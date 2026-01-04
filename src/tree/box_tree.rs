@@ -824,6 +824,8 @@ impl BoxNode {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      table_cell_span: None,
+      table_column_span: None,
       first_line_style: None,
       first_letter_style: None,
     }
