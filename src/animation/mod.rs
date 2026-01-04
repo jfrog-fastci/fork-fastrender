@@ -3962,6 +3962,39 @@ mod tests {
   }
 
   #[test]
+  fn animation_timeline_none_disables_time_based_animation() {
+    let html = r#"<!DOCTYPE html>
+<html>
+  <head>
+    <style>
+      html, body { margin: 0; background: white; }
+      #box {
+        width: 100px;
+        height: 100px;
+        margin: 50px;
+        background: rgb(255, 0, 0);
+        opacity: 0;
+        animation: fade 1s forwards;
+        animation-timeline: none;
+      }
+      @keyframes fade {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="box"></div>
+  </body>
+</html>
+"#;
+    let base_url = Url::parse("https://example.com/").unwrap().to_string();
+    let rendered = render_animation_sampling_fixture(html, base_url, Some(1500.0));
+    let image = decode_png(&rendered);
+    assert_eq!(image.get_pixel(100, 100).0, [255, 255, 255, 255]);
+  }
+
+  #[test]
   fn animation_time_sampling_fixture_matches_golden() {
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let fixture_path = repo_root.join("tests/pages/fixtures/animation_time_sampling/index.html");

@@ -1251,7 +1251,11 @@ pub(crate) fn parse_animation_timeline_list(raw: &str) -> Option<Vec<AnimationTi
     return None;
   }
 
-  if timelines.is_empty() { None } else { Some(timelines) }
+  if timelines.is_empty() {
+    None
+  } else {
+    Some(timelines)
+  }
 }
 
 fn parse_animation_names(raw: &str) -> Vec<String> {
@@ -15659,6 +15663,7 @@ mod tests {
   use crate::style::string_set::{StringSetAssignment, StringSetValue};
   use crate::style::types::AlignContent;
   use crate::style::types::AlignItems;
+  use crate::style::types::AnimationTimeline;
   use crate::style::types::AspectRatio;
   use crate::style::types::BackgroundImage;
   use crate::style::types::BackgroundPosition;
@@ -15794,6 +15799,49 @@ mod tests {
       apply_declaration(&mut styles, &decl, &parent, 16.0, 16.0);
       assert_eq!(styles.line_clamp, Some(2));
     }
+  }
+
+  #[test]
+  fn animation_timeline_parses_none_as_entry() {
+    let decls = parse_declarations("animation-timeline: none;");
+    assert_eq!(decls.len(), 1);
+    let decl = &decls[0];
+
+    let mut styles = ComputedStyle::default();
+    let parent = ComputedStyle::default();
+    apply_declaration(&mut styles, decl, &parent, 16.0, 16.0);
+
+    assert_eq!(styles.animation_timelines, vec![AnimationTimeline::None]);
+  }
+
+  #[test]
+  fn animation_timeline_preserves_none_entries_in_lists() {
+    let decls = parse_declarations("animation-timeline: none, foo;");
+    assert_eq!(decls.len(), 1);
+    let decl = &decls[0];
+
+    let mut styles = ComputedStyle::default();
+    let parent = ComputedStyle::default();
+    apply_declaration(&mut styles, decl, &parent, 16.0, 16.0);
+
+    assert_eq!(
+      styles.animation_timelines,
+      vec![AnimationTimeline::None, AnimationTimeline::Named("foo".to_string())]
+    );
+  }
+
+  #[test]
+  fn animation_timeline_splits_top_level_commas() {
+    let decls = parse_declarations("animation-timeline: scroll(self), none;");
+    assert_eq!(decls.len(), 1);
+    let decl = &decls[0];
+
+    let mut styles = ComputedStyle::default();
+    let parent = ComputedStyle::default();
+    apply_declaration(&mut styles, decl, &parent, 16.0, 16.0);
+
+    assert_eq!(styles.animation_timelines.len(), 2);
+    assert!(matches!(styles.animation_timelines[1], AnimationTimeline::None));
   }
 
   #[test]
