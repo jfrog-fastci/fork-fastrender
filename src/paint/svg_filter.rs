@@ -5395,12 +5395,12 @@ fn apply_convolve_matrix(
             let mut sum_a = 0.0;
 
             for (ky, row) in kernel_rows.iter().enumerate() {
-              let sy = y + ky as i32 - target_y;
+              let sy = y + target_y - ky as i32;
               for (kx, weight) in row.iter().enumerate() {
                 if *weight == 0.0 {
                   continue;
                 }
-                let sx = x + kx as i32 - target_x;
+                let sx = x + target_x - kx as i32;
                 if let Some(px) = sample_pixel(src_pixels, sx, sy, width_i32, height_i32, edge_mode)
                 {
                   let (r, g, b, a) = unpremultiply(px);
