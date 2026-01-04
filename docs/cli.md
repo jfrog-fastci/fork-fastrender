@@ -303,7 +303,7 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
   - Defaults match the fixture runner viewport/DPR (1040x1240 @ 1.0) unless overridden.
   - JavaScript is disabled by default to match FastRender’s “no JS” model (enforced via injected CSP).
   - Prefers Chrome's `--headless=new` mode but automatically retries with legacy `--headless` on older Chrome versions (the chosen mode is recorded in `<fixture>.json` metadata).
-  - `<fixture>.json` metadata also records hashes of fixture inputs (`input_sha256` for `index.html`, plus `assets_sha256` for other fixture-local files) so `fixture-chrome-diff --no-chrome` can detect stale baselines.
+  - `<fixture>.json` metadata also records hashes of fixture inputs (`input_sha256` for `index.html`, `assets_sha256` for other fixture-local files, plus `shared_assets_sha256` for the fixtures-root `assets/` directory) so `fixture-chrome-diff --no-chrome` can detect stale baselines.
   - Pass `--chrome /path/to/chrome` (or set `CHROME_BIN=/path/to/chrome`) if auto-detection fails.
   - Output defaults to `target/chrome_fixture_renders/<fixture>.png` plus `<fixture>.chrome.log` (includes the Chrome command line) and `<fixture>.json` metadata alongside.
 - Core flags:
@@ -328,7 +328,7 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 - Notes:
   - JavaScript is disabled by default (Chrome baseline uses an injected CSP, matching FastRender's no-JS model).
   - When `--no-chrome` is set, existing Chrome baseline metadata (`<out>/chrome/<fixture>.json`) is validated against the current `--viewport`, `--dpr`, `--media`, and `--js` values when present. Missing metadata emits a warning; use `--require-chrome-metadata` to fail fast.
-  - When `--no-chrome` is set, the command checks the stored Chrome baseline metadata against the current fixture `index.html` (and other fixture-local inputs like `assets/`, `styles.css`, etc, when available). If the fixture inputs have changed since the baseline was generated, it fails fast to avoid misleading diffs. Use `--allow-stale-chrome-baselines` to downgrade this to a warning.
+  - When `--no-chrome` is set, the command checks the stored Chrome baseline metadata against the current fixture `index.html`, other fixture-local inputs like `assets/`, `styles.css`, etc, and the shared fixtures-root `assets/` directory (when available). If the fixture inputs have changed since the baseline was generated, it fails fast to avoid misleading diffs. Use `--allow-stale-chrome-baselines` to downgrade this to a warning.
   - Pass `--write-snapshot` to also write per-fixture snapshots/diagnostics for later `diff_snapshots` (equivalent to `render_fixtures --write-snapshot`).
 - Core flags:
   - Selection: `--fixtures <csv>`, `--shard <index>/<total>`

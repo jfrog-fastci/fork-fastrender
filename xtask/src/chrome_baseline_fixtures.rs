@@ -124,6 +124,8 @@ struct FixtureMetadata {
   input_sha256: String,
   #[serde(skip_serializing_if = "Option::is_none")]
   assets_sha256: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  shared_assets_sha256: Option<String>,
   headless: &'static str,
   chrome_version: Option<String>,
   elapsed_ms: f64,
@@ -150,6 +152,8 @@ pub fn run_chrome_baseline_fixtures(args: ChromeBaselineFixturesArgs) -> Result<
   if !fixture_root.is_dir() {
     bail!("fixture dir not found: {}", fixture_root.display());
   }
+
+  let shared_assets_sha256 = compute_shared_assets_sha256(&fixture_root)?;
 
   let chrome =
     resolve_chrome_binary(&args).with_context(|| "failed to locate a Chrome/Chromium binary")?;
@@ -192,6 +196,7 @@ pub fn run_chrome_baseline_fixtures(args: ChromeBaselineFixturesArgs) -> Result<
       &fixture,
       &chrome,
       chrome_version.as_deref(),
+      shared_assets_sha256.as_deref(),
       &out_dir,
       temp_root.path(),
       &args,
@@ -222,6 +227,7 @@ fn render_fixture(
   fixture: &Fixture,
   chrome: &Path,
   chrome_version: Option<&str>,
+  shared_assets_sha256: Option<&str>,
   out_dir: &Path,
   temp_root: &Path,
   args: &ChromeBaselineFixturesArgs,
@@ -369,6 +375,7 @@ fn render_fixture(
     chrome_version,
     elapsed_ms,
     &index_bytes,
+    shared_assets_sha256,
   )?;
   let json = serde_json::to_vec_pretty(&metadata).context("serialize chrome fixture metadata")?;
   fs::write(&metadata_path, json).with_context(|| format!("write {}", metadata_path.display()))?;
@@ -383,6 +390,7 @@ fn build_fixture_metadata(
   chrome_version: Option<&str>,
   elapsed_ms: f64,
   index_html: &[u8],
+  shared_assets_sha256: Option<&str>,
 ) -> Result<FixtureMetadata> {
   let input_sha256 = sha256_hex(index_html);
   let assets_sha256 = compute_assets_sha256(&fixture.dir)?;
@@ -399,6 +407,7 @@ fn build_fixture_metadata(
     },
     input_sha256,
     assets_sha256,
+    shared_assets_sha256: shared_assets_sha256.map(|hash| hash.to_string()),
     headless: match headless_used {
       HeadlessMode::New => "new",
       HeadlessMode::Legacy => "legacy",
@@ -491,6 +500,40 @@ fn compute_assets_sha256(fixture_dir: &Path) -> Result<Option<String>> {
 
   if !any {
     return Ok(None);
+  }
+
+  let digest = hasher.finalize();
+  Ok(Some(digest.iter().map(|b| format!("{b:02x}")).collect()))
+}
+
+fn compute_shared_assets_sha256(fixtures_root: &Path) -> Result<Option<String>> {
+  let assets_dir = fixtures_root.join("assets");
+  if !assets_dir.is_dir() {
+    return Ok(None);
+  }
+
+  let mut files = WalkDir::new(&assets_dir)
+    .follow_links(false)
+    .into_iter()
+    .filter_map(|entry| entry.ok())
+    .filter(|entry| entry.file_type().is_file())
+    .map(|entry| entry.into_path())
+    .collect::<Vec<_>>();
+
+  files.sort_by(|a, b| {
+    let a_rel = a.strip_prefix(&assets_dir).unwrap_or(a);
+    let b_rel = b.strip_prefix(&assets_dir).unwrap_or(b);
+    a_rel.to_string_lossy().cmp(&b_rel.to_string_lossy())
+  });
+
+  let mut hasher = Sha256::new();
+  for path in files {
+    let rel = path.strip_prefix(&assets_dir).unwrap_or(&path);
+    hasher.update(rel.to_string_lossy().as_bytes());
+    hasher.update([0u8]);
+    let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    hasher.update(bytes);
+    hasher.update([0u8]);
   }
 
   let digest = hasher.finalize();
@@ -1374,6 +1417,7 @@ mod tests {
       Some("Chromium 123.0.0.0"),
       12.0,
       html,
+      None,
     )
     .expect("build fixture metadata");
 

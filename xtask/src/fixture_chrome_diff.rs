@@ -78,6 +78,8 @@ struct ChromeFixtureMetadata {
   input_sha256: Option<String>,
   #[serde(default)]
   assets_sha256: Option<String>,
+  #[serde(default)]
+  shared_assets_sha256: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -540,6 +542,8 @@ struct StaleFixtureInfo {
   current_input_sha256: String,
   baseline_assets_sha256: Option<String>,
   current_assets_sha256: Option<String>,
+  baseline_shared_assets_sha256: Option<String>,
+  current_shared_assets_sha256: Option<String>,
 }
 
 fn validate_reused_chrome_baselines(
@@ -549,6 +553,7 @@ fn validate_reused_chrome_baselines(
   args: &FixtureChromeDiffArgs,
 ) -> Result<()> {
   let mut stale = BTreeMap::<String, StaleFixtureInfo>::new();
+  let current_shared_assets_sha256 = shared_assets_sha256(fixtures_root)?;
 
   for stem in stems {
     let metadata_path = chrome_dir.join(format!("{stem}.json"));
@@ -569,7 +574,9 @@ fn validate_reused_chrome_baselines(
 
     let baseline_input_sha256 = metadata.input_sha256;
     let baseline_assets_sha256 = metadata.assets_sha256;
+    let baseline_shared_assets_sha256 = metadata.shared_assets_sha256;
     let current_assets_sha256 = fixture_assets_sha256(&fixture_dir)?;
+    let current_shared_assets_sha256 = current_shared_assets_sha256.clone();
 
     let mut is_stale = match baseline_input_sha256.as_deref() {
       Some(hash) if hash == current_input_sha256 => false,
@@ -598,6 +605,17 @@ fn validate_reused_chrome_baselines(
       }
     }
 
+    if !is_stale {
+      match (
+        baseline_shared_assets_sha256.as_deref(),
+        current_shared_assets_sha256.as_deref(),
+      ) {
+        (Some(baseline), Some(current)) if baseline == current => {}
+        (None, None) => {}
+        _ => is_stale = true,
+      }
+    }
+
     if is_stale {
       stale.insert(
         stem.clone(),
@@ -606,6 +624,8 @@ fn validate_reused_chrome_baselines(
           current_input_sha256,
           baseline_assets_sha256,
           current_assets_sha256,
+          baseline_shared_assets_sha256,
+          current_shared_assets_sha256,
         },
       );
     }
@@ -636,6 +656,20 @@ fn validate_reused_chrome_baselines(
       }
       msg.push_str(" (baseline) vs ");
       match info.current_assets_sha256.as_deref() {
+        Some(hash) => msg.push_str(hash),
+        None => msg.push_str("<none>"),
+      }
+      msg.push_str(" (current)\n");
+    }
+
+    if info.baseline_shared_assets_sha256 != info.current_shared_assets_sha256 {
+      msg.push_str("      shared_assets_sha256 ");
+      match info.baseline_shared_assets_sha256.as_deref() {
+        Some(hash) => msg.push_str(hash),
+        None => msg.push_str("<missing from baseline metadata>"),
+      }
+      msg.push_str(" (baseline) vs ");
+      match info.current_shared_assets_sha256.as_deref() {
         Some(hash) => msg.push_str(hash),
         None => msg.push_str("<none>"),
       }
@@ -728,6 +762,40 @@ fn fixture_assets_sha256(fixture_dir: &Path) -> Result<Option<String>> {
 
   if !any {
     return Ok(None);
+  }
+
+  let digest = hasher.finalize();
+  Ok(Some(digest.iter().map(|b| format!("{b:02x}")).collect()))
+}
+
+fn shared_assets_sha256(fixtures_root: &Path) -> Result<Option<String>> {
+  let assets_dir = fixtures_root.join("assets");
+  if !assets_dir.is_dir() {
+    return Ok(None);
+  }
+
+  let mut files = WalkDir::new(&assets_dir)
+    .follow_links(false)
+    .into_iter()
+    .filter_map(|entry| entry.ok())
+    .filter(|entry| entry.file_type().is_file())
+    .map(|entry| entry.into_path())
+    .collect::<Vec<_>>();
+
+  files.sort_by(|a, b| {
+    let a_rel = a.strip_prefix(&assets_dir).unwrap_or(a);
+    let b_rel = b.strip_prefix(&assets_dir).unwrap_or(b);
+    a_rel.to_string_lossy().cmp(&b_rel.to_string_lossy())
+  });
+
+  let mut hasher = Sha256::new();
+  for path in files {
+    let rel = path.strip_prefix(&assets_dir).unwrap_or(&path);
+    hasher.update(rel.to_string_lossy().as_bytes());
+    hasher.update([0u8]);
+    let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    hasher.update(bytes);
+    hasher.update([0u8]);
   }
 
   let digest = hasher.finalize();
