@@ -1754,14 +1754,16 @@ fn parse_animation_play_state_list(raw: &str) -> Vec<AnimationPlayState> {
 fn parse_transition_property_list(raw: &str) -> Vec<TransitionProperty> {
   let mut props = Vec::new();
   for part in split_top_level_commas(raw) {
-    let lower = part.to_ascii_lowercase();
+    let lower = part.trim().to_ascii_lowercase();
     if lower == "none" {
       return vec![TransitionProperty::None];
     }
     if lower == "all" {
       props.push(TransitionProperty::All);
     } else {
-      props.push(TransitionProperty::Name(lower));
+      let canonical =
+        crate::css::properties::vendor_prefixed_property_alias(&lower).unwrap_or(lower.as_str());
+      props.push(TransitionProperty::Name(canonical.to_string()));
     }
   }
   if props.is_empty() {
@@ -2160,10 +2162,12 @@ fn parse_transition_shorthand(
 
       if property.is_none() {
         let lower = token.trim().to_ascii_lowercase();
-        property = Some(match lower.as_str() {
+        let canonical =
+          crate::css::properties::vendor_prefixed_property_alias(&lower).unwrap_or(lower.as_str());
+        property = Some(match canonical {
           "all" => TransitionProperty::All,
           "none" => TransitionProperty::None,
-          _ => TransitionProperty::Name(lower),
+          _ => TransitionProperty::Name(canonical.to_string()),
         });
       }
     }
@@ -15670,6 +15674,66 @@ mod tests {
     assert_eq!(
       styles.transition_timing_functions,
       vec![TransitionTimingFunction::Linear].into()
+    );
+  }
+
+  #[test]
+  fn transition_property_aliases_vendor_prefixed_names() {
+    let decls = parse_declarations("transition-property: -webkit-transform, opacity;");
+    assert_eq!(decls.len(), 1);
+    let decl = &decls[0];
+
+    let parent_styles = ComputedStyle::default();
+    let mut styles = ComputedStyle::default();
+    apply_declaration_with_base(
+      &mut styles,
+      decl,
+      &parent_styles,
+      default_computed_style(),
+      None,
+      16.0,
+      16.0,
+      DEFAULT_VIEWPORT,
+    );
+
+    assert_eq!(
+      styles.transition_properties,
+      vec![
+        TransitionProperty::Name("transform".to_string()),
+        TransitionProperty::Name("opacity".to_string()),
+      ]
+      .into()
+    );
+  }
+
+  #[test]
+  fn transition_shorthand_aliases_vendor_prefixed_properties() {
+    let decls = parse_declarations("transition: -webkit-transform 200ms ease-in-out;");
+    assert_eq!(decls.len(), 1);
+    let decl = &decls[0];
+
+    let parent_styles = ComputedStyle::default();
+    let mut styles = ComputedStyle::default();
+    apply_declaration_with_base(
+      &mut styles,
+      decl,
+      &parent_styles,
+      default_computed_style(),
+      None,
+      16.0,
+      16.0,
+      DEFAULT_VIEWPORT,
+    );
+
+    assert_eq!(
+      styles.transition_properties,
+      vec![TransitionProperty::Name("transform".to_string())].into()
+    );
+    assert_eq!(styles.transition_durations, vec![200.0].into());
+    assert_eq!(styles.transition_delays, vec![0.0].into());
+    assert_eq!(
+      styles.transition_timing_functions,
+      vec![TransitionTimingFunction::EaseInOut].into()
     );
   }
 
