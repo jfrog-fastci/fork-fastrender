@@ -777,10 +777,23 @@ impl FallbackChain {
     }
 
     // Try system emoji fonts
-    db.find_emoji_fonts()
+    if let Some(id) = db
+      .find_emoji_fonts()
       .into_iter()
       .find(|&id| db.has_glyph(id, c))
-      .map(FontId::new)
+    {
+      return Some(FontId::new(id));
+    }
+
+    db.faces()
+      .filter(|face| {
+        face
+          .families
+          .iter()
+          .any(|(name, _)| FontDatabase::family_name_is_emoji_font(name))
+      })
+      .find(|face| db.has_glyph(face.id, c))
+      .map(|face| FontId::new(face.id))
   }
 
   /// Tries to resolve a single family entry for a character.

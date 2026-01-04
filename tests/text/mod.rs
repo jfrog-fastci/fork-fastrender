@@ -12,6 +12,7 @@ mod emoji_font_detection_test;
 mod emoji_test;
 mod emoji_unified_test;
 mod font_fallback;
+mod font_variant_emoji_monochrome_test;
 mod font_metrics_test;
 mod font_palette;
 mod font_palette_test;

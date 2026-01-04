@@ -3981,17 +3981,14 @@ fn is_emoji_dominant(text: &str) -> bool {
 }
 
 fn font_is_emoji_font(db: &FontDatabase, id: Option<fontdb::ID>, font: &LoadedFont) -> bool {
-  if let Some(id) = id {
-    if let Some(is_color) = db.is_color_capable_font(id) {
-      return is_color;
-    }
-  } else if let Some(is_color) =
+  let is_color_capable = if let Some(id) = id {
+    db.is_color_capable_font(id).unwrap_or(false)
+  } else {
     crate::text::face_cache::with_face(font, crate::text::font_db::face_has_color_tables)
-  {
-    return is_color;
-  }
+      .unwrap_or(false)
+  };
 
-  FontDatabase::family_name_is_emoji_font(&font.family)
+  is_color_capable || FontDatabase::family_name_is_emoji_font(&font.family)
 }
 
 fn consider_local_font_candidate(
@@ -4006,16 +4003,16 @@ fn consider_local_font_candidate(
   }
 
   let is_emoji_font = if picker.prefer_emoji || picker.avoid_emoji {
-    if let Some(face) = cached_face {
+    let has_color_tables = cached_face.is_some_and(|face| {
       crate::text::font_db::face_has_color_tables(face.face())
-    } else {
-      db.inner().face(id).is_some_and(|face| {
-        face
-          .families
-          .iter()
-          .any(|(name, _)| FontDatabase::family_name_is_emoji_font(name))
-      })
-    }
+    });
+    let is_emoji_family = db.inner().face(id).is_some_and(|face| {
+      face
+        .families
+        .iter()
+        .any(|(name, _)| FontDatabase::family_name_is_emoji_font(name))
+    });
+    has_color_tables || is_emoji_family
   } else {
     false
   };
