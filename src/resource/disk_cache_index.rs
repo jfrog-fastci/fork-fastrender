@@ -1197,9 +1197,9 @@ mod tests {
     for id in 0..processes {
       let mut cmd = Command::new(&exe);
       cmd
+        .arg("--quiet")
         .arg("--ignored")
         .arg("--exact")
-        .arg("--nocapture")
         .arg(child_test_name)
         .env("FASTR_DISK_CACHE_INDEX_CACHE_DIR", tmp.path().as_os_str())
         .env("FASTR_DISK_CACHE_INDEX_CHILD_ID", id.to_string())
