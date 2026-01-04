@@ -5684,6 +5684,7 @@ mod tests {
       width: None,
       height: None,
     };
+    let taffy_style = taffy::style::Style::default();
 
     let avail_a = taffy::geometry::Size {
       width: AvailableSpace::Definite(100.4),
