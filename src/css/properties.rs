@@ -2225,6 +2225,7 @@ fn parse_simple_value(value_str: &str) -> Option<PropertyValue> {
     && trimmed.as_bytes()[2].to_ascii_lowercase() == b'l'
     && trimmed.as_bytes()[3] == b'('
     && trimmed.ends_with(')')
+    && is_single_function_call(trimmed, "url")
   {
     let inner = trimmed[4..trimmed.len() - 1].trim();
     let inner = if inner.len() >= 2 {
@@ -2263,6 +2264,61 @@ fn parse_simple_value(value_str: &str) -> Option<PropertyValue> {
 
 fn is_css_whitespace(ch: char) -> bool {
   matches!(ch, ' ' | '\t' | '\n' | '\r' | '\u{000C}')
+}
+
+fn is_single_function_call(trimmed: &str, name: &str) -> bool {
+  let name_len = name.len();
+  let Some(prefix) = trimmed.get(..name_len) else {
+    return false;
+  };
+  if !prefix.eq_ignore_ascii_case(name) {
+    return false;
+  }
+  if trimmed.as_bytes().get(name_len) != Some(&b'(') {
+    return false;
+  }
+
+  // Keep this allocation-free and avoid decoding UTF-8 into `char`s; ASCII punctuation can't
+  // appear inside a multi-byte UTF-8 sequence.
+  let bytes = trimmed.as_bytes();
+  let mut depth: i32 = 0;
+  let mut in_string: Option<u8> = None;
+  let mut escape = false;
+
+  for idx in name_len..bytes.len() {
+    let b = bytes[idx];
+    if escape {
+      escape = false;
+      continue;
+    }
+    if b == b'\\' {
+      escape = true;
+      continue;
+    }
+    if let Some(q) = in_string {
+      if b == q {
+        in_string = None;
+      }
+      continue;
+    }
+    match b {
+      b'"' | b'\'' => in_string = Some(b),
+      b'(' => depth += 1,
+      b')' => {
+        depth -= 1;
+        if depth == 0 {
+          // CSS whitespace is ASCII only; avoid `str::trim`'s Unicode-aware scanning.
+          return bytes[idx + 1..].iter().all(|b| b.is_ascii_whitespace());
+        }
+        if depth < 0 {
+          return false;
+        }
+      }
+      _ => {}
+    }
+  }
+
+  false
 }
 
 fn unescape_css_string_fragment(value: &str) -> String {
@@ -2337,61 +2393,6 @@ fn parse_gradient(value: &str) -> Option<PropertyValue> {
     // `is_single_function_call` validates that `trimmed` is exactly `name(<inner>)` with the outer
     // closing `)` at the end of the string, so slicing by byte offsets is safe.
     trimmed.get(name_len + 1..trimmed.len().saturating_sub(1))
-  }
-
-  fn is_single_function_call(trimmed: &str, name: &str) -> bool {
-    let name_len = name.len();
-    let Some(prefix) = trimmed.get(..name_len) else {
-      return false;
-    };
-    if !prefix.eq_ignore_ascii_case(name) {
-      return false;
-    }
-    if trimmed.as_bytes().get(name_len) != Some(&b'(') {
-      return false;
-    }
-
-    // This runs for every gradient value, so keep it allocation-free and avoid decoding UTF-8
-    // into `char`s; ASCII punctuation can't appear inside a multi-byte UTF-8 sequence.
-    let bytes = trimmed.as_bytes();
-    let mut depth: i32 = 0;
-    let mut in_string: Option<u8> = None;
-    let mut escape = false;
-
-    for idx in name_len..bytes.len() {
-      let b = bytes[idx];
-      if escape {
-        escape = false;
-        continue;
-      }
-      if b == b'\\' {
-        escape = true;
-        continue;
-      }
-      if let Some(q) = in_string {
-        if b == q {
-          in_string = None;
-        }
-        continue;
-      }
-      match b {
-        b'"' | b'\'' => in_string = Some(b),
-        b'(' => depth += 1,
-        b')' => {
-          depth -= 1;
-          if depth == 0 {
-            // CSS whitespace is ASCII only; avoid `str::trim`'s Unicode-aware scanning.
-            return bytes[idx + 1..].iter().all(|b| b.is_ascii_whitespace());
-          }
-          if depth < 0 {
-            return false;
-          }
-        }
-        _ => {}
-      }
-    }
-
-    false
   }
 
   let trimmed = value.trim();
@@ -3787,6 +3788,20 @@ mod tests {
       parsed,
       PropertyValue::Url(url) if url == "/content/dam/nyu/stream/home3/parkeast.jpg"
     ));
+  }
+
+  #[test]
+  fn filter_value_url_with_additional_functions_is_not_single_url_token() {
+    let value = "url(#recolor) opacity(0.5)";
+    let parsed = parse_property_value("filter", value).expect("parsed");
+    assert!(matches!(parsed, PropertyValue::Keyword(kw) if kw == value));
+  }
+
+  #[test]
+  fn backdrop_filter_value_url_with_additional_functions_is_not_single_url_token() {
+    let value = "url(#recolor) opacity(0.5)";
+    let parsed = parse_property_value("backdrop-filter", value).expect("parsed");
+    assert!(matches!(parsed, PropertyValue::Keyword(kw) if kw == value));
   }
 
   #[test]

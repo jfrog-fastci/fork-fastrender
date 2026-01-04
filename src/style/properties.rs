@@ -23678,6 +23678,22 @@ mod tests {
   }
 
   #[test]
+  fn parses_filter_list_starting_with_url_from_css_property_parser() {
+    let parsed = crate::css::properties::parse_property_value(
+      "filter",
+      "url(#recolor) opacity(0.5)",
+    )
+    .expect("parsed");
+    let filters = parse_filter_list(&parsed).expect("filters");
+    assert_eq!(filters.len(), 2);
+    assert!(matches!(&filters[0], FilterFunction::Url(url) if url == "#recolor"));
+    match &filters[1] {
+      FilterFunction::Opacity(v) => assert!((*v - 0.5).abs() < 0.001),
+      other => panic!("expected opacity filter, got {:?}", other),
+    }
+  }
+
+  #[test]
   fn filter_url_empty_is_invalid() {
     assert!(parse_filter_list(&PropertyValue::Url(String::new())).is_none());
   }
