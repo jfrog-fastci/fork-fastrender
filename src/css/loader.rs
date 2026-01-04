@@ -2085,6 +2085,10 @@ pub fn inject_css_into_html(html: &str, css: &str) -> String {
 /// - `<meta property="og:url" content="...">`
 /// - as a last resort: `https://{filename}/` when the cached filename looks like a domain.
 ///
+/// For arbitrary local HTML files (including imported offline fixtures that use `index.html` as the
+/// entrypoint) we intentionally keep the `file://...` URL as-is so canonical/OG metadata cannot
+/// override offline resource resolution.
+///
 /// Note: This function intentionally does **not** consider `<base href>`; base URL resolution is
 /// handled after DOM parsing so `<base>` inside inert contexts (e.g. `<template>`, declarative
 /// shadow DOM templates) cannot poison the result.
@@ -2092,6 +2096,9 @@ pub fn infer_document_url_guess<'a>(html: &'a str, input_url: &'a str) -> Cow<'a
   // Canonicalize file:// inputs so relative cached paths become absolute.
   let input = canonicalize_file_input_url(input_url);
   if !is_file_url(input.as_ref()) {
+    return input;
+  }
+  if !file_url_looks_like_cached_pageset_html(input.as_ref()) {
     return input;
   }
 
@@ -2128,6 +2135,32 @@ fn is_file_url(url: &str) -> bool {
   Url::parse(url)
     .ok()
     .is_some_and(|url| url.scheme() == "file")
+}
+
+fn file_url_looks_like_cached_pageset_html(doc_url: &str) -> bool {
+  let Ok(url) = Url::parse(doc_url) else {
+    return false;
+  };
+  if url.scheme() != "file" {
+    return false;
+  }
+  let Some(seg) = url.path_segments().and_then(|mut s| s.next_back()) else {
+    return false;
+  };
+  let lower = seg.to_ascii_lowercase();
+  let stem = if lower.ends_with(".html") {
+    &seg[..seg.len() - ".html".len()]
+  } else if lower.ends_with(".htm") {
+    &seg[..seg.len() - ".htm".len()]
+  } else {
+    return false;
+  };
+
+  // Pageset cached HTML snapshots are named using the normalized host/path stem (e.g.
+  // `macrumors.com.html`). Imported fixtures use `index.html`, and treating those as cached pages
+  // would cause `<link rel="canonical">` / `og:url` metadata to override the file base URL and
+  // break offline resource loading.
+  stem.contains('.')
 }
 
 fn infer_http_base_from_file_url(doc_url: &str) -> Option<String> {
@@ -2184,6 +2217,9 @@ fn infer_document_url_guess_from_dom_with_input<'a>(
   input: Cow<'a, str>,
 ) -> Cow<'a, str> {
   if !is_file_url(input.as_ref()) {
+    return input;
+  }
+  if !file_url_looks_like_cached_pageset_html(input.as_ref()) {
     return input;
   }
 
