@@ -82,6 +82,7 @@ mod svg_inline_css_cdata_test;
 mod svg_inline_test;
 mod text_cache_test;
 mod text_decoration_skip_ink_offset_golden_test;
+mod text_decoration_skip_ink_variable_font_golden_test;
 mod text_emphasis_currentcolor_palette;
 mod text_rasterize_test;
 mod text_shadow_color_emoji_golden;

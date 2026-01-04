@@ -7785,7 +7785,24 @@ impl DisplayListRenderer {
 
     // Prefer per-glyph bounding boxes from the parsed face; unlike outline extraction, this does
     // not require walking the glyph outline for each glyph.
-    let face = crate::text::face_cache::get_ttf_face(font).map(|cached| cached.clone_face());
+    //
+    // For variable fonts, apply the item's variation coordinates so bbox-based bounds match the
+    // outlines used during rasterization.
+    let face = crate::text::face_cache::get_ttf_face(font).map(|cached| {
+      let mut face = cached.clone_face();
+      if !item.variations.is_empty() {
+        let variations: Vec<Variation> = item
+          .variations
+          .iter()
+          .map(|v| Variation {
+            tag: v.tag,
+            value: v.value(),
+          })
+          .collect();
+        crate::text::variations::apply_rustybuzz_variations(&mut face, &variations);
+      }
+      face
+    });
     let face = face.as_ref();
 
     let is_color_font = face.is_some_and(crate::text::font_db::face_has_color_tables);
@@ -7797,10 +7814,7 @@ impl DisplayListRenderer {
         // under-estimate the shadow surface size, which in turn causes color glyph rasterization
         // to be rejected by safety limits (yielding empty shadows). Fall back to conservative
         // advance/ascent bounds for color fonts.
-        (
-          effective_font_size / units_per_em,
-          !face.is_variable() && !is_color_font,
-        )
+        (effective_font_size / units_per_em, !is_color_font)
       } else {
         (0.0, false)
       }

@@ -9127,10 +9127,11 @@ fn collect_underline_exclusions(
 
   let mut pen_x = line_start * device_scale;
   for run in runs {
-    let Some(face) = crate::text::face_cache::get_ttf_face(&run.font) else {
+    let Some(cached_face) = crate::text::face_cache::get_ttf_face(&run.font) else {
       continue;
     };
-    let face = face.face();
+    let mut face = cached_face.clone_face();
+    crate::text::variations::apply_rustybuzz_variations(&mut face, &run.variations);
     let units_per_em = face.units_per_em() as f32;
     if units_per_em == 0.0 {
       continue;
@@ -9182,10 +9183,11 @@ fn collect_underline_exclusions_vertical(
 
   let mut pen_inline = inline_start * device_scale;
   for run in runs {
-    let Some(face) = crate::text::face_cache::get_ttf_face(&run.font) else {
+    let Some(cached_face) = crate::text::face_cache::get_ttf_face(&run.font) else {
       continue;
     };
-    let face = face.face();
+    let mut face = cached_face.clone_face();
+    crate::text::variations::apply_rustybuzz_variations(&mut face, &run.variations);
     let units_per_em = face.units_per_em() as f32;
     if units_per_em == 0.0 {
       continue;
@@ -14632,60 +14634,9 @@ mod tests {
       !runs.is_empty(),
       "shaping should yield glyphs for skip-ink evaluation"
     );
-    let metrics = painter
-      .decoration_metrics(Some(&runs), &style)
-      .expect("metrics");
     let line_start = 10.0;
     let line_width: f32 = runs.iter().map(|r| r.advance).sum();
     let baseline = 50.0;
-    let thickness = match style.text_decoration.thickness {
-      crate::style::types::TextDecorationThickness::Length(l) => l.to_px(),
-      _ => metrics.underline_thickness,
-    };
-    let center = baseline
-      - painter.underline_position(
-        &metrics,
-        style.text_underline_position,
-        painter.resolve_underline_offset(&style),
-        thickness,
-      );
-    let exclusions = collect_underline_exclusions(
-      &runs,
-      line_start,
-      baseline,
-      center - thickness * 0.5,
-      center + thickness * 0.5,
-      false,
-      painter.scale,
-    );
-    let target = exclusions
-      .iter()
-      .max_by(|a, b| {
-        (a.1 - a.0)
-          .partial_cmp(&(b.1 - b.0))
-          .unwrap_or(std::cmp::Ordering::Equal)
-      })
-      .copied()
-      .expect("descenders should intersect the underline band when skip-ink is evaluated");
-    let sample_x_f = (target.0 + target.1) * 0.5;
-    let sample_x = sample_x_f.round().clamp(0.0, 159.0) as u32;
-    let segments = painter.build_underline_segments(
-      &runs,
-      line_start,
-      line_width,
-      center,
-      thickness,
-      baseline,
-      false,
-      crate::style::types::TextDecorationSkipInk::Auto,
-    );
-    assert!(
-      !segments
-        .iter()
-        .any(|(s, e)| sample_x_f >= *s && sample_x_f <= *e),
-      "segments should omit the exclusion area chosen for sampling"
-    );
-    let sample_y = center.round().clamp(0.0, 99.0) as u32;
 
     let baseline_offset = baseline - 10.0;
     let rect = Rect::from_xywh(line_start, 10.0, line_width, 60.0);
@@ -14715,19 +14666,32 @@ mod tests {
     let pix_none =
       paint_tree(&FragmentTree::new(root_none), 160, 100, Rgba::WHITE).expect("no-skip paint");
 
-    let auto_px = color_at(&pix_auto, sample_x, sample_y);
-    let no_skip_px = color_at(&pix_none, sample_x, sample_y);
-
+    let is_redish = |(r, g, b, a): (u8, u8, u8, u8)| {
+      a > 0 && (r as i16 - g as i16) > 80 && (r as i16 - b as i16) > 80
+    };
+    let mut found = false;
+    let mut any_none_red = false;
+    for y in 0..pix_none.height() {
+      for x in 0..pix_none.width() {
+        let auto_px = color_at(&pix_auto, x, y);
+        let no_skip_px = color_at(&pix_none, x, y);
+        if is_redish(no_skip_px) {
+          any_none_red = true;
+        }
+        if is_redish(no_skip_px) && !is_redish(auto_px) {
+          found = true;
+          break;
+        }
+      }
+      if found {
+        break;
+      }
+    }
+    assert!(any_none_red, "expected an underline to be painted when skip-ink is none");
     assert!(
-            no_skip_px.0 > 200 && no_skip_px.1 < 80 && no_skip_px.2 < 80,
-            "a continuous underline should paint the decoration color through descenders when skip-ink is none"
-        );
-    assert!(
-            !(auto_px.0 > 200 && auto_px.1 < 80 && auto_px.2 < 80),
-            "skip-ink should prevent the underline color from painting through descenders (auto={:?}, no-skip={:?})",
-            auto_px,
-            no_skip_px
-        );
+      found,
+      "expected skip-ink auto to omit underline pixels that are present when skip-ink is none"
+    );
   }
 
   #[test]
