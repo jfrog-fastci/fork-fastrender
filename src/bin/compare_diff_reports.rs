@@ -54,7 +54,16 @@ struct DiffReport {
   max_diff_percent: f64,
   max_perceptual_distance: Option<f64>,
   ignore_alpha: bool,
+  shard: Option<DiffReportShard>,
   results: Vec<DiffReportEntry>,
+}
+
+#[derive(Deserialize, Clone)]
+struct DiffReportShard {
+  index: usize,
+  total: usize,
+  #[allow(dead_code)]
+  discovered: usize,
 }
 
 #[derive(Deserialize, Clone)]
@@ -769,6 +778,21 @@ fn diff_config(baseline: &DiffReport, new_report: &DiffReport) -> Vec<ConfigMism
         .unwrap_or_else(|| "-".to_string()),
     }),
   }
+
+  match (baseline.shard.as_ref(), new_report.shard.as_ref()) {
+    (None, None) => {}
+    (Some(a), Some(b)) if a.index == b.index && a.total == b.total => {}
+    (a, b) => mismatches.push(ConfigMismatch {
+      field: "shard",
+      baseline: a
+        .map(|s| format!("{}/{}", s.index, s.total))
+        .unwrap_or_else(|| "-".to_string()),
+      new: b
+        .map(|s| format!("{}/{}", s.index, s.total))
+        .unwrap_or_else(|| "-".to_string()),
+    }),
+  }
+
   mismatches
 }
 
