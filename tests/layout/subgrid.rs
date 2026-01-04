@@ -335,12 +335,6 @@ fn column_subgrid_aligns_with_parent_tracks() {
     .expect("layout succeeds");
 
   let subgrid_fragment = &fragment.children[0];
-  eprintln!(
-    "subgrid origin x={} child0 x={} child1 x={}",
-    subgrid_fragment.bounds.x(),
-    subgrid_fragment.children[0].bounds.x(),
-    subgrid_fragment.children[1].bounds.x()
-  );
   assert_eq!(subgrid_fragment.children.len(), 2);
   let first = &subgrid_fragment.children[0];
   let second = &subgrid_fragment.children[1];
@@ -1396,12 +1390,6 @@ fn rtl_direction_reverses_subgrid_inline_axis() {
     .expect("layout succeeds");
 
   let subgrid_fragment = &fragment.children[0];
-  eprintln!(
-    "rtl subgrid origin x={} first x={} second x={}",
-    subgrid_fragment.bounds.x(),
-    subgrid_fragment.children[0].bounds.x(),
-    subgrid_fragment.children[1].bounds.x()
-  );
   let first = &subgrid_fragment.children[0];
   let second = &subgrid_fragment.children[1];
   assert_approx(first.bounds.width(), 30.0, "first track width preserved");
@@ -1462,12 +1450,6 @@ fn subgrid_uses_parent_direction_even_when_local_differs() {
     .expect("layout succeeds");
 
   let subgrid_fragment = &fragment.children[0];
-  eprintln!(
-    "ltr subgrid origin x={} first x={} second x={}",
-    subgrid_fragment.bounds.x(),
-    subgrid_fragment.children[0].bounds.x(),
-    subgrid_fragment.children[1].bounds.x()
-  );
   let first = &subgrid_fragment.children[0];
   let second = &subgrid_fragment.children[1];
   assert_approx(first.bounds.width(), 28.0, "first track width");
@@ -1541,10 +1523,6 @@ fn row_subgrid_respects_local_direction_for_columns() {
   let first = &subgrid_fragment.children[0];
   let second = &subgrid_fragment.children[1];
 
-  eprintln!(
-    "subgrid origin {:?} first {:?} second {:?}",
-    subgrid_fragment.bounds, first.bounds, second.bounds
-  );
   assert!(
     first.bounds.x() > second.bounds.x(),
     "rtl direction on row subgrid should mirror the inline axis"
@@ -2046,10 +2024,6 @@ fn subgrid_inherits_area_lines_when_axes_differ() {
   let subgrid_fragment = &fragment.children[0];
   let nav_fragment = &subgrid_fragment.children[0];
   let main_fragment = &subgrid_fragment.children[1];
-  eprintln!(
-    "subgrid {:?} nav {:?} main {:?}",
-    subgrid_fragment.bounds, nav_fragment.bounds, main_fragment.bounds
-  );
 
   assert_approx(
     nav_fragment.bounds.y(),
