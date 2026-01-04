@@ -555,3 +555,54 @@ fn compare_diff_reports_can_override_report_html_paths() {
   assert!(html.contains("baseline_custom.html"), "missing baseline link:\n{html}");
   assert!(html.contains("new_custom.html"), "missing new link:\n{html}");
 }
+
+#[test]
+fn compare_diff_reports_accepts_reports_without_ignore_alpha_field() {
+  let tmp = tempfile::TempDir::new().expect("tempdir");
+  let baseline_path = tmp.path().join("baseline.json");
+  let new_path = tmp.path().join("new.json");
+  let out_json = tmp.path().join("delta.json");
+  let out_html = tmp.path().join("delta.html");
+
+  let mut baseline = basic_report(vec![]);
+  baseline
+    .as_object_mut()
+    .expect("baseline object")
+    .remove("ignore_alpha");
+  let mut new_report = basic_report(vec![]);
+  new_report
+    .as_object_mut()
+    .expect("new report object")
+    .remove("ignore_alpha");
+
+  write_json(&baseline_path, &baseline);
+  write_json(&new_path, &new_report);
+
+  let output = compare_cmd(tmp.path())
+    .args([
+      "--baseline",
+      baseline_path.to_str().unwrap(),
+      "--new",
+      new_path.to_str().unwrap(),
+      "--json",
+      out_json.to_str().unwrap(),
+      "--html",
+      out_html.to_str().unwrap(),
+    ])
+    .output()
+    .expect("run compare_diff_reports");
+
+  assert!(
+    output.status.success(),
+    "expected success, got {:?}\nstdout:\n{}\nstderr:\n{}",
+    output.status.code(),
+    output_text(&output.stdout),
+    output_text(&output.stderr),
+  );
+
+  let report: Value = serde_json::from_str(&fs::read_to_string(&out_json).unwrap()).unwrap();
+  assert!(
+    report["config_mismatches"].as_array().unwrap().is_empty(),
+    "ignore_alpha should default to false when missing: {report}"
+  );
+}
