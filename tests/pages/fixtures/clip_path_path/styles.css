@@ -1,23 +1,26 @@
-.demos {
-  grid-template-columns: repeat(1, minmax(0, 1fr));
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: #ffffff;
 }
 
-.demo {
-  display: grid;
-  gap: 10px;
-}
-
-.label {
-  font-size: 14px;
+.stage {
+  /* Place content away from the origin to ensure reference-box translation is exercised. */
+  position: absolute;
+  left: 160px;
+  top: 80px;
 }
 
 .bar {
   width: 420px;
   height: 96px;
-  border-radius: 14px;
-  border: 1px solid rgba(15, 23, 42, 0.18);
-  background: linear-gradient(90deg, #0ea5e9 0%, #d946ef 45%, #f97316 100%);
-  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.15);
+  background: #0ea5e9;
+  margin-bottom: 28px;
+}
+
+.bar:last-child {
+  margin-bottom: 0;
 }
 
 .clip-arrow {
@@ -32,4 +35,3 @@
 .clip-hole-nonzero {
   clip-path: path(nonzero, "M0 0 H420 V96 H0 Z M120 24 H300 V72 H120 Z");
 }
-

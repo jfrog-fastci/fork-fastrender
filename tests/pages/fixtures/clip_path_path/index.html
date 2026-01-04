@@ -3,38 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <title>clip-path: path()</title>
-    <link rel="stylesheet" href="../assets/styles/base.css" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <section class="card">
-      <span class="pill">CSS clip-path</span>
-      <h1>path()</h1>
-      <p class="muted">
-        Regression fixture for <code>clip-path: path("…")</code> and
-        <code>path(evenodd, "…")</code>. The shapes are positioned away from the origin so the
-        reference box translation is observable.
-      </p>
-
-      <div class="divider"></div>
-
-      <div class="grid demos">
-        <div class="demo">
-          <div class="label muted">Default (nonzero), negative coordinates</div>
-          <div class="bar clip-arrow"></div>
-        </div>
-
-        <div class="demo">
-          <div class="label muted">evenodd: inner subpath punches out a hole</div>
-          <div class="bar clip-hole-evenodd"></div>
-        </div>
-
-        <div class="demo">
-          <div class="label muted">nonzero: same data, inner subpath remains filled</div>
-          <div class="bar clip-hole-nonzero"></div>
-        </div>
-      </div>
-    </section>
+    <div class="stage">
+      <div class="bar clip-arrow"></div>
+      <div class="bar clip-hole-evenodd"></div>
+      <div class="bar clip-hole-nonzero"></div>
+    </div>
   </body>
 </html>
-
