@@ -84,6 +84,48 @@ fn backdrop_filter_clips_to_border_radius() {
 }
 
 #[test]
+fn backdrop_filter_is_masked_by_mask_image() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #bg { position: absolute; inset: 0; background: rgb(255 0 0); }
+      #overlay {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 40px;
+        height: 40px;
+        backdrop-filter: invert(1);
+
+        /* Mask out the left half of the overlay. */
+        mask-image: linear-gradient(90deg, transparent 0 50%, black 50% 100%);
+        -webkit-mask-image: linear-gradient(90deg, transparent 0 50%, black 50% 100%);
+        mask-repeat: no-repeat;
+        -webkit-mask-repeat: no-repeat;
+        mask-size: 100% 100%;
+        -webkit-mask-size: 100% 100%;
+      }
+    </style>
+    <div id="bg"></div>
+    <div id="overlay"></div>
+  "#;
+
+  let (list, font_ctx) = build_display_list(html, 128, 128);
+  let pixmap = DisplayListRenderer::new(128, 128, Rgba::WHITE, font_ctx)
+    .expect("renderer")
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("render");
+
+  // Masked-out half: stays red (backdrop was not mutated outside the compositing group).
+  assert_eq!(pixel(&pixmap, 10, 20), (255, 0, 0, 255));
+  // Masked-in half: red backdrop inverted to cyan.
+  assert_eq!(pixel(&pixmap, 30, 20), (0, 255, 255, 255));
+  // Outside overlay: stays red.
+  assert_eq!(pixel(&pixmap, 60, 60), (255, 0, 0, 255));
+}
+
+#[test]
 fn parallel_paint_is_used_with_backdrop_filter_and_matches_serial() {
   let html = r#"<!doctype html>
     <style>
