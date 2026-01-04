@@ -134,6 +134,88 @@ fn no_fastrender_fails_on_mismatched_metadata() {
 
 #[test]
 #[cfg(unix)]
+fn no_fastrender_fails_on_mismatched_font_metadata() {
+  let temp = tempdir().expect("tempdir");
+  let fixtures_root = temp.path().join("fixtures");
+  write_fixture(&fixtures_root, "a");
+
+  let out_dir = temp.path().join("out");
+  let fastrender_dir = out_dir.join("fastrender");
+  fs::create_dir_all(&fastrender_dir).expect("create fastrender out dir");
+  fs::create_dir_all(out_dir.join("chrome")).expect("create chrome out dir");
+
+  let target_dir = temp.path().join("target");
+  let diff_renders_exe = target_dir.join("release").join(format!(
+    "diff_renders{}",
+    std::env::consts::EXE_SUFFIX
+  ));
+  fs::create_dir_all(diff_renders_exe.parent().unwrap()).expect("create target/release dir");
+  fs::write(&diff_renders_exe, "#!/usr/bin/env sh\nexit 0\n").expect("write stub diff_renders");
+  make_executable(&diff_renders_exe);
+
+  fs::write(fastrender_dir.join("a.png"), "PNG").expect("write placeholder png");
+  fs::write(
+    fastrender_dir.join("a.json"),
+    r#"{
+  "fixture": "a",
+  "viewport": [800, 600],
+  "dpr": 1.0,
+  "media": "screen",
+  "timeout_secs": 15,
+  "bundled_fonts": true,
+  "font_dirs": ["extra-fonts"],
+  "status": "ok",
+  "elapsed_ms": 1
+}"#,
+  )
+  .expect("write mismatched font metadata");
+
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .env("CARGO_TARGET_DIR", &target_dir)
+    .args([
+      "fixture-chrome-diff",
+      "--no-build",
+      "--no-chrome",
+      "--no-fastrender",
+      "--fixtures-dir",
+      fixtures_root.to_string_lossy().as_ref(),
+      "--fixtures",
+      "a",
+      "--out-dir",
+      out_dir.to_string_lossy().as_ref(),
+      "--viewport",
+      "800x600",
+      "--dpr",
+      "1",
+      "--media",
+      "screen",
+      "--timeout",
+      "15",
+    ])
+    .output()
+    .expect("run fixture-chrome-diff with mismatched font metadata");
+
+  assert!(
+    !output.status.success(),
+    "expected fixture-chrome-diff to fail for mismatched font metadata.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  assert!(
+    stderr.contains("FastRender metadata mismatch"),
+    "expected error message to mention metadata mismatch; got:\n{stderr}"
+  );
+  assert!(
+    stderr.contains("font_dirs"),
+    "expected error message to mention font_dirs; got:\n{stderr}"
+  );
+}
+
+#[test]
+#[cfg(unix)]
 fn no_chrome_fails_fast_on_stale_baselines_unless_allowed() {
   use sha2::{Digest, Sha256};
 

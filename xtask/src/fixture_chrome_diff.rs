@@ -721,6 +721,9 @@ struct FastRenderFixtureMetadata {
   dpr: f32,
   media: String,
   timeout_secs: u64,
+  bundled_fonts: bool,
+  #[serde(default)]
+  font_dirs: Vec<String>,
 }
 
 fn validate_fastrender_output_metadata(
@@ -753,30 +756,58 @@ fn validate_fastrender_output_metadata(
       .with_context(|| format!("parse {}", metadata_path.display()))?;
 
     let wanted_media = args.media.as_cli_value();
+    let wanted_bundled_fonts = true;
+    let wanted_font_dirs_summary = "[]";
     let mut mismatch = false;
     mismatch |= metadata.viewport != args.viewport;
     mismatch |= !metadata.dpr.is_finite() || (metadata.dpr - args.dpr).abs() > 1e-6;
     mismatch |= metadata.media != wanted_media;
     mismatch |= metadata.timeout_secs != args.timeout;
+    mismatch |= metadata.bundled_fonts != wanted_bundled_fonts;
+    mismatch |= !metadata.font_dirs.is_empty();
 
     if mismatch {
+      let font_dirs_summary = if metadata.font_dirs.is_empty() {
+        "[]".to_string()
+      } else {
+        let sample = metadata
+          .font_dirs
+          .iter()
+          .take(3)
+          .cloned()
+          .collect::<Vec<_>>()
+          .join(", ");
+        if metadata.font_dirs.len() > 3 {
+          format!(
+            "[{}, ... (+{} more)]",
+            sample,
+            metadata.font_dirs.len() - 3
+          )
+        } else {
+          format!("[{}]", sample)
+        }
+      };
       bail!(
-        "FastRender metadata mismatch for fixture '{stem}'. This likely means you are reusing stale FastRender renders.\n\
-         Metadata: {}\n\
-         Wanted: viewport {}x{}, dpr {}, media {}, timeout {}s\n\
-         Found:  viewport {}x{}, dpr {}, media {}, timeout {}s\n\
-         Rerun without --no-fastrender to regenerate FastRender renders, or choose an --out-dir that was rendered with matching settings.",
-        metadata_path.display(),
-        args.viewport.0,
-        args.viewport.1,
-        args.dpr,
-        wanted_media,
-        args.timeout,
-        metadata.viewport.0,
-        metadata.viewport.1,
-        metadata.dpr,
-        metadata.media,
-        metadata.timeout_secs
+         "FastRender metadata mismatch for fixture '{stem}'. This likely means you are reusing stale FastRender renders.\n\
+          Metadata: {}\n\
+         Wanted: viewport {}x{}, dpr {}, media {}, timeout {}s, bundled_fonts {}, font_dirs {}\n\
+         Found:  viewport {}x{}, dpr {}, media {}, timeout {}s, bundled_fonts {}, font_dirs {}\n\
+          Rerun without --no-fastrender to regenerate FastRender renders, or choose an --out-dir that was rendered with matching settings.",
+         metadata_path.display(),
+         args.viewport.0,
+         args.viewport.1,
+         args.dpr,
+         wanted_media,
+         args.timeout,
+         wanted_bundled_fonts,
+         wanted_font_dirs_summary,
+         metadata.viewport.0,
+         metadata.viewport.1,
+         metadata.dpr,
+         metadata.media,
+         metadata.timeout_secs,
+         metadata.bundled_fonts,
+         font_dirs_summary,
       );
     }
   }
