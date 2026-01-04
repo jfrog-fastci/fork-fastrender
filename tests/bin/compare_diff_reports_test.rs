@@ -606,3 +606,140 @@ fn compare_diff_reports_accepts_reports_without_ignore_alpha_field() {
     "ignore_alpha should default to false when missing: {report}"
   );
 }
+
+#[test]
+fn compare_diff_reports_sorts_results_by_severity() {
+  let tmp = tempfile::TempDir::new().expect("tempdir");
+  let baseline_path = tmp.path().join("baseline.json");
+  let new_path = tmp.path().join("new.json");
+  let out_json = tmp.path().join("delta.json");
+  let out_html = tmp.path().join("delta.html");
+
+  let baseline = basic_report(vec![
+    json!({
+      "name": "regress",
+      "status": "diff",
+      "metrics": {
+        "pixel_diff": 0,
+        "total_pixels": 100,
+        "diff_percentage": 0.0,
+        "perceptual_distance": 0.0
+      }
+    }),
+    json!({
+      "name": "missing_new",
+      "status": "diff",
+      "metrics": {
+        "pixel_diff": 1,
+        "total_pixels": 100,
+        "diff_percentage": 1.0,
+        "perceptual_distance": 0.1
+      }
+    }),
+    json!({
+      "name": "improve",
+      "status": "diff",
+      "metrics": {
+        "pixel_diff": 10,
+        "total_pixels": 100,
+        "diff_percentage": 10.0,
+        "perceptual_distance": 0.5
+      }
+    }),
+    json!({
+      "name": "unchanged",
+      "status": "diff",
+      "metrics": {
+        "pixel_diff": 5,
+        "total_pixels": 100,
+        "diff_percentage": 5.0,
+        "perceptual_distance": 0.2
+      }
+    }),
+  ]);
+
+  let new_report = basic_report(vec![
+    json!({
+      "name": "regress",
+      "status": "diff",
+      "metrics": {
+        "pixel_diff": 2,
+        "total_pixels": 100,
+        "diff_percentage": 2.0,
+        "perceptual_distance": 0.2
+      }
+    }),
+    json!({
+      "name": "improve",
+      "status": "diff",
+      "metrics": {
+        "pixel_diff": 2,
+        "total_pixels": 100,
+        "diff_percentage": 2.0,
+        "perceptual_distance": 0.2
+      }
+    }),
+    json!({
+      "name": "unchanged",
+      "status": "diff",
+      "metrics": {
+        "pixel_diff": 5,
+        "total_pixels": 100,
+        "diff_percentage": 5.0,
+        "perceptual_distance": 0.2
+      }
+    }),
+    json!({
+      "name": "missing_base",
+      "status": "diff",
+      "metrics": {
+        "pixel_diff": 3,
+        "total_pixels": 100,
+        "diff_percentage": 3.0,
+        "perceptual_distance": 0.3
+      }
+    }),
+  ]);
+
+  write_json(&baseline_path, &baseline);
+  write_json(&new_path, &new_report);
+
+  let output = compare_cmd(tmp.path())
+    .args([
+      "--baseline",
+      baseline_path.to_str().unwrap(),
+      "--new",
+      new_path.to_str().unwrap(),
+      "--json",
+      out_json.to_str().unwrap(),
+      "--html",
+      out_html.to_str().unwrap(),
+    ])
+    .output()
+    .expect("run compare_diff_reports");
+
+  assert!(
+    output.status.success(),
+    "expected success, got {:?}\nstdout:\n{}\nstderr:\n{}",
+    output.status.code(),
+    output_text(&output.stdout),
+    output_text(&output.stderr),
+  );
+
+  let report: Value = serde_json::from_str(&fs::read_to_string(&out_json).unwrap()).unwrap();
+  let results = report["results"].as_array().expect("results array");
+  let names: Vec<String> = results
+    .iter()
+    .map(|entry| entry["name"].as_str().unwrap().to_string())
+    .collect();
+  assert_eq!(
+    names,
+    vec![
+      "missing_new".to_string(),
+      "regress".to_string(),
+      "missing_base".to_string(),
+      "improve".to_string(),
+      "unchanged".to_string()
+    ]
+  );
+}
