@@ -501,7 +501,7 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 - Optional: pass `--baseline-html <report.html>` and/or `--new-html <report.html>` when the report HTML isn't alongside the JSON (or uses a non-standard filename). This improves report links and ensures diff thumbnails resolve correctly (diff image paths in `diff_renders` are relative to the report HTML directory).
 - HTML includes:
   - links to the baseline/new input `report.json` and `report.html`
-  - diff thumbnails (and diff% cells show raw pixel counts on hover)
+  - baseline/new render thumbnails (after + diff), and diff% cells show raw pixel counts on hover
 - Gating: `--fail-on-regression` (plus `--regression-threshold-percent <PERCENT>`) exits non-zero when any entry regresses.
 - Works with both deterministic fixture diffs (`cargo xtask fixture-chrome-diff`) and cached-page diffs (`scripts/chrome_vs_fastrender.sh`), as long as you have two `report.json` files to compare.
 

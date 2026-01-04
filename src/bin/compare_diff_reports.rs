@@ -1226,18 +1226,42 @@ fn write_html_report(
       .unwrap_or("-");
     let new_status = entry.new.as_ref().map(|s| s.status.label()).unwrap_or("-");
 
-    let baseline_diff_image = entry
+    let baseline_after_cell = entry
+      .baseline
+      .as_ref()
+      .and_then(|s| s.after.as_deref())
+      .map(|after| format_report_image_cell(&html_dir, &baseline_report_dir, "After", after))
+      .unwrap_or_else(|| "-".to_string());
+    let baseline_after_and_diff = if let Some(diff) = entry
       .baseline
       .as_ref()
       .and_then(|s| s.diff.as_deref())
-      .map(|diff| format_report_image_cell(&html_dir, &baseline_report_dir, "Diff", diff))
-      .unwrap_or_else(|| "-".to_string());
-    let new_diff_image = entry
+    {
+      format!(
+        "{after}{diff}",
+        after = baseline_after_cell,
+        diff = format_report_image_cell(&html_dir, &baseline_report_dir, "Diff", diff)
+      )
+    } else {
+      baseline_after_cell
+    };
+
+    let new_after_cell = entry
       .new
       .as_ref()
-      .and_then(|s| s.diff.as_deref())
-      .map(|diff| format_report_image_cell(&html_dir, &new_report_dir, "Diff", diff))
+      .and_then(|s| s.after.as_deref())
+      .map(|after| format_report_image_cell(&html_dir, &new_report_dir, "After", after))
       .unwrap_or_else(|| "-".to_string());
+    let new_after_and_diff =
+      if let Some(diff) = entry.new.as_ref().and_then(|s| s.diff.as_deref()) {
+        format!(
+          "{after}{diff}",
+          after = new_after_cell,
+          diff = format_report_image_cell(&html_dir, &new_report_dir, "Diff", diff)
+        )
+      } else {
+        new_after_cell
+      };
 
     let baseline_diff = entry
       .baseline
@@ -1295,23 +1319,23 @@ fn write_html_report(
     };
 
     rows.push_str(&format!(
-      "<tr id=\"{anchor_id}\" class=\"{row_class}\"><td>{name}</td><td>{classification}</td><td>{baseline_status}</td><td>{baseline_diff}</td><td>{baseline_perceptual}</td><td>{baseline_diff_image}</td><td>{new_status}</td><td>{new_diff}</td><td>{new_perceptual}</td><td>{new_diff_image}</td><td>{diff_delta}</td><td>{perceptual_delta}</td><td class=\"error\">{error}</td></tr>",
-      anchor_id = escape_html(&anchor_id),
-      row_class = entry.classification.row_class(),
-      name = escape_html(&entry.name),
-      classification = escape_html(entry.classification.label()),
-      baseline_status = escape_html(baseline_status),
-      baseline_diff = baseline_diff,
-      baseline_perceptual = baseline_perceptual,
-      baseline_diff_image = baseline_diff_image,
-      new_status = escape_html(new_status),
-      new_diff = new_diff,
-      new_perceptual = new_perceptual,
-      new_diff_image = new_diff_image,
-      diff_delta = diff_delta,
-      perceptual_delta = perceptual_delta,
-      error = escape_html(&error_combined),
-    ));
+       "<tr id=\"{anchor_id}\" class=\"{row_class}\"><td>{name}</td><td>{classification}</td><td>{baseline_status}</td><td>{baseline_diff}</td><td>{baseline_perceptual}</td><td>{baseline_after_and_diff}</td><td>{new_status}</td><td>{new_diff}</td><td>{new_perceptual}</td><td>{new_after_and_diff}</td><td>{diff_delta}</td><td>{perceptual_delta}</td><td class=\"error\">{error}</td></tr>",
+       anchor_id = escape_html(&anchor_id),
+       row_class = entry.classification.row_class(),
+       name = escape_html(&entry.name),
+       classification = escape_html(entry.classification.label()),
+       baseline_status = escape_html(baseline_status),
+       baseline_diff = baseline_diff,
+       baseline_perceptual = baseline_perceptual,
+       baseline_after_and_diff = baseline_after_and_diff,
+       new_status = escape_html(new_status),
+       new_diff = new_diff,
+       new_perceptual = new_perceptual,
+       new_after_and_diff = new_after_and_diff,
+       diff_delta = diff_delta,
+       perceptual_delta = perceptual_delta,
+       error = escape_html(&error_combined),
+     ));
   }
 
   let content = format!(
@@ -1332,6 +1356,7 @@ fn write_html_report(
       .warning {{ color: #b00020; }}
       .error {{ color: #b00020; white-space: pre-wrap; }}
       .top-list table {{ width: auto; }}
+      .thumb {{ display: inline-block; margin-right: 6px; }}
       .thumb img {{ max-width: 240px; max-height: 180px; display: block; }}
     </style>
   </head>
@@ -1360,11 +1385,11 @@ fn write_html_report(
           <th>Baseline status</th>
           <th>Baseline diff %</th>
           <th>Baseline perceptual</th>
-          <th>Baseline diff</th>
+          <th>Baseline after | diff</th>
           <th>New status</th>
           <th>New diff %</th>
           <th>New perceptual</th>
-          <th>New diff</th>
+          <th>New after | diff</th>
           <th>Δ diff %</th>
           <th>Δ perceptual</th>
           <th>Error</th>
