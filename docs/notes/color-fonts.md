@@ -27,6 +27,10 @@ limitations.
     `DisplayListRenderer::render_text_shadows`, which rasterizes the glyph run into
     an offscreen pixmap using `TextRasterizer` (with the shared caches) and then
     blurs/composites it.
+  - `Canvas::draw_text_run` is the main internal entry point for text rendering.
+    `Canvas::draw_text` is a convenience wrapper for the common case (no extra run
+    scale/rotation) and forwards `palette_overrides` + `palette_override_hash` to
+    `draw_text_run`.
 
 ## Supported formats (preference order)
 
@@ -95,7 +99,7 @@ limitations.
   [`DisplayListBuilder::emit_shaped_runs`](../../src/paint/display_list_builder.rs)
   and the list-marker emission helpers).
 - `DisplayListRenderer` passes the overrides + hash through to both:
-  - `Canvas::draw_text_run` for normal text, and
+  - `Canvas::draw_text_run` for normal text and string emphasis runs, and
   - `DisplayListRenderer::render_text_shadows` for the text-shadow offscreen
     rasterization path (see
     [`src/paint/display_list_renderer.rs`](../../src/paint/display_list_renderer.rs)).
@@ -155,10 +159,6 @@ Implemented COLRv1 features include:
 
 ## Limitations
 
-- The `Canvas::draw_text` convenience API does not accept `palette_overrides` /
-  `palette_override_hash`; callers that need `@font-palette-values override-colors`
-  must use `Canvas::draw_text_run` (or call `TextRasterizer::render_glyph_run`
-  directly).
 - `sbix` supports PNG + JPEG only; other `sbix` tags are skipped (see
   [`bitmap.rs`](../../src/text/color_fonts/bitmap.rs)).
 - SVG glyphs are rendered with `usvg` resources disabled and are rejected if the
