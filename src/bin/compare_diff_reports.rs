@@ -1,7 +1,7 @@
 mod common;
 
 use clap::Parser;
-use common::report::{ensure_parent_dir, escape_html, path_for_report};
+use common::report::{display_path, ensure_parent_dir, escape_html, path_for_report};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -189,6 +189,9 @@ struct ReportGating {
 
 #[derive(Serialize)]
 struct ReportMeta {
+  report_json: String,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  report_html: Option<String>,
   before_dir: String,
   after_dir: String,
   tolerance: u8,
@@ -372,12 +375,16 @@ fn run() -> Result<i32, String> {
     .as_ref()
     .map(|path| absolutize_path(&cwd, path));
   let new_html_override = args.new_html.as_ref().map(|path| absolutize_path(&cwd, path));
+  let baseline_report_html =
+    baseline_html_override.clone().or_else(|| guess_report_html_path(&baseline_path));
+  let new_report_html = new_html_override.clone().or_else(|| guess_report_html_path(&new_path));
 
   let baseline_report = read_report(&baseline_path)?;
   let new_report = read_report(&new_path)?;
 
-  let baseline_meta = ReportMeta::from_report(&baseline_report);
-  let new_meta = ReportMeta::from_report(&new_report);
+  let baseline_meta =
+    ReportMeta::from_report(&baseline_report, &baseline_path, baseline_report_html.as_deref());
+  let new_meta = ReportMeta::from_report(&new_report, &new_path, new_report_html.as_deref());
 
   let config_mismatches = diff_config(&baseline_report, &new_report);
   if !config_mismatches.is_empty() {
@@ -1012,8 +1019,10 @@ fn read_report(path: &Path) -> Result<DiffReport, String> {
 }
 
 impl ReportMeta {
-  fn from_report(report: &DiffReport) -> Self {
+  fn from_report(report: &DiffReport, report_json: &Path, report_html: Option<&Path>) -> Self {
     Self {
+      report_json: display_path(report_json),
+      report_html: report_html.map(display_path),
       before_dir: report.before_dir.clone(),
       after_dir: report.after_dir.clone(),
       tolerance: report.tolerance,
