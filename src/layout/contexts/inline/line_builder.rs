@@ -2692,9 +2692,58 @@ impl<'a> LineBuilder<'a> {
     self.finish_line()
   }
 
+  fn trim_soft_wrap_trailing_spaces(&mut self) {
+    if self.current_line.ends_with_hard_break || self.current_line.items.is_empty() {
+      return;
+    }
+
+    let mut removed_any = false;
+    while let Some(last) = self.current_line.items.last() {
+      match &last.item {
+        InlineItem::Text(text) => {
+          let collapsible = matches!(
+            text.style.white_space,
+            WhiteSpace::Normal | WhiteSpace::Nowrap | WhiteSpace::PreLine
+          );
+          let all_spaces = !text.text.is_empty() && text.text.chars().all(|ch| ch == ' ');
+          if collapsible && all_spaces && !text.is_marker {
+            let width = last.item.width();
+            self.current_x = (self.current_x - width).max(0.0);
+            self.current_line.items.pop();
+            removed_any = true;
+            continue;
+          }
+        }
+        _ => {}
+      }
+      break;
+    }
+
+    if !removed_any {
+      return;
+    }
+
+    // The baseline accumulator is computed incrementally. If we remove items from the line, we
+    // need to recompute it so the line box height/baseline do not include trimmed whitespace.
+    self.baseline_acc = LineBaselineAccumulator::new(&self.strut_metrics);
+    for positioned in &mut self.current_line.items {
+      let metrics = positioned.item.baseline_metrics();
+      let vertical_align = positioned.item.vertical_align();
+      positioned.baseline_offset = if vertical_align.is_line_relative() {
+        self.baseline_acc.add_line_relative(&metrics, vertical_align);
+        0.0
+      } else {
+        self
+          .baseline_acc
+          .add_baseline_relative(&metrics, vertical_align, Some(&self.strut_metrics))
+      };
+    }
+  }
+
   /// Finishes the current line and starts a new one
   fn finish_line(&mut self) -> Result<(), LayoutError> {
     check_layout_deadline(&mut self.deadline_counter)?;
+    self.trim_soft_wrap_trailing_spaces();
     let push_empty_after_hard_break = self.current_line.is_empty()
       && !self.current_line.ends_with_hard_break
       && self
