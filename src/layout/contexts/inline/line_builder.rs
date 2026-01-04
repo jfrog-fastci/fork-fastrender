@@ -2307,6 +2307,17 @@ impl<'a> LineBuilder<'a> {
         self.float_base_y + self.current_y,
         LineSpaceOptions::default().line_height(self.strut_metrics.line_height),
       );
+      // Clamp the float-derived line range to the container width. This matters when we're
+      // querying an external float context (e.g., inherited from an ancestor BFC) whose
+      // containing block is wider than the inline container we're laying out.
+      let left_edge = space.left_edge.max(0.0);
+      let right_edge = space.right_edge.min(base_width);
+      let width = (right_edge - left_edge).max(0.0);
+      let space = crate::layout::inline::float_integration::LineSpace::new(
+        space.y,
+        left_edge,
+        width,
+      );
       self.current_line_space = Some(space);
       self.current_line.available_width = space.width;
       self.current_line.box_width = space.width;

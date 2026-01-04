@@ -312,6 +312,8 @@ impl BlockFormattingContext {
     margin_ctx: &mut MarginCollapseContext,
     current_y: f32,
     nearest_positioned_cb: &ContainingBlock,
+    external_float_ctx: Option<&mut FloatContext>,
+    external_float_base_y: f32,
   ) -> Result<(FragmentNode, f32), LayoutError> {
     let toggles = crate::debug::runtime::runtime_toggles();
     let dump_child_y = toggles.truthy("FASTR_DUMP_CELL_CHILD_Y");
@@ -750,11 +752,13 @@ impl BlockFormattingContext {
               computed_width.content_width,
             )?;
             (frags, height, positioned, info)
-          } else {
-            let (frags, height, positioned) = self.layout_children(
+           } else {
+            let (frags, height, positioned) = self.layout_children_with_external_floats(
               child,
               &child_constraints,
               &descendant_nearest_positioned_cb,
+              external_float_ctx,
+              external_float_base_y + box_y,
             )?;
             (frags, height, positioned, None)
           }
@@ -770,8 +774,13 @@ impl BlockFormattingContext {
           )?;
           (frags, height, positioned, info)
         } else {
-          let (frags, height, positioned) =
-            self.layout_children(child, &child_constraints, &descendant_nearest_positioned_cb)?;
+          let (frags, height, positioned) = self.layout_children_with_external_floats(
+            child,
+            &child_constraints,
+            &descendant_nearest_positioned_cb,
+            external_float_ctx,
+            external_float_base_y + box_y,
+          )?;
           (frags, height, positioned, None)
         }
       };
@@ -1240,6 +1249,8 @@ impl BlockFormattingContext {
             &mut margin_ctx,
             0.0,
             nearest_positioned_cb,
+            None,
+            0.0,
           )?;
           let meta = fragment.block_metadata.clone().ok_or_else(|| {
             LayoutError::MissingContext(
@@ -1504,6 +1515,18 @@ impl BlockFormattingContext {
     constraints: &LayoutConstraints,
     nearest_positioned_cb: &ContainingBlock,
   ) -> Result<(Vec<FragmentNode>, f32, Vec<PositionedCandidate>), LayoutError> {
+    self.layout_children_with_external_floats(parent, constraints, nearest_positioned_cb, None, 0.0)
+  }
+
+  #[allow(clippy::cognitive_complexity)]
+  fn layout_children_with_external_floats(
+    &self,
+    parent: &BoxNode,
+    constraints: &LayoutConstraints,
+    nearest_positioned_cb: &ContainingBlock,
+    mut external_float_ctx: Option<&mut FloatContext>,
+    external_float_base_y: f32,
+  ) -> Result<(Vec<FragmentNode>, f32, Vec<PositionedCandidate>), LayoutError> {
     let mut deadline_counter = 0usize;
     let toggles = crate::debug::runtime::runtime_toggles();
     let inline_is_horizontal = inline_axis_is_horizontal(parent.style.writing_mode);
@@ -1714,16 +1737,18 @@ impl BlockFormattingContext {
 
     let trace_positioned = trace_positioned_ids();
     let trace_block_text = trace_block_text_ids();
-    if let Some(result) = self.try_parallel_block_children(
-      parent,
-      constraints,
-      nearest_positioned_cb,
-      margin_ctx.clone(),
-      &relative_cb,
-      containing_width,
-      float_ctx.is_empty(),
-    ) {
-      return result;
+    if external_float_ctx.is_none() {
+      if let Some(result) = self.try_parallel_block_children(
+        parent,
+        constraints,
+        nearest_positioned_cb,
+        margin_ctx.clone(),
+        &relative_cb,
+        containing_width,
+        float_ctx.is_empty(),
+      ) {
+        return result;
+      }
     }
 
     let inline_fc_owned = if *nearest_positioned_cb == self.nearest_positioned_cb {
@@ -1743,6 +1768,7 @@ impl BlockFormattingContext {
                                content_height: &mut f32,
                                margin_ctx: &mut MarginCollapseContext,
                                float_ctx_ref: &mut FloatContext,
+                               mut external_float_ctx: Option<&mut FloatContext>,
                                deadline_counter: &mut usize|
      -> Result<(), LayoutError> {
       if buffer.is_empty() {
@@ -1759,55 +1785,75 @@ impl BlockFormattingContext {
       });
       if has_block || all_whitespace {
         for child in buffer.drain(..) {
-          if let Err(RenderError::Timeout { elapsed, .. }) =
-            check_active_periodic(deadline_counter, 16, RenderStage::Layout)
-          {
-            return Err(LayoutError::Timeout { elapsed });
-          }
-          let pending_margin = margin_ctx.consume_pending();
-          *current_y += pending_margin;
-          let (fragment, next_y) = self.layout_block_child(
-            parent,
-            &child,
-            containing_width,
-            constraints,
-            margin_ctx,
-            *current_y,
-            nearest_positioned_cb,
-          )?;
-          *content_height = content_height.max(fragment.bounds.max_y());
-          *current_y = next_y;
-          let mut fragment = fragment;
-          if child.style.position.is_relative() {
-            let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style(
-              &child.style,
-              &relative_cb,
-              self.viewport_size,
-              &self.font_context,
-            );
-            fragment = PositionedLayout::with_font_context(self.font_context.clone())
-              .apply_relative_positioning(&fragment, &positioned_style, &relative_cb)?;
-          }
-          fragments.push(fragment);
-        }
-        return Ok(());
-      }
+           if let Err(RenderError::Timeout { elapsed, .. }) =
+             check_active_periodic(deadline_counter, 16, RenderStage::Layout)
+           {
+             return Err(LayoutError::Timeout { elapsed });
+           }
+           let pending_margin = margin_ctx.consume_pending();
+           *current_y += pending_margin;
+           let (child_float_ctx, child_float_base_y) = if !float_ctx_ref.is_empty() {
+             (Some(&mut *float_ctx_ref), 0.0)
+           } else if external_float_ctx.is_some() {
+             (external_float_ctx.as_deref_mut(), external_float_base_y)
+           } else {
+             (Some(&mut *float_ctx_ref), 0.0)
+           };
+           let (fragment, next_y) = self.layout_block_child(
+             parent,
+             &child,
+             containing_width,
+             constraints,
+             margin_ctx,
+             *current_y,
+             nearest_positioned_cb,
+             child_float_ctx,
+             child_float_base_y,
+           )?;
+           *content_height = content_height.max(fragment.bounds.max_y());
+           *current_y = next_y;
+           let mut fragment = fragment;
+           if child.style.position.is_relative() {
+             let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style(
+               &child.style,
+               &relative_cb,
+               self.viewport_size,
+               &self.font_context,
+             );
+             fragment = PositionedLayout::with_font_context(self.font_context.clone())
+               .apply_relative_positioning(&fragment, &positioned_style, &relative_cb)?;
+           }
+           fragments.push(fragment);
+         }
+         return Ok(());
+       }
 
       // Apply any pending collapsed margin before inline content
       let pending_margin = margin_ctx.consume_pending();
       *current_y += pending_margin;
 
-      let mut inline_container = BoxNode::new_inline(parent.style.clone(), std::mem::take(buffer));
+      let mut inline_container =
+        BoxNode::new_inline(parent.style.clone(), std::mem::take(buffer));
       // If the inline container would start below the current cursor because of pending
       // margins, advance to that baseline first.
       let inline_y = *current_y;
       let inline_constraints =
         LayoutConstraints::new(AvailableSpace::Definite(containing_width), available_height);
+      let (inline_float_ctx, float_base_y) = if !float_ctx_ref.is_empty() {
+        (Some(&mut *float_ctx_ref), inline_y)
+      } else if external_float_ctx.is_some() {
+        (
+          external_float_ctx.as_deref_mut(),
+          external_float_base_y + inline_y,
+        )
+      } else {
+        (Some(&mut *float_ctx_ref), inline_y)
+      };
       let mut inline_fragment = match inline_fc.layout_with_floats(
         &inline_container,
         &inline_constraints,
-        Some(float_ctx_ref),
-        inline_y,
+        inline_float_ctx,
+        float_base_y,
       ) {
         Ok(fragment) => fragment,
         Err(err) => {
@@ -2009,6 +2055,7 @@ impl BlockFormattingContext {
           &mut content_height,
           &mut margin_ctx,
           &mut float_ctx,
+          external_float_ctx.as_deref_mut(),
           &mut deadline_counter,
         )?;
 
@@ -2237,6 +2284,7 @@ impl BlockFormattingContext {
           &mut content_height,
           &mut margin_ctx,
           &mut float_ctx,
+          external_float_ctx.as_deref_mut(),
           &mut deadline_counter,
         )?;
 
@@ -2265,9 +2313,16 @@ impl BlockFormattingContext {
                     child.style.max_height,
                     child.style.margin_left,
                     child.style.margin_right,
-                );
+          );
         }
 
+        let (child_float_ctx, child_float_base_y) = if !float_ctx.is_empty() {
+          (Some(&mut float_ctx), 0.0)
+        } else if external_float_ctx.is_some() {
+          (external_float_ctx.as_deref_mut(), external_float_base_y)
+        } else {
+          (Some(&mut float_ctx), 0.0)
+        };
         let (fragment, next_y) = self.layout_block_child(
           parent,
           child,
@@ -2276,6 +2331,8 @@ impl BlockFormattingContext {
           &mut margin_ctx,
           current_y,
           nearest_positioned_cb,
+          child_float_ctx,
+          child_float_base_y,
         )?;
 
         if dump_cell_child_y && matches!(parent.style.display, Display::TableCell) {
@@ -2335,8 +2392,16 @@ impl BlockFormattingContext {
             &mut content_height,
             &mut margin_ctx,
             &mut float_ctx,
+            external_float_ctx.as_deref_mut(),
             &mut deadline_counter,
           )?;
+          let (child_float_ctx, child_float_base_y) = if !float_ctx.is_empty() {
+            (Some(&mut float_ctx), 0.0)
+          } else if external_float_ctx.is_some() {
+            (external_float_ctx.as_deref_mut(), external_float_base_y)
+          } else {
+            (Some(&mut float_ctx), 0.0)
+          };
           let (fragment, next_y) = self.layout_block_child(
             parent,
             child,
@@ -2345,6 +2410,8 @@ impl BlockFormattingContext {
             &mut margin_ctx,
             current_y,
             nearest_positioned_cb,
+            child_float_ctx,
+            child_float_base_y,
           )?;
           content_height = content_height.max(fragment.bounds.max_y());
           current_y = next_y;
@@ -2373,6 +2440,7 @@ impl BlockFormattingContext {
       &mut content_height,
       &mut margin_ctx,
       &mut float_ctx,
+      external_float_ctx.as_deref_mut(),
       &mut deadline_counter,
     )?;
 
@@ -5269,6 +5337,55 @@ mod tests {
       default_style(),
       FormattingContextType::Block,
       vec![float_node, BoxNode::new_inline(default_style(), vec![text])],
+    );
+    let constraints = LayoutConstraints::definite(200.0, 200.0);
+
+    let fragment = bfc.layout(&root, &constraints).unwrap();
+
+    fn find_line(fragment: &FragmentNode) -> Option<&FragmentNode> {
+      if matches!(fragment.content, FragmentContent::Line { .. }) {
+        return Some(fragment);
+      }
+      for child in fragment.children.iter() {
+        if let Some(line) = find_line(child) {
+          return Some(line);
+        }
+      }
+      None
+    }
+
+    let line = find_line(&fragment).expect("line fragment");
+    assert!(
+      line.bounds.width() <= 120.0,
+      "line width should be shortened by float; got {}",
+      line.bounds.width()
+    );
+    assert!(
+      line.bounds.x() >= 79.9,
+      "line should start after the float; got x={}",
+      line.bounds.x()
+    );
+  }
+
+  #[test]
+  fn inline_lines_inside_following_block_boxes_consult_parent_float_context() {
+    let bfc = BlockFormattingContext::new();
+
+    let mut float_style = ComputedStyle::default();
+    float_style.display = Display::Block;
+    float_style.float = Float::Left;
+    float_style.width = Some(Length::px(80.0));
+    float_style.height = Some(Length::px(20.0));
+    let float_node =
+      BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+
+    let text = BoxNode::new_text(default_style(), "text".to_string());
+    let paragraph = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![text]);
+
+    let root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![float_node, paragraph],
     );
     let constraints = LayoutConstraints::definite(200.0, 200.0);
 
