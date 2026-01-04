@@ -61,6 +61,7 @@ struct DiffReport {
   tolerance: u8,
   max_diff_percent: f64,
   max_perceptual_distance: Option<f64>,
+  #[serde(default)]
   ignore_alpha: bool,
   shard: Option<DiffReportShard>,
   results: Vec<DiffReportEntry>,
