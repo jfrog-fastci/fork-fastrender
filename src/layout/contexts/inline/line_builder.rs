@@ -646,8 +646,13 @@ impl TextItem {
       descent = fallback_font_size * 0.2;
     }
 
+    // CSS 2.1 §10.8: inline box baselines include half-leading so negative leading (line-height
+    // smaller than the font metrics) doesn't force the line box to expand to the font's full
+    // ascent+descent.
+    let half_leading = (line_height - (ascent + descent)) / 2.0;
+
     BaselineMetrics {
-      baseline_offset: ascent,
+      baseline_offset: ascent + half_leading,
       height: line_height,
       ascent,
       descent,
@@ -3709,6 +3714,30 @@ mod tests {
 
   fn make_strut_metrics() -> BaselineMetrics {
     BaselineMetrics::new(12.0, 16.0, 12.0, 4.0)
+  }
+
+  #[test]
+  fn tight_line_height_uses_negative_leading_without_expanding_line_box() {
+    let font_context = FontContext::new();
+    let fallback_font_size = 10.0;
+    let ascent = fallback_font_size * 0.8;
+    let descent = fallback_font_size * 0.2;
+    let line_height = 6.0;
+
+    let metrics = TextItem::metrics_from_runs(&font_context, &[], line_height, fallback_font_size);
+    let half_leading = (line_height - (ascent + descent)) / 2.0;
+    assert!(
+      (metrics.baseline_offset - (ascent + half_leading)).abs() < 1e-3,
+      "baseline_offset should include half-leading for tight line-height"
+    );
+
+    let strut = BaselineMetrics::new(ascent + half_leading, line_height, ascent, descent);
+    let mut acc = LineBaselineAccumulator::new(&strut);
+    acc.add_baseline_relative(&metrics, VerticalAlign::Baseline, Some(&strut));
+    assert!(
+      (acc.line_height() - line_height).abs() < 1e-3,
+      "line box should respect authored line-height even when font metrics are taller"
+    );
   }
 
   fn make_builder(width: f32) -> LineBuilder<'static> {

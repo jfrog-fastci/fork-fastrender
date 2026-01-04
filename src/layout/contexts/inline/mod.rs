@@ -2593,15 +2593,9 @@ impl InlineFormattingContext {
 
       segment_width = segment_width.max(top_width).max(bottom_width);
 
-      let top_height = top_metrics
-        .map(|m| m.height.max(m.baseline_offset + m.descent))
-        .unwrap_or(0.0);
-      let bottom_height = bottom_metrics
-        .map(|m| m.height.max(m.baseline_offset + m.descent))
-        .unwrap_or(0.0);
-      let base_height = base_metrics
-        .height
-        .max(base_metrics.baseline_offset + base_metrics.descent);
+      let top_height = top_metrics.map(|m| m.height).unwrap_or(0.0);
+      let bottom_height = bottom_metrics.map(|m| m.height).unwrap_or(0.0);
+      let base_height = base_metrics.height;
       let baseline_offset = top_height + base_metrics.baseline_offset;
       let segment_height = top_height + base_height + bottom_height;
       let descent = (segment_height - baseline_offset).max(0.0);
@@ -3932,8 +3926,10 @@ impl InlineFormattingContext {
     let line_height =
       compute_line_height_with_metrics_viewport(style, scaled.as_ref(), Some(self.viewport_size));
     if let Some(scaled) = scaled {
+      // CSS 2.1 §10.8: distribute leading equally above and below the font's ascent/descent.
+      let half_leading = (line_height - (scaled.ascent + scaled.descent)) / 2.0;
       return BaselineMetrics {
-        baseline_offset: scaled.ascent,
+        baseline_offset: scaled.ascent + half_leading,
         height: line_height,
         ascent: scaled.ascent,
         descent: scaled.descent,
@@ -3944,12 +3940,10 @@ impl InlineFormattingContext {
     }
 
     let font_size = style.font_size;
-    BaselineMetrics::new(
-      font_size * 0.8,
-      line_height,
-      font_size * 0.8,
-      font_size * 0.2,
-    )
+    let ascent = font_size * 0.8;
+    let descent = font_size * 0.2;
+    let half_leading = (line_height - (ascent + descent)) / 2.0;
+    BaselineMetrics::new(ascent + half_leading, line_height, ascent, descent)
   }
 
   fn first_letter_eligible(box_node: &BoxNode) -> bool {
@@ -6042,28 +6036,26 @@ fn compute_inline_box_metrics(
     .collect();
 
   if effective_children.is_empty() {
-    let mut metrics = fallback;
-    metrics.baseline_offset += content_offset_y;
-    metrics.ascent += content_offset_y;
-    metrics.descent = (metrics.descent + bottom_inset).max(0.0);
-    metrics.height = metrics
-      .height
-      .max(metrics.baseline_offset + metrics.descent + bottom_inset);
-    metrics.line_height = metrics.height;
-    return metrics;
+    let baseline_offset = content_offset_y + fallback.baseline_offset;
+    let ascent = content_offset_y + fallback.ascent;
+    let height = content_offset_y + fallback.height + bottom_inset;
+    let descent = (height - baseline_offset).max(0.0);
+    return BaselineMetrics {
+      baseline_offset,
+      height,
+      ascent,
+      descent,
+      line_gap: fallback.line_gap,
+      // Preserve the authored line-height for vertical-align percentage/length resolution.
+      line_height: fallback.line_height,
+      x_height: fallback.x_height,
+    };
   }
 
   let mut content_height: f32 = 0.0;
   for child in &effective_children {
     let child_metrics = child.baseline_metrics();
-    // Guard against fonts whose ascent exceeds the authored line-height by using the larger of
-    // the line box height and the font’s intrinsic ascent+descent. This avoids negative
-    // descents that would otherwise push nested inline boxes downward when line-height is
-    // tighter than the font metrics.
-    let child_height = child_metrics
-      .height
-      .max(child_metrics.baseline_offset + child_metrics.descent);
-    content_height = content_height.max(child_height);
+    content_height = content_height.max(child_metrics.height);
   }
 
   let baseline_child = effective_children
@@ -6084,7 +6076,8 @@ fn compute_inline_box_metrics(
     ascent,
     descent,
     line_gap: child_metrics.line_gap,
-    line_height: height,
+    // Preserve the authored line-height for vertical-align percentage/length resolution.
+    line_height: fallback.line_height,
     x_height: child_metrics.x_height,
   }
 }

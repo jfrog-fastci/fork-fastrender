@@ -129,8 +129,11 @@ impl BaselineMetrics {
   /// Creates metrics from font metrics and font size
   pub fn from_font_metrics(metrics: &FontMetrics, font_size: f32, line_height: f32) -> Self {
     let scaled = metrics.scale(font_size);
+    // CSS 2.1 §10.8: distribute leading equally above and below the em box.
+    // The baseline position within an inline box is ascent + half-leading.
+    let half_leading = (line_height - (scaled.ascent + scaled.descent)) / 2.0;
     Self {
-      baseline_offset: scaled.ascent,
+      baseline_offset: scaled.ascent + half_leading,
       height: line_height,
       ascent: scaled.ascent,
       descent: scaled.descent,
@@ -430,6 +433,34 @@ pub fn compute_line_height_with_metrics(
 mod tests {
   use super::*;
   use crate::text::font_db::ScaledMetrics;
+
+  #[test]
+  fn from_font_metrics_includes_half_leading_in_baseline_offset() {
+    // Construct a font with ascent+descent larger than the authored line-height so leading is
+    // negative. BaselineMetrics should reflect the half-leading adjustment.
+    let font = FontMetrics {
+      units_per_em: 1000,
+      ascent: 800,
+      descent: -200,
+      line_gap: 0,
+      line_height: 1000,
+      x_height: None,
+      cap_height: None,
+      underline_position: 0,
+      underline_thickness: 0,
+      strikeout_position: None,
+      strikeout_thickness: None,
+      is_bold: false,
+      is_italic: false,
+      is_monospace: false,
+    };
+
+    let metrics = BaselineMetrics::from_font_metrics(&font, 10.0, 6.0);
+    assert!(
+      (metrics.baseline_offset - 6.0).abs() < 1e-3,
+      "baseline_offset should include half-leading when line-height is tight"
+    );
+  }
 
   #[test]
   fn test_vertical_align_default() {
