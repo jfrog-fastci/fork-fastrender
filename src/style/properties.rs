@@ -1662,8 +1662,12 @@ fn parse_time_ms(raw: &str) -> Option<f32> {
   if trimmed.parse::<f32>().ok().is_some_and(|v| v == 0.0) {
     return Some(0.0);
   }
-  if starts_with_ignore_ascii_case(trimmed, "calc(") {
-    return parse_calc_time_ms(trimmed);
+  if starts_with_ignore_ascii_case(trimmed, "calc(")
+    || starts_with_ignore_ascii_case(trimmed, "min(")
+    || starts_with_ignore_ascii_case(trimmed, "max(")
+    || starts_with_ignore_ascii_case(trimmed, "clamp(")
+  {
+    return parse_math_time_ms(trimmed);
   }
   None
 }
@@ -1786,11 +1790,20 @@ fn parse_calc_time_factor<'i, 't>(
       }
     }
     Token::Function(ref name) => {
-      if name.as_ref().eq_ignore_ascii_case("calc") {
-        input.parse_nested_block(parse_calc_time_sum)
-      } else {
-        Err(location.new_custom_error(()))
+      let name = name.as_ref();
+      if name.eq_ignore_ascii_case("calc") {
+        return input.parse_nested_block(parse_calc_time_sum);
       }
+      if name.eq_ignore_ascii_case("min") {
+        return input.parse_nested_block(|block| parse_min_max_time(block, TimeMathFn::Min));
+      }
+      if name.eq_ignore_ascii_case("max") {
+        return input.parse_nested_block(|block| parse_min_max_time(block, TimeMathFn::Max));
+      }
+      if name.eq_ignore_ascii_case("clamp") {
+        return input.parse_nested_block(parse_clamp_time);
+      }
+      Err(location.new_custom_error(()))
     }
     Token::ParenthesisBlock => input.parse_nested_block(parse_calc_time_sum),
     Token::Delim('+') => parse_calc_time_factor(input),
@@ -1805,18 +1818,140 @@ fn parse_calc_time_factor<'i, 't>(
   }
 }
 
-fn parse_calc_time_ms(raw: &str) -> Option<f32> {
+#[derive(Clone, Copy)]
+enum TimeMathFn {
+  Min,
+  Max,
+}
+
+fn parse_min_max_time<'i, 't>(
+  input: &mut Parser<'i, 't>,
+  func: TimeMathFn,
+) -> Result<CalcTimeComponent, cssparser::ParseError<'i, ()>> {
+  let mut values = Vec::new();
+  loop {
+    input.skip_whitespace();
+    values.push(parse_calc_time_sum(input)?);
+    input.skip_whitespace();
+    if input.try_parse(|p| p.expect_comma()).is_err() {
+      break;
+    }
+  }
+
+  if values.len() < 2 {
+    return Err(input.new_custom_error(()));
+  }
+
+  let location = input.current_source_location();
+  let has_time = values
+    .iter()
+    .any(|component| matches!(component, CalcTimeComponent::Time(_)));
+
+  if has_time {
+    let mut iter = values.into_iter();
+    let first = iter
+      .next()
+      .and_then(calc_time_component_to_ms)
+      .ok_or_else(|| location.new_custom_error(()))?;
+    let mut extremum = first;
+    for component in iter {
+      let ms = calc_time_component_to_ms(component).ok_or_else(|| location.new_custom_error(()))?;
+      extremum = match func {
+        TimeMathFn::Min => extremum.min(ms),
+        TimeMathFn::Max => extremum.max(ms),
+      };
+    }
+    Ok(CalcTimeComponent::Time(extremum))
+  } else {
+    let mut iter = values.into_iter();
+    let first = match iter.next() {
+      Some(CalcTimeComponent::Number(v)) => v,
+      _ => return Err(location.new_custom_error(())),
+    };
+    let mut extremum = first;
+    for component in iter {
+      let CalcTimeComponent::Number(v) = component else {
+        return Err(location.new_custom_error(()));
+      };
+      extremum = match func {
+        TimeMathFn::Min => extremum.min(v),
+        TimeMathFn::Max => extremum.max(v),
+      };
+    }
+    Ok(CalcTimeComponent::Number(extremum))
+  }
+}
+
+fn parse_clamp_time<'i, 't>(
+  input: &mut Parser<'i, 't>,
+) -> Result<CalcTimeComponent, cssparser::ParseError<'i, ()>> {
+  input.skip_whitespace();
+  let min = parse_calc_time_sum(input)?;
+  input.skip_whitespace();
+  input.expect_comma()?;
+  input.skip_whitespace();
+  let preferred = parse_calc_time_sum(input)?;
+  input.skip_whitespace();
+  input.expect_comma()?;
+  input.skip_whitespace();
+  let max = parse_calc_time_sum(input)?;
+
+  let location = input.current_source_location();
+  let has_time = matches!(min, CalcTimeComponent::Time(_))
+    || matches!(preferred, CalcTimeComponent::Time(_))
+    || matches!(max, CalcTimeComponent::Time(_));
+
+  if has_time {
+    let min_ms = calc_time_component_to_ms(min).ok_or_else(|| location.new_custom_error(()))?;
+    let preferred_ms =
+      calc_time_component_to_ms(preferred).ok_or_else(|| location.new_custom_error(()))?;
+    let max_ms = calc_time_component_to_ms(max).ok_or_else(|| location.new_custom_error(()))?;
+    let upper = if max_ms < min_ms { min_ms } else { max_ms };
+    Ok(CalcTimeComponent::Time(preferred_ms.max(min_ms).min(upper)))
+  } else {
+    let CalcTimeComponent::Number(min_value) = min else {
+      return Err(location.new_custom_error(()));
+    };
+    let CalcTimeComponent::Number(preferred_value) = preferred else {
+      return Err(location.new_custom_error(()));
+    };
+    let CalcTimeComponent::Number(max_value) = max else {
+      return Err(location.new_custom_error(()));
+    };
+    let upper = if max_value < min_value {
+      min_value
+    } else {
+      max_value
+    };
+    Ok(CalcTimeComponent::Number(
+      preferred_value.max(min_value).min(upper),
+    ))
+  }
+}
+
+fn parse_math_time_ms(raw: &str) -> Option<f32> {
   let mut parser_input = ParserInput::new(raw);
   let mut parser = Parser::new(&mut parser_input);
   parser
     .parse_entirely(|input| {
       let location = input.current_source_location();
       match input.next()? {
-        Token::Function(name) if name.as_ref().eq_ignore_ascii_case("calc") => {
-          let component = input.parse_nested_block(parse_calc_time_sum)?;
+        Token::Function(name) => {
+          let name = name.as_ref();
+          let component = if name.eq_ignore_ascii_case("calc") {
+            input.parse_nested_block(parse_calc_time_sum)?
+          } else if name.eq_ignore_ascii_case("min") {
+            input.parse_nested_block(|block| parse_min_max_time(block, TimeMathFn::Min))?
+          } else if name.eq_ignore_ascii_case("max") {
+            input.parse_nested_block(|block| parse_min_max_time(block, TimeMathFn::Max))?
+          } else if name.eq_ignore_ascii_case("clamp") {
+            input.parse_nested_block(parse_clamp_time)?
+          } else {
+            return Err(location.new_custom_error(()));
+          };
           calc_time_component_to_ms(component).ok_or_else(|| location.new_custom_error(()))
         }
-        _ => Err(location.new_custom_error(())),
+        _ => Err(location.new_custom_error(()))
       }
     })
     .ok()
@@ -16201,6 +16336,17 @@ mod tests {
     assert_eq!(parse_time_ms("calc(1s - 250ms)"), Some(750.0));
     assert_eq!(parse_time_ms("calc(0)"), Some(0.0));
     assert!(parse_time_ms("calc(1s / 0)").is_none());
+  }
+
+  #[test]
+  fn parse_time_ms_parses_min_max_clamp_math_functions() {
+    assert_eq!(parse_time_ms("min(1s, 500ms)"), Some(500.0));
+    assert_eq!(parse_time_ms("max(1s, 500ms)"), Some(1000.0));
+    assert_eq!(parse_time_ms("clamp(0s, 1s, 500ms)"), Some(500.0));
+    assert_eq!(
+      parse_time_ms("min(.16s + 20ms * calc(4 - 2), .24s)"),
+      Some(200.0)
+    );
   }
 
   #[test]
