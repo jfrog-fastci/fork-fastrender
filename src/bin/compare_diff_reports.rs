@@ -714,6 +714,14 @@ fn print_summary(report: &DeltaReport, args: &Args) {
       "Gating: fail_on_regression={} regression_threshold_percent={:.4}%",
       gating.fail_on_regression, gating.regression_threshold_percent
     );
+    if gating.fail_on_regression {
+      let failing = report
+        .results
+        .iter()
+        .filter(|entry| entry.failing_regression)
+        .count();
+      println!("Failing regressions: {failing}");
+    }
   }
 
   if let Some(filters) = &report.filters {
@@ -1330,7 +1338,7 @@ fn write_html_report(
     )
   };
 
-  let summary = format!(
+  let mut summary = format!(
     "Paired: {} | Improved: {} | Regressed: {} | Unchanged: {} | Missing entries: {} | Errors (baseline/new): {}/{} | Missing files (baseline/new): {}/{}",
     report.totals.paired,
     report.totals.improved,
@@ -1342,6 +1350,19 @@ fn write_html_report(
     report.totals.baseline_missing,
     report.totals.new_missing
   );
+  if report
+    .gating
+    .as_ref()
+    .map(|g| g.fail_on_regression)
+    .unwrap_or(false)
+  {
+    let failing = report
+      .results
+      .iter()
+      .filter(|entry| entry.failing_regression)
+      .count();
+    summary.push_str(&format!(" | Failing regressions: {failing}"));
+  }
   let filters = format_filters_html(report.filters.as_ref());
   let gating = format_gating_html(report.gating.as_ref());
 
