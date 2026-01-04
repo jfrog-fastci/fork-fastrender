@@ -303,12 +303,13 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
   - Defaults match the fixture runner viewport/DPR (1040x1240 @ 1.0) unless overridden.
   - JavaScript is disabled by default to match FastRender’s “no JS” model (enforced via injected CSP).
   - Prefers Chrome's `--headless=new` mode but automatically retries with legacy `--headless` on older Chrome versions (the chosen mode is recorded in `<fixture>.json` metadata).
+  - `<fixture>.json` metadata also records hashes of fixture inputs (`input_sha256` for `index.html`, plus `assets_sha256` for other fixture-local files) so `fixture-chrome-diff --no-chrome` can detect stale baselines.
   - Pass `--chrome /path/to/chrome` (or set `CHROME_BIN=/path/to/chrome`) if auto-detection fails.
   - Output defaults to `target/chrome_fixture_renders/<fixture>.png` plus `<fixture>.chrome.log` (includes the Chrome command line) and `<fixture>.json` metadata alongside.
 - Core flags:
   - Selection: `--fixtures <csv>` (alias `--only`) or positional fixture names.
   - Paths: `--fixture-dir <dir>` (aliases `--fixtures-dir`, `--fixtures-root`), `--out-dir <dir>`.
-  - Render params: `--viewport <WxH>`, `--dpr <float>`, `--timeout <secs>`, `--js {on|off}`.
+  - Render params: `--viewport <WxH>`, `--dpr <float>`, `--media {screen|print}`, `--timeout <secs>`, `--js {on|off}`.
   - Parallelism: `--shard <index>/<total>`.
 
 ## `cargo xtask fixture-chrome-diff`
