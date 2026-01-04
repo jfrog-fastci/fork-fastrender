@@ -50,7 +50,7 @@ fn spawn_server(listener: TcpListener) -> thread::JoinHandle<()> {
 
           let body = b"ok";
           let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAcCeSs-CoNtRoL-AlLoW-OrIgIn:   *  \r\nTiMiNg-AlLoW-OrIgIn:  https://example.com  \r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAcCeSs-CoNtRoL-AlLoW-OrIgIn:   *  \r\nAcCeSs-CoNtRoL-AlLoW-CrEdEnTiAlS:  TrUe  \r\nTiMiNg-AlLoW-OrIgIn:  https://example.com  \r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
           );
           let _ = stream.write_all(response.as_bytes());
@@ -92,4 +92,5 @@ fn http_fetcher_captures_cors_response_headers() {
 
   assert_eq!(res.access_control_allow_origin.as_deref(), Some("*"));
   assert_eq!(res.timing_allow_origin.as_deref(), Some("https://example.com"));
+  assert!(res.access_control_allow_credentials);
 }
