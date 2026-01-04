@@ -1504,10 +1504,18 @@ fn write_html_report(
       format!("baseline: {baseline_error}\nnew: {new_error}")
     };
 
-    let row_class = if entry.failing_regression {
-      format!("{} failing", entry.classification.row_class())
-    } else {
-      entry.classification.row_class().to_string()
+    let row_class = {
+      let row_class = entry.classification.row_class();
+      let label_class = entry.classification.label();
+      let mut classes = if row_class == label_class {
+        row_class.to_string()
+      } else {
+        format!("{row_class} {label_class}")
+      };
+      if entry.failing_regression {
+        classes.push_str(" failing");
+      }
+      classes
     };
 
     rows.push_str(&format!(
@@ -1544,6 +1552,7 @@ fn write_html_report(
       tr.improved {{ background: #f3fff3; }}
       tr.regressed {{ background: #fff3f3; }}
       tr.missing {{ background: #fffbe8; }}
+      tr.missing-in-new {{ background: #fff3f3; }}
       tr.unchanged {{ background: #ffffff; }}
       tr.failing {{ outline: 2px solid #b00020; }}
       tr.failing td:first-child {{ box-shadow: inset 4px 0 0 #b00020; }}

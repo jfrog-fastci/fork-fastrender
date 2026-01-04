@@ -257,6 +257,17 @@ fn compare_diff_reports_pairs_and_classifies_entries() {
     )),
     "expected entry name to link to its own anchor:\n{html}"
   );
+  let anchor_e = entry_anchor_id("e");
+  assert!(
+    html.contains(&format!(
+      "<tr id=\"{anchor_e}\" class=\"missing missing-in-new\"><td><a href=\"#{anchor_e}\">e</a></td>"
+    )),
+    "expected missing-in-new entries to include both `missing` and `missing-in-new` classes:\n{html}"
+  );
+  assert!(
+    html.contains("tr.missing-in-new"),
+    "expected CSS styling for missing-in-new rows:\n{html}"
+  );
   assert!(
     html.contains("tr:target"),
     "expected target highlight styling for deep-links:\n{html}"
