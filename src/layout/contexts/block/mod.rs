@@ -554,6 +554,67 @@ impl BlockFormattingContext {
       }
     }
 
+    // Clamp the resolved inline size using min-width/max-width (CSS 2.1 §10.4).
+    // Unlike the top-level `layout()` entrypoint, in-flow block children are laid out via
+    // `layout_block_child` (not via a recursive BlockFormattingContext::layout call), so we must
+    // apply min/max sizing here to keep wrappers like `max-width: 920px; margin: 0 auto` from
+    // inflating to the full containing block width.
+    let horizontal_edges = computed_width.border_left
+      + computed_width.padding_left
+      + computed_width.padding_right
+      + computed_width.border_right;
+    let min_width = style
+      .min_width
+      .as_ref()
+      .map(|l| {
+        resolve_length_for_width(
+          *l,
+          containing_width,
+          style,
+          &self.font_context,
+          self.viewport_size,
+        )
+      })
+      .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing))
+      .unwrap_or(0.0);
+    let max_width = style
+      .max_width
+      .as_ref()
+      .map(|l| {
+        resolve_length_for_width(
+          *l,
+          containing_width,
+          style,
+          &self.font_context,
+          self.viewport_size,
+        )
+      })
+      .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing))
+      .unwrap_or(f32::INFINITY);
+    let max_width = if max_width.is_finite() && max_width < min_width {
+      min_width
+    } else {
+      max_width
+    };
+    let clamped_content_width =
+      crate::layout::utils::clamp_with_order(computed_width.content_width, min_width, max_width);
+    if clamped_content_width != computed_width.content_width {
+      let (margin_left, margin_right) = recompute_margins_for_width(
+        style,
+        containing_width,
+        clamped_content_width,
+        computed_width.border_left,
+        computed_width.padding_left,
+        computed_width.padding_right,
+        computed_width.border_right,
+        self.viewport_size,
+        &self.font_context,
+      );
+      computed_width.content_width = clamped_content_width;
+      computed_width.margin_left = margin_left;
+      computed_width.margin_right = margin_right;
+    }
+
     let child_constraints = LayoutConstraints::new(
       AvailableSpace::Definite(computed_width.content_width),
       child_height_space,
@@ -4675,6 +4736,53 @@ mod tests {
     style.display = Display::Block;
     style.height = Some(Length::px(height));
     Arc::new(style)
+  }
+
+  #[test]
+  fn max_width_clamps_and_centers_in_flow_blocks() {
+    let mut parent_style = ComputedStyle::default();
+    parent_style.display = Display::Block;
+
+    let mut child_style = ComputedStyle::default();
+    child_style.display = Display::Block;
+    child_style.height = Some(Length::px(20.0));
+    child_style.box_sizing = crate::style::types::BoxSizing::BorderBox;
+    child_style.padding_left = Length::px(10.0);
+    child_style.padding_right = Length::px(10.0);
+    child_style.border_left_width = Length::px(2.0);
+    child_style.border_right_width = Length::px(2.0);
+    child_style.max_width = Some(Length::px(200.0));
+    child_style.margin_left = None;
+    child_style.margin_right = None;
+
+    let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+    let parent = BoxNode::new_block(
+      Arc::new(parent_style),
+      FormattingContextType::Block,
+      vec![child],
+    );
+
+    let viewport = Size::new(500.0, 200.0);
+    let fc = BlockFormattingContext::with_font_context_viewport_and_cb(
+      FontContext::new(),
+      viewport,
+      ContainingBlock::viewport(viewport),
+    );
+    let constraints = LayoutConstraints::definite_width(500.0);
+    let fragment = fc.layout(&parent, &constraints).unwrap();
+    assert_eq!(fragment.children.len(), 1);
+
+    let child_frag = &fragment.children[0];
+    assert!(
+      (child_frag.bounds.width() - 200.0).abs() < 0.5,
+      "expected border-box width 200, got {}",
+      child_frag.bounds.width()
+    );
+    assert!(
+      (child_frag.bounds.x() - 150.0).abs() < 0.5,
+      "expected centered x=150, got {}",
+      child_frag.bounds.x()
+    );
   }
 
   #[test]
