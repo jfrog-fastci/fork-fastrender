@@ -6087,6 +6087,9 @@ impl DisplayListRenderer {
           if shadow.inset {
             continue;
           }
+          if shadow.color.a <= f32::EPSILON {
+            continue;
+          }
           let blur = shadow.blur_radius.abs() * 3.0;
           let spread = shadow.spread_radius.abs();
           let offset = shadow.offset.x.abs().max(shadow.offset.y.abs());
@@ -6094,6 +6097,9 @@ impl DisplayListRenderer {
         }
         DisplayItem::Text(text) => {
           for shadow in &text.shadows {
+            if shadow.color.a <= f32::EPSILON {
+              continue;
+            }
             let blur = shadow.blur_radius.abs() * 3.0;
             let offset = shadow.offset.x.abs().max(shadow.offset.y.abs());
             max_pad = max_pad.max(blur + offset);
@@ -6101,6 +6107,9 @@ impl DisplayListRenderer {
         }
         DisplayItem::ListMarker(marker) => {
           for shadow in &marker.shadows {
+            if shadow.color.a <= f32::EPSILON {
+              continue;
+            }
             let blur = shadow.blur_radius.abs() * 3.0;
             let offset = shadow.offset.x.abs().max(shadow.offset.y.abs());
             max_pad = max_pad.max(blur + offset);
