@@ -1351,6 +1351,7 @@ fn write_html_report(
 
   let top_improvements = format_top_list("Top improvements", &report.top_improvements, true);
   let top_regressions = format_top_list("Top regressions", &report.top_regressions, false);
+  let failing_regressions = format_failing_regressions_block(report);
 
   let baseline_report_html = baseline_report_html_override
     .map(PathBuf::from)
@@ -1567,6 +1568,7 @@ fn write_html_report(
     {aggregate_block}
     {mismatch_block}
     <div class="top-list">
+      {failing_regressions}
       {top_regressions}
       {top_improvements}
     </div>
@@ -1618,6 +1620,7 @@ fn write_html_report(
     summary = escape_html(&summary),
     aggregate_block = aggregate_block,
     mismatch_block = mismatch_block,
+    failing_regressions = failing_regressions,
     top_regressions = top_regressions,
     top_improvements = top_improvements,
     rows = rows,
@@ -1858,6 +1861,56 @@ fn format_top_list(title: &str, entries: &[DeltaRankedEntry], improvements: bool
 </table>"#,
     title = escape_html(title),
     note = escape_html(note),
+    rows = rows
+  )
+}
+
+fn format_failing_regressions_block(report: &DeltaReport) -> String {
+  if !report
+    .gating
+    .as_ref()
+    .map(|g| g.fail_on_regression)
+    .unwrap_or(false)
+  {
+    return "".to_string();
+  }
+
+  let failing = report
+    .results
+    .iter()
+    .filter(|entry| entry.failing_regression)
+    .collect::<Vec<_>>();
+  if failing.is_empty() {
+    return "<h2>Failing regressions</h2><p>-</p>".to_string();
+  }
+
+  let mut rows = String::new();
+  for entry in failing {
+    let anchor_id = entry_anchor_id(&entry.name);
+    let diff = entry
+      .diff_percentage_delta
+      .map(|d| format!("{:+.4}%", d))
+      .unwrap_or_else(|| "-".to_string());
+    let perceptual = entry
+      .perceptual_distance_delta
+      .map(|d| format!("{:+.4}", d))
+      .unwrap_or_else(|| "-".to_string());
+    rows.push_str(&format!(
+      "<tr><td><a href=\"#{anchor_id}\">{name}</a></td><td>{classification}</td><td>{diff}</td><td>{perceptual}</td></tr>",
+      anchor_id = escape_html(&anchor_id),
+      name = escape_html(&entry.name),
+      classification = escape_html(entry.classification.label()),
+      diff = escape_html(&diff),
+      perceptual = escape_html(&perceptual),
+    ));
+  }
+
+  format!(
+    r#"<h2>Failing regressions</h2>
+<table>
+  <thead><tr><th>Name</th><th>Delta</th><th>Δ diff %</th><th>Δ perceptual</th></tr></thead>
+  <tbody>{rows}</tbody>
+</table>"#,
     rows = rows
   )
 }

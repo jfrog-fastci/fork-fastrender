@@ -318,6 +318,10 @@ fn compare_diff_reports_can_gate_on_regressions() {
     "missing gating threshold in html:\n{html}"
   );
   assert!(
+    html.contains("<h2>Failing regressions</h2>"),
+    "missing failing regressions block:\n{html}"
+  );
+  assert!(
     html.contains("Failing regressions: 1"),
     "missing failing regression count in html summary:\n{html}"
   );
@@ -372,6 +376,10 @@ fn compare_diff_reports_can_gate_on_regressions() {
   assert!(
     html.contains("<code>1.0000%</code>"),
     "missing gating threshold in html:\n{html}"
+  );
+  assert!(
+    html.contains("<h2>Failing regressions</h2><p>-</p>"),
+    "missing empty failing regressions block:\n{html}"
   );
   assert!(
     html.contains("Failing regressions: 0"),
