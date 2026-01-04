@@ -180,6 +180,14 @@ table {
     border-spacing: 2px;
 }
 
+colgroup {
+    display: table-column-group;
+}
+
+col {
+    display: table-column;
+}
+
 thead {
     display: table-header-group;
 }

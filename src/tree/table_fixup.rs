@@ -276,6 +276,8 @@ impl TableStructureFixer {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      table_cell_span: None,
+      table_column_span: None,
       first_line_style: None,
       first_letter_style: None,
     }
@@ -302,6 +304,8 @@ impl TableStructureFixer {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      table_cell_span: None,
+      table_column_span: None,
       first_line_style: None,
       first_letter_style: None,
     }
@@ -328,6 +332,8 @@ impl TableStructureFixer {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      table_cell_span: None,
+      table_column_span: None,
       first_line_style: None,
       first_letter_style: None,
     }
@@ -347,6 +353,8 @@ impl TableStructureFixer {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      table_cell_span: None,
+      table_column_span: None,
       first_line_style: None,
       first_letter_style: None,
     }
@@ -668,13 +676,7 @@ impl TableStructureFixer {
       .children
       .iter()
       .filter(|c| Self::is_table_cell(c))
-      .map(|_cell| {
-        _cell
-          .debug_info
-          .as_ref()
-          .map(|info| info.colspan.max(1))
-          .unwrap_or(1)
-      })
+      .map(|cell| cell.table_colspan())
       .sum()
   }
 
@@ -771,7 +773,10 @@ impl TableStructureFixer {
   }
 
   /// Fixes up all table boxes while checking deadlines.
-  pub fn fixup_tree_with_deadline(mut root: BoxNode, deadline_counter: &mut usize) -> Result<BoxNode> {
+  pub fn fixup_tree_with_deadline(
+    mut root: BoxNode,
+    deadline_counter: &mut usize,
+  ) -> Result<BoxNode> {
     Self::fixup_tree_tables_in_place_with_deadline(
       &mut root,
       deadline_counter,
@@ -888,7 +893,6 @@ impl TableStructureFixer {
 mod tests {
   use super::*;
   use crate::tree::box_tree::BlockBox;
-  use crate::tree::debug::DebugInfo;
 
   // Helper to create a default style
   fn default_style() -> Arc<ComputedStyle> {
@@ -940,6 +944,8 @@ mod tests {
       children: cells,
       debug_info: None,
       styled_node_id: None,
+      table_cell_span: None,
+      table_column_span: None,
       first_line_style: None,
       first_letter_style: None,
     }
@@ -957,6 +963,8 @@ mod tests {
       children: content,
       debug_info: None,
       styled_node_id: None,
+      table_cell_span: None,
+      table_column_span: None,
       first_line_style: None,
       first_letter_style: None,
     }
@@ -974,6 +982,8 @@ mod tests {
       children: rows,
       debug_info: None,
       styled_node_id: None,
+      table_cell_span: None,
+      table_column_span: None,
       first_line_style: None,
       first_letter_style: None,
     }
@@ -991,6 +1001,8 @@ mod tests {
       children: content,
       debug_info: None,
       styled_node_id: None,
+      table_cell_span: None,
+      table_column_span: None,
       first_line_style: None,
       first_letter_style: None,
     }
@@ -1342,7 +1354,10 @@ mod tests {
   #[test]
   fn test_column_count_accounts_for_colspan() {
     let mut spanning = cell_box(vec![]);
-    spanning.debug_info = Some(DebugInfo::new(None, None, vec![]).with_spans(3, 1));
+    spanning.table_cell_span = Some(crate::tree::box_tree::TableCellSpan {
+      colspan: 3,
+      rowspan: 1,
+    });
     let row = row_box(vec![spanning, cell_box(vec![])]);
 
     let count = TableStructureFixer::count_columns(&row);

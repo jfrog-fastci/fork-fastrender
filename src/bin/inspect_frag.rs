@@ -183,6 +183,8 @@ fn filter_box_subtree(node: &BoxNode, allowed_styled_ids: &HashSet<usize>) -> Op
     id: node.id,
     debug_info: node.debug_info.clone(),
     styled_node_id: node.styled_node_id,
+    table_cell_span: node.table_cell_span,
+    table_column_span: node.table_column_span,
     first_line_style: node.first_line_style.clone(),
     first_letter_style: node.first_letter_style.clone(),
   })

@@ -530,6 +530,16 @@ pub enum AnonymousType {
   TableCell,
 }
 
+/// Always-present HTML table metadata for a table cell box.
+///
+/// Note: This is **not** debug-only. Table layout must not depend on `DebugInfo`, since debug info
+/// is disabled by default in `--release` builds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TableCellSpan {
+  pub colspan: u16,
+  pub rowspan: u16,
+}
+
 /// Different types of boxes in the box tree
 ///
 /// This enum discriminates between the different kinds of CSS boxes.
@@ -688,6 +698,12 @@ pub struct BoxNode {
   /// Styled node identifier that produced this box (pre-order traversal id).
   pub styled_node_id: Option<usize>,
 
+  /// HTML table cell span metadata (for `<td>` / `<th>`), if applicable.
+  pub table_cell_span: Option<TableCellSpan>,
+
+  /// HTML table column / column group span metadata (for `<col>` / `<colgroup>`), if applicable.
+  pub table_column_span: Option<u16>,
+
   /// Optional computed style overrides for `::first-line`.
   pub first_line_style: Option<Arc<ComputedStyle>>,
 
@@ -747,6 +763,8 @@ impl BoxNode {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      table_cell_span: None,
+      table_column_span: None,
       first_line_style: None,
       first_letter_style: None,
     }
@@ -764,6 +782,8 @@ impl BoxNode {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      table_cell_span: None,
+      table_column_span: None,
       first_line_style: None,
       first_letter_style: None,
     }
@@ -785,6 +805,8 @@ impl BoxNode {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      table_cell_span: None,
+      table_column_span: None,
       first_line_style: None,
       first_letter_style: None,
     }
@@ -800,6 +822,8 @@ impl BoxNode {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      table_cell_span: None,
+      table_column_span: None,
       first_line_style: None,
       first_letter_style: None,
     }
@@ -815,6 +839,8 @@ impl BoxNode {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      table_cell_span: None,
+      table_column_span: None,
       first_line_style: None,
       first_letter_style: None,
     }
@@ -839,6 +865,8 @@ impl BoxNode {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      table_cell_span: None,
+      table_column_span: None,
       first_line_style: None,
       first_letter_style: None,
     }
@@ -856,6 +884,8 @@ impl BoxNode {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      table_cell_span: None,
+      table_column_span: None,
       first_line_style: None,
       first_letter_style: None,
     }
@@ -873,6 +903,8 @@ impl BoxNode {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      table_cell_span: None,
+      table_column_span: None,
       first_line_style: None,
       first_letter_style: None,
     }
@@ -959,6 +991,36 @@ impl BoxNode {
   /// Their internal layout doesn't affect outside, and vice versa.
   pub fn generates_formatting_context(&self) -> bool {
     self.formatting_context().is_some()
+  }
+
+  /// Table cell colspan (`<td colspan>` / `<th colspan>`).
+  ///
+  /// Defaults to `1` when not present/applicable.
+  pub fn table_colspan(&self) -> usize {
+    match self.table_cell_span {
+      Some(span) if span.colspan > 0 => span.colspan as usize,
+      _ => 1,
+    }
+  }
+
+  /// Table cell rowspan (`<td rowspan>` / `<th rowspan>`).
+  ///
+  /// Defaults to `1` when not present/applicable.
+  pub fn table_rowspan(&self) -> usize {
+    match self.table_cell_span {
+      Some(span) if span.rowspan > 0 => span.rowspan as usize,
+      _ => 1,
+    }
+  }
+
+  /// Table column span (`<col span>` / `<colgroup span>`).
+  ///
+  /// Defaults to `1` when not present/applicable.
+  pub fn table_column_span(&self) -> usize {
+    match self.table_column_span {
+      Some(span) if span > 0 => span as usize,
+      _ => 1,
+    }
   }
 
   /// Returns true if this is a table-internal box

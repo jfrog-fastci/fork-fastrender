@@ -2496,6 +2496,8 @@ impl BlockFormattingContext {
       id: parent.id,
       debug_info: parent.debug_info.clone(),
       styled_node_id: parent.styled_node_id,
+      table_cell_span: parent.table_cell_span,
+      table_column_span: parent.table_column_span,
       first_line_style: parent.first_line_style.clone(),
       first_letter_style: parent.first_letter_style.clone(),
     }

@@ -61,6 +61,8 @@ pub fn get_default_styles_for_element(node: &DomNode) -> ComputedStyle {
       // Table elements
       "table" => Display::Table,
       "caption" => Display::TableCaption,
+      "colgroup" => Display::TableColumnGroup,
+      "col" => Display::TableColumn,
       "tr" => Display::TableRow,
       "td" | "th" => Display::TableCell,
       "thead" | "tbody" | "tfoot" => Display::TableRowGroup,

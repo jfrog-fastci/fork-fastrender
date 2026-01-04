@@ -455,6 +455,8 @@ impl AnonymousBoxCreator {
         id: 0,
         debug_info: debug_info.cloned(),
         styled_node_id,
+        table_cell_span: None,
+        table_column_span: None,
         first_line_style: None,
         first_letter_style: None,
       },
@@ -466,6 +468,8 @@ impl AnonymousBoxCreator {
         id: 0,
         debug_info: debug_info.cloned(),
         styled_node_id,
+        table_cell_span: None,
+        table_column_span: None,
         first_line_style: None,
         first_letter_style: None,
       },
@@ -665,6 +669,8 @@ impl AnonymousBoxCreator {
       id: std::mem::replace(&mut node.id, 0),
       debug_info: node.debug_info.take(),
       styled_node_id: node.styled_node_id.take(),
+      table_cell_span: node.table_cell_span.take(),
+      table_column_span: node.table_column_span.take(),
       first_line_style: node.first_line_style.take(),
       first_letter_style: node.first_letter_style.take(),
     };
@@ -701,6 +707,8 @@ impl AnonymousBoxCreator {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      table_cell_span: None,
+      table_column_span: None,
       first_line_style: None,
       first_letter_style: None,
     }
@@ -731,6 +739,8 @@ impl AnonymousBoxCreator {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      table_cell_span: None,
+      table_column_span: None,
       first_line_style: None,
       first_letter_style: None,
     }
@@ -750,6 +760,8 @@ impl AnonymousBoxCreator {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      table_cell_span: None,
+      table_column_span: None,
       first_line_style: None,
       first_letter_style: None,
     }
@@ -769,6 +781,8 @@ impl AnonymousBoxCreator {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      table_cell_span: None,
+      table_column_span: None,
       first_line_style: None,
       first_letter_style: None,
     }

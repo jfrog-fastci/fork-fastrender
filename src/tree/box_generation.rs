@@ -51,6 +51,7 @@ use crate::tree::box_tree::SizesList;
 use crate::tree::box_tree::SrcsetCandidate;
 use crate::tree::box_tree::SvgContent;
 use crate::tree::box_tree::SvgDocumentCssInjection;
+use crate::tree::box_tree::TableCellSpan;
 use crate::tree::box_tree::TextControlKind;
 use crate::tree::debug::DebugInfo;
 use crate::tree::table_fixup::TableStructureFixer;
@@ -2067,36 +2068,69 @@ fn generate_boxes_for_styled_into(
 
 fn attach_debug_info(mut box_node: BoxNode, styled: &StyledNode) -> BoxNode {
   box_node.styled_node_id = Some(styled.node_id);
-  if !box_debug_info_enabled() {
-    return box_node;
-  }
-  if let Some(tag) = styled.node.tag_name() {
-    // Extract colspan/rowspan for table cells and span for columns/colgroups
-    let colspan = styled
-      .node
-      .get_attribute_ref("colspan")
-      .and_then(|s| s.parse::<usize>().ok())
-      .unwrap_or(1)
-      .max(1);
-    let rowspan = styled
-      .node
-      .get_attribute_ref("rowspan")
-      .and_then(|s| s.parse::<usize>().ok())
-      .unwrap_or(1)
-      .max(1);
-    let column_span = if matches!(
-      styled.styles.display,
-      Display::TableColumn | Display::TableColumnGroup
-    ) {
-      styled
-        .node
-        .get_attribute_ref("span")
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(1)
-        .max(1)
-    } else {
-      1
+
+  const HTML_TABLE_SPAN_MAX: u16 = 1000;
+
+  fn parse_html_table_span_attr(raw: Option<&str>) -> u16 {
+    let Some(raw) = raw else {
+      return 1;
     };
+
+    let bytes = raw.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+      i += 1;
+    }
+    if i >= bytes.len() {
+      return 1;
+    }
+
+    let mut value: u32 = 0;
+    let mut saw_digit = false;
+    while i < bytes.len() {
+      let b = bytes[i];
+      if !b.is_ascii_digit() {
+        break;
+      }
+      saw_digit = true;
+      if value < HTML_TABLE_SPAN_MAX as u32 {
+        value = value.saturating_mul(10).saturating_add((b - b'0') as u32);
+        if value > HTML_TABLE_SPAN_MAX as u32 {
+          value = HTML_TABLE_SPAN_MAX as u32;
+        }
+      }
+      i += 1;
+    }
+
+    if !saw_digit || value == 0 {
+      1
+    } else {
+      value as u16
+    }
+  }
+
+  if let Some(tag) = styled.node.tag_name() {
+    // Populate table span metadata (not debug-only). Table layout must not depend on `DebugInfo`,
+    // since debug info is disabled by default in `--release`.
+    if tag.eq_ignore_ascii_case("td") || tag.eq_ignore_ascii_case("th") {
+      box_node.table_cell_span = Some(TableCellSpan {
+        colspan: parse_html_table_span_attr(styled.node.get_attribute_ref("colspan")),
+        rowspan: parse_html_table_span_attr(styled.node.get_attribute_ref("rowspan")),
+      });
+    } else {
+      box_node.table_cell_span = None;
+    }
+    if tag.eq_ignore_ascii_case("col") || tag.eq_ignore_ascii_case("colgroup") {
+      box_node.table_column_span = Some(parse_html_table_span_attr(
+        styled.node.get_attribute_ref("span"),
+      ));
+    } else {
+      box_node.table_column_span = None;
+    }
+
+    if !box_debug_info_enabled() {
+      return box_node;
+    }
 
     let id = styled.node.get_attribute("id");
     let classes = styled
@@ -2105,8 +2139,9 @@ fn attach_debug_info(mut box_node: BoxNode, styled: &StyledNode) -> BoxNode {
       .map(|c| c.split_ascii_whitespace().map(str::to_owned).collect())
       .unwrap_or_default();
 
-    let mut dbg = DebugInfo::new(Some(tag.to_string()), id, classes).with_spans(colspan, rowspan);
-    dbg.column_span = column_span;
+    let mut dbg = DebugInfo::new(Some(tag.to_string()), id, classes)
+      .with_spans(box_node.table_colspan(), box_node.table_rowspan());
+    dbg.column_span = box_node.table_column_span();
     box_node = box_node.with_debug_info(dbg);
   }
   box_node
@@ -2236,6 +2271,8 @@ fn create_pseudo_element_box(
           id: 0,
           debug_info: None,
           styled_node_id: Some(styled.node_id),
+          table_cell_span: None,
+          table_column_span: None,
           first_line_style: None,
           first_letter_style: None,
         });
@@ -3271,6 +3308,8 @@ fn create_replaced_box_from_styled(
     id: 0,
     debug_info: None,
     styled_node_id: None,
+    table_cell_span: None,
+    table_column_span: None,
     first_line_style: None,
     first_letter_style: None,
   }
