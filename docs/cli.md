@@ -504,7 +504,7 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 - HTML includes:
   - links to the baseline/new input `report.json` and `report.html`
   - baseline/new render thumbnails (after + diff), and diff% cells show raw pixel counts on hover
-- Gating: `--fail-on-regression` (plus `--regression-threshold-percent <PERCENT>`) exits non-zero when any entry regresses. The delta report records the gating settings so stored reports remain self-describing.
+- Gating: `--fail-on-regression` (plus `--regression-threshold-percent <PERCENT>`) exits non-zero when any entry regresses. The delta report records the gating settings so stored reports remain self-describing, and entries that fail the gate are marked in JSON (`failing_regression: true`) and highlighted in the HTML.
 - Works with both deterministic fixture diffs (`cargo xtask fixture-chrome-diff`) and cached-page diffs (`scripts/chrome_vs_fastrender.sh`), as long as you have two `report.json` files to compare.
 
 ## `diff_snapshots`
