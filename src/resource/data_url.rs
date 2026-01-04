@@ -126,22 +126,14 @@ fn has_charset(params: &[String]) -> bool {
 
 /// Decode base64 payloads, tolerating ASCII whitespace for robustness.
 fn decode_base64_data(data: &str) -> Result<Vec<u8>> {
-  let mut saw_url_safe = false;
-
   let bytes = data.as_bytes();
   let mut cleaned: Option<Vec<u8>> = None;
 
   for (idx, &byte) in bytes.iter().enumerate() {
-    if byte == b'-' || byte == b'_' {
-      saw_url_safe = true;
-    }
     if byte.is_ascii_whitespace() {
       let mut out = Vec::with_capacity(bytes.len());
       out.extend_from_slice(&bytes[..idx]);
       for &rest in &bytes[idx + 1..] {
-        if rest == b'-' || rest == b'_' {
-          saw_url_safe = true;
-        }
         if rest.is_ascii_whitespace() {
           continue;
         }
@@ -158,21 +150,19 @@ fn decode_base64_data(data: &str) -> Result<Vec<u8>> {
     return Ok(decoded);
   }
 
-  let mut last_err = match base64::engine::general_purpose::STANDARD_NO_PAD.decode(input) {
+  let last_err = match base64::engine::general_purpose::STANDARD_NO_PAD.decode(input) {
     Ok(decoded) => return Ok(decoded),
-    Err(err) => err,
+    Err(_) => {
+      if let Ok(decoded) = base64::engine::general_purpose::URL_SAFE.decode(input) {
+        return Ok(decoded);
+      }
+
+      match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(input) {
+        Ok(decoded) => return Ok(decoded),
+        Err(err) => err,
+      }
+    }
   };
-
-  if saw_url_safe {
-    if let Ok(decoded) = base64::engine::general_purpose::URL_SAFE.decode(input) {
-      return Ok(decoded);
-    }
-
-    match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(input) {
-      Ok(decoded) => return Ok(decoded),
-      Err(err) => last_err = err,
-    }
-  }
 
   Err(Error::Image(ImageError::InvalidDataUrl {
     reason: format!("Invalid base64: {last_err}"),
@@ -237,39 +227,35 @@ fn decode_base64_prefix(data: &str, max_bytes: usize) -> Result<Vec<u8>> {
     Ok(out)
   }
 
-  let saw_url_safe = data.bytes().any(|b| b == b'-' || b == b'_');
-
   if let Ok(decoded) =
     decode_base64_prefix_with_engine(data, max_bytes, &base64::engine::general_purpose::STANDARD)
   {
     return Ok(decoded);
   }
 
-  let mut last_err = match decode_base64_prefix_with_engine(
+  let last_err = match decode_base64_prefix_with_engine(
     data,
     max_bytes,
     &base64::engine::general_purpose::STANDARD_NO_PAD,
   ) {
     Ok(decoded) => return Ok(decoded),
-    Err(err) => err.to_string(),
+    Err(_) => {
+      if let Ok(decoded) =
+        decode_base64_prefix_with_engine(data, max_bytes, &base64::engine::general_purpose::URL_SAFE)
+      {
+        return Ok(decoded);
+      }
+
+      match decode_base64_prefix_with_engine(
+        data,
+        max_bytes,
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+      ) {
+        Ok(decoded) => return Ok(decoded),
+        Err(err) => err.to_string(),
+      }
+    }
   };
-
-  if saw_url_safe {
-    if let Ok(decoded) =
-      decode_base64_prefix_with_engine(data, max_bytes, &base64::engine::general_purpose::URL_SAFE)
-    {
-      return Ok(decoded);
-    }
-
-    match decode_base64_prefix_with_engine(
-      data,
-      max_bytes,
-      &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-    ) {
-      Ok(decoded) => return Ok(decoded),
-      Err(err) => last_err = err.to_string(),
-    }
-  }
 
   Err(Error::Image(ImageError::InvalidDataUrl {
     reason: format!("Invalid base64: {last_err}"),
