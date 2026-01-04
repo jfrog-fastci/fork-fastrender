@@ -117,7 +117,7 @@ cargo run --release --bin compare_diff_reports -- \
 #   --fail-on-regression --regression-threshold-percent 0.05
 ```
 
-Note: the delta tool expects the two reports to use the same diff settings (`--tolerance`, `--max-diff-percent`, `--max-perceptual-distance`, `--ignore-alpha`) and the same sharding settings when applicable (e.g. both generated with `--shard 0/4`).
+Note: the delta tool expects the two reports to use the same diff settings (`--tolerance`, `--max-diff-percent`, `--max-perceptual-distance`, `--ignore-alpha`) and the same sharding settings when applicable (e.g. both generated with `--shard 0/4`). If your `report.json` lives in a different directory than the corresponding `report.html`, pass `--baseline-html` / `--new-html` so diff thumbnails resolve correctly.
 
 The same delta tool also works with cached-page reports from `scripts/chrome_vs_fastrender.sh` (best-effort / non-deterministic because live subresources can change):
 

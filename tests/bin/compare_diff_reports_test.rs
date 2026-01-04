@@ -508,3 +508,50 @@ fn compare_diff_reports_requires_matching_shard_config_by_default() {
   assert_eq!(report["config_mismatches"].as_array().unwrap().len(), 1);
   assert_eq!(report["config_mismatches"][0]["field"], "shard");
 }
+
+#[test]
+fn compare_diff_reports_can_override_report_html_paths() {
+  let tmp = tempfile::TempDir::new().expect("tempdir");
+  let baseline_path = tmp.path().join("baseline.json");
+  let new_path = tmp.path().join("new.json");
+  let baseline_html = tmp.path().join("baseline_custom.html");
+  let new_html = tmp.path().join("new_custom.html");
+  let out_json = tmp.path().join("delta.json");
+  let out_html = tmp.path().join("delta.html");
+
+  fs::write(&baseline_html, "<!doctype html><title>baseline</title>").unwrap();
+  fs::write(&new_html, "<!doctype html><title>new</title>").unwrap();
+
+  write_json(&baseline_path, &basic_report(vec![]));
+  write_json(&new_path, &basic_report(vec![]));
+
+  let output = compare_cmd(tmp.path())
+    .args([
+      "--baseline",
+      baseline_path.to_str().unwrap(),
+      "--new",
+      new_path.to_str().unwrap(),
+      "--baseline-html",
+      baseline_html.to_str().unwrap(),
+      "--new-html",
+      new_html.to_str().unwrap(),
+      "--json",
+      out_json.to_str().unwrap(),
+      "--html",
+      out_html.to_str().unwrap(),
+    ])
+    .output()
+    .expect("run compare_diff_reports");
+
+  assert!(
+    output.status.success(),
+    "expected success, got {:?}\nstdout:\n{}\nstderr:\n{}",
+    output.status.code(),
+    output_text(&output.stdout),
+    output_text(&output.stderr),
+  );
+
+  let html = fs::read_to_string(&out_html).expect("read delta html");
+  assert!(html.contains("baseline_custom.html"), "missing baseline link:\n{html}");
+  assert!(html.contains("new_custom.html"), "missing new link:\n{html}");
+}

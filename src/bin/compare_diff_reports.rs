@@ -25,6 +25,14 @@ struct Args {
   #[arg(long = "new", value_name = "PATH")]
   new_report: PathBuf,
 
+  /// Optional baseline diff_report.html (used for report links and resolving image paths).
+  #[arg(long, value_name = "PATH")]
+  baseline_html: Option<PathBuf>,
+
+  /// Optional new diff_report.html (used for report links and resolving image paths).
+  #[arg(long, value_name = "PATH")]
+  new_html: Option<PathBuf>,
+
   /// Path to write diff_report_delta.json
   #[arg(long, default_value = "diff_report_delta.json")]
   json: PathBuf,
@@ -140,6 +148,14 @@ struct ReportMeta {
   max_diff_percent: f64,
   max_perceptual_distance: Option<f64>,
   ignore_alpha: bool,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  shard: Option<ReportShard>,
+}
+
+#[derive(Serialize)]
+struct ReportShard {
+  index: usize,
+  total: usize,
 }
 
 #[derive(Serialize)]
@@ -273,10 +289,18 @@ fn run() -> Result<i32, String> {
   let args = Args::parse();
   validate_args(&args)?;
 
+  let cwd =
+    std::env::current_dir().map_err(|e| format!("failed to read current directory: {e}"))?;
   let baseline_path =
     fs::canonicalize(&args.baseline).map_err(|e| format!("{}: {e}", args.baseline.display()))?;
   let new_path = fs::canonicalize(&args.new_report)
     .map_err(|e| format!("{}: {e}", args.new_report.display()))?;
+
+  let baseline_html_override = args
+    .baseline_html
+    .as_ref()
+    .map(|path| absolutize_path(&cwd, path));
+  let new_html_override = args.new_html.as_ref().map(|path| absolutize_path(&cwd, path));
 
   let baseline_report = read_report(&baseline_path)?;
   let new_report = read_report(&new_path)?;
@@ -312,7 +336,14 @@ fn run() -> Result<i32, String> {
       };
 
       write_json_report(&report, &args.json)?;
-      write_html_report(&report, &baseline_path, &new_path, &args.html)?;
+      write_html_report(
+        &report,
+        &baseline_path,
+        &new_path,
+        &args.html,
+        baseline_html_override.as_deref(),
+        new_html_override.as_deref(),
+      )?;
       println!(
         "Refusing to compare reports with mismatched diff config; wrote delta report to {} and {}.",
         args.json.display(),
@@ -403,7 +434,14 @@ fn run() -> Result<i32, String> {
   };
 
   write_json_report(&report, &args.json)?;
-  write_html_report(&report, &baseline_path, &new_path, &args.html)?;
+  write_html_report(
+    &report,
+    &baseline_path,
+    &new_path,
+    &args.html,
+    baseline_html_override.as_deref(),
+    new_html_override.as_deref(),
+  )?;
   print_summary(&report, &args);
 
   if args.fail_on_regression {
@@ -449,6 +487,14 @@ fn print_summary(report: &DeltaReport, args: &Args) {
     report.totals.new_missing,
   );
 
+  if report.baseline.shard.is_some() || report.new.shard.is_some() {
+    println!(
+      "Shard (baseline/new): {}/{}",
+      shard_label(&report.baseline.shard),
+      shard_label(&report.new.shard),
+    );
+  }
+
   if report.aggregate.paired_with_metrics > 0 {
     let weighted = report
       .aggregate
@@ -480,6 +526,21 @@ fn print_summary(report: &DeltaReport, args: &Args) {
     args.json.display(),
     args.html.display()
   );
+}
+
+fn shard_label(shard: &Option<ReportShard>) -> String {
+  shard
+    .as_ref()
+    .map(|s| format!("{}/{}", s.index, s.total))
+    .unwrap_or_else(|| "-".to_string())
+}
+
+fn absolutize_path(cwd: &Path, path: &Path) -> PathBuf {
+  if path.is_absolute() {
+    path.to_path_buf()
+  } else {
+    cwd.join(path)
+  }
 }
 
 fn print_failing_regressions(failing: &[&DeltaEntry], threshold: f64) {
@@ -727,6 +788,10 @@ impl ReportMeta {
       max_diff_percent: report.max_diff_percent,
       max_perceptual_distance: report.max_perceptual_distance,
       ignore_alpha: report.ignore_alpha,
+      shard: report.shard.as_ref().map(|s| ReportShard {
+        index: s.index,
+        total: s.total,
+      }),
     }
   }
 }
@@ -963,6 +1028,8 @@ fn write_html_report(
   baseline_report_json: &Path,
   new_report_json: &Path,
   path: &Path,
+  baseline_report_html_override: Option<&Path>,
+  new_report_html_override: Option<&Path>,
 ) -> Result<(), String> {
   ensure_parent_dir(path)?;
 
@@ -1013,8 +1080,12 @@ fn write_html_report(
   let top_improvements = format_top_list("Top improvements", &report.top_improvements, true);
   let top_regressions = format_top_list("Top regressions", &report.top_regressions, false);
 
-  let baseline_report_html = guess_report_html_path(baseline_report_json);
-  let new_report_html = guess_report_html_path(new_report_json);
+  let baseline_report_html = baseline_report_html_override
+    .map(PathBuf::from)
+    .or_else(|| guess_report_html_path(baseline_report_json));
+  let new_report_html = new_report_html_override
+    .map(PathBuf::from)
+    .or_else(|| guess_report_html_path(new_report_json));
 
   // The diff report's `before`/`after`/`diff` paths are emitted relative to the directory
   // containing the report HTML, so prefer that directory when we can find the HTML file.
@@ -1024,12 +1095,27 @@ fn write_html_report(
     .filter(|p| !p.as_os_str().is_empty())
     .or_else(|| baseline_report_json.parent().filter(|p| !p.as_os_str().is_empty()))
     .unwrap_or_else(|| Path::new("."));
+  let baseline_report_dir = fs::canonicalize(baseline_report_dir).unwrap_or_else(|_| {
+    if baseline_report_dir.as_os_str().is_empty() {
+      PathBuf::from(".")
+    } else {
+      baseline_report_dir.to_path_buf()
+    }
+  });
+
   let new_report_dir = new_report_html
     .as_ref()
     .and_then(|path| path.parent())
     .filter(|p| !p.as_os_str().is_empty())
     .or_else(|| new_report_json.parent().filter(|p| !p.as_os_str().is_empty()))
     .unwrap_or_else(|| Path::new("."));
+  let new_report_dir = fs::canonicalize(new_report_dir).unwrap_or_else(|_| {
+    if new_report_dir.as_os_str().is_empty() {
+      PathBuf::from(".")
+    } else {
+      new_report_dir.to_path_buf()
+    }
+  });
 
   let baseline_html_link = baseline_report_html
     .as_deref()
@@ -1054,13 +1140,13 @@ fn write_html_report(
       .baseline
       .as_ref()
       .and_then(|s| s.diff.as_deref())
-      .map(|diff| format_report_image_cell(&html_dir, baseline_report_dir, "Diff", diff))
+      .map(|diff| format_report_image_cell(&html_dir, &baseline_report_dir, "Diff", diff))
       .unwrap_or_else(|| "-".to_string());
     let new_diff_image = entry
       .new
       .as_ref()
       .and_then(|s| s.diff.as_deref())
-      .map(|diff| format_report_image_cell(&html_dir, new_report_dir, "Diff", diff))
+      .map(|diff| format_report_image_cell(&html_dir, &new_report_dir, "Diff", diff))
       .unwrap_or_else(|| "-".to_string());
 
     let baseline_diff = entry
@@ -1165,7 +1251,7 @@ fn write_html_report(
     <p><strong>Baseline report:</strong> {baseline_report_link}</p>
     <p><strong>New:</strong> {new_before} → {new_after}</p>
     <p><strong>New report:</strong> {new_report_link}</p>
-    <p><strong>Config:</strong> tolerance={tolerance}, max_diff_percent={max_diff_percent:.4}, max_perceptual_distance={max_perceptual}, ignore_alpha={ignore_alpha}</p>
+    <p><strong>Config:</strong> tolerance={tolerance}, max_diff_percent={max_diff_percent:.4}, max_perceptual_distance={max_perceptual}, ignore_alpha={ignore_alpha}, shard={shard}</p>
     <p><strong>Summary:</strong> {summary}</p>
     {aggregate_block}
     {mismatch_block}
@@ -1213,6 +1299,7 @@ fn write_html_report(
       .map(|d| format!("{d:.4}"))
       .unwrap_or_else(|| "-".to_string()),
     ignore_alpha = if report.new.ignore_alpha { "yes" } else { "no" },
+    shard = shard_label(&report.new.shard),
     summary = escape_html(&summary),
     aggregate_block = aggregate_block,
     mismatch_block = mismatch_block,
