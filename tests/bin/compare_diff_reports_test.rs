@@ -281,6 +281,18 @@ fn compare_diff_reports_can_gate_on_regressions() {
     output_text(&output.stderr)
   );
   assert!(out_json_fail.exists(), "delta json should still be written");
+  assert!(out_html_fail.exists(), "delta html should still be written");
+
+  let report: Value =
+    serde_json::from_str(&fs::read_to_string(&out_json_fail).expect("read delta json")).unwrap();
+  assert_eq!(report["gating"]["fail_on_regression"], true);
+  assert_eq!(report["gating"]["regression_threshold_percent"].as_f64(), Some(0.0));
+  let html = fs::read_to_string(&out_html_fail).expect("read delta html");
+  assert!(html.contains("<strong>Gating:</strong>"), "missing Gating row:\n{html}");
+  assert!(
+    html.contains("<code>0.0000%</code>"),
+    "missing gating threshold in html:\n{html}"
+  );
 
   let out_json_pass = tmp.path().join("delta_pass.json");
   let out_html_pass = tmp.path().join("delta_pass.html");
@@ -306,6 +318,17 @@ fn compare_diff_reports_can_gate_on_regressions() {
     "expected success with threshold\nstdout:\n{}\nstderr:\n{}",
     output_text(&output.stdout),
     output_text(&output.stderr)
+  );
+
+  let report: Value =
+    serde_json::from_str(&fs::read_to_string(&out_json_pass).expect("read delta json")).unwrap();
+  assert_eq!(report["gating"]["fail_on_regression"], true);
+  assert_eq!(report["gating"]["regression_threshold_percent"].as_f64(), Some(1.0));
+  let html = fs::read_to_string(&out_html_pass).expect("read delta html");
+  assert!(html.contains("<strong>Gating:</strong>"), "missing Gating row:\n{html}");
+  assert!(
+    html.contains("<code>1.0000%</code>"),
+    "missing gating threshold in html:\n{html}"
   );
 }
 

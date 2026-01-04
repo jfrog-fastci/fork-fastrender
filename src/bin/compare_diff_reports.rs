@@ -161,6 +161,8 @@ struct DeltaReport {
   new: ReportMeta,
   #[serde(skip_serializing_if = "Option::is_none")]
   filters: Option<ReportFilters>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  gating: Option<ReportGating>,
   config_mismatches: Vec<ConfigMismatch>,
   totals: DeltaTotals,
   aggregate: AggregateMetrics,
@@ -175,6 +177,12 @@ struct ReportFilters {
   include: Vec<String>,
   #[serde(skip_serializing_if = "Vec::is_empty")]
   exclude: Vec<String>,
+}
+
+#[derive(Serialize, Clone)]
+struct ReportGating {
+  fail_on_regression: bool,
+  regression_threshold_percent: f64,
 }
 
 #[derive(Serialize)]
@@ -343,6 +351,15 @@ fn run() -> Result<i32, String> {
       exclude: args.exclude.clone(),
     })
   };
+  let gating_meta = if args.fail_on_regression || args.regression_threshold_percent.abs() > METRIC_EPS
+  {
+    Some(ReportGating {
+      fail_on_regression: args.fail_on_regression,
+      regression_threshold_percent: args.regression_threshold_percent,
+    })
+  } else {
+    None
+  };
 
   let cwd =
     std::env::current_dir().map_err(|e| format!("failed to read current directory: {e}"))?;
@@ -383,6 +400,7 @@ fn run() -> Result<i32, String> {
         baseline: baseline_meta,
         new: new_meta,
         filters: filters_meta,
+        gating: gating_meta.clone(),
         config_mismatches,
         totals,
         aggregate: AggregateMetrics::default(),
@@ -488,6 +506,7 @@ fn run() -> Result<i32, String> {
     baseline: baseline_meta,
     new: new_meta,
     filters: filters_meta,
+    gating: gating_meta,
     config_mismatches,
     totals,
     aggregate,
@@ -639,6 +658,13 @@ fn print_summary(report: &DeltaReport, args: &Args) {
     report.totals.baseline_missing,
     report.totals.new_missing,
   );
+
+  if let Some(gating) = &report.gating {
+    println!(
+      "Gating: fail_on_regression={} regression_threshold_percent={:.4}%",
+      gating.fail_on_regression, gating.regression_threshold_percent
+    );
+  }
 
   if let Some(filters) = &report.filters {
     if !filters.include.is_empty() || !filters.exclude.is_empty() {
@@ -1262,6 +1288,7 @@ fn write_html_report(
     report.totals.new_missing
   );
   let filters = format_filters_html(report.filters.as_ref());
+  let gating = format_gating_html(report.gating.as_ref());
 
   let aggregate_block = format_aggregate_block(&report.aggregate);
 
@@ -1471,6 +1498,7 @@ fn write_html_report(
     <p><strong>New report JSON:</strong> {new_report_json_link}</p>
     <p><strong>Config:</strong> tolerance={tolerance}, max_diff_percent={max_diff_percent:.4}, max_perceptual_distance={max_perceptual}, ignore_alpha={ignore_alpha}, shard={shard}</p>
     <p><strong>Filters:</strong> {filters}</p>
+    <p><strong>Gating:</strong> {gating}</p>
     <p><strong>Summary:</strong> {summary}</p>
     {aggregate_block}
     {mismatch_block}
@@ -1522,6 +1550,7 @@ fn write_html_report(
     ignore_alpha = if report.new.ignore_alpha { "yes" } else { "no" },
     shard = shard_label(&report.new.shard),
     filters = filters,
+    gating = gating,
     summary = escape_html(&summary),
     aggregate_block = aggregate_block,
     mismatch_block = mismatch_block,
@@ -1574,6 +1603,18 @@ fn format_filters_html(filters: Option<&ReportFilters>) -> String {
   } else {
     parts.join(" ")
   }
+}
+
+fn format_gating_html(gating: Option<&ReportGating>) -> String {
+  let Some(gating) = gating else {
+    return "-".to_string();
+  };
+
+  let enabled = if gating.fail_on_regression { "yes" } else { "no" };
+  format!(
+    "fail_on_regression={enabled}, threshold=<code>{:.4}%</code>",
+    gating.regression_threshold_percent
+  )
 }
 
 fn format_diff_percentage_cell(metrics: MetricsSummary) -> String {
