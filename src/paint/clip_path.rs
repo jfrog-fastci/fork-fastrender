@@ -18,7 +18,7 @@ use tiny_skia::PathBuilder;
 use tiny_skia::Rect as SkRect;
 use tiny_skia::Transform;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum ResolvedClipPath {
   Inset {
     rect: Rect,
@@ -35,6 +35,10 @@ pub enum ResolvedClipPath {
   },
   Polygon {
     points: Vec<Point>,
+    fill_rule: SkFillRule,
+  },
+  Path {
+    path: tiny_skia::Path,
     fill_rule: SkFillRule,
   },
 }
@@ -67,6 +71,16 @@ impl ResolvedClipPath {
           .collect(),
         fill_rule: *fill_rule,
       },
+      ResolvedClipPath::Path { path, fill_rule } => {
+        let translated = path
+          .clone()
+          .transform(Transform::from_translate(dx, dy))
+          .unwrap_or_else(|| path.clone());
+        ResolvedClipPath::Path {
+          path: translated,
+          fill_rule: *fill_rule,
+        }
+      }
     }
   }
 
@@ -106,6 +120,18 @@ impl ResolvedClipPath {
           (max_x - min_x).max(0.0),
           (max_y - min_y).max(0.0),
         )
+      }
+      ResolvedClipPath::Path { path, .. } => {
+        let bounds = path.bounds();
+        let left = bounds.left();
+        let top = bounds.top();
+        let right = bounds.right();
+        let bottom = bounds.bottom();
+        if !(left.is_finite() && top.is_finite() && right.is_finite() && bottom.is_finite()) {
+          Rect::ZERO
+        } else {
+          Rect::from_xywh(left, top, (right - left).max(0.0), (bottom - top).max(0.0))
+        }
       }
     }
   }
@@ -186,6 +212,12 @@ impl ResolvedClipPath {
         if let Some(path) = builder.finish() {
           mask.fill_path(&path, *fill_rule, true, transform);
         }
+      }
+      ResolvedClipPath::Path { path, fill_rule } => {
+        let scaled = path
+          .clone()
+          .transform(Transform::from_scale(scale, scale))?;
+        mask.fill_path(&scaled, *fill_rule, true, transform);
       }
     }
 
@@ -297,6 +329,18 @@ pub(crate) fn resolve_basic_shape(
       };
       Some(ResolvedClipPath::Polygon {
         points: resolved,
+        fill_rule,
+      })
+    }
+    BasicShape::Path { fill, data } => {
+      let fill_rule = match fill {
+        FillRule::EvenOdd => SkFillRule::EvenOdd,
+        FillRule::NonZero => SkFillRule::Winding,
+      };
+      let path = crate::svg_path::build_tiny_skia_path_from_svg_path_data_unchecked(data.as_ref())?;
+      let translated = path.transform(Transform::from_translate(reference.x(), reference.y()))?;
+      Some(ResolvedClipPath::Path {
+        path: translated,
         fill_rule,
       })
     }
@@ -787,7 +831,12 @@ mod tests {
     assert!((radii.top_left.y - 20.0).abs() < 0.01);
   }
 
-  fn mask_reference(clip: &ResolvedClipPath, scale: f32, size: IntSize, transform: Transform) -> Option<Mask> {
+  fn mask_reference(
+    clip: &ResolvedClipPath,
+    scale: f32,
+    size: IntSize,
+    transform: Transform,
+  ) -> Option<Mask> {
     if size.width() == 0 || size.height() == 0 {
       return None;
     }
@@ -831,8 +880,7 @@ mod tests {
           return None;
         }
         let r = *radius * scale;
-        let rect =
-          SkRect::from_xywh(center.x * scale - r, center.y * scale - r, r * 2.0, r * 2.0)?;
+        let rect = SkRect::from_xywh(center.x * scale - r, center.y * scale - r, r * 2.0, r * 2.0)?;
         if let Some(path) = PathBuilder::from_oval(rect) {
           mask_pixmap.fill_path(&path, &paint, SkFillRule::Winding, transform, None);
         }
@@ -869,6 +917,12 @@ mod tests {
           mask_pixmap.fill_path(&path, &paint, *fill_rule, transform, None);
         }
       }
+      ResolvedClipPath::Path { path, fill_rule } => {
+        let scaled = path
+          .clone()
+          .transform(Transform::from_scale(scale, scale))?;
+        mask_pixmap.fill_path(&scaled, &paint, *fill_rule, transform, None);
+      }
     }
 
     Some(Mask::from_pixmap(mask_pixmap.as_ref(), MaskType::Alpha))
@@ -903,6 +957,23 @@ mod tests {
         ],
         fill_rule: SkFillRule::EvenOdd,
       },
+      ResolvedClipPath::Path {
+        path: {
+          let mut builder = PathBuilder::new();
+          builder.move_to(2.0, 2.0);
+          builder.line_to(30.0, 2.0);
+          builder.line_to(30.0, 30.0);
+          builder.line_to(2.0, 30.0);
+          builder.close();
+          builder.move_to(10.0, 10.0);
+          builder.line_to(22.0, 10.0);
+          builder.line_to(22.0, 22.0);
+          builder.line_to(10.0, 22.0);
+          builder.close();
+          builder.finish().expect("expected path to build")
+        },
+        fill_rule: SkFillRule::EvenOdd,
+      },
     ];
 
     for clip in clips {
@@ -914,6 +985,49 @@ mod tests {
         "clip-path mask mismatch for {clip:?}"
       );
     }
+  }
+
+  #[test]
+  fn clip_path_path_fill_rule_affects_mask() {
+    let size = IntSize::from_wh(32, 32).expect("size");
+    let mut builder = PathBuilder::new();
+    builder.move_to(2.0, 2.0);
+    builder.line_to(30.0, 2.0);
+    builder.line_to(30.0, 30.0);
+    builder.line_to(2.0, 30.0);
+    builder.close();
+    builder.move_to(10.0, 10.0);
+    builder.line_to(22.0, 10.0);
+    builder.line_to(22.0, 22.0);
+    builder.line_to(10.0, 22.0);
+    builder.close();
+    let path = builder.finish().expect("path");
+
+    let winding = ResolvedClipPath::Path {
+      path: path.clone(),
+      fill_rule: SkFillRule::Winding,
+    };
+    let evenodd = ResolvedClipPath::Path {
+      path,
+      fill_rule: SkFillRule::EvenOdd,
+    };
+
+    let winding_mask = winding
+      .mask(1.0, size, Transform::identity())
+      .expect("mask");
+    let evenodd_mask = evenodd
+      .mask(1.0, size, Transform::identity())
+      .expect("mask");
+
+    let idx = 16 * size.width() as usize + 16;
+    assert!(
+      winding_mask.data()[idx] > 200,
+      "expected nonzero fill to include inner subpath"
+    );
+    assert!(
+      evenodd_mask.data()[idx] < 20,
+      "expected evenodd fill to punch out inner subpath"
+    );
   }
 
   #[test]

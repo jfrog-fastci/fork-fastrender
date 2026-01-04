@@ -1,0 +1,35 @@
+.demos {
+  grid-template-columns: repeat(1, minmax(0, 1fr));
+}
+
+.demo {
+  display: grid;
+  gap: 10px;
+}
+
+.label {
+  font-size: 14px;
+}
+
+.bar {
+  width: 420px;
+  height: 96px;
+  border-radius: 14px;
+  border: 1px solid rgba(15, 23, 42, 0.18);
+  background: linear-gradient(90deg, #0ea5e9 0%, #d946ef 45%, #f97316 100%);
+  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.15);
+}
+
+.clip-arrow {
+  /* Stripe-like arrow motion path: starts at negative x to test translation. */
+  clip-path: path("M-44 0 H340 L420 48 L340 96 H-44 Z");
+}
+
+.clip-hole-evenodd {
+  clip-path: path(evenodd, "M0 0 H420 V96 H0 Z M120 24 H300 V72 H120 Z");
+}
+
+.clip-hole-nonzero {
+  clip-path: path(nonzero, "M0 0 H420 V96 H0 Z M120 24 H300 V72 H120 Z");
+}
+

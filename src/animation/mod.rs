@@ -693,8 +693,8 @@ fn resolve_clip_path(
           reference: *reference,
         })
       }
-      // Polygons and unsupported shapes fall back to discrete animation.
-      BasicShape::Polygon { .. } => None,
+      // Polygons/path and unsupported shapes fall back to discrete animation.
+      BasicShape::Polygon { .. } | BasicShape::Path { .. } => None,
     },
   }
 }
@@ -943,7 +943,7 @@ fn clip_path_to_resolved(path: &ClipPath) -> Option<ResolvedClipPath> {
         }),
         _ => None,
       },
-      BasicShape::Polygon { .. } => None,
+      BasicShape::Polygon { .. } | BasicShape::Path { .. } => None,
     },
   }
 }

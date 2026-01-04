@@ -10097,17 +10097,17 @@ fn apply_declaration_with_base_internal(
       if let PropertyValue::Translate(value) = resolved_value {
         styles.translate = *value;
       }
-    },
+    }
     "rotate" => {
       if let PropertyValue::Rotate(value) = resolved_value {
         styles.rotate = *value;
       }
-    },
+    }
     "scale" => {
       if let PropertyValue::Scale(value) = resolved_value {
         styles.scale = *value;
       }
-    },
+    }
     "transform" => {
       if let PropertyValue::Transform(transforms) = resolved_value {
         styles.transform = transforms.clone();
@@ -12156,7 +12156,11 @@ fn parse_contain_intrinsic_axis_tokens(
           length: None,
         }
       };
-      let next = if value.length.is_some() { start + 2 } else { start + 1 };
+      let next = if value.length.is_some() {
+        start + 2
+      } else {
+        start + 1
+      };
       return Some((value, next));
     }
   }
@@ -12175,7 +12179,11 @@ fn parse_contain_intrinsic_size_axis(value: &PropertyValue) -> Option<ContainInt
   match value {
     PropertyValue::Multiple(tokens) => {
       let (axis, next) = parse_contain_intrinsic_axis_tokens(tokens, 0)?;
-      if next == tokens.len() { Some(axis) } else { None }
+      if next == tokens.len() {
+        Some(axis)
+      } else {
+        None
+      }
     }
     other => parse_contain_intrinsic_axis_tokens(std::slice::from_ref(other), 0)
       .and_then(|(axis, next)| if next == 1 { Some(axis) } else { None }),
@@ -13703,6 +13711,9 @@ fn parse_basic_shape<'i, 't>(
   if let Ok(polygon) = input.try_parse(parse_polygon_shape) {
     return Ok(polygon);
   }
+  if let Ok(path) = input.try_parse(parse_path_shape) {
+    return Ok(path);
+  }
 
   Err(cssparser::ParseError {
     kind: cssparser::ParseErrorKind::Custom(()),
@@ -13832,6 +13843,55 @@ fn parse_polygon_shape<'i, 't>(
     Ok(BasicShape::Polygon {
       fill: fill_rule,
       points,
+    })
+  })
+}
+
+fn parse_path_shape<'i, 't>(
+  input: &mut Parser<'i, 't>,
+) -> Result<BasicShape, cssparser::ParseError<'i, ()>> {
+  input.expect_function_matching("path")?;
+  input.parse_nested_block(|nested| {
+    let state = nested.state();
+    let mut fill_rule = FillRule::NonZero;
+    if let Ok(rule) = nested.try_parse(|p| p.expect_ident_cloned()) {
+      if rule.eq_ignore_ascii_case("evenodd") {
+        fill_rule = FillRule::EvenOdd;
+        let _ = nested.try_parse(|p| p.expect_comma());
+      } else if rule.eq_ignore_ascii_case("nonzero") {
+        fill_rule = FillRule::NonZero;
+        let _ = nested.try_parse(|p| p.expect_comma());
+      } else {
+        nested.reset(&state);
+      }
+    }
+
+    nested.skip_whitespace();
+    let data =
+      if let Ok(data) = nested.try_parse(|p| p.expect_string().map(|s| s.as_ref().to_string())) {
+        data
+      } else {
+        // Best-effort support for unquoted path data by re-serializing the remaining tokens.
+        let mut raw = String::new();
+        while !nested.is_exhausted() {
+          let token = nested.next_including_whitespace()?;
+          raw.push_str(&token.to_css_string());
+        }
+        raw.trim().to_string()
+      };
+
+    if data.trim().is_empty() {
+      return Err(cssparser::ParseError {
+        kind: cssparser::ParseErrorKind::Custom(()),
+        location: nested.current_source_location(),
+      });
+    }
+
+    nested.skip_whitespace();
+    nested.expect_exhausted()?;
+    Ok(BasicShape::Path {
+      fill: fill_rule,
+      data: Arc::from(data),
     })
   })
 }
@@ -15299,8 +15359,14 @@ mod tests {
       16.0,
       DEFAULT_VIEWPORT,
     );
-    assert_eq!(styles.contain_intrinsic_width.length, Some(Length::px(3000.0)));
-    assert_eq!(styles.contain_intrinsic_height.length, Some(Length::px(1500.0)));
+    assert_eq!(
+      styles.contain_intrinsic_width.length,
+      Some(Length::px(3000.0))
+    );
+    assert_eq!(
+      styles.contain_intrinsic_height.length,
+      Some(Length::px(1500.0))
+    );
   }
 
   #[test]
@@ -15378,10 +15444,13 @@ mod tests {
 
     assert_eq!(
       styles.scale,
-      crate::css::types::ScaleValue::Values { x: 1.0, y: 2.0, z: 1.0 }
+      crate::css::types::ScaleValue::Values {
+        x: 1.0,
+        y: 2.0,
+        z: 1.0
+      }
     );
     assert!(styles.has_transform());
-
   }
 
   #[test]
@@ -16989,6 +17058,63 @@ mod tests {
   }
 
   #[test]
+  fn parses_clip_path_path_function_fill_rules() {
+    let mut style = ComputedStyle::default();
+
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "clip-path".into(),
+        value: PropertyValue::Keyword("path(\"M0 0 H10 V10 H0 Z\")".to_string()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+
+    match &style.clip_path {
+      ClipPath::BasicShape(shape, None) => match shape.as_ref() {
+        BasicShape::Path { fill, data } => {
+          assert_eq!(*fill, FillRule::NonZero);
+          assert_eq!(data.as_ref(), "M0 0 H10 V10 H0 Z");
+        }
+        other => panic!("unexpected basic shape: {other:?}"),
+      },
+      other => panic!("unexpected clip-path parsed: {other:?}"),
+    }
+
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "clip-path".into(),
+        value: PropertyValue::Keyword(
+          "path(evenodd, \"M0 0 H10 V10 H0 Z M2 2 H8 V8 H2 Z\")".to_string(),
+        ),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+
+    match &style.clip_path {
+      ClipPath::BasicShape(shape, None) => match shape.as_ref() {
+        BasicShape::Path { fill, data } => {
+          assert_eq!(*fill, FillRule::EvenOdd);
+          assert_eq!(data.as_ref(), "M0 0 H10 V10 H0 Z M2 2 H8 V8 H2 Z");
+        }
+        other => panic!("unexpected basic shape: {other:?}"),
+      },
+      other => panic!("unexpected clip-path parsed: {other:?}"),
+    }
+  }
+
+  #[test]
   fn parses_clip_rect_values() {
     let decl = Declaration {
       property: "clip".into(),
@@ -17108,7 +17234,11 @@ mod tests {
 
     let parent = ComputedStyle {
       rotate: crate::css::types::RotateValue::Angle(45.0),
-      scale: crate::css::types::ScaleValue::Values { x: 2.0, y: 3.0, z: 1.0 },
+      scale: crate::css::types::ScaleValue::Values {
+        x: 2.0,
+        y: 3.0,
+        z: 1.0,
+      },
       ..ComputedStyle::default()
     };
     apply_declaration(
@@ -25776,12 +25906,22 @@ pub fn resolve_pending_logical_properties(styles: &mut ComputedStyle) {
       }
       crate::style::LogicalProperty::ContainIntrinsicInlineSize { value } => {
         if let Some(v) = value {
-          set_axis_contain_intrinsic_size(styles, crate::style::LogicalAxis::Inline, v, pending_prop.order);
+          set_axis_contain_intrinsic_size(
+            styles,
+            crate::style::LogicalAxis::Inline,
+            v,
+            pending_prop.order,
+          );
         }
       }
       crate::style::LogicalProperty::ContainIntrinsicBlockSize { value } => {
         if let Some(v) = value {
-          set_axis_contain_intrinsic_size(styles, crate::style::LogicalAxis::Block, v, pending_prop.order);
+          set_axis_contain_intrinsic_size(
+            styles,
+            crate::style::LogicalAxis::Block,
+            v,
+            pending_prop.order,
+          );
         }
       }
       crate::style::LogicalProperty::Inset { axis, start, end } => {

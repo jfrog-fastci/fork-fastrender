@@ -315,6 +315,7 @@ fn build_segments_from_shape(
       });
       Some(segments)
     }
+    BasicShape::Path { .. } => None,
   }
 }
 

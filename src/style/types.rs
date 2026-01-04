@@ -1621,7 +1621,10 @@ impl WillChangeHint {
       WillChangeHint::Property(name) => matches!(
         name.as_str(),
         // Properties that create stacking contexts when non-initial
-        "transform" | "translate" | "rotate" | "scale"
+        "transform"
+          | "translate"
+          | "rotate"
+          | "scale"
           | "opacity"
           | "filter"
           | "backdrop-filter"
@@ -3195,6 +3198,10 @@ pub enum BasicShape {
   Polygon {
     fill: FillRule,
     points: Vec<(Length, Length)>,
+  },
+  Path {
+    fill: FillRule,
+    data: Arc<str>,
   },
 }
 
