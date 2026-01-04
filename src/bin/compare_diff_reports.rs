@@ -237,6 +237,16 @@ impl DeltaClassification {
       DeltaClassification::MissingInBaseline | DeltaClassification::MissingInNew => "missing",
     }
   }
+
+  fn sort_weight(&self) -> u8 {
+    match self {
+      DeltaClassification::MissingInNew => 0,
+      DeltaClassification::Regressed => 1,
+      DeltaClassification::MissingInBaseline => 2,
+      DeltaClassification::Improved => 3,
+      DeltaClassification::Unchanged => 4,
+    }
+  }
 }
 
 #[derive(Serialize)]
@@ -416,6 +426,8 @@ fn run() -> Result<i32, String> {
     });
   }
 
+  sort_results(&mut results);
+
   let mut top_improvements = collect_top_metric_deltas(&results, true);
   let mut top_regressions = collect_top_metric_deltas(&results, false);
   top_improvements.truncate(TOP_N);
@@ -464,6 +476,80 @@ fn run() -> Result<i32, String> {
   }
 
   Ok(0)
+}
+
+fn sort_results(entries: &mut [DeltaEntry]) {
+  use std::cmp::Ordering;
+
+  entries.sort_by(|a, b| {
+    let a_weight = a.classification.sort_weight();
+    let b_weight = b.classification.sort_weight();
+    if a_weight != b_weight {
+      return a_weight.cmp(&b_weight);
+    }
+
+    match a.classification {
+      DeltaClassification::Regressed => compare_regressed(a, b),
+      DeltaClassification::Improved => compare_improved(a, b),
+      _ => a.name.cmp(&b.name),
+    }
+  });
+
+  fn compare_regressed(a: &DeltaEntry, b: &DeltaEntry) -> Ordering {
+    use std::cmp::Ordering;
+
+    let a_missing = a.diff_percentage_delta.is_none();
+    let b_missing = b.diff_percentage_delta.is_none();
+    if a_missing != b_missing {
+      return a_missing.cmp(&b_missing).reverse();
+    }
+
+    let diff_order = match (a.diff_percentage_delta, b.diff_percentage_delta) {
+      (Some(a), Some(b)) => b.partial_cmp(&a).unwrap_or(Ordering::Equal),
+      _ => Ordering::Equal,
+    };
+    if diff_order != Ordering::Equal {
+      return diff_order;
+    }
+
+    let perceptual_order = match (a.perceptual_distance_delta, b.perceptual_distance_delta) {
+      (Some(a), Some(b)) => b.partial_cmp(&a).unwrap_or(Ordering::Equal),
+      _ => Ordering::Equal,
+    };
+    if perceptual_order != Ordering::Equal {
+      return perceptual_order;
+    }
+
+    a.name.cmp(&b.name)
+  }
+
+  fn compare_improved(a: &DeltaEntry, b: &DeltaEntry) -> Ordering {
+    use std::cmp::Ordering;
+
+    let a_missing = a.diff_percentage_delta.is_none();
+    let b_missing = b.diff_percentage_delta.is_none();
+    if a_missing != b_missing {
+      return a_missing.cmp(&b_missing);
+    }
+
+    let diff_order = match (a.diff_percentage_delta, b.diff_percentage_delta) {
+      (Some(a), Some(b)) => a.partial_cmp(&b).unwrap_or(Ordering::Equal),
+      _ => Ordering::Equal,
+    };
+    if diff_order != Ordering::Equal {
+      return diff_order;
+    }
+
+    let perceptual_order = match (a.perceptual_distance_delta, b.perceptual_distance_delta) {
+      (Some(a), Some(b)) => a.partial_cmp(&b).unwrap_or(Ordering::Equal),
+      _ => Ordering::Equal,
+    };
+    if perceptual_order != Ordering::Equal {
+      return perceptual_order;
+    }
+
+    a.name.cmp(&b.name)
+  }
 }
 
 fn validate_args(args: &Args) -> Result<(), String> {
