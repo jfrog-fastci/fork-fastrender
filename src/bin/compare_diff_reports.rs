@@ -1245,6 +1245,7 @@ fn write_html_report(
     report.totals.baseline_missing,
     report.totals.new_missing
   );
+  let filters = format_filters_html(report.filters.as_ref());
 
   let aggregate_block = format_aggregate_block(&report.aggregate);
 
@@ -1453,6 +1454,7 @@ fn write_html_report(
     <p><strong>New report:</strong> {new_report_link}</p>
     <p><strong>New report JSON:</strong> {new_report_json_link}</p>
     <p><strong>Config:</strong> tolerance={tolerance}, max_diff_percent={max_diff_percent:.4}, max_perceptual_distance={max_perceptual}, ignore_alpha={ignore_alpha}, shard={shard}</p>
+    <p><strong>Filters:</strong> {filters}</p>
     <p><strong>Summary:</strong> {summary}</p>
     {aggregate_block}
     {mismatch_block}
@@ -1503,6 +1505,7 @@ fn write_html_report(
       .unwrap_or_else(|| "-".to_string()),
     ignore_alpha = if report.new.ignore_alpha { "yes" } else { "no" },
     shard = shard_label(&report.new.shard),
+    filters = filters,
     summary = escape_html(&summary),
     aggregate_block = aggregate_block,
     mismatch_block = mismatch_block,
@@ -1523,6 +1526,38 @@ fn format_report_image_cell(
   let target_path = resolve_report_path(report_dir, report_relative_path);
   let rel = path_for_report(delta_html_dir, &target_path);
   format_linked_image(label, &rel)
+}
+
+fn format_filters_html(filters: Option<&ReportFilters>) -> String {
+  let Some(filters) = filters else {
+    return "-".to_string();
+  };
+
+  let mut parts = Vec::new();
+  if !filters.include.is_empty() {
+    let patterns = filters
+      .include
+      .iter()
+      .map(|pattern| format!("<code>{}</code>", escape_html(pattern)))
+      .collect::<Vec<_>>()
+      .join(", ");
+    parts.push(format!("include=[{patterns}]"));
+  }
+  if !filters.exclude.is_empty() {
+    let patterns = filters
+      .exclude
+      .iter()
+      .map(|pattern| format!("<code>{}</code>", escape_html(pattern)))
+      .collect::<Vec<_>>()
+      .join(", ");
+    parts.push(format!("exclude=[{patterns}]"));
+  }
+
+  if parts.is_empty() {
+    "-".to_string()
+  } else {
+    parts.join(" ")
+  }
 }
 
 fn format_diff_percentage_cell(metrics: MetricsSummary) -> String {

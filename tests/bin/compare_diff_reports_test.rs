@@ -832,6 +832,14 @@ fn compare_diff_reports_can_filter_entries_by_name() {
   assert_eq!(report["filters"]["include"][0], "^keep$");
   assert_eq!(report["filters"]["exclude"][0], "drop");
 
+  let html = fs::read_to_string(&out_html).expect("read delta html");
+  assert!(
+    html.contains("<strong>Filters:</strong>"),
+    "missing Filters row:\n{html}"
+  );
+  assert!(html.contains("<code>^keep$</code>"), "missing include filter:\n{html}");
+  assert!(html.contains("<code>drop</code>"), "missing exclude filter:\n{html}");
+
   let results = report["results"].as_array().expect("results array");
   assert_eq!(results.len(), 1);
   assert_eq!(results[0]["name"], "keep");
