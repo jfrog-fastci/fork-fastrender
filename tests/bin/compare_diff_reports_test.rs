@@ -261,6 +261,22 @@ fn compare_diff_reports_pairs_and_classifies_entries() {
     html.contains("tr:target"),
     "expected target highlight styling for deep-links:\n{html}"
   );
+  assert!(
+    html.contains("id=\"all-entries-controls\""),
+    "expected All entries filter controls:\n{html}"
+  );
+  assert!(
+    html.contains("id=\"show-unchanged\""),
+    "expected per-class All entries filter controls:\n{html}"
+  );
+  assert!(
+    html.contains("id=\"show-thumbnails\""),
+    "expected thumbnail toggle control:\n{html}"
+  );
+  assert!(
+    html.contains("#show-unchanged:not(:checked) ~ #all-entries tbody tr.unchanged"),
+    "expected CSS toggle rule for hiding unchanged rows:\n{html}"
+  );
 }
 
 #[test]

@@ -1549,6 +1549,23 @@ fn write_html_report(
       tr.failing td:first-child {{ box-shadow: inset 4px 0 0 #b00020; }}
       tr:target {{ outline: 3px solid #0066cc; }}
       tr[id] {{ scroll-margin-top: 50px; }}
+      #all-entries-controls {{ margin-top: 16px; }}
+      #all-entries-controls input[type="checkbox"] {{ position: absolute; left: -10000px; }}
+      .entry-filters {{ margin-bottom: 10px; }}
+      .entry-filters label {{ display: inline-block; margin-right: 12px; }}
+      .entry-filters label:hover {{ text-decoration: underline; cursor: pointer; }}
+      #show-improved:not(:checked) ~ .entry-filters label[for="show-improved"],
+      #show-regressed:not(:checked) ~ .entry-filters label[for="show-regressed"],
+      #show-missing:not(:checked) ~ .entry-filters label[for="show-missing"],
+      #show-unchanged:not(:checked) ~ .entry-filters label[for="show-unchanged"],
+      #show-thumbnails:not(:checked) ~ .entry-filters label[for="show-thumbnails"] {{
+        opacity: 0.5;
+      }}
+      #show-improved:not(:checked) ~ #all-entries tbody tr.improved {{ display: none; }}
+      #show-regressed:not(:checked) ~ #all-entries tbody tr.regressed {{ display: none; }}
+      #show-missing:not(:checked) ~ #all-entries tbody tr.missing {{ display: none; }}
+      #show-unchanged:not(:checked) ~ #all-entries tbody tr.unchanged {{ display: none; }}
+      #show-thumbnails:not(:checked) ~ #all-entries .thumb img {{ display: none; }}
       .warning {{ color: #b00020; }}
       .error {{ color: #b00020; white-space: pre-wrap; }}
       .top-list table {{ width: auto; }}
@@ -1576,7 +1593,21 @@ fn write_html_report(
       {top_improvements}
     </div>
     <h2>All entries</h2>
-    <table>
+    <div id="all-entries-controls">
+      <input type="checkbox" id="show-improved" checked>
+      <input type="checkbox" id="show-regressed" checked>
+      <input type="checkbox" id="show-missing" checked>
+      <input type="checkbox" id="show-unchanged" checked>
+      <input type="checkbox" id="show-thumbnails" checked>
+      <div class="entry-filters">
+        <strong>Show:</strong>
+        <label for="show-improved">Improved ({improved})</label>
+        <label for="show-regressed">Regressed ({regressed})</label>
+        <label for="show-missing">Missing ({missing_entries})</label>
+        <label for="show-unchanged">Unchanged ({unchanged})</label>
+        <label for="show-thumbnails">Thumbnails</label>
+      </div>
+      <table id="all-entries">
       <thead>
         <tr>
           <th>Name</th>
@@ -1598,6 +1629,7 @@ fn write_html_report(
         {rows}
       </tbody>
     </table>
+    </div>
   </body>
 </html>
 "#,
@@ -1626,6 +1658,10 @@ fn write_html_report(
     failing_regressions = failing_regressions,
     top_regressions = top_regressions,
     top_improvements = top_improvements,
+    improved = report.totals.improved,
+    regressed = report.totals.regressed,
+    unchanged = report.totals.unchanged,
+    missing_entries = report.totals.missing_in_baseline + report.totals.missing_in_new,
     rows = rows,
   );
 
