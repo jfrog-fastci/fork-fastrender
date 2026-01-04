@@ -296,6 +296,11 @@ fn compare_diff_reports_can_gate_on_regressions() {
     output_text(&output.stdout),
     output_text(&output.stderr)
   );
+  let stdout = output_text(&output.stdout);
+  assert!(
+    stdout.contains("Failing regressions: 1"),
+    "missing failing regression count in stdout:\n{stdout}"
+  );
   assert!(out_json_fail.exists(), "delta json should still be written");
   assert!(out_html_fail.exists(), "delta html should still be written");
 
@@ -311,6 +316,10 @@ fn compare_diff_reports_can_gate_on_regressions() {
   assert!(
     html.contains("<code>0.0000%</code>"),
     "missing gating threshold in html:\n{html}"
+  );
+  assert!(
+    html.contains("Failing regressions: 1"),
+    "missing failing regression count in html summary:\n{html}"
   );
   assert!(
     html.contains("class=\"regressed failing\""),
@@ -342,6 +351,11 @@ fn compare_diff_reports_can_gate_on_regressions() {
     output_text(&output.stdout),
     output_text(&output.stderr)
   );
+  let stdout = output_text(&output.stdout);
+  assert!(
+    stdout.contains("Failing regressions: 0"),
+    "missing failing regression count in stdout:\n{stdout}"
+  );
 
   let report: Value =
     serde_json::from_str(&fs::read_to_string(&out_json_pass).expect("read delta json")).unwrap();
@@ -358,6 +372,10 @@ fn compare_diff_reports_can_gate_on_regressions() {
   assert!(
     html.contains("<code>1.0000%</code>"),
     "missing gating threshold in html:\n{html}"
+  );
+  assert!(
+    html.contains("Failing regressions: 0"),
+    "missing failing regression count in html summary:\n{html}"
   );
   assert!(
     !html.contains("class=\"regressed failing\""),
