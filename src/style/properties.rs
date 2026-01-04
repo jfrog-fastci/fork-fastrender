@@ -44,6 +44,7 @@ use cssparser::BasicParseErrorKind;
 use cssparser::Parser;
 use cssparser::ParserInput;
 use cssparser::Token;
+use cssparser::ToCss;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Arc;
