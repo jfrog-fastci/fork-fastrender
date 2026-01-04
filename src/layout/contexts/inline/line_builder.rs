@@ -2528,8 +2528,32 @@ impl<'a> LineBuilder<'a> {
           &self.font_context,
           &mut self.reshape_cache,
         ) {
+          let mut before = before;
+          let mut drop_before = false;
+          if matches!(break_opportunity.break_type, BreakType::Allowed)
+            && matches!(
+              text_item.style.white_space,
+              WhiteSpace::Normal | WhiteSpace::Nowrap | WhiteSpace::PreLine
+            )
+          {
+            let trimmed_len = before.text.trim_end_matches(' ').len();
+            if trimmed_len < before.text.len() {
+              if trimmed_len == 0 {
+                drop_before = true;
+              } else if let Some((trimmed, _)) = before.split_at(
+                trimmed_len,
+                false,
+                &self.shaper,
+                &self.font_context,
+                &mut self.reshape_cache,
+              ) {
+                before = trimmed;
+              }
+            }
+          }
+
           // Place the part that fits
-          if before.advance_for_layout > 0.0 {
+          if !drop_before && before.advance_for_layout > 0.0 {
             let width = before.advance_for_layout;
             self.place_item_with_width(InlineItem::Text(before), width);
           }
