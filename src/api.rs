@@ -792,9 +792,10 @@ pub struct RenderOptions {
   /// Optional animation/transition sampling time in milliseconds since document load.
   ///
   /// When set, time-based effects such as @starting-style transitions will be sampled at this
-  /// moment; when absent, time-based animations resolve to a deterministic settled state (finite
-  /// animations use their post-animation values, while infinite animations sample the start of the
-  /// first iteration after any delay).
+  /// moment; when absent, time-based animations resolve to a deterministic settled state.
+  ///
+  /// Finite animations use their post-animation values, while infinite animations have no
+  /// deterministic "final" keyframe state and are ignored (falling back to the underlying style).
   pub animation_time: Option<f32>,
   /// Scroll offsets for element scroll containers keyed by box ID.
   pub element_scroll_offsets: HashMap<usize, Point>,
