@@ -4208,7 +4208,12 @@ impl FormattingContext for BlockFormattingContext {
     }
 
     let style = style_override.as_ref().unwrap_or(&box_node.style);
-    let edges = horizontal_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context);
+    let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+    let edges = if inline_is_horizontal {
+      horizontal_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context)
+    } else {
+      vertical_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context)
+    };
     // Honor specified widths that resolve without a containing block.
     if let Some(specified) = style.width.as_ref() {
       let resolved = resolve_length_for_width(
@@ -4227,10 +4232,24 @@ impl FormattingContext for BlockFormattingContext {
       }
     }
 
-    if style.containment.size || style.containment.inline_size {
-      intrinsic_cache_store(box_node, IntrinsicSizingMode::MinContent, edges);
-      intrinsic_cache_store(box_node, IntrinsicSizingMode::MaxContent, edges);
-      return Ok((edges, edges));
+    if style.containment.isolates_inline_size() {
+      let axis = if inline_is_horizontal {
+        style.contain_intrinsic_width
+      } else {
+        style.contain_intrinsic_height
+      };
+      let fallback = crate::layout::utils::resolve_contain_intrinsic_size_axis(
+        axis,
+        None,
+        Some(0.0),
+        self.viewport_size,
+        style.font_size,
+        style.root_font_size,
+      );
+      let result = (edges + fallback).max(0.0);
+      intrinsic_cache_store(box_node, IntrinsicSizingMode::MinContent, result);
+      intrinsic_cache_store(box_node, IntrinsicSizingMode::MaxContent, result);
+      return Ok((result, result));
     }
 
     // Replaced elements fall back to their intrinsic content size plus padding/borders.
@@ -4608,6 +4627,39 @@ fn horizontal_padding_and_borders(
     viewport,
   ) + resolve_length_for_width(
     style.border_right_width,
+    percentage_base,
+    style,
+    font_context,
+    viewport,
+  )
+}
+
+fn vertical_padding_and_borders(
+  style: &ComputedStyle,
+  percentage_base: f32,
+  viewport: crate::geometry::Size,
+  font_context: &FontContext,
+) -> f32 {
+  resolve_length_for_width(
+    style.padding_top,
+    percentage_base,
+    style,
+    font_context,
+    viewport,
+  ) + resolve_length_for_width(
+    style.padding_bottom,
+    percentage_base,
+    style,
+    font_context,
+    viewport,
+  ) + resolve_length_for_width(
+    style.border_top_width,
+    percentage_base,
+    style,
+    font_context,
+    viewport,
+  ) + resolve_length_for_width(
+    style.border_bottom_width,
     percentage_base,
     style,
     font_context,
