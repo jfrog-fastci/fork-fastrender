@@ -2409,6 +2409,42 @@ fn is_unicode_mark(ch: char) -> bool {
   )
 }
 
+fn required_coverage_chars_for_cluster<'a>(
+  cluster_text: &str,
+  first_char: char,
+  base_char: char,
+  coverage_chars_all: &'a [char],
+  required_chars: &'a mut ClusterCharBuf,
+) -> &'a [char] {
+  let has_marks = coverage_chars_all.iter().copied().any(is_unicode_mark);
+  if !has_marks {
+    return coverage_chars_all;
+  }
+
+  // Keycap sequences use U+20E3 (Combining Enclosing Keycap), which is an enclosing mark.
+  //
+  // The general "optional marks" fallback (Task 72) treats marks as optional when resolving fonts,
+  // but for keycap sequences the mark is required to render the emoji cluster as a single keycap
+  // glyph. Keep marks required for these clusters so we prefer emoji fonts that support both the
+  // base and the keycap mark (and avoid `.notdef` for the mark).
+  let is_keycap_sequence = matches!(first_char, '0'..='9' | '#' | '*')
+    && cluster_text.chars().any(|ch| ch == '\u{20e3}');
+  if is_keycap_sequence {
+    return coverage_chars_all;
+  }
+
+  required_chars.clear();
+  for ch in coverage_chars_all.iter().copied() {
+    if !is_unicode_mark(ch) {
+      required_chars.push(ch);
+    }
+  }
+  if required_chars.is_empty() {
+    required_chars.push(base_char);
+  }
+  required_chars.as_slice()
+}
+
 // Optional-mark fallback invariants (Task 72):
 // - Only treat marks (General Category M*) as optional when the cluster also contains at least one
 //   non-mark glyph that must render.
@@ -3070,28 +3106,13 @@ fn assign_fonts_internal(
         &[]
       };
       let has_marks = coverage_chars_all.iter().copied().any(is_unicode_mark);
-      // Keycap sequences use U+20E3 (Combining Enclosing Keycap), which is an enclosing mark.
-      //
-      // The general "optional marks" fallback (Task 72) treats marks as optional when resolving
-      // fonts, but for keycap sequences the mark is required to render the emoji cluster as a
-      // single keycap glyph. Keep marks required for these clusters so we prefer emoji fonts that
-      // support both the base and the keycap mark (and avoid `.notdef` for the mark).
-      let is_keycap_sequence = matches!(first_char, '0'..='9' | '#' | '*')
-        && cluster_text.chars().any(|ch| ch == '\u{20e3}');
-      let coverage_chars_required: &[char] = if has_marks && !is_keycap_sequence {
-        required_chars.clear();
-        for ch in coverage_chars_all.iter().copied() {
-          if !is_unicode_mark(ch) {
-            required_chars.push(ch);
-          }
-        }
-        if required_chars.is_empty() {
-          required_chars.push(base_char);
-        }
-        required_chars.as_slice()
-      } else {
-        coverage_chars_all
-      };
+      let coverage_chars_required: &[char] = required_coverage_chars_for_cluster(
+        cluster_text,
+        first_char,
+        base_char,
+        coverage_chars_all,
+        &mut required_chars,
+      );
 
       let wants_emoji = matches!(emoji_pref, EmojiPreference::PreferEmoji);
       let avoids_emoji = matches!(emoji_pref, EmojiPreference::AvoidEmoji);
@@ -9313,6 +9334,36 @@ mod tests {
     assert_eq!(
       emoji_preference_for_cluster("1\u{fe0e}\u{20e3}", FontVariantEmoji::Emoji),
       EmojiPreference::AvoidEmoji
+    );
+  }
+
+  #[test]
+  fn keycap_sequences_keep_keycap_mark_required_for_coverage() {
+    let mut required = ClusterCharBuf::new();
+    let coverage = ['1', '\u{20e3}'];
+    let required_slice = required_coverage_chars_for_cluster(
+      "1\u{20e3}",
+      '1',
+      '1',
+      &coverage,
+      &mut required,
+    );
+    assert_eq!(
+      required_slice, &coverage,
+      "keycap clusters should keep U+20E3 required for font coverage"
+    );
+  }
+
+  #[test]
+  fn optional_mark_fallback_drops_marks_from_required_coverage() {
+    let mut required = ClusterCharBuf::new();
+    let coverage = ['a', '\u{0301}'];
+    let required_slice =
+      required_coverage_chars_for_cluster("a\u{0301}", 'a', 'a', &coverage, &mut required);
+    assert_eq!(
+      required_slice,
+      &['a'],
+      "combining marks should be treated as optional for font coverage when possible"
     );
   }
 
