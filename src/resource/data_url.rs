@@ -126,26 +126,33 @@ fn has_charset(params: &[String]) -> bool {
 
 /// Decode base64 payloads, tolerating ASCII whitespace for robustness.
 fn decode_base64_data(data: &str) -> Result<Vec<u8>> {
-  let mut cleaned = Vec::with_capacity(data.len());
-  let mut saw_whitespace = false;
   let mut saw_url_safe = false;
 
-  for byte in data.bytes() {
-    if byte.is_ascii_whitespace() {
-      saw_whitespace = true;
-      continue;
-    }
+  let bytes = data.as_bytes();
+  let mut cleaned: Option<Vec<u8>> = None;
+
+  for (idx, &byte) in bytes.iter().enumerate() {
     if byte == b'-' || byte == b'_' {
       saw_url_safe = true;
     }
-    cleaned.push(byte);
+    if byte.is_ascii_whitespace() {
+      let mut out = Vec::with_capacity(bytes.len());
+      out.extend_from_slice(&bytes[..idx]);
+      for &rest in &bytes[idx + 1..] {
+        if rest == b'-' || rest == b'_' {
+          saw_url_safe = true;
+        }
+        if rest.is_ascii_whitespace() {
+          continue;
+        }
+        out.push(rest);
+      }
+      cleaned = Some(out);
+      break;
+    }
   }
 
-  let input = if saw_whitespace {
-    cleaned.as_slice()
-  } else {
-    data.as_bytes()
-  };
+  let input = cleaned.as_deref().unwrap_or(bytes);
 
   if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(input) {
     return Ok(decoded);
