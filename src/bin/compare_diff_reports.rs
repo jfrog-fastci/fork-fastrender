@@ -1127,6 +1127,9 @@ fn write_html_report(
     .map(|path| path_for_report(&html_dir, path))
     .unwrap_or_else(|| "-".to_string());
 
+  let baseline_json_link = path_for_report(&html_dir, baseline_report_json);
+  let new_json_link = path_for_report(&html_dir, new_report_json);
+
   let mut rows = String::new();
   for entry in &report.results {
     let anchor_id = entry_anchor_id(&entry.name);
@@ -1250,8 +1253,10 @@ fn write_html_report(
     <h1>Diff report delta</h1>
     <p><strong>Baseline:</strong> {baseline_before} → {baseline_after}</p>
     <p><strong>Baseline report:</strong> {baseline_report_link}</p>
+    <p><strong>Baseline report JSON:</strong> {baseline_report_json_link}</p>
     <p><strong>New:</strong> {new_before} → {new_after}</p>
     <p><strong>New report:</strong> {new_report_link}</p>
+    <p><strong>New report JSON:</strong> {new_report_json_link}</p>
     <p><strong>Config:</strong> tolerance={tolerance}, max_diff_percent={max_diff_percent:.4}, max_perceptual_distance={max_perceptual}, ignore_alpha={ignore_alpha}, shard={shard}</p>
     <p><strong>Summary:</strong> {summary}</p>
     {aggregate_block}
@@ -1292,6 +1297,8 @@ fn write_html_report(
     new_after = escape_html(&report.new.after_dir),
     baseline_report_link = format_report_link(&baseline_html_link),
     new_report_link = format_report_link(&new_html_link),
+    baseline_report_json_link = format_report_link(&baseline_json_link),
+    new_report_json_link = format_report_link(&new_json_link),
     tolerance = report.new.tolerance,
     max_diff_percent = report.new.max_diff_percent,
     max_perceptual = report
