@@ -1451,7 +1451,11 @@ fn parse_function(name: &str, args: &str) -> Option<ContentItem> {
         let fallback = fallback
           .strip_prefix('"')
           .and_then(|s| s.strip_suffix('"'))
-          .or_else(|| fallback.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+          .or_else(|| {
+            fallback
+              .strip_prefix('\'')
+              .and_then(|s| s.strip_suffix('\''))
+          })
           .unwrap_or(fallback);
         Some(ContentItem::Attr {
           name: attr_name.to_string(),

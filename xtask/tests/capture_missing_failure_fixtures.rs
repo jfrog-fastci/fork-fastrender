@@ -11,17 +11,29 @@ fn selects_missing_failing_fixtures_and_builds_commands() {
   fs::create_dir_all(&progress_dir).expect("create progress dir");
 
   fs::write(progress_dir.join("ok.json"), r#"{"status":"ok"}"#).expect("write ok progress");
-  fs::write(progress_dir.join("has_fixture.json"), r#"{"status":"timeout"}"#)
-    .expect("write timeout progress");
-  fs::write(progress_dir.join("missing_error.json"), r#"{"status":"error"}"#)
-    .expect("write error progress");
-  fs::write(progress_dir.join("missing_panic.json"), r#"{"status":"panic"}"#)
-    .expect("write panic progress");
+  fs::write(
+    progress_dir.join("has_fixture.json"),
+    r#"{"status":"timeout"}"#,
+  )
+  .expect("write timeout progress");
+  fs::write(
+    progress_dir.join("missing_error.json"),
+    r#"{"status":"error"}"#,
+  )
+  .expect("write error progress");
+  fs::write(
+    progress_dir.join("missing_panic.json"),
+    r#"{"status":"panic"}"#,
+  )
+  .expect("write panic progress");
 
   let fixtures_root = temp.path().join("fixtures");
   fs::create_dir_all(fixtures_root.join("has_fixture")).expect("create fixture dir");
-  fs::write(fixtures_root.join("has_fixture/index.html"), "existing fixture")
-    .expect("write fixture index");
+  fs::write(
+    fixtures_root.join("has_fixture/index.html"),
+    "existing fixture",
+  )
+  .expect("write fixture index");
 
   let bundles_out = temp.path().join("bundles");
   let cache_dir = temp.path().join("asset-cache");
@@ -136,4 +148,3 @@ fn selects_missing_failing_fixtures_and_builds_commands() {
     );
   }
 }
-

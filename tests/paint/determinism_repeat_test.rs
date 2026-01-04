@@ -17,13 +17,7 @@ use rayon::ThreadPoolBuilder;
 use std::sync::mpsc;
 use std::sync::Arc;
 
-fn assert_rgba8888_pixels_eq(
-  width: u32,
-  height: u32,
-  expected: &[u8],
-  actual: &[u8],
-  label: &str,
-) {
+fn assert_rgba8888_pixels_eq(width: u32, height: u32, expected: &[u8], actual: &[u8], label: &str) {
   assert_eq!(
     expected.len(),
     actual.len(),
@@ -406,13 +400,17 @@ fn paint_is_repeatable_under_parallel_scheduling() {
     let pool = ThreadPoolBuilder::new().num_threads(1).build().unwrap();
     let list = scene_a.clone();
     let font_ctx = font_ctx.clone();
-    run_on_pool(&pool, move || render_bytes(WIDTH, HEIGHT, &list, font_ctx, parallelism))
+    run_on_pool(&pool, move || {
+      render_bytes(WIDTH, HEIGHT, &list, font_ctx, parallelism)
+    })
   };
   let baseline_b = {
     let pool = ThreadPoolBuilder::new().num_threads(1).build().unwrap();
     let list = scene_b.clone();
     let font_ctx = font_ctx.clone();
-    run_on_pool(&pool, move || render_bytes(WIDTH, HEIGHT, &list, font_ctx, parallelism))
+    run_on_pool(&pool, move || {
+      render_bytes(WIDTH, HEIGHT, &list, font_ctx, parallelism)
+    })
   };
 
   // Ensure serial rerenders do not depend on earlier work on the same thread (e.g. scratch buffers
@@ -421,7 +419,9 @@ fn paint_is_repeatable_under_parallel_scheduling() {
   for i in 0..SERIAL_REPEATS_PER_SCENE {
     let list = scene_a.clone();
     let font_ctx = font_ctx.clone();
-    let bytes = run_on_pool(&serial_pool, move || render_bytes(WIDTH, HEIGHT, &list, font_ctx, parallelism));
+    let bytes = run_on_pool(&serial_pool, move || {
+      render_bytes(WIDTH, HEIGHT, &list, font_ctx, parallelism)
+    });
     assert_rgba8888_pixels_eq(
       WIDTH,
       HEIGHT,
@@ -433,7 +433,9 @@ fn paint_is_repeatable_under_parallel_scheduling() {
   for i in 0..SERIAL_REPEATS_PER_SCENE {
     let list = scene_b.clone();
     let font_ctx = font_ctx.clone();
-    let bytes = run_on_pool(&serial_pool, move || render_bytes(WIDTH, HEIGHT, &list, font_ctx, parallelism));
+    let bytes = run_on_pool(&serial_pool, move || {
+      render_bytes(WIDTH, HEIGHT, &list, font_ctx, parallelism)
+    });
     assert_rgba8888_pixels_eq(
       WIDTH,
       HEIGHT,
@@ -446,12 +448,22 @@ fn paint_is_repeatable_under_parallel_scheduling() {
   // Interleave both scenes on the same thread to catch state leakage across unrelated workloads.
   for i in 0..(SERIAL_REPEATS_PER_SCENE * 2) {
     let (expected, list, label) = if i % 2 == 0 {
-      (&baseline_a, scene_a.clone(), format!("serial interleave {i} scene A"))
+      (
+        &baseline_a,
+        scene_a.clone(),
+        format!("serial interleave {i} scene A"),
+      )
     } else {
-      (&baseline_b, scene_b.clone(), format!("serial interleave {i} scene B"))
+      (
+        &baseline_b,
+        scene_b.clone(),
+        format!("serial interleave {i} scene B"),
+      )
     };
     let font_ctx = font_ctx.clone();
-    let bytes = run_on_pool(&serial_pool, move || render_bytes(WIDTH, HEIGHT, &list, font_ctx, parallelism));
+    let bytes = run_on_pool(&serial_pool, move || {
+      render_bytes(WIDTH, HEIGHT, &list, font_ctx, parallelism)
+    });
     assert_rgba8888_pixels_eq(WIDTH, HEIGHT, expected, &bytes, &label);
   }
 
@@ -494,4 +506,3 @@ fn paint_is_repeatable_under_parallel_scheduling() {
     }
   }
 }
-

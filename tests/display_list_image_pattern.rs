@@ -101,7 +101,10 @@ fn repeating_background_emits_single_image_pattern_item() {
     .unwrap();
   let top_left = pixmap.pixel(0, 0).expect("pixel in bounds");
   assert!(
-    top_left.red() > 200 && top_left.green() < 50 && top_left.blue() < 50 && top_left.alpha() == 255,
+    top_left.red() > 200
+      && top_left.green() < 50
+      && top_left.blue() < 50
+      && top_left.alpha() == 255,
     "expected non-white pixels from repeated background (got {top_left:?})"
   );
 

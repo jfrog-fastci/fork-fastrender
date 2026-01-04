@@ -262,7 +262,9 @@ pub fn discover_html_asset_urls_with_srcset_limit(
       .captures(tag)
       .and_then(|c| capture_first(&c, &[1, 2, 3]))
       .unwrap_or("");
-    let as_value = attr_as.captures(tag).and_then(|c| capture_first(&c, &[1, 2, 3]));
+    let as_value = attr_as
+      .captures(tag)
+      .and_then(|c| capture_first(&c, &[1, 2, 3]));
     if rel.is_empty() || !link_rel_is_image_asset(rel, as_value) {
       continue;
     }
@@ -463,7 +465,10 @@ mod tests {
       <iframe src="live.html"></iframe>
     "#;
     let out = discover_html_asset_urls(html, "https://example.com/base/");
-    assert_eq!(out.images, vec!["https://example.com/base/live.png".to_string()]);
+    assert_eq!(
+      out.images,
+      vec!["https://example.com/base/live.png".to_string()]
+    );
     assert_eq!(
       out.documents,
       vec!["https://example.com/base/live.html".to_string()]

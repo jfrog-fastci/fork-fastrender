@@ -226,7 +226,10 @@ pub fn run_update_pageset_guardrails(mut args: UpdatePagesetGuardrailsArgs) -> R
   let selected = select_pages(&progress, count, args.strategy);
   let failing_pages = progress.iter().filter(|e| e.status.is_failure()).count();
   if failing_pages > count {
-    let ok_pages = selected.iter().filter(|e| e.status == ProgressStatus::Ok).count();
+    let ok_pages = selected
+      .iter()
+      .filter(|e| e.status == ProgressStatus::Ok)
+      .count();
     eprintln!(
       "Warning: progress contains {failing_pages} failing page(s) (timeout/panic/error), which exceeds \
 requested --count={count}. The manifest will include all failures and {ok_pages} ok page(s) \
@@ -412,8 +415,10 @@ fn capture_missing(missing: &[MissingFixture], args: &UpdatePagesetGuardrailsArg
       }
       FixtureCaptureMode::Cache => {
         bundle_cmd.args(["cache", &entry.name]);
-        bundle_cmd
-          .args(["--cache-dir", args.asset_cache_dir.to_string_lossy().as_ref()]);
+        bundle_cmd.args([
+          "--cache-dir",
+          args.asset_cache_dir.to_string_lossy().as_ref(),
+        ]);
         if args.allow_missing_resources {
           bundle_cmd.arg("--allow-missing");
         }
@@ -497,8 +502,12 @@ fn missing_fixtures(
 }
 
 fn load_manifest(path: &Path) -> Result<PagesetGuardrailsManifest> {
-  let data = fs::read_to_string(path)
-    .with_context(|| format!("failed to read pageset guardrails manifest {}", path.display()))?;
+  let data = fs::read_to_string(path).with_context(|| {
+    format!(
+      "failed to read pageset guardrails manifest {}",
+      path.display()
+    )
+  })?;
   serde_json::from_str(&data).with_context(|| format!("invalid JSON in {}", path.display()))
 }
 
@@ -643,9 +652,7 @@ fn select_pages_coverage(entries: &[ProgressEntry], count: usize) -> Vec<Progres
       hotspot_categories_present.insert(HotspotCategory::from_hotspot(entry.hotspot.as_deref()));
     }
     let desired_ok_slots = hotspot_categories_present.len();
-    desired_ok_slots
-      .max(ok_page_reserve(count))
-      .min(ok.len())
+    desired_ok_slots.max(ok_page_reserve(count)).min(ok.len())
   };
 
   if ok_slots == 0 {
@@ -851,7 +858,10 @@ mod tests {
 
     let reparsed: serde_json::Value =
       serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
-    assert_eq!(reparsed.get("extra_root_field"), Some(&json!({ "answer": 42 })));
+    assert_eq!(
+      reparsed.get("extra_root_field"),
+      Some(&json!({ "answer": 42 }))
+    );
   }
 
   fn mk_entry(
@@ -872,24 +882,9 @@ mod tests {
   #[test]
   fn coverage_strategy_includes_ok_pages_even_when_failures_exceed_count() {
     let entries = vec![
-      mk_entry(
-        "timeout-layout",
-        ProgressStatus::Timeout,
-        5000.0,
-        None,
-      ),
-      mk_entry(
-        "timeout-css",
-        ProgressStatus::Timeout,
-        5000.0,
-        None,
-      ),
-      mk_entry(
-        "slow-ok-paint",
-        ProgressStatus::Ok,
-        4500.0,
-        Some("paint"),
-      ),
+      mk_entry("timeout-layout", ProgressStatus::Timeout, 5000.0, None),
+      mk_entry("timeout-css", ProgressStatus::Timeout, 5000.0, None),
+      mk_entry("slow-ok-paint", ProgressStatus::Ok, 4500.0, Some("paint")),
       mk_entry("slow-ok-css", ProgressStatus::Ok, 4400.0, Some("css")),
     ];
 
@@ -899,31 +894,21 @@ mod tests {
     let names: Vec<&str> = selected.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(
       names,
-      vec!["timeout-css", "timeout-layout", "slow-ok-paint", "slow-ok-css"]
+      vec![
+        "timeout-css",
+        "timeout-layout",
+        "slow-ok-paint",
+        "slow-ok-css"
+      ]
     );
   }
 
   #[test]
   fn coverage_strategy_is_deterministic() {
     let entries = vec![
-      mk_entry(
-        "timeout-layout",
-        ProgressStatus::Timeout,
-        5000.0,
-        None,
-      ),
-      mk_entry(
-        "timeout-css",
-        ProgressStatus::Timeout,
-        5000.0,
-        None,
-      ),
-      mk_entry(
-        "slow-ok-paint",
-        ProgressStatus::Ok,
-        4500.0,
-        Some("paint"),
-      ),
+      mk_entry("timeout-layout", ProgressStatus::Timeout, 5000.0, None),
+      mk_entry("timeout-css", ProgressStatus::Timeout, 5000.0, None),
+      mk_entry("slow-ok-paint", ProgressStatus::Ok, 4500.0, Some("paint")),
       mk_entry("slow-ok-css", ProgressStatus::Ok, 4400.0, Some("css")),
     ];
 
@@ -1100,4 +1085,4 @@ mod tests {
       mismatches.join("\n")
     );
   }
-} 
+}

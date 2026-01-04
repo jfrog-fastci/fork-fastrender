@@ -21,8 +21,8 @@ fn get_pixel(pixmap: &Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
 
 #[test]
 fn dom_compatibility_lifts_lazy_loaded_images_at_render_time() {
-  let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-    .join("tests/pages/fixtures/dom_compat_lazy_load");
+  let fixture_dir =
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/pages/fixtures/dom_compat_lazy_load");
   let html_path = fixture_dir.join("index.html");
   let html = fs::read_to_string(&html_path).expect("read fixture HTML");
 

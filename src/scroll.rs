@@ -1497,7 +1497,10 @@ mod tests {
     assert_eq!(container.viewport, Size::new(120.0, 100.0));
     assert_eq!(container.padding_x, (5.0, 2.0));
     assert_eq!(container.padding_y, (1.0, 4.0));
-    assert_eq!(container.scroll_bounds, Rect::from_xywh(0.0, 0.0, 15.0, 15.0));
+    assert_eq!(
+      container.scroll_bounds,
+      Rect::from_xywh(0.0, 0.0, 15.0, 15.0)
+    );
     assert_eq!(container.targets_x.len(), 1);
     assert_eq!(container.targets_y.len(), 1);
   }

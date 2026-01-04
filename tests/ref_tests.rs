@@ -45,8 +45,10 @@ struct EnvVarGuard<'a> {
 impl<'a> EnvVarGuard<'a> {
   fn new(keys: &[&'static str]) -> Self {
     let lock = ENV_MUTEX.lock().expect("env mutex poisoned");
-    let saved: Vec<(&'static str, Option<OsString>)> =
-      keys.iter().map(|&key| (key, std::env::var_os(key))).collect();
+    let saved: Vec<(&'static str, Option<OsString>)> = keys
+      .iter()
+      .map(|&key| (key, std::env::var_os(key)))
+      .collect();
     for &key in keys {
       std::env::remove_var(key);
     }
@@ -283,13 +285,17 @@ fn compare_config_from_env_supports_fixture_ignore_alpha_and_perceptual_distance
   std::env::remove_var("FIXTURE_IGNORE_ALPHA");
   std::env::set_var("FIXTURE_MAX_PERCEPTUAL_DISTANCE", "0.123");
   let config = compare_config_from_env(CompareEnvVars::fixtures()).expect("config");
-  let parsed = config.max_perceptual_distance.expect("max perceptual distance");
+  let parsed = config
+    .max_perceptual_distance
+    .expect("max perceptual distance");
   assert!((parsed - 0.123).abs() < 1e-12);
 
   std::env::set_var("FIXTURE_FUZZY", "1");
   std::env::set_var("FIXTURE_MAX_PERCEPTUAL_DISTANCE", "0.01");
   let config = compare_config_from_env(CompareEnvVars::fixtures()).expect("config");
-  let parsed = config.max_perceptual_distance.expect("max perceptual distance");
+  let parsed = config
+    .max_perceptual_distance
+    .expect("max perceptual distance");
   assert!((parsed - 0.01).abs() < 1e-12);
   assert!(!config.compare_alpha);
 }
@@ -312,7 +318,9 @@ fn compare_config_from_env_supports_pages_ignore_alpha_and_perceptual_distance()
   std::env::set_var("PAGES_MAX_PERCEPTUAL_DISTANCE", "0.2");
   let config = compare_config_from_env(CompareEnvVars::pages()).expect("config");
   assert!(!config.compare_alpha);
-  let parsed = config.max_perceptual_distance.expect("max perceptual distance");
+  let parsed = config
+    .max_perceptual_distance
+    .expect("max perceptual distance");
   assert!((parsed - 0.2).abs() < 1e-12);
 }
 

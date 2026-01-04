@@ -46,8 +46,13 @@ impl From<Rgba> for BackgroundKey {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum IframeRenderCacheContent {
-  Src { url: String },
-  Srcdoc { html_hash: u64, base_url: Option<String> },
+  Src {
+    url: String,
+  },
+  Srcdoc {
+    html_hash: u64,
+    base_url: Option<String>,
+  },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -118,10 +123,7 @@ impl IframeInFlight {
           .unwrap_or_else(|e| e.into_inner())
           .0;
       } else {
-        guard = self
-          .cv
-          .wait(guard)
-          .unwrap_or_else(|e| e.into_inner());
+        guard = self.cv.wait(guard).unwrap_or_else(|e| e.into_inner());
       }
     }
     guard.as_ref()?.as_option()
@@ -162,9 +164,7 @@ impl IframeRenderCache {
     }
 
     let flight = Arc::new(IframeInFlight::new());
-    self
-      .in_flight
-      .insert(key.clone(), Arc::clone(&flight));
+    self.in_flight.insert(key.clone(), Arc::clone(&flight));
     (flight, true)
   }
 
@@ -177,7 +177,9 @@ impl IframeRenderCache {
     if let Some(entry) = self.inner.pop(&key) {
       self.current_bytes = self.current_bytes.saturating_sub(entry.bytes);
     }
-    self.inner.put(key, CachedIframeRenderEntry { image, bytes });
+    self
+      .inner
+      .put(key, CachedIframeRenderEntry { image, bytes });
     self.current_bytes = self.current_bytes.saturating_add(bytes);
     self.evict_if_needed();
   }
@@ -213,14 +215,18 @@ fn finish_iframe_inflight(
 ) {
   match result {
     Some(image) => {
-      let mut cache = iframe_render_cache().lock().unwrap_or_else(|e| e.into_inner());
+      let mut cache = iframe_render_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
       cache.in_flight.remove(&key);
       cache.insert(key, Arc::clone(&image));
       drop(cache);
       flight.set(SharedIframeResult::Success(image));
     }
     None => {
-      let mut cache = iframe_render_cache().lock().unwrap_or_else(|e| e.into_inner());
+      let mut cache = iframe_render_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
       cache.in_flight.remove(&key);
       drop(cache);
       flight.set(SharedIframeResult::None);
@@ -272,7 +278,10 @@ fn is_about_blank(url: &str) -> bool {
   if !head.eq_ignore_ascii_case(PREFIX) {
     return false;
   }
-  matches!(url.as_bytes().get(PREFIX.len()), None | Some(b'#') | Some(b'?'))
+  matches!(
+    url.as_bytes().get(PREFIX.len()),
+    None | Some(b'#') | Some(b'?')
+  )
 }
 
 fn policy_fingerprint(policy: &ResourceAccessPolicy) -> u64 {
@@ -283,7 +292,11 @@ fn policy_fingerprint(policy: &ResourceAccessPolicy) -> u64 {
   policy.allow_file_from_http.hash(&mut hasher);
   policy.block_mixed_content.hash(&mut hasher);
   policy.same_origin_only.hash(&mut hasher);
-  let mut allowed: Vec<String> = policy.allowed_origins.iter().map(ToString::to_string).collect();
+  let mut allowed: Vec<String> = policy
+    .allowed_origins
+    .iter()
+    .map(ToString::to_string)
+    .collect();
   allowed.sort();
   allowed.hash(&mut hasher);
   hasher.finish()
@@ -441,7 +454,9 @@ pub(crate) fn render_iframe_srcdoc(
   };
 
   let (flight, is_owner) = {
-    let mut cache = iframe_render_cache().lock().unwrap_or_else(|e| e.into_inner());
+    let mut cache = iframe_render_cache()
+      .lock()
+      .unwrap_or_else(|e| e.into_inner());
     if let Some(image) = cache.get(&key) {
       #[cfg(test)]
       record_iframe_cache_hit(true);
@@ -564,7 +579,9 @@ pub(crate) fn render_iframe_src(
 
   let key = IframeRenderCacheKey {
     image_cache_id: image_cache.instance_id(),
-    content: IframeRenderCacheContent::Src { url: resolved.clone() },
+    content: IframeRenderCacheContent::Src {
+      url: resolved.clone(),
+    },
     css_width: width,
     css_height: height,
     device_pixel_ratio_bits: device_pixel_ratio.to_bits(),
@@ -573,7 +590,9 @@ pub(crate) fn render_iframe_src(
     policy_hash: policy_fingerprint(&policy),
   };
   let (flight, is_owner) = {
-    let mut cache = iframe_render_cache().lock().unwrap_or_else(|e| e.into_inner());
+    let mut cache = iframe_render_cache()
+      .lock()
+      .unwrap_or_else(|e| e.into_inner());
     if let Some(image) = cache.get(&key) {
       #[cfg(test)]
       record_iframe_cache_hit(true);
@@ -667,7 +686,9 @@ pub(crate) fn render_iframe_src(
   cache.set_base_url(final_url.clone());
   let nested_origin = origin_from_url(&final_url);
   let nested_context = context.as_ref().map(|ctx| {
-    let mut nested = ctx.for_origin(nested_origin).with_iframe_depth(nested_depth);
+    let mut nested = ctx
+      .for_origin(nested_origin)
+      .with_iframe_depth(nested_depth);
     nested.document_url = resource
       .final_url
       .as_deref()
@@ -711,13 +732,13 @@ mod tests {
   use crate::resource::FetchedResource;
   use crate::resource::ResourceFetcher;
   use std::io;
-  use std::sync::Mutex as StdMutex;
   use std::sync::atomic::{AtomicUsize, Ordering};
+  use std::sync::Mutex as StdMutex;
   use std::sync::{Arc, Barrier};
- 
+
   #[derive(Clone, Default)]
   struct RejectingFetcher;
- 
+
   impl ResourceFetcher for RejectingFetcher {
     fn fetch(&self, url: &str) -> crate::error::Result<FetchedResource> {
       Err(Error::Io(io::Error::new(
@@ -800,35 +821,17 @@ mod tests {
       <style>html, body { margin: 0; padding: 0; background: rgb(0, 255, 0); }</style>
       <div data-fastr-test="iframe-render-cache-113"></div>
     "#;
- 
-    let first = render_iframe_srcdoc(
-      html,
-      None,
-      rect,
-      None,
-      &image_cache,
-      &font_ctx,
-      1.0,
-      3,
-    )
-    .expect("first iframe render");
+
+    let first = render_iframe_srcdoc(html, None, rect, None, &image_cache, &font_ctx, 1.0, 3)
+      .expect("first iframe render");
     assert_eq!(
       take_last_iframe_cache_hit(),
       Some(false),
       "first render should miss cache"
     );
- 
-    let second = render_iframe_srcdoc(
-      html,
-      None,
-      rect,
-      None,
-      &image_cache,
-      &font_ctx,
-      1.0,
-      3,
-    )
-    .expect("second iframe render");
+
+    let second = render_iframe_srcdoc(html, None, rect, None, &image_cache, &font_ctx, 1.0, 3)
+      .expect("second iframe render");
     assert_eq!(
       take_last_iframe_cache_hit(),
       Some(true),
@@ -856,32 +859,16 @@ mod tests {
     let image_cache = ImageCache::with_fetcher(fetcher.clone());
     let rect = Rect::from_xywh(0.0, 0.0, 16.0, 16.0);
 
-    let first = render_iframe_src(
-      url,
-      rect,
-      None,
-      &image_cache,
-      &font_ctx,
-      1.0,
-      3,
-    )
-    .expect("first iframe src render");
+    let first = render_iframe_src(url, rect, None, &image_cache, &font_ctx, 1.0, 3)
+      .expect("first iframe src render");
     assert_eq!(
       take_last_iframe_cache_hit(),
       Some(false),
       "first render should miss cache"
     );
 
-    let second = render_iframe_src(
-      url,
-      rect,
-      None,
-      &image_cache,
-      &font_ctx,
-      1.0,
-      3,
-    )
-    .expect("second iframe src render");
+    let second = render_iframe_src(url, rect, None, &image_cache, &font_ctx, 1.0, 3)
+      .expect("second iframe src render");
     assert_eq!(
       take_last_iframe_cache_hit(),
       Some(true),
@@ -951,16 +938,8 @@ mod tests {
     let image_cache = ImageCache::with_fetcher(fetcher.clone());
     let rect = Rect::from_xywh(0.0, 0.0, 16.0, 16.0);
 
-    render_iframe_src(
-      requested_url,
-      rect,
-      None,
-      &image_cache,
-      &font_ctx,
-      1.0,
-      3,
-    )
-    .expect("iframe src render should succeed");
+    render_iframe_src(requested_url, rect, None, &image_cache, &font_ctx, 1.0, 3)
+      .expect("iframe src render should succeed");
 
     let urls = fetcher
       .requests
@@ -1065,7 +1044,7 @@ mod tests {
 #[cfg(test)]
 mod diagnostics_tests {
   use super::*;
-  use crate::api::{SharedRenderDiagnostics, ResourceContext, ResourceKind};
+  use crate::api::{ResourceContext, ResourceKind, SharedRenderDiagnostics};
   use crate::error::{Error, ResourceError, Result};
   use crate::geometry::{Point, Size};
   use crate::resource::{FetchedResource, ResourceFetcher};
@@ -1097,7 +1076,10 @@ mod diagnostics_tests {
     FontContext::with_database(Arc::new(FontDatabase::empty()))
   }
 
-  fn test_image_cache(fetcher: Arc<dyn ResourceFetcher>, diagnostics: SharedRenderDiagnostics) -> ImageCache {
+  fn test_image_cache(
+    fetcher: Arc<dyn ResourceFetcher>,
+    diagnostics: SharedRenderDiagnostics,
+  ) -> ImageCache {
     let mut cache = ImageCache::with_fetcher(fetcher);
     cache.set_resource_context(Some(ResourceContext {
       diagnostics: Some(diagnostics),
@@ -1132,15 +1114,7 @@ mod diagnostics_tests {
     let cache = test_image_cache(fetcher, diagnostics.clone());
     let rect = Rect::new(Point::ZERO, Size::new(10.0, 10.0));
 
-    let result = render_iframe_src(
-      "/bad",
-      rect,
-      None,
-      &cache,
-      &test_font_context(),
-      1.0,
-      1,
-    );
+    let result = render_iframe_src("/bad", rect, None, &cache, &test_font_context(), 1.0, 1);
     assert!(result.is_none());
 
     let diag = diagnostics.into_inner();
@@ -1157,22 +1131,15 @@ mod diagnostics_tests {
   fn iframe_http_error_status_records_diagnostics() {
     let diagnostics = SharedRenderDiagnostics::new();
     let fetcher = Arc::new(MockFetcher::new(|_url| {
-      let mut resource = FetchedResource::new(b"<html></html>".to_vec(), Some("text/html".to_string()));
+      let mut resource =
+        FetchedResource::new(b"<html></html>".to_vec(), Some("text/html".to_string()));
       resource.status = Some(403);
       Ok(resource)
     }));
     let cache = test_image_cache(fetcher, diagnostics.clone());
     let rect = Rect::new(Point::ZERO, Size::new(10.0, 10.0));
 
-    let result = render_iframe_src(
-      "/bad",
-      rect,
-      None,
-      &cache,
-      &test_font_context(),
-      1.0,
-      1,
-    );
+    let result = render_iframe_src("/bad", rect, None, &cache, &test_font_context(), 1.0, 1);
     assert!(result.is_none());
 
     let diag = diagnostics.into_inner();
@@ -1216,15 +1183,7 @@ mod diagnostics_tests {
     let cache = test_image_cache(fetcher, diagnostics.clone());
     let rect = Rect::new(Point::ZERO, Size::new(10.0, 10.0));
 
-    let result = render_iframe_src(
-      "   ",
-      rect,
-      None,
-      &cache,
-      &test_font_context(),
-      1.0,
-      1,
-    );
+    let result = render_iframe_src("   ", rect, None, &cache, &test_font_context(), 1.0, 1);
     assert!(result.is_none());
 
     let diag = diagnostics.into_inner();
@@ -1287,7 +1246,9 @@ mod diagnostics_tests {
     let diag = diagnostics.into_inner();
     assert!(
       diag.fetch_errors.iter().any(|e| {
-        e.kind == ResourceKind::Document && e.url == "about:srcdoc" && e.message == IFRAME_NESTING_LIMIT_MESSAGE
+        e.kind == ResourceKind::Document
+          && e.url == "about:srcdoc"
+          && e.message == IFRAME_NESTING_LIMIT_MESSAGE
       }),
       "expected about:srcdoc nesting violation, got {diag:?}"
     );

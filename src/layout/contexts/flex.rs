@@ -3351,7 +3351,10 @@ fn measure_cache_key_and_snap(
   }
 
   (
-    (Some(f32_to_canonical_bits(width)), height.map(f32_to_canonical_bits)),
+    (
+      Some(f32_to_canonical_bits(width)),
+      height.map(f32_to_canonical_bits),
+    ),
     snapped_known,
     snapped_avail,
   )
@@ -8926,15 +8929,15 @@ mod tests {
 
     let container = BoxNode::new_block(create_flex_style(), FormattingContextType::Flex, children);
 
-    let sequential_fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+    let sequential_fc =
+      FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
     let expected_bits = sequential_fc
       .compute_intrinsic_inline_size(&container, IntrinsicSizingMode::MaxContent)
       .expect("sequential intrinsic sizing")
       .to_bits();
 
-    let parallel_fc = FlexFormattingContext::new().with_parallelism(
-      LayoutParallelism::enabled(1).with_max_threads(Some(4)),
-    );
+    let parallel_fc = FlexFormattingContext::new()
+      .with_parallelism(LayoutParallelism::enabled(1).with_max_threads(Some(4)));
     assert!(
       parallel_fc
         .parallelism

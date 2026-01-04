@@ -163,7 +163,10 @@ static ACTIVE_TOGGLES_EPOCH: AtomicUsize = AtomicUsize::new(0);
 #[derive(Clone)]
 enum ThreadToggleState {
   Override(Arc<RuntimeToggles>),
-  Cached { epoch: usize, toggles: Arc<RuntimeToggles> },
+  Cached {
+    epoch: usize,
+    toggles: Arc<RuntimeToggles>,
+  },
 }
 thread_local! {
   static THREAD_TOGGLES: RefCell<Option<ThreadToggleState>> = RefCell::new(None);
@@ -205,7 +208,10 @@ pub fn runtime_toggles() -> Arc<RuntimeToggles> {
       continue;
     }
     THREAD_TOGGLES.with(|cell| {
-      *cell.borrow_mut() = Some(ThreadToggleState::Cached { epoch, toggles: toggles.clone() });
+      *cell.borrow_mut() = Some(ThreadToggleState::Cached {
+        epoch,
+        toggles: toggles.clone(),
+      });
     });
     return toggles;
   }

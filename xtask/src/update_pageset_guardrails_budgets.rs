@@ -213,8 +213,12 @@ pub fn run_update_pageset_guardrails_budgets(
 }
 
 fn load_manifest(path: &Path) -> Result<PagesetGuardrailsManifest> {
-  let raw = fs::read_to_string(path)
-    .with_context(|| format!("failed to read pageset guardrails manifest {}", path.display()))?;
+  let raw = fs::read_to_string(path).with_context(|| {
+    format!(
+      "failed to read pageset guardrails manifest {}",
+      path.display()
+    )
+  })?;
   serde_json::from_str(&raw).with_context(|| format!("invalid JSON in {}", path.display()))
 }
 
@@ -228,7 +232,10 @@ fn run_perf_smoke(
   let mut cmd = Command::new("cargo");
   cmd.env("FASTR_USE_BUNDLED_FONTS", "1");
   // Ensure we always exercise the same manifest, even if the caller has env vars set.
-  cmd.env("FASTR_PERF_SMOKE_PAGESET_GUARDRAILS_MANIFEST", &args.manifest);
+  cmd.env(
+    "FASTR_PERF_SMOKE_PAGESET_GUARDRAILS_MANIFEST",
+    &args.manifest,
+  );
   cmd.env("FASTR_PERF_SMOKE_PAGESET_TIMEOUT_MANIFEST", &args.manifest);
   cmd
     .arg("run")

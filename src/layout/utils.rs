@@ -5,12 +5,12 @@
 use crate::geometry::Size;
 use crate::style::computed::PositionedStyle;
 use crate::style::types::BoxSizing;
+use crate::style::types::ContainIntrinsicSizeAxis;
 use crate::style::types::FontStyle as CssFontStyle;
 use crate::style::types::ScrollbarWidth;
 use crate::style::values::Length;
 use crate::style::values::LengthOrAuto;
 use crate::style::values::LengthUnit;
-use crate::style::types::ContainIntrinsicSizeAxis;
 use crate::style::ComputedStyle;
 use crate::text::font_db::FontStretch;
 use crate::text::font_db::FontStyle as FontFaceStyle;
@@ -1008,15 +1008,15 @@ mod tests {
   fn replaced_max_height_scales_width_with_ratio() {
     let mut style = ComputedStyle::default();
     style.max_height = Some(Length::px(40.0));
-      let replaced = ReplacedBox {
-        replaced_type: crate::tree::box_tree::ReplacedType::Image {
-          src: "img".into(),
-          alt: None,
-          crossorigin: CrossOriginAttribute::None,
-          sizes: None,
-          srcset: Vec::new(),
-          picture_sources: Vec::new(),
-        },
+    let replaced = ReplacedBox {
+      replaced_type: crate::tree::box_tree::ReplacedType::Image {
+        src: "img".into(),
+        alt: None,
+        crossorigin: CrossOriginAttribute::None,
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+      },
       intrinsic_size: Some(Size::new(100.0, 50.0)),
       aspect_ratio: Some(2.0),
     };

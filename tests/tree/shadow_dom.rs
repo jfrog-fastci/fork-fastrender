@@ -607,7 +607,9 @@ fn slot_assignment_times_out_under_expired_deadline() {
   let ids = enumerate_dom_ids(&dom);
 
   let deadline = RenderDeadline::new(Some(Duration::from_millis(0)), None);
-  let result = with_deadline(Some(&deadline), || compute_slot_assignment_with_ids(&dom, &ids));
+  let result = with_deadline(Some(&deadline), || {
+    compute_slot_assignment_with_ids(&dom, &ids)
+  });
   let err = result.expect_err("expected slot assignment timeout");
   match err {
     Error::Render(RenderError::Timeout { stage, .. }) => assert_eq!(stage, RenderStage::Cascade),

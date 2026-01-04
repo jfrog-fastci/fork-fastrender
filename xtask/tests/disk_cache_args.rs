@@ -37,4 +37,3 @@ fn does_not_forward_non_prefixed_flags() {
 
   assert!(extract_disk_cache_args(&extra).is_empty());
 }
-

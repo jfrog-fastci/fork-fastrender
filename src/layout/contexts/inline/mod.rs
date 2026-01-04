@@ -3133,8 +3133,12 @@ impl InlineFormattingContext {
       style.word_spacing,
     );
 
-    let metrics =
-      TextItem::metrics_from_runs(&self.font_context, &shaped_runs, line_height, style.font_size);
+    let metrics = TextItem::metrics_from_runs(
+      &self.font_context,
+      &shaped_runs,
+      line_height,
+      style.font_size,
+    );
 
     // Find break opportunities and filter based on white-space handling
     let base_breaks = find_break_opportunities(&hyphen_free);
@@ -3909,7 +3913,12 @@ impl InlineFormattingContext {
         let used_font_size = compute_adjusted_font_size(style, &font, preferred_aspect);
         let authored = crate::text::variations::authored_variations_from_style(style);
         let variations = crate::text::face_cache::with_face(&font, |face| {
-          crate::text::variations::collect_variations_for_face(face, style, used_font_size, &authored)
+          crate::text::variations::collect_variations_for_face(
+            face,
+            style,
+            used_font_size,
+            &authored,
+          )
         })
         .unwrap_or_else(|| authored.clone());
         self
@@ -5020,7 +5029,11 @@ impl InlineFormattingContext {
             box_item.metrics.height,
             box_item.width(),
           );
-          record_containing_block(bounds, parent_offset_in_line, &mut positioned_containing_blocks);
+          record_containing_block(
+            bounds,
+            parent_offset_in_line,
+            &mut positioned_containing_blocks,
+          );
           let box_id = (box_item.box_id != 0).then_some(box_item.box_id);
           FragmentNode::new_with_style(
             bounds,
@@ -5056,7 +5069,11 @@ impl InlineFormattingContext {
             box_item.width(),
             box_item.metrics.height,
           );
-          record_containing_block(bounds, parent_offset_in_line, &mut positioned_containing_blocks);
+          record_containing_block(
+            bounds,
+            parent_offset_in_line,
+            &mut positioned_containing_blocks,
+          );
           let box_id = (box_item.box_id != 0).then_some(box_item.box_id);
           FragmentNode::new_with_style(
             bounds,
@@ -7545,8 +7562,12 @@ impl InlineFormattingContext {
       margin_left + box_width + margin_right,
       margin_top + border_box_height + margin_bottom,
     );
-    let border_box =
-      Rect::from_xywh(fx + margin_left, fy + margin_top, box_width, border_box_height);
+    let border_box = Rect::from_xywh(
+      fx + margin_left,
+      fy + margin_top,
+      box_width,
+      border_box_height,
+    );
     let shape = build_float_shape(
       &float_node.style,
       margin_box,
@@ -7711,7 +7732,9 @@ impl InlineFormattingContext {
       return Ok(lines);
     }
 
-    let Some(marker) = self.build_overflow_marker_item(&ellipsis, style, last_line.resolved_direction)? else {
+    let Some(marker) =
+      self.build_overflow_marker_item(&ellipsis, style, last_line.resolved_direction)?
+    else {
       return Ok(lines);
     };
     let mut items: Vec<InlineItem> = last_line.items.iter().map(|p| p.item.clone()).collect();
@@ -8304,9 +8327,9 @@ impl InlineFormattingContext {
       if value == 0 {
         return None;
       }
-        match style.line_clamp_source {
-          LineClampSource::Standard => Some(value),
-          LineClampSource::Webkit => {
+      match style.line_clamp_source {
+        LineClampSource::Standard => Some(value),
+        LineClampSource::Webkit => {
           if style.display_is_webkit_box
             && matches!(style.webkit_box_orient, WebkitBoxOrient::Vertical)
           {
@@ -9755,16 +9778,16 @@ fn compute_paragraph_line_flags(lines: &[Line]) -> Vec<(bool, bool)> {
 fn determine_paragraph_direction(items: &[InlineItem]) -> Option<crate::style::types::Direction> {
   const OBJECT_REPLACEMENT: char = '\u{FFFC}';
 
-    fn collect_text(item: &InlineItem, out: &mut String) {
-      match item {
-        InlineItem::Text(t) => out.push_str(&t.text),
-        InlineItem::Tab(_) => out.push('\t'),
-        InlineItem::HardBreak => out.push('\n'),
-        InlineItem::InlineBox(b) => {
-          for child in &b.children {
-            collect_text(child, out);
-          }
+  fn collect_text(item: &InlineItem, out: &mut String) {
+    match item {
+      InlineItem::Text(t) => out.push_str(&t.text),
+      InlineItem::Tab(_) => out.push('\t'),
+      InlineItem::HardBreak => out.push('\n'),
+      InlineItem::InlineBox(b) => {
+        for child in &b.children {
+          collect_text(child, out);
         }
+      }
       InlineItem::Ruby(r) => {
         for seg in &r.segments {
           for child in &seg.base_items {
@@ -10407,7 +10430,6 @@ mod tests {
   use crate::style::types::ListStylePosition;
   use crate::style::types::Overflow;
   use crate::style::types::OverflowWrap;
-  use crate::style::types::WebkitBoxOrient;
   use crate::style::types::TextAlign;
   use crate::style::types::TextAlignLast;
   use crate::style::types::TextCombineUpright;
@@ -10416,6 +10438,7 @@ mod tests {
   use crate::style::types::TextOverflowSide;
   use crate::style::types::TextTransform;
   use crate::style::types::TextWrap;
+  use crate::style::types::WebkitBoxOrient;
   use crate::style::types::WhiteSpace;
   use crate::style::types::WordBreak;
   use crate::style::types::WritingMode;
@@ -11701,11 +11724,7 @@ mod tests {
         .break_opportunities
         .iter()
         .all(|b| matches!(b.break_type, BreakType::Mandatory)));
-      let glyphs: Vec<_> = text
-        .runs
-        .iter()
-        .flat_map(|run| run.glyphs.iter())
-        .collect();
+      let glyphs: Vec<_> = text.runs.iter().flat_map(|run| run.glyphs.iter()).collect();
       assert!(
         glyphs.iter().any(|g| g.x_advance.abs() > 0.01),
         "combined run should advance horizontally within the vertical cell"
@@ -12778,8 +12797,7 @@ mod tests {
     ] {
       let data = std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(font))
         .expect("fixture font should load");
-      db.load_font_data(data)
-        .expect("fixture font should parse");
+      db.load_font_data(data).expect("fixture font should parse");
     }
     db.refresh_generic_fallbacks();
     let font_ctx = FontContext::with_database(Arc::new(db));
@@ -14734,25 +14752,26 @@ mod tests {
         );
 
     let strut = ifc.compute_strut_metrics(&container_style);
-    let lines = ifc.layout_segment_lines(
-      inline_items,
-      true,
-      200.0,
-      200.0,
-      ComputedStyle::default().text_wrap,
-      0.0,
-      false,
-      false,
-      &strut,
-      None,
-      crate::style::types::Direction::Ltr,
-      crate::style::types::UnicodeBidi::Plaintext,
-      None,
-      0.0,
-      None,
-    )
-    .unwrap()
-    .lines;
+    let lines = ifc
+      .layout_segment_lines(
+        inline_items,
+        true,
+        200.0,
+        200.0,
+        ComputedStyle::default().text_wrap,
+        0.0,
+        false,
+        false,
+        &strut,
+        None,
+        crate::style::types::Direction::Ltr,
+        crate::style::types::UnicodeBidi::Plaintext,
+        None,
+        0.0,
+        None,
+      )
+      .unwrap()
+      .lines;
     assert_eq!(lines.len(), 2, "mandatory breaks should split lines");
     assert_eq!(
       lines[0].resolved_direction,
@@ -15773,47 +15792,49 @@ mod tests {
       .expect("inline items");
     let strut = ifc.compute_strut_metrics(&style);
 
-    let balanced = ifc.layout_segment_lines(
-      items.clone(),
-      true,
-      200.0,
-      200.0,
-      style.text_wrap,
-      0.0,
-      false,
-      false,
-      &strut,
-      Some(unicode_bidi::Level::ltr()),
-      style.direction,
-      style.unicode_bidi,
-      None,
-      0.0,
-      None,
-    )
-    .unwrap()
-    .lines;
+    let balanced = ifc
+      .layout_segment_lines(
+        items.clone(),
+        true,
+        200.0,
+        200.0,
+        style.text_wrap,
+        0.0,
+        false,
+        false,
+        &strut,
+        Some(unicode_bidi::Level::ltr()),
+        style.direction,
+        style.unicode_bidi,
+        None,
+        0.0,
+        None,
+      )
+      .unwrap()
+      .lines;
 
     let mut auto_style = style.clone();
     auto_style.text_wrap = TextWrap::Auto;
-    let auto = ifc.layout_segment_lines(
-      items,
-      true,
-      200.0,
-      200.0,
-      auto_style.text_wrap,
-      0.0,
-      false,
-      false,
-      &strut,
-      Some(unicode_bidi::Level::ltr()),
-      auto_style.direction,
-      auto_style.unicode_bidi,
-      None,
-      0.0,
-      None,
-    )
-    .unwrap()
-    .lines;
+    let auto = ifc
+      .layout_segment_lines(
+        items,
+        true,
+        200.0,
+        200.0,
+        auto_style.text_wrap,
+        0.0,
+        false,
+        false,
+        &strut,
+        Some(unicode_bidi::Level::ltr()),
+        auto_style.direction,
+        auto_style.unicode_bidi,
+        None,
+        0.0,
+        None,
+      )
+      .unwrap()
+      .lines;
 
     assert_eq!(balanced.len(), auto.len());
     let balanced_score = balance_score(&balanced, 1.5, 1.0);
@@ -15840,25 +15861,26 @@ mod tests {
       .expect("cjk items");
     let strut = ifc.compute_strut_metrics(&style);
 
-    let balanced = ifc.layout_segment_lines(
-      items,
-      true,
-      120.0,
-      120.0,
-      style.text_wrap,
-      0.0,
-      false,
-      false,
-      &strut,
-      Some(unicode_bidi::Level::ltr()),
-      style.direction,
-      style.unicode_bidi,
-      None,
-      0.0,
-      None,
-    )
-    .unwrap()
-    .lines;
+    let balanced = ifc
+      .layout_segment_lines(
+        items,
+        true,
+        120.0,
+        120.0,
+        style.text_wrap,
+        0.0,
+        false,
+        false,
+        &strut,
+        Some(unicode_bidi::Level::ltr()),
+        style.direction,
+        style.unicode_bidi,
+        None,
+        0.0,
+        None,
+      )
+      .unwrap()
+      .lines;
     assert!(balanced.len() > 1, "should wrap CJK text");
     let texts = line_texts(&balanced);
     let min_len = texts.iter().map(|t| t.chars().count()).min().unwrap();
@@ -15936,25 +15958,26 @@ mod tests {
     let items = ifc
       .create_inline_items_for_text(&node, text, false)
       .expect("hyphen items");
-    let lines = ifc.layout_segment_lines(
-      items,
-      true,
-      width,
-      width,
-      style.text_wrap,
-      0.0,
-      false,
-      false,
-      &strut,
-      Some(unicode_bidi::Level::ltr()),
-      style.direction,
-      style.unicode_bidi,
-      None,
-      0.0,
-      None,
-    )
-    .unwrap()
-    .lines;
+    let lines = ifc
+      .layout_segment_lines(
+        items,
+        true,
+        width,
+        width,
+        style.text_wrap,
+        0.0,
+        false,
+        false,
+        &strut,
+        Some(unicode_bidi::Level::ltr()),
+        style.direction,
+        style.unicode_bidi,
+        None,
+        0.0,
+        None,
+      )
+      .unwrap()
+      .lines;
 
     assert!(
       lines.iter().any(|line| {
@@ -15972,25 +15995,26 @@ mod tests {
     let manual_items = ifc
       .create_inline_items_for_text(&manual_node, text, false)
       .expect("manual items");
-    let manual_lines = ifc.layout_segment_lines(
-      manual_items,
-      true,
-      width,
-      width,
-      manual.text_wrap,
-      0.0,
-      false,
-      false,
-      &strut,
-      Some(unicode_bidi::Level::ltr()),
-      manual.direction,
-      manual.unicode_bidi,
-      None,
-      0.0,
-      None,
-    )
-    .unwrap()
-    .lines;
+    let manual_lines = ifc
+      .layout_segment_lines(
+        manual_items,
+        true,
+        width,
+        width,
+        manual.text_wrap,
+        0.0,
+        false,
+        false,
+        &strut,
+        Some(unicode_bidi::Level::ltr()),
+        manual.direction,
+        manual.unicode_bidi,
+        None,
+        0.0,
+        None,
+      )
+      .unwrap()
+      .lines;
 
     assert!(
       !manual_lines.iter().any(|line| {
@@ -16015,47 +16039,49 @@ mod tests {
       .expect("pretty items");
     let strut = ifc.compute_strut_metrics(&style);
 
-    let pretty = ifc.layout_segment_lines(
-      items.clone(),
-      true,
-      180.0,
-      180.0,
-      style.text_wrap,
-      0.0,
-      false,
-      false,
-      &strut,
-      Some(unicode_bidi::Level::ltr()),
-      style.direction,
-      style.unicode_bidi,
-      None,
-      0.0,
-      None,
-    )
-    .unwrap()
-    .lines;
+    let pretty = ifc
+      .layout_segment_lines(
+        items.clone(),
+        true,
+        180.0,
+        180.0,
+        style.text_wrap,
+        0.0,
+        false,
+        false,
+        &strut,
+        Some(unicode_bidi::Level::ltr()),
+        style.direction,
+        style.unicode_bidi,
+        None,
+        0.0,
+        None,
+      )
+      .unwrap()
+      .lines;
 
     let mut auto_style = style.clone();
     auto_style.text_wrap = TextWrap::Auto;
-    let auto = ifc.layout_segment_lines(
-      items,
-      true,
-      180.0,
-      180.0,
-      auto_style.text_wrap,
-      0.0,
-      false,
-      false,
-      &strut,
-      Some(unicode_bidi::Level::ltr()),
-      auto_style.direction,
-      auto_style.unicode_bidi,
-      None,
-      0.0,
-      None,
-    )
-    .unwrap()
-    .lines;
+    let auto = ifc
+      .layout_segment_lines(
+        items,
+        true,
+        180.0,
+        180.0,
+        auto_style.text_wrap,
+        0.0,
+        false,
+        false,
+        &strut,
+        Some(unicode_bidi::Level::ltr()),
+        auto_style.direction,
+        auto_style.unicode_bidi,
+        None,
+        0.0,
+        None,
+      )
+      .unwrap()
+      .lines;
 
     assert_eq!(pretty.len(), auto.len());
     let pretty_penalty = paragraph_short_last_penalty(&pretty);
@@ -16078,44 +16104,46 @@ mod tests {
       .expect("stable items");
     let strut = ifc.compute_strut_metrics(&style);
 
-    let narrow = ifc.layout_segment_lines(
-      items.clone(),
-      true,
-      150.0,
-      150.0,
-      style.text_wrap,
-      0.0,
-      false,
-      false,
-      &strut,
-      Some(unicode_bidi::Level::ltr()),
-      style.direction,
-      style.unicode_bidi,
-      None,
-      0.0,
-      None,
-    )
-    .unwrap()
-    .lines;
-    let wider = ifc.layout_segment_lines(
-      items.clone(),
-      true,
-      170.0,
-      170.0,
-      style.text_wrap,
-      0.0,
-      false,
-      false,
-      &strut,
-      Some(unicode_bidi::Level::ltr()),
-      style.direction,
-      style.unicode_bidi,
-      None,
-      0.0,
-      None,
-    )
-    .unwrap()
-    .lines;
+    let narrow = ifc
+      .layout_segment_lines(
+        items.clone(),
+        true,
+        150.0,
+        150.0,
+        style.text_wrap,
+        0.0,
+        false,
+        false,
+        &strut,
+        Some(unicode_bidi::Level::ltr()),
+        style.direction,
+        style.unicode_bidi,
+        None,
+        0.0,
+        None,
+      )
+      .unwrap()
+      .lines;
+    let wider = ifc
+      .layout_segment_lines(
+        items.clone(),
+        true,
+        170.0,
+        170.0,
+        style.text_wrap,
+        0.0,
+        false,
+        false,
+        &strut,
+        Some(unicode_bidi::Level::ltr()),
+        style.direction,
+        style.unicode_bidi,
+        None,
+        0.0,
+        None,
+      )
+      .unwrap()
+      .lines;
 
     let narrow_texts = line_texts(&narrow);
     let wider_texts = line_texts(&wider);
@@ -16123,44 +16151,46 @@ mod tests {
 
     let mut auto_style = style.clone();
     auto_style.text_wrap = TextWrap::Auto;
-    let auto_narrow = ifc.layout_segment_lines(
-      items.clone(),
-      true,
-      150.0,
-      150.0,
-      auto_style.text_wrap,
-      0.0,
-      false,
-      false,
-      &strut,
-      Some(unicode_bidi::Level::ltr()),
-      auto_style.direction,
-      auto_style.unicode_bidi,
-      None,
-      0.0,
-      None,
-    )
-    .unwrap()
-    .lines;
-    let auto_wide = ifc.layout_segment_lines(
-      items,
-      true,
-      170.0,
-      170.0,
-      auto_style.text_wrap,
-      0.0,
-      false,
-      false,
-      &strut,
-      Some(unicode_bidi::Level::ltr()),
-      auto_style.direction,
-      auto_style.unicode_bidi,
-      None,
-      0.0,
-      None,
-    )
-    .unwrap()
-    .lines;
+    let auto_narrow = ifc
+      .layout_segment_lines(
+        items.clone(),
+        true,
+        150.0,
+        150.0,
+        auto_style.text_wrap,
+        0.0,
+        false,
+        false,
+        &strut,
+        Some(unicode_bidi::Level::ltr()),
+        auto_style.direction,
+        auto_style.unicode_bidi,
+        None,
+        0.0,
+        None,
+      )
+      .unwrap()
+      .lines;
+    let auto_wide = ifc
+      .layout_segment_lines(
+        items,
+        true,
+        170.0,
+        170.0,
+        auto_style.text_wrap,
+        0.0,
+        false,
+        false,
+        &strut,
+        Some(unicode_bidi::Level::ltr()),
+        auto_style.direction,
+        auto_style.unicode_bidi,
+        None,
+        0.0,
+        None,
+      )
+      .unwrap()
+      .lines;
 
     assert_ne!(line_texts(&auto_narrow), line_texts(&auto_wide));
   }

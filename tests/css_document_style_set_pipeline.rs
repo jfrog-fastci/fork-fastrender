@@ -101,15 +101,24 @@ fn collect_document_style_set_matches_resolved_stylesheet_rules() {
   let mut fetch_map: HashMap<String, (Vec<u8>, Option<String>)> = HashMap::new();
   fetch_map.insert(
     inline_a_url.to_string(),
-    (inline_a_css.as_bytes().to_vec(), Some("text/css".to_string())),
+    (
+      inline_a_css.as_bytes().to_vec(),
+      Some("text/css".to_string()),
+    ),
   );
   fetch_map.insert(
     inline_b_url.to_string(),
-    (inline_b_css.as_bytes().to_vec(), Some("text/css".to_string())),
+    (
+      inline_b_css.as_bytes().to_vec(),
+      Some("text/css".to_string()),
+    ),
   );
   fetch_map.insert(
     external_url.to_string(),
-    (external_css.as_bytes().to_vec(), Some("text/css".to_string())),
+    (
+      external_css.as_bytes().to_vec(),
+      Some("text/css".to_string()),
+    ),
   );
   fetch_map.insert(
     external_import_url.to_string(),
@@ -160,9 +169,8 @@ fn collect_document_style_set_matches_resolved_stylesheet_rules() {
   let loader = MapLoader::new(loader_map);
 
   let mut expected_cache = MediaQueryCache::default();
-  let inline_sheet =
-    parse_stylesheet_with_media(inline_css, &media_ctx, Some(&mut expected_cache))
-      .expect("parse inline sheet");
+  let inline_sheet = parse_stylesheet_with_media(inline_css, &media_ctx, Some(&mut expected_cache))
+    .expect("parse inline sheet");
   let resolved_inline = if inline_sheet.contains_imports() {
     inline_sheet
       .resolve_imports_with_cache(

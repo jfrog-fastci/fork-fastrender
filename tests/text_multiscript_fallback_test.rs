@@ -1,8 +1,7 @@
 use fastrender::text::pipeline::ShapedRun;
 use fastrender::{ComputedStyle, FontConfig, FontContext, FontDatabase, ShapingPipeline};
 
-const MULTISCRIPT_SAMPLE: &str =
-  "Hello العربية עברית हिन्दी বাংলা ไทย 中文 日本語 かな カナ 한국어 \
+const MULTISCRIPT_SAMPLE: &str = "Hello العربية עברית हिन्दी বাংলা ไทย 中文 日本語 かな カナ 한국어 \
    ਗ ગ ଓ ಕ മ ස Ա ა አ ກ ཀ ក Ꭰ ᐁ ᥐ ᱚ Ⰰ ⴰ ꠅ ꯀ 𐌰";
 
 /// Representative characters for the scripts we expect bundled fonts to cover.

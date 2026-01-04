@@ -128,7 +128,9 @@ impl FaceCache {
   fn new(capacity: usize) -> Self {
     let capacity = capacity.max(1);
     let desired_shards = (capacity / FACE_CACHE_SHARD_TARGET).clamp(1, FACE_CACHE_SHARD_LIMIT);
-    let shard_count = desired_shards.next_power_of_two().min(FACE_CACHE_SHARD_LIMIT);
+    let shard_count = desired_shards
+      .next_power_of_two()
+      .min(FACE_CACHE_SHARD_LIMIT);
     let shard_count = shard_count.max(1);
     let shard_mask = shard_count - 1;
 
@@ -201,7 +203,9 @@ impl RustybuzzFaceCache {
   fn new(capacity: usize) -> Self {
     let capacity = capacity.max(1);
     let desired_shards = (capacity / FACE_CACHE_SHARD_TARGET).clamp(1, FACE_CACHE_SHARD_LIMIT);
-    let shard_count = desired_shards.next_power_of_two().min(FACE_CACHE_SHARD_LIMIT);
+    let shard_count = desired_shards
+      .next_power_of_two()
+      .min(FACE_CACHE_SHARD_LIMIT);
     let shard_count = shard_count.max(1);
     let shard_mask = shard_count - 1;
 

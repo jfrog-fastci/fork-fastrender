@@ -376,8 +376,8 @@ mod tests {
 
   #[test]
   fn data_url_prefix_decodes_url_safe_base64_without_padding() {
-    let res = decode_data_url_prefix("data:application/octet-stream;base64,_w", 8)
-      .expect("decode prefix");
+    let res =
+      decode_data_url_prefix("data:application/octet-stream;base64,_w", 8).expect("decode prefix");
     assert_eq!(res.bytes, [0xff]);
   }
 

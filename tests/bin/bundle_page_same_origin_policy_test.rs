@@ -8,14 +8,14 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
- 
+
 struct TestServer {
   addr: SocketAddr,
   requests: Arc<Mutex<Vec<String>>>,
   shutdown: Arc<AtomicBool>,
   handle: Option<thread::JoinHandle<()>>,
 }
- 
+
 impl TestServer {
   fn start(
     context: &str,
@@ -32,7 +32,7 @@ impl TestServer {
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_thread = Arc::clone(&shutdown);
     let handler = Arc::new(handler);
- 
+
     let handle = thread::spawn(move || {
       let start = Instant::now();
       // Keep the server responsive but bounded so failures don't hang CI.
@@ -62,11 +62,11 @@ impl TestServer {
               .next()
               .and_then(|line| line.split_whitespace().nth(1))
               .unwrap_or("/");
- 
+
             if let Ok(mut guard) = requests_thread.lock() {
               guard.push(path.to_string());
             }
- 
+
             let (status, content_type, body) = handler(path);
             let response = format!(
               "HTTP/1.1 {status} OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -83,7 +83,7 @@ impl TestServer {
         }
       }
     });
- 
+
     Some(Self {
       addr,
       requests,
@@ -91,11 +91,11 @@ impl TestServer {
       handle: Some(handle),
     })
   }
- 
+
   fn url(&self, path: &str) -> String {
     format!("http://{}/{}", self.addr, path.trim_start_matches('/'))
   }
- 
+
   fn requests(&self) -> Vec<String> {
     self
       .requests
@@ -103,7 +103,7 @@ impl TestServer {
       .map(|guard| guard.clone())
       .unwrap_or_default()
   }
- 
+
   fn join(mut self) {
     self.shutdown.store(true, Ordering::SeqCst);
     if let Some(handle) = self.handle.take() {
@@ -111,7 +111,7 @@ impl TestServer {
     }
   }
 }
- 
+
 impl Drop for TestServer {
   fn drop(&mut self) {
     self.shutdown.store(true, Ordering::SeqCst);
@@ -120,7 +120,7 @@ impl Drop for TestServer {
     }
   }
 }
- 
+
 #[test]
 fn bundle_page_same_origin_subresources_does_not_block_cross_origin_iframe_documents() {
   let Some(cross_origin) = TestServer::start(
@@ -138,16 +138,17 @@ fn bundle_page_same_origin_subresources_does_not_block_cross_origin_iframe_docum
   ) else {
     return;
   };
- 
+
   let frame_url = cross_origin.url("frame.html");
   let blocked_css_url = cross_origin.url("blocked.css");
   let frame_url_for_origin = frame_url.clone();
   let blocked_css_url_for_origin = blocked_css_url.clone();
- 
+
   let Some(origin) = TestServer::start(
     "bundle_page_same_origin_subresources_does_not_block_cross_origin_iframe_documents.origin",
     10,
-    move |path| match path {
+    move |path| {
+      match path {
       "/page.html" => (
         200,
         "text/html; charset=utf-8",
@@ -156,16 +157,17 @@ fn bundle_page_same_origin_subresources_does_not_block_cross_origin_iframe_docum
         ),
       ),
       _ => (404, "text/plain; charset=utf-8", "missing".to_string()),
+    }
     },
   ) else {
     cross_origin.join();
     return;
   };
- 
+
   let tmp = TempDir::new().expect("tempdir");
   let bundle_dir = tmp.path().join("bundle");
   let origin_url = origin.url("page.html");
- 
+
   let status = Command::new(env!("CARGO_BIN_EXE_bundle_page"))
     .args([
       "fetch",
@@ -178,7 +180,7 @@ fn bundle_page_same_origin_subresources_does_not_block_cross_origin_iframe_docum
     .status()
     .expect("run bundle_page fetch");
   assert!(status.success(), "bundle_page fetch should succeed");
- 
+
   // The cross-origin stylesheet should be blocked but the iframe document should still be fetched
   // and persisted into the bundle.
   let cross_requests = cross_origin.requests();
@@ -190,9 +192,8 @@ fn bundle_page_same_origin_subresources_does_not_block_cross_origin_iframe_docum
     !cross_requests.iter().any(|p| p == "/blocked.css"),
     "expected stylesheet to be blocked by same-origin subresource policy, got {cross_requests:?}"
   );
- 
-  let manifest_bytes =
-    std::fs::read(bundle_dir.join("bundle.json")).expect("read bundle manifest");
+
+  let manifest_bytes = std::fs::read(bundle_dir.join("bundle.json")).expect("read bundle manifest");
   let manifest: Value = serde_json::from_slice(&manifest_bytes).expect("parse bundle manifest");
   let resources = manifest["resources"].as_object().expect("resources object");
   assert!(
@@ -216,7 +217,10 @@ fn bundle_page_same_origin_subresources_does_not_block_cross_origin_iframe_docum
     ])
     .status()
     .expect("run bundle_page render");
-  assert!(status.success(), "bundle_page render should succeed offline");
+  assert!(
+    status.success(),
+    "bundle_page render should succeed offline"
+  );
   let png_bytes = std::fs::read(&output_png).expect("read rendered png");
   assert!(!png_bytes.is_empty(), "expected output PNG to be written");
 

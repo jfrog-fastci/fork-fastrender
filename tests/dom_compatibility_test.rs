@@ -1,6 +1,6 @@
 use fastrender::dom::{
-  compute_slot_assignment_with_ids, enumerate_dom_ids, parse_html, parse_html_with_options, DomNode,
-  DomNodeType, DomParseOptions, SlotAssignment,
+  compute_slot_assignment_with_ids, enumerate_dom_ids, parse_html, parse_html_with_options,
+  DomNode, DomNodeType, DomParseOptions, SlotAssignment,
 };
 use std::collections::HashMap;
 
@@ -82,9 +82,9 @@ fn assigned_node_texts_for_slot<'a>(
     .unwrap_or_default()
     .into_iter()
     .map(|node_id| {
-      let node = lookup.get(&node_id).unwrap_or_else(|| {
-        panic!("assigned node id {node_id} for slot id='{slot_element_id}'")
-      });
+      let node = lookup
+        .get(&node_id)
+        .unwrap_or_else(|| panic!("assigned node id {node_id} for slot id='{slot_element_id}'"));
       subtree_text_content(node).trim().to_string()
     })
     .collect()
@@ -136,9 +136,8 @@ fn compatibility_mode_preserves_shadow_slot_distribution() {
 
   let standard_assignment = compute_slot_assignment_with_ids(&standard_dom, &standard_ids)
     .expect("compute standard slot assignment");
-  let compat_assignment =
-    compute_slot_assignment_with_ids(&compat_dom, &compat_ids)
-      .expect("compute compat slot assignment");
+  let compat_assignment = compute_slot_assignment_with_ids(&compat_dom, &compat_ids)
+    .expect("compute compat slot assignment");
 
   let standard_host = find_by_id(&standard_dom, "host").expect("standard host element");
   assert!(
@@ -152,8 +151,7 @@ fn compatibility_mode_preserves_shadow_slot_distribution() {
   );
 
   assert_eq!(
-    standard_assignment.slot_to_nodes,
-    compat_assignment.slot_to_nodes,
+    standard_assignment.slot_to_nodes, compat_assignment.slot_to_nodes,
     "compatibility mode should not alter slot assignment"
   );
 
@@ -270,8 +268,7 @@ fn compatibility_mode_overwrites_placeholder_img_src_but_not_real_src() {
 
 #[test]
 fn compatibility_mode_lifts_srcset_for_img_and_picture_sources() {
-  let img_html =
-    r#"<html><body><img data-original-set="a.jpg 1x, b.jpg 2x"></body></html>"#;
+  let img_html = r#"<html><body><img data-original-set="a.jpg 1x, b.jpg 2x"></body></html>"#;
   let standard_dom = parse_html(img_html).expect("parse standard DOM");
   let standard_img = find_element(&standard_dom, "img").expect("standard img element");
   assert!(
@@ -279,8 +276,8 @@ fn compatibility_mode_lifts_srcset_for_img_and_picture_sources() {
     "standard mode should not mutate img srcset"
   );
 
-  let compat_dom = parse_html_with_options(img_html, DomParseOptions::compatibility())
-    .expect("parse compat DOM");
+  let compat_dom =
+    parse_html_with_options(img_html, DomParseOptions::compatibility()).expect("parse compat DOM");
   let compat_img = find_element(&compat_dom, "img").expect("compat img element");
   assert_eq!(
     compat_img.get_attribute_ref("srcset"),

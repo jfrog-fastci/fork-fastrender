@@ -51,4 +51,3 @@ fn import_page_fixture_resolves_relative_paths_from_repo_root() {
     index_path.display()
   );
 }
-

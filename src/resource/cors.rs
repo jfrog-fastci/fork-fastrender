@@ -75,8 +75,8 @@ pub fn validate_cors_allow_origin(
     ));
   }
 
-  let parsed_origin =
-    Url::parse(raw).map_err(|_| format!("blocked by CORS: invalid Access-Control-Allow-Origin: {raw}"))?;
+  let parsed_origin = Url::parse(raw)
+    .map_err(|_| format!("blocked by CORS: invalid Access-Control-Allow-Origin: {raw}"))?;
   let allowed_origin = DocumentOrigin::from_parsed_url(&parsed_origin);
   if !allowed_origin.same_origin(document_origin) {
     return Err(format!(

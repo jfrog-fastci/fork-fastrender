@@ -64,9 +64,9 @@ pub enum StageHeartbeat {
 impl StageHeartbeat {
   fn render_stage(self) -> Option<RenderStage> {
     match self {
-      StageHeartbeat::ReadCache
-      | StageHeartbeat::FollowRedirects
-      | StageHeartbeat::DomParse => Some(RenderStage::DomParse),
+      StageHeartbeat::ReadCache | StageHeartbeat::FollowRedirects | StageHeartbeat::DomParse => {
+        Some(RenderStage::DomParse)
+      }
       StageHeartbeat::CssInline | StageHeartbeat::CssParse => Some(RenderStage::Css),
       StageHeartbeat::Cascade => Some(RenderStage::Cascade),
       StageHeartbeat::BoxTree => Some(RenderStage::BoxTree),

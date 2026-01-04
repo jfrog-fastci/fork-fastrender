@@ -86,7 +86,8 @@ fn layout_does_not_rebuild_shaping_pipeline_or_factory_in_hot_paths() {
   let shaping_pipeline_news = ShapingPipeline::debug_new_call_count();
   let factory_news = FormattingContextFactory::debug_with_font_context_viewport_and_cb_call_count();
   let detached_news = FormattingContextFactory::debug_detached_call_count();
-  let inline_fc_news = InlineFormattingContext::debug_with_font_context_viewport_and_cb_call_count();
+  let inline_fc_news =
+    InlineFormattingContext::debug_with_font_context_viewport_and_cb_call_count();
   let inline_fc_with_factory_news = InlineFormattingContext::debug_with_factory_call_count();
 
   assert!(
@@ -117,7 +118,8 @@ fn block_intrinsic_sizing_does_not_rebuild_shaping_pipeline_or_factory() {
     .lock()
     .unwrap_or_else(|err| err.into_inner());
   let viewport = Size::new(800.0, 600.0);
-  let factory = FormattingContextFactory::with_font_context_and_viewport(FontContext::new(), viewport);
+  let factory =
+    FormattingContextFactory::with_font_context_and_viewport(FontContext::new(), viewport);
   let bfc = BlockFormattingContext::with_factory(factory);
 
   // Reset churn counters after initialization so we measure just the intrinsic sizing calls.
@@ -140,7 +142,11 @@ fn block_intrinsic_sizing_does_not_rebuild_shaping_pipeline_or_factory() {
   child.id = 0;
   let mut root_style = ComputedStyle::default();
   root_style.display = Display::Block;
-  let mut root = BoxNode::new_block(Arc::new(root_style), FormattingContextType::Block, vec![child]);
+  let mut root = BoxNode::new_block(
+    Arc::new(root_style),
+    FormattingContextType::Block,
+    vec![child],
+  );
   // Disable the intrinsic sizing cache so every call recomputes (including for the nested block child).
   root.id = 0;
 
@@ -236,7 +242,8 @@ fn flex_positioned_children_do_not_churn_factories_or_inline_contexts() {
   let shaping_pipeline_news = ShapingPipeline::debug_new_call_count();
   let factory_news = FormattingContextFactory::debug_with_font_context_viewport_and_cb_call_count();
   let detached_news = FormattingContextFactory::debug_detached_call_count();
-  let inline_fc_news = InlineFormattingContext::debug_with_font_context_viewport_and_cb_call_count();
+  let inline_fc_news =
+    InlineFormattingContext::debug_with_font_context_viewport_and_cb_call_count();
   let inline_fc_with_factory_news = InlineFormattingContext::debug_with_factory_call_count();
 
   assert!(
@@ -325,7 +332,8 @@ fn grid_positioned_children_do_not_churn_factories_or_inline_contexts() {
   let shaping_pipeline_news = ShapingPipeline::debug_new_call_count();
   let factory_news = FormattingContextFactory::debug_with_font_context_viewport_and_cb_call_count();
   let detached_news = FormattingContextFactory::debug_detached_call_count();
-  let inline_fc_news = InlineFormattingContext::debug_with_font_context_viewport_and_cb_call_count();
+  let inline_fc_news =
+    InlineFormattingContext::debug_with_font_context_viewport_and_cb_call_count();
   let inline_fc_with_factory_news = InlineFormattingContext::debug_with_factory_call_count();
 
   assert!(
@@ -412,7 +420,8 @@ fn inline_positioned_children_do_not_churn_detached_factories() {
   let shaping_pipeline_news = ShapingPipeline::debug_new_call_count();
   let factory_news = FormattingContextFactory::debug_with_font_context_viewport_and_cb_call_count();
   let detached_news = FormattingContextFactory::debug_detached_call_count();
-  let inline_fc_news = InlineFormattingContext::debug_with_font_context_viewport_and_cb_call_count();
+  let inline_fc_news =
+    InlineFormattingContext::debug_with_font_context_viewport_and_cb_call_count();
   let inline_fc_with_factory_news = InlineFormattingContext::debug_with_factory_call_count();
 
   assert!(
@@ -507,7 +516,8 @@ fn block_positioned_children_do_not_churn_detached_factories() {
   let shaping_pipeline_news = ShapingPipeline::debug_new_call_count();
   let factory_news = FormattingContextFactory::debug_with_font_context_viewport_and_cb_call_count();
   let detached_news = FormattingContextFactory::debug_detached_call_count();
-  let inline_fc_news = InlineFormattingContext::debug_with_font_context_viewport_and_cb_call_count();
+  let inline_fc_news =
+    InlineFormattingContext::debug_with_font_context_viewport_and_cb_call_count();
   let inline_fc_with_factory_news = InlineFormattingContext::debug_with_factory_call_count();
 
   assert!(
@@ -622,15 +632,15 @@ fn table_positioned_children_do_not_churn_detached_factories() {
     })
     .count();
   assert_eq!(
-    positioned_fragments,
-    ITEMS,
+    positioned_fragments, ITEMS,
     "expected all positioned table children (abs/fixed) to produce fragments",
   );
 
   let shaping_pipeline_news = ShapingPipeline::debug_new_call_count();
   let factory_news = FormattingContextFactory::debug_with_font_context_viewport_and_cb_call_count();
   let detached_news = FormattingContextFactory::debug_detached_call_count();
-  let inline_fc_news = InlineFormattingContext::debug_with_font_context_viewport_and_cb_call_count();
+  let inline_fc_news =
+    InlineFormattingContext::debug_with_font_context_viewport_and_cb_call_count();
   let inline_fc_with_factory_news = InlineFormattingContext::debug_with_factory_call_count();
 
   assert!(

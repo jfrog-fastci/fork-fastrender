@@ -25,7 +25,15 @@ fn prepare_item() -> Option<(TextItem, ShapingPipeline, FontContext, Vec<Range<u
   }
 
   let metrics = TextItem::metrics_from_runs(&runs, style.font_size, style.font_size);
-  let item = TextItem::new(runs, text.clone(), metrics, Vec::new(), Vec::new(), style, Direction::Ltr);
+  let item = TextItem::new(
+    runs,
+    text.clone(),
+    metrics,
+    Vec::new(),
+    Vec::new(),
+    style,
+    Direction::Ltr,
+  );
 
   const SLICE_LEN: usize = 32;
   let ranges: Vec<Range<usize>> = (0..text.len())

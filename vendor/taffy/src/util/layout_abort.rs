@@ -119,7 +119,9 @@ impl LayoutAbortGuard {
       previous
     });
 
-    Self { previous: Some(previous) }
+    Self {
+      previous: Some(previous),
+    }
   }
 }
 

@@ -1,10 +1,10 @@
 use crate::text::face_cache::{self, CachedFace};
 use crate::text::font_db::LoadedFont;
+use rustc_hash::FxHasher;
 use rustybuzz::Variation;
 use skrifa::instance::{Location, LocationRef, Size};
 use skrifa::outline::{DrawSettings, OutlineGlyph, OutlineGlyphCollection, OutlinePen};
 use skrifa::{FontRef, GlyphId, MetadataProvider, Tag};
-use rustc_hash::FxHasher;
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;

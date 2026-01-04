@@ -391,8 +391,11 @@ mod tests {
   #[test]
   fn bundled_fetcher_roundtrips_cors_headers() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    std::fs::write(tmp.path().join("document.html"), "<!doctype html><html></html>")
-      .expect("write doc");
+    std::fs::write(
+      tmp.path().join("document.html"),
+      "<!doctype html><html></html>",
+    )
+    .expect("write doc");
     std::fs::write(tmp.path().join("style.css"), "body{}").expect("write css");
 
     let manifest = BundleManifest {
@@ -464,8 +467,11 @@ mod tests {
   #[test]
   fn bundle_loads_v1_manifest_without_cors_fields() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    std::fs::write(tmp.path().join("document.html"), "<!doctype html><html></html>")
-      .expect("write doc");
+    std::fs::write(
+      tmp.path().join("document.html"),
+      "<!doctype html><html></html>",
+    )
+    .expect("write doc");
     std::fs::write(tmp.path().join("style.css"), "body{}").expect("write css");
 
     // Older bundles (v1) may not include CORS header fields; they should deserialize as `None`,

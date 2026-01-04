@@ -124,7 +124,10 @@ fn text_diagnostics_reset_per_render() {
   );
 
   for (name, value) in [
-    ("text_fallback_cpu_ms", second_stats.timings.text_fallback_cpu_ms),
+    (
+      "text_fallback_cpu_ms",
+      second_stats.timings.text_fallback_cpu_ms,
+    ),
     ("text_shape_cpu_ms", second_stats.timings.text_shape_cpu_ms),
     (
       "text_rasterize_cpu_ms",
@@ -133,9 +136,6 @@ fn text_diagnostics_reset_per_render() {
   ] {
     let Some(value) = value else { continue };
     assert!(value.is_finite(), "{name} should be finite, got {value}");
-    assert!(
-      value >= 0.0,
-      "{name} should be non-negative, got {value}"
-    );
+    assert!(value >= 0.0, "{name} should be non-negative, got {value}");
   }
 }

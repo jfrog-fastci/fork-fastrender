@@ -90,7 +90,10 @@ fn render_fixtures_writes_png_output() {
 
   assert!(status.success(), "expected render_fixtures to succeed");
   assert!(out_dir.join("basic.png").is_file(), "expected PNG output");
-  assert!(out_dir.join("basic.log").is_file(), "expected per-fixture log");
+  assert!(
+    out_dir.join("basic.log").is_file(),
+    "expected per-fixture log"
+  );
   assert!(
     out_dir.join("basic.json").is_file(),
     "expected per-fixture metadata json"

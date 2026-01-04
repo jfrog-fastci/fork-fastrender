@@ -90,10 +90,7 @@ fn display_list_parallel_reports_text_metrics() {
       .expect("stats should be present on third render");
     let third_hits = third_stats.counts.glyph_cache_hits.unwrap_or(0);
     let third_misses = third_stats.counts.glyph_cache_misses.unwrap_or(0);
-    assert!(
-      third_hits > 0,
-      "expected glyph cache hits on third render"
-    );
+    assert!(third_hits > 0, "expected glyph cache hits on third render");
     assert!(
       third_misses == 0,
       "expected third render to be fully warmed (misses={third_misses})"

@@ -28,8 +28,8 @@ fn progress_pages_stage_buckets_sum_to_total_ms() {
       continue;
     }
 
-    let raw =
-      fs::read_to_string(&path).unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+    let raw = fs::read_to_string(&path)
+      .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
     let json: Value = serde_json::from_str(&raw)
       .unwrap_or_else(|err| panic!("failed to parse {} as JSON: {err}", path.display()));
 

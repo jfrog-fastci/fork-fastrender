@@ -1585,14 +1585,12 @@ mod tests {
 
     let regressions = find_regressions(&latest, &baseline, 0.10, 0.20);
     assert_eq!(regressions.len(), 2);
-    assert!(regressions.iter().any(|regression| matches!(
-      regression.metric,
-      RegressionMetric::TotalMs
-    )));
-    assert!(regressions.iter().any(|regression| matches!(
-      regression.metric,
-      RegressionMetric::Count("dom_nodes")
-    )));
+    assert!(regressions
+      .iter()
+      .any(|regression| matches!(regression.metric, RegressionMetric::TotalMs)));
+    assert!(regressions
+      .iter()
+      .any(|regression| matches!(regression.metric, RegressionMetric::Count("dom_nodes"))));
   }
 
   #[test]

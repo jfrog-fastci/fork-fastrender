@@ -42,9 +42,8 @@ fn adjacent_var_substitution_preserves_token_boundaries() {
 #[test]
 fn tailwind_empty_fallback_var_calls_keep_transform_parseable() {
   let props = CustomPropertyStore::default();
-  let value = PropertyValue::Keyword(
-    "var(--tw-rotate-x,)var(--tw-rotate-y,)translate(0px,0px)".to_string(),
-  );
+  let value =
+    PropertyValue::Keyword("var(--tw-rotate-x,)var(--tw-rotate-y,)translate(0px,0px)".to_string());
 
   let resolved = resolve_var_for_property(&value, &props, "transform");
   let VarResolutionResult::Resolved { value, css_text } = resolved else {

@@ -2,7 +2,9 @@ use fastrender::css::parser::parse_stylesheet;
 use fastrender::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
 use fastrender::style::cascade::apply_styles;
 use fastrender::style::color::Rgba;
-use fastrender::style::values::{CustomPropertySyntax, CustomPropertyTypedValue, Length, LengthUnit};
+use fastrender::style::values::{
+  CustomPropertySyntax, CustomPropertyTypedValue, Length, LengthUnit,
+};
 
 fn dom_with_child() -> DomNode {
   DomNode {
@@ -196,7 +198,10 @@ fn custom_property_syntax_length_percentage_parses_length_and_percentage() {
   );
   assert_eq!(
     CustomPropertySyntax::LengthPercentage.parse_value("25%"),
-    Some(CustomPropertyTypedValue::Length(Length::new(25.0, LengthUnit::Percent)))
+    Some(CustomPropertyTypedValue::Length(Length::new(
+      25.0,
+      LengthUnit::Percent
+    )))
   );
   assert!(CustomPropertySyntax::LengthPercentage
     .parse_value("not-a-length")
@@ -227,7 +232,10 @@ fn length_percentage_property_registration_parses_initial_value() {
   assert_eq!(initial.value.trim(), "50%");
   assert_eq!(
     initial.typed,
-    Some(CustomPropertyTypedValue::Length(Length::new(50.0, LengthUnit::Percent)))
+    Some(CustomPropertyTypedValue::Length(Length::new(
+      50.0,
+      LengthUnit::Percent
+    )))
   );
 
   let value = styled

@@ -107,7 +107,10 @@ fn render_pages_writes_composed_dom_dump() {
   let composed_path = temp
     .path()
     .join("fetches/renders/example.com.composed_dom.json");
-  assert!(composed_path.is_file(), "composed DOM JSON should be written");
+  assert!(
+    composed_path.is_file(),
+    "composed DOM JSON should be written"
+  );
 
   let contents = fs::read_to_string(composed_path).expect("read composed dom dump");
   serde_json::from_str::<Value>(&contents).expect("parse composed dom dump");

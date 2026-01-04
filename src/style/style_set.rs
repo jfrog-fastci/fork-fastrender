@@ -135,9 +135,8 @@ mod tests {
 
   #[test]
   fn collectors_process_shadow_sheets_in_sorted_host_order() {
-    let document =
-      parse_stylesheet("@keyframes doc { from { opacity: 0; } to { opacity: 1; } }")
-        .expect("document stylesheet parses");
+    let document = parse_stylesheet("@keyframes doc { from { opacity: 0; } to { opacity: 1; } }")
+      .expect("document stylesheet parses");
 
     let shadow_low =
       parse_stylesheet("@keyframes shadow-low { from { opacity: 0; } to { opacity: 1; } }")

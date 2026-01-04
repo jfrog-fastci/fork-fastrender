@@ -56,7 +56,11 @@ fn bot_mitigation_captcha_subresource_does_not_set_failure_stage() {
       .diagnostics
       .blocked_fetch_errors
       .iter()
-      .any(|e| e.status == Some(405) && e.final_url.as_deref().is_some_and(|u| u.contains("captcha="))),
+      .any(|e| e.status == Some(405)
+        && e
+          .final_url
+          .as_deref()
+          .is_some_and(|u| u.contains("captcha="))),
     "blocked_fetch_errors should include the HTTP 405 captcha response"
   );
 }

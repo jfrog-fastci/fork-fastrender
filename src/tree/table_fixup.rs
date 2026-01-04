@@ -178,7 +178,10 @@ impl TableStructureFixer {
       // element mixes table internals with pretty-printed whitespace text nodes. If the wrapper
       // contains only whitespace, treat it as ignorable so we don't generate anonymous table cells.
       BoxType::Anonymous(anon)
-        if matches!(anon.anonymous_type, AnonymousType::Block | AnonymousType::Inline) =>
+        if matches!(
+          anon.anonymous_type,
+          AnonymousType::Block | AnonymousType::Inline
+        ) =>
       {
         box_node
           .children
@@ -1206,7 +1209,10 @@ mod tests {
       .expect("row created");
 
     assert_eq!(fixed_row.children.len(), 2);
-    assert!(fixed_row.children.iter().all(TableStructureFixer::is_table_cell));
+    assert!(fixed_row
+      .children
+      .iter()
+      .all(TableStructureFixer::is_table_cell));
   }
 
   #[test]
@@ -1248,7 +1254,10 @@ mod tests {
       .expect("row created");
 
     assert_eq!(fixed_row.children.len(), 2);
-    assert!(fixed_row.children.iter().all(TableStructureFixer::is_table_cell));
+    assert!(fixed_row
+      .children
+      .iter()
+      .all(TableStructureFixer::is_table_cell));
   }
 
   // ==================== Mixed Content Tests ====================

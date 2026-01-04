@@ -31,7 +31,11 @@ fn layout_grid_child_width(overflow_x: Overflow) -> f32 {
   let long_word = "W".repeat(200);
   let text = BoxNode::new_text(Arc::new(text_style), long_word);
 
-  let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![text]);
+  let item = BoxNode::new_block(
+    Arc::new(item_style),
+    FormattingContextType::Block,
+    vec![text],
+  );
   let grid = BoxNode::new_block(
     Arc::new(grid_style),
     FormattingContextType::Grid,
@@ -62,4 +66,3 @@ fn grid_overflow_auto_allows_fr_track_to_shrink() {
     auto_width
   );
 }
-

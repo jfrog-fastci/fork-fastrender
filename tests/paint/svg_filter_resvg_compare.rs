@@ -108,10 +108,11 @@ fn assert_svg_filter_matches_resvg_custom(
   let source_svg = strip_filter_reference(svg_source, strip_filter_id);
   let source_pixmap = render_svg_resvg(&source_svg, viewport_w, viewport_h);
 
-  let filter = parse_svg_filter_from_svg_document(svg_source, Some(parse_filter_id), &ImageCache::new())
-    .unwrap_or_else(|| {
-      panic!("parse_svg_filter_from_svg_document: missing filter #{parse_filter_id}")
-    });
+  let filter =
+    parse_svg_filter_from_svg_document(svg_source, Some(parse_filter_id), &ImageCache::new())
+      .unwrap_or_else(|| {
+        panic!("parse_svg_filter_from_svg_document: missing filter #{parse_filter_id}")
+      });
   let mut fastrender = source_pixmap.clone();
   apply_svg_filter(filter.as_ref(), &mut fastrender, 1.0, bbox_css_px).expect("apply_svg_filter");
 
@@ -157,13 +158,7 @@ fn svg_filter_resvg_color_matrix_matrix_defaults_to_linear_rgb() {
       </g>
     </svg>
   "#;
-  assert_svg_filter_matches_resvg(
-    svg,
-    "f",
-    Rect::from_xywh(0.0, 0.0, 16.0, 16.0),
-    (16, 16),
-    1,
-  );
+  assert_svg_filter_matches_resvg(svg, "f", Rect::from_xywh(0.0, 0.0, 16.0, 16.0), (16, 16), 1);
 }
 
 #[test]
@@ -181,13 +176,7 @@ fn svg_filter_resvg_composite_over_matches_porter_duff_premultiplied() {
       </g>
     </svg>
   "#;
-  assert_svg_filter_matches_resvg(
-    svg,
-    "f",
-    Rect::from_xywh(0.0, 0.0, 8.0, 8.0),
-    (8, 8),
-    1,
-  );
+  assert_svg_filter_matches_resvg(svg, "f", Rect::from_xywh(0.0, 0.0, 8.0, 8.0), (8, 8), 1);
 }
 
 #[test]
@@ -205,13 +194,7 @@ fn svg_filter_resvg_composite_out_matches_porter_duff_premultiplied() {
       </g>
     </svg>
   "#;
-  assert_svg_filter_matches_resvg(
-    svg,
-    "f",
-    Rect::from_xywh(0.0, 0.0, 8.0, 8.0),
-    (8, 8),
-    0,
-  );
+  assert_svg_filter_matches_resvg(svg, "f", Rect::from_xywh(0.0, 0.0, 8.0, 8.0), (8, 8), 0);
 }
 
 #[test]
@@ -305,13 +288,7 @@ fn svg_filter_resvg_convolve_matrix_edge_mode_wrap() {
       </g>
     </svg>
   "#;
-  assert_svg_filter_matches_resvg(
-    svg,
-    "f",
-    Rect::from_xywh(0.0, 0.0, 5.0, 5.0),
-    (5, 5),
-    0,
-  );
+  assert_svg_filter_matches_resvg(svg, "f", Rect::from_xywh(0.0, 0.0, 5.0, 5.0), (5, 5), 0);
 }
 
 #[test]
@@ -332,13 +309,7 @@ fn svg_filter_resvg_convolve_matrix_edge_mode_duplicate() {
       </g>
     </svg>
   "#;
-  assert_svg_filter_matches_resvg(
-    svg,
-    "f",
-    Rect::from_xywh(0.0, 0.0, 5.0, 5.0),
-    (5, 5),
-    0,
-  );
+  assert_svg_filter_matches_resvg(svg, "f", Rect::from_xywh(0.0, 0.0, 5.0, 5.0), (5, 5), 0);
 }
 
 #[test]

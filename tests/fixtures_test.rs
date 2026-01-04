@@ -556,8 +556,7 @@ fn test_fixture_text_letter_spacing_vertical() {
 
 #[test]
 fn test_fixture_text_font_variant_emoji() {
-  test_fixture("text_font_variant_emoji")
-    .expect("text_font_variant_emoji fixture should render");
+  test_fixture("text_font_variant_emoji").expect("text_font_variant_emoji fixture should render");
 }
 
 #[test]

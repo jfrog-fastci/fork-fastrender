@@ -34,7 +34,11 @@ pub fn parse_srcset_with_limit(attr: &str, max_candidates: usize) -> Vec<SrcsetC
       && bytes[start + 4] == b':'
   }
 
-  fn is_likely_comma_in_cdn_transform_url(bytes: &[u8], url_start: usize, comma_idx: usize) -> bool {
+  fn is_likely_comma_in_cdn_transform_url(
+    bytes: &[u8],
+    url_start: usize,
+    comma_idx: usize,
+  ) -> bool {
     // Heuristic for malformed-but-common production markup:
     //
     // Many CDNs (including Condé Nast properties like wired.com) embed transform parameters
@@ -101,7 +105,11 @@ pub fn parse_srcset_with_limit(attr: &str, max_candidates: usize) -> Vec<SrcsetC
     false
   }
 
-  fn is_likely_comma_in_query_numeric_list(bytes: &[u8], url_start: usize, comma_idx: usize) -> bool {
+  fn is_likely_comma_in_query_numeric_list(
+    bytes: &[u8],
+    url_start: usize,
+    comma_idx: usize,
+  ) -> bool {
     // Some sites (notably WordPress, including nasa.gov fixtures) embed comma-separated numeric
     // values in query parameters, e.g. `?resize=300,163`.
     //
@@ -596,10 +604,22 @@ mod tests {
       "https://example.com/w_2560,c_limit/image.jpg 2560w, https://example.com/w_1280,c_limit/image.jpg 1280w",
     );
     assert_eq!(parsed.len(), 2);
-    assert_eq!(parsed[0].url, "https://example.com/w_2560,c_limit/image.jpg");
-    assert!(matches!(parsed[0].descriptor, SrcsetDescriptor::Width(2560)));
-    assert_eq!(parsed[1].url, "https://example.com/w_1280,c_limit/image.jpg");
-    assert!(matches!(parsed[1].descriptor, SrcsetDescriptor::Width(1280)));
+    assert_eq!(
+      parsed[0].url,
+      "https://example.com/w_2560,c_limit/image.jpg"
+    );
+    assert!(matches!(
+      parsed[0].descriptor,
+      SrcsetDescriptor::Width(2560)
+    ));
+    assert_eq!(
+      parsed[1].url,
+      "https://example.com/w_1280,c_limit/image.jpg"
+    );
+    assert!(matches!(
+      parsed[1].descriptor,
+      SrcsetDescriptor::Width(1280)
+    ));
   }
 
   #[test]
@@ -650,7 +670,10 @@ mod tests {
       "https://img.example/foo.jpg?rect=0,0,100,100 1x, https://img.example/bar.jpg 2x",
     );
     assert_eq!(parsed.len(), 2);
-    assert_eq!(parsed[0].url, "https://img.example/foo.jpg?rect=0,0,100,100");
+    assert_eq!(
+      parsed[0].url,
+      "https://img.example/foo.jpg?rect=0,0,100,100"
+    );
     assert!(matches!(parsed[0].descriptor, SrcsetDescriptor::Density(d) if d == 1.0));
     assert_eq!(parsed[1].url, "https://img.example/bar.jpg");
     assert!(matches!(parsed[1].descriptor, SrcsetDescriptor::Density(d) if d == 2.0));

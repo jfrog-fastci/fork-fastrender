@@ -403,13 +403,22 @@ impl StackingContext {
       accumulate(translate(rect), &mut bounds);
     }
     for frag in &self.layer3_blocks {
-      accumulate(translate(frag.scroll_overflow.translate(frag.bounds.origin)), &mut bounds);
+      accumulate(
+        translate(frag.scroll_overflow.translate(frag.bounds.origin)),
+        &mut bounds,
+      );
     }
     for frag in &self.layer4_floats {
-      accumulate(translate(frag.scroll_overflow.translate(frag.bounds.origin)), &mut bounds);
+      accumulate(
+        translate(frag.scroll_overflow.translate(frag.bounds.origin)),
+        &mut bounds,
+      );
     }
     for frag in &self.layer5_inlines {
-      accumulate(translate(frag.scroll_overflow.translate(frag.bounds.origin)), &mut bounds);
+      accumulate(
+        translate(frag.scroll_overflow.translate(frag.bounds.origin)),
+        &mut bounds,
+      );
     }
     for frag in &self.layer6_positioned {
       let fragment = &frag.fragment;

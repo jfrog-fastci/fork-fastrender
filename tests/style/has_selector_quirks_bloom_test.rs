@@ -43,10 +43,6 @@ fn quirks_mode_has_attribute_selector_matches() {
   let stylesheet = parse_stylesheet(css).unwrap();
   let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
 
-  assert_eq!(
-    display(find_by_id(&styled, "hit").expect("hit")),
-    "inline"
-  );
+  assert_eq!(display(find_by_id(&styled, "hit").expect("hit")), "inline");
   assert_eq!(display(find_by_id(&styled, "miss").expect("miss")), "block");
 }
-

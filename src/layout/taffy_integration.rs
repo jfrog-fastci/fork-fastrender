@@ -32,9 +32,9 @@ use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
 #[cfg(test)]
 use std::sync::LazyLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use taffy::style::Style as TaffyStyle;
 use taffy::TaffyTree;

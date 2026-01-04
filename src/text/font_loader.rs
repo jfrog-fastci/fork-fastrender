@@ -38,8 +38,8 @@ use crate::error::Result;
 use crate::render_control;
 use crate::resource::{
   cors_enforcement_enabled, ensure_font_mime_sane, ensure_http_success, origin_from_url,
-  validate_cors_allow_origin, CorsMode, FetchDestination, FetchRequest, FetchedResource, HttpFetcher,
-  HttpRetryPolicy, ResourceFetcher,
+  validate_cors_allow_origin, CorsMode, FetchDestination, FetchRequest, FetchedResource,
+  HttpFetcher, HttpRetryPolicy, ResourceFetcher,
 };
 use crate::text::face_cache;
 use crate::text::font_db::FontCacheConfig;
@@ -59,16 +59,16 @@ use base64::Engine;
 use fontdb::Database as FontDbDatabase;
 use lru::LruCache;
 use parking_lot::Mutex as ParkingMutex;
+use rustc_hash::FxHasher;
 use rustybuzz::ttf_parser::{self, GlyphId, Tag};
 use rustybuzz::Direction;
 use rustybuzz::Face;
 use rustybuzz::Feature;
 use rustybuzz::UnicodeBuffer;
 use rustybuzz::Variation;
-use rustc_hash::FxHasher;
 use std::collections::HashSet;
-use std::hash::BuildHasherDefault;
 use std::fs;
+use std::hash::BuildHasherDefault;
 use std::num::NonZeroUsize;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -342,7 +342,8 @@ pub struct FontContext {
   web_fonts: Arc<RwLock<Vec<WebFontFace>>>,
   web_families: Arc<RwLock<std::collections::HashSet<String>>>,
   feature_support: Arc<RwLock<std::collections::HashMap<(usize, u32, u32), bool>>>,
-  scaled_metrics_cache: Arc<ParkingMutex<LruCache<ScaledMetricsCacheKey, ScaledMetrics, ScaledMetricsCacheHasher>>>,
+  scaled_metrics_cache:
+    Arc<ParkingMutex<LruCache<ScaledMetricsCacheKey, ScaledMetrics, ScaledMetricsCacheHasher>>>,
   fetcher: Arc<dyn FontFetcher>,
   resource_context_shared: Option<Arc<RwLock<Option<ResourceContext>>>>,
   pending_async: Arc<(Mutex<usize>, Condvar)>,
@@ -371,7 +372,12 @@ struct ScaledMetricsCacheKey {
 }
 
 impl ScaledMetricsCacheKey {
-  fn new(font: &LoadedFont, effective_font_size: f32, overrides: FontFaceMetricsOverrides, variations: &[Variation]) -> Self {
+  fn new(
+    font: &LoadedFont,
+    effective_font_size: f32,
+    overrides: FontFaceMetricsOverrides,
+    variations: &[Variation],
+  ) -> Self {
     let ascent_override_bits = overrides
       .ascent_override
       .filter(|v| v.is_finite() && *v >= 0.0)
@@ -3171,7 +3177,8 @@ mod tests {
         data: font_bytes.clone(),
         access_control_allow_origin: acao.map(|v| v.to_string()),
       });
-      let mut ctx = FontContext::with_database_and_fetcher(Arc::new(FontDatabase::empty()), fetcher);
+      let mut ctx =
+        FontContext::with_database_and_fetcher(Arc::new(FontDatabase::empty()), fetcher);
       let mut resource_ctx = ResourceContext::default();
       resource_ctx.document_url = Some(doc_url.to_string());
       resource_ctx.policy.document_origin = crate::resource::origin_from_url(doc_url);
@@ -3189,8 +3196,7 @@ mod tests {
 
     // Toggle disabled: behavior should be unchanged.
     {
-      let toggles =
-        HashMap::from([("FASTR_FETCH_ENFORCE_CORS".to_string(), "0".to_string())]);
+      let toggles = HashMap::from([("FASTR_FETCH_ENFORCE_CORS".to_string(), "0".to_string())]);
       let _guard = set_runtime_toggles(Arc::new(RuntimeToggles::from_map(toggles)));
 
       let ctx = make_context(None, "https://example.com/");
@@ -3205,8 +3211,7 @@ mod tests {
 
     // Toggle enabled: enforce Access-Control-Allow-Origin for cross-origin fonts.
     {
-      let toggles =
-        HashMap::from([("FASTR_FETCH_ENFORCE_CORS".to_string(), "1".to_string())]);
+      let toggles = HashMap::from([("FASTR_FETCH_ENFORCE_CORS".to_string(), "1".to_string())]);
       let _guard = set_runtime_toggles(Arc::new(RuntimeToggles::from_map(toggles)));
 
       let ctx = make_context(None, "https://example.com/");

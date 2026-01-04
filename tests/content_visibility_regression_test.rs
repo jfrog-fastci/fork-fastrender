@@ -38,7 +38,8 @@ fn base_url_for(html_path: &Path) -> Result<String, String> {
 
 fn run_fixture_with_options(options: RenderOptions) -> Vec<u8> {
   let html_path = fixtures_dir().join("content_visibility/index.html");
-  let html = fs::read_to_string(&html_path).unwrap_or_else(|e| panic!("Failed to read fixture: {e}"));
+  let html =
+    fs::read_to_string(&html_path).unwrap_or_else(|e| panic!("Failed to read fixture: {e}"));
   let base_url = base_url_for(&html_path).expect("failed to build base url");
 
   let mut renderer = FastRender::builder()
@@ -51,7 +52,11 @@ fn run_fixture_with_options(options: RenderOptions) -> Vec<u8> {
   encode_image(&pixmap, OutputFormat::Png).expect("encode should succeed")
 }
 
-fn assert_matches_golden(golden_name: &str, rendered: &[u8], compare_config: &r#ref::CompareConfig) {
+fn assert_matches_golden(
+  golden_name: &str,
+  rendered: &[u8],
+  compare_config: &r#ref::CompareConfig,
+) {
   let golden_path = golden_path(golden_name);
   if should_update_goldens() {
     fs::create_dir_all(golden_dir()).expect("failed to create golden dir");
@@ -69,14 +74,8 @@ fn assert_matches_golden(golden_name: &str, rendered: &[u8], compare_config: &r#
     )
   });
 
-  compare_pngs(
-    golden_name,
-    rendered,
-    &golden,
-    compare_config,
-    &diff_dir(),
-  )
-  .unwrap_or_else(|e| panic!("Comparison failed: {e}"));
+  compare_pngs(golden_name, rendered, &golden, compare_config, &diff_dir())
+    .unwrap_or_else(|e| panic!("Comparison failed: {e}"));
 }
 
 #[test]
@@ -96,5 +95,9 @@ fn content_visibility_regression() {
       .with_viewport(420, 260)
       .with_scroll(0.0, 150.0),
   );
-  assert_matches_golden("content_visibility_scrolled", &rendered_scrolled, &compare_config);
+  assert_matches_golden(
+    "content_visibility_scrolled",
+    &rendered_scrolled,
+    &compare_config,
+  );
 }

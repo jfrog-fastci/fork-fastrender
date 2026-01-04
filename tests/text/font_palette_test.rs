@@ -173,7 +173,10 @@ fn resolve_font_palette_current_color_override_ignores_text_alpha() {
 
   assert_eq!(
     resolved_a.overrides,
-    vec![(1, Rgba::new(10, 20, 30, 1.0)), (2, Rgba::new(1, 2, 3, 0.25))]
+    vec![
+      (1, Rgba::new(10, 20, 30, 1.0)),
+      (2, Rgba::new(1, 2, 3, 0.25))
+    ]
   );
   assert_eq!(resolved_b.overrides, resolved_a.overrides);
   assert_eq!(resolved_b.override_hash, resolved_a.override_hash);

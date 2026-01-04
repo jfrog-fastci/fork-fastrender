@@ -2326,11 +2326,8 @@ impl<'a> LineBuilder<'a> {
       let left_edge = space.left_edge.max(0.0);
       let right_edge = space.right_edge.min(base_width);
       let width = (right_edge - left_edge).max(0.0);
-      let space = crate::layout::inline::float_integration::LineSpace::new(
-        space.y,
-        left_edge,
-        width,
-      );
+      let space =
+        crate::layout::inline::float_integration::LineSpace::new(space.y, left_edge, width);
       self.current_line_space = Some(space);
       self.current_line.available_width = space.width;
       self.current_line.box_width = space.width;
@@ -2730,7 +2727,9 @@ impl<'a> LineBuilder<'a> {
       let metrics = positioned.item.baseline_metrics();
       let vertical_align = positioned.item.vertical_align();
       positioned.baseline_offset = if vertical_align.is_line_relative() {
-        self.baseline_acc.add_line_relative(&metrics, vertical_align);
+        self
+          .baseline_acc
+          .add_line_relative(&metrics, vertical_align);
         0.0
       } else {
         self

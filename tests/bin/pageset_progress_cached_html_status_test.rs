@@ -54,7 +54,10 @@ fn pageset_progress_worker_renders_cached_http_error_status_by_default() {
 
   let contents = fs::read_to_string(&progress_path).expect("read progress");
   let json: Value = serde_json::from_str(&contents).expect("parse progress JSON");
-  assert_eq!(json["status"], "ok", "expected cached status to be non-fatal");
+  assert_eq!(
+    json["status"], "ok",
+    "expected cached status to be non-fatal"
+  );
   assert!(
     json["auto_notes"]
       .as_str()

@@ -51,14 +51,14 @@ use fontdb::Family;
 use fontdb::Query;
 use fontdb::ID;
 use lru::LruCache;
+use parking_lot::Mutex;
 use rustc_hash::FxHasher;
+use std::hash::BuildHasherDefault;
 use std::hash::Hash;
 use std::hash::Hasher;
-use std::hash::BuildHasherDefault;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
-use parking_lot::Mutex;
 
 type FallbackCacheHasher = BuildHasherDefault<FxHasher>;
 const FALLBACK_CACHE_SHARDS: usize = 16;
@@ -173,7 +173,10 @@ where
     let cap = cache.cap().get();
     let inserted_new = cache.put(key, value).is_none();
     let evicted = inserted_new && len_before >= cap;
-    ShardedInsertOutcome { inserted_new, evicted }
+    ShardedInsertOutcome {
+      inserted_new,
+      evicted,
+    }
   }
 
   fn clear(&self) {
@@ -460,18 +463,12 @@ impl FallbackCache {
     self.clusters.clear();
     self.descriptor_hints.clear();
     self.stats.glyph_entries.store(0, Ordering::Relaxed);
-    self
-      .stats
-      .cluster_entries
-      .store(0, Ordering::Relaxed);
+    self.stats.cluster_entries.store(0, Ordering::Relaxed);
     self.last_generation.store(generation, Ordering::Release);
     self.stats.clears.fetch_add(1, Ordering::Relaxed);
   }
 
-  pub(crate) fn get_glyph(
-    &self,
-    key: &GlyphFallbackCacheKey,
-  ) -> Option<Option<Arc<LoadedFont>>> {
+  pub(crate) fn get_glyph(&self, key: &GlyphFallbackCacheKey) -> Option<Option<Arc<LoadedFont>>> {
     let result = self.glyphs.get(key);
     self.stats.record_glyph(result.is_some());
     result
@@ -486,11 +483,7 @@ impl FallbackCache {
     result
   }
 
-  pub(crate) fn insert_glyph(
-    &self,
-    key: GlyphFallbackCacheKey,
-    value: Option<Arc<LoadedFont>>,
-  ) {
+  pub(crate) fn insert_glyph(&self, key: GlyphFallbackCacheKey, value: Option<Arc<LoadedFont>>) {
     let outcome = self.glyphs.put(key, value);
     if outcome.evicted {
       self.stats.glyph_evictions.fetch_add(1, Ordering::Relaxed);
@@ -507,16 +500,10 @@ impl FallbackCache {
   ) {
     let outcome = self.clusters.put(key, value);
     if outcome.evicted {
-      self
-        .stats
-        .cluster_evictions
-        .fetch_add(1, Ordering::Relaxed);
+      self.stats.cluster_evictions.fetch_add(1, Ordering::Relaxed);
     }
     if outcome.inserted_new && !outcome.evicted {
-      self
-        .stats
-        .cluster_entries
-        .fetch_add(1, Ordering::Relaxed);
+      self.stats.cluster_entries.fetch_add(1, Ordering::Relaxed);
     }
   }
 
@@ -554,10 +541,7 @@ impl FallbackCache {
     self.clusters.clear();
     self.descriptor_hints.clear();
     self.stats.glyph_entries.store(0, Ordering::Relaxed);
-    self
-      .stats
-      .cluster_entries
-      .store(0, Ordering::Relaxed);
+    self.stats.cluster_entries.store(0, Ordering::Relaxed);
     self.stats.clears.fetch_add(1, Ordering::Relaxed);
   }
 
@@ -1134,7 +1118,10 @@ mod tests {
     let _guard = EnvVarGuard::set(FALLBACK_CACHE_CAPACITY_ENV, "0");
     let cache = FallbackCache::new(32);
     let descriptor = dummy_descriptor();
-    let glyph_key = GlyphFallbackCacheKey { descriptor, ch: 'a' };
+    let glyph_key = GlyphFallbackCacheKey {
+      descriptor,
+      ch: 'a',
+    };
     let cluster_key = ClusterFallbackCacheKey {
       descriptor,
       signature: 42,
@@ -1169,8 +1156,14 @@ mod tests {
     let cache = FallbackCache::new(1);
     let descriptor = dummy_descriptor();
 
-    let glyph_key_1 = GlyphFallbackCacheKey { descriptor, ch: 'a' };
-    let glyph_key_2 = GlyphFallbackCacheKey { descriptor, ch: 'b' };
+    let glyph_key_1 = GlyphFallbackCacheKey {
+      descriptor,
+      ch: 'a',
+    };
+    let glyph_key_2 = GlyphFallbackCacheKey {
+      descriptor,
+      ch: 'b',
+    };
     cache.insert_glyph(glyph_key_1, None);
     cache.insert_glyph(glyph_key_2, None);
 

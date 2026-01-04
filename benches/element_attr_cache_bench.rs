@@ -14,8 +14,8 @@ use fastrender::dom::ElementRef;
 use fastrender::dom::HTML_NAMESPACE;
 use selectors::context::QuirksMode;
 use selectors::matching::matches_selector;
-use selectors::matching::MatchingForInvalidation;
 use selectors::matching::MatchingContext;
+use selectors::matching::MatchingForInvalidation;
 use selectors::matching::MatchingMode;
 use selectors::matching::NeedsSelectorFlags;
 use selectors::matching::SelectorCaches;
@@ -147,4 +147,3 @@ fn bench_element_attr_cache(c: &mut Criterion) {
 
 criterion_group!(benches, bench_element_attr_cache);
 criterion_main!(benches);
-

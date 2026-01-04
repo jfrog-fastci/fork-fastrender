@@ -1044,16 +1044,11 @@ mod tests {
       path,
       fill_rule: SkFillRule::Winding,
     };
-    let mask = clip
-      .mask(1.0, size, Transform::identity())
-      .expect("mask");
+    let mask = clip.mask(1.0, size, Transform::identity()).expect("mask");
 
     // Point well inside the triangle.
     let idx = 6 * size.width() as usize + 6;
-    assert!(
-      mask.data()[idx] > 200,
-      "expected open subpath to be filled"
-    );
+    assert!(mask.data()[idx] > 200, "expected open subpath to be filled");
   }
 
   #[test]

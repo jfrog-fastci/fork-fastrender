@@ -4,9 +4,9 @@ use std::path::Path;
 use std::process::Command;
 
 const ONE_BY_ONE_PNG: &[u8] = &[
-  137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
-  8, 4, 0, 0, 0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 252, 255, 31, 0,
-  3, 3, 1, 255, 165, 231, 224, 169, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+  137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 4, 0, 0,
+  0, 181, 28, 12, 2, 0, 0, 0, 11, 73, 68, 65, 84, 120, 218, 99, 252, 255, 31, 0, 3, 3, 1, 255, 165,
+  231, 224, 169, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
 ];
 
 fn minimal_style() -> Value {
@@ -123,10 +123,19 @@ fn diff_snapshots_supports_pageset_dump_layout() {
 
   let status = Command::new(env!("CARGO_BIN_EXE_diff_snapshots"))
     .current_dir(tmp.path())
-    .args(["--before", before.to_str().unwrap(), "--after", after.to_str().unwrap()])
+    .args([
+      "--before",
+      before.to_str().unwrap(),
+      "--after",
+      after.to_str().unwrap(),
+    ])
     .status()
     .expect("run diff_snapshots");
-  assert!(status.success(), "expected success, got {:?}", status.code());
+  assert!(
+    status.success(),
+    "expected success, got {:?}",
+    status.code()
+  );
 
   assert!(
     tmp.path().join("diff_snapshots.html").exists(),
@@ -188,11 +197,14 @@ fn diff_snapshots_links_pageset_dump_render_png() {
     ])
     .status()
     .expect("run diff_snapshots");
-  assert!(status.success(), "expected success, got {:?}", status.code());
+  assert!(
+    status.success(),
+    "expected success, got {:?}",
+    status.code()
+  );
 
-  let report: Value =
-    serde_json::from_str(&fs::read_to_string(&report_json).expect("read report"))
-      .expect("parse report json");
+  let report: Value = serde_json::from_str(&fs::read_to_string(&report_json).expect("read report"))
+    .expect("parse report json");
   let entry = report["entries"]
     .as_array()
     .and_then(|entries| {
@@ -234,11 +246,14 @@ fn diff_snapshots_links_pageset_dump_legacy_stem_png() {
     ])
     .status()
     .expect("run diff_snapshots");
-  assert!(status.success(), "expected success, got {:?}", status.code());
+  assert!(
+    status.success(),
+    "expected success, got {:?}",
+    status.code()
+  );
 
-  let report: Value =
-    serde_json::from_str(&fs::read_to_string(&report_json).expect("read report"))
-      .expect("parse report json");
+  let report: Value = serde_json::from_str(&fs::read_to_string(&report_json).expect("read report"))
+    .expect("parse report json");
   let entry = report["entries"]
     .as_array()
     .and_then(|entries| {
@@ -267,10 +282,19 @@ fn diff_snapshots_supports_pageset_dump_layout_missing_entries() {
 
   let status = Command::new(env!("CARGO_BIN_EXE_diff_snapshots"))
     .current_dir(tmp.path())
-    .args(["--before", before.to_str().unwrap(), "--after", after.to_str().unwrap()])
+    .args([
+      "--before",
+      before.to_str().unwrap(),
+      "--after",
+      after.to_str().unwrap(),
+    ])
     .status()
     .expect("run diff_snapshots");
-  assert!(status.success(), "expected success, got {:?}", status.code());
+  assert!(
+    status.success(),
+    "expected success, got {:?}",
+    status.code()
+  );
 
   let report = read_report(&tmp);
   let entries = report["entries"].as_array().expect("entries array");

@@ -11,6 +11,7 @@ use fastrender::dom::{self};
 use fastrender::geometry::Point;
 use fastrender::geometry::Rect;
 use fastrender::geometry::Size;
+use fastrender::image_output::encode_image;
 use fastrender::layout::engine::LayoutConfig;
 use fastrender::layout::engine::LayoutEngine;
 use fastrender::paint::display_list::Transform3D;
@@ -32,7 +33,6 @@ use fastrender::tree::box_generation::generate_box_tree_with_anonymous_fixup;
 use fastrender::tree::box_tree::BoxNode;
 use fastrender::tree::fragment_tree::FragmentContent;
 use fastrender::tree::fragment_tree::FragmentNode;
-use fastrender::image_output::encode_image;
 use fastrender::{snapshot_pipeline, OutputFormat, RenderArtifactRequest, RenderOptions};
 use serde_json;
 use std::collections::{HashMap, HashSet};
@@ -110,7 +110,10 @@ struct Args {
   timeout: Option<u64>,
 }
 
-fn write_pretty_json(path: &Path, value: &impl serde::Serialize) -> Result<(), Box<dyn std::error::Error>> {
+fn write_pretty_json(
+  path: &Path,
+  value: &impl serde::Serialize,
+) -> Result<(), Box<dyn std::error::Error>> {
   if let Some(parent) = path.parent() {
     if !parent.as_os_str().is_empty() {
       fs::create_dir_all(parent)?;
@@ -121,7 +124,10 @@ fn write_pretty_json(path: &Path, value: &impl serde::Serialize) -> Result<(), B
   Ok(())
 }
 
-fn find_dom_node_by_preorder_id(root: &fastrender::dom::DomNode, target_id: usize) -> Option<fastrender::dom::DomNode> {
+fn find_dom_node_by_preorder_id(
+  root: &fastrender::dom::DomNode,
+  target_id: usize,
+) -> Option<fastrender::dom::DomNode> {
   fn walk(
     node: &fastrender::dom::DomNode,
     next: &mut usize,
@@ -197,7 +203,10 @@ fn collect_box_ids(node: &BoxNode, out: &mut HashSet<usize>) {
   }
 }
 
-fn filter_fragment_subtree(node: &FragmentNode, allowed_box_ids: &HashSet<usize>) -> Option<FragmentNode> {
+fn filter_fragment_subtree(
+  node: &FragmentNode,
+  allowed_box_ids: &HashSet<usize>,
+) -> Option<FragmentNode> {
   let children: Vec<FragmentNode> = node
     .children
     .iter()
@@ -212,7 +221,13 @@ fn filter_fragment_subtree(node: &FragmentNode, allowed_box_ids: &HashSet<usize>
   Some(filtered)
 }
 
-fn draw_fragment_overlays(pixmap: &mut tiny_skia::Pixmap, tree: &fastrender::FragmentTree, dpr: f32, scroll_x: f32, scroll_y: f32) {
+fn draw_fragment_overlays(
+  pixmap: &mut tiny_skia::Pixmap,
+  tree: &fastrender::FragmentTree,
+  dpr: f32,
+  scroll_x: f32,
+  scroll_y: f32,
+) {
   fn color_for(fragment: &FragmentNode) -> Color {
     match &fragment.content {
       FragmentContent::Block { .. } => Color::from_rgba8(255, 0, 0, 160),
@@ -268,11 +283,13 @@ fn run_dump_outputs(
   viewport: (u32, u32),
 ) -> Result<(), Box<dyn std::error::Error>> {
   if args.filter_id.is_some() && args.filter_selector.is_some() {
-    return Err(std::io::Error::new(
-      std::io::ErrorKind::InvalidInput,
-      "--filter-id and --filter-selector are mutually exclusive",
-    )
-    .into());
+    return Err(
+      std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "--filter-id and --filter-selector are mutually exclusive",
+      )
+      .into(),
+    );
   }
 
   let options = RenderOptions::new()
@@ -294,37 +311,36 @@ fn run_dump_outputs(
     ..
   } = report;
 
-  let mut dom = artifacts
-    .dom
-    .ok_or_else(|| {
-      std::io::Error::new(std::io::ErrorKind::Other, "inspect_frag: missing DOM artifact")
-    })?;
-  let mut styled = artifacts
-    .styled_tree
-    .ok_or_else(|| {
-      std::io::Error::new(std::io::ErrorKind::Other, "inspect_frag: missing styled tree artifact")
-    })?;
-  let mut box_tree = artifacts
-    .box_tree
-    .ok_or_else(|| {
-      std::io::Error::new(std::io::ErrorKind::Other, "inspect_frag: missing box tree artifact")
-    })?;
-  let mut fragment_tree = artifacts
-    .fragment_tree
-    .ok_or_else(|| {
-      std::io::Error::new(
-        std::io::ErrorKind::Other,
-        "inspect_frag: missing fragment tree artifact",
-      )
-    })?;
-  let mut display_list = artifacts
-    .display_list
-    .ok_or_else(|| {
-      std::io::Error::new(
-        std::io::ErrorKind::Other,
-        "inspect_frag: missing display list artifact",
-      )
-    })?;
+  let mut dom = artifacts.dom.ok_or_else(|| {
+    std::io::Error::new(
+      std::io::ErrorKind::Other,
+      "inspect_frag: missing DOM artifact",
+    )
+  })?;
+  let mut styled = artifacts.styled_tree.ok_or_else(|| {
+    std::io::Error::new(
+      std::io::ErrorKind::Other,
+      "inspect_frag: missing styled tree artifact",
+    )
+  })?;
+  let mut box_tree = artifacts.box_tree.ok_or_else(|| {
+    std::io::Error::new(
+      std::io::ErrorKind::Other,
+      "inspect_frag: missing box tree artifact",
+    )
+  })?;
+  let mut fragment_tree = artifacts.fragment_tree.ok_or_else(|| {
+    std::io::Error::new(
+      std::io::ErrorKind::Other,
+      "inspect_frag: missing fragment tree artifact",
+    )
+  })?;
+  let mut display_list = artifacts.display_list.ok_or_else(|| {
+    std::io::Error::new(
+      std::io::ErrorKind::Other,
+      "inspect_frag: missing display list artifact",
+    )
+  })?;
 
   let target_node_id = match (&args.filter_id, &args.filter_selector) {
     (None, None) => None,
@@ -377,13 +393,13 @@ fn run_dump_outputs(
       }
     }
     if roots.is_empty() {
-      return Err(std::io::Error::new(
-        std::io::ErrorKind::Other,
-        format!(
-          "inspect_frag: filter matched node_id={node_id} but no fragments were retained"
-        ),
-      )
-      .into());
+      return Err(
+        std::io::Error::new(
+          std::io::ErrorKind::Other,
+          format!("inspect_frag: filter matched node_id={node_id} but no fragments were retained"),
+        )
+        .into(),
+      );
     }
     let viewport_size = fragment_tree.viewport_size();
     let mut filtered_tree = fastrender::FragmentTree::from_fragments(roots, viewport_size);
@@ -424,7 +440,13 @@ fn run_dump_outputs(
 
   if let Some(path) = &args.render_overlay {
     let mut pixmap = _pixmap;
-    draw_fragment_overlays(&mut pixmap, &fragment_tree, args.dpr, args.scroll_x, args.scroll_y);
+    draw_fragment_overlays(
+      &mut pixmap,
+      &fragment_tree,
+      args.dpr,
+      args.scroll_x,
+      args.scroll_y,
+    );
     let bytes = encode_image(&pixmap, OutputFormat::Png)?;
     if let Some(parent) = path.parent() {
       if !parent.as_os_str().is_empty() {
@@ -522,7 +544,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     .build()?;
 
   if args.dump_snapshot || args.dump_json.is_some() || args.render_overlay.is_some() {
-    run_dump_outputs(&mut renderer, &html, &input_url, &args, (viewport_w, viewport_h))?;
+    run_dump_outputs(
+      &mut renderer,
+      &html,
+      &input_url,
+      &args,
+      (viewport_w, viewport_h),
+    )?;
     return Ok(());
   }
 

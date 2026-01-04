@@ -26,8 +26,11 @@ fn selects_missing_fixtures_for_non_ok_pages() {
   write_progress(&progress, "error.test", "error");
 
   fs::create_dir_all(fixtures.path().join("timeout.test")).expect("create fixture dir");
-  fs::write(fixtures.path().join("timeout.test/index.html"), "<!doctype html>")
-    .expect("write fixture html");
+  fs::write(
+    fixtures.path().join("timeout.test/index.html"),
+    "<!doctype html>",
+  )
+  .expect("write fixture html");
 
   let plan = plan_missing_failure_fixtures(progress.path(), fixtures.path()).expect("plan");
   let failing: Vec<_> = plan.failing_pages.iter().map(|p| p.stem.as_str()).collect();
@@ -51,4 +54,3 @@ fn selects_missing_fixtures_for_non_ok_pages() {
     .collect();
   assert_eq!(missing, vec!["error.test", "panic.test"]);
 }
-

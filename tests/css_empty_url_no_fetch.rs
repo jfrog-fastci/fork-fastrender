@@ -42,4 +42,3 @@ fn empty_css_url_values_do_not_trigger_fetches() {
     result.diagnostics.fetch_errors
   );
 }
-

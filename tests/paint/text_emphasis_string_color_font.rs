@@ -232,21 +232,21 @@ fn text_emphasis_string_respects_font_palette_overrides() {
     };
     saw_emphasis = true;
     assert!(
-      emphasis_text
-        .runs
-        .iter()
-        .any(|run| {
-          used_entries.iter().all(|idx| {
-            run
-              .palette_overrides
-              .iter()
-              .any(|(entry, c)| *entry == *idx && c.g > 200 && c.r < 80 && c.b < 80)
-          })
-        }),
+      emphasis_text.runs.iter().any(|run| {
+        used_entries.iter().all(|idx| {
+          run
+            .palette_overrides
+            .iter()
+            .any(|(entry, c)| *entry == *idx && c.g > 200 && c.r < 80 && c.b < 80)
+        })
+      }),
       "expected shaped emphasis text runs to carry palette override colors"
     );
   }
-  assert!(saw_emphasis, "fixture did not generate emphasis marks for inspection");
+  assert!(
+    saw_emphasis,
+    "fixture did not generate emphasis marks for inspection"
+  );
 
   assert!(
     contains_color_approx(&pixmap, override_rgb, 30),

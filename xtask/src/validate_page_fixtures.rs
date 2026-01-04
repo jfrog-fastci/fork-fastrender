@@ -235,11 +235,7 @@ fn strip_query_fragment(url: &str) -> &str {
   &url[..end]
 }
 
-fn resolve_local_html_path(
-  fixture_dir: &Path,
-  base_dir: &Path,
-  raw: &str,
-) -> Option<PathBuf> {
+fn resolve_local_html_path(fixture_dir: &Path, base_dir: &Path, raw: &str) -> Option<PathBuf> {
   let trimmed = raw.trim();
   if trimmed.is_empty() || is_remote_fetch_url(trimmed) {
     return None;
@@ -271,7 +267,10 @@ fn resolve_local_html_path(
   if !path.starts_with(fixture_dir) {
     return None;
   }
-  let ext = path.extension().and_then(|e| e.to_str())?.to_ascii_lowercase();
+  let ext = path
+    .extension()
+    .and_then(|e| e.to_str())?
+    .to_ascii_lowercase();
   if !is_html_extension(&ext) {
     return None;
   }
@@ -333,9 +332,7 @@ fn scan_embedded_html_assets_for_fixture(
   violations: &mut Vec<Violation>,
 ) -> Result<()> {
   let fixture_dir = fixtures_root.join(fixture_name);
-  let base_dir = index_path
-    .parent()
-    .unwrap_or_else(|| fixture_dir.as_path());
+  let base_dir = index_path.parent().unwrap_or_else(|| fixture_dir.as_path());
 
   let mut queue: VecDeque<PathBuf> = VecDeque::new();
   let mut visited: BTreeSet<PathBuf> = BTreeSet::new();
@@ -433,7 +430,9 @@ fn scan_css_for_remote_fetches(css: &str) -> Vec<UrlSpan> {
         _ => start -= 1,
       }
     }
-    content[start..at].to_ascii_lowercase().contains("@namespace")
+    content[start..at]
+      .to_ascii_lowercase()
+      .contains("@namespace")
   }
 
   let mut out = Vec::new();
@@ -576,9 +575,8 @@ fn scan_html_for_remote_fetches(html: &str) -> Vec<UrlSpan> {
     Regex::new("(?is)<source[^>]*\\ssrcset\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
       .expect("source srcset regex")
   });
-  let style_tag = STYLE_TAG.get_or_init(|| {
-    Regex::new("(?is)<style[^>]*>(.*?)</style>").expect("style tag regex")
-  });
+  let style_tag = STYLE_TAG
+    .get_or_init(|| Regex::new("(?is)<style[^>]*>(.*?)</style>").expect("style tag regex"));
   let style_attr_double =
     STYLE_ATTR_DOUBLE.get_or_init(|| Regex::new("(?is)\\sstyle\\s*=\\s*\"([^\"]*)\"").unwrap());
   let style_attr_single =
@@ -698,9 +696,9 @@ fn scan_html_for_remote_fetches(html: &str) -> Vec<UrlSpan> {
       continue;
     };
     let tag_str = tag.as_str();
-    let rel_value = attr_rel.captures(tag_str).and_then(|c| {
-      capture_first_match(&c, &[1, 2, 3]).map(|m| m.as_str().to_string())
-    });
+    let rel_value = attr_rel
+      .captures(tag_str)
+      .and_then(|c| capture_first_match(&c, &[1, 2, 3]).map(|m| m.as_str().to_string()));
     let Some(rel_value) = rel_value else {
       continue;
     };
@@ -772,10 +770,8 @@ fn scan_svg_for_remote_fetches(svg: &str) -> Vec<UrlSpan> {
     .unwrap()
   });
   let use_href = USE_HREF.get_or_init(|| {
-    Regex::new(
-      "(?is)<use[^>]*\\s(?:href|xlink:href)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
-    )
-    .unwrap()
+    Regex::new("(?is)<use[^>]*\\s(?:href|xlink:href)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+      .unwrap()
   });
   let feimage_href = FEIMAGE_HREF.get_or_init(|| {
     Regex::new(

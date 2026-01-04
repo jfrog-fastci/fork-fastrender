@@ -837,10 +837,13 @@ fn hash_fixture_dir_sha256(dir: &Path) -> Result<String> {
     if !entry.file_type().is_file() {
       continue;
     }
-    let rel = entry
-      .path()
-      .strip_prefix(dir)
-      .with_context(|| format!("strip prefix {} from {}", dir.display(), entry.path().display()))?;
+    let rel = entry.path().strip_prefix(dir).with_context(|| {
+      format!(
+        "strip prefix {} from {}",
+        dir.display(),
+        entry.path().display()
+      )
+    })?;
     files.push((normalize_rel_path(rel), entry.path().to_path_buf()));
   }
   files.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1022,12 +1025,7 @@ fn validate_fastrender_output_metadata(
       let font_dirs_summary = match metadata.font_dirs.as_deref() {
         Some(dirs) if dirs.is_empty() => "[]".to_string(),
         Some(dirs) => {
-          let sample = dirs
-            .iter()
-            .take(3)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
+          let sample = dirs.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
           if dirs.len() > 3 {
             format!("[{}, ... (+{} more)]", sample, dirs.len() - 3)
           } else {

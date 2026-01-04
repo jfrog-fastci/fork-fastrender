@@ -82,7 +82,9 @@ impl CoverageCollector {
     let entry = self.properties.entry(property).or_default();
     entry.count = entry.count.saturating_add(1);
 
-    if self.sample_values_per_property == 0 || entry.sample_values.len() >= self.sample_values_per_property {
+    if self.sample_values_per_property == 0
+      || entry.sample_values.len() >= self.sample_values_per_property
+    {
       return;
     }
 
@@ -91,7 +93,11 @@ impl CoverageCollector {
       return;
     }
 
-    if entry.sample_values.iter().any(|existing| existing == trimmed) {
+    if entry
+      .sample_values
+      .iter()
+      .any(|existing| existing == trimmed)
+    {
       return;
     }
 
@@ -641,11 +647,7 @@ fn print_human_summary(report: &CoverageReport, top: usize) {
     .iter()
     .filter(|p| !p.known_style_property && !p.is_custom_property)
     .collect();
-  unknown.sort_by(|a, b| {
-    b.count
-      .cmp(&a.count)
-      .then_with(|| a.name.cmp(&b.name))
-  });
+  unknown.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
 
   println!("Top unknown properties (by count):");
   for (idx, prop) in unknown.iter().take(top).enumerate() {
@@ -670,11 +672,7 @@ fn print_human_summary(report: &CoverageReport, top: usize) {
 
   let mut unknown_non_vendor: Vec<&PropertyReport> =
     unknown.into_iter().filter(|p| !p.vendor_prefixed).collect();
-  unknown_non_vendor.sort_by(|a, b| {
-    b.count
-      .cmp(&a.count)
-      .then_with(|| a.name.cmp(&b.name))
-  });
+  unknown_non_vendor.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
 
   if !unknown_non_vendor.is_empty() {
     println!();

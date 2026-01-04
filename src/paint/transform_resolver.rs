@@ -1,8 +1,8 @@
+use crate::css::types::{RotateValue, ScaleValue, TranslateValue};
 use crate::geometry::Point;
 use crate::geometry::Rect;
 use crate::paint::display_list::Transform2D;
 use crate::paint::display_list::Transform3D;
-use crate::css::types::{RotateValue, ScaleValue, TranslateValue};
 use crate::style::types::TransformBox;
 use crate::style::values::Length;
 use crate::style::ComputedStyle;
@@ -66,12 +66,27 @@ pub fn resolve_transforms(
     // The final matrix is then computed using standard transform-list semantics (the rightmost
     // transform applies first).
     if let TranslateValue::Values { x, y, z } = style.translate {
-      let tx =
-        resolve_transform_length(&x, style.font_size, style.root_font_size, percentage_width, viewport);
-      let ty =
-        resolve_transform_length(&y, style.font_size, style.root_font_size, percentage_height, viewport);
-      let tz =
-        resolve_transform_length(&z, style.font_size, style.root_font_size, percentage_width, viewport);
+      let tx = resolve_transform_length(
+        &x,
+        style.font_size,
+        style.root_font_size,
+        percentage_width,
+        viewport,
+      );
+      let ty = resolve_transform_length(
+        &y,
+        style.font_size,
+        style.root_font_size,
+        percentage_height,
+        viewport,
+      );
+      let tz = resolve_transform_length(
+        &z,
+        style.font_size,
+        style.root_font_size,
+        percentage_width,
+        viewport,
+      );
       ts = ts.multiply(&Transform3D::translate(tx, ty, tz));
     }
 
@@ -86,44 +101,40 @@ pub fn resolve_transforms(
     for component in &style.transform {
       let next = match component {
         crate::css::types::Transform::Translate(x, y) => {
-          let tx =
-            resolve_transform_length(
-              x,
-              style.font_size,
-              style.root_font_size,
-              percentage_width,
-              viewport,
-            );
-          let ty =
-            resolve_transform_length(
-              y,
-              style.font_size,
-              style.root_font_size,
-              percentage_height,
-              viewport,
-            );
+          let tx = resolve_transform_length(
+            x,
+            style.font_size,
+            style.root_font_size,
+            percentage_width,
+            viewport,
+          );
+          let ty = resolve_transform_length(
+            y,
+            style.font_size,
+            style.root_font_size,
+            percentage_height,
+            viewport,
+          );
           Transform3D::translate(tx, ty, 0.0)
         }
         crate::css::types::Transform::TranslateX(x) => {
-          let tx =
-            resolve_transform_length(
-              x,
-              style.font_size,
-              style.root_font_size,
-              percentage_width,
-              viewport,
-            );
+          let tx = resolve_transform_length(
+            x,
+            style.font_size,
+            style.root_font_size,
+            percentage_width,
+            viewport,
+          );
           Transform3D::translate(tx, 0.0, 0.0)
         }
         crate::css::types::Transform::TranslateY(y) => {
-          let ty =
-            resolve_transform_length(
-              y,
-              style.font_size,
-              style.root_font_size,
-              percentage_height,
-              viewport,
-            );
+          let ty = resolve_transform_length(
+            y,
+            style.font_size,
+            style.root_font_size,
+            percentage_height,
+            viewport,
+          );
           Transform3D::translate(0.0, ty, 0.0)
         }
         crate::css::types::Transform::TranslateZ(z) => Transform3D::translate(
@@ -138,30 +149,27 @@ pub fn resolve_transforms(
           ),
         ),
         crate::css::types::Transform::Translate3d(x, y, z) => {
-          let tx =
-            resolve_transform_length(
-              x,
-              style.font_size,
-              style.root_font_size,
-              percentage_width,
-              viewport,
-            );
-          let ty =
-            resolve_transform_length(
-              y,
-              style.font_size,
-              style.root_font_size,
-              percentage_height,
-              viewport,
-            );
-          let tz =
-            resolve_transform_length(
-              z,
-              style.font_size,
-              style.root_font_size,
-              percentage_width,
-              viewport,
-            );
+          let tx = resolve_transform_length(
+            x,
+            style.font_size,
+            style.root_font_size,
+            percentage_width,
+            viewport,
+          );
+          let ty = resolve_transform_length(
+            y,
+            style.font_size,
+            style.root_font_size,
+            percentage_height,
+            viewport,
+          );
+          let tz = resolve_transform_length(
+            z,
+            style.font_size,
+            style.root_font_size,
+            percentage_width,
+            viewport,
+          );
           Transform3D::translate(tx, ty, tz)
         }
         crate::css::types::Transform::Scale(sx, sy) => Transform3D::scale(*sx, *sy, 1.0),
@@ -212,15 +220,15 @@ pub fn resolve_transforms(
         crate::css::types::Transform::Skew(ax, ay) => {
           Transform3D::skew(ax.to_radians(), ay.to_radians())
         }
-        crate::css::types::Transform::Perspective(len) => Transform3D::perspective(
-          resolve_transform_length(
+        crate::css::types::Transform::Perspective(len) => {
+          Transform3D::perspective(resolve_transform_length(
             len,
             style.font_size,
             style.root_font_size,
             percentage_width,
             viewport,
-          ),
-        ),
+          ))
+        }
         crate::css::types::Transform::Matrix(a, b, c, d, e, f) => {
           Transform3D::from_2d(&Transform2D {
             a: *a,
@@ -546,7 +554,9 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.transform_origin.x = Length::px(0.0);
     style.transform_origin.y = Length::px(0.0);
-    style.transform.push(Transform::Rotate3d(0.0, 0.0, 1.0, 90.0));
+    style
+      .transform
+      .push(Transform::Rotate3d(0.0, 0.0, 1.0, 90.0));
     let bounds = Rect::from_xywh(0.0, 0.0, 100.0, 50.0);
     let matrix = resolve_transform3d(&style, bounds, None)
       .expect("rotate3d")

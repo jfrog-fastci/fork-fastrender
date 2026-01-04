@@ -483,8 +483,7 @@ fn collect_snapshots(dir: &Path) -> Result<HashMap<String, PathBuf>, String> {
   // the same stem.
   let mut map: HashMap<String, (PathBuf, SnapshotOrigin)> = HashMap::new();
 
-  let entries =
-    fs::read_dir(dir).map_err(|e| format!("failed to read {}: {e}", dir.display()))?;
+  let entries = fs::read_dir(dir).map_err(|e| format!("failed to read {}: {e}", dir.display()))?;
 
   for entry in entries {
     let entry = entry.map_err(|e| format!("failed to read entry: {e}"))?;
@@ -495,8 +494,7 @@ fn collect_snapshots(dir: &Path) -> Result<HashMap<String, PathBuf>, String> {
 
     if file_type.is_file() {
       if let Some((stem, origin)) = snapshot_stem(&path) {
-        let canonical =
-          fs::canonicalize(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let canonical = fs::canonicalize(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         upsert_snapshot(&mut map, stem, canonical, origin);
       }
       continue;

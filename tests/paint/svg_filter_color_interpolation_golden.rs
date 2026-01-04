@@ -63,4 +63,3 @@ fn svg_filter_color_interpolation_filters_match_golden() {
   )
   .unwrap_or_else(|e| panic!("{}", e));
 }
-

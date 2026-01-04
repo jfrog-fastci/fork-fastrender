@@ -355,15 +355,15 @@ fn run() -> Result<i32, String> {
   } else {
     Some((args.include.clone(), args.exclude.clone()))
   };
-  let gating_meta = if args.fail_on_regression || args.regression_threshold_percent.abs() > METRIC_EPS
-  {
-    Some(ReportGating {
-      fail_on_regression: args.fail_on_regression,
-      regression_threshold_percent: args.regression_threshold_percent,
-    })
-  } else {
-    None
-  };
+  let gating_meta =
+    if args.fail_on_regression || args.regression_threshold_percent.abs() > METRIC_EPS {
+      Some(ReportGating {
+        fail_on_regression: args.fail_on_regression,
+        regression_threshold_percent: args.regression_threshold_percent,
+      })
+    } else {
+      None
+    };
 
   let cwd =
     std::env::current_dir().map_err(|e| format!("failed to read current directory: {e}"))?;
@@ -376,16 +376,25 @@ fn run() -> Result<i32, String> {
     .baseline_html
     .as_ref()
     .map(|path| absolutize_path(&cwd, path));
-  let new_html_override = args.new_html.as_ref().map(|path| absolutize_path(&cwd, path));
-  let baseline_report_html =
-    baseline_html_override.clone().or_else(|| guess_report_html_path(&baseline_path));
-  let new_report_html = new_html_override.clone().or_else(|| guess_report_html_path(&new_path));
+  let new_html_override = args
+    .new_html
+    .as_ref()
+    .map(|path| absolutize_path(&cwd, path));
+  let baseline_report_html = baseline_html_override
+    .clone()
+    .or_else(|| guess_report_html_path(&baseline_path));
+  let new_report_html = new_html_override
+    .clone()
+    .or_else(|| guess_report_html_path(&new_path));
 
   let baseline_report = read_report(&baseline_path)?;
   let new_report = read_report(&new_path)?;
 
-  let baseline_meta =
-    ReportMeta::from_report(&baseline_report, &baseline_path, baseline_report_html.as_deref());
+  let baseline_meta = ReportMeta::from_report(
+    &baseline_report,
+    &baseline_path,
+    baseline_report_html.as_deref(),
+  );
   let new_meta = ReportMeta::from_report(&new_report, &new_path, new_report_html.as_deref());
 
   let config_mismatches = diff_config(&baseline_report, &new_report);
@@ -407,12 +416,14 @@ fn run() -> Result<i32, String> {
       total_names.extend(baseline_report.results.iter().map(|e| e.name.as_str()));
       total_names.extend(new_report.results.iter().map(|e| e.name.as_str()));
       let total_entries = total_names.len();
-      let filters_meta = filter_patterns.as_ref().map(|(include, exclude)| ReportFilters {
-        include: include.clone(),
-        exclude: exclude.clone(),
-        matched_entries: totals.entries,
-        total_entries,
-      });
+      let filters_meta = filter_patterns
+        .as_ref()
+        .map(|(include, exclude)| ReportFilters {
+          include: include.clone(),
+          exclude: exclude.clone(),
+          matched_entries: totals.entries,
+          total_entries,
+        });
       let report = DeltaReport {
         schema_version: SCHEMA_VERSION,
         baseline: baseline_meta,
@@ -512,8 +523,7 @@ fn run() -> Result<i32, String> {
       failing_regression: false,
     };
     if args.fail_on_regression {
-      entry.failing_regression =
-        is_failing_regression(&entry, args.regression_threshold_percent);
+      entry.failing_regression = is_failing_regression(&entry, args.regression_threshold_percent);
     }
     results.push(entry);
   }
@@ -526,12 +536,14 @@ fn run() -> Result<i32, String> {
   top_regressions.truncate(TOP_N);
 
   let aggregate = compute_aggregate_metrics(&results);
-  let filters_meta = filter_patterns.as_ref().map(|(include, exclude)| ReportFilters {
-    include: include.clone(),
-    exclude: exclude.clone(),
-    matched_entries: totals.entries,
-    total_entries,
-  });
+  let filters_meta = filter_patterns
+    .as_ref()
+    .map(|(include, exclude)| ReportFilters {
+      include: include.clone(),
+      exclude: exclude.clone(),
+      matched_entries: totals.entries,
+      total_entries,
+    });
   let report = DeltaReport {
     schema_version: SCHEMA_VERSION,
     baseline: baseline_meta,
@@ -820,7 +832,10 @@ fn print_failing_regressions(failing: &[&DeltaEntry], threshold: f64) {
         .map(|s| s.status.label())
         .unwrap_or("-");
       let new_status = entry.new.as_ref().map(|s| s.status.label()).unwrap_or("-");
-      eprintln!("  - {} (baseline={}, new={})", entry.name, baseline, new_status);
+      eprintln!(
+        "  - {} (baseline={}, new={})",
+        entry.name, baseline, new_status
+      );
     }
     if missing_metrics.len() > LIMIT {
       eprintln!("  ... ({} more)", missing_metrics.len() - LIMIT);
@@ -837,7 +852,10 @@ fn print_failing_regressions(failing: &[&DeltaEntry], threshold: f64) {
         .then_with(|| a.name.cmp(&b.name))
     });
 
-    eprintln!("Failing regressions with metrics (diff threshold {:.4}%):", threshold);
+    eprintln!(
+      "Failing regressions with metrics (diff threshold {:.4}%):",
+      threshold
+    );
     for entry in metric_regressions.iter().take(LIMIT) {
       let diff = entry
         .diff_percentage_delta
@@ -847,7 +865,10 @@ fn print_failing_regressions(failing: &[&DeltaEntry], threshold: f64) {
         .perceptual_distance_delta
         .map(|d| format!("{:+.4}", d))
         .unwrap_or_else(|| "-".to_string());
-      eprintln!("  - {}: Δdiff={} Δperceptual={}", entry.name, diff, perceptual);
+      eprintln!(
+        "  - {}: Δdiff={} Δperceptual={}",
+        entry.name, diff, perceptual
+      );
     }
     if metric_regressions.len() > LIMIT {
       eprintln!("  ... ({} more)", metric_regressions.len() - LIMIT);
@@ -1366,7 +1387,11 @@ fn write_html_report(
     .as_ref()
     .and_then(|path| path.parent())
     .filter(|p| !p.as_os_str().is_empty())
-    .or_else(|| baseline_report_json.parent().filter(|p| !p.as_os_str().is_empty()))
+    .or_else(|| {
+      baseline_report_json
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+    })
     .unwrap_or_else(|| Path::new("."));
   let baseline_report_dir = fs::canonicalize(baseline_report_dir).unwrap_or_else(|_| {
     if baseline_report_dir.as_os_str().is_empty() {
@@ -1380,7 +1405,11 @@ fn write_html_report(
     .as_ref()
     .and_then(|path| path.parent())
     .filter(|p| !p.as_os_str().is_empty())
-    .or_else(|| new_report_json.parent().filter(|p| !p.as_os_str().is_empty()))
+    .or_else(|| {
+      new_report_json
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+    })
     .unwrap_or_else(|| Path::new("."));
   let new_report_dir = fs::canonicalize(new_report_dir).unwrap_or_else(|_| {
     if new_report_dir.as_os_str().is_empty() {
@@ -1418,19 +1447,16 @@ fn write_html_report(
       .and_then(|s| s.after.as_deref())
       .map(|after| format_report_image_cell(&html_dir, &baseline_report_dir, "After", after))
       .unwrap_or_else(|| "-".to_string());
-    let baseline_after_and_diff = if let Some(diff) = entry
-      .baseline
-      .as_ref()
-      .and_then(|s| s.diff.as_deref())
-    {
-      format!(
-        "{after}{diff}",
-        after = baseline_after_cell,
-        diff = format_report_image_cell(&html_dir, &baseline_report_dir, "Diff", diff)
-      )
-    } else {
-      baseline_after_cell
-    };
+    let baseline_after_and_diff =
+      if let Some(diff) = entry.baseline.as_ref().and_then(|s| s.diff.as_deref()) {
+        format!(
+          "{after}{diff}",
+          after = baseline_after_cell,
+          diff = format_report_image_cell(&html_dir, &baseline_report_dir, "Diff", diff)
+        )
+      } else {
+        baseline_after_cell
+      };
 
     let new_after_cell = entry
       .new
@@ -1438,16 +1464,16 @@ fn write_html_report(
       .and_then(|s| s.after.as_deref())
       .map(|after| format_report_image_cell(&html_dir, &new_report_dir, "After", after))
       .unwrap_or_else(|| "-".to_string());
-    let new_after_and_diff =
-      if let Some(diff) = entry.new.as_ref().and_then(|s| s.diff.as_deref()) {
-        format!(
-          "{after}{diff}",
-          after = new_after_cell,
-          diff = format_report_image_cell(&html_dir, &new_report_dir, "Diff", diff)
-        )
-      } else {
-        new_after_cell
-      };
+    let new_after_and_diff = if let Some(diff) = entry.new.as_ref().and_then(|s| s.diff.as_deref())
+    {
+      format!(
+        "{after}{diff}",
+        after = new_after_cell,
+        diff = format_report_image_cell(&html_dir, &new_report_dir, "Diff", diff)
+      )
+    } else {
+      new_after_cell
+    };
 
     let baseline_diff = entry
       .baseline
@@ -1729,7 +1755,11 @@ fn format_gating_html(gating: Option<&ReportGating>) -> String {
     return "-".to_string();
   };
 
-  let enabled = if gating.fail_on_regression { "yes" } else { "no" };
+  let enabled = if gating.fail_on_regression {
+    "yes"
+  } else {
+    "no"
+  };
   format!(
     "fail_on_regression={enabled}, threshold=<code>{:.4}%</code>",
     gating.regression_threshold_percent
@@ -1738,7 +1768,10 @@ fn format_gating_html(gating: Option<&ReportGating>) -> String {
 
 fn format_diff_percentage_cell(metrics: MetricsSummary) -> String {
   if metrics.total_pixels > 0 {
-    let title = format!("{}/{} pixels differ", metrics.pixel_diff, metrics.total_pixels);
+    let title = format!(
+      "{}/{} pixels differ",
+      metrics.pixel_diff, metrics.total_pixels
+    );
     format!(
       r#"<span title="{title}">{percent:.4}%</span>"#,
       title = escape_html(&title),

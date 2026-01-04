@@ -53,4 +53,3 @@ fn imports_bundle_with_html_entities_in_urls() {
     "imported HTML should not contain the original remote URL"
   );
 }
-

@@ -608,10 +608,13 @@ fn env_override_prefers_reduced_transparency() {
     assert!(ctx.prefers_reduced_transparency);
   });
 
-  with_test_toggles(&[("FASTR_PREFERS_REDUCED_TRANSPARENCY", "no-preference")], || {
-    let ctx = MediaContext::screen(800.0, 600.0).with_env_overrides();
-    assert!(!ctx.prefers_reduced_transparency);
-  });
+  with_test_toggles(
+    &[("FASTR_PREFERS_REDUCED_TRANSPARENCY", "no-preference")],
+    || {
+      let ctx = MediaContext::screen(800.0, 600.0).with_env_overrides();
+      assert!(!ctx.prefers_reduced_transparency);
+    },
+  );
 
   with_test_toggles(&[("FASTR_PREFERS_REDUCED_TRANSPARENCY", "invalid")], || {
     let ctx = MediaContext::screen(800.0, 600.0).with_env_overrides();

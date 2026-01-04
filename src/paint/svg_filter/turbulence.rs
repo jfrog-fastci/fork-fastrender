@@ -1,6 +1,6 @@
+use crate::error::RenderStage;
 use crate::geometry::Rect;
 use crate::paint::pixmap::new_pixmap;
-use crate::error::RenderStage;
 use crate::render_control::{active_deadline, check_active, with_deadline};
 use rayon::prelude::*;
 use tiny_skia::{Pixmap, PremultipliedColorU8};

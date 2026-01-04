@@ -66,4 +66,3 @@ fn absolute_child_in_subgrid_uses_grid_track_static_position() {
     abs_fragment.bounds.x()
   );
 }
-

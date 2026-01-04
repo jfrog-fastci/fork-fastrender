@@ -161,7 +161,10 @@ fn compare_diff_reports_pairs_and_classifies_entries() {
   assert_eq!(report["schema_version"], 2);
   assert_eq!(
     report["baseline"]["report_json"],
-    fs::canonicalize(&baseline_path).unwrap().display().to_string()
+    fs::canonicalize(&baseline_path)
+      .unwrap()
+      .display()
+      .to_string()
   );
   assert_eq!(
     report["new"]["report_json"],
@@ -356,12 +359,18 @@ fn compare_diff_reports_can_gate_on_regressions() {
   let report: Value =
     serde_json::from_str(&fs::read_to_string(&out_json_fail).expect("read delta json")).unwrap();
   assert_eq!(report["gating"]["fail_on_regression"], true);
-  assert_eq!(report["gating"]["regression_threshold_percent"].as_f64(), Some(0.0));
+  assert_eq!(
+    report["gating"]["regression_threshold_percent"].as_f64(),
+    Some(0.0)
+  );
   let results = report["results"].as_array().expect("results array");
   let entry = results.iter().find(|e| e["name"] == "a").expect("entry a");
   assert_eq!(entry["failing_regression"], true);
   let html = fs::read_to_string(&out_html_fail).expect("read delta html");
-  assert!(html.contains("<strong>Gating:</strong>"), "missing Gating row:\n{html}");
+  assert!(
+    html.contains("<strong>Gating:</strong>"),
+    "missing Gating row:\n{html}"
+  );
   assert!(
     html.contains("<code>0.0000%</code>"),
     "missing gating threshold in html:\n{html}"
@@ -413,7 +422,10 @@ fn compare_diff_reports_can_gate_on_regressions() {
   let report: Value =
     serde_json::from_str(&fs::read_to_string(&out_json_pass).expect("read delta json")).unwrap();
   assert_eq!(report["gating"]["fail_on_regression"], true);
-  assert_eq!(report["gating"]["regression_threshold_percent"].as_f64(), Some(1.0));
+  assert_eq!(
+    report["gating"]["regression_threshold_percent"].as_f64(),
+    Some(1.0)
+  );
   let results = report["results"].as_array().expect("results array");
   let entry = results.iter().find(|e| e["name"] == "a").expect("entry a");
   assert!(
@@ -421,7 +433,10 @@ fn compare_diff_reports_can_gate_on_regressions() {
     "did not expect failing_regression field when regression is below threshold: {entry}"
   );
   let html = fs::read_to_string(&out_html_pass).expect("read delta html");
-  assert!(html.contains("<strong>Gating:</strong>"), "missing Gating row:\n{html}");
+  assert!(
+    html.contains("<strong>Gating:</strong>"),
+    "missing Gating row:\n{html}"
+  );
   assert!(
     html.contains("<code>1.0000%</code>"),
     "missing gating threshold in html:\n{html}"
@@ -686,7 +701,10 @@ fn compare_diff_reports_can_override_report_html_paths() {
   let report: Value = serde_json::from_str(&fs::read_to_string(&out_json).unwrap()).unwrap();
   assert_eq!(
     report["baseline"]["report_html"],
-    fs::canonicalize(&baseline_html).unwrap().display().to_string()
+    fs::canonicalize(&baseline_html)
+      .unwrap()
+      .display()
+      .to_string()
   );
   assert_eq!(
     report["new"]["report_html"],
@@ -694,8 +712,14 @@ fn compare_diff_reports_can_override_report_html_paths() {
   );
 
   let html = fs::read_to_string(&out_html).expect("read delta html");
-  assert!(html.contains("baseline_custom.html"), "missing baseline link:\n{html}");
-  assert!(html.contains("new_custom.html"), "missing new link:\n{html}");
+  assert!(
+    html.contains("baseline_custom.html"),
+    "missing baseline link:\n{html}"
+  );
+  assert!(
+    html.contains("new_custom.html"),
+    "missing new link:\n{html}"
+  );
 }
 
 #[test]
@@ -1036,10 +1060,22 @@ fn compare_diff_reports_can_filter_entries_by_name() {
   );
 
   let stdout = output_text(&output.stdout);
-  assert!(stdout.contains("Filters:"), "missing Filters line:\n{stdout}");
-  assert!(stdout.contains("^keep$"), "missing include filter in stdout:\n{stdout}");
-  assert!(stdout.contains("drop"), "missing exclude filter in stdout:\n{stdout}");
-  assert!(stdout.contains("matched=1/2"), "missing filter match count:\n{stdout}");
+  assert!(
+    stdout.contains("Filters:"),
+    "missing Filters line:\n{stdout}"
+  );
+  assert!(
+    stdout.contains("^keep$"),
+    "missing include filter in stdout:\n{stdout}"
+  );
+  assert!(
+    stdout.contains("drop"),
+    "missing exclude filter in stdout:\n{stdout}"
+  );
+  assert!(
+    stdout.contains("matched=1/2"),
+    "missing filter match count:\n{stdout}"
+  );
 
   let report: Value = serde_json::from_str(&fs::read_to_string(&out_json).unwrap()).unwrap();
   assert_eq!(report["totals"]["entries"], 1);
@@ -1054,9 +1090,18 @@ fn compare_diff_reports_can_filter_entries_by_name() {
     html.contains("<strong>Filters:</strong>"),
     "missing Filters row:\n{html}"
   );
-  assert!(html.contains("<code>^keep$</code>"), "missing include filter:\n{html}");
-  assert!(html.contains("<code>drop</code>"), "missing exclude filter:\n{html}");
-  assert!(html.contains("matched=1/2"), "missing filter match count:\n{html}");
+  assert!(
+    html.contains("<code>^keep$</code>"),
+    "missing include filter:\n{html}"
+  );
+  assert!(
+    html.contains("<code>drop</code>"),
+    "missing exclude filter:\n{html}"
+  );
+  assert!(
+    html.contains("matched=1/2"),
+    "missing filter match count:\n{html}"
+  );
 
   let results = report["results"].as_array().expect("results array");
   assert_eq!(results.len(), 1);

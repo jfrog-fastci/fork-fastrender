@@ -6654,7 +6654,10 @@ impl DisplayListRenderer {
           {
             (None, (0, 0))
           } else {
-            let origin = (layer_bounds.min_x().floor() as i32, layer_bounds.min_y().floor() as i32);
+            let origin = (
+              layer_bounds.min_x().floor() as i32,
+              layer_bounds.min_y().floor() as i32,
+            );
             (Some(layer_bounds), origin)
           }
         } else {
@@ -6694,11 +6697,11 @@ impl DisplayListRenderer {
               return Ok(());
             };
             let scale = self.scale;
-            let blur_cache: &mut (dyn BlurCacheOps + 'static) = match self.shared_blur_cache.as_mut()
-            {
-              Some(shared) => shared,
-              None => &mut self.blur_cache,
-            };
+            let blur_cache: &mut (dyn BlurCacheOps + 'static) =
+              match self.shared_blur_cache.as_mut() {
+                Some(shared) => shared,
+                None => &mut self.blur_cache,
+              };
             let backdrop_cache: &mut (dyn BackdropFilterCacheOps + 'static) =
               match self.shared_backdrop_filter_cache.as_mut() {
                 Some(shared) => shared,
@@ -6727,8 +6730,9 @@ impl DisplayListRenderer {
               let is_affine = Homography::from_transform3d_z0(&adjusted_transform).is_affine();
               let depth = {
                 let center = scene_item.plane_rect.center();
-                let (_tx, _ty, tz, tw) =
-                  scene_item.transform.transform_point(center.x, center.y, 0.0);
+                let (_tx, _ty, tz, tw) = scene_item
+                  .transform
+                  .transform_point(center.x, center.y, 0.0);
                 if tz.is_finite() && tw.is_finite() && tw.abs() >= Transform3D::MIN_PROJECTIVE_W {
                   tz / tw
                 } else {

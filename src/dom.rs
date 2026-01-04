@@ -5681,9 +5681,7 @@ impl<'a> Element for ElementRef<'a> {
       PseudoClass::Disabled => self.supports_disabled() && self.is_disabled(),
       PseudoClass::Enabled => self.supports_disabled() && !self.is_disabled(),
       PseudoClass::Required => self.is_required(),
-      PseudoClass::Optional => {
-        self.supports_required() && !self.is_required()
-      }
+      PseudoClass::Optional => self.supports_required() && !self.is_required(),
       PseudoClass::Valid => {
         (self.supports_validation() && self.is_disabled())
           || (self.supports_validation() && self.is_valid_control())
@@ -6202,11 +6200,7 @@ fn for_each_assigned_slot_child<'a, F: FnMut(&'a DomNode)>(node: &'a DomNode, f:
   while let Some(node) = stack.pop() {
     match &node.node_type {
       DomNodeType::Slot { assigned: true, .. } => {
-        for assigned_child in node
-          .traversal_children()
-          .iter()
-          .filter(|c| c.is_element())
-        {
+        for assigned_child in node.traversal_children().iter().filter(|c| c.is_element()) {
           f(assigned_child);
         }
       }
@@ -6970,7 +6964,10 @@ mod tests {
 
   #[test]
   fn has_relative_selector_does_not_match_inside_template_contents() {
-    let dom = element("div", vec![element("template", vec![element("span", vec![])])]);
+    let dom = element(
+      "div",
+      vec![element("template", vec![element("span", vec![])])],
+    );
 
     let mut input = ParserInput::new("span");
     let mut parser = Parser::new(&mut input);
@@ -7495,11 +7492,13 @@ mod tests {
   fn bloom_pruning_ignores_inert_template_contents() {
     reset_has_counters();
     set_selector_bloom_enabled(true);
-    let dom = element("div", vec![element("template", vec![element_with_attrs(
-      "span",
-      vec![("class", "hit")],
-      vec![],
-    )])]);
+    let dom = element(
+      "div",
+      vec![element(
+        "template",
+        vec![element_with_attrs("span", vec![("class", "hit")], vec![])],
+      )],
+    );
     let id_map = enumerate_dom_ids(&dom);
     let bloom_store = build_selector_bloom_store(&dom, &id_map).expect("selector bloom store");
 
@@ -10147,7 +10146,10 @@ mod tests {
     )
     .expect("parse");
     let img = find_element_by_id(&dom, "img").expect("img element");
-    assert_eq!(img.get_attribute_ref("srcset"), Some("a1.jpg 1x, a2.jpg 2x"));
+    assert_eq!(
+      img.get_attribute_ref("srcset"),
+      Some("a1.jpg 1x, a2.jpg 2x")
+    );
   }
 
   #[test]

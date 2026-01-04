@@ -352,4 +352,3 @@ fn fixture_determinism_allow_differences_exits_zero() {
     "missing report.json in out dir"
   );
 }
-

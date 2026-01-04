@@ -43,8 +43,8 @@ use crate::style::ComputedStyle;
 use cssparser::BasicParseErrorKind;
 use cssparser::Parser;
 use cssparser::ParserInput;
-use cssparser::Token;
 use cssparser::ToCss;
+use cssparser::Token;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -1297,7 +1297,10 @@ fn parse_range_offset(tokens: &[String]) -> Option<(RangeOffset, usize)> {
         return Some((RangeOffset::View(phase, len), 2));
       }
       if let Some(progress) = parse_progress_value(&tokens[1]) {
-        return Some((RangeOffset::View(phase, Length::percent(progress * 100.0)), 2));
+        return Some((
+          RangeOffset::View(phase, Length::percent(progress * 100.0)),
+          2,
+        ));
       }
     }
     return Some((RangeOffset::View(phase, Length::px(0.0)), 1));
@@ -1397,7 +1400,10 @@ fn animation_ranges_with_updated_start(
   out
 }
 
-fn animation_ranges_with_updated_end(existing: &[AnimationRange], end_offsets: &[RangeOffset]) -> Vec<AnimationRange> {
+fn animation_ranges_with_updated_end(
+  existing: &[AnimationRange],
+  end_offsets: &[RangeOffset],
+) -> Vec<AnimationRange> {
   let new_len = existing.len().max(end_offsets.len());
   if new_len == 0 {
     return Vec::new();
@@ -1826,9 +1832,13 @@ fn combine_calc_time_sum<'i>(
     (CalcTimeComponent::Number(a), CalcTimeComponent::Number(b)) => {
       Ok(CalcTimeComponent::Number(a + b * sign))
     }
-    (CalcTimeComponent::Time(a), CalcTimeComponent::Time(b)) => Ok(CalcTimeComponent::Time(a + b * sign)),
+    (CalcTimeComponent::Time(a), CalcTimeComponent::Time(b)) => {
+      Ok(CalcTimeComponent::Time(a + b * sign))
+    }
     (CalcTimeComponent::Time(a), CalcTimeComponent::Number(0.0)) => Ok(CalcTimeComponent::Time(a)),
-    (CalcTimeComponent::Number(0.0), CalcTimeComponent::Time(b)) => Ok(CalcTimeComponent::Time(b * sign)),
+    (CalcTimeComponent::Number(0.0), CalcTimeComponent::Time(b)) => {
+      Ok(CalcTimeComponent::Time(b * sign))
+    }
     _ => Err(location.new_custom_error(())),
   }
 }
@@ -1841,18 +1851,28 @@ fn combine_calc_time_product<'i>(
 ) -> Result<CalcTimeComponent, cssparser::ParseError<'i, ()>> {
   match op {
     '*' => match (left, right) {
-      (CalcTimeComponent::Number(a), CalcTimeComponent::Number(b)) => Ok(CalcTimeComponent::Number(a * b)),
+      (CalcTimeComponent::Number(a), CalcTimeComponent::Number(b)) => {
+        Ok(CalcTimeComponent::Number(a * b))
+      }
       (CalcTimeComponent::Time(t), CalcTimeComponent::Number(n))
-      | (CalcTimeComponent::Number(n), CalcTimeComponent::Time(t)) => Ok(CalcTimeComponent::Time(t * n)),
+      | (CalcTimeComponent::Number(n), CalcTimeComponent::Time(t)) => {
+        Ok(CalcTimeComponent::Time(t * n))
+      }
       _ => Err(location.new_custom_error(())),
     },
     '/' => match (left, right) {
       (_, CalcTimeComponent::Number(0.0)) => Err(location.new_custom_error(())),
       (_, CalcTimeComponent::Time(0.0)) => Err(location.new_custom_error(())),
-      (CalcTimeComponent::Number(a), CalcTimeComponent::Number(b)) => Ok(CalcTimeComponent::Number(a / b)),
-      (CalcTimeComponent::Time(t), CalcTimeComponent::Number(n)) => Ok(CalcTimeComponent::Time(t / n)),
+      (CalcTimeComponent::Number(a), CalcTimeComponent::Number(b)) => {
+        Ok(CalcTimeComponent::Number(a / b))
+      }
+      (CalcTimeComponent::Time(t), CalcTimeComponent::Number(n)) => {
+        Ok(CalcTimeComponent::Time(t / n))
+      }
       // Support time/time -> number so nested expressions like `calc(1s * (1s/500ms))` work.
-      (CalcTimeComponent::Time(a), CalcTimeComponent::Time(b)) => Ok(CalcTimeComponent::Number(a / b)),
+      (CalcTimeComponent::Time(a), CalcTimeComponent::Time(b)) => {
+        Ok(CalcTimeComponent::Number(a / b))
+      }
       _ => Err(location.new_custom_error(())),
     },
     _ => Err(location.new_custom_error(())),
@@ -2080,7 +2100,7 @@ fn parse_math_time_ms(raw: &str) -> Option<f32> {
           };
           calc_time_component_to_ms(component).ok_or_else(|| location.new_custom_error(()))
         }
-        _ => Err(location.new_custom_error(()))
+        _ => Err(location.new_custom_error(())),
       }
     })
     .ok()
@@ -2449,7 +2469,10 @@ pub(crate) fn parse_transition_timing_function(raw: &str) -> Option<TransitionTi
     let mut stops = Vec::with_capacity(raw_stops.len());
     for (idx, (_, y)) in raw_stops.into_iter().enumerate() {
       let x = xs.get(idx).copied().flatten()?;
-      stops.push(LinearStop { input: x, output: y });
+      stops.push(LinearStop {
+        input: x,
+        output: y,
+      });
     }
     if stops.len() < 2 {
       return None;
@@ -2630,7 +2653,11 @@ fn parse_animation_shorthand(
         let unquoted = trimmed
           .strip_prefix('"')
           .and_then(|s| s.strip_suffix('"'))
-          .or_else(|| trimmed.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')));
+          .or_else(|| {
+            trimmed
+              .strip_prefix('\'')
+              .and_then(|s| s.strip_suffix('\''))
+          });
         if let Some(unquoted) = unquoted {
           name = Some(unquoted.to_string());
         } else {
@@ -15847,7 +15874,10 @@ mod tests {
 
     assert_eq!(
       styles.animation_timelines,
-      vec![AnimationTimeline::None, AnimationTimeline::Named("foo".to_string())]
+      vec![
+        AnimationTimeline::None,
+        AnimationTimeline::Named("foo".to_string())
+      ]
     );
   }
 
@@ -15862,7 +15892,10 @@ mod tests {
     apply_declaration(&mut styles, decl, &parent, 16.0, 16.0);
 
     assert_eq!(styles.animation_timelines.len(), 2);
-    assert!(matches!(styles.animation_timelines[1], AnimationTimeline::None));
+    assert!(matches!(
+      styles.animation_timelines[1],
+      AnimationTimeline::None
+    ));
   }
 
   #[test]
@@ -16489,8 +16522,7 @@ mod tests {
 
   #[test]
   fn transition_shorthand_parses_cubic_bezier_function_tokens() {
-    let decls =
-      parse_declarations("transition: opacity 200ms cubic-bezier(.25,1,.5,1) 50ms;");
+    let decls = parse_declarations("transition: opacity 200ms cubic-bezier(.25,1,.5,1) 50ms;");
     assert_eq!(decls.len(), 1);
     let decl = &decls[0];
 
@@ -16521,9 +16553,8 @@ mod tests {
 
   #[test]
   fn transition_shorthand_treats_css_comments_as_whitespace() {
-    let decls = parse_declarations(
-      "transition: opacity 200ms/*comment*/cubic-bezier(.25,1,.5,1) 50ms;",
-    );
+    let decls =
+      parse_declarations("transition: opacity 200ms/*comment*/cubic-bezier(.25,1,.5,1) 50ms;");
     assert_eq!(decls.len(), 1);
     let decl = &decls[0];
 
@@ -16653,9 +16684,8 @@ mod tests {
 
   #[test]
   fn transition_shorthand_parses_comma_list_with_mixed_entries() {
-    let decls = parse_declarations(
-      "transition: 200ms cubic-bezier(.25,1,.5,1) 50ms opacity, transform 1s;",
-    );
+    let decls =
+      parse_declarations("transition: 200ms cubic-bezier(.25,1,.5,1) 50ms opacity, transform 1s;");
     assert_eq!(decls.len(), 1);
     let decl = &decls[0];
 
@@ -17137,8 +17167,7 @@ mod tests {
 
   #[test]
   fn animation_shorthand_parses_comma_list_with_function_entry() {
-    let decls =
-      parse_declarations("animation: spin 2s steps(4,end) infinite, fade 1s linear;");
+    let decls = parse_declarations("animation: spin 2s steps(4,end) infinite, fade 1s linear;");
     assert_eq!(decls.len(), 1);
     let decl = &decls[0];
 
@@ -17846,7 +17875,13 @@ mod tests {
 
     match &style.clip_path {
       ClipPath::BasicShape(basic, Some(ReferenceBox::ContentBox)) => match basic.as_ref() {
-        BasicShape::Inset { top, right, bottom, left, .. } => {
+        BasicShape::Inset {
+          top,
+          right,
+          bottom,
+          left,
+          ..
+        } => {
           assert_eq!(*top, Length::px(10.0));
           assert_eq!(*right, Length::px(10.0));
           assert_eq!(*bottom, Length::px(10.0));
@@ -20823,7 +20858,8 @@ mod tests {
     // Use many distinct area names to make it astronomically unlikely that HashMap iteration
     // accidentally yields a sorted order.
     let area_names: Vec<String> = (0..12).map(|i| format!("area{i:02}")).collect();
-    let areas: Vec<Vec<Option<String>>> = vec![area_names.iter().map(|n| Some(n.clone())).collect()];
+    let areas: Vec<Vec<Option<String>>> =
+      vec![area_names.iter().map(|n| Some(n.clone())).collect()];
 
     let mut expected_row_start: Vec<String> =
       area_names.iter().map(|n| format!("{n}-start")).collect();
@@ -23986,11 +24022,9 @@ mod tests {
 
   #[test]
   fn parses_filter_list_starting_with_url_from_css_property_parser() {
-    let parsed = crate::css::properties::parse_property_value(
-      "filter",
-      "url(#recolor) opacity(0.5)",
-    )
-    .expect("parsed");
+    let parsed =
+      crate::css::properties::parse_property_value("filter", "url(#recolor) opacity(0.5)")
+        .expect("parsed");
     let filters = parse_filter_list(&parsed).expect("filters");
     assert_eq!(filters.len(), 2);
     assert!(matches!(&filters[0], FilterFunction::Url(url) if url == "#recolor"));

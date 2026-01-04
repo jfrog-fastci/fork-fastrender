@@ -222,7 +222,7 @@ fn last_resort_font_fallback_shapes_missing_scripts() {
     runs
       .iter()
       .any(|run| run.glyphs.iter().any(|glyph| glyph.glyph_id == 0)),
-   "fallback glyphs should use .notdef when coverage is missing"
+    "fallback glyphs should use .notdef when coverage is missing"
   );
 }
 
@@ -294,7 +294,10 @@ fn bundled_only_indic_scripts_shape_conjunct_clusters() {
     let runs = pipeline
       .shape(text, &style, &font_ctx)
       .unwrap_or_else(|_| panic!("shape {label} conjunct sample"));
-    assert!(!runs.is_empty(), "{label} conjunct sample should produce runs");
+    assert!(
+      !runs.is_empty(),
+      "{label} conjunct sample should produce runs"
+    );
 
     let run = runs
       .iter()

@@ -24,8 +24,8 @@ use fastrender::style::display::Display;
 use fastrender::style::types::{BorderCollapse, BorderStyle, FlexWrap, TableLayout};
 use fastrender::style::values::Length;
 use fastrender::{
-  BoxNode, BoxTree, ComputedStyle, FormattingContext, FormattingContextFactory, FormattingContextType,
-  IntrinsicSizingMode, LayoutConfig, LayoutEngine, Size,
+  BoxNode, BoxTree, ComputedStyle, FormattingContext, FormattingContextFactory,
+  FormattingContextType, IntrinsicSizingMode, LayoutConfig, LayoutEngine, Size,
 };
 
 mod common;

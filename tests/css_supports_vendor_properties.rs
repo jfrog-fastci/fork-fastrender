@@ -46,7 +46,10 @@ fn supports_vendor_properties_prevent_pruning_tailwind_reset_blocks() {
     .expect("@layer rule should survive inside @supports block");
 
   assert!(
-    layer_rule.rules.iter().any(|rule| matches!(rule, CssRule::Style(_))),
+    layer_rule
+      .rules
+      .iter()
+      .any(|rule| matches!(rule, CssRule::Style(_))),
     "expected style rule inside @layer block"
   );
 }

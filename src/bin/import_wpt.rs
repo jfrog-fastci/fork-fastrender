@@ -482,8 +482,7 @@ fn rewrite_html(
   let import_regex =
     Regex::new("(?i)(?P<prefix>@import\\s+['\"])(?P<url>[^\"']+)(?P<suffix>['\"])").unwrap();
   let attr_unquoted_regex =
-    Regex::new("(?i)(?P<prefix>\\s(?:src|poster|data)\\s*=\\s*)(?P<url>[^\\s\"'>]+)")
-      .unwrap();
+    Regex::new("(?i)(?P<prefix>\\s(?:src|poster|data)\\s*=\\s*)(?P<url>[^\\s\"'>]+)").unwrap();
   let svg_href_regex = Regex::new(
     "(?is)(?P<prefix><(?:image|use|feimage)\\b[^>]*?\\shref\\s*=\\s*[\"'])(?P<url>[^\"'>]+)(?P<suffix>[\"'])",
   )
@@ -745,12 +744,11 @@ fn apply_link_href_rewrite(
   seen: &mut HashSet<PathBuf>,
 ) -> Result<String> {
   let link_tag = Regex::new("(?is)<link\\b[^>]*>").unwrap();
-  let rel_attr = Regex::new("(?is)(?:^|\\s)rel\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
-    .unwrap();
-  let href_quoted = Regex::new(
-    "(?is)(?P<prefix>(?:^|\\s)href\\s*=\\s*[\"'])(?P<url>[^\"'>]+)(?P<suffix>[\"'])",
-  )
-  .unwrap();
+  let rel_attr =
+    Regex::new("(?is)(?:^|\\s)rel\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))").unwrap();
+  let href_quoted =
+    Regex::new("(?is)(?P<prefix>(?:^|\\s)href\\s*=\\s*[\"'])(?P<url>[^\"'>]+)(?P<suffix>[\"'])")
+      .unwrap();
   let href_unquoted =
     Regex::new("(?is)(?P<prefix>(?:^|\\s)href\\s*=\\s*)(?P<url>[^\\s\"'>]+)").unwrap();
 
@@ -776,37 +774,27 @@ fn apply_link_href_rewrite(
       }
 
       let mut out = href_quoted
-        .replace_all(tag, |caps: &regex::Captures<'_>| match rewrite_reference(
-          config,
-          src_dir,
-          dest_dir,
-          &caps["url"],
-          references,
-          seen,
-        ) {
-          Ok(Some(new_value)) => format!("{}{}{}", &caps["prefix"], new_value, &caps["suffix"]),
-          Ok(None) => caps[0].to_string(),
-          Err(err) => {
-            error = Some(err);
-            caps[0].to_string()
+        .replace_all(tag, |caps: &regex::Captures<'_>| {
+          match rewrite_reference(config, src_dir, dest_dir, &caps["url"], references, seen) {
+            Ok(Some(new_value)) => format!("{}{}{}", &caps["prefix"], new_value, &caps["suffix"]),
+            Ok(None) => caps[0].to_string(),
+            Err(err) => {
+              error = Some(err);
+              caps[0].to_string()
+            }
           }
         })
         .to_string();
 
       out = href_unquoted
-        .replace_all(&out, |caps: &regex::Captures<'_>| match rewrite_reference(
-          config,
-          src_dir,
-          dest_dir,
-          &caps["url"],
-          references,
-          seen,
-        ) {
-          Ok(Some(new_value)) => format!("{}{}", &caps["prefix"], new_value),
-          Ok(None) => caps[0].to_string(),
-          Err(err) => {
-            error = Some(err);
-            caps[0].to_string()
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+          match rewrite_reference(config, src_dir, dest_dir, &caps["url"], references, seen) {
+            Ok(Some(new_value)) => format!("{}{}", &caps["prefix"], new_value),
+            Ok(None) => caps[0].to_string(),
+            Err(err) => {
+              error = Some(err);
+              caps[0].to_string()
+            }
           }
         })
         .to_string();
@@ -830,8 +818,8 @@ fn apply_xlink_href_rewrite(
   references: &mut Vec<Reference>,
   seen: &mut HashSet<PathBuf>,
 ) -> Result<String> {
-  let tag_with_xlink = Regex::new("(?is)<(?P<tag>[a-z0-9:_-]+)\\b[^>]*\\sxlink:href\\b[^>]*>")
-    .unwrap();
+  let tag_with_xlink =
+    Regex::new("(?is)<(?P<tag>[a-z0-9:_-]+)\\b[^>]*\\sxlink:href\\b[^>]*>").unwrap();
   let xlink_quoted = Regex::new(
     "(?is)(?P<prefix>(?:^|\\s)xlink:href\\s*=\\s*[\"'])(?P<url>[^\"'>]+)(?P<suffix>[\"'])",
   )
@@ -852,37 +840,27 @@ fn apply_xlink_href_rewrite(
       }
 
       let mut out = xlink_quoted
-        .replace_all(tag, |caps: &regex::Captures<'_>| match rewrite_reference(
-          config,
-          src_dir,
-          dest_dir,
-          &caps["url"],
-          references,
-          seen,
-        ) {
-          Ok(Some(new_value)) => format!("{}{}{}", &caps["prefix"], new_value, &caps["suffix"]),
-          Ok(None) => caps[0].to_string(),
-          Err(err) => {
-            error = Some(err);
-            caps[0].to_string()
+        .replace_all(tag, |caps: &regex::Captures<'_>| {
+          match rewrite_reference(config, src_dir, dest_dir, &caps["url"], references, seen) {
+            Ok(Some(new_value)) => format!("{}{}{}", &caps["prefix"], new_value, &caps["suffix"]),
+            Ok(None) => caps[0].to_string(),
+            Err(err) => {
+              error = Some(err);
+              caps[0].to_string()
+            }
           }
         })
         .to_string();
 
       out = xlink_unquoted
-        .replace_all(&out, |caps: &regex::Captures<'_>| match rewrite_reference(
-          config,
-          src_dir,
-          dest_dir,
-          &caps["url"],
-          references,
-          seen,
-        ) {
-          Ok(Some(new_value)) => format!("{}{}", &caps["prefix"], new_value),
-          Ok(None) => caps[0].to_string(),
-          Err(err) => {
-            error = Some(err);
-            caps[0].to_string()
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+          match rewrite_reference(config, src_dir, dest_dir, &caps["url"], references, seen) {
+            Ok(Some(new_value)) => format!("{}{}", &caps["prefix"], new_value),
+            Ok(None) => caps[0].to_string(),
+            Err(err) => {
+              error = Some(err);
+              caps[0].to_string()
+            }
           }
         })
         .to_string();
@@ -944,10 +922,11 @@ fn rewrite_srcset_value(
 
   let mut out = Vec::with_capacity(candidates.len());
   for candidate in candidates {
-    let rewritten_url = match rewrite_reference(config, src_dir, dest_dir, &candidate.url, references, seen)? {
-      Some(new_value) => new_value,
-      None => candidate.url,
-    };
+    let rewritten_url =
+      match rewrite_reference(config, src_dir, dest_dir, &candidate.url, references, seen)? {
+        Some(new_value) => new_value,
+        None => candidate.url,
+      };
     out.push(format!("{} {}", rewritten_url, candidate.descriptor));
   }
 
@@ -1171,15 +1150,12 @@ fn find_network_urls(content: &str) -> Vec<String> {
     Regex::new("(?i)\\s(?:src|poster|data)\\s*=\\s*[\"'](?P<url>[^\"'>]+)[\"']").unwrap();
   let attr_unquoted_regex =
     Regex::new("(?i)\\s(?:src|poster|data)\\s*=\\s*(?P<url>[^\\s\"'>]+)").unwrap();
-  let url_regex =
-    Regex::new("(?i)url\\(\\s*[\"']?(?P<url>[^\"')]+)[\"']?\\s*\\)").unwrap();
+  let url_regex = Regex::new("(?i)url\\(\\s*[\"']?(?P<url>[^\"')]+)[\"']?\\s*\\)").unwrap();
   let import_regex = Regex::new("(?i)@import\\s+[\"'](?P<url>[^\"']+)[\"']").unwrap();
   let srcset_double = Regex::new("(?i)\\ssrcset\\s*=\\s*\"(?P<value>[^\"]*)\"").unwrap();
   let srcset_single = Regex::new("(?i)\\ssrcset\\s*=\\s*'(?P<value>[^']*)'").unwrap();
-  let imagesrcset_double =
-    Regex::new("(?i)\\simagesrcset\\s*=\\s*\"(?P<value>[^\"]*)\"").unwrap();
-  let imagesrcset_single =
-    Regex::new("(?i)\\simagesrcset\\s*=\\s*'(?P<value>[^']*)'").unwrap();
+  let imagesrcset_double = Regex::new("(?i)\\simagesrcset\\s*=\\s*\"(?P<value>[^\"]*)\"").unwrap();
+  let imagesrcset_single = Regex::new("(?i)\\simagesrcset\\s*=\\s*'(?P<value>[^']*)'").unwrap();
 
   let mut urls = Vec::new();
   for regex in [&attr_regex, &attr_unquoted_regex, &import_regex] {
@@ -1197,10 +1173,10 @@ fn find_network_urls(content: &str) -> Vec<String> {
   // WPT metadata like `<link rel=help href="https://...">` by only validating the `href` value
   // when the `<link rel>` indicates a fetchable relation.
   let link_tag = Regex::new("(?is)<link\\b[^>]*>").unwrap();
-  let rel_attr = Regex::new("(?is)(?:^|\\s)rel\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
-    .unwrap();
-  let href_attr = Regex::new("(?is)(?:^|\\s)href\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
-    .unwrap();
+  let rel_attr =
+    Regex::new("(?is)(?:^|\\s)rel\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))").unwrap();
+  let href_attr =
+    Regex::new("(?is)(?:^|\\s)href\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))").unwrap();
 
   for m in link_tag.find_iter(content) {
     let tag = m.as_str();
@@ -1278,7 +1254,9 @@ fn find_network_urls(content: &str) -> Vec<String> {
         _ => start -= 1,
       }
     }
-    content[start..at].to_ascii_lowercase().contains("@namespace")
+    content[start..at]
+      .to_ascii_lowercase()
+      .contains("@namespace")
   }
 
   for caps in url_regex.captures_iter(content) {
@@ -1296,7 +1274,12 @@ fn find_network_urls(content: &str) -> Vec<String> {
   }
 
   const MAX_SRCSET_CANDIDATES: usize = 64;
-  for regex in [&srcset_double, &srcset_single, &imagesrcset_double, &imagesrcset_single] {
+  for regex in [
+    &srcset_double,
+    &srcset_single,
+    &imagesrcset_double,
+    &imagesrcset_single,
+  ] {
     for caps in regex.captures_iter(content) {
       let Some(raw_srcset) = caps.name("value").map(|m| m.as_str()) else {
         continue;
@@ -1951,7 +1934,9 @@ mod tests {
     let err = run_import(config).unwrap_err();
     match err {
       ImportError::NetworkUrlsRemaining(path, urls) => {
-        assert!(path.to_string_lossy().contains("svg-image-href-external.html"));
+        assert!(path
+          .to_string_lossy()
+          .contains("svg-image-href-external.html"));
         assert!(urls.contains("example.com"));
       }
       other => panic!("unexpected error: {other:?}"),
@@ -1973,8 +1958,12 @@ mod tests {
     };
 
     run_import(config).expect("import should succeed");
-    let imported =
-      fs::read_to_string(out_dir.path().join("out/html/network/svg-image-xlink-href.html")).unwrap();
+    let imported = fs::read_to_string(
+      out_dir
+        .path()
+        .join("out/html/network/svg-image-xlink-href.html"),
+    )
+    .unwrap();
     assert!(!imported.contains("web-platform.test"));
     assert!(out_dir.path().join("out/resources/green.png").exists());
 
@@ -2017,8 +2006,12 @@ mod tests {
     };
 
     run_import(config).expect("import should succeed");
-    let imported =
-      fs::read_to_string(out_dir.path().join("out/html/network/svg-anchor-xlink-href.html")).unwrap();
+    let imported = fs::read_to_string(
+      out_dir
+        .path()
+        .join("out/html/network/svg-anchor-xlink-href.html"),
+    )
+    .unwrap();
     assert!(imported.contains("xlink:href=\"https://example.com/spec\""));
     assert!(!imported.contains("xlink:href=\"/resources/"));
     assert!(out_dir.path().join("out/resources/green.png").exists());
@@ -2067,7 +2060,8 @@ mod tests {
 
     run_import(config).expect("import should succeed");
 
-    let poster_html = fs::read_to_string(out_dir.path().join("out/html/network/poster.html")).unwrap();
+    let poster_html =
+      fs::read_to_string(out_dir.path().join("out/html/network/poster.html")).unwrap();
     assert!(!poster_html.contains("poster=\"/resources/"));
     assert!(poster_html.contains("green.png"));
 
@@ -2139,9 +2133,11 @@ mod tests {
 
     run_import(config).expect("import should succeed");
 
-    let imported = fs::read_to_string(out_dir.path().join("out/html/network/data-attrs.html")).unwrap();
+    let imported =
+      fs::read_to_string(out_dir.path().join("out/html/network/data-attrs.html")).unwrap();
     assert!(imported.contains("data-src=\"https://example.com/image.png\""));
-    assert!(imported.contains("data-srcset=\"https://example.com/image.png 1x, /resources/green.png 2x\""));
+    assert!(imported
+      .contains("data-srcset=\"https://example.com/image.png 1x, /resources/green.png 2x\""));
     assert!(!imported.contains("src=\"/resources/"));
     assert!(out_dir.path().join("out/resources/green.png").exists());
   }
@@ -2246,8 +2242,13 @@ mod tests {
       };
 
       run_import(config).expect("import should succeed");
-      let imported =
-        fs::read_to_string(out_dir.path().join(subdir).join("html/network/data-url.html")).unwrap();
+      let imported = fs::read_to_string(
+        out_dir
+          .path()
+          .join(subdir)
+          .join("html/network/data-url.html"),
+      )
+      .unwrap();
       assert!(imported.contains("data:image/svg+xml"));
       assert!(imported.contains("http://www.w3.org/2000/svg"));
     }

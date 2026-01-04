@@ -350,9 +350,7 @@ impl LeafMeasureCacheKey {
     // it only canonicalizes the cache key to match the effective behavior of downstream
     // constraint normalization.
     if let Some(w) = known_dimensions.width {
-      if w <= 1.0
-        && matches!(available_space.width, AvailableSpace::Definite(v) if v <= 1.0)
-      {
+      if w <= 1.0 && matches!(available_space.width, AvailableSpace::Definite(v) if v <= 1.0) {
         known_dimensions.width = None;
         available_space.width = AvailableSpace::MaxContent;
       }
@@ -363,9 +361,7 @@ impl LeafMeasureCacheKey {
       }
     }
     if let Some(h) = known_dimensions.height {
-      if h <= 1.0
-        && matches!(available_space.height, AvailableSpace::Definite(v) if v <= 1.0)
-      {
+      if h <= 1.0 && matches!(available_space.height, AvailableSpace::Definite(v) if v <= 1.0) {
         known_dimensions.height = None;
         available_space.height = AvailableSpace::MaxContent;
       }
@@ -504,12 +500,12 @@ where
 // TraverseTree impl for TaffyView
 impl<NodeContext, MeasureFunction> TraverseTree for TaffyView<'_, NodeContext, MeasureFunction> where
   MeasureFunction: FnMut(
-      Size<Option<f32>>,
-      Size<AvailableSpace>,
-      NodeId,
-      Option<&mut NodeContext>,
-      &Style,
-    ) -> Size<f32>
+    Size<Option<f32>>,
+    Size<AvailableSpace>,
+    NodeId,
+    Option<&mut NodeContext>,
+    &Style,
+  ) -> Size<f32>
 {
 }
 
@@ -517,12 +513,12 @@ impl<NodeContext, MeasureFunction> TraverseTree for TaffyView<'_, NodeContext, M
 impl<NodeContext, MeasureFunction> LayoutPartialTree for TaffyView<'_, NodeContext, MeasureFunction>
 where
   MeasureFunction: FnMut(
-      Size<Option<f32>>,
-      Size<AvailableSpace>,
-      NodeId,
-      Option<&mut NodeContext>,
-      &Style,
-    ) -> Size<f32>
+    Size<Option<f32>>,
+    Size<AvailableSpace>,
+    NodeId,
+    Option<&mut NodeContext>,
+    &Style,
+  ) -> Size<f32>,
 {
   type CoreContainerStyle<'a>
     = &'a Style
@@ -591,13 +587,8 @@ where
           let node_context_data = &mut tree.taffy.node_context_data;
 
           let measure_function = |known_dimensions, available_space| {
-            let key = LeafMeasureCacheKey::new(
-              node,
-              inputs.axis,
-              known_dimensions,
-              available_space,
-              style,
-            );
+            let key =
+              LeafMeasureCacheKey::new(node, inputs.axis, known_dimensions, available_space, style);
             if let Some(cached) = leaf_measure_cache.get(&key) {
               return *cached;
             }
@@ -605,8 +596,8 @@ where
             let node_context = has_context
               .then(|| node_context_data.get_mut(node_key))
               .flatten();
-           let measured =
-             (measure_callback)(known_dimensions, available_space, node, node_context, style);
+            let measured =
+              (measure_callback)(known_dimensions, available_space, node, node_context, style);
             leaf_measure_cache.insert(key, measured);
             measured
           };
@@ -666,12 +657,12 @@ impl<NodeContext, MeasureFunction> LayoutBlockContainer
   for TaffyView<'_, NodeContext, MeasureFunction>
 where
   MeasureFunction: FnMut(
-      Size<Option<f32>>,
-      Size<AvailableSpace>,
-      NodeId,
-      Option<&mut NodeContext>,
-      &Style,
-    ) -> Size<f32>
+    Size<Option<f32>>,
+    Size<AvailableSpace>,
+    NodeId,
+    Option<&mut NodeContext>,
+    &Style,
+  ) -> Size<f32>,
 {
   type BlockContainerStyle<'a>
     = &'a Style
@@ -698,12 +689,12 @@ impl<NodeContext, MeasureFunction> LayoutFlexboxContainer
   for TaffyView<'_, NodeContext, MeasureFunction>
 where
   MeasureFunction: FnMut(
-      Size<Option<f32>>,
-      Size<AvailableSpace>,
-      NodeId,
-      Option<&mut NodeContext>,
-      &Style,
-    ) -> Size<f32>
+    Size<Option<f32>>,
+    Size<AvailableSpace>,
+    NodeId,
+    Option<&mut NodeContext>,
+    &Style,
+  ) -> Size<f32>,
 {
   type FlexboxContainerStyle<'a>
     = &'a Style
@@ -730,12 +721,12 @@ impl<NodeContext, MeasureFunction> LayoutGridContainer
   for TaffyView<'_, NodeContext, MeasureFunction>
 where
   MeasureFunction: FnMut(
-      Size<Option<f32>>,
-      Size<AvailableSpace>,
-      NodeId,
-      Option<&mut NodeContext>,
-      &Style,
-    ) -> Size<f32>
+    Size<Option<f32>>,
+    Size<AvailableSpace>,
+    NodeId,
+    Option<&mut NodeContext>,
+    &Style,
+  ) -> Size<f32>,
 {
   type GridContainerStyle<'a>
     = &'a Style
@@ -778,12 +769,12 @@ where
 impl<NodeContext, MeasureFunction> RoundTree for TaffyView<'_, NodeContext, MeasureFunction>
 where
   MeasureFunction: FnMut(
-      Size<Option<f32>>,
-      Size<AvailableSpace>,
-      NodeId,
-      Option<&mut NodeContext>,
-      &Style,
-    ) -> Size<f32>
+    Size<Option<f32>>,
+    Size<AvailableSpace>,
+    NodeId,
+    Option<&mut NodeContext>,
+    &Style,
+  ) -> Size<f32>,
 {
   #[inline(always)]
   fn get_unrounded_layout(&self, node: NodeId) -> Layout {
@@ -1216,12 +1207,12 @@ impl<NodeContext> TaffyTree<NodeContext> {
   ) -> Result<(), TaffyError>
   where
     MeasureFunction: FnMut(
-        Size<Option<f32>>,
-        Size<AvailableSpace>,
-        NodeId,
-        Option<&mut NodeContext>,
-        &Style,
-      ) -> Size<f32>
+      Size<Option<f32>>,
+      Size<AvailableSpace>,
+      NodeId,
+      Option<&mut NodeContext>,
+      &Style,
+    ) -> Size<f32>,
   {
     // Subgrid overrides are stored in thread-local state. Scope them to this layout pass so that
     // nested layout calls (e.g. from measure functions) don't clobber the outer layout's overrides.
@@ -1255,9 +1246,7 @@ impl<NodeContext> TaffyTree<NodeContext> {
       }));
 
       match result {
-        Ok(()) => {
-          Ok(())
-        }
+        Ok(()) => Ok(()),
         Err(payload) => {
           if payload.is::<crate::util::LayoutAbort>() {
             return Err(TaffyError::LayoutAborted);
@@ -1295,12 +1284,12 @@ impl<NodeContext> TaffyTree<NodeContext> {
   ) -> Result<(), TaffyError>
   where
     MeasureFunction: FnMut(
-        Size<Option<f32>>,
-        Size<AvailableSpace>,
-        NodeId,
-        Option<&mut NodeContext>,
-        &Style,
-      ) -> Size<f32>
+      Size<Option<f32>>,
+      Size<AvailableSpace>,
+      NodeId,
+      Option<&mut NodeContext>,
+      &Style,
+    ) -> Size<f32>,
   {
     let Some(cancel) = cancel else {
       return self.compute_layout_with_measure(node_id, available_space, measure_function);
@@ -1497,7 +1486,9 @@ mod tests {
         children.push(taffy.new_leaf(Style::default()).unwrap());
       }
       children.push(deep_child);
-      deep_child = taffy.new_with_children(Style::default(), &children).unwrap();
+      deep_child = taffy
+        .new_with_children(Style::default(), &children)
+        .unwrap();
     }
     let root = deep_child;
     taffy
@@ -2207,23 +2198,19 @@ mod tests {
     let inner = RefCell::new(inner);
 
     outer
-      .compute_layout_with_measure(
-        outer_root,
-        Size::MAX_CONTENT,
-        move |_, _, _, _, _| {
-          insert_dummy_subgrid_override(NodeId::new(1));
-          assert_eq!(subgrid_overrides_len(), 1);
+      .compute_layout_with_measure(outer_root, Size::MAX_CONTENT, move |_, _, _, _, _| {
+        insert_dummy_subgrid_override(NodeId::new(1));
+        assert_eq!(subgrid_overrides_len(), 1);
 
-          // Nested layout runs should not clobber the outer run's overrides map.
-          inner
-            .borrow_mut()
-            .compute_layout(inner_root, Size::MAX_CONTENT)
-            .unwrap();
-          assert_eq!(subgrid_overrides_len(), 1);
+        // Nested layout runs should not clobber the outer run's overrides map.
+        inner
+          .borrow_mut()
+          .compute_layout(inner_root, Size::MAX_CONTENT)
+          .unwrap();
+        assert_eq!(subgrid_overrides_len(), 1);
 
-          Size::ZERO
-        },
-      )
+        Size::ZERO
+      })
       .unwrap();
 
     // Outermost layout runs clear the overrides map on exit to avoid leaking state.

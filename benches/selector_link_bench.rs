@@ -77,8 +77,7 @@ fn parse_selector(
 ) -> SelectorList<fastrender::css::selectors::FastRenderSelectorImpl> {
   let mut input = ParserInput::new(selector);
   let mut parser = cssparser::Parser::new(&mut input);
-  SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No)
-    .expect("parse selector")
+  SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).expect("parse selector")
 }
 
 fn selector_link_bench(c: &mut Criterion) {

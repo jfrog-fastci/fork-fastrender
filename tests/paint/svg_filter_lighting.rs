@@ -450,5 +450,9 @@ fn diffuse_lighting_regression_premultiply_and_normal_sign() {
     "expected middle pixel premultiplied red around 81 (n·L≈0.316), got {}",
     px.red()
   );
-  assert_eq!(px.alpha(), 255, "expected fully opaque output for opaque input");
+  assert_eq!(
+    px.alpha(),
+    255,
+    "expected fully opaque output for opaque input"
+  );
 }

@@ -651,80 +651,77 @@ fn process_entry(
             metrics: None,
             error: Some(format!("Failed to read {}: {e}", after.display())),
           },
-          Ok(after_png) => match diff_png_with_alpha(
-            &after_png,
-            &before_png,
-            tolerance,
-            compare_alpha,
-          ) {
-            Err(e) => DiffReportEntry {
-              name: name.to_string(),
-              status: EntryStatus::Error,
-              before: before_rel,
-              after: after_rel,
-              diff: None,
-              metrics: None,
-              error: Some(format!("Diff failed: {e}")),
-            },
-            Ok((metrics, diff_image)) => {
-              let passes_pixels = metrics.diff_percentage <= max_diff_percent + f64::EPSILON;
-              let passes_perceptual = max_perceptual_distance
-                .map(|max| metrics.perceptual_distance <= max + f64::EPSILON)
-                .unwrap_or(true);
+          Ok(after_png) => {
+            match diff_png_with_alpha(&after_png, &before_png, tolerance, compare_alpha) {
+              Err(e) => DiffReportEntry {
+                name: name.to_string(),
+                status: EntryStatus::Error,
+                before: before_rel,
+                after: after_rel,
+                diff: None,
+                metrics: None,
+                error: Some(format!("Diff failed: {e}")),
+              },
+              Ok((metrics, diff_image)) => {
+                let passes_pixels = metrics.diff_percentage <= max_diff_percent + f64::EPSILON;
+                let passes_perceptual = max_perceptual_distance
+                  .map(|max| metrics.perceptual_distance <= max + f64::EPSILON)
+                  .unwrap_or(true);
 
-              let status = if metrics.diff_percentage == 0.0 && passes_perceptual {
-                EntryStatus::Match
-              } else if passes_pixels && passes_perceptual {
-                EntryStatus::WithinThreshold
-              } else {
-                EntryStatus::Diff
-              };
-
-              let mut diff_path = None;
-              let mut final_status = status;
-              let mut error = if metrics.rendered_dimensions != metrics.expected_dimensions {
-                Some(format!(
-                  "Dimensions differ: after {}x{}, before {}x{}",
-                  metrics.rendered_dimensions.0,
-                  metrics.rendered_dimensions.1,
-                  metrics.expected_dimensions.0,
-                  metrics.expected_dimensions.1
-                ))
-              } else {
-                None
-              };
-              if metrics.pixel_diff > 0 {
-                let path = diff_path_for_name(diff_dir, name);
-                if let Err(e) = ensure_parent_dir(&path) {
-                  final_status = EntryStatus::Error;
-                  error = Some(e);
+                let status = if metrics.diff_percentage == 0.0 && passes_perceptual {
+                  EntryStatus::Match
+                } else if passes_pixels && passes_perceptual {
+                  EntryStatus::WithinThreshold
                 } else {
-                  match fs::write(&path, diff_image) {
-                    Ok(_) => {
-                      diff_path = Some(path_for_report(html_dir, &path));
-                    }
-                    Err(e) => {
-                      final_status = EntryStatus::Error;
-                      error = Some(format!(
-                        "Failed to write diff image {}: {e}",
-                        path.display()
-                      ));
+                  EntryStatus::Diff
+                };
+
+                let mut diff_path = None;
+                let mut final_status = status;
+                let mut error = if metrics.rendered_dimensions != metrics.expected_dimensions {
+                  Some(format!(
+                    "Dimensions differ: after {}x{}, before {}x{}",
+                    metrics.rendered_dimensions.0,
+                    metrics.rendered_dimensions.1,
+                    metrics.expected_dimensions.0,
+                    metrics.expected_dimensions.1
+                  ))
+                } else {
+                  None
+                };
+                if metrics.pixel_diff > 0 {
+                  let path = diff_path_for_name(diff_dir, name);
+                  if let Err(e) = ensure_parent_dir(&path) {
+                    final_status = EntryStatus::Error;
+                    error = Some(e);
+                  } else {
+                    match fs::write(&path, diff_image) {
+                      Ok(_) => {
+                        diff_path = Some(path_for_report(html_dir, &path));
+                      }
+                      Err(e) => {
+                        final_status = EntryStatus::Error;
+                        error = Some(format!(
+                          "Failed to write diff image {}: {e}",
+                          path.display()
+                        ));
+                      }
                     }
                   }
                 }
-              }
 
-              DiffReportEntry {
-                name: name.to_string(),
-                status: final_status,
-                before: before_rel,
-                after: after_rel,
-                diff: diff_path,
-                metrics: Some(metrics.into()),
-                error,
+                DiffReportEntry {
+                  name: name.to_string(),
+                  status: final_status,
+                  before: before_rel,
+                  after: after_rel,
+                  diff: diff_path,
+                  metrics: Some(metrics.into()),
+                  error,
+                }
               }
             }
-          },
+          }
         },
       }
     }

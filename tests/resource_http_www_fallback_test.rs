@@ -7,9 +7,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
- 
+
 const MAX_WAIT: Duration = Duration::from_secs(2);
- 
+
 #[track_caller]
 fn try_bind_localhost(context: &str) -> Option<TcpListener> {
   match TcpListener::bind("127.0.0.1:0") {
@@ -34,7 +34,7 @@ fn try_bind_localhost(context: &str) -> Option<TcpListener> {
     }
   }
 }
- 
+
 fn read_request(stream: &mut TcpStream) -> Vec<u8> {
   let mut buf = Vec::new();
   let mut tmp = [0u8; 1024];
@@ -56,7 +56,7 @@ fn read_request(stream: &mut TcpStream) -> Vec<u8> {
   }
   buf
 }
- 
+
 fn extract_host_header(req: &[u8]) -> Option<String> {
   let text = String::from_utf8_lossy(req);
   for line in text.lines() {
@@ -67,7 +67,7 @@ fn extract_host_header(req: &[u8]) -> Option<String> {
   }
   None
 }
- 
+
 fn spawn_server(listener: TcpListener, port: u16) -> thread::JoinHandle<()> {
   let seen_www = Arc::new(AtomicBool::new(false));
   let seen_www_accept = Arc::clone(&seen_www);
@@ -76,9 +76,10 @@ fn spawn_server(listener: TcpListener, port: u16) -> thread::JoinHandle<()> {
     let start = Instant::now();
     let mut last_activity = Instant::now();
     let mut joins = Vec::new();
- 
+
     while start.elapsed() < MAX_WAIT {
-      if seen_www_accept.load(Ordering::Relaxed) && last_activity.elapsed() > Duration::from_millis(200)
+      if seen_www_accept.load(Ordering::Relaxed)
+        && last_activity.elapsed() > Duration::from_millis(200)
       {
         break;
       }
@@ -90,11 +91,11 @@ fn spawn_server(listener: TcpListener, port: u16) -> thread::JoinHandle<()> {
             let _ = stream.set_nonblocking(true);
             let req = read_request(&mut stream);
             let _ = stream.set_nonblocking(false);
- 
+
             let host = extract_host_header(&req).unwrap_or_default();
             let expected_local = format!("localhost:{port}");
             let expected_www = format!("www.localhost:{port}");
- 
+
             if host.eq_ignore_ascii_case(&expected_www) {
               seen_www.store(true, Ordering::Relaxed);
               let body = b"www-ok";
@@ -106,15 +107,17 @@ fn spawn_server(listener: TcpListener, port: u16) -> thread::JoinHandle<()> {
               let _ = stream.write_all(body);
               return;
             }
- 
-            if host.eq_ignore_ascii_case(&expected_local) || host.eq_ignore_ascii_case("localhost") {
+
+            if host.eq_ignore_ascii_case(&expected_local) || host.eq_ignore_ascii_case("localhost")
+            {
               // Deliberately do not respond; hold the connection open long enough for the client to
               // hit its timeout so the fetcher is forced to retry with the `www.` hostname.
               thread::sleep(Duration::from_millis(450));
               return;
             }
- 
-            let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+            let response =
+              "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
             let _ = stream.write_all(response.as_bytes());
           }));
         }
@@ -124,13 +127,13 @@ fn spawn_server(listener: TcpListener, port: u16) -> thread::JoinHandle<()> {
         Err(_) => break,
       }
     }
- 
+
     for join in joins {
       let _ = join.join();
     }
   })
 }
- 
+
 #[test]
 fn http_fetch_www_fallback_on_timeout() {
   let Some(listener) = try_bind_localhost("http_fetch_www_fallback_on_timeout") else {
@@ -138,7 +141,7 @@ fn http_fetch_www_fallback_on_timeout() {
   };
   let port = listener.local_addr().unwrap().port();
   let handle = spawn_server(listener, port);
- 
+
   let fetcher = HttpFetcher::new()
     .with_timeout(Duration::from_millis(300))
     .with_retry_policy(HttpRetryPolicy {
@@ -155,6 +158,6 @@ fn http_fetch_www_fallback_on_timeout() {
     final_url.contains("www.localhost"),
     "expected final_url to reflect www fallback, got {final_url}"
   );
- 
+
   handle.join().unwrap();
 }

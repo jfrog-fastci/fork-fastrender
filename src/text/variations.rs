@@ -108,8 +108,12 @@ pub(crate) fn collect_variations_for_face(
   let has_slnt_axis = axes.iter().any(|a| a.tag == slnt_tag);
   let has_ital_axis = axes.iter().any(|a| a.tag == ital_tag);
   let slnt_angle = match style.font_style {
-    CssFontStyle::Oblique(angle) => Some(angle.unwrap_or(crate::text::pipeline::DEFAULT_OBLIQUE_ANGLE_DEG)),
-    CssFontStyle::Italic if !has_ital_axis => Some(crate::text::pipeline::DEFAULT_OBLIQUE_ANGLE_DEG),
+    CssFontStyle::Oblique(angle) => {
+      Some(angle.unwrap_or(crate::text::pipeline::DEFAULT_OBLIQUE_ANGLE_DEG))
+    }
+    CssFontStyle::Italic if !has_ital_axis => {
+      Some(crate::text::pipeline::DEFAULT_OBLIQUE_ANGLE_DEG)
+    }
     _ => None,
   };
   let ital_needed = matches!(style.font_style, CssFontStyle::Italic)
@@ -117,8 +121,7 @@ pub(crate) fn collect_variations_for_face(
 
   for axis in axes {
     if axis.tag == wght_tag && !set_tags.contains(&wght_tag) {
-      let wght_value =
-        (style.font_weight.to_u16() as f32).clamp(axis.min_value, axis.max_value);
+      let wght_value = (style.font_weight.to_u16() as f32).clamp(axis.min_value, axis.max_value);
       variations.push(Variation {
         tag: wght_tag,
         value: wght_value,

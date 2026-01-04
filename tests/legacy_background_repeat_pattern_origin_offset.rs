@@ -109,4 +109,3 @@ fn legacy_repeat_pattern_respects_stacking_context_origin_offset() {
   assert_close(pixel(&pixmap, 15, 0), (255, 128, 128, 255), 2);
   assert_close(pixel(&pixmap, 16, 0), (128, 128, 255, 255), 2);
 }
-

@@ -31,7 +31,11 @@ where
     }
   }
 
-  (best, samples, last.expect("cascade run produced styled tree"))
+  (
+    best,
+    samples,
+    last.expect("cascade run produced styled tree"),
+  )
 }
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
@@ -87,8 +91,9 @@ fn cascade_handles_large_rule_sets_under_budget() {
 
   let media = MediaContext::screen(1280.0, 720.0);
   let budget = Duration::from_millis(1500);
-  let (elapsed, samples, styled) =
-    apply_styles_best_of(budget, || apply_styles_with_media(&dom, &stylesheet, &media));
+  let (elapsed, samples, styled) = apply_styles_best_of(budget, || {
+    apply_styles_with_media(&dom, &stylesheet, &media)
+  });
   let samples_ms: Vec<u128> = samples.iter().map(|sample| sample.as_millis()).collect();
 
   assert!(
@@ -143,8 +148,9 @@ fn cascade_handles_thousands_of_has_rules_under_budget() {
 
   let media = MediaContext::screen(1440.0, 900.0);
   let budget = Duration::from_millis(2000);
-  let (elapsed, samples, styled) =
-    apply_styles_best_of(budget, || apply_styles_with_media(&dom, &stylesheet, &media));
+  let (elapsed, samples, styled) = apply_styles_best_of(budget, || {
+    apply_styles_with_media(&dom, &stylesheet, &media)
+  });
   let samples_ms: Vec<u128> = samples.iter().map(|sample| sample.as_millis()).collect();
 
   assert!(
@@ -192,8 +198,9 @@ fn cascade_handles_many_custom_properties_under_budget() {
 
   let media = MediaContext::screen(1280.0, 720.0);
   let budget = Duration::from_millis(2500);
-  let (elapsed, samples, styled) =
-    apply_styles_best_of(budget, || apply_styles_with_media(&dom, &stylesheet, &media));
+  let (elapsed, samples, styled) = apply_styles_best_of(budget, || {
+    apply_styles_with_media(&dom, &stylesheet, &media)
+  });
   let samples_ms: Vec<u128> = samples.iter().map(|sample| sample.as_millis()).collect();
 
   assert!(
@@ -241,8 +248,9 @@ fn cascade_handles_many_keyword_declarations_under_budget() {
 
   let media = MediaContext::screen(1280.0, 720.0);
   let budget = Duration::from_millis(800);
-  let (elapsed, samples, styled) =
-    apply_styles_best_of(budget, || apply_styles_with_media(&dom, &stylesheet, &media));
+  let (elapsed, samples, styled) = apply_styles_best_of(budget, || {
+    apply_styles_with_media(&dom, &stylesheet, &media)
+  });
   let samples_ms: Vec<u128> = samples.iter().map(|sample| sample.as_millis()).collect();
 
   assert!(

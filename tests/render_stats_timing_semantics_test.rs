@@ -54,4 +54,3 @@ fn layout_diagnostics_accepts_legacy_taffy_keys_and_serializes_cpu_suffix() {
     "legacy key should not be emitted"
   );
 }
-

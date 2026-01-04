@@ -830,21 +830,22 @@ fn push_token_to_css(out: &mut String, token: &Token) {
     // Compute the first byte of the serialized token so we can decide whether a token-splice
     // boundary separator is required.
     let (first, second) = match token {
-      Token::Ident(ident) => (
-        ident.as_bytes()[0],
-        ident.as_bytes().get(1).copied(),
-      ),
+      Token::Ident(ident) => (ident.as_bytes()[0], ident.as_bytes().get(1).copied()),
       Token::AtKeyword(_) => (b'@', None),
       Token::Hash(_) | Token::IDHash(_) => (b'#', None),
       Token::QuotedString(_) => (b'"', None),
       Token::UnquotedUrl(_) | Token::BadUrl(_) => (b'u', Some(b'r')),
-      Token::Number { has_sign, value, .. }
+      Token::Number {
+        has_sign, value, ..
+      }
       | Token::Percentage {
         has_sign,
         unit_value: value,
         ..
       }
-      | Token::Dimension { has_sign, value, .. } => {
+      | Token::Dimension {
+        has_sign, value, ..
+      } => {
         if value.is_sign_negative() {
           (b'-', None)
         } else if *has_sign {
@@ -1529,8 +1530,7 @@ mod tests {
     assert_eq!(name, "--x");
     assert_eq!(fallback, Some(""));
 
-    let (_, fallback) =
-      parse_simple_var_call("var(--x,   )").expect("expected simple var call");
+    let (_, fallback) = parse_simple_var_call("var(--x,   )").expect("expected simple var call");
     assert_eq!(fallback, Some(""));
 
     let (_, fallback) = parse_simple_var_call("var(--x)").expect("expected simple var call");
@@ -1630,7 +1630,10 @@ mod tests {
       }
     }
 
-    assert!(seen_number, "expected a number token at start of spliced result");
+    assert!(
+      seen_number,
+      "expected a number token at start of spliced result"
+    );
     assert!(seen_calc, "expected a calc() function token after number");
   }
 

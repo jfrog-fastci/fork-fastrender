@@ -9532,8 +9532,7 @@ fn apply_styles_internal_with_ancestors<'a>(
           // When computing starting styles for slotted nodes, inherit from the slot's starting
           // base styles when available (else fall back to the slot's normal base styles).
           if let Some(assigned_slot) = slot_assignment.node_to_slot.get(&child_id) {
-            if let Some(slot_styles) =
-              flat_tree_inheritance_cache.get(&assigned_slot.slot_node_id)
+            if let Some(slot_styles) = flat_tree_inheritance_cache.get(&assigned_slot.slot_node_id)
             {
               start_parent_styles = slot_styles
                 .starting_styles
@@ -23618,7 +23617,8 @@ fn resolve_container_query_lengths(
   };
 
   let mut resolve_len = |len: &mut Length| {
-    *len = len.resolve_container_query_units(inline_size, size_container_inline, size_container_block);
+    *len =
+      len.resolve_container_query_units(inline_size, size_container_inline, size_container_block);
   };
 
   fn resolve_opt_len(len: &mut Option<Length>, resolve_len: &mut impl FnMut(&mut Length)) {
@@ -23727,9 +23727,7 @@ fn resolve_container_query_lengths(
     match size {
       RadialGradientSize::Explicit { x, y } => {
         length_needs_container_resolution(x)
-          || y
-            .as_ref()
-            .is_some_and(length_needs_container_resolution)
+          || y.as_ref().is_some_and(length_needs_container_resolution)
       }
       _ => false,
     }
@@ -23741,8 +23739,7 @@ fn resolve_container_query_lengths(
   ) {
     match image {
       BackgroundImage::None | BackgroundImage::Url(_) => {}
-      BackgroundImage::LinearGradient { .. }
-      | BackgroundImage::RepeatingLinearGradient { .. } => {}
+      BackgroundImage::LinearGradient { .. } | BackgroundImage::RepeatingLinearGradient { .. } => {}
       BackgroundImage::RadialGradient { size, position, .. }
       | BackgroundImage::RepeatingRadialGradient { size, position, .. } => {
         resolve_radial_gradient_size(size, resolve_len);
@@ -23758,8 +23755,9 @@ fn resolve_container_query_lengths(
   fn background_image_needs_container_resolution(image: &BackgroundImage) -> bool {
     match image {
       BackgroundImage::None | BackgroundImage::Url(_) => false,
-      BackgroundImage::LinearGradient { .. }
-      | BackgroundImage::RepeatingLinearGradient { .. } => false,
+      BackgroundImage::LinearGradient { .. } | BackgroundImage::RepeatingLinearGradient { .. } => {
+        false
+      }
       BackgroundImage::RadialGradient { size, position, .. }
       | BackgroundImage::RepeatingRadialGradient { size, position, .. } => {
         radial_gradient_size_needs_container_resolution(size)
@@ -23778,27 +23776,21 @@ fn resolve_container_query_lengths(
       GridTrack::MinMax(min, max) => {
         grid_track_needs_container_resolution(min) || grid_track_needs_container_resolution(max)
       }
-      GridTrack::RepeatAutoFill { tracks, .. } | GridTrack::RepeatAutoFit { tracks, .. } => tracks
-        .iter()
-        .any(grid_track_needs_container_resolution),
+      GridTrack::RepeatAutoFill { tracks, .. } | GridTrack::RepeatAutoFit { tracks, .. } => {
+        tracks.iter().any(grid_track_needs_container_resolution)
+      }
       _ => false,
     }
   }
 
-  fn resolve_clip_radii(
-    radii: &mut ClipRadii,
-    resolve_len: &mut impl FnMut(&mut Length),
-  ) {
+  fn resolve_clip_radii(radii: &mut ClipRadii, resolve_len: &mut impl FnMut(&mut Length)) {
     resolve_border_corner(&mut radii.top_left, resolve_len);
     resolve_border_corner(&mut radii.top_right, resolve_len);
     resolve_border_corner(&mut radii.bottom_right, resolve_len);
     resolve_border_corner(&mut radii.bottom_left, resolve_len);
   }
 
-  fn resolve_basic_shape(
-    shape: &mut BasicShape,
-    resolve_len: &mut impl FnMut(&mut Length),
-  ) {
+  fn resolve_basic_shape(shape: &mut BasicShape, resolve_len: &mut impl FnMut(&mut Length)) {
     match shape {
       BasicShape::Inset {
         top,
@@ -23844,10 +23836,7 @@ fn resolve_container_query_lengths(
     }
   }
 
-  fn resolve_clip_path(
-    path: &mut ClipPath,
-    resolve_len: &mut impl FnMut(&mut Length),
-  ) {
+  fn resolve_clip_path(path: &mut ClipPath, resolve_len: &mut impl FnMut(&mut Length)) {
     match path {
       ClipPath::None | ClipPath::Box(_) => {}
       ClipPath::BasicShape(shape, _) => resolve_basic_shape(shape, resolve_len),
@@ -23886,10 +23875,7 @@ fn resolve_container_query_lengths(
     }
   }
 
-  fn resolve_offset_path(
-    path: &mut OffsetPath,
-    resolve_len: &mut impl FnMut(&mut Length),
-  ) {
+  fn resolve_offset_path(path: &mut OffsetPath, resolve_len: &mut impl FnMut(&mut Length)) {
     match path {
       OffsetPath::None | OffsetPath::Path(_) => {}
       OffsetPath::Ray(ray) => {
@@ -23901,10 +23887,7 @@ fn resolve_container_query_lengths(
     }
   }
 
-  fn resolve_shape_outside(
-    shape: &mut ShapeOutside,
-    resolve_len: &mut impl FnMut(&mut Length),
-  ) {
+  fn resolve_shape_outside(shape: &mut ShapeOutside, resolve_len: &mut impl FnMut(&mut Length)) {
     match shape {
       ShapeOutside::None | ShapeOutside::Box(_) => {}
       ShapeOutside::BasicShape(shape, _) => resolve_basic_shape(shape, resolve_len),
@@ -23993,10 +23976,7 @@ fn resolve_container_query_lengths(
     }
   }
 
-  fn resolve_transform_list(
-    list: &mut [Transform],
-    resolve_len: &mut impl FnMut(&mut Length),
-  ) {
+  fn resolve_transform_list(list: &mut [Transform], resolve_len: &mut impl FnMut(&mut Length)) {
     for transform in list {
       match transform {
         Transform::Translate(x, y) => {
@@ -24140,7 +24120,10 @@ fn resolve_container_query_lengths(
     .flatten()
     .any(background_image_needs_container_resolution)
   {
-    for image in Arc::make_mut(&mut styles.background_images).iter_mut().flatten() {
+    for image in Arc::make_mut(&mut styles.background_images)
+      .iter_mut()
+      .flatten()
+    {
       resolve_background_image(image, &mut resolve_len);
     }
   }
@@ -24208,7 +24191,12 @@ fn resolve_container_query_lengths(
 
   match &mut styles.border_image.width {
     width => {
-      for value in [&mut width.top, &mut width.right, &mut width.bottom, &mut width.left] {
+      for value in [
+        &mut width.top,
+        &mut width.right,
+        &mut width.bottom,
+        &mut width.left,
+      ] {
         if let BorderImageWidthValue::Length(len) = value {
           resolve_len(len);
         }
@@ -24282,18 +24270,10 @@ fn resolve_container_query_lengths(
     }
   }
 
-  if let Some(len) = styles
-    .contain_intrinsic_width
-    .length
-    .as_mut()
-  {
+  if let Some(len) = styles.contain_intrinsic_width.length.as_mut() {
     resolve_len(len);
   }
-  if let Some(len) = styles
-    .contain_intrinsic_height
-    .length
-    .as_mut()
-  {
+  if let Some(len) = styles.contain_intrinsic_height.length.as_mut() {
     resolve_len(len);
   }
 }

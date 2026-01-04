@@ -67,7 +67,10 @@ pub fn plan_missing_failure_fixtures(
       continue;
     }
 
-    let url = json.get("url").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let url = json
+      .get("url")
+      .and_then(|v| v.as_str())
+      .map(|s| s.to_string());
     let fixture_index_path = fixtures_root.join(stem).join("index.html");
     let has_fixture = fixture_index_path.is_file();
 
@@ -99,4 +102,3 @@ pub fn plan_missing_failure_fixtures(
     existing_fixtures,
   })
 }
-

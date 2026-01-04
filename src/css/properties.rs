@@ -2053,7 +2053,9 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     | "text-emphasis-color"
     | "column-rule-color" => return Color::parse(raw_value).is_ok(),
     "display" => return keyword_parse(parsed, |kw| Display::parse(kw).ok()),
-    "-webkit-box-orient" | "box-orient" => return keyword_in_list(parsed, &["horizontal", "vertical"]),
+    "-webkit-box-orient" | "box-orient" => {
+      return keyword_in_list(parsed, &["horizontal", "vertical"])
+    }
     "position" => return keyword_parse(parsed, |kw| Position::parse(kw).ok()),
     "float" => return keyword_parse(parsed, |kw| Float::parse(kw).ok()),
     "clear" => return keyword_parse(parsed, |kw| Clear::parse(kw).ok()),
@@ -4965,14 +4967,21 @@ mod tests {
 
   #[test]
   fn parses_container_query_units() {
-    assert_eq!(parse_length("100cqw").unwrap(), Length::new(100.0, LengthUnit::Cqw));
-    assert_eq!(parse_length("1cqmin").unwrap(), Length::new(1.0, LengthUnit::Cqmin));
+    assert_eq!(
+      parse_length("100cqw").unwrap(),
+      Length::new(100.0, LengthUnit::Cqw)
+    );
+    assert_eq!(
+      parse_length("1cqmin").unwrap(),
+      Length::new(1.0, LengthUnit::Cqmin)
+    );
     assert_eq!(
       parse_length("calc(10cqw + 5px)").unwrap(),
-      Length::calc(CalcLength::single(LengthUnit::Cqw, 10.0).add_scaled(&CalcLength::single(
-        LengthUnit::Px,
-        5.0
-      ), 1.0).unwrap())
+      Length::calc(
+        CalcLength::single(LengthUnit::Cqw, 10.0)
+          .add_scaled(&CalcLength::single(LengthUnit::Px, 5.0), 1.0)
+          .unwrap()
+      )
     );
   }
 }

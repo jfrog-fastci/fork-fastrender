@@ -43,4 +43,3 @@ fn supports_animation_timeline_rejects_trailing_comma() {
   ";
   assert_eq!(render_div_display(css), "block");
 }
-

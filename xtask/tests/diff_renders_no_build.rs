@@ -7,7 +7,9 @@ use tempfile::tempdir;
 #[cfg(unix)]
 fn make_executable(path: &Path) {
   use std::os::unix::fs::PermissionsExt;
-  let mut perms = fs::metadata(path).expect("stat stub executable").permissions();
+  let mut perms = fs::metadata(path)
+    .expect("stat stub executable")
+    .permissions();
   perms.set_mode(0o755);
   fs::set_permissions(path, perms).expect("chmod stub executable");
 }
@@ -34,8 +36,11 @@ fn diff_renders_no_build_runs_existing_binary() {
   // Place a stub `cargo` in PATH that fails if invoked. When `--no-build` is working correctly,
   // xtask should never spawn `cargo build`.
   let stub_cargo = bin_dir.join("cargo");
-  fs::write(&stub_cargo, "#!/usr/bin/env sh\necho 'cargo should not be called' >&2\nexit 2\n")
-    .expect("write stub cargo");
+  fs::write(
+    &stub_cargo,
+    "#!/usr/bin/env sh\necho 'cargo should not be called' >&2\nexit 2\n",
+  )
+  .expect("write stub cargo");
   make_executable(&stub_cargo);
 
   // Provide a stub diff_renders binary that writes the requested report files and exits 0.
@@ -110,4 +115,3 @@ exit 0
     "missing diff_report.json"
   );
 }
-

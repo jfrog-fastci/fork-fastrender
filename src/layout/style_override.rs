@@ -1,5 +1,5 @@
-use crate::style::ComputedStyle;
 use crate::style::values::{CalcLength, Length};
+use crate::style::ComputedStyle;
 use rustc_hash::FxHasher;
 use std::cell::{Cell, RefCell};
 use std::hash::{Hash, Hasher};

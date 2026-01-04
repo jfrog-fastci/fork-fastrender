@@ -126,7 +126,10 @@ fn preserves_single_value_animation_timeline_none() {
   let styled = apply_styles_with_media(&dom, &sheet, &MediaContext::screen(800.0, 600.0));
   let div = find_by_tag(&styled, "div").expect("div present");
 
-  assert_eq!(div.styles.animation_timelines, vec![AnimationTimeline::None]);
+  assert_eq!(
+    div.styles.animation_timelines,
+    vec![AnimationTimeline::None]
+  );
 }
 
 #[test]

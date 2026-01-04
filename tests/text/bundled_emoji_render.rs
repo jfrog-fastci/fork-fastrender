@@ -58,7 +58,10 @@ fn bundled_emoji_shapes_us_flag_sequence_as_single_glyph() {
     .shape("🇺🇸", &style, &font_ctx)
     .expect("flag should shape");
 
-  assert!(!runs.is_empty(), "flag should yield at least one shaped run");
+  assert!(
+    !runs.is_empty(),
+    "flag should yield at least one shaped run"
+  );
   assert_eq!(
     runs[0].font.family, "FastRender Emoji",
     "bundled emoji font should shape the flag sequence"
@@ -105,7 +108,9 @@ fn bundled_us_flag_emoji_shapes_as_single_glyph() {
   style.font_size = 64.0;
 
   let text = "\u{1F1FA}\u{1F1F8}";
-  let runs = pipeline.shape(text, &style, &font_ctx).expect("emoji flag should shape");
+  let runs = pipeline
+    .shape(text, &style, &font_ctx)
+    .expect("emoji flag should shape");
   assert!(!runs.is_empty());
 
   let glyphs: Vec<_> = runs.iter().flat_map(|run| run.glyphs.iter()).collect();

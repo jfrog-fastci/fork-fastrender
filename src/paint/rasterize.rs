@@ -1138,12 +1138,9 @@ fn render_outset_shadow(
       (pixmap.width() as f32 + blur_pad).ceil(),
       (pixmap.height() as f32 + blur_pad).ceil(),
     ),
-    BoxShadowSurfaceClamp::ClampToDestination => (
-      0.0,
-      0.0,
-      pixmap.width() as f32,
-      pixmap.height() as f32,
-    ),
+    BoxShadowSurfaceClamp::ClampToDestination => {
+      (0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32)
+    }
   };
 
   let min_x = full_min_x.max(clip_min_x);
@@ -1229,12 +1226,9 @@ fn render_inset_shadow(
       (pixmap.width() as f32 + blur_pad).ceil(),
       (pixmap.height() as f32 + blur_pad).ceil(),
     ),
-    BoxShadowSurfaceClamp::ClampToDestination => (
-      0.0,
-      0.0,
-      pixmap.width() as f32,
-      pixmap.height() as f32,
-    ),
+    BoxShadowSurfaceClamp::ClampToDestination => {
+      (0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32)
+    }
   };
 
   let min_x = full_min_x.max(clip_min_x);
@@ -1298,7 +1292,11 @@ fn render_inset_shadow(
   let deadline_row_stride = (DEADLINE_STRIDE / width_px).max(1);
   let mut deadline_counter = 0usize;
   for y_idx in 0..height_px {
-    check_active_periodic(&mut deadline_counter, deadline_row_stride, RenderStage::Paint)?;
+    check_active_periodic(
+      &mut deadline_counter,
+      deadline_row_stride,
+      RenderStage::Paint,
+    )?;
     let row_base = y_idx * width_px;
     let row = &mut pixels[row_base..row_base + width_px];
 
@@ -1889,16 +1887,7 @@ mod tests {
     let width = pixmap.width() as f32;
     let height = pixmap.height() as f32;
     let result = with_deadline(Some(&deadline), || {
-      render_box_shadow_cached(
-        &mut pixmap,
-        0.0,
-        0.0,
-        width,
-        height,
-        &radii,
-        &shadow,
-        None,
-      )
+      render_box_shadow_cached(&mut pixmap, 0.0, 0.0, width, height, &radii, &shadow, None)
     });
     assert!(matches!(
       result,

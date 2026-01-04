@@ -44,9 +44,7 @@ fn progress_pages_do_not_contain_legacy_cpu_sum_keys() {
     if !found.is_empty() {
       offenders.push(format!(
         "{}: contains legacy keys: {}",
-        path.strip_prefix(&repo_root)
-          .unwrap_or(&path)
-          .display(),
+        path.strip_prefix(&repo_root).unwrap_or(&path).display(),
         found.into_iter().collect::<Vec<_>>().join(", ")
       ));
     }
@@ -78,4 +76,3 @@ fn collect_legacy_keys(value: &Value, found: &mut BTreeSet<String>) {
     Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
   }
 }
-

@@ -3,12 +3,12 @@ mod r#ref;
 use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::style::media::MediaType;
 use fastrender::{
-  snapshot_pipeline, FastRender, FontConfig, Pixmap, PipelineSnapshot, RenderArtifactRequest,
+  snapshot_pipeline, FastRender, FontConfig, PipelineSnapshot, Pixmap, RenderArtifactRequest,
   RenderDiagnostics, RenderOptions, ResourcePolicy,
 };
-use rayon::ThreadPoolBuilder;
 use r#ref::image_compare::compare_pngs;
 use r#ref::CompareConfig;
+use rayon::ThreadPoolBuilder;
 use std::collections::{BTreeSet, HashMap};
 use std::env;
 use std::fs;
@@ -118,7 +118,9 @@ fn env_flag(name: &str) -> Result<bool, String> {
   match value.as_str() {
     "1" | "true" | "yes" | "on" => Ok(true),
     "0" | "false" | "no" | "off" => Ok(false),
-    other => Err(format!("expected 1/0/true/false/yes/no/on/off, got '{other}'")),
+    other => Err(format!(
+      "expected 1/0/true/false/yes/no/on/off, got '{other}'"
+    )),
   }
 }
 
@@ -200,7 +202,11 @@ fn base_url_for(html_path: &Path) -> Result<String, String> {
     .map(|url| url.to_string())
 }
 
-fn render_pixmap(renderer: &mut FastRender, html: &str, options: &RenderOptions) -> Result<Pixmap, String> {
+fn render_pixmap(
+  renderer: &mut FastRender,
+  html: &str,
+  options: &RenderOptions,
+) -> Result<Pixmap, String> {
   renderer
     .render_html_with_options(html, options.clone())
     .map_err(|e| format!("Render failed: {:?}", e))
@@ -254,8 +260,8 @@ fn capture_snapshot(
 }
 
 fn write_json_pretty(path: &Path, value: &impl serde::Serialize) -> Result<(), String> {
-  let json =
-    serde_json::to_string_pretty(value).map_err(|e| format!("serialize {}: {e}", path.display()))?;
+  let json = serde_json::to_string_pretty(value)
+    .map_err(|e| format!("serialize {}: {e}", path.display()))?;
   fs::write(path, json).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
@@ -266,13 +272,21 @@ fn run_diff_snapshots(before_dir: &Path, after_dir: &Path, out_dir: &Path) -> Re
     .current_dir(PathBuf::from(env!("CARGO_MANIFEST_DIR")))
     .args([
       "--before",
-      before_dir.to_str().ok_or_else(|| "before dir not utf-8".to_string())?,
+      before_dir
+        .to_str()
+        .ok_or_else(|| "before dir not utf-8".to_string())?,
       "--after",
-      after_dir.to_str().ok_or_else(|| "after dir not utf-8".to_string())?,
+      after_dir
+        .to_str()
+        .ok_or_else(|| "after dir not utf-8".to_string())?,
       "--json",
-      json_path.to_str().ok_or_else(|| "json path not utf-8".to_string())?,
+      json_path
+        .to_str()
+        .ok_or_else(|| "json path not utf-8".to_string())?,
       "--html",
-      html_path.to_str().ok_or_else(|| "html path not utf-8".to_string())?,
+      html_path
+        .to_str()
+        .ok_or_else(|| "html path not utf-8".to_string())?,
     ])
     .status()
     .map_err(|e| format!("spawn diff_snapshots: {e}"))?;
@@ -315,7 +329,10 @@ fn pixmap_matches_straight_rgba(pixmap: &Pixmap, expected_rgba: &[u8]) -> bool {
     return false;
   }
 
-  for (expected, chunk) in expected_rgba.chunks_exact(4).zip(pixmap.data().chunks_exact(4)) {
+  for (expected, chunk) in expected_rgba
+    .chunks_exact(4)
+    .zip(pixmap.data().chunks_exact(4))
+  {
     let r = chunk[0];
     let g = chunk[1];
     let b = chunk[2];
@@ -376,7 +393,8 @@ fn run_fixture(
 
     let rendered = pool.install(|| render_pixmap(&mut renderer, &html, options))?;
 
-    if let (Some(expected_pixmap), Some(expected_rgba)) = (expected.as_ref(), expected_rgba.as_ref())
+    if let (Some(expected_pixmap), Some(expected_rgba)) =
+      (expected.as_ref(), expected_rgba.as_ref())
     {
       if !pixmap_matches_straight_rgba(&rendered, expected_rgba) {
         let label = format!("run_{idx}_threads_{threads}");
@@ -384,9 +402,14 @@ fn run_fixture(
           encode_image(expected_pixmap, OutputFormat::Png).map_err(|e| format!("{e:?}"))?;
         let rendered_png =
           encode_image(&rendered, OutputFormat::Png).map_err(|e| format!("{e:?}"))?;
-        let mut message =
-          compare_pngs(&label, &rendered_png, &expected_png, compare_config, &output_dir)
-            .unwrap_err();
+        let mut message = compare_pngs(
+          &label,
+          &rendered_png,
+          &expected_png,
+          compare_config,
+          &output_dir,
+        )
+        .unwrap_err();
 
         // If the pixel diff is due to nondeterminism, make it actionable by capturing pipeline
         // snapshots (DOM/styled/box/fragment/display-list) for both variants and running
@@ -401,9 +424,8 @@ fn run_fixture(
           .get(&expected_threads)
           .ok_or_else(|| format!("Missing thread pool for expected {expected_threads} threads"))?;
 
-        let before_capture = expected_pool.install(|| {
-          capture_snapshot(&mut renderer, &html, &base_url, options)
-        });
+        let before_capture =
+          expected_pool.install(|| capture_snapshot(&mut renderer, &html, &base_url, options));
         let after_capture =
           pool.install(|| capture_snapshot(&mut renderer, &html, &base_url, options));
 
@@ -475,8 +497,8 @@ fn fixture_determinism_in_process() {
 
   let is_heavy_settings = config.viewport == HEAVY_VIEWPORT && config.schedule == HEAVY_SCHEDULE;
   let is_slow_platform = cfg!(target_os = "windows") || cfg!(target_os = "macos");
-  let allow_heavy = env_flag(ENV_ALLOW_HEAVY)
-    .unwrap_or_else(|e| panic!("Invalid {ENV_ALLOW_HEAVY} value: {e}"));
+  let allow_heavy =
+    env_flag(ENV_ALLOW_HEAVY).unwrap_or_else(|e| panic!("Invalid {ENV_ALLOW_HEAVY} value: {e}"));
   if is_heavy_settings && is_slow_platform && !allow_heavy {
     eprintln!(
       "Skipping heavy in-process determinism run on this platform (viewport {}x{}, schedule {:?}).\n\
@@ -487,8 +509,8 @@ Set {ENV_ALLOW_HEAVY}=1 to run anyway.",
   }
 
   let options = config.render_options();
-  let pools =
-    build_thread_pools(&config.schedule).unwrap_or_else(|e| panic!("Thread pool setup failed: {e}"));
+  let pools = build_thread_pools(&config.schedule)
+    .unwrap_or_else(|e| panic!("Thread pool setup failed: {e}"));
 
   let compare_config = CompareConfig::strict();
   for fixture in FIXTURES {

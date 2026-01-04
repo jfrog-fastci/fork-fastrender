@@ -1,5 +1,7 @@
 use super::color_font_helpers::load_test_font;
-use fastrender::css::types::{FontPaletteBase, FontPaletteOverride, FontPaletteValuesRule, TextShadow};
+use fastrender::css::types::{
+  FontPaletteBase, FontPaletteOverride, FontPaletteValuesRule, TextShadow,
+};
 use fastrender::geometry::Rect;
 use fastrender::paint::display_list::DisplayItem;
 use fastrender::paint::display_list_builder::DisplayListBuilder;
@@ -63,9 +65,7 @@ fn build_palette_registry(family: &str) -> Arc<FontPaletteRegistry> {
 
 fn shape_single_run(text: &str, style: &ComputedStyle, font_ctx: &FontContext) -> ShapedRun {
   let pipeline = ShapingPipeline::new();
-  let runs = pipeline
-    .shape(text, style, font_ctx)
-    .expect("shape runs");
+  let runs = pipeline.shape(text, style, font_ctx).expect("shape runs");
   runs.into_iter().next().expect("expected a shaped run")
 }
 
@@ -116,8 +116,8 @@ fn tint_shadow_pixmap(pixmap: &mut Pixmap, color: Rgba) {
     let rp = mul_div_255_round_u16(r, a16) as u8;
     let gp = mul_div_255_round_u16(g, a16) as u8;
     let bp = mul_div_255_round_u16(b, a16) as u8;
-    *px = PremultipliedColorU8::from_rgba(rp, gp, bp, a)
-      .unwrap_or(PremultipliedColorU8::TRANSPARENT);
+    *px =
+      PremultipliedColorU8::from_rgba(rp, gp, bp, a).unwrap_or(PremultipliedColorU8::TRANSPARENT);
   }
 }
 
@@ -323,7 +323,10 @@ fn display_list_preserves_font_palette_overrides_for_text() {
   );
 
   let hist = color_histogram(&dl_pixmap);
-  assert!(hist.contains_key(&[0, 255, 0]), "expected green override pixels");
+  assert!(
+    hist.contains_key(&[0, 255, 0]),
+    "expected green override pixels"
+  );
   assert!(
     !hist.contains_key(&[255, 0, 0]),
     "expected base red palette entry to be absent after overrides"
@@ -338,7 +341,10 @@ fn display_list_preserves_font_palette_overrides_for_text() {
     })
     .expect("expected a text display item");
   assert_eq!(text_item.palette_override_hash, run.palette_override_hash);
-  assert_eq!(text_item.palette_overrides.as_ref(), run.palette_overrides.as_ref());
+  assert_eq!(
+    text_item.palette_overrides.as_ref(),
+    run.palette_overrides.as_ref()
+  );
 }
 
 #[test]
@@ -387,9 +393,10 @@ fn display_list_palette_override_hash_avoids_cache_aliasing_for_text() {
     vec![green_run.clone()],
     Arc::new(green_style),
   );
-  let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, width as f32, height as f32), vec![
-    left, right,
-  ]);
+  let root = FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, width as f32, height as f32),
+    vec![left, right],
+  );
 
   let list = DisplayListBuilder::new().build(&root);
   let dl_pixmap = DisplayListRenderer::new(width, height, Rgba::WHITE, font_ctx.clone())
@@ -448,7 +455,10 @@ fn display_list_preserves_palette_overrides_for_text_shadows() {
       .any(|(idx, color)| *idx == 0 && color.alpha_u8() == 0),
     "expected palette entry 0 to be overridden with transparent color"
   );
-  assert_ne!(no_blue_run.palette_override_hash, green_run.palette_override_hash);
+  assert_ne!(
+    no_blue_run.palette_override_hash,
+    green_run.palette_override_hash
+  );
 
   let width = 260;
   let height = 140;
@@ -470,9 +480,10 @@ fn display_list_preserves_palette_overrides_for_text_shadows() {
     vec![no_blue_run.clone()],
     Arc::new(no_blue_style.clone()),
   );
-  let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, width as f32, height as f32), vec![
-    left, right,
-  ]);
+  let root = FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, width as f32, height as f32),
+    vec![left, right],
+  );
   let list = DisplayListBuilder::new().build(&root);
 
   let dl_pixmap = DisplayListRenderer::new(width, height, Rgba::WHITE, font_ctx.clone())
@@ -496,7 +507,14 @@ fn display_list_preserves_palette_overrides_for_text_shadows() {
         color: shadow.color,
       })
       .collect();
-    render_legacy_text_shadows(&mut rasterizer, run, origin_x, baseline, &shadows, &mut legacy);
+    render_legacy_text_shadows(
+      &mut rasterizer,
+      run,
+      origin_x,
+      baseline,
+      &shadows,
+      &mut legacy,
+    );
   }
 
   assert_eq!(
@@ -540,9 +558,10 @@ fn display_list_preserves_font_palette_overrides_for_list_markers() {
     vec![],
     style,
   );
-  let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, width as f32, height as f32), vec![
-    marker,
-  ]);
+  let root = FragmentNode::new_block(
+    Rect::from_xywh(0.0, 0.0, width as f32, height as f32),
+    vec![marker],
+  );
   let list = DisplayListBuilder::new().build(&root);
 
   let dl_pixmap = DisplayListRenderer::new(width, height, Rgba::WHITE, font_ctx.clone())
@@ -563,7 +582,10 @@ fn display_list_preserves_font_palette_overrides_for_list_markers() {
   );
 
   let hist = color_histogram(&dl_pixmap);
-  assert!(hist.contains_key(&[0, 255, 0]), "expected green override pixels");
+  assert!(
+    hist.contains_key(&[0, 255, 0]),
+    "expected green override pixels"
+  );
   assert!(
     !hist.contains_key(&[255, 0, 0]),
     "expected base red palette entry to be absent after overrides"
@@ -578,5 +600,8 @@ fn display_list_preserves_font_palette_overrides_for_list_markers() {
     })
     .expect("expected a list marker display item");
   assert_eq!(marker_item.palette_override_hash, run.palette_override_hash);
-  assert_eq!(marker_item.palette_overrides.as_ref(), run.palette_overrides.as_ref());
+  assert_eq!(
+    marker_item.palette_overrides.as_ref(),
+    run.palette_overrides.as_ref()
+  );
 }

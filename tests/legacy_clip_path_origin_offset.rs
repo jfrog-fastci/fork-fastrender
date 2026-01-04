@@ -77,4 +77,3 @@ fn legacy_clip_path_respects_stacking_context_origin_offset() {
   assert_close(pixel(&pixmap, 16, 0), (255, 0, 0, 255), 0);
   assert_close(pixel(&pixmap, 17, 0), (255, 255, 255, 255), 0);
 }
-

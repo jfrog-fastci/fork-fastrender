@@ -5811,7 +5811,8 @@ mod tests {
 
   #[test]
   fn property_rule_percentage_accepts_unitless_zero_initial_value() {
-    let css = r#"@property --switch-position { syntax:"<percentage>"; inherits:false; initial-value:0 }"#;
+    let css =
+      r#"@property --switch-position { syntax:"<percentage>"; inherits:false; initial-value:0 }"#;
     let sheet = parse_stylesheet(css).expect("parse stylesheet");
     let media_ctx = crate::style::media::MediaContext::screen(800.0, 600.0);
     let collected = sheet.collect_property_rules(&media_ctx);
@@ -5857,7 +5858,9 @@ mod tests {
       });
     }
 
-    let rule = registry.get("--l0").expect("expected property to be registered");
+    let rule = registry
+      .get("--l0")
+      .expect("expected property to be registered");
     assert_eq!(rule.syntax, CustomPropertySyntax::Length);
     let initial = rule.initial_value.as_ref().expect("expected initial-value");
     assert_eq!(initial.value, "0");
@@ -5885,13 +5888,17 @@ mod tests {
       });
     }
 
-    let rule = registry.get("--c0").expect("expected property to be registered");
+    let rule = registry
+      .get("--c0")
+      .expect("expected property to be registered");
     assert_eq!(rule.syntax, CustomPropertySyntax::Color);
     let initial = rule.initial_value.as_ref().expect("expected initial-value");
     assert_eq!(initial.value, "#0000");
     assert_eq!(
       initial.typed,
-      Some(CustomPropertyTypedValue::Color(CssColor::Rgba(Rgba::TRANSPARENT)))
+      Some(CustomPropertyTypedValue::Color(CssColor::Rgba(
+        Rgba::TRANSPARENT
+      )))
     );
   }
-} 
+}

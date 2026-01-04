@@ -39,7 +39,10 @@ fn render_fixture(html: &str) -> Vec<u8> {
   // Ensure the fixture actually exercises the text-shadow path. A blank render would make the
   // golden test meaningless (and could happen if the emoji font fails to load or the shadow is
   // optimized away).
-  let display_list = artifacts.display_list.as_ref().expect("display list captured");
+  let display_list = artifacts
+    .display_list
+    .as_ref()
+    .expect("display list captured");
   let mut saw_shadowed_text = false;
   for item in display_list.items() {
     if let DisplayItem::Text(text) = item {
@@ -81,15 +84,15 @@ fn text_shadow_color_emoji_matches_golden() {
     return;
   }
 
-  let golden = fs::read(&golden_path)
-    .unwrap_or_else(|e| panic!("Missing golden {} ({}): {}", GOLDEN_NAME, golden_path.display(), e));
+  let golden = fs::read(&golden_path).unwrap_or_else(|e| {
+    panic!(
+      "Missing golden {} ({}): {}",
+      GOLDEN_NAME,
+      golden_path.display(),
+      e
+    )
+  });
   let diff_dir = PathBuf::from(DIFF_DIR);
-  compare_pngs(
-    GOLDEN_NAME,
-    &rendered,
-    &golden,
-    &compare_config,
-    &diff_dir,
-  )
-  .unwrap_or_else(|e| panic!("{}", e));
+  compare_pngs(GOLDEN_NAME, &rendered, &golden, &compare_config, &diff_dir)
+    .unwrap_or_else(|e| panic!("{}", e));
 }

@@ -78,8 +78,7 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
       #[cfg(test)]
       println!("Definite Item {}\n==============", index);
 
-      let (primary_span, secondary_span) =
-        place_definite_grid_item(*child_placement, primary_axis);
+      let (primary_span, secondary_span) = place_definite_grid_item(*child_placement, primary_axis);
       record_grid_placement(
         cell_occupancy_matrix,
         items,
@@ -135,9 +134,11 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
           start: sec_idx,
           end: sec_idx + secondary_span_width,
         };
-        if cell_occupancy_matrix
-          .line_area_is_unoccupied(primary_axis, primary_placement, secondary_span)
-        {
+        if cell_occupancy_matrix.line_area_is_unoccupied(
+          primary_axis,
+          primary_placement,
+          secondary_span,
+        ) {
           break (primary_placement, secondary_span);
         }
         sec_idx += 1;

@@ -169,4 +169,3 @@ fn pageset_progress_report_verbose_includes_accuracy_block() {
     "expected verbose report to include accuracy block, got:\n{stdout}"
   );
 }
-

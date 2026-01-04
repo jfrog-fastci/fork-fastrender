@@ -108,10 +108,9 @@ fn no_fastrender_fails_on_mismatched_metadata() {
   // Ensure we don't accidentally try to build or run the real diff_renders binary if the
   // metadata validation regresses.
   let target_dir = temp.path().join("target");
-  let diff_renders_exe = target_dir.join("release").join(format!(
-    "diff_renders{}",
-    std::env::consts::EXE_SUFFIX
-  ));
+  let diff_renders_exe = target_dir
+    .join("release")
+    .join(format!("diff_renders{}", std::env::consts::EXE_SUFFIX));
   fs::create_dir_all(diff_renders_exe.parent().unwrap()).expect("create target/release dir");
   fs::write(&diff_renders_exe, "#!/usr/bin/env sh\nexit 0\n").expect("write stub diff_renders");
   make_executable(&diff_renders_exe);
@@ -190,10 +189,9 @@ fn no_fastrender_fails_on_mismatched_font_metadata() {
   fs::create_dir_all(out_dir.join("chrome")).expect("create chrome out dir");
 
   let target_dir = temp.path().join("target");
-  let diff_renders_exe = target_dir.join("release").join(format!(
-    "diff_renders{}",
-    std::env::consts::EXE_SUFFIX
-  ));
+  let diff_renders_exe = target_dir
+    .join("release")
+    .join(format!("diff_renders{}", std::env::consts::EXE_SUFFIX));
   fs::create_dir_all(diff_renders_exe.parent().unwrap()).expect("create target/release dir");
   fs::write(&diff_renders_exe, "#!/usr/bin/env sh\nexit 0\n").expect("write stub diff_renders");
   make_executable(&diff_renders_exe);
@@ -272,10 +270,9 @@ fn no_fastrender_fails_on_mismatched_fit_canvas_to_content_metadata() {
   fs::create_dir_all(out_dir.join("chrome")).expect("create chrome out dir");
 
   let target_dir = temp.path().join("target");
-  let diff_renders_exe = target_dir.join("release").join(format!(
-    "diff_renders{}",
-    std::env::consts::EXE_SUFFIX
-  ));
+  let diff_renders_exe = target_dir
+    .join("release")
+    .join(format!("diff_renders{}", std::env::consts::EXE_SUFFIX));
   fs::create_dir_all(diff_renders_exe.parent().unwrap()).expect("create target/release dir");
   fs::write(&diff_renders_exe, "#!/usr/bin/env sh\nexit 0\n").expect("write stub diff_renders");
   make_executable(&diff_renders_exe);
@@ -489,10 +486,9 @@ fn no_fastrender_warns_and_continues_on_invalid_metadata_json() {
   fs::create_dir_all(&chrome_dir).expect("create chrome out dir");
 
   let target_dir = temp.path().join("target");
-  let diff_renders_exe = target_dir.join("release").join(format!(
-    "diff_renders{}",
-    std::env::consts::EXE_SUFFIX
-  ));
+  let diff_renders_exe = target_dir
+    .join("release")
+    .join(format!("diff_renders{}", std::env::consts::EXE_SUFFIX));
   fs::create_dir_all(diff_renders_exe.parent().unwrap()).expect("create target/release dir");
   fs::write(&diff_renders_exe, "#!/usr/bin/env sh\nexit 0\n").expect("write stub diff_renders");
   make_executable(&diff_renders_exe);

@@ -34,13 +34,7 @@ impl Drop for EnvGuard {
   }
 }
 
-fn assert_rgba8888_pixels_eq(
-  width: u32,
-  height: u32,
-  expected: &[u8],
-  actual: &[u8],
-  label: &str,
-) {
+fn assert_rgba8888_pixels_eq(width: u32, height: u32, expected: &[u8], actual: &[u8], label: &str) {
   assert_eq!(
     expected.len(),
     actual.len(),
@@ -357,9 +351,7 @@ fn mask_parallel_paint_matches_serial_output() {
         }
       }
     }
-    panic!(
-      "parallel output differs from serial: diff_bytes={diff} first_mismatch={first:?}"
-    );
+    panic!("parallel output differs from serial: diff_bytes={diff} first_mismatch={first:?}");
   }
 }
 

@@ -2,9 +2,9 @@ use anyhow::{bail, Context, Result};
 use clap::Args;
 use fastrender::css::loader::resolve_href;
 use fastrender::resource::bundle::{Bundle, BundledFetcher, BundledResourceInfo};
+use fastrender::resource::is_data_url;
 use fastrender::resource::FetchedResource;
 use fastrender::resource::ResourceFetcher;
-use fastrender::resource::is_data_url;
 use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
@@ -507,14 +507,7 @@ fn rewrite_html(
       "(?is)(?P<prefix>(?:src|href|poster|data)\\s*=\\s*[\"'])(?P<url>[^\"'>]+)(?P<suffix>[\"'])",
     )
     .expect("attr regex must compile");
-    rewritten = apply_rewrite(
-      &attr_regex,
-      &rewritten,
-      base_url,
-      ctx,
-      catalog,
-      None,
-    )?;
+    rewritten = apply_rewrite(&attr_regex, &rewritten, base_url, ctx, catalog, None)?;
 
     let content_url_regex = Regex::new(
       "(?is)(?P<prefix>content\\s*=\\s*[\"'])(?P<url>https?://[^\"'>]+)(?P<suffix>[\"'])",
@@ -864,9 +857,8 @@ fn rewrite_and_strip_link_tags(
   let link_tag = Regex::new("(?is)<link\\b[^>]*>").expect("link tag regex must compile");
   let attr_rel = Regex::new("(?is)(?:^|\\s)rel\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
     .expect("link rel regex must compile");
-  let attr_href =
-    Regex::new("(?is)(?:^|\\s)href\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
-      .expect("link href regex must compile");
+  let attr_href = Regex::new("(?is)(?:^|\\s)href\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+    .expect("link href regex must compile");
 
   let mut out = String::with_capacity(input.len());
   let mut last = 0usize;
@@ -955,8 +947,7 @@ fn rewrite_html_resource_attrs(
   .into_iter()
   .collect();
 
-  let mut rewritten =
-    rewrite_and_strip_link_tags(input, base_url, ctx, catalog, &stylesheet_urls)?;
+  let mut rewritten = rewrite_and_strip_link_tags(input, base_url, ctx, catalog, &stylesheet_urls)?;
 
   let img_src = Regex::new("(?is)<img[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
     .expect("img src regex must compile");
@@ -1095,9 +1086,8 @@ fn validate_no_remote_fetchable_subresources_in_html(label: &str, html: &str) ->
     .expect("link rel validation regex");
   let attr_href = Regex::new("(?is)(?:^|\\s)href\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
     .expect("link href validation regex");
-  let attr_imagesrcset =
-    Regex::new("(?is)(?:^|\\s)imagesrcset\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
-      .expect("link imagesrcset validation regex");
+  let attr_imagesrcset = Regex::new("(?is)(?:^|\\s)imagesrcset\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
+    .expect("link imagesrcset validation regex");
 
   for tag_match in link_tag.find_iter(html) {
     let tag = tag_match.as_str();
@@ -1174,20 +1164,24 @@ fn validate_no_remote_fetchable_subresources_in_html(label: &str, html: &str) ->
       .expect("video poster validation regex");
   collect_remote_attr_values(&video_poster, html, &[1, 2, 3], &mut remote);
 
-  let video_src = Regex::new("(?is)<video[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
-    .expect("video src validation regex");
+  let video_src =
+    Regex::new("(?is)<video[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+      .expect("video src validation regex");
   collect_remote_attr_values(&video_src, html, &[1, 2, 3], &mut remote);
 
-  let audio_src = Regex::new("(?is)<audio[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
-    .expect("audio src validation regex");
+  let audio_src =
+    Regex::new("(?is)<audio[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+      .expect("audio src validation regex");
   collect_remote_attr_values(&audio_src, html, &[1, 2, 3], &mut remote);
 
-  let track_src = Regex::new("(?is)<track[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
-    .expect("track src validation regex");
+  let track_src =
+    Regex::new("(?is)<track[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+      .expect("track src validation regex");
   collect_remote_attr_values(&track_src, html, &[1, 2, 3], &mut remote);
 
-  let source_src = Regex::new("(?is)<source[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
-    .expect("source src validation regex");
+  let source_src =
+    Regex::new("(?is)<source[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+      .expect("source src validation regex");
   collect_remote_attr_values(&source_src, html, &[1, 2, 3], &mut remote);
 
   let img_srcset = Regex::new("(?is)<img[^>]*\\ssrcset\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
@@ -1302,8 +1296,8 @@ fn rewrite_srcset_with_limit(
 
   let mut rewritten = Vec::new();
   for candidate in fastrender::html::image_attrs::parse_srcset_with_limit(input, max_candidates) {
-    let rewritten_url = rewrite_reference(&candidate.url, base_url, ctx, catalog)?
-      .unwrap_or_else(|| candidate.url);
+    let rewritten_url =
+      rewrite_reference(&candidate.url, base_url, ctx, catalog)?.unwrap_or_else(|| candidate.url);
     let entry = match candidate.descriptor {
       SrcsetDescriptor::Density(d) if d == 1.0 => rewritten_url,
       descriptor => format!("{rewritten_url} {descriptor}"),
@@ -1787,4 +1781,4 @@ mod tests {
     );
     Ok(())
   }
-} 
+}

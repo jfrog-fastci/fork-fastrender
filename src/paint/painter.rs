@@ -883,11 +883,8 @@ impl Painter {
       )
       .or_else(|| self.font_ctx.get_sans_serif())
       .and_then(|font| {
-        let used_font_size = crate::text::pipeline::compute_adjusted_font_size(
-          style,
-          &font,
-          preferred_aspect,
-        );
+        let used_font_size =
+          crate::text::pipeline::compute_adjusted_font_size(style, &font, preferred_aspect);
         let authored = crate::text::variations::authored_variations_from_style(style);
         let variations = crate::text::face_cache::with_face(&font, |face| {
           crate::text::variations::collect_variations_for_face(
@@ -928,11 +925,8 @@ impl Painter {
       )
       .or_else(|| font_ctx.get_sans_serif())
       .and_then(|font| {
-        let used_font_size = crate::text::pipeline::compute_adjusted_font_size(
-          style,
-          &font,
-          preferred_aspect,
-        );
+        let used_font_size =
+          crate::text::pipeline::compute_adjusted_font_size(style, &font, preferred_aspect);
         let authored = crate::text::variations::authored_variations_from_style(style);
         let variations = crate::text::face_cache::with_face(&font, |face| {
           crate::text::variations::collect_variations_for_face(
@@ -5841,7 +5835,9 @@ impl Painter {
           }
         }
       }
-      ReplacedType::Image { alt, crossorigin, .. } => {
+      ReplacedType::Image {
+        alt, crossorigin, ..
+      } => {
         let media_ctx = crate::style::media::MediaContext::screen(self.css_width, self.css_height)
           .with_device_pixel_ratio(self.scale)
           .with_env_overrides();
@@ -6510,9 +6506,7 @@ impl Painter {
         true
       }
       FormControlKind::TextArea {
-        value,
-        placeholder,
-        ..
+        value, placeholder, ..
       } => {
         let base_color = if control.invalid { accent } else { style.color };
         let placeholder_color = base_color.with_alpha(0.6);
@@ -6829,7 +6823,10 @@ impl Painter {
         }
       }
     } else {
-      match self.image_cache.load_with_crossorigin(&resolved_src, crossorigin) {
+      match self
+        .image_cache
+        .load_with_crossorigin(&resolved_src, crossorigin)
+      {
         Ok(img) => img,
         Err(e) => {
           if log_image_fail {
@@ -6953,19 +6950,24 @@ impl Painter {
     let should_scale =
       Self::should_use_scaled_raster_pixmap(quality, img_w_raw, img_h_raw, target_w, target_h);
     let pixmap = match if should_scale {
-      self.image_cache.load_raster_pixmap_at_size_with_crossorigin(
+      self
+        .image_cache
+        .load_raster_pixmap_at_size_with_crossorigin(
+          &resolved_src,
+          crossorigin,
+          orientation,
+          false,
+          target_w,
+          target_h,
+          quality,
+        )
+    } else {
+      self.image_cache.load_raster_pixmap_with_crossorigin(
         &resolved_src,
         crossorigin,
         orientation,
         false,
-        target_w,
-        target_h,
-        quality,
       )
-    } else {
-      self
-        .image_cache
-        .load_raster_pixmap_with_crossorigin(&resolved_src, crossorigin, orientation, false)
     } {
       Ok(Some(pixmap)) => pixmap,
       Ok(None) | Err(_) => {
@@ -7478,11 +7480,8 @@ impl Painter {
         )
         .or_else(|| self.font_ctx.get_sans_serif())
         .and_then(|font| {
-          let used_font_size = crate::text::pipeline::compute_adjusted_font_size(
-            style,
-            &font,
-            preferred_aspect,
-          );
+          let used_font_size =
+            crate::text::pipeline::compute_adjusted_font_size(style, &font, preferred_aspect);
           let authored = crate::text::variations::authored_variations_from_style(style);
           let variations = crate::text::face_cache::with_face(&font, |face| {
             crate::text::variations::collect_variations_for_face(
@@ -14648,7 +14647,10 @@ mod tests {
         break;
       }
     }
-    assert!(any_none_red, "expected an underline to be painted when skip-ink is none");
+    assert!(
+      any_none_red,
+      "expected an underline to be painted when skip-ink is none"
+    );
     assert!(
       found,
       "expected skip-ink auto to omit underline pixels that are present when skip-ink is none"

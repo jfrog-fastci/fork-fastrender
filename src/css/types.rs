@@ -2289,7 +2289,11 @@ mod tests {
     let media_ctx = MediaContext::screen(800.0, 600.0);
 
     let resolved = stylesheet
-      .resolve_imports(&loader, Some("https://example.com/dup/root.css"), &media_ctx)
+      .resolve_imports(
+        &loader,
+        Some("https://example.com/dup/root.css"),
+        &media_ctx,
+      )
       .expect("imports resolve");
 
     let style_rule_count = resolved
@@ -2325,7 +2329,11 @@ mod tests {
     let media_ctx = MediaContext::screen(800.0, 600.0);
 
     let resolved = stylesheet
-      .resolve_imports(&loader, Some("https://example.com/layer/root.css"), &media_ctx)
+      .resolve_imports(
+        &loader,
+        Some("https://example.com/layer/root.css"),
+        &media_ctx,
+      )
       .expect("imports resolve");
 
     let layers: Vec<&LayerRule> = resolved
@@ -2383,7 +2391,11 @@ mod tests {
       parse_stylesheet(r#"@import "a.css"; @import "b.css";"#).expect("stylesheet parses");
     let media_ctx = MediaContext::screen(800.0, 600.0);
     let resolved = stylesheet
-      .resolve_imports(&loader, Some("https://example.com/shared/root.css"), &media_ctx)
+      .resolve_imports(
+        &loader,
+        Some("https://example.com/shared/root.css"),
+        &media_ctx,
+      )
       .expect("imports resolve");
 
     let selectors: Vec<String> = resolved
@@ -2435,7 +2447,11 @@ mod tests {
     let stylesheet = parse_stylesheet(r#"@import "a.css";"#).expect("stylesheet parses");
     let media_ctx = MediaContext::screen(800.0, 600.0);
     let resolved = stylesheet
-      .resolve_imports(&loader, Some("https://example.com/cycle/root.css"), &media_ctx)
+      .resolve_imports(
+        &loader,
+        Some("https://example.com/cycle/root.css"),
+        &media_ctx,
+      )
       .expect("imports resolve");
 
     let selectors: Vec<String> = resolved

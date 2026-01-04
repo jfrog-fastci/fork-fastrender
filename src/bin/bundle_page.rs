@@ -12,6 +12,10 @@ use common::render_pipeline::{
 };
 use fastrender::css::encoding::decode_css_bytes;
 use fastrender::css::loader::resolve_href;
+use fastrender::dom::{parse_html_with_options, DomParseOptions};
+use fastrender::geometry::Size;
+use fastrender::html::image_prefetch::{discover_image_prefetch_urls, ImagePrefetchLimits};
+use fastrender::html::images::ImageSelectionContext;
 use fastrender::html::meta_refresh::{extract_js_location_redirect, extract_meta_refresh_url};
 use fastrender::image_output::encode_image;
 use fastrender::resource::bundle::{
@@ -20,17 +24,14 @@ use fastrender::resource::bundle::{
 };
 use fastrender::resource::{
   ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane, ensure_stylesheet_mime_sane,
-  origin_from_url, DocumentOrigin, FetchContextKind, FetchDestination, FetchRequest, FetchedResource,
-  ResourceAccessPolicy, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
+  origin_from_url, DocumentOrigin, FetchContextKind, FetchDestination, FetchRequest,
+  FetchedResource, ResourceAccessPolicy, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE,
+  DEFAULT_USER_AGENT,
 };
 #[cfg(feature = "disk_cache")]
 use fastrender::resource::{
   parse_cached_html_meta, CachingFetcherConfig, DiskCacheConfig, DiskCachingFetcher, ResourcePolicy,
 };
-use fastrender::dom::{parse_html_with_options, DomParseOptions};
-use fastrender::geometry::Size;
-use fastrender::html::image_prefetch::{discover_image_prefetch_urls, ImagePrefetchLimits};
-use fastrender::html::images::ImageSelectionContext;
 use fastrender::style::media::{MediaContext, MediaType};
 use fastrender::{OutputFormat, Result};
 use std::collections::{BTreeMap, HashMap};
@@ -1304,7 +1305,8 @@ fn crawl_document(
   let fastrender::html::asset_discovery::HtmlAssetUrls {
     images: html_image_urls,
     documents: html_documents,
-  } = fastrender::html::asset_discovery::discover_html_asset_urls(&document.html, &document.base_url);
+  } =
+    fastrender::html::asset_discovery::discover_html_asset_urls(&document.html, &document.base_url);
   if matches!(mode, CrawlMode::BestEffort) {
     for url in html_image_urls {
       if url
@@ -1614,13 +1616,17 @@ fn destination_from_url_extension(url: &str) -> FetchDestination {
   match ext.as_str() {
     "css" => FetchDestination::Style,
     "woff2" | "woff" | "ttf" | "otf" => FetchDestination::Font,
-    "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "svg" | "ico" | "bmp" | "tif"
-    | "tiff" => FetchDestination::Image,
+    "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "svg" | "ico" | "bmp" | "tif" | "tiff" => {
+      FetchDestination::Image
+    }
     _ => FetchDestination::Other,
   }
 }
 
-fn discover_css_urls_with_destination(css: &str, base_url: &str) -> Vec<(String, FetchDestination)> {
+fn discover_css_urls_with_destination(
+  css: &str,
+  base_url: &str,
+) -> Vec<(String, FetchDestination)> {
   use cssparser::{Parser, ParserInput, Token};
 
   fn record(
@@ -1944,7 +1950,9 @@ mod tests {
 
     let calls = inner.calls();
     assert!(
-      !calls.iter().any(|(url, _, _)| url == "https://example.com/bg.png"),
+      !calls
+        .iter()
+        .any(|(url, _, _)| url == "https://example.com/bg.png"),
       "should not crawl dependencies from stylesheet error body"
     );
 
@@ -2214,9 +2222,13 @@ mod tests {
     crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
 
     let calls = inner.calls();
-    assert!(calls.iter().any(|(url, _, _)| url == "https://example.com/2x.png"));
+    assert!(calls
+      .iter()
+      .any(|(url, _, _)| url == "https://example.com/2x.png"));
     assert!(
-      !calls.iter().any(|(url, _, _)| url == "https://example.com/1x.png"),
+      !calls
+        .iter()
+        .any(|(url, _, _)| url == "https://example.com/1x.png"),
       "should not fetch lower-density srcset candidate when dpr=2"
     );
 

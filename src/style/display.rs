@@ -622,7 +622,10 @@ mod tests {
   fn test_parse_vendor_prefixed_flex_aliases() {
     assert_eq!(Display::parse("-webkit-flex").unwrap(), Display::Flex);
     assert_eq!(Display::parse("-ms-flexbox").unwrap(), Display::Flex);
-    assert_eq!(Display::parse("-webkit-inline-flex").unwrap(), Display::InlineFlex);
+    assert_eq!(
+      Display::parse("-webkit-inline-flex").unwrap(),
+      Display::InlineFlex
+    );
   }
 
   #[test]

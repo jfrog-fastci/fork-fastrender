@@ -627,7 +627,10 @@ fn build_gradient_lut(
     .first()
     .map(|(_, c)| premultiply_rgba(*c))
     .unwrap_or(PremultipliedColorU8::TRANSPARENT);
-  let last = stops.last().map(|(_, c)| premultiply_rgba(*c)).unwrap_or(first);
+  let last = stops
+    .last()
+    .map(|(_, c)| premultiply_rgba(*c))
+    .unwrap_or(first);
   let scale = max_idx / period.max(1e-6);
 
   GradientLut {

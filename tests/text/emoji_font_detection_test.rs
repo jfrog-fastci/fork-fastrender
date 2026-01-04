@@ -5,7 +5,8 @@ use fastrender::text::font_resolver::font_is_emoji_font;
 
 fn load_font_fixture(path: &Path) -> (FontDatabase, fastrender::text::font_db::LoadedFont) {
   let mut db = FontDatabase::empty();
-  let data = std::fs::read(path).unwrap_or_else(|err| panic!("read font {}: {err}", path.display()));
+  let data =
+    std::fs::read(path).unwrap_or_else(|err| panic!("read font {}: {err}", path.display()));
   db.load_font_data(data)
     .unwrap_or_else(|err| panic!("load font {}: {err:?}", path.display()));
 
@@ -39,4 +40,3 @@ fn emoji_font_detection_does_not_misclassify_text_web_fonts() {
     "text fonts without color tables should not be detected as emoji when family name is neutral"
   );
 }
-

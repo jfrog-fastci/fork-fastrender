@@ -1,9 +1,9 @@
 //! Pagination helpers that honor CSS @page rules and margin boxes.
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
 #[cfg(test)]
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::css::types::{CollectedPageRule, PageMarginArea};
@@ -130,7 +130,10 @@ fn split_atomic_ranges_at_forced_boundaries(
       split.push(AtomicRange { start, end: pos });
       start = pos;
     }
-    split.push(AtomicRange { start, end: range.end });
+    split.push(AtomicRange {
+      start,
+      end: range.end,
+    });
   }
 
   atomic_ranges.clear();
@@ -1358,7 +1361,10 @@ mod tests {
       PageMarginArea::LeftMiddle,
       PageMarginArea::LeftTop,
     ];
-    let expected_text: Vec<String> = expected_order.iter().map(|area| format!("{area:?}")).collect();
+    let expected_text: Vec<String> = expected_order
+      .iter()
+      .map(|area| format!("{area:?}"))
+      .collect();
 
     let font_ctx = FontContext::with_database(Arc::new(FontDatabase::empty()));
     let running_strings: HashMap<String, RunningStringValues> = HashMap::new();

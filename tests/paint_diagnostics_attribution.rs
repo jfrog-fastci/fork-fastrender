@@ -78,9 +78,7 @@ fn paint_diagnostics_include_attribution_counters() {
   let legacy_report = legacy
     .render_html_with_diagnostics(
       &html,
-      options
-        .clone()
-        .with_runtime_toggles(legacy_toggles.clone()),
+      options.clone().with_runtime_toggles(legacy_toggles.clone()),
     )
     .expect("legacy render");
   let legacy_stats = legacy_report

@@ -20,6 +20,7 @@
 //! - W3.T09: GridFormattingContext (Taffy-backed)
 //! - W4.T12: InlineFormattingContext
 
+use crate::geometry::Point;
 use crate::image_loader::ImageCache;
 use crate::layout::contexts::block::BlockFormattingContext;
 use crate::layout::contexts::flex::FlexFormattingContext;
@@ -30,7 +31,6 @@ use crate::layout::contexts::positioned::ContainingBlock;
 use crate::layout::engine::LayoutParallelism;
 use crate::layout::formatting_context::FormattingContext;
 use crate::layout::formatting_context::LayoutError;
-use crate::geometry::Point;
 use crate::layout::table::TableFormattingContext;
 use crate::layout::taffy_integration::{
   taffy_template_cache_limit, taffy_template_cache_limit_for_box_tree, TaffyAdapterKind,

@@ -580,9 +580,9 @@ fn pageset_progress_worker_keeps_non_bot_mitigation_http_errors() {
 
 #[test]
 fn pageset_progress_worker_filters_external_network_failures_for_stylesheets() {
-  let Some(listener) = try_bind_localhost(
-    "pageset_progress_worker_filters_external_network_failures_for_stylesheets",
-  ) else {
+  let Some(listener) =
+    try_bind_localhost("pageset_progress_worker_filters_external_network_failures_for_stylesheets")
+  else {
     return;
   };
   let addr = listener.local_addr().expect("addr");

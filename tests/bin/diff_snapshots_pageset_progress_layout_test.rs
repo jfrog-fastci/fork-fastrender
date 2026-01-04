@@ -101,4 +101,3 @@ fn diff_snapshots_discovers_pageset_progress_layout() {
     "expected snapshot pair to be matched"
   );
 }
-

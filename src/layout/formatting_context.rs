@@ -123,7 +123,8 @@ impl ShardedIntrinsicCache {
     let box_id = key.0;
     let shard = &self.shards[Self::shard_index_for_box_id(box_id)];
     let map = shard.read();
-    map.get(key)
+    map
+      .get(key)
       .and_then(|(entry_epoch, value)| (*entry_epoch == epoch).then_some(*value))
   }
 
@@ -543,12 +544,7 @@ impl ShardedLayoutResultCache {
   }
 
   #[inline]
-  fn get(
-    &self,
-    key: &LayoutCacheKey,
-    epoch: usize,
-    style_hash: u64,
-  ) -> Option<Arc<FragmentNode>> {
+  fn get(&self, key: &LayoutCacheKey, epoch: usize, style_hash: u64) -> Option<Arc<FragmentNode>> {
     let shard = &self.shards[Self::shard_index_for_box_id(key.box_id)];
     {
       let map = shard.read();
@@ -700,7 +696,11 @@ fn layout_constraints_hash(constraints: &LayoutConstraints) -> u64 {
   let mut h = DefaultHasher::default();
   let hash_f32 = |val: f32, hasher: &mut DefaultHasher| {
     // Canonicalize -0.0 so cache keys don't splinter on harmless sign differences.
-    let bits = if val == 0.0 { 0.0f32.to_bits() } else { val.to_bits() };
+    let bits = if val == 0.0 {
+      0.0f32.to_bits()
+    } else {
+      val.to_bits()
+    };
     bits.hash(hasher);
   };
   let hash_space = |space: &crate::layout::constraints::AvailableSpace,
@@ -1660,7 +1660,10 @@ mod tests {
     let mut override_style = ComputedStyle::default();
     override_style.width = Some(Length::px(200.0));
     crate::layout::style_override::with_style_override(node.id, Arc::new(override_style), || {
-      assert_eq!(intrinsic_cache_lookup(&node, IntrinsicSizingMode::MinContent), None);
+      assert_eq!(
+        intrinsic_cache_lookup(&node, IntrinsicSizingMode::MinContent),
+        None
+      );
     });
 
     intrinsic_cache_use_epoch(1, true);
@@ -1896,12 +1899,11 @@ mod tests {
     let base_hit = layout_cache_lookup(&node, fc_type, &constraints, viewport).unwrap();
     assert_eq!(base_hit.bounds.width(), 100.0);
 
-    let override_hit = crate::layout::style_override::with_style_override(
-      node.id,
-      override_style.clone(),
-      || layout_cache_lookup(&node, fc_type, &constraints, viewport),
-    )
-    .expect("override cache hit");
+    let override_hit =
+      crate::layout::style_override::with_style_override(node.id, override_style.clone(), || {
+        layout_cache_lookup(&node, fc_type, &constraints, viewport)
+      })
+      .expect("override cache hit");
     assert_eq!(override_hit.bounds.width(), 200.0);
 
     // Fresh `Arc<ComputedStyle>` allocations with identical override values should reuse the cached

@@ -275,51 +275,50 @@ fn interpolate_filters(
     })
   };
 
-  let interpolate_pair =
-    |fa: &ResolvedFilter, fb: &ResolvedFilter| -> Option<ResolvedFilter> {
-      match (fa, fb) {
-        (ResolvedFilter::Blur(la), ResolvedFilter::Blur(lb)) => {
-          Some(ResolvedFilter::Blur(lerp(*la, *lb, t)))
-        }
-        (ResolvedFilter::Brightness(la), ResolvedFilter::Brightness(lb)) => Some(
-          ResolvedFilter::Brightness(lerp(*la, *lb, t)),
-        ),
-        (ResolvedFilter::Contrast(la), ResolvedFilter::Contrast(lb)) => {
-          Some(ResolvedFilter::Contrast(lerp(*la, *lb, t)))
-        }
-        (ResolvedFilter::Grayscale(la), ResolvedFilter::Grayscale(lb)) => {
-          Some(ResolvedFilter::Grayscale(lerp(*la, *lb, t)))
-        }
-        (ResolvedFilter::Sepia(la), ResolvedFilter::Sepia(lb)) => {
-          Some(ResolvedFilter::Sepia(lerp(*la, *lb, t)))
-        }
-        (ResolvedFilter::Saturate(la), ResolvedFilter::Saturate(lb)) => {
-          Some(ResolvedFilter::Saturate(lerp(*la, *lb, t)))
-        }
-        (ResolvedFilter::HueRotate(la), ResolvedFilter::HueRotate(lb)) => {
-          Some(ResolvedFilter::HueRotate(lerp(*la, *lb, t)))
-        }
-        (ResolvedFilter::Invert(la), ResolvedFilter::Invert(lb)) => {
-          Some(ResolvedFilter::Invert(lerp(*la, *lb, t)))
-        }
-        (ResolvedFilter::Opacity(la), ResolvedFilter::Opacity(lb)) => {
-          Some(ResolvedFilter::Opacity(lerp(*la, *lb, t)))
-        }
-        (ResolvedFilter::DropShadow(sa), ResolvedFilter::DropShadow(sb)) => {
-          Some(ResolvedFilter::DropShadow(ResolvedShadow {
-            offset_x: lerp(sa.offset_x, sb.offset_x, t),
-            offset_y: lerp(sa.offset_y, sb.offset_y, t),
-            blur: lerp(sa.blur, sb.blur, t),
-            spread: lerp(sa.spread, sb.spread, t),
-            color: lerp_color(sa.color, sb.color, t),
-          }))
-        }
-        (ResolvedFilter::Url(a), ResolvedFilter::Url(b)) if a == b => {
-          Some(ResolvedFilter::Url(a.clone()))
-        }
-        _ => None,
+  let interpolate_pair = |fa: &ResolvedFilter, fb: &ResolvedFilter| -> Option<ResolvedFilter> {
+    match (fa, fb) {
+      (ResolvedFilter::Blur(la), ResolvedFilter::Blur(lb)) => {
+        Some(ResolvedFilter::Blur(lerp(*la, *lb, t)))
       }
-    };
+      (ResolvedFilter::Brightness(la), ResolvedFilter::Brightness(lb)) => {
+        Some(ResolvedFilter::Brightness(lerp(*la, *lb, t)))
+      }
+      (ResolvedFilter::Contrast(la), ResolvedFilter::Contrast(lb)) => {
+        Some(ResolvedFilter::Contrast(lerp(*la, *lb, t)))
+      }
+      (ResolvedFilter::Grayscale(la), ResolvedFilter::Grayscale(lb)) => {
+        Some(ResolvedFilter::Grayscale(lerp(*la, *lb, t)))
+      }
+      (ResolvedFilter::Sepia(la), ResolvedFilter::Sepia(lb)) => {
+        Some(ResolvedFilter::Sepia(lerp(*la, *lb, t)))
+      }
+      (ResolvedFilter::Saturate(la), ResolvedFilter::Saturate(lb)) => {
+        Some(ResolvedFilter::Saturate(lerp(*la, *lb, t)))
+      }
+      (ResolvedFilter::HueRotate(la), ResolvedFilter::HueRotate(lb)) => {
+        Some(ResolvedFilter::HueRotate(lerp(*la, *lb, t)))
+      }
+      (ResolvedFilter::Invert(la), ResolvedFilter::Invert(lb)) => {
+        Some(ResolvedFilter::Invert(lerp(*la, *lb, t)))
+      }
+      (ResolvedFilter::Opacity(la), ResolvedFilter::Opacity(lb)) => {
+        Some(ResolvedFilter::Opacity(lerp(*la, *lb, t)))
+      }
+      (ResolvedFilter::DropShadow(sa), ResolvedFilter::DropShadow(sb)) => {
+        Some(ResolvedFilter::DropShadow(ResolvedShadow {
+          offset_x: lerp(sa.offset_x, sb.offset_x, t),
+          offset_y: lerp(sa.offset_y, sb.offset_y, t),
+          blur: lerp(sa.blur, sb.blur, t),
+          spread: lerp(sa.spread, sb.spread, t),
+          color: lerp_color(sa.color, sb.color, t),
+        }))
+      }
+      (ResolvedFilter::Url(a), ResolvedFilter::Url(b)) if a == b => {
+        Some(ResolvedFilter::Url(a.clone()))
+      }
+      _ => None,
+    }
+  };
 
   let max_len = a.len().max(b.len());
   let mut out = Vec::with_capacity(max_len);

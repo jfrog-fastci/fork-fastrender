@@ -87,10 +87,7 @@ impl<'a> ShadowMatchData<'a> {
     }
   }
 
-  pub fn with_selector_blooms(
-    mut self,
-    selector_blooms: Option<&'a SelectorBloomStore>,
-  ) -> Self {
+  pub fn with_selector_blooms(mut self, selector_blooms: Option<&'a SelectorBloomStore>) -> Self {
     self.selector_blooms = selector_blooms;
     self
   }
@@ -847,12 +844,8 @@ pub(crate) fn build_relative_selectors(
     // Preserve the specificity contribution of the removed `:scope` compound selector by adding an
     // always-true `:is(<scope-compound>, *)` to the next compound selector.
     let scope_arg_selector = Selector::from_components(components[2..scope_compound_end].to_vec());
-    let universal_selector =
-      Selector::from_components(vec![Component::ExplicitUniversalType]);
-    let is_list = SelectorList::from_iter(
-      vec![scope_arg_selector, universal_selector]
-        .into_iter(),
-    );
+    let universal_selector = Selector::from_components(vec![Component::ExplicitUniversalType]);
+    let is_list = SelectorList::from_iter(vec![scope_arg_selector, universal_selector].into_iter());
     let is_component = Component::Is(is_list);
 
     // Everything after the combinator that follows the scope compound.

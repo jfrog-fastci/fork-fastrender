@@ -17,17 +17,18 @@ fn stripe_progress_is_ok_under_budget() {
     .join("progress")
     .join("pages")
     .join("stripe.com.json");
-  let raw =
-    fs::read_to_string(&path).unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
-  let json: Value =
-    serde_json::from_str(&raw).unwrap_or_else(|err| panic!("failed to parse {}: {err}", path.display()));
+  let raw = fs::read_to_string(&path)
+    .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+  let json: Value = serde_json::from_str(&raw)
+    .unwrap_or_else(|err| panic!("failed to parse {}: {err}", path.display()));
 
   let status = json
     .get("status")
     .and_then(|value| value.as_str())
     .unwrap_or_default();
   assert_eq!(
-    status, "ok",
+    status,
+    "ok",
     "expected {} status=ok, got {:?}",
     path.display(),
     json.get("status")
@@ -68,4 +69,3 @@ fn stripe_progress_is_ok_under_budget() {
     );
   }
 }
-

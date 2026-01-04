@@ -41,13 +41,13 @@ use fontdb::Family as FontDbFamily;
 use fontdb::Query as FontDbQuery;
 use fontdb::ID;
 use lru::LruCache;
+use parking_lot::Mutex;
 use rustc_hash::FxHasher;
 use std::collections::HashMap;
 use std::hash::BuildHasherDefault;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
-use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::RwLock;
@@ -770,7 +770,9 @@ impl Default for FontFaceMetricsOverrides {
 impl FontFaceMetricsOverrides {
   #[inline]
   pub fn has_metric_overrides(&self) -> bool {
-    self.ascent_override.is_some() || self.descent_override.is_some() || self.line_gap_override.is_some()
+    self.ascent_override.is_some()
+      || self.descent_override.is_some()
+      || self.line_gap_override.is_some()
   }
 }
 
@@ -1979,7 +1981,9 @@ impl FontMetrics {
       apply_face_variations(&mut face, variations);
       let mut metrics = extract_metrics(&face)?;
       if face.is_variable() {
-        if let Some(overrides) = extract_skrifa_metrics_overrides(&font.data, font.index, variations) {
+        if let Some(overrides) =
+          extract_skrifa_metrics_overrides(&font.data, font.index, variations)
+        {
           metrics.ascent = overrides.ascent;
           metrics.descent = overrides.descent;
           metrics.line_gap = overrides.line_gap;
@@ -1994,14 +1998,14 @@ impl FontMetrics {
       }
       Ok(metrics)
     })
-      .transpose()?
-      .ok_or_else(|| {
-        FontError::LoadFailed {
-          family: font.family.clone(),
-          reason: "Failed to parse font".to_string(),
-        }
-        .into()
-      })
+    .transpose()?
+    .ok_or_else(|| {
+      FontError::LoadFailed {
+        family: font.family.clone(),
+        reason: "Failed to parse font".to_string(),
+      }
+      .into()
+    })
   }
 
   /// Extract metrics from font data

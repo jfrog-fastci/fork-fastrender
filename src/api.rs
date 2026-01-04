@@ -6409,7 +6409,9 @@ impl FastRender {
       url
         .path_segments()
         .and_then(|mut segments| segments.next_back())
-        .is_some_and(|seg| seg.eq_ignore_ascii_case("index.html") || seg.eq_ignore_ascii_case("index.htm"))
+        .is_some_and(|seg| {
+          seg.eq_ignore_ascii_case("index.html") || seg.eq_ignore_ascii_case("index.htm")
+        })
     }
 
     let file_http_base = match document_url {
@@ -9317,16 +9319,16 @@ impl FastRender {
        media_ctx: &MediaContext,
        profile_enabled: bool,
        jobs: &mut HashMap<ImageIntrinsicProbeKey, Vec<ImageIntrinsicProbeJob>>| {
-         let ReplacedType::Image {
-           src,
-           srcset,
-           picture_sources,
-           crossorigin,
-           ..
-         } = &replaced_box.replaced_type
-         else {
-           return;
-         };
+        let ReplacedType::Image {
+          src,
+          srcset,
+          picture_sources,
+          crossorigin,
+          ..
+        } = &replaced_box.replaced_type
+        else {
+          return;
+        };
         let crossorigin = *crossorigin;
 
         // Mirrors the early-return logic in `resolve_intrinsic_for_replaced_for_media` so we don't
@@ -9467,8 +9469,8 @@ impl FastRender {
       let _deadline_guard = DeadlineGuard::install(deadline.as_ref());
       let _stage_guard = StageGuard::install(Some(RenderStage::BoxTree));
       let probe_start = profile_enabled.then(Instant::now);
-      let probe_result = image_cache
-        .probe_resolved_with_crossorigin(key.url.as_str(), key.crossorigin);
+      let probe_result =
+        image_cache.probe_resolved_with_crossorigin(key.url.as_str(), key.crossorigin);
       let probe_ms = probe_start.map(|s| s.elapsed().as_secs_f64() * 1000.0);
       let probe_ok = probe_result.is_ok();
 
@@ -9718,7 +9720,8 @@ impl FastRender {
     }
 
     let media_ctx = self.media_context_for_media(media_type, viewport.width, viewport.height);
-    let mut probe_jobs: HashMap<ImageIntrinsicProbeKey, Vec<ImageIntrinsicProbeJob>> = HashMap::new();
+    let mut probe_jobs: HashMap<ImageIntrinsicProbeKey, Vec<ImageIntrinsicProbeJob>> =
+      HashMap::new();
     let collect_start = timings_enabled.then(Instant::now);
     self.collect_image_intrinsic_probe_jobs_for_node(
       node,
@@ -9958,7 +9961,9 @@ impl FastRender {
         if let Some(selected) = selected {
           if !selected.url.is_empty() {
             let probe_start = profile_enabled.then(Instant::now);
-            let probe_result = self.image_cache.probe_with_crossorigin(selected.url, crossorigin);
+            let probe_result = self
+              .image_cache
+              .probe_with_crossorigin(selected.url, crossorigin);
             if let Some(start) = probe_start {
               let ms = start.elapsed().as_secs_f64() * 1000.0;
               REPLACED_INTRINSIC_PROFILE.with(|state| {
@@ -11917,11 +11922,7 @@ fn needs_container_pass_inline_styles(node: &DomNode) -> Result<bool> {
   let mut deadline_counter = 0usize;
   let mut stack: Vec<&DomNode> = vec![node];
   while let Some(current) = stack.pop() {
-    crate::render_control::check_active_periodic(
-      &mut deadline_counter,
-      1024,
-      RenderStage::Css,
-    )?;
+    crate::render_control::check_active_periodic(&mut deadline_counter, 1024, RenderStage::Css)?;
 
     if let Some(style) = current.get_attribute_ref("style") {
       if style_attr_needs_container_pass(style) {
@@ -12259,7 +12260,10 @@ mod tests {
           .lock()
           .unwrap_or_else(|poisoned| poisoned.into_inner())
           .push(url.to_string());
-        Ok(FetchedResource::new((*self.response).clone(), Some("image/png".to_string())))
+        Ok(FetchedResource::new(
+          (*self.response).clone(),
+          Some("image/png".to_string()),
+        ))
       }
     }
 
@@ -12319,11 +12323,15 @@ mod tests {
       .unwrap_or_else(|poisoned| poisoned.into_inner())
       .clone();
     assert!(
-      reqs.iter().any(|url| url == "https://example.com/a/mask.png"),
+      reqs
+        .iter()
+        .any(|url| url == "https://example.com/a/mask.png"),
       "expected initial shape-outside mask to resolve against base url A; got {reqs:?}"
     );
     assert!(
-      reqs.iter().any(|url| url == "https://example.com/b/mask.png"),
+      reqs
+        .iter()
+        .any(|url| url == "https://example.com/b/mask.png"),
       "expected updated shape-outside mask to resolve against base url B; got {reqs:?}"
     );
   }
@@ -16357,8 +16365,16 @@ mod tests {
 
     let fetcher = Arc::new(
       RecordingRequestFetcher::default()
-        .with_entry(file_stylesheet_url, "body { color: rgb(1, 2, 3); }", "text/css")
-        .with_entry(http_stylesheet_url, "body { color: rgb(4, 5, 6); }", "text/css"),
+        .with_entry(
+          file_stylesheet_url,
+          "body { color: rgb(1, 2, 3); }",
+          "text/css",
+        )
+        .with_entry(
+          http_stylesheet_url,
+          "body { color: rgb(4, 5, 6); }",
+          "text/css",
+        ),
     );
     let toggles = RuntimeToggles::from_map(HashMap::from([(
       "FASTR_FETCH_LINK_CSS".to_string(),

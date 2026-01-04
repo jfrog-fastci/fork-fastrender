@@ -104,8 +104,8 @@ use crate::paint::painter::{
 };
 use crate::paint::stacking::Layer6Item;
 use crate::paint::stacking::StackingContext;
-use crate::paint::text_decoration::{resolve_underline_side, UnderlineSide};
 use crate::paint::svg_filter::SvgFilterResolver;
+use crate::paint::text_decoration::{resolve_underline_side, UnderlineSide};
 use crate::paint::text_shadow::resolve_text_shadows;
 use crate::paint::transform3d::backface_is_hidden;
 use crate::paint::transform_resolver::ResolvedTransforms;
@@ -941,11 +941,8 @@ impl DisplayListBuilder {
       )
       .or_else(|| font_ctx.get_sans_serif())
       .and_then(|font| {
-        let used_font_size = crate::text::pipeline::compute_adjusted_font_size(
-          style,
-          &font,
-          preferred_aspect,
-        );
+        let used_font_size =
+          crate::text::pipeline::compute_adjusted_font_size(style, &font, preferred_aspect);
         let authored = crate::text::variations::authored_variations_from_style(style);
         let variations = crate::text::face_cache::with_face(&font, |face| {
           crate::text::variations::collect_variations_for_face(
@@ -2251,17 +2248,31 @@ impl DisplayListBuilder {
         apply_opacity,
         local_child_visibility,
       );
-      self.emit_fragment_list(&context.layer3_blocks, descendant_offset, local_child_visibility);
-      self.emit_fragment_list(&context.layer4_floats, descendant_offset, local_child_visibility);
-      self.emit_fragment_list(&context.layer5_inlines, descendant_offset, local_child_visibility);
+      self.emit_fragment_list(
+        &context.layer3_blocks,
+        descendant_offset,
+        local_child_visibility,
+      );
+      self.emit_fragment_list(
+        &context.layer4_floats,
+        descendant_offset,
+        local_child_visibility,
+      );
+      self.emit_fragment_list(
+        &context.layer5_inlines,
+        descendant_offset,
+        local_child_visibility,
+      );
       for item in context.layer6_iter() {
         if self.deadline_reached_periodic(&mut deadline_counter, DEADLINE_STRIDE) {
           break;
         }
         match item {
-          Layer6Item::Positioned(fragment) => {
-            self.build_fragment(&fragment.fragment, descendant_offset, local_child_visibility)
-          }
+          Layer6Item::Positioned(fragment) => self.build_fragment(
+            &fragment.fragment,
+            descendant_offset,
+            local_child_visibility,
+          ),
           Layer6Item::ZeroContext(child) => self.build_stacking_context(
             child,
             descendant_offset,
@@ -2369,17 +2380,31 @@ impl DisplayListBuilder {
         local_child_visibility,
       );
     }
-    self.emit_fragment_list(&context.layer3_blocks, descendant_offset, local_child_visibility);
-    self.emit_fragment_list(&context.layer4_floats, descendant_offset, local_child_visibility);
-    self.emit_fragment_list(&context.layer5_inlines, descendant_offset, local_child_visibility);
+    self.emit_fragment_list(
+      &context.layer3_blocks,
+      descendant_offset,
+      local_child_visibility,
+    );
+    self.emit_fragment_list(
+      &context.layer4_floats,
+      descendant_offset,
+      local_child_visibility,
+    );
+    self.emit_fragment_list(
+      &context.layer5_inlines,
+      descendant_offset,
+      local_child_visibility,
+    );
     for item in context.layer6_iter() {
       if self.deadline_reached_periodic(&mut deadline_counter, DEADLINE_STRIDE) {
         break;
       }
       match item {
-        Layer6Item::Positioned(fragment) => {
-          self.build_fragment(&fragment.fragment, descendant_offset, local_child_visibility)
-        }
+        Layer6Item::Positioned(fragment) => self.build_fragment(
+          &fragment.fragment,
+          descendant_offset,
+          local_child_visibility,
+        ),
         Layer6Item::ZeroContext(child) => self.build_stacking_context(
           child,
           descendant_offset,
@@ -5874,7 +5899,8 @@ impl DisplayListBuilder {
         continue;
       }
 
-      let used_thickness = self.resolve_text_decoration_thickness_override(deco.decoration.thickness, style);
+      let used_thickness =
+        self.resolve_text_decoration_thickness_override(deco.decoration.thickness, style);
 
       let underline_offset = self.resolve_underline_offset_value(deco.underline_offset, style);
       let mut paint = DecorationPaint {
@@ -6076,20 +6102,19 @@ impl DisplayListBuilder {
     style: &ComputedStyle,
   ) -> Option<DecorationMetrics> {
     let mut metrics_source = runs.and_then(|rs| {
-      rs.iter()
-        .find_map(|run| {
-          let coords: Vec<_> = run.variations.iter().map(|v| (v.tag, v.value)).collect();
-          let metrics = if coords.is_empty() {
-            run.font.metrics()
-          } else {
-            run
-              .font
-              .metrics_with_variations(&coords)
-              .or_else(|_| run.font.metrics())
-          }
-          .ok()?;
-          Some((metrics, run.font_size * run.scale))
-        })
+      rs.iter().find_map(|run| {
+        let coords: Vec<_> = run.variations.iter().map(|v| (v.tag, v.value)).collect();
+        let metrics = if coords.is_empty() {
+          run.font.metrics()
+        } else {
+          run
+            .font
+            .metrics_with_variations(&coords)
+            .or_else(|_| run.font.metrics())
+        }
+        .ok()?;
+        Some((metrics, run.font_size * run.scale))
+      })
     });
 
     if metrics_source.is_none() {
@@ -6114,11 +6139,8 @@ impl DisplayListBuilder {
         )
         .or_else(|| self.font_ctx.get_sans_serif())
         .and_then(|font| {
-          let used_font_size = crate::text::pipeline::compute_adjusted_font_size(
-            style,
-            &font,
-            preferred_aspect,
-          );
+          let used_font_size =
+            crate::text::pipeline::compute_adjusted_font_size(style, &font, preferred_aspect);
           let authored = crate::text::variations::authored_variations_from_style(style);
           let variations = crate::text::face_cache::with_face(&font, |face| {
             crate::text::variations::collect_variations_for_face(
@@ -6442,15 +6464,13 @@ impl DisplayListBuilder {
               let glyphs = r
                 .glyphs
                 .iter()
-                .map(|g| {
-                  GlyphInstance {
-                    glyph_id: g.glyph_id,
-                    cluster: g.cluster,
-                    x_offset: g.x_offset,
-                    y_offset: -g.y_offset,
-                    x_advance: g.x_advance,
-                    y_advance: g.y_advance,
-                  }
+                .map(|g| GlyphInstance {
+                  glyph_id: g.glyph_id,
+                  cluster: g.cluster,
+                  x_offset: g.x_offset,
+                  y_offset: -g.y_offset,
+                  x_advance: g.x_advance,
+                  y_advance: g.y_advance,
                 })
                 .collect();
               runs.push(EmphasisTextRun {
@@ -6728,9 +6748,7 @@ impl DisplayListBuilder {
         true
       }
       FormControlKind::TextArea {
-        value,
-        placeholder,
-        ..
+        value, placeholder, ..
       } => {
         let base_color = if control.invalid { accent } else { style.color };
         let placeholder_color = base_color.with_alpha(0.6);

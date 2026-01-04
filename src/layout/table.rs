@@ -2112,7 +2112,9 @@ impl TableStructure {
     } else {
       0
     };
-    let keep_cols = used_cols.max(explicit_remaining).min(new_structure.column_count);
+    let keep_cols = used_cols
+      .max(explicit_remaining)
+      .min(new_structure.column_count);
     if keep_cols < new_structure.column_count {
       new_structure.column_count = keep_cols;
       new_structure.columns.truncate(keep_cols);
@@ -7594,11 +7596,10 @@ mod tests {
     let font_ctx = FontContext::with_config(FontConfig::bundled_only());
     let base_factory = FormattingContextFactory::with_font_context_and_viewport(font_ctx, viewport);
 
-    let parallel_factory = base_factory.clone().with_parallelism(
-      LayoutParallelism::enabled(1).with_max_threads(Some(4)),
-    );
-    let sequential_factory = base_factory
-      .with_parallelism(LayoutParallelism::disabled());
+    let parallel_factory = base_factory
+      .clone()
+      .with_parallelism(LayoutParallelism::enabled(1).with_max_threads(Some(4)));
+    let sequential_factory = base_factory.with_parallelism(LayoutParallelism::disabled());
 
     let parallel_tfc = TableFormattingContext::with_factory(parallel_factory);
     let sequential_tfc = TableFormattingContext::with_factory(sequential_factory);
@@ -7638,11 +7639,7 @@ mod tests {
         // measurement-to-cell indexing. Vary the width slightly per row to encourage work stealing.
         let len = (c + 1) * 12 + (r % 3);
         let text = BoxNode::new_text(text_style.clone(), "x".repeat(len));
-        let cell = BoxNode::new_block(
-          cell_style.clone(),
-          FormattingContextType::Block,
-          vec![text],
-        );
+        let cell = BoxNode::new_block(cell_style.clone(), FormattingContextType::Block, vec![text]);
         cells.push(cell);
       }
       table_rows.push(BoxNode::new_block(
@@ -7690,8 +7687,11 @@ mod tests {
       .num_threads(4)
       .build()
       .expect("rayon pool");
-    let parallel_runs =
-      pool.install(|| (0..16usize).map(|_| compute(&parallel_tfc)).collect::<Vec<_>>());
+    let parallel_runs = pool.install(|| {
+      (0..16usize)
+        .map(|_| compute(&parallel_tfc))
+        .collect::<Vec<_>>()
+    });
 
     for (idx, constraints) in parallel_runs.iter().enumerate() {
       assert_eq!(

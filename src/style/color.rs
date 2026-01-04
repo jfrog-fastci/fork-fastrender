@@ -2752,10 +2752,7 @@ mod tests {
       Color::parse("RGB(0 0 0)").unwrap().to_rgba(Rgba::BLACK),
       Rgba::BLACK
     );
-    assert_eq!(
-      Color::parse("ReD").unwrap().to_rgba(Rgba::BLACK),
-      Rgba::RED
-    );
+    assert_eq!(Color::parse("ReD").unwrap().to_rgba(Rgba::BLACK), Rgba::RED);
     assert_eq!(
       Color::parse("#FfF").unwrap().to_rgba(Rgba::BLACK),
       Rgba::WHITE

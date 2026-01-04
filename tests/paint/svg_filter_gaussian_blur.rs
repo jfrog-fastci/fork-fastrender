@@ -1,11 +1,11 @@
+use fastrender::debug::runtime;
+use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::geometry::Rect;
 use fastrender::image_loader::ImageCache;
 use fastrender::paint::svg_filter::{
   apply_svg_filter, parse_svg_filter_from_svg_document, ColorInterpolationFilters, FilterInput,
   FilterPrimitive, FilterStep, SvgFilter, SvgFilterRegion, SvgFilterUnits, SvgLength,
 };
-use fastrender::debug::runtime;
-use fastrender::debug::runtime::RuntimeToggles;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tiny_skia::{Pixmap, PremultipliedColorU8};

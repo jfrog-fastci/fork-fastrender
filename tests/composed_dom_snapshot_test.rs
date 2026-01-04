@@ -36,14 +36,22 @@ fn composed_snapshot_places_slotted_nodes_under_slot() {
   let snapshot = dom::composed_dom_snapshot(&dom).expect("compose snapshot");
 
   let host = find_by_id(&snapshot, "host").expect("host element");
-  assert_eq!(host.children.len(), 1, "host should expose shadow root children");
+  assert_eq!(
+    host.children.len(),
+    1,
+    "host should expose shadow root children"
+  );
   assert!(
     matches!(host.children[0].node_type, DomNodeType::Slot { .. }),
     "host child should be the shadow slot"
   );
 
   let slot = &host.children[0];
-  assert_eq!(slot.children.len(), 1, "slot should contain the assigned node");
+  assert_eq!(
+    slot.children.len(),
+    1,
+    "slot should contain the assigned node"
+  );
   assert_eq!(
     slot.children[0].get_attribute_ref("id"),
     Some("light"),
@@ -77,14 +85,24 @@ fn composed_snapshot_named_and_default_slots_use_assignment_and_suppress_fallbac
     dom::composed_dom_snapshot_with_ids_and_assignment(&dom, &ids, &assignment).expect("snapshot");
 
   let host = find_by_id(&snapshot, "host").expect("host element");
-  assert_eq!(host.children.len(), 2, "host should expose its shadow root children");
+  assert_eq!(
+    host.children.len(),
+    2,
+    "host should expose its shadow root children"
+  );
   let title_slot = find_by_id(host, "title-slot").expect("title slot");
   assert!(
-    matches!(title_slot.node_type, DomNodeType::Slot { assigned: true, .. }),
+    matches!(
+      title_slot.node_type,
+      DomNodeType::Slot { assigned: true, .. }
+    ),
     "slot should be marked assigned when it receives nodes"
   );
   assert_eq!(title_slot.children.len(), 1);
-  assert_eq!(title_slot.children[0].get_attribute_ref("id"), Some("title"));
+  assert_eq!(
+    title_slot.children[0].get_attribute_ref("id"),
+    Some("title")
+  );
   assert!(
     find_by_id(title_slot, "fallback-title").is_none(),
     "fallback subtree should be suppressed when assigned"
@@ -92,11 +110,17 @@ fn composed_snapshot_named_and_default_slots_use_assignment_and_suppress_fallbac
 
   let default_slot = find_by_id(host, "default-slot").expect("default slot");
   assert!(
-    matches!(default_slot.node_type, DomNodeType::Slot { assigned: true, .. }),
+    matches!(
+      default_slot.node_type,
+      DomNodeType::Slot { assigned: true, .. }
+    ),
     "default slot should be marked assigned when it receives nodes"
   );
   assert_eq!(default_slot.children.len(), 1);
-  assert_eq!(default_slot.children[0].get_attribute_ref("id"), Some("body"));
+  assert_eq!(
+    default_slot.children[0].get_attribute_ref("id"),
+    Some("body")
+  );
   assert!(
     find_by_id(default_slot, "fallback-default").is_none(),
     "fallback subtree should be suppressed when assigned"

@@ -181,7 +181,11 @@ impl Cache {
         };
 
         let cache_slot = Self::compute_cache_slot(known_dimensions, available_space);
-        if let Some(entry) = self.measure_entries.get(cache_slot).and_then(|slot| slot.as_ref()) {
+        if let Some(entry) = self
+          .measure_entries
+          .get(cache_slot)
+          .and_then(|slot| slot.as_ref())
+        {
           if matches(entry) {
             return Some(LayoutOutput::from_outer_size(entry.content));
           }
@@ -237,8 +241,16 @@ impl Cache {
             || known_dimensions.width == Some(cached_size.width))
             && (known_dimensions.height == entry.known_dimensions.height
               || known_dimensions.height == Some(cached_size.height))
-            && (known_dimensions.width.is_some() || entry.available_space.width.is_roughly_equal(available_space.width))
-            && (known_dimensions.height.is_some() || entry.available_space.height.is_roughly_equal(available_space.height))
+            && (known_dimensions.width.is_some()
+              || entry
+                .available_space
+                .width
+                .is_roughly_equal(available_space.width))
+            && (known_dimensions.height.is_some()
+              || entry
+                .available_space
+                .height
+                .is_roughly_equal(available_space.height))
         };
 
         // Avoid duplicating equivalent entries (and keep the most recent measurement when

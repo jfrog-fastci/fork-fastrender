@@ -288,7 +288,9 @@ fn taffy_perf_counters_do_not_leak_between_overlapping_diagnostics_renders() {
       return;
     }
     let (lock, cv) = &*blocker_listener;
-    let mut state = lock.lock().expect("diagnostics overlap blocker lock poisoned");
+    let mut state = lock
+      .lock()
+      .expect("diagnostics overlap blocker lock poisoned");
     if state.entered_dom_parse {
       return;
     }
@@ -315,9 +317,13 @@ fn taffy_perf_counters_do_not_leak_between_overlapping_diagnostics_renders() {
   // Wait until thread A reaches the first DOM parse stage and is blocked by the stage listener.
   {
     let (lock, cv) = &*blocker;
-    let guard = lock.lock().expect("diagnostics overlap blocker lock poisoned");
+    let guard = lock
+      .lock()
+      .expect("diagnostics overlap blocker lock poisoned");
     let (_guard, timeout) = cv
-      .wait_timeout_while(guard, Duration::from_secs(2), |state| !state.entered_dom_parse)
+      .wait_timeout_while(guard, Duration::from_secs(2), |state| {
+        !state.entered_dom_parse
+      })
       .expect("diagnostics overlap blocker lock poisoned");
     assert!(
       !timeout.timed_out(),
@@ -347,7 +353,9 @@ fn taffy_perf_counters_do_not_leak_between_overlapping_diagnostics_renders() {
 
   {
     let (lock, cv) = &*blocker;
-    let mut state = lock.lock().expect("diagnostics overlap blocker lock poisoned");
+    let mut state = lock
+      .lock()
+      .expect("diagnostics overlap blocker lock poisoned");
     state.release = true;
     cv.notify_all();
   }

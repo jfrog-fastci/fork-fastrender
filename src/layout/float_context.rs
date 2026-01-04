@@ -1087,7 +1087,11 @@ impl FloatContext {
     let mut state = self.ensure_sweep_state(y);
     self.advance_sweep_to(y, &mut state);
     let next = self.next_float_boundary_after_internal(&*state, y);
-    if next.is_finite() && next > y { next } else { y }
+    if next.is_finite() && next > y {
+      next
+    } else {
+      y
+    }
   }
 
   /// Compute the clearance needed for an element with the given clear value

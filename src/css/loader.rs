@@ -2436,7 +2436,8 @@ pub fn infer_base_url<'a>(html: &'a str, input_url: &'a str) -> Cow<'a, str> {
     let prefix = &html[..limit];
     let mut end = limit;
 
-    if let Some(pos) = crate::html::find_tag_case_insensitive_outside_templates(prefix, "body", false)
+    if let Some(pos) =
+      crate::html::find_tag_case_insensitive_outside_templates(prefix, "body", false)
     {
       end = (pos + BASE_URL_SCAN_BODY_PREFIX_BYTES).min(limit);
     } else if let Some(pos) =

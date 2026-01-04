@@ -427,11 +427,13 @@ fn test_context_quotes_basic() {
 #[test]
 fn test_context_quotes_custom() {
   let mut ctx = ContentContext::new();
-  ctx.set_quotes(vec![
-    ("<<".to_string(), ">>".to_string()),
-    ("<".to_string(), ">".to_string()),
-  ]
-  .into());
+  ctx.set_quotes(
+    vec![
+      ("<<".to_string(), ">>".to_string()),
+      ("<".to_string(), ">".to_string()),
+    ]
+    .into(),
+  );
 
   assert_eq!(ctx.open_quote(), "<<");
   ctx.push_quote();
@@ -1032,11 +1034,13 @@ fn test_quoted_text_workflow() {
   let mut ctx = ContentContext::new();
 
   // Set custom quotes (like French guillemets)
-  ctx.set_quotes(vec![
-    ("«\u{00A0}".to_string(), "\u{00A0}»".to_string()),
-    ("‹\u{00A0}".to_string(), "\u{00A0}›".to_string()),
-  ]
-  .into());
+  ctx.set_quotes(
+    vec![
+      ("«\u{00A0}".to_string(), "\u{00A0}»".to_string()),
+      ("‹\u{00A0}".to_string(), "\u{00A0}›".to_string()),
+    ]
+    .into(),
+  );
 
   let content = ContentValue::Items(vec![
     ContentItem::OpenQuote,

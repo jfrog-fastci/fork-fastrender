@@ -1361,7 +1361,9 @@ fn run_pageset(args: PagesetArgs) -> Result<()> {
       cmd.arg("--accuracy");
     }
 
-    let baseline = args.accuracy_baseline.unwrap_or(PagesetAccuracyBaseline::Existing);
+    let baseline = args
+      .accuracy_baseline
+      .unwrap_or(PagesetAccuracyBaseline::Existing);
     let baseline_dir = args
       .accuracy_baseline_dir
       .clone()

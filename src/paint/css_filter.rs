@@ -26,15 +26,17 @@ where
   let pixels = pixmap.pixels_mut();
   if pixels.len() > COLOR_FILTER_PARALLEL_THRESHOLD {
     let deadline = active_deadline();
-    pixels.par_chunks_mut(COLOR_FILTER_CHUNK_SIZE).try_for_each(|chunk| {
-      with_deadline(deadline.as_ref(), || -> Result<(), RenderError> {
-        check_active(RenderStage::Paint)?;
-        for px in chunk.iter_mut() {
-          apply_color_filter_to_pixel(px, &f);
-        }
-        Ok(())
-      })
-    })?;
+    pixels
+      .par_chunks_mut(COLOR_FILTER_CHUNK_SIZE)
+      .try_for_each(|chunk| {
+        with_deadline(deadline.as_ref(), || -> Result<(), RenderError> {
+          check_active(RenderStage::Paint)?;
+          for px in chunk.iter_mut() {
+            apply_color_filter_to_pixel(px, &f);
+          }
+          Ok(())
+        })
+      })?;
   } else {
     for (idx, px) in pixels.iter_mut().enumerate() {
       if idx % COLOR_FILTER_DEADLINE_STRIDE == 0 {
@@ -407,10 +409,18 @@ mod tests {
     let deadline = RenderDeadline::new(None, Some(cancel));
 
     let mut pixmap = new_pixmap((COLOR_FILTER_PARALLEL_THRESHOLD + 1) as u32, 1).unwrap();
-    let result = with_deadline(Some(&deadline), || apply_color_filter(&mut pixmap, |c, a| (c, a)));
+    let result = with_deadline(Some(&deadline), || {
+      apply_color_filter(&mut pixmap, |c, a| (c, a))
+    });
 
     assert!(
-      matches!(result, Err(RenderError::Timeout { stage: RenderStage::Paint, .. })),
+      matches!(
+        result,
+        Err(RenderError::Timeout {
+          stage: RenderStage::Paint,
+          ..
+        })
+      ),
       "expected timeout, got {result:?}"
     );
     assert!(calls.load(Ordering::SeqCst) >= 2);

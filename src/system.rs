@@ -17,7 +17,9 @@ use std::sync::OnceLock;
 pub fn cpu_budget() -> usize {
   static CPU_BUDGET: OnceLock<usize> = OnceLock::new();
   *CPU_BUDGET.get_or_init(|| {
-    let mut cpus = std::thread::available_parallelism().map_or(1, |n| n.get()).max(1);
+    let mut cpus = std::thread::available_parallelism()
+      .map_or(1, |n| n.get())
+      .max(1);
     #[cfg(target_os = "linux")]
     {
       if let Some(quota) = linux_cgroup_cpu_quota() {
@@ -91,7 +93,10 @@ fn parse_proc_self_cgroup_v1_controller_path<'a>(
     let _id = it.next()?;
     let controllers = it.next()?;
     let path = it.next()?;
-    if controllers.split(',').any(|candidate| candidate == controller) {
+    if controllers
+      .split(',')
+      .any(|candidate| candidate == controller)
+    {
       Some(path)
     } else {
       None
@@ -139,9 +144,10 @@ fn cgroup_v1_cpu_quota(mountpoint: &Path, proc_cgroup: Option<&str>) -> Option<u
   loop {
     let quota_path = dir.join("cpu.cfs_quota_us");
     let period_path = dir.join("cpu.cfs_period_us");
-    if let (Ok(quota_raw), Ok(period_raw)) =
-      (std::fs::read_to_string(quota_path), std::fs::read_to_string(period_path))
-    {
+    if let (Ok(quota_raw), Ok(period_raw)) = (
+      std::fs::read_to_string(quota_path),
+      std::fs::read_to_string(period_path),
+    ) {
       if let Some(cpus) = parse_cgroup_v1_cpu_quota(&quota_raw, &period_raw) {
         quota = Some(quota.map_or(cpus, |prev| prev.min(cpus)));
       }

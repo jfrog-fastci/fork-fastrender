@@ -154,7 +154,11 @@ fn build_has_tree_html(depth: usize, branching: usize, needle_stride: usize) -> 
   build_has_tree_html_inner(depth, branching, needle_stride, false)
 }
 
-fn build_has_tree_html_with_leaf_noise(depth: usize, branching: usize, needle_stride: usize) -> String {
+fn build_has_tree_html_with_leaf_noise(
+  depth: usize,
+  branching: usize,
+  needle_stride: usize,
+) -> String {
   build_has_tree_html_inner(depth, branching, needle_stride, true)
 }
 

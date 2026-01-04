@@ -1,19 +1,19 @@
 use fastrender::error::RenderStage;
-use fastrender::render_control::{RenderDeadline, StageGuard};
-use fastrender::snapshot_fragment_tree;
 use fastrender::layout::engine::{
   enable_layout_parallel_debug_counters, layout_parallel_debug_counters,
   reset_layout_parallel_debug_counters, DEFAULT_LAYOUT_MIN_FANOUT,
 };
+use fastrender::layout::formatting_context::LayoutError;
+use fastrender::render_control::{RenderDeadline, StageGuard};
+use fastrender::snapshot_fragment_tree;
 use fastrender::style::display::Display;
 use fastrender::style::position::Position;
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
 use fastrender::text::font_loader::FontContext;
-use fastrender::layout::formatting_context::LayoutError;
 use fastrender::{
-  BoxNode, BoxTree, FormattingContextType, FragmentNodeSnapshot,
-  FragmentTreeSnapshot, LayoutConfig, LayoutEngine, LayoutParallelism, Size,
+  BoxNode, BoxTree, FormattingContextType, FragmentNodeSnapshot, FragmentTreeSnapshot,
+  LayoutConfig, LayoutEngine, LayoutParallelism, Size,
 };
 use std::sync::Arc;
 
@@ -402,9 +402,8 @@ fn parallel_grid_children_match_serial_fragments() {
   let serial_engine =
     LayoutEngine::with_font_context(LayoutConfig::for_viewport(viewport), FontContext::new());
   let parallel_engine = LayoutEngine::with_font_context(
-    LayoutConfig::for_viewport(viewport).with_parallelism(
-      LayoutParallelism::enabled(4).with_max_threads(Some(available_threads())),
-    ),
+    LayoutConfig::for_viewport(viewport)
+      .with_parallelism(LayoutParallelism::enabled(4).with_max_threads(Some(available_threads()))),
     FontContext::new(),
   );
 
@@ -527,7 +526,10 @@ fn parallel_layout_respects_deadline() {
   let err = engine
     .layout_tree_with_deadline(&box_tree, Some(&deadline))
     .unwrap_err();
-  assert!(matches!(err, LayoutError::Timeout { .. }), "expected timeout, got {err:?}");
+  assert!(
+    matches!(err, LayoutError::Timeout { .. }),
+    "expected timeout, got {err:?}"
+  );
 }
 
 #[test]
@@ -578,8 +580,8 @@ fn auto_parallel_layout_spawns_workers() {
   let box_tree = build_block_stack(1024);
   let viewport = Size::new(1200.0, 900.0);
   let threads = available_threads();
-  let parallelism = LayoutParallelism::auto(DEFAULT_LAYOUT_MIN_FANOUT)
-    .with_max_threads(Some(threads));
+  let parallelism =
+    LayoutParallelism::auto(DEFAULT_LAYOUT_MIN_FANOUT).with_max_threads(Some(threads));
   let config = LayoutConfig::for_viewport(viewport).with_parallelism(parallelism);
   let engine = LayoutEngine::with_font_context(config, FontContext::new());
 

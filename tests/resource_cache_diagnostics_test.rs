@@ -50,13 +50,11 @@ fn resource_cache_diagnostics_surface_hits_and_misses() {
       .expect("disk cache lock waits should be present"),
     0
   );
-  assert!(
-    first_stats
-      .resources
-      .disk_cache_lock_wait_ms
-      .expect("disk cache lock wait ms should be present")
-      .is_finite()
-  );
+  assert!(first_stats
+    .resources
+    .disk_cache_lock_wait_ms
+    .expect("disk cache lock wait ms should be present")
+    .is_finite());
   assert_eq!(
     first_stats
       .resources
@@ -107,13 +105,11 @@ fn resource_cache_diagnostics_surface_hits_and_misses() {
       .expect("disk cache lock waits should be present"),
     0
   );
-  assert!(
-    second_stats
-      .resources
-      .disk_cache_lock_wait_ms
-      .expect("disk cache lock wait ms should be present")
-      .is_finite()
-  );
+  assert!(second_stats
+    .resources
+    .disk_cache_lock_wait_ms
+    .expect("disk cache lock wait ms should be present")
+    .is_finite());
   assert!(
     second_stats
       .resources

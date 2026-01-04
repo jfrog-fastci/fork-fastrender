@@ -3854,10 +3854,8 @@ mod tests {
 
   #[test]
   fn test_parse_query_list_mixed_case_keywords() {
-    let queries = MediaQuery::parse_list(
-      "NoT ScReEn AnD (min-width: 768px), OnLy PrInT AnD (CoLoR)",
-    )
-    .unwrap();
+    let queries =
+      MediaQuery::parse_list("NoT ScReEn AnD (min-width: 768px), OnLy PrInT AnD (CoLoR)").unwrap();
     assert_eq!(queries.len(), 2);
     assert_eq!(queries[0].modifier, Some(MediaModifier::Not));
     assert_eq!(queries[0].media_type, Some(MediaType::Screen));
@@ -3883,10 +3881,8 @@ mod tests {
 
   #[test]
   fn media_query_parses_range_syntax_calc_with_whitespace() {
-    let query = MediaQuery::parse(
-      "(width >= calc(1rem * 2 + (14rem + 2rem) * 2 + 31rem))",
-    )
-    .expect("parse range syntax with calc");
+    let query = MediaQuery::parse("(width >= calc(1rem * 2 + (14rem + 2rem) * 2 + 31rem))")
+      .expect("parse range syntax with calc");
     assert!(
       matches!(
         query.features.as_slice(),
@@ -3902,10 +3898,8 @@ mod tests {
 
   #[test]
   fn media_query_parses_double_sided_range_with_calc_atoms() {
-    let query = MediaQuery::parse(
-      "(calc(400px + 1px) <= width <= calc(800px - 1px))",
-    )
-    .expect("parse double-sided range with calc atoms");
+    let query = MediaQuery::parse("(calc(400px + 1px) <= width <= calc(800px - 1px))")
+      .expect("parse double-sided range with calc atoms");
     assert_eq!(query.features.len(), 2);
   }
 

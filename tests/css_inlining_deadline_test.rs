@@ -24,12 +24,10 @@ fn css_inlining_respects_deadline() {
   // Use stage heartbeats to trip cancellation while CSS inlining/parsing is active, avoiding
   // fragile wall-clock thresholds.
   let css_active_listener = Arc::clone(&css_active);
-  set_stage_listener(Some(Arc::new(move |stage| {
-    match stage {
-      StageHeartbeat::CssInline => css_active_listener.store(true, Ordering::Relaxed),
-      StageHeartbeat::Cascade => css_active_listener.store(false, Ordering::Relaxed),
-      _ => {}
-    }
+  set_stage_listener(Some(Arc::new(move |stage| match stage {
+    StageHeartbeat::CssInline => css_active_listener.store(true, Ordering::Relaxed),
+    StageHeartbeat::Cascade => css_active_listener.store(false, Ordering::Relaxed),
+    _ => {}
   })));
   let _stage_listener_guard = StageListenerGuard;
 

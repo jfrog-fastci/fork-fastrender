@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use fastrender::layout::engine::LayoutParallelism;
 use fastrender::layout::contexts::grid::GridFormattingContext;
+use fastrender::layout::engine::LayoutParallelism;
 use fastrender::style::display::Display;
 use fastrender::style::position::Position;
 use fastrender::style::values::Length;
@@ -145,7 +145,8 @@ fn build_flex_row(children: usize) -> BoxTree {
 }
 
 fn build_flex_row_heavy(children: usize) -> BoxTree {
-  const LOREM: &str = "FastRender flex item benchmark text: lorem ipsum dolor sit amet consectetur adipiscing elit.";
+  const LOREM: &str =
+    "FastRender flex item benchmark text: lorem ipsum dolor sit amet consectetur adipiscing elit.";
   let mut flex_style = ComputedStyle::default();
   flex_style.display = Display::Flex;
   let flex_style = Arc::new(flex_style);
@@ -175,7 +176,11 @@ fn build_flex_row_heavy(children: usize) -> BoxTree {
       FormattingContextType::Inline,
       vec![text_node],
     );
-    let child = BoxNode::new_block(item_style.clone(), FormattingContextType::Block, vec![inline]);
+    let child = BoxNode::new_block(
+      item_style.clone(),
+      FormattingContextType::Block,
+      vec![inline],
+    );
     items.push(child);
   }
 
@@ -316,7 +321,11 @@ fn build_grid(rows: usize, cols: usize) -> BoxTree {
           vec![text],
         ));
       }
-      let current = BoxNode::new_block(inner_style.clone(), FormattingContextType::Block, paragraphs);
+      let current = BoxNode::new_block(
+        inner_style.clone(),
+        FormattingContextType::Block,
+        paragraphs,
+      );
       items.push(BoxNode::new_block(
         item_style.clone(),
         FormattingContextType::Block,
@@ -425,7 +434,8 @@ fn bench_layout_parallel(c: &mut Criterion) {
 
   let serial_engine =
     LayoutEngine::with_font_context(LayoutConfig::for_viewport(viewport), font_ctx.clone());
-  let parallelism = LayoutParallelism::enabled(4).with_max_threads(Some(available_threads().max(2)));
+  let parallelism =
+    LayoutParallelism::enabled(4).with_max_threads(Some(available_threads().max(2)));
   let parallel_engine = LayoutEngine::with_font_context(
     LayoutConfig::for_viewport(viewport).with_parallelism(parallelism),
     font_ctx,
@@ -477,8 +487,7 @@ fn bench_grid_parallel(c: &mut Criterion) {
   let constraints = LayoutConstraints::new(AvailableSpace::Indefinite, AvailableSpace::Indefinite);
   let grid = &box_tree.root.children[0];
 
-  let serial_fc =
-    GridFormattingContext::with_viewport_and_cb(viewport, cb, font_ctx.clone());
+  let serial_fc = GridFormattingContext::with_viewport_and_cb(viewport, cb, font_ctx.clone());
   let parallel_fc = GridFormattingContext::with_viewport_and_cb(viewport, cb, font_ctx)
     .with_parallelism(LayoutParallelism::enabled(8));
 
@@ -489,12 +498,21 @@ fn bench_grid_parallel(c: &mut Criterion) {
 
   let mut group = c.benchmark_group("layout_grid_parallel");
   group.bench_function("serial", |b| {
-    b.iter(|| pool.install(|| serial_fc.layout(black_box(grid), black_box(&constraints)).unwrap()))
+    b.iter(|| {
+      pool.install(|| {
+        serial_fc
+          .layout(black_box(grid), black_box(&constraints))
+          .unwrap()
+      })
+    })
   });
   group.bench_function("parallel", |b| {
     b.iter(|| {
-      pool
-        .install(|| parallel_fc.layout(black_box(grid), black_box(&constraints)).unwrap())
+      pool.install(|| {
+        parallel_fc
+          .layout(black_box(grid), black_box(&constraints))
+          .unwrap()
+      })
     })
   });
   group.finish();
@@ -507,7 +525,8 @@ fn bench_block_parallel(c: &mut Criterion) {
 
   let serial_engine =
     LayoutEngine::with_font_context(LayoutConfig::for_viewport(viewport), font_ctx.clone());
-  let parallelism = LayoutParallelism::enabled(8).with_max_threads(Some(available_threads().max(2)));
+  let parallelism =
+    LayoutParallelism::enabled(8).with_max_threads(Some(available_threads().max(2)));
   let parallel_engine = LayoutEngine::with_font_context(
     LayoutConfig::for_viewport(viewport).with_parallelism(parallelism),
     font_ctx,
@@ -530,7 +549,8 @@ fn bench_flex_parallel(c: &mut Criterion) {
 
   let serial_engine =
     LayoutEngine::with_font_context(LayoutConfig::for_viewport(viewport), font_ctx.clone());
-  let parallelism = LayoutParallelism::enabled(8).with_max_threads(Some(available_threads().max(2)));
+  let parallelism =
+    LayoutParallelism::enabled(8).with_max_threads(Some(available_threads().max(2)));
   let parallel_engine = LayoutEngine::with_font_context(
     LayoutConfig::for_viewport(viewport).with_parallelism(parallelism),
     font_ctx,
@@ -553,7 +573,8 @@ fn bench_flex_item_children_parallel(c: &mut Criterion) {
 
   let serial_engine =
     LayoutEngine::with_font_context(LayoutConfig::for_viewport(viewport), font_ctx.clone());
-  let parallelism = LayoutParallelism::enabled(8).with_max_threads(Some(available_threads().max(2)));
+  let parallelism =
+    LayoutParallelism::enabled(8).with_max_threads(Some(available_threads().max(2)));
   let parallel_engine = LayoutEngine::with_font_context(
     LayoutConfig::for_viewport(viewport).with_parallelism(parallelism),
     font_ctx,

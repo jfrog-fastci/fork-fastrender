@@ -1,7 +1,7 @@
 //! Tests for image encoding helpers
 
-use fastrender::image_output::encode_image;
 use fastrender::image_output::diff_png_with_alpha;
+use fastrender::image_output::encode_image;
 use fastrender::image_output::OutputFormat;
 use fastrender::Pixmap;
 use image::DynamicImage;
@@ -87,8 +87,7 @@ fn diff_png_reports_max_channel_delta() {
   let before = encode_solid_png_bytes([255, 0, 0, 255]);
   let after = encode_solid_png_bytes([0, 0, 255, 255]);
 
-  let (metrics, diff) =
-    diff_png_with_alpha(&after, &before, 0, true).expect("diff_png_with_alpha");
+  let (metrics, diff) = diff_png_with_alpha(&after, &before, 0, true).expect("diff_png_with_alpha");
   assert!(metrics.pixel_diff > 0);
   assert_eq!(metrics.max_channel_diff, 255);
   assert!(!diff.is_empty(), "expected diff image bytes");

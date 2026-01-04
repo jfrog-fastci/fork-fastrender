@@ -58,7 +58,8 @@ fn parse_paint_threads_env() -> Result<Option<usize>, String> {
       if raw.is_empty() {
         return Err(format!("{PAINT_THREADS_ENV} is set but empty"));
       }
-      raw.parse::<usize>()
+      raw
+        .parse::<usize>()
         .map(Some)
         .map_err(|_| format!("{PAINT_THREADS_ENV}={raw:?} is not a valid positive integer"))
     }

@@ -10,9 +10,9 @@ use crate::tree::{
   Layout, LayoutInput, LayoutOutput, LayoutPartialTreeExt, NodeId, RunMode, SizingMode,
 };
 use crate::util::debug::debug_log;
-use crate::util::sys::{f32_max, GridTrackVec, Vec};
 #[cfg(not(feature = "std"))]
 use crate::util::sys::Map;
+use crate::util::sys::{f32_max, GridTrackVec, Vec};
 use crate::util::MaybeMath;
 use crate::util::{MaybeResolve, ResolveOrZero};
 use crate::{
@@ -20,14 +20,14 @@ use crate::{
   GridItemStyle, JustifyContent, LayoutGridContainer, Style, TrackSizingFunction,
 };
 use crate::{sys::DefaultCheapStr, tree::LayoutPartialTree};
-#[cfg(feature = "std")]
-use rustc_hash::FxHashMap;
 use alignment::{align_and_position_item, align_tracks};
 use explicit_grid::{
   compute_explicit_grid_size_in_axis, initialize_grid_tracks, AutoRepeatStrategy,
 };
 use implicit_grid::compute_grid_size_estimate;
 use placement::place_grid_items;
+#[cfg(feature = "std")]
+use rustc_hash::FxHashMap;
 use track_sizing::{
   determine_if_item_crosses_flexible_or_intrinsic_tracks, resolve_item_track_indexes,
   track_sizing_algorithm,
@@ -98,7 +98,9 @@ impl SubgridOverrideGuard {
     } else {
       // Nested layout run: isolate the current overrides map so we don't clobber the outer run.
       let previous = SUBGRID_OVERRIDES.with(|map| std::mem::take(&mut *map.borrow_mut()));
-      Self { previous: Some(previous) }
+      Self {
+        previous: Some(previous),
+      }
     }
   }
 }

@@ -39,7 +39,12 @@ fn build_deep_table_html(depth: usize, rows: usize, cols: usize) -> String {
   html
 }
 
-fn build_deep_table_multi_tbody_html(depth: usize, bodies: usize, rows: usize, cols: usize) -> String {
+fn build_deep_table_multi_tbody_html(
+  depth: usize,
+  bodies: usize,
+  rows: usize,
+  cols: usize,
+) -> String {
   let mut html = String::new();
   html.push_str("<!doctype html><html><head><meta charset=\"utf-8\">");
   html.push_str(

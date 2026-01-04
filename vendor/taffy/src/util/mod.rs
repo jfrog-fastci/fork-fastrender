@@ -6,10 +6,10 @@ pub(crate) mod sys;
 
 /// Abort the current Taffy layout computation (see [`layout_abort::abort_now`]).
 pub use layout_abort::abort_now as abort_layout_now;
-pub use math::MaybeMath;
+pub(crate) use layout_abort::check_layout_abort;
 #[cfg(feature = "std")]
 pub(crate) use layout_abort::{with_layout_abort, LayoutAbort};
-pub(crate) use layout_abort::check_layout_abort;
+pub use math::MaybeMath;
 pub use resolve::{MaybeResolve, ResolveOrZero};
 
 #[doc(hidden)]

@@ -354,7 +354,11 @@ impl CalcLength {
     let inline_size = inline_size.max(0.0);
     let size_container_inline = size_container_inline.max(0.0);
     let size_container_block = size_container_block.max(0.0);
-    let inline_size = if inline_size.is_finite() { inline_size } else { 0.0 };
+    let inline_size = if inline_size.is_finite() {
+      inline_size
+    } else {
+      0.0
+    };
     let size_container_inline = if size_container_inline.is_finite() {
       size_container_inline
     } else {
@@ -949,8 +953,11 @@ impl Length {
     size_container_block: f32,
   ) -> Self {
     if let Some(calc) = self.calc {
-      let resolved =
-        calc.resolve_container_query_units(inline_size, size_container_inline, size_container_block);
+      let resolved = calc.resolve_container_query_units(
+        inline_size,
+        size_container_inline,
+        size_container_block,
+      );
       if resolved.is_zero() {
         return Length::px(0.0);
       }
@@ -1474,7 +1481,11 @@ impl CustomPropertySyntax {
             .parse::<f32>()
             .ok()
             .map(CustomPropertyTypedValue::Percentage)
-        } else if trimmed.parse::<f32>().ok().is_some_and(|value| value == 0.0) {
+        } else if trimmed
+          .parse::<f32>()
+          .ok()
+          .is_some_and(|value| value == 0.0)
+        {
           // Mirror CSS' general "unitless zero" allowance so that registrations like
           // `@property --switch-position { syntax: "<percentage>"; initial-value: 0 }` are kept.
           Some(CustomPropertyTypedValue::Percentage(0.0))

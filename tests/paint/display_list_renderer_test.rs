@@ -996,11 +996,10 @@ fn clip_path_warped_with_perspective_transform() {
     color: Rgba::BLUE,
   }));
   unclipped.push(DisplayItem::PopStackingContext);
-  let unclipped_pixmap =
-    DisplayListRenderer::new(120, 120, Rgba::WHITE, FontContext::new())
-      .unwrap()
-      .render(&unclipped)
-      .unwrap();
+  let unclipped_pixmap = DisplayListRenderer::new(120, 120, Rgba::WHITE, FontContext::new())
+    .unwrap()
+    .render(&unclipped)
+    .unwrap();
   let Some((unclipped_min_x, unclipped_min_y, unclipped_max_x, unclipped_max_y)) =
     bounding_box_for_color(&unclipped_pixmap, |(r, g, b, a)| a > 0 && b > r && b > g)
   else {
@@ -1818,7 +1817,12 @@ fn color_glyph_shadow_matches_golden() {
   if std::env::var("UPDATE_GOLDEN").is_ok() {
     let mut buf = Vec::new();
     PngEncoder::new(&mut buf)
-      .write_image(actual.as_raw(), actual.width(), actual.height(), ExtendedColorType::Rgba8)
+      .write_image(
+        actual.as_raw(),
+        actual.width(),
+        actual.height(),
+        ExtendedColorType::Rgba8,
+      )
       .expect("encode golden image");
     fs::write(&golden_path, &buf).expect("write golden image");
     return;
@@ -1826,7 +1830,12 @@ fn color_glyph_shadow_matches_golden() {
   if !golden_path.exists() {
     let mut buf = Vec::new();
     PngEncoder::new(&mut buf)
-      .write_image(actual.as_raw(), actual.width(), actual.height(), ExtendedColorType::Rgba8)
+      .write_image(
+        actual.as_raw(),
+        actual.width(),
+        actual.height(),
+        ExtendedColorType::Rgba8,
+      )
       .expect("encode missing golden image");
     fs::write(&golden_path, &buf).expect("write missing golden image");
     panic!(
@@ -3761,7 +3770,10 @@ fn parallel_renderer_uses_multiple_threads_on_large_list() {
     tile_size: 64,
     ..PaintParallelism::adaptive()
   };
-  let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let pool = rayon::ThreadPoolBuilder::new()
+    .num_threads(4)
+    .build()
+    .unwrap();
   let report = pool.install(|| {
     DisplayListRenderer::new(512, 512, Rgba::WHITE, font_ctx)
       .unwrap()

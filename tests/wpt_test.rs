@@ -443,7 +443,10 @@ mod wpt_runner_tests {
       .build();
 
     let result = runner.run_test(&temp.path().join("test.html"));
-    assert!(result.status.is_failure(), "expected failure, got {result:?}");
+    assert!(
+      result.status.is_failure(),
+      "expected failure, got {result:?}"
+    );
 
     server.join().unwrap();
     assert!(

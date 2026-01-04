@@ -111,11 +111,7 @@ fn script_payload(target_len: usize) -> String {
   s.push_str("/* fastrender synthetic benchmark payload */\n");
   let mut i = 0usize;
   while s.len() < target_len {
-    let _ = writeln!(
-      s,
-      "var v{0} = {0}; function f{0}(){{return v{0};}}",
-      i
-    );
+    let _ = writeln!(s, "var v{0} = {0}; function f{0}(){{return v{0};}}", i);
     i += 1;
   }
   s
@@ -220,7 +216,11 @@ fn build_synthetic_html(target_nodes: usize) -> (String, usize) {
     html.push_str("<span class=\"caption\">caption</span>");
     html.push_str("</div>");
 
-    let d = if include_long_attr { &long_svg } else { short_svg };
+    let d = if include_long_attr {
+      &long_svg
+    } else {
+      short_svg
+    };
     let _ = write!(
       html,
       "<svg viewBox=\"0 0 10 10\" class=\"icon icon-{icon}\"><path d=\"{d}\" fill=\"none\" stroke=\"#000\"></path></svg>",

@@ -53,12 +53,16 @@ fn dom_parse_benchmarks(c: &mut Criterion) {
 
   for &count in &card_counts {
     let plain = build_dom_parse_html(count, false);
-    group.bench_with_input(BenchmarkId::new("parse_html_plain", count), &plain, |b, html| {
-      b.iter(|| {
-        let dom = parse_html(black_box(html)).expect("parse html");
-        black_box(dom);
-      })
-    });
+    group.bench_with_input(
+      BenchmarkId::new("parse_html_plain", count),
+      &plain,
+      |b, html| {
+        b.iter(|| {
+          let dom = parse_html(black_box(html)).expect("parse html");
+          black_box(dom);
+        })
+      },
+    );
 
     let with_template = build_dom_parse_html(count, true);
     group.bench_with_input(
@@ -78,4 +82,3 @@ fn dom_parse_benchmarks(c: &mut Criterion) {
 
 criterion_group!(benches, dom_parse_benchmarks);
 criterion_main!(benches);
-

@@ -31,4 +31,3 @@ fn bundle_page_cache_accepts_cache_dir_alias_without_disk_cache_feature() {
     "expected error to mention disk_cache feature, got stderr:\n{stderr}"
   );
 }
-

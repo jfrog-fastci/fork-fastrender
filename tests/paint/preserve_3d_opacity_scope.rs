@@ -68,4 +68,3 @@ fn preserve_3d_opacity_scope_wraps_child_stacking_context() {
   );
   assert_eq!(pixel.alpha(), 255);
 }
-

@@ -684,10 +684,7 @@ fn render_fixture(shared: &RenderShared, entry: &FixtureEntry) -> FixtureResult 
       let urls = blocked_network_urls(&diagnostics);
       if !urls.is_empty() {
         blocked_urls = Some(urls.clone());
-        status = Status::Error(format!(
-          "blocked http/https resources: {}",
-          urls.join(", ")
-        ));
+        status = Status::Error(format!("blocked http/https resources: {}", urls.join(", ")));
       }
 
       let size = outcome.png.len();
@@ -814,10 +811,7 @@ fn write_render_metadata_file(
   let blocked_network_urls = blocked_urls.map(|urls| {
     let count = urls.len();
     let sample = urls.into_iter().take(3).collect::<Vec<_>>();
-    BlockedNetworkUrlsMetadata {
-      count,
-      sample,
-    }
+    BlockedNetworkUrlsMetadata { count, sample }
   });
   let metadata = RenderMetadataFile {
     fixture: stem.to_string(),

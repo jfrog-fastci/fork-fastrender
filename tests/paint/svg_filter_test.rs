@@ -218,7 +218,12 @@ fn displacement_map_object_bounding_box_scales_per_axis() {
 
   let top_left = primary.pixel(0, 0).unwrap();
   assert_eq!(
-    (top_left.red(), top_left.green(), top_left.blue(), top_left.alpha()),
+    (
+      top_left.red(),
+      top_left.green(),
+      top_left.blue(),
+      top_left.alpha()
+    ),
     (100, 100, 0, 255)
   );
 }

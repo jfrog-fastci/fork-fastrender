@@ -654,9 +654,9 @@ fn prefetch_assets_warms_disk_cache_with_html_images_iframes_and_embeds() {
 
 #[test]
 fn prefetch_assets_does_not_fetch_embeds_without_prefetch_embeds() {
-  let Some(listener) = try_bind_localhost(
-    "prefetch_assets_does_not_fetch_embeds_without_prefetch_embeds",
-  ) else {
+  let Some(listener) =
+    try_bind_localhost("prefetch_assets_does_not_fetch_embeds_without_prefetch_embeds")
+  else {
     return;
   };
   let addr = listener.local_addr().unwrap();
@@ -665,7 +665,10 @@ fn prefetch_assets_does_not_fetch_embeds_without_prefetch_embeds() {
   let mut responses: HashMap<String, (Vec<u8>, &'static str)> = HashMap::new();
   responses.insert(
     "/frame.html".to_string(),
-    (b"<!doctype html><html><body>frame</body></html>".to_vec(), "text/html"),
+    (
+      b"<!doctype html><html><body>frame</body></html>".to_vec(),
+      "text/html",
+    ),
   );
   responses.insert(
     "/object.bin".to_string(),
@@ -783,8 +786,7 @@ fn prefetch_assets_does_not_fetch_embeds_without_prefetch_embeds() {
 
 #[test]
 fn prefetch_assets_honors_base_href_for_html_discovery() {
-  let Some(listener) =
-    try_bind_localhost("prefetch_assets_honors_base_href_for_html_discovery")
+  let Some(listener) = try_bind_localhost("prefetch_assets_honors_base_href_for_html_discovery")
   else {
     return;
   };
@@ -794,7 +796,10 @@ fn prefetch_assets_honors_base_href_for_html_discovery() {
   let mut responses: HashMap<String, (Vec<u8>, &'static str)> = HashMap::new();
   responses.insert(
     "/base/frame.html".to_string(),
-    (b"<!doctype html><html><body>frame</body></html>".to_vec(), "text/html"),
+    (
+      b"<!doctype html><html><body>frame</body></html>".to_vec(),
+      "text/html",
+    ),
   );
   responses.insert(
     "/base/icon.png".to_string(),
@@ -903,18 +908,9 @@ fn prefetch_assets_selects_srcset_candidate_and_respects_max_urls_per_element() 
   let addr = listener.local_addr().unwrap();
   let hits = Arc::new(Mutex::new(HashMap::new()));
   let mut responses: HashMap<String, (Vec<u8>, &'static str)> = HashMap::new();
-  responses.insert(
-    "/a1.jpg".to_string(),
-    (b"dummy-a1".to_vec(), "image/jpeg"),
-  );
-  responses.insert(
-    "/a2.jpg".to_string(),
-    (b"dummy-a2".to_vec(), "image/jpeg"),
-  );
-  responses.insert(
-    "/a3.jpg".to_string(),
-    (b"dummy-a3".to_vec(), "image/jpeg"),
-  );
+  responses.insert("/a1.jpg".to_string(), (b"dummy-a1".to_vec(), "image/jpeg"));
+  responses.insert("/a2.jpg".to_string(), (b"dummy-a2".to_vec(), "image/jpeg"));
+  responses.insert("/a3.jpg".to_string(), (b"dummy-a3".to_vec(), "image/jpeg"));
   responses.insert(
     "/fallback.jpg".to_string(),
     (b"dummy-fallback".to_vec(), "image/jpeg"),
@@ -1029,22 +1025,15 @@ fn prefetch_assets_selects_srcset_candidate_and_respects_max_urls_per_element() 
 
 #[test]
 fn prefetch_assets_selects_preload_imagesrcset_candidate() {
-  let Some(listener) =
-    try_bind_localhost("prefetch_assets_selects_preload_imagesrcset_candidate")
+  let Some(listener) = try_bind_localhost("prefetch_assets_selects_preload_imagesrcset_candidate")
   else {
     return;
   };
   let addr = listener.local_addr().unwrap();
   let hits = Arc::new(Mutex::new(HashMap::new()));
   let mut responses: HashMap<String, (Vec<u8>, &'static str)> = HashMap::new();
-  responses.insert(
-    "/a1.jpg".to_string(),
-    (b"dummy-a1".to_vec(), "image/jpeg"),
-  );
-  responses.insert(
-    "/a2.jpg".to_string(),
-    (b"dummy-a2".to_vec(), "image/jpeg"),
-  );
+  responses.insert("/a1.jpg".to_string(), (b"dummy-a1".to_vec(), "image/jpeg"));
+  responses.insert("/a2.jpg".to_string(), (b"dummy-a2".to_vec(), "image/jpeg"));
   responses.insert(
     "/fallback.jpg".to_string(),
     (b"dummy-fallback".to_vec(), "image/jpeg"),
@@ -1180,10 +1169,7 @@ fn prefetch_assets_warms_disk_cache_with_iframes_embeds_icons_and_video_posters(
     "/object.bin".to_string(),
     (b"dummy-object".to_vec(), "application/octet-stream"),
   );
-  responses.insert(
-    "/img.png".to_string(),
-    (b"dummy-img".to_vec(), "image/png"),
-  );
+  responses.insert("/img.png".to_string(), (b"dummy-img".to_vec(), "image/png"));
   responses.insert(
     "/picture-1x.png".to_string(),
     (b"dummy-picture-1x".to_vec(), "image/png"),
@@ -1430,7 +1416,8 @@ fn prefetch_assets_respects_max_images_per_page() {
 
 #[test]
 fn prefetch_assets_selects_picture_source_by_media_and_dpr() {
-  let Some(listener) = try_bind_localhost("prefetch_assets_selects_picture_source_by_media_and_dpr")
+  let Some(listener) =
+    try_bind_localhost("prefetch_assets_selects_picture_source_by_media_and_dpr")
   else {
     return;
   };

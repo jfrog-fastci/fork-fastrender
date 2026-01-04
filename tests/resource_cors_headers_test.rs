@@ -91,6 +91,9 @@ fn http_fetcher_captures_cors_response_headers() {
   handle.join().unwrap();
 
   assert_eq!(res.access_control_allow_origin.as_deref(), Some("*"));
-  assert_eq!(res.timing_allow_origin.as_deref(), Some("https://example.com"));
+  assert_eq!(
+    res.timing_allow_origin.as_deref(),
+    Some("https://example.com")
+  );
   assert!(res.access_control_allow_credentials);
 }

@@ -1,5 +1,5 @@
-use crate::geometry::Point;
 use crate::error::{RenderError, RenderStage};
+use crate::geometry::Point;
 use crate::paint::homography::{quad_bounds, Homography};
 use crate::paint::pixmap::new_pixmap;
 use crate::render_control::{active_deadline, check_active, with_deadline};
@@ -225,7 +225,9 @@ pub fn warp_pixmap(
       .pixels_mut()
       .par_chunks_mut(width as usize)
       .enumerate()
-      .try_for_each(|(row_idx, row)| with_deadline(deadline.as_ref(), || process_row(row_idx, row)))?;
+      .try_for_each(|(row_idx, row)| {
+        with_deadline(deadline.as_ref(), || process_row(row_idx, row))
+      })?;
   } else {
     for (row_idx, row) in output.pixels_mut().chunks_mut(width as usize).enumerate() {
       process_row(row_idx, row)?;
@@ -501,7 +503,13 @@ mod tests {
     });
 
     assert!(
-      matches!(result, Err(RenderError::Timeout { stage: RenderStage::Paint, .. })),
+      matches!(
+        result,
+        Err(RenderError::Timeout {
+          stage: RenderStage::Paint,
+          ..
+        })
+      ),
       "expected timeout"
     );
     assert!(

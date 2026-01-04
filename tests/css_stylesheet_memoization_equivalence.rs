@@ -70,4 +70,3 @@ p { color: red; }
     "different media contexts should produce different pruned stylesheets"
   );
 }
-

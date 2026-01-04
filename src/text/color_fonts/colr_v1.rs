@@ -1932,7 +1932,9 @@ mod tests {
   };
   use crate::style::color::Rgba;
   use crate::text::color_fonts::{ColorFontCaches, ColorFontRenderer};
-  use crate::text::font_db::{FontFaceMetricsOverrides, FontStretch, FontStyle, FontWeight, LoadedFont};
+  use crate::text::font_db::{
+    FontFaceMetricsOverrides, FontStretch, FontStyle, FontWeight, LoadedFont,
+  };
   use crate::text::font_instance::FontInstance;
   use std::path::PathBuf;
   use std::sync::{Arc, Mutex};

@@ -55,7 +55,10 @@ fn nested_preserve_3d_context_is_preserved_inside_flattened_subtree() {
 
   // Flat child forces the outer preserve-3d scene renderer to treat its subtree as a single
   // `FlattenedSubtree` item.
-  list.push(DisplayItem::PushStackingContext(context(root_bounds, TransformStyle::Flat)));
+  list.push(DisplayItem::PushStackingContext(context(
+    root_bounds,
+    TransformStyle::Flat,
+  )));
 
   // Nested preserve-3d context inside the flattened subtree. This should still render its
   // own children in 3D before being flattened into the outer plane.

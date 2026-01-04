@@ -1308,7 +1308,11 @@ impl TransitionTimingFunction {
           StepPosition::End => ((t * steps_f).floor() / steps_f).clamp(0.0, 1.0),
           StepPosition::JumpNone => {
             if steps <= 1 {
-              if t >= 1.0 { 1.0 } else { 0.0 }
+              if t >= 1.0 {
+                1.0
+              } else {
+                0.0
+              }
             } else {
               let denom = (steps - 1) as f32;
               let idx = (t * steps_f).floor().min((steps - 1) as f32);
@@ -1431,8 +1435,14 @@ mod tests {
     assert_approx(TransitionTimingFunction::EaseIn.value_at(0.5), 0.3153568);
     assert_approx(TransitionTimingFunction::EaseOut.value_at(0.5), 0.6846432);
 
-    assert_approx(TransitionTimingFunction::EaseInOut.value_at(0.25), 0.12916193);
-    assert_approx(TransitionTimingFunction::EaseInOut.value_at(0.75), 0.87083807);
+    assert_approx(
+      TransitionTimingFunction::EaseInOut.value_at(0.25),
+      0.12916193,
+    );
+    assert_approx(
+      TransitionTimingFunction::EaseInOut.value_at(0.75),
+      0.87083807,
+    );
 
     let custom = TransitionTimingFunction::CubicBezier(0.65, 0.0, 0.35, 1.0);
     assert_eq!(custom.value_at(0.0), 0.0);

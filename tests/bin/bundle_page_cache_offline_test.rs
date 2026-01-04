@@ -176,7 +176,10 @@ fn bundle_page_cache_captures_from_disk_cache_offline() {
     .args(["--out", output_png.to_string_lossy().as_ref()])
     .status()
     .expect("run bundle_page render");
-  assert!(status.success(), "bundle_page render should succeed offline");
+  assert!(
+    status.success(),
+    "bundle_page render should succeed offline"
+  );
   let png_bytes = std::fs::read(&output_png).expect("png output");
   assert!(
     png_bytes.starts_with(b"\x89PNG"),

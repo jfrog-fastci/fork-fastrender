@@ -53,9 +53,9 @@ use super::harness::TestMetadata;
 use super::harness::TestResult;
 use super::harness::TestStatus;
 use super::harness::TestType;
-use fastrender::ResourcePolicy;
 use fastrender::text::font_db::FontDatabase;
 use fastrender::text::font_loader::FontContext;
+use fastrender::ResourcePolicy;
 use html5ever::parse_document;
 use html5ever::tendril::TendrilSink;
 use image::codecs::png::PngEncoder;
@@ -76,7 +76,11 @@ use url::Url;
 
 fn build_offline_renderer() -> fastrender::Result<fastrender::FastRender> {
   fastrender::FastRender::builder()
-    .resource_policy(ResourcePolicy::default().allow_http(false).allow_https(false))
+    .resource_policy(
+      ResourcePolicy::default()
+        .allow_http(false)
+        .allow_https(false),
+    )
     .build()
 }
 

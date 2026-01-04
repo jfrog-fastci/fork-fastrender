@@ -578,7 +578,15 @@ fn convert_pdf_to_stacked_png(
     .append(true)
     .open(log_path)
     .with_context(|| format!("open log file {}", log_path.display()))?;
-  writeln!(log, "\n\n# pdf->png: {} -png -r {} {} {}", pdftoppm.display(), dpi, pdf_path.display(), prefix.display()).ok();
+  writeln!(
+    log,
+    "\n\n# pdf->png: {} -png -r {} {} {}",
+    pdftoppm.display(),
+    dpi,
+    pdf_path.display(),
+    prefix.display()
+  )
+  .ok();
   if !output.stdout.is_empty() {
     let _ = log.write_all(&output.stdout);
   }
@@ -656,13 +664,7 @@ fn run_chrome_print_to_pdf(
   log_path: &Path,
   timeout: Option<Duration>,
 ) -> Result<HeadlessMode> {
-  let mut args = build_chrome_print_args(
-    HeadlessMode::New,
-    profile_dir,
-    viewport,
-    dpr,
-    pdf_path,
-  )?;
+  let mut args = build_chrome_print_args(HeadlessMode::New, profile_dir, viewport, dpr, pdf_path)?;
 
   let mut last_status = run_chrome_with_timeout(chrome, &args, url, log_path, timeout, false)?;
   if last_status.success() && pdf_path.is_file() {
@@ -676,13 +678,7 @@ fn run_chrome_print_to_pdf(
       || log_lower.contains("unrecognized option")
       || log_lower.contains("unknown option"));
   if headless_new_unsupported {
-    args = build_chrome_print_args(
-      HeadlessMode::Legacy,
-      profile_dir,
-      viewport,
-      dpr,
-      pdf_path,
-    )?;
+    args = build_chrome_print_args(HeadlessMode::Legacy, profile_dir, viewport, dpr, pdf_path)?;
     if pdf_path.exists() {
       let _ = fs::remove_file(pdf_path);
     }
@@ -706,10 +702,7 @@ fn run_chrome_print_to_pdf(
     );
   }
 
-  bail!(
-    "chrome did not produce a PDF; see {}",
-    log_path.display()
-  );
+  bail!("chrome did not produce a PDF; see {}", log_path.display());
 }
 
 fn build_chrome_print_args(

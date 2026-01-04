@@ -2427,8 +2427,8 @@ fn required_coverage_chars_for_cluster<'a>(
   // but for keycap sequences the mark is required to render the emoji cluster as a single keycap
   // glyph. Keep marks required for these clusters so we prefer emoji fonts that support both the
   // base and the keycap mark (and avoid `.notdef` for the mark).
-  let is_keycap_sequence = matches!(first_char, '0'..='9' | '#' | '*')
-    && cluster_text.chars().any(|ch| ch == '\u{20e3}');
+  let is_keycap_sequence =
+    matches!(first_char, '0'..='9' | '#' | '*') && cluster_text.chars().any(|ch| ch == '\u{20e3}');
   if is_keycap_sequence {
     return coverage_chars_all;
   }
@@ -3296,7 +3296,12 @@ fn assign_fonts_internal(
             let mut face = hint.cached_face(db);
             let hint_font = hint.font;
             if coverage_chars_required.is_empty()
-              || font_supports_all_chars_fast(db, hint_font.as_ref(), &mut face, coverage_chars_required)
+              || font_supports_all_chars_fast(
+                db,
+                hint_font.as_ref(),
+                &mut face,
+                coverage_chars_required,
+              )
             {
               resolved = Some(hint_font);
             }
@@ -3338,8 +3343,12 @@ fn assign_fonts_internal(
               // full cluster resolver a second time.
               if let Some(font) = resolved.as_ref() {
                 let mut face = None;
-                if !font_supports_all_chars_fast(db, font.as_ref(), &mut face, coverage_chars_required)
-                {
+                if !font_supports_all_chars_fast(
+                  db,
+                  font.as_ref(),
+                  &mut face,
+                  coverage_chars_required,
+                ) {
                   // The cluster resolver can return a best-effort font that doesn't cover the base
                   // glyph when no single face covers the entire cluster (including marks). Ensure
                   // we still resolve the required (non-mark) codepoints.
@@ -3356,8 +3365,12 @@ fn assign_fonts_internal(
                 match cached {
                   Some(Some(font)) => {
                     let mut face = None;
-                    if font_supports_all_chars_fast(db, font.as_ref(), &mut face, coverage_chars_required)
-                    {
+                    if font_supports_all_chars_fast(
+                      db,
+                      font.as_ref(),
+                      &mut face,
+                      coverage_chars_required,
+                    ) {
                       resolved = Some(font);
                     }
                   }
@@ -3415,7 +3428,11 @@ fn assign_fonts_internal(
         if let Some(font) = resolved.as_ref() {
           let base_supported = font
             .id
-            .map(|id| font_context.database().has_glyph_cached(id.inner(), base_char))
+            .map(|id| {
+              font_context
+                .database()
+                .has_glyph_cached(id.inner(), base_char)
+            })
             .unwrap_or_else(|| font_supports_all_chars(font.as_ref(), &[base_char]));
           if !base_supported {
             record_last_resort_fallback(cluster_text);
@@ -3430,7 +3447,9 @@ fn assign_fonts_internal(
         }
       }
 
-      if let (Some(cache), Some(descriptor), Some(font)) = (font_cache, descriptor, resolved.as_ref()) {
+      if let (Some(cache), Some(descriptor), Some(font)) =
+        (font_cache, descriptor, resolved.as_ref())
+      {
         cache.insert_descriptor_hint(descriptor, Arc::clone(font));
       }
 
@@ -4820,7 +4839,12 @@ fn push_font_run(
 ) {
   let segment_text = &run.text[start..end];
   let variations = crate::text::face_cache::with_face(&font, |face| {
-    crate::text::variations::collect_variations_for_face(face, style, font_size, authored_variations)
+    crate::text::variations::collect_variations_for_face(
+      face,
+      style,
+      font_size,
+      authored_variations,
+    )
   })
   .unwrap_or_else(|| authored_variations.to_vec());
 
@@ -5053,7 +5077,10 @@ pub(crate) fn notdef_advance_for_font(font: &LoadedFont, font_size: f32) -> f32 
 }
 
 fn fallback_notdef_advance(run: &FontRun) -> f32 {
-  notdef_advance_for_font(&run.font, run.font_size * run.font.face_metrics_overrides.size_adjust)
+  notdef_advance_for_font(
+    &run.font,
+    run.font_size * run.font.face_metrics_overrides.size_adjust,
+  )
 }
 
 fn synthesize_notdef_run(run: &FontRun) -> ShapedRun {
@@ -6886,7 +6913,8 @@ mod tests {
 
   #[test]
   fn size_adjust_scales_shaping_advances() {
-    let data = Arc::new(include_bytes!("../../tests/fixtures/fonts/DejaVuSans-subset.ttf").to_vec());
+    let data =
+      Arc::new(include_bytes!("../../tests/fixtures/fonts/DejaVuSans-subset.ttf").to_vec());
     let base_font = Arc::new(LoadedFont {
       id: None,
       family: "DejaVu Sans".to_string(),
@@ -9341,13 +9369,8 @@ mod tests {
   fn keycap_sequences_keep_keycap_mark_required_for_coverage() {
     let mut required = ClusterCharBuf::new();
     let coverage = ['1', '\u{20e3}'];
-    let required_slice = required_coverage_chars_for_cluster(
-      "1\u{20e3}",
-      '1',
-      '1',
-      &coverage,
-      &mut required,
-    );
+    let required_slice =
+      required_coverage_chars_for_cluster("1\u{20e3}", '1', '1', &coverage, &mut required);
     assert_eq!(
       required_slice, &coverage,
       "keycap clusters should keep U+20E3 required for font coverage"

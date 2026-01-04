@@ -6,9 +6,10 @@ use fastrender::css::types::{Declaration, Keyframe, KeyframesRule, PropertyValue
 use fastrender::geometry::{Point, Rect, Size};
 use fastrender::scroll::ScrollState;
 use fastrender::style::types::{
-  AnimationDirection, AnimationFillMode, AnimationIterationCount, AnimationRange, AnimationTimeline,
-  Overflow, RangeOffset, ScrollFunctionTimeline, ScrollTimeline, ScrollTimelineScroller, StepPosition,
-  TimelineAxis, TransitionTimingFunction, ViewFunctionTimeline,
+  AnimationDirection, AnimationFillMode, AnimationIterationCount, AnimationRange,
+  AnimationTimeline, Overflow, RangeOffset, ScrollFunctionTimeline, ScrollTimeline,
+  ScrollTimelineScroller, StepPosition, TimelineAxis, TransitionTimingFunction,
+  ViewFunctionTimeline,
 };
 use fastrender::style::ComputedStyle;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
@@ -259,7 +260,8 @@ fn scroll_timeline_fill_mode_none_skips_before_range() {
     200.0,
   );
 
-  let scroll_state = ScrollState::from_parts(Point::ZERO, HashMap::from([(scroller_id, Point::ZERO)]));
+  let scroll_state =
+    ScrollState::from_parts(Point::ZERO, HashMap::from([(scroller_id, Point::ZERO)]));
   apply_scroll_driven_animations(&mut tree, &scroll_state);
 
   let opacity = tree.root.children[0].children[0]
@@ -306,7 +308,8 @@ fn scroll_timeline_fill_mode_both_clamps_before_range() {
     200.0,
   );
 
-  let scroll_state = ScrollState::from_parts(Point::ZERO, HashMap::from([(scroller_id, Point::ZERO)]));
+  let scroll_state =
+    ScrollState::from_parts(Point::ZERO, HashMap::from([(scroller_id, Point::ZERO)]));
   apply_scroll_driven_animations(&mut tree, &scroll_state);
 
   let opacity = tree.root.children[0].children[0]
@@ -327,7 +330,9 @@ fn build_scroll_self_tree(
 ) -> FragmentTree {
   let mut node = FragmentNode::new_with_style(
     Rect::from_xywh(0.0, 0.0, 50.0, 100.0),
-    FragmentContent::Block { box_id: Some(box_id) },
+    FragmentContent::Block {
+      box_id: Some(box_id),
+    },
     vec![],
     style,
   );
@@ -391,8 +396,10 @@ fn scroll_self_timeline_active_when_scrollable() {
 
   let mut tree = build_scroll_self_tree(style, 200.0, box_id);
 
-  let scroll_state =
-    ScrollState::from_parts(Point::ZERO, HashMap::from([(box_id, Point::new(0.0, 50.0))]));
+  let scroll_state = ScrollState::from_parts(
+    Point::ZERO,
+    HashMap::from([(box_id, Point::new(0.0, 50.0))]),
+  );
   apply_scroll_driven_animations(&mut tree, &scroll_state);
 
   let opacity = tree.root.children[0]
@@ -452,7 +459,9 @@ fn view_root_timeline_tracks_viewport_scroll_offset() {
 
   let mut node = FragmentNode::new_with_style(
     Rect::from_xywh(0.0, 150.0, 50.0, 50.0),
-    FragmentContent::Block { box_id: Some(box_id) },
+    FragmentContent::Block {
+      box_id: Some(box_id),
+    },
     vec![],
     style,
   );

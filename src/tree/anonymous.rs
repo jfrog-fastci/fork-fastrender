@@ -43,8 +43,8 @@
 use crate::error::{RenderStage, Result};
 use crate::render_control::active_deadline;
 use crate::style::display::Display;
-use crate::style::ComputedStyle;
 use crate::style::types::WhiteSpace;
+use crate::style::ComputedStyle;
 use crate::tree::box_tree::AnonymousBox;
 use crate::tree::box_tree::AnonymousType;
 use crate::tree::box_tree::BoxNode;
@@ -601,7 +601,10 @@ impl AnonymousBoxCreator {
       if inline_run.is_empty() {
         return;
       }
-      if inline_run.iter().all(Self::is_collapsible_whitespace_text_node) {
+      if inline_run
+        .iter()
+        .all(Self::is_collapsible_whitespace_text_node)
+      {
         inline_run.clear();
         return;
       }
@@ -635,7 +638,10 @@ impl AnonymousBoxCreator {
     match &node.box_type {
       BoxType::Text(text_box) => {
         text_box.text.trim().is_empty()
-          && matches!(node.style.white_space, WhiteSpace::Normal | WhiteSpace::Nowrap)
+          && matches!(
+            node.style.white_space,
+            WhiteSpace::Normal | WhiteSpace::Nowrap
+          )
       }
       _ => false,
     }

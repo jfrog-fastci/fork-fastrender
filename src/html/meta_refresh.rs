@@ -183,9 +183,7 @@ pub fn extract_js_location_redirect(html: &str) -> Option<String> {
           j -= 1;
         }
         let mut k = j;
-        while k > 0
-          && (bytes[k - 1].is_ascii_alphanumeric() || bytes[k - 1] == b'_')
-        {
+        while k > 0 && (bytes[k - 1].is_ascii_alphanumeric() || bytes[k - 1] == b'_') {
           k -= 1;
         }
         if let Some(word) = decoded.get(k..j) {
@@ -321,11 +319,7 @@ pub fn extract_js_location_redirect(html: &str) -> Option<String> {
   None
 }
 
-fn extract_js_string_literal(
-  decoded: &str,
-  start_idx: usize,
-  max_len: usize,
-) -> Option<String> {
+fn extract_js_string_literal(decoded: &str, start_idx: usize, max_len: usize) -> Option<String> {
   let bytes = decoded.as_bytes();
   let quote = *bytes.get(start_idx)?;
   if quote != b'"' && quote != b'\'' && quote != b'`' {
@@ -827,10 +821,7 @@ mod tests {
       <template><meta http-equiv="refresh" content="0; url=/bad"></template>
       <meta http-equiv="refresh" content="0; url=/good">
     "#;
-    assert_eq!(
-      extract_meta_refresh_url(html),
-      Some("/good".to_string())
-    );
+    assert_eq!(extract_meta_refresh_url(html), Some("/good".to_string()));
   }
 
   #[test]

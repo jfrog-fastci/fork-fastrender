@@ -19,7 +19,9 @@ fn svg_filter_background_image_uses_backdrop_pixels() {
   let html = fs::read_to_string(HTML_PATH).expect("read fixture");
   let mut renderer = FastRender::new().expect("renderer");
   let dom = renderer.parse_html(&html).expect("parse html");
-  let fragments = renderer.layout_document(&dom, 30, 30).expect("layout document");
+  let fragments = renderer
+    .layout_document(&dom, 30, 30)
+    .expect("layout document");
 
   let pixmap = paint_tree_with_resources_scaled_offset_backend(
     &fragments,
@@ -42,4 +44,3 @@ fn svg_filter_background_image_uses_backdrop_pixels() {
     "expected multiply(red, blue) == black when BackgroundImage is supported"
   );
 }
-

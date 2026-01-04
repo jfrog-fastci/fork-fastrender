@@ -2222,7 +2222,9 @@ fn create_backdrop_box(styled: &StyledNode) -> Option<BoxNode> {
     | Display::TableFooterGroup
     | Display::TableColumn
     | Display::TableColumnGroup
-    | Display::TableCaption => BoxNode::new_block(backdrop_style, FormattingContextType::Block, vec![]),
+    | Display::TableCaption => {
+      BoxNode::new_block(backdrop_style, FormattingContextType::Block, vec![])
+    }
     Display::None | Display::Contents => return None,
   };
 
@@ -3550,7 +3552,10 @@ mod tests {
       panic!("expected replaced box, got {:?}", child.box_type);
     };
     let ReplacedType::FormControl(control) = &replaced.replaced_type else {
-      panic!("expected form control replaced type, got {:?}", replaced.replaced_type);
+      panic!(
+        "expected form control replaced type, got {:?}",
+        replaced.replaced_type
+      );
     };
     assert!(matches!(control.appearance, Appearance::None));
     assert!(

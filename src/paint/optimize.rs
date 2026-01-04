@@ -668,7 +668,11 @@ impl DisplayListOptimizer {
         if item.shadows.iter().any(|shadow| shadow.color.a > 0.0) {
           return false;
         }
-        if item.emphasis.as_ref().is_some_and(|emphasis| emphasis.color.a > 0.0) {
+        if item
+          .emphasis
+          .as_ref()
+          .is_some_and(|emphasis| emphasis.color.a > 0.0)
+        {
           return false;
         }
         true

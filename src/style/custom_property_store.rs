@@ -165,8 +165,7 @@ pub(crate) fn contains_revert_layer_token(haystack: &str) -> bool {
         Token::Function(name) if name.eq_ignore_ascii_case("url") => {
           // `url(...)` arguments are URL tokens; the substring `revert-layer` inside them cannot
           // produce the CSS-wide keyword, so skip scanning inside.
-          let _ =
-            parser.parse_nested_block(|_| Ok::<_, cssparser::ParseError<'i, ()>>(false));
+          let _ = parser.parse_nested_block(|_| Ok::<_, cssparser::ParseError<'i, ()>>(false));
         }
         Token::Function(_)
         | Token::ParenthesisBlock

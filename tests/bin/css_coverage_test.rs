@@ -41,9 +41,7 @@ fn css_coverage_classifies_known_unknown_and_vendor_prefixed_properties() {
   );
 
   let report: Value = serde_json::from_slice(&output.stdout).expect("json parse");
-  let properties = report["properties"]
-    .as_array()
-    .expect("properties array");
+  let properties = report["properties"].as_array().expect("properties array");
 
   let lookup = |name: &str| -> Value {
     properties

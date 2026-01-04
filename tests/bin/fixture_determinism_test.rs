@@ -95,8 +95,7 @@ fn run_diff_snapshots(before: &Path, after: &Path, json: &Path, html: &Path) -> 
 
 fn clear_dir(path: &Path) -> Result<(), String> {
   if path.exists() {
-    fs::remove_dir_all(path)
-      .map_err(|e| format!("failed to remove {}: {e}", path.display()))?;
+    fs::remove_dir_all(path).map_err(|e| format!("failed to remove {}: {e}", path.display()))?;
   }
   fs::create_dir_all(path).map_err(|e| format!("failed to create {}: {e}", path.display()))
 }
@@ -192,7 +191,8 @@ fn fixture_renders_are_deterministic_across_processes() {
   let snapshot_run2_dir = snapshot_run2_out.join(fixture);
 
   let mut snapshot_capture_error = None::<String>;
-  if let Err(err) = run_render_fixtures(tmp.path(), &fixtures_dir, &snapshot_run1_out, fixture, true)
+  if let Err(err) =
+    run_render_fixtures(tmp.path(), &fixtures_dir, &snapshot_run1_out, fixture, true)
   {
     snapshot_capture_error = Some(format!("run1 snapshot capture failed: {err}"));
   } else if let Err(err) =
@@ -207,7 +207,10 @@ fn fixture_renders_are_deterministic_across_processes() {
     let run1_diag = snapshot_run1_dir.join("diagnostics.json");
     let run2_diag = snapshot_run2_dir.join("diagnostics.json");
 
-    if !run1_snapshot.is_file() || !run2_snapshot.is_file() || !run1_diag.is_file() || !run2_diag.is_file()
+    if !run1_snapshot.is_file()
+      || !run2_snapshot.is_file()
+      || !run1_diag.is_file()
+      || !run2_diag.is_file()
     {
       snapshot_capture_error = Some(format!(
         "snapshot outputs missing (expected {} + {} and {} + {})",

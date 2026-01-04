@@ -31,9 +31,7 @@ fn parse_timeout_secs_from_env() -> u64 {
       assert!(parsed > 0, "{ENV_TIMEOUT_SECS} must be > 0");
       parsed
     }
-    Err(env::VarError::NotPresent) => {
-      45
-    }
+    Err(env::VarError::NotPresent) => 45,
     Err(e) => panic!("failed to read {ENV_TIMEOUT_SECS}: {e}"),
   }
 }
@@ -174,10 +172,10 @@ fn compare_fixture_png(
 ) {
   let png1_path = run1_dir.join(format!("{stem}.png"));
   let png2_path = run2_dir.join(format!("{stem}.png"));
-  let png1 = fs::read(&png1_path)
-    .unwrap_or_else(|e| panic!("failed to read {}: {e}", png1_path.display()));
-  let png2 = fs::read(&png2_path)
-    .unwrap_or_else(|e| panic!("failed to read {}: {e}", png2_path.display()));
+  let png1 =
+    fs::read(&png1_path).unwrap_or_else(|e| panic!("failed to read {}: {e}", png1_path.display()));
+  let png2 =
+    fs::read(&png2_path).unwrap_or_else(|e| panic!("failed to read {}: {e}", png2_path.display()));
 
   let pix1 = load_png_from_bytes(&png1)
     .unwrap_or_else(|e| panic!("failed to decode {}: {e}", png1_path.display()));
@@ -221,18 +219,26 @@ fn compare_fixture_png(
   let snapshot_after_dir = snapshot_run2_out.join(stem);
   let mut snapshot_error = None::<String>;
 
-  if let Err(err) = run_render_fixture_with_snapshot(stem, &snapshot_run1_out, viewport, timeout_secs) {
+  if let Err(err) =
+    run_render_fixture_with_snapshot(stem, &snapshot_run1_out, viewport, timeout_secs)
+  {
     snapshot_error = Some(format!("run1 snapshot capture failed: {err}"));
   } else if let Err(err) =
     run_render_fixture_with_snapshot(stem, &snapshot_run2_out, viewport, timeout_secs)
   {
     snapshot_error = Some(format!("run2 snapshot capture failed: {err}"));
   } else {
-    for (label, dir) in [("run1", &snapshot_before_dir), ("run2", &snapshot_after_dir)] {
+    for (label, dir) in [
+      ("run1", &snapshot_before_dir),
+      ("run2", &snapshot_after_dir),
+    ] {
       for required in ["snapshot.json", "diagnostics.json"] {
         let path = dir.join(required);
         if !path.is_file() {
-          snapshot_error = Some(format!("missing {required} in {label} snapshot dir {}", dir.display()));
+          snapshot_error = Some(format!(
+            "missing {required} in {label} snapshot dir {}",
+            dir.display()
+          ));
           break;
         }
       }
@@ -248,7 +254,9 @@ fn compare_fixture_png(
       snapshot_error = Some(format!("failed to copy expected render.png: {err}"));
     } else if let Err(err) = fs::copy(&actual_out, snapshot_after_dir.join("render.png")) {
       snapshot_error = Some(format!("failed to copy actual render.png: {err}"));
-    } else if let Err(err) = run_diff_snapshots(&snapshot_before_dir, &snapshot_after_dir, &artifact_dir) {
+    } else if let Err(err) =
+      run_diff_snapshots(&snapshot_before_dir, &snapshot_after_dir, &artifact_dir)
+    {
       snapshot_error = Some(err);
     }
   }

@@ -103,4 +103,3 @@ fn running_anchor_in_grid_aligns_to_track_start() {
     "expected anchor x to align to start of column 2 (40px), got {x}"
   );
 }
-

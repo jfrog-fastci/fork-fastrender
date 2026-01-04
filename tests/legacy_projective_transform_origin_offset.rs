@@ -88,4 +88,3 @@ fn legacy_projective_transform_respects_stacking_context_origin_offset() {
     "expected projective content to start near x=10 (min_x={min_x})"
   );
 }
-
