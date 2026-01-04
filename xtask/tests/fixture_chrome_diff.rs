@@ -298,6 +298,57 @@ fn no_fastrender_fails_on_mismatched_fit_canvas_to_content_metadata() {
 }
 
 #[test]
+fn require_fastrender_metadata_errors_when_missing() {
+  let temp = tempdir().expect("tempdir");
+  let fixtures_root = temp.path().join("fixtures");
+  write_fixture(&fixtures_root, "a");
+
+  let out_dir = temp.path().join("out");
+  fs::create_dir_all(out_dir.join("chrome")).expect("create chrome out dir");
+  fs::create_dir_all(out_dir.join("fastrender")).expect("create fastrender out dir");
+
+  let target_dir = temp.path().join("target");
+  let diff_renders_bin = target_dir
+    .join("release")
+    .join(format!("diff_renders{}", std::env::consts::EXE_SUFFIX));
+  fs::create_dir_all(diff_renders_bin.parent().unwrap()).expect("create release dir");
+  fs::write(&diff_renders_bin, "stub").expect("write stub diff_renders");
+  make_executable(&diff_renders_bin);
+
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .env("CARGO_TARGET_DIR", &target_dir)
+    .args([
+      "fixture-chrome-diff",
+      "--no-build",
+      "--no-chrome",
+      "--no-fastrender",
+      "--require-fastrender-metadata",
+      "--fixtures-dir",
+      fixtures_root.to_string_lossy().as_ref(),
+      "--fixtures",
+      "a",
+      "--out-dir",
+      out_dir.to_string_lossy().as_ref(),
+    ])
+    .output()
+    .expect("run fixture-chrome-diff requiring metadata");
+
+  assert!(
+    !output.status.success(),
+    "expected fixture-chrome-diff to fail when required metadata is missing.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  assert!(
+    stderr.contains("FastRender metadata is missing"),
+    "expected stderr to mention missing metadata; got:\n{stderr}"
+  );
+}
+
+#[test]
 #[cfg(unix)]
 fn no_chrome_fails_fast_on_stale_baselines_unless_allowed() {
   use sha2::{Digest, Sha256};
