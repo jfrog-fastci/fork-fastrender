@@ -4970,6 +4970,32 @@ fn apply_property_from_source(
     "view-timeline" => styles.view_timelines = source.view_timelines.clone(),
     "animation-timeline" => styles.animation_timelines = source.animation_timelines.clone(),
     "animation-range" => styles.animation_ranges = source.animation_ranges.clone(),
+    "animation-range-start" => {
+      let start_offsets: Vec<RangeOffset> = if source.animation_ranges.is_empty() {
+        vec![RangeOffset::Progress(0.0)]
+      } else {
+        source
+          .animation_ranges
+          .iter()
+          .map(|range| range.start.clone())
+          .collect()
+      };
+      let existing = std::mem::take(&mut styles.animation_ranges);
+      styles.animation_ranges = animation_ranges_with_updated_start(&existing, &start_offsets);
+    }
+    "animation-range-end" => {
+      let end_offsets: Vec<RangeOffset> = if source.animation_ranges.is_empty() {
+        vec![RangeOffset::Progress(1.0)]
+      } else {
+        source
+          .animation_ranges
+          .iter()
+          .map(|range| range.end.clone())
+          .collect()
+      };
+      let existing = std::mem::take(&mut styles.animation_ranges);
+      styles.animation_ranges = animation_ranges_with_updated_end(&existing, &end_offsets);
+    }
     "animation-name" => styles.animation_names = source.animation_names.clone(),
     "animation-duration" => styles.animation_durations = source.animation_durations.clone(),
     "animation-delay" => styles.animation_delays = source.animation_delays.clone(),
@@ -16859,6 +16885,57 @@ mod tests {
     assert_eq!(
       styles.animation_iteration_counts,
       vec![AnimationIterationCount::Infinite].into()
+    );
+  }
+
+  #[test]
+  fn animation_range_longhands_support_global_keywords() {
+    let parent_decls = parse_declarations("animation-range-start: entry 50px;");
+    let parent_base = ComputedStyle::default();
+    let mut parent_styles = ComputedStyle::default();
+    apply_declaration_with_base(
+      &mut parent_styles,
+      &parent_decls[0],
+      &parent_base,
+      default_computed_style(),
+      None,
+      16.0,
+      16.0,
+      DEFAULT_VIEWPORT,
+    );
+
+    let mut styles = ComputedStyle::default();
+    let base_parent = ComputedStyle::default();
+    let end_decls = parse_declarations("animation-range-end: entry 150px;");
+    apply_declaration_with_base(
+      &mut styles,
+      &end_decls[0],
+      &base_parent,
+      default_computed_style(),
+      None,
+      16.0,
+      16.0,
+      DEFAULT_VIEWPORT,
+    );
+
+    let inherit_decls = parse_declarations("animation-range-start: inherit;");
+    apply_declaration_with_base(
+      &mut styles,
+      &inherit_decls[0],
+      &parent_styles,
+      default_computed_style(),
+      None,
+      16.0,
+      16.0,
+      DEFAULT_VIEWPORT,
+    );
+
+    assert_eq!(
+      styles.animation_ranges,
+      vec![AnimationRange {
+        start: RangeOffset::View(ViewTimelinePhase::Entry, Length::px(50.0)),
+        end: RangeOffset::View(ViewTimelinePhase::Entry, Length::px(150.0)),
+      }]
     );
   }
 
