@@ -12982,27 +12982,29 @@ mod tests {
         calls: Arc::clone(&calls),
       });
 
-      let url = "http://example.com/font.woff2";
-      let req_a =
-        FetchRequest::new(url, FetchDestination::Font).with_referrer("http://a.test/page");
-      let req_b =
-        FetchRequest::new(url, FetchDestination::Font).with_referrer("http://b.test/page");
+      for (destination, url) in [
+        (FetchDestination::Font, "http://example.com/font.woff2"),
+        (FetchDestination::ImageCors, "http://example.com/image.png"),
+      ] {
+        let req_a = FetchRequest::new(url, destination).with_referrer("http://a.test/page");
+        let req_b = FetchRequest::new(url, destination).with_referrer("http://b.test/page");
 
-      let first_a = cache.fetch_with_request(req_a).expect("fetch A");
-      assert_eq!(first_a.bytes, b"http://a.test");
-      let first_b = cache.fetch_with_request(req_b).expect("fetch B");
-      assert_eq!(first_b.bytes, b"http://b.test");
+        let first_a = cache.fetch_with_request(req_a).expect("fetch A");
+        assert_eq!(first_a.bytes, b"http://a.test");
+        let first_b = cache.fetch_with_request(req_b).expect("fetch B");
+        assert_eq!(first_b.bytes, b"http://b.test");
 
-      // Ensure fetching `B` doesn't overwrite `A` and vice versa.
-      let second_a = cache.fetch_with_request(req_a).expect("cache A");
-      assert_eq!(second_a.bytes, b"http://a.test");
-      let second_b = cache.fetch_with_request(req_b).expect("cache B");
-      assert_eq!(second_b.bytes, b"http://b.test");
+        // Ensure fetching `B` doesn't overwrite `A` and vice versa.
+        let second_a = cache.fetch_with_request(req_a).expect("cache A");
+        assert_eq!(second_a.bytes, b"http://a.test");
+        let second_b = cache.fetch_with_request(req_b).expect("cache B");
+        assert_eq!(second_b.bytes, b"http://b.test");
+      }
 
       assert_eq!(
         calls.load(Ordering::SeqCst),
-        2,
-        "expected differing font referrer origins to produce distinct cache entries when CORS enforcement is enabled"
+        4,
+        "expected differing referrer origins to produce distinct cache entries for CORS-mode requests when CORS enforcement is enabled"
       );
     });
   }
@@ -13039,23 +13041,25 @@ mod tests {
         calls: Arc::clone(&calls),
       });
 
-      let url = "http://example.com/font.woff2";
-      let req_a =
-        FetchRequest::new(url, FetchDestination::Font).with_referrer("http://a.test/page");
-      let req_b =
-        FetchRequest::new(url, FetchDestination::Font).with_referrer("http://b.test/page");
+      for (destination, url) in [
+        (FetchDestination::Font, "http://example.com/font.woff2"),
+        (FetchDestination::ImageCors, "http://example.com/image.png"),
+      ] {
+        let req_a = FetchRequest::new(url, destination).with_referrer("http://a.test/page");
+        let req_b = FetchRequest::new(url, destination).with_referrer("http://b.test/page");
 
-      let first_a = cache.fetch_with_request(req_a).expect("fetch A");
-      assert_eq!(first_a.bytes, b"http://a.test");
-      // Without enforcement, we keep legacy cache key behavior (no origin partitioning), so `B`
-      // reuses the cached entry from `A`.
-      let first_b = cache.fetch_with_request(req_b).expect("fetch B");
-      assert_eq!(first_b.bytes, b"http://a.test");
+        let first_a = cache.fetch_with_request(req_a).expect("fetch A");
+        assert_eq!(first_a.bytes, b"http://a.test");
+        // Without enforcement, we keep legacy cache key behavior (no origin partitioning), so `B`
+        // reuses the cached entry from `A`.
+        let first_b = cache.fetch_with_request(req_b).expect("fetch B");
+        assert_eq!(first_b.bytes, b"http://a.test");
+      }
 
       assert_eq!(
         calls.load(Ordering::SeqCst),
-        1,
-        "expected referrer origin to be ignored for font cache keys when CORS enforcement is disabled"
+        2,
+        "expected referrer origin to be ignored for CORS-mode cache keys when CORS enforcement is disabled"
       );
     });
   }
