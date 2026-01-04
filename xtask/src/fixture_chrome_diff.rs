@@ -174,8 +174,8 @@ pub struct FixtureChromeDiffArgs {
   /// When reusing an existing `<out>/fastrender` directory (`--no-fastrender`), require per-fixture
   /// FastRender metadata files (`<stem>.json`) to be present.
   ///
-  /// Without this flag, missing metadata produces a warning and the command continues (to remain
-  /// backwards compatible with older output directories).
+  /// Without this flag, missing (or incomplete) metadata produces a warning and the command
+  /// continues (to remain backwards compatible with older output directories).
   #[arg(long)]
   pub require_fastrender_metadata: bool,
 
@@ -918,7 +918,7 @@ fn validate_fastrender_output_metadata(
     eprintln!(
       "warning: FastRender metadata is missing or incomplete for {} fixture(s) ({}{}). \
        Continuing without full validation; rerun without --no-fastrender to regenerate, \
-       or pass --require-fastrender-metadata to fail on missing metadata.",
+       or pass --require-fastrender-metadata to fail on missing/incomplete metadata.",
       missing_metadata.len(),
       sample,
       suffix
