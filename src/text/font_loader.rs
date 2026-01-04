@@ -3387,6 +3387,11 @@ mod tests {
       fetch_font_bytes("DATA:font/woff2;base64,aGk").expect("fetch data url font bytes");
     assert_eq!(bytes, b"hi");
     assert_eq!(content_type.as_deref(), Some("font/woff2"));
+
+    let (bytes, content_type) =
+      fetch_font_bytes("DATA:font/woff2;base64,a Gk\n").expect("fetch data url font bytes");
+    assert_eq!(bytes, b"hi");
+    assert_eq!(content_type.as_deref(), Some("font/woff2"));
   }
 
   #[test]

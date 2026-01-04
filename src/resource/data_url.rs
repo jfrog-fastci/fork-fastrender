@@ -353,6 +353,35 @@ mod tests {
   }
 
   #[test]
+  fn data_url_prefix_decodes_unpadded_base64() {
+    let res = decode_data_url_prefix("data:text/plain;base64,aGk", 16).expect("decode prefix");
+    assert_eq!(res.bytes, b"hi");
+    assert_eq!(res.content_type.as_deref(), Some("text/plain"));
+  }
+
+  #[test]
+  fn data_url_prefix_decodes_unpadded_base64_with_whitespace() {
+    let res = decode_data_url_prefix("data:text/plain;base64,a Gk\n", 16).expect("decode prefix");
+    assert_eq!(res.bytes, b"hi");
+    assert_eq!(res.content_type.as_deref(), Some("text/plain"));
+  }
+
+  #[test]
+  fn decodes_url_safe_base64_without_padding() {
+    // 0xff encodes to `/w==` in standard base64, and `_w==` in URL-safe base64.
+    let res =
+      decode_data_url("data:application/octet-stream;base64,_w").expect("decode url-safe data url");
+    assert_eq!(res.bytes, [0xff]);
+  }
+
+  #[test]
+  fn data_url_prefix_decodes_url_safe_base64_without_padding() {
+    let res = decode_data_url_prefix("data:application/octet-stream;base64,_w", 8)
+      .expect("decode prefix");
+    assert_eq!(res.bytes, [0xff]);
+  }
+
+  #[test]
   fn data_url_prefix_decodes_base64_prefix() {
     let bytes: Vec<u8> = (0..128u8).collect();
     let url = encode_base64_data_url("application/octet-stream", &bytes);
