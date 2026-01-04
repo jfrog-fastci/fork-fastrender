@@ -1324,8 +1324,13 @@ mod tests {
   #[test]
   #[ignore]
   fn disk_cache_index_multiprocess_child_writer() {
-    let cache_dir =
-      PathBuf::from(std::env::var_os("FASTR_DISK_CACHE_INDEX_CACHE_DIR").expect("cache dir env"));
+    // This is a helper test invoked by `multiprocess_journal_appends_remain_parseable` by spawning
+    // the current test binary with `--ignored`. When run directly (e.g. `cargo test -- --ignored`)
+    // it should be a no-op.
+    let Some(cache_dir) = std::env::var_os("FASTR_DISK_CACHE_INDEX_CACHE_DIR") else {
+      return;
+    };
+    let cache_dir = PathBuf::from(cache_dir);
     let id = std::env::var("FASTR_DISK_CACHE_INDEX_CHILD_ID")
       .expect("child id env")
       .parse::<usize>()
