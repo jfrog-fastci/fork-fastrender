@@ -2,8 +2,8 @@
 
 mod bidi;
 mod bidi_visual_order;
-mod bundled_emoji_render;
 mod bundled_emoji_last_resort;
+mod bundled_emoji_render;
 mod bundled_multiscript_render;
 mod bundled_script_coverage;
 mod cluster_test;
@@ -26,4 +26,5 @@ mod shaper_test;
 mod svg_color_font_test;
 mod svg_glyph_safety_test;
 mod variable_font_metrics_mvar;
+mod web_font_cors;
 mod web_font_display;

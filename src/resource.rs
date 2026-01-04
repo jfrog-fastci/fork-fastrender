@@ -1858,10 +1858,6 @@ pub struct FetchedResource {
   pub etag: Option<String>,
   /// HTTP Last-Modified header when present
   pub last_modified: Option<String>,
-  /// The final URL after redirects, when available
-  pub final_url: Option<String>,
-  /// Parsed HTTP caching policy when fetched over HTTP(S).
-  pub cache_policy: Option<HttpCachePolicy>,
   /// Access-Control-Allow-Origin response header value when fetched over HTTP(S).
   ///
   /// Stored for downstream CORS enforcement (e.g. web fonts, `<img crossorigin>`).
@@ -1870,6 +1866,10 @@ pub struct FetchedResource {
   pub timing_allow_origin: Option<String>,
   /// Whether `Access-Control-Allow-Credentials: true` was present on the response.
   pub access_control_allow_credentials: bool,
+  /// The final URL after redirects, when available
+  pub final_url: Option<String>,
+  /// Parsed HTTP caching policy when fetched over HTTP(S).
+  pub cache_policy: Option<HttpCachePolicy>,
 }
 
 /// Parsed metadata stored alongside cached HTML documents.
@@ -1890,11 +1890,11 @@ impl FetchedResource {
       status: None,
       etag: None,
       last_modified: None,
-      final_url: None,
-      cache_policy: None,
       access_control_allow_origin: None,
       timing_allow_origin: None,
       access_control_allow_credentials: false,
+      final_url: None,
+      cache_policy: None,
     }
   }
 
@@ -1911,11 +1911,11 @@ impl FetchedResource {
       status: None,
       etag: None,
       last_modified: None,
-      final_url,
-      cache_policy: None,
       access_control_allow_origin: None,
       timing_allow_origin: None,
       access_control_allow_credentials: false,
+      final_url,
+      cache_policy: None,
     }
   }
 
@@ -2103,6 +2103,99 @@ pub fn ensure_http_success(resource: &FetchedResource, requested_url: &str) -> R
     requested_url,
     format!("HTTP status {code}"),
   ))
+}
+
+/// Enforce Chromium-like CORS checks based on the `Access-Control-Allow-Origin` response header.
+///
+/// This helper is intentionally small and reusable: callers supply the initiating document origin,
+/// the fetched resource (including any final URL after redirects), and the originally requested URL.
+///
+/// Behavior summary:
+/// - If the request origin is missing/unparseable: allow (skip enforcement).
+/// - If the response is same-origin: allow.
+/// - If the response is cross-origin:
+///   - allow `Access-Control-Allow-Origin: *`
+///   - allow an `Access-Control-Allow-Origin` origin that matches the request origin
+///   - otherwise reject with the caller-provided error mapping.
+///
+/// Note: CORS enforcement only applies to HTTP(S) origins; non-HTTP schemes (e.g. `data:`) are
+/// always allowed because there is no response header surface to validate.
+pub fn ensure_cors_allows_origin_with<E>(
+  request_origin: Option<&DocumentOrigin>,
+  resource: &FetchedResource,
+  requested_url: &str,
+  map_error: impl FnOnce(String) -> E,
+) -> std::result::Result<(), E> {
+  let Some(request_origin) = request_origin else {
+    return Ok(());
+  };
+  if !request_origin.is_http_like() {
+    return Ok(());
+  }
+
+  let response_url = resource.final_url.as_deref().unwrap_or(requested_url);
+  let parsed_response_url = match Url::parse(response_url) {
+    Ok(parsed) => parsed,
+    Err(_) => return Ok(()),
+  };
+  let response_origin = DocumentOrigin::from_parsed_url(&parsed_response_url);
+  if !response_origin.is_http_like() {
+    return Ok(());
+  }
+
+  if request_origin.same_origin(&response_origin) {
+    return Ok(());
+  }
+
+  let header_value = resource
+    .access_control_allow_origin
+    .as_deref()
+    .unwrap_or_default();
+  let header_value = header_value
+    .split(',')
+    .map(|v| v.trim())
+    .find(|v| !v.is_empty())
+    .unwrap_or_default();
+
+  if header_value == "*" {
+    return Ok(());
+  }
+
+  let parsed_allowed_origin = match Url::parse(header_value) {
+    Ok(parsed) => parsed,
+    Err(_) => {
+      let message = if header_value.is_empty() {
+        "blocked by CORS: missing Access-Control-Allow-Origin header".to_string()
+      } else {
+        format!(
+          "blocked by CORS: invalid Access-Control-Allow-Origin header value {header_value:?}"
+        )
+      };
+      return Err(map_error(message));
+    }
+  };
+  let allowed_origin = DocumentOrigin::from_parsed_url(&parsed_allowed_origin);
+  if request_origin.same_origin(&allowed_origin) {
+    return Ok(());
+  }
+
+  Err(map_error(format!(
+    "blocked by CORS: Access-Control-Allow-Origin {header_value:?} does not match request origin {request_origin}"
+  )))
+}
+
+/// Enforce Chromium-like CORS checks for cross-origin resources.
+///
+/// This is a convenience wrapper around [`ensure_cors_allows_origin_with`] that returns an
+/// [`Error::Resource`] on failure.
+pub fn ensure_cors_allows_origin(
+  request_origin: Option<&DocumentOrigin>,
+  resource: &FetchedResource,
+  requested_url: &str,
+) -> Result<()> {
+  ensure_cors_allows_origin_with(request_origin, resource, requested_url, |message| {
+    response_resource_error(resource, requested_url, message)
+  })
 }
 
 /// Best-effort MIME sanity check for fetched images.
@@ -10470,7 +10563,10 @@ mod tests {
 
   #[test]
   fn normalize_page_name_does_not_panic_on_non_utf8_boundary_prefixes() {
-    assert_eq!(normalize_page_name("€€€foobar").as_deref(), Some("___foobar"));
+    assert_eq!(
+      normalize_page_name("€€€foobar").as_deref(),
+      Some("___foobar")
+    );
   }
 
   #[test]
@@ -13418,7 +13514,10 @@ mod tests {
       "fallback should return cached status/metadata, not the HTTP error response"
     );
     assert_eq!(
-      second.cache_policy.as_ref().and_then(|policy| policy.max_age),
+      second
+        .cache_policy
+        .as_ref()
+        .and_then(|policy| policy.max_age),
       Some(3600),
       "fallback should return cached status/metadata, not the HTTP error response"
     );
@@ -13433,7 +13532,10 @@ mod tests {
     let cached = cache
       .cached_entry(&CacheKey::new(FetchContextKind::Other, url.to_string()))
       .expect("cache entry should remain after fallback");
-    let cached_res = cached.value.as_result().expect("cache entry should be a resource");
+    let cached_res = cached
+      .value
+      .as_result()
+      .expect("cache entry should be a resource");
     assert_eq!(
       cached_res.bytes, b"cached",
       "cache entry must not be overwritten by HTTP error response"
@@ -13981,7 +14083,10 @@ mod tests {
       "fallback should return cached status/metadata, not the HTTP error response"
     );
     assert_eq!(
-      second.cache_policy.as_ref().and_then(|policy| policy.max_age),
+      second
+        .cache_policy
+        .as_ref()
+        .and_then(|policy| policy.max_age),
       Some(3600),
       "fallback should return cached status/metadata, not the HTTP error response"
     );
@@ -13999,7 +14104,10 @@ mod tests {
         url.to_string(),
       ))
       .expect("cache entry should remain after fallback");
-    let cached_res = cached.value.as_result().expect("cache entry should be a resource");
+    let cached_res = cached
+      .value
+      .as_result()
+      .expect("cache entry should be a resource");
     assert_eq!(
       cached_res.bytes, b"cached",
       "cache entry must not be overwritten by HTTP error response"

@@ -37,9 +37,9 @@ use crate::error::RenderStage;
 use crate::error::Result;
 use crate::render_control;
 use crate::resource::{
-  cors_enforcement_enabled, ensure_font_mime_sane, ensure_http_success, validate_cors_allow_origin,
-  CorsMode, FetchDestination, FetchRequest, FetchedResource, HttpFetcher, HttpRetryPolicy,
-  ResourceFetcher,
+  cors_enforcement_enabled, ensure_font_mime_sane, ensure_http_success, origin_from_url,
+  validate_cors_allow_origin, CorsMode, FetchDestination, FetchRequest, FetchedResource, HttpFetcher,
+  HttpRetryPolicy, ResourceFetcher,
 };
 use crate::text::face_cache;
 use crate::text::font_db::FontCacheConfig;
@@ -1593,18 +1593,21 @@ impl FontContext {
       return Err(err);
     }
     if cors_enforcement_enabled() {
-      if let Some(ctx) = &self.resource_context {
-        if let Some(origin) = ctx.policy.document_origin.as_ref() {
-          if let Err(message) =
-            validate_cors_allow_origin(&resource, resolved_url, origin, CorsMode::Anonymous)
-          {
-            let blocked = Error::Font(FontError::LoadFailed {
-              family: family.to_string(),
-              reason: message,
-            });
-            self.record_font_error(resolved_url, &blocked);
-            return Err(blocked);
-          }
+      let request_origin = self
+        .resource_context
+        .as_ref()
+        .and_then(|ctx| ctx.document_url.as_deref())
+        .and_then(origin_from_url);
+      if let Some(origin) = request_origin.as_ref() {
+        if let Err(message) =
+          validate_cors_allow_origin(&resource, resolved_url, origin, CorsMode::Anonymous)
+        {
+          let blocked = Error::Font(FontError::LoadFailed {
+            family: family.to_string(),
+            reason: message,
+          });
+          self.record_font_error(resolved_url, &blocked);
+          return Err(blocked);
         }
       }
     }
@@ -2304,7 +2307,11 @@ impl FontContext {
     side: MathKernSide,
   ) -> f32 {
     let effective_font_size = font_size * font.face_metrics_overrides.size_adjust;
-    let Some(scale) = font.metrics().ok().map(|m| m.scale(effective_font_size).scale) else {
+    let Some(scale) = font
+      .metrics()
+      .ok()
+      .map(|m| m.scale(effective_font_size).scale)
+    else {
       return 0.0;
     };
     let Some(table) = self.math_table(font) else {
@@ -2808,7 +2815,10 @@ fn inferred_format_support_rank_from_url(url: &str) -> Option<usize> {
   // it (some endpoints omit extensions).
   if has_prefix_ignore_ascii_case(url, "data:") {
     let after_prefix = url.get("data:".len()..).unwrap_or("");
-    let meta = after_prefix.split_once(',').map(|(m, _)| m).unwrap_or(after_prefix);
+    let meta = after_prefix
+      .split_once(',')
+      .map(|(m, _)| m)
+      .unwrap_or(after_prefix);
     let mime = meta.split(';').next().unwrap_or("").trim();
     if !mime.is_empty() {
       let mime = mime.to_ascii_lowercase();
@@ -2818,7 +2828,9 @@ fn inferred_format_support_rank_from_url(url: &str) -> Option<usize> {
       if mime.contains("woff") {
         return Some(1);
       }
-      if mime.contains("opentype") || mime.contains("otf") || mime.contains("truetype")
+      if mime.contains("opentype")
+        || mime.contains("otf")
+        || mime.contains("truetype")
         || mime.contains("ttf")
         || mime.contains("collection")
         || mime.contains("ttc")
@@ -3325,7 +3337,8 @@ mod tests {
 
   #[test]
   fn scaled_metrics_apply_font_face_metric_overrides_after_size_adjust() {
-    let data = Arc::new(include_bytes!("../../tests/fixtures/fonts/DejaVuSans-subset.ttf").to_vec());
+    let data =
+      Arc::new(include_bytes!("../../tests/fixtures/fonts/DejaVuSans-subset.ttf").to_vec());
     let font = LoadedFont {
       id: None,
       data: Arc::clone(&data),
@@ -3944,7 +3957,9 @@ mod tests {
 
   #[test]
   fn ordered_sources_skips_eot_without_format_hints() {
-    let sources = vec![FontFaceSource::url("https://example.com/font.eot?#iefix".to_string())];
+    let sources = vec![FontFaceSource::url(
+      "https://example.com/font.eot?#iefix".to_string(),
+    )];
     assert!(ordered_sources(&sources).is_empty());
   }
 

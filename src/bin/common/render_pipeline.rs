@@ -540,7 +540,9 @@ pub fn follow_client_redirects_with_deadline(
     return follow_client_redirects(fetcher, doc, log);
   };
   let deadline = RenderDeadline::new(Some(timeout), None);
-  with_deadline(Some(&deadline), || follow_client_redirects(fetcher, doc, log))
+  with_deadline(Some(&deadline), || {
+    follow_client_redirects(fetcher, doc, log)
+  })
 }
 
 /// Follow client-side redirects for a fetched HTML resource, returning the final resource.
