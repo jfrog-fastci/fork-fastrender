@@ -15785,6 +15785,23 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
   }
 
   #[test]
+  fn backdrop_is_computed_without_content_property() {
+    let dom = crate::dom::parse_html(r#"<dialog id="d" open data-fastr-modal="true"></dialog>"#)
+      .expect("parse html");
+    let stylesheet = parse_stylesheet(
+      r#"
+        dialog::backdrop { background-color: rgb(1, 2, 3); }
+      "#,
+    )
+    .expect("parse stylesheet");
+    let styled = apply_styles(&dom, &stylesheet);
+
+    let dialog = find_styled_node_by_id(&styled, "d").expect("dialog node present");
+    let backdrop = dialog.styles.backdrop.as_ref().expect("computed ::backdrop");
+    assert_eq!(backdrop.background_color, Rgba::rgb(1, 2, 3));
+  }
+
+  #[test]
   fn single_colon_before_behaves_like_pseudo_element() {
     let dom = element_with_style("");
     let stylesheet =

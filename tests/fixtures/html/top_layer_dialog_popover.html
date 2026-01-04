@@ -2,60 +2,88 @@
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>Top layer - dialog backdrop + popover open/closed</title>
+    <title>Top layer - dialog + popover ordering + ::backdrop</title>
     <style>
-        html, body {
-            margin: 0;
-            width: 100%;
-            height: 100%;
-        }
         body {
-            background: #00ff00; /* bright green */
+            margin: 0;
             font-family: sans-serif;
         }
 
-        dialog {
-            width: 320px;
-            height: 220px;
-            top: 290px;
-            left: 140px;
-            right: auto;
-            bottom: auto;
-            margin: 0;
-            border: 6px solid #000;
-            border-radius: 12px;
-            padding: 20px;
+        /* Bright background pattern so modal ::backdrop dimming is obvious. */
+        .bg {
+            position: fixed;
+            inset: 0;
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            grid-template-rows: repeat(4, 1fr);
+        }
+        .cell { display: flex; align-items: center; justify-content: center; font-size: 42px; color: rgba(0, 0, 0, 0.35); }
+        .c1 { background: rgb(255, 64, 64); }
+        .c2 { background: rgb(64, 255, 64); }
+        .c3 { background: rgb(64, 64, 255); }
+        .c4 { background: rgb(255, 255, 64); }
+        .c5 { background: rgb(255, 64, 255); }
+        .c6 { background: rgb(64, 255, 255); }
+
+        /* Popovers are top-layer elements; open/closed states are controlled by [open]. */
+        [popover] {
+            width: 220px;
+            height: 120px;
+            border-radius: 14px;
+            border: 4px solid rgba(0, 0, 0, 0.25);
             box-sizing: border-box;
         }
-        dialog h1 {
-            margin: 0 0 10px 0;
-            font-size: 28px;
+        #popover-a { top: 40px; left: 40px; background: rgb(0, 0, 255); }
+        #popover-b { top: 70px; left: 70px; background: rgb(255, 255, 0); }
+
+        /* Modal dialog (top layer + backdrop). */
+        dialog {
+            width: 340px;
+            height: 220px;
+            border-radius: 22px;
+            border-width: 6px;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 36px;
         }
 
-        /* Position popovers explicitly so they're visible and distinct from the dialog. */
-        #popover-open {
-            top: 40px;
-            left: 40px;
-            background: #ffff00;
-            border: 4px solid #ff0000;
-            font-size: 22px;
-        }
-        #popover-closed {
-            top: 40px;
-            right: 40px;
-            background: #ff00ff;
-            border: 4px solid #0000ff;
-            font-size: 22px;
+        /*
+         * This popover is after the dialog in DOM order so it should paint above the dialog and
+         * (importantly) above the dialog's ::backdrop.
+         */
+        #popover-top {
+            top: 430px;
+            left: 360px;
+            background: rgb(255, 0, 255);
         }
     </style>
 </head>
 <body>
-    <dialog data-fastr-open="modal" data-fastr-modal="true">
-        <h1>Modal dialog</h1>
-        <p>The background should be darkened by <code>::backdrop</code>.</p>
-    </dialog>
+    <div class="bg">
+        <div class="cell c1">A</div>
+        <div class="cell c2">B</div>
+        <div class="cell c3">C</div>
+        <div class="cell c4">D</div>
+        <div class="cell c5">E</div>
+        <div class="cell c6">F</div>
+        <div class="cell c2">G</div>
+        <div class="cell c3">H</div>
+        <div class="cell c4">I</div>
+        <div class="cell c5">J</div>
+        <div class="cell c6">K</div>
+        <div class="cell c1">L</div>
+    </div>
 
-    <div id="popover-open" popover data-fastr-open="true">Open popover</div>
-    <div id="popover-closed" popover>Hidden popover</div>
+    <div id="popover-a" popover open>Popover A</div>
+    <div id="popover-b" popover open>Popover B</div>
+
+    <dialog open data-fastr-modal="true">Modal</dialog>
+
+    <div id="popover-top" popover open>Top</div>
+
+    <!-- Closed popover: should not paint. -->
+    <div popover>Closed</div>
 </body>
 </html>

@@ -247,6 +247,7 @@ fn test_all_fixture_files_exist() {
     "shadow_dom",
     "shadow_dom_selectors",
     "svg_foreign_object",
+    "top_layer_dialog_popover",
   ];
 
   for name in &expected_fixtures {
@@ -453,6 +454,15 @@ fn test_fixture_positioned_absolute() {
 #[test]
 fn test_fixture_transform_layer() {
   test_fixture("transform_layer").expect("transform_layer fixture should render");
+}
+
+//
+// Top layer tests
+//
+
+#[test]
+fn test_fixture_top_layer_dialog_popover() {
+  test_fixture("top_layer_dialog_popover").expect("top_layer_dialog_popover fixture should render");
 }
 
 //
@@ -685,6 +695,8 @@ pub fn list_fixtures() -> Vec<&'static str> {
     "positioned_absolute",
     // Transforms
     "transform_layer",
+    // Top layer
+    "top_layer_dialog_popover",
     // Masks
     "mask_composite",
     // Forms
@@ -820,6 +832,11 @@ pub fn fixture_descriptions() -> Vec<(&'static str, &'static str, &'static str)>
       "transform_layer",
       "Transforms",
       "Nested transforms and compositing layers",
+    ),
+    (
+      "top_layer_dialog_popover",
+      "Top layer",
+      "Modal dialog backdrop + popover stacking order",
     ),
     (
       "mask_composite",
