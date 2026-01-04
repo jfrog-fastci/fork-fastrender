@@ -2185,10 +2185,7 @@ impl DisplayListBuilder {
       hard_clip: child_visibility.hard_clip,
     };
 
-    let local_child_visibility = Visibility {
-      rect: Self::visible_in_local_space(child_visibility.rect, transform.as_ref()),
-      hard_clip: child_visibility.hard_clip,
-    };
+    let local_child_visibility = child_visibility;
 
     let has_effects = is_isolated
       || transform.is_some()

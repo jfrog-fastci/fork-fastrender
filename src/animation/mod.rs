@@ -1935,99 +1935,41 @@ pub fn sample_keyframes(
   viewport: Size,
   element_size: Size,
 ) -> HashMap<String, AnimatedValue> {
-  let mut frames = rule.keyframes.clone();
-  if frames.is_empty() {
+  if rule.keyframes.is_empty() {
     return HashMap::new();
   }
+  let mut frames: Vec<&Keyframe> = rule.keyframes.iter().collect();
   frames.sort_by(|a, b| {
     a.offset
       .partial_cmp(&b.offset)
       .unwrap_or(std::cmp::Ordering::Equal)
   });
-  // Browsers treat missing 0%/100% keyframes as implicit endpoints that use the
-  // underlying style. We model this by adding synthetic keyframes with empty
-  // declarations so `from_style`/`to_style` fall back to `base_style`.
-  const ENDPOINT_EPS: f32 = 1e-6;
-  let has_start = frames
-    .first()
-    .is_some_and(|frame| (frame.offset - 0.0).abs() <= ENDPOINT_EPS);
-  if !has_start {
-    frames.insert(
-      0,
-      Keyframe {
-        offset: 0.0,
-        declarations: Vec::new(),
-      },
-    );
-  }
-  let has_end = frames
-    .last()
-    .is_some_and(|frame| (frame.offset - 1.0).abs() <= ENDPOINT_EPS);
-  if !has_end {
-    frames.push(Keyframe {
-      offset: 1.0,
-      declarations: Vec::new(),
-    });
-  }
   let progress = clamp_progress(progress);
-
-  let mut prev: &Keyframe = &frames[0];
-  let mut next: &Keyframe = &frames[frames.len() - 1];
-  for frame in &frames {
-    if frame.offset <= progress + f32::EPSILON {
-      prev = frame;
-    }
-    if frame.offset + f32::EPSILON >= progress {
-      next = frame;
-      break;
-    }
-  }
-
-  let start = prev.offset;
-  let end = next.offset;
-  let local_t = if end - start > f32::EPSILON {
-    (progress - start) / (end - start)
-  } else {
-    0.0
-  };
-
   let defaults = ComputedStyle::default();
-  let mut from_style = base_style.clone();
-  let mut to_style = base_style.clone();
-  for decl in &prev.declarations {
-    apply_declaration_with_base(
-      &mut from_style,
-      decl,
-      base_style,
-      &defaults,
-      None,
-      base_style.font_size,
-      base_style.root_font_size,
-      viewport,
-    );
-  }
-  for decl in &next.declarations {
-    apply_declaration_with_base(
-      &mut to_style,
-      decl,
-      base_style,
-      &defaults,
-      None,
-      base_style.font_size,
-      base_style.root_font_size,
-      viewport,
-    );
+  let mut resolved_styles = Vec::with_capacity(frames.len());
+  for frame in &frames {
+    let mut style = base_style.clone();
+    for decl in &frame.declarations {
+      apply_declaration_with_base(
+        &mut style,
+        decl,
+        base_style,
+        &defaults,
+        None,
+        base_style.font_size,
+        base_style.root_font_size,
+        viewport,
+      );
+    }
+    resolved_styles.push(style);
   }
 
   let ctx = AnimationResolveContext::new(viewport, element_size);
-  // Property names are normalized to lowercase during CSS parsing (custom properties keep
-  // their case), so we can dedupe by borrowing the property strings directly without allocating.
   let mut properties: FxHashSet<&str> = FxHashSet::default();
-  for decl in &prev.declarations {
-    properties.insert(decl.property.as_str());
-  }
-  for decl in &next.declarations {
-    properties.insert(decl.property.as_str());
+  for frame in &frames {
+    for decl in &frame.declarations {
+      properties.insert(decl.property.as_str());
+    }
   }
 
   let mut result = HashMap::new();
@@ -2035,10 +1977,64 @@ pub fn sample_keyframes(
     let Some(interpolator) = interpolator_for(prop) else {
       continue;
     };
-    let Some(from_val) = (interpolator.extract)(&from_style, &ctx) else {
+
+    let frame_has_property =
+      |frame: &&Keyframe| frame.declarations.iter().any(|d| d.property.as_str() == prop);
+
+    let mut prev_idx = None;
+    for (idx, frame) in frames.iter().enumerate() {
+      if frame.offset <= progress + f32::EPSILON {
+        if frame_has_property(frame) {
+          prev_idx = Some(idx);
+        }
+      } else {
+        break;
+      }
+    }
+
+    let mut next_idx = None;
+    let mut next_offset: Option<f32> = None;
+    for (idx, frame) in frames.iter().enumerate() {
+      if !frame_has_property(frame) {
+        continue;
+      }
+      if frame.offset + f32::EPSILON < progress {
+        continue;
+      }
+      match next_offset {
+        None => {
+          next_offset = Some(frame.offset);
+          next_idx = Some(idx);
+        }
+        Some(offset) => {
+          if (frame.offset - offset).abs() <= f32::EPSILON {
+            next_idx = Some(idx);
+          } else {
+            break;
+          }
+        }
+      }
+    }
+
+    let start = prev_idx.map(|idx| frames[idx].offset).unwrap_or(0.0);
+    let end = next_idx.map(|idx| frames[idx].offset).unwrap_or(1.0);
+    let local_t = if end - start > f32::EPSILON {
+      clamp_progress((progress - start) / (end - start))
+    } else {
+      0.0
+    };
+
+    let from_style = prev_idx
+      .map(|idx| &resolved_styles[idx])
+      .unwrap_or(base_style);
+    let to_style = next_idx
+      .map(|idx| &resolved_styles[idx])
+      .unwrap_or(base_style);
+
+    let Some(from_val) = (interpolator.extract)(from_style, &ctx) else {
       continue;
     };
-    let Some(to_val) = (interpolator.extract)(&to_style, &ctx) else {
+    let Some(to_val) = (interpolator.extract)(to_style, &ctx) else {
       continue;
     };
     let value = (interpolator.interpolate)(&from_val, &to_val, local_t).or_else(|| {
@@ -3148,6 +3144,20 @@ mod tests {
     }
   }
 
+  fn sampled_transform_translate_x(rule: &KeyframesRule, progress: f32) -> f32 {
+    let values = sample_keyframes(
+      rule,
+      progress,
+      &ComputedStyle::default(),
+      Size::new(800.0, 600.0),
+      Size::new(100.0, 100.0),
+    );
+    match values.get("transform") {
+      Some(AnimatedValue::Transform(list)) => compose_transform_list(list).m[12],
+      other => panic!("expected transform, got {other:?}"),
+    }
+  }
+
   #[test]
   fn time_based_animation_fill_forwards_applies_after_end() {
     let rule = fade_rule();
@@ -3321,6 +3331,24 @@ mod tests {
 
     let after_mid = sampled_opacity_with_base_opacity(rule, 0.75, 1.0);
     assert!((after_mid - 0.5).abs() < 1e-6, "after_mid={after_mid}");
+  }
+
+  #[test]
+  fn sample_keyframes_mixed_offsets_sample_per_property() {
+    let sheet = parse_stylesheet(
+      "@keyframes mix { 0% { opacity: 0; } 50% { transform: translateX(100px); } 100% { opacity: 1; } }",
+    )
+    .unwrap();
+    let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+    let rule = &keyframes[0];
+
+    assert!((sampled_opacity(rule, 0.5) - 0.5).abs() < 1e-6);
+
+    assert!((sampled_opacity(rule, 0.25) - 0.25).abs() < 1e-6);
+    assert!((sampled_transform_translate_x(rule, 0.25) - 50.0).abs() < 1e-6);
+
+    assert!((sampled_opacity(rule, 0.75) - 0.75).abs() < 1e-6);
+    assert!((sampled_transform_translate_x(rule, 0.75) - 50.0).abs() < 1e-6);
   }
 
   fn decode_png(bytes: &[u8]) -> image::RgbaImage {
