@@ -1154,13 +1154,13 @@ fn write_html_report(
       .baseline
       .as_ref()
       .and_then(|s| s.metrics)
-      .map(|m| format!("{:.4}%", m.diff_percentage))
+      .map(format_diff_percentage_cell)
       .unwrap_or_else(|| "-".to_string());
     let new_diff = entry
       .new
       .as_ref()
       .and_then(|s| s.metrics)
-      .map(|m| format!("{:.4}%", m.diff_percentage))
+      .map(format_diff_percentage_cell)
       .unwrap_or_else(|| "-".to_string());
 
     let baseline_perceptual = entry
@@ -1321,6 +1321,19 @@ fn format_report_image_cell(
   let target_path = resolve_report_path(report_dir, report_relative_path);
   let rel = path_for_report(delta_html_dir, &target_path);
   format_linked_image(label, &rel)
+}
+
+fn format_diff_percentage_cell(metrics: MetricsSummary) -> String {
+  if metrics.total_pixels > 0 {
+    let title = format!("{}/{} pixels differ", metrics.pixel_diff, metrics.total_pixels);
+    format!(
+      r#"<span title="{title}">{percent:.4}%</span>"#,
+      title = escape_html(&title),
+      percent = metrics.diff_percentage
+    )
+  } else {
+    format!("{:.4}%", metrics.diff_percentage)
+  }
 }
 
 fn resolve_report_path(report_dir: &Path, report_relative_path: &str) -> PathBuf {
