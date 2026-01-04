@@ -2686,16 +2686,19 @@ mod tests {
     );
   }
 
-  fn spawn_cors_origin_echo_font_server(
+  fn spawn_cors_origin_echo_server(
     context: &str,
     expected_requests: usize,
+    path: &str,
+    content_type: &str,
   ) -> Option<(String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>)> {
     let listener = try_bind_localhost(context)?;
     let addr = listener.local_addr().unwrap();
     listener.set_nonblocking(true).unwrap();
     let captured = Arc::new(Mutex::new(Vec::<String>::new()));
     let captured_for_thread = Arc::clone(&captured);
-    let url = format!("http://{}/font.woff2", addr);
+    let url = format!("http://{}/{}", addr, path.trim_start_matches('/'));
+    let content_type = content_type.to_string();
     let handle = thread::spawn(move || {
       let start = Instant::now();
       let mut last_activity = Instant::now();
@@ -2724,8 +2727,9 @@ mod tests {
             last_activity = Instant::now();
             let body = origin.as_bytes();
             let response = format!(
-              "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: font/woff2\r\nAccess-Control-Allow-Origin: {}\r\nVary: Origin\r\nConnection: close\r\n\r\n",
+              "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: {}\r\nAccess-Control-Allow-Origin: {}\r\nVary: Origin\r\nConnection: close\r\n\r\n",
               body.len(),
+              content_type,
               origin
             );
             let _ = stream.write_all(response.as_bytes());
@@ -2751,6 +2755,20 @@ mod tests {
     });
 
     Some((url, captured, handle))
+  }
+
+  fn spawn_cors_origin_echo_font_server(
+    context: &str,
+    expected_requests: usize,
+  ) -> Option<(String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>)> {
+    spawn_cors_origin_echo_server(context, expected_requests, "font.woff2", "font/woff2")
+  }
+
+  fn spawn_cors_origin_echo_image_cors_server(
+    context: &str,
+    expected_requests: usize,
+  ) -> Option<(String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>)> {
+    spawn_cors_origin_echo_server(context, expected_requests, "image.png", "image/png")
   }
 
   #[test]
@@ -2812,6 +2830,84 @@ mod tests {
         FetchRequest::new(&url, FetchDestination::Font).with_referrer("http://a.test/page");
       let req_b =
         FetchRequest::new(&url, FetchDestination::Font).with_referrer("http://b.test/page");
+
+      let disk = DiskCachingFetcher::new(HttpFetcher::new(), tmp.path());
+      let first_a = disk.fetch_with_request(req_a).expect("fetch A");
+      assert_eq!(first_a.bytes, b"http://a.test");
+      let first_b = disk.fetch_with_request(req_b).expect("fetch B");
+      assert_eq!(first_b.bytes, b"http://a.test");
+
+      drop(disk);
+
+      let disk_again = DiskCachingFetcher::new(HttpFetcher::new(), tmp.path());
+      let second_b = disk_again.fetch_with_request(req_b).expect("disk B");
+      assert_eq!(second_b.bytes, b"http://a.test");
+    });
+
+    server.join().unwrap();
+    let captured = captured.lock().unwrap().clone();
+    assert_eq!(captured, ["http://a.test"]);
+  }
+
+  #[test]
+  fn disk_cache_partitions_cors_image_cors_entries_by_origin_when_enforced() {
+    let Some((url, captured, server)) = spawn_cors_origin_echo_image_cors_server(
+      "disk_cache_partitions_cors_image_cors_entries_by_origin_when_enforced",
+      2,
+    ) else {
+      return;
+    };
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "1".to_string(),
+    )])));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let tmp = tempfile::tempdir().unwrap();
+      let req_a =
+        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer("http://a.test/page");
+      let req_b =
+        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer("http://b.test/page");
+
+      let disk = DiskCachingFetcher::new(HttpFetcher::new(), tmp.path());
+      let first_a = disk.fetch_with_request(req_a).expect("fetch A");
+      assert_eq!(first_a.bytes, b"http://a.test");
+      let first_b = disk.fetch_with_request(req_b).expect("fetch B");
+      assert_eq!(first_b.bytes, b"http://b.test");
+
+      drop(disk);
+
+      let disk_again = DiskCachingFetcher::new(HttpFetcher::new(), tmp.path());
+      let second_a = disk_again.fetch_with_request(req_a).expect("disk A");
+      assert_eq!(second_a.bytes, b"http://a.test");
+      let second_b = disk_again.fetch_with_request(req_b).expect("disk B");
+      assert_eq!(second_b.bytes, b"http://b.test");
+    });
+
+    server.join().unwrap();
+    let captured = captured.lock().unwrap().clone();
+    assert_eq!(captured, ["http://a.test", "http://b.test"]);
+  }
+
+  #[test]
+  fn disk_cache_does_not_partition_cors_image_cors_entries_without_enforcement() {
+    let Some((url, captured, server)) = spawn_cors_origin_echo_image_cors_server(
+      "disk_cache_does_not_partition_cors_image_cors_entries_without_enforcement",
+      1,
+    ) else {
+      return;
+    };
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "0".to_string(),
+    )])));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let tmp = tempfile::tempdir().unwrap();
+      let req_a =
+        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer("http://a.test/page");
+      let req_b =
+        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer("http://b.test/page");
 
       let disk = DiskCachingFetcher::new(HttpFetcher::new(), tmp.path());
       let first_a = disk.fetch_with_request(req_a).expect("fetch A");
@@ -5418,8 +5514,7 @@ mod tests {
           .fetch_with_request(FetchRequest::new(url, FetchDestination::Image))
           .expect("refresh fetch");
         assert_eq!(
-          second.bytes,
-          b"\x89PNG\r\n\x1a\n",
+          second.bytes, b"\x89PNG\r\n\x1a\n",
           "expected cached bytes to be served instead of HTML markup"
         );
         assert_eq!(calls.load(Ordering::SeqCst), 2);
