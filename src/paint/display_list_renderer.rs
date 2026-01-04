@@ -5742,10 +5742,6 @@ impl DisplayListRenderer {
             Some("preserve-3d stacking contexts require serial painting".to_string());
           return Ok(true);
         }
-        if !sc.backdrop_filters.is_empty() {
-          *fallback_reason = Some("backdrop-filter requires serial painting".to_string());
-          return Ok(true);
-        }
         if !matches!(sc.mix_blend_mode, BlendMode::Normal) && !sc.is_isolated {
           *fallback_reason =
             Some("mix-blend-mode on non-isolated context requires serial painting".to_string());
