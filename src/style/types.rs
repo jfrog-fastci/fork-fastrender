@@ -1332,18 +1332,113 @@ impl TransitionTimingFunction {
 }
 
 fn cubic_bezier_value(x1: f32, y1: f32, x2: f32, y2: f32, t: f32) -> f32 {
-  // Use the parametric y(t) directly; this matches common easing curves even though the
-  // official definition solves x(t) = progress. For authored curves within [0,1] this
-  // approximation keeps evaluations simple and stable for static sampling.
-  let omt = 1.0 - t;
-  let omt2 = omt * omt;
-  let t2 = t * t;
-  let y = omt2 * omt * 0.0 + 3.0 * omt2 * t * y1 + 3.0 * omt * t2 * y2 + t2 * t * 1.0;
-  let x = omt2 * omt * 0.0 + 3.0 * omt2 * t * x1 + 3.0 * omt * t2 * x2 + t2 * t * 1.0;
-  if x.abs() > f32::EPSILON {
-    y
-  } else {
-    t
+  // CSS cubic-bezier() is defined as y(x), not y(t). We must first solve x(t) = progress,
+  // then evaluate y(t). This matches browser behavior and is required for animation/transition
+  // sampling at intermediate times.
+  //
+  // We use Newton–Raphson iteration (fast convergence for typical curves) and fall back to
+  // bisection on [0, 1] (guaranteed for monotonic x, which CSS enforces via x1/x2 ∈ [0, 1]).
+  if t <= 0.0 {
+    return 0.0;
+  }
+  if t >= 1.0 {
+    return 1.0;
+  }
+
+  // Use f64 internally to reduce precision loss during the root finding iterations.
+  let progress = t as f64;
+  let x1 = x1 as f64;
+  let y1 = y1 as f64;
+  let x2 = x2 as f64;
+  let y2 = y2 as f64;
+
+  // Cubic Bézier coefficients for P0=0, P1=p1, P2=p2, P3=1:
+  // B(t) = ((a * t + b) * t + c) * t
+  // with:
+  //   a = 1 - 3*p2 + 3*p1
+  //   b = 3*p2 - 6*p1
+  //   c = 3*p1
+  let ax = 1.0 - 3.0 * x2 + 3.0 * x1;
+  let bx = 3.0 * x2 - 6.0 * x1;
+  let cx = 3.0 * x1;
+  let ay = 1.0 - 3.0 * y2 + 3.0 * y1;
+  let by = 3.0 * y2 - 6.0 * y1;
+  let cy = 3.0 * y1;
+
+  let sample_x = |t: f64| ((ax * t + bx) * t + cx) * t;
+  let sample_y = |t: f64| ((ay * t + by) * t + cy) * t;
+  let sample_dx = |t: f64| (3.0 * ax * t + 2.0 * bx) * t + cx;
+
+  // 1) Newton–Raphson solve
+  let mut curve_t = progress;
+  for _ in 0..8 {
+    let x = sample_x(curve_t) - progress;
+    if x.abs() < 1e-7 {
+      return sample_y(curve_t) as f32;
+    }
+    let dx = sample_dx(curve_t);
+    // If the slope is too small, Newton steps become unstable.
+    if dx.abs() < 1e-7 {
+      break;
+    }
+    let next_t = curve_t - x / dx;
+    if !(0.0..=1.0).contains(&next_t) {
+      break;
+    }
+    curve_t = next_t;
+  }
+
+  // 2) Bisection fallback (monotonic x)
+  let mut lo = 0.0f64;
+  let mut hi = 1.0f64;
+  curve_t = progress;
+  for _ in 0..30 {
+    let x = sample_x(curve_t);
+    let diff = x - progress;
+    if diff.abs() < 1e-7 {
+      break;
+    }
+    if diff < 0.0 {
+      lo = curve_t;
+    } else {
+      hi = curve_t;
+    }
+    curve_t = (lo + hi) * 0.5;
+  }
+
+  sample_y(curve_t) as f32
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn assert_approx(actual: f32, expected: f32) {
+    let epsilon = 1e-4;
+    assert!(
+      (actual - expected).abs() <= epsilon,
+      "expected {expected}, got {actual}"
+    );
+  }
+
+  #[test]
+  fn cubic_bezier_timing_function_matches_known_values() {
+    // Edge cases: all cubic-bezier timing functions should map 0 -> 0 and 1 -> 1.
+    assert_eq!(TransitionTimingFunction::Ease.value_at(0.0), 0.0);
+    assert_eq!(TransitionTimingFunction::Ease.value_at(1.0), 1.0);
+
+    assert_approx(TransitionTimingFunction::Ease.value_at(0.5), 0.8024034);
+    assert_approx(TransitionTimingFunction::EaseIn.value_at(0.5), 0.3153568);
+    assert_approx(TransitionTimingFunction::EaseOut.value_at(0.5), 0.6846432);
+
+    assert_approx(TransitionTimingFunction::EaseInOut.value_at(0.25), 0.12916193);
+    assert_approx(TransitionTimingFunction::EaseInOut.value_at(0.75), 0.87083807);
+
+    let custom = TransitionTimingFunction::CubicBezier(0.65, 0.0, 0.35, 1.0);
+    assert_eq!(custom.value_at(0.0), 0.0);
+    assert_eq!(custom.value_at(1.0), 1.0);
+    assert_approx(custom.value_at(0.25), 0.07079670);
+    assert_approx(custom.value_at(0.75), 0.92920330);
   }
 }
 
