@@ -1307,6 +1307,8 @@ mod tests {
     style.top = Some(Length::px(0.0));
     style.width = Some(Length::px(50.0));
     style.height = Some(Length::px(50.0));
+    style.width_keyword = None;
+    style.height_keyword = None;
     style.margin_left = Some(Length::percent(20.0));
     style.margin_right = Some(Length::percent(0.0));
     style.margin_top = Some(Length::percent(10.0));

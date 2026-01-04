@@ -1633,6 +1633,7 @@ mod tests {
 
     let mut override_style = ComputedStyle::default();
     override_style.width = Some(Length::px(100.0));
+    override_style.width_keyword = None;
     crate::layout::style_override::with_style_override(node.id, Arc::new(override_style), || {
       intrinsic_cache_store(&node, IntrinsicSizingMode::MinContent, 20.0);
       assert_eq!(
@@ -1649,6 +1650,7 @@ mod tests {
     // A fresh override instance with identical sizing inputs should reuse the cached value.
     let mut override_style = ComputedStyle::default();
     override_style.width = Some(Length::px(100.0));
+    override_style.width_keyword = None;
     crate::layout::style_override::with_style_override(node.id, Arc::new(override_style), || {
       assert_eq!(
         intrinsic_cache_lookup(&node, IntrinsicSizingMode::MinContent),
@@ -1659,6 +1661,7 @@ mod tests {
     // Different override styles should not collide.
     let mut override_style = ComputedStyle::default();
     override_style.width = Some(Length::px(200.0));
+    override_style.width_keyword = None;
     crate::layout::style_override::with_style_override(node.id, Arc::new(override_style), || {
       assert_eq!(
         intrinsic_cache_lookup(&node, IntrinsicSizingMode::MinContent),
@@ -1883,6 +1886,7 @@ mod tests {
 
     let mut override_style = (*node.style).clone();
     override_style.width = Some(Length::px(123.0));
+    override_style.width_keyword = None;
     let override_style = Arc::new(override_style);
     crate::layout::style_override::with_style_override(node.id, override_style.clone(), || {
       layout_cache_store(
@@ -1910,6 +1914,7 @@ mod tests {
     // entry by fingerprint.
     let mut override_style_again = (*node.style).clone();
     override_style_again.width = Some(Length::px(123.0));
+    override_style_again.width_keyword = None;
     let override_hit_again = crate::layout::style_override::with_style_override(
       node.id,
       Arc::new(override_style_again),
@@ -1921,6 +1926,7 @@ mod tests {
     // Different overrides must not collide with the previously stored entry.
     let mut different_override = (*node.style).clone();
     different_override.width = Some(Length::px(456.0));
+    different_override.width_keyword = None;
     let miss = crate::layout::style_override::with_style_override(
       node.id,
       Arc::new(different_override),

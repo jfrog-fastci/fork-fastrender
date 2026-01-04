@@ -147,6 +147,7 @@ pub fn get_default_styles_for_element(node: &DomNode) -> ComputedStyle {
       "img" | "video" | "audio" | "canvas" | "svg" | "iframe" => {
         // Responsive default: limit replaced elements to their containing block
         styles.max_width = Some(Length::percent(100.0));
+        styles.max_width_keyword = None;
       }
       "math" => {
         // Prefer math fonts when available and honor display="block" attribute

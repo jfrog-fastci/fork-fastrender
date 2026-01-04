@@ -603,6 +603,7 @@ mod tests {
   fn test_width_specified_with_auto_margins_centers() {
     let mut style = default_style();
     style.width = Some(Length::px(400.0));
+    style.width_keyword = None;
 
     let result = compute_auto(&style, 800.0, true, true);
 
@@ -616,6 +617,7 @@ mod tests {
   fn test_width_specified_left_margin_auto() {
     let mut style = default_style();
     style.width = Some(Length::px(400.0));
+    style.width_keyword = None;
     style.margin_right = Some(Length::px(100.0));
 
     let result = compute_auto(&style, 800.0, true, false);
@@ -631,6 +633,7 @@ mod tests {
   fn test_width_specified_right_margin_auto() {
     let mut style = default_style();
     style.width = Some(Length::px(400.0));
+    style.width_keyword = None;
     style.margin_left = Some(Length::px(100.0));
 
     let result = compute_auto(&style, 800.0, false, true);
@@ -646,6 +649,7 @@ mod tests {
   fn test_width_over_constrained() {
     let mut style = default_style();
     style.width = Some(Length::px(400.0));
+    style.width_keyword = None;
     style.margin_left = Some(Length::px(100.0));
     style.margin_right = Some(Length::px(100.0));
 
@@ -664,6 +668,7 @@ mod tests {
     let mut style = default_style();
     style.direction = Direction::Rtl;
     style.width = Some(Length::px(400.0));
+    style.width_keyword = None;
     style.margin_left = Some(Length::px(150.0));
     style.margin_right = Some(Length::px(50.0));
 
@@ -681,6 +686,7 @@ mod tests {
     let mut style = default_style();
     style.direction = Direction::Ltr;
     style.width = Some(Length::px(400.0));
+    style.width_keyword = None;
     style.margin_left = Some(Length::px(150.0));
     style.margin_right = Some(Length::px(50.0));
 
@@ -756,6 +762,7 @@ mod tests {
     let mut style = default_style();
     style.box_sizing = BoxSizing::BorderBox;
     style.width = Some(Length::px(200.0));
+    style.width_keyword = None;
     style.padding_left = Length::px(10.0);
     style.padding_right = Length::px(10.0);
     style.border_left_width = Length::px(5.0);
@@ -771,6 +778,7 @@ mod tests {
   fn test_width_percentage() {
     let mut style = default_style();
     style.width = Some(Length::percent(50.0));
+    style.width_keyword = None;
 
     let result = compute(&style, 800.0);
 
@@ -783,6 +791,7 @@ mod tests {
   fn test_width_cannot_be_negative() {
     let mut style = default_style();
     style.width = Some(Length::px(100.0));
+    style.width_keyword = None;
     style.padding_left = Length::px(500.0);
     style.padding_right = Length::px(500.0);
 

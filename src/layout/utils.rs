@@ -800,6 +800,8 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.width = None;
     style.height = None;
+    style.width_keyword = None;
+    style.height_keyword = None;
 
     let replaced = ReplacedBox {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
@@ -868,6 +870,7 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.aspect_ratio = crate::style::types::AspectRatio::Ratio(2.0);
     style.height = Some(Length::px(75.0));
+    style.height_keyword = None;
 
     let replaced = ReplacedBox {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
@@ -934,6 +937,8 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.width = Some(Length::px(200.0));
     style.height = None;
+    style.width_keyword = None;
+    style.height_keyword = None;
 
     let replaced = ReplacedBox {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
@@ -958,6 +963,8 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.min_width = Some(Length::px(250.0));
     style.height = Some(Length::px(50.0));
+    style.min_width_keyword = None;
+    style.height_keyword = None;
     let replaced = ReplacedBox {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
@@ -981,6 +988,7 @@ mod tests {
   fn replaced_max_width_scales_height_with_ratio() {
     let mut style = ComputedStyle::default();
     style.max_width = Some(Length::px(1200.0));
+    style.max_width_keyword = None;
     let replaced = ReplacedBox {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
@@ -1008,6 +1016,7 @@ mod tests {
   fn replaced_max_height_scales_width_with_ratio() {
     let mut style = ComputedStyle::default();
     style.max_height = Some(Length::px(40.0));
+    style.max_height_keyword = None;
     let replaced = ReplacedBox {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
@@ -1031,6 +1040,8 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.width = Some(Length::percent(50.0));
     style.height = Some(Length::percent(25.0));
+    style.width_keyword = None;
+    style.height_keyword = None;
     let replaced = ReplacedBox {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
@@ -1059,6 +1070,8 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.width = Some(Length::percent(50.0));
     style.height = None;
+    style.width_keyword = None;
+    style.height_keyword = None;
 
     let replaced = ReplacedBox {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
@@ -1083,6 +1096,7 @@ mod tests {
   fn compute_replaced_ignores_min_height_percentage_without_base() {
     let mut style = ComputedStyle::default();
     style.min_height = Some(Length::percent(50.0));
+    style.min_height_keyword = None;
 
     let replaced = ReplacedBox {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
@@ -1108,6 +1122,7 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.box_sizing = BoxSizing::BorderBox;
     style.width = Some(Length::px(360.0));
+    style.width_keyword = None;
     style.padding_left = Length::px(10.0);
     style.padding_right = Length::px(10.0);
     style.border_left_width = Length::px(5.0);
@@ -1137,6 +1152,7 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.box_sizing = BoxSizing::BorderBox;
     style.height = Some(Length::px(100.0));
+    style.height_keyword = None;
     style.padding_top = Length::percent(10.0);
 
     let replaced = ReplacedBox {
@@ -1169,6 +1185,7 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.box_sizing = BoxSizing::BorderBox;
     style.width = Some(Length::px(200.0));
+    style.width_keyword = None;
     style.padding_left = Length::percent(10.0);
     style.padding_right = Length::percent(10.0);
     style.padding_top = Length::percent(10.0);
@@ -1206,6 +1223,8 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.max_height = Some(Length::percent(50.0));
     style.width = Some(Length::px(360.0));
+    style.max_height_keyword = None;
+    style.width_keyword = None;
     style.aspect_ratio = crate::style::types::AspectRatio::Ratio(1.5);
 
     let replaced = ReplacedBox {
@@ -1270,6 +1289,7 @@ mod tests {
   fn compute_replaced_min_height_percentage_expands_with_ratio() {
     let mut style = ComputedStyle::default();
     style.min_height = Some(Length::percent(50.0));
+    style.min_height_keyword = None;
     style.aspect_ratio = crate::style::types::AspectRatio::Ratio(2.0);
 
     let replaced = ReplacedBox {
@@ -1301,6 +1321,7 @@ mod tests {
   fn compute_replaced_height_percentage_derives_width_from_ratio() {
     let mut style = ComputedStyle::default();
     style.height = Some(Length::percent(60.0));
+    style.height_keyword = None;
     style.aspect_ratio = crate::style::types::AspectRatio::Ratio(1.25);
 
     let replaced = ReplacedBox {
@@ -1332,6 +1353,7 @@ mod tests {
   fn compute_replaced_percentage_width_ignored_without_base_even_with_ratio() {
     let mut style = ComputedStyle::default();
     style.width = Some(Length::percent(50.0));
+    style.width_keyword = None;
     style.aspect_ratio = crate::style::types::AspectRatio::Ratio(2.0);
 
     let replaced = ReplacedBox {

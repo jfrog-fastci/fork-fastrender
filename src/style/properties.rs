@@ -3241,19 +3241,19 @@ fn set_axis_dimension(
     crate::style::LogicalAxis::Block => block_axis_is_horizontal(styles.writing_mode),
   };
   if is_horizontal {
-    set_length_with_order(
-      &mut styles.width,
-      &mut styles.logical.width_order,
-      value,
-      order,
-    );
+    if order < styles.logical.width_order {
+      return;
+    }
+    styles.width = value;
+    styles.width_keyword = None;
+    styles.logical.width_order = order;
   } else {
-    set_length_with_order(
-      &mut styles.height,
-      &mut styles.logical.height_order,
-      value,
-      order,
-    );
+    if order < styles.logical.height_order {
+      return;
+    }
+    styles.height = value;
+    styles.height_keyword = None;
+    styles.logical.height_order = order;
   }
 }
 
@@ -3269,19 +3269,19 @@ fn set_axis_min_dimension(
   };
   let value = sanitize_min_length(value);
   if is_horizontal {
-    set_length_with_order(
-      &mut styles.min_width,
-      &mut styles.logical.min_width_order,
-      value,
-      order,
-    );
+    if order < styles.logical.min_width_order {
+      return;
+    }
+    styles.min_width = value;
+    styles.min_width_keyword = None;
+    styles.logical.min_width_order = order;
   } else {
-    set_length_with_order(
-      &mut styles.min_height,
-      &mut styles.logical.min_height_order,
-      value,
-      order,
-    );
+    if order < styles.logical.min_height_order {
+      return;
+    }
+    styles.min_height = value;
+    styles.min_height_keyword = None;
+    styles.logical.min_height_order = order;
   }
 }
 
@@ -3297,19 +3297,19 @@ fn set_axis_max_dimension(
   };
   let value = sanitize_max_length(value);
   if is_horizontal {
-    set_length_with_order(
-      &mut styles.max_width,
-      &mut styles.logical.max_width_order,
-      value,
-      order,
-    );
+    if order < styles.logical.max_width_order {
+      return;
+    }
+    styles.max_width = value;
+    styles.max_width_keyword = None;
+    styles.logical.max_width_order = order;
   } else {
-    set_length_with_order(
-      &mut styles.max_height,
-      &mut styles.logical.max_height_order,
-      value,
-      order,
-    );
+    if order < styles.logical.max_height_order {
+      return;
+    }
+    styles.max_height = value;
+    styles.max_height_keyword = None;
+    styles.logical.max_height_order = order;
   }
 }
 
@@ -3811,44 +3811,48 @@ fn apply_property_from_source(
       styles.outline_width = source.outline_width;
       styles.outline_offset = source.outline_offset;
     }
-    "width" => set_length_with_order(
-      &mut styles.width,
-      &mut styles.logical.width_order,
-      source.width,
-      order,
-    ),
-    "height" => set_length_with_order(
-      &mut styles.height,
-      &mut styles.logical.height_order,
-      source.height,
-      order,
-    ),
-    "min-width" => set_length_with_order(
-      &mut styles.min_width,
-      &mut styles.logical.min_width_order,
-      sanitize_min_length(source.min_width),
-      order,
-    ),
-    "min-height" => set_length_with_order(
-      &mut styles.min_height,
-      &mut styles.logical.min_height_order,
-      sanitize_min_length(source.min_height),
-      order,
-    ),
-    "max-width" => set_length_with_order(
-      &mut styles.max_width,
-      &mut styles.logical.max_width_order,
-      sanitize_max_length(source.max_width),
-      order,
-    ),
+    "width" => {
+      if order >= styles.logical.width_order {
+        styles.width = source.width;
+        styles.width_keyword = source.width_keyword;
+        styles.logical.width_order = order;
+      }
+    }
+    "height" => {
+      if order >= styles.logical.height_order {
+        styles.height = source.height;
+        styles.height_keyword = source.height_keyword;
+        styles.logical.height_order = order;
+      }
+    }
+    "min-width" => {
+      if order >= styles.logical.min_width_order {
+        styles.min_width = sanitize_min_length(source.min_width);
+        styles.min_width_keyword = source.min_width_keyword;
+        styles.logical.min_width_order = order;
+      }
+    }
+    "min-height" => {
+      if order >= styles.logical.min_height_order {
+        styles.min_height = sanitize_min_length(source.min_height);
+        styles.min_height_keyword = source.min_height_keyword;
+        styles.logical.min_height_order = order;
+      }
+    }
+    "max-width" => {
+      if order >= styles.logical.max_width_order {
+        styles.max_width = sanitize_max_length(source.max_width);
+        styles.max_width_keyword = source.max_width_keyword;
+        styles.logical.max_width_order = order;
+      }
+    }
     "max-height" => {
       styles.max_height_is_max_content = source.max_height_is_max_content;
-      set_length_with_order(
-        &mut styles.max_height,
-        &mut styles.logical.max_height_order,
-        sanitize_max_length(source.max_height),
-        order,
-      );
+      if order >= styles.logical.max_height_order {
+        styles.max_height = sanitize_max_length(source.max_height);
+        styles.max_height_keyword = source.max_height_keyword;
+        styles.logical.max_height_order = order;
+      }
     }
     "inline-size" => {
       let value = if inline_axis_is_horizontal(source.writing_mode) {
@@ -6823,39 +6827,42 @@ fn apply_declaration_with_base_internal(
     }
 
     // Width and height
-    "width" => set_length_with_order(
-      &mut styles.width,
-      &mut styles.logical.width_order,
-      extract_length(resolved_value),
-      order,
-    ),
+    "width" => {
+      if order >= styles.logical.width_order {
+        styles.width = extract_length(resolved_value);
+        styles.width_keyword = None;
+        styles.logical.width_order = order;
+      }
+    }
     "height" => {
       styles.max_height_is_max_content = false;
-      set_length_with_order(
-        &mut styles.height,
-        &mut styles.logical.height_order,
-        extract_length(resolved_value),
-        order,
-      );
+      if order >= styles.logical.height_order {
+        styles.height = extract_length(resolved_value);
+        styles.height_keyword = None;
+        styles.logical.height_order = order;
+      }
     }
-    "min-width" => set_length_with_order(
-      &mut styles.min_width,
-      &mut styles.logical.min_width_order,
-      sanitize_min_length(extract_length(resolved_value)),
-      order,
-    ),
-    "min-height" => set_length_with_order(
-      &mut styles.min_height,
-      &mut styles.logical.min_height_order,
-      sanitize_min_length(extract_length(resolved_value)),
-      order,
-    ),
-    "max-width" => set_length_with_order(
-      &mut styles.max_width,
-      &mut styles.logical.max_width_order,
-      sanitize_max_length(extract_length(resolved_value)),
-      order,
-    ),
+    "min-width" => {
+      if order >= styles.logical.min_width_order {
+        styles.min_width = sanitize_min_length(extract_length(resolved_value));
+        styles.min_width_keyword = None;
+        styles.logical.min_width_order = order;
+      }
+    }
+    "min-height" => {
+      if order >= styles.logical.min_height_order {
+        styles.min_height = sanitize_min_length(extract_length(resolved_value));
+        styles.min_height_keyword = None;
+        styles.logical.min_height_order = order;
+      }
+    }
+    "max-width" => {
+      if order >= styles.logical.max_width_order {
+        styles.max_width = sanitize_max_length(extract_length(resolved_value));
+        styles.max_width_keyword = None;
+        styles.logical.max_width_order = order;
+      }
+    }
     "max-height" => {
       if let PropertyValue::Keyword(ref kw) = resolved_value {
         if kw.eq_ignore_ascii_case("max-content")
@@ -6866,17 +6873,17 @@ fn apply_declaration_with_base_internal(
             styles.max_height_is_max_content = true;
             styles.logical.max_height_order = order;
             styles.max_height = Some(Length::px(f32::INFINITY));
+            styles.max_height_keyword = None;
           }
           return;
         }
       }
       styles.max_height_is_max_content = false;
-      set_length_with_order(
-        &mut styles.max_height,
-        &mut styles.logical.max_height_order,
-        sanitize_max_length(extract_length(resolved_value)),
-        order,
-      );
+      if order >= styles.logical.max_height_order {
+        styles.max_height = sanitize_max_length(extract_length(resolved_value));
+        styles.max_height_keyword = None;
+        styles.logical.max_height_order = order;
+      }
     }
     "inline-size" => {
       push_logical(

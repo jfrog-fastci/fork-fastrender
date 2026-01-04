@@ -121,6 +121,7 @@ use types::ImageOrientation;
 use types::ImageRendering;
 use types::ImageResolution;
 use types::Isolation;
+use types::IntrinsicSizeKeyword;
 use types::JustifyContent;
 use types::LengthOrNumber;
 use types::LineBreak;
@@ -566,11 +567,17 @@ pub struct ComputedStyle {
 
   // Box model
   pub width: Option<Length>,
+  pub width_keyword: Option<IntrinsicSizeKeyword>,
   pub height: Option<Length>,
+  pub height_keyword: Option<IntrinsicSizeKeyword>,
   pub min_width: Option<Length>,
+  pub min_width_keyword: Option<IntrinsicSizeKeyword>,
   pub min_height: Option<Length>,
+  pub min_height_keyword: Option<IntrinsicSizeKeyword>,
   pub max_width: Option<Length>,
+  pub max_width_keyword: Option<IntrinsicSizeKeyword>,
   pub max_height: Option<Length>,
+  pub max_height_keyword: Option<IntrinsicSizeKeyword>,
   /// Whether max-height was authored as the keyword `max-content`.
   pub max_height_is_max_content: bool,
 
@@ -943,11 +950,17 @@ impl Default for ComputedStyle {
       shrink_to_fit_inline_size: false,
 
       width: None,
+      width_keyword: None,
       height: None,
+      height_keyword: None,
       min_width: None,
+      min_width_keyword: None,
       min_height: None,
+      min_height_keyword: None,
       max_width: None,
+      max_width_keyword: None,
       max_height: None,
+      max_height_keyword: None,
       max_height_is_max_content: false,
 
       margin_top: Some(Length::px(0.0)),

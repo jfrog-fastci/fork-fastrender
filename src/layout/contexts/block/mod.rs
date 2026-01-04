@@ -1184,6 +1184,8 @@ impl BlockFormattingContext {
             let mut relayout_style = (*static_style).clone();
             relayout_style.width = Some(crate::style::values::Length::px(result.size.width));
             relayout_style.height = Some(crate::style::values::Length::px(result.size.height));
+            relayout_style.width_keyword = None;
+            relayout_style.height_keyword = None;
             child_fragment = crate::layout::style_override::with_style_override(
               pos_child.id,
               Arc::new(relayout_style),
@@ -1194,6 +1196,8 @@ impl BlockFormattingContext {
             let mut relayout_style = (*static_style).clone();
             relayout_style.width = Some(crate::style::values::Length::px(result.size.width));
             relayout_style.height = Some(crate::style::values::Length::px(result.size.height));
+            relayout_style.width_keyword = None;
+            relayout_style.height_keyword = None;
             relayout_child.style = Arc::new(relayout_style);
             child_fragment = fc.layout(&relayout_child, &relayout_constraints)?;
           }
@@ -1542,6 +1546,7 @@ impl BlockFormattingContext {
     // Use the resolved replaced width when computing horizontal metrics
     let mut width_style = (*style).as_ref().clone();
     width_style.width = Some(Length::px(used_size.width));
+    width_style.width_keyword = None;
     width_style.box_sizing = crate::style::types::BoxSizing::ContentBox;
     let inline_sides = inline_axis_sides(style);
     let inline_positive = inline_axis_positive(style.writing_mode, style.direction);
@@ -3215,12 +3220,15 @@ impl FormattingContext for BlockFormattingContext {
       let mut s: ComputedStyle = (**style).clone();
       if matches!(s.width, Some(len) if len.unit.is_percentage()) {
         s.width = None;
+        s.width_keyword = None;
       }
       if matches!(s.min_width, Some(len) if len.unit.is_percentage()) {
         s.min_width = None;
+        s.min_width_keyword = None;
       }
       if matches!(s.max_width, Some(len) if len.unit.is_percentage()) {
         s.max_width = None;
+        s.max_width_keyword = None;
       }
       _style_for_width_owned = Some(s);
       _style_for_width_owned.as_ref().unwrap()
@@ -4111,6 +4119,8 @@ impl FormattingContext for BlockFormattingContext {
             let mut relayout_style = (*static_style).clone();
             relayout_style.width = Some(crate::style::values::Length::px(result.size.width));
             relayout_style.height = Some(crate::style::values::Length::px(result.size.height));
+            relayout_style.width_keyword = None;
+            relayout_style.height_keyword = None;
             child_fragment = crate::layout::style_override::with_style_override(
               child.id,
               Arc::new(relayout_style),
@@ -4121,6 +4131,8 @@ impl FormattingContext for BlockFormattingContext {
             let mut relayout_style = (*static_style).clone();
             relayout_style.width = Some(crate::style::values::Length::px(result.size.width));
             relayout_style.height = Some(crate::style::values::Length::px(result.size.height));
+            relayout_style.width_keyword = None;
+            relayout_style.height_keyword = None;
             relayout_child.style = Arc::new(relayout_style);
             child_fragment = fc.layout(&relayout_child, &relayout_constraints)?;
           }
@@ -4805,6 +4817,7 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.display = Display::Block;
     style.height = Some(Length::px(height));
+    style.height_keyword = None;
     Arc::new(style)
   }
 
@@ -4867,6 +4880,7 @@ mod tests {
     let mut child_style = ComputedStyle::default();
     child_style.display = Display::Block;
     child_style.height = Some(Length::percent(50.0));
+    child_style.height_keyword = None;
 
     let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
     let parent = BoxNode::new_block(
@@ -5004,11 +5018,13 @@ mod tests {
     root_style.display = Display::Block;
     root_style.writing_mode = WritingMode::VerticalRl;
     root_style.width = Some(Length::px(200.0));
+    root_style.width_keyword = None;
 
     let mut child_style = ComputedStyle::default();
     child_style.display = Display::Block;
     child_style.writing_mode = WritingMode::VerticalRl;
     child_style.height = Some(Length::px(40.0));
+    child_style.height_keyword = None;
 
     let child1 = BoxNode::new_block(
       Arc::new(child_style.clone()),
@@ -5240,6 +5256,8 @@ mod tests {
     legend_child_style.display = Display::Block;
     legend_child_style.width = Some(Length::px(80.0));
     legend_child_style.height = Some(Length::px(10.0));
+    legend_child_style.width_keyword = None;
+    legend_child_style.height_keyword = None;
     let legend_child = BoxNode::new_block(
       Arc::new(legend_child_style),
       FormattingContextType::Block,
@@ -5355,6 +5373,8 @@ mod tests {
     relative_style.top = Some(Length::px(20.0));
     relative_style.width = Some(Length::px(100.0));
     relative_style.height = Some(Length::px(40.0));
+    relative_style.width_keyword = None;
+    relative_style.height_keyword = None;
 
     let child = BoxNode::new_block(
       Arc::new(relative_style),
@@ -5385,6 +5405,8 @@ mod tests {
     relative_style.top = Some(Length::percent(25.0)); // 25% of 120 = 30
     relative_style.width = Some(Length::px(40.0));
     relative_style.height = Some(Length::px(10.0));
+    relative_style.width_keyword = None;
+    relative_style.height_keyword = None;
 
     let child = BoxNode::new_block(
       Arc::new(relative_style),
@@ -5394,6 +5416,7 @@ mod tests {
     let mut root_style = ComputedStyle::default();
     root_style.display = Display::Block;
     root_style.height = Some(Length::px(120.0));
+    root_style.height_keyword = None;
     let root = BoxNode::new_block(
       Arc::new(root_style),
       FormattingContextType::Block,
@@ -5417,10 +5440,12 @@ mod tests {
     let mut child_style = ComputedStyle::default();
     child_style.display = Display::Block;
     child_style.height = Some(Length::percent(50.0));
+    child_style.height_keyword = None;
     let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
     let mut root_style = ComputedStyle::default();
     root_style.display = Display::Block;
     root_style.height = Some(Length::px(300.0));
+    root_style.height_keyword = None;
     let root = BoxNode::new_block(
       Arc::new(root_style),
       FormattingContextType::Block,
@@ -5462,6 +5487,7 @@ mod tests {
     let mut child_style = ComputedStyle::default();
     child_style.display = Display::Block;
     child_style.height = Some(Length::percent(60.0));
+    child_style.height_keyword = None;
     let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
     let root = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![child]);
     let constraints = LayoutConstraints::definite_width(200.0);
@@ -5512,6 +5538,8 @@ mod tests {
     float_style.float = Float::Left;
     float_style.width = Some(Length::px(60.0));
     float_style.height = Some(Length::px(50.0));
+    float_style.width_keyword = None;
+    float_style.height_keyword = None;
     let float_node =
       BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
 
@@ -5519,6 +5547,7 @@ mod tests {
     cleared_style.display = Display::Block;
     cleared_style.clear = crate::style::float::Clear::Left;
     cleared_style.height = Some(Length::px(10.0));
+    cleared_style.height_keyword = None;
     let cleared_node = BoxNode::new_block(
       Arc::new(cleared_style),
       FormattingContextType::Block,
@@ -5573,6 +5602,8 @@ mod tests {
     float_style.float = Float::Left;
     float_style.width = Some(Length::px(80.0));
     float_style.height = Some(Length::px(20.0));
+    float_style.width_keyword = None;
+    float_style.height_keyword = None;
     let float_node =
       BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
 
@@ -5669,6 +5700,8 @@ mod tests {
     float_style.float = Float::Left;
     float_style.width = Some(Length::px(60.0));
     float_style.height = Some(Length::px(20.0));
+    float_style.width_keyword = None;
+    float_style.height_keyword = None;
     float_style.margin_left = Some(Length::px(-20.0));
     let float_node =
       BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
@@ -5729,6 +5762,8 @@ mod tests {
     wide_style.float = Float::Left;
     wide_style.width = Some(Length::px(120.0));
     wide_style.height = Some(Length::px(20.0));
+    wide_style.width_keyword = None;
+    wide_style.height_keyword = None;
     let wide_float = BoxNode::new_block(Arc::new(wide_style), FormattingContextType::Block, vec![]);
 
     let mut auto_style = ComputedStyle::default();
@@ -5974,6 +6009,7 @@ mod tests {
     let mut parent_style = ComputedStyle::default();
     parent_style.display = Display::Block;
     parent_style.width = Some(Length::px(200.0));
+    parent_style.width_keyword = None;
     parent_style.padding_left = Length::px(10.0);
     parent_style.padding_top = Length::px(10.0);
     let mut child_style = ComputedStyle::default();
@@ -5983,6 +6019,8 @@ mod tests {
     child_style.top = Some(Length::px(7.0));
     child_style.width = Some(Length::px(50.0));
     child_style.height = Some(Length::px(20.0));
+    child_style.width_keyword = None;
+    child_style.height_keyword = None;
 
     let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
     let parent = BoxNode::new_block(
@@ -6009,13 +6047,16 @@ mod tests {
     let mut root_style = ComputedStyle::default();
     root_style.display = Display::Block;
     root_style.width = Some(Length::px(400.0));
+    root_style.width_keyword = None;
 
     let mut middle_style = ComputedStyle::default();
     middle_style.display = Display::Block;
     middle_style.width = Some(Length::px(200.0));
+    middle_style.width_keyword = None;
     middle_style.padding_left = Length::px(10.0);
     middle_style.padding_top = Length::px(10.0);
     middle_style.height = Some(Length::px(80.0));
+    middle_style.height_keyword = None;
 
     let mut abs_style = ComputedStyle::default();
     abs_style.display = Display::Block;
@@ -6024,6 +6065,8 @@ mod tests {
     abs_style.top = Some(Length::px(7.0));
     abs_style.width = Some(Length::px(30.0));
     abs_style.height = Some(Length::px(12.0));
+    abs_style.width_keyword = None;
+    abs_style.height_keyword = None;
 
     let abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
     let middle = BoxNode::new_block(
@@ -6067,11 +6110,13 @@ mod tests {
     let mut root_style = ComputedStyle::default();
     root_style.display = Display::Block;
     root_style.width = Some(Length::px(800.0));
+    root_style.width_keyword = None;
 
     let mut parent_style = ComputedStyle::default();
     parent_style.display = Display::Block;
     parent_style.position = Position::Relative;
     parent_style.width = Some(Length::px(200.0));
+    parent_style.width_keyword = None;
 
     let mut inline_style = ComputedStyle::default();
     inline_style.display = Display::Inline;
@@ -6083,6 +6128,8 @@ mod tests {
     abs_style.top = Some(Length::px(0.0));
     abs_style.width = Some(Length::px(10.0));
     abs_style.height = Some(Length::px(10.0));
+    abs_style.width_keyword = None;
+    abs_style.height_keyword = None;
 
     let abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
     let inline = BoxNode::new_inline(Arc::new(inline_style), vec![abs_child]);
@@ -6151,6 +6198,7 @@ mod tests {
     let mut container_style = ComputedStyle::default();
     container_style.display = Display::Block;
     container_style.width = Some(Length::px(200.0));
+    container_style.width_keyword = None;
     // Non-empty transforms establish a new positioned containing block. The block formatting
     // context clones itself when entering such a subtree; ensure the shared inline formatting
     // context is rebuilt with the updated `nearest_positioned_cb`.
@@ -6169,6 +6217,8 @@ mod tests {
     abs_style.top = Some(Length::px(0.0));
     abs_style.width = Some(Length::px(20.0));
     abs_style.height = Some(Length::px(10.0));
+    abs_style.width_keyword = None;
+    abs_style.height_keyword = None;
 
     let abs_id = 9001;
     let mut abs_child =

@@ -569,6 +569,7 @@ mod tests {
   fn test_should_collapse_with_last_child_explicit_height() {
     let mut style = ComputedStyle::default();
     style.height = Some(Length::px(100.0));
+    style.height_keyword = None;
     assert!(!should_collapse_with_last_child(&style));
   }
 
@@ -589,6 +590,7 @@ mod tests {
   fn test_is_margin_collapsible_through_has_height() {
     let mut style = ComputedStyle::default();
     style.height = Some(Length::px(50.0));
+    style.height_keyword = None;
     assert!(!is_margin_collapsible_through(&style));
   }
 

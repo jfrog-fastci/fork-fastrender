@@ -1490,6 +1490,15 @@ fn apply_style_overrides(base: &ComputedStyle, flags: StyleOverrideFlags) -> Com
           }
         };
 
+        if style.width.is_some() {
+          style.width_keyword = None;
+        }
+        if style.min_width.is_some() {
+          style.min_width_keyword = None;
+        }
+        if style.max_width.is_some() {
+          style.max_width_keyword = None;
+        }
         adjust(&mut style.width);
         adjust(&mut style.min_width);
         adjust(&mut style.max_width);
@@ -1515,6 +1524,9 @@ fn apply_style_overrides(base: &ComputedStyle, flags: StyleOverrideFlags) -> Com
     style.width = None;
     style.min_width = None;
     style.max_width = None;
+    style.width_keyword = None;
+    style.min_width_keyword = None;
+    style.max_width_keyword = None;
     style.margin_left = Some(Length::px(0.0));
     style.margin_right = Some(Length::px(0.0));
     style.margin_top = Some(Length::px(0.0));
@@ -8134,6 +8146,7 @@ mod tests {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
     table_style.width = Some(Length::px(300.0));
+    table_style.width_keyword = None;
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(0.0);
 
@@ -8177,6 +8190,9 @@ mod tests {
     table_style.width = Some(Length::px(50.0));
     table_style.min_width = Some(Length::px(200.0));
     table_style.max_width = Some(Length::px(250.0));
+    table_style.width_keyword = None;
+    table_style.min_width_keyword = None;
+    table_style.max_width_keyword = None;
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(0.0);
 
@@ -8217,6 +8233,7 @@ mod tests {
     let mut base_style = ComputedStyle::default();
     base_style.display = Display::Table;
     base_style.width = Some(Length::px(50.0));
+    base_style.width_keyword = None;
     base_style.border_spacing_horizontal = Length::px(0.0);
     base_style.border_spacing_vertical = Length::px(0.0);
 
@@ -8245,6 +8262,7 @@ mod tests {
 
     let mut override_style = base_style;
     override_style.width = Some(Length::px(100.0));
+    override_style.width_keyword = None;
     let fragment = crate::layout::style_override::with_style_override(
       table.id,
       Arc::new(override_style),
@@ -8260,6 +8278,7 @@ mod tests {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
     table_style.min_width = Some(Length::px(300.0));
+    table_style.min_width_keyword = None;
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(0.0);
 
@@ -8298,6 +8317,7 @@ mod tests {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
     table_style.max_width = Some(Length::px(100.0));
+    table_style.max_width_keyword = None;
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(0.0);
 
@@ -8307,6 +8327,7 @@ mod tests {
     let mut wide_cell_style = ComputedStyle::default();
     wide_cell_style.display = Display::TableCell;
     wide_cell_style.width = Some(Length::px(120.0));
+    wide_cell_style.width_keyword = None;
     let cell_a = BoxNode::new_block(
       Arc::new(wide_cell_style.clone()),
       FormattingContextType::Block,
@@ -8341,6 +8362,7 @@ mod tests {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
     table_style.min_width = Some(Length::px(200.0));
+    table_style.min_width_keyword = None;
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(0.0);
 
@@ -8378,6 +8400,7 @@ mod tests {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
     table_style.max_height = Some(Length::px(50.0));
+    table_style.max_height_keyword = None;
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(0.0);
 
@@ -8386,6 +8409,7 @@ mod tests {
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
     cell_style.height = Some(Length::px(120.0));
+    cell_style.height_keyword = None;
 
     let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![]);
     let row = BoxNode::new_block(
@@ -8858,6 +8882,7 @@ mod tests {
     let mut span_style = ComputedStyle::default();
     span_style.display = Display::TableCell;
     span_style.width = Some(Length::px(200.0));
+    span_style.width_keyword = None;
     let mut span_cell =
       BoxNode::new_block(Arc::new(span_style), FormattingContextType::Block, vec![]);
     span_cell.table_cell_span = Some(crate::tree::box_tree::TableCellSpan {
@@ -8935,6 +8960,7 @@ mod tests {
     let mut span_style = ComputedStyle::default();
     span_style.display = Display::TableCell;
     span_style.width = Some(Length::percent(50.0));
+    span_style.width_keyword = None;
     let mut span_cell =
       BoxNode::new_block(Arc::new(span_style), FormattingContextType::Block, vec![]);
     span_cell.table_cell_span = Some(crate::tree::box_tree::TableCellSpan {
@@ -8969,6 +8995,7 @@ mod tests {
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(0.0);
     table_style.width = Some(Length::px(200.0));
+    table_style.width_keyword = None;
     let table = BoxNode::new_block(
       Arc::new(table_style),
       FormattingContextType::Table,
@@ -9052,6 +9079,7 @@ mod tests {
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
     cell_style.min_width = Some(Length::px(80.0));
+    cell_style.min_width_keyword = None;
     let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![]);
 
     let mut row_style = ComputedStyle::default();
@@ -9108,6 +9136,7 @@ mod tests {
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
     cell_style.min_width = Some(Length::percent(50.0));
+    cell_style.min_width_keyword = None;
     let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![]);
 
     let mut row_style = ComputedStyle::default();
@@ -9123,6 +9152,7 @@ mod tests {
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(0.0);
     table_style.width = Some(Length::px(200.0));
+    table_style.width_keyword = None;
     let table = BoxNode::new_block(
       Arc::new(table_style),
       FormattingContextType::Table,
@@ -9165,6 +9195,7 @@ mod tests {
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
     cell_style.min_width = Some(Length::percent(50.0));
+    cell_style.min_width_keyword = None;
     let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![]);
 
     let mut row_style = ComputedStyle::default();
@@ -9221,6 +9252,7 @@ mod tests {
     let mut flex_child_a_style = ComputedStyle::default();
     flex_child_a_style.display = Display::Block;
     flex_child_a_style.width = Some(Length::px(40.0));
+    flex_child_a_style.width_keyword = None;
     let flex_child_a = BoxNode::new_block(
       Arc::new(flex_child_a_style),
       FormattingContextType::Block,
@@ -9229,6 +9261,7 @@ mod tests {
     let mut flex_child_b_style = ComputedStyle::default();
     flex_child_b_style.display = Display::Block;
     flex_child_b_style.width = Some(Length::px(60.0));
+    flex_child_b_style.width_keyword = None;
     let flex_child_b = BoxNode::new_block(
       Arc::new(flex_child_b_style),
       FormattingContextType::Block,
@@ -9253,6 +9286,7 @@ mod tests {
     let mut grid_item_a_style = ComputedStyle::default();
     grid_item_a_style.display = Display::Block;
     grid_item_a_style.width = Some(Length::px(70.0));
+    grid_item_a_style.width_keyword = None;
     let grid_item_a = BoxNode::new_block(
       Arc::new(grid_item_a_style),
       FormattingContextType::Block,
@@ -9261,6 +9295,7 @@ mod tests {
     let mut grid_item_b_style = ComputedStyle::default();
     grid_item_b_style.display = Display::Block;
     grid_item_b_style.width = Some(Length::px(50.0));
+    grid_item_b_style.width_keyword = None;
     let grid_item_b = BoxNode::new_block(
       Arc::new(grid_item_b_style),
       FormattingContextType::Block,
@@ -9357,6 +9392,7 @@ mod tests {
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
     cell_style.max_width = Some(Length::px(40.0));
+    cell_style.max_width_keyword = None;
     let cell = BoxNode::new_block(
       Arc::new(cell_style),
       FormattingContextType::Block,
@@ -9425,6 +9461,7 @@ mod tests {
     let mut col_style = ComputedStyle::default();
     col_style.display = Display::TableColumn;
     col_style.min_width = Some(Length::px(120.0));
+    col_style.min_width_keyword = None;
     let col = BoxNode::new_block(Arc::new(col_style), FormattingContextType::Block, vec![]);
 
     let mut cell_style = ComputedStyle::default();
@@ -9484,6 +9521,7 @@ mod tests {
     let mut col_style = ComputedStyle::default();
     col_style.display = Display::TableColumn;
     col_style.max_width = Some(Length::px(40.0));
+    col_style.max_width_keyword = None;
     let col = BoxNode::new_block(Arc::new(col_style), FormattingContextType::Block, vec![]);
 
     let mut wide_cell_style = ComputedStyle::default();
@@ -9561,6 +9599,7 @@ mod tests {
     let mut col_style = ComputedStyle::default();
     col_style.display = Display::TableColumn;
     col_style.min_width = Some(Length::percent(50.0));
+    col_style.min_width_keyword = None;
     let col = BoxNode::new_block(Arc::new(col_style), FormattingContextType::Block, vec![]);
 
     let mut cell_style = ComputedStyle::default();
@@ -9579,6 +9618,7 @@ mod tests {
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(0.0);
     table_style.width = Some(Length::px(200.0));
+    table_style.width_keyword = None;
     let table = BoxNode::new_block(
       Arc::new(table_style),
       FormattingContextType::Table,
@@ -9621,6 +9661,7 @@ mod tests {
     let mut col_style = ComputedStyle::default();
     col_style.display = Display::TableColumn;
     col_style.min_width = Some(Length::percent(50.0));
+    col_style.min_width_keyword = None;
     let col = BoxNode::new_block(Arc::new(col_style), FormattingContextType::Block, vec![]);
 
     let mut cell_style = ComputedStyle::default();
@@ -9695,6 +9736,7 @@ mod tests {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
     table_style.width = Some(Length::px(200.0));
+    table_style.width_keyword = None;
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(0.0);
     let table = BoxNode::new_block(
@@ -10383,6 +10425,7 @@ mod tests {
     table_style.padding_left = Length::px(5.0);
     table_style.padding_right = Length::px(5.0);
     table_style.height = Some(Length::px(100.0));
+    table_style.height_keyword = None;
 
     let mut row_style = ComputedStyle::default();
     row_style.display = Display::TableRow;
@@ -10455,6 +10498,7 @@ mod tests {
     let mut child_style = ComputedStyle::default();
     child_style.display = Display::Block;
     child_style.height = Some(Length::px(10.0));
+    child_style.height_keyword = None;
     let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
 
     let cell1 = BoxNode::new_block(
@@ -10577,6 +10621,7 @@ mod tests {
     let mut child_style = ComputedStyle::default();
     child_style.display = Display::Block;
     child_style.width = Some(Length::px(50.0));
+    child_style.width_keyword = None;
     let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
 
     let cell = BoxNode::new_block(
@@ -10636,6 +10681,7 @@ mod tests {
       cell_style.display = Display::TableCell;
       cell_style.box_sizing = box_sizing;
       cell_style.width = Some(Length::px(100.0));
+      cell_style.width_keyword = None;
       cell_style.padding_left = Length::px(10.0);
       cell_style.padding_right = Length::px(10.0);
       // Keep borders at zero so the test focuses on padding behavior.
@@ -10711,6 +10757,7 @@ mod tests {
     border_box_style.display = Display::TableCell;
     border_box_style.box_sizing = BoxSizing::BorderBox;
     border_box_style.width = Some(Length::px(100.0));
+    border_box_style.width_keyword = None;
     border_box_style.padding_left = Length::px(10.0);
     border_box_style.padding_right = Length::px(10.0);
 
@@ -10989,6 +11036,7 @@ mod tests {
     let mut left_style = ComputedStyle::default();
     left_style.display = Display::TableCell;
     left_style.width = Some(Length::new(80.0, LengthUnit::Percent));
+    left_style.width_keyword = None;
 
     let mut right_style = ComputedStyle::default();
     right_style.display = Display::TableCell;
@@ -11056,6 +11104,7 @@ mod tests {
     let mut cell1_style = ComputedStyle::default();
     cell1_style.display = Display::TableCell;
     cell1_style.width = Some(Length::percent(50.0));
+    cell1_style.width_keyword = None;
     let cell1 = BoxNode::new_block(Arc::new(cell1_style), FormattingContextType::Block, vec![]);
 
     let mut cell2_style = ComputedStyle::default();
@@ -11072,6 +11121,7 @@ mod tests {
     let mut second_cell_style = ComputedStyle::default();
     second_cell_style.display = Display::TableCell;
     second_cell_style.width = Some(Length::px(400.0));
+    second_cell_style.width_keyword = None;
     let second_cell = BoxNode::new_block(
       Arc::new(second_cell_style),
       FormattingContextType::Block,
@@ -11131,6 +11181,7 @@ mod tests {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
     table_style.height = Some(Length::px(100.0));
+    table_style.height_keyword = None;
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(0.0);
 
@@ -11175,16 +11226,19 @@ mod tests {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
     table_style.height = Some(Length::px(120.0));
+    table_style.height_keyword = None;
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(0.0);
 
     let mut row1_style = ComputedStyle::default();
     row1_style.display = Display::TableRow;
     row1_style.height = Some(Length::percent(25.0));
+    row1_style.height_keyword = None;
 
     let mut row2_style = ComputedStyle::default();
     row2_style.display = Display::TableRow;
     row2_style.height = Some(Length::percent(75.0));
+    row2_style.height_keyword = None;
 
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
@@ -11230,16 +11284,19 @@ mod tests {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
     table_style.height = Some(Length::px(120.0));
+    table_style.height_keyword = None;
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(10.0);
 
     let mut row1_style = ComputedStyle::default();
     row1_style.display = Display::TableRow;
     row1_style.height = Some(Length::percent(50.0));
+    row1_style.height_keyword = None;
 
     let mut row2_style = ComputedStyle::default();
     row2_style.display = Display::TableRow;
     row2_style.height = Some(Length::percent(50.0));
+    row2_style.height_keyword = None;
 
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
@@ -11286,12 +11343,14 @@ mod tests {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
     table_style.min_height = Some(Length::px(100.0));
+    table_style.min_height_keyword = None;
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(0.0);
 
     let mut row_style = ComputedStyle::default();
     row_style.display = Display::TableRow;
     row_style.height = Some(Length::percent(50.0));
+    row_style.height_keyword = None;
 
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
@@ -11338,12 +11397,14 @@ mod tests {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
     table_style.height = Some(Length::px(200.0));
+    table_style.height_keyword = None;
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(0.0);
 
     let mut row1_style = ComputedStyle::default();
     row1_style.display = Display::TableRow;
     row1_style.height = Some(Length::percent(50.0));
+    row1_style.height_keyword = None;
 
     let mut row2_style = ComputedStyle::default();
     row2_style.display = Display::TableRow;
@@ -11393,16 +11454,19 @@ mod tests {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
     table_style.height = Some(Length::px(100.0));
+    table_style.height_keyword = None;
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(0.0);
 
     let mut row1_style = ComputedStyle::default();
     row1_style.display = Display::TableRow;
     row1_style.height = Some(Length::percent(60.0));
+    row1_style.height_keyword = None;
 
     let mut row2_style = ComputedStyle::default();
     row2_style.display = Display::TableRow;
     row2_style.height = Some(Length::percent(60.0));
+    row2_style.height_keyword = None;
 
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
@@ -11458,16 +11522,19 @@ mod tests {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
     table_style.height = Some(Length::px(100.0));
+    table_style.height_keyword = None;
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(0.0);
 
     let mut row1_style = ComputedStyle::default();
     row1_style.display = Display::TableRow;
     row1_style.height = Some(Length::percent(60.0));
+    row1_style.height_keyword = None;
 
     let mut row2_style = ComputedStyle::default();
     row2_style.display = Display::TableRow;
     row2_style.height = Some(Length::percent(60.0));
+    row2_style.height_keyword = None;
 
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
@@ -11523,6 +11590,9 @@ mod tests {
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
     cell_style.width = Some(Length::px(10.0));
+    cell_style.width_keyword = None;
+    cell_style.width_keyword = None;
+    cell_style.width_keyword = None;
 
     let mut row_style = ComputedStyle::default();
     row_style.display = Display::TableRow;
@@ -11531,6 +11601,8 @@ mod tests {
     child_style.display = Display::Block;
     child_style.height = Some(Length::px(8.0));
     child_style.width = Some(Length::px(10.0));
+    child_style.height_keyword = None;
+    child_style.width_keyword = None;
 
     let cell = BoxNode::new_block(
       Arc::new(cell_style),
@@ -11578,6 +11650,9 @@ mod tests {
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
     cell_style.width = Some(Length::px(10.0));
+    cell_style.width_keyword = None;
+    cell_style.width_keyword = None;
+    cell_style.width_keyword = None;
 
     let mut row_style = ComputedStyle::default();
     row_style.display = Display::TableRow;
@@ -11586,6 +11661,8 @@ mod tests {
     child_style.display = Display::Block;
     child_style.height = Some(Length::px(5.0));
     child_style.width = Some(Length::px(10.0));
+    child_style.height_keyword = None;
+    child_style.width_keyword = None;
 
     let cell = BoxNode::new_block(
       Arc::new(cell_style),
@@ -11624,6 +11701,7 @@ mod tests {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
     table_style.width = Some(Length::px(100.0));
+    table_style.width_keyword = None;
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(0.0);
     table_style.padding_left = Length::px(5.0);
@@ -11635,6 +11713,8 @@ mod tests {
     cell_style.display = Display::TableCell;
     cell_style.min_width = Some(Length::px(10.0));
     cell_style.max_width = Some(Length::px(1000.0));
+    cell_style.min_width_keyword = None;
+    cell_style.max_width_keyword = None;
 
     let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![]);
     let row = BoxNode::new_block(
@@ -11679,6 +11759,7 @@ mod tests {
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
     cell_style.min_width = Some(Length::px(10.0));
+    cell_style.min_width_keyword = None;
 
     let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![]);
     let row = BoxNode::new_block(
@@ -11709,6 +11790,7 @@ mod tests {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
     table_style.max_height = Some(Length::px(40.0));
+    table_style.max_height_keyword = None;
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(0.0);
 
@@ -11991,6 +12073,7 @@ mod tests {
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
     cell_style.width = Some(Length::px(10.0));
+    cell_style.width_keyword = None;
 
     let mut spanning_cell = BoxNode::new_block(
       Arc::new(cell_style.clone()),
@@ -12095,6 +12178,7 @@ mod tests {
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
     cell_style.width = Some(Length::px(10.0));
+    cell_style.width_keyword = None;
 
     let mut top_spanning = BoxNode::new_block(
       Arc::new(cell_style.clone()),
@@ -12465,6 +12549,8 @@ mod tests {
     abs_style.top = Some(Length::px(7.0));
     abs_style.width = Some(Length::px(12.0));
     abs_style.height = Some(Length::px(9.0));
+    abs_style.width_keyword = None;
+    abs_style.height_keyword = None;
 
     let abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
     let table = BoxNode::new_block(
@@ -13054,14 +13140,17 @@ mod tests {
     let mut row_style_head = ComputedStyle::default();
     row_style_head.display = Display::TableRow;
     row_style_head.height = Some(Length::px(10.0));
+    row_style_head.height_keyword = None;
 
     let mut row_style_body = ComputedStyle::default();
     row_style_body.display = Display::TableRow;
     row_style_body.height = Some(Length::px(30.0));
+    row_style_body.height_keyword = None;
 
     let mut row_style_foot = ComputedStyle::default();
     row_style_foot.display = Display::TableRow;
     row_style_foot.height = Some(Length::px(15.0));
+    row_style_foot.height_keyword = None;
 
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
@@ -13340,6 +13429,7 @@ mod tests {
     let mut caption_style = ComputedStyle::default();
     caption_style.display = Display::TableCaption;
     caption_style.width = Some(Length::px(400.0));
+    caption_style.width_keyword = None;
     let caption = BoxNode::new_block(
       Arc::new(caption_style),
       FormattingContextType::Block,
@@ -13359,6 +13449,7 @@ mod tests {
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
     cell_style.width = Some(Length::px(10.0));
+    cell_style.width_keyword = None;
 
     let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![]);
     let row = BoxNode::new_block(
@@ -13393,6 +13484,7 @@ mod tests {
     let mut caption_style = ComputedStyle::default();
     caption_style.display = Display::TableCaption;
     caption_style.width = Some(Length::px(120.0));
+    caption_style.width_keyword = None;
     let caption = BoxNode::new_block(
       Arc::new(caption_style),
       FormattingContextType::Block,
@@ -13429,6 +13521,7 @@ mod tests {
     let mut caption_style = ComputedStyle::default();
     caption_style.display = Display::TableCaption;
     caption_style.width = Some(Length::px(180.0));
+    caption_style.width_keyword = None;
     let caption = BoxNode::new_block(
       Arc::new(caption_style),
       FormattingContextType::Block,
@@ -13467,6 +13560,8 @@ mod tests {
     table_style.border_spacing_vertical = Length::px(0.0);
     table_style.min_width = Some(Length::px(120.0));
     table_style.max_width = Some(Length::px(160.0));
+    table_style.min_width_keyword = None;
+    table_style.max_width_keyword = None;
 
     let mut row_style = ComputedStyle::default();
     row_style.display = Display::TableRow;
@@ -13474,6 +13569,7 @@ mod tests {
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
     cell_style.width = Some(Length::px(300.0));
+    cell_style.width_keyword = None;
     let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![]);
     let row = BoxNode::new_block(
       Arc::new(row_style),
@@ -13503,6 +13599,7 @@ mod tests {
     let mut caption_style = ComputedStyle::default();
     caption_style.display = Display::TableCaption;
     caption_style.width = Some(Length::px(400.0));
+    caption_style.width_keyword = None;
     let caption = BoxNode::new_block(
       Arc::new(caption_style),
       FormattingContextType::Block,
@@ -13515,6 +13612,7 @@ mod tests {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
     table_style.max_width = Some(Length::px(200.0));
+    table_style.max_width_keyword = None;
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(0.0);
 
@@ -14011,6 +14109,7 @@ mod tests {
     let mut child_style = ComputedStyle::default();
     child_style.display = Display::Block;
     child_style.height = Some(Length::px(20.0));
+    child_style.height_keyword = None;
     child_style.margin_top = Some(Length::px(10.0));
     child_style.margin_bottom = Some(Length::px(10.0));
     let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
@@ -14140,6 +14239,7 @@ mod tests {
     let mut group_style = ComputedStyle::default();
     group_style.display = Display::TableRowGroup;
     group_style.height = Some(Length::px(100.0));
+    group_style.height_keyword = None;
 
     let mut row_style = ComputedStyle::default();
     row_style.display = Display::TableRow;
@@ -14147,6 +14247,7 @@ mod tests {
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
     cell_style.min_height = Some(Length::px(10.0));
+    cell_style.min_height_keyword = None;
 
     let row0_cell = BoxNode::new_block(
       Arc::new(cell_style.clone()),
@@ -14204,10 +14305,12 @@ mod tests {
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(0.0);
     table_style.height = Some(Length::px(200.0));
+    table_style.height_keyword = None;
 
     let mut group_style = ComputedStyle::default();
     group_style.display = Display::TableRowGroup;
     group_style.height = Some(Length::percent(50.0));
+    group_style.height_keyword = None;
 
     let mut row_style = ComputedStyle::default();
     row_style.display = Display::TableRow;
@@ -14215,6 +14318,7 @@ mod tests {
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
     cell_style.min_height = Some(Length::px(5.0));
+    cell_style.min_height_keyword = None;
 
     let row0_cell = BoxNode::new_block(
       Arc::new(cell_style.clone()),
@@ -14271,10 +14375,12 @@ mod tests {
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(0.0);
     table_style.height = Some(Length::px(200.0));
+    table_style.height_keyword = None;
 
     let mut capped_group_style = ComputedStyle::default();
     capped_group_style.display = Display::TableRowGroup;
     capped_group_style.max_height = Some(Length::px(80.0));
+    capped_group_style.max_height_keyword = None;
 
     let mut free_group_style = ComputedStyle::default();
     free_group_style.display = Display::TableRowGroup;
@@ -14285,6 +14391,7 @@ mod tests {
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
     cell_style.min_height = Some(Length::px(10.0));
+    cell_style.min_height_keyword = None;
 
     let make_row = |cell_style: &ComputedStyle| {
       BoxNode::new_block(
@@ -14437,6 +14544,7 @@ mod tests {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
     table_style.height = Some(Length::px(100.0));
+    table_style.height_keyword = None;
     table_style.padding_top = Length::px(10.0);
     table_style.padding_bottom = Length::px(10.0);
     table_style.border_spacing_horizontal = Length::px(5.0);
@@ -14448,6 +14556,7 @@ mod tests {
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
     cell_style.min_height = Some(Length::px(40.0));
+    cell_style.min_height_keyword = None;
 
     let make_row = |cell_style: &ComputedStyle| {
       BoxNode::new_block(
@@ -14517,6 +14626,7 @@ mod tests {
     let mut span_cell_style = ComputedStyle::default();
     span_cell_style.display = Display::TableCell;
     span_cell_style.width = Some(Length::percent(60.0));
+    span_cell_style.width_keyword = None;
 
     let mut auto_cell_style = ComputedStyle::default();
     auto_cell_style.display = Display::TableCell;
@@ -14590,10 +14700,12 @@ mod tests {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
     table_style.width = Some(Length::px(100.0));
+    table_style.width_keyword = None;
 
     let mut caption_style = ComputedStyle::default();
     caption_style.display = Display::TableCaption;
     caption_style.width = Some(Length::px(220.0));
+    caption_style.width_keyword = None;
 
     let mut row_style = ComputedStyle::default();
     row_style.display = Display::TableRow;
@@ -14875,9 +14987,11 @@ mod tests {
 
     let mut row0_cell_style = cell_style.clone();
     row0_cell_style.height = Some(Length::px(10.0)); // No baseline content
+    row0_cell_style.height_keyword = None;
 
     let mut row1_cell_style = cell_style.clone();
     row1_cell_style.height = Some(Length::px(5.0));
+    row1_cell_style.height_keyword = None;
 
     let row0_cell = BoxNode::new_block(
       Arc::new(row0_cell_style),
@@ -14941,10 +15055,14 @@ mod tests {
     let mut span_child_style = ComputedStyle::default();
     span_child_style.display = Display::Block;
     span_child_style.height = Some(Length::px(20.0));
+    span_child_style.height_keyword = None;
 
     let mut short_child_style = ComputedStyle::default();
     short_child_style.display = Display::Block;
     short_child_style.height = Some(Length::px(10.0));
+    short_child_style.height_keyword = None;
+    short_child_style.height_keyword = None;
+    short_child_style.height_keyword = None;
 
     let span_child = BoxNode::new_block(
       Arc::new(span_child_style),
@@ -14981,6 +15099,7 @@ mod tests {
     let mut tiny_child_style = ComputedStyle::default();
     tiny_child_style.display = Display::Block;
     tiny_child_style.height = Some(Length::px(4.0));
+    tiny_child_style.height_keyword = None;
 
     let tiny_child = BoxNode::new_block(
       Arc::new(tiny_child_style),
@@ -15042,10 +15161,12 @@ mod tests {
     let mut short_child_style = ComputedStyle::default();
     short_child_style.display = Display::Block;
     short_child_style.height = Some(Length::px(10.0));
+    short_child_style.height_keyword = None;
 
     let mut span_child_style = ComputedStyle::default();
     span_child_style.display = Display::Block;
     span_child_style.height = Some(Length::px(40.0));
+    span_child_style.height_keyword = None;
 
     let short_child = BoxNode::new_block(
       Arc::new(short_child_style),
@@ -15076,6 +15197,7 @@ mod tests {
     let mut filler_child_style = ComputedStyle::default();
     filler_child_style.display = Display::Block;
     filler_child_style.height = Some(Length::px(4.0));
+    filler_child_style.height_keyword = None;
     let filler_child = BoxNode::new_block(
       Arc::new(filler_child_style),
       FormattingContextType::Block,
@@ -15144,10 +15266,12 @@ mod tests {
     let mut tall_child_style = ComputedStyle::default();
     tall_child_style.display = Display::Block;
     tall_child_style.height = Some(Length::px(40.0));
+    tall_child_style.height_keyword = None;
 
     let mut span_child_style = ComputedStyle::default();
     span_child_style.display = Display::Block;
     span_child_style.height = Some(Length::px(100.0));
+    span_child_style.height_keyword = None;
 
     let tall_child = BoxNode::new_block(
       Arc::new(tall_child_style),
@@ -15235,6 +15359,7 @@ mod tests {
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
     cell_style.width = Some(Length::px(20.0));
+    cell_style.width_keyword = None;
 
     let row0 = BoxNode::new_block(
       Arc::new(row_style.clone()),
@@ -15459,6 +15584,7 @@ mod tests {
     table_style.border_left_color = Rgba::from_rgba8(0, 0, 0, 255);
     table_style.border_right_color = Rgba::from_rgba8(0, 0, 0, 255);
     table_style.width = Some(Length::px(100.0));
+    table_style.width_keyword = None;
 
     let mut row_style = ComputedStyle::default();
     row_style.display = Display::TableRow;
@@ -15717,6 +15843,7 @@ mod tests {
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
     cell_style.width = Some(Length::px(20.0));
+    cell_style.width_keyword = None;
 
     let cell_a = BoxNode::new_block(
       Arc::new(cell_style.clone()),
@@ -15770,6 +15897,7 @@ mod tests {
     cell_top_style.vertical_align = VerticalAlign::Top;
     cell_top_style.vertical_align_specified = true;
     cell_top_style.min_height = Some(Length::px(10.0));
+    cell_top_style.min_height_keyword = None;
 
     let mut cell_span_style = ComputedStyle::default();
     cell_span_style.display = Display::TableCell;
@@ -15781,6 +15909,7 @@ mod tests {
     cell_bottom_style.vertical_align = VerticalAlign::Bottom;
     cell_bottom_style.vertical_align_specified = true;
     cell_bottom_style.min_height = Some(Length::px(10.0));
+    cell_bottom_style.min_height_keyword = None;
 
     let top_cell = BoxNode::new_block(
       Arc::new(cell_top_style),
@@ -15946,6 +16075,7 @@ mod tests {
     caption_style.display = Display::TableCaption;
     caption_style.caption_side = CaptionSide::Top;
     caption_style.height = Some(Length::px(4.0));
+    caption_style.height_keyword = None;
     let caption = BoxNode::new_block(
       Arc::new(caption_style),
       FormattingContextType::Block,
@@ -15959,6 +16089,8 @@ mod tests {
     cell_style.display = Display::TableCell;
     cell_style.width = Some(Length::px(20.0));
     cell_style.height = Some(Length::px(10.0));
+    cell_style.width_keyword = None;
+    cell_style.height_keyword = None;
     let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![]);
     let row = BoxNode::new_block(
       Arc::new(row_style),
@@ -15971,6 +16103,8 @@ mod tests {
     running_style.running_position = Some("header".to_string());
     running_style.width = Some(Length::px(5.0));
     running_style.height = Some(Length::px(5.0));
+    running_style.width_keyword = None;
+    running_style.height_keyword = None;
     let running = BoxNode::new_block(
       Arc::new(running_style),
       FormattingContextType::Block,
@@ -15982,6 +16116,8 @@ mod tests {
     positioned_style.position = Position::Absolute;
     positioned_style.width = Some(Length::px(7.0));
     positioned_style.height = Some(Length::px(3.0));
+    positioned_style.width_keyword = None;
+    positioned_style.height_keyword = None;
     let positioned = BoxNode::new_block(
       Arc::new(positioned_style),
       FormattingContextType::Block,
@@ -16027,6 +16163,7 @@ mod tests {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
     table_style.width = Some(Length::px(200.0));
+    table_style.width_keyword = None;
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(0.0);
 
@@ -16036,6 +16173,7 @@ mod tests {
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
     cell_style.width = Some(Length::px(100.0));
+    cell_style.width_keyword = None;
     cell_style.margin_left = Some(Length::px(4.0));
     cell_style.margin_right = Some(Length::px(4.0));
     let shared_cell_style = Arc::new(cell_style);
@@ -16104,12 +16242,14 @@ mod tests {
     let mut tall_style = ComputedStyle::default();
     tall_style.display = Display::TableCell;
     tall_style.height = Some(Length::px(100.0));
+    tall_style.height_keyword = None;
 
     let tall_cell = BoxNode::new_block(Arc::new(tall_style), FormattingContextType::Block, vec![]);
 
     let mut short_style = ComputedStyle::default();
     short_style.display = Display::TableCell;
     short_style.height = Some(Length::px(20.0));
+    short_style.height_keyword = None;
     short_style.vertical_align = VerticalAlign::Bottom;
     short_style.vertical_align_specified = true;
 
@@ -16148,6 +16288,7 @@ mod tests {
     let mut row_style = ComputedStyle::default();
     row_style.display = Display::TableRow;
     row_style.height = Some(Length::px(40.0));
+    row_style.height_keyword = None;
     row_style.vertical_align = VerticalAlign::Top;
     row_style.vertical_align_specified = true;
 
@@ -16161,6 +16302,7 @@ mod tests {
     let mut inner_style = ComputedStyle::default();
     inner_style.display = Display::Block;
     inner_style.height = Some(Length::px(10.0));
+    inner_style.height_keyword = None;
     let inner = BoxNode::new_block(Arc::new(inner_style), FormattingContextType::Block, vec![]);
 
     let cell = BoxNode::new_block(
@@ -16217,6 +16359,8 @@ mod tests {
       style.background_color = color;
       style.width = Some(Length::px(width));
       style.height = Some(Length::px(height));
+      style.width_keyword = None;
+      style.height_keyword = None;
       let mut node = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![]);
       node.table_cell_span = Some(crate::tree::box_tree::TableCellSpan {
         colspan: colspan as u16,
@@ -16228,6 +16372,7 @@ mod tests {
     let mut row_style = ComputedStyle::default();
     row_style.display = Display::TableRow;
     row_style.height = Some(Length::px(18.0));
+    row_style.height_keyword = None;
     let row1 = BoxNode::new_block(
       Arc::new(row_style.clone()),
       FormattingContextType::Block,
@@ -16238,6 +16383,7 @@ mod tests {
     );
 
     row_style.height = Some(Length::px(22.0));
+    row_style.height_keyword = None;
     let row2 = BoxNode::new_block(
       Arc::new(row_style.clone()),
       FormattingContextType::Block,
@@ -16263,6 +16409,7 @@ mod tests {
     );
 
     row_style.height = Some(Length::px(24.0));
+    row_style.height_keyword = None;
     let row3 = BoxNode::new_block(
       Arc::new(row_style),
       FormattingContextType::Block,
@@ -16473,6 +16620,7 @@ mod tests {
     let mut col_style = ComputedStyle::default();
     col_style.display = Display::TableColumn;
     col_style.width = Some(Length::px(25.0));
+    col_style.width_keyword = None;
     let col = BoxNode::new_block(Arc::new(col_style), FormattingContextType::Block, vec![]);
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
@@ -16498,6 +16646,7 @@ mod tests {
     let mut col_style = ComputedStyle::default();
     col_style.display = Display::TableColumn;
     col_style.width = Some(Length::px(10.0));
+    col_style.width_keyword = None;
     let mut col = BoxNode::new_block(Arc::new(col_style), FormattingContextType::Block, vec![]);
     col.table_column_span = Some(3);
     let mut table_style = ComputedStyle::default();
@@ -16532,6 +16681,7 @@ mod tests {
     let mut narrow_cell_style = ComputedStyle::default();
     narrow_cell_style.display = Display::TableCell;
     narrow_cell_style.width = Some(Length::px(20.0));
+    narrow_cell_style.width_keyword = None;
 
     let first_row = BoxNode::new_block(
       Arc::new(row_style.clone()),
@@ -16553,6 +16703,7 @@ mod tests {
     let mut wide_cell_style = ComputedStyle::default();
     wide_cell_style.display = Display::TableCell;
     wide_cell_style.width = Some(Length::px(1000.0));
+    wide_cell_style.width_keyword = None;
 
     let second_row = BoxNode::new_block(
       Arc::new(row_style),
@@ -16657,6 +16808,7 @@ mod tests {
     let mut col_style = ComputedStyle::default();
     col_style.display = Display::TableColumn;
     col_style.width = Some(Length::px(10.0));
+    col_style.width_keyword = None;
     let col = BoxNode::new_block(
       Arc::new(col_style.clone()),
       FormattingContextType::Block,
@@ -16705,6 +16857,7 @@ mod tests {
     let mut colgroup_style = ComputedStyle::default();
     colgroup_style.display = Display::TableColumnGroup;
     colgroup_style.width = Some(Length::px(7.0));
+    colgroup_style.width_keyword = None;
     colgroup_style.visibility = Visibility::Visible;
     let colgroup = BoxNode::new_block(
       Arc::new(colgroup_style),

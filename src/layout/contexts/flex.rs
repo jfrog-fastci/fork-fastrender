@@ -1356,12 +1356,15 @@ impl FormattingContext for FlexFormattingContext {
                         let style = cloned_style.get_or_insert_with(|| (*box_node.style).clone());
                         if matches!(style.width, Some(len) if len.unit.is_percentage()) {
                             style.width = None;
+                            style.width_keyword = None;
                         }
                         if matches!(style.min_width, Some(len) if len.unit.is_percentage()) {
                             style.min_width = None;
+                            style.min_width_keyword = None;
                         }
                         if matches!(style.max_width, Some(len) if len.unit.is_percentage()) {
                             style.max_width = None;
+                            style.max_width_keyword = None;
                         }
                     }
                     // Flexbox automatic minimum sizes use the min-content size suggestion, which is
@@ -1374,17 +1377,23 @@ impl FormattingContext for FlexFormattingContext {
                         style.width = None;
                         style.min_width = None;
                         style.max_width = None;
+                        style.width_keyword = None;
+                        style.min_width_keyword = None;
+                        style.max_width_keyword = None;
                     }
                     if matches!(avail.height, AvailableSpace::MinContent | AvailableSpace::MaxContent) {
                         let style = cloned_style.get_or_insert_with(|| (*box_node.style).clone());
                         if matches!(style.height, Some(len) if len.unit.is_percentage()) {
                             style.height = None;
+                            style.height_keyword = None;
                         }
                         if matches!(style.min_height, Some(len) if len.unit.is_percentage()) {
                             style.min_height = None;
+                            style.min_height_keyword = None;
                         }
                         if matches!(style.max_height, Some(len) if len.unit.is_percentage()) {
                             style.max_height = None;
+                            style.max_height_keyword = None;
                         }
                     }
                     if matches!(avail.height, AvailableSpace::MinContent) && known_dimensions.height.is_none() {
@@ -1392,6 +1401,9 @@ impl FormattingContext for FlexFormattingContext {
                         style.height = None;
                         style.min_height = None;
                         style.max_height = None;
+                        style.height_keyword = None;
+                        style.min_height_keyword = None;
+                        style.max_height_keyword = None;
                     }
                     if known_dimensions.width.is_none()
                         && matches!(avail.width, AvailableSpace::MinContent)
@@ -1404,6 +1416,7 @@ impl FormattingContext for FlexFormattingContext {
                         // intact so fixed/viewport-spanning items preserve their authored size.
                         let style = cloned_style.get_or_insert_with(|| (*box_node.style).clone());
                         style.width = None;
+                        style.width_keyword = None;
                     }
                     let override_style = cloned_style.map(Arc::new);
                     // When probing intrinsic sizes we may temporarily override the root style.
@@ -3976,6 +3989,7 @@ impl FlexFormattingContext {
         let intrinsic_result = if needs_override {
           let mut override_style: ComputedStyle = (*box_node.style).clone();
           override_style.width = None;
+          override_style.width_keyword = None;
           if box_node.id != 0 {
             crate::layout::style_override::with_style_override(
               box_node.id,
@@ -4043,6 +4057,7 @@ impl FlexFormattingContext {
       let intrinsic_result = if needs_override {
         let mut override_style: ComputedStyle = (*box_node.style).clone();
         override_style.height = None;
+        override_style.height_keyword = None;
         if box_node.id != 0 {
           crate::layout::style_override::with_style_override(
             box_node.id,
@@ -4419,17 +4434,25 @@ impl FlexFormattingContext {
         let mut layout_style = (*layout_child.style).clone();
         if used_border_box_width.is_some() {
           layout_style.width = Some(Length::px(raw_layout_width));
+          layout_style.width_keyword = None;
         } else {
           layout_style.width = None;
           layout_style.min_width = None;
           layout_style.max_width = None;
+          layout_style.width_keyword = None;
+          layout_style.min_width_keyword = None;
+          layout_style.max_width_keyword = None;
         }
         if used_border_box_height.is_some() {
           layout_style.height = Some(Length::px(raw_layout_height));
+          layout_style.height_keyword = None;
         } else {
           layout_style.height = None;
           layout_style.min_height = None;
           layout_style.max_height = None;
+          layout_style.height_keyword = None;
+          layout_style.min_height_keyword = None;
+          layout_style.max_height_keyword = None;
         }
         layout_child.style = Arc::new(layout_style);
         Some(layout_child)
@@ -6472,6 +6495,8 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.width = Some(Length::px(width));
     style.height = Some(Length::px(height));
+    style.width_keyword = None;
+    style.height_keyword = None;
     Arc::new(style)
   }
 
@@ -6479,6 +6504,8 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.width = Some(Length::px(width));
     style.height = Some(Length::px(height));
+    style.width_keyword = None;
+    style.height_keyword = None;
     style.flex_grow = grow;
     Arc::new(style)
   }
@@ -6879,6 +6906,7 @@ mod tests {
     let mut base_style = ComputedStyle::default();
     base_style.display = Display::InlineFlex;
     base_style.width = Some(Length::px(50.0));
+    base_style.width_keyword = None;
 
     let mut container = BoxNode::new_inline_block(
       Arc::new(base_style.clone()),
@@ -6898,6 +6926,7 @@ mod tests {
 
     let mut override_style = base_style;
     override_style.width = Some(Length::px(100.0));
+    override_style.width_keyword = None;
     let fragment = crate::layout::style_override::with_style_override(
       container.id,
       Arc::new(override_style),
@@ -6915,11 +6944,15 @@ mod tests {
     let mut style_a = ComputedStyle::default();
     style_a.width = Some(Length::px(10.0));
     style_a.height = Some(Length::px(10.0));
+    style_a.width_keyword = None;
+    style_a.height_keyword = None;
     style_a.order = 0;
 
     let mut style_b = ComputedStyle::default();
     style_b.width = Some(Length::px(10.0));
     style_b.height = Some(Length::px(10.0));
+    style_b.width_keyword = None;
+    style_b.height_keyword = None;
     style_b.order = 1;
 
     let children = vec![
@@ -6947,11 +6980,15 @@ mod tests {
     let mut style_a = ComputedStyle::default();
     style_a.width = Some(Length::px(10.0));
     style_a.height = Some(Length::px(10.0));
+    style_a.width_keyword = None;
+    style_a.height_keyword = None;
     style_a.order = 1;
 
     let mut style_b = ComputedStyle::default();
     style_b.width = Some(Length::px(10.0));
     style_b.height = Some(Length::px(10.0));
+    style_b.width_keyword = None;
+    style_b.height_keyword = None;
     style_b.order = 0;
 
     let children = vec![
@@ -6982,11 +7019,15 @@ mod tests {
     let mut style_a = ComputedStyle::default();
     style_a.width = Some(Length::px(10.0));
     style_a.height = Some(Length::px(10.0));
+    style_a.width_keyword = None;
+    style_a.height_keyword = None;
     style_a.order = 1;
 
     let mut style_b = ComputedStyle::default();
     style_b.width = Some(Length::px(10.0));
     style_b.height = Some(Length::px(10.0));
+    style_b.width_keyword = None;
+    style_b.height_keyword = None;
     style_b.order = 0;
 
     let children = vec![
@@ -7134,6 +7175,7 @@ mod tests {
 
     let mut item_style = ComputedStyle::default();
     item_style.height = Some(Length::px(10.0));
+    item_style.height_keyword = None;
     item_style.overflow_y = Overflow::Visible;
 
     let child = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
@@ -7159,6 +7201,7 @@ mod tests {
     item_style.display = Display::Flex;
     item_style.flex_direction = FlexDirection::Row;
     item_style.width = Some(Length::px(100.0));
+    item_style.width_keyword = None;
     item_style.overflow_x = Overflow::Visible;
 
     let mut item = BoxNode::new_block(
@@ -7355,6 +7398,10 @@ mod tests {
     item_style.height = Some(Length::px(10.0));
     item_style.min_width = Some(Length::px(0.0));
     item_style.min_height = Some(Length::px(0.0));
+    item_style.width_keyword = None;
+    item_style.height_keyword = None;
+    item_style.min_width_keyword = None;
+    item_style.min_height_keyword = None;
 
     let container_style_a = Arc::new(container_style.clone());
     let container_style_b = Arc::new(container_style);
@@ -7643,6 +7690,7 @@ mod tests {
     container_style.flex_wrap = FlexWrap::NoWrap;
     container_style.overflow_x = Overflow::Scroll;
     container_style.width = Some(Length::px(400.0));
+    container_style.width_keyword = None;
 
     let mut items = Vec::new();
     for _ in 0..5 {
@@ -7650,6 +7698,9 @@ mod tests {
       item_style.width = Some(Length::px(300.0));
       item_style.height = Some(Length::px(50.0));
       item_style.min_width = Some(Length::px(152.0));
+      item_style.width_keyword = None;
+      item_style.height_keyword = None;
+      item_style.min_width_keyword = None;
       item_style.flex_shrink = 1.0;
       items.push(BoxNode::new_block(
         Arc::new(item_style),
@@ -8059,6 +8110,8 @@ mod tests {
     child_style.top = Some(Length::px(11.0));
     child_style.width = Some(Length::px(40.0));
     child_style.height = Some(Length::px(20.0));
+    child_style.width_keyword = None;
+    child_style.height_keyword = None;
     let grandchild = BoxNode::new_block(
       Arc::new(ComputedStyle::default()),
       FormattingContextType::Block,
@@ -8076,6 +8129,8 @@ mod tests {
     container_style.flex_direction = FlexDirection::Row;
     container_style.width = Some(Length::px(120.0));
     container_style.height = Some(Length::px(60.0));
+    container_style.width_keyword = None;
+    container_style.height_keyword = None;
     let mut container = BoxNode::new_block(
       Arc::new(container_style),
       FormattingContextType::Flex,
@@ -8149,6 +8204,8 @@ mod tests {
     abs_style.top = Some(Length::px(7.0));
     abs_style.width = Some(Length::px(20.0));
     abs_style.height = Some(Length::px(10.0));
+    abs_style.width_keyword = None;
+    abs_style.height_keyword = None;
 
     let abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
     let container = BoxNode::new_block(
@@ -8186,6 +8243,8 @@ mod tests {
     abs_style.top = Some(Length::px(7.0));
     abs_style.width = Some(Length::px(10.0));
     abs_style.height = Some(Length::px(6.0));
+    abs_style.width_keyword = None;
+    abs_style.height_keyword = None;
 
     let abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
     let container = BoxNode::new_block(
@@ -8426,6 +8485,7 @@ mod tests {
     container_style.flex_direction = FlexDirection::Row;
     container_style.align_items = AlignItems::Center;
     container_style.height = Some(Length::px(100.0));
+    container_style.height_keyword = None;
 
     // Different height items
     let item1 = BoxNode::new_block(
@@ -8469,6 +8529,7 @@ mod tests {
     container_style.flex_direction = FlexDirection::Row;
     container_style.align_items = AlignItems::Baseline;
     container_style.height = Some(Length::px(80.0));
+    container_style.height_keyword = None;
 
     let mut small_text_style = ComputedStyle::default();
     small_text_style.font_size = 12.0;
@@ -8534,6 +8595,8 @@ mod tests {
     let mut replaced_style = ComputedStyle::default();
     replaced_style.width = Some(Length::px(20.0));
     replaced_style.height = Some(Length::px(10.0));
+    replaced_style.width_keyword = None;
+    replaced_style.height_keyword = None;
     let replaced =
       BoxNode::new_replaced(Arc::new(replaced_style), ReplacedType::Canvas, None, None);
 
@@ -8566,6 +8629,7 @@ mod tests {
     container_style.align_items = AlignItems::Baseline;
     container_style.flex_wrap = FlexWrap::Wrap;
     container_style.width = Some(Length::px(120.0));
+    container_style.width_keyword = None;
 
     let make_item = |font_size: f32, width: f32| {
       let mut text_style = ComputedStyle::default();
@@ -8575,6 +8639,7 @@ mod tests {
       let inline = BoxNode::new_inline(text_style.clone(), vec![text]);
       let mut item_style = ComputedStyle::default();
       item_style.width = Some(Length::px(width));
+      item_style.width_keyword = None;
       BoxNode::new_block(
         Arc::new(item_style),
         FormattingContextType::Block,
@@ -8631,9 +8696,11 @@ mod tests {
     container_style.flex_direction = FlexDirection::Row;
     container_style.align_items = AlignItems::Center;
     container_style.height = Some(Length::px(100.0));
+    container_style.height_keyword = None;
 
     let mut item_style = ComputedStyle::default();
     item_style.height = Some(Length::px(20.0));
+    item_style.height_keyword = None;
     item_style.align_self = Some(AlignItems::FlexEnd);
 
     let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
@@ -8693,6 +8760,7 @@ mod tests {
     style.writing_mode = crate::style::types::WritingMode::VerticalRl;
     style.align_items = AlignItems::Start;
     style.width = Some(Length::px(100.0));
+    style.width_keyword = None;
 
     let child = BoxNode::new_block(
       create_item_style(20.0, 10.0),
@@ -8717,6 +8785,7 @@ mod tests {
     style.writing_mode = crate::style::types::WritingMode::VerticalRl;
     style.justify_content = JustifyContent::FlexStart;
     style.height = Some(Length::px(100.0));
+    style.height_keyword = None;
 
     let mut end_style = style.clone();
     end_style.justify_content = JustifyContent::FlexEnd;
@@ -8777,10 +8846,13 @@ mod tests {
     container_style.writing_mode = crate::style::types::WritingMode::VerticalRl;
     container_style.align_items = AlignItems::Center;
     container_style.width = Some(Length::px(100.0));
+    container_style.width_keyword = None;
 
     let mut child1_style = ComputedStyle::default();
     child1_style.width = Some(Length::px(10.0));
     child1_style.height = Some(Length::px(10.0));
+    child1_style.width_keyword = None;
+    child1_style.height_keyword = None;
     child1_style.align_self = Some(AlignItems::Start);
     // Different writing mode should not affect axis interpretation
     child1_style.writing_mode = crate::style::types::WritingMode::HorizontalTb;
@@ -8789,6 +8861,8 @@ mod tests {
     let mut child2_style = ComputedStyle::default();
     child2_style.width = Some(Length::px(10.0));
     child2_style.height = Some(Length::px(10.0));
+    child2_style.width_keyword = None;
+    child2_style.height_keyword = None;
     child2_style.align_self = Some(AlignItems::End);
     child2_style.writing_mode = crate::style::types::WritingMode::HorizontalTb;
     let child2 = BoxNode::new_block(Arc::new(child2_style), FormattingContextType::Block, vec![]);
@@ -8820,6 +8894,7 @@ mod tests {
 
     let mut item_style = ComputedStyle::default();
     item_style.height = Some(Length::px(40.0));
+    item_style.height_keyword = None;
     item_style.aspect_ratio = AspectRatio::Ratio(2.0);
     let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
 
@@ -8846,6 +8921,7 @@ mod tests {
 
     let mut item_style = ComputedStyle::default();
     item_style.width = Some(Length::px(120.0));
+    item_style.width_keyword = None;
     item_style.aspect_ratio = AspectRatio::Ratio(3.0);
     let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
 

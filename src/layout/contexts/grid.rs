@@ -2147,6 +2147,8 @@ impl GridFormattingContext {
             let mut layout_style = (*child.style).clone();
             layout_style.width = Some(Length::px(bounds.width()));
             layout_style.height = Some(Length::px(bounds.height()));
+            layout_style.width_keyword = None;
+            layout_style.height_keyword = None;
             crate::layout::style_override::with_style_override(
               child.id,
               Arc::new(layout_style),
@@ -2156,6 +2158,8 @@ impl GridFormattingContext {
             let mut layout_style = (*child.style).clone();
             layout_style.width = Some(Length::px(bounds.width()));
             layout_style.height = Some(Length::px(bounds.height()));
+            layout_style.width_keyword = None;
+            layout_style.height_keyword = None;
             let layout_style = Arc::new(layout_style);
             if child.id != 0 {
               crate::layout::style_override::with_style_override(child.id, layout_style, || {
@@ -2438,6 +2442,8 @@ impl GridFormattingContext {
         let mut layout_style = (*box_node.style).clone();
         layout_style.width = Some(Length::px(bounds.width()));
         layout_style.height = Some(Length::px(bounds.height()));
+        layout_style.width_keyword = None;
+        layout_style.height_keyword = None;
         crate::layout::style_override::with_style_override(
           box_node.id,
           Arc::new(layout_style),
@@ -2447,6 +2453,8 @@ impl GridFormattingContext {
         let mut layout_style = (*box_node.style).clone();
         layout_style.width = Some(Length::px(bounds.width()));
         layout_style.height = Some(Length::px(bounds.height()));
+        layout_style.width_keyword = None;
+        layout_style.height_keyword = None;
         let layout_style = Arc::new(layout_style);
         if box_node.id != 0 {
           crate::layout::style_override::with_style_override(box_node.id, layout_style, || {
@@ -2976,6 +2984,8 @@ impl GridFormattingContext {
           let mut relayout_style = (*static_style).clone();
           relayout_style.width = Some(Length::px(result.size.width));
           relayout_style.height = Some(Length::px(result.size.height));
+          relayout_style.width_keyword = None;
+          relayout_style.height_keyword = None;
           child_fragment = crate::layout::style_override::with_style_override(
             child.id,
             Arc::new(relayout_style),
@@ -2986,6 +2996,8 @@ impl GridFormattingContext {
           let mut relayout_style = (*static_style).clone();
           relayout_style.width = Some(Length::px(result.size.width));
           relayout_style.height = Some(Length::px(result.size.height));
+          relayout_style.width_keyword = None;
+          relayout_style.height_keyword = None;
           relayout_child.style = Arc::new(relayout_style);
           child_fragment = fc.layout(&relayout_child, &relayout_constraints)?;
         }
@@ -4977,6 +4989,8 @@ impl FormattingContext for GridFormattingContext {
             let mut relayout_style = (*static_style).clone();
             relayout_style.width = Some(Length::px(result.size.width));
             relayout_style.height = Some(Length::px(result.size.height));
+            relayout_style.width_keyword = None;
+            relayout_style.height_keyword = None;
             child_fragment = crate::layout::style_override::with_style_override(
               child.id,
               Arc::new(relayout_style),
@@ -4987,6 +5001,8 @@ impl FormattingContext for GridFormattingContext {
             let mut relayout_style = (*static_style).clone();
             relayout_style.width = Some(Length::px(result.size.width));
             relayout_style.height = Some(Length::px(result.size.height));
+            relayout_style.width_keyword = None;
+            relayout_style.height_keyword = None;
             relayout_child.style = Arc::new(relayout_style);
             child_fragment = fc.layout(&relayout_child, &relayout_constraints)?;
           }
@@ -5342,6 +5358,8 @@ mod tests {
     let mut item_style = ComputedStyle::default();
     item_style.width = Some(Length::px(10.0));
     item_style.height = Some(Length::px(10.0));
+    item_style.width_keyword = None;
+    item_style.height_keyword = None;
 
     let container = BoxNode::new_inline_block(
       Arc::new(grid_style),
@@ -5370,6 +5388,7 @@ mod tests {
     let mut base_style = ComputedStyle::default();
     base_style.display = CssDisplay::InlineGrid;
     base_style.width = Some(Length::px(50.0));
+    base_style.width_keyword = None;
 
     let mut grid = BoxNode::new_inline_block(
       Arc::new(base_style.clone()),
@@ -5387,6 +5406,7 @@ mod tests {
 
     let mut override_style = base_style;
     override_style.width = Some(Length::px(100.0));
+    override_style.width_keyword = None;
     let fragment =
       crate::layout::style_override::with_style_override(grid.id, Arc::new(override_style), || {
         fc.layout(&grid, &constraints)
@@ -5414,6 +5434,8 @@ mod tests {
     let mut item_style = ComputedStyle::default();
     item_style.width = Some(Length::px(10.0));
     item_style.height = Some(Length::px(10.0));
+    item_style.width_keyword = None;
+    item_style.height_keyword = None;
     item_style.grid_column_start = 1;
     item_style.grid_row_start = 1;
 
@@ -6269,6 +6291,7 @@ mod tests {
 
     let mut child_style = ComputedStyle::default();
     child_style.height = Some(Length::percent(50.0));
+    child_style.height_keyword = None;
     let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
 
     let nodes: Vec<BoxNode> = (0..4)
@@ -6832,6 +6855,8 @@ mod tests {
     abs_style.top = Some(Length::px(7.0));
     abs_style.width = Some(Length::px(12.0));
     abs_style.height = Some(Length::px(9.0));
+    abs_style.width_keyword = None;
+    abs_style.height_keyword = None;
 
     let abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
     let grid = BoxNode::new_block(
@@ -6935,6 +6960,8 @@ mod tests {
     let mut item_style = ComputedStyle::default();
     item_style.width = Some(Length::px(50.0));
     item_style.height = Some(Length::px(30.0));
+    item_style.width_keyword = None;
+    item_style.height_keyword = None;
 
     let child = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
     let grid = BoxNode::new_block(make_grid_style(), FormattingContextType::Grid, vec![child]);
@@ -6954,6 +6981,8 @@ mod tests {
     let mut item_style = ComputedStyle::default();
     item_style.width = Some(Length::px(100.0));
     item_style.height = Some(Length::px(50.0));
+    item_style.width_keyword = None;
+    item_style.height_keyword = None;
 
     let child = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
     let grid = BoxNode::new_block(make_grid_style(), FormattingContextType::Grid, vec![child]);
@@ -7005,6 +7034,7 @@ mod tests {
 
     let mut item_style = ComputedStyle::default();
     item_style.width = Some(Length::px(100.0));
+    item_style.width_keyword = None;
     item_style.padding_left = Length::px(10.0);
     item_style.padding_right = Length::px(10.0);
     item_style.border_left_width = Length::px(5.0);
@@ -7111,6 +7141,8 @@ mod tests {
     let mut item_style = ComputedStyle::default();
     item_style.width = Some(Length::px(50.0));
     item_style.height = Some(Length::px(20.0));
+    item_style.width_keyword = None;
+    item_style.height_keyword = None;
     let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
 
     let grid = BoxNode::new_block(style, FormattingContextType::Grid, vec![item]);
@@ -7136,6 +7168,8 @@ mod tests {
     let mut item_style = ComputedStyle::default();
     item_style.width = Some(Length::px(50.0));
     item_style.height = Some(Length::px(30.0));
+    item_style.width_keyword = None;
+    item_style.height_keyword = None;
     item_style.justify_self = Some(AlignItems::FlexEnd);
     item_style.align_self = Some(AlignItems::FlexEnd);
     let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
@@ -7160,6 +7194,7 @@ mod tests {
 
     let mut item_style = ComputedStyle::default();
     item_style.width = Some(Length::px(80.0));
+    item_style.width_keyword = None;
     item_style.aspect_ratio = AspectRatio::Ratio(2.0);
     let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
 
@@ -7183,6 +7218,7 @@ mod tests {
 
     let mut item_style = ComputedStyle::default();
     item_style.height = Some(Length::px(60.0));
+    item_style.height_keyword = None;
     item_style.aspect_ratio = AspectRatio::Ratio(1.5);
     let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
 

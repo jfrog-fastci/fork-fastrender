@@ -1846,6 +1846,18 @@ impl Default for ContentVisibility {
   }
 }
 
+/// Intrinsic sizing keywords accepted by the size properties.
+///
+/// Used by `width`/`height`/`min-*`/`max-*` when authored as `min-content`,
+/// `max-content`, or `fit-content(...)` instead of a length/percentage.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum IntrinsicSizeKeyword {
+  MinContent,
+  MaxContent,
+  /// Represents `fit-content` and `fit-content(<length-percentage>)`.
+  FitContent { limit: Option<Length> },
+}
+
 /// Intrinsic size fallback for an axis when an element's contents are skipped.
 ///
 /// CSS: `contain-intrinsic-*`

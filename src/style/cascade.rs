@@ -25348,6 +25348,12 @@ pub(crate) fn reset_marker_box_properties(styles: &mut ComputedStyle) {
   styles.min_height = None;
   styles.max_width = None;
   styles.max_height = None;
+  styles.width_keyword = None;
+  styles.height_keyword = None;
+  styles.min_width_keyword = None;
+  styles.min_height_keyword = None;
+  styles.max_width_keyword = None;
+  styles.max_height_keyword = None;
 
   styles.margin_top = defaults.margin_top;
   styles.margin_right = defaults.margin_right;

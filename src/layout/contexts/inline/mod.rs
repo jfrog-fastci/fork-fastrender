@@ -9158,6 +9158,8 @@ impl InlineFormattingContext {
             let mut relayout_style = (*layout_child.style).clone();
             relayout_style.width = Some(Length::px(result.size.width));
             relayout_style.height = Some(Length::px(result.size.height));
+            relayout_style.width_keyword = None;
+            relayout_style.height_keyword = None;
             layout_child.style = Arc::new(relayout_style);
             child_fragment = fc.layout(&layout_child, &relayout_constraints)?;
           }
@@ -10628,6 +10630,8 @@ mod tests {
       style.top = Some(Length::px(0.0));
       style.width = Some(Length::px(1.0));
       style.height = Some(Length::px(1.0));
+      style.width_keyword = None;
+      style.height_keyword = None;
       let abs_child = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![]);
       children.push(abs_child);
     }
@@ -10687,6 +10691,8 @@ mod tests {
       style.top = Some(Length::px(0.0));
       style.width = Some(Length::px(1.0));
       style.height = Some(Length::px(1.0));
+      style.width_keyword = None;
+      style.height_keyword = None;
       let abs_child = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![]);
       children.push(abs_child);
     }
@@ -10755,6 +10761,8 @@ mod tests {
     abs_style.top = Some(Length::px(0.0));
     abs_style.width = Some(Length::px(10.0));
     abs_style.height = Some(Length::px(10.0));
+    abs_style.width_keyword = None;
+    abs_style.height_keyword = None;
     let abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
 
     let wrapper = BoxNode::new_inline(wrapper_style, vec![replaced, abs_child]);
@@ -10800,6 +10808,8 @@ mod tests {
     fixed_style.top = Some(Length::px(0.0));
     fixed_style.width = Some(Length::px(10.0));
     fixed_style.height = Some(Length::px(10.0));
+    fixed_style.width_keyword = None;
+    fixed_style.height_keyword = None;
     let fixed_child =
       BoxNode::new_block(Arc::new(fixed_style), FormattingContextType::Block, vec![]);
 
@@ -10851,6 +10861,8 @@ mod tests {
     abs_style.top = Some(Length::px(0.0));
     abs_style.width = Some(Length::px(10.0));
     abs_style.height = Some(Length::px(10.0));
+    abs_style.width_keyword = None;
+    abs_style.height_keyword = None;
     let abs_child = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
 
     let wrapper = BoxNode::new_inline(wrapper_style, vec![replaced, abs_child]);
@@ -10900,6 +10912,8 @@ mod tests {
     fixed_style.top = Some(Length::px(0.0));
     fixed_style.width = Some(Length::px(10.0));
     fixed_style.height = Some(Length::px(10.0));
+    fixed_style.width_keyword = None;
+    fixed_style.height_keyword = None;
     let fixed_child =
       BoxNode::new_block(Arc::new(fixed_style), FormattingContextType::Block, vec![]);
 
@@ -10976,6 +10990,7 @@ mod tests {
     let mut inline_block_style = (*container_style).clone();
     inline_block_style.display = Display::InlineBlock;
     inline_block_style.width = Some(Length::px(50.0));
+    inline_block_style.width_keyword = None;
     let inline_block_style = Arc::new(inline_block_style);
 
     let inline_block = BoxNode::new_inline_block(
@@ -13168,6 +13183,7 @@ mod tests {
     root_style.text_justify = TextJustify::InterCharacter;
     root_style.text_align_last = crate::style::types::TextAlignLast::Justify;
     root_style.width = Some(Length::px(200.0));
+    root_style.width_keyword = None;
     let root_style = Arc::new(root_style);
     let text_style = Arc::new(ComputedStyle::default());
     let mut text_style_b = ComputedStyle::default();
@@ -13462,6 +13478,8 @@ mod tests {
     ib_style.display = Display::InlineBlock;
     ib_style.height = Some(Length::percent(50.0));
     ib_style.width = Some(Length::px(20.0));
+    ib_style.height_keyword = None;
+    ib_style.width_keyword = None;
     let inline_block =
       BoxNode::new_inline_block(Arc::new(ib_style), FormattingContextType::Block, vec![]);
     let root = make_inline_container(vec![inline_block]);
@@ -13479,6 +13497,7 @@ mod tests {
     let mut ib_style = ComputedStyle::default();
     ib_style.display = Display::InlineBlock;
     ib_style.height = Some(Length::px(50.0));
+    ib_style.height_keyword = None;
     ib_style.aspect_ratio = crate::style::types::AspectRatio::Ratio(2.0);
     let inline_block =
       BoxNode::new_inline_block(Arc::new(ib_style), FormattingContextType::Block, vec![]);
@@ -13498,6 +13517,7 @@ mod tests {
     let mut ib_style = ComputedStyle::default();
     ib_style.display = Display::InlineBlock;
     ib_style.width = Some(Length::px(80.0));
+    ib_style.width_keyword = None;
     ib_style.aspect_ratio = crate::style::types::AspectRatio::Ratio(2.0);
     let inline_block =
       BoxNode::new_inline_block(Arc::new(ib_style), FormattingContextType::Block, vec![]);
@@ -16285,6 +16305,8 @@ mod tests {
     float_style.float = crate::style::float::Float::Left;
     float_style.width = Some(Length::px(40.0));
     float_style.height = Some(Length::px(20.0));
+    float_style.width_keyword = None;
+    float_style.height_keyword = None;
     let float_node = BoxNode::new_inline(Arc::new(float_style), vec![]);
 
     let text_style = Arc::new(ComputedStyle::default());
@@ -16354,6 +16376,8 @@ mod tests {
     float_style.float = crate::style::float::Float::Left;
     float_style.width = Some(Length::px(40.0));
     float_style.height = Some(Length::px(20.0));
+    float_style.width_keyword = None;
+    float_style.height_keyword = None;
     let float_node = BoxNode::new_inline(Arc::new(float_style), vec![]);
 
     let text_style = Arc::new(ComputedStyle::default());
@@ -17386,6 +17410,8 @@ mod tests {
       style.position = crate::style::position::Position::Absolute;
       style.width = Some(Length::px(10.0));
       style.height = Some(Length::px(5.0));
+      style.width_keyword = None;
+      style.height_keyword = None;
       Arc::new(style)
     };
     let positioned = BoxNode::new_inline(positioned_style, vec![]);
@@ -17445,6 +17471,7 @@ mod tests {
     let mut ib_style = ComputedStyle::default();
     ib_style.display = Display::InlineBlock;
     ib_style.width = Some(Length::px(20.0));
+    ib_style.width_keyword = None;
     let inline_block =
       BoxNode::new_inline_block(Arc::new(ib_style), FormattingContextType::Block, vec![]);
 
@@ -17453,6 +17480,8 @@ mod tests {
       style.position = crate::style::position::Position::Absolute;
       style.width = Some(Length::px(5.0));
       style.height = Some(Length::px(5.0));
+      style.width_keyword = None;
+      style.height_keyword = None;
       Arc::new(style)
     };
     let positioned = BoxNode::new_inline(positioned_style, vec![]);
@@ -17488,6 +17517,8 @@ mod tests {
     abs_style.position = crate::style::position::Position::Absolute;
     abs_style.width = Some(Length::px(6.0));
     abs_style.height = Some(Length::px(6.0));
+    abs_style.width_keyword = None;
+    abs_style.height_keyword = None;
     let positioned = BoxNode::new_inline(Arc::new(abs_style), vec![]);
 
     let inline = BoxNode::new_inline(Arc::new(inline_style), vec![positioned]);
@@ -17520,6 +17551,8 @@ mod tests {
     abs_style.position = crate::style::position::Position::Absolute;
     abs_style.width = Some(Length::px(4.0));
     abs_style.height = Some(Length::px(4.0));
+    abs_style.width_keyword = None;
+    abs_style.height_keyword = None;
     let abs = BoxNode::new_inline(Arc::new(abs_style), vec![]);
 
     let mut text_style = ComputedStyle::default();
@@ -17588,6 +17621,8 @@ mod tests {
     abs_style.position = crate::style::position::Position::Absolute;
     abs_style.width = Some(Length::px(4.0));
     abs_style.height = Some(Length::px(4.0));
+    abs_style.width_keyword = None;
+    abs_style.height_keyword = None;
     let abs1 = BoxNode::new_inline(Arc::new(abs_style.clone()), vec![]);
     let abs2 = BoxNode::new_inline(Arc::new(abs_style), vec![]);
 
@@ -17645,6 +17680,8 @@ mod tests {
     abs_style.position = crate::style::position::Position::Absolute;
     abs_style.width = Some(Length::px(4.0));
     abs_style.height = Some(Length::px(4.0));
+    abs_style.width_keyword = None;
+    abs_style.height_keyword = None;
     let abs1 = BoxNode::new_inline(Arc::new(abs_style.clone()), vec![]);
     let abs2 = BoxNode::new_inline(Arc::new(abs_style), vec![]);
 
@@ -17708,6 +17745,8 @@ mod tests {
     abs_style.position = crate::style::position::Position::Absolute;
     abs_style.width = Some(Length::px(2.0));
     abs_style.height = Some(Length::px(2.0));
+    abs_style.width_keyword = None;
+    abs_style.height_keyword = None;
     let abs = BoxNode::new_inline(Arc::new(abs_style), vec![]);
     let with_abs_root = BoxNode::new_block(
       Arc::new(ComputedStyle::default()),
