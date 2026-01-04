@@ -1262,7 +1262,6 @@ mod tests {
   use crate::style::ComputedStyle;
   use crate::text::font_db::FontDatabase;
   use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
-  use std::collections::BTreeMap;
   use std::sync::Arc;
 
   fn contains_running_anchor(node: &FragmentNode) -> bool {
