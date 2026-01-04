@@ -1,6 +1,8 @@
 #[path = "animation/mod.rs"]
 mod animation;
 
+use std::collections::HashMap;
+
 use fastrender::animation::{
   axis_scroll_state, sample_keyframes, scroll_timeline_progress, view_timeline_progress,
   AnimatedValue,
@@ -9,16 +11,20 @@ use fastrender::api::FastRender;
 use fastrender::css::parser::parse_stylesheet;
 use fastrender::css::types::{Transform as CssTransform, TranslateValue};
 use fastrender::dom;
+use fastrender::scroll::ScrollState;
 use fastrender::style::cascade::apply_styles_with_media;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::media::MediaContext;
 use fastrender::style::types::{
-  AnimationRange, AnimationTimeline, BasicShape, FilterFunction, RangeOffset, ScrollFunctionTimeline,
-  ScrollTimeline, ScrollTimelineScroller, TimelineAxis, TimelineOffset, ViewTimeline, ViewTimelinePhase,
-  WritingMode,
+  AnimationRange, AnimationTimeline, BasicShape, FilterFunction, RangeOffset,
+  ScrollFunctionTimeline, ScrollTimeline, ScrollTimelineScroller, TimelineAxis, TimelineOffset,
+  ViewTimeline, ViewTimelinePhase, WritingMode,
 };
 use fastrender::Rgba;
-use fastrender::{ComputedStyle, Length, Size};
+use fastrender::{
+  BoxNode, ComputedStyle, FragmentNode, FragmentTree, Length, Point, PreparedPaintOptions,
+  RenderOptions, Size,
+};
 
 fn find_by_tag<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a StyledNode> {
   if let Some(name) = node.node.tag_name() {
@@ -97,8 +103,14 @@ fn parses_animation_timeline_functions() {
     div.styles.animation_timelines[1],
     AnimationTimeline::Named(ref name) if name == "--foo"
   ));
-  assert!(matches!(div.styles.animation_timelines[2], AnimationTimeline::Auto));
-  assert!(matches!(div.styles.animation_timelines[3], AnimationTimeline::None));
+  assert!(matches!(
+    div.styles.animation_timelines[2],
+    AnimationTimeline::Auto
+  ));
+  assert!(matches!(
+    div.styles.animation_timelines[3],
+    AnimationTimeline::None
+  ));
 }
 
 #[test]
@@ -132,8 +144,7 @@ fn scroll_timeline_progress_tracks_scroll() {
   let range = AnimationRange::default();
   let progress0 = scroll_timeline_progress(&timeline, 0.0, 200.0, 100.0, &range).unwrap();
   let progress_mid = scroll_timeline_progress(&timeline, 50.0, 200.0, 100.0, &range).unwrap();
-  let progress_end =
-    scroll_timeline_progress(&timeline, 200.0, 200.0, 100.0, &range).unwrap();
+  let progress_end = scroll_timeline_progress(&timeline, 200.0, 200.0, 100.0, &range).unwrap();
   assert!((progress0 - 0.0).abs() < 1e-6);
   assert!((progress_mid - 0.25).abs() < 1e-6);
   assert!((progress_end - 1.0).abs() < 1e-6);
@@ -155,10 +166,8 @@ fn view_timeline_progress_respects_entry_and_exit() {
   let range = AnimationRange::default();
   let progress_start =
     view_timeline_progress(&timeline, 150.0, 200.0, 100.0, 50.0, &range).unwrap();
-  let progress_mid =
-    view_timeline_progress(&timeline, 150.0, 200.0, 100.0, 125.0, &range).unwrap();
-  let progress_end =
-    view_timeline_progress(&timeline, 150.0, 200.0, 100.0, 200.0, &range).unwrap();
+  let progress_mid = view_timeline_progress(&timeline, 150.0, 200.0, 100.0, 125.0, &range).unwrap();
+  let progress_end = view_timeline_progress(&timeline, 150.0, 200.0, 100.0, 200.0, &range).unwrap();
   assert!((progress_start - 0.0).abs() < 1e-6);
   assert!((progress_mid - 0.5).abs() < 1e-6);
   assert!((progress_end - 1.0).abs() < 1e-6);
@@ -177,22 +186,43 @@ fn view_timeline_progress_supports_entry_length_offsets() {
   let view_size = 100.0;
   let entry = target_start - view_size;
 
-  let progress0 =
-    view_timeline_progress(&timeline, target_start, target_end, view_size, entry + 100.0, &range)
-      .unwrap();
-  let progress_mid =
-    view_timeline_progress(&timeline, target_start, target_end, view_size, entry + 300.0, &range)
-      .unwrap();
-  let progress_end =
-    view_timeline_progress(&timeline, target_start, target_end, view_size, entry + 500.0, &range)
-      .unwrap();
+  let progress0 = view_timeline_progress(
+    &timeline,
+    target_start,
+    target_end,
+    view_size,
+    entry + 100.0,
+    &range,
+  )
+  .unwrap();
+  let progress_mid = view_timeline_progress(
+    &timeline,
+    target_start,
+    target_end,
+    view_size,
+    entry + 300.0,
+    &range,
+  )
+  .unwrap();
+  let progress_end = view_timeline_progress(
+    &timeline,
+    target_start,
+    target_end,
+    view_size,
+    entry + 500.0,
+    &range,
+  )
+  .unwrap();
 
   assert!((progress0 - 0.0).abs() < 1e-6, "progress0={progress0}");
   assert!(
     (progress_mid - 0.5).abs() < 1e-6,
     "progress_mid={progress_mid}"
   );
-  assert!((progress_end - 1.0).abs() < 1e-6, "progress_end={progress_end}");
+  assert!(
+    (progress_end - 1.0).abs() < 1e-6,
+    "progress_end={progress_end}"
+  );
 }
 
 #[test]
@@ -469,6 +499,211 @@ fn red_pixels(pixmap: &tiny_skia::Pixmap) -> usize {
     }
   }
   count
+}
+
+fn find_box_id_by_dom_id(node: &BoxNode, id: &str) -> Option<usize> {
+  if node.debug_info.as_ref().and_then(|info| info.id.as_deref()) == Some(id) {
+    return Some(node.id);
+  }
+  node
+    .children
+    .iter()
+    .find_map(|child| find_box_id_by_dom_id(child, id))
+}
+
+fn find_fragment_by_box_id<'a>(tree: &'a FragmentTree, box_id: usize) -> Option<&'a FragmentNode> {
+  fn rec<'a>(node: &'a FragmentNode, box_id: usize) -> Option<&'a FragmentNode> {
+    if node.box_id() == Some(box_id) {
+      return Some(node);
+    }
+    node.children.iter().find_map(|child| rec(child, box_id))
+  }
+
+  rec(&tree.root, box_id).or_else(|| {
+    tree
+      .additional_fragments
+      .iter()
+      .find_map(|frag| rec(frag, box_id))
+  })
+}
+
+#[test]
+fn scroll_self_timeline_becomes_inactive_when_element_cannot_scroll() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(100, 100);
+
+  let html_inactive = r#"
+    <style>
+      html, body { margin: 0; }
+      #scroller {
+        overflow-y: auto;
+        height: 100px;
+        width: 100px;
+        background: rgb(255, 0, 0);
+        animation-timeline: scroll(self);
+        animation-name: fade;
+      }
+      @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+    </style>
+    <div id="scroller"><div style="height: 100px;"></div></div>
+  "#;
+
+  let prepared = renderer
+    .prepare_html(html_inactive, options)
+    .expect("prepare inactive");
+  let scroller_id =
+    find_box_id_by_dom_id(&prepared.box_tree().root, "scroller").expect("scroller box_id");
+  let scroll_state = ScrollState::from_parts(
+    Point::ZERO,
+    HashMap::from([(scroller_id, Point::new(0.0, 0.0))]),
+  );
+  let pixmap = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_scroll_state(scroll_state)
+        .with_background(Rgba::new(0, 0, 0, 1.0)),
+    )
+    .expect("paint inactive");
+
+  // With scroll range == 0, scroll(self) should be inactive and the animation should not apply.
+  assert_eq!(pixel(&pixmap, 10, 10), (255, 0, 0, 255));
+}
+
+#[test]
+fn scroll_self_timeline_progress_tracks_element_scroll_offsets() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(100, 100);
+
+  let html = r#"
+    <style>
+      html, body { margin: 0; }
+      #scroller {
+        overflow-y: auto;
+        height: 100px;
+        width: 100px;
+        background: rgb(255, 0, 0);
+        animation-timeline: scroll(self);
+        animation-name: fade;
+      }
+      @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+    </style>
+    <div id="scroller"><div style="height: 200px;"></div></div>
+  "#;
+
+  let prepared = renderer.prepare_html(html, options).expect("prepare");
+  let scroller_id =
+    find_box_id_by_dom_id(&prepared.box_tree().root, "scroller").expect("scroller box_id");
+  let scroller_frag =
+    find_fragment_by_box_id(prepared.fragment_tree(), scroller_id).expect("scroller fragment");
+  let max_scroll =
+    (scroller_frag.scroll_overflow.height() - scroller_frag.bounds.height()).max(0.0);
+  assert!(
+    max_scroll > 0.0,
+    "expected non-zero scroll range for scroll(self) test"
+  );
+
+  let paint = |scroll_y: f32| {
+    let scroll_state = ScrollState::from_parts(
+      Point::ZERO,
+      HashMap::from([(scroller_id, Point::new(0.0, scroll_y))]),
+    );
+    prepared.paint_with_options(
+      PreparedPaintOptions::new()
+        .with_scroll_state(scroll_state)
+        .with_background(Rgba::new(0, 0, 0, 1.0)),
+    )
+  };
+
+  let pixmap_top = paint(0.0).expect("paint at top");
+  // With scroll(self) active and at progress 0, opacity is 0 so we should see the background.
+  assert_eq!(pixel(&pixmap_top, 10, 10), (0, 0, 0, 255));
+
+  let pixmap_bottom = paint(max_scroll).expect("paint at bottom");
+  // With scroll(self) at max scroll, progress should be ~1 so opacity is 1.
+  assert_eq!(pixel(&pixmap_bottom, 10, 10), (255, 0, 0, 255));
+}
+
+#[test]
+fn view_timeline_animation_range_entry_length_offsets_move_pixels() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(0, 0, 0); }
+      .spacer { height: 100px; }
+      #target {
+        width: 40px;
+        height: 800px;
+        background: rgb(255, 0, 0);
+        view-timeline: --t block;
+        animation-timeline: --t;
+        animation-range: entry 100px entry 500px;
+        animation-name: slide;
+        animation-timing-function: linear;
+        animation-fill-mode: both;
+      }
+      @keyframes slide { from { transform: translateX(0px); } to { transform: translateX(50px); } }
+    </style>
+    <div class="spacer"></div>
+    <div id="target"></div>
+    <div class="spacer"></div>
+  "#;
+
+  let pixmap_start = renderer
+    .render_html_with_scroll(html, 100, 100, 0.0, 100.0)
+    .expect("render start");
+  assert_eq!(pixel(&pixmap_start, 2, 10), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap_start, 60, 10), (0, 0, 0, 255));
+
+  let pixmap_mid = renderer
+    .render_html_with_scroll(html, 100, 100, 0.0, 300.0)
+    .expect("render mid");
+  assert_eq!(pixel(&pixmap_mid, 22, 10), (0, 0, 0, 255));
+  assert_eq!(pixel(&pixmap_mid, 30, 10), (255, 0, 0, 255));
+
+  let pixmap_end = renderer
+    .render_html_with_scroll(html, 100, 100, 0.0, 500.0)
+    .expect("render end");
+  assert_eq!(pixel(&pixmap_end, 30, 10), (0, 0, 0, 255));
+  assert_eq!(pixel(&pixmap_end, 60, 10), (255, 0, 0, 255));
+}
+
+#[test]
+fn view_timeline_fill_mode_none_does_not_apply_before_range_start() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(0, 0, 0); }
+      .spacer { height: 100px; }
+      #target {
+        width: 40px;
+        height: 800px;
+        background: rgb(255, 0, 0);
+        view-timeline: --t block;
+        animation-timeline: --t;
+        animation-range: entry 100px entry 500px;
+        animation-name: slide;
+        animation-timing-function: linear;
+        animation-fill-mode: none;
+      }
+      @keyframes slide { from { transform: translateX(50px); } to { transform: translateX(100px); } }
+    </style>
+    <div class="spacer"></div>
+    <div id="target"></div>
+    <div class="spacer"></div>
+  "#;
+
+  // entry == 0 for this setup, so this scroll position is before `entry 100px` but the element is
+  // already visible in the viewport.
+  let pixmap_before = renderer
+    .render_html_with_scroll(html, 100, 100, 0.0, 50.0)
+    .expect("render before");
+  assert_eq!(pixel(&pixmap_before, 2, 60), (255, 0, 0, 255));
+
+  let pixmap_start = renderer
+    .render_html_with_scroll(html, 100, 100, 0.0, 100.0)
+    .expect("render at start");
+  assert_eq!(pixel(&pixmap_start, 2, 60), (0, 0, 0, 255));
+  assert_eq!(pixel(&pixmap_start, 60, 60), (255, 0, 0, 255));
 }
 
 #[test]
