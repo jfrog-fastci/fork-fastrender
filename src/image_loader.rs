@@ -55,6 +55,7 @@ use std::hash::Hasher;
 use std::io::{self, BufRead, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Condvar;
@@ -161,6 +162,7 @@ pub struct ImageCacheDiagnostics {
 
 static IMAGE_CACHE_DIAGNOSTICS_ACTIVE: AtomicBool = AtomicBool::new(false);
 static IMAGE_CACHE_DIAGNOSTICS: Mutex<Option<ImageCacheDiagnostics>> = Mutex::new(None);
+static NEXT_IMAGE_CACHE_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn enable_image_cache_diagnostics() {
   IMAGE_CACHE_DIAGNOSTICS_ACTIVE.store(true, Ordering::Relaxed);
@@ -1331,6 +1333,7 @@ impl ProbeInFlight {
 /// # }
 /// ```
 pub struct ImageCache {
+  instance_id: u64,
   /// In-memory cache of decoded images (keyed by resolved URL)
   cache: Arc<Mutex<SizedLruCache<String, Arc<CachedImage>>>>,
   /// In-flight decodes keyed by resolved URL to de-duplicate concurrent loads.
@@ -1515,6 +1518,7 @@ impl ImageCache {
     config: ImageCacheConfig,
   ) -> Self {
     Self {
+      instance_id: NEXT_IMAGE_CACHE_INSTANCE_ID.fetch_add(1, Ordering::Relaxed),
       cache: Arc::new(Mutex::new(SizedLruCache::new(
         config.max_cached_images,
         config.max_cached_image_bytes,
@@ -1572,6 +1576,10 @@ impl ImageCache {
   /// Returns a reference to the current fetcher
   pub fn fetcher(&self) -> &Arc<dyn ResourceFetcher> {
     &self.fetcher
+  }
+
+  pub(crate) fn instance_id(&self) -> u64 {
+    self.instance_id
   }
 
   /// Attach a diagnostics sink for recording fetch failures.
@@ -4419,6 +4427,7 @@ impl Default for ImageCache {
 impl Clone for ImageCache {
   fn clone(&self) -> Self {
     Self {
+      instance_id: self.instance_id,
       cache: Arc::clone(&self.cache),
       in_flight: Arc::clone(&self.in_flight),
       meta_cache: Arc::clone(&self.meta_cache),

@@ -52,6 +52,7 @@ enum IframeRenderCacheContent {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct IframeRenderCacheKey {
+  image_cache_id: u64,
   content: IframeRenderCacheContent,
   css_width: u32,
   css_height: u32,
@@ -426,6 +427,7 @@ pub(crate) fn render_iframe_srcdoc(
     .unwrap_or_default();
 
   let key = IframeRenderCacheKey {
+    image_cache_id: image_cache.instance_id(),
     content: IframeRenderCacheContent::Srcdoc {
       html_hash: stable_hash_bytes(html.as_bytes()),
       base_url: base_url.clone(),
@@ -561,6 +563,7 @@ pub(crate) fn render_iframe_src(
     .unwrap_or_default();
 
   let key = IframeRenderCacheKey {
+    image_cache_id: image_cache.instance_id(),
     content: IframeRenderCacheContent::Src { url: resolved.clone() },
     css_width: width,
     css_height: height,
@@ -987,6 +990,7 @@ mod tests {
     "#;
 
     let key = IframeRenderCacheKey {
+      image_cache_id: image_cache.instance_id(),
       content: IframeRenderCacheContent::Srcdoc {
         html_hash: stable_hash_bytes(html.as_bytes()),
         base_url: None,
