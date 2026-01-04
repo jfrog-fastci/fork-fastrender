@@ -743,3 +743,94 @@ fn compare_diff_reports_sorts_results_by_severity() {
     ]
   );
 }
+
+#[test]
+fn compare_diff_reports_can_filter_entries_by_name() {
+  let tmp = tempfile::TempDir::new().expect("tempdir");
+  let baseline_path = tmp.path().join("baseline.json");
+  let new_path = tmp.path().join("new.json");
+  let out_json = tmp.path().join("delta.json");
+  let out_html = tmp.path().join("delta.html");
+
+  let baseline = basic_report(vec![
+    json!({
+      "name": "keep",
+      "status": "diff",
+      "metrics": {
+        "pixel_diff": 1,
+        "total_pixels": 100,
+        "diff_percentage": 1.0,
+        "perceptual_distance": 0.1
+      }
+    }),
+    json!({
+      "name": "drop",
+      "status": "diff",
+      "metrics": {
+        "pixel_diff": 2,
+        "total_pixels": 100,
+        "diff_percentage": 2.0,
+        "perceptual_distance": 0.2
+      }
+    }),
+  ]);
+  let new_report = basic_report(vec![
+    json!({
+      "name": "keep",
+      "status": "diff",
+      "metrics": {
+        "pixel_diff": 1,
+        "total_pixels": 100,
+        "diff_percentage": 1.0,
+        "perceptual_distance": 0.1
+      }
+    }),
+    json!({
+      "name": "drop",
+      "status": "diff",
+      "metrics": {
+        "pixel_diff": 2,
+        "total_pixels": 100,
+        "diff_percentage": 2.0,
+        "perceptual_distance": 0.2
+      }
+    }),
+  ]);
+
+  write_json(&baseline_path, &baseline);
+  write_json(&new_path, &new_report);
+
+  let output = compare_cmd(tmp.path())
+    .args([
+      "--baseline",
+      baseline_path.to_str().unwrap(),
+      "--new",
+      new_path.to_str().unwrap(),
+      "--include",
+      "^keep$",
+      "--exclude",
+      "drop",
+      "--json",
+      out_json.to_str().unwrap(),
+      "--html",
+      out_html.to_str().unwrap(),
+    ])
+    .output()
+    .expect("run compare_diff_reports");
+
+  assert!(
+    output.status.success(),
+    "expected success, got {:?}\nstdout:\n{}\nstderr:\n{}",
+    output.status.code(),
+    output_text(&output.stdout),
+    output_text(&output.stderr),
+  );
+
+  let report: Value = serde_json::from_str(&fs::read_to_string(&out_json).unwrap()).unwrap();
+  assert_eq!(report["totals"]["entries"], 1);
+  assert_eq!(report["aggregate"]["paired_with_metrics"], 1);
+
+  let results = report["results"].as_array().expect("results array");
+  assert_eq!(results.len(), 1);
+  assert_eq!(results[0]["name"], "keep");
+}

@@ -115,6 +115,8 @@ cargo run --release --bin compare_diff_reports -- \
 
 # Optional gating (exit non-zero on regressions):
 #   --fail-on-regression --regression-threshold-percent 0.05
+# Optional filtering (only compare selected entries by name regex):
+#   --include '^my_fixture_name$'
 ```
 
 Note: the delta tool expects the two reports to use the same diff settings (`--tolerance`, `--max-diff-percent`, `--max-perceptual-distance`, `--ignore-alpha`) and the same sharding settings when applicable (e.g. both generated with `--shard 0/4`). If your `report.json` lives in a different directory than the corresponding `report.html`, pass `--baseline-html` / `--new-html` so diff thumbnails resolve correctly.

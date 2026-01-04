@@ -500,6 +500,7 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 - Outputs: `diff_report_delta.json` + `diff_report_delta.html` by default.
 - Safety: refuses to compare reports generated with different diff parameters (`tolerance`, `max_diff_percent`, `max_perceptual_distance`, `ignore_alpha`) or different `--shard` settings unless you pass `--allow-config-mismatch` (mismatches are recorded in the delta report).
 - Optional: pass `--baseline-html <report.html>` and/or `--new-html <report.html>` when the report HTML isn't alongside the JSON (or uses a non-standard filename). This improves report links and ensures diff thumbnails resolve correctly (diff image paths in `diff_renders` are relative to the report HTML directory).
+- Optional filtering: `--include <REGEX>` / `--exclude <REGEX>` can be repeated to restrict which entry names are compared (useful when iterating on a specific fixture/page).
 - HTML includes:
   - links to the baseline/new input `report.json` and `report.html`
   - baseline/new render thumbnails (after + diff), and diff% cells show raw pixel counts on hover

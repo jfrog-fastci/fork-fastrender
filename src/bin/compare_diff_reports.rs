@@ -2,6 +2,7 @@ mod common;
 
 use clap::Parser;
 use common::report::{ensure_parent_dir, escape_html, path_for_report};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -52,6 +53,31 @@ struct Args {
   /// Only treat an entry as a failing regression when diff_percentage increases by more than this amount.
   #[arg(long, default_value_t = 0.0, value_name = "PERCENT")]
   regression_threshold_percent: f64,
+
+  /// Only compare entries whose names match this regex (can be repeated).
+  #[arg(long, value_name = "REGEX")]
+  include: Vec<String>,
+
+  /// Exclude entries whose names match this regex (can be repeated).
+  #[arg(long, value_name = "REGEX")]
+  exclude: Vec<String>,
+}
+
+struct NameFilters {
+  include: Vec<Regex>,
+  exclude: Vec<Regex>,
+}
+
+impl NameFilters {
+  fn matches(&self, name: &str) -> bool {
+    if !self.include.is_empty() && !self.include.iter().any(|re| re.is_match(name)) {
+      return false;
+    }
+    if self.exclude.iter().any(|re| re.is_match(name)) {
+      return false;
+    }
+    true
+  }
 }
 
 #[derive(Deserialize, Clone)]
@@ -298,7 +324,7 @@ fn main() {
 
 fn run() -> Result<i32, String> {
   let args = Args::parse();
-  validate_args(&args)?;
+  let name_filters = compile_name_filters(&args)?;
 
   let cwd =
     std::env::current_dir().map_err(|e| format!("failed to read current directory: {e}"))?;
@@ -333,7 +359,7 @@ fn run() -> Result<i32, String> {
       );
     }
     if !args.allow_config_mismatch {
-      let totals = compute_totals_without_deltas(&baseline_report, &new_report);
+      let totals = compute_totals_without_deltas(&baseline_report, &new_report, &name_filters);
       let report = DeltaReport {
         schema_version: SCHEMA_VERSION,
         baseline: baseline_meta,
@@ -370,6 +396,10 @@ fn run() -> Result<i32, String> {
   let mut names = BTreeSet::new();
   names.extend(baseline_by_name.keys().cloned());
   names.extend(new_by_name.keys().cloned());
+  let names: Vec<String> = names
+    .into_iter()
+    .filter(|name| name_filters.matches(name))
+    .collect();
 
   let mut totals = DeltaTotals::default();
   totals.entries = names.len();
@@ -552,11 +582,27 @@ fn sort_results(entries: &mut [DeltaEntry]) {
   }
 }
 
-fn validate_args(args: &Args) -> Result<(), String> {
+fn compile_name_filters(args: &Args) -> Result<NameFilters, String> {
   if !args.regression_threshold_percent.is_finite() || args.regression_threshold_percent < 0.0 {
     return Err("--regression-threshold-percent must be a finite, non-negative number".to_string());
   }
-  Ok(())
+
+  let include = args
+    .include
+    .iter()
+    .map(|pattern| {
+      Regex::new(pattern).map_err(|e| format!("invalid --include regex {pattern:?}: {e}"))
+    })
+    .collect::<Result<Vec<_>, _>>()?;
+  let exclude = args
+    .exclude
+    .iter()
+    .map(|pattern| {
+      Regex::new(pattern).map_err(|e| format!("invalid --exclude regex {pattern:?}: {e}"))
+    })
+    .collect::<Result<Vec<_>, _>>()?;
+
+  Ok(NameFilters { include, exclude })
 }
 
 fn print_summary(report: &DeltaReport, args: &Args) {
@@ -807,9 +853,23 @@ fn compute_aggregate_metrics(entries: &[DeltaEntry]) -> AggregateMetrics {
   }
 }
 
-fn compute_totals_without_deltas(baseline: &DiffReport, new_report: &DiffReport) -> DeltaTotals {
-  let baseline_names: BTreeSet<String> = baseline.results.iter().map(|e| e.name.clone()).collect();
-  let new_names: BTreeSet<String> = new_report.results.iter().map(|e| e.name.clone()).collect();
+fn compute_totals_without_deltas(
+  baseline: &DiffReport,
+  new_report: &DiffReport,
+  filters: &NameFilters,
+) -> DeltaTotals {
+  let baseline_names: BTreeSet<String> = baseline
+    .results
+    .iter()
+    .map(|e| e.name.clone())
+    .filter(|name| filters.matches(name))
+    .collect();
+  let new_names: BTreeSet<String> = new_report
+    .results
+    .iter()
+    .map(|e| e.name.clone())
+    .filter(|name| filters.matches(name))
+    .collect();
 
   let entries = baseline_names.union(&new_names).count();
   let paired = baseline_names.intersection(&new_names).count();
@@ -819,17 +879,20 @@ fn compute_totals_without_deltas(baseline: &DiffReport, new_report: &DiffReport)
   let baseline_errors = baseline
     .results
     .iter()
+    .filter(|entry| filters.matches(&entry.name))
     .filter(|entry| matches!(entry.status, EntryStatus::Error))
     .count();
   let new_errors = new_report
     .results
     .iter()
+    .filter(|entry| filters.matches(&entry.name))
     .filter(|entry| matches!(entry.status, EntryStatus::Error))
     .count();
 
   let baseline_missing = baseline
     .results
     .iter()
+    .filter(|entry| filters.matches(&entry.name))
     .filter(|entry| {
       matches!(
         entry.status,
@@ -840,6 +903,7 @@ fn compute_totals_without_deltas(baseline: &DiffReport, new_report: &DiffReport)
   let new_missing = new_report
     .results
     .iter()
+    .filter(|entry| filters.matches(&entry.name))
     .filter(|entry| {
       matches!(
         entry.status,
