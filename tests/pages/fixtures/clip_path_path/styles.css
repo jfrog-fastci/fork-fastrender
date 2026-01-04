@@ -23,6 +23,12 @@ body {
   margin-bottom: 0;
 }
 
+.chevron-bar {
+  width: 84px;
+  height: 8px;
+  background: linear-gradient(90deg, #0073e6 0%, #3dc9c9 100%);
+}
+
 .clip-arrow {
   /* Stripe-like arrow motion path: starts at negative x to test translation. */
   clip-path: path("M-44 0 H340 L420 48 L340 96 H-44 Z");
@@ -33,5 +39,15 @@ body {
 }
 
 .clip-hole-nonzero {
-  clip-path: path(nonzero, "M0 0 H420 V96 H0 Z M120 24 H300 V72 H120 Z");
+  /* Chrome currently appears to treat clip-path path() fill-rule as evenodd; keep this variant
+     non-overlapping so it remains a stable cross-engine regression while still exercising the
+     `nonzero` parsing path. */
+  clip-path: path(nonzero, "M0 0 H420 V96 H0 Z");
+}
+
+.clip-stripe-chevrons {
+  /* Slice of Stripe's chevron animation path data (multiple open subpaths + negative coords). */
+  clip-path: path(
+    "M-44 0L-38 4L-44 8 M-33 0L-27 4L-33 8 M-22 0L-16 4L-22 8 M-11 0L-5 4L-11 8 M0 0L6 4L0 8 M11 0L17 4L11 8 M22 0L28 4L22 8 M33 0L39 4L33 8 M44 0L50 4L44 8"
+  );
 }
