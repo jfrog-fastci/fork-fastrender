@@ -1,0 +1,72 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Text decoration skip-ink - vertical mixed</title>
+<style>
+  @font-face {
+    font-family: "Noto Sans JP Subset";
+    src: url("tests/fixtures/fonts/NotoSansJP-subset.ttf") format("truetype");
+  }
+
+  body {
+    margin: 0;
+    padding: 24px;
+    background: white;
+    font-family: sans-serif;
+  }
+
+  .row {
+    display: flex;
+    gap: 32px;
+    align-items: flex-start;
+  }
+
+  .block {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .label {
+    font-size: 14px;
+  }
+
+  .sample {
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    font-family: "Noto Sans JP Subset";
+    font-size: 64px;
+    line-height: 1;
+    padding: 16px;
+    border: 2px solid #000;
+    height: 420px;
+    background: #f8f8f8;
+
+    /* Force synthetic styles so the skip-ink inflation matches painted glyphs. */
+    font-weight: 900;
+    font-style: oblique 20deg;
+
+    text-decoration-line: underline;
+    text-decoration-color: black;
+    text-decoration-thickness: 6px;
+    text-underline-offset: -16px;
+  }
+
+  .skip-none {
+    text-decoration-skip-ink: none;
+  }
+
+  .skip-auto {
+    text-decoration-skip-ink: auto;
+  }
+</style>
+
+<div class="row">
+  <div class="block">
+    <div class="label">skip-ink: none</div>
+    <div class="sample skip-none">漢ABC字DEF</div>
+  </div>
+  <div class="block">
+    <div class="label">skip-ink: auto</div>
+    <div class="sample skip-auto">漢ABC字DEF</div>
+  </div>
+</div>

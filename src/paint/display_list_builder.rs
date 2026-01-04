@@ -167,8 +167,6 @@ use crate::tree::fragment_tree::FragmentNode;
 use crate::tree::fragment_tree::FragmentTree;
 use lru::LruCache;
 use rayon::prelude::*;
-use rustc_hash::FxHashMap;
-use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -7354,56 +7352,6 @@ impl DecorationMetrics {
   }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct UnderlineGlyphBboxKey {
-  font_ptr: usize,
-  font_index: u32,
-  variations_hash: u64,
-  glyph_id: u16,
-}
-
-const UNDERLINE_GLYPH_BBOX_CACHE_MAX_ENTRIES: usize = 8192;
-
-thread_local! {
-  static UNDERLINE_GLYPH_BBOX_CACHE: RefCell<FxHashMap<UnderlineGlyphBboxKey, Option<ttf_parser::Rect>>> =
-    RefCell::new(FxHashMap::default());
-}
-
-#[inline]
-fn cached_glyph_bounding_box(
-  face: &ttf_parser::Face<'static>,
-  font: &crate::text::font_db::LoadedFont,
-  variations_hash: u64,
-  glyph_id: u16,
-) -> Option<ttf_parser::Rect> {
-  let key = UnderlineGlyphBboxKey {
-    font_ptr: Arc::as_ptr(&font.data) as usize,
-    font_index: font.index,
-    variations_hash,
-    glyph_id,
-  };
-
-  UNDERLINE_GLYPH_BBOX_CACHE.with(|cache| {
-    let mut cache = cache.borrow_mut();
-    if let Some(cached) = cache.get(&key) {
-      return *cached;
-    }
-    let bbox = face.glyph_bounding_box(ttf_parser::GlyphId(glyph_id));
-    if cache.len() >= UNDERLINE_GLYPH_BBOX_CACHE_MAX_ENTRIES {
-      cache.clear();
-    }
-    cache.insert(key, bbox);
-    bbox
-  })
-}
-
-#[inline]
-fn underline_variations_hash(variations: &[rustybuzz::Variation]) -> u64 {
-  // Keep skip-ink bbox cache keys stable across tag ordering by reusing the shared
-  // variation hash helper (which sorts by axis tag).
-  crate::text::font_instance::variation_hash(variations)
-}
-
 fn collect_underline_exclusions(
   runs: &[ShapedRun],
   baseline_y: f32,
@@ -7411,48 +7359,9 @@ fn collect_underline_exclusions(
   band_bottom: f32,
   skip_all: bool,
 ) -> Vec<(f32, f32)> {
-  let mut intervals = Vec::new();
-  let tolerance = 0.5;
-
-  let mut pen_x = 0.0;
-  for run in runs {
-    let Some(cached_face) = crate::text::face_cache::get_ttf_face(&run.font) else {
-      continue;
-    };
-    let mut face = cached_face.clone_face();
-    crate::text::variations::apply_rustybuzz_variations(&mut face, &run.variations);
-    let variations_hash = underline_variations_hash(&run.variations);
-    let units_per_em = face.units_per_em() as f32;
-    if units_per_em == 0.0 {
-      continue;
-    }
-    let scale = run.font_size / units_per_em * run.scale;
-    let run_origin = pen_x;
-    let mut cursor_x = run_origin;
-
-    for glyph in &run.glyphs {
-      let glyph_x = cursor_x + glyph.x_offset;
-      let glyph_y = baseline_y - glyph.y_offset;
-      if let Some(bbox) =
-        cached_glyph_bounding_box(&face, &run.font, variations_hash, glyph.glyph_id as u16)
-      {
-        let left = glyph_x + bbox.x_min as f32 * scale - tolerance;
-        let right = glyph_x + bbox.x_max as f32 * scale + tolerance;
-        let top = glyph_y - bbox.y_max as f32 * scale - tolerance;
-        let bottom = glyph_y - bbox.y_min as f32 * scale + tolerance;
-
-        if skip_all || (bottom >= band_top && top <= band_bottom) {
-          intervals.push((left, right));
-        }
-      }
-
-      cursor_x += glyph.x_advance;
-    }
-
-    pen_x += run.advance;
-  }
-
-  intervals
+  crate::paint::text_decoration_skip_ink::collect_underline_exclusions(
+    runs, 0.0, baseline_y, band_top, band_bottom, skip_all, 1.0,
+  )
 }
 
 fn collect_underline_exclusions_vertical(
@@ -7462,53 +7371,9 @@ fn collect_underline_exclusions_vertical(
   band_right: f32,
   skip_all: bool,
 ) -> Vec<(f32, f32)> {
-  let mut intervals = Vec::new();
-  let mut pen_inline = 0.0;
-
-  for run in runs {
-    let Some(cached_face) = crate::text::face_cache::get_ttf_face(&run.font) else {
-      continue;
-    };
-    let mut face = cached_face.clone_face();
-    crate::text::variations::apply_rustybuzz_variations(&mut face, &run.variations);
-    let variations_hash = underline_variations_hash(&run.variations);
-    let units_per_em = face.units_per_em() as f32;
-    if units_per_em == 0.0 {
-      continue;
-    }
-    let scale = run.font_size / units_per_em * run.scale;
-    let advance = run.advance;
-    let run_origin = pen_inline;
-    let mut cursor_inline = run_origin;
-
-    for glyph in &run.glyphs {
-      let inline_pos = cursor_inline + glyph.x_offset;
-      let block_pos = block_baseline - glyph.y_offset;
-      if let Some(bbox) =
-        cached_glyph_bounding_box(&face, &run.font, variations_hash, glyph.glyph_id as u16)
-      {
-        let inline_left = inline_pos + bbox.x_min as f32 * scale;
-        let inline_right = inline_pos + bbox.x_max as f32 * scale;
-        let block_top = block_pos - bbox.y_max as f32 * scale;
-        let block_bottom = block_pos - bbox.y_min as f32 * scale;
-
-        if skip_all || (block_bottom >= band_left && block_top <= band_right) {
-          intervals.push((inline_left, inline_right));
-        }
-      }
-
-      let inline_advance = if glyph.y_advance.abs() > f32::EPSILON {
-        glyph.y_advance
-      } else {
-        glyph.x_advance
-      };
-      cursor_inline += inline_advance;
-    }
-
-    pen_inline += advance;
-  }
-
-  intervals
+  crate::paint::text_decoration_skip_ink::collect_underline_exclusions_vertical(
+    runs, 0.0, block_baseline, band_left, band_right, skip_all, 1.0,
+  )
 }
 
 fn subtract_intervals(total: (f32, f32), exclusions: &mut [(f32, f32)]) -> Vec<(f32, f32)> {
@@ -9874,84 +9739,6 @@ mod tests {
       expected_width,
       ch,
       width
-    );
-  }
-
-  #[test]
-  fn underline_glyph_bbox_cache_separates_variations() {
-    let font_path =
-      PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fonts/TestVar.ttf");
-    let data = Arc::new(std::fs::read(font_path).expect("read test font"));
-    let font = crate::text::font_db::LoadedFont {
-      id: None,
-      data,
-      index: 0,
-      face_metrics_overrides: crate::text::font_db::FontFaceMetricsOverrides::default(),
-      family: "TestVar".to_string(),
-      weight: crate::text::font_db::FontWeight::NORMAL,
-      style: FontStyle::Normal,
-      stretch: FontStretch::Normal,
-    };
-
-    let cached_face = face_cache::get_ttf_face(&font).expect("parse test font");
-    let glyph_id = cached_face
-      .face()
-      .glyph_index('A')
-      .expect("expected glyph for A")
-      .0;
-
-    let var_a = rustybuzz::Variation {
-      tag: ttf_parser::Tag::from_bytes(b"wght"),
-      value: 100.0,
-    };
-    let var_b = rustybuzz::Variation {
-      tag: ttf_parser::Tag::from_bytes(b"wght"),
-      value: 900.0,
-    };
-    let hash_a = underline_variations_hash(&[var_a]);
-    let hash_b = underline_variations_hash(&[var_b]);
-    assert_ne!(hash_a, hash_b, "variation hash should depend on value");
-
-    UNDERLINE_GLYPH_BBOX_CACHE.with(|cache| cache.borrow_mut().clear());
-    let mut face_a = cached_face.clone_face();
-    crate::text::variations::apply_rustybuzz_variations(&mut face_a, &[var_a]);
-    let bbox_a = cached_glyph_bounding_box(&face_a, &font, hash_a, glyph_id).expect("bbox a");
-
-    let mut face_b = cached_face.clone_face();
-    crate::text::variations::apply_rustybuzz_variations(&mut face_b, &[var_b]);
-    let bbox_b = cached_glyph_bounding_box(&face_b, &font, hash_b, glyph_id).expect("bbox b");
-
-    assert!(
-      bbox_a.x_min != bbox_b.x_min
-        || bbox_a.x_max != bbox_b.x_max
-        || bbox_a.y_min != bbox_b.y_min
-        || bbox_a.y_max != bbox_b.y_max,
-      "expected bbox to differ across variation values (a {:?}, b {:?})",
-      bbox_a,
-      bbox_b
-    );
-
-    let order_a = [
-      rustybuzz::Variation {
-        tag: ttf_parser::Tag::from_bytes(b"wght"),
-        value: 400.0,
-      },
-      rustybuzz::Variation {
-        tag: ttf_parser::Tag::from_bytes(b"wdth"),
-        value: 125.0,
-      },
-    ];
-    let order_b = [order_a[1], order_a[0]];
-    assert_eq!(
-      underline_variations_hash(&order_a),
-      underline_variations_hash(&order_b),
-      "variation hash should be order-independent"
-    );
-
-    let cache_len = UNDERLINE_GLYPH_BBOX_CACHE.with(|cache| cache.borrow().len());
-    assert_eq!(
-      cache_len, 2,
-      "glyph bbox cache should key entries by variation hash"
     );
   }
 

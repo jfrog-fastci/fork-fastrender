@@ -84,6 +84,7 @@ mod svg_inline_test;
 mod text_cache_test;
 mod text_decoration_skip_ink_offset_golden_test;
 mod text_decoration_skip_ink_rtl_golden_test;
+mod text_decoration_skip_ink_vertical_mixed_golden_test;
 mod text_decoration_skip_ink_variable_font_golden_test;
 mod text_emphasis_currentcolor_palette;
 mod text_emphasis_string_color_font;

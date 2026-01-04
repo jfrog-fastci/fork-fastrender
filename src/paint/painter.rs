@@ -8565,9 +8565,7 @@ impl Painter {
         } else {
           block_baseline - adjusted_pos
         };
-        if inline_vertical {
-          render_line(&mut self.pixmap, center, thickness);
-        } else if matches!(
+        if matches!(
           deco.skip_ink,
           crate::style::types::TextDecorationSkipInk::Auto
             | crate::style::types::TextDecorationSkipInk::All
@@ -9087,48 +9085,15 @@ fn collect_underline_exclusions(
   skip_all: bool,
   device_scale: f32,
 ) -> Vec<(f32, f32)> {
-  let mut intervals = Vec::new();
-  // Small inflation to account for antialiasing without swallowing the entire line.
-  let tolerance = 0.5 * device_scale;
-
-  let mut pen_x = line_start;
-  for run in runs {
-    let Some(cached_face) = crate::text::face_cache::get_ttf_face(&run.font) else {
-      continue;
-    };
-    let mut face = cached_face.clone_face();
-    crate::text::variations::apply_rustybuzz_variations(&mut face, &run.variations);
-    let units_per_em = face.units_per_em() as f32;
-    if units_per_em == 0.0 {
-      continue;
-    }
-    let mut scale = run.font_size / units_per_em;
-    scale *= run.scale * device_scale;
-    let advance = run.advance * device_scale;
-    let run_origin = pen_x;
-    let mut cursor_x = run_origin;
-
-    for glyph in &run.glyphs {
-      let glyph_x = cursor_x + glyph.x_offset * device_scale;
-      let glyph_y = baseline_y - glyph.y_offset * device_scale;
-      if let Some(bbox) = face.glyph_bounding_box(ttf_parser::GlyphId(glyph.glyph_id as u16)) {
-        let left = glyph_x + bbox.x_min as f32 * scale - tolerance;
-        let right = glyph_x + bbox.x_max as f32 * scale + tolerance;
-        let top = glyph_y - bbox.y_max as f32 * scale - tolerance;
-        let bottom = glyph_y - bbox.y_min as f32 * scale + tolerance;
-
-        if skip_all || (bottom >= band_top && top <= band_bottom) {
-          intervals.push((left, right));
-        }
-      }
-
-      cursor_x += glyph.x_advance * device_scale;
-    }
-
-    pen_x += advance;
-  }
-
-  intervals
+  crate::paint::text_decoration_skip_ink::collect_underline_exclusions(
+    runs,
+    line_start,
+    baseline_y,
+    band_top,
+    band_bottom,
+    skip_all,
+    device_scale,
+  )
 }
 
 fn collect_underline_exclusions_vertical(
@@ -9140,52 +9105,15 @@ fn collect_underline_exclusions_vertical(
   skip_all: bool,
   device_scale: f32,
 ) -> Vec<(f32, f32)> {
-  let mut intervals = Vec::new();
-  let tolerance = 0.5 * device_scale;
-
-  let mut pen_inline = inline_start;
-  for run in runs {
-    let Some(cached_face) = crate::text::face_cache::get_ttf_face(&run.font) else {
-      continue;
-    };
-    let mut face = cached_face.clone_face();
-    crate::text::variations::apply_rustybuzz_variations(&mut face, &run.variations);
-    let units_per_em = face.units_per_em() as f32;
-    if units_per_em == 0.0 {
-      continue;
-    }
-    let mut scale = run.font_size / units_per_em;
-    scale *= run.scale * device_scale;
-    let advance = run.advance * device_scale;
-    let run_origin = pen_inline;
-    let mut cursor_inline = run_origin;
-
-    for glyph in &run.glyphs {
-      let inline_pos = cursor_inline + glyph.x_offset * device_scale;
-      let block_pos = block_baseline - glyph.y_offset * device_scale;
-      if let Some(bbox) = face.glyph_bounding_box(ttf_parser::GlyphId(glyph.glyph_id as u16)) {
-        let inline_left = inline_pos + bbox.x_min as f32 * scale - tolerance;
-        let inline_right = inline_pos + bbox.x_max as f32 * scale + tolerance;
-        let block_top = block_pos - bbox.y_max as f32 * scale - tolerance;
-        let block_bottom = block_pos - bbox.y_min as f32 * scale + tolerance;
-
-        if skip_all || (block_bottom >= band_left && block_top <= band_right) {
-          intervals.push((inline_left, inline_right));
-        }
-      }
-
-      let inline_advance = if glyph.y_advance.abs() > f32::EPSILON {
-        glyph.y_advance
-      } else {
-        glyph.x_advance
-      };
-      cursor_inline += inline_advance * device_scale;
-    }
-
-    pen_inline += advance;
-  }
-
-  intervals
+  crate::paint::text_decoration_skip_ink::collect_underline_exclusions_vertical(
+    runs,
+    inline_start,
+    block_baseline,
+    band_left,
+    band_right,
+    skip_all,
+    device_scale,
+  )
 }
 
 fn subtract_intervals(total: (f32, f32), exclusions: &mut [(f32, f32)]) -> Vec<(f32, f32)> {

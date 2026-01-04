@@ -114,6 +114,7 @@ pub mod scene_tree;
 pub mod stacking;
 pub mod svg_filter;
 mod text_decoration;
+pub(crate) mod text_decoration_skip_ink;
 pub mod text_rasterize;
 pub mod text_shadow;
 pub mod transform3d;
