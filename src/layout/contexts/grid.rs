@@ -5681,6 +5681,7 @@ mod tests {
       width: None,
       height: None,
     };
+    let taffy_style: taffy::style::Style = taffy::style::Style::default();
 
     let avail_a = taffy::geometry::Size {
       width: AvailableSpace::Definite(100.4),
@@ -5698,7 +5699,6 @@ mod tests {
       "expected probes to map to the same quantized MeasureKey"
     );
 
-    let taffy_style: taffy::style::Style = taffy::style::Style::default();
     let size_a = {
       let mut measure_cache: FxHashMap<MeasureKey, taffy::geometry::Size<f32>> =
         FxHashMap::default();
