@@ -59,9 +59,9 @@ mod curl_backend;
 mod data_url;
 #[cfg(feature = "disk_cache")]
 pub mod disk_cache;
+pub use cors::{cors_enforcement_enabled, validate_cors_allow_origin, CorsMode};
 #[cfg(feature = "disk_cache")]
 pub use disk_cache::{DiskCacheConfig, DiskCachingFetcher};
-pub use cors::{cors_enforcement_enabled, validate_cors_allow_origin, CorsMode};
 
 // ============================================================================
 // Origin and resource policy
@@ -1967,7 +1967,9 @@ fn cors_origin_key_from_referrer(referrer: Option<&str>) -> Option<String> {
   let referrer = referrer?;
   match Url::parse(referrer) {
     Ok(parsed) => match parsed.scheme() {
-      "http" | "https" => http_browser_origin_and_referer_for_url(&parsed).map(|(origin, _)| origin),
+      "http" | "https" => {
+        http_browser_origin_and_referer_for_url(&parsed).map(|(origin, _)| origin)
+      }
       _ => Some("null".to_string()),
     },
     Err(_) => http_browser_tolerant_origin_from_url(referrer).and_then(|origin| {
@@ -2527,6 +2529,40 @@ pub trait ResourceFetcher: Send + Sync {
     Ok(res)
   }
 
+  /// Fetch a prefix of a resource body using a contextual request (destination + referrer).
+  ///
+  /// This is the request-aware variant of [`ResourceFetcher::fetch_partial_with_context`]. Callers
+  /// that need correct browser-like headers for partial/range requests (notably `Origin` for CORS
+  /// mode) should prefer this API.
+  ///
+  /// The default implementation preserves legacy behavior for non-CORS-mode requests by delegating
+  /// to [`ResourceFetcher::fetch_partial_with_context`]. When the request is in CORS mode and a
+  /// referrer is available, it falls back to a full [`ResourceFetcher::fetch_with_request`] and
+  /// truncates the returned body so the fetcher can still incorporate the referrer into request
+  /// headers.
+  fn fetch_partial_with_request(
+    &self,
+    req: FetchRequest<'_>,
+    max_bytes: usize,
+  ) -> Result<FetchedResource> {
+    let kind: FetchContextKind = req.destination.into();
+    if req.referrer.is_some() && req.destination.sec_fetch_mode() == "cors" {
+      if max_bytes == 0 {
+        let mut res = self.fetch_with_request(req)?;
+        res.bytes.clear();
+        return Ok(res);
+      }
+
+      let mut res = self.fetch_with_request(req)?;
+      if res.bytes.len() > max_bytes {
+        res.bytes.truncate(max_bytes);
+      }
+      return Ok(res);
+    }
+
+    self.fetch_partial_with_context(kind, req.url, max_bytes)
+  }
+
   /// Fetch a resource with optional cache validators for HTTP requests.
   ///
   /// Implementors can ignore the validators if they do not support conditional
@@ -2572,6 +2608,18 @@ pub trait ResourceFetcher: Send + Sync {
     None
   }
 
+  /// Read a cached auxiliary artifact blob using a contextual request (destination + referrer).
+  ///
+  /// The default implementation delegates to [`ResourceFetcher::read_cache_artifact`], discarding
+  /// the referrer.
+  fn read_cache_artifact_with_request(
+    &self,
+    req: FetchRequest<'_>,
+    artifact: CacheArtifactKind,
+  ) -> Option<FetchedResource> {
+    self.read_cache_artifact(req.destination.into(), req.url, artifact)
+  }
+
   /// Persist an auxiliary artifact blob for the given `(kind, url)` tuple.
   ///
   /// Implementations should treat this as best-effort; failures must not surface to callers.
@@ -2591,11 +2639,33 @@ pub trait ResourceFetcher: Send + Sync {
     let _ = (kind, url, artifact, bytes, source);
   }
 
+  /// Persist an auxiliary artifact blob using a contextual request (destination + referrer).
+  ///
+  /// The default implementation delegates to [`ResourceFetcher::write_cache_artifact`], discarding
+  /// the referrer.
+  fn write_cache_artifact_with_request(
+    &self,
+    req: FetchRequest<'_>,
+    artifact: CacheArtifactKind,
+    bytes: &[u8],
+    source: Option<&FetchedResource>,
+  ) {
+    self.write_cache_artifact(req.destination.into(), req.url, artifact, bytes, source);
+  }
+
   /// Remove a cached auxiliary artifact blob for the given `(kind, url)` tuple.
   ///
   /// The default implementation is a no-op.
   fn remove_cache_artifact(&self, kind: FetchContextKind, url: &str, artifact: CacheArtifactKind) {
     let _ = (kind, url, artifact);
+  }
+
+  /// Remove a cached auxiliary artifact blob using a contextual request (destination + referrer).
+  ///
+  /// The default implementation delegates to [`ResourceFetcher::remove_cache_artifact`], discarding
+  /// the referrer.
+  fn remove_cache_artifact_with_request(&self, req: FetchRequest<'_>, artifact: CacheArtifactKind) {
+    self.remove_cache_artifact(req.destination.into(), req.url, artifact);
   }
 }
 
@@ -2635,6 +2705,14 @@ impl<T: ResourceFetcher + ?Sized> ResourceFetcher for Arc<T> {
     (**self).fetch_partial_with_context(kind, url, max_bytes)
   }
 
+  fn fetch_partial_with_request(
+    &self,
+    req: FetchRequest<'_>,
+    max_bytes: usize,
+  ) -> Result<FetchedResource> {
+    (**self).fetch_partial_with_request(req, max_bytes)
+  }
+
   fn fetch_with_validation(
     &self,
     url: &str,
@@ -2663,6 +2741,14 @@ impl<T: ResourceFetcher + ?Sized> ResourceFetcher for Arc<T> {
     (**self).read_cache_artifact(kind, url, artifact)
   }
 
+  fn read_cache_artifact_with_request(
+    &self,
+    req: FetchRequest<'_>,
+    artifact: CacheArtifactKind,
+  ) -> Option<FetchedResource> {
+    (**self).read_cache_artifact_with_request(req, artifact)
+  }
+
   fn write_cache_artifact(
     &self,
     kind: FetchContextKind,
@@ -2674,8 +2760,22 @@ impl<T: ResourceFetcher + ?Sized> ResourceFetcher for Arc<T> {
     (**self).write_cache_artifact(kind, url, artifact, bytes, source)
   }
 
+  fn write_cache_artifact_with_request(
+    &self,
+    req: FetchRequest<'_>,
+    artifact: CacheArtifactKind,
+    bytes: &[u8],
+    source: Option<&FetchedResource>,
+  ) {
+    (**self).write_cache_artifact_with_request(req, artifact, bytes, source)
+  }
+
   fn remove_cache_artifact(&self, kind: FetchContextKind, url: &str, artifact: CacheArtifactKind) {
     (**self).remove_cache_artifact(kind, url, artifact)
+  }
+
+  fn remove_cache_artifact_with_request(&self, req: FetchRequest<'_>, artifact: CacheArtifactKind) {
+    (**self).remove_cache_artifact_with_request(req, artifact)
   }
 }
 
@@ -2790,7 +2890,10 @@ fn build_http_header_pairs<'a>(
     if let Some(value) = profile.upgrade_insecure_requests() {
       headers.push(("Upgrade-Insecure-Requests".to_string(), value.to_string()));
     }
-    if matches!(profile, FetchDestination::Font | FetchDestination::ImageCors) {
+    if matches!(
+      profile,
+      FetchDestination::Font | FetchDestination::ImageCors
+    ) {
       if referrer.is_some() {
         if let Some(referrer_url) = parsed_referrer_url.as_ref() {
           if let Some((origin, _)) = http_browser_origin_and_referer_for_url(referrer_url) {
@@ -2808,7 +2911,8 @@ fn build_http_header_pairs<'a>(
             headers.push(("Referer".to_string(), referer));
           }
         } else if let Some(target_origin) = target_origin.as_ref() {
-          if let Some((origin, referer)) = http_browser_origin_and_referer_for_origin(target_origin) {
+          if let Some((origin, referer)) = http_browser_origin_and_referer_for_origin(target_origin)
+          {
             headers.push(("Origin".to_string(), origin));
             headers.push(("Referer".to_string(), referer));
           }
@@ -3051,11 +3155,12 @@ impl HttpFetcher {
     kind: FetchContextKind,
     url: &str,
     max_bytes: usize,
+    referrer: Option<&str>,
   ) -> Result<FetchedResource> {
     let deadline = render_control::root_deadline();
     let started = Instant::now();
     render_control::with_deadline(deadline.as_ref(), || {
-      self.fetch_http_partial_inner(kind, url, max_bytes, &deadline, started)
+      self.fetch_http_partial_inner(kind, url, max_bytes, referrer, &deadline, started)
     })
   }
 
@@ -3238,6 +3343,7 @@ impl HttpFetcher {
     kind: FetchContextKind,
     url: &str,
     max_bytes: usize,
+    referrer: Option<&str>,
     deadline: &Option<render_control::RenderDeadline>,
     started: Instant,
   ) -> Result<FetchedResource> {
@@ -3249,20 +3355,44 @@ impl HttpFetcher {
       .unwrap_or(false);
 
     match http_backend_mode() {
-      HttpBackendMode::Ureq => {
-        self.fetch_http_partial_inner_ureq(kind, effective_url, max_bytes, deadline, started)
-      }
-      HttpBackendMode::Reqwest => {
-        self.fetch_http_partial_inner_reqwest(kind, effective_url, max_bytes, deadline, started)
-      }
+      HttpBackendMode::Ureq => self.fetch_http_partial_inner_ureq(
+        kind,
+        effective_url,
+        max_bytes,
+        referrer,
+        deadline,
+        started,
+      ),
+      HttpBackendMode::Reqwest => self.fetch_http_partial_inner_reqwest(
+        kind,
+        effective_url,
+        max_bytes,
+        referrer,
+        deadline,
+        started,
+      ),
       // The cURL backend shells out to the system binary and reads the entire response body before
       // returning. For partial probes we instead use the Rust backends, falling back to a full
       // `fetch()` when needed (the image probe path already does this).
       HttpBackendMode::Curl | HttpBackendMode::Auto => {
         if prefer_reqwest {
-          self.fetch_http_partial_inner_reqwest(kind, effective_url, max_bytes, deadline, started)
+          self.fetch_http_partial_inner_reqwest(
+            kind,
+            effective_url,
+            max_bytes,
+            referrer,
+            deadline,
+            started,
+          )
         } else {
-          self.fetch_http_partial_inner_ureq(kind, effective_url, max_bytes, deadline, started)
+          self.fetch_http_partial_inner_ureq(
+            kind,
+            effective_url,
+            max_bytes,
+            referrer,
+            deadline,
+            started,
+          )
         }
       }
     }
@@ -3273,15 +3403,16 @@ impl HttpFetcher {
     kind: FetchContextKind,
     url: &str,
     max_bytes: usize,
+    referrer: Option<&str>,
     deadline: &Option<render_control::RenderDeadline>,
     started: Instant,
   ) -> Result<FetchedResource> {
     let mut current = url.to_string();
     let agent = &self.agent;
     let timeout_budget = self.timeout_budget(deadline);
-    let deadline_retries_disabled = deadline
-      .as_ref()
-      .is_some_and(|deadline| deadline.timeout_limit().is_some() && !deadline.http_retries_enabled());
+    let deadline_retries_disabled = deadline.as_ref().is_some_and(|deadline| {
+      deadline.timeout_limit().is_some() && !deadline.http_retries_enabled()
+    });
     let max_attempts = if deadline_retries_disabled {
       1
     } else {
@@ -3336,7 +3467,7 @@ impl HttpFetcher {
           "identity",
           None,
           kind,
-          None,
+          referrer,
         );
         headers.push((
           "Range".to_string(),
@@ -3755,15 +3886,16 @@ impl HttpFetcher {
     kind: FetchContextKind,
     url: &str,
     max_bytes: usize,
+    referrer: Option<&str>,
     deadline: &Option<render_control::RenderDeadline>,
     started: Instant,
   ) -> Result<FetchedResource> {
     let mut current = url.to_string();
     let client = &self.reqwest_client;
     let timeout_budget = self.timeout_budget(deadline);
-    let deadline_retries_disabled = deadline
-      .as_ref()
-      .is_some_and(|deadline| deadline.timeout_limit().is_some() && !deadline.http_retries_enabled());
+    let deadline_retries_disabled = deadline.as_ref().is_some_and(|deadline| {
+      deadline.timeout_limit().is_some() && !deadline.http_retries_enabled()
+    });
     let max_attempts = if deadline_retries_disabled {
       1
     } else {
@@ -3815,7 +3947,7 @@ impl HttpFetcher {
           "identity",
           None,
           kind,
-          None,
+          referrer,
         );
         headers.push((
           "Range".to_string(),
@@ -4239,9 +4371,9 @@ impl HttpFetcher {
     let mut validators = validators;
     let agent = &self.agent;
     let timeout_budget = self.timeout_budget(deadline);
-    let deadline_retries_disabled = deadline
-      .as_ref()
-      .is_some_and(|deadline| deadline.timeout_limit().is_some() && !deadline.http_retries_enabled());
+    let deadline_retries_disabled = deadline.as_ref().is_some_and(|deadline| {
+      deadline.timeout_limit().is_some() && !deadline.http_retries_enabled()
+    });
     let max_attempts = if deadline_retries_disabled {
       1
     } else {
@@ -4788,9 +4920,9 @@ impl HttpFetcher {
     let mut validators = validators;
     let client = &self.reqwest_client;
     let timeout_budget = self.timeout_budget(deadline);
-    let deadline_retries_disabled = deadline
-      .as_ref()
-      .is_some_and(|deadline| deadline.timeout_limit().is_some() && !deadline.http_retries_enabled());
+    let deadline_retries_disabled = deadline.as_ref().is_some_and(|deadline| {
+      deadline.timeout_limit().is_some() && !deadline.http_retries_enabled()
+    });
     let max_attempts = if auto_fallback && timeout_budget.is_some() {
       1
     } else if deadline_retries_disabled {
@@ -5618,9 +5750,38 @@ impl ResourceFetcher for HttpFetcher {
     match self.policy.ensure_url_allowed(url)? {
       ResourceScheme::Data => self.fetch_data_prefix(kind, url, max_bytes),
       ResourceScheme::File => self.fetch_file_prefix(kind, url, max_bytes),
-      ResourceScheme::Http | ResourceScheme::Https => self.fetch_http_partial(kind, url, max_bytes),
+      ResourceScheme::Http | ResourceScheme::Https => {
+        self.fetch_http_partial(kind, url, max_bytes, None)
+      }
       ResourceScheme::Relative => {
         self.fetch_file_prefix(kind, &format!("file://{}", url), max_bytes)
+      }
+      ResourceScheme::Other => Err(policy_error("unsupported URL scheme")),
+    }
+  }
+
+  fn fetch_partial_with_request(
+    &self,
+    req: FetchRequest<'_>,
+    max_bytes: usize,
+  ) -> Result<FetchedResource> {
+    let kind: FetchContextKind = req.destination.into();
+    if max_bytes == 0 {
+      let mut res = self.fetch_with_request(req)?;
+      res.bytes.clear();
+      return Ok(res);
+    }
+
+    render_control::check_active(render_stage_hint_for_context(kind, req.url))
+      .map_err(Error::Render)?;
+    match self.policy.ensure_url_allowed(req.url)? {
+      ResourceScheme::Data => self.fetch_data_prefix(kind, req.url, max_bytes),
+      ResourceScheme::File => self.fetch_file_prefix(kind, req.url, max_bytes),
+      ResourceScheme::Http | ResourceScheme::Https => {
+        self.fetch_http_partial(kind, req.url, max_bytes, req.referrer)
+      }
+      ResourceScheme::Relative => {
+        self.fetch_file_prefix(kind, &format!("file://{}", req.url), max_bytes)
       }
       ResourceScheme::Other => Err(policy_error("unsupported URL scheme")),
     }
@@ -7439,6 +7600,33 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
 
     self.inner.fetch_partial_with_context(kind, url, max_bytes)
   }
+
+  fn fetch_partial_with_request(
+    &self,
+    req: FetchRequest<'_>,
+    max_bytes: usize,
+  ) -> Result<FetchedResource> {
+    let kind: FetchContextKind = req.destination.into();
+    let url = req.url;
+    if let Some(policy) = &self.policy {
+      policy.ensure_url_allowed(url)?;
+    }
+
+    let key = CacheKey::new_with_origin(kind, url.to_string(), cors_cache_partition_key(&req));
+    if let Some(snapshot) = self.cached_entry(&key) {
+      if let CacheValue::Resource(mut res) = snapshot.value {
+        if res.bytes.len() > max_bytes {
+          res.bytes.truncate(max_bytes);
+        }
+        record_cache_fresh_hit();
+        record_resource_cache_bytes(res.bytes.len());
+        reserve_policy_bytes(&self.policy, &res)?;
+        return Ok(res);
+      }
+    }
+
+    self.inner.fetch_partial_with_request(req, max_bytes)
+  }
 }
 
 /// Returns a sanitized header value from a response header map.
@@ -8730,7 +8918,14 @@ mod tests {
 
       let url = format!("http://{addr}/pixel");
       let res = fetcher
-        .fetch_http_partial_inner_ureq(FetchContextKind::Image, &url, 8, &deadline, Instant::now())
+        .fetch_http_partial_inner_ureq(
+          FetchContextKind::Image,
+          &url,
+          8,
+          None,
+          &deadline,
+          Instant::now(),
+        )
         .expect("ureq image prefix should substitute placeholder");
       handle.join().unwrap();
       assert_eq!(res.bytes, OFFLINE_FIXTURE_PLACEHOLDER_PNG[..8]);
@@ -8799,6 +8994,7 @@ mod tests {
           FetchContextKind::Image,
           &url,
           8,
+          None,
           &deadline,
           Instant::now(),
         )
@@ -8886,7 +9082,14 @@ mod tests {
 
       let url = format!("http://{addr}/pixel.html");
       let res = fetcher
-        .fetch_http_partial_inner_ureq(FetchContextKind::Image, &url, 8, &deadline, Instant::now())
+        .fetch_http_partial_inner_ureq(
+          FetchContextKind::Image,
+          &url,
+          8,
+          None,
+          &deadline,
+          Instant::now(),
+        )
         .expect("ureq image prefix should substitute placeholder");
       handle.join().unwrap();
       assert_eq!(res.bytes, OFFLINE_FIXTURE_PLACEHOLDER_PNG[..8]);
@@ -8957,6 +9160,7 @@ mod tests {
           FetchContextKind::Image,
           &url,
           8,
+          None,
           &deadline,
           Instant::now(),
         )
@@ -9041,7 +9245,14 @@ mod tests {
 
       let url = format!("http://{addr}/photo.jpg");
       let res = fetcher
-        .fetch_http_partial_inner_ureq(FetchContextKind::Image, &url, 8, &deadline, Instant::now())
+        .fetch_http_partial_inner_ureq(
+          FetchContextKind::Image,
+          &url,
+          8,
+          None,
+          &deadline,
+          Instant::now(),
+        )
         .expect("ureq prefix should succeed");
       handle.join().unwrap();
       assert_eq!(res.bytes, body.as_bytes()[..8]);
@@ -9106,6 +9317,7 @@ mod tests {
           FetchContextKind::Image,
           &url,
           8,
+          None,
           &deadline,
           Instant::now(),
         )
@@ -11243,7 +11455,7 @@ mod tests {
       if let Ok(mut slot) = captured_req.lock() {
         *slot = String::from_utf8_lossy(&request).to_string();
       }
- 
+
       let body = b"img";
       let headers = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -11252,7 +11464,7 @@ mod tests {
       stream.write_all(headers.as_bytes()).unwrap();
       stream.write_all(body).unwrap();
     });
- 
+
     let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
     let url = format!("http://{}/asset.png", addr);
     let referrer = format!("http://{}/doc.html", addr);
@@ -11262,7 +11474,7 @@ mod tests {
       )
       .expect("fetch image cors");
     handle.join().unwrap();
- 
+
     assert_eq!(res.bytes, b"img");
     let req = captured.lock().unwrap().to_ascii_lowercase();
     assert!(
@@ -11290,6 +11502,69 @@ mod tests {
     assert!(
       req.contains(&expected_referer),
       "expected Referer header for image cors, got: {req}"
+    );
+  }
+
+  #[test]
+  fn http_fetcher_sets_image_cors_partial_request_headers() {
+    let Some(listener) = try_bind_localhost("http_fetcher_sets_image_cors_partial_request_headers")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(String::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let request = read_http_request(&mut stream)
+        .unwrap()
+        .expect("expected HTTP request");
+      if let Ok(mut slot) = captured_req.lock() {
+        *slot = String::from_utf8_lossy(&request).to_string();
+      }
+
+      let body = b"img";
+      let headers = format!(
+        "HTTP/1.1 206 Partial Content\r\nContent-Type: image/png\r\nContent-Length: {}\r\nContent-Range: bytes 0-2/3\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(headers.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
+    let url = format!("http://{}/asset.png", addr);
+    // Use a cross-origin referrer so the `Origin` header must come from the referrer (not the
+    // target URL origin).
+    let referrer = "http://a.test/page";
+    let res = fetcher
+      .fetch_partial_with_request(
+        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer(referrer),
+        2,
+      )
+      .expect("fetch image cors prefix");
+    handle.join().unwrap();
+
+    assert_eq!(res.bytes, b"im");
+    let req = captured.lock().unwrap().to_ascii_lowercase();
+    assert!(
+      req.contains("sec-fetch-mode: cors"),
+      "expected Sec-Fetch-Mode cors for partial image, got: {req}"
+    );
+    assert!(
+      req.contains("range: bytes=0-1"),
+      "expected Range header for partial image, got: {req}"
+    );
+    assert!(
+      req.contains("origin: http://a.test"),
+      "expected Origin header derived from referrer for partial image, got: {req}"
+    );
+    assert!(
+      req.contains("referer: http://a.test/"),
+      "expected Referer header derived from referrer for partial image, got: {req}"
     );
   }
 
@@ -13101,6 +13376,101 @@ mod tests {
         calls.load(Ordering::SeqCst),
         4,
         "expected differing referrer origins to produce distinct cache entries for CORS-mode requests when CORS enforcement is enabled"
+      );
+    });
+  }
+
+  #[test]
+  fn caching_fetcher_fetch_partial_with_request_uses_origin_partitioned_cache_keys() {
+    #[derive(Clone)]
+    struct OriginEchoFetcher {
+      full_calls: Arc<AtomicUsize>,
+      partial_calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for OriginEchoFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected CachingFetcher to use fetch_with_request / fetch_partial_with_request");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.full_calls.fetch_add(1, Ordering::SeqCst);
+        let origin = cors_origin_key_from_referrer(req.referrer).unwrap_or_default();
+        let mut res = FetchedResource::new(
+          format!("full:{origin}").into_bytes(),
+          Some("text/plain".to_string()),
+        );
+        res.final_url = Some(req.url.to_string());
+        Ok(res)
+      }
+
+      fn fetch_partial_with_request(
+        &self,
+        req: FetchRequest<'_>,
+        max_bytes: usize,
+      ) -> Result<FetchedResource> {
+        self.partial_calls.fetch_add(1, Ordering::SeqCst);
+        let origin = cors_origin_key_from_referrer(req.referrer).unwrap_or_default();
+        let mut bytes = format!("partial:{origin}").into_bytes();
+        bytes.truncate(max_bytes);
+        let mut res = FetchedResource::new(bytes, Some("text/plain".to_string()));
+        res.final_url = Some(req.url.to_string());
+        Ok(res)
+      }
+    }
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "1".to_string(),
+    )])));
+
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let full_calls = Arc::new(AtomicUsize::new(0));
+      let partial_calls = Arc::new(AtomicUsize::new(0));
+      let cache = CachingFetcher::new(OriginEchoFetcher {
+        full_calls: Arc::clone(&full_calls),
+        partial_calls: Arc::clone(&partial_calls),
+      });
+
+      let url = "http://example.com/image.png";
+      let req_a =
+        FetchRequest::new(url, FetchDestination::ImageCors).with_referrer("http://a.test/page");
+      let req_b =
+        FetchRequest::new(url, FetchDestination::ImageCors).with_referrer("http://b.test/page");
+
+      // Seed a full response for origin A.
+      let full_a = cache.fetch_with_request(req_a).expect("fetch A");
+      assert!(
+        String::from_utf8_lossy(&full_a.bytes).starts_with("full:http://a.test"),
+        "unexpected full response: {:?}",
+        String::from_utf8_lossy(&full_a.bytes)
+      );
+      assert_eq!(full_calls.load(Ordering::SeqCst), 1);
+      assert_eq!(partial_calls.load(Ordering::SeqCst), 0);
+
+      // A partial fetch for the same origin should reuse the cached full response rather than
+      // calling through to the inner partial fetcher.
+      let prefix_a = cache
+        .fetch_partial_with_request(req_a, 8)
+        .expect("partial A");
+      assert_eq!(prefix_a.bytes, b"full:htt");
+      assert_eq!(full_calls.load(Ordering::SeqCst), 1);
+      assert_eq!(
+        partial_calls.load(Ordering::SeqCst),
+        0,
+        "expected partial fetch to reuse cached full response for same origin"
+      );
+
+      // A partial fetch from origin B should *not* reuse A's cached response.
+      let prefix_b = cache
+        .fetch_partial_with_request(req_b, 8)
+        .expect("partial B");
+      assert_eq!(prefix_b.bytes, b"partial:");
+      assert_eq!(full_calls.load(Ordering::SeqCst), 1);
+      assert_eq!(
+        partial_calls.load(Ordering::SeqCst),
+        1,
+        "expected partial fetch from a different origin to call inner fetcher when CORS enforcement is enabled"
       );
     });
   }

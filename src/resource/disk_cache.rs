@@ -642,8 +642,13 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     }
   }
 
-  fn stored_at_for_cached_entry(&self, kind: FetchContextKind, url: &str) -> Option<u64> {
-    let key = self.cache_key(kind, url);
+  fn stored_at_for_cached_entry(
+    &self,
+    kind: FetchContextKind,
+    url: &str,
+    origin_key: Option<&str>,
+  ) -> Option<u64> {
+    let key = self.cache_key_with_partition(kind, url, origin_key);
     let data_path = self.data_path_for_key(&key);
     let meta_path = self.meta_path_for_data(&data_path);
     let meta_bytes = fs::read(meta_path).ok()?;
@@ -976,6 +981,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     kind: FetchContextKind,
     url: &str,
     max_bytes: usize,
+    origin_key: Option<&str>,
   ) -> Result<Option<(String, FetchedResource)>> {
     let mut disk_timer = super::start_disk_cache_diagnostics();
     let mut current = url.to_string();
@@ -987,7 +993,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         return Err(Error::Render(err));
       }
 
-      let key = self.cache_key(kind, &current);
+      let key = self.cache_key_with_partition(kind, &current, origin_key);
       let data_path = self.data_path_for_key(&key);
       let meta_path = self.meta_path_for_data(&data_path);
 
@@ -1041,14 +1047,14 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         SnapshotPrefixRead::Miss => {}
       }
 
-      let Some(next) = self.read_alias_target(kind, &current, None) else {
+      let Some(next) = self.read_alias_target(kind, &current, origin_key) else {
         super::record_disk_cache_miss();
         super::finish_disk_cache_diagnostics(disk_timer.take());
         return Ok(None);
       };
 
       if hops >= MAX_ALIAS_HOPS || next == current {
-        self.remove_alias_for(kind, &current, None);
+        self.remove_alias_for(kind, &current, origin_key);
         super::record_disk_cache_miss();
         super::finish_disk_cache_diagnostics(disk_timer.take());
         return Ok(None);
@@ -1700,11 +1706,12 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     kind: FetchContextKind,
     url: &str,
     artifact: CacheArtifactKind,
+    origin_key: Option<&str>,
   ) {
     if self.disk_writeback_disabled() {
       return;
     }
-    let key = self.artifact_key(kind, url, artifact);
+    let key = self.artifact_key_with_partition(kind, url, artifact, origin_key);
     let data_path = self.data_path_for_key(&key);
     let meta_path = self.meta_path_for_data(&data_path);
     let _ = self.remove_entry(&key, &data_path, &meta_path);
@@ -1720,6 +1727,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     kind: FetchContextKind,
     url: &str,
     artifact: CacheArtifactKind,
+    origin_key: Option<&str>,
   ) -> Result<Option<(String, CachedSnapshot)>> {
     if let Some(policy) = &self.policy {
       policy.ensure_url_allowed(url)?;
@@ -1738,7 +1746,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         return Err(Error::Render(err));
       }
 
-      let key = self.artifact_key(kind, &current, artifact);
+      let key = self.artifact_key_with_partition(kind, &current, artifact, origin_key);
       let data_path = self.data_path_for_key(&key);
       let meta_path = self.meta_path_for_data(&data_path);
 
@@ -1779,14 +1787,14 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
         SnapshotRead::Miss => {}
       }
 
-      let Some(next) = self.read_alias_target(kind, &current, None) else {
+      let Some(next) = self.read_alias_target(kind, &current, origin_key) else {
         super::record_disk_cache_miss();
         super::finish_disk_cache_diagnostics(disk_timer.take());
         return Ok(None);
       };
 
       if hops >= MAX_ALIAS_HOPS || next == current {
-        self.remove_alias_for(kind, &current, None);
+        self.remove_alias_for(kind, &current, origin_key);
         super::record_disk_cache_miss();
         super::finish_disk_cache_diagnostics(disk_timer.take());
         return Ok(None);
@@ -1804,6 +1812,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     artifact: CacheArtifactKind,
     bytes: &[u8],
     source: Option<&FetchedResource>,
+    origin_key: Option<&str>,
   ) {
     if self.disk_writeback_disabled_for_len(bytes.len()) {
       return;
@@ -1814,6 +1823,8 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     if !self.deadline_allows_disk_writeback() {
       return;
     }
+
+    self.remove_alias_for(kind, url, origin_key);
 
     let mut resource = FetchedResource::new(
       bytes.to_vec(),
@@ -1841,9 +1852,9 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     // Best-effort: if the primary resource is not cached (e.g. probe performed via a network range
     // request that bypasses disk persistence), fall back to using `now` as the stored-at timestamp.
     let stored_at = self
-      .stored_at_for_cached_entry(kind, &canonical)
+      .stored_at_for_cached_entry(kind, &canonical, origin_key)
       .unwrap_or_else(now_seconds);
-    let canonical_key = self.artifact_key(kind, &canonical, artifact);
+    let canonical_key = self.artifact_key_with_partition(kind, &canonical, artifact, origin_key);
     let data_path = self.data_path_for_key(&canonical_key);
     if let Some(parent) = data_path.parent() {
       let _ = fs::create_dir_all(parent);
@@ -1964,7 +1975,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       });
 
     if canonical != url {
-      self.persist_alias(kind, url, &canonical, None);
+      self.persist_alias(kind, url, &canonical, origin_key);
     }
   }
 
@@ -2391,7 +2402,7 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       return result;
     }
 
-    if let Some((_canonical, mut res)) = self.read_disk_entry_prefix(kind, url, max_bytes)? {
+    if let Some((_canonical, mut res)) = self.read_disk_entry_prefix(kind, url, max_bytes, None)? {
       if res.bytes.len() > max_bytes {
         res.bytes.truncate(max_bytes);
       }
@@ -2407,17 +2418,87 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
       .fetch_partial_with_context(kind, url, max_bytes)
   }
 
+  fn fetch_partial_with_request(
+    &self,
+    req: FetchRequest<'_>,
+    max_bytes: usize,
+  ) -> Result<FetchedResource> {
+    let kind: FetchContextKind = req.destination.into();
+    let url = req.url;
+    if let Some(policy) = &self.policy {
+      policy.ensure_url_allowed(url)?;
+    }
+
+    let origin_key = super::cors_cache_partition_key(&req);
+    let key = CacheKey::new_with_origin(kind, url.to_string(), origin_key);
+
+    if let Some(snapshot) = self.memory.cached_entry(&key) {
+      let result = snapshot.value.as_result();
+      if let Ok(mut res) = result {
+        if res.bytes.len() > max_bytes {
+          res.bytes.truncate(max_bytes);
+        }
+        super::record_cache_fresh_hit();
+        super::record_resource_cache_bytes(res.bytes.len());
+        super::reserve_policy_bytes(&self.policy, &res)?;
+        return Ok(res);
+      }
+      return result;
+    }
+
+    if let Some((_canonical, mut res)) =
+      self.read_disk_entry_prefix(kind, url, max_bytes, key.origin_key.as_deref())?
+    {
+      if res.bytes.len() > max_bytes {
+        res.bytes.truncate(max_bytes);
+      }
+      super::record_cache_fresh_hit();
+      super::record_resource_cache_bytes(res.bytes.len());
+      super::reserve_policy_bytes(&self.policy, &res)?;
+      return Ok(res);
+    }
+
+    self.memory.inner.fetch_partial_with_request(req, max_bytes)
+  }
+
   fn read_cache_artifact(
     &self,
     kind: FetchContextKind,
     url: &str,
     artifact: CacheArtifactKind,
   ) -> Option<FetchedResource> {
-    let snapshot = self.read_disk_artifact(kind, url, artifact).ok().flatten();
+    let snapshot = self
+      .read_disk_artifact(kind, url, artifact, None)
+      .ok()
+      .flatten();
     let (_, snapshot) = snapshot?;
     let plan = self
       .memory
       .plan_cache_use(url, Some(snapshot.clone()), self.disk_config.max_age);
+    match plan.action {
+      CacheAction::UseCached => plan
+        .cached
+        .and_then(|snapshot| snapshot.value.as_result().ok()),
+      _ => None,
+    }
+  }
+
+  fn read_cache_artifact_with_request(
+    &self,
+    req: FetchRequest<'_>,
+    artifact: CacheArtifactKind,
+  ) -> Option<FetchedResource> {
+    let kind: FetchContextKind = req.destination.into();
+    let origin_key = super::cors_cache_partition_key(&req);
+    let snapshot = self
+      .read_disk_artifact(kind, req.url, artifact, origin_key.as_deref())
+      .ok()
+      .flatten();
+    let (_, snapshot) = snapshot?;
+    let plan =
+      self
+        .memory
+        .plan_cache_use(req.url, Some(snapshot.clone()), self.disk_config.max_age);
     match plan.action {
       CacheAction::UseCached => plan
         .cached
@@ -2434,11 +2515,36 @@ impl<F: ResourceFetcher> ResourceFetcher for DiskCachingFetcher<F> {
     bytes: &[u8],
     source: Option<&FetchedResource>,
   ) {
-    self.persist_artifact(kind, url, artifact, bytes, source);
+    self.persist_artifact(kind, url, artifact, bytes, source, None);
+  }
+
+  fn write_cache_artifact_with_request(
+    &self,
+    req: FetchRequest<'_>,
+    artifact: CacheArtifactKind,
+    bytes: &[u8],
+    source: Option<&FetchedResource>,
+  ) {
+    let kind: FetchContextKind = req.destination.into();
+    let origin_key = super::cors_cache_partition_key(&req);
+    self.persist_artifact(
+      kind,
+      req.url,
+      artifact,
+      bytes,
+      source,
+      origin_key.as_deref(),
+    );
   }
 
   fn remove_cache_artifact(&self, kind: FetchContextKind, url: &str, artifact: CacheArtifactKind) {
-    self.remove_artifact_for_url(kind, url, artifact);
+    self.remove_artifact_for_url(kind, url, artifact, None);
+  }
+
+  fn remove_cache_artifact_with_request(&self, req: FetchRequest<'_>, artifact: CacheArtifactKind) {
+    let kind: FetchContextKind = req.destination.into();
+    let origin_key = super::cors_cache_partition_key(&req);
+    self.remove_artifact_for_url(kind, req.url, artifact, origin_key.as_deref());
   }
 }
 
@@ -2903,6 +3009,69 @@ mod tests {
     server.join().unwrap();
     let captured = captured.lock().unwrap().clone();
     assert_eq!(captured, ["http://a.test", "http://b.test"]);
+  }
+
+  #[test]
+  fn disk_cache_partitions_image_probe_metadata_artifacts_by_origin_when_enforced() {
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "1".to_string(),
+    )])));
+
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let tmp = tempfile::tempdir().unwrap();
+      let disk = DiskCachingFetcher::new(PanicFetcher, tmp.path());
+      let url = "https://example.com/image.png";
+      let req_a =
+        FetchRequest::new(url, FetchDestination::ImageCors).with_referrer("http://a.test/page");
+      let req_b =
+        FetchRequest::new(url, FetchDestination::ImageCors).with_referrer("http://b.test/page");
+
+      let mut source_a = FetchedResource::new(
+        Vec::new(),
+        Some(IMAGE_PROBE_METADATA_CONTENT_TYPE.to_string()),
+      );
+      source_a.status = Some(200);
+      source_a.final_url = Some(url.to_string());
+      source_a.access_control_allow_origin = Some("http://a.test".to_string());
+
+      let mut source_b = source_a.clone();
+      source_b.access_control_allow_origin = Some("http://b.test".to_string());
+
+      let bytes_a = br#"{"origin":"a"}"#;
+      let bytes_b = br#"{"origin":"b"}"#;
+
+      disk.write_cache_artifact_with_request(
+        req_a,
+        CacheArtifactKind::ImageProbeMetadata,
+        bytes_a,
+        Some(&source_a),
+      );
+      disk.write_cache_artifact_with_request(
+        req_b,
+        CacheArtifactKind::ImageProbeMetadata,
+        bytes_b,
+        Some(&source_b),
+      );
+
+      let cached_a = disk
+        .read_cache_artifact_with_request(req_a, CacheArtifactKind::ImageProbeMetadata)
+        .expect("artifact A hit");
+      assert_eq!(cached_a.bytes, bytes_a);
+      assert_eq!(
+        cached_a.access_control_allow_origin.as_deref(),
+        Some("http://a.test")
+      );
+
+      let cached_b = disk
+        .read_cache_artifact_with_request(req_b, CacheArtifactKind::ImageProbeMetadata)
+        .expect("artifact B hit");
+      assert_eq!(cached_b.bytes, bytes_b);
+      assert_eq!(
+        cached_b.access_control_allow_origin.as_deref(),
+        Some("http://b.test")
+      );
+    });
   }
 
   #[test]
