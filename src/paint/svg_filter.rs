@@ -3847,11 +3847,14 @@ fn apply_primitive(
       else {
         return Ok(None);
       };
-      let scale = filter.resolve_primitive_scalar(*disp_scale, css_bbox) * scale_avg;
+      let (sx, sy) = filter.resolve_primitive_pair((*disp_scale, *disp_scale), css_bbox);
+      let scale_x_px = sx * scale_x;
+      let scale_y_px = sy * scale_y;
       let Some(output) = apply_displacement_map(
         &primary.pixmap,
         &map.pixmap,
-        scale,
+        scale_x_px,
+        scale_y_px,
         *x_channel,
         *y_channel,
         color_interpolation_filters,
@@ -4894,21 +4897,45 @@ fn drop_shadow_pixmap(
     })?;
   }
 
-  let mut out = match new_pixmap(input.pixmap.width(), input.pixmap.height()) {
-    Some(p) => p,
-    None => return Ok(input),
-  };
-
   let mut paint = PixmapPaint::default();
   paint.blend_mode = tiny_skia::BlendMode::SourceOver;
-  out.draw_pixmap(
-    min_x as i32 - blur_pad_x as i32,
-    min_y as i32 - blur_pad_y as i32,
-    shadow.as_ref(),
-    &paint,
-    Transform::from_translate(dx, dy),
-    None,
-  );
+
+  let origin_x = min_x as i32 - blur_pad_x as i32;
+  let origin_y = min_y as i32 - blur_pad_y as i32;
+  let needs_interpolation = dx.fract() != 0.0 || dy.fract() != 0.0;
+
+  let mut out = if needs_interpolation {
+    // tiny-skia's draw_pixmap translation path snaps subpixel offsets, so apply the offset via our
+    // filter-space sampler to preserve fractional dx/dy like `feOffset` does.
+    let mut shadow_layer = match new_pixmap(input.pixmap.width(), input.pixmap.height()) {
+      Some(p) => p,
+      None => return Ok(input),
+    };
+    shadow_layer.draw_pixmap(
+      origin_x,
+      origin_y,
+      shadow.as_ref(),
+      &paint,
+      Transform::identity(),
+      None,
+    );
+    offset_pixmap(shadow_layer, dx, dy, ColorInterpolationFilters::SRGB)?
+  } else {
+    let mut out = match new_pixmap(input.pixmap.width(), input.pixmap.height()) {
+      Some(p) => p,
+      None => return Ok(input),
+    };
+    out.draw_pixmap(
+      origin_x,
+      origin_y,
+      shadow.as_ref(),
+      &paint,
+      Transform::from_translate(dx, dy),
+      None,
+    );
+    out
+  };
+
   let mut input = input;
   if use_linear {
     reencode_pixmap_to_linear_rgb(&mut input.pixmap)?;
@@ -5136,7 +5163,8 @@ fn tile_pixmap(input: FilterResult, filter_region: Rect) -> RenderResult<Option<
 fn apply_displacement_map(
   primary: &Pixmap,
   map: &Pixmap,
-  scale: f32,
+  scale_x: f32,
+  scale_y: f32,
   x_channel: ChannelSelector,
   y_channel: ChannelSelector,
   color_interpolation_filters: ColorInterpolationFilters,
@@ -5175,8 +5203,8 @@ fn apply_displacement_map(
     let map_color = unpremultiply_sample(map_sample);
     let channel_value_x = channel_value(&map_color, x_channel);
     let channel_value_y = channel_value(&map_color, y_channel);
-    let dx = (channel_value_x - 0.5) * scale;
-    let dy = (channel_value_y - 0.5) * scale;
+    let dx = (channel_value_x - 0.5) * scale_x;
+    let dy = (channel_value_y - 0.5) * scale_y;
 
     let sample = sample_premultiplied(primary, x as f32 + dx, y as f32 + dy);
     let a = to_byte(sample[3]);
@@ -6453,6 +6481,7 @@ mod tests {
       &primary,
       &map,
       1.0,
+      1.0,
       ChannelSelector::R,
       ChannelSelector::G,
       ColorInterpolationFilters::SRGB,
@@ -6462,6 +6491,7 @@ mod tests {
     let linear = apply_displacement_map(
       &primary,
       &map,
+      1.0,
       1.0,
       ChannelSelector::R,
       ChannelSelector::G,
@@ -6493,6 +6523,46 @@ mod tests {
       linear_px.green(),
       linear_px.blue(),
       linear_px.alpha()
+    );
+  }
+
+  #[test]
+  fn displacement_map_scales_per_axis() {
+    let mut primary = new_pixmap(3, 3).unwrap();
+    for y in 0..3u32 {
+      for x in 0..3u32 {
+        let idx = (y * 3 + x) as usize;
+        primary.pixels_mut()[idx] = premul((x * 80) as u8, (y * 80) as u8, 0, 255);
+      }
+    }
+
+    let mut map = new_pixmap(3, 3).unwrap();
+    for px in map.pixels_mut() {
+      *px = premul(255, 255, 255, 255);
+    }
+
+    let out = apply_displacement_map(
+      &primary,
+      &map,
+      2.0,
+      4.0,
+      ChannelSelector::R,
+      ChannelSelector::R,
+      ColorInterpolationFilters::SRGB,
+    )
+    .unwrap()
+    .unwrap();
+
+    let out_px = out.pixel(0, 0).unwrap();
+    let expected = primary.pixel(1, 2).unwrap();
+    assert_eq!(
+      (out_px.red(), out_px.green(), out_px.blue(), out_px.alpha()),
+      (
+        expected.red(),
+        expected.green(),
+        expected.blue(),
+        expected.alpha()
+      )
     );
   }
 
