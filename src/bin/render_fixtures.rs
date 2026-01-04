@@ -131,6 +131,7 @@ struct RenderMetadataFile {
   viewport: (u32, u32),
   dpr: f32,
   media: MediaMetadata,
+  fit_canvas_to_content: bool,
   timeout_secs: u64,
   bundled_fonts: bool,
   font_dirs: Vec<PathBuf>,
@@ -708,6 +709,7 @@ fn write_render_metadata_file(
 ) -> io::Result<()> {
   let viewport = shared.base_options.viewport.unwrap_or((0, 0));
   let dpr = shared.base_options.device_pixel_ratio.unwrap_or(1.0);
+  let fit_canvas_to_content = shared.base_options.fit_canvas_to_content.unwrap_or(false);
   let blocked_network_urls = blocked_urls.map(|urls| {
     let count = urls.len();
     let sample = urls.into_iter().take(3).collect::<Vec<_>>();
@@ -721,6 +723,7 @@ fn write_render_metadata_file(
     viewport,
     dpr,
     media: MediaMetadata::from_arg(shared.media),
+    fit_canvas_to_content,
     timeout_secs: shared.timeout_secs,
     bundled_fonts: shared.font_config.use_bundled_fonts,
     font_dirs: shared.font_config.font_dirs.clone(),

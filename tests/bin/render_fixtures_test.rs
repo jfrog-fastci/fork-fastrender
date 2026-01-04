@@ -56,6 +56,7 @@ fn render_fixtures_writes_png_output() {
   assert_eq!(metadata["fixture"], "basic");
   assert_eq!(metadata["viewport"], serde_json::json!([64, 64]));
   assert_eq!(metadata["media"], "screen");
+  assert_eq!(metadata["fit_canvas_to_content"], false);
   assert_eq!(metadata["timeout_secs"], 2);
   assert_eq!(metadata["status"], "ok");
   assert!(
