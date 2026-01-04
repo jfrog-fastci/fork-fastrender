@@ -2240,7 +2240,7 @@ fn parse_transition_time_list(raw: &str) -> Vec<f32> {
   }
 }
 
-fn parse_transition_timing_function(raw: &str) -> Option<TransitionTimingFunction> {
+pub(crate) fn parse_transition_timing_function(raw: &str) -> Option<TransitionTimingFunction> {
   let trimmed = raw.trim();
   if trimmed.is_empty() {
     return None;

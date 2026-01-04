@@ -8,13 +8,13 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::css::types::{Keyframe, KeyframesRule, RotateValue, ScaleValue, TranslateValue};
+use crate::css::types::{Keyframe, KeyframesRule, PropertyValue, RotateValue, ScaleValue, TranslateValue};
 use crate::debug::runtime;
 use crate::geometry::{Point, Rect, Size};
 use crate::paint::display_list::{Transform2D, Transform3D};
 use crate::scroll::ScrollState;
 use crate::style::inline_axis_is_horizontal;
-use crate::style::properties::apply_declaration_with_base;
+use crate::style::properties::{apply_declaration_with_base, parse_transition_timing_function};
 use crate::style::types::AnimationDirection;
 use crate::style::types::AnimationFillMode;
 use crate::style::types::AnimationIterationCount;
@@ -48,6 +48,7 @@ use crate::style::types::ViewTimeline;
 use crate::style::types::ViewTimelineInset;
 use crate::style::types::ViewTimelinePhase;
 use crate::style::types::WritingMode;
+use crate::style::var_resolution::{resolve_var_for_property, VarResolutionResult};
 use crate::style::values::Length;
 use crate::style::ComputedStyle;
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
@@ -1955,6 +1956,7 @@ pub fn sample_keyframes(
   }
 
   let mut resolved_styles = Vec::with_capacity(groups.len());
+  let mut timing_functions = Vec::with_capacity(groups.len());
   for (_, group_frames) in &groups {
     let mut style = base_style.clone();
 
@@ -1976,9 +1978,42 @@ pub fn sample_keyframes(
       }
     }
 
+    let mut keyframe_timing_function: Option<TransitionTimingFunction> = None;
     for frame in group_frames {
       for decl in &frame.declarations {
         if decl.property.is_custom() {
+          continue;
+        }
+        if matches!(
+          decl.property.as_str(),
+          "animation-timing-function" | "-webkit-animation-timing-function"
+        ) {
+          let PropertyValue::Keyword(raw_value) = &decl.value else {
+            continue;
+          };
+
+          let resolved_css = if decl.contains_var {
+            match resolve_var_for_property(
+              &decl.value,
+              &style.custom_properties,
+              "animation-timing-function",
+            ) {
+              VarResolutionResult::Resolved { css_text, .. } => {
+                if css_text.is_empty() {
+                  raw_value.clone()
+                } else {
+                  css_text.into_owned()
+                }
+              }
+              _ => continue,
+            }
+          } else {
+            raw_value.clone()
+          };
+
+          if let Some(parsed) = parse_transition_timing_function(&resolved_css) {
+            keyframe_timing_function = Some(parsed);
+          }
           continue;
         }
         apply_declaration_with_base(
@@ -1994,6 +2029,7 @@ pub fn sample_keyframes(
       }
     }
 
+    timing_functions.push(keyframe_timing_function.unwrap_or(TransitionTimingFunction::Linear));
     resolved_styles.push(style);
   }
 
@@ -2047,6 +2083,10 @@ pub fn sample_keyframes(
     } else {
       0.0
     };
+    let eased_t = match prev_idx {
+      Some(idx) => timing_functions[idx].value_at(local_t),
+      None => local_t,
+    };
 
     let from_style = prev_idx
       .map(|idx| &resolved_styles[idx])
@@ -2061,8 +2101,8 @@ pub fn sample_keyframes(
     let Some(to_val) = (interpolator.extract)(to_style, &ctx) else {
       continue;
     };
-    let value = (interpolator.interpolate)(&from_val, &to_val, local_t).or_else(|| {
-      if (local_t - 1.0).abs() < f32::EPSILON {
+    let value = (interpolator.interpolate)(&from_val, &to_val, eased_t).or_else(|| {
+      if (eased_t - 1.0).abs() < f32::EPSILON {
         Some(to_val.clone())
       } else {
         Some(from_val.clone())
@@ -3432,6 +3472,24 @@ mod tests {
     let rule = &keyframes[0];
 
     assert!((sampled_transform_translate_x(rule, 0.0) - 100.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn sample_keyframes_respects_keyframe_timing_function_for_following_interval() {
+    let sheet = parse_stylesheet(
+      "@keyframes step {\
+        0% { opacity: 0; }\
+        50% { opacity: 1; animation-timing-function: step-end; }\
+        100% { opacity: 0; }\
+      }",
+    )
+    .unwrap();
+    let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+    let rule = &keyframes[0];
+
+    assert!((sampled_opacity(rule, 0.25) - 0.5).abs() < 1e-6);
+    assert!((sampled_opacity(rule, 0.75) - 1.0).abs() < 1e-6);
+    assert!((sampled_opacity(rule, 1.0) - 0.0).abs() < 1e-6);
   }
 
   fn decode_png(bytes: &[u8]) -> image::RgbaImage {
