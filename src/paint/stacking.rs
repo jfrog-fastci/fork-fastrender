@@ -387,27 +387,36 @@ impl StackingContext {
     };
     let translate = |rect: Rect| rect.translate(self.offset_from_parent_context);
 
-    // Union all fragment bounds from all layers in the parent stacking context's
+    // Union all fragment paint bounds from all layers in the parent stacking context's
     // coordinate space.
+    //
+    // Fragment bounds represent only the element's own border box; descendants can paint outside
+    // those bounds (e.g., absolutely positioned elements with `overflow: visible`). Use
+    // `scroll_overflow` (which is annotated after layout) so culling based on stacking context
+    // bounds doesn't incorrectly drop visible overflow descendants.
     for (idx, frag) in self.fragments.iter().enumerate() {
       let rect = if idx == 0 {
-        Rect::from_xywh(0.0, 0.0, frag.bounds.width(), frag.bounds.height())
+        frag.scroll_overflow
       } else {
-        frag.bounds
+        frag.scroll_overflow.translate(frag.bounds.origin)
       };
       accumulate(translate(rect), &mut bounds);
     }
     for frag in &self.layer3_blocks {
-      accumulate(translate(frag.bounds), &mut bounds);
+      accumulate(translate(frag.scroll_overflow.translate(frag.bounds.origin)), &mut bounds);
     }
     for frag in &self.layer4_floats {
-      accumulate(translate(frag.bounds), &mut bounds);
+      accumulate(translate(frag.scroll_overflow.translate(frag.bounds.origin)), &mut bounds);
     }
     for frag in &self.layer5_inlines {
-      accumulate(translate(frag.bounds), &mut bounds);
+      accumulate(translate(frag.scroll_overflow.translate(frag.bounds.origin)), &mut bounds);
     }
     for frag in &self.layer6_positioned {
-      accumulate(translate(frag.fragment.bounds), &mut bounds);
+      let fragment = &frag.fragment;
+      accumulate(
+        translate(fragment.scroll_overflow.translate(fragment.bounds.origin)),
+        &mut bounds,
+      );
     }
 
     // Union child stacking context bounds

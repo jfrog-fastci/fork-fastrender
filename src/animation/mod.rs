@@ -2263,45 +2263,39 @@ fn time_based_animation_progress(style: &ComputedStyle, idx: usize, time_ms: f32
 }
 
 fn settled_time_based_animation_progress(style: &ComputedStyle, idx: usize) -> Option<f32> {
-  let duration = pick(&style.animation_durations, idx, 0.0).max(0.0);
-  let delay = pick(&style.animation_delays, idx, 0.0);
-  let timing = pick(
-    &style.animation_timing_functions,
+  let fill = pick(
+    &style.animation_fill_modes,
     idx,
-    TransitionTimingFunction::Ease,
+    AnimationFillMode::default(),
   );
+  if !fill_forwards(fill) {
+    return None;
+  }
+
   let iteration_count = pick(
     &style.animation_iteration_counts,
     idx,
     AnimationIterationCount::default(),
   );
+  let iterations = iteration_count.as_f32();
+  // Infinite animations don't have a deterministic "final" keyframe state.
+  if !iterations.is_finite() {
+    return None;
+  }
+
   let direction = pick(
     &style.animation_directions,
     idx,
     AnimationDirection::default(),
   );
+  let timing = pick(
+    &style.animation_timing_functions,
+    idx,
+    TransitionTimingFunction::Ease,
+  );
 
-  let iterations = iteration_count.as_f32();
-  if iterations.is_infinite() {
-    // When no animation sampling timestamp is provided, we still want a stable output for
-    // time-based animations. Infinite animations have no "final" state, so we sample a canonical
-    // progress at the start of the first iteration after any delay. This keeps renders
-    // deterministic while respecting animation-direction (reverse/alternate-reverse start at 1.0).
-    let start_progress = if iteration_reverses(direction, 0) {
-      1.0
-    } else {
-      0.0
-    };
-    return Some(timing.value_at(start_progress));
-  }
-
-  let active_duration = if duration <= 0.0 {
-    0.0
-  } else {
-    duration * iterations.max(0.0)
-  };
-  let sample_time = (delay + active_duration).max(0.0);
-  time_based_animation_progress_impl(style, idx, sample_time, false)
+  let end_progress = animation_end_progress(direction, iterations);
+  Some(timing.value_at(end_progress))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3063,6 +3057,7 @@ impl AnimationRangeExt for AnimationRange {
 mod tests {
   use super::*;
   use crate::css::parser::parse_stylesheet;
+  use crate::css::types::CssRule;
   use crate::image_output::{encode_image, OutputFormat};
   use crate::style::media::MediaContext;
   use crate::{FastRender, RenderOptions, ResourcePolicy};
@@ -3243,6 +3238,38 @@ mod tests {
     let progress = time_based_animation_progress(&style, 0, 500.0).expect("active");
     assert!((progress - 0.0).abs() < 1e-6, "progress={progress}");
     assert!((sampled_opacity(&rule, progress) - 0.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn settled_time_based_animation_progress_samples_fill_forwards_end_state() {
+    let rule = fade_rule();
+    let mut style = ComputedStyle::default();
+    style.animation_names = vec!["fade".to_string()];
+    style.animation_fill_modes = vec![AnimationFillMode::Forwards].into();
+    style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
+
+    let progress = settled_time_based_animation_progress(&style, 0).expect("filled");
+    assert!((progress - 1.0).abs() < 1e-6, "progress={progress}");
+    assert!((sampled_opacity(&rule, progress) - 1.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn settled_time_based_animation_progress_skips_non_filled_animations() {
+    let mut style = ComputedStyle::default();
+    style.animation_names = vec!["fade".to_string()];
+    style.animation_fill_modes = vec![AnimationFillMode::None].into();
+
+    assert_eq!(settled_time_based_animation_progress(&style, 0), None);
+  }
+
+  #[test]
+  fn settled_time_based_animation_progress_skips_infinite_iterations() {
+    let mut style = ComputedStyle::default();
+    style.animation_names = vec!["fade".to_string()];
+    style.animation_fill_modes = vec![AnimationFillMode::Forwards].into();
+    style.animation_iteration_counts = vec![AnimationIterationCount::Infinite].into();
+
+    assert_eq!(settled_time_based_animation_progress(&style, 0), None);
   }
 
   #[test]
@@ -3577,17 +3604,99 @@ mod tests {
   }
 
   #[test]
-  fn settled_infinite_time_based_animations_sample_deterministically() {
-    let rule = fade_rule();
-    let mut style = ComputedStyle::default();
-    style.animation_names = vec!["fade".to_string()];
-    style.animation_durations = vec![1000.0].into();
-    style.animation_iteration_counts = vec![AnimationIterationCount::Infinite].into();
-    style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
-    style.animation_directions = vec![AnimationDirection::Reverse].into();
+  fn animation_shorthand_parses_forwards_fill_mode_with_zero_delay() {
+    let sheet =
+      parse_stylesheet("#box { animation: fade 1000ms linear 0ms 1 normal forwards; }").unwrap();
+    let CssRule::Style(rule) = &sheet.rules[0] else {
+      panic!("expected style rule");
+    };
+    let decl = rule
+      .declarations
+      .iter()
+      .find(|decl| decl.property.as_str() == "animation")
+      .expect("expected animation declaration");
 
-    let progress = settled_time_based_animation_progress(&style, 0).expect("settled progress");
+    let defaults = ComputedStyle::default();
+    let mut style = ComputedStyle::default();
+    apply_declaration_with_base(
+      &mut style,
+      decl,
+      &defaults,
+      &defaults,
+      None,
+      defaults.font_size,
+      defaults.root_font_size,
+      Size::new(800.0, 600.0),
+    );
+
+    assert_eq!(&*style.animation_names, &["fade".to_string()]);
+    assert_eq!(&*style.animation_durations, &[1000.0]);
+    assert_eq!(&*style.animation_delays, &[0.0]);
+    assert_eq!(&*style.animation_timing_functions, &[TransitionTimingFunction::Linear]);
+    assert_eq!(
+      &*style.animation_iteration_counts,
+      &[AnimationIterationCount::Count(1.0)]
+    );
+    assert_eq!(&*style.animation_directions, &[AnimationDirection::Normal]);
+    assert_eq!(&*style.animation_fill_modes, &[AnimationFillMode::Forwards]);
+
+    let progress = time_based_animation_progress(&style, 0, 2000.0).expect("filled");
     assert!((progress - 1.0).abs() < 1e-6, "progress={progress}");
-    assert!((sampled_opacity(&rule, progress) - 1.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn animation_time_none_samples_settled_forwards_animation() {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let fixture_path =
+      repo_root.join("tests/pages/fixtures/animation_time_settled_forwards/index.html");
+    let html = fs::read_to_string(&fixture_path).unwrap_or_else(|e| panic!("read fixture: {e}"));
+    let base_url = Url::from_directory_path(
+      fixture_path
+        .parent()
+        .expect("fixture directory should have parent"),
+    )
+    .expect("fixture base url")
+    .to_string();
+
+    let count_non_white = |img: &image::RgbaImage| {
+      img
+        .pixels()
+        .filter(|p| p.0 != [255, 255, 255, 255])
+        .count()
+    };
+    let start = render_animation_sampling_fixture(&html, base_url.clone(), Some(0.0));
+    let start_image = decode_png(&start);
+    let start_non_white = count_non_white(&start_image);
+    assert_eq!(
+      start_non_white, 0,
+      "expected no painted pixels at t=0, got {start_non_white}"
+    );
+
+    let settled = render_animation_sampling_fixture(&html, base_url.clone(), None);
+    let settled_image = decode_png(&settled);
+    let settled_non_white = count_non_white(&settled_image);
+    assert_eq!(settled_image.get_pixel(100, 100).0, [200, 0, 0, 255]);
+
+    // Sanity-check the fixture animates when an explicit time is provided.
+    let mid = render_animation_sampling_fixture(&html, base_url.clone(), Some(500.0));
+    let mid_image = decode_png(&mid);
+    let mid_non_white = count_non_white(&mid_image);
+    assert!(
+      mid_non_white > 0,
+      "expected non-white pixels while the animation is active, got {mid_non_white}"
+    );
+
+    let end = render_animation_sampling_fixture(&html, base_url.clone(), Some(2000.0));
+    let end_image = decode_png(&end);
+    let end_non_white = count_non_white(&end_image);
+    assert!(
+      end_non_white > 0,
+      "expected non-white pixels at the end of the animation, got {end_non_white}"
+    );
+    assert_eq!(end_image.get_pixel(100, 100).0, [200, 0, 0, 255]);
+    assert!(
+      settled_non_white > 0,
+      "expected non-white pixels when animation_time is unset, got {settled_non_white}"
+    );
   }
 }

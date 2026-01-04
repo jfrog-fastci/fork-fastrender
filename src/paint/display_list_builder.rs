@@ -1505,6 +1505,11 @@ impl DisplayListBuilder {
       ContentVisibility::Visible => false,
     });
     let mut paint_bounds = self.fragment_paint_bounds(fragment, absolute_rect, style_opt);
+    // `fragment_paint_bounds` only accounts for effects on the fragment's own border box.
+    // Descendants can paint outside that box (e.g. absolutely positioned children with
+    // `overflow: visible`), so use the already-computed `scroll_overflow` to avoid culling away
+    // visible descendants.
+    paint_bounds = paint_bounds.union(fragment.scroll_overflow.translate(absolute_rect.origin));
 
     if let Some(style) = style_opt {
       if matches!(style.backface_visibility, BackfaceVisibility::Hidden)
