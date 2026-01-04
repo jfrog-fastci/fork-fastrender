@@ -569,11 +569,7 @@ fn validate_reused_chrome_baselines(
 
     let baseline_input_sha256 = metadata.input_sha256;
     let baseline_assets_sha256 = metadata.assets_sha256;
-    let current_assets_sha256 = if baseline_assets_sha256.is_some() {
-      fixture_assets_sha256(&fixture_dir.join("assets"))?
-    } else {
-      None
-    };
+    let current_assets_sha256 = fixture_assets_sha256(&fixture_dir)?;
 
     let mut is_stale = match baseline_input_sha256.as_deref() {
       Some(hash) if hash == current_input_sha256 => false,
@@ -581,16 +577,24 @@ fn validate_reused_chrome_baselines(
     };
 
     if !is_stale {
-      if let (Some(baseline_assets), Some(current_assets)) = (
+      match (
         baseline_assets_sha256.as_deref(),
         current_assets_sha256.as_deref(),
       ) {
-        if baseline_assets != current_assets {
+        (Some(baseline_assets), Some(current_assets)) => {
+          if baseline_assets != current_assets {
+            is_stale = true;
+          }
+        }
+        (Some(_), None) => {
+          // Assets were present when the baseline was generated but no longer exist.
           is_stale = true;
         }
-      } else if baseline_assets_sha256.is_some() && current_assets_sha256.is_none() {
-        // Assets were present when the baseline was generated but no longer exist.
-        is_stale = true;
+        (None, Some(_)) => {
+          // This baseline predates asset hashing support, but the fixture has local assets.
+          is_stale = true;
+        }
+        (None, None) => {}
       }
     }
 
@@ -624,15 +628,18 @@ fn validate_reused_chrome_baselines(
     msg.push_str(&info.current_input_sha256);
     msg.push_str(" (current)\n");
 
-    if let (Some(baseline_assets), Some(current_assets)) = (
-      info.baseline_assets_sha256.as_deref(),
-      info.current_assets_sha256.as_deref(),
-    ) {
-      if baseline_assets != current_assets {
-        msg.push_str(&format!(
-          "      assets_sha256 {baseline_assets} (baseline) vs {current_assets} (current)\n"
-        ));
+    if info.baseline_assets_sha256 != info.current_assets_sha256 {
+      msg.push_str("      assets_sha256 ");
+      match info.baseline_assets_sha256.as_deref() {
+        Some(hash) => msg.push_str(hash),
+        None => msg.push_str("<missing from baseline metadata>"),
       }
+      msg.push_str(" (baseline) vs ");
+      match info.current_assets_sha256.as_deref() {
+        Some(hash) => msg.push_str(hash),
+        None => msg.push_str("<none>"),
+      }
+      msg.push_str(" (current)\n");
     }
   }
 
@@ -649,33 +656,78 @@ fn validate_reused_chrome_baselines(
   }
 }
 
-fn fixture_assets_sha256(assets_dir: &Path) -> Result<Option<String>> {
-  if !assets_dir.is_dir() {
-    return Ok(None);
+fn fixture_assets_sha256(fixture_dir: &Path) -> Result<Option<String>> {
+  let assets_dir = fixture_dir.join("assets");
+  let mut hasher = Sha256::new();
+  let mut any = false;
+
+  // Hash `assets/**` using paths relative to the assets directory, matching `chrome-baseline-fixtures`.
+  if assets_dir.is_dir() {
+    let mut files = WalkDir::new(&assets_dir)
+      .follow_links(false)
+      .into_iter()
+      .filter_map(|entry| entry.ok())
+      .filter(|entry| entry.file_type().is_file())
+      .map(|entry| entry.into_path())
+      .collect::<Vec<_>>();
+
+    files.sort_by(|a, b| {
+      let a_rel = a.strip_prefix(&assets_dir).unwrap_or(a);
+      let b_rel = b.strip_prefix(&assets_dir).unwrap_or(b);
+      a_rel.to_string_lossy().cmp(&b_rel.to_string_lossy())
+    });
+
+    any = true;
+    for path in files {
+      let rel = path.strip_prefix(&assets_dir).unwrap_or(&path);
+      hasher.update(rel.to_string_lossy().as_bytes());
+      hasher.update([0u8]);
+      let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+      hasher.update(bytes);
+      hasher.update([0u8]);
+    }
   }
 
-  let mut files = WalkDir::new(assets_dir)
+  let mut extra_files = WalkDir::new(fixture_dir)
     .follow_links(false)
     .into_iter()
     .filter_map(|entry| entry.ok())
     .filter(|entry| entry.file_type().is_file())
     .map(|entry| entry.into_path())
+    .filter(|path| {
+      if *path == fixture_dir.join("index.html") {
+        return false;
+      }
+      if assets_dir.is_dir() && path.starts_with(&assets_dir) {
+        return false;
+      }
+      true
+    })
     .collect::<Vec<_>>();
 
-  files.sort_by(|a, b| {
-    let a_rel = a.strip_prefix(assets_dir).unwrap_or(a);
-    let b_rel = b.strip_prefix(assets_dir).unwrap_or(b);
+  extra_files.sort_by(|a, b| {
+    let a_rel = a.strip_prefix(fixture_dir).unwrap_or(a);
+    let b_rel = b.strip_prefix(fixture_dir).unwrap_or(b);
     a_rel.to_string_lossy().cmp(&b_rel.to_string_lossy())
   });
 
-  let mut hasher = Sha256::new();
-  for path in files {
-    let rel = path.strip_prefix(assets_dir).unwrap_or(&path);
-    hasher.update(rel.to_string_lossy().as_bytes());
-    hasher.update([0u8]);
-    let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-    hasher.update(bytes);
-    hasher.update([0u8]);
+  if !extra_files.is_empty() {
+    if any {
+      hasher.update(b"\0EXTRA\0");
+    }
+    any = true;
+    for path in extra_files {
+      let rel = path.strip_prefix(fixture_dir).unwrap_or(&path);
+      hasher.update(rel.to_string_lossy().as_bytes());
+      hasher.update([0u8]);
+      let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+      hasher.update(bytes);
+      hasher.update([0u8]);
+    }
+  }
+
+  if !any {
+    return Ok(None);
   }
 
   let digest = hasher.finalize();

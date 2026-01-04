@@ -540,6 +540,133 @@ fn no_chrome_fails_fast_on_stale_baselines_unless_allowed() {
 }
 
 #[test]
+#[cfg(unix)]
+fn no_chrome_fails_fast_on_stale_fixture_assets_unless_allowed() {
+  use sha2::{Digest, Sha256};
+
+  let temp = tempdir().expect("tempdir");
+  let fixtures_root = temp.path().join("fixtures");
+  let fixture_dir = fixtures_root.join("a");
+  fs::create_dir_all(&fixture_dir).expect("create fixture dir");
+
+  let html = r#"<!doctype html><link rel="stylesheet" href="styles.css"><title>v1</title>"#;
+  fs::write(fixture_dir.join("index.html"), html).expect("write fixture html");
+
+  let css_v1 = "body { color: red; }";
+  fs::write(fixture_dir.join("styles.css"), css_v1).expect("write styles.css v1");
+
+  let digest = Sha256::digest(html.as_bytes());
+  let input_sha256 = digest
+    .iter()
+    .map(|b| format!("{b:02x}"))
+    .collect::<String>();
+
+  // Hash of fixture-local assets (excluding index.html). With this test fixture, that is just
+  // `styles.css`.
+  let mut hasher = Sha256::new();
+  hasher.update("styles.css".as_bytes());
+  hasher.update([0u8]);
+  hasher.update(css_v1.as_bytes());
+  hasher.update([0u8]);
+  let assets_sha256 = hasher
+    .finalize()
+    .iter()
+    .map(|b| format!("{b:02x}"))
+    .collect::<String>();
+
+  let out_dir = temp.path().join("out");
+  let chrome_out = out_dir.join("chrome");
+  let fastrender_out = out_dir.join("fastrender");
+  fs::create_dir_all(&chrome_out).expect("create chrome out dir");
+  fs::create_dir_all(&fastrender_out).expect("create fastrender out dir");
+  fs::write(chrome_out.join("a.png"), "PNG").expect("write dummy chrome png");
+  fs::write(fastrender_out.join("a.png"), "PNG").expect("write dummy fastrender png");
+  fs::write(
+    chrome_out.join("a.json"),
+    format!(
+      r#"{{"viewport":[1040,1240],"dpr":1.0,"media":"screen","js":"off","input_sha256":"{input_sha256}","assets_sha256":"{assets_sha256}"}}"#
+    ),
+  )
+  .expect("write chrome metadata");
+
+  let target_dir = temp.path().join("target");
+  let diff_renders_bin = target_dir
+    .join("release")
+    .join(format!("diff_renders{}", std::env::consts::EXE_SUFFIX));
+  fs::create_dir_all(diff_renders_bin.parent().unwrap()).expect("create release dir");
+  fs::write(&diff_renders_bin, "#!/usr/bin/env sh\nexit 0\n").expect("write stub diff_renders");
+  make_executable(&diff_renders_bin);
+
+  let css_v2 = "body { color: blue; }";
+  fs::write(fixture_dir.join("styles.css"), css_v2).expect("write styles.css v2");
+
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .env("CARGO_TARGET_DIR", &target_dir)
+    .args([
+      "fixture-chrome-diff",
+      "--no-build",
+      "--no-chrome",
+      "--no-fastrender",
+      "--fixtures-dir",
+      fixtures_root.to_string_lossy().as_ref(),
+      "--fixtures",
+      "a",
+      "--out-dir",
+      out_dir.to_string_lossy().as_ref(),
+    ])
+    .output()
+    .expect("run fixture-chrome-diff with stale assets");
+
+  assert!(
+    !output.status.success(),
+    "expected stale fixture assets to fail; stdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  assert!(
+    stderr.contains("stale relative to fixture inputs"),
+    "expected stderr to mention stale baselines; got:\n{stderr}"
+  );
+  assert!(
+    stderr.contains("assets_sha256"),
+    "expected stderr to mention assets_sha256 mismatch; got:\n{stderr}"
+  );
+
+  let output_allow = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .env("CARGO_TARGET_DIR", &target_dir)
+    .args([
+      "fixture-chrome-diff",
+      "--no-build",
+      "--no-chrome",
+      "--no-fastrender",
+      "--allow-stale-chrome-baselines",
+      "--fixtures-dir",
+      fixtures_root.to_string_lossy().as_ref(),
+      "--fixtures",
+      "a",
+      "--out-dir",
+      out_dir.to_string_lossy().as_ref(),
+    ])
+    .output()
+    .expect("run fixture-chrome-diff with --allow-stale-chrome-baselines");
+
+  assert!(
+    output_allow.status.success(),
+    "expected override flag to allow stale assets; stdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output_allow.stdout),
+    String::from_utf8_lossy(&output_allow.stderr)
+  );
+  let stderr = String::from_utf8_lossy(&output_allow.stderr);
+  assert!(
+    stderr.contains("warning:") && stderr.contains("stale relative to fixture inputs"),
+    "expected warning about stale baselines; got:\n{stderr}"
+  );
+}
+
+#[test]
 fn dry_run_prints_deterministic_plan_and_forwards_args() {
   let temp = tempdir().expect("tempdir");
   let fixtures_root = temp.path().join("fixtures");

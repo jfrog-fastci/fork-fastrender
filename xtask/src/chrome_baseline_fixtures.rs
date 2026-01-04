@@ -415,32 +415,82 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 fn compute_assets_sha256(fixture_dir: &Path) -> Result<Option<String>> {
   let assets_dir = fixture_dir.join("assets");
-  if !assets_dir.is_dir() {
-    return Ok(None);
+  let mut hasher = Sha256::new();
+  let mut any = false;
+
+  // Hash `assets/**` using paths relative to the assets directory. This preserves compatibility with
+  // older `assets_sha256` values that only covered the `assets/` subtree.
+  if assets_dir.is_dir() {
+    let mut files = WalkDir::new(&assets_dir)
+      .follow_links(false)
+      .into_iter()
+      .filter_map(|entry| entry.ok())
+      .filter(|entry| entry.file_type().is_file())
+      .map(|entry| entry.into_path())
+      .collect::<Vec<_>>();
+
+    files.sort_by(|a, b| {
+      let a_rel = a.strip_prefix(&assets_dir).unwrap_or(a);
+      let b_rel = b.strip_prefix(&assets_dir).unwrap_or(b);
+      a_rel.to_string_lossy().cmp(&b_rel.to_string_lossy())
+    });
+
+    // Preserve the previous behavior where the mere presence of an `assets/` directory caused an
+    // `assets_sha256` value to be emitted (even if it was empty).
+    any = true;
+    for path in files {
+      let rel = path.strip_prefix(&assets_dir).unwrap_or(&path);
+      hasher.update(rel.to_string_lossy().as_bytes());
+      hasher.update([0u8]);
+      let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+      hasher.update(bytes);
+      hasher.update([0u8]);
+    }
   }
 
-  let mut files = WalkDir::new(&assets_dir)
+  // Some fixtures keep additional inputs (e.g. `styles.css`, `mask.svg`) at the fixture root.
+  // Include those in the fingerprint too so `--no-chrome` can detect drift even when `index.html`
+  // didn't change.
+  let mut extra_files = WalkDir::new(fixture_dir)
     .follow_links(false)
     .into_iter()
     .filter_map(|entry| entry.ok())
     .filter(|entry| entry.file_type().is_file())
     .map(|entry| entry.into_path())
+    .filter(|path| {
+      if *path == fixture_dir.join("index.html") {
+        return false;
+      }
+      if assets_dir.is_dir() && path.starts_with(&assets_dir) {
+        return false;
+      }
+      true
+    })
     .collect::<Vec<_>>();
 
-  files.sort_by(|a, b| {
-    let a_rel = a.strip_prefix(&assets_dir).unwrap_or(a);
-    let b_rel = b.strip_prefix(&assets_dir).unwrap_or(b);
+  extra_files.sort_by(|a, b| {
+    let a_rel = a.strip_prefix(fixture_dir).unwrap_or(a);
+    let b_rel = b.strip_prefix(fixture_dir).unwrap_or(b);
     a_rel.to_string_lossy().cmp(&b_rel.to_string_lossy())
   });
 
-  let mut hasher = Sha256::new();
-  for path in files {
-    let rel = path.strip_prefix(&assets_dir).unwrap_or(&path);
-    hasher.update(rel.to_string_lossy().as_bytes());
-    hasher.update([0u8]);
-    let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-    hasher.update(bytes);
-    hasher.update([0u8]);
+  if !extra_files.is_empty() {
+    if any {
+      hasher.update(b"\0EXTRA\0");
+    }
+    any = true;
+    for path in extra_files {
+      let rel = path.strip_prefix(fixture_dir).unwrap_or(&path);
+      hasher.update(rel.to_string_lossy().as_bytes());
+      hasher.update([0u8]);
+      let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+      hasher.update(bytes);
+      hasher.update([0u8]);
+    }
+  }
+
+  if !any {
+    return Ok(None);
   }
 
   let digest = hasher.finalize();
