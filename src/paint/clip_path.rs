@@ -1057,6 +1057,32 @@ mod tests {
   }
 
   #[test]
+  fn clip_path_path_parses_stripe_chevrons() {
+    // Stripe uses `clip-path: path("M-44 0L-38 4L-44 8M-33 0L-27 4L-33 8…")` for arrow animations.
+    // Note: These subpaths are *not* explicitly closed with `Z`.
+    let data = "M-44 0L-38 4L-44 8M-33 0L-27 4L-33 8M-22 0L-16 4L-22 8";
+    let path =
+      crate::svg_path::build_tiny_skia_path_from_svg_path_data_unchecked(data).expect("path");
+    let clip = ResolvedClipPath::Path {
+      path,
+      fill_rule: SkFillRule::Winding,
+    };
+
+    let size = IntSize::from_wh(200, 20).expect("size");
+    // Translate the path so the negative x coordinates land inside the mask.
+    let transform = Transform::from_translate(50.0, 6.0);
+    let mask = clip.mask(1.0, size, transform).expect("mask");
+
+    let w = size.width() as usize;
+    // Point inside first triangle after translation: (-44..-38, 0..8) + (50, 6).
+    let inside = 10 * w + 8;
+    // Point left of the first triangle.
+    let outside = 10 * w + 0;
+    assert!(mask.data()[inside] > 200, "expected chevron to be filled");
+    assert!(mask.data()[outside] < 10, "expected background to be empty");
+  }
+
+  #[test]
   fn clip_path_mask_avoids_new_pixmap_allocations() {
     let size = IntSize::from_wh(16, 16).expect("size");
     let clip = ResolvedClipPath::Circle {
