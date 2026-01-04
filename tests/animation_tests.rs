@@ -114,6 +114,22 @@ fn parses_animation_timeline_functions() {
 }
 
 #[test]
+fn preserves_single_value_animation_timeline_none() {
+  let css = r#"
+    #box {
+      animation-timeline: none;
+    }
+  "#;
+  let html = r#"<div id="box"></div>"#;
+  let dom = dom::parse_html(html).unwrap();
+  let sheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &sheet, &MediaContext::screen(800.0, 600.0));
+  let div = find_by_tag(&styled, "div").expect("div present");
+
+  assert_eq!(div.styles.animation_timelines, vec![AnimationTimeline::None]);
+}
+
+#[test]
 fn parses_animation_range_view_offsets_with_lengths() {
   let css = r#"
     #box {
