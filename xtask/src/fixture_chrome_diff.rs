@@ -934,10 +934,38 @@ fn validate_fastrender_output_metadata(
       continue;
     }
 
-    let bytes = fs::read(&metadata_path)
-      .with_context(|| format!("read {}", metadata_path.display()))?;
-    let metadata: FastRenderFixtureMetadata = serde_json::from_slice(&bytes)
-      .with_context(|| format!("parse {}", metadata_path.display()))?;
+    let bytes = match fs::read(&metadata_path) {
+      Ok(bytes) => bytes,
+      Err(err) => {
+        if args.require_fastrender_metadata {
+          bail!(
+            "FastRender metadata could not be read for fixture '{stem}'.\n\
+             Path: {}\n\
+             Error: {err}\n\
+             Rerun without --no-fastrender to regenerate FastRender renders, or point --out-dir at a directory that contains readable metadata.",
+            metadata_path.display(),
+          );
+        }
+        missing_metadata.push(format!("{stem} (unreadable metadata)"));
+        continue;
+      }
+    };
+    let metadata: FastRenderFixtureMetadata = match serde_json::from_slice(&bytes) {
+      Ok(metadata) => metadata,
+      Err(err) => {
+        if args.require_fastrender_metadata {
+          bail!(
+            "FastRender metadata is invalid for fixture '{stem}'.\n\
+             Path: {}\n\
+             Error: {err}\n\
+             Rerun without --no-fastrender to regenerate FastRender renders, or point --out-dir at a directory that contains valid metadata.",
+            metadata_path.display(),
+          );
+        }
+        missing_metadata.push(format!("{stem} (invalid metadata json)"));
+        continue;
+      }
+    };
 
     let wanted_media = args.media.as_cli_value();
     let wanted_font_dirs_summary = "[]";
