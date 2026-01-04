@@ -720,15 +720,17 @@ fn select_fixtures(
 
 fn resolve_chrome_binary(args: &ChromeBaselineFixturesArgs) -> Result<PathBuf> {
   if let Some(chrome) = &args.chrome {
-    return resolve_program_path(chrome)
-      .with_context(|| format!("invalid --chrome {}", chrome.display()));
+    let resolved = resolve_program_path(chrome)
+      .with_context(|| format!("invalid --chrome {}", chrome.display()))?;
+    return Ok(maybe_unwrap_snap_chromium(resolved));
   }
 
   if let Ok(value) = std::env::var("CHROME_BIN") {
     let trimmed = value.trim();
     if !trimmed.is_empty() {
-      return resolve_program_path(Path::new(trimmed))
-        .with_context(|| format!("invalid CHROME_BIN={trimmed}"));
+      let resolved = resolve_program_path(Path::new(trimmed))
+        .with_context(|| format!("invalid CHROME_BIN={trimmed}"))?;
+      return Ok(maybe_unwrap_snap_chromium(resolved));
     }
   }
 
@@ -745,7 +747,7 @@ fn resolve_chrome_binary(args: &ChromeBaselineFixturesArgs) -> Result<PathBuf> {
     for name in CANDIDATES {
       let candidate = dir.join(name);
       if candidate.is_file() {
-        return Ok(candidate);
+        return Ok(maybe_unwrap_snap_chromium(candidate));
       }
     }
 
