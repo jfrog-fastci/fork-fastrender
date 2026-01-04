@@ -1303,6 +1303,35 @@ mod tests {
   }
 
   #[test]
+  fn taffy_grid_container_style_fingerprint_includes_writing_mode_and_direction() {
+    use crate::style::types::{Direction, WritingMode};
+
+    taffy_style_fingerprint_cache_use_epoch(
+      TAFFY_STYLE_FINGERPRINT_EPOCH.load(Ordering::Relaxed) + 1,
+    );
+
+    let mut style_ltr = ComputedStyle::default();
+    style_ltr.writing_mode = WritingMode::HorizontalTb;
+    style_ltr.direction = Direction::Ltr;
+
+    let mut style_vertical = style_ltr.clone();
+    style_vertical.writing_mode = WritingMode::VerticalRl;
+
+    assert_ne!(
+      taffy_grid_container_style_fingerprint(&style_ltr),
+      taffy_grid_container_style_fingerprint(&style_vertical)
+    );
+
+    let mut style_rtl = style_ltr.clone();
+    style_rtl.direction = Direction::Rtl;
+
+    assert_ne!(
+      taffy_grid_container_style_fingerprint(&style_ltr),
+      taffy_grid_container_style_fingerprint(&style_rtl)
+    );
+  }
+
+  #[test]
   fn taffy_node_cache_shard_capacities_sum_to_configured_capacity() {
     let capacity = 7;
     let cache = TaffyNodeCache::new(capacity);
