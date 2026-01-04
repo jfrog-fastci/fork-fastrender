@@ -18,6 +18,7 @@
 use crate::debug::runtime;
 use crate::debug::trace::TraceHandle;
 use crate::error::{RenderError, RenderStage};
+use crate::geometry::Point;
 use crate::geometry::Size;
 use crate::image_loader::ImageCache;
 use crate::layout::constraints::LayoutConstraints;
@@ -414,6 +415,12 @@ pub struct LayoutConfig {
   /// and defines the available space for layout.
   pub initial_containing_block: Size,
 
+  /// Scroll offset applied to the viewport when evaluating viewport-dependent layout features.
+  ///
+  /// This is primarily used for `content-visibility:auto` layout skipping so that layout decisions
+  /// are deterministic for a given scroll position.
+  pub viewport_scroll: Point,
+
   /// Enable caching of layout results (placeholder for future)
   ///
   /// When true, the engine will cache layout results for subtrees
@@ -450,6 +457,7 @@ impl LayoutConfig {
   pub fn new(initial_containing_block: Size) -> Self {
     Self {
       initial_containing_block,
+      viewport_scroll: Point::ZERO,
       enable_cache: false,
       enable_incremental: false,
       fragmentation: None,
@@ -504,6 +512,13 @@ impl LayoutConfig {
   /// Enables layout fan-out with the provided parallelism configuration.
   pub fn with_parallelism(mut self, parallelism: LayoutParallelism) -> Self {
     self.parallelism = parallelism;
+    self
+  }
+
+  /// Sets the viewport scroll offset used by viewport-dependent layout features (e.g.
+  /// `content-visibility:auto`).
+  pub fn with_viewport_scroll(mut self, scroll: Point) -> Self {
+    self.viewport_scroll = scroll;
     self
   }
 }
@@ -718,6 +733,7 @@ impl LayoutEngine {
       config.initial_containing_block,
     )
     .with_image_cache(image_cache)
+    .with_viewport_scroll(config.viewport_scroll)
     .with_parallelism(config.parallelism);
     let parallel_pool = config
       .parallelism

@@ -183,6 +183,7 @@ pub struct BlockFormattingContext {
   intrinsic_inline_fc: Arc<InlineFormattingContext>,
   font_context: FontContext,
   viewport_size: crate::geometry::Size,
+  viewport_scroll: Point,
   nearest_positioned_cb: ContainingBlock,
   /// When true, treat the root box as a flex item for width resolution (auto margins resolve to
   /// 0 and specified margins stay fixed instead of being rebalanced to satisfy the block width
@@ -235,6 +236,7 @@ impl BlockFormattingContext {
 
   pub fn with_factory(factory: FormattingContextFactory) -> Self {
     let viewport_size = factory.viewport_size();
+    let viewport_scroll = factory.viewport_scroll();
     let nearest_positioned_cb = factory.nearest_positioned_cb();
     let font_context = factory.font_context().clone();
     let parallelism = factory.parallelism();
@@ -244,6 +246,7 @@ impl BlockFormattingContext {
       intrinsic_inline_fc,
       font_context,
       viewport_size,
+      viewport_scroll,
       nearest_positioned_cb,
       flex_item_mode: false,
       parallelism,
@@ -266,6 +269,7 @@ impl BlockFormattingContext {
 
   pub fn for_flex_item_with_factory(factory: FormattingContextFactory) -> Self {
     let viewport_size = factory.viewport_size();
+    let viewport_scroll = factory.viewport_scroll();
     let nearest_positioned_cb = factory.nearest_positioned_cb();
     let font_context = factory.font_context().clone();
     let parallelism = factory.parallelism();
@@ -275,6 +279,7 @@ impl BlockFormattingContext {
       intrinsic_inline_fc,
       font_context,
       viewport_size,
+      viewport_scroll,
       nearest_positioned_cb,
       flex_item_mode: true,
       parallelism,
@@ -761,7 +766,8 @@ impl BlockFormattingContext {
         //
         // The block formatting context operates in logical axes; apply this heuristic only when
         // the block axis maps to physical y (horizontal writing modes).
-        !block_axis_is_horizontal(style.writing_mode) && box_y >= self.viewport_size.height
+        !block_axis_is_horizontal(style.writing_mode)
+          && box_y >= (self.viewport_scroll.y + self.viewport_size.height)
       }
       crate::style::types::ContentVisibility::Visible => false,
     };
@@ -852,19 +858,14 @@ impl BlockFormattingContext {
       } else {
         style.contain_intrinsic_height
       };
-      content_height = axis
-        .length
-        .and_then(|l| {
-          resolve_length_with_percentage(
-            l,
-            containing_height,
-            self.viewport_size,
-            style.font_size,
-            style.root_font_size,
-          )
-        })
-        .unwrap_or(0.0)
-        .max(0.0);
+      content_height = crate::layout::utils::resolve_contain_intrinsic_size_axis(
+        axis,
+        None,
+        containing_height,
+        self.viewport_size,
+        style.font_size,
+        style.root_font_size,
+      );
     }
 
     // Height computation (CSS 2.1 Section 10.6.3) with aspect-ratio adjustment (CSS Sizing L4)

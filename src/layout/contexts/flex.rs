@@ -2905,9 +2905,28 @@ impl FormattingContext for FlexFormattingContext {
       .as_deref()
       .unwrap_or_else(|| box_node.style.as_ref());
     if style.containment.isolates_inline_size() {
-      let edges = self.horizontal_edges_px(style).unwrap_or(0.0);
-      intrinsic_cache_store(box_node, mode, edges.max(0.0));
-      return Ok(edges.max(0.0));
+      let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+      let edges = if inline_is_horizontal {
+        self.horizontal_edges_px(style).unwrap_or(0.0)
+      } else {
+        self.vertical_edges_px(style).unwrap_or(0.0)
+      };
+      let axis = if inline_is_horizontal {
+        style.contain_intrinsic_width
+      } else {
+        style.contain_intrinsic_height
+      };
+      let fallback = crate::layout::utils::resolve_contain_intrinsic_size_axis(
+        axis,
+        None,
+        Some(0.0),
+        self.viewport_size,
+        style.font_size,
+        style.root_font_size,
+      );
+      let size = (edges + fallback).max(0.0);
+      intrinsic_cache_store(box_node, mode, size);
+      return Ok(size);
     }
 
     // Approximate intrinsic inline size from flex items per CSS flexbox intrinsic sizing rules:

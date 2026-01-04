@@ -30,6 +30,7 @@ use crate::layout::contexts::positioned::ContainingBlock;
 use crate::layout::engine::LayoutParallelism;
 use crate::layout::formatting_context::FormattingContext;
 use crate::layout::formatting_context::LayoutError;
+use crate::geometry::Point;
 use crate::layout::table::TableFormattingContext;
 use crate::layout::taffy_integration::{
   taffy_template_cache_limit, taffy_template_cache_limit_for_box_tree, TaffyAdapterKind,
@@ -100,6 +101,7 @@ pub struct FormattingContextFactory {
   font_context: FontContext,
   image_cache: ImageCache,
   viewport_size: crate::geometry::Size,
+  viewport_scroll: Point,
   nearest_positioned_cb: ContainingBlock,
   flex_measure_cache: std::sync::Arc<ShardedFlexCache>,
   flex_layout_cache: std::sync::Arc<ShardedFlexCache>,
@@ -234,6 +236,7 @@ impl FormattingContextFactory {
       font_context,
       image_cache: ImageCache::new(),
       viewport_size,
+      viewport_scroll: Point::ZERO,
       nearest_positioned_cb,
       flex_measure_cache,
       flex_layout_cache,
@@ -243,6 +246,19 @@ impl FormattingContextFactory {
       parallelism: LayoutParallelism::default(),
       cached_contexts: CachedFormattingContexts::fresh(),
     }
+  }
+
+  /// Returns a copy of this factory configured with a viewport scroll offset.
+  ///
+  /// This is used when evaluating viewport-dependent layout features (e.g. `content-visibility:auto`
+  /// layout skipping).
+  pub fn with_viewport_scroll(mut self, scroll: Point) -> Self {
+    if scroll == self.viewport_scroll {
+      return self;
+    }
+    self.viewport_scroll = scroll;
+    self.reset_cached_contexts();
+    self
   }
 
   /// Returns a copy of this factory with an updated nearest positioned containing block.
@@ -343,6 +359,11 @@ impl FormattingContextFactory {
   /// Returns the viewport size used for viewport-relative length resolution.
   pub fn viewport_size(&self) -> crate::geometry::Size {
     self.viewport_size
+  }
+
+  /// Returns the scroll offset applied to the viewport when evaluating viewport-dependent layout.
+  pub fn viewport_scroll(&self) -> Point {
+    self.viewport_scroll
   }
 
   /// Returns the nearest positioned containing block threaded into newly constructed contexts.

@@ -586,7 +586,12 @@ impl DisplayListBuilder {
   fn viewport_rect(&self) -> Option<Rect> {
     self
       .viewport
-      .map(|(w, h)| Rect::from_xywh(0.0, 0.0, w, h))
+      .map(|(w, h)| {
+        // Viewport culling happens in the same coordinate space as the display list being built.
+        // The paint pipeline passes an explicit translation offset (e.g. `-scroll`) when building
+        // the display list, so the visible viewport remains anchored at (0,0).
+        Rect::from_xywh(0.0, 0.0, w, h)
+      })
       .filter(|r| r.width() > 0.0 && r.height() > 0.0)
   }
 

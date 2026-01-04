@@ -771,6 +771,14 @@ impl GridFormattingContext {
     Some(left + right + bl + br)
   }
 
+  fn vertical_edges_px(&self, style: &ComputedStyle) -> Option<f32> {
+    let top = self.resolve_length_px(&style.padding_top, style)?;
+    let bottom = self.resolve_length_px(&style.padding_bottom, style)?;
+    let bt = self.resolve_length_px(&style.border_top_width, style)?;
+    let bb = self.resolve_length_px(&style.border_bottom_width, style)?;
+    Some(top + bottom + bt + bb)
+  }
+
   fn resolve_length_for_width(
     &self,
     length: Length,
@@ -3380,9 +3388,28 @@ impl GridFormattingContext {
     let style_override = crate::layout::style_override::style_override_for(box_node.id);
     let style: &ComputedStyle = style_override.as_deref().unwrap_or(style);
     if style.containment.isolates_inline_size() {
-      let edges = self.horizontal_edges_px(style).unwrap_or(0.0);
-      intrinsic_cache_store(box_node, mode, edges.max(0.0));
-      return Ok(edges.max(0.0));
+      let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+      let edges = if inline_is_horizontal {
+        self.horizontal_edges_px(style).unwrap_or(0.0)
+      } else {
+        self.vertical_edges_px(style).unwrap_or(0.0)
+      };
+      let axis = if inline_is_horizontal {
+        style.contain_intrinsic_width
+      } else {
+        style.contain_intrinsic_height
+      };
+      let fallback = crate::layout::utils::resolve_contain_intrinsic_size_axis(
+        axis,
+        None,
+        Some(0.0),
+        self.viewport_size,
+        style.font_size,
+        style.root_font_size,
+      );
+      let size = (edges + fallback).max(0.0);
+      intrinsic_cache_store(box_node, mode, size);
+      return Ok(size);
     }
 
     // Use a pooled Taffy tree to avoid repeated allocation churn during intrinsic sizing probes.

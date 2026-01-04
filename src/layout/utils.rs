@@ -10,6 +10,7 @@ use crate::style::types::ScrollbarWidth;
 use crate::style::values::Length;
 use crate::style::values::LengthOrAuto;
 use crate::style::values::LengthUnit;
+use crate::style::types::ContainIntrinsicSizeAxis;
 use crate::style::ComputedStyle;
 use crate::text::font_db::FontStretch;
 use crate::text::font_db::FontStyle as FontFaceStyle;
@@ -77,6 +78,42 @@ pub fn resolve_length_with_percentage_metrics(
     // Viewport/unknown units should already have been handled earlier; fall back to raw value.
     Some(length.value)
   }
+}
+
+/// Resolves the `contain-intrinsic-size` fallback for a single axis.
+///
+/// This is used when:
+/// - an element establishes size containment (`contain: size`), or
+/// - an element's contents are skipped (e.g. `content-visibility: hidden/auto`).
+///
+/// The `auto` keyword selects a remembered size when provided; when no remembered size is
+/// available, it falls back to the optional length-percentage. When neither is available, the
+/// result is `0`.
+pub fn resolve_contain_intrinsic_size_axis(
+  axis: ContainIntrinsicSizeAxis,
+  remembered: Option<f32>,
+  percentage_base: Option<f32>,
+  viewport: Size,
+  font_size: f32,
+  root_font_size: f32,
+) -> f32 {
+  let resolved = if axis.auto {
+    remembered.or_else(|| {
+      axis.length.and_then(|len| {
+        resolve_length_with_percentage(len, percentage_base, viewport, font_size, root_font_size)
+      })
+    })
+  } else {
+    axis.length.and_then(|len| {
+      resolve_length_with_percentage(len, percentage_base, viewport, font_size, root_font_size)
+    })
+  };
+
+  let mut value = resolved.unwrap_or(0.0);
+  if !value.is_finite() {
+    value = 0.0;
+  }
+  value.max(0.0)
 }
 
 /// Resolves the CSS `scrollbar-width` keyword to an approximate physical width in CSS pixels.

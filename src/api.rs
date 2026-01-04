@@ -4840,6 +4840,7 @@ impl FastRender {
           page_stacking: PageStacking::Stacked { gap: 0.0 },
           animation_time,
         },
+        Point::new(scroll_x, scroll_y),
         deadline,
         trace,
         layout_parallelism,
@@ -5378,6 +5379,7 @@ impl FastRender {
           page_stacking: PageStacking::Stacked { gap: 0.0 },
           animation_time: options.animation_time,
         },
+        Point::new(options.scroll_x, options.scroll_y),
         Some(&deadline),
         &trace,
         layout_parallelism,
@@ -7252,6 +7254,7 @@ impl FastRender {
       height,
       media_type,
       LayoutDocumentOptions::default(),
+      Point::ZERO,
       deadline.as_ref(),
       &trace,
       self.layout_parallelism,
@@ -7289,6 +7292,7 @@ impl FastRender {
       height,
       media_type,
       options,
+      Point::ZERO,
       deadline,
       &trace,
       self.layout_parallelism,
@@ -7304,6 +7308,7 @@ impl FastRender {
     height: u32,
     media_type: MediaType,
     options: LayoutDocumentOptions,
+    viewport_scroll: Point,
     deadline: Option<&RenderDeadline>,
     trace: &TraceHandle,
     layout_parallelism: LayoutParallelism,
@@ -7330,6 +7335,7 @@ impl FastRender {
         height,
         media_type,
         options,
+        viewport_scroll,
         deadline,
         trace,
         layout_parallelism,
@@ -7347,6 +7353,7 @@ impl FastRender {
     height: u32,
     media_type: MediaType,
     options: LayoutDocumentOptions,
+    viewport_scroll: Point,
     deadline: Option<&RenderDeadline>,
     trace: &TraceHandle,
     layout_parallelism: LayoutParallelism,
@@ -7840,6 +7847,7 @@ impl FastRender {
     // guarded by conservative eligibility rules.
     let mut config = LayoutConfig::for_viewport(layout_viewport);
     config.fragmentation = manual_fragmentation;
+    config.viewport_scroll = viewport_scroll;
     config.enable_cache = !toggles.truthy("FASTR_DISABLE_LAYOUT_CACHE");
     config.parallelism = resolved_parallelism;
     let enable_layout_cache = config.enable_cache;
@@ -8339,6 +8347,7 @@ impl FastRender {
       height,
       MediaType::Screen,
       LayoutDocumentOptions::default(),
+      Point::ZERO,
       None,
       &trace,
       self.layout_parallelism,
@@ -12808,6 +12817,7 @@ mod tests {
         200,
         MediaType::Screen,
         LayoutDocumentOptions::default(),
+        Point::ZERO,
         None,
         &trace,
         LayoutParallelism::default(),
@@ -12845,6 +12855,7 @@ mod tests {
         200,
         MediaType::Screen,
         LayoutDocumentOptions::default(),
+        Point::ZERO,
         None,
         &trace,
         LayoutParallelism::default(),
