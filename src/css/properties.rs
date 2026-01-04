@@ -4927,6 +4927,19 @@ mod tests {
       Length::percent(10.0)
     );
   }
+
+  #[test]
+  fn parses_container_query_units() {
+    assert_eq!(parse_length("100cqw").unwrap(), Length::new(100.0, LengthUnit::Cqw));
+    assert_eq!(parse_length("1cqmin").unwrap(), Length::new(1.0, LengthUnit::Cqmin));
+    assert_eq!(
+      parse_length("calc(10cqw + 5px)").unwrap(),
+      Length::calc(CalcLength::single(LengthUnit::Cqw, 10.0).add_scaled(&CalcLength::single(
+        LengthUnit::Px,
+        5.0
+      ), 1.0).unwrap())
+    );
+  }
 }
 
 const MATH_PREFIXES: &[&str] = &[
@@ -4968,6 +4981,12 @@ pub fn parse_length(s: &str) -> Option<Length> {
     ("dvmax", LengthUnit::Dvmax),
     ("dvw", LengthUnit::Dvw),
     ("dvh", LengthUnit::Dvh),
+    ("cqmin", LengthUnit::Cqmin),
+    ("cqmax", LengthUnit::Cqmax),
+    ("cqw", LengthUnit::Cqw),
+    ("cqh", LengthUnit::Cqh),
+    ("cqi", LengthUnit::Cqi),
+    ("cqb", LengthUnit::Cqb),
     ("vmin", LengthUnit::Vmin),
     ("vmax", LengthUnit::Vmax),
     ("vw", LengthUnit::Vw),
@@ -5365,6 +5384,12 @@ fn parse_calc_factor<'i, 't>(
         "dvh" => LengthUnit::Dvh,
         "dvmin" => LengthUnit::Dvmin,
         "dvmax" => LengthUnit::Dvmax,
+        "cqw" => LengthUnit::Cqw,
+        "cqh" => LengthUnit::Cqh,
+        "cqi" => LengthUnit::Cqi,
+        "cqb" => LengthUnit::Cqb,
+        "cqmin" => LengthUnit::Cqmin,
+        "cqmax" => LengthUnit::Cqmax,
         _ => return Err(location.new_custom_error(())),
       };
       Ok(CalcComponent::Length(CalcLength::single(unit, *value)))

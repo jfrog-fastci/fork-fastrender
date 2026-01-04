@@ -90,6 +90,24 @@ pub enum LengthUnit {
   /// Dynamic viewport maximum (dvmax)
   Dvmax,
 
+  /// Container query width (cqw) - 1% of the query container's inline size
+  Cqw,
+
+  /// Container query height (cqh) - 1% of the query container's block size
+  Cqh,
+
+  /// Container query inline size (cqi) - 1% of the query container's inline size
+  Cqi,
+
+  /// Container query block size (cqb) - 1% of the query container's block size
+  Cqb,
+
+  /// Container query minimum (cqmin) - 1% of the smaller of inline/block sizes
+  Cqmin,
+
+  /// Container query maximum (cqmax) - 1% of the larger of inline/block sizes
+  Cqmax,
+
   /// Percentage (%) - relative to containing block or font size
   Percent,
 
@@ -163,6 +181,13 @@ impl LengthUnit {
     )
   }
 
+  pub fn is_container_query_relative(self) -> bool {
+    matches!(
+      self,
+      Self::Cqw | Self::Cqh | Self::Cqi | Self::Cqb | Self::Cqmin | Self::Cqmax
+    )
+  }
+
   /// Returns true if this is a percentage
   pub fn is_percentage(self) -> bool {
     matches!(self, Self::Percent)
@@ -200,6 +225,12 @@ impl LengthUnit {
       Self::Dvh => "dvh",
       Self::Dvmin => "dvmin",
       Self::Dvmax => "dvmax",
+      Self::Cqw => "cqw",
+      Self::Cqh => "cqh",
+      Self::Cqi => "cqi",
+      Self::Cqb => "cqb",
+      Self::Cqmin => "cqmin",
+      Self::Cqmax => "cqmax",
       Self::Percent => "%",
       Self::Calc => "calc",
     }
@@ -305,6 +336,61 @@ impl CalcLength {
 
   pub fn has_font_relative(&self) -> bool {
     self.terms().iter().any(|t| t.unit.is_font_relative())
+  }
+
+  pub fn has_container_query_relative(&self) -> bool {
+    self
+      .terms()
+      .iter()
+      .any(|t| t.unit.is_container_query_relative())
+  }
+
+  pub fn resolve_container_query_units(
+    &self,
+    inline_size: f32,
+    size_container_inline: f32,
+    size_container_block: f32,
+  ) -> Self {
+    let inline_size = inline_size.max(0.0);
+    let size_container_inline = size_container_inline.max(0.0);
+    let size_container_block = size_container_block.max(0.0);
+    let inline_size = if inline_size.is_finite() { inline_size } else { 0.0 };
+    let size_container_inline = if size_container_inline.is_finite() {
+      size_container_inline
+    } else {
+      0.0
+    };
+    let size_container_block = if size_container_block.is_finite() {
+      size_container_block
+    } else {
+      0.0
+    };
+
+    let mut out = Self::empty();
+    for term in self.terms() {
+      match term.unit {
+        LengthUnit::Cqw | LengthUnit::Cqi => {
+          let px = (term.value / 100.0) * inline_size;
+          let _ = out.push(LengthUnit::Px, px);
+        }
+        LengthUnit::Cqh | LengthUnit::Cqb => {
+          let px = (term.value / 100.0) * size_container_block;
+          let _ = out.push(LengthUnit::Px, px);
+        }
+        LengthUnit::Cqmin => {
+          let px = (term.value / 100.0) * size_container_inline.min(size_container_block);
+          let _ = out.push(LengthUnit::Px, px);
+        }
+        LengthUnit::Cqmax => {
+          let px = (term.value / 100.0) * size_container_inline.max(size_container_block);
+          let _ = out.push(LengthUnit::Px, px);
+        }
+        _ => {
+          let _ = out.push(term.unit, term.value);
+        }
+      }
+    }
+    out
   }
 
   pub fn resolve(
@@ -853,6 +939,71 @@ impl Length {
       LengthUnit::Mm => self.value * 3.7795276,     // 1mm = 1/10 cm
       LengthUnit::Q => self.value * 0.944882,       // 1Q = 1/4 mm
       _ => self.value,
+    }
+  }
+
+  pub fn resolve_container_query_units(
+    self,
+    inline_size: f32,
+    size_container_inline: f32,
+    size_container_block: f32,
+  ) -> Self {
+    if let Some(calc) = self.calc {
+      let resolved =
+        calc.resolve_container_query_units(inline_size, size_container_inline, size_container_block);
+      if resolved.is_zero() {
+        return Length::px(0.0);
+      }
+      if let Some(term) = resolved.single_term() {
+        return Length::new(term.value, term.unit);
+      }
+      return Length::calc(resolved);
+    }
+
+    match self.unit {
+      LengthUnit::Cqw | LengthUnit::Cqi => {
+        let inline_size = if inline_size.is_finite() && inline_size > 0.0 {
+          inline_size
+        } else {
+          0.0
+        };
+        Length::px((self.value / 100.0) * inline_size)
+      }
+      LengthUnit::Cqh | LengthUnit::Cqb => {
+        let block_size = if size_container_block.is_finite() && size_container_block > 0.0 {
+          size_container_block
+        } else {
+          0.0
+        };
+        Length::px((self.value / 100.0) * block_size)
+      }
+      LengthUnit::Cqmin => {
+        let inline = if size_container_inline.is_finite() && size_container_inline > 0.0 {
+          size_container_inline
+        } else {
+          0.0
+        };
+        let block = if size_container_block.is_finite() && size_container_block > 0.0 {
+          size_container_block
+        } else {
+          0.0
+        };
+        Length::px((self.value / 100.0) * inline.min(block))
+      }
+      LengthUnit::Cqmax => {
+        let inline = if size_container_inline.is_finite() && size_container_inline > 0.0 {
+          size_container_inline
+        } else {
+          0.0
+        };
+        let block = if size_container_block.is_finite() && size_container_block > 0.0 {
+          size_container_block
+        } else {
+          0.0
+        };
+        Length::px((self.value / 100.0) * inline.max(block))
+      }
+      _ => self,
     }
   }
 

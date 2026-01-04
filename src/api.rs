@@ -7398,7 +7398,7 @@ impl FastRender {
       .collect_css_metadata_all_scopes_with_cache(&media_ctx, Some(&mut media_query_cache));
     let font_faces = css_metadata.font_faces;
     let keyframes = css_metadata.keyframes;
-    let has_container_queries = css_metadata.has_container_rules;
+    let has_container_queries = css_metadata.needs_container_pass;
     let has_starting_style_rules = css_metadata.has_starting_style_rules;
     if let Some(rec) = stats.as_deref_mut() {
       RenderStatsRecorder::add_ms(

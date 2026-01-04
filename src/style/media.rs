@@ -2745,6 +2745,14 @@ impl MediaContext {
       LengthUnit::Pc => Some(length.value * 16.0),
       LengthUnit::Ex => Some(length.value * (base_font * 0.5)), // Approximate: half of em
       LengthUnit::Ch => Some(length.value * (base_font * 0.5)), // Approximate: width of '0'
+      // Container query units depend on the nearest query container's content-box size, which is
+      // not available in the media query evaluation context. Treat them as unresolved.
+      LengthUnit::Cqw
+      | LengthUnit::Cqh
+      | LengthUnit::Cqi
+      | LengthUnit::Cqb
+      | LengthUnit::Cqmin
+      | LengthUnit::Cqmax => None,
       LengthUnit::Calc => None,
     }
   }

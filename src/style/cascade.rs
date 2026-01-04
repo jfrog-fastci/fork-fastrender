@@ -8736,6 +8736,8 @@ fn compute_base_styles<'a>(
     resolve_line_height_length(&mut styles, viewport);
     resolve_absolute_lengths(&mut ua_styles, current_ua_root_font_size, viewport);
     resolve_absolute_lengths(&mut styles, current_root_font_size, viewport);
+    resolve_container_query_lengths(&mut ua_styles, node_id, ancestor_ids, container_ctx);
+    resolve_container_query_lengths(&mut styles, node_id, ancestor_ids, container_ctx);
     return Ok(NodeBaseStyles {
       styles,
       ua_styles,
@@ -8820,6 +8822,7 @@ fn compute_base_styles<'a>(
   ua_styles.root_font_size = current_ua_root_font_size;
   resolve_line_height_length(&mut ua_styles, viewport);
   resolve_absolute_lengths(&mut ua_styles, current_ua_root_font_size, viewport);
+  resolve_container_query_lengths(&mut ua_styles, node_id, ancestor_ids, container_ctx);
   let ua_default_color = ua_styles.color;
   let ua_default_background = ua_styles.background_color;
 
@@ -8886,6 +8889,7 @@ fn compute_base_styles<'a>(
   styles.root_font_size = current_root_font_size;
   resolve_line_height_length(&mut styles, viewport);
   resolve_absolute_lengths(&mut styles, current_root_font_size, viewport);
+  resolve_container_query_lengths(&mut styles, node_id, ancestor_ids, container_ctx);
 
   let selected_scheme = select_color_scheme(&styles.color_scheme, color_scheme_pref);
 
@@ -9010,7 +9014,9 @@ fn compute_pseudo_styles(
   scratch: &mut CascadeScratch,
   ancestors: &[&DomNode],
   ancestor_bloom: Option<&selectors::bloom::BloomFilter>,
+  ancestor_ids: &[usize],
   node_id: usize,
+  container_ctx: Option<&ContainerQueryContext>,
   dom_maps: &DomMaps,
   sibling_cache: &SiblingListCache,
   element_attr_cache: &ElementAttrCache,
@@ -9051,7 +9057,9 @@ fn compute_pseudo_styles(
       scratch,
       ancestors,
       ancestor_bloom,
+      ancestor_ids,
       node_id,
+      container_ctx,
       dom_maps,
       sibling_cache,
       element_attr_cache,
@@ -9083,6 +9091,8 @@ fn compute_pseudo_styles(
     scratch,
     ancestors,
     ancestor_bloom,
+    ancestor_ids,
+    container_ctx,
     node_id,
     dom_maps,
     sibling_cache,
@@ -9108,6 +9118,8 @@ fn compute_pseudo_styles(
     scratch,
     ancestors,
     ancestor_bloom,
+    ancestor_ids,
+    container_ctx,
     node_id,
     dom_maps,
     sibling_cache,
@@ -9135,7 +9147,9 @@ fn compute_pseudo_styles(
       scratch,
       ancestors,
       ancestor_bloom,
+      ancestor_ids,
       node_id,
+      container_ctx,
       dom_maps,
       sibling_cache,
       element_attr_cache,
@@ -9166,7 +9180,9 @@ fn compute_pseudo_styles(
       scratch,
       ancestors,
       ancestor_bloom,
+      ancestor_ids,
       node_id,
+      container_ctx,
       dom_maps,
       sibling_cache,
       element_attr_cache,
@@ -9626,7 +9642,9 @@ fn apply_styles_internal_with_ancestors<'a>(
         scratch,
         ancestors.as_slice(),
         ancestor_bloom_enabled.then_some(&*ancestor_bloom_filter),
+        ancestor_ids.as_slice(),
         frame.node_id,
+        container_ctx,
         dom_maps,
         sibling_cache,
         element_attr_cache,
@@ -9648,7 +9666,9 @@ fn apply_styles_internal_with_ancestors<'a>(
         scratch,
         ancestors.as_slice(),
         ancestor_bloom_enabled.then_some(&*ancestor_bloom_filter),
+        ancestor_ids.as_slice(),
         frame.node_id,
+        container_ctx,
         dom_maps,
         sibling_cache,
         element_attr_cache,
@@ -11122,6 +11142,73 @@ mod tests {
     // - both base + @starting-style cascades, and
     // - both container-query passes.
     assert_eq!(inline_style_declaration_parse_count(), 2);
+  }
+
+  #[test]
+  fn resolves_container_query_units_against_nearest_query_container() {
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("id".to_string(), "container".to_string())],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![("id".to_string(), "inner".to_string())],
+        },
+        children: vec![],
+      }],
+    };
+    let stylesheet = parse_stylesheet(
+      r#"
+        #container { container-type: inline-size; }
+        #inner { width: 50cqw; }
+      "#,
+    )
+    .expect("parse stylesheet");
+    let style_set = StyleSet::from_document(stylesheet);
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+
+    let first = apply_style_set_with_media_target_and_imports_cached_with_deadline(
+      &dom, &style_set, &media_ctx, None, None, None, None, None, None, None, None,
+    )
+    .expect("first cascade");
+    let inner_first = find_styled_node_by_id(&first, "inner").expect("find inner");
+    assert_eq!(inner_first.styles.width, Some(Length::px(0.0)));
+
+    let container_ctx = ContainerQueryContext {
+      base_media: media_ctx.clone(),
+      containers: HashMap::from([(
+        1usize,
+        ContainerQueryInfo {
+          inline_size: 400.0,
+          block_size: 300.0,
+          container_type: ContainerType::InlineSize,
+          names: Vec::new(),
+          font_size: 16.0,
+          styles: Arc::clone(&first.styles),
+        },
+      )]),
+    };
+
+    let second = apply_style_set_with_media_target_and_imports_cached_with_deadline(
+      &dom,
+      &style_set,
+      &media_ctx,
+      None,
+      None,
+      None,
+      Some(&container_ctx),
+      None,
+      None,
+      None,
+      None,
+    )
+    .expect("second cascade");
+    let inner_second = find_styled_node_by_id(&second, "inner").expect("find inner");
+    assert_eq!(inner_second.styles.width, Some(Length::px(200.0)));
   }
 
   #[test]
@@ -23473,6 +23560,743 @@ fn resolve_absolute_lengths(styles: &mut ComputedStyle, root_font_size: f32, vie
   // Percentage radii remain relative and are handled during paint/layout.
 }
 
+fn resolve_container_query_lengths(
+  styles: &mut ComputedStyle,
+  node_id: usize,
+  ancestor_ids: &[usize],
+  container_ctx: Option<&ContainerQueryContext>,
+) {
+  use crate::css::types::RadialGradientSize;
+  use crate::css::types::Transform;
+  use crate::css::types::TranslateValue;
+  use crate::style::types::BackgroundImage;
+  use crate::style::types::BackgroundPosition;
+  use crate::style::types::BackgroundSize;
+  use crate::style::types::BackgroundSizeComponent;
+  use crate::style::types::BasicShape;
+  use crate::style::types::BorderImageOutsetValue;
+  use crate::style::types::BorderImageWidthValue;
+  use crate::style::types::ClipComponent;
+  use crate::style::types::ClipPath;
+  use crate::style::types::ClipRadii;
+  use crate::style::types::ClipRect;
+  use crate::style::types::FilterFunction;
+  use crate::style::types::FilterShadow;
+  use crate::style::types::FlexBasis;
+  use crate::style::types::GridTrack;
+  use crate::style::types::LengthOrNumber;
+  use crate::style::types::LineHeight;
+  use crate::style::types::OffsetAnchor;
+  use crate::style::types::OffsetPath;
+  use crate::style::types::PositionComponent;
+  use crate::style::types::ShapeOutside;
+  use crate::style::types::ShapeRadius;
+  use crate::style::types::StrokeDasharray;
+  use crate::style::types::TabSize;
+  use crate::style::types::TextDecorationThickness;
+  use crate::style::types::TextUnderlineOffset;
+  use crate::style::types::VerticalAlign;
+
+  let (inline_size, size_container_inline, size_container_block) = if let Some(ctx) = container_ctx
+  {
+    let inline_size = ctx
+      .find_container_impl(
+        node_id,
+        ancestor_ids,
+        None,
+        CQ_SUPPORT_SIZE | CQ_SUPPORT_INLINE_SIZE,
+      )
+      .map(|(_, info)| info.inline_size)
+      .unwrap_or(0.0);
+    let (size_container_inline, size_container_block) = ctx
+      .find_container_impl(node_id, ancestor_ids, None, CQ_SUPPORT_SIZE)
+      .map(|(_, info)| (info.inline_size, info.block_size))
+      .unwrap_or((0.0, 0.0));
+    (inline_size, size_container_inline, size_container_block)
+  } else {
+    (0.0, 0.0, 0.0)
+  };
+
+  let mut resolve_len = |len: &mut Length| {
+    *len = len.resolve_container_query_units(inline_size, size_container_inline, size_container_block);
+  };
+
+  fn resolve_opt_len(len: &mut Option<Length>, resolve_len: &mut impl FnMut(&mut Length)) {
+    if let Some(v) = len.as_mut() {
+      resolve_len(v);
+    }
+  }
+
+  fn resolve_border_corner(
+    radius: &mut BorderCornerRadius,
+    resolve_len: &mut impl FnMut(&mut Length),
+  ) {
+    resolve_len(&mut radius.x);
+    resolve_len(&mut radius.y);
+  }
+
+  fn resolve_transform_origin(
+    origin: &mut crate::style::types::TransformOrigin,
+    resolve_len: &mut impl FnMut(&mut Length),
+  ) {
+    resolve_len(&mut origin.x);
+    resolve_len(&mut origin.y);
+  }
+
+  fn resolve_length_or_number(
+    value: &mut LengthOrNumber,
+    resolve_len: &mut impl FnMut(&mut Length),
+  ) {
+    if let LengthOrNumber::Length(len) = value {
+      resolve_len(len);
+    }
+  }
+
+  fn length_needs_container_resolution(length: &Length) -> bool {
+    length.unit.is_container_query_relative()
+      || length
+        .calc
+        .is_some_and(|calc| calc.has_container_query_relative())
+  }
+
+  fn resolve_background_position(
+    pos: &mut BackgroundPosition,
+    resolve_len: &mut impl FnMut(&mut Length),
+  ) {
+    match pos {
+      BackgroundPosition::Position { x, y } => {
+        resolve_len(&mut x.offset);
+        resolve_len(&mut y.offset);
+      }
+    }
+  }
+
+  fn background_position_needs_container_resolution(pos: &BackgroundPosition) -> bool {
+    match pos {
+      BackgroundPosition::Position { x, y } => {
+        length_needs_container_resolution(&x.offset) || length_needs_container_resolution(&y.offset)
+      }
+    }
+  }
+
+  fn resolve_background_size(size: &mut BackgroundSize, resolve_len: &mut impl FnMut(&mut Length)) {
+    match size {
+      BackgroundSize::Explicit(x, y) => {
+        if let BackgroundSizeComponent::Length(len) = x {
+          resolve_len(len);
+        }
+        if let BackgroundSizeComponent::Length(len) = y {
+          resolve_len(len);
+        }
+      }
+      BackgroundSize::Keyword(_) => {}
+    }
+  }
+
+  fn background_size_needs_container_resolution(size: &BackgroundSize) -> bool {
+    fn component_needs_container_resolution(component: &BackgroundSizeComponent) -> bool {
+      match component {
+        BackgroundSizeComponent::Length(len) => length_needs_container_resolution(len),
+        BackgroundSizeComponent::Auto => false,
+      }
+    }
+    match size {
+      BackgroundSize::Explicit(x, y) => {
+        component_needs_container_resolution(x) || component_needs_container_resolution(y)
+      }
+      BackgroundSize::Keyword(_) => false,
+    }
+  }
+
+  fn resolve_radial_gradient_size(
+    size: &mut RadialGradientSize,
+    resolve_len: &mut impl FnMut(&mut Length),
+  ) {
+    match size {
+      RadialGradientSize::Explicit { x, y } => {
+        resolve_len(x);
+        if let Some(y) = y.as_mut() {
+          resolve_len(y);
+        }
+      }
+      _ => {}
+    }
+  }
+
+  fn radial_gradient_size_needs_container_resolution(size: &RadialGradientSize) -> bool {
+    match size {
+      RadialGradientSize::Explicit { x, y } => {
+        length_needs_container_resolution(x)
+          || y
+            .as_ref()
+            .is_some_and(length_needs_container_resolution)
+      }
+      _ => false,
+    }
+  }
+
+  fn resolve_background_image(
+    image: &mut BackgroundImage,
+    resolve_len: &mut impl FnMut(&mut Length),
+  ) {
+    match image {
+      BackgroundImage::None | BackgroundImage::Url(_) => {}
+      BackgroundImage::LinearGradient { .. }
+      | BackgroundImage::RepeatingLinearGradient { .. } => {}
+      BackgroundImage::RadialGradient { size, position, .. }
+      | BackgroundImage::RepeatingRadialGradient { size, position, .. } => {
+        resolve_radial_gradient_size(size, resolve_len);
+        resolve_background_position(position, resolve_len);
+      }
+      BackgroundImage::ConicGradient { position, .. }
+      | BackgroundImage::RepeatingConicGradient { position, .. } => {
+        resolve_background_position(position, resolve_len);
+      }
+    }
+  }
+
+  fn background_image_needs_container_resolution(image: &BackgroundImage) -> bool {
+    match image {
+      BackgroundImage::None | BackgroundImage::Url(_) => false,
+      BackgroundImage::LinearGradient { .. }
+      | BackgroundImage::RepeatingLinearGradient { .. } => false,
+      BackgroundImage::RadialGradient { size, position, .. }
+      | BackgroundImage::RepeatingRadialGradient { size, position, .. } => {
+        radial_gradient_size_needs_container_resolution(size)
+          || background_position_needs_container_resolution(position)
+      }
+      BackgroundImage::ConicGradient { position, .. }
+      | BackgroundImage::RepeatingConicGradient { position, .. } => {
+        background_position_needs_container_resolution(position)
+      }
+    }
+  }
+
+  fn grid_track_needs_container_resolution(track: &GridTrack) -> bool {
+    match track {
+      GridTrack::Length(len) | GridTrack::FitContent(len) => length_needs_container_resolution(len),
+      GridTrack::MinMax(min, max) => {
+        grid_track_needs_container_resolution(min) || grid_track_needs_container_resolution(max)
+      }
+      GridTrack::RepeatAutoFill { tracks, .. } | GridTrack::RepeatAutoFit { tracks, .. } => tracks
+        .iter()
+        .any(grid_track_needs_container_resolution),
+      _ => false,
+    }
+  }
+
+  fn resolve_clip_radii(
+    radii: &mut ClipRadii,
+    resolve_len: &mut impl FnMut(&mut Length),
+  ) {
+    resolve_border_corner(&mut radii.top_left, resolve_len);
+    resolve_border_corner(&mut radii.top_right, resolve_len);
+    resolve_border_corner(&mut radii.bottom_right, resolve_len);
+    resolve_border_corner(&mut radii.bottom_left, resolve_len);
+  }
+
+  fn resolve_basic_shape(
+    shape: &mut BasicShape,
+    resolve_len: &mut impl FnMut(&mut Length),
+  ) {
+    match shape {
+      BasicShape::Inset {
+        top,
+        right,
+        bottom,
+        left,
+        border_radius,
+      } => {
+        resolve_len(top);
+        resolve_len(right);
+        resolve_len(bottom);
+        resolve_len(left);
+        if let Some(radii) = border_radius.as_mut() {
+          resolve_clip_radii(radii, resolve_len);
+        }
+      }
+      BasicShape::Circle { radius, position } => {
+        if let ShapeRadius::Length(len) = radius {
+          resolve_len(len);
+        }
+        resolve_background_position(position, resolve_len);
+      }
+      BasicShape::Ellipse {
+        radius_x,
+        radius_y,
+        position,
+      } => {
+        if let ShapeRadius::Length(len) = radius_x {
+          resolve_len(len);
+        }
+        if let ShapeRadius::Length(len) = radius_y {
+          resolve_len(len);
+        }
+        resolve_background_position(position, resolve_len);
+      }
+      BasicShape::Polygon { points, .. } => {
+        for (x, y) in points {
+          resolve_len(x);
+          resolve_len(y);
+        }
+      }
+    }
+  }
+
+  fn resolve_clip_path(
+    path: &mut ClipPath,
+    resolve_len: &mut impl FnMut(&mut Length),
+  ) {
+    match path {
+      ClipPath::None | ClipPath::Box(_) => {}
+      ClipPath::BasicShape(shape, _) => resolve_basic_shape(shape, resolve_len),
+    }
+  }
+
+  fn resolve_clip_rect(rect: &mut ClipRect, resolve_len: &mut impl FnMut(&mut Length)) {
+    fn resolve_component(component: &mut ClipComponent, resolve_len: &mut impl FnMut(&mut Length)) {
+      if let ClipComponent::Length(len) = component {
+        resolve_len(len);
+      }
+    }
+    resolve_component(&mut rect.top, resolve_len);
+    resolve_component(&mut rect.right, resolve_len);
+    resolve_component(&mut rect.bottom, resolve_len);
+    resolve_component(&mut rect.left, resolve_len);
+  }
+
+  fn resolve_filter_function(func: &mut FilterFunction, resolve_len: &mut impl FnMut(&mut Length)) {
+    match func {
+      FilterFunction::Blur(len) => resolve_len(len),
+      FilterFunction::DropShadow(shadow) => {
+        let FilterShadow {
+          offset_x,
+          offset_y,
+          blur_radius,
+          spread,
+          ..
+        } = shadow.as_mut();
+        resolve_len(offset_x);
+        resolve_len(offset_y);
+        resolve_len(blur_radius);
+        resolve_len(spread);
+      }
+      _ => {}
+    }
+  }
+
+  fn resolve_offset_path(
+    path: &mut OffsetPath,
+    resolve_len: &mut impl FnMut(&mut Length),
+  ) {
+    match path {
+      OffsetPath::None | OffsetPath::Path(_) => {}
+      OffsetPath::Ray(ray) => {
+        if let Some(len) = ray.length.as_mut() {
+          resolve_len(len);
+        }
+      }
+      OffsetPath::BasicShape(shape) => resolve_basic_shape(shape, resolve_len),
+    }
+  }
+
+  fn resolve_shape_outside(
+    shape: &mut ShapeOutside,
+    resolve_len: &mut impl FnMut(&mut Length),
+  ) {
+    match shape {
+      ShapeOutside::None | ShapeOutside::Box(_) => {}
+      ShapeOutside::BasicShape(shape, _) => resolve_basic_shape(shape, resolve_len),
+      ShapeOutside::Image(image) => resolve_background_image(image, resolve_len),
+    }
+  }
+
+  fn resolve_flex_basis(basis: &mut FlexBasis, resolve_len: &mut impl FnMut(&mut Length)) {
+    if let FlexBasis::Length(len) = basis {
+      resolve_len(len);
+    }
+  }
+
+  fn resolve_grid_track(track: &mut GridTrack, resolve_len: &mut impl FnMut(&mut Length)) {
+    match track {
+      GridTrack::Length(len) | GridTrack::FitContent(len) => resolve_len(len),
+      GridTrack::MinMax(min, max) => {
+        resolve_grid_track(min, resolve_len);
+        resolve_grid_track(max, resolve_len);
+      }
+      GridTrack::RepeatAutoFill { tracks, .. } | GridTrack::RepeatAutoFit { tracks, .. } => {
+        for child in tracks {
+          resolve_grid_track(child, resolve_len);
+        }
+      }
+      _ => {}
+    }
+  }
+
+  fn resolve_text_underline_offset(
+    offset: &mut TextUnderlineOffset,
+    resolve_len: &mut impl FnMut(&mut Length),
+  ) {
+    if let TextUnderlineOffset::Length(len) = offset {
+      resolve_len(len);
+    }
+  }
+
+  fn resolve_text_decoration_thickness(
+    thickness: &mut TextDecorationThickness,
+    resolve_len: &mut impl FnMut(&mut Length),
+  ) {
+    if let TextDecorationThickness::Length(len) = thickness {
+      resolve_len(len);
+    }
+  }
+
+  fn resolve_line_height(value: &mut LineHeight, resolve_len: &mut impl FnMut(&mut Length)) {
+    if let LineHeight::Length(len) = value {
+      resolve_len(len);
+    }
+  }
+
+  fn resolve_tab_size(value: &mut TabSize, resolve_len: &mut impl FnMut(&mut Length)) {
+    if let TabSize::Length(len) = value {
+      resolve_len(len);
+    }
+  }
+
+  fn resolve_vertical_align(value: &mut VerticalAlign, resolve_len: &mut impl FnMut(&mut Length)) {
+    if let VerticalAlign::Length(len) = value {
+      resolve_len(len);
+    }
+  }
+
+  fn resolve_position_component(
+    value: &mut PositionComponent,
+    resolve_len: &mut impl FnMut(&mut Length),
+  ) {
+    if let PositionComponent::Length(len) = value {
+      resolve_len(len);
+    }
+  }
+
+  fn resolve_translate_value(
+    value: &mut TranslateValue,
+    resolve_len: &mut impl FnMut(&mut Length),
+  ) {
+    match value {
+      TranslateValue::None => {}
+      TranslateValue::Values { x, y, z } => {
+        resolve_len(x);
+        resolve_len(y);
+        resolve_len(z);
+      }
+    }
+  }
+
+  fn resolve_transform_list(
+    list: &mut [Transform],
+    resolve_len: &mut impl FnMut(&mut Length),
+  ) {
+    for transform in list {
+      match transform {
+        Transform::Translate(x, y) => {
+          resolve_len(x);
+          resolve_len(y);
+        }
+        Transform::TranslateX(v) | Transform::TranslateY(v) | Transform::TranslateZ(v) => {
+          resolve_len(v);
+        }
+        Transform::Translate3d(x, y, z) => {
+          resolve_len(x);
+          resolve_len(y);
+          resolve_len(z);
+        }
+        Transform::Perspective(v) => resolve_len(v),
+        _ => {}
+      }
+    }
+  }
+
+  // Direct lengths.
+  resolve_len(&mut styles.scroll_padding_top);
+  resolve_len(&mut styles.scroll_padding_right);
+  resolve_len(&mut styles.scroll_padding_bottom);
+  resolve_len(&mut styles.scroll_padding_left);
+  resolve_len(&mut styles.scroll_margin_top);
+  resolve_len(&mut styles.scroll_margin_right);
+  resolve_len(&mut styles.scroll_margin_bottom);
+  resolve_len(&mut styles.scroll_margin_left);
+
+  resolve_opt_len(&mut styles.top, &mut resolve_len);
+  resolve_opt_len(&mut styles.right, &mut resolve_len);
+  resolve_opt_len(&mut styles.bottom, &mut resolve_len);
+  resolve_opt_len(&mut styles.left, &mut resolve_len);
+
+  resolve_len(&mut styles.shape_margin);
+  resolve_len(&mut styles.outline_width);
+  resolve_len(&mut styles.outline_offset);
+
+  resolve_opt_len(&mut styles.width, &mut resolve_len);
+  resolve_opt_len(&mut styles.height, &mut resolve_len);
+  resolve_opt_len(&mut styles.min_width, &mut resolve_len);
+  resolve_opt_len(&mut styles.min_height, &mut resolve_len);
+  resolve_opt_len(&mut styles.max_width, &mut resolve_len);
+  resolve_opt_len(&mut styles.max_height, &mut resolve_len);
+
+  resolve_opt_len(&mut styles.margin_top, &mut resolve_len);
+  resolve_opt_len(&mut styles.margin_right, &mut resolve_len);
+  resolve_opt_len(&mut styles.margin_bottom, &mut resolve_len);
+  resolve_opt_len(&mut styles.margin_left, &mut resolve_len);
+
+  resolve_len(&mut styles.padding_top);
+  resolve_len(&mut styles.padding_right);
+  resolve_len(&mut styles.padding_bottom);
+  resolve_len(&mut styles.padding_left);
+
+  resolve_len(&mut styles.border_top_width);
+  resolve_len(&mut styles.border_right_width);
+  resolve_len(&mut styles.border_bottom_width);
+  resolve_len(&mut styles.border_left_width);
+
+  resolve_border_corner(&mut styles.border_top_left_radius, &mut resolve_len);
+  resolve_border_corner(&mut styles.border_top_right_radius, &mut resolve_len);
+  resolve_border_corner(&mut styles.border_bottom_right_radius, &mut resolve_len);
+  resolve_border_corner(&mut styles.border_bottom_left_radius, &mut resolve_len);
+
+  resolve_len(&mut styles.grid_gap);
+  resolve_len(&mut styles.grid_row_gap);
+  resolve_len(&mut styles.grid_column_gap);
+
+  resolve_opt_len(&mut styles.column_width, &mut resolve_len);
+  resolve_len(&mut styles.column_gap);
+  resolve_len(&mut styles.column_rule_width);
+
+  resolve_len(&mut styles.border_spacing_horizontal);
+  resolve_len(&mut styles.border_spacing_vertical);
+
+  resolve_flex_basis(&mut styles.flex_basis, &mut resolve_len);
+  for track in styles.grid_template_columns.iter_mut() {
+    resolve_grid_track(track, &mut resolve_len);
+  }
+  for track in styles.grid_template_rows.iter_mut() {
+    resolve_grid_track(track, &mut resolve_len);
+  }
+  if styles
+    .grid_auto_rows
+    .iter()
+    .any(grid_track_needs_container_resolution)
+  {
+    for track in Arc::make_mut(&mut styles.grid_auto_rows).iter_mut() {
+      resolve_grid_track(track, &mut resolve_len);
+    }
+  }
+  if styles
+    .grid_auto_columns
+    .iter()
+    .any(grid_track_needs_container_resolution)
+  {
+    for track in Arc::make_mut(&mut styles.grid_auto_columns).iter_mut() {
+      resolve_grid_track(track, &mut resolve_len);
+    }
+  }
+
+  resolve_line_height(&mut styles.line_height, &mut resolve_len);
+  resolve_len(&mut styles.text_indent.length);
+  resolve_text_decoration_thickness(&mut styles.text_decoration.thickness, &mut resolve_len);
+  resolve_text_underline_offset(&mut styles.text_underline_offset, &mut resolve_len);
+  resolve_tab_size(&mut styles.tab_size, &mut resolve_len);
+  resolve_vertical_align(&mut styles.vertical_align, &mut resolve_len);
+
+  for decoration in styles.applied_text_decorations.iter_mut() {
+    resolve_text_decoration_thickness(&mut decoration.decoration.thickness, &mut resolve_len);
+    resolve_text_underline_offset(&mut decoration.underline_offset, &mut resolve_len);
+  }
+
+  if let Some(stroke_width) = styles.svg_stroke_width.as_mut() {
+    resolve_length_or_number(stroke_width, &mut resolve_len);
+  }
+  if let Some(dasharray) = styles.svg_stroke_dasharray.as_mut() {
+    if let StrokeDasharray::Values(values) = dasharray {
+      if values.iter().any(|value| match value {
+        LengthOrNumber::Length(len) => length_needs_container_resolution(len),
+        _ => false,
+      }) {
+        for value in Arc::make_mut(values).iter_mut() {
+          resolve_length_or_number(value, &mut resolve_len);
+        }
+      }
+    }
+  }
+  if let Some(offset) = styles.svg_stroke_dashoffset.as_mut() {
+    resolve_length_or_number(offset, &mut resolve_len);
+  }
+
+  resolve_position_component(&mut styles.object_position.x, &mut resolve_len);
+  resolve_position_component(&mut styles.object_position.y, &mut resolve_len);
+
+  if styles
+    .background_images
+    .iter()
+    .flatten()
+    .any(background_image_needs_container_resolution)
+  {
+    for image in Arc::make_mut(&mut styles.background_images).iter_mut().flatten() {
+      resolve_background_image(image, &mut resolve_len);
+    }
+  }
+  if styles
+    .background_positions
+    .iter()
+    .any(background_position_needs_container_resolution)
+  {
+    for pos in Arc::make_mut(&mut styles.background_positions).iter_mut() {
+      resolve_background_position(pos, &mut resolve_len);
+    }
+  }
+  if styles
+    .background_sizes
+    .iter()
+    .any(background_size_needs_container_resolution)
+  {
+    for size in Arc::make_mut(&mut styles.background_sizes).iter_mut() {
+      resolve_background_size(size, &mut resolve_len);
+    }
+  }
+  for layer in styles.background_layers.iter_mut() {
+    resolve_background_position(&mut layer.position, &mut resolve_len);
+    resolve_background_size(&mut layer.size, &mut resolve_len);
+    if let Some(image) = layer.image.as_mut() {
+      resolve_background_image(image, &mut resolve_len);
+    }
+  }
+
+  if styles
+    .mask_images
+    .iter()
+    .flatten()
+    .any(background_image_needs_container_resolution)
+  {
+    for image in Arc::make_mut(&mut styles.mask_images).iter_mut().flatten() {
+      resolve_background_image(image, &mut resolve_len);
+    }
+  }
+  if styles
+    .mask_positions
+    .iter()
+    .any(background_position_needs_container_resolution)
+  {
+    for pos in Arc::make_mut(&mut styles.mask_positions).iter_mut() {
+      resolve_background_position(pos, &mut resolve_len);
+    }
+  }
+  if styles
+    .mask_sizes
+    .iter()
+    .any(background_size_needs_container_resolution)
+  {
+    for size in Arc::make_mut(&mut styles.mask_sizes).iter_mut() {
+      resolve_background_size(size, &mut resolve_len);
+    }
+  }
+  for layer in styles.mask_layers.iter_mut() {
+    resolve_background_position(&mut layer.position, &mut resolve_len);
+    resolve_background_size(&mut layer.size, &mut resolve_len);
+    if let Some(image) = layer.image.as_mut() {
+      resolve_background_image(image, &mut resolve_len);
+    }
+  }
+
+  match &mut styles.border_image.width {
+    width => {
+      for value in [&mut width.top, &mut width.right, &mut width.bottom, &mut width.left] {
+        if let BorderImageWidthValue::Length(len) = value {
+          resolve_len(len);
+        }
+      }
+    }
+  }
+  match &mut styles.border_image.outset {
+    outset => {
+      for value in [
+        &mut outset.top,
+        &mut outset.right,
+        &mut outset.bottom,
+        &mut outset.left,
+      ] {
+        if let BorderImageOutsetValue::Length(len) = value {
+          resolve_len(len);
+        }
+      }
+    }
+  }
+  if let crate::style::types::BorderImageSource::Image(image) = &mut styles.border_image.source {
+    resolve_background_image(image, &mut resolve_len);
+  }
+
+  for func in styles.filter.iter_mut() {
+    resolve_filter_function(func, &mut resolve_len);
+  }
+  for func in styles.backdrop_filter.iter_mut() {
+    resolve_filter_function(func, &mut resolve_len);
+  }
+
+  resolve_clip_path(&mut styles.clip_path, &mut resolve_len);
+  if let Some(rect) = styles.clip.as_mut() {
+    resolve_clip_rect(rect, &mut resolve_len);
+  }
+
+  resolve_shape_outside(&mut styles.shape_outside, &mut resolve_len);
+
+  resolve_len(&mut styles.offset_distance);
+  resolve_offset_path(&mut styles.offset_path, &mut resolve_len);
+  match &mut styles.offset_anchor {
+    OffsetAnchor::Auto => {}
+    OffsetAnchor::Position { x, y } => {
+      resolve_len(x);
+      resolve_len(y);
+    }
+  }
+
+  resolve_transform_origin(&mut styles.transform_origin, &mut resolve_len);
+  resolve_transform_origin(&mut styles.perspective_origin, &mut resolve_len);
+  resolve_opt_len(&mut styles.perspective, &mut resolve_len);
+
+  resolve_translate_value(&mut styles.translate, &mut resolve_len);
+  resolve_transform_list(&mut styles.transform, &mut resolve_len);
+
+  for shadow in styles.box_shadow.iter_mut() {
+    resolve_len(&mut shadow.offset_x);
+    resolve_len(&mut shadow.offset_y);
+    resolve_len(&mut shadow.blur_radius);
+    resolve_len(&mut shadow.spread_radius);
+  }
+  if styles.text_shadow.iter().any(|shadow| {
+    length_needs_container_resolution(&shadow.offset_x)
+      || length_needs_container_resolution(&shadow.offset_y)
+      || length_needs_container_resolution(&shadow.blur_radius)
+  }) {
+    for shadow in Arc::make_mut(&mut styles.text_shadow).iter_mut() {
+      resolve_len(&mut shadow.offset_x);
+      resolve_len(&mut shadow.offset_y);
+      resolve_len(&mut shadow.blur_radius);
+    }
+  }
+
+  if let Some(len) = styles
+    .contain_intrinsic_width
+    .length
+    .as_mut()
+  {
+    resolve_len(len);
+  }
+  if let Some(len) = styles
+    .contain_intrinsic_height
+    .length
+    .as_mut()
+  {
+    resolve_len(len);
+  }
+}
+
 fn table_border_value(node: &DomNode) -> Option<Length> {
   node
     .get_attribute_ref("border")
@@ -23995,7 +24819,9 @@ fn compute_pseudo_element_styles(
   scratch: &mut CascadeScratch,
   ancestors: &[&DomNode],
   ancestor_bloom: Option<&selectors::bloom::BloomFilter>,
+  ancestor_ids: &[usize],
   node_id: usize,
+  container_ctx: Option<&ContainerQueryContext>,
   dom_maps: &DomMaps,
   sibling_cache: &SiblingListCache,
   element_attr_cache: &ElementAttrCache,
@@ -24081,6 +24907,7 @@ fn compute_pseudo_element_styles(
   ua_styles.root_font_size = ua_root_font_size;
   resolve_line_height_length(&mut ua_styles, viewport);
   resolve_absolute_lengths(&mut ua_styles, ua_root_font_size, viewport);
+  resolve_container_query_lengths(&mut ua_styles, node_id, ancestor_ids, container_ctx);
 
   // Start with default inline styles (pseudo-elements default to display: inline)
   let mut styles = ComputedStyle::default();
@@ -24109,6 +24936,7 @@ fn compute_pseudo_element_styles(
   styles.root_font_size = root_font_size;
   resolve_line_height_length(&mut styles, viewport);
   resolve_absolute_lengths(&mut styles, root_font_size, viewport);
+  resolve_container_query_lengths(&mut styles, node_id, ancestor_ids, container_ctx);
 
   match pseudo {
     PseudoElement::Before | PseudoElement::After => {
@@ -24188,6 +25016,8 @@ fn compute_first_line_styles(
   scratch: &mut CascadeScratch,
   ancestors: &[&DomNode],
   ancestor_bloom: Option<&selectors::bloom::BloomFilter>,
+  ancestor_ids: &[usize],
+  container_ctx: Option<&ContainerQueryContext>,
   node_id: usize,
   dom_maps: &DomMaps,
   sibling_cache: &SiblingListCache,
@@ -24258,6 +25088,7 @@ fn compute_first_line_styles(
   ua_styles.root_font_size = ua_root_font_size;
   resolve_line_height_length(&mut ua_styles, viewport);
   resolve_absolute_lengths(&mut ua_styles, ua_root_font_size, viewport);
+  resolve_container_query_lengths(&mut ua_styles, node_id, ancestor_ids, container_ctx);
 
   let mut styles = base_styles.clone();
   styles.display = Display::Inline;
@@ -24280,6 +25111,7 @@ fn compute_first_line_styles(
   styles.root_font_size = root_font_size;
   resolve_line_height_length(&mut styles, viewport);
   resolve_absolute_lengths(&mut styles, root_font_size, viewport);
+  resolve_container_query_lengths(&mut styles, node_id, ancestor_ids, container_ctx);
 
   Some((styles, ua_styles))
 }
@@ -24292,6 +25124,8 @@ fn compute_first_letter_styles(
   scratch: &mut CascadeScratch,
   ancestors: &[&DomNode],
   ancestor_bloom: Option<&selectors::bloom::BloomFilter>,
+  ancestor_ids: &[usize],
+  container_ctx: Option<&ContainerQueryContext>,
   node_id: usize,
   dom_maps: &DomMaps,
   sibling_cache: &SiblingListCache,
@@ -24363,6 +25197,7 @@ fn compute_first_letter_styles(
   ua_styles.root_font_size = ua_root_font_size;
   resolve_line_height_length(&mut ua_styles, viewport);
   resolve_absolute_lengths(&mut ua_styles, ua_root_font_size, viewport);
+  resolve_container_query_lengths(&mut ua_styles, node_id, ancestor_ids, container_ctx);
 
   let mut styles = base_styles.clone();
   styles.display = Display::Inline;
@@ -24385,6 +25220,7 @@ fn compute_first_letter_styles(
   styles.root_font_size = root_font_size;
   resolve_line_height_length(&mut styles, viewport);
   resolve_absolute_lengths(&mut styles, root_font_size, viewport);
+  resolve_container_query_lengths(&mut styles, node_id, ancestor_ids, container_ctx);
   styles.display = Display::Inline;
 
   Some(styles)

@@ -335,6 +335,7 @@ pub struct CollectedCssMetadata {
   pub font_faces: Vec<FontFaceRule>,
   pub keyframes: Vec<KeyframesRule>,
   pub has_container_rules: bool,
+  pub needs_container_pass: bool,
   pub has_starting_style_rules: bool,
 }
 
@@ -1198,6 +1199,143 @@ fn collect_css_metadata_recursive(
   collect_keyframes: bool,
   out: &mut CollectedCssMetadata,
 ) {
+  fn string_contains_container_query_units(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() < 4 {
+      return false;
+    }
+    for idx in 1..bytes.len().saturating_sub(2) {
+      if !bytes[idx - 1].is_ascii_digit() {
+        continue;
+      }
+      if bytes[idx].to_ascii_lowercase() != b'c' || bytes[idx + 1].to_ascii_lowercase() != b'q' {
+        continue;
+      }
+      let tail = bytes[idx + 2].to_ascii_lowercase();
+      if matches!(tail, b'w' | b'h' | b'i' | b'b') {
+        return true;
+      }
+      if tail == b'm' {
+        let Some(slice) = bytes.get(idx + 2..idx + 5) else {
+          continue;
+        };
+        if slice.len() == 3
+          && slice[0].to_ascii_lowercase() == b'm'
+          && slice[1].to_ascii_lowercase() == b'i'
+          && slice[2].to_ascii_lowercase() == b'n'
+        {
+          return true;
+        }
+        if slice.len() == 3
+          && slice[0].to_ascii_lowercase() == b'm'
+          && slice[1].to_ascii_lowercase() == b'a'
+          && slice[2].to_ascii_lowercase() == b'x'
+        {
+          return true;
+        }
+      }
+    }
+    false
+  }
+
+  fn length_contains_container_query_units(length: &Length) -> bool {
+    if length.unit.is_container_query_relative() {
+      return true;
+    }
+    length
+      .calc
+      .is_some_and(|calc| calc.has_container_query_relative())
+  }
+
+  fn value_contains_container_query_units(value: &PropertyValue) -> bool {
+    match value {
+      PropertyValue::Length(length) => length_contains_container_query_units(length),
+      PropertyValue::Multiple(values) => values.iter().any(value_contains_container_query_units),
+      PropertyValue::BoxShadow(shadows) => shadows.iter().any(|shadow| {
+        length_contains_container_query_units(&shadow.offset_x)
+          || length_contains_container_query_units(&shadow.offset_y)
+          || length_contains_container_query_units(&shadow.blur_radius)
+          || length_contains_container_query_units(&shadow.spread_radius)
+      }),
+      PropertyValue::TextShadow(shadows) => shadows.iter().any(|shadow| {
+        length_contains_container_query_units(&shadow.offset_x)
+          || length_contains_container_query_units(&shadow.offset_y)
+          || length_contains_container_query_units(&shadow.blur_radius)
+      }),
+      PropertyValue::Translate(value) => match value {
+        TranslateValue::None => false,
+        TranslateValue::Values { x, y, z } => {
+          length_contains_container_query_units(x)
+            || length_contains_container_query_units(y)
+            || length_contains_container_query_units(z)
+        }
+      },
+      PropertyValue::Transform(transforms) => transforms.iter().any(|transform| match transform {
+        Transform::Translate(x, y) => {
+          length_contains_container_query_units(x) || length_contains_container_query_units(y)
+        }
+        Transform::TranslateX(v) | Transform::TranslateY(v) | Transform::TranslateZ(v) => {
+          length_contains_container_query_units(v)
+        }
+        Transform::Translate3d(x, y, z) => {
+          length_contains_container_query_units(x)
+            || length_contains_container_query_units(y)
+            || length_contains_container_query_units(z)
+        }
+        Transform::Perspective(v) => length_contains_container_query_units(v),
+        _ => false,
+      }),
+      PropertyValue::RadialGradient { size, position, .. }
+      | PropertyValue::RepeatingRadialGradient { size, position, .. } => {
+        let size_contains = match size {
+          RadialGradientSize::Explicit { x, y } => {
+            length_contains_container_query_units(x)
+              || y
+                .as_ref()
+                .is_some_and(|y| length_contains_container_query_units(y))
+          }
+          _ => false,
+        };
+        let position_contains = length_contains_container_query_units(&position.x.offset)
+          || length_contains_container_query_units(&position.y.offset);
+        size_contains || position_contains
+      }
+      PropertyValue::ConicGradient { position, .. }
+      | PropertyValue::RepeatingConicGradient { position, .. } => {
+        length_contains_container_query_units(&position.x.offset)
+          || length_contains_container_query_units(&position.y.offset)
+      }
+      PropertyValue::Keyword(value) | PropertyValue::Custom(value) => {
+        string_contains_container_query_units(value)
+      }
+      _ => false,
+    }
+  }
+
+  fn declarations_need_container_pass(decls: &[Declaration]) -> bool {
+    decls.iter().any(|decl| {
+      let prop = decl.property.as_str();
+      if matches!(prop, "container-type" | "container-name" | "container") {
+        return true;
+      }
+      if value_contains_container_query_units(&decl.value) {
+        return true;
+      }
+      if decl.contains_var {
+        if !decl.raw_value.is_empty() && string_contains_container_query_units(&decl.raw_value) {
+          return true;
+        }
+        match &decl.value {
+          PropertyValue::Keyword(v) | PropertyValue::Custom(v) => {
+            return string_contains_container_query_units(v);
+          }
+          _ => {}
+        }
+      }
+      false
+    })
+  }
+
   let mut cache = cache;
   for rule in rules {
     match rule {
@@ -1213,6 +1351,7 @@ fn collect_css_metadata_recursive(
       }
       CssRule::Container(container_rule) => {
         out.has_container_rules = true;
+        out.needs_container_pass = true;
         collect_css_metadata_recursive(
           &container_rule.rules,
           media_ctx,
@@ -1292,6 +1431,9 @@ fn collect_css_metadata_recursive(
         );
       }
       CssRule::Style(style_rule) => {
+        if !out.needs_container_pass && declarations_need_container_pass(&style_rule.declarations) {
+          out.needs_container_pass = true;
+        }
         if style_rule.nested_rules.is_empty() {
           continue;
         }
