@@ -1166,53 +1166,55 @@ fn parse_view_timeline_list(raw: &str) -> Vec<ViewTimeline> {
   timelines
 }
 
-fn parse_animation_timeline_list(raw: &str) -> Vec<AnimationTimeline> {
+pub(crate) fn parse_animation_timeline_list(raw: &str) -> Option<Vec<AnimationTimeline>> {
   let mut timelines = Vec::new();
   for part in split_top_level_commas(raw) {
-    let mut input = ParserInput::new(part.trim());
+    let trimmed = part.trim();
+    if trimmed.is_empty() {
+      return None;
+    }
+
+    let mut input = ParserInput::new(trimmed);
     let mut parser = Parser::new(&mut input);
     parser.skip_whitespace();
-    let token = match parser.next() {
-      Ok(token) => token,
-      Err(_) => continue,
-    };
+    let token = parser.next().ok()?;
 
     let timeline = match token {
       Token::Ident(ident) => {
         let lower = ident.as_ref().to_ascii_lowercase();
         match lower.as_str() {
-          "auto" => Some(AnimationTimeline::Auto),
-          "none" => Some(AnimationTimeline::None),
-          _ => Some(AnimationTimeline::Named(ident.to_string())),
+          "auto" => AnimationTimeline::Auto,
+          "none" => AnimationTimeline::None,
+          _ => AnimationTimeline::Named(ident.to_string()),
         }
       }
       Token::Function(name) => {
-        let func = name.as_ref().to_ascii_lowercase();
-        match func.as_str() {
-          "scroll" => parser
-            .parse_nested_block(parse_scroll_function_timeline)
-            .ok()
-            .map(AnimationTimeline::Scroll),
-          "view" => parser
-            .parse_nested_block(parse_view_function_timeline)
-            .ok()
-            .map(AnimationTimeline::View),
-          _ => None,
+        if name.eq_ignore_ascii_case("scroll") {
+          let parsed = parser.parse_nested_block(parse_scroll_function_timeline).ok()?;
+          AnimationTimeline::Scroll(parsed)
+        } else if name.eq_ignore_ascii_case("view") {
+          let parsed = parser.parse_nested_block(parse_view_function_timeline).ok()?;
+          AnimationTimeline::View(parsed)
+        } else {
+          return None;
         }
       }
-      _ => None,
+      _ => return None,
     };
 
-    let Some(timeline) = timeline else {
-      continue;
-    };
     parser.skip_whitespace();
     if !parser.is_exhausted() {
-      continue;
+      return None;
     }
+
     timelines.push(timeline);
   }
-  timelines
+
+  if timelines.is_empty() {
+    None
+  } else {
+    Some(timelines)
+  }
 }
 
 fn parse_animation_names(raw: &str) -> Vec<String> {
@@ -9310,7 +9312,9 @@ fn apply_declaration_with_base_internal(
     }
     "animation-timeline" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      styles.animation_timelines = parse_animation_timeline_list(css_text);
+      if let Some(val) = parse_animation_timeline_list(css_text) {
+        styles.animation_timelines = val;
+      }
     }
     "animation-range" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
