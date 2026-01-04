@@ -1289,18 +1289,18 @@ fn parse_range_offset(tokens: &[String]) -> Option<(RangeOffset, usize)> {
   if tokens.is_empty() {
     return None;
   }
-    let lower = tokens[0].to_ascii_lowercase();
-    if let Some(phase) = parse_view_phase(&lower) {
-      if tokens.len() >= 2 {
-        if let Some(len) = parse_length(&tokens[1]) {
-          return Some((RangeOffset::View(phase, len), 2));
-        }
-        if let Some(progress) = parse_progress_value(&tokens[1]) {
-          return Some((RangeOffset::View(phase, Length::percent(progress * 100.0)), 2));
-        }
+  let lower = tokens[0].to_ascii_lowercase();
+  if let Some(phase) = parse_view_phase(&lower) {
+    if tokens.len() >= 2 {
+      if let Some(len) = parse_length(&tokens[1]) {
+        return Some((RangeOffset::View(phase, len), 2));
       }
-      return Some((RangeOffset::View(phase, Length::px(0.0)), 1));
+      if let Some(progress) = parse_progress_value(&tokens[1]) {
+        return Some((RangeOffset::View(phase, Length::percent(progress * 100.0)), 2));
+      }
     }
+    return Some((RangeOffset::View(phase, Length::px(0.0)), 1));
+  }
   if let Some(progress) = parse_progress_value(&tokens[0]) {
     return Some((RangeOffset::Progress(progress), 1));
   }
@@ -1332,6 +1332,33 @@ fn parse_animation_range_list(raw: &str) -> Vec<AnimationRange> {
     ranges.push(AnimationRange { start, end });
   }
   ranges
+}
+
+#[cfg(test)]
+mod animation_range_tests {
+  use super::*;
+
+  #[test]
+  fn parses_animation_range_view_timeline_px_offsets() {
+    assert_eq!(
+      parse_animation_range_list("entry 100px entry 500px"),
+      vec![AnimationRange {
+        start: RangeOffset::View(ViewTimelinePhase::Entry, Length::px(100.0)),
+        end: RangeOffset::View(ViewTimelinePhase::Entry, Length::px(500.0)),
+      }]
+    );
+  }
+
+  #[test]
+  fn parses_animation_range_view_timeline_percent_offsets() {
+    assert_eq!(
+      parse_animation_range_list("entry 50% exit 0%"),
+      vec![AnimationRange {
+        start: RangeOffset::View(ViewTimelinePhase::Entry, Length::percent(50.0)),
+        end: RangeOffset::View(ViewTimelinePhase::Exit, Length::percent(0.0)),
+      }]
+    );
+  }
 }
 
 fn split_top_level_commas(raw: &str) -> Vec<String> {
