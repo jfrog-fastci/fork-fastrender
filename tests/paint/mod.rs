@@ -44,6 +44,7 @@ mod offscreen_culling_stress;
 mod optimize_test;
 mod overflow_clip_test;
 mod paged_media_margin_boxes;
+mod determinism_repeat_test;
 mod parallel_paint_test;
 mod picture_source_selection;
 mod preserve3d_scene;
