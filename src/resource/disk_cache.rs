@@ -3403,6 +3403,7 @@ mod tests {
         resource.final_url = Some(url.to_string());
         resource.access_control_allow_origin = Some("https://example.com".to_string());
         resource.timing_allow_origin = Some("*".to_string());
+        resource.access_control_allow_credentials = true;
         Ok(resource)
       }
     }
@@ -3417,6 +3418,7 @@ mod tests {
       Some("https://example.com")
     );
     assert_eq!(first.timing_allow_origin.as_deref(), Some("*"));
+    assert!(first.access_control_allow_credentials);
 
     let disk_again = DiskCachingFetcher::new(PanicFetcher, tmp.path());
     let second = disk_again.fetch(url).expect("disk hit");
@@ -3425,6 +3427,7 @@ mod tests {
       Some("https://example.com")
     );
     assert_eq!(second.timing_allow_origin.as_deref(), Some("*"));
+    assert!(second.access_control_allow_credentials);
   }
 
   #[test]

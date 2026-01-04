@@ -430,7 +430,7 @@ mod tests {
           last_modified: None,
           access_control_allow_origin: Some("https://example.com".to_string()),
           timing_allow_origin: Some("*".to_string()),
-          access_control_allow_credentials: false,
+          access_control_allow_credentials: true,
         },
       )]),
     };
@@ -458,6 +458,7 @@ mod tests {
       Some("https://example.com")
     );
     assert_eq!(css.timing_allow_origin.as_deref(), Some("*"));
+    assert!(css.access_control_allow_credentials);
   }
 
   #[test]

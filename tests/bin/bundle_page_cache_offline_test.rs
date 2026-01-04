@@ -55,6 +55,7 @@ impl ResourceFetcher for StaticFetcher {
     resource.status = Some(200);
     resource.access_control_allow_origin = Some("*".to_string());
     resource.timing_allow_origin = Some("https://timing.example".to_string());
+    resource.access_control_allow_credentials = true;
     Ok(resource)
   }
 }
@@ -157,6 +158,7 @@ fn bundle_page_cache_captures_from_disk_cache_offline() {
     css_res.timing_allow_origin.as_deref(),
     Some("https://timing.example")
   );
+  assert!(css_res.access_control_allow_credentials);
   assert_eq!(
     fetcher.fetch(&img_url).expect("fetch img").bytes,
     b"png-bytes-1".to_vec()
