@@ -401,11 +401,50 @@ fn image_mask(
       let cached = image_cache.load(url).ok()?;
       let transform = style.image_orientation.resolve(cached.orientation, true);
       let rgba = cached.to_oriented_rgba(transform);
-      let (width, height) = rgba.dimensions();
-      let Some(bytes) = u64::from(width).checked_mul(u64::from(height)) else {
+      let (src_w, src_h) = rgba.dimensions();
+      let (dst_w, dst_h, _) = image_size(reference_rect);
+      if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+        return None;
+      }
+
+      // Fast path: the decoded image already matches the float's reference box.
+      if src_w == dst_w && src_h == dst_h {
+        let Some(bytes) = u64::from(src_w).checked_mul(u64::from(src_h)) else {
+          eprintln!(
+            "shape-outside mask dimensions overflow ({}x{})",
+            src_w, src_h
+          );
+          return None;
+        };
+        let mut alpha = match reserve_buffer(bytes, "shape-outside image alpha") {
+          Ok(buf) => buf,
+          Err(err) => {
+            eprintln!(
+              "shape-outside mask {}x{} ({} bytes) skipped: {}",
+              src_w, src_h, bytes, err
+            );
+            return None;
+          }
+        };
+        for chunk in rgba.as_raw().chunks_exact(4) {
+          alpha.push(chunk[3]);
+        }
+        return Some(AlphaBitmap {
+          width: src_w,
+          height: src_h,
+          data: alpha,
+        });
+      }
+
+      // When the intrinsic image dimensions differ from the float's reference box, pad/crop the
+      // alpha map into reference-box coordinates. This ensures float layout can observe a boundary
+      // where the shape spans switch to `None` (important for `next_change_after`).
+      let mask_w = src_w.min(dst_w);
+      let mask_h = dst_h;
+      let Some(bytes) = u64::from(mask_w).checked_mul(u64::from(mask_h)) else {
         eprintln!(
           "shape-outside mask dimensions overflow ({}x{})",
-          width, height
+          mask_w, mask_h
         );
         return None;
       };
@@ -414,17 +453,45 @@ fn image_mask(
         Err(err) => {
           eprintln!(
             "shape-outside mask {}x{} ({} bytes) skipped: {}",
-            width, height, bytes, err
+            mask_w, mask_h, bytes, err
           );
           return None;
         }
       };
-      for chunk in rgba.as_raw().chunks_exact(4) {
-        alpha.push(chunk[3]);
+      let dst_len = match usize::try_from(bytes) {
+        Ok(v) => v,
+        Err(_) => {
+          eprintln!(
+            "shape-outside mask dimensions overflow ({}x{})",
+            mask_w, mask_h
+          );
+          return None;
+        }
+      };
+      alpha.resize(dst_len, 0);
+
+      let copy_h = (src_h.min(mask_h)) as usize;
+      let copy_w = usize::try_from(mask_w).ok()?;
+      let dst_stride = copy_w;
+      let src_w_usize = usize::try_from(src_w).ok()?;
+      let src_stride = src_w_usize.checked_mul(4)?;
+
+      for (row_idx, src_row) in rgba
+        .as_raw()
+        .chunks_exact(src_stride)
+        .take(copy_h)
+        .enumerate()
+      {
+        let dst_row_start = row_idx.checked_mul(dst_stride)?;
+        let dst_row = alpha.get_mut(dst_row_start..dst_row_start + dst_stride)?;
+        for (col_idx, chunk) in src_row.chunks_exact(4).take(dst_stride).enumerate() {
+          dst_row[col_idx] = chunk[3];
+        }
       }
+
       Some(AlphaBitmap {
-        width,
-        height,
+        width: mask_w,
+        height: mask_h,
         data: alpha,
       })
     }
@@ -538,6 +605,44 @@ fn alpha_from_pixmap(pixmap: Pixmap, _origin: Point) -> AlphaBitmap {
     width: pixmap.width(),
     height: pixmap.height(),
     data: alpha,
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn shape_outside_image_is_padded_to_reference_box() {
+    let svg = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='2' height='2'><rect width='2' height='2' fill='black'/></svg>";
+
+    let mut style = ComputedStyle::default();
+    style.shape_outside = ShapeOutside::Image(BackgroundImage::Url(svg.to_string()));
+
+    let margin_box = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+    let border_box = margin_box;
+    let containing_block = Size::new(10.0, 10.0);
+    let viewport = Size::new(100.0, 100.0);
+    let font_ctx = FontContext::new();
+    let image_cache = ImageCache::new();
+
+    let shape = build_float_shape(
+      &style,
+      margin_box,
+      border_box,
+      containing_block,
+      viewport,
+      &font_ctx,
+      &image_cache,
+    )
+    .expect("expected shape-outside image to produce a float shape");
+
+    assert_eq!(shape.top(), 0.0);
+    assert_eq!(shape.bottom(), 10.0);
+    assert_eq!(shape.span_at(0.0), Some((0.0, 2.0)));
+    assert_eq!(shape.span_at(1.0), Some((0.0, 2.0)));
+    assert_eq!(shape.span_at(2.0), None);
+    assert_eq!(shape.next_change_after(0.0), Some(2.0));
   }
 }
 
