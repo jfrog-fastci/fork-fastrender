@@ -14237,6 +14237,18 @@ fn parse_clip_path_str(input_str: &str) -> Option<ClipPath> {
     return Some(ClipPath::BasicShape(Box::new(shape), reference));
   }
 
+  // `<basic-shape> || <geometry-box>` allows the geometry box to appear before the shape.
+  // Support `border-box inset(...)`/`margin-box path(...)` in addition to the more common
+  // `inset(...) border-box` ordering.
+  let state = parser.state();
+  if let Ok(reference) = parser.try_parse(parse_reference_box) {
+    if let Ok(shape) = parser.try_parse(parse_basic_shape) {
+      parser.expect_exhausted().ok()?;
+      return Some(ClipPath::BasicShape(Box::new(shape), Some(reference)));
+    }
+    parser.reset(&state);
+  }
+
   if let Ok(reference) = parser.parse_entirely(parse_reference_box) {
     return Some(ClipPath::Box(reference));
   }
@@ -14260,6 +14272,16 @@ fn parse_shape_outside_str(input_str: &str) -> Option<ShapeOutside> {
     let reference = parser.try_parse(parse_reference_box).ok();
     parser.expect_exhausted().ok()?;
     return Some(ShapeOutside::BasicShape(Box::new(shape), reference));
+  }
+
+  // `<shape-box> || <basic-shape>` allows the reference box to appear before the shape.
+  let state = parser.state();
+  if let Ok(reference) = parser.try_parse(parse_reference_box) {
+    if let Ok(shape) = parser.try_parse(parse_basic_shape) {
+      parser.expect_exhausted().ok()?;
+      return Some(ShapeOutside::BasicShape(Box::new(shape), Some(reference)));
+    }
+    parser.reset(&state);
   }
 
   if let Ok(reference) = parser.parse_entirely(parse_reference_box) {
@@ -17736,6 +17758,32 @@ mod tests {
             radii.bottom_right,
             BorderCornerRadius::uniform(Length::px(5.0))
           );
+        }
+        other => panic!("unexpected basic shape: {other:?}"),
+      },
+      other => panic!("unexpected clip-path parsed: {other:?}"),
+    }
+  }
+
+  #[test]
+  fn parses_clip_path_geometry_box_before_shape() {
+    let decl = Declaration {
+      property: "clip-path".into(),
+      value: PropertyValue::Keyword("content-box inset(10px)".to_string()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    let mut style = ComputedStyle::default();
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+
+    match &style.clip_path {
+      ClipPath::BasicShape(basic, Some(ReferenceBox::ContentBox)) => match basic.as_ref() {
+        BasicShape::Inset { top, right, bottom, left, .. } => {
+          assert_eq!(*top, Length::px(10.0));
+          assert_eq!(*right, Length::px(10.0));
+          assert_eq!(*bottom, Length::px(10.0));
+          assert_eq!(*left, Length::px(10.0));
         }
         other => panic!("unexpected basic shape: {other:?}"),
       },
@@ -25886,6 +25934,27 @@ mod tests {
       style.shape_outside,
       ShapeOutside::Image(BackgroundImage::Url("a.png".to_string()))
     );
+
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "shape-outside".into(),
+        value: parse_property_value("shape-outside", "margin-box circle(50% at 50% 50%)").unwrap(),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+
+    match &style.shape_outside {
+      ShapeOutside::BasicShape(_, reference) => {
+        assert_eq!(*reference, Some(ReferenceBox::MarginBox));
+      }
+      other => panic!("unexpected shape-outside: {:?}", other),
+    }
   }
 
   #[test]
