@@ -5624,11 +5624,7 @@ impl DisplayListBuilder {
       if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
         break;
       }
-      let origin_x = if run.direction.is_rtl() {
-        pen_x + run.advance
-      } else {
-        pen_x
-      };
+      let origin_x = pen_x;
       let (glyphs, cached_bounds) = self.glyphs_from_run(run, origin_x, baseline_y);
       let font_id = self.font_id_from_run(run);
       let emphasis =
@@ -5682,11 +5678,7 @@ impl DisplayListBuilder {
       if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
         break;
       }
-      let run_origin_inline = if run.direction.is_rtl() {
-        pen_inline + run.advance
-      } else {
-        pen_inline
-      };
+      let run_origin_inline = pen_inline;
       let (glyphs, cached_bounds) =
         self.glyphs_from_run_vertical(run, block_baseline, run_origin_inline);
       let font_id = self.font_id_from_run(run);
@@ -5742,11 +5734,7 @@ impl DisplayListBuilder {
       if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
         break;
       }
-      let origin_x = if run.direction.is_rtl() {
-        pen_x + run.advance
-      } else {
-        pen_x
-      };
+      let origin_x = pen_x;
       let (glyphs, cached_bounds) = self.glyphs_from_run(run, origin_x, baseline_y);
       let font_id = self.font_id_from_run(run);
       let emphasis =
@@ -5799,11 +5787,7 @@ impl DisplayListBuilder {
       if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
         break;
       }
-      let run_origin_inline = if run.direction.is_rtl() {
-        pen_inline + run.advance
-      } else {
-        pen_inline
-      };
+      let run_origin_inline = pen_inline;
       let (glyphs, cached_bounds) =
         self.glyphs_from_run_vertical(run, block_baseline, run_origin_inline);
       let font_id = self.font_id_from_run(run);
@@ -6284,37 +6268,18 @@ impl DisplayListBuilder {
     let origin = Point::new(origin_x, baseline_y);
     let mut bounds = ConservativeGlyphRunBoundsBuilder::new(origin, run.advance);
 
-    match run.direction {
-      crate::text::pipeline::Direction::LeftToRight => {
-        for glyph in &run.glyphs {
-          let x_offset = glyph.x_offset;
-          let y_offset = -glyph.y_offset;
-          bounds.include_glyph(x_offset, glyph.x_advance);
-          glyphs.push(GlyphInstance {
-            glyph_id: glyph.glyph_id,
-            cluster: glyph.cluster,
-            x_offset,
-            y_offset,
-            x_advance: glyph.x_advance,
-            y_advance: 0.0,
-          });
-        }
-      }
-      crate::text::pipeline::Direction::RightToLeft => {
-        for glyph in &run.glyphs {
-          let x_offset = -glyph.x_offset;
-          let y_offset = -glyph.y_offset;
-          bounds.include_glyph(x_offset, glyph.x_advance);
-          glyphs.push(GlyphInstance {
-            glyph_id: glyph.glyph_id,
-            cluster: glyph.cluster,
-            x_offset,
-            y_offset,
-            x_advance: glyph.x_advance,
-            y_advance: 0.0,
-          });
-        }
-      }
+    for glyph in &run.glyphs {
+      let x_offset = glyph.x_offset;
+      let y_offset = -glyph.y_offset;
+      bounds.include_glyph(x_offset, glyph.x_advance);
+      glyphs.push(GlyphInstance {
+        glyph_id: glyph.glyph_id,
+        cluster: glyph.cluster,
+        x_offset,
+        y_offset,
+        x_advance: glyph.x_advance,
+        y_advance: 0.0,
+      });
     }
 
     (glyphs, bounds.finish(run.font_size))
@@ -6400,12 +6365,24 @@ impl DisplayListBuilder {
 
     let mut marks = Vec::new();
     let mut seen_clusters = HashSet::new();
-    let run_origin_inline = if run.direction.is_rtl() {
-      inline_origin + run.advance
-    } else {
-      inline_origin
-    };
+    let mut cursor_inline = inline_origin;
     for glyph in &run.glyphs {
+      let (inline_offset, inline_advance) = if inline_vertical {
+        // For vertical runs, HarfBuzz offsets use a y-up coordinate system. Flip the inline offset
+        // so we stay in CSS's y-down space.
+        let inline_advance = if glyph.y_advance.abs() > f32::EPSILON {
+          glyph.y_advance
+        } else {
+          glyph.x_advance
+        };
+        (-glyph.y_offset, inline_advance)
+      } else {
+        (glyph.x_offset, glyph.x_advance)
+      };
+
+      let inline_center = cursor_inline + inline_offset + inline_advance * 0.5;
+      cursor_inline += inline_advance;
+
       if !seen_clusters.insert(glyph.cluster) {
         continue;
       }
@@ -6417,14 +6394,7 @@ impl DisplayListBuilder {
           }
         }
       }
-      let inline_center = match run.direction {
-        crate::text::pipeline::Direction::RightToLeft => {
-          run_origin_inline - (glyph.x_offset + glyph.x_advance * 0.5)
-        }
-        crate::text::pipeline::Direction::LeftToRight => {
-          run_origin_inline + glyph.x_offset + glyph.x_advance * 0.5
-        }
-      };
+
       let center = if inline_vertical {
         Point::new(block_center, inline_center)
       } else {
@@ -6468,14 +6438,10 @@ impl DisplayListBuilder {
                 .glyphs
                 .iter()
                 .map(|g| {
-                  let x_offset = match r.direction {
-                    crate::text::pipeline::Direction::RightToLeft => run_advance - g.x_offset,
-                    crate::text::pipeline::Direction::LeftToRight => g.x_offset,
-                  };
                   GlyphInstance {
                     glyph_id: g.glyph_id,
                     cluster: g.cluster,
-                    x_offset,
+                    x_offset: g.x_offset,
                     y_offset: -g.y_offset,
                     x_advance: g.x_advance,
                     y_advance: g.y_advance,
@@ -7438,18 +7404,11 @@ fn collect_underline_exclusions(
       continue;
     }
     let scale = run.font_size / units_per_em * run.scale;
-    let run_origin = if run.direction.is_rtl() {
-      pen_x + run.advance
-    } else {
-      pen_x
-    };
+    let run_origin = pen_x;
     let mut cursor_x = run_origin;
 
     for glyph in &run.glyphs {
-      let glyph_x = match run.direction {
-        crate::text::pipeline::Direction::RightToLeft => cursor_x - glyph.x_offset,
-        crate::text::pipeline::Direction::LeftToRight => cursor_x + glyph.x_offset,
-      };
+      let glyph_x = cursor_x + glyph.x_offset;
       let glyph_y = baseline_y - glyph.y_offset;
       if let Some(bbox) =
         cached_glyph_bounding_box(&face, &run.font, variations_hash, glyph.glyph_id as u16)
@@ -7464,10 +7423,7 @@ fn collect_underline_exclusions(
         }
       }
 
-      cursor_x += match run.direction {
-        crate::text::pipeline::Direction::RightToLeft => -glyph.x_advance,
-        crate::text::pipeline::Direction::LeftToRight => glyph.x_advance,
-      };
+      cursor_x += glyph.x_advance;
     }
 
     pen_x += run.advance;
@@ -7499,18 +7455,11 @@ fn collect_underline_exclusions_vertical(
     }
     let scale = run.font_size / units_per_em * run.scale;
     let advance = run.advance;
-    let run_origin = if run.direction.is_rtl() {
-      pen_inline + advance
-    } else {
-      pen_inline
-    };
+    let run_origin = pen_inline;
     let mut cursor_inline = run_origin;
 
     for glyph in &run.glyphs {
-      let inline_pos = match run.direction {
-        crate::text::pipeline::Direction::RightToLeft => cursor_inline - glyph.x_offset,
-        crate::text::pipeline::Direction::LeftToRight => cursor_inline + glyph.x_offset,
-      };
+      let inline_pos = cursor_inline + glyph.x_offset;
       let block_pos = block_baseline - glyph.y_offset;
       if let Some(bbox) =
         cached_glyph_bounding_box(&face, &run.font, variations_hash, glyph.glyph_id as u16)
@@ -7530,10 +7479,7 @@ fn collect_underline_exclusions_vertical(
       } else {
         glyph.x_advance
       };
-      cursor_inline += match run.direction {
-        crate::text::pipeline::Direction::RightToLeft => -inline_advance,
-        crate::text::pipeline::Direction::LeftToRight => inline_advance,
-      };
+      cursor_inline += inline_advance;
     }
 
     pen_inline += advance;

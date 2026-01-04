@@ -5438,11 +5438,7 @@ impl Painter {
     let mut pen_x = origin_x;
 
     for run in runs {
-      let run_origin = if run.direction.is_rtl() {
-        pen_x + run.advance
-      } else {
-        pen_x
-      };
+      let run_origin = pen_x;
       self.paint_shaped_run(run, run_origin, baseline_y, color, style);
       pen_x += run.advance;
     }
@@ -5458,11 +5454,7 @@ impl Painter {
   ) {
     let mut pen_inline = inline_origin;
     for run in runs {
-      let run_origin_inline = if run.direction.is_rtl() {
-        pen_inline + run.advance
-      } else {
-        pen_inline
-      };
+      let run_origin_inline = pen_inline;
       self.paint_shaped_run_vertical(run, block_origin, run_origin_inline, color, style);
       pen_inline += run.advance;
     }
@@ -5493,19 +5485,12 @@ impl Painter {
     let mut glyph_paths = Vec::with_capacity(run.glyphs.len());
     let mut bounds = PathBounds::new();
 
-    let mut pen_x = if run.direction.is_rtl() {
-      origin_x + run.advance * self.scale
-    } else {
-      origin_x
-    };
+    let mut pen_x = origin_x;
     let mut pen_y = 0.0_f32;
 
     for glyph in &run.glyphs {
-      let glyph_x = match run.direction {
-        crate::text::pipeline::Direction::RightToLeft => pen_x - glyph.x_offset * self.scale,
-        crate::text::pipeline::Direction::LeftToRight => pen_x + glyph.x_offset * self.scale,
-      };
-      let glyph_y = baseline_y + pen_y + glyph.y_offset * self.scale;
+      let glyph_x = pen_x + glyph.x_offset * self.scale;
+      let glyph_y = baseline_y + pen_y - glyph.y_offset * self.scale;
 
       if let Some(path) = Self::build_glyph_path(
         &instance,
@@ -5519,10 +5504,7 @@ impl Painter {
         glyph_paths.push(path);
       }
 
-      pen_x += match run.direction {
-        crate::text::pipeline::Direction::RightToLeft => -glyph.x_advance * self.scale,
-        crate::text::pipeline::Direction::LeftToRight => glyph.x_advance * self.scale,
-      };
+      pen_x += glyph.x_advance * self.scale;
       pen_y += glyph.y_advance * self.scale;
     }
 
@@ -5637,11 +5619,7 @@ impl Painter {
     let mut glyph_paths = Vec::with_capacity(run.glyphs.len());
     let mut bounds = PathBounds::new();
 
-    let mut pen_inline = if run.direction.is_rtl() {
-      inline_origin + run.advance * self.scale
-    } else {
-      inline_origin
-    };
+    let mut pen_inline = inline_origin;
     let mut pen_block = 0.0_f32;
 
     for glyph in &run.glyphs {
@@ -5657,10 +5635,7 @@ impl Painter {
       };
       let inline_step = inline_step_raw * self.scale;
       let block_step = block_step_raw * self.scale;
-      let inline_pos = match run.direction {
-        crate::text::pipeline::Direction::RightToLeft => pen_inline - glyph.x_offset * self.scale,
-        crate::text::pipeline::Direction::LeftToRight => pen_inline + glyph.x_offset * self.scale,
-      };
+      let inline_pos = pen_inline + glyph.x_offset * self.scale;
       let block_pos = block_origin + pen_block + glyph.y_offset * self.scale;
       if let Some(path) = Self::build_glyph_path(
         &instance,
@@ -5674,10 +5649,7 @@ impl Painter {
         glyph_paths.push(path);
       }
 
-      pen_inline += match run.direction {
-        crate::text::pipeline::Direction::RightToLeft => -inline_step,
-        crate::text::pipeline::Direction::LeftToRight => inline_step,
-      };
+      pen_inline += inline_step;
       pen_block += block_step;
     }
 
@@ -8793,11 +8765,7 @@ impl Painter {
         let mut run_pen_inline = 0.0;
         for run in &mark_runs {
           let advance = run.advance * self.scale;
-          let run_origin = if run.direction.is_rtl() {
-            run_pen_inline + advance
-          } else {
-            run_pen_inline
-          };
+          let run_origin = run_pen_inline;
           let Some(instance) = FontInstance::new(&run.font, &run.variations) else {
             continue;
           };
@@ -8806,19 +8774,12 @@ impl Painter {
             continue;
           }
           let scale = (run.font_size / units_per_em) * run.scale * self.scale;
-          let mut pen_inline = if run.direction.is_rtl() { advance } else { 0.0 };
+          let mut pen_inline = 0.0_f32;
           let mut pen_block = 0.0_f32;
           for glyph in &run.glyphs {
-            let glyph_x = match run.direction {
-              crate::text::pipeline::Direction::RightToLeft => {
-                run_origin + pen_inline - glyph.x_offset * self.scale
-              }
-              crate::text::pipeline::Direction::LeftToRight => {
-                run_origin + pen_inline + glyph.x_offset * self.scale
-              }
-            };
+            let glyph_x = run_origin + pen_inline + glyph.x_offset * self.scale;
             let glyph_y =
-              mark_metrics.baseline_offset * self.scale + pen_block + glyph.y_offset * self.scale;
+              mark_metrics.baseline_offset * self.scale + pen_block - glyph.y_offset * self.scale;
             if let Some(path) = Self::build_glyph_path(
               &instance,
               glyph.glyph_id,
@@ -8829,10 +8790,7 @@ impl Painter {
             ) {
               paths.push(path);
             }
-            pen_inline += match run.direction {
-              crate::text::pipeline::Direction::RightToLeft => -glyph.x_advance * self.scale,
-              crate::text::pipeline::Direction::LeftToRight => glyph.x_advance * self.scale,
-            };
+            pen_inline += glyph.x_advance * self.scale;
             pen_block += glyph.y_advance * self.scale;
           }
           run_pen_inline += advance;
@@ -8850,16 +8808,25 @@ impl Painter {
     let mut pen_inline = inline_origin;
     for run in runs {
       let advance = run.advance * self.scale;
-      let run_origin_inline = if run.direction.is_rtl() {
-        pen_inline + advance
-      } else {
-        pen_inline
-      };
+      let run_origin_inline = pen_inline;
 
       let mut seen_clusters = std::collections::HashSet::new();
-      let mut glyph_pen_inline = if run.direction.is_rtl() { advance } else { 0.0 };
-      let mut glyph_pen_block = 0.0_f32;
+      let mut cursor_inline = run_origin_inline;
       for glyph in &run.glyphs {
+        let (inline_offset, inline_advance) = if inline_vertical {
+          let inline_advance = if glyph.y_advance.abs() > f32::EPSILON {
+            glyph.y_advance
+          } else {
+            glyph.x_advance
+          };
+          (-glyph.y_offset, inline_advance)
+        } else {
+          (glyph.x_offset, glyph.x_advance)
+        };
+        let inline_center =
+          cursor_inline + inline_offset * self.scale + inline_advance * 0.5 * self.scale;
+        cursor_inline += inline_advance * self.scale;
+
         if !seen_clusters.insert(glyph.cluster) {
           continue;
         }
@@ -8871,23 +8838,7 @@ impl Painter {
             }
           }
         }
-        let inline_pos = match run.direction {
-          crate::text::pipeline::Direction::RightToLeft => {
-            run_origin_inline + glyph_pen_inline - glyph.x_offset * self.scale
-          }
-          crate::text::pipeline::Direction::LeftToRight => {
-            run_origin_inline + glyph_pen_inline + glyph.x_offset * self.scale
-          }
-        };
-        let inline_center = match run.direction {
-          crate::text::pipeline::Direction::RightToLeft => {
-            inline_pos - glyph.x_advance * 0.5 * self.scale
-          }
-          crate::text::pipeline::Direction::LeftToRight => {
-            inline_pos + glyph.x_advance * 0.5 * self.scale
-          }
-        };
-        let block_center_with_pen = block_center + glyph_pen_block + glyph.y_offset * self.scale;
+        let block_center_with_pen = block_center;
         let (mark_center_x, mark_center_y) = if inline_vertical {
           (block_center_with_pen, inline_center)
         } else {
@@ -8938,12 +8889,6 @@ impl Painter {
           }
           crate::style::types::TextEmphasisStyle::None => {}
         }
-
-        glyph_pen_inline += match run.direction {
-          crate::text::pipeline::Direction::RightToLeft => -glyph.x_advance * self.scale,
-          crate::text::pipeline::Direction::LeftToRight => glyph.x_advance * self.scale,
-        };
-        glyph_pen_block += glyph.y_advance * self.scale;
       }
 
       pen_inline += advance;
@@ -9148,7 +9093,7 @@ fn collect_underline_exclusions(
   // Small inflation to account for antialiasing without swallowing the entire line.
   let tolerance = 0.5 * device_scale;
 
-  let mut pen_x = line_start * device_scale;
+  let mut pen_x = line_start;
   for run in runs {
     let Some(cached_face) = crate::text::face_cache::get_ttf_face(&run.font) else {
       continue;
@@ -9162,18 +9107,11 @@ fn collect_underline_exclusions(
     let mut scale = run.font_size / units_per_em;
     scale *= run.scale * device_scale;
     let advance = run.advance * device_scale;
-    let run_origin = if run.direction.is_rtl() {
-      pen_x + advance
-    } else {
-      pen_x
-    };
+    let run_origin = pen_x;
     let mut cursor_x = run_origin;
 
     for glyph in &run.glyphs {
-      let glyph_x = match run.direction {
-        crate::text::pipeline::Direction::RightToLeft => cursor_x - glyph.x_offset * device_scale,
-        crate::text::pipeline::Direction::LeftToRight => cursor_x + glyph.x_offset * device_scale,
-      };
+      let glyph_x = cursor_x + glyph.x_offset * device_scale;
       let glyph_y = baseline_y - glyph.y_offset * device_scale;
       if let Some(bbox) = face.glyph_bounding_box(ttf_parser::GlyphId(glyph.glyph_id as u16)) {
         let left = glyph_x + bbox.x_min as f32 * scale - tolerance;
@@ -9186,10 +9124,7 @@ fn collect_underline_exclusions(
         }
       }
 
-      cursor_x += match run.direction {
-        crate::text::pipeline::Direction::RightToLeft => -glyph.x_advance * device_scale,
-        crate::text::pipeline::Direction::LeftToRight => glyph.x_advance * device_scale,
-      };
+      cursor_x += glyph.x_advance * device_scale;
     }
 
     pen_x += advance;
@@ -9210,7 +9145,7 @@ fn collect_underline_exclusions_vertical(
   let mut intervals = Vec::new();
   let tolerance = 0.5 * device_scale;
 
-  let mut pen_inline = inline_start * device_scale;
+  let mut pen_inline = inline_start;
   for run in runs {
     let Some(cached_face) = crate::text::face_cache::get_ttf_face(&run.font) else {
       continue;
@@ -9224,18 +9159,11 @@ fn collect_underline_exclusions_vertical(
     let mut scale = run.font_size / units_per_em;
     scale *= run.scale * device_scale;
     let advance = run.advance * device_scale;
-    let run_origin = if run.direction.is_rtl() {
-      pen_inline + advance
-    } else {
-      pen_inline
-    };
+    let run_origin = pen_inline;
     let mut cursor_inline = run_origin;
 
     for glyph in &run.glyphs {
-      let inline_pos = match run.direction {
-        crate::text::pipeline::Direction::RightToLeft => cursor_inline - glyph.x_offset * device_scale,
-        crate::text::pipeline::Direction::LeftToRight => cursor_inline + glyph.x_offset * device_scale,
-      };
+      let inline_pos = cursor_inline + glyph.x_offset * device_scale;
       let block_pos = block_baseline - glyph.y_offset * device_scale;
       if let Some(bbox) = face.glyph_bounding_box(ttf_parser::GlyphId(glyph.glyph_id as u16)) {
         let inline_left = inline_pos + bbox.x_min as f32 * scale - tolerance;
@@ -9253,10 +9181,7 @@ fn collect_underline_exclusions_vertical(
       } else {
         glyph.x_advance
       };
-      cursor_inline += match run.direction {
-        crate::text::pipeline::Direction::RightToLeft => -inline_advance * device_scale,
-        crate::text::pipeline::Direction::LeftToRight => inline_advance * device_scale,
-      };
+      cursor_inline += inline_advance * device_scale;
     }
 
     pen_inline += advance;
