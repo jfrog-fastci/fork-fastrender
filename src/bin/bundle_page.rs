@@ -1162,7 +1162,7 @@ enum CrawlMode {
 
 fn placeholder_resource(destination: FetchDestination, url: &str) -> FetchedResource {
   match destination {
-    FetchDestination::Image => FetchedResource::with_final_url(
+    FetchDestination::Image | FetchDestination::ImageCors => FetchedResource::with_final_url(
       offline_placeholder_png_bytes().to_vec(),
       Some("image/png".to_string()),
       Some(url.to_string()),
