@@ -152,7 +152,6 @@ use encoding_rs::Encoding;
 use image::codecs::png::PngEncoder;
 use image::ColorType;
 use image::ImageEncoder;
-use percent_encoding::percent_decode;
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::cell::RefCell;
@@ -9276,24 +9275,11 @@ fn approx_same_rect(a: Rect, b: Rect) -> bool {
 }
 
 fn decode_data_url_to_string(data_url: &str) -> Result<String> {
-  let mut parts = data_url.splitn(2, ',');
-  let header = parts.next().ok_or_else(|| RenderError::InvalidParameters {
-    message: "Invalid data URL".to_string(),
-  })?;
-  let data = parts.next().ok_or_else(|| RenderError::InvalidParameters {
-    message: "Invalid data URL".to_string(),
-  })?;
-
-  let is_base64 = header.to_ascii_lowercase().ends_with(";base64");
-  let decoded = if is_base64 {
-    base64::engine::general_purpose::STANDARD
-      .decode(data.as_bytes())
-      .map_err(|_| RenderError::InvalidParameters {
-        message: "Invalid base64 in data URL".to_string(),
-      })?
-  } else {
-    percent_decode(data.as_bytes()).collect()
-  };
+  let decoded = crate::resource::decode_data_url(data_url)
+    .map(|resource| resource.bytes)
+    .map_err(|err| RenderError::InvalidParameters {
+      message: format!("Invalid data URL: {err}"),
+    })?;
 
   if let Some((enc, bom_len)) = Encoding::for_bom(&decoded) {
     return Ok(
@@ -13295,6 +13281,16 @@ mod tests {
       "data:image/png;base64,{}",
       base64::engine::general_purpose::STANDARD.encode(buf)
     )
+  }
+
+  #[test]
+  fn embedded_import_fetcher_decodes_unpadded_base64_data_url() {
+    use crate::css::types::CssImportLoader;
+
+    let fetcher = EmbeddedImportFetcher { base_url: None };
+    let url = "data:text/css;base64,Ym9k eXtjb2xv\ncjpyZWQ7fQ";
+    let css = fetcher.load(url).expect("load data url");
+    assert_eq!(css, "body{color:red;}");
   }
 
   #[test]

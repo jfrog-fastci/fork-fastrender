@@ -8145,8 +8145,8 @@ fn file_url_path_candidates(url: &str) -> Vec<std::path::PathBuf> {
   candidates
 }
 
-/// Decode a data: URL into bytes
-fn decode_data_url(url: &str) -> Result<FetchedResource> {
+/// Decode a data: URL into bytes.
+pub(crate) fn decode_data_url(url: &str) -> Result<FetchedResource> {
   if !is_data_url(url) {
     return Err(Error::Image(ImageError::InvalidDataUrl {
       reason: "URL does not start with 'data:'".to_string(),

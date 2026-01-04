@@ -59,7 +59,6 @@ use base64::Engine;
 use fontdb::Database as FontDbDatabase;
 use lru::LruCache;
 use parking_lot::Mutex as ParkingMutex;
-use percent_encoding::percent_decode_str;
 use rustybuzz::ttf_parser::{self, GlyphId, Tag};
 use rustybuzz::Direction;
 use rustybuzz::Face;
@@ -2695,7 +2694,13 @@ fn resolve_font_url(url: &str, base_url: Option<&str>) -> String {
 
 fn fetch_font_bytes(url: &str) -> Result<(Vec<u8>, Option<String>)> {
   if has_prefix_ignore_ascii_case(url, "data:") {
-    return decode_data_url(url);
+    let resource = crate::resource::decode_data_url(url).map_err(|e| {
+      Error::Font(crate::error::FontError::LoadFailed {
+        family: "data-url".into(),
+        reason: e.to_string(),
+      })
+    })?;
+    return Ok((resource.bytes, resource.content_type));
   }
 
   if has_prefix_ignore_ascii_case(url, "http://") || has_prefix_ignore_ascii_case(url, "https://") {
@@ -2908,50 +2913,6 @@ fn decode_font_bytes(bytes: Vec<u8>, content_type: Option<&str>) -> Result<Vec<u
   }
 
   Ok(bytes)
-}
-
-fn decode_data_url(url: &str) -> Result<(Vec<u8>, Option<String>)> {
-  const DATA_URL_PREFIX: &str = "data:";
-  let without_prefix = if has_prefix_ignore_ascii_case(url, DATA_URL_PREFIX) {
-    &url[DATA_URL_PREFIX.len()..]
-  } else {
-    return Err(Error::Font(crate::error::FontError::LoadFailed {
-      family: "data-url".into(),
-      reason: "URL does not start with 'data:'".into(),
-    }));
-  };
-  let mut parts = without_prefix.splitn(2, ',');
-  let meta = parts.next().unwrap_or("");
-  let data = parts.next().ok_or_else(|| {
-    Error::Font(crate::error::FontError::LoadFailed {
-      family: "data-url".into(),
-      reason: "missing data".into(),
-    })
-  })?;
-  let is_base64 = meta.to_ascii_lowercase().contains(";base64");
-  let mime = meta
-    .split(';')
-    .next()
-    .filter(|s| !s.is_empty())
-    .map(|s| s.to_string());
-
-  if is_base64 {
-    let decoded = BASE64_STANDARD.decode(data.as_bytes()).map_err(|e| {
-      Error::Font(crate::error::FontError::LoadFailed {
-        family: "data-url".into(),
-        reason: e.to_string(),
-      })
-    })?;
-    return Ok((decoded, mime));
-  }
-
-  let decoded = percent_decode_str(data).decode_utf8().map_err(|e| {
-    Error::Font(crate::error::FontError::LoadFailed {
-      family: "data-url".into(),
-      reason: e.to_string(),
-    })
-  })?;
-  Ok((decoded.as_bytes().to_vec(), mime))
 }
 
 // ============================================================================
@@ -3419,6 +3380,11 @@ mod tests {
   fn fetch_font_bytes_decodes_data_url_case_insensitive_scheme() {
     let (bytes, content_type) =
       fetch_font_bytes("DATA:font/woff2;base64,aGk=").expect("fetch data url font bytes");
+    assert_eq!(bytes, b"hi");
+    assert_eq!(content_type.as_deref(), Some("font/woff2"));
+
+    let (bytes, content_type) =
+      fetch_font_bytes("DATA:font/woff2;base64,aGk").expect("fetch data url font bytes");
     assert_eq!(bytes, b"hi");
     assert_eq!(content_type.as_deref(), Some("font/woff2"));
   }

@@ -128,11 +128,15 @@ fn has_charset(params: &[String]) -> bool {
 fn decode_base64_data(data: &str) -> Result<Vec<u8>> {
   let mut cleaned = Vec::with_capacity(data.len());
   let mut saw_whitespace = false;
+  let mut saw_url_safe = false;
 
   for byte in data.bytes() {
     if byte.is_ascii_whitespace() {
       saw_whitespace = true;
       continue;
+    }
+    if byte == b'-' || byte == b'_' {
+      saw_url_safe = true;
     }
     cleaned.push(byte);
   }
@@ -143,13 +147,29 @@ fn decode_base64_data(data: &str) -> Result<Vec<u8>> {
     data.as_bytes()
   };
 
-  base64::engine::general_purpose::STANDARD
-    .decode(input)
-    .map_err(|e| {
-      Error::Image(ImageError::InvalidDataUrl {
-        reason: format!("Invalid base64: {e}"),
-      })
-    })
+  if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(input) {
+    return Ok(decoded);
+  }
+
+  let mut last_err = match base64::engine::general_purpose::STANDARD_NO_PAD.decode(input) {
+    Ok(decoded) => return Ok(decoded),
+    Err(err) => err,
+  };
+
+  if saw_url_safe {
+    if let Ok(decoded) = base64::engine::general_purpose::URL_SAFE.decode(input) {
+      return Ok(decoded);
+    }
+
+    match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(input) {
+      Ok(decoded) => return Ok(decoded),
+      Err(err) => last_err = err,
+    }
+  }
+
+  Err(Error::Image(ImageError::InvalidDataUrl {
+    reason: format!("Invalid base64: {last_err}"),
+  }))
 }
 
 struct WhitespaceStrippingReader<'a> {
@@ -188,26 +208,65 @@ fn decode_base64_prefix(data: &str, max_bytes: usize) -> Result<Vec<u8>> {
     return Ok(Vec::new());
   }
 
-  let mut stripped = WhitespaceStrippingReader::new(data.as_bytes());
-  let mut decoder =
-    base64::read::DecoderReader::new(&mut stripped, &base64::engine::general_purpose::STANDARD);
+  fn decode_base64_prefix_with_engine<E: base64::Engine>(
+    data: &str,
+    max_bytes: usize,
+    engine: &E,
+  ) -> io::Result<Vec<u8>> {
+    let mut stripped = WhitespaceStrippingReader::new(data.as_bytes());
+    let mut decoder = base64::read::DecoderReader::new(&mut stripped, engine);
 
-  let mut out = Vec::with_capacity(max_bytes.min(64 * 1024));
-  let mut buf = [0u8; 8 * 1024];
-  while out.len() < max_bytes {
-    let remaining = max_bytes - out.len();
-    let to_read = remaining.min(buf.len());
-    let read = decoder.read(&mut buf[..to_read]).map_err(|e| {
-      Error::Image(ImageError::InvalidDataUrl {
-        reason: format!("Invalid base64: {e}"),
-      })
-    })?;
-    if read == 0 {
-      break;
+    let mut out = Vec::with_capacity(max_bytes.min(64 * 1024));
+    let mut buf = [0u8; 8 * 1024];
+    while out.len() < max_bytes {
+      let remaining = max_bytes - out.len();
+      let to_read = remaining.min(buf.len());
+      let read = decoder.read(&mut buf[..to_read])?;
+      if read == 0 {
+        break;
+      }
+      out.extend_from_slice(&buf[..read]);
     }
-    out.extend_from_slice(&buf[..read]);
+    Ok(out)
   }
-  Ok(out)
+
+  let saw_url_safe = data.bytes().any(|b| b == b'-' || b == b'_');
+
+  if let Ok(decoded) =
+    decode_base64_prefix_with_engine(data, max_bytes, &base64::engine::general_purpose::STANDARD)
+  {
+    return Ok(decoded);
+  }
+
+  let mut last_err = match decode_base64_prefix_with_engine(
+    data,
+    max_bytes,
+    &base64::engine::general_purpose::STANDARD_NO_PAD,
+  ) {
+    Ok(decoded) => return Ok(decoded),
+    Err(err) => err.to_string(),
+  };
+
+  if saw_url_safe {
+    if let Ok(decoded) =
+      decode_base64_prefix_with_engine(data, max_bytes, &base64::engine::general_purpose::URL_SAFE)
+    {
+      return Ok(decoded);
+    }
+
+    match decode_base64_prefix_with_engine(
+      data,
+      max_bytes,
+      &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+    ) {
+      Ok(decoded) => return Ok(decoded),
+      Err(err) => last_err = err.to_string(),
+    }
+  }
+
+  Err(Error::Image(ImageError::InvalidDataUrl {
+    reason: format!("Invalid base64: {last_err}"),
+  }))
 }
 
 /// Percent-decode a URL payload without treating '+' specially.
@@ -275,6 +334,20 @@ mod tests {
   #[test]
   fn decodes_data_url_case_insensitive_scheme() {
     let res = decode_data_url("DATA:text/plain;base64,aGk=").expect("decode data url");
+    assert_eq!(res.bytes, b"hi");
+    assert_eq!(res.content_type.as_deref(), Some("text/plain"));
+  }
+
+  #[test]
+  fn decodes_base64_without_padding() {
+    let res = decode_data_url("data:text/plain;base64,aGk").expect("decode data url");
+    assert_eq!(res.bytes, b"hi");
+    assert_eq!(res.content_type.as_deref(), Some("text/plain"));
+  }
+
+  #[test]
+  fn decodes_base64_without_padding_with_whitespace() {
+    let res = decode_data_url("data:text/plain;base64,a Gk").expect("decode data url");
     assert_eq!(res.bytes, b"hi");
     assert_eq!(res.content_type.as_deref(), Some("text/plain"));
   }
