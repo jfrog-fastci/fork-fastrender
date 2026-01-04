@@ -2691,6 +2691,7 @@ mod tests {
     expected_requests: usize,
     path: &str,
     content_type: &str,
+    allow_credentials: bool,
   ) -> Option<(String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>)> {
     let listener = try_bind_localhost(context)?;
     let addr = listener.local_addr().unwrap();
@@ -2726,8 +2727,13 @@ mod tests {
             captured_for_thread.lock().unwrap().push(origin.clone());
             last_activity = Instant::now();
             let body = origin.as_bytes();
+            let allow_credentials_header = if allow_credentials {
+              "Access-Control-Allow-Credentials: true\r\n"
+            } else {
+              ""
+            };
             let response = format!(
-              "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: {}\r\nAccess-Control-Allow-Origin: {}\r\nVary: Origin\r\nConnection: close\r\n\r\n",
+              "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: {}\r\nAccess-Control-Allow-Origin: {}\r\n{allow_credentials_header}Vary: Origin\r\nConnection: close\r\n\r\n",
               body.len(),
               content_type,
               origin
@@ -2761,14 +2767,20 @@ mod tests {
     context: &str,
     expected_requests: usize,
   ) -> Option<(String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>)> {
-    spawn_cors_origin_echo_server(context, expected_requests, "font.woff2", "font/woff2")
+    spawn_cors_origin_echo_server(
+      context,
+      expected_requests,
+      "font.woff2",
+      "font/woff2",
+      false,
+    )
   }
 
   fn spawn_cors_origin_echo_image_cors_server(
     context: &str,
     expected_requests: usize,
   ) -> Option<(String, Arc<Mutex<Vec<String>>>, thread::JoinHandle<()>)> {
-    spawn_cors_origin_echo_server(context, expected_requests, "image.png", "image/png")
+    spawn_cors_origin_echo_server(context, expected_requests, "image.png", "image/png", true)
   }
 
   #[test]
@@ -2794,16 +2806,20 @@ mod tests {
       let disk = DiskCachingFetcher::new(HttpFetcher::new(), tmp.path());
       let first_a = disk.fetch_with_request(req_a).expect("fetch A");
       assert_eq!(first_a.bytes, b"http://a.test");
+      assert!(first_a.access_control_allow_credentials);
       let first_b = disk.fetch_with_request(req_b).expect("fetch B");
       assert_eq!(first_b.bytes, b"http://b.test");
+      assert!(first_b.access_control_allow_credentials);
 
       drop(disk);
 
       let disk_again = DiskCachingFetcher::new(HttpFetcher::new(), tmp.path());
       let second_a = disk_again.fetch_with_request(req_a).expect("disk A");
       assert_eq!(second_a.bytes, b"http://a.test");
+      assert!(second_a.access_control_allow_credentials);
       let second_b = disk_again.fetch_with_request(req_b).expect("disk B");
       assert_eq!(second_b.bytes, b"http://b.test");
+      assert!(second_b.access_control_allow_credentials);
     });
 
     server.join().unwrap();

@@ -411,29 +411,27 @@ impl MeasureKey {
     };
 
     let available_width = match key.available_width {
-      MeasureAvailKey::Definite(bits) => taffy::style::AvailableSpace::Definite(f32::from_bits(bits)),
+      MeasureAvailKey::Definite(bits) => {
+        taffy::style::AvailableSpace::Definite(f32::from_bits(bits))
+      }
       MeasureAvailKey::Indefinite => taffy::style::AvailableSpace::Definite(0.0),
       MeasureAvailKey::MinContent => taffy::style::AvailableSpace::MinContent,
       MeasureAvailKey::MaxContent => taffy::style::AvailableSpace::MaxContent,
-      MeasureAvailKey::Ignored => taffy::style::AvailableSpace::Definite(
-        key
-          .known_width
-          .map(f32::from_bits)
-          .unwrap_or(0.0),
-      ),
+      MeasureAvailKey::Ignored => {
+        taffy::style::AvailableSpace::Definite(key.known_width.map(f32::from_bits).unwrap_or(0.0))
+      }
     };
 
     let available_height = match key.available_height {
-      MeasureAvailKey::Definite(bits) => taffy::style::AvailableSpace::Definite(f32::from_bits(bits)),
+      MeasureAvailKey::Definite(bits) => {
+        taffy::style::AvailableSpace::Definite(f32::from_bits(bits))
+      }
       MeasureAvailKey::Indefinite => taffy::style::AvailableSpace::Definite(0.0),
       MeasureAvailKey::MinContent => taffy::style::AvailableSpace::MinContent,
       MeasureAvailKey::MaxContent => taffy::style::AvailableSpace::MaxContent,
-      MeasureAvailKey::Ignored => taffy::style::AvailableSpace::Definite(
-        key
-          .known_height
-          .map(f32::from_bits)
-          .unwrap_or(0.0),
-      ),
+      MeasureAvailKey::Ignored => {
+        taffy::style::AvailableSpace::Definite(key.known_height.map(f32::from_bits).unwrap_or(0.0))
+      }
     };
 
     let available_space = taffy::geometry::Size {
@@ -5678,6 +5676,7 @@ mod tests {
     let node_ptr = &node as *const _;
     let node_id = TaffyNodeId::from(1u64);
     let viewport = gc.viewport_size;
+    let taffy_style = taffy::style::Style::default();
 
     let known = taffy::geometry::Size {
       width: None,
@@ -5695,11 +5694,15 @@ mod tests {
 
     let key_a = MeasureKey::new(node_ptr, known, avail_a, viewport, false);
     let key_b = MeasureKey::new(node_ptr, known, avail_b, viewport, false);
-    assert_eq!(key_a, key_b, "expected probes to map to the same quantized MeasureKey");
+    assert_eq!(
+      key_a, key_b,
+      "expected probes to map to the same quantized MeasureKey"
+    );
 
     let taffy_style: taffy::style::Style = taffy::style::Style::default();
     let size_a = {
-      let mut measure_cache: FxHashMap<MeasureKey, taffy::geometry::Size<f32>> = FxHashMap::default();
+      let mut measure_cache: FxHashMap<MeasureKey, taffy::geometry::Size<f32>> =
+        FxHashMap::default();
       let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
       let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
       gc.measure_grid_item(
@@ -5717,7 +5720,8 @@ mod tests {
     };
 
     let size_b = {
-      let mut measure_cache: FxHashMap<MeasureKey, taffy::geometry::Size<f32>> = FxHashMap::default();
+      let mut measure_cache: FxHashMap<MeasureKey, taffy::geometry::Size<f32>> =
+        FxHashMap::default();
       let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
       let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
       gc.measure_grid_item(
