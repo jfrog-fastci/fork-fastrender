@@ -36,8 +36,8 @@ use crate::style::types::Overflow;
 use crate::style::types::RangeOffset;
 use crate::style::types::ReferenceBox;
 use crate::style::types::ScrollFunctionTimeline;
-use crate::style::types::ScrollTimelineScroller;
 use crate::style::types::ScrollTimeline;
+use crate::style::types::ScrollTimelineScroller;
 use crate::style::types::ShapeRadius;
 use crate::style::types::TimelineAxis;
 use crate::style::types::TimelineOffset;
@@ -57,11 +57,13 @@ use std::mem::discriminant;
 use std::sync::Arc;
 
 use crate::style::color::Rgba;
+use crate::style::computed::Visibility;
 
 /// Resolved animated property value used by interpolation/apply steps.
 #[derive(Debug, Clone)]
 pub enum AnimatedValue {
   Opacity(f32),
+  Visibility(Visibility),
   Color(Rgba),
   Transform(Vec<crate::css::types::Transform>),
   Translate(TranslateValue),
@@ -972,6 +974,48 @@ fn apply_opacity(style: &mut ComputedStyle, value: &AnimatedValue) {
   }
 }
 
+fn extract_visibility(
+  style: &ComputedStyle,
+  _ctx: &AnimationResolveContext,
+) -> Option<AnimatedValue> {
+  Some(AnimatedValue::Visibility(style.visibility))
+}
+
+fn interpolate_visibility_value(
+  a: &AnimatedValue,
+  b: &AnimatedValue,
+  t: f32,
+) -> Option<AnimatedValue> {
+  let (AnimatedValue::Visibility(va), AnimatedValue::Visibility(vb)) = (a, b) else {
+    return None;
+  };
+
+  // `visibility` is a discrete animated property with special-case behaviour:
+  // if either endpoint is `visible`, the intermediate values should also be `visible`
+  // (so opacity fades don't keep content hidden for the whole segment).
+  //
+  // We preserve the exact endpoints (t=0 and t=1) deterministically using EPS
+  // tolerances consistent with other sampling code in this module.
+  if matches!(*va, Visibility::Visible) || matches!(*vb, Visibility::Visible) {
+    if t <= f32::EPSILON {
+      return Some(AnimatedValue::Visibility(*va));
+    }
+    if (1.0 - t).abs() <= f32::EPSILON {
+      return Some(AnimatedValue::Visibility(*vb));
+    }
+    return Some(AnimatedValue::Visibility(Visibility::Visible));
+  }
+
+  // Base discrete behaviour: switch at the 50% midpoint.
+  Some(AnimatedValue::Visibility(if t < 0.5 { *va } else { *vb }))
+}
+
+fn apply_visibility(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::Visibility(v) = value {
+    style.visibility = *v;
+  }
+}
+
 fn extract_color(style: &ComputedStyle, _ctx: &AnimationResolveContext) -> Option<AnimatedValue> {
   Some(AnimatedValue::Color(style.color))
 }
@@ -1354,6 +1398,12 @@ fn property_interpolators() -> &'static [PropertyInterpolator] {
       extract: extract_opacity,
       interpolate: interpolate_opacity,
       apply: apply_opacity,
+    },
+    PropertyInterpolator {
+      name: "visibility",
+      extract: extract_visibility,
+      interpolate: interpolate_visibility_value,
+      apply: apply_visibility,
     },
     PropertyInterpolator {
       name: "color",
@@ -2313,16 +2363,14 @@ fn timeline_scroll_context(
 
 type TimelineScope = HashMap<String, Vec<TimelineState>>;
 
-fn timeline_scope_push(
-  scope: &mut TimelineScope,
-  name: String,
-  state: TimelineState,
-) {
+fn timeline_scope_push(scope: &mut TimelineScope, name: String, state: TimelineState) {
   scope.entry(name).or_default().push(state);
 }
 
 fn timeline_scope_pop(scope: &mut TimelineScope, name: &str) {
-  let Some(stack) = scope.get_mut(name) else { return };
+  let Some(stack) = scope.get_mut(name) else {
+    return;
+  };
   stack.pop();
   if stack.is_empty() {
     scope.remove(name);
@@ -2408,7 +2456,9 @@ fn scroll_progress_for_function(
   let scroll_container = match func.scroller {
     ScrollTimelineScroller::Root => root,
     ScrollTimelineScroller::Nearest => ancestor_scroll_containers.last().copied().unwrap_or(root),
-    ScrollTimelineScroller::SelfElement => scroll_container_context_for_node(node, origin, scroll_state)?,
+    ScrollTimelineScroller::SelfElement => {
+      scroll_container_context_for_node(node, origin, scroll_state)?
+    }
   };
 
   let (scroll_pos, scroll_range, viewport_size) = axis_scroll_state(
@@ -2442,7 +2492,9 @@ fn view_progress_for_function(
   let scroll_container = match func.scroller {
     ScrollTimelineScroller::Root => root,
     ScrollTimelineScroller::Nearest => ancestor_scroll_containers.last().copied().unwrap_or(root),
-    ScrollTimelineScroller::SelfElement => scroll_container_context_for_node(node, origin, scroll_state)?,
+    ScrollTimelineScroller::SelfElement => {
+      scroll_container_context_for_node(node, origin, scroll_state)?
+    }
   };
 
   let abs = Rect::from_xywh(
@@ -2536,7 +2588,10 @@ fn apply_animations_to_node_scoped(
       }
     }
 
-    let view_timeline_context = ancestor_scroll_containers.last().copied().unwrap_or(root_context);
+    let view_timeline_context = ancestor_scroll_containers
+      .last()
+      .copied()
+      .unwrap_or(root_context);
     for tl in &style.view_timelines {
       if let Some(name) = &tl.name {
         let horizontal = axis_is_horizontal(tl.axis, view_timeline_context.writing_mode);
@@ -2769,7 +2824,8 @@ pub fn apply_animations(
     .as_deref()
     .map(|s| s.writing_mode)
     .unwrap_or(WritingMode::HorizontalTb);
-  let root_context = root_scroll_container_context(scroll_state, viewport, content, root_writing_mode);
+  let root_context =
+    root_scroll_container_context(scroll_state, viewport, content, root_writing_mode);
 
   {
     let root_offset = Point::new(tree.root.bounds.x(), tree.root.bounds.y());
@@ -3036,6 +3092,20 @@ mod tests {
     }
   }
 
+  fn sampled_visibility(rule: &KeyframesRule, progress: f32) -> Visibility {
+    let values = sample_keyframes(
+      rule,
+      progress,
+      &ComputedStyle::default(),
+      Size::new(800.0, 600.0),
+      Size::new(100.0, 100.0),
+    );
+    match values.get("visibility") {
+      Some(AnimatedValue::Visibility(v)) => *v,
+      other => panic!("expected visibility, got {other:?}"),
+    }
+  }
+
   fn sampled_translate(rule: &KeyframesRule, progress: f32, element_size: Size) -> TranslateValue {
     let values = sample_keyframes(
       rule,
@@ -3139,6 +3209,34 @@ mod tests {
     let progress = time_based_animation_progress(&style, 0, 500.0).expect("active");
     assert!((progress - 0.0).abs() < 1e-6, "progress={progress}");
     assert!((sampled_opacity(&rule, progress) - 0.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn sample_keyframes_visibility_hidden_to_visible_is_visible_for_open_interval() {
+    let sheet = parse_stylesheet(
+      "@keyframes show { 0% { visibility: hidden; } 100% { visibility: visible; } }",
+    )
+    .unwrap();
+    let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+    let rule = &keyframes[0];
+
+    assert_eq!(sampled_visibility(rule, 0.0), Visibility::Hidden);
+    assert_eq!(sampled_visibility(rule, 0.25), Visibility::Visible);
+    assert_eq!(sampled_visibility(rule, 1.0), Visibility::Visible);
+  }
+
+  #[test]
+  fn sample_keyframes_visibility_visible_to_hidden_is_visible_until_end() {
+    let sheet = parse_stylesheet(
+      "@keyframes hide { 0% { visibility: visible; } 100% { visibility: hidden; } }",
+    )
+    .unwrap();
+    let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+    let rule = &keyframes[0];
+
+    assert_eq!(sampled_visibility(rule, 0.0), Visibility::Visible);
+    assert_eq!(sampled_visibility(rule, 0.75), Visibility::Visible);
+    assert_eq!(sampled_visibility(rule, 1.0), Visibility::Hidden);
   }
 
   #[test]
@@ -3269,6 +3367,35 @@ mod tests {
       .render_html_with_options(html, options)
       .expect("render fixture");
     encode_image(&pixmap, OutputFormat::Png).expect("encode png")
+  }
+
+  #[test]
+  fn animation_time_sampling_applies_visibility_keyframes() {
+    let html = r#"
+      <!doctype html>
+      <style>
+        html, body { margin: 0; background: rgb(0, 0, 0); }
+        #box {
+          width: 100px;
+          height: 100px;
+          background: rgb(255, 0, 0);
+          visibility: hidden;
+          opacity: 0;
+          animation: show 1s forwards;
+        }
+        @keyframes show {
+          from { visibility: hidden; opacity: 0; }
+          to { visibility: visible; opacity: 1; }
+        }
+      </style>
+      <div id="box"></div>
+    "#;
+
+    let base_url = Url::parse("https://example.com/").unwrap().to_string();
+    let rendered = render_animation_sampling_fixture(html, base_url, Some(1500.0));
+    let image = decode_png(&rendered);
+    let px = image.get_pixel(50, 50);
+    assert_eq!(px.0, [255, 0, 0, 255]);
   }
 
   #[test]
