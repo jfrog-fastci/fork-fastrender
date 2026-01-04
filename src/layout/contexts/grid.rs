@@ -5697,6 +5697,7 @@ mod tests {
     let key_b = MeasureKey::new(node_ptr, known, avail_b, viewport, false);
     assert_eq!(key_a, key_b, "expected probes to map to the same quantized MeasureKey");
 
+    let taffy_style = taffy::style::Style::default();
     let size_a = {
       let mut measure_cache: FxHashMap<MeasureKey, taffy::geometry::Size<f32>> = FxHashMap::default();
       let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
@@ -5707,7 +5708,7 @@ mod tests {
         known,
         avail_a,
         None,
-        AlignItems::Stretch,
+        &taffy_style,
         &factory,
         &mut measure_cache,
         &mut measured_fragments,
@@ -5725,7 +5726,7 @@ mod tests {
         known,
         avail_b,
         None,
-        AlignItems::Stretch,
+        &taffy_style,
         &factory,
         &mut measure_cache,
         &mut measured_fragments,
