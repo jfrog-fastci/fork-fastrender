@@ -1600,7 +1600,8 @@ fn write_html_report(
       #show-regressed:not(:checked) ~ #all-entries tbody tr.regressed {{ display: none; }}
       #show-missing:not(:checked) ~ #all-entries tbody tr.missing {{ display: none; }}
       #show-unchanged:not(:checked) ~ #all-entries tbody tr.unchanged {{ display: none; }}
-      #show-thumbnails:not(:checked) ~ #all-entries .thumb img {{ display: none; }}
+      #show-thumbnails:not(:checked) ~ #all-entries .thumb br {{ display: none; }}
+      #show-thumbnails:not(:checked) ~ #all-entries .thumb a:nth-of-type(2) {{ display: none; }}
       .warning {{ color: #b00020; }}
       .error {{ color: #b00020; white-space: pre-wrap; }}
       .top-list table {{ width: auto; }}

@@ -291,6 +291,10 @@ fn compare_diff_reports_pairs_and_classifies_entries() {
     html.contains("#show-unchanged:not(:checked) ~ #all-entries tbody tr.unchanged"),
     "expected CSS toggle rule for hiding unchanged rows:\n{html}"
   );
+  assert!(
+    html.contains("#show-thumbnails:not(:checked) ~ #all-entries .thumb a:nth-of-type(2)"),
+    "expected CSS toggle rule for hiding thumbnails:\n{html}"
+  );
 }
 
 #[test]
