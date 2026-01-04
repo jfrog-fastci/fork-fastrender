@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+  <meta charset="utf-8" />
+  <style>
+    body {
+      margin: 0;
+      background: white;
+    }
+
+    .guide {
+      position: absolute;
+      left: 80px;
+      top: 0;
+      width: 2px;
+      height: 220px;
+      background: rgba(255, 0, 0, 0.25);
+    }
+
+    .sample {
+      margin-top: 64px;
+      margin-left: 80px;
+      font-family: "Noto Sans Arabic", sans-serif;
+      font-size: 72px;
+      line-height: 1;
+      color: black;
+      direction: rtl;
+      text-align: left;
+      text-decoration-line: underline;
+      text-decoration-skip-ink: auto;
+      text-decoration-thickness: 10px;
+      text-decoration-color: rgb(0, 80, 255);
+      /* Force the underline through glyph bounds so skip-ink carving is visible. */
+      text-underline-offset: -0.35em;
+      letter-spacing: 0.12em;
+    }
+  </style>
+
+  <div class="guide"></div>
+  <div class="sample">مرحبا بالعالم</div>
+</html>
