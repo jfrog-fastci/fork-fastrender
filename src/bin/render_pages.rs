@@ -1759,6 +1759,7 @@ fn serialize_box_node(node: &BoxNode) -> SerializableBoxNode {
   let (kind, text) = match &node.box_type {
     BoxType::Block(_) => ("block".to_string(), None),
     BoxType::Inline(_) => ("inline".to_string(), None),
+    BoxType::LineBreak(_) => ("line-break".to_string(), None),
     BoxType::Text(t) => (
       "text".to_string(),
       Some(truncate_text(&t.text, TEXT_PREVIEW)),

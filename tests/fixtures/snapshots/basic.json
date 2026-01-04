@@ -263,10 +263,10 @@
               "left": "Length { value: 0.0, unit: Px, calc: None }"
             },
             "background_color": {
-              "r": 255,
-              "g": 255,
-              "b": 255,
-              "a": 1.0
+              "r": 0,
+              "g": 0,
+              "b": 0,
+              "a": 0.0
             },
             "color": {
               "r": 0,
@@ -1087,10 +1087,10 @@
               "left": "Length { value: 0.0, unit: Px, calc: None }"
             },
             "background_color": {
-              "r": 255,
-              "g": 255,
-              "b": 255,
-              "a": 1.0
+              "r": 0,
+              "g": 0,
+              "b": 0,
+              "a": 0.0
             },
             "color": {
               "r": 0,
@@ -2245,10 +2245,10 @@
                 "left": "Length { value: 0.0, unit: Px, calc: None }"
               },
               "background_color": {
-                "r": 255,
-                "g": 255,
-                "b": 255,
-                "a": 1.0
+                "r": 0,
+                "g": 0,
+                "b": 0,
+                "a": 0.0
               },
               "color": {
                 "r": 0,
@@ -2484,7 +2484,7 @@
                           "x": 0.0,
                           "y": 0.0,
                           "width": 120.0,
-                          "height": 46.792
+                          "height": 52.792
                         },
                         "fragment_index": 0,
                         "fragment_count": 1,
@@ -2546,8 +2546,8 @@
                           {
                             "fragment_id": 7,
                             "bounds": {
-                              "x": 9.0,
-                              "y": 13.0,
+                              "x": 15.0,
+                              "y": 19.0,
                               "width": 35.808,
                               "height": 27.792002
                             },
@@ -3244,26 +3244,42 @@
     "items": [
       {
         "item_id": 1,
-        "kind": "fill_rect",
-        "bounds": {
-          "x": 0.0,
-          "y": 0.0,
-          "width": 200.0,
-          "height": 88.0
-        },
+        "kind": "push_stacking_context",
         "details": {
-          "color": {
-            "a": 1.0,
-            "b": 255,
-            "g": 255,
-            "r": 255
+          "backdrop_filters": 0,
+          "backface_visibility": "Visible",
+          "bounds": {
+            "height": 72.0,
+            "width": 132.0,
+            "x": 8.0,
+            "y": 8.0
           },
-          "rect": {
-            "height": 88.0,
-            "width": 200.0,
-            "x": 0.0,
-            "y": 0.0
-          }
+          "creates_stacking_context": true,
+          "filters": 0,
+          "has_mask": false,
+          "is_isolated": false,
+          "mix_blend_mode": "Normal",
+          "radii": {
+            "bottom_left": {
+              "x": 0.0,
+              "y": 0.0
+            },
+            "bottom_right": {
+              "x": 0.0,
+              "y": 0.0
+            },
+            "top_left": {
+              "x": 0.0,
+              "y": 0.0
+            },
+            "top_right": {
+              "x": 0.0,
+              "y": 0.0
+            }
+          },
+          "transform": null,
+          "transform_style": "Flat",
+          "z_index": 2
         }
       },
       {
@@ -3389,177 +3405,10 @@
       },
       {
         "item_id": 5,
-        "kind": "text",
-        "bounds": {
-          "x": 8.0,
-          "y": 11.104,
-          "width": 27.744,
-          "height": 20.0
-        },
-        "details": {
-          "advance_width": 27.743999481201172,
-          "color": {
-            "a": 1.0,
-            "b": 0,
-            "g": 0,
-            "r": 0
-          },
-          "font_size": 16.0,
-          "glyphs": 3,
-          "origin": {
-            "x": 8.0,
-            "y": 27.104000091552734
-          },
-          "shadows": []
-        }
-      },
-      {
-        "item_id": 6,
         "kind": "pop_clip"
       },
       {
-        "item_id": 7,
-        "kind": "push_stacking_context",
-        "details": {
-          "backdrop_filters": 0,
-          "backface_visibility": "Visible",
-          "bounds": {
-            "height": 80.0,
-            "width": 140.0,
-            "x": 8.0,
-            "y": 8.0
-          },
-          "creates_stacking_context": true,
-          "filters": 0,
-          "has_mask": false,
-          "is_isolated": false,
-          "mix_blend_mode": "Normal",
-          "radii": {
-            "bottom_left": {
-              "x": 0.0,
-              "y": 0.0
-            },
-            "bottom_right": {
-              "x": 0.0,
-              "y": 0.0
-            },
-            "top_left": {
-              "x": 0.0,
-              "y": 0.0
-            },
-            "top_right": {
-              "x": 0.0,
-              "y": 0.0
-            }
-          },
-          "transform": null,
-          "transform_style": "Flat",
-          "z_index": 2
-        }
-      },
-      {
-        "item_id": 8,
-        "kind": "fill_rect",
-        "bounds": {
-          "x": 8.0,
-          "y": 8.0,
-          "width": 132.0,
-          "height": 72.0
-        },
-        "details": {
-          "color": {
-            "a": 1.0,
-            "b": 220,
-            "g": 210,
-            "r": 200
-          },
-          "rect": {
-            "height": 72.0,
-            "width": 132.0,
-            "x": 8.0,
-            "y": 8.0
-          }
-        }
-      },
-      {
-        "item_id": 9,
-        "kind": "border",
-        "bounds": {
-          "x": 7.0,
-          "y": 7.0,
-          "width": 134.0,
-          "height": 74.0
-        },
-        "details": {
-          "bottom": {
-            "color": {
-              "a": 1.0,
-              "b": 30,
-              "g": 20,
-              "r": 10
-            },
-            "style": "Solid",
-            "width": 2.0
-          },
-          "has_image": false,
-          "left": {
-            "color": {
-              "a": 1.0,
-              "b": 30,
-              "g": 20,
-              "r": 10
-            },
-            "style": "Solid",
-            "width": 2.0
-          },
-          "radii": {
-            "bottom_left": {
-              "x": 0.0,
-              "y": 0.0
-            },
-            "bottom_right": {
-              "x": 0.0,
-              "y": 0.0
-            },
-            "top_left": {
-              "x": 0.0,
-              "y": 0.0
-            },
-            "top_right": {
-              "x": 0.0,
-              "y": 0.0
-            }
-          },
-          "rect": {
-            "height": 72.0,
-            "width": 132.0,
-            "x": 8.0,
-            "y": 8.0
-          },
-          "right": {
-            "color": {
-              "a": 1.0,
-              "b": 30,
-              "g": 20,
-              "r": 10
-            },
-            "style": "Solid",
-            "width": 2.0
-          },
-          "top": {
-            "color": {
-              "a": 1.0,
-              "b": 30,
-              "g": 20,
-              "r": 10
-            },
-            "style": "Solid",
-            "width": 2.0
-          }
-        }
-      },
-      {
-        "item_id": 10,
+        "item_id": 6,
         "kind": "push_clip",
         "bounds": {
           "x": 10.0,
@@ -3579,31 +3428,7 @@
         }
       },
       {
-        "item_id": 11,
-        "kind": "pop_clip"
-      },
-      {
-        "item_id": 12,
-        "kind": "push_clip",
-        "bounds": {
-          "x": 10.0,
-          "y": 10.0,
-          "width": 136.0,
-          "height": 76.0
-        },
-        "details": {
-          "radii": null,
-          "rect": {
-            "height": 76.0,
-            "width": 136.0,
-            "x": 10.0,
-            "y": 10.0
-          },
-          "shape": "rect"
-        }
-      },
-      {
-        "item_id": 13,
+        "item_id": 7,
         "kind": "text",
         "bounds": {
           "x": 8.0,
@@ -3629,7 +3454,7 @@
         }
       },
       {
-        "item_id": 14,
+        "item_id": 8,
         "kind": "push_stacking_context",
         "details": {
           "backdrop_filters": 0,
@@ -3637,8 +3462,8 @@
           "bounds": {
             "height": 33.79199981689453,
             "width": 29.807998657226562,
-            "x": 17.0,
-            "y": 21.0
+            "x": 23.0,
+            "y": 27.0
           },
           "creates_stacking_context": true,
           "filters": 0,
@@ -3669,11 +3494,11 @@
         }
       },
       {
-        "item_id": 15,
+        "item_id": 9,
         "kind": "fill_rect",
         "bounds": {
-          "x": 17.0,
-          "y": 21.0,
+          "x": 23.0,
+          "y": 27.0,
           "width": 29.808,
           "height": 33.792
         },
@@ -3687,17 +3512,17 @@
           "rect": {
             "height": 33.79199981689453,
             "width": 29.808000564575195,
-            "x": 17.0,
-            "y": 21.0
+            "x": 23.0,
+            "y": 27.0
           }
         }
       },
       {
-        "item_id": 16,
+        "item_id": 10,
         "kind": "border",
         "bounds": {
-          "x": 16.0,
-          "y": 20.0,
+          "x": 22.0,
+          "y": 26.0,
           "width": 31.808,
           "height": 35.792
         },
@@ -3744,8 +3569,8 @@
           "rect": {
             "height": 33.79199981689453,
             "width": 29.808000564575195,
-            "x": 17.0,
-            "y": 21.0
+            "x": 23.0,
+            "y": 27.0
           },
           "right": {
             "color": {
@@ -3770,11 +3595,11 @@
         }
       },
       {
-        "item_id": 17,
+        "item_id": 11,
         "kind": "push_clip",
         "bounds": {
-          "x": 19.0,
-          "y": 23.0,
+          "x": 25.0,
+          "y": 29.0,
           "width": 25.808,
           "height": 29.792
         },
@@ -3783,22 +3608,22 @@
           "rect": {
             "height": 29.79199981689453,
             "width": 25.808000564575195,
-            "x": 19.0,
-            "y": 23.0
+            "x": 25.0,
+            "y": 29.0
           },
           "shape": "rect"
         }
       },
       {
-        "item_id": 18,
+        "item_id": 12,
         "kind": "pop_clip"
       },
       {
-        "item_id": 19,
+        "item_id": 13,
         "kind": "push_clip",
         "bounds": {
-          "x": 19.0,
-          "y": 23.0,
+          "x": 25.0,
+          "y": 29.0,
           "width": 25.807999,
           "height": 29.792
         },
@@ -3807,18 +3632,18 @@
           "rect": {
             "height": 29.79199981689453,
             "width": 25.807998657226562,
-            "x": 19.0,
-            "y": 23.0
+            "x": 25.0,
+            "y": 29.0
           },
           "shape": "rect"
         }
       },
       {
-        "item_id": 20,
+        "item_id": 14,
         "kind": "text",
         "bounds": {
-          "x": 23.0,
-          "y": 28.104,
+          "x": 29.0,
+          "y": 34.104,
           "width": 17.807999,
           "height": 20.0
         },
@@ -3833,26 +3658,26 @@
           "font_size": 16.0,
           "glyphs": 2,
           "origin": {
-            "x": 23.0,
-            "y": 44.104000091552734
+            "x": 29.0,
+            "y": 50.104000091552734
           },
           "shadows": []
         }
       },
       {
-        "item_id": 21,
+        "item_id": 15,
         "kind": "pop_clip"
       },
       {
-        "item_id": 22,
+        "item_id": 16,
         "kind": "pop_stacking_context"
       },
       {
-        "item_id": 23,
+        "item_id": 17,
         "kind": "pop_clip"
       },
       {
-        "item_id": 24,
+        "item_id": 18,
         "kind": "pop_stacking_context"
       }
     ]

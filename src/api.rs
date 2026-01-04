@@ -7735,6 +7735,9 @@ impl FastRender {
               node.children.len()
             );
           }
+          BoxType::LineBreak(_) => {
+            eprintln!("{}line-break display={:?}", indent, node.style.display);
+          }
           BoxType::Block(_) => {
             eprintln!(
               "{}block display={:?} children={}",

@@ -88,6 +88,13 @@ pub struct TextBox {
   pub text: String,
 }
 
+/// A forced line-break box (`<br>`)
+///
+/// `<br>` participates in the inline formatting context at its DOM position but forces a new line
+/// in the inline layout algorithm.
+#[derive(Debug, Clone)]
+pub struct LineBreakBox;
+
 #[derive(Debug, Clone)]
 pub enum MarkerContent {
   Text(String),
@@ -566,6 +573,9 @@ pub enum BoxType {
   /// Inline-level box (span, a, em, etc.)
   Inline(InlineBox),
 
+  /// Forced line break (`<br>`)
+  LineBreak(LineBreakBox),
+
   /// Text box (actual text content)
   Text(TextBox),
 
@@ -599,7 +609,7 @@ impl BoxType {
   /// Returns true if this box type is inline-level
   pub fn is_inline_level(&self) -> bool {
     match self {
-      BoxType::Inline(_) | BoxType::Text(_) | BoxType::Marker(_) => true,
+      BoxType::Inline(_) | BoxType::LineBreak(_) | BoxType::Text(_) | BoxType::Marker(_) => true,
       BoxType::Anonymous(anon) => matches!(anon.anonymous_type, AnonymousType::Inline),
       _ => false,
     }
@@ -641,6 +651,7 @@ impl fmt::Display for BoxType {
     match self {
       BoxType::Block(_) => write!(f, "Block"),
       BoxType::Inline(_) => write!(f, "Inline"),
+      BoxType::LineBreak(_) => write!(f, "LineBreak"),
       BoxType::Text(_) => write!(f, "Text"),
       BoxType::Marker(_) => write!(f, "Marker"),
       BoxType::Replaced(_) => write!(f, "Replaced"),
@@ -798,6 +809,21 @@ impl BoxNode {
       styled_node_id: None,
       table_cell_span: None,
       table_column_span: None,
+      first_line_style: None,
+      first_letter_style: None,
+    }
+  }
+
+  /// Creates a new forced line break box (`<br>`)
+  pub fn new_line_break(style: Arc<ComputedStyle>) -> Self {
+    Self {
+      style,
+      starting_style: None,
+      box_type: BoxType::LineBreak(LineBreakBox),
+      children: Vec::new(),
+      id: 0,
+      debug_info: None,
+      styled_node_id: None,
       first_line_style: None,
       first_letter_style: None,
     }

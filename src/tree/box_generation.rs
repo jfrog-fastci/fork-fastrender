@@ -1782,6 +1782,25 @@ fn generate_boxes_for_styled_into(
           continue;
         }
 
+        // HTML <br> elements represent forced line breaks. Model them explicitly so inline layout can
+        // force a new line even under `white-space: normal/nowrap` (i.e., without relying on a
+        // newline character that could be collapsed to a space).
+        if let Some(tag) = styled.node.tag_name() {
+          if tag.eq_ignore_ascii_case("br") {
+            counters.leave_scope();
+            stack.pop();
+            let mut box_node = BoxNode::new_line_break(Arc::clone(&styled.styles));
+            box_node.starting_style = clone_starting_style(&styled.starting_styles.base);
+            let box_node = attach_debug_info(box_node, styled);
+            if let Some(parent) = stack.last_mut() {
+              parent.children.push(box_node);
+            } else {
+              out.push(box_node);
+            }
+            continue;
+          }
+        }
+
         if let Some(tag) = styled.node.tag_name() {
           if tag.eq_ignore_ascii_case("math") {
             let dom_subtree = dom_subtree_from_styled(styled);

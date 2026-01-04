@@ -207,6 +207,7 @@ impl EnhancedTreePrinter {
       let type_str = match &node.box_type {
         BoxType::Block(_) => "Block",
         BoxType::Inline(_) => "Inline",
+        BoxType::LineBreak(_) => "LineBreak",
         BoxType::Text(t) => {
           let text = truncate(&t.text, 20);
           return format!(

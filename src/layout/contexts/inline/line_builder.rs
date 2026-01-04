@@ -111,6 +111,12 @@ pub enum InlineItem {
   /// A tab character that expands to the next tab stop
   Tab(TabItem),
 
+  /// Mandatory hard line break (e.g., from `<br>`)
+  ///
+  /// This item does not produce a fragment and does not paint a glyph. It exists purely to force
+  /// the line builder to end the current line immediately.
+  HardBreak,
+
   /// An inline box (span, a, em, etc.) with children
   InlineBox(InlineBoxItem),
 
@@ -136,6 +142,7 @@ impl InlineItem {
     match self {
       InlineItem::Text(t) => t.advance_for_layout,
       InlineItem::Tab(t) => t.width(),
+      InlineItem::HardBreak => 0.0,
       InlineItem::InlineBox(b) => b.width(),
       InlineItem::InlineBlock(b) => b.total_width(),
       InlineItem::Ruby(r) => r.width(),
@@ -150,6 +157,7 @@ impl InlineItem {
     match self {
       InlineItem::Text(t) => t.advance_for_layout,
       InlineItem::Tab(t) => t.width(),
+      InlineItem::HardBreak => 0.0,
       InlineItem::InlineBox(b) => b.width(),
       InlineItem::InlineBlock(b) => b.width,
       InlineItem::Ruby(r) => r.intrinsic_width(),
@@ -164,6 +172,7 @@ impl InlineItem {
     match self {
       InlineItem::Text(t) => t.metrics,
       InlineItem::Tab(t) => t.metrics,
+      InlineItem::HardBreak => StaticPositionAnchor::metrics(),
       InlineItem::InlineBox(b) => b.metrics,
       InlineItem::InlineBlock(b) => b.metrics,
       InlineItem::Ruby(r) => r.metrics,
@@ -178,6 +187,7 @@ impl InlineItem {
     match self {
       InlineItem::Text(t) => t.vertical_align,
       InlineItem::Tab(t) => t.vertical_align,
+      InlineItem::HardBreak => VerticalAlign::Baseline,
       InlineItem::InlineBox(b) => b.vertical_align,
       InlineItem::InlineBlock(b) => b.vertical_align,
       InlineItem::Ruby(r) => r.vertical_align,
@@ -196,6 +206,7 @@ impl InlineItem {
     match self {
       InlineItem::Text(t) => t.style.direction,
       InlineItem::Tab(t) => t.direction,
+      InlineItem::HardBreak => Direction::Ltr,
       InlineItem::InlineBox(b) => b.direction,
       InlineItem::InlineBlock(b) => b.direction,
       InlineItem::Ruby(r) => r.direction,
@@ -209,6 +220,7 @@ impl InlineItem {
     match self {
       InlineItem::Text(t) => t.style.unicode_bidi,
       InlineItem::Tab(t) => t.unicode_bidi,
+      InlineItem::HardBreak => UnicodeBidi::Normal,
       InlineItem::InlineBox(b) => b.unicode_bidi,
       InlineItem::InlineBlock(b) => b.unicode_bidi,
       InlineItem::Ruby(r) => r.unicode_bidi,
@@ -227,6 +239,7 @@ impl InlineItem {
         let width = tab.resolve_width(start_x);
         (self, width)
       }
+      InlineItem::HardBreak => (self, 0.0),
       _ => {
         let width = self.width();
         (self, width)
@@ -2404,6 +2417,9 @@ impl<'a> LineBuilder<'a> {
 
   /// Adds an inline item to the builder
   pub fn add_item(&mut self, item: InlineItem) -> Result<(), LayoutError> {
+    if matches!(item, InlineItem::HardBreak) {
+      return self.force_break();
+    }
     if self.line_clamp_reached {
       self.truncated = true;
       return Ok(());
@@ -2415,6 +2431,7 @@ impl<'a> LineBuilder<'a> {
     let kind = match &item {
       InlineItem::Text(_) => "text",
       InlineItem::Tab(_) => "tab",
+      InlineItem::HardBreak => "hard-break",
       InlineItem::InlineBox(_) => "inline-box",
       InlineItem::InlineBlock(_) => "inline-block",
       InlineItem::Ruby(_) => "ruby",
@@ -2678,7 +2695,16 @@ impl<'a> LineBuilder<'a> {
   /// Finishes the current line and starts a new one
   fn finish_line(&mut self) -> Result<(), LayoutError> {
     check_layout_deadline(&mut self.deadline_counter)?;
-    if !self.current_line.is_empty() {
+    let push_empty_after_hard_break = self.current_line.is_empty()
+      && !self.current_line.ends_with_hard_break
+      && self
+        .lines
+        .last()
+        .is_some_and(|line| line.ends_with_hard_break);
+    if !self.current_line.is_empty()
+      || self.current_line.ends_with_hard_break
+      || push_empty_after_hard_break
+    {
       // Calculate final line metrics
       self.current_line.width = self.current_x;
       self.current_line.height = self.baseline_acc.line_height();
@@ -2820,6 +2846,7 @@ impl<'a> LineBuilder<'a> {
           false
         }
       }
+      InlineItem::HardBreak => true,
       InlineItem::InlineBox(b) => {
         if matches!(b.unicode_bidi, UnicodeBidi::Plaintext) {
           *saw_plaintext = true;
@@ -5973,6 +6000,7 @@ mod tests {
     match item {
       InlineItem::Text(t) => t.text.clone(),
       InlineItem::Tab(_) => "\t".to_string(),
+      InlineItem::HardBreak => "\n".to_string(),
       InlineItem::InlineBox(b) => b.children.iter().map(flatten_text).collect(),
       InlineItem::Ruby(r) => r
         .segments

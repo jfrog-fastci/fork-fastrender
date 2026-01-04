@@ -388,6 +388,7 @@ impl TreePrinter {
     let box_type = match &node.box_type {
       BoxType::Block(_) => "Block".to_string(),
       BoxType::Inline(_) => "Inline".to_string(),
+      BoxType::LineBreak(_) => "LineBreak".to_string(),
       BoxType::Text(text) => format!("Text({})", truncate(&text.text, 20)),
       BoxType::Marker(marker) => {
         let payload = match &marker.content {

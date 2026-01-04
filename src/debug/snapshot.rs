@@ -571,6 +571,9 @@ fn snapshot_box_kind(kind: &BoxType) -> BoxKindSnapshot {
     BoxType::Inline(inline) => BoxKindSnapshot::Inline {
       formatting_context: inline.formatting_context.map(|fc| format!("{fc:?}")),
     },
+    BoxType::LineBreak(_) => BoxKindSnapshot::Inline {
+      formatting_context: None,
+    },
     BoxType::Text(text) => BoxKindSnapshot::Text {
       text: text.text.clone(),
     },

@@ -448,6 +448,11 @@ const PAGE_FIXTURES: &[PageFixture] = &[
     html: "line_clamp/index.html",
     shots: DEFAULT_SHOTS,
   },
+  PageFixture {
+    name: "br_linebreak",
+    html: "br_linebreak/index.html",
+    shots: DEFAULT_SHOTS,
+  },
 ];
 
 fn fixtures_dir() -> PathBuf {

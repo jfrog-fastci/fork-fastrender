@@ -471,6 +471,7 @@ fn box_snapshot(node: &BoxNode) -> BoxSnapshot {
     box_type: match &node.box_type {
       BoxType::Block(_) => "block".to_string(),
       BoxType::Inline(_) => "inline".to_string(),
+      BoxType::LineBreak(_) => "line-break".to_string(),
       BoxType::Text(_) => "text".to_string(),
       BoxType::Marker(_) => "marker".to_string(),
       BoxType::Replaced(_) => "replaced".to_string(),
