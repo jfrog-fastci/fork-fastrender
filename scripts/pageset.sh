@@ -146,6 +146,7 @@ detect_total_cpus() {
 #   --jobs/-j N --fetch-timeout SECS --render-timeout SECS --cache-dir DIR --no-fetch
 #   --disk-cache --no-disk-cache
 #   --disk-cache-audit-clean
+#   --bundled-fonts (default; deterministic timings) --system-fonts/--no-bundled-fonts (match Chrome)
 #   --accuracy
 #   --accuracy-baseline <existing|chrome>
 #   --accuracy-baseline-dir DIR
@@ -201,6 +202,7 @@ CAPTURE_MISSING_FAILURE_FIXTURES=0
 CAPTURE_MISSING_FAILURE_FIXTURES_OUT_DIR="target/pageset_failure_fixture_bundles"
 CAPTURE_MISSING_FAILURE_FIXTURES_ALLOW_MISSING_RESOURCES=0
 CAPTURE_MISSING_FAILURE_FIXTURES_OVERWRITE=0
+USE_BUNDLED_FONTS=1
 CAPTURE_WORST_ACCURACY_FIXTURES=0
 CAPTURE_WORST_ACCURACY_FIXTURES_OUT_DIR="target/pageset_accuracy_fixture_bundles"
 CAPTURE_WORST_ACCURACY_FIXTURES_MIN_DIFF_PERCENT="0.5"
@@ -241,6 +243,16 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-fetch)
       NO_FETCH=1
+      shift
+      continue
+      ;;
+    --system-fonts|--no-bundled-fonts)
+      USE_BUNDLED_FONTS=0
+      shift
+      continue
+      ;;
+    --bundled-fonts)
+      USE_BUNDLED_FONTS=1
       shift
       continue
       ;;
@@ -1156,8 +1168,15 @@ if [[ "${ACCURACY}" -eq 1 ]]; then
   fi
 fi
 
-echo "Updating progress/pages (jobs=${JOBS}, hard timeout=${RENDER_TIMEOUT}s, disk_cache=${USE_DISK_CACHE}, cache_dir=${CACHE_DIR}, rayon_threads=${RAYON_NUM_THREADS}, layout_parallel=${FASTR_LAYOUT_PARALLEL})..."
-cargo run --release "${FEATURE_ARGS[@]}" --bin pageset_progress -- run --jobs "${JOBS}" --timeout "${RENDER_TIMEOUT}" --bundled-fonts --cache-dir "${CACHE_DIR}" "${PAGESET_KNOB_ARGS[@]}" "${PAGESET_ACCURACY_ARGS[@]}" "${PAGESET_ARGS[@]}" "${EXTRA_DISK_CACHE_ARGS[@]}"
+PAGESET_FONT_ARGS=()
+FONT_MODE="system"
+if [[ "${USE_BUNDLED_FONTS}" != 0 ]]; then
+  PAGESET_FONT_ARGS+=(--bundled-fonts)
+  FONT_MODE="bundled"
+fi
+
+echo "Updating progress/pages (jobs=${JOBS}, hard timeout=${RENDER_TIMEOUT}s, disk_cache=${USE_DISK_CACHE}, cache_dir=${CACHE_DIR}, fonts=${FONT_MODE}, rayon_threads=${RAYON_NUM_THREADS}, layout_parallel=${FASTR_LAYOUT_PARALLEL})..."
+cargo run --release "${FEATURE_ARGS[@]}" --bin pageset_progress -- run --jobs "${JOBS}" --timeout "${RENDER_TIMEOUT}" "${PAGESET_FONT_ARGS[@]}" --cache-dir "${CACHE_DIR}" "${PAGESET_KNOB_ARGS[@]}" "${PAGESET_ACCURACY_ARGS[@]}" "${PAGESET_ARGS[@]}" "${EXTRA_DISK_CACHE_ARGS[@]}"
 
 if [[ "${CAPTURE_MISSING_FAILURE_FIXTURES}" -eq 1 ]]; then
   if [[ "${USE_DISK_CACHE}" == 0 ]]; then

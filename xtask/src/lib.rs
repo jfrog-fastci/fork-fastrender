@@ -201,6 +201,11 @@ pub struct PagesetExtraArgsOverrides {
   pub dpr: Option<String>,
   pub disk_cache: Option<bool>,
   pub cache_dir: Option<String>,
+  /// Overrides the pageset wrapper's default bundled font mode.
+  ///
+  /// `Some(true)` corresponds to `--bundled-fonts` (deterministic); `Some(false)` corresponds to
+  /// `--system-fonts`/`--no-bundled-fonts` (closer to Chrome).
+  pub bundled_fonts: Option<bool>,
   pub no_fetch: bool,
   pub fetch_timeout: Option<String>,
   pub render_timeout: Option<String>,
@@ -239,6 +244,14 @@ pub fn extract_pageset_extra_arg_overrides(
       }
       "--no-disk-cache" => {
         overrides.disk_cache = Some(false);
+        continue;
+      }
+      "--bundled-fonts" => {
+        overrides.bundled_fonts = Some(true);
+        continue;
+      }
+      "--system-fonts" | "--no-bundled-fonts" => {
+        overrides.bundled_fonts = Some(false);
         continue;
       }
       "--no-fetch" => {

@@ -6,6 +6,7 @@ fn extracts_pageset_extra_arg_overrides() {
     "--foo".to_string(),
     "--no-disk-cache".to_string(),
     "--no-fetch".to_string(),
+    "--system-fonts".to_string(),
     "--jobs".to_string(),
     "3".to_string(),
     "--pages".to_string(),
@@ -44,6 +45,7 @@ fn extracts_pageset_extra_arg_overrides() {
       dpr: Some("2".to_string()),
       disk_cache: Some(false),
       cache_dir: Some("target/assets".to_string()),
+      bundled_fonts: Some(false),
       no_fetch: true,
       fetch_timeout: Some("60".to_string()),
       render_timeout: Some("7".to_string()),
@@ -55,6 +57,7 @@ fn extracts_pageset_extra_arg_overrides() {
 fn extracts_pageset_extra_arg_overrides_disk_cache_enabled() {
   let extra = vec![
     "--disk-cache".to_string(),
+    "--bundled-fonts".to_string(),
     "--pages=example.com".to_string(),
   ];
 
@@ -72,6 +75,7 @@ fn extracts_pageset_extra_arg_overrides_disk_cache_enabled() {
       dpr: None,
       disk_cache: Some(true),
       cache_dir: None,
+      bundled_fonts: Some(true),
       no_fetch: false,
       fetch_timeout: None,
       render_timeout: None,

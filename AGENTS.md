@@ -70,6 +70,11 @@ cargo xtask pageset
 cargo xtask pageset --capture-missing-failure-fixtures
 ```
 
+Bundled fonts are the default in the pageset wrappers because they make perf/timing runs more deterministic.
+When generating `pageset_progress run --accuracy` diffs against Chrome screenshots, consider running with
+system fonts (`scripts/pageset.sh --system-fonts ...` / `cargo xtask pageset --system-fonts ...`) so font
+substitution doesn’t dominate the signal.
+
 **Inspect the committed scoreboard:**
 
 ```bash

@@ -156,6 +156,25 @@ struct PagesetArgs {
   #[arg(long, default_value_t = 5)]
   render_timeout: u64,
 
+  /// Use system fonts instead of the bundled font fixtures.
+  ///
+  /// Bundled fonts are best for deterministic pageset timing/perf work. When using
+  /// `pageset_progress run --accuracy` against Chrome screenshots, `--system-fonts` can produce
+  /// more meaningful diffs by avoiding font substitution noise.
+  #[arg(
+    long,
+    visible_alias = "no-bundled-fonts",
+    conflicts_with = "bundled_fonts"
+  )]
+  system_fonts: bool,
+
+  /// Explicitly use the bundled font fixtures (default).
+  ///
+  /// This is a no-op today (pageset defaults to bundled fonts) but exists so scripts can pin the
+  /// behavior even if the wrapper default changes in the future.
+  #[arg(long, conflicts_with = "system_fonts")]
+  bundled_fonts: bool,
+
   /// Fetch/render only listed pages (comma-separated URLs or cache stems)
   #[arg(long, value_delimiter = ',')]
   pages: Option<Vec<String>>,
@@ -890,6 +909,13 @@ fn run_pageset(args: PagesetArgs) -> Result<()> {
     xtask::extract_pageset_extra_arg_overrides(&pageset_extra_args);
   pageset_extra_args = filtered_pageset_extra_args;
 
+  let use_bundled_fonts = resolve_pageset_use_bundled_fonts(&args, &pageset_overrides)?;
+  let fonts_status = if use_bundled_fonts {
+    "bundled"
+  } else {
+    "system"
+  };
+
   if let Some(jobs_override) = pageset_overrides.jobs {
     jobs = jobs_override
       .parse::<usize>()
@@ -1282,20 +1308,13 @@ fn run_pageset(args: PagesetArgs) -> Result<()> {
     }
   }
 
-  let mut cmd = Command::new("cargo");
-  cmd
-    .arg("run")
-    .arg("--release")
-    .apply_disk_cache_feature(disk_cache_enabled)
-    .args(["--bin", "pageset_progress"])
-    .arg("--")
-    .arg("run")
-    .arg("--jobs")
-    .arg(jobs.to_string())
-    .arg("--timeout")
-    .arg(render_timeout.to_string())
-    .arg("--bundled-fonts");
-  cmd.arg("--cache-dir").arg(&cache_dir);
+  let mut cmd = build_pageset_progress_run_command(
+    disk_cache_enabled,
+    jobs,
+    render_timeout,
+    &cache_dir,
+    use_bundled_fonts,
+  );
   if let Some(pages) = &pages_arg {
     cmd.arg("--pages").arg(pages);
   }
@@ -1390,11 +1409,12 @@ fn run_pageset(args: PagesetArgs) -> Result<()> {
   apply_disk_cache_env(&mut cmd);
   cmd.current_dir(&repo_root);
   println!(
-    "Updating progress/pages scoreboard (jobs={}, hard timeout={}s, disk_cache={}, cache_dir={})...",
+    "Updating progress/pages scoreboard (jobs={}, hard timeout={}s, disk_cache={}, cache_dir={}, fonts={})...",
     jobs,
     render_timeout,
     disk_cache_status,
-    cache_dir.display()
+    cache_dir.display(),
+    fonts_status
   );
   run_command(cmd)?;
 
@@ -1708,6 +1728,56 @@ fn capture_accuracy_fixtures_with_plan(
   }
 
   Ok(())
+}
+
+fn resolve_pageset_use_bundled_fonts(
+  args: &PagesetArgs,
+  pageset_overrides: &xtask::PagesetExtraArgsOverrides,
+) -> Result<bool> {
+  let mut bundled_fonts_override = if args.system_fonts {
+    Some(false)
+  } else if args.bundled_fonts {
+    Some(true)
+  } else {
+    None
+  };
+
+  if let Some(bundled_fonts) = pageset_overrides.bundled_fonts {
+    match bundled_fonts_override {
+      Some(existing) if existing != bundled_fonts => bail!(
+        "--system-fonts/--bundled-fonts cannot be passed both before and after `--` with different values"
+      ),
+      _ => bundled_fonts_override = Some(bundled_fonts),
+    }
+  }
+
+  Ok(bundled_fonts_override.unwrap_or(true))
+}
+
+fn build_pageset_progress_run_command(
+  disk_cache_enabled: bool,
+  jobs: usize,
+  render_timeout: u64,
+  cache_dir: &Path,
+  use_bundled_fonts: bool,
+) -> Command {
+  let mut cmd = Command::new("cargo");
+  cmd
+    .arg("run")
+    .arg("--release")
+    .apply_disk_cache_feature(disk_cache_enabled)
+    .args(["--bin", "pageset_progress"])
+    .arg("--")
+    .arg("run")
+    .arg("--jobs")
+    .arg(jobs.to_string())
+    .arg("--timeout")
+    .arg(render_timeout.to_string());
+  if use_bundled_fonts {
+    cmd.arg("--bundled-fonts");
+  }
+  cmd.arg("--cache-dir").arg(cache_dir);
+  cmd
 }
 
 fn query_prefetch_assets_support(disk_cache_feature: bool) -> Result<xtask::PrefetchAssetsSupport> {
@@ -2362,6 +2432,68 @@ mod tests {
     assert_eq!(
       resolve_cargo_target_dir(&repo_root, Some(Path::new("/abs/target"))),
       PathBuf::from("/abs/target")
+    );
+  }
+
+  #[test]
+  fn pageset_progress_command_uses_bundled_fonts_by_default() {
+    let cli = Cli::try_parse_from(["xtask", "pageset"]).expect("parse pageset defaults");
+    let Commands::Pageset(args) = cli.command else {
+      panic!("expected pageset command");
+    };
+
+    let use_bundled_fonts =
+      resolve_pageset_use_bundled_fonts(&args, &xtask::PagesetExtraArgsOverrides::default())
+        .expect("resolve bundled font default");
+    assert!(use_bundled_fonts, "pageset should default to bundled fonts");
+
+    let cmd = build_pageset_progress_run_command(
+      false,
+      args.jobs,
+      args.render_timeout,
+      Path::new("fetches/assets"),
+      use_bundled_fonts,
+    );
+    let cmd_args: Vec<String> = cmd
+      .get_args()
+      .map(|arg| arg.to_string_lossy().to_string())
+      .collect();
+    assert!(
+      cmd_args.iter().any(|arg| arg == "--bundled-fonts"),
+      "pageset_progress invocation should include --bundled-fonts by default; args={cmd_args:?}"
+    );
+  }
+
+  #[test]
+  fn pageset_system_fonts_flag_omits_bundled_fonts_in_pageset_progress_command() {
+    let cli = Cli::try_parse_from(["xtask", "pageset", "--system-fonts"])
+      .expect("parse pageset --system-fonts");
+    let Commands::Pageset(args) = cli.command else {
+      panic!("expected pageset command");
+    };
+
+    let use_bundled_fonts =
+      resolve_pageset_use_bundled_fonts(&args, &xtask::PagesetExtraArgsOverrides::default())
+        .expect("resolve font override");
+    assert!(
+      !use_bundled_fonts,
+      "--system-fonts should disable bundled fonts"
+    );
+
+    let cmd = build_pageset_progress_run_command(
+      false,
+      args.jobs,
+      args.render_timeout,
+      Path::new("fetches/assets"),
+      use_bundled_fonts,
+    );
+    let cmd_args: Vec<String> = cmd
+      .get_args()
+      .map(|arg| arg.to_string_lossy().to_string())
+      .collect();
+    assert!(
+      !cmd_args.iter().any(|arg| arg == "--bundled-fonts"),
+      "pageset_progress invocation should omit --bundled-fonts when --system-fonts is set; args={cmd_args:?}"
     );
   }
 }
