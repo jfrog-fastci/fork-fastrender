@@ -23840,6 +23840,7 @@ fn resolve_container_query_lengths(
           resolve_len(y);
         }
       }
+      BasicShape::Path { .. } => {}
     }
   }
 
