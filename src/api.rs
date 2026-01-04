@@ -1727,7 +1727,11 @@ pub struct PreparedPaintOptions {
   pub viewport: Option<(u32, u32)>,
   /// Optional background override.
   pub background: Option<Rgba>,
-  /// Optional time used for sampling time-based animations.
+  /// Optional animation/transition sampling time in milliseconds.
+  ///
+  /// When absent, time-based animations resolve to a deterministic settled state (finite
+  /// `animation-fill-mode: forwards|both` animations sample their end values; other time-based
+  /// animations fall back to their underlying style).
   pub animation_time: Option<f32>,
 }
 
@@ -4090,6 +4094,10 @@ pub struct LayoutDocumentOptions {
   /// Whether paginated pages should be stacked along the block axis or left untranslated.
   pub page_stacking: PageStacking,
   /// Optional animation/transition sampling time in milliseconds.
+  ///
+  /// When absent, time-based animations resolve to a deterministic settled state (finite
+  /// `animation-fill-mode: forwards|both` animations sample their end values; other time-based
+  /// animations fall back to their underlying style).
   pub animation_time: Option<f32>,
 }
 

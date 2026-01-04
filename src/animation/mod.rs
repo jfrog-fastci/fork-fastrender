@@ -2892,13 +2892,17 @@ fn apply_animations_to_node_scoped(
   }
 }
 
-/// Applies scroll/view timeline-driven animations to the fragment tree by sampling
-/// matching @keyframes rules and applying animated properties (currently opacity).
+/// Applies CSS animations to the fragment tree by sampling matching `@keyframes` rules and
+/// applying animated properties (currently opacity).
 ///
-/// This is a lightweight hook to make scroll-driven effects visible without a full
-/// animation engine. It uses the provided scroll state for viewport and element scroll offsets.
-/// Time-based animations sample at the provided timestamp, honoring per-animation
-/// duration/delay/iteration-count/direction/fill-mode/play-state.
+/// Scroll- and view-timeline animations are always sampled using the provided scroll state.
+///
+/// Time-based animations (`animation-timeline: auto`) are sampled as follows:
+/// - When `animation_time` is `Some`, animations are sampled at that timestamp, honoring per-
+///   animation duration/delay/iteration-count/direction/fill-mode/play-state.
+/// - When `animation_time` is `None`, time-based animations resolve to a deterministic settled
+///   state: finite `animation-fill-mode: forwards|both` animations sample their end state, while
+///   all other time-based animations have no effect (falling back to the underlying style).
 pub fn apply_animations(
   tree: &mut FragmentTree,
   scroll_state: &ScrollState,
@@ -2961,11 +2965,8 @@ pub fn apply_animations(
   }
 }
 
-/// Applies scroll/view timeline-driven animations to the fragment tree by sampling
-/// matching @keyframes rules and applying animated properties (currently opacity).
-///
-/// This is a lightweight hook to make scroll-driven effects visible without a full
-/// animation engine. It uses the provided scroll state for viewport and element scroll offsets.
+/// Applies scroll/view timeline-driven animations (and settles time-based animations) to a fragment
+/// tree using the provided scroll state.
 pub fn apply_scroll_driven_animations(tree: &mut FragmentTree, scroll_state: &ScrollState) {
   apply_animations(tree, scroll_state, None);
 }
