@@ -380,33 +380,42 @@ fn clip_path_mismatches_fall_back_to_discrete() {
   .unwrap();
   let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
   let rule = &keyframes[0];
-  let sampled = sample_keyframes(
-    rule,
-    0.5,
-    &ComputedStyle::default(),
-    Size::new(400.0, 300.0),
-    Size::new(100.0, 100.0),
-  );
-  match sampled.get("clip-path") {
-    Some(AnimatedValue::ClipPath(path)) => match path {
-      fastrender::style::types::ClipPath::BasicShape(shape, _) => match shape.as_ref() {
-        BasicShape::Inset {
-          top,
-          right,
-          bottom,
-          left,
-          ..
-        } => {
-          assert_eq!(top.to_px(), 0.0);
-          assert_eq!(right.to_px(), 0.0);
-          assert_eq!(bottom.to_px(), 0.0);
-          assert_eq!(left.to_px(), 0.0);
-        }
-        other => panic!("expected inset fallback, got {other:?}"),
+  let sample_shape = |progress: f32| -> BasicShape {
+    let sampled = sample_keyframes(
+      rule,
+      progress,
+      &ComputedStyle::default(),
+      Size::new(400.0, 300.0),
+      Size::new(100.0, 100.0),
+    );
+    match sampled.get("clip-path") {
+      Some(AnimatedValue::ClipPath(path)) => match path {
+        fastrender::style::types::ClipPath::BasicShape(shape, _) => shape.as_ref().clone(),
+        other => panic!("unexpected clip-path {other:?}"),
       },
-      other => panic!("unexpected clip-path {other:?}"),
-    },
-    other => panic!("unexpected clip-path value {other:?}"),
+      other => panic!("unexpected clip-path value {other:?}"),
+    }
+  };
+
+  match sample_shape(0.25) {
+    BasicShape::Inset {
+      top,
+      right,
+      bottom,
+      left,
+      ..
+    } => {
+      assert_eq!(top.to_px(), 0.0);
+      assert_eq!(right.to_px(), 0.0);
+      assert_eq!(bottom.to_px(), 0.0);
+      assert_eq!(left.to_px(), 0.0);
+    }
+    other => panic!("expected inset fallback, got {other:?}"),
+  }
+
+  match sample_shape(0.5) {
+    BasicShape::Circle { .. } => {}
+    other => panic!("expected circle fallback, got {other:?}"),
   }
 }
 

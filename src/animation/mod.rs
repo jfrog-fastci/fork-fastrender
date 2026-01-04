@@ -8,7 +8,9 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use crate::css::types::{Keyframe, KeyframesRule, PropertyValue, RotateValue, ScaleValue, TranslateValue};
+use crate::css::types::{
+  Keyframe, KeyframesRule, PropertyValue, RotateValue, ScaleValue, TranslateValue,
+};
 use crate::debug::runtime;
 use crate::geometry::{Point, Rect, Size};
 use crate::paint::display_list::{Transform2D, Transform3D};
@@ -48,8 +50,8 @@ use crate::style::types::ViewTimeline;
 use crate::style::types::ViewTimelineInset;
 use crate::style::types::ViewTimelinePhase;
 use crate::style::types::WritingMode;
-use crate::style::var_resolution::{resolve_var_for_property, VarResolutionResult};
 use crate::style::values::Length;
+use crate::style::var_resolution::{resolve_var_for_property, VarResolutionResult};
 use crate::style::ComputedStyle;
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 use rustc_hash::FxHashSet;
@@ -2052,9 +2054,12 @@ pub fn sample_keyframes(
     };
 
     let group_has_property = |group: &[&Keyframe]| {
-      group
-        .iter()
-        .any(|frame| frame.declarations.iter().any(|d| d.property.as_str() == prop))
+      group.iter().any(|frame| {
+        frame
+          .declarations
+          .iter()
+          .any(|d| d.property.as_str() == prop)
+      })
     };
 
     let mut prev_idx = None;
@@ -2106,7 +2111,7 @@ pub fn sample_keyframes(
       continue;
     };
     let value = (interpolator.interpolate)(&from_val, &to_val, eased_t).or_else(|| {
-      if (eased_t - 1.0).abs() < f32::EPSILON {
+      if eased_t >= 0.5 {
         Some(to_val.clone())
       } else {
         Some(from_val.clone())
@@ -3221,6 +3226,20 @@ mod tests {
     }
   }
 
+  fn sampled_filter_len(rule: &KeyframesRule, progress: f32) -> usize {
+    let values = sample_keyframes(
+      rule,
+      progress,
+      &ComputedStyle::default(),
+      Size::new(800.0, 600.0),
+      Size::new(100.0, 100.0),
+    );
+    match values.get("filter") {
+      Some(AnimatedValue::Filter(filters)) => filters.len(),
+      other => panic!("expected filter, got {other:?}"),
+    }
+  }
+
   #[test]
   fn time_based_animation_fill_forwards_applies_after_end() {
     let rule = fade_rule();
@@ -3590,6 +3609,20 @@ mod tests {
     assert!((sampled_opacity(rule, 1.0) - 0.0).abs() < 1e-6);
   }
 
+  #[test]
+  fn sample_keyframes_fallbacks_to_discrete_interpolation() {
+    let sheet =
+      parse_stylesheet("@keyframes f { from { filter: blur(10px); } to { filter: none; } }")
+        .unwrap();
+    let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+    let rule = &keyframes[0];
+
+    assert_eq!(sampled_filter_len(rule, 0.25), 1);
+    assert_eq!(sampled_filter_len(rule, 0.5), 0);
+    assert_eq!(sampled_filter_len(rule, 0.75), 0);
+    assert_eq!(sampled_filter_len(rule, 1.0), 0);
+  }
+
   fn decode_png(bytes: &[u8]) -> image::RgbaImage {
     image::load_from_memory_with_format(bytes, ImageFormat::Png)
       .expect("decode png")
@@ -3788,7 +3821,10 @@ mod tests {
     assert_eq!(&*style.animation_names, &["fade".to_string()]);
     assert_eq!(&*style.animation_durations, &[1000.0]);
     assert_eq!(&*style.animation_delays, &[0.0]);
-    assert_eq!(&*style.animation_timing_functions, &[TransitionTimingFunction::Linear]);
+    assert_eq!(
+      &*style.animation_timing_functions,
+      &[TransitionTimingFunction::Linear]
+    );
     assert_eq!(
       &*style.animation_iteration_counts,
       &[AnimationIterationCount::Count(1.0)]
@@ -3814,12 +3850,8 @@ mod tests {
     .expect("fixture base url")
     .to_string();
 
-    let count_non_white = |img: &image::RgbaImage| {
-      img
-        .pixels()
-        .filter(|p| p.0 != [255, 255, 255, 255])
-        .count()
-    };
+    let count_non_white =
+      |img: &image::RgbaImage| img.pixels().filter(|p| p.0 != [255, 255, 255, 255]).count();
     let start = render_animation_sampling_fixture(&html, base_url.clone(), Some(0.0));
     let start_image = decode_png(&start);
     let start_non_white = count_non_white(&start_image);
