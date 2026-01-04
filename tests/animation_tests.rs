@@ -408,6 +408,31 @@ fn keyframes_interpolate_filters() {
 }
 
 #[test]
+fn keyframes_interpolate_filters_from_none() {
+  let sheet =
+    parse_stylesheet("@keyframes blur { from { filter: none; } to { filter: blur(10px); } }")
+      .unwrap();
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = &keyframes[0];
+  let sampled = sample_keyframes(
+    rule,
+    0.5,
+    &ComputedStyle::default(),
+    Size::new(800.0, 600.0),
+    Size::new(100.0, 100.0),
+  );
+  let filters = match sampled.get("filter") {
+    Some(AnimatedValue::Filter(f)) => f,
+    other => panic!("unexpected value {other:?}"),
+  };
+  assert_eq!(filters.len(), 1);
+  match &filters[0] {
+    FilterFunction::Blur(len) => assert!((len.to_px() - 5.0).abs() < 1e-3),
+    other => panic!("unexpected filter {other:?}"),
+  }
+}
+
+#[test]
 fn keyframes_interpolate_box_shadows() {
   let sheet = parse_stylesheet(
     "@keyframes shadow { from { box-shadow: none; } to { box-shadow: 10px 0px 0px 0px rgba(255, 0, 0, 1); } }",

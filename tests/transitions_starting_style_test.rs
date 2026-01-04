@@ -5,7 +5,7 @@ use fastrender::api::{FastRender, RenderOptions};
 use fastrender::css::types::{BoxShadow, TextShadow};
 use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::style::cascade::StyledNode;
-use fastrender::style::types::{BasicShape, ClipPath};
+use fastrender::style::types::{BasicShape, ClipPath, FilterFunction};
 use fastrender::tree::box_tree::{BoxNode, BoxTree};
 use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
 use r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
@@ -85,6 +85,16 @@ fn fragment_transform_x(tree: &FragmentTree, box_id: usize) -> f32 {
   match style.transform.as_slice() {
     [fastrender::css::types::Transform::TranslateX(len)] => len.to_px(),
     _ => 0.0,
+  }
+}
+
+fn fragment_blur_filter(tree: &FragmentTree, box_id: usize) -> Option<f32> {
+  let frag = find_fragment(&tree.root, box_id).expect("fragment present");
+  let style = frag.style.as_ref().expect("style present");
+  match style.filter.as_slice() {
+    [] => None,
+    [FilterFunction::Blur(len)] => Some(len.to_px()),
+    other => panic!("expected blur filter, got {other:?}"),
   }
 }
 
@@ -199,6 +209,31 @@ fn transitions_interpolate_text_shadow_over_time() {
   assert!((shadow.offset_x.to_px() - 5.0).abs() < 1e-3);
   let color = shadow.color.expect("resolved color");
   assert!((color.a - 0.5).abs() < 1e-6);
+}
+
+#[test]
+fn transitions_interpolate_filter_from_none() {
+  let html = r#"
+    <style>
+      @starting-style { #box { filter: none; } }
+      #box { width: 100px; height: 100px; filter: blur(10px); transition: filter 1000ms linear; }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut start = fragment_tree.clone();
+  let viewport = start.viewport_size();
+  animation::apply_transitions(&mut start, 0.0, viewport);
+  assert!(fragment_blur_filter(&start, box_id).is_none());
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 500.0, viewport);
+  let blur = fragment_blur_filter(&mid, box_id).expect("blur filter");
+  assert!((blur - 5.0).abs() < 1e-3);
 }
 
 #[test]

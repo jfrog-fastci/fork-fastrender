@@ -246,51 +246,95 @@ fn interpolate_filters(
   b: &[ResolvedFilter],
   t: f32,
 ) -> Option<Vec<ResolvedFilter>> {
-  if a.len() != b.len() {
-    return None;
+  if t <= f32::EPSILON {
+    return Some(a.to_vec());
+  }
+  if t >= 1.0 - f32::EPSILON {
+    return Some(b.to_vec());
   }
 
-  let mut out = Vec::with_capacity(a.len());
-  for (fa, fb) in a.iter().zip(b.iter()) {
-    let next = match (fa, fb) {
-      (ResolvedFilter::Blur(la), ResolvedFilter::Blur(lb)) => {
-        ResolvedFilter::Blur(lerp(*la, *lb, t))
+  let identity = |filter: &ResolvedFilter| -> Option<ResolvedFilter> {
+    Some(match filter {
+      ResolvedFilter::Blur(_) => ResolvedFilter::Blur(0.0),
+      ResolvedFilter::Brightness(_) => ResolvedFilter::Brightness(1.0),
+      ResolvedFilter::Contrast(_) => ResolvedFilter::Contrast(1.0),
+      ResolvedFilter::Grayscale(_) => ResolvedFilter::Grayscale(0.0),
+      ResolvedFilter::Sepia(_) => ResolvedFilter::Sepia(0.0),
+      ResolvedFilter::Saturate(_) => ResolvedFilter::Saturate(1.0),
+      ResolvedFilter::HueRotate(_) => ResolvedFilter::HueRotate(0.0),
+      ResolvedFilter::Invert(_) => ResolvedFilter::Invert(0.0),
+      ResolvedFilter::Opacity(_) => ResolvedFilter::Opacity(1.0),
+      ResolvedFilter::DropShadow(shadow) => ResolvedFilter::DropShadow(ResolvedShadow {
+        offset_x: 0.0,
+        offset_y: 0.0,
+        blur: 0.0,
+        spread: 0.0,
+        color: Rgba::new(shadow.color.r, shadow.color.g, shadow.color.b, 0.0),
+      }),
+      ResolvedFilter::Url(_) => return None,
+    })
+  };
+
+  let interpolate_pair =
+    |fa: &ResolvedFilter, fb: &ResolvedFilter| -> Option<ResolvedFilter> {
+      match (fa, fb) {
+        (ResolvedFilter::Blur(la), ResolvedFilter::Blur(lb)) => {
+          Some(ResolvedFilter::Blur(lerp(*la, *lb, t)))
+        }
+        (ResolvedFilter::Brightness(la), ResolvedFilter::Brightness(lb)) => Some(
+          ResolvedFilter::Brightness(lerp(*la, *lb, t)),
+        ),
+        (ResolvedFilter::Contrast(la), ResolvedFilter::Contrast(lb)) => {
+          Some(ResolvedFilter::Contrast(lerp(*la, *lb, t)))
+        }
+        (ResolvedFilter::Grayscale(la), ResolvedFilter::Grayscale(lb)) => {
+          Some(ResolvedFilter::Grayscale(lerp(*la, *lb, t)))
+        }
+        (ResolvedFilter::Sepia(la), ResolvedFilter::Sepia(lb)) => {
+          Some(ResolvedFilter::Sepia(lerp(*la, *lb, t)))
+        }
+        (ResolvedFilter::Saturate(la), ResolvedFilter::Saturate(lb)) => {
+          Some(ResolvedFilter::Saturate(lerp(*la, *lb, t)))
+        }
+        (ResolvedFilter::HueRotate(la), ResolvedFilter::HueRotate(lb)) => {
+          Some(ResolvedFilter::HueRotate(lerp(*la, *lb, t)))
+        }
+        (ResolvedFilter::Invert(la), ResolvedFilter::Invert(lb)) => {
+          Some(ResolvedFilter::Invert(lerp(*la, *lb, t)))
+        }
+        (ResolvedFilter::Opacity(la), ResolvedFilter::Opacity(lb)) => {
+          Some(ResolvedFilter::Opacity(lerp(*la, *lb, t)))
+        }
+        (ResolvedFilter::DropShadow(sa), ResolvedFilter::DropShadow(sb)) => {
+          Some(ResolvedFilter::DropShadow(ResolvedShadow {
+            offset_x: lerp(sa.offset_x, sb.offset_x, t),
+            offset_y: lerp(sa.offset_y, sb.offset_y, t),
+            blur: lerp(sa.blur, sb.blur, t),
+            spread: lerp(sa.spread, sb.spread, t),
+            color: lerp_color(sa.color, sb.color, t),
+          }))
+        }
+        (ResolvedFilter::Url(a), ResolvedFilter::Url(b)) if a == b => {
+          Some(ResolvedFilter::Url(a.clone()))
+        }
+        _ => None,
       }
-      (ResolvedFilter::Brightness(la), ResolvedFilter::Brightness(lb)) => {
-        ResolvedFilter::Brightness(lerp(*la, *lb, t))
+    };
+
+  let max_len = a.len().max(b.len());
+  let mut out = Vec::with_capacity(max_len);
+  for idx in 0..max_len {
+    let next = match (a.get(idx), b.get(idx)) {
+      (Some(fa), Some(fb)) => interpolate_pair(fa, fb)?,
+      (Some(fa), None) => {
+        let fb = identity(fa)?;
+        interpolate_pair(fa, &fb)?
       }
-      (ResolvedFilter::Contrast(la), ResolvedFilter::Contrast(lb)) => {
-        ResolvedFilter::Contrast(lerp(*la, *lb, t))
+      (None, Some(fb)) => {
+        let fa = identity(fb)?;
+        interpolate_pair(&fa, fb)?
       }
-      (ResolvedFilter::Grayscale(la), ResolvedFilter::Grayscale(lb)) => {
-        ResolvedFilter::Grayscale(lerp(*la, *lb, t))
-      }
-      (ResolvedFilter::Sepia(la), ResolvedFilter::Sepia(lb)) => {
-        ResolvedFilter::Sepia(lerp(*la, *lb, t))
-      }
-      (ResolvedFilter::Saturate(la), ResolvedFilter::Saturate(lb)) => {
-        ResolvedFilter::Saturate(lerp(*la, *lb, t))
-      }
-      (ResolvedFilter::HueRotate(la), ResolvedFilter::HueRotate(lb)) => {
-        ResolvedFilter::HueRotate(lerp(*la, *lb, t))
-      }
-      (ResolvedFilter::Invert(la), ResolvedFilter::Invert(lb)) => {
-        ResolvedFilter::Invert(lerp(*la, *lb, t))
-      }
-      (ResolvedFilter::Opacity(la), ResolvedFilter::Opacity(lb)) => {
-        ResolvedFilter::Opacity(lerp(*la, *lb, t))
-      }
-      (ResolvedFilter::DropShadow(sa), ResolvedFilter::DropShadow(sb)) => {
-        ResolvedFilter::DropShadow(ResolvedShadow {
-          offset_x: lerp(sa.offset_x, sb.offset_x, t),
-          offset_y: lerp(sa.offset_y, sb.offset_y, t),
-          blur: lerp(sa.blur, sb.blur, t),
-          spread: lerp(sa.spread, sb.spread, t),
-          color: lerp_color(sa.color, sb.color, t),
-        })
-      }
-      (ResolvedFilter::Url(a), ResolvedFilter::Url(b)) if a == b => ResolvedFilter::Url(a.clone()),
-      _ => return None,
+      (None, None) => continue,
     };
     out.push(next);
   }
