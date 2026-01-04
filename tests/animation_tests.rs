@@ -360,6 +360,33 @@ fn keyframes_interpolate_colors_and_currentcolor() {
 }
 
 #[test]
+fn keyframes_interpolate_border_colors() {
+  let sheet = parse_stylesheet(
+    "@keyframes border { from { border-color: rgb(255, 0, 0); } to { border-color: rgb(0, 0, 255); } }",
+  )
+  .unwrap();
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = &keyframes[0];
+  let sampled = sample_keyframes(
+    rule,
+    0.5,
+    &ComputedStyle::default(),
+    Size::new(800.0, 600.0),
+    Size::new(200.0, 200.0),
+  );
+  let colors = match sampled.get("border-color") {
+    Some(AnimatedValue::BorderColor(c)) => c,
+    other => panic!("unexpected value {other:?}"),
+  };
+  for color in colors {
+    assert_eq!(color.r, 128);
+    assert_eq!(color.g, 0);
+    assert_eq!(color.b, 128);
+    assert!((color.a - 1.0).abs() < 1e-6);
+  }
+}
+
+#[test]
 fn keyframes_interpolate_transform_lists() {
   let sheet = parse_stylesheet(
     "@keyframes move { from { transform: translateX(0px); } to { transform: translateX(100px); } }",

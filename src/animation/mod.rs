@@ -82,6 +82,7 @@ pub enum AnimatedValue {
   BackgroundSize(Vec<BackgroundSize>),
   BoxShadow(Vec<BoxShadow>),
   TextShadow(Vec<TextShadow>),
+  BorderColor([Rgba; 4]),
   BorderRadius([BorderCornerRadius; 4]),
 }
 
@@ -1607,6 +1608,95 @@ fn apply_text_shadow(style: &mut ComputedStyle, value: &AnimatedValue) {
   }
 }
 
+fn extract_border_color(
+  style: &ComputedStyle,
+  _ctx: &AnimationResolveContext,
+) -> Option<AnimatedValue> {
+  Some(AnimatedValue::BorderColor([
+    style.border_top_color,
+    style.border_right_color,
+    style.border_bottom_color,
+    style.border_left_color,
+  ]))
+}
+
+fn interpolate_border_color_value(
+  a: &AnimatedValue,
+  b: &AnimatedValue,
+  t: f32,
+) -> Option<AnimatedValue> {
+  let (AnimatedValue::BorderColor(ca), AnimatedValue::BorderColor(cb)) = (a, b) else {
+    return None;
+  };
+
+  let mut out = [Rgba::BLACK; 4];
+  for i in 0..4 {
+    out[i] = lerp_color(ca[i], cb[i], t);
+  }
+  Some(AnimatedValue::BorderColor(out))
+}
+
+fn apply_border_color(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::BorderColor(c) = value {
+    style.border_top_color = c[0];
+    style.border_right_color = c[1];
+    style.border_bottom_color = c[2];
+    style.border_left_color = c[3];
+  }
+}
+
+fn extract_border_top_color(
+  style: &ComputedStyle,
+  _ctx: &AnimationResolveContext,
+) -> Option<AnimatedValue> {
+  Some(AnimatedValue::Color(style.border_top_color))
+}
+
+fn extract_border_right_color(
+  style: &ComputedStyle,
+  _ctx: &AnimationResolveContext,
+) -> Option<AnimatedValue> {
+  Some(AnimatedValue::Color(style.border_right_color))
+}
+
+fn extract_border_bottom_color(
+  style: &ComputedStyle,
+  _ctx: &AnimationResolveContext,
+) -> Option<AnimatedValue> {
+  Some(AnimatedValue::Color(style.border_bottom_color))
+}
+
+fn extract_border_left_color(
+  style: &ComputedStyle,
+  _ctx: &AnimationResolveContext,
+) -> Option<AnimatedValue> {
+  Some(AnimatedValue::Color(style.border_left_color))
+}
+
+fn apply_border_top_color(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::Color(c) = value {
+    style.border_top_color = *c;
+  }
+}
+
+fn apply_border_right_color(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::Color(c) = value {
+    style.border_right_color = *c;
+  }
+}
+
+fn apply_border_bottom_color(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::Color(c) = value {
+    style.border_bottom_color = *c;
+  }
+}
+
+fn apply_border_left_color(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::Color(c) = value {
+    style.border_left_color = *c;
+  }
+}
+
 fn extract_border_radius(
   style: &ComputedStyle,
   ctx: &AnimationResolveContext,
@@ -1769,6 +1859,36 @@ fn property_interpolators() -> &'static [PropertyInterpolator] {
       extract: extract_text_shadow,
       interpolate: interpolate_text_shadow_value,
       apply: apply_text_shadow,
+    },
+    PropertyInterpolator {
+      name: "border-color",
+      extract: extract_border_color,
+      interpolate: interpolate_border_color_value,
+      apply: apply_border_color,
+    },
+    PropertyInterpolator {
+      name: "border-top-color",
+      extract: extract_border_top_color,
+      interpolate: interpolate_color,
+      apply: apply_border_top_color,
+    },
+    PropertyInterpolator {
+      name: "border-right-color",
+      extract: extract_border_right_color,
+      interpolate: interpolate_color,
+      apply: apply_border_right_color,
+    },
+    PropertyInterpolator {
+      name: "border-bottom-color",
+      extract: extract_border_bottom_color,
+      interpolate: interpolate_color,
+      apply: apply_border_bottom_color,
+    },
+    PropertyInterpolator {
+      name: "border-left-color",
+      extract: extract_border_left_color,
+      interpolate: interpolate_color,
+      apply: apply_border_left_color,
     },
     PropertyInterpolator {
       name: "border-radius",
