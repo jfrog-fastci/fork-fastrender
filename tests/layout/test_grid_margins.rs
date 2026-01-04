@@ -1,7 +1,9 @@
 use fastrender::layout::constraints::LayoutConstraints;
 use fastrender::layout::contexts::grid::GridFormattingContext;
 use fastrender::style::display::Display;
+use fastrender::style::types::AlignItems;
 use fastrender::style::types::GridTrack;
+use fastrender::style::types::WritingMode;
 use fastrender::style::values::Length;
 use fastrender::tree::fragment_tree::FragmentContent;
 use fastrender::tree::fragment_tree::FragmentNode;
@@ -112,6 +114,132 @@ fn grid_item_auto_block_margins_center_vertically() {
     child.bounds.y()
   );
   assert_eq!(child.bounds.height(), 20.0);
+}
+
+#[test]
+fn grid_item_auto_inline_margins_center_vertically_in_vertical_writing_mode() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Grid;
+  container_style.writing_mode = WritingMode::VerticalLr;
+  container_style.width = Some(Length::px(50.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.grid_template_rows = vec![GridTrack::Length(Length::px(50.0))];
+  container_style.grid_template_columns = vec![GridTrack::Length(Length::px(100.0))];
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.width = Some(Length::px(50.0));
+  child_style.height = Some(Length::px(10.0));
+  child_style.margin_top = None;
+  child_style.margin_bottom = None;
+
+  let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Grid,
+    vec![child],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(50.0, 100.0))
+    .expect("layout succeeds");
+
+  let child = &fragment.children[0];
+  assert!(
+    child.bounds.x().abs() <= 0.5,
+    "expected no horizontal offset, got x={}",
+    child.bounds.x()
+  );
+  assert!(
+    (child.bounds.y() - 45.0).abs() <= 0.5,
+    "expected vertically centered item, got y={}",
+    child.bounds.y()
+  );
+}
+
+#[test]
+fn grid_item_swaps_self_alignment_axes_in_vertical_writing_mode() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Grid;
+  container_style.writing_mode = WritingMode::VerticalLr;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.grid_template_rows = vec![GridTrack::Length(Length::px(100.0))];
+  container_style.grid_template_columns = vec![GridTrack::Length(Length::px(100.0))];
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.width = Some(Length::px(20.0));
+  child_style.height = Some(Length::px(20.0));
+  child_style.align_self = Some(AlignItems::End);
+  child_style.justify_self = Some(AlignItems::Start);
+
+  let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Grid,
+    vec![child],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(100.0, 100.0))
+    .expect("layout succeeds");
+
+  let child = &fragment.children[0];
+  assert!(
+    (child.bounds.x() - 80.0).abs() <= 0.5,
+    "expected block-axis end alignment to affect x, got x={}",
+    child.bounds.x()
+  );
+  assert!(
+    child.bounds.y().abs() <= 0.5,
+    "expected inline-axis start alignment to affect y, got y={}",
+    child.bounds.y()
+  );
+}
+
+#[test]
+fn grid_item_swaps_container_alignment_axes_in_vertical_writing_mode() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Grid;
+  container_style.writing_mode = WritingMode::VerticalLr;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.grid_template_rows = vec![GridTrack::Length(Length::px(100.0))];
+  container_style.grid_template_columns = vec![GridTrack::Length(Length::px(100.0))];
+  container_style.align_items = AlignItems::End;
+  container_style.justify_items = AlignItems::Start;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.width = Some(Length::px(20.0));
+  child_style.height = Some(Length::px(20.0));
+
+  let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Grid,
+    vec![child],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(100.0, 100.0))
+    .expect("layout succeeds");
+
+  let child = &fragment.children[0];
+  assert!(
+    (child.bounds.x() - 80.0).abs() <= 0.5,
+    "expected align-items (block axis) to affect x, got x={}",
+    child.bounds.x()
+  );
+  assert!(
+    child.bounds.y().abs() <= 0.5,
+    "expected justify-items (inline axis) to affect y, got y={}",
+    child.bounds.y()
+  );
 }
 
 #[test]

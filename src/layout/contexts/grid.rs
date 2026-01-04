@@ -1450,25 +1450,54 @@ impl GridFormattingContext {
       };
 
       // Alignment
-      taffy_style.align_content =
-        Some(self.convert_align_content(&style.align_content, block_positive_container));
-      taffy_style.justify_content =
-        Some(self.convert_justify_content(&style.justify_content, inline_positive_container));
+      if inline_is_horizontal_container {
+        taffy_style.align_content =
+          Some(self.convert_align_content(&style.align_content, block_positive_container));
+        taffy_style.justify_content =
+          Some(self.convert_justify_content(&style.justify_content, inline_positive_container));
+      } else {
+        taffy_style.align_content =
+          Some(self.convert_justify_content(&style.justify_content, inline_positive_container));
+        taffy_style.justify_content =
+          Some(self.convert_align_content(&style.align_content, block_positive_container));
+      }
     }
-    taffy_style.align_items =
-      Some(self.convert_align_items(&style.align_items, block_positive_container));
-    taffy_style.justify_items =
-      Some(self.convert_align_items(&style.justify_items, inline_positive_container));
-    taffy_style.align_self = style
-      .align_self
-      .map(|a| self.convert_align_items(&a, block_positive_item));
-    taffy_style.justify_self = style
-      .justify_self
-      .map(|a| self.convert_align_items(&a, inline_positive_item));
+    if inline_is_horizontal_container {
+      taffy_style.align_items =
+        Some(self.convert_align_items(&style.align_items, block_positive_container));
+      taffy_style.justify_items =
+        Some(self.convert_align_items(&style.justify_items, inline_positive_container));
+    } else {
+      taffy_style.justify_items =
+        Some(self.convert_align_items(&style.align_items, block_positive_container));
+      taffy_style.align_items =
+        Some(self.convert_align_items(&style.justify_items, inline_positive_container));
+    }
 
-    if taffy_style.justify_self.is_none() {
-      if let Some(containing_grid) = containing_grid {
-        taffy_style.justify_self =
+    if inline_is_horizontal_item {
+      taffy_style.align_self = style
+        .align_self
+        .map(|a| self.convert_align_items(&a, block_positive_item));
+      taffy_style.justify_self = style
+        .justify_self
+        .map(|a| self.convert_align_items(&a, inline_positive_item));
+    } else {
+      taffy_style.justify_self = style
+        .align_self
+        .map(|a| self.convert_align_items(&a, block_positive_item));
+      taffy_style.align_self = style
+        .justify_self
+        .map(|a| self.convert_align_items(&a, inline_positive_item));
+    }
+
+    if let Some(containing_grid) = containing_grid {
+      if inline_is_horizontal_item {
+        if taffy_style.justify_self.is_none() {
+          taffy_style.justify_self =
+            Some(self.convert_align_items(&containing_grid.justify_items, inline_positive_item));
+        }
+      } else if taffy_style.align_self.is_none() {
+        taffy_style.align_self =
           Some(self.convert_align_items(&containing_grid.justify_items, inline_positive_item));
       }
     }
@@ -1481,10 +1510,12 @@ impl GridFormattingContext {
         } else {
           margin_right_auto
         }
-      } else if block_positive_item {
-        margin_top_auto
       } else {
-        margin_bottom_auto
+        if inline_positive_item {
+          margin_top_auto
+        } else {
+          margin_bottom_auto
+        }
       };
       let inline_end_auto = if inline_is_horizontal_item {
         if inline_positive_item {
@@ -1492,21 +1523,39 @@ impl GridFormattingContext {
         } else {
           margin_left_auto
         }
-      } else if block_positive_item {
-        margin_bottom_auto
       } else {
-        margin_top_auto
+        if inline_positive_item {
+          margin_bottom_auto
+        } else {
+          margin_top_auto
+        }
       };
 
-      let block_start_auto = if block_positive_item {
-        margin_top_auto
+      let block_start_auto = if inline_is_horizontal_item {
+        if block_positive_item {
+          margin_top_auto
+        } else {
+          margin_bottom_auto
+        }
       } else {
-        margin_bottom_auto
+        if block_positive_item {
+          margin_left_auto
+        } else {
+          margin_right_auto
+        }
       };
-      let block_end_auto = if block_positive_item {
-        margin_bottom_auto
+      let block_end_auto = if inline_is_horizontal_item {
+        if block_positive_item {
+          margin_bottom_auto
+        } else {
+          margin_top_auto
+        }
       } else {
-        margin_top_auto
+        if block_positive_item {
+          margin_right_auto
+        } else {
+          margin_left_auto
+        }
       };
 
       let justify_override = match (inline_start_auto, inline_end_auto) {
@@ -1524,7 +1573,12 @@ impl GridFormattingContext {
         _ => None,
       };
       if let Some(justify) = justify_override {
-        taffy_style.justify_self = Some(self.convert_align_items(&justify, inline_positive_item));
+        let converted = Some(self.convert_align_items(&justify, inline_positive_item));
+        if inline_is_horizontal_item {
+          taffy_style.justify_self = converted;
+        } else {
+          taffy_style.align_self = converted;
+        }
       }
 
       let align_override = match (block_start_auto, block_end_auto) {
@@ -1542,7 +1596,12 @@ impl GridFormattingContext {
         _ => None,
       };
       if let Some(align) = align_override {
-        taffy_style.align_self = Some(self.convert_align_items(&align, block_positive_item));
+        let converted = Some(self.convert_align_items(&align, block_positive_item));
+        if inline_is_horizontal_item {
+          taffy_style.align_self = converted;
+        } else {
+          taffy_style.justify_self = converted;
+        }
       }
     }
 
