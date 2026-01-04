@@ -1715,10 +1715,11 @@ fn resolve_report_path(report_dir: &Path, report_relative_path: &str) -> PathBuf
 
 fn format_linked_image(label: &str, path: &str) -> String {
   let escaped = escape_html(path);
+  let label = escape_html(label);
   format!(
-    r#"<div class="thumb"><a href="{p}">{l}</a><br><img src="{p}" loading="lazy"></div>"#,
+    r#"<div class="thumb"><a href="{p}">{l}</a><br><a href="{p}"><img src="{p}" alt="{l}" loading="lazy"></a></div>"#,
     p = escaped,
-    l = escape_html(label),
+    l = label,
   )
 }
 

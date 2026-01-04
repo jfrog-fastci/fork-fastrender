@@ -723,6 +723,73 @@ fn compare_diff_reports_accepts_reports_without_ignore_alpha_field() {
 }
 
 #[test]
+fn compare_diff_reports_makes_thumbnails_clickable() {
+  let tmp = tempfile::TempDir::new().expect("tempdir");
+  let baseline_path = tmp.path().join("baseline.json");
+  let new_path = tmp.path().join("new.json");
+  let out_json = tmp.path().join("delta.json");
+  let out_html = tmp.path().join("delta.html");
+
+  let baseline = basic_report(vec![json!({
+    "name": "a",
+    "status": "diff",
+    "after": "baseline_after.png",
+    "diff": "baseline_diff.png",
+    "metrics": {
+      "pixel_diff": 1,
+      "total_pixels": 100,
+      "diff_percentage": 1.0,
+      "perceptual_distance": 0.1
+    }
+  })]);
+  let new_report = basic_report(vec![json!({
+    "name": "a",
+    "status": "diff",
+    "after": "new_after.png",
+    "diff": "new_diff.png",
+    "metrics": {
+      "pixel_diff": 2,
+      "total_pixels": 100,
+      "diff_percentage": 2.0,
+      "perceptual_distance": 0.2
+    }
+  })]);
+
+  write_json(&baseline_path, &baseline);
+  write_json(&new_path, &new_report);
+
+  let output = compare_cmd(tmp.path())
+    .args([
+      "--baseline",
+      baseline_path.to_str().unwrap(),
+      "--new",
+      new_path.to_str().unwrap(),
+      "--json",
+      out_json.to_str().unwrap(),
+      "--html",
+      out_html.to_str().unwrap(),
+    ])
+    .output()
+    .expect("run compare_diff_reports");
+
+  assert!(
+    output.status.success(),
+    "expected success, got {:?}\nstdout:\n{}\nstderr:\n{}",
+    output.status.code(),
+    output_text(&output.stdout),
+    output_text(&output.stderr),
+  );
+
+  let html = fs::read_to_string(&out_html).expect("read delta html");
+  assert!(
+    html.contains(
+      "<a href=\"baseline_after.png\"><img src=\"baseline_after.png\" alt=\"After\" loading=\"lazy\"></a>"
+    ),
+    "expected baseline thumbnail image to be clickable:\n{html}"
+  );
+}
+
+#[test]
 fn compare_diff_reports_sorts_results_by_severity() {
   let tmp = tempfile::TempDir::new().expect("tempdir");
   let baseline_path = tmp.path().join("baseline.json");
