@@ -17,6 +17,15 @@ fn compare_cmd(tmp_dir: &Path) -> Command {
   cmd
 }
 
+fn entry_anchor_id(name: &str) -> String {
+  let mut hash: u64 = 14695981039346656037;
+  for byte in name.as_bytes() {
+    hash ^= u64::from(*byte);
+    hash = hash.wrapping_mul(1099511628211);
+  }
+  format!("entry-{hash:016x}")
+}
+
 fn basic_report(entries: Vec<Value>) -> Value {
   json!({
     "before_dir": "chrome",
@@ -239,6 +248,19 @@ fn compare_diff_reports_pairs_and_classifies_entries() {
 
   let e = find("e");
   assert_eq!(e["classification"], "missing_in_new");
+
+  let html = fs::read_to_string(&out_html).expect("read delta html");
+  let anchor_a = entry_anchor_id("a");
+  assert!(
+    html.contains(&format!(
+      "<tr id=\"{anchor_a}\" class=\"improved\"><td><a href=\"#{anchor_a}\">a</a></td>"
+    )),
+    "expected entry name to link to its own anchor:\n{html}"
+  );
+  assert!(
+    html.contains("tr:target"),
+    "expected target highlight styling for deep-links:\n{html}"
+  );
 }
 
 #[test]

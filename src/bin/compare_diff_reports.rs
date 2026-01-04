@@ -1546,6 +1546,9 @@ fn write_html_report(
       tr.missing {{ background: #fffbe8; }}
       tr.unchanged {{ background: #ffffff; }}
       tr.failing {{ outline: 2px solid #b00020; }}
+      tr.failing td:first-child {{ box-shadow: inset 4px 0 0 #b00020; }}
+      tr:target {{ outline: 3px solid #0066cc; }}
+      tr[id] {{ scroll-margin-top: 50px; }}
       .warning {{ color: #b00020; }}
       .error {{ color: #b00020; white-space: pre-wrap; }}
       .top-list table {{ width: auto; }}
