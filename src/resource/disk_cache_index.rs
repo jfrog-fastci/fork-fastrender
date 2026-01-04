@@ -293,6 +293,10 @@ impl DiskCacheIndex {
 
   fn refresh_locked(&self, state: &mut IndexState) -> std::io::Result<()> {
     let _journal_lock = self.lock_journal()?;
+    self.refresh_under_journal_lock(state)
+  }
+
+  fn refresh_under_journal_lock(&self, state: &mut IndexState) -> std::io::Result<()> {
     if !state.loaded {
       match self.replay_from_offset(state, 0) {
         Ok(()) => {
@@ -334,7 +338,6 @@ impl DiskCacheIndex {
       return Ok(());
     }
 
-    let start_offset = state.journal_len;
     let pending = std::mem::take(&mut state.pending_backfills);
 
     let mut buf = Vec::new();
@@ -344,6 +347,11 @@ impl DiskCacheIndex {
     }
 
     let _journal_lock = self.lock_journal()?;
+    // Another process can append between the `refresh_locked()` done by the caller and this write.
+    // Catch up our in-memory `journal_len` while the journal lock is held so we don't replay our own
+    // flushed backfills after writing.
+    self.refresh_under_journal_lock(state)?;
+    let start_offset = state.journal_len;
     let end_offset = {
       let file = self.append_file_locked(state)?;
       self.write_journal_bytes(file, &buf)?;
@@ -742,7 +750,6 @@ impl DiskCacheIndex {
     state: &mut IndexState,
     record: JournalRecord,
   ) -> std::io::Result<()> {
-    let start_offset = state.journal_len;
     let pending = std::mem::take(&mut state.pending_backfills);
 
     let mut buf = Vec::new();
@@ -754,6 +761,11 @@ impl DiskCacheIndex {
     buf.push(b'\n');
 
     let _journal_lock = self.lock_journal()?;
+    // Another process can append between the `refresh_locked()` done by the caller and this write.
+    // Catch up our in-memory `journal_len` while the journal lock is held so we don't replay our own
+    // flushed backfills after writing.
+    self.refresh_under_journal_lock(state)?;
+    let start_offset = state.journal_len;
     let end_offset = {
       let file = self.append_file_locked(state)?;
       self.write_journal_bytes(file, &buf)?;
@@ -1153,6 +1165,68 @@ mod tests {
       keys,
       vec!["orphan".to_string(), "new".to_string()],
       "pending backfills should be flushed before the next record"
+    );
+  }
+
+  #[test]
+  fn concurrent_append_between_refresh_and_flush_does_not_reapply_pending_backfills() {
+    let tmp = tempfile::tempdir().unwrap();
+    let journal_path = tmp.path().join("index.jsonl");
+    fs::write(&journal_path, b"").expect("seed empty journal");
+
+    let index = DiskCacheIndex::new(tmp.path().to_path_buf());
+    index.refresh();
+
+    let orphan_data = tmp.path().join("orphan.bin");
+    let orphan_meta = tmp.path().join("orphan.bin.meta");
+    index.backfill_if_missing("orphan", 1_700_000_000, 10, &orphan_data, &orphan_meta);
+
+    let mut state = index
+      .state
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let orphan_order_before = state
+      .entries
+      .get("orphan")
+      .expect("backfill should insert entry")
+      .order_key;
+
+    // Mirror the internal `record_insert` flow (`refresh_locked` -> append), but allow another
+    // writer to append between them. We should not replay our own pending backfills after writing.
+    index
+      .refresh_locked(&mut state)
+      .expect("refresh_locked should succeed");
+
+    let other = DiskCacheIndex::new(tmp.path().to_path_buf());
+    let other_data = tmp.path().join("other.bin");
+    let other_meta = tmp.path().join("other.bin.meta");
+    other.record_insert("other", 1_700_000_001, 1, &other_data, &other_meta);
+
+    index
+      .append_record_locked(
+        &mut state,
+        JournalRecord::Insert {
+          key: "new".to_string(),
+          stored_at: 1_700_000_002,
+          len: 1,
+          data_file: "new.bin".to_string(),
+          meta_file: "new.bin.meta".to_string(),
+        },
+      )
+      .expect("append with pending backfills");
+
+    let orphan_order_after = state
+      .entries
+      .get("orphan")
+      .expect("orphan should still exist")
+      .order_key;
+    assert_eq!(
+      orphan_order_after, orphan_order_before,
+      "pending backfills should not be re-applied to the in-memory index after a concurrent append"
+    );
+    assert!(
+      state.pending_backfills.is_empty(),
+      "pending backfills should be flushed"
     );
   }
 
