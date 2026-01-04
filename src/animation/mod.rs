@@ -1814,17 +1814,18 @@ fn resolve_progress_offset(
   base_start: f32,
   base_end: f32,
   view_size: f32,
-  phases: Option<(f32, f32, f32)>,
+  phases: Option<(f32, f32, f32, f32)>,
 ) -> f32 {
   match offset {
-    RangeOffset::Progress(p) => base_start + (base_end - base_start) * p,
+    RangeOffset::Progress(p) => base_start + (base_end - base_start) * *p,
     RangeOffset::View(phase, adj) => {
-      let Some((entry, cross, exit)) = phases else {
+      let Some((entry, contain, cover, exit)) = phases else {
         return base_start;
       };
       let base = match phase {
         ViewTimelinePhase::Entry => entry,
-        ViewTimelinePhase::Contain | ViewTimelinePhase::Cover => cross,
+        ViewTimelinePhase::Contain => contain,
+        ViewTimelinePhase::Cover => cover,
         ViewTimelinePhase::Exit => exit,
       };
       let adjustment = adj
@@ -1839,8 +1840,18 @@ fn clamp_progress(value: f32) -> f32 {
   value.clamp(0.0, 1.0)
 }
 
-/// Computes scroll timeline progress given the current scroll offset and
-/// resolved geometry.
+fn raw_progress(position: f32, start: f32, end: f32) -> f32 {
+  if (end - start).abs() < f32::EPSILON {
+    if position >= end {
+      1.0
+    } else {
+      0.0
+    }
+  } else {
+    (position - start) / (end - start)
+  }
+}
+
 pub fn scroll_timeline_progress(
   timeline: &ScrollTimeline,
   scroll_position: f32,
@@ -1848,18 +1859,14 @@ pub fn scroll_timeline_progress(
   viewport_size: f32,
   range: &AnimationRange,
 ) -> Option<f32> {
-  if scroll_range <= 0.0 {
+  if scroll_range.abs() < f32::EPSILON {
     return None;
   }
   let start_base = resolve_offset_value(&timeline.start, scroll_range, viewport_size, false);
   let end_base = resolve_offset_value(&timeline.end, scroll_range, viewport_size, true);
   let start = resolve_progress_offset(range.start(), start_base, end_base, viewport_size, None);
   let end = resolve_progress_offset(range.end(), start_base, end_base, viewport_size, None);
-  let denom = end - start;
-  if denom.abs() < f32::EPSILON {
-    return None;
-  }
-  Some((scroll_position - start) / denom)
+  Some(raw_progress(scroll_position, start, end))
 }
 
 /// Computes view timeline progress using the target position relative to the
@@ -1890,17 +1897,14 @@ pub fn view_timeline_progress(
 
   let entry = target_start - view_size + inset_end;
   let exit = target_end - inset_start;
-  let cross = (target_start + target_end) * 0.5 - view_size * 0.5 + (inset_end - inset_start) * 0.5;
+  let contain = target_end - view_size + inset_end;
+  let cover = target_start - inset_start;
   let start_base = entry;
   let end_base = exit;
-  let phases = Some((entry, cross, exit));
+  let phases = Some((entry, contain, cover, exit));
   let start = resolve_progress_offset(range.start(), start_base, end_base, view_size, phases);
   let end = resolve_progress_offset(range.end(), start_base, end_base, view_size, phases);
-  let denom = end - start;
-  if denom.abs() < f32::EPSILON {
-    return None;
-  }
-  Some((scroll_offset - start) / denom)
+  Some(raw_progress(scroll_offset, start, end))
 }
 
 /// Determines the scroll position and range along the requested axis given
@@ -3278,6 +3282,100 @@ mod tests {
     let progress = time_based_animation_progress(&style, 0, 500.0).expect("active");
     assert!((progress - 0.0).abs() < 1e-6, "progress={progress}");
     assert!((sampled_opacity(&rule, progress) - 0.0).abs() < 1e-6);
+  }
+
+  fn render_scroll_self_opacity(
+    scroll_overflow_height: f32,
+    scroll_offset_y: f32,
+    range: AnimationRange,
+    fill: AnimationFillMode,
+  ) -> f32 {
+    let mut style = ComputedStyle::default();
+    style.overflow_y = Overflow::Scroll;
+    style.animation_names = vec!["fade".to_string()];
+    style.animation_timelines = vec![AnimationTimeline::Scroll(ScrollFunctionTimeline {
+      scroller: ScrollTimelineScroller::SelfElement,
+      axis: TimelineAxis::Block,
+    })];
+    style.animation_ranges = vec![range];
+    style.animation_fill_modes = vec![fill].into();
+    style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
+
+    let style = Arc::new(style);
+    let mut animated =
+      FragmentNode::new_block_with_id(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), 1, vec![]);
+    animated.style = Some(style);
+    animated.scroll_overflow = Rect::from_xywh(0.0, 0.0, 100.0, scroll_overflow_height);
+
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 200.0, 200.0), vec![animated]);
+    let mut tree = FragmentTree::new(root);
+    tree.keyframes.insert("fade".to_string(), fade_rule());
+
+    let mut elements = HashMap::new();
+    elements.insert(1, Point::new(0.0, scroll_offset_y));
+    let scroll_state = ScrollState::from_parts(Point::ZERO, elements);
+    apply_animations(&mut tree, &scroll_state, None);
+
+    tree.root.children[0]
+      .style
+      .as_ref()
+      .expect("child style")
+      .opacity
+  }
+
+  #[test]
+  fn scroll_self_timeline_inactive_when_scroll_range_is_zero() {
+    let opacity = render_scroll_self_opacity(
+      100.0,
+      0.0,
+      AnimationRange::default(),
+      AnimationFillMode::Both,
+    );
+    assert!((opacity - 1.0).abs() < 1e-6, "opacity={opacity}");
+  }
+
+  #[test]
+  fn scroll_self_timeline_active_when_scroll_range_is_positive() {
+    let opacity = render_scroll_self_opacity(
+      200.0,
+      0.0,
+      AnimationRange::default(),
+      AnimationFillMode::None,
+    );
+    assert!((opacity - 0.0).abs() < 1e-6, "opacity={opacity}");
+  }
+
+  #[test]
+  fn view_timeline_entry_offsets_resolve_against_view_size() {
+    let range = AnimationRange {
+      start: RangeOffset::View(ViewTimelinePhase::Entry, Length::px(100.0)),
+      end: RangeOffset::View(ViewTimelinePhase::Entry, Length::px(500.0)),
+    };
+    let timeline = ViewTimeline::default();
+    let raw = view_timeline_progress(&timeline, 1000.0, 1100.0, 400.0, 900.0, &range).unwrap();
+    assert!((raw - 0.5).abs() < 1e-6, "raw={raw}");
+  }
+
+  #[test]
+  fn scroll_driven_fill_mode_controls_out_of_range_application() {
+    let range = AnimationRange {
+      start: RangeOffset::Progress(0.5),
+      end: RangeOffset::Progress(1.0),
+    };
+
+    let opacity_none =
+      render_scroll_self_opacity(200.0, 0.0, range.clone(), AnimationFillMode::None);
+    assert!(
+      (opacity_none - 1.0).abs() < 1e-6,
+      "opacity_none={opacity_none}"
+    );
+
+    let opacity_backwards =
+      render_scroll_self_opacity(200.0, 0.0, range, AnimationFillMode::Backwards);
+    assert!(
+      (opacity_backwards - 0.0).abs() < 1e-6,
+      "opacity_backwards={opacity_backwards}"
+    );
   }
 
   #[test]

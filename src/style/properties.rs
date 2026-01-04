@@ -1213,7 +1213,6 @@ pub(crate) fn parse_animation_timeline_list(raw: &str) -> Option<Vec<AnimationTi
     if trimmed.is_empty() {
       return None;
     }
-
     let mut input = ParserInput::new(trimmed);
     let mut parser = Parser::new(&mut input);
     parser.skip_whitespace();
