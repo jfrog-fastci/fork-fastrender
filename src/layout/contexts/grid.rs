@@ -5676,7 +5676,6 @@ mod tests {
     let node_ptr = &node as *const _;
     let node_id = TaffyNodeId::from(1u64);
     let viewport = gc.viewport_size;
-    let taffy_style = taffy::style::Style::default();
 
     let known = taffy::geometry::Size {
       width: None,
