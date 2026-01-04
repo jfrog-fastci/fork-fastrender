@@ -762,6 +762,10 @@ impl LayoutEngine {
     self.factory.image_cache_mut()
   }
 
+  pub(crate) fn reset_cached_formatting_contexts(&mut self) {
+    self.factory.reset_cached_formatting_contexts();
+  }
+
   /// Performs layout on an entire box tree
   ///
   /// This is the main entry point for layout. It takes a box tree
@@ -1222,6 +1226,13 @@ fn formatting_context_span_name(fc_type: FormattingContextType) -> &'static str 
 impl Default for LayoutEngine {
   fn default() -> Self {
     Self::new(LayoutConfig::default())
+  }
+}
+
+#[cfg(test)]
+impl LayoutEngine {
+  pub(crate) fn cached_context_is_initialized(&self, fc_type: FormattingContextType) -> bool {
+    self.factory.cached_context_is_initialized(fc_type)
   }
 }
 

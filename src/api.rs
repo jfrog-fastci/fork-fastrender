@@ -8489,6 +8489,7 @@ impl FastRender {
     self.base_url = Some(base.clone());
     self.image_cache.set_base_url(base.clone());
     self.layout_engine.image_cache_mut().set_base_url(base);
+    self.layout_engine.reset_cached_formatting_contexts();
   }
 
   /// Replaces the font context used for layout and painting.
@@ -8521,6 +8522,7 @@ impl FastRender {
   pub fn clear_base_url(&mut self) {
     self.image_cache.clear_base_url();
     self.layout_engine.image_cache_mut().clear_base_url();
+    self.layout_engine.reset_cached_formatting_contexts();
     self.base_url = None;
   }
 
@@ -8549,6 +8551,7 @@ impl FastRender {
       .layout_engine
       .image_cache_mut()
       .set_diagnostics_sink(sink);
+    self.layout_engine.reset_cached_formatting_contexts();
   }
 
   fn record_fetch_error(&self, kind: ResourceKind, url: &str, message: impl Into<String>) {
@@ -8597,6 +8600,7 @@ impl FastRender {
       .layout_engine
       .image_cache_mut()
       .set_resource_context(context.clone());
+    self.layout_engine.reset_cached_formatting_contexts();
     self.font_context.set_resource_context(context);
 
     (prev_self, prev_image, prev_layout_image, prev_font)
@@ -8615,6 +8619,7 @@ impl FastRender {
       .layout_engine
       .image_cache_mut()
       .set_resource_context(prev_layout_image);
+    self.layout_engine.reset_cached_formatting_contexts();
     self.font_context.set_resource_context(prev_font);
   }
   /// Gets the default background color
@@ -11914,6 +11919,7 @@ pub(crate) fn render_html_with_shared_resources(
     .layout_engine
     .image_cache_mut()
     .set_resource_context(resource_context.clone());
+  renderer.layout_engine.reset_cached_formatting_contexts();
   renderer.font_context.set_resource_context(resource_context);
 
   let trace = TraceHandle::disabled();
@@ -11947,6 +11953,7 @@ mod tests {
   use crate::css::parser::extract_css;
   use crate::css::types::StyleSheet;
   use crate::dom::DomNodeType;
+  use crate::layout::constraints::LayoutConstraints;
   use crate::layout::contexts::inline::line_builder::TextItem;
   use crate::layout::engine::LayoutConfig;
   use crate::layout::engine::LayoutEngine;
@@ -11955,6 +11962,7 @@ mod tests {
   use crate::style::cascade::apply_style_set_with_media_target_and_imports_cached;
   use crate::style::cascade::ContainerQueryContext;
   use crate::style::cascade::StyledNode;
+  use crate::style::display::FormattingContextType;
   use crate::style::media::MediaContext;
   use crate::style::style_set::StyleSet;
   use crate::style::types::{
@@ -11971,6 +11979,119 @@ mod tests {
   use std::collections::{HashMap, HashSet};
   use std::io;
   use std::sync::{Arc, Mutex};
+
+  #[test]
+  fn layout_image_cache_configuration_changes_reset_cached_formatting_contexts() {
+    let mut renderer = FastRender::new().expect("renderer");
+    renderer.set_base_url("https://example.com/a/");
+
+    let style = Arc::new(ComputedStyle::default());
+    let node = BoxNode::new_block(style, FormattingContextType::Block, vec![]);
+    let constraints = LayoutConstraints::definite(32.0, 32.0);
+
+    renderer
+      .layout_engine()
+      .layout_subtree(&node, &constraints)
+      .expect("initial layout");
+    assert!(
+      renderer
+        .layout_engine()
+        .cached_context_is_initialized(FormattingContextType::Block),
+      "expected a cached block formatting context after layout"
+    );
+
+    renderer.set_base_url("https://example.com/b/");
+    assert!(
+      !renderer
+        .layout_engine()
+        .cached_context_is_initialized(FormattingContextType::Block),
+      "expected base url updates to reset cached formatting contexts"
+    );
+
+    renderer
+      .layout_engine()
+      .layout_subtree(&node, &constraints)
+      .expect("layout after base url update");
+    assert_eq!(
+      renderer.layout_engine().image_cache().base_url(),
+      Some("https://example.com/b/".to_string())
+    );
+    assert!(
+      renderer
+        .layout_engine()
+        .cached_context_is_initialized(FormattingContextType::Block),
+      "expected cached formatting context to be rebuilt after base url update"
+    );
+
+    renderer.clear_base_url();
+    assert!(
+      !renderer
+        .layout_engine()
+        .cached_context_is_initialized(FormattingContextType::Block),
+      "expected clearing the base url to reset cached formatting contexts"
+    );
+    assert_eq!(renderer.layout_engine().image_cache().base_url(), None);
+
+    renderer
+      .layout_engine()
+      .layout_subtree(&node, &constraints)
+      .expect("layout after base url cleared");
+    assert!(
+      renderer
+        .layout_engine()
+        .cached_context_is_initialized(FormattingContextType::Block),
+      "expected cached formatting contexts to be initialized again after layout"
+    );
+
+    let diagnostics = Arc::new(Mutex::new(RenderDiagnostics::default()));
+    renderer.set_diagnostics_sink(Some(Arc::clone(&diagnostics)));
+    assert!(
+      !renderer
+        .layout_engine()
+        .cached_context_is_initialized(FormattingContextType::Block),
+      "expected diagnostics sink updates to reset cached formatting contexts"
+    );
+
+    renderer
+      .layout_engine()
+      .layout_subtree(&node, &constraints)
+      .expect("layout after diagnostics sink update");
+    assert!(
+      renderer
+        .layout_engine()
+        .cached_context_is_initialized(FormattingContextType::Block),
+      "expected cached formatting contexts to be rebuilt after diagnostics sink update"
+    );
+
+    let context = Some(renderer.build_resource_context(Some("https://example.com/"), None));
+    let (prev_self, prev_image, prev_layout_image, prev_font) =
+      renderer.push_resource_context(context);
+    assert!(
+      !renderer
+        .layout_engine()
+        .cached_context_is_initialized(FormattingContextType::Block),
+      "expected resource context pushes to reset cached formatting contexts"
+    );
+
+    renderer
+      .layout_engine()
+      .layout_subtree(&node, &constraints)
+      .expect("layout after resource context push");
+    assert!(
+      renderer
+        .layout_engine()
+        .cached_context_is_initialized(FormattingContextType::Block),
+      "expected cached formatting contexts to be rebuilt after resource context push"
+    );
+
+    renderer.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
+    assert!(
+      !renderer
+        .layout_engine()
+        .cached_context_is_initialized(FormattingContextType::Block),
+      "expected resource context pops to reset cached formatting contexts"
+    );
+  }
 
   #[test]
   fn inline_stylesheet_http_403_records_fetch_error_status_and_url() {

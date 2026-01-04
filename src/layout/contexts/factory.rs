@@ -165,6 +165,10 @@ impl FormattingContextFactory {
     self.cached_contexts = CachedFormattingContexts::fresh();
   }
 
+  pub(crate) fn reset_cached_formatting_contexts(&mut self) {
+    self.reset_cached_contexts();
+  }
+
   /// Creates a new factory
   pub fn new() -> Self {
     let viewport_size = crate::geometry::Size::new(800.0, 600.0);

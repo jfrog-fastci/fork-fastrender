@@ -1256,7 +1256,7 @@ fn margin_box_bounds(area: PageMarginArea, style: &ResolvedPageStyle) -> Option<
 }
 
 #[cfg(test)]
-  mod tests {
+mod tests {
   use super::*;
   use crate::style::display::Display;
   use crate::style::ComputedStyle;
