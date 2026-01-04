@@ -1511,7 +1511,7 @@ fn write_html_report(
     };
 
     rows.push_str(&format!(
-       "<tr id=\"{anchor_id}\" class=\"{row_class}\"><td>{name}</td><td>{classification}</td><td>{baseline_status}</td><td>{baseline_diff}</td><td>{baseline_perceptual}</td><td>{baseline_after_and_diff}</td><td>{new_status}</td><td>{new_diff}</td><td>{new_perceptual}</td><td>{new_after_and_diff}</td><td>{diff_delta}</td><td>{perceptual_delta}</td><td class=\"error\">{error}</td></tr>",
+       "<tr id=\"{anchor_id}\" class=\"{row_class}\"><td><a href=\"#{anchor_id}\">{name}</a></td><td>{classification}</td><td>{baseline_status}</td><td>{baseline_diff}</td><td>{baseline_perceptual}</td><td>{baseline_after_and_diff}</td><td>{new_status}</td><td>{new_diff}</td><td>{new_perceptual}</td><td>{new_after_and_diff}</td><td>{diff_delta}</td><td>{perceptual_delta}</td><td class=\"error\">{error}</td></tr>",
        anchor_id = escape_html(&anchor_id),
        row_class = escape_html(&row_class),
        name = escape_html(&entry.name),
