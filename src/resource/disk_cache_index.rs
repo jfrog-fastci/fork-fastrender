@@ -1222,7 +1222,7 @@ mod tests {
     let journal = fs::read_to_string(&journal_path).expect("read journal");
     let expected_inserts = processes * flushes_per_process * (backfills_per_flush + 1);
     let mut insert_keys = HashSet::new();
-    let mut inserts_seen = 0usize;
+    let mut inserts_seen = Vec::new();
     for (idx, line) in journal.lines().enumerate() {
       if line.trim().is_empty() {
         continue;
@@ -1231,7 +1231,7 @@ mod tests {
         .unwrap_or_else(|err| panic!("invalid journal line {idx}: {err} (raw={line:?})"));
       match record {
         JournalRecord::Insert { key, .. } => {
-          inserts_seen += 1;
+          inserts_seen.push(key.clone());
           assert!(
             insert_keys.insert(key.clone()),
             "duplicate insert key encountered: {key}"
@@ -1241,14 +1241,81 @@ mod tests {
       }
     }
 
+    let inserts_len = inserts_seen.len();
     assert_eq!(
-      inserts_seen, expected_inserts,
-      "expected {expected_inserts} inserts, saw {inserts_seen}"
+      inserts_len, expected_inserts,
+      "expected {expected_inserts} inserts, saw {inserts_len}"
     );
     assert_eq!(
       insert_keys.len(),
       expected_inserts,
       "expected unique insert keys for every record"
+    );
+
+    // Ensure each child flush (backfills + main insert) appears contiguously in the journal. A
+    // parseable journal alone isn't sufficient: without cross-process locking, writes can interleave
+    // at JSON-line boundaries leaving valid JSON but incorrect ordering (breaking eviction/backfill
+    // semantics).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum KeyKind {
+      Backfill(usize),
+      Main,
+    }
+
+    fn parse_key(key: &str) -> Option<(usize, usize, KeyKind)> {
+      let mut parts = key.splitn(4, '_');
+      let pid = parts
+        .next()
+        .and_then(|p| p.strip_prefix('p'))
+        .and_then(|p| p.parse::<usize>().ok())?;
+      let flush = parts
+        .next()
+        .and_then(|p| p.strip_prefix('f'))
+        .and_then(|p| p.parse::<usize>().ok())?;
+      let kind = parts.next()?;
+      if kind == "main" {
+        return Some((pid, flush, KeyKind::Main));
+      }
+      let bf = kind.strip_prefix("bf")?.parse::<usize>().ok()?;
+      Some((pid, flush, KeyKind::Backfill(bf)))
+    }
+
+    let mut seen_flushes = HashSet::new();
+    let mut idx = 0usize;
+    while idx < inserts_seen.len() {
+      let (pid, flush, kind) = parse_key(&inserts_seen[idx]).expect("parse key header");
+      assert_eq!(
+        kind,
+        KeyKind::Backfill(0),
+        "expected flush to start with bf0 at index {idx} (key={:?})",
+        inserts_seen[idx]
+      );
+      assert!(
+        seen_flushes.insert((pid, flush)),
+        "duplicate flush group encountered for pid={pid} flush={flush}"
+      );
+      for bf_idx in 0..backfills_per_flush {
+        let (pid2, flush2, kind2) = parse_key(&inserts_seen[idx + bf_idx]).expect("parse bf key");
+        assert_eq!(
+          (pid2, flush2, kind2),
+          (pid, flush, KeyKind::Backfill(bf_idx)),
+          "unexpected backfill ordering within flush group starting at {idx}"
+        );
+      }
+      let (pid2, flush2, kind2) =
+        parse_key(&inserts_seen[idx + backfills_per_flush]).expect("parse main key");
+      assert_eq!(
+        (pid2, flush2, kind2),
+        (pid, flush, KeyKind::Main),
+        "expected main record after backfills for pid={pid} flush={flush}"
+      );
+
+      idx += backfills_per_flush + 1;
+    }
+    assert_eq!(
+      seen_flushes.len(),
+      processes * flushes_per_process,
+      "expected one flush group per (process, flush)"
     );
   }
 
