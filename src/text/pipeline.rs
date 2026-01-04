@@ -21,7 +21,7 @@
 //!
 //! ```rust,no_run
 //! # use fastrender::text::pipeline::{Direction, ShapingPipeline};
-//! # use fastrender::text::FontContext;
+//! # use fastrender::FontContext;
 //! # use fastrender::ComputedStyle;
 //! # fn main() -> fastrender::Result<()> {
 //! let mut pipeline = ShapingPipeline::new();

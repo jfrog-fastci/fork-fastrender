@@ -120,7 +120,7 @@
 //!
 //! ```rust,no_run
 //! # use fastrender::FastRender;
-//! # fn main() -> fastrender::Result<()> {
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let html = r#"
 //!     <!DOCTYPE html>
 //!     <html>

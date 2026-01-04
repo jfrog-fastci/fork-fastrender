@@ -37,7 +37,7 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! # use fastrender::text::{FallbackChain, FontContext, FontDatabase, GenericFamily};
+//! # use fastrender::{FallbackChain, FontContext, FontDatabase, GenericFamily};
 //! # fn main() -> fastrender::Result<()> {
 //! // Create font context (loads system fonts)
 //! let ctx = FontContext::new();

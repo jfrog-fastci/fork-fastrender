@@ -634,7 +634,8 @@ impl Default for Line {
 /// # Example
 ///
 /// ```rust,no_run
-/// # use fastrender::text::{break_lines_greedy, BreakOpportunity, GlyphPosition};
+/// # use fastrender::text::line_break::{break_lines_greedy, BreakOpportunity};
+/// # use fastrender::GlyphPosition;
 /// # fn main() -> fastrender::Result<()> {
 ///
 /// let glyphs = vec![

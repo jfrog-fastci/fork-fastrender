@@ -28,7 +28,7 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! # use fastrender::text::Hyphenator;
+//! # use fastrender::Hyphenator;
 //! # fn main() -> fastrender::Result<()> {
 //! // Create hyphenator for English
 //! let hyphenator = Hyphenator::new("en-us").unwrap();

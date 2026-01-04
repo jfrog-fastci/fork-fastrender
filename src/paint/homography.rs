@@ -2,13 +2,13 @@
 //!
 //! Provides a small, dependency-free implementation for building and using 3×3
 //! projective matrices. The matrix is stored in **row-major** order:
-//! ```
+//! ```text
 //! [ m0 m1 m2 ]
 //! [ m3 m4 m5 ]
 //! [ m6 m7 m8 ]
 //! ```
 //! mapping a point `(x, y, 1)` to homogeneous coordinates `(x', y', w')` via:
-//! ```
+//! ```text
 //! x' = m0 * x + m1 * y + m2
 //! y' = m3 * x + m4 * y + m5
 //! w' = m6 * x + m7 * y + m8

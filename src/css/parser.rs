@@ -321,7 +321,7 @@ pub fn parse_stylesheet(css: &str) -> Result<StyleSheet> {
 /// use fastrender::css::parser::parse_stylesheet_with_errors;
 ///
 /// let css = "p { color: red; } .invalid {{ } span { color: blue; }";
-/// let result = parse_stylesheet_with_errors(css);
+/// let result = parse_stylesheet_with_errors(css).unwrap();
 ///
 /// println!("Found {} errors", result.error_count());
 /// for error in &result.errors {
@@ -329,7 +329,7 @@ pub fn parse_stylesheet(css: &str) -> Result<StyleSheet> {
 /// }
 ///
 /// // The stylesheet still contains the valid rules
-/// assert!(result.stylesheet.rules.len() > 0);
+/// assert!(!result.stylesheet.rules.is_empty());
 /// ```
 pub fn parse_stylesheet_with_errors(css: &str) -> Result<CssParseResult> {
   let (stylesheet, errors) = parse_stylesheet_internal(css, None, None, ParseMode::CollectErrors)?;

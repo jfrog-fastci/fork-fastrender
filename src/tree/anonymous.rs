@@ -98,6 +98,7 @@ impl AnonymousBoxCreator {
   /// use fastrender::{BoxNode, FormattingContextType};
   /// use fastrender::tree::anonymous::AnonymousBoxCreator;
   /// use fastrender::ComputedStyle;
+  /// # fn main() -> fastrender::Result<()> {
   ///
   /// let style = Arc::new(ComputedStyle::default());
   /// let text = BoxNode::new_text(style.clone(), "Hello".to_string());
@@ -112,6 +113,8 @@ impl AnonymousBoxCreator {
   /// // Text is now wrapped in anonymous block
   /// assert_eq!(fixed.children.len(), 2);
   /// assert!(fixed.children[0].is_anonymous());
+  /// # Ok(())
+  /// # }
   /// ```
   pub fn fixup_tree(box_node: BoxNode) -> Result<BoxNode> {
     let mut deadline_counter = 0usize;

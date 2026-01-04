@@ -7,7 +7,7 @@
 //!
 //! ```rust,no_run
 //! # use fastrender::api::FastRender;
-//! # fn main() -> fastrender::Result<()> {
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // Create a new renderer
 //! let mut renderer = FastRender::new()?;
 //!
@@ -2880,6 +2880,8 @@ impl FastRenderConfig {
   /// # Examples
   ///
   /// ```rust,no_run
+  /// use fastrender::api::FastRenderConfig;
+  ///
   /// let config = FastRenderConfig::new()
   ///     .with_default_viewport(1920, 1080);
   /// ```
@@ -4253,7 +4255,7 @@ impl FastRender {
   ///
   /// ```rust,no_run
   /// # use fastrender::api::FastRender;
-  /// # fn main() -> fastrender::Result<()> {
+  /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
   ///
   /// let mut renderer = FastRender::new()?;
   /// # Ok(())
@@ -4405,7 +4407,7 @@ impl FastRender {
   ///
   /// ```rust,no_run
   /// # use fastrender::api::FastRender;
-  /// # fn main() -> fastrender::Result<()> {
+  /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
   ///
   /// let mut renderer = FastRender::new()?;
   ///
