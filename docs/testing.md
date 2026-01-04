@@ -88,7 +88,7 @@ Artifacts and PR guidance:
 - Report: `target/fixture_chrome_diff/report.html` (plus `report.json` and per-fixture PNG/log/metadata artifacts under `target/fixture_chrome_diff/{chrome,fastrender,...}`).
   - FastRender writes `<out>/fastrender/<fixture>.json` alongside each PNG with render settings (viewport/DPR/media/fit-canvas-to-content/timeout, fonts) and status/timing.
   - When reusing an existing FastRender output dir (`cargo xtask fixture-chrome-diff --no-fastrender`), xtask validates that the per-fixture metadata matches the current `--viewport/--dpr/--media/--fit-canvas-to-content/--timeout` and font config. Mismatches fail fast to prevent misleading diffs against stale renders.
-  - If a metadata file is missing, xtask warns and continues by default for backwards compatibility; pass `--require-fastrender-metadata` to fail instead.
+  - If a metadata file is missing (or incomplete), xtask warns and continues by default for backwards compatibility; pass `--require-fastrender-metadata` to fail instead.
 - Re-run without invoking Chrome (reuse existing renders under `target/fixture_chrome_diff/chrome`): `cargo xtask fixture-chrome-diff --no-chrome`.
 - Exit non-zero when diffs are found (useful for gating local scripts): `cargo xtask fixture-chrome-diff --fail-on-differences`.
 - Write FastRender pipeline snapshots for later `diff_snapshots`: `cargo xtask fixture-chrome-diff --write-snapshot` (writes under `target/fixture_chrome_diff/fastrender/<fixture>/snapshot.json`).

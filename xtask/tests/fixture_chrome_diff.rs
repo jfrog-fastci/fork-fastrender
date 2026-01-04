@@ -349,6 +349,88 @@ fn require_fastrender_metadata_errors_when_missing() {
 }
 
 #[test]
+fn require_fastrender_metadata_errors_when_incomplete() {
+  let temp = tempdir().expect("tempdir");
+  let fixtures_root = temp.path().join("fixtures");
+  write_fixture(&fixtures_root, "a");
+
+  let out_dir = temp.path().join("out");
+  let fastrender_dir = out_dir.join("fastrender");
+  fs::create_dir_all(out_dir.join("chrome")).expect("create chrome out dir");
+  fs::create_dir_all(&fastrender_dir).expect("create fastrender out dir");
+
+  let target_dir = temp.path().join("target");
+  let diff_renders_bin = target_dir
+    .join("release")
+    .join(format!("diff_renders{}", std::env::consts::EXE_SUFFIX));
+  fs::create_dir_all(diff_renders_bin.parent().unwrap()).expect("create release dir");
+  fs::write(&diff_renders_bin, "#!/usr/bin/env sh\nexit 0\n").expect("write stub diff_renders");
+  make_executable(&diff_renders_bin);
+
+  // This metadata file intentionally omits `fit_canvas_to_content`, which older versions of
+  // render_fixtures did not record.
+  fs::write(
+    fastrender_dir.join("a.json"),
+    r#"{
+  "fixture": "a",
+  "viewport": [800, 600],
+  "dpr": 1.0,
+  "media": "screen",
+  "timeout_secs": 15,
+  "bundled_fonts": true,
+  "font_dirs": [],
+  "status": "ok",
+  "elapsed_ms": 1
+}"#,
+  )
+  .expect("write incomplete fastrender metadata");
+
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .env("CARGO_TARGET_DIR", &target_dir)
+    .args([
+      "fixture-chrome-diff",
+      "--no-build",
+      "--no-chrome",
+      "--no-fastrender",
+      "--require-fastrender-metadata",
+      "--fixtures-dir",
+      fixtures_root.to_string_lossy().as_ref(),
+      "--fixtures",
+      "a",
+      "--out-dir",
+      out_dir.to_string_lossy().as_ref(),
+      "--viewport",
+      "800x600",
+      "--dpr",
+      "1",
+      "--media",
+      "screen",
+      "--timeout",
+      "15",
+    ])
+    .output()
+    .expect("run fixture-chrome-diff requiring complete metadata");
+
+  assert!(
+    !output.status.success(),
+    "expected fixture-chrome-diff to fail when required metadata is incomplete.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  assert!(
+    stderr.contains("FastRender metadata is incomplete"),
+    "expected stderr to mention incomplete metadata; got:\n{stderr}"
+  );
+  assert!(
+    stderr.contains("fit_canvas_to_content"),
+    "expected stderr to mention missing fit_canvas_to_content; got:\n{stderr}"
+  );
+}
+
+#[test]
 #[cfg(unix)]
 fn no_chrome_fails_fast_on_stale_baselines_unless_allowed() {
   use sha2::{Digest, Sha256};

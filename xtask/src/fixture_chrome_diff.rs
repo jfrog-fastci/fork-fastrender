@@ -720,13 +720,10 @@ struct FastRenderFixtureMetadata {
   viewport: (u32, u32),
   dpr: f32,
   media: String,
-  #[serde(default)]
-  fit_canvas_to_content: bool,
+  fit_canvas_to_content: Option<bool>,
   timeout_secs: u64,
-  #[serde(default)]
-  bundled_fonts: bool,
-  #[serde(default)]
-  font_dirs: Vec<String>,
+  bundled_fonts: Option<bool>,
+  font_dirs: Option<Vec<String>>,
 }
 
 fn validate_fastrender_output_metadata(
@@ -759,40 +756,75 @@ fn validate_fastrender_output_metadata(
       .with_context(|| format!("parse {}", metadata_path.display()))?;
 
     let wanted_media = args.media.as_cli_value();
-    let wanted_bundled_fonts = true;
     let wanted_font_dirs_summary = "[]";
+    let wanted_bundled_fonts = true;
     let wanted_fit_canvas_to_content = args.fit_canvas_to_content;
+    let mut missing_fields = Vec::<&'static str>::new();
+    if metadata.fit_canvas_to_content.is_none() {
+      missing_fields.push("fit_canvas_to_content");
+    }
+    if metadata.bundled_fonts.is_none() {
+      missing_fields.push("bundled_fonts");
+    }
+    if metadata.font_dirs.is_none() {
+      missing_fields.push("font_dirs");
+    }
+    if !missing_fields.is_empty() {
+      if args.require_fastrender_metadata {
+        bail!(
+          "FastRender metadata is incomplete for fixture '{stem}'.\n\
+           Missing field(s): {}\n\
+           Metadata: {}\n\
+           Rerun without --no-fastrender to regenerate FastRender renders, or point --out-dir at a directory that contains matching metadata.",
+          missing_fields.join(", "),
+          metadata_path.display(),
+        );
+      }
+      missing_metadata.push(format!("{stem} (missing {})", missing_fields.join(", ")));
+    }
+
     let mut mismatch = false;
     mismatch |= metadata.viewport != args.viewport;
     mismatch |= !metadata.dpr.is_finite() || (metadata.dpr - args.dpr).abs() > 1e-6;
     mismatch |= metadata.media != wanted_media;
-    mismatch |= metadata.fit_canvas_to_content != wanted_fit_canvas_to_content;
     mismatch |= metadata.timeout_secs != args.timeout;
-    mismatch |= metadata.bundled_fonts != wanted_bundled_fonts;
-    mismatch |= !metadata.font_dirs.is_empty();
+    if let Some(fit_canvas_to_content) = metadata.fit_canvas_to_content {
+      mismatch |= fit_canvas_to_content != wanted_fit_canvas_to_content;
+    }
+    if let Some(bundled_fonts) = metadata.bundled_fonts {
+      mismatch |= bundled_fonts != wanted_bundled_fonts;
+    }
+    if let Some(font_dirs) = metadata.font_dirs.as_ref() {
+      mismatch |= !font_dirs.is_empty();
+    }
 
     if mismatch {
-      let font_dirs_summary = if metadata.font_dirs.is_empty() {
-        "[]".to_string()
-      } else {
-        let sample = metadata
-          .font_dirs
-          .iter()
-          .take(3)
-          .cloned()
-          .collect::<Vec<_>>()
-          .join(", ");
-        if metadata.font_dirs.len() > 3 {
-          format!(
-            "[{}, ... (+{} more)]",
-            sample,
-            metadata.font_dirs.len() - 3
-          )
-        } else {
-          format!("[{}]", sample)
+      let fit_canvas_to_content_value = metadata
+        .fit_canvas_to_content
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "<missing>".to_string());
+      let bundled_fonts_value = metadata
+        .bundled_fonts
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "<missing>".to_string());
+      let font_dirs_summary = match metadata.font_dirs.as_deref() {
+        Some(dirs) if dirs.is_empty() => "[]".to_string(),
+        Some(dirs) => {
+          let sample = dirs
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+          if dirs.len() > 3 {
+            format!("[{}, ... (+{} more)]", sample, dirs.len() - 3)
+          } else {
+            format!("[{}]", sample)
+          }
         }
+        None => "<missing>".to_string(),
       };
-         bail!(
+      bail!(
          "FastRender metadata mismatch for fixture '{stem}'. This likely means you are reusing stale FastRender renders.\n\
           Metadata: {}\n\
          Wanted: viewport {}x{}, dpr {}, media {}, fit_canvas_to_content {}, timeout {}s, bundled_fonts {}, font_dirs {}\n\
@@ -811,9 +843,9 @@ fn validate_fastrender_output_metadata(
          metadata.viewport.1,
          metadata.dpr,
          metadata.media,
-         metadata.fit_canvas_to_content,
+         fit_canvas_to_content_value,
          metadata.timeout_secs,
-         metadata.bundled_fonts,
+         bundled_fonts_value,
          font_dirs_summary,
       );
     }
@@ -832,8 +864,8 @@ fn validate_fastrender_output_metadata(
       String::new()
     };
     eprintln!(
-      "warning: FastRender metadata is missing for {} fixture(s) ({}{}). \
-       Continuing without validation; rerun without --no-fastrender to regenerate, \
+      "warning: FastRender metadata is missing or incomplete for {} fixture(s) ({}{}). \
+       Continuing without full validation; rerun without --no-fastrender to regenerate, \
        or pass --require-fastrender-metadata to fail on missing metadata.",
       missing_metadata.len(),
       sample,

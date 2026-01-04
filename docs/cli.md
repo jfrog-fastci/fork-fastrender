@@ -105,7 +105,7 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
   - Defaults to the curated `pages_regression` fixture set in `tests/pages_regression_test.rs`.
   - Pass `--all-fixtures` to render every fixture under `tests/pages/fixtures/`.
   - FastRender writes `<out>/fastrender/<fixture>.json` alongside each PNG with render settings + status/timing.
-  - When reusing an existing FastRender output directory (`--no-fastrender` / `--diff-only`), xtask validates the metadata matches the requested `--viewport/--dpr/--media/--fit-canvas-to-content/--timeout` and font config, and fails fast on mismatches. Missing metadata warns by default; pass `--require-fastrender-metadata` to fail instead.
+  - When reusing an existing FastRender output directory (`--no-fastrender` / `--diff-only`), xtask validates the metadata matches the requested `--viewport/--dpr/--media/--fit-canvas-to-content/--timeout` and font config, and fails fast on mismatches. Missing/incomplete metadata warns by default; pass `--require-fastrender-metadata` to fail instead.
 - Import a bundled capture into a `pages_regression` fixture: `cargo xtask import-page-fixture <bundle_dir|.tar> <fixture_name> [--output-root tests/pages/fixtures --overwrite --dry-run]`
   - Relative `<bundle>` and `--output-root` paths are resolved relative to the repository root so the command behaves consistently even when invoked from subdirectories (pass absolute paths to override).
 - Recapture and (re)import offline page fixtures from a manifest (pageset guardrails by default): `cargo xtask recapture-page-fixtures [--capture-mode cache|crawl|render] [--only stripe.com] [--overwrite]`
