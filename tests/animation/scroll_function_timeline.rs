@@ -7,7 +7,7 @@ use fastrender::geometry::{Point, Rect, Size};
 use fastrender::scroll::ScrollState;
 use fastrender::style::types::{
   AnimationRange, AnimationTimeline, Overflow, ScrollFunctionTimeline, ScrollTimelineScroller,
-  TimelineAxis,
+  TimelineAxis, TransitionTimingFunction,
 };
 use fastrender::style::ComputedStyle;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
@@ -52,6 +52,7 @@ fn scroll_function_timeline_uses_self_scroll_offsets() {
     scroller: ScrollTimelineScroller::SelfElement,
     axis: TimelineAxis::Block,
   })];
+  style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
   let style = Arc::new(style);
 
   let mut scroller = FragmentNode::new_with_style(

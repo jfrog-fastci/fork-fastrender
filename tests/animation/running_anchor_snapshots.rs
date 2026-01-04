@@ -5,7 +5,9 @@ use fastrender::animation::apply_scroll_driven_animations;
 use fastrender::css::types::{Declaration, Keyframe, KeyframesRule, PropertyValue};
 use fastrender::geometry::{Point, Rect, Size};
 use fastrender::scroll::ScrollState;
-use fastrender::style::types::{AnimationRange, AnimationTimeline, ScrollTimeline, TimelineAxis};
+use fastrender::style::types::{
+  AnimationRange, AnimationTimeline, ScrollTimeline, TimelineAxis, TransitionTimingFunction,
+};
 use fastrender::style::ComputedStyle;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 
@@ -54,6 +56,7 @@ fn scroll_driven_animations_apply_inside_running_anchor_snapshots() {
   animated_style.animation_names = vec![animation_name.to_string()];
   animated_style.animation_ranges = vec![AnimationRange::default()];
   animated_style.animation_timelines = vec![AnimationTimeline::Named(timeline_name.to_string())];
+  animated_style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
   let animated_style = Arc::new(animated_style);
 
   let animated_leaf = FragmentNode::new_with_style(
