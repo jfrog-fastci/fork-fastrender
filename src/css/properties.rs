@@ -1943,8 +1943,11 @@ fn supports_view_timeline_function<'i, 't>(
           return Err(input.new_custom_error(()));
         }
         let func = name.as_ref().to_string();
-        let inner =
-          input.parse_nested_block(|block| Ok(block.slice_from(block.position()).to_string()))?;
+        let inner = input.parse_nested_block(|block| {
+          let start = block.position();
+          consume_nested_tokens_for_slice(block)?;
+          Ok(block.slice_from(start).to_string())
+        })?;
         let token_text = format!("{func}({inner})");
         if parse_length(&token_text).is_some() {
           inset_count += 1;
@@ -1956,6 +1959,24 @@ fn supports_view_timeline_function<'i, 't>(
     }
   }
 
+  Ok(())
+}
+
+fn consume_nested_tokens_for_slice<'i, 't>(
+  input: &mut Parser<'i, 't>,
+) -> Result<(), cssparser::ParseError<'i, ()>> {
+  while !input.is_exhausted() {
+    let token = input.next_including_whitespace_and_comments()?;
+    match token {
+      Token::CurlyBracketBlock
+      | Token::ParenthesisBlock
+      | Token::SquareBracketBlock
+      | Token::Function(_) => {
+        input.parse_nested_block(consume_nested_tokens_for_slice)?;
+      }
+      _ => {}
+    }
+  }
   Ok(())
 }
 

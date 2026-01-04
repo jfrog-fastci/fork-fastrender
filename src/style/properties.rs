@@ -13573,6 +13573,24 @@ fn parse_length_component<'i, 't>(
   }
 }
 
+fn consume_nested_tokens_for_slice<'i, 't>(
+  input: &mut Parser<'i, 't>,
+) -> Result<(), cssparser::ParseError<'i, ()>> {
+  while !input.is_exhausted() {
+    let token = input.next_including_whitespace_and_comments()?;
+    match token {
+      Token::CurlyBracketBlock
+      | Token::ParenthesisBlock
+      | Token::SquareBracketBlock
+      | Token::Function(_) => {
+        input.parse_nested_block(consume_nested_tokens_for_slice)?;
+      }
+      _ => {}
+    }
+  }
+  Ok(())
+}
+
 fn parse_css_color_value<'i, 't>(
   input: &mut Parser<'i, 't>,
 ) -> Result<FilterColor, cssparser::ParseError<'i, ()>> {
@@ -13583,8 +13601,11 @@ fn parse_css_color_value<'i, 't>(
     Token::Hash(ref value) | Token::IDHash(ref value) => format!("#{}", value),
     Token::Function(ref name) => {
       let func = name.as_ref().to_string();
-      let inner =
-        input.parse_nested_block(|block| Ok(block.slice_from(block.position()).to_string()))?;
+      let inner = input.parse_nested_block(|block| {
+        let start = block.position();
+        consume_nested_tokens_for_slice(block)?;
+        Ok(block.slice_from(start).to_string())
+      })?;
       format!("{}({})", func, inner)
     }
     _ => return Err(location.new_custom_error(())),
@@ -24070,6 +24091,25 @@ mod tests {
         assert!((shadow.spread.to_px() - 4.0).abs() < 0.01);
       }
       _ => panic!("expected drop-shadow with spread"),
+    }
+  }
+
+  #[test]
+  fn parses_drop_shadow_with_rgba_color() {
+    let filters = parse_filter_list(&PropertyValue::Keyword(
+      "drop-shadow(0 0 0 2px rgba(20, 40, 80, 0.5))".to_string(),
+    ))
+    .expect("filters");
+    assert_eq!(filters.len(), 1);
+    match &filters[0] {
+      FilterFunction::DropShadow(shadow) => {
+        assert_eq!(shadow.color, FilterColor::Color(Rgba::new(20, 40, 80, 0.5)));
+        assert!((shadow.offset_x.to_px() - 0.0).abs() < 0.01);
+        assert!((shadow.offset_y.to_px() - 0.0).abs() < 0.01);
+        assert!((shadow.blur_radius.to_px() - 0.0).abs() < 0.01);
+        assert!((shadow.spread.to_px() - 2.0).abs() < 0.01);
+      }
+      other => panic!("expected drop-shadow with rgba color, got {:?}", other),
     }
   }
 
