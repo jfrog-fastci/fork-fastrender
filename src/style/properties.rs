@@ -1622,7 +1622,256 @@ fn parse_time_ms(raw: &str) -> Option<f32> {
   if trimmed.parse::<f32>().ok().is_some_and(|v| v == 0.0) {
     return Some(0.0);
   }
+  if starts_with_ignore_ascii_case(trimmed, "calc(") {
+    return parse_calc_time_ms(trimmed);
+  }
   None
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CalcTimeComponent {
+  Number(f32),
+  /// Stored in milliseconds.
+  Time(f32),
+}
+
+fn calc_time_component_to_ms(component: CalcTimeComponent) -> Option<f32> {
+  match component {
+    CalcTimeComponent::Time(ms) => Some(ms),
+    CalcTimeComponent::Number(v) if v == 0.0 => Some(0.0),
+    _ => None,
+  }
+}
+
+fn combine_calc_time_sum<'i>(
+  left: CalcTimeComponent,
+  right: CalcTimeComponent,
+  sign: f32,
+  location: cssparser::SourceLocation,
+) -> Result<CalcTimeComponent, cssparser::ParseError<'i, ()>> {
+  match (left, right) {
+    (CalcTimeComponent::Number(a), CalcTimeComponent::Number(b)) => {
+      Ok(CalcTimeComponent::Number(a + b * sign))
+    }
+    (CalcTimeComponent::Time(a), CalcTimeComponent::Time(b)) => Ok(CalcTimeComponent::Time(a + b * sign)),
+    (CalcTimeComponent::Time(a), CalcTimeComponent::Number(0.0)) => Ok(CalcTimeComponent::Time(a)),
+    (CalcTimeComponent::Number(0.0), CalcTimeComponent::Time(b)) => Ok(CalcTimeComponent::Time(b * sign)),
+    _ => Err(location.new_custom_error(())),
+  }
+}
+
+fn combine_calc_time_product<'i>(
+  left: CalcTimeComponent,
+  right: CalcTimeComponent,
+  op: char,
+  location: cssparser::SourceLocation,
+) -> Result<CalcTimeComponent, cssparser::ParseError<'i, ()>> {
+  match op {
+    '*' => match (left, right) {
+      (CalcTimeComponent::Number(a), CalcTimeComponent::Number(b)) => Ok(CalcTimeComponent::Number(a * b)),
+      (CalcTimeComponent::Time(t), CalcTimeComponent::Number(n))
+      | (CalcTimeComponent::Number(n), CalcTimeComponent::Time(t)) => Ok(CalcTimeComponent::Time(t * n)),
+      _ => Err(location.new_custom_error(())),
+    },
+    '/' => match (left, right) {
+      (_, CalcTimeComponent::Number(0.0)) => Err(location.new_custom_error(())),
+      (_, CalcTimeComponent::Time(0.0)) => Err(location.new_custom_error(())),
+      (CalcTimeComponent::Number(a), CalcTimeComponent::Number(b)) => Ok(CalcTimeComponent::Number(a / b)),
+      (CalcTimeComponent::Time(t), CalcTimeComponent::Number(n)) => Ok(CalcTimeComponent::Time(t / n)),
+      // Support time/time -> number so nested expressions like `calc(1s * (1s/500ms))` work.
+      (CalcTimeComponent::Time(a), CalcTimeComponent::Time(b)) => Ok(CalcTimeComponent::Number(a / b)),
+      _ => Err(location.new_custom_error(())),
+    },
+    _ => Err(location.new_custom_error(())),
+  }
+}
+
+fn parse_calc_time_sum<'i, 't>(
+  input: &mut Parser<'i, 't>,
+) -> Result<CalcTimeComponent, cssparser::ParseError<'i, ()>> {
+  let mut left = parse_calc_time_product(input)?;
+  loop {
+    let op = match input.try_parse(|p| match p.next()? {
+      Token::Delim('+') => Ok(1.0),
+      Token::Delim('-') => Ok(-1.0),
+      _ => Err(p.new_custom_error::<(), ()>(())),
+    }) {
+      Ok(sign) => sign,
+      Err(_) => break,
+    };
+    let right = parse_calc_time_product(input)?;
+    let location = input.current_source_location();
+    left = combine_calc_time_sum(left, right, op, location)?;
+  }
+  Ok(left)
+}
+
+fn parse_calc_time_product<'i, 't>(
+  input: &mut Parser<'i, 't>,
+) -> Result<CalcTimeComponent, cssparser::ParseError<'i, ()>> {
+  let mut left = parse_calc_time_factor(input)?;
+  loop {
+    let op = match input.try_parse(|p| match p.next()? {
+      Token::Delim('*') => Ok('*'),
+      Token::Delim('/') => Ok('/'),
+      _ => Err(p.new_custom_error::<(), ()>(())),
+    }) {
+      Ok(op) => op,
+      Err(_) => break,
+    };
+    let right = parse_calc_time_factor(input)?;
+    let location = input.current_source_location();
+    left = combine_calc_time_product(left, right, op, location)?;
+  }
+  Ok(left)
+}
+
+fn parse_calc_time_factor<'i, 't>(
+  input: &mut Parser<'i, 't>,
+) -> Result<CalcTimeComponent, cssparser::ParseError<'i, ()>> {
+  let location = input.current_source_location();
+  let token = input.next()?;
+  match token {
+    Token::Number { value, .. } => Ok(CalcTimeComponent::Number(*value)),
+    Token::Dimension {
+      value, ref unit, ..
+    } => {
+      let unit = unit.as_ref();
+      if unit.eq_ignore_ascii_case("ms") {
+        Ok(CalcTimeComponent::Time(*value))
+      } else if unit.eq_ignore_ascii_case("s") {
+        Ok(CalcTimeComponent::Time(*value * 1000.0))
+      } else {
+        Err(location.new_custom_error(()))
+      }
+    }
+    Token::Function(ref name) => {
+      if name.as_ref().eq_ignore_ascii_case("calc") {
+        input.parse_nested_block(parse_calc_time_sum)
+      } else {
+        Err(location.new_custom_error(()))
+      }
+    }
+    Token::ParenthesisBlock => input.parse_nested_block(parse_calc_time_sum),
+    Token::Delim('+') => parse_calc_time_factor(input),
+    Token::Delim('-') => {
+      let inner = parse_calc_time_factor(input)?;
+      match inner {
+        CalcTimeComponent::Number(v) => Ok(CalcTimeComponent::Number(-v)),
+        CalcTimeComponent::Time(ms) => Ok(CalcTimeComponent::Time(-ms)),
+      }
+    }
+    _ => Err(location.new_custom_error(())),
+  }
+}
+
+fn parse_calc_time_ms(raw: &str) -> Option<f32> {
+  let mut parser_input = ParserInput::new(raw);
+  let mut parser = Parser::new(&mut parser_input);
+  parser
+    .parse_entirely(|input| {
+      let location = input.current_source_location();
+      match input.next()? {
+        Token::Function(name) if name.as_ref().eq_ignore_ascii_case("calc") => {
+          let component = input.parse_nested_block(parse_calc_time_sum)?;
+          calc_time_component_to_ms(component).ok_or_else(|| location.new_custom_error(()))
+        }
+        _ => Err(location.new_custom_error(())),
+      }
+    })
+    .ok()
+}
+
+fn parse_number_or_calc(raw: &str) -> Option<f32> {
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return None;
+  }
+  if let Ok(v) = trimmed.parse::<f32>() {
+    return Some(v);
+  }
+  if !starts_with_ignore_ascii_case(trimmed, "calc(") {
+    return None;
+  }
+
+  fn parse_calc_number_sum<'i, 't>(
+    input: &mut Parser<'i, 't>,
+  ) -> Result<f32, cssparser::ParseError<'i, ()>> {
+    let mut left = parse_calc_number_product(input)?;
+    loop {
+      let op = match input.try_parse(|p| match p.next()? {
+        Token::Delim('+') => Ok(1.0),
+        Token::Delim('-') => Ok(-1.0),
+        _ => Err(p.new_custom_error::<(), ()>(())),
+      }) {
+        Ok(sign) => sign,
+        Err(_) => break,
+      };
+      let right = parse_calc_number_product(input)?;
+      left += right * op;
+    }
+    Ok(left)
+  }
+
+  fn parse_calc_number_product<'i, 't>(
+    input: &mut Parser<'i, 't>,
+  ) -> Result<f32, cssparser::ParseError<'i, ()>> {
+    let mut left = parse_calc_number_factor(input)?;
+    loop {
+      let op = match input.try_parse(|p| match p.next()? {
+        Token::Delim('*') => Ok('*'),
+        Token::Delim('/') => Ok('/'),
+        _ => Err(p.new_custom_error::<(), ()>(())),
+      }) {
+        Ok(op) => op,
+        Err(_) => break,
+      };
+      let right = parse_calc_number_factor(input)?;
+      match op {
+        '*' => left *= right,
+        '/' => {
+          if right == 0.0 {
+            return Err(input.new_custom_error(()));
+          }
+          left /= right;
+        }
+        _ => {}
+      }
+    }
+    Ok(left)
+  }
+
+  fn parse_calc_number_factor<'i, 't>(
+    input: &mut Parser<'i, 't>,
+  ) -> Result<f32, cssparser::ParseError<'i, ()>> {
+    let location = input.current_source_location();
+    let token = input.next()?;
+    match token {
+      Token::Number { value, .. } => Ok(*value),
+      Token::Function(ref name) => {
+        if name.as_ref().eq_ignore_ascii_case("calc") {
+          input.parse_nested_block(parse_calc_number_sum)
+        } else {
+          Err(location.new_custom_error(()))
+        }
+      }
+      Token::ParenthesisBlock => input.parse_nested_block(parse_calc_number_sum),
+      Token::Delim('+') => parse_calc_number_factor(input),
+      Token::Delim('-') => parse_calc_number_factor(input).map(|v| -v),
+      _ => Err(location.new_custom_error(())),
+    }
+  }
+
+  let mut parser_input = ParserInput::new(trimmed);
+  let mut parser = Parser::new(&mut parser_input);
+  parser
+    .parse_entirely(|input| match input.next()? {
+      Token::Function(name) if name.as_ref().eq_ignore_ascii_case("calc") => {
+        input.parse_nested_block(parse_calc_number_sum)
+      }
+      _ => Err(input.new_custom_error(())),
+    })
+    .ok()
 }
 
 fn parse_animation_duration_list(raw: &str) -> Vec<f32> {
@@ -1661,7 +1910,7 @@ fn parse_animation_iteration_count(raw: &str) -> Option<AnimationIterationCount>
   if trimmed.eq_ignore_ascii_case("infinite") {
     return Some(AnimationIterationCount::Infinite);
   }
-  let value = trimmed.parse::<f32>().ok()?;
+  let value = parse_number_or_calc(trimmed)?;
   if value.is_finite() && value >= 0.0 {
     Some(AnimationIterationCount::Count(value))
   } else {
@@ -15907,6 +16156,18 @@ mod tests {
   }
 
   #[test]
+  fn parse_time_ms_parses_calc_expressions() {
+    assert_eq!(parse_time_ms("calc(1s/2)"), Some(500.0));
+    assert_eq!(parse_time_ms("calc(1s / 2)"), Some(500.0));
+    assert_eq!(parse_time_ms("calc(2 * 500ms)"), Some(1000.0));
+    assert_eq!(parse_time_ms("calc(500ms*2)"), Some(1000.0));
+    assert_eq!(parse_time_ms("calc(1s + 250ms)"), Some(1250.0));
+    assert_eq!(parse_time_ms("calc(1s - 250ms)"), Some(750.0));
+    assert_eq!(parse_time_ms("calc(0)"), Some(0.0));
+    assert!(parse_time_ms("calc(1s / 0)").is_none());
+  }
+
+  #[test]
   fn transition_shorthand_parses_linear_function_tokens() {
     let decls = parse_declarations("transition: 200ms linear(0,0.5,1) opacity;");
     assert_eq!(decls.len(), 1);
@@ -16124,6 +16385,61 @@ mod tests {
     assert_eq!(
       styles.animation_names,
       vec!["fade".to_string(), "slide".to_string()]
+    );
+  }
+
+  #[test]
+  fn animation_duration_var_resolves_calc_time() {
+    let decls = parse_declarations("animation-duration: calc(var(--d)/2);");
+    assert_eq!(decls.len(), 1);
+    let decl = &decls[0];
+
+    let parent_styles = ComputedStyle::default();
+    let mut styles = ComputedStyle::default();
+    styles
+      .custom_properties
+      .insert("--d".into(), CustomPropertyValue::new("1s", None));
+    apply_declaration_with_base(
+      &mut styles,
+      decl,
+      &parent_styles,
+      default_computed_style(),
+      None,
+      16.0,
+      16.0,
+      DEFAULT_VIEWPORT,
+    );
+
+    assert_eq!(styles.animation_durations, vec![500.0].into());
+  }
+
+  #[test]
+  fn animation_iteration_count_var_resolves_calc_number() {
+    assert_eq!(parse_number_or_calc("calc(1 + 2)"), Some(3.0));
+
+    let decls = parse_declarations("animation-iteration-count: calc(var(--r)*2);");
+    assert_eq!(decls.len(), 1);
+    let decl = &decls[0];
+
+    let parent_styles = ComputedStyle::default();
+    let mut styles = ComputedStyle::default();
+    styles
+      .custom_properties
+      .insert("--r".into(), CustomPropertyValue::new("1", None));
+    apply_declaration_with_base(
+      &mut styles,
+      decl,
+      &parent_styles,
+      default_computed_style(),
+      None,
+      16.0,
+      16.0,
+      DEFAULT_VIEWPORT,
+    );
+
+    assert_eq!(
+      styles.animation_iteration_counts,
+      vec![AnimationIterationCount::Count(2.0)].into()
     );
   }
 
