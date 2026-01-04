@@ -3868,6 +3868,8 @@ fn apply_primitive(
       let (sx, sy) = filter.resolve_primitive_pair((*disp_scale, *disp_scale), css_bbox);
       let scale_x_px = sx * scale_x;
       let scale_y_px = sy * scale_y;
+      let scale_x_px = if scale_x_px.is_finite() { scale_x_px } else { 0.0 };
+      let scale_y_px = if scale_y_px.is_finite() { scale_y_px } else { 0.0 };
       let Some(output) = apply_displacement_map(
         &primary.pixmap,
         &map.pixmap,
@@ -5216,6 +5218,9 @@ fn apply_displacement_map(
     (primary, map)
   };
 
+  let scale_x = if scale_x.is_finite() { scale_x } else { 0.0 };
+  let scale_y = if scale_y.is_finite() { scale_y } else { 0.0 };
+
   for (idx, dst) in out.pixels_mut().iter_mut().enumerate() {
     if idx % FILTER_DEADLINE_STRIDE == 0 {
       check_active(RenderStage::Paint)?;
@@ -5230,7 +5235,13 @@ fn apply_displacement_map(
     let dx = (channel_value_x - 0.5) * scale_x;
     let dy = (channel_value_y - 0.5) * scale_y;
 
-    let sample = sample_premultiplied(primary, x as f32 + dx, y as f32 + dy);
+    let sample_x = x as f32 + dx;
+    let sample_y = y as f32 + dy;
+    let sample = if sample_x.is_finite() && sample_y.is_finite() {
+      sample_premultiplied(primary, sample_x, sample_y)
+    } else {
+      [0.0; 4]
+    };
     let a = to_byte(sample[3]);
     *dst = PremultipliedColorU8::from_rgba(
       to_byte(sample[0].min(sample[3])),

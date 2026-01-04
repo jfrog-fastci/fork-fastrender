@@ -222,3 +222,65 @@ fn displacement_map_object_bounding_box_scales_per_axis() {
     (100, 100, 0, 255)
   );
 }
+
+#[test]
+fn displacement_map_uses_anisotropic_filter_res_scale() {
+  // Stretch the filter graph in X via `filterRes` so the displacement map scale must be converted
+  // with separate X/Y pixel scales (i.e. not using a single `scale_avg`).
+  let mut pixmap = gradient_pixmap();
+
+  // Constant map:
+  // - X channel neutral (0.5) => dx = 0
+  // - Y channel max (1.0) => dy = +0.5 * scale_y_px
+  let mut map = Pixmap::new(pixmap.width(), pixmap.height()).unwrap();
+  for px in map.pixels_mut() {
+    *px =
+      PremultipliedColorU8::from_rgba(128, 0, 0, 255).unwrap_or(PremultipliedColorU8::TRANSPARENT);
+  }
+
+  let mut filter = SvgFilter {
+    color_interpolation_filters: ColorInterpolationFilters::SRGB,
+    steps: vec![
+      FilterStep {
+        result: Some("map".to_string()),
+        color_interpolation_filters: None,
+        primitive: FilterPrimitive::Image(ImagePrimitive::from_pixmap(map)),
+        region: None,
+      },
+      FilterStep {
+        result: None,
+        color_interpolation_filters: None,
+        primitive: FilterPrimitive::DisplacementMap {
+          in1: FilterInput::SourceGraphic,
+          in2: FilterInput::Reference("map".to_string()),
+          // With `filterRes="6 1"` on a 3×1 input, we get scale_x=2 and scale_y=1. Using a single
+          // averaged scale would over-displace Y, pushing all samples out-of-bounds (transparent).
+          scale: 1.5,
+          x_channel: ChannelSelector::R,
+          y_channel: ChannelSelector::A,
+        },
+        region: None,
+      },
+    ],
+    region: SvgFilterRegion {
+      x: SvgLength::Percent(0.0),
+      y: SvgLength::Percent(0.0),
+      width: SvgLength::Percent(1.0),
+      height: SvgLength::Percent(1.0),
+      units: SvgFilterUnits::ObjectBoundingBox,
+    },
+    filter_res: Some((6, 1)),
+    primitive_units: SvgFilterUnits::UserSpaceOnUse,
+    fingerprint: 0,
+  };
+  filter.refresh_fingerprint();
+
+  let bbox = Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32);
+  apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
+
+  let alpha = pixel(&pixmap, 1).3;
+  assert!(
+    alpha > 0 && alpha < 255,
+    "expected partial coverage from Y displacement, got alpha={alpha}"
+  );
+}
