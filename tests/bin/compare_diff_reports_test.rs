@@ -150,6 +150,22 @@ fn compare_diff_reports_pairs_and_classifies_entries() {
 
   let report: Value = serde_json::from_str(&fs::read_to_string(&out_json).unwrap()).unwrap();
   assert_eq!(report["schema_version"], 2);
+  assert_eq!(
+    report["baseline"]["report_json"],
+    fs::canonicalize(&baseline_path).unwrap().display().to_string()
+  );
+  assert_eq!(
+    report["new"]["report_json"],
+    fs::canonicalize(&new_path).unwrap().display().to_string()
+  );
+  assert!(
+    report["baseline"].get("report_html").is_none(),
+    "did not expect report_html when no html path is provided"
+  );
+  assert!(
+    report["new"].get("report_html").is_none(),
+    "did not expect report_html when no html path is provided"
+  );
 
   let aggregate = &report["aggregate"];
   assert_eq!(aggregate["paired_with_metrics"], 2);
@@ -572,6 +588,16 @@ fn compare_diff_reports_can_override_report_html_paths() {
     output.status.code(),
     output_text(&output.stdout),
     output_text(&output.stderr),
+  );
+
+  let report: Value = serde_json::from_str(&fs::read_to_string(&out_json).unwrap()).unwrap();
+  assert_eq!(
+    report["baseline"]["report_html"],
+    fs::canonicalize(&baseline_html).unwrap().display().to_string()
+  );
+  assert_eq!(
+    report["new"]["report_html"],
+    fs::canonicalize(&new_html).unwrap().display().to_string()
   );
 
   let html = fs::read_to_string(&out_html).expect("read delta html");
