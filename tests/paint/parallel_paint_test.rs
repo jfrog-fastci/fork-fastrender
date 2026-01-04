@@ -1196,10 +1196,9 @@ fn stacking_context_filter_radii_match_serial_output_under_tiling() {
 fn path_clips_survive_tiling() {
   let (width, height) = (192, 192);
   let mut list = DisplayList::new();
-  // Add an invisible shadow solely to inflate the per-tile halo region. Tiny-skia's
-  // path mask rasterizer can produce subtly different antialiasing coverage when a
-  // polygon is clipped to the tile's mask bounds, so we make each tile render a
-  // large enough region that the full clip path fits inside.
+  // Add a no-op (fully transparent) shadow with a large blur radius. The renderer
+  // should ignore it when estimating the per-tile halo; otherwise we'd trigger the
+  // halo amplification serial fallback and lose tiling coverage for clip-path.
   list.push(DisplayItem::BoxShadow(BoxShadowItem {
     rect: Rect::from_xywh(0.0, 0.0, 8.0, 8.0),
     radii: BorderRadii::ZERO,
