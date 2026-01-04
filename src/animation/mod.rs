@@ -1650,6 +1650,34 @@ fn apply_border_radius(style: &mut ComputedStyle, value: &AnimatedValue) {
   }
 }
 
+fn apply_border_corner(style: &mut ComputedStyle, value: &AnimatedValue, idx: usize) {
+  if let AnimatedValue::BorderRadius(r) = value {
+    match idx {
+      0 => style.border_top_left_radius = r[0],
+      1 => style.border_top_right_radius = r[1],
+      2 => style.border_bottom_left_radius = r[3],
+      3 => style.border_bottom_right_radius = r[2],
+      _ => {}
+    }
+  }
+}
+
+fn apply_border_top_left_radius(style: &mut ComputedStyle, value: &AnimatedValue) {
+  apply_border_corner(style, value, 0);
+}
+
+fn apply_border_top_right_radius(style: &mut ComputedStyle, value: &AnimatedValue) {
+  apply_border_corner(style, value, 1);
+}
+
+fn apply_border_bottom_left_radius(style: &mut ComputedStyle, value: &AnimatedValue) {
+  apply_border_corner(style, value, 2);
+}
+
+fn apply_border_bottom_right_radius(style: &mut ComputedStyle, value: &AnimatedValue) {
+  apply_border_corner(style, value, 3);
+}
+
 fn property_interpolators() -> &'static [PropertyInterpolator] {
   static PROPS: &[PropertyInterpolator] = &[
     PropertyInterpolator {
@@ -1752,25 +1780,25 @@ fn property_interpolators() -> &'static [PropertyInterpolator] {
       name: "border-top-left-radius",
       extract: |s, c| extract_border_corner(s, c, 0),
       interpolate: interpolate_border_radius_value,
-      apply: apply_border_radius,
+      apply: apply_border_top_left_radius,
     },
     PropertyInterpolator {
       name: "border-top-right-radius",
       extract: |s, c| extract_border_corner(s, c, 1),
       interpolate: interpolate_border_radius_value,
-      apply: apply_border_radius,
+      apply: apply_border_top_right_radius,
     },
     PropertyInterpolator {
       name: "border-bottom-left-radius",
       extract: |s, c| extract_border_corner(s, c, 2),
       interpolate: interpolate_border_radius_value,
-      apply: apply_border_radius,
+      apply: apply_border_bottom_left_radius,
     },
     PropertyInterpolator {
       name: "border-bottom-right-radius",
       extract: |s, c| extract_border_corner(s, c, 3),
       interpolate: interpolate_border_radius_value,
-      apply: apply_border_radius,
+      apply: apply_border_bottom_right_radius,
     },
   ];
   PROPS
