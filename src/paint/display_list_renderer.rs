@@ -61,9 +61,9 @@ use crate::paint::display_list::TextItem;
 use crate::paint::display_list::TextShadowItem;
 use crate::paint::display_list::Transform3D;
 use crate::paint::display_list::TransformItem;
-use crate::paint::filter_outset::filter_outset_with_bounds;
 #[cfg(test)]
 use crate::paint::filter_outset::filter_outset;
+use crate::paint::filter_outset::filter_outset_with_bounds;
 use crate::paint::gradient::{
   gradient_bucket, rasterize_conic_gradient_cached, rasterize_conic_gradient_scaled_cached,
   rasterize_linear_gradient_cached, GradientLutCache, GradientPixmapCache, GradientPixmapCacheKey,
@@ -81,8 +81,8 @@ use crate::paint::rasterize::{
   BoxShadowSurfaceClamp,
 };
 use crate::paint::text_rasterize::{
-  concat_transforms, shared_color_cache, shared_color_renderer, shared_glyph_cache, ColorGlyphCache,
-  GlyphCache, TextRasterizer, TextRenderState,
+  concat_transforms, shared_color_cache, shared_color_renderer, shared_glyph_cache,
+  ColorGlyphCache, GlyphCache, TextRasterizer, TextRenderState,
 };
 use crate::paint::text_shadow::PathBounds;
 use crate::paint::transform3d::backface_is_hidden;
@@ -1076,7 +1076,9 @@ fn apply_filters_with_optional_svg_backdrop(
 
   let mut scratch = BACKDROP_FILTER_SCRATCH.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
   let mut backdrop_pixmap = match scratch.svg_backdrop.take() {
-    Some(existing) if existing.width() == pixmap.width() && existing.height() == pixmap.height() => {
+    Some(existing)
+      if existing.width() == pixmap.width() && existing.height() == pixmap.height() =>
+    {
       existing
     }
     _ => match new_pixmap(pixmap.width(), pixmap.height()) {
@@ -2790,7 +2792,10 @@ fn update_scene_effect_stack(stack: &mut Vec<SceneEffect>, item: &DisplayItem) {
       stack.push(SceneEffect::Clip(clip.clone()));
     }
     DisplayItem::PopClip => {
-      if let Some(pos) = stack.iter().rposition(|eff| matches!(eff, SceneEffect::Clip(_))) {
+      if let Some(pos) = stack
+        .iter()
+        .rposition(|eff| matches!(eff, SceneEffect::Clip(_)))
+      {
         stack.remove(pos);
       }
     }
@@ -2798,7 +2803,10 @@ fn update_scene_effect_stack(stack: &mut Vec<SceneEffect>, item: &DisplayItem) {
       stack.push(SceneEffect::Opacity(*opacity));
     }
     DisplayItem::PopOpacity => {
-      if let Some(pos) = stack.iter().rposition(|eff| matches!(eff, SceneEffect::Opacity(_))) {
+      if let Some(pos) = stack
+        .iter()
+        .rposition(|eff| matches!(eff, SceneEffect::Opacity(_)))
+      {
         stack.remove(pos);
       }
     }
@@ -4846,8 +4854,9 @@ impl DisplayListRenderer {
     let rects = mask.rects;
     let mut combined: Option<CompositeMask> = None;
     let transform = self.canvas.transform();
-    let inv_transform =
-      (transform == Transform::identity()).then_some(Transform::identity()).or_else(|| {
+    let inv_transform = (transform == Transform::identity())
+      .then_some(Transform::identity())
+      .or_else(|| {
         // `render_mask` needs to clip mask rasterization to the visible canvas region. Mask
         // reference rectangles are expressed in global CSS coordinates, while the underlying
         // canvas pixmap is always rooted at (0,0) in *pixmap* space. When the canvas has a
@@ -5229,7 +5238,11 @@ impl DisplayListRenderer {
         }
         let mut tile_deadline_counter = 0usize;
         if let Some((tx, ty, tile_w, tile_h)) = generated_tile_override {
-          check_active_periodic(&mut tile_deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)?;
+          check_active_periodic(
+            &mut tile_deadline_counter,
+            DEADLINE_STRIDE,
+            RenderStage::Paint,
+          )?;
           paint_mask_tile(
             mask_pixmap,
             mask_tile,
@@ -5244,7 +5257,11 @@ impl DisplayListRenderer {
         } else {
           for ty in positions_y.iter() {
             for tx in positions_x.iter() {
-              check_active_periodic(&mut tile_deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)?;
+              check_active_periodic(
+                &mut tile_deadline_counter,
+                DEADLINE_STRIDE,
+                RenderStage::Paint,
+              )?;
               paint_mask_tile(
                 mask_pixmap,
                 mask_tile,
@@ -6469,8 +6486,9 @@ impl DisplayListRenderer {
             let is_affine = Homography::from_transform3d_z0(&adjusted_transform).is_affine();
             let depth = {
               let center = scene_item.plane_rect.center();
-              let (_tx, _ty, tz, tw) =
-                scene_item.transform.transform_point(center.x, center.y, 0.0);
+              let (_tx, _ty, tz, tw) = scene_item
+                .transform
+                .transform_point(center.x, center.y, 0.0);
               if tz.is_finite() && tw.is_finite() && tw.abs() >= Transform3D::MIN_PROJECTIVE_W {
                 tz / tw
               } else {
@@ -6956,12 +6974,12 @@ impl DisplayListRenderer {
           self.culled_depth = 1;
           return Ok(());
         }
- 
+
         let warp_candidate = parent_perspective.multiply(&local_transform);
         let warp_candidate_is_projective =
           !Homography::from_transform3d_z0(&warp_candidate).is_affine();
-        let projective_transform = (self.projective_warp_enabled && warp_candidate_is_projective)
-          .then_some(warp_candidate);
+        let projective_transform =
+          (self.projective_warp_enabled && warp_candidate_is_projective).then_some(warp_candidate);
 
         let child_base_transform = if let Some(perspective) = item.child_perspective.as_ref() {
           painting_transform_3d.multiply(perspective)
@@ -6990,13 +7008,15 @@ impl DisplayListRenderer {
         let mut combined_transform = parent_transform;
         let mut applied_perspective = false;
         if projective_transform.is_none()
-          && (item.transform.is_some() || (!self.projective_warp_enabled && warp_candidate_is_projective))
+          && (item.transform.is_some()
+            || (!self.projective_warp_enabled && warp_candidate_is_projective))
         {
-          let transform_for_canvas = if !self.projective_warp_enabled && warp_candidate_is_projective {
-            &warp_candidate
-          } else {
-            &local_transform
-          };
+          let transform_for_canvas =
+            if !self.projective_warp_enabled && warp_candidate_is_projective {
+              &warp_candidate
+            } else {
+              &local_transform
+            };
           let (t, valid) = self.to_skia_transform_checked(transform_for_canvas);
           if valid {
             local_skia_transform = Some(t);
@@ -7206,11 +7226,11 @@ impl DisplayListRenderer {
               _ => false,
             });
             let backdrop = needs_svg_background.then(|| self.canvas.pixmap());
-            let blur_cache: &mut (dyn BlurCacheOps + 'static) = match self.shared_blur_cache.as_mut()
-            {
-              Some(shared) => shared,
-              None => &mut self.blur_cache,
-            };
+            let blur_cache: &mut (dyn BlurCacheOps + 'static) =
+              match self.shared_blur_cache.as_mut() {
+                Some(shared) => shared,
+                None => &mut self.blur_cache,
+              };
             apply_filters_scoped(
               &mut layer,
               &record.filters,
@@ -7800,11 +7820,8 @@ impl DisplayListRenderer {
       0.0
     };
 
-    let rotation = crate::paint::text_rasterize::rotation_transform(
-      item.rotation,
-      item.origin.x,
-      item.origin.y,
-    );
+    let rotation =
+      crate::paint::text_rasterize::rotation_transform(item.rotation, item.origin.x, item.origin.y);
 
     for glyph in &item.glyphs {
       let glyph_x = cursor_x + glyph.x_offset;
@@ -7923,8 +7940,8 @@ impl DisplayListRenderer {
       let rp = mul_div_255_round_u16(r, a16) as u8;
       let gp = mul_div_255_round_u16(g, a16) as u8;
       let bp = mul_div_255_round_u16(b, a16) as u8;
-      *px = PremultipliedColorU8::from_rgba(rp, gp, bp, a)
-        .unwrap_or(PremultipliedColorU8::TRANSPARENT);
+      *px =
+        PremultipliedColorU8::from_rgba(rp, gp, bp, a).unwrap_or(PremultipliedColorU8::TRANSPARENT);
     }
 
     Ok(())
@@ -10093,7 +10110,9 @@ fn apply_mask_composite(
     (Transparent, Transparent) => Ok(Some(Transparent)),
     (Transparent, Region(mask)) => match op {
       MaskComposite::Intersect => Ok(Some(Transparent)),
-      MaskComposite::Add | MaskComposite::Subtract | MaskComposite::Exclude => Ok(Some(Region(mask))),
+      MaskComposite::Add | MaskComposite::Subtract | MaskComposite::Exclude => {
+        Ok(Some(Region(mask)))
+      }
     },
     (Region(mask), Transparent) => match op {
       MaskComposite::Add | MaskComposite::Exclude => Ok(Some(Region(mask))),
@@ -11285,7 +11304,7 @@ mod tests {
       None,
       (0, 0),
     )
-      .expect("apply filter warm-up");
+    .expect("apply filter warm-up");
 
     let recorder = crate::paint::pixmap::NewPixmapAllocRecorder::start();
     apply_filters_scoped(
@@ -11298,7 +11317,7 @@ mod tests {
       None,
       (0, 0),
     )
-      .expect("apply filter reuse");
+    .expect("apply filter reuse");
     let allocations = recorder.take();
 
     assert!(
@@ -11492,10 +11511,7 @@ mod tests {
       .expect("single-thread rayon pool");
 
     let toggles = Arc::new(crate::debug::runtime::RuntimeToggles::from_map(
-      std::collections::HashMap::from([(
-        "FASTR_PAINT_THREADS".to_string(),
-        "4".to_string(),
-      )]),
+      std::collections::HashMap::from([("FASTR_PAINT_THREADS".to_string(), "4".to_string())]),
     ));
 
     let report = one_thread.install(|| {
@@ -11549,10 +11565,7 @@ mod tests {
       .expect("single-thread rayon pool");
 
     let toggles = Arc::new(crate::debug::runtime::RuntimeToggles::from_map(
-      std::collections::HashMap::from([(
-        "FASTR_PAINT_THREADS".to_string(),
-        "4".to_string(),
-      )]),
+      std::collections::HashMap::from([("FASTR_PAINT_THREADS".to_string(), "4".to_string())]),
     ));
 
     let report = one_thread.install(|| {
@@ -14490,8 +14503,7 @@ mod tests {
 
   #[test]
   fn render_mask_respects_bounded_layer_translation() {
-    let mut renderer =
-      DisplayListRenderer::new(100, 100, Rgba::WHITE, FontContext::new()).unwrap();
+    let mut renderer = DisplayListRenderer::new(100, 100, Rgba::WHITE, FontContext::new()).unwrap();
     renderer
       .canvas
       .push_layer_bounded(1.0, None, Rect::from_xywh(50.0, 60.0, 10.0, 10.0))
@@ -14554,9 +14566,10 @@ mod tests {
         Rect::from_xywh(10.0, 10.0, 20.0, 20.0),
       )
       .unwrap();
-    renderer
-      .canvas
-      .draw_rect(Rect::from_xywh(70.0, 70.0, 20.0, 20.0), Rgba::new(30, 160, 220, 1.0));
+    renderer.canvas.draw_rect(
+      Rect::from_xywh(70.0, 70.0, 20.0, 20.0),
+      Rgba::new(30, 160, 220, 1.0),
+    );
 
     let (mut layer, layer_origin, _opacity, _blend) = renderer.canvas.pop_layer_raw().unwrap();
     assert_eq!(layer_origin, (10, 10));
@@ -14919,7 +14932,8 @@ mod tests {
     let cancel: Arc<CancelCallback> =
       Arc::new(move || cancel_calls.fetch_add(1, Ordering::Relaxed) >= 1);
     let deadline = RenderDeadline::new(None, Some(cancel));
-    let result = crate::render_control::with_deadline(Some(&deadline), || renderer.render_mask(&mask));
+    let result =
+      crate::render_control::with_deadline(Some(&deadline), || renderer.render_mask(&mask));
 
     assert!(
       matches!(
@@ -14974,7 +14988,8 @@ mod tests {
     let cancel: Arc<CancelCallback> =
       Arc::new(move || cancel_calls.fetch_add(1, Ordering::Relaxed) >= cancel_after);
     let deadline = RenderDeadline::new(None, Some(cancel));
-    let result = crate::render_control::with_deadline(Some(&deadline), || renderer.render_mask(&mask));
+    let result =
+      crate::render_control::with_deadline(Some(&deadline), || renderer.render_mask(&mask));
 
     assert!(
       matches!(

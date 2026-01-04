@@ -1556,9 +1556,8 @@ impl DisplayListBuilder {
       );
       (
         if clip_x || clip_y {
-          let rects = absolute_rects.get_or_insert_with(|| {
-            Self::background_rects(absolute_rect, style, self.viewport)
-          });
+          let rects = absolute_rects
+            .get_or_insert_with(|| Self::background_rects(absolute_rect, style, self.viewport));
           Self::overflow_clip_from_style_with_rects(
             style,
             rects,
@@ -1613,9 +1612,8 @@ impl DisplayListBuilder {
           absolute_rects
             .get_or_insert_with(|| Self::background_rects(absolute_rect, style, self.viewport))
         } else {
-          decoration_rects.get_or_insert_with(|| {
-            Self::background_rects(decoration_rect, style, self.viewport)
-          })
+          decoration_rects
+            .get_or_insert_with(|| Self::background_rects(decoration_rect, style, self.viewport))
         };
 
         let has_outer = style.box_shadow.iter().any(|shadow| !shadow.inset);
@@ -1793,13 +1791,17 @@ impl DisplayListBuilder {
         return;
       }
     }
-    let skip_contents = fragment.style.as_deref().is_some_and(|style| match style.content_visibility {
-      ContentVisibility::Hidden => true,
-      ContentVisibility::Auto => visibility
-        .rect
-        .is_some_and(|vis| !vis.intersects(absolute_rect)),
-      ContentVisibility::Visible => false,
-    });
+    let skip_contents =
+      fragment
+        .style
+        .as_deref()
+        .is_some_and(|style| match style.content_visibility {
+          ContentVisibility::Hidden => true,
+          ContentVisibility::Auto => visibility
+            .rect
+            .is_some_and(|vis| !vis.intersects(absolute_rect)),
+          ContentVisibility::Visible => false,
+        });
     if push_opacity {
       self.push_opacity(opacity);
     }
@@ -2079,15 +2081,21 @@ impl DisplayListBuilder {
     } else {
       None
     };
-    let clip_path =
-      root_style.and_then(|style| resolve_clip_path(style, context_bounds, viewport, &self.font_ctx));
+    let clip_path = root_style
+      .and_then(|style| resolve_clip_path(style, context_bounds, viewport, &self.font_ctx));
     if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), clip_path_timer) {
       breakdown.record_clip_path(start.elapsed());
     }
-    let clip_rect =
-      root_style.and_then(|style| Self::clip_rect_from_style(style, context_bounds, Some(viewport)));
-    let overflow_clip = root_style
-      .and_then(|style| Self::overflow_clip_from_style(style, context_bounds, self.viewport, self.build_breakdown.as_deref()));
+    let clip_rect = root_style
+      .and_then(|style| Self::clip_rect_from_style(style, context_bounds, Some(viewport)));
+    let overflow_clip = root_style.and_then(|style| {
+      Self::overflow_clip_from_style(
+        style,
+        context_bounds,
+        self.viewport,
+        self.build_breakdown.as_deref(),
+      )
+    });
     let paint_containment_clip = if paint_contained {
       root_fragment
         .and_then(|fragment| {
@@ -3619,7 +3627,9 @@ impl DisplayListBuilder {
       }
     } else if len.unit.is_viewport_relative() {
       if let Some((vw, vh)) = viewport {
-        len.resolve_with_viewport(vw, vh).unwrap_or(len.value * font_size)
+        len
+          .resolve_with_viewport(vw, vh)
+          .unwrap_or(len.value * font_size)
       } else {
         len.value * font_size
       }
@@ -3629,7 +3639,9 @@ impl DisplayListBuilder {
       } else {
         font_size
       };
-      len.resolve_with_font_size(px).unwrap_or(len.value * font_size)
+      len
+        .resolve_with_font_size(px)
+        .unwrap_or(len.value * font_size)
     } else {
       len.value
     };
@@ -3729,8 +3741,7 @@ impl DisplayListBuilder {
           .enumerate()
           .map(|(chunk_idx, chunk)| {
             let chunk_offset = chunk_idx * plan.chunk_size;
-            let _diagnostics_guard =
-              diagnostics_session.map(PaintDiagnosticsThreadGuard::enter);
+            let _diagnostics_guard = diagnostics_session.map(PaintDiagnosticsThreadGuard::enter);
             let deadline = deadline.clone();
             let root_deadline = root_deadline.clone();
             with_deadline(root_deadline.as_ref(), || {
@@ -3804,8 +3815,7 @@ impl DisplayListBuilder {
           .enumerate()
           .map(|(chunk_idx, chunk)| {
             let chunk_offset = chunk_idx * plan.chunk_size;
-            let _diagnostics_guard =
-              diagnostics_session.map(PaintDiagnosticsThreadGuard::enter);
+            let _diagnostics_guard = diagnostics_session.map(PaintDiagnosticsThreadGuard::enter);
             let deadline = deadline.clone();
             let root_deadline = root_deadline.clone();
             with_deadline(root_deadline.as_ref(), || {
@@ -4393,7 +4403,11 @@ impl DisplayListBuilder {
     self.emit_background_from_style_with_rects(&rects, style);
   }
 
-  fn emit_background_from_style_with_rects(&mut self, rects: &BackgroundRects, style: &ComputedStyle) {
+  fn emit_background_from_style_with_rects(
+    &mut self,
+    rects: &BackgroundRects,
+    style: &ComputedStyle,
+  ) {
     let has_images = style.background_layers.iter().any(|l| l.image.is_some());
     if style.background_color.is_transparent() && !has_images {
       return;
@@ -4683,9 +4697,8 @@ impl DisplayListBuilder {
               let start = Point::new(cx - dx * len, cy - dy * len);
               let end = Point::new(cx + dx * len, cy + dy * len);
 
-              self
-                .list
-                .push(DisplayItem::LinearGradientPattern(LinearGradientPatternItem {
+              self.list.push(DisplayItem::LinearGradientPattern(
+                LinearGradientPatternItem {
                   dest_rect: visible_clip,
                   tile_size: Size::new(tile_w, tile_h),
                   origin: Point::new(origin_rect.x() + offset_x, origin_rect.y() + offset_y),
@@ -4693,7 +4706,8 @@ impl DisplayListBuilder {
                   end,
                   stops,
                   spread: GradientSpread::Pad,
-                }));
+                },
+              ));
             }
           } else if let Some((tile_w, tile_h, _offset_x, _offset_y, positions_x, positions_y)) =
             compute_tiles(0.0, 0.0)
@@ -4761,9 +4775,8 @@ impl DisplayListBuilder {
               let start = Point::new(cx - dx * len, cy - dy * len);
               let end = Point::new(cx + dx * len, cy + dy * len);
 
-              self
-                .list
-                .push(DisplayItem::LinearGradientPattern(LinearGradientPatternItem {
+              self.list.push(DisplayItem::LinearGradientPattern(
+                LinearGradientPatternItem {
                   dest_rect: visible_clip,
                   tile_size: Size::new(tile_w, tile_h),
                   origin: Point::new(origin_rect.x() + offset_x, origin_rect.y() + offset_y),
@@ -4771,7 +4784,8 @@ impl DisplayListBuilder {
                   end,
                   stops,
                   spread: GradientSpread::Repeat,
-                }));
+                },
+              ));
             }
           } else if let Some((tile_w, tile_h, _offset_x, _offset_y, positions_x, positions_y)) =
             compute_tiles(0.0, 0.0)
@@ -4842,9 +4856,8 @@ impl DisplayListBuilder {
                 self.viewport,
               );
 
-              self
-                .list
-                .push(DisplayItem::ConicGradientPattern(ConicGradientPatternItem {
+              self.list.push(DisplayItem::ConicGradientPattern(
+                ConicGradientPatternItem {
                   dest_rect: visible_clip,
                   tile_size: Size::new(tile_w, tile_h),
                   origin: Point::new(origin_rect.x() + offset_x, origin_rect.y() + offset_y),
@@ -4852,7 +4865,8 @@ impl DisplayListBuilder {
                   from_angle: *from_angle,
                   stops,
                   repeating: false,
-                }));
+                },
+              ));
             }
           } else if let Some((tile_w, tile_h, _offset_x, _offset_y, positions_x, positions_y)) =
             compute_tiles(0.0, 0.0)
@@ -4923,9 +4937,8 @@ impl DisplayListBuilder {
                 self.viewport,
               );
 
-              self
-                .list
-                .push(DisplayItem::ConicGradientPattern(ConicGradientPatternItem {
+              self.list.push(DisplayItem::ConicGradientPattern(
+                ConicGradientPatternItem {
                   dest_rect: visible_clip,
                   tile_size: Size::new(tile_w, tile_h),
                   origin: Point::new(origin_rect.x() + offset_x, origin_rect.y() + offset_y),
@@ -4933,7 +4946,8 @@ impl DisplayListBuilder {
                   from_angle: *from_angle,
                   stops,
                   repeating: true,
-                }));
+                },
+              ));
             }
           } else if let Some((tile_w, tile_h, _offset_x, _offset_y, positions_x, positions_y)) =
             compute_tiles(0.0, 0.0)
@@ -5007,9 +5021,8 @@ impl DisplayListBuilder {
                 self.viewport,
               );
 
-              self
-                .list
-                .push(DisplayItem::RadialGradientPattern(RadialGradientPatternItem {
+              self.list.push(DisplayItem::RadialGradientPattern(
+                RadialGradientPatternItem {
                   dest_rect: visible_clip,
                   tile_size: Size::new(tile_w, tile_h),
                   origin: Point::new(origin_rect.x() + offset_x, origin_rect.y() + offset_y),
@@ -5017,7 +5030,8 @@ impl DisplayListBuilder {
                   radii: Point::new(radius_x, radius_y),
                   stops,
                   spread: GradientSpread::Pad,
-                }));
+                },
+              ));
             }
           } else if let Some((tile_w, tile_h, _offset_x, _offset_y, positions_x, positions_y)) =
             compute_tiles(0.0, 0.0)
@@ -5090,9 +5104,8 @@ impl DisplayListBuilder {
                 self.viewport,
               );
 
-              self
-                .list
-                .push(DisplayItem::RadialGradientPattern(RadialGradientPatternItem {
+              self.list.push(DisplayItem::RadialGradientPattern(
+                RadialGradientPatternItem {
                   dest_rect: visible_clip,
                   tile_size: Size::new(tile_w, tile_h),
                   origin: Point::new(origin_rect.x() + offset_x, origin_rect.y() + offset_y),
@@ -5100,7 +5113,8 @@ impl DisplayListBuilder {
                   radii: Point::new(radius_x, radius_y),
                   stops,
                   spread: GradientSpread::Repeat,
-                }));
+                },
+              ));
             }
           } else if let Some((tile_w, tile_h, _offset_x, _offset_y, positions_x, positions_y)) =
             compute_tiles(0.0, 0.0)
@@ -6418,6 +6432,7 @@ impl DisplayListBuilder {
       } else {
         let mut mark_style = style.clone();
         mark_style.font_size = style.font_size * 0.5;
+        mark_style.color = mark_color;
         let shape_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
         let shaped = self.shaper.shape(s, &mark_style, &self.font_ctx);
         if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), shape_timer) {
@@ -6956,7 +6971,8 @@ impl DisplayListBuilder {
     let viewport = self.viewport.map(|(w, h)| Size::new(w, h));
     let line_height =
       compute_line_height_with_metrics_viewport(style, metrics_scaled.as_ref(), viewport);
-    let metrics = InlineTextItem::metrics_from_runs(&self.font_ctx, &runs, line_height, style.font_size);
+    let metrics =
+      InlineTextItem::metrics_from_runs(&self.font_ctx, &runs, line_height, style.font_size);
     let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
     let baseline = rect.y() + half_leading + metrics.baseline_offset;
 
@@ -7598,12 +7614,12 @@ mod tests {
   use crate::style::values::Length;
   use crate::style::values::LengthUnit;
   use crate::style::ComputedStyle;
-  use crate::{debug::runtime::RuntimeToggles, paint::painter::enable_paint_diagnostics};
   use crate::text::face_cache;
   use crate::text::font_db::FontDatabase;
   use crate::text::font_loader::FontContext;
   use crate::text::pipeline::ShapingPipeline;
   use crate::tree::box_tree::ReplacedType;
+  use crate::{debug::runtime::RuntimeToggles, paint::painter::enable_paint_diagnostics};
   use base64::engine::general_purpose;
   use base64::Engine as _;
   use image::codecs::png::PngEncoder;
@@ -8583,7 +8599,10 @@ mod tests {
       .iter()
       .filter(|item| matches!(item, DisplayItem::LinearGradientPattern(_)))
       .count();
-    assert_eq!(pattern_items, 1, "expected exactly one gradient pattern item");
+    assert_eq!(
+      pattern_items, 1,
+      "expected exactly one gradient pattern item"
+    );
     assert!(
       !list
         .items()
@@ -9784,8 +9803,8 @@ mod tests {
 
   #[test]
   fn underline_exclusions_apply_run_scale() {
-    let font_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-      .join("tests/fixtures/fonts/DejaVuSans-subset.ttf");
+    let font_path =
+      PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fonts/DejaVuSans-subset.ttf");
     let data = Arc::new(std::fs::read(font_path).expect("read test font"));
     let font = crate::text::font_db::LoadedFont {
       id: None,
@@ -9862,8 +9881,7 @@ mod tests {
 
   #[test]
   fn underline_glyph_bbox_cache_separates_variations() {
-    let font_path =
-      PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fonts/RobotoFlex-VF.ttf");
+    let font_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fonts/RobotoFlex-VF.ttf");
     let data = Arc::new(std::fs::read(font_path).expect("read test font"));
     let font = crate::text::font_db::LoadedFont {
       id: None,
@@ -9878,10 +9896,7 @@ mod tests {
 
     let cached_face = face_cache::get_ttf_face(&font).expect("parse test font");
     let face = cached_face.face();
-    let glyph_id = face
-      .glyph_index('A')
-      .expect("expected glyph for A")
-      .0;
+    let glyph_id = face.glyph_index('A').expect("expected glyph for A").0;
 
     let hash_a = underline_variations_hash(&[rustybuzz::Variation {
       tag: ttf_parser::Tag::from_bytes(b"wght"),
