@@ -3,7 +3,7 @@ use crate::debug::runtime;
 use crate::error::{Error, RenderError, RenderStage};
 use crate::geometry::{Point, Rect};
 use crate::image_loader::ImageCache;
-use crate::paint::blur::pixel_fingerprint;
+use crate::paint::blur::{pixel_fingerprint, PixelFingerprintHasher};
 use crate::paint::blur::{alpha_bounds, apply_gaussian_blur_cached, BlurCache, BlurCacheOps};
 use crate::paint::painter::with_paint_diagnostics;
 use crate::paint::pixmap::new_pixmap;
@@ -202,7 +202,6 @@ struct SvgFilterCacheKey {
 }
 
 fn pixel_fingerprint_in_region(pixmap: &Pixmap, region: Rect) -> u64 {
-  const PRIME: u64 = 0x9E37_79B1_85EB_CA87;
   let width = pixmap.width() as i32;
   let height = pixmap.height() as i32;
   if width == 0 || height == 0 {
@@ -231,54 +230,17 @@ fn pixel_fingerprint_in_region(pixmap: &Pixmap, region: Rect) -> u64 {
     return 0;
   }
 
-  let mut hash = (total_len as u64).wrapping_mul(PRIME);
   let data = pixmap.data();
   let row_stride = pixmap.width() as usize * 4;
-
-  let mut pending = [0u8; 8];
-  let mut pending_len = 0usize;
+  let mut hasher = PixelFingerprintHasher::new(total_len);
 
   for y in clamped_min_y..clamped_max_y {
     let start = y as usize * row_stride + clamped_min_x as usize * 4;
     let end = start + bytes_per_row;
-    let mut slice = &data[start..end];
-
-    if pending_len != 0 {
-      let needed = 8 - pending_len;
-      if slice.len() >= needed {
-        pending[pending_len..].copy_from_slice(&slice[..needed]);
-        hash ^= u64::from_le_bytes(pending)
-          .wrapping_mul(PRIME)
-          .rotate_left(7);
-        pending_len = 0;
-        slice = &slice[needed..];
-      } else {
-        pending[pending_len..pending_len + slice.len()].copy_from_slice(slice);
-        pending_len += slice.len();
-        continue;
-      }
-    }
-
-    let mut chunks = slice.chunks_exact(8);
-    for chunk in &mut chunks {
-      let mut buf = [0u8; 8];
-      buf.copy_from_slice(chunk);
-      hash ^= u64::from_le_bytes(buf).wrapping_mul(PRIME).rotate_left(7);
-    }
-    let rem = chunks.remainder();
-    if !rem.is_empty() {
-      pending[..rem.len()].copy_from_slice(rem);
-      pending_len = rem.len();
-    }
+    hasher.write(&data[start..end]);
   }
 
-  if pending_len != 0 {
-    let mut buf = [0u8; 8];
-    buf[..pending_len].copy_from_slice(&pending[..pending_len]);
-    hash ^= u64::from_le_bytes(buf).wrapping_mul(PRIME).rotate_left(11);
-  }
-
-  hash
+  hasher.finish()
 }
 
 impl SvgFilterCacheKey {
@@ -8716,6 +8678,27 @@ mod filter_result_cache_tests {
     filter
   }
 
+  fn make_swapped_block_sources() -> (Pixmap, Pixmap) {
+    let transparent = PremultipliedColorU8::TRANSPARENT;
+    let red = PremultipliedColorU8::from_rgba(255, 0, 0, 255).unwrap();
+
+    let mut first = new_pixmap(8, 1).expect("create pixmap");
+    for px in first.pixels_mut() {
+      *px = transparent;
+    }
+    first.pixels_mut()[2] = red;
+    first.pixels_mut()[3] = red;
+
+    let mut second = new_pixmap(8, 1).expect("create pixmap");
+    for px in second.pixels_mut() {
+      *px = transparent;
+    }
+    second.pixels_mut()[0] = red;
+    second.pixels_mut()[1] = red;
+
+    (first, second)
+  }
+
   #[test]
   fn filter_result_cache_hits_on_identical_input() {
     let _guard = test_lock().lock().unwrap();
@@ -8744,6 +8727,42 @@ mod filter_result_cache_tests {
     assert_eq!(stats.filter_cache_misses, 1);
     assert_eq!(stats.filter_cache_hits, 1);
     assert_eq!(first.data(), second.data());
+  }
+
+  #[test]
+  fn filter_result_cache_does_not_alias_swapped_8_byte_blocks() {
+    let _guard = test_lock().lock().unwrap();
+    let config = FilterCacheConfig {
+      max_items: 64,
+      max_bytes: 1024 * 1024,
+    };
+    let filter = make_invert_filter(4, 1);
+    let bbox = Rect::from_xywh(0.0, 0.0, 8.0, 1.0);
+
+    let run = |mut first: Pixmap, mut second: Pixmap| {
+      reset_filter_result_cache_for_tests(config);
+      enable_paint_diagnostics();
+      apply_svg_filter(&filter, &mut first, 1.0, bbox).unwrap();
+      apply_svg_filter(&filter, &mut second, 1.0, bbox).unwrap();
+      let stats = take_paint_diagnostics().expect("diagnostics enabled");
+      (first, second, stats)
+    };
+
+    let (first, second) = make_swapped_block_sources();
+    let (out_first, out_second, stats) = run(first.clone(), second.clone());
+    assert_eq!(stats.filter_cache_hits, 0);
+    assert_eq!(stats.filter_cache_misses, 2);
+    assert_ne!(
+      out_first.data(),
+      out_second.data(),
+      "expected distinct filter results for distinct inputs"
+    );
+
+    let (out_second_again, out_first_again, stats) = run(second, first);
+    assert_eq!(stats.filter_cache_hits, 0);
+    assert_eq!(stats.filter_cache_misses, 2);
+    assert_eq!(out_first.data(), out_first_again.data());
+    assert_eq!(out_second.data(), out_second_again.data());
   }
 
   #[test]

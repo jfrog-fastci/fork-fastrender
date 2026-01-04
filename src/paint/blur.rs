@@ -331,20 +331,89 @@ fn record_blur_tiles(count: usize) {
 }
 
 pub(crate) fn pixel_fingerprint(data: &[u8]) -> u64 {
-  const PRIME: u64 = 0x9E37_79B1_85EB_CA87;
-  let mut hash = (data.len() as u64).wrapping_mul(PRIME);
-  let mut chunks = data.chunks_exact(8);
-  for chunk in &mut chunks {
-    let val = u64::from_le_bytes(chunk.try_into().unwrap());
-    hash ^= val.wrapping_mul(PRIME).rotate_left(7);
+  if data.is_empty() {
+    return 0;
   }
-  let rem = chunks.remainder();
-  if !rem.is_empty() {
-    let mut buf = [0u8; 8];
-    buf[..rem.len()].copy_from_slice(rem);
-    hash ^= u64::from_le_bytes(buf).wrapping_mul(PRIME).rotate_left(11);
+  let mut hasher = PixelFingerprintHasher::new(data.len());
+  hasher.write(data);
+  hasher.finish()
+}
+
+pub(crate) struct PixelFingerprintHasher {
+  state: u64,
+  pending: [u8; 8],
+  pending_len: usize,
+}
+
+impl PixelFingerprintHasher {
+  const PRIME_1: u64 = 0x9E37_79B1_85EB_CA87;
+  const PRIME_2: u64 = 0xC2B2_AE3D_27D4_EB4F;
+  const PRIME_3: u64 = 0x1656_67B1_9E37_79F9;
+  const PRIME_5: u64 = 0x27D4_EB2F_1656_67C5;
+
+  #[inline]
+  pub(crate) fn new(total_len: usize) -> Self {
+    Self {
+      state: (total_len as u64).wrapping_add(Self::PRIME_5),
+      pending: [0u8; 8],
+      pending_len: 0,
+    }
   }
-  hash
+
+  #[inline]
+  fn write_word(&mut self, word: u64) {
+    self.state = self.state.wrapping_add(word.wrapping_mul(Self::PRIME_2));
+    self.state = self.state.rotate_left(31);
+    self.state = self.state.wrapping_mul(Self::PRIME_1);
+  }
+
+  #[inline]
+  pub(crate) fn write(&mut self, mut bytes: &[u8]) {
+    if bytes.is_empty() {
+      return;
+    }
+
+    if self.pending_len != 0 {
+      let needed = 8 - self.pending_len;
+      if bytes.len() < needed {
+        self.pending[self.pending_len..self.pending_len + bytes.len()].copy_from_slice(bytes);
+        self.pending_len += bytes.len();
+        return;
+      }
+      self.pending[self.pending_len..].copy_from_slice(&bytes[..needed]);
+      self.write_word(u64::from_le_bytes(self.pending));
+      self.pending_len = 0;
+      bytes = &bytes[needed..];
+    }
+
+    let mut chunks = bytes.chunks_exact(8);
+    for chunk in &mut chunks {
+      self.write_word(u64::from_le_bytes(chunk.try_into().unwrap()));
+    }
+
+    let rem = chunks.remainder();
+    if !rem.is_empty() {
+      self.pending[..rem.len()].copy_from_slice(rem);
+      self.pending_len = rem.len();
+    }
+  }
+
+  #[inline]
+  pub(crate) fn finish(mut self) -> u64 {
+    if self.pending_len != 0 {
+      let mut buf = [0u8; 8];
+      buf[..self.pending_len].copy_from_slice(&self.pending[..self.pending_len]);
+      self.write_word(u64::from_le_bytes(buf));
+    }
+
+    let mut hash = self.state;
+    hash ^= hash >> 33;
+    hash = hash.wrapping_mul(Self::PRIME_2);
+    hash ^= hash >> 29;
+    hash = hash.wrapping_mul(Self::PRIME_3);
+    hash ^= hash >> 32;
+    hash
+  }
 }
 
 pub(crate) fn alpha_bounds(pixmap: &Pixmap) -> Option<(u32, u32, u32, u32)> {
@@ -3182,6 +3251,60 @@ mod tests {
     assert_eq!(diag.blur_cancellations, 0);
     assert_eq!(diag.blur_pixels, 64u64 * 64);
     assert_eq!(diag.blur_bytes, 64u64 * 64 * 4);
+  }
+
+  #[test]
+  fn blur_cache_key_is_order_sensitive() {
+    enable_paint_diagnostics();
+    let mut cache = BlurCache::new(FilterCacheConfig {
+      max_items: 8,
+      max_bytes: 1024 * 1024,
+    });
+
+    let transparent = PremultipliedColorU8::TRANSPARENT;
+    let red = PremultipliedColorU8::from_rgba(255, 0, 0, 255).unwrap();
+
+    let mut first = new_pixmap(4, 1).unwrap();
+    first.pixels_mut()[0] = transparent;
+    first.pixels_mut()[1] = transparent;
+    first.pixels_mut()[2] = red;
+    first.pixels_mut()[3] = red;
+
+    let mut second = new_pixmap(4, 1).unwrap();
+    second.pixels_mut()[0] = red;
+    second.pixels_mut()[1] = red;
+    second.pixels_mut()[2] = transparent;
+    second.pixels_mut()[3] = transparent;
+
+    let sigma = 1.0;
+
+    let mut first_baseline = first.clone();
+    let mut second_baseline = second.clone();
+    apply_gaussian_blur(&mut first_baseline, sigma).unwrap();
+    apply_gaussian_blur(&mut second_baseline, sigma).unwrap();
+    assert_ne!(
+      first_baseline.data(),
+      second_baseline.data(),
+      "expected swapped inputs to blur differently"
+    );
+
+    apply_gaussian_blur_cached(&mut first, sigma, sigma, Some(&mut cache), 1.0).unwrap();
+    apply_gaussian_blur_cached(&mut second, sigma, sigma, Some(&mut cache), 1.0).unwrap();
+
+    assert_eq!(
+      first.data(),
+      first_baseline.data(),
+      "cached blur output did not match uncached baseline"
+    );
+    assert_eq!(
+      second.data(),
+      second_baseline.data(),
+      "cached blur output did not match uncached baseline"
+    );
+
+    let diag = take_paint_diagnostics().unwrap();
+    assert_eq!(diag.blur_cache_hits, 0);
+    assert_eq!(diag.blur_cache_misses, 2);
   }
 
   #[test]
