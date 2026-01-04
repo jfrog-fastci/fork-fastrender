@@ -2226,7 +2226,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
             FetchContextKind::Font => {
               ensure_http_success(&res, url).and_then(|_| ensure_font_mime_sane(&res, url))
             }
-            FetchContextKind::Image => {
+            FetchContextKind::Image | FetchContextKind::ImageCors => {
               ensure_http_success(&res, url).and_then(|_| ensure_image_mime_sane(&res, url))
             }
             FetchContextKind::Other | FetchContextKind::Document => Ok(()),
