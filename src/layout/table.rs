@@ -1986,13 +1986,13 @@ impl TableStructure {
 
     structure.percent_sensitive = percent_sensitive;
 
-    structure.apply_visibility_collapse()
+    structure.apply_visibility_collapse(explicit_columns)
   }
 
   /// Removes rows and columns with `visibility: collapse` from the structure
   /// while preserving source indices so cell lookup and styling can map back
   /// to the original table tree.
-  fn apply_visibility_collapse(self) -> Self {
+  fn apply_visibility_collapse(self, explicit_columns: usize) -> Self {
     let mut row_map: Vec<Option<usize>> = Vec::with_capacity(self.row_count);
     let mut next_row = 0usize;
     for row in &self.rows {
@@ -2094,6 +2094,30 @@ impl TableStructure {
             *slot = Some(cell.index);
           }
         }
+      }
+    }
+
+    let used_cols = new_structure
+      .cells
+      .iter()
+      .map(|cell| cell.col + cell.colspan)
+      .max()
+      .unwrap_or(0);
+    let explicit_remaining = if explicit_columns > 0 {
+      new_structure
+        .columns
+        .iter()
+        .filter(|col| col.source_index < explicit_columns)
+        .count()
+    } else {
+      0
+    };
+    let keep_cols = used_cols.max(explicit_remaining).min(new_structure.column_count);
+    if keep_cols < new_structure.column_count {
+      new_structure.column_count = keep_cols;
+      new_structure.columns.truncate(keep_cols);
+      for row in &mut new_structure.grid {
+        row.truncate(keep_cols);
       }
     }
 
