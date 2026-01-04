@@ -3506,6 +3506,9 @@ mod tests {
     assert_eq!(res.bytes, bytes);
     assert_eq!(res.content_type.as_deref(), Some("text/plain"));
     assert_eq!(res.status, None);
+    assert_eq!(res.access_control_allow_origin, None);
+    assert_eq!(res.timing_allow_origin, None);
+    assert!(!res.access_control_allow_credentials);
   }
 
   #[test]

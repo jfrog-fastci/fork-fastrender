@@ -466,8 +466,10 @@ mod tests {
     let tmp = tempfile::tempdir().expect("tempdir");
     std::fs::write(tmp.path().join("document.html"), "<!doctype html><html></html>")
       .expect("write doc");
+    std::fs::write(tmp.path().join("style.css"), "body{}").expect("write css");
 
-    // Older bundles (v1) may not include CORS header fields; they should deserialize as `None`.
+    // Older bundles (v1) may not include CORS header fields; they should deserialize as `None`,
+    // and `Access-Control-Allow-Credentials` should default to `false`.
     let manifest_json = serde_json::json!({
       "version": BUNDLE_VERSION,
       "original_url": "https://example.com/",
@@ -490,7 +492,16 @@ mod tests {
         "compat_profile": CompatProfile::default(),
         "dom_compat_mode": DomCompatibilityMode::default()
       },
-      "resources": {}
+      "resources": {
+        "https://example.com/style.css": {
+          "path": "style.css",
+          "content_type": "text/css",
+          "status": 200,
+          "final_url": "https://example.com/style.css",
+          "etag": null,
+          "last_modified": null
+        }
+      }
     });
     std::fs::write(
       tmp.path().join(BUNDLE_MANIFEST),
@@ -503,5 +514,13 @@ mod tests {
     let doc = fetcher.fetch("https://example.com/").expect("fetch doc");
     assert_eq!(doc.access_control_allow_origin, None);
     assert_eq!(doc.timing_allow_origin, None);
+
+    let css = fetcher
+      .fetch("https://example.com/style.css")
+      .expect("fetch css");
+    assert_eq!(css.bytes, b"body{}");
+    assert_eq!(css.access_control_allow_origin, None);
+    assert_eq!(css.timing_allow_origin, None);
+    assert!(!css.access_control_allow_credentials);
   }
 }
