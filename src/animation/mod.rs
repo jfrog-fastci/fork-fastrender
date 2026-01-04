@@ -1942,6 +1942,25 @@ pub fn sample_keyframes(
   viewport: Size,
   element_size: Size,
 ) -> HashMap<String, AnimatedValue> {
+  let default_timing = TransitionTimingFunction::Linear;
+  sample_keyframes_with_default_timing(
+    rule,
+    progress,
+    base_style,
+    viewport,
+    element_size,
+    &default_timing,
+  )
+}
+
+fn sample_keyframes_with_default_timing(
+  rule: &KeyframesRule,
+  progress: f32,
+  base_style: &ComputedStyle,
+  viewport: Size,
+  element_size: Size,
+  default_timing_function: &TransitionTimingFunction,
+) -> HashMap<String, AnimatedValue> {
   if rule.keyframes.is_empty() {
     return HashMap::new();
   }
@@ -2035,7 +2054,9 @@ pub fn sample_keyframes(
       }
     }
 
-    timing_functions.push(keyframe_timing_function.unwrap_or(TransitionTimingFunction::Linear));
+    timing_functions.push(
+      keyframe_timing_function.unwrap_or_else(|| default_timing_function.clone()),
+    );
     resolved_styles.push(style);
   }
 
@@ -2094,7 +2115,7 @@ pub fn sample_keyframes(
     };
     let eased_t = match prev_idx {
       Some(idx) => timing_functions[idx].value_at(local_t),
-      None => local_t,
+      None => default_timing_function.value_at(local_t),
     };
 
     let from_style = prev_idx
@@ -2223,11 +2244,6 @@ fn time_based_animation_progress_impl(
 
   let duration = pick(&style.animation_durations, idx, 0.0).max(0.0);
   let delay = pick(&style.animation_delays, idx, 0.0);
-  let timing = pick(
-    &style.animation_timing_functions,
-    idx,
-    TransitionTimingFunction::Ease,
-  );
   let iteration_count = pick(
     &style.animation_iteration_counts,
     idx,
@@ -2277,7 +2293,7 @@ fn time_based_animation_progress_impl(
 
   if local_time < 0.0 {
     return if fill_backwards(fill) {
-      Some(timing.value_at(start_progress))
+      Some(start_progress)
     } else {
       None
     };
@@ -2285,14 +2301,14 @@ fn time_based_animation_progress_impl(
 
   if active_duration.is_finite() && local_time >= active_duration {
     return if fill_forwards(fill) {
-      Some(timing.value_at(end_progress))
+      Some(end_progress)
     } else {
       None
     };
   }
 
   if duration <= 0.0 {
-    return Some(timing.value_at(end_progress));
+    return Some(end_progress);
   }
 
   let total = (local_time / duration).max(0.0);
@@ -2304,7 +2320,7 @@ fn time_based_animation_progress_impl(
   } else {
     iteration_progress
   };
-  Some(timing.value_at(directed))
+  Some(directed)
 }
 
 fn time_based_animation_progress(style: &ComputedStyle, idx: usize, time_ms: f32) -> Option<f32> {
@@ -2337,14 +2353,9 @@ fn settled_time_based_animation_progress(style: &ComputedStyle, idx: usize) -> O
     idx,
     AnimationDirection::default(),
   );
-  let timing = pick(
-    &style.animation_timing_functions,
-    idx,
-    TransitionTimingFunction::Ease,
-  );
 
   let end_progress = animation_end_progress(direction, iterations);
-  Some(timing.value_at(end_progress))
+  Some(end_progress)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2458,11 +2469,6 @@ fn scroll_driven_fill_progress(raw: f32, fill: AnimationFillMode) -> Option<f32>
 }
 
 fn scroll_driven_effect_progress(style: &ComputedStyle, idx: usize, overall: f32) -> f32 {
-  let timing = pick(
-    &style.animation_timing_functions,
-    idx,
-    TransitionTimingFunction::Ease,
-  );
   let iteration_count = pick(
     &style.animation_iteration_counts,
     idx,
@@ -2504,7 +2510,7 @@ fn scroll_driven_effect_progress(style: &ComputedStyle, idx: usize, overall: f32
     }
   };
 
-  timing.value_at(directed)
+  directed
 }
 
 fn scroll_progress_for_function(
@@ -2706,6 +2712,11 @@ fn apply_animations_to_node_scoped(
       for (idx, name) in names.iter().enumerate() {
         let timeline_ref = pick(timelines_list, idx, AnimationTimeline::Auto);
         let range = pick(ranges_list, idx, AnimationRange::default());
+        let timing = pick(
+          &style_arc.animation_timing_functions,
+          idx,
+          TransitionTimingFunction::Ease,
+        );
 
         let progress = match timeline_ref {
           AnimationTimeline::Auto => match animation_time_ms {
@@ -2796,7 +2807,14 @@ fn apply_animations_to_node_scoped(
         if let Some(rule) = keyframes.get(name) {
           let element_size = Size::new(node.bounds.width(), node.bounds.height());
           let viewport_size = Size::new(viewport.width(), viewport.height());
-          let values = sample_keyframes(rule, progress, &*style_arc, viewport_size, element_size);
+          let values = sample_keyframes_with_default_timing(
+            rule,
+            progress,
+            &*style_arc,
+            viewport_size,
+            element_size,
+            &timing,
+          );
           if !values.is_empty() {
             apply_animated_properties(&mut animated, &values);
             changed = true;
@@ -3136,6 +3154,25 @@ mod tests {
     }
   }
 
+  fn sampled_opacity_with_timing(
+    rule: &KeyframesRule,
+    progress: f32,
+    timing: &TransitionTimingFunction,
+  ) -> f32 {
+    let values = sample_keyframes_with_default_timing(
+      rule,
+      progress,
+      &ComputedStyle::default(),
+      Size::new(800.0, 600.0),
+      Size::new(100.0, 100.0),
+      timing,
+    );
+    match values.get("opacity") {
+      Some(AnimatedValue::Opacity(v)) => *v,
+      other => panic!("expected opacity, got {other:?}"),
+    }
+  }
+
   fn sampled_opacity_with_base_opacity(
     rule: &KeyframesRule,
     progress: f32,
@@ -3301,6 +3338,34 @@ mod tests {
     let progress = time_based_animation_progress(&style, 0, 500.0).expect("active");
     assert!((progress - 0.0).abs() < 1e-6, "progress={progress}");
     assert!((sampled_opacity(&rule, progress) - 0.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn time_based_animations_apply_timing_function_within_keyframe_intervals() {
+    let sheet = parse_stylesheet(
+      "@keyframes tri { 0% { opacity: 0; } 50% { opacity: 1; } 100% { opacity: 0; } }",
+    )
+    .unwrap();
+    let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+    let rule = &keyframes[0];
+
+    let timing = TransitionTimingFunction::CubicBezier(0.0, 1.0, 0.0, 1.0);
+
+    let mut style = ComputedStyle::default();
+    style.animation_names = vec!["tri".to_string()];
+    style.animation_durations = vec![1000.0].into();
+    style.animation_timing_functions = vec![timing.clone()].into();
+
+    let progress_mid = time_based_animation_progress(&style, 0, 500.0).expect("active");
+    assert!((progress_mid - 0.5).abs() < 1e-6, "progress_mid={progress_mid}");
+    assert!((sampled_opacity_with_timing(rule, progress_mid, &timing) - 1.0).abs() < 1e-6);
+
+    let progress_quarter = time_based_animation_progress(&style, 0, 250.0).expect("active");
+    assert!((progress_quarter - 0.25).abs() < 1e-6, "progress_quarter={progress_quarter}");
+    assert!(
+      sampled_opacity_with_timing(rule, progress_quarter, &timing) > 0.7,
+      "expected cubic-bezier timing to ease within the first interval"
+    );
   }
 
   fn render_scroll_self_opacity(
