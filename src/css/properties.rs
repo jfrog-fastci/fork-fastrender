@@ -1834,48 +1834,37 @@ fn supports_animation_timeline_value(raw_value: &str) -> bool {
     return false;
   }
 
-  let mut saw_any = false;
-  for item in split_top_level_commas(raw_value) {
-    let item = item.trim();
-    if item.is_empty() {
-      return false;
-    }
-    saw_any = true;
-    if !supports_animation_timeline_item(item) {
-      return false;
-    }
-  }
-  saw_any
-}
-
-fn supports_animation_timeline_item(item: &str) -> bool {
-  let mut input = ParserInput::new(item);
+  let mut input = ParserInput::new(raw_value);
   let mut parser = Parser::new(&mut input);
   parser.skip_whitespace();
-  let token = match parser.next() {
-    Ok(token) => token,
+  let timelines = match parser.parse_comma_separated(|p| {
+    p.skip_whitespace();
+    let token = p.next()?;
+    match token {
+      Token::Ident(_) => Ok(()),
+      Token::Function(name) => {
+        if name.eq_ignore_ascii_case("scroll") {
+          p.parse_nested_block(supports_scroll_timeline_function)?;
+          Ok(())
+        } else if name.eq_ignore_ascii_case("view") {
+          p.parse_nested_block(supports_view_timeline_function)?;
+          Ok(())
+        } else {
+          Err(p.new_custom_error(()))
+        }
+      }
+      _ => Err(p.new_custom_error(())),
+    }
+  }) {
+    Ok(timelines) => timelines,
     Err(_) => return false,
   };
-  let matches = match token {
-    Token::Ident(_) => true,
-    Token::Function(name) => {
-      if name.eq_ignore_ascii_case("scroll") {
-        parser
-          .parse_nested_block(supports_scroll_timeline_function)
-          .is_ok()
-      } else if name.eq_ignore_ascii_case("view") {
-        parser.parse_nested_block(supports_view_timeline_function).is_ok()
-      } else {
-        false
-      }
-    }
-    _ => false,
-  };
-  if !matches {
+  parser.skip_whitespace();
+  if !parser.is_exhausted() {
     return false;
   }
-  parser.skip_whitespace();
-  parser.is_exhausted()
+
+  !timelines.is_empty()
 }
 
 fn supports_scroll_timeline_function<'i, 't>(

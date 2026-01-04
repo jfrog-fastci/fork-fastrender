@@ -1207,53 +1207,51 @@ fn parse_view_timeline_list(raw: &str) -> Vec<ViewTimeline> {
 }
 
 pub(crate) fn parse_animation_timeline_list(raw: &str) -> Option<Vec<AnimationTimeline>> {
-  let mut timelines = Vec::new();
-  for part in split_top_level_commas(raw) {
-    let trimmed = part.trim();
-    if trimmed.is_empty() {
-      return None;
-    }
-    let mut input = ParserInput::new(trimmed);
-    let mut parser = Parser::new(&mut input);
-    parser.skip_whitespace();
-    let token = parser.next().ok()?;
-
-    let timeline = match token {
-      Token::Ident(ident) => {
-        let lower = ident.as_ref().to_ascii_lowercase();
-        match lower.as_str() {
-          "auto" => AnimationTimeline::Auto,
-          "none" => AnimationTimeline::None,
-          _ => AnimationTimeline::Named(ident.to_string()),
-        }
-      }
-      Token::Function(name) => {
-        if name.eq_ignore_ascii_case("scroll") {
-          let parsed = parser.parse_nested_block(parse_scroll_function_timeline).ok()?;
-          AnimationTimeline::Scroll(parsed)
-        } else if name.eq_ignore_ascii_case("view") {
-          let parsed = parser.parse_nested_block(parse_view_function_timeline).ok()?;
-          AnimationTimeline::View(parsed)
-        } else {
-          return None;
-        }
-      }
-      _ => return None,
-    };
-
-    parser.skip_whitespace();
-    if !parser.is_exhausted() {
-      return None;
-    }
-
-    timelines.push(timeline);
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return None;
   }
 
-  if timelines.is_empty() {
-    None
-  } else {
-    Some(timelines)
+  let mut input = ParserInput::new(trimmed);
+  let mut parser = Parser::new(&mut input);
+  parser.skip_whitespace();
+  let timelines = parser
+    .parse_comma_separated(|p| {
+      p.skip_whitespace();
+      let token = p.next()?;
+      let timeline = match token {
+        Token::Ident(ident) => {
+          let lower = ident.as_ref().to_ascii_lowercase();
+          match lower.as_str() {
+            "auto" => AnimationTimeline::Auto,
+            "none" => AnimationTimeline::None,
+            _ => AnimationTimeline::Named(ident.to_string()),
+          }
+        }
+        Token::Function(name) => {
+          if name.eq_ignore_ascii_case("scroll") {
+            let parsed = p.parse_nested_block(parse_scroll_function_timeline)?;
+            AnimationTimeline::Scroll(parsed)
+          } else if name.eq_ignore_ascii_case("view") {
+            let parsed = p.parse_nested_block(parse_view_function_timeline)?;
+            AnimationTimeline::View(parsed)
+          } else {
+            return Err(p.new_custom_error(()));
+          }
+        }
+        _ => return Err(p.new_custom_error(())),
+      };
+      p.skip_whitespace();
+      Ok(timeline)
+    })
+    .ok()?;
+
+  parser.skip_whitespace();
+  if !parser.is_exhausted() {
+    return None;
   }
+
+  if timelines.is_empty() { None } else { Some(timelines) }
 }
 
 fn parse_animation_names(raw: &str) -> Vec<String> {
