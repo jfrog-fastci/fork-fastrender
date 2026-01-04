@@ -1192,12 +1192,15 @@ mod tests {
 
     let mut children = Vec::new();
     let exe = std::env::current_exe().expect("resolve current exe");
+    let child_test_name =
+      "resource::disk_cache::disk_cache_index::tests::disk_cache_index_multiprocess_child_writer";
     for id in 0..processes {
       let mut cmd = Command::new(&exe);
       cmd
         .arg("--ignored")
+        .arg("--exact")
         .arg("--nocapture")
-        .arg("disk_cache_index_multiprocess_child_writer")
+        .arg(child_test_name)
         .env("FASTR_DISK_CACHE_INDEX_CACHE_DIR", tmp.path().as_os_str())
         .env("FASTR_DISK_CACHE_INDEX_CHILD_ID", id.to_string())
         .env(
