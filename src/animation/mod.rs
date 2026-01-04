@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::css::types::{
-  Keyframe, KeyframesRule, PropertyValue, RotateValue, ScaleValue, TranslateValue,
+  BoxShadow, Keyframe, KeyframesRule, PropertyValue, RotateValue, ScaleValue, TranslateValue,
 };
 use crate::debug::runtime;
 use crate::geometry::{Point, Rect, Size};
@@ -79,6 +79,7 @@ pub enum AnimatedValue {
   ClipPath(ClipPath),
   BackgroundPosition(Vec<BackgroundPosition>),
   BackgroundSize(Vec<BackgroundSize>),
+  BoxShadow(Vec<BoxShadow>),
   BorderRadius([BorderCornerRadius; 4]),
 }
 
@@ -1353,6 +1354,110 @@ fn apply_background_size(style: &mut ComputedStyle, value: &AnimatedValue) {
   }
 }
 
+fn resolve_box_shadow_list(
+  shadows: &[BoxShadow],
+  style: &ComputedStyle,
+  ctx: &AnimationResolveContext,
+) -> Vec<BoxShadow> {
+  shadows
+    .iter()
+    .map(|shadow| BoxShadow {
+      offset_x: Length::px(resolve_length_px(&shadow.offset_x, None, style, ctx)),
+      offset_y: Length::px(resolve_length_px(&shadow.offset_y, None, style, ctx)),
+      blur_radius: Length::px(resolve_length_px(&shadow.blur_radius, None, style, ctx)),
+      spread_radius: Length::px(resolve_length_px(&shadow.spread_radius, None, style, ctx)),
+      color: shadow.color,
+      inset: shadow.inset,
+    })
+    .collect()
+}
+
+fn extract_box_shadow(
+  style: &ComputedStyle,
+  ctx: &AnimationResolveContext,
+) -> Option<AnimatedValue> {
+  Some(AnimatedValue::BoxShadow(resolve_box_shadow_list(
+    &style.box_shadow,
+    style,
+    ctx,
+  )))
+}
+
+fn transparent_box_shadow_like(shadow: &BoxShadow) -> BoxShadow {
+  BoxShadow {
+    offset_x: Length::px(0.0),
+    offset_y: Length::px(0.0),
+    blur_radius: Length::px(0.0),
+    spread_radius: Length::px(0.0),
+    color: Rgba::new(shadow.color.r, shadow.color.g, shadow.color.b, 0.0),
+    inset: shadow.inset,
+  }
+}
+
+fn interpolate_single_box_shadow(a: &BoxShadow, b: &BoxShadow, t: f32) -> Option<BoxShadow> {
+  if a.inset != b.inset {
+    return None;
+  }
+  Some(BoxShadow {
+    offset_x: Length::px(lerp(a.offset_x.to_px(), b.offset_x.to_px(), t)),
+    offset_y: Length::px(lerp(a.offset_y.to_px(), b.offset_y.to_px(), t)),
+    blur_radius: Length::px(lerp(a.blur_radius.to_px(), b.blur_radius.to_px(), t)),
+    spread_radius: Length::px(lerp(a.spread_radius.to_px(), b.spread_radius.to_px(), t)),
+    color: lerp_color(a.color, b.color, t),
+    inset: a.inset,
+  })
+}
+
+fn interpolate_box_shadow_list(a: &[BoxShadow], b: &[BoxShadow], t: f32) -> Option<Vec<BoxShadow>> {
+  if t <= f32::EPSILON {
+    return Some(a.to_vec());
+  }
+  if t >= 1.0 - f32::EPSILON {
+    return Some(b.to_vec());
+  }
+
+  let max_len = a.len().max(b.len());
+  let mut out = Vec::with_capacity(max_len);
+  for idx in 0..max_len {
+    match (a.get(idx), b.get(idx)) {
+      (Some(a_shadow), Some(b_shadow)) => {
+        out.push(interpolate_single_box_shadow(a_shadow, b_shadow, t)?);
+      }
+      (Some(a_shadow), None) => {
+        let transparent = transparent_box_shadow_like(a_shadow);
+        out.push(interpolate_single_box_shadow(a_shadow, &transparent, t)?);
+      }
+      (None, Some(b_shadow)) => {
+        let transparent = transparent_box_shadow_like(b_shadow);
+        out.push(interpolate_single_box_shadow(&transparent, b_shadow, t)?);
+      }
+      (None, None) => {}
+    }
+  }
+
+  Some(out)
+}
+
+fn interpolate_box_shadow_value(
+  a: &AnimatedValue,
+  b: &AnimatedValue,
+  t: f32,
+) -> Option<AnimatedValue> {
+  let (AnimatedValue::BoxShadow(sa), AnimatedValue::BoxShadow(sb)) = (a, b) else {
+    return None;
+  };
+
+  Some(AnimatedValue::BoxShadow(interpolate_box_shadow_list(
+    sa, sb, t,
+  )?))
+}
+
+fn apply_box_shadow(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::BoxShadow(shadows) = value {
+    style.box_shadow = shadows.clone();
+  }
+}
+
 fn extract_border_radius(
   style: &ComputedStyle,
   ctx: &AnimationResolveContext,
@@ -1475,6 +1580,12 @@ fn property_interpolators() -> &'static [PropertyInterpolator] {
       extract: extract_background_size,
       interpolate: interpolate_background_size_value,
       apply: apply_background_size,
+    },
+    PropertyInterpolator {
+      name: "box-shadow",
+      extract: extract_box_shadow,
+      interpolate: interpolate_box_shadow_value,
+      apply: apply_box_shadow,
     },
     PropertyInterpolator {
       name: "border-radius",
