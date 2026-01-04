@@ -12113,6 +12113,95 @@ mod tests {
   }
 
   #[test]
+  fn layout_shape_outside_image_masks_observe_updated_base_url() {
+    use image::codecs::png::PngEncoder;
+    use image::ColorType;
+    use image::ImageEncoder;
+    use image::RgbaImage;
+
+    #[derive(Clone)]
+    struct RecordingFetcher {
+      requests: Arc<Mutex<Vec<String>>>,
+      response: Arc<Vec<u8>>,
+    }
+
+    impl crate::resource::ResourceFetcher for RecordingFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self
+          .requests
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner())
+          .push(url.to_string());
+        Ok(FetchedResource::new((*self.response).clone(), Some("image/png".to_string())))
+      }
+    }
+
+    let img = RgbaImage::from_raw(1, 1, vec![0, 0, 0, 255]).expect("rgba image");
+    let mut png = Vec::new();
+    PngEncoder::new(&mut png)
+      .write_image(&img, 1, 1, ColorType::Rgba8.into())
+      .expect("encode png");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let fetcher = Arc::new(RecordingFetcher {
+      requests: Arc::clone(&requests),
+      response: Arc::new(png),
+    });
+
+    let mut renderer = FastRender::with_config_and_fetcher(
+      FastRenderConfig::default(),
+      Some(fetcher.clone() as Arc<dyn crate::resource::ResourceFetcher>),
+    )
+    .expect("renderer");
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = crate::style::display::Display::Block;
+    let mut float_style = ComputedStyle::default();
+    float_style.display = crate::style::display::Display::Block;
+    float_style.float = crate::style::float::Float::Left;
+    float_style.shape_outside =
+      crate::style::types::ShapeOutside::Image(BackgroundImage::Url("mask.png".to_string()));
+    let float_node =
+      BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+    let root_node = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Block,
+      vec![float_node],
+    );
+    let constraints = LayoutConstraints::definite(200.0, 200.0);
+
+    renderer.set_base_url("https://example.com/a/");
+    renderer
+      .layout_engine()
+      .layout_subtree(&root_node, &constraints)
+      .expect("layout with base url A");
+    assert!(
+      renderer
+        .layout_engine()
+        .cached_context_is_initialized(FormattingContextType::Block),
+      "expected block formatting context to be cached after layout"
+    );
+
+    renderer.set_base_url("https://example.com/b/");
+    renderer
+      .layout_engine()
+      .layout_subtree(&root_node, &constraints)
+      .expect("layout with base url B");
+
+    let reqs = requests
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner())
+      .clone();
+    assert!(
+      reqs.iter().any(|url| url == "https://example.com/a/mask.png"),
+      "expected initial shape-outside mask to resolve against base url A; got {reqs:?}"
+    );
+    assert!(
+      reqs.iter().any(|url| url == "https://example.com/b/mask.png"),
+      "expected updated shape-outside mask to resolve against base url B; got {reqs:?}"
+    );
+  }
+
+  #[test]
   fn inline_stylesheet_http_403_records_fetch_error_status_and_url() {
     use std::io::{Read, Write};
     use std::net::TcpListener;
