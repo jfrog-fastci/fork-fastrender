@@ -93,4 +93,13 @@ mod tests {
     assert!(supports_declaration("box-orient", "vertical"));
     assert!(!supports_declaration("box-orient", "diagonal"));
   }
+
+  #[test]
+  fn supports_word_break_auto_phrase_is_false() {
+    // GitLab ships `@supports (word-break:auto-phrase)` gates, but FastRender does not implement
+    // the `auto-phrase` value yet. Returning `true` here would incorrectly enable styles that
+    // expect native phrase-based line breaking behavior.
+    assert!(!supports_declaration("word-break", "auto-phrase"));
+    assert!(supports_declaration("word-break", "break-word"));
+  }
 }
