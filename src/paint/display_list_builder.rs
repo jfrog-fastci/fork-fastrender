@@ -7623,7 +7623,7 @@ mod tests {
   use crate::text::font_db::FontDatabase;
   use crate::text::font_loader::FontContext;
   use crate::text::pipeline::ShapingPipeline;
-  use crate::tree::box_tree::ReplacedType;
+  use crate::tree::box_tree::{CrossOriginAttribute, ReplacedType};
   use crate::{debug::runtime::RuntimeToggles, paint::painter::enable_paint_diagnostics};
   use base64::engine::general_purpose;
   use base64::Engine as _;
@@ -7680,6 +7680,7 @@ mod tests {
       ReplacedType::Image {
         src: src.to_string(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -8788,6 +8789,7 @@ mod tests {
       ReplacedType::Image {
         src: chosen,
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -8842,6 +8844,7 @@ mod tests {
       ReplacedType::Image {
         src: chosen,
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -9176,6 +9179,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
+          crossorigin: CrossOriginAttribute::None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -9221,6 +9225,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
+          crossorigin: CrossOriginAttribute::None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -9253,6 +9258,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
+          crossorigin: CrossOriginAttribute::None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -9280,6 +9286,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
           alt: None,
+          crossorigin: CrossOriginAttribute::None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -9467,6 +9474,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: Some("alt text".to_string()),
+          crossorigin: CrossOriginAttribute::None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -9493,6 +9501,7 @@ mod tests {
       ReplacedType::Image {
         src: String::new(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),

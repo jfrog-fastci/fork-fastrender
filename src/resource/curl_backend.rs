@@ -621,8 +621,8 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
         .get("last-modified")
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
-      let access_control_allow_origin =
-        super::header_values_joined(&response.headers, "access-control-allow-origin");
+      let (access_control_allow_origin, access_control_allow_credentials) =
+        super::parse_cors_response_headers(&response.headers);
       let timing_allow_origin =
         super::header_values_joined(&response.headers, "timing-allow-origin");
       let cache_policy = super::parse_http_cache_policy(&response.headers);
@@ -847,6 +847,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
       resource.last_modified = last_modified;
       resource.access_control_allow_origin = access_control_allow_origin;
       resource.timing_allow_origin = timing_allow_origin;
+      resource.access_control_allow_credentials = access_control_allow_credentials;
       resource.cache_policy = cache_policy;
       render_control::check_active(decode_stage).map_err(Error::Render)?;
       return Ok(resource);

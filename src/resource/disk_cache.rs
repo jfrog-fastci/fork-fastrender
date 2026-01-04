@@ -1163,6 +1163,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     resource.last_modified = meta.last_modified.clone();
     resource.access_control_allow_origin = meta.access_control_allow_origin.clone();
     resource.timing_allow_origin = meta.timing_allow_origin.clone();
+    resource.access_control_allow_credentials = meta.access_control_allow_credentials;
 
     let stored_time = secs_to_system_time(meta.stored_at).unwrap_or(SystemTime::now());
     let http_cache = meta.cache.as_ref().and_then(|c| c.to_http()).or_else(|| {
@@ -1279,6 +1280,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     resource.last_modified = meta.last_modified.clone();
     resource.access_control_allow_origin = meta.access_control_allow_origin.clone();
     resource.timing_allow_origin = meta.timing_allow_origin.clone();
+    resource.access_control_allow_credentials = meta.access_control_allow_credentials;
     resource.cache_policy = meta.cache.as_ref().map(|c| c.to_policy()).or_else(|| {
       self.disk_config.max_age.map(|max_age| HttpCachePolicy {
         max_age: Some(max_age.as_secs()),
@@ -1465,9 +1467,10 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       last_modified: last_modified
         .map(|s| s.to_string())
         .or_else(|| resource.last_modified.clone()),
+      final_url: resource.final_url.clone().or_else(|| Some(url.to_string())),
       access_control_allow_origin: resource.access_control_allow_origin.clone(),
       timing_allow_origin: resource.timing_allow_origin.clone(),
-      final_url: resource.final_url.clone().or_else(|| Some(url.to_string())),
+      access_control_allow_credentials: resource.access_control_allow_credentials,
       stored_at,
       len: resource.bytes.len(),
       cache: cache_metadata
@@ -1604,9 +1607,10 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       content_encoding: None,
       etag: error.etag.clone(),
       last_modified: error.last_modified.clone(),
+      final_url: error.final_url.clone(),
       access_control_allow_origin: None,
       timing_allow_origin: None,
-      final_url: error.final_url.clone(),
+      access_control_allow_credentials: false,
       stored_at,
       len: 0,
       cache: StoredCacheMetadata::from_http(&cache_metadata),
@@ -1821,6 +1825,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       resource.last_modified = source.last_modified.clone();
       resource.access_control_allow_origin = source.access_control_allow_origin.clone();
       resource.timing_allow_origin = source.timing_allow_origin.clone();
+      resource.access_control_allow_credentials = source.access_control_allow_credentials;
       resource.final_url = source.final_url.clone();
       resource.cache_policy = source.cache_policy.clone();
     }
@@ -1887,12 +1892,13 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       content_encoding: resource.content_encoding.clone(),
       etag: resource.etag.clone(),
       last_modified: resource.last_modified.clone(),
-      access_control_allow_origin: resource.access_control_allow_origin.clone(),
-      timing_allow_origin: resource.timing_allow_origin.clone(),
       // The artifact entry is keyed by the canonical URL (after redirects). Store the canonical
       // URL here as well so callers consuming the cached artifact can still enforce final-URL
       // policies without hitting the network.
       final_url: Some(canonical.clone()),
+      access_control_allow_origin: resource.access_control_allow_origin.clone(),
+      timing_allow_origin: resource.timing_allow_origin.clone(),
+      access_control_allow_credentials: resource.access_control_allow_credentials,
       stored_at,
       len: resource.bytes.len(),
       cache: cache_metadata
@@ -2446,16 +2452,22 @@ pub(super) struct StoredMetadata {
   content_encoding: Option<String>,
   etag: Option<String>,
   last_modified: Option<String>,
+  final_url: Option<String>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   access_control_allow_origin: Option<String>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   timing_allow_origin: Option<String>,
-  final_url: Option<String>,
+  #[serde(default, skip_serializing_if = "bool_is_false")]
+  access_control_allow_credentials: bool,
   stored_at: u64,
   len: usize,
   cache: Option<StoredCacheMetadata>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   error: Option<String>,
+}
+
+fn bool_is_false(value: &bool) -> bool {
+  !*value
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -3594,9 +3606,10 @@ mod tests {
       content_encoding: None,
       etag: None,
       last_modified: None,
+      final_url: Some(url.to_string()),
       access_control_allow_origin: None,
       timing_allow_origin: None,
-      final_url: Some(url.to_string()),
+      access_control_allow_credentials: false,
       stored_at: now_seconds().saturating_sub(60),
       len: cached_bytes.len(),
       cache: None,
@@ -3649,9 +3662,10 @@ mod tests {
       content_encoding: None,
       etag: None,
       last_modified: None,
+      final_url: Some(url.to_string()),
       access_control_allow_origin: None,
       timing_allow_origin: None,
-      final_url: Some(url.to_string()),
+      access_control_allow_credentials: false,
       stored_at: now_seconds().saturating_sub(60),
       len: cached_bytes.len(),
       cache: None,
@@ -4980,9 +4994,10 @@ mod tests {
       content_encoding: None,
       etag: None,
       last_modified: None,
+      final_url: Some(url.to_string()),
       access_control_allow_origin: None,
       timing_allow_origin: None,
-      final_url: Some(url.to_string()),
+      access_control_allow_credentials: false,
       stored_at: now_seconds(),
       len: bytes.len(),
       cache: None,
@@ -5446,6 +5461,7 @@ mod tests {
           last_modified: None,
           access_control_allow_origin: None,
           timing_allow_origin: None,
+          access_control_allow_credentials: false,
           final_url: Some(url.to_string()),
           stored_at: 0,
           len: 0,

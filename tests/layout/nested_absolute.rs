@@ -8,6 +8,7 @@ use fastrender::style::position::Position;
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
+use fastrender::tree::box_tree::CrossOriginAttribute;
 use fastrender::tree::box_tree::ReplacedType;
 use fastrender::tree::box_tree::SrcsetCandidate;
 use fastrender::Size;
@@ -141,6 +142,7 @@ fn replaced_absolute_with_both_insets_shrinks_to_intrinsic_in_block_layout() {
       srcset: Vec::<SrcsetCandidate>::new(),
       sizes: None,
       picture_sources: Vec::new(),
+      crossorigin: CrossOriginAttribute::None,
     },
     Some(Size::new(50.0, 20.0)),
     None,
@@ -191,6 +193,7 @@ fn replaced_absolute_with_both_insets_shrinks_to_intrinsic_in_flex_layout() {
       srcset: Vec::<SrcsetCandidate>::new(),
       sizes: None,
       picture_sources: Vec::new(),
+      crossorigin: CrossOriginAttribute::None,
     },
     Some(Size::new(60.0, 20.0)),
     None,

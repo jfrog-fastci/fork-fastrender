@@ -3580,6 +3580,7 @@ mod tests {
   use crate::text::font_loader::FontContext;
   use crate::text::line_break::find_break_opportunities;
   use crate::text::pipeline::ShapingPipeline;
+  use crate::tree::box_tree::CrossOriginAttribute;
   use std::path::PathBuf;
   use std::sync::Arc;
   use std::time::Duration;
@@ -4413,6 +4414,7 @@ mod tests {
       ReplacedType::Image {
         src: String::new(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),

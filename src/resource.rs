@@ -709,6 +709,11 @@ pub enum FetchDestination {
   Document,
   Style,
   Image,
+  /// Image fetched in CORS mode (e.g. `<img crossorigin>`).
+  ///
+  /// `Sec-Fetch-Dest` remains `image`, but `Sec-Fetch-Mode` becomes `cors` and a browser-like
+  /// `Origin` header is sent when request headers are enabled.
+  ImageCors,
   Font,
   Other,
 }
@@ -718,7 +723,7 @@ impl FetchDestination {
     match self {
       Self::Document => DEFAULT_ACCEPT,
       Self::Style => BROWSER_ACCEPT_STYLESHEET,
-      Self::Image => BROWSER_ACCEPT_IMAGE,
+      Self::Image | Self::ImageCors => BROWSER_ACCEPT_IMAGE,
       Self::Font | Self::Other => BROWSER_ACCEPT_ALL,
     }
   }
@@ -727,7 +732,7 @@ impl FetchDestination {
     match self {
       Self::Document => "document",
       Self::Style => "style",
-      Self::Image => "image",
+      Self::Image | Self::ImageCors => "image",
       Self::Font => "font",
       Self::Other => "empty",
     }
@@ -736,7 +741,7 @@ impl FetchDestination {
   fn sec_fetch_mode(self) -> &'static str {
     match self {
       Self::Document => "navigate",
-      Self::Font => "cors",
+      Self::Font | Self::ImageCors => "cors",
       Self::Style | Self::Image | Self::Other => "no-cors",
     }
   }
@@ -744,7 +749,7 @@ impl FetchDestination {
   fn sec_fetch_site(self) -> &'static str {
     match self {
       Self::Document => "none",
-      Self::Style | Self::Image | Self::Font | Self::Other => "same-origin",
+      Self::Style | Self::Image | Self::ImageCors | Self::Font | Self::Other => "same-origin",
     }
   }
 
@@ -764,7 +769,7 @@ impl FetchDestination {
 
   fn origin_and_referer(self, url: &Url) -> Option<(String, String)> {
     match self {
-      Self::Font => http_browser_origin_and_referer_for_url(url),
+      Self::Font | Self::ImageCors => http_browser_origin_and_referer_for_url(url),
       _ => None,
     }
   }
@@ -939,7 +944,7 @@ fn should_substitute_akamai_pixel_empty_image_body(
   status: u16,
   headers: &HeaderMap,
 ) -> bool {
-  if kind != FetchContextKind::Image
+  if !matches!(kind, FetchContextKind::Image | FetchContextKind::ImageCors)
     || !(200..300).contains(&status)
     || !url_is_akamai_tracking_pixel(url)
   {
@@ -1859,10 +1864,12 @@ pub struct FetchedResource {
   pub cache_policy: Option<HttpCachePolicy>,
   /// Access-Control-Allow-Origin response header value when fetched over HTTP(S).
   ///
-  /// Stored for downstream CORS enforcement (e.g. web fonts).
+  /// Stored for downstream CORS enforcement (e.g. web fonts, `<img crossorigin>`).
   pub access_control_allow_origin: Option<String>,
   /// Timing-Allow-Origin response header value when fetched over HTTP(S).
   pub timing_allow_origin: Option<String>,
+  /// Whether `Access-Control-Allow-Credentials: true` was present on the response.
+  pub access_control_allow_credentials: bool,
 }
 
 /// Parsed metadata stored alongside cached HTML documents.
@@ -1887,6 +1894,7 @@ impl FetchedResource {
       cache_policy: None,
       access_control_allow_origin: None,
       timing_allow_origin: None,
+      access_control_allow_credentials: false,
     }
   }
 
@@ -1907,6 +1915,7 @@ impl FetchedResource {
       cache_policy: None,
       access_control_allow_origin: None,
       timing_allow_origin: None,
+      access_control_allow_credentials: false,
     }
   }
 
@@ -2255,6 +2264,8 @@ pub enum FetchContextKind {
   Document,
   Stylesheet,
   Image,
+  /// Image fetched in CORS mode (e.g. `<img crossorigin>`).
+  ImageCors,
   Font,
   Other,
 }
@@ -2267,6 +2278,7 @@ impl FetchContextKind {
       Self::Image => 2,
       Self::Font => 3,
       Self::Other => 4,
+      Self::ImageCors => 5,
     }
   }
 
@@ -2275,6 +2287,7 @@ impl FetchContextKind {
       Self::Document => "document",
       Self::Stylesheet => "stylesheet",
       Self::Image => "image",
+      Self::ImageCors => "image-cors",
       Self::Font => "font",
       Self::Other => "other",
     }
@@ -2301,6 +2314,7 @@ impl From<FetchDestination> for FetchContextKind {
       FetchDestination::Document => Self::Document,
       FetchDestination::Style => Self::Stylesheet,
       FetchDestination::Image => Self::Image,
+      FetchDestination::ImageCors => Self::ImageCors,
       FetchDestination::Font => Self::Font,
       FetchDestination::Other => Self::Other,
     }
@@ -2313,6 +2327,7 @@ impl From<FetchContextKind> for FetchDestination {
       FetchContextKind::Document => Self::Document,
       FetchContextKind::Stylesheet => Self::Style,
       FetchContextKind::Image => Self::Image,
+      FetchContextKind::ImageCors => Self::ImageCors,
       FetchContextKind::Font => Self::Font,
       FetchContextKind::Other => Self::Other,
     }
@@ -2682,7 +2697,7 @@ fn build_http_header_pairs<'a>(
     if let Some(value) = profile.upgrade_insecure_requests() {
       headers.push(("Upgrade-Insecure-Requests".to_string(), value.to_string()));
     }
-    if profile == FetchDestination::Font {
+    if matches!(profile, FetchDestination::Font | FetchDestination::ImageCors) {
       if referrer.is_some() {
         if let Some(referrer_url) = parsed_referrer_url.as_ref() {
           if let Some((origin, _)) = http_browser_origin_and_referer_for_url(referrer_url) {
@@ -2693,15 +2708,29 @@ fn build_http_header_pairs<'a>(
             headers.push(("Origin".to_string(), origin));
           }
         }
-      } else if let Some(parsed) = parsed_target_url.as_ref() {
-        if let Some((origin, referer)) = profile.origin_and_referer(parsed) {
-          headers.push(("Origin".to_string(), origin));
-          headers.push(("Referer".to_string(), referer));
+      } else if profile == FetchDestination::Font {
+        if let Some(parsed) = parsed_target_url.as_ref() {
+          if let Some((origin, referer)) = profile.origin_and_referer(parsed) {
+            headers.push(("Origin".to_string(), origin));
+            headers.push(("Referer".to_string(), referer));
+          }
+        } else if let Some(target_origin) = target_origin.as_ref() {
+          if let Some((origin, referer)) = http_browser_origin_and_referer_for_origin(target_origin) {
+            headers.push(("Origin".to_string(), origin));
+            headers.push(("Referer".to_string(), referer));
+          }
         }
-      } else if let Some(target_origin) = target_origin.as_ref() {
-        if let Some((origin, referer)) = http_browser_origin_and_referer_for_origin(target_origin) {
-          headers.push(("Origin".to_string(), origin));
-          headers.push(("Referer".to_string(), referer));
+      } else if profile == FetchDestination::ImageCors {
+        // For CORS-mode image requests, always send an `Origin` header. When a referrer isn't
+        // available, fall back to using the target origin as a best-effort approximation.
+        if let Some(parsed) = parsed_target_url.as_ref() {
+          if let Some((origin, _)) = profile.origin_and_referer(parsed) {
+            headers.push(("Origin".to_string(), origin));
+          }
+        } else if let Some(target_origin) = target_origin.as_ref() {
+          if let Some((origin, _)) = http_browser_origin_and_referer_for_origin(target_origin) {
+            headers.push(("Origin".to_string(), origin));
+          }
         }
       }
     }
@@ -3361,8 +3390,8 @@ impl HttpFetcher {
           .get("last-modified")
           .and_then(|h| h.to_str().ok())
           .map(|s| s.to_string());
-        let access_control_allow_origin =
-          header_values_joined(response.headers(), "access-control-allow-origin");
+        let (access_control_allow_origin, access_control_allow_credentials) =
+          parse_cors_response_headers(response.headers());
         let timing_allow_origin = header_values_joined(response.headers(), "timing-allow-origin");
         let cache_policy = parse_http_cache_policy(response.headers());
         let final_url = response.get_uri().to_string();
@@ -3545,6 +3574,7 @@ impl HttpFetcher {
             resource.last_modified = last_modified;
             resource.access_control_allow_origin = access_control_allow_origin;
             resource.timing_allow_origin = timing_allow_origin;
+            resource.access_control_allow_credentials = access_control_allow_credentials;
             resource.cache_policy = cache_policy;
             render_control::check_active(decode_stage).map_err(Error::Render)?;
             return Ok(resource);
@@ -3835,8 +3865,8 @@ impl HttpFetcher {
           .get("last-modified")
           .and_then(|h| h.to_str().ok())
           .map(|s| s.to_string());
-        let access_control_allow_origin =
-          header_values_joined(response.headers(), "access-control-allow-origin");
+        let (access_control_allow_origin, access_control_allow_credentials) =
+          parse_cors_response_headers(response.headers());
         let timing_allow_origin = header_values_joined(response.headers(), "timing-allow-origin");
         let cache_policy = parse_http_cache_policy(response.headers());
         let final_url = response.url().to_string();
@@ -4018,6 +4048,7 @@ impl HttpFetcher {
             resource.last_modified = last_modified;
             resource.access_control_allow_origin = access_control_allow_origin;
             resource.timing_allow_origin = timing_allow_origin;
+            resource.access_control_allow_credentials = access_control_allow_credentials;
             resource.cache_policy = cache_policy;
             render_control::check_active(decode_stage).map_err(Error::Render)?;
             return Ok(resource);
@@ -4315,8 +4346,8 @@ impl HttpFetcher {
           .get("last-modified")
           .and_then(|h| h.to_str().ok())
           .map(|s| s.to_string());
-        let access_control_allow_origin =
-          header_values_joined(response.headers(), "access-control-allow-origin");
+        let (access_control_allow_origin, access_control_allow_credentials) =
+          parse_cors_response_headers(response.headers());
         let timing_allow_origin = header_values_joined(response.headers(), "timing-allow-origin");
         let cache_policy = parse_http_cache_policy(response.headers());
         let final_url = response.get_uri().to_string();
@@ -4566,6 +4597,7 @@ impl HttpFetcher {
             resource.last_modified = last_modified;
             resource.access_control_allow_origin = access_control_allow_origin;
             resource.timing_allow_origin = timing_allow_origin;
+            resource.access_control_allow_credentials = access_control_allow_credentials;
             resource.cache_policy = cache_policy;
             render_control::check_active(decode_stage).map_err(Error::Render)?;
             return Ok(resource);
@@ -4844,8 +4876,8 @@ impl HttpFetcher {
           .get("last-modified")
           .and_then(|h| h.to_str().ok())
           .map(|s| s.to_string());
-        let access_control_allow_origin =
-          header_values_joined(response.headers(), "access-control-allow-origin");
+        let (access_control_allow_origin, access_control_allow_credentials) =
+          parse_cors_response_headers(response.headers());
         let timing_allow_origin = header_values_joined(response.headers(), "timing-allow-origin");
         let cache_policy = parse_http_cache_policy(response.headers());
         let final_url = response.url().to_string();
@@ -5120,6 +5152,7 @@ impl HttpFetcher {
             resource.last_modified = last_modified;
             resource.access_control_allow_origin = access_control_allow_origin;
             resource.timing_allow_origin = timing_allow_origin;
+            resource.access_control_allow_credentials = access_control_allow_credentials;
             resource.cache_policy = cache_policy;
             render_control::check_active(decode_stage).map_err(Error::Render)?;
             return Ok(resource);
@@ -6292,7 +6325,7 @@ fn render_stage_hint_for_context(kind: FetchContextKind, url: &str) -> RenderSta
   match kind {
     FetchContextKind::Document => RenderStage::DomParse,
     FetchContextKind::Stylesheet | FetchContextKind::Font => RenderStage::Css,
-    FetchContextKind::Image => RenderStage::Paint,
+    FetchContextKind::Image | FetchContextKind::ImageCors => RenderStage::Paint,
     FetchContextKind::Other => render_stage_hint_from_url(url),
   }
 }
@@ -7344,6 +7377,24 @@ fn parse_content_encodings(headers: &HeaderMap) -> Vec<String> {
     .collect()
 }
 
+fn parse_cors_response_headers(headers: &HeaderMap) -> (Option<String>, bool) {
+  let allow_origin = header_values_joined(headers, "access-control-allow-origin");
+  let credentials_values: Vec<&str> = headers
+    .get_all("access-control-allow-credentials")
+    .iter()
+    .filter_map(|value| value.to_str().ok())
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .collect();
+  // Chromium expects `Access-Control-Allow-Credentials: true` exactly; treat multiple values as
+  // invalid.
+  let allow_credentials = matches!(
+    credentials_values.as_slice(),
+    [value] if value.eq_ignore_ascii_case("true")
+  );
+  (allow_origin, allow_credentials)
+}
+
 fn read_response_prefix<R: Read>(
   reader: &mut R,
   max_bytes: usize,
@@ -7621,7 +7672,7 @@ fn should_substitute_empty_image_body(
   // returning a successful 2xx status and a non-image content-type. Treat those as a 1x1
   // transparent PNG so they don't surface as fetch failures (and so replaced element sizing has a
   // stable intrinsic size).
-  kind == FetchContextKind::Image
+  matches!(kind, FetchContextKind::Image | FetchContextKind::ImageCors)
     && (200..300).contains(&status)
     && header_content_length_is_zero(headers)
 }
@@ -7638,7 +7689,9 @@ fn should_substitute_captcha_image_response(
   // NYU (and similar bot-mitigation setups) can redirect blocked subresource requests to a URL with
   // `?captcha=...` and return an HTTP error status. Treat these as missing images rather than hard
   // failures so the renderer can proceed deterministically.
-  kind == FetchContextKind::Image && status == 405 && url_has_captcha_param(final_url)
+  matches!(kind, FetchContextKind::Image | FetchContextKind::ImageCors)
+    && status == 405
+    && url_has_captcha_param(final_url)
 }
 
 fn should_substitute_markup_image_body(
@@ -7648,7 +7701,7 @@ fn should_substitute_markup_image_body(
   content_type: Option<&str>,
   bytes: &[u8],
 ) -> bool {
-  if kind != FetchContextKind::Image || bytes.is_empty() {
+  if !matches!(kind, FetchContextKind::Image | FetchContextKind::ImageCors) || bytes.is_empty() {
     return false;
   }
   // Avoid hiding "bot mitigation returned HTML for an image URL" cases (e.g. `.jpg` / `.png` / etc.)
@@ -7739,7 +7792,7 @@ fn substitute_offline_fixture_placeholder_full(
   }
 
   match kind {
-    FetchContextKind::Image => {
+    FetchContextKind::Image | FetchContextKind::ImageCors => {
       *bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG.to_vec();
       *content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
     }
@@ -7763,7 +7816,7 @@ fn substitute_offline_fixture_placeholder_prefix(
   }
 
   match kind {
-    FetchContextKind::Image => {
+    FetchContextKind::Image | FetchContextKind::ImageCors => {
       let take = OFFLINE_FIXTURE_PLACEHOLDER_PNG.len().min(read_limit);
       *bytes = OFFLINE_FIXTURE_PLACEHOLDER_PNG[..take].to_vec();
       *content_type = Some(OFFLINE_FIXTURE_PLACEHOLDER_PNG_MIME.to_string());
@@ -11072,6 +11125,75 @@ mod tests {
     assert!(
       !req.contains("sec-fetch-user: ?1"),
       "font requests should not set Sec-Fetch-User, got: {req}"
+    );
+  }
+
+  #[test]
+  fn http_fetcher_sets_image_cors_request_headers() {
+    let Some(listener) = try_bind_localhost("http_fetcher_sets_image_cors_request_headers") else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(String::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let request = read_http_request(&mut stream)
+        .unwrap()
+        .expect("expected HTTP request");
+      if let Ok(mut slot) = captured_req.lock() {
+        *slot = String::from_utf8_lossy(&request).to_string();
+      }
+ 
+      let body = b"img";
+      let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(headers.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+ 
+    let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
+    let url = format!("http://{}/asset.png", addr);
+    let referrer = format!("http://{}/doc.html", addr);
+    let res = fetcher
+      .fetch_with_request(
+        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer(&referrer),
+      )
+      .expect("fetch image cors");
+    handle.join().unwrap();
+ 
+    assert_eq!(res.bytes, b"img");
+    let req = captured.lock().unwrap().to_ascii_lowercase();
+    assert!(
+      req.contains(&format!("accept: {BROWSER_ACCEPT_IMAGE}").to_ascii_lowercase()),
+      "expected image accept header, got: {req}"
+    );
+    assert!(
+      req.contains("sec-fetch-dest: image"),
+      "expected Sec-Fetch-Dest image, got: {req}"
+    );
+    assert!(
+      req.contains("sec-fetch-mode: cors"),
+      "expected Sec-Fetch-Mode cors, got: {req}"
+    );
+    assert!(
+      req.contains("sec-fetch-site: same-origin"),
+      "expected Sec-Fetch-Site same-origin, got: {req}"
+    );
+    let expected_origin = format!("origin: http://{}", addr).to_ascii_lowercase();
+    assert!(
+      req.contains(&expected_origin),
+      "expected Origin header for image cors, got: {req}"
+    );
+    let expected_referer = format!("referer: http://{}/doc.html", addr).to_ascii_lowercase();
+    assert!(
+      req.contains(&expected_referer),
+      "expected Referer header for image cors, got: {req}"
     );
   }
 

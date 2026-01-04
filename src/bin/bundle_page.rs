@@ -854,6 +854,7 @@ fn build_manifest(
       last_modified: res.last_modified.clone(),
       access_control_allow_origin: res.access_control_allow_origin.clone(),
       timing_allow_origin: res.timing_allow_origin.clone(),
+      access_control_allow_credentials: res.access_control_allow_credentials,
     };
     manifest_resources.insert(url.clone(), info.clone());
     resources.push(ResourceEntry {
@@ -1401,6 +1402,9 @@ fn crawl_document(
         ensure_http_success(&res, &url).and_then(|_| ensure_font_mime_sane(&res, &url))
       }
       FetchDestination::Image => {
+        ensure_http_success(&res, &url).and_then(|_| ensure_image_mime_sane(&res, &url))
+      }
+      FetchDestination::ImageCors => {
         ensure_http_success(&res, &url).and_then(|_| ensure_image_mime_sane(&res, &url))
       }
       FetchDestination::Document => ensure_http_success(&res, &url).and_then(|_| {

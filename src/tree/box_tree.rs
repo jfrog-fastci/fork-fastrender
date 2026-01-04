@@ -35,6 +35,18 @@ use std::sync::Arc;
 
 pub use crate::html::images::{ImageSelectionContext, SelectedImageSource};
 
+/// Parsed `crossorigin` attribute state for `<img>` elements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum CrossOriginAttribute {
+  /// No `crossorigin` attribute present (default: non-CORS fetch).
+  #[default]
+  None,
+  /// `crossorigin` present with empty/`anonymous`/unknown value.
+  Anonymous,
+  /// `crossorigin="use-credentials"`.
+  UseCredentials,
+}
+
 /// A block-level box
 ///
 /// Block boxes stack vertically and establish block formatting contexts.
@@ -339,6 +351,8 @@ pub enum ReplacedType {
     src: String,
     /// Alternative text for fallback rendering
     alt: Option<String>,
+    /// Parsed `crossorigin` attribute, used to drive CORS-mode image requests.
+    crossorigin: CrossOriginAttribute,
     /// Srcset candidates for density-aware selection
     srcset: Vec<SrcsetCandidate>,
     /// Sizes attribute values for width-descriptor selection
@@ -1187,6 +1201,7 @@ mod tests {
       ReplacedType::Image {
         src: "image.png".to_string(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -1319,6 +1334,7 @@ mod tests {
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
+        crossorigin: CrossOriginAttribute::None,
       },
       None,
       None,
@@ -1435,6 +1451,7 @@ mod tests {
         }],
       }),
       picture_sources: Vec::new(),
+      crossorigin: CrossOriginAttribute::None,
     };
 
     let viewport = Size::new(200.0, 100.0);
@@ -1483,6 +1500,7 @@ mod tests {
         ],
       }),
       picture_sources: Vec::new(),
+      crossorigin: CrossOriginAttribute::None,
     };
 
     let viewport = Size::new(1200.0, 800.0);
@@ -1526,6 +1544,7 @@ mod tests {
         }],
       }),
       picture_sources: Vec::new(),
+      crossorigin: CrossOriginAttribute::None,
     };
 
     let viewport = Size::new(200.0, 100.0);
@@ -1560,6 +1579,7 @@ mod tests {
       ],
       sizes: None,
       picture_sources: Vec::new(),
+      crossorigin: CrossOriginAttribute::None,
     };
 
     // With viewport width 500 and DPR 2, density candidates are 0.8 and 1.6.
@@ -1598,6 +1618,7 @@ mod tests {
       ],
       sizes: None,
       picture_sources: Vec::new(),
+      crossorigin: CrossOriginAttribute::None,
     };
 
     // Slot width is zero (e.g., auto-sized placeholder), so selection should fall back to viewport.
@@ -1636,6 +1657,7 @@ mod tests {
       ],
       sizes: None,
       picture_sources: Vec::new(),
+      crossorigin: CrossOriginAttribute::None,
     };
 
     let media_ctx = MediaContext::screen(800.0, 600.0).with_device_pixel_ratio(2.0);
@@ -1703,6 +1725,7 @@ mod tests {
           mime_type: Some("image/webp; codecs=vp8".to_string()),
         },
       ],
+      crossorigin: CrossOriginAttribute::None,
     };
 
     let small_viewport = Size::new(400.0, 300.0);
@@ -1737,6 +1760,7 @@ mod tests {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
+      crossorigin: CrossOriginAttribute::None,
       srcset: vec![],
       sizes: None,
       picture_sources: vec![
@@ -1803,6 +1827,7 @@ mod tests {
         media: None,
         mime_type: None,
       }],
+      crossorigin: CrossOriginAttribute::None,
     };
 
     let viewport = Size::new(800.0, 600.0);
@@ -1842,6 +1867,7 @@ mod tests {
         }],
       }),
       picture_sources: Vec::new(),
+      crossorigin: CrossOriginAttribute::None,
     };
 
     let viewport = Size::new(400.0, 200.0);
@@ -1899,6 +1925,7 @@ mod tests {
         ],
       }),
       picture_sources: Vec::new(),
+      crossorigin: CrossOriginAttribute::None,
     };
 
     let small_viewport = Size::new(300.0, 400.0);
@@ -1959,6 +1986,7 @@ mod tests {
           mime_type: Some("image/png".to_string()),
         },
       ],
+      crossorigin: CrossOriginAttribute::None,
     };
 
     let small_viewport = Size::new(400.0, 300.0);

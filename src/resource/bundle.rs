@@ -15,6 +15,10 @@ pub const BUNDLE_MANIFEST: &str = "bundle.json";
 /// Schema version for bundle manifests.
 pub const BUNDLE_VERSION: u32 = 1;
 
+fn bool_is_false(value: &bool) -> bool {
+  !*value
+}
+
 /// Render settings captured with the bundle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BundleRenderConfig {
@@ -66,6 +70,8 @@ pub struct BundledResourceInfo {
   pub access_control_allow_origin: Option<String>,
   #[serde(default)]
   pub timing_allow_origin: Option<String>,
+  #[serde(default, skip_serializing_if = "bool_is_false")]
+  pub access_control_allow_credentials: bool,
 }
 
 /// Manifest describing all resources contained in a bundle.
@@ -103,6 +109,7 @@ impl BundledResource {
     res.last_modified = self.info.last_modified.clone();
     res.access_control_allow_origin = self.info.access_control_allow_origin.clone();
     res.timing_allow_origin = self.info.timing_allow_origin.clone();
+    res.access_control_allow_credentials = self.info.access_control_allow_credentials;
     res
   }
 }
@@ -423,6 +430,7 @@ mod tests {
           last_modified: None,
           access_control_allow_origin: Some("https://example.com".to_string()),
           timing_allow_origin: Some("*".to_string()),
+          access_control_allow_credentials: false,
         },
       )]),
     };

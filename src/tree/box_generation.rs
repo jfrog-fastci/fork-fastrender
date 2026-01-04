@@ -39,6 +39,7 @@ use crate::tree::anonymous::AnonymousBoxCreator;
 use crate::tree::box_tree::BoxNode;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::box_tree::BoxType;
+use crate::tree::box_tree::CrossOriginAttribute;
 use crate::tree::box_tree::ForeignObjectInfo;
 use crate::tree::box_tree::FormControl;
 use crate::tree::box_tree::FormControlKind;
@@ -2324,6 +2325,7 @@ fn create_pseudo_element_box(
           replaced_type: ReplacedType::Image {
             src: url.clone(),
             alt: None,
+            crossorigin: CrossOriginAttribute::None,
             sizes: None,
             srcset: Vec::new(),
             picture_sources: Vec::new(),
@@ -2505,6 +2507,7 @@ pub(crate) fn marker_content_from_style(
         replaced_type: ReplacedType::Image {
           src,
           alt: None,
+          crossorigin: CrossOriginAttribute::None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -2523,6 +2526,7 @@ pub(crate) fn marker_content_from_style(
         replaced_type: ReplacedType::Image {
           src: url.clone(),
           alt: None,
+          crossorigin: CrossOriginAttribute::None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -3234,6 +3238,18 @@ fn create_replaced_box_from_styled(
       .get_attribute_ref("alt")
       .filter(|s| !s.is_empty())
       .map(|s| s.to_string());
+    let crossorigin = match styled.node.get_attribute_ref("crossorigin") {
+      None => CrossOriginAttribute::None,
+      Some(value) => {
+        let value = value.trim();
+        if value.eq_ignore_ascii_case("use-credentials") {
+          CrossOriginAttribute::UseCredentials
+        } else {
+          // Empty, `anonymous`, and unknown tokens are treated as `anonymous`.
+          CrossOriginAttribute::Anonymous
+        }
+      }
+    };
     let srcset = styled
       .node
       .get_attribute_ref("srcset")
@@ -3243,6 +3259,7 @@ fn create_replaced_box_from_styled(
     ReplacedType::Image {
       src,
       alt,
+      crossorigin,
       srcset,
       sizes,
       picture_sources,
@@ -3295,6 +3312,7 @@ fn create_replaced_box_from_styled(
     ReplacedType::Image {
       src,
       alt,
+      crossorigin: CrossOriginAttribute::None,
       sizes: None,
       srcset: Vec::new(),
       picture_sources: Vec::new(),
@@ -3521,6 +3539,55 @@ mod tests {
       "expected input to preserve value for painting, got {:?}",
       control.control
     );
+  }
+
+  #[test]
+  fn img_crossorigin_attribute_parses() {
+    fn set_attr(node: &mut StyledNode, name: &str, value: &str) {
+      match &mut node.node.node_type {
+        DomNodeType::Element { attributes, .. } => {
+          attributes.push((name.to_string(), value.to_string()));
+        }
+        _ => panic!("expected element node"),
+      }
+    }
+
+    let mut img_none = styled_element("img");
+    img_none.node_id = 1;
+    set_attr(&mut img_none, "src", "/a.png");
+
+    let mut img_anonymous = styled_element("img");
+    img_anonymous.node_id = 2;
+    set_attr(&mut img_anonymous, "src", "/a.png");
+    set_attr(&mut img_anonymous, "crossorigin", "anonymous");
+
+    let mut img_creds = styled_element("img");
+    img_creds.node_id = 3;
+    set_attr(&mut img_creds, "src", "/a.png");
+    set_attr(&mut img_creds, "crossorigin", "use-credentials");
+
+    let mut root = styled_element("div");
+    root.children = vec![img_none, img_anonymous, img_creds];
+
+    let tree = generate_box_tree(&root);
+    assert_eq!(tree.root.children.len(), 3);
+
+    let expected = [
+      CrossOriginAttribute::None,
+      CrossOriginAttribute::Anonymous,
+      CrossOriginAttribute::UseCredentials,
+    ];
+
+    for (idx, want) in expected.into_iter().enumerate() {
+      let node = &tree.root.children[idx];
+      match &node.box_type {
+        BoxType::Replaced(replaced) => match &replaced.replaced_type {
+          ReplacedType::Image { crossorigin, .. } => assert_eq!(*crossorigin, want),
+          other => panic!("expected image replaced type, got {other:?}"),
+        },
+        other => panic!("expected replaced box, got {other:?}"),
+      }
+    }
   }
 
   #[test]
@@ -4220,6 +4287,7 @@ mod tests {
       ReplacedType::Image {
         src: "test.png".to_string(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),

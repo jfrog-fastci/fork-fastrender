@@ -169,6 +169,7 @@ use crate::tree::box_generation::BoxGenerationOptions;
 use crate::tree::box_tree::BoxNode;
 use crate::tree::box_tree::BoxTree;
 use crate::tree::box_tree::BoxType;
+use crate::tree::box_tree::CrossOriginAttribute;
 use crate::tree::box_tree::MarkerContent;
 use crate::tree::box_tree::ReplacedBox;
 use crate::tree::box_tree::ReplacedType;
@@ -238,6 +239,12 @@ struct ImageIntrinsicProbeJob {
   box_id: usize,
   density: Option<f32>,
   style: Arc<ComputedStyle>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ImageIntrinsicProbeKey {
+  url: String,
+  crossorigin: CrossOriginAttribute,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -9247,7 +9254,7 @@ impl FastRender {
     viewport: Size,
     media_ctx: &MediaContext,
     profile_enabled: bool,
-    jobs: &mut HashMap<String, Vec<ImageIntrinsicProbeJob>>,
+    jobs: &mut HashMap<ImageIntrinsicProbeKey, Vec<ImageIntrinsicProbeJob>>,
   ) {
     fn should_skip_image_probe(style: &ComputedStyle) -> bool {
       matches!(style.aspect_ratio, crate::style::types::AspectRatio::Ratio(r) if r > 0.0)
@@ -9261,16 +9268,18 @@ impl FastRender {
        viewport: Size,
        media_ctx: &MediaContext,
        profile_enabled: bool,
-       jobs: &mut HashMap<String, Vec<ImageIntrinsicProbeJob>>| {
-        let ReplacedType::Image {
-          src,
-          srcset,
-          picture_sources,
-          ..
-        } = &replaced_box.replaced_type
-        else {
-          return;
-        };
+       jobs: &mut HashMap<ImageIntrinsicProbeKey, Vec<ImageIntrinsicProbeJob>>| {
+         let ReplacedType::Image {
+           src,
+           srcset,
+           picture_sources,
+           crossorigin,
+           ..
+         } = &replaced_box.replaced_type
+         else {
+           return;
+         };
+        let crossorigin = *crossorigin;
 
         // Mirrors the early-return logic in `resolve_intrinsic_for_replaced_for_media` so we don't
         // schedule unnecessary probes.
@@ -9334,7 +9343,10 @@ impl FastRender {
           return;
         }
         jobs
-          .entry(resolved_url)
+          .entry(ImageIntrinsicProbeKey {
+            url: resolved_url,
+            crossorigin,
+          })
           .or_default()
           .push(ImageIntrinsicProbeJob {
             box_id,
@@ -9382,14 +9394,15 @@ impl FastRender {
 
   fn execute_image_intrinsic_probe_jobs(
     &self,
-    jobs: HashMap<String, Vec<ImageIntrinsicProbeJob>>,
+    jobs: HashMap<ImageIntrinsicProbeKey, Vec<ImageIntrinsicProbeJob>>,
     profile_enabled: bool,
   ) -> HashMap<usize, ImageIntrinsicProbeOutcome> {
     if jobs.is_empty() {
       return HashMap::new();
     }
 
-    let job_groups: Vec<(String, Vec<ImageIntrinsicProbeJob>)> = jobs.into_iter().collect();
+    let job_groups: Vec<(ImageIntrinsicProbeKey, Vec<ImageIntrinsicProbeJob>)> =
+      jobs.into_iter().collect();
     let box_jobs = job_groups
       .iter()
       .map(|(_, group)| group.len())
@@ -9402,15 +9415,12 @@ impl FastRender {
     let image_cache = self.image_cache.clone();
     let device_pixel_ratio = self.device_pixel_ratio;
 
-    let run_job = |(url, jobs): (String, Vec<ImageIntrinsicProbeJob>)| {
+    let run_job = |(key, jobs): (ImageIntrinsicProbeKey, Vec<ImageIntrinsicProbeJob>)| {
       let _deadline_guard = DeadlineGuard::install(deadline.as_ref());
       let _stage_guard = StageGuard::install(Some(RenderStage::BoxTree));
       let probe_start = profile_enabled.then(Instant::now);
-      let probe_result = if url.trim_start().starts_with('<') {
-        image_cache.probe(url.as_str())
-      } else {
-        image_cache.probe_resolved(url.as_str())
-      };
+      let probe_result = image_cache
+        .probe_resolved_with_crossorigin(key.url.as_str(), key.crossorigin);
       let probe_ms = probe_start.map(|s| s.elapsed().as_secs_f64() * 1000.0);
       let probe_ok = probe_result.is_ok();
 
@@ -9660,7 +9670,7 @@ impl FastRender {
     }
 
     let media_ctx = self.media_context_for_media(media_type, viewport.width, viewport.height);
-    let mut probe_jobs: HashMap<String, Vec<ImageIntrinsicProbeJob>> = HashMap::new();
+    let mut probe_jobs: HashMap<ImageIntrinsicProbeKey, Vec<ImageIntrinsicProbeJob>> = HashMap::new();
     let collect_start = timings_enabled.then(Instant::now);
     self.collect_image_intrinsic_probe_jobs_for_node(
       node,
@@ -9839,8 +9849,10 @@ impl FastRender {
         alt: stored_alt,
         srcset,
         picture_sources,
+        crossorigin,
         ..
       } => {
+        let crossorigin = *crossorigin;
         if profile_enabled {
           REPLACED_INTRINSIC_PROFILE.with(|state| {
             state.borrow_mut().image_nodes += 1;
@@ -9898,7 +9910,7 @@ impl FastRender {
         if let Some(selected) = selected {
           if !selected.url.is_empty() {
             let probe_start = profile_enabled.then(Instant::now);
-            let probe_result = self.image_cache.probe(selected.url);
+            let probe_result = self.image_cache.probe_with_crossorigin(selected.url, crossorigin);
             if let Some(start) = probe_start {
               let ms = start.elapsed().as_secs_f64() * 1000.0;
               REPLACED_INTRINSIC_PROFILE.with(|state| {
@@ -11950,6 +11962,7 @@ mod tests {
     ScrollSnapStrictness, WritingMode,
   };
   use crate::text::pipeline::ShapingPipeline;
+  use crate::tree::box_tree::CrossOriginAttribute;
   use crate::tree::fragment_tree::FragmentContent;
   use crate::tree::fragment_tree::FragmentTree;
   use crate::ComputedStyle;
@@ -14497,6 +14510,7 @@ mod tests {
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
+        crossorigin: CrossOriginAttribute::None,
       },
       None,
       None,
@@ -14635,6 +14649,7 @@ mod tests {
             sizes: None,
             srcset: Vec::new(),
             picture_sources: Vec::new(),
+            crossorigin: CrossOriginAttribute::None,
           },
           None,
           None,
@@ -14647,6 +14662,7 @@ mod tests {
             sizes: None,
             srcset: Vec::new(),
             picture_sources: Vec::new(),
+            crossorigin: CrossOriginAttribute::None,
           },
           None,
           None,
@@ -14767,6 +14783,7 @@ mod tests {
             sizes: None,
             srcset: Vec::new(),
             picture_sources: Vec::new(),
+            crossorigin: CrossOriginAttribute::None,
           },
           None,
           None,
@@ -14779,6 +14796,7 @@ mod tests {
             sizes: None,
             srcset: Vec::new(),
             picture_sources: Vec::new(),
+            crossorigin: CrossOriginAttribute::None,
           },
           None,
           None,
@@ -14944,6 +14962,7 @@ mod tests {
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
+        crossorigin: CrossOriginAttribute::None,
       },
       None,
       None,
@@ -14991,6 +15010,7 @@ mod tests {
           descriptor: SrcsetDescriptor::Density(2.0),
         }],
         picture_sources: Vec::new(),
+        crossorigin: CrossOriginAttribute::None,
       },
       None,
       None,

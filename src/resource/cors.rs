@@ -78,12 +78,15 @@ pub fn validate_cors_allow_origin(
   let parsed_origin =
     Url::parse(raw).map_err(|_| format!("blocked by CORS: invalid Access-Control-Allow-Origin: {raw}"))?;
   let allowed_origin = DocumentOrigin::from_parsed_url(&parsed_origin);
-  if allowed_origin.same_origin(document_origin) {
-    return Ok(());
+  if !allowed_origin.same_origin(document_origin) {
+    return Err(format!(
+      "blocked by CORS: Access-Control-Allow-Origin {allowed_origin} does not match document origin {document_origin}"
+    ));
   }
 
-  Err(format!(
-    "blocked by CORS: Access-Control-Allow-Origin {allowed_origin} does not match document origin {document_origin}"
-  ))
-}
+  if matches!(mode, CorsMode::UseCredentials) && !resource.access_control_allow_credentials {
+    return Err("blocked by CORS: missing Access-Control-Allow-Credentials: true".to_string());
+  }
 
+  Ok(())
+}

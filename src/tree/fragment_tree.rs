@@ -1528,6 +1528,7 @@ mod tests {
   use crate::layout::fragmentation::{fragment_tree as split_fragment_tree, FragmentationOptions};
   use crate::style::ComputedStyle;
   use crate::text::pipeline::ShapedRun;
+  use crate::tree::box_tree::CrossOriginAttribute;
   use std::sync::Arc;
 
   // Constructor tests
@@ -1906,6 +1907,7 @@ mod tests {
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
+        crossorigin: CrossOriginAttribute::None,
       },
     );
 

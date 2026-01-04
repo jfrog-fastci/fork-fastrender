@@ -141,7 +141,7 @@ use crate::tree::box_tree::ReplacedBox;
 use crate::tree::box_tree::ReplacedType;
 use crate::tree::box_tree::SvgContent;
 use crate::tree::box_tree::SvgDocumentCssInjection;
-use crate::tree::box_tree::{FormControl, FormControlKind, TextControlKind};
+use crate::tree::box_tree::{CrossOriginAttribute, FormControl, FormControlKind, TextControlKind};
 use crate::tree::fragment_tree::FragmentContent;
 use crate::tree::fragment_tree::FragmentNode;
 use crate::tree::fragment_tree::FragmentTree;
@@ -5847,7 +5847,7 @@ impl Painter {
           }
         }
       }
-      ReplacedType::Image { alt, .. } => {
+      ReplacedType::Image { alt, crossorigin, .. } => {
         let media_ctx = crate::style::media::MediaContext::screen(self.css_width, self.css_height)
           .with_device_pixel_ratio(self.scale)
           .with_env_overrides();
@@ -5864,6 +5864,7 @@ impl Painter {
         for candidate in sources {
           if self.paint_image_from_src(
             &candidate,
+            *crossorigin,
             style,
             content_rect.x(),
             content_rect.y(),
@@ -5920,6 +5921,7 @@ impl Painter {
         };
         if self.paint_image_from_src(
           &image_source,
+          CrossOriginAttribute::None,
           style,
           content_rect.x(),
           content_rect.y(),
@@ -5971,6 +5973,7 @@ impl Painter {
           };
           if self.paint_image_from_src(
             &fallback_source,
+            CrossOriginAttribute::None,
             style,
             content_rect.x(),
             content_rect.y(),
@@ -6022,6 +6025,7 @@ impl Painter {
         };
         if self.paint_image_from_src(
           &image_source,
+          CrossOriginAttribute::None,
           style,
           content_rect.x(),
           content_rect.y(),
@@ -6050,6 +6054,7 @@ impl Painter {
         };
         if self.paint_image_from_src(
           &image_source,
+          CrossOriginAttribute::None,
           style,
           content_rect.x(),
           content_rect.y(),
@@ -6076,6 +6081,7 @@ impl Painter {
         for candidate in sources {
           if self.paint_image_from_src(
             &candidate,
+            CrossOriginAttribute::None,
             style,
             content_rect.x(),
             content_rect.y(),
@@ -6785,6 +6791,7 @@ impl Painter {
   fn paint_image_from_src(
     &mut self,
     src: &crate::tree::box_tree::SelectedImageSource<'_>,
+    crossorigin: CrossOriginAttribute,
     style: Option<&ComputedStyle>,
     x: f32,
     y: f32,
@@ -6828,7 +6835,7 @@ impl Painter {
         }
       }
     } else {
-      match self.image_cache.load(&resolved_src) {
+      match self.image_cache.load_with_crossorigin(&resolved_src, crossorigin) {
         Ok(img) => img,
         Err(e) => {
           if log_image_fail {
@@ -6952,8 +6959,9 @@ impl Painter {
     let should_scale =
       Self::should_use_scaled_raster_pixmap(quality, img_w_raw, img_h_raw, target_w, target_h);
     let pixmap = match if should_scale {
-      self.image_cache.load_raster_pixmap_at_size(
+      self.image_cache.load_raster_pixmap_at_size_with_crossorigin(
         &resolved_src,
+        crossorigin,
         orientation,
         false,
         target_w,
@@ -6963,7 +6971,7 @@ impl Painter {
     } else {
       self
         .image_cache
-        .load_raster_pixmap(&resolved_src, orientation, false)
+        .load_raster_pixmap_with_crossorigin(&resolved_src, crossorigin, orientation, false)
     } {
       Ok(Some(pixmap)) => pixmap,
       Ok(None) | Err(_) => {
@@ -13200,6 +13208,7 @@ mod tests {
   use crate::style::values::Length;
   use crate::style::ComputedStyle;
   use crate::text::font_loader::FontContext;
+  use crate::tree::box_tree::CrossOriginAttribute;
   use crate::tree::box_tree::SrcsetCandidate;
   use crate::tree::box_tree::SrcsetDescriptor;
   use crate::Position;
@@ -14813,6 +14822,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: Some("alt".to_string()),
+          crossorigin: CrossOriginAttribute::None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -14941,6 +14951,7 @@ mod tests {
     let replaced = ReplacedType::Image {
       src: red.clone(),
       alt: None,
+      crossorigin: CrossOriginAttribute::None,
       sizes: None,
       srcset: vec![
         SrcsetCandidate {
@@ -14983,6 +14994,7 @@ mod tests {
     let replaced = ReplacedType::Image {
       src: red.clone(),
       alt: None,
+      crossorigin: CrossOriginAttribute::None,
       sizes: None,
       srcset: vec![
         SrcsetCandidate {
@@ -16689,6 +16701,7 @@ mod tests {
         density: None,
         from_picture: false,
       },
+      CrossOriginAttribute::None,
       Some(&style),
       0.0,
       0.0,
@@ -16724,6 +16737,7 @@ mod tests {
         density: None,
         from_picture: false,
       },
+      CrossOriginAttribute::None,
       Some(&style),
       0.0,
       0.0,

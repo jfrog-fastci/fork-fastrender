@@ -24,6 +24,7 @@ use crate::resource::{ensure_http_success, ensure_image_mime_sane};
 use crate::style::color::Rgba;
 use crate::style::types::ImageResolution;
 use crate::style::types::OrientationTransform;
+use crate::tree::box_tree::CrossOriginAttribute;
 use crate::svg::{
   map_svg_aspect_ratio, parse_svg_length_px, parse_svg_view_box,
   svg_intrinsic_dimensions_from_attributes, svg_view_box_root_transform, SvgPreserveAspectRatio,
@@ -1609,12 +1610,42 @@ impl ImageCache {
     url.to_string()
   }
 
+  fn cache_key_for_crossorigin(&self, resolved_url: &str, crossorigin: CrossOriginAttribute) -> String {
+    if crossorigin == CrossOriginAttribute::None {
+      return resolved_url.to_string();
+    }
+
+    let crossorigin_key = match crossorigin {
+      CrossOriginAttribute::None => "none",
+      CrossOriginAttribute::Anonymous => "anonymous",
+      CrossOriginAttribute::UseCredentials => "use-credentials",
+    };
+    let document_origin = self
+      .resource_context
+      .as_ref()
+      .and_then(|ctx| ctx.policy.document_origin.as_ref())
+      .map(|origin| origin.to_string())
+      .unwrap_or_else(|| "<unknown>".to_string());
+
+    format!("{resolved_url}@@crossorigin={crossorigin_key}@@doc_origin={document_origin}")
+  }
+
   /// Load an image from a URL or file path
   ///
   /// The URL is first resolved against the base URL if one is configured.
   /// Results are cached in memory, so subsequent loads of the same URL
   /// return the cached image.
   pub fn load(&self, url: &str) -> Result<Arc<CachedImage>> {
+    self.load_with_crossorigin(url, CrossOriginAttribute::None)
+  }
+
+  /// Load an image, using the provided `<img crossorigin>` state to control the fetch mode.
+  ///
+  /// When `crossorigin` is not [`CrossOriginAttribute::None`], the resource is fetched in CORS
+  /// mode (headers: `Origin`, `Sec-Fetch-Mode: cors`) and, when the `FASTR_FETCH_ENFORCE_CORS`
+  /// runtime toggle is enabled, the response's `Access-Control-Allow-Origin`/`Credentials` headers
+  /// are validated.
+  pub fn load_with_crossorigin(&self, url: &str, crossorigin: CrossOriginAttribute) -> Result<Arc<CachedImage>> {
     let trimmed = url.trim();
     if trimmed.is_empty() {
       return Ok(about_url_placeholder_image());
@@ -1626,27 +1657,33 @@ impl ImageCache {
       return Ok(about_url_placeholder_image());
     }
 
-    // Resolve the URL first
+    // Resolve the URL first.
     let resolved_url = self.resolve_url(trimmed);
     self.enforce_image_policy(&resolved_url)?;
 
-    // Check cache first (using resolved URL as key)
+    let destination = match crossorigin {
+      CrossOriginAttribute::None => FetchDestination::Image,
+      _ => FetchDestination::ImageCors,
+    };
+    let cache_key = self.cache_key_for_crossorigin(&resolved_url, crossorigin);
+
+    // Check cache first.
     record_image_cache_request();
-    if let Some(img) = self.get_cached(&resolved_url) {
+    if let Some(img) = self.get_cached(&cache_key) {
       record_image_cache_hit();
       return Ok(img);
     }
-    let (flight, is_owner) = self.join_inflight(&resolved_url);
+    let (flight, is_owner) = self.join_inflight(&cache_key);
     if !is_owner {
       record_image_cache_hit();
-      return flight.wait(&resolved_url);
+      return flight.wait(&cache_key);
     }
 
-    let mut inflight_guard = DecodeInFlightOwnerGuard::new(self, &resolved_url, flight);
+    let mut inflight_guard = DecodeInFlightOwnerGuard::new(self, &cache_key, flight);
 
-    if let Some(resource) = self.take_raw_cached_resource(&resolved_url) {
+    if let Some(resource) = self.take_raw_cached_resource(&cache_key) {
       record_image_cache_hit();
-      let result = self.decode_resource_into_cache(&resolved_url, &resource);
+      let result = self.decode_resource_into_cache(&cache_key, &resolved_url, &resource, crossorigin);
       let shared = match &result {
         Ok(img) => SharedImageResult::Success(Arc::clone(img)),
         Err(err) => {
@@ -1659,7 +1696,7 @@ impl ImageCache {
     }
 
     record_image_cache_miss();
-    let result = self.fetch_and_decode(&resolved_url);
+    let result = self.fetch_and_decode(&cache_key, &resolved_url, destination, crossorigin);
     let shared = match &result {
       Ok(img) => SharedImageResult::Success(Arc::clone(img)),
       Err(err) => SharedImageResult::Error(err.clone()),
@@ -1702,6 +1739,99 @@ impl ImageCache {
     });
 
     let image = self.load(&resolved_url)?;
+    if image.is_vector {
+      return Ok(None);
+    }
+
+    let (width, height) = image.oriented_dimensions(orientation);
+    if width == 0 || height == 0 {
+      return Ok(None);
+    }
+
+    let Some(bytes) = u64::from(width)
+      .checked_mul(u64::from(height))
+      .and_then(|px| px.checked_mul(4))
+    else {
+      return Ok(None);
+    };
+    if bytes > MAX_PIXMAP_BYTES {
+      return Ok(None);
+    }
+    let bytes = match usize::try_from(bytes) {
+      Ok(bytes) => bytes,
+      Err(_) => return Ok(None),
+    };
+
+    let rgba = image.to_oriented_rgba(orientation);
+    let (rgba_w, rgba_h) = rgba.dimensions();
+    if rgba_w != width || rgba_h != height {
+      return Ok(None);
+    }
+    let mut data = rgba.into_raw();
+
+    // tiny-skia expects premultiplied RGBA.
+    for pixel in data.chunks_exact_mut(4) {
+      let alpha = pixel[3] as f32 / 255.0;
+      pixel[0] = (pixel[0] as f32 * alpha).round() as u8;
+      pixel[1] = (pixel[1] as f32 * alpha).round() as u8;
+      pixel[2] = (pixel[2] as f32 * alpha).round() as u8;
+    }
+
+    let Some(size) = IntSize::from_wh(width, height) else {
+      return Ok(None);
+    };
+    let Some(pixmap) = Pixmap::from_vec(data, size) else {
+      return Ok(None);
+    };
+    let pixmap = Arc::new(pixmap);
+
+    if self.config.max_cached_raster_bytes > 0 && bytes > self.config.max_cached_raster_bytes {
+      return Ok(Some(pixmap));
+    }
+
+    if let Ok(mut cache) = self.raster_pixmap_cache.lock() {
+      cache.insert(key, Arc::clone(&pixmap), bytes);
+      record_raster_pixmap_cache_bytes(cache.current_bytes());
+    }
+
+    Ok(Some(pixmap))
+  }
+
+  pub fn load_raster_pixmap_with_crossorigin(
+    &self,
+    url: &str,
+    crossorigin: CrossOriginAttribute,
+    orientation: OrientationTransform,
+    decorative: bool,
+  ) -> Result<Option<Arc<tiny_skia::Pixmap>>> {
+    if crossorigin == CrossOriginAttribute::None {
+      return self.load_raster_pixmap(url, orientation, decorative);
+    }
+
+    let resolved_url = self.resolve_url(url);
+    if is_about_url(&resolved_url) {
+      return Ok(Some(about_url_placeholder_pixmap()));
+    }
+    self.enforce_image_policy(&resolved_url)?;
+    let cache_key = self.cache_key_for_crossorigin(&resolved_url, crossorigin);
+
+    let key = raster_pixmap_full_key(&cache_key, orientation, decorative);
+    if let Ok(mut cache) = self.raster_pixmap_cache.lock() {
+      if let Some(cached) = cache.get_cloned(&key) {
+        record_raster_pixmap_cache_hit();
+        record_raster_pixmap_cache_bytes(cache.current_bytes());
+        with_paint_diagnostics(|diag| {
+          diag.image_pixmap_cache_hits = diag.image_pixmap_cache_hits.saturating_add(1);
+        });
+        return Ok(Some(cached));
+      }
+    }
+    record_raster_pixmap_cache_miss();
+    with_paint_diagnostics(|diag| {
+      diag.image_pixmap_cache_misses = diag.image_pixmap_cache_misses.saturating_add(1);
+    });
+
+    let image = self.load_with_crossorigin(&resolved_url, crossorigin)?;
     if image.is_vector {
       return Ok(None);
     }
@@ -1902,9 +2032,167 @@ impl ImageCache {
     Ok(Some(pixmap))
   }
 
+  pub fn load_raster_pixmap_at_size_with_crossorigin(
+    &self,
+    url: &str,
+    crossorigin: CrossOriginAttribute,
+    orientation: OrientationTransform,
+    decorative: bool,
+    target_width: u32,
+    target_height: u32,
+    quality: FilterQuality,
+  ) -> Result<Option<Arc<tiny_skia::Pixmap>>> {
+    if crossorigin == CrossOriginAttribute::None {
+      return self.load_raster_pixmap_at_size(
+        url,
+        orientation,
+        decorative,
+        target_width,
+        target_height,
+        quality,
+      );
+    }
+
+    if target_width == 0 || target_height == 0 {
+      return Ok(None);
+    }
+    let resolved_url = self.resolve_url(url);
+    if is_about_url(&resolved_url) {
+      return Ok(Some(about_url_placeholder_pixmap()));
+    }
+    self.enforce_image_policy(&resolved_url)?;
+
+    let cache_key = self.cache_key_for_crossorigin(&resolved_url, crossorigin);
+    let key = raster_pixmap_key(
+      &cache_key,
+      orientation,
+      decorative,
+      target_width,
+      target_height,
+      raster_pixmap_quality_bits(quality),
+    );
+    if let Ok(mut cache) = self.raster_pixmap_cache.lock() {
+      if let Some(cached) = cache.get_cloned(&key) {
+        record_raster_pixmap_cache_hit();
+        record_raster_pixmap_cache_bytes(cache.current_bytes());
+        with_paint_diagnostics(|diag| {
+          diag.image_pixmap_cache_hits = diag.image_pixmap_cache_hits.saturating_add(1);
+        });
+        return Ok(Some(cached));
+      }
+    }
+    record_raster_pixmap_cache_miss();
+    with_paint_diagnostics(|diag| {
+      diag.image_pixmap_cache_misses = diag.image_pixmap_cache_misses.saturating_add(1);
+    });
+
+    let image = self.load_with_crossorigin(&resolved_url, crossorigin)?;
+    if image.is_vector {
+      return Ok(None);
+    }
+
+    let (src_w, src_h) = image.oriented_dimensions(orientation);
+    if src_w == 0 || src_h == 0 {
+      return Ok(None);
+    }
+    if target_width >= src_w || target_height >= src_h {
+      // Callers should only use this path when downscaling. If any axis would require upscaling,
+      // fall back to the full-resolution pixmap cache so results stay stable (important for
+      // pixelated/crisp-edges semantics and to avoid needless resampling work).
+      return self.load_raster_pixmap_with_crossorigin(&resolved_url, crossorigin, orientation, decorative);
+    }
+
+    let Some(bytes) = u64::from(target_width)
+      .checked_mul(u64::from(target_height))
+      .and_then(|px| px.checked_mul(4))
+    else {
+      return Ok(None);
+    };
+    if bytes > MAX_PIXMAP_BYTES {
+      return Ok(None);
+    }
+    let bytes = match usize::try_from(bytes) {
+      Ok(bytes) => bytes,
+      Err(_) => return Ok(None),
+    };
+
+    let filter = match quality {
+      FilterQuality::Nearest => image::imageops::FilterType::Nearest,
+      FilterQuality::Bilinear => image::imageops::FilterType::Triangle,
+      _ => image::imageops::FilterType::Triangle,
+    };
+
+    // We resize in the decoded image's native orientation and then apply the requested
+    // orientation transform on the smaller output buffer.
+    let (pre_w, pre_h) = if orientation.swaps_axes() {
+      (target_height, target_width)
+    } else {
+      (target_width, target_height)
+    };
+    let resized = image.image.resize_exact(pre_w, pre_h, filter);
+    let mut rgba = resized.to_rgba8();
+
+    match orientation.quarter_turns % 4 {
+      0 => {}
+      1 => rgba = imageops::rotate90(&rgba),
+      2 => rgba = imageops::rotate180(&rgba),
+      3 => rgba = imageops::rotate270(&rgba),
+      _ => {}
+    }
+    if orientation.flip_x {
+      rgba = imageops::flip_horizontal(&rgba);
+    }
+
+    let (rgba_w, rgba_h) = rgba.dimensions();
+    if rgba_w != target_width || rgba_h != target_height {
+      return Ok(None);
+    }
+    let mut data = rgba.into_raw();
+
+    // tiny-skia expects premultiplied RGBA.
+    for pixel in data.chunks_exact_mut(4) {
+      let alpha = pixel[3] as f32 / 255.0;
+      pixel[0] = (pixel[0] as f32 * alpha).round() as u8;
+      pixel[1] = (pixel[1] as f32 * alpha).round() as u8;
+      pixel[2] = (pixel[2] as f32 * alpha).round() as u8;
+    }
+
+    let Some(size) = IntSize::from_wh(target_width, target_height) else {
+      return Ok(None);
+    };
+    let Some(pixmap) = Pixmap::from_vec(data, size) else {
+      return Ok(None);
+    };
+    let pixmap = Arc::new(pixmap);
+
+    if self.config.max_cached_raster_bytes > 0 && bytes > self.config.max_cached_raster_bytes {
+      return Ok(Some(pixmap));
+    }
+
+    if let Ok(mut cache) = self.raster_pixmap_cache.lock() {
+      cache.insert(key, Arc::clone(&pixmap), bytes);
+      record_raster_pixmap_cache_bytes(cache.current_bytes());
+    }
+
+    Ok(Some(pixmap))
+  }
+
   /// Probe image metadata (dimensions, EXIF orientation/resolution, SVG intrinsic ratio)
   /// without fully decoding the image.
   pub fn probe(&self, url: &str) -> Result<Arc<CachedImageMetadata>> {
+    self.probe_with_crossorigin(url, CrossOriginAttribute::None)
+  }
+
+  /// Probe image metadata, using the provided `<img crossorigin>` state to control the fetch mode.
+  ///
+  /// When `crossorigin` is not [`CrossOriginAttribute::None`], the probe issues a CORS-mode fetch
+  /// (`Sec-Fetch-Mode: cors`, `Origin`) and, when `FASTR_FETCH_ENFORCE_CORS` is enabled, validates
+  /// the response's `Access-Control-Allow-Origin`/`Credentials` headers.
+  pub fn probe_with_crossorigin(
+    &self,
+    url: &str,
+    crossorigin: CrossOriginAttribute,
+  ) -> Result<Arc<CachedImageMetadata>> {
     let trimmed = url.trim();
     if trimmed.is_empty() {
       return Ok(about_url_placeholder_metadata());
@@ -1951,19 +2239,38 @@ impl ImageCache {
     }
 
     let resolved_url = self.resolve_url(trimmed);
-    self.probe_resolved_url(&resolved_url)
+    self.probe_resolved_with_crossorigin(&resolved_url, crossorigin)
   }
 
   pub fn probe_resolved(&self, resolved_url: &str) -> Result<Arc<CachedImageMetadata>> {
+    self.probe_resolved_with_crossorigin(resolved_url, CrossOriginAttribute::None)
+  }
+
+  pub fn probe_resolved_with_crossorigin(
+    &self,
+    resolved_url: &str,
+    crossorigin: CrossOriginAttribute,
+  ) -> Result<Arc<CachedImageMetadata>> {
     let resolved_url = resolved_url.trim();
     let trimmed = resolved_url.trim_start();
     if trimmed.starts_with('<') {
-      return self.probe(trimmed);
+      return self.probe_with_crossorigin(trimmed, crossorigin);
     }
-    self.probe_resolved_url(resolved_url)
+    let cache_key = self.cache_key_for_crossorigin(resolved_url, crossorigin);
+    let kind = match crossorigin {
+      CrossOriginAttribute::None => FetchContextKind::Image,
+      _ => FetchContextKind::ImageCors,
+    };
+    self.probe_resolved_url(&cache_key, resolved_url, kind, crossorigin)
   }
 
-  fn probe_resolved_url(&self, resolved_url: &str) -> Result<Arc<CachedImageMetadata>> {
+  fn probe_resolved_url(
+    &self,
+    cache_key: &str,
+    resolved_url: &str,
+    kind: FetchContextKind,
+    crossorigin: CrossOriginAttribute,
+  ) -> Result<Arc<CachedImageMetadata>> {
     if resolved_url.is_empty() {
       return Err(Error::Image(ImageError::LoadFailed {
         url: resolved_url.to_string(),
@@ -1976,26 +2283,26 @@ impl ImageCache {
 
     self.enforce_image_policy(resolved_url)?;
     record_image_cache_request();
-    if let Some(img) = self.get_cached(resolved_url) {
+    if let Some(img) = self.get_cached(cache_key) {
       record_image_cache_hit();
       return Ok(Arc::new(CachedImageMetadata::from(&*img)));
     }
 
-    if let Some(meta) = self.get_cached_meta(resolved_url) {
+    if let Some(meta) = self.get_cached_meta(cache_key) {
       record_image_cache_hit();
       return Ok(meta);
     }
 
-    let (flight, is_owner) = self.join_meta_inflight(resolved_url);
+    let (flight, is_owner) = self.join_meta_inflight(cache_key);
     if !is_owner {
       record_image_cache_hit();
-      return flight.wait(resolved_url);
+      return flight.wait(cache_key);
     }
 
-    let mut inflight_guard = ProbeInFlightOwnerGuard::new(self, resolved_url, flight);
+    let mut inflight_guard = ProbeInFlightOwnerGuard::new(self, cache_key, flight);
 
     if let Some(cached) = self.fetcher.read_cache_artifact(
-      FetchContextKind::Image,
+      kind,
       resolved_url,
       CacheArtifactKind::ImageProbeMetadata,
     ) {
@@ -2011,11 +2318,16 @@ impl ImageCache {
           return Err(blocked);
         }
       }
+      if let Err(err) = self.enforce_image_cors(resolved_url, &cached, crossorigin) {
+        self.record_image_error(resolved_url, &err);
+        inflight_guard.finish(SharedMetaResult::Error(err.clone()));
+        return Err(err);
+      }
 
       if let Some(decoded) = decode_probe_metadata_from_disk(&cached.bytes) {
         let meta = Arc::new(decoded);
         if let Ok(mut cache) = self.meta_cache.lock() {
-          cache.insert(resolved_url.to_string(), Arc::clone(&meta));
+          cache.insert(cache_key.to_string(), Arc::clone(&meta));
         }
         record_image_cache_hit();
         inflight_guard.finish(SharedMetaResult::Success(Arc::clone(&meta)));
@@ -2024,14 +2336,18 @@ impl ImageCache {
 
       // Corrupt or incompatible cache entry; evict so we don't repeatedly reparse it.
       self.fetcher.remove_cache_artifact(
-        FetchContextKind::Image,
+        kind,
         cached.final_url.as_deref().unwrap_or(resolved_url),
         CacheArtifactKind::ImageProbeMetadata,
       );
     }
 
     record_image_cache_miss();
-    let result = self.fetch_and_probe(resolved_url);
+    let destination = match kind {
+      FetchContextKind::ImageCors => FetchDestination::ImageCors,
+      _ => FetchDestination::Image,
+    };
+    let result = self.fetch_and_probe(cache_key, resolved_url, kind, destination, crossorigin);
     let shared = match &result {
       Ok(meta) => SharedMetaResult::Success(Arc::clone(meta)),
       Err(err) => SharedMetaResult::Error(err.clone()),
@@ -2151,6 +2467,43 @@ impl ImageCache {
     Ok(())
   }
 
+  fn enforce_image_cors(
+    &self,
+    requested_url: &str,
+    resource: &FetchedResource,
+    crossorigin: CrossOriginAttribute,
+  ) -> Result<()> {
+    if crossorigin == CrossOriginAttribute::None {
+      return Ok(());
+    }
+    if !crate::resource::cors_enforcement_enabled() {
+      return Ok(());
+    }
+
+    let document_origin = self
+      .resource_context
+      .as_ref()
+      .and_then(|ctx| ctx.policy.document_origin.as_ref());
+    let Some(document_origin) = document_origin else {
+      // Without a known document origin, avoid over-blocking.
+      return Ok(());
+    };
+    let mode = match crossorigin {
+      CrossOriginAttribute::Anonymous => crate::resource::CorsMode::Anonymous,
+      CrossOriginAttribute::UseCredentials => crate::resource::CorsMode::UseCredentials,
+      CrossOriginAttribute::None => return Ok(()),
+    };
+    if let Err(reason) =
+      crate::resource::validate_cors_allow_origin(resource, requested_url, document_origin, mode)
+    {
+      return Err(Error::Image(ImageError::LoadFailed {
+        url: requested_url.to_string(),
+        reason,
+      }));
+    }
+    Ok(())
+  }
+
   /// Enforce the active resource policy for subresources referenced within an SVG document.
   fn enforce_svg_resource_policy(&self, svg_content: &str, svg_url: &str) -> Result<()> {
     let Some(ctx) = &self.resource_context else {
@@ -2190,7 +2543,13 @@ impl ImageCache {
     Ok(())
   }
 
-  fn fetch_and_decode(&self, resolved_url: &str) -> Result<Arc<CachedImage>> {
+  fn fetch_and_decode(
+    &self,
+    cache_key: &str,
+    resolved_url: &str,
+    destination: FetchDestination,
+    crossorigin: CrossOriginAttribute,
+  ) -> Result<Arc<CachedImage>> {
     let threshold_ms = image_profile_threshold_ms();
     let profile_enabled = threshold_ms.is_some();
     let total_start = profile_enabled.then(Instant::now);
@@ -2200,7 +2559,7 @@ impl ImageCache {
       .resource_context
       .as_ref()
       .and_then(|ctx| ctx.document_url.as_deref());
-    let mut request = FetchRequest::new(resolved_url, FetchDestination::Image);
+    let mut request = FetchRequest::new(resolved_url, destination);
     if let Some(referrer) = referrer {
       request = request.with_referrer(referrer);
     }
@@ -2208,7 +2567,7 @@ impl ImageCache {
       Ok(res) => res,
       Err(err) => {
         if is_empty_body_error_for_image(&err) {
-          return Ok(self.cache_placeholder_image(resolved_url));
+          return Ok(self.cache_placeholder_image(cache_key));
         }
         self.record_image_error(resolved_url, &err);
         return Err(err);
@@ -2232,7 +2591,7 @@ impl ImageCache {
       &resource.bytes,
     ) {
       self.record_invalid_image(resolved_url);
-      return Ok(self.cache_placeholder_image(resolved_url));
+      return Ok(self.cache_placeholder_image(cache_key));
     }
     if let Err(err) = ensure_http_success(&resource, resolved_url)
       .and_then(|()| ensure_image_mime_sane(&resource, resolved_url))
@@ -2240,8 +2599,12 @@ impl ImageCache {
       let treat_as_placeholder = is_bot_mitigation_image_error(resolved_url, &err);
       self.record_image_error(resolved_url, &err);
       if treat_as_placeholder {
-        return Ok(self.cache_placeholder_image(resolved_url));
+        return Ok(self.cache_placeholder_image(cache_key));
       }
+      return Err(err);
+    }
+    if let Err(err) = self.enforce_image_cors(resolved_url, &resource, crossorigin) {
+      self.record_image_error(resolved_url, &err);
       return Err(err);
     }
     let fetch_ms = fetch_start.map(|s| s.elapsed().as_secs_f64() * 1000.0);
@@ -2269,7 +2632,7 @@ impl ImageCache {
       svg_content,
     });
 
-    self.insert_cached_image(resolved_url, Arc::clone(&img_arc));
+    self.insert_cached_image(cache_key, Arc::clone(&img_arc));
 
     if let (Some(threshold_ms), Some(total_start)) = (threshold_ms, total_start) {
       let total_ms = total_start.elapsed().as_secs_f64() * 1000.0;
@@ -2300,8 +2663,10 @@ impl ImageCache {
 
   fn decode_resource_into_cache(
     &self,
+    cache_key: &str,
     resolved_url: &str,
     resource: &FetchedResource,
+    crossorigin: CrossOriginAttribute,
   ) -> Result<Arc<CachedImage>> {
     if should_substitute_markup_payload_for_image(
       resolved_url,
@@ -2310,7 +2675,11 @@ impl ImageCache {
       &resource.bytes,
     ) {
       self.record_invalid_image(resolved_url);
-      return Ok(self.cache_placeholder_image(resolved_url));
+      return Ok(self.cache_placeholder_image(cache_key));
+    }
+    if let Err(err) = self.enforce_image_cors(resolved_url, resource, crossorigin) {
+      self.record_image_error(resolved_url, &err);
+      return Err(err);
     }
     let threshold_ms = image_profile_threshold_ms();
     let profile_enabled = threshold_ms.is_some();
@@ -2333,7 +2702,7 @@ impl ImageCache {
       svg_content,
     });
 
-    self.insert_cached_image(resolved_url, Arc::clone(&img_arc));
+    self.insert_cached_image(cache_key, Arc::clone(&img_arc));
 
     if let (Some(threshold_ms), Some(total_start)) = (threshold_ms, total_start) {
       let total_ms = total_start.elapsed().as_secs_f64() * 1000.0;
@@ -2361,7 +2730,14 @@ impl ImageCache {
     Ok(img_arc)
   }
 
-  fn fetch_and_probe(&self, resolved_url: &str) -> Result<Arc<CachedImageMetadata>> {
+  fn fetch_and_probe(
+    &self,
+    cache_key: &str,
+    resolved_url: &str,
+    kind: FetchContextKind,
+    destination: FetchDestination,
+    crossorigin: CrossOriginAttribute,
+  ) -> Result<Arc<CachedImageMetadata>> {
     let threshold_ms = image_profile_threshold_ms();
     let profile_enabled = threshold_ms.is_some();
     let total_start = profile_enabled.then(Instant::now);
@@ -2377,7 +2753,8 @@ impl ImageCache {
           }));
         }
       }
-      ensure_http_success(resource, resolved_url)
+      ensure_http_success(resource, resolved_url)?;
+      self.enforce_image_cors(resolved_url, resource, crossorigin)
     };
 
     let probe_limit = image_probe_max_bytes();
@@ -2392,12 +2769,12 @@ impl ImageCache {
       let resource =
         match self
           .fetcher
-          .fetch_partial_with_context(FetchContextKind::Image, resolved_url, limit)
+          .fetch_partial_with_context(kind, resolved_url, limit)
         {
           Ok(res) => res,
           Err(err) => {
             if is_empty_body_error_for_image(&err) {
-              return Ok(self.cache_placeholder_metadata(resolved_url));
+              return Ok(self.cache_placeholder_metadata(cache_key));
             }
             let _ = err;
             break;
@@ -2418,7 +2795,7 @@ impl ImageCache {
         self.record_image_error(resolved_url, &err);
         if treat_as_placeholder {
           let meta = about_url_placeholder_metadata();
-          let _ = self.cache_placeholder_image(resolved_url);
+          let _ = self.cache_placeholder_image(cache_key);
           return Ok(meta);
         }
         return Err(err);
@@ -2430,14 +2807,14 @@ impl ImageCache {
         &resource.bytes,
       ) {
         self.record_invalid_image(resolved_url);
-        return Ok(self.cache_placeholder_metadata(resolved_url));
+        return Ok(self.cache_placeholder_metadata(cache_key));
       }
       if let Err(err) = ensure_image_mime_sane(resource.as_ref(), resolved_url) {
         let treat_as_placeholder = is_bot_mitigation_image_error(resolved_url, &err);
         self.record_image_error(resolved_url, &err);
         if treat_as_placeholder {
           let meta = about_url_placeholder_metadata();
-          let _ = self.cache_placeholder_image(resolved_url);
+          let _ = self.cache_placeholder_image(cache_key);
           return Ok(meta);
         }
         return Err(err);
@@ -2450,12 +2827,12 @@ impl ImageCache {
           let probe_ms = attempt_probe_start.map(|s| s.elapsed().as_secs_f64() * 1000.0);
           let meta = Arc::new(meta);
 
-          if let Ok(mut cache) = self.meta_cache.lock() {
-            cache.insert(resolved_url.to_string(), Arc::clone(&meta));
-          }
-          if let Some(serialized) = encode_probe_metadata_for_disk(&meta) {
-            self.fetcher.write_cache_artifact(
-              FetchContextKind::Image,
+           if let Ok(mut cache) = self.meta_cache.lock() {
+            cache.insert(cache_key.to_string(), Arc::clone(&meta));
+           }
+           if let Some(serialized) = encode_probe_metadata_for_disk(&meta) {
+             self.fetcher.write_cache_artifact(
+              kind,
               resolved_url,
               CacheArtifactKind::ImageProbeMetadata,
               &serialized,
@@ -2465,12 +2842,12 @@ impl ImageCache {
 
           // When the image is small enough to fit in the probe prefix, keep the bytes so a later
           // decode can reuse them without issuing another HTTP request.
-          if resource.bytes.len() < limit && resource.bytes.len() <= RAW_RESOURCE_CACHE_LIMIT_BYTES
-          {
-            if let Ok(mut cache) = self.raw_cache.lock() {
-              cache.insert(resolved_url.to_string(), Arc::clone(&resource));
-            }
-          }
+           if resource.bytes.len() < limit && resource.bytes.len() <= RAW_RESOURCE_CACHE_LIMIT_BYTES
+           {
+             if let Ok(mut cache) = self.raw_cache.lock() {
+              cache.insert(cache_key.to_string(), Arc::clone(&resource));
+             }
+           }
 
           if let (Some(threshold_ms), Some(total_start)) = (threshold_ms, total_start) {
             let total_ms = total_start.elapsed().as_secs_f64() * 1000.0;
@@ -2522,7 +2899,7 @@ impl ImageCache {
       .resource_context
       .as_ref()
       .and_then(|ctx| ctx.document_url.as_deref());
-    let mut request = FetchRequest::new(resolved_url, FetchDestination::Image);
+    let mut request = FetchRequest::new(resolved_url, destination);
     if let Some(referrer) = referrer {
       request = request.with_referrer(referrer);
     }
@@ -2530,7 +2907,7 @@ impl ImageCache {
       Ok(res) => res,
       Err(err) => {
         if is_empty_body_error_for_image(&err) {
-          return Ok(self.cache_placeholder_metadata(resolved_url));
+          return Ok(self.cache_placeholder_metadata(cache_key));
         }
         self.record_image_error(resolved_url, &err);
         return Err(err);
@@ -2542,7 +2919,7 @@ impl ImageCache {
       self.record_image_error(resolved_url, &err);
       if treat_as_placeholder {
         let meta = about_url_placeholder_metadata();
-        let _ = self.cache_placeholder_image(resolved_url);
+        let _ = self.cache_placeholder_image(cache_key);
         return Ok(meta);
       }
       return Err(err);
@@ -2554,14 +2931,14 @@ impl ImageCache {
       &resource.bytes,
     ) {
       self.record_invalid_image(resolved_url);
-      return Ok(self.cache_placeholder_metadata(resolved_url));
+      return Ok(self.cache_placeholder_metadata(cache_key));
     }
     if let Err(err) = ensure_image_mime_sane(resource.as_ref(), resolved_url) {
       let treat_as_placeholder = is_bot_mitigation_image_error(resolved_url, &err);
       self.record_image_error(resolved_url, &err);
       if treat_as_placeholder {
         let meta = about_url_placeholder_metadata();
-        let _ = self.cache_placeholder_image(resolved_url);
+        let _ = self.cache_placeholder_image(cache_key);
         return Ok(meta);
       }
       return Err(err);
@@ -2579,11 +2956,11 @@ impl ImageCache {
     let meta = Arc::new(meta);
 
     if let Ok(mut cache) = self.meta_cache.lock() {
-      cache.insert(resolved_url.to_string(), Arc::clone(&meta));
+      cache.insert(cache_key.to_string(), Arc::clone(&meta));
     }
     if let Some(serialized) = encode_probe_metadata_for_disk(&meta) {
       self.fetcher.write_cache_artifact(
-        FetchContextKind::Image,
+        kind,
         resolved_url,
         CacheArtifactKind::ImageProbeMetadata,
         &serialized,
@@ -2593,7 +2970,7 @@ impl ImageCache {
 
     if resource.bytes.len() <= RAW_RESOURCE_CACHE_LIMIT_BYTES {
       if let Ok(mut cache) = self.raw_cache.lock() {
-        cache.insert(resolved_url.to_string(), Arc::clone(&resource));
+        cache.insert(cache_key.to_string(), Arc::clone(&resource));
       }
     }
 
@@ -4058,6 +4435,52 @@ mod tests {
   use std::time::Duration;
   use std::time::SystemTime;
 
+  #[derive(Clone, Default)]
+  struct MapFetcher {
+    responses: Arc<HashMap<String, FetchedResource>>,
+    requests: Arc<Mutex<Vec<(String, FetchDestination)>>>,
+  }
+
+  impl MapFetcher {
+    fn with_entries(entries: impl IntoIterator<Item = (String, FetchedResource)>) -> Self {
+      Self {
+        responses: Arc::new(entries.into_iter().collect()),
+        requests: Arc::new(Mutex::new(Vec::new())),
+      }
+    }
+
+    fn requests(&self) -> Vec<(String, FetchDestination)> {
+      self
+        .requests
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+    }
+  }
+
+  impl ResourceFetcher for MapFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      self
+        .responses
+        .get(url)
+        .cloned()
+        .map(|mut res| {
+          res.final_url.get_or_insert_with(|| url.to_string());
+          res
+        })
+        .ok_or_else(|| Error::Other(format!("unexpected fetch url {url}")))
+    }
+
+    fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+      self
+        .requests
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push((req.url.to_string(), req.destination));
+      self.fetch(req.url)
+    }
+  }
+
   #[test]
   fn image_cache_diagnostics_survives_poisoned_lock() {
     let result = std::panic::catch_unwind(|| {
@@ -4125,6 +4548,118 @@ mod tests {
       };
       assert!(matches!(err, Error::Render(RenderError::Timeout { .. })));
     });
+  }
+
+  #[test]
+  fn img_crossorigin_enforces_acao_when_toggle_enabled() {
+    let _toggles_guard = runtime::set_runtime_toggles(Arc::new(runtime::RuntimeToggles::from_map(
+      HashMap::from([(
+        "FASTR_FETCH_ENFORCE_CORS".to_string(),
+        "1".to_string(),
+      )]),
+    )));
+
+    let doc_url = "https://doc.test/";
+    let doc_origin = crate::resource::origin_from_url(doc_url).expect("document origin");
+
+    let mut pixels = RgbaImage::new(1, 1);
+    pixels.pixels_mut().for_each(|p| *p = image::Rgba([255, 0, 0, 255]));
+    let mut png = Vec::new();
+    PngEncoder::new(&mut png)
+      .write_image(pixels.as_raw(), 1, 1, ColorType::Rgba8.into())
+      .expect("encode png");
+
+    let cross_no_acao = "https://img.test/no-acao.png";
+    let same_no_acao = "https://doc.test/same.png";
+    let cross_star = "https://img.test/star.png";
+    let cred_missing = "https://img.test/cred-missing.png";
+    let cred_ok = "https://img.test/cred-ok.png";
+
+    let make_res = |url: &str, acao: Option<&str>, acac: bool| {
+      let mut res = FetchedResource::new(png.clone(), Some("image/png".to_string()));
+      res.status = Some(200);
+      res.final_url = Some(url.to_string());
+      res.access_control_allow_origin = acao.map(|v| v.to_string());
+      res.access_control_allow_credentials = acac;
+      res
+    };
+
+    let fetcher = MapFetcher::with_entries([
+      (cross_no_acao.to_string(), make_res(cross_no_acao, None, false)),
+      (same_no_acao.to_string(), make_res(same_no_acao, None, false)),
+      (cross_star.to_string(), make_res(cross_star, Some("*"), false)),
+      (
+        cred_missing.to_string(),
+        make_res(cred_missing, Some(doc_url), false),
+      ),
+      (
+        cred_ok.to_string(),
+        make_res(cred_ok, Some(doc_url), true),
+      ),
+    ]);
+
+    let mut cache = ImageCache::with_fetcher(Arc::new(fetcher.clone()));
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(doc_url.to_string());
+    ctx.policy.document_origin = Some(doc_origin);
+    cache.set_resource_context(Some(ctx));
+
+    // Baseline: cross-origin image without `crossorigin` should still load (no CORS enforcement).
+    cache
+      .load_with_crossorigin(cross_no_acao, CrossOriginAttribute::None)
+      .expect("no-cors image should load");
+
+    // CORS-mode fetch should fail without ACAO.
+    let err = match cache.load_with_crossorigin(cross_no_acao, CrossOriginAttribute::Anonymous) {
+      Ok(_) => panic!("crossorigin=anonymous should enforce ACAO"),
+      Err(err) => err,
+    };
+    match err {
+      Error::Image(ImageError::LoadFailed { reason, .. }) => {
+        assert!(reason.contains("Access-Control-Allow-Origin"));
+      }
+      other => panic!("expected CORS image load failure, got {other:?}"),
+    }
+
+    // Same-origin images should always pass CORS checks.
+    cache
+      .load_with_crossorigin(same_no_acao, CrossOriginAttribute::Anonymous)
+      .expect("same-origin image should pass CORS enforcement");
+
+    // Anonymous mode accepts `*`.
+    cache
+      .load_with_crossorigin(cross_star, CrossOriginAttribute::Anonymous)
+      .expect("crossorigin=anonymous with ACAO=* should load");
+
+    // Credentialed mode requires exact origin match and ACAC=true.
+    let err = match cache.load_with_crossorigin(cred_missing, CrossOriginAttribute::UseCredentials) {
+      Ok(_) => panic!("credentialed CORS without ACAC should fail"),
+      Err(err) => err,
+    };
+    match err {
+      Error::Image(ImageError::LoadFailed { reason, .. }) => {
+        assert!(reason.contains("Access-Control-Allow-Credentials"));
+      }
+      other => panic!("expected credentialed CORS failure, got {other:?}"),
+    }
+    cache
+      .load_with_crossorigin(cred_ok, CrossOriginAttribute::UseCredentials)
+      .expect("credentialed CORS with ACAO match + ACAC should load");
+
+    let requests = fetcher.requests();
+    assert_eq!(
+      requests
+        .iter()
+        .filter(|(url, _)| url == cross_no_acao)
+        .map(|(_, dest)| *dest)
+        .collect::<Vec<_>>(),
+      vec![FetchDestination::Image, FetchDestination::ImageCors],
+      "no-cors and cors-mode loads must not share the same fetch profile"
+    );
+    assert!(
+      requests.iter().any(|(url, dest)| url == same_no_acao && *dest == FetchDestination::ImageCors),
+      "same-origin crossorigin images should still use ImageCors destination"
+    );
   }
 
   #[test]

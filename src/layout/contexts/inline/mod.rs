@@ -10376,6 +10376,7 @@ mod tests {
   use crate::text::font_loader::FontContext;
   use crate::text::line_break::BreakOpportunity;
   use crate::text::line_break::BreakType;
+  use crate::tree::box_tree::CrossOriginAttribute;
   use crate::tree::box_tree::MarkerContent;
   use crate::tree::box_tree::ReplacedBox;
   use crate::tree::box_tree::ReplacedType;
@@ -11084,6 +11085,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          crossorigin: CrossOriginAttribute::None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -11310,6 +11312,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          crossorigin: CrossOriginAttribute::None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -11588,6 +11591,7 @@ mod tests {
         replaced_type: box_tree::ReplacedType::Image {
           src: String::new(),
           alt: None,
+          crossorigin: CrossOriginAttribute::None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -12090,6 +12094,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          crossorigin: CrossOriginAttribute::None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -12137,6 +12142,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          crossorigin: CrossOriginAttribute::None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -12207,6 +12213,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          crossorigin: CrossOriginAttribute::None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -12306,6 +12313,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          crossorigin: CrossOriginAttribute::None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -12352,6 +12360,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          crossorigin: CrossOriginAttribute::None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -12524,6 +12533,7 @@ mod tests {
         replaced_type: ReplacedType::Image {
           src: String::new(),
           alt: None,
+          crossorigin: CrossOriginAttribute::None,
           sizes: None,
           srcset: Vec::new(),
           picture_sources: Vec::new(),
@@ -12789,6 +12799,7 @@ mod tests {
       ReplacedType::Image {
         src: String::new(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),

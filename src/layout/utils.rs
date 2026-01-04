@@ -651,6 +651,7 @@ mod tests {
   use crate::style::values::LengthUnit;
   use crate::style::ComputedStyle;
   use crate::text::font_loader::FontContext;
+  use crate::tree::box_tree::CrossOriginAttribute;
   use crate::tree::box_tree::ReplacedBox;
   use crate::PositionedStyle;
 
@@ -767,6 +768,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -787,6 +789,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -809,6 +812,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -832,6 +836,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -852,6 +857,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -872,6 +878,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -895,6 +902,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -917,6 +925,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: String::new(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -939,6 +948,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -961,14 +971,15 @@ mod tests {
   fn replaced_max_height_scales_width_with_ratio() {
     let mut style = ComputedStyle::default();
     style.max_height = Some(Length::px(40.0));
-    let replaced = ReplacedBox {
-      replaced_type: crate::tree::box_tree::ReplacedType::Image {
-        src: "img".into(),
-        alt: None,
-        sizes: None,
-        srcset: Vec::new(),
-        picture_sources: Vec::new(),
-      },
+      let replaced = ReplacedBox {
+        replaced_type: crate::tree::box_tree::ReplacedType::Image {
+          src: "img".into(),
+          alt: None,
+          crossorigin: CrossOriginAttribute::None,
+          sizes: None,
+          srcset: Vec::new(),
+          picture_sources: Vec::new(),
+        },
       intrinsic_size: Some(Size::new(100.0, 50.0)),
       aspect_ratio: Some(2.0),
     };
@@ -987,6 +998,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -1015,6 +1027,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -1038,6 +1051,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -1066,6 +1080,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -1091,6 +1106,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -1126,6 +1142,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -1158,6 +1175,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -1190,6 +1208,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -1220,6 +1239,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -1250,6 +1270,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
@@ -1280,6 +1301,7 @@ mod tests {
       replaced_type: crate::tree::box_tree::ReplacedType::Image {
         src: "img".into(),
         alt: None,
+        crossorigin: CrossOriginAttribute::None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),
