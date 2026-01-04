@@ -181,6 +181,13 @@ pub struct FixtureChromeDiffArgs {
   #[arg(long)]
   pub require_fastrender_metadata: bool,
 
+  /// Allow reusing stale FastRender renders when `--no-fastrender` is set.
+  ///
+  /// This downgrades fixture input fingerprint mismatches to warnings so you can intentionally
+  /// diff against historical outputs.
+  #[arg(long)]
+  pub allow_stale_fastrender_renders: bool,
+
   /// Explicit Chrome/Chromium binary path forwarded to the Chrome baseline step.
   #[arg(long, value_name = "PATH", conflicts_with = "chrome_dir")]
   pub chrome: Option<PathBuf>,
@@ -377,6 +384,9 @@ fn validate_args(args: &FixtureChromeDiffArgs) -> Result<()> {
   }
   if args.allow_stale_chrome_baselines && !args.no_chrome {
     bail!("--allow-stale-chrome-baselines can only be used with --no-chrome (or --diff-only)");
+  }
+  if args.allow_stale_fastrender_renders && !args.no_fastrender {
+    bail!("--allow-stale-fastrender-renders requires --no-fastrender");
   }
   if args.dpr <= 0.0 || !args.dpr.is_finite() {
     bail!("--dpr must be a positive, finite number");
@@ -807,6 +817,46 @@ fn sha256_hex(bytes: &[u8]) -> String {
   digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+fn normalize_rel_path(path: &Path) -> String {
+  path
+    .components()
+    .map(|c| c.as_os_str().to_string_lossy())
+    .collect::<Vec<_>>()
+    .join("/")
+}
+
+fn hash_fixture_dir_sha256(dir: &Path) -> Result<String> {
+  // Keep this hashing algorithm in sync with `render_fixtures`.
+  //
+  // Deterministic digest over all regular files in the fixture directory:
+  // - collect relative paths (with `/` separators), sort lexicographically
+  // - hash `path_bytes + 0x00 + file_bytes` for each file in order.
+  let mut files: Vec<(String, PathBuf)> = Vec::new();
+  for entry in WalkDir::new(dir).follow_links(false) {
+    let entry = entry.with_context(|| format!("walk fixture dir {}", dir.display()))?;
+    if !entry.file_type().is_file() {
+      continue;
+    }
+    let rel = entry
+      .path()
+      .strip_prefix(dir)
+      .with_context(|| format!("strip prefix {} from {}", dir.display(), entry.path().display()))?;
+    files.push((normalize_rel_path(rel), entry.path().to_path_buf()));
+  }
+  files.sort_by(|a, b| a.0.cmp(&b.0));
+
+  let mut hasher = Sha256::new();
+  for (rel, path) in files {
+    hasher.update(rel.as_bytes());
+    hasher.update([0u8]);
+    let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    hasher.update(&bytes);
+  }
+
+  let digest = hasher.finalize();
+  Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
+}
+
 struct Layout {
   root: PathBuf,
   fastrender: PathBuf,
@@ -842,8 +892,20 @@ struct FastRenderFixtureMetadata {
   media: String,
   fit_canvas_to_content: Option<bool>,
   timeout_secs: u64,
+  #[serde(default)]
+  input_sha256: Option<String>,
+  #[serde(default)]
+  fixture_dir_sha256: Option<String>,
   bundled_fonts: Option<bool>,
   font_dirs: Option<Vec<String>>,
+}
+
+#[derive(Debug)]
+struct StaleFastRenderInfo {
+  baseline_input_sha256: Option<String>,
+  current_input_sha256: String,
+  baseline_fixture_dir_sha256: Option<String>,
+  current_fixture_dir_sha256: Option<String>,
 }
 
 fn validate_fastrender_output_metadata(
@@ -855,6 +917,8 @@ fn validate_fastrender_output_metadata(
     discover_selected_fixture_stems(fixtures_root, args.fixtures.as_deref(), args.shard)?;
 
   let mut missing_metadata = Vec::<String>::new();
+  let mut missing_fingerprints = Vec::<String>::new();
+  let mut stale = BTreeMap::<String, StaleFastRenderInfo>::new();
   for stem in fixtures {
     let metadata_path = layout.fastrender.join(format!("{stem}.json"));
     if !metadata_path.is_file() {
@@ -945,28 +1009,70 @@ fn validate_fastrender_output_metadata(
         None => "<missing>".to_string(),
       };
       bail!(
-         "FastRender metadata mismatch for fixture '{stem}'. This likely means you are reusing stale FastRender renders.\n\
-          Metadata: {}\n\
-         Wanted: viewport {}x{}, dpr {}, media {}, fit_canvas_to_content {}, timeout {}s, bundled_fonts {}, font_dirs {}\n\
-         Found:  viewport {}x{}, dpr {}, media {}, fit_canvas_to_content {}, timeout {}s, bundled_fonts {}, font_dirs {}\n\
-          Rerun without --no-fastrender to regenerate FastRender renders, or choose an --out-dir that was rendered with matching settings.",
-         metadata_path.display(),
-         args.viewport.0,
-         args.viewport.1,
-         args.dpr,
-         wanted_media,
-         wanted_fit_canvas_to_content,
-         args.timeout,
-         wanted_bundled_fonts,
-         wanted_font_dirs_summary,
-         metadata.viewport.0,
-         metadata.viewport.1,
-         metadata.dpr,
-         metadata.media,
-         fit_canvas_to_content_value,
-         metadata.timeout_secs,
-         bundled_fonts_value,
-         font_dirs_summary,
+        "FastRender metadata mismatch for fixture '{stem}'. This likely means you are reusing stale FastRender renders.\n\
+         Metadata: {}\n\
+        Wanted: viewport {}x{}, dpr {}, media {}, fit_canvas_to_content {}, timeout {}s, bundled_fonts {}, font_dirs {}\n\
+        Found:  viewport {}x{}, dpr {}, media {}, fit_canvas_to_content {}, timeout {}s, bundled_fonts {}, font_dirs {}\n\
+         Rerun without --no-fastrender to regenerate FastRender renders, or choose an --out-dir that was rendered with matching settings.",
+        metadata_path.display(),
+        args.viewport.0,
+        args.viewport.1,
+        args.dpr,
+        wanted_media,
+        wanted_fit_canvas_to_content,
+        args.timeout,
+        wanted_bundled_fonts,
+        wanted_font_dirs_summary,
+        metadata.viewport.0,
+        metadata.viewport.1,
+        metadata.dpr,
+        metadata.media,
+        fit_canvas_to_content_value,
+        metadata.timeout_secs,
+        bundled_fonts_value,
+        font_dirs_summary,
+      );
+    }
+
+    let baseline_input_sha256 = metadata.input_sha256;
+    let baseline_fixture_dir_sha256 = metadata.fixture_dir_sha256;
+    if baseline_input_sha256.is_none() && baseline_fixture_dir_sha256.is_none() {
+      missing_fingerprints.push(stem.clone());
+      continue;
+    }
+
+    let fixture_dir = fixtures_root.join(&stem);
+    let index_path = fixture_dir.join("index.html");
+    let index_bytes =
+      fs::read(&index_path).with_context(|| format!("read {}", index_path.display()))?;
+    let current_input_sha256 = sha256_hex(&index_bytes);
+    let current_fixture_dir_sha256 = if baseline_fixture_dir_sha256.is_some() {
+      Some(hash_fixture_dir_sha256(&fixture_dir)?)
+    } else {
+      None
+    };
+
+    let mut is_stale = false;
+    if let Some(hash) = baseline_input_sha256.as_deref() {
+      is_stale |= hash != current_input_sha256;
+    }
+
+    if let (Some(baseline_dir), Some(current_dir)) = (
+      baseline_fixture_dir_sha256.as_deref(),
+      current_fixture_dir_sha256.as_deref(),
+    ) {
+      is_stale |= baseline_dir != current_dir;
+    }
+
+    if is_stale {
+      stale.insert(
+        stem.clone(),
+        StaleFastRenderInfo {
+          baseline_input_sha256,
+          current_input_sha256,
+          baseline_fixture_dir_sha256,
+          current_fixture_dir_sha256,
+        },
       );
     }
   }
@@ -991,6 +1097,67 @@ fn validate_fastrender_output_metadata(
       sample,
       suffix
     );
+  }
+
+  if !missing_fingerprints.is_empty() {
+    missing_fingerprints.sort();
+    missing_fingerprints.dedup();
+    let sample = missing_fingerprints
+      .iter()
+      .take(5)
+      .cloned()
+      .collect::<Vec<_>>()
+      .join(", ");
+    let suffix = if missing_fingerprints.len() > 5 {
+      format!(", ... (+{} more)", missing_fingerprints.len() - 5)
+    } else {
+      String::new()
+    };
+    eprintln!(
+      "warning: FastRender metadata is missing fixture input fingerprints for {} fixture(s) ({}{}). \
+       Staleness checks will be skipped; rerun without --no-fastrender to regenerate metadata.",
+      missing_fingerprints.len(),
+      sample,
+      suffix
+    );
+  }
+
+  if !stale.is_empty() {
+    let mut msg = String::from(
+      "FastRender renders are stale relative to current fixture inputs (fixture HTML/assets changed since the renders were generated):\n",
+    );
+    for (stem, info) in &stale {
+      msg.push_str(&format!("  - {stem}: input_sha256 "));
+      match info.baseline_input_sha256.as_deref() {
+        Some(hash) => msg.push_str(hash),
+        None => msg.push_str("<missing from metadata>"),
+      }
+      msg.push_str(" (baseline) vs ");
+      msg.push_str(&info.current_input_sha256);
+      msg.push_str(" (current)\n");
+
+      if let (Some(baseline_dir), Some(current_dir)) = (
+        info.baseline_fixture_dir_sha256.as_deref(),
+        info.current_fixture_dir_sha256.as_deref(),
+      ) {
+        if baseline_dir != current_dir {
+          msg.push_str(&format!(
+            "      fixture_dir_sha256 {baseline_dir} (baseline) vs {current_dir} (current)\n"
+          ));
+        }
+      }
+    }
+
+    msg.push_str(
+      "\nRerun without --no-fastrender to regenerate FastRender renders.\n\
+       (Or pass --allow-stale-fastrender-renders to continue anyway.)",
+    );
+
+    if args.allow_stale_fastrender_renders {
+      eprintln!("warning: {msg}");
+    } else {
+      bail!(msg);
+    }
   }
 
   Ok(())

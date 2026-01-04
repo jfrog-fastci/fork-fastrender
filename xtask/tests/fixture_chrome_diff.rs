@@ -2,7 +2,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use sha2::{Digest, Sha256};
 use tempfile::tempdir;
+use walkdir::WalkDir;
 
 #[cfg(unix)]
 fn make_executable(path: &Path) {
@@ -46,6 +48,49 @@ fn write_stub_diff_renders(target_dir: &Path) -> PathBuf {
   .expect("write stub diff_renders");
   make_executable(&bin);
   bin
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+  let digest = Sha256::digest(bytes);
+  digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn normalize_rel_path(path: &Path) -> String {
+  path
+    .components()
+    .map(|c| c.as_os_str().to_string_lossy())
+    .collect::<Vec<_>>()
+    .join("/")
+}
+
+fn hash_fixture_dir_sha256(dir: &Path) -> String {
+  // Keep this algorithm in sync with `render_fixtures` + `xtask fixture-chrome-diff`.
+  let mut files: Vec<(String, PathBuf)> = Vec::new();
+  for entry in WalkDir::new(dir).follow_links(false) {
+    let entry = entry.expect("walk fixture dir");
+    if !entry.file_type().is_file() {
+      continue;
+    }
+    let rel = entry
+      .path()
+      .strip_prefix(dir)
+      .expect("strip fixture dir prefix");
+    files.push((normalize_rel_path(rel), entry.path().to_path_buf()));
+  }
+  files.sort_by(|a, b| a.0.cmp(&b.0));
+
+  let mut hasher = Sha256::new();
+  for (rel, path) in files {
+    hasher.update(rel.as_bytes());
+    hasher.update([0u8]);
+    let bytes = fs::read(&path).expect("read fixture file");
+    hasher.update(&bytes);
+  }
+  hasher
+    .finalize()
+    .iter()
+    .map(|b| format!("{b:02x}"))
+    .collect()
 }
 
 #[test]
@@ -1504,4 +1549,142 @@ exit 0
   );
   assert!(out_dir.join("report.html").is_file(), "missing report.html");
   assert!(out_dir.join("report.json").is_file(), "missing report.json");
+}
+
+#[test]
+#[cfg(unix)]
+fn no_fastrender_fails_fast_on_stale_renders_unless_overridden() {
+  let temp = tempdir().expect("tempdir");
+  let fixtures_root = temp.path().join("fixtures");
+  let fixture_dir = fixtures_root.join("a");
+  fs::create_dir_all(fixture_dir.join("assets")).expect("create fixture assets dir");
+  let index_path = fixture_dir.join("index.html");
+  fs::write(&index_path, "<!doctype html><title>fixture</title>").expect("write index.html");
+  let asset_path = fixture_dir.join("assets/data.txt");
+  fs::write(&asset_path, "v1").expect("write asset v1");
+
+  let input_sha256 = sha256_hex(&fs::read(&index_path).expect("read index.html bytes"));
+  let fixture_dir_sha256 = hash_fixture_dir_sha256(&fixture_dir);
+
+  let out_dir = temp.path().join("out");
+  let fastrender_out = out_dir.join("fastrender");
+  let chrome_out = out_dir.join("chrome");
+  fs::create_dir_all(&fastrender_out).expect("create fastrender out dir");
+  fs::create_dir_all(&chrome_out).expect("create chrome out dir");
+  fs::write(fastrender_out.join("a.png"), "PNG").expect("write fake fastrender png");
+  fs::write(chrome_out.join("a.png"), "PNG").expect("write fake chrome png");
+
+  let meta = serde_json::json!({
+    // Keep render settings aligned with the fixture-chrome-diff defaults so we trip the staleness
+    // check, not the existing metadata config validation.
+    "viewport": [1040, 1240],
+    "dpr": 1.0,
+    "media": "screen",
+    "fit_canvas_to_content": false,
+    "timeout_secs": 15,
+    "bundled_fonts": true,
+    "font_dirs": [],
+    "input_sha256": input_sha256,
+    "fixture_dir_sha256": fixture_dir_sha256,
+  });
+  fs::write(
+    fastrender_out.join("a.json"),
+    serde_json::to_string_pretty(&meta).expect("serialize metadata"),
+  )
+  .expect("write metadata");
+
+  // Mutate an asset without updating the FastRender outputs.
+  fs::write(&asset_path, "v2").expect("write asset v2");
+
+  let target_dir = temp.path().join("target");
+  fs::create_dir_all(target_dir.join("release")).expect("create stub target dir");
+  let diff_renders = target_dir
+    .join("release")
+    .join(format!("diff_renders{}", std::env::consts::EXE_SUFFIX));
+  fs::write(
+    &diff_renders,
+    r#"#!/usr/bin/env sh
+set -eu
+
+html=""
+json=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --html) html="$2"; shift 2;;
+    --json) json="$2"; shift 2;;
+    *) shift;;
+  esac
+done
+
+mkdir -p "$(dirname "$html")"
+mkdir -p "$(dirname "$json")"
+echo "<!doctype html><title>stub diff</title>" > "$html"
+echo "{}" > "$json"
+exit 0
+"#,
+  )
+  .expect("write stub diff_renders");
+  make_executable(&diff_renders);
+
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .env("CARGO_TARGET_DIR", &target_dir)
+    .args([
+      "fixture-chrome-diff",
+      "--no-build",
+      "--no-chrome",
+      "--no-fastrender",
+      "--fixtures-dir",
+      fixtures_root.to_string_lossy().as_ref(),
+      "--fixtures",
+      "a",
+      "--out-dir",
+      out_dir.to_string_lossy().as_ref(),
+    ])
+    .output()
+    .expect("run fixture-chrome-diff with stale metadata");
+
+  assert!(
+    !output.status.success(),
+    "expected fixture-chrome-diff to fail when reusing stale FastRender renders.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  assert!(
+    stderr.contains("FastRender renders are stale relative to current fixture inputs"),
+    "expected staleness error; got:\n{stderr}"
+  );
+
+  let output_allow = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .env("CARGO_TARGET_DIR", &target_dir)
+    .args([
+      "fixture-chrome-diff",
+      "--no-build",
+      "--no-chrome",
+      "--no-fastrender",
+      "--allow-stale-fastrender-renders",
+      "--fixtures-dir",
+      fixtures_root.to_string_lossy().as_ref(),
+      "--fixtures",
+      "a",
+      "--out-dir",
+      out_dir.to_string_lossy().as_ref(),
+    ])
+    .output()
+    .expect("run fixture-chrome-diff with --allow-stale-fastrender-renders");
+
+  assert!(
+    output_allow.status.success(),
+    "expected fixture-chrome-diff to succeed with allow-stale override.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output_allow.stdout),
+    String::from_utf8_lossy(&output_allow.stderr)
+  );
+  let stderr_allow = String::from_utf8_lossy(&output_allow.stderr);
+  assert!(
+    stderr_allow
+      .contains("warning: FastRender renders are stale relative to current fixture inputs"),
+    "expected staleness warning; got:\n{stderr_allow}"
+  );
 }

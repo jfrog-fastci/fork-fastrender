@@ -1,7 +1,53 @@
 use image::GenericImageView;
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
+use walkdir::WalkDir;
+
+use sha2::{Digest, Sha256};
+
+fn sha256_hex(bytes: &[u8]) -> String {
+  let digest = Sha256::digest(bytes);
+  digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn normalize_rel_path(path: &Path) -> String {
+  path
+    .components()
+    .map(|c| c.as_os_str().to_string_lossy())
+    .collect::<Vec<_>>()
+    .join("/")
+}
+
+fn hash_fixture_dir_sha256(dir: &Path) -> String {
+  // Keep this hashing algorithm in sync with `render_fixtures` + `xtask fixture-chrome-diff`.
+  let mut files = Vec::new();
+  for entry in WalkDir::new(dir).follow_links(false) {
+    let entry = entry.expect("walk fixture dir");
+    if !entry.file_type().is_file() {
+      continue;
+    }
+    let rel = entry
+      .path()
+      .strip_prefix(dir)
+      .expect("strip fixture dir prefix");
+    files.push((normalize_rel_path(rel), entry.path().to_path_buf()));
+  }
+  files.sort_by(|a, b| a.0.cmp(&b.0));
+
+  let mut hasher = Sha256::new();
+  for (rel, path) in files {
+    hasher.update(rel.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(fs::read(path).expect("read fixture file"));
+  }
+  hasher
+    .finalize()
+    .iter()
+    .map(|b| format!("{b:02x}"))
+    .collect()
+}
 
 fn write_fixture(root: &std::path::Path, stem: &str, index_html: &str) -> std::path::PathBuf {
   let dir = root.join(stem);
@@ -62,6 +108,26 @@ fn render_fixtures_writes_png_output() {
   assert!(
     metadata["dpr"].as_f64().unwrap_or_default() > 0.0,
     "expected dpr to be a positive number"
+  );
+
+  let input_sha256 = metadata["input_sha256"]
+    .as_str()
+    .expect("input_sha256 should be present");
+  let expected_input_sha256 = sha256_hex(
+    &fs::read(fixtures_dir.join("basic").join("index.html")).expect("read fixture html bytes"),
+  );
+  assert_eq!(
+    input_sha256, expected_input_sha256,
+    "input_sha256 should match fixture index.html contents"
+  );
+
+  let fixture_dir_sha256 = metadata["fixture_dir_sha256"]
+    .as_str()
+    .expect("fixture_dir_sha256 should be present");
+  let expected_dir_sha256 = hash_fixture_dir_sha256(&fixtures_dir.join("basic"));
+  assert_eq!(
+    fixture_dir_sha256, expected_dir_sha256,
+    "fixture_dir_sha256 should match fixture directory contents"
   );
 }
 

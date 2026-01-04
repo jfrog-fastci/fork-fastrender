@@ -8,13 +8,16 @@ mod common;
 
 use clap::Parser;
 use common::args::{default_jobs, parse_shard, parse_viewport, MediaTypeArg};
-use common::render_pipeline::{compute_soft_timeout_ms, format_error_with_chain, CLI_RENDER_STACK_SIZE};
+use common::render_pipeline::{
+  compute_soft_timeout_ms, format_error_with_chain, CLI_RENDER_STACK_SIZE,
+};
 use fastrender::api::{FastRenderPool, FastRenderPoolConfig, RenderArtifactRequest, RenderOptions};
 use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::resource::ResourcePolicy;
 use fastrender::text::font_db::FontConfig;
 use fastrender::{snapshot_pipeline, PipelineSnapshot, RenderArtifacts};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::fs;
@@ -26,6 +29,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 use url::Url;
+use walkdir::WalkDir;
 
 const DEFAULT_FIXTURES_DIR: &str = "tests/pages/fixtures";
 const DEFAULT_OUT_DIR: &str = "target/fixture_renders";
@@ -133,6 +137,14 @@ struct RenderMetadataFile {
   media: MediaMetadata,
   fit_canvas_to_content: bool,
   timeout_secs: u64,
+  /// SHA-256 hash of `<fixture>/index.html` bytes (computed before any renderer work).
+  #[serde(skip_serializing_if = "Option::is_none")]
+  input_sha256: Option<String>,
+  /// Deterministic SHA-256 hash over all regular files under the fixture directory.
+  ///
+  /// See `hash_fixture_dir_sha256` for the hashing algorithm.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  fixture_dir_sha256: Option<String>,
   bundled_fonts: bool,
   font_dirs: Vec<PathBuf>,
   status: &'static str,
@@ -183,7 +195,10 @@ fn main() {
 
 fn run(cli: Cli) -> io::Result<()> {
   if cli.jobs == 0 {
-    return Err(io::Error::new(io::ErrorKind::InvalidInput, "jobs must be > 0"));
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      "jobs must be > 0",
+    ));
   }
   if cli.timeout == 0 {
     return Err(io::Error::new(
@@ -257,7 +272,9 @@ fn run(cli: Cli) -> io::Result<()> {
     config
   };
 
-  let resource_policy = ResourcePolicy::default().allow_http(false).allow_https(false);
+  let resource_policy = ResourcePolicy::default()
+    .allow_http(false)
+    .allow_https(false);
   let render_config = fastrender::api::FastRenderConfig::new()
     .with_default_viewport(cli.viewport.0, cli.viewport.1)
     .with_device_pixel_ratio(cli.dpr)
@@ -339,7 +356,10 @@ fn run(cli: Cli) -> io::Result<()> {
 
   let total_elapsed = start.elapsed();
 
-  let pass = results.iter().filter(|r| matches!(r.status, Status::Ok)).count();
+  let pass = results
+    .iter()
+    .filter(|r| matches!(r.status, Status::Ok))
+    .count();
   let timeout = results
     .iter()
     .filter(|r| matches!(r.status, Status::Timeout(_)))
@@ -366,7 +386,11 @@ fn run(cli: Cli) -> io::Result<()> {
     crash,
     error
   );
-  let _ = writeln!(summary, "{:<40} {:>8} {:>10} STATUS", "FIXTURE", "TIME", "SIZE");
+  let _ = writeln!(
+    summary,
+    "{:<40} {:>8} {:>10} STATUS",
+    "FIXTURE", "TIME", "SIZE"
+  );
   let _ = writeln!(summary, "{}", "-".repeat(75));
   for r in &results {
     let status_str = match &r.status {
@@ -403,7 +427,10 @@ fn run(cli: Cli) -> io::Result<()> {
   println!("Logs:     {}/<fixture>.log", cli.out_dir.display());
   println!("Metadata: {}/<fixture>.json", cli.out_dir.display());
   if cli.write_snapshot {
-    println!("Snapshots:{}/<fixture>/snapshot.json", cli.out_dir.display());
+    println!(
+      "Snapshots:{}/<fixture>/snapshot.json",
+      cli.out_dir.display()
+    );
   }
 
   if timeout > 0 || crash > 0 || error > 0 {
@@ -480,8 +507,17 @@ fn render_fixture(shared: &RenderShared, entry: &FixtureEntry) -> FixtureResult 
 
   let mut log = format!("=== {stem} ===\n");
   let _ = writeln!(log, "Entrypoint: {}", entry.index_path.display());
-  let _ = writeln!(log, "Viewport: {}x{}", shared.base_options.viewport.unwrap().0, shared.base_options.viewport.unwrap().1);
-  let _ = writeln!(log, "DPR: {}", shared.base_options.device_pixel_ratio.unwrap_or(1.0));
+  let _ = writeln!(
+    log,
+    "Viewport: {}x{}",
+    shared.base_options.viewport.unwrap().0,
+    shared.base_options.viewport.unwrap().1
+  );
+  let _ = writeln!(
+    log,
+    "DPR: {}",
+    shared.base_options.device_pixel_ratio.unwrap_or(1.0)
+  );
 
   let base_url = match canonical_file_url(&entry.index_path) {
     Ok(url) => url,
@@ -494,6 +530,8 @@ fn render_fixture(shared: &RenderShared, entry: &FixtureEntry) -> FixtureResult 
         shared,
         &status,
         0,
+        None,
+        None,
         None,
         &mut log,
       );
@@ -508,7 +546,7 @@ fn render_fixture(shared: &RenderShared, entry: &FixtureEntry) -> FixtureResult 
   };
   let _ = writeln!(log, "Base URL: {base_url}");
 
-  let html = match fs::read_to_string(&entry.index_path) {
+  let html_bytes = match fs::read(&entry.index_path) {
     Ok(html) => html,
     Err(err) => {
       let _ = writeln!(log, "Read error: {err}");
@@ -520,12 +558,62 @@ fn render_fixture(shared: &RenderShared, entry: &FixtureEntry) -> FixtureResult 
         &status,
         0,
         None,
+        None,
+        None,
         &mut log,
       );
       let _ = fs::write(&log_path, log);
       return FixtureResult {
         stem,
         status,
+        time_ms: 0,
+        size: None,
+      };
+    }
+  };
+
+  let input_sha256 = sha256_hex(&html_bytes);
+  let fixture_dir_sha256 = match entry.index_path.parent() {
+    Some(dir) => match hash_fixture_dir_sha256(dir) {
+      Ok(hash) => Some(hash),
+      Err(err) => {
+        let _ = writeln!(log, "Fixture dir hash error: {err}");
+        let _ = fs::write(&log_path, log);
+        return FixtureResult {
+          stem,
+          status: Status::Error(format!("fixture_dir_hash: {err}")),
+          time_ms: 0,
+          size: None,
+        };
+      }
+    },
+    None => {
+      let _ = writeln!(
+        log,
+        "Fixture dir hash error: missing fixture directory parent"
+      );
+      let _ = fs::write(&log_path, log);
+      return FixtureResult {
+        stem,
+        status: Status::Error("fixture_dir_hash: missing fixture dir parent".to_string()),
+        time_ms: 0,
+        size: None,
+      };
+    }
+  };
+  let _ = writeln!(log, "Input SHA-256: {input_sha256}");
+  if let Some(hash) = fixture_dir_sha256.as_deref() {
+    let _ = writeln!(log, "Fixture dir SHA-256: {hash}");
+  }
+
+  let html = match String::from_utf8(html_bytes) {
+    Ok(html) => html,
+    Err(err) => {
+      let _ = writeln!(log, "UTF-8 decode error: {err}");
+      let _ = fs::write(&log_path, log);
+      return FixtureResult {
+        stem,
+        status: Status::Error(format!("decode_utf8: {err}")),
         time_ms: 0,
         size: None,
       };
@@ -572,7 +660,9 @@ fn render_fixture(shared: &RenderShared, entry: &FixtureEntry) -> FixtureResult 
       "render timed out after {:.2}s",
       shared.hard_timeout.as_secs_f64()
     ))),
-    Err(RecvTimeoutError::Disconnected) => Err(Status::Crash("render worker disconnected".to_string())),
+    Err(RecvTimeoutError::Disconnected) => {
+      Err(Status::Crash("render worker disconnected".to_string()))
+    }
   };
 
   let elapsed = page_start.elapsed();
@@ -582,7 +672,7 @@ fn render_fixture(shared: &RenderShared, entry: &FixtureEntry) -> FixtureResult 
   let mut diagnostics = fastrender::RenderDiagnostics::default();
   let mut blocked_urls: Option<Vec<String>> = None;
 
-  let (status, size) = match result {
+  let (mut status, size) = match result {
     Ok(outcome) => {
       diagnostics = outcome.diagnostics;
       common::render_pipeline::log_diagnostics(&diagnostics, |line| {
@@ -662,15 +752,24 @@ fn render_fixture(shared: &RenderShared, entry: &FixtureEntry) -> FixtureResult 
     diagnostics: diagnostics.clone(),
   };
   let _ = write_diagnostics_file(&snapshot_dir, &diag_report, &mut log, shared.write_snapshot);
-  let _ = write_render_metadata_file(
+
+  let _ = writeln!(log, "Metadata: {}", metadata_path.display());
+  if let Err(err) = write_render_metadata_file(
     &metadata_path,
     &stem,
     shared,
     &status,
     time_ms,
     blocked_urls,
+    Some(&input_sha256),
+    fixture_dir_sha256.as_deref(),
     &mut log,
-  );
+  ) {
+    let _ = writeln!(log, "Metadata write error: {err}");
+    if matches!(status, Status::Ok) {
+      status = Status::Error(format!("write_metadata: {err}"));
+    }
+  }
 
   let _ = fs::write(&log_path, &log);
 
@@ -705,6 +804,8 @@ fn write_render_metadata_file(
   status: &Status,
   elapsed_ms: u128,
   blocked_urls: Option<Vec<String>>,
+  input_sha256: Option<&str>,
+  fixture_dir_sha256: Option<&str>,
   log: &mut String,
 ) -> io::Result<()> {
   let viewport = shared.base_options.viewport.unwrap_or((0, 0));
@@ -725,6 +826,8 @@ fn write_render_metadata_file(
     media: MediaMetadata::from_arg(shared.media),
     fit_canvas_to_content,
     timeout_secs: shared.timeout_secs,
+    input_sha256: input_sha256.map(|value| value.to_string()),
+    fixture_dir_sha256: fixture_dir_sha256.map(|value| value.to_string()),
     bundled_fonts: shared.font_config.use_bundled_fonts,
     font_dirs: shared.font_config.font_dirs.clone(),
     status: status_label(status),
@@ -760,6 +863,54 @@ fn canonical_file_url(path: &Path) -> io::Result<String> {
   let url = Url::from_file_path(&abs)
     .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid file path for URL"))?;
   Ok(url.to_string())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+  let digest = Sha256::digest(bytes);
+  digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn normalize_rel_path(path: &Path) -> String {
+  path
+    .components()
+    .map(|c| c.as_os_str().to_string_lossy())
+    .collect::<Vec<_>>()
+    .join("/")
+}
+
+fn hash_fixture_dir_sha256(dir: &Path) -> io::Result<String> {
+  // Keep this hashing algorithm in sync with `xtask fixture-chrome-diff` staleness checks.
+  //
+  // Deterministic digest over all regular files in the fixture directory:
+  // - collect relative paths (with `/` separators), sort lexicographically
+  // - hash `path_bytes + 0x00 + file_bytes` for each file in order.
+  let mut files: Vec<(String, PathBuf)> = Vec::new();
+  for entry in WalkDir::new(dir).follow_links(false) {
+    let entry = entry.map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    if !entry.file_type().is_file() {
+      continue;
+    }
+    let rel = entry
+      .path()
+      .strip_prefix(dir)
+      .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    files.push((normalize_rel_path(rel), entry.path().to_path_buf()));
+  }
+  files.sort_by(|a, b| a.0.cmp(&b.0));
+
+  let mut hasher = Sha256::new();
+  for (rel, path) in files {
+    hasher.update(rel.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(fs::read(path)?);
+  }
+  Ok(
+    hasher
+      .finalize()
+      .iter()
+      .map(|b| format!("{b:02x}"))
+      .collect(),
+  )
 }
 
 fn write_snapshot_outputs(
