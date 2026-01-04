@@ -1,0 +1,58 @@
+<!--
+README
+
+Offline evidence loop:
+- Validate fixture invariants:
+    cargo xtask validate-page-fixtures --only media_query_range_calc
+- Compare Chrome vs FastRender output:
+    cargo xtask fixture-chrome-diff --fixtures media_query_range_calc
+
+The default fixture viewport is 1040x1240 @ 1.0 DPR.
+
+This fixture exercises MQ4 range syntax + calc() with intentionally heavy whitespace.
+The expression resolves to 65rem == 1040px when `html { font-size: 16px; }`, so the query should
+*match* at the default viewport width (width >= ... is inclusive).
+-->
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>@media range syntax + calc()</title>
+    <style>
+      html {
+        font-size: 16px;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+      }
+
+      body {
+        background: red;
+      }
+
+      .fill {
+        width: 100%;
+        height: 100%;
+        background: red;
+      }
+
+      @media (width >= calc( 1rem * 2 + ( 14rem + 2rem ) * 2 + 31rem )) {
+        body {
+          background: lime;
+        }
+
+        .fill {
+          background: lime;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="fill"></div>
+  </body>
+</html>
+

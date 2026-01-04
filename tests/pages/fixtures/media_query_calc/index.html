@@ -1,0 +1,53 @@
+<!--
+README
+
+Offline evidence loop:
+- Validate fixture invariants:
+    cargo xtask validate-page-fixtures --only media_query_calc
+- Compare Chrome vs FastRender output:
+    cargo xtask fixture-chrome-diff --fixtures media_query_calc
+
+The default fixture viewport is 1040x1240 @ 1.0 DPR. The @media query below is written so it
+*matches* at 1040px width (min-width is inclusive).
+-->
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>@media calc() (colon syntax)</title>
+    <style>
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+      }
+
+      /* Base (should be overridden by the @media query at 1040px). */
+      body {
+        background: red;
+      }
+
+      /* Fill the viewport with an obvious solid so diffs are easy to spot. */
+      .fill {
+        width: 100%;
+        height: 100%;
+        background: red;
+      }
+
+      @media (min-width: calc(1024px + 16px)) {
+        body {
+          background: lime;
+        }
+
+        .fill {
+          background: lime;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="fill"></div>
+  </body>
+</html>
+

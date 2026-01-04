@@ -1,0 +1,64 @@
+<!--
+README
+
+Offline evidence loop:
+- Validate fixture invariants:
+    cargo xtask validate-page-fixtures --only container_query_range_calc
+- Compare Chrome vs FastRender output:
+    cargo xtask fixture-chrome-diff --fixtures container_query_range_calc
+
+The default fixture viewport is 1040x1240 @ 1.0 DPR.
+
+This fixture exercises @container size queries using MQ4 range syntax + calc() (with whitespace).
+The query container is sized to the viewport; the expression resolves to 65rem == 1040px when
+`html { font-size: 16px; }`, so the query should *match* at the default viewport width.
+-->
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>@container range syntax + calc()</title>
+    <style>
+      html {
+        font-size: 16px;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+      }
+
+      .container {
+        width: 100%;
+        height: 100%;
+        background: red;
+        container-type: inline-size;
+        container-name: demo;
+      }
+
+      .fill {
+        width: 100%;
+        height: 100%;
+        background: red;
+      }
+
+      @container demo (width >= calc( 1rem * 2 + ( 14rem + 2rem ) * 2 + 31rem )) {
+        .container {
+          background: lime;
+        }
+
+        .fill {
+          background: lime;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="fill"></div>
+    </div>
+  </body>
+</html>
+
