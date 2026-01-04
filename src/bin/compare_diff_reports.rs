@@ -471,30 +471,6 @@ fn run() -> Result<i32, String> {
 
     let (diff_percentage_delta, perceptual_distance_delta, classification) =
       classify_delta(baseline_entry, new_entry);
-    let failing_regression = if args.fail_on_regression {
-      match classification {
-        DeltaClassification::MissingInNew => true,
-        DeltaClassification::Regressed => {
-          let threshold = args.regression_threshold_percent;
-          if let Some(delta) = diff_percentage_delta {
-            if delta > threshold + METRIC_EPS {
-              true
-            } else if delta.abs() <= METRIC_EPS {
-              perceptual_distance_delta
-                .map(|d| d > METRIC_EPS)
-                .unwrap_or(false)
-            } else {
-              false
-            }
-          } else {
-            true
-          }
-        }
-        _ => false,
-      }
-    } else {
-      false
-    };
 
     if baseline_entry.is_some() && new_entry.is_some() {
       totals.paired += 1;
@@ -526,15 +502,20 @@ fn run() -> Result<i32, String> {
       DeltaClassification::MissingInBaseline | DeltaClassification::MissingInNew => {}
     }
 
-    results.push(DeltaEntry {
+    let mut entry = DeltaEntry {
       name,
       baseline: baseline_summary,
       new: new_summary,
       diff_percentage_delta,
       perceptual_distance_delta,
       classification,
-      failing_regression,
-    });
+      failing_regression: false,
+    };
+    if args.fail_on_regression {
+      entry.failing_regression =
+        is_failing_regression(&entry, args.regression_threshold_percent);
+    }
+    results.push(entry);
   }
 
   sort_results(&mut results);
@@ -581,7 +562,7 @@ fn run() -> Result<i32, String> {
     let failing: Vec<&DeltaEntry> = report
       .results
       .iter()
-      .filter(|entry| is_failing_regression(entry, threshold))
+      .filter(|entry| entry.failing_regression)
       .collect();
     if !failing.is_empty() {
       eprintln!(
