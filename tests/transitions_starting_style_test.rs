@@ -4,6 +4,7 @@ use fastrender::animation;
 use fastrender::api::{FastRender, RenderOptions};
 use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::style::cascade::StyledNode;
+use fastrender::style::types::{BasicShape, ClipPath};
 use fastrender::tree::box_tree::{BoxNode, BoxTree};
 use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
 use r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
@@ -83,6 +84,15 @@ fn fragment_transform_x(tree: &FragmentTree, box_id: usize) -> f32 {
   match style.transform.as_slice() {
     [fastrender::css::types::Transform::TranslateX(len)] => len.to_px(),
     _ => 0.0,
+  }
+}
+
+fn fragment_clip_shape(tree: &FragmentTree, box_id: usize) -> BasicShape {
+  let frag = find_fragment(&tree.root, box_id).expect("fragment present");
+  let style = frag.style.as_ref().expect("style present");
+  match &style.clip_path {
+    ClipPath::BasicShape(shape, _) => shape.as_ref().clone(),
+    other => panic!("expected basic shape clip-path, got {other:?}"),
   }
 }
 
@@ -193,6 +203,57 @@ fn zero_duration_disables_transition() {
 }
 
 #[test]
+fn transitions_fall_back_to_discrete_when_interpolation_fails() {
+  let html = r#"
+    <style>
+      @starting-style { #box { clip-path: inset(0%); } }
+      #box {
+        width: 100px;
+        height: 100px;
+        clip-path: circle(50%);
+        transition: clip-path 1000ms linear;
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut start = fragment_tree.clone();
+  let viewport = start.viewport_size();
+  animation::apply_transitions(&mut start, 0.0, viewport);
+  assert!(matches!(
+    fragment_clip_shape(&start, box_id),
+    BasicShape::Inset { .. }
+  ));
+
+  let mut quarter = fragment_tree.clone();
+  let viewport = quarter.viewport_size();
+  animation::apply_transitions(&mut quarter, 250.0, viewport);
+  assert!(matches!(
+    fragment_clip_shape(&quarter, box_id),
+    BasicShape::Inset { .. }
+  ));
+
+  let mut half = fragment_tree.clone();
+  let viewport = half.viewport_size();
+  animation::apply_transitions(&mut half, 500.0, viewport);
+  assert!(matches!(
+    fragment_clip_shape(&half, box_id),
+    BasicShape::Circle { .. }
+  ));
+
+  let mut late = fragment_tree.clone();
+  let viewport = late.viewport_size();
+  animation::apply_transitions(&mut late, 750.0, viewport);
+  assert!(matches!(
+    fragment_clip_shape(&late, box_id),
+    BasicShape::Circle { .. }
+  ));
+}
+
+#[test]
 fn visual_fixture_matches_goldens() {
   std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
   let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -201,10 +262,7 @@ fn visual_fixture_matches_goldens() {
   let compare_config = compare_config_from_env(CompareEnvVars::fixtures()).expect("compare config");
   let mut renderer = FastRender::new().expect("renderer");
   let prepared = renderer
-    .prepare_html(
-      &html,
-      RenderOptions::new().with_viewport(260, 180),
-    )
+    .prepare_html(&html, RenderOptions::new().with_viewport(260, 180))
     .expect("prepare");
   let cases = [
     ("transition_starting_style_0ms", 0.0),

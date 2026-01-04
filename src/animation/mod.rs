@@ -2054,9 +2054,8 @@ fn sample_keyframes_with_default_timing(
       }
     }
 
-    timing_functions.push(
-      keyframe_timing_function.unwrap_or_else(|| default_timing_function.clone()),
-    );
+    timing_functions
+      .push(keyframe_timing_function.unwrap_or_else(|| default_timing_function.clone()));
     resolved_styles.push(style);
   }
 
@@ -2993,7 +2992,13 @@ fn transition_value_for_property(
   let Some(to_val) = (interpolator.extract)(style, ctx) else {
     return None;
   };
-  let Some(value) = (interpolator.interpolate)(&from_val, &to_val, progress) else {
+  let Some(value) = (interpolator.interpolate)(&from_val, &to_val, progress).or_else(|| {
+    if progress >= 0.5 {
+      Some(to_val.clone())
+    } else {
+      Some(from_val.clone())
+    }
+  }) else {
     return None;
   };
 
@@ -3357,11 +3362,17 @@ mod tests {
     style.animation_timing_functions = vec![timing.clone()].into();
 
     let progress_mid = time_based_animation_progress(&style, 0, 500.0).expect("active");
-    assert!((progress_mid - 0.5).abs() < 1e-6, "progress_mid={progress_mid}");
+    assert!(
+      (progress_mid - 0.5).abs() < 1e-6,
+      "progress_mid={progress_mid}"
+    );
     assert!((sampled_opacity_with_timing(rule, progress_mid, &timing) - 1.0).abs() < 1e-6);
 
     let progress_quarter = time_based_animation_progress(&style, 0, 250.0).expect("active");
-    assert!((progress_quarter - 0.25).abs() < 1e-6, "progress_quarter={progress_quarter}");
+    assert!(
+      (progress_quarter - 0.25).abs() < 1e-6,
+      "progress_quarter={progress_quarter}"
+    );
     assert!(
       sampled_opacity_with_timing(rule, progress_quarter, &timing) > 0.7,
       "expected cubic-bezier timing to ease within the first interval"
