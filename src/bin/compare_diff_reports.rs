@@ -159,12 +159,22 @@ struct DeltaReport {
   schema_version: u32,
   baseline: ReportMeta,
   new: ReportMeta,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  filters: Option<ReportFilters>,
   config_mismatches: Vec<ConfigMismatch>,
   totals: DeltaTotals,
   aggregate: AggregateMetrics,
   top_improvements: Vec<DeltaRankedEntry>,
   top_regressions: Vec<DeltaRankedEntry>,
   results: Vec<DeltaEntry>,
+}
+
+#[derive(Serialize)]
+struct ReportFilters {
+  #[serde(skip_serializing_if = "Vec::is_empty")]
+  include: Vec<String>,
+  #[serde(skip_serializing_if = "Vec::is_empty")]
+  exclude: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -325,6 +335,14 @@ fn main() {
 fn run() -> Result<i32, String> {
   let args = Args::parse();
   let name_filters = compile_name_filters(&args)?;
+  let filters_meta = if args.include.is_empty() && args.exclude.is_empty() {
+    None
+  } else {
+    Some(ReportFilters {
+      include: args.include.clone(),
+      exclude: args.exclude.clone(),
+    })
+  };
 
   let cwd =
     std::env::current_dir().map_err(|e| format!("failed to read current directory: {e}"))?;
@@ -364,6 +382,7 @@ fn run() -> Result<i32, String> {
         schema_version: SCHEMA_VERSION,
         baseline: baseline_meta,
         new: new_meta,
+        filters: filters_meta,
         config_mismatches,
         totals,
         aggregate: AggregateMetrics::default(),
@@ -468,6 +487,7 @@ fn run() -> Result<i32, String> {
     schema_version: SCHEMA_VERSION,
     baseline: baseline_meta,
     new: new_meta,
+    filters: filters_meta,
     config_mismatches,
     totals,
     aggregate,

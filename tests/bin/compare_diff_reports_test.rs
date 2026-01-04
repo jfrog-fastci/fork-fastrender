@@ -829,6 +829,8 @@ fn compare_diff_reports_can_filter_entries_by_name() {
   let report: Value = serde_json::from_str(&fs::read_to_string(&out_json).unwrap()).unwrap();
   assert_eq!(report["totals"]["entries"], 1);
   assert_eq!(report["aggregate"]["paired_with_metrics"], 1);
+  assert_eq!(report["filters"]["include"][0], "^keep$");
+  assert_eq!(report["filters"]["exclude"][0], "drop");
 
   let results = report["results"].as_array().expect("results array");
   assert_eq!(results.len(), 1);
