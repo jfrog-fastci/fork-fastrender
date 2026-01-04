@@ -7426,7 +7426,10 @@ impl FastRender {
       .collect_css_metadata_all_scopes_with_cache(&media_ctx, Some(&mut media_query_cache));
     let font_faces = css_metadata.font_faces;
     let keyframes = css_metadata.keyframes;
-    let has_container_queries = css_metadata.needs_container_pass;
+    let mut has_container_queries = css_metadata.needs_container_pass;
+    if !has_container_queries {
+      has_container_queries = needs_container_pass_inline_styles(&dom_with_state)?;
+    }
     let has_starting_style_rules = css_metadata.has_starting_style_rules;
     if let Some(rec) = stats.as_deref_mut() {
       RenderStatsRecorder::add_ms(
@@ -11817,6 +11820,109 @@ fn build_styled_lookup<'a>(styled: &'a StyledNode, out: &mut HashMap<usize, *con
   for child in &styled.children {
     build_styled_lookup(child, out);
   }
+}
+
+fn needs_container_pass_inline_styles(node: &DomNode) -> Result<bool> {
+  fn string_contains_container_query_units(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() < 4 {
+      return false;
+    }
+    for idx in 1..bytes.len().saturating_sub(2) {
+      if !bytes[idx - 1].is_ascii_digit() {
+        continue;
+      }
+      if bytes[idx].to_ascii_lowercase() != b'c' || bytes[idx + 1].to_ascii_lowercase() != b'q' {
+        continue;
+      }
+      let tail = bytes[idx + 2].to_ascii_lowercase();
+      if matches!(tail, b'w' | b'h' | b'i' | b'b') {
+        return true;
+      }
+      if tail == b'm' {
+        let Some(slice) = bytes.get(idx + 2..idx + 5) else {
+          continue;
+        };
+        if slice.len() == 3
+          && slice[0].to_ascii_lowercase() == b'm'
+          && slice[1].to_ascii_lowercase() == b'i'
+          && slice[2].to_ascii_lowercase() == b'n'
+        {
+          return true;
+        }
+        if slice.len() == 3
+          && slice[0].to_ascii_lowercase() == b'm'
+          && slice[1].to_ascii_lowercase() == b'a'
+          && slice[2].to_ascii_lowercase() == b'x'
+        {
+          return true;
+        }
+      }
+    }
+    false
+  }
+
+  fn style_attr_has_property(style: &str, needle: &[u8]) -> bool {
+    let bytes = style.as_bytes();
+    if bytes.len() < needle.len() + 1 {
+      return false;
+    }
+    for idx in 0..=bytes.len() - needle.len() {
+      if bytes[idx..idx + needle.len()]
+        .iter()
+        .zip(needle.iter())
+        .any(|(&b, &n)| b.to_ascii_lowercase() != n)
+      {
+        continue;
+      }
+
+      let mut start = idx;
+      while start > 0 && bytes[start - 1].is_ascii_whitespace() {
+        start -= 1;
+      }
+      if start != 0 && bytes[start - 1] != b';' {
+        continue;
+      }
+
+      let mut end = idx + needle.len();
+      while end < bytes.len() && bytes[end].is_ascii_whitespace() {
+        end += 1;
+      }
+      if end < bytes.len() && bytes[end] == b':' {
+        return true;
+      }
+    }
+    false
+  }
+
+  fn style_attr_needs_container_pass(style: &str) -> bool {
+    style_attr_has_property(style, b"container-type")
+      || style_attr_has_property(style, b"container-name")
+      || style_attr_has_property(style, b"container")
+      || string_contains_container_query_units(style)
+  }
+
+  let mut deadline_counter = 0usize;
+  let mut stack: Vec<&DomNode> = vec![node];
+  while let Some(current) = stack.pop() {
+    crate::render_control::check_active_periodic(
+      &mut deadline_counter,
+      1024,
+      RenderStage::Css,
+    )?;
+
+    if let Some(style) = current.get_attribute_ref("style") {
+      if style_attr_needs_container_pass(style) {
+        return Ok(true);
+      }
+    }
+
+    for child in current.traversal_children().iter() {
+      stack.push(child);
+    }
+  }
+
+  Ok(false)
 }
 
 fn needs_top_layer_state(node: &DomNode) -> Result<bool> {
