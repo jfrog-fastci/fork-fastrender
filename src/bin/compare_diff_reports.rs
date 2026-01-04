@@ -640,6 +640,22 @@ fn print_summary(report: &DeltaReport, args: &Args) {
     report.totals.new_missing,
   );
 
+  if let Some(filters) = &report.filters {
+    if !filters.include.is_empty() || !filters.exclude.is_empty() {
+      let include = if filters.include.is_empty() {
+        "-".to_string()
+      } else {
+        filters.include.join(", ")
+      };
+      let exclude = if filters.exclude.is_empty() {
+        "-".to_string()
+      } else {
+        filters.exclude.join(", ")
+      };
+      println!("Filters: include=[{}] exclude=[{}]", include, exclude);
+    }
+  }
+
   if report.baseline.shard.is_some() || report.new.shard.is_some() {
     println!(
       "Shard (baseline/new): {}/{}",
