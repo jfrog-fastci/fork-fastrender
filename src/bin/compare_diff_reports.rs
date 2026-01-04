@@ -1591,14 +1591,16 @@ fn write_html_report(
       .entry-filters label:hover {{ text-decoration: underline; cursor: pointer; }}
       #show-improved:not(:checked) ~ .entry-filters label[for="show-improved"],
       #show-regressed:not(:checked) ~ .entry-filters label[for="show-regressed"],
-      #show-missing:not(:checked) ~ .entry-filters label[for="show-missing"],
+      #show-missing-in-new:not(:checked) ~ .entry-filters label[for="show-missing-in-new"],
+      #show-missing-in-baseline:not(:checked) ~ .entry-filters label[for="show-missing-in-baseline"],
       #show-unchanged:not(:checked) ~ .entry-filters label[for="show-unchanged"],
       #show-thumbnails:not(:checked) ~ .entry-filters label[for="show-thumbnails"] {{
         opacity: 0.5;
       }}
       #show-improved:not(:checked) ~ #all-entries tbody tr.improved {{ display: none; }}
       #show-regressed:not(:checked) ~ #all-entries tbody tr.regressed {{ display: none; }}
-      #show-missing:not(:checked) ~ #all-entries tbody tr.missing {{ display: none; }}
+      #show-missing-in-new:not(:checked) ~ #all-entries tbody tr.missing-in-new {{ display: none; }}
+      #show-missing-in-baseline:not(:checked) ~ #all-entries tbody tr.missing-in-baseline {{ display: none; }}
       #show-unchanged:not(:checked) ~ #all-entries tbody tr.unchanged {{ display: none; }}
       #show-thumbnails:not(:checked) ~ #all-entries .thumb br {{ display: none; }}
       #show-thumbnails:not(:checked) ~ #all-entries .thumb a:nth-of-type(2) {{ display: none; }}
@@ -1632,14 +1634,16 @@ fn write_html_report(
     <div id="all-entries-controls">
       <input type="checkbox" id="show-improved" checked>
       <input type="checkbox" id="show-regressed" checked>
-      <input type="checkbox" id="show-missing" checked>
+      <input type="checkbox" id="show-missing-in-new" checked>
+      <input type="checkbox" id="show-missing-in-baseline" checked>
       <input type="checkbox" id="show-unchanged" checked>
       <input type="checkbox" id="show-thumbnails" checked>
       <div class="entry-filters">
         <strong>Show:</strong>
         <label for="show-improved">Improved ({improved})</label>
         <label for="show-regressed">Regressed ({regressed})</label>
-        <label for="show-missing">Missing ({missing_entries})</label>
+        <label for="show-missing-in-new">Missing in new ({missing_in_new})</label>
+        <label for="show-missing-in-baseline">Missing in baseline ({missing_in_baseline})</label>
         <label for="show-unchanged">Unchanged ({unchanged})</label>
         <label for="show-thumbnails">Thumbnails</label>
       </div>
@@ -1697,7 +1701,8 @@ fn write_html_report(
     improved = report.totals.improved,
     regressed = report.totals.regressed,
     unchanged = report.totals.unchanged,
-    missing_entries = report.totals.missing_in_baseline + report.totals.missing_in_new,
+    missing_in_new = report.totals.missing_in_new,
+    missing_in_baseline = report.totals.missing_in_baseline,
     rows = rows,
   );
 

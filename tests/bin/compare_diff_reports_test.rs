@@ -284,12 +284,28 @@ fn compare_diff_reports_pairs_and_classifies_entries() {
     "expected per-class All entries filter controls:\n{html}"
   );
   assert!(
+    html.contains("id=\"show-missing-in-new\""),
+    "expected missing-in-new filter control:\n{html}"
+  );
+  assert!(
+    html.contains("id=\"show-missing-in-baseline\""),
+    "expected missing-in-baseline filter control:\n{html}"
+  );
+  assert!(
     html.contains("id=\"show-thumbnails\""),
     "expected thumbnail toggle control:\n{html}"
   );
   assert!(
     html.contains("#show-unchanged:not(:checked) ~ #all-entries tbody tr.unchanged"),
     "expected CSS toggle rule for hiding unchanged rows:\n{html}"
+  );
+  assert!(
+    html.contains("#show-missing-in-new:not(:checked) ~ #all-entries tbody tr.missing-in-new"),
+    "expected CSS toggle rule for hiding missing-in-new rows:\n{html}"
+  );
+  assert!(
+    html.contains("#show-missing-in-baseline:not(:checked) ~ #all-entries tbody tr.missing-in-baseline"),
+    "expected CSS toggle rule for hiding missing-in-baseline rows:\n{html}"
   );
   assert!(
     html.contains("#show-thumbnails:not(:checked) ~ #all-entries .thumb a:nth-of-type(2)"),
