@@ -6184,7 +6184,7 @@ impl DisplayListBuilder {
       let size = style.font_size.max(1.0);
       let ascent = size * 0.8;
       let descent = size - ascent;
-      let underline_thickness = (size * 0.05).max(1.0);
+      let underline_thickness = (size * 0.1).max(1.0);
       let underline_pos = descent * 0.5;
       let strike_pos = ascent * 0.4;
 
