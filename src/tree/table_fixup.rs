@@ -171,6 +171,24 @@ impl TableStructureFixer {
 
   // ==================== Type Checking ====================
 
+  fn is_ignorable_table_whitespace(box_node: &BoxNode) -> bool {
+    match &box_node.box_type {
+      BoxType::Text(text) => text.text.trim().is_empty(),
+      // Anonymous block/inline wrappers can be introduced by block/inline fixups when a table
+      // element mixes table internals with pretty-printed whitespace text nodes. If the wrapper
+      // contains only whitespace, treat it as ignorable so we don't generate anonymous table cells.
+      BoxType::Anonymous(anon)
+        if matches!(anon.anonymous_type, AnonymousType::Block | AnonymousType::Inline) =>
+      {
+        box_node
+          .children
+          .iter()
+          .all(|child| Self::is_ignorable_table_whitespace(child))
+      }
+      _ => false,
+    }
+  }
+
   /// Checks if a box is a table box (display: table or inline-table)
   pub fn is_table_box(box_node: &BoxNode) -> bool {
     match &box_node.box_type {
@@ -482,6 +500,9 @@ impl TableStructureFixer {
         }
         result.push(child);
       } else {
+        if Self::is_ignorable_table_whitespace(&child) {
+          continue;
+        }
         // Other non-table content - wrap in anonymous cell first
         let style = anonymous_cell_style
           .get_or_insert_with(|| Self::inherited_table_style(parent_style, Display::TableCell));
@@ -531,6 +552,9 @@ impl TableStructureFixer {
         }
         result.push(Self::fixup_row(child, deadline_counter)?);
       } else {
+        if Self::is_ignorable_table_whitespace(&child) {
+          continue;
+        }
         // Unexpected content - wrap in anonymous cell then add to loose cells
         if !loose_cells.is_empty() {
           let style = anonymous_row_style
@@ -584,6 +608,9 @@ impl TableStructureFixer {
         }
         fixed_children.push(child);
       } else {
+        if Self::is_ignorable_table_whitespace(&child) {
+          continue;
+        }
         pending_non_cells.push(child);
       }
     }
@@ -1155,6 +1182,71 @@ mod tests {
       .expect("row created");
     assert_eq!(fixed_row.children.len(), 1);
     assert!(TableStructureFixer::is_table_cell(&fixed_row.children[0]));
+  }
+
+  #[test]
+  fn test_row_ignores_whitespace_text_nodes() {
+    // Pretty-printed HTML tables contain whitespace-only text nodes between <td>/<th> elements.
+    // Browsers ignore these nodes for table layout; they must not generate anonymous cells that
+    // would increase the computed column count.
+    let cell1 = cell_box(vec![]);
+    let cell2 = cell_box(vec![]);
+    let whitespace = BoxNode::new_text(default_style(), "\n  ".to_string());
+
+    let row = row_box(vec![cell1, whitespace, cell2]);
+    let table = table_box(vec![row]);
+
+    let fixed = TableStructureFixer::fixup_table(table).unwrap();
+    let fixed_row = &fixed
+      .children
+      .first()
+      .expect("row group created")
+      .children
+      .first()
+      .expect("row created");
+
+    assert_eq!(fixed_row.children.len(), 2);
+    assert!(fixed_row.children.iter().all(TableStructureFixer::is_table_cell));
+  }
+
+  #[test]
+  fn test_row_ignores_whitespace_wrapped_in_anonymous_block() {
+    // The box tree can wrap inline sequences in anonymous blocks. When those blocks are
+    // whitespace-only (e.g. pretty-printed table source), they must not create extra cells.
+    let cell1 = cell_box(vec![]);
+    let cell2 = cell_box(vec![]);
+    let whitespace = BoxNode::new_text(default_style(), "\n  ".to_string());
+
+    let mut block_style = ComputedStyle::default();
+    block_style.display = Display::Block;
+    let whitespace_block = BoxNode {
+      style: Arc::new(block_style),
+      starting_style: None,
+      box_type: BoxType::Anonymous(AnonymousBox {
+        anonymous_type: AnonymousType::Block,
+      }),
+      children: vec![whitespace],
+      id: 0,
+      debug_info: None,
+      styled_node_id: None,
+      first_line_style: None,
+      first_letter_style: None,
+    };
+
+    let row = row_box(vec![cell1, whitespace_block, cell2]);
+    let table = table_box(vec![row]);
+
+    let fixed = TableStructureFixer::fixup_table(table).unwrap();
+    let fixed_row = &fixed
+      .children
+      .first()
+      .expect("row group created")
+      .children
+      .first()
+      .expect("row created");
+
+    assert_eq!(fixed_row.children.len(), 2);
+    assert!(fixed_row.children.iter().all(TableStructureFixer::is_table_cell));
   }
 
   // ==================== Mixed Content Tests ====================
