@@ -2786,11 +2786,8 @@ fn assign_fonts_internal(
       && !run.text.is_empty()
       && !matches!(style.font_variant_emoji, FontVariantEmoji::Emoji)
     {
-      let emoji_pref = match style.font_variant_emoji {
-        FontVariantEmoji::Text | FontVariantEmoji::Unicode => EmojiPreference::AvoidEmoji,
-        _ => EmojiPreference::Neutral,
-      };
       let resolve_for_sample = |sample_char: char| -> Option<Arc<LoadedFont>> {
+        let emoji_pref = emoji_preference_for_char(sample_char, style.font_variant_emoji);
         let require_base_glyph = !is_non_rendering_for_coverage(sample_char);
         let descriptor = font_cache.map(|_| {
           FallbackCacheDescriptor::new(
@@ -4117,10 +4114,27 @@ impl FontPreferencePicker {
 }
 
 fn emoji_preference_for_char(ch: char, variant: FontVariantEmoji) -> EmojiPreference {
+  let emoji_capable = emoji::is_emoji(ch);
+
   match variant {
-    FontVariantEmoji::Emoji => EmojiPreference::PreferEmoji,
-    FontVariantEmoji::Text => EmojiPreference::AvoidEmoji,
+    FontVariantEmoji::Emoji => {
+      if emoji_capable {
+        EmojiPreference::PreferEmoji
+      } else {
+        EmojiPreference::Neutral
+      }
+    }
+    FontVariantEmoji::Text => {
+      if emoji_capable {
+        EmojiPreference::AvoidEmoji
+      } else {
+        EmojiPreference::Neutral
+      }
+    }
     FontVariantEmoji::Unicode => {
+      if !emoji_capable {
+        return EmojiPreference::Neutral;
+      }
       if emoji::is_emoji_presentation(ch) {
         EmojiPreference::PreferEmoji
       } else {
@@ -9250,6 +9264,14 @@ mod tests {
     assert_eq!(
       emoji_preference_for_char('😀', FontVariantEmoji::Unicode),
       EmojiPreference::PreferEmoji
+    );
+    assert_eq!(
+      emoji_preference_for_char('A', FontVariantEmoji::Emoji),
+      EmojiPreference::Neutral
+    );
+    assert_eq!(
+      emoji_preference_for_char('A', FontVariantEmoji::Text),
+      EmojiPreference::Neutral
     );
     // '#' defaults to text presentation.
     assert_eq!(
