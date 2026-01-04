@@ -9,7 +9,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::css::types::{
-  BoxShadow, Keyframe, KeyframesRule, PropertyValue, RotateValue, ScaleValue, TranslateValue,
+  BoxShadow, Keyframe, KeyframesRule, PropertyValue, RotateValue, ScaleValue, TextShadow,
+  TranslateValue,
 };
 use crate::debug::runtime;
 use crate::geometry::{Point, Rect, Size};
@@ -80,6 +81,7 @@ pub enum AnimatedValue {
   BackgroundPosition(Vec<BackgroundPosition>),
   BackgroundSize(Vec<BackgroundSize>),
   BoxShadow(Vec<BoxShadow>),
+  TextShadow(Vec<TextShadow>),
   BorderRadius([BorderCornerRadius; 4]),
 }
 
@@ -1458,6 +1460,110 @@ fn apply_box_shadow(style: &mut ComputedStyle, value: &AnimatedValue) {
   }
 }
 
+fn resolve_text_shadow_list(
+  shadows: &[TextShadow],
+  style: &ComputedStyle,
+  ctx: &AnimationResolveContext,
+) -> Vec<TextShadow> {
+  shadows
+    .iter()
+    .map(|shadow| TextShadow {
+      offset_x: Length::px(resolve_length_px(&shadow.offset_x, None, style, ctx)),
+      offset_y: Length::px(resolve_length_px(&shadow.offset_y, None, style, ctx)),
+      blur_radius: Length::px(resolve_length_px(&shadow.blur_radius, None, style, ctx)),
+      color: Some(shadow.color.unwrap_or(style.color)),
+    })
+    .collect()
+}
+
+fn extract_text_shadow(
+  style: &ComputedStyle,
+  ctx: &AnimationResolveContext,
+) -> Option<AnimatedValue> {
+  Some(AnimatedValue::TextShadow(resolve_text_shadow_list(
+    style.text_shadow.as_ref(),
+    style,
+    ctx,
+  )))
+}
+
+fn transparent_text_shadow_like(shadow: &TextShadow) -> TextShadow {
+  let color = shadow.color.unwrap_or(Rgba::BLACK);
+  TextShadow {
+    offset_x: Length::px(0.0),
+    offset_y: Length::px(0.0),
+    blur_radius: Length::px(0.0),
+    color: Some(Rgba::new(color.r, color.g, color.b, 0.0)),
+  }
+}
+
+fn interpolate_single_text_shadow(a: &TextShadow, b: &TextShadow, t: f32) -> Option<TextShadow> {
+  Some(TextShadow {
+    offset_x: Length::px(lerp(a.offset_x.to_px(), b.offset_x.to_px(), t)),
+    offset_y: Length::px(lerp(a.offset_y.to_px(), b.offset_y.to_px(), t)),
+    blur_radius: Length::px(lerp(a.blur_radius.to_px(), b.blur_radius.to_px(), t)),
+    color: Some(lerp_color(
+      a.color.unwrap_or(Rgba::BLACK),
+      b.color.unwrap_or(Rgba::BLACK),
+      t,
+    )),
+  })
+}
+
+fn interpolate_text_shadow_list(
+  a: &[TextShadow],
+  b: &[TextShadow],
+  t: f32,
+) -> Option<Vec<TextShadow>> {
+  if t <= f32::EPSILON {
+    return Some(a.to_vec());
+  }
+  if t >= 1.0 - f32::EPSILON {
+    return Some(b.to_vec());
+  }
+
+  let max_len = a.len().max(b.len());
+  let mut out = Vec::with_capacity(max_len);
+  for idx in 0..max_len {
+    match (a.get(idx), b.get(idx)) {
+      (Some(a_shadow), Some(b_shadow)) => {
+        out.push(interpolate_single_text_shadow(a_shadow, b_shadow, t)?);
+      }
+      (Some(a_shadow), None) => {
+        let transparent = transparent_text_shadow_like(a_shadow);
+        out.push(interpolate_single_text_shadow(a_shadow, &transparent, t)?);
+      }
+      (None, Some(b_shadow)) => {
+        let transparent = transparent_text_shadow_like(b_shadow);
+        out.push(interpolate_single_text_shadow(&transparent, b_shadow, t)?);
+      }
+      (None, None) => {}
+    }
+  }
+
+  Some(out)
+}
+
+fn interpolate_text_shadow_value(
+  a: &AnimatedValue,
+  b: &AnimatedValue,
+  t: f32,
+) -> Option<AnimatedValue> {
+  let (AnimatedValue::TextShadow(sa), AnimatedValue::TextShadow(sb)) = (a, b) else {
+    return None;
+  };
+
+  Some(AnimatedValue::TextShadow(interpolate_text_shadow_list(
+    sa, sb, t,
+  )?))
+}
+
+fn apply_text_shadow(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::TextShadow(shadows) = value {
+    style.text_shadow = shadows.clone().into();
+  }
+}
+
 fn extract_border_radius(
   style: &ComputedStyle,
   ctx: &AnimationResolveContext,
@@ -1586,6 +1692,12 @@ fn property_interpolators() -> &'static [PropertyInterpolator] {
       extract: extract_box_shadow,
       interpolate: interpolate_box_shadow_value,
       apply: apply_box_shadow,
+    },
+    PropertyInterpolator {
+      name: "text-shadow",
+      extract: extract_text_shadow,
+      interpolate: interpolate_text_shadow_value,
+      apply: apply_text_shadow,
     },
     PropertyInterpolator {
       name: "border-radius",

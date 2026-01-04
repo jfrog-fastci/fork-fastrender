@@ -2,7 +2,7 @@ mod r#ref;
 
 use fastrender::animation;
 use fastrender::api::{FastRender, RenderOptions};
-use fastrender::css::types::BoxShadow;
+use fastrender::css::types::{BoxShadow, TextShadow};
 use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::types::{BasicShape, ClipPath};
@@ -97,6 +97,15 @@ fn fragment_box_shadows(tree: &FragmentTree, box_id: usize) -> Vec<BoxShadow> {
     .expect("style present")
 }
 
+fn fragment_text_shadows(tree: &FragmentTree, box_id: usize) -> Vec<TextShadow> {
+  let frag = find_fragment(&tree.root, box_id).expect("fragment present");
+  frag
+    .style
+    .as_ref()
+    .map(|s| s.text_shadow.as_ref().to_vec())
+    .expect("style present")
+}
+
 fn fragment_clip_shape(tree: &FragmentTree, box_id: usize) -> BasicShape {
   let frag = find_fragment(&tree.root, box_id).expect("fragment present");
   let style = frag.style.as_ref().expect("style present");
@@ -161,6 +170,35 @@ fn transitions_interpolate_box_shadow_over_time() {
   let shadow = &shadows[0];
   assert!((shadow.offset_x.to_px() - 5.0).abs() < 1e-3);
   assert!((shadow.color.a - 0.5).abs() < 1e-6);
+}
+
+#[test]
+fn transitions_interpolate_text_shadow_over_time() {
+  let html = r#"
+    <style>
+      @starting-style { #box { text-shadow: none; } }
+      #box { width: 100px; height: 100px; text-shadow: 10px 0px 0px rgba(255, 0, 0, 1); transition: text-shadow 1000ms linear; }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut start = fragment_tree.clone();
+  let viewport = start.viewport_size();
+  animation::apply_transitions(&mut start, 0.0, viewport);
+  assert!(fragment_text_shadows(&start, box_id).is_empty());
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 500.0, viewport);
+  let shadows = fragment_text_shadows(&mid, box_id);
+  assert_eq!(shadows.len(), 1);
+  let shadow = &shadows[0];
+  assert!((shadow.offset_x.to_px() - 5.0).abs() < 1e-3);
+  let color = shadow.color.expect("resolved color");
+  assert!((color.a - 0.5).abs() < 1e-6);
 }
 
 #[test]
