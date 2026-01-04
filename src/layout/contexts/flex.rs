@@ -34,7 +34,7 @@ use crate::layout::constraints::LayoutConstraints;
 use crate::layout::contexts::block::BlockFormattingContext;
 use crate::layout::contexts::factory::FormattingContextFactory;
 use crate::layout::contexts::flex_cache::{
-  find_layout_cache_fragment, FlexCacheEntry, ShardedFlexCache,
+  find_layout_cache_fragment, FlexCacheEntry, FlexCacheKey, ShardedFlexCache,
 };
 use crate::layout::contexts::positioned::ContainingBlock;
 use crate::layout::contexts::positioned::PositionedLayout;
@@ -990,7 +990,10 @@ impl FormattingContext for FlexFormattingContext {
                                 !height_depends_on_available_height(&box_node.style)
                             })
                             .unwrap_or(false);
-                    let key = measure_cache_key(&known_dimensions, &avail, viewport_size, drop_available_height);
+                    let (key, snapped_known_dimensions, snapped_avail) =
+                        measure_cache_key_and_snap(&known_dimensions, &avail, viewport_size, drop_available_height);
+                    known_dimensions = snapped_known_dimensions;
+                    avail = snapped_avail;
                     let bucket = match (w_state, h_state) {
                         (DimState::Known, DimState::Known) => 0,
                         (DimState::Known, DimState::Definite) => 1,
@@ -3035,12 +3038,16 @@ fn height_depends_on_available_height(style: &ComputedStyle) -> bool {
   height_depends || min_depends || max_depends || flex_basis_depends
 }
 
-fn measure_cache_key(
+fn measure_cache_key_and_snap(
   known: &taffy::geometry::Size<Option<f32>>,
   avail: &taffy::geometry::Size<AvailableSpace>,
   viewport: Size,
   drop_available_height: bool,
-) -> (Option<u32>, Option<u32>) {
+) -> (
+  FlexCacheKey,
+  taffy::geometry::Size<Option<f32>>,
+  taffy::geometry::Size<AvailableSpace>,
+) {
   fn quantize(val: f32) -> f32 {
     // Quantize measure keys to merge near-duplicate probes without visibly affecting layout.
     // Use progressively coarser steps as sizes grow to curb key cardinality on large pages
@@ -3099,61 +3106,94 @@ fn measure_cache_key(
     }
   }
 
-  let mut known = known.clone();
-  let avail = taffy::geometry::Size {
+  let mut snapped_known = known.clone();
+  let mut snapped_avail = taffy::geometry::Size {
     width: normalize_available_width(avail.width, viewport),
     height: normalize_available_height(avail.height),
   };
-  if let Some(w) = known.width {
+  if let Some(w) = snapped_known.width {
     if w > 1.0 {
-      known.width = Some(clamp_width_for_constraints(w, viewport));
+      snapped_known.width = Some(clamp_width_for_constraints(w, viewport));
     }
   }
-  if let Some(w) = known.width {
-    if w <= 1.0 && matches!(avail.width, AvailableSpace::MaxContent) {
-      known.width = None;
+  if let Some(w) = snapped_known.width {
+    if w <= 1.0 && matches!(snapped_avail.width, AvailableSpace::MaxContent) {
+      snapped_known.width = None;
     }
   }
-  if let Some(h) = known.height {
-    if h <= 1.0 && matches!(avail.height, AvailableSpace::MaxContent) {
-      known.height = None;
+  if let Some(h) = snapped_known.height {
+    if h <= 1.0 && matches!(snapped_avail.height, AvailableSpace::MaxContent) {
+      snapped_known.height = None;
     }
   }
 
-  let width_is_intrinsic = known.width.is_none()
+  let width_is_intrinsic = snapped_known.width.is_none()
     && matches!(
-      avail.width,
+      snapped_avail.width,
       AvailableSpace::MinContent | AvailableSpace::MaxContent
     );
 
-  let width = if let Some(w) = known.width {
-    Some(quantize(w))
+  let width = if let Some(w) = snapped_known.width {
+    quantize(w)
   } else {
-    match avail.width {
-      AvailableSpace::Definite(w) => Some(quantize(w)),
-      AvailableSpace::MinContent => Some(-viewport.width.max(0.0) - 1.0),
-      AvailableSpace::MaxContent => Some(-viewport.width.max(0.0) - 2.0),
+    match snapped_avail.width {
+      AvailableSpace::Definite(w) => quantize(w),
+      AvailableSpace::MinContent => -viewport.width.max(0.0) - 1.0,
+      AvailableSpace::MaxContent => -viewport.width.max(0.0) - 2.0,
     }
   };
+
+  if snapped_known.width.is_some() {
+    snapped_known.width = Some(width);
+  }
+  if matches!(snapped_avail.width, AvailableSpace::Definite(_)) {
+    snapped_avail.width = AvailableSpace::Definite(width);
+  }
+
   let ignore_height = drop_available_height || width_is_intrinsic;
-  let height = if let Some(h) = known.height {
+  let height = if let Some(h) = snapped_known.height {
     Some(quantize(h))
   } else if ignore_height {
     // Ignore available block-size differences when the measurement does not depend on the
     // containing block height (or when probing intrinsic inline sizes).
     None
   } else {
-    match avail.height {
-      AvailableSpace::Definite(h) => Some(quantize(h)),
-      AvailableSpace::MinContent => Some(-viewport.height.max(0.0) - 1.0),
-      AvailableSpace::MaxContent => Some(-viewport.height.max(0.0) - 2.0),
-    }
+    Some(match snapped_avail.height {
+      AvailableSpace::Definite(h) => quantize(h),
+      AvailableSpace::MinContent => -viewport.height.max(0.0) - 1.0,
+      AvailableSpace::MaxContent => -viewport.height.max(0.0) - 2.0,
+    })
   };
 
+  match height {
+    Some(h) => {
+      if snapped_known.height.is_some() {
+        snapped_known.height = Some(h);
+      }
+      if matches!(snapped_avail.height, AvailableSpace::Definite(_)) {
+        snapped_avail.height = AvailableSpace::Definite(h);
+      }
+    }
+    None => {
+      snapped_known.height = None;
+      snapped_avail.height = AvailableSpace::MaxContent;
+    }
+  }
+
   (
-    width.map(f32_to_canonical_bits),
-    height.map(f32_to_canonical_bits),
+    (Some(f32_to_canonical_bits(width)), height.map(f32_to_canonical_bits)),
+    snapped_known,
+    snapped_avail,
   )
+}
+
+fn measure_cache_key(
+  known: &taffy::geometry::Size<Option<f32>>,
+  avail: &taffy::geometry::Size<AvailableSpace>,
+  viewport: Size,
+  drop_available_height: bool,
+) -> FlexCacheKey {
+  measure_cache_key_and_snap(known, avail, viewport, drop_available_height).0
 }
 
 fn hash_enum_discriminant<T>(value: &T, hasher: &mut FingerprintHasher) {
@@ -7256,6 +7296,99 @@ mod tests {
       false,
     );
     assert_eq!(key_a.0, key_c.0);
+  }
+
+  #[test]
+  fn measure_cache_key_snaps_known_and_available_space_to_quantized_values() {
+    use crate::geometry::Size as GeoSize;
+    use taffy::style::AvailableSpace;
+
+    let viewport = GeoSize::new(1200.0, 800.0);
+    let fc = FlexFormattingContext::with_viewport(viewport);
+
+    let known = taffy::geometry::Size {
+      width: None,
+      height: None,
+    };
+
+    let (key_a, snapped_known_a, snapped_avail_a) = super::measure_cache_key_and_snap(
+      &known,
+      &taffy::geometry::Size {
+        width: AvailableSpace::Definite(250.3),
+        height: AvailableSpace::Definite(150.7),
+      },
+      viewport,
+      false,
+    );
+
+    let (key_b, snapped_known_b, snapped_avail_b) = super::measure_cache_key_and_snap(
+      &known,
+      &taffy::geometry::Size {
+        width: AvailableSpace::Definite(250.6),
+        height: AvailableSpace::Definite(150.4),
+      },
+      viewport,
+      false,
+    );
+
+    assert_eq!(key_a, key_b);
+    assert_eq!(
+      snapped_known_a, snapped_known_b,
+      "snapped known dimensions should match for probes sharing a cache key"
+    );
+    assert_eq!(
+      snapped_avail_a, snapped_avail_b,
+      "snapped available space should match for probes sharing a cache key"
+    );
+
+    let constraints_a = fc.constraints_from_taffy(snapped_known_a, snapped_avail_a, None);
+    let constraints_b = fc.constraints_from_taffy(snapped_known_b, snapped_avail_b, None);
+    assert_eq!(
+      constraints_a, constraints_b,
+      "layout constraints should be identical once inputs are snapped"
+    );
+  }
+
+  #[test]
+  fn measure_cache_key_snaps_known_dimensions_that_contribute_to_the_key() {
+    use crate::geometry::Size as GeoSize;
+    use taffy::style::AvailableSpace;
+
+    let viewport = GeoSize::new(1200.0, 800.0);
+    let fc = FlexFormattingContext::with_viewport(viewport);
+
+    let avail = taffy::geometry::Size {
+      width: AvailableSpace::Definite(250.0),
+      height: AvailableSpace::Definite(100.0),
+    };
+
+    let (key_a, snapped_known_a, snapped_avail_a) = super::measure_cache_key_and_snap(
+      &taffy::geometry::Size {
+        width: Some(250.3),
+        height: None,
+      },
+      &avail,
+      viewport,
+      false,
+    );
+
+    let (key_b, snapped_known_b, snapped_avail_b) = super::measure_cache_key_and_snap(
+      &taffy::geometry::Size {
+        width: Some(250.6),
+        height: None,
+      },
+      &avail,
+      viewport,
+      false,
+    );
+
+    assert_eq!(key_a, key_b);
+    assert_eq!(snapped_known_a, snapped_known_b);
+    assert_eq!(snapped_avail_a, snapped_avail_b);
+
+    let constraints_a = fc.constraints_from_taffy(snapped_known_a, snapped_avail_a, None);
+    let constraints_b = fc.constraints_from_taffy(snapped_known_b, snapped_avail_b, None);
+    assert_eq!(constraints_a, constraints_b);
   }
 
   #[test]
