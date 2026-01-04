@@ -135,7 +135,7 @@ detect_total_cpus() {
 #   fetch_pages -> prefetch_assets -> pageset_progress
 #
 # Environment overrides:
-#   JOBS=8 FETCH_TIMEOUT=30 RENDER_TIMEOUT=5 DISK_CACHE=0 NO_DISK_CACHE=1
+#   JOBS=8 FETCH_TIMEOUT=30 RENDER_TIMEOUT=5 DISK_CACHE=0 NO_DISK_CACHE=1 DISK_CACHE_AUDIT_CLEAN=1
 #   RAYON_NUM_THREADS=4 FASTR_LAYOUT_PARALLEL=off|on|auto
 #   USER_AGENT=... ACCEPT_LANGUAGE=... VIEWPORT=... DPR=...
 #   FASTR_DISK_CACHE_MAX_BYTES=... FASTR_DISK_CACHE_MAX_AGE_SECS=... (0 = never expire)
@@ -145,6 +145,7 @@ detect_total_cpus() {
 # Wrapper flags (accepted even if placed after `--`):
 #   --jobs/-j N --fetch-timeout SECS --render-timeout SECS --cache-dir DIR --no-fetch
 #   --disk-cache --no-disk-cache
+#   --disk-cache-audit-clean
 #   --accuracy
 #   --accuracy-baseline <existing|chrome>
 #   --accuracy-baseline-dir DIR
@@ -195,6 +196,7 @@ RENDER_TIMEOUT="${RENDER_TIMEOUT:-5}"
 USE_DISK_CACHE="${DISK_CACHE:-1}"
 CACHE_DIR="fetches/assets"
 NO_FETCH=0
+DISK_CACHE_AUDIT_CLEAN="${DISK_CACHE_AUDIT_CLEAN:-0}"
 CAPTURE_MISSING_FAILURE_FIXTURES=0
 CAPTURE_MISSING_FAILURE_FIXTURES_OUT_DIR="target/pageset_failure_fixture_bundles"
 CAPTURE_MISSING_FAILURE_FIXTURES_ALLOW_MISSING_RESOURCES=0
@@ -239,6 +241,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-fetch)
       NO_FETCH=1
+      shift
+      continue
+      ;;
+    --disk-cache-audit-clean)
+      DISK_CACHE_AUDIT_CLEAN=1
       shift
       continue
       ;;
@@ -1002,6 +1009,86 @@ if [[ "${USE_DISK_CACHE}" != 0 ]]; then
     PREFETCH_ASSET_ARGS+=(--prefetch-css-url-assets)
   fi
   cargo run --release "${FEATURE_ARGS[@]}" --bin prefetch_assets -- --jobs "${JOBS}" --timeout "${FETCH_TIMEOUT}" --cache-dir "${CACHE_DIR}" "${SELECTION_ARGS[@]}" "${PREFETCH_KNOB_ARGS[@]}" "${PREFETCH_ASSET_ARGS[@]}" "${DISK_CACHE_ARGS[@]}" "${EXTRA_DISK_CACHE_ARGS[@]}"
+fi
+
+if [[ "${USE_DISK_CACHE}" != 0 ]]; then
+  mkdir -p target/pageset
+  DISK_CACHE_AUDIT_PATH="target/pageset/disk_cache_audit.json"
+
+  DISK_CACHE_AUDIT_ARGS=(--cache-dir "${CACHE_DIR}" --json --top 0)
+
+  # If the caller overrides the disk cache lock staleness threshold via `--disk-cache-lock-stale-secs`,
+  # mirror it in the audit so stale-lock diagnostics match the cache's own behaviour.
+  DISK_CACHE_LOCK_STALE_SECS=""
+  for ((i=0; i < ${#DISK_CACHE_ARGS[@]}; i++)); do
+    arg="${DISK_CACHE_ARGS[$i]}"
+    case "${arg}" in
+      --disk-cache-lock-stale-secs=*)
+        DISK_CACHE_LOCK_STALE_SECS="${arg#--disk-cache-lock-stale-secs=}"
+        ;;
+      --disk-cache-lock-stale-secs)
+        if [[ $((i + 1)) -lt ${#DISK_CACHE_ARGS[@]} ]]; then
+          DISK_CACHE_LOCK_STALE_SECS="${DISK_CACHE_ARGS[$((i + 1))]}"
+          i=$((i + 1))
+        fi
+        ;;
+    esac
+  done
+  if [[ -n "${DISK_CACHE_LOCK_STALE_SECS}" ]]; then
+    DISK_CACHE_AUDIT_ARGS+=(--lock-stale-after-secs "${DISK_CACHE_LOCK_STALE_SECS}")
+  fi
+
+  if [[ "${DISK_CACHE_AUDIT_CLEAN}" != 0 ]]; then
+    DISK_CACHE_AUDIT_ARGS+=(
+      --delete-stale-locks
+      --delete-tmp-files
+      --delete-http-errors
+      --delete-html-subresources
+      --delete-error-entries
+    )
+  fi
+
+  echo "Auditing disk cache health (cache_dir=${CACHE_DIR})..."
+  if ! cargo run --release "${FEATURE_ARGS[@]}" --bin disk_cache_audit -- "${DISK_CACHE_AUDIT_ARGS[@]}" > "${DISK_CACHE_AUDIT_PATH}"; then
+    echo "Warning: disk_cache_audit failed; continuing pageset run." >&2
+    python3 - <<'PY' "${CACHE_DIR}" > "${DISK_CACHE_AUDIT_PATH}"
+import json
+import sys
+print(json.dumps({"cache_dir": sys.argv[1], "error": "disk_cache_audit_failed"}))
+PY
+  fi
+
+  python3 - <<'PY' "${DISK_CACHE_AUDIT_PATH}"
+import json
+import sys
+
+path = sys.argv[1]
+try:
+  with open(path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+except Exception as e:
+  print(f"Disk cache audit: failed to read {path}: {e}", file=sys.stderr)
+  raise SystemExit(0)
+
+def get_int(key):
+  value = data.get(key)
+  if isinstance(value, bool):
+    return int(value)
+  if isinstance(value, int):
+    return value
+  if isinstance(value, float):
+    return int(value)
+  return 0
+
+print(
+  "Disk cache audit summary: "
+  f"http_errors={get_int('http_error_count')} "
+  f"html_subresources={get_int('html_subresource_count')} "
+  f"error_entries={get_int('error_field_count')} "
+  f"stale_locks={get_int('stale_lock_count')} "
+  f"tmp={get_int('tmp_count')}"
+)
+PY
 fi
 
 PAGESET_ACCURACY_ARGS=()

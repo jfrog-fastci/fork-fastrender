@@ -11,6 +11,7 @@ mod common;
 use clap::Parser;
 use common::disk_cache_audit::{audit_disk_cache_dir, DiskCacheAuditOptions};
 use std::path::PathBuf;
+use std::time::Duration;
 
 const DEFAULT_CACHE_DIR: &str = "fetches/assets";
 
@@ -43,6 +44,26 @@ struct Cli {
   /// Delete entries that persist a fetch error (`error` field set).
   #[arg(long)]
   delete_error_entries: bool,
+
+  /// Delete stale `.lock` files (older than `--lock-stale-after-secs`).
+  #[arg(long)]
+  delete_stale_locks: bool,
+
+  /// Delete leftover `.tmp` files from partial cache writes.
+  #[arg(long)]
+  delete_tmp_files: bool,
+
+  /// Maximum age in seconds for `.lock` files before they are treated as stale.
+  ///
+  /// Defaults to `FASTR_DISK_CACHE_LOCK_STALE_SECS` (when set) or 8 seconds.
+  #[arg(
+    long,
+    env = "FASTR_DISK_CACHE_LOCK_STALE_SECS",
+    default_value_t = common::args::DEFAULT_DISK_CACHE_LOCK_STALE_SECS,
+    value_parser = clap::value_parser!(u64).range(1..),
+    value_name = "SECS"
+  )]
+  lock_stale_after_secs: u64,
 }
 
 fn main() -> std::io::Result<()> {
@@ -51,6 +72,9 @@ fn main() -> std::io::Result<()> {
     delete_http_errors: cli.delete_http_errors,
     delete_html_subresources: cli.delete_html_subresources,
     delete_error_entries: cli.delete_error_entries,
+    delete_stale_locks: cli.delete_stale_locks,
+    delete_tmp_files: cli.delete_tmp_files,
+    lock_stale_after: Duration::from_secs(cli.lock_stale_after_secs),
     top_n: cli.top,
   };
   let report = audit_disk_cache_dir(&cli.cache_dir, &options)?;
@@ -63,7 +87,10 @@ fn main() -> std::io::Result<()> {
         serde_json::Value::String(cli.cache_dir.display().to_string()),
       );
     }
-    println!("{}", serde_json::to_string(&out).unwrap_or_else(|_| "{}".to_string()));
+    println!(
+      "{}",
+      serde_json::to_string(&out).unwrap_or_else(|_| "{}".to_string())
+    );
     return Ok(());
   }
 
@@ -72,21 +99,47 @@ fn main() -> std::io::Result<()> {
     "Entries: scanned={} parsed={} invalid_meta={}",
     report.entries_scanned, report.entries_parsed, report.invalid_meta_count
   );
+  println!(
+    "Files: bin={} bin_bytes={} meta={} alias={} locks={} stale_locks={} tmp={} journal_bytes={}",
+    report.bin_count,
+    report.bin_bytes,
+    report.meta_count,
+    report.alias_count,
+    report.lock_count,
+    report.stale_lock_count,
+    report.tmp_count,
+    report.journal_bytes
+  );
   println!("HTTP errors (status>=400): {}", report.http_error_count);
   println!(
     "HTML masquerading as static subresources: {}",
     report.html_subresource_count
   );
-  println!("Persisted network errors (`error` field): {}", report.error_field_count);
+  println!(
+    "Persisted network errors (`error` field): {}",
+    report.error_field_count
+  );
+  println!(
+    "Stale locks: {} (threshold={}s)",
+    report.stale_lock_count, cli.lock_stale_after_secs
+  );
+  println!("Tmp files: {}", report.tmp_count);
 
-  if cli.delete_http_errors || cli.delete_html_subresources || cli.delete_error_entries {
+  if cli.delete_http_errors
+    || cli.delete_html_subresources
+    || cli.delete_error_entries
+    || cli.delete_stale_locks
+    || cli.delete_tmp_files
+  {
     println!();
     println!(
-      "Deleted: entries={} http_error_entries={} html_subresource_entries={} error_entries={} (bin={} meta={} alias={})",
+      "Deleted: entries={} http_error_entries={} html_subresource_entries={} error_entries={} stale_lock_files={} tmp_files={} (bin={} meta={} alias={})",
       report.deleted_entry_count,
       report.deleted_http_error_entries,
       report.deleted_html_subresource_entries,
       report.deleted_error_entries,
+      report.deleted_stale_lock_files,
+      report.deleted_tmp_files,
       report.deleted_bin_files,
       report.deleted_meta_files,
       report.deleted_alias_files
@@ -105,7 +158,10 @@ fn main() -> std::io::Result<()> {
   }
 
   print_top("Top HTTP error URLs", &report.top_http_error_urls);
-  print_top("Top HTML-subresource URLs", &report.top_html_subresource_urls);
+  print_top(
+    "Top HTML-subresource URLs",
+    &report.top_html_subresource_urls,
+  );
   print_top("Top persisted-error URLs", &report.top_error_urls);
 
   Ok(())

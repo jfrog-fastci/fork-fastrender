@@ -180,6 +180,17 @@ struct PagesetArgs {
   #[arg(long = "no-disk-cache", conflicts_with = "disk_cache")]
   no_disk_cache: bool,
 
+  /// Run `disk_cache_audit` after prefetching and delete poisoned/stale cache files.
+  ///
+  /// When enabled, `disk_cache_audit` is invoked with deletion flags to remove:
+  /// - stale `.lock` files
+  /// - leftover `.tmp` files
+  /// - poisoned cache entries (HTTP errors, HTML masquerading as subresources, persisted errors)
+  ///
+  /// The JSON audit report is always written to `target/pageset/disk_cache_audit.json`.
+  #[arg(long)]
+  disk_cache_audit_clean: bool,
+
   /// Override disk-backed subresource cache directory (defaults to fetches/assets)
   ///
   /// This is forwarded to both `prefetch_assets` and `pageset_progress` so the pageset workflow can
@@ -1160,6 +1171,115 @@ fn run_pageset(args: PagesetArgs) -> Result<()> {
       fetch_timeout
     );
     run_command(cmd)?;
+  }
+
+  if disk_cache_enabled {
+    let audit_dir = repo_root.join("target/pageset");
+    fs::create_dir_all(&audit_dir).with_context(|| {
+      format!(
+        "failed to create pageset audit output directory {}",
+        audit_dir.display()
+      )
+    })?;
+    let audit_path = audit_dir.join("disk_cache_audit.json");
+
+    let mut lock_stale_after_secs: Option<u64> = None;
+    let mut iter = disk_cache_extra_args.iter().peekable();
+    while let Some(arg) = iter.next() {
+      if let Some(value) = arg.strip_prefix("--disk-cache-lock-stale-secs=") {
+        lock_stale_after_secs = value.parse::<u64>().ok();
+        continue;
+      }
+      if arg == "--disk-cache-lock-stale-secs" {
+        if let Some(value) = iter.next() {
+          lock_stale_after_secs = value.parse::<u64>().ok();
+        }
+      }
+    }
+
+    let mut cmd = Command::new("cargo");
+    cmd
+      .arg("run")
+      .arg("--release")
+      .apply_disk_cache_feature(true)
+      .args(["--bin", "disk_cache_audit"])
+      .arg("--")
+      .arg("--cache-dir")
+      .arg(&cache_dir)
+      .arg("--json")
+      .args(["--top", "0"]);
+    if let Some(secs) = lock_stale_after_secs.filter(|v| *v > 0) {
+      cmd.arg("--lock-stale-after-secs").arg(secs.to_string());
+    }
+    if args.disk_cache_audit_clean {
+      cmd.args([
+        "--delete-stale-locks",
+        "--delete-tmp-files",
+        "--delete-http-errors",
+        "--delete-html-subresources",
+        "--delete-error-entries",
+      ]);
+    }
+    apply_disk_cache_env(&mut cmd);
+    cmd.current_dir(&repo_root);
+
+    println!(
+      "Auditing disk cache health (writing {})...",
+      audit_path.display()
+    );
+    print_command(&cmd);
+
+    let output = cmd
+      .output()
+      .with_context(|| format!("failed to run {:?}", cmd.get_program()))?;
+
+    if !output.status.success() {
+      eprintln!(
+        "Warning: disk_cache_audit failed with status {}; continuing pageset run.",
+        output.status
+      );
+      let fallback = serde_json::json!({
+        "cache_dir": cache_dir.display().to_string(),
+        "error": "disk_cache_audit_failed",
+      });
+      let fallback = serde_json::to_string(&fallback).unwrap_or_else(|_| "{}".to_string());
+      fs::write(&audit_path, fallback).with_context(|| {
+        format!(
+          "failed to write disk cache audit fallback report to {}",
+          audit_path.display()
+        )
+      })?;
+    } else {
+      fs::write(&audit_path, &output.stdout).with_context(|| {
+        format!(
+          "failed to write disk cache audit report to {}",
+          audit_path.display()
+        )
+      })?;
+
+      match serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+        Ok(report) => {
+          let http_errors = report["http_error_count"].as_u64().unwrap_or(0);
+          let html_subresources = report["html_subresource_count"].as_u64().unwrap_or(0);
+          let error_entries = report["error_field_count"].as_u64().unwrap_or(0);
+          let stale_locks = report["stale_lock_count"].as_u64().unwrap_or(0);
+          let tmp_files = report["tmp_count"].as_u64().unwrap_or(0);
+
+          if http_errors + html_subresources + error_entries + stale_locks + tmp_files > 0 {
+            eprintln!(
+              "Warning: disk cache audit found issues (http_errors={http_errors} \
+               html_subresources={html_subresources} error_entries={error_entries} \
+               stale_locks={stale_locks} tmp={tmp_files}); see {}",
+              audit_path.display()
+            );
+          }
+        }
+        Err(err) => eprintln!(
+          "Warning: failed to parse disk cache audit JSON report {} ({err}); continuing pageset run.",
+          audit_path.display()
+        ),
+      }
+    }
   }
 
   let mut cmd = Command::new("cargo");
