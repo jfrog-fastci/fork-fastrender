@@ -5669,6 +5669,7 @@ mod tests {
 
     let gc = GridFormattingContext::new();
     let factory = gc.factory.clone();
+    let taffy_style = taffy::style::Style::default();
 
     let mut style = ComputedStyle::default();
     style.width = Some(Length::percent(50.0));
