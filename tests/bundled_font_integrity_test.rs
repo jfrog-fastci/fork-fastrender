@@ -71,6 +71,44 @@ fn bundled_font_set_integrity() {
   assert_family_has_glyph(&ctx, "FastRender Emoji", '✨');
   assert_family_has_glyph(&ctx, "FastRender Emoji", '❮');
   assert_family_has_glyph(&ctx, "FastRender Emoji", '❯');
+  // Emoji sequences should stay hermetic when using bundled fonts; keep the tiny bundled emoji font
+  // covering components needed for shaping keycap, tag, and modifier+ZWJ sequences.
+  assert_family_has_glyph(&ctx, "FastRender Emoji", '1'); // keycap base
+  assert_family_has_glyph(
+    &ctx,
+    "FastRender Emoji",
+    char::from_u32(0x20E3).expect("combining enclosing keycap scalar"),
+  );
+  assert_family_has_glyph(
+    &ctx,
+    "FastRender Emoji",
+    char::from_u32(0x1F3F4).expect("black flag scalar"),
+  );
+  assert_family_has_glyph(
+    &ctx,
+    "FastRender Emoji",
+    char::from_u32(0xE0067).expect("tag letter scalar"),
+  );
+  assert_family_has_glyph(
+    &ctx,
+    "FastRender Emoji",
+    char::from_u32(0xE007F).expect("cancel tag scalar"),
+  );
+  assert_family_has_glyph(
+    &ctx,
+    "FastRender Emoji",
+    char::from_u32(0x1F3FB).expect("emoji modifier scalar"),
+  );
+  assert_family_has_glyph(
+    &ctx,
+    "FastRender Emoji",
+    char::from_u32(0x1F52C).expect("microscope scalar"),
+  );
+  assert_family_has_glyph(
+    &ctx,
+    "FastRender Emoji",
+    char::from_u32(0x2695).expect("medical symbol scalar"),
+  );
   assert_family_has_glyph(&ctx, "FastRender Emoji", '🔮');
   assert_family_has_glyph(&ctx, "FastRender Emoji", '⭐');
   assert_family_has_glyph(&ctx, "FastRender Emoji", '🌟');
