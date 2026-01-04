@@ -4,10 +4,30 @@
     <meta charset="UTF-8">
     <title>Text - font-variant-emoji</title>
     <style>
+        @font-face {
+            font-family: "Noto Sans Symbols 2";
+            src: url("../../../fixtures/fonts/NotoSansSymbols2-subset.ttf");
+        }
+
+        @font-face {
+            font-family: "Noto Sans Symbols";
+            src: url("../../../fixtures/fonts/NotoSansSymbols-subset.ttf");
+        }
+
+        @font-face {
+            font-family: "Noto Sans";
+            src: url("../../../fixtures/fonts/NotoSans-subset.ttf");
+        }
+
+        @font-face {
+            font-family: "FastRender Emoji";
+            src: url("../../../fixtures/fonts/FastRenderEmoji.ttf");
+        }
+
         body {
             margin: 0;
             padding: 0;
-            /* Keep fixtures deterministic under FASTR_USE_BUNDLED_FONTS=1 by preferring bundled family names. */
+            /* Keep Chrome + FastRender deterministic by preferring fixture-backed fonts. */
             font-family: "Noto Sans Symbols 2", "Noto Sans Symbols", "Noto Sans", "FastRender Emoji";
             background: #ffffff;
         }
