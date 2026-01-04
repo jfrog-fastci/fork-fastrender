@@ -130,6 +130,55 @@ enum Axis {
   Vertical,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct GridAxisStyle {
+  writing_mode: WritingMode,
+  direction: Direction,
+}
+
+impl GridAxisStyle {
+  fn from_style(style: &ComputedStyle) -> Self {
+    Self {
+      writing_mode: style.writing_mode,
+      direction: style.direction,
+    }
+  }
+
+  fn effective_for_grid_container(style: &ComputedStyle, parent_axis: Option<Self>) -> Self {
+    let mut axis = Self::from_style(style);
+    if style.grid_row_subgrid || style.grid_column_subgrid {
+      if let Some(parent) = parent_axis {
+        axis.writing_mode = parent.writing_mode;
+        if style.grid_column_subgrid {
+          axis.direction = parent.direction;
+        }
+      }
+    }
+    axis
+  }
+
+  fn inline_is_horizontal(self) -> bool {
+    matches!(self.writing_mode, WritingMode::HorizontalTb)
+  }
+
+  fn inline_positive(self) -> bool {
+    match self.writing_mode {
+      WritingMode::HorizontalTb => self.direction != Direction::Rtl,
+      WritingMode::VerticalRl
+      | WritingMode::VerticalLr
+      | WritingMode::SidewaysRl
+      | WritingMode::SidewaysLr => true,
+    }
+  }
+
+  fn block_positive(self) -> bool {
+    match self.writing_mode {
+      WritingMode::VerticalRl | WritingMode::SidewaysRl => false,
+      _ => true,
+    }
+  }
+}
+
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 enum MeasureAvailKey {
   Definite(u32),
@@ -915,6 +964,7 @@ impl GridFormattingContext {
     let has_subgrid = root_style.grid_row_subgrid || root_style.grid_column_subgrid;
 
     if !has_subgrid && !child_has_subgrid {
+      let root_axis_style = GridAxisStyle::from_style(root_style);
       let child_fingerprint = grid_child_fingerprint(&in_flow_children, &mut deadline_counter)?;
       let root_style_fingerprint = taffy_grid_container_style_fingerprint(root_style);
       let cache_key = TaffyNodeCacheKey::new(
@@ -935,13 +985,16 @@ impl GridFormattingContext {
           child_styles.push(std::sync::Arc::new(SendSyncStyle(self.convert_style(
             &child.style,
             Some(root_style),
+            Some(root_axis_style),
             false,
             false,
           ))));
         }
-        let simple_grid = self.is_simple_grid(root_style, &in_flow_children, &mut deadline_counter)?;
+        let simple_grid =
+          self.is_simple_grid(root_style, &in_flow_children, &mut deadline_counter)?;
         let root_style = std::sync::Arc::new(SendSyncStyle(self.convert_style(
           root_style,
+          None,
           None,
           simple_grid,
           true,
@@ -992,6 +1045,7 @@ impl GridFormattingContext {
       root_style,
       true,
       None,
+      None,
       Some(root_children),
       positioned_children,
       &mut deadline_counter,
@@ -1005,6 +1059,7 @@ impl GridFormattingContext {
     style: &ComputedStyle,
     is_root: bool,
     containing_grid: Option<&ComputedStyle>,
+    containing_grid_axis: Option<GridAxisStyle>,
     children_override: Option<&[&BoxNode]>,
     positioned_children: &mut FxHashMap<TaffyNodeId, Vec<*const BoxNode>>,
     deadline_counter: &mut usize,
@@ -1022,7 +1077,8 @@ impl GridFormattingContext {
     // scanning their children here; their full subtree will be laid out later when we re-run the
     // child formatting context with the definite sizes resolved by Taffy.
     if !is_grid_container && !is_root {
-      let taffy_style = self.convert_style(style, containing_grid, false, false);
+      let taffy_style =
+        self.convert_style(style, containing_grid, containing_grid_axis, false, false);
       return taffy
         .new_leaf_with_context(taffy_style, box_node as *const BoxNode)
         .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)));
@@ -1079,9 +1135,16 @@ impl GridFormattingContext {
     let taffy_style = self.convert_style(
       style,
       containing_grid,
+      containing_grid_axis,
       simple_grid,
       include_children,
     );
+
+    let axis_style_for_children = if is_grid_container {
+      GridAxisStyle::effective_for_grid_container(style, containing_grid_axis)
+    } else {
+      GridAxisStyle::from_style(style)
+    };
 
     let node_id = if include_children {
       let mut taffy_children = Vec::with_capacity(children_iter.len());
@@ -1093,6 +1156,7 @@ impl GridFormattingContext {
           child.style.as_ref(),
           false,
           Some(style),
+          Some(axis_style_for_children),
           None,
           positioned_children,
           deadline_counter,
@@ -1122,13 +1186,20 @@ impl GridFormattingContext {
     &self,
     style: &ComputedStyle,
     containing_grid: Option<&ComputedStyle>,
+    containing_grid_axis: Option<GridAxisStyle>,
     simple_grid: bool,
     is_grid_node: bool,
   ) -> TaffyStyle {
     let mut taffy_style = TaffyStyle::default();
-    let inline_positive_container = self.inline_axis_positive(style);
-    let block_positive_container = self.block_axis_positive(style);
-    let inline_is_horizontal_container = self.inline_axis_is_horizontal(style);
+    let is_grid = is_grid_node && !simple_grid;
+    let container_axis_style = if is_grid {
+      GridAxisStyle::effective_for_grid_container(style, containing_grid_axis)
+    } else {
+      GridAxisStyle::from_style(style)
+    };
+    let inline_positive_container = container_axis_style.inline_positive();
+    let block_positive_container = container_axis_style.block_positive();
+    let inline_is_horizontal_container = container_axis_style.inline_is_horizontal();
 
     let reserve_scroll_x = style.scrollbar_gutter.stable
       && matches!(style.overflow_x, CssOverflow::Auto | CssOverflow::Scroll);
@@ -1152,13 +1223,12 @@ impl GridFormattingContext {
     };
 
     // Grid item axes follow the containing grid's writing mode, not the item's own.
-    let item_axis_style = containing_grid.unwrap_or(style);
-    let inline_positive_item = self.inline_axis_positive(item_axis_style);
-    let block_positive_item = self.block_axis_positive(item_axis_style);
-    let inline_is_horizontal_item = self.inline_axis_is_horizontal(item_axis_style);
+    let item_axis_style = containing_grid_axis.unwrap_or_else(|| GridAxisStyle::from_style(style));
+    let inline_positive_item = item_axis_style.inline_positive();
+    let block_positive_item = item_axis_style.block_positive();
+    let inline_is_horizontal_item = item_axis_style.inline_is_horizontal();
 
     // Display mode
-    let is_grid = is_grid_node && !simple_grid;
     if is_grid {
       taffy_style.display = Display::Grid;
     } else {
@@ -1234,18 +1304,22 @@ impl GridFormattingContext {
 
     // Grid container properties
     if is_grid {
+      let has_parent_grid = containing_grid_axis.is_some();
+      let css_row_subgrid = style.grid_row_subgrid && has_parent_grid;
+      let css_column_subgrid = style.grid_column_subgrid && has_parent_grid;
+      taffy_style.axes_swapped = !inline_is_horizontal_container;
       // Grid template columns/rows (swap when inline axis is vertical)
       if inline_is_horizontal_container {
         taffy_style.grid_template_columns =
           self.convert_grid_template(&style.grid_template_columns, style);
         taffy_style.grid_template_rows =
           self.convert_grid_template(&style.grid_template_rows, style);
-        taffy_style.subgrid_columns = style.grid_column_subgrid;
-        taffy_style.subgrid_rows = style.grid_row_subgrid;
-        if !style.subgrid_column_line_names.is_empty() {
+        taffy_style.subgrid_columns = css_column_subgrid;
+        taffy_style.subgrid_rows = css_row_subgrid;
+        if css_column_subgrid && !style.subgrid_column_line_names.is_empty() {
           taffy_style.subgrid_column_names = style.subgrid_column_line_names.clone();
         }
-        if !style.subgrid_row_line_names.is_empty() {
+        if css_row_subgrid && !style.subgrid_row_line_names.is_empty() {
           taffy_style.subgrid_row_names = style.subgrid_row_line_names.clone();
         }
       } else {
@@ -1253,12 +1327,12 @@ impl GridFormattingContext {
           self.convert_grid_template(&style.grid_template_rows, style);
         taffy_style.grid_template_rows =
           self.convert_grid_template(&style.grid_template_columns, style);
-        taffy_style.subgrid_columns = style.grid_row_subgrid;
-        taffy_style.subgrid_rows = style.grid_column_subgrid;
-        if !style.subgrid_row_line_names.is_empty() {
+        taffy_style.subgrid_columns = css_row_subgrid;
+        taffy_style.subgrid_rows = css_column_subgrid;
+        if css_row_subgrid && !style.subgrid_row_line_names.is_empty() {
           taffy_style.subgrid_column_names = style.subgrid_row_line_names.clone();
         }
-        if !style.subgrid_column_line_names.is_empty() {
+        if css_column_subgrid && !style.subgrid_column_line_names.is_empty() {
           taffy_style.subgrid_row_names = style.subgrid_column_line_names.clone();
         }
       }
@@ -1385,6 +1459,13 @@ impl GridFormattingContext {
     taffy_style.justify_self = style
       .justify_self
       .map(|a| self.convert_align_items(&a, inline_positive_item));
+
+    if taffy_style.justify_self.is_none() {
+      if let Some(containing_grid) = containing_grid {
+        taffy_style.justify_self =
+          Some(self.convert_align_items(&containing_grid.justify_items, inline_positive_item));
+      }
+    }
 
     if containing_grid.is_some() {
       // Auto margins override alignment per-axis; map them to self-alignment to keep grid items centered or pushed.
@@ -2123,6 +2204,16 @@ impl GridFormattingContext {
       ) {
         return Some(Err(err));
       }
+      if let Err(err) = self.apply_grid_axis_mirroring(
+        taffy,
+        root_id,
+        root_layout,
+        &mut fragment,
+        GridAxisStyle::from_style(&box_node.style),
+        &mut deadline_counter,
+      ) {
+        return Some(Err(err));
+      }
     }
 
     Some(Ok(fragment))
@@ -2135,6 +2226,7 @@ impl GridFormattingContext {
     node_id: TaffyNodeId,
     root_id: TaffyNodeId,
     constraints: &LayoutConstraints,
+    containing_grid_axis: Option<GridAxisStyle>,
     measured_fragments: &mut FxHashMap<MeasureKey, FragmentNode>,
     measured_node_keys: &FxHashMap<TaffyNodeId, Vec<MeasureKey>>,
     positioned_children: &FxHashMap<TaffyNodeId, Vec<*const BoxNode>>,
@@ -2144,11 +2236,28 @@ impl GridFormattingContext {
       .layout(node_id)
       .map_err(|e| LayoutError::MissingContext(format!("Taffy layout error: {:?}", e)))?;
 
-    // Convert children recursively
     let children = taffy
       .children(node_id)
       .map_err(|e| LayoutError::MissingContext(format!("Taffy children error: {:?}", e)))?;
 
+    let taffy_style = taffy.style(node_id).ok();
+    let is_grid_style = matches!(taffy_style.as_ref().map(|s| s.display), Some(Display::Grid));
+    let node_axis_style = if is_grid_style {
+      taffy
+        .get_node_context(node_id)
+        .copied()
+        .map(|ptr| unsafe { &*ptr })
+        .map(|node| GridAxisStyle::effective_for_grid_container(&node.style, containing_grid_axis))
+    } else {
+      None
+    };
+    let child_axis_style = if is_grid_style {
+      node_axis_style
+    } else {
+      containing_grid_axis
+    };
+
+    // Convert children recursively, propagating the effective grid axes to descendants.
     let mut child_fragments = Vec::with_capacity(children.len());
     for &child_id in children.iter() {
       check_layout_deadline(deadline_counter)?;
@@ -2157,6 +2266,7 @@ impl GridFormattingContext {
         child_id,
         root_id,
         constraints,
+        child_axis_style,
         measured_fragments,
         measured_node_keys,
         positioned_children,
@@ -2178,8 +2288,6 @@ impl GridFormattingContext {
       let fc_type = box_node
         .formatting_context()
         .unwrap_or(FormattingContextType::Block);
-      let taffy_style = taffy.style(node_id).ok();
-      let is_grid_style = matches!(taffy_style.as_ref().map(|s| s.display), Some(Display::Grid));
       if node_id == root_id || is_grid_style || !child_fragments.is_empty() {
         let mut fragment = FragmentNode::new_with_style(
           bounds,
@@ -2198,15 +2306,20 @@ impl GridFormattingContext {
             &mut fragment,
             deadline_counter,
           )?;
+          if let Some(axis_style) = node_axis_style {
+            self.apply_grid_axis_mirroring(
+              taffy,
+              node_id,
+              layout,
+              &mut fragment,
+              axis_style,
+              deadline_counter,
+            )?;
+          }
         }
         if let Some(positioned) = positioned_children.get(&node_id) {
-          let mut abs_children = self.layout_positioned_children_for_node(
-            taffy,
-            node_id,
-            box_node,
-            bounds,
-            positioned,
-          )?;
+          let mut abs_children = self
+            .layout_positioned_children_for_node(taffy, node_id, box_node, bounds, positioned)?;
           fragment.children_mut().append(&mut abs_children);
         }
         return Ok(fragment);
@@ -2662,84 +2775,32 @@ impl GridFormattingContext {
       static_style.left = None;
       let static_style = Arc::new(static_style);
 
-      let (mut child_fragment, preferred_min_inline, preferred_inline, preferred_min_block, preferred_block) =
-        if child.id != 0 {
-          crate::layout::style_override::with_style_override(child.id, static_style.clone(), || {
-            let child_fragment = fc.layout(child, &child_constraints)?;
-            let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
-              match fc.compute_intrinsic_inline_sizes(child) {
-                Ok((min, max)) => (Some(min), Some(max)),
-                Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                Err(_) => {
-                  let min =
-                    match fc.compute_intrinsic_inline_size(child, IntrinsicSizingMode::MinContent) {
-                      Ok(size) => Some(size),
-                      Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                      Err(_) => None,
-                    };
-                  let max =
-                    match fc.compute_intrinsic_inline_size(child, IntrinsicSizingMode::MaxContent) {
-                      Ok(size) => Some(size),
-                      Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                      Err(_) => None,
-                    };
-                  (min, max)
-                }
-              }
-            } else {
-              (None, None)
-            };
-            let preferred_min_block = if needs_block_intrinsics {
-              match fc.compute_intrinsic_block_size(child, IntrinsicSizingMode::MinContent) {
-                Ok(size) => Some(size),
-                Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                Err(_) => None,
-              }
-            } else {
-              None
-            };
-            let preferred_block = if needs_block_intrinsics {
-              match fc.compute_intrinsic_block_size(child, IntrinsicSizingMode::MaxContent) {
-                Ok(size) => Some(size),
-                Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                Err(_) => None,
-              }
-            } else {
-              None
-            };
-            Ok((
-              child_fragment,
-              preferred_min_inline,
-              preferred_inline,
-              preferred_min_block,
-              preferred_block,
-            ))
-          })?
-        } else {
-          let mut layout_child = child.clone();
-          layout_child.style = static_style.clone();
-          let child_fragment = fc.layout(&layout_child, &child_constraints)?;
+      let (
+        mut child_fragment,
+        preferred_min_inline,
+        preferred_inline,
+        preferred_min_block,
+        preferred_block,
+      ) = if child.id != 0 {
+        crate::layout::style_override::with_style_override(child.id, static_style.clone(), || {
+          let child_fragment = fc.layout(child, &child_constraints)?;
           let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
-            match fc.compute_intrinsic_inline_sizes(&layout_child) {
+            match fc.compute_intrinsic_inline_sizes(child) {
               Ok((min, max)) => (Some(min), Some(max)),
               Err(err @ LayoutError::Timeout { .. }) => return Err(err),
               Err(_) => {
-                let min = match fc.compute_intrinsic_inline_size(
-                  &layout_child,
-                  IntrinsicSizingMode::MinContent,
-                ) {
-                  Ok(size) => Some(size),
-                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                  Err(_) => None,
-                };
-                let max = match fc.compute_intrinsic_inline_size(
-                  &layout_child,
-                  IntrinsicSizingMode::MaxContent,
-                ) {
-                  Ok(size) => Some(size),
-                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                  Err(_) => None,
-                };
+                let min =
+                  match fc.compute_intrinsic_inline_size(child, IntrinsicSizingMode::MinContent) {
+                    Ok(size) => Some(size),
+                    Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                    Err(_) => None,
+                  };
+                let max =
+                  match fc.compute_intrinsic_inline_size(child, IntrinsicSizingMode::MaxContent) {
+                    Ok(size) => Some(size),
+                    Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                    Err(_) => None,
+                  };
                 (min, max)
               }
             }
@@ -2747,7 +2808,7 @@ impl GridFormattingContext {
             (None, None)
           };
           let preferred_min_block = if needs_block_intrinsics {
-            match fc.compute_intrinsic_block_size(&layout_child, IntrinsicSizingMode::MinContent) {
+            match fc.compute_intrinsic_block_size(child, IntrinsicSizingMode::MinContent) {
               Ok(size) => Some(size),
               Err(err @ LayoutError::Timeout { .. }) => return Err(err),
               Err(_) => None,
@@ -2756,7 +2817,7 @@ impl GridFormattingContext {
             None
           };
           let preferred_block = if needs_block_intrinsics {
-            match fc.compute_intrinsic_block_size(&layout_child, IntrinsicSizingMode::MaxContent) {
+            match fc.compute_intrinsic_block_size(child, IntrinsicSizingMode::MaxContent) {
               Ok(size) => Some(size),
               Err(err @ LayoutError::Timeout { .. }) => return Err(err),
               Err(_) => None,
@@ -2764,14 +2825,69 @@ impl GridFormattingContext {
           } else {
             None
           };
-          (
+          Ok((
             child_fragment,
             preferred_min_inline,
             preferred_inline,
             preferred_min_block,
             preferred_block,
-          )
+          ))
+        })?
+      } else {
+        let mut layout_child = child.clone();
+        layout_child.style = static_style.clone();
+        let child_fragment = fc.layout(&layout_child, &child_constraints)?;
+        let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
+          match fc.compute_intrinsic_inline_sizes(&layout_child) {
+            Ok((min, max)) => (Some(min), Some(max)),
+            Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+            Err(_) => {
+              let min = match fc
+                .compute_intrinsic_inline_size(&layout_child, IntrinsicSizingMode::MinContent)
+              {
+                Ok(size) => Some(size),
+                Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                Err(_) => None,
+              };
+              let max = match fc
+                .compute_intrinsic_inline_size(&layout_child, IntrinsicSizingMode::MaxContent)
+              {
+                Ok(size) => Some(size),
+                Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                Err(_) => None,
+              };
+              (min, max)
+            }
+          }
+        } else {
+          (None, None)
         };
+        let preferred_min_block = if needs_block_intrinsics {
+          match fc.compute_intrinsic_block_size(&layout_child, IntrinsicSizingMode::MinContent) {
+            Ok(size) => Some(size),
+            Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+            Err(_) => None,
+          }
+        } else {
+          None
+        };
+        let preferred_block = if needs_block_intrinsics {
+          match fc.compute_intrinsic_block_size(&layout_child, IntrinsicSizingMode::MaxContent) {
+            Ok(size) => Some(size),
+            Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+            Err(_) => None,
+          }
+        } else {
+          None
+        };
+        (
+          child_fragment,
+          preferred_min_inline,
+          preferred_inline,
+          preferred_min_block,
+          preferred_block,
+        )
+      };
 
       let mut input = crate::layout::absolute_positioning::AbsoluteLayoutInput::new(
         positioned_style,
@@ -3118,6 +3234,134 @@ impl GridFormattingContext {
     Ok(())
   }
 
+  fn apply_grid_axis_mirroring(
+    &self,
+    taffy: &TaffyTree<*const BoxNode>,
+    node_id: TaffyNodeId,
+    layout: &TaffyLayout,
+    fragment: &mut FragmentNode,
+    axis_style: GridAxisStyle,
+    deadline_counter: &mut usize,
+  ) -> Result<(), LayoutError> {
+    if fragment.children.is_empty() {
+      return Ok(());
+    }
+
+    let inline_is_horizontal = axis_style.inline_is_horizontal();
+    let mut mirror_x = false;
+    let mut mirror_y = false;
+
+    if !axis_style.inline_positive() {
+      if inline_is_horizontal {
+        mirror_x = true;
+      } else {
+        mirror_y = true;
+      }
+    }
+    if !axis_style.block_positive() {
+      if inline_is_horizontal {
+        mirror_y = true;
+      } else {
+        mirror_x = true;
+      }
+    }
+
+    let compute_region = |axis: Axis, children: &[FragmentNode]| -> Option<(f32, f32)> {
+      if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(node_id) {
+        if let Ok(container_style) = taffy.style(node_id) {
+          let offsets = match axis {
+            Axis::Horizontal => compute_track_offsets(
+              &info.columns,
+              layout.size.width,
+              layout.padding.left,
+              layout.padding.right,
+              layout.border.left,
+              layout.border.right,
+              container_style
+                .justify_content
+                .unwrap_or(TaffyAlignContent::Stretch),
+            ),
+            Axis::Vertical => compute_track_offsets(
+              &info.rows,
+              layout.size.height,
+              layout.padding.top,
+              layout.padding.bottom,
+              layout.border.top,
+              layout.border.bottom,
+              container_style
+                .align_content
+                .unwrap_or(TaffyAlignContent::Stretch),
+            ),
+          };
+          if offsets.len() >= 2 {
+            return Some((offsets[1], *offsets.last().unwrap()));
+          }
+        }
+      }
+
+      // Fallback: infer the span of the used grid tracks from child positions. This is less robust
+      // when tracks are empty, but avoids direction bugs for subgrids that don't expose detailed
+      // track info via Taffy.
+      let mut min_start = f32::INFINITY;
+      let mut max_end = f32::NEG_INFINITY;
+      for child in children {
+        match axis {
+          Axis::Horizontal => {
+            min_start = min_start.min(child.bounds.x());
+            max_end = max_end.max(child.bounds.x() + child.bounds.width());
+          }
+          Axis::Vertical => {
+            min_start = min_start.min(child.bounds.y());
+            max_end = max_end.max(child.bounds.y() + child.bounds.height());
+          }
+        }
+      }
+      if min_start.is_finite() && max_end.is_finite() && max_end >= min_start {
+        Some((min_start, max_end))
+      } else {
+        None
+      }
+    };
+
+    let (x_region, y_region) = {
+      let children = fragment.children.as_slice();
+      (
+        mirror_x
+          .then(|| compute_region(Axis::Horizontal, children))
+          .flatten(),
+        mirror_y
+          .then(|| compute_region(Axis::Vertical, children))
+          .flatten(),
+      )
+    };
+
+    if let Some((region_start, region_end)) = x_region {
+      if region_end > region_start {
+        for child in fragment.children_mut().iter_mut() {
+          check_layout_deadline(deadline_counter)?;
+          let child_end = child.bounds.x() + child.bounds.width();
+          let new_start = region_start + region_end - child_end;
+          let delta = new_start - child.bounds.x();
+          translate_along_axis(child, Axis::Horizontal, delta, deadline_counter)?;
+        }
+      }
+    }
+
+    if let Some((region_start, region_end)) = y_region {
+      if region_end > region_start {
+        for child in fragment.children_mut().iter_mut() {
+          check_layout_deadline(deadline_counter)?;
+          let child_end = child.bounds.y() + child.bounds.height();
+          let new_start = region_start + region_end - child_end;
+          let delta = new_start - child.bounds.y();
+          translate_along_axis(child, Axis::Vertical, delta, deadline_counter)?;
+        }
+      }
+    }
+
+    Ok(())
+  }
+
   /// Computes intrinsic size using Taffy
   fn compute_intrinsic_size(
     &self,
@@ -3136,9 +3380,7 @@ impl GridFormattingContext {
       return Ok(cached);
     }
     let style_override = crate::layout::style_override::style_override_for(box_node.id);
-    let style: &ComputedStyle = style_override
-      .as_deref()
-      .unwrap_or(style);
+    let style: &ComputedStyle = style_override.as_deref().unwrap_or(style);
     if style.containment.isolates_inline_size() {
       let edges = self.horizontal_edges_px(style).unwrap_or(0.0);
       intrinsic_cache_store(box_node, mode, edges.max(0.0));
@@ -3179,7 +3421,7 @@ impl GridFormattingContext {
         &in_flow_children,
         &mut style_deadline_counter,
       )?;
-      let override_taffy_style = self.convert_style(style_override, None, simple_grid, true);
+      let override_taffy_style = self.convert_style(style_override, None, None, simple_grid, true);
       taffy
         .set_style(root_id, override_taffy_style)
         .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
@@ -3372,7 +3614,7 @@ impl GridFormattingContext {
     known_dimensions: taffy::geometry::Size<Option<f32>>,
     available_space: taffy::geometry::Size<taffy::style::AvailableSpace>,
     parent_inline_base: Option<f32>,
-    container_justify_items: AlignItems,
+    taffy_style: &taffy::style::Style,
     factory: &crate::layout::contexts::factory::FormattingContextFactory,
     measure_cache: &mut FxHashMap<MeasureKey, taffy::geometry::Size<f32>>,
     measured_fragments: &mut FxHashMap<MeasureKey, FragmentNode>,
@@ -3516,11 +3758,10 @@ impl GridFormattingContext {
       && box_node.style.width.is_none()
     {
       if let taffy::style::AvailableSpace::Definite(area_width) = available_space.width {
-        let justify = box_node
-          .style
+        let justify = taffy_style
           .justify_self
-          .unwrap_or(container_justify_items);
-        if justify != AlignItems::Stretch {
+          .unwrap_or(taffy::style::AlignItems::Stretch);
+        if justify != taffy::style::AlignItems::Stretch {
           match fc.compute_intrinsic_inline_size(box_node, IntrinsicSizingMode::MaxContent) {
             Ok(intrinsic_width) => {
               let used_width = intrinsic_width.min(area_width);
@@ -3974,7 +4215,8 @@ impl FormattingContext for GridFormattingContext {
     // Use a pooled instance to reduce allocation churn when many grid containers are laid out
     // during a single render.
     let mut taffy = crate::layout::taffy_integration::PooledTaffyTree::new();
-    let mut positioned_children_map: FxHashMap<TaffyNodeId, Vec<*const BoxNode>> = FxHashMap::default();
+    let mut positioned_children_map: FxHashMap<TaffyNodeId, Vec<*const BoxNode>> =
+      FxHashMap::default();
 
     // Partition children into running, in-flow vs. out-of-flow positioned.
     let mut in_flow_children: Vec<&BoxNode> = Vec::new();
@@ -4022,7 +4264,7 @@ impl FormattingContext for GridFormattingContext {
         &in_flow_children,
         &mut style_deadline_counter,
       )?;
-      let override_taffy_style = self.convert_style(style_override, None, simple_grid, true);
+      let override_taffy_style = self.convert_style(style_override, None, None, simple_grid, true);
       taffy
         .set_style(root_id, override_taffy_style)
         .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
@@ -4136,7 +4378,6 @@ impl FormattingContext for GridFormattingContext {
     let compute_result = {
       let this = self.clone();
       let parent_inline_base = constraints.inline_percentage_base;
-      let container_justify_items = style.justify_items;
       let cache = &mut measure_cache;
       let measured = &mut measured_fragments;
       let measured_keys = &mut measured_node_keys;
@@ -4147,7 +4388,7 @@ impl FormattingContext for GridFormattingContext {
               available_space,
               node_id,
               node_context,
-              _style: &taffy::style::Style| {
+              taffy_style: &taffy::style::Style| {
           if taffy_perf_enabled {
             record_taffy_measure_call(TaffyAdapterKind::Grid);
           }
@@ -4228,7 +4469,7 @@ impl FormattingContext for GridFormattingContext {
             known_dimensions,
             available_space,
             parent_inline_base,
-            container_justify_items,
+            taffy_style,
             &this.factory,
             cache,
             measured,
@@ -4276,6 +4517,7 @@ impl FormattingContext for GridFormattingContext {
           root_id,
           root_id,
           &constraints,
+          None,
           &mut measured_fragments,
           &measured_node_keys,
           &positioned_children_map,
@@ -4288,6 +4530,7 @@ impl FormattingContext for GridFormattingContext {
         root_id,
         root_id,
         &constraints,
+        None,
         &mut measured_fragments,
         &measured_node_keys,
         &positioned_children_map,
@@ -4515,57 +4758,63 @@ impl FormattingContext for GridFormattingContext {
           preferred_min_block,
           preferred_block,
         ) = if child.id != 0 {
-          crate::layout::style_override::with_style_override(child.id, static_style.clone(), || {
-            let child_fragment = fc.layout(child, &child_constraints)?;
-            let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
-              match fc.compute_intrinsic_inline_sizes(child) {
-                Ok((min, max)) => (Some(min), Some(max)),
-                Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                Err(_) => {
-                  let min =
-                    match fc.compute_intrinsic_inline_size(child, IntrinsicSizingMode::MinContent) {
+          crate::layout::style_override::with_style_override(
+            child.id,
+            static_style.clone(),
+            || {
+              let child_fragment = fc.layout(child, &child_constraints)?;
+              let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
+                match fc.compute_intrinsic_inline_sizes(child) {
+                  Ok((min, max)) => (Some(min), Some(max)),
+                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                  Err(_) => {
+                    let min = match fc
+                      .compute_intrinsic_inline_size(child, IntrinsicSizingMode::MinContent)
+                    {
                       Ok(size) => Some(size),
                       Err(err @ LayoutError::Timeout { .. }) => return Err(err),
                       Err(_) => None,
                     };
-                  let max =
-                    match fc.compute_intrinsic_inline_size(child, IntrinsicSizingMode::MaxContent) {
+                    let max = match fc
+                      .compute_intrinsic_inline_size(child, IntrinsicSizingMode::MaxContent)
+                    {
                       Ok(size) => Some(size),
                       Err(err @ LayoutError::Timeout { .. }) => return Err(err),
                       Err(_) => None,
                     };
-                  (min, max)
+                    (min, max)
+                  }
                 }
-              }
-            } else {
-              (None, None)
-            };
-            let preferred_min_block = if needs_block_intrinsics {
-              match fc.compute_intrinsic_block_size(child, IntrinsicSizingMode::MinContent) {
-                Ok(size) => Some(size),
-                Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                Err(_) => None,
-              }
-            } else {
-              None
-            };
-            let preferred_block = if needs_block_intrinsics {
-              match fc.compute_intrinsic_block_size(child, IntrinsicSizingMode::MaxContent) {
-                Ok(size) => Some(size),
-                Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                Err(_) => None,
-              }
-            } else {
-              None
-            };
-            Ok((
-              child_fragment,
-              preferred_min_inline,
-              preferred_inline,
-              preferred_min_block,
-              preferred_block,
-            ))
-          })?
+              } else {
+                (None, None)
+              };
+              let preferred_min_block = if needs_block_intrinsics {
+                match fc.compute_intrinsic_block_size(child, IntrinsicSizingMode::MinContent) {
+                  Ok(size) => Some(size),
+                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                  Err(_) => None,
+                }
+              } else {
+                None
+              };
+              let preferred_block = if needs_block_intrinsics {
+                match fc.compute_intrinsic_block_size(child, IntrinsicSizingMode::MaxContent) {
+                  Ok(size) => Some(size),
+                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                  Err(_) => None,
+                }
+              } else {
+                None
+              };
+              Ok((
+                child_fragment,
+                preferred_min_inline,
+                preferred_inline,
+                preferred_min_block,
+                preferred_block,
+              ))
+            },
+          )?
         } else {
           let mut layout_child = (*child).clone();
           layout_child.style = static_style.clone();
@@ -4575,18 +4824,16 @@ impl FormattingContext for GridFormattingContext {
               Ok((min, max)) => (Some(min), Some(max)),
               Err(err @ LayoutError::Timeout { .. }) => return Err(err),
               Err(_) => {
-                let min = match fc.compute_intrinsic_inline_size(
-                  &layout_child,
-                  IntrinsicSizingMode::MinContent,
-                ) {
+                let min = match fc
+                  .compute_intrinsic_inline_size(&layout_child, IntrinsicSizingMode::MinContent)
+                {
                   Ok(size) => Some(size),
                   Err(err @ LayoutError::Timeout { .. }) => return Err(err),
                   Err(_) => None,
                 };
-                let max = match fc.compute_intrinsic_inline_size(
-                  &layout_child,
-                  IntrinsicSizingMode::MaxContent,
-                ) {
+                let max = match fc
+                  .compute_intrinsic_inline_size(&layout_child, IntrinsicSizingMode::MaxContent)
+                {
                   Ok(size) => Some(size),
                   Err(err @ LayoutError::Timeout { .. }) => return Err(err),
                   Err(_) => None,
@@ -4693,7 +4940,8 @@ impl FormattingContext for GridFormattingContext {
             self.resolve_length_for_width(style.padding_left, percentage_base, style);
           let padding_right =
             self.resolve_length_for_width(style.padding_right, percentage_base, style);
-          let padding_top = self.resolve_length_for_width(style.padding_top, percentage_base, style);
+          let padding_top =
+            self.resolve_length_for_width(style.padding_top, percentage_base, style);
           let padding_bottom =
             self.resolve_length_for_width(style.padding_bottom, percentage_base, style);
           let border_left =
@@ -4733,29 +4981,27 @@ impl FormattingContext for GridFormattingContext {
       let axes = FragmentAxes::from_writing_mode_and_direction(style.writing_mode, style.direction);
       let snapshot_factory = self.factory.clone();
 
-      let parse_explicit_single_track = |raw: Option<&str>,
-                                         start: i32,
-                                         end: i32|
-       -> Option<(u16, u16)> {
-        if start > 0 && end > 0 && end == start + 1 {
-          return Some((start as u16, end as u16));
-        }
-        let raw = raw?;
-        let placement = parse_grid_line_placement_raw(raw);
-        let TaffyGridPlacement::Line(start_line) = placement.start else {
-          return None;
+      let parse_explicit_single_track =
+        |raw: Option<&str>, start: i32, end: i32| -> Option<(u16, u16)> {
+          if start > 0 && end > 0 && end == start + 1 {
+            return Some((start as u16, end as u16));
+          }
+          let raw = raw?;
+          let placement = parse_grid_line_placement_raw(raw);
+          let TaffyGridPlacement::Line(start_line) = placement.start else {
+            return None;
+          };
+          let TaffyGridPlacement::Line(end_line) = placement.end else {
+            return None;
+          };
+          let start = start_line.as_i16();
+          let end = end_line.as_i16();
+          if start > 0 && end > 0 && end == start + 1 {
+            Some((start as u16, end as u16))
+          } else {
+            None
+          }
         };
-        let TaffyGridPlacement::Line(end_line) = placement.end else {
-          return None;
-        };
-        let start = start_line.as_i16();
-        let end = end_line.as_i16();
-        if start > 0 && end > 0 && end == start + 1 {
-          Some((start as u16, end as u16))
-        } else {
-          None
-        }
-      };
 
       for (order, (running_idx, running_child)) in running_children.into_iter().enumerate() {
         check_layout_deadline(&mut deadline_counter)?;
@@ -4775,7 +5021,8 @@ impl FormattingContext for GridFormattingContext {
               && child.style.running_position.is_none()
               && !matches!(
                 child.style.position,
-                crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
+                crate::style::position::Position::Absolute
+                  | crate::style::position::Position::Fixed
               )
           })
           .min_by_key(|(idx, _)| *idx)
@@ -4792,7 +5039,8 @@ impl FormattingContext for GridFormattingContext {
             child.style.running_position.is_none()
               && !matches!(
                 child.style.position,
-                crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
+                crate::style::position::Position::Absolute
+                  | crate::style::position::Position::Fixed
               )
           })
           .max_by_key(|(idx, _)| *idx)
@@ -4889,7 +5137,8 @@ impl FormattingContext for GridFormattingContext {
             let offset = axes.block_offset(eps);
             let anchor_bounds =
               Rect::from_xywh(anchor_x + offset.x, anchor_y + offset.y, 0.0, 0.01);
-            let mut anchor = FragmentNode::new_running_anchor(anchor_bounds, name, snapshot_fragment);
+            let mut anchor =
+              FragmentNode::new_running_anchor(anchor_bounds, name, snapshot_fragment);
             anchor.style = Some(running_child.style.clone());
             fragment.children_mut().push(anchor);
           }
@@ -5038,23 +5287,27 @@ mod tests {
     base_style.display = CssDisplay::InlineGrid;
     base_style.width = Some(Length::px(50.0));
 
-    let mut grid =
-      BoxNode::new_inline_block(Arc::new(base_style.clone()), FormattingContextType::Grid, vec![]);
+    let mut grid = BoxNode::new_inline_block(
+      Arc::new(base_style.clone()),
+      FormattingContextType::Grid,
+      vec![],
+    );
     grid.id = 1;
 
-    let constraints =
-      LayoutConstraints::new(CrateAvailableSpace::MaxContent, CrateAvailableSpace::Indefinite);
+    let constraints = LayoutConstraints::new(
+      CrateAvailableSpace::MaxContent,
+      CrateAvailableSpace::Indefinite,
+    );
     let fragment = fc.layout(&grid, &constraints).expect("inline-grid layout");
     assert_eq!(fragment.bounds.width(), 50.0);
 
     let mut override_style = base_style;
     override_style.width = Some(Length::px(100.0));
-    let fragment = crate::layout::style_override::with_style_override(
-      grid.id,
-      Arc::new(override_style),
-      || fc.layout(&grid, &constraints),
-    )
-    .expect("layout with style override");
+    let fragment =
+      crate::layout::style_override::with_style_override(grid.id, Arc::new(override_style), || {
+        fc.layout(&grid, &constraints)
+      })
+      .expect("layout with style override");
 
     assert_eq!(fragment.bounds.width(), 100.0);
   }
@@ -5707,6 +5960,7 @@ mod tests {
       width: None,
       height: None,
     };
+    let taffy_style = taffy::style::Style::default();
 
     for i in 0..(MAX_MEASURED_KEYS_PER_NODE + 5) {
       let avail = taffy::geometry::Size {
@@ -5719,7 +5973,7 @@ mod tests {
         known,
         avail,
         None,
-        AlignItems::Stretch,
+        &taffy_style,
         &factory,
         &mut measure_cache,
         &mut measured_fragments,
@@ -5808,6 +6062,7 @@ mod tests {
       width: None,
       height: None,
     };
+    let taffy_style = taffy::style::Style::default();
     let widths = [300.2, 300.6, 300.1, 300.8, 300.4];
     let heights = [150.7, 150.4, 150.9];
 
@@ -5830,7 +6085,7 @@ mod tests {
             known,
             avail,
             None,
-            AlignItems::Stretch,
+            &taffy_style,
             &factory,
             &mut measure_cache,
             &mut measured_fragments,
@@ -5863,6 +6118,7 @@ mod tests {
       width: None,
       height: None,
     };
+    let taffy_style = taffy::style::Style::default();
     let width = 300.0;
     let heights = [150.0, 400.0, 650.0];
 
@@ -5884,7 +6140,7 @@ mod tests {
           known,
           avail,
           None,
-          AlignItems::Stretch,
+          &taffy_style,
           &factory,
           &mut measure_cache,
           &mut measured_fragments,
@@ -5917,6 +6173,7 @@ mod tests {
       width: None,
       height: None,
     };
+    let taffy_style = taffy::style::Style::default();
     let width = 300.0;
     let heights = [150.0, 400.0, 650.0];
 
@@ -5925,7 +6182,13 @@ mod tests {
     let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
 
     let nodes: Vec<BoxNode> = (0..4)
-      .map(|_| BoxNode::new_block(make_item_style(), FormattingContextType::Block, vec![child.clone()]))
+      .map(|_| {
+        BoxNode::new_block(
+          make_item_style(),
+          FormattingContextType::Block,
+          vec![child.clone()],
+        )
+      })
       .collect();
 
     for (i, node) in nodes.iter().enumerate() {
@@ -5942,7 +6205,7 @@ mod tests {
           known,
           avail,
           None,
-          AlignItems::Stretch,
+          &taffy_style,
           &factory,
           &mut measure_cache,
           &mut measured_fragments,
@@ -5986,6 +6249,7 @@ mod tests {
       let mut node = BoxNode::new_block(style, FormattingContextType::Inline, vec![text_child]);
       node.id = 1;
       let node_ptr = &node as *const _;
+      let taffy_style = taffy::style::Style::default();
 
       let wide_width = gc.viewport_size.width;
       reset_grid_measure_layout_calls();
@@ -6001,7 +6265,7 @@ mod tests {
           height: probe_height,
         },
         Some(wide_width),
-        AlignItems::Stretch,
+        &taffy_style,
         &factory,
         &mut measure_cache,
         &mut measured_fragments,
@@ -6031,7 +6295,7 @@ mod tests {
           height: probe_height,
         },
         Some(narrow_width),
-        AlignItems::Stretch,
+        &taffy_style,
         &factory,
         &mut measure_cache,
         &mut measured_fragments,
@@ -6095,7 +6359,7 @@ mod tests {
 
     let node = BoxNode::new_block(Arc::new(style), FormattingContextType::Grid, vec![]);
     let gc = GridFormattingContext::new();
-    let taffy_style = gc.convert_style(&node.style, None, false, true);
+    let taffy_style = gc.convert_style(&node.style, None, None, false, true);
 
     assert_eq!(taffy_style.overflow.x, TaffyOverflow::Scroll);
     assert_eq!(taffy_style.overflow.y, TaffyOverflow::Clip);
@@ -6138,7 +6402,7 @@ mod tests {
       )
       .expect("grid conversion");
     // If the fast path is taken, the parent container style should have been converted to block.
-    let taffy_style = gc.convert_style(&parent.style, None, true, true);
+    let taffy_style = gc.convert_style(&parent.style, None, None, true, true);
     assert_eq!(taffy_style.display, Display::Block);
   }
 
@@ -6294,8 +6558,13 @@ mod tests {
               };
               let box_node = unsafe { &*node_ptr };
 
-              let key =
-                MeasureKey::new(node_ptr, known_dimensions, available_space, viewport_size, false);
+              let key = MeasureKey::new(
+                node_ptr,
+                known_dimensions,
+                available_space,
+                viewport_size,
+                false,
+              );
               if let Some(size) = cache.get(&key) {
                 return *size;
               }
@@ -6362,6 +6631,7 @@ mod tests {
             root_id,
             root_id,
             &constraints,
+            None,
             &mut measured_fragments,
             &measured_node_keys,
             &positioned_children_map,

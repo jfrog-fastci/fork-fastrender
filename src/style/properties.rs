@@ -165,8 +165,15 @@ fn synthesize_area_line_names(styles: &mut ComputedStyle) {
     return;
   }
 
-  let col_count = styles.grid_template_columns.len();
-  let row_count = styles.grid_template_rows.len();
+  let area_row_count = styles.grid_template_areas.len();
+  let area_col_count = styles
+    .grid_template_areas
+    .first()
+    .map(|row| row.len())
+    .unwrap_or(0);
+
+  let col_count = styles.grid_template_columns.len().max(area_col_count);
+  let row_count = styles.grid_template_rows.len().max(area_row_count);
   if col_count == 0 || row_count == 0 {
     return;
   }
@@ -188,6 +195,14 @@ fn synthesize_area_line_names(styles: &mut ComputedStyle) {
       if !lines[idx].contains(&name) {
         lines[idx].push(name.clone());
         names.entry(name).or_default().push(idx);
+      }
+    };
+    let ensure_line_only = |lines: &mut Vec<Vec<String>>, idx: usize, name: String| {
+      if lines.len() <= idx {
+        lines.resize(idx + 1, Vec::new());
+      }
+      if !lines[idx].contains(&name) {
+        lines[idx].push(name);
       }
     };
 
@@ -231,6 +246,30 @@ fn synthesize_area_line_names(styles: &mut ComputedStyle) {
         row_end,
         format!("{}-end", name),
       );
+      if styles.grid_column_subgrid {
+        ensure_line_only(
+          &mut styles.subgrid_column_line_names,
+          col_start,
+          format!("{}-start", name),
+        );
+        ensure_line_only(
+          &mut styles.subgrid_column_line_names,
+          col_end,
+          format!("{}-end", name),
+        );
+      }
+      if styles.grid_row_subgrid {
+        ensure_line_only(
+          &mut styles.subgrid_row_line_names,
+          row_start,
+          format!("{}-start", name),
+        );
+        ensure_line_only(
+          &mut styles.subgrid_row_line_names,
+          row_end,
+          format!("{}-end", name),
+        );
+      }
     }
 
     for line in styles.grid_column_line_names.iter_mut() {
@@ -7755,18 +7794,14 @@ fn apply_declaration_with_base_internal(
 
           styles.grid_template_areas = areas;
 
-          if styles.grid_template_columns.is_empty() {
+          if styles.grid_template_columns.is_empty() && !styles.grid_column_subgrid {
             styles.grid_template_columns = vec![GridTrack::Auto; col_count];
             styles.grid_column_line_names = vec![Vec::new(); col_count + 1];
           }
-          if styles.grid_template_rows.is_empty() {
+          if styles.grid_template_rows.is_empty() && !styles.grid_row_subgrid {
             styles.grid_template_rows = vec![GridTrack::Auto; row_count];
             styles.grid_row_line_names = vec![Vec::new(); row_count + 1];
           }
-          styles.grid_row_subgrid = false;
-          styles.grid_column_subgrid = false;
-          styles.subgrid_row_line_names.clear();
-          styles.subgrid_column_line_names.clear();
           synthesize_area_line_names(styles);
         }
       }

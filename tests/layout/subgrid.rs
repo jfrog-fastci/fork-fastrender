@@ -1057,7 +1057,7 @@ fn row_subgrid_inherits_block_axis_from_vertical_parent() {
 }
 
 #[test]
-fn row_subgrid_with_vertical_writing_mode_stacks_inline_tracks_vertically() {
+fn row_subgrid_with_mismatched_writing_mode_uses_parent_axes() {
   let mut parent_style = ComputedStyle::default();
   parent_style.display = Display::Grid;
   parent_style.grid_template_columns = vec![GridTrack::Auto];
@@ -1115,23 +1115,23 @@ fn row_subgrid_with_vertical_writing_mode_stacks_inline_tracks_vertically() {
   let subgrid_fragment = &fragment.children[0];
   assert_approx(
     subgrid_fragment.children[0].bounds.width(),
-    40.0,
-    "row inherits width",
+    15.0,
+    "first column width",
   );
   assert_approx(
     subgrid_fragment.children[0].bounds.height(),
-    15.0,
-    "first inline track height",
+    40.0,
+    "row inherits height from the parent grid",
   );
   assert_approx(
-    subgrid_fragment.children[1].bounds.y() - subgrid_fragment.bounds.y(),
+    subgrid_fragment.children[1].bounds.x(),
     15.0,
-    "second column stacks vertically in inline axis",
+    "second column starts after the first track",
   );
   assert_approx(
-    subgrid_fragment.children[1].bounds.height(),
+    subgrid_fragment.children[1].bounds.width(),
     25.0,
-    "second inline track height",
+    "second column width",
   );
 }
 
@@ -1196,7 +1196,7 @@ fn subgrid_respects_its_own_justify_items() {
     "child should shrink to its content instead of stretching to the track"
   );
   assert_approx(
-    child_fragment.bounds.x() - subgrid_fragment.bounds.x(),
+    child_fragment.bounds.x(),
     0.0,
     "child stays at the start edge under justify-items:start",
   );
@@ -1540,14 +1540,13 @@ fn row_subgrid_respects_local_direction_for_columns() {
   let subgrid_fragment = &fragment.children[0];
   let first = &subgrid_fragment.children[0];
   let second = &subgrid_fragment.children[1];
-  let origin_x = subgrid_fragment.bounds.x();
 
   eprintln!(
     "subgrid origin {:?} first {:?} second {:?}",
     subgrid_fragment.bounds, first.bounds, second.bounds
   );
   assert!(
-    first.bounds.x() - origin_x > second.bounds.x() - origin_x,
+    first.bounds.x() > second.bounds.x(),
     "rtl direction on row subgrid should mirror the inline axis"
   );
   assert_approx(first.bounds.width(), 20.0, "first column width preserved");
@@ -1617,9 +1616,8 @@ fn subgrid_inherits_named_lines_with_offset() {
   assert_eq!(subgrid_fragment.children.len(), 2);
   let child0 = &subgrid_fragment.children[0];
   let child1 = &subgrid_fragment.children[1];
-  let origin_x = subgrid_fragment.bounds.x();
   assert_approx(
-    child0.bounds.x() - origin_x,
+    child0.bounds.x(),
     0.0,
     "first child starts at inherited line two",
   );
@@ -1629,7 +1627,7 @@ fn subgrid_inherits_named_lines_with_offset() {
     "first child spans the second parent track",
   );
   assert_approx(
-    child1.bounds.x() - origin_x,
+    child1.bounds.x(),
     35.0,
     "second child begins after the inherited track",
   );
@@ -1703,21 +1701,13 @@ fn subgrid_inherits_area_line_names_with_offset() {
   let subgrid_fragment = &fragment.children[0];
   let first = &subgrid_fragment.children[0];
   let second = &subgrid_fragment.children[1];
-  assert_approx(
-    first.bounds.x() - subgrid_fragment.bounds.x(),
-    0.0,
-    "main-start maps to subgrid start",
-  );
+  assert_approx(first.bounds.x(), 0.0, "main-start maps to subgrid start");
   assert_approx(
     first.bounds.width(),
     35.0,
     "main area width preserved inside subgrid",
   );
-  assert_approx(
-    second.bounds.x() - subgrid_fragment.bounds.x(),
-    35.0,
-    "right area starts after main",
-  );
+  assert_approx(second.bounds.x(), 35.0, "right area starts after main");
   assert_approx(
     second.bounds.width(),
     45.0,
@@ -1987,14 +1977,10 @@ fn subgrid_named_lines_survive_writing_mode_transpose() {
   let second = &subgrid_fragment.children[1];
 
   assert_approx(first.bounds.width(), 25.0, "start/mid span first column");
-  assert_approx(
-    first.bounds.x() - subgrid_fragment.bounds.x(),
-    0.0,
-    "first column starts at origin",
-  );
+  assert_approx(first.bounds.x(), 0.0, "first column starts at origin");
   assert_approx(second.bounds.width(), 35.0, "mid/end span second column");
   assert_approx(
-    second.bounds.x() - subgrid_fragment.bounds.x(),
+    second.bounds.x(),
     30.0,
     "second column offset respects parent gap and track",
   );
@@ -2066,7 +2052,7 @@ fn subgrid_inherits_area_lines_when_axes_differ() {
   );
 
   assert_approx(
-    nav_fragment.bounds.y() - subgrid_fragment.bounds.y(),
+    nav_fragment.bounds.y(),
     0.0,
     "nav stays in the first inherited track",
   );
@@ -2076,7 +2062,7 @@ fn subgrid_inherits_area_lines_when_axes_differ() {
     "nav spans first column height",
   );
   assert_approx(
-    main_fragment.bounds.y() - subgrid_fragment.bounds.y(),
+    main_fragment.bounds.y(),
     34.0,
     "gap and track offset preserved for main",
   );
@@ -2151,9 +2137,19 @@ fn row_subgrid_inherits_tracks_from_vertical_parent() {
     "first row size inherited on horizontal axis",
   );
   assert_approx(
-    second.bounds.x() - subgrid_fragment.bounds.x(),
-    48.0,
-    "second row offset includes gap",
+    second.bounds.x(),
+    0.0,
+    "second track starts at the block-end edge in vertical-rl",
+  );
+  assert_approx(
+    first.bounds.x(),
+    68.0,
+    "first track starts at the block-start edge in vertical-rl",
+  );
+  assert_approx(
+    first.bounds.x() - (second.bounds.x() + second.bounds.width()),
+    8.0,
+    "gap is preserved between inherited tracks",
   );
   assert_approx(
     second.bounds.width(),
@@ -2225,7 +2221,7 @@ fn subgrid_named_lines_resolve_in_vertical_mode() {
   let child0 = &subgrid_fragment.children[0];
   let child1 = &subgrid_fragment.children[1];
   assert_approx(
-    child0.bounds.y() - subgrid_fragment.bounds.y(),
+    child0.bounds.y(),
     0.0,
     "first named slice starts at inherited line two",
   );
@@ -2235,7 +2231,7 @@ fn subgrid_named_lines_resolve_in_vertical_mode() {
     "first named span inherits second track size",
   );
   assert_approx(
-    child1.bounds.y() - subgrid_fragment.bounds.y(),
+    child1.bounds.y(),
     35.0,
     "second named slice begins after inherited track",
   );
