@@ -2695,25 +2695,45 @@ impl<'a> LineBuilder<'a> {
     }
 
     let mut removed_any = false;
-    while let Some(last) = self.current_line.items.last() {
-      match &last.item {
-        InlineItem::Text(text) => {
-          let collapsible = matches!(
-            text.style.white_space,
-            WhiteSpace::Normal | WhiteSpace::Nowrap | WhiteSpace::PreLine
-          );
-          let all_spaces = !text.text.is_empty() && text.text.chars().all(|ch| ch == ' ');
-          if collapsible && all_spaces && !text.is_marker {
-            let width = last.item.width();
-            self.current_x = (self.current_x - width).max(0.0);
-            self.current_line.items.pop();
-            removed_any = true;
-            continue;
-          }
+    let mut trailing_zero_width = Vec::new();
+    loop {
+      while matches!(
+        self.current_line.items.last().map(|p| &p.item),
+        Some(InlineItem::StaticPositionAnchor(_))
+          | Some(InlineItem::Floating(_))
+          | Some(InlineItem::HardBreak)
+      ) {
+        if let Some(item) = self.current_line.items.pop() {
+          trailing_zero_width.push(item);
+        } else {
+          break;
         }
-        _ => {}
       }
+
+      let Some(last) = self.current_line.items.last() else {
+        break;
+      };
+
+      if let InlineItem::Text(text) = &last.item {
+        let collapsible = matches!(
+          text.style.white_space,
+          WhiteSpace::Normal | WhiteSpace::Nowrap | WhiteSpace::PreLine
+        );
+        let all_spaces = !text.text.is_empty() && text.text.chars().all(|ch| ch == ' ');
+        if collapsible && all_spaces && !text.is_marker {
+          let width = last.item.width();
+          self.current_x = (self.current_x - width).max(0.0);
+          self.current_line.items.pop();
+          removed_any = true;
+          continue;
+        }
+      }
+
       break;
+    }
+
+    for item in trailing_zero_width.into_iter().rev() {
+      self.current_line.items.push(item);
     }
 
     if !removed_any {

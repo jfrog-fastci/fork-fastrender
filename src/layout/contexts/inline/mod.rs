@@ -14001,6 +14001,89 @@ mod tests {
   }
 
   #[test]
+  fn white_space_normal_trims_breaking_space_before_static_position_anchor() {
+    let ifc = InlineFormattingContext::new();
+    let mut style = ComputedStyle::default();
+    style.white_space = WhiteSpace::Normal;
+    let style = Arc::new(style);
+    let text = "a b";
+    let advance_before_break = {
+      let mut runs = ifc
+        .pipeline
+        .shape_with_direction(
+          "a ",
+          style.as_ref(),
+          &ifc.font_context,
+          pipeline_direction(style.direction),
+        )
+        .expect("shape prefix");
+      TextItem::apply_spacing_to_runs(&mut runs, "a ", style.letter_spacing, style.word_spacing);
+      runs.iter().map(|run| run.advance).sum::<f32>()
+    };
+    let advance_full = {
+      let mut runs = ifc
+        .pipeline
+        .shape_with_direction(
+          text,
+          style.as_ref(),
+          &ifc.font_context,
+          pipeline_direction(style.direction),
+        )
+        .expect("shape full text");
+      TextItem::apply_spacing_to_runs(&mut runs, text, style.letter_spacing, style.word_spacing);
+      runs.iter().map(|run| run.advance).sum::<f32>()
+    };
+    assert!(
+      advance_full > advance_before_break,
+      "expected \"a b\" to be wider than \"a \", got {} vs {}",
+      advance_full,
+      advance_before_break
+    );
+    let width = (advance_before_break + advance_full) / 2.0;
+
+    let mut positioned_style = ComputedStyle::default();
+    positioned_style.position = Position::Absolute;
+    let positioned_style = Arc::new(positioned_style);
+    let positioned = BoxNode::new_inline(positioned_style.clone(), Vec::new());
+
+    let root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![
+        BoxNode::new_text(style.clone(), "a ".to_string()),
+        positioned,
+        BoxNode::new_text(style.clone(), "b".to_string()),
+      ],
+    );
+    let items = ifc
+      .collect_inline_items(&root, width, Some(width))
+      .expect("collect items");
+    let strut = ifc.compute_strut_metrics(style.as_ref());
+    let lines = ifc
+      .layout_segment_lines(
+        items,
+        true,
+        width,
+        width,
+        style.text_wrap,
+        0.0,
+        false,
+        false,
+        &strut,
+        Some(unicode_bidi::Level::ltr()),
+        style.direction,
+        style.unicode_bidi,
+        None,
+        0.0,
+        None,
+      )
+      .expect("line layout")
+      .lines;
+
+    assert_eq!(line_texts(&lines), vec!["a", "b"]);
+  }
+
+  #[test]
   fn pre_treats_form_feed_as_break() {
     let mut style = ComputedStyle::default();
     style.white_space = WhiteSpace::Pre;
