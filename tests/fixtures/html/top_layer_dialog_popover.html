@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Top layer - dialog backdrop + popover open/closed</title>
+    <style>
+        html, body {
+            margin: 0;
+            width: 100%;
+            height: 100%;
+        }
+        body {
+            background: #00ff00; /* bright green */
+            font-family: sans-serif;
+        }
+
+        dialog {
+            width: 320px;
+            height: 220px;
+            top: 290px;
+            left: 140px;
+            right: auto;
+            bottom: auto;
+            margin: 0;
+            border: 6px solid #000;
+            border-radius: 12px;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        dialog h1 {
+            margin: 0 0 10px 0;
+            font-size: 28px;
+        }
+
+        /* Position popovers explicitly so they're visible and distinct from the dialog. */
+        #popover-open {
+            top: 40px;
+            left: 40px;
+            background: #ffff00;
+            border: 4px solid #ff0000;
+            font-size: 22px;
+        }
+        #popover-closed {
+            top: 40px;
+            right: 40px;
+            background: #ff00ff;
+            border: 4px solid #0000ff;
+            font-size: 22px;
+        }
+    </style>
+</head>
+<body>
+    <dialog data-fastr-open="modal" data-fastr-modal="true">
+        <h1>Modal dialog</h1>
+        <p>The background should be darkened by <code>::backdrop</code>.</p>
+    </dialog>
+
+    <div id="popover-open" popover data-fastr-open="true">Open popover</div>
+    <div id="popover-closed" popover>Hidden popover</div>
+</body>
+</html>

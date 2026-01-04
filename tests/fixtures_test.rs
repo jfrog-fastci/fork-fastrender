@@ -223,6 +223,8 @@ fn test_all_fixture_files_exist() {
     "form_controls",
     "form_controls_appearance_none",
     "form_controls_textarea_placeholder",
+    // Top layer
+    "top_layer_dialog_popover",
     // Text
     "text_complex_scripts",
     "text_additional_scripts",
@@ -493,6 +495,15 @@ fn test_fixture_form_controls_textarea_placeholder() {
 }
 
 //
+// Top layer Tests
+//
+
+#[test]
+fn test_fixture_top_layer_dialog_popover() {
+  test_fixture("top_layer_dialog_popover").expect("top_layer_dialog_popover fixture should render");
+}
+
+//
 // Text Tests
 //
 
@@ -676,6 +687,8 @@ pub fn list_fixtures() -> Vec<&'static str> {
     "form_controls",
     "form_controls_appearance_none",
     "form_controls_textarea_placeholder",
+    // Top layer
+    "top_layer_dialog_popover",
     // Text
     "text_complex_scripts",
     "text_additional_scripts",

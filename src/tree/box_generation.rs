@@ -1999,6 +1999,13 @@ fn generate_boxes_for_styled_into(
         // display: contents contributes its children directly.
         if styled.styles.display == Display::Contents {
           counters.leave_scope();
+          if let Some(backdrop_box) = create_backdrop_box(styled) {
+            if let Some(parent) = stack.last_mut() {
+              parent.children.push(backdrop_box);
+            } else {
+              out.push(backdrop_box);
+            }
+          }
           if let Some(parent) = stack.last_mut() {
             parent.children.extend(children);
           } else {
@@ -2055,8 +2062,14 @@ fn generate_boxes_for_styled_into(
         counters.leave_scope();
         let box_node = attach_debug_info(box_node, styled);
         if let Some(parent) = stack.last_mut() {
+          if let Some(backdrop_box) = create_backdrop_box(styled) {
+            parent.children.push(backdrop_box);
+          }
           parent.children.push(box_node);
         } else {
+          if let Some(backdrop_box) = create_backdrop_box(styled) {
+            out.push(backdrop_box);
+          }
           out.push(box_node);
         }
       }
@@ -2145,6 +2158,61 @@ fn attach_debug_info(mut box_node: BoxNode, styled: &StyledNode) -> BoxNode {
     box_node = box_node.with_debug_info(dbg);
   }
   box_node
+}
+
+fn create_backdrop_box(styled: &StyledNode) -> Option<BoxNode> {
+  // `::backdrop` is represented as a sibling box inserted immediately before the originating
+  // top-layer element. This ensures paint order matches the spec: backdrop behind the element but
+  // above the rest of the document.
+  let backdrop_style = styled.styles.backdrop.as_ref().map(Arc::clone)?;
+  if backdrop_style.display == Display::None {
+    return None;
+  }
+
+  let fc_type = backdrop_style
+    .display
+    .formatting_context_type()
+    .unwrap_or(FormattingContextType::Block);
+
+  let mut box_node = match backdrop_style.display {
+    Display::Block | Display::FlowRoot | Display::ListItem => {
+      BoxNode::new_block(backdrop_style, fc_type, Vec::new())
+    }
+    Display::Inline
+    | Display::Ruby
+    | Display::RubyBase
+    | Display::RubyText
+    | Display::RubyBaseContainer
+    | Display::RubyTextContainer => BoxNode::new_inline(backdrop_style, Vec::new()),
+    Display::InlineBlock => BoxNode::new_inline_block(backdrop_style, fc_type, Vec::new()),
+    Display::Flex | Display::InlineFlex => {
+      BoxNode::new_block(backdrop_style, FormattingContextType::Flex, Vec::new())
+    }
+    Display::Grid | Display::InlineGrid => {
+      BoxNode::new_block(backdrop_style, FormattingContextType::Grid, Vec::new())
+    }
+    Display::Table | Display::InlineTable => {
+      BoxNode::new_block(backdrop_style, FormattingContextType::Table, Vec::new())
+    }
+    // Table-internal boxes (simplified for Wave 2)
+    Display::TableRow
+    | Display::TableCell
+    | Display::TableRowGroup
+    | Display::TableHeaderGroup
+    | Display::TableFooterGroup
+    | Display::TableColumn
+    | Display::TableColumnGroup
+    | Display::TableCaption => BoxNode::new_block(backdrop_style, FormattingContextType::Block, vec![]),
+    Display::None | Display::Contents => return None,
+  };
+
+  box_node.debug_info = Some(DebugInfo::new(
+    Some("backdrop".to_string()),
+    None,
+    vec!["pseudo-element".to_string()],
+  ));
+  box_node.styled_node_id = Some(styled.node_id);
+  Some(box_node)
 }
 
 /// Creates a box for a pseudo-element (::before or ::after)

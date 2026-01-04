@@ -62,6 +62,7 @@ use crate::style::media::ColorScheme;
 use crate::style::media::MediaContext;
 use crate::style::media::MediaQueryCache;
 use crate::style::normalize_language_tag;
+use crate::style::position::Position;
 use crate::style::properties::apply_content_visibility_implied_containment;
 use crate::style::properties::apply_declaration_with_base;
 use crate::style::properties::apply_declaration_with_base_and_custom_properties;
@@ -9062,7 +9063,13 @@ fn compute_pseudo_styles(
       &PseudoElement::Backdrop,
       include_starting_style,
     )
-    .map(Arc::new);
+    .map(|mut backdrop| {
+      // ::backdrop participates in the top layer stacking order for its originating element.
+      // Keep it alongside the element so the painter can promote it above the normal document
+      // content while still ordering it just beneath the top-layer element itself.
+      backdrop.top_layer = styles.top_layer;
+      Arc::new(backdrop)
+    });
   }
 
   let prof = cascade_profile_enabled();
@@ -24034,8 +24041,26 @@ fn compute_pseudo_element_styles(
     .cloned()
     .collect();
 
+  let apply_initial_pseudo_styles = |styles: &mut ComputedStyle| {
+    // ::before/::after default to inline. ::backdrop is special-cased to match the UA defaults:
+    // it is a full-viewport fixed-position box.
+    match pseudo {
+      PseudoElement::Backdrop => {
+        styles.display = Display::Block;
+        styles.position = Position::Fixed;
+        styles.top = Some(Length::px(0.0));
+        styles.right = Some(Length::px(0.0));
+        styles.bottom = Some(Length::px(0.0));
+        styles.left = Some(Length::px(0.0));
+      }
+      _ => {
+        styles.display = Display::Inline;
+      }
+    }
+  };
+
   let mut ua_styles = ComputedStyle::default();
-  ua_styles.display = Display::Inline;
+  apply_initial_pseudo_styles(&mut ua_styles);
   inherit_styles(&mut ua_styles, ua_parent_styles);
   apply_cascaded_declarations(
     &mut ua_styles,
@@ -24059,7 +24084,7 @@ fn compute_pseudo_element_styles(
 
   // Start with default inline styles (pseudo-elements default to display: inline)
   let mut styles = ComputedStyle::default();
-  styles.display = Display::Inline;
+  apply_initial_pseudo_styles(&mut styles);
 
   // Inherit from parent element
   inherit_styles(&mut styles, parent_styles);
@@ -24085,13 +24110,20 @@ fn compute_pseudo_element_styles(
   resolve_line_height_length(&mut styles, viewport);
   resolve_absolute_lengths(&mut styles, root_font_size, viewport);
 
-  // Check if content property generates content
-  // Per CSS spec, ::before/::after only generate boxes if content is not 'none' or 'normal'
-  if matches!(
-    styles.content_value,
-    crate::style::content::ContentValue::None | crate::style::content::ContentValue::Normal
-  ) {
-    return None;
+  match pseudo {
+    PseudoElement::Before | PseudoElement::After => {
+      // Check if content property generates content
+      // Per CSS spec, ::before/::after only generate boxes if content is not 'none' or 'normal'
+      if matches!(
+        styles.content_value,
+        crate::style::content::ContentValue::None | crate::style::content::ContentValue::Normal
+      ) {
+        return None;
+      }
+    }
+    // ::backdrop always generates a box when matched; it does not depend on `content`.
+    PseudoElement::Backdrop => {}
+    _ => {}
   }
 
   Some(styles)
