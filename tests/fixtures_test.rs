@@ -498,9 +498,14 @@ fn test_fixture_form_controls_textarea_placeholder() {
 // Top layer Tests
 //
 
-#[test]
-fn test_fixture_top_layer_dialog_popover() {
-  test_fixture("top_layer_dialog_popover").expect("top_layer_dialog_popover fixture should render");
+mod fixtures {
+  use super::test_fixture;
+
+  #[test]
+  fn test_fixture_top_layer_dialog_popover() {
+    test_fixture("top_layer_dialog_popover")
+      .expect("top_layer_dialog_popover fixture should render");
+  }
 }
 
 //
