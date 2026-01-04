@@ -1946,21 +1946,54 @@ pub fn sample_keyframes(
   });
   let progress = clamp_progress(progress);
   let defaults = ComputedStyle::default();
-  let mut resolved_styles = Vec::with_capacity(frames.len());
-  for frame in &frames {
-    let mut style = base_style.clone();
-    for decl in &frame.declarations {
-      apply_declaration_with_base(
-        &mut style,
-        decl,
-        base_style,
-        &defaults,
-        None,
-        base_style.font_size,
-        base_style.root_font_size,
-        viewport,
-      );
+  let mut groups: Vec<(f32, Vec<&Keyframe>)> = Vec::new();
+  for frame in frames.iter().copied() {
+    match groups.last_mut() {
+      Some((offset, list)) if (*offset - frame.offset).abs() <= f32::EPSILON => list.push(frame),
+      _ => groups.push((frame.offset, vec![frame])),
     }
+  }
+
+  let mut resolved_styles = Vec::with_capacity(groups.len());
+  for (_, group_frames) in &groups {
+    let mut style = base_style.clone();
+
+    for frame in group_frames {
+      for decl in &frame.declarations {
+        if !decl.property.is_custom() {
+          continue;
+        }
+        apply_declaration_with_base(
+          &mut style,
+          decl,
+          base_style,
+          &defaults,
+          None,
+          base_style.font_size,
+          base_style.root_font_size,
+          viewport,
+        );
+      }
+    }
+
+    for frame in group_frames {
+      for decl in &frame.declarations {
+        if decl.property.is_custom() {
+          continue;
+        }
+        apply_declaration_with_base(
+          &mut style,
+          decl,
+          base_style,
+          &defaults,
+          None,
+          base_style.font_size,
+          base_style.root_font_size,
+          viewport,
+        );
+      }
+    }
+
     resolved_styles.push(style);
   }
 
@@ -1978,13 +2011,16 @@ pub fn sample_keyframes(
       continue;
     };
 
-    let frame_has_property =
-      |frame: &&Keyframe| frame.declarations.iter().any(|d| d.property.as_str() == prop);
+    let group_has_property = |group: &[&Keyframe]| {
+      group
+        .iter()
+        .any(|frame| frame.declarations.iter().any(|d| d.property.as_str() == prop))
+    };
 
     let mut prev_idx = None;
-    for (idx, frame) in frames.iter().enumerate() {
-      if frame.offset <= progress + f32::EPSILON {
-        if frame_has_property(frame) {
+    for (idx, (offset, group_frames)) in groups.iter().enumerate() {
+      if *offset <= progress + f32::EPSILON {
+        if group_has_property(group_frames) {
           prev_idx = Some(idx);
         }
       } else {
@@ -1993,31 +2029,19 @@ pub fn sample_keyframes(
     }
 
     let mut next_idx = None;
-    let mut next_offset: Option<f32> = None;
-    for (idx, frame) in frames.iter().enumerate() {
-      if !frame_has_property(frame) {
+    for (idx, (offset, group_frames)) in groups.iter().enumerate() {
+      if !group_has_property(group_frames) {
         continue;
       }
-      if frame.offset + f32::EPSILON < progress {
+      if *offset + f32::EPSILON < progress {
         continue;
       }
-      match next_offset {
-        None => {
-          next_offset = Some(frame.offset);
-          next_idx = Some(idx);
-        }
-        Some(offset) => {
-          if (frame.offset - offset).abs() <= f32::EPSILON {
-            next_idx = Some(idx);
-          } else {
-            break;
-          }
-        }
-      }
+      next_idx = Some(idx);
+      break;
     }
 
-    let start = prev_idx.map(|idx| frames[idx].offset).unwrap_or(0.0);
-    let end = next_idx.map(|idx| frames[idx].offset).unwrap_or(1.0);
+    let start = prev_idx.map(|idx| groups[idx].0).unwrap_or(0.0);
+    let end = next_idx.map(|idx| groups[idx].0).unwrap_or(1.0);
     let local_t = if end - start > f32::EPSILON {
       clamp_progress((progress - start) / (end - start))
     } else {
@@ -3349,6 +3373,38 @@ mod tests {
 
     assert!((sampled_opacity(rule, 0.75) - 0.75).abs() < 1e-6);
     assert!((sampled_transform_translate_x(rule, 0.75) - 50.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn sample_keyframes_var_resolution_sees_custom_properties_from_same_offset_keyframes() {
+    let sheet = parse_stylesheet(
+      "@keyframes vars {\
+        0% { transform: translateX(var(--x)); }\
+        0% { --x: 100px; }\
+        100% { transform: translateX(0px); }\
+      }",
+    )
+    .unwrap();
+    let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+    let rule = &keyframes[0];
+
+    assert!((sampled_transform_translate_x(rule, 0.0) - 100.0).abs() < 1e-6);
+    assert!((sampled_transform_translate_x(rule, 0.5) - 50.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn sample_keyframes_var_resolution_is_order_independent_within_keyframe_block() {
+    let sheet = parse_stylesheet(
+      "@keyframes vars {\
+        from { transform: translateX(var(--x)); --x: 100px; }\
+        to { transform: translateX(0px); }\
+      }",
+    )
+    .unwrap();
+    let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+    let rule = &keyframes[0];
+
+    assert!((sampled_transform_translate_x(rule, 0.0) - 100.0).abs() < 1e-6);
   }
 
   fn decode_png(bytes: &[u8]) -> image::RgbaImage {
