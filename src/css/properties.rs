@@ -4666,6 +4666,10 @@ mod tests {
       ("12dvh", 12.0, LengthUnit::Dvh),
       ("8dvmin", 8.0, LengthUnit::Dvmin),
       ("9dvmax", 9.0, LengthUnit::Dvmax),
+      // Modern viewport units (CSS Values and Units Level 4). FastRender aliases these to the
+      // classic viewport units since the viewport is static/headless.
+      ("80svh", 80.0, LengthUnit::Vh),
+      ("50LVW", 50.0, LengthUnit::Vw),
       ("75%", 75.0, LengthUnit::Percent),
     ];
 
@@ -4677,6 +4681,26 @@ mod tests {
 
     assert_eq!(parse_length("0"), Some(Length::px(0.0)));
     assert_eq!(parse_length("-0"), Some(Length::px(0.0)));
+  }
+
+  #[test]
+  fn parses_calc_with_modern_viewport_units() {
+    let len = parse_length("calc(100svh - 10px)").expect("calc length");
+    assert_eq!(len.unit, LengthUnit::Calc);
+    let calc = len.calc.expect("calc terms");
+    assert!(calc
+      .terms()
+      .iter()
+      .any(|t| t.unit == LengthUnit::Vh && (t.value - 100.0).abs() < 1e-6));
+    assert!(calc
+      .terms()
+      .iter()
+      .any(|t| t.unit == LengthUnit::Px && (t.value + 10.0).abs() < 1e-6));
+
+    let resolved = len
+      .resolve_with_context(None, 800.0, 600.0, 16.0, 16.0)
+      .expect("resolved calc");
+    assert!((resolved - 590.0).abs() < 1e-3);
   }
 
   #[test]
@@ -5023,6 +5047,12 @@ pub fn parse_length(s: &str) -> Option<Length> {
   for (suffix, unit) in [
     ("dvmin", LengthUnit::Dvmin),
     ("dvmax", LengthUnit::Dvmax),
+    // CSS Values and Units Level 4 adds "small" and "large" viewport units (sv*/lv*). FastRender
+    // renders with a fixed headless viewport, so these map to the classic viewport units.
+    ("svmin", LengthUnit::Vmin),
+    ("svmax", LengthUnit::Vmax),
+    ("lvmin", LengthUnit::Vmin),
+    ("lvmax", LengthUnit::Vmax),
     ("dvw", LengthUnit::Dvw),
     ("dvh", LengthUnit::Dvh),
     ("cqmin", LengthUnit::Cqmin),
@@ -5031,6 +5061,10 @@ pub fn parse_length(s: &str) -> Option<Length> {
     ("cqh", LengthUnit::Cqh),
     ("cqi", LengthUnit::Cqi),
     ("cqb", LengthUnit::Cqb),
+    ("svw", LengthUnit::Vw),
+    ("svh", LengthUnit::Vh),
+    ("lvw", LengthUnit::Vw),
+    ("lvh", LengthUnit::Vh),
     ("vmin", LengthUnit::Vmin),
     ("vmax", LengthUnit::Vmax),
     ("vw", LengthUnit::Vw),
@@ -5434,6 +5468,16 @@ fn parse_calc_factor<'i, 't>(
         "cqb" => LengthUnit::Cqb,
         "cqmin" => LengthUnit::Cqmin,
         "cqmax" => LengthUnit::Cqmax,
+        // CSS Values and Units Level 4 viewport units.
+        // FastRender's viewport is static (no UA chrome), so sv*/lv* behave the same as v*.
+        "svw" => LengthUnit::Vw,
+        "svh" => LengthUnit::Vh,
+        "svmin" => LengthUnit::Vmin,
+        "svmax" => LengthUnit::Vmax,
+        "lvw" => LengthUnit::Vw,
+        "lvh" => LengthUnit::Vh,
+        "lvmin" => LengthUnit::Vmin,
+        "lvmax" => LengthUnit::Vmax,
         _ => return Err(location.new_custom_error(())),
       };
       Ok(CalcComponent::Length(CalcLength::single(unit, *value)))

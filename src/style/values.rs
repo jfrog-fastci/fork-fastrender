@@ -579,6 +579,18 @@ mod tests {
   }
 
   #[test]
+  fn test_modern_viewport_units_resolve_with_static_viewport() {
+    // CSS Values and Units Level 4 adds "small" and "large" viewport units (sv*/lv*). FastRender
+    // renders with a fixed headless viewport, so these resolve the same as the classic viewport
+    // units.
+    let svh = crate::css::properties::parse_length("100svh").expect("svh length");
+    assert_eq!(svh.resolve_with_viewport(800.0, 600.0), Some(600.0));
+
+    let lvw = crate::css::properties::parse_length("50lvw").expect("lvw length");
+    assert_eq!(lvw.resolve_with_viewport(800.0, 600.0), Some(400.0));
+  }
+
+  #[test]
   fn test_length_is_zero() {
     assert!(Length::px(0.0).is_zero());
     assert!(Length::em(0.0).is_zero());
