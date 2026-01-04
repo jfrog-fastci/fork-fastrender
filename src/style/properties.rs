@@ -1461,7 +1461,7 @@ mod animation_range_tests {
   }
 }
 
-fn split_top_level_commas(raw: &str) -> Vec<String> {
+pub(crate) fn split_top_level_commas(raw: &str) -> Vec<String> {
   let mut parts = Vec::new();
   let mut current = String::new();
   let mut depth = 0i32;

@@ -16,7 +16,9 @@ use crate::geometry::{Point, Rect, Size};
 use crate::paint::display_list::{Transform2D, Transform3D};
 use crate::scroll::ScrollState;
 use crate::style::inline_axis_is_horizontal;
-use crate::style::properties::{apply_declaration_with_base, parse_transition_timing_function};
+use crate::style::properties::{
+  apply_declaration_with_base, parse_transition_timing_function, split_top_level_commas,
+};
 use crate::style::types::AnimationDirection;
 use crate::style::types::AnimationFillMode;
 use crate::style::types::AnimationIterationCount;
@@ -1954,22 +1956,8 @@ pub fn sample_keyframes(
 }
 
 fn parse_first_timing_function(value: &str) -> Option<TransitionTimingFunction> {
-  let trimmed = value.trim();
-  if trimmed.is_empty() {
-    return None;
-  }
-
-  let mut depth = 0u32;
-  for (idx, ch) in trimmed.char_indices() {
-    match ch {
-      '(' => depth = depth.saturating_add(1),
-      ')' => depth = depth.saturating_sub(1),
-      ',' if depth == 0 => return parse_transition_timing_function(trimmed[..idx].trim()),
-      _ => {}
-    }
-  }
-
-  parse_transition_timing_function(trimmed)
+  let first = split_top_level_commas(value).into_iter().next()?;
+  parse_transition_timing_function(&first)
 }
 
 fn sample_keyframes_with_default_timing(
@@ -3739,6 +3727,24 @@ mod tests {
       "@keyframes step {\
         0% { opacity: 0; }\
         50% { opacity: 1; animation-timing-function: steps(1, end), linear; }\
+        100% { opacity: 0; }\
+      }",
+    )
+    .unwrap();
+    let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+    let rule = &keyframes[0];
+
+    assert!((sampled_opacity(rule, 0.25) - 0.5).abs() < 1e-6);
+    assert!((sampled_opacity(rule, 0.75) - 1.0).abs() < 1e-6);
+    assert!((sampled_opacity(rule, 1.0) - 0.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn sample_keyframes_parse_keyframe_timing_function_ignores_commas_inside_comments() {
+    let sheet = parse_stylesheet(
+      "@keyframes step {\
+        0% { opacity: 0; }\
+        50% { opacity: 1; animation-timing-function: steps(1, end) /* comment, with comma */, linear; }\
         100% { opacity: 0; }\
       }",
     )
