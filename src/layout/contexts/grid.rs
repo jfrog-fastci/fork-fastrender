@@ -5671,7 +5671,7 @@ mod tests {
 
     let gc = GridFormattingContext::new();
     let factory = gc.factory.clone();
-    let taffy_style = taffy::style::Style::default();
+    let taffy_style: taffy::style::Style = taffy::style::Style::default();
 
     let mut style = ComputedStyle::default();
     style.width = Some(Length::percent(50.0));
@@ -5684,7 +5684,7 @@ mod tests {
       width: None,
       height: None,
     };
-    let taffy_style = taffy::style::Style::default();
+    let taffy_style: taffy::style::Style = taffy::style::Style::default();
 
     let avail_a = taffy::geometry::Size {
       width: AvailableSpace::Definite(100.4),
@@ -5699,7 +5699,7 @@ mod tests {
     let key_b = MeasureKey::new(node_ptr, known, avail_b, viewport, false);
     assert_eq!(key_a, key_b, "expected probes to map to the same quantized MeasureKey");
 
-    let taffy_style = taffy::style::Style::default();
+    let taffy_style: taffy::style::Style = taffy::style::Style::default();
     let size_a = {
       let mut measure_cache: FxHashMap<MeasureKey, taffy::geometry::Size<f32>> = FxHashMap::default();
       let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
@@ -5963,7 +5963,7 @@ mod tests {
       width: None,
       height: None,
     };
-    let taffy_style = taffy::style::Style::default();
+    let taffy_style: taffy::style::Style = taffy::style::Style::default();
 
     for i in 0..(MAX_MEASURED_KEYS_PER_NODE + 5) {
       let avail = taffy::geometry::Size {
@@ -6065,7 +6065,7 @@ mod tests {
       width: None,
       height: None,
     };
-    let taffy_style = taffy::style::Style::default();
+    let taffy_style: taffy::style::Style = taffy::style::Style::default();
     let widths = [300.2, 300.6, 300.1, 300.8, 300.4];
     let heights = [150.7, 150.4, 150.9];
 
@@ -6121,7 +6121,7 @@ mod tests {
       width: None,
       height: None,
     };
-    let taffy_style = taffy::style::Style::default();
+    let taffy_style: taffy::style::Style = taffy::style::Style::default();
     let width = 300.0;
     let heights = [150.0, 400.0, 650.0];
 
@@ -6176,7 +6176,7 @@ mod tests {
       width: None,
       height: None,
     };
-    let taffy_style = taffy::style::Style::default();
+    let taffy_style: taffy::style::Style = taffy::style::Style::default();
     let width = 300.0;
     let heights = [150.0, 400.0, 650.0];
 
@@ -6252,7 +6252,7 @@ mod tests {
       let mut node = BoxNode::new_block(style, FormattingContextType::Inline, vec![text_child]);
       node.id = 1;
       let node_ptr = &node as *const _;
-      let taffy_style = taffy::style::Style::default();
+      let taffy_style: taffy::style::Style = taffy::style::Style::default();
 
       let wide_width = gc.viewport_size.width;
       reset_grid_measure_layout_calls();
