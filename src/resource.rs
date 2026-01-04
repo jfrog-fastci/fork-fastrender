@@ -12828,6 +12828,116 @@ mod tests {
     );
   }
 
+  #[test]
+  fn caching_fetcher_partitions_cors_mode_entries_by_origin_when_enforced() {
+    #[derive(Clone)]
+    struct OriginEchoFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for OriginEchoFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected CachingFetcher to use fetch_with_request");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let origin = cors_origin_key_from_referrer(req.referrer).unwrap_or_default();
+        let mut res = FetchedResource::new(origin.into_bytes(), Some("text/plain".to_string()));
+        res.final_url = Some(req.url.to_string());
+        Ok(res)
+      }
+    }
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "1".to_string(),
+    )])));
+
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let calls = Arc::new(AtomicUsize::new(0));
+      let cache = CachingFetcher::new(OriginEchoFetcher {
+        calls: Arc::clone(&calls),
+      });
+
+      let url = "http://example.com/font.woff2";
+      let req_a =
+        FetchRequest::new(url, FetchDestination::Font).with_referrer("http://a.test/page");
+      let req_b =
+        FetchRequest::new(url, FetchDestination::Font).with_referrer("http://b.test/page");
+
+      let first_a = cache.fetch_with_request(req_a).expect("fetch A");
+      assert_eq!(first_a.bytes, b"http://a.test");
+      let first_b = cache.fetch_with_request(req_b).expect("fetch B");
+      assert_eq!(first_b.bytes, b"http://b.test");
+
+      // Ensure fetching `B` doesn't overwrite `A` and vice versa.
+      let second_a = cache.fetch_with_request(req_a).expect("cache A");
+      assert_eq!(second_a.bytes, b"http://a.test");
+      let second_b = cache.fetch_with_request(req_b).expect("cache B");
+      assert_eq!(second_b.bytes, b"http://b.test");
+
+      assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "expected differing font referrer origins to produce distinct cache entries when CORS enforcement is enabled"
+      );
+    });
+  }
+
+  #[test]
+  fn caching_fetcher_does_not_partition_cors_mode_entries_without_enforcement() {
+    #[derive(Clone)]
+    struct OriginEchoFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for OriginEchoFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected CachingFetcher to use fetch_with_request");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let origin = cors_origin_key_from_referrer(req.referrer).unwrap_or_default();
+        let mut res = FetchedResource::new(origin.into_bytes(), Some("text/plain".to_string()));
+        res.final_url = Some(req.url.to_string());
+        Ok(res)
+      }
+    }
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "0".to_string(),
+    )])));
+
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let calls = Arc::new(AtomicUsize::new(0));
+      let cache = CachingFetcher::new(OriginEchoFetcher {
+        calls: Arc::clone(&calls),
+      });
+
+      let url = "http://example.com/font.woff2";
+      let req_a =
+        FetchRequest::new(url, FetchDestination::Font).with_referrer("http://a.test/page");
+      let req_b =
+        FetchRequest::new(url, FetchDestination::Font).with_referrer("http://b.test/page");
+
+      let first_a = cache.fetch_with_request(req_a).expect("fetch A");
+      assert_eq!(first_a.bytes, b"http://a.test");
+      // Without enforcement, we keep legacy cache key behavior (no origin partitioning), so `B`
+      // reuses the cached entry from `A`.
+      let first_b = cache.fetch_with_request(req_b).expect("fetch B");
+      assert_eq!(first_b.bytes, b"http://a.test");
+
+      assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "expected referrer origin to be ignored for font cache keys when CORS enforcement is disabled"
+      );
+    });
+  }
+
   #[derive(Clone, Debug)]
   struct RecordedValidationCall {
     destination: FetchDestination,
