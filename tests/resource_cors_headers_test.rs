@@ -6,11 +6,22 @@ use std::io;
 use std::io::Read;
 use std::io::Write;
 use std::net::TcpListener;
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 use test_support::net::try_bind_localhost;
 
 const MAX_WAIT: Duration = Duration::from_secs(3);
+
+fn curl_available() -> bool {
+  Command::new("curl")
+    .arg("--version")
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .map(|status| status.success())
+    .unwrap_or(false)
+}
 
 fn spawn_server(listener: TcpListener) -> thread::JoinHandle<()> {
   thread::spawn(move || {
@@ -57,6 +68,17 @@ fn spawn_server(listener: TcpListener) -> thread::JoinHandle<()> {
 
 #[test]
 fn http_fetcher_captures_cors_response_headers() {
+  if std::env::var("FASTR_HTTP_BACKEND")
+    .ok()
+    .is_some_and(|backend| backend.eq_ignore_ascii_case("curl"))
+    && !curl_available()
+  {
+    eprintln!(
+      "skipping http_fetcher_captures_cors_response_headers: curl backend selected but curl is unavailable"
+    );
+    return;
+  }
+
   let Some(listener) = try_bind_localhost("http_fetcher_captures_cors_response_headers") else {
     return;
   };
@@ -71,4 +93,3 @@ fn http_fetcher_captures_cors_response_headers() {
   assert_eq!(res.access_control_allow_origin.as_deref(), Some("*"));
   assert_eq!(res.timing_allow_origin.as_deref(), Some("https://example.com"));
 }
-

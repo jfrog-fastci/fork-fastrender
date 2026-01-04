@@ -1823,8 +1823,6 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       resource.timing_allow_origin = source.timing_allow_origin.clone();
       resource.final_url = source.final_url.clone();
       resource.cache_policy = source.cache_policy.clone();
-      resource.access_control_allow_origin = source.access_control_allow_origin.clone();
-      resource.timing_allow_origin = source.timing_allow_origin.clone();
     }
 
     let canonical = self.canonical_url(url, resource.final_url.as_deref());
