@@ -2185,6 +2185,11 @@ impl DisplayListBuilder {
       hard_clip: child_visibility.hard_clip,
     };
 
+    let local_child_visibility = Visibility {
+      rect: Self::visible_in_local_space(child_visibility.rect, transform.as_ref()),
+      hard_clip: child_visibility.hard_clip,
+    };
+
     let has_effects = is_isolated
       || transform.is_some()
       || child_perspective.is_some()
@@ -2212,7 +2217,7 @@ impl DisplayListBuilder {
           &context.fragments,
           root_fragment_offset,
           apply_opacity,
-          child_visibility,
+          local_child_visibility,
         );
         if pushed_opacity {
           self.pop_opacity();
@@ -2229,7 +2234,7 @@ impl DisplayListBuilder {
           descendant_offset,
           false,
           svg_filters,
-          child_visibility,
+          local_child_visibility,
         );
       }
 
@@ -2237,25 +2242,25 @@ impl DisplayListBuilder {
         &context.fragments,
         root_fragment_offset,
         apply_opacity,
-        child_visibility,
+        local_child_visibility,
       );
-      self.emit_fragment_list(&context.layer3_blocks, descendant_offset, child_visibility);
-      self.emit_fragment_list(&context.layer4_floats, descendant_offset, child_visibility);
-      self.emit_fragment_list(&context.layer5_inlines, descendant_offset, child_visibility);
+      self.emit_fragment_list(&context.layer3_blocks, descendant_offset, local_child_visibility);
+      self.emit_fragment_list(&context.layer4_floats, descendant_offset, local_child_visibility);
+      self.emit_fragment_list(&context.layer5_inlines, descendant_offset, local_child_visibility);
       for item in context.layer6_iter() {
         if self.deadline_reached_periodic(&mut deadline_counter, DEADLINE_STRIDE) {
           break;
         }
         match item {
           Layer6Item::Positioned(fragment) => {
-            self.build_fragment(&fragment.fragment, descendant_offset, child_visibility)
+            self.build_fragment(&fragment.fragment, descendant_offset, local_child_visibility)
           }
           Layer6Item::ZeroContext(child) => self.build_stacking_context(
             child,
             descendant_offset,
             false,
             svg_filters,
-            child_visibility,
+            local_child_visibility,
           ),
         }
       }
@@ -2269,7 +2274,7 @@ impl DisplayListBuilder {
           descendant_offset,
           false,
           svg_filters,
-          child_visibility,
+          local_child_visibility,
         );
       }
       if pushed_opacity {
@@ -2322,7 +2327,7 @@ impl DisplayListBuilder {
       &context.fragments,
       root_fragment_offset,
       apply_opacity,
-      child_visibility,
+      local_child_visibility,
     );
     if skip_contents {
       for _ in 0..pushed_clips {
@@ -2354,26 +2359,26 @@ impl DisplayListBuilder {
         descendant_offset,
         false,
         svg_filters,
-        child_visibility,
+        local_child_visibility,
       );
     }
-    self.emit_fragment_list(&context.layer3_blocks, descendant_offset, child_visibility);
-    self.emit_fragment_list(&context.layer4_floats, descendant_offset, child_visibility);
-    self.emit_fragment_list(&context.layer5_inlines, descendant_offset, child_visibility);
+    self.emit_fragment_list(&context.layer3_blocks, descendant_offset, local_child_visibility);
+    self.emit_fragment_list(&context.layer4_floats, descendant_offset, local_child_visibility);
+    self.emit_fragment_list(&context.layer5_inlines, descendant_offset, local_child_visibility);
     for item in context.layer6_iter() {
       if self.deadline_reached_periodic(&mut deadline_counter, DEADLINE_STRIDE) {
         break;
       }
       match item {
         Layer6Item::Positioned(fragment) => {
-          self.build_fragment(&fragment.fragment, descendant_offset, child_visibility)
+          self.build_fragment(&fragment.fragment, descendant_offset, local_child_visibility)
         }
         Layer6Item::ZeroContext(child) => self.build_stacking_context(
           child,
           descendant_offset,
           false,
           svg_filters,
-          child_visibility,
+          local_child_visibility,
         ),
       }
     }
@@ -2387,7 +2392,7 @@ impl DisplayListBuilder {
         descendant_offset,
         false,
         svg_filters,
-        child_visibility,
+        local_child_visibility,
       );
     }
 
