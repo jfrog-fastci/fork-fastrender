@@ -878,7 +878,7 @@ mod tests {
   use super::*;
   use std::collections::HashSet;
   use std::fs;
-  use std::process::Command;
+  use std::process::{Command, Stdio};
   use std::sync::Arc;
   use std::sync::Barrier;
   use std::thread;
@@ -1201,6 +1201,8 @@ mod tests {
         .arg("--ignored")
         .arg("--exact")
         .arg(child_test_name)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .env("FASTR_DISK_CACHE_INDEX_CACHE_DIR", tmp.path().as_os_str())
         .env("FASTR_DISK_CACHE_INDEX_CHILD_ID", id.to_string())
         .env(
@@ -1216,12 +1218,18 @@ mod tests {
           "FASTR_DISK_CACHE_INDEX_WRITE_CHUNK_SIZE",
           write_chunk_size.to_string(),
         );
-      children.push(cmd.spawn().expect("spawn child writer"));
+      children.push((id, cmd.spawn().expect("spawn child writer")));
     }
 
-    for mut child in children {
-      let status = child.wait().expect("wait child writer");
-      assert!(status.success(), "child writer exited with {status}");
+    for (id, child) in children {
+      let output = child.wait_with_output().expect("wait child writer");
+      assert!(
+        output.status.success(),
+        "child writer {id} exited with {} (stdout={} stderr={})",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+      );
     }
 
     let journal = fs::read_to_string(&journal_path).expect("read journal");
