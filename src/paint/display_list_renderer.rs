@@ -2823,6 +2823,9 @@ struct Preserve3dSceneItem {
   backface_visibility: BackfaceVisibility,
   paint_order: usize,
   effects: Vec<SceneEffect>,
+  backdrop_filters: Vec<ResolvedFilter>,
+  radii: BorderRadii,
+  filter_bounds: Rect,
 }
 
 #[derive(Clone)]
@@ -2990,6 +2993,9 @@ fn collect_scene_items(
       backface_visibility: node.context.backface_visibility,
       paint_order: order,
       effects: inherited_effects.to_vec(),
+      backdrop_filters: node.context.backdrop_filters.clone(),
+      radii: node.context.radii,
+      filter_bounds: node.context.bounds,
     });
     return items;
   }
@@ -3032,6 +3038,9 @@ fn collect_scene_items(
           backface_visibility: node.context.backface_visibility,
           paint_order: order,
           effects: prefix_effects,
+          backdrop_filters: Vec::new(),
+          radii: BorderRadii::ZERO,
+          filter_bounds: bounds,
         });
       }
       StackingSegment::Child(child) => {
@@ -6583,36 +6592,172 @@ impl DisplayListRenderer {
         }
       }
       let scene_result = (|| -> Result<()> {
-        if let Some(pixmap) = self.render_scene_item(scene_item)? {
-          let adjusted_transform = scene_item.transform.multiply(&Transform3D::translate(
-            scene_item.bounds.x(),
-            scene_item.bounds.y(),
-            0.0,
-          ));
-          if self.preserve_3d_debug {
-            let is_affine = Homography::from_transform3d_z0(&adjusted_transform).is_affine();
-            let depth = {
-              let center = scene_item.plane_rect.center();
-              let (_tx, _ty, tz, tw) = scene_item
-                .transform
-                .transform_point(center.x, center.y, 0.0);
-              if tz.is_finite() && tw.is_finite() && tw.abs() >= Transform3D::MIN_PROJECTIVE_W {
-                tz / tw
-              } else {
-                f32::NAN
-              }
+        let has_backdrop = !scene_item.backdrop_filters.is_empty();
+        let parent_transform = self.canvas.transform();
+        let parent_bounds = self.canvas.bounds();
+        let parent_clip_bounds = self.canvas.clip_bounds();
+        let adjusted_transform = scene_item.transform.multiply(&Transform3D::translate(
+          scene_item.bounds.x(),
+          scene_item.bounds.y(),
+          0.0,
+        ));
+
+        let backdrop_bounds = if has_backdrop {
+          let local_bounds = Rect::from_xywh(
+            scene_item.filter_bounds.x() - scene_item.bounds.x(),
+            scene_item.filter_bounds.y() - scene_item.bounds.y(),
+            scene_item.filter_bounds.width(),
+            scene_item.filter_bounds.height(),
+          );
+          self.preserve_3d_rect_device_bounds(local_bounds, &adjusted_transform, parent_transform)
+        } else {
+          None
+        };
+
+        let should_apply_backdrop = has_backdrop && backdrop_bounds.is_some();
+
+        // Match the normal stacking-context backdrop-filter pipeline: paint into an isolated
+        // layer, populate it with the filtered backdrop from the already-composited scene, then
+        // warp/draw the plane content over it.
+        let (layer_bounds, layer_origin) = if should_apply_backdrop {
+          let Some(bounds) = backdrop_bounds.as_ref() else {
+            return Ok(());
+          };
+          let (out_l, out_t, out_r, out_b) = filter_outset_with_bounds(
+            &scene_item.backdrop_filters,
+            self.scale,
+            Some(scene_item.filter_bounds),
+          )
+          .as_tuple();
+          let mut layer_bounds = Rect::from_xywh(
+            bounds.x() - out_l,
+            bounds.y() - out_t,
+            bounds.width() + out_l + out_r,
+            bounds.height() + out_t + out_b,
+          );
+
+          if let Some(clip) = parent_clip_bounds {
+            layer_bounds = match layer_bounds.intersection(clip) {
+              Some(r) => r,
+              None => return Ok(()),
             };
-            eprintln!(
-              "preserve-3d item order={} depth={depth:.4} affine={is_affine} bounds=({}, {}, {}, {})",
-              scene_item.paint_order,
-              scene_item.bounds.x(),
-              scene_item.bounds.y(),
-              scene_item.bounds.width(),
-              scene_item.bounds.height(),
-            );
           }
-          self.warp_pixmap(&pixmap, &adjusted_transform)?;
+          layer_bounds = match layer_bounds.intersection(parent_bounds) {
+            Some(r) => r,
+            None => return Ok(()),
+          };
+
+          if layer_bounds.width() <= 0.0
+            || layer_bounds.height() <= 0.0
+            || !layer_bounds.x().is_finite()
+            || !layer_bounds.y().is_finite()
+          {
+            (None, (0, 0))
+          } else {
+            let origin = (layer_bounds.min_x().floor() as i32, layer_bounds.min_y().floor() as i32);
+            (Some(layer_bounds), origin)
+          }
+        } else {
+          (None, (0, 0))
+        };
+
+        let pushed_layer = if should_apply_backdrop {
+          if let Some(bounds) = layer_bounds {
+            self.canvas.push_layer_bounded(1.0, None, bounds)?;
+          } else {
+            self.canvas.push_layer(1.0)?;
+          }
+          self.record_layer_allocation(self.canvas.width(), self.canvas.height());
+          true
+        } else {
+          false
+        };
+
+        let draw_result = (|| -> Result<()> {
+          if should_apply_backdrop {
+            let Some(bounds_in_src) = backdrop_bounds else {
+              return Ok(());
+            };
+
+            let clip_mask = self.canvas.clip_mask_rc();
+            let clip_bounds = self.canvas.clip_bounds();
+            let radii = self.ds_radii(scene_item.radii);
+            let shape_bounds = Rect::from_xywh(
+              bounds_in_src.x() - layer_origin.0 as f32,
+              bounds_in_src.y() - layer_origin.1 as f32,
+              bounds_in_src.width(),
+              bounds_in_src.height(),
+            );
+
+            let Some((backdrop, dest_pixmap)) = self.canvas.split_backdrop_and_pixmap_mut() else {
+              // Without an active layer, there's nowhere to write the filtered backdrop.
+              return Ok(());
+            };
+            let scale = self.scale;
+            let blur_cache: &mut (dyn BlurCacheOps + 'static) = match self.shared_blur_cache.as_mut()
+            {
+              Some(shared) => shared,
+              None => &mut self.blur_cache,
+            };
+            let backdrop_cache: &mut (dyn BackdropFilterCacheOps + 'static) =
+              match self.shared_backdrop_filter_cache.as_mut() {
+                Some(shared) => shared,
+                None => &mut self.backdrop_filter_cache,
+              };
+            apply_backdrop_filters(
+              dest_pixmap,
+              backdrop,
+              layer_origin,
+              bounds_in_src,
+              shape_bounds,
+              &scene_item.backdrop_filters,
+              radii,
+              scale,
+              clip_mask.as_deref(),
+              clip_bounds,
+              scene_item.filter_bounds,
+              Transform::identity(),
+              Some(blur_cache),
+              Some(backdrop_cache),
+            )?;
+          }
+
+          if let Some(pixmap) = self.render_scene_item(scene_item)? {
+            if self.preserve_3d_debug {
+              let is_affine = Homography::from_transform3d_z0(&adjusted_transform).is_affine();
+              let depth = {
+                let center = scene_item.plane_rect.center();
+                let (_tx, _ty, tz, tw) =
+                  scene_item.transform.transform_point(center.x, center.y, 0.0);
+                if tz.is_finite() && tw.is_finite() && tw.abs() >= Transform3D::MIN_PROJECTIVE_W {
+                  tz / tw
+                } else {
+                  f32::NAN
+                }
+              };
+              eprintln!(
+                "preserve-3d item order={} depth={depth:.4} affine={is_affine} bounds=({}, {}, {}, {})",
+                scene_item.paint_order,
+                scene_item.bounds.x(),
+                scene_item.bounds.y(),
+                scene_item.bounds.width(),
+                scene_item.bounds.height(),
+              );
+            }
+            self.warp_pixmap(&pixmap, &adjusted_transform)?;
+          }
+          Ok(())
+        })();
+
+        if pushed_layer {
+          // If drawing failed, still pop the layer to restore the canvas state before returning.
+          if draw_result.is_err() {
+            let _ = self.canvas.pop_layer_raw();
+          } else {
+            self.canvas.pop_layer()?;
+          }
         }
+        draw_result?;
         Ok(())
       })();
       for _ in 0..pushed_clips {
@@ -6662,6 +6807,7 @@ impl DisplayListRenderer {
             if let DisplayItem::PushStackingContext(sc) = it {
               let mut adjusted = sc.clone();
               adjusted.transform = None;
+              adjusted.backdrop_filters.clear();
               let display_item = DisplayItem::PushStackingContext(adjusted);
               update_scene_effect_stack(&mut effects_after, &display_item);
               list.push(display_item);
@@ -6698,6 +6844,77 @@ impl DisplayListRenderer {
     let report = renderer.render_with_report(&list)?;
     self.gradient_stats.merge(&report.gradient_stats);
     Ok(Some(report.pixmap))
+  }
+
+  fn preserve_3d_rect_device_bounds(
+    &self,
+    rect: Rect,
+    transform: &Transform3D,
+    parent_transform: Transform,
+  ) -> Option<Rect> {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+      return None;
+    }
+    if !rect.x().is_finite()
+      || !rect.y().is_finite()
+      || !rect.width().is_finite()
+      || !rect.height().is_finite()
+    {
+      return None;
+    }
+
+    let homography = Homography::from_transform3d_z0(transform);
+    let warp_enabled = self.projective_warp_enabled;
+
+    let affine_bounds = || {
+      let (t, _valid) = self.to_skia_transform_checked(transform);
+      let skia_transform = concat_transforms(parent_transform, t);
+      transform_rect(self.ds_rect(rect), &skia_transform)
+    };
+
+    if homography.is_affine() || !warp_enabled {
+      return Some(affine_bounds());
+    }
+
+    let corners = [
+      (rect.min_x(), rect.min_y()),
+      (rect.max_x(), rect.min_y()),
+      (rect.max_x(), rect.max_y()),
+      (rect.min_x(), rect.max_y()),
+    ];
+
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+
+    for (x, y) in corners {
+      let (tx, ty, _tz, tw) = transform.transform_point(x, y, 0.0);
+      if !tw.is_finite() || tw.abs() < Transform3D::MIN_PROJECTIVE_W {
+        return Some(affine_bounds());
+      }
+      let px = (tx / tw) * self.scale;
+      let py = (ty / tw) * self.scale;
+      let dst_x = px * parent_transform.sx + py * parent_transform.kx + parent_transform.tx;
+      let dst_y = px * parent_transform.ky + py * parent_transform.sy + parent_transform.ty;
+      if !dst_x.is_finite() || !dst_y.is_finite() {
+        return Some(affine_bounds());
+      }
+      min_x = min_x.min(dst_x);
+      min_y = min_y.min(dst_y);
+      max_x = max_x.max(dst_x);
+      max_y = max_y.max(dst_y);
+    }
+
+    if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite() {
+      return Some(affine_bounds());
+    }
+
+    let bounds = Rect::from_xywh(min_x, min_y, max_x - min_x, max_y - min_y);
+    if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+      return Some(affine_bounds());
+    }
+    Some(bounds)
   }
 
   fn projective_warp(
@@ -10782,6 +10999,7 @@ mod tests {
   use crate::paint::display_list::LinearGradientItem;
   use crate::paint::display_list::LinearGradientPatternItem;
   use crate::paint::display_list::RadialGradientItem;
+  use crate::paint::display_list::ResolvedFilter;
   use crate::paint::display_list::ResolvedMaskLayer;
   use crate::paint::display_list::StackingContextItem;
   use crate::paint::display_list::TextDecorationItem;
@@ -10930,6 +11148,101 @@ mod tests {
     assert!(
       overlap.1 > overlap.2,
       "expected recursion depth guard to disable preserve-3d depth sorting and fall back to DOM paint order"
+    );
+  }
+
+  #[test]
+  fn preserve_3d_backdrop_filter_samples_composited_backdrop() {
+    let bounds = Rect::from_xywh(0.0, 0.0, 50.0, 20.0);
+    let left = Rect::from_xywh(0.0, 0.0, 25.0, 20.0);
+    let right = Rect::from_xywh(25.0, 0.0, 25.0, 20.0);
+
+    let render = |backdrop_filters: Vec<ResolvedFilter>| -> Pixmap {
+      let mut list = DisplayList::new();
+      list.push(DisplayItem::PushStackingContext(StackingContextItem {
+        z_index: 0,
+        creates_stacking_context: true,
+        bounds,
+        plane_rect: bounds,
+        mix_blend_mode: BlendMode::Normal,
+        is_isolated: false,
+        transform: None,
+        child_perspective: None,
+        transform_style: TransformStyle::Preserve3d,
+        backface_visibility: BackfaceVisibility::Visible,
+        filters: Vec::new(),
+        backdrop_filters: Vec::new(),
+        radii: BorderRadii::ZERO,
+        mask: None,
+      }));
+
+      // Back plane paints a hard black/white edge at x=25.
+      list.push(DisplayItem::PushStackingContext(StackingContextItem {
+        z_index: 0,
+        creates_stacking_context: true,
+        bounds,
+        plane_rect: bounds,
+        mix_blend_mode: BlendMode::Normal,
+        is_isolated: false,
+        transform: Some(Transform3D::translate(0.0, 0.0, -10.0)),
+        child_perspective: None,
+        transform_style: TransformStyle::Flat,
+        backface_visibility: BackfaceVisibility::Visible,
+        filters: Vec::new(),
+        backdrop_filters: Vec::new(),
+        radii: BorderRadii::ZERO,
+        mask: None,
+      }));
+      list.push(DisplayItem::FillRect(FillRectItem {
+        rect: left,
+        color: Rgba::BLACK,
+      }));
+      list.push(DisplayItem::FillRect(FillRectItem {
+        rect: right,
+        color: Rgba::WHITE,
+      }));
+      list.push(DisplayItem::PopStackingContext);
+
+      // Front plane applies the backdrop filter (content is empty/transparent so only the filtered
+      // backdrop is visible).
+      list.push(DisplayItem::PushStackingContext(StackingContextItem {
+        z_index: 0,
+        creates_stacking_context: true,
+        bounds,
+        plane_rect: bounds,
+        mix_blend_mode: BlendMode::Normal,
+        is_isolated: !backdrop_filters.is_empty(),
+        transform: Some(Transform3D::translate(0.0, 0.0, 10.0)),
+        child_perspective: None,
+        transform_style: TransformStyle::Flat,
+        backface_visibility: BackfaceVisibility::Visible,
+        filters: Vec::new(),
+        backdrop_filters,
+        radii: BorderRadii::ZERO,
+        mask: None,
+      }));
+      list.push(DisplayItem::PopStackingContext);
+
+      list.push(DisplayItem::PopStackingContext);
+
+      DisplayListRenderer::new(50, 20, Rgba::TRANSPARENT, FontContext::new())
+        .unwrap()
+        .render(&list)
+        .unwrap()
+    };
+
+    let baseline = render(Vec::new());
+    let blurred = render(vec![ResolvedFilter::Blur(5.0)]);
+
+    let baseline_px = pixel(&baseline, 24, 10);
+    let blurred_px = pixel(&blurred, 24, 10);
+    assert_ne!(
+      baseline_px, blurred_px,
+      "expected backdrop-filter to sample the composited backdrop in preserve-3d scenes"
+    );
+    assert!(
+      blurred_px.0 > baseline_px.0,
+      "expected blur to mix in white pixels across the edge; baseline={baseline_px:?} blurred={blurred_px:?}"
     );
   }
 
