@@ -1301,19 +1301,41 @@ fn crawl_document(
     }
   }
 
-  let html_assets =
-    fastrender::html::asset_discovery::discover_html_asset_urls(&document.html, &document.base_url);
-  for url in discover_html_images(&document.html, &document.base_url, render)? {
-    enqueue_unique(
-      &mut queue,
-      &mut seen_urls,
-      &mut queued,
-      url,
-      FetchDestination::Image,
-      root_referrer,
-    );
+  let fastrender::html::asset_discovery::HtmlAssetUrls {
+    images: html_image_urls,
+    documents: html_documents,
+  } = fastrender::html::asset_discovery::discover_html_asset_urls(&document.html, &document.base_url);
+  if matches!(mode, CrawlMode::BestEffort) {
+    for url in html_image_urls {
+      if url
+        .get(..5)
+        .map(|prefix| prefix.eq_ignore_ascii_case("data:"))
+        .unwrap_or(false)
+      {
+        continue;
+      }
+      enqueue_unique(
+        &mut queue,
+        &mut seen_urls,
+        &mut queued,
+        url,
+        FetchDestination::Image,
+        root_referrer,
+      );
+    }
+  } else {
+    for url in discover_html_images(&document.html, &document.base_url, render)? {
+      enqueue_unique(
+        &mut queue,
+        &mut seen_urls,
+        &mut queued,
+        url,
+        FetchDestination::Image,
+        root_referrer,
+      );
+    }
   }
-  for url in html_assets.documents {
+  for url in html_documents {
     enqueue_unique(
       &mut queue,
       &mut seen_urls,
@@ -1507,20 +1529,42 @@ fn crawl_document(
           }
         }
 
-        for url in discover_html_images(&doc.html, &doc.base_url, render)? {
-          enqueue_unique(
-            &mut queue,
-            &mut seen_urls,
-            &mut queued,
-            url,
-            FetchDestination::Image,
-            doc.base_hint.as_str(),
-          );
+        let fastrender::html::asset_discovery::HtmlAssetUrls {
+          images: html_image_urls,
+          documents: html_documents,
+        } = fastrender::html::asset_discovery::discover_html_asset_urls(&doc.html, &doc.base_url);
+        if matches!(mode, CrawlMode::BestEffort) {
+          for url in html_image_urls {
+            if url
+              .get(..5)
+              .map(|prefix| prefix.eq_ignore_ascii_case("data:"))
+              .unwrap_or(false)
+            {
+              continue;
+            }
+            enqueue_unique(
+              &mut queue,
+              &mut seen_urls,
+              &mut queued,
+              url,
+              FetchDestination::Image,
+              doc.base_hint.as_str(),
+            );
+          }
+        } else {
+          for url in discover_html_images(&doc.html, &doc.base_url, render)? {
+            enqueue_unique(
+              &mut queue,
+              &mut seen_urls,
+              &mut queued,
+              url,
+              FetchDestination::Image,
+              doc.base_hint.as_str(),
+            );
+          }
         }
 
-        let html_assets =
-          fastrender::html::asset_discovery::discover_html_asset_urls(&doc.html, &doc.base_url);
-        for url in html_assets.documents {
+        for url in html_documents {
           enqueue_unique(
             &mut queue,
             &mut seen_urls,

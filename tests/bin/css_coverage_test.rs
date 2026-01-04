@@ -72,8 +72,8 @@ fn css_coverage_classifies_known_unknown_and_vendor_prefixed_properties() {
   let vendor = lookup("-webkit-transform");
   assert_eq!(
     vendor["known_style_property"].as_bool(),
-    Some(false),
-    "expected vendor-prefixed property to be unknown: {vendor:?}"
+    Some(true),
+    "expected vendor-prefixed property to be recognized via aliasing: {vendor:?}"
   );
   assert_eq!(
     vendor["vendor_prefixed"].as_bool(),
@@ -94,8 +94,8 @@ fn css_coverage_classifies_known_unknown_and_vendor_prefixed_properties() {
   let rotate = lookup("rotate");
   assert_eq!(
     rotate["known_style_property"].as_bool(),
-    Some(false),
-    "expected `rotate` to be unknown: {rotate:?}"
+    Some(true),
+    "expected `rotate` to be classified as known: {rotate:?}"
   );
 
   let unknown = lookup("unknown-prop");

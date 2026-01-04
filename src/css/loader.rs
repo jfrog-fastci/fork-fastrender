@@ -2376,7 +2376,47 @@ fn infer_document_url_guess_from_dom_with_input<'a>(
 /// templates).
 pub fn infer_base_url<'a>(html: &'a str, input_url: &'a str) -> Cow<'a, str> {
   let input = canonicalize_file_input_url(input_url);
-  let Ok(dom) = crate::dom::parse_html(html) else {
+  // `infer_base_url` previously parsed the full document to safely locate `<base href>` and
+  // canonical/OG URL hints without being vulnerable to poisoning from inert contexts. That is
+  // correct but can be prohibitively expensive for very large HTML inputs (e.g. pageset fixtures
+  // used by CLI tooling) where the only relevant metadata lives near the top of the document.
+  //
+  // To keep CLI soft timeouts effective (and avoid consuming the entire hard timeout budget while
+  // *guessing* the base URL), only parse a prefix of the document that covers `<head>` and the
+  // start of `<body>`.
+  const MAX_BASE_URL_SCAN_BYTES: usize = 256 * 1024;
+  const BASE_URL_SCAN_BODY_PREFIX_BYTES: usize = 32 * 1024;
+
+  fn scan_html_prefix(html: &str) -> &str {
+    if html.len() <= MAX_BASE_URL_SCAN_BYTES {
+      return html;
+    }
+
+    let mut limit = MAX_BASE_URL_SCAN_BYTES.min(html.len());
+    while limit > 0 && !html.is_char_boundary(limit) {
+      limit -= 1;
+    }
+
+    let prefix = &html[..limit];
+    let mut end = limit;
+
+    if let Some(pos) = crate::html::find_tag_case_insensitive_outside_templates(prefix, "body", false)
+    {
+      end = (pos + BASE_URL_SCAN_BODY_PREFIX_BYTES).min(limit);
+    } else if let Some(pos) =
+      crate::html::find_tag_case_insensitive_outside_templates(prefix, "head", true)
+    {
+      end = pos.min(limit);
+    }
+
+    while end > 0 && !html.is_char_boundary(end) {
+      end -= 1;
+    }
+    &html[..end]
+  }
+
+  let scanned_html = scan_html_prefix(html);
+  let Ok(dom) = crate::dom::parse_html(scanned_html) else {
     return infer_document_url_guess_without_dom(input);
   };
   let document_url_guess = infer_document_url_guess_from_dom_with_input(&dom, input);
