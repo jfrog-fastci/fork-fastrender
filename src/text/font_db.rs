@@ -1801,6 +1801,55 @@ fn apply_face_variations(face: &mut ttf_parser::Face<'_>, variations: &[(Tag, f3
   applied
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SkrifaMetricsOverrides {
+  ascent: i16,
+  descent: i16,
+  line_gap: i16,
+  x_height: Option<i16>,
+  cap_height: Option<i16>,
+}
+
+#[inline]
+fn skrifa_metric_to_i16(value: f32) -> Option<i16> {
+  if !value.is_finite() {
+    return None;
+  }
+  let value = value.round();
+  if value <= i16::MIN as f32 {
+    return Some(i16::MIN);
+  }
+  if value >= i16::MAX as f32 {
+    return Some(i16::MAX);
+  }
+  Some(value as i16)
+}
+
+fn extract_skrifa_metrics_overrides(
+  data: &[u8],
+  index: u32,
+  variations: &[(Tag, f32)],
+) -> Option<SkrifaMetricsOverrides> {
+  use skrifa::instance::{LocationRef, Size};
+  use skrifa::{FontRef, MetadataProvider, Tag as SkTag};
+
+  let font_ref = FontRef::from_index(data, index).ok()?;
+  let settings: Vec<(SkTag, f32)> = variations
+    .iter()
+    .map(|(tag, value)| (SkTag::from_u32(tag.0), *value))
+    .collect();
+  let location = font_ref.axes().location(settings);
+  let metrics = font_ref.metrics(Size::unscaled(), LocationRef::from(&location));
+
+  Some(SkrifaMetricsOverrides {
+    ascent: skrifa_metric_to_i16(metrics.ascent)?,
+    descent: skrifa_metric_to_i16(metrics.descent)?,
+    line_gap: skrifa_metric_to_i16(metrics.leading)?,
+    x_height: metrics.x_height.and_then(skrifa_metric_to_i16),
+    cap_height: metrics.cap_height.and_then(skrifa_metric_to_i16),
+  })
+}
+
 fn extract_metrics(face: &ttf_parser::Face) -> Result<FontMetrics> {
   let units_per_em = face.units_per_em();
   let ascent = face.ascender();
@@ -1921,7 +1970,30 @@ impl FontMetrics {
     if variations.is_empty() {
       return Self::from_font(font);
     }
-    face_cache::with_face(font, |face| Self::from_face_with_variations(face, variations))
+
+    // `ttf-parser` applies variation coordinates to underline metrics, but does not apply MVAR
+    // deltas for typographic metrics like ascender/descender/line-gap. Use skrifa as a fallback
+    // for the line metrics when variations are present.
+    face_cache::with_face(font, |face| -> Result<FontMetrics> {
+      let mut face = face.clone();
+      apply_face_variations(&mut face, variations);
+      let mut metrics = extract_metrics(&face)?;
+      if face.is_variable() {
+        if let Some(overrides) = extract_skrifa_metrics_overrides(&font.data, font.index, variations) {
+          metrics.ascent = overrides.ascent;
+          metrics.descent = overrides.descent;
+          metrics.line_gap = overrides.line_gap;
+          metrics.line_height = metrics.ascent - metrics.descent + metrics.line_gap;
+          if overrides.x_height.is_some() {
+            metrics.x_height = overrides.x_height;
+          }
+          if overrides.cap_height.is_some() {
+            metrics.cap_height = overrides.cap_height;
+          }
+        }
+      }
+      Ok(metrics)
+    })
       .transpose()?
       .ok_or_else(|| {
         FontError::LoadFailed {
@@ -1945,10 +2017,27 @@ impl FontMetrics {
     variations: &[(Tag, f32)],
   ) -> Result<Self> {
     let mut face = parse_face_for_metrics(data, index)?;
-    if !variations.is_empty() {
-      apply_face_variations(&mut face, variations);
+    if variations.is_empty() {
+      return Self::from_face(&face);
     }
-    Self::from_face(&face)
+
+    apply_face_variations(&mut face, variations);
+    let mut metrics = extract_metrics(&face)?;
+    if face.is_variable() {
+      if let Some(overrides) = extract_skrifa_metrics_overrides(data, index, variations) {
+        metrics.ascent = overrides.ascent;
+        metrics.descent = overrides.descent;
+        metrics.line_gap = overrides.line_gap;
+        metrics.line_height = metrics.ascent - metrics.descent + metrics.line_gap;
+        if overrides.x_height.is_some() {
+          metrics.x_height = overrides.x_height;
+        }
+        if overrides.cap_height.is_some() {
+          metrics.cap_height = overrides.cap_height;
+        }
+      }
+    }
+    Ok(metrics)
   }
 
   /// Extract metrics from ttf-parser Face

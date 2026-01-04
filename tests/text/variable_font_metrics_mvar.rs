@@ -50,15 +50,40 @@ fn variable_font_metrics_apply_mvar_variations() {
     .metrics_with_variations(&coords_b)
     .expect("raw metrics for second coordinate set");
 
-  let changed = (a.ascent - b.ascent).abs() > 0.01
-    || (a.descent - b.descent).abs() > 0.01
-    || (a.line_gap - b.line_gap).abs() > 0.01
-    || (a.line_height - b.line_height).abs() > 0.01
-    || (a.underline_position - b.underline_position).abs() > 0.01
-    || (a.underline_thickness - b.underline_thickness).abs() > 0.01;
+  // The fixture font encodes MVAR deltas for typographic metrics (ascender/descender/line-gap) and
+  // underline metrics. Both scaled and raw values should reflect those deltas when `wght` changes.
+  assert_eq!(raw_a.ascent, 720, "raw A mismatch: {raw_a:?}");
+  assert_eq!(raw_a.descent, -180, "raw A mismatch: {raw_a:?}");
+  assert_eq!(raw_a.line_gap, 0, "raw A mismatch: {raw_a:?}");
+  assert_eq!(raw_a.line_height, 900, "raw A mismatch: {raw_a:?}");
+  assert_eq!(raw_a.x_height, Some(460), "raw A mismatch: {raw_a:?}");
+  assert_eq!(raw_a.cap_height, Some(640), "raw A mismatch: {raw_a:?}");
+  assert_eq!(raw_a.underline_position, -60, "raw A mismatch: {raw_a:?}");
+  assert_eq!(raw_a.underline_thickness, 30, "raw A mismatch: {raw_a:?}");
+
+  assert_eq!(raw_b.ascent, 920, "raw B mismatch: {raw_b:?}");
+  assert_eq!(raw_b.descent, -260, "raw B mismatch: {raw_b:?}");
+  assert_eq!(raw_b.line_gap, 300, "raw B mismatch: {raw_b:?}");
+  assert_eq!(raw_b.line_height, 1480, "raw B mismatch: {raw_b:?}");
+  assert_eq!(raw_b.x_height, Some(540), "raw B mismatch: {raw_b:?}");
+  assert_eq!(raw_b.cap_height, Some(760), "raw B mismatch: {raw_b:?}");
+  assert_eq!(raw_b.underline_position, -140, "raw B mismatch: {raw_b:?}");
+  assert_eq!(raw_b.underline_thickness, 70, "raw B mismatch: {raw_b:?}");
+
+  let expect = |label: &str, actual: f32, expected: f32| {
+    assert!(
+      (actual - expected).abs() < 0.05,
+      "{label}: expected {expected}, got {actual}\nA={a:?}\nB={b:?}\nraw A={raw_a:?}\nraw B={raw_b:?}"
+    );
+  };
+
+  expect("scaled A line_height", a.line_height, 43.2);
+  expect("scaled B line_height", b.line_height, 71.04);
+  expect("scaled A underline_thickness", a.underline_thickness, 1.44);
+  expect("scaled B underline_thickness", b.underline_thickness, 3.36);
 
   assert!(
-    changed,
-    "expected variable font MVAR metrics to change across variations.\nA={a:?}\nB={b:?}\nraw A={raw_a:?}\nraw B={raw_b:?}"
+    b.line_height > a.line_height,
+    "expected heavier instance to have a larger line height.\nA={a:?}\nB={b:?}\nraw A={raw_a:?}\nraw B={raw_b:?}"
   );
 }
