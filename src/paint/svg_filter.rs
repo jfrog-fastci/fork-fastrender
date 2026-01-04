@@ -2337,8 +2337,17 @@ fn parse_light_source(node: &roxmltree::Node) -> Option<LightSource> {
 
 fn parse_fe_diffuse_lighting(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   let input = parse_input(attribute_ci(node, "in"));
-  let surface_scale = parse_number(attribute_ci(node, "surfaceScale"));
-  let diffuse_constant = parse_number(attribute_ci(node, "diffuseConstant")).max(0.0);
+  let surface_scale = attribute_ci(node, "surfaceScale")
+    .and_then(|v| v.split_whitespace().next())
+    .and_then(|v| v.parse::<f32>().ok())
+    .filter(|v| v.is_finite())
+    .unwrap_or(1.0);
+  let diffuse_constant = attribute_ci(node, "diffuseConstant")
+    .and_then(|v| v.split_whitespace().next())
+    .and_then(|v| v.parse::<f32>().ok())
+    .filter(|v| v.is_finite())
+    .unwrap_or(1.0)
+    .max(0.0);
   let kernel_unit_length = attribute_ci(node, "kernelUnitLength")
     .map(|v| parse_number_pair(Some(v)))
     .map(|(x, y)| (x.max(0.0), y.max(0.0)));
@@ -2415,8 +2424,17 @@ fn parse_fe_color_matrix(node: &roxmltree::Node) -> Option<FilterPrimitive> {
 
 fn parse_fe_specular_lighting(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   let input = parse_input(attribute_ci(node, "in"));
-  let surface_scale = parse_number(attribute_ci(node, "surfaceScale"));
-  let specular_constant = parse_number(attribute_ci(node, "specularConstant")).max(0.0);
+  let surface_scale = attribute_ci(node, "surfaceScale")
+    .and_then(|v| v.split_whitespace().next())
+    .and_then(|v| v.parse::<f32>().ok())
+    .filter(|v| v.is_finite())
+    .unwrap_or(1.0);
+  let specular_constant = attribute_ci(node, "specularConstant")
+    .and_then(|v| v.split_whitespace().next())
+    .and_then(|v| v.parse::<f32>().ok())
+    .filter(|v| v.is_finite())
+    .unwrap_or(1.0)
+    .max(0.0);
   let specular_exponent = attribute_ci(node, "specularExponent")
     .and_then(|v| v.parse::<f32>().ok())
     .unwrap_or(1.0);
@@ -4301,7 +4319,7 @@ fn surface_normal(
   );
   let dzdx = (h_l - h_r) / (2.0 * ku_x);
   let dzdy = (h_t - h_b) / (2.0 * ku_y);
-  normalize3(-dzdx, -dzdy, 1.0)
+  normalize3(dzdx, dzdy, 1.0)
 }
 
 fn normalize3(x: f32, y: f32, z: f32) -> (f32, f32, f32) {
@@ -4403,13 +4421,16 @@ fn apply_diffuse_lighting(
               compute_light_direction(filter, css_bbox, &light, (css_x, css_y, height));
             let n_dot_l = dot3(normal, light_dir).max(0.0);
             let intensity = n_dot_l * diffuse_constant * light_factor;
-            let color_scale = (intensity * base_color.a * alpha).clamp(0.0, 1.0);
-            let out_alpha = color_scale;
+            if intensity <= 0.0 {
+              *dst = PremultipliedColorU8::TRANSPARENT;
+              continue;
+            }
+            let out_alpha = (base_color.a * alpha).clamp(0.0, 1.0);
             *dst = pack_color(
               UnpremultipliedColor {
-                r: base_color.r * color_scale,
-                g: base_color.g * color_scale,
-                b: base_color.b * color_scale,
+                r: base_color.r * intensity,
+                g: base_color.g * intensity,
+                b: base_color.b * intensity,
                 a: out_alpha,
               },
               color_interpolation_filters,
@@ -4522,13 +4543,16 @@ fn apply_specular_lighting(
             );
             let spec_angle = reflect.2.max(0.0).powf(exponent);
             let intensity = specular_constant * spec_angle * light_factor;
-            let color_scale = (intensity * base_color.a * alpha).clamp(0.0, 1.0);
-            let out_alpha = color_scale;
+            if intensity <= 0.0 {
+              *dst = PremultipliedColorU8::TRANSPARENT;
+              continue;
+            }
+            let out_alpha = (base_color.a * alpha).clamp(0.0, 1.0);
             *dst = pack_color(
               UnpremultipliedColor {
-                r: base_color.r * color_scale,
-                g: base_color.g * color_scale,
-                b: base_color.b * color_scale,
+                r: base_color.r * intensity,
+                g: base_color.g * intensity,
+                b: base_color.b * intensity,
                 a: out_alpha,
               },
               color_interpolation_filters,

@@ -110,6 +110,55 @@ fn lighting_primitives_parse_light_sources() {
 }
 
 #[test]
+fn lighting_primitives_parse_defaults() {
+  let svg = r##"
+  <svg xmlns="http://www.w3.org/2000/svg">
+    <filter id="f" color-interpolation-filters="sRGB">
+      <feDiffuseLighting in="SourceAlpha">
+        <feDistantLight azimuth="0" elevation="45" />
+      </feDiffuseLighting>
+      <feSpecularLighting in="SourceGraphic">
+        <feDistantLight azimuth="0" elevation="45" />
+      </feSpecularLighting>
+    </filter>
+  </svg>
+  "##;
+
+  let filter =
+    parse_svg_filter_from_svg_document(svg, Some("f"), &ImageCache::new()).expect("filter");
+
+  match &filter.steps[0].primitive {
+    FilterPrimitive::DiffuseLighting {
+      surface_scale,
+      diffuse_constant,
+      kernel_unit_length,
+      ..
+    } => {
+      assert_eq!(*surface_scale, 1.0);
+      assert_eq!(*diffuse_constant, 1.0);
+      assert_eq!(kernel_unit_length, &None);
+    }
+    other => panic!("unexpected first primitive {other:?}"),
+  }
+
+  match &filter.steps[1].primitive {
+    FilterPrimitive::SpecularLighting {
+      surface_scale,
+      specular_constant,
+      specular_exponent,
+      kernel_unit_length,
+      ..
+    } => {
+      assert_eq!(*surface_scale, 1.0);
+      assert_eq!(*specular_constant, 1.0);
+      assert_eq!(*specular_exponent, 1.0);
+      assert_eq!(kernel_unit_length, &None);
+    }
+    other => panic!("unexpected second primitive {other:?}"),
+  }
+}
+
+#[test]
 fn diffuse_lighting_colors_flat_surface() {
   let mut pixmap = solid_pixmap(1, 1, PremultipliedColorU8::from_rgba(0, 0, 0, 255).unwrap());
   let bbox = Rect::from_xywh(0.0, 0.0, 1.0, 1.0);
@@ -353,4 +402,53 @@ fn point_light_percentages_follow_bbox_in_userspace() {
     "expected bbox-relative point light to fully illuminate the corner (alpha={})",
     px.alpha()
   );
+}
+
+#[test]
+fn diffuse_lighting_regression_premultiply_and_normal_sign() {
+  let mut pixmap = Pixmap::new(3, 1).expect("pixmap");
+  let alphas = [0u8, 255u8, 255u8];
+  for (x, &a) in alphas.iter().enumerate() {
+    pixmap.pixels_mut()[x] = PremultipliedColorU8::from_rgba(0, 0, 0, a).unwrap();
+  }
+  let bbox = Rect::from_xywh(0.0, 0.0, 3.0, 1.0);
+  let filter = with_fingerprint(SvgFilter {
+    color_interpolation_filters: ColorInterpolationFilters::SRGB,
+    steps: vec![FilterStep {
+      result: None,
+      color_interpolation_filters: None,
+      primitive: FilterPrimitive::DiffuseLighting {
+        input: FilterInput::SourceAlpha,
+        surface_scale: 1.0,
+        diffuse_constant: 1.0,
+        kernel_unit_length: None,
+        light: LightSource::Distant {
+          azimuth: 0.0,
+          elevation: 45.0,
+        },
+        lighting_color: Rgba::WHITE,
+      },
+      region: None,
+    }],
+    region: SvgFilterRegion {
+      x: SvgLength::Number(0.0),
+      y: SvgLength::Number(0.0),
+      width: SvgLength::Number(3.0),
+      height: SvgLength::Number(1.0),
+      units: SvgFilterUnits::UserSpaceOnUse,
+    },
+    filter_res: None,
+    primitive_units: SvgFilterUnits::UserSpaceOnUse,
+    fingerprint: 0,
+  });
+
+  apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
+
+  let px = pixmap.pixel(1, 0).unwrap();
+  assert!(
+    (px.red() as i32 - 81).abs() <= 1,
+    "expected middle pixel premultiplied red around 81 (n·L≈0.316), got {}",
+    px.red()
+  );
+  assert_eq!(px.alpha(), 255, "expected fully opaque output for opaque input");
 }
