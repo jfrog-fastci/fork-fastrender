@@ -46,6 +46,8 @@ pub(crate) fn is_raw_only_property(property: &str) -> bool {
       | "view-timeline"
       | "animation-timeline"
       | "animation-range"
+      | "animation-range-start"
+      | "animation-range-end"
       | "animation"
       | "animation-name"
       | "animation-duration"
@@ -91,6 +93,8 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "animation-name",
   "animation-play-state",
   "animation-range",
+  "animation-range-end",
+  "animation-range-start",
   "animation-timing-function",
   "animation-timeline",
   "-webkit-animation",

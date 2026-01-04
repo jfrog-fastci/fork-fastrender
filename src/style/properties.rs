@@ -1333,6 +1333,85 @@ fn parse_animation_range_list(raw: &str) -> Vec<AnimationRange> {
   ranges
 }
 
+fn parse_animation_range_offset_list(raw: &str, default: RangeOffset) -> Vec<RangeOffset> {
+  let parts = split_top_level_commas(raw);
+  if parts.len() == 1 && parts[0].trim().eq_ignore_ascii_case("none") {
+    return Vec::new();
+  }
+
+  let mut offsets = Vec::new();
+  for part in parts {
+    let tokens = split_top_level_whitespace(&part);
+    if tokens.is_empty() {
+      continue;
+    }
+
+    if tokens.len() == 1 && tokens[0].eq_ignore_ascii_case("normal") {
+      offsets.push(default.clone());
+      continue;
+    }
+
+    if let Some((offset, consumed)) = parse_range_offset(&tokens) {
+      if consumed == tokens.len() {
+        offsets.push(offset);
+      }
+    }
+  }
+
+  if offsets.is_empty() {
+    vec![default]
+  } else {
+    offsets
+  }
+}
+
+fn pick_or_last<T: Clone>(list: &[T], idx: usize, default: T) -> T {
+  if list.is_empty() {
+    return default;
+  }
+  list
+    .get(idx)
+    .cloned()
+    .unwrap_or_else(|| list.last().cloned().unwrap_or(default))
+}
+
+fn animation_ranges_with_updated_start(
+  existing: &[AnimationRange],
+  start_offsets: &[RangeOffset],
+) -> Vec<AnimationRange> {
+  let new_len = existing.len().max(start_offsets.len());
+  if new_len == 0 {
+    return Vec::new();
+  }
+
+  let default_range = AnimationRange::default();
+  let default_start = RangeOffset::Progress(0.0);
+  let mut out = Vec::with_capacity(new_len);
+  for idx in 0..new_len {
+    let start = pick_or_last(start_offsets, idx, default_start.clone());
+    let end = pick_or_last(existing, idx, default_range.clone()).end;
+    out.push(AnimationRange { start, end });
+  }
+  out
+}
+
+fn animation_ranges_with_updated_end(existing: &[AnimationRange], end_offsets: &[RangeOffset]) -> Vec<AnimationRange> {
+  let new_len = existing.len().max(end_offsets.len());
+  if new_len == 0 {
+    return Vec::new();
+  }
+
+  let default_range = AnimationRange::default();
+  let default_end = RangeOffset::Progress(1.0);
+  let mut out = Vec::with_capacity(new_len);
+  for idx in 0..new_len {
+    let start = pick_or_last(existing, idx, default_range.clone()).start;
+    let end = pick_or_last(end_offsets, idx, default_end.clone());
+    out.push(AnimationRange { start, end });
+  }
+  out
+}
+
 #[cfg(test)]
 mod animation_range_tests {
   use super::*;
@@ -1356,6 +1435,28 @@ mod animation_range_tests {
         start: RangeOffset::View(ViewTimelinePhase::Entry, Length::percent(50.0)),
         end: RangeOffset::View(ViewTimelinePhase::Exit, Length::percent(0.0)),
       }]
+    );
+  }
+
+  #[test]
+  fn parses_animation_range_start_offset_list() {
+    assert_eq!(
+      parse_animation_range_offset_list("entry 50px, normal", RangeOffset::Progress(0.0)),
+      vec![
+        RangeOffset::View(ViewTimelinePhase::Entry, Length::px(50.0)),
+        RangeOffset::Progress(0.0)
+      ]
+    );
+  }
+
+  #[test]
+  fn parses_animation_range_end_offset_list() {
+    assert_eq!(
+      parse_animation_range_offset_list("exit 0px, normal", RangeOffset::Progress(1.0)),
+      vec![
+        RangeOffset::View(ViewTimelinePhase::Exit, Length::px(0.0)),
+        RangeOffset::Progress(1.0)
+      ]
     );
   }
 }
@@ -6103,6 +6204,8 @@ fn apply_declaration_with_base_internal(
       | "view-timeline"
       | "animation-timeline"
       | "animation-range"
+      | "animation-range-start"
+      | "animation-range-end"
       | "animation"
       | "animation-name"
       | "animation-duration"
@@ -9766,6 +9869,18 @@ fn apply_declaration_with_base_internal(
     "animation-range" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
       styles.animation_ranges = parse_animation_range_list(css_text);
+    }
+    "animation-range-start" => {
+      let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
+      let start_offsets = parse_animation_range_offset_list(css_text, RangeOffset::Progress(0.0));
+      let existing = std::mem::take(&mut styles.animation_ranges);
+      styles.animation_ranges = animation_ranges_with_updated_start(&existing, &start_offsets);
+    }
+    "animation-range-end" => {
+      let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
+      let end_offsets = parse_animation_range_offset_list(css_text, RangeOffset::Progress(1.0));
+      let existing = std::mem::take(&mut styles.animation_ranges);
+      styles.animation_ranges = animation_ranges_with_updated_end(&existing, &end_offsets);
     }
     "animation-name" | "-webkit-animation-name" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());

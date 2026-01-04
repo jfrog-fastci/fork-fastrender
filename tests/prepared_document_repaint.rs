@@ -234,3 +234,48 @@ fn repaint_with_view_timeline_range_changes_pixels() -> Result<()> {
   assert_ne!(mid_px, end_px);
   Ok(())
 }
+
+#[test]
+fn repaint_with_view_timeline_range_longhands_changes_pixels() -> Result<()> {
+  let mut renderer = FastRender::new()?;
+  let html = r#"
+    <style>
+      body { margin: 0; }
+      .spacer { height: 200px; }
+      .box {
+        width: 200px;
+        height: 100px;
+        view-timeline: --box block;
+        animation-name: fade;
+        animation-timeline: --box;
+        animation-range-start: entry 50px;
+        animation-range-end: entry 150px;
+      }
+      @keyframes fade {
+        from { background-color: rgb(255, 0, 0); }
+        to { background-color: rgb(0, 255, 0); }
+      }
+    </style>
+    <div class="spacer"></div>
+    <div class="box"></div>
+    <div class="spacer" style="height: 800px"></div>
+  "#;
+  let prepared = renderer.prepare_html(html, RenderOptions::new().with_viewport(200, 200))?;
+
+  // The box starts at y=200, so its entry phase begins at scroll_y=0 for a 200px viewport.
+  // With `animation-range-start/end: entry 50px` / `entry 150px`, scroll_y=50 should be progress 0 and
+  // scroll_y=150 should be progress 1.
+  let start = prepared.paint_with_options(PreparedPaintOptions::new().with_scroll(0.0, 50.0))?;
+  let mid = prepared.paint_with_options(PreparedPaintOptions::new().with_scroll(0.0, 100.0))?;
+  let end = prepared.paint_with_options(PreparedPaintOptions::new().with_scroll(0.0, 150.0))?;
+
+  let start_px = pixel(&start, 10, 160);
+  let mid_px = pixel(&mid, 10, 110);
+  let end_px = pixel(&end, 10, 60);
+
+  assert_eq!(start_px, (255, 0, 0, 255));
+  assert_eq!(end_px, (0, 255, 0, 255));
+  assert_ne!(mid_px, start_px);
+  assert_ne!(mid_px, end_px);
+  Ok(())
+}
