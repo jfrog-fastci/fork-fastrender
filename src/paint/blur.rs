@@ -2783,8 +2783,125 @@ mod tests {
   use crate::paint::pixmap::new_pixmap;
   use crate::render_control::{with_deadline, RenderDeadline};
   use rayon::ThreadPoolBuilder;
+  use std::cell::RefCell;
+  use std::collections::HashMap;
   use std::sync::Arc;
   use tiny_skia::PremultipliedColorU8;
+
+  thread_local! {
+    static THREAD_TOGGLE_GUARD: RefCell<Option<runtime::ThreadRuntimeTogglesGuard>> =
+      RefCell::new(None);
+  }
+
+  fn build_pool_with_toggles(
+    threads: usize,
+    toggles: Arc<runtime::RuntimeToggles>,
+  ) -> rayon::ThreadPool {
+    ThreadPoolBuilder::new()
+      .num_threads(threads)
+      .start_handler(move |_| {
+        let guard = runtime::set_thread_runtime_toggles(toggles.clone());
+        THREAD_TOGGLE_GUARD.with(|slot| {
+          *slot.borrow_mut() = Some(guard);
+        });
+      })
+      .exit_handler(|_| {
+        THREAD_TOGGLE_GUARD.with(|slot| {
+          slot.borrow_mut().take();
+        });
+      })
+      .build()
+      .unwrap()
+  }
+
+  fn tile_blur_plan(
+    width: u32,
+    height: u32,
+    sigma_x: f32,
+    sigma_y: f32,
+    config: FilterCacheConfig,
+  ) -> (usize, usize, bool) {
+    let data_len = (width as usize)
+      .saturating_mul(height as usize)
+      .saturating_mul(4);
+    if config.max_bytes == 0 || data_len <= config.max_bytes || width == 0 || height == 0 {
+      return (0, 0, false);
+    }
+
+    let pad_x = (sigma_x.abs() * 3.0).ceil() as u32;
+    let pad_y = (sigma_y.abs() * 3.0).ceil() as u32;
+    let budget_pixels = config.max_bytes / 4;
+    if budget_pixels == 0 {
+      return (0, 0, false);
+    }
+    let budget_pixels_u64 = budget_pixels as u64;
+
+    let (span_w, span_h) = if width >= height {
+      let aspect = width as f64 / height as f64;
+      let mut span_w = ((budget_pixels as f64) * aspect).sqrt().floor() as u64;
+      span_w = span_w
+        .max(1)
+        .min(budget_pixels_u64.max(1))
+        .min(width as u64);
+      let span_h = (budget_pixels_u64 / span_w).max(1).min(height as u64);
+      (span_w as u32, span_h as u32)
+    } else {
+      let aspect = height as f64 / width as f64;
+      let mut span_h = ((budget_pixels as f64) * aspect).sqrt().floor() as u64;
+      span_h = span_h
+        .max(1)
+        .min(budget_pixels_u64.max(1))
+        .min(height as u64);
+      let span_w = (budget_pixels_u64 / span_h).max(1).min(width as u64);
+      (span_w as u32, span_h as u32)
+    };
+
+    let tile_w = span_w.saturating_sub(pad_x.saturating_mul(2)).max(1);
+    let tile_h = span_h.saturating_sub(pad_y.saturating_mul(2)).max(1);
+    if tile_w >= width && tile_h >= height {
+      return (0, 0, false);
+    }
+
+    let tiles_x = ((width as u64 + tile_w as u64 - 1) / tile_w as u64) as u32;
+    let tiles_y = ((height as u64 + tile_h as u64 - 1) / tile_h as u64) as u32;
+    let tiles = usize::try_from(tiles_x as u64 * tiles_y as u64).unwrap_or(usize::MAX);
+
+    let max_src_w = width.min(tile_w.saturating_add(pad_x.saturating_mul(2)));
+    let max_src_h = height.min(tile_h.saturating_add(pad_y.saturating_mul(2)));
+    let max_tile_pixels = (max_src_w as usize).saturating_mul(max_src_h as usize);
+    let parallel_tiles =
+      max_tile_pixels < PARALLEL_BLUR_MIN_PIXELS && tiles > 1 && blur_thread_budget() > 1;
+
+    (tiles, max_tile_pixels, parallel_tiles)
+  }
+
+  fn make_pattern_pixmap(width: u32, height: u32) -> Pixmap {
+    let mut pixmap = new_pixmap(width, height).unwrap();
+    let w = width as usize;
+    let h = height as usize;
+    for y in 0..h {
+      for x in 0..w {
+        let a = if x < w / 8 && y < h / 8 {
+          0u8
+        } else if x >= w * 7 / 8 && y >= h * 7 / 8 {
+          255u8
+        } else {
+          let mut v = (x as u32).wrapping_mul(0x9E37_79B9) ^ (y as u32).wrapping_mul(0x85EB_CA6B);
+          v ^= v >> 16;
+          v = v.wrapping_mul(0xC2B2_AE35);
+          v ^= v >> 15;
+          (v & 0xFF) as u8
+        };
+        let r0 = ((x * 37 + y * 17) % 256) as u8;
+        let g0 = ((x * 11 + y * 61) % 256) as u8;
+        let b0 = ((x * 97 + y * 23) % 256) as u8;
+        let premul = |c: u8| ((c as u16 * a as u16) / 255) as u8;
+        pixmap.pixels_mut()[y * w + x] =
+          PremultipliedColorU8::from_rgba(premul(r0), premul(g0), premul(b0), a).unwrap();
+      }
+    }
+    pixmap
+  }
 
   #[test]
   fn fast_div_u32_matches_builtin_division() {
@@ -3479,6 +3596,106 @@ mod tests {
       .install(|| apply_gaussian_blur_cached(&mut tiled, 3.0, 3.0, Some(&mut cache), 1.0).unwrap());
 
     assert_eq!(direct.data(), tiled.data(), "tiled blur output mismatch");
+  }
+
+  #[test]
+  fn tile_blur_is_deterministic_across_rayon_thread_counts() {
+    const WIDTH: u32 = 512;
+    const HEIGHT: u32 = 512;
+    const ITERATIONS: usize = 10;
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FAST_BLUR".to_string(),
+      "0".to_string(),
+    )])));
+
+    let base = make_pattern_pixmap(WIDTH, HEIGHT);
+    let base_len = base.data().len();
+
+    let direct_config = FilterCacheConfig {
+      max_items: 0,
+      max_bytes: base_len,
+    };
+    let tiled_config = FilterCacheConfig {
+      max_items: 0,
+      max_bytes: 64 * 1024,
+    };
+    assert!(
+      base_len > tiled_config.max_bytes,
+      "expected test surface to exceed tiling threshold"
+    );
+
+    let pool = build_pool_with_toggles(1, toggles.clone());
+    let (direct_isotropic, direct_anisotropic) =
+      runtime::with_thread_runtime_toggles(toggles.clone(), || {
+        pool.install(|| {
+          let mut direct_cache = BlurCache::new(direct_config);
+
+          let mut isotropic = base.clone();
+          apply_gaussian_blur_cached(&mut isotropic, 3.0, 3.0, Some(&mut direct_cache), 1.0)
+            .unwrap();
+          let isotropic = isotropic.data().to_vec();
+
+          let mut anisotropic = base.clone();
+          apply_gaussian_blur_cached(&mut anisotropic, 12.0, 2.0, Some(&mut direct_cache), 1.0)
+            .unwrap();
+          let anisotropic = anisotropic.data().to_vec();
+
+          (Arc::new(isotropic), Arc::new(anisotropic))
+        })
+      });
+
+    for &threads in &[2usize, 4, 8] {
+      let pool = build_pool_with_toggles(threads, toggles.clone());
+      let base = base.clone();
+      let direct_isotropic = direct_isotropic.clone();
+      let direct_anisotropic = direct_anisotropic.clone();
+
+      runtime::with_thread_runtime_toggles(toggles.clone(), || {
+        pool.install(|| {
+          let (tiles, max_tile_pixels, parallel_tiles) =
+            tile_blur_plan(WIDTH, HEIGHT, 3.0, 3.0, tiled_config);
+          assert!(
+            parallel_tiles,
+            "expected isotropic tiled blur to use parallel tile scheduling (threads={threads} budget={} tiles={tiles} max_tile_pixels={max_tile_pixels})",
+            blur_thread_budget(),
+          );
+          let (tiles, max_tile_pixels, parallel_tiles) =
+            tile_blur_plan(WIDTH, HEIGHT, 12.0, 2.0, tiled_config);
+          assert!(
+            parallel_tiles,
+            "expected anisotropic tiled blur to use parallel tile scheduling (threads={threads} budget={} tiles={tiles} max_tile_pixels={max_tile_pixels})",
+            blur_thread_budget(),
+          );
+
+          let mut isotropic_cache = BlurCache::new(tiled_config);
+          let mut pixmap = base.clone();
+          for iter in 0..ITERATIONS {
+            pixmap.data_mut().copy_from_slice(base.data());
+            apply_gaussian_blur_cached(&mut pixmap, 3.0, 3.0, Some(&mut isotropic_cache), 1.0)
+              .unwrap();
+            assert_eq!(
+              pixmap.data(),
+              direct_isotropic.as_slice(),
+              "isotropic tiled blur output mismatch (threads={threads} iter={iter})"
+            );
+          }
+
+          let mut anisotropic_cache = BlurCache::new(tiled_config);
+          let mut pixmap = base.clone();
+          for iter in 0..ITERATIONS {
+            pixmap.data_mut().copy_from_slice(base.data());
+            apply_gaussian_blur_cached(&mut pixmap, 12.0, 2.0, Some(&mut anisotropic_cache), 1.0)
+              .unwrap();
+            assert_eq!(
+              pixmap.data(),
+              direct_anisotropic.as_slice(),
+              "anisotropic tiled blur output mismatch (threads={threads} iter={iter})"
+            );
+          }
+        })
+      });
+    }
   }
 
   #[test]
