@@ -727,9 +727,9 @@ impl BlockFormattingContext {
 
     // If this block establishes a new containing block for absolute/fixed descendants (via
     // positioning, transforms, filters, containment, etc.), propagate that updated containing
-    // block into the
-    // descendant layout call. Otherwise absolutely-positioned descendants inside inline content can
-    // incorrectly resolve percentages against an ancestor CB (e.g. the viewport).
+    // block into the descendant layout call. Otherwise absolutely-positioned descendants inside
+    // inline content can incorrectly resolve percentages against an ancestor CB (e.g. the
+    // viewport).
     let establishes_positioned_cb = style.establishes_abs_containing_block();
     let padding_origin = Point::new(
       computed_width.border_left + computed_width.padding_left,
@@ -813,7 +813,7 @@ impl BlockFormattingContext {
               computed_width.content_width,
             )?;
             (frags, height, positioned, info)
-           } else {
+          } else {
             let (frags, height, positioned) = self.layout_children_with_external_floats(
               child,
               &child_constraints,
@@ -3765,22 +3765,22 @@ impl FormattingContext for BlockFormattingContext {
       style.content_visibility,
       crate::style::types::ContentVisibility::Hidden
     );
-    let (mut child_fragments, mut content_height, positioned_children, column_info) = if skip_contents
-    {
-      (Vec::new(), 0.0, Vec::new(), None)
-    } else if use_columns {
-      let (frags, height, positioned, info) = child_ctx.layout_multicolumn(
-        box_node,
-        &child_constraints,
-        &nearest_cb,
-        computed_width.content_width,
-      )?;
-      (frags, height, positioned, info)
-    } else {
-      let (frags, height, positioned) =
-        child_ctx.layout_children(box_node, &child_constraints, &nearest_cb)?;
-      (frags, height, positioned, None)
-    };
+    let (mut child_fragments, mut content_height, positioned_children, column_info) =
+      if skip_contents {
+        (Vec::new(), 0.0, Vec::new(), None)
+      } else if use_columns {
+        let (frags, height, positioned, info) = child_ctx.layout_multicolumn(
+          box_node,
+          &child_constraints,
+          &nearest_cb,
+          computed_width.content_width,
+        )?;
+        (frags, height, positioned, info)
+      } else {
+        let (frags, height, positioned) =
+          child_ctx.layout_children(box_node, &child_constraints, &nearest_cb)?;
+        (frags, height, positioned, None)
+      };
     if skip_contents || style.containment.size {
       let axis = if block_axis_is_horizontal(style.writing_mode) {
         style.contain_intrinsic_width
