@@ -3526,6 +3526,34 @@ mod tests {
   }
 
   #[test]
+  fn settled_time_based_animation_progress_respects_direction_and_iterations() {
+    let rule = fade_rule();
+    let mut style = ComputedStyle::default();
+    style.animation_names = vec!["fade".to_string()];
+    style.animation_fill_modes = vec![AnimationFillMode::Forwards].into();
+    style.animation_directions = vec![AnimationDirection::Alternate].into();
+    style.animation_iteration_counts = vec![AnimationIterationCount::Count(2.0)].into();
+
+    let progress = settled_time_based_animation_progress(&style, 0).expect("filled");
+    assert!((progress - 0.0).abs() < 1e-6, "progress={progress}");
+    assert!((sampled_opacity(&rule, progress) - 0.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn settled_time_based_animation_progress_supports_fractional_iterations() {
+    let rule = fade_rule();
+    let mut style = ComputedStyle::default();
+    style.animation_names = vec!["fade".to_string()];
+    style.animation_fill_modes = vec![AnimationFillMode::Forwards].into();
+    style.animation_iteration_counts = vec![AnimationIterationCount::Count(1.5)].into();
+    style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
+
+    let progress = settled_time_based_animation_progress(&style, 0).expect("filled");
+    assert!((progress - 0.5).abs() < 1e-6, "progress={progress}");
+    assert!((sampled_opacity(&rule, progress) - 0.5).abs() < 1e-6);
+  }
+
+  #[test]
   fn sample_keyframes_visibility_hidden_to_visible_is_visible_for_open_interval() {
     let sheet = parse_stylesheet(
       "@keyframes show { 0% { visibility: hidden; } 100% { visibility: visible; } }",
