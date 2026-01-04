@@ -1031,6 +1031,32 @@ mod tests {
   }
 
   #[test]
+  fn clip_path_path_fills_open_subpaths() {
+    let size = IntSize::from_wh(32, 32).expect("size");
+    let mut builder = PathBuilder::new();
+    builder.move_to(2.0, 2.0);
+    builder.line_to(30.0, 2.0);
+    builder.line_to(2.0, 30.0);
+    // Intentionally omit `close()`; SVG/CSS fill semantics implicitly close open subpaths.
+    let path = builder.finish().expect("path");
+
+    let clip = ResolvedClipPath::Path {
+      path,
+      fill_rule: SkFillRule::Winding,
+    };
+    let mask = clip
+      .mask(1.0, size, Transform::identity())
+      .expect("mask");
+
+    // Point well inside the triangle.
+    let idx = 6 * size.width() as usize + 6;
+    assert!(
+      mask.data()[idx] > 200,
+      "expected open subpath to be filled"
+    );
+  }
+
+  #[test]
   fn clip_path_mask_avoids_new_pixmap_allocations() {
     let size = IntSize::from_wh(16, 16).expect("size");
     let clip = ResolvedClipPath::Circle {
