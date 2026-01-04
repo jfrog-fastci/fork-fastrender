@@ -257,6 +257,12 @@ pub fn audit_disk_cache_dir(
       continue;
     }
 
+    if name == "index.jsonl.lock" {
+      // Legacy disk cache index journal advisory lock file. This is not a per-entry lock and can be
+      // long-lived without implying a stuck writer, so exclude it from stale lock counts/cleanup.
+      continue;
+    }
+
     if name.ends_with(".tmp") {
       report.tmp_count += 1;
       if options.delete_tmp_files {
@@ -558,6 +564,7 @@ mod tests {
     fs::write(dir.join("partial.bin.tmp"), b"partial").unwrap();
     fs::write(dir.join("fresh.bin.lock"), b"lock").unwrap();
     fs::write(dir.join("stale.bin.lock"), b"lock").unwrap();
+    fs::write(dir.join("index.jsonl.lock"), b"lock").unwrap();
 
     let now = SystemTime::now();
     let stale_time = now
@@ -575,6 +582,11 @@ mod tests {
     set_file_mtime(
       dir.join("fresh.bin.lock"),
       FileTime::from_system_time(fresh_time),
+    )
+    .unwrap();
+    set_file_mtime(
+      dir.join("index.jsonl.lock"),
+      FileTime::from_system_time(stale_time),
     )
     .unwrap();
 
@@ -609,6 +621,10 @@ mod tests {
     assert_eq!(deleted.deleted_tmp_files, 1);
     assert!(dir.join("fresh.bin.lock").exists());
     assert!(!dir.join("stale.bin.lock").exists());
+    assert!(
+      dir.join("index.jsonl.lock").exists(),
+      "legacy journal lock file should not be deleted as a stale per-entry lock"
+    );
     assert!(!dir.join("partial.bin.tmp").exists());
   }
 }
