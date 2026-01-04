@@ -14,7 +14,7 @@ The main orchestration code lives in `src/api.rs` (`FastRender`).
 6. Build paint commands / stacking contexts (`src/paint/`)
 7. Paint to a `tiny-skia` pixmap and encode (`src/image_output.rs`)
 
-After layout, scroll snapping and scroll/view timeline-driven animations are resolved before building the final display list (`scroll.rs`, `animation::apply_scroll_driven_animations`).
+After layout, scroll snapping and animations are resolved before building the final display list (`scroll.rs`, `animation::apply_scroll_driven_animations`). This includes scroll/view timeline animations plus deterministic settling of time-based animations when no sampling timestamp is provided.
 
 ## Key intermediate structures
 
