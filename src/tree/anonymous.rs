@@ -44,6 +44,7 @@ use crate::error::{RenderStage, Result};
 use crate::render_control::active_deadline;
 use crate::style::display::Display;
 use crate::style::ComputedStyle;
+use crate::style::types::WhiteSpace;
 use crate::tree::box_tree::AnonymousBox;
 use crate::tree::box_tree::AnonymousType;
 use crate::tree::box_tree::BoxNode;
@@ -596,6 +597,22 @@ impl AnonymousBoxCreator {
     let mut result = Vec::with_capacity(children.len());
     let mut inline_run: Vec<BoxNode> = Vec::new();
     let mut anonymous_block_style: Option<Arc<ComputedStyle>> = None;
+    let mut flush_inline_run = |result: &mut Vec<BoxNode>, inline_run: &mut Vec<BoxNode>| {
+      if inline_run.is_empty() {
+        return;
+      }
+      if inline_run.iter().all(Self::is_collapsible_whitespace_text_node) {
+        inline_run.clear();
+        return;
+      }
+      let style = anonymous_block_style.get_or_insert_with(|| {
+        let mut style = inherited_style(parent_style);
+        style.display = Display::Block;
+        Arc::new(style)
+      });
+      let anon_block = Self::create_anonymous_block(style.clone(), std::mem::take(inline_run));
+      result.push(anon_block);
+    };
 
     for child in children {
       if Self::is_inline_level_child(&child) {
@@ -603,32 +620,25 @@ impl AnonymousBoxCreator {
         inline_run.push(child);
       } else {
         // Block box encountered - flush any inline run
-        if !inline_run.is_empty() {
-          let style = anonymous_block_style.get_or_insert_with(|| {
-            let mut style = inherited_style(parent_style);
-            style.display = Display::Block;
-            Arc::new(style)
-          });
-          let anon_block =
-            Self::create_anonymous_block(style.clone(), std::mem::take(&mut inline_run));
-          result.push(anon_block);
-        }
+        flush_inline_run(&mut result, &mut inline_run);
         result.push(child);
       }
     }
 
     // Flush remaining inline run at end
-    if !inline_run.is_empty() {
-      let style = anonymous_block_style.get_or_insert_with(|| {
-        let mut style = inherited_style(parent_style);
-        style.display = Display::Block;
-        Arc::new(style)
-      });
-      let anon_block = Self::create_anonymous_block(style.clone(), std::mem::take(&mut inline_run));
-      result.push(anon_block);
-    }
+    flush_inline_run(&mut result, &mut inline_run);
 
     result
+  }
+
+  fn is_collapsible_whitespace_text_node(node: &BoxNode) -> bool {
+    match &node.box_type {
+      BoxType::Text(text_box) => {
+        text_box.text.trim().is_empty()
+          && matches!(node.style.white_space, WhiteSpace::Normal | WhiteSpace::Nowrap)
+      }
+      _ => false,
+    }
   }
 
   /// Wraps bare text nodes in anonymous inline boxes
@@ -1034,6 +1044,25 @@ mod tests {
     // Third anonymous block contains 1 inline
     assert!(fixed.children[2].is_anonymous());
     assert_eq!(fixed.children[2].children.len(), 1);
+  }
+
+  #[test]
+  fn test_whitespace_only_inline_runs_dropped_in_mixed_content() {
+    let whitespace1 = BoxNode::new_text(default_style(), "   ".to_string());
+    let block1 = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+    let whitespace2 = BoxNode::new_text(default_style(), "\n  ".to_string());
+    let block2 = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
+
+    let container = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![whitespace1, block1, whitespace2, block2],
+    );
+
+    let fixed = fixup_tree(container);
+    assert_eq!(fixed.children.len(), 2);
+    assert!(fixed.children.iter().all(|child| child.is_block_level()));
+    assert!(fixed.children.iter().all(|child| !child.is_anonymous()));
   }
 
   #[test]

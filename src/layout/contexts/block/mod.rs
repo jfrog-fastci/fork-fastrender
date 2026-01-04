@@ -915,6 +915,15 @@ impl BlockFormattingContext {
       max_height
     };
     let height = crate::layout::utils::clamp_with_order(height, min_height, max_height);
+    let padding_origin = Point::new(
+      computed_width.border_left + computed_width.padding_left,
+      border_top + padding_top,
+    );
+    if padding_origin != Point::ZERO {
+      for fragment in child_fragments.iter_mut() {
+        fragment.translate_root_in_place(padding_origin);
+      }
+    }
 
     // Create the fragment
     let box_height = border_top + padding_top + height + padding_bottom + border_bottom;
@@ -3782,6 +3791,11 @@ impl FormattingContext for BlockFormattingContext {
           child_ctx.layout_children(box_node, &child_constraints, &nearest_cb)?;
         (frags, height, positioned, None)
       };
+    if padding_origin != Point::ZERO {
+      for fragment in child_fragments.iter_mut() {
+        fragment.translate_root_in_place(padding_origin);
+      }
+    }
     if skip_contents || style.containment.size {
       let axis = if block_axis_is_horizontal(style.writing_mode) {
         style.contain_intrinsic_width
@@ -4851,6 +4865,71 @@ mod tests {
     let fragment = fc.layout(&node, &constraints).unwrap();
 
     assert!((fragment.bounds.height() - 8.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn padding_offsets_in_flow_children() {
+    let mut parent_style = ComputedStyle::default();
+    parent_style.display = Display::Block;
+    parent_style.padding_left = Length::px(10.0);
+    parent_style.padding_top = Length::px(20.0);
+
+    let mut child_style = ComputedStyle::default();
+    child_style.display = Display::Block;
+    child_style.height = Some(Length::px(30.0));
+
+    let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+    let parent = BoxNode::new_block(
+      Arc::new(parent_style),
+      FormattingContextType::Block,
+      vec![child],
+    );
+
+    let fc = BlockFormattingContext::new();
+    let constraints =
+      LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Indefinite);
+    let fragment = fc.layout(&parent, &constraints).unwrap();
+    assert_eq!(fragment.children.len(), 1);
+    let child_fragment = &fragment.children[0];
+    assert!((child_fragment.bounds.x() - 10.0).abs() < 0.01);
+    assert!((child_fragment.bounds.y() - 20.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn padding_offsets_children_of_in_flow_blocks() {
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+
+    let mut parent_style = ComputedStyle::default();
+    parent_style.display = Display::Block;
+    parent_style.padding_left = Length::px(10.0);
+    parent_style.padding_top = Length::px(20.0);
+
+    let mut child_style = ComputedStyle::default();
+    child_style.display = Display::Block;
+    child_style.height = Some(Length::px(30.0));
+
+    let grandchild = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+    let parent = BoxNode::new_block(
+      Arc::new(parent_style),
+      FormattingContextType::Block,
+      vec![grandchild],
+    );
+    let root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Block,
+      vec![parent],
+    );
+
+    let fc = BlockFormattingContext::new();
+    let constraints =
+      LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Indefinite);
+    let fragment = fc.layout(&root, &constraints).unwrap();
+    assert_eq!(fragment.children.len(), 1);
+    assert_eq!(fragment.children[0].children.len(), 1);
+    let grandchild_fragment = &fragment.children[0].children[0];
+    assert!((grandchild_fragment.bounds.x() - 10.0).abs() < 0.01);
+    assert!((grandchild_fragment.bounds.y() - 20.0).abs() < 0.01);
   }
 
   fn block_style_with_margin(margin: f32) -> Arc<ComputedStyle> {
