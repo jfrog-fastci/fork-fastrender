@@ -240,6 +240,8 @@ struct DeltaEntry {
   #[serde(skip_serializing_if = "Option::is_none")]
   perceptual_distance_delta: Option<f64>,
   classification: DeltaClassification,
+  #[serde(skip_serializing_if = "std::ops::Not::not")]
+  failing_regression: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -469,6 +471,30 @@ fn run() -> Result<i32, String> {
 
     let (diff_percentage_delta, perceptual_distance_delta, classification) =
       classify_delta(baseline_entry, new_entry);
+    let failing_regression = if args.fail_on_regression {
+      match classification {
+        DeltaClassification::MissingInNew => true,
+        DeltaClassification::Regressed => {
+          let threshold = args.regression_threshold_percent;
+          if let Some(delta) = diff_percentage_delta {
+            if delta > threshold + METRIC_EPS {
+              true
+            } else if delta.abs() <= METRIC_EPS {
+              perceptual_distance_delta
+                .map(|d| d > METRIC_EPS)
+                .unwrap_or(false)
+            } else {
+              false
+            }
+          } else {
+            true
+          }
+        }
+        _ => false,
+      }
+    } else {
+      false
+    };
 
     if baseline_entry.is_some() && new_entry.is_some() {
       totals.paired += 1;
@@ -507,6 +533,7 @@ fn run() -> Result<i32, String> {
       diff_percentage_delta,
       perceptual_distance_delta,
       classification,
+      failing_regression,
     });
   }
 
@@ -1474,10 +1501,16 @@ fn write_html_report(
       format!("baseline: {baseline_error}\nnew: {new_error}")
     };
 
+    let row_class = if entry.failing_regression {
+      format!("{} failing", entry.classification.row_class())
+    } else {
+      entry.classification.row_class().to_string()
+    };
+
     rows.push_str(&format!(
        "<tr id=\"{anchor_id}\" class=\"{row_class}\"><td>{name}</td><td>{classification}</td><td>{baseline_status}</td><td>{baseline_diff}</td><td>{baseline_perceptual}</td><td>{baseline_after_and_diff}</td><td>{new_status}</td><td>{new_diff}</td><td>{new_perceptual}</td><td>{new_after_and_diff}</td><td>{diff_delta}</td><td>{perceptual_delta}</td><td class=\"error\">{error}</td></tr>",
        anchor_id = escape_html(&anchor_id),
-       row_class = entry.classification.row_class(),
+       row_class = escape_html(&row_class),
        name = escape_html(&entry.name),
        classification = escape_html(entry.classification.label()),
        baseline_status = escape_html(baseline_status),
@@ -1509,6 +1542,7 @@ fn write_html_report(
       tr.regressed {{ background: #fff3f3; }}
       tr.missing {{ background: #fffbe8; }}
       tr.unchanged {{ background: #ffffff; }}
+      tr.failing {{ outline: 2px solid #b00020; }}
       .warning {{ color: #b00020; }}
       .error {{ color: #b00020; white-space: pre-wrap; }}
       .top-list table {{ width: auto; }}

@@ -303,11 +303,18 @@ fn compare_diff_reports_can_gate_on_regressions() {
     serde_json::from_str(&fs::read_to_string(&out_json_fail).expect("read delta json")).unwrap();
   assert_eq!(report["gating"]["fail_on_regression"], true);
   assert_eq!(report["gating"]["regression_threshold_percent"].as_f64(), Some(0.0));
+  let results = report["results"].as_array().expect("results array");
+  let entry = results.iter().find(|e| e["name"] == "a").expect("entry a");
+  assert_eq!(entry["failing_regression"], true);
   let html = fs::read_to_string(&out_html_fail).expect("read delta html");
   assert!(html.contains("<strong>Gating:</strong>"), "missing Gating row:\n{html}");
   assert!(
     html.contains("<code>0.0000%</code>"),
     "missing gating threshold in html:\n{html}"
+  );
+  assert!(
+    html.contains("class=\"regressed failing\""),
+    "missing failing class in html:\n{html}"
   );
 
   let out_json_pass = tmp.path().join("delta_pass.json");
@@ -340,11 +347,21 @@ fn compare_diff_reports_can_gate_on_regressions() {
     serde_json::from_str(&fs::read_to_string(&out_json_pass).expect("read delta json")).unwrap();
   assert_eq!(report["gating"]["fail_on_regression"], true);
   assert_eq!(report["gating"]["regression_threshold_percent"].as_f64(), Some(1.0));
+  let results = report["results"].as_array().expect("results array");
+  let entry = results.iter().find(|e| e["name"] == "a").expect("entry a");
+  assert!(
+    entry.get("failing_regression").is_none(),
+    "did not expect failing_regression field when regression is below threshold: {entry}"
+  );
   let html = fs::read_to_string(&out_html_pass).expect("read delta html");
   assert!(html.contains("<strong>Gating:</strong>"), "missing Gating row:\n{html}");
   assert!(
     html.contains("<code>1.0000%</code>"),
     "missing gating threshold in html:\n{html}"
+  );
+  assert!(
+    !html.contains("class=\"regressed failing\""),
+    "did not expect failing class in html:\n{html}"
   );
 }
 
@@ -402,6 +419,7 @@ fn compare_diff_reports_gating_fails_on_missing_entries_in_new_report() {
     .find(|e| e["name"] == "a")
     .expect("missing entry a");
   assert_eq!(entry["classification"], "missing_in_new");
+  assert_eq!(entry["failing_regression"], true);
 }
 
 #[test]
