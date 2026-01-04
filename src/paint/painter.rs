@@ -9167,11 +9167,12 @@ fn collect_underline_exclusions(
     } else {
       pen_x
     };
+    let mut cursor_x = run_origin;
 
     for glyph in &run.glyphs {
       let glyph_x = match run.direction {
-        crate::text::pipeline::Direction::RightToLeft => run_origin - glyph.x_offset * device_scale,
-        crate::text::pipeline::Direction::LeftToRight => run_origin + glyph.x_offset * device_scale,
+        crate::text::pipeline::Direction::RightToLeft => cursor_x - glyph.x_offset * device_scale,
+        crate::text::pipeline::Direction::LeftToRight => cursor_x + glyph.x_offset * device_scale,
       };
       let glyph_y = baseline_y - glyph.y_offset * device_scale;
       if let Some(bbox) = face.glyph_bounding_box(ttf_parser::GlyphId(glyph.glyph_id as u16)) {
@@ -9184,6 +9185,11 @@ fn collect_underline_exclusions(
           intervals.push((left, right));
         }
       }
+
+      cursor_x += match run.direction {
+        crate::text::pipeline::Direction::RightToLeft => -glyph.x_advance * device_scale,
+        crate::text::pipeline::Direction::LeftToRight => glyph.x_advance * device_scale,
+      };
     }
 
     pen_x += advance;
@@ -9223,11 +9229,12 @@ fn collect_underline_exclusions_vertical(
     } else {
       pen_inline
     };
+    let mut cursor_inline = run_origin;
 
     for glyph in &run.glyphs {
       let inline_pos = match run.direction {
-        crate::text::pipeline::Direction::RightToLeft => run_origin - glyph.x_offset * device_scale,
-        crate::text::pipeline::Direction::LeftToRight => run_origin + glyph.x_offset * device_scale,
+        crate::text::pipeline::Direction::RightToLeft => cursor_inline - glyph.x_offset * device_scale,
+        crate::text::pipeline::Direction::LeftToRight => cursor_inline + glyph.x_offset * device_scale,
       };
       let block_pos = block_baseline - glyph.y_offset * device_scale;
       if let Some(bbox) = face.glyph_bounding_box(ttf_parser::GlyphId(glyph.glyph_id as u16)) {
@@ -9240,6 +9247,16 @@ fn collect_underline_exclusions_vertical(
           intervals.push((inline_left, inline_right));
         }
       }
+
+      let inline_advance = if glyph.y_advance.abs() > f32::EPSILON {
+        glyph.y_advance
+      } else {
+        glyph.x_advance
+      };
+      cursor_inline += match run.direction {
+        crate::text::pipeline::Direction::RightToLeft => -inline_advance * device_scale,
+        crate::text::pipeline::Direction::LeftToRight => inline_advance * device_scale,
+      };
     }
 
     pen_inline += advance;
