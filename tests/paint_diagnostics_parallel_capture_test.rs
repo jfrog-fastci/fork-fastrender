@@ -34,7 +34,7 @@ fn paint_diagnostics_capture_blur_from_parallel_tiles() {
     });
 
   // Ensure the blur work runs during rasterization inside the per-tile tasks.
-  // Avoid backdrop-filter because it forces serial painting.
+  // (Use `filter: blur()` here; backdrop-filter tiling is covered by dedicated tests.)
   let html = r#"<!doctype html>
     <style>
       html, body { margin: 0; padding: 0; background: white; }
