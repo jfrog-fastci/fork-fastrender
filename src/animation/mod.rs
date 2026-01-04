@@ -3140,6 +3140,7 @@ mod tests {
   use crate::css::types::CssRule;
   use crate::image_output::{encode_image, OutputFormat};
   use crate::style::media::MediaContext;
+  use crate::text::font_db::FontConfig;
   use crate::{FastRender, RenderOptions, ResourcePolicy};
   use image::ImageFormat;
   use std::fs;
@@ -3805,6 +3806,9 @@ mod tests {
     let mut renderer = FastRender::builder()
       .base_url(base_url)
       .resource_policy(policy)
+      // Avoid system font discovery in tests so rendering stays deterministic and local `cargo test`
+      // doesn't spend minutes crawling the host font directory.
+      .font_sources(FontConfig::bundled_only())
       .build()
       .expect("renderer");
     let mut options = RenderOptions::new().with_viewport(200, 200);
