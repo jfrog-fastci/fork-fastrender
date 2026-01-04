@@ -3225,21 +3225,10 @@ pub(crate) fn img_src_is_placeholder(value: &str) -> bool {
     return false;
   }
 
-  use base64::Engine;
-  let decoded = if payload.bytes().any(|b| b.is_ascii_whitespace()) {
-    let mut cleaned = Vec::with_capacity(payload.len());
-    cleaned.extend(payload.bytes().filter(|b| !b.is_ascii_whitespace()));
-    base64::engine::general_purpose::STANDARD
-      .decode(cleaned.as_slice())
-      .ok()
-  } else {
-    base64::engine::general_purpose::STANDARD
-      .decode(payload.as_bytes())
-      .ok()
-  };
-  let Some(decoded) = decoded else {
+  let Ok(resource) = crate::resource::decode_data_url(value) else {
     return false;
   };
+  let decoded = resource.bytes;
 
   if decoded.len() < 10 {
     return false;
@@ -6636,6 +6625,21 @@ mod tests {
       },
       children: vec![],
     }
+  }
+
+  #[test]
+  fn img_src_is_placeholder_accepts_unpadded_base64_data_url() {
+    let padded = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
+    assert!(img_src_is_placeholder(padded));
+
+    let unpadded = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw";
+    assert!(img_src_is_placeholder(unpadded));
+  }
+
+  #[test]
+  fn img_src_is_placeholder_accepts_base64_data_url_with_whitespace() {
+    let url = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEK\nAAEALAAAAAABAAEAAAICTAEAOw==";
+    assert!(img_src_is_placeholder(url));
   }
 
   fn enumerate_dom_ids_legacy(root: &DomNode) -> HashMap<*const DomNode, usize> {
