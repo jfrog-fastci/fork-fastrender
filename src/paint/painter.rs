@@ -3006,9 +3006,33 @@ impl Painter {
 
         if !backdrop_filters.is_empty() {
           let backdrop_start = profile_enabled.then(Instant::now);
+          // `backdrop-filter` is scoped to the stacking context root border box, not the
+          // entire stacking layer bounds (which may include descendant overflow or the
+          // union of pre-/post-transform bounds used for viewport culling).
+          let root_local = Rect::from_xywh(
+            root_rect.x() - offset.x,
+            root_rect.y() - offset.y,
+            root_rect.width(),
+            root_rect.height(),
+          );
+          let mut backdrop_quad_device = [Point::ZERO; 4];
+          let mut projected = true;
+          for (idx, corner) in rect_corners(root_local).iter().enumerate() {
+            let (tx, ty, _tz, tw) = combined_transform.transform_point(corner.x, corner.y, 0.0);
+            if !tx.is_finite() || !ty.is_finite() || tw.abs() < 1e-6 || !tw.is_finite() {
+              projected = false;
+              break;
+            }
+            backdrop_quad_device[idx] = self.device_point(Point::new(tx / tw, ty / tw));
+          }
+          let backdrop_bounds_device = if projected {
+            quad_bounds(&backdrop_quad_device)
+          } else {
+            self.device_rect(root_rect)
+          };
           apply_backdrop_filters(
             &mut self.pixmap,
-            &dest_bounds_device,
+            &backdrop_bounds_device,
             &backdrop_filters,
             device_radii,
             self.scale,
@@ -3597,7 +3621,8 @@ impl Painter {
     let is_local = layer.attachment == BackgroundAttachment::Local;
     let clip_box = if is_local {
       match layer.clip {
-        crate::style::types::BackgroundBox::ContentBox | crate::style::types::BackgroundBox::Text => {
+        crate::style::types::BackgroundBox::ContentBox
+        | crate::style::types::BackgroundBox::Text => {
           crate::style::types::BackgroundBox::ContentBox
         }
         _ => crate::style::types::BackgroundBox::PaddingBox,
@@ -3622,18 +3647,16 @@ impl Painter {
       Rect::from_xywh(0.0, 0.0, self.css_width, self.css_height)
     } else if is_local {
       match layer.origin {
-        crate::style::types::BackgroundBox::ContentBox | crate::style::types::BackgroundBox::Text => {
-          rects.content
-        }
+        crate::style::types::BackgroundBox::ContentBox
+        | crate::style::types::BackgroundBox::Text => rects.content,
         _ => rects.padding,
       }
     } else {
       match layer.origin {
         crate::style::types::BackgroundBox::BorderBox => rects.border,
         crate::style::types::BackgroundBox::PaddingBox => rects.padding,
-        crate::style::types::BackgroundBox::ContentBox | crate::style::types::BackgroundBox::Text => {
-          rects.content
-        }
+        crate::style::types::BackgroundBox::ContentBox
+        | crate::style::types::BackgroundBox::Text => rects.content,
       }
     };
 
@@ -17585,8 +17608,7 @@ mod tests {
         BackgroundImage::Url(_) | BackgroundImage::None => None,
       };
       let Some(tile) = tile else { continue };
-      let Some(mask_tile) =
-        mask_tile_from_image(&tile, layer.mode).expect("mask_tile_from_image")
+      let Some(mask_tile) = mask_tile_from_image(&tile, layer.mode).expect("mask_tile_from_image")
       else {
         continue;
       };

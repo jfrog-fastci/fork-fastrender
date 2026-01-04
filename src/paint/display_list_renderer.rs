@@ -10,6 +10,10 @@ use crate::css::types::RadialGradientSize;
 use crate::error::{Error, RenderError, RenderStage, Result};
 use crate::geometry::Point;
 use crate::geometry::Rect;
+use crate::paint::backdrop_filter_cache::{
+  hash_filter_chain, BackdropFilterCache, BackdropFilterCacheKey, BackdropFilterCacheOps,
+  SharedBackdropFilterCache,
+};
 use crate::paint::blur::{
   alpha_bounds, apply_gaussian_blur_cached, BlurCache, BlurCacheOps, SharedBlurCache,
 };
@@ -1167,40 +1171,47 @@ fn copy_pixmap_region_with_offset(
   Ok(())
 }
 fn apply_backdrop_filters(
-  pixmap: &mut Pixmap,
-  bounds: &Rect,
+  dest: &mut Pixmap,
+  src: &Pixmap,
+  dest_origin_in_src: (i32, i32),
+  bounds_in_src: Rect,
+  shape_bounds: Rect,
   filters: &[ResolvedFilter],
   radii: BorderRadii,
   scale: f32,
   clip_mask: Option<&Mask>,
   clip_bounds: Option<Rect>,
   filter_bounds: Rect,
-  cache: Option<&mut (dyn BlurCacheOps + 'static)>,
+  world_to_dest: Transform,
+  blur_cache: Option<&mut (dyn BlurCacheOps + 'static)>,
+  backdrop_cache: Option<&mut (dyn BackdropFilterCacheOps + 'static)>,
 ) -> RenderResult<()> {
   if filters.is_empty() {
     return Ok(());
   }
   check_active(RenderStage::Paint)?;
+
   let (out_l, out_t, out_r, out_b) =
     filter_outset_with_bounds(filters, scale, Some(filter_bounds)).as_tuple();
-  let x = (bounds.min_x() - out_l).floor() as i32;
-  let y = (bounds.min_y() - out_t).floor() as i32;
-  let width = (bounds.width() + out_l + out_r).ceil() as u32;
-  let height = (bounds.height() + out_t + out_b).ceil() as u32;
+
+  let x = (bounds_in_src.min_x() - out_l).floor() as i32;
+  let y = (bounds_in_src.min_y() - out_t).floor() as i32;
+  let width = (bounds_in_src.width() + out_l + out_r).ceil() as u32;
+  let height = (bounds_in_src.height() + out_t + out_b).ceil() as u32;
   if width == 0 || height == 0 {
     return Ok(());
   }
 
-  let pix_w = pixmap.width() as i32;
-  let pix_h = pixmap.height() as i32;
-  if x >= pix_w || y >= pix_h {
+  let src_w = src.width() as i32;
+  let src_h = src.height() as i32;
+  if x >= src_w || y >= src_h {
     return Ok(());
   }
 
   let clamped_x = x.max(0) as u32;
   let clamped_y = y.max(0) as u32;
-  let max_w = pix_w.saturating_sub(clamped_x as i32).max(0) as u32;
-  let max_h = pix_h.saturating_sub(clamped_y as i32).max(0) as u32;
+  let max_w = src_w.saturating_sub(clamped_x as i32).max(0) as u32;
+  let max_h = src_h.saturating_sub(clamped_y as i32).max(0) as u32;
   let region_w = width.min(max_w);
   let region_h = height.min(max_h);
   if region_w == 0 || region_h == 0 {
@@ -1221,18 +1232,18 @@ fn apply_backdrop_filters(
     },
   };
 
-  let bytes_per_row = pixmap.width() as usize * 4;
+  let src_bytes_per_row = src.width() as usize * 4;
   let region_row_bytes = region_w as usize * 4;
-  let start = (clamped_y as usize * bytes_per_row) + clamped_x as usize * 4;
+  let start = (clamped_y as usize * src_bytes_per_row) + clamped_x as usize * 4;
   let copy_in = (|| -> RenderResult<()> {
-    let data = pixmap.data();
-    let dest = region.data_mut();
+    let data = src.data();
+    let dest_data = region.data_mut();
     let mut deadline_counter = 0usize;
     for row in 0..region_h as usize {
       check_active_periodic(&mut deadline_counter, 32, RenderStage::Paint)?;
-      let src_idx = start + row * bytes_per_row;
+      let src_idx = start + row * src_bytes_per_row;
       let dst_idx = row * region_row_bytes;
-      dest[dst_idx..dst_idx + region_row_bytes]
+      dest_data[dst_idx..dst_idx + region_row_bytes]
         .copy_from_slice(&data[src_idx..src_idx + region_row_bytes]);
     }
     Ok(())
@@ -1246,27 +1257,69 @@ fn apply_backdrop_filters(
   }
 
   let local_bbox = Rect::from_xywh(
-    bounds.x() - clamped_x as f32,
-    bounds.y() - clamped_y as f32,
-    bounds.width(),
-    bounds.height(),
+    bounds_in_src.x() - clamped_x as f32,
+    bounds_in_src.y() - clamped_y as f32,
+    bounds_in_src.width(),
+    bounds_in_src.height(),
   );
-  if let Err(err) = apply_filters(
-    &mut region,
-    filters,
-    scale,
-    local_bbox,
-    crate::paint::svg_filter::SvgFilterStandardInputs::default(),
-    cache,
-  ) {
-    scratch.region = Some(region);
-    BACKDROP_FILTER_SCRATCH.with(|cell| {
-      *cell.borrow_mut() = scratch;
-    });
-    return Err(err);
+
+  let filter_hash = hash_filter_chain(filters);
+  let mut cached_filtered: Option<Arc<Pixmap>> = None;
+  let mut cache_key: Option<BackdropFilterCacheKey> = None;
+  let mut backdrop_cache = backdrop_cache;
+  if let Some(cache) = backdrop_cache.as_deref_mut() {
+    if let Some(key) = BackdropFilterCacheKey::new(filter_hash, scale, local_bbox, &region) {
+      if let Some(hit) = cache.get(&key) {
+        cached_filtered = Some(hit);
+      } else {
+        cache_key = Some(key);
+      }
+    }
   }
 
-  let radii_mask = if !radii.is_zero() {
+  if cached_filtered.is_none() {
+    let needs_svg_background = filters.iter().any(|filter| match filter {
+      ResolvedFilter::SvgFilter(filter) => filter.uses_background_inputs(),
+      _ => false,
+    });
+    let backdrop = needs_svg_background.then_some(src);
+    if let Err(err) = apply_filters_with_optional_svg_backdrop(
+      &mut region,
+      filters,
+      scale,
+      local_bbox,
+      blur_cache,
+      backdrop,
+      (clamped_x as i32, clamped_y as i32),
+    ) {
+      scratch.region = Some(region);
+      BACKDROP_FILTER_SCRATCH.with(|cell| {
+        *cell.borrow_mut() = scratch;
+      });
+      return Err(err);
+    }
+    if let (Some(cache), Some(key)) = (backdrop_cache.as_deref_mut(), cache_key.take()) {
+      cache.put(key, &region);
+    }
+  }
+
+  let (filtered_data, filtered_width) = if let Some(cached) = cached_filtered.as_ref() {
+    (cached.data(), cached.width() as usize)
+  } else {
+    (region.data(), region.width() as usize)
+  };
+
+  let needs_shape_mask = !radii.is_zero()
+    || world_to_dest.kx != 0.0
+    || world_to_dest.ky != 0.0
+    || world_to_dest.tx.fract().abs() > 1e-6
+    || world_to_dest.ty.fract().abs() > 1e-6
+    || shape_bounds.x().fract().abs() > 1e-6
+    || shape_bounds.y().fract().abs() > 1e-6
+    || shape_bounds.width().fract().abs() > 1e-6
+    || shape_bounds.height().fract().abs() > 1e-6;
+
+  let radii_mask = if needs_shape_mask {
     let mut mask = match scratch.radii_mask.take() {
       Some(existing) if existing.width() == region_w && existing.height() == region_h => existing,
       _ => match Mask::new(region_w, region_h) {
@@ -1289,15 +1342,23 @@ fn apply_backdrop_filters(
       return Err(err);
     }
     mask.data_mut().fill(0);
-    let local_x = bounds.x() - clamped_x as f32;
-    let local_y = bounds.y() - clamped_y as f32;
-    let clamped = radii.clamped(bounds.width(), bounds.height());
+
+    let region_origin_dest_x = clamped_x as i32 - dest_origin_in_src.0;
+    let region_origin_dest_y = clamped_y as i32 - dest_origin_in_src.1;
+    let world_to_region = concat_transforms(
+      Transform::from_translate(
+        -(region_origin_dest_x as f32),
+        -(region_origin_dest_y as f32),
+      ),
+      world_to_dest,
+    );
+
     let Some(path) = crate::paint::rasterize::build_rounded_rect_path(
-      local_x,
-      local_y,
-      bounds.width(),
-      bounds.height(),
-      &clamped,
+      shape_bounds.x(),
+      shape_bounds.y(),
+      shape_bounds.width(),
+      shape_bounds.height(),
+      &radii,
     ) else {
       scratch.region = Some(region);
       scratch.radii_mask = Some(mask);
@@ -1306,18 +1367,20 @@ fn apply_backdrop_filters(
       });
       return Ok(());
     };
-    mask.fill_path(
-      &path,
-      tiny_skia::FillRule::Winding,
-      true,
-      Transform::identity(),
-    );
+    mask.fill_path(&path, tiny_skia::FillRule::Winding, true, world_to_region);
     Some(mask)
   } else {
     None
   };
 
-  let mut write_rect = *bounds;
+  let bounds_in_dest = Rect::from_xywh(
+    bounds_in_src.x() - dest_origin_in_src.0 as f32,
+    bounds_in_src.y() - dest_origin_in_src.1 as f32,
+    bounds_in_src.width(),
+    bounds_in_src.height(),
+  );
+
+  let mut write_rect = bounds_in_dest;
   if let Some(clip) = clip_bounds {
     let Some(intersection) = write_rect.intersection(clip) else {
       scratch.region = Some(region);
@@ -1342,13 +1405,15 @@ fn apply_backdrop_filters(
     return Ok(());
   }
 
-  let write_x = write_rect.min_x().floor().max(clamped_x as f32).max(0.0) as u32;
-  let write_y = write_rect.min_y().floor().max(clamped_y as f32).max(0.0) as u32;
+  let dest_w = dest.width() as i32;
+  let dest_h = dest.height() as i32;
+  let write_x = write_rect.min_x().floor().max(0.0) as u32;
+  let write_y = write_rect.min_y().floor().max(0.0) as u32;
   let write_w = (write_rect.width().ceil() as i32)
-    .min(pix_w - write_x as i32)
+    .min(dest_w - write_x as i32)
     .max(0) as u32;
   let write_h = (write_rect.height().ceil() as i32)
-    .min(pix_h - write_y as i32)
+    .min(dest_h - write_y as i32)
     .max(0) as u32;
   if write_w == 0 || write_h == 0 {
     scratch.region = Some(region);
@@ -1361,33 +1426,33 @@ fn apply_backdrop_filters(
     return Ok(());
   }
 
-  let src_start_x = (write_x as i32 - clamped_x as i32) as u32;
-  let src_start_y = (write_y as i32 - clamped_y as i32) as u32;
-  let write_result = (|| -> RenderResult<()> {
-    let dest_data = pixmap.data_mut();
-    let src_data = region.data();
-    let region_width = region.width() as usize;
-    let clip_mask_data =
-      clip_mask.map(|mask| (mask.data(), mask.width() as usize, mask.height() as usize));
-    let radii_mask_data = radii_mask.as_ref().map(|mask| mask.data());
+  let src_start_x = (write_x as i32 + dest_origin_in_src.0 - clamped_x as i32).max(0) as u32;
+  let src_start_y = (write_y as i32 + dest_origin_in_src.1 - clamped_y as i32).max(0) as u32;
 
+  let dest_bytes_per_row = dest.width() as usize * 4;
+  let clip_mask_data =
+    clip_mask.map(|mask| (mask.data(), mask.width() as usize, mask.height() as usize));
+  let radii_mask_data = radii_mask.as_ref().map(|mask| mask.data());
+
+  let write_result = (|| -> RenderResult<()> {
+    let dest_data = dest.data_mut();
     if clip_mask_data.is_none() && radii_mask_data.is_none() {
       let row_bytes = write_w as usize * 4;
       let mut deadline_counter = 0usize;
       for row in 0..write_h as usize {
         check_active_periodic(&mut deadline_counter, 32, RenderStage::Paint)?;
-        let dst_idx = (write_y as usize + row) * bytes_per_row + write_x as usize * 4;
-        let src_idx = ((src_start_y as usize + row) * region_width + src_start_x as usize) * 4;
+        let dst_idx = (write_y as usize + row) * dest_bytes_per_row + write_x as usize * 4;
+        let src_idx = ((src_start_y as usize + row) * filtered_width + src_start_x as usize) * 4;
         dest_data[dst_idx..dst_idx + row_bytes]
-          .copy_from_slice(&src_data[src_idx..src_idx + row_bytes]);
+          .copy_from_slice(&filtered_data[src_idx..src_idx + row_bytes]);
       }
     } else {
       let mut deadline_counter = 0usize;
       let mut pixel_counter = 0usize;
       for row in 0..write_h as usize {
         check_active_periodic(&mut deadline_counter, 32, RenderStage::Paint)?;
-        let dst_idx = (write_y as usize + row) * bytes_per_row + write_x as usize * 4;
-        let src_idx = ((src_start_y as usize + row) * region_width + src_start_x as usize) * 4;
+        let dst_idx = (write_y as usize + row) * dest_bytes_per_row + write_x as usize * 4;
+        let src_idx = ((src_start_y as usize + row) * filtered_width + src_start_x as usize) * 4;
         let mask_y = write_y as usize + row;
 
         for col in 0..write_w as usize {
@@ -1415,13 +1480,13 @@ fn apply_backdrop_filters(
 
           if let Some(mask_data) = radii_mask_data {
             let mask_idx =
-              (src_start_y as usize + row) * region_width + (src_start_x as usize + col);
+              (src_start_y as usize + row) * filtered_width + (src_start_x as usize + col);
             coverage = div_255(coverage * mask_data[mask_idx] as u16);
           }
 
           if coverage >= 255 {
             dest_data[dest_offset..dest_offset + 4]
-              .copy_from_slice(&src_data[src_offset..src_offset + 4]);
+              .copy_from_slice(&filtered_data[src_offset..src_offset + 4]);
             continue;
           }
 
@@ -1431,7 +1496,7 @@ fn apply_backdrop_filters(
 
           let cov = coverage as u16;
           let inv = 255u16 - cov;
-          let src_px = &src_data[src_offset..src_offset + 4];
+          let src_px = &filtered_data[src_offset..src_offset + 4];
           let dst_slice = &mut dest_data[dest_offset..dest_offset + 4];
           for i in 0..4 {
             let src_v = src_px[i] as u16;
@@ -1443,6 +1508,7 @@ fn apply_backdrop_filters(
     }
     Ok(())
   })();
+
   if let Err(err) = write_result {
     scratch.region = Some(region);
     if let Some(mask) = radii_mask {
@@ -2659,6 +2725,8 @@ pub struct DisplayListRenderer {
   warp_cache: WarpCache,
   blur_cache: BlurCache,
   shared_blur_cache: Option<SharedBlurCache>,
+  backdrop_filter_cache: BackdropFilterCache,
+  shared_backdrop_filter_cache: Option<SharedBackdropFilterCache>,
   gradient_cache: GradientLutCache,
   gradient_pixmap_cache: GradientPixmapCache,
   gradient_stats: GradientStats,
@@ -2675,6 +2743,7 @@ struct StackingRecord {
   css_bounds: Rect,
   manual_blend: Option<BlendMode>,
   layer_bounds: Option<Rect>,
+  layer_origin: (i32, i32),
   projective_transform: Option<Transform3D>,
   parent_transform: Transform,
   culled: bool,
@@ -2683,7 +2752,10 @@ struct StackingRecord {
 
 #[derive(Debug, Clone)]
 struct PendingBackdrop {
+  /// Axis-aligned bounds in the *parent pixmap* coordinate space.
   bounds: Rect,
+  /// The stacking context border box in the local (pre-transform) device/CSS coordinate space.
+  shape_bounds: Rect,
   filters: Vec<ResolvedFilter>,
   radii: BorderRadii,
   filter_bounds: Rect,
@@ -3377,6 +3449,8 @@ impl DisplayListRenderer {
       warp_cache: WarpCache::new(WARP_CACHE_CAPACITY),
       blur_cache: BlurCache::default(),
       shared_blur_cache: None,
+      backdrop_filter_cache: BackdropFilterCache::default(),
+      shared_backdrop_filter_cache: None,
       gradient_cache: GradientLutCache::default(),
       gradient_pixmap_cache: GradientPixmapCache::default(),
       gradient_stats: GradientStats::default(),
@@ -3403,6 +3477,14 @@ impl DisplayListRenderer {
     match self.shared_blur_cache.as_mut() {
       Some(shared) => shared,
       None => &mut self.blur_cache,
+    }
+  }
+
+  #[inline]
+  fn backdrop_filter_cache_mut(&mut self) -> &mut (dyn BackdropFilterCacheOps + 'static) {
+    match self.shared_backdrop_filter_cache.as_mut() {
+      Some(shared) => shared,
+      None => &mut self.backdrop_filter_cache,
     }
   }
 
@@ -5696,34 +5778,52 @@ impl DisplayListRenderer {
   }
 
   fn apply_pending_backdrop(&mut self, next_item: &DisplayItem) -> RenderResult<()> {
-    let Some(record) = self.stacking_layers.last_mut() else {
+    let (pending, layer_origin) = {
+      let Some(record) = self.stacking_layers.last_mut() else {
+        return Ok(());
+      };
+      if record.pending_backdrop.is_none() {
+        return Ok(());
+      }
+      if matches!(next_item, DisplayItem::PushClip(_)) {
+        return Ok(());
+      }
+      (record.pending_backdrop.take().unwrap(), record.layer_origin)
+    };
+
+    let clip_mask = self.canvas.clip_mask_rc();
+    let clip_bounds = self.canvas.clip_bounds();
+    let world_to_dest = self.canvas.transform();
+    let scale = self.scale;
+
+    let Some((backdrop, dest_pixmap)) = self.canvas.split_backdrop_and_pixmap_mut() else {
       return Ok(());
     };
-    if record.pending_backdrop.is_none() {
-      return Ok(());
-    }
-    if matches!(next_item, DisplayItem::PushClip(_)) {
-      return Ok(());
-    }
-
-    let pending = record.pending_backdrop.take().unwrap();
-    let clip_mask = self.canvas.clip_mask().cloned();
-    let clip_bounds = self.canvas.clip_bounds();
-    let cache: &mut (dyn BlurCacheOps + 'static) = match self.shared_blur_cache.as_mut() {
+    let blur_cache: &mut (dyn BlurCacheOps + 'static) = match self.shared_blur_cache.as_mut() {
       Some(shared) => shared,
       None => &mut self.blur_cache,
     };
-    let backdrop = self.canvas.backdrop_pixmap_mut();
+    let backdrop_cache: &mut (dyn BackdropFilterCacheOps + 'static) =
+      match self.shared_backdrop_filter_cache.as_mut() {
+        Some(shared) => shared,
+        None => &mut self.backdrop_filter_cache,
+      };
+
     apply_backdrop_filters(
+      dest_pixmap,
       backdrop,
-      &pending.bounds,
+      layer_origin,
+      pending.bounds,
+      pending.shape_bounds,
       &pending.filters,
       pending.radii,
-      self.scale,
-      clip_mask.as_ref(),
+      scale,
+      clip_mask.as_deref(),
       clip_bounds,
       pending.filter_bounds,
-      Some(cache),
+      world_to_dest,
+      Some(blur_cache),
+      Some(backdrop_cache),
     )?;
     Ok(())
   }
@@ -6275,6 +6375,7 @@ impl DisplayListRenderer {
     let gradient_cache = self.gradient_cache.clone();
     let gradient_pixmap_cache = self.gradient_pixmap_cache.clone();
     let shared_blur_cache = SharedBlurCache::default();
+    let shared_backdrop_filter_cache = SharedBackdropFilterCache::default();
     let diagnostics_enabled = self.diagnostics_enabled;
     let diagnostics_session = paint_diagnostics_session_id();
     let image_pixmap_diagnostics = self.image_pixmap_diagnostics.clone();
@@ -6325,6 +6426,7 @@ impl DisplayListRenderer {
               renderer.gradient_cache = gradient_cache.clone();
               renderer.gradient_pixmap_cache = gradient_pixmap_cache.clone();
               renderer.shared_blur_cache = Some(shared_blur_cache.clone());
+              renderer.shared_backdrop_filter_cache = Some(shared_backdrop_filter_cache.clone());
               renderer.diagnostics_enabled = diagnostics_enabled;
               renderer.image_pixmap_diagnostics = image_pixmap_diagnostics.clone();
               renderer.background_paint_diagnostics = background_paint_diagnostics.clone();
@@ -7053,6 +7155,7 @@ impl DisplayListRenderer {
           };
           Some(PendingBackdrop {
             bounds: backdrop_bounds,
+            shape_bounds: bounds,
             filters: scaled_backdrop.clone(),
             radii,
             filter_bounds: css_bounds,
@@ -7091,13 +7194,22 @@ impl DisplayListRenderer {
             )
           })
           .flatten();
-        let layer_origin = if needs_layer && !has_backdrop {
-          layer_bounds.map(|rect| (rect.min_x().floor(), rect.min_y().floor()))
+        let (bounded_rect, layer_origin) = if needs_layer {
+          let bounded_rect = if has_backdrop && projective_transform.is_some() {
+            // Backdrop filtering under projective warps isn't fully supported yet; keep the legacy
+            // unbounded layer behavior to avoid cropping the warped output.
+            None
+          } else {
+            layer_bounds
+          };
+          let origin = bounded_rect
+            .map(|rect| (rect.min_x().floor() as i32, rect.min_y().floor() as i32))
+            .unwrap_or((0, 0));
+          (bounded_rect, origin)
         } else {
-          None
+          (None, (0, 0))
         };
         if needs_layer {
-          let bounded_rect = if has_backdrop { None } else { layer_bounds };
           if manual_blend.is_some() {
             if let Some(layer_rect) = bounded_rect {
               self.canvas.push_layer_bounded(1.0, None, layer_rect)?;
@@ -7134,6 +7246,7 @@ impl DisplayListRenderer {
           css_bounds,
           manual_blend,
           layer_bounds,
+          layer_origin,
           projective_transform,
           parent_transform,
           culled: false,
@@ -7142,8 +7255,9 @@ impl DisplayListRenderer {
 
         if let Some(t) = local_skia_transform {
           let mut layer_transform = parent_transform.post_concat(t);
-          if let Some((origin_x, origin_y)) = layer_origin {
-            layer_transform = layer_transform.post_translate(-origin_x, -origin_y);
+          if needs_layer && layer_origin != (0, 0) {
+            layer_transform =
+              layer_transform.post_translate(-(layer_origin.0 as f32), -(layer_origin.1 as f32));
           }
           self.canvas.set_transform(layer_transform);
         }
@@ -7161,6 +7275,7 @@ impl DisplayListRenderer {
             css_bounds: Rect::ZERO,
             manual_blend: None,
             layer_bounds: None,
+            layer_origin: (0, 0),
             projective_transform: None,
             parent_transform: Transform::identity(),
             culled: false,
@@ -11229,6 +11344,11 @@ mod tests {
       *cell.borrow_mut() = BackdropFilterScratch::default();
     });
 
+    let backdrop = {
+      let mut pixmap = new_pixmap(8, 8).unwrap();
+      pixmap.data_mut().fill(200);
+      pixmap
+    };
     let mut pixmap = new_pixmap(8, 8).unwrap();
     pixmap.data_mut().fill(200);
     let bounds = Rect::from_xywh(1.0, 1.0, 6.0, 6.0);
@@ -11237,13 +11357,18 @@ mod tests {
     let recorder = crate::paint::pixmap::NewPixmapAllocRecorder::start();
     apply_backdrop_filters(
       &mut pixmap,
-      &bounds,
+      &backdrop,
+      (0, 0),
+      bounds,
+      bounds,
       &filters,
       BorderRadii::uniform(2.0),
       1.0,
       None,
       None,
       bounds,
+      Transform::identity(),
+      None,
       None,
     )
     .expect("backdrop filter");
@@ -11263,6 +11388,11 @@ mod tests {
       *cell.borrow_mut() = BackdropFilterScratch::default();
     });
 
+    let backdrop = {
+      let mut pixmap = new_pixmap(8, 8).unwrap();
+      pixmap.data_mut().fill(200);
+      pixmap
+    };
     let mut pixmap = new_pixmap(8, 8).unwrap();
     pixmap.data_mut().fill(200);
     let bounds = Rect::from_xywh(1.0, 1.0, 6.0, 6.0);
@@ -11270,13 +11400,18 @@ mod tests {
 
     apply_backdrop_filters(
       &mut pixmap,
-      &bounds,
+      &backdrop,
+      (0, 0),
+      bounds,
+      bounds,
       &filters,
       BorderRadii::uniform(2.0),
       1.0,
       None,
       None,
       bounds,
+      Transform::identity(),
+      None,
       None,
     )
     .expect("backdrop filter warm-up");
@@ -11284,13 +11419,18 @@ mod tests {
     let recorder = crate::paint::pixmap::NewPixmapAllocRecorder::start();
     apply_backdrop_filters(
       &mut pixmap,
-      &bounds,
+      &backdrop,
+      (0, 0),
+      bounds,
+      bounds,
       &filters,
       BorderRadii::uniform(2.0),
       1.0,
       None,
       None,
       bounds,
+      Transform::identity(),
+      None,
       None,
     )
     .expect("backdrop filter reuse");
@@ -11362,6 +11502,7 @@ mod tests {
 
     let mut pixmap = new_pixmap(128, 128).unwrap();
     pixmap.data_mut().fill(200);
+    let backdrop = pixmap.clone();
     let bounds = Rect::from_xywh(0.0, 0.0, 128.0, 128.0);
     // Blur with sigma=0 is a no-op and won't call into the blur implementation, so this test
     // asserts that apply_backdrop_filters itself periodically checks the active deadline.
@@ -11370,13 +11511,18 @@ mod tests {
     let result = with_deadline(Some(&deadline), || {
       apply_backdrop_filters(
         &mut pixmap,
-        &bounds,
+        &backdrop,
+        (0, 0),
+        bounds,
+        bounds,
         &filters,
         BorderRadii::ZERO,
         1.0,
         None,
         None,
         bounds,
+        Transform::identity(),
+        None,
         None,
       )
     });

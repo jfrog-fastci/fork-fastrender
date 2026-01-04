@@ -346,6 +346,17 @@ impl Canvas {
       .unwrap_or(&mut self.pixmap)
   }
 
+  /// Returns references to the backdrop (parent) pixmap and the current pixmap.
+  ///
+  /// This is primarily used for `backdrop-filter`, which samples from the already-painted
+  /// backdrop while writing into the current offscreen layer.
+  ///
+  /// Returns `None` when there is no parent pixmap (i.e. no active offscreen layer).
+  pub(crate) fn split_backdrop_and_pixmap_mut(&mut self) -> Option<(&Pixmap, &mut Pixmap)> {
+    let backdrop = self.layer_stack.last().map(|layer| &layer.pixmap)?;
+    Some((backdrop, &mut self.pixmap))
+  }
+
   // ========================================================================
   // State Management
   // ========================================================================
@@ -786,6 +797,14 @@ impl Canvas {
   /// Returns the current clip mask, including any rounded radii.
   pub(crate) fn clip_mask(&self) -> Option<&Mask> {
     self.current_state.clip_mask.as_deref()
+  }
+
+  /// Clones the reference-counted clip mask, if any.
+  ///
+  /// This is cheaper than cloning the underlying `Mask` and is useful when callers need to hold
+  /// onto the clip mask while also mutating the canvas (e.g. `backdrop-filter` sampling).
+  pub(crate) fn clip_mask_rc(&self) -> Option<Rc<Mask>> {
+    self.current_state.clip_mask.clone()
   }
 
   fn current_text_state<'a>(&self, clip_mask: Option<&'a Mask>) -> TextRenderState<'a> {

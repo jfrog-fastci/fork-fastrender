@@ -6067,6 +6067,7 @@ fn apply_declaration_with_base_internal(
     "-webkit-animation-direction" => "animation-direction",
     "-webkit-animation-fill-mode" => "animation-fill-mode",
     "-webkit-animation-play-state" => "animation-play-state",
+    "-webkit-backdrop-filter" => "backdrop-filter",
     other => other,
   };
 
@@ -23797,6 +23798,25 @@ mod tests {
     let mut style = ComputedStyle::default();
     let decl = Declaration {
       property: "backdrop-filter".into(),
+      value: PropertyValue::Keyword("blur(5px)".to_string()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert_eq!(style.backdrop_filter.len(), 1);
+    match &style.backdrop_filter[0] {
+      FilterFunction::Blur(len) => assert!((len.to_px() - 5.0).abs() < 0.01),
+      _ => panic!("expected blur"),
+    }
+  }
+
+  #[test]
+  fn parses_webkit_backdrop_filter_alias_as_filter_list() {
+    let mut style = ComputedStyle::default();
+    let decl = Declaration {
+      property: "-webkit-backdrop-filter".into(),
       value: PropertyValue::Keyword("blur(5px)".to_string()),
       contains_var: false,
       raw_value: String::new(),

@@ -87,6 +87,7 @@
 //! // ... iterate display list and draw to canvas
 //! ```
 
+pub mod backdrop_filter_cache;
 pub mod blur;
 pub mod canvas;
 pub mod clip_path;
