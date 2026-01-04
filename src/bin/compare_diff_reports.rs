@@ -177,6 +177,8 @@ struct ReportFilters {
   include: Vec<String>,
   #[serde(skip_serializing_if = "Vec::is_empty")]
   exclude: Vec<String>,
+  matched_entries: usize,
+  total_entries: usize,
 }
 
 #[derive(Serialize, Clone)]
@@ -343,13 +345,10 @@ fn main() {
 fn run() -> Result<i32, String> {
   let args = Args::parse();
   let name_filters = compile_name_filters(&args)?;
-  let filters_meta = if args.include.is_empty() && args.exclude.is_empty() {
+  let filter_patterns = if args.include.is_empty() && args.exclude.is_empty() {
     None
   } else {
-    Some(ReportFilters {
-      include: args.include.clone(),
-      exclude: args.exclude.clone(),
-    })
+    Some((args.include.clone(), args.exclude.clone()))
   };
   let gating_meta = if args.fail_on_regression || args.regression_threshold_percent.abs() > METRIC_EPS
   {
@@ -395,6 +394,16 @@ fn run() -> Result<i32, String> {
     }
     if !args.allow_config_mismatch {
       let totals = compute_totals_without_deltas(&baseline_report, &new_report, &name_filters);
+      let mut total_names: BTreeSet<&str> = BTreeSet::new();
+      total_names.extend(baseline_report.results.iter().map(|e| e.name.as_str()));
+      total_names.extend(new_report.results.iter().map(|e| e.name.as_str()));
+      let total_entries = total_names.len();
+      let filters_meta = filter_patterns.as_ref().map(|(include, exclude)| ReportFilters {
+        include: include.clone(),
+        exclude: exclude.clone(),
+        matched_entries: totals.entries,
+        total_entries,
+      });
       let report = DeltaReport {
         schema_version: SCHEMA_VERSION,
         baseline: baseline_meta,
@@ -433,6 +442,7 @@ fn run() -> Result<i32, String> {
   let mut names = BTreeSet::new();
   names.extend(baseline_by_name.keys().cloned());
   names.extend(new_by_name.keys().cloned());
+  let total_entries = names.len();
   let names: Vec<String> = names
     .into_iter()
     .filter(|name| name_filters.matches(name))
@@ -501,6 +511,12 @@ fn run() -> Result<i32, String> {
   top_regressions.truncate(TOP_N);
 
   let aggregate = compute_aggregate_metrics(&results);
+  let filters_meta = filter_patterns.as_ref().map(|(include, exclude)| ReportFilters {
+    include: include.clone(),
+    exclude: exclude.clone(),
+    matched_entries: totals.entries,
+    total_entries,
+  });
   let report = DeltaReport {
     schema_version: SCHEMA_VERSION,
     baseline: baseline_meta,
@@ -678,7 +694,10 @@ fn print_summary(report: &DeltaReport, args: &Args) {
       } else {
         filters.exclude.join(", ")
       };
-      println!("Filters: include=[{}] exclude=[{}]", include, exclude);
+      println!(
+        "Filters: include=[{}] exclude=[{}] matched={}/{}",
+        include, exclude, filters.matched_entries, filters.total_entries
+      );
     }
   }
 
@@ -1601,6 +1620,10 @@ fn format_filters_html(filters: Option<&ReportFilters>) -> String {
   if parts.is_empty() {
     "-".to_string()
   } else {
+    parts.push(format!(
+      "matched={}/{}",
+      filters.matched_entries, filters.total_entries
+    ));
     parts.join(" ")
   }
 }

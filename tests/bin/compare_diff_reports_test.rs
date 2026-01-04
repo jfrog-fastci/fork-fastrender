@@ -853,12 +853,15 @@ fn compare_diff_reports_can_filter_entries_by_name() {
   assert!(stdout.contains("Filters:"), "missing Filters line:\n{stdout}");
   assert!(stdout.contains("^keep$"), "missing include filter in stdout:\n{stdout}");
   assert!(stdout.contains("drop"), "missing exclude filter in stdout:\n{stdout}");
+  assert!(stdout.contains("matched=1/2"), "missing filter match count:\n{stdout}");
 
   let report: Value = serde_json::from_str(&fs::read_to_string(&out_json).unwrap()).unwrap();
   assert_eq!(report["totals"]["entries"], 1);
   assert_eq!(report["aggregate"]["paired_with_metrics"], 1);
   assert_eq!(report["filters"]["include"][0], "^keep$");
   assert_eq!(report["filters"]["exclude"][0], "drop");
+  assert_eq!(report["filters"]["matched_entries"].as_u64(), Some(1));
+  assert_eq!(report["filters"]["total_entries"].as_u64(), Some(2));
 
   let html = fs::read_to_string(&out_html).expect("read delta html");
   assert!(
@@ -867,6 +870,7 @@ fn compare_diff_reports_can_filter_entries_by_name() {
   );
   assert!(html.contains("<code>^keep$</code>"), "missing include filter:\n{html}");
   assert!(html.contains("<code>drop</code>"), "missing exclude filter:\n{html}");
+  assert!(html.contains("matched=1/2"), "missing filter match count:\n{html}");
 
   let results = report["results"].as_array().expect("results array");
   assert_eq!(results.len(), 1);
