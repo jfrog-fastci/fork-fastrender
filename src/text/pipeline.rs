@@ -3073,7 +3073,15 @@ fn assign_fonts_internal(
         &[]
       };
       let has_marks = coverage_chars_all.iter().copied().any(is_unicode_mark);
-      let coverage_chars_required: &[char] = if has_marks {
+      // Keycap sequences use U+20E3 (Combining Enclosing Keycap), which is an enclosing mark.
+      //
+      // The general "optional marks" fallback (Task 72) treats marks as optional when resolving
+      // fonts, but for keycap sequences the mark is required to render the emoji cluster as a
+      // single keycap glyph. Keep marks required for these clusters so we prefer emoji fonts that
+      // support both the base and the keycap mark (and avoid `.notdef` for the mark).
+      let is_keycap_sequence = matches!(first_char, '0'..='9' | '#' | '*')
+        && cluster_text.chars().any(|ch| ch == '\u{20e3}');
+      let coverage_chars_required: &[char] = if has_marks && !is_keycap_sequence {
         required_chars.clear();
         for ch in coverage_chars_all.iter().copied() {
           if !is_unicode_mark(ch) {

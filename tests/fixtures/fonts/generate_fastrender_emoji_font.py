@@ -102,6 +102,21 @@ def flag_stripes_glyph():
   return pen.glyph()
 
 
+def keycap_base_glyph():
+  # A simple "1"-like vertical bar used for all keycap base characters.
+  pen = TTGlyphPen(None)
+  rect(pen, 460, 220, 540, 620)
+  return pen.glyph()
+
+
+def england_cross_glyph():
+  # A simple red cross for the England subdivision tag sequence flag.
+  pen = TTGlyphPen(None)
+  rect(pen, 470, 180, 530, 720)  # vertical bar
+  rect(pen, 150, 420, 850, 480)  # horizontal bar
+  return pen.glyph()
+
+
 def main() -> None:
   upem = 1000
   ascent = 900
@@ -136,16 +151,44 @@ def main() -> None:
     "family",
     "family.layer1",
     "family.layer2",
+    # Keycap sequences + tag sequences + additional ZWJ sequences.
+    "keycap_base",
+    "keycap_mark",
+    "keycap",
+    "black_flag",
+    "tag",
+    "tag_cancel",
+    "flag_england",
+    "flag_england.layer2",
+    "emoji_modifier",
+    "microscope",
+    "medical",
+    "woman_scientist",
+    "woman_health_worker",
   ]
 
   fb = FontBuilder(upem, isTTF=True)
   fb.setupGlyphOrder(glyph_order)
   cmap = {
     0x0020: "space",
+    # Keycap base characters.
+    0x0023: "keycap_base",  # #
+    0x002A: "keycap_base",  # *
+    0x20E3: "keycap_mark",  # combining enclosing keycap
     0x200D: "zwj",
     0x1F600: "grin",
     0x2764: "heart",
     0x1F44D: "thumb",
+    # Tag sequence components (England subdivision flag).
+    0x1F3F4: "black_flag",
+    0xE0067: "tag",  # tag g
+    0xE0062: "tag",  # tag b
+    0xE0065: "tag",  # tag e
+    0xE006E: "tag",  # tag n
+    0xE007F: "tag_cancel",
+    # ZWJ sequences we want to keep on the emoji fallback path.
+    0x1F52C: "microscope",  # 🔬
+    0x2695: "medical",  # ⚕ (emoji variant ⚕️)
     # Regional indicator letters needed for pageset flags.
     0x1F1EB: "ri_generic",  # 🇫
     0x1F1EE: "ri_generic",  # 🇮
@@ -157,6 +200,8 @@ def main() -> None:
     0x1F467: "girl",  # 👧
     0x1F466: "boy",  # 👦
   }
+  for codepoint in range(0x30, 0x3A):
+    cmap[codepoint] = "keycap_base"
   # Pageset-derived emoji (from `bundled_font_coverage`) mapped onto the existing fixture glyphs
   # so bundled-font runs avoid missing-emoji tofu.
   for codepoint in [
@@ -238,7 +283,8 @@ def main() -> None:
     cmap[codepoint] = "thumb"
   cmap[0x1F497] = "heart"  # 💗
   cmap[0x1F525] = "heart"  # 🔥
-  cmap[0x1F3FB] = "space"  # 🏻 (emoji modifier)
+  for codepoint in range(0x1F3FB, 0x1F400):
+    cmap[codepoint] = "emoji_modifier"
   fb.setupCharacterMap(cmap)
 
   glyphs = {
@@ -276,12 +322,32 @@ def main() -> None:
     "family": rect_glyph(0, 0, 0, 0),
     "family.layer1": rect_glyph(150, 150, 850, 850),
     "family.layer2": regional_indicator_generic_mark_glyph(),
+    # Keycap sequences.
+    "keycap_base": keycap_base_glyph(),
+    "keycap_mark": rect_glyph(0, 0, 0, 0),
+    "keycap": rect_glyph(0, 0, 0, 0),
+    # Tag sequence (England subdivision flag).
+    "black_flag": rect_glyph(0, 0, 0, 0),
+    "tag": rect_glyph(0, 0, 0, 0),
+    "tag_cancel": rect_glyph(0, 0, 0, 0),
+    "flag_england": rect_glyph(0, 0, 0, 0),
+    "flag_england.layer2": england_cross_glyph(),
+    # ZWJ sequences with emoji modifiers.
+    "emoji_modifier": rect_glyph(0, 0, 0, 0),
+    "microscope": rect_glyph(0, 0, 0, 0),
+    "medical": rect_glyph(0, 0, 0, 0),
+    "woman_scientist": rect_glyph(0, 0, 0, 0),
+    "woman_health_worker": rect_glyph(0, 0, 0, 0),
   }
 
   advance = 1000
   metrics = {name: (advance, 0) for name in glyph_order}
   metrics["space"] = (500, 0)
   metrics["zwj"] = (0, 0)
+  metrics["keycap_mark"] = (0, 0)
+  metrics["emoji_modifier"] = (0, 0)
+  metrics["tag"] = (0, 0)
+  metrics["tag_cancel"] = (0, 0)
 
   fb.setupGlyf(glyphs)
   fb.setupHorizontalMetrics(metrics)
@@ -329,11 +395,16 @@ def main() -> None:
       "boy": [("grin.layer1", 0), ("grin.layer2", 1)],
       "family": [("family.layer1", 3), ("family.layer2", 1)],
       "ri_generic": [("ri_generic.layer1", 4), ("ri_generic.layer2", 5)],
+      "keycap": [("grin.layer1", 0), ("keycap_base", 1)],
+      "black_flag": [("flag_us.layer1", 1)],
       "flag_us": [
         ("flag_us.layer1", 4),
         ("flag_us.layer2", 2),
         ("flag_us.layer3", 5),
       ],
+      "flag_england": [("flag_us.layer1", 4), ("flag_england.layer2", 2)],
+      "woman_scientist": [("grin.layer1", 0), ("family.layer2", 1)],
+      "woman_health_worker": [("thumb.layer1", 3), ("family.layer2", 2)],
     },
     version=0,
     glyphMap=fb.font.getReverseGlyphMap(),
@@ -348,6 +419,12 @@ languagesystem DFLT dflt;
 feature ccmp {
   sub ri_u ri_s by flag_us;
   sub man zwj woman zwj girl zwj boy by family;
+  sub keycap_base keycap_mark by keycap;
+  sub black_flag tag tag tag tag tag tag_cancel by flag_england;
+  sub woman zwj microscope by woman_scientist;
+  sub woman emoji_modifier zwj microscope by woman_scientist;
+  sub woman zwj medical by woman_health_worker;
+  sub woman emoji_modifier zwj medical by woman_health_worker;
 } ccmp;
 """,
   )
