@@ -392,7 +392,10 @@ fn interpolate_filters(
         spread: 0.0,
         color: Rgba::new(shadow.color.r, shadow.color.g, shadow.color.b, 0.0),
       }),
-      ResolvedFilter::Url(_) => return None,
+      // `url()` filters are discrete and don't have a meaningful identity value. For list
+      // interpolation we treat a missing `url()` entry as the existing value so animations like
+      // `url(#f)` -> `none` keep the filter applied until the end keyframe.
+      ResolvedFilter::Url(url) => ResolvedFilter::Url(url.clone()),
     })
   };
 
