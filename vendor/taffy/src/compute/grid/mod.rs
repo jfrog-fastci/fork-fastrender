@@ -519,6 +519,8 @@ fn record_subgrid_overrides<
   parent_style: &Style,
   rows: &[GridTrack],
   columns: &[GridTrack],
+  record_rows: bool,
+  record_columns: bool,
 ) {
   #[cfg(feature = "std")]
   let debug_subgrid = std::env::var("FASTR_DEBUG_SUBGRID").is_ok();
@@ -556,7 +558,7 @@ fn record_subgrid_overrides<
 
     let mut rows_override = None;
     let mut cols_override = None;
-    if css_row_subgrid {
+    if record_rows && css_row_subgrid {
       let (span_start, _) = if parent_axes_swapped {
         (item.column.start, item.column.end)
       } else {
@@ -595,7 +597,7 @@ fn record_subgrid_overrides<
       }
     }
 
-    if css_col_subgrid {
+    if record_columns && css_col_subgrid {
       let (span_start, _) = if parent_axes_swapped {
         (item.row.start, item.row.end)
       } else {
@@ -960,6 +962,24 @@ where
     .iter_mut()
     .for_each(|item| item.available_space_cache = None);
 
+  // The block-axis track sizing algorithm measures grid items (RunMode::ComputeSize) to determine
+  // intrinsic block-size contributions. Subgrids can only measure correctly once the inline-axis
+  // track sizes they inherit are known, so record the relevant overrides before row sizing begins.
+  let (record_rows, record_columns) = if style.axes_swapped {
+    (true, false)
+  } else {
+    (false, true)
+  };
+  record_subgrid_overrides(
+    tree,
+    &items,
+    style,
+    &rows,
+    &columns,
+    record_rows,
+    record_columns,
+  );
+
   // Run track sizing algorithm for Block axis
   track_sizing_algorithm(
     tree,
@@ -1115,6 +1135,24 @@ where
       has_baseline_aligned_item,
     );
 
+    // The first row sizing pass may have already consumed the overrides recorded earlier. Refresh
+    // them now that column sizes have been rerun so subsequent block-axis measurements inherit the
+    // updated track sizes.
+    let (record_rows, record_columns) = if style.axes_swapped {
+      (true, false)
+    } else {
+      (false, true)
+    };
+    record_subgrid_overrides(
+      tree,
+      &items,
+      style,
+      &rows,
+      &columns,
+      record_rows,
+      record_columns,
+    );
+
     // Row sizing must be re-run (once) if:
     //   - The grid container's height was initially indefinite and there are any rows with percentage track sizing functions
     //   - Any grid item crossing an intrinsically sized track's min content contribution height has changed
@@ -1185,9 +1223,7 @@ where
   }
 
   // Capture subgrid overrides now that track sizes are resolved and drop virtual contributions
-  if run_mode != RunMode::ComputeSize {
-    record_subgrid_overrides(tree, &items, style, &rows, &columns);
-  }
+  record_subgrid_overrides(tree, &items, style, &rows, &columns, true, true);
   items.retain(|item| !item.is_virtual);
 
   // 8. Track Alignment

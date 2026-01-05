@@ -3,6 +3,7 @@ use fastrender::layout::contexts::grid::GridFormattingContext;
 use fastrender::layout::formatting_context::IntrinsicSizingMode;
 use fastrender::style::display::Display;
 use fastrender::style::types::AlignItems;
+use fastrender::style::types::AspectRatio;
 use fastrender::style::types::Direction;
 use fastrender::style::types::GridTrack;
 use fastrender::style::types::WritingMode;
@@ -1811,6 +1812,82 @@ fn subgrid_max_content_inline_size_accounts_for_children() {
     max_content,
     69.0,
     "max-content spans inherited tracks and gaps",
+  );
+}
+
+#[test]
+fn column_subgrid_height_contribution_requires_inherited_track_sizes_during_measurement() {
+  // Regression: measuring a subgrid item (RunMode::ComputeSize inside Taffy) must account for
+  // inherited track sizes. This scenario makes the subgrid item's height depend on the width of an
+  // inherited column via aspect-ratio, so incorrect subgrid measurement causes the parent's auto
+  // row sizing to be wrong.
+  //
+  // Layout structure:
+  // outer grid (100px wide) -> inner grid with columns (30px, 70px) -> column-subgrid spanning both columns.
+  // The subgrid contains a single item in its second column. The item has `aspect-ratio: 2` and is
+  // left as `width: auto` so it stretches to the column width (70px). Expected height is 70/2 =
+  // 35px.
+  let mut outer_style = ComputedStyle::default();
+  outer_style.display = Display::Grid;
+  outer_style.grid_template_columns = vec![GridTrack::Length(Length::px(100.0))];
+  outer_style.grid_template_rows = vec![GridTrack::Auto];
+
+  let mut inner_style = ComputedStyle::default();
+  inner_style.display = Display::Grid;
+  inner_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(30.0)),
+    GridTrack::Length(Length::px(70.0)),
+  ];
+  inner_style.grid_template_rows = vec![GridTrack::Auto];
+
+  let mut subgrid_style = ComputedStyle::default();
+  subgrid_style.display = Display::Grid;
+  subgrid_style.grid_column_subgrid = true;
+  subgrid_style.grid_column_start = 1;
+  subgrid_style.grid_column_end = 3;
+  // Provide an explicit (non-inherited) track list so that, without overrides, the subgrid would
+  // size its columns differently. With correct subgrid overrides it should use the parent's (30,70)
+  // track sizes instead.
+  subgrid_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(50.0)),
+    GridTrack::Length(Length::px(50.0)),
+  ];
+  subgrid_style.grid_template_rows = vec![GridTrack::Auto, GridTrack::Auto];
+
+  let mut item_style = ComputedStyle::default();
+  item_style.display = Display::Block;
+  item_style.aspect_ratio = AspectRatio::Ratio(2.0);
+  item_style.grid_column_start = 2;
+  item_style.grid_column_end = 3;
+  item_style.grid_row_start = 2;
+  item_style.grid_row_end = 3;
+
+  let item = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
+  let subgrid = BoxNode::new_block(
+    Arc::new(subgrid_style),
+    FormattingContextType::Grid,
+    vec![item],
+  );
+  let inner = BoxNode::new_block(
+    Arc::new(inner_style),
+    FormattingContextType::Grid,
+    vec![subgrid],
+  );
+  let outer = BoxNode::new_block(
+    Arc::new(outer_style),
+    FormattingContextType::Grid,
+    vec![inner],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&outer, &LayoutConstraints::definite_width(100.0))
+    .expect("layout succeeds");
+
+  assert_approx(
+    fragment.bounds.height(),
+    35.0,
+    "outer grid height reflects subgrid's measured aspect-ratio item",
   );
 }
 
