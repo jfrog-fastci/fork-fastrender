@@ -5809,21 +5809,59 @@ impl Painter {
       return;
     }
 
-    let content_rect = if let Some(style) = style {
-      background_rects(
-        x,
-        y,
-        width,
-        height,
-        style,
-        Some((self.css_width, self.css_height)),
-      )
-      .content
+    let viewport = (self.css_width, self.css_height);
+    let (content_rect, rects) = if let Some(style) = style {
+      let rects = background_rects(x, y, width, height, style, Some(viewport));
+      (rects.content, Some(rects))
     } else {
-      Rect::from_xywh(x, y, width, height)
+      (Rect::from_xywh(x, y, width, height), None)
     };
     if content_rect.width() <= 0.0 || content_rect.height() <= 0.0 {
       return;
+    }
+
+    // Replaced elements default to `overflow: clip` in the UA stylesheet, so their content needs
+    // to be clipped to the content box (and its inner border radius). The display-list backend
+    // handles this via explicit clip items; mirror that behavior in the legacy painter.
+    let mut clip_mask_guard: Option<BackgroundClipMaskGuard> = None;
+    let mut clip_mask: Option<&Mask> = None;
+    if let (Some(style), Some(rects)) = (style, rects.as_ref()) {
+      let clip_x = matches!(
+        style.overflow_x,
+        Overflow::Hidden | Overflow::Scroll | Overflow::Auto | Overflow::Clip
+      ) || style.containment.paint;
+      let clip_y = matches!(
+        style.overflow_y,
+        Overflow::Hidden | Overflow::Scroll | Overflow::Auto | Overflow::Clip
+      ) || style.containment.paint;
+      if clip_x || clip_y {
+        let canvas_w = self.pixmap.width();
+        let canvas_h = self.pixmap.height();
+        let mut clip_rect = self.device_rect(content_rect);
+        let clip_radii = if clip_x && clip_y {
+          resolve_clip_radii(
+            style,
+            rects,
+            crate::style::types::BackgroundBox::ContentBox,
+            Some(viewport),
+          )
+        } else {
+          BorderRadii::ZERO
+        };
+        let clip_radii = self.device_radii(clip_radii);
+        if !clip_x {
+          clip_rect.origin.x = 0.0;
+          clip_rect.size.width = canvas_w as f32;
+        }
+        if !clip_y {
+          clip_rect.origin.y = 0.0;
+          clip_rect.size.height = canvas_h as f32;
+        }
+        clip_mask_guard = Some(BackgroundClipMaskGuard::take());
+        clip_mask = clip_mask_guard
+          .as_mut()
+          .and_then(|guard| guard.mask(clip_rect, clip_radii, canvas_w, canvas_h));
+      }
     }
 
     // Try to render actual content for images and SVG
@@ -5860,6 +5898,7 @@ impl Painter {
             content_rect.y(),
             content_rect.width(),
             content_rect.height(),
+            clip_mask,
           ) {
             return;
           }
@@ -5887,7 +5926,7 @@ impl Painter {
               pixmap,
               &paint,
               Transform::identity(),
-              None,
+              clip_mask,
             );
             return;
           }
@@ -5900,6 +5939,7 @@ impl Painter {
           content_rect.y(),
           content_rect.width(),
           content_rect.height(),
+          clip_mask,
         ) {
           return;
         }
@@ -5917,6 +5957,7 @@ impl Painter {
           content_rect.y(),
           content_rect.width(),
           content_rect.height(),
+          clip_mask,
         ) {
           return;
         }
@@ -5929,6 +5970,7 @@ impl Painter {
           content_rect.y(),
           content_rect.width(),
           content_rect.height(),
+          clip_mask,
         ) {
           return;
         }
@@ -5942,6 +5984,7 @@ impl Painter {
               content_rect.y(),
               content_rect.width(),
               content_rect.height(),
+              clip_mask,
             ) {
               return;
             }
@@ -5952,6 +5995,7 @@ impl Painter {
             content_rect.y(),
             content_rect.width(),
             content_rect.height(),
+            clip_mask,
           ) {
             return;
           }
@@ -5969,6 +6013,7 @@ impl Painter {
             content_rect.y(),
             content_rect.width(),
             content_rect.height(),
+            clip_mask,
           ) {
             return;
           }
@@ -5991,7 +6036,7 @@ impl Painter {
               pixmap,
               &paint,
               Transform::identity(),
-              None,
+              clip_mask,
             );
             return;
           }
@@ -6004,6 +6049,7 @@ impl Painter {
           content_rect.y(),
           content_rect.width(),
           content_rect.height(),
+          clip_mask,
         ) {
           return;
         }
@@ -6021,6 +6067,7 @@ impl Painter {
           content_rect.y(),
           content_rect.width(),
           content_rect.height(),
+          clip_mask,
         ) {
           return;
         }
@@ -6033,6 +6080,7 @@ impl Painter {
           content_rect.y(),
           content_rect.width(),
           content_rect.height(),
+          clip_mask,
         ) {
           return;
         }
@@ -6050,6 +6098,7 @@ impl Painter {
           content_rect.y(),
           content_rect.width(),
           content_rect.height(),
+          clip_mask,
         ) {
           return;
         }
@@ -6077,6 +6126,7 @@ impl Painter {
             content_rect.y(),
             content_rect.width(),
             content_rect.height(),
+            clip_mask,
           ) {
             return;
           }
@@ -6085,7 +6135,7 @@ impl Painter {
       _ => {}
     }
 
-    self.paint_replaced_placeholder(replaced_type, style, content_rect);
+    self.paint_replaced_placeholder(replaced_type, style, content_rect, clip_mask);
   }
 
   fn paint_inline_svg(
@@ -6096,6 +6146,7 @@ impl Painter {
     y: f32,
     width: f32,
     height: f32,
+    clip_mask: Option<&Mask>,
   ) -> bool {
     let injection = content.document_css_injection.as_ref();
     if content.foreign_objects.is_empty() {
@@ -6108,17 +6159,19 @@ impl Painter {
           y,
           width,
           height,
+          clip_mask,
         );
       }
-      return self.paint_svg(&content.svg, style, x, y, width, height);
+      return self.paint_svg(&content.svg, style, x, y, width, height, clip_mask);
     }
 
     if let Some(svg) = self.inline_svg_with_foreign_objects(content) {
       if let Some(injection) = injection {
-        return self
-          .paint_inline_svg_with_injected_style(&svg, injection, style, x, y, width, height);
+        return self.paint_inline_svg_with_injected_style(
+          &svg, injection, style, x, y, width, height, clip_mask,
+        );
       }
-      return self.paint_svg(&svg, style, x, y, width, height);
+      return self.paint_svg(&svg, style, x, y, width, height, clip_mask);
     }
 
     false
@@ -6133,6 +6186,7 @@ impl Painter {
     y: f32,
     width: f32,
     height: f32,
+    clip_mask: Option<&Mask>,
   ) -> bool {
     if content.is_empty() {
       return false;
@@ -6143,7 +6197,7 @@ impl Painter {
     let trimmed = content.trim_start();
     let inline_svg = trimmed.starts_with("<svg") || trimmed.starts_with("<?xml");
     if !inline_svg {
-      return self.paint_svg(content, style, x, y, width, height);
+      return self.paint_svg(content, style, x, y, width, height, clip_mask);
     }
 
     let meta = match self.image_cache.probe_svg_content(content, "inline-svg") {
@@ -6228,7 +6282,7 @@ impl Painter {
     );
     self
       .pixmap
-      .draw_pixmap(0, 0, pixmap.as_ref().as_ref(), &paint, transform, None);
+      .draw_pixmap(0, 0, pixmap.as_ref().as_ref(), &paint, transform, clip_mask);
     true
   }
 
@@ -6785,6 +6839,7 @@ impl Painter {
     y: f32,
     width: f32,
     height: f32,
+    clip_mask: Option<&Mask>,
   ) -> bool {
     if src.url.is_empty() {
       return false;
@@ -6934,7 +6989,7 @@ impl Painter {
               );
               self
                 .pixmap
-                .draw_pixmap(0, 0, pixmap.as_ref().as_ref(), &paint, transform, None);
+                .draw_pixmap(0, 0, pixmap.as_ref().as_ref(), &paint, transform, clip_mask);
               return true;
             }
           }
@@ -7018,7 +7073,7 @@ impl Painter {
       );
       self
         .pixmap
-        .draw_pixmap(0, 0, pixmap.as_ref().as_ref(), &paint, transform, None);
+        .draw_pixmap(0, 0, pixmap.as_ref().as_ref(), &paint, transform, clip_mask);
       return true;
     }
 
@@ -7046,7 +7101,7 @@ impl Painter {
     );
     self
       .pixmap
-      .draw_pixmap(0, 0, pixmap.as_ref().as_ref(), &paint, transform, None);
+      .draw_pixmap(0, 0, pixmap.as_ref().as_ref(), &paint, transform, clip_mask);
     true
   }
 
@@ -7058,6 +7113,7 @@ impl Painter {
     y: f32,
     width: f32,
     height: f32,
+    clip_mask: Option<&Mask>,
   ) -> bool {
     if content.is_empty() {
       return false;
@@ -7145,7 +7201,7 @@ impl Painter {
       );
       self
         .pixmap
-        .draw_pixmap(0, 0, pixmap.as_ref().as_ref(), &paint, transform, None);
+        .draw_pixmap(0, 0, pixmap.as_ref().as_ref(), &paint, transform, clip_mask);
       return true;
     }
 
@@ -7219,7 +7275,7 @@ impl Painter {
               );
               self
                 .pixmap
-                .draw_pixmap(0, 0, pixmap.as_ref().as_ref(), &paint, transform, None);
+                .draw_pixmap(0, 0, pixmap.as_ref().as_ref(), &paint, transform, clip_mask);
               return true;
             }
           }
@@ -7292,7 +7348,7 @@ impl Painter {
       );
       self
         .pixmap
-        .draw_pixmap(0, 0, pixmap.as_ref().as_ref(), &paint, transform, None);
+        .draw_pixmap(0, 0, pixmap.as_ref().as_ref(), &paint, transform, clip_mask);
       return true;
     }
 
@@ -7320,7 +7376,7 @@ impl Painter {
     );
     self
       .pixmap
-      .draw_pixmap(0, 0, pixmap.as_ref().as_ref(), &paint, transform, None);
+      .draw_pixmap(0, 0, pixmap.as_ref().as_ref(), &paint, transform, clip_mask);
     true
   }
 
@@ -7329,6 +7385,7 @@ impl Painter {
     replaced_type: &ReplacedType,
     style: Option<&ComputedStyle>,
     rect: Rect,
+    clip_mask: Option<&Mask>,
   ) {
     // Browsers keep `<video>` transparent when no poster/frame is available. Painting a generic
     // placeholder breaks real pages that rely on a thumbnail image behind the video element.
@@ -7361,7 +7418,7 @@ impl Painter {
         &paint,
         tiny_skia::FillRule::Winding,
         Transform::identity(),
-        None,
+        clip_mask,
       );
 
       // Border around the placeholder
@@ -7373,9 +7430,13 @@ impl Painter {
         width: 1.0 * self.scale,
         ..Default::default()
       };
-      self
-        .pixmap
-        .stroke_path(&path, &stroke_paint, &stroke, Transform::identity(), None);
+      self.pixmap.stroke_path(
+        &path,
+        &stroke_paint,
+        &stroke,
+        Transform::identity(),
+        clip_mask,
+      );
     }
 
     // Optional label to hint the missing resource type
@@ -16582,6 +16643,7 @@ mod tests {
       0.0,
       1.0,
       2.0,
+      None,
     );
     assert!(ok, "image should paint");
     let top = color_at(&painter.pixmap, 0, 0);
@@ -16618,6 +16680,7 @@ mod tests {
       0.0,
       2.0,
       1.0,
+      None,
     );
     assert!(ok, "image should paint");
     let left = color_at(&painter.pixmap, 0, 0);
