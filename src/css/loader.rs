@@ -1355,14 +1355,52 @@ where
                 .budget
                 .import_depth_allowed(state.stack.len(), &resolved, diagnostics)
               {
+                if let Some(layer) = layer {
+                  if let ImportLayerModifier::Named(path) = layer {
+                    let mut wrapped: std::borrow::Cow<'_, str> = std::borrow::Cow::Owned(format!(
+                      "@layer {};\n",
+                      serialize_layer_name(&path)
+                    ));
+                    if let Some(condition) = supports {
+                      wrapped = std::borrow::Cow::Owned(format!(
+                        "@supports {} {{\n{}\n}}\n",
+                        condition, wrapped
+                      ));
+                    }
+                    if media.is_empty() || media.eq_ignore_ascii_case("all") {
+                      if !push_with_budget(
+                        &mut out,
+                        wrapped.as_ref(),
+                        &resolved,
+                        &mut state.budget,
+                        diagnostics,
+                      ) {
+                        budget_exhausted = true;
+                      }
+                    } else {
+                      let to_insert = format!("@media {} {{\n{}\n}}\n", media, wrapped);
+                      if !push_with_budget(
+                        &mut out,
+                        &to_insert,
+                        &resolved,
+                        &mut state.budget,
+                        diagnostics,
+                      ) {
+                        budget_exhausted = true;
+                      }
+                    }
+                  }
+                }
                 last_emit = j;
                 i = j;
                 continue;
               }
               if state.stack.contains(&resolved) {
                 diagnostics(&resolved, "skipping cyclic @import");
-              } else {
-                let mut inlined: Option<&str> = None;
+              }
+
+              let mut inlined: Option<&str> = None;
+              if !state.stack.contains(&resolved) {
                 if !state.try_register_stylesheet_with_budget(&resolved, diagnostics) {
                   // Count exhausted; skip this import.
                 } else if state.budget.remaining_bytes() == 0 {
@@ -1388,45 +1426,65 @@ where
                     inlined = Some(cached.as_str());
                   }
                 }
+              }
 
-                if let Some(inlined) = inlined {
-                  let mut wrapped: std::borrow::Cow<'_, str> = std::borrow::Cow::Borrowed(inlined);
-                  if let Some(layer) = layer {
-                    let layer_block = match layer {
-                      ImportLayerModifier::Anonymous => format!("@layer {{\n{}\n}}\n", wrapped),
-                      ImportLayerModifier::Named(path) => {
-                        format!("@layer {} {{\n{}\n}}\n", serialize_layer_name(&path), wrapped)
+              // Failed imports are ignored, but `@import ... layer(foo)` still establishes the
+              // layer ordering so subsequent `@layer foo { ... }` blocks don't change precedence
+              // based on network outcomes.
+              if inlined.is_some()
+                || matches!(layer.as_ref(), Some(ImportLayerModifier::Named(_)))
+              {
+                let mut wrapped: std::borrow::Cow<'_, str> = std::borrow::Cow::Borrowed(
+                  inlined.unwrap_or_default(),
+                );
+
+                if let Some(layer) = layer {
+                  match layer {
+                    ImportLayerModifier::Anonymous => {
+                      if inlined.is_some() {
+                        wrapped = std::borrow::Cow::Owned(format!("@layer {{\n{}\n}}\n", wrapped));
                       }
-                    };
-                    wrapped = std::borrow::Cow::Owned(layer_block);
-                  }
-                  if let Some(condition) = supports {
-                    wrapped = std::borrow::Cow::Owned(format!(
-                      "@supports {} {{\n{}\n}}\n",
-                      condition, wrapped
-                    ));
-                  }
-                  if media.is_empty() || media.eq_ignore_ascii_case("all") {
-                    if !push_with_budget(
-                      &mut out,
-                      wrapped.as_ref(),
-                      &resolved,
-                      &mut state.budget,
-                      diagnostics,
-                    ) {
-                      budget_exhausted = true;
                     }
-                  } else {
-                    let to_insert = format!("@media {} {{\n{}\n}}\n", media, wrapped);
-                    if !push_with_budget(
-                      &mut out,
-                      &to_insert,
-                      &resolved,
-                      &mut state.budget,
-                      diagnostics,
-                    ) {
-                      budget_exhausted = true;
+                    ImportLayerModifier::Named(path) => {
+                      wrapped = if inlined.is_some() {
+                        std::borrow::Cow::Owned(format!(
+                          "@layer {} {{\n{}\n}}\n",
+                          serialize_layer_name(&path),
+                          wrapped
+                        ))
+                      } else {
+                        std::borrow::Cow::Owned(format!("@layer {};\n", serialize_layer_name(&path)))
+                      };
                     }
+                  }
+                }
+
+                if let Some(condition) = supports {
+                  wrapped = std::borrow::Cow::Owned(format!(
+                    "@supports {} {{\n{}\n}}\n",
+                    condition, wrapped
+                  ));
+                }
+                if media.is_empty() || media.eq_ignore_ascii_case("all") {
+                  if !push_with_budget(
+                    &mut out,
+                    wrapped.as_ref(),
+                    &resolved,
+                    &mut state.budget,
+                    diagnostics,
+                  ) {
+                    budget_exhausted = true;
+                  }
+                } else {
+                  let to_insert = format!("@media {} {{\n{}\n}}\n", media, wrapped);
+                  if !push_with_budget(
+                    &mut out,
+                    &to_insert,
+                    &resolved,
+                    &mut state.budget,
+                    diagnostics,
+                  ) {
+                    budget_exhausted = true;
                   }
                 }
               }
@@ -2813,6 +2871,7 @@ mod tests {
   use super::*;
   use crate::debug::runtime::{self, RuntimeToggles};
   use crate::style::media::MediaType;
+  use cssparser::ToCss;
   use std::borrow::Cow;
   use std::collections::HashMap;
   use std::sync::Arc;
@@ -3244,6 +3303,75 @@ mod tests {
       fetched_urls,
       vec!["https://example.com/layered.css".to_string()],
       "expected import with layer modifier to be fetched"
+    );
+  }
+
+  #[test]
+  fn inline_imports_declares_layer_on_failed_layered_import() {
+    let mut state = InlineImportState::new();
+    let mut fetched_urls: Vec<String> = Vec::new();
+    let mut fetched = |url: &str| -> Result<String> {
+      fetched_urls.push(url.to_string());
+      Err(crate::error::Error::Other("network error".to_string()))
+    };
+
+    let css = r#"
+      @import "missing.css" layer(foo);
+      @layer bar { .x { color: red; } }
+      @layer foo { .y { color: blue; } }
+    "#;
+    let out = inline_imports(
+      css,
+      "https://example.com/failed-layer/root.css",
+      &mut fetched,
+      &mut state,
+      None,
+    )
+    .expect("inline imports");
+
+    assert!(
+      !out.contains("@import"),
+      "failed @import should be removed from output: {out}"
+    );
+
+    let sheet = crate::css::parser::parse_stylesheet(&out).expect("parse output stylesheet");
+    let Some(crate::css::types::CssRule::Layer(layer)) = sheet.rules.first() else {
+      panic!("expected a leading @layer declaration, got: {:?}", sheet.rules);
+    };
+    assert_eq!(layer.names, vec![vec!["foo".to_string()]]);
+    assert!(layer.rules.is_empty());
+    assert!(!layer.has_block);
+
+    let media_ctx = crate::style::media::MediaContext::screen(800.0, 600.0);
+    let collected = sheet.collect_style_rules(&media_ctx);
+    let mut bar_layer = None;
+    let mut foo_layer = None;
+    for rule in &collected {
+      let selector = rule
+        .rule
+        .selectors
+        .slice()
+        .first()
+        .map(|sel| sel.to_css_string())
+        .unwrap_or_default();
+      if selector == ".x" {
+        bar_layer = Some(rule.layer_order.clone());
+      } else if selector == ".y" {
+        foo_layer = Some(rule.layer_order.clone());
+      }
+    }
+
+    let bar_layer = bar_layer.expect("expected to find bar layer");
+    let foo_layer = foo_layer.expect("expected to find foo layer");
+    assert!(
+      foo_layer.as_ref() < bar_layer.as_ref(),
+      "expected failing @import layer(foo) to still declare foo before bar (foo={foo_layer:?} bar={bar_layer:?})"
+    );
+
+    assert_eq!(
+      fetched_urls,
+      vec!["https://example.com/failed-layer/missing.css".to_string()],
+      "expected failing import to still attempt fetching"
     );
   }
 

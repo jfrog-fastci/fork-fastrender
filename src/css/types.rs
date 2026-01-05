@@ -2611,6 +2611,82 @@ mod tests {
   }
 
   #[test]
+  fn failed_layered_import_still_establishes_layer_order() {
+    struct FailingLoader {
+      requests: RefCell<Vec<String>>,
+    }
+
+    impl FailingLoader {
+      fn new() -> Self {
+        Self {
+          requests: RefCell::new(Vec::new()),
+        }
+      }
+
+      fn requests(&self) -> Vec<String> {
+        self.requests.borrow().clone()
+      }
+    }
+
+    impl CssImportLoader for FailingLoader {
+      fn load(&self, url: &str) -> crate::error::Result<String> {
+        self.requests.borrow_mut().push(url.to_string());
+        Err(crate::error::Error::Other("import failed".to_string()))
+      }
+    }
+
+    let loader = FailingLoader::new();
+    let stylesheet = parse_stylesheet(
+      r#"
+        @import "missing.css" layer(foo);
+        @layer bar { .x { color: red; } }
+        @layer foo { .y { color: blue; } }
+      "#,
+    )
+    .expect("stylesheet parses");
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+
+    let resolved = stylesheet
+      .resolve_imports(
+        &loader,
+        Some("https://example.com/failed-layer/root.css"),
+        &media_ctx,
+      )
+      .expect("imports resolve");
+
+    assert_eq!(
+      loader.requests().as_slice(),
+      &["https://example.com/failed-layer/missing.css".to_string()],
+      "expected the failing import to be fetched once"
+    );
+
+    let collected = resolved.collect_style_rules(&media_ctx);
+    let mut bar_layer = None;
+    let mut foo_layer = None;
+    for rule in &collected {
+      let selector = rule
+        .rule
+        .selectors
+        .slice()
+        .first()
+        .map(|sel| sel.to_css_string())
+        .unwrap_or_default();
+      if selector == ".x" {
+        bar_layer = Some(rule.layer_order.clone());
+      } else if selector == ".y" {
+        foo_layer = Some(rule.layer_order.clone());
+      }
+    }
+
+    let bar_layer = bar_layer.expect("expected to find bar layer rule");
+    let foo_layer = foo_layer.expect("expected to find foo layer rule");
+    assert!(
+      foo_layer.as_ref() < bar_layer.as_ref(),
+      "expected failing @import layer(foo) to still declare foo before bar (foo={foo_layer:?} bar={bar_layer:?})"
+    );
+  }
+
+  #[test]
   fn resolve_imports_allows_shared_sub_imports() {
     let loader = RecordingLoader::new([
       (
@@ -3437,6 +3513,12 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
         };
 
         if state.stack.iter().any(|url| url == &resolved_href) {
+          // Cyclic imports behave like failed imports. When the @import carries a layer modifier,
+          // we still need to declare the layer ordering at this point so later rules in the same
+          // layer keep their cascade ordering stable.
+          if let Some(layer) = layer {
+            out.push(CssRule::Layer(layer_declaration_for_failed_import(layer)));
+          }
           continue;
         }
 
@@ -3454,6 +3536,10 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
           }
         } else {
           if state.cache.len() >= MAX_RESOLVED_IMPORTS {
+            // Treat import cutoff as a failed import; preserve layer ordering when requested.
+            if let Some(layer) = layer {
+              out.push(CssRule::Layer(layer_declaration_for_failed_import(layer)));
+            }
             continue;
           }
 
@@ -3528,6 +3614,12 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
         };
 
         let Some(resolved_children) = resolved_children else {
+          if let Some(layer) = layer {
+            // Per spec, failed imports are ignored. The layer modifier still establishes the layer
+            // ordering so later rules in the same named layer don't change precedence based on
+            // network outcomes.
+            out.push(CssRule::Layer(layer_declaration_for_failed_import(layer)));
+          }
           continue;
         };
 
@@ -3555,6 +3647,23 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
   }
 
   Ok(())
+}
+
+fn layer_declaration_for_failed_import(layer: ImportLayer) -> LayerRule {
+  match layer {
+    ImportLayer::Anonymous => LayerRule {
+      names: Vec::new(),
+      rules: Vec::new(),
+      has_block: true,
+      anonymous: true,
+    },
+    ImportLayer::Named(path) => LayerRule {
+      names: vec![path],
+      rules: Vec::new(),
+      has_block: false,
+      anonymous: false,
+    },
+  }
 }
 
 #[derive(Debug, Clone)]
