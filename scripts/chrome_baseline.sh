@@ -82,27 +82,32 @@ while [[ $# -gt 0 ]]; do
         exit 0
         ;;
       --html-dir)
-        HTML_DIR="${2:-}"; shift 2 ;;
+        HTML_DIR="${2:-}"; shift 2; continue ;;
       --out-dir)
-        OUT_DIR="${2:-}"; shift 2 ;;
+        OUT_DIR="${2:-}"; shift 2; continue ;;
       --viewport)
-        VIEWPORT="${2:-}"; shift 2 ;;
+        VIEWPORT="${2:-}"; shift 2; continue ;;
       --dpr)
-        DPR="${2:-}"; shift 2 ;;
+        DPR="${2:-}"; shift 2; continue ;;
       --timeout)
-        TIMEOUT="${2:-}"; shift 2 ;;
+        TIMEOUT="${2:-}"; shift 2; continue ;;
       --shard)
-        SHARD="${2:-}"; shift 2 ;;
+        SHARD="${2:-}"; shift 2; continue ;;
       --chrome)
-        CHROME_BIN="${2:-}"; shift 2 ;;
+        CHROME_BIN="${2:-}"; shift 2; continue ;;
       --js)
-        JS="${2:-}"; shift 2 ;;
+        JS="${2:-}"; shift 2; continue ;;
       --allow-animations)
-        ALLOW_ANIMATIONS="1"; shift ;;
+        ALLOW_ANIMATIONS="1"; shift; continue ;;
       --)
         PARSE_FLAGS=0
         shift
         continue
+        ;;
+      -*)
+        echo "unknown option: $1" >&2
+        usage >&2
+        exit 2
         ;;
     esac
   fi
@@ -163,6 +168,57 @@ if [[ -z "${CHROME}" ]]; then
   exit 2
 fi
 
+is_snap_chromium() {
+  local chrome_path="${1:-}"
+  if [[ -z "${chrome_path}" ]]; then
+    return 1
+  fi
+
+  # `snap install chromium` exposes a wrapper at `/snap/bin/chromium` that launches the sandboxed
+  # app via systemd transient scopes. That wrapper fails in container/CI environments without
+  # systemd, but the snap payload also includes the real Chromium binary which can be invoked
+  # directly.
+  #
+  # Detect both direct `/snap/bin/chromium` installs and distro wrapper scripts that exec
+  # `snap run chromium`.
+  if [[ "${chrome_path}" == /snap/bin/chromium* ]]; then
+    return 0
+  fi
+
+  if command -v readlink >/dev/null 2>&1; then
+    local canon
+    canon="$(readlink -f "${chrome_path}" 2>/dev/null || true)"
+    if [[ -n "${canon}" && "${canon}" == /snap/bin/chromium* ]]; then
+      return 0
+    fi
+  fi
+
+  if head -c 4096 "${chrome_path}" 2>/dev/null | grep -aqE '/snap/bin/chromium|snap run chromium|snap run chromium-browser'; then
+    return 0
+  fi
+
+  return 1
+}
+
+# Snap-installed Chromium (`/snap/bin/chromium` or wrappers that call `snap run chromium`) may not
+# work in CI containers that lack systemd. Prefer the real Chromium binary from the snap payload
+# when available.
+CHROME_PATH=""
+if [[ "${CHROME}" == */* ]]; then
+  CHROME_PATH="${CHROME}"
+else
+  CHROME_PATH="$(command -v "${CHROME}" || true)"
+fi
+SNAP_CHROMIUM=0
+if is_snap_chromium "${CHROME_PATH}"; then
+  SNAP_CHROMIUM=1
+  DIRECT_CHROME="/snap/chromium/current/usr/lib/chromium-browser/chrome"
+  if [[ -x "${DIRECT_CHROME}" ]]; then
+    CHROME="${DIRECT_CHROME}"
+    CHROME_PATH="${DIRECT_CHROME}"
+  fi
+fi
+
 if [[ ! -d "${HTML_DIR}" ]]; then
   echo "HTML dir not found: ${HTML_DIR}" >&2
   echo "Run: cargo run --release --bin fetch_pages" >&2
@@ -178,9 +234,8 @@ CHROME_VERSION="$("${CHROME}" --version 2>/dev/null | head -n 1 | tr -d '\r' || 
 # In that configuration, `/tmp` is private to the snap, and Chromium may be unable to
 # write screenshots to arbitrary repo paths. Use a temp dir under the snap's common
 # directory when available so the screenshot is visible to the host process.
-CHROME_PATH="$(command -v "${CHROME}" || true)"
 TMP_TEMPLATE=""
-if [[ "${CHROME_PATH}" == /snap/bin/chromium* ]]; then
+if [[ "${SNAP_CHROMIUM}" -eq 1 ]]; then
   SNAP_COMMON_DIR="${HOME}/snap/chromium/common"
   mkdir -p "${SNAP_COMMON_DIR}" 2>/dev/null || true
   if [[ -d "${SNAP_COMMON_DIR}" ]]; then
