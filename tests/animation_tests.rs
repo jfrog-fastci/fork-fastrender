@@ -411,6 +411,28 @@ fn keyframes_interpolate_border_widths() {
 }
 
 #[test]
+fn keyframes_interpolate_outline_offset() {
+  let sheet = parse_stylesheet(
+    "@keyframes outline { from { outline-offset: -10px; } to { outline-offset: 10px; } }",
+  )
+  .unwrap();
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = &keyframes[0];
+  let sampled = sample_keyframes(
+    rule,
+    0.5,
+    &ComputedStyle::default(),
+    Size::new(800.0, 600.0),
+    Size::new(200.0, 200.0),
+  );
+  let offset = match sampled.get("outline-offset") {
+    Some(AnimatedValue::Length(len)) => len.to_px(),
+    other => panic!("unexpected value {other:?}"),
+  };
+  assert!((offset - 0.0).abs() < 1e-3);
+}
+
+#[test]
 fn keyframes_interpolate_transform_lists() {
   let sheet = parse_stylesheet(
     "@keyframes move { from { transform: translateX(0px); } to { transform: translateX(100px); } }",

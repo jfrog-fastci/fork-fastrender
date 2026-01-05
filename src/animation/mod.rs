@@ -71,6 +71,7 @@ pub enum AnimatedValue {
   Opacity(f32),
   Visibility(Visibility),
   Color(Rgba),
+  Length(Length),
   Transform(Vec<crate::css::types::Transform>),
   Translate(TranslateValue),
   Rotate(RotateValue),
@@ -1089,6 +1090,19 @@ fn interpolate_color(a: &AnimatedValue, b: &AnimatedValue, t: f32) -> Option<Ani
   }
 }
 
+fn interpolate_length_value(
+  a: &AnimatedValue,
+  b: &AnimatedValue,
+  t: f32,
+) -> Option<AnimatedValue> {
+  match (a, b) {
+    (AnimatedValue::Length(la), AnimatedValue::Length(lb)) => Some(AnimatedValue::Length(
+      Length::px(lerp(la.to_px(), lb.to_px(), t)),
+    )),
+    _ => None,
+  }
+}
+
 fn apply_color(style: &mut ComputedStyle, value: &AnimatedValue) {
   if let AnimatedValue::Color(c) = value {
     style.color = *c;
@@ -1763,6 +1777,42 @@ fn apply_border_left_width(style: &mut ComputedStyle, value: &AnimatedValue) {
   }
 }
 
+fn extract_outline_width(
+  style: &ComputedStyle,
+  ctx: &AnimationResolveContext,
+) -> Option<AnimatedValue> {
+  Some(AnimatedValue::Length(Length::px(resolve_length_px(
+    &style.outline_width,
+    None,
+    style,
+    ctx,
+  ))))
+}
+
+fn extract_outline_offset(
+  style: &ComputedStyle,
+  ctx: &AnimationResolveContext,
+) -> Option<AnimatedValue> {
+  Some(AnimatedValue::Length(Length::px(resolve_length_px(
+    &style.outline_offset,
+    None,
+    style,
+    ctx,
+  ))))
+}
+
+fn apply_outline_width(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::Length(len) = value {
+    style.outline_width = Length::px(len.to_px().max(0.0));
+  }
+}
+
+fn apply_outline_offset(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::Length(len) = value {
+    style.outline_offset = *len;
+  }
+}
+
 fn extract_border_radius(
   style: &ComputedStyle,
   ctx: &AnimationResolveContext,
@@ -1985,6 +2035,18 @@ fn property_interpolators() -> &'static [PropertyInterpolator] {
       extract: extract_border_width,
       interpolate: interpolate_border_width_value,
       apply: apply_border_left_width,
+    },
+    PropertyInterpolator {
+      name: "outline-width",
+      extract: extract_outline_width,
+      interpolate: interpolate_length_value,
+      apply: apply_outline_width,
+    },
+    PropertyInterpolator {
+      name: "outline-offset",
+      extract: extract_outline_offset,
+      interpolate: interpolate_length_value,
+      apply: apply_outline_offset,
     },
     PropertyInterpolator {
       name: "border-radius",
