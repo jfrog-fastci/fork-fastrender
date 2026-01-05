@@ -1764,6 +1764,12 @@ pub fn itemize_text(text: &str, bidi: &BidiAnalysis) -> Vec<ItemizedRun> {
     return Vec::new();
   }
 
+  // Bidi levels are only needed when we will reorder runs for visual display. When the bidi
+  // analysis reports no reordering is required (e.g. pure LTR text with embedded isolates),
+  // splitting runs on level boundaries is pure churn and can break adjacency-sensitive shaping
+  // like kerning/ligatures even though the control characters are default-ignorable.
+  let split_by_level = bidi.needs_reordering();
+
   let mut runs = Vec::new();
   let mut current_start = 0;
   let mut current_text = String::new();
@@ -1774,7 +1780,11 @@ pub fn itemize_text(text: &str, bidi: &BidiAnalysis) -> Vec<ItemizedRun> {
   for (idx, ch) in text.char_indices() {
     let char_script = Script::detect(ch);
     let char_direction = bidi.direction_at(idx);
-    let char_level = bidi.level_at(idx).number();
+    let char_level = if split_by_level {
+      bidi.level_at(idx).number()
+    } else {
+      bidi.base_level().number()
+    };
 
     // Resolve neutral scripts based on context
     let resolved_script = if char_script.is_neutral() {
@@ -1789,7 +1799,7 @@ pub fn itemize_text(text: &str, bidi: &BidiAnalysis) -> Vec<ItemizedRun> {
       (Some(script), Some(dir), Some(level)) => {
         // New run if direction, level, or script changes
         dir != char_direction
-          || level != char_level
+          || (split_by_level && level != char_level)
           || (!char_script.is_neutral() && script != resolved_script)
       }
       _ => false,
@@ -5175,7 +5185,32 @@ fn shape_font_run(run: &FontRun) -> Result<ShapedRun> {
   // Create Unicode buffer
   let mut buffer = take_unicode_buffer();
 
-  let (shape_text, cluster_map_override) = mirror_text_for_direction(&run.text, run.direction);
+  // Bidi control characters (LRE/RLE/LRO/RLO/LRI/RLI/FSI/PDI) are default-ignorable and must not
+  // affect shaping results (e.g. kerning/ligature formation). Passing them through to HarfBuzz can
+  // disrupt adjacency-dependent features even if we later drop the resulting glyphs, so strip them
+  // from the shaping input and keep a mapping back to the original byte indices.
+  let has_bidi_controls = run.text.chars().any(is_bidi_control_char);
+  let (mut shape_text, mut cluster_map_override) =
+    mirror_text_for_direction(&run.text, run.direction);
+  if has_bidi_controls {
+    let original_map = cluster_map_override.as_ref();
+    let mut filtered = String::with_capacity(shape_text.len());
+    let mut mapping: Vec<(usize, usize)> = Vec::new();
+
+    for (idx, ch) in shape_text.char_indices() {
+      if is_bidi_control_char(ch) {
+        continue;
+      }
+      let orig_idx = original_map
+        .map(|map| map_cluster_offset(idx, map))
+        .unwrap_or(idx);
+      mapping.push((filtered.len(), orig_idx));
+      filtered.push(ch);
+    }
+
+    shape_text = Cow::Owned(filtered);
+    cluster_map_override = Some(mapping);
+  }
   buffer.push_str(&shape_text);
 
   let language = run.language.clone();
@@ -5286,57 +5321,38 @@ fn shape_font_run(run: &FontRun) -> Result<ShapedRun> {
     None
   };
 
-  let bidi_control_mask = run.text.chars().any(is_bidi_control_char).then(|| {
-    let mut mask = vec![0u8; run.text.len().saturating_add(1)];
-    for (idx, ch) in run.text.char_indices() {
-      if is_bidi_control_char(ch) && idx < mask.len() {
-        mask[idx] = 1;
-      }
-    }
-    mask
-  });
-
   for (info, pos) in glyph_infos.iter().zip(glyph_positions.iter()) {
     let cluster_in_shape = info.cluster as usize;
     let logical_cluster = cluster_map_override
       .as_ref()
       .map(|map| map_cluster_offset(cluster_in_shape, map))
       .unwrap_or(cluster_in_shape);
-    let is_bidi_control = bidi_control_mask
-      .as_ref()
-      .and_then(|mask| mask.get(logical_cluster))
-      .copied()
-      .unwrap_or(0)
-      != 0;
 
-    if !is_bidi_control {
-      if info.glyph_id == 0 {
-        if let Some((clusters, can_suppress)) = suppress_optional_mark_notdefs.as_ref() {
-          let cluster_idx =
-            match clusters.binary_search_by_key(&logical_cluster, |(start, _)| *start) {
-              Ok(idx) => idx,
-              Err(0) => 0,
-              Err(idx) => idx.saturating_sub(1),
-            };
-          if can_suppress.get(cluster_idx).copied().unwrap_or(false) {
-            continue;
-          }
+    if info.glyph_id == 0 {
+      if let Some((clusters, can_suppress)) = suppress_optional_mark_notdefs.as_ref() {
+        let cluster_idx = match clusters.binary_search_by_key(&logical_cluster, |(start, _)| *start) {
+          Ok(idx) => idx,
+          Err(0) => 0,
+          Err(idx) => idx.saturating_sub(1),
+        };
+        if can_suppress.get(cluster_idx).copied().unwrap_or(false) {
+          continue;
         }
       }
-
-      let (x_offset, y_offset, x_advance, y_advance) =
-        map_hb_position(run.vertical, baseline_shift, scale, pos);
-
-      glyphs.push(GlyphPosition {
-        glyph_id: info.glyph_id,
-        cluster: logical_cluster as u32,
-        x_offset,
-        y_offset,
-        x_advance,
-        y_advance,
-      });
-      inline_position += if run.vertical { y_advance } else { x_advance };
     }
+
+    let (x_offset, y_offset, x_advance, y_advance) =
+      map_hb_position(run.vertical, baseline_shift, scale, pos);
+
+    glyphs.push(GlyphPosition {
+      glyph_id: info.glyph_id,
+      cluster: logical_cluster as u32,
+      x_offset,
+      y_offset,
+      x_advance,
+      y_advance,
+    });
+    inline_position += if run.vertical { y_advance } else { x_advance };
   }
 
   if inline_position.abs() <= f32::EPSILON && !glyphs.is_empty() && mark_only {
@@ -8246,8 +8262,7 @@ mod tests {
     }
     let mid = pipeline.fallback_cache_stats();
 
-    // Keep the leading sample character stable so the ASCII fast-path still records cache hits.
-    let second = match pipeline.shape("please cache me again", &style, &ctx) {
+    let second = match pipeline.shape("cache me again", &style, &ctx) {
       Ok(runs) => runs,
       Err(_) => return,
     };
@@ -8284,7 +8299,9 @@ mod tests {
     let second_pipeline = pipeline.clone();
 
     let text1 = "abcdefghijklmnopqrstuvwxyz";
-    let text2 = "zyxwvutsrqponmlkjihgfedcba";
+    // The ASCII fast path keys its fallback cache probe off the first non-control character. Ensure
+    // both strings share the same initial byte so the second run can observe a cache hit.
+    let text2 = "azyxwvutsrqponmlkjihgfedcb";
 
     let before = pipeline.fallback_cache_stats();
     let first_runs = first_pipeline
@@ -9250,6 +9267,179 @@ mod tests {
     assert!(
       glyph_lookups > 0,
       "expected variation selector clusters to consult glyph fallback cache"
+    );
+  }
+
+  #[test]
+  fn keycap_sequences_use_cluster_fallback_cache() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    ctx.clear_web_fonts();
+    let style = ComputedStyle::default();
+    let text = "1\u{fe0f}\u{20e3}".to_string();
+    let text_len = text.len();
+
+    let run = ItemizedRun {
+      text,
+      start: 0,
+      end: text_len,
+      script: Script::Latin,
+      direction: Direction::LeftToRight,
+      level: 0,
+    };
+
+    let cache = FallbackCache::new(256);
+    let font_runs = assign_fonts_internal(
+      &[run],
+      &style,
+      &ctx,
+      Some(&cache),
+      ctx.font_generation(),
+      true,
+    )
+    .expect("assign fonts");
+    assert!(
+      !font_runs.is_empty(),
+      "expected bundled fonts to cover keycap sequence"
+    );
+    assert!(
+      font_runs
+        .iter()
+        .any(|run| FontDatabase::family_name_is_emoji_font(&run.font.family)),
+      "expected keycap sequence to select an emoji font (got {:?})",
+      font_runs
+        .iter()
+        .map(|run| run.font.family.as_str())
+        .collect::<Vec<_>>()
+    );
+
+    let stats = cache.stats();
+    let cluster_lookups = stats.cluster_hits + stats.cluster_misses;
+    assert!(
+      cluster_lookups > 0,
+      "expected keycap sequence clusters to consult cluster fallback cache (cluster lookups={cluster_lookups})"
+    );
+  }
+
+  #[test]
+  fn tag_sequences_use_cluster_fallback_cache_without_glyph_churn() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    ctx.clear_web_fonts();
+    let style = ComputedStyle::default();
+    // Emoji tag sequence for the Scotland flag (🏴).
+    let text = "\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}".to_string();
+    let text_len = text.len();
+
+    let run = ItemizedRun {
+      text,
+      start: 0,
+      end: text_len,
+      script: Script::Latin,
+      direction: Direction::LeftToRight,
+      level: 0,
+    };
+
+    let cache = FallbackCache::new(256);
+    let font_runs = assign_fonts_internal(
+      &[run],
+      &style,
+      &ctx,
+      Some(&cache),
+      ctx.font_generation(),
+      true,
+    )
+    .expect("assign fonts");
+    assert!(
+      !font_runs.is_empty(),
+      "expected bundled fonts to cover tag sequence"
+    );
+    assert!(
+      font_runs
+        .iter()
+        .any(|run| FontDatabase::family_name_is_emoji_font(&run.font.family)),
+      "expected tag sequence to select an emoji font (got {:?})",
+      font_runs
+        .iter()
+        .map(|run| run.font.family.as_str())
+        .collect::<Vec<_>>()
+    );
+
+    let stats = cache.stats();
+    let cluster_lookups = stats.cluster_hits + stats.cluster_misses;
+    let glyph_lookups = stats.glyph_hits + stats.glyph_misses;
+    assert!(
+      cluster_lookups > 0,
+      "expected tag sequence clusters to consult cluster fallback cache (cluster lookups={cluster_lookups})"
+    );
+    assert_eq!(
+      glyph_lookups, 0,
+      "expected tag sequence clusters to avoid per-codepoint glyph cache lookups (glyph lookups={glyph_lookups})"
+    );
+  }
+
+  #[test]
+  fn repeated_zwj_sequences_hit_cluster_fallback_cache() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    ctx.clear_web_fonts();
+    let style = ComputedStyle::default();
+
+    // Woman scientist (👩‍🔬), a ZWJ emoji sequence covered by the bundled emoji font.
+    let zwj_sequence = "👩\u{200d}🔬";
+    let repetitions = 128usize;
+    let mut text = String::new();
+    for _ in 0..repetitions {
+      // Include ASCII in between so we switch back to a non-emoji primary font, forcing
+      // repeated resolution of the ZWJ cluster via the fallback cache.
+      text.push('a');
+      text.push_str(zwj_sequence);
+    }
+    let text_len = text.len();
+
+    let run = ItemizedRun {
+      text,
+      start: 0,
+      end: text_len,
+      script: Script::Latin,
+      direction: Direction::LeftToRight,
+      level: 0,
+    };
+
+    let cache = FallbackCache::new(256);
+    let font_runs = assign_fonts_internal(
+      &[run],
+      &style,
+      &ctx,
+      Some(&cache),
+      ctx.font_generation(),
+      true,
+    )
+    .expect("assign fonts");
+    assert!(
+      font_runs
+        .iter()
+        .any(|run| FontDatabase::family_name_is_emoji_font(&run.font.family)),
+      "expected ZWJ sequence to select an emoji font (got {:?})",
+      font_runs
+        .iter()
+        .map(|run| run.font.family.as_str())
+        .collect::<Vec<_>>()
+    );
+
+    let stats = cache.stats();
+    assert!(
+      stats.cluster_hits > 0,
+      "expected repeated ZWJ sequences to hit the cluster fallback cache"
+    );
+    assert!(
+      stats.cluster_misses <= 2,
+      "expected repeated ZWJ sequences to avoid cluster cache churn (cluster misses={}, hits={})",
+      stats.cluster_misses,
+      stats.cluster_hits
+    );
+    assert!(
+      stats.cluster_hits >= repetitions.saturating_sub(2) as u64,
+      "expected most repeated ZWJ clusters to be cache hits (hits={}, misses={}, repetitions={repetitions})",
+      stats.cluster_hits,
+      stats.cluster_misses
     );
   }
 
