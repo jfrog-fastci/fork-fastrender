@@ -1106,6 +1106,18 @@ fn error_looks_like_dns_failure(err: &Error) -> bool {
   let Error::Resource(resource) = err else {
     return false;
   };
+  let mut source: Option<&(dyn std::error::Error + 'static)> = Some(err);
+  while let Some(current) = source {
+    if let Some(io_err) = current.downcast_ref::<io::Error>() {
+      // `std` maps common name-resolution failures (`EAI_NONAME`) to `NotFound`. Reqwest/hyper
+      // sometimes surface these as a generic "error sending request" message, so inspect the error
+      // chain instead of relying purely on the formatted message.
+      if io_err.kind() == io::ErrorKind::NotFound {
+        return true;
+      }
+    }
+    source = current.source();
+  }
   // Match on the error message (not the URL) so we don't trigger a fallback for domains that happen
   // to include keywords in their hostname.
   let msg = resource.message.to_ascii_lowercase();
@@ -8520,6 +8532,17 @@ mod tests {
       "HTTP/2 internal error",
     ));
     assert!(should_fallback_to_curl(&err));
+  }
+
+  #[test]
+  fn error_looks_like_dns_failure_detects_not_found_error_sources() {
+    let io_err = io::Error::new(io::ErrorKind::NotFound, "dns lookup failed");
+    let err = Error::Resource(ResourceError::new(
+      "https://example.com",
+      "error sending request for url (https://example.com)",
+    )
+    .with_source(io_err));
+    assert!(error_looks_like_dns_failure(&err));
   }
 
   #[test]
