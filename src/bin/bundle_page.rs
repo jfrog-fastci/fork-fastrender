@@ -1170,16 +1170,29 @@ enum CrawlMode {
 
 fn placeholder_resource(destination: FetchDestination, url: &str) -> FetchedResource {
   match destination {
-    FetchDestination::Image | FetchDestination::ImageCors => FetchedResource::with_final_url(
-      offline_placeholder_png_bytes().to_vec(),
-      Some("image/png".to_string()),
-      Some(url.to_string()),
-    ),
-    FetchDestination::Font => FetchedResource::with_final_url(
-      offline_placeholder_woff2_bytes().to_vec(),
-      Some("font/woff2".to_string()),
-      Some(url.to_string()),
-    ),
+    FetchDestination::Image | FetchDestination::ImageCors => {
+      let mut res = FetchedResource::with_final_url(
+        offline_placeholder_png_bytes().to_vec(),
+        Some("image/png".to_string()),
+        Some(url.to_string()),
+      );
+      // When CORS enforcement is enabled (`FASTR_FETCH_ENFORCE_CORS`), `<img crossorigin>` loads
+      // expect an `Access-Control-Allow-Origin` header. For missing resources we prefer a
+      // deterministic placeholder over failing the entire render.
+      res.access_control_allow_origin = Some("*".to_string());
+      res
+    }
+    FetchDestination::Font => {
+      let mut res = FetchedResource::with_final_url(
+        offline_placeholder_woff2_bytes().to_vec(),
+        Some("font/woff2".to_string()),
+        Some(url.to_string()),
+      );
+      // Fonts are always fetched in CORS mode; make placeholders usable when CORS enforcement is
+      // enabled.
+      res.access_control_allow_origin = Some("*".to_string());
+      res
+    }
     FetchDestination::Style => FetchedResource::with_final_url(
       b"/* missing */".to_vec(),
       Some("text/css".to_string()),

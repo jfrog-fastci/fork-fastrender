@@ -485,6 +485,7 @@ fn bundle_page_cache_allow_missing_inserts_typed_placeholders() {
     .expect("fetch placeholder image");
   assert_eq!(missing_img.content_type.as_deref(), Some("image/png"));
   assert_eq!(missing_img.final_url.as_deref(), Some(missing_img_url.as_str()));
+  assert_eq!(missing_img.access_control_allow_origin.as_deref(), Some("*"));
   assert!(
     missing_img.bytes.starts_with(b"\x89PNG"),
     "expected PNG placeholder bytes"
@@ -495,6 +496,7 @@ fn bundle_page_cache_allow_missing_inserts_typed_placeholders() {
     .expect("fetch placeholder font");
   assert_eq!(missing_font.content_type.as_deref(), Some("font/woff2"));
   assert_eq!(missing_font.final_url.as_deref(), Some(missing_font_url.as_str()));
+  assert_eq!(missing_font.access_control_allow_origin.as_deref(), Some("*"));
   assert!(!missing_font.bytes.is_empty(), "font placeholder should be non-empty");
 
   let missing_css = fetcher
