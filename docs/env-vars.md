@@ -126,6 +126,9 @@ use `fetch_pages --refresh` for HTML and consider disabling the disk cache (`DIS
 
 These are emitted by the paint pipeline:
 
+- `FASTR_DETERMINISTIC_PAINT=1` – enable deterministic clearing of certain paint/filter thread-local
+  scratch buffers. This can help diagnose nondeterministic pixel diffs that are caused by stale
+  bytes leaking between renders (at the cost of extra memory clears).
 - `FASTR_DUMP_STACK=1`
 - `FASTR_DUMP_FRAGMENTS=1`
 - `FASTR_DUMP_COUNTS=1`
