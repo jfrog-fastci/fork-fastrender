@@ -43,6 +43,57 @@ fn strip_prefix_ignore_ascii_case<'a>(s: &'a str, prefix: &str) -> Option<&'a st
   }
 }
 
+fn extract_single_function_inner<'a>(input: &'a str) -> Option<&'a str> {
+  let trimmed = input.trim();
+  let open = trimmed.find('(')?;
+  let close = find_matching_paren(trimmed, open)?;
+  if !trimmed.get(close + 1..)?.trim().is_empty() {
+    return None;
+  }
+  trimmed.get(open + 1..close)
+}
+
+fn find_matching_paren(input: &str, open_idx: usize) -> Option<usize> {
+  let bytes = input.as_bytes();
+  let mut depth: i32 = 0;
+  let mut in_string: Option<u8> = None;
+  let mut escape = false;
+
+  for idx in open_idx..bytes.len() {
+    let b = bytes[idx];
+    if escape {
+      escape = false;
+      continue;
+    }
+    if b == b'\\' {
+      escape = true;
+      continue;
+    }
+    if let Some(q) = in_string {
+      if b == q {
+        in_string = None;
+      }
+      continue;
+    }
+    match b {
+      b'"' | b'\'' => in_string = Some(b),
+      b'(' => depth += 1,
+      b')' => {
+        depth -= 1;
+        if depth == 0 {
+          return Some(idx);
+        }
+        if depth < 0 {
+          return None;
+        }
+      }
+      _ => {}
+    }
+  }
+
+  None
+}
+
 fn srgb_to_linear_component(c: u8) -> f32 {
   let c = c as f32 / 255.0;
   srgb_to_linear_value(c)
@@ -1031,9 +1082,7 @@ fn parse_hex(s: &str) -> Result<Color, ColorParseError> {
 
 /// Parse rgb() or rgba() function (modern syntax)
 fn parse_rgb(s: &str) -> Result<Color, ColorParseError> {
-  let inner = s
-    .split_once('(')
-    .and_then(|(_, rest)| rest.rsplit_once(')').map(|(body, _)| body))
+  let inner = extract_single_function_inner(s)
     .ok_or_else(|| ColorParseError::InvalidFormat(s.to_string()))?;
 
   let mut input = cssparser::ParserInput::new(inner);
@@ -1068,6 +1117,10 @@ fn parse_rgb(s: &str) -> Result<Color, ColorParseError> {
   if channels.len() != 3 {
     return Err(ColorParseError::InvalidFormat(s.to_string()));
   }
+  parser.skip_whitespace();
+  if !parser.is_exhausted() {
+    return Err(ColorParseError::InvalidFormat(s.to_string()));
+  }
 
   Ok(Color::Rgba(Rgba::new(
     channels[0],
@@ -1079,9 +1132,7 @@ fn parse_rgb(s: &str) -> Result<Color, ColorParseError> {
 
 /// Parse hsl() or hsla() function (modern syntax)
 fn parse_hsl(s: &str) -> Result<Color, ColorParseError> {
-  let inner = s
-    .split_once('(')
-    .and_then(|(_, rest)| rest.rsplit_once(')').map(|(body, _)| body))
+  let inner = extract_single_function_inner(s)
     .ok_or_else(|| ColorParseError::InvalidFormat(s.to_string()))?;
 
   let mut input = cssparser::ParserInput::new(inner);
@@ -1106,6 +1157,10 @@ fn parse_hsl(s: &str) -> Result<Color, ColorParseError> {
   } else if parser.try_parse(|p| p.expect_delim('/')).is_ok() {
     alpha = parse_alpha_component(&mut parser)?;
   }
+  parser.skip_whitespace();
+  if !parser.is_exhausted() {
+    return Err(ColorParseError::InvalidFormat(s.to_string()));
+  }
 
   Ok(Color::Hsla(Hsla::new(
     h,
@@ -1117,9 +1172,7 @@ fn parse_hsl(s: &str) -> Result<Color, ColorParseError> {
 
 /// Parse hwb() function
 fn parse_hwb(s: &str) -> Result<Color, ColorParseError> {
-  let inner = s
-    .split_once('(')
-    .and_then(|(_, rest)| rest.rsplit_once(')').map(|(body, _)| body))
+  let inner = extract_single_function_inner(s)
     .ok_or_else(|| ColorParseError::InvalidFormat(s.to_string()))?;
 
   let mut input = cssparser::ParserInput::new(inner);
@@ -1133,6 +1186,10 @@ fn parse_hwb(s: &str) -> Result<Color, ColorParseError> {
   } else {
     1.0
   };
+  parser.skip_whitespace();
+  if !parser.is_exhausted() {
+    return Err(ColorParseError::InvalidFormat(s.to_string()));
+  }
 
   Ok(Color::Rgba(hwb_to_rgba(h, w, b, alpha)))
 }
@@ -1251,9 +1308,7 @@ fn parse_oklch(s: &str) -> Result<Color, ColorParseError> {
 }
 
 fn parse_lab_like(input: &str, polar: bool) -> Result<Color, ColorParseError> {
-  let inner = input
-    .split_once('(')
-    .and_then(|(_, rest)| rest.rsplit_once(')').map(|(body, _)| body))
+  let inner = extract_single_function_inner(input)
     .ok_or_else(|| ColorParseError::InvalidFormat(input.to_string()))?;
 
   let mut parser_input = cssparser::ParserInput::new(inner);
@@ -1292,9 +1347,7 @@ fn parse_lab_like(input: &str, polar: bool) -> Result<Color, ColorParseError> {
 }
 
 fn parse_oklab_like(input: &str, polar: bool) -> Result<Color, ColorParseError> {
-  let inner = input
-    .split_once('(')
-    .and_then(|(_, rest)| rest.rsplit_once(')').map(|(body, _)| body))
+  let inner = extract_single_function_inner(input)
     .ok_or_else(|| ColorParseError::InvalidFormat(input.to_string()))?;
 
   let mut parser_input = cssparser::ParserInput::new(inner);

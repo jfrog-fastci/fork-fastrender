@@ -7532,11 +7532,16 @@ fn apply_declaration_with_base_internal(
 
     // Border color
     "border-color" => {
-      if let Some(c) = resolve_color_value(resolved_value) {
-        set_border_color_side(styles, crate::style::PhysicalSide::Top, c, order);
-        set_border_color_side(styles, crate::style::PhysicalSide::Right, c, order);
-        set_border_color_side(styles, crate::style::PhysicalSide::Bottom, c, order);
-        set_border_color_side(styles, crate::style::PhysicalSide::Left, c, order);
+      if let Some(colors) = extract_color_values_with(resolved_value, &resolve_color_value) {
+        let mut top = styles.border_top_color;
+        let mut right = styles.border_right_color;
+        let mut bottom = styles.border_bottom_color;
+        let mut left = styles.border_left_color;
+        apply_color_values(&mut top, &mut right, &mut bottom, &mut left, colors);
+        set_border_color_side(styles, crate::style::PhysicalSide::Top, top, order);
+        set_border_color_side(styles, crate::style::PhysicalSide::Right, right, order);
+        set_border_color_side(styles, crate::style::PhysicalSide::Bottom, bottom, order);
+        set_border_color_side(styles, crate::style::PhysicalSide::Left, left, order);
       }
     }
     "border-top-color" => {
@@ -7612,7 +7617,9 @@ fn apply_declaration_with_base_internal(
       }
     }
     "border-inline-color" => {
-      if let Some((start, end)) = extract_color_pair_with(resolved_value, &resolve_color_value) {
+      if let Some(colors) = extract_color_values_with(resolved_value, &resolve_color_value) {
+        let start = colors[0];
+        let end = colors.get(1).copied().unwrap_or(start);
         push_logical(
           styles,
           crate::style::LogicalProperty::BorderColor {
@@ -7625,7 +7632,9 @@ fn apply_declaration_with_base_internal(
       }
     }
     "border-block-color" => {
-      if let Some((start, end)) = extract_color_pair_with(resolved_value, &resolve_color_value) {
+      if let Some(colors) = extract_color_values_with(resolved_value, &resolve_color_value) {
+        let start = colors[0];
+        let end = colors.get(1).copied().unwrap_or(start);
         push_logical(
           styles,
           crate::style::LogicalProperty::BorderColor {
@@ -7640,12 +7649,30 @@ fn apply_declaration_with_base_internal(
 
     // Border style
     "border-style" => {
-      if let PropertyValue::Keyword(kw) = resolved_value {
-        let style = parse_border_style(kw);
-        set_border_style_side(styles, crate::style::PhysicalSide::Top, style, order);
-        set_border_style_side(styles, crate::style::PhysicalSide::Right, style, order);
-        set_border_style_side(styles, crate::style::PhysicalSide::Bottom, style, order);
-        set_border_style_side(styles, crate::style::PhysicalSide::Left, style, order);
+      let styles_list: Vec<BorderStyle> = match resolved_value {
+        PropertyValue::Keyword(kw) => vec![parse_border_style(kw)],
+        PropertyValue::Multiple(values) => values
+          .iter()
+          .filter_map(|v| {
+            if let PropertyValue::Keyword(kw) = v {
+              Some(parse_border_style(kw))
+            } else {
+              None
+            }
+          })
+          .collect(),
+        _ => Vec::new(),
+      };
+      if !styles_list.is_empty() {
+        let mut top = styles.border_top_style;
+        let mut right = styles.border_right_style;
+        let mut bottom = styles.border_bottom_style;
+        let mut left = styles.border_left_style;
+        apply_border_style_values(&mut top, &mut right, &mut bottom, &mut left, styles_list);
+        set_border_style_side(styles, crate::style::PhysicalSide::Top, top, order);
+        set_border_style_side(styles, crate::style::PhysicalSide::Right, right, order);
+        set_border_style_side(styles, crate::style::PhysicalSide::Bottom, bottom, order);
+        set_border_style_side(styles, crate::style::PhysicalSide::Left, left, order);
       }
     }
     "border-top-style" => {
@@ -15827,6 +15854,78 @@ pub fn apply_box_values(
   bottom: &mut Length,
   left: &mut Length,
   values: Vec<Length>,
+) {
+  match values.len() {
+    1 => {
+      *top = values[0];
+      *right = values[0];
+      *bottom = values[0];
+      *left = values[0];
+    }
+    2 => {
+      *top = values[0];
+      *bottom = values[0];
+      *right = values[1];
+      *left = values[1];
+    }
+    3 => {
+      *top = values[0];
+      *right = values[1];
+      *left = values[1];
+      *bottom = values[2];
+    }
+    4 => {
+      *top = values[0];
+      *right = values[1];
+      *bottom = values[2];
+      *left = values[3];
+    }
+    _ => {}
+  }
+}
+
+fn apply_color_values(
+  top: &mut Rgba,
+  right: &mut Rgba,
+  bottom: &mut Rgba,
+  left: &mut Rgba,
+  values: Vec<Rgba>,
+) {
+  match values.len() {
+    1 => {
+      *top = values[0];
+      *right = values[0];
+      *bottom = values[0];
+      *left = values[0];
+    }
+    2 => {
+      *top = values[0];
+      *bottom = values[0];
+      *right = values[1];
+      *left = values[1];
+    }
+    3 => {
+      *top = values[0];
+      *right = values[1];
+      *left = values[1];
+      *bottom = values[2];
+    }
+    4 => {
+      *top = values[0];
+      *right = values[1];
+      *bottom = values[2];
+      *left = values[3];
+    }
+    _ => {}
+  }
+}
+
+fn apply_border_style_values(
+  top: &mut BorderStyle,
+  right: &mut BorderStyle,
+  bottom: &mut BorderStyle,
+  left: &mut BorderStyle,
+  values: Vec<BorderStyle>,
 ) {
   match values.len() {
     1 => {

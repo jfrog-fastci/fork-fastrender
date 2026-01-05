@@ -1732,6 +1732,8 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
       | "border-right"
       | "border-bottom"
       | "border-left"
+      | "border-color"
+      | "border-style"
       | "border-width"
       | "image-orientation"
       | "image-resolution"
