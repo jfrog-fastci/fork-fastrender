@@ -144,3 +144,49 @@ fn top_worst_accuracy_selects_and_sorts_fixtures() {
     "render_fixtures should receive deterministic, stem-sorted fixtures; got:\n{render_line}\nfull stdout:\n{stdout}"
   );
 }
+
+#[test]
+fn from_progress_conflicts_with_all_fixtures() {
+  let temp = tempdir().expect("tempdir");
+  let progress_root = temp.path().join("progress");
+  let fixtures_root = temp.path().join("fixtures");
+  let out_dir = temp.path().join("out");
+
+  write_progress_file(
+    &progress_root,
+    "timeout.test",
+    r#"{"url":"https://timeout.test/","status":"timeout"}"#,
+  );
+  write_fixture(&fixtures_root, "timeout.test");
+
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .args([
+      "fixture-chrome-diff",
+      "--dry-run",
+      "--no-chrome",
+      "--fixtures-dir",
+      fixtures_root.to_string_lossy().as_ref(),
+      "--from-progress",
+      progress_root.to_string_lossy().as_ref(),
+      "--only-failures",
+      "--all-fixtures",
+      "--out-dir",
+      out_dir.to_string_lossy().as_ref(),
+    ])
+    .output()
+    .expect("run fixture-chrome-diff with incompatible flags");
+
+  assert!(
+    !output.status.success(),
+    "expected clap to reject --from-progress with --all-fixtures.\nstdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  assert!(
+    stderr.contains("--from-progress") && stderr.contains("--all-fixtures"),
+    "error should mention the conflicting flags; got:\n{stderr}"
+  );
+}

@@ -105,7 +105,7 @@ pub struct FixtureChromeDiffArgs {
   ///
   /// Use `--only-failures` to select `status != ok` pages, and/or `--top-worst-accuracy` to select
   /// the `status=ok` pages with the highest `accuracy.diff_percent`.
-  #[arg(long, value_name = "DIR", conflicts_with = "fixtures")]
+  #[arg(long, value_name = "DIR", conflicts_with_all = ["fixtures", "all_fixtures"])]
   pub from_progress: Option<PathBuf>,
 
   /// When selecting from `--from-progress`, include pages whose `status != ok`.
@@ -479,6 +479,14 @@ fn apply_progress_selection(
     progress_dir.display()
   );
 
+  let failing_pages = pages.iter().filter(|p| p.status != "ok").count();
+  if args.only_failures {
+    println!(
+      "Progress selection: found {} failing page(s) with status != ok.",
+      failing_pages
+    );
+  }
+
   let mut selected = BTreeSet::new();
 
   if args.only_failures {
@@ -487,14 +495,33 @@ fn apply_progress_selection(
     }
   }
 
+  let mut worst_accuracy_total_len = None;
+  let mut worst_accuracy_candidates_len = None;
   if let Some(n) = args.top_worst_accuracy {
     let min = args.min_diff_percent.unwrap_or(0.0);
+    worst_accuracy_total_len = Some(
+      pages
+        .iter()
+        .filter(|p| p.status == "ok" && p.accuracy.is_some())
+        .count(),
+    );
     let mut candidates = pages
       .iter()
       .filter(|p| p.status == "ok")
       .filter_map(|p| p.accuracy.map(|accuracy| (p.stem.clone(), accuracy)))
       .filter(|(_, accuracy)| accuracy.diff_percent >= min)
       .collect::<Vec<_>>();
+
+    worst_accuracy_candidates_len = Some(candidates.len());
+    if let Some(total_with_accuracy) = worst_accuracy_total_len {
+      println!(
+        "Progress selection: found {} ok page(s) with accuracy metrics; {} meet diff_percent >= {} (selecting top {}).",
+        total_with_accuracy,
+        candidates.len(),
+        min,
+        n
+      );
+    }
 
     candidates.sort_by(|a, b| {
       b.1
@@ -518,12 +545,34 @@ fn apply_progress_selection(
 
   let selected_stems = selected.into_iter().collect::<Vec<_>>();
   if selected_stems.is_empty() {
-    bail!(
-      "no fixtures selected from {} (filters: only_failures={}, top_worst_accuracy={:?})",
-      progress_dir.display(),
-      args.only_failures,
-      args.top_worst_accuracy
+    let mut msg = format!(
+      "no fixtures selected from {} with the requested progress filters.\n",
+      progress_dir.display()
     );
+    if args.only_failures {
+      msg.push_str(&format!(
+        "  - --only-failures: found {failing_pages} failing page(s) (status != ok)\n"
+      ));
+    }
+    if let Some(n) = args.top_worst_accuracy {
+      let min = args.min_diff_percent.unwrap_or(0.0);
+      let total_with_accuracy = worst_accuracy_total_len.unwrap_or(0);
+      let candidates_len = worst_accuracy_candidates_len.unwrap_or(0);
+      msg.push_str(&format!(
+        "  - --top-worst-accuracy {n}: found {total_with_accuracy} ok page(s) with accuracy metrics; {candidates_len} meet diff_percent >= {min}\n"
+      ));
+      if total_with_accuracy == 0 {
+        msg.push_str(
+          "    Hint: progress JSON needs `accuracy.diff_percent`; run `cargo xtask pageset --accuracy ...` \
+or `cargo xtask sync-progress-accuracy --report <fixture_chrome_diff_report.json>`.\n",
+        );
+      } else if candidates_len == 0 {
+        msg.push_str(&format!(
+          "    Hint: lower --min-diff-percent (currently {min}) or regenerate accuracy metrics.\n"
+        ));
+      }
+    }
+    bail!(msg.trim_end().to_owned());
   }
   println!(
     "Progress selection: selected {} stem(s).",
@@ -1467,7 +1516,7 @@ fn remove_file_if_exists(path: &Path) -> Result<()> {
 }
 
 fn apply_default_fixture_selection(repo_root: &Path, args: &mut FixtureChromeDiffArgs) {
-  if args.all_fixtures || args.fixtures.is_some() {
+  if args.from_progress.is_some() || args.all_fixtures || args.fixtures.is_some() {
     return;
   }
 
