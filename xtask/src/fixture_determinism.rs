@@ -966,11 +966,21 @@ fn escape_html(input: &str) -> String {
 
 fn format_linked_image(label: &str, path: &str) -> String {
   let escaped = escape_html(path);
+  let label = escape_html(label);
   format!(
-    r#"<div class="thumb"><a href="{p}">{l}</a><br><img src="{p}" loading="lazy"></div>"#,
+    r#"<div class="thumb"><a href="{p}">{l}</a><br><a href="{p}"><img src="{p}" alt="{l}" loading="lazy"></a></div>"#,
     p = escaped,
-    l = escape_html(label)
+    l = label
   )
+}
+
+fn entry_anchor_id(name: &str) -> String {
+  let mut hash: u64 = 14695981039346656037;
+  for byte in name.as_bytes() {
+    hash ^= u64::from(*byte);
+    hash = hash.wrapping_mul(1099511628211);
+  }
+  format!("entry-{hash:016x}")
 }
 
 fn path_for_report(base: &Path, target: &Path) -> String {
@@ -994,10 +1004,27 @@ fn resolve_repo_relative(repo_root: &Path, path: &str) -> PathBuf {
 
 fn render_html(layout: &Layout, report: &FixtureDeterminismReport) -> String {
   let repo_root = crate::repo_root();
+  let mut diffs = 0usize;
+  let mut missing_before = 0usize;
+  let mut missing_after = 0usize;
+  let mut errors = 0usize;
+
+  for fixture in &report.nondeterministic {
+    match fixture.worst.status {
+      EntryStatus::Diff => diffs += 1,
+      EntryStatus::MissingBefore => missing_before += 1,
+      EntryStatus::MissingAfter => missing_after += 1,
+      EntryStatus::Error => errors += 1,
+      EntryStatus::Match | EntryStatus::WithinThreshold => {}
+    }
+  }
+
   let mut rows = String::new();
 
   for fixture in &report.nondeterministic {
     let worst = &fixture.worst;
+    let anchor_id = entry_anchor_id(&fixture.name);
+    let escaped_anchor = escape_html(&anchor_id);
 
     let occurrences = fixture
       .occurrences
@@ -1110,21 +1137,22 @@ fn render_html(layout: &Layout, report: &FixtureDeterminismReport) -> String {
 
     let error = worst.error.as_deref().unwrap_or_default();
     rows.push_str(&format!(
-      "<tr class=\"{}\"><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"error\">{}</td></tr>",
-      worst.status.label(),
-      escape_html(&fixture.name),
-      escape_html(worst.status.label()),
-      escape_html(&occurrences),
-      diff_percent,
-      perceptual,
-      pixel_diff,
-      max_channel_diff,
-      total_pixels,
-      before_cell,
-      after_and_diff,
-      pair_link,
-      artifacts_cell,
-      escape_html(error),
+      "<tr id=\"{anchor}\" class=\"{class}\"><td><a href=\"#{anchor}\">{name}</a></td><td>{status}</td><td>{occurrences}</td><td>{diff_percent}</td><td>{perceptual}</td><td>{pixel_diff}</td><td>{max_channel_diff}</td><td>{total_pixels}</td><td>{before_cell}</td><td>{after_and_diff}</td><td>{pair_link}</td><td>{artifacts_cell}</td><td class=\"error\">{error}</td></tr>",
+      anchor = escaped_anchor,
+      class = worst.status.label(),
+      name = escape_html(&fixture.name),
+      status = escape_html(worst.status.label()),
+      occurrences = escape_html(&occurrences),
+      diff_percent = diff_percent,
+      perceptual = perceptual,
+      pixel_diff = pixel_diff,
+      max_channel_diff = max_channel_diff,
+      total_pixels = total_pixels,
+      before_cell = before_cell,
+      after_and_diff = after_and_diff,
+      pair_link = pair_link,
+      artifacts_cell = artifacts_cell,
+      error = escape_html(error),
     ));
   }
 
@@ -1158,8 +1186,27 @@ fn render_html(layout: &Layout, report: &FixtureDeterminismReport) -> String {
       th {{ background: #f3f3f3; position: sticky; top: 0; }}
       tr.diff {{ background: #fff8f8; }}
       tr.missing-before, tr.missing-after, tr.error {{ background: #fff0f0; }}
+      tr:target {{ outline: 3px solid #0066cc; }}
+      tr[id] {{ scroll-margin-top: 42px; }}
       .thumb img {{ max-width: 320px; max-height: 240px; display: block; }}
       .error {{ color: #b00020; }}
+      #nondet-controls input[type="checkbox"] {{ position: absolute; left: -10000px; }}
+      .entry-filters {{ margin: 16px 0 10px; }}
+      .entry-filters label {{ display: inline-block; margin-right: 12px; }}
+      .entry-filters label:hover {{ text-decoration: underline; cursor: pointer; }}
+      #show-diff:not(:checked) ~ .entry-filters label[for="show-diff"],
+      #show-missing-before:not(:checked) ~ .entry-filters label[for="show-missing-before"],
+      #show-missing-after:not(:checked) ~ .entry-filters label[for="show-missing-after"],
+      #show-error:not(:checked) ~ .entry-filters label[for="show-error"],
+      #show-thumbnails:not(:checked) ~ .entry-filters label[for="show-thumbnails"] {{
+        opacity: 0.5;
+      }}
+      #show-diff:not(:checked) ~ table tr.diff {{ display: none; }}
+      #show-missing-before:not(:checked) ~ table tr.missing-before {{ display: none; }}
+      #show-missing-after:not(:checked) ~ table tr.missing-after {{ display: none; }}
+      #show-error:not(:checked) ~ table tr.error {{ display: none; }}
+      #show-thumbnails:not(:checked) ~ table .thumb br {{ display: none; }}
+      #show-thumbnails:not(:checked) ~ table .thumb a:nth-of-type(2) {{ display: none; }}
     </style>
   </head>
   <body>
@@ -1173,28 +1220,43 @@ fn render_html(layout: &Layout, report: &FixtureDeterminismReport) -> String {
       {comparisons}
     </ul>
     <h2>Nondeterministic fixtures</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Fixture</th>
-          <th>Status</th>
-          <th>Occurrences</th>
-          <th>Diff %</th>
-          <th>Perceptual</th>
-          <th>Pixel diff</th>
-          <th>Max Δ</th>
-          <th>Total pixels</th>
-          <th>Before</th>
-          <th>After | Diff</th>
-          <th>Pair report</th>
-          <th>Artifacts</th>
-          <th>Error</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows}
-      </tbody>
-    </table>
+    <div id="nondet-controls">
+      <input type="checkbox" id="show-diff" checked>
+      <input type="checkbox" id="show-missing-before" checked>
+      <input type="checkbox" id="show-missing-after" checked>
+      <input type="checkbox" id="show-error" checked>
+      <input type="checkbox" id="show-thumbnails" checked>
+      <div class="entry-filters">
+        <strong>Show:</strong>
+        <label for="show-diff">Diff ({diffs})</label>
+        <label for="show-missing-before">Missing before ({missing_before})</label>
+        <label for="show-missing-after">Missing after ({missing_after})</label>
+        <label for="show-error">Error ({errors})</label>
+        <label for="show-thumbnails">Thumbnails</label>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Fixture</th>
+            <th>Status</th>
+            <th>Occurrences</th>
+            <th>Diff %</th>
+            <th>Perceptual</th>
+            <th>Pixel diff</th>
+            <th>Max Δ</th>
+            <th>Total pixels</th>
+            <th>Before</th>
+            <th>After | Diff</th>
+            <th>Pair report</th>
+            <th>Artifacts</th>
+            <th>Error</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows}
+        </tbody>
+      </table>
+    </div>
   </body>
 </html>
 "#,
@@ -1213,6 +1275,10 @@ fn render_html(layout: &Layout, report: &FixtureDeterminismReport) -> String {
     artifact_failures = report.totals.artifact_failures,
     comparisons = comparisons,
     rows = rows,
+    diffs = diffs,
+    missing_before = missing_before,
+    missing_after = missing_after,
+    errors = errors,
   )
 }
 

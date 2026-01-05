@@ -24,6 +24,15 @@ fn repo_root() -> PathBuf {
     .to_path_buf()
 }
 
+fn entry_anchor_id(name: &str) -> String {
+  let mut hash: u64 = 14695981039346656037;
+  for byte in name.as_bytes() {
+    hash ^= u64::from(*byte);
+    hash = hash.wrapping_mul(1099511628211);
+  }
+  format!("entry-{hash:016x}")
+}
+
 fn prepend_path(bin_dir: &Path) -> std::ffi::OsString {
   let path_var = std::env::var_os("PATH").unwrap_or_default();
   let mut paths = vec![bin_dir.to_path_buf()];
@@ -281,6 +290,16 @@ fn fixture_determinism_no_build_writes_report() {
     out_dir.join("report.json").is_file(),
     "missing report.json in out dir"
   );
+
+  let html = fs::read_to_string(out_dir.join("report.html")).expect("read report.html");
+  assert!(
+    html.contains("id=\"nondet-controls\""),
+    "expected filter controls in report HTML:\n{html}"
+  );
+  assert!(
+    html.contains("id=\"show-diff\""),
+    "expected status toggles in report HTML:\n{html}"
+  );
 }
 
 #[test]
@@ -316,6 +335,29 @@ fn fixture_determinism_fails_when_differences_found() {
     out_dir.join("report.json").is_file(),
     "missing report.json in out dir"
   );
+
+  let html = fs::read_to_string(out_dir.join("report.html")).expect("read report.html");
+  assert!(
+    html.contains("id=\"nondet-controls\""),
+    "expected filter controls in report HTML:\n{html}"
+  );
+  assert!(
+    html.contains("Diff (1)"),
+    "expected diff count in report HTML:\n{html}"
+  );
+  let anchor = entry_anchor_id("hello");
+  assert!(
+    html.contains(&format!("id=\"{anchor}\" class=\"diff\"")),
+    "expected per-entry anchor id in report HTML:\n{html}"
+  );
+  assert!(
+    html.contains(&format!("href=\"#{anchor}\">hello</a>")),
+    "expected fixture name self-link in report HTML:\n{html}"
+  );
+  assert!(
+    html.contains(r#"<a href="run1/hello.png"><img src="run1/hello.png""#),
+    "expected clickable thumbnail image in report HTML:\n{html}"
+  );
 }
 
 #[test]
@@ -350,5 +392,11 @@ fn fixture_determinism_allow_differences_exits_zero() {
   assert!(
     out_dir.join("report.json").is_file(),
     "missing report.json in out dir"
+  );
+
+  let html = fs::read_to_string(out_dir.join("report.html")).expect("read report.html");
+  assert!(
+    html.contains("Diff (1)"),
+    "expected diff count in report HTML:\n{html}"
   );
 }
