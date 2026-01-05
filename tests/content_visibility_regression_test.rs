@@ -1,8 +1,10 @@
 mod r#ref;
 
+use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::{FastRender, RenderOptions};
 use r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use url::Url;
@@ -36,7 +38,17 @@ fn base_url_for(html_path: &Path) -> Result<String, String> {
     .map(|url| url.to_string())
 }
 
+fn content_visibility_runtime_toggles() -> RuntimeToggles {
+  // Keep the regression stable even when developers have FASTR_* env vars set locally (e.g.
+  // activation margin experiments).
+  RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_CONTENT_VISIBILITY_AUTO_MARGIN_PX".to_string(),
+    "0".to_string(),
+  )]))
+}
+
 fn run_fixture_with_options(options: RenderOptions) -> Vec<u8> {
+  let options = options.with_runtime_toggles(content_visibility_runtime_toggles());
   let html_path = fixtures_dir().join("content_visibility/index.html");
   let html =
     fs::read_to_string(&html_path).unwrap_or_else(|e| panic!("Failed to read fixture: {e}"));

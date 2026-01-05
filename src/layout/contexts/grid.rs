@@ -1303,6 +1303,20 @@ impl GridFormattingContext {
     Ok(())
   }
 
+  fn content_visibility_auto_has_definite_placeholder(&self, style: &ComputedStyle) -> bool {
+    style
+      .height
+      .as_ref()
+      .and_then(|l| self.resolve_length_px(l, style))
+      .is_some()
+      || style
+        .contain_intrinsic_height
+        .length
+        .as_ref()
+        .and_then(|l| self.resolve_length_px(l, style))
+        .is_some()
+  }
+
   fn content_visibility_placeholder_content_size(
     &self,
     style: &ComputedStyle,
@@ -2609,9 +2623,12 @@ impl GridFormattingContext {
       let child = in_flow_children[idx];
       let skip_contents = match child.style.content_visibility {
         crate::style::types::ContentVisibility::Hidden => true,
-        crate::style::types::ContentVisibility::Auto => auto_unskipped
-          .map(|set| !set.contains(&(child as *const BoxNode)))
-          .unwrap_or(false),
+        crate::style::types::ContentVisibility::Auto => {
+          self.content_visibility_auto_has_definite_placeholder(child.style.as_ref())
+            && auto_unskipped
+              .map(|set| !set.contains(&(child as *const BoxNode)))
+              .unwrap_or(false)
+        }
         crate::style::types::ContentVisibility::Visible => false,
       };
       if skip_contents {
@@ -2956,9 +2973,12 @@ impl GridFormattingContext {
 
       let skip_contents = match box_node.style.content_visibility {
         crate::style::types::ContentVisibility::Hidden => true,
-        crate::style::types::ContentVisibility::Auto => auto_unskipped
-          .map(|set| !set.contains(&box_node_ptr))
-          .unwrap_or(false),
+        crate::style::types::ContentVisibility::Auto => {
+          self.content_visibility_auto_has_definite_placeholder(box_node.style.as_ref())
+            && auto_unskipped
+              .map(|set| !set.contains(&box_node_ptr))
+              .unwrap_or(false)
+        }
         crate::style::types::ContentVisibility::Visible => false,
       };
       if skip_contents {
@@ -4694,7 +4714,10 @@ impl GridFormattingContext {
     let box_node = unsafe { &*node_ptr };
     let skip_contents = match box_node.style.content_visibility {
       crate::style::types::ContentVisibility::Hidden => true,
-      crate::style::types::ContentVisibility::Auto => !auto_unskipped.contains(&node_ptr),
+      crate::style::types::ContentVisibility::Auto => {
+        self.content_visibility_auto_has_definite_placeholder(box_node.style.as_ref())
+          && !auto_unskipped.contains(&node_ptr)
+      }
       crate::style::types::ContentVisibility::Visible => false,
     };
     let fc_type = box_node
@@ -6022,7 +6045,7 @@ impl FormattingContext for GridFormattingContext {
             if matches!(
               node.style.content_visibility,
               crate::style::types::ContentVisibility::Auto
-            ) {
+            ) && self.content_visibility_auto_has_definite_placeholder(node.style.as_ref()) {
               auto_item_nodes.push((ptr, node_id));
             }
           }

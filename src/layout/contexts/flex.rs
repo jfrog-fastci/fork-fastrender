@@ -907,6 +907,7 @@ impl FormattingContext for FlexFormattingContext {
           crate::style::types::ContentVisibility::Auto
         )
       })
+      .filter(|child| self.content_visibility_auto_has_definite_placeholder(child.style.as_ref()))
       .filter_map(|child| {
         node_map
           .get(&(*child as *const BoxNode))
@@ -1416,7 +1417,8 @@ impl FormattingContext for FlexFormattingContext {
                     let skip_contents = match box_node.style.content_visibility {
                       crate::style::types::ContentVisibility::Hidden => true,
                       crate::style::types::ContentVisibility::Auto => {
-                        !auto_unskipped_for_pass.contains(&box_ptr)
+                        this.content_visibility_auto_has_definite_placeholder(box_node.style.as_ref())
+                          && !auto_unskipped_for_pass.contains(&box_ptr)
                       }
                       crate::style::types::ContentVisibility::Visible => false,
                     };
@@ -5845,9 +5847,12 @@ impl FlexFormattingContext {
 
       let skip_contents = match child_box.style.content_visibility {
         crate::style::types::ContentVisibility::Hidden => true,
-        crate::style::types::ContentVisibility::Auto => auto_unskipped
-          .map(|set| !set.contains(&(child_box as *const BoxNode)))
-          .unwrap_or(false),
+        crate::style::types::ContentVisibility::Auto => {
+          self.content_visibility_auto_has_definite_placeholder(child_box.style.as_ref())
+            && auto_unskipped
+              .map(|set| !set.contains(&(child_box as *const BoxNode)))
+              .unwrap_or(false)
+        }
         crate::style::types::ContentVisibility::Visible => false,
       };
       if skip_contents {
@@ -7338,6 +7343,20 @@ impl FlexFormattingContext {
         .max(0.0);
 
     Size::new(content_width, content_height)
+  }
+
+  fn content_visibility_auto_has_definite_placeholder(&self, style: &ComputedStyle) -> bool {
+    style
+      .height
+      .as_ref()
+      .and_then(|l| self.resolve_length_px(l, style))
+      .is_some()
+      || style
+        .contain_intrinsic_height
+        .length
+        .as_ref()
+        .and_then(|l| self.resolve_length_px(l, style))
+        .is_some()
   }
 
   fn content_visibility_placeholder_content_size(
