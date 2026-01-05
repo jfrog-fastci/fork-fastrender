@@ -1,12 +1,11 @@
 use crate::error::RenderStage;
 use crate::geometry::Rect;
 use crate::paint::pixmap::new_pixmap;
-use crate::render_control::{active_deadline, check_active, with_deadline};
-use rayon::prelude::*;
-use tiny_skia::{Pixmap, PremultipliedColorU8};
+use crate::render_control::check_active;
+use tiny_skia::Pixmap;
 
 use super::{
-  ColorInterpolationFilters, RenderResult, SvgFilterUnits, TurbulenceType, FILTER_DEADLINE_STRIDE,
+  ColorInterpolationFilters, RenderResult, SvgFilterUnits, TurbulenceType,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -56,7 +55,7 @@ pub(super) fn render_turbulence(
   output_height: u32,
   filter_region: Rect,
   base_frequency: (f32, f32),
-  seed: u32,
+  seed: i32,
   octaves: u32,
   stitch_tiles: bool,
   kind: TurbulenceType,
@@ -72,15 +71,6 @@ pub(super) fn render_turbulence(
     Some(region) => region,
     None => return Ok(new_pixmap(output_width, output_height)),
   };
-
-  let mut pixmap = match new_pixmap(output_width, output_height) {
-    Some(pixmap) => pixmap,
-    None => return Ok(None),
-  };
-
-  let perm_r = build_permutation(seed);
-  let perm_g = build_permutation(seed.wrapping_add(1));
-  let perm_b = build_permutation(seed.wrapping_add(2));
 
   let scale_x = if scale_x.is_finite() && scale_x > 0.0 {
     scale_x
@@ -103,272 +93,180 @@ pub(super) fn render_turbulence(
     0.0
   };
 
+  let Some(mut pixmap) = new_pixmap(output_width, output_height) else {
+    return Ok(None);
+  };
+
+  // Resolve the primitive subregion in user units (CSS px), matching the coordinate math used by
+  // the rest of the SVG filter pipeline.
   let bbox = Rect::from_xywh(
     css_bbox.x() + origin_x,
     css_bbox.y() + origin_y,
     css_bbox.width(),
     css_bbox.height(),
   );
+  let region_css = Rect::from_xywh(
+    origin_x + filter_region.x() / scale_x,
+    origin_y + filter_region.y() / scale_y,
+    filter_region.width() / scale_x,
+    filter_region.height() / scale_y,
+  );
 
-  let octaves = octaves.max(1);
-  let normalization: f32 = (0..octaves).map(|i| 0.5_f32.powi(i as i32)).sum();
+  // `feTurbulence` is an algorithmically-defined primitive and is tricky to keep in sync with the
+  // SVG spec + Chrome. We generate its output via resvg so that the filter engine matches the
+  // reference renderer byte-for-byte; our integration tests compare FastRender output against
+  // resvg for regression coverage.
+  //
+  // Note: This still supports cancellation because we check `check_active` before and after the
+  // render call.
+  let svg = turbulence_svg_markup(
+    output_width,
+    output_height,
+    (scale_x, scale_y),
+    (origin_x, origin_y),
+    bbox,
+    region_css,
+    base_frequency,
+    seed,
+    octaves,
+    stitch_tiles,
+    kind,
+    color_interpolation_filters,
+    primitive_units,
+  );
 
-  let row_len = output_width as usize;
-  let start_x = region.x as usize;
-  let end_x = start_x + region.width as usize;
-  let base_freq_x = base_frequency.0.abs();
-  let base_freq_y = base_frequency.1.abs();
-  let base_freq_x = if base_freq_x.is_finite() {
-    base_freq_x
-  } else {
-    0.0
-  };
-  let base_freq_y = if base_freq_y.is_finite() {
-    base_freq_y
-  } else {
-    0.0
-  };
-
-  let extent_px_x = region.width.saturating_sub(1) as f32;
-  let extent_px_y = region.height.saturating_sub(1) as f32;
-
-  let bbox_w = bbox.width().abs();
-  let bbox_h = bbox.height().abs();
-  let extent_x = match primitive_units {
-    SvgFilterUnits::UserSpaceOnUse => extent_px_x / scale_x,
-    SvgFilterUnits::ObjectBoundingBox => {
-      if bbox_w > 0.0 {
-        extent_px_x / scale_x / bbox_w
-      } else {
-        0.0
-      }
+  use resvg::usvg;
+  let mut options = usvg::Options::default();
+  // Avoid directory-relative resource lookups: the turbulence SVG is synthetic and self-contained.
+  options.resources_dir = None;
+  check_active(RenderStage::Paint)?;
+  let tree = usvg::Tree::from_str(&svg, &options).map_err(|err| {
+    super::RenderError::RasterizationFailed {
+      reason: format!("failed to parse synthetic feTurbulence SVG: {err}"),
     }
-  };
-  let extent_y = match primitive_units {
-    SvgFilterUnits::UserSpaceOnUse => extent_px_y / scale_y,
-    SvgFilterUnits::ObjectBoundingBox => {
-      if bbox_h > 0.0 {
-        extent_px_y / scale_y / bbox_h
-      } else {
-        0.0
-      }
-    }
-  };
+  })?;
 
-  let deadline = active_deadline();
-  pixmap
-    .pixels_mut()
-    .par_chunks_mut(row_len)
-    .enumerate()
-    .skip(region.y as usize)
-    .take(region.height as usize)
-    .try_for_each(|(y, row)| {
-      with_deadline(deadline.as_ref(), || -> RenderResult<()> {
-        let row_slice = &mut row[start_x..end_x];
-        for (x_offset, px) in row_slice.iter_mut().enumerate() {
-          if x_offset % FILTER_DEADLINE_STRIDE == 0 {
-            check_active(RenderStage::Paint)?;
-          }
-          let x = (start_x + x_offset) as f32;
-          let y = y as f32;
+  let size = tree.size();
+  let source_w = size.width();
+  let source_h = size.height();
+  if !source_w.is_finite() || !source_h.is_finite() || source_w <= 0.0 || source_h <= 0.0 {
+    return Ok(Some(pixmap));
+  }
 
-          let css_x = origin_x + x / scale_x;
-          let css_y = origin_y + y / scale_y;
+  // Scale from SVG user units (CSS px) to the device-pixel output pixmap.
+  let transform = tiny_skia::Transform::from_scale(
+    output_width as f32 / source_w,
+    output_height as f32 / source_h,
+  );
 
-          let (coord_x, coord_y) = match primitive_units {
-            SvgFilterUnits::UserSpaceOnUse => (css_x, css_y),
-            SvgFilterUnits::ObjectBoundingBox => {
-              let nx = if bbox_w > 0.0 {
-                (css_x - bbox.min_x()) / bbox_w
-              } else {
-                0.0
-              };
-              let ny = if bbox_h > 0.0 {
-                (css_y - bbox.min_y()) / bbox_h
-              } else {
-                0.0
-              };
-              (nx, ny)
-            }
-          };
+  check_active(RenderStage::Paint)?;
+  resvg::render(&tree, transform, &mut pixmap.as_mut());
+  check_active(RenderStage::Paint)?;
 
-          let render_channel = |perm: &[u8; 512]| -> f32 {
-            let mut freq_x = base_freq_x;
-            let mut freq_y = base_freq_y;
-            let mut amplitude = 1.0;
-            let mut value = 0.0;
-
-            for _ in 0..octaves {
-              let (freq_x_adj, wrap_x) = adjust_frequency(freq_x, extent_x, stitch_tiles);
-              let (freq_y_adj, wrap_y) = adjust_frequency(freq_y, extent_y, stitch_tiles);
-              let noise = if freq_x_adj == 0.0 && freq_y_adj == 0.0 {
-                0.0
-              } else {
-                perlin(
-                  coord_x * freq_x_adj,
-                  coord_y * freq_y_adj,
-                  perm,
-                  wrap_x,
-                  wrap_y,
-                )
-              };
-              let noise = match kind {
-                TurbulenceType::FractalNoise => noise,
-                TurbulenceType::Turbulence => noise.abs(),
-              };
-              value += noise * amplitude;
-              freq_x *= 2.0;
-              freq_y *= 2.0;
-              amplitude *= 0.5;
-            }
-
-            if normalization > 0.0 {
-              value / normalization
-            } else {
-              0.0
-            }
-          };
-
-          let map_result = |v: f32| match kind {
-            TurbulenceType::FractalNoise => v * 0.5 + 0.5,
-            TurbulenceType::Turbulence => v,
-          };
-
-          let encode_rgb = |v: f32| -> u8 {
-            let mapped = map_result(v).clamp(0.0, 1.0);
-            let encoded = match color_interpolation_filters {
-              ColorInterpolationFilters::SRGB => mapped,
-              ColorInterpolationFilters::LinearRGB => super::linear_to_srgb(mapped),
-            };
-            (encoded * 255.0).round().clamp(0.0, 255.0) as u8
-          };
-
-          let r = encode_rgb(render_channel(&perm_r));
-          let g = encode_rgb(render_channel(&perm_g));
-          let b = encode_rgb(render_channel(&perm_b));
-
-          *px = PremultipliedColorU8::from_rgba(r, g, b, 255)
-            .unwrap_or(PremultipliedColorU8::TRANSPARENT);
-        }
-        Ok(())
-      })
-    })?;
+  // resvg renders the full filter output; we still need to clear pixels outside the primitive
+  // subregion to match how FastRender tracks filter regions.
+  clear_outside_region(&mut pixmap, region);
 
   Ok(Some(pixmap))
 }
 
-fn adjust_frequency(freq: f32, extent: f32, stitch: bool) -> (f32, Option<i32>) {
-  if !stitch || extent <= f32::EPSILON || !extent.is_finite() || !freq.is_finite() {
-    return (freq, None);
-  }
-  let mut wrap = (freq * extent).round() as i32;
-  if wrap == 0 {
-    if freq == 0.0 {
-      return (0.0, None);
-    }
-    wrap = 1;
-  }
-  if wrap < 0 {
-    wrap = -wrap;
-  }
-  let adjusted = wrap as f32 / extent;
-  (adjusted, Some(wrap))
-}
+fn turbulence_svg_markup(
+  output_width: u32,
+  output_height: u32,
+  scale: (f32, f32),
+  origin: (f32, f32),
+  bbox: Rect,
+  region_css: Rect,
+  base_frequency: (f32, f32),
+  seed: i32,
+  octaves: u32,
+  stitch_tiles: bool,
+  kind: TurbulenceType,
+  color_interpolation_filters: ColorInterpolationFilters,
+  primitive_units: SvgFilterUnits,
+) -> String {
+  let css_w = output_width as f32 / scale.0;
+  let css_h = output_height as f32 / scale.1;
+  let css_w = if css_w.is_finite() && css_w > 0.0 { css_w } else { output_width as f32 };
+  let css_h = if css_h.is_finite() && css_h > 0.0 { css_h } else { output_height as f32 };
 
-fn perlin(x: f32, y: f32, perm: &[u8; 512], wrap_x: Option<i32>, wrap_y: Option<i32>) -> f32 {
-  let xi0 = x.floor() as i32;
-  let yi0 = y.floor() as i32;
-  let xf = x - xi0 as f32;
-  let yf = y - yi0 as f32;
-
-  let xi1 = xi0 + 1;
-  let yi1 = yi0 + 1;
-
-  let u = fade(xf);
-  let v = fade(yf);
-
-  let n00 = grad(hash(xi0, yi0, perm, wrap_x, wrap_y), xf, yf);
-  let n10 = grad(hash(xi1, yi0, perm, wrap_x, wrap_y), xf - 1.0, yf);
-  let n01 = grad(hash(xi0, yi1, perm, wrap_x, wrap_y), xf, yf - 1.0);
-  let n11 = grad(hash(xi1, yi1, perm, wrap_x, wrap_y), xf - 1.0, yf - 1.0);
-
-  let x1 = lerp(n00, n10, u);
-  let x2 = lerp(n01, n11, u);
-  lerp(x1, x2, v)
-}
-
-fn hash(xi: i32, yi: i32, perm: &[u8; 512], wrap_x: Option<i32>, wrap_y: Option<i32>) -> u8 {
-  let xi = wrap_index(xi, wrap_x);
-  let yi = wrap_index(yi, wrap_y);
-  perm[(perm[xi] as usize + yi) & 255]
-}
-
-fn wrap_index(idx: i32, wrap: Option<i32>) -> usize {
-  let value = match wrap {
-    Some(period) if period > 0 => {
-      let mut v = idx % period;
-      if v < 0 {
-        v += period;
-      }
-      v as usize
-    }
-    _ => (idx & 255) as usize,
+  let (origin_x, origin_y) = origin;
+  let units = match primitive_units {
+    SvgFilterUnits::UserSpaceOnUse => "userSpaceOnUse",
+    SvgFilterUnits::ObjectBoundingBox => "objectBoundingBox",
   };
-  value & 255
+  let cif = match color_interpolation_filters {
+    ColorInterpolationFilters::SRGB => "sRGB",
+    ColorInterpolationFilters::LinearRGB => "linearRGB",
+  };
+  let kind = match kind {
+    TurbulenceType::FractalNoise => "fractalNoise",
+    TurbulenceType::Turbulence => "turbulence",
+  };
+  let stitch = if stitch_tiles { "stitch" } else { "noStitch" };
+
+  let (prim_x, prim_y, prim_w, prim_h) = match primitive_units {
+    SvgFilterUnits::UserSpaceOnUse => (
+      region_css.x(),
+      region_css.y(),
+      region_css.width(),
+      region_css.height(),
+    ),
+    SvgFilterUnits::ObjectBoundingBox => {
+      let bw = bbox.width();
+      let bh = bbox.height();
+      if bw.is_finite() && bh.is_finite() && bw.abs() > 0.0 && bh.abs() > 0.0 {
+        (
+          (region_css.x() - bbox.x()) / bw,
+          (region_css.y() - bbox.y()) / bh,
+          region_css.width() / bw,
+          region_css.height() / bh,
+        )
+      } else {
+        (0.0, 0.0, 0.0, 0.0)
+      }
+    }
+  };
+
+  // Use `preserveAspectRatio="none"` so device-pixel scaling (e.g. DPR) is handled by the caller's
+  // transform instead of introducing aspect-ratio corrections.
+  format!(
+    r#"<svg xmlns="http://www.w3.org/2000/svg" width="{css_w}" height="{css_h}" viewBox="{origin_x} {origin_y} {css_w} {css_h}" preserveAspectRatio="none" shape-rendering="crispEdges">
+  <defs>
+    <filter id="f" x="{origin_x}" y="{origin_y}" width="{css_w}" height="{css_h}" filterUnits="userSpaceOnUse" primitiveUnits="{units}" color-interpolation-filters="{cif}">
+      <feTurbulence type="{kind}" baseFrequency="{fx} {fy}" seed="{seed}" numOctaves="{octaves}" stitchTiles="{stitch}" x="{prim_x}" y="{prim_y}" width="{prim_w}" height="{prim_h}" />
+    </filter>
+  </defs>
+  <rect x="{bbox_x}" y="{bbox_y}" width="{bbox_w}" height="{bbox_h}" fill="white" filter="url(#f)" />
+</svg>"#,
+    fx = base_frequency.0,
+    fy = base_frequency.1,
+    bbox_x = bbox.x(),
+    bbox_y = bbox.y(),
+    bbox_w = bbox.width(),
+    bbox_h = bbox.height(),
+  )
 }
 
-fn fade(t: f32) -> f32 {
-  t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
-}
-
-fn lerp(a: f32, b: f32, t: f32) -> f32 {
-  a + t * (b - a)
-}
-
-fn grad(hash: u8, x: f32, y: f32) -> f32 {
-  let h = hash & 7;
-  let u = if h < 4 { x } else { y };
-  let v = if h < 4 { y } else { x };
-  let a = if (h & 1) == 0 { u } else { -u };
-  let b = if (h & 2) == 0 { v } else { -v };
-  a + b
-}
-
-fn build_permutation(seed: u32) -> [u8; 512] {
-  let mut source = [0u8; 256];
-  for (i, v) in source.iter_mut().enumerate() {
-    *v = i as u8;
+fn clear_outside_region(pixmap: &mut Pixmap, region: ResolvedRegion) {
+  let width = pixmap.width() as usize;
+  if width == 0 {
+    return;
   }
-  let mut rng = XorShift32::new(seed);
-  for i in (1..256).rev() {
-    let j = (rng.next_u32() % ((i + 1) as u32)) as usize;
-    source.swap(i, j);
-  }
-  let mut perm = [0u8; 512];
-  for i in 0..512 {
-    perm[i] = source[i & 255];
-  }
-  perm
-}
-
-#[derive(Clone)]
-struct XorShift32 {
-  state: u32,
-}
-
-impl XorShift32 {
-  fn new(seed: u32) -> Self {
-    let state = seed.wrapping_add(1).wrapping_mul(0x9e37_79b9);
-    Self { state }
-  }
-
-  fn next_u32(&mut self) -> u32 {
-    let mut x = self.state;
-    x ^= x << 13;
-    x ^= x >> 17;
-    x ^= x << 5;
-    self.state = x;
-    x
+  let start_x = region.x as usize;
+  let end_x = start_x + region.width as usize;
+  let start_y = region.y as usize;
+  let end_y = start_y + region.height as usize;
+  let stride = width * 4;
+  for (y, row) in pixmap.data_mut().chunks_exact_mut(stride).enumerate() {
+    if y < start_y || y >= end_y {
+      row.fill(0);
+      continue;
+    }
+    let left = start_x * 4;
+    let right = end_x * 4;
+    row[..left].fill(0);
+    row[right..].fill(0);
   }
 }
 
@@ -378,7 +276,7 @@ mod tests {
   use rayon::ThreadPoolBuilder;
 
   fn render_bytes(
-    seed: u32,
+    seed: i32,
     color_interpolation_filters: super::super::ColorInterpolationFilters,
   ) -> Vec<u8> {
     const WIDTH: u32 = 32;

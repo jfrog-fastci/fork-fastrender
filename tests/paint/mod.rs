@@ -79,6 +79,7 @@ mod svg_filter_offset_test;
 mod svg_filter_painter_test;
 mod svg_filter_parallel_determinism_test;
 mod svg_filter_resvg_compare;
+mod svg_filter_turbulence_golden;
 mod svg_filter_test;
 mod svg_filter_url_test;
 mod svg_foreign_object_css_limits_test;

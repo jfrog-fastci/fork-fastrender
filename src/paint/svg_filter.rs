@@ -724,7 +724,7 @@ pub enum FilterPrimitive {
   },
   Turbulence {
     base_frequency: (f32, f32),
-    seed: u32,
+    seed: i32,
     octaves: u32,
     stitch_tiles: bool,
     kind: TurbulenceType,
@@ -1367,7 +1367,7 @@ fn hash_filter_primitive(prim: &FilterPrimitive, state: &mut impl Hasher) {
       state.write_u8(14);
       hash_f32(base_frequency.0, state);
       hash_f32(base_frequency.1, state);
-      state.write_u32(*seed);
+      state.write(&seed.to_le_bytes());
       state.write_u32(*octaves);
       state.write_u8(*stitch_tiles as u8);
       match kind {
@@ -2710,7 +2710,8 @@ fn parse_fe_turbulence(node: &roxmltree::Node) -> Option<FilterPrimitive> {
     .attribute("seed")
     .and_then(|v| v.parse::<f32>().ok())
     .unwrap_or(0.0);
-  let seed = seed_raw.round() as u32;
+  // Match resvg/Chrome behavior: truncate the float toward zero and preserve the sign.
+  let seed = seed_raw as i32;
   let octaves = node
     .attribute("numOctaves")
     .and_then(|v| v.parse::<u32>().ok())
@@ -7287,24 +7288,32 @@ mod tests {
 
     let srgb = render(ColorInterpolationFilters::SRGB);
     for px in srgb.pixels() {
-      assert_eq!(px.red(), 128);
-      assert_eq!(px.green(), 128);
-      assert_eq!(px.blue(), 128);
-      assert_eq!(px.alpha(), 255);
+      let unpremul = to_unpremultiplied(*px);
+      for ch in [unpremul.r, unpremul.g, unpremul.b] {
+        assert_eq!((ch * 255.0).round() as u8, 128);
+      }
+      assert_eq!((unpremul.a * 255.0).round() as u8, 128);
     }
 
     let linear = render(ColorInterpolationFilters::LinearRGB);
     for px in linear.pixels() {
       let expected = 188u8;
-      let actual = px.red();
+      let unpremul = to_unpremultiplied(*px);
+      let actual = (unpremul.r * 255.0).round().clamp(0.0, 255.0) as u8;
       let diff = (actual as i16 - expected as i16).abs();
       assert!(
         diff <= 1,
         "expected ~{expected} for linearRGB encoding, got {actual}"
       );
-      assert_eq!(px.green(), actual);
-      assert_eq!(px.blue(), actual);
-      assert_eq!(px.alpha(), 255);
+      assert_eq!(
+        (unpremul.g * 255.0).round().clamp(0.0, 255.0) as u8,
+        actual
+      );
+      assert_eq!(
+        (unpremul.b * 255.0).round().clamp(0.0, 255.0) as u8,
+        actual
+      );
+      assert_eq!((unpremul.a * 255.0).round() as u8, 128);
     }
   }
 
@@ -8032,7 +8041,7 @@ mod tests {
   }
 
   #[test]
-  fn turbulence_seed_clamps_negative_to_zero() {
+  fn turbulence_seed_preserves_negative_values() {
     let doc = roxmltree::Document::parse("<filter><feTurbulence seed=\"-1\"/></filter>").unwrap();
     let node = doc
       .descendants()
@@ -8040,14 +8049,14 @@ mod tests {
       .unwrap();
     let prim = parse_fe_turbulence(&node).expect("should parse turbulence");
     match prim {
-      FilterPrimitive::Turbulence { seed, .. } => assert_eq!(seed, 0),
+      FilterPrimitive::Turbulence { seed, .. } => assert_eq!(seed, -1),
       other => panic!("expected turbulence primitive, got {other:?}"),
     }
   }
 
   #[test]
-  fn turbulence_seed_rounds_fractional_values() {
-    fn parse_seed(seed: &str) -> u32 {
+  fn turbulence_seed_truncates_fractional_values() {
+    fn parse_seed(seed: &str) -> i32 {
       let svg = format!("<filter><feTurbulence seed=\"{seed}\"/></filter>");
       let doc = roxmltree::Document::parse(&svg).unwrap();
       let node = doc
@@ -8062,7 +8071,9 @@ mod tests {
     }
 
     assert_eq!(parse_seed("1.4"), 1);
-    assert_eq!(parse_seed("1.6"), 2);
+    assert_eq!(parse_seed("1.6"), 1);
+    assert_eq!(parse_seed("-1.4"), -1);
+    assert_eq!(parse_seed("-1.6"), -1);
   }
 
   #[test]

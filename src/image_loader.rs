@@ -3075,7 +3075,7 @@ impl ImageCache {
     Ok(cached)
   }
 
-  pub(crate) fn render_svg_pixmap_at_size(
+  pub fn render_svg_pixmap_at_size(
     &self,
     svg_content: &str,
     render_width: u32,
@@ -3106,7 +3106,7 @@ impl ImageCache {
     self.render_svg_pixmap_at_size_uncached(svg_content, key, render_width, render_height, url)
   }
 
-  pub(crate) fn render_svg_pixmap_at_size_with_injected_style(
+  pub fn render_svg_pixmap_at_size_with_injected_style(
     &self,
     svg_content: &str,
     insert_pos: usize,

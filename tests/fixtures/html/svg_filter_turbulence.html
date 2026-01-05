@@ -1,0 +1,87 @@
+<!doctype html>
+<html>
+<style>
+  body {
+    margin: 0;
+    background: #1c1c1c;
+    padding: 12px;
+    display: grid;
+    grid-template-columns: repeat(2, 96px);
+    gap: 12px;
+  }
+
+  svg {
+    width: 96px;
+    height: 96px;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+</style>
+
+<!--
+  Visual regression fixture for feTurbulence.
+
+  - Raw feTurbulence output (fractalNoise + turbulence).
+  - Channel selectors demo: feTurbulence -> feDisplacementMap (R/G).
+  - stitchTiles="stitch" demo: stitched turbulence is tiled via feTile (seams are obvious when broken).
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" shape-rendering="crispEdges">
+  <defs>
+    <filter id="fractal" x="0" y="0" width="96" height="96" filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse">
+      <feTurbulence type="fractalNoise" baseFrequency="0.08 0.1" numOctaves="2" seed="2" />
+    </filter>
+  </defs>
+  <rect x="0" y="0" width="96" height="96" fill="#333" />
+  <rect x="0" y="0" width="96" height="96" fill="white" filter="url(#fractal)" />
+</svg>
+
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" shape-rendering="crispEdges">
+  <defs>
+    <filter id="turb" x="0" y="0" width="96" height="96" filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse">
+      <feTurbulence type="turbulence" baseFrequency="0.08 0.1" numOctaves="2" seed="2" />
+    </filter>
+  </defs>
+  <rect x="0" y="0" width="96" height="96" fill="#333" />
+  <rect x="0" y="0" width="96" height="96" fill="white" filter="url(#turb)" />
+</svg>
+
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" shape-rendering="crispEdges">
+  <defs>
+    <pattern id="checker" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect x="0" y="0" width="4" height="4" fill="#e8e8e8" />
+      <rect x="4" y="0" width="4" height="4" fill="#101010" />
+      <rect x="0" y="4" width="4" height="4" fill="#101010" />
+      <rect x="4" y="4" width="4" height="4" fill="#e8e8e8" />
+    </pattern>
+    <filter id="disp" x="0" y="0" width="96" height="96" filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse">
+      <feTurbulence type="turbulence" baseFrequency="0.05" numOctaves="1" seed="7" result="noise" />
+      <feDisplacementMap in="SourceGraphic" in2="noise" scale="18" xChannelSelector="R" yChannelSelector="G" />
+    </filter>
+  </defs>
+  <rect x="0" y="0" width="96" height="96" fill="url(#checker)" filter="url(#disp)" />
+</svg>
+
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" shape-rendering="crispEdges">
+  <defs>
+    <filter id="stitch" x="0" y="0" width="96" height="96" filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse">
+      <feTurbulence
+        type="fractalNoise"
+        baseFrequency="0.08"
+        numOctaves="2"
+        seed="4"
+        stitchTiles="stitch"
+        x="0"
+        y="0"
+        width="32"
+        height="32"
+        result="tile"
+      />
+      <feTile in="tile" />
+    </filter>
+  </defs>
+  <rect x="0" y="0" width="96" height="96" fill="#333" />
+  <rect x="0" y="0" width="96" height="96" fill="white" filter="url(#stitch)" />
+</svg>
+</html>
+
