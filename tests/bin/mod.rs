@@ -10,6 +10,7 @@ mod bundle_page_test;
 mod bundled_font_coverage_test;
 mod compare_diff_reports_test;
 mod chrome_baseline_script_test;
+mod chrome_fixture_baseline_script_test;
 mod css_coverage_test;
 mod diff_renders_test;
 mod diff_snapshots_pageset_dump_layout_test;
