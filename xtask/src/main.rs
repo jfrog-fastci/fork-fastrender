@@ -161,6 +161,10 @@ struct PagesetArgs {
   /// Bundled fonts are best for deterministic pageset timing/perf work. When using
   /// `pageset_progress run --accuracy` against Chrome screenshots, `--system-fonts` can produce
   /// more meaningful diffs by avoiding font substitution noise.
+  ///
+  /// Note: pageset_progress automatically enables bundled fonts when `FASTR_USE_BUNDLED_FONTS` or
+  /// `CI` are set. `--system-fonts` forces `FASTR_USE_BUNDLED_FONTS=0` and `CI=0` for the spawned
+  /// `pageset_progress` process so host fonts are used predictably even in CI.
   #[arg(
     long,
     visible_alias = "no-bundled-fonts",
@@ -1765,9 +1769,14 @@ fn build_pageset_progress_run_command(
     .arg(jobs.to_string())
     .arg("--timeout")
     .arg(render_timeout.to_string());
-  if use_bundled_fonts {
-    cmd.arg("--bundled-fonts");
-  }
+  xtask::apply_pageset_progress_font_mode(
+    &mut cmd,
+    if use_bundled_fonts {
+      xtask::PagesetFontMode::Bundled
+    } else {
+      xtask::PagesetFontMode::System
+    },
+  );
   cmd.arg("--cache-dir").arg(cache_dir);
   cmd
 }

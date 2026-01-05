@@ -195,6 +195,7 @@ JOBS="${JOBS:-${TOTAL_CPUS}}"
 FETCH_TIMEOUT="${FETCH_TIMEOUT:-30}"
 RENDER_TIMEOUT="${RENDER_TIMEOUT:-5}"
 USE_DISK_CACHE="${DISK_CACHE:-1}"
+USE_BUNDLED_FONTS=1
 CACHE_DIR="fetches/assets"
 NO_FETCH=0
 DISK_CACHE_AUDIT_CLEAN="${DISK_CACHE_AUDIT_CLEAN:-0}"
@@ -202,7 +203,6 @@ CAPTURE_MISSING_FAILURE_FIXTURES=0
 CAPTURE_MISSING_FAILURE_FIXTURES_OUT_DIR="target/pageset_failure_fixture_bundles"
 CAPTURE_MISSING_FAILURE_FIXTURES_ALLOW_MISSING_RESOURCES=0
 CAPTURE_MISSING_FAILURE_FIXTURES_OVERWRITE=0
-USE_BUNDLED_FONTS=1
 CAPTURE_WORST_ACCURACY_FIXTURES=0
 CAPTURE_WORST_ACCURACY_FIXTURES_OUT_DIR="target/pageset_accuracy_fixture_bundles"
 CAPTURE_WORST_ACCURACY_FIXTURES_MIN_DIFF_PERCENT="0.5"
@@ -1176,7 +1176,14 @@ if [[ "${USE_BUNDLED_FONTS}" != 0 ]]; then
 fi
 
 echo "Updating progress/pages (jobs=${JOBS}, hard timeout=${RENDER_TIMEOUT}s, disk_cache=${USE_DISK_CACHE}, cache_dir=${CACHE_DIR}, fonts=${FONT_MODE}, rayon_threads=${RAYON_NUM_THREADS}, layout_parallel=${FASTR_LAYOUT_PARALLEL})..."
-cargo run --release "${FEATURE_ARGS[@]}" --bin pageset_progress -- run --jobs "${JOBS}" --timeout "${RENDER_TIMEOUT}" "${PAGESET_FONT_ARGS[@]}" --cache-dir "${CACHE_DIR}" "${PAGESET_KNOB_ARGS[@]}" "${PAGESET_ACCURACY_ARGS[@]}" "${PAGESET_ARGS[@]}" "${EXTRA_DISK_CACHE_ARGS[@]}"
+PAGESET_PROGRESS_CMD=(
+  cargo run --release "${FEATURE_ARGS[@]}" --bin pageset_progress -- run --jobs "${JOBS}" --timeout "${RENDER_TIMEOUT}" "${PAGESET_FONT_ARGS[@]}" --cache-dir "${CACHE_DIR}" "${PAGESET_KNOB_ARGS[@]}" "${PAGESET_ACCURACY_ARGS[@]}" "${PAGESET_ARGS[@]}" "${EXTRA_DISK_CACHE_ARGS[@]}"
+)
+if [[ "${USE_BUNDLED_FONTS}" != 0 ]]; then
+  "${PAGESET_PROGRESS_CMD[@]}"
+else
+  FASTR_USE_BUNDLED_FONTS=0 CI=0 "${PAGESET_PROGRESS_CMD[@]}"
+fi
 
 if [[ "${CAPTURE_MISSING_FAILURE_FIXTURES}" -eq 1 ]]; then
   if [[ "${USE_DISK_CACHE}" == 0 ]]; then

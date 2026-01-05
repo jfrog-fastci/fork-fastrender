@@ -82,3 +82,61 @@ fn extracts_pageset_extra_arg_overrides_disk_cache_enabled() {
     }
   );
 }
+
+#[test]
+fn extracts_pageset_extra_arg_overrides_system_fonts() {
+  let extra = vec![
+    "--system-fonts".to_string(),
+    "--pages=example.com".to_string(),
+  ];
+
+  let (filtered, overrides) = extract_pageset_extra_arg_overrides(&extra);
+  assert_eq!(filtered, Vec::<String>::new());
+  assert_eq!(
+    overrides,
+    PagesetExtraArgsOverrides {
+      jobs: None,
+      pages: Some("example.com".to_string()),
+      shard: None,
+      user_agent: None,
+      accept_language: None,
+      viewport: None,
+      dpr: None,
+      disk_cache: None,
+      cache_dir: None,
+      bundled_fonts: Some(false),
+      no_fetch: false,
+      fetch_timeout: None,
+      render_timeout: None,
+    }
+  );
+}
+
+#[test]
+fn extracts_pageset_extra_arg_overrides_system_fonts_alias() {
+  let extra = vec![
+    "--no-bundled-fonts".to_string(),
+    "--pages=example.com".to_string(),
+  ];
+
+  let (filtered, overrides) = extract_pageset_extra_arg_overrides(&extra);
+  assert_eq!(filtered, Vec::<String>::new());
+  assert_eq!(
+    overrides,
+    PagesetExtraArgsOverrides {
+      jobs: None,
+      pages: Some("example.com".to_string()),
+      shard: None,
+      user_agent: None,
+      accept_language: None,
+      viewport: None,
+      dpr: None,
+      disk_cache: None,
+      cache_dir: None,
+      bundled_fonts: Some(false),
+      no_fetch: false,
+      fetch_timeout: None,
+      render_timeout: None,
+    }
+  );
+}

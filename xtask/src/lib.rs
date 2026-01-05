@@ -4,6 +4,51 @@ pub mod capture_accuracy_fixtures;
 pub mod capture_missing_failure_fixtures;
 pub mod pageset_failure_fixtures;
 use serde::Deserialize;
+use std::process::Command;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PagesetFontMode {
+  Bundled,
+  System,
+}
+
+pub fn apply_pageset_progress_font_mode(cmd: &mut Command, mode: PagesetFontMode) {
+  match mode {
+    PagesetFontMode::Bundled => {
+      cmd.arg("--bundled-fonts");
+    }
+    PagesetFontMode::System => {
+      // `FontConfig::default` switches to bundled fonts automatically when `FASTR_USE_BUNDLED_FONTS`
+      // or `CI` are set. Pageset wrappers provide a `--system-fonts` knob to align output with
+      // Chrome on the same machine, so force those env vars off for that child process.
+      cmd.env("FASTR_USE_BUNDLED_FONTS", "0");
+      cmd.env("CI", "0");
+    }
+  }
+}
+
+pub fn build_pageset_progress_run_command(
+  disk_cache_feature: bool,
+  jobs: usize,
+  timeout_secs: u64,
+  font_mode: PagesetFontMode,
+) -> Command {
+  let mut cmd = Command::new("cargo");
+  cmd.arg("run").arg("--release");
+  if disk_cache_feature {
+    cmd.args(["--features", "disk_cache"]);
+  }
+  cmd
+    .args(["--bin", "pageset_progress"])
+    .arg("--")
+    .arg("run")
+    .arg("--jobs")
+    .arg(jobs.to_string())
+    .arg("--timeout")
+    .arg(timeout_secs.to_string());
+  apply_pageset_progress_font_mode(&mut cmd, font_mode);
+  cmd
+}
 
 /// Extract `--disk-cache-*` flags from an argument vector while preserving ordering.
 ///
