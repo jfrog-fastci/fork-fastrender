@@ -20,7 +20,7 @@ use fastrender::html::meta_refresh::{extract_js_location_redirect, extract_meta_
 use fastrender::image_output::encode_image;
 use fastrender::resource::bundle::{
   Bundle, BundleManifest, BundleRenderConfig, BundledDocument, BundledFetcher, BundledResourceInfo,
-  BUNDLE_MANIFEST, BUNDLE_VERSION,
+  request_partitioned_resource_key, BUNDLE_MANIFEST, BUNDLE_VERSION,
 };
 use fastrender::resource::{
   ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane, ensure_stylesheet_mime_sane,
@@ -455,11 +455,60 @@ impl RecordingFetcher {
   }
 
   fn snapshot(&self) -> HashMap<String, FetchedResource> {
-    self
+    let mut snapshot = self
       .recorded
       .lock()
       .map(|map| map.clone())
-      .unwrap_or_default()
+      .unwrap_or_default();
+
+    if !cors_enforcement_enabled() {
+      return snapshot;
+    }
+
+    let by_request = self
+      .recorded_by_request
+      .lock()
+      .map(|map| map.clone())
+      .unwrap_or_default();
+
+    if by_request.is_empty() {
+      return snapshot;
+    }
+
+    let mut origins_by_resource: HashMap<(FetchContextKind, String), HashSet<Option<DocumentOrigin>>> =
+      HashMap::new();
+    for (key, _) in &by_request {
+      origins_by_resource
+        .entry((key.kind, key.url.clone()))
+        .or_default()
+        .insert(key.origin.clone());
+    }
+
+    for (key, resource) in by_request {
+      let Some(origins) = origins_by_resource.get(&(key.kind, key.url.clone())) else {
+        continue;
+      };
+      // Only record per-origin variants when a single URL was fetched in CORS mode under multiple
+      // initiating origins; otherwise the legacy URL-only entry is sufficient and keeps bundles
+      // smaller.
+      if origins.len() <= 1 {
+        continue;
+      }
+      let Some(origin) = key.origin.as_ref() else {
+        continue;
+      };
+
+      let manifest_key = request_partitioned_resource_key(key.kind, &key.url, origin);
+      snapshot.entry(manifest_key).or_insert_with(|| resource.clone());
+      if let Some(final_url) = resource.final_url.as_deref() {
+        if final_url != key.url.as_str() {
+          let manifest_key = request_partitioned_resource_key(key.kind, final_url, origin);
+          snapshot.entry(manifest_key).or_insert_with(|| resource.clone());
+        }
+      }
+    }
+
+    snapshot
   }
 
   fn discard(&self, url: &str) {
@@ -1510,7 +1559,11 @@ fn crawl_document(
   // Cap recursion based on distinct URLs discovered, not on per-document referrer contexts.
   let mut seen_urls: HashSet<String> = HashSet::new();
   let mut queued: HashMap<(String, Option<DocumentOrigin>), FetchDestination> = HashMap::new();
-  let mut fetched_urls: HashSet<String> = HashSet::new();
+  // Track fetched resources using the same partitioning semantics as the renderer caches: kind is
+  // always part of the key, and for CORS-mode requests under CORS enforcement we also include the
+  // initiating origin so we don't accidentally drop per-origin metadata (notably
+  // Access-Control-Allow-Origin).
+  let mut fetched_urls: HashSet<(FetchContextKind, String, Option<DocumentOrigin>)> = HashSet::new();
   let mut fetch_errors: Vec<(String, String)> = Vec::new();
   let root_referrer = document.base_hint.as_str();
 
@@ -1633,11 +1686,21 @@ fn crawl_document(
       break;
     }
 
-    if fetched_urls.contains(&url) {
+    let kind: FetchContextKind = destination.into();
+    let document_origin = origin_from_url(&referrer);
+    let origin_key = if cors_enforcement_enabled()
+      && matches!(destination, FetchDestination::Font | FetchDestination::ImageCors)
+    {
+      document_origin.clone().or_else(|| origin_from_url(&url))
+    } else {
+      None
+    };
+    let fetch_key = (kind, url.clone(), origin_key.clone());
+    if fetched_urls.contains(&fetch_key) {
       continue;
     }
 
-    let policy_for_request = policy.for_origin(origin_from_url(&referrer));
+    let policy_for_request = policy.for_origin(document_origin.clone());
     let allowed = match destination {
       FetchDestination::Document => policy_for_request.allows_document(&url),
       _ => policy_for_request.allows(&url),
@@ -1653,7 +1716,7 @@ fn crawl_document(
       Err(err) => {
         handle_crawl_failure(fetcher, &mut fetch_errors, &url, destination, &referrer, &err, mode);
         if matches!(mode, CrawlMode::AllowMissing) {
-          fetched_urls.insert(url.clone());
+          fetched_urls.insert(fetch_key);
         }
         continue;
       }
@@ -1675,7 +1738,7 @@ fn crawl_document(
       continue;
     }
 
-    fetched_urls.insert(url.clone());
+    fetched_urls.insert(fetch_key);
 
     let validation = match destination {
       FetchDestination::Style => {
@@ -2274,6 +2337,162 @@ mod tests {
         inner.calls(),
         2,
         "expected RecordingFetcher to cache by URL when CORS enforcement is disabled"
+      );
+    });
+
+    Ok(())
+  }
+
+  #[test]
+  fn crawl_records_per_origin_cors_resources_in_snapshot_when_enforced() -> Result<()> {
+    #[derive(Default)]
+    struct CrawlFixtureFetcher {
+      calls: Mutex<Vec<(String, FetchDestination, Option<String>)>>,
+    }
+
+    impl CrawlFixtureFetcher {
+      fn calls(&self) -> Vec<(String, FetchDestination, Option<String>)> {
+        self
+          .calls
+          .lock()
+          .map(|calls| calls.clone())
+          .unwrap_or_default()
+      }
+    }
+
+    impl ResourceFetcher for CrawlFixtureFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected crawl to use fetch_with_request()");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.lock().unwrap().push((
+          req.url.to_string(),
+          req.destination,
+          req.referrer.map(|r| r.to_string()),
+        ));
+
+        const ROOT: &str = "http://root.test/page.html";
+        const FRAME_A: &str = "http://a.test/frame.html";
+        const FRAME_B: &str = "http://b.test/frame.html";
+        const FONT: &str = "http://cdn.test/font.woff2";
+
+        match req.url {
+          ROOT => Ok(FetchedResource::with_final_url(
+            format!(
+              r#"<html><body><iframe src="{FRAME_A}"></iframe><iframe src="{FRAME_B}"></iframe></body></html>"#
+            )
+            .into_bytes(),
+            Some("text/html".to_string()),
+            Some(ROOT.to_string()),
+          )),
+          FRAME_A | FRAME_B => Ok(FetchedResource::with_final_url(
+            format!(
+              r#"<html><head><style>@font-face{{font-family:"Test";src:url("{FONT}");}}</style></head><body>frame</body></html>"#
+            )
+            .into_bytes(),
+            Some("text/html".to_string()),
+            Some(req.url.to_string()),
+          )),
+          FONT => {
+            let origin = req
+              .referrer
+              .and_then(|referrer| url::Url::parse(referrer).ok())
+              .and_then(|parsed| {
+                parsed
+                  .host_str()
+                  .map(|host| format!("{}://{}", parsed.scheme(), host))
+              });
+
+            let mut res = FetchedResource::with_final_url(
+              b"ok".to_vec(),
+              Some("font/woff2".to_string()),
+              Some(FONT.to_string()),
+            );
+            res.status = Some(200);
+            res.access_control_allow_origin = origin;
+            Ok(res)
+          }
+          other => Err(fastrender::Error::Other(format!(
+            "unexpected fetch: {other}"
+          ))),
+        }
+      }
+    }
+
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "1".to_string(),
+    )])));
+
+    with_thread_runtime_toggles(toggles, || {
+      let inner = Arc::new(CrawlFixtureFetcher::default());
+      let recording = RecordingFetcher::new(inner.clone());
+
+      let doc = common::render_pipeline::PreparedDocument::new(
+        r#"<html><body><iframe src="http://a.test/frame.html"></iframe><iframe src="http://b.test/frame.html"></iframe></body></html>"#.to_string(),
+        "http://root.test/page.html".to_string(),
+      );
+
+      let render = BundleRenderConfig {
+        viewport: (1200, 800),
+        device_pixel_ratio: 1.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+        full_page: false,
+        same_origin_subresources: false,
+        allowed_subresource_origins: Vec::new(),
+        compat_profile: fastrender::compat::CompatProfile::default(),
+        dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
+      };
+
+      crawl_document(&recording, &doc, &render, CrawlMode::Strict).expect("crawl");
+
+      let calls = inner.calls();
+      let font_calls: Vec<_> = calls
+        .iter()
+        .filter(|(url, destination, _)| {
+          url == "http://cdn.test/font.woff2" && *destination == FetchDestination::Font
+        })
+        .collect();
+      assert_eq!(
+        font_calls.len(),
+        2,
+        "expected crawl to fetch the same CORS-mode font twice (once per initiating origin) when CORS enforcement is enabled"
+      );
+
+      let snapshot = recording.snapshot();
+      let origin_a = origin_from_url("http://a.test/frame.html").expect("origin A");
+      let origin_b = origin_from_url("http://b.test/frame.html").expect("origin B");
+      let font_url = "http://cdn.test/font.woff2";
+      let key_a =
+        request_partitioned_resource_key(FetchContextKind::Font, font_url, &origin_a);
+      let key_b =
+        request_partitioned_resource_key(FetchContextKind::Font, font_url, &origin_b);
+
+      assert!(
+        snapshot.contains_key(font_url),
+        "expected legacy URL entry to be present"
+      );
+      assert!(
+        snapshot.contains_key(&key_a),
+        "expected origin A partitioned entry to be present"
+      );
+      assert!(
+        snapshot.contains_key(&key_b),
+        "expected origin B partitioned entry to be present"
+      );
+      assert_eq!(
+        snapshot
+          .get(&key_a)
+          .and_then(|res| res.access_control_allow_origin.as_deref()),
+        Some("http://a.test")
+      );
+      assert_eq!(
+        snapshot
+          .get(&key_b)
+          .and_then(|res| res.access_control_allow_origin.as_deref()),
+        Some("http://b.test")
       );
     });
 

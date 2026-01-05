@@ -1,7 +1,10 @@
 use crate::compat::CompatProfile;
 use crate::dom::DomCompatibilityMode;
 use crate::error::{Error, Result};
-use crate::resource::{FetchedResource, ResourceFetcher};
+use crate::resource::{
+  cors_enforcement_enabled, origin_from_url, DocumentOrigin, FetchContextKind, FetchDestination,
+  FetchRequest, FetchedResource, ResourceFetcher,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -14,6 +17,31 @@ pub const BUNDLE_MANIFEST: &str = "bundle.json";
 
 /// Schema version for bundle manifests.
 pub const BUNDLE_VERSION: u32 = 1;
+
+/// Synthetic manifest key used for request-partitioned resources.
+///
+/// This is primarily used for CORS-mode resources (`Font` / `ImageCors`) when
+/// `FASTR_FETCH_ENFORCE_CORS=1`. Some servers vary `Access-Control-Allow-Origin` by the initiating
+/// origin; bundles need to preserve the per-origin metadata so offline renders can replay the same
+/// behavior.
+///
+/// The returned key is **not** a real URL. It is only used as a stable lookup key inside
+/// `bundle.json`.
+pub fn request_partitioned_resource_key(
+  kind: FetchContextKind,
+  url: &str,
+  origin: &DocumentOrigin,
+) -> String {
+  let kind_tag = match kind {
+    FetchContextKind::Document => "document",
+    FetchContextKind::Stylesheet => "stylesheet",
+    FetchContextKind::Image => "image",
+    FetchContextKind::ImageCors => "image-cors",
+    FetchContextKind::Font => "font",
+    FetchContextKind::Other => "other",
+  };
+  format!("{url}@@fastr:bundle:req_v1@@kind={kind_tag}@@origin={origin}")
+}
 
 fn bool_is_false(value: &bool) -> bool {
   !*value
@@ -326,6 +354,27 @@ impl ResourceFetcher for BundledFetcher {
     )))
   }
 
+  fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+    if cors_enforcement_enabled()
+      && matches!(req.destination, FetchDestination::Font | FetchDestination::ImageCors)
+    {
+      let kind: FetchContextKind = req.destination.into();
+      let origin = req
+        .referrer
+        .and_then(origin_from_url)
+        .or_else(|| origin_from_url(req.url));
+
+      if let Some(origin) = origin {
+        let key = request_partitioned_resource_key(kind, req.url, &origin);
+        if let Some(resource) = self.bundle.resource_for_url(&key) {
+          return Ok(resource.as_fetched());
+        }
+      }
+    }
+
+    self.fetch(req.url)
+  }
+
   fn fetch_with_validation(
     &self,
     url: &str,
@@ -339,6 +388,7 @@ impl ResourceFetcher for BundledFetcher {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
 
   #[test]
   fn bundled_fetcher_decodes_data_urls_without_manifest_entries() {
@@ -528,5 +578,126 @@ mod tests {
     assert_eq!(css.access_control_allow_origin, None);
     assert_eq!(css.timing_allow_origin, None);
     assert!(!css.access_control_allow_credentials);
+  }
+
+  #[test]
+  fn bundled_fetcher_uses_request_partitioned_entries_for_cors_mode_requests() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      tmp.path().join("document.html"),
+      "<!doctype html><html></html>",
+    )
+    .expect("write doc");
+
+    let url = "https://cdn.example/font.woff2";
+    let origin_a = origin_from_url("https://a.test/page.html").expect("origin A");
+    let origin_b = origin_from_url("https://b.test/page.html").expect("origin B");
+
+    let key_a = request_partitioned_resource_key(FetchContextKind::Font, url, &origin_a);
+    let key_b = request_partitioned_resource_key(FetchContextKind::Font, url, &origin_b);
+
+    std::fs::write(tmp.path().join("font_raw.woff2"), b"raw").expect("write raw font");
+    std::fs::write(tmp.path().join("font_a.woff2"), b"a").expect("write font a");
+    std::fs::write(tmp.path().join("font_b.woff2"), b"b").expect("write font b");
+
+    let manifest = BundleManifest {
+      version: BUNDLE_VERSION,
+      original_url: "https://example.com/".to_string(),
+      document: BundledDocument {
+        path: "document.html".to_string(),
+        content_type: Some("text/html".to_string()),
+        final_url: "https://example.com/".to_string(),
+        status: Some(200),
+        etag: None,
+        last_modified: None,
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+      },
+      render: BundleRenderConfig {
+        viewport: (1200, 800),
+        device_pixel_ratio: 1.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+        full_page: false,
+        same_origin_subresources: false,
+        allowed_subresource_origins: Vec::new(),
+        compat_profile: CompatProfile::default(),
+        dom_compat_mode: DomCompatibilityMode::default(),
+      },
+      resources: BTreeMap::from([
+        (
+          url.to_string(),
+          BundledResourceInfo {
+            path: "font_raw.woff2".to_string(),
+            content_type: Some("font/woff2".to_string()),
+            status: Some(200),
+            final_url: Some(url.to_string()),
+            etag: None,
+            last_modified: None,
+            access_control_allow_origin: Some("https://a.test".to_string()),
+            timing_allow_origin: None,
+            access_control_allow_credentials: false,
+          },
+        ),
+        (
+          key_a,
+          BundledResourceInfo {
+            path: "font_a.woff2".to_string(),
+            content_type: Some("font/woff2".to_string()),
+            status: Some(200),
+            final_url: Some(url.to_string()),
+            etag: None,
+            last_modified: None,
+            access_control_allow_origin: Some("https://a.test".to_string()),
+            timing_allow_origin: None,
+            access_control_allow_credentials: false,
+          },
+        ),
+        (
+          key_b,
+          BundledResourceInfo {
+            path: "font_b.woff2".to_string(),
+            content_type: Some("font/woff2".to_string()),
+            status: Some(200),
+            final_url: Some(url.to_string()),
+            etag: None,
+            last_modified: None,
+            access_control_allow_origin: Some("https://b.test".to_string()),
+            timing_allow_origin: None,
+            access_control_allow_credentials: false,
+          },
+        ),
+      ]),
+    };
+
+    std::fs::write(
+      tmp.path().join(BUNDLE_MANIFEST),
+      serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+
+    let bundle = Bundle::load(tmp.path()).expect("load bundle");
+    let fetcher = BundledFetcher::new(bundle);
+
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "1".to_string(),
+    )])));
+
+    with_thread_runtime_toggles(toggles, || {
+      let a = fetcher
+        .fetch_with_request(
+          FetchRequest::new(url, FetchDestination::Font).with_referrer("https://a.test/page.html"),
+        )
+        .expect("fetch origin A");
+      assert_eq!(a.bytes, b"a");
+
+      let b = fetcher
+        .fetch_with_request(
+          FetchRequest::new(url, FetchDestination::Font).with_referrer("https://b.test/page.html"),
+        )
+        .expect("fetch origin B");
+      assert_eq!(b.bytes, b"b");
+    });
   }
 }
