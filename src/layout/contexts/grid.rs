@@ -4946,21 +4946,12 @@ impl FormattingContext for GridFormattingContext {
         && box_node.box_type.is_block_level()
         && crate::style::inline_axis_is_horizontal(style.writing_mode)
       {
-        let percentage_base = outer_width;
-        let padding_left =
-          self.resolve_length_for_width(style.padding_left, percentage_base, style);
-        let padding_right =
-          self.resolve_length_for_width(style.padding_right, percentage_base, style);
-        let border_left =
-          self.resolve_length_for_width(style.used_border_left_width(), percentage_base, style);
-        let border_right =
-          self.resolve_length_for_width(style.used_border_right_width(), percentage_base, style);
-        let content_width =
-          (outer_width - padding_left - padding_right - border_left - border_right).max(0.0);
         if let Ok(existing) = taffy.style(root_id) {
           if existing.size.width.is_auto() {
             let mut updated = existing.clone();
-            updated.size.width = Dimension::length(content_width);
+            // Taffy treats the `size` property as the border-box width, so use the available
+            // border-box width directly (CSS 2.1 §10.3.3).
+            updated.size.width = Dimension::length(outer_width.max(0.0));
             taffy
               .set_style(root_id, updated)
               .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
@@ -6032,6 +6023,54 @@ mod tests {
     let style = Arc::new(style);
     let text_child = BoxNode::new_text(style.clone(), text.to_string());
     BoxNode::new_block(style, FormattingContextType::Inline, vec![text_child])
+  }
+
+  #[test]
+  fn grid_border_box_width_accounts_for_padding_and_border_with_explicit_width() {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut style = ComputedStyle::default();
+    style.display = CssDisplay::Grid;
+    style.width = Some(Length::px(100.0));
+    style.width_keyword = None;
+    style.padding_left = Length::px(10.0);
+    style.padding_right = Length::px(10.0);
+    style.border_left_style = crate::style::types::BorderStyle::Solid;
+    style.border_right_style = crate::style::types::BorderStyle::Solid;
+    style.border_left_width = Length::px(2.0);
+    style.border_right_width = Length::px(2.0);
+    let grid = BoxNode::new_block(Arc::new(style), FormattingContextType::Grid, vec![]);
+
+    // CSS `width` applies to the content box by default (`box-sizing: content-box`), so the used
+    // border-box width includes padding and borders.
+    let fragment = fc
+      .layout(&grid, &LayoutConstraints::definite(1000.0, 200.0))
+      .unwrap();
+    assert_eq!(fragment.bounds.width(), 124.0);
+  }
+
+  #[test]
+  fn grid_auto_width_stretches_border_box_including_padding_and_border() {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut style = ComputedStyle::default();
+    style.display = CssDisplay::Grid;
+    style.width = None;
+    style.width_keyword = None;
+    style.padding_left = Length::px(10.0);
+    style.padding_right = Length::px(10.0);
+    style.border_left_style = crate::style::types::BorderStyle::Solid;
+    style.border_right_style = crate::style::types::BorderStyle::Solid;
+    style.border_left_width = Length::px(2.0);
+    style.border_right_width = Length::px(2.0);
+    let grid = BoxNode::new_block(Arc::new(style), FormattingContextType::Grid, vec![]);
+
+    // With `width: auto`, block-level boxes should stretch to fill the available inline size. The
+    // used width is the border-box width, so padding/borders must be included in the total size.
+    let fragment = fc
+      .layout(&grid, &LayoutConstraints::definite(124.0, 200.0))
+      .unwrap();
+    assert_eq!(fragment.bounds.width(), 124.0);
   }
 
   #[test]
