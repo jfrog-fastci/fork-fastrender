@@ -13944,6 +13944,62 @@ mod tests {
   }
 
   #[test]
+  fn collapsible_space_is_not_doubled_across_adjacent_whitespace_nodes() {
+    let mut style = ComputedStyle::default();
+    style.white_space = WhiteSpace::Normal;
+    let text_style = Arc::new(style);
+    let root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![
+        BoxNode::new_text(text_style.clone(), "Hello".to_string()),
+        BoxNode::new_text(text_style.clone(), " ".to_string()),
+        BoxNode::new_text(text_style.clone(), " world".to_string()),
+      ],
+    );
+    let ifc = InlineFormattingContext::new();
+    let items = ifc
+      .collect_inline_items(&root, 800.0, Some(800.0))
+      .expect("collect items");
+    let texts: Vec<String> = items
+      .iter()
+      .filter_map(|item| match item {
+        InlineItem::Text(t) => Some(t.text.clone()),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(texts, vec!["Hello", " ", "world"]);
+    assert_eq!(texts.concat(), "Hello world");
+  }
+
+  #[test]
+  fn pending_space_is_not_emitted_when_followed_only_by_whitespace_text_node() {
+    let mut style = ComputedStyle::default();
+    style.white_space = WhiteSpace::Normal;
+    let text_style = Arc::new(style);
+    let root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![
+        BoxNode::new_text(text_style.clone(), "Hello ".to_string()),
+        BoxNode::new_text(text_style.clone(), " ".to_string()),
+      ],
+    );
+    let ifc = InlineFormattingContext::new();
+    let items = ifc
+      .collect_inline_items(&root, 800.0, Some(800.0))
+      .expect("collect items");
+    let texts: Vec<String> = items
+      .iter()
+      .filter_map(|item| match item {
+        InlineItem::Text(t) => Some(t.text.clone()),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(texts, vec!["Hello"]);
+  }
+
+  #[test]
   fn trailing_collapsible_space_is_dropped_at_end() {
     let mut style = ComputedStyle::default();
     style.white_space = WhiteSpace::Normal;
