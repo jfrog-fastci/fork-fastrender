@@ -1,14 +1,23 @@
 use base64::Engine;
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::image_loader::ImageCache;
-use fastrender::paint::display_list::DisplayList;
+use fastrender::paint::display_list::{
+  BlendMode, BorderRadius, DisplayItem, DisplayList, FillRectItem, ImageData, MaskReferenceRects,
+  ResolvedFilter, ResolvedMask, ResolvedMaskImage, ResolvedMaskLayer, StackingContextItem,
+};
 use fastrender::paint::display_list_builder::DisplayListBuilder;
 use fastrender::paint::display_list_renderer::{DisplayListRenderer, PaintParallelism};
 use fastrender::scroll::ScrollState;
+use fastrender::style::types::{
+  BackfaceVisibility, BackgroundPosition, BackgroundPositionComponent, BackgroundRepeat,
+  BackgroundSize, BackgroundSizeComponent, MaskClip, MaskComposite, MaskMode, MaskOrigin,
+  TransformStyle,
+};
 use fastrender::text::font_loader::FontContext;
 use fastrender::tree::fragment_tree::FragmentNode;
 use fastrender::{
-  DiagnosticsLevel, FastRender, FontConfig, Point, RenderArtifactRequest, RenderOptions, Rgba,
+  BorderRadii, DiagnosticsLevel, FastRender, FontConfig, Length, Point, Rect, RenderArtifactRequest,
+  RenderOptions, Rgba,
 };
 use rayon::ThreadPoolBuilder;
 use std::collections::HashMap;
@@ -111,6 +120,59 @@ fn build_display_list(html: &str, width: u32, height: u32) -> (DisplayList, Font
     list.append(build_for_root(extra));
   }
   (list, font_ctx)
+}
+
+fn top_left_position() -> BackgroundPosition {
+  BackgroundPosition::Position {
+    x: BackgroundPositionComponent {
+      alignment: 0.0,
+      offset: Length::percent(0.0),
+    },
+    y: BackgroundPositionComponent {
+      alignment: 0.0,
+      offset: Length::percent(0.0),
+    },
+  }
+}
+
+fn patterned_mask(bounds: Rect) -> ResolvedMask {
+  const SIZE: u32 = 8;
+  let mut pixels = Vec::with_capacity((SIZE * SIZE * 4) as usize);
+  for y in 0..SIZE {
+    for x in 0..SIZE {
+      let base = x * 32 + y * 4;
+      let alpha = if base < 24 {
+        0
+      } else if base > 224 {
+        255
+      } else {
+        base as u8
+      };
+      pixels.extend_from_slice(&[0, 0, 0, alpha]);
+    }
+  }
+
+  ResolvedMask {
+    layers: vec![ResolvedMaskLayer {
+      image: ResolvedMaskImage::Raster(ImageData::new_pixels(SIZE, SIZE, pixels)),
+      repeat: BackgroundRepeat::repeat(),
+      position: top_left_position(),
+      size: BackgroundSize::Explicit(BackgroundSizeComponent::Auto, BackgroundSizeComponent::Auto),
+      origin: MaskOrigin::BorderBox,
+      clip: MaskClip::BorderBox,
+      mode: MaskMode::Alpha,
+      composite: MaskComposite::Add,
+    }],
+    color: Rgba::BLACK,
+    font_size: 16.0,
+    root_font_size: 16.0,
+    viewport: None,
+    rects: MaskReferenceRects {
+      border: bounds,
+      padding: bounds,
+      content: bounds,
+    },
+  }
 }
 
 #[test]
@@ -327,6 +389,93 @@ fn parallel_backdrop_filter_with_large_box_shadow_matches_serial() {
 
   assert!(report.parallel_used, "expected multiple tiles");
   assert_pixmap_eq("parallel output diverged", &serial, &report.pixmap);
+}
+
+#[test]
+fn parallel_backdrop_filter_with_mask_and_radii_matches_serial() {
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 128.0, 128.0),
+    color: Rgba::WHITE,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 64.0, 128.0),
+    color: Rgba::new(255, 0, 0, 1.0),
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(64.0, 0.0, 64.0, 128.0),
+    color: Rgba::new(0, 0, 255, 1.0),
+  }));
+
+  let bounds = Rect::from_xywh(20.0, 12.0, 88.0, 96.0);
+  let sc = StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    bounds,
+    plane_rect: bounds,
+    mix_blend_mode: BlendMode::Normal,
+    is_isolated: false,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: vec![ResolvedFilter::Blur(6.0), ResolvedFilter::Invert(1.0)],
+    radii: BorderRadii::new(
+      BorderRadius::uniform(18.0),
+      BorderRadius::uniform(10.0),
+      BorderRadius::uniform(22.0),
+      BorderRadius::uniform(6.0),
+    ),
+    mask: Some(patterned_mask(bounds)),
+  };
+  list.push(DisplayItem::PushStackingContext(sc));
+  // Add content so both the mask and border radii clipping paths are exercised, while the
+  // backdrop-filter chain still has visible backdrop variation to blur/invert.
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: bounds,
+    color: Rgba::from_rgba8(0, 0, 0, 96),
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(bounds.x() + 6.0, bounds.y() + 22.0, 48.0, 40.0),
+    color: Rgba::from_rgba8(0, 255, 0, 160),
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let font_ctx = FontContext::new();
+  let serial = DisplayListRenderer::new(128, 128, Rgba::WHITE, font_ctx.clone())
+    .expect("renderer")
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("serial render");
+
+  let parallelism = PaintParallelism {
+    tile_size: 32,
+    ..PaintParallelism::enabled()
+  };
+  let pool = ThreadPoolBuilder::new()
+    .num_threads(4)
+    .build()
+    .expect("rayon pool");
+  let report = pool.install(|| {
+    DisplayListRenderer::new(128, 128, Rgba::WHITE, font_ctx)
+      .expect("renderer")
+      .with_parallelism(parallelism)
+      .render_with_report(&list)
+      .expect("parallel render")
+  });
+
+  assert!(
+    report.parallel_used,
+    "expected masked backdrop-filter scene to use parallel tiling (fallback={:?})",
+    report.fallback_reason
+  );
+  assert!(report.tiles > 1, "expected multiple tiles to be rendered");
+  assert_pixmap_eq(
+    "parallel masked backdrop-filter output diverged from serial",
+    &serial,
+    &report.pixmap,
+  );
 }
 
 #[test]

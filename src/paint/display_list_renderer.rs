@@ -7047,7 +7047,10 @@ impl DisplayListRenderer {
     let glyph_cache = self.glyph_cache.clone();
     let gradient_cache = self.gradient_cache.clone();
     let gradient_pixmap_cache = self.gradient_pixmap_cache.clone();
-    let shared_blur_cache = SharedBlurCache::default();
+    // NOTE: Tile renderers run concurrently. Sharing a single blur cache across tiles can lead to
+    // incorrect results for some filter chains (notably `backdrop-filter` + blur). Keep blur cache
+    // state local to each tile renderer to guarantee serial/parallel byte equality.
+    let shared_blur_cache: Option<SharedBlurCache> = None;
     let shared_backdrop_filter_cache = SharedBackdropFilterCache::default();
     let diagnostics_enabled = self.diagnostics_enabled;
     let diagnostics_session = paint_diagnostics_session_id();
@@ -7098,7 +7101,7 @@ impl DisplayListRenderer {
               renderer.paint_parallelism = PaintParallelism::disabled();
               renderer.gradient_cache = gradient_cache.clone();
               renderer.gradient_pixmap_cache = gradient_pixmap_cache.clone();
-              renderer.shared_blur_cache = Some(shared_blur_cache.clone());
+              renderer.shared_blur_cache = shared_blur_cache.clone();
               renderer.shared_backdrop_filter_cache = Some(shared_backdrop_filter_cache.clone());
               renderer.diagnostics_enabled = diagnostics_enabled;
               renderer.image_pixmap_diagnostics = image_pixmap_diagnostics.clone();
