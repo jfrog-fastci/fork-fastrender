@@ -16641,7 +16641,7 @@ mod tests {
       "override styles should be reused across cells sharing the same base style"
     );
     assert!(
-      first_style.width.is_none(),
+      first_style.width.is_none() && first_style.width_keyword.is_none(),
       "layout overrides should clear authored widths on derived styles"
     );
 

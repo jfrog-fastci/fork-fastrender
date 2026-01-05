@@ -2451,6 +2451,7 @@ impl InlineFormattingContext {
 
     if matches!(style.aspect_ratio, crate::style::types::AspectRatio::Ratio(r) if r > 0.0)
       && style.height.is_none()
+      && style.height_keyword.is_none()
     {
       if let crate::style::types::AspectRatio::Ratio(r) = style.aspect_ratio {
         if r > 0.0 && fragment.bounds.width().is_finite() {
@@ -10302,10 +10303,11 @@ impl InlineFormattingContext {
           );
           let relayout_constraints = child_constraints
             .with_used_border_box_size(Some(border_size.width), Some(border_size.height));
-          if supports_used_border_box
-            && layout_child.style.width.is_none()
-            && layout_child.style.height.is_none()
-          {
+          let width_auto =
+            layout_child.style.width.is_none() && layout_child.style.width_keyword.is_none();
+          let height_auto =
+            layout_child.style.height.is_none() && layout_child.style.height_keyword.is_none();
+          if supports_used_border_box && width_auto && height_auto {
             child_fragment = fc.layout(&layout_child, &relayout_constraints)?;
           } else {
             let mut relayout_style = (*layout_child.style).clone();
@@ -12636,6 +12638,75 @@ mod tests {
         "expected positioned child {idx} x≈{idx}, got {x}"
       );
     }
+  }
+
+  #[test]
+  fn abspos_relayout_does_not_treat_intrinsic_width_as_auto() {
+    let ifc = InlineFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    root_style.font_size = 16.0;
+    root_style.position = Position::Relative;
+    let root_style = Arc::new(root_style);
+
+    let text = "aaa ".repeat(80);
+
+    let mut abs_style = ComputedStyle::default();
+    abs_style.display = Display::Block;
+    abs_style.font_size = 16.0;
+    abs_style.position = Position::Absolute;
+    abs_style.left = Some(Length::px(80.0));
+    abs_style.right = Some(Length::px(80.0));
+    abs_style.top = Some(Length::px(0.0));
+    abs_style.margin_left = None;
+    abs_style.margin_right = None;
+    abs_style.width = None;
+    abs_style.width_keyword = Some(IntrinsicSizeKeyword::FitContent { limit: None });
+    abs_style.height = None;
+    abs_style.height_keyword = None;
+
+    let abs_child = BoxNode::new_block(
+      Arc::new(abs_style),
+      FormattingContextType::Block,
+      vec![BoxNode::new_text(default_style(), text)],
+    );
+    let root = BoxNode::new_block(
+      root_style,
+      FormattingContextType::Block,
+      vec![make_text_box("anchor"), abs_child],
+    );
+
+    let fragment = ifc
+      .layout(&root, &LayoutConstraints::definite_width(200.0))
+      .expect("inline layout");
+    let abs_fragment =
+      find_fragment_by_position(&fragment, Position::Absolute).expect("absolute fragment");
+
+    assert!(
+      (abs_fragment.bounds.width() - 40.0).abs() < 0.5,
+      "expected abspos width≈40px (fit-content within 200px minus 80px insets), got {:.2}",
+      abs_fragment.bounds.width()
+    );
+
+    fn subtree_max_x(node: &FragmentNode, offset: Point) -> f32 {
+      let origin = Point::new(node.bounds.x() + offset.x, node.bounds.y() + offset.y);
+      let mut max_x = origin.x + node.bounds.width();
+      for child in node.children.iter() {
+        max_x = max_x.max(subtree_max_x(child, origin));
+      }
+      max_x
+    }
+
+    let max_x = subtree_max_x(abs_fragment, Point::ZERO);
+    let right_edge = abs_fragment.bounds.x() + abs_fragment.bounds.width();
+    assert!(
+      max_x <= right_edge + 0.5,
+      "expected abspos contents to relayout within {:.2}px, got max_x {:.2} (right_edge {:.2})",
+      abs_fragment.bounds.width(),
+      max_x,
+      right_edge
+    );
   }
 
   #[test]
