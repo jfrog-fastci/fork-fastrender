@@ -1443,6 +1443,27 @@ fn write_html_report(
       .map(|s| s.status.label())
       .unwrap_or("-");
     let new_status = entry.new.as_ref().map(|s| s.status.label()).unwrap_or("-");
+    let baseline_status_cell =
+      if entry.baseline.is_some() && baseline_html_link != "-" {
+        let href = format!("{baseline_html_link}#{anchor_id}");
+        format!(
+          r#"<a href="{href}">{status}</a>"#,
+          href = escape_html(&href),
+          status = escape_html(baseline_status)
+        )
+      } else {
+        escape_html(baseline_status)
+      };
+    let new_status_cell = if entry.new.is_some() && new_html_link != "-" {
+      let href = format!("{new_html_link}#{anchor_id}");
+      format!(
+        r#"<a href="{href}">{status}</a>"#,
+        href = escape_html(&href),
+        status = escape_html(new_status)
+      )
+    } else {
+      escape_html(new_status)
+    };
 
     let baseline_after_cell = entry
       .baseline
@@ -1544,8 +1565,8 @@ fn write_html_report(
       if entry.failing_regression {
         classes.push_str(" failing");
       }
-      classes
-    };
+        classes
+      };
 
     rows.push_str(&format!(
        "<tr id=\"{anchor_id}\" class=\"{row_class}\"><td><a href=\"#{anchor_id}\">{name}</a></td><td>{classification}</td><td>{baseline_status}</td><td>{baseline_diff}</td><td>{baseline_perceptual}</td><td>{baseline_after_and_diff}</td><td>{new_status}</td><td>{new_diff}</td><td>{new_perceptual}</td><td>{new_after_and_diff}</td><td>{diff_delta}</td><td>{perceptual_delta}</td><td class=\"error\">{error}</td></tr>",
@@ -1553,11 +1574,11 @@ fn write_html_report(
        row_class = escape_html(&row_class),
        name = escape_html(&entry.name),
        classification = escape_html(entry.classification.label()),
-       baseline_status = escape_html(baseline_status),
+       baseline_status = baseline_status_cell,
        baseline_diff = baseline_diff,
        baseline_perceptual = baseline_perceptual,
        baseline_after_and_diff = baseline_after_and_diff,
-       new_status = escape_html(new_status),
+       new_status = new_status_cell,
        new_diff = new_diff,
        new_perceptual = new_perceptual,
        new_after_and_diff = new_after_and_diff,
