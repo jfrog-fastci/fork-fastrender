@@ -3062,16 +3062,6 @@ impl FormattingContext for FlexFormattingContext {
     if !positioned_children.is_empty() {
       let positioned_factory = base_factory.clone();
       let abs = AbsoluteLayout::with_font_context(self.font_context.clone());
-      let padding_left = self.resolve_length_for_width(
-        box_node.style.padding_left,
-        constraints.width().unwrap_or(0.0),
-        &box_node.style,
-      );
-      let padding_top = self.resolve_length_for_width(
-        box_node.style.padding_top,
-        constraints.width().unwrap_or(0.0),
-        &box_node.style,
-      );
       let border_left = self.resolve_length_for_width(
         box_node.style.border_left_width,
         constraints.width().unwrap_or(0.0),
@@ -3093,18 +3083,20 @@ impl FormattingContext for FlexFormattingContext {
         &box_node.style,
       );
 
-      let padding_origin = Point::new(border_left + padding_left, border_top + padding_top);
+      // CSS 2.1 §10.1: the containing block for absolute positioned descendants is the
+      // padding box of the nearest positioned ancestor, i.e. the rectangle bounded by the
+      // padding edge (border box minus borders).
+      let padding_origin = Point::new(border_left, border_top);
       let padding_size = Size::new(
         fragment.bounds.width() - border_left - border_right,
         fragment.bounds.height() - border_top - border_bottom,
       );
       let padding_rect = Rect::new(padding_origin, padding_size);
 
-      let block_base = if box_node.style.height.is_some() {
-        Some(padding_rect.size.height)
-      } else {
-        None
-      };
+      // Percentage sizes/offsets on absolutely positioned boxes resolve against the used size
+      // of the containing block, even when the containing block's own height is `auto`
+      // (CSS 2.1 §10.5). Use the computed padding box height as the percentage base.
+      let block_base = Some(padding_rect.size.height);
       let establishes_abs_cb = box_node.style.establishes_abs_containing_block();
       let establishes_fixed_cb = box_node.style.establishes_fixed_containing_block();
       let padding_cb = ContainingBlock::with_viewport_and_bases(
@@ -9087,6 +9079,14 @@ mod tests {
     let mut container_style = ComputedStyle::default();
     container_style.display = Display::Flex;
     container_style.position = Position::Relative;
+    container_style.border_left_width = Length::px(2.0);
+    container_style.border_top_width = Length::px(3.0);
+    container_style.border_right_width = Length::px(2.0);
+    container_style.border_bottom_width = Length::px(3.0);
+    container_style.border_left_style = BorderStyle::Solid;
+    container_style.border_top_style = BorderStyle::Solid;
+    container_style.border_right_style = BorderStyle::Solid;
+    container_style.border_bottom_style = BorderStyle::Solid;
     container_style.padding_left = Length::px(10.0);
     container_style.padding_top = Length::px(8.0);
     container_style.padding_right = Length::px(10.0);
@@ -9115,8 +9115,11 @@ mod tests {
 
     assert_eq!(fragment.children.len(), 1);
     let abs_fragment = &fragment.children[0];
-    assert_eq!(abs_fragment.bounds.x(), 15.0);
-    assert_eq!(abs_fragment.bounds.y(), 15.0);
+    // The absolute containing block is the flex container's padding box. The padding edge sits
+    // inside the border, so top/left offsets are applied from the border thickness, not the
+    // content box origin.
+    assert_eq!(abs_fragment.bounds.x(), 7.0);
+    assert_eq!(abs_fragment.bounds.y(), 10.0);
     assert_eq!(abs_fragment.bounds.width(), 20.0);
     assert_eq!(abs_fragment.bounds.height(), 10.0);
     let abs_fragment_style = abs_fragment.style.as_ref().expect("abs style preserved");

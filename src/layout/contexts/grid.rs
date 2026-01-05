@@ -2497,6 +2497,16 @@ impl GridFormattingContext {
       self.resolve_length_for_width(box_node.style.padding_left, bounds.width(), &box_node.style);
     let padding_top =
       self.resolve_length_for_width(box_node.style.padding_top, bounds.width(), &box_node.style);
+    let padding_right = self.resolve_length_for_width(
+      box_node.style.padding_right,
+      bounds.width(),
+      &box_node.style,
+    );
+    let padding_bottom = self.resolve_length_for_width(
+      box_node.style.padding_bottom,
+      bounds.width(),
+      &box_node.style,
+    );
     let border_left = self.resolve_length_for_width(
       box_node.style.border_left_width,
       bounds.width(),
@@ -2517,21 +2527,19 @@ impl GridFormattingContext {
       bounds.width(),
       &box_node.style,
     );
-    let padding_origin =
-      crate::geometry::Point::new(border_left + padding_left, border_top + padding_top);
+    // CSS 2.1 §10.1: the containing block for absolute positioned descendants is the padding box
+    // of the nearest positioned ancestor, i.e. the rectangle bounded by the padding edge (border
+    // box minus borders).
+    let padding_origin = crate::geometry::Point::new(border_left, border_top);
     let padding_size = crate::geometry::Size::new(
-      bounds.width() - border_left - border_right,
-      bounds.height() - border_top - border_bottom,
+      (bounds.width() - border_left - border_right).max(0.0),
+      (bounds.height() - border_top - border_bottom).max(0.0),
     );
     let padding_rect = crate::geometry::Rect::new(padding_origin, padding_size);
-    let padding_bottom = padding_rect.size.height - padding_top;
-    let padding_right = padding_rect.size.width - padding_left;
 
-    let block_base = if box_node.style.height.is_some() {
-      Some(padding_rect.size.height)
-    } else {
-      None
-    };
+    // Percentage sizes/offsets on absolutely positioned boxes resolve against the used size of the
+    // containing block, even when the containing block's own height is `auto` (CSS 2.1 §10.5).
+    let block_base = Some(padding_rect.size.height);
     let establishes_abs_cb = box_node.style.establishes_abs_containing_block();
     let establishes_fixed_cb = box_node.style.establishes_fixed_containing_block();
     let padding_cb = crate::layout::contexts::positioned::ContainingBlock::with_viewport_and_bases(
@@ -2673,6 +2681,16 @@ impl GridFormattingContext {
               ancestor_bounds.width(),
               &ancestor_box_node.style,
             );
+            let ancestor_padding_right = self.resolve_length_for_width(
+              ancestor_box_node.style.padding_right,
+              ancestor_bounds.width(),
+              &ancestor_box_node.style,
+            );
+            let ancestor_padding_bottom = self.resolve_length_for_width(
+              ancestor_box_node.style.padding_bottom,
+              ancestor_bounds.width(),
+              &ancestor_box_node.style,
+            );
             let ancestor_border_left = self.resolve_length_for_width(
               ancestor_box_node.style.border_left_width,
               ancestor_bounds.width(),
@@ -2693,12 +2711,6 @@ impl GridFormattingContext {
               ancestor_bounds.width(),
               &ancestor_box_node.style,
             );
-            let ancestor_padding_size = crate::geometry::Size::new(
-              ancestor_bounds.width() - ancestor_border_left - ancestor_border_right,
-              ancestor_bounds.height() - ancestor_border_top - ancestor_border_bottom,
-            );
-            let ancestor_padding_right = ancestor_padding_size.width - ancestor_padding_left;
-            let ancestor_padding_bottom = ancestor_padding_size.height - ancestor_padding_top;
 
             let offsets = if axis_is_columns {
               compute_track_offsets(
@@ -2828,8 +2840,8 @@ impl GridFormattingContext {
         self.viewport_size,
         &self.font_context,
       );
-      // Static position resolves to where the element would be in flow; use the
-      // content origin here since AbsoluteLayout adds padding/border.
+      // Static position resolves to where the element would be in flow, relative to the containing
+      // block origin (padding edge).
       let static_pos = static_positions
         .get(&ensure_box_id(child))
         .copied()
@@ -4730,6 +4742,16 @@ impl FormattingContext for GridFormattingContext {
         constraints.width().unwrap_or(0.0),
         &box_node.style,
       );
+      let padding_right = self.resolve_length_for_width(
+        box_node.style.padding_right,
+        constraints.width().unwrap_or(0.0),
+        &box_node.style,
+      );
+      let padding_bottom = self.resolve_length_for_width(
+        box_node.style.padding_bottom,
+        constraints.width().unwrap_or(0.0),
+        &box_node.style,
+      );
       let border_left = self.resolve_length_for_width(
         box_node.style.border_left_width,
         constraints.width().unwrap_or(0.0),
@@ -4750,21 +4772,19 @@ impl FormattingContext for GridFormattingContext {
         constraints.width().unwrap_or(0.0),
         &box_node.style,
       );
-      let padding_origin =
-        crate::geometry::Point::new(border_left + padding_left, border_top + padding_top);
+      // CSS 2.1 §10.1: the containing block for absolute positioned descendants is the padding box
+      // of the nearest positioned ancestor, i.e. the rectangle bounded by the padding edge (border
+      // box minus borders).
+      let padding_origin = crate::geometry::Point::new(border_left, border_top);
       let padding_size = crate::geometry::Size::new(
-        fragment.bounds.width() - border_left - border_right,
-        fragment.bounds.height() - border_top - border_bottom,
+        (fragment.bounds.width() - border_left - border_right).max(0.0),
+        (fragment.bounds.height() - border_top - border_bottom).max(0.0),
       );
       let padding_rect = crate::geometry::Rect::new(padding_origin, padding_size);
-      let padding_bottom = padding_rect.size.height - padding_top;
-      let padding_right = padding_rect.size.width - padding_left;
 
-      let block_base = if box_node.style.height.is_some() {
-        Some(padding_rect.size.height)
-      } else {
-        None
-      };
+      // Percentage sizes/offsets on absolutely positioned boxes resolve against the used size of the
+      // containing block, even when the containing block's own height is `auto` (CSS 2.1 §10.5).
+      let block_base = Some(padding_rect.size.height);
       let establishes_abs_cb = box_node.style.establishes_abs_containing_block();
       let establishes_fixed_cb = box_node.style.establishes_fixed_containing_block();
       let padding_cb =
@@ -4887,8 +4907,8 @@ impl FormattingContext for GridFormattingContext {
           self.viewport_size,
           &self.font_context,
         );
-        // Static position resolves to where the element would be in flow; use the
-        // content origin here since AbsoluteLayout adds padding/border.
+        // Static position resolves to where the element would be in flow, relative to the containing
+        // block origin (padding edge).
         let static_pos = static_positions
           .get(&ensure_box_id(child))
           .copied()

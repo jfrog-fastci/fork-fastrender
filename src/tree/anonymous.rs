@@ -43,6 +43,7 @@
 use crate::error::{RenderStage, Result};
 use crate::render_control::active_deadline;
 use crate::style::display::Display;
+use crate::style::position::Position;
 use crate::style::types::WhiteSpace;
 use crate::style::ComputedStyle;
 use crate::tree::box_tree::AnonymousBox;
@@ -237,6 +238,11 @@ impl AnonymousBoxCreator {
   /// Replaced elements with inline display behave as inline-level boxes even though
   /// `BoxType::is_inline_level` returns false.
   fn is_inline_level_child(child: &BoxNode) -> bool {
+    // Out-of-flow positioned boxes do not participate in anonymous in-flow box fixup.
+    // Treat them as neither inline nor block so they remain as siblings in tree order.
+    if matches!(child.style.position, Position::Absolute | Position::Fixed) {
+      return false;
+    }
     match &child.box_type {
       BoxType::Replaced(_) => child.style.display.is_inline_level(),
       _ => child.is_inline_level(),
@@ -248,6 +254,10 @@ impl AnonymousBoxCreator {
   /// Replaced elements with inline display are treated as inline-level and shouldn't
   /// be counted as blocks when deciding anonymous box insertion.
   fn is_block_level_child(child: &BoxNode) -> bool {
+    // Out-of-flow positioned boxes do not participate in anonymous in-flow box fixup.
+    if matches!(child.style.position, Position::Absolute | Position::Fixed) {
+      return false;
+    }
     match &child.box_type {
       BoxType::Replaced(_) => !child.style.display.is_inline_level(),
       _ => child.is_block_level(),
@@ -1050,6 +1060,40 @@ mod tests {
     // Third anonymous block contains 1 inline
     assert!(fixed.children[2].is_anonymous());
     assert_eq!(fixed.children[2].children.len(), 1);
+  }
+
+  #[test]
+  fn out_of_flow_positioned_children_are_not_wrapped_into_anonymous_inline_runs() {
+    let style = default_style();
+    let text = BoxNode::new_text(style.clone(), "Hello".to_string());
+
+    let mut abs_style = (*style).clone();
+    abs_style.display = Display::Inline;
+    abs_style.position = crate::style::position::Position::Absolute;
+    let abs_child = BoxNode::new_inline(Arc::new(abs_style), vec![]);
+
+    let block = BoxNode::new_block(style.clone(), FormattingContextType::Block, vec![]);
+
+    let container = BoxNode::new_block(
+      style.clone(),
+      FormattingContextType::Block,
+      vec![text, abs_child, block],
+    );
+
+    let fixed = fixup_tree(container);
+    assert_eq!(fixed.children.len(), 3);
+    assert!(
+      fixed.children[0].is_anonymous(),
+      "expected anonymous block for inline run"
+    );
+    assert!(
+      matches!(
+        fixed.children[1].style.position,
+        crate::style::position::Position::Absolute
+      ),
+      "expected positioned child to remain a direct sibling"
+    );
+    assert!(!fixed.children[2].is_anonymous());
   }
 
   #[test]
