@@ -54,8 +54,6 @@ use crate::text::font_db::ScaledMetrics;
 use crate::text::font_fallback::FontId;
 use crate::text::pipeline::DEFAULT_OBLIQUE_ANGLE_DEG;
 use crate::text::variations::variation_hash;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use base64::Engine;
 use fontdb::Database as FontDbDatabase;
 use lru::LruCache;
 use parking_lot::Mutex as ParkingMutex;
@@ -1093,6 +1091,17 @@ impl FontContext {
     let mut started_count = 0usize;
     let (block_tx, block_rx) = mpsc::channel::<usize>();
     let mut blocking_jobs: Vec<(usize, Instant, String, FontDisplay)> = Vec::new();
+    // `font-display: swap` faces should not be able to affect layout for the initial render
+    // unless the caller explicitly waits for them (e.g. via `wait_for_pending_web_fonts`).
+    //
+    // Previously we spawned swap loads alongside blocking faces and then called
+    // `activate_loaded_web_fonts` after blocking jobs completed. When the swap face finished
+    // quickly (especially under concurrent fixture renders), it could register before the
+    // activation step and become "active" for layout nondeterministically.
+    //
+    // To keep `font-display` semantics deterministic, we defer non-blocking faces until after we
+    // have activated any blocking fonts.
+    let mut deferred_faces: Vec<(usize, String, FontFaceRule, Option<String>)> = Vec::new();
     let events: Arc<Mutex<Vec<FontLoadEvent>>> = Arc::new(Mutex::new(Vec::new()));
     let expired_jobs: Arc<Mutex<HashSet<usize>>> = Arc::new(Mutex::new(HashSet::new()));
     let render_deadline = render_control::active_deadline().filter(|d| d.is_enabled());
@@ -1163,10 +1172,6 @@ impl FontContext {
       }
       selected_iter.next();
 
-      let face_clone = face.clone();
-      let family_clone = family.clone();
-      let base = base_url.map(|b| b.to_string());
-      let guard = PendingTask::new(self.pending_async.clone());
       let display_block = display_deadlines(face.display).0;
       let should_block = display_block > Duration::ZERO && policy_deadline.is_some();
       let job_id = started_count;
@@ -1175,38 +1180,49 @@ impl FontContext {
       } else {
         None
       };
+      started_count += 1;
+
       if let Some(deadline) = block_deadline {
         blocking_jobs.push((job_id, deadline, family.clone(), face.display));
-      }
-      let done_tx: Option<mpsc::Sender<usize>> = block_deadline.is_some().then(|| block_tx.clone());
-      started_count += 1;
-      let ctx = self.clone();
-      let events = Arc::clone(&events);
-      let expired_jobs = Arc::clone(&expired_jobs);
-      let render_deadline = render_deadline.clone();
-      std::thread::spawn(move || {
-        let _pending = guard;
-        let _deadline_guard = render_control::DeadlineGuard::install(render_deadline.as_ref());
-        let start = Instant::now();
-        let event = ctx.load_face_sources_with_report(
-          &family_clone,
-          &face_clone,
-          base.as_deref(),
+
+        let face_clone = face.clone();
+        let family_clone = family.clone();
+        let base = base_url.map(|b| b.to_string());
+        let guard = PendingTask::new(self.pending_async.clone());
+        let done_tx: mpsc::Sender<usize> = block_tx.clone();
+        let ctx = self.clone();
+        let events = Arc::clone(&events);
+        let expired_jobs = Arc::clone(&expired_jobs);
+        let render_deadline = render_deadline.clone();
+        std::thread::spawn(move || {
+          let _pending = guard;
+          let _deadline_guard = render_control::DeadlineGuard::install(render_deadline.as_ref());
+          let start = Instant::now();
+          let event = ctx.load_face_sources_with_report(
+            &family_clone,
+            &face_clone,
+            base.as_deref(),
+            order,
+            start,
+            allow_remote,
+          );
+          let timed_out = expired_jobs
+            .lock()
+            .map(|set| set.contains(&job_id))
+            .unwrap_or(false);
+          if !timed_out {
+            record_font_event(&events, event);
+          }
+          let _ = done_tx.send(job_id);
+        });
+      } else {
+        deferred_faces.push((
           order,
-          start,
-          allow_remote,
-        );
-        let timed_out = expired_jobs
-          .lock()
-          .map(|set| set.contains(&job_id))
-          .unwrap_or(false);
-        if !timed_out {
-          record_font_event(&events, event);
-        }
-        if let Some(tx) = done_tx {
-          let _ = tx.send(job_id);
-        }
-      });
+          family.clone(),
+          face.clone(),
+          base_url.map(|b| b.to_string()),
+        ));
+      }
     }
     drop(block_tx);
     Self::wait_for_blocking_jobs(
@@ -1217,6 +1233,29 @@ impl FontContext {
       render_deadline.as_ref(),
     );
     self.activate_loaded_web_fonts();
+
+    // Start non-blocking faces after activation so they cannot be observed as active for this
+    // render until an explicit wait/activation step is performed.
+    for (order, family, face, base) in deferred_faces {
+      let guard = PendingTask::new(self.pending_async.clone());
+      let ctx = self.clone();
+      let events = Arc::clone(&events);
+      let render_deadline = render_deadline.clone();
+      std::thread::spawn(move || {
+        let _pending = guard;
+        let _deadline_guard = render_control::DeadlineGuard::install(render_deadline.as_ref());
+        let start = Instant::now();
+        let event = ctx.load_face_sources_with_report(
+          &family,
+          &face,
+          base.as_deref(),
+          order,
+          start,
+          allow_remote,
+        );
+        record_font_event(&events, event);
+      });
+    }
     let events = match Arc::try_unwrap(events) {
       Ok(mutex) => mutex.into_inner().unwrap_or_default(),
       Err(shared) => shared.lock().map(|v| v.clone()).unwrap_or_default(),
@@ -2967,6 +3006,8 @@ pub struct TextMeasurement {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+  use base64::Engine;
   use crate::debug::runtime::{set_runtime_toggles, RuntimeToggles};
   use crate::style::media::MediaContext;
   use crate::ComputedStyle;
@@ -3216,6 +3257,35 @@ mod tests {
             reason: "missing response".into(),
           })
         })
+    }
+  }
+
+  struct DelayedRecordingFetcher {
+    responses: HashMap<String, (Vec<u8>, Duration)>,
+  }
+
+  impl DelayedRecordingFetcher {
+    fn new(entries: Vec<(String, Vec<u8>, Duration)>) -> Self {
+      let mut responses = HashMap::new();
+      for (url, data, delay) in entries {
+        responses.insert(url, (data, delay));
+      }
+      Self { responses }
+    }
+  }
+
+  impl FontFetcher for DelayedRecordingFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      let (data, delay) = self.responses.get(url).cloned().ok_or_else(|| {
+        Error::Font(crate::error::FontError::LoadFailed {
+          family: url.to_string(),
+          reason: "missing response".into(),
+        })
+      })?;
+      if delay > Duration::ZERO {
+        thread::sleep(delay);
+      }
+      Ok(FetchedResource::with_final_url(data, None, Some(url.to_string())))
     }
   }
 
@@ -4298,6 +4368,94 @@ mod tests {
     assert!(
       ctx.has_web_faces("BlockFace"),
       "block display should wait for quick loads"
+    );
+  }
+
+  #[test]
+  fn swap_fonts_do_not_activate_during_blocking_load() {
+    let Some((data, _family)) = system_font_for_char('A') else {
+      return;
+    };
+
+    let fast_url = "http://example.com/fast.ttf".to_string();
+    let slow_url = "http://example.com/slow.ttf".to_string();
+    let fetcher: Arc<dyn FontFetcher> = Arc::new(DelayedRecordingFetcher::new(vec![
+      (fast_url.clone(), data.clone(), Duration::from_millis(0)),
+      (slow_url.clone(), data, Duration::from_millis(300)),
+    ]));
+
+    let ctx = FontContext::with_database_and_fetcher(Arc::new(FontDatabase::empty()), fetcher);
+
+    let faces = vec![
+      FontFaceRule {
+        family: Some("SwapDuringBlock".to_string()),
+        sources: vec![FontFaceSource::url(fast_url)],
+        display: FontDisplay::Swap,
+        ..Default::default()
+      },
+      FontFaceRule {
+        family: Some("BlockingFace".to_string()),
+        sources: vec![FontFaceSource::url(slow_url)],
+        display: FontDisplay::Block,
+        ..Default::default()
+      },
+    ];
+
+    ctx.load_web_fonts(&faces, None, None)
+      .expect("schedule web font loads");
+
+    // Wait for the background threads to finish without activating the web font generation. The
+    // engine should not treat `font-display: swap` faces as active during the initial layout
+    // phase; they are only activated after an explicit wait/activation step.
+    fn wait_without_activation(ctx: &FontContext, timeout: Duration) -> bool {
+      let deadline = Instant::now() + timeout;
+      let (lock, cvar) = &*ctx.pending_async;
+      let mut guard = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+      loop {
+        if *guard == 0 {
+          return true;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+          return false;
+        }
+        let remaining = deadline - now;
+        let (g, _) = cvar
+          .wait_timeout(guard, remaining)
+          .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard = g;
+      }
+    }
+
+    assert!(
+      wait_without_activation(&ctx, Duration::from_secs(1)),
+      "web font loads should settle"
+    );
+    assert!(ctx.has_web_faces("SwapDuringBlock"));
+    assert!(ctx.has_web_faces("BlockingFace"));
+    assert!(
+      ctx
+        .match_web_font_for_family(
+          "BlockingFace",
+          400,
+          FontStyle::Normal,
+          FontStretch::Normal,
+          None
+        )
+        .is_some(),
+      "blocking faces should be active after load_web_fonts returns"
+    );
+    assert!(
+      ctx
+        .match_web_font_for_family(
+          "SwapDuringBlock",
+          400,
+          FontStyle::Normal,
+          FontStretch::Normal,
+          None
+        )
+        .is_none(),
+      "swap faces must not become active until an explicit activation step is performed"
     );
   }
 

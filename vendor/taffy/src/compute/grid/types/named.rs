@@ -86,7 +86,7 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
     explicit_row_count: u16,
     explicit_column_count: u16,
   ) -> Self {
-    let mut row_lines: Map<StrHasher<S>, Vec<u16>> = Map::new();
+    let mut row_lines: Map<StrHasher<S>, Vec<u16>> = Map::default();
     for (idx, names) in row_line_names.iter().enumerate() {
       let line_index = (idx as u16) + 1;
       for name in names {
@@ -94,7 +94,7 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
       }
     }
 
-    let mut column_lines: Map<StrHasher<S>, Vec<u16>> = Map::new();
+    let mut column_lines: Map<StrHasher<S>, Vec<u16>> = Map::default();
     for (idx, names) in column_line_names.iter().enumerate() {
       let line_index = (idx as u16) + 1;
       for name in names {
@@ -116,7 +116,7 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
       area_row_count: 0,
       explicit_column_count,
       explicit_row_count,
-      areas: Map::new(),
+      areas: Map::default(),
       row_lines,
       column_lines,
     }
@@ -128,9 +128,9 @@ impl<S: CheapCloneStr> NamedLineResolver<S> {
     column_auto_repetitions: u16,
     row_auto_repetitions: u16,
   ) -> Self {
-    let mut areas: Map<StrHasher<S>, GridTemplateArea<_>> = Map::new();
-    let mut column_lines: Map<StrHasher<S>, Vec<u16>> = Map::new();
-    let mut row_lines: Map<StrHasher<S>, Vec<u16>> = Map::new();
+    let mut areas: Map<StrHasher<S>, GridTemplateArea<_>> = Map::default();
+    let mut column_lines: Map<StrHasher<S>, Vec<u16>> = Map::default();
+    let mut row_lines: Map<StrHasher<S>, Vec<u16>> = Map::default();
 
     let mut area_column_count = 0;
     let mut area_row_count = 0;

@@ -32,8 +32,7 @@ mod std {
   /// The default type for representing strings in Taffy styles
   pub(crate) type DefaultCheapStr = String;
   /// A map
-  pub(crate) type Map<K, V> =
-    std::collections::HashMap<K, V, std::collections::hash_map::RandomState>;
+  pub(crate) type Map<K, V> = rustc_hash::FxHashMap<K, V>;
   /// An allocation-backend agnostic vector type
   pub(crate) type Vec<A> = std::vec::Vec<A>;
   /// A vector of child nodes

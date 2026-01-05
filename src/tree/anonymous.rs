@@ -143,14 +143,12 @@ impl AnonymousBoxCreator {
     // tens of thousands of nodes. Walk the tree iteratively with an explicit stack.
     struct Frame {
       node: *mut BoxNode,
-      parent_style: Option<*const Arc<ComputedStyle>>,
       next_child_idx: usize,
     }
 
     let mut root = box_node;
     let mut stack = vec![Frame {
       node: &mut root as *mut BoxNode,
-      parent_style: None,
       next_child_idx: 0,
     }];
 
@@ -175,18 +173,14 @@ impl AnonymousBoxCreator {
         let child_ptr = &mut node.children[idx] as *mut BoxNode;
         stack.push(Frame {
           node: child_ptr,
-          parent_style: Some(&node.style as *const Arc<ComputedStyle>),
           next_child_idx: 0,
         });
         continue;
       }
 
-      let parent_style = match frame.parent_style {
-        Some(style) => unsafe { &*style },
-        None => &node.style,
-      };
       let children = std::mem::take(&mut node.children);
-      node.children = Self::fixup_children(children, &node.box_type, parent_style);
+      let parent_style = node.style.clone();
+      node.children = Self::fixup_children(children, &node.box_type, &parent_style);
       stack.pop();
     }
 
@@ -915,7 +909,9 @@ pub(crate) fn inherited_style(parent: &ComputedStyle) -> ComputedStyle {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::style::display::FormattingContextType;
+  use crate::style::color::Rgba;
+  use crate::style::display::{Display, FormattingContextType};
+  use crate::style::position::Position;
   use crate::tree::table_fixup::TableStructureFixer;
 
   fn default_style() -> Arc<ComputedStyle> {
@@ -1262,5 +1258,57 @@ mod tests {
     let level3_fixed = &fixed.children[0].children[0];
     assert_eq!(level3_fixed.children.len(), 2);
     assert!(level3_fixed.children[0].is_anonymous());
+  }
+
+  #[test]
+  fn test_child_wrappers_inherit_from_their_actual_parent_style() {
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    root_style.color = Rgba::RED;
+    let root_style = Arc::new(root_style);
+
+    let mut inner_style = ComputedStyle::default();
+    inner_style.display = Display::Block;
+    inner_style.color = Rgba::BLUE;
+    let inner_style = Arc::new(inner_style);
+
+    let text = BoxNode::new_text(inner_style.clone(), "Hello".to_string());
+    let inner = BoxNode::new_block(inner_style, FormattingContextType::Block, vec![text]);
+    let root = BoxNode::new_block(root_style, FormattingContextType::Block, vec![inner]);
+
+    let fixed = fixup_tree(root);
+
+    let inner_fixed = &fixed.children[0];
+    assert_eq!(inner_fixed.children.len(), 1);
+    let wrapper = &inner_fixed.children[0];
+    assert!(wrapper.is_anonymous());
+    assert!(wrapper.is_inline_level());
+    assert_eq!(wrapper.style.color, Rgba::BLUE);
+  }
+
+  #[test]
+  fn test_inline_text_wrappers_do_not_leak_non_inherited_styles_from_ancestors() {
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    root_style.position = Position::Absolute;
+    let root_style = Arc::new(root_style);
+
+    let mut inline_style = ComputedStyle::default();
+    inline_style.display = Display::Inline;
+    inline_style.position = Position::Static;
+    let inline_style = Arc::new(inline_style);
+
+    let text = BoxNode::new_text(inline_style.clone(), "Hello".to_string());
+    let inline = BoxNode::new_inline(inline_style.clone(), vec![text]);
+    let root = BoxNode::new_block(root_style, FormattingContextType::Block, vec![inline]);
+
+    let fixed = fixup_tree(root);
+
+    let inline_fixed = &fixed.children[0];
+    assert_eq!(inline_fixed.children.len(), 1);
+    let wrapper = &inline_fixed.children[0];
+    assert!(wrapper.is_anonymous());
+    assert_eq!(wrapper.style.display, Display::Inline);
+    assert_eq!(wrapper.style.position, Position::Static);
   }
 }
