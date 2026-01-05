@@ -2793,12 +2793,16 @@ impl BlockFormattingContext {
           crate::layout::utils::clamp_with_order(shrink, min_width, max_width)
         };
 
-        let content_width = (used_border_box - horizontal_edges).max(0.0);
-
+        // Layout the float's contents using the *containing block* width as the percentage base
+        // (CSS 2.1 §8.3), while forcing the used border-box width we computed above for `width:auto`
+        // shrink-to-fit (CSS 2.1 §10.3.5). Passing the used content width as the constraint would
+        // incorrectly resolve percentage padding/borders against the float's own content box.
+        let width_auto = specified_width.is_none();
         let child_constraints = LayoutConstraints::new(
-          AvailableSpace::Definite(content_width),
+          AvailableSpace::Definite(containing_width),
           AvailableSpace::Indefinite,
-        );
+        )
+        .with_used_border_box_size(width_auto.then_some(used_border_box), None);
         let child_bfc = BlockFormattingContext::with_factory(factory.clone());
         let mut fragment = child_bfc.layout(child, &child_constraints)?;
 
@@ -7191,6 +7195,86 @@ mod tests {
       auto.bounds.width() <= 90.0,
       "auto float should shrink to the available 80px space; got {}",
       auto.bounds.width()
+    );
+  }
+
+  #[test]
+  fn float_percent_padding_resolves_against_containing_block_width() {
+    let bfc = BlockFormattingContext::new();
+
+    let mut float_style = ComputedStyle::default();
+    float_style.display = Display::Block;
+    float_style.float = Float::Left;
+    float_style.width = Some(Length::px(100.0));
+    float_style.width_keyword = None;
+    float_style.padding_left = Length::percent(10.0);
+    float_style.padding_right = Length::px(0.0);
+    float_style.border_left_width = Length::px(0.0);
+    float_style.border_right_width = Length::px(0.0);
+
+    let text = BoxNode::new_text(default_style(), "hello".into());
+    let inline = BoxNode::new_inline(default_style(), vec![text]);
+    let float_node = BoxNode::new_block(
+      Arc::new(float_style.clone()),
+      FormattingContextType::Block,
+      vec![inline],
+    );
+
+    let root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![float_node.clone()],
+    );
+    let constraints = LayoutConstraints::definite_width(200.0);
+
+    let fragment = bfc.layout(&root, &constraints).unwrap();
+    let float_fragment = fragment
+      .children
+      .iter()
+      .find(|child| {
+        child
+          .style
+          .as_ref()
+          .map(|s| s.float.is_floating())
+          .unwrap_or(false)
+      })
+      .expect("float fragment");
+
+    fn find_line_offset_x(fragment: &FragmentNode, offset: f32) -> Option<f32> {
+      let offset = offset + fragment.bounds.x();
+      if matches!(fragment.content, FragmentContent::Line { .. }) {
+        return Some(offset);
+      }
+      for child in fragment.children.iter() {
+        if let Some(found) = find_line_offset_x(child, offset) {
+          return Some(found);
+        }
+      }
+      None
+    }
+
+    let line_x = float_fragment
+      .children
+      .iter()
+      .find_map(|child| find_line_offset_x(child, 0.0))
+      .expect("line fragment");
+
+    let inline_sides = inline_axis_sides(&float_style);
+    let inline_positive = inline_axis_positive(float_style.writing_mode, float_style.direction);
+    let computed_width = compute_block_width(
+      &float_style,
+      200.0,
+      bfc.viewport_size,
+      inline_sides,
+      inline_positive,
+    );
+    let expected_offset = computed_width.border_left + computed_width.padding_left;
+
+    assert!(
+      (line_x - expected_offset).abs() < 0.5,
+      "expected line to start at x={:.2} inside the float (border+padding); got x={:.2}",
+      expected_offset,
+      line_x
     );
   }
 
