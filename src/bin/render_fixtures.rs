@@ -448,7 +448,7 @@ fn run(cli: Cli) -> io::Result<()> {
     .build()
     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-  let mut results: Vec<FixtureResult> = Vec::new();
+  let mut results: Vec<FixtureResult>;
   let mut determinism: HashMap<String, FixtureDeterminism> = HashMap::new();
   let mut repeat_failures: Vec<RepeatFailure> = Vec::new();
 
@@ -969,6 +969,18 @@ fn record_variant(
       && variant.width == pixels.width
       && variant.height == pixels.height
     {
+      // The hashes are our primary key, but confirm equality with the stored bytes when available
+      // (e.g. when `--save-variants` is enabled). This keeps the variant tracker effectively exact
+      // while still avoiding retaining baseline pixmap bytes for every fixture.
+      if let Some(existing) = variant.data.as_deref() {
+        if existing == pixels.data.as_slice() {
+          variant.count += 1;
+          return;
+        }
+        // Hash collision (vanishingly unlikely); fall through and treat this as a new variant.
+        continue;
+      }
+
       variant.count += 1;
       return;
     }
