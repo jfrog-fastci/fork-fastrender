@@ -36,6 +36,7 @@ use crate::style::types::FilterFunction;
 use crate::style::types::FontSizeAdjust;
 use crate::style::types::FontStretch;
 use crate::style::types::ForcedColorAdjust;
+use crate::style::types::IntrinsicSizeKeyword;
 use crate::style::types::Isolation;
 use crate::style::types::MixBlendMode;
 use crate::style::types::Overflow;
@@ -94,6 +95,8 @@ pub struct PositionedStyle {
   /// Initial: auto
   /// Percentages: relative to containing block width
   pub width: LengthOrAuto,
+  /// Intrinsic sizing keyword for `width` (e.g. `max-content`, `fit-content()`).
+  pub width_keyword: Option<IntrinsicSizeKeyword>,
 
   /// Height property
   ///
@@ -101,18 +104,24 @@ pub struct PositionedStyle {
   /// Initial: auto
   /// Percentages: relative to containing block height
   pub height: LengthOrAuto,
+  /// Intrinsic sizing keyword for `height` (e.g. `max-content`, `fit-content()`).
+  pub height_keyword: Option<IntrinsicSizeKeyword>,
 
   /// Minimum width
   ///
   /// CSS: `min-width`
   /// Initial: 0
   pub min_width: Length,
+  /// Intrinsic sizing keyword for `min-width`.
+  pub min_width_keyword: Option<IntrinsicSizeKeyword>,
 
   /// Maximum width
   ///
   /// CSS: `max-width`
   /// Initial: none (represented as f32::INFINITY)
   pub max_width: Length,
+  /// Intrinsic sizing keyword for `max-width`.
+  pub max_width_keyword: Option<IntrinsicSizeKeyword>,
   /// Whether width/height apply to content-box or border-box
   ///
   /// CSS: `box-sizing`
@@ -124,12 +133,16 @@ pub struct PositionedStyle {
   /// CSS: `min-height`
   /// Initial: 0
   pub min_height: Length,
+  /// Intrinsic sizing keyword for `min-height`.
+  pub min_height_keyword: Option<IntrinsicSizeKeyword>,
 
   /// Maximum height
   ///
   /// CSS: `max-height`
   /// Initial: none
   pub max_height: Length,
+  /// Intrinsic sizing keyword for `max-height`.
+  pub max_height_keyword: Option<IntrinsicSizeKeyword>,
 
   /// Margin on all sides
   ///
@@ -555,11 +568,17 @@ impl Default for PositionedStyle {
       // Box model defaults
       width: LengthOrAuto::Auto,
       height: LengthOrAuto::Auto,
+      width_keyword: None,
+      height_keyword: None,
       min_width: Length::px(0.0),
       max_width: Length::px(f32::INFINITY),
+      min_width_keyword: None,
+      max_width_keyword: None,
       box_sizing: BoxSizing::ContentBox,
       min_height: Length::px(0.0),
       max_height: Length::px(f32::INFINITY),
+      min_height_keyword: None,
+      max_height_keyword: None,
       margin: EdgeOffsets::ZERO,
       margin_left_auto: false,
       margin_right_auto: false,

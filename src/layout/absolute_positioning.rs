@@ -60,6 +60,7 @@ use crate::layout::utils::resolve_offset_for_positioned;
 use crate::style::computed::PositionedStyle;
 use crate::style::position::Position;
 use crate::style::types::Direction;
+use crate::style::types::IntrinsicSizeKeyword;
 use crate::style::values::Length;
 use crate::style::values::LengthOrAuto;
 use crate::style::values::LengthUnit;
@@ -286,7 +287,7 @@ impl AbsoluteLayout {
     let block_base = containing_block.block_percentage_base();
 
     // Resolve horizontal position and width
-    let (x, mut width, margin_left, margin_right) = self.compute_horizontal(
+    let (x, mut width, margin_left, margin_right, min_width, max_width) = self.compute_horizontal(
       style,
       cb_width,
       inline_base,
@@ -299,22 +300,25 @@ impl AbsoluteLayout {
     )?;
 
     // Resolve vertical position and height
-    let (y, mut height, margin_top, margin_bottom) = self.compute_vertical(
-      style,
-      cb_height,
-      block_base,
-      viewport,
-      input.preferred_min_block_size,
-      input.preferred_block_size,
-      input.intrinsic_size.height,
-      input.static_position.y,
-    )?;
+    let (y, mut height, margin_top, margin_bottom, min_height, max_height) = self
+      .compute_vertical(
+        style,
+        cb_height,
+        block_base,
+        viewport,
+        input.preferred_min_block_size,
+        input.preferred_block_size,
+        input.intrinsic_size.height,
+        input.static_position.y,
+      )?;
 
     // Apply aspect-ratio if authored (CSS Sizing L4).
     if let crate::style::types::AspectRatio::Ratio(ratio) = style.aspect_ratio {
       if ratio > 0.0 {
-        let width_auto = matches!(style.width, crate::style::values::LengthOrAuto::Auto);
-        let height_auto = matches!(style.height, crate::style::values::LengthOrAuto::Auto);
+        let width_auto = matches!(style.width, crate::style::values::LengthOrAuto::Auto)
+          && style.width_keyword.is_none();
+        let height_auto = matches!(style.height, crate::style::values::LengthOrAuto::Auto)
+          && style.height_keyword.is_none();
         if width_auto && !height_auto {
           width = height * ratio;
         } else if height_auto && !width_auto {
@@ -332,45 +336,7 @@ impl AbsoluteLayout {
     }
 
     // Re-apply min/max constraints after aspect-ratio adjustments.
-    let horizontal_spacing =
-      style.padding.left + style.padding.right + style.border_width.left + style.border_width.right;
-    let vertical_spacing =
-      style.padding.top + style.padding.bottom + style.border_width.top + style.border_width.bottom;
-    let min_width = content_size_from_box_sizing(
-      style.min_width.to_px(),
-      horizontal_spacing,
-      style.box_sizing,
-    );
-    let mut max_width = content_size_from_box_sizing(
-      style.max_width.to_px(),
-      horizontal_spacing,
-      style.box_sizing,
-    );
-    if max_width.is_finite() && max_width < min_width {
-      log_abs_clamp(
-        "width",
-        min_width,
-        max_width,
-        style.min_width,
-        style.max_width,
-      );
-      max_width = min_width;
-    }
     width = crate::layout::utils::clamp_with_order(width, min_width, max_width);
-    let min_height =
-      content_size_from_box_sizing(style.min_height.to_px(), vertical_spacing, style.box_sizing);
-    let mut max_height =
-      content_size_from_box_sizing(style.max_height.to_px(), vertical_spacing, style.box_sizing);
-    if max_height.is_finite() && max_height < min_height {
-      log_abs_clamp(
-        "height",
-        min_height,
-        max_height,
-        style.min_height,
-        style.max_height,
-      );
-      max_height = min_height;
-    }
     height = crate::layout::utils::clamp_with_order(height, min_height, max_height);
 
     // Position relative to containing block origin
@@ -417,7 +383,7 @@ impl AbsoluteLayout {
     preferred_inline_size: Option<f32>,
     intrinsic_width: f32,
     static_x: f32,
-  ) -> Result<(f32, f32, f32, f32), LayoutError> {
+  ) -> Result<(f32, f32, f32, f32, f32, f32), LayoutError> {
     let left = resolve_offset_for_positioned(
       &style.left,
       inline_base,
@@ -440,40 +406,27 @@ impl AbsoluteLayout {
     let border_right = style.border_width.right;
     let total_horizontal_spacing = padding_left + padding_right + border_left + border_right;
 
-    let specified_width = match style.width {
-      LengthOrAuto::Auto => None,
-      LengthOrAuto::Length(len) => {
-        resolve_length_for_positioned_size(&len, inline_base, viewport, style, &self.font_context)
-          .map(|px| content_size_from_box_sizing(px, total_horizontal_spacing, style.box_sizing))
-      }
-    };
-    let min_width = content_size_from_box_sizing(
-      style.min_width.to_px(),
-      total_horizontal_spacing,
-      style.box_sizing,
-    );
-    let mut max_width = content_size_from_box_sizing(
-      style.max_width.to_px(),
-      total_horizontal_spacing,
-      style.box_sizing,
-    );
-    if max_width.is_finite() && max_width < min_width {
-      log_abs_clamp(
-        "width",
-        min_width,
-        max_width,
-        style.min_width,
-        style.max_width,
-      );
-      max_width = min_width;
-    }
-
     // Compute shrink-to-fit candidates for auto width.
     let preferred_min = preferred_min_inline_size.unwrap_or(intrinsic_width);
     let preferred = preferred_inline_size.unwrap_or(preferred_min);
     let shrink = |available: f32| -> f32 {
       let available = available.max(0.0);
       preferred.min(available.max(preferred_min))
+    };
+
+    #[derive(Clone, Copy)]
+    enum WidthValue {
+      Auto,
+      Length(Length),
+      Keyword(IntrinsicSizeKeyword),
+    }
+
+    let width_value = match style.width {
+      LengthOrAuto::Length(len) => WidthValue::Length(len),
+      LengthOrAuto::Auto => style
+        .width_keyword
+        .map(WidthValue::Keyword)
+        .unwrap_or(WidthValue::Auto),
     };
 
     // Default margin values (auto resolved only when the constraint equation includes both edges)
@@ -491,7 +444,7 @@ impl AbsoluteLayout {
     };
 
     let overconstrained = left.is_some()
-      && specified_width.is_some()
+      && !matches!(width_value, WidthValue::Auto)
       && right.is_some()
       && !margin_left_auto
       && !margin_right_auto;
@@ -503,6 +456,72 @@ impl AbsoluteLayout {
     } else {
       (left, right)
     };
+
+    let available_for_shrink = cb_width
+      - resolved_left.unwrap_or(0.0)
+      - resolved_right.unwrap_or(0.0)
+      - margin_left
+      - margin_right
+      - total_horizontal_spacing;
+
+    let resolve_keyword = |keyword: IntrinsicSizeKeyword, available: f32| -> Option<f32> {
+      match keyword {
+        IntrinsicSizeKeyword::MinContent => Some(preferred_min),
+        IntrinsicSizeKeyword::MaxContent => Some(preferred),
+        IntrinsicSizeKeyword::FitContent { limit } => match limit {
+          None => Some(shrink(available)),
+          Some(limit) => resolve_length_for_positioned_size(
+            &limit,
+            inline_base,
+            viewport,
+            style,
+            &self.font_context,
+          )
+          .map(|px| content_size_from_box_sizing(px, total_horizontal_spacing, style.box_sizing))
+          .map(|limit| preferred.min(limit.max(preferred_min))),
+        },
+      }
+    };
+
+    let specified_width = match width_value {
+      WidthValue::Auto => None,
+      WidthValue::Length(len) => {
+        resolve_length_for_positioned_size(&len, inline_base, viewport, style, &self.font_context)
+          .map(|px| content_size_from_box_sizing(px, total_horizontal_spacing, style.box_sizing))
+      }
+      WidthValue::Keyword(keyword) => resolve_keyword(keyword, available_for_shrink),
+    };
+
+    let min_width = style
+      .min_width_keyword
+      .and_then(|keyword| resolve_keyword(keyword, available_for_shrink))
+      .unwrap_or_else(|| {
+        content_size_from_box_sizing(
+          style.min_width.to_px(),
+          total_horizontal_spacing,
+          style.box_sizing,
+        )
+      });
+    let mut max_width = style
+      .max_width_keyword
+      .and_then(|keyword| resolve_keyword(keyword, available_for_shrink))
+      .unwrap_or_else(|| {
+        content_size_from_box_sizing(
+          style.max_width.to_px(),
+          total_horizontal_spacing,
+          style.box_sizing,
+        )
+      });
+    if max_width.is_finite() && max_width < min_width {
+      log_abs_clamp(
+        "width",
+        min_width,
+        max_width,
+        style.min_width,
+        style.max_width,
+      );
+      max_width = min_width;
+    }
 
     let (mut x, mut width) = match (resolved_left, specified_width, resolved_right) {
       // Case 1: All three specified (auto margins handled later)
@@ -604,7 +623,7 @@ impl AbsoluteLayout {
       }
     }
 
-    Ok((x, width, margin_left, margin_right))
+    Ok((x, width, margin_left, margin_right, min_width, max_width))
   }
 
   /// Computes vertical position, height, and margins
@@ -620,7 +639,7 @@ impl AbsoluteLayout {
     preferred_block_size: Option<f32>,
     intrinsic_height: f32,
     static_y: f32,
-  ) -> Result<(f32, f32, f32, f32), LayoutError> {
+  ) -> Result<(f32, f32, f32, f32, f32, f32), LayoutError> {
     let top =
       resolve_offset_for_positioned(&style.top, block_base, viewport, style, &self.font_context);
     let bottom = resolve_offset_for_positioned(
@@ -651,23 +670,84 @@ impl AbsoluteLayout {
       style.margin.bottom
     };
 
-    let specified_height = match style.height {
-      LengthOrAuto::Auto => None,
-      LengthOrAuto::Length(len) => {
+    // Compute shrink-to-fit candidates for auto height.
+    let preferred_min = preferred_min_block_size.unwrap_or(intrinsic_height);
+    let preferred = preferred_block_size.unwrap_or(preferred_min);
+    let shrink = |available: f32| -> f32 {
+      let available = available.max(0.0);
+      preferred.min(available.max(preferred_min))
+    };
+
+    #[derive(Clone, Copy)]
+    enum HeightValue {
+      Auto,
+      Length(Length),
+      Keyword(IntrinsicSizeKeyword),
+    }
+
+    let height_value = match style.height {
+      LengthOrAuto::Length(len) => HeightValue::Length(len),
+      LengthOrAuto::Auto => style
+        .height_keyword
+        .map(HeightValue::Keyword)
+        .unwrap_or(HeightValue::Auto),
+    };
+
+    let available_for_shrink = cb_height
+      - top.unwrap_or(0.0)
+      - bottom.unwrap_or(0.0)
+      - margin_top
+      - margin_bottom
+      - total_vertical_spacing;
+
+    let resolve_keyword = |keyword: IntrinsicSizeKeyword, available: f32| -> Option<f32> {
+      match keyword {
+        IntrinsicSizeKeyword::MinContent => Some(preferred_min),
+        IntrinsicSizeKeyword::MaxContent => Some(preferred),
+        IntrinsicSizeKeyword::FitContent { limit } => match limit {
+          None => Some(shrink(available)),
+          Some(limit) => resolve_length_for_positioned_size(
+            &limit,
+            block_base,
+            viewport,
+            style,
+            &self.font_context,
+          )
+          .map(|px| content_size_from_box_sizing(px, total_vertical_spacing, style.box_sizing))
+          .map(|limit| preferred.min(limit.max(preferred_min))),
+        },
+      }
+    };
+
+    let specified_height = match height_value {
+      HeightValue::Auto => None,
+      HeightValue::Length(len) => {
         resolve_length_for_positioned_size(&len, block_base, viewport, style, &self.font_context)
           .map(|px| content_size_from_box_sizing(px, total_vertical_spacing, style.box_sizing))
       }
+      HeightValue::Keyword(keyword) => resolve_keyword(keyword, available_for_shrink),
     };
-    let min_height = content_size_from_box_sizing(
-      style.min_height.to_px(),
-      total_vertical_spacing,
-      style.box_sizing,
-    );
-    let mut max_height = content_size_from_box_sizing(
-      style.max_height.to_px(),
-      total_vertical_spacing,
-      style.box_sizing,
-    );
+
+    let min_height = style
+      .min_height_keyword
+      .and_then(|keyword| resolve_keyword(keyword, available_for_shrink))
+      .unwrap_or_else(|| {
+        content_size_from_box_sizing(
+          style.min_height.to_px(),
+          total_vertical_spacing,
+          style.box_sizing,
+        )
+      });
+    let mut max_height = style
+      .max_height_keyword
+      .and_then(|keyword| resolve_keyword(keyword, available_for_shrink))
+      .unwrap_or_else(|| {
+        content_size_from_box_sizing(
+          style.max_height.to_px(),
+          total_vertical_spacing,
+          style.box_sizing,
+        )
+      });
     if max_height.is_finite() && max_height < min_height {
       log_abs_clamp(
         "height",
@@ -678,14 +758,6 @@ impl AbsoluteLayout {
       );
       max_height = min_height;
     }
-
-    // Compute shrink-to-fit candidates for auto height.
-    let preferred_min = preferred_min_block_size.unwrap_or(intrinsic_height);
-    let preferred = preferred_block_size.unwrap_or(preferred_min);
-    let shrink = |available: f32| -> f32 {
-      let available = available.max(0.0);
-      preferred.min(available.max(preferred_min))
-    };
 
     let (mut y, mut height, overconstrained) = match (top, specified_height, bottom) {
       // All three specified (overconstrained) - ignore bottom
@@ -780,7 +852,7 @@ impl AbsoluteLayout {
       }
     }
 
-    Ok((y, height, margin_top, margin_bottom))
+    Ok((y, height, margin_top, margin_bottom, min_height, max_height))
   }
 
   /// Computes centering for absolutely positioned elements with auto margins
@@ -1018,6 +1090,61 @@ mod tests {
     // available width = 400; shrink-to-fit clamps intrinsic to available space
     assert_eq!(result.position.x, 50.0);
     assert_eq!(result.size.width, 400.0);
+  }
+
+  #[test]
+  fn layout_absolute_width_max_content_keyword_uses_preferred_size() {
+    let layout = AbsoluteLayout::new();
+
+    let mut style = default_style();
+    style.position = Position::Absolute;
+    style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+
+    let mut input = AbsoluteLayoutInput::new(style, Size::new(0.0, 0.0), Point::ZERO);
+    input.preferred_min_inline_size = Some(80.0);
+    input.preferred_inline_size = Some(150.0);
+
+    let cb = create_containing_block(100.0, 100.0);
+    let result = layout.layout_absolute(&input, &cb).unwrap();
+    assert_eq!(result.size.width, 150.0);
+  }
+
+  #[test]
+  fn layout_absolute_width_fit_content_limit_keyword_uses_limit() {
+    let layout = AbsoluteLayout::new();
+
+    let mut style = default_style();
+    style.position = Position::Absolute;
+    style.width_keyword = Some(IntrinsicSizeKeyword::FitContent {
+      limit: Some(Length::percent(50.0)),
+    });
+
+    let mut input = AbsoluteLayoutInput::new(style, Size::new(0.0, 0.0), Point::ZERO);
+    input.preferred_min_inline_size = Some(80.0);
+    input.preferred_inline_size = Some(150.0);
+
+    let cb = create_containing_block(200.0, 100.0);
+    let result = layout.layout_absolute(&input, &cb).unwrap();
+    // limit = 50% of 200 => 100; fit-content clamp => min(150, max(80, 100)) = 100
+    assert_eq!(result.size.width, 100.0);
+  }
+
+  #[test]
+  fn layout_absolute_min_width_max_content_keyword_clamps_width() {
+    let layout = AbsoluteLayout::new();
+
+    let mut style = default_style();
+    style.position = Position::Absolute;
+    style.width = LengthOrAuto::px(50.0);
+    style.min_width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+
+    let mut input = AbsoluteLayoutInput::new(style, Size::new(0.0, 0.0), Point::ZERO);
+    input.preferred_min_inline_size = Some(80.0);
+    input.preferred_inline_size = Some(150.0);
+
+    let cb = create_containing_block(200.0, 100.0);
+    let result = layout.layout_absolute(&input, &cb).unwrap();
+    assert_eq!(result.size.width, 150.0);
   }
 
   #[test]
@@ -1974,9 +2101,11 @@ pub fn resolve_positioned_style(
     .bottom
     .map_or(LengthOrAuto::Auto, LengthOrAuto::Length);
   resolved.width = style.width.map_or(LengthOrAuto::Auto, LengthOrAuto::Length);
+  resolved.width_keyword = style.width_keyword;
   resolved.height = style
     .height
     .map_or(LengthOrAuto::Auto, LengthOrAuto::Length);
+  resolved.height_keyword = style.height_keyword;
   resolved.box_sizing = style.box_sizing;
   resolved.aspect_ratio = style.aspect_ratio;
   resolved.font_family = style.font_family.to_vec();
@@ -2040,6 +2169,7 @@ pub fn resolve_positioned_style(
       .and_then(|l| resolve_len(l, inline_base))
       .unwrap_or(0.0),
   );
+  resolved.min_width_keyword = style.min_width_keyword;
   resolved.max_width = Length::px(
     style
       .max_width
@@ -2047,6 +2177,7 @@ pub fn resolve_positioned_style(
       .and_then(|l| resolve_len(l, inline_base))
       .unwrap_or(f32::INFINITY),
   );
+  resolved.max_width_keyword = style.max_width_keyword;
   resolved.min_height = Length::px(
     style
       .min_height
@@ -2054,6 +2185,7 @@ pub fn resolve_positioned_style(
       .and_then(|l| resolve_len(l, block_base))
       .unwrap_or(0.0),
   );
+  resolved.min_height_keyword = style.min_height_keyword;
   resolved.max_height = Length::px(
     style
       .max_height
@@ -2061,6 +2193,7 @@ pub fn resolve_positioned_style(
       .and_then(|l| resolve_len(l, block_base))
       .unwrap_or(f32::INFINITY),
   );
+  resolved.max_height_keyword = style.max_height_keyword;
 
   resolved.margin_left_auto = style.margin_left.is_none();
   resolved.margin_right_auto = style.margin_right.is_none();
