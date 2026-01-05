@@ -297,7 +297,9 @@ fn compare_diff_reports_pairs_and_classifies_entries() {
     "expected CSS toggle rule for hiding missing-in-new rows:\n{html}"
   );
   assert!(
-    html.contains("#show-missing-in-baseline:not(:checked) ~ #all-entries tbody tr.missing-in-baseline"),
+    html.contains(
+      "#show-missing-in-baseline:not(:checked) ~ #all-entries tbody tr.missing-in-baseline"
+    ),
     "expected CSS toggle rule for hiding missing-in-baseline rows:\n{html}"
   );
   assert!(

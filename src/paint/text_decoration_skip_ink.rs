@@ -55,7 +55,11 @@ fn rotation_transform(rotation: RunRotation, origin_x: f32, origin_y: f32) -> Op
 
 #[inline]
 fn safe_skew(skew: f32) -> f32 {
-  if skew.is_finite() { skew } else { 0.0 }
+  if skew.is_finite() {
+    skew
+  } else {
+    0.0
+  }
 }
 
 #[inline]
@@ -165,7 +169,8 @@ pub(crate) fn collect_underline_exclusions(
       crate::text::apply_rustybuzz_variations(&mut face, &run.variations);
       face
     });
-    let face: &ttf_parser::Face<'static> = owned_face.as_ref().unwrap_or_else(|| cached_face.face());
+    let face: &ttf_parser::Face<'static> =
+      owned_face.as_ref().unwrap_or_else(|| cached_face.face());
     let units_per_em = face.units_per_em() as f32;
     if units_per_em <= 0.0 || !units_per_em.is_finite() {
       pen_x += run.advance * coord_scale;
@@ -247,7 +252,8 @@ pub(crate) fn collect_underline_exclusions_vertical(
       crate::text::apply_rustybuzz_variations(&mut face, &run.variations);
       face
     });
-    let face: &ttf_parser::Face<'static> = owned_face.as_ref().unwrap_or_else(|| cached_face.face());
+    let face: &ttf_parser::Face<'static> =
+      owned_face.as_ref().unwrap_or_else(|| cached_face.face());
     let units_per_em = face.units_per_em() as f32;
     if units_per_em <= 0.0 || !units_per_em.is_finite() {
       pen_inline += run.advance * coord_scale;
@@ -308,7 +314,9 @@ pub(crate) fn collect_underline_exclusions_vertical(
 mod tests {
   use super::*;
   use crate::text::face_cache;
-  use crate::text::font_db::{FontFaceMetricsOverrides, FontStretch, FontStyle, FontWeight, LoadedFont};
+  use crate::text::font_db::{
+    FontFaceMetricsOverrides, FontStretch, FontStyle, FontWeight, LoadedFont,
+  };
   use rustybuzz::Variation;
   use std::path::PathBuf;
   use std::sync::Arc;
@@ -330,10 +338,7 @@ mod tests {
 
     let cached_face = face_cache::get_ttf_face(&font).expect("parse test font");
     let face = cached_face.face();
-    let glyph_id = face
-      .glyph_index('A')
-      .expect("expected glyph for A")
-      .0;
+    let glyph_id = face.glyph_index('A').expect("expected glyph for A").0;
 
     let hash_a = crate::text::variations::variation_hash(&[Variation {
       tag: ttf_parser::Tag::from_bytes(b"wght"),
@@ -357,8 +362,8 @@ mod tests {
 
   #[test]
   fn underline_exclusions_apply_rotation_transform() {
-    let font_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-      .join("tests/fixtures/fonts/DejaVuSans-subset.ttf");
+    let font_path =
+      PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fonts/DejaVuSans-subset.ttf");
     let data = Arc::new(std::fs::read(font_path).expect("read test font"));
     let font = LoadedFont {
       id: None,

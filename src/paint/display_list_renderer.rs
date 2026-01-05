@@ -1618,7 +1618,8 @@ pub(crate) fn reset_thread_local_scratch_for_tests() {
   MASK_RENDER_SCRATCH.with(|cell| *cell.borrow_mut() = None);
   BACKDROP_FILTER_SCRATCH.with(|cell| *cell.borrow_mut() = BackdropFilterScratch::default());
   SPREAD_SCRATCH.with(|cell| *cell.borrow_mut() = SpreadScratch::default());
-  PRESERVE_3D_CLIP_MASK_SCRATCH.with(|cell| *cell.borrow_mut() = Preserve3dClipMaskScratch::default());
+  PRESERVE_3D_CLIP_MASK_SCRATCH
+    .with(|cell| *cell.borrow_mut() = Preserve3dClipMaskScratch::default());
 }
 
 fn clip_mask_dirty_bounds(rect: Rect, width: u32, height: u32) -> Option<ClipMaskDirtyRect> {
@@ -2906,7 +2907,10 @@ enum Preserve3dSceneItemSource {
 
 #[derive(Clone, Debug)]
 enum SceneEffect {
-  Clip { clip: ClipItem, transform: Transform3D },
+  Clip {
+    clip: ClipItem,
+    transform: Transform3D,
+  },
   Opacity(f32),
 }
 
@@ -2931,7 +2935,11 @@ impl SceneEffect {
   }
 }
 
-fn update_scene_effect_stack(stack: &mut Vec<SceneEffect>, item: &DisplayItem, transform: Transform3D) {
+fn update_scene_effect_stack(
+  stack: &mut Vec<SceneEffect>,
+  item: &DisplayItem,
+  transform: Transform3D,
+) {
   match item {
     DisplayItem::PushClip(clip) => {
       stack.push(SceneEffect::Clip {
@@ -7008,11 +7016,7 @@ impl DisplayListRenderer {
     Some(bounds)
   }
 
-  fn with_preserve_3d_clip_override<T, F>(
-    &mut self,
-    effects: &[SceneEffect],
-    f: F,
-  ) -> Result<T>
+  fn with_preserve_3d_clip_override<T, F>(&mut self, effects: &[SceneEffect], f: F) -> Result<T>
   where
     F: FnOnce(&mut Self, Option<&Mask>) -> Result<T>,
   {
@@ -7065,12 +7069,9 @@ impl DisplayListRenderer {
         let SceneEffect::Clip { clip, transform } = effect else {
           continue;
         };
-        let Some(path) = self.projected_preserve_3d_clip_path(
-          clip,
-          transform,
-          parent_transform,
-          warp_enabled,
-        ) else {
+        let Some(path) =
+          self.projected_preserve_3d_clip_path(clip, transform, parent_transform, warp_enabled)
+        else {
           return Ok(None);
         };
 
@@ -7131,7 +7132,9 @@ impl DisplayListRenderer {
       return None;
     }
 
-    let radii = radii.unwrap_or(BorderRadii::ZERO).clamped(rect.width(), rect.height());
+    let radii = radii
+      .unwrap_or(BorderRadii::ZERO)
+      .clamped(rect.width(), rect.height());
     let (x0, y0) = (rect.min_x(), rect.min_y());
     let (x1, y1) = (rect.max_x(), rect.max_y());
     let corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)];
@@ -7143,7 +7146,11 @@ impl DisplayListRenderer {
       let normalize = |rx: f32, ry: f32| -> (f32, f32) {
         let rx = rx.max(0.0);
         let ry = ry.max(0.0);
-        if rx > 0.0 && ry > 0.0 { (rx, ry) } else { (0.0, 0.0) }
+        if rx > 0.0 && ry > 0.0 {
+          (rx, ry)
+        } else {
+          (0.0, 0.0)
+        }
       };
 
       let (tl_rx, tl_ry) = normalize(radii.top_left.x, radii.top_left.y);
@@ -7324,14 +7331,10 @@ impl DisplayListRenderer {
       let clip_ref = clip_override.or_else(|| clip_rc.as_deref());
       let (t, _valid) = self.to_skia_transform_checked(transform);
       let skia_transform = concat_transforms(parent_transform, t);
-      self.canvas.pixmap_mut().draw_pixmap(
-        0,
-        0,
-        pixmap.as_ref(),
-        &paint,
-        skia_transform,
-        clip_ref,
-      );
+      self
+        .canvas
+        .pixmap_mut()
+        .draw_pixmap(0, 0, pixmap.as_ref(), &paint, skia_transform, clip_ref);
       return Ok(());
     }
 
@@ -7402,14 +7405,10 @@ impl DisplayListRenderer {
     let clip_ref = clip_override.or_else(|| clip_rc.as_deref());
     let (t, _valid) = self.to_skia_transform_checked(transform);
     let skia_transform = concat_transforms(parent_transform, t);
-    self.canvas.pixmap_mut().draw_pixmap(
-      0,
-      0,
-      pixmap.as_ref(),
-      &paint,
-      skia_transform,
-      clip_ref,
-    );
+    self
+      .canvas
+      .pixmap_mut()
+      .draw_pixmap(0, 0, pixmap.as_ref(), &paint, skia_transform, clip_ref);
     Ok(())
   }
 

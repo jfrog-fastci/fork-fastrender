@@ -18,4 +18,3 @@ fn video_without_poster_does_not_paint_placeholder() -> Result<()> {
   assert_eq!(pixel(&pixmap, 500, 200), (23, 19, 33, 255));
   Ok(())
 }
-

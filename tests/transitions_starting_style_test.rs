@@ -6,8 +6,8 @@ use fastrender::css::types::{BoxShadow, TextShadow};
 use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::types::{
-  BackgroundPosition, BackgroundSize, BackgroundSizeComponent, BasicShape, BorderStyle, ClipComponent,
-  ClipPath, ClipRect, FilterFunction,
+  BackgroundPosition, BackgroundSize, BackgroundSizeComponent, BasicShape, BorderStyle,
+  ClipComponent, ClipPath, ClipRect, FilterFunction,
 };
 use fastrender::tree::box_tree::{BoxNode, BoxTree};
 use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
@@ -149,7 +149,10 @@ fn fragment_mask_size(tree: &FragmentTree, box_id: usize) -> (f32, f32) {
   let frag = find_fragment(&tree.root, box_id).expect("fragment present");
   let style = frag.style.as_ref().expect("style present");
   match style.mask_sizes.as_ref() {
-    [BackgroundSize::Explicit(BackgroundSizeComponent::Length(x), BackgroundSizeComponent::Length(y)), ..] => (x.to_px(), y.to_px()),
+    [BackgroundSize::Explicit(
+      BackgroundSizeComponent::Length(x),
+      BackgroundSizeComponent::Length(y),
+    ), ..] => (x.to_px(), y.to_px()),
     other => panic!("expected mask-size list, got {other:?}"),
   }
 }
@@ -157,7 +160,10 @@ fn fragment_mask_size(tree: &FragmentTree, box_id: usize) -> (f32, f32) {
 fn fragment_transform_origin(tree: &FragmentTree, box_id: usize) -> (f32, f32) {
   let frag = find_fragment(&tree.root, box_id).expect("fragment present");
   let style = frag.style.as_ref().expect("style present");
-  (style.transform_origin.x.to_px(), style.transform_origin.y.to_px())
+  (
+    style.transform_origin.x.to_px(),
+    style.transform_origin.y.to_px(),
+  )
 }
 
 fn fragment_perspective_origin(tree: &FragmentTree, box_id: usize) -> (f32, f32) {
@@ -386,7 +392,10 @@ fn transitions_interpolate_border_shorthand_over_time() {
   let viewport = start.viewport_size();
   animation::apply_transitions(&mut start, 0.0, viewport);
   assert!((fragment_border_top_width(&start, box_id) - 0.0).abs() < 1e-3);
-  assert_eq!(fragment_border_top_style(&start, box_id), BorderStyle::Solid);
+  assert_eq!(
+    fragment_border_top_style(&start, box_id),
+    BorderStyle::Solid
+  );
   assert_eq!(
     fragment_border_top_color(&start, box_id),
     fastrender::Rgba::new(255, 0, 0, 1.0)
@@ -396,7 +405,10 @@ fn transitions_interpolate_border_shorthand_over_time() {
   let viewport = early.viewport_size();
   animation::apply_transitions(&mut early, 400.0, viewport);
   assert!((fragment_border_top_width(&early, box_id) - 4.0).abs() < 1e-3);
-  assert_eq!(fragment_border_top_style(&early, box_id), BorderStyle::Solid);
+  assert_eq!(
+    fragment_border_top_style(&early, box_id),
+    BorderStyle::Solid
+  );
   assert_eq!(
     fragment_border_top_color(&early, box_id),
     fastrender::Rgba::new(153, 0, 102, 1.0)
@@ -406,7 +418,10 @@ fn transitions_interpolate_border_shorthand_over_time() {
   let viewport = late.viewport_size();
   animation::apply_transitions(&mut late, 600.0, viewport);
   assert!((fragment_border_top_width(&late, box_id) - 6.0).abs() < 1e-3);
-  assert_eq!(fragment_border_top_style(&late, box_id), BorderStyle::Dashed);
+  assert_eq!(
+    fragment_border_top_style(&late, box_id),
+    BorderStyle::Dashed
+  );
   assert_eq!(
     fragment_border_top_color(&late, box_id),
     fastrender::Rgba::new(102, 0, 153, 1.0)
@@ -436,7 +451,10 @@ fn transitions_interpolate_border_style_over_time() {
   let mut early = fragment_tree.clone();
   let viewport = early.viewport_size();
   animation::apply_transitions(&mut early, 400.0, viewport);
-  assert_eq!(fragment_border_top_style(&early, box_id), BorderStyle::Solid);
+  assert_eq!(
+    fragment_border_top_style(&early, box_id),
+    BorderStyle::Solid
+  );
   assert!((fragment_border_top_width(&early, box_id) - 4.0).abs() < 1e-3);
   assert_eq!(
     fragment_border_top_color(&early, box_id),
@@ -446,7 +464,10 @@ fn transitions_interpolate_border_style_over_time() {
   let mut late = fragment_tree.clone();
   let viewport = late.viewport_size();
   animation::apply_transitions(&mut late, 600.0, viewport);
-  assert_eq!(fragment_border_top_style(&late, box_id), BorderStyle::Dashed);
+  assert_eq!(
+    fragment_border_top_style(&late, box_id),
+    BorderStyle::Dashed
+  );
   assert!((fragment_border_top_width(&late, box_id) - 4.0).abs() < 1e-3);
 }
 
@@ -520,9 +541,18 @@ fn transitions_interpolate_clip_rect_over_time() {
   animation::apply_transitions(&mut mid, 500.0, viewport);
   let rect = fragment_clip_rect(&mid, box_id).expect("clip rect");
   assert_eq!(rect.top, ClipComponent::Length(fastrender::Length::px(0.0)));
-  assert_eq!(rect.left, ClipComponent::Length(fastrender::Length::px(0.0)));
-  assert_eq!(rect.right, ClipComponent::Length(fastrender::Length::px(15.0)));
-  assert_eq!(rect.bottom, ClipComponent::Length(fastrender::Length::px(15.0)));
+  assert_eq!(
+    rect.left,
+    ClipComponent::Length(fastrender::Length::px(0.0))
+  );
+  assert_eq!(
+    rect.right,
+    ClipComponent::Length(fastrender::Length::px(15.0))
+  );
+  assert_eq!(
+    rect.bottom,
+    ClipComponent::Length(fastrender::Length::px(15.0))
+  );
 }
 
 #[test]

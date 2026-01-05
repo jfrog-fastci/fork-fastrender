@@ -22,7 +22,9 @@ fn canvas_background_prefers_root_html_background_over_body() {
     <div style="height: 100px"></div>
   "#;
 
-  let pixmap = renderer.render_html(html, 64, 200).expect("render should succeed");
+  let pixmap = renderer
+    .render_html(html, 64, 200)
+    .expect("render should succeed");
 
   let inside = pixmap.pixel(10, 50).expect("inside pixel");
   assert!(
@@ -44,4 +46,3 @@ fn canvas_background_prefers_root_html_background_over_body() {
     outside.alpha()
   );
 }
-

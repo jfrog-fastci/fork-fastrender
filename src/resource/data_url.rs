@@ -240,9 +240,11 @@ fn decode_base64_prefix(data: &str, max_bytes: usize) -> Result<Vec<u8>> {
   ) {
     Ok(decoded) => return Ok(decoded),
     Err(_) => {
-      if let Ok(decoded) =
-        decode_base64_prefix_with_engine(data, max_bytes, &base64::engine::general_purpose::URL_SAFE)
-      {
+      if let Ok(decoded) = decode_base64_prefix_with_engine(
+        data,
+        max_bytes,
+        &base64::engine::general_purpose::URL_SAFE,
+      ) {
         return Ok(decoded);
       }
 

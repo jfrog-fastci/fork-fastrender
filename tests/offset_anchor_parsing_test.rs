@@ -37,4 +37,3 @@ fn parses_offset_anchor_two_value_syntax() {
     }
   );
 }
-

@@ -102,4 +102,3 @@ fn parses_column_rule_width_keyword() {
 
   assert_eq!(div.styles.column_rule_width, Length::px(5.0));
 }
-

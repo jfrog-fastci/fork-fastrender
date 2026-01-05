@@ -492,7 +492,10 @@ mod disk_cache_main {
     let _ = insert_unique_with_cap(all, set, normalized, max_total, max_set);
   }
 
-  fn merge_crossorigin_attr(current: CrossOriginAttribute, incoming: CrossOriginAttribute) -> CrossOriginAttribute {
+  fn merge_crossorigin_attr(
+    current: CrossOriginAttribute,
+    incoming: CrossOriginAttribute,
+  ) -> CrossOriginAttribute {
     match (current, incoming) {
       (CrossOriginAttribute::UseCredentials, _) | (_, CrossOriginAttribute::UseCredentials) => {
         CrossOriginAttribute::UseCredentials
@@ -1529,10 +1532,10 @@ mod disk_cache_main {
             media_ctx.viewport_width,
             media_ctx.viewport_height,
           )),
-           media_context: Some(media_ctx),
-           font_size: Some(media_ctx.base_font_size),
-           base_url: Some(base_url),
-         };
+          media_context: Some(media_ctx),
+          font_size: Some(media_ctx.base_font_size),
+          base_url: Some(base_url),
+        };
         let discovery = discover_image_prefetch_requests(dom, selection_ctx, opts.image_limits);
 
         let max_urls = if opts.max_discovered_assets_per_page == 0 {

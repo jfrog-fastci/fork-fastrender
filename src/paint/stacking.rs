@@ -1973,11 +1973,8 @@ mod tests {
       Arc::new(style)
     };
 
-    let visible_child = FragmentNode::new_block_styled(
-      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
-      vec![],
-      child_style,
-    );
+    let visible_child =
+      FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 10.0, 10.0), vec![], child_style);
     let hidden_parent = FragmentNode::new_block_styled(
       Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
       vec![visible_child],

@@ -220,22 +220,22 @@ fn view_timeline_progress_includes_sticky_offsets() -> Result<()> {
   // 0.25.
   let expected = (0.25_f32 * 255.0).round() as i32;
   let tol = 20;
-  for (chan, name) in [(r0, "r0"), (g0, "g0"), (b0, "b0"), (r1, "r1"), (g1, "g1"), (b1, "b1")] {
+  for (chan, name) in [
+    (r0, "r0"),
+    (g0, "g0"),
+    (b0, "b0"),
+    (r1, "r1"),
+    (g1, "g1"),
+    (b1, "b1"),
+  ] {
     let diff = (chan as i32 - expected).abs();
-    assert!(
-      diff <= tol,
-      "expected {name}≈{expected}±{tol} (got {chan})"
-    );
+    assert!(diff <= tol, "expected {name}≈{expected}±{tol} (got {chan})");
   }
 
   // Also assert that the pixel is stable across scroll positions (regression for evaluating view
   // timeline progress before sticky offsets are applied).
   let stable_tol = 10;
-  for ((a, b), name) in [
-    ((r0, r1), "r"),
-    ((g0, g1), "g"),
-    ((b0, b1), "b"),
-  ] {
+  for ((a, b), name) in [((r0, r1), "r"), ((g0, g1), "g"), ((b0, b1), "b")] {
     let diff = (a as i32 - b as i32).abs();
     assert!(
       diff <= stable_tol,

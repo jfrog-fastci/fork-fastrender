@@ -84,7 +84,11 @@ fn font_variant_emoji_text_avoids_monochrome_emoji_family_even_if_it_is_first() 
   let ctx = FontContext::with_database(Arc::clone(&db));
   let mut style = ComputedStyle::default();
   style.font_variant_emoji = FontVariantEmoji::Text;
-  style.font_family = vec![MONO_EMOJI_FAMILY.to_string(), TEXT_SYMBOL_FAMILY.to_string()].into();
+  style.font_family = vec![
+    MONO_EMOJI_FAMILY.to_string(),
+    TEXT_SYMBOL_FAMILY.to_string(),
+  ]
+  .into();
 
   let runs = ShapingPipeline::new()
     .shape(&TEST_CODEPOINT.to_string(), &style, &ctx)

@@ -16153,7 +16153,11 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     let styled = apply_styles(&dom, &stylesheet);
 
     let dialog = find_styled_node_by_id(&styled, "d").expect("dialog node present");
-    let backdrop = dialog.styles.backdrop.as_ref().expect("computed ::backdrop");
+    let backdrop = dialog
+      .styles
+      .backdrop
+      .as_ref()
+      .expect("computed ::backdrop");
     assert_eq!(backdrop.background_color, Rgba::rgb(1, 2, 3));
   }
 

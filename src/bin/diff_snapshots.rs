@@ -2,7 +2,8 @@ mod common;
 
 use clap::Parser;
 use common::report::{
-  display_path, ensure_parent_dir, entry_anchor_id, escape_html, format_linked_image, path_for_report,
+  display_path, ensure_parent_dir, entry_anchor_id, escape_html, format_linked_image,
+  path_for_report,
 };
 use fastrender::debug::snapshot::{
   BoxKindSnapshot, BoxNodeSnapshot, DisplayItemSnapshot, DisplayListSnapshot, DomNodeKindSnapshot,

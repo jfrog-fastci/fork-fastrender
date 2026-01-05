@@ -1,3 +1,4 @@
+use base64::Engine;
 use fastrender::image_loader::ImageCache;
 use fastrender::paint::display_list::DisplayList;
 use fastrender::paint::display_list_builder::DisplayListBuilder;
@@ -6,7 +7,6 @@ use fastrender::scroll::ScrollState;
 use fastrender::text::font_loader::FontContext;
 use fastrender::tree::fragment_tree::FragmentNode;
 use fastrender::{FastRender, FontConfig, Point, Rgba};
-use base64::Engine;
 use rayon::ThreadPoolBuilder;
 use std::fs;
 use std::path::PathBuf;
@@ -18,7 +18,11 @@ fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
 
 fn assert_pixmap_eq(label: &str, expected: &tiny_skia::Pixmap, actual: &tiny_skia::Pixmap) {
   assert_eq!(expected.width(), actual.width(), "{label}: width mismatch");
-  assert_eq!(expected.height(), actual.height(), "{label}: height mismatch");
+  assert_eq!(
+    expected.height(),
+    actual.height(),
+    "{label}: height mismatch"
+  );
   let expected_data = expected.data();
   let actual_data = actual.data();
   if expected_data == actual_data {
@@ -393,10 +397,10 @@ fn parallel_drop_shadow_and_clip_path_cross_tile_matches_serial() {
 #[test]
 fn parallel_mask_image_url_with_drop_shadow_matches_serial() {
   let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-  let mask_bytes = fs::read(manifest_dir.join("tests/pages/fixtures/assets/images/mask.png"))
-    .expect("mask png");
-  let pattern_bytes =
-    fs::read(manifest_dir.join("tests/pages/fixtures/assets/images/pattern.png")).expect("pattern png");
+  let mask_bytes =
+    fs::read(manifest_dir.join("tests/pages/fixtures/assets/images/mask.png")).expect("mask png");
+  let pattern_bytes = fs::read(manifest_dir.join("tests/pages/fixtures/assets/images/pattern.png"))
+    .expect("pattern png");
   let mask_url = format!(
     "data:image/png;base64,{}",
     base64::engine::general_purpose::STANDARD.encode(mask_bytes)

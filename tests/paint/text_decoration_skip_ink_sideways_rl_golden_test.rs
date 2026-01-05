@@ -38,7 +38,10 @@ fn text_decoration_skip_ink_sideways_rl_matches_golden() {
   let golden = fs::read(golden_path).unwrap_or_else(|e| {
     panic!(
       "Missing golden {} ({}): {}",
-      golden_path.file_name().unwrap_or_default().to_string_lossy(),
+      golden_path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy(),
       golden_path.display(),
       e
     )
@@ -57,4 +60,3 @@ fn text_decoration_skip_ink_sideways_rl_matches_golden() {
   )
   .unwrap_or_else(|e| panic!("{}", e));
 }
-

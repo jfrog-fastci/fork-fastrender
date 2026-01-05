@@ -8,8 +8,8 @@ use crate::css::types::RadialGradientShape;
 use crate::css::types::RadialGradientSize;
 use crate::style::color::Rgba;
 use crate::style::values::Length;
-use std::hash::{Hash, Hasher};
 pub use crate::text::hyphenation::HyphensMode;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 /// Text direction
@@ -1856,15 +1856,15 @@ pub enum IntrinsicSizeKeyword {
   MinContent,
   MaxContent,
   /// Represents `fit-content` and `fit-content(<length-percentage>)`.
-  FitContent { limit: Option<Length> },
+  FitContent {
+    limit: Option<Length>,
+  },
 }
 
 impl IntrinsicSizeKeyword {
   pub fn has_percentage(&self) -> bool {
     match self {
-      Self::FitContent {
-        limit: Some(limit),
-      } => limit.has_percentage(),
+      Self::FitContent { limit: Some(limit) } => limit.has_percentage(),
       _ => false,
     }
   }

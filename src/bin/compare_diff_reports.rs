@@ -2,7 +2,8 @@ mod common;
 
 use clap::Parser;
 use common::report::{
-  display_path, ensure_parent_dir, entry_anchor_id, escape_html, format_linked_image, path_for_report,
+  display_path, ensure_parent_dir, entry_anchor_id, escape_html, format_linked_image,
+  path_for_report,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -1443,17 +1444,16 @@ fn write_html_report(
       .map(|s| s.status.label())
       .unwrap_or("-");
     let new_status = entry.new.as_ref().map(|s| s.status.label()).unwrap_or("-");
-    let baseline_status_cell =
-      if entry.baseline.is_some() && baseline_html_link != "-" {
-        let href = format!("{baseline_html_link}#{anchor_id}");
-        format!(
-          r#"<a href="{href}">{status}</a>"#,
-          href = escape_html(&href),
-          status = escape_html(baseline_status)
-        )
-      } else {
-        escape_html(baseline_status)
-      };
+    let baseline_status_cell = if entry.baseline.is_some() && baseline_html_link != "-" {
+      let href = format!("{baseline_html_link}#{anchor_id}");
+      format!(
+        r#"<a href="{href}">{status}</a>"#,
+        href = escape_html(&href),
+        status = escape_html(baseline_status)
+      )
+    } else {
+      escape_html(baseline_status)
+    };
     let new_status_cell = if entry.new.is_some() && new_html_link != "-" {
       let href = format!("{new_html_link}#{anchor_id}");
       format!(
@@ -1565,8 +1565,8 @@ fn write_html_report(
       if entry.failing_regression {
         classes.push_str(" failing");
       }
-        classes
-      };
+      classes
+    };
 
     rows.push_str(&format!(
        "<tr id=\"{anchor_id}\" class=\"{row_class}\"><td><a href=\"#{anchor_id}\">{name}</a></td><td>{classification}</td><td>{baseline_status}</td><td>{baseline_diff}</td><td>{baseline_perceptual}</td><td>{baseline_after_and_diff}</td><td>{new_status}</td><td>{new_diff}</td><td>{new_perceptual}</td><td>{new_after_and_diff}</td><td>{diff_delta}</td><td>{perceptual_delta}</td><td class=\"error\">{error}</td></tr>",

@@ -4003,9 +4003,8 @@ fn consider_local_font_candidate(
   }
 
   let is_emoji_font = if picker.prefer_emoji || picker.avoid_emoji {
-    let has_color_tables = cached_face.is_some_and(|face| {
-      crate::text::font_db::face_has_color_tables(face.face())
-    });
+    let has_color_tables =
+      cached_face.is_some_and(|face| crate::text::font_db::face_has_color_tables(face.face()));
     let is_emoji_family = db.inner().face(id).is_some_and(|face| {
       face
         .families

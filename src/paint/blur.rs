@@ -3835,8 +3835,12 @@ mod tests {
     where
       F: Fn(&mut Pixmap) -> Result<(), RenderError> + Copy,
     {
-      let len = blur_buffer_len(width as usize, height as usize, "blur scratch determinism test")
-        .unwrap();
+      let len = blur_buffer_len(
+        width as usize,
+        height as usize,
+        "blur scratch determinism test",
+      )
+      .unwrap();
 
       fill_scratch(len, 0xAA, 0x55);
       let mut pixmap_a = patterned_pixmap(width, height);

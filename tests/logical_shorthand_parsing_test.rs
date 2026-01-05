@@ -112,4 +112,3 @@ fn parses_border_inline_color_two_values() {
   assert_eq!(div.styles.border_left_color, Rgba::new(255, 0, 0, 1.0));
   assert_eq!(div.styles.border_right_color, Rgba::new(0, 0, 255, 1.0));
 }
-

@@ -15,4 +15,3 @@ pub fn reset_thread_local_scratch() {
   super::blur::reset_thread_local_scratch_for_tests();
   super::painter::reset_thread_local_scratch_for_tests();
 }
-

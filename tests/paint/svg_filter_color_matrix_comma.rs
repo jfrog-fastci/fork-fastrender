@@ -35,4 +35,3 @@ fn fe_color_matrix_matrix_parses_comma_separated_values() {
     (30, 20, 10, 255)
   );
 }
-

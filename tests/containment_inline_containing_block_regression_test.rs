@@ -85,4 +85,3 @@ fn containment_inline_containing_block_regression() {
   )
   .unwrap_or_else(|e| panic!("Comparison failed: {e}"));
 }
-

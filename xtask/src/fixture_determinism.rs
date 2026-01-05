@@ -18,7 +18,9 @@ const DEFAULT_JOBS_CAP: usize = 8;
 const DETERMINISM_DIFFS_DIR: &str = "determinism_diffs";
 
 fn default_jobs() -> usize {
-  fastrender::system::cpu_budget().min(DEFAULT_JOBS_CAP).max(1)
+  fastrender::system::cpu_budget()
+    .min(DEFAULT_JOBS_CAP)
+    .max(1)
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -1096,15 +1098,12 @@ fn render_html(layout: &Layout, report: &FixtureDeterminismReport) -> String {
         .diff_png
         .as_deref()
         .map(|p| path_for_report(&layout.root, &resolve_repo_relative(&repo_root, p)));
-      let snapshot_href = artifacts
-        .diff_snapshots_html
-        .as_deref()
-        .map(|p| {
-          format!(
-            "{}#{anchor_id}",
-            path_for_report(&layout.root, &resolve_repo_relative(&repo_root, p))
-          )
-        });
+      let snapshot_href = artifacts.diff_snapshots_html.as_deref().map(|p| {
+        format!(
+          "{}#{anchor_id}",
+          path_for_report(&layout.root, &resolve_repo_relative(&repo_root, p))
+        )
+      });
 
       let diff_row = diff_href
         .as_deref()

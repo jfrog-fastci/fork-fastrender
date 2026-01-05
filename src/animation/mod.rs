@@ -1489,8 +1489,18 @@ fn extract_transform_origin(
   let width = ctx.element_size.width;
   let height = ctx.element_size.height;
   Some(AnimatedValue::TransformOrigin(TransformOrigin {
-    x: Length::px(resolve_length_px(&style.transform_origin.x, Some(width), style, ctx)),
-    y: Length::px(resolve_length_px(&style.transform_origin.y, Some(height), style, ctx)),
+    x: Length::px(resolve_length_px(
+      &style.transform_origin.x,
+      Some(width),
+      style,
+      ctx,
+    )),
+    y: Length::px(resolve_length_px(
+      &style.transform_origin.y,
+      Some(height),
+      style,
+      ctx,
+    )),
   }))
 }
 

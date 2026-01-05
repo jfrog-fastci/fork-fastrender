@@ -4662,8 +4662,7 @@ impl DisplayListBuilder {
         && matches!(
           layer.size,
           BackgroundSize::Explicit(BackgroundSizeComponent::Auto, BackgroundSizeComponent::Auto)
-        )
-      {
+        ) {
         self
           .background_size_override
           .unwrap_or((origin_rect.width(), origin_rect.height()))

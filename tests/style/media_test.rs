@@ -338,7 +338,10 @@ fn test_device_aspect_ratio_queries() {
 #[test]
 fn media_length_features_accept_calc_and_reject_invalid_units() {
   let calc_query = MediaQuery::parse("(min-width: calc(100px + 10%))");
-  assert!(calc_query.is_ok(), "calc() should be accepted in media lengths");
+  assert!(
+    calc_query.is_ok(),
+    "calc() should be accepted in media lengths"
+  );
 
   let bogus_unit = MediaQuery::parse("(min-width: 10foobar)");
   assert!(
@@ -489,7 +492,8 @@ fn test_prefers_color_scheme() {
   let light_ctx = MediaContext::screen(1024.0, 768.0).with_color_scheme(ColorScheme::Light);
   let dark_ctx = MediaContext::screen(1024.0, 768.0).with_color_scheme(ColorScheme::Dark);
   let default_ctx = MediaContext::screen(1024.0, 768.0); // Defaults to light
-  let no_pref_ctx = MediaContext::screen(1024.0, 768.0).with_color_scheme(ColorScheme::NoPreference);
+  let no_pref_ctx =
+    MediaContext::screen(1024.0, 768.0).with_color_scheme(ColorScheme::NoPreference);
 
   let dark_query = MediaQuery::parse("(prefers-color-scheme: dark)").unwrap();
   let light_query = MediaQuery::parse("(prefers-color-scheme: light)").unwrap();

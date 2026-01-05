@@ -2889,9 +2889,7 @@ pub(crate) fn apply_svg_filter_with_cache(
   let Some((res_w, res_h)) = def.filter_res else {
     let target_w = pixmap.width();
     let target_h = pixmap.height();
-    if target_w > 0
-      && target_h > 0
-      && rect_exceeds_pixmap_bounds(filter_region, target_w, target_h)
+    if target_w > 0 && target_h > 0 && rect_exceeds_pixmap_bounds(filter_region, target_w, target_h)
     {
       let min_x = filter_region.min_x().floor();
       let min_y = filter_region.min_y().floor();
@@ -2935,7 +2933,11 @@ pub(crate) fn apply_svg_filter_with_cache(
             let mut local_def = def.clone();
             let origin_css_x = x0 as f32 / scale;
             let origin_css_y = y0 as f32 / scale;
-            translate_filter_user_space_numbers_for_filter_res(&mut local_def, origin_css_x, origin_css_y);
+            translate_filter_user_space_numbers_for_filter_res(
+              &mut local_def,
+              origin_css_x,
+              origin_css_y,
+            );
             local_def.refresh_fingerprint();
 
             let uses_fill_paint = def.uses_fill_paint_input();

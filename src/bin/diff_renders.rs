@@ -2,7 +2,8 @@ mod common;
 
 use clap::Parser;
 use common::report::{
-  display_path, ensure_parent_dir, entry_anchor_id, escape_html, format_linked_image, path_for_report,
+  display_path, ensure_parent_dir, entry_anchor_id, escape_html, format_linked_image,
+  path_for_report,
 };
 use fastrender::image_output::{diff_png_with_alpha, DiffMetrics};
 use serde::Serialize;
@@ -818,7 +819,11 @@ fn write_html_report(report: &DiffReport, path: &Path) -> Result<(), String> {
 
   let mut failing_entries = String::new();
   let mut failing_count = 0usize;
-  for entry in report.results.iter().filter(|entry| entry.status.is_failure()) {
+  for entry in report
+    .results
+    .iter()
+    .filter(|entry| entry.status.is_failure())
+  {
     failing_count += 1;
     let anchor_id = entry_anchor_id(&entry.name);
     failing_entries.push_str(&format!(

@@ -273,7 +273,13 @@ fn turbulence_userspace_translation_changes_pattern() {
   let bbox_h = 32.0;
   let dx = 7.0;
   let dy = 5.0;
-  apply_svg_filter(&filter, &mut a, 1.0, Rect::from_xywh(0.0, 0.0, bbox_w, bbox_h)).unwrap();
+  apply_svg_filter(
+    &filter,
+    &mut a,
+    1.0,
+    Rect::from_xywh(0.0, 0.0, bbox_w, bbox_h),
+  )
+  .unwrap();
   apply_svg_filter(
     &filter,
     &mut b,
@@ -327,7 +333,13 @@ fn turbulence_userspace_translation_changes_pattern_with_filter_res() {
   let bbox_h = 32.0;
   let dx = 7.0;
   let dy = 5.0;
-  apply_svg_filter(&filter, &mut a, 1.0, Rect::from_xywh(0.0, 0.0, bbox_w, bbox_h)).unwrap();
+  apply_svg_filter(
+    &filter,
+    &mut a,
+    1.0,
+    Rect::from_xywh(0.0, 0.0, bbox_w, bbox_h),
+  )
+  .unwrap();
   apply_svg_filter(
     &filter,
     &mut b,

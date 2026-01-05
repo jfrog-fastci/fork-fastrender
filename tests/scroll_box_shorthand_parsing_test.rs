@@ -48,4 +48,3 @@ fn parses_scroll_margin_shorthand_two_values() {
   assert_eq!(div.styles.scroll_margin_right, Length::px(6.0));
   assert_eq!(div.styles.scroll_margin_left, Length::px(6.0));
 }
-

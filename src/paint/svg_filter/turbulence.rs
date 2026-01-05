@@ -118,8 +118,16 @@ pub(super) fn render_turbulence(
   let end_x = start_x + region.width as usize;
   let base_freq_x = base_frequency.0.abs();
   let base_freq_y = base_frequency.1.abs();
-  let base_freq_x = if base_freq_x.is_finite() { base_freq_x } else { 0.0 };
-  let base_freq_y = if base_freq_y.is_finite() { base_freq_y } else { 0.0 };
+  let base_freq_x = if base_freq_x.is_finite() {
+    base_freq_x
+  } else {
+    0.0
+  };
+  let base_freq_y = if base_freq_y.is_finite() {
+    base_freq_y
+  } else {
+    0.0
+  };
 
   let extent_px_x = region.width.saturating_sub(1) as f32;
   let extent_px_y = region.height.saturating_sub(1) as f32;
@@ -196,7 +204,13 @@ pub(super) fn render_turbulence(
               let noise = if freq_x_adj == 0.0 && freq_y_adj == 0.0 {
                 0.0
               } else {
-                perlin(coord_x * freq_x_adj, coord_y * freq_y_adj, perm, wrap_x, wrap_y)
+                perlin(
+                  coord_x * freq_x_adj,
+                  coord_y * freq_y_adj,
+                  perm,
+                  wrap_x,
+                  wrap_y,
+                )
               };
               let noise = match kind {
                 TurbulenceType::FractalNoise => noise,

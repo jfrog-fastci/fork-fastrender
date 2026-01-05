@@ -485,8 +485,14 @@ fn bundle_page_cache_allow_missing_inserts_typed_placeholders() {
     .fetch(&missing_img_url)
     .expect("fetch placeholder image");
   assert_eq!(missing_img.content_type.as_deref(), Some("image/png"));
-  assert_eq!(missing_img.final_url.as_deref(), Some(missing_img_url.as_str()));
-  assert_eq!(missing_img.access_control_allow_origin.as_deref(), Some("*"));
+  assert_eq!(
+    missing_img.final_url.as_deref(),
+    Some(missing_img_url.as_str())
+  );
+  assert_eq!(
+    missing_img.access_control_allow_origin.as_deref(),
+    Some("*")
+  );
   assert!(
     missing_img.bytes.starts_with(b"\x89PNG"),
     "expected PNG placeholder bytes"
@@ -496,15 +502,27 @@ fn bundle_page_cache_allow_missing_inserts_typed_placeholders() {
     .fetch(&missing_font_url)
     .expect("fetch placeholder font");
   assert_eq!(missing_font.content_type.as_deref(), Some("font/woff2"));
-  assert_eq!(missing_font.final_url.as_deref(), Some(missing_font_url.as_str()));
-  assert_eq!(missing_font.access_control_allow_origin.as_deref(), Some("*"));
-  assert!(!missing_font.bytes.is_empty(), "font placeholder should be non-empty");
+  assert_eq!(
+    missing_font.final_url.as_deref(),
+    Some(missing_font_url.as_str())
+  );
+  assert_eq!(
+    missing_font.access_control_allow_origin.as_deref(),
+    Some("*")
+  );
+  assert!(
+    !missing_font.bytes.is_empty(),
+    "font placeholder should be non-empty"
+  );
 
   let missing_css = fetcher
     .fetch(&missing_css_url)
     .expect("fetch placeholder stylesheet");
   assert_eq!(missing_css.content_type.as_deref(), Some("text/css"));
-  assert_eq!(missing_css.final_url.as_deref(), Some(missing_css_url.as_str()));
+  assert_eq!(
+    missing_css.final_url.as_deref(),
+    Some(missing_css_url.as_str())
+  );
   let css_text =
     std::str::from_utf8(&missing_css.bytes).expect("stylesheet placeholder should be valid UTF-8");
   parse_stylesheet(css_text).expect("stylesheet placeholder should parse");
@@ -521,9 +539,7 @@ fn bundle_page_cache_allow_missing_inserts_typed_placeholders() {
     Some(missing_frame_url.as_str())
   );
   assert!(
-    missing_frame
-      .bytes
-      .starts_with(b"<!doctype html>"),
+    missing_frame.bytes.starts_with(b"<!doctype html>"),
     "document placeholder should start with a doctype"
   );
 }
@@ -559,7 +575,10 @@ fn bundle_page_cache_captures_extensionless_css_url_images() {
   let mut responses: HashMap<String, (Vec<u8>, &'static str)> = HashMap::new();
   responses.insert(
     css_url.clone(),
-    (b"body { background-image: url(\"bg\"); }".to_vec(), "text/css"),
+    (
+      b"body { background-image: url(\"bg\"); }".to_vec(),
+      "text/css",
+    ),
   );
   responses.insert(bg_url.clone(), (b"png-bytes".to_vec(), "image/png"));
 

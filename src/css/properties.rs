@@ -2268,9 +2268,7 @@ pub(crate) fn supports_parsed_declaration_is_valid(
       return matches!(parsed, PropertyValue::Number(_)) || keyword_in_list(parsed, &["auto"])
     }
     "width" | "height" | "min-width" | "min-height" | "inline-size" | "block-size"
-    | "min-inline-size" | "min-block-size" => {
-      return supports_sizing_value(raw_value, false)
-    }
+    | "min-inline-size" | "min-block-size" => return supports_sizing_value(raw_value, false),
     "max-width" | "max-height" | "max-inline-size" | "max-block-size" => {
       return supports_sizing_value(raw_value, true)
     }
@@ -5093,7 +5091,10 @@ mod tests {
 
   #[test]
   fn parses_lh_lengths() {
-    assert_eq!(parse_length("1lh").unwrap(), Length::new(1.0, LengthUnit::Lh));
+    assert_eq!(
+      parse_length("1lh").unwrap(),
+      Length::new(1.0, LengthUnit::Lh)
+    );
   }
 }
 

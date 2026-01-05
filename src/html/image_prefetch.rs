@@ -884,7 +884,9 @@ pub fn discover_image_prefetch_requests(
 
 #[cfg(test)]
 mod tests {
-  use super::{discover_image_prefetch_requests, discover_image_prefetch_urls, ImagePrefetchLimits};
+  use super::{
+    discover_image_prefetch_requests, discover_image_prefetch_urls, ImagePrefetchLimits,
+  };
   use crate::dom::parse_html;
   use crate::geometry::Size;
   use crate::html::images::ImageSelectionContext;
@@ -1092,7 +1094,10 @@ mod tests {
     assert_eq!(out.requests[0].url, "https://example.com/a.jpg");
     assert_eq!(out.requests[0].crossorigin, CrossOriginAttribute::Anonymous);
     assert_eq!(out.requests[1].url, "https://example.com/b.jpg");
-    assert_eq!(out.requests[1].crossorigin, CrossOriginAttribute::UseCredentials);
+    assert_eq!(
+      out.requests[1].crossorigin,
+      CrossOriginAttribute::UseCredentials
+    );
   }
 
   #[test]

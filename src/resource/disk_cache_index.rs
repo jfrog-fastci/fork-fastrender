@@ -596,15 +596,12 @@ impl DiskCacheIndex {
       JournalRecord::Insert { key, .. } => key.as_str(),
       JournalRecord::Remove { key } => key.as_str(),
     };
-    state
-      .pending_backfills
-      .retain(|candidate| match candidate {
-        JournalRecord::Insert {
-          key: candidate_key,
-          ..
-        } => candidate_key.as_str() != key,
-        JournalRecord::Remove { key: candidate_key } => candidate_key.as_str() != key,
-      });
+    state.pending_backfills.retain(|candidate| match candidate {
+      JournalRecord::Insert {
+        key: candidate_key, ..
+      } => candidate_key.as_str() != key,
+      JournalRecord::Remove { key: candidate_key } => candidate_key.as_str() != key,
+    });
   }
 
   fn apply_record(&self, state: &mut IndexState, record: JournalRecord) {

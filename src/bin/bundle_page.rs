@@ -2091,9 +2091,9 @@ mod tests {
       "expected @font-face URL to be fetched as a font"
     );
     assert!(
-      calls
-        .iter()
-        .any(|(url, dest, _)| url == "https://example.com/bg.png" && *dest == FetchDestination::Image),
+      calls.iter().any(
+        |(url, dest, _)| url == "https://example.com/bg.png" && *dest == FetchDestination::Image
+      ),
       "expected non-font CSS url() asset to be fetched as an image"
     );
 
@@ -2137,9 +2137,11 @@ mod tests {
             Some("text/css".to_string()),
             Some(req.url.to_string()),
           )),
-          other if other.to_ascii_lowercase().starts_with("data:") => Err(fastrender::Error::Other(
-            "data: URL should not be fetched during bundle crawling".to_string(),
-          )),
+          other if other.to_ascii_lowercase().starts_with("data:") => {
+            Err(fastrender::Error::Other(
+              "data: URL should not be fetched during bundle crawling".to_string(),
+            ))
+          }
           other => Err(fastrender::Error::Other(format!(
             "unexpected fetch: {other}"
           ))),

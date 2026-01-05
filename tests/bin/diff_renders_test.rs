@@ -89,7 +89,10 @@ fn diff_renders_reports_matches() {
     html.contains("id=\"show-match\""),
     "expected show-match toggle:\n{html}"
   );
-  assert!(html.contains("Match (1)"), "expected match count label:\n{html}");
+  assert!(
+    html.contains("Match (1)"),
+    "expected match count label:\n{html}"
+  );
   assert!(
     html.contains("tr:target"),
     "expected deep-link highlight styling:\n{html}"

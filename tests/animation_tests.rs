@@ -17,9 +17,9 @@ use fastrender::style::cascade::StyledNode;
 use fastrender::style::media::MediaContext;
 use fastrender::style::types::{
   AnimationRange, AnimationTimeline, BackgroundPosition, BackgroundSize, BackgroundSizeComponent,
-  BasicShape, BorderStyle, ClipComponent, FilterFunction, RangeOffset,
+  BasicShape, BorderStyle, ClipComponent, FilterFunction, OutlineColor, OutlineStyle, RangeOffset,
   ScrollFunctionTimeline, ScrollTimeline, ScrollTimelineScroller, TimelineAxis, TimelineOffset,
-  OutlineColor, OutlineStyle, TransformOrigin, ViewTimeline, ViewTimelinePhase, WritingMode,
+  TransformOrigin, ViewTimeline, ViewTimelinePhase, WritingMode,
 };
 use fastrender::Rgba;
 use fastrender::{
@@ -568,7 +568,10 @@ fn keyframes_interpolate_mask_size() {
   };
   assert_eq!(sizes.len(), 1);
   match &sizes[0] {
-    BackgroundSize::Explicit(BackgroundSizeComponent::Length(x), BackgroundSizeComponent::Length(y)) => {
+    BackgroundSize::Explicit(
+      BackgroundSizeComponent::Length(x),
+      BackgroundSizeComponent::Length(y),
+    ) => {
       assert!((x.to_px() - 50.0).abs() < 1e-3);
       assert!((y.to_px() - 25.0).abs() < 1e-3);
     }
@@ -699,10 +702,7 @@ fn keyframes_interpolate_outline_shorthand() {
   };
   assert_eq!(*style, OutlineStyle::Solid);
   assert_eq!(*width, Length::px(5.0));
-  assert_eq!(
-    *color,
-    OutlineColor::Color(Rgba::new(128, 0, 128, 1.0))
-  );
+  assert_eq!(*color, OutlineColor::Color(Rgba::new(128, 0, 128, 1.0)));
 }
 
 #[test]
