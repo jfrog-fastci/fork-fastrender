@@ -65,6 +65,7 @@ mod shadow_dom_slotted_paint;
 mod stacking_test;
 mod svg_context_paint_font;
 mod svg_filter_background_image;
+mod svg_filter_color_matrix_comma;
 mod svg_filter_color_interpolation;
 mod svg_filter_color_interpolation_golden;
 mod svg_filter_display_none_defs_test;

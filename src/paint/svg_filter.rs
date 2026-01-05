@@ -2405,12 +2405,7 @@ fn parse_fe_color_matrix(node: &roxmltree::Node) -> Option<FilterPrimitive> {
     }
     "luminancetoalpha" => ColorMatrixKind::LuminanceToAlpha,
     _ => {
-      let values: Vec<f32> = node
-        .attribute("values")
-        .unwrap_or("")
-        .split_whitespace()
-        .filter_map(|v| v.parse::<f32>().ok())
-        .collect();
+      let values = parse_number_list(node.attribute("values"));
       if values.len() >= 20 {
         let mut arr = [0.0; 20];
         arr.copy_from_slice(&values[..20]);
