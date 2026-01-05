@@ -2007,6 +2007,12 @@ pub enum FilterFunction {
 pub struct TransformOrigin {
   pub x: Length,
   pub y: Length,
+  /// Optional z offset for 3D transforms (`transform-origin` third component).
+  ///
+  /// CSS defines this as a `<length>` (no percentages). We keep it as a `Length` so
+  /// computed styles can round-trip authored values; callers should treat
+  /// non-length units conservatively.
+  pub z: Length,
 }
 
 /// A position used by the `offset-path: path(...)` function.

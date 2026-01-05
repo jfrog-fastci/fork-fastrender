@@ -12346,8 +12346,20 @@ fn parse_transform_origin(value: &PropertyValue) -> Option<TransformOrigin> {
 
   let mut x: Option<Length> = None;
   let mut y: Option<Length> = None;
+  let mut z: Option<Length> = None;
 
-  for comp in components.iter().take(3) {
+  for (idx, comp) in components.iter().take(3).enumerate() {
+    if idx == 2 {
+      // `transform-origin` accepts an optional third z component; `perspective-origin` does not,
+      // but parsing it harmlessly keeps the helper shared.
+      match *comp {
+        PropertyValue::Length(len) if !len.unit.is_percentage() => z = Some(*len),
+        PropertyValue::Number(n) if *n == 0.0 => z = Some(Length::px(0.0)),
+        _ => {}
+      }
+      continue;
+    }
+
     match *comp {
       PropertyValue::Length(len) => push_component(&mut x, &mut y, *len, AxisHint::Either),
       PropertyValue::Percentage(pct) => {
@@ -12367,7 +12379,8 @@ fn parse_transform_origin(value: &PropertyValue) -> Option<TransformOrigin> {
 
   let x = x.unwrap_or_else(|| Length::percent(50.0));
   let y = y.unwrap_or_else(|| Length::percent(50.0));
-  Some(TransformOrigin { x, y })
+  let z = z.unwrap_or_else(|| Length::px(0.0));
+  Some(TransformOrigin { x, y, z })
 }
 
 fn parse_transform_box(kw: &str) -> Option<TransformBox> {

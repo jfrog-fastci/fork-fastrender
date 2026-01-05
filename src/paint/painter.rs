@@ -16892,6 +16892,7 @@ mod tests {
     style.transform_origin = crate::style::types::TransformOrigin {
       x: Length::percent(0.0),
       y: Length::percent(0.0),
+      z: Length::px(0.0),
     };
     style
       .transform

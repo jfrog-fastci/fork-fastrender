@@ -258,11 +258,18 @@ pub fn resolve_transforms(
       percentage_height,
       viewport,
     );
+    let origin_z = resolve_transform_length(
+      &style.transform_origin.z,
+      style.font_size,
+      style.root_font_size,
+      percentage_width,
+      viewport,
+    );
     let origin = Point::new(reference.x() + origin_x, reference.y() + origin_y);
 
-    let matrix = Transform3D::translate(origin.x, origin.y, 0.0)
+    let matrix = Transform3D::translate(origin.x, origin.y, origin_z)
       .multiply(&ts)
-      .multiply(&Transform3D::translate(-origin.x, -origin.y, 0.0));
+      .multiply(&Transform3D::translate(-origin.x, -origin.y, -origin_z));
 
     transform_from_style = Some(matrix);
   }

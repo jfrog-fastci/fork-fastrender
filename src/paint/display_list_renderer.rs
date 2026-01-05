@@ -7352,15 +7352,18 @@ impl DisplayListRenderer {
     let mut valid = true;
 
     for (i, (x, y)) in corners.iter().enumerate() {
-      let (tx, ty, _tz, tw) = transform.transform_point(*x, *y, 0.0);
-      if tw.abs() < Transform3D::MIN_PROJECTIVE_W {
+      let Some(projected) = transform.project_point_2d(*x, *y) else {
+        valid = false;
+        break;
+      };
+      let px = projected.x * self.scale;
+      let py = projected.y * self.scale;
+      let dst_x = px * parent_transform.sx + py * parent_transform.kx + parent_transform.tx;
+      let dst_y = px * parent_transform.ky + py * parent_transform.sy + parent_transform.ty;
+      if !dst_x.is_finite() || !dst_y.is_finite() {
         valid = false;
         break;
       }
-      let px = (tx / tw) * self.scale;
-      let py = (ty / tw) * self.scale;
-      let dst_x = px * parent_transform.sx + py * parent_transform.kx + parent_transform.tx;
-      let dst_y = px * parent_transform.ky + py * parent_transform.sy + parent_transform.ty;
       dst_quad[i] = (dst_x, dst_y);
       dst_quad_points[i] = Point::new(dst_x, dst_y);
     }

@@ -1194,12 +1194,14 @@ impl Default for ComputedStyle {
       transform_origin: TransformOrigin {
         x: Length::percent(50.0),
         y: Length::percent(50.0),
+        z: Length::px(0.0),
       },
       transform_style: TransformStyle::Flat,
       perspective: None,
       perspective_origin: TransformOrigin {
         x: Length::percent(50.0),
         y: Length::percent(50.0),
+        z: Length::px(0.0),
       },
       backface_visibility: BackfaceVisibility::Visible,
       resize: Resize::None,

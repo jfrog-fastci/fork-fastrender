@@ -9812,6 +9812,7 @@ mod tests {
     style.transform_origin = crate::style::types::TransformOrigin {
       x: Length::percent(0.0),
       y: Length::percent(0.0),
+      z: Length::px(0.0),
     };
     style.transform.push(Transform::Scale(2.0, 1.0));
 
@@ -9831,6 +9832,7 @@ mod tests {
     style.transform_origin = crate::style::types::TransformOrigin {
       x: Length::percent(0.0),
       y: Length::percent(0.0),
+      z: Length::px(0.0),
     };
     style.transform.push(Transform::Scale(2.0, 1.0));
     style.offset_path = OffsetPath::Path(vec![
@@ -9866,6 +9868,7 @@ mod tests {
     style.transform_origin = crate::style::types::TransformOrigin {
       x: Length::percent(0.0),
       y: Length::percent(0.0),
+      z: Length::px(0.0),
     };
     style.transform.push(Transform::Scale(2.0, 1.0));
     style.offset_path = OffsetPath::Path(vec![

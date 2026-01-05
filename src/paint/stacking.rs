@@ -38,13 +38,14 @@
 //! 9. Mix-blend-mode (except normal)
 //! 10. Isolation: isolate
 //! 11. Perspective property (except none)
-//! 12. Backdrop-filter property (except none)
-//! 13. Containment properties (contain: layout|paint|strict|content)
-//! 14. Flex items with z-index (child of flex container with z-index)
-//! 15. Grid items with z-index (child of grid container with z-index)
-//! 16. Will-change set to property that creates stacking context
-//! 17. Container type (size or inline-size)
-//! 18. Top layer elements (fullscreen, popover, dialog)
+//! 12. Backface-visibility: hidden (implementation detail so we can cull 3D-flipped planes)
+//! 13. Backdrop-filter property (except none)
+//! 14. Containment properties (contain: layout|paint|strict|content)
+//! 15. Flex items with z-index (child of flex container with z-index)
+//! 16. Grid items with z-index (child of grid container with z-index)
+//! 17. Will-change set to property that creates stacking context
+//! 18. Container type (size or inline-size)
+//! 19. Top layer elements (fullscreen, popover, dialog)
 //!
 //! # Usage
 //!
@@ -160,6 +161,13 @@ pub enum StackingContextReason {
 
   /// Has CSS perspective
   Perspective,
+
+  /// Has `backface-visibility: hidden`.
+  ///
+  /// This does not technically establish a stacking context in the spec, but we promote it so
+  /// the paint pipeline can cull the element as a 3D plane (matching browser behaviour in
+  /// common card-flip patterns where only the ancestor is transformed).
+  BackfaceVisibility,
 
   /// Has backdrop-filter
   BackdropFilter,
@@ -532,6 +540,16 @@ pub fn creates_stacking_context(
     return true;
   }
 
+  // `backface-visibility: hidden` needs a distinct plane so we can cull it when an ancestor 3D
+  // transform flips the element away from the camera (common in card flip UIs where only the
+  // parent is rotated).
+  if matches!(
+    style.backface_visibility,
+    crate::style::types::BackfaceVisibility::Hidden
+  ) {
+    return true;
+  }
+
   // 6b. Has CSS filter (filter list is non-empty)
   if !style.filter.is_empty() {
     return true;
@@ -658,6 +676,13 @@ pub fn get_stacking_context_reason(
 
   if style.perspective.is_some() {
     return Some(StackingContextReason::Perspective);
+  }
+
+  if matches!(
+    style.backface_visibility,
+    crate::style::types::BackfaceVisibility::Hidden
+  ) {
+    return Some(StackingContextReason::BackfaceVisibility);
   }
 
   if !style.filter.is_empty() {
@@ -1677,6 +1702,17 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.opacity = 1.0;
     assert!(!creates_stacking_context(&style, None, false));
+  }
+
+  #[test]
+  fn test_creates_stacking_context_backface_visibility_hidden() {
+    let mut style = ComputedStyle::default();
+    style.backface_visibility = crate::style::types::BackfaceVisibility::Hidden;
+    assert!(creates_stacking_context(&style, None, false));
+    assert_eq!(
+      get_stacking_context_reason(&style, None, false),
+      Some(StackingContextReason::BackfaceVisibility)
+    );
   }
 
   #[test]
