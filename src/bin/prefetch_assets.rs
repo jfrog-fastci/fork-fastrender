@@ -143,7 +143,7 @@ mod disk_cache_main {
   use fastrender::dom::{parse_html, DomNode};
   use fastrender::geometry::Size;
   use fastrender::html::asset_discovery::discover_html_asset_urls;
-  use fastrender::html::image_prefetch::{discover_image_prefetch_urls, ImagePrefetchLimits};
+  use fastrender::html::image_prefetch::{discover_image_prefetch_requests, ImagePrefetchLimits};
   use fastrender::html::images::ImageSelectionContext;
   use fastrender::image_loader::ImageCache;
   use fastrender::pageset::{cache_html_path, pageset_entries, PagesetEntry, PagesetFilter};
@@ -154,11 +154,12 @@ mod disk_cache_main {
     DEFAULT_USER_AGENT,
   };
   use fastrender::style::media::{MediaContext, MediaQuery, MediaQueryCache};
+  use fastrender::tree::box_tree::CrossOriginAttribute;
   use rayon::prelude::*;
   use rayon::ThreadPoolBuilder;
   use regex::Regex;
   use std::cell::RefCell;
-  use std::collections::{BTreeSet, HashMap, HashSet};
+  use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
   use std::path::{Path, PathBuf};
   use std::sync::{Arc, OnceLock};
   use std::time::Duration;
@@ -489,6 +490,48 @@ mod disk_cache_main {
       return;
     };
     let _ = insert_unique_with_cap(all, set, normalized, max_total, max_set);
+  }
+
+  fn merge_crossorigin_attr(current: CrossOriginAttribute, incoming: CrossOriginAttribute) -> CrossOriginAttribute {
+    match (current, incoming) {
+      (CrossOriginAttribute::UseCredentials, _) | (_, CrossOriginAttribute::UseCredentials) => {
+        CrossOriginAttribute::UseCredentials
+      }
+      (CrossOriginAttribute::Anonymous, _) | (_, CrossOriginAttribute::Anonymous) => {
+        CrossOriginAttribute::Anonymous
+      }
+      _ => CrossOriginAttribute::None,
+    }
+  }
+
+  fn record_cors_image_candidate(
+    all: &RefCell<BTreeSet<String>>,
+    set: &mut BTreeMap<String, CrossOriginAttribute>,
+    url: &str,
+    crossorigin: CrossOriginAttribute,
+    max_total: usize,
+    max_set: usize,
+  ) {
+    let Some(normalized) = normalize_prefetch_url(url) else {
+      return;
+    };
+    if max_set != 0 && set.len() >= max_set && !set.contains_key(&normalized) {
+      return;
+    }
+    if let Some(existing) = set.get_mut(&normalized) {
+      *existing = merge_crossorigin_attr(*existing, crossorigin);
+      return;
+    }
+    {
+      let mut all_urls = all.borrow_mut();
+      if !all_urls.contains(&normalized) {
+        if max_total != 0 && all_urls.len() >= max_total {
+          return;
+        }
+        all_urls.insert(normalized.clone());
+      }
+    }
+    set.insert(normalized, crossorigin);
   }
 
   fn record_document_candidate(
@@ -1448,6 +1491,7 @@ mod disk_cache_main {
     let all_asset_urls = RefCell::new(BTreeSet::<String>::new());
 
     let mut image_urls: BTreeSet<String> = BTreeSet::new();
+    let mut cors_image_urls: BTreeMap<String, CrossOriginAttribute> = BTreeMap::new();
     let mut document_urls: BTreeSet<String> = BTreeSet::new();
 
     if opts.prefetch_images {
@@ -1461,28 +1505,38 @@ mod disk_cache_main {
             media_ctx.viewport_width,
             media_ctx.viewport_height,
           )),
-          media_context: Some(media_ctx),
-          font_size: Some(media_ctx.base_font_size),
-          base_url: Some(base_url),
-        };
-        let discovery = discover_image_prefetch_urls(dom, selection_ctx, opts.image_limits);
+           media_context: Some(media_ctx),
+           font_size: Some(media_ctx.base_font_size),
+           base_url: Some(base_url),
+         };
+        let discovery = discover_image_prefetch_requests(dom, selection_ctx, opts.image_limits);
 
         let max_urls = if opts.max_discovered_assets_per_page == 0 {
           usize::MAX
         } else {
           opts.max_discovered_assets_per_page
         };
-        for url in discovery.urls {
-          if image_urls.len() >= max_urls {
+        for req in discovery.requests {
+          if image_urls.len() + cors_image_urls.len() >= max_urls {
             break;
           }
-          record_image_candidate(
-            &all_asset_urls,
-            &mut image_urls,
-            &url,
-            opts.max_discovered_assets_per_page,
-            max_urls,
-          );
+          match req.crossorigin {
+            CrossOriginAttribute::None => record_image_candidate(
+              &all_asset_urls,
+              &mut image_urls,
+              &req.url,
+              opts.max_discovered_assets_per_page,
+              max_urls,
+            ),
+            crossorigin => record_cors_image_candidate(
+              &all_asset_urls,
+              &mut cors_image_urls,
+              &req.url,
+              crossorigin,
+              opts.max_discovered_assets_per_page,
+              max_urls,
+            ),
+          };
         }
       }
     }
@@ -1786,7 +1840,11 @@ mod disk_cache_main {
 
     {
       let mut summary = summary.borrow_mut();
-      summary.discovered_images = image_urls.len();
+      summary.discovered_images = image_urls.len()
+        + cors_image_urls
+          .keys()
+          .filter(|url| !image_urls.contains(*url))
+          .count();
       summary.discovered_documents = document_urls.len();
       summary.discovered_css_assets = css_asset_urls.len();
     }
@@ -1808,6 +1866,49 @@ mod disk_cache_main {
               // metadata into the disk cache so subsequent renders can avoid repeating image header
               // parsing during box-tree construction.
               let _ = image_cache.probe(url.as_str());
+            } else {
+              summary.failed_images += 1;
+            }
+          }
+          Err(_) => summary.failed_images += 1,
+        }
+      }
+
+      let plain_fetched = image_urls
+        .iter()
+        .chain(css_asset_urls.iter())
+        .cloned()
+        .collect::<HashSet<_>>();
+      for (url, crossorigin) in &cors_image_urls {
+        if !plain_fetched.contains(url) {
+          match fetcher.fetch_with_request(
+            FetchRequest::new(url.as_str(), FetchDestination::Image).with_referrer(base_hint),
+          ) {
+            Ok(res) => {
+              if ensure_http_success(&res, url)
+                .and_then(|()| ensure_image_mime_sane(&res, url))
+                .is_ok()
+              {
+                summary.fetched_images += 1;
+                let _ = image_cache.probe(url.as_str());
+              } else {
+                summary.failed_images += 1;
+              }
+            }
+            Err(_) => summary.failed_images += 1,
+          }
+        }
+
+        match fetcher.fetch_with_request(
+          FetchRequest::new(url.as_str(), FetchDestination::ImageCors).with_referrer(base_hint),
+        ) {
+          Ok(res) => {
+            if ensure_http_success(&res, url)
+              .and_then(|()| ensure_image_mime_sane(&res, url))
+              .is_ok()
+            {
+              summary.fetched_images += 1;
+              let _ = image_cache.probe_with_crossorigin(url.as_str(), *crossorigin);
             } else {
               summary.failed_images += 1;
             }
@@ -2737,6 +2838,146 @@ body { background-image: url(/bg.png); }
         .fetch_with_request(FetchRequest::new(
           &format!("{base}/img.png"),
           FetchDestination::Image,
+        ))
+        .expect("disk hit");
+      assert_eq!(res.bytes, IMG_BYTES);
+    }
+
+    #[test]
+    fn prefetch_warms_disk_cache_for_crossorigin_images() {
+      let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+      listener.set_nonblocking(true).expect("set_nonblocking");
+      let addr = listener.local_addr().expect("addr");
+
+      const IMG_BYTES: &[u8] = b"cors-img";
+
+      let done = Arc::new(AtomicBool::new(false));
+      let server_done = Arc::clone(&done);
+      let handle = std::thread::spawn(move || {
+        while !server_done.load(Ordering::SeqCst) {
+          match listener.accept() {
+            Ok((mut stream, _)) => {
+              let mut buf = [0u8; 4096];
+              let n = stream.read(&mut buf).unwrap_or(0);
+              let req = String::from_utf8_lossy(&buf[..n]);
+              let path = req
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or("/");
+              let path = path.split('?').next().unwrap_or(path);
+
+              let (status, content_type, body): (&str, &str, &[u8]) = match path {
+                "/img.png" => ("200 OK", "image/png", IMG_BYTES),
+                _ => ("404 Not Found", "text/plain", b"not found"),
+              };
+
+              let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: {content_type}\r\nCache-Control: max-age=86400\r\nConnection: close\r\n\r\n",
+                body.len()
+              );
+              let _ = stream.write_all(response.as_bytes());
+              let _ = stream.write_all(body);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+              std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(_) => break,
+          }
+        }
+      });
+
+      let tmp = tempfile::tempdir().expect("tempdir");
+      let cache_dir = tmp.path().join("cache");
+
+      let base = format!("http://{addr}");
+      let document_url = format!("{base}/index.html");
+      let html = r#"<!doctype html><html><body><img crossorigin src="/img.png"></body></html>"#;
+
+      let html_path = tmp.path().join("cached.html");
+      std::fs::write(&html_path, html).expect("write html");
+      let mut meta_path = html_path.clone();
+      meta_path.set_extension("html.meta");
+      std::fs::write(
+        &meta_path,
+        format!("content-type: text/html\nurl: {document_url}\n"),
+      )
+      .expect("write meta");
+
+      let cached = read_cached_document(&html_path).expect("read cached document");
+
+      let http = build_http_fetcher(
+        DEFAULT_USER_AGENT,
+        DEFAULT_ACCEPT_LANGUAGE,
+        Some(Duration::from_secs(2)),
+      );
+      let mut disk_config = DiskCacheConfig {
+        max_bytes: 0,
+        ..DiskCacheConfig::default()
+      };
+      disk_config.namespace = Some(disk_cache_namespace(
+        DEFAULT_USER_AGENT,
+        DEFAULT_ACCEPT_LANGUAGE,
+      ));
+
+      let fetcher = DiskCachingFetcher::with_configs(
+        http,
+        &cache_dir,
+        CachingFetcherConfig {
+          honor_http_cache_freshness: true,
+          ..CachingFetcherConfig::default()
+        },
+        disk_config.clone(),
+      );
+      let fetcher: Arc<dyn ResourceFetcher> = Arc::new(fetcher);
+
+      let media_ctx = MediaContext::screen(800.0, 600.0);
+      let opts = PrefetchOptions {
+        prefetch_fonts: false,
+        prefetch_images: true,
+        prefetch_icons: false,
+        prefetch_video_posters: false,
+        prefetch_iframes: false,
+        prefetch_embeds: false,
+        prefetch_css_url_assets: false,
+        max_discovered_assets_per_page: 2000,
+        image_limits: ImagePrefetchLimits {
+          max_image_elements: 150,
+          max_urls_per_element: 2,
+        },
+      };
+
+      let summary = prefetch_assets_for_html(
+        "test",
+        &cached.document.base_hint,
+        &cached.document.html,
+        &cached.document.base_hint,
+        &cached.document.base_url,
+        &fetcher,
+        &media_ctx,
+        opts,
+      );
+
+      done.store(true, Ordering::SeqCst);
+      handle.join().expect("server thread");
+
+      assert_eq!(summary.discovered_images, 1);
+      assert_eq!(summary.failed_images, 0);
+
+      // Ensure the persisted resource is actually usable from disk without network access.
+      let offline = DiskCachingFetcher::with_configs(
+        PanicFetcher,
+        &cache_dir,
+        CachingFetcherConfig {
+          honor_http_cache_freshness: true,
+          ..CachingFetcherConfig::default()
+        },
+        disk_config,
+      );
+      let res = offline
+        .fetch_with_request(FetchRequest::new(
+          &format!("{base}/img.png"),
+          FetchDestination::ImageCors,
         ))
         .expect("disk hit");
       assert_eq!(res.bytes, IMG_BYTES);

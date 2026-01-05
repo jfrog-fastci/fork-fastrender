@@ -19,7 +19,7 @@ use crate::html::images::{
 use crate::resource::is_data_url;
 use crate::style::media::MediaContext;
 use crate::style::media::MediaQuery;
-use crate::tree::box_tree::{PictureSource, SizesList, SrcsetDescriptor};
+use crate::tree::box_tree::{CrossOriginAttribute, PictureSource, SizesList, SrcsetDescriptor};
 use std::collections::HashSet;
 
 /// Hard limits for image prefetch discovery.
@@ -47,6 +47,24 @@ pub struct ImagePrefetchDiscovery {
   pub image_elements: usize,
   /// Discovered URLs, in deterministic priority order.
   pub urls: Vec<String>,
+  /// True when discovery stopped early due to `max_image_elements`.
+  pub limited: bool,
+}
+
+/// A discovered image request, paired with the element's `crossorigin` state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImagePrefetchRequest {
+  pub url: String,
+  pub crossorigin: CrossOriginAttribute,
+}
+
+/// Result of HTML image prefetch discovery including `crossorigin` metadata.
+#[derive(Debug, Clone)]
+pub struct ImagePrefetchRequestDiscovery {
+  /// Number of image elements walked (bounded by `max_image_elements`).
+  pub image_elements: usize,
+  /// Discovered requests, in deterministic priority order.
+  pub requests: Vec<ImagePrefetchRequest>,
   /// True when discovery stopped early due to `max_image_elements`.
   pub limited: bool,
 }
@@ -118,6 +136,21 @@ fn resolve_prefetch_url(ctx: ImageSelectionContext<'_>, raw: &str) -> Option<Str
   Some(resolved)
 }
 
+fn parse_crossorigin_attr(node: &DomNode) -> CrossOriginAttribute {
+  match node.get_attribute_ref("crossorigin") {
+    None => CrossOriginAttribute::None,
+    Some(value) => {
+      let value = value.trim();
+      if value.eq_ignore_ascii_case("use-credentials") {
+        CrossOriginAttribute::UseCredentials
+      } else {
+        // Empty, `anonymous`, and unknown tokens are treated as `anonymous`.
+        CrossOriginAttribute::Anonymous
+      }
+    }
+  }
+}
+
 fn push_unique_url(
   ctx: ImageSelectionContext<'_>,
   seen: &mut HashSet<String>,
@@ -129,6 +162,24 @@ fn push_unique_url(
   };
   if seen.insert(resolved.clone()) {
     out.push(resolved);
+  }
+}
+
+fn push_unique_request(
+  ctx: ImageSelectionContext<'_>,
+  crossorigin: CrossOriginAttribute,
+  seen: &mut HashSet<(String, CrossOriginAttribute)>,
+  out: &mut Vec<ImagePrefetchRequest>,
+  raw: &str,
+) {
+  let Some(resolved) = resolve_prefetch_url(ctx, raw) else {
+    return;
+  };
+  if seen.insert((resolved.clone(), crossorigin)) {
+    out.push(ImagePrefetchRequest {
+      url: resolved,
+      crossorigin,
+    });
   }
 }
 
@@ -321,6 +372,92 @@ fn push_prefetch_selection(
     .take(limits.max_urls_per_element)
   {
     push_unique_url(ctx, seen_urls, urls, selected.url);
+  }
+}
+
+fn push_prefetch_selection_with_crossorigin(
+  ctx: ImageSelectionContext<'_>,
+  crossorigin: CrossOriginAttribute,
+  picture_sources: &[PictureSource],
+  img_src: &str,
+  img_srcset: &[crate::tree::box_tree::SrcsetCandidate],
+  img_sizes: Option<&SizesList>,
+  limits: ImagePrefetchLimits,
+  seen_urls: &mut HashSet<(String, CrossOriginAttribute)>,
+  urls: &mut Vec<ImagePrefetchRequest>,
+) {
+  if limits.max_urls_per_element == 0 {
+    return;
+  }
+
+  let srcset_to_consider = select_picture_source(picture_sources, ctx)
+    .map(|source| source.srcset.as_slice())
+    .unwrap_or(img_srcset);
+  let uses_width_descriptors = srcset_has_width_descriptors(srcset_to_consider);
+
+  if uses_width_descriptors {
+    let sizes_for_estimate = select_picture_source(picture_sources, ctx)
+      .and_then(|source| source.sizes.as_ref())
+      .or(img_sizes);
+
+    let Some(source_size) = estimate_source_size(sizes_for_estimate, ctx) else {
+      // Fallback to the renderer-aligned selection which will pick a candidate based on `sizes`
+      // evaluation when slot widths are unknown.
+      for selected in
+        image_sources_with_fallback(img_src, img_srcset, img_sizes, picture_sources, ctx)
+          .into_iter()
+          .take(limits.max_urls_per_element)
+      {
+        push_unique_request(ctx, crossorigin, seen_urls, urls, selected.url);
+      }
+      return;
+    };
+
+    let mut emitted = 0usize;
+    for slot_width in [
+      source_size,
+      source_size * WIDTH_DESCRIPTOR_SECONDARY_SLOT_SCALE,
+    ] {
+      if emitted >= limits.max_urls_per_element {
+        break;
+      }
+      if !slot_width.is_finite() || slot_width <= 0.0 {
+        continue;
+      }
+
+      let selection_ctx = ImageSelectionContext {
+        slot_width: Some(slot_width),
+        ..ctx
+      };
+      let selected = select_image_source(
+        img_src,
+        img_srcset,
+        img_sizes,
+        picture_sources,
+        selection_ctx,
+      );
+      if selected.url.trim().is_empty() {
+        continue;
+      }
+      let before_len = urls.len();
+      push_unique_request(ctx, crossorigin, seen_urls, urls, selected.url);
+      if urls.len() != before_len {
+        emitted += 1;
+      }
+    }
+
+    // Ensure a plain `src` is still captured when we didn't fill the cap (e.g. malformed srcset).
+    if emitted < limits.max_urls_per_element && !img_src.trim().is_empty() {
+      push_unique_request(ctx, crossorigin, seen_urls, urls, img_src);
+    }
+    return;
+  }
+
+  for selected in image_sources_with_fallback(img_src, img_srcset, img_sizes, picture_sources, ctx)
+    .into_iter()
+    .take(limits.max_urls_per_element)
+  {
+    push_unique_request(ctx, crossorigin, seen_urls, urls, selected.url);
   }
 }
 
@@ -524,13 +661,235 @@ pub fn discover_image_prefetch_urls(
   }
 }
 
+/// Discover image URLs in a DOM tree using the renderer's responsive image selection, emitting
+/// the element's `crossorigin` state for each discovered request.
+///
+/// This intentionally does **not** execute layout, so slot widths are treated as unknown and
+/// `sizes` evaluation uses the viewport fallback logic.
+pub fn discover_image_prefetch_requests(
+  dom: &DomNode,
+  ctx: ImageSelectionContext<'_>,
+  limits: ImagePrefetchLimits,
+) -> ImagePrefetchRequestDiscovery {
+  let mut requests: Vec<ImagePrefetchRequest> = Vec::new();
+  let mut seen_requests: HashSet<(String, CrossOriginAttribute)> = HashSet::new();
+  let mut image_elements = 0usize;
+  let mut limited = false;
+
+  fn walk(
+    node: &DomNode,
+    ctx: ImageSelectionContext<'_>,
+    limits: ImagePrefetchLimits,
+    image_elements: &mut usize,
+    limited: &mut bool,
+    seen_requests: &mut HashSet<(String, CrossOriginAttribute)>,
+    requests: &mut Vec<ImagePrefetchRequest>,
+  ) -> bool {
+    if limits.max_image_elements == 0 || limits.max_urls_per_element == 0 {
+      return false;
+    }
+    if *image_elements >= limits.max_image_elements {
+      *limited = true;
+      return false;
+    }
+
+    if node.template_contents_are_inert() {
+      return true;
+    }
+
+    if let Some(tag) = node.tag_name() {
+      if tag.eq_ignore_ascii_case("picture") {
+        if let Some((picture_sources, img)) = picture_sources_and_fallback_img(node) {
+          if *image_elements >= limits.max_image_elements {
+            *limited = true;
+            return false;
+          }
+          *image_elements += 1;
+
+          let crossorigin = parse_crossorigin_attr(img);
+          let img_src = get_img_src_attr(img).unwrap_or("");
+          let img_srcset = get_img_srcset_attr(img)
+            .map(parse_srcset)
+            .unwrap_or_default();
+          let img_sizes = get_sizes_attr(img).and_then(parse_sizes);
+
+          push_prefetch_selection_with_crossorigin(
+            ctx,
+            crossorigin,
+            &picture_sources,
+            img_src,
+            &img_srcset,
+            img_sizes.as_ref(),
+            limits,
+            seen_requests,
+            requests,
+          );
+          if *image_elements >= limits.max_image_elements {
+            *limited = true;
+            return false;
+          }
+          return true;
+        }
+      } else if tag.eq_ignore_ascii_case("img") {
+        if *image_elements >= limits.max_image_elements {
+          *limited = true;
+          return false;
+        }
+        let img_src = get_img_src_attr(node).unwrap_or("");
+        let has_src = !img_src.trim().is_empty();
+        let img_srcset_attr = get_img_srcset_attr(node);
+        let has_srcset = img_srcset_attr.is_some();
+        if has_src || has_srcset {
+          *image_elements += 1;
+
+          let crossorigin = parse_crossorigin_attr(node);
+          let img_srcset = img_srcset_attr.map(parse_srcset).unwrap_or_default();
+          let img_sizes = get_sizes_attr(node).and_then(parse_sizes);
+
+          push_prefetch_selection_with_crossorigin(
+            ctx,
+            crossorigin,
+            &[],
+            img_src,
+            &img_srcset,
+            img_sizes.as_ref(),
+            limits,
+            seen_requests,
+            requests,
+          );
+          if *image_elements >= limits.max_image_elements {
+            *limited = true;
+            return false;
+          }
+        }
+      } else if tag.eq_ignore_ascii_case("video") {
+        let poster = node
+          .get_attribute_ref("poster")
+          .filter(|value| !value.trim().is_empty())
+          .or_else(|| {
+            node
+              .get_attribute_ref("gnt-gl-ps")
+              .filter(|value| !value.trim().is_empty())
+          });
+        if let Some(poster) = poster {
+          if *image_elements >= limits.max_image_elements {
+            *limited = true;
+            return false;
+          }
+          *image_elements += 1;
+          push_unique_request(
+            ctx,
+            CrossOriginAttribute::None,
+            seen_requests,
+            requests,
+            poster,
+          );
+          if *image_elements >= limits.max_image_elements {
+            *limited = true;
+            return false;
+          }
+        }
+      } else if tag.eq_ignore_ascii_case("link") {
+        if let Some(rel_attr) = node.get_attribute_ref("rel") {
+          let rel_tokens = tokenize_rel_list(rel_attr);
+          if !rel_tokens.is_empty() {
+            let href = node.get_attribute_ref("href").unwrap_or("").trim();
+            let as_attr = node.get_attribute_ref("as");
+
+            let media_matches = match node.get_attribute_ref("media") {
+              Some(media) => MediaQuery::parse_list(media)
+                .ok()
+                .map(|list| {
+                  ctx
+                    .media_context
+                    .map(|m| m.evaluate_list(&list))
+                    .unwrap_or(true)
+                })
+                .unwrap_or(true),
+              None => true,
+            };
+            if !media_matches {
+              return true;
+            }
+
+            if link_rel_is_preload_image(&rel_tokens, as_attr) {
+              let parsed_srcset = node
+                .get_attribute_ref("imagesrcset")
+                .map(parse_srcset)
+                .unwrap_or_default();
+              let parsed_sizes = node.get_attribute_ref("imagesizes").and_then(parse_sizes);
+              if href.is_empty() && parsed_srcset.is_empty() {
+                return true;
+              }
+
+              if *image_elements >= limits.max_image_elements {
+                *limited = true;
+                return false;
+              }
+              *image_elements += 1;
+              let crossorigin = parse_crossorigin_attr(node);
+              push_prefetch_selection_with_crossorigin(
+                ctx,
+                crossorigin,
+                &[],
+                href,
+                &parsed_srcset,
+                parsed_sizes.as_ref(),
+                limits,
+                seen_requests,
+                requests,
+              );
+              if *image_elements >= limits.max_image_elements {
+                *limited = true;
+                return false;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    for child in node.traversal_children() {
+      if !walk(
+        child,
+        ctx,
+        limits,
+        image_elements,
+        limited,
+        seen_requests,
+        requests,
+      ) {
+        return false;
+      }
+    }
+    true
+  }
+
+  walk(
+    dom,
+    ctx,
+    limits,
+    &mut image_elements,
+    &mut limited,
+    &mut seen_requests,
+    &mut requests,
+  );
+
+  ImagePrefetchRequestDiscovery {
+    image_elements,
+    requests,
+    limited,
+  }
+}
+
 #[cfg(test)]
 mod tests {
-  use super::{discover_image_prefetch_urls, ImagePrefetchLimits};
+  use super::{discover_image_prefetch_requests, discover_image_prefetch_urls, ImagePrefetchLimits};
   use crate::dom::parse_html;
   use crate::geometry::Size;
   use crate::html::images::ImageSelectionContext;
   use crate::style::media::MediaContext;
+  use crate::tree::box_tree::CrossOriginAttribute;
 
   fn media_ctx_for(viewport: (f32, f32), dpr: f32) -> MediaContext {
     MediaContext::screen(viewport.0, viewport.1)
@@ -709,6 +1068,31 @@ mod tests {
     assert_eq!(out.image_elements, 1);
     assert!(!out.limited);
     assert_eq!(out.urls, vec!["https://example.com/a.jpg".to_string()]);
+  }
+
+  #[test]
+  fn discovers_crossorigin_attribute_for_img() {
+    let html = r#"<img src="a.jpg" crossorigin><img src="b.jpg" crossorigin="use-credentials">"#;
+    let dom = parse_html(html).unwrap();
+
+    let media_ctx = media_ctx_for((800.0, 600.0), 1.0);
+    let ctx = ctx_for((800.0, 600.0), 1.0, &media_ctx, "https://example.com/");
+    let out = discover_image_prefetch_requests(
+      &dom,
+      ctx,
+      ImagePrefetchLimits {
+        max_image_elements: 10,
+        max_urls_per_element: 1,
+      },
+    );
+
+    assert_eq!(out.image_elements, 2);
+    assert!(!out.limited);
+    assert_eq!(out.requests.len(), 2);
+    assert_eq!(out.requests[0].url, "https://example.com/a.jpg");
+    assert_eq!(out.requests[0].crossorigin, CrossOriginAttribute::Anonymous);
+    assert_eq!(out.requests[1].url, "https://example.com/b.jpg");
+    assert_eq!(out.requests[1].crossorigin, CrossOriginAttribute::UseCredentials);
   }
 
   #[test]
