@@ -107,7 +107,6 @@ use crate::paint::stacking::StackingContext;
 use crate::paint::svg_filter::SvgFilterResolver;
 use crate::paint::text_decoration::{resolve_underline_side, UnderlineSide};
 use crate::paint::text_shadow::resolve_text_shadows;
-use crate::paint::transform3d::backface_is_hidden;
 use crate::paint::transform_resolver::ResolvedTransforms;
 use crate::render_control::{
   active_deadline, active_stage, check_active, check_active_periodic, with_deadline, StageGuard,
@@ -1529,20 +1528,6 @@ impl DisplayListBuilder {
     // `overflow: visible`), so use the already-computed `scroll_overflow` to avoid culling away
     // visible descendants.
     paint_bounds = paint_bounds.union(fragment.scroll_overflow.translate(absolute_rect.origin));
-
-    if let Some(style) = style_opt {
-      if matches!(style.backface_visibility, BackfaceVisibility::Hidden)
-        && (style.has_transform() || style.perspective.is_some() || style.has_motion_path())
-      {
-        let transforms = Self::build_transform(style, absolute_rect, self.viewport);
-        if let Some(transform) = transforms.self_transform.as_ref() {
-          if backface_is_hidden(transform) {
-            return;
-          }
-        }
-      }
-    }
-
     if let Some(vis) = visibility.rect {
       if !vis.intersects(paint_bounds) {
         return;
@@ -2089,14 +2074,6 @@ impl DisplayListBuilder {
     let backface_visibility = root_style
       .map(|style| style.backface_visibility)
       .unwrap_or(BackfaceVisibility::Visible);
-
-    if matches!(backface_visibility, BackfaceVisibility::Hidden) {
-      if let Some(t) = transform.as_ref() {
-        if backface_is_hidden(t) {
-          return;
-        }
-      }
-    }
 
     let filter_outset = filter_outset_with_bounds(&filters, 1.0, Some(context.bounds));
     let backdrop_outset = filter_outset_with_bounds(&backdrop_filters, 1.0, Some(context.bounds));

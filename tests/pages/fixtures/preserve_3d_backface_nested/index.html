@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Preserve 3D nested backface-visibility</title>
+    <link rel="stylesheet" href="../assets/styles/base.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <section class="card">
+      <h1>Nested backface-visibility with preserve-3d</h1>
+      <p class="muted">
+        The child is rotated 180deg with <code>backface-visibility: hidden</code>, but an ancestor
+        performs another 180deg rotateY in a preserve-3d context. The net facing should be toward
+        the viewer, so the blue panel must remain visible.
+      </p>
+
+      <div class="stage">
+        <div class="parent">
+          <div class="child">VISIBLE</div>
+        </div>
+      </div>
+    </section>
+  </body>
+</html>
