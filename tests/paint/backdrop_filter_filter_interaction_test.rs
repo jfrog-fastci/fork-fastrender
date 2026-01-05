@@ -110,3 +110,45 @@ fn webkit_backdrop_filter_property_is_honored() {
   assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
+
+#[test]
+fn opacity_applies_to_backdrop_filter_output() {
+  // `opacity` should apply to the element's entire rendering output, including the backdrop-filter
+  // result. A half-opacity element with `backdrop-filter: invert(1)` over red should therefore
+  // blend cyan (the inverted backdrop) with red to produce mid-gray.
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #bg { position: absolute; inset: 0; background: rgb(255 0 0); }
+      #overlay {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 40px;
+        height: 40px;
+        backdrop-filter: invert(1);
+        opacity: 0.5;
+      }
+    </style>
+    <div id="bg"></div>
+    <div id="overlay"></div>
+  "#;
+
+  let (list, font_ctx) = build_display_list(html, 64, 64);
+  let pixmap = DisplayListRenderer::new(64, 64, Rgba::WHITE, font_ctx)
+    .expect("renderer")
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("render");
+
+  let (r, g, b, a) = pixel(&pixmap, 20, 20);
+  assert_eq!(a, 255);
+  // Blending should be close to 50% gray; allow 1 LSB of rounding variance.
+  assert!(
+    (r as i16 - 128).abs() <= 1 && (g as i16 - 128).abs() <= 1 && (b as i16 - 128).abs() <= 1,
+    "expected ~gray, got rgba=({r},{g},{b},{a})"
+  );
+
+  // Outside the overlay remains untouched.
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}

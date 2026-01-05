@@ -1916,6 +1916,7 @@ fn test_stacking_context() {
     bounds: Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
     mix_blend_mode: BlendMode::Normal,
+    opacity: 1.0,
     is_isolated: false,
     transform: None,
     child_perspective: None,

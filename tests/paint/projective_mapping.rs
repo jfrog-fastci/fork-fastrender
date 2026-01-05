@@ -33,6 +33,7 @@ fn renderer_falls_back_for_degenerate_projection() {
     bounds: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
     mix_blend_mode: BlendMode::Normal,
+    opacity: 1.0,
     is_isolated: false,
     transform: Some(near_clipping_transform()),
     child_perspective: None,

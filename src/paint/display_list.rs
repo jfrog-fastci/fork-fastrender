@@ -2116,6 +2116,14 @@ pub struct StackingContextItem {
   /// mix-blend-mode applied when compositing this stacking context
   pub mix_blend_mode: BlendMode,
 
+  /// Opacity applied when compositing this stacking context into its parent.
+  ///
+  /// This represents the CSS `opacity` property on the stacking context root. It must be applied
+  /// at compositing time (rather than wrapping the stacking context in an additional opacity
+  /// layer), otherwise effects like `backdrop-filter` would sample from an empty intermediate
+  /// surface instead of the already-painted backdrop.
+  pub opacity: f32,
+
   /// Whether the stacking context is isolated from backdrop blending
   pub is_isolated: bool,
 

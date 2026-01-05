@@ -21,6 +21,7 @@ fn stacking_context(
     bounds,
     plane_rect,
     mix_blend_mode: BlendMode::Normal,
+    opacity: 1.0,
     is_isolated: false,
     transform,
     child_perspective,

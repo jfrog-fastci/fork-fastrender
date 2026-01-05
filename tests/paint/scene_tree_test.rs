@@ -21,6 +21,7 @@ fn stacking_context(
     bounds: Rect::from_xywh(0.0, 0.0, 0.0, 0.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 0.0, 0.0),
     mix_blend_mode,
+    opacity: 1.0,
     is_isolated: false,
     transform,
     child_perspective: None,

@@ -14,6 +14,7 @@ fn stacking_context(bounds: Rect, transform_style: TransformStyle) -> StackingCo
     bounds,
     plane_rect: bounds,
     mix_blend_mode: BlendMode::Normal,
+    opacity: 1.0,
     is_isolated: false,
     transform: None,
     child_perspective: None,

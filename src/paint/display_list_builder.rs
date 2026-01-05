@@ -1967,7 +1967,7 @@ impl DisplayListBuilder {
     if root_opacity <= f32::EPSILON {
       return;
     }
-    let apply_opacity = root_opacity < 1.0 - f32::EPSILON;
+    let has_opacity = root_opacity < 1.0 - f32::EPSILON;
     let paint_contained = root_style.map(|s| s.containment.paint).unwrap_or(false);
     let context_bounds = context.bounds.translate(offset);
     let root_fragment_offset = root_fragment
@@ -2195,7 +2195,6 @@ impl DisplayListBuilder {
       None
     };
 
-    let mut pushed_opacity = false;
     let mut child_visibility = context_visibility;
     if let Some(bounds) = clip_path.as_ref().map(|clip| clip.bounds()) {
       child_visibility = child_visibility.intersect(Some(bounds), true);
@@ -2217,9 +2216,6 @@ impl DisplayListBuilder {
     }
     // If the visible rect is empty after intersecting local bounds/clips, we can early-out.
     if child_visibility.rect.is_none() && visibility.rect.is_some() {
-      if pushed_opacity {
-        self.pop_opacity();
-      }
       return;
     }
 
@@ -2236,12 +2232,8 @@ impl DisplayListBuilder {
       || overflow_clip.is_some()
       || paint_contained
       || !radii.is_zero()
-      || mask.is_some();
-
-    if apply_opacity {
-      self.push_opacity(root_opacity);
-      pushed_opacity = true;
-    }
+      || mask.is_some()
+      || has_opacity;
 
     if is_root && !has_effects {
       if let Some(root_background) = root_background.as_ref() {
@@ -2251,12 +2243,9 @@ impl DisplayListBuilder {
         self.emit_fragment_list_shallow(
           &context.fragments,
           root_fragment_offset,
-          apply_opacity,
+          has_opacity,
           local_child_visibility,
         );
-        if pushed_opacity {
-          self.pop_opacity();
-        }
         return;
       }
       let mut deadline_counter = 0usize;
@@ -2276,7 +2265,7 @@ impl DisplayListBuilder {
       self.emit_fragment_list_shallow(
         &context.fragments,
         root_fragment_offset,
-        apply_opacity,
+        has_opacity,
         local_child_visibility,
       );
       self.emit_fragment_list(
@@ -2326,9 +2315,6 @@ impl DisplayListBuilder {
           local_child_visibility,
         );
       }
-      if pushed_opacity {
-        self.pop_opacity();
-      }
       return;
     }
 
@@ -2340,6 +2326,7 @@ impl DisplayListBuilder {
         bounds: context_bounds,
         plane_rect,
         mix_blend_mode,
+        opacity: root_opacity,
         is_isolated,
         transform,
         child_perspective,
@@ -2371,7 +2358,7 @@ impl DisplayListBuilder {
     self.emit_fragment_list_shallow(
       &context.fragments,
       root_fragment_offset,
-      apply_opacity,
+      has_opacity,
       local_child_visibility,
     );
     if skip_contents {
@@ -2379,9 +2366,6 @@ impl DisplayListBuilder {
         self.list.push(DisplayItem::PopClip);
       }
       self.list.push(DisplayItem::PopStackingContext);
-      if pushed_opacity {
-        self.pop_opacity();
-      }
       return;
     }
 
@@ -2468,9 +2452,6 @@ impl DisplayListBuilder {
       self.list.push(DisplayItem::PopClip);
     }
     self.list.push(DisplayItem::PopStackingContext);
-    if pushed_opacity {
-      self.pop_opacity();
-    }
   }
 
   fn overflow_clip_from_style(

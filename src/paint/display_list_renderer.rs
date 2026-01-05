@@ -8440,6 +8440,7 @@ impl DisplayListRenderer {
         let scaled_filters = self.ds_filters(&item.filters);
         let scaled_backdrop = self.ds_filters(&item.backdrop_filters);
         let has_backdrop = !scaled_backdrop.is_empty();
+        let opacity = item.opacity.clamp(0.0, 1.0);
         let css_bounds = item.bounds;
         let plane_css_bounds = {
           let candidate = item.plane_rect;
@@ -8533,6 +8534,7 @@ impl DisplayListRenderer {
           )
           || !scaled_filters.is_empty()
           || has_backdrop
+          || opacity < 1.0 - f32::EPSILON
           || mask.is_some()
           || projective_transform.is_some();
         let layer_bounds = needs_layer
@@ -8569,9 +8571,9 @@ impl DisplayListRenderer {
         if needs_layer {
           if manual_blend.is_some() {
             if let Some(layer_rect) = bounded_rect {
-              self.canvas.push_layer_bounded(1.0, None, layer_rect)?;
+              self.canvas.push_layer_bounded(opacity, None, layer_rect)?;
             } else {
-              self.canvas.push_layer(1.0)?;
+              self.canvas.push_layer(opacity)?;
             }
           } else {
             let blend = if is_isolated {
@@ -8582,9 +8584,9 @@ impl DisplayListRenderer {
             if let Some(layer_rect) = bounded_rect {
               self
                 .canvas
-                .push_layer_bounded(1.0, Some(blend), layer_rect)?;
+                .push_layer_bounded(opacity, Some(blend), layer_rect)?;
             } else {
-              self.canvas.push_layer_with_blend(1.0, Some(blend))?;
+              self.canvas.push_layer_with_blend(opacity, Some(blend))?;
             }
           }
           self.record_layer_allocation(self.canvas.width(), self.canvas.height());
@@ -12435,6 +12437,7 @@ mod tests {
       bounds: Rect::from_xywh(0.0, 0.0, 80.0, 50.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 80.0, 50.0),
       mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
       is_isolated: false,
       transform: None,
       child_perspective: None,
@@ -12454,6 +12457,7 @@ mod tests {
       bounds: tilted_rect,
       plane_rect: tilted_rect,
       mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
       is_isolated: false,
       transform: Some(tilt),
       child_perspective: None,
@@ -12477,6 +12481,7 @@ mod tests {
       bounds: front_rect,
       plane_rect: front_rect,
       mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
       is_isolated: false,
       transform: Some(Transform3D::translate(0.0, 0.0, 10.0)),
       child_perspective: None,
@@ -12529,6 +12534,7 @@ mod tests {
         bounds,
         plane_rect: bounds,
         mix_blend_mode: BlendMode::Normal,
+        opacity: 1.0,
         is_isolated: false,
         transform: None,
         child_perspective: None,
@@ -12547,6 +12553,7 @@ mod tests {
         bounds,
         plane_rect: bounds,
         mix_blend_mode: BlendMode::Normal,
+        opacity: 1.0,
         is_isolated: false,
         transform: Some(Transform3D::translate(0.0, 0.0, -10.0)),
         child_perspective: None,
@@ -12575,6 +12582,7 @@ mod tests {
         bounds,
         plane_rect: bounds,
         mix_blend_mode: BlendMode::Normal,
+        opacity: 1.0,
         is_isolated: !backdrop_filters.is_empty(),
         transform: Some(Transform3D::translate(0.0, 0.0, 10.0)),
         child_perspective: None,
@@ -12624,6 +12632,7 @@ mod tests {
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
       is_isolated: false,
       transform: Some(Transform3D::translate(10_000.0, 0.0, 0.0)),
       child_perspective: None,
@@ -12664,6 +12673,7 @@ mod tests {
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
       is_isolated: false,
       transform: None,
       child_perspective: None,
@@ -12682,6 +12692,7 @@ mod tests {
         bounds,
         plane_rect: bounds,
         mix_blend_mode: BlendMode::Normal,
+        opacity: 1.0,
         is_isolated: false,
         transform: Some(Transform3D::translate(0.0, 0.0, order as f32)),
         child_perspective: None,
@@ -15114,6 +15125,7 @@ mod tests {
       bounds: Rect::from_xywh(10.0, 10.0, 20.0, 10.0),
       plane_rect: Rect::from_xywh(10.0, 10.0, 20.0, 10.0),
       mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
       is_isolated: false,
       transform: None,
       child_perspective: None,
@@ -15200,6 +15212,7 @@ mod tests {
       bounds: Rect::from_xywh(1.0, 1.0, 8.0, 8.0),
       plane_rect: Rect::from_xywh(1.0, 1.0, 8.0, 8.0),
       mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
       is_isolated: false,
       transform: None,
       child_perspective: None,
@@ -15255,6 +15268,7 @@ mod tests {
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
       is_isolated: false,
       transform: None,
       child_perspective: None,
@@ -15303,6 +15317,7 @@ mod tests {
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
       is_isolated: false,
       transform: None,
       child_perspective: None,
@@ -15397,6 +15412,7 @@ mod tests {
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
       is_isolated: true,
       transform: None,
       child_perspective: None,
@@ -15465,6 +15481,7 @@ mod tests {
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
       is_isolated: false,
       transform: None,
       child_perspective: None,
@@ -15507,6 +15524,7 @@ mod tests {
         bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
+        opacity: 1.0,
         is_isolated: false,
         transform: None,
         child_perspective: None,
@@ -15546,6 +15564,7 @@ mod tests {
         bounds: Rect::from_xywh(0.0, 0.0, 6.0, 6.0),
         plane_rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
         mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
+        opacity: 1.0,
         is_isolated: false,
         transform: None,
         child_perspective: None,
@@ -15903,6 +15922,7 @@ mod tests {
         bounds: Rect::from_xywh(0.0, 0.0, 6.0, 6.0),
         plane_rect: Rect::from_xywh(0.0, 0.0, 6.0, 6.0),
         mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
+        opacity: 1.0,
         is_isolated: false,
         transform: None,
         child_perspective: None,
@@ -15949,6 +15969,7 @@ mod tests {
       bounds: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
       mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
+      opacity: 1.0,
       is_isolated: false,
       transform: Some(Transform3D::translate(2.0, 1.0, 0.0)),
       child_perspective: None,
@@ -16025,6 +16046,7 @@ mod tests {
       bounds: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
       mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
       is_isolated: false,
       transform: None,
       child_perspective: None,
@@ -16058,6 +16080,7 @@ mod tests {
         bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         mix_blend_mode: crate::paint::display_list::BlendMode::Multiply,
+        opacity: 1.0,
         is_isolated: false,
         transform: None,
         child_perspective: None,
@@ -16102,6 +16125,7 @@ mod tests {
         bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         mix_blend_mode: crate::paint::display_list::BlendMode::Multiply,
+        opacity: 1.0,
         is_isolated: false,
         transform: None,
         child_perspective: None,
@@ -16152,6 +16176,7 @@ mod tests {
         bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         mix_blend_mode: crate::paint::display_list::BlendMode::Multiply,
+        opacity: 1.0,
         is_isolated: true,
         transform: None,
         child_perspective: None,
@@ -16202,6 +16227,7 @@ mod tests {
         bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         mix_blend_mode: crate::paint::display_list::BlendMode::Hue,
+        opacity: 1.0,
         is_isolated: true,
         transform: None,
         child_perspective: None,
@@ -16279,6 +16305,7 @@ mod tests {
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
       is_isolated: true,
       transform: None,
       child_perspective: None,
@@ -16402,6 +16429,7 @@ mod tests {
       bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
       mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
       is_isolated: true,
       transform: None,
       child_perspective: None,
@@ -16478,6 +16506,7 @@ mod tests {
       bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
       mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
       is_isolated: true,
       transform: None,
       child_perspective: None,
@@ -16541,6 +16570,7 @@ mod tests {
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
       is_isolated: true,
       transform: None,
       child_perspective: None,
@@ -16959,6 +16989,7 @@ mod tests {
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
       is_isolated: true,
       transform: None,
       child_perspective: None,
