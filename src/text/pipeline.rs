@@ -7021,6 +7021,23 @@ mod tests {
   }
 
   #[test]
+  fn atomic_clusters_skip_emoji_sequence_spans_for_ascii_text() {
+    crate::text::emoji::debug_reset_emoji_sequence_span_calls();
+    let text = "Hello";
+    let clusters = atomic_shaping_clusters(text);
+    assert_eq!(
+      clusters,
+      vec![(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)],
+      "expected ASCII text to cluster by scalar boundaries"
+    );
+    assert_eq!(
+      crate::text::emoji::debug_emoji_sequence_span_calls(),
+      0,
+      "ASCII text should not run emoji sequence detection"
+    );
+  }
+
+  #[test]
   fn atomic_clusters_skip_emoji_sequence_spans_for_non_emoji_text() {
     crate::text::emoji::debug_reset_emoji_sequence_span_calls();
     let text = "a\u{0301}";
@@ -7044,6 +7061,25 @@ mod tests {
       1,
       "ZWJ sequences need emoji sequence detection to stay atomic"
     );
+  }
+
+  #[test]
+  fn atomic_clusters_keep_emoji_sequences_atomic() {
+    // Emoji sequences that contain joiners/variation selectors/keycaps/tag chars must never be
+    // split into multiple shaping/fallback clusters.
+    for text in [
+      "👨\u{200D}👩\u{200D}👧", // ZWJ sequence
+      "1\u{20E3}",            // keycap (digit + combining enclosing keycap)
+      "❤️",                   // variation selector-16
+      "🏴\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}", // tag sequence (gb-sct)
+    ] {
+      let clusters = atomic_shaping_clusters(text);
+      assert_eq!(
+        clusters,
+        vec![(0, text.len())],
+        "expected emoji sequence to remain atomic: {text:?}"
+      );
+    }
   }
 
   #[test]
