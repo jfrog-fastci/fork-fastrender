@@ -4882,6 +4882,7 @@ impl InlineFormattingContext {
     paragraph_info: &[(bool, bool)],
     inline_vertical: bool,
     strut_metrics: &BaselineMetrics,
+    relative_cb: &ContainingBlock,
     mut anchor_positions: Option<&mut HashMap<usize, Point>>,
     mut positioned_containing_blocks: Option<&mut HashMap<usize, ContainingBlock>>,
   ) -> Vec<FragmentNode> {
@@ -4943,6 +4944,7 @@ impl InlineFormattingContext {
         indent_offset,
         inline_vertical,
         strut_metrics,
+        relative_cb,
         anchor_positions.as_deref_mut(),
         positioned_containing_blocks.as_deref_mut(),
       );
@@ -4965,6 +4967,7 @@ impl InlineFormattingContext {
     indent_offset: f32,
     inline_vertical: bool,
     strut_metrics: &BaselineMetrics,
+    relative_cb: &ContainingBlock,
     mut anchor_positions: Option<&mut HashMap<usize, Point>>,
     mut positioned_containing_blocks: Option<&mut HashMap<usize, ContainingBlock>>,
   ) -> FragmentNode {
@@ -5092,6 +5095,7 @@ impl InlineFormattingContext {
             inline_vertical,
             line_origin,
             Point::ZERO,
+            relative_cb,
             anchor_positions.as_deref_mut(),
             positioned_containing_blocks.as_deref_mut(),
           );
@@ -5119,6 +5123,7 @@ impl InlineFormattingContext {
           inline_vertical,
           line_origin,
           Point::ZERO,
+          relative_cb,
           anchor_positions.as_deref_mut(),
           positioned_containing_blocks.as_deref_mut(),
         );
@@ -5325,14 +5330,88 @@ impl InlineFormattingContext {
   fn create_item_fragment_oriented(
     &self,
     item: &InlineItem,
-    block_pos: f32,
-    inline_pos: f32,
+    mut block_pos: f32,
+    mut inline_pos: f32,
     inline_vertical: bool,
     line_origin: Point,
     parent_offset_in_line: Point,
+    relative_cb: &ContainingBlock,
     mut anchor_positions: Option<&mut HashMap<usize, Point>>,
     mut positioned_containing_blocks: Option<&mut HashMap<usize, ContainingBlock>>,
   ) -> FragmentNode {
+    let style = match item {
+      InlineItem::InlineBox(box_item) => Some(box_item.style.as_ref()),
+      InlineItem::InlineBlock(block_item) => block_item.fragment.style.as_deref(),
+      InlineItem::Ruby(ruby_item) => Some(ruby_item.style.as_ref()),
+      InlineItem::Replaced(replaced_item) => Some(replaced_item.style.as_ref()),
+      InlineItem::Text(_)
+      | InlineItem::SoftBreak
+      | InlineItem::Tab(_)
+      | InlineItem::HardBreak
+      | InlineItem::Floating(_)
+      | InlineItem::StaticPositionAnchor(_) => None,
+    };
+
+    if let Some(style) = style {
+      if style.position.is_relative() {
+        let positioned_style = resolve_positioned_style(
+          style,
+          relative_cb,
+          self.viewport_size,
+          &self.font_context,
+        );
+        let viewport = relative_cb.viewport_size();
+        let inline_base = relative_cb.inline_percentage_base();
+        let block_base = relative_cb.block_percentage_base();
+        let mut offset_x = 0.0;
+        let mut offset_y = 0.0;
+
+        if let Some(top) = crate::layout::utils::resolve_offset_for_positioned(
+          &positioned_style.top,
+          block_base,
+          viewport,
+          &positioned_style,
+          &self.font_context,
+        ) {
+          offset_y = top;
+        } else if let Some(bottom) = crate::layout::utils::resolve_offset_for_positioned(
+          &positioned_style.bottom,
+          block_base,
+          viewport,
+          &positioned_style,
+          &self.font_context,
+        ) {
+          offset_y = -bottom;
+        }
+
+        if let Some(left) = crate::layout::utils::resolve_offset_for_positioned(
+          &positioned_style.left,
+          inline_base,
+          viewport,
+          &positioned_style,
+          &self.font_context,
+        ) {
+          offset_x = left;
+        } else if let Some(right) = crate::layout::utils::resolve_offset_for_positioned(
+          &positioned_style.right,
+          inline_base,
+          viewport,
+          &positioned_style,
+          &self.font_context,
+        ) {
+          offset_x = -right;
+        }
+
+        if inline_vertical {
+          block_pos += offset_x;
+          inline_pos += offset_y;
+        } else {
+          inline_pos += offset_x;
+          block_pos += offset_y;
+        }
+      }
+    }
+
     match item {
       InlineItem::Text(text_item) => {
         let paint_offset = text_item.paint_offset;
@@ -5483,6 +5562,7 @@ impl InlineFormattingContext {
               inline_vertical,
               line_origin,
               parent_offset_in_line.translate(Point::new(block_pos, inline_pos)),
+              relative_cb,
               anchor_positions.as_deref_mut(),
               positioned_containing_blocks.as_deref_mut(),
             );
@@ -5522,6 +5602,7 @@ impl InlineFormattingContext {
               inline_vertical,
               line_origin,
               parent_offset_in_line.translate(Point::new(inline_pos, block_pos)),
+              relative_cb,
               anchor_positions.as_deref_mut(),
               positioned_containing_blocks.as_deref_mut(),
             );
@@ -9666,6 +9747,19 @@ impl InlineFormattingContext {
     } else {
       Point::ZERO
     };
+    let (relative_cb_width, relative_cb_height) = if inline_vertical {
+      (available_block, available_inline)
+    } else {
+      (available_inline, available_block)
+    };
+    let relative_cb_width = relative_cb_width.max(0.0);
+    let relative_cb_height = relative_cb_height.max(0.0);
+    let relative_cb = ContainingBlock::with_viewport_and_bases(
+      Rect::new(Point::ZERO, Size::new(relative_cb_width, relative_cb_height)),
+      self.viewport_size,
+      Some(relative_cb_width),
+      relative_cb_height.is_finite().then_some(relative_cb_height),
+    );
     let mut anchor_positions: HashMap<usize, Point> = HashMap::new();
     let mut positioned_containing_blocks: HashMap<usize, ContainingBlock> = HashMap::new();
     let mut line_fragments = self.create_fragments(
@@ -9677,6 +9771,7 @@ impl InlineFormattingContext {
       &paragraph_info,
       inline_vertical,
       &strut_metrics,
+      &relative_cb,
       if positioned_children.is_empty() {
         None
       } else {
@@ -14807,6 +14902,13 @@ mod tests {
       "aligns base={:?} effective={:?} resolved={:?} allow={} has={}",
       base_align, effective_align, resolved_justify, allow_justify, has_justify
     );
+    let relative_cb_width = first_line.available_width.max(0.0);
+    let relative_cb = ContainingBlock::with_viewport_and_bases(
+      Rect::new(Point::ZERO, Size::new(relative_cb_width, 0.0)),
+      ifc.viewport_size,
+      Some(relative_cb_width),
+      None,
+    );
     let fragments = ifc.create_fragments(
       lines,
       0.0,
@@ -14816,6 +14918,7 @@ mod tests {
       &[(true, true)],
       false,
       &strut,
+      &relative_cb,
       None,
       None,
     );
