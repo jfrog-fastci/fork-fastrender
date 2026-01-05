@@ -1188,10 +1188,28 @@ impl InlineFormattingContext {
         }
         BoxType::Replaced(replaced_box) => {
           self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
-          let item =
-            self.create_replaced_item(child, replaced_box, available_width, available_height)?;
-          current_items.push(InlineItem::Replaced(item));
-          whitespace.note_content();
+          if float {
+            let metrics = self.compute_strut_metrics(&child.style);
+            let va = self.convert_vertical_align(
+              child.style.vertical_align,
+              child.style.font_size,
+              metrics.line_height,
+            );
+            let floating = crate::layout::contexts::inline::line_builder::FloatingItem {
+              box_node: child.clone(),
+              metrics,
+              vertical_align: va,
+              direction: child.style.direction,
+              unicode_bidi: child.style.unicode_bidi,
+            };
+            current_items.push(InlineItem::Floating(floating));
+            whitespace.note_ignorable();
+          } else {
+            let item =
+              self.create_replaced_item(child, replaced_box, available_width, available_height)?;
+            current_items.push(InlineItem::Replaced(item));
+            whitespace.note_content();
+          }
         }
         _ => {
           if is_inline_level || float {
@@ -1991,10 +2009,28 @@ impl InlineFormattingContext {
         }
         BoxType::Replaced(replaced_box) => {
           self.flush_pending_collapsible_space(whitespace, &mut items)?;
-          let item =
-            self.create_replaced_item(child, replaced_box, available_width, available_height)?;
-          items.push(InlineItem::Replaced(item));
-          whitespace.note_content();
+          if child.style.float.is_floating() {
+            let metrics = self.compute_strut_metrics(&child.style);
+            let va = self.convert_vertical_align(
+              child.style.vertical_align,
+              child.style.font_size,
+              metrics.line_height,
+            );
+            let floating = crate::layout::contexts::inline::line_builder::FloatingItem {
+              box_node: child.clone(),
+              metrics,
+              vertical_align: va,
+              direction: child.style.direction,
+              unicode_bidi: child.style.unicode_bidi,
+            };
+            items.push(InlineItem::Floating(floating));
+            whitespace.note_ignorable();
+          } else {
+            let item =
+              self.create_replaced_item(child, replaced_box, available_width, available_height)?;
+            items.push(InlineItem::Replaced(item));
+            whitespace.note_content();
+          }
         }
         _ => {
           // Skip block-level boxes in inline context
@@ -17865,6 +17901,53 @@ mod tests {
     assert!(float_found, "should emit a float fragment in IFC");
     assert!(line_found, "should emit at least one line after the float");
 
+    let (left, width) = float_ctx.available_width_at_y(float_y);
+    assert!(
+      left >= 39.9 && (120.0 - width - left).abs() < 0.1,
+      "float context should report shortened line space; left={left}, width={width}"
+    );
+  }
+
+  #[test]
+  fn inline_float_replaced_creates_fragment_and_shortens_line_space() {
+    let mut float_style = ComputedStyle::default();
+    float_style.display = Display::Inline;
+    float_style.float = crate::style::float::Float::Left;
+    float_style.width = Some(Length::px(40.0));
+    float_style.height = Some(Length::px(20.0));
+    float_style.width_keyword = None;
+    float_style.height_keyword = None;
+    let float_node = BoxNode::new_replaced(
+      Arc::new(float_style),
+      ReplacedType::Canvas,
+      Some(Size::new(40.0, 20.0)),
+      Some(2.0),
+    );
+
+    let text_style = Arc::new(ComputedStyle::default());
+    let before = BoxNode::new_text(text_style.clone(), "before ".to_string());
+    let after = BoxNode::new_text(text_style.clone(), "after wrapping text".to_string());
+    let root = BoxNode::new_inline(text_style, vec![before, float_node, after]);
+
+    let mut float_ctx = crate::layout::float_context::FloatContext::new(120.0);
+    let ifc = InlineFormattingContext::new();
+    let constraints = LayoutConstraints::definite_width(120.0);
+    let fragment = ifc
+      .layout_with_floats(&root, &constraints, Some(&mut float_ctx), 0.0)
+      .expect("layout with replaced inline float");
+
+    let mut float_found = false;
+    let mut float_y = 0.0;
+    for child in fragment.children.iter() {
+      if let Some(style) = &child.style {
+        if style.float.is_floating() {
+          float_found = true;
+          float_y = child.bounds.y();
+        }
+      }
+    }
+
+    assert!(float_found, "should emit a float fragment in IFC");
     let (left, width) = float_ctx.available_width_at_y(float_y);
     assert!(
       left >= 39.9 && (120.0 - width - left).abs() < 0.1,
