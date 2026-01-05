@@ -39,8 +39,9 @@ At runtime we execute the filter graph over `tiny_skia::Pixmap` surfaces:
     where `filter_region_*_device` is the resolved filter-region size in device pixels.
 - `surface_origin_css`: the CSS-space origin of the working surface. This is needed when the filter
   engine allocates a working surface that is not aligned to `(0, 0)` in CSS space (e.g. offset
-  filter regions or `filterRes` resampling). `feTurbulence` uses this to evaluate noise in a stable
-  user-space coordinate system.
+  filter regions, `filterRes` resampling, or when the resolved filter region extends outside the
+  destination pixmap and we temporarily allocate a larger working surface). `feTurbulence` uses this
+  to evaluate noise in a stable user-space coordinate system.
 
 ### `filterRes` handling
 
