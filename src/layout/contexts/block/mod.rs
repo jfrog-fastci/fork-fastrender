@@ -6033,6 +6033,62 @@ mod tests {
   }
 
   #[test]
+  fn height_max_content_rebases_percent_padding_and_borders() {
+    let mut parent_style = ComputedStyle::default();
+    parent_style.display = Display::Block;
+
+    let mut child_style = ComputedStyle::default();
+    child_style.display = Display::Block;
+    child_style.height_keyword = Some(crate::style::types::IntrinsicSizeKeyword::MaxContent);
+    // Percentage vertical padding uses the containing block inline size as its base (CSS2.1 10.5),
+    // which is also the key edge case for intrinsic size rebasing.
+    child_style.padding_top = Length::percent(10.0);
+    child_style.padding_bottom = Length::px(5.0);
+    child_style.border_top_width = Length::px(2.0);
+    child_style.border_bottom_width = Length::px(2.0);
+    child_style.margin_top = Some(Length::px(0.0));
+    child_style.margin_bottom = Some(Length::px(0.0));
+
+    let text = BoxNode::new_text(default_style(), "word ".repeat(40));
+    let inline = BoxNode::new_inline(default_style(), vec![text]);
+    let child = BoxNode::new_block(
+      Arc::new(child_style.clone()),
+      FormattingContextType::Block,
+      vec![inline],
+    );
+    let parent = BoxNode::new_block(
+      Arc::new(parent_style),
+      FormattingContextType::Block,
+      vec![child.clone()],
+    );
+
+    let viewport = Size::new(300.0, 200.0);
+    let font_context = FontContext::new();
+    let fc = BlockFormattingContext::with_font_context_viewport_and_cb(
+      font_context.clone(),
+      viewport,
+      ContainingBlock::viewport(viewport),
+    );
+    let constraints = LayoutConstraints::definite_width(300.0);
+
+    let (_min_base0, max_base0) =
+      compute_intrinsic_block_sizes_without_block_size_constraints(&fc, &child).unwrap();
+    let edges_base0 = vertical_padding_and_borders(&child_style, 0.0, viewport, &font_context);
+    let edges_actual = vertical_padding_and_borders(&child_style, 300.0, viewport, &font_context);
+    let expected_border_box = rebase_intrinsic_border_box_size(max_base0, edges_base0, edges_actual);
+
+    let fragment = fc.layout(&parent, &constraints).unwrap();
+    assert_eq!(fragment.children.len(), 1);
+    let child_frag = &fragment.children[0];
+    assert!(
+      (child_frag.bounds.height() - expected_border_box).abs() < 0.5,
+      "expected border-box height {:.2}, got {:.2}",
+      expected_border_box,
+      child_frag.bounds.height()
+    );
+  }
+
+  #[test]
   fn max_width_clamps_and_centers_in_flow_blocks() {
     let mut parent_style = ComputedStyle::default();
     parent_style.display = Display::Block;
