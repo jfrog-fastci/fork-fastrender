@@ -8084,49 +8084,6 @@ mod tests {
     style.border_left_color = color;
   }
 
-  fn collect_collapsed_border_styles(
-    fragment: &FragmentNode,
-    vertical: &mut Vec<Arc<ComputedStyle>>,
-    horizontal: &mut Vec<Arc<ComputedStyle>>,
-    corners: &mut Vec<Arc<ComputedStyle>>,
-  ) {
-    if let Some(style) = &fragment.style {
-      if matches!(fragment.content, FragmentContent::Block { box_id: None }) {
-        let epsilon = 1e-6;
-        let left = style.border_left_width.value;
-        let right = style.border_right_width.value;
-        let top = style.border_top_width.value;
-        let bottom = style.border_bottom_width.value;
-        let has_left = left > epsilon;
-        let has_right = right > epsilon;
-        let has_top = top > epsilon;
-        let has_bottom = bottom > epsilon;
-        if has_left && !has_right && !has_top && !has_bottom {
-          vertical.push(style.clone());
-        } else if has_top && !has_left && !has_right && !has_bottom {
-          horizontal.push(style.clone());
-        } else if has_left && has_right && has_top && has_bottom {
-          corners.push(style.clone());
-        }
-      }
-    }
-
-    for child in &fragment.children {
-      collect_collapsed_border_styles(child, vertical, horizontal, corners);
-    }
-  }
-
-  fn unique_style_count(styles: &[Arc<ComputedStyle>]) -> usize {
-    let mut uniques: Vec<*const ComputedStyle> = Vec::new();
-    for style in styles {
-      let ptr = Arc::as_ptr(style);
-      if !uniques.iter().any(|existing| *existing == ptr) {
-        uniques.push(ptr);
-      }
-    }
-    uniques.len()
-  }
-
   // -------------------------------------------------------------------------
   // Table fixup fast path
   // -------------------------------------------------------------------------
@@ -11808,10 +11765,11 @@ mod tests {
 
     // Total spacing = 2 rows * 10 = 20, so rows share the remaining 100 -> 50 each.
     assert!((fragment.bounds.height() - 120.0).abs() < 0.1);
-    assert!(fragment.children.len() >= 2);
-    let first_y = fragment.children[0].bounds.y();
-    let second_y = fragment.children[1].bounds.y();
-    assert!((second_y - first_y - 60.0).abs() < 0.1); // 50 height + 10 spacing
+    let mut tops = Vec::new();
+    collect_table_cell_tops(&fragment, &mut tops);
+    tops.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(tops.len(), 2);
+    assert!((tops[1] - tops[0] - 60.0).abs() < 0.1); // 50 height + 10 spacing
   }
 
   #[test]
@@ -11861,10 +11819,11 @@ mod tests {
       .expect("table layout");
 
     // Percent rows should not use the table min-height as a percentage base; they should collapse to intrinsic size.
-    assert!(fragment.children.len() >= 2);
-    let first_y = fragment.children[0].bounds.y();
-    let second_y = fragment.children[1].bounds.y();
-    assert!((second_y - first_y) < 10.0);
+    let mut tops = Vec::new();
+    collect_table_cell_tops(&fragment, &mut tops);
+    tops.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(tops.len(), 2);
+    assert!((tops[1] - tops[0]) < 10.0);
     assert!(fragment.bounds.height() >= 100.0);
   }
 
@@ -11919,10 +11878,11 @@ mod tests {
       .expect("table layout");
 
     assert!((fragment.bounds.height() - 200.0).abs() < 0.1);
-    assert_eq!(fragment.children.len(), 2);
-    let first_y = fragment.children[0].bounds.y();
-    let second_y = fragment.children[1].bounds.y();
-    assert!((second_y - first_y - 100.0).abs() < 0.5);
+    let mut tops = Vec::new();
+    collect_table_cell_tops(&fragment, &mut tops);
+    tops.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(tops.len(), 2);
+    assert!((tops[1] - tops[0] - 100.0).abs() < 0.5);
   }
 
   #[test]
@@ -11986,11 +11946,12 @@ mod tests {
       .layout(&table, &LayoutConstraints::definite(100.0, 300.0))
       .expect("table layout");
 
-    assert_eq!(fragment.children.len(), 2);
-    let first_y = fragment.children[0].bounds.y();
-    let second_y = fragment.children[1].bounds.y();
+    let mut tops = Vec::new();
+    collect_table_cell_tops(&fragment, &mut tops);
+    tops.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(tops.len(), 2);
     // Even though the percentages sum to 120% of the table height, rows must not shrink below their 80px content.
-    assert!(second_y - first_y >= 79.9);
+    assert!(tops[1] - tops[0] >= 79.9);
   }
 
   #[test]
@@ -12044,11 +12005,12 @@ mod tests {
       .layout(&table, &LayoutConstraints::definite(200.0, 200.0))
       .expect("table layout");
 
-    assert_eq!(fragment.children.len(), 2);
-    let first_y = fragment.children[0].bounds.y();
-    let second_y = fragment.children[1].bounds.y();
+    let mut tops = Vec::new();
+    collect_table_cell_tops(&fragment, &mut tops);
+    tops.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(tops.len(), 2);
     // Percent rows totalling 120% of the table height should keep their targets even if the table overflows.
-    assert!((second_y - first_y - 60.0).abs() < 0.5);
+    assert!((tops[1] - tops[0] - 60.0).abs() < 0.5);
     assert!((fragment.bounds.height() - 100.0).abs() < 0.1);
   }
 
@@ -12122,6 +12084,10 @@ mod tests {
     table_style.border_right_width = Length::px(2.0);
     table_style.border_top_width = Length::px(4.0);
     table_style.border_bottom_width = Length::px(1.0);
+    table_style.border_left_style = BorderStyle::Solid;
+    table_style.border_right_style = BorderStyle::Solid;
+    table_style.border_top_style = BorderStyle::Solid;
+    table_style.border_bottom_style = BorderStyle::Solid;
 
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
@@ -12165,7 +12131,7 @@ mod tests {
       .layout(&table, &LayoutConstraints::min_content())
       .expect("table layout");
 
-    let child = &fragment.children[0];
+    let child = find_cell_fragment(&fragment).expect("cell fragment");
     assert!((child.bounds.x() - 3.0).abs() < 0.1);
     assert!((child.bounds.y() - 4.0).abs() < 0.1);
     assert!((fragment.bounds.width() - 15.0).abs() < 0.1); // 10 content + 3 + 2 borders
@@ -12184,6 +12150,8 @@ mod tests {
     table_style.padding_right = Length::px(5.0);
     table_style.border_left_width = Length::px(2.0);
     table_style.border_right_width = Length::px(2.0);
+    table_style.border_left_style = BorderStyle::Solid;
+    table_style.border_right_style = BorderStyle::Solid;
 
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
@@ -12213,7 +12181,7 @@ mod tests {
       .layout(&table, &LayoutConstraints::definite(100.0, 200.0))
       .expect("table layout");
 
-    let child = &fragment.children[0];
+    let child = find_cell_fragment(&fragment).expect("cell fragment");
     // Content width should be table width minus padding/borders: 100 - (5+5) - (2+2) = 86.
     assert!((child.bounds.width() - 86.0).abs() < 0.1);
     // Child should start after left border+padding.
@@ -12231,6 +12199,8 @@ mod tests {
     table_style.padding_right = Length::px(5.0);
     table_style.border_left_width = Length::px(2.0);
     table_style.border_right_width = Length::px(2.0);
+    table_style.border_left_style = BorderStyle::Solid;
+    table_style.border_right_style = BorderStyle::Solid;
 
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
@@ -16112,36 +16082,34 @@ mod tests {
       .layout(&table, &LayoutConstraints::definite_width(80.0))
       .expect("table layout");
 
-    let mut vertical_styles = Vec::new();
-    let mut horizontal_styles = Vec::new();
-    let mut corner_styles = Vec::new();
-    collect_collapsed_border_styles(
-      &fragment,
-      &mut vertical_styles,
-      &mut horizontal_styles,
-      &mut corner_styles,
-    );
+    let borders = fragment
+      .table_borders
+      .as_ref()
+      .expect("expected collapsed borders metadata on the table fragment");
+    assert_eq!(borders.column_count, 2);
+    assert_eq!(borders.row_count, 2);
 
+    let has_vertical = borders.vertical_borders.iter().any(|b| b.is_visible());
+    let has_horizontal = borders.horizontal_borders.iter().any(|b| b.is_visible());
+    let has_corner = borders.corner_borders.iter().any(|b| b.is_visible());
     assert!(
-      vertical_styles.len() > 1 && horizontal_styles.len() > 1 && corner_styles.len() > 1,
-      "expected collapsed border fragments to be present in all orientations"
+      has_vertical && has_horizontal && has_corner,
+      "expected collapsed border segments to be present in all orientations"
     );
 
-    assert_eq!(
-      unique_style_count(&vertical_styles),
-      1,
-      "vertical borders should reuse cached styles"
-    );
-    assert_eq!(
-      unique_style_count(&horizontal_styles),
-      1,
-      "horizontal borders should reuse cached styles"
-    );
-    assert_eq!(
-      unique_style_count(&corner_styles),
-      1,
-      "corner borders should reuse cached styles"
-    );
+    for seg in borders
+      .vertical_borders
+      .iter()
+      .chain(borders.horizontal_borders.iter())
+      .chain(borders.corner_borders.iter())
+    {
+      if !seg.is_visible() {
+        continue;
+      }
+      assert!((seg.width - 2.0).abs() < 1e-6);
+      assert_eq!(seg.style, BorderStyle::Solid);
+      assert_eq!(seg.color, Rgba::RED);
+    }
   }
 
   #[test]
@@ -16729,14 +16697,30 @@ mod tests {
     let constraints = LayoutConstraints::definite_width(200.0);
     let fragment = tfc.layout(&table, &constraints).expect("table layout");
 
-    assert_eq!(fragment.children.len(), 2);
-    let first = &fragment.children[0];
-    let second = &fragment.children[1];
+    let mut cells = Vec::new();
+    collect_table_cell_fragments(&fragment, &mut cells);
+    assert_eq!(cells.len(), 2);
+    let bottom_cell = cells
+      .iter()
+      .copied()
+      .find(|f| {
+        f.style
+          .as_ref()
+          .map(|s| s.vertical_align == VerticalAlign::Bottom)
+          .unwrap_or(false)
+      })
+      .expect("bottom-aligned cell fragment");
+    let other_cell = cells
+      .iter()
+      .copied()
+      .find(|f| !std::ptr::eq(*f, bottom_cell))
+      .expect("other cell fragment");
 
-    assert!((first.bounds.y() - 0.0).abs() < 0.01);
+    assert!((other_cell.bounds.y() - 0.0).abs() < 0.01);
     // Both cells occupy the full row height; bottom alignment is expressed by shifting contents, not the box.
-    assert!((second.bounds.y() - 0.0).abs() < 0.01);
-    assert!((second.bounds.height() - 100.0).abs() < 0.01);
+    assert!((bottom_cell.bounds.y() - 0.0).abs() < 0.01);
+    assert!((bottom_cell.bounds.height() - 100.0).abs() < 0.01);
+    assert!((bottom_cell.bounds.height() - other_cell.bounds.height()).abs() < 0.01);
   }
 
   #[test]
