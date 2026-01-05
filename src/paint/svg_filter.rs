@@ -7930,6 +7930,54 @@ mod tests {
   }
 
   #[test]
+  fn turbulence_seed_defaults_to_zero() {
+    let doc = roxmltree::Document::parse("<filter><feTurbulence/></filter>").unwrap();
+    let node = doc
+      .descendants()
+      .find(|n| n.has_tag_name("feTurbulence"))
+      .unwrap();
+    let prim = parse_fe_turbulence(&node).expect("should parse turbulence");
+    match prim {
+      FilterPrimitive::Turbulence { seed, .. } => assert_eq!(seed, 0),
+      other => panic!("expected turbulence primitive, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn turbulence_seed_clamps_negative_to_zero() {
+    let doc = roxmltree::Document::parse("<filter><feTurbulence seed=\"-1\"/></filter>").unwrap();
+    let node = doc
+      .descendants()
+      .find(|n| n.has_tag_name("feTurbulence"))
+      .unwrap();
+    let prim = parse_fe_turbulence(&node).expect("should parse turbulence");
+    match prim {
+      FilterPrimitive::Turbulence { seed, .. } => assert_eq!(seed, 0),
+      other => panic!("expected turbulence primitive, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn turbulence_seed_rounds_fractional_values() {
+    fn parse_seed(seed: &str) -> u32 {
+      let svg = format!("<filter><feTurbulence seed=\"{seed}\"/></filter>");
+      let doc = roxmltree::Document::parse(&svg).unwrap();
+      let node = doc
+        .descendants()
+        .find(|n| n.has_tag_name("feTurbulence"))
+        .unwrap();
+      let prim = parse_fe_turbulence(&node).expect("should parse turbulence");
+      match prim {
+        FilterPrimitive::Turbulence { seed, .. } => seed,
+        other => panic!("expected turbulence primitive, got {other:?}"),
+      }
+    }
+
+    assert_eq!(parse_seed("1.4"), 1);
+    assert_eq!(parse_seed("1.6"), 2);
+  }
+
+  #[test]
   fn parse_transfer_fn_gamma_defaults_exponent_to_one() {
     let doc = roxmltree::Document::parse(
       "<filter><feComponentTransfer><feFuncR type=\"gamma\" amplitude=\"0.7\" offset=\"0.1\"/></feComponentTransfer></filter>",

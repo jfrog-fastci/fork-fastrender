@@ -357,3 +357,79 @@ impl XorShift32 {
     x
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use rayon::ThreadPoolBuilder;
+
+  fn render_bytes(
+    seed: u32,
+    color_interpolation_filters: super::super::ColorInterpolationFilters,
+  ) -> Vec<u8> {
+    const WIDTH: u32 = 32;
+    const HEIGHT: u32 = 32;
+
+    let filter_region = Rect::from_xywh(0.0, 0.0, WIDTH as f32, HEIGHT as f32);
+    let pixmap = render_turbulence(
+      WIDTH,
+      HEIGHT,
+      filter_region,
+      (0.13, 0.27),
+      seed,
+      3,
+      false,
+      super::super::TurbulenceType::Turbulence,
+      color_interpolation_filters,
+    )
+    .expect("render should succeed")
+    .expect("expected pixmap");
+
+    pixmap.data().to_vec()
+  }
+
+  #[test]
+  fn turbulence_raster_is_deterministic_for_same_seed() {
+    let pool = ThreadPoolBuilder::new()
+      .num_threads(4)
+      .build()
+      .expect("thread pool");
+    let first = pool.install(|| render_bytes(0, super::super::ColorInterpolationFilters::SRGB));
+    let second = pool.install(|| render_bytes(0, super::super::ColorInterpolationFilters::SRGB));
+    assert_eq!(first, second);
+  }
+
+  #[test]
+  fn turbulence_raster_is_deterministic_across_thread_counts() {
+    let single = ThreadPoolBuilder::new()
+      .num_threads(1)
+      .build()
+      .expect("thread pool");
+    let parallel = ThreadPoolBuilder::new()
+      .num_threads(4)
+      .build()
+      .expect("thread pool");
+
+    let single_bytes =
+      single.install(|| render_bytes(42, super::super::ColorInterpolationFilters::LinearRGB));
+    let parallel_bytes =
+      parallel.install(|| render_bytes(42, super::super::ColorInterpolationFilters::LinearRGB));
+
+    assert_eq!(single_bytes, parallel_bytes);
+  }
+
+  #[test]
+  fn turbulence_different_seeds_produce_different_output() {
+    let pool = ThreadPoolBuilder::new()
+      .num_threads(4)
+      .build()
+      .expect("thread pool");
+    let a = pool.install(|| render_bytes(1, super::super::ColorInterpolationFilters::SRGB));
+    let b = pool.install(|| render_bytes(2, super::super::ColorInterpolationFilters::SRGB));
+    assert_eq!(a.len(), b.len(), "expected same output size");
+    assert!(
+      a.iter().zip(&b).any(|(a, b)| a != b),
+      "expected different seeds to affect output"
+    );
+  }
+}
