@@ -1704,6 +1704,168 @@ fn write_snapshot_outputs(
   Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use tempfile::tempdir;
+  use tiny_skia::{IntSize, Pixmap};
+
+  fn pixmap_bytes_rgba(width: u32, height: u32, rgba: [u8; 4]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity((width * height * 4) as usize);
+    for _ in 0..(width * height) {
+      bytes.extend_from_slice(&rgba);
+    }
+    bytes
+  }
+
+  #[test]
+  fn record_variant_increments_baseline_without_storing_bytes() {
+    let temp = tempdir().expect("tempdir");
+    let out_dir = temp.path();
+
+    let baseline_bytes = pixmap_bytes_rgba(1, 1, [10, 20, 30, 255]);
+    let (hash_hi, hash_lo) = hash128(&baseline_bytes);
+
+    let mut state = FixtureDeterminism {
+      stem: "fixture".to_string(),
+      variants: vec![VariantRecord {
+        hash_hi,
+        hash_lo,
+        width: 1,
+        height: 1,
+        count: 1,
+        diff_pixels_vs_baseline: Some(0),
+        first_mismatch_vs_baseline: None,
+        first_mismatch_rgba_vs_baseline: None,
+        data: None,
+      }],
+    };
+
+    record_variant(
+      &mut state,
+      PixmapBytes {
+        width: 1,
+        height: 1,
+        data: baseline_bytes,
+      },
+      out_dir,
+      false,
+    );
+
+    assert_eq!(state.variants.len(), 1);
+    assert_eq!(state.variants[0].count, 2);
+    assert!(
+      state.variants[0].data.is_none(),
+      "baseline record should not retain pixmap bytes"
+    );
+  }
+
+  #[test]
+  fn record_variant_reads_baseline_png_and_reports_first_mismatch_rgba() {
+    let temp = tempdir().expect("tempdir");
+    let out_dir = temp.path();
+
+    let stem = "fixture";
+
+    // Baseline pixmap bytes are premultiplied RGBA (alpha=255 keeps values unchanged).
+    let baseline_bytes = pixmap_bytes_rgba(1, 1, [255, 0, 0, 255]);
+    let (baseline_hi, baseline_lo) = hash128(&baseline_bytes);
+    let size = IntSize::from_wh(1, 1).expect("size");
+    let baseline_pixmap =
+      Pixmap::from_vec(baseline_bytes.clone(), size).expect("baseline pixmap");
+    let baseline_png = encode_image(&baseline_pixmap, OutputFormat::Png).expect("encode baseline");
+    fs::write(output_path_for(out_dir, stem), baseline_png).expect("write baseline png");
+
+    let mut state = FixtureDeterminism {
+      stem: stem.to_string(),
+      variants: vec![VariantRecord {
+        hash_hi: baseline_hi,
+        hash_lo: baseline_lo,
+        width: 1,
+        height: 1,
+        count: 1,
+        diff_pixels_vs_baseline: Some(0),
+        first_mismatch_vs_baseline: None,
+        first_mismatch_rgba_vs_baseline: None,
+        data: None,
+      }],
+    };
+
+    let variant_bytes = pixmap_bytes_rgba(1, 1, [0, 255, 0, 255]);
+    let (variant_hi, variant_lo) = hash128(&variant_bytes);
+
+    record_variant(
+      &mut state,
+      PixmapBytes {
+        width: 1,
+        height: 1,
+        data: variant_bytes.clone(),
+      },
+      out_dir,
+      true,
+    );
+
+    assert_eq!(state.variants.len(), 2);
+    let variant = &state.variants[1];
+    assert_eq!(variant.hash_hi, variant_hi);
+    assert_eq!(variant.hash_lo, variant_lo);
+    assert_eq!(variant.diff_pixels_vs_baseline, Some(1));
+    assert_eq!(variant.first_mismatch_vs_baseline, Some((0, 0)));
+    assert_eq!(
+      variant.first_mismatch_rgba_vs_baseline,
+      Some(([255, 0, 0, 255], [0, 255, 0, 255]))
+    );
+    assert_eq!(variant.data.as_deref(), Some(variant_bytes.as_slice()));
+  }
+
+  #[test]
+  fn record_variant_does_not_store_variant_bytes_when_disabled() {
+    let temp = tempdir().expect("tempdir");
+    let out_dir = temp.path();
+
+    let stem = "fixture";
+    let baseline_bytes = pixmap_bytes_rgba(1, 1, [255, 0, 0, 255]);
+    let (baseline_hi, baseline_lo) = hash128(&baseline_bytes);
+    let size = IntSize::from_wh(1, 1).expect("size");
+    let baseline_pixmap =
+      Pixmap::from_vec(baseline_bytes.clone(), size).expect("baseline pixmap");
+    let baseline_png = encode_image(&baseline_pixmap, OutputFormat::Png).expect("encode baseline");
+    fs::write(output_path_for(out_dir, stem), baseline_png).expect("write baseline png");
+
+    let mut state = FixtureDeterminism {
+      stem: stem.to_string(),
+      variants: vec![VariantRecord {
+        hash_hi: baseline_hi,
+        hash_lo: baseline_lo,
+        width: 1,
+        height: 1,
+        count: 1,
+        diff_pixels_vs_baseline: Some(0),
+        first_mismatch_vs_baseline: None,
+        first_mismatch_rgba_vs_baseline: None,
+        data: None,
+      }],
+    };
+
+    record_variant(
+      &mut state,
+      PixmapBytes {
+        width: 1,
+        height: 1,
+        data: pixmap_bytes_rgba(1, 1, [0, 255, 0, 255]),
+      },
+      out_dir,
+      false,
+    );
+
+    assert_eq!(state.variants.len(), 2);
+    assert!(
+      state.variants[1].data.is_none(),
+      "variant bytes should only be retained when --save-variants is enabled"
+    );
+  }
+}
+
 fn build_snapshot(artifacts: &RenderArtifacts) -> io::Result<PipelineSnapshot> {
   let dom = artifacts
     .dom
