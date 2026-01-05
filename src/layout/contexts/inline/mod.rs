@@ -228,23 +228,6 @@ fn ensure_box_id(node: &BoxNode) -> usize {
   EPHEMERAL_ID_BASE | (node as *const BoxNode as usize)
 }
 
-fn has_preceding_in_flow_inline_content(items: &[InlineItem]) -> bool {
-  items
-    .iter()
-    .rev()
-    .take_while(|item| !matches!(item, InlineItem::HardBreak))
-    .any(|item| match item {
-      InlineItem::Text(t) => t.advance_for_layout > 0.0,
-      InlineItem::Tab(_) => true,
-      InlineItem::InlineBox(b) => b.width() > 0.0,
-      InlineItem::InlineBlock(b) => b.total_width() > 0.0,
-      InlineItem::Ruby(r) => r.width() > 0.0,
-      InlineItem::Replaced(r) => r.total_width() > 0.0,
-      InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_) => false,
-      InlineItem::HardBreak => false,
-    })
-}
-
 impl InlineFormattingContext {
   /// Creates a new InlineFormattingContext
   pub fn new() -> Self {
@@ -493,7 +476,7 @@ impl InlineFormattingContext {
     base_direction: crate::style::types::Direction,
     positioned_children: &mut Vec<PositionedChild>,
   ) -> Result<Vec<InlineItem>, LayoutError> {
-    let mut pending_space: Option<PendingSpace> = None;
+    let mut whitespace = CollapsibleWhitespaceState::default();
     let mut bidi_stack = vec![(box_node.style.unicode_bidi, box_node.style.direction)];
     let mut abs_cb_stack = Vec::new();
     let mut fixed_cb_stack = Vec::new();
@@ -501,7 +484,7 @@ impl InlineFormattingContext {
       box_node,
       available_width,
       available_height,
-      &mut pending_space,
+      &mut whitespace,
       base_direction,
       positioned_children,
       &mut bidi_stack,
@@ -524,7 +507,7 @@ impl InlineFormattingContext {
     fixed_cb_stack: &mut Vec<usize>,
     boundary: CombineBoundary,
   ) -> Result<Vec<InlineFlowSegment>, LayoutError> {
-    let mut pending_space: Option<PendingSpace> = None;
+    let mut whitespace = CollapsibleWhitespaceState::default();
     let mut segments = Vec::new();
     let mut current_items: Vec<InlineItem> = Vec::new();
     let mut deadline_counter = 0usize;
@@ -558,22 +541,17 @@ impl InlineFormattingContext {
       // `<br>` forces a hard line break and suppresses any pending collapsible whitespace that would
       // otherwise appear at the end of the line.
       if matches!(child.box_type, BoxType::LineBreak(_)) {
-        pending_space = None;
+        whitespace.reset();
         current_items.push(InlineItem::HardBreak);
         continue;
       }
 
-      let mut inserted_pending_space = false;
-      if let Some(space) = pending_space.take() {
-        let space_item = self.create_collapsed_space_item(&space.style, space.allow_soft_wrap)?;
-        current_items.push(space_item);
-        inserted_pending_space = true;
-      }
-
       if let Some(running_name) = child.style.running_position.as_ref() {
+        self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
         let running = self.snapshot_running_fragment(child, available_width, running_name)?;
         let anchor = self.create_running_anchor(child, running);
         current_items.push(anchor);
+        whitespace.note_ignorable();
         continue;
       }
 
@@ -581,6 +559,7 @@ impl InlineFormattingContext {
         child.style.position,
         crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
       ) {
+        self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
         let box_id = ensure_box_id(child);
         let containing_block_id = if matches!(
           child.style.position,
@@ -597,6 +576,7 @@ impl InlineFormattingContext {
           containing_block_id,
         });
         current_items.push(anchor);
+        whitespace.note_ignorable();
         continue;
       }
 
@@ -643,28 +623,26 @@ impl InlineFormattingContext {
             child.style.white_space,
             child.style.text_wrap,
           );
-          if normalized.leading_collapsible
-            && !inserted_pending_space
-            && has_preceding_in_flow_inline_content(&current_items)
-          {
-            let space_item =
-              self.create_collapsed_space_item(&child.style, normalized.allow_soft_wrap)?;
-            current_items.push(space_item);
+          if normalized.leading_collapsible {
+            whitespace
+              .note_collapsible_whitespace(child.style.clone(), normalized.allow_soft_wrap);
           }
-          let mut produced = self.create_inline_items_from_normalized_with_base(
-            child,
-            normalized.clone(),
-            false,
-            base_direction,
-            bidi_stack,
-            boundary,
-          )?;
-          current_items.append(&mut produced);
+          if !normalized.text.is_empty() {
+            self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
+            let mut produced = self.create_inline_items_from_normalized_with_base(
+              child,
+              normalized.clone(),
+              false,
+              base_direction,
+              bidi_stack,
+              boundary,
+            )?;
+            current_items.append(&mut produced);
+            whitespace.note_content();
+          }
           if normalized.trailing_collapsible {
-            pending_space = Some(PendingSpace::new(
-              child.style.clone(),
-              normalized.allow_soft_wrap,
-            ));
+            whitespace
+              .note_collapsible_whitespace(child.style.clone(), normalized.allow_soft_wrap);
           }
         }
         BoxType::Marker(marker_box) => match &marker_box.content {
@@ -694,14 +672,7 @@ impl InlineFormattingContext {
               leading_collapsible: false,
               trailing_collapsible: false,
             };
-            if normalized.leading_collapsible
-              && !inserted_pending_space
-              && has_preceding_in_flow_inline_content(&current_items)
-            {
-              let space_item =
-                self.create_collapsed_space_item(&child.style, normalized.allow_soft_wrap)?;
-              current_items.push(space_item);
-            }
+            self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
             let mut produced = self.create_inline_items_from_normalized_with_base(
               child,
               normalized.clone(),
@@ -711,22 +682,20 @@ impl InlineFormattingContext {
               boundary,
             )?;
             current_items.append(&mut produced);
-            if normalized.trailing_collapsible {
-              pending_space = Some(PendingSpace::new(
-                child.style.clone(),
-                normalized.allow_soft_wrap,
-              ));
-            }
+            whitespace.note_content();
           }
           MarkerContent::Image(replaced_box) => {
+            self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
             let mut item =
               self.create_replaced_item(child, replaced_box, available_width, available_height)?;
             let gap = marker_inline_gap(&child.style, &self.font_context, self.viewport_size);
             item = item.as_marker(gap, child.style.list_style_position, child.style.direction);
             current_items.push(InlineItem::Replaced(item));
+            whitespace.note_content();
           }
         },
         BoxType::Inline(_) => {
+          self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
           if matches!(child.style.display, Display::Ruby) {
             let item = self.layout_ruby_inline_item(
               child,
@@ -739,6 +708,7 @@ impl InlineFormattingContext {
               fixed_cb_stack,
             )?;
             current_items.push(item);
+            whitespace.note_content();
             continue;
           }
           if float {
@@ -756,11 +726,13 @@ impl InlineFormattingContext {
               unicode_bidi: child.style.unicode_bidi,
             };
             current_items.push(InlineItem::Floating(floating));
+            whitespace.note_content();
             continue;
           }
           if formatting_context.is_some() {
             let item = self.layout_inline_block(child, available_width, available_height)?;
             current_items.push(InlineItem::InlineBlock(item));
+            whitespace.note_content();
             continue;
           }
 
@@ -862,7 +834,7 @@ impl InlineFormattingContext {
             child,
             available_width,
             available_height,
-            &mut pending_space,
+            &mut whitespace,
             base_direction,
             positioned_children,
             bidi_stack,
@@ -963,9 +935,16 @@ impl InlineFormattingContext {
             inline_box.add_child(item);
           }
 
+          let inline_box_width = inline_box.width();
           current_items.push(InlineItem::InlineBox(inline_box));
+          if inline_box_width > 0.0 {
+            whitespace.note_content();
+          } else {
+            whitespace.note_ignorable();
+          }
         }
         BoxType::Anonymous(anon) if matches!(anon.anonymous_type, AnonymousType::Inline) => {
+          self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
           if float {
             let metrics = self.compute_strut_metrics(&child.style);
             let va = self.convert_vertical_align(
@@ -981,11 +960,13 @@ impl InlineFormattingContext {
               unicode_bidi: child.style.unicode_bidi,
             };
             current_items.push(InlineItem::Floating(floating));
+            whitespace.note_content();
             continue;
           }
           if formatting_context.is_some() {
             let item = self.layout_inline_block(child, available_width, available_height)?;
             current_items.push(InlineItem::InlineBlock(item));
+            whitespace.note_content();
             continue;
           }
 
@@ -1087,7 +1068,7 @@ impl InlineFormattingContext {
             child,
             available_width,
             available_height,
-            &mut pending_space,
+            &mut whitespace,
             base_direction,
             positioned_children,
             bidi_stack,
@@ -1202,19 +1183,28 @@ impl InlineFormattingContext {
             inline_box.add_child(item);
           }
 
+          let inline_box_width = inline_box.width();
           current_items.push(InlineItem::InlineBox(inline_box));
+          if inline_box_width > 0.0 {
+            whitespace.note_content();
+          } else {
+            whitespace.note_ignorable();
+          }
         }
         BoxType::Replaced(replaced_box) => {
+          self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
           let item =
             self.create_replaced_item(child, replaced_box, available_width, available_height)?;
           current_items.push(InlineItem::Replaced(item));
+          whitespace.note_content();
         }
         _ => {
           if is_inline_level || float {
             continue;
           }
+          self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
           flush_current(&mut segments, &mut current_items);
-          pending_space = None;
+          whitespace.reset();
           segments.push(InlineFlowSegment::Block(BoxNodeRef::new(child)));
         }
       }
@@ -1233,7 +1223,7 @@ impl InlineFormattingContext {
     box_node: &BoxNode,
     available_width: f32,
     available_height: Option<f32>,
-    pending_space: &mut Option<PendingSpace>,
+    whitespace: &mut CollapsibleWhitespaceState,
     base_direction: crate::style::types::Direction,
     positioned_children: &mut Vec<PositionedChild>,
     bidi_stack: &mut Vec<(UnicodeBidi, Direction)>,
@@ -1270,7 +1260,7 @@ impl InlineFormattingContext {
       |idx| &box_node.children[idx],
       available_width,
       available_height,
-      pending_space,
+      whitespace,
       base_direction,
       positioned_children,
       bidi_stack,
@@ -1287,7 +1277,7 @@ impl InlineFormattingContext {
     child_at: F,
     available_width: f32,
     available_height: Option<f32>,
-    pending_space: &mut Option<PendingSpace>,
+    whitespace: &mut CollapsibleWhitespaceState,
     base_direction: crate::style::types::Direction,
     positioned_children: &mut Vec<PositionedChild>,
     bidi_stack: &mut Vec<(UnicodeBidi, Direction)>,
@@ -1329,27 +1319,24 @@ impl InlineFormattingContext {
       // `<br>` forces a hard line break and suppresses any pending collapsible whitespace that would
       // otherwise appear at the end of the line.
       if matches!(child.box_type, BoxType::LineBreak(_)) {
-        *pending_space = None;
+        whitespace.reset();
         items.push(InlineItem::HardBreak);
         continue;
       }
 
-      let mut inserted_pending_space = false;
-      if let Some(space) = pending_space.take() {
-        let space_item = self.create_collapsed_space_item(&space.style, space.allow_soft_wrap)?;
-        items.push(space_item);
-        inserted_pending_space = true;
-      }
       if let Some(running_name) = child.style.running_position.as_ref() {
+        self.flush_pending_collapsible_space(whitespace, &mut items)?;
         let running = self.snapshot_running_fragment(child, available_width, running_name)?;
         let anchor = self.create_running_anchor(child, running);
         items.push(anchor);
+        whitespace.note_ignorable();
         continue;
       }
       if matches!(
         child.style.position,
         crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
       ) {
+        self.flush_pending_collapsible_space(whitespace, &mut items)?;
         let box_id = ensure_box_id(child);
         let containing_block_id = if matches!(
           child.style.position,
@@ -1366,6 +1353,7 @@ impl InlineFormattingContext {
           containing_block_id,
         });
         items.push(anchor);
+        whitespace.note_ignorable();
         continue;
       }
       match &child.box_type {
@@ -1429,28 +1417,24 @@ impl InlineFormattingContext {
             );
           }
 
-          if normalized.leading_collapsible
-            && !inserted_pending_space
-            && has_preceding_in_flow_inline_content(&items)
-          {
-            let space_item =
-              self.create_collapsed_space_item(&child.style, normalized.allow_soft_wrap)?;
-            items.push(space_item);
+          if normalized.leading_collapsible {
+            whitespace.note_collapsible_whitespace(child.style.clone(), normalized.allow_soft_wrap);
           }
-          let mut produced = self.create_inline_items_from_normalized_with_base(
-            child,
-            normalized.clone(),
-            false,
-            base_direction,
-            bidi_stack,
-            boundary,
-          )?;
-          items.append(&mut produced);
+          if !normalized.text.is_empty() {
+            self.flush_pending_collapsible_space(whitespace, &mut items)?;
+            let mut produced = self.create_inline_items_from_normalized_with_base(
+              child,
+              normalized.clone(),
+              false,
+              base_direction,
+              bidi_stack,
+              boundary,
+            )?;
+            items.append(&mut produced);
+            whitespace.note_content();
+          }
           if normalized.trailing_collapsible {
-            *pending_space = Some(PendingSpace::new(
-              child.style.clone(),
-              normalized.allow_soft_wrap,
-            ));
+            whitespace.note_collapsible_whitespace(child.style.clone(), normalized.allow_soft_wrap);
           }
         }
         BoxType::Marker(marker_box) => match &marker_box.content {
@@ -1484,14 +1468,7 @@ impl InlineFormattingContext {
               leading_collapsible: false,
               trailing_collapsible: false,
             };
-            if normalized.leading_collapsible
-              && !inserted_pending_space
-              && has_preceding_in_flow_inline_content(&items)
-            {
-              let space_item =
-                self.create_collapsed_space_item(&child.style, normalized.allow_soft_wrap)?;
-              items.push(space_item);
-            }
+            self.flush_pending_collapsible_space(whitespace, &mut items)?;
             let mut produced = self.create_inline_items_from_normalized_with_base(
               child,
               normalized.clone(),
@@ -1501,14 +1478,10 @@ impl InlineFormattingContext {
               boundary,
             )?;
             items.append(&mut produced);
-            if normalized.trailing_collapsible {
-              *pending_space = Some(PendingSpace::new(
-                child.style.clone(),
-                normalized.allow_soft_wrap,
-              ));
-            }
+            whitespace.note_content();
           }
           MarkerContent::Image(replaced_box) => {
+            self.flush_pending_collapsible_space(whitespace, &mut items)?;
             let mut item =
               self.create_replaced_item(child, replaced_box, available_width, available_height)?;
             let raw_gap = child
@@ -1532,9 +1505,11 @@ impl InlineFormattingContext {
             };
             item = item.as_marker(gap, child.style.list_style_position, child.style.direction);
             items.push(InlineItem::Replaced(item));
+            whitespace.note_content();
           }
         },
         BoxType::Inline(_) => {
+          self.flush_pending_collapsible_space(whitespace, &mut items)?;
           if matches!(child.style.display, Display::Ruby) {
             let item = self.layout_ruby_inline_item(
               child,
@@ -1547,6 +1522,7 @@ impl InlineFormattingContext {
               fixed_cb_stack,
             )?;
             items.push(item);
+            whitespace.note_content();
             continue;
           }
           if child.style.float.is_floating() {
@@ -1565,11 +1541,13 @@ impl InlineFormattingContext {
               unicode_bidi: child.style.unicode_bidi,
             };
             items.push(InlineItem::Floating(floating));
+            whitespace.note_content();
             continue;
           }
           if child.formatting_context().is_some() {
             let item = self.layout_inline_block(child, available_width, available_height)?;
             items.push(InlineItem::InlineBlock(item));
+            whitespace.note_content();
             continue;
           }
           // Regular inline box: wrap children in an inline box item that carries padding/borders
@@ -1654,7 +1632,7 @@ impl InlineFormattingContext {
             child,
             available_width,
             available_height,
-            pending_space,
+            whitespace,
             base_direction,
             positioned_children,
             bidi_stack,
@@ -1751,9 +1729,16 @@ impl InlineFormattingContext {
             inline_box.add_child(item);
           }
 
+          let inline_box_width = inline_box.width();
           items.push(InlineItem::InlineBox(inline_box));
+          if inline_box_width > 0.0 {
+            whitespace.note_content();
+          } else {
+            whitespace.note_ignorable();
+          }
         }
         BoxType::Anonymous(anon) if matches!(anon.anonymous_type, AnonymousType::Inline) => {
+          self.flush_pending_collapsible_space(whitespace, &mut items)?;
           if child.style.float.is_floating() {
             let metrics = self.compute_strut_metrics(&child.style);
             let va = self.convert_vertical_align(
@@ -1769,11 +1754,13 @@ impl InlineFormattingContext {
               unicode_bidi: child.style.unicode_bidi,
             };
             items.push(InlineItem::Floating(floating));
+            whitespace.note_content();
             continue;
           }
           if child.formatting_context().is_some() {
             let item = self.layout_inline_block(child, available_width, available_height)?;
             items.push(InlineItem::InlineBlock(item));
+            whitespace.note_content();
             continue;
           }
 
@@ -1857,7 +1844,7 @@ impl InlineFormattingContext {
             child,
             available_width,
             available_height,
-            pending_space,
+            whitespace,
             base_direction,
             positioned_children,
             bidi_stack,
@@ -1957,12 +1944,20 @@ impl InlineFormattingContext {
             inline_box.add_child(item);
           }
 
+          let inline_box_width = inline_box.width();
           items.push(InlineItem::InlineBox(inline_box));
+          if inline_box_width > 0.0 {
+            whitespace.note_content();
+          } else {
+            whitespace.note_ignorable();
+          }
         }
         BoxType::Replaced(replaced_box) => {
+          self.flush_pending_collapsible_space(whitespace, &mut items)?;
           let item =
             self.create_replaced_item(child, replaced_box, available_width, available_height)?;
           items.push(InlineItem::Replaced(item));
+          whitespace.note_content();
         }
         _ => {
           // Skip block-level boxes in inline context
@@ -2267,12 +2262,12 @@ impl InlineFormattingContext {
       first_letter_style: None,
       starting_style: None,
     };
-    let mut pending_space: Option<PendingSpace> = None;
+    let mut whitespace = CollapsibleWhitespaceState::default();
     self.collect_inline_items_internal(
       &container,
       available_width,
       available_height,
-      &mut pending_space,
+      &mut whitespace,
       base_direction,
       positioned_children,
       bidi_stack,
@@ -3473,6 +3468,20 @@ impl InlineFormattingContext {
     item.advance = em;
     item.advance_for_layout = em;
     item.recompute_cluster_advances();
+  }
+
+  fn flush_pending_collapsible_space(
+    &self,
+    whitespace: &mut CollapsibleWhitespaceState,
+    items: &mut Vec<InlineItem>,
+  ) -> Result<(), LayoutError> {
+    let Some(space) = whitespace.pending.take() else {
+      return Ok(());
+    };
+    let space_item = self.create_collapsed_space_item(&space.style, space.allow_soft_wrap)?;
+    items.push(space_item);
+    whitespace.note_space();
+    Ok(())
   }
 
   fn create_collapsed_space_item(
@@ -5737,7 +5746,7 @@ impl InlineFormattingContext {
     base_direction: crate::style::types::Direction,
     positioned_children: &mut Vec<PositionedChild>,
   ) -> Result<Vec<InlineItem>, LayoutError> {
-    let mut pending_space: Option<PendingSpace> = None;
+    let mut whitespace = CollapsibleWhitespaceState::default();
     let mut bidi_stack = vec![(container_style.unicode_bidi, container_style.direction)];
     let mut abs_cb_stack = Vec::new();
     let mut fixed_cb_stack = Vec::new();
@@ -5746,7 +5755,7 @@ impl InlineFormattingContext {
       |idx| children[idx],
       available_width,
       available_height,
-      &mut pending_space,
+      &mut whitespace,
       base_direction,
       positioned_children,
       &mut bidi_stack,
@@ -6155,6 +6164,43 @@ impl PendingSpace {
       style,
       allow_soft_wrap,
     }
+  }
+}
+
+#[derive(Debug, Default)]
+struct CollapsibleWhitespaceState {
+  pending: Option<PendingSpace>,
+  seen_content: bool,
+  after_collapsible_space: bool,
+}
+
+impl CollapsibleWhitespaceState {
+  fn reset(&mut self) {
+    self.pending = None;
+    self.seen_content = false;
+    self.after_collapsible_space = false;
+  }
+
+  fn note_content(&mut self) {
+    self.seen_content = true;
+    self.after_collapsible_space = false;
+  }
+
+  fn note_space(&mut self) {
+    self.seen_content = true;
+    self.after_collapsible_space = true;
+  }
+
+  fn note_ignorable(&mut self) {
+    // Keep `after_collapsible_space` unchanged so collapsible whitespace can span across
+    // zero-width placeholders (e.g. static position anchors for out-of-flow descendants).
+  }
+
+  fn note_collapsible_whitespace(&mut self, style: Arc<ComputedStyle>, allow_soft_wrap: bool) {
+    if !self.seen_content || self.after_collapsible_space || self.pending.is_some() {
+      return;
+    }
+    self.pending = Some(PendingSpace::new(style, allow_soft_wrap));
   }
 }
 
@@ -13801,6 +13847,34 @@ mod tests {
   }
 
   #[test]
+  fn collapsible_space_survives_from_whitespace_only_text_node() {
+    let mut style = ComputedStyle::default();
+    style.white_space = WhiteSpace::Normal;
+    let text_style = Arc::new(style);
+    let root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![
+        BoxNode::new_text(text_style.clone(), "Hello".to_string()),
+        BoxNode::new_text(text_style.clone(), "   ".to_string()),
+        BoxNode::new_text(text_style.clone(), "world".to_string()),
+      ],
+    );
+    let ifc = InlineFormattingContext::new();
+    let items = ifc
+      .collect_inline_items(&root, 800.0, Some(800.0))
+      .expect("collect items");
+    let texts: Vec<String> = items
+      .iter()
+      .filter_map(|item| match item {
+        InlineItem::Text(t) => Some(t.text.clone()),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(texts, vec!["Hello", " ", "world"]);
+  }
+
+  #[test]
   fn collapsible_space_survives_across_inline_boxes() {
     let mut style = ComputedStyle::default();
     style.white_space = WhiteSpace::Normal;
@@ -13857,10 +13931,15 @@ mod tests {
     }
     assert_eq!(combined, "Hello world");
 
+    assert_eq!(items.len(), 3);
+    assert!(matches!(&items[0], InlineItem::InlineBox(_)));
     assert!(
-      items.windows(2).any(|w| matches!(&w[0], InlineItem::Text(t) if t.text == " ")
-        && matches!(&w[1], InlineItem::Text(t) if t.text == "world")),
-      "collapsed space should appear before world text node"
+      matches!(&items[1], InlineItem::Text(t) if t.text == " "),
+      "expected collapsed space after inline box"
+    );
+    assert!(
+      matches!(&items[2], InlineItem::Text(t) if t.text == "world"),
+      "expected text after collapsed space"
     );
   }
 
