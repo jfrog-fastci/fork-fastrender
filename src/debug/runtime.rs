@@ -10,6 +10,16 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::RwLock;
 
+// `set_runtime_toggles` installs process-wide overrides. In the unit test harness, multiple tests
+// may run concurrently and each may toggle different `FASTR_*` flags. Without coordination, two
+// overlapping overrides can race and restore the "wrong" previous value when their guards drop,
+// leading to flaky behavior.
+//
+// Serialize global overrides across threads (while still allowing nested overrides on the same
+// thread) so guards behave deterministically.
+use parking_lot::ReentrantMutex;
+use parking_lot::ReentrantMutexGuard;
+
 /// Parsed runtime debug/configuration toggles sourced from `FASTR_*` environment variables.
 ///
 /// Values are captured once (via [`RuntimeToggles::from_env`]) and then reused throughout a render.
@@ -159,6 +169,7 @@ fn matches_ignore_case(value: &str, candidates: &[&str]) -> bool {
 static DEFAULT_TOGGLES: OnceLock<Arc<RuntimeToggles>> = OnceLock::new();
 static ACTIVE_TOGGLES: OnceLock<RwLock<Arc<RuntimeToggles>>> = OnceLock::new();
 static ACTIVE_TOGGLES_EPOCH: AtomicUsize = AtomicUsize::new(0);
+static ACTIVE_TOGGLES_OVERRIDE_LOCK: OnceLock<ReentrantMutex<()>> = OnceLock::new();
 
 #[derive(Clone)]
 enum ThreadToggleState {
@@ -226,6 +237,8 @@ fn default_toggles() -> Arc<RuntimeToggles> {
 /// Guard that restores the previous active toggles when dropped.
 pub struct RuntimeTogglesGuard {
   previous: Arc<RuntimeToggles>,
+  #[allow(dead_code)]
+  _override_lock: ReentrantMutexGuard<'static, ()>,
 }
 
 impl Drop for RuntimeTogglesGuard {
@@ -242,6 +255,9 @@ impl Drop for RuntimeTogglesGuard {
 
 /// Install the provided toggles as the active set for the duration of the returned guard.
 pub fn set_runtime_toggles(toggles: Arc<RuntimeToggles>) -> RuntimeTogglesGuard {
+  let override_lock = ACTIVE_TOGGLES_OVERRIDE_LOCK
+    .get_or_init(|| ReentrantMutex::new(()))
+    .lock();
   let lock = ACTIVE_TOGGLES.get_or_init(|| RwLock::new(default_toggles()));
   let mut guard = lock
     .write()
@@ -249,13 +265,19 @@ pub fn set_runtime_toggles(toggles: Arc<RuntimeToggles>) -> RuntimeTogglesGuard 
   let previous = guard.clone();
   *guard = toggles;
   ACTIVE_TOGGLES_EPOCH.fetch_add(1, Ordering::Relaxed);
-  RuntimeTogglesGuard { previous }
+  RuntimeTogglesGuard {
+    previous,
+    _override_lock: override_lock,
+  }
 }
 
 /// Replace the currently active runtime toggles.
 ///
 /// Unlike [`set_runtime_toggles`], this does not return a guard to restore the previous value.
 pub(crate) fn update_runtime_toggles(toggles: Arc<RuntimeToggles>) {
+  let _override_lock = ACTIVE_TOGGLES_OVERRIDE_LOCK
+    .get_or_init(|| ReentrantMutex::new(()))
+    .lock();
   let lock = ACTIVE_TOGGLES.get_or_init(|| RwLock::new(default_toggles()));
   let mut guard = lock
     .write()

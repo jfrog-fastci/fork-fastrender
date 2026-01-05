@@ -1653,6 +1653,12 @@ impl FormattingContext for FlexFormattingContext {
                           // content-box size because Taffy adds padding/border/scrollbars from the
                           // style when computing the used border-box size for the flex item.
                           let percentage_base = this.viewport_size.width.max(0.0);
+                          let reserve_scroll_x = matches!(measure_style.overflow_x, CssOverflow::Scroll)
+                            || (measure_style.scrollbar_gutter.stable
+                              && matches!(
+                                measure_style.overflow_x,
+                                CssOverflow::Auto | CssOverflow::Scroll
+                              ));
                           let reserve_scroll_y = matches!(measure_style.overflow_y, CssOverflow::Scroll)
                             || (measure_style.scrollbar_gutter.stable
                               && matches!(
@@ -1660,6 +1666,11 @@ impl FormattingContext for FlexFormattingContext {
                                 CssOverflow::Auto | CssOverflow::Scroll
                               ));
                           let scrollbar_width = resolve_scrollbar_width(measure_style);
+
+                          // `compute_intrinsic_inline_size` and `compute_intrinsic_block_size`
+                          // both return *border-box* sizes. Convert to a content-box size because
+                          // Taffy applies padding/border/scrollbar gutters from the style when it
+                          // computes the used border-box for flex items.
                           let padding_left = this.resolve_length_for_width(
                             measure_style.padding_left,
                             percentage_base,
@@ -1667,6 +1678,16 @@ impl FormattingContext for FlexFormattingContext {
                           );
                           let padding_right = this.resolve_length_for_width(
                             measure_style.padding_right,
+                            percentage_base,
+                            measure_style,
+                          );
+                          let padding_top = this.resolve_length_for_width(
+                            measure_style.padding_top,
+                            percentage_base,
+                            measure_style,
+                          );
+                          let padding_bottom = this.resolve_length_for_width(
+                            measure_style.padding_bottom,
                             percentage_base,
                             measure_style,
                           );
@@ -1680,6 +1701,16 @@ impl FormattingContext for FlexFormattingContext {
                             percentage_base,
                             measure_style,
                           );
+                          let border_top = this.resolve_length_for_width(
+                            measure_style.border_top_width,
+                            percentage_base,
+                            measure_style,
+                          );
+                          let border_bottom = this.resolve_length_for_width(
+                            measure_style.border_bottom_width,
+                            percentage_base,
+                            measure_style,
+                          );
                           let extra_w = padding_left
                             + padding_right
                             + border_left
@@ -1689,12 +1720,46 @@ impl FormattingContext for FlexFormattingContext {
                             } else {
                               0.0
                             };
+                          let extra_h = padding_top
+                            + padding_bottom
+                            + border_top
+                            + border_bottom
+                            + if reserve_scroll_x {
+                              scrollbar_width
+                            } else {
+                              0.0
+                            };
                           let mut content_w = (border_box_width - extra_w).max(0.0);
                           // Mirror the clamp behavior from the full layout path to avoid runaway
                           // intrinsic sizes propagating through flex sizing.
                           content_w = content_w.min(this.viewport_size.width.max(0.0));
 
+                          // The intrinsic-width probe is primarily about the inline size, but Taffy
+                          // still consumes the returned block size when resolving the flex line's
+                          // cross size (notably for baseline alignment). Returning 0 here can
+                          // collapse the line height, so compute an intrinsic block size when the
+                          // caller hasn't provided a definite height.
                           let mut content_h = fallback_size(known_dimensions.height, avail.height);
+                          let eps = 0.01;
+                          if content_h <= eps {
+                            let intrinsic_block_result = if let Some(style) = override_style.clone() {
+                              crate::layout::style_override::with_style_override(
+                                measure_box.id,
+                                style,
+                                || fc.compute_intrinsic_block_size(measure_box, mode),
+                              )
+                            } else {
+                              fc.compute_intrinsic_block_size(measure_box, mode)
+                            };
+                            match intrinsic_block_result {
+                              Ok(border_box_block) => {
+                                content_h = (border_box_block - extra_h).max(0.0);
+                              }
+                              Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                              Err(_) => {}
+                            }
+                          }
+
                           let max_h_bound = match avail.height {
                             AvailableSpace::Definite(h) => h,
                             _ => this.viewport_size.height,
