@@ -1024,7 +1024,7 @@ fn parse_container_query_list<'i, 't>(
   let mut queries = vec![parse_container_condition(parser)?];
   loop {
     parser.skip_whitespace();
-    if parser.try_parse(|p| p.expect_delim(',')).is_ok() {
+    if parser.try_parse(|p| p.expect_comma()).is_ok() {
       parser.skip_whitespace();
       queries.push(parse_container_condition(parser)?);
     } else {

@@ -480,17 +480,30 @@ fn cq_query_support_mask(query: &ContainerQuery) -> u8 {
         })
       }
     }
-    ContainerQuery::Or(list) => list
-      .iter()
-      .fold(0u8, |acc, inner| acc | cq_query_support_mask(inner)),
+    ContainerQuery::Or(list) => {
+      // Even for OR conditions, the query container must support all referenced query types;
+      // unsupported branches would otherwise force the engine to select an inline-size container
+      // and miss a matching outer size container.
+      if list.is_empty() {
+        0
+      } else {
+        list.iter().fold(CQ_SUPPORT_ALL, |acc, inner| {
+          acc & cq_query_support_mask(inner)
+        })
+      }
+    }
   }
 }
 
 fn cq_condition_support_mask(condition: &ContainerCondition) -> u8 {
-  condition
-    .query_list
-    .iter()
-    .fold(0u8, |acc, query| acc | cq_query_support_mask(query))
+  if condition.query_list.is_empty() {
+    0
+  } else {
+    condition
+      .query_list
+      .iter()
+      .fold(CQ_SUPPORT_ALL, |acc, query| acc & cq_query_support_mask(query))
+  }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -22154,6 +22167,190 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       target.styles.color,
       Rgba::RED,
       "@container rule should match using the outer size container (not the inner inline-size container)"
+    );
+  }
+
+  #[test]
+  fn container_size_queries_or_with_block_axis_require_size_container() {
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "div".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![
+              ("id".to_string(), "target".to_string()),
+              ("class".to_string(), "fallback".to_string()),
+            ],
+          },
+          children: vec![],
+        }],
+      }],
+    };
+
+    let stylesheet = parse_stylesheet(
+      r"
+        @container (min-width: 400px) or (min-height: 200px) {
+          #target { color: red; }
+        }
+        .fallback { color: blue; }
+      ",
+    )
+    .unwrap();
+
+    // Root node_id = 1 (size container), child node_id = 2 (inline-size container), target node_id = 3.
+    // The OR expression references a block-axis query, so the query container must be a size container.
+    let mut containers = HashMap::new();
+    containers.insert(
+      1,
+      ContainerQueryInfo {
+        inline_size: 300.0,
+        block_size: 300.0,
+        container_type: ContainerType::Size,
+        names: Vec::new(),
+        font_size: 16.0,
+        styles: Arc::new(ComputedStyle::default()),
+      },
+    );
+    containers.insert(
+      2,
+      ContainerQueryInfo {
+        inline_size: 300.0,
+        block_size: 100.0,
+        container_type: ContainerType::InlineSize,
+        names: Vec::new(),
+        font_size: 16.0,
+        styles: Arc::new(ComputedStyle::default()),
+      },
+    );
+    let container_ctx = ContainerQueryContext {
+      base_media: MediaContext::screen(800.0, 600.0),
+      containers,
+    };
+
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+    let styled = apply_styles_with_media_target_and_imports(
+      &dom,
+      &stylesheet,
+      &media_ctx,
+      None,
+      None,
+      None,
+      Some(&container_ctx),
+      None,
+      None,
+    );
+    let target = styled
+      .children
+      .first()
+      .and_then(|inner| inner.children.first())
+      .expect("target");
+    assert_eq!(
+      target.styles.color,
+      Rgba::RED,
+      "@container OR query should match using the outer size container (not the inner inline-size container)"
+    );
+  }
+
+  #[test]
+  fn container_size_queries_query_list_with_block_axis_require_size_container() {
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "div".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![
+              ("id".to_string(), "target".to_string()),
+              ("class".to_string(), "fallback".to_string()),
+            ],
+          },
+          children: vec![],
+        }],
+      }],
+    };
+
+    let stylesheet = parse_stylesheet(
+      r"
+        @container (min-width: 400px), (min-height: 200px) {
+          #target { color: red; }
+        }
+        .fallback { color: blue; }
+      ",
+    )
+    .unwrap();
+
+    // Root node_id = 1 (size container), child node_id = 2 (inline-size container), target node_id = 3.
+    // The query list references a block-axis query, so the query container must be a size container.
+    let mut containers = HashMap::new();
+    containers.insert(
+      1,
+      ContainerQueryInfo {
+        inline_size: 300.0,
+        block_size: 300.0,
+        container_type: ContainerType::Size,
+        names: Vec::new(),
+        font_size: 16.0,
+        styles: Arc::new(ComputedStyle::default()),
+      },
+    );
+    containers.insert(
+      2,
+      ContainerQueryInfo {
+        inline_size: 300.0,
+        block_size: 100.0,
+        container_type: ContainerType::InlineSize,
+        names: Vec::new(),
+        font_size: 16.0,
+        styles: Arc::new(ComputedStyle::default()),
+      },
+    );
+    let container_ctx = ContainerQueryContext {
+      base_media: MediaContext::screen(800.0, 600.0),
+      containers,
+    };
+
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+    let styled = apply_styles_with_media_target_and_imports(
+      &dom,
+      &stylesheet,
+      &media_ctx,
+      None,
+      None,
+      None,
+      Some(&container_ctx),
+      None,
+      None,
+    );
+    let target = styled
+      .children
+      .first()
+      .and_then(|inner| inner.children.first())
+      .expect("target");
+    assert_eq!(
+      target.styles.color,
+      Rgba::RED,
+      "@container query list should match using the outer size container (not the inner inline-size container)"
     );
   }
 
