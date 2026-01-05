@@ -2574,7 +2574,74 @@ impl FormattingContext for FlexFormattingContext {
       let root_layout = taffy_tree
         .layout(root_node)
         .map_err(|e| LayoutError::MissingContext(format!("Failed to get Taffy layout: {:?}", e)))?;
+      let root_origin_x = root_layout.location.x;
       let root_origin_y = root_layout.location.y;
+
+      // Resolve the viewport rectangle in the flex container's coordinate system. Nested
+      // formatting contexts translate the factory's viewport scroll offset so we can keep this
+      // intersection test local.
+      let scroll = self.factory.viewport_scroll();
+      let scroll = if scroll.x.is_finite() && scroll.y.is_finite() {
+        scroll
+      } else {
+        Point::ZERO
+      };
+      let activation_margin = toggles
+        .f64("FASTR_CONTENT_VISIBILITY_AUTO_MARGIN_PX")
+        .unwrap_or(0.0)
+        .max(0.0) as f32;
+      let mut viewport_rect = Rect::from_xywh(
+        scroll.x,
+        scroll.y,
+        viewport_size.width,
+        viewport_size.height,
+      );
+      if activation_margin > 0.0 {
+        viewport_rect = viewport_rect.inflate(activation_margin);
+      }
+
+      let cb_width = if root_layout.size.width.is_finite() {
+        root_layout.size.width.max(0.0)
+      } else {
+        viewport_size.width
+      };
+      let cb_height = if root_layout.size.height.is_finite() {
+        root_layout.size.height.max(0.0)
+      } else {
+        viewport_size.height
+      };
+
+      // Relative positioning offsets should be included in the viewport intersection decision:
+      // a relative shift can move an otherwise in-flow box offscreen while preserving its space in
+      // layout.
+      let border_left =
+        self.resolve_length_for_width(box_node.style.used_border_left_width(), cb_width, style);
+      let border_right =
+        self.resolve_length_for_width(box_node.style.used_border_right_width(), cb_width, style);
+      let border_top =
+        self.resolve_length_for_width(box_node.style.used_border_top_width(), cb_width, style);
+      let border_bottom =
+        self.resolve_length_for_width(box_node.style.used_border_bottom_width(), cb_width, style);
+      let padding_left =
+        self.resolve_length_for_width(box_node.style.padding_left, cb_width, style);
+      let padding_right =
+        self.resolve_length_for_width(box_node.style.padding_right, cb_width, style);
+      let padding_top = self.resolve_length_for_width(box_node.style.padding_top, cb_width, style);
+      let padding_bottom =
+        self.resolve_length_for_width(box_node.style.padding_bottom, cb_width, style);
+      let content_width =
+        (cb_width - border_left - border_right - padding_left - padding_right).max(0.0);
+      let content_height =
+        (cb_height - border_top - border_bottom - padding_top - padding_bottom).max(0.0);
+      let block_base = box_node.style.height.is_some().then_some(content_height);
+      let containing_block = ContainingBlock::with_viewport_and_bases(
+        Rect::new(Point::ZERO, Size::new(content_width, content_height)),
+        viewport_size,
+        Some(content_width),
+        block_base,
+      );
+      let positioned_layout = PositionedLayout::with_font_context(self.font_context.clone());
+
       let mut changed = false;
       for (child, node_id) in auto_item_nodes.iter() {
         let ptr = *child as *const BoxNode;
@@ -2584,12 +2651,25 @@ impl FormattingContext for FlexFormattingContext {
         let child_layout = taffy_tree.layout(*node_id).map_err(|e| {
           LayoutError::MissingContext(format!("Failed to get Taffy layout: {:?}", e))
         })?;
-        let child_top = child_layout.location.y - root_origin_y;
-        let should_unskip = if crate::style::block_axis_is_horizontal(child.style.writing_mode) {
-          true
-        } else {
-          child_top < viewport_size.height
-        };
+        let mut child_bounds = Rect::from_xywh(
+          child_layout.location.x - root_origin_x,
+          child_layout.location.y - root_origin_y,
+          child_layout.size.width,
+          child_layout.size.height,
+        );
+        if child.style.position.is_relative() {
+          let positioned_style = resolve_positioned_style(
+            &child.style,
+            &containing_block,
+            viewport_size,
+            &self.font_context,
+          );
+          let dummy = FragmentNode::new_block(child_bounds, vec![]);
+          child_bounds = positioned_layout
+            .apply_relative_positioning(&dummy, &positioned_style, &containing_block)?
+            .bounds;
+        }
+        let should_unskip = viewport_rect.intersects(child_bounds);
         if should_unskip {
           auto_unskipped_nodes.insert(ptr);
           changed = true;
@@ -2677,6 +2757,48 @@ impl FormattingContext for FlexFormattingContext {
       } else {
         fragment.bounds.height()
       };
+
+      // Child fragments are positioned within the flex container's content box. When remapping the
+      // cross-axis position to account for writing-mode differences we must preserve the
+      // border+padding offsets that Taffy already applied, otherwise `align-items:stretch` would
+      // incorrectly reset children to the border box origin (regressing content-visibility
+      // placeholder positioning tests).
+      let cb_width = fragment.bounds.width();
+      let border_left = self.resolve_length_for_width(
+        box_node.style.used_border_left_width(),
+        cb_width,
+        &box_node.style,
+      );
+      let border_right = self.resolve_length_for_width(
+        box_node.style.used_border_right_width(),
+        cb_width,
+        &box_node.style,
+      );
+      let border_top = self.resolve_length_for_width(
+        box_node.style.used_border_top_width(),
+        cb_width,
+        &box_node.style,
+      );
+      let border_bottom = self.resolve_length_for_width(
+        box_node.style.used_border_bottom_width(),
+        cb_width,
+        &box_node.style,
+      );
+      let padding_left =
+        self.resolve_length_for_width(box_node.style.padding_left, cb_width, &box_node.style);
+      let padding_right =
+        self.resolve_length_for_width(box_node.style.padding_right, cb_width, &box_node.style);
+      let padding_top =
+        self.resolve_length_for_width(box_node.style.padding_top, cb_width, &box_node.style);
+      let padding_bottom =
+        self.resolve_length_for_width(box_node.style.padding_bottom, cb_width, &box_node.style);
+
+      let (cross_content_start, cross_content_end) = if cross_is_horizontal {
+        (border_left + padding_left, border_right + padding_right)
+      } else {
+        (border_top + padding_top, border_bottom + padding_bottom)
+      };
+      let cross_inner_size = (cross_size - cross_content_start - cross_content_end).max(0.0);
 
       let taffy_dir =
         self.flex_direction_to_taffy(&box_node.style, inline_positive, block_positive);
@@ -2843,31 +2965,33 @@ impl FormattingContext for FlexFormattingContext {
         } else {
           child_fragment.bounds.height()
         };
-        let pos = match align {
+        let delta = cross_inner_size - child_cross;
+        let pos_inner = match align {
           AlignItems::Start | AlignItems::SelfStart | AlignItems::FlexStart => {
             if cross_positive {
               0.0
             } else {
-              (cross_size - child_cross).max(0.0)
+              delta.max(0.0)
             }
           }
           AlignItems::End | AlignItems::SelfEnd | AlignItems::FlexEnd => {
             if cross_positive {
-              (cross_size - child_cross).max(0.0)
+              delta.max(0.0)
             } else {
               0.0
             }
           }
-          AlignItems::Center => (cross_size - child_cross) / 2.0,
+          AlignItems::Center => delta / 2.0,
           AlignItems::Stretch => 0.0,
           AlignItems::Baseline => {
             if cross_positive {
               0.0
             } else {
-              (cross_size - child_cross).max(0.0)
+              delta.max(0.0)
             }
           }
         };
+        let pos = cross_content_start + pos_inner;
 
         if cross_is_horizontal {
           child_fragment.bounds.origin.x = pos;
@@ -5058,6 +5182,20 @@ impl FlexFormattingContext {
     };
 
     let style = &box_node.style;
+    // `min-size:auto` uses a content-based minimum size suggestion (CSS Flexbox §4.5). When
+    // `content-visibility` skips an element's contents, that content-driven sizing must *not*
+    // force the flex item to its full (skipped) contents size.
+    //
+    // The flex measurement callback already handles `content-visibility` by returning
+    // `contain-intrinsic-size` placeholders for skipped items. Avoid running intrinsic sizing
+    // probes here (which would lay out the skipped subtree and clamp the item back to the real
+    // contents size via `min_size`).
+    if !matches!(
+      style.content_visibility,
+      crate::style::types::ContentVisibility::Visible
+    ) {
+      return Ok(());
+    }
     let item_fc_type = box_node
       .formatting_context()
       .unwrap_or(FormattingContextType::Block);
@@ -5249,7 +5387,8 @@ impl FlexFormattingContext {
             self.compute_intrinsic_inline_sizes(node)
           } else {
             let min = self.compute_intrinsic_block_size(node, IntrinsicSizingMode::MinContent)?;
-            let max = match self.compute_intrinsic_block_size(node, IntrinsicSizingMode::MaxContent) {
+            let max = match self.compute_intrinsic_block_size(node, IntrinsicSizingMode::MaxContent)
+            {
               Ok(value) => value,
               Err(err @ LayoutError::Timeout { .. }) => return Err(err),
               Err(_) => min,
@@ -5260,7 +5399,8 @@ impl FlexFormattingContext {
         Axis::Vertical => {
           if inline_axis_is_horizontal {
             let min = self.compute_intrinsic_block_size(node, IntrinsicSizingMode::MinContent)?;
-            let max = match self.compute_intrinsic_block_size(node, IntrinsicSizingMode::MaxContent) {
+            let max = match self.compute_intrinsic_block_size(node, IntrinsicSizingMode::MaxContent)
+            {
               Ok(value) => value,
               Err(err @ LayoutError::Timeout { .. }) => return Err(err),
               Err(_) => min,
@@ -5342,11 +5482,8 @@ impl FlexFormattingContext {
       }
     };
 
-    let mut border_box = crate::layout::utils::clamp_with_order(
-      preferred_border_box,
-      min_intrinsic,
-      max_intrinsic,
-    );
+    let mut border_box =
+      crate::layout::utils::clamp_with_order(preferred_border_box, min_intrinsic, max_intrinsic);
 
     // Apply authored min/max constraints on the same axis. These clamp the fit-content result.
     let (author_min_len, author_max_len, author_min_kw, author_max_kw) = match axis {
@@ -5372,12 +5509,16 @@ impl FlexFormattingContext {
       }
     };
 
-    let author_min = author_min_kw
-      .and_then(keyword_to_bound)
-      .or_else(|| author_min_len.and_then(resolve_length_px).map(to_border_box));
-    let author_max = author_max_kw
-      .and_then(keyword_to_bound)
-      .or_else(|| author_max_len.and_then(resolve_length_px).map(to_border_box));
+    let author_min = author_min_kw.and_then(keyword_to_bound).or_else(|| {
+      author_min_len
+        .and_then(resolve_length_px)
+        .map(to_border_box)
+    });
+    let author_max = author_max_kw.and_then(keyword_to_bound).or_else(|| {
+      author_max_len
+        .and_then(resolve_length_px)
+        .map(to_border_box)
+    });
 
     if author_min.is_some() || author_max.is_some() {
       let min_bound = author_min.unwrap_or(0.0);
@@ -11077,7 +11218,10 @@ mod tests {
     text_style.font_size = 16.0;
     let text_style = Arc::new(text_style);
 
-    let text = BoxNode::new_text(text_style.clone(), "fit content prefers wrapping".to_string());
+    let text = BoxNode::new_text(
+      text_style.clone(),
+      "fit content prefers wrapping".to_string(),
+    );
     let inline = BoxNode::new_inline(text_style.clone(), vec![text]);
     let child = BoxNode::new_block(
       Arc::new(ComputedStyle::default()),
@@ -11110,7 +11254,10 @@ mod tests {
       .clamp(min_intrinsic + 1.0, max_intrinsic - 1.0);
 
     let fragment = fc
-      .layout(&container, &LayoutConstraints::definite(available_width, 200.0))
+      .layout(
+        &container,
+        &LayoutConstraints::definite(available_width, 200.0),
+      )
       .unwrap();
     assert!(
       (fragment.bounds.width() - available_width).abs() < 1.0,

@@ -81,7 +81,7 @@ use crate::tree::box_tree::BoxNode;
 use crate::tree::fragment_tree::FragmentContent;
 use crate::tree::fragment_tree::FragmentNode;
 use rayon::prelude::*;
-use rustc_hash::{FxHashMap, FxHasher};
+use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use taffy::geometry::Line;
@@ -112,6 +112,7 @@ use taffy::DetailedGridTracksInfo;
 
 const MAX_MEASURED_KEYS_PER_NODE: usize = 32;
 const GRID_DEADLINE_CHECK_STRIDE: usize = 64;
+const GRID_CONTENT_VISIBILITY_AUTO_MAX_PASSES: usize = 4;
 
 #[inline]
 fn check_layout_deadline(counter: &mut usize) -> Result<(), LayoutError> {
@@ -1302,6 +1303,66 @@ impl GridFormattingContext {
     Ok(())
   }
 
+  fn content_visibility_placeholder_content_size(
+    &self,
+    style: &ComputedStyle,
+    constraints: &LayoutConstraints,
+    known_dimensions: taffy::geometry::Size<Option<f32>>,
+  ) -> Size {
+    let sanitize = |value: f32| {
+      if value.is_finite() && value >= 0.0 {
+        value
+      } else {
+        0.0
+      }
+    };
+
+    let width = known_dimensions.width.unwrap_or_else(|| {
+      let base = constraints
+        .inline_percentage_base
+        .or_else(|| constraints.width())
+        .filter(|b| b.is_finite());
+      style
+        .contain_intrinsic_width
+        .length
+        .and_then(|l| {
+          resolve_length_with_percentage_metrics(
+            l,
+            base,
+            self.viewport_size,
+            style.font_size,
+            style.root_font_size,
+            Some(style),
+            Some(&self.font_context),
+          )
+        })
+        .map(sanitize)
+        .unwrap_or(0.0)
+    });
+
+    let height = known_dimensions.height.unwrap_or_else(|| {
+      let base = constraints.height().filter(|b| b.is_finite());
+      style
+        .contain_intrinsic_height
+        .length
+        .and_then(|l| {
+          resolve_length_with_percentage_metrics(
+            l,
+            base,
+            self.viewport_size,
+            style.font_size,
+            style.root_font_size,
+            Some(style),
+            Some(&self.font_context),
+          )
+        })
+        .map(sanitize)
+        .unwrap_or(0.0)
+    });
+
+    Size::new(sanitize(width), sanitize(height))
+  }
+
   /// Builds a Taffy tree from a BoxNode tree
   ///
   /// Recursively converts the BoxNode tree to Taffy nodes, returning
@@ -2490,6 +2551,7 @@ impl GridFormattingContext {
     box_node: &BoxNode,
     constraints: &LayoutConstraints,
     in_flow_children: &[&BoxNode],
+    auto_unskipped: Option<&FxHashSet<*const BoxNode>>,
     measured_fragments: &mut FxHashMap<MeasureKey, FragmentNode>,
     measured_node_keys: &FxHashMap<TaffyNodeId, Vec<MeasureKey>>,
   ) -> Option<Result<FragmentNode, LayoutError>> {
@@ -2544,6 +2606,25 @@ impl GridFormattingContext {
         layout.size.height,
       );
       child_bounds.push(bounds);
+      let child = in_flow_children[idx];
+      let skip_contents = match child.style.content_visibility {
+        crate::style::types::ContentVisibility::Hidden => true,
+        crate::style::types::ContentVisibility::Auto => auto_unskipped
+          .map(|set| !set.contains(&(child as *const BoxNode)))
+          .unwrap_or(false),
+        crate::style::types::ContentVisibility::Visible => false,
+      };
+      if skip_contents {
+        reused_fragments[idx] = Some(FragmentNode::new_with_style(
+          bounds,
+          FragmentContent::Block {
+            box_id: Some(child.id),
+          },
+          vec![],
+          child.style.clone(),
+        ));
+        continue;
+      }
       if let Some(keys) = measured_node_keys.get(&child_id) {
         if let Some(mut reused) = Self::take_matching_measured_fragment(
           measured_fragments,
@@ -2590,7 +2671,10 @@ impl GridFormattingContext {
           let fc_type = child
             .formatting_context()
             .unwrap_or(FormattingContextType::Block);
-          let fc = factory.get(fc_type);
+          let parent_scroll = factory.viewport_scroll();
+          let child_scroll = Point::new(parent_scroll.x - bounds.x(), parent_scroll.y - bounds.y());
+          let child_factory = (*factory).clone().with_viewport_scroll(child_scroll);
+          let fc = child_factory.get(fc_type);
 
           let child_constraints = LayoutConstraints::new(
             CrateAvailableSpace::Definite(bounds.width()),
@@ -2770,6 +2854,7 @@ impl GridFormattingContext {
     root_id: TaffyNodeId,
     constraints: &LayoutConstraints,
     containing_grid_axis: Option<GridAxisStyle>,
+    auto_unskipped: Option<&FxHashSet<*const BoxNode>>,
     measured_fragments: &mut FxHashMap<MeasureKey, FragmentNode>,
     measured_node_keys: &FxHashMap<TaffyNodeId, Vec<MeasureKey>>,
     positioned_children: &FxHashMap<TaffyNodeId, Vec<*const BoxNode>>,
@@ -2810,6 +2895,7 @@ impl GridFormattingContext {
         root_id,
         constraints,
         child_axis_style,
+        auto_unskipped,
         measured_fragments,
         measured_node_keys,
         positioned_children,
@@ -2868,6 +2954,24 @@ impl GridFormattingContext {
         return Ok(fragment);
       }
 
+      let skip_contents = match box_node.style.content_visibility {
+        crate::style::types::ContentVisibility::Hidden => true,
+        crate::style::types::ContentVisibility::Auto => auto_unskipped
+          .map(|set| !set.contains(&box_node_ptr))
+          .unwrap_or(false),
+        crate::style::types::ContentVisibility::Visible => false,
+      };
+      if skip_contents {
+        return Ok(FragmentNode::new_with_style(
+          bounds,
+          FragmentContent::Block {
+            box_id: Some(box_node.id),
+          },
+          vec![],
+          box_node.style.clone(),
+        ));
+      }
+
       if let Some(keys) = measured_node_keys.get(&node_id) {
         if let Some(mut reused) = Self::take_matching_measured_fragment(
           measured_fragments,
@@ -2885,7 +2989,10 @@ impl GridFormattingContext {
         }
       }
 
-      let fc = self.factory.get(fc_type);
+      let parent_scroll = self.factory.viewport_scroll();
+      let child_scroll = Point::new(parent_scroll.x - bounds.x(), parent_scroll.y - bounds.y());
+      let child_factory = self.factory.clone().with_viewport_scroll(child_scroll);
+      let fc = child_factory.get(fc_type);
 
       let child_constraints = LayoutConstraints::new(
         CrateAvailableSpace::Definite(bounds.width()),
@@ -4578,12 +4685,18 @@ impl GridFormattingContext {
     available_space: taffy::geometry::Size<taffy::style::AvailableSpace>,
     parent_inline_base: Option<f32>,
     taffy_style: &taffy::style::Style,
+    auto_unskipped: &FxHashSet<*const BoxNode>,
     factory: &crate::layout::contexts::factory::FormattingContextFactory,
     measure_cache: &mut FxHashMap<MeasureKey, taffy::geometry::Size<f32>>,
     measured_fragments: &mut FxHashMap<MeasureKey, FragmentNode>,
     measured_node_keys: &mut FxHashMap<TaffyNodeId, Vec<MeasureKey>>,
   ) -> taffy::geometry::Size<f32> {
     let box_node = unsafe { &*node_ptr };
+    let skip_contents = match box_node.style.content_visibility {
+      crate::style::types::ContentVisibility::Hidden => true,
+      crate::style::types::ContentVisibility::Auto => !auto_unskipped.contains(&node_ptr),
+      crate::style::types::ContentVisibility::Visible => false,
+    };
     let fc_type = box_node
       .formatting_context()
       .unwrap_or(FormattingContextType::Block);
@@ -4609,6 +4722,27 @@ impl GridFormattingContext {
       self.viewport_size,
       drop_available_height,
     );
+
+    if skip_contents {
+      let constraints = constraints_from_taffy(
+        self.viewport_size,
+        known_dimensions,
+        available_space,
+        parent_inline_base,
+      );
+      let placeholder = self.content_visibility_placeholder_content_size(
+        &box_node.style,
+        &constraints,
+        known_dimensions,
+      );
+      let size = taffy::geometry::Size {
+        width: placeholder.width.max(0.0),
+        height: placeholder.height.max(0.0),
+      };
+      measure_cache.insert(key, size);
+      return size;
+    }
+
     if let Some(size) = measure_cache.get(&key) {
       return *size;
     }
@@ -5713,10 +5847,7 @@ impl FormattingContext for GridFormattingContext {
       }
     }
 
-    // Run Taffy layout
-    record_taffy_invocation(TaffyAdapterKind::Grid);
     let taffy_perf_enabled = crate::layout::taffy_integration::taffy_perf_enabled();
-    let taffy_compute_start = taffy_perf_enabled.then(std::time::Instant::now);
     // Render pipeline always installs a deadline guard (even when disabled), so only enable
     // the Taffy cancellation path when the active deadline is actually configured.
     let cancel: Option<Arc<dyn Fn() -> bool + Send + Sync>> = active_deadline()
@@ -5728,123 +5859,233 @@ impl FormattingContext for GridFormattingContext {
       FxHashMap::with_capacity_and_hasher(in_flow_children.len(), Default::default());
     let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> =
       FxHashMap::with_capacity_and_hasher(in_flow_children.len(), Default::default());
-    let compute_result = {
-      let this = self.clone();
-      let parent_inline_base = constraints.inline_percentage_base;
-      let cache = &mut measure_cache;
-      let measured = &mut measured_fragments;
-      let measured_keys = &mut measured_node_keys;
-      taffy.compute_layout_with_measure_and_cancel(
-        root_id,
-        available_space,
-        move |known_dimensions,
-              available_space,
-              node_id,
-              node_context,
-              taffy_style: &taffy::style::Style| {
-          if taffy_perf_enabled {
-            record_taffy_measure_call(TaffyAdapterKind::Grid);
+    let mut auto_item_nodes: Vec<(*const BoxNode, TaffyNodeId)> = Vec::new();
+    if !in_flow_children.is_empty() {
+      let mut auto_deadline_counter = 0usize;
+      let mut stack = vec![root_id];
+      while let Some(node_id) = stack.pop() {
+        check_layout_deadline(&mut auto_deadline_counter)?;
+        let children = taffy
+          .children(node_id)
+          .map_err(|e| LayoutError::MissingContext(format!("Taffy children error: {:?}", e)))?;
+        if children.is_empty() && node_id != root_id {
+          if let Some(ptr) = taffy.get_node_context(node_id).copied() {
+            let node = unsafe { &*ptr };
+            if matches!(
+              node.style.content_visibility,
+              crate::style::types::ContentVisibility::Auto
+            ) {
+              auto_item_nodes.push((ptr, node_id));
+            }
           }
-          let fallback_size = |known: Option<f32>, avail_dim: taffy::style::AvailableSpace| {
-            known.unwrap_or(match avail_dim {
-              taffy::style::AvailableSpace::Definite(v) => v,
-              _ => 0.0,
-            })
-          };
-
-          if node_id == root_id {
-            let outer_width = fallback_size(known_dimensions.width, available_space.width);
-            let outer_height = known_dimensions.height.unwrap_or(0.0);
-            let Some(node_ptr) = node_context.as_ref().map(|p| **p) else {
-              return taffy::geometry::Size {
-                width: outer_width,
-                height: outer_height,
-              };
-            };
-            let root_box_node = unsafe { &*node_ptr };
-            let percentage_base = outer_width;
-            let padding_left = this.resolve_length_for_width(
-              root_box_node.style.padding_left,
-              percentage_base,
-              &root_box_node.style,
-            );
-            let padding_right = this.resolve_length_for_width(
-              root_box_node.style.padding_right,
-              percentage_base,
-              &root_box_node.style,
-            );
-            let padding_top = this.resolve_length_for_width(
-              root_box_node.style.padding_top,
-              percentage_base,
-              &root_box_node.style,
-            );
-            let padding_bottom = this.resolve_length_for_width(
-              root_box_node.style.padding_bottom,
-              percentage_base,
-              &root_box_node.style,
-            );
-            let border_left = this.resolve_length_for_width(
-              root_box_node.style.used_border_left_width(),
-              percentage_base,
-              &root_box_node.style,
-            );
-            let border_right = this.resolve_length_for_width(
-              root_box_node.style.used_border_right_width(),
-              percentage_base,
-              &root_box_node.style,
-            );
-            let border_top = this.resolve_length_for_width(
-              root_box_node.style.used_border_top_width(),
-              percentage_base,
-              &root_box_node.style,
-            );
-            let border_bottom = this.resolve_length_for_width(
-              root_box_node.style.used_border_bottom_width(),
-              percentage_base,
-              &root_box_node.style,
-            );
-            let content_width =
-              (outer_width - padding_left - padding_right - border_left - border_right).max(0.0);
-            let content_height =
-              (outer_height - padding_top - padding_bottom - border_top - border_bottom).max(0.0);
-            return taffy::geometry::Size {
-              width: content_width,
-              height: content_height,
-            };
-          }
-
-          let Some(node_ptr) = node_context.as_ref().map(|p| **p) else {
-            return taffy::geometry::Size::ZERO;
-          };
-          this.measure_grid_item(
-            node_ptr,
-            node_id,
-            known_dimensions,
-            available_space,
-            parent_inline_base,
-            taffy_style,
-            &this.factory,
-            cache,
-            measured,
-            measured_keys,
-          )
-        },
-        cancel,
-        TAFFY_ABORT_CHECK_STRIDE,
-      )
-    };
-    if let Some(start) = taffy_compute_start {
-      record_taffy_compute(TaffyAdapterKind::Grid, start.elapsed());
+        } else {
+          stack.extend(children.iter().copied());
+        }
+      }
     }
-    compute_result.map_err(|e| match e {
-      taffy::TaffyError::LayoutAborted => match active_deadline() {
-        Some(deadline) => LayoutError::Timeout {
-          elapsed: deadline.elapsed(),
+    let auto_item_count = auto_item_nodes.len();
+    let auto_all_nodes: FxHashSet<*const BoxNode> =
+      auto_item_nodes.iter().map(|(ptr, _)| *ptr).collect();
+    let mut auto_unskipped_nodes: FxHashSet<*const BoxNode> = FxHashSet::default();
+    let max_passes = if auto_item_count == 0 {
+      1
+    } else {
+      GRID_CONTENT_VISIBILITY_AUTO_MAX_PASSES
+    };
+
+    let parent_inline_base = constraints.inline_percentage_base;
+    for pass_idx in 0..max_passes {
+      if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
+        return Err(LayoutError::Timeout { elapsed });
+      }
+      let is_last_pass = pass_idx + 1 == max_passes;
+      if is_last_pass
+        && auto_item_count > 0
+        && auto_unskipped_nodes.len() < auto_all_nodes.len()
+        && pass_idx > 0
+      {
+        // If we hit the pass cap without reaching a stable viewport set, fall back to fully
+        // laying out all `content-visibility:auto` items so in-viewport content is never skipped.
+        auto_unskipped_nodes = auto_all_nodes.clone();
+        for (_, node_id) in auto_item_nodes.iter() {
+          taffy
+            .mark_dirty(*node_id)
+            .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+        }
+        taffy
+          .mark_dirty(root_id)
+          .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+      }
+
+      measure_cache.clear();
+      record_taffy_invocation(TaffyAdapterKind::Grid);
+      let taffy_compute_start = taffy_perf_enabled.then(std::time::Instant::now);
+      let auto_unskipped_for_pass = &auto_unskipped_nodes;
+
+      let compute_result = {
+        let this = self.clone();
+        let cache = &mut measure_cache;
+        let measured = &mut measured_fragments;
+        let measured_keys = &mut measured_node_keys;
+        taffy.compute_layout_with_measure_and_cancel(
+          root_id,
+          available_space,
+          move |known_dimensions,
+                available_space,
+                node_id,
+                node_context,
+                taffy_style: &taffy::style::Style| {
+            if taffy_perf_enabled {
+              record_taffy_measure_call(TaffyAdapterKind::Grid);
+            }
+            let fallback_size = |known: Option<f32>, avail_dim: taffy::style::AvailableSpace| {
+              known.unwrap_or(match avail_dim {
+                taffy::style::AvailableSpace::Definite(v) => v,
+                _ => 0.0,
+              })
+            };
+
+            if node_id == root_id {
+              let outer_width = fallback_size(known_dimensions.width, available_space.width);
+              let outer_height = known_dimensions.height.unwrap_or(0.0);
+              let Some(node_ptr) = node_context.as_ref().map(|p| **p) else {
+                return taffy::geometry::Size {
+                  width: outer_width,
+                  height: outer_height,
+                };
+              };
+              let root_box_node = unsafe { &*node_ptr };
+              let percentage_base = outer_width;
+              let padding_left = this.resolve_length_for_width(
+                root_box_node.style.padding_left,
+                percentage_base,
+                &root_box_node.style,
+              );
+              let padding_right = this.resolve_length_for_width(
+                root_box_node.style.padding_right,
+                percentage_base,
+                &root_box_node.style,
+              );
+              let padding_top = this.resolve_length_for_width(
+                root_box_node.style.padding_top,
+                percentage_base,
+                &root_box_node.style,
+              );
+              let padding_bottom = this.resolve_length_for_width(
+                root_box_node.style.padding_bottom,
+                percentage_base,
+                &root_box_node.style,
+              );
+              let border_left = this.resolve_length_for_width(
+                root_box_node.style.used_border_left_width(),
+                percentage_base,
+                &root_box_node.style,
+              );
+              let border_right = this.resolve_length_for_width(
+                root_box_node.style.used_border_right_width(),
+                percentage_base,
+                &root_box_node.style,
+              );
+              let border_top = this.resolve_length_for_width(
+                root_box_node.style.used_border_top_width(),
+                percentage_base,
+                &root_box_node.style,
+              );
+              let border_bottom = this.resolve_length_for_width(
+                root_box_node.style.used_border_bottom_width(),
+                percentage_base,
+                &root_box_node.style,
+              );
+              let content_width =
+                (outer_width - padding_left - padding_right - border_left - border_right).max(0.0);
+              let content_height =
+                (outer_height - padding_top - padding_bottom - border_top - border_bottom).max(0.0);
+              return taffy::geometry::Size {
+                width: content_width,
+                height: content_height,
+              };
+            }
+
+            let Some(node_ptr) = node_context.as_ref().map(|p| **p) else {
+              return taffy::geometry::Size::ZERO;
+            };
+            this.measure_grid_item(
+              node_ptr,
+              node_id,
+              known_dimensions,
+              available_space,
+              parent_inline_base,
+              taffy_style,
+              auto_unskipped_for_pass,
+              &this.factory,
+              cache,
+              measured,
+              measured_keys,
+            )
+          },
+          cancel.clone(),
+          TAFFY_ABORT_CHECK_STRIDE,
+        )
+      };
+      if let Some(start) = taffy_compute_start {
+        record_taffy_compute(TaffyAdapterKind::Grid, start.elapsed());
+      }
+      compute_result.map_err(|e| match e {
+        taffy::TaffyError::LayoutAborted => match active_deadline() {
+          Some(deadline) => LayoutError::Timeout {
+            elapsed: deadline.elapsed(),
+          },
+          None => LayoutError::MissingContext("Taffy layout aborted".to_string()),
         },
-        None => LayoutError::MissingContext("Taffy layout aborted".to_string()),
-      },
-      _ => LayoutError::MissingContext(format!("Taffy compute error: {:?}", e)),
-    })?;
+        _ => LayoutError::MissingContext(format!("Taffy compute error: {:?}", e)),
+      })?;
+
+      if auto_item_count == 0 || is_last_pass {
+        break;
+      }
+
+      let mut changed = false;
+      for (ptr, node_id) in auto_item_nodes.iter().copied() {
+        if auto_unskipped_nodes.contains(&ptr) {
+          continue;
+        }
+        let mut top = 0.0;
+        let mut current = node_id;
+        while current != root_id {
+          let layout = taffy.layout(current).map_err(|e| {
+            LayoutError::MissingContext(format!("Failed to get Taffy layout: {:?}", e))
+          })?;
+          top += layout.location.y;
+          current = match taffy.parent(current) {
+            Some(parent) => parent,
+            None => break,
+          };
+        }
+        let node = unsafe { &*ptr };
+        let should_unskip = if crate::style::block_axis_is_horizontal(node.style.writing_mode) {
+          true
+        } else {
+          top < self.viewport_size.height
+        };
+        if should_unskip {
+          auto_unskipped_nodes.insert(ptr);
+          changed = true;
+        }
+      }
+
+      if !changed {
+        break;
+      }
+
+      for (_, node_id) in auto_item_nodes.iter() {
+        taffy
+          .mark_dirty(*node_id)
+          .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+      }
+      taffy
+        .mark_dirty(root_id)
+        .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+    }
 
     if let Some(start) = grid_trace_start {
       let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
@@ -5852,6 +6093,7 @@ impl FormattingContext for GridFormattingContext {
     }
 
     // Convert back to FragmentNode tree and layout each in-flow child using its formatting context.
+    let auto_unskipped = (auto_item_count > 0).then_some(&auto_unskipped_nodes);
     let mut deadline_counter = 0usize;
     let mut fragment = if !has_subgrid && !child_has_subgrid {
       if let Some(result) = self.try_parallel_root_children_conversion(
@@ -5860,6 +6102,7 @@ impl FormattingContext for GridFormattingContext {
         box_node,
         constraints,
         &in_flow_children,
+        auto_unskipped,
         &mut measured_fragments,
         &measured_node_keys,
       ) {
@@ -5871,6 +6114,7 @@ impl FormattingContext for GridFormattingContext {
           root_id,
           &constraints,
           None,
+          auto_unskipped,
           &mut measured_fragments,
           &measured_node_keys,
           &positioned_children_map,
@@ -5884,6 +6128,7 @@ impl FormattingContext for GridFormattingContext {
         root_id,
         &constraints,
         None,
+        auto_unskipped,
         &mut measured_fragments,
         &measured_node_keys,
         &positioned_children_map,
@@ -7783,6 +8028,7 @@ mod tests {
         avail_a,
         None,
         &taffy_style,
+        &FxHashSet::default(),
         &factory,
         &mut measure_cache,
         &mut measured_fragments,
@@ -7802,6 +8048,7 @@ mod tests {
         avail_b,
         None,
         &taffy_style,
+        &FxHashSet::default(),
         &factory,
         &mut measure_cache,
         &mut measured_fragments,
@@ -8050,6 +8297,7 @@ mod tests {
         avail,
         None,
         &taffy_style,
+        &FxHashSet::default(),
         &factory,
         &mut measure_cache,
         &mut measured_fragments,
@@ -8162,6 +8410,7 @@ mod tests {
             avail,
             None,
             &taffy_style,
+            &FxHashSet::default(),
             &factory,
             &mut measure_cache,
             &mut measured_fragments,
@@ -8217,6 +8466,7 @@ mod tests {
           avail,
           None,
           &taffy_style,
+          &FxHashSet::default(),
           &factory,
           &mut measure_cache,
           &mut measured_fragments,
@@ -8283,6 +8533,7 @@ mod tests {
           avail,
           None,
           &taffy_style,
+          &FxHashSet::default(),
           &factory,
           &mut measure_cache,
           &mut measured_fragments,
@@ -8343,6 +8594,7 @@ mod tests {
         },
         Some(wide_width),
         &taffy_style,
+        &FxHashSet::default(),
         &factory,
         &mut measure_cache,
         &mut measured_fragments,
@@ -8373,6 +8625,7 @@ mod tests {
         },
         Some(narrow_width),
         &taffy_style,
+        &FxHashSet::default(),
         &factory,
         &mut measure_cache,
         &mut measured_fragments,
@@ -8771,6 +9024,7 @@ mod tests {
             root_id,
             root_id,
             &constraints,
+            None,
             None,
             &mut measured_fragments,
             &measured_node_keys,
