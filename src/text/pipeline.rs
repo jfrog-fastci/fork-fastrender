@@ -8237,7 +8237,7 @@ mod tests {
     let before = pipeline.fallback_cache_stats();
     // Keep the first non-control character stable across both runs so the ASCII fast path reuses
     // the same glyph fallback cache key.
-    let first = match pipeline.shape("please cache me", &style, &ctx) {
+    let first = match pipeline.shape("cache me please", &style, &ctx) {
       Ok(runs) => runs,
       Err(_) => return,
     };

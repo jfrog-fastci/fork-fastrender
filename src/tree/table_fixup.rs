@@ -442,8 +442,12 @@ impl TableStructureFixer {
         if Self::row_needs_cell_fixup(child) {
           return true;
         }
-      } else if Self::is_passthrough_child(child) || Self::is_ignorable_table_whitespace(child) {
+      } else if Self::is_passthrough_child(child) {
         continue;
+      } else if Self::is_ignorable_table_whitespace(child) {
+        // Whitespace between rows should be ignored, but we still need to drop it from the child
+        // list so it doesn't create spurious anonymous cells later in the pipeline.
+        return true;
       } else {
         return true;
       }
@@ -454,9 +458,12 @@ impl TableStructureFixer {
 
   fn row_needs_cell_fixup(row: &BoxNode) -> bool {
     row.children.iter().any(|child| {
-      !Self::is_table_cell(child)
-        && !Self::is_passthrough_child(child)
-        && !Self::is_ignorable_table_whitespace(child)
+      // Whitespace-only text nodes (and anonymous wrappers around them) are ignored in HTML tables,
+      // but we still need to strip them out so they don't generate anonymous cells.
+      if Self::is_ignorable_table_whitespace(child) {
+        return true;
+      }
+      !Self::is_table_cell(child) && !Self::is_passthrough_child(child)
     })
   }
 
