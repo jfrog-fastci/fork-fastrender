@@ -2985,6 +2985,7 @@ pub(crate) fn apply_svg_filter_with_cache(
               bbox_working,
               working_inputs,
               blur_cache.as_deref_mut(),
+              (origin_css_x, origin_css_y),
             )?;
 
             pixmap.data_mut().fill(0);
