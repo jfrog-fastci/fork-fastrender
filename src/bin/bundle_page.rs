@@ -624,20 +624,15 @@ impl ResourceFetcher for RecordingFetcher {
         .map(|prefix| prefix.eq_ignore_ascii_case("data:"))
         .unwrap_or(false)
       {
-        let inserted = if let Ok(mut map) = self.recorded.lock() {
+        if let Ok(mut map) = self.recorded.lock() {
           match map.entry(url.clone()) {
             std::collections::hash_map::Entry::Vacant(entry) => {
               entry.insert(result.clone());
-              true
+              if let Ok(mut set) = self.recorded_url_is_cors.lock() {
+                set.insert(url.clone());
+              }
             }
-            std::collections::hash_map::Entry::Occupied(_) => false,
-          }
-        } else {
-          false
-        };
-        if inserted {
-          if let Ok(mut set) = self.recorded_url_is_cors.lock() {
-            set.insert(url.clone());
+            std::collections::hash_map::Entry::Occupied(_) => {}
           }
         }
         if let Ok(mut map) = self.recorded_by_request.lock() {
@@ -647,16 +642,19 @@ impl ResourceFetcher for RecordingFetcher {
       return Ok(result);
     }
 
-    let bypass_url_cache = cors_enforcement_enabled()
-      && req.destination == FetchDestination::Image
-      && self
-        .recorded_url_is_cors
-        .lock()
-        .map(|set| set.contains(&url))
-        .unwrap_or(false);
-    if !bypass_url_cache {
-      if let Ok(map) = self.recorded.lock() {
-        if let Some(existing) = map.get(req.url) {
+    let check_cors_poisoned_url_cache =
+      cors_enforcement_enabled() && req.destination == FetchDestination::Image;
+    if let Ok(map) = self.recorded.lock() {
+      if let Some(existing) = map.get(req.url) {
+        if !check_cors_poisoned_url_cache {
+          return Ok(existing.clone());
+        }
+        let is_cors_entry = self
+          .recorded_url_is_cors
+          .lock()
+          .map(|set| set.contains(&url))
+          .unwrap_or(false);
+        if !is_cors_entry {
           return Ok(existing.clone());
         }
       }
@@ -665,9 +663,11 @@ impl ResourceFetcher for RecordingFetcher {
     let result = self.inner.fetch_with_request(req)?;
     if !is_data_url(&url) {
       if let Ok(mut map) = self.recorded.lock() {
-        map.insert(url, result.clone());
-      }
-      if let Ok(mut set) = self.recorded_url_is_cors.lock() {
+        map.insert(url.clone(), result.clone());
+        if let Ok(mut set) = self.recorded_url_is_cors.lock() {
+          set.remove(req.url);
+        }
+      } else if let Ok(mut set) = self.recorded_url_is_cors.lock() {
         set.remove(req.url);
       }
     }
