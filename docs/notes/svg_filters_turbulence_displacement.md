@@ -1,4 +1,4 @@
-# SVG filters: `feTurbulence` + `feDisplacementMap` (implementation semantics)
+# SVG filters: `feTurbulence` + `feDisplacementMap` (Chrome-aligned semantics)
 
 FastRender’s SVG filter implementation lives in:
 
@@ -10,8 +10,7 @@ This note records the **exact semantics we implement today** for `feTurbulence` 
 
 - `color-interpolation-filters` (generator vs sampling primitives)
 - `primitiveUnits` / objectBoundingBox scaling rules
-- `filterRes` resampling (and interaction with DPR / anisotropic scaling), including our
-  Chrome-compatibility exception for `feDisplacementMap`
+- `filterRes` resampling + its Chrome-compatibility exception for `feDisplacementMap`
 - pixel sampling conventions and out-of-bounds behavior
 
 Related notes:
@@ -25,52 +24,62 @@ Related notes:
 At runtime we execute the filter graph over `tiny_skia::Pixmap` surfaces:
 
 - All intermediate surfaces are **premultiplied RGBA8** (`PremultipliedColorU8`).
-- The filter graph runs in **device pixel space** for the current working surface.
-- `apply_svg_filter()` receives:
-  - `scale`: device pixel ratio (DPR) used to interpret numeric values that are in CSS px
-  - `bbox`: element bbox in device pixels (used for `filterUnits`/`primitiveUnits` resolution)
+- The filter graph runs in **“working surface pixel space”** for the current filter execution.
 
-When `filterRes` is specified, `apply_svg_filter_with_cache()` normally allocates a *working pixmap*
-of size `filterRes` and resamples into/out of it (see `apply_svg_filter_with_cache()` /
-`resize_pixmap()` / `resample_pixmap_region()` in `src/paint/svg_filter.rs`).
+`apply_svg_filter_with_cache()` (in `src/paint/svg_filter.rs`) computes per-render scales:
 
-Important compatibility exception: **for Chrome parity, we treat SVG 1.1 `filterRes` as unset if the
-filter graph contains `feDisplacementMap`** (Chrome ignores `filterRes` and it was removed in SVG
-2). This is implemented by an early return in `apply_svg_filter_with_cache()` that bypasses the
-filterRes path whenever any step matches `FilterPrimitive::DisplacementMap { .. }`.
+- `scale_x` / `scale_y`: **CSS/user units → working pixels** conversion factors passed into each
+  primitive.
+  - Most commonly: `scale_x = scale_y = DPR`.
+  - When `filterRes` is active (see below): these incorporate the `filterRes` resampling scale.
+- `surface_origin_css`: the CSS-space origin of the working surface. This is needed when the filter
+  engine allocates a working surface that is not aligned to `(0, 0)` in CSS space (e.g. offset
+  filter regions or `filterRes` resampling). `feTurbulence` uses this to evaluate noise in a stable
+  user-space coordinate system.
 
-Inside `apply_svg_filter_scaled()` the effective “CSS-to-filter-pixels” scales are:
+### `filterRes` handling
 
-- No `filterRes`: `scale_x = scale_y = DPR`
-- With `filterRes` (and **no** `feDisplacementMap` in the graph):
-  - `scale_x = DPR * (filterRes_w / filter_region_w_device)`
-  - `scale_y = DPR * (filterRes_h / filter_region_h_device)`
-- With `filterRes` **and** `feDisplacementMap`: `filterRes` is ignored, so
-  `scale_x = scale_y = DPR` (same as “No `filterRes`”).
+When `filterRes` is specified, `apply_svg_filter_with_cache()` normally allocates a working pixmap
+of size `filterRes` and resamples into/out of it (see `resize_pixmap()` /
+`resample_pixmap_region()`).
 
-These `scale_x/scale_y` are passed into each primitive step and are the bridge between:
+**Chrome compatibility exception:** Chrome ignores the SVG 1.1 `filterRes` attribute (it was removed
+in SVG 2). For parity, FastRender treats `filterRes` as *unset* when the filter graph contains
+`feDisplacementMap` (implemented as an early return in `apply_svg_filter_with_cache()` that bypasses
+the `filterRes` path whenever any step matches `FilterPrimitive::DisplacementMap { .. }`).
 
-- **CSS/user units** (`primitiveUnits="userSpaceOnUse"`)
-- **objectBoundingBox units** (`primitiveUnits="objectBoundingBox"`)
-- **working filter pixels** (potentially `filterRes`-scaled)
+Net effect:
+
+- Filters *without* displacement maps: `filterRes` affects the working resolution (and thus
+  `scale_x/scale_y`).
+- Filters *with* displacement maps: `filterRes` is ignored and the graph runs at the default filter
+  resolution (`scale_x = scale_y = DPR`).
 
 ## `feTurbulence`
 
+Implementation is in `parse_fe_turbulence()` (`src/paint/svg_filter.rs`) and
+`turbulence::render_turbulence()` (`src/paint/svg_filter/turbulence.rs`).
+
+The turbulence generator is **ported from resvg’s** `filter::turbulence` implementation to match
+Chromium/Skia behavior (see the top-of-file comment in `turbulence.rs`).
+
 ### Parsing + defaults
 
-Parsing happens in `parse_fe_turbulence()` (`src/paint/svg_filter.rs`):
+Parsing happens in `parse_fe_turbulence()`:
 
 - `baseFrequency`:
   - Parsed as a list of floats (`parse_number_list()`).
   - Defaults:
-    - `fx = 0.05` when missing/empty.
-    - `fy = fx` when the second value is missing.
-  - Negative values clamp to `0.0` (`.max(0.0)`).
+    - Missing/empty attribute => `fx = 0.0`.
+    - Missing second value => `fy = fx`.
+  - Non-finite values become `0.0`.
+  - Negative values clamp to `0.0`.
 - `seed`:
   - Parsed as `f32`, default `0.0`.
-  - Rounded (`.round()`) to the nearest integer.
-  - Negative values clamp to `0`.
-  - Stored as `u32`.
+  - Coerced to an integer via Rust’s `as i32` cast (truncates toward zero, preserves sign).
+  - Non-finite values become `0`.
+  - Note: the internal noise tables then normalize the seed to a positive range (see
+    `TurbulenceTables::new()` / `normalize_seed()` in `turbulence.rs`).
 - `numOctaves`:
   - Parsed as `u32`, default `1`.
   - Clamped to `[1, MAX_TURBULENCE_OCTAVES]` (`MAX_TURBULENCE_OCTAVES = 8`).
@@ -81,212 +90,286 @@ Parsing happens in `parse_fe_turbulence()` (`src/paint/svg_filter.rs`):
   - `"fractalNoise"` => `TurbulenceType::FractalNoise`
   - Anything else (including missing) => `TurbulenceType::Turbulence`
 
-### Noise function + value mapping
+### Noise algorithm + value mapping
 
 Noise generation happens in `turbulence::render_turbulence()`:
 
-- Base noise is classic 2D Perlin (`perlin()`), with a permutation table derived from `seed`
-  (`build_permutation()`).
-- For each octave:
-  - Sample `perlin(x * freq_x, y * freq_y)`
-  - If `type="turbulence"`, apply `abs()` **per octave** (`noise.abs()`).
-  - Accumulate with amplitudes `1.0, 0.5, 0.25, …`.
-- Normalize by the sum of amplitudes across octaves.
-- Map into `[0, 1]` via:
-  - `mapped = clamp01(normalized * 0.5 + 0.5)`
+- The implementation uses classic gradient noise (Perlin-style), with:
+  - a lattice selector table (`TurbulenceTables::lattice_selector`)
+  - per-channel gradient vectors (`TurbulenceTables::gradient`)
+- **Channels are independent:** noise is generated for `R`, `G`, `B`, and **`A`** separately
+  (`CHANNELS = 4`).
+- The main per-channel function is `turbulence()`:
+  - Each octave samples `noise2(channel, x, y, tables, stitch_info)` (≈ `[-1, 1]`).
+  - `type="fractalNoise"`: accumulate signed noise (no `abs()`):
+    - `sum += noise / ratio`
+  - `type="turbulence"`: accumulate absolute value (the `abs()` happens **per octave**):
+    - `sum += abs(noise) / ratio`
+  - `ratio` doubles each octave (`1, 2, 4, …`) and `x/y` double each octave (classic fractal
+    Brownian motion setup).
+  - There is **no normalization by the octave amplitude sum**; the final mapping relies on clamping
+    (matching resvg/Chromium behavior).
+- Mapping from `sum` to bytes in `render_turbulence()`:
+  - `fractalNoise`: `((sum * 255.0) + 255.0) / 2.0` (i.e. `(sum + 1) / 2` in `[0, 1]`)
+  - `turbulence`: `sum * 255.0`
+  - Then clamp to `[0, 255]` and round by `+0.5` before truncation (matching resvg’s rounding).
 
-Important: with `baseFrequency="0 0"` (or clamped-to-zero), Perlin is skipped and the primitive
-produces `normalized = 0` => `mapped = 0.5` everywhere.
+**`baseFrequency=0` fast-path:** if both base frequencies are zero, we skip table generation and per
+pixel sampling and fill a constant output that matches resvg/Chromium:
 
-### Output channels
+- `fractalNoise`: all channels (`R/G/B/A`) are constant `0.5` (including alpha).
+  - In `color-interpolation-filters="sRGB"` this is byte `128`.
+  - In `color-interpolation-filters="linearRGB"` the RGB channels are encoded to sRGB bytes
+    (≈`188`) while alpha remains `128`.
+- `turbulence`: all channels are `0` (fully transparent)
 
-Current channel policy (in `render_turbulence()`):
+### Output channel policy
 
-- RGB are **not independent**: `R == G == B` (monochrome noise).
-- Alpha is always fully opaque: `A = 1.0` (byte `255`).
+`feTurbulence` is a generator primitive that outputs **premultiplied RGBA8**:
 
-### `color-interpolation-filters` for a generator primitive
+- RGB channels are **not** forced to be equal (not monochrome).
+- Alpha is **not** forced to `255`; it is generated as its own noise channel.
+- If the generated alpha byte is `0`, the output pixel is fully transparent.
 
-`feTurbulence` is a **generator**: it does not sample any input surface, it synthesizes pixels.
+### `color-interpolation-filters` (generator primitive semantics)
 
-FastRender treats the computed `mapped` value as being in the step’s
+For generator primitives, FastRender must decide how to encode computed numeric channel values into
+the pixmap’s stored bytes (which are always sRGB-encoded bytes in our engine).
+
+`render_turbulence()` treats the generated channel bytes as being in the step’s
 `color-interpolation-filters` space:
 
-- `color-interpolation-filters="sRGB"`: write `mapped` directly as an sRGB byte.
+- `color-interpolation-filters="sRGB"`:
+  - write the generated bytes as sRGB values
+  - premultiply `R/G/B` by `A` (`multiply_alpha_u8`)
 - `color-interpolation-filters="linearRGB"`:
-  - treat `mapped` as a **linear** value
-  - encode it to sRGB bytes via `linear_to_srgb()` before storing into the RGBA8 pixmap
+  - treat the generated bytes as **linearRGB**
+  - convert them to sRGB for storage using resvg’s `LINEAR_RGB_TO_SRGB_TABLE`
+  - conversion is done in a way that matches resvg/Chromium (premultiply → demultiply →
+    linear→sRGB → premultiply), so downstream primitives that decode to linearRGB see the intended
+    numeric values.
 
-This is required so that downstream primitives that *decode* into linearRGB recover the intended
-numeric `mapped` value (see the regression test `turbulence_midgray_displacement_map_is_nearly_identity_in_linear_rgb`
-in `tests/svg_filter_turbulence.rs`).
+Regression coverage:
 
-### Coordinate system (`primitiveUnits`) + `filterRes`/DPR scaling
+- Unit test: `turbulence_encodes_channels_based_on_color_interpolation_filters`
+  (`src/paint/svg_filter.rs`)
+- Integration test: `turbulence_midgray_displacement_map_is_nearly_identity_in_linear_rgb`
+  (`tests/svg_filter_turbulence.rs`)
 
-Implementation detail: `render_turbulence()` operates in **working-pixmap pixel coordinates** and
-does not currently consult `SvgFilter::primitive_units` or the element bbox.
+### Coordinates: `primitiveUnits`, bbox translation, and `filterRes`/DPR
 
-Concretely:
+In `render_turbulence()` each output pixel coordinate `(x_px, y_px)` is converted into **user-space
+coordinates** (CSS units) before sampling noise:
 
-- Per-pixel sampling uses `(x, y)` as **integer pixel indices** in the working pixmap.
-- `baseFrequency` is interpreted as “cycles per working pixel”.
-- As a result, the *visible* frequency in CSS/user units scales with the effective `scale_x/scale_y`
-  chosen by the filter engine (when `filterRes` is actually applied):
-  - higher DPR and/or higher `filterRes` => higher apparent frequency in CSS pixels
-  - lower `filterRes` => lower apparent frequency (noise stretches when resampled back)
+```
+x_user = surface_origin_css.x + x_px / scale_x
+y_user = surface_origin_css.y + y_px / scale_y
+```
+
+Important (Chrome-aligned) behavior:
+
+- `feTurbulence` treats its noise coordinate system as user-space even when
+  `primitiveUnits="objectBoundingBox"` (see the comment in `render_turbulence()`).
+  - In other words: `primitiveUnits` does **not** change how `baseFrequency` or `(x, y)` are
+    interpreted for turbulence.
+- Because coordinates divide by `scale_x/scale_y`, the turbulence pattern is **scale-invariant in
+  CSS units**:
+  - increasing DPR or enabling `filterRes` increases sampling density
+  - but does not change the underlying noise frequency in CSS/user space
+
+Regression coverage:
+
+- `turbulence_userspace_translation_changes_pattern` (`tests/svg_filter_turbulence.rs`)
+- `turbulence_userspace_translation_changes_pattern_with_filter_res` (`tests/svg_filter_turbulence.rs`)
 
 ### `stitchTiles` (wrapping algorithm)
 
-When `stitchTiles` is enabled, we adjust frequencies so the noise value matches on the primitive
-subregion edges:
+Stitching is implemented inside `turbulence()` / `noise2()`:
 
-- In `render_turbulence()` we compute:
-  - `stitch_width = region.width - 1` (clamped to at least 1)
-  - `stitch_height = region.height - 1` (clamped to at least 1)
-  - The `-1` means “make the first and last pixel identical”, matching how the subregion is
-    rasterized as discrete pixels.
-- For each octave and each axis (`adjust_frequency()`):
-  - `wrap = round(freq * extent)` (forced to be non-zero if `freq != 0`)
-  - `adjusted_freq = wrap / extent`
-  - Pass `wrap` into the Perlin hash as a period (see `wrap_index()`).
-- This forces the Perlin lattice indices to repeat with period `wrap`, and by choosing
-  `adjusted_freq` such that `extent * adjusted_freq == wrap`, the coordinate at the far edge lands
-  on the same lattice phase as the origin.
+1. Convert the rendered pixel tile size back into **user-space units**:
+   - `tile_width = region.width / scale_x`
+   - `tile_height = region.height / scale_y`
+2. Adjust base frequencies so the tile can be made periodic:
+   - If `base_freq_x != 0`, choose between:
+     - `lo_freq = floor(tile_width * base_freq_x) / tile_width`
+     - `hi_freq = ceil(tile_width * base_freq_x) / tile_width`
+     picking whichever is closer in relative error (same for `y`).
+3. Compute `StitchInfo`:
+   - `width = round(tile_width * base_freq_x)` (implemented as `+0.5` then cast to `i32`)
+   - `wrap_x = ceil(tile_x * base_freq_x + PERLIN_N + width)` (same for `y`)
+4. `noise2()` uses `wrap_x/wrap_y` to wrap lattice coordinates so noise repeats at the tile edges.
+5. Each octave doubles the stitch period (`width/height`) and updates `wrap_x/wrap_y` by:
+   - `wrap_x = 2*wrap_x - PERLIN_N` (same for `y`)
 
-The edge stitch behavior is regression-tested by `turbulence_stitches_edges` in
-`tests/svg_filter_turbulence.rs`.
+Regression coverage:
+
+- `turbulence_stitches_edges` (`tests/svg_filter_turbulence.rs`)
+- `turbulence_stitches_edges_with_offset_filter_region` (`tests/svg_filter_turbulence.rs`)
 
 ## `feDisplacementMap`
 
+Implementation is in `parse_fe_displacement_map()` and the displacement branch of
+`apply_primitive()` (`src/paint/svg_filter.rs`), plus:
+
+- `apply_displacement_map()`
+- `sample_nearest_premultiplied()`
+
 ### Parsing
 
-`parse_fe_displacement_map()` in `src/paint/svg_filter.rs` parses:
+`parse_fe_displacement_map()` parses:
 
 - `in` / `in2` (case-insensitive attribute lookup)
 - `scale` as a float (`parse_number()`; default `0.0`)
 - `xChannelSelector` / `yChannelSelector` (`R|G|B|A`, default `A`)
 
-### Scale resolution (`primitiveUnits` + device/DPR scaling)
+### `scale` units + axis-specific scaling
 
-In `apply_primitive()` the `scale` attribute is converted into a displacement magnitude in **working
-pixels**:
+In `apply_primitive()` we resolve `scale` to **pixel displacements**:
 
-1. Resolve the raw `scale` number through `primitiveUnits`:
-   - `SvgFilter::resolve_primitive_scalar(scale, css_bbox)`
-   - `primitiveUnits="userSpaceOnUse"`: scalar is used as-is (CSS/user units).
-   - `primitiveUnits="objectBoundingBox"`: scalar is multiplied by the **average** bbox dimension:
-      `scale * 0.5 * (bbox.width + bbox.height)`.
-2. Multiply by the average pixel scale:
-   - `scale_avg = 0.5 * (scale_x + scale_y)`
-   - In general this makes displacement **isotropic** even when upstream engine code uses
-     anisotropic `(scale_x, scale_y)` values.
+1. Resolve the raw scalar in the current `primitiveUnits` coordinate system:
+   - `base_scale = SvgFilter::resolve_primitive_x(scale, css_bbox)`
+   - `primitiveUnits="userSpaceOnUse"`: `base_scale = scale`
+   - `primitiveUnits="objectBoundingBox"`: `base_scale = scale * bbox.width`
 
-`filterRes` note: because we currently **ignore `filterRes` for graphs containing
-`feDisplacementMap`**, `scale_x == scale_y == DPR` for displacement-map filters, so
-`scale_avg == DPR` and `filterRes` never affects displacement magnitude.
+   Note: this intentionally resolves object-bounding-box scalars against the bbox **width** (not an
+   average dimension) to match Chrome/Skia (see the comment at the displacement-map site in
+   `apply_primitive()`).
+2. Convert to working pixels separately for x/y:
+   - `scale_x_px = base_scale * scale_x`
+   - `scale_y_px = base_scale * scale_y`
 
-Net effect: `dx` and `dy` are scaled by the **same** scalar (isotropic displacement).
+In practice, `filterRes` is ignored for graphs containing `feDisplacementMap`, so the common case is
+`scale_x == scale_y == DPR` and thus `scale_x_px == scale_y_px`.
 
-### Displacement math + sampling
+Regression coverage:
 
-The pixel kernel is implemented in `apply_displacement_map()` (`src/paint/svg_filter.rs`):
+- `displacement_map_object_bounding_box_scale_is_resolved_against_bbox_width`
+  (`tests/paint/svg_filter_test.rs`)
 
-For each output pixel `(x, y)`:
+### Displacement math + sampling (Chrome behavior)
 
-1. Sample the displacement-map input (`in2`) at `(x, y)` using bilinear sampling in premultiplied
-   RGBA (`sample_premultiplied()`).
-2. Convert that sample to **unpremultiplied** RGBA floats (`unpremultiply_sample()`).
-3. Extract channels from the unpremultiplied sample:
-   - `dx = (channel(map, xChannelSelector) - 0.5) * scale`
-   - `dy = (channel(map, yChannelSelector) - 0.5) * scale`
-4. Sample the primary input (`in1`) at `(x + dx, y + dy)` using the same bilinear premultiplied
-   sampler.
-5. Store the sampled premultiplied values back into an RGBA8 pixmap.
+`apply_displacement_map()` applies a per-pixel kernel:
 
-### Pixel coordinate convention (centers vs corners)
+For each output pixel `(x, y)` (integer pixel indices):
 
-FastRender treats integer coordinates as the sample positions:
+1. **Sample the displacement map (`in2`) at `(x, y)` with clamping to the map’s primitive subregion.**
+   - We clamp `x/y` into `map_region` (the `FilterResult::region` of the map input), then sample
+     `map.pixel(map_x, map_y)`.
+   - This models Chrome’s behavior: pixels outside the map’s primitive subregion behave like the
+     nearest edge pixel, not transparent black (see the comment in `apply_displacement_map()`).
+   - Sampling is **nearest neighbor** (no bilinear interpolation).
+2. Convert that map pixel from premultiplied RGBA8 into **unpremultiplied floats** using
+   `to_unpremultiplied()`.
+3. Select channels and compute displacements:
+   - `dx = (channel(map, xChannelSelector) - 0.5) * scale_x_px`
+   - `dy = (channel(map, yChannelSelector) - 0.5) * scale_y_px`
+4. Sample the primary input (`in1`) at `(x + dx, y + dy)` using `sample_nearest_premultiplied()`.
+5. Store the sampled premultiplied pixel.
 
-- A sample at `(x = 0.0, y = 0.0)` reads exactly pixel `(0, 0)`.
-- Fractional positions bilinearly interpolate between the four neighboring pixels.
+### Pixel coordinate convention (nearest pixel centers)
 
-This convention is encoded by `sample_premultiplied()` using:
+Primary sampling uses `sample_nearest_premultiplied()`:
 
-- `x0 = floor(x)`, `tx = x - x0` (similarly for `y`)
+- Out-of-bounds coordinates return transparent (`PremultipliedColorU8::TRANSPARENT`).
+- Otherwise we round to the nearest pixel “center” with ties rounding toward negative infinity:
 
-### Out-of-bounds sampling
+```
+ix = ceil(x - 0.5)
+iy = ceil(y - 0.5)
+```
 
-Out-of-bounds sampling is treated as **transparent black**:
+So:
 
-- If any of the bilinear taps fall outside the pixmap, that tap contributes 0.
-- We do **not** clamp coordinates to the edge.
+- `x = 0.0` => `ix = 0` (reads pixel 0)
+- `x = 0.5` => `ix = 0` (tie goes to 0)
+- `x = 0.50001` => `ix = 1`
 
-This is done in `sample_premultiplied()` by skipping contributions when `sx/sy` are out of range.
+This tie-breaking is intentional to match Chrome/Skia semantics.
 
-### `color-interpolation-filters` for a sampling primitive
+### Out-of-bounds behavior
 
-`feDisplacementMap` is a **sampling** primitive: it reads two input surfaces and interpolates them.
+- Sampling the **primary input** out-of-bounds yields transparent black.
+- Sampling the **map input** never goes out-of-bounds in practice because coordinates are clamped to
+  the map’s region and then to pixmap bounds.
+
+### `color-interpolation-filters` (sampling primitive semantics)
+
+`feDisplacementMap` is a **sampling** primitive: it reads two inputs and interprets channel values.
 
 When the step’s `color-interpolation-filters` is `linearRGB`, `apply_displacement_map()`:
 
 - clones both input pixmaps
-- re-encodes them in-place from sRGB bytes to linearRGB (`reencode_pixmap_to_linear_rgb()`)
-- performs displacement-map channel selection + bilinear interpolation in that space
-- re-encodes the output back to sRGB (`reencode_pixmap_to_srgb()`) for storage as RGBA8
+- re-encodes them from sRGB bytes to linearRGB values (`reencode_pixmap_to_linear_rgb()`)
+- performs channel selection + displacement math in that space
+- re-encodes the output back to sRGB bytes for storage (`reencode_pixmap_to_srgb()`)
 
 When the step uses `sRGB`, no conversion is performed.
 
-## Cross-cutting: filter-region clipping + `filterRes`
+Regression coverage:
 
-Two engine-level details matter for both primitives:
+- `displacement_map_interprets_map_channels_as_unpremultiplied`
+  (`tests/paint/svg_filter_test.rs`)
+- `displacement_map_interprets_map_channels_in_color_interpolation_space`
+  (`tests/paint/svg_filter_test.rs`)
 
-1. **Filter-region clipping happens before the graph runs.**
-   `apply_svg_filter_scaled()` calls `clip_to_region(pixmap, filter_region)` so pixels outside the
-   resolved filter region do not leak into sampling primitives.
+### `filterRes` interaction
 
-2. **`filterRes` resamples the entire filter region into a working surface (usually).**
-   Primitives see the filter graph in the working surface’s pixel grid; generator primitives (like
-   `feTurbulence`) will generate at that resolution.
+For Chrome parity, `filterRes` is ignored whenever the filter graph contains `feDisplacementMap`
+(see `apply_svg_filter_with_cache()`).
 
-   Exception: for Chrome parity, we treat `filterRes` as unset whenever the filter graph contains
-   `feDisplacementMap` (implemented in `apply_svg_filter_with_cache()`). In that case, all
-   primitives run at the default filter resolution (no resampling).
+Regression coverage:
 
-See [svg_filter_filterres.md](svg_filter_filterres.md) for the exact filterRes mapping when the
-filter region is offset/clipped.
+- `displacement_map_ignores_filter_res` (`tests/paint/svg_filter_test.rs`)
 
 ## Regression coverage (tests + fixtures)
 
-### Unit tests (parsing + math)
+### `feTurbulence` unit tests
 
-- `src/paint/svg_filter.rs`:
+- `src/paint/svg_filter.rs` (parsing/CIF encoding):
   - `turbulence_base_frequency_parses_pair`
   - `turbulence_base_frequency_clamps_negative_to_zero`
   - `turbulence_negative_base_frequency_clamps_to_zero`
+  - `turbulence_seed_defaults_to_zero_when_missing`
+  - `turbulence_seed_preserves_negative_values`
+  - `turbulence_seed_truncates_fractional_values`
+  - `turbulence_encodes_channels_based_on_color_interpolation_filters`
+- `src/paint/svg_filter/turbulence.rs` (determinism under rayon):
+  - `turbulence_render_is_byte_identical_for_same_seed`
+  - `turbulence_raster_is_deterministic_across_thread_counts`
+
+### `feTurbulence` integration tests
+
 - `tests/svg_filter_turbulence.rs`:
   - `turbulence_is_deterministic`
   - `turbulence_seed_changes_output`
   - `turbulence_stitches_edges`
-  - `turbulence_midgray_displacement_map_is_nearly_identity_in_linear_rgb`
+  - `turbulence_output_is_rgba_noise`
+  - `turbulence_generates_independent_rgb_channels`
+  - `turbulence_userspace_translation_changes_pattern`
+  - `turbulence_userspace_translation_changes_pattern_with_filter_res`
+  - `turbulence_missing_basefrequency_defaults_to_zero` (compares against resvg)
+
+### `feDisplacementMap` tests + fixtures
+
 - `tests/paint/svg_filter_test.rs`:
   - `displacement_map_applies_scale_without_extra_multiplier`
   - `displacement_map_interprets_map_channels_as_unpremultiplied`
   - `displacement_map_object_bounding_box_scale_is_resolved_against_bbox_width`
   - `displacement_map_ignores_filter_res`
   - `displacement_map_interprets_map_channels_in_color_interpolation_space`
-
-### Integration fixtures
-
 - Displacement-map semantics golden (validated against Chrome):
   - Fixture: `tests/fixtures/html/svg_filter_displacement_map_semantics.html`
   - Golden test: `tests/paint/svg_filter_displacement_map_semantics_golden.rs`
   - Golden image: `tests/fixtures/golden/svg_filter_displacement_map_semantics.png`
-- Golden fixture exercising `feDisplacementMap` under both `linearRGB` and `sRGB`:
+- CIF golden fixture (includes `feDisplacementMap` under both CIF modes):
   - Fixture: `tests/fixtures/html/svg_filter_color_interpolation_filters.html`
     (`filter id="cif-displacement-*"`).
   - Golden test: `tests/paint/svg_filter_color_interpolation_golden.rs`
   - Golden image: `tests/fixtures/golden/svg_filter_color_interpolation_filters.png`
-- Fuzz corpus sample using both primitives (useful as a minimized repro input):
+
+### Additional repro inputs
+
+- Fuzz corpus sample using both primitives:
   - `tests/fuzz_corpus/svg_filters.svg` (`filter id="wavy"`)
 - Real-world pageset fixture using `feTurbulence` with `stitchTiles="stitch"`:
   - `tests/pages/fixtures/foxnews.com/assets/795bf940a1c9a2a4e880a25b9b697ad7.svg`
