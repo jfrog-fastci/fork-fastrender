@@ -19,6 +19,7 @@ mod grid_writing_mode_in_block;
 mod inline_float_min_width;
 mod inline_shaping_fallback;
 mod legend_shrink_to_fit;
+mod intrinsic_sizing_keywords;
 mod multicol;
 mod nested_absolute;
 mod noscript_layout;
