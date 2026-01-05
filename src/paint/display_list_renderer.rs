@@ -997,7 +997,6 @@ fn apply_filters_scoped(
       };
 
       if let Some(mut backdrop_pixmap) = backdrop_pixmap {
-        backdrop_pixmap.data_mut().fill(0);
         let src_x = backdrop_origin.0.saturating_add(clamped_x as i32);
         let src_y = backdrop_origin.1.saturating_add(clamped_y as i32);
         if let Err(err) =
@@ -1115,7 +1114,6 @@ fn apply_filters_with_optional_svg_backdrop(
     },
   };
 
-  backdrop_pixmap.data_mut().fill(0);
   let result = copy_pixmap_region_with_offset(
     &mut backdrop_pixmap,
     backdrop,
@@ -1148,6 +1146,10 @@ fn copy_pixmap_region_with_offset(
   if dst_w <= 0 || dst_h <= 0 {
     return Ok(());
   }
+  let dst_stride = dst_w as usize * 4;
+  let dst_data = dst.data_mut();
+  dst_data.fill(0);
+
   let src_w = src.width() as i32;
   let src_h = src.height() as i32;
   if src_w <= 0 || src_h <= 0 {
@@ -1168,10 +1170,8 @@ fn copy_pixmap_region_with_offset(
   let copy_h = (y1 - y0) as usize;
 
   let src_stride = src.width() as usize * 4;
-  let dst_stride = dst.width() as usize * 4;
   let row_bytes = copy_w * 4;
   let src_data = src.data();
-  let dst_data = dst.data_mut();
 
   let mut deadline_counter = 0usize;
   for row in 0..copy_h {
@@ -16774,6 +16774,43 @@ mod tests {
       .collect::<Vec<_>>();
       assert_f32_positions_close(&actual, &expected);
     }
+  }
+
+  #[test]
+  fn copy_pixmap_region_with_offset_clears_unwritten_pixels() {
+    let mut src = new_pixmap(4, 4).expect("src pixmap");
+    for y in 0..src.height() {
+      for x in 0..src.width() {
+        let idx = ((y * src.width() + x) * 4) as usize;
+        src.data_mut()[idx..idx + 4].copy_from_slice(&[
+          x.saturating_add(1) as u8,
+          y.saturating_add(1) as u8,
+          0xAA,
+          0xFF,
+        ]);
+      }
+    }
+
+    let mut dst = new_pixmap(3, 3).expect("dst pixmap");
+    dst.data_mut().fill(0xCC);
+
+    // Start the source at (-1, -1) relative to the destination so only the bottom-right quadrant
+    // overlaps.
+    copy_pixmap_region_with_offset(&mut dst, &src, -1, -1).expect("copy ok");
+
+    // Pixels outside the overlap should be cleared to fully transparent.
+    for x in 0..dst.width() {
+      assert_eq!(pixel(&dst, x, 0), (0, 0, 0, 0));
+    }
+    for y in 0..dst.height() {
+      assert_eq!(pixel(&dst, 0, y), (0, 0, 0, 0));
+    }
+
+    // The overlapping region should match the source bytes.
+    assert_eq!(pixel(&dst, 1, 1), pixel(&src, 0, 0));
+    assert_eq!(pixel(&dst, 2, 1), pixel(&src, 1, 0));
+    assert_eq!(pixel(&dst, 1, 2), pixel(&src, 0, 1));
+    assert_eq!(pixel(&dst, 2, 2), pixel(&src, 1, 1));
   }
 
   #[test]
