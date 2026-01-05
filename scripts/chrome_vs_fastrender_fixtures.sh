@@ -76,17 +76,19 @@ if [[ "${BASH_VERSINFO[0]:-0}" -lt 4 ]]; then
   exit 2
 fi
 
-FIXTURES_DIR="${FIXTURES_DIR:-tests/pages/fixtures}"
-OUT_DIR="${OUT_DIR:-target/fixture_chrome_diff}"
+FIXTURES_DIR="tests/pages/fixtures"
+FIXTURES_DIR_SET=0
+OUT_DIR="target/fixture_chrome_diff"
+OUT_DIR_SET=0
 OUT_DIR_EXPLICIT=0
-VIEWPORT="${VIEWPORT:-1040x1240}"
-DPR="${DPR:-1.0}"
-MEDIA="${MEDIA:-screen}"
+VIEWPORT=""
+DPR=""
+MEDIA=""
 JOBS=""
 WRITE_SNAPSHOT=0
-TIMEOUT="${TIMEOUT:-15}"
-CHROME_BIN="${CHROME_BIN:-}"
-JS="${JS:-off}"
+TIMEOUT=""
+CHROME_BIN=""
+JS=""
 SHARD=""
 TOLERANCE=""
 MAX_DIFF_PERCENT=""
@@ -121,13 +123,13 @@ while [[ $# -gt 0 ]]; do
         exit 0
         ;;
       --fixtures-dir=*)
-        FIXTURES_DIR="${1#*=}"; shift; continue ;;
+        FIXTURES_DIR="${1#*=}"; FIXTURES_DIR_SET=1; shift; continue ;;
       --fixtures-dir)
-        FIXTURES_DIR="${2:-}"; shift 2; continue ;;
+        FIXTURES_DIR="${2:-}"; FIXTURES_DIR_SET=1; shift 2; continue ;;
       --out-dir=*)
-        OUT_DIR="${1#*=}"; OUT_DIR_EXPLICIT=1; shift; continue ;;
+        OUT_DIR="${1#*=}"; OUT_DIR_SET=1; OUT_DIR_EXPLICIT=1; shift; continue ;;
       --out-dir)
-        OUT_DIR="${2:-}"; OUT_DIR_EXPLICIT=1; shift 2; continue ;;
+        OUT_DIR="${2:-}"; OUT_DIR_SET=1; OUT_DIR_EXPLICIT=1; shift 2; continue ;;
       --chrome-out-dir)
         LEGACY_CHROME_OUT_DIR="${2:-}"; shift 2; continue ;;
       --fastr-out-dir)
@@ -357,6 +359,7 @@ if [[ "${#LEGACY_OUT_DIRS[@]}" -gt 0 ]]; then
     exit 2
   fi
   OUT_DIR="${first}"
+  OUT_DIR_SET=1
   refuse_unsafe_path "out dir" "${OUT_DIR}"
 fi
 
@@ -364,16 +367,28 @@ CHROME_OUT_DIR="${OUT_DIR}/chrome"
 FASTR_OUT_DIR="${OUT_DIR}/fastrender"
 REPORT_HTML="${OUT_DIR}/report.html"
 REPORT_JSON="${OUT_DIR}/report.json"
-xtask_args=(
-  fixture-chrome-diff
-  --fixtures-dir "${FIXTURES_DIR}"
-  --out-dir "${OUT_DIR}"
-  --viewport "${VIEWPORT}"
-  --dpr "${DPR}"
-  --media "${MEDIA}"
-  --timeout "${TIMEOUT}"
-  --js "${JS}"
-)
+xtask_args=(fixture-chrome-diff)
+if [[ "${FIXTURES_DIR_SET}" -eq 1 ]]; then
+  xtask_args+=(--fixtures-dir "${FIXTURES_DIR}")
+fi
+if [[ "${OUT_DIR_SET}" -eq 1 ]]; then
+  xtask_args+=(--out-dir "${OUT_DIR}")
+fi
+if [[ -n "${VIEWPORT}" ]]; then
+  xtask_args+=(--viewport "${VIEWPORT}")
+fi
+if [[ -n "${DPR}" ]]; then
+  xtask_args+=(--dpr "${DPR}")
+fi
+if [[ -n "${MEDIA}" ]]; then
+  xtask_args+=(--media "${MEDIA}")
+fi
+if [[ -n "${TIMEOUT}" ]]; then
+  xtask_args+=(--timeout "${TIMEOUT}")
+fi
+if [[ -n "${JS}" ]]; then
+  xtask_args+=(--js "${JS}")
+fi
 if [[ -n "${JOBS}" ]]; then
   xtask_args+=(--jobs "${JOBS}")
 fi
