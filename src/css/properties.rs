@@ -5221,11 +5221,25 @@ mod tests {
       Length::new(1.0, LengthUnit::Lh)
     );
   }
+
+  #[test]
+  fn parses_env_safe_area_insets() {
+    assert_eq!(
+      parse_length("env(safe-area-inset-left)").unwrap(),
+      Length::px(0.0)
+    );
+    assert_eq!(
+      parse_length("calc(10px + env(safe-area-inset-left))").unwrap(),
+      Length::px(10.0)
+    );
+    assert_eq!(parse_length("env(unknown, 5px)").unwrap(), Length::px(5.0));
+  }
 }
 
 const MATH_PREFIXES: &[&str] = &[
-  "calc(", "min(", "max(", "clamp(", "sin(", "cos(", "tan(", "asin(", "acos(", "atan(", "atan2(",
-  "pow(", "sqrt(", "hypot(", "log(", "exp(", "sign(", "abs(", "round(", "mod(", "rem(", "clamped(",
+  "calc(", "min(", "max(", "clamp(", "env(", "constant(", "sin(", "cos(", "tan(", "asin(", "acos(",
+  "atan(", "atan2(", "pow(", "sqrt(", "hypot(", "log(", "exp(", "sign(", "abs(", "round(", "mod(",
+  "rem(", "clamped(",
 ];
 
 /// Parse a CSS length value
@@ -6168,6 +6182,43 @@ fn parse_hypot_function<'i, 't>(
   }
 }
 
+fn parse_env_or_constant_function<'i, 't>(
+  input: &mut Parser<'i, 't>,
+  location: cssparser::SourceLocation,
+) -> Result<CalcComponent, cssparser::ParseError<'i, ()>> {
+  input.skip_whitespace();
+  let name = input.expect_ident()?;
+  let name = name.as_ref();
+
+  // For the headless/desktop environment FastRender targets, treat safe-area insets as 0px.
+  let is_safe_area_inset = name.eq_ignore_ascii_case("safe-area-inset-top")
+    || name.eq_ignore_ascii_case("safe-area-inset-right")
+    || name.eq_ignore_ascii_case("safe-area-inset-bottom")
+    || name.eq_ignore_ascii_case("safe-area-inset-left");
+
+  input.skip_whitespace();
+  let fallback = if input.try_parse(|p| p.expect_comma()).is_ok() {
+    input.skip_whitespace();
+    Some(parse_calc_sum(input)?)
+  } else {
+    None
+  };
+
+  if is_safe_area_inset {
+    return Ok(CalcComponent::Length(CalcLength::single(
+      LengthUnit::Px,
+      0.0,
+    )));
+  }
+
+  // Spec: unknown env() variables are invalid unless a fallback is provided.
+  let fallback = fallback.ok_or_else(|| location.new_custom_error(()))?;
+  if calc_component_to_length(fallback).is_none() {
+    return Err(location.new_custom_error(()));
+  }
+  Ok(fallback)
+}
+
 fn parse_math_function<'i, 't>(
   func: &str,
   input: &mut Parser<'i, 't>,
@@ -6178,6 +6229,9 @@ fn parse_math_function<'i, 't>(
     "min" => input.parse_nested_block(|block| parse_min_max(block, MathFn::Min)),
     "max" => input.parse_nested_block(|block| parse_min_max(block, MathFn::Max)),
     "clamp" => input.parse_nested_block(parse_clamp),
+    "env" | "constant" => {
+      input.parse_nested_block(|block| parse_env_or_constant_function(block, location))
+    }
     "sin" => input.parse_nested_block(|block| {
       block.skip_whitespace();
       let angle = expect_angle(parse_calc_sum(block)?, location)?.to_radians();

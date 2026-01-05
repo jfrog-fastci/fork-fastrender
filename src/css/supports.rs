@@ -131,4 +131,16 @@ mod tests {
     assert!(supports_declaration("container-type", "inline-size"));
     assert!(!supports_declaration("container-type", "scroll-state"));
   }
+
+  #[test]
+  fn supports_env_and_constant_in_calc_lengths() {
+    assert!(supports_declaration(
+      "padding-left",
+      "calc(10px + env(safe-area-inset-left))"
+    ));
+    assert!(supports_declaration(
+      "padding-left",
+      "calc(22px + constant(safe-area-inset-left))"
+    ));
+  }
 }
