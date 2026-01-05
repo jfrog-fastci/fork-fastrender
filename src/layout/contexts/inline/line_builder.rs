@@ -4833,6 +4833,7 @@ mod tests {
     crate::layout::contexts::inline::apply_break_properties(
       text,
       find_break_opportunities(text),
+      crate::style::types::LineBreak::Auto,
       word_break,
       overflow_wrap,
       true,

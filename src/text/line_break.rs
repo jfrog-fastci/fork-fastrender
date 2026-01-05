@@ -41,6 +41,8 @@
 //! - `word-break: break-word` - Deprecated; equivalent to `overflow-wrap:anywhere` (emergency-only, affects intrinsic sizing)
 //! - `word-break: anywhere` - Add emergency breaks between all grapheme clusters (and affects intrinsic sizing)
 //! - `word-break: keep-all` - Suppress/downgrade breaks within CJK text (UAs may relax this to avoid overflow)
+//! - `line-break: strict` - Downgrade some CJK breaks (e.g. before small kana) to avoid starting lines with prohibited characters
+//! - `line-break: anywhere` - Add breaks between all grapheme clusters
 //! - `overflow-wrap: break-word` - Add emergency breaks within otherwise-unbreakable words
 //! - `overflow-wrap: anywhere` - Add emergency breaks between all grapheme clusters (and affects intrinsic sizing)
 //!

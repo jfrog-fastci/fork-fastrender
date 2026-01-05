@@ -3515,6 +3515,7 @@ impl InlineFormattingContext {
       apply_break_properties(
         &hyphen_free,
         merged,
+        style.line_break,
         style.word_break,
         style.overflow_wrap,
         allow_soft_wrap,
@@ -7475,9 +7476,17 @@ fn grapheme_boundary_breaks(
   breaks
 }
 
+fn is_kinsoku_strict_prohibited_line_start(ch: char) -> bool {
+  // CSS Text `line-break: strict` applies Japanese kinsoku shori restrictions. Model the most
+  // common ones: small kana and prolonged sound marks can't start a line unless needed to avoid
+  // overflow.
+  map_small_kana(ch).is_some() || matches!(ch, '\u{30FC}' | '\u{FF70}')
+}
+
 fn apply_break_properties(
   text: &str,
   breaks: Vec<crate::text::line_break::BreakOpportunity>,
+  line_break: LineBreak,
   word_break: WordBreak,
   overflow_wrap: OverflowWrap,
   allow_soft_wrap: bool,
@@ -7490,6 +7499,28 @@ fn apply_break_properties(
   }
 
   let mut result = breaks;
+
+  match line_break {
+    LineBreak::Strict => {
+      // CSS Text: breaks before Japanese small kana / prolonged sound marks are forbidden in
+      // strict line breaking. Treat them as emergency-only so they can still be used as a last
+      // resort to avoid overflow.
+      for brk in &mut result {
+        if brk.break_type == BreakType::Mandatory {
+          continue;
+        }
+        if brk.kind == BreakOpportunityKind::Emergency {
+          continue;
+        }
+        let pos = brk.byte_offset.min(text.len());
+        let next = text[pos..].chars().next();
+        if matches!(next, Some(ch) if is_kinsoku_strict_prohibited_line_start(ch)) {
+          brk.kind = BreakOpportunityKind::Emergency;
+        }
+      }
+    }
+    _ => {}
+  }
 
   match word_break {
     WordBreak::BreakAll => {
@@ -17561,7 +17592,7 @@ mod tests {
       BreakOpportunity::with_hyphen(2, BreakType::Allowed, true),
     ];
     let result =
-      apply_break_properties("abc", breaks, WordBreak::Normal, OverflowWrap::Normal, true);
+      apply_break_properties("abc", breaks, LineBreak::Auto, WordBreak::Normal, OverflowWrap::Normal, true);
 
     let mut at_1 = result.iter().filter(|b| b.byte_offset == 1);
     let brk_1 = at_1.next().expect("break at 1");
@@ -17587,7 +17618,7 @@ mod tests {
     let text = "hello world";
     let base = find_break_opportunities(text);
     let result =
-      apply_break_properties(text, base, WordBreak::BreakWord, OverflowWrap::Normal, true);
+      apply_break_properties(text, base, LineBreak::Auto, WordBreak::BreakWord, OverflowWrap::Normal, true);
 
     let space_break = result
       .iter()
@@ -17625,7 +17656,7 @@ mod tests {
     ];
 
     let result =
-      apply_break_properties(text, breaks, WordBreak::KeepAll, OverflowWrap::Normal, true);
+      apply_break_properties(text, breaks, LineBreak::Auto, WordBreak::KeepAll, OverflowWrap::Normal, true);
     let offsets: Vec<usize> = result.iter().map(|b| b.byte_offset).collect();
     assert_eq!(offsets, vec![3, 6, 7, 10, 13]);
 
@@ -17652,6 +17683,47 @@ mod tests {
         "non-CJK breaks should remain normal under keep-all"
       );
     }
+  }
+
+  #[test]
+  fn line_break_strict_downgrades_breaks_before_small_kana_to_emergency() {
+    use crate::text::line_break::BreakOpportunityKind;
+
+    let text = "あぁい"; // break before small hiragana 'ぁ' should be emergency-only in strict mode
+    let breaks = vec![
+      BreakOpportunity::allowed(3), // あ|ぁ
+      BreakOpportunity::allowed(6), // ぁ|い
+      BreakOpportunity::allowed(9), // end
+    ];
+
+    let result = apply_break_properties(
+      text,
+      breaks,
+      LineBreak::Strict,
+      WordBreak::Normal,
+      OverflowWrap::Normal,
+      true,
+    );
+
+    let brk_3 = result
+      .iter()
+      .find(|b| b.byte_offset == 3)
+      .expect("break at 3");
+    assert_eq!(
+      brk_3.kind,
+      BreakOpportunityKind::Emergency,
+      "breaks before small kana should be emergency-only under line-break: strict"
+    );
+
+    let brk_6 = result
+      .iter()
+      .find(|b| b.byte_offset == 6)
+      .expect("break at 6");
+    assert_eq!(
+      brk_6.kind,
+      BreakOpportunityKind::Normal,
+      "breaks not affected by kinsoku rules should remain normal"
+    );
   }
 
   #[test]
