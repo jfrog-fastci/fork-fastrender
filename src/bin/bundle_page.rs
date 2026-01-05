@@ -491,15 +491,39 @@ impl RecordingFetcher {
       let Some(origins) = origins_by_resource.get(&(key.kind, key.url.clone())) else {
         continue;
       };
-      // Only record per-origin variants when a single URL was fetched in CORS mode under multiple
-      // initiating origins; otherwise the legacy URL-only entry is sufficient and keeps bundles
-      // smaller.
-      if origins.len() <= 1 {
-        continue;
-      }
       let Some(origin) = key.origin.as_ref() else {
         continue;
       };
+
+      let same_for_replay = |a: &FetchedResource, b: &FetchedResource| {
+        a.bytes == b.bytes
+          && a.content_type == b.content_type
+          && a.status == b.status
+          && a.final_url == b.final_url
+          && a.etag == b.etag
+          && a.last_modified == b.last_modified
+          && a.access_control_allow_origin == b.access_control_allow_origin
+          && a.timing_allow_origin == b.timing_allow_origin
+          && a.access_control_allow_credentials == b.access_control_allow_credentials
+      };
+
+      // Record per-origin variants when:
+      // - a single URL was fetched in CORS mode under multiple initiating origins (so the bundle
+      //   must preserve varying CORS metadata), OR
+      // - the legacy URL-only entry does not match the CORS-mode fetch (e.g. the URL was first
+      //   fetched in `no-cors` mode, which omits the Origin header and can cause missing
+      //   `Access-Control-Allow-Origin` on the response).
+      //
+      // This keeps bundles small in the common case while ensuring offline replay has the data
+      // required for CORS enforcement.
+      let should_partition = origins.len() > 1
+        || snapshot
+          .get(&key.url)
+          .map(|existing| !same_for_replay(existing, &resource))
+          .unwrap_or(true);
+      if !should_partition {
+        continue;
+      }
 
       let manifest_key = request_partitioned_resource_key(key.kind, &key.url, origin);
       snapshot
@@ -2384,6 +2408,95 @@ mod tests {
         inner.calls(),
         2,
         "expected RecordingFetcher to cache by URL when CORS enforcement is disabled"
+      );
+    });
+
+    Ok(())
+  }
+
+  #[test]
+  fn snapshot_records_single_origin_cors_variant_when_url_entry_is_no_cors() -> Result<()> {
+    #[derive(Default)]
+    struct MixedModeFetcher {
+      calls: AtomicUsize,
+    }
+
+    impl MixedModeFetcher {
+      fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+      }
+    }
+
+    impl ResourceFetcher for MixedModeFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected RecordingFetcher to use fetch_with_request");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+
+        let mut res = FetchedResource::with_final_url(
+          b"img".to_vec(),
+          Some("image/png".to_string()),
+          Some(req.url.to_string()),
+        );
+        res.status = Some(200);
+        if matches!(req.destination, FetchDestination::ImageCors) {
+          res.access_control_allow_origin = Some("https://a.test".to_string());
+        }
+        Ok(res)
+      }
+    }
+
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "1".to_string(),
+    )])));
+
+    with_thread_runtime_toggles(toggles, || {
+      let inner = Arc::new(MixedModeFetcher::default());
+      let recording = RecordingFetcher::new(inner.clone());
+
+      let url = "https://cdn.test/img.png";
+      let referrer = "https://a.test/page.html";
+      let _ = recording
+        .fetch_with_request(FetchRequest::new(url, FetchDestination::Image).with_referrer(referrer))
+        .expect("no-cors image fetch");
+      let _ = recording
+        .fetch_with_request(
+          FetchRequest::new(url, FetchDestination::ImageCors).with_referrer(referrer),
+        )
+        .expect("cors image fetch");
+
+      assert_eq!(inner.calls(), 2, "expected inner fetcher to be invoked twice");
+
+      let snapshot = recording.snapshot();
+      let origin = origin_from_url(referrer).expect("origin");
+      let partitioned =
+        request_partitioned_resource_key(FetchContextKind::ImageCors, url, &origin);
+
+      assert!(
+        snapshot.contains_key(url),
+        "expected legacy URL entry to be present"
+      );
+      assert!(
+        snapshot.contains_key(&partitioned),
+        "expected request-partitioned entry to be present for the CORS-mode variant"
+      );
+
+      assert_eq!(
+        snapshot
+          .get(url)
+          .and_then(|res| res.access_control_allow_origin.as_deref()),
+        None,
+        "expected legacy URL entry to retain the no-cors response metadata"
+      );
+      assert_eq!(
+        snapshot
+          .get(&partitioned)
+          .and_then(|res| res.access_control_allow_origin.as_deref()),
+        Some("https://a.test"),
+        "expected partitioned entry to store CORS-mode response metadata"
       );
     });
 
