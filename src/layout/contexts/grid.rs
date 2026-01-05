@@ -6483,6 +6483,69 @@ mod tests {
   }
 
   #[test]
+  fn convert_style_sets_axes_swapped_for_vertical_writing_modes() {
+    let gc = GridFormattingContext::new();
+    let mut style = ComputedStyle::default();
+    style.display = CssDisplay::Grid;
+
+    style.writing_mode = WritingMode::HorizontalTb;
+    let taffy_style = gc.convert_style(&style, None, None, false, true);
+    assert!(
+      !taffy_style.axes_swapped,
+      "horizontal-tb should not transpose inline/block axes"
+    );
+
+    style.writing_mode = WritingMode::VerticalRl;
+    let taffy_style = gc.convert_style(&style, None, None, false, true);
+    assert!(
+      taffy_style.axes_swapped,
+      "vertical writing-modes should transpose inline/block axes into physical axes"
+    );
+  }
+
+  #[test]
+  fn convert_style_subgrids_inherit_axes_swapped_from_containing_grid() {
+    let gc = GridFormattingContext::new();
+
+    let mut parent_style = ComputedStyle::default();
+    parent_style.display = CssDisplay::Grid;
+    parent_style.writing_mode = WritingMode::HorizontalTb;
+    let parent_axis = GridAxisStyle::from_style(&parent_style);
+
+    let mut subgrid_style = ComputedStyle::default();
+    subgrid_style.display = CssDisplay::Grid;
+    subgrid_style.writing_mode = WritingMode::VerticalRl;
+    subgrid_style.grid_column_subgrid = true;
+
+    let taffy_style = gc.convert_style(
+      &subgrid_style,
+      Some(&parent_style),
+      Some(parent_axis),
+      false,
+      true,
+    );
+    assert!(
+      !taffy_style.axes_swapped,
+      "subgrids must inherit axes from the containing grid (not their own writing-mode)"
+    );
+
+    parent_style.writing_mode = WritingMode::VerticalRl;
+    let parent_axis = GridAxisStyle::from_style(&parent_style);
+    subgrid_style.writing_mode = WritingMode::HorizontalTb;
+    let taffy_style = gc.convert_style(
+      &subgrid_style,
+      Some(&parent_style),
+      Some(parent_axis),
+      false,
+      true,
+    );
+    assert!(
+      taffy_style.axes_swapped,
+      "subgrids should inherit axes_swapped when the containing grid uses a vertical writing-mode"
+    );
+  }
+
+  #[test]
   fn simple_grids_use_block_fast_path() {
     // Grid with default implicit tracks and a single child should use the simple fast path.
     let mut parent = BoxNode::new_block(
