@@ -92,6 +92,16 @@ fn bundled_font_set_integrity() {
   assert_family_has_glyph(
     &ctx,
     "FastRender Emoji",
+    char::from_u32(0xE006C).expect("tag letter l scalar"),
+  );
+  assert_family_has_glyph(
+    &ctx,
+    "FastRender Emoji",
+    char::from_u32(0xE0077).expect("tag letter w scalar"),
+  );
+  assert_family_has_glyph(
+    &ctx,
+    "FastRender Emoji",
     char::from_u32(0xE007F).expect("cancel tag scalar"),
   );
   assert_family_has_glyph(
