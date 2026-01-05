@@ -15125,6 +15125,57 @@ mod tests {
   }
 
   #[test]
+  fn backdrop_filter_allocates_bounded_layer() {
+    crate::paint::painter::enable_paint_diagnostics();
+    struct DiagnosticsGuard;
+    impl Drop for DiagnosticsGuard {
+      fn drop(&mut self) {
+        let _ = crate::paint::painter::take_paint_diagnostics();
+      }
+    }
+    let _guard = DiagnosticsGuard;
+
+    const SIZE: u32 = 1024;
+    let renderer = DisplayListRenderer::new(SIZE, SIZE, Rgba::WHITE, FontContext::new())
+      .unwrap()
+      .with_parallelism(PaintParallelism::disabled());
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(0.0, 0.0, SIZE as f32, SIZE as f32),
+      color: Rgba::RED,
+    }));
+
+    let bounds = Rect::from_xywh(500.0, 500.0, 10.0, 10.0);
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      bounds,
+      plane_rect: bounds,
+      mix_blend_mode: BlendMode::Normal,
+      is_isolated: false,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
+      radii: BorderRadii::ZERO,
+      mask: None,
+    }));
+    list.push(DisplayItem::PopStackingContext);
+
+    let report = renderer.render_with_report(&list).unwrap();
+    assert_eq!(report.layer_allocations, 1, "expected exactly one isolated layer allocation");
+    let full_canvas_bytes = u64::from(SIZE).saturating_mul(u64::from(SIZE)).saturating_mul(4);
+    assert!(
+      report.layer_alloc_bytes < full_canvas_bytes / 4,
+      "expected backdrop-filter to allocate a bounded layer; got {} bytes for a {}-byte canvas",
+      report.layer_alloc_bytes,
+      full_canvas_bytes
+    );
+  }
+
+  #[test]
   fn backdrop_filter_applies_to_background() {
     let renderer = DisplayListRenderer::new(4, 4, Rgba::WHITE, FontContext::new()).unwrap();
     let mut list = DisplayList::new();
