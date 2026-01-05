@@ -5874,7 +5874,7 @@ impl Painter {
     match replaced_type {
       ReplacedType::FormControl(control) => {
         if let Some(style) = style {
-          if self.paint_form_control(control, style, content_rect) {
+          if self.paint_form_control(control, style, content_rect, clip_mask) {
             return;
           }
         }
@@ -6406,9 +6406,46 @@ impl Painter {
     control: &FormControl,
     style: &ComputedStyle,
     content_rect: Rect,
+    clip_mask: Option<&Mask>,
   ) -> bool {
     if content_rect.width() <= 0.0 || content_rect.height() <= 0.0 {
       return true;
+    }
+
+    fn fill_rounded_rect_masked(
+      pixmap: &mut Pixmap,
+      rect: Rect,
+      radii: BorderRadii,
+      color: Rgba,
+      clip_mask: Option<&Mask>,
+    ) {
+      if color.a <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+      }
+      let Some(path) = crate::paint::rasterize::build_rounded_rect_path(
+        rect.x(),
+        rect.y(),
+        rect.width(),
+        rect.height(),
+        &radii,
+      ) else {
+        return;
+      };
+      let mut paint = Paint::default();
+      paint.set_color(tiny_skia::Color::from_rgba8(
+        color.r,
+        color.g,
+        color.b,
+        color.alpha_u8(),
+      ));
+      paint.anti_alias = true;
+      pixmap.fill_path(
+        &path,
+        &paint,
+        tiny_skia::FillRule::Winding,
+        Transform::identity(),
+        clip_mask,
+      );
     }
 
     let mut accent = Self::resolved_accent_color(style);
@@ -6449,15 +6486,7 @@ impl Painter {
       let radii = BorderRadii::uniform((rect.height().min(rect.width()) / 6.0).max(2.0));
       let device_rect = self.device_rect(rect);
       let radii = self.device_radii(radii);
-      let _ = fill_rounded_rect(
-        &mut self.pixmap,
-        device_rect.x(),
-        device_rect.y(),
-        device_rect.width(),
-        device_rect.height(),
-        &radii,
-        tint,
-      );
+      fill_rounded_rect_masked(&mut self.pixmap, device_rect, radii, tint, clip_mask);
     }
 
     match &control.control {
@@ -6529,7 +6558,7 @@ impl Painter {
             rect.height(),
           );
         }
-        let _ = self.paint_alt_text(text, &text_style, rect, None);
+        let _ = self.paint_alt_text(text, &text_style, rect, clip_mask);
         if affordance_space > 0.0 {
           let mut affordance_style = style.clone();
           affordance_style.color = muted_accent;
@@ -6554,11 +6583,11 @@ impl Painter {
                 affordance_rect.width(),
                 affordance_rect.height() - half,
               );
-              let _ = self.paint_alt_text("▲", &affordance_style, upper, None);
-              let _ = self.paint_alt_text("▼", &affordance_style, lower, None);
+              let _ = self.paint_alt_text("▲", &affordance_style, upper, clip_mask);
+              let _ = self.paint_alt_text("▼", &affordance_style, lower, clip_mask);
             }
             TextControlKind::Date => {
-              let _ = self.paint_alt_text("▾", &affordance_style, affordance_rect, None);
+              let _ = self.paint_alt_text("▾", &affordance_style, affordance_rect, clip_mask);
             }
             _ => {}
           }
@@ -6600,7 +6629,7 @@ impl Painter {
             rect.width(),
             (rect.height() - (y - rect.y())).max(0.0),
           );
-          let _ = self.paint_alt_text(line.trim_end(), &text_style, line_rect, None);
+          let _ = self.paint_alt_text(line.trim_end(), &text_style, line_rect, clip_mask);
           y += line_height;
         }
         true
@@ -6622,7 +6651,7 @@ impl Painter {
           (rect.width() - arrow_space).max(0.0),
           rect.height(),
         );
-        let _ = self.paint_alt_text(label, &select_style, text_rect, None);
+        let _ = self.paint_alt_text(label, &select_style, text_rect, clip_mask);
 
         if arrow_space > 0.0 {
           let mut arrow_style = select_style;
@@ -6633,7 +6662,7 @@ impl Painter {
             arrow_space,
             rect.height(),
           );
-          let _ = self.paint_alt_text("▾", &arrow_style, arrow_rect, None);
+          let _ = self.paint_alt_text("▾", &arrow_style, arrow_rect, clip_mask);
         }
         true
       }
@@ -6658,7 +6687,7 @@ impl Painter {
         } else {
           content_rect
         };
-        let _ = self.paint_alt_text(label, &button_style, label_rect, None);
+        let _ = self.paint_alt_text(label, &button_style, label_rect, clip_mask);
         true
       }
       FormControlKind::Checkbox {
@@ -6679,7 +6708,7 @@ impl Painter {
         } else {
           "✓"
         };
-        let _ = self.paint_alt_text(glyph, &mark_style, rect, None);
+        let _ = self.paint_alt_text(glyph, &mark_style, rect, clip_mask);
         true
       }
       FormControlKind::Range { value, min, max } => {
@@ -6696,14 +6725,12 @@ impl Painter {
           track_height,
         ));
         let device_radii = self.device_radii(radii);
-        let _ = fill_rounded_rect(
+        fill_rounded_rect_masked(
           &mut self.pixmap,
-          device_track_rect.x(),
-          device_track_rect.y(),
-          device_track_rect.width(),
-          device_track_rect.height(),
-          &device_radii,
+          device_track_rect,
+          device_radii,
           track_color,
+          clip_mask,
         );
 
         let min_val = min.unwrap_or(0.0);
@@ -6734,7 +6761,7 @@ impl Painter {
             &paint,
             tiny_skia::FillRule::Winding,
             Transform::identity(),
-            None,
+            clip_mask,
           );
         }
         true
@@ -6744,15 +6771,7 @@ impl Painter {
         let radii = BorderRadii::uniform((rect.height().min(rect.width()) / 5.0).max(2.0));
         let device_rect = self.device_rect(rect);
         let radii = self.device_radii(radii);
-        let _ = fill_rounded_rect(
-          &mut self.pixmap,
-          device_rect.x(),
-          device_rect.y(),
-          device_rect.width(),
-          device_rect.height(),
-          &radii,
-          *value,
-        );
+        fill_rounded_rect_masked(&mut self.pixmap, device_rect, radii, *value, clip_mask);
         let luminance =
           (0.299 * value.r as f32 + 0.587 * value.g as f32 + 0.114 * value.b as f32) / 255.0;
         let text_color = if luminance > 0.5 {
@@ -6775,7 +6794,7 @@ impl Painter {
         let label = raw
           .clone()
           .unwrap_or_else(|| format!("#{:02X}{:02X}{:02X}", value.r, value.g, value.b));
-        let _ = self.paint_alt_text(&label, &text_style, rect, None);
+        let _ = self.paint_alt_text(&label, &text_style, rect, clip_mask);
         true
       }
       FormControlKind::Unknown { label } => {
@@ -6785,7 +6804,7 @@ impl Painter {
           if control.invalid {
             unknown_style.color = accent;
           }
-          let _ = self.paint_alt_text(text, &unknown_style, rect, None);
+          let _ = self.paint_alt_text(text, &unknown_style, rect, clip_mask);
         }
         true
       }
