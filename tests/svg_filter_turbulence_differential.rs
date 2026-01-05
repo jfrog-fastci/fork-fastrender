@@ -371,8 +371,22 @@ fn compare_pixmaps(
     }
   }
 
+  let pixel_offset = (max_at.1 as usize * width as usize + max_at.0 as usize) * 4;
+  let resvg_px = [
+    resvg[pixel_offset + 2],
+    resvg[pixel_offset + 1],
+    resvg[pixel_offset],
+    resvg[pixel_offset + 3],
+  ];
+  let fast_px = [
+    fast[pixel_offset + 2],
+    fast[pixel_offset + 1],
+    fast[pixel_offset],
+    fast[pixel_offset + 3],
+  ];
+
   panic!(
-    "feTurbulence differential mismatch (tolerance<={tolerance})\n  case={case_idx} / {total_cases} (seed={seed})\n  max Δ={max_delta} at ({},{}) channel {} (resvg={} fast={})\n  differing_channels={differing_channels} / {}\n  rerun:\n    FASTR_TURBULENCE_DIFF_SEED={seed} FASTR_TURBULENCE_DIFF_CASES={total_cases} FASTR_TURBULENCE_DIFF_ONLY={case_idx} cargo test --test svg_filter_turbulence_differential -- --ignored\n  params={case:?}{artifact_note}\n  svg=\n{svg}",
+    "feTurbulence differential mismatch (tolerance<={tolerance})\n  case={case_idx} / {total_cases} (seed={seed})\n  max Δ={max_delta} at ({},{}) channel {} (resvg={} fast={})\n  pixel premul RGBA: resvg={resvg_px:?} fast={fast_px:?}\n  differing_channels={differing_channels} / {}\n  rerun:\n    FASTR_TURBULENCE_DIFF_SEED={seed} FASTR_TURBULENCE_DIFF_CASES={total_cases} FASTR_TURBULENCE_DIFF_ONLY={case_idx} cargo test --test svg_filter_turbulence_differential -- --ignored\n  params={case:?}{artifact_note}\n  svg=\n{svg}",
     max_at.0,
     max_at.1,
     max_at.2,
