@@ -3796,6 +3796,15 @@ fn time_based_animation_progress(style: &ComputedStyle, idx: usize, time_ms: f32
 }
 
 fn settled_time_based_animation_progress(style: &ComputedStyle, idx: usize) -> Option<f32> {
+  let play_state = pick(
+    &style.animation_play_states,
+    idx,
+    AnimationPlayState::default(),
+  );
+  if matches!(play_state, AnimationPlayState::Paused) {
+    return time_based_animation_progress_impl(style, idx, 0.0, true);
+  }
+
   // `animation-duration: auto` is represented by a negative sentinel. For time-based timelines we
   // treat it as `0ms`, so the end progress here depends solely on iterations and direction.
   let fill = pick(
@@ -5212,6 +5221,44 @@ mod tests {
     let progress = settled_time_based_animation_progress(&style, 0).expect("filled");
     assert!((progress - 1.0).abs() < 1e-6, "progress={progress}");
     assert!((sampled_opacity(&rule, progress) - 1.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn settled_time_based_animation_progress_paused_returns_initial_progress() {
+    let mut style = ComputedStyle::default();
+    style.animation_names = vec!["fade".to_string()];
+    style.animation_durations = vec![1000.0].into();
+    style.animation_fill_modes = vec![AnimationFillMode::Forwards].into();
+    style.animation_play_states = vec![AnimationPlayState::Paused].into();
+    style.animation_directions = vec![AnimationDirection::Normal].into();
+    style.animation_iteration_counts = vec![AnimationIterationCount::Count(1.0)].into();
+
+    let progress = settled_time_based_animation_progress(&style, 0).expect("active");
+    assert!((progress - 0.0).abs() < 1e-6, "progress={progress}");
+  }
+
+  #[test]
+  fn settled_time_based_animation_progress_paused_with_positive_delay_is_none_without_backwards_fill() {
+    let mut style = ComputedStyle::default();
+    style.animation_names = vec!["fade".to_string()];
+    style.animation_durations = vec![1000.0].into();
+    style.animation_delays = vec![10_000.0].into();
+    style.animation_fill_modes = vec![AnimationFillMode::Forwards].into();
+    style.animation_play_states = vec![AnimationPlayState::Paused].into();
+
+    assert_eq!(settled_time_based_animation_progress(&style, 0), None);
+  }
+
+  #[test]
+  fn settled_time_based_animation_progress_paused_infinite_iterations_is_deterministically_start() {
+    let mut style = ComputedStyle::default();
+    style.animation_names = vec!["fade".to_string()];
+    style.animation_durations = vec![1000.0].into();
+    style.animation_iteration_counts = vec![AnimationIterationCount::Infinite].into();
+    style.animation_play_states = vec![AnimationPlayState::Paused].into();
+
+    let progress = settled_time_based_animation_progress(&style, 0).expect("active");
+    assert!((progress - 0.0).abs() < 1e-6, "progress={progress}");
   }
 
   #[test]
