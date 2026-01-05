@@ -284,9 +284,10 @@ fn compare_pixmaps(
   let x = (pixel_idx % width as usize) as u32;
   let y = (pixel_idx / width as usize) as u32;
   let channel = match max_at % 4 {
-    0 => "r",
+    // tiny-skia pixmaps are stored as premultiplied BGRA.
+    0 => "b",
     1 => "g",
-    2 => "b",
+    2 => "r",
     _ => "a",
   };
 
@@ -301,26 +302,57 @@ fn compare_pixmaps(
       let diff_path = out_dir.join(format!("case_{case_idx:04}_diff.png"));
       let svg_path = out_dir.join(format!("case_{case_idx:04}.svg"));
 
-      let write_png = |path: &PathBuf, data: &[u8]| -> Result<(), String> {
-        let Some(img) = image::RgbaImage::from_raw(width, height, data.to_vec()) else {
-          return Err("failed to create RgbaImage".to_string());
-        };
+      let to_rgba_image = |data: &[u8]| -> image::RgbaImage {
+        // Convert premultiplied BGRA (tiny-skia) into straight RGBA for PNG dumps.
+        let mut rgba = image::RgbaImage::new(width, height);
+        for (dst, src) in rgba.as_mut().chunks_exact_mut(4).zip(data.chunks_exact(4)) {
+          let b = src[0];
+          let g = src[1];
+          let r = src[2];
+          let a = src[3];
+          if a == 0 {
+            dst.copy_from_slice(&[0, 0, 0, 0]);
+            continue;
+          }
+          let alpha = a as f32 / 255.0;
+          dst[0] = ((r as f32 / alpha).min(255.0)) as u8;
+          dst[1] = ((g as f32 / alpha).min(255.0)) as u8;
+          dst[2] = ((b as f32 / alpha).min(255.0)) as u8;
+          dst[3] = a;
+        }
+        rgba
+      };
+      let write_png = |path: &PathBuf, img: &image::RgbaImage| -> Result<(), String> {
         img
           .save(path)
           .map_err(|err| format!("failed to write {path:?}: {err}"))
       };
 
-      let mut diff_bytes = vec![0u8; resvg.len()];
-      for (dst, (&a, &b)) in diff_bytes.iter_mut().zip(resvg.iter().zip(fast.iter())) {
-        *dst = a.abs_diff(b).saturating_mul(8);
-      }
+      // Grayscale diff image showing max per-channel delta per pixel.
+      let diff_img = {
+        let mut img = image::RgbaImage::new(width, height);
+        for (idx, px) in img.pixels_mut().enumerate() {
+          let base = idx * 4;
+          let db = resvg[base].abs_diff(fast[base]);
+          let dg = resvg[base + 1].abs_diff(fast[base + 1]);
+          let dr = resvg[base + 2].abs_diff(fast[base + 2]);
+          let da = resvg[base + 3].abs_diff(fast[base + 3]);
+          let max = db.max(dg).max(dr).max(da);
+          // Amplify small diffs so single-byte changes are visible.
+          let v = max.saturating_mul(8);
+          *px = image::Rgba([v, v, v, 255]);
+        }
+        img
+      };
 
       let write_svg =
         fs::write(&svg_path, svg).map_err(|err| format!("failed to write {svg_path:?}: {err}"));
 
-      let writes = write_png(&resvg_path, resvg)
-        .and_then(|_| write_png(&fast_path, fast))
-        .and_then(|_| write_png(&diff_path, &diff_bytes))
+      let resvg_img = to_rgba_image(resvg);
+      let fast_img = to_rgba_image(fast);
+      let writes = write_png(&resvg_path, &resvg_img)
+        .and_then(|_| write_png(&fast_path, &fast_img))
+        .and_then(|_| write_png(&diff_path, &diff_img))
         .and_then(|_| write_svg);
 
       match writes {
