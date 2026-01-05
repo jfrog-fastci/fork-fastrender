@@ -8,7 +8,7 @@ use fastrender::paint::display_list_renderer::{DisplayListRenderer, PaintParalle
 use fastrender::resource::{CachingFetcher, HttpFetcher};
 use fastrender::scroll::ScrollState;
 use fastrender::text::font_loader::FontContext;
-use fastrender::{FastRender, FontConfig, ResourcePolicy, Rgba};
+use fastrender::{FastRender, FontConfig, Point, ResourcePolicy, Rgba};
 use rayon::ThreadPoolBuilder;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -125,10 +125,13 @@ fn build_display_list(width: u32, height: u32) -> (DisplayList, FontContext) {
   let image_cache = ImageCache::with_base_url_and_fetcher(base_url, fetcher);
 
   let viewport = tree.viewport_size();
+  // Render a scrolled view so the fixture exercises masks/clip-path/backdrop-filter interactions
+  // without needing a full-size viewport.
+  let scroll_state = ScrollState::with_viewport(Point::new(0.0, 320.0));
   let list = DisplayListBuilder::with_image_cache(image_cache)
     .with_font_context(font_ctx.clone())
     .with_svg_filter_defs(tree.svg_filter_defs.clone())
-    .with_scroll_state(ScrollState::default())
+    .with_scroll_state(scroll_state)
     .with_device_pixel_ratio(1.0)
     // Keep display-list building deterministic; this test focuses on paint-time determinism.
     .with_parallelism(&PaintParallelism::disabled())
