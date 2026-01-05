@@ -6427,6 +6427,8 @@ mod tests {
       "#recolor",
       " url(#recolor) ",
       "url(\"#recolor\")",
+      "url('#recolor')",
+      "url(url(#recolor))",
       "url('url(#recolor)')",
     ] {
       assert!(
