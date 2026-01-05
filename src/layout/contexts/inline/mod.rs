@@ -9781,7 +9781,7 @@ impl InlineFormattingContext {
         &self.font_context,
         self.viewport_size,
       );
-      let _padding_right = resolve_length_for_width(
+      let padding_right = resolve_length_for_width(
         style.padding_right,
         percentage_base_px,
         style,
@@ -9795,7 +9795,7 @@ impl InlineFormattingContext {
         &self.font_context,
         self.viewport_size,
       );
-      let _padding_bottom = resolve_length_for_width(
+      let padding_bottom = resolve_length_for_width(
         style.padding_bottom,
         percentage_base_px,
         style,
@@ -9834,14 +9834,32 @@ impl InlineFormattingContext {
       // CSS 2.1 §10.1: the containing block for absolute positioned descendants is the padding
       // box of the nearest positioned ancestor, i.e. the rectangle bounded by the padding edge
       // (border box minus borders).
-      let padding_origin = Point::new(border_left, border_top);
-      let padding_rect = Rect::new(
-        padding_origin,
-        Size::new(
-          bounds.width() - border_left - border_right,
-          bounds.height() - border_top - border_bottom,
-        ),
+      let root_inline_container = matches!(
+        &box_node.box_type,
+        BoxType::Inline(_)
+          | BoxType::Anonymous(AnonymousBox {
+            anonymous_type: AnonymousType::Inline,
+            ..
+          })
       );
+      let (padding_origin, padding_size) = if root_inline_container {
+        (
+          Point::new(-padding_left, -padding_top),
+          Size::new(
+            (bounds.width() + padding_left + padding_right).max(0.0),
+            (bounds.height() + padding_top + padding_bottom).max(0.0),
+          ),
+        )
+      } else {
+        (
+          Point::new(border_left, border_top),
+          Size::new(
+            (bounds.width() - border_left - border_right).max(0.0),
+            (bounds.height() - border_top - border_bottom).max(0.0),
+          ),
+        )
+      };
+      let padding_rect = Rect::new(padding_origin, padding_size);
       // Percentage offsets on absolutely positioned boxes resolve against the used height of the
       // padding box even when the containing block's own height is `auto` (CSS 2.1 §10.5).
       let cb_block_base = Some(padding_rect.size.height);
