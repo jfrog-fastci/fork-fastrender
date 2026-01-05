@@ -625,9 +625,8 @@ impl InlineFormattingContext {
           if normalized.leading_collapsible {
             whitespace.note_collapsible_whitespace(child.style.clone(), normalized.allow_soft_wrap);
           }
-          if !normalized.text.is_empty() {
-            self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
-            let mut produced = self.create_inline_items_from_normalized_with_base(
+          if !normalized.text.is_empty() || !normalized.forced_breaks.is_empty() {
+            let produced = self.create_inline_items_from_normalized_with_base(
               child,
               normalized.clone(),
               false,
@@ -635,8 +634,7 @@ impl InlineFormattingContext {
               bidi_stack,
               boundary,
             )?;
-            current_items.append(&mut produced);
-            whitespace.note_content();
+            self.append_inline_items_with_whitespace(&mut whitespace, &mut current_items, produced)?;
           }
           if normalized.trailing_collapsible {
             whitespace.note_collapsible_whitespace(child.style.clone(), normalized.allow_soft_wrap);
@@ -1417,9 +1415,8 @@ impl InlineFormattingContext {
           if normalized.leading_collapsible {
             whitespace.note_collapsible_whitespace(child.style.clone(), normalized.allow_soft_wrap);
           }
-          if !normalized.text.is_empty() {
-            self.flush_pending_collapsible_space(whitespace, &mut items)?;
-            let mut produced = self.create_inline_items_from_normalized_with_base(
+          if !normalized.text.is_empty() || !normalized.forced_breaks.is_empty() {
+            let produced = self.create_inline_items_from_normalized_with_base(
               child,
               normalized.clone(),
               false,
@@ -1427,8 +1424,7 @@ impl InlineFormattingContext {
               bidi_stack,
               boundary,
             )?;
-            items.append(&mut produced);
-            whitespace.note_content();
+            self.append_inline_items_with_whitespace(whitespace, &mut items, produced)?;
           }
           if normalized.trailing_collapsible {
             whitespace.note_collapsible_whitespace(child.style.clone(), normalized.allow_soft_wrap);
@@ -3707,6 +3703,32 @@ impl InlineFormattingContext {
     let space_item = self.create_collapsed_space_item(&space.style, space.allow_soft_wrap)?;
     items.push(space_item);
     whitespace.note_space();
+    Ok(())
+  }
+
+  fn append_inline_items_with_whitespace(
+    &self,
+    whitespace: &mut CollapsibleWhitespaceState,
+    items: &mut Vec<InlineItem>,
+    produced: Vec<InlineItem>,
+  ) -> Result<(), LayoutError> {
+    for item in produced {
+      match item {
+        InlineItem::HardBreak => {
+          whitespace.reset();
+          items.push(InlineItem::HardBreak);
+        }
+        InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_) => {
+          items.push(item);
+          whitespace.note_ignorable();
+        }
+        other => {
+          self.flush_pending_collapsible_space(whitespace, items)?;
+          items.push(other);
+          whitespace.note_content();
+        }
+      }
+    }
     Ok(())
   }
 
@@ -11364,6 +11386,32 @@ mod tests {
     texts
   }
 
+  fn collect_fragment_line_texts(fragment: &FragmentNode) -> Vec<String> {
+    fn collect_text(fragment: &FragmentNode, out: &mut String) {
+      if let FragmentContent::Text { text, .. } = &fragment.content {
+        out.push_str(text);
+      }
+      for child in fragment.children.iter() {
+        collect_text(child, out);
+      }
+    }
+
+    fn collect_lines(fragment: &FragmentNode, out: &mut Vec<String>) {
+      if matches!(fragment.content, FragmentContent::Line { .. }) {
+        let mut text = String::new();
+        collect_text(fragment, &mut text);
+        out.push(text);
+      }
+      for child in fragment.children.iter() {
+        collect_lines(child, out);
+      }
+    }
+
+    let mut lines = Vec::new();
+    collect_lines(fragment, &mut lines);
+    lines
+  }
+
   #[test]
   fn inline_respects_style_override_for_root() {
     let ifc = InlineFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
@@ -14870,6 +14918,22 @@ mod tests {
   }
 
   #[test]
+  fn white_space_pre_layout_preserves_newline_only_text_nodes() {
+    let ifc = InlineFormattingContext::new();
+    let mut style = ComputedStyle::default();
+    style.white_space = WhiteSpace::Pre;
+    style.font_size = 16.0;
+    let style = Arc::new(style);
+
+    let text = BoxNode::new_text(style.clone(), "\n\n".to_string());
+    let root = BoxNode::new_block(style, FormattingContextType::Block, vec![text]);
+    let constraints = LayoutConstraints::definite_width(200.0);
+
+    let fragment = ifc.layout(&root, &constraints).expect("layout");
+    assert_eq!(collect_fragment_line_texts(&fragment), vec!["", "", ""]);
+  }
+
+  #[test]
   fn white_space_pre_preserves_empty_lines_from_consecutive_newlines() {
     let mut style = ComputedStyle::default();
     style.white_space = WhiteSpace::Pre;
@@ -14908,6 +14972,28 @@ mod tests {
     style.font_size = 16.0;
     let (lines, _) = build_lines_for_text(Arc::new(style), "a\n\nb");
     assert_eq!(collect_line_texts(&lines), vec!["a", "", "b"]);
+  }
+
+  #[test]
+  fn white_space_pre_line_drops_collapsible_space_before_newline() {
+    let ifc = InlineFormattingContext::new();
+    let mut style = ComputedStyle::default();
+    style.white_space = WhiteSpace::PreLine;
+    style.font_size = 16.0;
+    let style = Arc::new(style);
+
+    let root = BoxNode::new_block(
+      style.clone(),
+      FormattingContextType::Block,
+      vec![
+        BoxNode::new_text(style.clone(), "a ".to_string()),
+        BoxNode::new_text(style.clone(), "\n".to_string()),
+      ],
+    );
+    let constraints = LayoutConstraints::definite_width(200.0);
+
+    let fragment = ifc.layout(&root, &constraints).expect("layout");
+    assert_eq!(collect_fragment_line_texts(&fragment), vec!["a", ""]);
   }
 
   #[test]
