@@ -30,8 +30,13 @@ At runtime we execute the filter graph over `tiny_skia::Pixmap` surfaces:
 
 - `scale_x` / `scale_y`: **CSS/user units → working pixels** conversion factors passed into each
   primitive.
-  - Most commonly: `scale_x = scale_y = DPR`.
-  - When `filterRes` is active (see below): these incorporate the `filterRes` resampling scale.
+  - Without `filterRes`: `scale_x = scale_y = DPR`.
+  - With `filterRes` (and no displacement-map exception):
+    - `scale_region_x = filterRes_w / filter_region_w_device`
+    - `scale_region_y = filterRes_h / filter_region_h_device`
+    - `scale_x = DPR * scale_region_x`
+    - `scale_y = DPR * scale_region_y`
+    where `filter_region_*_device` is the resolved filter-region size in device pixels.
 - `surface_origin_css`: the CSS-space origin of the working surface. This is needed when the filter
   engine allocates a working surface that is not aligned to `(0, 0)` in CSS space (e.g. offset
   filter regions or `filterRes` resampling). `feTurbulence` uses this to evaluate noise in a stable
@@ -241,10 +246,17 @@ In `apply_primitive()` we resolve `scale` to **pixel displacements**:
 In practice, `filterRes` is ignored for graphs containing `feDisplacementMap`, so the common case is
 `scale_x == scale_y == DPR` and thus `scale_x_px == scale_y_px`.
 
+`scale` is the **full displacement range** (no extra `*2`):
+
+- If the selected map channel is `1.0` and `scale=2`, then `dx = (1.0 - 0.5) * 2 = +1px`.
+- If the selected map channel is `0.0` and `scale=2`, then `dx = (0.0 - 0.5) * 2 = -1px`.
+
 Regression coverage:
 
 - `displacement_map_object_bounding_box_scale_is_resolved_against_bbox_width`
   (`tests/paint/svg_filter_test.rs`)
+  - `displacement_map_applies_scale_without_extra_multiplier`
+    (`tests/paint/svg_filter_test.rs`)
 
 ### Displacement math + sampling (Chrome behavior)
 
@@ -291,6 +303,18 @@ This tie-breaking is intentional to match Chrome/Skia semantics.
 - Sampling the **primary input** out-of-bounds yields transparent black.
 - Sampling the **map input** never goes out-of-bounds in practice because coordinates are clamped to
   the map’s region and then to pixmap bounds.
+
+### Output region expansion
+
+After applying the displacement kernel, `apply_primitive()` conservatively expands the output region
+based on the displacement magnitude:
+
+- `margin_x = 0.5 * abs(scale_x_px)`
+- `margin_y = 0.5 * abs(scale_y_px)`
+- `region = inflate_rect_xy(primary.region, margin_x, margin_y)` (clipped to the primitive region)
+
+This affects how later primitives decide which pixels are “valid” and is easy to regress when
+touching region bookkeeping.
 
 ### `color-interpolation-filters` (sampling primitive semantics)
 
