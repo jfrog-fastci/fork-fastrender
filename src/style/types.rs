@@ -1858,6 +1858,24 @@ pub enum IntrinsicSizeKeyword {
   FitContent { limit: Option<Length> },
 }
 
+impl IntrinsicSizeKeyword {
+  pub fn has_percentage(&self) -> bool {
+    match self {
+      Self::FitContent {
+        limit: Some(limit),
+      } => limit.has_percentage(),
+      _ => false,
+    }
+  }
+
+  pub fn fit_content_limit(&self) -> Option<Length> {
+    match self {
+      Self::FitContent { limit } => *limit,
+      _ => None,
+    }
+  }
+}
+
 /// Intrinsic size fallback for an axis when an element's contents are skipped.
 ///
 /// CSS: `contain-intrinsic-*`

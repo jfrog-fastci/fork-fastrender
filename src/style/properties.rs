@@ -3122,6 +3122,19 @@ fn parse_intrinsic_size_keyword(value: &PropertyValue) -> Option<IntrinsicSizeKe
   None
 }
 
+fn extract_sizing_value(value: &PropertyValue) -> crate::style::LogicalSizingValue {
+  if let Some(keyword) = parse_intrinsic_size_keyword(value) {
+    return crate::style::LogicalSizingValue {
+      length: None,
+      keyword: Some(keyword),
+    };
+  }
+  crate::style::LogicalSizingValue {
+    length: extract_length(value),
+    keyword: None,
+  }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum PhysicalCorner {
   TopLeft,
@@ -3273,7 +3286,7 @@ fn parse_single_corner_radius(value: &PropertyValue) -> Option<BorderCornerRadiu
 fn set_axis_dimension(
   styles: &mut ComputedStyle,
   axis: crate::style::LogicalAxis,
-  value: Option<Length>,
+  value: crate::style::LogicalSizingValue,
   order: i32,
 ) {
   let is_horizontal = match axis {
@@ -3284,15 +3297,15 @@ fn set_axis_dimension(
     if order < styles.logical.width_order {
       return;
     }
-    styles.width = value;
-    styles.width_keyword = None;
+    styles.width = value.length;
+    styles.width_keyword = value.keyword;
     styles.logical.width_order = order;
   } else {
     if order < styles.logical.height_order {
       return;
     }
-    styles.height = value;
-    styles.height_keyword = None;
+    styles.height = value.length;
+    styles.height_keyword = value.keyword;
     styles.logical.height_order = order;
   }
 }
@@ -3300,27 +3313,30 @@ fn set_axis_dimension(
 fn set_axis_min_dimension(
   styles: &mut ComputedStyle,
   axis: crate::style::LogicalAxis,
-  value: Option<Length>,
+  value: crate::style::LogicalSizingValue,
   order: i32,
 ) {
   let is_horizontal = match axis {
     crate::style::LogicalAxis::Inline => inline_axis_is_horizontal(styles.writing_mode),
     crate::style::LogicalAxis::Block => block_axis_is_horizontal(styles.writing_mode),
   };
-  let value = sanitize_min_length(value);
+  let value = crate::style::LogicalSizingValue {
+    length: sanitize_min_length(value.length),
+    keyword: value.keyword,
+  };
   if is_horizontal {
     if order < styles.logical.min_width_order {
       return;
     }
-    styles.min_width = value;
-    styles.min_width_keyword = None;
+    styles.min_width = value.length;
+    styles.min_width_keyword = value.keyword;
     styles.logical.min_width_order = order;
   } else {
     if order < styles.logical.min_height_order {
       return;
     }
-    styles.min_height = value;
-    styles.min_height_keyword = None;
+    styles.min_height = value.length;
+    styles.min_height_keyword = value.keyword;
     styles.logical.min_height_order = order;
   }
 }
@@ -3328,27 +3344,30 @@ fn set_axis_min_dimension(
 fn set_axis_max_dimension(
   styles: &mut ComputedStyle,
   axis: crate::style::LogicalAxis,
-  value: Option<Length>,
+  value: crate::style::LogicalSizingValue,
   order: i32,
 ) {
   let is_horizontal = match axis {
     crate::style::LogicalAxis::Inline => inline_axis_is_horizontal(styles.writing_mode),
     crate::style::LogicalAxis::Block => block_axis_is_horizontal(styles.writing_mode),
   };
-  let value = sanitize_max_length(value);
+  let value = crate::style::LogicalSizingValue {
+    length: sanitize_max_length(value.length),
+    keyword: value.keyword,
+  };
   if is_horizontal {
     if order < styles.logical.max_width_order {
       return;
     }
-    styles.max_width = value;
-    styles.max_width_keyword = None;
+    styles.max_width = value.length;
+    styles.max_width_keyword = value.keyword;
     styles.logical.max_width_order = order;
   } else {
     if order < styles.logical.max_height_order {
       return;
     }
-    styles.max_height = value;
-    styles.max_height_keyword = None;
+    styles.max_height = value.length;
+    styles.max_height_keyword = value.keyword;
     styles.logical.max_height_order = order;
   }
 }
@@ -3887,7 +3906,6 @@ fn apply_property_from_source(
       }
     }
     "max-height" => {
-      styles.max_height_is_max_content = source.max_height_is_max_content;
       if order >= styles.logical.max_height_order {
         styles.max_height = sanitize_max_length(source.max_height);
         styles.max_height_keyword = source.max_height_keyword;
@@ -3896,49 +3914,85 @@ fn apply_property_from_source(
     }
     "inline-size" => {
       let value = if inline_axis_is_horizontal(source.writing_mode) {
-        source.width
+        crate::style::LogicalSizingValue {
+          length: source.width,
+          keyword: source.width_keyword,
+        }
       } else {
-        source.height
+        crate::style::LogicalSizingValue {
+          length: source.height,
+          keyword: source.height_keyword,
+        }
       };
       set_axis_dimension(styles, crate::style::LogicalAxis::Inline, value, order);
     }
     "block-size" => {
       let value = if block_axis_is_horizontal(source.writing_mode) {
-        source.width
+        crate::style::LogicalSizingValue {
+          length: source.width,
+          keyword: source.width_keyword,
+        }
       } else {
-        source.height
+        crate::style::LogicalSizingValue {
+          length: source.height,
+          keyword: source.height_keyword,
+        }
       };
       set_axis_dimension(styles, crate::style::LogicalAxis::Block, value, order);
     }
     "min-inline-size" => {
       let value = if inline_axis_is_horizontal(source.writing_mode) {
-        source.min_width
+        crate::style::LogicalSizingValue {
+          length: source.min_width,
+          keyword: source.min_width_keyword,
+        }
       } else {
-        source.min_height
+        crate::style::LogicalSizingValue {
+          length: source.min_height,
+          keyword: source.min_height_keyword,
+        }
       };
       set_axis_min_dimension(styles, crate::style::LogicalAxis::Inline, value, order);
     }
     "min-block-size" => {
       let value = if block_axis_is_horizontal(source.writing_mode) {
-        source.min_width
+        crate::style::LogicalSizingValue {
+          length: source.min_width,
+          keyword: source.min_width_keyword,
+        }
       } else {
-        source.min_height
+        crate::style::LogicalSizingValue {
+          length: source.min_height,
+          keyword: source.min_height_keyword,
+        }
       };
       set_axis_min_dimension(styles, crate::style::LogicalAxis::Block, value, order);
     }
     "max-inline-size" => {
       let value = if inline_axis_is_horizontal(source.writing_mode) {
-        source.max_width
+        crate::style::LogicalSizingValue {
+          length: source.max_width,
+          keyword: source.max_width_keyword,
+        }
       } else {
-        source.max_height
+        crate::style::LogicalSizingValue {
+          length: source.max_height,
+          keyword: source.max_height_keyword,
+        }
       };
       set_axis_max_dimension(styles, crate::style::LogicalAxis::Inline, value, order);
     }
     "max-block-size" => {
       let value = if block_axis_is_horizontal(source.writing_mode) {
-        source.max_width
+        crate::style::LogicalSizingValue {
+          length: source.max_width,
+          keyword: source.max_width_keyword,
+        }
       } else {
-        source.max_height
+        crate::style::LogicalSizingValue {
+          length: source.max_height,
+          keyword: source.max_height_keyword,
+        }
       };
       set_axis_max_dimension(styles, crate::style::LogicalAxis::Block, value, order);
     }
@@ -6869,89 +6923,49 @@ fn apply_declaration_with_base_internal(
     // Width and height
     "width" => {
       if order >= styles.logical.width_order {
-        if let Some(keyword) = parse_intrinsic_size_keyword(resolved_value) {
-          styles.width = None;
-          styles.width_keyword = Some(keyword);
-        } else {
-          styles.width = extract_length(resolved_value);
-          styles.width_keyword = None;
-        }
+        let value = extract_sizing_value(resolved_value);
+        styles.width = value.length;
+        styles.width_keyword = value.keyword;
         styles.logical.width_order = order;
       }
     }
     "height" => {
-      styles.max_height_is_max_content = false;
       if order >= styles.logical.height_order {
-        if let Some(keyword) = parse_intrinsic_size_keyword(resolved_value) {
-          styles.height = None;
-          styles.height_keyword = Some(keyword);
-        } else {
-          styles.height = extract_length(resolved_value);
-          styles.height_keyword = None;
-        }
+        let value = extract_sizing_value(resolved_value);
+        styles.height = value.length;
+        styles.height_keyword = value.keyword;
         styles.logical.height_order = order;
       }
     }
     "min-width" => {
       if order >= styles.logical.min_width_order {
-        if let Some(keyword) = parse_intrinsic_size_keyword(resolved_value) {
-          styles.min_width = None;
-          styles.min_width_keyword = Some(keyword);
-        } else {
-          styles.min_width = sanitize_min_length(extract_length(resolved_value));
-          styles.min_width_keyword = None;
-        }
+        let value = extract_sizing_value(resolved_value);
+        styles.min_width = sanitize_min_length(value.length);
+        styles.min_width_keyword = value.keyword;
         styles.logical.min_width_order = order;
       }
     }
     "min-height" => {
       if order >= styles.logical.min_height_order {
-        if let Some(keyword) = parse_intrinsic_size_keyword(resolved_value) {
-          styles.min_height = None;
-          styles.min_height_keyword = Some(keyword);
-        } else {
-          styles.min_height = sanitize_min_length(extract_length(resolved_value));
-          styles.min_height_keyword = None;
-        }
+        let value = extract_sizing_value(resolved_value);
+        styles.min_height = sanitize_min_length(value.length);
+        styles.min_height_keyword = value.keyword;
         styles.logical.min_height_order = order;
       }
     }
     "max-width" => {
       if order >= styles.logical.max_width_order {
-        if let Some(keyword) = parse_intrinsic_size_keyword(resolved_value) {
-          styles.max_width = None;
-          styles.max_width_keyword = Some(keyword);
-        } else {
-          styles.max_width = sanitize_max_length(extract_length(resolved_value));
-          styles.max_width_keyword = None;
-        }
+        let value = extract_sizing_value(resolved_value);
+        styles.max_width = sanitize_max_length(value.length);
+        styles.max_width_keyword = value.keyword;
         styles.logical.max_width_order = order;
       }
     }
     "max-height" => {
-      if let PropertyValue::Keyword(ref kw) = resolved_value {
-        if kw.eq_ignore_ascii_case("max-content")
-          || kw.eq_ignore_ascii_case("-webkit-max-content")
-          || kw.eq_ignore_ascii_case("-moz-max-content")
-        {
-          if order >= styles.logical.max_height_order {
-            styles.max_height_is_max_content = true;
-            styles.logical.max_height_order = order;
-            styles.max_height = Some(Length::px(f32::INFINITY));
-            styles.max_height_keyword = Some(IntrinsicSizeKeyword::MaxContent);
-          }
-          return;
-        }
-      }
-      styles.max_height_is_max_content = false;
       if order >= styles.logical.max_height_order {
-        if let Some(keyword) = parse_intrinsic_size_keyword(resolved_value) {
-          styles.max_height = None;
-          styles.max_height_keyword = Some(keyword);
-        } else {
-          styles.max_height = sanitize_max_length(extract_length(resolved_value));
-          styles.max_height_keyword = None;
-        }
+        let value = extract_sizing_value(resolved_value);
+        styles.max_height = sanitize_max_length(value.length);
+        styles.max_height_keyword = value.keyword;
         styles.logical.max_height_order = order;
       }
     }
@@ -6959,7 +6973,7 @@ fn apply_declaration_with_base_internal(
       push_logical(
         styles,
         crate::style::LogicalProperty::InlineSize {
-          value: Some(extract_length(resolved_value)),
+          value: Some(extract_sizing_value(resolved_value)),
         },
         order,
       );
@@ -6968,7 +6982,7 @@ fn apply_declaration_with_base_internal(
       push_logical(
         styles,
         crate::style::LogicalProperty::BlockSize {
-          value: Some(extract_length(resolved_value)),
+          value: Some(extract_sizing_value(resolved_value)),
         },
         order,
       );
@@ -6977,7 +6991,7 @@ fn apply_declaration_with_base_internal(
       push_logical(
         styles,
         crate::style::LogicalProperty::MinInlineSize {
-          value: Some(extract_length(resolved_value)),
+          value: Some(extract_sizing_value(resolved_value)),
         },
         order,
       );
@@ -6986,7 +7000,7 @@ fn apply_declaration_with_base_internal(
       push_logical(
         styles,
         crate::style::LogicalProperty::MinBlockSize {
-          value: Some(extract_length(resolved_value)),
+          value: Some(extract_sizing_value(resolved_value)),
         },
         order,
       );
@@ -6995,7 +7009,7 @@ fn apply_declaration_with_base_internal(
       push_logical(
         styles,
         crate::style::LogicalProperty::MaxInlineSize {
-          value: Some(extract_length(resolved_value)),
+          value: Some(extract_sizing_value(resolved_value)),
         },
         order,
       );
@@ -7004,7 +7018,7 @@ fn apply_declaration_with_base_internal(
       push_logical(
         styles,
         crate::style::LogicalProperty::MaxBlockSize {
-          value: Some(extract_length(resolved_value)),
+          value: Some(extract_sizing_value(resolved_value)),
         },
         order,
       );
@@ -15810,6 +15824,7 @@ mod tests {
   use crate::style::types::ImageOrientation;
   use crate::style::types::ImageRendering;
   use crate::style::types::ImageResolution;
+  use crate::style::types::IntrinsicSizeKeyword;
   use crate::style::types::JustifyContent;
   use crate::style::types::LengthOrNumber;
   use crate::style::types::ListStyleImage;
@@ -15899,8 +15914,7 @@ mod tests {
         limit: Some(Length::percent(50.0))
       })
     );
-
-    assert!(styles.max_height_is_max_content);
+    assert_eq!(styles.max_height, None);
     assert_eq!(styles.max_height_keyword, Some(IntrinsicSizeKeyword::MaxContent));
 
     // A later length assignment should clear the stored keyword.
@@ -15908,6 +15922,39 @@ mod tests {
     apply_declaration(&mut styles, &decls[0], &parent, 16.0, 16.0);
     assert_eq!(styles.width, Some(Length::px(10.0)));
     assert_eq!(styles.width_keyword, None);
+  }
+
+  #[test]
+  fn parses_intrinsic_sizing_keywords_for_dimensions() {
+    let parent = ComputedStyle::default();
+
+    let decls = parse_declarations("width: max-content;");
+    assert_eq!(decls.len(), 1);
+    let mut styles = ComputedStyle::default();
+    apply_declaration(&mut styles, &decls[0], &parent, 16.0, 16.0);
+    assert_eq!(styles.width, None);
+    assert_eq!(styles.width_keyword, Some(IntrinsicSizeKeyword::MaxContent));
+
+    let decls = parse_declarations("width: -moz-fit-content;");
+    assert_eq!(decls.len(), 1);
+    let mut styles = ComputedStyle::default();
+    apply_declaration(&mut styles, &decls[0], &parent, 16.0, 16.0);
+    assert_eq!(
+      styles.width_keyword,
+      Some(IntrinsicSizeKeyword::FitContent { limit: None })
+    );
+
+    let decls = parse_declarations("max-width: fit-content(50%);");
+    assert_eq!(decls.len(), 1);
+    let mut styles = ComputedStyle::default();
+    apply_declaration(&mut styles, &decls[0], &parent, 16.0, 16.0);
+    assert_eq!(styles.max_width, None);
+    assert_eq!(
+      styles.max_width_keyword,
+      Some(IntrinsicSizeKeyword::FitContent {
+        limit: Some(Length::percent(50.0))
+      })
+    );
   }
 
   #[test]

@@ -23644,6 +23644,17 @@ fn resolve_container_query_lengths(
     }
   }
 
+  fn resolve_intrinsic_size_keyword(
+    keyword: &mut Option<crate::style::types::IntrinsicSizeKeyword>,
+    resolve_len: &mut impl FnMut(&mut Length),
+  ) {
+    if let Some(crate::style::types::IntrinsicSizeKeyword::FitContent { limit: Some(limit) }) =
+      keyword.as_mut()
+    {
+      resolve_len(limit);
+    }
+  }
+
   fn resolve_border_corner(
     radius: &mut BorderCornerRadius,
     resolve_len: &mut impl FnMut(&mut Length),
@@ -24034,11 +24045,17 @@ fn resolve_container_query_lengths(
   resolve_len(&mut styles.outline_offset);
 
   resolve_opt_len(&mut styles.width, &mut resolve_len);
+  resolve_intrinsic_size_keyword(&mut styles.width_keyword, &mut resolve_len);
   resolve_opt_len(&mut styles.height, &mut resolve_len);
+  resolve_intrinsic_size_keyword(&mut styles.height_keyword, &mut resolve_len);
   resolve_opt_len(&mut styles.min_width, &mut resolve_len);
+  resolve_intrinsic_size_keyword(&mut styles.min_width_keyword, &mut resolve_len);
   resolve_opt_len(&mut styles.min_height, &mut resolve_len);
+  resolve_intrinsic_size_keyword(&mut styles.min_height_keyword, &mut resolve_len);
   resolve_opt_len(&mut styles.max_width, &mut resolve_len);
+  resolve_intrinsic_size_keyword(&mut styles.max_width_keyword, &mut resolve_len);
   resolve_opt_len(&mut styles.max_height, &mut resolve_len);
+  resolve_intrinsic_size_keyword(&mut styles.max_height_keyword, &mut resolve_len);
 
   resolve_opt_len(&mut styles.margin_top, &mut resolve_len);
   resolve_opt_len(&mut styles.margin_right, &mut resolve_len);

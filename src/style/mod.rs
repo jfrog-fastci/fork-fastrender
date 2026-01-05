@@ -301,8 +301,17 @@ pub(crate) fn block_axis_positive(wm: WritingMode) -> bool {
   }
 }
 
-/// Pending logical properties (margin/padding/border) to resolve after writing-mode is known.
-// Outer Option tracks presence in the cascade; inner Option carries keyword vs length (e.g., auto vs length).
+/// Pending logical properties (margin/padding/border/sizing) to resolve after writing-mode is known.
+///
+/// For side-based properties, the outer `Option` tracks whether the logical start/end side was
+/// present in the cascade, while the inner `Option` carries keyword vs length semantics (e.g.
+/// `auto` vs length).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LogicalSizingValue {
+  pub length: Option<Length>,
+  pub keyword: Option<IntrinsicSizeKeyword>,
+}
+
 #[allow(clippy::option_option)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogicalProperty {
@@ -317,22 +326,22 @@ pub enum LogicalProperty {
     end: Option<Length>,
   },
   InlineSize {
-    value: Option<Option<Length>>,
+    value: Option<LogicalSizingValue>,
   },
   BlockSize {
-    value: Option<Option<Length>>,
+    value: Option<LogicalSizingValue>,
   },
   MinInlineSize {
-    value: Option<Option<Length>>,
+    value: Option<LogicalSizingValue>,
   },
   MinBlockSize {
-    value: Option<Option<Length>>,
+    value: Option<LogicalSizingValue>,
   },
   MaxInlineSize {
-    value: Option<Option<Length>>,
+    value: Option<LogicalSizingValue>,
   },
   MaxBlockSize {
-    value: Option<Option<Length>>,
+    value: Option<LogicalSizingValue>,
   },
   ContainIntrinsicInlineSize {
     value: Option<ContainIntrinsicSizeAxis>,
@@ -578,8 +587,6 @@ pub struct ComputedStyle {
   pub max_width_keyword: Option<IntrinsicSizeKeyword>,
   pub max_height: Option<Length>,
   pub max_height_keyword: Option<IntrinsicSizeKeyword>,
-  /// Whether max-height was authored as the keyword `max-content`.
-  pub max_height_is_max_content: bool,
 
   pub margin_top: Option<Length>,
   pub margin_right: Option<Length>,
@@ -961,7 +968,6 @@ impl Default for ComputedStyle {
       max_width_keyword: None,
       max_height: None,
       max_height_keyword: None,
-      max_height_is_max_content: false,
 
       margin_top: Some(Length::px(0.0)),
       margin_right: Some(Length::px(0.0)),

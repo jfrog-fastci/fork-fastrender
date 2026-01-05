@@ -1,4 +1,5 @@
 use crate::style::values::{CalcLength, Length};
+use crate::style::types::IntrinsicSizeKeyword;
 use crate::style::ComputedStyle;
 use rustc_hash::FxHasher;
 use std::cell::{Cell, RefCell};
@@ -121,6 +122,33 @@ fn hash_option_length(len: &Option<Length>, hasher: &mut FxHasher) {
   }
 }
 
+fn hash_intrinsic_size_keyword(value: &IntrinsicSizeKeyword, hasher: &mut FxHasher) {
+  match value {
+    IntrinsicSizeKeyword::MinContent => 0u8.hash(hasher),
+    IntrinsicSizeKeyword::MaxContent => 1u8.hash(hasher),
+    IntrinsicSizeKeyword::FitContent { limit } => {
+      2u8.hash(hasher);
+      match limit {
+        Some(limit) => {
+          1u8.hash(hasher);
+          hash_length(limit, hasher);
+        }
+        None => 0u8.hash(hasher),
+      }
+    }
+  }
+}
+
+fn hash_option_intrinsic_size_keyword(value: &Option<IntrinsicSizeKeyword>, hasher: &mut FxHasher) {
+  match value {
+    Some(value) => {
+      1u8.hash(hasher);
+      hash_intrinsic_size_keyword(value, hasher);
+    }
+    None => 0u8.hash(hasher),
+  }
+}
+
 fn style_override_fingerprint(style: &ComputedStyle) -> u64 {
   let mut h = FxHasher::default();
   hash_enum_discriminant(&style.display, &mut h);
@@ -135,12 +163,17 @@ fn style_override_fingerprint(style: &ComputedStyle) -> u64 {
   hash_enum_discriminant(&style.writing_mode, &mut h);
   hash_enum_discriminant(&style.direction, &mut h);
   hash_option_length(&style.width, &mut h);
+  hash_option_intrinsic_size_keyword(&style.width_keyword, &mut h);
   hash_option_length(&style.height, &mut h);
+  hash_option_intrinsic_size_keyword(&style.height_keyword, &mut h);
   hash_option_length(&style.min_width, &mut h);
   hash_option_length(&style.max_width, &mut h);
+  hash_option_intrinsic_size_keyword(&style.min_width_keyword, &mut h);
+  hash_option_intrinsic_size_keyword(&style.max_width_keyword, &mut h);
   hash_option_length(&style.min_height, &mut h);
   hash_option_length(&style.max_height, &mut h);
-  style.max_height_is_max_content.hash(&mut h);
+  hash_option_intrinsic_size_keyword(&style.min_height_keyword, &mut h);
+  hash_option_intrinsic_size_keyword(&style.max_height_keyword, &mut h);
   hash_option_length(&style.margin_top, &mut h);
   hash_option_length(&style.margin_right, &mut h);
   hash_option_length(&style.margin_bottom, &mut h);
