@@ -99,6 +99,10 @@ cargo xtask fixture-chrome-diff --from-progress progress/pages --top-worst-accur
 
 Defaults are aligned with the `pages_regression` suite (`viewport=1040x1240`, `dpr=1.0`) unless you override them.
 
+For determinism, the Chrome baseline step disables CSS animations/transitions by default (via an injected `<style>` block). This both reduces screenshot frame-timing noise and keeps Chrome baselines aligned with FastRender’s “no animation” model. Opt out for debugging with:
+
+- `cargo xtask chrome-baseline-fixtures --allow-animations`
+
 Artifacts and PR guidance:
 
 - Report: `target/fixture_chrome_diff/report.html` (plus `report.json` and per-fixture PNG/log/metadata artifacts under `target/fixture_chrome_diff/{chrome,fastrender,...}`).

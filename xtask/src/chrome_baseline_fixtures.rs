@@ -77,6 +77,14 @@ pub struct ChromeBaselineFixturesArgs {
   /// Enable or disable JavaScript (default: off).
   #[arg(long, value_enum, default_value_t = JsMode::Off)]
   js: JsMode,
+
+  /// Allow CSS animations/transitions in the Chrome baseline (default: disabled for determinism).
+  ///
+  /// FastRender does not run CSS animations, so leaving them enabled in Chrome produces baselines
+  /// that are both less deterministic (frame timing variance) and less aligned with renderer
+  /// semantics.
+  #[arg(long)]
+  allow_animations: bool,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -175,7 +183,7 @@ pub fn run_chrome_baseline_fixtures(args: ChromeBaselineFixturesArgs) -> Result<
   println!("Input:  {}", fixture_root.display());
   println!("Output: {}", out_dir.display());
   println!(
-    "Viewport: {}x{}  DPR: {}  Media: {}  JS: {}  Timeout: {}s",
+    "Viewport: {}x{}  DPR: {}  Media: {}  JS: {}  Animations: {}  Timeout: {}s",
     args.viewport.0,
     args.viewport.1,
     args.dpr,
@@ -184,6 +192,7 @@ pub fn run_chrome_baseline_fixtures(args: ChromeBaselineFixturesArgs) -> Result<
       JsMode::On => "on",
       JsMode::Off => "off",
     },
+    if args.allow_animations { "on" } else { "off" },
     args.timeout
   );
   println!();
@@ -271,6 +280,7 @@ fn render_fixture(
     &index_bytes,
     Some(&base_url),
     matches!(args.js, JsMode::Off),
+    !args.allow_animations,
   );
   fs::write(&patched_html, patched).with_context(|| format!("write {}", patched_html.display()))?;
   let url = file_url(&patched_html)?;
@@ -1202,7 +1212,14 @@ fn file_url(path: &Path) -> Result<String> {
     .map_err(|_| anyhow!("could not convert {} to a file:// URL", absolute.display()))
 }
 
-fn patch_html_bytes(data: &[u8], base_url: Option<&str>, disable_js: bool) -> Vec<u8> {
+fn patch_html_bytes(
+  data: &[u8],
+  base_url: Option<&str>,
+  disable_js: bool,
+  disable_animations: bool,
+) -> Vec<u8> {
+  const DISABLE_ANIMATIONS_STYLE: &str =
+    "<style>*, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }</style>\n";
   let mut inserts = Vec::new();
   if let Some(base_url) = base_url {
     inserts.extend_from_slice(format!("<base href=\"{base_url}\">\n").as_bytes());
@@ -1217,6 +1234,9 @@ fn patch_html_bytes(data: &[u8], base_url: Option<&str>, disable_js: bool) -> Ve
   inserts.extend_from_slice(
     format!("<meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">\n").as_bytes(),
   );
+  if disable_animations {
+    inserts.extend_from_slice(DISABLE_ANIMATIONS_STYLE.as_bytes());
+  }
 
   if inserts.is_empty() {
     return data.to_vec();
@@ -1336,7 +1356,7 @@ mod tests {
   #[test]
   fn patch_html_keeps_doctype_first_when_head_missing() {
     let input = b"<!doctype html>\n<meta charset=\"utf-8\">\n<body>Hello</body>\n";
-    let output = patch_html_bytes(input, Some("file:///tmp/fixture/"), true);
+    let output = patch_html_bytes(input, Some("file:///tmp/fixture/"), true, true);
     assert!(
       output.starts_with(b"<!doctype html>"),
       "doctype must remain the first token to avoid quirks mode"
@@ -1350,6 +1370,25 @@ mod tests {
     assert!(
       output_str.contains("<base href=\"file:///tmp/fixture/\">"),
       "patched HTML should include base href injection"
+    );
+    assert!(
+      output_str.contains("animation: none !important"),
+      "patched HTML should disable animations for deterministic baselines"
+    );
+  }
+
+  #[test]
+  fn patch_html_can_opt_out_of_animation_disabling() {
+    let input = b"<!doctype html><html><head></head><body>Hello</body></html>";
+    let output = patch_html_bytes(input, Some("file:///tmp/fixture/"), true, false);
+    let output_str = String::from_utf8_lossy(&output);
+    assert!(
+      !output_str.contains("animation: none !important"),
+      "opt-out should omit the animation-disabling CSS"
+    );
+    assert!(
+      !output_str.contains("transition: none !important"),
+      "opt-out should omit the transition-disabling CSS"
     );
   }
 
@@ -1401,6 +1440,7 @@ mod tests {
       media: super::MediaMode::Screen,
       timeout: 15,
       js: super::JsMode::Off,
+      allow_animations: false,
     };
 
     let metadata = build_fixture_metadata(

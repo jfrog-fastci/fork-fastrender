@@ -16,6 +16,7 @@ These are optional wrappers for the most common loops:
 - Cached-pages Chrome-vs-FastRender diff (best-effort; non-deterministic): `scripts/chrome_vs_fastrender.sh [options] [--] [page_stem...]`
   - Wraps `scripts/chrome_baseline.sh`, `render_pages`, and `diff_renders` into one command.
   - Defaults to `viewport=1200x800`, `dpr=1.0`, JavaScript disabled (to match FastRender’s “no JS” model).
+  - Disables CSS animations/transitions by default for more deterministic Chrome screenshots; set `ALLOW_ANIMATIONS=1` to opt out when debugging.
   - Writes a report at `<out>/report.html` (default: `target/chrome_vs_fastrender/report.html`).
   - Core flags: `--pages <csv>`, `--shard <index>/<total>`, `--viewport <WxH>`, `--dpr <float>`, `--jobs <n>`, `--timeout <secs>`, `--out-dir <dir>`, `--chrome <path>`, `--js {on|off}`, `--no-chrome`, `--no-fastrender`, `--diff-only`, `--tolerance <u8>`, `--max-diff-percent <float>`, `--max-perceptual-distance <float>`, `--ignore-alpha`, `--sort-by {pixel|percent|perceptual}`, `--fail-on-differences`, `--no-build`.
   - `--pages` accepts cached stems or URLs; URL-looking inputs are normalized to cached stems best-effort (strip scheme/leading `www.`, etc).
@@ -24,6 +25,7 @@ These are optional wrappers for the most common loops:
 - Offline fixture Chrome-vs-FastRender diff (deterministic; offline): `scripts/chrome_vs_fastrender_fixtures.sh [options] [--] [fixture_glob...]`
   - Thin wrapper around the canonical implementation: `cargo xtask fixture-chrome-diff` (inherits its validations and default fixture selection).
   - Defaults to `viewport=1040x1240`, `dpr=1.0`, JavaScript disabled.
+  - Chrome baselines disable CSS animations/transitions by default for deterministic screenshots; use `cargo xtask chrome-baseline-fixtures --allow-animations` to opt out when debugging.
   - Writes outputs under `<out>/` (default: `target/fixture_chrome_diff/`):
     - `<out>/chrome/`, `<out>/fastrender/`, `<out>/report.html`, `<out>/report.json`.
   - When reusing existing FastRender renders (`--no-fastrender` / `--diff-only`), xtask validates per-fixture metadata to prevent stale diffs; pass `--allow-stale-fastrender-renders` to override.
@@ -104,6 +106,7 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
   - Use `--fail-on-differences` to exit non-zero when the report contains diffs/missing/error entries.
   - Use `--no-build` to reuse an existing `target/release/diff_renders` binary (skips `cargo build`).
 - Chrome baseline screenshots for offline fixtures (local-only; not committed): `cargo xtask chrome-baseline-fixtures`
+  - Disables CSS animations/transitions by default for deterministic baselines; pass `--allow-animations` to opt out.
   - Chrome-vs-FastRender diff report for offline fixtures (deterministic; offline): `cargo xtask fixture-chrome-diff`
     - Defaults to the curated `pages_regression` fixture set in `tests/pages_regression_test.rs`.
     - Pass `--all-fixtures` to render every fixture under `tests/pages/fixtures/`.

@@ -43,6 +43,7 @@ Options:
                       Process only a deterministic shard of selected cached pages (0-based)
   --chrome <path>      Chrome/Chromium binary (default: auto-detect)
   --js <on|off>        Enable JavaScript (default: off)
+  --allow-animations   Allow CSS animations/transitions (default: off for determinism)
   -h, --help           Show help
 
 Filtering:
@@ -50,7 +51,7 @@ Filtering:
   and only those pages will be rendered.
 
 Environment (optional):
-  HTML_DIR, OUT_DIR, VIEWPORT, DPR, TIMEOUT, SHARD, CHROME_BIN, JS
+  HTML_DIR, OUT_DIR, VIEWPORT, DPR, TIMEOUT, SHARD, CHROME_BIN, JS, ALLOW_ANIMATIONS
 
 Output:
   <out-dir>/<stem>.png        Screenshot
@@ -68,6 +69,7 @@ TIMEOUT="${TIMEOUT:-15}"
 SHARD="${SHARD:-}"
 CHROME_BIN="${CHROME_BIN:-}"
 JS="${JS:-off}"
+ALLOW_ANIMATIONS="${ALLOW_ANIMATIONS:-0}"
 HEADLESS_FLAG="--headless=new"
 
 FILTERS=()
@@ -95,6 +97,8 @@ while [[ $# -gt 0 ]]; do
         CHROME_BIN="${2:-}"; shift 2 ;;
       --js)
         JS="${2:-}"; shift 2 ;;
+      --allow-animations)
+        ALLOW_ANIMATIONS="1"; shift ;;
       --)
         PARSE_FLAGS=0
         shift
@@ -118,6 +122,19 @@ case "${JS,,}" in
   on|off) ;;
   *)
     echo "invalid --js: ${JS} (expected on|off)" >&2
+    exit 2
+    ;;
+esac
+
+case "${ALLOW_ANIMATIONS,,}" in
+  ""|0|false|off|no)
+    ALLOW_ANIMATIONS="0"
+    ;;
+  1|true|on|yes)
+    ALLOW_ANIMATIONS="1"
+    ;;
+  *)
+    echo "invalid --allow-animations/ALLOW_ANIMATIONS: ${ALLOW_ANIMATIONS} (expected 0/1)" >&2
     exit 2
     ;;
 esac
@@ -269,7 +286,7 @@ total=0
 echo "Chrome: ${CHROME}"
 echo "Input:  ${HTML_DIR}"
 echo "Output: ${OUT_DIR}"
-echo "Viewport: ${VIEWPORT}  DPR: ${DPR}  JS: ${JS,,}  Timeout: ${TIMEOUT}s"
+echo "Viewport: ${VIEWPORT}  DPR: ${DPR}  JS: ${JS,,}  Animations: $([[ "${ALLOW_ANIMATIONS}" -eq 1 ]] && echo on || echo off)  Timeout: ${TIMEOUT}s"
 if [[ -n "${SHARD}" ]]; then
   echo "Shard: ${SHARD}"
 fi
@@ -303,8 +320,12 @@ for html_path in "${HTML_FILES[@]}"; do
   if [[ "${JS,,}" == "off" ]]; then
     disable_js="1"
   fi
+  disable_animations="1"
+  if [[ "${ALLOW_ANIMATIONS}" -eq 1 ]]; then
+    disable_animations="0"
+  fi
 
-  html_sha256="$(python3 - "${html_path}" "${patched_html}" "${base_url}" "${disable_js}" <<'PY'
+  html_sha256="$(python3 - "${html_path}" "${patched_html}" "${base_url}" "${disable_js}" "${disable_animations}" <<'PY'
 import sys
 import hashlib
 
@@ -314,10 +335,13 @@ base_url = sys.argv[3].strip()
 disable_js = False
 if len(sys.argv) >= 5:
     disable_js = sys.argv[4].strip() == "1"
+disable_animations = True
+if len(sys.argv) >= 6:
+    disable_animations = sys.argv[5].strip() != "0"
 
 data = open(in_path, "rb").read()
 sha256 = hashlib.sha256(data).hexdigest()
-if not base_url and not disable_js:
+if not base_url and not disable_js and not disable_animations:
     open(out_path, "wb").write(data)
     print(sha256, end="")
     sys.exit(0)
@@ -364,6 +388,10 @@ if disable_js:
     # Best-effort JS disable: inject a CSP that blocks script execution.
     # This is more portable than Chromium flag hacks and matches our "no JS" renderer model.
     inserts.append(b"<meta http-equiv=\"Content-Security-Policy\" content=\"script-src 'none';\">\n")
+if disable_animations:
+    # Disable CSS animations/transitions by default to reduce screenshot frame timing noise (Chrome
+    # may capture at slightly different points along the animation timeline, even with JS disabled).
+    inserts.append(b"<style>*, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }</style>\n")
 
 insertion = b"".join(inserts)
 if not insertion:
