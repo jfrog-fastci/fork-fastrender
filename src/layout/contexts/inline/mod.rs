@@ -5122,11 +5122,9 @@ impl InlineFormattingContext {
             ),
             Size::new(padding_width, padding_height),
           );
-          let cb_block_base = if box_item.style.height.is_some() {
-            Some(padding_rect.size.height)
-          } else {
-            None
-          };
+          // Percentage offsets on absolutely positioned boxes resolve against the used height of the
+          // padding box even when the containing block's own height is `auto` (CSS 2.1 §10.5).
+          let cb_block_base = Some(padding_rect.size.height);
           let new_cb = ContainingBlock::with_viewport_and_bases(
             padding_rect,
             self.viewport_size,
@@ -5147,12 +5145,7 @@ impl InlineFormattingContext {
                   existing.rect.max_y().max(padding_rect.max_y()),
                 ),
               );
-              let block_base =
-                if existing.block_percentage_base().is_some() || cb_block_base.is_some() {
-                  Some(union.size.height)
-                } else {
-                  None
-                };
+              let block_base = Some(union.size.height);
               *existing = ContainingBlock::with_viewport_and_bases(
                 union,
                 existing.viewport_size(),
@@ -8956,8 +8949,6 @@ impl InlineFormattingContext {
     } else {
       Point::ZERO
     };
-    let lines_empty = lines.is_empty();
-
     let mut anchor_positions: HashMap<usize, Point> = HashMap::new();
     let mut positioned_containing_blocks: HashMap<usize, ContainingBlock> = HashMap::new();
     let mut line_fragments = self.create_fragments(
@@ -9128,7 +9119,10 @@ impl InlineFormattingContext {
         self.viewport_size,
       );
 
-      let padding_origin = Point::new(border_left + padding_left, border_top + padding_top);
+      // CSS 2.1 §10.1: the containing block for absolute positioned descendants is the padding
+      // box of the nearest positioned ancestor, i.e. the rectangle bounded by the padding edge
+      // (border box minus borders).
+      let padding_origin = Point::new(border_left, border_top);
       let padding_rect = Rect::new(
         padding_origin,
         Size::new(
@@ -9136,12 +9130,9 @@ impl InlineFormattingContext {
           bounds.height() - border_top - border_bottom,
         ),
       );
-      let cb_block_base = if style.height.is_some() || constraints.used_border_box_height.is_some()
-      {
-        Some(padding_rect.size.height)
-      } else {
-        None
-      };
+      // Percentage offsets on absolutely positioned boxes resolve against the used height of the
+      // padding box even when the containing block's own height is `auto` (CSS 2.1 §10.5).
+      let cb_block_base = Some(padding_rect.size.height);
       let cb = if style.establishes_abs_containing_block() {
         ContainingBlock::with_viewport_and_bases(
           padding_rect,
@@ -9152,13 +9143,7 @@ impl InlineFormattingContext {
       } else {
         self.nearest_positioned_cb
       };
-      let default_static_position = if lines_empty && style.establishes_abs_containing_block() {
-        // Static position starts at the containing block origin; AbsoluteLayout adds
-        // padding/border offsets, so use the content origin when no lines were laid out.
-        Point::ZERO
-      } else {
-        static_position
-      };
+      let default_static_position = static_position;
 
       let abs = AbsoluteLayout::with_font_context(self.font_context.clone());
       let font_context = self.font_context.clone();
@@ -9226,6 +9211,15 @@ impl InlineFormattingContext {
           .get(&box_id)
           .copied()
           .unwrap_or(default_static_position);
+        if !adjust_static_position && child_cb == cb && style.establishes_abs_containing_block() {
+          // Static positions are tracked in the inline formatting context's content coordinate space.
+          // When the positioned containing block is the padding box (bounded by the padding edge),
+          // translate them so they're relative to the padding edge instead.
+          child_static_position = Point::new(
+            child_static_position.x + padding_left,
+            child_static_position.y + padding_top,
+          );
+        }
         if adjust_static_position {
           let origin = child_cb.origin();
           child_static_position = Point::new(
@@ -18190,6 +18184,63 @@ mod tests {
       (positioned_fragment.bounds.x() - 100.0).abs() < 0.1,
       "RTL start alignment should place static position at the line start edge; got {}",
       positioned_fragment.bounds.x()
+    );
+  }
+
+  #[test]
+  fn absolute_child_inset_offsets_resolve_against_padding_edge_for_ifc_root() {
+    let mut root_style = ComputedStyle::default();
+    root_style.position = Position::Relative;
+    root_style.font_size = 16.0;
+    root_style.padding_left = Length::px(10.0);
+    root_style.padding_top = Length::px(11.0);
+    root_style.border_left_width = Length::px(2.0);
+    root_style.border_top_width = Length::px(3.0);
+    root_style.border_left_style = BorderStyle::Solid;
+    root_style.border_top_style = BorderStyle::Solid;
+
+    let mut abs_style = ComputedStyle::default();
+    abs_style.position = Position::Absolute;
+    abs_style.left = Some(Length::px(5.0));
+    abs_style.top = Some(Length::px(7.0));
+    abs_style.width = Some(Length::px(6.0));
+    abs_style.height = Some(Length::px(6.0));
+    abs_style.width_keyword = None;
+    abs_style.height_keyword = None;
+    let positioned = BoxNode::new_inline(Arc::new(abs_style), vec![]);
+
+    let root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Block,
+      vec![make_text_box("Hi"), positioned],
+    );
+    let constraints = LayoutConstraints::definite_width(100.0);
+
+    let ifc = InlineFormattingContext::new();
+    let fragment = ifc.layout(&root, &constraints).expect("layout");
+    let abs_fragment = fragment
+      .children
+      .iter()
+      .find(|child| {
+        child
+          .style
+          .as_ref()
+          .map(|s| matches!(s.position, Position::Absolute | Position::Fixed))
+          .unwrap_or(false)
+      })
+      .expect("positioned fragment");
+
+    // Offsets are relative to the padding edge (origin at the padding box), not the content edge.
+    // border-left 2 + left 5 = 7; border-top 3 + top 7 = 10.
+    assert!(
+      (abs_fragment.bounds.x() - 7.0).abs() < 0.1,
+      "expected left offset to resolve against padding edge; got {}",
+      abs_fragment.bounds.x()
+    );
+    assert!(
+      (abs_fragment.bounds.y() - 10.0).abs() < 0.1,
+      "expected top offset to resolve against padding edge; got {}",
+      abs_fragment.bounds.y()
     );
   }
 
