@@ -1328,7 +1328,7 @@ fn collect_break_opportunities(
   inline_depth: usize,
   context: FragmentationContext,
   axis: &FragmentAxis,
-  parent_block_size: f32,
+  _parent_block_size: f32,
 ) {
   let default_style = default_style();
   let style = node
@@ -1353,9 +1353,8 @@ fn collect_break_opportunities(
     ));
 
   let node_block_size = axis.block_size(&node.bounds);
-  let (node_flow_start, node_flow_end) =
-    axis.flow_range(abs_start, parent_block_size, &node.bounds);
-  let abs_end = node_flow_end;
+  let node_flow_start = abs_start;
+  let abs_end = abs_start + node_block_size;
   if style.float.is_floating() {
     collection.atomic.push(AtomicRange {
       start: node_flow_start,
@@ -1680,13 +1679,14 @@ fn collect_atomic_range_for_node(
   node: &FragmentNode,
   abs_start: f32,
   axis: &FragmentAxis,
-  parent_block_size: f32,
+  _parent_block_size: f32,
   ranges: &mut Vec<AtomicRange>,
   context: FragmentationContext,
   fragmentainer_size: Option<f32>,
 ) {
-  let _node_block_size = axis.block_size(&node.bounds);
-  let (start, end) = axis.flow_range(abs_start, parent_block_size, &node.bounds);
+  let node_block_size = axis.block_size(&node.bounds);
+  let start = abs_start;
+  let end = abs_start + node_block_size;
   if end <= start + BREAK_EPSILON {
     return;
   }
@@ -1696,7 +1696,24 @@ fn collect_atomic_range_for_node(
     .map(|s| s.as_ref())
     .unwrap_or(default_style());
   let height = end - start;
+  let fits_fragmentainer = fragmentainer_size
+    .map(|size| height <= size + BREAK_EPSILON)
+    .unwrap_or(true);
   if style.float.is_floating() {
+    ranges.push(AtomicRange { start, end });
+  }
+
+  // Leaf-level fragments that fit within a fragmentainer are effectively indivisible: they do not
+  // contain any internal break opportunities, so splitting them would require clipping their
+  // border box. Treat them as atomic so boundary selection pushes the entire fragment into the
+  // next fragmentainer when it would otherwise be split.
+  let is_leaf_atomic = fits_fragmentainer
+    && node.children.is_empty()
+    && matches!(
+      node.content,
+      FragmentContent::Block { .. } | FragmentContent::Replaced { .. }
+    );
+  if is_leaf_atomic {
     ranges.push(AtomicRange { start, end });
   }
 
@@ -1708,9 +1725,6 @@ fn collect_atomic_range_for_node(
       | Display::TableFooterGroup
   );
   let avoid_inside = avoids_break_inside(style.break_inside, context) || is_table_row_like;
-  let fits_fragmentainer = fragmentainer_size
-    .map(|size| height <= size + BREAK_EPSILON)
-    .unwrap_or(true);
   if avoid_inside && (fits_fragmentainer || !matches!(context, FragmentationContext::Page)) {
     ranges.push(AtomicRange { start, end });
   }
@@ -1756,9 +1770,7 @@ fn collect_atomic_ranges_with_axis(
 
   let node_block_size = axis.block_size(&node.bounds);
   for child in node.children.iter() {
-    let child_abs_start = axis
-      .flow_range(abs_start, parent_block_size, &child.bounds)
-      .0;
+    let child_abs_start = axis.flow_range(abs_start, node_block_size, &child.bounds).0;
     collect_atomic_ranges_with_axis(
       child,
       child_abs_start,
@@ -1800,11 +1812,24 @@ pub(crate) fn normalize_atomic_ranges(ranges: &mut Vec<AtomicRange>) {
   });
 
   let mut merged: Vec<AtomicRange> = Vec::with_capacity(ranges.len());
-  for range in ranges.iter().copied() {
+  for mut range in ranges.iter().copied() {
     if let Some(last) = merged.last_mut() {
-      if range.start <= last.end + BREAK_EPSILON {
+      // Atomic ranges treat their endpoints as break-safe (see `atomic_containing`). Do not merge
+      // ranges that only touch within epsilon, otherwise the shared endpoint becomes interior to
+      // the merged interval and would incorrectly forbid breaks between adjacent atomic siblings
+      // (including forced breaks).
+      if range.start < last.end - BREAK_EPSILON {
         last.end = last.end.max(range.end);
         continue;
+      }
+
+      // Snap tiny overlaps/gaps so the remaining intervals stay non-overlapping while preserving
+      // the break-safe boundary at the join.
+      if (range.start - last.end).abs() <= BREAK_EPSILON {
+        range.start = last.end;
+        if range.end <= range.start + BREAK_EPSILON {
+          continue;
+        }
       }
     }
     merged.push(range);
