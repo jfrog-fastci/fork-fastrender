@@ -135,6 +135,60 @@ fn render_fixtures_writes_png_output() {
 }
 
 #[test]
+fn render_fixtures_repeat_mode_is_deterministic() {
+  let temp = TempDir::new().expect("tempdir");
+  let fixtures_dir = temp.path().join("fixtures");
+  let out_dir = temp.path().join("out");
+  fs::create_dir_all(&fixtures_dir).expect("create fixtures dir");
+
+  write_fixture(
+    &fixtures_dir,
+    "repeat",
+    "<!doctype html><html><body><div style=\"width:32px;height:32px;background:#f0f\"></div></body></html>",
+  );
+
+  let status = Command::new(env!("CARGO_BIN_EXE_render_fixtures"))
+    .current_dir(temp.path())
+    .args([
+      "--fixtures-dir",
+      fixtures_dir.to_str().unwrap(),
+      "--out-dir",
+      out_dir.to_str().unwrap(),
+      "--fixtures",
+      "repeat",
+      "--viewport",
+      "64x64",
+      "--jobs",
+      "2",
+      "--timeout",
+      "5",
+      "--repeat",
+      "2",
+      "--shuffle",
+      "--seed",
+      "1",
+      "--fail-on-nondeterminism",
+      "--save-variants",
+      "--reset-paint-scratch",
+    ])
+    .status()
+    .expect("run render_fixtures");
+
+  assert!(
+    status.success(),
+    "expected render_fixtures repeat mode to succeed for a deterministic fixture"
+  );
+  assert!(
+    out_dir.join("repeat.png").is_file(),
+    "expected baseline PNG output"
+  );
+  assert!(
+    !out_dir.join("repeat").join("nondeterminism").exists(),
+    "did not expect nondeterminism outputs for a deterministic fixture"
+  );
+}
+
+#[test]
 fn render_fixtures_blocks_http_subresources() {
   let temp = TempDir::new().expect("tempdir");
   let fixtures_dir = temp.path().join("fixtures");
