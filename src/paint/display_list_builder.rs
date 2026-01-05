@@ -4327,7 +4327,14 @@ impl DisplayListBuilder {
 
         if let ReplacedType::Math(math) = replaced_type {
           let fallback_style = ComputedStyle::default();
-          let style_ref = fragment.style.as_deref().unwrap_or(&fallback_style);
+          let style = fragment.style.as_deref();
+          let style_ref = style.unwrap_or(&fallback_style);
+          let (content_rect, clip_radii) = self.replaced_content_rect_and_radii(rect, style);
+          let clip_contents =
+            Self::replaced_content_clip_item(style, content_rect, content_rect, clip_radii);
+          if let Some(clip) = clip_contents.as_ref() {
+            self.list.push(DisplayItem::PushClip(clip.clone()));
+          }
           let layout_owned = math
             .layout
             .as_ref()
@@ -4338,12 +4345,12 @@ impl DisplayListBuilder {
           let layout_w = layout_owned.width.max(0.01);
           let layout_h = layout_owned.height.max(0.01);
           let scale_x = if layout_w > 0.0 {
-            rect.width() / layout_w
+            content_rect.width() / layout_w
           } else {
             1.0
           };
           let scale_y = if layout_h > 0.0 {
-            rect.height() / layout_h
+            content_rect.height() / layout_h
           } else {
             1.0
           };
@@ -4351,8 +4358,8 @@ impl DisplayListBuilder {
             match frag {
               MathFragment::Glyph { origin, run } => {
                 let scaled_run = Self::scale_run(&run, scale_x, scale_y);
-                let baseline_y = rect.y() + origin.y * scale_y;
-                let start_x = rect.x() + origin.x * scale_x;
+                let baseline_y = content_rect.y() + origin.y * scale_y;
+                let start_x = content_rect.x() + origin.x * scale_x;
                 self.emit_shaped_runs(
                   &[scaled_run],
                   color,
@@ -4365,8 +4372,8 @@ impl DisplayListBuilder {
               }
               MathFragment::Rule(r) => {
                 let scaled_rect = Rect::from_xywh(
-                  rect.x() + r.x() * scale_x,
-                  rect.y() + r.y() * scale_y,
+                  content_rect.x() + r.x() * scale_x,
+                  content_rect.y() + r.y() * scale_y,
                   r.width() * scale_x,
                   r.height() * scale_y,
                 );
@@ -4381,8 +4388,8 @@ impl DisplayListBuilder {
                 width,
               } => {
                 let scaled_rect = Rect::from_xywh(
-                  rect.x() + stroke_rect.x() * scale_x,
-                  rect.y() + stroke_rect.y() * scale_y,
+                  content_rect.x() + stroke_rect.x() * scale_x,
+                  content_rect.y() + stroke_rect.y() * scale_y,
                   stroke_rect.width() * scale_x,
                   stroke_rect.height() * scale_y,
                 );
@@ -4408,6 +4415,9 @@ impl DisplayListBuilder {
                 }
               }
             }
+          }
+          if clip_contents.is_some() {
+            self.list.push(DisplayItem::PopClip);
           }
           return;
         }
