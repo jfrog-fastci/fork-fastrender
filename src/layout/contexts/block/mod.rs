@@ -94,6 +94,7 @@ use crate::tree::fragment_tree::FragmentNode;
 use crate::tree::fragment_tree::FragmentationInfo;
 use margin_collapse::should_collapse_with_first_child;
 use margin_collapse::should_collapse_with_last_child;
+use margin_collapse::CollapsibleMargin;
 use margin_collapse::MarginCollapseContext;
 use rayon::prelude::*;
 use std::sync::Arc;
@@ -2528,12 +2529,30 @@ impl BlockFormattingContext {
             child.style.position
           );
         }
-        let pending_margin = margin_ctx.pending_margin();
+        // Static position is defined in terms of the hypothetical in-flow margin edge, which for
+        // block-level siblings must respect vertical margin collapsing. Because absolutely/fixed
+        // positioned boxes do not participate in margin collapse with surrounding flow content, we
+        // must compute the collapsed block-start margin without mutating the `MarginCollapseContext`.
+        let pending_margin = margin_ctx.pending_collapsible_margin();
+        let block_sides = block_axis_sides(&child.style);
+        let margin_top = resolve_margin_side(
+          &child.style,
+          block_sides.0,
+          containing_width,
+          &self.font_context,
+          self.viewport_size,
+        );
+        let collapsed_margin = pending_margin
+          .collapse_with(CollapsibleMargin::from_margin(margin_top))
+          .resolve();
         // Static position is based on the hypothetical in-flow margin edge. For normal blocks, the
         // margin edge is aligned to the containing block start, so the inline coordinate is 0 and
         // the absolute positioning constraint equation will apply the actual margin.
         let static_x = 0.0;
-        let static_y = current_y + pending_margin;
+        // `AbsoluteLayout` applies the element's margin-top as part of the constraint equation, so
+        // the static position must be recorded at the (collapsed) margin edge rather than the
+        // border edge.
+        let static_y = current_y + collapsed_margin - margin_top;
         let static_position = Some(Point::new(static_x, static_y));
         let source = match child.style.position {
           Position::Fixed => {
