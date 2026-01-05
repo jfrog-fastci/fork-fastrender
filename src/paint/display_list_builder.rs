@@ -7570,6 +7570,7 @@ mod tests {
   use crate::image_loader::ImageCache;
   use crate::paint::display_list::text_bounds;
   use crate::paint::display_list::ResolvedMaskImage;
+  use crate::paint::display_list_renderer::DisplayListRenderer;
   use crate::paint::stacking::StackingContext;
   use crate::paint::stacking::StackingContextReason;
   use crate::render_control::RenderDeadline;
@@ -7610,6 +7611,7 @@ mod tests {
   use crate::text::font_loader::FontContext;
   use crate::text::pipeline::ShapingPipeline;
   use crate::tree::box_tree::{CrossOriginAttribute, ReplacedType};
+  use crate::tree::fragment_tree::FragmentTree;
   use crate::{debug::runtime::RuntimeToggles, paint::painter::enable_paint_diagnostics};
   use base64::engine::general_purpose;
   use base64::Engine as _;
@@ -10120,11 +10122,26 @@ mod tests {
     );
 
     let builder = DisplayListBuilder::new();
-    let list = builder.build(&fragment);
+    let tree = FragmentTree::new(fragment);
+    let list = builder.build_tree_with_stacking(&tree);
 
     assert!(
-      list.is_empty(),
-      "backface hidden element should not emit display items"
+      !list.is_empty(),
+      "display items should be retained (backface culling happens at paint time)"
+    );
+
+    let pixmap = DisplayListRenderer::new(30, 30, Rgba::WHITE, FontContext::new())
+      .expect("renderer")
+      .render(&list)
+      .expect("render");
+    assert!(
+      (0..pixmap.height())
+        .flat_map(|y| (0..pixmap.width()).map(move |x| (x, y)))
+        .all(|(x, y)| {
+          let px = pixmap.pixel(x, y).expect("pixel in bounds");
+          px.red() == 255 && px.green() == 255 && px.blue() == 255 && px.alpha() == 255
+        }),
+      "backface hidden element should be culled during rendering"
     );
   }
 
@@ -10143,10 +10160,25 @@ mod tests {
     );
 
     let builder = DisplayListBuilder::new();
-    let list = builder.build(&fragment);
+    let tree = FragmentTree::new(fragment);
+    let list = builder.build_tree_with_stacking(&tree);
 
     assert!(
-      list.is_empty(),
+      !list.is_empty(),
+      "display items should be retained (backface culling happens at paint time)"
+    );
+
+    let pixmap = DisplayListRenderer::new(30, 30, Rgba::WHITE, FontContext::new())
+      .expect("renderer")
+      .render(&list)
+      .expect("render");
+    assert!(
+      (0..pixmap.height())
+        .flat_map(|y| (0..pixmap.width()).map(move |x| (x, y)))
+        .all(|(x, y)| {
+          let px = pixmap.pixel(x, y).expect("pixel in bounds");
+          px.red() == 255 && px.green() == 255 && px.blue() == 255 && px.alpha() == 255
+        }),
       "backface should be culled with perspective"
     );
   }
