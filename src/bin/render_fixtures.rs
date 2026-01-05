@@ -446,7 +446,7 @@ fn run(cli: Cli) -> io::Result<()> {
 
   if cli.repeat == 1 {
     if cli.reset_paint_scratch {
-      reset_paint_scratch_for_pool(&thread_pool);
+      reset_paint_scratch_for_pools(&thread_pool);
     }
     let results_mutex: Mutex<Vec<FixtureResult>> = Mutex::new(Vec::new());
     thread_pool.scope(|s| {
@@ -475,7 +475,7 @@ fn run(cli: Cli) -> io::Result<()> {
     // same rayon pool to surface any scheduling-dependent nondeterminism.
     for repeat_idx in 0..cli.repeat {
       if cli.reset_paint_scratch {
-        reset_paint_scratch_for_pool(&thread_pool);
+        reset_paint_scratch_for_pools(&thread_pool);
       }
       let mut ordered = fixtures.clone();
       if cli.shuffle && repeat_idx > 0 {
@@ -850,13 +850,20 @@ fn status_error(status: &Status) -> Option<&str> {
   }
 }
 
-fn reset_paint_scratch_for_pool(pool: &rayon::ThreadPool) {
-  // This is best-effort. Most paint/filter code runs on Rayon worker threads, so we reset the
-  // paint scratch buffers on each Rayon worker thread before starting a repeat.
+fn reset_paint_scratch_for_pools(harness_pool: &rayon::ThreadPool) {
+  // This is best-effort. Paint/filter code can run on:
+  // - the calling thread (serial paths),
+  // - the global Rayon thread pool (default for parallel paint),
+  // - a dedicated paint pool (when `FASTR_PAINT_THREADS>1` is set),
+  // - or a custom harness pool used by CLI tools.
   //
-  // This must run inside the same pool that will execute paint work; otherwise we would just reset
-  // scratch buffers on the global Rayon pool (which isn't necessarily used by this harness).
-  pool.install(|| {
+  // We reset scratch on the calling thread, the global pool, and the fixture harness pool. The
+  // dedicated paint pool can't be reached from this binary without additional library plumbing.
+  fastrender::paint::scratch::reset_thread_local_scratch();
+  rayon::broadcast(|_| {
+    fastrender::paint::scratch::reset_thread_local_scratch();
+  });
+  harness_pool.install(|| {
     rayon::broadcast(|_| {
       fastrender::paint::scratch::reset_thread_local_scratch();
     });
