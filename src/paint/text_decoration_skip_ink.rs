@@ -1,4 +1,5 @@
 use crate::text::font_db::LoadedFont;
+use crate::text::font_instance::{FontBBox, FontInstance};
 use crate::text::pipeline::{RunRotation, ShapedRun};
 use rustc_hash::FxHashMap;
 use std::cell::RefCell;
@@ -10,23 +11,23 @@ struct UnderlineGlyphBboxKey {
   font_ptr: usize,
   font_index: u32,
   variations_hash: u64,
-  glyph_id: u16,
+  glyph_id: u32,
 }
 
 const UNDERLINE_GLYPH_BBOX_CACHE_MAX_ENTRIES: usize = 8192;
 
 thread_local! {
-  static UNDERLINE_GLYPH_BBOX_CACHE: RefCell<FxHashMap<UnderlineGlyphBboxKey, Option<ttf_parser::Rect>>> =
+  static UNDERLINE_GLYPH_BBOX_CACHE: RefCell<FxHashMap<UnderlineGlyphBboxKey, Option<FontBBox>>> =
     RefCell::new(FxHashMap::default());
 }
 
 #[inline]
 fn cached_glyph_bounding_box(
-  face: &ttf_parser::Face<'static>,
+  instance: &FontInstance<'_>,
   font: &LoadedFont,
   variations_hash: u64,
-  glyph_id: u16,
-) -> Option<ttf_parser::Rect> {
+  glyph_id: u32,
+) -> Option<FontBBox> {
   let key = UnderlineGlyphBboxKey {
     font_ptr: Arc::as_ptr(&font.data) as usize,
     font_index: font.index,
@@ -39,7 +40,7 @@ fn cached_glyph_bounding_box(
     if let Some(cached) = cache.get(&key) {
       return *cached;
     }
-    let bbox = face.glyph_bounding_box(ttf_parser::GlyphId(glyph_id));
+    let bbox = instance.glyph_bounds(glyph_id);
     if cache.len() >= UNDERLINE_GLYPH_BBOX_CACHE_MAX_ENTRIES {
       cache.clear();
     }
@@ -87,10 +88,10 @@ fn push_interval(intervals: &mut Vec<(f32, f32)>, start: f32, end: f32) {
 }
 
 fn glyph_aabb(
-  face: &ttf_parser::Face<'static>,
+  instance: &FontInstance<'_>,
   font: &LoadedFont,
   variations_hash: u64,
-  glyph_id: u16,
+  glyph_id: u32,
   glyph_x: f32,
   glyph_y: f32,
   scale: f32,
@@ -103,7 +104,7 @@ fn glyph_aabb(
     return None;
   }
 
-  let bbox = cached_glyph_bounding_box(face, font, variations_hash, glyph_id)?;
+  let bbox = cached_glyph_bounding_box(instance, font, variations_hash, glyph_id)?;
 
   let mut min_x = f32::INFINITY;
   let mut max_x = f32::NEG_INFINITY;
@@ -111,10 +112,10 @@ fn glyph_aabb(
   let mut max_y = f32::NEG_INFINITY;
 
   let corners = [
-    (bbox.x_min as f32, bbox.y_min as f32),
-    (bbox.x_min as f32, bbox.y_max as f32),
-    (bbox.x_max as f32, bbox.y_min as f32),
-    (bbox.x_max as f32, bbox.y_max as f32),
+    (bbox.x_min, bbox.y_min),
+    (bbox.x_min, bbox.y_max),
+    (bbox.x_max, bbox.y_min),
+    (bbox.x_max, bbox.y_max),
   ];
   for (px, py) in corners {
     let mut x = glyph_x + (px + skew * py) * scale;
@@ -160,18 +161,11 @@ pub(crate) fn collect_underline_exclusions(
 
   let mut pen_x = line_start;
   for run in runs {
-    let Some(cached_face) = crate::text::face_cache::get_ttf_face(&run.font) else {
+    let Some(instance) = FontInstance::new(&run.font, &run.variations) else {
       pen_x += run.advance * coord_scale;
       continue;
     };
-    let owned_face = (!run.variations.is_empty()).then(|| {
-      let mut face = cached_face.clone_face();
-      crate::text::apply_rustybuzz_variations(&mut face, &run.variations);
-      face
-    });
-    let face: &ttf_parser::Face<'static> =
-      owned_face.as_ref().unwrap_or_else(|| cached_face.face());
-    let units_per_em = face.units_per_em() as f32;
+    let units_per_em = instance.units_per_em();
     if units_per_em <= 0.0 || !units_per_em.is_finite() {
       pen_x += run.advance * coord_scale;
       continue;
@@ -196,23 +190,21 @@ pub(crate) fn collect_underline_exclusions(
       let glyph_x = cursor_x + glyph.x_offset * coord_scale;
       let glyph_y = origin_y - glyph.y_offset * coord_scale;
 
-      if let Ok(glyph_id) = u16::try_from(glyph.glyph_id) {
-        if let Some((min_x, max_x, min_y, max_y)) = glyph_aabb(
-          face,
-          &run.font,
-          variations_hash,
-          glyph_id,
-          glyph_x,
-          glyph_y,
-          scale,
-          skew,
-          rotation,
-          pad_x,
-          pad_y,
-        ) {
-          if skip_all || (max_y >= band_top && min_y <= band_bottom) {
-            push_interval(&mut intervals, min_x, max_x);
-          }
+      if let Some((min_x, max_x, min_y, max_y)) = glyph_aabb(
+        &instance,
+        &run.font,
+        variations_hash,
+        glyph.glyph_id,
+        glyph_x,
+        glyph_y,
+        scale,
+        skew,
+        rotation,
+        pad_x,
+        pad_y,
+      ) {
+        if skip_all || (max_y >= band_top && min_y <= band_bottom) {
+          push_interval(&mut intervals, min_x, max_x);
         }
       }
 
@@ -243,18 +235,11 @@ pub(crate) fn collect_underline_exclusions_vertical(
 
   let mut pen_inline = inline_start;
   for run in runs {
-    let Some(cached_face) = crate::text::face_cache::get_ttf_face(&run.font) else {
+    let Some(instance) = FontInstance::new(&run.font, &run.variations) else {
       pen_inline += run.advance * coord_scale;
       continue;
     };
-    let owned_face = (!run.variations.is_empty()).then(|| {
-      let mut face = cached_face.clone_face();
-      crate::text::apply_rustybuzz_variations(&mut face, &run.variations);
-      face
-    });
-    let face: &ttf_parser::Face<'static> =
-      owned_face.as_ref().unwrap_or_else(|| cached_face.face());
-    let units_per_em = face.units_per_em() as f32;
+    let units_per_em = instance.units_per_em();
     if units_per_em <= 0.0 || !units_per_em.is_finite() {
       pen_inline += run.advance * coord_scale;
       continue;
@@ -280,23 +265,21 @@ pub(crate) fn collect_underline_exclusions_vertical(
       let glyph_x = cursor_x + glyph.x_offset * coord_scale;
       let glyph_y = origin_y + cursor_y - glyph.y_offset * coord_scale;
 
-      if let Ok(glyph_id) = u16::try_from(glyph.glyph_id) {
-        if let Some((min_x, max_x, min_y, max_y)) = glyph_aabb(
-          face,
-          &run.font,
-          variations_hash,
-          glyph_id,
-          glyph_x,
-          glyph_y,
-          scale,
-          skew,
-          rotation,
-          pad_x,
-          pad_y,
-        ) {
-          if skip_all || (max_x >= band_left && min_x <= band_right) {
-            push_interval(&mut intervals, min_y, max_y);
-          }
+      if let Some((min_x, max_x, min_y, max_y)) = glyph_aabb(
+        &instance,
+        &run.font,
+        variations_hash,
+        glyph.glyph_id,
+        glyph_x,
+        glyph_y,
+        scale,
+        skew,
+        rotation,
+        pad_x,
+        pad_y,
+      ) {
+        if skip_all || (max_x >= band_left && min_x <= band_right) {
+          push_interval(&mut intervals, min_y, max_y);
         }
       }
 
@@ -338,21 +321,26 @@ mod tests {
 
     let cached_face = face_cache::get_ttf_face(&font).expect("parse test font");
     let face = cached_face.face();
-    let glyph_id = face.glyph_index('A').expect("expected glyph for A").0;
+    let glyph_id = face.glyph_index('A').expect("expected glyph for A").0 as u32;
 
-    let hash_a = crate::text::variations::variation_hash(&[Variation {
+    let variations_a = [Variation {
       tag: ttf_parser::Tag::from_bytes(b"wght"),
       value: 400.0,
-    }]);
-    let hash_b = crate::text::variations::variation_hash(&[Variation {
+    }];
+    let variations_b = [Variation {
       tag: ttf_parser::Tag::from_bytes(b"wght"),
       value: 700.0,
-    }]);
+    }];
+    let hash_a = crate::text::variations::variation_hash(&variations_a);
+    let hash_b = crate::text::variations::variation_hash(&variations_b);
     assert_ne!(hash_a, hash_b, "variation hash should depend on value");
 
+    let instance_a = FontInstance::new(&font, &variations_a).expect("instance A");
+    let instance_b = FontInstance::new(&font, &variations_b).expect("instance B");
+
     UNDERLINE_GLYPH_BBOX_CACHE.with(|cache| cache.borrow_mut().clear());
-    let _ = cached_glyph_bounding_box(face, &font, hash_a, glyph_id);
-    let _ = cached_glyph_bounding_box(face, &font, hash_b, glyph_id);
+    let _ = cached_glyph_bounding_box(&instance_a, &font, hash_a, glyph_id);
+    let _ = cached_glyph_bounding_box(&instance_b, &font, hash_b, glyph_id);
     let cache_len = UNDERLINE_GLYPH_BBOX_CACHE.with(|cache| cache.borrow().len());
     assert_eq!(
       cache_len, 2,

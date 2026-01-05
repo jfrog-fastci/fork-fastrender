@@ -7815,6 +7815,7 @@ impl Painter {
   ) -> f32 {
     let resolved = match offset {
       crate::style::types::TextUnderlineOffset::Auto => 0.0,
+      crate::style::types::TextUnderlineOffset::FromFont => 0.0,
       crate::style::types::TextUnderlineOffset::Length(l) => {
         if l.unit == LengthUnit::Percent {
           l.resolve_against(style.font_size).unwrap_or(0.0)
@@ -7857,17 +7858,21 @@ impl Painter {
     offset: f32,
     thickness: f32,
   ) -> f32 {
+    // OpenType `underlinePosition` is specified as the distance from the baseline to the top of
+    // the underline stroke. Convert it to our decoration-center coordinate by subtracting half
+    // the used stroke thickness.
+    let font_center = metrics.underline_pos - thickness * 0.5;
     let under_base = -metrics.descent - thickness * 0.5;
     let base = match position {
       crate::style::types::TextUnderlinePosition::Auto
-      | crate::style::types::TextUnderlinePosition::FromFont => metrics.underline_pos,
+      | crate::style::types::TextUnderlinePosition::FromFont => font_center,
       crate::style::types::TextUnderlinePosition::Under
       | crate::style::types::TextUnderlinePosition::UnderLeft
       | crate::style::types::TextUnderlinePosition::UnderRight => {
-        metrics.underline_pos.min(under_base)
+        font_center.min(under_base)
       }
       crate::style::types::TextUnderlinePosition::Left
-      | crate::style::types::TextUnderlinePosition::Right => metrics.underline_pos,
+      | crate::style::types::TextUnderlinePosition::Right => font_center,
     };
 
     metrics.underline_position_with_offset(base, offset)

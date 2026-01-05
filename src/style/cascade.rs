@@ -20746,6 +20746,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     let child_styles = &styled.children[0].styles;
     match child_styles.text_underline_offset {
       TextUnderlineOffset::Length(l) => assert!((l.to_px() - 2.0).abs() < 0.01),
+      TextUnderlineOffset::FromFont => panic!("expected underline offset to inherit, got FromFont"),
       TextUnderlineOffset::Auto => panic!("expected underline offset to inherit, got Auto"),
     }
     assert!(

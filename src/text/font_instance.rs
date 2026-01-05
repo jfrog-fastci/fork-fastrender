@@ -226,9 +226,28 @@ impl<'a> FontInstance<'a> {
   }
 
   pub fn glyph_bounds(&self, glyph_id: u32) -> Option<FontBBox> {
-    self
-      .glyph_outline(glyph_id)
-      .and_then(|outline| outline.bbox)
+    match &self.backend {
+      // Fast path: for static fonts, `ttf-parser` provides glyph bounding boxes directly so avoid
+      // constructing a full outline path just to compute bounds.
+      FontBackend::Ttf(face) => {
+        if glyph_id > u16::MAX as u32 {
+          return None;
+        }
+        let parser_glyph = ParserGlyphId(glyph_id as u16);
+        face
+          .face()
+          .glyph_bounding_box(parser_glyph)
+          .map(|r| FontBBox {
+            x_min: r.x_min as f32,
+            y_min: r.y_min as f32,
+            x_max: r.x_max as f32,
+            y_max: r.y_max as f32,
+          })
+          .or_else(|| build_ttf_outline(face.face(), glyph_id).and_then(|outline| outline.bbox))
+      }
+      // Variable fonts: use `skrifa` outline extraction so gvar/HVAR deltas are applied.
+      FontBackend::Skrifa { .. } => self.glyph_outline(glyph_id).and_then(|outline| outline.bbox),
+    }
   }
 }
 

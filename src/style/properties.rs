@@ -15399,6 +15399,9 @@ fn parse_text_underline_offset(value: &PropertyValue) -> Option<TextUnderlineOff
     PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("auto") => {
       Some(TextUnderlineOffset::Auto)
     }
+    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("from-font") => {
+      Some(TextUnderlineOffset::FromFont)
+    }
     PropertyValue::Length(l) => Some(TextUnderlineOffset::Length(*l)),
     PropertyValue::Percentage(p) => Some(TextUnderlineOffset::Length(Length::percent(*p))),
     _ => None,
