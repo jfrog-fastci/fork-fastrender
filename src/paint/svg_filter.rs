@@ -4115,6 +4115,7 @@ fn apply_primitive(
       let Some(output) = apply_displacement_map(
         &primary.pixmap,
         &map.pixmap,
+        map.region,
         scale_x_px,
         scale_y_px,
         *x_channel,
@@ -5470,6 +5471,7 @@ fn tile_pixmap(input: FilterResult, filter_region: Rect) -> RenderResult<Option<
 fn apply_displacement_map(
   primary: &Pixmap,
   map: &Pixmap,
+  map_region: Rect,
   scale_x: f32,
   scale_y: f32,
   x_channel: ChannelSelector,
@@ -5482,6 +5484,7 @@ fn apply_displacement_map(
     None => return Ok(None),
   };
   let width = primary.width() as usize;
+  let height = primary.height() as usize;
 
   let use_linear = matches!(
     color_interpolation_filters,
@@ -5501,23 +5504,53 @@ fn apply_displacement_map(
 
   let scale_x = if scale_x.is_finite() { scale_x } else { 0.0 };
   let scale_y = if scale_y.is_finite() { scale_y } else { 0.0 };
+  // Chrome clamps the displacement map input (`in2`) to its primitive subregion rather than
+  // treating pixels outside the subregion as transparent black. We model this by clamping
+  // sampling coordinates to the resolved `FilterResult::region` of the map input.
+  let map_width = map.width() as i32;
+  let map_height = map.height() as i32;
+  let clamp_region_to_bounds = |min: i32, max: i32, bound: i32| -> (i32, i32) {
+    let min = min.clamp(0, bound);
+    let max = max.clamp(0, bound);
+    if min < max { (min, max) } else { (0, bound) }
+  };
+  let (map_min_x, map_max_x) = clamp_region_to_bounds(
+    map_region.min_x().floor() as i32,
+    map_region.max_x().ceil() as i32,
+    map_width,
+  );
+  let (map_min_y, map_max_y) = clamp_region_to_bounds(
+    map_region.min_y().floor() as i32,
+    map_region.max_y().ceil() as i32,
+    map_height,
+  );
+  let map_max_x_incl = map_max_x.saturating_sub(1).max(map_min_x);
+  let map_max_y_incl = map_max_y.saturating_sub(1).max(map_min_y);
 
   for (idx, dst) in out.pixels_mut().iter_mut().enumerate() {
     if idx % FILTER_DEADLINE_STRIDE == 0 {
       check_active(RenderStage::Paint)?;
     }
-    let y = (idx / width) as u32;
-    let x = (idx % width) as u32;
+    let y = (idx / width) as i32;
+    let x = (idx % width) as i32;
 
-    let map_sample = sample_nearest_premultiplied(map, x as f32, y as f32);
-    let map_color = to_unpremultiplied(map_sample);
+    let map_x = x.clamp(map_min_x, map_max_x_incl);
+    let map_y = y.clamp(map_min_y, map_max_y_incl);
+    let map_color = map
+      .pixel(map_x as u32, map_y as u32)
+      .map(to_unpremultiplied)
+      .unwrap_or(UnpremultipliedColor {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.0,
+      });
     let channel_value_x = channel_value(&map_color, x_channel);
     let channel_value_y = channel_value(&map_color, y_channel);
     let dx = (channel_value_x - 0.5) * scale_x;
     let dy = (channel_value_y - 0.5) * scale_y;
 
-    let sample = sample_nearest_premultiplied(primary, x as f32 + dx, y as f32 + dy);
-    *dst = sample;
+    *dst = sample_nearest_premultiplied(primary, x as f32 + dx, y as f32 + dy);
   }
 
   if use_linear {
@@ -6858,6 +6891,7 @@ mod tests {
     let out = apply_displacement_map(
       &primary,
       &map,
+      filter_region_for_pixmap(&map),
       1.0,
       0.0,
       ChannelSelector::R,
@@ -6891,6 +6925,7 @@ mod tests {
     let srgb = apply_displacement_map(
       &primary,
       &map,
+      filter_region_for_pixmap(&map),
       2.0,
       0.0,
       ChannelSelector::R,
@@ -6902,6 +6937,7 @@ mod tests {
     let linear = apply_displacement_map(
       &primary,
       &map,
+      filter_region_for_pixmap(&map),
       2.0,
       0.0,
       ChannelSelector::R,
@@ -6955,6 +6991,7 @@ mod tests {
     let out = apply_displacement_map(
       &primary,
       &map,
+      filter_region_for_pixmap(&map),
       2.0,
       4.0,
       ChannelSelector::R,
@@ -6988,6 +7025,7 @@ mod tests {
     let out = apply_displacement_map(
       &primary,
       &map,
+      filter_region_for_pixmap(&map),
       10.0,
       0.0,
       ChannelSelector::R,
@@ -7003,6 +7041,95 @@ mod tests {
       (0, 0, 0, 0),
       "expected out-of-bounds sampling to return transparent"
     );
+  }
+
+  #[test]
+  fn displacement_map_samples_primary_with_point_sampling() {
+    let primary = pixmap_from_rgba(&[(0, 0, 0, 255), (255, 255, 255, 255)]);
+    // R=1.0 => dx=+0.5px when scale=1.0.
+    let map = pixmap_from_rgba(&[(255, 0, 0, 255), (255, 0, 0, 255)]);
+    let out = apply_displacement_map(
+      &primary,
+      &map,
+      filter_region_for_pixmap(&map),
+      1.0,
+      0.0,
+      ChannelSelector::R,
+      ChannelSelector::G,
+      ColorInterpolationFilters::SRGB,
+    )
+    .unwrap()
+    .unwrap();
+
+    let px0 = out.pixel(0, 0).unwrap();
+    assert_eq!((px0.red(), px0.green(), px0.blue(), px0.alpha()), (0, 0, 0, 255));
+    let px1 = out.pixel(1, 0).unwrap();
+    assert_eq!(
+      (px1.red(), px1.green(), px1.blue(), px1.alpha()),
+      (255, 255, 255, 255)
+    );
+  }
+
+  #[test]
+  fn displacement_map_negative_half_offset_samples_oob_as_transparent() {
+    let primary = pixmap_from_rgba(&[(0, 0, 0, 255), (255, 255, 255, 255)]);
+    // R=0.0 => dx=-0.5px when scale=1.0.
+    let map = pixmap_from_rgba(&[(0, 0, 0, 255), (0, 0, 0, 255)]);
+    let out = apply_displacement_map(
+      &primary,
+      &map,
+      filter_region_for_pixmap(&map),
+      1.0,
+      0.0,
+      ChannelSelector::R,
+      ChannelSelector::G,
+      ColorInterpolationFilters::SRGB,
+    )
+    .unwrap()
+    .unwrap();
+
+    let px0 = out.pixel(0, 0).unwrap();
+    assert_eq!((px0.red(), px0.green(), px0.blue(), px0.alpha()), (0, 0, 0, 0));
+    let px1 = out.pixel(1, 0).unwrap();
+    assert_eq!((px1.red(), px1.green(), px1.blue(), px1.alpha()), (0, 0, 0, 255));
+  }
+
+  #[test]
+  fn displacement_map_clamps_map_to_primitive_subregion() {
+    let primary = pixmap_from_rgba(&[
+      (255, 0, 0, 255),
+      (0, 255, 0, 255),
+      (0, 0, 255, 255),
+      (255, 255, 255, 255),
+    ]);
+    // Only the left half of the map is defined; the rest is transparent.
+    let map = pixmap_from_rgba(&[
+      (255, 0, 0, 255),
+      (255, 0, 0, 255),
+      (0, 0, 0, 0),
+      (0, 0, 0, 0),
+    ]);
+    let map_region = Rect::from_xywh(0.0, 0.0, 2.0, 1.0);
+    let out = apply_displacement_map(
+      &primary,
+      &map,
+      map_region,
+      2.0,
+      0.0,
+      ChannelSelector::R,
+      ChannelSelector::G,
+      ColorInterpolationFilters::SRGB,
+    )
+    .unwrap()
+    .unwrap();
+
+    let expected = vec![
+      (0, 255, 0, 255),
+      (0, 0, 255, 255),
+      (255, 255, 255, 255),
+      (0, 0, 0, 0),
+    ];
+    assert_eq!(pixels_to_vec(&out), expected);
   }
 
   #[test]

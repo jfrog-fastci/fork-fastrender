@@ -1,0 +1,181 @@
+<!doctype html>
+<meta charset="utf-8" />
+<style>
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    background: #1c1c1c;
+  }
+
+  body {
+    display: flex;
+    gap: 0;
+  }
+
+  .cell {
+    width: 16px;
+    height: 16px;
+    background: #f0f;
+    position: relative;
+  }
+
+  .filtered {
+    width: 16px;
+    height: 16px;
+    position: relative;
+  }
+
+  .row {
+    display: flex;
+    width: 16px;
+    height: 16px;
+  }
+
+  .px {
+    width: 1px;
+    height: 16px;
+  }
+</style>
+
+<!--
+  feDisplacementMap sampling semantics probe.
+
+  The SVGs exercise:
+  1) Primary input out-of-bounds sampling (does Chrome clamp or treat as transparent?).
+  2) Displacement-map out-of-bounds sampling (what values are used when the map pixel is missing?).
+  3) Pixel-center convention (integer vs half-integer sample positions).
+  4) Negative fractional displacement (floor vs truncation).
+
+  This fixture intentionally applies SVG filters via the CSS `filter: url(#...)` property so it
+  exercises FastRender's custom SVG filter implementation (`src/paint/svg_filter.rs`) rather than
+  any SVG renderer's internal filter pipeline.
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" style="position: absolute">
+  <defs>
+    <!-- Use filterUnits=objectBoundingBox so each filtered CSS box resolves the region relative to
+         its own bbox, keeping the three cases comparable across engines. -->
+    <filter id="primary-oob" filterUnits="objectBoundingBox" x="0" y="0" width="1" height="1">
+      <!-- R=1.0 => dx=+0.5*scale. With scale=40, dx=+20 so the primary sample is always OOB. -->
+      <!-- G=188 is ~0.5 in linearRGB, which keeps dy≈0 even when the filter operates in linearRGB. -->
+      <feFlood flood-color="rgb(255 188 0)" flood-opacity="1" result="map" />
+      <feDisplacementMap
+        in="SourceGraphic"
+        in2="map"
+        scale="40"
+        xChannelSelector="R"
+        yChannelSelector="G"
+      />
+    </filter>
+
+    <filter id="map-oob" filterUnits="objectBoundingBox" x="0" y="0" width="1" height="1">
+      <!-- Only cover the left half of the filter region. -->
+      <!-- R=1.0 => dx=+1px when scale=2. G=0.5 => dy=0 in the covered region. -->
+      <!-- G=188 is ~0.5 in linearRGB, which keeps dy≈0 even when the filter operates in linearRGB. -->
+      <feFlood
+        flood-color="rgb(255 188 0)"
+        flood-opacity="1"
+        x="0%"
+        y="0%"
+        width="50%"
+        height="100%"
+        result="map"
+      />
+      <feDisplacementMap
+        in="SourceGraphic"
+        in2="map"
+        scale="2"
+        xChannelSelector="R"
+        yChannelSelector="G"
+      />
+    </filter>
+
+    <filter id="pixel-center" filterUnits="objectBoundingBox" x="0" y="0" width="1" height="1">
+      <!-- R=1.0 with scale=1 => dx=+0.5px. -->
+      <!-- G=188 is ~0.5 in linearRGB, which keeps dy≈0 even when the filter operates in linearRGB. -->
+      <feFlood flood-color="rgb(255 188 0)" flood-opacity="1" result="map" />
+      <feDisplacementMap
+        in="SourceGraphic"
+        in2="map"
+        scale="1"
+        xChannelSelector="R"
+        yChannelSelector="G"
+      />
+    </filter>
+
+    <filter
+      id="pixel-center-negative"
+      filterUnits="objectBoundingBox"
+      x="0"
+      y="0"
+      width="1"
+      height="1"
+    >
+      <!-- R=0.0 with scale=1 => dx=-0.5px. -->
+      <!-- G=188 is ~0.5 in linearRGB, which keeps dy≈0 even when the filter operates in linearRGB. -->
+      <feFlood flood-color="rgb(0 188 0)" flood-opacity="1" result="map" />
+      <feDisplacementMap
+        in="SourceGraphic"
+        in2="map"
+        scale="1"
+        xChannelSelector="R"
+        yChannelSelector="G"
+      />
+    </filter>
+  </defs>
+</svg>
+
+<!-- Case 1: primary OOB sampling. -->
+<div class="cell">
+  <div class="filtered" style="filter: url(#primary-oob)">
+    <div class="row">
+      <div class="px" style="width: 15px; background: #00f"></div>
+      <div class="px" style="background: #ff0"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Case 2: map OOB sampling. -->
+<div class="cell">
+  <div class="filtered" style="filter: url(#map-oob)">
+    <div class="row">
+      <div class="px" style="background: #f00"></div>
+      <div class="px" style="background: #0f0"></div>
+      <div class="px" style="background: #00f"></div>
+      <div class="px" style="background: #fff"></div>
+      <div class="px" style="background: #f00"></div>
+      <div class="px" style="background: #0f0"></div>
+      <div class="px" style="background: #00f"></div>
+      <div class="px" style="background: #fff"></div>
+      <div class="px" style="background: #f00"></div>
+      <div class="px" style="background: #0f0"></div>
+      <div class="px" style="background: #00f"></div>
+      <div class="px" style="background: #fff"></div>
+      <div class="px" style="background: #f00"></div>
+      <div class="px" style="background: #0f0"></div>
+      <div class="px" style="background: #00f"></div>
+      <div class="px" style="background: #fff"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Case 3: pixel-center convention. -->
+<div class="cell">
+  <div class="filtered" style="filter: url(#pixel-center)">
+    <div class="row">
+      <div class="px" style="background: #000"></div>
+      <div class="px" style="width: 15px; background: #fff"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Case 4: negative fractional displacement rounding. -->
+<div class="cell">
+  <div class="filtered" style="filter: url(#pixel-center-negative)">
+    <div class="row">
+      <div class="px" style="background: #000"></div>
+      <div class="px" style="width: 15px; background: #fff"></div>
+    </div>
+  </div>
+</div>
