@@ -816,6 +816,34 @@ fn write_html_report(report: &DiffReport, path: &Path) -> Result<(), String> {
     .filter(|entry| entry.status == EntryStatus::MissingAfter)
     .count();
 
+  let mut failing_entries = String::new();
+  let mut failing_count = 0usize;
+  for entry in report.results.iter().filter(|entry| entry.status.is_failure()) {
+    failing_count += 1;
+    let anchor_id = entry_anchor_id(&entry.name);
+    failing_entries.push_str(&format!(
+      "<li><a href=\"#{anchor_id}\">{name}</a> <span class=\"status\">{status}</span></li>",
+      anchor_id = escape_html(&anchor_id),
+      name = escape_html(&entry.name),
+      status = escape_html(entry.status.label()),
+    ));
+  }
+
+  let failing_section = if failing_count > 0 {
+    format!(
+      r#"<details class="failing" open>
+  <summary><strong>Failing entries ({failing_count})</strong></summary>
+  <ul class="failing-list">
+    {failing_entries}
+  </ul>
+</details>"#,
+      failing_count = failing_count,
+      failing_entries = failing_entries,
+    )
+  } else {
+    String::new()
+  };
+
   let mut rows = String::new();
 
   for entry in &report.results {
@@ -931,6 +959,11 @@ fn write_html_report(report: &DiffReport, path: &Path) -> Result<(), String> {
       #show-thumbnails:not(:checked) ~ #results .thumb a:nth-of-type(2) {{ display: none; }}
       .thumb img {{ max-width: 320px; max-height: 240px; display: block; }}
       .error {{ color: #b00020; }}
+      details.failing {{ margin: 12px 0; padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; background: #fafafa; }}
+      details.failing summary {{ cursor: pointer; }}
+      .failing-list {{ margin: 8px 0 0; padding-left: 18px; column-count: 2; }}
+      .failing-list li {{ break-inside: avoid; }}
+      .failing-list .status {{ text-transform: uppercase; font-size: 0.8em; color: #555; }}
     </style>
   </head>
   <body>
@@ -939,6 +972,7 @@ fn write_html_report(report: &DiffReport, path: &Path) -> Result<(), String> {
     <p><strong>After:</strong> {after}</p>
     <p><strong>Tolerance:</strong> {tolerance} | <strong>Max diff %:</strong> {max_diff_percent:.4} | <strong>Max perceptual:</strong> {max_perceptual} | <strong>Ignore alpha:</strong> {ignore_alpha} | <strong>Sort:</strong> {sort_by} {shard}</p>
     <p>Processed {processed} of {discovered} candidates ({matches} exact, {within} within threshold, {diffs} failing, {missing} missing, {errors} errors{skipped}).</p>
+    {failing_section}
     <div id="results-controls">
       <input type="checkbox" id="show-match" checked>
       <input type="checkbox" id="show-within-threshold" checked>
@@ -1004,6 +1038,7 @@ fn write_html_report(report: &DiffReport, path: &Path) -> Result<(), String> {
     errors = report.totals.errors,
     missing_before = missing_before,
     missing_after = missing_after,
+    failing_section = failing_section,
     skipped = if report.totals.shard_skipped > 0 {
       format!(", {} skipped by shard", report.totals.shard_skipped)
     } else {

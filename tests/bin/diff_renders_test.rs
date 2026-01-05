@@ -161,6 +161,19 @@ fn diff_renders_exits_non_zero_on_diff() {
     "diff image missing at {}",
     diff_path
   );
+
+  let html = fs::read_to_string(&html_path).expect("read html report");
+  assert!(
+    html.contains("Failing entries (1)"),
+    "expected failing entries list:\n{html}"
+  );
+  let anchor = entry_anchor_id("page");
+  assert!(
+    html.contains(&format!(
+      "href=\"#{anchor}\">page</a> <span class=\"status\">diff</span>"
+    )),
+    "expected failing list to include entry anchor:\n{html}"
+  );
 }
 
 #[test]
