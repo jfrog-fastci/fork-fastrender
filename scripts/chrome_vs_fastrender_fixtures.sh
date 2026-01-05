@@ -12,7 +12,7 @@ cd "${REPO_ROOT}"
 
 usage() {
   cat <<'EOF'
-usage: scripts/chrome_vs_fastrender_fixtures.sh [options] [--] [fixture...]
+usage: scripts/chrome_vs_fastrender_fixtures.sh [options] [--] [fixture_glob...]
 
 Options:
   --fixtures-dir <dir>      Fixture root (default: tests/pages/fixtures)
@@ -45,7 +45,8 @@ Options:
   -h, --help                Show help
 
 Filtering:
-  Positional args are forwarded to `cargo xtask fixture-chrome-diff --fixtures <csv>`.
+  Positional args are treated as fixture directory globs (matched against
+  <fixtures-dir>/<glob>/index.html), then forwarded to `cargo xtask fixture-chrome-diff --fixtures <csv>`.
   If omitted, fixture selection defaults to the xtask implementation.
   Any additional flags (e.g. `--all-fixtures`, `--from-progress`) are forwarded to `cargo xtask fixture-chrome-diff`.
 
@@ -256,6 +257,34 @@ if [[ "${MEDIA,,}" == "print" ]]; then
   FIT_CANVAS_TO_CONTENT=1
 fi
 
+resolve_fixture_patterns() {
+  local -a patterns=("$@")
+  local -a fixtures=()
+  declare -A seen=()
+
+  shopt -s nullglob
+  for pat in "${patterns[@]}"; do
+    local matched=0
+    for dir in "${FIXTURES_DIR}"/${pat}; do
+      if [[ -d "${dir}" && -f "${dir}/index.html" ]]; then
+        local stem
+        stem="$(basename "${dir}")"
+        if [[ -z "${seen[${stem}]:-}" ]]; then
+          seen["${stem}"]=1
+          fixtures+=("${stem}")
+        fi
+        matched=1
+      fi
+    done
+    if [[ "${matched}" -eq 0 ]]; then
+      echo "no fixtures matched pattern: ${pat}" >&2
+      exit 1
+    fi
+  done
+
+  printf '%s\n' "${fixtures[@]}" | sort -u
+}
+
 infer_out_dir_from_legacy_path() {
   local kind="$1"
   local path="$2"
@@ -373,7 +402,12 @@ elif [[ "${#FILTERS[@]}" -gt 0 ]]; then
   if [[ "${DISABLE_POSITIONAL_FIXTURES}" -eq 1 ]]; then
     echo "warning: ignoring positional fixture list because selection flags were provided; use --fixtures to select explicitly." >&2
   else
-    xtask_args+=(--fixtures "$(IFS=,; echo "${FILTERS[*]}")")
+    mapfile -t RESOLVED_FIXTURES < <(resolve_fixture_patterns "${FILTERS[@]}")
+    if [[ "${#RESOLVED_FIXTURES[@]}" -eq 0 ]]; then
+      echo "No fixtures matched the provided filters." >&2
+      exit 1
+    fi
+    xtask_args+=(--fixtures "$(IFS=,; echo "${RESOLVED_FIXTURES[*]}")")
   fi
 fi
 if [[ "${#EXTRA_XTASK_ARGS[@]}" -gt 0 ]]; then
