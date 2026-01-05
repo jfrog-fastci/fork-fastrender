@@ -262,34 +262,37 @@ fn compare_pixmaps(
   assert_eq!(resvg.len(), fast.len(), "pixmaps must be same byte length");
 
   let mut max_delta = 0u8;
-  let mut max_at = 0usize;
-  let mut differing_bytes = 0usize;
+  let mut max_at = (0u32, 0u32, 'r', 0u8, 0u8);
+  let mut differing_channels = 0usize;
 
-  for (idx, (&a, &b)) in resvg.iter().zip(fast.iter()).enumerate() {
-    let delta = a.abs_diff(b);
-    if delta != 0 {
-      differing_bytes += 1;
-    }
-    if delta > max_delta {
-      max_delta = delta;
-      max_at = idx;
+  let pixel_count = resvg.len() / 4;
+  let row_len = width as usize;
+
+  for pixel_idx in 0..pixel_count {
+    let base = pixel_idx * 4;
+    // tiny-skia pixmaps are stored as premultiplied BGRA; convert indices to premultiplied RGBA.
+    for (channel, resvg_byte, fast_byte) in [
+      ('r', resvg[base + 2], fast[base + 2]),
+      ('g', resvg[base + 1], fast[base + 1]),
+      ('b', resvg[base], fast[base]),
+      ('a', resvg[base + 3], fast[base + 3]),
+    ] {
+      let delta = resvg_byte.abs_diff(fast_byte);
+      if delta != 0 {
+        differing_channels += 1;
+      }
+      if delta > max_delta {
+        max_delta = delta;
+        let x = (pixel_idx % row_len) as u32;
+        let y = (pixel_idx / row_len) as u32;
+        max_at = (x, y, channel, resvg_byte, fast_byte);
+      }
     }
   }
 
   if max_delta <= tolerance {
     return;
   }
-
-  let pixel_idx = max_at / 4;
-  let x = (pixel_idx % width as usize) as u32;
-  let y = (pixel_idx / width as usize) as u32;
-  let channel = match max_at % 4 {
-    // tiny-skia pixmaps are stored as premultiplied BGRA.
-    0 => "b",
-    1 => "g",
-    2 => "r",
-    _ => "a",
-  };
 
   let mut artifact_note = String::new();
   if dump_artifacts {
@@ -369,10 +372,13 @@ fn compare_pixmaps(
   }
 
   panic!(
-    "feTurbulence differential mismatch (tolerance<={tolerance})\n  case={case_idx} / {total_cases} (seed={seed})\n  max Δ={max_delta} at ({x},{y}) channel {channel} (resvg={} fast={})\n  differing_bytes={differing_bytes} / {}\n  rerun:\n    FASTR_TURBULENCE_DIFF_SEED={seed} FASTR_TURBULENCE_DIFF_CASES={total_cases} FASTR_TURBULENCE_DIFF_ONLY={case_idx} cargo test --test svg_filter_turbulence_differential -- --ignored\n  params={case:?}{artifact_note}\n  svg=\n{svg}",
-    resvg[max_at],
-    fast[max_at],
-    resvg.len()
+    "feTurbulence differential mismatch (tolerance<={tolerance})\n  case={case_idx} / {total_cases} (seed={seed})\n  max Δ={max_delta} at ({},{}) channel {} (resvg={} fast={})\n  differing_channels={differing_channels} / {}\n  rerun:\n    FASTR_TURBULENCE_DIFF_SEED={seed} FASTR_TURBULENCE_DIFF_CASES={total_cases} FASTR_TURBULENCE_DIFF_ONLY={case_idx} cargo test --test svg_filter_turbulence_differential -- --ignored\n  params={case:?}{artifact_note}\n  svg=\n{svg}",
+    max_at.0,
+    max_at.1,
+    max_at.2,
+    max_at.3,
+    max_at.4,
+    pixel_count * 4
   );
 }
 
