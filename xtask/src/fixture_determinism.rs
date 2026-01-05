@@ -1078,7 +1078,7 @@ fn render_html(layout: &Layout, report: &FixtureDeterminismReport) -> String {
 
     let pair_link = format!(
       r#"<a href="{href}">pair report</a>"#,
-      href = escape_html(&worst.pair_report)
+      href = escape_html(&format!("{}#{anchor_id}", worst.pair_report))
     );
 
     let artifacts_cell = if let Some(artifacts) = fixture.artifacts.as_ref() {
@@ -1097,7 +1097,12 @@ fn render_html(layout: &Layout, report: &FixtureDeterminismReport) -> String {
       let snapshot_href = artifacts
         .diff_snapshots_html
         .as_deref()
-        .map(|p| path_for_report(&layout.root, &resolve_repo_relative(&repo_root, p)));
+        .map(|p| {
+          format!(
+            "{}#{anchor_id}",
+            path_for_report(&layout.root, &resolve_repo_relative(&repo_root, p))
+          )
+        });
 
       let diff_row = diff_href
         .as_deref()

@@ -358,6 +358,12 @@ fn fixture_determinism_fails_when_differences_found() {
     html.contains(r#"<a href="run1/hello.png"><img src="run1/hello.png""#),
     "expected clickable thumbnail image in report HTML:\n{html}"
   );
+  assert!(
+    html.contains(&format!(
+      "href=\"diff_run1_run2/report.html#{anchor}\">pair report</a>"
+    )),
+    "expected pair report link to deep-link to entry anchor:\n{html}"
+  );
 }
 
 #[test]
