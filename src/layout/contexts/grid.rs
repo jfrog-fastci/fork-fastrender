@@ -7391,6 +7391,36 @@ mod tests {
   }
 
   #[test]
+  fn grid_root_max_width_keyword_max_content_clamps_explicit_width_in_vertical_writing_mode() {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut style = ComputedStyle::default();
+    style.display = CssDisplay::Grid;
+    style.writing_mode = WritingMode::VerticalRl;
+    style.width = Some(Length::px(500.0));
+    style.width_keyword = None;
+    style.max_width = None;
+    style.max_width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+    // In vertical writing modes, CSS grid rows map to the physical horizontal axis.
+    style.grid_template_rows = vec![
+      GridTrack::Length(Length::px(80.0)),
+      GridTrack::Length(Length::px(120.0)),
+    ];
+    style.grid_template_columns = vec![GridTrack::Length(Length::px(40.0))];
+    let child = BoxNode::new_block(make_item_style(), FormattingContextType::Block, vec![]);
+    let grid = BoxNode::new_block(Arc::new(style), FormattingContextType::Grid, vec![child]);
+
+    let constraints = LayoutConstraints::definite(1000.0, 1000.0);
+    let fragment = fc.layout(&grid, &constraints).expect("grid layout should succeed");
+
+    assert!(
+      (fragment.bounds.width() - 200.0).abs() < 0.01,
+      "expected max-width:max-content to clamp explicit width, got {:.2}",
+      fragment.bounds.width()
+    );
+  }
+
+  #[test]
   fn grid_item_width_keyword_max_content_prevents_stretch() {
     let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
 
