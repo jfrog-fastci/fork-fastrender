@@ -5470,7 +5470,7 @@ impl InlineFormattingContext {
     let style: &ComputedStyle = style_override
       .as_deref()
       .unwrap_or_else(|| box_node.style.as_ref());
-    if style.containment.size || style.containment.inline_size {
+    if style.containment.isolates_inline_size() {
       let edges = resolve_length_for_width(
         style.padding_left,
         0.0,
@@ -5534,7 +5534,7 @@ impl InlineFormattingContext {
     let style: &ComputedStyle = style_override
       .as_deref()
       .unwrap_or_else(|| box_node.style.as_ref());
-    if style.containment.size || style.containment.inline_size {
+    if style.containment.isolates_inline_size() {
       let edges = resolve_length_for_width(
         style.padding_left,
         0.0,
@@ -5614,7 +5614,7 @@ impl InlineFormattingContext {
     mode: IntrinsicSizingMode,
   ) -> Result<f32, LayoutError> {
     let style = container_style;
-    if style.containment.size || style.containment.inline_size {
+    if style.containment.isolates_inline_size() {
       let edges = resolve_length_for_width(
         style.padding_left,
         0.0,
@@ -5678,7 +5678,7 @@ impl InlineFormattingContext {
     children: &[&BoxNode],
   ) -> Result<(f32, f32), LayoutError> {
     let style = container_style;
-    if style.containment.size || style.containment.inline_size {
+    if style.containment.isolates_inline_size() {
       let edges = resolve_length_for_width(
         style.padding_left,
         0.0,
