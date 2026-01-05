@@ -924,16 +924,6 @@ impl BlockFormattingContext {
       max_height
     };
     let height = crate::layout::utils::clamp_with_order(height, min_height, max_height);
-    let padding_origin = Point::new(
-      computed_width.border_left + computed_width.padding_left,
-      border_top + padding_top,
-    );
-    if padding_origin != Point::ZERO {
-      for fragment in child_fragments.iter_mut() {
-        fragment.translate_root_in_place(padding_origin);
-      }
-    }
-
     // Create the fragment
     let box_height = border_top + padding_top + height + padding_bottom + border_bottom;
     let box_width = computed_width.border_box_width();
@@ -3811,11 +3801,6 @@ impl FormattingContext for BlockFormattingContext {
           child_ctx.layout_children(box_node, &child_constraints, &nearest_cb)?;
         (frags, height, positioned, None)
       };
-    if padding_origin != Point::ZERO {
-      for fragment in child_fragments.iter_mut() {
-        fragment.translate_root_in_place(padding_origin);
-      }
-    }
     if skip_contents || style.containment.size {
       let axis = if block_axis_is_horizontal(style.writing_mode) {
         style.contain_intrinsic_width
