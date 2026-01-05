@@ -414,6 +414,7 @@ fn parallel_backdrop_filter_with_mask_and_radii_matches_serial() {
     bounds,
     plane_rect: bounds,
     mix_blend_mode: BlendMode::Normal,
+    opacity: 1.0,
     is_isolated: false,
     transform: None,
     child_perspective: None,
