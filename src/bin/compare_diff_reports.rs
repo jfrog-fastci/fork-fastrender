@@ -1,7 +1,9 @@
 mod common;
 
 use clap::Parser;
-use common::report::{display_path, ensure_parent_dir, escape_html, path_for_report};
+use common::report::{
+  display_path, ensure_parent_dir, entry_anchor_id, escape_html, path_for_report,
+};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -2031,16 +2033,4 @@ fn format_failing_regressions_block(report: &DeltaReport) -> String {
 </table>"#,
     rows = rows
   )
-}
-
-fn entry_anchor_id(name: &str) -> String {
-  // Deterministic, stable, HTML-id-safe anchor for per-entry navigation.
-  // We avoid using `DefaultHasher` here since its output isn't guaranteed stable
-  // across Rust versions/platforms.
-  let mut hash: u64 = 14695981039346656037;
-  for byte in name.as_bytes() {
-    hash ^= u64::from(*byte);
-    hash = hash.wrapping_mul(1099511628211);
-  }
-  format!("entry-{hash:016x}")
 }

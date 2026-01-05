@@ -1,7 +1,9 @@
 mod common;
 
 use clap::Parser;
-use common::report::{display_path, ensure_parent_dir, escape_html, path_for_report};
+use common::report::{
+  display_path, ensure_parent_dir, entry_anchor_id, escape_html, path_for_report,
+};
 use fastrender::debug::snapshot::{
   BoxKindSnapshot, BoxNodeSnapshot, DisplayItemSnapshot, DisplayListSnapshot, DomNodeKindSnapshot,
   DomNodeSnapshot, FragmentContentSnapshot, FragmentNodeSnapshot, PipelineSnapshot, RectSnapshot,
@@ -1460,15 +1462,6 @@ fn format_linked_image(label: &str, path: &str) -> String {
     p = escaped,
     l = label
   )
-}
-
-fn entry_anchor_id(name: &str) -> String {
-  let mut hash: u64 = 14695981039346656037;
-  for byte in name.as_bytes() {
-    hash ^= u64::from(*byte);
-    hash = hash.wrapping_mul(1099511628211);
-  }
-  format!("entry-{hash:016x}")
 }
 
 fn render_schema(schema: &SchemaSummary) -> String {

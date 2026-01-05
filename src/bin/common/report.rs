@@ -45,3 +45,18 @@ pub fn ensure_parent_dir(path: &Path) -> Result<(), String> {
   }
   Ok(())
 }
+
+/// Produce a stable HTML anchor ID for a report entry name.
+///
+/// We hash the name (FNV-1a 64-bit) so that:
+/// - anchors remain stable across runs,
+/// - we don't have to worry about unsafe characters in IDs,
+/// - links are compact and copy/paste friendly.
+pub fn entry_anchor_id(name: &str) -> String {
+  let mut hash: u64 = 14695981039346656037;
+  for byte in name.as_bytes() {
+    hash ^= u64::from(*byte);
+    hash = hash.wrapping_mul(1099511628211);
+  }
+  format!("entry-{hash:016x}")
+}
