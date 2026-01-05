@@ -1,4 +1,3 @@
-use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -9,18 +8,19 @@ use std::os::unix::fs::PermissionsExt;
 
 fn write_stub_cargo(dir: &Path) -> PathBuf {
   let path = dir.join("cargo");
-  // A stub `cargo` binary that records argv into $CARGO_STUB_OUT as JSON and exits 0.
-  let script = r#"#!/usr/bin/env python3
-import json
-import os
-import sys
-from pathlib import Path
+  // A stub `cargo` binary that records argv into $CARGO_STUB_OUT (one arg per line) and exits 0.
+  //
+  // This keeps the wrapper test fast and deterministic: we only want to validate argument parsing
+  // without invoking a real build or Chrome.
+  let script = r#"#!/usr/bin/env bash
+set -euo pipefail
 
-out = os.environ.get("CARGO_STUB_OUT")
-if out:
-    Path(out).write_text(json.dumps(sys.argv[1:]) + "\n")
+out="${CARGO_STUB_OUT:-}"
+if [[ -n "${out}" ]]; then
+  printf '%s\n' "$@" > "${out}"
+fi
 
-sys.exit(0)
+exit 0
 "#;
 
   fs::write(&path, script).expect("write stub cargo");
@@ -34,6 +34,7 @@ sys.exit(0)
 }
 
 #[test]
+#[cfg(unix)]
 fn chrome_fixture_baseline_script_parses_flags_without_treating_them_as_fixture_patterns() {
   let tmp = tempdir().expect("tempdir");
   let fixtures_dir = tmp.path().join("fixtures");
@@ -89,34 +90,31 @@ fn chrome_fixture_baseline_script_parses_flags_without_treating_them_as_fixture_
     String::from_utf8_lossy(&output.stderr),
   );
 
-  let recorded: Value =
-    serde_json::from_str(&fs::read_to_string(&record_path).expect("read record")).expect("json");
-  let args = recorded
-    .as_array()
-    .expect("recorded cargo argv should be a JSON array");
+  let recorded = fs::read_to_string(&record_path).expect("read record");
+  let args: Vec<&str> = recorded.lines().collect();
   assert!(
     args.len() >= 2,
-    "expected stub cargo to record at least the subcommand, got: {recorded}"
+    "expected stub cargo to record at least the subcommand, got:\n{recorded}"
   );
   assert_eq!(args[0], "xtask");
   assert_eq!(args[1], "chrome-baseline-fixtures");
 
-  let recorded_str = recorded.to_string();
   assert!(
-    recorded_str.contains("--viewport") && recorded_str.contains("200x150"),
-    "expected stub cargo args to include viewport, got: {recorded_str}"
+    args.contains(&"--viewport") && args.contains(&"200x150"),
+    "expected stub cargo args to include viewport, got:\n{recorded}"
   );
   assert!(
-    recorded_str.contains("--dpr") && recorded_str.contains("1.25"),
-    "expected stub cargo args to include dpr, got: {recorded_str}"
+    args.contains(&"--dpr") && args.contains(&"1.25"),
+    "expected stub cargo args to include dpr, got:\n{recorded}"
   );
   assert!(
-    recorded_str.contains("--") && recorded_str.contains(fixture_name),
-    "expected stub cargo args to include fixture list after --, got: {recorded_str}"
+    args.contains(&"--") && args.contains(&fixture_name),
+    "expected stub cargo args to include fixture list after --, got:\n{recorded}"
   );
 }
 
 #[test]
+#[cfg(unix)]
 fn chrome_fixture_baseline_script_errors_on_unknown_flag() {
   let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
   let script_path = repo_root.join("scripts/chrome_fixture_baseline.sh");
@@ -137,4 +135,3 @@ fn chrome_fixture_baseline_script_errors_on_unknown_flag() {
     "expected stderr to mention unknown option, got:\n{stderr}"
   );
 }
-

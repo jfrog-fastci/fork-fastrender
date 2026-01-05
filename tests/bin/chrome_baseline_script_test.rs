@@ -53,7 +53,13 @@ sys.exit(0)
 }
 
 #[test]
+#[cfg(unix)]
 fn chrome_baseline_script_parses_flags_without_treating_them_as_page_stems() {
+  if Command::new("python3").arg("--version").output().is_err() {
+    eprintln!("skipping chrome_baseline_script_parses_flags_without_treating_them_as_page_stems: python3 not available");
+    return;
+  }
+
   let tmp = tempdir().expect("tempdir");
   let html_dir = tmp.path().join("html");
   let out_dir = tmp.path().join("out");
@@ -131,6 +137,7 @@ fn chrome_baseline_script_parses_flags_without_treating_them_as_page_stems() {
 }
 
 #[test]
+#[cfg(unix)]
 fn chrome_baseline_script_errors_on_unknown_flag() {
   let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
   let script_path = repo_root.join("scripts/chrome_baseline.sh");
@@ -151,4 +158,3 @@ fn chrome_baseline_script_errors_on_unknown_flag() {
     "expected stderr to mention unknown option, got:\n{stderr}"
   );
 }
-
