@@ -14,7 +14,8 @@ These runs use the same caches / bundled-font defaults as the pageset wrappers.
 Warm caches (HTML + disk cache) for the chosen pages:
 
 ```bash
-cargo build --release --features disk_cache --bin fetch_pages
+# `fetch_pages` only caches HTML; it does not require the `disk_cache` feature.
+cargo build --release --bin fetch_pages
 target/release/fetch_pages --jobs 1 --timeout 120 --pages nytimes.com,stackoverflow.com,cnet.com
 
 cargo build --release --features disk_cache --bin prefetch_assets
