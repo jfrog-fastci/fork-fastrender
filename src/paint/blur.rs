@@ -2829,25 +2829,52 @@ mod tests {
       .unwrap()
   }
 
+  #[derive(Clone, Copy, Debug)]
+  struct TileBlurPlan {
+    tiles: usize,
+    max_tile_pixels: usize,
+    parallel_tiles: bool,
+    tile_w: u32,
+    tile_h: u32,
+    pad_x: u32,
+    pad_y: u32,
+  }
+
   fn tile_blur_plan(
     width: u32,
     height: u32,
     sigma_x: f32,
     sigma_y: f32,
     config: FilterCacheConfig,
-  ) -> (usize, usize, bool) {
+  ) -> TileBlurPlan {
     let data_len = (width as usize)
       .saturating_mul(height as usize)
       .saturating_mul(4);
     if config.max_bytes == 0 || data_len <= config.max_bytes || width == 0 || height == 0 {
-      return (0, 0, false);
+      return TileBlurPlan {
+        tiles: 0,
+        max_tile_pixels: 0,
+        parallel_tiles: false,
+        tile_w: 0,
+        tile_h: 0,
+        pad_x: 0,
+        pad_y: 0,
+      };
     }
 
     let pad_x = (sigma_x.abs() * 3.0).ceil() as u32;
     let pad_y = (sigma_y.abs() * 3.0).ceil() as u32;
     let budget_pixels = config.max_bytes / 4;
     if budget_pixels == 0 {
-      return (0, 0, false);
+      return TileBlurPlan {
+        tiles: 0,
+        max_tile_pixels: 0,
+        parallel_tiles: false,
+        tile_w: 0,
+        tile_h: 0,
+        pad_x,
+        pad_y,
+      };
     }
     let budget_pixels_u64 = budget_pixels as u64;
 
@@ -2874,7 +2901,15 @@ mod tests {
     let tile_w = span_w.saturating_sub(pad_x.saturating_mul(2)).max(1);
     let tile_h = span_h.saturating_sub(pad_y.saturating_mul(2)).max(1);
     if tile_w >= width && tile_h >= height {
-      return (0, 0, false);
+      return TileBlurPlan {
+        tiles: 0,
+        max_tile_pixels: 0,
+        parallel_tiles: false,
+        tile_w,
+        tile_h,
+        pad_x,
+        pad_y,
+      };
     }
 
     let tiles_x = ((width as u64 + tile_w as u64 - 1) / tile_w as u64) as u32;
@@ -2887,7 +2922,15 @@ mod tests {
     let parallel_tiles =
       max_tile_pixels < PARALLEL_BLUR_MIN_PIXELS && tiles > 1 && blur_thread_budget() > 1;
 
-    (tiles, max_tile_pixels, parallel_tiles)
+    TileBlurPlan {
+      tiles,
+      max_tile_pixels,
+      parallel_tiles,
+      tile_w,
+      tile_h,
+      pad_x,
+      pad_y,
+    }
   }
 
   fn make_pattern_pixmap(width: u32, height: u32) -> Pixmap {
@@ -3668,19 +3711,21 @@ mod tests {
 
       runtime::with_thread_runtime_toggles(toggles.clone(), || {
         pool.install(|| {
-          let (tiles, max_tile_pixels, parallel_tiles) =
-            tile_blur_plan(WIDTH, HEIGHT, 3.0, 3.0, tiled_config);
+          let plan = tile_blur_plan(WIDTH, HEIGHT, 3.0, 3.0, tiled_config);
           assert!(
-            parallel_tiles,
-            "expected isotropic tiled blur to use parallel tile scheduling (threads={threads} budget={} tiles={tiles} max_tile_pixels={max_tile_pixels})",
+            plan.parallel_tiles,
+            "expected isotropic tiled blur to use parallel tile scheduling (threads={threads} budget={} tiles={} max_tile_pixels={})",
             blur_thread_budget(),
+            plan.tiles,
+            plan.max_tile_pixels,
           );
-          let (tiles, max_tile_pixels, parallel_tiles) =
-            tile_blur_plan(WIDTH, HEIGHT, 12.0, 2.0, tiled_config);
+          let plan = tile_blur_plan(WIDTH, HEIGHT, 12.0, 2.0, tiled_config);
           assert!(
-            parallel_tiles,
-            "expected anisotropic tiled blur to use parallel tile scheduling (threads={threads} budget={} tiles={tiles} max_tile_pixels={max_tile_pixels})",
+            plan.parallel_tiles,
+            "expected anisotropic tiled blur to use parallel tile scheduling (threads={threads} budget={} tiles={} max_tile_pixels={})",
             blur_thread_budget(),
+            plan.tiles,
+            plan.max_tile_pixels,
           );
 
           let mut isotropic_cache = BlurCache::new(tiled_config);
@@ -3715,8 +3760,8 @@ mod tests {
 
   #[test]
   fn hybrid_tile_blur_matches_direct_output_across_rayon_thread_counts() {
-    const WIDTH: u32 = 1024;
-    const HEIGHT: u32 = 1024;
+    const WIDTH: u32 = 600;
+    const HEIGHT: u32 = 600;
 
     // Disable the fast blur path so sigma-dependent algorithm selection stays stable (and
     // reasonably quick) regardless of environment variables.
@@ -3725,8 +3770,10 @@ mod tests {
       "0".to_string(),
     )])));
 
-    // Use a tiling budget that yields a 512x512 span (PARALLEL_BLUR_MIN_PIXELS) to force serial
-    // tiling while still allowing per-tile blur passes to parallelize.
+    // Force the "hybrid" tiling path:
+    // - total surface exceeds max_bytes => tiling is enabled
+    // - tiles are large enough that `parallel_tiles == false`
+    // - per-tile blur still parallelizes (`BlurParallelism::Auto`)
     let base = make_pattern_pixmap(WIDTH, HEIGHT);
     let base_len = base.data().len();
     let direct_config = FilterCacheConfig {
@@ -3735,7 +3782,8 @@ mod tests {
     };
     let tiled_config = FilterCacheConfig {
       max_items: 0,
-      max_bytes: PARALLEL_BLUR_MIN_PIXELS * 4,
+      // Keep tiles large: ~83% of the full pixmap size for a 600x600 surface.
+      max_bytes: base_len * 5 / 6,
     };
     assert!(
       base_len > tiled_config.max_bytes,
@@ -3770,22 +3818,27 @@ mod tests {
 
       runtime::with_thread_runtime_toggles(toggles.clone(), || {
         pool.install(|| {
-          let (tiles, max_tile_pixels, parallel_tiles) =
-            tile_blur_plan(WIDTH, HEIGHT, 8.0, 8.0, tiled_config);
+          let plan = tile_blur_plan(WIDTH, HEIGHT, 8.0, 8.0, tiled_config);
           assert!(
-            !parallel_tiles,
-            "expected hybrid tiled blur to schedule tiles serially (threads={threads} budget={} tiles={tiles} max_tile_pixels={max_tile_pixels})",
+            !plan.parallel_tiles,
+            "expected hybrid tiled blur to schedule tiles serially (threads={threads} budget={} tiles={} max_tile_pixels={})",
             blur_thread_budget(),
+            plan.tiles,
+            plan.max_tile_pixels,
           );
           assert!(
-            max_tile_pixels >= PARALLEL_BLUR_MIN_PIXELS && tiles > 1,
-            "expected tiling with large tiles (threads={threads} tiles={tiles} max_tile_pixels={max_tile_pixels})"
+            plan.max_tile_pixels >= PARALLEL_BLUR_MIN_PIXELS && plan.tiles > 1,
+            "expected tiling with large tiles (threads={threads} tiles={} max_tile_pixels={})",
+            plan.tiles,
+            plan.max_tile_pixels,
           );
 
           if blur_thread_budget() > 1 {
+            let edge_src_w = plan.tile_w.saturating_add(plan.pad_x).min(WIDTH);
+            let edge_src_h = plan.tile_h.saturating_add(plan.pad_y).min(HEIGHT);
             assert!(
-              blur_should_parallelize(512, 512),
-              "expected per-tile blur to parallelize (threads={threads} budget={})",
+              blur_should_parallelize(edge_src_w as usize, edge_src_h as usize),
+              "expected per-tile blur to parallelize (threads={threads} budget={} tile={edge_src_w}x{edge_src_h})",
               blur_thread_budget(),
             );
           }
@@ -3796,7 +3849,7 @@ mod tests {
           apply_gaussian_blur_cached(&mut pixmap, 8.0, 8.0, Some(&mut cache), 1.0).unwrap();
           let diag = take_paint_diagnostics().expect("diagnostics enabled");
           assert_eq!(
-            diag.blur_tiles, tiles,
+            diag.blur_tiles, plan.tiles,
             "expected tiled blur to report tile count (threads={threads})"
           );
           assert_eq!(
@@ -3805,16 +3858,19 @@ mod tests {
             "hybrid isotropic tiled blur output mismatch (threads={threads})"
           );
 
-          let (tiles, max_tile_pixels, parallel_tiles) =
-            tile_blur_plan(WIDTH, HEIGHT, 12.0, 2.0, tiled_config);
+          let plan = tile_blur_plan(WIDTH, HEIGHT, 12.0, 2.0, tiled_config);
           assert!(
-            !parallel_tiles,
-            "expected hybrid tiled blur to schedule tiles serially (threads={threads} budget={} tiles={tiles} max_tile_pixels={max_tile_pixels})",
+            !plan.parallel_tiles,
+            "expected hybrid tiled blur to schedule tiles serially (threads={threads} budget={} tiles={} max_tile_pixels={})",
             blur_thread_budget(),
+            plan.tiles,
+            plan.max_tile_pixels,
           );
           assert!(
-            max_tile_pixels >= PARALLEL_BLUR_MIN_PIXELS && tiles > 1,
-            "expected tiling with large tiles (threads={threads} tiles={tiles} max_tile_pixels={max_tile_pixels})"
+            plan.max_tile_pixels >= PARALLEL_BLUR_MIN_PIXELS && plan.tiles > 1,
+            "expected tiling with large tiles (threads={threads} tiles={} max_tile_pixels={})",
+            plan.tiles,
+            plan.max_tile_pixels,
           );
 
           let mut cache = BlurCache::new(tiled_config);
@@ -3823,7 +3879,7 @@ mod tests {
           apply_gaussian_blur_cached(&mut pixmap, 12.0, 2.0, Some(&mut cache), 1.0).unwrap();
           let diag = take_paint_diagnostics().expect("diagnostics enabled");
           assert_eq!(
-            diag.blur_tiles, tiles,
+            diag.blur_tiles, plan.tiles,
             "expected tiled blur to report tile count (threads={threads})"
           );
           assert_eq!(
@@ -3834,6 +3890,90 @@ mod tests {
         });
       });
     }
+  }
+
+  #[test]
+  fn hybrid_tile_blur_is_deterministic_under_nested_rayon_parallelism() {
+    const WIDTH: u32 = 600;
+    const HEIGHT: u32 = 600;
+    const SIGMA_X: f32 = 12.0;
+    const SIGMA_Y: f32 = 2.0;
+    const THREADS: usize = 4;
+    const JOBS: usize = THREADS * 2;
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FAST_BLUR".to_string(),
+      "0".to_string(),
+    )])));
+
+    let base = make_pattern_pixmap(WIDTH, HEIGHT);
+    let base_data = Arc::new(base.data().to_vec());
+    let base_len = base_data.len();
+    let direct_config = FilterCacheConfig {
+      max_items: 0,
+      max_bytes: base_len,
+    };
+    let tiled_config = FilterCacheConfig {
+      max_items: 0,
+      max_bytes: base_len * 5 / 6,
+    };
+    assert!(
+      base_len > tiled_config.max_bytes,
+      "expected test surface to exceed tiling threshold"
+    );
+
+    let reference_pool = build_pool_with_toggles(1, toggles.clone());
+    let reference = runtime::with_thread_runtime_toggles(toggles.clone(), || {
+      reference_pool.install(|| {
+        let mut pixmap = new_pixmap(WIDTH, HEIGHT).unwrap();
+        pixmap.data_mut().copy_from_slice(&base_data);
+        let mut cache = BlurCache::new(direct_config);
+        apply_gaussian_blur_cached(&mut pixmap, SIGMA_X, SIGMA_Y, Some(&mut cache), 1.0).unwrap();
+        Arc::new(pixmap.data().to_vec())
+      })
+    });
+
+    let pool = build_pool_with_toggles(THREADS, toggles.clone());
+    runtime::with_thread_runtime_toggles(toggles.clone(), || {
+      pool.install(|| {
+        let plan = tile_blur_plan(WIDTH, HEIGHT, SIGMA_X, SIGMA_Y, tiled_config);
+        assert!(
+          !plan.parallel_tiles,
+          "expected hybrid tiled blur to schedule tiles serially (budget={} tiles={} max_tile_pixels={})",
+          blur_thread_budget(),
+          plan.tiles,
+          plan.max_tile_pixels,
+        );
+        assert!(
+          plan.max_tile_pixels >= PARALLEL_BLUR_MIN_PIXELS && plan.tiles > 1,
+          "expected tiling with large tiles (tiles={} max_tile_pixels={})",
+          plan.tiles,
+          plan.max_tile_pixels,
+        );
+
+        if blur_thread_budget() > 1 {
+          let edge_src_w = plan.tile_w.saturating_add(plan.pad_x).min(WIDTH);
+          let edge_src_h = plan.tile_h.saturating_add(plan.pad_y).min(HEIGHT);
+          assert!(
+            blur_should_parallelize(edge_src_w as usize, edge_src_h as usize),
+            "expected per-tile blur to parallelize (budget={} tile={edge_src_w}x{edge_src_h})",
+            blur_thread_budget(),
+          );
+        }
+
+        (0..JOBS).into_par_iter().for_each(|job| {
+          let mut pixmap = new_pixmap(WIDTH, HEIGHT).unwrap();
+          pixmap.data_mut().copy_from_slice(&base_data);
+          let mut cache = BlurCache::new(tiled_config);
+          apply_gaussian_blur_cached(&mut pixmap, SIGMA_X, SIGMA_Y, Some(&mut cache), 1.0).unwrap();
+          assert_eq!(
+            pixmap.data(),
+            reference.as_slice(),
+            "nested hybrid tiled blur output mismatch (job={job})"
+          );
+        });
+      });
+    });
   }
 
   #[test]
