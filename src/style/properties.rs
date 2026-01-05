@@ -3060,6 +3060,21 @@ fn set_length_with_order(
   *order_slot = order;
 }
 
+fn set_size_property_with_order(
+  length_target: &mut Option<Length>,
+  keyword_target: &mut Option<IntrinsicSizeKeyword>,
+  order_slot: &mut i32,
+  value: crate::style::LogicalSizingValue,
+  order: i32,
+) {
+  if order < *order_slot {
+    return;
+  }
+  *length_target = value.length;
+  *keyword_target = value.keyword;
+  *order_slot = order;
+}
+
 fn sanitize_min_length(value: Option<Length>) -> Option<Length> {
   if let Some(len) = value {
     if len.calc.is_none() && len.value < 0.0 {
@@ -3106,17 +3121,30 @@ fn parse_intrinsic_size_keyword(value: &PropertyValue) -> Option<IntrinsicSizeKe
   }
 
   for prefix in ["fit-content(", "-webkit-fit-content(", "-moz-fit-content("] {
-    if !lower.starts_with(prefix) || !lower.ends_with(')') {
+    if raw.len() < prefix.len() + 1 {
       continue;
     }
-    let inner = lower.strip_prefix(prefix)?;
-    let inner = inner.strip_suffix(')')?.trim();
-    let Some(limit) = sanitize_min_length(parse_length(inner)) else {
+    if !raw
+      .get(..prefix.len())
+      .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+    {
+      continue;
+    }
+    if !raw.ends_with(')') {
+      continue;
+    }
+    let inner = raw.get(prefix.len()..raw.len() - 1)?.trim();
+    let limit = match crate::css::properties::parse_property_value("", inner)? {
+      PropertyValue::Length(l) => Some(l),
+      PropertyValue::Percentage(p) => Some(Length::percent(p)),
+      PropertyValue::Number(n) if n == 0.0 => Some(Length::px(n)),
+      PropertyValue::Keyword(raw) => parse_length(raw.as_str()),
+      _ => None,
+    };
+    let Some(limit) = sanitize_min_length(limit) else {
       continue;
     };
-    return Some(IntrinsicSizeKeyword::FitContent {
-      limit: Some(limit),
-    });
+    return Some(IntrinsicSizeKeyword::FitContent { limit: Some(limit) });
   }
 
   None
@@ -3871,46 +3899,76 @@ fn apply_property_from_source(
       styles.outline_offset = source.outline_offset;
     }
     "width" => {
-      if order >= styles.logical.width_order {
-        styles.width = source.width;
-        styles.width_keyword = source.width_keyword;
-        styles.logical.width_order = order;
-      }
+      set_size_property_with_order(
+        &mut styles.width,
+        &mut styles.width_keyword,
+        &mut styles.logical.width_order,
+        crate::style::LogicalSizingValue {
+          length: source.width,
+          keyword: source.width_keyword,
+        },
+        order,
+      );
     }
     "height" => {
-      if order >= styles.logical.height_order {
-        styles.height = source.height;
-        styles.height_keyword = source.height_keyword;
-        styles.logical.height_order = order;
-      }
+      set_size_property_with_order(
+        &mut styles.height,
+        &mut styles.height_keyword,
+        &mut styles.logical.height_order,
+        crate::style::LogicalSizingValue {
+          length: source.height,
+          keyword: source.height_keyword,
+        },
+        order,
+      );
     }
     "min-width" => {
-      if order >= styles.logical.min_width_order {
-        styles.min_width = sanitize_min_length(source.min_width);
-        styles.min_width_keyword = source.min_width_keyword;
-        styles.logical.min_width_order = order;
-      }
+      set_size_property_with_order(
+        &mut styles.min_width,
+        &mut styles.min_width_keyword,
+        &mut styles.logical.min_width_order,
+        crate::style::LogicalSizingValue {
+          length: sanitize_min_length(source.min_width),
+          keyword: source.min_width_keyword,
+        },
+        order,
+      );
     }
     "min-height" => {
-      if order >= styles.logical.min_height_order {
-        styles.min_height = sanitize_min_length(source.min_height);
-        styles.min_height_keyword = source.min_height_keyword;
-        styles.logical.min_height_order = order;
-      }
+      set_size_property_with_order(
+        &mut styles.min_height,
+        &mut styles.min_height_keyword,
+        &mut styles.logical.min_height_order,
+        crate::style::LogicalSizingValue {
+          length: sanitize_min_length(source.min_height),
+          keyword: source.min_height_keyword,
+        },
+        order,
+      );
     }
     "max-width" => {
-      if order >= styles.logical.max_width_order {
-        styles.max_width = sanitize_max_length(source.max_width);
-        styles.max_width_keyword = source.max_width_keyword;
-        styles.logical.max_width_order = order;
-      }
+      set_size_property_with_order(
+        &mut styles.max_width,
+        &mut styles.max_width_keyword,
+        &mut styles.logical.max_width_order,
+        crate::style::LogicalSizingValue {
+          length: sanitize_max_length(source.max_width),
+          keyword: source.max_width_keyword,
+        },
+        order,
+      );
     }
     "max-height" => {
-      if order >= styles.logical.max_height_order {
-        styles.max_height = sanitize_max_length(source.max_height);
-        styles.max_height_keyword = source.max_height_keyword;
-        styles.logical.max_height_order = order;
-      }
+      set_size_property_with_order(
+        &mut styles.max_height,
+        &mut styles.max_height_keyword,
+        &mut styles.logical.max_height_order,
+        crate::style::LogicalSizingValue {
+          length: sanitize_max_length(source.max_height),
+          keyword: source.max_height_keyword,
+        },
+        order,
+      );
     }
     "inline-size" => {
       let value = if inline_axis_is_horizontal(source.writing_mode) {
@@ -6932,52 +6990,74 @@ fn apply_declaration_with_base_internal(
 
     // Width and height
     "width" => {
-      if order >= styles.logical.width_order {
-        let value = extract_sizing_value(resolved_value);
-        styles.width = value.length;
-        styles.width_keyword = value.keyword;
-        styles.logical.width_order = order;
-      }
+      set_size_property_with_order(
+        &mut styles.width,
+        &mut styles.width_keyword,
+        &mut styles.logical.width_order,
+        extract_sizing_value(resolved_value),
+        order,
+      );
     }
     "height" => {
-      if order >= styles.logical.height_order {
-        let value = extract_sizing_value(resolved_value);
-        styles.height = value.length;
-        styles.height_keyword = value.keyword;
-        styles.logical.height_order = order;
-      }
+      set_size_property_with_order(
+        &mut styles.height,
+        &mut styles.height_keyword,
+        &mut styles.logical.height_order,
+        extract_sizing_value(resolved_value),
+        order,
+      );
     }
     "min-width" => {
-      if order >= styles.logical.min_width_order {
-        let value = extract_sizing_value(resolved_value);
-        styles.min_width = sanitize_min_length(value.length);
-        styles.min_width_keyword = value.keyword;
-        styles.logical.min_width_order = order;
-      }
+      let value = extract_sizing_value(resolved_value);
+      set_size_property_with_order(
+        &mut styles.min_width,
+        &mut styles.min_width_keyword,
+        &mut styles.logical.min_width_order,
+        crate::style::LogicalSizingValue {
+          length: sanitize_min_length(value.length),
+          keyword: value.keyword,
+        },
+        order,
+      );
     }
     "min-height" => {
-      if order >= styles.logical.min_height_order {
-        let value = extract_sizing_value(resolved_value);
-        styles.min_height = sanitize_min_length(value.length);
-        styles.min_height_keyword = value.keyword;
-        styles.logical.min_height_order = order;
-      }
+      let value = extract_sizing_value(resolved_value);
+      set_size_property_with_order(
+        &mut styles.min_height,
+        &mut styles.min_height_keyword,
+        &mut styles.logical.min_height_order,
+        crate::style::LogicalSizingValue {
+          length: sanitize_min_length(value.length),
+          keyword: value.keyword,
+        },
+        order,
+      );
     }
     "max-width" => {
-      if order >= styles.logical.max_width_order {
-        let value = extract_sizing_value(resolved_value);
-        styles.max_width = sanitize_max_length(value.length);
-        styles.max_width_keyword = value.keyword;
-        styles.logical.max_width_order = order;
-      }
+      let value = extract_sizing_value(resolved_value);
+      set_size_property_with_order(
+        &mut styles.max_width,
+        &mut styles.max_width_keyword,
+        &mut styles.logical.max_width_order,
+        crate::style::LogicalSizingValue {
+          length: sanitize_max_length(value.length),
+          keyword: value.keyword,
+        },
+        order,
+      );
     }
     "max-height" => {
-      if order >= styles.logical.max_height_order {
-        let value = extract_sizing_value(resolved_value);
-        styles.max_height = sanitize_max_length(value.length);
-        styles.max_height_keyword = value.keyword;
-        styles.logical.max_height_order = order;
-      }
+      let value = extract_sizing_value(resolved_value);
+      set_size_property_with_order(
+        &mut styles.max_height,
+        &mut styles.max_height_keyword,
+        &mut styles.logical.max_height_order,
+        crate::style::LogicalSizingValue {
+          length: sanitize_max_length(value.length),
+          keyword: value.keyword,
+        },
+        order,
+      );
     }
     "inline-size" => {
       push_logical(
@@ -15954,7 +16034,10 @@ mod tests {
     assert_eq!(styles.width_keyword, Some(IntrinsicSizeKeyword::MinContent));
 
     assert_eq!(styles.height, None);
-    assert_eq!(styles.height_keyword, Some(IntrinsicSizeKeyword::MaxContent));
+    assert_eq!(
+      styles.height_keyword,
+      Some(IntrinsicSizeKeyword::MaxContent)
+    );
 
     assert_eq!(
       styles.min_width_keyword,
@@ -15967,7 +16050,10 @@ mod tests {
       })
     );
     assert_eq!(styles.max_height, None);
-    assert_eq!(styles.max_height_keyword, Some(IntrinsicSizeKeyword::MaxContent));
+    assert_eq!(
+      styles.max_height_keyword,
+      Some(IntrinsicSizeKeyword::MaxContent)
+    );
 
     // A later length assignment should clear the stored keyword.
     let decls = parse_declarations("width: 10px;");
@@ -16007,6 +16093,69 @@ mod tests {
         limit: Some(Length::percent(50.0))
       })
     );
+  }
+
+  #[test]
+  fn parses_fit_content_function_for_width() {
+    let parent = ComputedStyle::default();
+
+    let decls = parse_declarations("width: fit-content(50%);");
+    assert_eq!(decls.len(), 1);
+    let mut styles = ComputedStyle::default();
+    apply_declaration(&mut styles, &decls[0], &parent, 16.0, 16.0);
+    assert_eq!(styles.width, None);
+    assert_eq!(
+      styles.width_keyword,
+      Some(IntrinsicSizeKeyword::FitContent {
+        limit: Some(Length::percent(50.0))
+      })
+    );
+  }
+
+  #[test]
+  fn intrinsic_size_keywords_apply_to_min_and_max_width() {
+    let parent = ComputedStyle::default();
+
+    let decls = parse_declarations("min-width: min-content; max-width: fit-content;");
+    let mut styles = ComputedStyle::default();
+    for decl in &decls {
+      apply_declaration(&mut styles, decl, &parent, 16.0, 16.0);
+    }
+
+    assert_eq!(styles.min_width, None);
+    assert_eq!(
+      styles.min_width_keyword,
+      Some(IntrinsicSizeKeyword::MinContent)
+    );
+
+    assert_eq!(styles.max_width, None);
+    assert_eq!(
+      styles.max_width_keyword,
+      Some(IntrinsicSizeKeyword::FitContent { limit: None })
+    );
+  }
+
+  #[test]
+  fn intrinsic_size_keywords_cascade_with_inherit_and_unset() {
+    let grandparent = ComputedStyle::default();
+    let mut parent = ComputedStyle::default();
+    let decls = parse_declarations("width: max-content;");
+    apply_declaration(&mut parent, &decls[0], &grandparent, 16.0, 16.0);
+
+    let mut child = ComputedStyle::default();
+    let decls = parse_declarations("width: inherit;");
+    apply_declaration(&mut child, &decls[0], &parent, 16.0, 16.0);
+    assert_eq!(child.width, None);
+    assert_eq!(child.width_keyword, Some(IntrinsicSizeKeyword::MaxContent));
+
+    // `unset` should reset the keyword back to the initial value.
+    let mut reset = ComputedStyle::default();
+    let decls = parse_declarations("width: max-content; width: unset;");
+    for decl in &decls {
+      apply_declaration(&mut reset, decl, &parent, 16.0, 16.0);
+    }
+    assert_eq!(reset.width, None);
+    assert_eq!(reset.width_keyword, None);
   }
 
   #[test]
