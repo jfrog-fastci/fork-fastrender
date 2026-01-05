@@ -43,9 +43,15 @@ fn rejects_media_query_with_invalid_length_unit() {
 }
 
 #[test]
-fn rejects_media_query_calc_percentage_without_base() {
-  // Percentages inside calc() should fail when no percentage base is available.
-  assert!(MediaQuery::parse("(max-width: calc(50% + 10px))").is_err());
+fn media_query_calc_percentage_resolves_against_axis() {
+  // FastRender allows `%` terms inside `calc()` for MQ length features and resolves them against the
+  // relevant axis (e.g. width percentages use the viewport width). This matches common authoring
+  // patterns and keeps the parser aligned with the library's internal media-query unit tests.
+  let query = MediaQuery::parse("(max-width: calc(50% + 10px))").expect("parse calc width query");
+
+  // max-width: 50% * w + 10px => matches when w <= 20px
+  assert!(MediaContext::screen(10.0, 768.0).evaluate(&query));
+  assert!(!MediaContext::screen(100.0, 768.0).evaluate(&query));
 }
 
 // ============================================================================
@@ -330,12 +336,9 @@ fn test_device_aspect_ratio_queries() {
 // ============================================================================
 
 #[test]
-fn media_length_features_reject_calc_and_invalid_units() {
+fn media_length_features_accept_calc_and_reject_invalid_units() {
   let calc_query = MediaQuery::parse("(min-width: calc(100px + 10%))");
-  assert!(
-    calc_query.is_err(),
-    "calc() should not be accepted in media lengths"
-  );
+  assert!(calc_query.is_ok(), "calc() should be accepted in media lengths");
 
   let bogus_unit = MediaQuery::parse("(min-width: 10foobar)");
   assert!(
@@ -348,9 +351,13 @@ fn media_length_features_reject_calc_and_invalid_units() {
 fn media_range_syntax_requires_valid_lengths() {
   let calc_range = MediaQuery::parse("(400px < width < calc(800px + 10%))");
   assert!(
-    calc_range.is_err(),
-    "range syntax should reject calc lengths"
+    calc_range.is_ok(),
+    "range syntax should accept calc lengths"
   );
+  let calc_range = calc_range.unwrap();
+  assert!(MediaContext::screen(500.0, 800.0).evaluate(&calc_range));
+  assert!(!MediaContext::screen(300.0, 800.0).evaluate(&calc_range));
+  assert!(!MediaContext::screen(1000.0, 800.0).evaluate(&calc_range));
 
   let bad_range = MediaQuery::parse("(width >< 500px)");
   assert!(
@@ -481,7 +488,8 @@ fn test_retina_image_patterns() {
 fn test_prefers_color_scheme() {
   let light_ctx = MediaContext::screen(1024.0, 768.0).with_color_scheme(ColorScheme::Light);
   let dark_ctx = MediaContext::screen(1024.0, 768.0).with_color_scheme(ColorScheme::Dark);
-  let no_pref_ctx = MediaContext::screen(1024.0, 768.0); // Defaults to no-preference
+  let default_ctx = MediaContext::screen(1024.0, 768.0); // Defaults to light
+  let no_pref_ctx = MediaContext::screen(1024.0, 768.0).with_color_scheme(ColorScheme::NoPreference);
 
   let dark_query = MediaQuery::parse("(prefers-color-scheme: dark)").unwrap();
   let light_query = MediaQuery::parse("(prefers-color-scheme: light)").unwrap();
@@ -497,6 +505,10 @@ fn test_prefers_color_scheme() {
   assert!(!light_ctx.evaluate(&no_pref_query));
 
   // No preference - matches only no-preference queries
+  assert!(default_ctx.evaluate(&light_query));
+  assert!(!default_ctx.evaluate(&dark_query));
+  assert!(!default_ctx.evaluate(&no_pref_query));
+
   assert!(!no_pref_ctx.evaluate(&dark_query));
   assert!(!no_pref_ctx.evaluate(&light_query));
   assert!(no_pref_ctx.evaluate(&no_pref_query));
@@ -1002,7 +1014,11 @@ fn test_parse_errors() {
   assert!(MediaQuery::parse("").is_err());
 
   // Unknown feature
-  assert!(MediaQuery::parse("(unknown-feature: value)").is_err());
+  let unknown = MediaQuery::parse("(unknown-feature: value)").expect("unknown feature parses");
+  assert!(
+    !MediaContext::screen(800.0, 600.0).evaluate(&unknown),
+    "unknown media features should evaluate to false"
+  );
 
   // Missing value for feature that requires it
   assert!(MediaQuery::parse("(min-width)").is_err());
