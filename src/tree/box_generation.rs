@@ -4242,6 +4242,25 @@ mod tests {
   }
 
   #[test]
+  fn video_src_placeholder_falls_back_to_source_children() {
+    let html = "<html><body><video src=\"#\"><source src=\"a.mp4\"></video></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    fn find_video_src(node: &BoxNode) -> Option<String> {
+      if let BoxType::Replaced(repl) = &node.box_type {
+        if let ReplacedType::Video { src, .. } = &repl.replaced_type {
+          return Some(src.clone());
+        }
+      }
+      node.children.iter().find_map(find_video_src)
+    }
+
+    assert_eq!(find_video_src(&box_tree.root).as_deref(), Some("a.mp4"));
+  }
+
+  #[test]
   fn audio_src_falls_back_to_source_children() {
     let html =
       "<html><body><audio><source src=\"a.mp3\"><source src=\"b.ogg\"></audio></body></html>";
@@ -4259,6 +4278,47 @@ mod tests {
     }
 
     assert_eq!(find_audio_src(&box_tree.root).as_deref(), Some("a.mp3"));
+  }
+
+  #[test]
+  fn audio_src_placeholder_falls_back_to_source_children() {
+    let html = "<html><body><audio src=\"about:blank\"><source src=\"a.mp3\"></audio></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    fn find_audio_src(node: &BoxNode) -> Option<String> {
+      if let BoxType::Replaced(repl) = &node.box_type {
+        if let ReplacedType::Audio { src } = &repl.replaced_type {
+          return Some(src.clone());
+        }
+      }
+      node.children.iter().find_map(find_audio_src)
+    }
+
+    assert_eq!(find_audio_src(&box_tree.root).as_deref(), Some("a.mp3"));
+  }
+
+  #[test]
+  fn video_src_prefers_source_type_prefix() {
+    let html = "<html><body><video>
+      <source src=\"wrong.mp4\" type=\"audio/mp3\">
+      <source src=\"right.webm\" type=\"video/webm\">
+    </video></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    fn find_video_src(node: &BoxNode) -> Option<String> {
+      if let BoxType::Replaced(repl) = &node.box_type {
+        if let ReplacedType::Video { src, .. } = &repl.replaced_type {
+          return Some(src.clone());
+        }
+      }
+      node.children.iter().find_map(find_video_src)
+    }
+
+    assert_eq!(find_video_src(&box_tree.root).as_deref(), Some("right.webm"));
   }
 
   #[test]
