@@ -12061,7 +12061,8 @@ mod tests {
   use crate::layout::engine::LayoutConfig;
   use crate::layout::engine::LayoutEngine;
   use crate::layout::formatting_context::intrinsic_cache_clear;
-  use crate::resource::FetchedResource;
+  use crate::render_control::RenderDeadline;
+  use crate::resource::{FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
   use crate::style::cascade::apply_style_set_with_media_target_and_imports_cached;
   use crate::style::cascade::ContainerQueryContext;
   use crate::style::cascade::StyledNode;
@@ -12082,6 +12083,7 @@ mod tests {
   use std::collections::{HashMap, HashSet};
   use std::io;
   use std::sync::{Arc, Mutex};
+  use std::time::Duration;
 
   #[test]
   fn layout_image_cache_configuration_changes_reset_cached_formatting_contexts() {
@@ -17067,6 +17069,90 @@ mod tests {
     assert!(display.contains("ShapingFailed"));
     assert!(display.contains("reason:"));
     assert!(display.contains("boom"));
+  }
+
+  #[test]
+  fn image_probe_prefetch_uses_cors_mode_for_img_crossorigin() {
+    #[derive(Default)]
+    struct RecordingFetcher {
+      partial: Mutex<Vec<FetchDestination>>,
+    }
+
+    impl RecordingFetcher {
+      fn partial(&self) -> Vec<FetchDestination> {
+        self
+          .partial
+          .lock()
+          .map(|guard| guard.clone())
+          .unwrap_or_default()
+      }
+    }
+
+    impl ResourceFetcher for RecordingFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        // 1x1 PNG.
+        let bytes = base64::engine::general_purpose::STANDARD
+          .decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNoaGj4DwAFhAKAjM1mJgAAAABJRU5ErkJggg==",
+          )
+          .expect("decode png");
+        let mut res = FetchedResource::with_final_url(
+          bytes,
+          Some("image/png".to_string()),
+          Some(req.url.to_string()),
+        );
+        res.status = Some(200);
+        Ok(res)
+      }
+
+      fn fetch_partial_with_request(
+        &self,
+        req: FetchRequest<'_>,
+        max_bytes: usize,
+      ) -> Result<FetchedResource> {
+        self
+          .partial
+          .lock()
+          .unwrap_or_else(|poisoned| poisoned.into_inner())
+          .push(req.destination);
+        let mut res = self.fetch_with_request(req)?;
+        res.bytes.truncate(max_bytes);
+        Ok(res)
+      }
+    }
+
+    let fetcher = Arc::new(RecordingFetcher::default());
+    let toggles = RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_PREFETCH_IMAGE_PROBES".to_string(),
+      "1".to_string(),
+    )]));
+    let mut renderer = FastRender::builder()
+      .fetcher(fetcher.clone())
+      .runtime_toggles(toggles)
+      .build()
+      .expect("renderer");
+
+    let dom = renderer
+      .parse_html(r#"<img src="https://example.com/img.png" crossorigin>"#)
+      .expect("parse dom");
+    let media_ctx = MediaContext::screen(800.0, 600.0).with_env_overrides();
+    let deadline = RenderDeadline::new(Some(Duration::from_secs(1)), None);
+
+    let handle = renderer
+      .spawn_image_probe_prefetch(&dom, &media_ctx, Some(&deadline))
+      .expect("expected prefetch handle");
+    drop(handle);
+
+    let calls = fetcher.partial();
+    assert_eq!(
+      calls,
+      vec![FetchDestination::ImageCors],
+      "expected image probe prefetch to issue CORS-mode probe for <img crossorigin>"
+    );
   }
 
   #[test]
