@@ -9787,6 +9787,7 @@ fn apply_styles_internal_with_ancestors<'a>(
 pub(crate) fn inherit_styles(styles: &mut ComputedStyle, parent: &ComputedStyle) {
   // Reset cascade bookkeeping for the new style; logical pending state should not inherit.
   styles.logical.reset();
+  styles.var_dependent_declarations = Arc::new(HashMap::new());
   // Typography properties inherit
   styles.font_family = parent.font_family.clone();
   styles.font_size = parent.font_size;
@@ -23164,6 +23165,7 @@ fn apply_cascaded_declarations<'a, F>(
 ) where
   F: Fn(&Declaration) -> bool,
 {
+  styles.var_dependent_declarations = Arc::new(HashMap::new());
   let mut total_decls = matched_rules
     .iter()
     .map(|rule| rule.declarations.len())
@@ -23556,6 +23558,9 @@ fn apply_cascaded_declarations<'a, F>(
   apply_content_visibility_implied_containment(styles);
 
   resolve_absolute_lengths(styles, root_font_size, viewport);
+  if styles.animation_names.is_empty() {
+    styles.var_dependent_declarations = Arc::new(HashMap::new());
+  }
 }
 
 fn dir_presentational_hint(
@@ -23900,7 +23905,11 @@ fn bordercolor_presentational_hint(
   })
 }
 
-fn resolve_absolute_lengths(styles: &mut ComputedStyle, root_font_size: f32, viewport: Size) {
+pub(crate) fn resolve_absolute_lengths(
+  styles: &mut ComputedStyle,
+  root_font_size: f32,
+  viewport: Size,
+) {
   let resolve_len = |len: Length| -> Length {
     match len.unit {
       u if u.is_absolute() => Length::px(len.to_px()),

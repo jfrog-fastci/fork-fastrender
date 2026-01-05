@@ -68,8 +68,7 @@ use crate::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 use rustc_hash::FxHashSet;
 use std::borrow::Cow;
 use std::mem::discriminant;
-use std::sync::Arc;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use crate::style::color::Rgba;
 use crate::style::computed::Visibility;
@@ -102,6 +101,7 @@ pub enum AnimatedValue {
   BorderColor([Rgba; 4]),
   BorderWidth([Length; 4]),
   BorderRadius([BorderCornerRadius; 4]),
+  CustomProperty(Option<CustomPropertyValue>),
 }
 
 #[derive(Clone, Copy)]
@@ -3460,10 +3460,7 @@ fn sample_keyframes_with_default_timing(
 }
 
 /// Applies animated property values to the computed style.
-pub fn apply_animated_properties(
-  style: &mut ComputedStyle,
-  values: &HashMap<String, AnimatedValue>,
-) {
+pub fn apply_animated_properties(style: &mut ComputedStyle, values: &HashMap<String, AnimatedValue>) {
   for (name, value) in values {
     if let Some(interpolator) = interpolator_for(name) {
       (interpolator.apply)(style, value);
