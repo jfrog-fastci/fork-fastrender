@@ -88,7 +88,7 @@ use crate::geometry::Point;
 use crate::geometry::Rect;
 use crate::geometry::Size;
 use crate::html::encoding::decode_html_bytes;
-use crate::html::image_prefetch::{discover_image_prefetch_urls, ImagePrefetchLimits};
+use crate::html::image_prefetch::{discover_image_prefetch_requests, ImagePrefetchLimits};
 use crate::html::viewport::ViewportLength;
 use crate::image_loader::ImageCache;
 use crate::image_output::encode_image;
@@ -9138,7 +9138,7 @@ impl FastRender {
       .unwrap_or(1)
       .clamp(1, 4);
 
-    let discovery = discover_image_prefetch_urls(
+    let discovery = discover_image_prefetch_requests(
       dom,
       crate::tree::box_tree::ImageSelectionContext {
         device_pixel_ratio: media_ctx.device_pixel_ratio,
@@ -9156,7 +9156,7 @@ impl FastRender {
         max_urls_per_element,
       },
     );
-    if discovery.urls.is_empty() {
+    if discovery.requests.is_empty() {
       return None;
     }
 
@@ -9177,7 +9177,7 @@ impl FastRender {
       .max(1)
       .min(16);
     let pool = Self::intrinsic_probe_pool(parallelism);
-    let urls = discovery.urls;
+    let requests = discovery.requests;
 
     let handle = std::thread::Builder::new()
       .name("fastr-image-prefetch".to_string())
@@ -9185,10 +9185,10 @@ impl FastRender {
         let _deadline_guard = DeadlineGuard::install(deadline.as_ref());
         let _stage_guard = StageGuard::install(Some(RenderStage::BoxTree));
         pool.install(|| {
-          urls.into_par_iter().for_each(|url| {
+          requests.into_par_iter().for_each(|req| {
             let _deadline_guard = DeadlineGuard::install(deadline.as_ref());
             let _stage_guard = StageGuard::install(Some(RenderStage::BoxTree));
-            let _ = image_cache.probe(url.as_str());
+            let _ = image_cache.probe_with_crossorigin(req.url.as_str(), req.crossorigin);
           });
         });
       })
