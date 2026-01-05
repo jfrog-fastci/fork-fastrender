@@ -9835,7 +9835,9 @@ fn apply_declaration_with_base_internal_with_order(
       } else {
         parent_font_size
       };
-      if let Some(len) = parse_spacing_value(resolved_value, font_size, root_font_size, false) {
+      if let Some(len) =
+        parse_spacing_value(resolved_value, font_size, root_font_size, viewport, false)
+      {
         styles.letter_spacing = len;
       }
     }
@@ -9845,7 +9847,9 @@ fn apply_declaration_with_base_internal_with_order(
       } else {
         parent_font_size
       };
-      if let Some(len) = parse_spacing_value(resolved_value, font_size, root_font_size, true) {
+      if let Some(len) =
+        parse_spacing_value(resolved_value, font_size, root_font_size, viewport, true)
+      {
         styles.word_spacing = len;
       }
     }
@@ -11758,28 +11762,33 @@ fn parse_spacing_value(
   value: &PropertyValue,
   font_size: f32,
   root_font_size: f32,
+  viewport: Size,
   allow_percentage: bool,
 ) -> Option<f32> {
   match value {
     PropertyValue::Keyword(kw) if kw == "normal" => Some(0.0),
     PropertyValue::Number(n) if *n == 0.0 => Some(0.0),
-    PropertyValue::Length(len) => resolve_font_relative_length(*len, font_size, root_font_size),
+    PropertyValue::Length(len) => {
+      resolve_font_relative_length(*len, font_size, root_font_size, viewport)
+    }
     PropertyValue::Percentage(pct) if allow_percentage => Some((pct / 100.0) * font_size),
     _ => None,
   }
 }
 
-fn resolve_font_relative_length(len: Length, font_size: f32, root_font_size: f32) -> Option<f32> {
-  Some(match len.unit {
-    u if u.is_absolute() => len.to_px(),
-    LengthUnit::Em => len.value * font_size,
-    LengthUnit::Ex => len.value * font_size * 0.5,
-    LengthUnit::Ch => len.value * font_size * 0.5,
-    LengthUnit::Rem => len.value * root_font_size,
-    LengthUnit::Percent => (len.value / 100.0) * font_size,
-    // Fallback: keep the raw author value when we cannot resolve viewport-relative or unknown units here.
-    _ => len.value,
-  })
+fn resolve_font_relative_length(
+  len: Length,
+  font_size: f32,
+  root_font_size: f32,
+  viewport: Size,
+) -> Option<f32> {
+  len.resolve_with_context(
+    Some(font_size),
+    viewport.width,
+    viewport.height,
+    font_size,
+    root_font_size,
+  )
 }
 
 fn parse_object_fit(kw: &str) -> Option<ObjectFit> {
@@ -23815,6 +23824,33 @@ mod tests {
     assert!((style.letter_spacing - 5.0).abs() < 0.01);
 
     let decl = Declaration {
+      property: "letter-spacing".into(),
+      value: PropertyValue::Length(parse_length("calc(0.5em + 2px)").unwrap()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert!((style.letter_spacing - 12.0).abs() < 0.01);
+
+    let decl = Declaration {
+      property: "letter-spacing".into(),
+      value: PropertyValue::Length(parse_length("calc(1vw + 1px)").unwrap()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration_with_viewport(
+      &mut style,
+      &decl,
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+      Size::new(1000.0, 800.0),
+    );
+    assert!((style.letter_spacing - 11.0).abs() < 0.01);
+
+    let decl = Declaration {
       property: "word-spacing".into(),
       value: PropertyValue::Percentage(50.0),
       contains_var: false,
@@ -23833,6 +23869,16 @@ mod tests {
     };
     apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
     assert!((style.word_spacing + 10.0).abs() < 0.01);
+
+    let decl = Declaration {
+      property: "word-spacing".into(),
+      value: PropertyValue::Length(parse_length("calc(50% + 2px)").unwrap()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert!((style.word_spacing - 12.0).abs() < 0.01);
   }
 
   #[test]
