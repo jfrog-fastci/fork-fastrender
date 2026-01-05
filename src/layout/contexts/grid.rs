@@ -1903,9 +1903,19 @@ impl GridFormattingContext {
           taffy_style.justify_self =
             Some(self.convert_align_items(&containing_grid.justify_items, inline_positive_item));
         }
-      } else if taffy_style.align_self.is_none() {
-        taffy_style.align_self =
-          Some(self.convert_align_items(&containing_grid.justify_items, inline_positive_item));
+        if taffy_style.align_self.is_none() {
+          taffy_style.align_self =
+            Some(self.convert_align_items(&containing_grid.align_items, block_positive_item));
+        }
+      } else {
+        if taffy_style.align_self.is_none() {
+          taffy_style.align_self =
+            Some(self.convert_align_items(&containing_grid.justify_items, inline_positive_item));
+        }
+        if taffy_style.justify_self.is_none() {
+          taffy_style.justify_self =
+            Some(self.convert_align_items(&containing_grid.align_items, block_positive_item));
+        }
       }
     }
 
@@ -6960,6 +6970,95 @@ mod tests {
     assert!(
       fit_width + 0.5 < auto_width,
       "expected fit-content grid item width ({fit_width:.2}) to be smaller than stretched auto width ({auto_width:.2})",
+    );
+  }
+
+  #[test]
+  fn grid_item_height_keyword_max_content_prevents_stretch() {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let make_grid = |height_keyword: Option<IntrinsicSizeKeyword>| {
+      let mut grid_style = ComputedStyle::default();
+      grid_style.display = CssDisplay::Grid;
+      grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(300.0))];
+      grid_style.grid_template_rows = vec![GridTrack::Length(Length::px(200.0))];
+      grid_style.align_items = AlignItems::Stretch;
+      let grid_style = Arc::new(grid_style);
+
+      let mut item_style = ComputedStyle::default();
+      item_style.font_size = 16.0;
+      item_style.height = None;
+      item_style.height_keyword = height_keyword;
+      let item_style = Arc::new(item_style);
+      let text_child = BoxNode::new_text(item_style.clone(), "hello world".into());
+      let item = BoxNode::new_block(item_style, FormattingContextType::Inline, vec![text_child]);
+
+      BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![item])
+    };
+
+    let constraints = LayoutConstraints::definite(300.0, 200.0);
+    let auto_fragment = fc.layout(&make_grid(None), &constraints).unwrap();
+    let max_fragment = fc
+      .layout(&make_grid(Some(IntrinsicSizeKeyword::MaxContent)), &constraints)
+      .unwrap();
+
+    assert_eq!(auto_fragment.children.len(), 1);
+    assert_eq!(max_fragment.children.len(), 1);
+    let auto_height = auto_fragment.children[0].bounds.height();
+    let max_height = max_fragment.children[0].bounds.height();
+    assert!(
+      (auto_height - 200.0).abs() < 0.1,
+      "expected auto grid item to stretch to 200px, got {auto_height:.2}"
+    );
+    assert!(
+      max_height + 0.5 < auto_height,
+      "expected max-content grid item height ({max_height:.2}) to be smaller than stretched auto height ({auto_height:.2})",
+    );
+  }
+
+  #[test]
+  fn grid_item_height_keyword_fit_content_prevents_stretch() {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let make_grid = |height_keyword: Option<IntrinsicSizeKeyword>| {
+      let mut grid_style = ComputedStyle::default();
+      grid_style.display = CssDisplay::Grid;
+      grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(300.0))];
+      grid_style.grid_template_rows = vec![GridTrack::Length(Length::px(200.0))];
+      grid_style.align_items = AlignItems::Stretch;
+      let grid_style = Arc::new(grid_style);
+
+      let mut item_style = ComputedStyle::default();
+      item_style.font_size = 16.0;
+      item_style.height = None;
+      item_style.height_keyword = height_keyword;
+      let item_style = Arc::new(item_style);
+      let text_child = BoxNode::new_text(item_style.clone(), "hello world".into());
+      let item = BoxNode::new_block(item_style, FormattingContextType::Inline, vec![text_child]);
+
+      BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![item])
+    };
+
+    let constraints = LayoutConstraints::definite(300.0, 200.0);
+    let auto_fragment = fc.layout(&make_grid(None), &constraints).unwrap();
+    let fit_fragment = fc
+      .layout(
+        &make_grid(Some(IntrinsicSizeKeyword::FitContent { limit: None })),
+        &constraints,
+      )
+      .unwrap();
+
+    assert_eq!(auto_fragment.children.len(), 1);
+    assert_eq!(fit_fragment.children.len(), 1);
+    let auto_height = auto_fragment.children[0].bounds.height();
+    let fit_height = fit_fragment.children[0].bounds.height();
+    assert!(
+      (auto_height - 200.0).abs() < 0.1,
+      "expected auto grid item to stretch to 200px, got {auto_height:.2}"
+    );
+    assert!(
+      fit_height + 0.5 < auto_height,
+      "expected fit-content grid item height ({fit_height:.2}) to be smaller than stretched auto height ({auto_height:.2})",
     );
   }
 
