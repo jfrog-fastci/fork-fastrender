@@ -83,6 +83,7 @@ pub enum AnimatedValue {
   BoxShadow(Vec<BoxShadow>),
   TextShadow(Vec<TextShadow>),
   BorderColor([Rgba; 4]),
+  BorderWidth([Length; 4]),
   BorderRadius([BorderCornerRadius; 4]),
 }
 
@@ -1697,6 +1698,71 @@ fn apply_border_left_color(style: &mut ComputedStyle, value: &AnimatedValue) {
   }
 }
 
+fn resolve_border_widths(style: &ComputedStyle, ctx: &AnimationResolveContext) -> [Length; 4] {
+  [
+    Length::px(resolve_length_px(&style.border_top_width, None, style, ctx)),
+    Length::px(resolve_length_px(&style.border_right_width, None, style, ctx)),
+    Length::px(resolve_length_px(&style.border_bottom_width, None, style, ctx)),
+    Length::px(resolve_length_px(&style.border_left_width, None, style, ctx)),
+  ]
+}
+
+fn extract_border_width(
+  style: &ComputedStyle,
+  ctx: &AnimationResolveContext,
+) -> Option<AnimatedValue> {
+  Some(AnimatedValue::BorderWidth(resolve_border_widths(style, ctx)))
+}
+
+fn interpolate_border_width_value(
+  a: &AnimatedValue,
+  b: &AnimatedValue,
+  t: f32,
+) -> Option<AnimatedValue> {
+  let (AnimatedValue::BorderWidth(wa), AnimatedValue::BorderWidth(wb)) = (a, b) else {
+    return None;
+  };
+
+  let mut out = [Length::px(0.0); 4];
+  for i in 0..4 {
+    out[i] = Length::px(lerp(wa[i].to_px(), wb[i].to_px(), t).max(0.0));
+  }
+  Some(AnimatedValue::BorderWidth(out))
+}
+
+fn apply_border_width(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::BorderWidth(w) = value {
+    style.border_top_width = w[0];
+    style.border_right_width = w[1];
+    style.border_bottom_width = w[2];
+    style.border_left_width = w[3];
+  }
+}
+
+fn apply_border_top_width(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::BorderWidth(w) = value {
+    style.border_top_width = w[0];
+  }
+}
+
+fn apply_border_right_width(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::BorderWidth(w) = value {
+    style.border_right_width = w[1];
+  }
+}
+
+fn apply_border_bottom_width(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::BorderWidth(w) = value {
+    style.border_bottom_width = w[2];
+  }
+}
+
+fn apply_border_left_width(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::BorderWidth(w) = value {
+    style.border_left_width = w[3];
+  }
+}
+
 fn extract_border_radius(
   style: &ComputedStyle,
   ctx: &AnimationResolveContext,
@@ -1889,6 +1955,36 @@ fn property_interpolators() -> &'static [PropertyInterpolator] {
       extract: extract_border_left_color,
       interpolate: interpolate_color,
       apply: apply_border_left_color,
+    },
+    PropertyInterpolator {
+      name: "border-width",
+      extract: extract_border_width,
+      interpolate: interpolate_border_width_value,
+      apply: apply_border_width,
+    },
+    PropertyInterpolator {
+      name: "border-top-width",
+      extract: extract_border_width,
+      interpolate: interpolate_border_width_value,
+      apply: apply_border_top_width,
+    },
+    PropertyInterpolator {
+      name: "border-right-width",
+      extract: extract_border_width,
+      interpolate: interpolate_border_width_value,
+      apply: apply_border_right_width,
+    },
+    PropertyInterpolator {
+      name: "border-bottom-width",
+      extract: extract_border_width,
+      interpolate: interpolate_border_width_value,
+      apply: apply_border_bottom_width,
+    },
+    PropertyInterpolator {
+      name: "border-left-width",
+      extract: extract_border_width,
+      interpolate: interpolate_border_width_value,
+      apply: apply_border_left_width,
     },
     PropertyInterpolator {
       name: "border-radius",
