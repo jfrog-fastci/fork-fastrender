@@ -11503,6 +11503,52 @@ mod tests {
   }
 
   #[test]
+  fn http_fetcher_sets_font_origin_null_for_file_referrer() {
+    let Some(listener) = try_bind_localhost("http_fetcher_sets_font_origin_null_for_file_referrer")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(String::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let request = read_http_request(&mut stream)
+        .unwrap()
+        .expect("expected HTTP request");
+      if let Ok(mut slot) = captured_req.lock() {
+        *slot = String::from_utf8_lossy(&request).to_string();
+      }
+
+      let body = b"font";
+      let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: font/woff2\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(headers.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
+    let url = format!("http://{}/asset.woff2", addr);
+    let referrer = "file:///fixture.html";
+    let res = fetcher
+      .fetch_with_request(FetchRequest::new(&url, FetchDestination::Font).with_referrer(referrer))
+      .expect("fetch font");
+    handle.join().unwrap();
+
+    assert_eq!(res.bytes, b"font");
+    let req = captured.lock().unwrap().to_ascii_lowercase();
+    assert!(
+      req.contains("origin: null"),
+      "expected Origin: null for file referrer, got: {req}"
+    );
+  }
+
+  #[test]
   fn http_fetcher_sets_image_cors_request_headers() {
     let Some(listener) = try_bind_localhost("http_fetcher_sets_image_cors_request_headers") else {
       return;
