@@ -269,6 +269,7 @@ struct RecordingFetcher {
   inner: Arc<dyn ResourceFetcher>,
   recorded: Arc<Mutex<HashMap<String, FetchedResource>>>,
   recorded_by_request: Arc<Mutex<HashMap<RecordingRequestKey, FetchedResource>>>,
+  recorded_url_is_cors: Arc<Mutex<HashSet<String>>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -443,6 +444,7 @@ impl RecordingFetcher {
       inner,
       recorded: Arc::new(Mutex::new(HashMap::new())),
       recorded_by_request: Arc::new(Mutex::new(HashMap::new())),
+      recorded_url_is_cors: Arc::new(Mutex::new(HashSet::new())),
     }
   }
 
@@ -452,6 +454,9 @@ impl RecordingFetcher {
     }
     if let Ok(mut map) = self.recorded_by_request.lock() {
       map.retain(|key, _| key.url != url);
+    }
+    if let Ok(mut set) = self.recorded_url_is_cors.lock() {
+      set.remove(url);
     }
   }
 
@@ -549,6 +554,9 @@ impl RecordingFetcher {
     if let Ok(mut map) = self.recorded_by_request.lock() {
       map.retain(|key, _| key.url != url);
     }
+    if let Ok(mut set) = self.recorded_url_is_cors.lock() {
+      set.remove(url);
+    }
   }
 
   fn replace(&self, url: &str, resource: FetchedResource) {
@@ -557,6 +565,9 @@ impl RecordingFetcher {
     }
     if let Ok(mut map) = self.recorded_by_request.lock() {
       map.retain(|key, _| key.url != url);
+    }
+    if let Ok(mut set) = self.recorded_url_is_cors.lock() {
+      set.remove(url);
     }
   }
 }
@@ -575,6 +586,9 @@ impl ResourceFetcher for RecordingFetcher {
     if !is_data_url(url) {
       if let Ok(mut map) = self.recorded.lock() {
         map.insert(url.to_string(), result.clone());
+      }
+      if let Ok(mut set) = self.recorded_url_is_cors.lock() {
+        set.remove(url);
       }
     }
     Ok(result)
@@ -610,8 +624,21 @@ impl ResourceFetcher for RecordingFetcher {
         .map(|prefix| prefix.eq_ignore_ascii_case("data:"))
         .unwrap_or(false)
       {
-        if let Ok(mut map) = self.recorded.lock() {
-          map.entry(url.clone()).or_insert_with(|| result.clone());
+        let inserted = if let Ok(mut map) = self.recorded.lock() {
+          match map.entry(url.clone()) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+              entry.insert(result.clone());
+              true
+            }
+            std::collections::hash_map::Entry::Occupied(_) => false,
+          }
+        } else {
+          false
+        };
+        if inserted {
+          if let Ok(mut set) = self.recorded_url_is_cors.lock() {
+            set.insert(url.clone());
+          }
         }
         if let Ok(mut map) = self.recorded_by_request.lock() {
           map.insert(key, result.clone());
@@ -620,9 +647,18 @@ impl ResourceFetcher for RecordingFetcher {
       return Ok(result);
     }
 
-    if let Ok(map) = self.recorded.lock() {
-      if let Some(existing) = map.get(req.url) {
-        return Ok(existing.clone());
+    let bypass_url_cache = cors_enforcement_enabled()
+      && req.destination == FetchDestination::Image
+      && self
+        .recorded_url_is_cors
+        .lock()
+        .map(|set| set.contains(&url))
+        .unwrap_or(false);
+    if !bypass_url_cache {
+      if let Ok(map) = self.recorded.lock() {
+        if let Some(existing) = map.get(req.url) {
+          return Ok(existing.clone());
+        }
       }
     }
 
@@ -630,6 +666,9 @@ impl ResourceFetcher for RecordingFetcher {
     if !is_data_url(&url) {
       if let Ok(mut map) = self.recorded.lock() {
         map.insert(url, result.clone());
+      }
+      if let Ok(mut set) = self.recorded_url_is_cors.lock() {
+        set.remove(req.url);
       }
     }
     Ok(result)
@@ -2497,6 +2536,87 @@ mod tests {
           .and_then(|res| res.access_control_allow_origin.as_deref()),
         Some("https://a.test"),
         "expected partitioned entry to store CORS-mode response metadata"
+      );
+    });
+
+    Ok(())
+  }
+
+  #[test]
+  fn recording_fetcher_refetches_image_without_crossorigin_after_cors_variant() -> Result<()> {
+    #[derive(Default)]
+    struct MixedModeFetcher {
+      calls: AtomicUsize,
+    }
+
+    impl MixedModeFetcher {
+      fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+      }
+    }
+
+    impl ResourceFetcher for MixedModeFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected RecordingFetcher to use fetch_with_request");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+
+        let mut res = FetchedResource::with_final_url(
+          b"no-cors".to_vec(),
+          Some("image/png".to_string()),
+          Some(req.url.to_string()),
+        );
+        res.status = Some(200);
+
+        if matches!(req.destination, FetchDestination::ImageCors) {
+          res.bytes = b"cors".to_vec();
+          res.access_control_allow_origin = Some("https://a.test".to_string());
+        }
+
+        Ok(res)
+      }
+    }
+
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "1".to_string(),
+    )])));
+
+    with_thread_runtime_toggles(toggles, || {
+      let inner = Arc::new(MixedModeFetcher::default());
+      let recording = RecordingFetcher::new(inner.clone());
+
+      let url = "https://cdn.test/img.png";
+      let referrer = "https://a.test/page.html";
+
+      let cors = recording
+        .fetch_with_request(
+          FetchRequest::new(url, FetchDestination::ImageCors).with_referrer(referrer),
+        )
+        .expect("cors fetch");
+      assert_eq!(cors.bytes, b"cors");
+
+      let no_cors = recording
+        .fetch_with_request(FetchRequest::new(url, FetchDestination::Image).with_referrer(referrer))
+        .expect("no-cors fetch");
+      assert_eq!(no_cors.bytes, b"no-cors");
+
+      assert_eq!(inner.calls(), 2, "expected two underlying fetches");
+
+      let snapshot = recording.snapshot();
+      let origin = origin_from_url(referrer).expect("origin");
+      let partitioned =
+        request_partitioned_resource_key(FetchContextKind::ImageCors, url, &origin);
+
+      assert_eq!(snapshot.get(url).expect("url entry").bytes, b"no-cors");
+      assert_eq!(
+        snapshot
+          .get(&partitioned)
+          .expect("partitioned entry")
+          .bytes,
+        b"cors"
       );
     });
 
