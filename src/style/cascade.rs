@@ -11167,6 +11167,131 @@ mod tests {
   }
 
   #[test]
+  fn container_query_reuse_preserves_slotted_flat_tree_inheritance() {
+    fn find_dom_node_by_id<'a>(node: &'a DomNode, id: &str) -> Option<&'a DomNode> {
+      if node.get_attribute_ref("id") == Some(id) {
+        return Some(node);
+      }
+      for child in node.children.iter() {
+        if let Some(found) = find_dom_node_by_id(child, id) {
+          return Some(found);
+        }
+      }
+      None
+    }
+
+    fn build_reuse_map(node: &StyledNode) -> HashMap<usize, *const StyledNode> {
+      let mut out: HashMap<usize, *const StyledNode> = HashMap::new();
+      let mut stack: Vec<&StyledNode> = vec![node];
+      while let Some(current) = stack.pop() {
+        out.insert(current.node_id, current as *const StyledNode);
+        for child in current.children.iter() {
+          stack.push(child);
+        }
+      }
+      out
+    }
+
+    let doc = crate::dom::parse_html(
+      r#"
+        <div id="host">
+          <template shadowrootmode="open">
+            <div style="color: rgb(0, 0, 255);">
+              <slot id="slot"></slot>
+            </div>
+          </template>
+          <span id="slotted"></span>
+        </div>
+      "#,
+    )
+    .expect("parse html");
+    let dom = find_dom_node_by_id(&doc, "host")
+      .expect("host element")
+      .clone();
+
+    let stylesheet = parse_stylesheet(
+      r#"
+        #host { color: rgb(255, 0, 0); container-type: inline-size; }
+        @container (min-width: 1px) {
+          #slotted { padding-left: 1px; }
+        }
+      "#,
+    )
+    .expect("parse stylesheet");
+    let style_set = StyleSet::from_document(stylesheet);
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+
+    let mut prepared =
+      PreparedCascade::new_for_style_set(&dom, &style_set, &media_ctx, None, None, None, false)
+        .expect("build prepared cascade");
+    let first = prepared
+      .apply(None, None, None, None, None)
+      .expect("first cascade");
+
+    let slot_first = find_styled_node_by_id(&first, "slot").expect("slot node");
+    let slotted_first = find_styled_node_by_id(&first, "slotted").expect("slotted node");
+    assert_eq!(first.styles.color, Rgba::rgb(255, 0, 0));
+    assert_eq!(slot_first.styles.color, Rgba::rgb(0, 0, 255));
+    assert_eq!(slotted_first.styles.color, Rgba::rgb(0, 0, 255));
+    assert!(slotted_first.styles.padding_left.is_zero());
+
+    let container_ctx = ContainerQueryContext {
+      base_media: media_ctx.clone(),
+      containers: HashMap::from([(
+        first.node_id,
+        ContainerQueryInfo {
+          inline_size: 600.0,
+          block_size: 400.0,
+          container_type: ContainerType::InlineSize,
+          names: Vec::new(),
+          font_size: 16.0,
+          styles: Arc::clone(&first.styles),
+        },
+      )]),
+    };
+
+    let reuse_map = build_reuse_map(&first);
+
+    // Force a container-query-style recascade where only the light DOM branch is restyled while the
+    // shadow root subtree containing the <slot> is reused.
+    let mut container_scope: HashSet<usize> = HashSet::new();
+    container_scope.insert(first.node_id);
+    container_scope.insert(slotted_first.node_id);
+    assert!(
+      !container_scope.contains(&slot_first.node_id),
+      "slot must be out of scope so its subtree can be reused"
+    );
+
+    let second = prepared
+      .apply(
+        None,
+        Some(&container_ctx),
+        Some(&container_scope),
+        Some(&reuse_map),
+        None,
+      )
+      .expect("second cascade");
+
+    let slot_second = find_styled_node_by_id(&second, "slot").expect("slot node");
+    let slotted_second = find_styled_node_by_id(&second, "slotted").expect("slotted node");
+
+    assert!(
+      Arc::ptr_eq(&slot_first.styles, &slot_second.styles),
+      "expected slot subtree to be reused across passes"
+    );
+    assert!(
+      !Arc::ptr_eq(&slotted_first.styles, &slotted_second.styles),
+      "expected slotted light DOM branch to be recomputed in pass 2"
+    );
+    assert_eq!(slotted_second.styles.padding_left, Length::px(1.0));
+    assert_eq!(
+      slotted_second.styles.color,
+      Rgba::rgb(0, 0, 255),
+      "slotted node should inherit from the flattened-tree slot base styles, not the DOM parent"
+    );
+  }
+
+  #[test]
   fn apply_styles_preserves_flat_tree_inheritance_when_shadow_subtree_reused() {
     let dom = DomNode {
       node_type: DomNodeType::Element {
