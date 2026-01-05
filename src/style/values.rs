@@ -467,11 +467,50 @@ impl CalcLength {
     }
     Some(total)
   }
+
+  fn write_css(&self, out: &mut impl fmt::Write) -> fmt::Result {
+    if self.is_zero() {
+      // Unitless zero is valid for `<length>` and `<length-percentage>`.
+      return out.write_str("0");
+    }
+
+    if let Some(term) = self.single_term() {
+      return write!(out, "{}{}", term.value, term.unit);
+    }
+
+    out.write_str("calc(")?;
+    for (idx, term) in self.terms().iter().enumerate() {
+      if idx == 0 {
+        write!(out, "{}{}", term.value, term.unit)?;
+        continue;
+      }
+
+      if term.value.is_sign_negative() {
+        out.write_str(" - ")?;
+        write!(out, "{}{}", term.value.abs(), term.unit)?;
+      } else {
+        out.write_str(" + ")?;
+        write!(out, "{}{}", term.value, term.unit)?;
+      }
+    }
+    out.write_str(")")
+  }
+
+  /// Serializes this calculated length to CSS text.
+  ///
+  /// This is used when synthesizing intermediate values for animations and for writing typed custom
+  /// property values back into `CustomPropertyValue.value` for later `var()` substitution.
+  pub fn to_css(&self) -> String {
+    let mut out = String::new();
+    let _ = self.write_css(&mut out);
+    out
+  }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::css::properties::parse_length;
 
   // LengthUnit tests
   #[test]
@@ -780,6 +819,54 @@ mod tests {
 
     assert_eq!(font_len.resolve_with_viewport(800.0, 600.0), None);
     assert_eq!(font_len.resolve_with_font_size(12.0), Some(24.0));
+  }
+
+  #[test]
+  fn calc_length_to_css_round_trips() {
+    let mut calc = CalcLength::empty();
+    calc.push(LengthUnit::Px, 10.0).unwrap();
+    calc.push(LengthUnit::Percent, 50.0).unwrap();
+
+    let length = Length::calc(calc);
+    let css = length.to_css();
+    assert!(css.contains("calc("));
+    assert!(css.contains(" + "));
+    assert_eq!(parse_length(&css), Some(length));
+  }
+
+  #[test]
+  fn calc_length_to_css_handles_negative_leading_term() {
+    let mut calc = CalcLength::empty();
+    calc.push(LengthUnit::Px, -10.0).unwrap();
+    calc.push(LengthUnit::Percent, 50.0).unwrap();
+
+    let length = Length::calc(calc);
+    let css = length.to_css();
+    assert!(css.starts_with("calc(-10px"));
+    assert!(css.contains(" + "));
+    assert_eq!(parse_length(&css), Some(length));
+  }
+
+  #[test]
+  fn calc_length_to_css_single_term_matches_plain_length() {
+    let calc = CalcLength::single(LengthUnit::Px, 10.0);
+    let calc_length = Length::calc(calc);
+
+    assert_eq!(calc_length.to_css(), Length::px(10.0).to_css());
+    assert_eq!(parse_length(&calc_length.to_css()), Some(Length::px(10.0)));
+  }
+
+  #[test]
+  fn custom_property_typed_length_calc_to_css_round_trips() {
+    let mut calc = CalcLength::empty();
+    calc.push(LengthUnit::Px, 10.0).unwrap();
+    calc.push(LengthUnit::Percent, 50.0).unwrap();
+
+    let typed = CustomPropertyTypedValue::Length(Length::calc(calc));
+    let css = typed.to_css();
+    assert_ne!(css, "0calc");
+    assert!(css.contains("calc("));
+    assert_eq!(parse_length(&css), Some(Length::calc(calc)));
   }
 
   #[test]
@@ -1238,38 +1325,25 @@ impl Length {
     }
     self.value == 0.0
   }
+
+  fn write_css(&self, out: &mut impl fmt::Write) -> fmt::Result {
+    if let Some(calc) = self.calc {
+      return calc.write_css(out);
+    }
+    write!(out, "{}{}", self.value, self.unit)
+  }
+
+  /// Serializes this length to CSS text, including any stored `calc()` expression.
+  pub fn to_css(&self) -> String {
+    let mut out = String::new();
+    let _ = self.write_css(&mut out);
+    out
+  }
 }
 
 impl fmt::Display for Length {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    if let Some(calc) = &self.calc {
-      let terms = calc.terms();
-      if terms.is_empty() {
-        // `calc(0)` is equivalent to `0` (unitless zero is accepted for all length syntaxes).
-        return write!(f, "0");
-      }
-      if terms.len() == 1 {
-        let term = terms[0];
-        return write!(f, "{}{}", term.value, term.unit);
-      }
-
-      write!(f, "calc(")?;
-      for (idx, term) in terms.iter().enumerate() {
-        let value = term.value;
-        if idx == 0 {
-          write!(f, "{}{}", value, term.unit)?;
-          continue;
-        }
-        if value < 0.0 {
-          write!(f, " - {}{}", -value, term.unit)?;
-        } else {
-          write!(f, " + {}{}", value, term.unit)?;
-        }
-      }
-      write!(f, ")")
-    } else {
-      write!(f, "{}{}", self.value, self.unit)
-    }
+    self.write_css(f)
   }
 }
 
@@ -1456,7 +1530,7 @@ impl CustomPropertyTypedValue {
   /// Serializes the typed value back to CSS text.
   pub fn to_css(&self) -> String {
     match self {
-      CustomPropertyTypedValue::Length(len) => len.to_string(),
+      CustomPropertyTypedValue::Length(len) => len.to_css(),
       CustomPropertyTypedValue::Number(n) => {
         if n.fract() == 0.0 {
           format!("{n:.0}")
