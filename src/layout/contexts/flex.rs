@@ -77,6 +77,7 @@ use crate::style::types::Direction;
 use crate::style::types::FlexBasis;
 use crate::style::types::FlexDirection;
 use crate::style::types::FlexWrap;
+use crate::style::types::IntrinsicSizeKeyword;
 use crate::style::types::JustifyContent;
 use crate::style::types::Overflow as CssOverflow;
 use crate::style::types::WritingMode;
@@ -754,7 +755,7 @@ impl FormattingContext for FlexFormattingContext {
     // Block-level flex containers with `width:auto` fill the available inline space. Root flex
     // nodes have no parent for percentage resolution, so translate the definite available width
     // into an explicit Taffy size to ensure flex-shrink/grow runs against the correct line size.
-    if style.width.is_none() && matches!(style.display, Display::Flex) {
+    if physical_width_is_auto(style) && matches!(style.display, Display::Flex) {
       if let CrateAvailableSpace::Definite(w) = constraints.available_width {
         if let Ok(existing) = taffy_tree.style(root_node) {
           let mut updated = existing.clone();
@@ -797,7 +798,28 @@ impl FormattingContext for FlexFormattingContext {
     }
 
     // Phase 2: Compute layout using Taffy
-    let available_space = self.constraints_to_available_space(&constraints);
+    let mut available_space = self.constraints_to_available_space(&constraints);
+    // If the flex container itself is sized with intrinsic keywords, map the available space we
+    // pass into Taffy so it performs the corresponding intrinsic probe. Fit-content needs a
+    // definite available size (fill-available), so only map min-/max-content here.
+    if constraints.used_border_box_width.is_none() {
+      match style.width_keyword {
+        Some(IntrinsicSizeKeyword::MinContent) => available_space.width = AvailableSpace::MinContent,
+        Some(IntrinsicSizeKeyword::MaxContent) => available_space.width = AvailableSpace::MaxContent,
+        _ => {}
+      }
+    }
+    if constraints.used_border_box_height.is_none() {
+      match style.height_keyword {
+        Some(IntrinsicSizeKeyword::MinContent) => {
+          available_space.height = AvailableSpace::MinContent
+        }
+        Some(IntrinsicSizeKeyword::MaxContent) => {
+          available_space.height = AvailableSpace::MaxContent
+        }
+        _ => {}
+      }
+    }
     let viewport_size = self.viewport_size;
     let measured_fragments = self.measured_fragments.clone();
     let base_factory = self.child_factory();
@@ -975,25 +997,25 @@ impl FormattingContext for FlexFormattingContext {
                           && log_measure_ids.contains(&box_node.id);
                         if known_dimensions.width == Some(0.0)
                             && matches!(avail.width, AvailableSpace::Definite(0.0))
-                            && box_node.style.width.is_none()
+                            && physical_width_is_auto(box_node.style.as_ref())
                         {
                             known_dimensions.width = None;
                         }
                         if known_dimensions.height == Some(0.0)
                             && matches!(avail.height, AvailableSpace::Definite(0.0))
-                            && box_node.style.height.is_none()
+                            && physical_height_is_auto(box_node.style.as_ref())
                         {
                             known_dimensions.height = None;
                         }
                         if matches!(avail.width, AvailableSpace::Definite(v) if v == 0.0)
                             && known_dimensions.width.is_none()
-                            && box_node.style.width.is_none()
+                            && physical_width_is_auto(box_node.style.as_ref())
                         {
                             avail.width = AvailableSpace::MaxContent;
                         }
                         if matches!(avail.height, AvailableSpace::Definite(v) if v == 0.0)
                             && known_dimensions.height.is_none()
-                            && box_node.style.height.is_none()
+                            && physical_height_is_auto(box_node.style.as_ref())
                         {
                             avail.height = AvailableSpace::MaxContent;
                         }
@@ -1027,7 +1049,7 @@ impl FormattingContext for FlexFormattingContext {
                         if known_dimensions.width.is_none()
                             && matches!(avail.width, AvailableSpace::Definite(_))
                             && matches!(box_node.style.flex_basis, crate::style::types::FlexBasis::Auto)
-                            && box_node.style.width.is_none()
+                            && physical_width_is_auto(box_node.style.as_ref())
                         {
                             avail.width = AvailableSpace::MaxContent;
                         }
@@ -1533,7 +1555,7 @@ impl FormattingContext for FlexFormattingContext {
                             );
                         }
                     }
-                    let constraints = this.constraints_from_taffy(known_dimensions, avail, None);
+                    let mut constraints = this.constraints_from_taffy(known_dimensions, avail, None);
                     if log_small_avail {
                         if let CrateAvailableSpace::Definite(w) = constraints.available_width {
                             if w > 0.0 && w <= 100.0 {
@@ -1610,6 +1632,302 @@ impl FormattingContext for FlexFormattingContext {
                     } else {
                         factory.get(fc_type)
                     };
+                    // Fit-content depends on the available space passed by Taffy. Resolve it here (per
+                    // measure call) instead of during style conversion so cached templates remain valid.
+                    let mut fit_border_box_width: Option<f32> = None;
+                    let mut fit_border_box_height: Option<f32> = None;
+                    // Border-box insets used to convert a resolved border-box length to the content-box
+                    // size that Taffy expects from the measure callback.
+                    let mut fit_inset_w: f32 = 0.0;
+                    let mut fit_inset_h: f32 = 0.0;
+
+                    let fit_width_limit = match (known_dimensions.width, measure_style.width_keyword) {
+                      (None, Some(IntrinsicSizeKeyword::FitContent { limit })) => Some(limit),
+                      _ => None,
+                    };
+                    let fit_height_limit = match (known_dimensions.height, measure_style.height_keyword) {
+                      (None, Some(IntrinsicSizeKeyword::FitContent { limit })) => Some(limit),
+                      _ => None,
+                    };
+                    let width_is_fit_content = fit_width_limit.is_some();
+                    let height_is_fit_content = fit_height_limit.is_some();
+
+                    if fit_width_limit.is_some() || fit_height_limit.is_some() {
+                      let inline_axis_is_horizontal =
+                        crate::style::inline_axis_is_horizontal(measure_style.writing_mode);
+                      let percentage_base = this.viewport_size.width.max(0.0);
+                      let reserve_scroll_x = matches!(measure_style.overflow_x, CssOverflow::Scroll)
+                        || (measure_style.scrollbar_gutter.stable
+                          && matches!(measure_style.overflow_x, CssOverflow::Auto | CssOverflow::Scroll));
+                      let reserve_scroll_y = matches!(measure_style.overflow_y, CssOverflow::Scroll)
+                        || (measure_style.scrollbar_gutter.stable
+                          && matches!(measure_style.overflow_y, CssOverflow::Auto | CssOverflow::Scroll));
+                      let scrollbar_width = resolve_scrollbar_width(measure_style);
+
+                      let padding_left = this.resolve_length_for_width(
+                        measure_style.padding_left,
+                        percentage_base,
+                        measure_style,
+                      );
+                      let padding_right = this.resolve_length_for_width(
+                        measure_style.padding_right,
+                        percentage_base,
+                        measure_style,
+                      );
+                      let padding_top = this.resolve_length_for_width(
+                        measure_style.padding_top,
+                        percentage_base,
+                        measure_style,
+                      );
+                      let padding_bottom = this.resolve_length_for_width(
+                        measure_style.padding_bottom,
+                        percentage_base,
+                        measure_style,
+                      );
+                      let border_left = this.resolve_length_for_width(
+                        measure_style.border_left_width,
+                        percentage_base,
+                        measure_style,
+                      );
+                      let border_right = this.resolve_length_for_width(
+                        measure_style.border_right_width,
+                        percentage_base,
+                        measure_style,
+                      );
+                      let border_top = this.resolve_length_for_width(
+                        measure_style.border_top_width,
+                        percentage_base,
+                        measure_style,
+                      );
+                      let border_bottom = this.resolve_length_for_width(
+                        measure_style.border_bottom_width,
+                        percentage_base,
+                        measure_style,
+                      );
+                      let edges_w = padding_left + padding_right + border_left + border_right;
+                      let edges_h = padding_top + padding_bottom + border_top + border_bottom;
+                      fit_inset_w = edges_w + if reserve_scroll_y { scrollbar_width } else { 0.0 };
+                      fit_inset_h = edges_h + if reserve_scroll_x { scrollbar_width } else { 0.0 };
+
+                      // Avoid self-recursion when computing intrinsic sizes for a fit-content axis by
+                      // clearing the corresponding preferred size property before calling into
+                      // intrinsic APIs.
+                      let fit_width_override = fit_width_limit.is_some().then(|| {
+                        let mut override_style: ComputedStyle = (*measure_style).clone();
+                        override_style.width = None;
+                        override_style.width_keyword = None;
+                        Arc::new(override_style)
+                      });
+                      let fit_height_override = fit_height_limit.is_some().then(|| {
+                        let mut override_style: ComputedStyle = (*measure_style).clone();
+                        override_style.height = None;
+                        override_style.height_keyword = None;
+                        Arc::new(override_style)
+                      });
+
+                      let override_for_axis = |axis: Axis| -> Option<Arc<ComputedStyle>> {
+                        match axis {
+                          Axis::Horizontal => fit_width_override.clone().or_else(|| override_style.clone()),
+                          Axis::Vertical => fit_height_override.clone().or_else(|| override_style.clone()),
+                        }
+                      };
+
+                      let run_intrinsic_inline_sizes =
+                        |style_override: Option<Arc<ComputedStyle>>| -> Result<(f32, f32), LayoutError> {
+                        if let Some(style) = style_override {
+                          crate::layout::style_override::with_style_override(
+                            measure_box.id,
+                            style,
+                            || fc.compute_intrinsic_inline_sizes(measure_box),
+                          )
+                        } else {
+                          fc.compute_intrinsic_inline_sizes(measure_box)
+                        }
+                      };
+
+                      let run_intrinsic_block_size = |mode: IntrinsicSizingMode,
+                                                      style_override: Option<Arc<ComputedStyle>>|
+                       -> Result<f32, LayoutError> {
+                          if let Some(style) = style_override {
+                            crate::layout::style_override::with_style_override(
+                              measure_box.id,
+                              style,
+                              || fc.compute_intrinsic_block_size(measure_box, mode),
+                            )
+                          } else {
+                            fc.compute_intrinsic_block_size(measure_box, mode)
+                          }
+                        };
+
+                      let intrinsic_range_for_physical_axis =
+                        |axis: Axis| -> Result<(f32, f32), LayoutError> {
+                          let axis_override = override_for_axis(axis);
+                          match axis {
+                            Axis::Horizontal => {
+                              if inline_axis_is_horizontal {
+                                run_intrinsic_inline_sizes(axis_override)
+                              } else {
+                                let min =
+                                  run_intrinsic_block_size(IntrinsicSizingMode::MinContent, axis_override.clone())?;
+                                let max = match run_intrinsic_block_size(
+                                  IntrinsicSizingMode::MaxContent,
+                                  axis_override,
+                                ) {
+                                  Ok(value) => value,
+                                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                                  Err(_) => min,
+                                };
+                                Ok((min, max))
+                              }
+                            }
+                            Axis::Vertical => {
+                              if inline_axis_is_horizontal {
+                                let min =
+                                  run_intrinsic_block_size(IntrinsicSizingMode::MinContent, axis_override.clone())?;
+                                let max = match run_intrinsic_block_size(
+                                  IntrinsicSizingMode::MaxContent,
+                                  axis_override,
+                                ) {
+                                  Ok(value) => value,
+                                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                                  Err(_) => min,
+                                };
+                                Ok((min, max))
+                              } else {
+                                run_intrinsic_inline_sizes(axis_override)
+                              }
+                            }
+                          }
+                        };
+
+                      let compute_fit_border_box =
+                        |axis: Axis, limit: Option<Length>, avail_dim: AvailableSpace| -> Result<f32, LayoutError> {
+                          let (min_intrinsic, max_intrinsic) =
+                            intrinsic_range_for_physical_axis(axis)?;
+                          let min_intrinsic = min_intrinsic.max(0.0);
+                          let max_intrinsic = max_intrinsic.max(0.0);
+                          let axis_inset = match axis {
+                            Axis::Horizontal => fit_inset_w,
+                            Axis::Vertical => fit_inset_h,
+                          };
+
+                          let available_border_box = match avail_dim {
+                            AvailableSpace::Definite(v) => (v + axis_inset).max(0.0),
+                            AvailableSpace::MinContent => min_intrinsic,
+                            AvailableSpace::MaxContent => max_intrinsic,
+                          };
+
+                          let preferred_border_box = match limit {
+                            None => available_border_box,
+                            Some(arg) => {
+                              let base_content = match avail_dim {
+                                AvailableSpace::Definite(v) => v.max(0.0),
+                                _ => (available_border_box - axis_inset).max(0.0),
+                              };
+                              let resolved =
+                                this.resolve_length_for_width(arg, base_content, measure_style).max(0.0);
+                              if measure_style.box_sizing == BoxSizing::ContentBox {
+                                (resolved + axis_inset).max(0.0)
+                              } else {
+                                resolved
+                              }
+                            }
+                          };
+
+                          let mut border_box = crate::layout::utils::clamp_with_order(
+                            preferred_border_box,
+                            min_intrinsic,
+                            max_intrinsic,
+                          );
+
+                          // Apply authored min/max constraints on the axis, including intrinsic keyword
+                          // constraints. These clamp the fit-content result.
+                          let percentage_base_opt = match avail_dim {
+                            AvailableSpace::Definite(v) => Some(v.max(0.0)),
+                            _ => None,
+                          };
+                          let resolve_length_px = |len: Length| -> Option<f32> {
+                            if len.has_percentage() && percentage_base_opt.is_none() {
+                              return None;
+                            }
+                            let base = percentage_base_opt.unwrap_or(this.viewport_size.width.max(0.0));
+                            Some(this.resolve_length_for_width(len, base, measure_style).max(0.0))
+                          };
+                          let to_border_box = |value: f32| -> f32 {
+                            if measure_style.box_sizing == BoxSizing::ContentBox {
+                              (value + axis_inset).max(0.0)
+                            } else {
+                              value.max(0.0)
+                            }
+                          };
+
+                          let (author_min_len, author_max_len, author_min_kw, author_max_kw) =
+                            match axis {
+                              Axis::Horizontal => (
+                                measure_style.min_width,
+                                measure_style.max_width,
+                                measure_style.min_width_keyword,
+                                measure_style.max_width_keyword,
+                              ),
+                              Axis::Vertical => (
+                                measure_style.min_height,
+                                measure_style.max_height,
+                                measure_style.min_height_keyword,
+                                measure_style.max_height_keyword,
+                              ),
+                            };
+
+                          let keyword_to_bound = |kw: IntrinsicSizeKeyword| -> Option<f32> {
+                            match kw {
+                              IntrinsicSizeKeyword::MinContent => Some(min_intrinsic),
+                              IntrinsicSizeKeyword::MaxContent => Some(max_intrinsic),
+                              IntrinsicSizeKeyword::FitContent { .. } => None,
+                            }
+                          };
+
+                          let author_min = author_min_kw
+                            .and_then(keyword_to_bound)
+                            .or_else(|| author_min_len.and_then(resolve_length_px).map(to_border_box));
+                          let author_max = author_max_kw
+                            .and_then(keyword_to_bound)
+                            .or_else(|| author_max_len.and_then(resolve_length_px).map(to_border_box));
+                          if author_min.is_some() || author_max.is_some() {
+                            let min_bound = author_min.unwrap_or(0.0);
+                            let mut max_bound = author_max.unwrap_or(f32::INFINITY);
+                            if max_bound < min_bound {
+                              max_bound = min_bound;
+                            }
+                            border_box = crate::layout::utils::clamp_with_order(border_box, min_bound, max_bound);
+                          }
+
+                          Ok(border_box)
+                        };
+
+                      if let Some(limit) = fit_width_limit {
+                        match compute_fit_border_box(Axis::Horizontal, limit, avail.width) {
+                          Ok(border_box) if border_box.is_finite() => {
+                            fit_border_box_width = Some(border_box);
+                            constraints.used_border_box_width = Some(border_box);
+                          }
+                          Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                          Err(_) => {}
+                          _ => {}
+                        }
+                      }
+
+                      if let Some(limit) = fit_height_limit {
+                        match compute_fit_border_box(Axis::Vertical, limit, avail.height) {
+                          Ok(border_box) if border_box.is_finite() => {
+                            fit_border_box_height = Some(border_box);
+                            constraints.used_border_box_height = Some(border_box);
+                          }
+                          Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                          Err(_) => {}
+                          _ => {}
+                        }
+                      }
+                    }
+
                     // Intrinsic width probes (`AvailableSpace::{MinContent,MaxContent}`) are used by
                     // Taffy during flex base-size resolution. They do not need a fully laid out
                     // fragment tree (we can't reuse those fragments for final placement anyway),
@@ -1631,6 +1949,53 @@ impl FormattingContext for FlexFormattingContext {
                         AvailableSpace::MaxContent => IntrinsicSizingMode::MaxContent,
                         _ => unreachable!("width_is_intrinsic_probe guarded avail.width"),
                       };
+                      if let Some(border_box_width) = fit_border_box_width {
+                        // Fit-content sizing is already resolved in border-box terms. Convert to
+                        // the content-box size that Taffy expects from the measure callback.
+                        let mut content_w = (border_box_width - fit_inset_w).max(0.0);
+                        // Mirror the clamp behavior from the intrinsic fast path to avoid runaway
+                        // widths propagating through flex sizing.
+                        content_w = content_w.min(this.viewport_size.width.max(0.0));
+
+                        // Preserve the existing block-size hint behavior so baseline alignment
+                        // doesn't collapse when Taffy asks for intrinsic inline sizes.
+                        let mut content_h = fallback_size(known_dimensions.height, avail.height);
+                        let eps = 0.01;
+                        if content_h <= eps {
+                          let intrinsic_block_result = if let Some(style) = override_style.clone() {
+                            crate::layout::style_override::with_style_override(
+                              measure_box.id,
+                              style,
+                              || fc.compute_intrinsic_block_size(measure_box, mode),
+                            )
+                          } else {
+                            fc.compute_intrinsic_block_size(measure_box, mode)
+                          };
+                          match intrinsic_block_result {
+                            Ok(border_box_block) => {
+                              content_h = (border_box_block - fit_inset_h).max(0.0);
+                            }
+                            Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                            Err(_) => {}
+                          }
+                        }
+
+                        let max_h_bound = match avail.height {
+                          AvailableSpace::Definite(h) => h,
+                          _ => this.viewport_size.height,
+                        };
+                        if content_h.is_finite() {
+                          content_h = content_h.min(max_h_bound.max(0.0));
+                        } else {
+                          content_h = max_h_bound.max(0.0);
+                        }
+
+                        flex_profile::record_measure_time(measure_timer);
+                        return taffy::geometry::Size {
+                          width: content_w.max(0.0),
+                          height: content_h.max(0.0),
+                        };
+                      }
                       #[cfg(test)]
                       if !log_measure_ids.is_empty() && log_measure_ids.contains(&measure_box.id) {
                         // Mirror the debug-only max-content hint accounting used by the full
@@ -1833,6 +2198,16 @@ impl FormattingContext for FlexFormattingContext {
                         _ => constraints.width().unwrap_or_else(|| fragment.bounds.width()),
                     };
                     let mut content_size = this.content_box_size(&fragment, &box_node.style, percentage_base);
+                    // For fit-content, the fit computation operates on border-box sizes. Override the
+                    // measured content-box size so that Taffy sees the content size corresponding to
+                    // the clamped fit-content border-box size (subtracting padding/border/scrollbar
+                    // gutters).
+                    if let Some(border_box) = fit_border_box_width {
+                      content_size.width = (border_box - fit_inset_w).max(0.0);
+                    }
+                    if let Some(border_box) = fit_border_box_height {
+                      content_size.height = (border_box - fit_inset_h).max(0.0);
+                    }
                     let eps = 0.01;
                     let mut subtree_deadline_counter = 0usize;
                     let mut intrinsic_size = Size::new(0.0, 0.0);
@@ -1858,9 +2233,9 @@ impl FormattingContext for FlexFormattingContext {
                     if matches!(
                         constraints.available_width,
                         CrateAvailableSpace::MaxContent | CrateAvailableSpace::MinContent
-                    ) && measure_style.width.is_none()
-                        && measure_style.min_width.is_none()
-                        && measure_style.max_width.is_none()
+                    ) && physical_width_is_auto(measure_style)
+                        && physical_min_width_is_auto(measure_style)
+                        && physical_max_width_is_auto(measure_style)
                     {
                         let descendant_span =
                           match Self::fragment_descendant_span(&fragment, &mut subtree_deadline_counter) {
@@ -1913,7 +2288,13 @@ impl FormattingContext for FlexFormattingContext {
                         .as_ref()
                         .and_then(|l| resolve_if_base(l, percentage_base_h));
                     let mut max_w_bound = resolved_max_w.unwrap_or_else(|| match avail.width {
-                        AvailableSpace::Definite(w) => w.min(this.viewport_size.width),
+                        AvailableSpace::Definite(w) => {
+                          if width_is_fit_content {
+                            this.viewport_size.width
+                          } else {
+                            w.min(this.viewport_size.width)
+                          }
+                        }
                         _ => this.viewport_size.width,
                     });
                     let min_w_bound = resolved_min_w.unwrap_or(0.0);
@@ -1927,7 +2308,13 @@ impl FormattingContext for FlexFormattingContext {
                     );
 
                     let mut max_h_bound = resolved_max_h.unwrap_or(match avail.height {
-                        AvailableSpace::Definite(h) => h,
+                        AvailableSpace::Definite(h) => {
+                          if height_is_fit_content {
+                            this.viewport_size.height
+                          } else {
+                            h
+                          }
+                        }
                         _ => this.viewport_size.height,
                     });
                     let min_h_bound = resolved_min_h.unwrap_or(0.0);
@@ -3271,19 +3658,48 @@ impl FormattingContext for FlexFormattingContext {
 }
 
 fn height_depends_on_available_height(style: &ComputedStyle) -> bool {
-  let height_depends = style.height.as_ref().is_some_and(Length::has_percentage);
+  let height_depends = style.height.as_ref().is_some_and(Length::has_percentage)
+    || style
+      .height_keyword
+      .is_some_and(|kw| matches!(kw, IntrinsicSizeKeyword::FitContent { .. }));
   let min_depends = style
     .min_height
     .as_ref()
-    .is_some_and(Length::has_percentage);
+    .is_some_and(Length::has_percentage)
+    || style
+      .min_height_keyword
+      .is_some_and(|kw| matches!(kw, IntrinsicSizeKeyword::FitContent { .. }));
   let max_depends = style
     .max_height
     .as_ref()
-    .is_some_and(Length::has_percentage);
+    .is_some_and(Length::has_percentage)
+    || style
+      .max_height_keyword
+      .is_some_and(|kw| matches!(kw, IntrinsicSizeKeyword::FitContent { .. }));
   let flex_basis_depends =
     matches!(style.flex_basis, FlexBasis::Length(len) if len.has_percentage());
 
   height_depends || min_depends || max_depends || flex_basis_depends
+}
+
+#[inline]
+fn physical_width_is_auto(style: &ComputedStyle) -> bool {
+  style.width.is_none() && style.width_keyword.is_none()
+}
+
+#[inline]
+fn physical_height_is_auto(style: &ComputedStyle) -> bool {
+  style.height.is_none() && style.height_keyword.is_none()
+}
+
+#[inline]
+fn physical_min_width_is_auto(style: &ComputedStyle) -> bool {
+  style.min_width.is_none() && style.min_width_keyword.is_none()
+}
+
+#[inline]
+fn physical_max_width_is_auto(style: &ComputedStyle) -> bool {
+  style.max_width.is_none() && style.max_width_keyword.is_none()
 }
 
 fn measure_cache_key_and_snap(
@@ -3480,6 +3896,36 @@ fn hash_option_length(len: &Option<Length>, hasher: &mut FingerprintHasher) {
   }
 }
 
+fn hash_intrinsic_size_keyword(value: &IntrinsicSizeKeyword, hasher: &mut FingerprintHasher) {
+  match value {
+    IntrinsicSizeKeyword::MinContent => 0u8.hash(hasher),
+    IntrinsicSizeKeyword::MaxContent => 1u8.hash(hasher),
+    IntrinsicSizeKeyword::FitContent { limit } => {
+      2u8.hash(hasher);
+      match limit {
+        Some(limit) => {
+          1u8.hash(hasher);
+          hash_length(limit, hasher);
+        }
+        None => 0u8.hash(hasher),
+      }
+    }
+  }
+}
+
+fn hash_option_intrinsic_size_keyword(
+  value: &Option<IntrinsicSizeKeyword>,
+  hasher: &mut FingerprintHasher,
+) {
+  match value {
+    Some(value) => {
+      1u8.hash(hasher);
+      hash_intrinsic_size_keyword(value, hasher);
+    }
+    None => 0u8.hash(hasher),
+  }
+}
+
 fn hash_flex_basis(basis: &crate::style::types::FlexBasis, hasher: &mut FingerprintHasher) {
   match basis {
     crate::style::types::FlexBasis::Auto => 0u8.hash(hasher),
@@ -3496,11 +3942,17 @@ fn flex_style_fingerprint(style: &ComputedStyle) -> u64 {
   hash_enum_discriminant(&style.position, &mut h);
   hash_enum_discriminant(&style.box_sizing, &mut h);
   hash_option_length(&style.width, &mut h);
+  hash_option_intrinsic_size_keyword(&style.width_keyword, &mut h);
   hash_option_length(&style.height, &mut h);
+  hash_option_intrinsic_size_keyword(&style.height_keyword, &mut h);
   hash_option_length(&style.min_width, &mut h);
   hash_option_length(&style.max_width, &mut h);
+  hash_option_intrinsic_size_keyword(&style.min_width_keyword, &mut h);
+  hash_option_intrinsic_size_keyword(&style.max_width_keyword, &mut h);
   hash_option_length(&style.min_height, &mut h);
   hash_option_length(&style.max_height, &mut h);
+  hash_option_intrinsic_size_keyword(&style.min_height_keyword, &mut h);
+  hash_option_intrinsic_size_keyword(&style.max_height_keyword, &mut h);
   hash_option_length(&style.margin_top, &mut h);
   hash_option_length(&style.margin_right, &mut h);
   hash_option_length(&style.margin_bottom, &mut h);
@@ -3698,6 +4150,7 @@ impl FlexFormattingContext {
       check_layout_deadline(&mut deadline_counter)?;
       let child = *child;
       let mut resolved_style = child_style.0.clone();
+      self.apply_flex_intrinsic_size_keywords(child, false, &mut resolved_style)?;
       self.apply_flex_auto_min_size(child, false, Some(root_style), &mut resolved_style)?;
       let node = taffy_tree
         .new_leaf_with_context(resolved_style, child as *const BoxNode)
@@ -3801,6 +4254,7 @@ impl FlexFormattingContext {
   ) -> Result<taffy::style::Style, LayoutError> {
     let mut style =
       self.computed_style_to_taffy_base(box_node.style.as_ref(), is_root, containing_flex)?;
+    self.apply_flex_intrinsic_size_keywords(box_node, is_root, &mut style)?;
     self.apply_flex_auto_min_size(box_node, is_root, containing_flex, &mut style)?;
     Ok(style)
   }
@@ -3961,6 +4415,164 @@ impl FlexFormattingContext {
     })
   }
 
+  /// Resolves intrinsic sizing keywords (`min-content` / `max-content`) for a specific flex item.
+  ///
+  /// These keyword values depend on the box's contents, so the resolution must happen per box
+  /// instance (both in the non-template path and when instantiating cached Taffy templates).
+  fn apply_flex_intrinsic_size_keywords(
+    &self,
+    box_node: &BoxNode,
+    is_root: bool,
+    taffy_style: &mut taffy::style::Style,
+  ) -> Result<(), LayoutError> {
+    if is_root {
+      return Ok(());
+    }
+
+    let style = box_node.style.as_ref();
+    let item_fc_type = box_node
+      .formatting_context()
+      .unwrap_or(FormattingContextType::Block);
+    let item_fc = self.factory.get(item_fc_type);
+    let box_id = box_node.id();
+    let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+
+    // When computing intrinsic sizes for an axis that is itself specified as an intrinsic keyword,
+    // clear that size property to avoid self-recursion.
+    let width_override = style.width_keyword.is_some().then(|| {
+      let mut override_style: ComputedStyle = (*box_node.style).clone();
+      override_style.width = None;
+      override_style.width_keyword = None;
+      Arc::new(override_style)
+    });
+    let height_override = style.height_keyword.is_some().then(|| {
+      let mut override_style: ComputedStyle = (*box_node.style).clone();
+      override_style.height = None;
+      override_style.height_keyword = None;
+      Arc::new(override_style)
+    });
+
+    let run_with_override = |override_style: Option<Arc<ComputedStyle>>,
+                             f: &dyn Fn(&BoxNode) -> Result<f32, LayoutError>|
+     -> Result<f32, LayoutError> {
+      if let Some(style_override) = override_style {
+        if box_id != 0 {
+          crate::layout::style_override::with_style_override(box_id, style_override, || f(box_node))
+        } else {
+          let mut cloned = box_node.clone();
+          cloned.style = style_override;
+          f(&cloned)
+        }
+      } else {
+        f(box_node)
+      }
+    };
+
+    let intrinsic_physical_width = |mode: IntrinsicSizingMode| -> Result<f32, LayoutError> {
+      if inline_is_horizontal {
+        run_with_override(width_override.clone(), &|node| {
+          item_fc.compute_intrinsic_inline_size(node, mode)
+        })
+      } else {
+        run_with_override(width_override.clone(), &|node| {
+          item_fc.compute_intrinsic_block_size(node, mode)
+        })
+      }
+    };
+
+    let intrinsic_physical_height = |mode: IntrinsicSizingMode| -> Result<f32, LayoutError> {
+      if inline_is_horizontal {
+        run_with_override(height_override.clone(), &|node| {
+          item_fc.compute_intrinsic_block_size(node, mode)
+        })
+      } else {
+        run_with_override(height_override.clone(), &|node| {
+          item_fc.compute_intrinsic_inline_size(node, mode)
+        })
+      }
+    };
+
+    let keyword_to_mode = |kw: IntrinsicSizeKeyword| match kw {
+      IntrinsicSizeKeyword::MinContent => Some(IntrinsicSizingMode::MinContent),
+      IntrinsicSizeKeyword::MaxContent => Some(IntrinsicSizingMode::MaxContent),
+      IntrinsicSizeKeyword::FitContent { .. } => None,
+    };
+
+    if let Some(mode) = style.width_keyword.and_then(keyword_to_mode) {
+      match intrinsic_physical_width(mode) {
+        Ok(border_box) => {
+          if border_box.is_finite() {
+            taffy_style.size.width = Dimension::length(border_box.max(0.0));
+          }
+        }
+        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+        Err(_) => {}
+      }
+    }
+
+    if let Some(mode) = style.height_keyword.and_then(keyword_to_mode) {
+      match intrinsic_physical_height(mode) {
+        Ok(border_box) => {
+          if border_box.is_finite() {
+            taffy_style.size.height = Dimension::length(border_box.max(0.0));
+          }
+        }
+        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+        Err(_) => {}
+      }
+    }
+
+    if let Some(mode) = style.min_width_keyword.and_then(keyword_to_mode) {
+      match intrinsic_physical_width(mode) {
+        Ok(border_box) => {
+          if border_box.is_finite() {
+            taffy_style.min_size.width = Dimension::length(border_box.max(0.0));
+          }
+        }
+        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+        Err(_) => {}
+      }
+    }
+
+    if let Some(mode) = style.min_height_keyword.and_then(keyword_to_mode) {
+      match intrinsic_physical_height(mode) {
+        Ok(border_box) => {
+          if border_box.is_finite() {
+            taffy_style.min_size.height = Dimension::length(border_box.max(0.0));
+          }
+        }
+        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+        Err(_) => {}
+      }
+    }
+
+    if let Some(mode) = style.max_width_keyword.and_then(keyword_to_mode) {
+      match intrinsic_physical_width(mode) {
+        Ok(border_box) => {
+          if border_box.is_finite() {
+            taffy_style.max_size.width = Dimension::length(border_box.max(0.0));
+          }
+        }
+        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+        Err(_) => {}
+      }
+    }
+
+    if let Some(mode) = style.max_height_keyword.and_then(keyword_to_mode) {
+      match intrinsic_physical_height(mode) {
+        Ok(border_box) => {
+          if border_box.is_finite() {
+            taffy_style.max_size.height = Dimension::length(border_box.max(0.0));
+          }
+        }
+        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+        Err(_) => {}
+      }
+    }
+
+    Ok(())
+  }
+
   /// Applies Flexbox's automatic minimum size (min-width/height:auto) for a specific box instance.
   ///
   /// This is content-dependent: it may run intrinsic sizing probes and therefore must *not* be
@@ -4034,7 +4646,7 @@ impl FlexFormattingContext {
         // ignores the preferred size (CSS Flexbox §4.5). When a definite preferred size exists,
         // the content-based minimum is the smaller of the preferred size suggestion and the
         // content size suggestion.
-        let needs_override = specified_size_suggestion.is_some() && style.width.is_some();
+        let needs_override = style.width.is_some() || style.width_keyword.is_some();
         let intrinsic_result = if needs_override {
           let mut override_style: ComputedStyle = (*box_node.style).clone();
           override_style.width = None;
@@ -4102,7 +4714,7 @@ impl FlexFormattingContext {
         Some(value.max(0.0))
       });
 
-      let needs_override = specified_size_suggestion.is_some() && style.height.is_some();
+      let needs_override = style.height.is_some() || style.height_keyword.is_some();
       let intrinsic_result = if needs_override {
         let mut override_style: ComputedStyle = (*box_node.style).clone();
         override_style.height = None;
@@ -4154,19 +4766,21 @@ impl FlexFormattingContext {
   /// available space (simulating block-level behavior).
   fn compute_size(&self, style: &ComputedStyle, is_root: bool) -> taffy::geometry::Size<Dimension> {
     let is_block_level_root = is_root && matches!(style.display, Display::Flex);
-    let width = match style.width.as_ref() {
-      Some(len) => self.dimension_for_box_sizing(len, style, Axis::Horizontal),
-      None if is_block_level_root => {
+    let width = match (style.width.as_ref(), style.width_keyword) {
+      (Some(len), _) => self.dimension_for_box_sizing(len, style, Axis::Horizontal),
+      (None, Some(_)) => Dimension::auto(),
+      (None, None) if is_block_level_root => {
         // Root flex container without explicit width: expand to fill
-        // available space (100% of containing block)
+        // available space (100% of containing block).
         Dimension::percent(1.0)
       }
-      None => Dimension::auto(),
+      (None, None) => Dimension::auto(),
     };
 
-    let height = match style.height.as_ref() {
-      Some(len) => self.dimension_for_box_sizing(len, style, Axis::Vertical),
-      None => Dimension::auto(), // Height always auto unless specified
+    let height = match (style.height.as_ref(), style.height_keyword) {
+      (Some(len), _) => self.dimension_for_box_sizing(len, style, Axis::Vertical),
+      (None, Some(_)) => Dimension::auto(),
+      (None, None) => Dimension::auto(), // Height always auto unless specified
     };
 
     taffy::geometry::Size { width, height }
@@ -9444,6 +10058,183 @@ mod tests {
     assert!(measure_lookups > 0, "measure cache should see lookups");
 
     drop(guard);
+  }
+
+  #[test]
+  fn flex_width_keyword_min_content_is_narrower_than_max_content() {
+    let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Row;
+    container_style.width = Some(Length::px(1000.0));
+    container_style.width_keyword = None;
+
+    let mut text_style = ComputedStyle::default();
+    text_style.font_size = 16.0;
+    let text_style = Arc::new(text_style);
+
+    let make_item = |id: usize, keyword: IntrinsicSizeKeyword| {
+      let text = BoxNode::new_text(text_style.clone(), "hello world goodbye".to_string());
+      let inline = BoxNode::new_inline(text_style.clone(), vec![text]);
+      let mut item_style = ComputedStyle::default();
+      item_style.width = None;
+      item_style.width_keyword = Some(keyword);
+      item_style.flex_shrink = 0.0;
+      let mut item =
+        BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![inline]);
+      item.id = id;
+      item
+    };
+
+    let min_id = 71001usize;
+    let max_id = 71002usize;
+    let min_item = make_item(min_id, IntrinsicSizeKeyword::MinContent);
+    let max_item = make_item(max_id, IntrinsicSizeKeyword::MaxContent);
+
+    let container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![min_item, max_item],
+    );
+    let constraints = LayoutConstraints::definite(1000.0, 200.0);
+    let fragment = fc.layout(&container, &constraints).unwrap();
+
+    let min_fragment = find_block_child(&fragment, min_id);
+    let max_fragment = find_block_child(&fragment, max_id);
+    assert!(
+      min_fragment.bounds.width() + 0.5 < max_fragment.bounds.width(),
+      "expected min-content width ({:.2}) < max-content width ({:.2})",
+      min_fragment.bounds.width(),
+      max_fragment.bounds.width(),
+    );
+  }
+
+  #[test]
+  fn flex_width_keyword_fit_content_shrinks_within_definite_container() {
+    let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+    let block_fc = fc.factory.get(FormattingContextType::Block);
+
+    let mut text_style = ComputedStyle::default();
+    text_style.font_size = 16.0;
+    let text_style = Arc::new(text_style);
+
+    // Measure intrinsic sizes on a plain auto-sized box to pick a container width that is between
+    // min- and max-content. This keeps the assertion robust across font metrics.
+    let probe_id = 72001usize;
+    let probe_text = BoxNode::new_text(text_style.clone(), "fit content prefers available".to_string());
+    let probe_inline = BoxNode::new_inline(text_style.clone(), vec![probe_text]);
+    let mut probe_box = BoxNode::new_block(
+      Arc::new(ComputedStyle::default()),
+      FormattingContextType::Block,
+      vec![probe_inline],
+    );
+    probe_box.id = probe_id;
+    let (min_intrinsic, max_intrinsic) = block_fc
+      .compute_intrinsic_inline_sizes(&probe_box)
+      .expect("intrinsic inline sizes");
+    assert!(
+      max_intrinsic > min_intrinsic + 1.0,
+      "expected text to have distinct min/max intrinsic widths (min={min_intrinsic:.2}, max={max_intrinsic:.2})"
+    );
+    let container_width = (min_intrinsic + (max_intrinsic - min_intrinsic) / 2.0)
+      .clamp(min_intrinsic + 1.0, max_intrinsic - 1.0);
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Row;
+    container_style.width = Some(Length::px(container_width));
+    container_style.width_keyword = None;
+
+    let item_id = 72002usize;
+    let item_text = BoxNode::new_text(text_style.clone(), "fit content prefers available".to_string());
+    let item_inline = BoxNode::new_inline(text_style.clone(), vec![item_text]);
+    let mut item_style = ComputedStyle::default();
+    item_style.width = None;
+    item_style.width_keyword = Some(IntrinsicSizeKeyword::FitContent { limit: None });
+    item_style.flex_shrink = 0.0;
+    let mut item = BoxNode::new_block(
+      Arc::new(item_style),
+      FormattingContextType::Block,
+      vec![item_inline],
+    );
+    item.id = item_id;
+
+    let container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![item],
+    );
+
+    let constraints = LayoutConstraints::definite(container_width, 200.0);
+    let fragment = fc.layout(&container, &constraints).unwrap();
+    let item_fragment = find_block_child(&fragment, item_id);
+    let measured_width = item_fragment.bounds.width();
+    assert!(
+      (measured_width - container_width).abs() < 1.0,
+      "expected fit-content width {:.2} to match container width {:.2}",
+      measured_width,
+      container_width
+    );
+    assert!(
+      measured_width + 0.5 < max_intrinsic,
+      "expected fit-content width {:.2} < max-content width {:.2}",
+      measured_width,
+      max_intrinsic,
+    );
+  }
+
+  #[test]
+  fn flex_intrinsic_keyword_resolution_respects_physical_axes_in_vertical_writing_mode() {
+    let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+    let block_fc = fc.factory.get(FormattingContextType::Block);
+
+    let replaced_id = 73001usize;
+    let mut replaced_style = ComputedStyle::default();
+    replaced_style.writing_mode = WritingMode::VerticalRl;
+    replaced_style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+    replaced_style.height_keyword = None;
+
+    let mut replaced = BoxNode::new_replaced(
+      Arc::new(replaced_style),
+      ReplacedType::Canvas,
+      Some(Size::new(20.0, 80.0)),
+      None,
+    );
+    replaced.id = replaced_id;
+
+    let inline_size = block_fc
+      .compute_intrinsic_inline_size(&replaced, IntrinsicSizingMode::MaxContent)
+      .expect("inline intrinsic size");
+    let block_size = block_fc
+      .compute_intrinsic_block_size(&replaced, IntrinsicSizingMode::MaxContent)
+      .expect("block intrinsic size");
+    assert!(
+      (inline_size - block_size).abs() > 1.0,
+      "expected inline/block intrinsic sizes to differ in vertical writing mode (inline={inline_size:.2}, block={block_size:.2})"
+    );
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Row;
+    container_style.width = Some(Length::px(200.0));
+    container_style.width_keyword = None;
+
+    let container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![replaced],
+    );
+    let constraints = LayoutConstraints::definite(200.0, 200.0);
+    let fragment = fc.layout(&container, &constraints).unwrap();
+    let child_fragment = &fragment.children[0];
+    assert!(
+      (child_fragment.bounds.width() - block_size).abs() < 0.5,
+      "expected physical width {:.2} to match intrinsic block size {:.2} (not inline {:.2})",
+      child_fragment.bounds.width(),
+      block_size,
+      inline_size,
+    );
   }
 
   #[test]
