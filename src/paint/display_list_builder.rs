@@ -2129,7 +2129,7 @@ impl DisplayListBuilder {
         self.build_breakdown.as_deref(),
       )
     });
-    let paint_containment_clip = if paint_contained {
+    let mut paint_containment_clip = if paint_contained {
       root_fragment
         .and_then(|fragment| {
           let style = root_style?;
@@ -2170,7 +2170,6 @@ impl DisplayListBuilder {
     } else {
       None
     };
-    let has_paint_containment_clip = paint_containment_clip.is_some();
 
     let mut pushed_opacity = false;
     let mut child_visibility = context_visibility;
@@ -2327,10 +2326,6 @@ impl DisplayListBuilder {
       return;
     }
 
-    if let Some(clip) = paint_containment_clip {
-      self.list.push(DisplayItem::PushClip(clip));
-    }
-
     self
       .list
       .push(DisplayItem::PushStackingContext(StackingContextItem {
@@ -2378,13 +2373,16 @@ impl DisplayListBuilder {
         self.list.push(DisplayItem::PopClip);
       }
       self.list.push(DisplayItem::PopStackingContext);
-      if has_paint_containment_clip {
-        self.list.push(DisplayItem::PopClip);
-      }
       if pushed_opacity {
         self.pop_opacity();
       }
       return;
+    }
+
+    let mut paint_containment_clip_pushed = false;
+    if let Some(clip) = paint_containment_clip.take() {
+      self.list.push(DisplayItem::PushClip(clip));
+      paint_containment_clip_pushed = true;
     }
 
     let mut overflow_clip_pushed = false;
@@ -2457,13 +2455,13 @@ impl DisplayListBuilder {
     if overflow_clip_pushed {
       self.list.push(DisplayItem::PopClip);
     }
+    if paint_containment_clip_pushed {
+      self.list.push(DisplayItem::PopClip);
+    }
     for _ in 0..pushed_clips {
       self.list.push(DisplayItem::PopClip);
     }
     self.list.push(DisplayItem::PopStackingContext);
-    if has_paint_containment_clip {
-      self.list.push(DisplayItem::PopClip);
-    }
     if pushed_opacity {
       self.pop_opacity();
     }
