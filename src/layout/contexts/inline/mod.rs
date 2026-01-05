@@ -8900,9 +8900,13 @@ impl InlineFormattingContext {
     } else {
       constraints.available_width
     };
-    let inline_percent_base = inline_space
-      .to_option()
-      .or(constraints.inline_percentage_base);
+    // Percentage-based lengths on this formatting context's root box resolve against the
+    // containing block inline size, which can differ from the definite available space when an
+    // outer layout mode (flex/grid/shrink-to-fit) has already resolved a used size. Match block
+    // layout by preferring the explicit percentage base override when present.
+    let inline_percent_base = constraints
+      .inline_percentage_base
+      .or(inline_space.to_option());
     let mut available_inline = match inline_space {
       AvailableSpace::Definite(w) => w,
       _ => inline_percent_base.unwrap_or(if inline_vertical {
@@ -8918,6 +8922,22 @@ impl InlineFormattingContext {
         self.viewport_size.width
       }
       .max(0.0);
+    }
+
+    // When a parent layout mode provides a definite used border-box inline size (e.g. flex/grid
+    // item sizing or shrink-to-fit resolution), lay out the inline contents within the resulting
+    // content box rather than the containing block size passed in `available_width`.
+    if let Some(used_border_box) = constraints.used_border_box_width.filter(|w| w.is_finite()) {
+      if !inline_vertical {
+        let percentage_base_px = inline_percent_base.unwrap_or(available_inline);
+        let edges = horizontal_padding_and_borders(
+          style,
+          percentage_base_px,
+          self.viewport_size,
+          &self.font_context,
+        );
+        available_inline = (used_border_box - edges).max(0.0);
+      }
     }
     if crate::layout::contexts::inline::line_builder::log_line_width_enabled() {
       eprintln!(
@@ -9656,58 +9676,59 @@ impl InlineFormattingContext {
 
     // Position out-of-flow abs/fixed children against the containing block.
     if !positioned_children.is_empty() {
+      let percentage_base_px = inline_percent_base.unwrap_or(available_inline);
       let padding_left = resolve_length_for_width(
         style.padding_left,
-        available_inline,
+        percentage_base_px,
         style,
         &self.font_context,
         self.viewport_size,
       );
       let _padding_right = resolve_length_for_width(
         style.padding_right,
-        available_inline,
+        percentage_base_px,
         style,
         &self.font_context,
         self.viewport_size,
       );
       let padding_top = resolve_length_for_width(
         style.padding_top,
-        available_inline,
+        percentage_base_px,
         style,
         &self.font_context,
         self.viewport_size,
       );
       let _padding_bottom = resolve_length_for_width(
         style.padding_bottom,
-        available_inline,
+        percentage_base_px,
         style,
         &self.font_context,
         self.viewport_size,
       );
       let border_left = resolve_length_for_width(
         style.used_border_left_width(),
-        available_inline,
+        percentage_base_px,
         style,
         &self.font_context,
         self.viewport_size,
       );
       let border_right = resolve_length_for_width(
         style.used_border_right_width(),
-        available_inline,
+        percentage_base_px,
         style,
         &self.font_context,
         self.viewport_size,
       );
       let border_top = resolve_length_for_width(
         style.used_border_top_width(),
-        available_inline,
+        percentage_base_px,
         style,
         &self.font_context,
         self.viewport_size,
       );
       let border_bottom = resolve_length_for_width(
         style.used_border_bottom_width(),
-        available_inline,
+        percentage_base_px,
         style,
         &self.font_context,
         self.viewport_size,
@@ -11845,6 +11866,98 @@ mod tests {
       "expected float to fit within available width {:.2}, got {:.2}",
       containing_width,
       fragment.bounds.width()
+    );
+  }
+
+  #[test]
+  fn inline_float_inline_fc_respects_used_width_for_wrapping() {
+    let ifc = InlineFormattingContext::new();
+
+    let mut base_style = ComputedStyle::default();
+    base_style.display = Display::Block;
+    base_style.float = crate::style::float::Float::Left;
+    base_style.width = None;
+    base_style.width_keyword = None;
+    base_style.min_width = None;
+    base_style.min_width_keyword = None;
+    base_style.max_width = None;
+    base_style.max_width_keyword = None;
+    let base_style = Arc::new(base_style);
+
+    let text = BoxNode::new_text(default_style(), "word ".repeat(40));
+    let intrinsic_node = BoxNode::new_block(
+      base_style.clone(),
+      FormattingContextType::Inline,
+      vec![text.clone()],
+    );
+
+    let fc = ifc.factory.get(FormattingContextType::Inline);
+    let (min_base0, max_base0) = fc
+      .compute_intrinsic_inline_sizes(&intrinsic_node)
+      .expect("intrinsic sizes");
+    assert!(
+      max_base0 > min_base0 + 0.5,
+      "expected breakable text to have distinct min/max-content widths (min={:.2}, max={:.2})",
+      min_base0,
+      max_base0
+    );
+
+    // Clamp the float below its max-content width so the inline formatting context must wrap.
+    let max_width = (min_base0 + max_base0) / 2.0;
+    let mut constrained_style: ComputedStyle = (*base_style).clone();
+    constrained_style.max_width = Some(Length::px(max_width));
+    let constrained_style = Arc::new(constrained_style);
+
+    let constrained_node = BoxNode::new_block(
+      constrained_style,
+      FormattingContextType::Inline,
+      vec![text],
+    );
+    let floating = crate::layout::contexts::inline::line_builder::FloatingItem {
+      box_node: constrained_node.clone(),
+      metrics: BaselineMetrics::for_replaced(0.0),
+      vertical_align: VerticalAlign::Baseline,
+      direction: constrained_node.style.direction,
+      unicode_bidi: constrained_node.style.unicode_bidi,
+    };
+
+    let containing_width = (max_base0 * 2.0 + 20.0).max(0.0);
+    let containing_size = Size::new(containing_width, 200.0);
+    let mut float_ctx = crate::layout::float_context::FloatContext::new(containing_width);
+    let (fragment, _, _) = ifc
+      .layout_inline_float_fragment(
+        &floating,
+        containing_width,
+        containing_size,
+        0.0,
+        0.0,
+        &mut float_ctx,
+      )
+      .expect("layout float");
+    assert!(
+      (fragment.bounds.width() - max_width).abs() < 0.5,
+      "expected max-width to clamp float to {:.2}, got {:.2}",
+      max_width,
+      fragment.bounds.width()
+    );
+
+    fn subtree_max_x(node: &FragmentNode, offset: Point) -> f32 {
+      let origin = Point::new(node.bounds.x() + offset.x, node.bounds.y() + offset.y);
+      let mut max_x = origin.x + node.bounds.width();
+      for child in node.children.iter() {
+        max_x = max_x.max(subtree_max_x(child, origin));
+      }
+      max_x
+    }
+
+    let max_x = subtree_max_x(&fragment, Point::ZERO);
+    let right_edge = fragment.bounds.x() + fragment.bounds.width();
+    assert!(
+      max_x <= right_edge + 0.5,
+      "expected inline FC contents to wrap within float width {:.2}, got max_x {:.2} (right_edge {:.2})",
+      fragment.bounds.width(),
+      max_x,
+      right_edge
     );
   }
 
