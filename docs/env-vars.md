@@ -143,6 +143,7 @@ These are emitted by the paint pipeline:
 ## Debug dumps (layout / fragments)
 
 - `FASTR_LOG_FRAG_BOUNDS=1` – log fragment-tree bounds vs the viewport.
+- `FASTR_CONTENT_VISIBILITY_AUTO_MARGIN_PX=<px>` – inflate the layout-time viewport used for `content-visibility:auto` skipping by `<px>` on all sides (default `0`). Helpful when debugging near-viewport heuristics without changing code.
 - `FASTR_DUMP_TEXT_FRAGMENTS=<N>` – sample text fragments (default 20 when enabled).
 - `FASTR_TEXT_DIAGNOSTICS=verbose` – log sampled clusters that relied on last-resort font fallback.
 - `FASTR_TEXT_FALLBACK_DESCRIPTOR_STATS=1` – collect per-render font fallback descriptor keyspace statistics (unique descriptor/family/language/weight counts + a small sample of descriptor summaries). When render diagnostics are enabled, this populates `RenderStats.counts.fallback_descriptor_stats` (and therefore appears in pageset progress JSON / `RenderDiagnostics.stats`).
