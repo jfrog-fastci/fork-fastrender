@@ -2303,6 +2303,43 @@ fn backdrop_filters_modify_backdrop_region() {
 }
 
 #[test]
+fn backdrop_filter_clips_to_affine_transformed_bounds() {
+  let renderer = DisplayListRenderer::new(10, 10, Rgba::RED, FontContext::new()).unwrap();
+  let mut list = DisplayList::new();
+
+  let rect = Rect::from_xywh(2.0, 2.0, 4.0, 4.0);
+  let center_x = rect.x() + rect.width() * 0.5;
+  let center_y = rect.y() + rect.height() * 0.5;
+  let transform = Transform3D::translate(center_x, center_y, 0.0)
+    .multiply(&Transform3D::rotate_z(std::f32::consts::FRAC_PI_4))
+    .multiply(&Transform3D::translate(-center_x, -center_y, 0.0));
+
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    bounds: rect,
+    plane_rect: rect,
+    mix_blend_mode: fastrender::paint::display_list::BlendMode::Normal,
+    is_isolated: false,
+    transform: Some(transform),
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
+    radii: fastrender::paint::display_list::BorderRadii::ZERO,
+    mask: None,
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let pixmap = renderer.render(&list).unwrap();
+  // Center of the rotated rect should be inverted.
+  assert_eq!(pixel(&pixmap, 4, 4), (0, 255, 255, 255));
+  // Corner of the AABB but outside the rotated quad should remain unfiltered.
+  assert_eq!(pixel(&pixmap, 1, 2), (255, 0, 0, 255));
+}
+
+#[test]
 fn backdrop_filter_respects_clip_path_mask() {
   let renderer = DisplayListRenderer::new(8, 8, Rgba::RED, FontContext::new()).unwrap();
   let mut list = DisplayList::new();
