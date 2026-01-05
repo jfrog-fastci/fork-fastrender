@@ -24,9 +24,36 @@ fn repo_root() -> PathBuf {
     .to_path_buf()
 }
 
+#[cfg(unix)]
+fn bash_version_major() -> Option<u32> {
+  let output = Command::new("bash")
+    .args(["-c", "echo ${BASH_VERSINFO[0]}"])
+    .output()
+    .ok()?;
+  if !output.status.success() {
+    return None;
+  }
+  String::from_utf8(output.stdout)
+    .ok()
+    .and_then(|s| s.trim().parse::<u32>().ok())
+}
+
+#[cfg(unix)]
+fn has_bash4() -> bool {
+  bash_version_major().is_some_and(|major| major >= 4)
+}
+
 #[test]
 #[cfg(unix)]
 fn wrapper_help_runs() {
+  if !has_bash4() {
+    eprintln!(
+      "skipping wrapper test: bash >= 4 is required (found {:?})",
+      bash_version_major()
+    );
+    return;
+  }
+
   let output = Command::new("bash")
     .current_dir(repo_root())
     .args(["scripts/chrome_vs_fastrender_fixtures.sh", "--help"])
@@ -50,6 +77,14 @@ fn wrapper_help_runs() {
 #[test]
 #[cfg(unix)]
 fn wrapper_diff_only_invokes_fixture_chrome_diff() {
+  if !has_bash4() {
+    eprintln!(
+      "skipping wrapper test: bash >= 4 is required (found {:?})",
+      bash_version_major()
+    );
+    return;
+  }
+
   let temp = tempdir().expect("tempdir");
   let bin_dir = temp.path().join("bin");
   fs::create_dir_all(&bin_dir).expect("create stub bin dir");
@@ -106,6 +141,14 @@ exit 0
 #[test]
 #[cfg(unix)]
 fn wrapper_resolves_fixture_globs() {
+  if !has_bash4() {
+    eprintln!(
+      "skipping wrapper test: bash >= 4 is required (found {:?})",
+      bash_version_major()
+    );
+    return;
+  }
+
   let temp = tempdir().expect("tempdir");
   let bin_dir = temp.path().join("bin");
   fs::create_dir_all(&bin_dir).expect("create stub bin dir");
