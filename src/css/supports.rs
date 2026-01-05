@@ -147,6 +147,7 @@ mod tests {
   #[test]
   fn supports_calc_max_single_argument() {
     assert!(supports_declaration("border-left-width", "calc(max(0px))"));
+    assert!(supports_declaration("left", "max(calc(0px))"));
   }
 
   #[test]

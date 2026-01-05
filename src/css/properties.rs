@@ -5295,6 +5295,23 @@ mod tests {
       Length::px(10.0)
     );
     assert_eq!(parse_length("env(unknown, 5px)").unwrap(), Length::px(5.0));
+    assert_eq!(
+      parse_length("env(unknown, calc(2px + 3px))").unwrap(),
+      Length::px(5.0)
+    );
+    assert_eq!(
+      parse_length("max(12px, env(safe-area-inset-left))").unwrap(),
+      Length::px(12.0)
+    );
+    assert_eq!(
+      parse_length("calc(max(12px, env(safe-area-inset-left)))").unwrap(),
+      Length::px(12.0)
+    );
+    // Legacy Safari function name.
+    assert_eq!(
+      parse_length("constant(safe-area-inset-left)").unwrap(),
+      Length::px(0.0)
+    );
   }
 }
 
