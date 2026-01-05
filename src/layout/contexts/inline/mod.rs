@@ -2371,18 +2371,24 @@ impl InlineFormattingContext {
       .map(AvailableSpace::Definite)
       .unwrap_or(AvailableSpace::Indefinite);
 
-    let fragment = if fc_type == FormattingContextType::Block {
-      let width_space = if available_for_box.is_finite() {
-        AvailableSpace::Definite(available_for_box.max(0.0))
+    let fragment = if fc_type == FormattingContextType::Table {
+      // Table formatting context currently does not honor `used_border_box_width`.
+      let constraints =
+        LayoutConstraints::new(AvailableSpace::Definite(constraint_width), height_space);
+      fc.layout(box_node, &constraints)?
+    } else {
+      // Pass the containing block inline size as the available space so percentage-based edges on
+      // the inline-block itself resolve against the correct base (CSS 2.1 §10.3.9). The computed
+      // shrink-to-fit width is provided separately via `used_border_box_width` so the inner
+      // formatting context lays out within the used size even when it differs from the containing
+      // block.
+      let width_space = if available_width.is_finite() {
+        AvailableSpace::Definite(available_width.max(0.0))
       } else {
         AvailableSpace::Indefinite
       };
       let constraints = LayoutConstraints::new(width_space, height_space)
         .with_used_border_box_size(Some(constraint_width), None);
-      fc.layout(box_node, &constraints)?
-    } else {
-      let constraints =
-        LayoutConstraints::new(AvailableSpace::Definite(constraint_width), height_space);
       fc.layout(box_node, &constraints)?
     };
     let mut fragment = fragment;
@@ -11913,6 +11919,57 @@ mod tests {
       "expected max-width:fit-content to cap below max-content {:.2}, got {:.2}",
       max_content_item.width,
       item.width
+    );
+  }
+
+  #[test]
+  fn inline_block_percentage_padding_resolves_against_containing_width_not_margin_reduced() {
+    let ifc = InlineFormattingContext::new();
+
+    let mut inline_block_style = ComputedStyle::default();
+    inline_block_style.display = Display::InlineBlock;
+    inline_block_style.padding_left = Length::percent(20.0);
+    inline_block_style.padding_right = Length::percent(20.0);
+    inline_block_style.margin_left = Some(Length::px(50.0));
+    inline_block_style.margin_right = Some(Length::px(50.0));
+    let inline_block_style = Arc::new(inline_block_style);
+
+    let inline_block = BoxNode::new_inline_block(
+      inline_block_style.clone(),
+      FormattingContextType::Block,
+      vec![inline_canvas(10.0, 10.0)],
+    );
+
+    let item = ifc
+      .layout_inline_block(&inline_block, 300.0, None)
+      .expect("layout inline-block");
+
+    fn find_replaced<'a>(node: &'a FragmentNode) -> Option<&'a FragmentNode> {
+      if matches!(node.content, FragmentContent::Replaced { .. }) {
+        return Some(node);
+      }
+      for child in node.children.iter() {
+        if let Some(found) = find_replaced(child) {
+          return Some(found);
+        }
+      }
+      None
+    }
+
+    let replaced = find_replaced(&item.fragment).expect("expected replaced fragment child");
+    let expected_padding_left = resolve_length_for_width(
+      inline_block_style.padding_left,
+      300.0,
+      &inline_block_style,
+      &ifc.font_context,
+      ifc.viewport_size,
+    );
+    assert!(
+      (replaced.bounds.x() - expected_padding_left).abs() < 0.5,
+      "expected replaced child to be offset by padding-left {:.2}, got x={:.2} (fragment={:?})",
+      expected_padding_left,
+      replaced.bounds.x(),
+      replaced.content
     );
   }
 
