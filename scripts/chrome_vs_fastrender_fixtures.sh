@@ -21,14 +21,14 @@ Options:
   --fastr-out-dir <dir>     (legacy) Must be <out-dir>/fastrender
   --report-html <path>      (legacy) Must be <out-dir>/report.html
   --report-json <path>      (legacy) Must be <out-dir>/report.json
-  --viewport <WxH>          Viewport size (default: 1040x1240)
-  --dpr <float>             Device pixel ratio (default: 1.0)
-  --media <screen|print>    Media type for both Chrome + FastRender (default: screen)
+  --viewport <WxH>          Viewport size (default: inherited from `cargo xtask fixture-chrome-diff`)
+  --dpr <float>             Device pixel ratio (default: inherited from `cargo xtask fixture-chrome-diff`)
+  --media <screen|print>    Media type for both Chrome + FastRender (default: inherited from `cargo xtask fixture-chrome-diff`)
   --jobs <n>, -j <n>        Parallelism forwarded to render_fixtures
   --write-snapshot          Also write render_fixtures snapshots/diagnostics (for diff_snapshots)
-  --timeout <secs>          Per-fixture timeout (Chrome + FastRender) (default: 15)
+  --timeout <secs>          Per-fixture timeout (Chrome + FastRender) (default: inherited from `cargo xtask fixture-chrome-diff`)
   --chrome <path>           Chrome/Chromium binary (default: auto-detect)
-  --js <on|off>             Enable JavaScript in Chrome (default: off)
+  --js <on|off>             Enable JavaScript in Chrome (default: inherited from `cargo xtask fixture-chrome-diff`)
   --shard <index>/<total>   Only process a deterministic shard of fixtures (0-based)
   --tolerance <0-255>       Pixel diff tolerance (passed to diff_renders)
   --max-diff-percent <f64>  Allowed diff percent (passed to diff_renders)
@@ -76,19 +76,28 @@ if [[ "${BASH_VERSINFO[0]:-0}" -lt 4 ]]; then
   exit 2
 fi
 
-FIXTURES_DIR="tests/pages/fixtures"
 FIXTURES_DIR_SET=0
-OUT_DIR="target/fixture_chrome_diff"
+if [[ -n "${FIXTURES_DIR:-}" ]]; then
+  FIXTURES_DIR_SET=1
+else
+  FIXTURES_DIR="tests/pages/fixtures"
+fi
+
 OUT_DIR_SET=0
+if [[ -n "${OUT_DIR:-}" ]]; then
+  OUT_DIR_SET=1
+else
+  OUT_DIR="target/fixture_chrome_diff"
+fi
 OUT_DIR_EXPLICIT=0
-VIEWPORT=""
-DPR=""
-MEDIA=""
+VIEWPORT="${VIEWPORT:-}"
+DPR="${DPR:-}"
+MEDIA="${MEDIA:-}"
 JOBS=""
 WRITE_SNAPSHOT=0
-TIMEOUT=""
-CHROME_BIN=""
-JS=""
+TIMEOUT="${TIMEOUT:-}"
+CHROME_BIN="${CHROME_BIN:-}"
+JS="${JS:-}"
 SHARD=""
 TOLERANCE=""
 MAX_DIFF_PERCENT=""
