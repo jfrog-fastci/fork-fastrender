@@ -1555,6 +1555,12 @@ fn extract_transform_origin(
       style,
       ctx,
     )),
+    z: Length::px(resolve_length_px(
+      &style.transform_origin.z,
+      None,
+      style,
+      ctx,
+    )),
   }))
 }
 
@@ -1577,6 +1583,12 @@ fn extract_perspective_origin(
       style,
       ctx,
     )),
+    z: Length::px(resolve_length_px(
+      &style.perspective_origin.z,
+      None,
+      style,
+      ctx,
+    )),
   }))
 }
 
@@ -1591,6 +1603,7 @@ fn interpolate_transform_origin_value(
   Some(AnimatedValue::TransformOrigin(TransformOrigin {
     x: Length::px(lerp(oa.x.to_px(), ob.x.to_px(), t)),
     y: Length::px(lerp(oa.y.to_px(), ob.y.to_px(), t)),
+    z: Length::px(lerp(oa.z.to_px(), ob.z.to_px(), t)),
   }))
 }
 
