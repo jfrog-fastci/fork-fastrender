@@ -4328,11 +4328,12 @@ impl DisplayListBuilder {
 
         if let ReplacedType::Iframe { src, srcdoc } = replaced_type {
           if let Some(cache) = self.image_cache.as_ref() {
+            let (content_rect, _) = self.replaced_content_rect_and_radii(rect, style_for_image);
             if let Some(image) = srcdoc.as_deref().and_then(|html| {
               render_iframe_srcdoc(
                 html,
                 Some(src.as_str()),
-                rect,
+                content_rect,
                 style_for_image,
                 cache,
                 &self.font_ctx,
@@ -4346,7 +4347,7 @@ impl DisplayListBuilder {
 
             if let Some(image) = render_iframe_src(
               src,
-              rect,
+              content_rect,
               style_for_image,
               cache,
               &self.font_ctx,
@@ -7173,12 +7174,28 @@ impl DisplayListBuilder {
     rect: Rect,
     style: Option<&ComputedStyle>,
   ) {
+    let clip_contents = Self::clip_replaced_contents(style);
+    let (content_rect, clip_radii) = self.replaced_content_rect_and_radii(rect, style);
+
+    if clip_contents {
+      self.list.push(DisplayItem::PushClip(ClipItem {
+        shape: ClipShape::Rect {
+          rect: content_rect,
+          radii: Some(clip_radii),
+        },
+      }));
+    }
+
     self.list.push(DisplayItem::Image(ImageItem {
-      dest_rect: rect,
+      dest_rect: content_rect,
       image,
       filter_quality: Self::image_filter_quality(style),
       src_rect: None,
     }));
+
+    if clip_contents {
+      self.list.push(DisplayItem::PopClip);
+    }
   }
 
   fn emit_inline_svg(
@@ -9690,6 +9707,149 @@ mod tests {
         .iter()
         .any(|item| matches!(item, DisplayItem::PushClip(_))),
       "expected no replaced-content clip when overflow is visible"
+    );
+  }
+
+  #[test]
+  fn replaced_iframe_uses_content_box_and_clips_when_overflow_hidden() {
+    let mut style = ComputedStyle::default();
+    style.display = Display::Inline;
+    style.overflow_x = Overflow::Hidden;
+    style.overflow_y = Overflow::Hidden;
+    style.padding_top = Length::px(10.0);
+    style.padding_right = Length::px(10.0);
+    style.padding_bottom = Length::px(10.0);
+    style.padding_left = Length::px(10.0);
+    let radius = crate::style::types::BorderCornerRadius::uniform(Length::px(20.0));
+    style.border_top_left_radius = radius;
+    style.border_top_right_radius = radius;
+    style.border_bottom_right_radius = radius;
+    style.border_bottom_left_radius = radius;
+
+    let fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      FragmentContent::Replaced {
+        box_id: None,
+        replaced_type: ReplacedType::Iframe {
+          src: "about:blank".to_string(),
+          srcdoc: Some("<html></html>".to_string()),
+        },
+      },
+      vec![],
+      Arc::new(style),
+    );
+
+    let mut image_cache = ImageCache::new();
+    image_cache.set_resource_context(Some(crate::api::ResourceContext {
+      iframe_depth_remaining: Some(0),
+      ..crate::api::ResourceContext::default()
+    }));
+    let builder = DisplayListBuilder::with_image_cache(image_cache);
+    let list = builder.build(&fragment);
+
+    let img_idx = list
+      .items()
+      .iter()
+      .position(|item| matches!(item, DisplayItem::Image(_)))
+      .expect("Expected image item");
+    let img = match &list.items()[img_idx] {
+      DisplayItem::Image(img) => img,
+      _ => unreachable!(),
+    };
+
+    let content_rect = Rect::from_xywh(10.0, 10.0, 80.0, 80.0);
+    assert_eq!(img.dest_rect, content_rect);
+    assert_eq!(img.image.css_width, 80.0);
+    assert_eq!(img.image.css_height, 80.0);
+
+    let content_clip_idx = list
+      .items()
+      .iter()
+      .position(|item| match item {
+        DisplayItem::PushClip(clip) => match &clip.shape {
+          ClipShape::Rect { rect, radii } => *rect == content_rect && radii.is_some(),
+          _ => false,
+        },
+        _ => false,
+      })
+      .expect("Expected content-box clip around iframe contents");
+    assert!(
+      content_clip_idx < img_idx,
+      "content clip should be pushed before the iframe image"
+    );
+
+    let clip_radii = match &list.items()[content_clip_idx] {
+      DisplayItem::PushClip(clip) => match &clip.shape {
+        ClipShape::Rect { rect, radii } if *rect == content_rect => *radii,
+        _ => None,
+      },
+      _ => None,
+    };
+    assert_eq!(clip_radii, Some(BorderRadii::uniform(10.0)));
+
+    assert!(
+      list
+        .items()
+        .iter()
+        .skip(img_idx + 1)
+        .any(|item| matches!(item, DisplayItem::PopClip)),
+      "expected clip pop after the iframe image"
+    );
+  }
+
+  #[test]
+  fn replaced_iframe_does_not_clip_when_overflow_visible() {
+    let mut style = ComputedStyle::default();
+    style.display = Display::Inline;
+    style.overflow_x = Overflow::Visible;
+    style.overflow_y = Overflow::Visible;
+    style.padding_top = Length::px(10.0);
+    style.padding_right = Length::px(10.0);
+    style.padding_bottom = Length::px(10.0);
+    style.padding_left = Length::px(10.0);
+    let radius = crate::style::types::BorderCornerRadius::uniform(Length::px(20.0));
+    style.border_top_left_radius = radius;
+    style.border_top_right_radius = radius;
+    style.border_bottom_right_radius = radius;
+    style.border_bottom_left_radius = radius;
+
+    let fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      FragmentContent::Replaced {
+        box_id: None,
+        replaced_type: ReplacedType::Iframe {
+          src: "about:blank".to_string(),
+          srcdoc: Some("<html></html>".to_string()),
+        },
+      },
+      vec![],
+      Arc::new(style),
+    );
+
+    let mut image_cache = ImageCache::new();
+    image_cache.set_resource_context(Some(crate::api::ResourceContext {
+      iframe_depth_remaining: Some(0),
+      ..crate::api::ResourceContext::default()
+    }));
+    let builder = DisplayListBuilder::with_image_cache(image_cache);
+    let list = builder.build(&fragment);
+
+    let img = list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::Image(img) => Some(img),
+        _ => None,
+      })
+      .expect("Expected image item");
+    assert_eq!(img.dest_rect, Rect::from_xywh(10.0, 10.0, 80.0, 80.0));
+
+    assert!(
+      !list
+        .items()
+        .iter()
+        .any(|item| matches!(item, DisplayItem::PushClip(_))),
+      "expected no iframe-content clip when overflow is visible"
     );
   }
 
