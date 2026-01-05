@@ -2159,6 +2159,61 @@ mod tests {
     Ok(())
   }
 
+  #[cfg(feature = "disk_cache")]
+  #[test]
+  fn cache_fetcher_falls_back_from_other_to_image_kind() -> Result<()> {
+    #[derive(Default)]
+    struct KindFetcher {
+      calls: Mutex<Vec<FetchDestination>>,
+    }
+
+    impl KindFetcher {
+      fn calls(&self) -> Vec<FetchDestination> {
+        self
+          .calls
+          .lock()
+          .map(|calls| calls.clone())
+          .unwrap_or_default()
+      }
+    }
+
+    impl ResourceFetcher for KindFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.lock().unwrap().push(req.destination);
+        match req.destination {
+          FetchDestination::Image => Ok(FetchedResource::with_final_url(
+            b"image-bytes".to_vec(),
+            Some("image/png".to_string()),
+            Some(req.url.to_string()),
+          )),
+          _ => Err(fastrender::Error::Other("cache miss".to_string())),
+        }
+      }
+    }
+
+    let inner = Arc::new(KindFetcher::default());
+    let inner_dyn: Arc<dyn ResourceFetcher> = inner.clone();
+    let fetcher = CacheKindMismatchFallbackFetcher::new(inner_dyn);
+    let res = fetcher.fetch_with_request(FetchRequest::new(
+      "https://example.com/asset",
+      FetchDestination::Other,
+    ))?;
+    assert_eq!(res.bytes, b"image-bytes".to_vec());
+
+    let calls = inner.calls();
+    assert_eq!(
+      calls,
+      vec![FetchDestination::Other, FetchDestination::Image],
+      "expected fall back from Other to Image"
+    );
+
+    Ok(())
+  }
+
   #[test]
   fn crawl_rejects_stylesheet_http_errors_without_discovering_deps() -> Result<()> {
     #[derive(Default)]
