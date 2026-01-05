@@ -732,6 +732,7 @@ impl StyleSheet {
       media_ctx,
       cache,
       &mut state,
+      true,
       &mut resolved,
       &mut deadline_counter,
     )?;
@@ -2048,6 +2049,10 @@ mod tests {
     fn request_count(&self) -> usize {
       self.requests.borrow().len()
     }
+
+    fn requests(&self) -> Vec<String> {
+      self.requests.borrow().clone()
+    }
   }
 
   impl CssImportLoader for RecordingLoader {
@@ -2061,6 +2066,114 @@ mod tests {
           .clone(),
       )
     }
+  }
+
+  fn rules_contain_selector(rules: &[CssRule], selector: &str) -> bool {
+    for rule in rules {
+      match rule {
+        CssRule::Style(style_rule) => {
+          if style_rule
+            .selectors
+            .slice()
+            .iter()
+            .any(|sel| sel.to_css_string() == selector)
+          {
+            return true;
+          }
+          if rules_contain_selector(&style_rule.nested_rules, selector) {
+            return true;
+          }
+        }
+        CssRule::Media(media_rule) => {
+          if rules_contain_selector(&media_rule.rules, selector) {
+            return true;
+          }
+        }
+        CssRule::Container(container_rule) => {
+          if rules_contain_selector(&container_rule.rules, selector) {
+            return true;
+          }
+        }
+        CssRule::Supports(supports_rule) => {
+          if rules_contain_selector(&supports_rule.rules, selector) {
+            return true;
+          }
+        }
+        CssRule::Layer(layer_rule) => {
+          if rules_contain_selector(&layer_rule.rules, selector) {
+            return true;
+          }
+        }
+        CssRule::StartingStyle(starting_rule) => {
+          if rules_contain_selector(&starting_rule.rules, selector) {
+            return true;
+          }
+        }
+        CssRule::Scope(scope_rule) => {
+          if rules_contain_selector(&scope_rule.rules, selector) {
+            return true;
+          }
+        }
+        CssRule::Import(_)
+        | CssRule::Page(_)
+        | CssRule::CounterStyle(_)
+        | CssRule::FontPaletteValues(_)
+        | CssRule::Property(_)
+        | CssRule::FontFace(_)
+        | CssRule::Keyframes(_) => {}
+      }
+    }
+    false
+  }
+
+  fn rules_contain_import(rules: &[CssRule]) -> bool {
+    for rule in rules {
+      match rule {
+        CssRule::Import(_) => return true,
+        CssRule::Style(style_rule) => {
+          if rules_contain_import(&style_rule.nested_rules) {
+            return true;
+          }
+        }
+        CssRule::Media(media_rule) => {
+          if rules_contain_import(&media_rule.rules) {
+            return true;
+          }
+        }
+        CssRule::Container(container_rule) => {
+          if rules_contain_import(&container_rule.rules) {
+            return true;
+          }
+        }
+        CssRule::Supports(supports_rule) => {
+          if rules_contain_import(&supports_rule.rules) {
+            return true;
+          }
+        }
+        CssRule::Layer(layer_rule) => {
+          if rules_contain_import(&layer_rule.rules) {
+            return true;
+          }
+        }
+        CssRule::StartingStyle(starting_rule) => {
+          if rules_contain_import(&starting_rule.rules) {
+            return true;
+          }
+        }
+        CssRule::Scope(scope_rule) => {
+          if rules_contain_import(&scope_rule.rules) {
+            return true;
+          }
+        }
+        CssRule::Page(_)
+        | CssRule::CounterStyle(_)
+        | CssRule::FontPaletteValues(_)
+        | CssRule::Property(_)
+        | CssRule::FontFace(_)
+        | CssRule::Keyframes(_) => {}
+      }
+    }
+    false
   }
 
   #[test]
@@ -2274,6 +2387,105 @@ mod tests {
       print_rules.len(),
       1,
       "@page rules should apply for print media"
+    );
+  }
+
+  #[test]
+  fn import_ignored_when_appearing_after_style_rule() {
+    let loader = RecordingLoader::new([(
+      "https://example.com/a.css".to_string(),
+      ".imported { color: blue; }".to_string(),
+    )]);
+
+    let stylesheet =
+      parse_stylesheet(r#"body { color: red; } @import "https://example.com/a.css";"#)
+        .expect("stylesheet parses");
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+
+    let resolved = stylesheet
+      .resolve_imports_owned_with_cache(&loader, None, &media_ctx, None)
+      .expect("resolve imports");
+
+    assert!(
+      !rules_contain_selector(&resolved.rules, ".imported"),
+      "late @import should be ignored (Chrome behavior)"
+    );
+    assert_eq!(
+      loader.request_count(),
+      0,
+      "late @import should not trigger fetches"
+    );
+    assert!(
+      !rules_contain_import(&resolved.rules),
+      "ignored @import rules should not be emitted into the resolved stylesheet"
+    );
+  }
+
+  #[test]
+  fn layer_statement_does_not_block_imports() {
+    let loader = RecordingLoader::new([(
+      "https://example.com/a.css".to_string(),
+      ".imported { color: blue; }".to_string(),
+    )]);
+
+    let stylesheet =
+      parse_stylesheet(r#"@layer base; @import "https://example.com/a.css";"#).expect("parses");
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+
+    let resolved = stylesheet
+      .resolve_imports_owned_with_cache(&loader, None, &media_ctx, None)
+      .expect("resolve imports");
+
+    assert!(
+      rules_contain_selector(&resolved.rules, ".imported"),
+      "@layer statement should not terminate the import prelude"
+    );
+    assert_eq!(
+      loader.requests().as_slice(),
+      &["https://example.com/a.css".to_string()],
+      "@import should still be fetched after blockless @layer statements"
+    );
+  }
+
+  #[test]
+  fn layer_block_blocks_subsequent_imports() {
+    let loader = RecordingLoader::new([
+      (
+        "https://example.com/a.css".to_string(),
+        ".from-a { color: blue; }".to_string(),
+      ),
+      (
+        "https://example.com/b.css".to_string(),
+        ".from-b { color: green; }".to_string(),
+      ),
+    ]);
+
+    let stylesheet = parse_stylesheet(
+      r#"@import "https://example.com/a.css"; @layer base { .x { color: red; } } @import "https://example.com/b.css";"#,
+    )
+    .expect("parses");
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+
+    let resolved = stylesheet
+      .resolve_imports_owned_with_cache(&loader, None, &media_ctx, None)
+      .expect("resolve imports");
+
+    assert!(
+      rules_contain_selector(&resolved.rules, ".from-a"),
+      "first @import should be honored in the stylesheet prelude"
+    );
+    assert!(
+      !rules_contain_selector(&resolved.rules, ".from-b"),
+      "@import after @layer block should be ignored"
+    );
+    assert!(
+      rules_contain_selector(&resolved.rules, ".x"),
+      "@layer block contents should remain"
+    );
+    assert_eq!(
+      loader.requests().as_slice(),
+      &["https://example.com/a.css".to_string()],
+      "ignored imports should not be fetched"
     );
   }
 
@@ -2958,6 +3170,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
   media_ctx: &MediaContext,
   cache: Option<&mut MediaQueryCache>,
   state: &mut ImportResolveState,
+  mut imports_allowed: bool,
   out: &mut Vec<CssRule>,
   deadline_counter: &mut usize,
 ) -> std::result::Result<(), RenderError> {
@@ -2969,10 +3182,74 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
 
   for rule in rules {
     check_active_periodic(deadline_counter, DEADLINE_STRIDE, RenderStage::Css)?;
+    // Browsers only honor @import rules in the stylesheet prelude. Modern CSS additionally allows
+    // blockless `@layer` statements (e.g. `@layer foo;`) before imports, but any other rule ends the
+    // import-allowed region. Nested rule blocks never allow @import.
+    let is_import_rule = matches!(&rule, CssRule::Import(_));
+    let is_layer_statement =
+      matches!(&rule, CssRule::Layer(LayerRule { rules, .. }) if rules.is_empty());
+    if imports_allowed && !is_import_rule && !is_layer_statement {
+      imports_allowed = false;
+    }
     match rule {
-      CssRule::Style(_)
-      | CssRule::Media(_)
-      | CssRule::FontFace(_)
+      CssRule::Media(media_rule) => {
+        let MediaRule { queries, rules } = media_rule;
+        if rules.is_empty() {
+          out.push(CssRule::Media(MediaRule { queries, rules }));
+          continue;
+        }
+
+        let mut resolved_children = Vec::new();
+        resolve_rules_owned(
+          rules,
+          loader,
+          base_url,
+          media_ctx,
+          cache.as_deref_mut(),
+          state,
+          false,
+          &mut resolved_children,
+          deadline_counter,
+        )?;
+        out.push(CssRule::Media(MediaRule {
+          queries,
+          rules: resolved_children,
+        }));
+      }
+      CssRule::Style(style_rule) => {
+        let StyleRule {
+          selectors,
+          declarations,
+          nested_rules,
+        } = style_rule;
+        if nested_rules.is_empty() {
+          out.push(CssRule::Style(StyleRule {
+            selectors,
+            declarations,
+            nested_rules,
+          }));
+          continue;
+        }
+
+        let mut resolved_nested = Vec::new();
+        resolve_rules_owned(
+          nested_rules,
+          loader,
+          base_url,
+          media_ctx,
+          cache.as_deref_mut(),
+          state,
+          false,
+          &mut resolved_nested,
+          deadline_counter,
+        )?;
+        out.push(CssRule::Style(StyleRule {
+          selectors,
+          declarations,
+          nested_rules: resolved_nested,
+        }));
+      }
+      CssRule::FontFace(_)
       | CssRule::Keyframes(_)
       | CssRule::CounterStyle(_)
       | CssRule::FontPaletteValues(_)
@@ -2992,6 +3269,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
           media_ctx,
           cache.as_deref_mut(),
           state,
+          false,
           &mut resolved_children,
           deadline_counter,
         )?;
@@ -3011,6 +3289,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
           media_ctx,
           cache.as_deref_mut(),
           state,
+          false,
           &mut resolved_children,
           deadline_counter,
         )?;
@@ -3029,6 +3308,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
           media_ctx,
           cache.as_deref_mut(),
           state,
+          false,
           &mut resolved_children,
           deadline_counter,
         )?;
@@ -3052,6 +3332,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
           media_ctx,
           cache.as_deref_mut(),
           state,
+          false,
           &mut resolved_children,
           deadline_counter,
         )?;
@@ -3071,6 +3352,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
           media_ctx,
           cache.as_deref_mut(),
           state,
+          false,
           &mut resolved_children,
           deadline_counter,
         )?;
@@ -3079,6 +3361,9 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
         }));
       }
       CssRule::Import(import) => {
+        if !imports_allowed {
+          continue;
+        }
         let ImportRule {
           href,
           media,
@@ -3157,6 +3442,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
                   media_ctx,
                   cache.as_deref_mut(),
                   state,
+                  true,
                   &mut resolved_children,
                   deadline_counter,
                 )?;
