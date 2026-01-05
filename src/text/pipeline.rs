@@ -2723,7 +2723,7 @@ fn assign_fonts_internal(
 ) -> Result<Vec<FontRun>> {
   let descriptor_stats_enabled =
     font_cache.is_some() && text_diagnostics_enabled() && text_fallback_descriptor_stats_enabled();
-  let validate_last_resort_coverage = text_diagnostics_verbose_logging();
+  let track_last_resort_fallbacks = text_diagnostics_enabled() || text_diagnostics_verbose_logging();
 
   let features: Arc<[Feature]> = collect_opentype_features(style).into_boxed_slice().into();
   let authored_variations = crate::text::variations::authored_variations_from_style(style);
@@ -3424,7 +3424,7 @@ fn assign_fonts_internal(
         }
       }
 
-      if validate_last_resort_coverage && require_base_glyph {
+      if track_last_resort_fallbacks && require_base_glyph {
         if let Some(font) = resolved.as_ref() {
           let base_supported = font
             .id

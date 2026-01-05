@@ -24,7 +24,8 @@ use fastrender::resource::bundle::{
 };
 use fastrender::resource::{
   ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane, ensure_stylesheet_mime_sane,
-  offline_placeholder_png_bytes, offline_placeholder_woff2_bytes, origin_from_url, DocumentOrigin,
+  cors_enforcement_enabled, offline_placeholder_png_bytes, offline_placeholder_woff2_bytes,
+  origin_from_url, DocumentOrigin,
   FetchContextKind, FetchDestination, FetchRequest, FetchedResource, ResourceAccessPolicy,
   ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
 };
@@ -265,6 +266,14 @@ struct RenderArgs {
 struct RecordingFetcher {
   inner: Arc<dyn ResourceFetcher>,
   recorded: Arc<Mutex<HashMap<String, FetchedResource>>>,
+  recorded_by_request: Arc<Mutex<HashMap<RecordingRequestKey, FetchedResource>>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct RecordingRequestKey {
+  kind: FetchContextKind,
+  url: String,
+  origin: Option<DocumentOrigin>,
 }
 
 #[cfg(feature = "disk_cache")]
@@ -431,12 +440,16 @@ impl RecordingFetcher {
     Self {
       inner,
       recorded: Arc::new(Mutex::new(HashMap::new())),
+      recorded_by_request: Arc::new(Mutex::new(HashMap::new())),
     }
   }
 
   fn record_override(&self, url: &str, resource: FetchedResource) {
     if let Ok(mut map) = self.recorded.lock() {
       map.insert(url.to_string(), resource);
+    }
+    if let Ok(mut map) = self.recorded_by_request.lock() {
+      map.retain(|key, _| key.url != url);
     }
   }
 
@@ -452,11 +465,17 @@ impl RecordingFetcher {
     if let Ok(mut map) = self.recorded.lock() {
       map.remove(url);
     }
+    if let Ok(mut map) = self.recorded_by_request.lock() {
+      map.retain(|key, _| key.url != url);
+    }
   }
 
   fn replace(&self, url: &str, resource: FetchedResource) {
     if let Ok(mut map) = self.recorded.lock() {
       map.insert(url.to_string(), resource);
+    }
+    if let Ok(mut map) = self.recorded_by_request.lock() {
+      map.retain(|key, _| key.url != url);
     }
   }
 }
@@ -481,13 +500,48 @@ impl ResourceFetcher for RecordingFetcher {
   }
 
   fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+    let url = req.url.to_string();
+
+    if cors_enforcement_enabled()
+      && matches!(req.destination, FetchDestination::Font | FetchDestination::ImageCors)
+    {
+      let key = RecordingRequestKey {
+        kind: req.destination.into(),
+        url: url.clone(),
+        origin: req
+          .referrer
+          .and_then(origin_from_url)
+          .or_else(|| origin_from_url(req.url)),
+      };
+
+      if let Ok(map) = self.recorded_by_request.lock() {
+        if let Some(existing) = map.get(&key) {
+          return Ok(existing.clone());
+        }
+      }
+
+      let result = self.inner.fetch_with_request(req)?;
+      if !url
+        .get(..5)
+        .map(|prefix| prefix.eq_ignore_ascii_case("data:"))
+        .unwrap_or(false)
+      {
+        if let Ok(mut map) = self.recorded.lock() {
+          map.entry(url.clone()).or_insert_with(|| result.clone());
+        }
+        if let Ok(mut map) = self.recorded_by_request.lock() {
+          map.insert(key, result.clone());
+        }
+      }
+      return Ok(result);
+    }
+
     if let Ok(map) = self.recorded.lock() {
       if let Some(existing) = map.get(req.url) {
         return Ok(existing.clone());
       }
     }
 
-    let url = req.url.to_string();
     let result = self.inner.fetch_with_request(req)?;
     if !is_data_url(&url) {
       if let Ok(mut map) = self.recorded.lock() {

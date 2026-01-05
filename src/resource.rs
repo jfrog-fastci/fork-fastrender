@@ -2625,10 +2625,10 @@ pub trait ResourceFetcher: Send + Sync {
     None
   }
 
-  /// Read a cached auxiliary artifact blob using a contextual request (destination + referrer).
+  /// Read a cached auxiliary artifact blob for the given request.
   ///
-  /// The default implementation delegates to [`ResourceFetcher::read_cache_artifact`], discarding
-  /// the referrer.
+  /// This mirrors [`ResourceFetcher::read_cache_artifact`], but allows implementations to
+  /// incorporate request metadata (e.g. the initiating document origin) into their cache keys.
   fn read_cache_artifact_with_request(
     &self,
     req: FetchRequest<'_>,
@@ -2656,10 +2656,10 @@ pub trait ResourceFetcher: Send + Sync {
     let _ = (kind, url, artifact, bytes, source);
   }
 
-  /// Persist an auxiliary artifact blob using a contextual request (destination + referrer).
+  /// Persist an auxiliary artifact blob for the given request.
   ///
-  /// The default implementation delegates to [`ResourceFetcher::write_cache_artifact`], discarding
-  /// the referrer.
+  /// This mirrors [`ResourceFetcher::write_cache_artifact`] but allows implementations to
+  /// incorporate request metadata (e.g. the initiating document origin) into their cache keys.
   fn write_cache_artifact_with_request(
     &self,
     req: FetchRequest<'_>,
@@ -2677,11 +2677,15 @@ pub trait ResourceFetcher: Send + Sync {
     let _ = (kind, url, artifact);
   }
 
-  /// Remove a cached auxiliary artifact blob using a contextual request (destination + referrer).
+  /// Remove a cached auxiliary artifact blob for the given request.
   ///
-  /// The default implementation delegates to [`ResourceFetcher::remove_cache_artifact`], discarding
-  /// the referrer.
-  fn remove_cache_artifact_with_request(&self, req: FetchRequest<'_>, artifact: CacheArtifactKind) {
+  /// This mirrors [`ResourceFetcher::remove_cache_artifact`] but allows implementations to
+  /// incorporate request metadata (e.g. the initiating document origin) into their cache keys.
+  fn remove_cache_artifact_with_request(
+    &self,
+    req: FetchRequest<'_>,
+    artifact: CacheArtifactKind,
+  ) {
     self.remove_cache_artifact(req.destination.into(), req.url, artifact);
   }
 }
