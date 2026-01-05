@@ -108,10 +108,16 @@ pub enum InlineItem {
   /// Shaped text ready for layout
   Text(TextItem),
 
+  /// Forced *soft* line break (used by `text-wrap: balance`/`pretty` to commit to chosen wrap points).
+  ///
+  /// Unlike `HardBreak`, this does **not** mark the end of a paragraph (`ends_with_hard_break` stays
+  /// false), so bidi reordering continues across the break.
+  SoftBreak,
+
   /// A tab character that expands to the next tab stop
   Tab(TabItem),
 
-  /// Mandatory hard line break (e.g., from `<br>`)
+  /// Mandatory hard line break (e.g., from `<br>` or preserved newline characters)
   ///
   /// This item does not produce a fragment and does not paint a glyph. It exists purely to force
   /// the line builder to end the current line immediately.
@@ -141,6 +147,7 @@ impl InlineItem {
   pub fn width(&self) -> f32 {
     match self {
       InlineItem::Text(t) => t.advance_for_layout,
+      InlineItem::SoftBreak => 0.0,
       InlineItem::Tab(t) => t.width(),
       InlineItem::HardBreak => 0.0,
       InlineItem::InlineBox(b) => b.width(),
@@ -156,6 +163,7 @@ impl InlineItem {
   pub fn intrinsic_width(&self) -> f32 {
     match self {
       InlineItem::Text(t) => t.advance_for_layout,
+      InlineItem::SoftBreak => 0.0,
       InlineItem::Tab(t) => t.width(),
       InlineItem::HardBreak => 0.0,
       InlineItem::InlineBox(b) => b.width(),
@@ -171,6 +179,7 @@ impl InlineItem {
   pub fn baseline_metrics(&self) -> BaselineMetrics {
     match self {
       InlineItem::Text(t) => t.metrics,
+      InlineItem::SoftBreak => BaselineMetrics::new(0.0, 0.0, 0.0, 0.0),
       InlineItem::Tab(t) => t.metrics,
       InlineItem::HardBreak => StaticPositionAnchor::metrics(),
       InlineItem::InlineBox(b) => b.metrics,
@@ -186,6 +195,7 @@ impl InlineItem {
   pub fn vertical_align(&self) -> VerticalAlign {
     match self {
       InlineItem::Text(t) => t.vertical_align,
+      InlineItem::SoftBreak => VerticalAlign::Baseline,
       InlineItem::Tab(t) => t.vertical_align,
       InlineItem::HardBreak => VerticalAlign::Baseline,
       InlineItem::InlineBox(b) => b.vertical_align,
@@ -205,6 +215,7 @@ impl InlineItem {
   pub fn direction(&self) -> Direction {
     match self {
       InlineItem::Text(t) => t.style.direction,
+      InlineItem::SoftBreak => Direction::Ltr,
       InlineItem::Tab(t) => t.direction,
       InlineItem::HardBreak => Direction::Ltr,
       InlineItem::InlineBox(b) => b.direction,
@@ -219,6 +230,7 @@ impl InlineItem {
   pub fn unicode_bidi(&self) -> UnicodeBidi {
     match self {
       InlineItem::Text(t) => t.style.unicode_bidi,
+      InlineItem::SoftBreak => UnicodeBidi::Normal,
       InlineItem::Tab(t) => t.unicode_bidi,
       InlineItem::HardBreak => UnicodeBidi::Normal,
       InlineItem::InlineBox(b) => b.unicode_bidi,
@@ -263,6 +275,7 @@ impl InlineItem {
             .is_some_and(|items| items.iter().any(|c| c.contains_hard_break()))
       }),
       InlineItem::Text(_)
+      | InlineItem::SoftBreak
       | InlineItem::Tab(_)
       | InlineItem::InlineBlock(_)
       | InlineItem::Replaced(_)
@@ -1359,8 +1372,16 @@ impl TextItem {
 
         run_advance += cluster_width;
         cumulative += cluster_width;
+        // `glyph.cluster` values point to the start of the cluster in logical text order. For
+        // line-breaking we need cumulative advances *at* boundary positions, which are the end
+        // offsets of clusters (the start of the next cluster, or the run end).
+        let next_cluster_value = run
+          .glyphs
+          .get(glyph_idx)
+          .map(|g| g.cluster as usize)
+          .unwrap_or_else(|| run.text.len());
         let offset =
-          Self::previous_char_boundary_in_text(text, run.start + cluster_value).min(text_len);
+          Self::previous_char_boundary_in_text(text, run.start + next_cluster_value).min(text_len);
         advances.push(ClusterBoundary {
           byte_offset: offset,
           advance: cumulative,
@@ -2557,11 +2578,23 @@ impl<'a> LineBuilder<'a> {
       return Ok(());
     }
     check_layout_deadline(&mut self.deadline_counter)?;
+
+    match item {
+      InlineItem::SoftBreak => return self.finish_line(),
+      other => {
+        // Keep processing below.
+        return self.add_item_internal(other);
+      }
+    }
+  }
+
+  fn add_item_internal(&mut self, item: InlineItem) -> Result<(), LayoutError> {
     let (item, item_width) = item.resolve_width_at(self.current_x);
     let line_width = self.current_line_width();
 
     let kind = match &item {
       InlineItem::Text(_) => "text",
+      InlineItem::SoftBreak => "soft-break",
       InlineItem::Tab(_) => "tab",
       InlineItem::HardBreak => "hard-break",
       InlineItem::InlineBox(_) => "inline-box",
@@ -3081,7 +3114,10 @@ impl<'a> LineBuilder<'a> {
           })
         }
       }
-      InlineItem::InlineBlock(_) | InlineItem::Replaced(_) | InlineItem::Tab(_) => true,
+      InlineItem::SoftBreak
+      | InlineItem::InlineBlock(_)
+      | InlineItem::Replaced(_)
+      | InlineItem::Tab(_) => true,
       InlineItem::StaticPositionAnchor(_) => true,
     }
   }
@@ -6389,6 +6425,7 @@ mod tests {
   fn flatten_text(item: &InlineItem) -> String {
     match item {
       InlineItem::Text(t) => t.text.clone(),
+      InlineItem::SoftBreak => "\n".to_string(),
       InlineItem::Tab(_) => "\t".to_string(),
       InlineItem::HardBreak => "\n".to_string(),
       InlineItem::InlineBox(b) => b.children.iter().map(flatten_text).collect(),

@@ -1626,6 +1626,28 @@ impl InlineFormattingContext {
             fixed_cb_stack.push(box_id);
           }
           bidi_stack.push((child.style.unicode_bidi, child.style.direction));
+          let mut inherited_boundary = CombineBoundary::default();
+          if Some(idx) == first_combinable {
+            inherited_boundary.prev = boundary.prev;
+          }
+          if Some(idx) == last_combinable {
+            inherited_boundary.next = boundary.next;
+          }
+          let child_boundary = if is_vertical_typographic_mode(child.style.writing_mode)
+            && !matches!(child.style.text_combine_upright, TextCombineUpright::None)
+          {
+            let mut b = compute_combine_boundary_for_child_at(
+              children_len,
+              &child_at,
+              idx,
+              child.style.text_combine_upright,
+            );
+            b.prev |= inherited_boundary.prev;
+            b.next |= inherited_boundary.next;
+            b
+          } else {
+            inherited_boundary
+          };
           let child_items = self.collect_inline_items_internal(
             child,
             available_width,
@@ -1636,7 +1658,7 @@ impl InlineFormattingContext {
             bidi_stack,
             abs_cb_stack,
             fixed_cb_stack,
-            CombineBoundary::default(),
+            child_boundary,
           )?;
           if dump_text_enabled() {
             static INLINE_CHILD_LOG: OnceLock<AtomicUsize> = OnceLock::new();
@@ -1838,6 +1860,28 @@ impl InlineFormattingContext {
             fixed_cb_stack.push(box_id);
           }
           bidi_stack.push((child.style.unicode_bidi, child.style.direction));
+          let mut inherited_boundary = CombineBoundary::default();
+          if Some(idx) == first_combinable {
+            inherited_boundary.prev = boundary.prev;
+          }
+          if Some(idx) == last_combinable {
+            inherited_boundary.next = boundary.next;
+          }
+          let child_boundary = if is_vertical_typographic_mode(child.style.writing_mode)
+            && !matches!(child.style.text_combine_upright, TextCombineUpright::None)
+          {
+            let mut b = compute_combine_boundary_for_child_at(
+              children_len,
+              &child_at,
+              idx,
+              child.style.text_combine_upright,
+            );
+            b.prev |= inherited_boundary.prev;
+            b.next |= inherited_boundary.next;
+            b
+          } else {
+            inherited_boundary
+          };
           let child_items = self.collect_inline_items_internal(
             child,
             available_width,
@@ -1848,7 +1892,7 @@ impl InlineFormattingContext {
             bidi_stack,
             abs_cb_stack,
             fixed_cb_stack,
-            CombineBoundary::default(),
+            child_boundary,
           )?;
           if dump_text_enabled() {
             static INLINE_ANON_ITEMS_LOG: OnceLock<AtomicUsize> = OnceLock::new();
@@ -3051,83 +3095,114 @@ impl InlineFormattingContext {
   ) -> Result<Vec<InlineItem>, LayoutError> {
     let NormalizedText {
       text: normalized_text,
-      forced_breaks,
+      forced_breaks: hard_breaks,
       allow_soft_wrap,
       ..
     } = normalized;
 
-    let mut effective_base_direction = base_direction;
-    if matches!(box_node.style.unicode_bidi, UnicodeBidi::Plaintext) {
-      if let Some(strong) = first_strong_direction(&normalized_text) {
-        effective_base_direction = strong;
-      }
-    }
+    let style = &box_node.style;
+    let is_plaintext = matches!(style.unicode_bidi, UnicodeBidi::Plaintext);
 
-    if !normalized_text.contains('\t') {
-      if normalized_text.is_empty() {
-        return Ok(Vec::new());
+    let base_direction_for_segment = |segment: &str| {
+      if is_plaintext {
+        first_strong_direction(segment).unwrap_or(base_direction)
+      } else {
+        base_direction
       }
-      let style = &box_node.style;
+    };
 
-      // Most pages hit the "single text item" path (horizontal writing mode and no
-      // `text-combine-upright`). Preserve the owned normalized string and feed it directly into the
-      // `TextItem` rather than cloning it again inside `create_text_item_from_normalized`.
-      if !is_vertical_typographic_mode(style.writing_mode)
-        || matches!(style.text_combine_upright, TextCombineUpright::None)
-        || boundary.prev
-        || boundary.next
-      {
-        let mut item = self.create_text_item_from_normalized_owned(
-          style,
-          normalized_text,
-          forced_breaks,
-          allow_soft_wrap,
-          is_marker,
-          effective_base_direction,
-          bidi_stack,
-        )?;
-        item.box_id = box_node.id;
-        return Ok(vec![InlineItem::Text(item)]);
-      }
+    let push_segment_items = |segment: &str, segment_boundary: CombineBoundary| {
+      let segment_base = base_direction_for_segment(segment);
 
-      let mut items = self.create_text_items_with_combine(
-        style,
-        &normalized_text,
-        forced_breaks,
-        allow_soft_wrap,
-        is_marker,
-        effective_base_direction,
-        bidi_stack,
-        boundary,
-      )?;
-      for item in &mut items {
-        if let InlineItem::Text(text_item) = item {
-          text_item.box_id = box_node.id;
+      if !segment.contains('\t') {
+        if segment.is_empty() {
+          return Ok(Vec::new());
         }
-      }
-      return Ok(items);
-    }
 
-    let mut items = Vec::new();
-    let mut segment_start = 0;
+        // Most pages hit the "single text item" path (horizontal writing mode and no
+        // `text-combine-upright`). Preserve the owned normalized string and feed it directly into the
+        // `TextItem` rather than cloning it again inside `create_text_item_from_normalized`.
+        if !is_vertical_typographic_mode(style.writing_mode)
+          || matches!(style.text_combine_upright, TextCombineUpright::None)
+          || segment_boundary.prev
+          || segment_boundary.next
+        {
+          let mut item = self.create_text_item_from_normalized(
+            style,
+            segment,
+            Vec::new(),
+            allow_soft_wrap,
+            is_marker,
+            segment_base,
+            bidi_stack,
+          )?;
+          item.box_id = box_node.id;
+          return Ok(vec![InlineItem::Text(item)]);
+        }
 
-    for (idx, ch) in normalized_text.char_indices() {
-      if ch != '\t' {
-        continue;
-      }
-      if idx > segment_start {
-        let segment_breaks = slice_breaks(&forced_breaks, segment_start, idx);
-        let mut produced = self.create_text_items_with_combine(
-          &box_node.style,
-          &normalized_text[segment_start..idx],
-          segment_breaks,
+        let mut items = self.create_text_items_with_combine(
+          style,
+          segment,
+          Vec::new(),
           allow_soft_wrap,
           is_marker,
-          effective_base_direction,
+          segment_base,
+          bidi_stack,
+          segment_boundary,
+        )?;
+        for item in &mut items {
+          if let InlineItem::Text(text_item) = item {
+            text_item.box_id = box_node.id;
+          }
+        }
+        return Ok(items);
+      }
+
+      let mut items = Vec::new();
+      let mut segment_start = 0;
+
+      for (idx, ch) in segment.char_indices() {
+        if ch != '\t' {
+          continue;
+        }
+        if idx > segment_start {
+          let mut produced = self.create_text_items_with_combine(
+            style,
+            &segment[segment_start..idx],
+            Vec::new(),
+            allow_soft_wrap,
+            is_marker,
+            segment_base,
+            bidi_stack,
+            CombineBoundary {
+              prev: segment_start == 0 && segment_boundary.prev,
+              next: false,
+            },
+          )?;
+          for item in &mut produced {
+            if let InlineItem::Text(text_item) = item {
+              text_item.box_id = box_node.id;
+            }
+          }
+          items.append(&mut produced);
+        }
+        let tab = self.create_tab_item(box_node, allow_soft_wrap)?;
+        items.push(tab);
+        segment_start = idx + ch.len_utf8();
+      }
+
+      if segment_start < segment.len() {
+        let mut produced = self.create_text_items_with_combine(
+          style,
+          &segment[segment_start..],
+          Vec::new(),
+          allow_soft_wrap,
+          is_marker,
+          segment_base,
           bidi_stack,
           CombineBoundary {
-            prev: segment_start == 0 && boundary.prev,
-            next: false,
+            prev: false,
+            next: segment_boundary.next,
           },
         )?;
         for item in &mut produced {
@@ -3137,32 +3212,80 @@ impl InlineFormattingContext {
         }
         items.append(&mut produced);
       }
-      let tab = self.create_tab_item(box_node, allow_soft_wrap)?;
-      items.push(tab);
-      segment_start = idx + ch.len_utf8();
+
+      Ok(items)
+    };
+
+    if hard_breaks.is_empty() {
+      // Fast path: no hard breaks, reuse the original single-string allocation if possible.
+      if !normalized_text.contains('\t') {
+        if normalized_text.is_empty() {
+          return Ok(Vec::new());
+        }
+
+        let segment_base = base_direction_for_segment(&normalized_text);
+
+        if !is_vertical_typographic_mode(style.writing_mode)
+          || matches!(style.text_combine_upright, TextCombineUpright::None)
+          || boundary.prev
+          || boundary.next
+        {
+          let mut item = self.create_text_item_from_normalized_owned(
+            style,
+            normalized_text,
+            Vec::new(),
+            allow_soft_wrap,
+            is_marker,
+            segment_base,
+            bidi_stack,
+          )?;
+          item.box_id = box_node.id;
+          return Ok(vec![InlineItem::Text(item)]);
+        }
+
+        let mut items = self.create_text_items_with_combine(
+          style,
+          &normalized_text,
+          Vec::new(),
+          allow_soft_wrap,
+          is_marker,
+          segment_base,
+          bidi_stack,
+          boundary,
+        )?;
+        for item in &mut items {
+          if let InlineItem::Text(text_item) = item {
+            text_item.box_id = box_node.id;
+          }
+        }
+        return Ok(items);
+      }
+
+      return push_segment_items(&normalized_text, boundary);
     }
 
-    if segment_start < normalized_text.len() {
-      let segment_breaks = slice_breaks(&forced_breaks, segment_start, normalized_text.len());
-      let mut produced = self.create_text_items_with_combine(
-        &box_node.style,
-        &normalized_text[segment_start..],
-        segment_breaks,
-        allow_soft_wrap,
-        is_marker,
-        effective_base_direction,
-        bidi_stack,
-        CombineBoundary {
-          prev: false,
-          next: boundary.next,
-        },
-      )?;
-      for item in &mut produced {
-        if let InlineItem::Text(text_item) = item {
-          text_item.box_id = box_node.id;
-        }
+    let hard_offsets: Vec<usize> = hard_breaks.iter().map(|b| b.byte_offset).collect();
+    let total_segments = hard_offsets.len() + 1;
+
+    let mut items = Vec::new();
+    let mut start = 0usize;
+    for (seg_index, end) in hard_offsets
+      .iter()
+      .copied()
+      .chain(std::iter::once(normalized_text.len()))
+      .enumerate()
+    {
+      let segment_boundary = CombineBoundary {
+        prev: seg_index == 0 && boundary.prev,
+        next: seg_index + 1 == total_segments && boundary.next,
+      };
+      let segment_items = push_segment_items(&normalized_text[start..end], segment_boundary)?;
+      items.extend(segment_items);
+
+      if seg_index < hard_offsets.len() {
+        items.push(InlineItem::HardBreak);
       }
-      items.append(&mut produced);
+      start = end;
     }
 
     Ok(items)
@@ -4534,21 +4657,49 @@ impl InlineFormattingContext {
           break;
         }
         builder.force_break()?;
-        // Skip past the newline character
-        if pos < remaining.text.len() {
-          let skip_bytes = remaining.text[pos..]
-            .chars()
-            .next()
-            .map(|c| c.len_utf8())
-            .unwrap_or(1);
-          if pos + skip_bytes < remaining.text.len() {
-            if let Some((_, after)) = builder.split_text_item(&remaining, pos + skip_bytes, false) {
-              remaining = after;
-              continue;
-            }
-          }
-        }
-        break;
+        // `normalize_text_for_white_space` removes line break characters and encodes them as
+        // mandatory breaks at byte offsets. That means the break position does not necessarily
+        // point at a newline character in `remaining.text`, so we must not "skip" a character here.
+        //
+        // Instead, rebuild the `TextItem` without the leading mandatory breaks so we can continue
+        // processing without dropping any text.
+        let remaining_breaks: Vec<crate::text::line_break::BreakOpportunity> = remaining
+          .break_opportunities
+          .iter()
+          .copied()
+          .filter(|b| !(b.break_type == BreakType::Mandatory && b.byte_offset == 0))
+          .collect();
+        let remaining_forced: Vec<usize> = remaining
+          .forced_break_offsets
+          .iter()
+          .copied()
+          .filter(|o| *o != 0)
+          .collect();
+        let style = remaining.style.clone();
+        let base = remaining.base_direction;
+        let metrics = remaining.metrics;
+        let va = remaining.vertical_align;
+        let box_id = remaining.box_id;
+        let explicit_bidi = remaining.explicit_bidi;
+        let is_marker = remaining.is_marker;
+        let paint_offset = remaining.paint_offset;
+        let advance_for_layout = remaining.advance_for_layout;
+        remaining = TextItem::new(
+          std::mem::take(&mut remaining.runs),
+          std::mem::take(&mut remaining.text),
+          metrics,
+          remaining_breaks,
+          remaining_forced,
+          style,
+          base,
+        );
+        remaining.vertical_align = va;
+        remaining.box_id = box_id;
+        remaining.explicit_bidi = explicit_bidi;
+        remaining.is_marker = is_marker;
+        remaining.paint_offset = paint_offset;
+        remaining.advance_for_layout = advance_for_layout.min(remaining.advance);
+        continue;
       } else {
         // No more mandatory breaks
         if remaining.advance > 0.0 {
@@ -5063,6 +5214,10 @@ impl InlineFormattingContext {
           )
         }
       }
+      InlineItem::SoftBreak => {
+        // Soft breaks should be handled by `LineBuilder` and never reach fragment construction.
+        FragmentNode::new_inline(Rect::from_xywh(inline_pos, block_pos, 0.0, 0.0), 0, vec![])
+      }
       InlineItem::Tab(tab_item) => {
         let metrics = tab_item.metrics();
         if inline_vertical {
@@ -5353,6 +5508,10 @@ impl InlineFormattingContext {
           vec![],
           text_item.style.clone(),
         )
+      }
+      InlineItem::SoftBreak => {
+        // Soft breaks should be handled by `LineBuilder` and never reach fragment construction.
+        FragmentNode::new_inline(Rect::from_xywh(x, y, 0.0, 0.0), 0, vec![])
       }
       InlineItem::Tab(tab_item) => {
         let metrics = tab_item.metrics();
@@ -5882,6 +6041,9 @@ impl InlineFormattingContext {
           let next_char = next_item.and_then(first_char_of_item);
           self.measure_text_min_content(text, tracker, next_char);
         }
+        InlineItem::SoftBreak => {
+          tracker.break_segment();
+        }
         InlineItem::Tab(tab) => {
           if tab.allow_wrap() {
             tracker.break_segment();
@@ -5926,6 +6088,9 @@ impl InlineFormattingContext {
       match item {
         InlineItem::Text(text) => {
           self.measure_text_max_content(text, tracker);
+        }
+        InlineItem::SoftBreak => {
+          tracker.break_segment();
         }
         InlineItem::Tab(tab) => {
           tracker.add_width(tab.width());
@@ -6359,7 +6524,7 @@ fn normalize_text_for_white_space(
       let mut out = String::with_capacity(text.len());
       let mut mandatory_breaks = Vec::new();
       let mut run_has_space = false;
-      let mut run_has_newline = false;
+      let mut run_newline_count: usize = 0;
       let mut seen_content = false;
       let mut iter = text.chars().peekable();
       let mut leading_collapsible = false;
@@ -6368,7 +6533,7 @@ fn normalize_text_for_white_space(
         match ch {
           ' ' | '\t' => {
             run_has_space = true;
-            if !seen_content && !run_has_newline {
+            if !seen_content && run_newline_count == 0 {
               leading_collapsible = true;
             }
           }
@@ -6376,20 +6541,22 @@ fn normalize_text_for_white_space(
             if matches!(iter.peek(), Some('\n')) {
               iter.next();
             }
-            run_has_newline = true;
+            run_newline_count += 1;
           }
           '\n' | '\u{000B}' | '\u{000C}' | '\u{0085}' | '\u{2028}' | '\u{2029}' => {
-            run_has_newline = true;
+            run_newline_count += 1;
           }
           _ => {
-            if run_has_newline {
-              // Spaces before a segment break are removed; emit the break directly.
-              mandatory_breaks.push(BreakOpportunity::mandatory(out.len()));
+            if run_newline_count > 0 {
+              // Spaces before a segment break are removed; emit each break directly.
+              mandatory_breaks.extend(
+                (0..run_newline_count).map(|_| BreakOpportunity::mandatory(out.len())),
+              );
             } else if run_has_space && seen_content {
               out.push(' ');
             }
             run_has_space = false;
-            run_has_newline = false;
+            run_newline_count = 0;
 
             out.push(ch);
             seen_content = true;
@@ -6397,10 +6564,10 @@ fn normalize_text_for_white_space(
         }
       }
 
-      if run_has_newline {
-        mandatory_breaks.push(BreakOpportunity::mandatory(out.len()));
+      if run_newline_count > 0 {
+        mandatory_breaks.extend((0..run_newline_count).map(|_| BreakOpportunity::mandatory(out.len())));
       }
-      let trailing_collapsible = run_has_space && !run_has_newline && seen_content;
+      let trailing_collapsible = run_has_space && run_newline_count == 0 && seen_content;
 
       NormalizedText {
         text: out,
@@ -7389,6 +7556,225 @@ impl InlineFormattingContext {
     Ok(build)
   }
 
+  fn build_balance_soft_break_items(
+    &self,
+    item: &TextItem,
+    target_line_count: usize,
+    available_width: f32,
+    hyphen_weight: f32,
+  ) -> Option<Vec<InlineItem>> {
+    use crate::text::line_break::{BreakOpportunityKind, BreakType};
+
+    if target_line_count <= 1 {
+      return None;
+    }
+    if item.text.is_empty() {
+      return None;
+    }
+
+    // `text-wrap: balance` is primarily used for headings. Keep the DP search bounded so
+    // long paragraphs don't turn into an O(n^2) hotspot.
+    if target_line_count > 12 {
+      return None;
+    }
+
+    #[derive(Clone, Copy)]
+    struct CandidateBreak {
+      byte_offset: usize,
+      adds_hyphen: bool,
+      kind: BreakOpportunityKind,
+    }
+
+    let len = item.text.len();
+    let mut candidates: Vec<CandidateBreak> = item
+      .break_opportunities
+      .iter()
+      .filter(|b| b.break_type == BreakType::Allowed)
+      .filter_map(|b| {
+        let off = b.byte_offset;
+        if off == 0 || off >= len {
+          return None;
+        }
+        Some(CandidateBreak {
+          byte_offset: off,
+          adds_hyphen: b.adds_hyphen,
+          kind: b.kind,
+        })
+      })
+      .collect();
+
+    if candidates.is_empty() {
+      return None;
+    }
+
+    // Prefer normal opportunities and avoid hyphens when multiple breaks share the same offset.
+    candidates.sort_by(|a, b| {
+      a.byte_offset
+        .cmp(&b.byte_offset)
+        .then_with(|| {
+          let kind_rank = |kind: BreakOpportunityKind| match kind {
+            BreakOpportunityKind::Normal => 0u8,
+            BreakOpportunityKind::Emergency => 1u8,
+          };
+          kind_rank(a.kind).cmp(&kind_rank(b.kind))
+        })
+        .then_with(|| (a.adds_hyphen as u8).cmp(&(b.adds_hyphen as u8)))
+    });
+    candidates.dedup_by_key(|c| c.byte_offset);
+
+    // If we don't have enough unique breakpoints to form the requested number of lines, give up.
+    if candidates.len() + 1 < target_line_count {
+      return None;
+    }
+
+    // Keep search bounded for long CJK strings.
+    if candidates.len() > 256 {
+      return None;
+    }
+
+    let needs_hyphen_width = candidates.iter().any(|c| c.adds_hyphen);
+    let hyphen_width = if needs_hyphen_width {
+      self.hyphen_advance(item.style.as_ref())
+    } else {
+      0.0
+    };
+
+    let mut points = Vec::with_capacity(candidates.len() + 2);
+    points.push(CandidateBreak {
+      byte_offset: 0,
+      adds_hyphen: false,
+      kind: BreakOpportunityKind::Normal,
+    });
+    points.extend(candidates);
+    points.push(CandidateBreak {
+      byte_offset: len,
+      adds_hyphen: false,
+      kind: BreakOpportunityKind::Normal,
+    });
+
+    let m = points.len();
+    let l = target_line_count;
+
+    let mut advances = Vec::with_capacity(m);
+    for point in &points {
+      advances.push(item.advance_at_offset(point.byte_offset));
+    }
+
+    let target_width = item.advance / l as f32;
+    let overflow_slack = 0.5;
+    let emergency_penalty = 10_000.0;
+
+    let mut dp = vec![vec![f32::INFINITY; m]; l + 1];
+    let mut prev = vec![vec![usize::MAX; m]; l + 1];
+    dp[0][0] = 0.0;
+
+    for line_idx in 0..l {
+      for start_idx in 0..m {
+        let base_cost = dp[line_idx][start_idx];
+        if !base_cost.is_finite() {
+          continue;
+        }
+
+        let remaining_after = l.saturating_sub(line_idx + 1);
+        let max_end = m
+          .saturating_sub(1)
+          .saturating_sub(remaining_after)
+          .max(start_idx + 1);
+
+        let end_iter: Box<dyn Iterator<Item = usize>> = if line_idx + 1 == l {
+          Box::new(std::iter::once(m - 1))
+        } else {
+          Box::new((start_idx + 1)..=max_end)
+        };
+
+        for end_idx in end_iter {
+          if end_idx <= start_idx || end_idx >= m {
+            continue;
+          }
+
+          let mut width = advances[end_idx] - advances[start_idx];
+          if points[end_idx].adds_hyphen {
+            width += hyphen_width;
+          }
+          if width > available_width + overflow_slack {
+            continue;
+          }
+
+          let mut cost = base_cost + (target_width - width).powi(2);
+          if points[end_idx].adds_hyphen {
+            cost += hyphen_weight;
+          }
+          if matches!(points[end_idx].kind, BreakOpportunityKind::Emergency) {
+            cost += emergency_penalty;
+          }
+
+          if cost < dp[line_idx + 1][end_idx] {
+            dp[line_idx + 1][end_idx] = cost;
+            prev[line_idx + 1][end_idx] = start_idx;
+          }
+        }
+      }
+    }
+
+    if !dp[l][m - 1].is_finite() {
+      return None;
+    }
+
+    // Reconstruct chosen breakpoints (line ends), excluding the final terminator.
+    let mut chosen_indices = Vec::with_capacity(l.saturating_sub(1));
+    let mut cur = m - 1;
+    for line_idx in (1..=l).rev() {
+      let p = prev[line_idx][cur];
+      if p == usize::MAX {
+        return None;
+      }
+      if cur != m - 1 {
+        chosen_indices.push(cur);
+      }
+      cur = p;
+    }
+    chosen_indices.reverse();
+
+    // Convert chosen break indices into absolute byte offsets in the original text.
+    let mut chosen_breaks: Vec<(usize, bool)> = chosen_indices
+      .into_iter()
+      .map(|idx| (points[idx].byte_offset, points[idx].adds_hyphen))
+      .collect();
+
+    if chosen_breaks.is_empty() {
+      return None;
+    }
+
+    // Split into multiple text items and insert `SoftBreak`s between them.
+    let mut out = Vec::with_capacity(chosen_breaks.len() * 2 + 1);
+    let mut remaining = item.clone();
+    let mut consumed = 0usize;
+    let mut reshape_cache = ReshapeCache::default();
+
+    for (offset, adds_hyphen) in chosen_breaks.drain(..) {
+      if offset <= consumed || offset > len {
+        return None;
+      }
+      let local = offset - consumed;
+      let Some((before, after)) = remaining.split_at(
+        local,
+        adds_hyphen,
+        &self.pipeline,
+        &self.font_context,
+        &mut reshape_cache,
+      ) else {
+        return None;
+      };
+      out.push(InlineItem::Text(before));
+      out.push(InlineItem::SoftBreak);
+      remaining = after;
+      consumed = offset;
+    }
+
+    out.push(InlineItem::Text(remaining));
+    Some(out)
+  }
+
   fn rebalance_text_wrap(
     &self,
     base: line_builder::LineBuildResult,
@@ -7418,62 +7804,81 @@ impl InlineFormattingContext {
       }
     }
 
-    let mut best_lines = base;
-    let mut best_score = balance_score(&best_lines.lines, 1.5, 1.0);
-    let target_line_count = best_lines.lines.len();
-
-    // Stable prefers keeping breaks consistent even when the container grows slightly.
-    if matches!(text_wrap, TextWrap::Stable) {
-      let stable_factor = 0.9;
-      let candidate_width = (subsequent_line_width * stable_factor).max(1.0);
-      let stable_first = if matches!(
-        text_wrap,
-        TextWrap::Balance | TextWrap::Pretty | TextWrap::Stable
-      ) {
-        candidate_width
-      } else {
-        first_line_width
-      };
-      return self.build_lines(
-        items.to_vec(),
-        stable_first,
-        candidate_width,
-        true,
-        text_wrap,
-        indent,
-        indent_hanging,
-        indent_each_line,
-        strut_metrics,
-        base_level,
-        root_direction,
-        root_unicode_bidi,
-        float_ctx,
-        float_base_y,
-        line_clamp,
-      );
-    }
-
-    let (min_factor, step, hyphen_weight, short_last_weight) = match text_wrap {
-      TextWrap::Pretty => (0.85, 0.03, 3.0, 1.5),
-      TextWrap::Balance => (0.65, 0.05, 1.5, 1.0),
-      _ => return Ok(best_lines),
+    let (min_factor, scan_step, hyphen_weight, short_last_weight): (f32, f32, f32, f32) =
+      match text_wrap {
+      // Pretty is tuned for headlines: prefer fewer hyphens and avoid lonely last lines.
+      TextWrap::Pretty => (0.85f32, 0.01f32, 3.0f32, 1.5f32),
+      // Balance is used more broadly; search a bit further to find a good raggedness minimum.
+      TextWrap::Balance => (0.65f32, 0.01f32, 1.5f32, 1.0f32),
+      _ => return Ok(base),
     };
+
+    let mut best_lines = base;
+    let target_line_count = best_lines.lines.len();
+    let mut best_score = balance_score(&best_lines.lines, hyphen_weight, short_last_weight);
+
+    if matches!(text_wrap, TextWrap::Balance)
+      && indent == 0.0
+      && !indent_hanging
+      && !indent_each_line
+    {
+      if let [InlineItem::Text(text_item)] = items {
+        if let Some(candidate_items) = self.build_balance_soft_break_items(
+          text_item,
+          target_line_count,
+          subsequent_line_width.max(1.0),
+          hyphen_weight,
+        ) {
+          let candidate_lines = self.build_lines(
+            candidate_items,
+            first_line_width,
+            subsequent_line_width,
+            true,
+            text_wrap,
+            indent,
+            indent_hanging,
+            indent_each_line,
+            strut_metrics,
+            base_level,
+            root_direction,
+            root_unicode_bidi,
+            float_ctx,
+            float_base_y,
+            line_clamp,
+          )?;
+
+          if candidate_lines.lines.len() == target_line_count {
+            let candidate_score =
+              balance_score(&candidate_lines.lines, hyphen_weight, short_last_weight);
+            if candidate_score + 0.01 < best_score {
+              best_score = candidate_score;
+              best_lines = candidate_lines;
+            }
+          }
+        }
+      }
+    }
 
     let base_width = subsequent_line_width.max(1.0);
     let average_width = mean_line_width(&best_lines.lines).max(1.0);
     let mut factors: Vec<f32> = Vec::new();
     let ideal_factor = (average_width / base_width).clamp(min_factor, 1.0);
-    if ideal_factor < 0.999 {
+    if ideal_factor < 1.0f32 - f32::EPSILON {
       factors.push(ideal_factor);
-      if ideal_factor + step < 1.0 {
-        factors.push((ideal_factor + step).min(1.0));
+    }
+
+    // Try a couple of values very close to 1.0; this matters when the width reduction needed
+    // to adjust the greedy breakpoints is tiny (common with short headings).
+    for &near in &[0.999f32, 0.995f32] {
+      if near >= min_factor {
+        factors.push(near);
       }
     }
 
-    let mut f = 0.98f32;
+    let mut f = 0.99f32;
     while f > min_factor {
       factors.push(f);
-      f -= step;
+      f -= scan_step;
     }
 
     factors.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
@@ -8420,6 +8825,7 @@ impl InlineFormattingContext {
                   InlineItem::Text(t) => format!("Text(len={})", t.text.len()),
                   InlineItem::Tab(_) => "Tab".to_string(),
                   InlineItem::HardBreak => "HardBreak".to_string(),
+                  InlineItem::SoftBreak => "SoftBreak".to_string(),
                   InlineItem::InlineBox(b) => format!(
                     "InlineBox(children={}, text_children={})",
                     b.children.len(),
@@ -8455,6 +8861,7 @@ impl InlineFormattingContext {
               InlineItem::Text(t) => format!("Text({:?})", truncate_text(&t.text, 20)),
               InlineItem::Tab(_) => "Tab".to_string(),
               InlineItem::HardBreak => "HardBreak".to_string(),
+              InlineItem::SoftBreak => "SoftBreak".to_string(),
               InlineItem::InlineBox(b) => {
                 let mut child_desc = Vec::new();
                 for child in b.children.iter().take(5) {
@@ -9579,6 +9986,7 @@ fn first_char_of_item(item: &InlineItem) -> Option<char> {
   const OBJECT_REPLACEMENT: char = '\u{FFFC}';
   match item {
     InlineItem::Text(t) => t.text.chars().next(),
+    InlineItem::SoftBreak => Some(OBJECT_REPLACEMENT),
     InlineItem::Tab(_) => Some('\t'),
     InlineItem::HardBreak => Some('\n'),
     InlineItem::InlineBox(b) => b.children.iter().find_map(first_char_of_item),
@@ -9598,6 +10006,7 @@ fn last_char_of_item(item: &InlineItem) -> Option<char> {
   const OBJECT_REPLACEMENT: char = '\u{FFFC}';
   match item {
     InlineItem::Text(t) => t.text.chars().next_back(),
+    InlineItem::SoftBreak => Some(OBJECT_REPLACEMENT),
     InlineItem::Tab(_) => Some('\t'),
     InlineItem::HardBreak => Some('\n'),
     InlineItem::InlineBox(b) => b.children.iter().rev().find_map(last_char_of_item),
@@ -9612,6 +10021,34 @@ fn last_char_of_item(item: &InlineItem) -> Option<char> {
     | InlineItem::Floating(_)
     | InlineItem::StaticPositionAnchor(_) => Some(OBJECT_REPLACEMENT),
   }
+}
+
+fn first_text_char_in_fragment(node: &FragmentNode) -> Option<char> {
+  if let FragmentContent::Text { text, .. } = &node.content {
+    if let Some(ch) = text.chars().next() {
+      return Some(ch);
+    }
+  }
+  for child in node.children.iter() {
+    if let Some(ch) = first_text_char_in_fragment(child) {
+      return Some(ch);
+    }
+  }
+  None
+}
+
+fn last_text_char_in_fragment(node: &FragmentNode) -> Option<char> {
+  if let FragmentContent::Text { text, .. } = &node.content {
+    if let Some(ch) = text.chars().next_back() {
+      return Some(ch);
+    }
+  }
+  for child in node.children.iter().rev() {
+    if let Some(ch) = last_text_char_in_fragment(child) {
+      return Some(ch);
+    }
+  }
+  None
 }
 
 fn is_expandable_space(ch: char) -> bool {
@@ -10013,6 +10450,7 @@ fn determine_paragraph_direction(items: &[InlineItem]) -> Option<crate::style::t
       InlineItem::Text(t) => out.push_str(&t.text),
       InlineItem::Tab(_) => out.push('\t'),
       InlineItem::HardBreak => out.push('\n'),
+      InlineItem::SoftBreak => out.push(' '),
       InlineItem::InlineBox(b) => {
         for child in &b.children {
           collect_text(child, out);
@@ -10244,6 +10682,7 @@ pub(crate) fn apply_plaintext_paragraph_direction(
       InlineItem::Text(t) => {
         t.base_direction = direction;
       }
+      InlineItem::SoftBreak => {}
       InlineItem::Tab(t) => {
         t.set_direction(direction);
       }
@@ -10346,6 +10785,7 @@ fn item_has_interchar_opportunity(item: &InlineItem) -> bool {
         .windows(2)
         .any(|pair| allows_inter_character_expansion(pair.first().copied(), pair.get(1).copied()))
     }
+    InlineItem::SoftBreak => false,
     InlineItem::InlineBox(b) => b.children.iter().any(item_has_interchar_opportunity),
     InlineItem::Ruby(r) => r
       .segments
@@ -10363,6 +10803,7 @@ fn item_has_interchar_opportunity(item: &InlineItem) -> bool {
 fn item_has_space_boundary(item: &InlineItem) -> bool {
   match item {
     InlineItem::Text(t) => text_has_space_boundary(&t.text),
+    InlineItem::SoftBreak => false,
     InlineItem::InlineBox(b) => b.children.iter().any(item_has_space_boundary),
     InlineItem::Ruby(r) => r
       .segments
@@ -10404,8 +10845,18 @@ fn allows_inter_character_gap(prev: &InlineItem, next: &InlineItem) -> bool {
   {
     return false;
   }
-  let prev_last = last_char_of_item(prev);
-  let next_first = first_char_of_item(next);
+  let prev_last = match prev {
+    InlineItem::InlineBlock(block) => {
+      last_text_char_in_fragment(&block.fragment).or_else(|| last_char_of_item(prev))
+    }
+    _ => last_char_of_item(prev),
+  };
+  let next_first = match next {
+    InlineItem::InlineBlock(block) => {
+      first_text_char_in_fragment(&block.fragment).or_else(|| first_char_of_item(next))
+    }
+    _ => first_char_of_item(next),
+  };
   allows_inter_character_expansion(prev_last, next_first)
 }
 
@@ -10439,6 +10890,7 @@ fn accumulate_scripts(item: &InlineItem, counts: &mut ScriptCounts) {
         }
       }
     }
+    InlineItem::SoftBreak => {}
     InlineItem::Tab(_) => {}
     InlineItem::HardBreak => {}
     InlineItem::InlineBox(b) => {
@@ -10522,6 +10974,7 @@ fn inline_item_ends_with_hyphen(item: &InlineItem) -> bool {
       .rev()
       .find(|c| !c.is_whitespace())
       .map_or(false, |c| c == '\u{2010}' || c == '\u{00AD}' || c == '-'),
+    InlineItem::SoftBreak => false,
     InlineItem::InlineBox(b) => b
       .children
       .last()
@@ -10584,6 +11037,7 @@ fn balance_score(lines: &[Line], hyphen_weight: f32, short_last_weight: f32) -> 
 fn append_text_content(item: &InlineItem, out: &mut String) {
   match item {
     InlineItem::Text(t) => out.push_str(&t.text),
+    InlineItem::SoftBreak => {}
     InlineItem::InlineBox(b) => {
       for child in &b.children {
         append_text_content(child, out);
@@ -10717,6 +11171,68 @@ mod tests {
       Some(Size::new(width, height)),
       None,
     )
+  }
+
+  fn build_lines_for_text(style: Arc<ComputedStyle>, text: &str) -> (Vec<Line>, BaselineMetrics) {
+    let ifc = InlineFormattingContext::new();
+    let node = BoxNode::new_text(style, text.to_string());
+    let mut items = ifc
+      .create_inline_items_for_text(&node, text, false)
+      .expect("inline items");
+    let strut = ifc.compute_strut_metrics(&node.style);
+    let lines = ifc
+      .build_lines(
+        std::mem::take(&mut items),
+        1000.0,
+        1000.0,
+        true,
+        node.style.text_wrap,
+        0.0,
+        false,
+        false,
+        &strut,
+        None,
+        node.style.direction,
+        node.style.unicode_bidi,
+        None,
+        0.0,
+        None,
+      )
+      .expect("lines")
+      .lines;
+    (lines, strut)
+  }
+
+  fn collect_line_texts(lines: &[Line]) -> Vec<String> {
+    fn collect_item_text(item: &InlineItem, out: &mut String) {
+      match item {
+        InlineItem::Text(t) => out.push_str(&t.text),
+        InlineItem::Tab(_) => out.push('\t'),
+        InlineItem::InlineBox(b) => {
+          for child in &b.children {
+            collect_item_text(child, out);
+          }
+        }
+        InlineItem::Ruby(r) => {
+          for seg in &r.segments {
+            for child in &seg.base_items {
+              collect_item_text(child, out);
+            }
+          }
+        }
+        _ => {}
+      }
+    }
+
+    let mut texts = Vec::with_capacity(lines.len());
+    for line in lines {
+      let mut text = String::new();
+      for item in &line.items {
+        collect_item_text(&item.item, &mut text);
+      }
+      texts.push(text);
+    }
+    texts
   }
 
   #[test]
@@ -14157,6 +14673,47 @@ mod tests {
   }
 
   #[test]
+  fn white_space_pre_preserves_empty_lines_from_consecutive_newlines() {
+    let mut style = ComputedStyle::default();
+    style.white_space = WhiteSpace::Pre;
+    style.font_size = 16.0;
+    let (lines, strut) = build_lines_for_text(Arc::new(style), "a\n\nb");
+    assert_eq!(collect_line_texts(&lines), vec!["a", "", "b"]);
+    assert!(lines[1].items.is_empty(), "expected an empty line box");
+    assert!(
+      (lines[1].height - strut.line_height).abs() < 0.01,
+      "empty line should use the strut line-height"
+    );
+    assert!(
+      (lines[1].baseline - strut.baseline_offset).abs() < 0.01,
+      "empty line should use the strut baseline"
+    );
+  }
+
+  #[test]
+  fn white_space_pre_preserves_leading_and_trailing_newlines() {
+    let mut style = ComputedStyle::default();
+    style.white_space = WhiteSpace::Pre;
+    style.font_size = 16.0;
+    let style = Arc::new(style);
+
+    let (lines, _) = build_lines_for_text(style.clone(), "\nstart");
+    assert_eq!(collect_line_texts(&lines), vec!["", "start"]);
+
+    let (lines, _) = build_lines_for_text(style, "end\n");
+    assert_eq!(collect_line_texts(&lines), vec!["end", ""]);
+  }
+
+  #[test]
+  fn white_space_pre_line_preserves_multiple_newlines() {
+    let mut style = ComputedStyle::default();
+    style.white_space = WhiteSpace::PreLine;
+    style.font_size = 16.0;
+    let (lines, _) = build_lines_for_text(Arc::new(style), "a\n\nb");
+    assert_eq!(collect_line_texts(&lines), vec!["a", "", "b"]);
+  }
+
+  #[test]
   fn collapsible_space_survives_across_text_nodes() {
     let mut style = ComputedStyle::default();
     style.white_space = WhiteSpace::Normal;
@@ -15531,11 +16088,11 @@ mod tests {
       .collect_inline_items(&root, 200.0, Some(200.0))
       .expect("collect items");
     assert!(
-            inline_items.iter().any(
-                |item| matches!(item, InlineItem::Text(t) if t.break_opportunities.iter().any(|b| b.is_mandatory()))
-            ),
-            "mandatory breaks should survive inline item collection"
-        );
+      inline_items
+        .iter()
+        .any(|item| matches!(item, InlineItem::HardBreak)),
+      "hard breaks should be emitted as explicit break items during inline item collection"
+    );
 
     let strut = ifc.compute_strut_metrics(&container_style);
     let lines = ifc
@@ -15558,7 +16115,7 @@ mod tests {
       )
       .unwrap()
       .lines;
-    assert_eq!(lines.len(), 2, "mandatory breaks should split lines");
+    assert_eq!(lines.len(), 2, "hard breaks should split lines");
     assert_eq!(
       lines[0].resolved_direction,
       crate::style::types::Direction::Ltr
@@ -15708,16 +16265,17 @@ mod tests {
     );
   }
 
-  fn collect_text_with_x<'a>(node: &'a FragmentNode, out: &mut Vec<(String, f32)>) {
-    let mut stack = vec![node];
-    while let Some(fragment) = stack.pop() {
-      if let FragmentContent::Text { ref text, .. } = fragment.content {
-        out.push((text.to_string(), fragment.bounds.x()));
+  fn collect_text_with_x(node: &FragmentNode, out: &mut Vec<(String, f32)>) {
+    fn walk(node: &FragmentNode, parent_x: f32, out: &mut Vec<(String, f32)>) {
+      let x = parent_x + node.bounds.x();
+      if let FragmentContent::Text { ref text, .. } = node.content {
+        out.push((text.to_string(), x));
       }
-      for child in fragment.children.iter() {
-        stack.push(child);
+      for child in node.children.iter() {
+        walk(child, x, out);
       }
     }
+    walk(node, 0.0, out);
   }
 
   #[test]
@@ -15752,8 +16310,6 @@ mod tests {
 
     let mut texts = Vec::new();
     collect_text_with_x(&fragment, &mut texts);
-    texts.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-
     texts.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     let labels: Vec<_> = texts.iter().map(|(t, _)| t.clone()).collect();
     let joined = labels.join("");
@@ -18932,9 +19488,11 @@ mod tests {
     );
 
     let item = ifc.create_text_item(&node, text).unwrap();
-    let width_foo = item.advance_at_offset(3);
-    let width_bar = (item.advance_at_offset(item.text.len()) - item.advance_at_offset(3)).max(0.0);
-    let expected = width_foo.max(width_bar);
+    let mut reshape_cache = ReshapeCache::default();
+    let (before, after) = item
+      .split_at(3, false, &ifc.pipeline, &ifc.font_context, &mut reshape_cache)
+      .expect("expected mandatory split");
+    let expected = before.advance_for_layout.max(after.advance_for_layout);
 
     let max_width = ifc
       .compute_intrinsic_inline_size(&root, IntrinsicSizingMode::MaxContent)
