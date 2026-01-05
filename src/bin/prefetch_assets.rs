@@ -1278,18 +1278,16 @@ mod disk_cache_main {
             idx += 1;
           }
 
-          let mut remotes: Vec<(usize, usize, &FontFaceUrlSource)> = (start..idx)
-            .filter_map(|i| {
-              let FontFaceSource::Url(url) = &sources[i] else {
-                return None;
-              };
-              let rank = format_support_rank(&url.format_hints, &url.url)?;
-              Some((rank, i, url))
-            })
-            .collect();
-
-          remotes.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-          ordered.extend(remotes.into_iter().map(|(_, _, src)| src));
+          // Align with browser semantics (and the renderer): preserve authored ordering and only
+          // skip formats we cannot decode (notably legacy EOT and SVG).
+          for source in &sources[start..idx] {
+            let FontFaceSource::Url(url) = source else {
+              continue;
+            };
+            if format_support_rank(&url.format_hints, &url.url).is_some() {
+              ordered.push(url);
+            }
+          }
         }
       }
     }
@@ -2478,7 +2476,83 @@ mod disk_cache_main {
       assert_eq!(
         calls,
         vec!["https://example.com/font.woff2"],
-        "expected only the best supported font source to be fetched"
+        "expected only the first supported font source to be fetched"
+      );
+      assert_eq!(summary.fetched_fonts, 1);
+      assert_eq!(summary.failed_fonts, 0);
+    }
+
+    #[test]
+    fn font_face_prefetch_preserves_authored_order_for_supported_formats() {
+      use std::sync::Mutex;
+
+      #[derive(Default)]
+      struct RecordingFetcher {
+        calls: Mutex<Vec<String>>,
+      }
+
+      impl ResourceFetcher for RecordingFetcher {
+        fn fetch(&self, _url: &str) -> fastrender::Result<FetchedResource> {
+          panic!("font prefetch should use fetch_with_request");
+        }
+
+        fn fetch_with_request(&self, req: FetchRequest<'_>) -> fastrender::Result<FetchedResource> {
+          self.calls.lock().unwrap().push(req.url.to_string());
+          let content_type = if req.url.ends_with(".woff2") {
+            "font/woff2"
+          } else {
+            "font/ttf"
+          };
+          let mut res = FetchedResource::with_final_url(
+            b"font".to_vec(),
+            Some(content_type.to_string()),
+            Some(req.url.to_string()),
+          );
+          res.status = Some(200);
+          Ok(res)
+        }
+      }
+
+      let html = r#"<!doctype html><html><head><style>
+@font-face { font-family: X; src: url(/font.ttf) format('truetype'), url(/font.woff2) format('woff2'); }
+</style></head><body></body></html>"#;
+
+      let document_url = "https://example.com/page";
+      let base_url = "https://example.com/";
+      let media_ctx = MediaContext::screen(800.0, 600.0);
+      let opts = PrefetchOptions {
+        prefetch_fonts: true,
+        prefetch_images: false,
+        prefetch_icons: false,
+        prefetch_video_posters: false,
+        prefetch_iframes: false,
+        prefetch_embeds: false,
+        prefetch_css_url_assets: false,
+        max_discovered_assets_per_page: 2000,
+        image_limits: ImagePrefetchLimits {
+          max_image_elements: 150,
+          max_urls_per_element: 2,
+        },
+      };
+
+      let fetcher_impl = Arc::new(RecordingFetcher::default());
+      let fetcher: Arc<dyn ResourceFetcher> = fetcher_impl.clone();
+      let summary = prefetch_assets_for_html(
+        "test",
+        document_url,
+        html,
+        document_url,
+        base_url,
+        &fetcher,
+        &media_ctx,
+        opts,
+      );
+
+      let calls = fetcher_impl.calls.lock().unwrap().clone();
+      assert_eq!(
+        calls,
+        vec!["https://example.com/font.ttf"],
+        "expected authored source order to be preserved (TTF before WOFF2)"
       );
       assert_eq!(summary.fetched_fonts, 1);
       assert_eq!(summary.failed_fonts, 0);
