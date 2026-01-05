@@ -3534,6 +3534,7 @@ fn reorder_paragraph(
             if prev.box_index == curr.box_index {
               prev.children.append(&mut curr.children);
               prev.end_edge = curr.end_edge;
+              prev.border_right = curr.border_right;
               continue;
             }
           }
@@ -3560,6 +3561,8 @@ fn reorder_paragraph(
           0.0
         };
         let end_edge = if vis_pos == last { ctx.end_edge } else { 0.0 };
+        let border_left = if vis_pos == first { ctx.border_left } else { 0.0 };
+        let border_right = if vis_pos == last { ctx.border_right } else { 0.0 };
 
         let mut inline_box = InlineBoxItem::new(
           start_edge,
@@ -3572,6 +3575,10 @@ fn reorder_paragraph(
           ctx.unicode_bidi,
         );
         inline_box.box_id = ctx.box_id;
+        inline_box.border_left = border_left;
+        inline_box.border_right = border_right;
+        inline_box.border_top = ctx.border_top;
+        inline_box.border_bottom = ctx.border_bottom;
         inline_box.vertical_align = ctx.vertical_align;
         inline_box.add_child(item);
         item = InlineItem::InlineBox(inline_box);
@@ -3797,6 +3804,10 @@ struct BoxContext {
   start_edge: f32,
   end_edge: f32,
   content_offset_y: f32,
+  border_left: f32,
+  border_right: f32,
+  border_top: f32,
+  border_bottom: f32,
   metrics: BaselineMetrics,
   vertical_align: VerticalAlign,
   box_index: usize,
@@ -3834,6 +3845,10 @@ fn flatten_positioned_item(
         start_edge: inline_box.start_edge,
         end_edge: inline_box.end_edge,
         content_offset_y: inline_box.content_offset_y,
+        border_left: inline_box.border_left,
+        border_right: inline_box.border_right,
+        border_top: inline_box.border_top,
+        border_bottom: inline_box.border_bottom,
         metrics: inline_box.metrics,
         vertical_align: inline_box.vertical_align,
         box_index: inline_box.box_index,
