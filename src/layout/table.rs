@@ -5183,10 +5183,13 @@ impl FormattingContext for TableFormattingContext {
 
     let source_rows = collect_source_rows(table_box);
 
-    let containing_width = match constraints.available_width {
-      AvailableSpace::Definite(w) => Some(w),
-      _ => None,
-    };
+    let containing_width =
+      constraints
+        .inline_percentage_base
+        .or_else(|| match constraints.available_width {
+          AvailableSpace::Definite(w) => Some(w),
+          _ => None,
+        });
     let containing_height = match constraints.available_height {
       AvailableSpace::Definite(h) => Some(h),
       _ => None,
@@ -5242,7 +5245,11 @@ impl FormattingContext for TableFormattingContext {
         override_style.min_width_keyword = None;
         override_style.max_width = None;
         override_style.max_width_keyword = None;
-        crate::layout::style_override::with_style_override(box_node.id, Arc::new(override_style), compute)
+        crate::layout::style_override::with_style_override(
+          box_node.id,
+          Arc::new(override_style),
+          compute,
+        )
       } else {
         compute()
       }?;
@@ -5278,11 +5285,19 @@ impl FormattingContext for TableFormattingContext {
 
     let resolved_min_width = match table_root_style.min_width_keyword {
       Some(keyword) => Some(resolve_size_keyword(keyword)?),
-      None => resolve_opt_length_against(table_root_style.min_width.as_ref(), font_size, containing_width),
+      None => resolve_opt_length_against(
+        table_root_style.min_width.as_ref(),
+        font_size,
+        containing_width,
+      ),
     };
     let resolved_max_width = match table_root_style.max_width_keyword {
       Some(keyword) => Some(resolve_size_keyword(keyword)?),
-      None => resolve_opt_length_against(table_root_style.max_width.as_ref(), font_size, containing_width),
+      None => resolve_opt_length_against(
+        table_root_style.max_width.as_ref(),
+        font_size,
+        containing_width,
+      ),
     };
     let resolved_max_width =
       if let (Some(min_w), Some(max_w)) = (resolved_min_width, resolved_max_width) {
@@ -6833,6 +6848,9 @@ impl FormattingContext for TableFormattingContext {
     }
 
     for (start, end, style) in row_groups {
+      if !style_paints_background_or_border(&style, false) {
+        continue;
+      }
       let style = strip_borders_cached(&style, &mut stripped_border_cache);
       if start >= row_offsets.len() {
         break;
@@ -7319,10 +7337,7 @@ impl FormattingContext for TableFormattingContext {
       // Containing blocks: absolute positioning uses the table's padding box when the table itself
       // establishes an absolute containing block; fixed positioning uses the viewport unless a
       // transform/perspective/containment establishes a fixed containing block.
-      let padding_origin = Point::new(
-        border_left,
-        table_origin_y + border_top,
-      );
+      let padding_origin = Point::new(border_left, table_origin_y + border_top);
       let padding_rect = Rect::new(
         padding_origin,
         crate::geometry::Size::new(
@@ -7462,7 +7477,11 @@ impl FormattingContext for TableFormattingContext {
         .sum()
     };
     let mut base_min_columns = if min_sum.is_finite() { min_sum } else { 0.0 };
-    let mut base_max_columns = if max_sum.is_finite() { max_sum } else { base_min_columns };
+    let mut base_max_columns = if max_sum.is_finite() {
+      max_sum
+    } else {
+      base_min_columns
+    };
     if distribution_mode == DistributionMode::Fixed {
       if let Some(base) = percent_base {
         base_min_columns = base_min_columns.max(base);
@@ -7535,8 +7554,7 @@ impl FormattingContext for TableFormattingContext {
         IntrinsicSizeKeyword::FitContent { limit } => match limit {
           None => intrinsic_max,
           Some(limit) => {
-            let limit_px =
-              resolve_length_against(&limit, font_size, None).unwrap_or(f32::INFINITY);
+            let limit_px = resolve_length_against(&limit, font_size, None).unwrap_or(f32::INFINITY);
             intrinsic_max.min(limit_px.max(intrinsic_min))
           }
         },
@@ -7577,12 +7595,12 @@ mod tests {
   use crate::layout::formatting_context::intrinsic_cache_test_lock;
   use crate::layout::formatting_context::intrinsic_cache_use_epoch;
   use crate::render_control::{with_deadline, RenderDeadline};
-  use crate::style::properties::apply_declaration;
   use crate::style::color::Rgba;
   use crate::style::computed::Visibility;
   use crate::style::display::Display;
   use crate::style::display::FormattingContextType;
   use crate::style::position::Position;
+  use crate::style::properties::apply_declaration;
   use crate::style::types::BorderCollapse;
   use crate::style::types::BorderStyle;
   use crate::style::types::CaptionSide;
@@ -8452,11 +8470,9 @@ mod tests {
     );
 
     let tfc = TableFormattingContext::new();
-    let constraints = LayoutConstraints::new(
-      AvailableSpace::Definite(300.0),
-      AvailableSpace::Indefinite,
-    )
-    .with_used_border_box_size(Some(120.0), None);
+    let constraints =
+      LayoutConstraints::new(AvailableSpace::Definite(300.0), AvailableSpace::Indefinite)
+        .with_used_border_box_size(Some(120.0), None);
     let fragment = tfc.layout(&table, &constraints).expect("table layout");
 
     assert!(
@@ -8522,7 +8538,11 @@ mod tests {
       override_style.min_width_keyword = None;
       override_style.max_width = None;
       override_style.max_width_keyword = None;
-      crate::layout::style_override::with_style_override(table.id, Arc::new(override_style), compute)
+      crate::layout::style_override::with_style_override(
+        table.id,
+        Arc::new(override_style),
+        compute,
+      )
     } else {
       compute()
     }
@@ -8547,7 +8567,11 @@ mod tests {
       FormattingContextType::Block,
       vec![text],
     );
-    let row = BoxNode::new_block(Arc::new(row_style), FormattingContextType::Block, vec![cell]);
+    let row = BoxNode::new_block(
+      Arc::new(row_style),
+      FormattingContextType::Block,
+      vec![cell],
+    );
     BoxNode::new_block(table_style, FormattingContextType::Table, vec![row])
   }
 
@@ -8568,9 +8592,13 @@ mod tests {
     let tree = BoxTree::new(single_cell_text_table(Arc::new(table_style), "hello world"));
     let table = &tree.root;
     assert_eq!(table.style.width, None);
-    assert_eq!(table.style.width_keyword, Some(IntrinsicSizeKeyword::MaxContent));
+    assert_eq!(
+      table.style.width_keyword,
+      Some(IntrinsicSizeKeyword::MaxContent)
+    );
 
-    let (intrinsic_min, intrinsic_max) = table_intrinsic_sizes_without_width_constraints(&tfc, table);
+    let (intrinsic_min, intrinsic_max) =
+      table_intrinsic_sizes_without_width_constraints(&tfc, table);
     assert!(
       intrinsic_max > intrinsic_min + 1.0,
       "expected min/max content widths to differ (min={intrinsic_min}, max={intrinsic_max})"
@@ -8614,7 +8642,8 @@ mod tests {
       Some(IntrinsicSizeKeyword::FitContent { limit: None })
     );
 
-    let (intrinsic_min, intrinsic_max) = table_intrinsic_sizes_without_width_constraints(&tfc, table);
+    let (intrinsic_min, intrinsic_max) =
+      table_intrinsic_sizes_without_width_constraints(&tfc, table);
     assert!(
       intrinsic_max > intrinsic_min + 1.0,
       "expected min/max content widths to differ (min={intrinsic_min}, max={intrinsic_max})"
@@ -11494,6 +11523,48 @@ mod tests {
       widths
     );
     assert!((18.0..22.0).contains(&widths[1]));
+  }
+
+  #[test]
+  fn percent_table_width_resolves_against_inline_percentage_base_in_intrinsic_sizing() {
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.width = Some(Length::percent(50.0));
+    table_style.width_keyword = None;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+
+    let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![]);
+    let row = BoxNode::new_block(
+      Arc::new(row_style),
+      FormattingContextType::Block,
+      vec![cell],
+    );
+    let table = BoxNode::new_block(
+      Arc::new(table_style),
+      FormattingContextType::Table,
+      vec![row],
+    );
+
+    // Keep a definite containing block width for resolving percentage lengths, but request
+    // max-content sizing for the table itself.
+    let constraints =
+      LayoutConstraints::definite_width(100.0).with_width(AvailableSpace::MaxContent);
+
+    let fc = TableFormattingContext::new();
+    let fragment = fc.layout(&table, &constraints).expect("layout");
+
+    assert!(
+      (fragment.bounds.width() - 50.0).abs() < 0.1,
+      "expected 50% of 100px, got {:.2}",
+      fragment.bounds.width()
+    );
   }
 
   #[test]
