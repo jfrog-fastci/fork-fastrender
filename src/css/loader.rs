@@ -932,6 +932,8 @@ where
   let mut active_deadline_counter = 0usize;
   let mut explicit_deadline_counter = 0usize;
   let mut budget_exhausted = state.budget.remaining_bytes() == 0;
+  let mut brace_depth = 0usize;
+  let mut imports_allowed = true;
 
   check_active(RenderStage::Css)?;
   if let Some(limit) = deadline {
@@ -959,6 +961,151 @@ where
           parser_state = State::Double;
           i += 1;
           continue;
+        }
+
+        if bytes[i] == b'{' {
+          brace_depth = brace_depth.saturating_add(1);
+          i += 1;
+          continue;
+        }
+        if bytes[i] == b'}' {
+          brace_depth = brace_depth.saturating_sub(1);
+          i += 1;
+          continue;
+        }
+
+        if imports_allowed
+          && brace_depth == 0
+          && bytes[i] == b'@'
+          && bytes.len().saturating_sub(i) >= 6
+          && bytes[i + 1..i + 6].eq_ignore_ascii_case(b"layer")
+        {
+          let mut j = i;
+          let mut inner_state = State::Normal;
+          while j < bytes.len() {
+            match inner_state {
+              State::Normal => {
+                if bytes[j] == b';' {
+                  j += 1;
+                  break;
+                }
+                if bytes[j] == b'{' {
+                  imports_allowed = false;
+                  break;
+                }
+                if bytes[j] == b'\'' {
+                  inner_state = State::Single;
+                } else if bytes[j] == b'"' {
+                  inner_state = State::Double;
+                } else if bytes[j] == b'/' && j + 1 < bytes.len() && bytes[j + 1] == b'*' {
+                  inner_state = State::Comment;
+                  j += 1;
+                }
+              }
+              State::Single => {
+                if bytes[j] == b'\\' {
+                  j += 1;
+                } else if bytes[j] == b'\'' {
+                  inner_state = State::Normal;
+                }
+              }
+              State::Double => {
+                if bytes[j] == b'\\' {
+                  j += 1;
+                } else if bytes[j] == b'"' {
+                  inner_state = State::Normal;
+                }
+              }
+              State::Comment => {
+                if bytes[j] == b'*' && j + 1 < bytes.len() && bytes[j + 1] == b'/' {
+                  inner_state = State::Normal;
+                  j += 1;
+                }
+              }
+            }
+            j += 1;
+          }
+
+          // Blockless @layer statements are allowed before @import rules. Skip ahead to the end of
+          // the statement so later non-@ bytes (layer names) don't terminate the import prelude.
+          if imports_allowed && j > i {
+            i = j;
+            continue;
+          }
+        }
+
+        if imports_allowed
+          && brace_depth == 0
+          && bytes[i] == b'@'
+          && bytes.len().saturating_sub(i) >= 8
+          && bytes[i + 1..i + 8].eq_ignore_ascii_case(b"charset")
+        {
+          let mut j = i;
+          let mut inner_state = State::Normal;
+          while j < bytes.len() {
+            match inner_state {
+              State::Normal => {
+                if bytes[j] == b';' {
+                  j += 1;
+                  break;
+                }
+                if bytes[j] == b'\'' {
+                  inner_state = State::Single;
+                } else if bytes[j] == b'"' {
+                  inner_state = State::Double;
+                } else if bytes[j] == b'/' && j + 1 < bytes.len() && bytes[j + 1] == b'*' {
+                  inner_state = State::Comment;
+                  j += 1;
+                }
+              }
+              State::Single => {
+                if bytes[j] == b'\\' {
+                  j += 1;
+                } else if bytes[j] == b'\'' {
+                  inner_state = State::Normal;
+                }
+              }
+              State::Double => {
+                if bytes[j] == b'\\' {
+                  j += 1;
+                } else if bytes[j] == b'"' {
+                  inner_state = State::Normal;
+                }
+              }
+              State::Comment => {
+                if bytes[j] == b'*' && j + 1 < bytes.len() && bytes[j + 1] == b'/' {
+                  inner_state = State::Normal;
+                  j += 1;
+                }
+              }
+            }
+            j += 1;
+          }
+
+          // @charset is permitted before @import rules; skip it without terminating the prelude.
+          if j > i {
+            i = j;
+            continue;
+          }
+        }
+
+        if imports_allowed && brace_depth == 0 && bytes[i] == b'@' {
+          let is_import = bytes.len().saturating_sub(i) >= 7
+            && bytes[i + 1..i + 7].eq_ignore_ascii_case(b"import");
+          let is_layer = bytes.len().saturating_sub(i) >= 6
+            && bytes[i + 1..i + 6].eq_ignore_ascii_case(b"layer");
+          let is_charset = bytes.len().saturating_sub(i) >= 8
+            && bytes[i + 1..i + 8].eq_ignore_ascii_case(b"charset");
+          if !is_import && !is_layer && !is_charset {
+            imports_allowed = false;
+          }
+        } else if imports_allowed
+          && brace_depth == 0
+          && bytes[i] != b'@'
+          && !bytes[i].is_ascii_whitespace()
+          && bytes[i] != b';'
+        {
+          imports_allowed = false;
         }
 
         if bytes[i] == b'@'
@@ -1012,6 +1159,22 @@ where
           }
 
           let rule = css[i..j].trim();
+          if brace_depth != 0 || !imports_allowed {
+            if !push_with_budget(
+              &mut out,
+              &css[last_emit..i],
+              base_url,
+              &mut state.budget,
+              diagnostics,
+            ) {
+              budget_exhausted = true;
+              break;
+            }
+            last_emit = j;
+            i = j;
+            continue;
+          }
+
           if let Some((target, media)) = parse_import_target(rule) {
             if let Some(resolved) = resolve_href(base_url, target) {
               if !push_with_budget(
@@ -2729,6 +2892,139 @@ mod tests {
     assert!(out.contains("@media screen"));
     assert!(out.contains("@media print"));
     assert_eq!(out.matches("p { color: green; }").count(), 2);
+  }
+
+  #[test]
+  fn inline_imports_ignores_late_import_after_style_rule() {
+    let mut state = InlineImportState::new();
+    let mut fetched_urls: Vec<String> = Vec::new();
+    let mut fetched = |url: &str| -> Result<String> {
+      fetched_urls.push(url.to_string());
+      Ok(".imported { color: blue; }".to_string())
+    };
+    let css = "body { color: black; } @import \"late.css\";\n.x { color: red; }";
+    let out = inline_imports(
+      css,
+      "https://example.com/main.css",
+      &mut fetched,
+      &mut state,
+      None,
+    )
+    .expect("inline imports");
+
+    assert!(
+      !out.contains(".imported"),
+      "late @import should not be inlined: {out}"
+    );
+    assert!(
+      !out.contains("@import"),
+      "late @import should be dropped from the output: {out}"
+    );
+    assert!(
+      fetched_urls.is_empty(),
+      "late @import should not trigger fetches: {fetched_urls:?}"
+    );
+  }
+
+  #[test]
+  fn inline_imports_allows_import_after_layer_statement() {
+    let mut state = InlineImportState::new();
+    let mut fetched_urls: Vec<String> = Vec::new();
+    let mut fetched = |url: &str| -> Result<String> {
+      fetched_urls.push(url.to_string());
+      Ok(".imported { color: blue; }".to_string())
+    };
+    let css = "@layer base; @import \"layered.css\";";
+    let out = inline_imports(
+      css,
+      "https://example.com/main.css",
+      &mut fetched,
+      &mut state,
+      None,
+    )
+    .expect("inline imports");
+
+    assert!(
+      out.contains(".imported { color: blue; }"),
+      "expected import after @layer statement to inline: {out}"
+    );
+    assert_eq!(
+      fetched_urls,
+      vec!["https://example.com/layered.css".to_string()],
+      "expected import after @layer statement to be fetched"
+    );
+  }
+
+  #[test]
+  fn inline_imports_layer_block_blocks_subsequent_imports() {
+    let mut state = InlineImportState::new();
+    let mut fetched_urls: Vec<String> = Vec::new();
+    let mut fetched = |url: &str| -> Result<String> {
+      fetched_urls.push(url.to_string());
+      if url.ends_with("/a.css") {
+        Ok(".from-a { color: blue; }".to_string())
+      } else if url.ends_with("/b.css") {
+        Ok(".from-b { color: green; }".to_string())
+      } else {
+        Ok(String::new())
+      }
+    };
+    let css = "@import \"a.css\"; @layer base { .x { color: red; } } @import \"b.css\";";
+    let out = inline_imports(
+      css,
+      "https://example.com/main.css",
+      &mut fetched,
+      &mut state,
+      None,
+    )
+    .expect("inline imports");
+
+    assert!(
+      out.contains(".from-a { color: blue; }"),
+      "first @import should be inlined: {out}"
+    );
+    assert!(
+      !out.contains(".from-b"),
+      "@import after @layer block should be ignored: {out}"
+    );
+    assert!(
+      out.contains(".x { color: red; }"),
+      "@layer block contents should remain: {out}"
+    );
+    assert_eq!(
+      fetched_urls,
+      vec!["https://example.com/a.css".to_string()],
+      "ignored imports should not be fetched"
+    );
+  }
+
+  #[test]
+  fn inline_imports_allows_import_after_charset() {
+    let mut state = InlineImportState::new();
+    let mut fetched_urls: Vec<String> = Vec::new();
+    let mut fetched = |url: &str| -> Result<String> {
+      fetched_urls.push(url.to_string());
+      Ok(".imported { color: blue; }".to_string())
+    };
+    let css = "@charset \"UTF-8\"; @import \"charset.css\";";
+    let out = inline_imports(
+      css,
+      "https://example.com/main.css",
+      &mut fetched,
+      &mut state,
+      None,
+    )
+    .expect("inline imports");
+
+    assert!(
+      out.contains(".imported { color: blue; }"),
+      "expected import after @charset to inline: {out}"
+    );
+    assert_eq!(
+      fetched_urls,
+      vec!["https://example.com/charset.css".to_string()],
+      "expected import after @charset to be fetched"
+    );
   }
 
   #[test]
