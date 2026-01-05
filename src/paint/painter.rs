@@ -39,6 +39,7 @@ use crate::image_loader::ImageCache;
 use crate::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport;
 use crate::layout::contexts::inline::line_builder::TextItem;
 use crate::layout::utils::resolve_font_relative_length;
+use crate::math::MathFragment;
 use crate::paint::blur::apply_gaussian_blur;
 use crate::paint::canvas::draw_pixmap_with_plus_blend;
 use crate::paint::clip_path::resolve_clip_path;
@@ -6137,6 +6138,154 @@ impl Painter {
             return;
           }
         }
+      }
+      ReplacedType::Math(math) => {
+        // Match display-list MathML painting: render math fragments into the replaced element's
+        // content box (already handled via `content_rect`), respecting any replaced-element clip
+        // mask so overflow: clip does not bleed into padding/border.
+        let fallback_style = ComputedStyle::default();
+        let style_ref = style.unwrap_or(&fallback_style);
+        let mut fallback_layout = None;
+        let layout = match math.layout.as_deref() {
+          Some(layout) => layout,
+          None => {
+            fallback_layout = Some(crate::math::layout_mathml(&math.root, style_ref, &self.font_ctx));
+            fallback_layout.as_ref().expect("inserted layout")
+          }
+        };
+
+        let color = style_ref.color;
+        let layout_w = layout.width.max(0.01);
+        let layout_h = layout.height.max(0.01);
+        let scale_x = if layout_w > 0.0 {
+          content_rect.width() / layout_w
+        } else {
+          1.0
+        };
+        let scale_y = if layout_h > 0.0 {
+          content_rect.height() / layout_h
+        } else {
+          1.0
+        };
+
+        let scale_run = |run: &ShapedRun| -> ShapedRun {
+          if (scale_x - 1.0).abs() < 0.001 && (scale_y - 1.0).abs() < 0.001 {
+            return run.clone();
+          }
+          let mut scaled = run.clone();
+          let uniform = ((scale_x + scale_y) * 0.5).max(0.0);
+          scaled.font_size *= uniform;
+          scaled.advance *= scale_x;
+          scaled.baseline_shift *= scale_y;
+          scaled.synthetic_bold *= uniform;
+          scaled.scale *= uniform.max(1e-3);
+          for glyph in &mut scaled.glyphs {
+            glyph.x_offset *= scale_x;
+            glyph.y_offset *= scale_y;
+            glyph.x_advance *= scale_x;
+            glyph.y_advance *= scale_y;
+          }
+          scaled
+        };
+
+        for frag in &layout.fragments {
+          match frag {
+            MathFragment::Glyph { origin, run } => {
+              let scaled_run = scale_run(run);
+              let baseline_y = content_rect.y() + origin.y * scale_y;
+              let start_x = content_rect.x() + origin.x * scale_x;
+              let runs = [scaled_run];
+              self.paint_shaped_runs(&runs, start_x, baseline_y, color, Some(style_ref), clip_mask);
+            }
+            MathFragment::Rule(r) => {
+              let scaled_rect = Rect::from_xywh(
+                content_rect.x() + r.x() * scale_x,
+                content_rect.y() + r.y() * scale_y,
+                r.width() * scale_x,
+                r.height() * scale_y,
+              );
+              let device_rect = self.device_rect(scaled_rect);
+              let Some(rect) = SkiaRect::from_xywh(
+                device_rect.x(),
+                device_rect.y(),
+                device_rect.width(),
+                device_rect.height(),
+              ) else {
+                continue;
+              };
+              let mut paint = Paint::default();
+              paint.set_color_rgba8(color.r, color.g, color.b, color.alpha_u8());
+              paint.anti_alias = true;
+              self
+                .pixmap
+                .fill_rect(rect, &paint, Transform::identity(), clip_mask);
+            }
+            MathFragment::StrokeRect {
+              rect: stroke_rect,
+              radius,
+              width,
+            } => {
+              let scaled_rect = Rect::from_xywh(
+                content_rect.x() + stroke_rect.x() * scale_x,
+                content_rect.y() + stroke_rect.y() * scale_y,
+                stroke_rect.width() * scale_x,
+                stroke_rect.height() * scale_y,
+              );
+              let uniform = ((scale_x + scale_y) * 0.5).max(0.0);
+              let stroke_width = *width * uniform;
+              let scaled_radius = *radius * uniform;
+
+              let device_rect = self.device_rect(scaled_rect);
+              let Some(rect) = SkiaRect::from_xywh(
+                device_rect.x(),
+                device_rect.y(),
+                device_rect.width(),
+                device_rect.height(),
+              ) else {
+                continue;
+              };
+
+              let mut paint = Paint::default();
+              paint.set_color_rgba8(color.r, color.g, color.b, color.alpha_u8());
+              paint.anti_alias = true;
+
+              let stroke = tiny_skia::Stroke {
+                width: stroke_width * self.scale,
+                ..Default::default()
+              };
+
+              if scaled_radius > 0.0 {
+                let radii = self.device_radii(BorderRadii::uniform(scaled_radius));
+                let Some(path) = crate::paint::rasterize::build_rounded_rect_path(
+                  rect.x(),
+                  rect.y(),
+                  rect.width(),
+                  rect.height(),
+                  &radii,
+                ) else {
+                  continue;
+                };
+                self.pixmap.stroke_path(
+                  &path,
+                  &paint,
+                  &stroke,
+                  Transform::identity(),
+                  clip_mask,
+                );
+              } else {
+                let path = PathBuilder::from_rect(rect);
+                self.pixmap.stroke_path(
+                  &path,
+                  &paint,
+                  &stroke,
+                  Transform::identity(),
+                  clip_mask,
+                );
+              }
+            }
+          }
+        }
+        return;
       }
       _ => {}
     }
