@@ -1602,6 +1602,8 @@ fn write_html_report(
       #show-missing-in-new:not(:checked) ~ #all-entries tbody tr.missing-in-new {{ display: none; }}
       #show-missing-in-baseline:not(:checked) ~ #all-entries tbody tr.missing-in-baseline {{ display: none; }}
       #show-unchanged:not(:checked) ~ #all-entries tbody tr.unchanged {{ display: none; }}
+      #show-only-failing:checked ~ .entry-filters label[for="show-only-failing"] {{ font-weight: bold; }}
+      #show-only-failing:checked ~ #all-entries tbody tr:not(.failing) {{ display: none; }}
       #show-thumbnails:not(:checked) ~ #all-entries .thumb br {{ display: none; }}
       #show-thumbnails:not(:checked) ~ #all-entries .thumb a:nth-of-type(2) {{ display: none; }}
       .warning {{ color: #b00020; }}
@@ -1637,6 +1639,7 @@ fn write_html_report(
       <input type="checkbox" id="show-missing-in-new" checked>
       <input type="checkbox" id="show-missing-in-baseline" checked>
       <input type="checkbox" id="show-unchanged" checked>
+      {failing_only_checkbox}
       <input type="checkbox" id="show-thumbnails" checked>
       <div class="entry-filters">
         <strong>Show:</strong>
@@ -1645,6 +1648,7 @@ fn write_html_report(
         <label for="show-missing-in-new">Missing in new ({missing_in_new})</label>
         <label for="show-missing-in-baseline">Missing in baseline ({missing_in_baseline})</label>
         <label for="show-unchanged">Unchanged ({unchanged})</label>
+        {failing_only_label}
         <label for="show-thumbnails">Thumbnails</label>
       </div>
       <table id="all-entries">
@@ -1703,6 +1707,31 @@ fn write_html_report(
     unchanged = report.totals.unchanged,
     missing_in_new = report.totals.missing_in_new,
     missing_in_baseline = report.totals.missing_in_baseline,
+    failing_only_checkbox = if report
+      .gating
+      .as_ref()
+      .map(|g| g.fail_on_regression)
+      .unwrap_or(false)
+    {
+      r#"<input type="checkbox" id="show-only-failing">"#
+    } else {
+      ""
+    },
+    failing_only_label = if report
+      .gating
+      .as_ref()
+      .map(|g| g.fail_on_regression)
+      .unwrap_or(false)
+    {
+      let failing = report
+        .results
+        .iter()
+        .filter(|entry| entry.failing_regression)
+        .count();
+      format!(r#"<label for="show-only-failing">Only failing ({failing})</label>"#)
+    } else {
+      String::new()
+    },
     rows = rows,
   );
 

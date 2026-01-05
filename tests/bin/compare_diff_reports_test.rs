@@ -404,6 +404,14 @@ fn compare_diff_reports_can_gate_on_regressions() {
     "missing failing regression count in html summary:\n{html}"
   );
   assert!(
+    html.contains("id=\"show-only-failing\""),
+    "expected failing-only filter control when gating enabled:\n{html}"
+  );
+  assert!(
+    html.contains("Only failing (1)"),
+    "expected failing-only filter label to include count:\n{html}"
+  );
+  assert!(
     html.contains("class=\"regressed failing\""),
     "missing failing class in html:\n{html}"
   );
