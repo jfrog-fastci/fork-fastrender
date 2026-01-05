@@ -125,3 +125,53 @@ fn validate_page_fixtures_ignores_css_namespace_urls() {
     combined_output(&output)
   );
 }
+
+#[test]
+fn validate_repo_pages_regression_fixtures_are_offline() {
+  let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    .parent()
+    .expect("xtask should live at repo_root/xtask");
+  let fixtures_root = repo_root.join("tests/pages/fixtures");
+  let regression_manifest = repo_root.join("tests/pages_regression_test.rs");
+
+  let contents = fs::read_to_string(&regression_manifest)
+    .unwrap_or_else(|e| panic!("read {}: {}", regression_manifest.display(), e));
+  let mut fixtures = Vec::new();
+  let mut seen = std::collections::BTreeSet::new();
+  for line in contents.lines() {
+    let line = line.trim();
+    let Some(rest) = line.strip_prefix("name: \"") else {
+      continue;
+    };
+    let Some(end) = rest.find('"') else {
+      continue;
+    };
+    let name = &rest[..end];
+    if seen.insert(name.to_string()) {
+      fixtures.push(name.to_string());
+    }
+  }
+  assert!(
+    !fixtures.is_empty(),
+    "expected to discover regression fixtures from {}",
+    regression_manifest.display()
+  );
+
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .args([
+      "validate-page-fixtures",
+      "--fixtures-root",
+      fixtures_root.to_str().expect("fixtures root path"),
+      "--only",
+      &fixtures.join(","),
+    ])
+    .output()
+    .expect("run cargo xtask validate-page-fixtures (regression fixtures)");
+
+  assert!(
+    output.status.success(),
+    "expected repo regression fixtures to be offline, got: {:?}\n{}",
+    output.status,
+    combined_output(&output)
+  );
+}
