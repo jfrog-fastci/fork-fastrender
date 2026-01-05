@@ -168,6 +168,24 @@ fn block_axis_sides(style: &ComputedStyle) -> (PhysicalSide, PhysicalSide) {
   )
 }
 
+fn paint_viewport_for(
+  writing_mode: WritingMode,
+  _direction: Direction,
+  viewport_size: Size,
+) -> Rect {
+  let inline_size = if inline_axis_is_horizontal(writing_mode) {
+    viewport_size.width
+  } else {
+    viewport_size.height
+  };
+  let block_size = if inline_axis_is_horizontal(writing_mode) {
+    viewport_size.height
+  } else {
+    viewport_size.width
+  };
+  Rect::from_xywh(0.0, 0.0, inline_size, block_size)
+}
+
 /// Block Formatting Context implementation
 ///
 /// Implements the FormattingContext trait for block-level layout.
@@ -319,6 +337,7 @@ impl BlockFormattingContext {
     nearest_positioned_cb: &ContainingBlock,
     external_float_ctx: Option<&mut FloatContext>,
     external_float_base_y: f32,
+    paint_viewport: Rect,
   ) -> Result<(FragmentNode, f32), LayoutError> {
     let toggles = crate::debug::runtime::runtime_toggles();
     let dump_child_y = toggles.truthy("FASTR_DUMP_CELL_CHILD_Y");
@@ -757,17 +776,77 @@ impl BlockFormattingContext {
       *nearest_positioned_cb
     };
 
+    let box_width = computed_width.border_box_width();
+    let box_width = if box_width.is_finite() {
+      box_width.max(0.0)
+    } else {
+      0.0
+    };
+    let child_border_origin = Point::new(computed_width.margin_left, box_y);
+    let child_content_origin = Point::new(
+      child_border_origin.x + padding_origin.x,
+      child_border_origin.y + padding_origin.y,
+    );
+    let child_viewport =
+      paint_viewport.translate(Point::new(-child_content_origin.x, -child_content_origin.y));
+
     let skip_contents = match style.content_visibility {
       crate::style::types::ContentVisibility::Hidden => true,
       crate::style::types::ContentVisibility::Auto => {
-        // A deterministic heuristic aligned with Chrome: if the element's border box is fully
-        // outside the paint viewport, treat it as skipped content and size the box using
+        // A deterministic heuristic aligned with Chrome: if the element's border box does not
+        // intersect the paint viewport, treat it as skipped content and size the box using
         // `contain-intrinsic-size` fallback rules.
-        //
-        // The block formatting context operates in logical axes; apply this heuristic only when
-        // the block axis maps to physical y (horizontal writing modes).
-        !block_axis_is_horizontal(style.writing_mode)
-          && box_y >= (self.viewport_scroll.y + self.viewport_size.height)
+        let activation_margin = toggles
+          .f64("FASTR_CONTENT_VISIBILITY_AUTO_MARGIN_PX")
+          .unwrap_or(0.0)
+          .max(0.0) as f32;
+        let viewport = if activation_margin > 0.0 {
+          paint_viewport.inflate(activation_margin)
+        } else {
+          paint_viewport
+        };
+
+        let estimated_border_box_block_size = specified_height
+          .filter(|h| h.is_finite())
+          .map(|h| h.max(0.0))
+          .or_else(|| {
+            let axis = if block_axis_is_horizontal(style.writing_mode) {
+              style.contain_intrinsic_width
+            } else {
+              style.contain_intrinsic_height
+            };
+            axis
+              .length
+              .and_then(|l| {
+                resolve_length_with_percentage(
+                  l,
+                  containing_height,
+                  self.viewport_size,
+                  style.font_size,
+                  style.root_font_size,
+                )
+              })
+              .map(|v| v.max(0.0))
+          })
+          .and_then(|content_estimate| {
+            let border_box = content_estimate + vertical_edges;
+            border_box.is_finite().then_some(border_box.max(0.0))
+          });
+
+        if let Some(block_size) = estimated_border_box_block_size {
+          let border_box =
+            Rect::from_xywh(computed_width.margin_left, box_y, box_width, block_size);
+          !viewport.intersects(border_box)
+        } else {
+          // Block-size is unknown pre-layout, so only skip when we can prove the border box is
+          // outside the viewport (either fully outside the inline axis or definitely after the
+          // viewport in the block axis).
+          let min_inline = computed_width.margin_left;
+          let max_inline = min_inline + box_width;
+          let outside_inline = max_inline < viewport.min_x() || min_inline > viewport.max_x();
+          let after_block = box_y > viewport.max_y();
+          outside_inline || after_block
+        }
       }
       crate::style::types::ContentVisibility::Visible => false,
     };
@@ -817,6 +896,7 @@ impl BlockFormattingContext {
               &child_constraints,
               &descendant_nearest_positioned_cb,
               computed_width.content_width,
+              child_viewport,
             )?;
             (frags, height, positioned, info)
           } else {
@@ -824,6 +904,7 @@ impl BlockFormattingContext {
               child,
               &child_constraints,
               &descendant_nearest_positioned_cb,
+              child_viewport,
               external_float_ctx,
               external_float_base_y + box_y,
             )?;
@@ -838,6 +919,7 @@ impl BlockFormattingContext {
             &child_constraints,
             &descendant_nearest_positioned_cb,
             computed_width.content_width,
+            child_viewport,
           )?;
           (frags, height, positioned, info)
         } else {
@@ -845,6 +927,7 @@ impl BlockFormattingContext {
             child,
             &child_constraints,
             &descendant_nearest_positioned_cb,
+            child_viewport,
             external_float_ctx,
             external_float_base_y + box_y,
           )?;
@@ -1261,6 +1344,10 @@ impl BlockFormattingContext {
           && child.style.float == Float::None
           && child.style.clear == Clear::None
           && child.style.running_position.is_none()
+          && matches!(
+            child.style.content_visibility,
+            crate::style::types::ContentVisibility::Visible
+          )
           && matches!(child.style.position, Position::Static | Position::Relative)
       })
   }
@@ -1295,6 +1382,7 @@ impl BlockFormattingContext {
     relative_cb: &ContainingBlock,
     containing_width: f32,
     float_ctx_empty: bool,
+    paint_viewport: Rect,
   ) -> Option<Result<(Vec<FragmentNode>, f32, Vec<PositionedCandidate>), LayoutError>> {
     if !self.parallelism.should_parallelize(parent.children.len())
       || !float_ctx_empty
@@ -1325,6 +1413,7 @@ impl BlockFormattingContext {
             nearest_positioned_cb,
             None,
             0.0,
+            paint_viewport,
           )?;
           let meta = fragment.block_metadata.clone().ok_or_else(|| {
             LayoutError::MissingContext(
@@ -1589,8 +1678,16 @@ impl BlockFormattingContext {
     parent: &BoxNode,
     constraints: &LayoutConstraints,
     nearest_positioned_cb: &ContainingBlock,
+    paint_viewport: Rect,
   ) -> Result<(Vec<FragmentNode>, f32, Vec<PositionedCandidate>), LayoutError> {
-    self.layout_children_with_external_floats(parent, constraints, nearest_positioned_cb, None, 0.0)
+    self.layout_children_with_external_floats(
+      parent,
+      constraints,
+      nearest_positioned_cb,
+      paint_viewport,
+      None,
+      0.0,
+    )
   }
 
   #[allow(clippy::cognitive_complexity)]
@@ -1599,6 +1696,7 @@ impl BlockFormattingContext {
     parent: &BoxNode,
     constraints: &LayoutConstraints,
     nearest_positioned_cb: &ContainingBlock,
+    paint_viewport: Rect,
     mut external_float_ctx: Option<&mut FloatContext>,
     external_float_base_y: f32,
   ) -> Result<(Vec<FragmentNode>, f32, Vec<PositionedCandidate>), LayoutError> {
@@ -1821,6 +1919,7 @@ impl BlockFormattingContext {
         &relative_cb,
         containing_width,
         float_ctx.is_empty(),
+        paint_viewport,
       ) {
         return result;
       }
@@ -1884,6 +1983,7 @@ impl BlockFormattingContext {
             nearest_positioned_cb,
             child_float_ctx,
             child_float_base_y,
+            paint_viewport,
           )?;
           *content_height = content_height.max(fragment.bounds.max_y());
           *current_y = next_y;
@@ -2411,6 +2511,7 @@ impl BlockFormattingContext {
           nearest_positioned_cb,
           child_float_ctx,
           child_float_base_y,
+          paint_viewport,
         )?;
 
         if dump_cell_child_y && matches!(parent.style.display, Display::TableCell) {
@@ -2490,6 +2591,7 @@ impl BlockFormattingContext {
             nearest_positioned_cb,
             child_float_ctx,
             child_float_base_y,
+            paint_viewport,
           )?;
           content_height = content_height.max(fragment.bounds.max_y());
           current_y = next_y;
@@ -2683,6 +2785,7 @@ impl BlockFormattingContext {
     column_gap: f32,
     available_height: AvailableSpace,
     nearest_positioned_cb: &ContainingBlock,
+    paint_viewport: Rect,
   ) -> Result<(Vec<FragmentNode>, f32, Vec<PositionedCandidate>, f32), LayoutError> {
     let mut deadline_counter = 0usize;
     if children.is_empty() {
@@ -2695,6 +2798,7 @@ impl BlockFormattingContext {
         &parent_clone,
         &LayoutConstraints::new(AvailableSpace::Definite(column_width), available_height),
         nearest_positioned_cb,
+        paint_viewport,
       )?;
       return Ok((frags, height, positioned, height));
     }
@@ -2702,8 +2806,12 @@ impl BlockFormattingContext {
     let parent_clone = Self::clone_with_children(parent, children.to_vec());
     let column_constraints =
       LayoutConstraints::new(AvailableSpace::Definite(column_width), available_height);
-    let (flow_fragments, flow_height, flow_positioned) =
-      self.layout_children(&parent_clone, &column_constraints, nearest_positioned_cb)?;
+    let (flow_fragments, flow_height, flow_positioned) = self.layout_children(
+      &parent_clone,
+      &column_constraints,
+      nearest_positioned_cb,
+      paint_viewport,
+    )?;
     let flow_fragments: Vec<FragmentNode> = flow_fragments
       .into_iter()
       .map(|mut frag| {
@@ -3039,6 +3147,7 @@ impl BlockFormattingContext {
     constraints: &LayoutConstraints,
     nearest_positioned_cb: &ContainingBlock,
     available_inline: f32,
+    paint_viewport: Rect,
   ) -> Result<
     (
       Vec<FragmentNode>,
@@ -3052,7 +3161,7 @@ impl BlockFormattingContext {
       self.compute_column_geometry(&parent.style, available_inline);
     if column_count <= 1 {
       let (frags, height, positioned) =
-        self.layout_children(parent, constraints, nearest_positioned_cb)?;
+        self.layout_children(parent, constraints, nearest_positioned_cb, paint_viewport)?;
       return Ok((frags, height, positioned, None));
     }
 
@@ -3076,6 +3185,7 @@ impl BlockFormattingContext {
       let end = next_span.unwrap_or(parent.children.len());
 
       if end > idx {
+        let segment_viewport = paint_viewport.translate(Point::new(0.0, -physical_offset));
         let (mut seg_fragments, seg_height, mut seg_positioned, seg_flow_height) = self
           .layout_column_segment(
             parent,
@@ -3085,6 +3195,7 @@ impl BlockFormattingContext {
             column_gap,
             constraints.available_height,
             nearest_positioned_cb,
+            segment_viewport,
           )?;
         for frag in &mut seg_fragments {
           Self::translate_with_logical(frag, 0.0, physical_offset, logical_offset);
@@ -3107,8 +3218,12 @@ impl BlockFormattingContext {
           AvailableSpace::Definite(available_inline),
           constraints.available_height,
         );
-        let (mut span_fragments, span_height, mut span_positioned) =
-          self.layout_children(&span_parent, &span_constraints, nearest_positioned_cb)?;
+        let (mut span_fragments, span_height, mut span_positioned) = self.layout_children(
+          &span_parent,
+          &span_constraints,
+          nearest_positioned_cb,
+          paint_viewport.translate(Point::new(0.0, -physical_offset)),
+        )?;
         for frag in &mut span_fragments {
           Self::set_logical_from_bounds(frag);
           Self::translate_with_logical(frag, 0.0, physical_offset, logical_offset);
@@ -3172,6 +3287,8 @@ impl FormattingContext for BlockFormattingContext {
       return Ok(cached);
     }
     let style = style_override.as_ref().unwrap_or(&box_node.style);
+    let base_paint_viewport =
+      paint_viewport_for(style.writing_mode, style.direction, self.viewport_size);
     let toggles = crate::debug::runtime::runtime_toggles();
     let inline_is_horizontal = inline_axis_is_horizontal(style.writing_mode);
     let _inline_positive = inline_axis_positive(style.writing_mode, style.direction);
@@ -3780,6 +3897,32 @@ impl FormattingContext for BlockFormattingContext {
         child_ctx.factory.clone(),
       ));
     }
+    let mut paint_viewport = base_paint_viewport;
+    let viewport_like = matches!(
+      constraints.available_width,
+      AvailableSpace::Definite(w) if (w - self.viewport_size.width).abs() < 0.01
+    ) && matches!(
+      constraints.available_height,
+      AvailableSpace::Definite(h) if (h - self.viewport_size.height).abs() < 0.01
+    );
+    if viewport_like {
+      let scroll = self.viewport_scroll;
+      if scroll.x.is_finite() && scroll.y.is_finite() {
+        let (scroll_inline, scroll_block) = if inline_is_horizontal {
+          (scroll.x, scroll.y)
+        } else {
+          (scroll.y, scroll.x)
+        };
+        paint_viewport = paint_viewport.translate(Point::new(scroll_inline, scroll_block));
+      }
+    }
+    // Layout uses the block's content box coordinate space; translate the viewport into that
+    // coordinate system so culling decisions stay relative to `box_y`/`margin_left` placement.
+    let content_origin = Point::new(
+      computed_width.margin_left + padding_origin.x,
+      padding_origin.y,
+    );
+    paint_viewport = paint_viewport.translate(Point::new(-content_origin.x, -content_origin.y));
     let use_columns = Self::is_multicol_container(style);
     let skip_contents = matches!(
       style.content_visibility,
@@ -3794,11 +3937,12 @@ impl FormattingContext for BlockFormattingContext {
           &child_constraints,
           &nearest_cb,
           computed_width.content_width,
+          paint_viewport,
         )?;
         (frags, height, positioned, info)
       } else {
         let (frags, height, positioned) =
-          child_ctx.layout_children(box_node, &child_constraints, &nearest_cb)?;
+          child_ctx.layout_children(box_node, &child_constraints, &nearest_cb, paint_viewport)?;
         (frags, height, positioned, None)
       };
     if skip_contents || style.containment.size {
