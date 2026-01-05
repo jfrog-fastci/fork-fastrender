@@ -139,6 +139,15 @@ fn hash_option_intrinsic_size_keyword(opt: &Option<IntrinsicSizeKeyword>, hasher
   }
 }
 
+fn hash_sizing_property(
+  length: &Option<Length>,
+  keyword: &Option<IntrinsicSizeKeyword>,
+  hasher: &mut FxHasher,
+) {
+  hash_option_length(length, hasher);
+  hash_option_intrinsic_size_keyword(keyword, hasher);
+}
+
 fn style_override_fingerprint(style: &ComputedStyle) -> u64 {
   let mut h = FxHasher::default();
   hash_enum_discriminant(&style.display, &mut h);
@@ -152,18 +161,12 @@ fn style_override_fingerprint(style: &ComputedStyle) -> u64 {
   hash_enum_discriminant(&style.box_sizing, &mut h);
   hash_enum_discriminant(&style.writing_mode, &mut h);
   hash_enum_discriminant(&style.direction, &mut h);
-  hash_option_length(&style.width, &mut h);
-  hash_option_intrinsic_size_keyword(&style.width_keyword, &mut h);
-  hash_option_length(&style.height, &mut h);
-  hash_option_intrinsic_size_keyword(&style.height_keyword, &mut h);
-  hash_option_length(&style.min_width, &mut h);
-  hash_option_intrinsic_size_keyword(&style.min_width_keyword, &mut h);
-  hash_option_length(&style.max_width, &mut h);
-  hash_option_intrinsic_size_keyword(&style.max_width_keyword, &mut h);
-  hash_option_length(&style.min_height, &mut h);
-  hash_option_intrinsic_size_keyword(&style.min_height_keyword, &mut h);
-  hash_option_length(&style.max_height, &mut h);
-  hash_option_intrinsic_size_keyword(&style.max_height_keyword, &mut h);
+  hash_sizing_property(&style.width, &style.width_keyword, &mut h);
+  hash_sizing_property(&style.height, &style.height_keyword, &mut h);
+  hash_sizing_property(&style.min_width, &style.min_width_keyword, &mut h);
+  hash_sizing_property(&style.max_width, &style.max_width_keyword, &mut h);
+  hash_sizing_property(&style.min_height, &style.min_height_keyword, &mut h);
+  hash_sizing_property(&style.max_height, &style.max_height_keyword, &mut h);
   hash_option_length(&style.margin_top, &mut h);
   hash_option_length(&style.margin_right, &mut h);
   hash_option_length(&style.margin_bottom, &mut h);
@@ -213,24 +216,34 @@ mod tests {
   #[test]
   fn style_override_fingerprint_includes_intrinsic_size_keywords() {
     let base = ComputedStyle::default();
-    let mut min_content = base.clone();
-    min_content.width_keyword = Some(IntrinsicSizeKeyword::MinContent);
+
+    let mut max_content = base.clone();
+    max_content.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
     assert_ne!(
       style_override_fingerprint(&base),
-      style_override_fingerprint(&min_content)
+      style_override_fingerprint(&max_content)
     );
 
-    let mut fit_10 = base.clone();
-    fit_10.width_keyword = Some(IntrinsicSizeKeyword::FitContent {
-      limit: Some(Length::px(10.0)),
-    });
-    let mut fit_20 = base.clone();
-    fit_20.width_keyword = Some(IntrinsicSizeKeyword::FitContent {
-      limit: Some(Length::px(20.0)),
+    let mut fit_content = base.clone();
+    fit_content.width_keyword = Some(IntrinsicSizeKeyword::FitContent { limit: None });
+    let mut fit_content_fn = base.clone();
+    fit_content_fn.width_keyword = Some(IntrinsicSizeKeyword::FitContent {
+      limit: Some(Length::percent(50.0)),
     });
     assert_ne!(
-      style_override_fingerprint(&fit_10),
-      style_override_fingerprint(&fit_20)
+      style_override_fingerprint(&fit_content),
+      style_override_fingerprint(&fit_content_fn)
+    );
+
+    let mut max_width_none = base.clone();
+    max_width_none.max_width = None;
+    max_width_none.max_width_keyword = None;
+    let mut max_width_max_content = base.clone();
+    max_width_max_content.max_width = None;
+    max_width_max_content.max_width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+    assert_ne!(
+      style_override_fingerprint(&max_width_none),
+      style_override_fingerprint(&max_width_max_content)
     );
   }
 }

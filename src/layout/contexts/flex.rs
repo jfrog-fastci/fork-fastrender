@@ -4023,6 +4023,15 @@ fn hash_option_intrinsic_size_keyword(
   }
 }
 
+fn hash_sizing_property(
+  length: &Option<Length>,
+  keyword: &Option<IntrinsicSizeKeyword>,
+  hasher: &mut FingerprintHasher,
+) {
+  hash_option_length(length, hasher);
+  hash_option_intrinsic_size_keyword(keyword, hasher);
+}
+
 fn hash_flex_basis(basis: &crate::style::types::FlexBasis, hasher: &mut FingerprintHasher) {
   match basis {
     crate::style::types::FlexBasis::Auto => 0u8.hash(hasher),
@@ -4038,18 +4047,12 @@ fn flex_style_fingerprint(style: &ComputedStyle) -> u64 {
   hash_enum_discriminant(&style.display, &mut h);
   hash_enum_discriminant(&style.position, &mut h);
   hash_enum_discriminant(&style.box_sizing, &mut h);
-  hash_option_length(&style.width, &mut h);
-  hash_option_intrinsic_size_keyword(&style.width_keyword, &mut h);
-  hash_option_length(&style.height, &mut h);
-  hash_option_intrinsic_size_keyword(&style.height_keyword, &mut h);
-  hash_option_length(&style.min_width, &mut h);
-  hash_option_length(&style.max_width, &mut h);
-  hash_option_intrinsic_size_keyword(&style.min_width_keyword, &mut h);
-  hash_option_intrinsic_size_keyword(&style.max_width_keyword, &mut h);
-  hash_option_length(&style.min_height, &mut h);
-  hash_option_length(&style.max_height, &mut h);
-  hash_option_intrinsic_size_keyword(&style.min_height_keyword, &mut h);
-  hash_option_intrinsic_size_keyword(&style.max_height_keyword, &mut h);
+  hash_sizing_property(&style.width, &style.width_keyword, &mut h);
+  hash_sizing_property(&style.height, &style.height_keyword, &mut h);
+  hash_sizing_property(&style.min_width, &style.min_width_keyword, &mut h);
+  hash_sizing_property(&style.max_width, &style.max_width_keyword, &mut h);
+  hash_sizing_property(&style.min_height, &style.min_height_keyword, &mut h);
+  hash_sizing_property(&style.max_height, &style.max_height_keyword, &mut h);
   hash_option_length(&style.margin_top, &mut h);
   hash_option_length(&style.margin_right, &mut h);
   hash_option_length(&style.margin_bottom, &mut h);
@@ -7808,6 +7811,41 @@ mod tests {
     assert_eq!(
       flex_style_fingerprint(&style_zero),
       flex_style_fingerprint(&style_neg_zero)
+    );
+  }
+
+  #[test]
+  fn flex_style_fingerprint_includes_intrinsic_size_keywords() {
+    let mut base = ComputedStyle::default();
+    base.display = Display::Flex;
+
+    let mut max_content = base.clone();
+    max_content.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+    assert_ne!(
+      flex_style_fingerprint(&base),
+      flex_style_fingerprint(&max_content)
+    );
+
+    let mut fit_content = base.clone();
+    fit_content.width_keyword = Some(IntrinsicSizeKeyword::FitContent { limit: None });
+    let mut fit_content_fn = base.clone();
+    fit_content_fn.width_keyword = Some(IntrinsicSizeKeyword::FitContent {
+      limit: Some(Length::percent(50.0)),
+    });
+    assert_ne!(
+      flex_style_fingerprint(&fit_content),
+      flex_style_fingerprint(&fit_content_fn)
+    );
+
+    let mut max_width_none = base.clone();
+    max_width_none.max_width = None;
+    max_width_none.max_width_keyword = None;
+    let mut max_width_max_content = base.clone();
+    max_width_max_content.max_width = None;
+    max_width_max_content.max_width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+    assert_ne!(
+      flex_style_fingerprint(&max_width_none),
+      flex_style_fingerprint(&max_width_max_content)
     );
   }
 

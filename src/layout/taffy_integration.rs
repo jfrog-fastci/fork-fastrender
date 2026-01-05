@@ -1341,6 +1341,47 @@ mod tests {
   }
 
   #[test]
+  fn taffy_style_fingerprints_include_intrinsic_size_keywords() {
+    taffy_style_fingerprint_cache_use_epoch(
+      TAFFY_STYLE_FINGERPRINT_EPOCH.load(Ordering::Relaxed) + 1,
+    );
+
+    let base = ComputedStyle::default();
+
+    let mut max_content = base.clone();
+    max_content.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+    assert_ne!(
+      taffy_flex_style_fingerprint(&base),
+      taffy_flex_style_fingerprint(&max_content),
+      "width:auto and width:max-content must hash differently",
+    );
+
+    let mut fit_content = base.clone();
+    fit_content.width_keyword = Some(IntrinsicSizeKeyword::FitContent { limit: None });
+    let mut fit_content_fn = base.clone();
+    fit_content_fn.width_keyword = Some(IntrinsicSizeKeyword::FitContent {
+      limit: Some(Length::percent(50.0)),
+    });
+    assert_ne!(
+      taffy_flex_style_fingerprint(&fit_content),
+      taffy_flex_style_fingerprint(&fit_content_fn),
+      "fit-content and fit-content(<length-percentage>) must hash differently",
+    );
+
+    let mut max_width_none = base.clone();
+    max_width_none.max_width = None;
+    max_width_none.max_width_keyword = None;
+    let mut max_width_max_content = base.clone();
+    max_width_max_content.max_width = None;
+    max_width_max_content.max_width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+    assert_ne!(
+      taffy_flex_style_fingerprint(&max_width_none),
+      taffy_flex_style_fingerprint(&max_width_max_content),
+      "max-width:none and max-width:max-content must hash differently",
+    );
+  }
+
+  #[test]
   fn taffy_node_cache_shard_capacities_sum_to_configured_capacity() {
     let capacity = 7;
     let cache = TaffyNodeCache::new(capacity);
