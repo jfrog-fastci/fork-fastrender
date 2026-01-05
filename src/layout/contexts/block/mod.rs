@@ -6272,9 +6272,10 @@ mod tests {
   }
 
   #[test]
-  fn absolutely_positioned_child_uses_padding_containing_block() {
+  fn absolutely_positioned_child_uses_padding_containing_block_when_parent_positioned() {
     let mut parent_style = ComputedStyle::default();
     parent_style.display = Display::Block;
+    parent_style.position = Position::Relative;
     parent_style.width = Some(Length::px(200.0));
     parent_style.width_keyword = None;
     parent_style.padding_left = Length::px(10.0);
@@ -6302,8 +6303,8 @@ mod tests {
 
     assert_eq!(fragment.children.len(), 1);
     let child_frag = &fragment.children[0];
-    assert_eq!(child_frag.bounds.x(), 5.0);
-    assert_eq!(child_frag.bounds.y(), 7.0);
+    assert_eq!(child_frag.bounds.x(), 15.0);
+    assert_eq!(child_frag.bounds.y(), 17.0);
     assert_eq!(child_frag.bounds.width(), 50.0);
     assert_eq!(child_frag.bounds.height(), 20.0);
   }
