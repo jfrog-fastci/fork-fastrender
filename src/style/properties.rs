@@ -3082,6 +3082,46 @@ fn sanitize_max_length(value: Option<Length>) -> Option<Length> {
   })
 }
 
+fn parse_intrinsic_size_keyword(value: &PropertyValue) -> Option<IntrinsicSizeKeyword> {
+  let PropertyValue::Keyword(raw) = value else {
+    return None;
+  };
+  let raw = raw.trim();
+  if raw.is_empty() {
+    return None;
+  }
+
+  let lower = raw.to_ascii_lowercase();
+  match lower.as_str() {
+    "min-content" | "-webkit-min-content" | "-moz-min-content" => {
+      return Some(IntrinsicSizeKeyword::MinContent);
+    }
+    "max-content" | "-webkit-max-content" | "-moz-max-content" => {
+      return Some(IntrinsicSizeKeyword::MaxContent);
+    }
+    "fit-content" | "-webkit-fit-content" | "-moz-fit-content" => {
+      return Some(IntrinsicSizeKeyword::FitContent { limit: None });
+    }
+    _ => {}
+  }
+
+  for prefix in ["fit-content(", "-webkit-fit-content(", "-moz-fit-content("] {
+    if !lower.starts_with(prefix) || !lower.ends_with(')') {
+      continue;
+    }
+    let inner = lower.strip_prefix(prefix)?;
+    let inner = inner.strip_suffix(')')?.trim();
+    let Some(limit) = sanitize_min_length(parse_length(inner)) else {
+      continue;
+    };
+    return Some(IntrinsicSizeKeyword::FitContent {
+      limit: Some(limit),
+    });
+  }
+
+  None
+}
+
 #[derive(Debug, Clone, Copy)]
 enum PhysicalCorner {
   TopLeft,
@@ -6829,37 +6869,62 @@ fn apply_declaration_with_base_internal(
     // Width and height
     "width" => {
       if order >= styles.logical.width_order {
-        styles.width = extract_length(resolved_value);
-        styles.width_keyword = None;
+        if let Some(keyword) = parse_intrinsic_size_keyword(resolved_value) {
+          styles.width = None;
+          styles.width_keyword = Some(keyword);
+        } else {
+          styles.width = extract_length(resolved_value);
+          styles.width_keyword = None;
+        }
         styles.logical.width_order = order;
       }
     }
     "height" => {
       styles.max_height_is_max_content = false;
       if order >= styles.logical.height_order {
-        styles.height = extract_length(resolved_value);
-        styles.height_keyword = None;
+        if let Some(keyword) = parse_intrinsic_size_keyword(resolved_value) {
+          styles.height = None;
+          styles.height_keyword = Some(keyword);
+        } else {
+          styles.height = extract_length(resolved_value);
+          styles.height_keyword = None;
+        }
         styles.logical.height_order = order;
       }
     }
     "min-width" => {
       if order >= styles.logical.min_width_order {
-        styles.min_width = sanitize_min_length(extract_length(resolved_value));
-        styles.min_width_keyword = None;
+        if let Some(keyword) = parse_intrinsic_size_keyword(resolved_value) {
+          styles.min_width = None;
+          styles.min_width_keyword = Some(keyword);
+        } else {
+          styles.min_width = sanitize_min_length(extract_length(resolved_value));
+          styles.min_width_keyword = None;
+        }
         styles.logical.min_width_order = order;
       }
     }
     "min-height" => {
       if order >= styles.logical.min_height_order {
-        styles.min_height = sanitize_min_length(extract_length(resolved_value));
-        styles.min_height_keyword = None;
+        if let Some(keyword) = parse_intrinsic_size_keyword(resolved_value) {
+          styles.min_height = None;
+          styles.min_height_keyword = Some(keyword);
+        } else {
+          styles.min_height = sanitize_min_length(extract_length(resolved_value));
+          styles.min_height_keyword = None;
+        }
         styles.logical.min_height_order = order;
       }
     }
     "max-width" => {
       if order >= styles.logical.max_width_order {
-        styles.max_width = sanitize_max_length(extract_length(resolved_value));
-        styles.max_width_keyword = None;
+        if let Some(keyword) = parse_intrinsic_size_keyword(resolved_value) {
+          styles.max_width = None;
+          styles.max_width_keyword = Some(keyword);
+        } else {
+          styles.max_width = sanitize_max_length(extract_length(resolved_value));
+          styles.max_width_keyword = None;
+        }
         styles.logical.max_width_order = order;
       }
     }
@@ -6873,15 +6938,20 @@ fn apply_declaration_with_base_internal(
             styles.max_height_is_max_content = true;
             styles.logical.max_height_order = order;
             styles.max_height = Some(Length::px(f32::INFINITY));
-            styles.max_height_keyword = None;
+            styles.max_height_keyword = Some(IntrinsicSizeKeyword::MaxContent);
           }
           return;
         }
       }
       styles.max_height_is_max_content = false;
       if order >= styles.logical.max_height_order {
-        styles.max_height = sanitize_max_length(extract_length(resolved_value));
-        styles.max_height_keyword = None;
+        if let Some(keyword) = parse_intrinsic_size_keyword(resolved_value) {
+          styles.max_height = None;
+          styles.max_height_keyword = Some(keyword);
+        } else {
+          styles.max_height = sanitize_max_length(extract_length(resolved_value));
+          styles.max_height_keyword = None;
+        }
         styles.logical.max_height_order = order;
       }
     }
@@ -15795,6 +15865,49 @@ mod tests {
     let out = extract_margin_values(&calc_len).expect("calc(0) should be accepted");
     assert_eq!(out.len(), 1);
     assert!(out[0].unwrap().is_zero());
+  }
+
+  #[test]
+  fn intrinsic_size_keywords_are_stored_on_size_properties() {
+    let mut styles = ComputedStyle::default();
+    let parent = ComputedStyle::default();
+
+    let decls = parse_declarations(
+      "width: min-content;\
+       height: max-content;\
+       min-width: fit-content;\
+       max-width: fit-content(50%);\
+       max-height: max-content;",
+    );
+    for decl in &decls {
+      apply_declaration(&mut styles, decl, &parent, 16.0, 16.0);
+    }
+
+    assert_eq!(styles.width, None);
+    assert_eq!(styles.width_keyword, Some(IntrinsicSizeKeyword::MinContent));
+
+    assert_eq!(styles.height, None);
+    assert_eq!(styles.height_keyword, Some(IntrinsicSizeKeyword::MaxContent));
+
+    assert_eq!(
+      styles.min_width_keyword,
+      Some(IntrinsicSizeKeyword::FitContent { limit: None })
+    );
+    assert_eq!(
+      styles.max_width_keyword,
+      Some(IntrinsicSizeKeyword::FitContent {
+        limit: Some(Length::percent(50.0))
+      })
+    );
+
+    assert!(styles.max_height_is_max_content);
+    assert_eq!(styles.max_height_keyword, Some(IntrinsicSizeKeyword::MaxContent));
+
+    // A later length assignment should clear the stored keyword.
+    let decls = parse_declarations("width: 10px;");
+    apply_declaration(&mut styles, &decls[0], &parent, 16.0, 16.0);
+    assert_eq!(styles.width, Some(Length::px(10.0)));
+    assert_eq!(styles.width_keyword, None);
   }
 
   #[test]
