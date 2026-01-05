@@ -194,3 +194,48 @@ fn fixed_inside_transformed_parent_uses_transformed_cb() {
     .join()
     .unwrap();
 }
+
+#[test]
+fn fixed_inside_animated_translate_none_does_not_create_containing_block() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+            <style>
+              body { margin: 0; background: white; }
+              .container {
+                width: 120px;
+                height: 120px;
+                background: rgb(0, 255, 0);
+                animation-name: noop;
+                animation-duration: 1000ms;
+                animation-fill-mode: forwards;
+                animation-timing-function: linear;
+                animation-composition: add;
+              }
+              @keyframes noop {
+                from { translate: none; }
+                to { translate: none; }
+              }
+              .fixed { position: fixed; top: 0; left: 0; right: 0; height: 30px; background: rgb(255, 0, 0); }
+            </style>
+            <div class="container"><div class="fixed"></div></div>
+            "#;
+
+      let pixmap = renderer.render_html(html, 200, 200).expect("render");
+      assert_eq!(
+        pixel(&pixmap, 150, 10),
+        [255, 0, 0, 255],
+        "fixed bar should span the viewport when translate is none"
+      );
+      assert_eq!(
+        pixel(&pixmap, 60, 10),
+        [255, 0, 0, 255],
+        "bar should still paint within the viewport"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}

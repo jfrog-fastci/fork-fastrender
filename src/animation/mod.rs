@@ -3583,6 +3583,11 @@ fn apply_additive_animation_value(
       true
     }
     ("translate", AnimatedValue::Translate(effect)) => {
+      // `translate: none` is an identity translation and should not force the property into the
+      // value form (which would incorrectly establish transform containing blocks).
+      if matches!(effect, TranslateValue::None) {
+        return true;
+      }
       let Some(AnimatedValue::Translate(underlying)) = extract_translate(style, ctx) else {
         return false;
       };
