@@ -8163,6 +8163,65 @@ mod tests {
   }
 
   #[test]
+  fn content_visibility_auto_without_placeholder_does_not_skip_layout() {
+    let _toggles = content_visibility_test_guard();
+    let viewport = Size::new(300.0, 200.0);
+    let fc = BlockFormattingContext::with_font_context_viewport_and_cb(
+      FontContext::new(),
+      viewport,
+      ContainingBlock::viewport(viewport),
+    );
+    let constraints = LayoutConstraints::new(
+      AvailableSpace::Definite(viewport.width),
+      AvailableSpace::Indefinite,
+    );
+
+    let mut spacer = BoxNode::new_block(
+      block_style_with_height(400.0),
+      FormattingContextType::Block,
+      vec![],
+    );
+    spacer.id = 2;
+
+    let mut leaf = BoxNode::new_block(
+      block_style_with_height(50.0),
+      FormattingContextType::Block,
+      vec![],
+    );
+    leaf.id = 4;
+
+    let mut auto_style = ComputedStyle::default();
+    auto_style.display = Display::Block;
+    auto_style.content_visibility = ContentVisibility::Auto;
+    let mut auto_box = BoxNode::new_block(
+      Arc::new(auto_style),
+      FormattingContextType::Block,
+      vec![leaf],
+    );
+    auto_box.id = 3;
+
+    let mut root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![spacer, auto_box],
+    );
+    root.id = 1;
+
+    let fragment = fc.layout(&root, &constraints).expect("layout");
+    let auto_fragment = find_block_fragment(&fragment, 3).expect("auto fragment");
+    assert!(
+      auto_fragment.bounds.y() > viewport.height,
+      "expected auto subtree to start below the viewport (y={} height={})",
+      auto_fragment.bounds.y(),
+      viewport.height
+    );
+    assert!(
+      !auto_fragment.children.is_empty(),
+      "expected descendants to be laid out when no placeholder is available"
+    );
+  }
+
+  #[test]
   fn content_visibility_auto_skips_when_fully_outside_inline_axis() {
     let _toggles = content_visibility_test_guard();
     let viewport = Size::new(300.0, 200.0);
