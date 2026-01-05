@@ -803,9 +803,21 @@ fn write_json_report(report: &DiffReport, path: &Path) -> Result<(), String> {
 fn write_html_report(report: &DiffReport, path: &Path) -> Result<(), String> {
   ensure_parent_dir(path)?;
 
+  let missing_before = report
+    .results
+    .iter()
+    .filter(|entry| entry.status == EntryStatus::MissingBefore)
+    .count();
+  let missing_after = report
+    .results
+    .iter()
+    .filter(|entry| entry.status == EntryStatus::MissingAfter)
+    .count();
+
   let mut rows = String::new();
 
   for entry in &report.results {
+    let anchor_id = entry_anchor_id(&entry.name);
     let diff_percent = entry
       .metrics
       .map(|m| format!("{:.4}%", m.diff_percentage))
@@ -850,18 +862,18 @@ fn write_html_report(report: &DiffReport, path: &Path) -> Result<(), String> {
 
     let error = entry.error.as_deref().unwrap_or_default();
     rows.push_str(&format!(
-      "<tr class=\"{}\"><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"error\">{}</td></tr>",
-      entry.status.label(),
-      escape_html(&entry.name),
-      escape_html(entry.status.label()),
-      diff_percent,
-      perceptual,
-      pixel_diff,
-      max_channel_diff,
-      total_pixels,
-      before_cell,
-      after_and_diff,
-      escape_html(&error),
+      "<tr id=\"{anchor_id}\" class=\"{status}\"><td><a href=\"#{anchor_id}\">{name}</a></td><td>{status}</td><td>{diff_percent}</td><td>{perceptual}</td><td>{pixel_diff}</td><td>{max_channel_diff}</td><td>{total_pixels}</td><td>{before}</td><td>{after_and_diff}</td><td class=\"error\">{error}</td></tr>",
+      anchor_id = escape_html(&anchor_id),
+      name = escape_html(&entry.name),
+      status = escape_html(entry.status.label()),
+      diff_percent = diff_percent,
+      perceptual = perceptual,
+      pixel_diff = pixel_diff,
+      max_channel_diff = max_channel_diff,
+      total_pixels = total_pixels,
+      before = before_cell,
+      after_and_diff = after_and_diff,
+      error = escape_html(&error),
     ));
   }
 
@@ -891,6 +903,30 @@ fn write_html_report(report: &DiffReport, path: &Path) -> Result<(), String> {
       tr.within-threshold {{ background: #f8f8ff; }}
       tr.diff {{ background: #fff8f8; }}
       tr.missing-before, tr.missing-after, tr.error {{ background: #fff0f0; }}
+      tr:target {{ outline: 3px solid #0066cc; }}
+      tr[id] {{ scroll-margin-top: 50px; }}
+      #results-controls {{ margin-top: 16px; }}
+      #results-controls input[type="checkbox"] {{ position: absolute; left: -10000px; }}
+      .entry-filters {{ margin-bottom: 10px; }}
+      .entry-filters label {{ display: inline-block; margin-right: 12px; }}
+      .entry-filters label:hover {{ text-decoration: underline; cursor: pointer; }}
+      #show-match:not(:checked) ~ .entry-filters label[for="show-match"],
+      #show-within-threshold:not(:checked) ~ .entry-filters label[for="show-within-threshold"],
+      #show-diff:not(:checked) ~ .entry-filters label[for="show-diff"],
+      #show-missing-before:not(:checked) ~ .entry-filters label[for="show-missing-before"],
+      #show-missing-after:not(:checked) ~ .entry-filters label[for="show-missing-after"],
+      #show-error:not(:checked) ~ .entry-filters label[for="show-error"],
+      #show-thumbnails:not(:checked) ~ .entry-filters label[for="show-thumbnails"] {{
+        opacity: 0.5;
+      }}
+      #show-match:not(:checked) ~ #results tbody tr.match {{ display: none; }}
+      #show-within-threshold:not(:checked) ~ #results tbody tr.within-threshold {{ display: none; }}
+      #show-diff:not(:checked) ~ #results tbody tr.diff {{ display: none; }}
+      #show-missing-before:not(:checked) ~ #results tbody tr.missing-before {{ display: none; }}
+      #show-missing-after:not(:checked) ~ #results tbody tr.missing-after {{ display: none; }}
+      #show-error:not(:checked) ~ #results tbody tr.error {{ display: none; }}
+      #show-thumbnails:not(:checked) ~ #results .thumb br {{ display: none; }}
+      #show-thumbnails:not(:checked) ~ #results .thumb a:nth-of-type(2) {{ display: none; }}
       .thumb img {{ max-width: 320px; max-height: 240px; display: block; }}
       .error {{ color: #b00020; }}
     </style>
@@ -901,7 +937,25 @@ fn write_html_report(report: &DiffReport, path: &Path) -> Result<(), String> {
     <p><strong>After:</strong> {after}</p>
     <p><strong>Tolerance:</strong> {tolerance} | <strong>Max diff %:</strong> {max_diff_percent:.4} | <strong>Max perceptual:</strong> {max_perceptual} | <strong>Ignore alpha:</strong> {ignore_alpha} | <strong>Sort:</strong> {sort_by} {shard}</p>
     <p>Processed {processed} of {discovered} candidates ({matches} exact, {within} within threshold, {diffs} failing, {missing} missing, {errors} errors{skipped}).</p>
-    <table>
+    <div id="results-controls">
+      <input type="checkbox" id="show-match" checked>
+      <input type="checkbox" id="show-within-threshold" checked>
+      <input type="checkbox" id="show-diff" checked>
+      <input type="checkbox" id="show-missing-before" checked>
+      <input type="checkbox" id="show-missing-after" checked>
+      <input type="checkbox" id="show-error" checked>
+      <input type="checkbox" id="show-thumbnails" checked>
+      <div class="entry-filters">
+        <strong>Show:</strong>
+        <label for="show-match">Match ({matches})</label>
+        <label for="show-within-threshold">Within threshold ({within})</label>
+        <label for="show-diff">Diff ({diffs})</label>
+        <label for="show-missing-before">Missing before ({missing_before})</label>
+        <label for="show-missing-after">Missing after ({missing_after})</label>
+        <label for="show-error">Error ({errors})</label>
+        <label for="show-thumbnails">Thumbnails</label>
+      </div>
+      <table id="results">
       <thead>
         <tr>
           <th>Name</th>
@@ -920,6 +974,7 @@ fn write_html_report(report: &DiffReport, path: &Path) -> Result<(), String> {
         {rows}
       </tbody>
     </table>
+    </div>
   </body>
 </html>
 "#,
@@ -945,6 +1000,8 @@ fn write_html_report(report: &DiffReport, path: &Path) -> Result<(), String> {
     diffs = report.totals.differences,
     missing = report.totals.missing,
     errors = report.totals.errors,
+    missing_before = missing_before,
+    missing_after = missing_after,
     skipped = if report.totals.shard_skipped > 0 {
       format!(", {} skipped by shard", report.totals.shard_skipped)
     } else {
@@ -998,6 +1055,15 @@ fn format_linked_image(label: &str, path: &str) -> String {
     p = escaped,
     l = label
   )
+}
+
+fn entry_anchor_id(name: &str) -> String {
+  let mut hash: u64 = 14695981039346656037;
+  for byte in name.as_bytes() {
+    hash ^= u64::from(*byte);
+    hash = hash.wrapping_mul(1099511628211);
+  }
+  format!("entry-{hash:016x}")
 }
 
 fn normalize_dir(path: &Path) -> Result<PathBuf, String> {

@@ -25,6 +25,15 @@ fn diff_renders_cmd(tmp_dir: &Path) -> Command {
   cmd
 }
 
+fn entry_anchor_id(name: &str) -> String {
+  let mut hash: u64 = 14695981039346656037;
+  for byte in name.as_bytes() {
+    hash ^= u64::from(*byte);
+    hash = hash.wrapping_mul(1099511628211);
+  }
+  format!("entry-{hash:016x}")
+}
+
 #[test]
 fn diff_renders_reports_matches() {
   let tmp = tempfile::TempDir::new().expect("tempdir");
@@ -75,6 +84,27 @@ fn diff_renders_reports_matches() {
   assert!(
     tmp.path().join("diff_report.html").exists(),
     "html report missing"
+  );
+
+  let html_path = tmp.path().join("diff_report.html");
+  let html = fs::read_to_string(&html_path).expect("read html report");
+  assert!(
+    html.contains("id=\"results-controls\""),
+    "expected filter controls in report html:\n{html}"
+  );
+  assert!(
+    html.contains("id=\"show-match\""),
+    "expected show-match toggle:\n{html}"
+  );
+  assert!(html.contains("Match (1)"), "expected match count label:\n{html}");
+  assert!(
+    html.contains("tr:target"),
+    "expected deep-link highlight styling:\n{html}"
+  );
+  let anchor = entry_anchor_id("page");
+  assert!(
+    html.contains(&format!("id=\"{anchor}\" class=\"match\"")),
+    "expected row anchor id for entry:\n{html}"
   );
 }
 
