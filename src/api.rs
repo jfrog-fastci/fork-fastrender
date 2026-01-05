@@ -11616,15 +11616,10 @@ fn box_style_key(node: &BoxNode) -> Option<usize> {
     return Some(base | 3);
   }
 
-  if let Some(info) = &node.debug_info {
-    if info.classes.iter().any(|c| c == "pseudo-element") {
-      if info.tag_name.as_deref() == Some("before") {
-        return Some(base | 1);
-      }
-      if info.tag_name.as_deref() == Some("after") {
-        return Some(base | 2);
-      }
-    }
+  match node.generated_pseudo {
+    Some(crate::tree::box_tree::GeneratedPseudoElement::Before) => return Some(base | 1),
+    Some(crate::tree::box_tree::GeneratedPseudoElement::After) => return Some(base | 2),
+    None => {}
   }
 
   Some(base)

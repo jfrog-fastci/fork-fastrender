@@ -50,6 +50,7 @@ use crate::tree::box_tree::AnonymousBox;
 use crate::tree::box_tree::AnonymousType;
 use crate::tree::box_tree::BoxNode;
 use crate::tree::box_tree::BoxType;
+use crate::tree::box_tree::GeneratedPseudoElement;
 use crate::tree::box_tree::InlineBox;
 use crate::tree::debug::DebugInfo;
 use std::sync::Arc;
@@ -333,6 +334,7 @@ impl AnonymousBoxCreator {
           &self.node.box_type,
           self.node.debug_info.as_ref(),
           self.node.styled_node_id,
+          self.node.generated_pseudo,
           std::mem::take(&mut self.inline_run),
         );
         self.out.push(fragment);
@@ -450,6 +452,7 @@ impl AnonymousBoxCreator {
     box_type: &BoxType,
     debug_info: Option<&DebugInfo>,
     styled_node_id: Option<usize>,
+    generated_pseudo: Option<GeneratedPseudoElement>,
     children: Vec<BoxNode>,
   ) -> BoxNode {
     let fragment = match box_type {
@@ -463,6 +466,7 @@ impl AnonymousBoxCreator {
         id: 0,
         debug_info: debug_info.cloned(),
         styled_node_id,
+        generated_pseudo,
         table_cell_span: None,
         table_column_span: None,
         first_line_style: None,
@@ -476,6 +480,7 @@ impl AnonymousBoxCreator {
         id: 0,
         debug_info: debug_info.cloned(),
         styled_node_id,
+        generated_pseudo,
         table_cell_span: None,
         table_column_span: None,
         first_line_style: None,
@@ -485,6 +490,7 @@ impl AnonymousBoxCreator {
         let mut node = BoxNode::new_inline(style.clone(), children);
         node.debug_info = debug_info.cloned();
         node.styled_node_id = styled_node_id;
+        node.generated_pseudo = generated_pseudo;
         node.starting_style = starting_style;
         node
       }
@@ -692,6 +698,7 @@ impl AnonymousBoxCreator {
       id: std::mem::replace(&mut node.id, 0),
       debug_info: node.debug_info.take(),
       styled_node_id: node.styled_node_id.take(),
+      generated_pseudo: node.generated_pseudo.take(),
       table_cell_span: node.table_cell_span.take(),
       table_column_span: node.table_column_span.take(),
       first_line_style: node.first_line_style.take(),
@@ -730,6 +737,7 @@ impl AnonymousBoxCreator {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      generated_pseudo: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,
@@ -762,6 +770,7 @@ impl AnonymousBoxCreator {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      generated_pseudo: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,
@@ -783,6 +792,7 @@ impl AnonymousBoxCreator {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      generated_pseudo: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,
@@ -804,6 +814,7 @@ impl AnonymousBoxCreator {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      generated_pseudo: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,

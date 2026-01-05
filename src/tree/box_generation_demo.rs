@@ -944,10 +944,10 @@ mod tests {
     let box_tree = generator.generate(&dom).unwrap();
     assert!(box_tree.root.debug_info.is_some());
 
-    let debug_info = box_tree.root.debug_info.as_ref().unwrap();
-    assert_eq!(debug_info.tag_name, Some("div".to_string()));
-    assert_eq!(debug_info.id, Some("header".to_string()));
-    assert_eq!(debug_info.classes.len(), 1);
+    let info = box_tree.root.debug_info.as_ref().unwrap();
+    assert_eq!(info.tag_name, Some("div".to_string()));
+    assert_eq!(info.id, Some("header".to_string()));
+    assert_eq!(info.classes.len(), 1);
   }
 
   #[test]

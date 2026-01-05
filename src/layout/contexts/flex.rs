@@ -4294,6 +4294,10 @@ fn flex_style_fingerprint(style: &ComputedStyle) -> u64 {
 fn flex_cache_key_with_style(box_node: &BoxNode, style: &ComputedStyle) -> u64 {
   let mut h = FingerprintHasher::default();
   box_node.styled_node_id.hash(&mut h);
+  // Include semantic pseudo-element identity so `::before`/`::after` boxes don't collide with the
+  // originating element in cache keys. `debug_info` is optional (often `None` in release builds)
+  // and must never influence layout/caching decisions.
+  box_node.generated_pseudo.hash(&mut h);
   // Anonymous boxes (no originating styled node) must not share cached fragments across
   // different instances: their descendants may differ (e.g. different `<img src>`), and
   // reusing would clone the wrong subtree.
@@ -4302,11 +4306,6 @@ fn flex_cache_key_with_style(box_node: &BoxNode, style: &ComputedStyle) -> u64 {
   }
   let fingerprint = flex_style_fingerprint(style);
   fingerprint.hash(&mut h);
-  // Incorporate a simplified key for common carousel templates to merge otherwise identical
-  // repeated items without formatting selectors (which allocates).
-  if let Some(debug) = &box_node.debug_info {
-    debug.hash_components(&mut h);
-  }
   h.finish()
 }
 

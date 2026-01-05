@@ -730,6 +730,13 @@ pub struct BoxNode {
   /// Styled node identifier that produced this box (pre-order traversal id).
   pub styled_node_id: Option<usize>,
 
+  /// Generated pseudo-element kind for this box, if any.
+  ///
+  /// This is semantic metadata used to distinguish generated boxes (e.g. `::before`/`::after`)
+  /// from their originating element without relying on `debug_info`, which is optional in
+  /// release builds.
+  pub generated_pseudo: Option<GeneratedPseudoElement>,
+
   /// HTML table cell span metadata (for `<td>` / `<th>`), if applicable.
   pub table_cell_span: Option<TableCellSpan>,
 
@@ -741,6 +748,13 @@ pub struct BoxNode {
 
   /// Optional computed style overrides for `::first-letter`.
   pub first_letter_style: Option<Arc<ComputedStyle>>,
+}
+
+/// Generated pseudo-elements that create their own boxes in the box tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GeneratedPseudoElement {
+  Before,
+  After,
 }
 
 impl Drop for BoxNode {
@@ -795,6 +809,7 @@ impl BoxNode {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      generated_pseudo: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,
@@ -814,6 +829,7 @@ impl BoxNode {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      generated_pseudo: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,
@@ -831,6 +847,7 @@ impl BoxNode {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      generated_pseudo: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,
@@ -854,6 +871,7 @@ impl BoxNode {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      generated_pseudo: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,
@@ -871,6 +889,7 @@ impl BoxNode {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      generated_pseudo: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,
@@ -888,6 +907,7 @@ impl BoxNode {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      generated_pseudo: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,
@@ -914,6 +934,7 @@ impl BoxNode {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      generated_pseudo: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,
@@ -933,6 +954,7 @@ impl BoxNode {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      generated_pseudo: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,
@@ -952,6 +974,7 @@ impl BoxNode {
       id: 0,
       debug_info: None,
       styled_node_id: None,
+      generated_pseudo: None,
       table_cell_span: None,
       table_column_span: None,
       first_line_style: None,
@@ -978,6 +1001,12 @@ impl BoxNode {
   /// Sets HTML `<col>/<colgroup span=...>` metadata.
   pub fn with_table_column_span(mut self, span: usize) -> Self {
     self.table_column_span = Some(clamp_table_span(span));
+    self
+  }
+
+  /// Sets semantic pseudo-element identity for generated boxes.
+  pub fn with_generated_pseudo(mut self, pseudo: GeneratedPseudoElement) -> Self {
+    self.generated_pseudo = Some(pseudo);
     self
   }
 

@@ -17450,4 +17450,68 @@ mod tests {
       assert!(col.computed_width >= 0.0);
     }
   }
+
+  #[test]
+  fn table_element_type_classification_uses_display_without_debug_info() {
+    fn node_for(display: Display) -> BoxNode {
+      let mut style = ComputedStyle::default();
+      style.display = display;
+      BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![])
+    }
+
+    assert_eq!(
+      TableStructure::get_table_element_type(&node_for(Display::Table)),
+      TableElementType::Table
+    );
+    assert_eq!(
+      TableStructure::get_table_element_type(&node_for(Display::InlineTable)),
+      TableElementType::Table
+    );
+    assert_eq!(
+      TableStructure::get_table_element_type(&node_for(Display::TableRow)),
+      TableElementType::Row
+    );
+    assert_eq!(
+      TableStructure::get_table_element_type(&node_for(Display::TableCell)),
+      TableElementType::Cell
+    );
+    assert_eq!(
+      TableStructure::get_table_element_type(&node_for(Display::TableCaption)),
+      TableElementType::Caption
+    );
+    assert_eq!(
+      TableStructure::get_table_element_type(&node_for(Display::TableRowGroup)),
+      TableElementType::RowGroup
+    );
+    assert_eq!(
+      TableStructure::get_table_element_type(&node_for(Display::TableHeaderGroup)),
+      TableElementType::HeaderGroup
+    );
+    assert_eq!(
+      TableStructure::get_table_element_type(&node_for(Display::TableFooterGroup)),
+      TableElementType::FooterGroup
+    );
+    assert_eq!(
+      TableStructure::get_table_element_type(&node_for(Display::TableColumn)),
+      TableElementType::Column
+    );
+    assert_eq!(
+      TableStructure::get_table_element_type(&node_for(Display::TableColumnGroup)),
+      TableElementType::ColumnGroup
+    );
+  }
+
+  #[test]
+  fn table_element_type_classification_does_not_fall_back_to_debug_info_tag_name() {
+    let mut style = ComputedStyle::default();
+    style.display = Display::Block;
+    let mut node = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![])
+      .with_debug_info(DebugInfo::new(Some("td".to_string()), None, vec![]));
+    // Prove debug info is ignored: only display/anonymous metadata may classify table elements.
+    node.debug_info = Some(DebugInfo::new(Some("table".to_string()), None, vec![]));
+    assert_eq!(
+      TableStructure::get_table_element_type(&node),
+      TableElementType::Unknown
+    );
+  }
 }

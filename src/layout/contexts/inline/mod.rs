@@ -2501,6 +2501,7 @@ impl InlineFormattingContext {
       }),
       children: nodes.to_vec(),
       id: 0,
+      generated_pseudo: None,
       debug_info: None,
       styled_node_id: None,
       table_cell_span: None,

@@ -3427,6 +3427,7 @@ impl BlockFormattingContext {
       box_type: parent.box_type.clone(),
       children,
       id: parent.id,
+      generated_pseudo: parent.generated_pseudo,
       debug_info: parent.debug_info.clone(),
       styled_node_id: parent.styled_node_id,
       table_cell_span: parent.table_cell_span,

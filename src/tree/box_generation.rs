@@ -44,6 +44,7 @@ use crate::tree::box_tree::CrossOriginAttribute;
 use crate::tree::box_tree::ForeignObjectInfo;
 use crate::tree::box_tree::FormControl;
 use crate::tree::box_tree::FormControlKind;
+use crate::tree::box_tree::GeneratedPseudoElement;
 use crate::tree::box_tree::MarkerContent;
 use crate::tree::box_tree::MathReplaced;
 use crate::tree::box_tree::PictureSource;
@@ -2278,6 +2279,12 @@ fn create_pseudo_element_box(
     return None;
   }
 
+  let generated_pseudo = match pseudo_name {
+    "before" => Some(GeneratedPseudoElement::Before),
+    "after" => Some(GeneratedPseudoElement::After),
+    _ => None,
+  };
+
   let pseudo_style = Arc::clone(styles);
 
   let mut context = ContentContext::new();
@@ -2293,13 +2300,17 @@ fn create_pseudo_element_box(
   let mut children: Vec<BoxNode> = Vec::new();
   let mut text_buf = String::new();
 
-  let flush_text = |buf: &mut String, pseudo_style: &Arc<ComputedStyle>, out: &mut Vec<BoxNode>| {
+  let flush_text = |buf: &mut String,
+                    pseudo_style: &Arc<ComputedStyle>,
+                    generated_pseudo: Option<GeneratedPseudoElement>,
+                    out: &mut Vec<BoxNode>| {
     if buf.is_empty() {
       return;
     }
     let text = std::mem::take(buf);
     let mut text_box = BoxNode::new_text(pseudo_style.clone(), text);
     text_box.styled_node_id = Some(styled.node_id);
+    text_box.generated_pseudo = generated_pseudo;
     out.push(text_box);
   };
 
@@ -2369,9 +2380,15 @@ fn create_pseudo_element_box(
         if url.trim().is_empty() {
           continue;
         }
-        flush_text(&mut text_buf, &pseudo_style, &mut children);
-        let replaced = ReplacedBox {
-          replaced_type: ReplacedType::Image {
+        flush_text(
+          &mut text_buf,
+          &pseudo_style,
+          generated_pseudo,
+          &mut children,
+        );
+        let mut replaced_node = BoxNode::new_replaced(
+          pseudo_style.clone(),
+          ReplacedType::Image {
             src: url.clone(),
             alt: None,
             crossorigin: CrossOriginAttribute::None,
@@ -2379,27 +2396,23 @@ fn create_pseudo_element_box(
             srcset: Vec::new(),
             picture_sources: Vec::new(),
           },
-          intrinsic_size: None,
-          aspect_ratio: None,
-        };
-        children.push(BoxNode {
-          starting_style: starting_style.clone(),
-          box_type: BoxType::Replaced(replaced),
-          style: pseudo_style.clone(),
-          children: vec![],
-          id: 0,
-          debug_info: None,
-          styled_node_id: Some(styled.node_id),
-          table_cell_span: None,
-          table_column_span: None,
-          first_line_style: None,
-          first_letter_style: None,
-        });
+          None,
+          None,
+        );
+        replaced_node.styled_node_id = Some(styled.node_id);
+        replaced_node.generated_pseudo = generated_pseudo;
+        replaced_node.starting_style = starting_style.clone();
+        children.push(replaced_node);
       }
     }
   }
 
-  flush_text(&mut text_buf, &pseudo_style, &mut children);
+  flush_text(
+    &mut text_buf,
+    &pseudo_style,
+    generated_pseudo,
+    &mut children,
+  );
 
   // Determine the box type based on display property
   let fc_type = styles
@@ -2458,6 +2471,7 @@ fn create_pseudo_element_box(
     vec!["pseudo-element".to_string()],
   ));
   pseudo_box.styled_node_id = Some(styled.node_id);
+  pseudo_box.generated_pseudo = generated_pseudo;
   pseudo_box.starting_style = starting_style;
 
   Some(pseudo_box)
@@ -3550,6 +3564,7 @@ fn create_replaced_box_from_styled(
     id: 0,
     debug_info: None,
     styled_node_id: None,
+    generated_pseudo: None,
     table_cell_span: None,
     table_column_span: None,
     first_line_style: None,
@@ -4457,14 +4472,18 @@ mod tests {
   #[test]
   fn display_contents_splices_children_into_parent() {
     let mut root = styled_element("div");
+    root.node_id = 1;
     Arc::make_mut(&mut root.styles).display = Display::Block;
 
     let mut contents = styled_element("section");
+    contents.node_id = 2;
     Arc::make_mut(&mut contents.styles).display = Display::Contents;
 
     let mut child1 = styled_element("p");
+    child1.node_id = 3;
     Arc::make_mut(&mut child1.styles).display = Display::Block;
     let mut child2 = styled_element("p");
+    child2.node_id = 4;
     Arc::make_mut(&mut child2.styles).display = Display::Block;
 
     contents.children = vec![child1, child2];
@@ -4476,13 +4495,8 @@ mod tests {
       2,
       "contents element should not create a box"
     );
-    let tags: Vec<_> = tree
-      .root
-      .children
-      .iter()
-      .filter_map(|c| c.debug_info.as_ref().and_then(|d| d.tag_name.clone()))
-      .collect();
-    assert_eq!(tags, vec!["p".to_string(), "p".to_string()]);
+    let styled_ids: Vec<_> = tree.root.children.iter().map(|c| c.styled_node_id).collect();
+    assert_eq!(styled_ids, vec![Some(3), Some(4)]);
   }
 
   #[test]
