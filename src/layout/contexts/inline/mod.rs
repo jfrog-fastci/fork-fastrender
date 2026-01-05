@@ -2144,23 +2144,23 @@ impl InlineFormattingContext {
       }
     };
 
-    let specified_width = style
-      .width
-      .as_ref()
-      .and_then(|l| {
-        if l.unit.is_percentage() && percentage_base.is_none() {
-          None
-        } else {
-          Some(resolve_length_for_width(
-            *l,
-            percentage_base_px,
-            style,
-            &self.font_context,
-            self.viewport_size,
-          ))
-        }
-      })
-      .or_else(|| style.width_keyword.and_then(resolve_intrinsic_keyword));
+    let specified_width_from_length = style.width.as_ref().and_then(|l| {
+      if l.unit.is_percentage() && percentage_base.is_none() {
+        None
+      } else {
+        Some(resolve_length_for_width(
+          *l,
+          percentage_base_px,
+          style,
+          &self.font_context,
+          self.viewport_size,
+        ))
+      }
+    });
+    let specified_width_from_keyword = style.width_keyword.and_then(resolve_intrinsic_keyword);
+    let specified_width = specified_width_from_length.or(specified_width_from_keyword);
+    let specified_width_is_keyword =
+      specified_width_from_length.is_none() && specified_width_from_keyword.is_some();
 
     let min_width = if let Some(keyword) = style.min_width_keyword {
       resolve_intrinsic_keyword(keyword).unwrap_or(0.0)
@@ -2198,10 +2198,11 @@ impl InlineFormattingContext {
     };
 
     let used_width = if let Some(specified) = specified_width {
-      // Honor specified width; cap pathological values to the containing width to keep line layout
-      // stable, but still allow min-content overflow.
+      // Honor specified width. Preserve legacy capping behavior for numeric widths to keep line
+      // layout stable, but intrinsic sizing keywords like `max-content` must be treated as truly
+      // specified values (they may overflow the containing line).
       let used = crate::layout::utils::clamp_with_order(specified, min_width, max_width);
-      if available_for_fit.is_finite() {
+      if !specified_width_is_keyword && available_for_fit.is_finite() {
         used.min(available_for_fit.max(preferred_min))
       } else {
         used
@@ -10909,26 +10910,45 @@ mod tests {
     base_style.border_right_width = Length::px(2.0);
     let base_style = Arc::new(base_style);
 
+    let text = BoxNode::new_text(default_style(), "word ".repeat(20));
+    let inline = BoxNode::new_inline(default_style(), vec![text]);
     let intrinsic_node = BoxNode::new_inline_block(
       base_style.clone(),
-      FormattingContextType::Block,
-      vec![inline_canvas(50.0, 10.0)],
+      FormattingContextType::Inline,
+      vec![inline.clone()],
     );
     let mut keyword_style: ComputedStyle = (*base_style).clone();
     keyword_style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
     let keyword_node = BoxNode::new_inline_block(
       Arc::new(keyword_style),
-      FormattingContextType::Block,
-      vec![inline_canvas(50.0, 10.0)],
+      FormattingContextType::Inline,
+      vec![inline],
     );
 
-    let containing_width = 200.0;
-    let fc = ifc.factory.get(FormattingContextType::Block);
-    let intrinsic_max_base0 = fc
-      .compute_intrinsic_inline_size(&intrinsic_node, IntrinsicSizingMode::MaxContent)
-      .expect("intrinsic max-content");
+    let fc = ifc.factory.get(FormattingContextType::Inline);
+    let (intrinsic_min_base0, intrinsic_max_base0) = fc
+      .compute_intrinsic_inline_sizes(&intrinsic_node)
+      .expect("intrinsic sizes");
     let edges_base0 =
       horizontal_padding_and_borders(&base_style, 0.0, ifc.viewport_size, &ifc.font_context);
+    let intrinsic_min_content = (intrinsic_min_base0 - edges_base0).max(0.0);
+    let intrinsic_max_content = (intrinsic_max_base0 - edges_base0).max(0.0);
+    assert!(
+      intrinsic_max_content > intrinsic_min_content + 0.5,
+      "expected breakable content to have distinct min/max-content widths (min={:.2}, max={:.2})",
+      intrinsic_min_content,
+      intrinsic_max_content
+    );
+
+    // Choose a containing width so that the available content width falls between the intrinsic
+    // min/max. This makes it easy to detect accidental shrink-to-fit behavior when `width:
+    // max-content` is specified.
+    //
+    // With `padding-left: 10%` and fixed edges of `edges_base0`, we have:
+    // available_content = available_border - (0.1 * available_border + edges_base0)
+    //                  = 0.9 * available_border - edges_base0
+    let target_available_content = (intrinsic_min_content + intrinsic_max_content) / 2.0;
+    let containing_width = (target_available_content + edges_base0) / 0.9;
     let edges_actual = horizontal_padding_and_borders(
       &base_style,
       containing_width,
@@ -10944,6 +10964,12 @@ mod tests {
       (item.width - expected_border).abs() < 0.5,
       "expected max-content border-box width {:.2}, got {:.2}",
       expected_border,
+      item.width
+    );
+    assert!(
+      item.width > containing_width + 0.5,
+      "expected max-content width to overflow available width {:.2}, got {:.2}",
+      containing_width,
       item.width
     );
   }
@@ -10964,11 +10990,11 @@ mod tests {
     let inline = BoxNode::new_inline(default_style(), vec![text]);
     let intrinsic_node = BoxNode::new_inline_block(
       base_style.clone(),
-      FormattingContextType::Block,
+      FormattingContextType::Inline,
       vec![inline.clone()],
     );
 
-    let fc = ifc.factory.get(FormattingContextType::Block);
+    let fc = ifc.factory.get(FormattingContextType::Inline);
     let (min_base0, max_base0) = fc
       .compute_intrinsic_inline_sizes(&intrinsic_node)
       .expect("intrinsic sizes");
@@ -10988,12 +11014,29 @@ mod tests {
     let available_width = (intrinsic_min_border + intrinsic_max_border) / 2.0;
     let expected_border = intrinsic_max_border.min(available_width.max(intrinsic_min_border));
 
+    let mut max_content_style: ComputedStyle = (*base_style).clone();
+    max_content_style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+    let max_content_node = BoxNode::new_inline_block(
+      Arc::new(max_content_style),
+      FormattingContextType::Inline,
+      vec![inline.clone()],
+    );
+    let max_content_item = ifc
+      .layout_inline_block(&max_content_node, available_width, None)
+      .expect("layout inline-block");
+    assert!(
+      (max_content_item.width - intrinsic_max_border).abs() < 0.5,
+      "expected max-content width {:.2}, got {:.2}",
+      intrinsic_max_border,
+      max_content_item.width
+    );
+
     let mut capped_style: ComputedStyle = (*base_style).clone();
     capped_style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
     capped_style.max_width_keyword = Some(IntrinsicSizeKeyword::FitContent { limit: None });
     let capped_node = BoxNode::new_inline_block(
       Arc::new(capped_style),
-      FormattingContextType::Block,
+      FormattingContextType::Inline,
       vec![inline],
     );
 
@@ -11007,9 +11050,9 @@ mod tests {
       item.width
     );
     assert!(
-      item.width < intrinsic_max_border - 0.5,
+      item.width < max_content_item.width - 0.5,
       "expected max-width:fit-content to cap below max-content {:.2}, got {:.2}",
-      intrinsic_max_border,
+      max_content_item.width,
       item.width
     );
   }
