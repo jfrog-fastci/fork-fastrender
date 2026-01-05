@@ -2709,28 +2709,28 @@ impl DisplayListBuilder {
     let base = rect.width().max(0.0);
 
     let border_left = Self::resolve_length_for_paint(
-      &style.border_left_width,
+      &style.used_border_left_width(),
       font_size,
       style.root_font_size,
       base,
       viewport,
     );
     let border_right = Self::resolve_length_for_paint(
-      &style.border_right_width,
+      &style.used_border_right_width(),
       font_size,
       style.root_font_size,
       base,
       viewport,
     );
     let border_top = Self::resolve_length_for_paint(
-      &style.border_top_width,
+      &style.used_border_top_width(),
       font_size,
       style.root_font_size,
       base,
       viewport,
     );
     let border_bottom = Self::resolve_length_for_paint(
-      &style.border_bottom_width,
+      &style.used_border_bottom_width(),
       font_size,
       style.root_font_size,
       base,
@@ -2955,28 +2955,28 @@ impl DisplayListBuilder {
     let percentage_base = rects.border.width().max(0.0);
     let font_size = style.font_size;
     let border_left = Self::resolve_length_for_paint(
-      &style.border_left_width,
+      &style.used_border_left_width(),
       font_size,
       style.root_font_size,
       percentage_base,
       viewport,
     );
     let border_right = Self::resolve_length_for_paint(
-      &style.border_right_width,
+      &style.used_border_right_width(),
       font_size,
       style.root_font_size,
       percentage_base,
       viewport,
     );
     let border_top = Self::resolve_length_for_paint(
-      &style.border_top_width,
+      &style.used_border_top_width(),
       font_size,
       style.root_font_size,
       percentage_base,
       viewport,
     );
     let border_bottom = Self::resolve_length_for_paint(
-      &style.border_bottom_width,
+      &style.used_border_bottom_width(),
       font_size,
       style.root_font_size,
       percentage_base,
@@ -5624,28 +5624,28 @@ impl DisplayListBuilder {
 
     let widths = (
       Self::resolve_length_for_paint(
-        &style.border_top_width,
+        &style.used_border_top_width(),
         style.font_size,
         style.root_font_size,
         rect.width(),
         self.viewport,
       ),
       Self::resolve_length_for_paint(
-        &style.border_right_width,
+        &style.used_border_right_width(),
         style.font_size,
         style.root_font_size,
         rect.width(),
         self.viewport,
       ),
       Self::resolve_length_for_paint(
-        &style.border_bottom_width,
+        &style.used_border_bottom_width(),
         style.font_size,
         style.root_font_size,
         rect.width(),
         self.viewport,
       ),
       Self::resolve_length_for_paint(
-        &style.border_left_width,
+        &style.used_border_left_width(),
         style.font_size,
         style.root_font_size,
         rect.width(),

@@ -379,28 +379,28 @@ fn background_rects(
   let base = rect.width().max(0.0);
 
   let border_left = resolve_length_for_paint(
-    &style.border_left_width,
+    &style.used_border_left_width(),
     font_size,
     style.root_font_size,
     base,
     viewport,
   );
   let border_right = resolve_length_for_paint(
-    &style.border_right_width,
+    &style.used_border_right_width(),
     font_size,
     style.root_font_size,
     base,
     viewport,
   );
   let border_top = resolve_length_for_paint(
-    &style.border_top_width,
+    &style.used_border_top_width(),
     font_size,
     style.root_font_size,
     base,
     viewport,
   );
   let border_bottom = resolve_length_for_paint(
-    &style.border_bottom_width,
+    &style.used_border_bottom_width(),
     font_size,
     style.root_font_size,
     base,

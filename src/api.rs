@@ -11130,10 +11130,10 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   hash_length(&style.padding_right, &mut h);
   hash_length(&style.padding_bottom, &mut h);
   hash_length(&style.padding_left, &mut h);
-  hash_length(&style.border_top_width, &mut h);
-  hash_length(&style.border_right_width, &mut h);
-  hash_length(&style.border_bottom_width, &mut h);
-  hash_length(&style.border_left_width, &mut h);
+  hash_length(&style.used_border_top_width(), &mut h);
+  hash_length(&style.used_border_right_width(), &mut h);
+  hash_length(&style.used_border_bottom_width(), &mut h);
+  hash_length(&style.used_border_left_width(), &mut h);
   style.order.hash(&mut h);
   hash_border_style(&style.border_top_style, &mut h);
   hash_border_style(&style.border_right_style, &mut h);
@@ -11672,12 +11672,12 @@ fn build_container_query_context(
 
     let hp = node.style.padding_left.to_px()
       + node.style.padding_right.to_px()
-      + node.style.border_left_width.to_px()
-      + node.style.border_right_width.to_px();
+      + node.style.used_border_left_width().to_px()
+      + node.style.used_border_right_width().to_px();
     let vp = node.style.padding_top.to_px()
       + node.style.padding_bottom.to_px()
-      + node.style.border_top_width.to_px()
-      + node.style.border_bottom_width.to_px();
+      + node.style.used_border_top_width().to_px()
+      + node.style.used_border_bottom_width().to_px();
 
     if hp.is_finite() {
       w = (w - hp).max(0.0);

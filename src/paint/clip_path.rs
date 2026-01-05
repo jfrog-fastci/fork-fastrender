@@ -554,11 +554,34 @@ fn reference_boxes(
   font_ctx: &FontContext,
 ) -> ReferenceBoxes {
   let base = bounds.width().max(0.0);
-  let border_left = resolve_clip_length(style.border_left_width, style, base, viewport, font_ctx);
-  let border_right = resolve_clip_length(style.border_right_width, style, base, viewport, font_ctx);
-  let border_top = resolve_clip_length(style.border_top_width, style, base, viewport, font_ctx);
-  let border_bottom =
-    resolve_clip_length(style.border_bottom_width, style, base, viewport, font_ctx);
+  let border_left = resolve_clip_length(
+    style.used_border_left_width(),
+    style,
+    base,
+    viewport,
+    font_ctx,
+  );
+  let border_right = resolve_clip_length(
+    style.used_border_right_width(),
+    style,
+    base,
+    viewport,
+    font_ctx,
+  );
+  let border_top = resolve_clip_length(
+    style.used_border_top_width(),
+    style,
+    base,
+    viewport,
+    font_ctx,
+  );
+  let border_bottom = resolve_clip_length(
+    style.used_border_bottom_width(),
+    style,
+    base,
+    viewport,
+    font_ctx,
+  );
 
   let padding_left = resolve_clip_length(style.padding_left, style, base, viewport, font_ctx);
   let padding_right = resolve_clip_length(style.padding_right, style, base, viewport, font_ctx);

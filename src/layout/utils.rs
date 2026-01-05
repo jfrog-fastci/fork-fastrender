@@ -590,13 +590,13 @@ pub fn compute_replaced_size(
   };
   let horizontal_edges = resolve_for_width(style.padding_left)
     + resolve_for_width(style.padding_right)
-    + resolve_for_width(style.border_left_width)
-    + resolve_for_width(style.border_right_width);
+    + resolve_for_width(style.used_border_left_width())
+    + resolve_for_width(style.used_border_right_width());
   // Percentages on padding/borders resolve against the containing block width in both axes.
   let vertical_edges = resolve_for_width(style.padding_top)
     + resolve_for_width(style.padding_bottom)
-    + resolve_for_width(style.border_top_width)
-    + resolve_for_width(style.border_bottom_width);
+    + resolve_for_width(style.used_border_top_width())
+    + resolve_for_width(style.used_border_bottom_width());
 
   let specified_w = style
     .width

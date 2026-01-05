@@ -1151,10 +1151,10 @@ fn style_paints_background_or_border(style: &ComputedStyle, allow_borders: bool)
   let paints_border = |style: BorderStyle, width: &Length| {
     !matches!(style, BorderStyle::None | BorderStyle::Hidden) && width.to_px() > 0.0
   };
-  paints_border(style.border_top_style, &style.border_top_width)
-    || paints_border(style.border_right_style, &style.border_right_width)
-    || paints_border(style.border_bottom_style, &style.border_bottom_width)
-    || paints_border(style.border_left_style, &style.border_left_width)
+  paints_border(style.border_top_style, &style.used_border_top_width())
+    || paints_border(style.border_right_style, &style.used_border_right_width())
+    || paints_border(style.border_bottom_style, &style.used_border_bottom_width())
+    || paints_border(style.border_left_style, &style.used_border_left_width())
 }
 
 fn strip_borders(style: &ComputedStyle) -> Arc<ComputedStyle> {
@@ -1456,8 +1456,8 @@ fn apply_style_overrides(base: &ComputedStyle, flags: StyleOverrideFlags) -> Com
       for edge in [
         style.padding_left,
         style.padding_right,
-        style.border_left_width,
-        style.border_right_width,
+        style.used_border_left_width(),
+        style.used_border_right_width(),
       ] {
         let edge_calc = to_calc(edge);
         if let Some(next) = horizontal_edges.add_scaled(&edge_calc, 1.0) {
@@ -1512,6 +1512,8 @@ fn apply_style_overrides(base: &ComputedStyle, flags: StyleOverrideFlags) -> Com
     style.padding_right = Length::px(0.0);
     style.border_left_width = Length::px(0.0);
     style.border_right_width = Length::px(0.0);
+    style.logical.border_width_orders.left = 0;
+    style.logical.border_width_orders.right = 0;
   }
   if flags.contains(StyleOverrideFlags::HIDE_EMPTY_RESET_BG_AND_TRANSPARENT_BORDERS) {
     style.reset_background_to_initial();
@@ -1537,6 +1539,10 @@ fn apply_style_overrides(base: &ComputedStyle, flags: StyleOverrideFlags) -> Com
     style.border_right_width = Length::px(0.0);
     style.border_top_width = Length::px(0.0);
     style.border_bottom_width = Length::px(0.0);
+    style.logical.border_width_orders.left = 0;
+    style.logical.border_width_orders.right = 0;
+    style.logical.border_width_orders.top = 0;
+    style.logical.border_width_orders.bottom = 0;
   }
   style
 }
@@ -2410,10 +2416,12 @@ fn horizontal_padding_and_borders(
     _ => l.value,
   };
 
+  let border_left = style.used_border_left_width();
+  let border_right = style.used_border_right_width();
   resolve_abs(&style.padding_left)
     + resolve_abs(&style.padding_right)
-    + resolve_abs(&style.border_left_width)
-    + resolve_abs(&style.border_right_width)
+    + resolve_abs(&border_left)
+    + resolve_abs(&border_right)
 }
 
 fn horizontal_padding(style: &crate::style::ComputedStyle, percent_base: Option<f32>) -> f32 {
@@ -2937,7 +2945,7 @@ fn compute_collapsed_borders(
     0,
     rows,
     tstyle.border_left_style,
-    &tstyle.border_left_width,
+    &tstyle.used_border_left_width(),
     &tstyle.border_left_color,
     BorderOrigin::Table,
     0,
@@ -2949,7 +2957,7 @@ fn compute_collapsed_borders(
     0,
     rows,
     tstyle.border_right_style,
-    &tstyle.border_right_width,
+    &tstyle.used_border_right_width(),
     &tstyle.border_right_color,
     BorderOrigin::Table,
     0,
@@ -2961,7 +2969,7 @@ fn compute_collapsed_borders(
     0,
     columns,
     tstyle.border_top_style,
-    &tstyle.border_top_width,
+    &tstyle.used_border_top_width(),
     &tstyle.border_top_color,
     BorderOrigin::Table,
     0,
@@ -2973,7 +2981,7 @@ fn compute_collapsed_borders(
     0,
     columns,
     tstyle.border_bottom_style,
-    &tstyle.border_bottom_width,
+    &tstyle.used_border_bottom_width(),
     &tstyle.border_bottom_color,
     BorderOrigin::Table,
     0,
@@ -2988,7 +2996,7 @@ fn compute_collapsed_borders(
       0,
       columns,
       style.border_top_style,
-      &style.border_top_width,
+      &style.used_border_top_width(),
       &style.border_top_color,
       BorderOrigin::RowGroup,
       *order,
@@ -3000,7 +3008,7 @@ fn compute_collapsed_borders(
       0,
       columns,
       style.border_bottom_style,
-      &style.border_bottom_width,
+      &style.used_border_bottom_width(),
       &style.border_bottom_color,
       BorderOrigin::RowGroup,
       *order,
@@ -3017,7 +3025,7 @@ fn compute_collapsed_borders(
         0,
         columns,
         style.border_top_style,
-        &style.border_top_width,
+        &style.used_border_top_width(),
         &style.border_top_color,
         BorderOrigin::Row,
         *order,
@@ -3029,7 +3037,7 @@ fn compute_collapsed_borders(
         0,
         columns,
         style.border_bottom_style,
-        &style.border_bottom_width,
+        &style.used_border_bottom_width(),
         &style.border_bottom_color,
         BorderOrigin::Row,
         *order,
@@ -3046,7 +3054,7 @@ fn compute_collapsed_borders(
       0,
       rows,
       style.border_left_style,
-      &style.border_left_width,
+      &style.used_border_left_width(),
       &style.border_left_color,
       BorderOrigin::ColumnGroup,
       *order,
@@ -3058,7 +3066,7 @@ fn compute_collapsed_borders(
       0,
       rows,
       style.border_right_style,
-      &style.border_right_width,
+      &style.used_border_right_width(),
       &style.border_right_color,
       BorderOrigin::ColumnGroup,
       *order,
@@ -3075,7 +3083,7 @@ fn compute_collapsed_borders(
         0,
         rows,
         style.border_left_style,
-        &style.border_left_width,
+        &style.used_border_left_width(),
         &style.border_left_color,
         BorderOrigin::Column,
         *order,
@@ -3087,7 +3095,7 @@ fn compute_collapsed_borders(
         0,
         rows,
         style.border_right_style,
-        &style.border_right_width,
+        &style.used_border_right_width(),
         &style.border_right_color,
         BorderOrigin::Column,
         *order,
@@ -3120,7 +3128,7 @@ fn compute_collapsed_borders(
       start_row,
       end_row,
       style.border_left_style,
-      &style.border_left_width,
+      &style.used_border_left_width(),
       &style.border_left_color,
       BorderOrigin::Cell,
       cell.index as u32,
@@ -3132,7 +3140,7 @@ fn compute_collapsed_borders(
       start_row,
       end_row,
       style.border_right_style,
-      &style.border_right_width,
+      &style.used_border_right_width(),
       &style.border_right_color,
       BorderOrigin::Cell,
       cell.index as u32,
@@ -3144,7 +3152,7 @@ fn compute_collapsed_borders(
       start_col,
       end_col,
       style.border_top_style,
-      &style.border_top_width,
+      &style.used_border_top_width(),
       &style.border_top_color,
       BorderOrigin::Cell,
       cell.index as u32,
@@ -3156,7 +3164,7 @@ fn compute_collapsed_borders(
       start_col,
       end_col,
       style.border_bottom_style,
-      &style.border_bottom_width,
+      &style.used_border_bottom_width(),
       &style.border_bottom_color,
       BorderOrigin::Cell,
       cell.index as u32,
@@ -5241,10 +5249,10 @@ impl FormattingContext for TableFormattingContext {
       _ if l.unit.is_absolute() => l.to_px(),
       _ => l.value,
     };
-    let _outer_border_left = resolve_abs(&table_root_style.border_left_width);
-    let _outer_border_right = resolve_abs(&table_root_style.border_right_width);
-    let outer_border_top = resolve_abs(&table_root_style.border_top_width);
-    let outer_border_bottom = resolve_abs(&table_root_style.border_bottom_width);
+    let _outer_border_left = resolve_abs(&table_root_style.used_border_left_width());
+    let _outer_border_right = resolve_abs(&table_root_style.used_border_right_width());
+    let outer_border_top = resolve_abs(&table_root_style.used_border_top_width());
+    let outer_border_bottom = resolve_abs(&table_root_style.used_border_bottom_width());
     let outer_border_v = outer_border_top + outer_border_bottom;
     let mut pad_left = resolve_abs(&table_root_style.padding_left);
     let mut pad_right = resolve_abs(&table_root_style.padding_right);
@@ -5263,10 +5271,10 @@ impl FormattingContext for TableFormattingContext {
         (0.0, 0.0, 0.0, 0.0)
       } else {
         (
-          resolve_abs(&table_root_style.border_left_width),
-          resolve_abs(&table_root_style.border_right_width),
-          resolve_abs(&table_root_style.border_top_width),
-          resolve_abs(&table_root_style.border_bottom_width),
+          resolve_abs(&table_root_style.used_border_left_width()),
+          resolve_abs(&table_root_style.used_border_right_width()),
+          resolve_abs(&table_root_style.used_border_top_width()),
+          resolve_abs(&table_root_style.used_border_bottom_width()),
         )
       };
     let padding_h = pad_left + pad_right;
@@ -6994,6 +7002,10 @@ impl FormattingContext for TableFormattingContext {
       table_style.border_right_width = crate::style::values::Length::px(0.0);
       table_style.border_bottom_width = crate::style::values::Length::px(0.0);
       table_style.border_left_width = crate::style::values::Length::px(0.0);
+      table_style.logical.border_width_orders.top = 0;
+      table_style.logical.border_width_orders.right = 0;
+      table_style.logical.border_width_orders.bottom = 0;
+      table_style.logical.border_width_orders.left = 0;
     }
     let baseline_offset = table_baseline.map(|b| b - table_bounds.y());
 
@@ -7310,8 +7322,8 @@ impl FormattingContext for TableFormattingContext {
     };
     let padding_h_base = resolve_abs_no_pct(&table_root_style.padding_left)
       + resolve_abs_no_pct(&table_root_style.padding_right);
-    let border_h_base = resolve_abs_no_pct(&table_root_style.border_left_width)
-      + resolve_abs_no_pct(&table_root_style.border_right_width);
+    let border_h_base = resolve_abs_no_pct(&table_root_style.used_border_left_width())
+      + resolve_abs_no_pct(&table_root_style.used_border_right_width());
     let edge_consumption = if structure.border_collapse == BorderCollapse::Collapse {
       0.0
     } else {
@@ -7353,8 +7365,8 @@ impl FormattingContext for TableFormattingContext {
       };
       resolve_abs(&table_root_style.padding_left)
         + resolve_abs(&table_root_style.padding_right)
-        + resolve_abs(&table_root_style.border_left_width)
-        + resolve_abs(&table_root_style.border_right_width)
+        + resolve_abs(&table_root_style.used_border_left_width())
+        + resolve_abs(&table_root_style.used_border_right_width())
     };
     let min_sum: f32 = column_constraints.iter().map(|c| c.min_width).sum();
     let raw_max_sum: f32 = column_constraints.iter().map(|c| c.max_width).sum();

@@ -182,10 +182,10 @@ fn style_override_fingerprint(style: &ComputedStyle) -> u64 {
   hash_length(&style.padding_right, &mut h);
   hash_length(&style.padding_bottom, &mut h);
   hash_length(&style.padding_left, &mut h);
-  hash_length(&style.border_top_width, &mut h);
-  hash_length(&style.border_right_width, &mut h);
-  hash_length(&style.border_bottom_width, &mut h);
-  hash_length(&style.border_left_width, &mut h);
+  hash_length(&style.used_border_top_width(), &mut h);
+  hash_length(&style.used_border_right_width(), &mut h);
+  hash_length(&style.used_border_bottom_width(), &mut h);
+  hash_length(&style.used_border_left_width(), &mut h);
   hash_enum_discriminant(&style.overflow_x, &mut h);
   hash_enum_discriminant(&style.overflow_y, &mut h);
   hash_enum_discriminant(&style.scrollbar_width, &mut h);

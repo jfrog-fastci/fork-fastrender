@@ -2156,11 +2156,14 @@ pub fn resolve_positioned_style(
   resolved.padding.top = resolve_len(&style.padding_top, inline_base).unwrap_or(0.0);
   resolved.padding.bottom = resolve_len(&style.padding_bottom, inline_base).unwrap_or(0.0);
 
-  resolved.border_width.left = resolve_len(&style.border_left_width, inline_base).unwrap_or(0.0);
-  resolved.border_width.right = resolve_len(&style.border_right_width, inline_base).unwrap_or(0.0);
-  resolved.border_width.top = resolve_len(&style.border_top_width, inline_base).unwrap_or(0.0);
+  resolved.border_width.left =
+    resolve_len(&style.used_border_left_width(), inline_base).unwrap_or(0.0);
+  resolved.border_width.right =
+    resolve_len(&style.used_border_right_width(), inline_base).unwrap_or(0.0);
+  resolved.border_width.top =
+    resolve_len(&style.used_border_top_width(), inline_base).unwrap_or(0.0);
   resolved.border_width.bottom =
-    resolve_len(&style.border_bottom_width, inline_base).unwrap_or(0.0);
+    resolve_len(&style.used_border_bottom_width(), inline_base).unwrap_or(0.0);
 
   resolved.min_width = Length::px(
     style

@@ -768,28 +768,28 @@ impl InlineFormattingContext {
             self.viewport_size,
           );
           let border_left = resolve_length_for_width(
-            child.style.border_left_width,
+            child.style.used_border_left_width(),
             percentage_base,
             &child.style,
             &self.font_context,
             self.viewport_size,
           );
           let border_right = resolve_length_for_width(
-            child.style.border_right_width,
+            child.style.used_border_right_width(),
             percentage_base,
             &child.style,
             &self.font_context,
             self.viewport_size,
           );
           let border_top = resolve_length_for_width(
-            child.style.border_top_width,
+            child.style.used_border_top_width(),
             percentage_base,
             &child.style,
             &self.font_context,
             self.viewport_size,
           );
           let border_bottom = resolve_length_for_width(
-            child.style.border_bottom_width,
+            child.style.used_border_bottom_width(),
             percentage_base,
             &child.style,
             &self.font_context,
@@ -1002,28 +1002,28 @@ impl InlineFormattingContext {
             self.viewport_size,
           );
           let border_left = resolve_length_for_width(
-            child.style.border_left_width,
+            child.style.used_border_left_width(),
             percentage_base,
             &child.style,
             &self.font_context,
             self.viewport_size,
           );
           let border_right = resolve_length_for_width(
-            child.style.border_right_width,
+            child.style.used_border_right_width(),
             percentage_base,
             &child.style,
             &self.font_context,
             self.viewport_size,
           );
           let border_top = resolve_length_for_width(
-            child.style.border_top_width,
+            child.style.used_border_top_width(),
             percentage_base,
             &child.style,
             &self.font_context,
             self.viewport_size,
           );
           let border_bottom = resolve_length_for_width(
-            child.style.border_bottom_width,
+            child.style.used_border_bottom_width(),
             percentage_base,
             &child.style,
             &self.font_context,
@@ -1583,28 +1583,28 @@ impl InlineFormattingContext {
             self.viewport_size,
           );
           let border_left = resolve_length_for_width(
-            child.style.border_left_width,
+            child.style.used_border_left_width(),
             percentage_base,
             &child.style,
             &self.font_context,
             self.viewport_size,
           );
           let border_right = resolve_length_for_width(
-            child.style.border_right_width,
+            child.style.used_border_right_width(),
             percentage_base,
             &child.style,
             &self.font_context,
             self.viewport_size,
           );
           let border_top = resolve_length_for_width(
-            child.style.border_top_width,
+            child.style.used_border_top_width(),
             percentage_base,
             &child.style,
             &self.font_context,
             self.viewport_size,
           );
           let border_bottom = resolve_length_for_width(
-            child.style.border_bottom_width,
+            child.style.used_border_bottom_width(),
             percentage_base,
             &child.style,
             &self.font_context,
@@ -1796,28 +1796,28 @@ impl InlineFormattingContext {
             self.viewport_size,
           );
           let border_left = resolve_length_for_width(
-            child.style.border_left_width,
+            child.style.used_border_left_width(),
             percentage_base,
             &child.style,
             &self.font_context,
             self.viewport_size,
           );
           let border_right = resolve_length_for_width(
-            child.style.border_right_width,
+            child.style.used_border_right_width(),
             percentage_base,
             &child.style,
             &self.font_context,
             self.viewport_size,
           );
           let border_top = resolve_length_for_width(
-            child.style.border_top_width,
+            child.style.used_border_top_width(),
             percentage_base,
             &child.style,
             &self.font_context,
             self.viewport_size,
           );
           let border_bottom = resolve_length_for_width(
-            child.style.border_bottom_width,
+            child.style.used_border_bottom_width(),
             percentage_base,
             &child.style,
             &self.font_context,
@@ -2422,28 +2422,28 @@ impl InlineFormattingContext {
       self.viewport_size,
     );
     let border_left = resolve_length_for_width(
-      style.border_left_width,
+      style.used_border_left_width(),
       percentage_base_px,
       style,
       &self.font_context,
       self.viewport_size,
     );
     let border_right = resolve_length_for_width(
-      style.border_right_width,
+      style.used_border_right_width(),
       percentage_base_px,
       style,
       &self.font_context,
       self.viewport_size,
     );
     let border_top = resolve_length_for_width(
-      style.border_top_width,
+      style.used_border_top_width(),
       percentage_base_px,
       style,
       &self.font_context,
       self.viewport_size,
     );
     let border_bottom = resolve_length_for_width(
-      style.border_bottom_width,
+      style.used_border_bottom_width(),
       percentage_base_px,
       style,
       &self.font_context,
@@ -3758,28 +3758,28 @@ impl InlineFormattingContext {
     );
 
     let border_left = resolve_length_for_width(
-      style.border_left_width,
+      style.used_border_left_width(),
       percentage_base,
       style,
       &self.font_context,
       self.viewport_size,
     );
     let border_right = resolve_length_for_width(
-      style.border_right_width,
+      style.used_border_right_width(),
       percentage_base,
       style,
       &self.font_context,
       self.viewport_size,
     );
     let border_top = resolve_length_for_width(
-      style.border_top_width,
+      style.used_border_top_width(),
       percentage_base,
       style,
       &self.font_context,
       self.viewport_size,
     );
     let border_bottom = resolve_length_for_width(
-      style.border_bottom_width,
+      style.used_border_bottom_width(),
       percentage_base,
       style,
       &self.font_context,
@@ -5484,13 +5484,13 @@ impl InlineFormattingContext {
         &self.font_context,
         self.viewport_size,
       ) + resolve_length_for_width(
-        style.border_left_width,
+        style.used_border_left_width(),
         0.0,
         style,
         &self.font_context,
         self.viewport_size,
       ) + resolve_length_for_width(
-        style.border_right_width,
+        style.used_border_right_width(),
         0.0,
         style,
         &self.font_context,
@@ -5548,13 +5548,13 @@ impl InlineFormattingContext {
         &self.font_context,
         self.viewport_size,
       ) + resolve_length_for_width(
-        style.border_left_width,
+        style.used_border_left_width(),
         0.0,
         style,
         &self.font_context,
         self.viewport_size,
       ) + resolve_length_for_width(
-        style.border_right_width,
+        style.used_border_right_width(),
         0.0,
         style,
         &self.font_context,
@@ -5628,13 +5628,13 @@ impl InlineFormattingContext {
         &self.font_context,
         self.viewport_size,
       ) + resolve_length_for_width(
-        style.border_left_width,
+        style.used_border_left_width(),
         0.0,
         style,
         &self.font_context,
         self.viewport_size,
       ) + resolve_length_for_width(
-        style.border_right_width,
+        style.used_border_right_width(),
         0.0,
         style,
         &self.font_context,
@@ -5692,13 +5692,13 @@ impl InlineFormattingContext {
         &self.font_context,
         self.viewport_size,
       ) + resolve_length_for_width(
-        style.border_left_width,
+        style.used_border_left_width(),
         0.0,
         style,
         &self.font_context,
         self.viewport_size,
       ) + resolve_length_for_width(
-        style.border_right_width,
+        style.used_border_right_width(),
         0.0,
         style,
         &self.font_context,
@@ -6014,13 +6014,13 @@ fn horizontal_padding_and_borders(
     font_context,
     viewport,
   ) + resolve_length_for_width(
-    style.border_left_width,
+    style.used_border_left_width(),
     percentage_base,
     style,
     font_context,
     viewport,
   ) + resolve_length_for_width(
-    style.border_right_width,
+    style.used_border_right_width(),
     percentage_base,
     style,
     font_context,
@@ -8994,28 +8994,28 @@ impl InlineFormattingContext {
         self.viewport_size,
       );
       let border_left = resolve_length_for_width(
-        style.border_left_width,
+        style.used_border_left_width(),
         available_inline,
         style,
         &self.font_context,
         self.viewport_size,
       );
       let border_right = resolve_length_for_width(
-        style.border_right_width,
+        style.used_border_right_width(),
         available_inline,
         style,
         &self.font_context,
         self.viewport_size,
       );
       let border_top = resolve_length_for_width(
-        style.border_top_width,
+        style.used_border_top_width(),
         available_inline,
         style,
         &self.font_context,
         self.viewport_size,
       );
       let border_bottom = resolve_length_for_width(
-        style.border_bottom_width,
+        style.used_border_bottom_width(),
         available_inline,
         style,
         &self.font_context,
@@ -10553,6 +10553,7 @@ mod tests {
   use crate::style::display::Display;
   use crate::style::display::FormattingContextType;
   use crate::style::position::Position;
+  use crate::style::types::BorderStyle;
   use crate::style::types::CaseTransform;
   use crate::style::types::FontSizeAdjust;
   use crate::style::types::HyphensMode;
@@ -13001,6 +13002,10 @@ mod tests {
     style.border_right_width = Length::px(2.0);
     style.border_top_width = Length::px(1.0);
     style.border_bottom_width = Length::px(1.0);
+    style.border_left_style = BorderStyle::Solid;
+    style.border_right_style = BorderStyle::Solid;
+    style.border_top_style = BorderStyle::Solid;
+    style.border_bottom_style = BorderStyle::Solid;
     style.margin_left = Some(Length::px(10.0));
     style.margin_right = Some(Length::px(6.0));
     let style = Arc::new(style);

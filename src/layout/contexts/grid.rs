@@ -748,16 +748,16 @@ impl GridFormattingContext {
   fn horizontal_edges_px(&self, style: &ComputedStyle) -> Option<f32> {
     let left = self.resolve_length_px(&style.padding_left, style)?;
     let right = self.resolve_length_px(&style.padding_right, style)?;
-    let bl = self.resolve_length_px(&style.border_left_width, style)?;
-    let br = self.resolve_length_px(&style.border_right_width, style)?;
+    let bl = self.resolve_length_px(&style.used_border_left_width(), style)?;
+    let br = self.resolve_length_px(&style.used_border_right_width(), style)?;
     Some(left + right + bl + br)
   }
 
   fn vertical_edges_px(&self, style: &ComputedStyle) -> Option<f32> {
     let top = self.resolve_length_px(&style.padding_top, style)?;
     let bottom = self.resolve_length_px(&style.padding_bottom, style)?;
-    let bt = self.resolve_length_px(&style.border_top_width, style)?;
-    let bb = self.resolve_length_px(&style.border_bottom_width, style)?;
+    let bt = self.resolve_length_px(&style.used_border_top_width(), style)?;
+    let bb = self.resolve_length_px(&style.used_border_bottom_width(), style)?;
     Some(top + bottom + bt + bb)
   }
 
@@ -805,6 +805,10 @@ impl GridFormattingContext {
     } else {
       0.0
     };
+    let border_left_len = style.used_border_left_width();
+    let border_right_len = style.used_border_right_width();
+    let border_top_len = style.used_border_top_width();
+    let border_bottom_len = style.used_border_bottom_width();
 
     // Fast-path the common case (no padding/border/gutters) to avoid repeated length resolution
     // work in tight grid measurement loops.
@@ -813,10 +817,10 @@ impl GridFormattingContext {
       && length_is_zero(style.padding_right)
       && length_is_zero(style.padding_top)
       && length_is_zero(style.padding_bottom)
-      && length_is_zero(style.border_left_width)
-      && length_is_zero(style.border_right_width)
-      && length_is_zero(style.border_top_width)
-      && length_is_zero(style.border_bottom_width)
+      && length_is_zero(border_left_len)
+      && length_is_zero(border_right_len)
+      && length_is_zero(border_top_len)
+      && length_is_zero(border_bottom_len)
     {
       return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     }
@@ -853,10 +857,10 @@ impl GridFormattingContext {
       padding_bottom += gutter_width;
     }
 
-    let border_left = resolve(style.border_left_width);
-    let border_right = resolve(style.border_right_width);
-    let border_top = resolve(style.border_top_width);
-    let border_bottom = resolve(style.border_bottom_width);
+    let border_left = resolve(border_left_len);
+    let border_right = resolve(border_right_len);
+    let border_top = resolve(border_top_len);
+    let border_bottom = resolve(border_bottom_len);
 
     (
       padding_left,
@@ -1278,10 +1282,10 @@ impl GridFormattingContext {
 
     // Border
     taffy_style.border = taffy::geometry::Rect {
-      left: self.convert_length_to_lp(&style.border_left_width, style),
-      right: self.convert_length_to_lp(&style.border_right_width, style),
-      top: self.convert_length_to_lp(&style.border_top_width, style),
-      bottom: self.convert_length_to_lp(&style.border_bottom_width, style),
+      left: self.convert_length_to_lp(&style.used_border_left_width(), style),
+      right: self.convert_length_to_lp(&style.used_border_right_width(), style),
+      top: self.convert_length_to_lp(&style.used_border_top_width(), style),
+      bottom: self.convert_length_to_lp(&style.used_border_bottom_width(), style),
     };
     taffy_style.aspect_ratio = self.convert_aspect_ratio(style.aspect_ratio);
 
@@ -1698,15 +1702,15 @@ impl GridFormattingContext {
       Axis::Horizontal => {
         let p1 = self.resolve_length_px(&style.padding_left, style)?;
         let p2 = self.resolve_length_px(&style.padding_right, style)?;
-        let b1 = self.resolve_length_px(&style.border_left_width, style)?;
-        let b2 = self.resolve_length_px(&style.border_right_width, style)?;
+        let b1 = self.resolve_length_px(&style.used_border_left_width(), style)?;
+        let b2 = self.resolve_length_px(&style.used_border_right_width(), style)?;
         Some(p1 + p2 + b1 + b2)
       }
       Axis::Vertical => {
         let p1 = self.resolve_length_px(&style.padding_top, style)?;
         let p2 = self.resolve_length_px(&style.padding_bottom, style)?;
-        let b1 = self.resolve_length_px(&style.border_top_width, style)?;
-        let b2 = self.resolve_length_px(&style.border_bottom_width, style)?;
+        let b1 = self.resolve_length_px(&style.used_border_top_width(), style)?;
+        let b2 = self.resolve_length_px(&style.used_border_bottom_width(), style)?;
         Some(p1 + p2 + b1 + b2)
       }
     }
@@ -2491,22 +2495,22 @@ impl GridFormattingContext {
       &box_node.style,
     );
     let border_left = self.resolve_length_for_width(
-      box_node.style.border_left_width,
+      box_node.style.used_border_left_width(),
       bounds.width(),
       &box_node.style,
     );
     let border_top = self.resolve_length_for_width(
-      box_node.style.border_top_width,
+      box_node.style.used_border_top_width(),
       bounds.width(),
       &box_node.style,
     );
     let border_right = self.resolve_length_for_width(
-      box_node.style.border_right_width,
+      box_node.style.used_border_right_width(),
       bounds.width(),
       &box_node.style,
     );
     let border_bottom = self.resolve_length_for_width(
-      box_node.style.border_bottom_width,
+      box_node.style.used_border_bottom_width(),
       bounds.width(),
       &box_node.style,
     );
@@ -2675,22 +2679,22 @@ impl GridFormattingContext {
               &ancestor_box_node.style,
             );
             let ancestor_border_left = self.resolve_length_for_width(
-              ancestor_box_node.style.border_left_width,
+              ancestor_box_node.style.used_border_left_width(),
               ancestor_bounds.width(),
               &ancestor_box_node.style,
             );
             let ancestor_border_top = self.resolve_length_for_width(
-              ancestor_box_node.style.border_top_width,
+              ancestor_box_node.style.used_border_top_width(),
               ancestor_bounds.width(),
               &ancestor_box_node.style,
             );
             let ancestor_border_right = self.resolve_length_for_width(
-              ancestor_box_node.style.border_right_width,
+              ancestor_box_node.style.used_border_right_width(),
               ancestor_bounds.width(),
               &ancestor_box_node.style,
             );
             let ancestor_border_bottom = self.resolve_length_for_width(
-              ancestor_box_node.style.border_bottom_width,
+              ancestor_box_node.style.used_border_bottom_width(),
               ancestor_bounds.width(),
               &ancestor_box_node.style,
             );
@@ -4713,9 +4717,9 @@ impl FormattingContext for GridFormattingContext {
         let padding_right =
           self.resolve_length_for_width(style.padding_right, percentage_base, style);
         let border_left =
-          self.resolve_length_for_width(style.border_left_width, percentage_base, style);
+          self.resolve_length_for_width(style.used_border_left_width(), percentage_base, style);
         let border_right =
-          self.resolve_length_for_width(style.border_right_width, percentage_base, style);
+          self.resolve_length_for_width(style.used_border_right_width(), percentage_base, style);
         let content_width =
           (outer_width - padding_left - padding_right - border_left - border_right).max(0.0);
         if let Ok(existing) = taffy.style(root_id) {
@@ -4845,22 +4849,22 @@ impl FormattingContext for GridFormattingContext {
               &root_box_node.style,
             );
             let border_left = this.resolve_length_for_width(
-              root_box_node.style.border_left_width,
+              root_box_node.style.used_border_left_width(),
               percentage_base,
               &root_box_node.style,
             );
             let border_right = this.resolve_length_for_width(
-              root_box_node.style.border_right_width,
+              root_box_node.style.used_border_right_width(),
               percentage_base,
               &root_box_node.style,
             );
             let border_top = this.resolve_length_for_width(
-              root_box_node.style.border_top_width,
+              root_box_node.style.used_border_top_width(),
               percentage_base,
               &root_box_node.style,
             );
             let border_bottom = this.resolve_length_for_width(
-              root_box_node.style.border_bottom_width,
+              root_box_node.style.used_border_bottom_width(),
               percentage_base,
               &root_box_node.style,
             );
@@ -4999,22 +5003,22 @@ impl FormattingContext for GridFormattingContext {
         &box_node.style,
       );
       let border_left = self.resolve_length_for_width(
-        box_node.style.border_left_width,
+        box_node.style.used_border_left_width(),
         constraints.width().unwrap_or(0.0),
         &box_node.style,
       );
       let border_top = self.resolve_length_for_width(
-        box_node.style.border_top_width,
+        box_node.style.used_border_top_width(),
         constraints.width().unwrap_or(0.0),
         &box_node.style,
       );
       let border_right = self.resolve_length_for_width(
-        box_node.style.border_right_width,
+        box_node.style.used_border_right_width(),
         constraints.width().unwrap_or(0.0),
         &box_node.style,
       );
       let border_bottom = self.resolve_length_for_width(
-        box_node.style.border_bottom_width,
+        box_node.style.used_border_bottom_width(),
         constraints.width().unwrap_or(0.0),
         &box_node.style,
       );
@@ -5432,13 +5436,13 @@ impl FormattingContext for GridFormattingContext {
           let padding_bottom =
             self.resolve_length_for_width(style.padding_bottom, percentage_base, style);
           let border_left =
-            self.resolve_length_for_width(style.border_left_width, percentage_base, style);
+            self.resolve_length_for_width(style.used_border_left_width(), percentage_base, style);
           let border_right =
-            self.resolve_length_for_width(style.border_right_width, percentage_base, style);
+            self.resolve_length_for_width(style.used_border_right_width(), percentage_base, style);
           let border_top =
-            self.resolve_length_for_width(style.border_top_width, percentage_base, style);
+            self.resolve_length_for_width(style.used_border_top_width(), percentage_base, style);
           let border_bottom =
-            self.resolve_length_for_width(style.border_bottom_width, percentage_base, style);
+            self.resolve_length_for_width(style.used_border_bottom_width(), percentage_base, style);
 
           row_offsets = Some(compute_track_offsets(
             &info.rows,
@@ -5665,6 +5669,7 @@ mod tests {
   use crate::style::display::FormattingContextType;
   use crate::style::types::AlignItems;
   use crate::style::types::AspectRatio;
+  use crate::style::types::BorderStyle;
   use crate::style::types::GridAutoFlow;
   use crate::style::types::GridTrack;
   use crate::style::types::Overflow;
@@ -7487,6 +7492,8 @@ mod tests {
     item_style.width_keyword = None;
     item_style.padding_left = Length::px(10.0);
     item_style.padding_right = Length::px(10.0);
+    item_style.border_left_style = BorderStyle::Solid;
+    item_style.border_right_style = BorderStyle::Solid;
     item_style.border_left_width = Length::px(5.0);
     item_style.border_right_width = Length::px(5.0);
     let child = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);

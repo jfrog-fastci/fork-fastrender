@@ -1818,7 +1818,7 @@ impl BlockFormattingContext {
     let trailing_margin = margin_ctx.pending_margin();
     let allow_collapse_last = should_collapse_with_last_child(&parent.style);
     let parent_has_bottom_separation = resolve_length_for_width(
-      parent.style.border_bottom_width,
+      parent.style.used_border_bottom_width(),
       containing_width,
       &parent.style,
       &self.font_context,
@@ -1963,14 +1963,14 @@ impl BlockFormattingContext {
     }
 
     let border_top = resolve_length_for_width(
-      style.border_top_width,
+      style.used_border_top_width(),
       containing_width,
       style,
       &self.font_context,
       self.viewport_size,
     );
     let border_bottom = resolve_length_for_width(
-      style.border_bottom_width,
+      style.used_border_bottom_width(),
       containing_width,
       style,
       &self.font_context,
@@ -2236,7 +2236,7 @@ impl BlockFormattingContext {
     );
     // Check for border/padding that prevents margin collapse with first child
     let parent_has_top_separation = resolve_length_for_width(
-      parent.style.border_top_width,
+      parent.style.used_border_top_width(),
       containing_width,
       &parent.style,
       &self.font_context,
@@ -3251,7 +3251,7 @@ impl BlockFormattingContext {
 
     // Check for bottom separation
     let parent_has_bottom_separation = resolve_length_for_width(
-      parent.style.border_bottom_width,
+      parent.style.used_border_bottom_width(),
       containing_width,
       &parent.style,
       &self.font_context,
@@ -4349,7 +4349,6 @@ impl FormattingContext for BlockFormattingContext {
       let pref_content = (pref_border - horizontal_edges).max(0.0);
       computed_width.content_width = pref_content;
     }
-
     let min_width = if let Some(keyword) = style_for_width.min_width_keyword {
       if intrinsic_content_sizes.is_none() {
         let fc_type = box_node
@@ -4539,14 +4538,14 @@ impl FormattingContext for BlockFormattingContext {
     }
 
     let border_top = resolve_length_for_width(
-      style.border_top_width,
+      style.used_border_top_width(),
       containing_width,
       style,
       &self.font_context,
       self.viewport_size,
     );
     let border_bottom = resolve_length_for_width(
-      style.border_bottom_width,
+      style.used_border_bottom_width(),
       containing_width,
       style,
       &self.font_context,
@@ -4625,14 +4624,14 @@ impl FormattingContext for BlockFormattingContext {
       };
 
       let border_top_base0 = resolve_length_for_width(
-        style.border_top_width,
+        style.used_border_top_width(),
         0.0,
         style,
         &self.font_context,
         self.viewport_size,
       );
       let border_bottom_base0 = resolve_length_for_width(
-        style.border_bottom_width,
+        style.used_border_bottom_width(),
         0.0,
         style,
         &self.font_context,
@@ -5755,13 +5754,13 @@ fn horizontal_padding_and_borders(
     font_context,
     viewport,
   ) + resolve_length_for_width(
-    style.border_left_width,
+    style.used_border_left_width(),
     percentage_base,
     style,
     font_context,
     viewport,
   ) + resolve_length_for_width(
-    style.border_right_width,
+    style.used_border_right_width(),
     percentage_base,
     style,
     font_context,
@@ -5788,13 +5787,13 @@ fn vertical_padding_and_borders(
     font_context,
     viewport,
   ) + resolve_length_for_width(
-    style.border_top_width,
+    style.used_border_top_width(),
     percentage_base,
     style,
     font_context,
     viewport,
   ) + resolve_length_for_width(
-    style.border_bottom_width,
+    style.used_border_bottom_width(),
     percentage_base,
     style,
     font_context,
@@ -5954,10 +5953,10 @@ fn resolve_border_side(
   viewport: crate::geometry::Size,
 ) -> f32 {
   let length = match side {
-    PhysicalSide::Top => style.border_top_width,
-    PhysicalSide::Right => style.border_right_width,
-    PhysicalSide::Bottom => style.border_bottom_width,
-    PhysicalSide::Left => style.border_left_width,
+    PhysicalSide::Top => style.used_border_top_width(),
+    PhysicalSide::Right => style.used_border_right_width(),
+    PhysicalSide::Bottom => style.used_border_bottom_width(),
+    PhysicalSide::Left => style.used_border_left_width(),
   };
   resolve_length_for_width(length, percentage_base, style, font_context, viewport)
 }
@@ -5971,6 +5970,7 @@ mod tests {
   use crate::style::display::Display;
   use crate::style::display::FormattingContextType;
   use crate::style::position::Position;
+  use crate::style::types::BorderStyle;
   use crate::style::types::ContentVisibility;
   use crate::style::types::IntrinsicSizeKeyword;
   use crate::style::types::ListStylePosition;
@@ -6035,6 +6035,8 @@ mod tests {
     child_style.width_keyword = Some(crate::style::types::IntrinsicSizeKeyword::MaxContent);
     child_style.padding_left = Length::percent(10.0);
     child_style.padding_right = Length::px(5.0);
+    child_style.border_left_style = BorderStyle::Solid;
+    child_style.border_right_style = BorderStyle::Solid;
     child_style.border_left_width = Length::px(2.0);
     child_style.border_right_width = Length::px(2.0);
     child_style.margin_left = Some(Length::px(0.0));
@@ -6092,6 +6094,8 @@ mod tests {
     });
     child_style.padding_left = Length::percent(10.0);
     child_style.padding_right = Length::px(5.0);
+    child_style.border_left_style = BorderStyle::Solid;
+    child_style.border_right_style = BorderStyle::Solid;
     child_style.border_left_width = Length::px(2.0);
     child_style.border_right_width = Length::px(2.0);
     child_style.margin_left = Some(Length::px(0.0));
@@ -6149,6 +6153,8 @@ mod tests {
       Some(crate::style::types::IntrinsicSizeKeyword::FitContent { limit: None });
     child_style.padding_left = Length::percent(10.0);
     child_style.padding_right = Length::px(5.0);
+    child_style.border_left_style = BorderStyle::Solid;
+    child_style.border_right_style = BorderStyle::Solid;
     child_style.border_left_width = Length::px(2.0);
     child_style.border_right_width = Length::px(2.0);
     child_style.margin_left = Some(Length::px(0.0));
@@ -6268,6 +6274,8 @@ mod tests {
     child_style.box_sizing = crate::style::types::BoxSizing::BorderBox;
     child_style.padding_left = Length::px(10.0);
     child_style.padding_right = Length::px(10.0);
+    child_style.border_left_style = BorderStyle::Solid;
+    child_style.border_right_style = BorderStyle::Solid;
     child_style.border_left_width = Length::px(2.0);
     child_style.border_right_width = Length::px(2.0);
     child_style.max_width = Some(Length::px(200.0));
@@ -6429,6 +6437,8 @@ mod tests {
     parent_style.display = Display::Block;
     parent_style.padding_top = Length::px(10.0);
     parent_style.padding_bottom = Length::px(10.0);
+    parent_style.border_top_style = BorderStyle::Solid;
+    parent_style.border_bottom_style = BorderStyle::Solid;
     parent_style.border_top_width = Length::px(5.0);
     parent_style.border_bottom_width = Length::px(5.0);
 
@@ -7632,6 +7642,8 @@ mod tests {
       crate::style::types::Containment::with_flags(true, false, false, false, false);
     style.padding_left = Length::px(4.0);
     style.padding_right = Length::px(4.0);
+    style.border_left_style = BorderStyle::Solid;
+    style.border_right_style = BorderStyle::Solid;
     style.border_left_width = Length::px(2.0);
     style.border_right_width = Length::px(2.0);
     let container = BoxNode::new_block(

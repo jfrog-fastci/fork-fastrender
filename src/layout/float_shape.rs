@@ -186,10 +186,10 @@ fn compute_reference_boxes(
     .max(0.0)
   };
 
-  let border_left = resolve(style.border_left_width);
-  let border_right = resolve(style.border_right_width);
-  let border_top = resolve(style.border_top_width);
-  let border_bottom = resolve(style.border_bottom_width);
+  let border_left = resolve(style.used_border_left_width());
+  let border_right = resolve(style.used_border_right_width());
+  let border_top = resolve(style.used_border_top_width());
+  let border_bottom = resolve(style.used_border_bottom_width());
 
   let padding_left = resolve(style.padding_left);
   let padding_right = resolve(style.padding_right);

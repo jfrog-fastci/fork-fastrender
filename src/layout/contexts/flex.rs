@@ -1639,22 +1639,22 @@ impl FormattingContext for FlexFormattingContext {
                         measure_style,
                       );
                       let border_left = this.resolve_length_for_width(
-                        measure_style.border_left_width,
+                        measure_style.used_border_left_width(),
                         percentage_base,
                         measure_style,
                       );
                       let border_right = this.resolve_length_for_width(
-                        measure_style.border_right_width,
+                        measure_style.used_border_right_width(),
                         percentage_base,
                         measure_style,
                       );
                       let border_top = this.resolve_length_for_width(
-                        measure_style.border_top_width,
+                        measure_style.used_border_top_width(),
                         percentage_base,
                         measure_style,
                       );
                       let border_bottom = this.resolve_length_for_width(
-                        measure_style.border_bottom_width,
+                        measure_style.used_border_bottom_width(),
                         percentage_base,
                         measure_style,
                       );
@@ -2011,22 +2011,22 @@ impl FormattingContext for FlexFormattingContext {
                             measure_style,
                           );
                           let border_left = this.resolve_length_for_width(
-                            measure_style.border_left_width,
+                            measure_style.used_border_left_width(),
                             percentage_base,
                             measure_style,
                           );
                           let border_right = this.resolve_length_for_width(
-                            measure_style.border_right_width,
+                            measure_style.used_border_right_width(),
                             percentage_base,
                             measure_style,
                           );
                           let border_top = this.resolve_length_for_width(
-                            measure_style.border_top_width,
+                            measure_style.used_border_top_width(),
                             percentage_base,
                             measure_style,
                           );
                           let border_bottom = this.resolve_length_for_width(
-                            measure_style.border_bottom_width,
+                            measure_style.used_border_bottom_width(),
                             percentage_base,
                             measure_style,
                           );
@@ -2390,12 +2390,12 @@ impl FormattingContext for FlexFormattingContext {
                       let padding_top = this.resolve_length_for_width(measure_style.padding_top, percentage_base, measure_style);
                       let padding_bottom =
                         this.resolve_length_for_width(measure_style.padding_bottom, percentage_base, measure_style);
-                      let border_left = this.resolve_length_for_width(measure_style.border_left_width, percentage_base, measure_style);
+                      let border_left = this.resolve_length_for_width(measure_style.used_border_left_width(), percentage_base, measure_style);
                       let border_right =
-                        this.resolve_length_for_width(measure_style.border_right_width, percentage_base, measure_style);
-                      let border_top = this.resolve_length_for_width(measure_style.border_top_width, percentage_base, measure_style);
+                        this.resolve_length_for_width(measure_style.used_border_right_width(), percentage_base, measure_style);
+                      let border_top = this.resolve_length_for_width(measure_style.used_border_top_width(), percentage_base, measure_style);
                       let border_bottom =
-                        this.resolve_length_for_width(measure_style.border_bottom_width, percentage_base, measure_style);
+                        this.resolve_length_for_width(measure_style.used_border_bottom_width(), percentage_base, measure_style);
                       let extra_w = padding_left + padding_right + border_left + border_right + if reserve_scroll_y { scrollbar_width } else { 0.0 };
                       let extra_h = padding_top + padding_bottom + border_top + border_bottom + if reserve_scroll_x { scrollbar_width } else { 0.0 };
                       Size::new((measured_size.width + extra_w).max(0.0), (measured_size.height + extra_h).max(0.0))
@@ -2890,14 +2890,23 @@ impl FormattingContext for FlexFormattingContext {
     if in_flow_children.len() == fragment.children.len() {
       let cb_width = fragment.bounds.width();
       let cb_height = fragment.bounds.height();
-      let border_left =
-        self.resolve_length_for_width(box_node.style.border_left_width, cb_width, &box_node.style);
-      let border_right =
-        self.resolve_length_for_width(box_node.style.border_right_width, cb_width, &box_node.style);
-      let border_top =
-        self.resolve_length_for_width(box_node.style.border_top_width, cb_width, &box_node.style);
+      let border_left = self.resolve_length_for_width(
+        box_node.style.used_border_left_width(),
+        cb_width,
+        &box_node.style,
+      );
+      let border_right = self.resolve_length_for_width(
+        box_node.style.used_border_right_width(),
+        cb_width,
+        &box_node.style,
+      );
+      let border_top = self.resolve_length_for_width(
+        box_node.style.used_border_top_width(),
+        cb_width,
+        &box_node.style,
+      );
       let border_bottom = self.resolve_length_for_width(
-        box_node.style.border_bottom_width,
+        box_node.style.used_border_bottom_width(),
         cb_width,
         &box_node.style,
       );
@@ -3067,22 +3076,22 @@ impl FormattingContext for FlexFormattingContext {
       let positioned_factory = base_factory.clone();
       let abs = AbsoluteLayout::with_font_context(self.font_context.clone());
       let border_left = self.resolve_length_for_width(
-        box_node.style.border_left_width,
+        box_node.style.used_border_left_width(),
         constraints.width().unwrap_or(0.0),
         &box_node.style,
       );
       let border_top = self.resolve_length_for_width(
-        box_node.style.border_top_width,
+        box_node.style.used_border_top_width(),
         constraints.width().unwrap_or(0.0),
         &box_node.style,
       );
       let border_right = self.resolve_length_for_width(
-        box_node.style.border_right_width,
+        box_node.style.used_border_right_width(),
         constraints.width().unwrap_or(0.0),
         &box_node.style,
       );
       let border_bottom = self.resolve_length_for_width(
-        box_node.style.border_bottom_width,
+        box_node.style.used_border_bottom_width(),
         constraints.width().unwrap_or(0.0),
         &box_node.style,
       );
@@ -3981,10 +3990,10 @@ fn flex_style_fingerprint(style: &ComputedStyle) -> u64 {
   hash_length(&style.padding_right, &mut h);
   hash_length(&style.padding_bottom, &mut h);
   hash_length(&style.padding_left, &mut h);
-  hash_length(&style.border_top_width, &mut h);
-  hash_length(&style.border_right_width, &mut h);
-  hash_length(&style.border_bottom_width, &mut h);
-  hash_length(&style.border_left_width, &mut h);
+  hash_length(&style.used_border_top_width(), &mut h);
+  hash_length(&style.used_border_right_width(), &mut h);
+  hash_length(&style.used_border_bottom_width(), &mut h);
+  hash_length(&style.used_border_left_width(), &mut h);
   hash_enum_discriminant(&style.overflow_x, &mut h);
   hash_enum_discriminant(&style.overflow_y, &mut h);
   hash_enum_discriminant(&style.scrollbar_width, &mut h);
@@ -4418,10 +4427,10 @@ impl FlexFormattingContext {
         bottom: self.length_option_to_lpa(style.margin_bottom.as_ref(), style),
       },
       border: taffy::geometry::Rect {
-        left: self.length_to_taffy_lp(&style.border_left_width, style),
-        right: self.length_to_taffy_lp(&style.border_right_width, style),
-        top: self.length_to_taffy_lp(&style.border_top_width, style),
-        bottom: self.length_to_taffy_lp(&style.border_bottom_width, style),
+        left: self.length_to_taffy_lp(&style.used_border_left_width(), style),
+        right: self.length_to_taffy_lp(&style.used_border_right_width(), style),
+        top: self.length_to_taffy_lp(&style.used_border_top_width(), style),
+        bottom: self.length_to_taffy_lp(&style.used_border_bottom_width(), style),
       },
       aspect_ratio: self.aspect_ratio_to_taffy(style.aspect_ratio),
 
@@ -6607,12 +6616,13 @@ impl FlexFormattingContext {
       self.resolve_length_for_width(style.padding_bottom, percentage_base, style);
 
     let border_left =
-      self.resolve_length_for_width(style.border_left_width, percentage_base, style);
+      self.resolve_length_for_width(style.used_border_left_width(), percentage_base, style);
     let border_right =
-      self.resolve_length_for_width(style.border_right_width, percentage_base, style);
-    let border_top = self.resolve_length_for_width(style.border_top_width, percentage_base, style);
+      self.resolve_length_for_width(style.used_border_right_width(), percentage_base, style);
+    let border_top =
+      self.resolve_length_for_width(style.used_border_top_width(), percentage_base, style);
     let border_bottom =
-      self.resolve_length_for_width(style.border_bottom_width, percentage_base, style);
+      self.resolve_length_for_width(style.used_border_bottom_width(), percentage_base, style);
 
     let content_width =
       (fragment.bounds.width() - padding_left - padding_right - border_left - border_right)
@@ -7037,16 +7047,16 @@ impl FlexFormattingContext {
   fn horizontal_edges_px(&self, style: &ComputedStyle) -> Option<f32> {
     let left = self.resolve_length_px(&style.padding_left, style)?;
     let right = self.resolve_length_px(&style.padding_right, style)?;
-    let bl = self.resolve_length_px(&style.border_left_width, style)?;
-    let br = self.resolve_length_px(&style.border_right_width, style)?;
+    let bl = self.resolve_length_px(&style.used_border_left_width(), style)?;
+    let br = self.resolve_length_px(&style.used_border_right_width(), style)?;
     Some(left + right + bl + br)
   }
 
   fn vertical_edges_px(&self, style: &ComputedStyle) -> Option<f32> {
     let top = self.resolve_length_px(&style.padding_top, style)?;
     let bottom = self.resolve_length_px(&style.padding_bottom, style)?;
-    let bt = self.resolve_length_px(&style.border_top_width, style)?;
-    let bb = self.resolve_length_px(&style.border_bottom_width, style)?;
+    let bt = self.resolve_length_px(&style.used_border_top_width(), style)?;
+    let bb = self.resolve_length_px(&style.used_border_bottom_width(), style)?;
     Some(top + bottom + bt + bb)
   }
 

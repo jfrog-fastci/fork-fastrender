@@ -1243,6 +1243,57 @@ impl ComputedStyle {
     !matches!(self.offset_path, OffsetPath::None)
   }
 
+  pub fn used_border_width(&self, side: PhysicalSide) -> Length {
+    let (style, width, order) = match side {
+      PhysicalSide::Top => (
+        self.border_top_style,
+        self.border_top_width,
+        self.logical.border_width_orders.top,
+      ),
+      PhysicalSide::Right => (
+        self.border_right_style,
+        self.border_right_width,
+        self.logical.border_width_orders.right,
+      ),
+      PhysicalSide::Bottom => (
+        self.border_bottom_style,
+        self.border_bottom_width,
+        self.logical.border_width_orders.bottom,
+      ),
+      PhysicalSide::Left => (
+        self.border_left_style,
+        self.border_left_width,
+        self.logical.border_width_orders.left,
+      ),
+    };
+
+    if matches!(style, BorderStyle::None | BorderStyle::Hidden) {
+      return Length::px(0.0);
+    }
+
+    if order < 0 && width.to_px() <= 0.0 {
+      return Length::px(3.0);
+    }
+
+    width
+  }
+
+  pub fn used_border_top_width(&self) -> Length {
+    self.used_border_width(PhysicalSide::Top)
+  }
+
+  pub fn used_border_right_width(&self) -> Length {
+    self.used_border_width(PhysicalSide::Right)
+  }
+
+  pub fn used_border_bottom_width(&self) -> Length {
+    self.used_border_width(PhysicalSide::Bottom)
+  }
+
+  pub fn used_border_left_width(&self) -> Length {
+    self.used_border_width(PhysicalSide::Left)
+  }
+
   pub fn has_transform(&self) -> bool {
     !self.transform.is_empty()
       || !matches!(self.translate, TranslateValue::None)

@@ -315,10 +315,10 @@ fn resolve_border_for_side(
   viewport: crate::geometry::Size,
 ) -> f32 {
   let length = match side {
-    PhysicalSide::Top => style.border_top_width,
-    PhysicalSide::Right => style.border_right_width,
-    PhysicalSide::Bottom => style.border_bottom_width,
-    PhysicalSide::Left => style.border_left_width,
+    PhysicalSide::Top => style.used_border_top_width(),
+    PhysicalSide::Right => style.used_border_right_width(),
+    PhysicalSide::Bottom => style.used_border_bottom_width(),
+    PhysicalSide::Left => style.used_border_left_width(),
   };
   resolve_length(length, containing_width, style, viewport)
 }
@@ -418,6 +418,7 @@ mod tests {
   use crate::geometry::Size;
   use crate::style::inline_axis_is_horizontal;
   use crate::style::inline_axis_positive;
+  use crate::style::types::BorderStyle;
   use crate::style::types::BoxSizing;
   use crate::style::types::Direction;
   use crate::style::types::Overflow;
@@ -719,6 +720,8 @@ mod tests {
   #[test]
   fn test_width_with_border() {
     let mut style = default_style();
+    style.border_left_style = BorderStyle::Solid;
+    style.border_right_style = BorderStyle::Solid;
     style.border_left_width = Length::px(5.0);
     style.border_right_width = Length::px(5.0);
 
@@ -739,6 +742,8 @@ mod tests {
     style.width_keyword = None;
     style.padding_left = Length::px(10.0);
     style.padding_right = Length::px(10.0);
+    style.border_left_style = BorderStyle::Solid;
+    style.border_right_style = BorderStyle::Solid;
     style.border_left_width = Length::px(5.0);
     style.border_right_width = Length::px(5.0);
 

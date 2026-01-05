@@ -2254,10 +2254,10 @@ impl Painter {
       });
     }
 
-    let has_border = style.border_top_width.to_px() > 0.0
-      || style.border_right_width.to_px() > 0.0
-      || style.border_bottom_width.to_px() > 0.0
-      || style.border_left_width.to_px() > 0.0;
+    let has_border = style.used_border_top_width().to_px() > 0.0
+      || style.used_border_right_width().to_px() > 0.0
+      || style.used_border_bottom_width().to_px() > 0.0
+      || style.used_border_left_width().to_px() > 0.0;
     if has_border {
       items.push(DisplayCommand::Border {
         rect: abs_bounds,
@@ -4538,10 +4538,10 @@ impl Painter {
   /// Paints the borders of a fragment
   fn paint_borders(&mut self, x: f32, y: f32, width: f32, height: f32, style: &ComputedStyle) {
     // Only paint if there are borders
-    let top_css = style.border_top_width.to_px();
-    let right_css = style.border_right_width.to_px();
-    let bottom_css = style.border_bottom_width.to_px();
-    let left_css = style.border_left_width.to_px();
+    let top_css = style.used_border_top_width().to_px();
+    let right_css = style.used_border_right_width().to_px();
+    let bottom_css = style.used_border_bottom_width().to_px();
+    let left_css = style.used_border_left_width().to_px();
 
     if matches!(style.border_image.source, BorderImageSource::Image(_)) {
       if self.paint_border_image(
@@ -10551,28 +10551,28 @@ fn resolve_clip_radii(
   let font_size = style.font_size;
   let vp = viewport.unwrap_or((percentage_base, percentage_base));
   let border_left = resolve_length_for_paint(
-    &style.border_left_width,
+    &style.used_border_left_width(),
     font_size,
     style.root_font_size,
     percentage_base,
     vp,
   );
   let border_right = resolve_length_for_paint(
-    &style.border_right_width,
+    &style.used_border_right_width(),
     font_size,
     style.root_font_size,
     percentage_base,
     vp,
   );
   let border_top = resolve_length_for_paint(
-    &style.border_top_width,
+    &style.used_border_top_width(),
     font_size,
     style.root_font_size,
     percentage_base,
     vp,
   );
   let border_bottom = resolve_length_for_paint(
-    &style.border_bottom_width,
+    &style.used_border_bottom_width(),
     font_size,
     style.root_font_size,
     percentage_base,
@@ -11717,28 +11717,28 @@ fn background_rects(
   let vp = viewport.unwrap_or((base, base));
 
   let border_left = resolve_length_for_paint(
-    &style.border_left_width,
+    &style.used_border_left_width(),
     font_size,
     style.root_font_size,
     base,
     vp,
   );
   let border_right = resolve_length_for_paint(
-    &style.border_right_width,
+    &style.used_border_right_width(),
     font_size,
     style.root_font_size,
     base,
     vp,
   );
   let border_top = resolve_length_for_paint(
-    &style.border_top_width,
+    &style.used_border_top_width(),
     font_size,
     style.root_font_size,
     base,
     vp,
   );
   let border_bottom = resolve_length_for_paint(
-    &style.border_bottom_width,
+    &style.used_border_bottom_width(),
     font_size,
     style.root_font_size,
     base,
