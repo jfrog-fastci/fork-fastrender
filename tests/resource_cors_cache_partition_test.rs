@@ -1,5 +1,7 @@
 use fastrender::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
-use fastrender::resource::{CachingFetcher, FetchDestination, FetchRequest, HttpFetcher, ResourceFetcher};
+use fastrender::resource::{
+  CachingFetcher, FetchDestination, FetchRequest, HttpFetcher, ResourceFetcher,
+};
 #[cfg(feature = "disk_cache")]
 use fastrender::resource::DiskCachingFetcher;
 use std::collections::HashMap;
@@ -112,6 +114,21 @@ impl Drop for OriginEchoServer {
   }
 }
 
+fn wait_for_hits(server: &OriginEchoServer, expected: usize, context: &str) {
+  let deadline = Instant::now() + Duration::from_secs(2);
+  while server.hits.load(Ordering::SeqCst) < expected && Instant::now() < deadline {
+    thread::sleep(Duration::from_millis(5));
+  }
+  // Give the accept loop a brief chance to observe any additional requests so we don't race
+  // against the non-blocking server thread.
+  thread::sleep(Duration::from_millis(10));
+  assert_eq!(
+    server.hits.load(Ordering::SeqCst),
+    expected,
+    "{context}"
+  );
+}
+
 #[test]
 fn in_memory_cache_partitions_cors_mode_by_request_origin_when_enforced() {
   let Some(server) = OriginEchoServer::start("in_memory_cache_partitions_cors_mode_by_request_origin_when_enforced") else {
@@ -126,23 +143,73 @@ fn in_memory_cache_partitions_cors_mode_by_request_origin_when_enforced() {
   with_thread_runtime_toggles(toggles, || {
     let fetcher = CachingFetcher::new(HttpFetcher::new());
 
-    let req_a = FetchRequest::new(&url, FetchDestination::Font).with_referrer("https://a.test/");
-    let req_b = FetchRequest::new(&url, FetchDestination::Font).with_referrer("https://b.test/");
+    for destination in [FetchDestination::Font, FetchDestination::ImageCors] {
+      let req_a = FetchRequest::new(&url, destination).with_referrer("https://a.test/");
+      let req_b = FetchRequest::new(&url, destination).with_referrer("https://b.test/");
 
-    let a = fetcher.fetch_with_request(req_a).expect("origin A fetch");
-    let b = fetcher.fetch_with_request(req_b).expect("origin B fetch");
-    assert_eq!(a.bytes, b"ok");
-    assert_eq!(b.bytes, b"ok");
+      let a = fetcher.fetch_with_request(req_a).expect("origin A fetch");
+      let b = fetcher.fetch_with_request(req_b).expect("origin B fetch");
+      assert_eq!(a.bytes, b"ok");
+      assert_eq!(b.bytes, b"ok");
+      assert_eq!(
+        a.access_control_allow_origin.as_deref(),
+        Some("https://a.test")
+      );
+      assert_eq!(
+        b.access_control_allow_origin.as_deref(),
+        Some("https://b.test")
+      );
+    }
   });
 
-  let deadline = Instant::now() + Duration::from_secs(2);
-  while server.hits.load(Ordering::SeqCst) < 2 && Instant::now() < deadline {
-    thread::sleep(Duration::from_millis(5));
-  }
-  assert_eq!(
-    server.hits.load(Ordering::SeqCst),
+  wait_for_hits(
+    &server,
+    4,
+    "cache should be partitioned by origin for CORS-mode resources under FASTR_FETCH_ENFORCE_CORS",
+  );
+}
+
+#[test]
+fn in_memory_cache_does_not_partition_cors_mode_by_origin_when_not_enforced() {
+  let Some(server) =
+    OriginEchoServer::start("in_memory_cache_does_not_partition_cors_mode_by_origin_when_not_enforced")
+  else {
+    return;
+  };
+
+  let mut raw = HashMap::new();
+  raw.insert("FASTR_FETCH_ENFORCE_CORS".to_string(), "0".to_string());
+  let toggles = Arc::new(RuntimeToggles::from_map(raw));
+
+  let url = server.url.clone();
+  with_thread_runtime_toggles(toggles, || {
+    let fetcher = CachingFetcher::new(HttpFetcher::new());
+
+    for destination in [FetchDestination::Font, FetchDestination::ImageCors] {
+      let req_a = FetchRequest::new(&url, destination).with_referrer("https://a.test/");
+      let req_b = FetchRequest::new(&url, destination).with_referrer("https://b.test/");
+
+      let a = fetcher.fetch_with_request(req_a).expect("origin A fetch");
+      let b = fetcher.fetch_with_request(req_b).expect("origin B fetch");
+      assert_eq!(a.bytes, b"ok");
+      assert_eq!(b.bytes, b"ok");
+      assert_eq!(
+        a.access_control_allow_origin.as_deref(),
+        Some("https://a.test")
+      );
+      // With enforcement disabled we keep legacy cache key behavior (no origin partitioning), so
+      // the second request reuses the cached response from the first origin.
+      assert_eq!(
+        b.access_control_allow_origin.as_deref(),
+        Some("https://a.test")
+      );
+    }
+  });
+
+  wait_for_hits(
+    &server,
     2,
-    "cache should be partitioned by origin under FASTR_FETCH_ENFORCE_CORS"
+    "cache should not be partitioned by origin for CORS-mode resources when FASTR_FETCH_ENFORCE_CORS is disabled",
   );
 }
 
@@ -161,24 +228,79 @@ fn disk_cache_partitions_cors_mode_by_request_origin_when_enforced() {
   let url = server.url.clone();
   with_thread_runtime_toggles(toggles, || {
     let disk_a = DiskCachingFetcher::new(HttpFetcher::new(), tmp.path());
-    let req_a = FetchRequest::new(&url, FetchDestination::Font).with_referrer("https://a.test/");
-    let first = disk_a.fetch_with_request(req_a).expect("origin A fetch");
-    assert_eq!(first.bytes, b"ok");
-
-    // New fetcher instance ensures the second request consults disk (not the in-memory cache).
     let disk_b = DiskCachingFetcher::new(HttpFetcher::new(), tmp.path());
-    let req_b = FetchRequest::new(&url, FetchDestination::Font).with_referrer("https://b.test/");
-    let second = disk_b.fetch_with_request(req_b).expect("origin B fetch");
-    assert_eq!(second.bytes, b"ok");
+
+    for destination in [FetchDestination::Font, FetchDestination::ImageCors] {
+      let req_a = FetchRequest::new(&url, destination).with_referrer("https://a.test/");
+      let first = disk_a.fetch_with_request(req_a).expect("origin A fetch");
+      assert_eq!(first.bytes, b"ok");
+      assert_eq!(
+        first.access_control_allow_origin.as_deref(),
+        Some("https://a.test")
+      );
+
+      // Second fetcher instance ensures the second request consults disk (not the in-memory
+      // cache).
+      let req_b = FetchRequest::new(&url, destination).with_referrer("https://b.test/");
+      let second = disk_b.fetch_with_request(req_b).expect("origin B fetch");
+      assert_eq!(second.bytes, b"ok");
+      assert_eq!(
+        second.access_control_allow_origin.as_deref(),
+        Some("https://b.test")
+      );
+    }
   });
 
-  let deadline = Instant::now() + Duration::from_secs(2);
-  while server.hits.load(Ordering::SeqCst) < 2 && Instant::now() < deadline {
-    thread::sleep(Duration::from_millis(5));
-  }
-  assert_eq!(
-    server.hits.load(Ordering::SeqCst),
+  wait_for_hits(
+    &server,
+    4,
+    "disk cache should be partitioned by origin for CORS-mode resources under FASTR_FETCH_ENFORCE_CORS",
+  );
+}
+
+#[cfg(feature = "disk_cache")]
+#[test]
+fn disk_cache_does_not_partition_cors_mode_by_origin_when_not_enforced() {
+  let Some(server) =
+    OriginEchoServer::start("disk_cache_does_not_partition_cors_mode_by_origin_when_not_enforced")
+  else {
+    return;
+  };
+
+  let mut raw = HashMap::new();
+  raw.insert("FASTR_FETCH_ENFORCE_CORS".to_string(), "0".to_string());
+  let toggles = Arc::new(RuntimeToggles::from_map(raw));
+
+  let tmp = tempfile::tempdir().expect("tempdir");
+  let url = server.url.clone();
+  with_thread_runtime_toggles(toggles, || {
+    let disk_a = DiskCachingFetcher::new(HttpFetcher::new(), tmp.path());
+    let disk_b = DiskCachingFetcher::new(HttpFetcher::new(), tmp.path());
+
+    for destination in [FetchDestination::Font, FetchDestination::ImageCors] {
+      let req_a = FetchRequest::new(&url, destination).with_referrer("https://a.test/");
+      let first = disk_a.fetch_with_request(req_a).expect("origin A fetch");
+      assert_eq!(first.bytes, b"ok");
+      assert_eq!(
+        first.access_control_allow_origin.as_deref(),
+        Some("https://a.test")
+      );
+
+      let req_b = FetchRequest::new(&url, destination).with_referrer("https://b.test/");
+      let second = disk_b.fetch_with_request(req_b).expect("origin B fetch");
+      assert_eq!(second.bytes, b"ok");
+      // Without enforcement, we keep legacy cache key behavior (no origin partitioning) so the
+      // disk cache returns the entry stored under the first origin.
+      assert_eq!(
+        second.access_control_allow_origin.as_deref(),
+        Some("https://a.test")
+      );
+    }
+  });
+
+  wait_for_hits(
+    &server,
     2,
-    "disk cache should be partitioned by origin under FASTR_FETCH_ENFORCE_CORS"
+    "disk cache should not be partitioned by origin for CORS-mode resources when FASTR_FETCH_ENFORCE_CORS is disabled",
   );
 }
