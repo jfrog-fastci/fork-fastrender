@@ -3582,6 +3582,27 @@ fn apply_additive_animation_value(
       style.transform = vec![crate::css::types::Transform::Matrix3d(combined.m)];
       true
     }
+    ("translate", AnimatedValue::Translate(effect)) => {
+      let Some(AnimatedValue::Translate(underlying)) = extract_translate(style, ctx) else {
+        return false;
+      };
+
+      let (ux, uy, uz) = match underlying {
+        TranslateValue::None => (0.0, 0.0, 0.0),
+        TranslateValue::Values { x, y, z } => (x.to_px(), y.to_px(), z.to_px()),
+      };
+      let (ex, ey, ez) = match effect {
+        TranslateValue::None => (0.0, 0.0, 0.0),
+        TranslateValue::Values { x, y, z } => (x.to_px(), y.to_px(), z.to_px()),
+      };
+
+      style.translate = TranslateValue::Values {
+        x: Length::px(ux + ex),
+        y: Length::px(uy + ey),
+        z: Length::px(uz + ez),
+      };
+      true
+    }
     ("opacity", AnimatedValue::Opacity(effect)) => {
       style.opacity = clamp_progress(style.opacity + effect);
       true

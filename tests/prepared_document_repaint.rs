@@ -135,6 +135,73 @@ fn repaint_with_animation_composition_add_combines_transforms() -> Result<()> {
 }
 
 #[test]
+fn repaint_with_animation_composition_add_preserves_transform_order() -> Result<()> {
+  let mut renderer = FastRender::new()?;
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(255, 255, 255); }
+      .box {
+        width: 20px;
+        height: 20px;
+        background: rgb(255, 0, 0);
+        transform-origin: 0 0;
+        transform: translateX(100px);
+        animation-name: spin;
+        animation-duration: 1000ms;
+        animation-timing-function: linear;
+        animation-composition: add;
+      }
+      @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(90deg); }
+      }
+    </style>
+    <div class="box"></div>
+  "#;
+  let prepared = renderer.prepare_html(html, RenderOptions::new().with_viewport(200, 200))?;
+  let mid = prepared.paint_with_options(PreparedPaintOptions::new().with_animation_time(500.0))?;
+
+  // The base translateX should not be rotated by the additive rotation.
+  assert_eq!(pixel(&mid, 100, 15), (255, 0, 0, 255));
+  assert_eq!(pixel(&mid, 70, 80), (255, 255, 255, 255));
+  Ok(())
+}
+
+#[test]
+fn repaint_with_animation_composition_add_combines_translate() -> Result<()> {
+  let mut renderer = FastRender::new()?;
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(255, 255, 255); }
+      .box {
+        width: 50px;
+        height: 50px;
+        background: rgb(255, 0, 0);
+        animation-name: move-x, move-y;
+        animation-duration: 1000ms, 1000ms;
+        animation-timing-function: linear, linear;
+        animation-composition: add;
+      }
+      @keyframes move-x {
+        from { translate: 0px 0px; }
+        to { translate: 100px 0px; }
+      }
+      @keyframes move-y {
+        from { translate: 0px 0px; }
+        to { translate: 0px 100px; }
+      }
+    </style>
+    <div class="box"></div>
+  "#;
+  let prepared = renderer.prepare_html(html, RenderOptions::new().with_viewport(150, 150))?;
+  let mid = prepared.paint_with_options(PreparedPaintOptions::new().with_animation_time(500.0))?;
+
+  assert_eq!(pixel(&mid, 75, 75), (255, 0, 0, 255));
+  assert_eq!(pixel(&mid, 25, 75), (255, 255, 255, 255));
+  Ok(())
+}
+
+#[test]
 fn repaint_with_animation_delay_and_fill_mode_changes_pixels() -> Result<()> {
   let mut renderer = FastRender::new()?;
   let html = r#"
