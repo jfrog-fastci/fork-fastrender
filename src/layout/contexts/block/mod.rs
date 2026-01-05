@@ -357,25 +357,34 @@ impl BlockFormattingContext {
     style: &ComputedStyle,
     inline_edges: f32,
   ) -> f32 {
-    match keyword {
-      IntrinsicSizeKeyword::MinContent => min_content,
-      IntrinsicSizeKeyword::MaxContent => max_content,
+    // The intrinsic sizing keywords (`min-content`, `max-content`, `fit-content(...)`) are defined
+    // in terms of the element's intrinsic *border-box* sizes. Internally we carry content-box
+    // dimensions in most of the block formatting context, so convert to border-box for the clamp
+    // and then back to content-box at the end. This also naturally rebases percentage padding
+    // because `min_content`/`max_content` are computed with a 0px percentage base.
+    let min_border = min_content + inline_edges;
+    let max_border = max_content + inline_edges;
+    let available_border = available_content + inline_edges;
+
+    let used_border = match keyword {
+      IntrinsicSizeKeyword::MinContent => min_border,
+      IntrinsicSizeKeyword::MaxContent => max_border,
       IntrinsicSizeKeyword::FitContent { limit } => match limit {
-        None => max_content.min(available_content.max(min_content)),
+        None => max_border.min(available_border.max(min_border)),
         Some(limit) => {
-          let limit_px = resolve_length_for_width(
+          let limit_border = resolve_length_for_width(
             limit,
             containing_width,
             style,
             &self.font_context,
             self.viewport_size,
           );
-          let limit_content =
-            content_size_from_box_sizing(limit_px, inline_edges, style.box_sizing);
-          max_content.min(limit_content.max(min_content))
+          max_border.min(limit_border.max(min_border))
         }
       },
-    }
+    };
+
+    (used_border - inline_edges).max(0.0)
   }
 
   /// Lays out a single block-level child and returns its fragment
