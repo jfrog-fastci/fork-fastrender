@@ -1473,20 +1473,7 @@ impl ComputedStyle {
   /// shorter lists and truncating longer lists to the number of mask-image layers.
   pub fn rebuild_mask_layers(&mut self) {
     self.ensure_mask_lists();
-    let layer_count = [
-      self.mask_images.len(),
-      self.mask_positions.len(),
-      self.mask_sizes.len(),
-      self.mask_repeats.len(),
-      self.mask_modes.len(),
-      self.mask_origins.len(),
-      self.mask_clips.len(),
-      self.mask_composites.len(),
-    ]
-    .into_iter()
-    .max()
-    .unwrap_or(0)
-    .max(1);
+    let layer_count = self.mask_images.len().max(1);
     self.mask_layers.clear();
     for idx in 0..layer_count {
       let mut layer = MaskLayer::default();

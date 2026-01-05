@@ -24,7 +24,7 @@ fn find_first<'a>(node: &'a StyledNode, tag: &str) -> Option<&'a StyledNode> {
 }
 
 #[test]
-fn mask_longhands_normalize_layer_lists() {
+fn mask_longhands_ignore_extra_layer_values() {
   let dom = dom::parse_html(
     r#"<div
       style="mask-image: linear-gradient(black, black);
@@ -38,26 +38,19 @@ fn mask_longhands_normalize_layer_lists() {
   let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
 
   let style = &find_first(&styled, "div").expect("div").styles;
-  assert_eq!(
-    style.mask_layers.len(),
-    2,
-    "layer count should follow longest list"
-  );
+  assert_eq!(style.mask_layers.len(), 1, "layer count should follow mask-image");
 
   assert_eq!(style.mask_layers[0].clip, MaskClip::PaddingBox);
-  assert_eq!(style.mask_layers[1].clip, MaskClip::ContentBox);
   assert_eq!(style.mask_layers[0].origin, MaskOrigin::ContentBox);
-  assert_eq!(style.mask_layers[1].origin, MaskOrigin::ContentBox);
   assert_eq!(style.mask_layers[0].composite, MaskComposite::Intersect);
-  assert_eq!(style.mask_layers[1].composite, MaskComposite::Intersect);
   assert!(
     style.mask_layers.iter().all(|layer| layer.image.is_some()),
-    "mask images should repeat to match the longest list"
+    "mask-image should be present for the single layer"
   );
 }
 
 #[test]
-fn mask_none_still_tracks_layer_lengths() {
+fn mask_none_ignores_extra_layer_values() {
   let dom =
     dom::parse_html(r#"<div style="mask-image: none; mask-clip: padding-box, border-box"></div>"#)
       .unwrap();
@@ -65,10 +58,9 @@ fn mask_none_still_tracks_layer_lengths() {
   let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
 
   let style = &find_first(&styled, "div").expect("div").styles;
-  assert_eq!(style.mask_layers.len(), 2);
+  assert_eq!(style.mask_layers.len(), 1);
   assert!(style.mask_layers.iter().all(|layer| layer.image.is_none()));
   assert_eq!(style.mask_layers[0].clip, MaskClip::PaddingBox);
-  assert_eq!(style.mask_layers[1].clip, MaskClip::BorderBox);
 }
 
 #[test]

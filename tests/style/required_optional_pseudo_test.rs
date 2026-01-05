@@ -25,7 +25,7 @@ fn display(node: &StyledNode) -> String {
 }
 
 #[test]
-fn required_and_optional_do_not_match_disabled_controls() {
+fn required_and_optional_match_disabled_controls() {
   let html = r#"
     <input id='r' required>
     <input id='rd' required disabled>
@@ -47,8 +47,8 @@ fn required_and_optional_do_not_match_disabled_controls() {
   );
   assert_eq!(
     display(find_by_id(&styled, "rd").expect("required disabled input")),
-    "inline-block",
-    "disabled controls do not match :required"
+    "inline",
+    "disabled required controls still match :required"
   );
   assert_eq!(
     display(find_by_id(&styled, "o").expect("optional input")),
@@ -56,8 +56,8 @@ fn required_and_optional_do_not_match_disabled_controls() {
   );
   assert_eq!(
     display(find_by_id(&styled, "od").expect("optional disabled input")),
-    "inline-block",
-    "disabled controls do not match :optional"
+    "block",
+    "disabled optional controls still match :optional"
   );
   // type=hidden doesn't participate in required/optional; its default display stays untouched.
   assert_eq!(
