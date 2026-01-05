@@ -14,8 +14,8 @@
   }
 
   .offset {
-    margin: 40px;
-    padding: 18px;
+    margin: 30px;
+    padding: 14px;
     background: #f0f0f0;
     border: 3px solid #888;
     /* Avoid whitespace text nodes affecting layout/line metrics. */
@@ -25,10 +25,8 @@
 
   /* This must stay `display:inline` (not inline-block) to exercise InlineFormattingContext. */
   .inline-cb {
-    contain: paint;
     padding: 14px;
-    border: 4px solid #0055aa;
-    background: #cfe8ff;
+    border: 4px solid transparent;
     vertical-align: top;
   }
 
@@ -38,7 +36,6 @@
     left: 0;
     width: 20px;
     height: 20px;
-    background: #ff0000;
   }
 
   .fixed {
@@ -47,13 +44,51 @@
     left: 0;
     width: 20px;
     height: 20px;
+  }
+
+  .inline-cb.paint {
+    contain: paint;
+    border-color: #0055aa;
+    background: #cfe8ff;
+  }
+  .inline-cb.paint .abs {
+    background: #ff0000;
+  }
+  .inline-cb.paint .fixed {
     background: #00cc00;
-    /* Offset the fixed square so the absolute + fixed cases are both visible. */
     transform: translateX(24px);
+  }
+
+  .inline-cb.layout {
+    contain: layout;
+    border-color: #aa5500;
+    background: #ffe8cf;
+  }
+  .inline-cb.layout .abs {
+    background: #0000ff;
+  }
+  .inline-cb.layout .fixed {
+    background: #ffcc00;
+    transform: translateX(48px);
+  }
+
+  .inline-cb.visibility {
+    content-visibility: auto;
+    border-color: #008855;
+    background: #d9ffe8;
+  }
+  .inline-cb.visibility .abs {
+    background: #cc00ff;
+  }
+  .inline-cb.visibility .fixed {
+    background: #00cccc;
+    transform: translateX(72px);
   }
 </style>
 
 <div class="header"></div>
 <div class="offset">
-  <span class="inline-cb"><span class="abs"></span><span class="fixed"></span></span>
+  <div><span class="inline-cb paint"><span class="abs"></span><span class="fixed"></span></span></div>
+  <div><span class="inline-cb layout"><span class="abs"></span><span class="fixed"></span></span></div>
+  <div><span class="inline-cb visibility"><span class="abs"></span><span class="fixed"></span></span></div>
 </div>
