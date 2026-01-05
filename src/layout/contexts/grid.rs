@@ -2043,7 +2043,7 @@ impl GridFormattingContext {
         )
       {
         taffy_style.justify_self = Some(self.convert_align_items(
-          &AlignItems::FlexStart,
+          &AlignItems::Start,
           physical_width_positive,
         ));
       }
@@ -2054,7 +2054,7 @@ impl GridFormattingContext {
         )
       {
         taffy_style.align_self = Some(self.convert_align_items(
-          &AlignItems::FlexStart,
+          &AlignItems::Start,
           physical_height_positive,
         ));
       }
@@ -7247,6 +7247,47 @@ mod tests {
     assert!(
       (width - 50.0).abs() < 0.5,
       "expected max-content width to be clamped to 50px, got {width:.2}"
+    );
+  }
+
+  #[test]
+  fn grid_item_width_keyword_max_content_uses_start_alignment_in_rtl() {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.direction = Direction::Rtl;
+    grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(200.0))];
+    grid_style.grid_template_rows = vec![GridTrack::Auto];
+    grid_style.justify_items = AlignItems::Stretch;
+    let grid_style = Arc::new(grid_style);
+
+    let mut item_style = ComputedStyle::default();
+    item_style.font_size = 16.0;
+    item_style.width = None;
+    item_style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+    let item_style = Arc::new(item_style);
+    let text_child = BoxNode::new_text(item_style.clone(), "hello world".into());
+    let item = BoxNode::new_block(item_style, FormattingContextType::Inline, vec![text_child]);
+
+    let grid = BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![item]);
+
+    let constraints = LayoutConstraints::definite(200.0, 200.0);
+    let fragment = fc.layout(&grid, &constraints).unwrap();
+
+    assert_eq!(fragment.children.len(), 1);
+    let child = &fragment.children[0];
+    let width = child.bounds.width();
+    assert!(
+      width + 0.5 < 200.0,
+      "expected max-content item width to be smaller than 200px, got {width:.2}"
+    );
+
+    let expected_x = 200.0 - width;
+    assert!(
+      (child.bounds.x() - expected_x).abs() < 1.0,
+      "expected RTL start alignment to place item at x≈{expected_x:.2}, got {:.2} (width={width:.2})",
+      child.bounds.x()
     );
   }
 
