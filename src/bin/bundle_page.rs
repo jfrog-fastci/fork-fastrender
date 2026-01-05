@@ -1581,6 +1581,21 @@ fn crawl_document(
         root_referrer,
       );
     }
+    // Best-effort mode historically uses regex-based discovery, which loses `<img crossorigin>`
+    // metadata. Opportunistically run the renderer-aligned responsive image discovery and upgrade
+    // any matching URLs to CORS mode.
+    if let Ok(requests) = discover_html_images(&document.html, &document.base_url, render) {
+      for (url, destination) in requests {
+        enqueue_unique(
+          &mut queue,
+          &mut seen_urls,
+          &mut queued,
+          url,
+          destination,
+          root_referrer,
+        );
+      }
+    }
   } else {
     for (url, destination) in discover_html_images(&document.html, &document.base_url, render)? {
       enqueue_unique(
@@ -1798,6 +1813,20 @@ fn crawl_document(
               FetchDestination::Image,
               doc.base_hint.as_str(),
             );
+          }
+          // As with the root document, attempt renderer-aligned discovery so `<img crossorigin>`
+          // resources are fetched in CORS mode when possible.
+          if let Ok(requests) = discover_html_images(&doc.html, &doc.base_url, render) {
+            for (url, destination) in requests {
+              enqueue_unique(
+                &mut queue,
+                &mut seen_urls,
+                &mut queued,
+                url,
+                destination,
+                doc.base_hint.as_str(),
+              );
+            }
           }
         } else {
           for (url, destination) in discover_html_images(&doc.html, &doc.base_url, render)? {
@@ -2323,6 +2352,89 @@ mod tests {
         url == "https://example.com/shared.png" && *dest == FetchDestination::ImageCors
       }),
       "expected <img crossorigin> URL to be fetched with ImageCors destination"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn crawl_best_effort_upgrades_img_crossorigin_to_image_cors() -> Result<()> {
+    #[derive(Default)]
+    struct CrossoriginFetcher {
+      calls: Mutex<Vec<(String, FetchDestination, Option<String>)>>,
+    }
+
+    impl CrossoriginFetcher {
+      fn calls(&self) -> Vec<(String, FetchDestination, Option<String>)> {
+        self
+          .calls
+          .lock()
+          .map(|calls| calls.clone())
+          .unwrap_or_default()
+      }
+    }
+
+    impl ResourceFetcher for CrossoriginFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.lock().unwrap().push((
+          req.url.to_string(),
+          req.destination,
+          req.referrer.map(|r| r.to_string()),
+        ));
+
+        match req.url {
+          "https://example.com/" => Ok(FetchedResource::with_final_url(
+            br#"<html><head><style>body{background:url('/shared.png');}</style></head><body><img src="/shared.png" crossorigin></body></html>"#
+              .to_vec(),
+            Some("text/html".to_string()),
+            Some(req.url.to_string()),
+          )),
+          "https://example.com/shared.png" => Ok(FetchedResource::with_final_url(
+            vec![0u8, 1, 2, 3],
+            Some("image/png".to_string()),
+            Some(req.url.to_string()),
+          )),
+          other => Err(fastrender::Error::Other(format!(
+            "unexpected fetch: {other}"
+          ))),
+        }
+      }
+    }
+
+    let inner = Arc::new(CrossoriginFetcher::default());
+    let recording = RecordingFetcher::new(inner.clone());
+    let (doc, _) = fetch_document(&recording, "https://example.com/")?;
+
+    let render = BundleRenderConfig {
+      viewport: (1200, 800),
+      device_pixel_ratio: 1.0,
+      scroll_x: 0.0,
+      scroll_y: 0.0,
+      full_page: false,
+      same_origin_subresources: false,
+      allowed_subresource_origins: Vec::new(),
+      compat_profile: fastrender::compat::CompatProfile::default(),
+      dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
+    };
+
+    crawl_document(&recording, &doc, &render, CrawlMode::BestEffort)?;
+
+    let calls = inner.calls();
+    assert!(
+      calls.iter().any(|(url, dest, _)| {
+        url == "https://example.com/shared.png" && *dest == FetchDestination::ImageCors
+      }),
+      "expected best-effort crawl to upgrade <img crossorigin> URL to ImageCors destination"
+    );
+    assert!(
+      !calls.iter().any(|(url, dest, _)| {
+        url == "https://example.com/shared.png" && *dest == FetchDestination::Image
+      }),
+      "expected best-effort crawl to avoid fetching the <img crossorigin> URL in no-cors mode"
     );
 
     Ok(())
