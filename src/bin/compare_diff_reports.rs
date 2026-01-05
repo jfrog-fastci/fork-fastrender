@@ -1341,12 +1341,13 @@ fn write_html_report(
   };
 
   let mut summary = format!(
-    "Paired: {} | Improved: {} | Regressed: {} | Unchanged: {} | Missing entries: {} | Errors (baseline/new): {}/{} | Missing files (baseline/new): {}/{}",
+    "Paired: {} | Improved: {} | Regressed: {} | Unchanged: {} | Missing entries (missing in baseline/new): {}/{} | Errors (baseline/new): {}/{} | Missing files (baseline/new): {}/{}",
     report.totals.paired,
     report.totals.improved,
     report.totals.regressed,
     report.totals.unchanged,
-    report.totals.missing_in_baseline + report.totals.missing_in_new,
+    report.totals.missing_in_baseline,
+    report.totals.missing_in_new,
     report.totals.baseline_errors,
     report.totals.new_errors,
     report.totals.baseline_missing,
