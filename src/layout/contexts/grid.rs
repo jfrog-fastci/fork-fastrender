@@ -7231,6 +7231,7 @@ mod tests {
     let mut measure_cache: FxHashMap<MeasureKey, taffy::geometry::Size<f32>> = FxHashMap::default();
     let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
     let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
+    let auto_unskipped: FxHashSet<*const BoxNode> = FxHashSet::default();
 
     let size = fc.measure_grid_item(
       node_ptr,
@@ -7239,7 +7240,7 @@ mod tests {
       available_space,
       Some(260.0),
       &taffy::style::Style::default(),
-      &FxHashSet::default(),
+      &auto_unskipped,
       &fc.factory,
       &mut measure_cache,
       &mut measured_fragments,

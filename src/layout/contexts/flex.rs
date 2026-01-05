@@ -650,11 +650,12 @@ impl FormattingContext for FlexFormattingContext {
     // identical available sizes (common on carousel-heavy pages). This is scoped per layout
     // run via the factory cache reset.
     let disable_cache = disable_global_layout_cache || override_active;
+    let viewport_scroll = sanitize_viewport_scroll(self.factory.viewport_scroll());
     let layout_cache_entry = if disable_cache {
       None
     } else {
       layout_cache_key(&constraints, self.viewport_size)
-        .map(|k| (flex_cache_key_with_style(box_node, style), k))
+        .map(|k| (flex_cache_key_with_style_and_scroll(box_node, style, viewport_scroll), k))
     };
 
     let _trace_text_ids = trace_flex_text_ids();
@@ -893,6 +894,7 @@ impl FormattingContext for FlexFormattingContext {
     let measured_fragments = self.measured_fragments.clone();
     let base_factory = self.child_factory();
     let factory = base_factory.clone();
+    let viewport_scroll = sanitize_viewport_scroll(factory.viewport_scroll());
     let flex_item_block_fc: Arc<dyn FormattingContext> = Arc::new(
       BlockFormattingContext::for_flex_item_with_factory(base_factory.clone())
         .with_parallelism(self.parallelism),
@@ -1519,7 +1521,8 @@ impl FormattingContext for FlexFormattingContext {
                     let measure_style: &ComputedStyle = override_style
                       .as_deref()
                       .unwrap_or_else(|| measure_box.style.as_ref());
-                    let cache_key = flex_cache_key_with_style(measure_box, measure_style);
+                    let cache_key =
+                      flex_cache_key_with_style_and_scroll(measure_box, measure_style, viewport_scroll);
                     if let Some(cached) = pass_cache.get(&cache_key).and_then(|m| m.get(&key)).cloned() {
                         record_node_measure_hit(measure_box.id);
                         flex_profile::record_measure_hit();
@@ -4307,6 +4310,36 @@ fn flex_cache_key_with_style(box_node: &BoxNode, style: &ComputedStyle) -> u64 {
   h.finish()
 }
 
+fn sanitize_viewport_scroll(scroll: Point) -> Point {
+  if scroll.x.is_finite() && scroll.y.is_finite() {
+    scroll
+  } else {
+    Point::ZERO
+  }
+}
+
+fn flex_cache_key_with_style_and_scroll(
+  box_node: &BoxNode,
+  style: &ComputedStyle,
+  viewport_scroll: Point,
+) -> u64 {
+  let base = flex_cache_key_with_style(box_node, style);
+  let viewport_scroll = sanitize_viewport_scroll(viewport_scroll);
+  if viewport_scroll == Point::ZERO {
+    return base;
+  }
+
+  let mut h = FingerprintHasher::default();
+  base.hash(&mut h);
+  f32_to_canonical_bits(viewport_scroll.x).hash(&mut h);
+  f32_to_canonical_bits(viewport_scroll.y).hash(&mut h);
+  h.finish()
+}
+
+fn flex_cache_key_with_scroll(box_node: &BoxNode, viewport_scroll: Point) -> u64 {
+  flex_cache_key_with_style_and_scroll(box_node, box_node.style.as_ref(), viewport_scroll)
+}
+
 fn flex_cache_key(box_node: &BoxNode) -> u64 {
   flex_cache_key_with_style(box_node, box_node.style.as_ref())
 }
@@ -5700,6 +5733,11 @@ impl FlexFormattingContext {
       dom_idx: usize,
       child_box: &'a BoxNode,
       fc_type: FormattingContextType,
+      /// The child's Taffy-resolved origin in the flex container's coordinate space.
+      ///
+      /// Used to translate the viewport scroll offset into the child's local coordinate system so
+      /// nested formatting contexts can make correct `content-visibility:auto` culling decisions.
+      origin: Point,
       constraints: LayoutConstraints,
       used_border_box_width: Option<f32>,
       used_border_box_height: Option<f32>,
@@ -5860,9 +5898,12 @@ impl FlexFormattingContext {
         continue;
       }
 
-      if !needs_intrinsic_main {
+       if !needs_intrinsic_main {
+        let parent_scroll = sanitize_viewport_scroll(factory.viewport_scroll());
+        let child_scroll = Point::new(parent_scroll.x - child_loc_x, parent_scroll.y - child_loc_y);
+        let cache_key = flex_cache_key_with_scroll(child_box, child_scroll);
         if let Some(cached) = measured_fragments.find_fragment_by_border_size_exact(
-          flex_cache_key(child_box),
+          cache_key,
           Size::new(target_width, target_height),
         ) {
           child_plans[dom_idx] = ChildPlan::Reuse {
@@ -5982,6 +6023,7 @@ impl FlexFormattingContext {
         dom_idx,
         child_box,
         fc_type,
+        origin: Point::new(child_loc_x, child_loc_y),
         constraints,
         used_border_box_width,
         used_border_box_height,
@@ -6001,7 +6043,23 @@ impl FlexFormattingContext {
       let run_layout = |deadline_counter: &mut usize,
                         work: &ChildLayoutWorkItem<'_>|
        -> Result<(usize, ChildLayoutWorkOutput), LayoutError> {
-        let fc = factory.get(work.fc_type);
+        // Translate the viewport scroll into the child's coordinate system so nested formatting
+        // contexts can correctly decide which `content-visibility:auto` descendants intersect the
+        // viewport. The flex container receives a scroll offset already translated into its own
+        // coordinate space by its parent (block/grid/flex); do the same for each child formatting
+        // context using the Taffy placement origin.
+        let parent_scroll = factory.viewport_scroll();
+        let parent_scroll = if parent_scroll.x.is_finite() && parent_scroll.y.is_finite() {
+          parent_scroll
+        } else {
+          Point::ZERO
+        };
+        let child_scroll = Point::new(
+          parent_scroll.x - work.origin.x,
+          parent_scroll.y - work.origin.y,
+        );
+        let child_factory = factory.clone().with_viewport_scroll(child_scroll);
+        let fc = child_factory.get(work.fc_type);
         let layout_node: &BoxNode = work.layout_child_storage.as_ref().unwrap_or(work.child_box);
         let node_timer = flex_profile::node_timer();
         let selector_for_profile = node_timer
@@ -8196,6 +8254,137 @@ mod tests {
       "expected offscreen auto item y={} to be beyond viewport height={}",
       offscreen_fragment.bounds.y(),
       fc.viewport_size.height
+    );
+  }
+
+  #[test]
+  fn content_visibility_auto_nested_flex_in_block_accounts_for_parent_offset() {
+    let _toggles = content_visibility_test_guard();
+    let viewport = Size::new(200.0, 200.0);
+    let fc = BlockFormattingContext::with_font_context_viewport_and_cb(
+      FontContext::new(),
+      viewport,
+      ContainingBlock::viewport(viewport),
+    );
+    let constraints = LayoutConstraints::definite(viewport.width, viewport.height);
+
+    let mut spacer_style = ComputedStyle::default();
+    spacer_style.display = Display::Block;
+    spacer_style.height = Some(Length::px(300.0));
+    spacer_style.height_keyword = None;
+    let mut spacer =
+      BoxNode::new_block(Arc::new(spacer_style), FormattingContextType::Block, vec![]);
+    spacer.id = 1;
+
+    let mut leaf_style = ComputedStyle::default();
+    leaf_style.display = Display::Block;
+    leaf_style.height = Some(Length::px(10.0));
+    leaf_style.height_keyword = None;
+    let mut leaf = BoxNode::new_block(Arc::new(leaf_style), FormattingContextType::Block, vec![]);
+    leaf.id = 4;
+
+    let mut auto_style = ComputedStyle::default();
+    auto_style.display = Display::Block;
+    auto_style.content_visibility = ContentVisibility::Auto;
+    auto_style.contain_intrinsic_height.length = Some(Length::px(10.0));
+    let mut auto_item = BoxNode::new_block(
+      Arc::new(auto_style),
+      FormattingContextType::Block,
+      vec![leaf],
+    );
+    auto_item.id = 3;
+
+    let mut flex_style = ComputedStyle::default();
+    flex_style.display = Display::Flex;
+    flex_style.flex_direction = FlexDirection::Column;
+    let mut flex_container = BoxNode::new_block(
+      Arc::new(flex_style),
+      FormattingContextType::Flex,
+      vec![auto_item],
+    );
+    flex_container.id = 2;
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    let mut root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Block,
+      vec![spacer, flex_container],
+    );
+    root.id = 0;
+
+    let fragment = fc.layout(&root, &constraints).expect("layout");
+    let flex_fragment = find_block_child(&fragment, 2);
+    let auto_fragment = find_block_child(flex_fragment, 3);
+    assert!(
+      auto_fragment.children.is_empty(),
+      "expected nested flex content-visibility:auto item to remain skipped when the flex container is offscreen"
+    );
+  }
+
+  #[test]
+  fn content_visibility_auto_nested_flex_in_flex_accounts_for_child_offset() {
+    let _toggles = content_visibility_test_guard();
+    let viewport = Size::new(200.0, 200.0);
+    // Give the flex container more block-axis space than the viewport so the spacer can push the
+    // nested container offscreen without being flex-shrunk to fit the viewport height.
+    let constraints = LayoutConstraints::definite(viewport.width, 1000.0);
+
+    let fc = FlexFormattingContext::with_viewport(viewport).with_parallelism(LayoutParallelism::disabled());
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Flex;
+    root_style.flex_direction = FlexDirection::Column;
+
+    let mut spacer_style = ComputedStyle::default();
+    spacer_style.display = Display::Block;
+    spacer_style.height = Some(Length::px(300.0));
+    spacer_style.height_keyword = None;
+    let mut spacer =
+      BoxNode::new_block(Arc::new(spacer_style), FormattingContextType::Block, vec![]);
+    spacer.id = 11;
+
+    let mut leaf_style = ComputedStyle::default();
+    leaf_style.display = Display::Block;
+    leaf_style.height = Some(Length::px(10.0));
+    leaf_style.height_keyword = None;
+    let mut leaf = BoxNode::new_block(Arc::new(leaf_style), FormattingContextType::Block, vec![]);
+    leaf.id = 33;
+
+    let mut auto_style = ComputedStyle::default();
+    auto_style.display = Display::Block;
+    auto_style.content_visibility = ContentVisibility::Auto;
+    auto_style.contain_intrinsic_height.length = Some(Length::px(10.0));
+    let mut auto_item = BoxNode::new_block(
+      Arc::new(auto_style),
+      FormattingContextType::Block,
+      vec![leaf],
+    );
+    auto_item.id = 22;
+
+    let mut nested_style = ComputedStyle::default();
+    nested_style.display = Display::Flex;
+    nested_style.flex_direction = FlexDirection::Column;
+    let mut nested_container = BoxNode::new_block(
+      Arc::new(nested_style),
+      FormattingContextType::Flex,
+      vec![auto_item],
+    );
+    nested_container.id = 12;
+
+    let mut root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Flex,
+      vec![spacer, nested_container],
+    );
+    root.id = 10;
+
+    let fragment = fc.layout(&root, &constraints).expect("layout");
+    let nested_fragment = find_block_child(&fragment, 12);
+    let auto_fragment = find_block_child(nested_fragment, 22);
+    assert!(
+      auto_fragment.children.is_empty(),
+      "expected nested flex content-visibility:auto item to remain skipped when its flex container is offscreen within the parent"
     );
   }
 

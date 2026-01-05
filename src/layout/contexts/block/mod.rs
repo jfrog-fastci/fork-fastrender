@@ -1126,6 +1126,22 @@ impl BlockFormattingContext {
       if let Some(fc_type) = fc_type {
         if fc_type != FormattingContextType::Block {
           let factory = self.child_factory_for_cb(*nearest_positioned_cb);
+          // Layout skipping (`content-visibility:auto`) inside the child formatting context is
+          // viewport-relative, so translate the factory viewport scroll offset into the child’s
+          // local coordinate space before invoking layout. Without this, nested flex/grid contexts
+          // interpret the viewport as starting at (0, 0) and may incorrectly unskip offscreen
+          // descendants.
+          let parent_scroll = factory.viewport_scroll();
+          let parent_scroll = if parent_scroll.x.is_finite() && parent_scroll.y.is_finite() {
+            parent_scroll
+          } else {
+            Point::ZERO
+          };
+          let child_scroll = Point::new(
+            parent_scroll.x - child_border_origin.x,
+            parent_scroll.y - child_border_origin.y,
+          );
+          let factory = factory.with_viewport_scroll(child_scroll);
           let fc = factory.get(fc_type);
 
           let used_border_box_width = computed_width.border_box_width();
