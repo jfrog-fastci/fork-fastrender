@@ -8298,9 +8298,9 @@ mod tests {
     let first_pipeline = pipeline.clone();
     let second_pipeline = pipeline.clone();
 
+    // The ASCII fast path probes the fallback cache using only the first non-control character, so
+    // both runs must start with the same byte to observe cache hits across pipeline clones.
     let text1 = "abcdefghijklmnopqrstuvwxyz";
-    // The ASCII fast path keys its fallback cache probe off the first non-control character. Ensure
-    // both strings share the same initial byte so the second run can observe a cache hit.
     let text2 = "azyxwvutsrqponmlkjihgfedcb";
 
     let before = pipeline.fallback_cache_stats();
