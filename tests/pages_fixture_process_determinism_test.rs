@@ -9,6 +9,9 @@ use tempfile::TempDir;
 
 const ENV_TIMEOUT_SECS: &str = "FASTR_DETERMINISM_TIMEOUT_SECS";
 const ENV_VIEWPORT: &str = "FASTR_DETERMINISM_VIEWPORT";
+const DPR: &str = "1.0";
+const MEDIA: &str = "screen";
+const JOBS: &str = "1";
 
 fn manifest_dir() -> PathBuf {
   PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -81,13 +84,17 @@ fn run_render_fixtures(fixtures: &[&str], out_dir: &Path, viewport: &str, timeou
       "--fixtures",
       &fixtures_arg,
       "--jobs",
-      "1",
+      JOBS,
       "--out-dir",
       out_dir.to_str().expect("out-dir utf8"),
       "--timeout",
       &timeout_arg,
       "--viewport",
       viewport,
+      "--dpr",
+      DPR,
+      "--media",
+      MEDIA,
     ])
     .status()
     .expect("spawn render_fixtures");
@@ -112,13 +119,17 @@ fn run_render_fixture_with_snapshot(
       "--fixtures",
       stem,
       "--jobs",
-      "1",
+      JOBS,
       "--out-dir",
       out_dir.to_str().expect("out-dir utf8"),
       "--timeout",
       &timeout_arg,
       "--viewport",
       viewport,
+      "--dpr",
+      DPR,
+      "--media",
+      MEDIA,
       "--write-snapshot",
     ])
     .status()
@@ -196,17 +207,23 @@ fn compare_fixture_png(
   fs::create_dir_all(&artifact_dir)
     .unwrap_or_else(|e| panic!("failed to create {}: {e}", artifact_dir.display()));
 
-  let expected_out = artifact_dir.join(format!("{stem}_expected.png"));
-  let actual_out = artifact_dir.join(format!("{stem}_actual.png"));
+  let run1_out = artifact_dir.join(format!("{stem}_run1.png"));
+  let run2_out = artifact_dir.join(format!("{stem}_run2.png"));
   let diff_out = artifact_dir.join(format!("{stem}_diff.png"));
 
-  fs::write(&expected_out, &png1)
-    .unwrap_or_else(|e| panic!("failed to write {}: {e}", expected_out.display()));
-  fs::write(&actual_out, &png2)
-    .unwrap_or_else(|e| panic!("failed to write {}: {e}", actual_out.display()));
-  diff
-    .save_diff_image(&diff_out)
-    .unwrap_or_else(|e| panic!("failed to write {}: {e}", diff_out.display()));
+  fs::write(&run1_out, &png1)
+    .unwrap_or_else(|e| panic!("failed to write {}: {e}", run1_out.display()));
+  fs::write(&run2_out, &png2)
+    .unwrap_or_else(|e| panic!("failed to write {}: {e}", run2_out.display()));
+
+  let diff_written = if diff.diff_image.is_some() {
+    diff
+      .save_diff_image(&diff_out)
+      .unwrap_or_else(|e| panic!("failed to write {}: {e}", diff_out.display()));
+    true
+  } else {
+    false
+  };
 
   // Capture pipeline snapshots and generate a stage-level snapshot diff report to make
   // process-level nondeterminism actionable.
@@ -249,11 +266,11 @@ fn compare_fixture_png(
   }
 
   if snapshot_error.is_none() {
-    // Make diff_snapshots link the exact pixel diff artifacts.
-    if let Err(err) = fs::copy(&expected_out, snapshot_before_dir.join("render.png")) {
-      snapshot_error = Some(format!("failed to copy expected render.png: {err}"));
-    } else if let Err(err) = fs::copy(&actual_out, snapshot_after_dir.join("render.png")) {
-      snapshot_error = Some(format!("failed to copy actual render.png: {err}"));
+    // Make diff_snapshots link the exact pixel mismatch.
+    if let Err(err) = fs::write(snapshot_before_dir.join("render.png"), &png1) {
+      snapshot_error = Some(format!("failed to write run1 render.png: {err}"));
+    } else if let Err(err) = fs::write(snapshot_after_dir.join("render.png"), &png2) {
+      snapshot_error = Some(format!("failed to write run2 render.png: {err}"));
     } else if let Err(err) =
       run_diff_snapshots(&snapshot_before_dir, &snapshot_after_dir, &artifact_dir)
     {
@@ -261,20 +278,33 @@ fn compare_fixture_png(
     }
   }
 
-  eprintln!(
-    "Process-level nondeterminism detected for fixture '{stem}': {:.4}% pixels differ.\n  expected: {}\n  actual:   {}\n  diff:     {}\n  snapshot run1: {}\n  snapshot run2: {}\n  diff_snapshots: {}\n  snapshot error: {}\n  {}",
-    diff.statistics.different_percent,
-    expected_out.display(),
-    actual_out.display(),
-    diff_out.display(),
-    snapshot_before_dir.display(),
-    snapshot_after_dir.display(),
-    artifact_dir.join("diff_snapshots.html").display(),
-    snapshot_error.as_deref().unwrap_or("(none)"),
+  let mut message = String::new();
+  message.push_str(&format!(
+    "Fixture '{stem}' rendered nondeterministically across processes.\n\nPixel diff: {}\n\nArtifacts:\n  run1: {}\n  run2: {}\n",
     diff.summary(),
-  );
+    run1_out.display(),
+    run2_out.display(),
+  ));
+  if diff_written {
+    message.push_str(&format!("  diff: {}\n", diff_out.display()));
+  } else {
+    message.push_str("  diff: (not generated; likely dimension mismatch)\n");
+  }
 
-  panic!("fixture '{stem}' rendered differently across processes");
+  message.push_str("\nSnapshots:\n");
+  message.push_str(&format!("  run1: {}\n", snapshot_before_dir.display()));
+  message.push_str(&format!("  run2: {}\n", snapshot_after_dir.display()));
+  message.push_str("\nSnapshot stage diff:\n");
+  message.push_str(&format!(
+    "  html: {}\n  json: {}\n",
+    artifact_dir.join("diff_snapshots.html").display(),
+    artifact_dir.join("diff_snapshots.json").display()
+  ));
+  if let Some(err) = snapshot_error {
+    message.push_str(&format!("\nSnapshot capture failed:\n{err}\n"));
+  }
+
+  panic!("{message}");
 }
 
 #[test]
