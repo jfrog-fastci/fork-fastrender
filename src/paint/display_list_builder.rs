@@ -8876,6 +8876,39 @@ mod tests {
   }
 
   #[test]
+  fn overflow_clip_preserves_radii_when_clipping_both_axes() {
+    let mut style = ComputedStyle::default();
+    style.overflow_x = Overflow::Hidden;
+    style.overflow_y = Overflow::Hidden;
+    let radius = crate::style::types::BorderCornerRadius::uniform(Length::px(10.0));
+    style.border_top_left_radius = radius;
+    style.border_top_right_radius = radius;
+    style.border_bottom_left_radius = radius;
+    style.border_bottom_right_radius = radius;
+
+    let fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 30.0, 30.0),
+      vec![],
+      Arc::new(style),
+    );
+
+    let clip = DisplayListBuilder::overflow_clip_from_style(
+      fragment.style.as_deref().unwrap(),
+      fragment.bounds,
+      fragment.bounds,
+      None,
+      None,
+    )
+    .expect("overflow clip missing");
+
+    let ClipShape::Rect { rect, radii } = &clip.shape else {
+      panic!("expected rectangular overflow clip");
+    };
+    assert_eq!(*rect, fragment.bounds);
+    assert!(radii.is_some(), "expected rounded overflow clip when both axes clip");
+  }
+
+  #[test]
   fn test_emit_background() {
     let mut builder = DisplayListBuilder::new();
     builder.emit_background(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), Rgba::RED);

@@ -1,0 +1,72 @@
+<!doctype html>
+<meta charset="utf-8" />
+<style>
+  body {
+    margin: 0;
+    background: #ddd;
+  }
+
+  .case {
+    margin: 20px;
+  }
+
+  .case-x {
+    margin-bottom: 280px;
+  }
+
+  .case-y {
+    margin-top: 0;
+  }
+
+  .container {
+    width: 220px;
+    height: 120px;
+    background: #fff;
+  }
+
+  .x-hidden {
+    overflow-x: clip;
+    overflow-y: visible;
+  }
+
+  .y-hidden {
+    overflow-y: clip;
+    overflow-x: visible;
+  }
+
+  .wide {
+    width: 320px;
+    height: 24px;
+    margin-left: 10px;
+    background: #1565c0;
+  }
+
+  .space {
+    height: 10px;
+  }
+
+  .tall {
+    width: 30px;
+    height: 220px;
+    margin-left: 160px;
+    background: #2e7d32;
+  }
+</style>
+
+<div class="case case-x">
+  <div class="container x-hidden">
+    <div class="space"></div>
+    <div class="wide"></div>
+    <div class="space"></div>
+    <div class="tall"></div>
+  </div>
+</div>
+
+<div class="case case-y">
+  <div class="container y-hidden">
+    <div class="space"></div>
+    <div class="wide"></div>
+    <div class="space"></div>
+    <div class="tall"></div>
+  </div>
+</div>
