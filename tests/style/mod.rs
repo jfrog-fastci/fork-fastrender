@@ -59,6 +59,7 @@ mod supports_rule_test;
 mod supports_selector_test;
 mod supports_writing_mode_test;
 mod svg_tag_selector_indexing_test;
+mod sizing_keywords_test;
 mod tab_size_test;
 mod text_combine_upright_case_insensitive_test;
 mod text_combine_upright_invalid_test;

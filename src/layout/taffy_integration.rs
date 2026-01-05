@@ -21,7 +21,7 @@
 //! `taffy_{flex,grid}_compute_ms`).
 
 use crate::geometry::Size;
-use crate::style::types::{AspectRatio, FlexBasis, GridTrack};
+use crate::style::types::{AspectRatio, FlexBasis, GridTrack, IntrinsicSizeKeyword};
 use crate::style::values::{CalcLength, Length};
 use crate::style::ComputedStyle;
 use crate::tree::box_tree::BoxNode;
@@ -534,6 +534,15 @@ fn hash_option_length(len: &Option<Length>, hasher: &mut FxHasher) {
   }
 }
 
+fn hash_sizing_property(
+  length: &Option<Length>,
+  keyword: &Option<IntrinsicSizeKeyword>,
+  hasher: &mut FxHasher,
+) {
+  hash_option_length(length, hasher);
+  keyword.hash(hasher);
+}
+
 fn hash_flex_basis(basis: &FlexBasis, hasher: &mut FxHasher) {
   match basis {
     FlexBasis::Auto => 0u8.hash(hasher),
@@ -719,12 +728,12 @@ fn taffy_flex_style_fingerprint_uncached(style: &ComputedStyle) -> u64 {
   hash_enum_discriminant(&style.direction, &mut h);
   hash_enum_discriminant(&style.box_sizing, &mut h);
 
-  hash_option_length(&style.width, &mut h);
-  hash_option_length(&style.height, &mut h);
-  hash_option_length(&style.min_width, &mut h);
-  hash_option_length(&style.max_width, &mut h);
-  hash_option_length(&style.min_height, &mut h);
-  hash_option_length(&style.max_height, &mut h);
+  hash_sizing_property(&style.width, &style.width_keyword, &mut h);
+  hash_sizing_property(&style.height, &style.height_keyword, &mut h);
+  hash_sizing_property(&style.min_width, &style.min_width_keyword, &mut h);
+  hash_sizing_property(&style.max_width, &style.max_width_keyword, &mut h);
+  hash_sizing_property(&style.min_height, &style.min_height_keyword, &mut h);
+  hash_sizing_property(&style.max_height, &style.max_height_keyword, &mut h);
 
   hash_option_length(&style.margin_top, &mut h);
   hash_option_length(&style.margin_right, &mut h);
@@ -810,12 +819,12 @@ fn taffy_grid_container_style_fingerprint_uncached(style: &ComputedStyle) -> u64
   f32_to_canonical_bits(style.font_size).hash(&mut h);
   f32_to_canonical_bits(style.root_font_size).hash(&mut h);
 
-  hash_option_length(&style.width, &mut h);
-  hash_option_length(&style.height, &mut h);
-  hash_option_length(&style.min_width, &mut h);
-  hash_option_length(&style.max_width, &mut h);
-  hash_option_length(&style.min_height, &mut h);
-  hash_option_length(&style.max_height, &mut h);
+  hash_sizing_property(&style.width, &style.width_keyword, &mut h);
+  hash_sizing_property(&style.height, &style.height_keyword, &mut h);
+  hash_sizing_property(&style.min_width, &style.min_width_keyword, &mut h);
+  hash_sizing_property(&style.max_width, &style.max_width_keyword, &mut h);
+  hash_sizing_property(&style.min_height, &style.min_height_keyword, &mut h);
+  hash_sizing_property(&style.max_height, &style.max_height_keyword, &mut h);
 
   hash_option_length(&style.margin_top, &mut h);
   hash_option_length(&style.margin_right, &mut h);
@@ -916,12 +925,12 @@ fn taffy_grid_item_style_fingerprint_uncached(style: &ComputedStyle) -> u64 {
   f32_to_canonical_bits(style.font_size).hash(&mut h);
   f32_to_canonical_bits(style.root_font_size).hash(&mut h);
 
-  hash_option_length(&style.width, &mut h);
-  hash_option_length(&style.height, &mut h);
-  hash_option_length(&style.min_width, &mut h);
-  hash_option_length(&style.max_width, &mut h);
-  hash_option_length(&style.min_height, &mut h);
-  hash_option_length(&style.max_height, &mut h);
+  hash_sizing_property(&style.width, &style.width_keyword, &mut h);
+  hash_sizing_property(&style.height, &style.height_keyword, &mut h);
+  hash_sizing_property(&style.min_width, &style.min_width_keyword, &mut h);
+  hash_sizing_property(&style.max_width, &style.max_width_keyword, &mut h);
+  hash_sizing_property(&style.min_height, &style.min_height_keyword, &mut h);
+  hash_sizing_property(&style.max_height, &style.max_height_keyword, &mut h);
 
   hash_option_length(&style.margin_top, &mut h);
   hash_option_length(&style.margin_right, &mut h);

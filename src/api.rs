@@ -11111,11 +11111,17 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   hash_enum_discriminant(&style.float, &mut h);
   hash_enum_discriminant(&style.clear, &mut h);
   hash_option_length(&style.width, &mut h);
+  style.width_keyword.hash(&mut h);
   hash_option_length(&style.height, &mut h);
+  style.height_keyword.hash(&mut h);
   hash_option_length(&style.min_width, &mut h);
+  style.min_width_keyword.hash(&mut h);
   hash_option_length(&style.max_width, &mut h);
+  style.max_width_keyword.hash(&mut h);
   hash_option_length(&style.min_height, &mut h);
+  style.min_height_keyword.hash(&mut h);
   hash_option_length(&style.max_height, &mut h);
+  style.max_height_keyword.hash(&mut h);
   hash_option_length(&style.margin_top, &mut h);
   hash_option_length(&style.margin_right, &mut h);
   hash_option_length(&style.margin_bottom, &mut h);
