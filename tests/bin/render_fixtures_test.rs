@@ -71,6 +71,11 @@ fn render_fixtures_writes_png_output() {
 
   let status = Command::new(env!("CARGO_BIN_EXE_render_fixtures"))
     .current_dir(temp.path())
+    // Keep the child process predictable and avoid spinning up a huge global Rayon pool on large
+    // CI machines. `render_fixtures` uses its own harness pool for fixture-level concurrency.
+    .env("RAYON_NUM_THREADS", "2")
+    // Ensure the paint pipeline stays on the global pool for this harness-level test.
+    .env("FASTR_PAINT_THREADS", "1")
     .args([
       "--fixtures-dir",
       fixtures_dir.to_str().unwrap(),
@@ -149,6 +154,8 @@ fn render_fixtures_repeat_mode_is_deterministic() {
 
   let status = Command::new(env!("CARGO_BIN_EXE_render_fixtures"))
     .current_dir(temp.path())
+    .env("RAYON_NUM_THREADS", "2")
+    .env("FASTR_PAINT_THREADS", "1")
     .args([
       "--fixtures-dir",
       fixtures_dir.to_str().unwrap(),
@@ -203,6 +210,8 @@ fn render_fixtures_blocks_http_subresources() {
 
   let status = Command::new(env!("CARGO_BIN_EXE_render_fixtures"))
     .current_dir(temp.path())
+    .env("RAYON_NUM_THREADS", "2")
+    .env("FASTR_PAINT_THREADS", "1")
     .args([
       "--fixtures-dir",
       fixtures_dir.to_str().unwrap(),
@@ -259,6 +268,8 @@ fn render_fixtures_resolves_relative_stylesheets_from_base_url() {
 
   let status = Command::new(env!("CARGO_BIN_EXE_render_fixtures"))
     .current_dir(temp.path())
+    .env("RAYON_NUM_THREADS", "2")
+    .env("FASTR_PAINT_THREADS", "1")
     .args([
       "--fixtures-dir",
       fixtures_dir.to_str().unwrap(),
@@ -308,6 +319,8 @@ fn render_fixtures_writes_snapshot_outputs() {
 
   let status = Command::new(env!("CARGO_BIN_EXE_render_fixtures"))
     .current_dir(temp.path())
+    .env("RAYON_NUM_THREADS", "2")
+    .env("FASTR_PAINT_THREADS", "1")
     .args([
       "--fixtures-dir",
       fixtures_dir.to_str().unwrap(),
