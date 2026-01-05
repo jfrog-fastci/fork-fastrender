@@ -5236,6 +5236,8 @@ mod tests {
 
   #[test]
   fn parses_min_max_clamp_lengths() {
+    assert_eq!(parse_length("max(0px)").unwrap(), Length::px(0.0));
+    assert_eq!(parse_length("min(10px)").unwrap(), Length::px(10.0));
     assert_eq!(parse_length("min(10px, 20px)").unwrap(), Length::px(10.0));
     assert_eq!(parse_length("max(10px, 20px)").unwrap(), Length::px(20.0));
     // `min()`/`max()` accept a single argument.
@@ -5902,8 +5904,13 @@ fn parse_min_max<'i, 't>(
   }
 
   // The `min()`/`max()` functions accept a comma-separated list of one or more values.
+  // One-arg forms are common in the wild as feature probes (e.g. `calc(max(0px))` in @supports)
+  // and behave as identity.
   if values.is_empty() {
     return Err(input.new_custom_error(()));
+  }
+  if values.len() == 1 {
+    return Ok(values.pop().expect("length checked"));
   }
 
   reduce_components(values, func, input.current_source_location())

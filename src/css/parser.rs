@@ -5240,6 +5240,23 @@ mod tests {
   }
 
   #[test]
+  fn supports_rule_applies_for_calc_max_single_argument_probe() {
+    // Some sites use one-argument min()/max() inside calc() as a feature probe:
+    // `@supports (padding: calc(max(0px))) { ... }`.
+    let css = r"@supports (padding: calc(max(0px))) { .ok { color: red; } }";
+    let result = parse_stylesheet_with_errors(css).unwrap();
+    assert_eq!(result.error_count(), 0, "parse errors: {:?}", result.errors);
+    let stylesheet = result.stylesheet;
+    let media = crate::style::media::MediaContext::screen(800.0, 600.0);
+    let rules = stylesheet.collect_style_rules(&media);
+    assert_eq!(
+      rules.len(),
+      1,
+      "one-arg max() inside calc() should be supported in @supports"
+    );
+  }
+
+  #[test]
   fn supports_rule_skipped_when_feature_unsupported() {
     let css = r"@supports (not-a-prop: foo) { .skip { color: red; } }";
     let stylesheet = parse_stylesheet(css).unwrap();
