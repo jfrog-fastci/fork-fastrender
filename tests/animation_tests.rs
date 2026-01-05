@@ -1520,3 +1520,31 @@ fn transform_animation_moves_pixels() {
   assert_eq!(pixel(&pixmap_bottom, 10, 10), (0, 0, 0, 255));
   assert_eq!(pixel(&pixmap_bottom, 60, 10), (255, 0, 0, 255));
 }
+
+#[test]
+fn registered_custom_property_interpolates_and_recomputes_var_dependent_values() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: black; }
+      @property --alpha { syntax: "<number>"; inherits: false; initial-value: 0; }
+      .box {
+        width: 50px;
+        height: 50px;
+        background-color: rgba(255, 0, 0, var(--alpha));
+        animation: a 1000ms linear both;
+      }
+      @keyframes a { from { --alpha: 0 } to { --alpha: 1 } }
+    </style>
+    <div class="box"></div>
+  "#;
+  let options = RenderOptions::new()
+    .with_viewport(60, 60)
+    .with_animation_time(500.0);
+  let pixmap = renderer
+    .render_html_with_options(html, options)
+    .expect("render");
+  let (r, g, b, a) = pixel(&pixmap, 25, 25);
+  assert!(r > 120 && r < 140, "r={r}");
+  assert_eq!((g, b, a), (0, 0, 255));
+}
