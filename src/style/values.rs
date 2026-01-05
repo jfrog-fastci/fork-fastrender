@@ -1242,7 +1242,34 @@ impl Length {
 
 impl fmt::Display for Length {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    write!(f, "{}{}", self.value, self.unit)
+    if let Some(calc) = &self.calc {
+      let terms = calc.terms();
+      if terms.is_empty() {
+        // `calc(0)` is equivalent to `0` (unitless zero is accepted for all length syntaxes).
+        return write!(f, "0");
+      }
+      if terms.len() == 1 {
+        let term = terms[0];
+        return write!(f, "{}{}", term.value, term.unit);
+      }
+
+      write!(f, "calc(")?;
+      for (idx, term) in terms.iter().enumerate() {
+        let value = term.value;
+        if idx == 0 {
+          write!(f, "{}{}", value, term.unit)?;
+          continue;
+        }
+        if value < 0.0 {
+          write!(f, " - {}{}", -value, term.unit)?;
+        } else {
+          write!(f, " + {}{}", value, term.unit)?;
+        }
+      }
+      write!(f, ")")
+    } else {
+      write!(f, "{}{}", self.value, self.unit)
+    }
   }
 }
 
@@ -1486,7 +1513,14 @@ impl CustomPropertySyntax {
   pub fn parse_value(&self, value: &str) -> Option<CustomPropertyTypedValue> {
     match self {
       CustomPropertySyntax::Length => {
-        crate::css::properties::parse_length(value.trim()).map(CustomPropertyTypedValue::Length)
+        let parsed = crate::css::properties::parse_length(value.trim())?;
+        // `<length>` must reject percentage-based values (including `calc()` that contains a `%`
+        // term). `parse_length` is a shared helper that accepts `<length-percentage>` values, so
+        // enforce the stricter syntax here.
+        if parsed.has_percentage() {
+          return None;
+        }
+        Some(CustomPropertyTypedValue::Length(parsed))
       }
       CustomPropertySyntax::LengthPercentage => {
         crate::css::properties::parse_length(value.trim()).map(CustomPropertyTypedValue::Length)

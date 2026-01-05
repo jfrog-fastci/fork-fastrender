@@ -59,7 +59,9 @@ use crate::style::types::ViewTimeline;
 use crate::style::types::ViewTimelineInset;
 use crate::style::types::ViewTimelinePhase;
 use crate::style::types::WritingMode;
-use crate::style::values::{CustomPropertyTypedValue, CustomPropertyValue, Length, LengthUnit};
+use crate::style::values::{
+  CalcLength, CustomPropertyTypedValue, CustomPropertyValue, Length, LengthUnit,
+};
 use crate::style::var_resolution::{resolve_var_for_property, VarResolutionResult};
 use crate::style::ComputedStyle;
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
@@ -142,11 +144,66 @@ fn interpolate_custom_property(
   from: &CustomPropertyValue,
   to: &CustomPropertyValue,
   t: f32,
-  base_style: &ComputedStyle,
+  from_style: &ComputedStyle,
+  to_style: &ComputedStyle,
   ctx: &AnimationResolveContext,
 ) -> Option<CustomPropertyValue> {
   let from_typed = from.typed.as_ref()?;
   let to_typed = to.typed.as_ref()?;
+
+  fn length_components(
+    len: &Length,
+    style: &ComputedStyle,
+    ctx: &AnimationResolveContext,
+  ) -> (f32, f32) {
+    // The computed value type for `<length-percentage>` can be expressed as a linear combination
+    // of percentage + absolute length. Convert any non-percent units into px so interpolation can
+    // produce a canonical value string that `parse_length()` can reparse later.
+    let mut pct = 0.0f32;
+    let mut px = 0.0f32;
+
+    if let Some(calc) = len.calc.as_ref() {
+      for term in calc.terms() {
+        if term.unit == LengthUnit::Percent {
+          pct += term.value;
+          continue;
+        }
+        let term_len = Length::new(term.value, term.unit);
+        px += resolve_length_px(&term_len, None, style, ctx);
+      }
+      return (pct, px);
+    }
+
+    if len.unit == LengthUnit::Percent {
+      pct += len.value;
+    } else {
+      px += resolve_length_px(len, None, style, ctx);
+    }
+    (pct, px)
+  }
+
+  fn build_length_from_components(px: f32, pct: f32) -> Option<Length> {
+    if !px.is_finite() || !pct.is_finite() {
+      return None;
+    }
+
+    let px = if px.abs() <= 1e-6 { 0.0 } else { px };
+    let pct = if pct.abs() <= 1e-6 { 0.0 } else { pct };
+
+    if pct == 0.0 {
+      return Some(Length::px(px));
+    }
+    if px == 0.0 {
+      return Some(Length::percent(pct));
+    }
+
+    let calc = CalcLength::single(LengthUnit::Px, px)
+      .add_scaled(&CalcLength::single(LengthUnit::Percent, pct), 1.0)?;
+    if let Some(term) = calc.single_term() {
+      return Some(Length::new(term.value, term.unit));
+    }
+    Some(Length::calc(calc))
+  }
 
   let typed = match (from_typed, to_typed) {
     (CustomPropertyTypedValue::Number(a), CustomPropertyTypedValue::Number(b)) => {
@@ -159,21 +216,18 @@ fn interpolate_custom_property(
       CustomPropertyTypedValue::Angle(lerp(*a, *b, t))
     }
     (CustomPropertyTypedValue::Color(a), CustomPropertyTypedValue::Color(b)) => {
-      let from_rgba = a.to_rgba(base_style.color);
-      let to_rgba = b.to_rgba(base_style.color);
+      let from_rgba = a.to_rgba(from_style.color);
+      let to_rgba = b.to_rgba(to_style.color);
       let rgba = lerp_color(from_rgba, to_rgba, t);
       CustomPropertyTypedValue::Color(crate::style::color::Color::Rgba(rgba))
     }
     (CustomPropertyTypedValue::Length(a), CustomPropertyTypedValue::Length(b)) => {
-      let invalid_percent = |len: &Length| {
-        len.unit == LengthUnit::Percent || len.calc.is_some_and(|calc| calc.has_percentage())
-      };
-      if invalid_percent(a) || invalid_percent(b) {
-        return None;
-      }
-      let a_px = resolve_length_px(a, None, base_style, ctx);
-      let b_px = resolve_length_px(b, None, base_style, ctx);
-      CustomPropertyTypedValue::Length(Length::px(lerp(a_px, b_px, t)))
+      let (a_pct, a_px) = length_components(a, from_style, ctx);
+      let (b_pct, b_px) = length_components(b, to_style, ctx);
+      let pct = lerp(a_pct, b_pct, t);
+      let px = lerp(a_px, b_px, t);
+      let len = build_length_from_components(px, pct)?;
+      CustomPropertyTypedValue::Length(len)
     }
     _ => return None,
   };
@@ -3364,7 +3418,9 @@ fn sample_keyframes_with_default_timing(
       let to = to_style.custom_properties.get(prop);
 
       let interpolated = match (from, to) {
-        (Some(from), Some(to)) => interpolate_custom_property(from, to, eased_t, base_style, &ctx),
+        (Some(from), Some(to)) => {
+          interpolate_custom_property(from, to, eased_t, from_style, to_style, &ctx)
+        }
         _ => None,
       };
       let sampled = interpolated.or_else(|| {

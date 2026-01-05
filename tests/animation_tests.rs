@@ -1208,6 +1208,61 @@ fn custom_property_animation_recompute_preserves_parent_style_through_line_fragm
 }
 
 #[test]
+fn scroll_self_custom_property_length_percentage_interpolates_calc_values() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(100, 60);
+
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(0, 0, 0); }
+      @property --tx {
+        syntax: "<length-percentage>";
+        inherits: false;
+        initial-value: 10px;
+      }
+      #box {
+        width: 40px;
+        height: 40px;
+        overflow-y: auto;
+        background: rgb(255, 0, 0);
+        transform: translateX(var(--tx));
+        animation-timeline: scroll(self);
+        animation-name: move;
+        animation-duration: 1s;
+        animation-timing-function: linear;
+      }
+      @keyframes move { from { --tx: 10px; } to { --tx: 100%; } }
+    </style>
+    <div id="box"><div style="height: 80px;"></div></div>
+  "#;
+
+  let prepared = renderer.prepare_html(html, options).expect("prepare");
+  let box_id = find_box_id_by_dom_id(&prepared.box_tree().root, "box").expect("box box_id");
+  let box_frag = find_fragment_by_box_id(prepared.fragment_tree(), box_id).expect("box fragment");
+  let max_scroll = (box_frag.scroll_overflow.height() - box_frag.bounds.height()).max(0.0);
+  assert!(max_scroll > 0.0, "expected scroll range for scroll(self) custom property test");
+
+  // Scroll slightly past 50% so a discrete fallback would snap to the 100% keyframe. With proper
+  // `<length-percentage>` interpolation we expect `--tx` ~= calc(60% + 4px), so the 40px-wide box
+  // should start around x=28 and end around x=68.
+  let scroll_y = max_scroll * 0.6;
+  let scroll_state = ScrollState::from_parts(
+    Point::ZERO,
+    HashMap::from([(box_id, Point::new(0.0, scroll_y))]),
+  );
+  let pixmap = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_scroll_state(scroll_state)
+        .with_background(Rgba::new(0, 0, 0, 1.0)),
+    )
+    .expect("paint");
+
+  assert_eq!(pixel(&pixmap, 30, 10), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 70, 10), (0, 0, 0, 255));
+}
+
+#[test]
 fn view_timeline_animation_range_entry_length_offsets_move_pixels() {
   let mut renderer = FastRender::new().expect("renderer");
   let html = r#"
