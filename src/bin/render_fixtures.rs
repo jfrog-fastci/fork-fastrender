@@ -8,6 +8,7 @@ mod common;
 
 use clap::Parser;
 use common::args::{default_jobs, parse_shard, parse_viewport, MediaTypeArg};
+use common::prng;
 use common::render_pipeline::{
   compute_soft_timeout_ms, format_error_with_chain, CLI_RENDER_STACK_SIZE,
 };
@@ -16,11 +17,13 @@ use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::resource::ResourcePolicy;
 use fastrender::text::font_db::FontConfig;
 use fastrender::{snapshot_pipeline, PipelineSnapshot, RenderArtifacts};
+use rustc_hash::FxHasher;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
+use std::hash::Hasher;
 use std::io;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
@@ -28,6 +31,7 @@ use std::sync::mpsc::{channel, RecvTimeoutError};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
+use tiny_skia::{IntSize, Pixmap};
 use url::Url;
 use walkdir::WalkDir;
 
@@ -89,6 +93,32 @@ struct Cli {
   /// Additional deterministic font directories to load (can be repeated).
   #[arg(long, value_name = "DIR")]
   font_dir: Vec<PathBuf>,
+
+  /// Render each selected fixture N times to detect nondeterminism.
+  ///
+  /// When `N > 1`, additional repeats run through the same thread pool to surface scheduling-
+  /// dependent paint nondeterminism.
+  #[arg(long, default_value_t = 1)]
+  repeat: usize,
+
+  /// Deterministically shuffle fixture order between repeats (requires `--repeat > 1`).
+  #[arg(long)]
+  shuffle: bool,
+
+  /// Seed used for deterministic shuffling.
+  ///
+  /// Has no effect unless `--shuffle` is enabled.
+  #[arg(long, default_value_t = 0)]
+  seed: u64,
+
+  /// Exit non-zero if any fixture produces different pixels across repeats.
+  #[arg(long)]
+  fail_on_nondeterminism: bool,
+
+  /// When nondeterminism is detected, save each distinct pixel output as a PNG under:
+  /// `<out-dir>/<fixture>/nondeterminism/<k>.png`, plus a small report.
+  #[arg(long)]
+  save_variants: bool,
 }
 
 #[derive(Clone)]
@@ -109,6 +139,7 @@ struct RenderShared {
   out_dir: PathBuf,
 }
 
+#[derive(Clone)]
 enum Status {
   Ok,
   Crash(String),
@@ -116,6 +147,7 @@ enum Status {
   Timeout(String),
 }
 
+#[derive(Clone)]
 struct FixtureResult {
   stem: String,
   status: Status,
@@ -124,9 +156,52 @@ struct FixtureResult {
 }
 
 struct RenderOutcome {
-  png: Vec<u8>,
+  png: Option<Vec<u8>>,
+  pixels: Option<PixmapBytes>,
   diagnostics: fastrender::RenderDiagnostics,
   artifacts: RenderArtifacts,
+}
+
+#[derive(Clone)]
+struct PixmapBytes {
+  width: u32,
+  height: u32,
+  data: Vec<u8>,
+}
+
+struct FixtureRunResult {
+  result: FixtureResult,
+  pixels: Option<PixmapBytes>,
+}
+
+#[derive(Clone, Copy)]
+struct RenderRunOptions {
+  write_outputs: bool,
+  write_snapshot: bool,
+  capture_pixels: bool,
+  quiet: bool,
+}
+
+#[derive(Clone)]
+struct VariantRecord {
+  hash: u64,
+  width: u32,
+  height: u32,
+  count: usize,
+  diff_pixels_vs_baseline: Option<u64>,
+  first_mismatch_vs_baseline: Option<(u32, u32)>,
+  data: Vec<u8>,
+}
+
+struct FixtureDeterminism {
+  stem: String,
+  variants: Vec<VariantRecord>,
+}
+
+struct RepeatFailure {
+  stem: String,
+  repeat_idx: usize,
+  status: Status,
 }
 
 #[derive(Debug, Serialize)]
@@ -204,6 +279,12 @@ fn run(cli: Cli) -> io::Result<()> {
     return Err(io::Error::new(
       io::ErrorKind::InvalidInput,
       "timeout must be > 0",
+    ));
+  }
+  if cli.repeat == 0 {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidInput,
+      "repeat must be >= 1",
     ));
   }
   if !cli.dpr.is_finite() || cli.dpr <= 0.0 {
@@ -331,28 +412,141 @@ fn run(cli: Cli) -> io::Result<()> {
     cli.fit_canvas_to_content,
     cli.timeout
   );
+  if cli.repeat > 1 {
+    println!(
+      "Determinism: repeat={} shuffle={}{}",
+      cli.repeat,
+      cli.shuffle,
+      if cli.shuffle {
+        format!(" seed={}", cli.seed)
+      } else {
+        String::new()
+      }
+    );
+  }
   println!();
 
   let start = Instant::now();
-  let results: Mutex<Vec<FixtureResult>> = Mutex::new(Vec::new());
   let thread_pool = rayon::ThreadPoolBuilder::new()
     .num_threads(cli.jobs)
     .build()
     .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
 
-  thread_pool.scope(|s| {
-    for entry in fixtures {
-      let shared = shared.clone();
-      let results = &results;
-      s.spawn(move |_| {
-        let result = render_fixture(&shared, &entry);
-        results.lock().unwrap().push(result);
-      });
-    }
-  });
+  let mut results: Vec<FixtureResult> = Vec::new();
+  let mut determinism: HashMap<String, FixtureDeterminism> = HashMap::new();
+  let mut repeat_failures: Vec<RepeatFailure> = Vec::new();
 
-  let mut results = results.into_inner().unwrap();
-  results.sort_by(|a, b| a.stem.cmp(&b.stem));
+  if cli.repeat == 1 {
+    let results_mutex: Mutex<Vec<FixtureResult>> = Mutex::new(Vec::new());
+    thread_pool.scope(|s| {
+      for entry in fixtures {
+        let shared = shared.clone();
+        let results = &results_mutex;
+        s.spawn(move |_| {
+          let run = render_fixture(
+            &shared,
+            &entry,
+            RenderRunOptions {
+              write_outputs: true,
+              write_snapshot: shared.write_snapshot,
+              capture_pixels: false,
+              quiet: false,
+            },
+          );
+          results.lock().unwrap().push(run.result);
+        });
+      }
+    });
+    results = results_mutex.into_inner().unwrap();
+    results.sort_by(|a, b| a.stem.cmp(&b.stem));
+  } else {
+    // Render repeat 0 with full outputs (PNG/log/snapshot), then run additional repeats through the
+    // same rayon pool to surface any scheduling-dependent nondeterminism.
+    for repeat_idx in 0..cli.repeat {
+      let mut ordered = fixtures.clone();
+      if cli.shuffle && repeat_idx > 0 {
+        let seed = cli
+          .seed
+          .wrapping_add((repeat_idx as u64).wrapping_mul(0x9E3779B97F4A7C15));
+        prng::shuffle(&mut ordered, seed);
+      }
+
+      if repeat_idx > 0 {
+        println!("--- Repeat {}/{} ---", repeat_idx + 1, cli.repeat);
+      }
+
+      let write_outputs = repeat_idx == 0;
+      let write_snapshot = write_outputs && shared.write_snapshot;
+      let run_results: Mutex<Vec<FixtureRunResult>> = Mutex::new(Vec::new());
+
+      thread_pool.scope(|s| {
+        for entry in ordered {
+          let shared = shared.clone();
+          let run_results = &run_results;
+          s.spawn(move |_| {
+            let run = render_fixture(
+              &shared,
+              &entry,
+              RenderRunOptions {
+                write_outputs,
+                write_snapshot,
+                capture_pixels: true,
+                quiet: !write_outputs,
+              },
+            );
+            run_results.lock().unwrap().push(run);
+          });
+        }
+      });
+
+      let mut run_results = run_results.into_inner().unwrap();
+      run_results.sort_by(|a, b| a.result.stem.cmp(&b.result.stem));
+
+      if repeat_idx == 0 {
+        results = run_results.iter().map(|r| r.result.clone()).collect();
+        results.sort_by(|a, b| a.stem.cmp(&b.stem));
+        for run in run_results {
+          if let (Status::Ok, Some(pixels)) = (&run.result.status, run.pixels) {
+            let hash = hash64(&pixels.data);
+            determinism.insert(
+              run.result.stem.clone(),
+              FixtureDeterminism {
+                stem: run.result.stem.clone(),
+                variants: vec![VariantRecord {
+                  hash,
+                  width: pixels.width,
+                  height: pixels.height,
+                  count: 1,
+                  diff_pixels_vs_baseline: Some(0),
+                  first_mismatch_vs_baseline: None,
+                  data: pixels.data,
+                }],
+              },
+            );
+          }
+        }
+      } else {
+        for run in run_results {
+          if !matches!(run.result.status, Status::Ok) {
+            repeat_failures.push(RepeatFailure {
+              stem: run.result.stem.clone(),
+              repeat_idx,
+              status: run.result.status,
+            });
+            continue;
+          }
+
+          let Some(pixels) = run.pixels else {
+            continue;
+          };
+          let Some(state) = determinism.get_mut(&run.result.stem) else {
+            continue;
+          };
+          record_variant(state, pixels);
+        }
+      }
+    }
+  }
 
   let total_elapsed = start.elapsed();
 
@@ -372,6 +566,18 @@ fn run(cli: Cli) -> io::Result<()> {
     .iter()
     .filter(|r| matches!(r.status, Status::Error(_)))
     .count();
+
+  let mut nondeterministic_stems: Vec<String> = Vec::new();
+  if cli.repeat > 1 {
+    nondeterministic_stems = determinism
+      .values()
+      .filter(|state| state.variants.len() > 1)
+      .map(|state| state.stem.clone())
+      .collect();
+    nondeterministic_stems.sort();
+  }
+  let nondeterministic_count = nondeterministic_stems.len();
+  let repeat_failure_count = repeat_failures.len();
 
   let summary_path = cli.out_dir.join("_summary.log");
   let mut summary = String::new();
@@ -411,6 +617,85 @@ fn run(cli: Cli) -> io::Result<()> {
   }
   let _ = writeln!(summary, "\n{}", "-".repeat(75));
   let _ = writeln!(summary, "Total: {:.1}s", total_elapsed.as_secs_f64());
+
+  if cli.repeat > 1 {
+    let _ = writeln!(summary, "\n=== Determinism Check ===");
+    let _ = writeln!(
+      summary,
+      "repeat={} shuffle={}{}",
+      cli.repeat,
+      cli.shuffle,
+      if cli.shuffle {
+        format!(" seed={}", cli.seed)
+      } else {
+        String::new()
+      }
+    );
+
+    if repeat_failure_count > 0 {
+      let _ = writeln!(summary, "Repeat failures: {repeat_failure_count}");
+      let _ = writeln!(summary, "{:<40} {:>8} STATUS", "FIXTURE", "REPEAT");
+      let _ = writeln!(summary, "{}", "-".repeat(65));
+      for failure in &repeat_failures {
+        let status_str = match &failure.status {
+          Status::Ok => "OK".to_string(),
+          Status::Crash(msg) => format!("CRASH: {}", msg.chars().take(30).collect::<String>()),
+          Status::Error(msg) => format!("ERROR: {}", msg.chars().take(30).collect::<String>()),
+          Status::Timeout(msg) => format!("TIMEOUT: {}", msg.chars().take(30).collect::<String>()),
+        };
+        let _ = writeln!(
+          summary,
+          "{:<40} {:>8} {}",
+          failure.stem, failure.repeat_idx, status_str
+        );
+      }
+    } else {
+      let _ = writeln!(summary, "Repeat failures: 0");
+    }
+
+    if nondeterministic_count > 0 {
+      let _ = writeln!(
+        summary,
+        "Nondeterministic fixtures: {nondeterministic_count}"
+      );
+      let _ = writeln!(
+        summary,
+        "{:<40} {:>10} {:>12}",
+        "FIXTURE", "VARIANTS", "MAX_DIFF_PX"
+      );
+      let _ = writeln!(summary, "{}", "-".repeat(70));
+      for stem in &nondeterministic_stems {
+        if let Some(state) = determinism.get(stem) {
+          let max_diff = if state
+            .variants
+            .iter()
+            .skip(1)
+            .any(|v| v.diff_pixels_vs_baseline.is_none())
+          {
+            "-".to_string()
+          } else {
+            state
+              .variants
+              .iter()
+              .filter_map(|v| v.diff_pixels_vs_baseline)
+              .max()
+              .unwrap_or(0)
+              .to_string()
+          };
+          let _ = writeln!(
+            summary,
+            "{:<40} {:>10} {:>12}",
+            stem,
+            state.variants.len(),
+            max_diff
+          );
+        }
+      }
+    } else {
+      let _ = writeln!(summary, "Nondeterministic fixtures: 0");
+    }
+  }
+
   let _ = fs::write(&summary_path, &summary);
 
   println!();
@@ -422,6 +707,12 @@ fn run(cli: Cli) -> io::Result<()> {
     crash,
     error
   );
+  if cli.repeat > 1 {
+    println!(
+      "Determinism: {} repeat failures, {} nondeterministic fixtures",
+      repeat_failure_count, nondeterministic_count
+    );
+  }
   println!("Summary: {}", summary_path.display());
   println!("Renders:  {}/<fixture>.png", cli.out_dir.display());
   println!("Logs:     {}/<fixture>.log", cli.out_dir.display());
@@ -433,7 +724,53 @@ fn run(cli: Cli) -> io::Result<()> {
     );
   }
 
-  if timeout > 0 || crash > 0 || error > 0 {
+  if cli.repeat > 1 && nondeterministic_count > 0 {
+    println!("\n=== Nondeterminism Summary ===");
+    println!("{:<40} {:>10} {:>12}", "FIXTURE", "VARIANTS", "MAX_DIFF_PX");
+    println!("{}", "-".repeat(70));
+    for stem in &nondeterministic_stems {
+      if let Some(state) = determinism.get(stem) {
+        let max_diff = if state
+          .variants
+          .iter()
+          .skip(1)
+          .any(|v| v.diff_pixels_vs_baseline.is_none())
+        {
+          "-".to_string()
+        } else {
+          state
+            .variants
+            .iter()
+            .filter_map(|v| v.diff_pixels_vs_baseline)
+            .max()
+            .unwrap_or(0)
+            .to_string()
+        };
+        println!("{:<40} {:>10} {:>12}", stem, state.variants.len(), max_diff);
+      }
+    }
+  }
+
+  let mut wrote_variants_ok = true;
+  if cli.repeat > 1 && cli.save_variants && nondeterministic_count > 0 {
+    for stem in &nondeterministic_stems {
+      let Some(state) = determinism.get_mut(stem) else {
+        continue;
+      };
+      if let Err(err) = write_nondeterminism_outputs(&cli.out_dir, stem, state, &cli) {
+        eprintln!("Failed to save variants for {stem}: {err}");
+        wrote_variants_ok = false;
+      }
+    }
+  }
+
+  if timeout > 0
+    || crash > 0
+    || error > 0
+    || repeat_failure_count > 0
+    || !wrote_variants_ok
+    || (cli.fail_on_nondeterminism && nondeterministic_count > 0)
+  {
     std::process::exit(1);
   }
 
@@ -498,124 +835,376 @@ fn status_error(status: &Status) -> Option<&str> {
   }
 }
 
-fn render_fixture(shared: &RenderShared, entry: &FixtureEntry) -> FixtureResult {
+fn hash64(bytes: &[u8]) -> u64 {
+  let mut hasher = FxHasher::default();
+  hasher.write(bytes);
+  hasher.finish()
+}
+
+fn diff_pixels_and_first_mismatch(
+  baseline: &[u8],
+  other: &[u8],
+  width: u32,
+) -> (u64, Option<(u32, u32)>) {
+  if baseline.len() != other.len() || width == 0 {
+    return (0, None);
+  }
+
+  let mut diff_pixels = 0u64;
+  let mut first_mismatch = None;
+  for (idx, (a, b)) in baseline
+    .chunks_exact(4)
+    .zip(other.chunks_exact(4))
+    .enumerate()
+  {
+    if a != b {
+      diff_pixels += 1;
+      if first_mismatch.is_none() {
+        let pixel_idx = idx as u32;
+        first_mismatch = Some((pixel_idx % width, pixel_idx / width));
+      }
+    }
+  }
+  (diff_pixels, first_mismatch)
+}
+
+fn record_variant(state: &mut FixtureDeterminism, pixels: PixmapBytes) {
+  let hash = hash64(&pixels.data);
+
+  for variant in &mut state.variants {
+    if variant.hash == hash
+      && variant.width == pixels.width
+      && variant.height == pixels.height
+      && variant.data == pixels.data
+    {
+      variant.count += 1;
+      return;
+    }
+  }
+
+  let baseline = state
+    .variants
+    .first()
+    .expect("fixture determinism baseline missing");
+  let (diff_pixels, first_mismatch) = if baseline.width == pixels.width
+    && baseline.height == pixels.height
+    && baseline.data.len() == pixels.data.len()
+  {
+    let (diff_pixels, first_mismatch) =
+      diff_pixels_and_first_mismatch(&baseline.data, &pixels.data, pixels.width);
+    (Some(diff_pixels), first_mismatch)
+  } else {
+    (None, None)
+  };
+
+  state.variants.push(VariantRecord {
+    hash,
+    width: pixels.width,
+    height: pixels.height,
+    count: 1,
+    diff_pixels_vs_baseline: diff_pixels,
+    first_mismatch_vs_baseline: first_mismatch,
+    data: pixels.data,
+  });
+}
+
+fn write_nondeterminism_outputs(
+  out_dir: &Path,
+  stem: &str,
+  state: &mut FixtureDeterminism,
+  cli: &Cli,
+) -> io::Result<()> {
+  let fixture_dir = snapshot_dir_for(out_dir, stem);
+  let nondet_dir = fixture_dir.join("nondeterminism");
+  fs::create_dir_all(&nondet_dir)?;
+
+  // Variant 0 is the baseline output already written by the main render pass.
+  let baseline_png = output_path_for(out_dir, stem);
+  if !baseline_png.is_file() {
+    return Err(io::Error::new(
+      io::ErrorKind::NotFound,
+      format!("baseline PNG not found at {}", baseline_png.display()),
+    ));
+  }
+  fs::copy(&baseline_png, nondet_dir.join("0.png"))?;
+
+  let mut report = String::new();
+  let _ = writeln!(report, "fixture: {stem}");
+  let _ = writeln!(report, "repeat: {}", cli.repeat);
+  let _ = writeln!(report, "jobs: {}", cli.jobs);
+  let _ = writeln!(report, "shuffle: {}", cli.shuffle);
+  if cli.shuffle {
+    let _ = writeln!(report, "seed: {}", cli.seed);
+  }
+  let _ = writeln!(report, "variants: {}", state.variants.len());
+  let _ = writeln!(report);
+
+  let baseline = state
+    .variants
+    .first()
+    .expect("fixture determinism baseline missing");
+
+  for (idx, variant) in state.variants.iter().enumerate() {
+    let _ = writeln!(
+      report,
+      "variant {idx}: hash=0x{hash:016x} count={count} dims={w}x{h}",
+      hash = variant.hash,
+      count = variant.count,
+      w = variant.width,
+      h = variant.height
+    );
+    if idx == 0 {
+      continue;
+    }
+    if let Some(diff) = variant.diff_pixels_vs_baseline {
+      let _ = writeln!(report, "  diff_pixels_vs_baseline={diff}");
+    }
+    if let Some((x, y)) = variant.first_mismatch_vs_baseline {
+      let _ = writeln!(report, "  first_mismatch_vs_baseline=({x}, {y})");
+      let w = baseline.width;
+      if w > 0 && baseline.width == variant.width && baseline.height == variant.height {
+        let i = ((y * w + x) as usize) * 4;
+        if baseline.data.len() >= i + 4 && variant.data.len() >= i + 4 {
+          let b = &baseline.data[i..i + 4];
+          let v = &variant.data[i..i + 4];
+          let _ = writeln!(
+            report,
+            "  baseline_rgba=[{}, {}, {}, {}] variant_rgba=[{}, {}, {}, {}]",
+            b[0], b[1], b[2], b[3], v[0], v[1], v[2], v[3]
+          );
+        }
+      }
+    }
+  }
+
+  let report_path = nondet_dir.join("report.txt");
+  fs::write(&report_path, report)?;
+
+  for idx in 1..state.variants.len() {
+    let variant = &mut state.variants[idx];
+    if variant.data.is_empty() {
+      continue;
+    }
+    let size = IntSize::from_wh(variant.width, variant.height).ok_or_else(|| {
+      io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!(
+          "invalid pixmap size {}x{} for {stem} variant {idx}",
+          variant.width, variant.height
+        ),
+      )
+    })?;
+    let bytes = std::mem::take(&mut variant.data);
+    let pixmap = Pixmap::from_vec(bytes, size).ok_or_else(|| {
+      io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("invalid pixmap bytes for {stem} variant {idx}"),
+      )
+    })?;
+    let png = encode_image(&pixmap, OutputFormat::Png)
+      .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    fs::write(nondet_dir.join(format!("{idx}.png")), png)?;
+  }
+
+  Ok(())
+}
+
+fn render_fixture(
+  shared: &RenderShared,
+  entry: &FixtureEntry,
+  opts: RenderRunOptions,
+) -> FixtureRunResult {
   let stem = entry.stem.clone();
   let log_path = log_path_for(&shared.out_dir, &stem);
   let output_path = output_path_for(&shared.out_dir, &stem);
   let metadata_path = metadata_path_for(&shared.out_dir, &stem);
   let snapshot_dir = snapshot_dir_for(&shared.out_dir, &stem);
 
-  let mut log = format!("=== {stem} ===\n");
-  let _ = writeln!(log, "Entrypoint: {}", entry.index_path.display());
-  let _ = writeln!(
-    log,
-    "Viewport: {}x{}",
-    shared.base_options.viewport.unwrap().0,
-    shared.base_options.viewport.unwrap().1
-  );
-  let _ = writeln!(
-    log,
-    "DPR: {}",
-    shared.base_options.device_pixel_ratio.unwrap_or(1.0)
-  );
+  let mut log = String::new();
+  if opts.write_outputs || opts.write_snapshot {
+    log = format!(
+      "=== {stem} ===
+"
+    );
+    let _ = writeln!(log, "Entrypoint: {}", entry.index_path.display());
+    let _ = writeln!(
+      log,
+      "Viewport: {}x{}",
+      shared.base_options.viewport.unwrap().0,
+      shared.base_options.viewport.unwrap().1
+    );
+    let _ = writeln!(
+      log,
+      "DPR: {}",
+      shared.base_options.device_pixel_ratio.unwrap_or(1.0)
+    );
+  }
 
   let base_url = match canonical_file_url(&entry.index_path) {
     Ok(url) => url,
     Err(err) => {
-      let _ = writeln!(log, "Base URL error: {err}");
       let status = Status::Error(format!("base_url: {err}"));
-      let _ = write_render_metadata_file(
-        &metadata_path,
-        &stem,
-        shared,
-        &status,
-        0,
-        None,
-        None,
-        None,
-        &mut log,
-      );
-      let _ = fs::write(&log_path, log);
-      return FixtureResult {
-        stem,
-        status,
-        time_ms: 0,
-        size: None,
+      if opts.write_outputs {
+        let _ = writeln!(log, "Base URL error: {err}");
+        let _ = write_render_metadata_file(
+          &metadata_path,
+          &stem,
+          shared,
+          &status,
+          0,
+          None,
+          None,
+          None,
+          &mut log,
+        );
+        let _ = fs::write(&log_path, log);
+      }
+      return FixtureRunResult {
+        result: FixtureResult {
+          stem,
+          status,
+          time_ms: 0,
+          size: None,
+        },
+        pixels: None,
       };
     }
   };
-  let _ = writeln!(log, "Base URL: {base_url}");
+  if !log.is_empty() {
+    let _ = writeln!(log, "Base URL: {base_url}");
+  }
 
   let html_bytes = match fs::read(&entry.index_path) {
     Ok(html) => html,
     Err(err) => {
-      let _ = writeln!(log, "Read error: {err}");
       let status = Status::Error(format!("read: {err}"));
-      let _ = write_render_metadata_file(
-        &metadata_path,
-        &stem,
-        shared,
-        &status,
-        0,
-        None,
-        None,
-        None,
-        &mut log,
-      );
-      let _ = fs::write(&log_path, log);
-      return FixtureResult {
-        stem,
-        status,
-        time_ms: 0,
-        size: None,
+      if opts.write_outputs {
+        let _ = writeln!(log, "Read error: {err}");
+        let _ = write_render_metadata_file(
+          &metadata_path,
+          &stem,
+          shared,
+          &status,
+          0,
+          None,
+          None,
+          None,
+          &mut log,
+        );
+        let _ = fs::write(&log_path, log);
+      }
+      return FixtureRunResult {
+        result: FixtureResult {
+          stem,
+          status,
+          time_ms: 0,
+          size: None,
+        },
+        pixels: None,
       };
     }
   };
 
-  let input_sha256 = sha256_hex(&html_bytes);
-  let fixture_dir_sha256 = match entry.index_path.parent() {
-    Some(dir) => match hash_fixture_dir_sha256(dir) {
-      Ok(hash) => Some(hash),
-      Err(err) => {
-        let _ = writeln!(log, "Fixture dir hash error: {err}");
+  let mut input_sha256: Option<String> = None;
+  let mut fixture_dir_sha256: Option<String> = None;
+
+  if opts.write_outputs {
+    input_sha256 = Some(sha256_hex(&html_bytes));
+
+    fixture_dir_sha256 = match entry.index_path.parent() {
+      Some(dir) => match hash_fixture_dir_sha256(dir) {
+        Ok(hash) => Some(hash),
+        Err(err) => {
+          let status = Status::Error(format!("fixture_dir_hash: {err}"));
+          let _ = writeln!(log, "Fixture dir hash error: {err}");
+          let _ = write_render_metadata_file(
+            &metadata_path,
+            &stem,
+            shared,
+            &status,
+            0,
+            None,
+            input_sha256.as_deref(),
+            None,
+            &mut log,
+          );
+          let _ = fs::write(&log_path, log);
+          return FixtureRunResult {
+            result: FixtureResult {
+              stem,
+              status,
+              time_ms: 0,
+              size: None,
+            },
+            pixels: None,
+          };
+        }
+      },
+      None => {
+        let status = Status::Error("fixture_dir_hash: missing fixture dir parent".to_string());
+        let _ = writeln!(
+          log,
+          "Fixture dir hash error: missing fixture directory parent"
+        );
+        let _ = write_render_metadata_file(
+          &metadata_path,
+          &stem,
+          shared,
+          &status,
+          0,
+          None,
+          input_sha256.as_deref(),
+          None,
+          &mut log,
+        );
         let _ = fs::write(&log_path, log);
-        return FixtureResult {
-          stem,
-          status: Status::Error(format!("fixture_dir_hash: {err}")),
-          time_ms: 0,
-          size: None,
+        return FixtureRunResult {
+          result: FixtureResult {
+            stem,
+            status,
+            time_ms: 0,
+            size: None,
+          },
+          pixels: None,
         };
       }
-    },
-    None => {
-      let _ = writeln!(
-        log,
-        "Fixture dir hash error: missing fixture directory parent"
-      );
-      let _ = fs::write(&log_path, log);
-      return FixtureResult {
-        stem,
-        status: Status::Error("fixture_dir_hash: missing fixture dir parent".to_string()),
-        time_ms: 0,
-        size: None,
-      };
+    };
+
+    if let Some(hash) = input_sha256.as_deref() {
+      let _ = writeln!(log, "Input SHA-256: {hash}");
     }
-  };
-  let _ = writeln!(log, "Input SHA-256: {input_sha256}");
-  if let Some(hash) = fixture_dir_sha256.as_deref() {
-    let _ = writeln!(log, "Fixture dir SHA-256: {hash}");
+    if let Some(hash) = fixture_dir_sha256.as_deref() {
+      let _ = writeln!(log, "Fixture dir SHA-256: {hash}");
+    }
   }
 
   let html = match String::from_utf8(html_bytes) {
     Ok(html) => html,
     Err(err) => {
-      let _ = writeln!(log, "UTF-8 decode error: {err}");
-      let _ = fs::write(&log_path, log);
-      return FixtureResult {
-        stem,
-        status: Status::Error(format!("decode_utf8: {err}")),
-        time_ms: 0,
-        size: None,
+      let status = Status::Error(format!("decode_utf8: {err}"));
+      if opts.write_outputs {
+        let _ = writeln!(log, "UTF-8 decode error: {err}");
+        let _ = write_render_metadata_file(
+          &metadata_path,
+          &stem,
+          shared,
+          &status,
+          0,
+          None,
+          input_sha256.as_deref(),
+          fixture_dir_sha256.as_deref(),
+          &mut log,
+        );
+        let _ = fs::write(&log_path, log);
+      }
+      return FixtureRunResult {
+        result: FixtureResult {
+          stem,
+          status,
+          time_ms: 0,
+          size: None,
+        },
+        pixels: None,
       };
     }
   };
@@ -624,19 +1213,38 @@ fn render_fixture(shared: &RenderShared, entry: &FixtureEntry) -> FixtureResult 
 
   let render_pool = shared.render_pool.clone();
   let options = shared.base_options.clone();
-  let artifact_request = if shared.write_snapshot {
+  let artifact_request = if opts.write_snapshot {
     RenderArtifactRequest::summary()
   } else {
     RenderArtifactRequest::none()
   };
+  let capture_pixels = opts.capture_pixels;
+  let encode_png = opts.write_outputs;
 
   let render_work = move || -> Result<RenderOutcome, fastrender::Error> {
     let report = render_pool.with_renderer(|renderer| {
       renderer.render_html_with_stylesheets_report(&html, &base_url, options, artifact_request)
     })?;
-    let png = encode_image(&report.pixmap, OutputFormat::Png)?;
+
+    let pixels = if capture_pixels {
+      Some(PixmapBytes {
+        width: report.pixmap.width(),
+        height: report.pixmap.height(),
+        data: report.pixmap.data().to_vec(),
+      })
+    } else {
+      None
+    };
+
+    let png = if encode_png {
+      Some(encode_image(&report.pixmap, OutputFormat::Png)?)
+    } else {
+      None
+    };
+
     Ok(RenderOutcome {
       png,
+      pixels,
       diagnostics: report.diagnostics,
       artifacts: report.artifacts,
     })
@@ -670,67 +1278,110 @@ fn render_fixture(shared: &RenderShared, entry: &FixtureEntry) -> FixtureResult 
 
   let mut captured_artifacts: Option<RenderArtifacts> = None;
   let mut diagnostics = fastrender::RenderDiagnostics::default();
+  let mut pixels: Option<PixmapBytes> = None;
   let mut blocked_urls: Option<Vec<String>> = None;
 
   let (mut status, size) = match result {
     Ok(outcome) => {
       diagnostics = outcome.diagnostics;
-      common::render_pipeline::log_diagnostics(&diagnostics, |line| {
-        let _ = writeln!(log, "{line}");
-      });
+      pixels = outcome.pixels;
 
       let mut status = Status::Ok;
 
       let urls = blocked_network_urls(&diagnostics);
       if !urls.is_empty() {
-        blocked_urls = Some(urls.clone());
+        if opts.write_outputs {
+          blocked_urls = Some(urls.clone());
+        }
         status = Status::Error(format!("blocked http/https resources: {}", urls.join(", ")));
       }
 
-      let size = outcome.png.len();
-      let _ = writeln!(log, "PNG size: {size} bytes");
-      let _ = writeln!(log, "Time: {time_ms}ms");
-      match &status {
-        Status::Ok => {
-          log.push_str("Status: OK\n");
-        }
-        Status::Error(msg) => {
-          log.push_str("Status: ERROR\n");
-          let _ = writeln!(log, "Error: {msg}");
-        }
-        Status::Crash(_) | Status::Timeout(_) => {}
+      if opts.write_outputs || opts.write_snapshot {
+        common::render_pipeline::log_diagnostics(&diagnostics, |line| {
+          let _ = writeln!(log, "{line}");
+        });
+        let _ = writeln!(log, "Time: {time_ms}ms");
       }
 
-      if let Err(err) = fs::write(&output_path, &outcome.png) {
-        let _ = writeln!(log, "Write error: {err}");
-        (Status::Error(format!("write: {err}")), None)
+      if opts.write_outputs {
+        let Some(png) = outcome.png else {
+          if !log.is_empty() {
+            let _ = writeln!(log, "PNG encode missing despite write_outputs=true");
+          }
+          return FixtureRunResult {
+            result: FixtureResult {
+              stem,
+              status: Status::Error("internal: missing PNG".to_string()),
+              time_ms,
+              size: None,
+            },
+            pixels: None,
+          };
+        };
+
+        let size = png.len();
+        if !log.is_empty() {
+          let _ = writeln!(log, "PNG size: {size} bytes");
+        }
+
+        match &status {
+          Status::Ok => {
+            if !log.is_empty() {
+              log.push_str(
+                "Status: OK
+",
+              );
+            }
+          }
+          Status::Error(msg) => {
+            if !log.is_empty() {
+              log.push_str(
+                "Status: ERROR
+",
+              );
+              let _ = writeln!(log, "Error: {msg}");
+            }
+          }
+          Status::Crash(_) | Status::Timeout(_) => {}
+        }
+
+        if let Err(err) = fs::write(&output_path, &png) {
+          if !log.is_empty() {
+            let _ = writeln!(log, "Write error: {err}");
+          }
+          (Status::Error(format!("write: {err}")), None)
+        } else {
+          captured_artifacts = Some(outcome.artifacts);
+          (status, Some(size))
+        }
       } else {
-        captured_artifacts = Some(outcome.artifacts);
-        (status, Some(size))
+        (status, None)
       }
     }
     Err(status) => {
-      let _ = writeln!(log, "Time: {time_ms}ms");
-      match &status {
-        Status::Error(msg) => {
-          let _ = writeln!(log, "Status: ERROR");
-          let _ = writeln!(log, "Error: {msg}");
+      if opts.write_outputs || opts.write_snapshot {
+        let _ = writeln!(log, "Time: {time_ms}ms");
+        match &status {
+          Status::Error(msg) => {
+            let _ = writeln!(log, "Status: ERROR");
+            let _ = writeln!(log, "Error: {msg}");
+          }
+          Status::Crash(msg) => {
+            let _ = writeln!(log, "Status: CRASH");
+            let _ = writeln!(log, "Panic: {msg}");
+          }
+          Status::Timeout(msg) => {
+            let _ = writeln!(log, "Status: TIMEOUT");
+            let _ = writeln!(log, "Timeout: {msg}");
+          }
+          Status::Ok => {}
         }
-        Status::Crash(msg) => {
-          let _ = writeln!(log, "Status: CRASH");
-          let _ = writeln!(log, "Panic: {msg}");
-        }
-        Status::Timeout(msg) => {
-          let _ = writeln!(log, "Status: TIMEOUT");
-          let _ = writeln!(log, "Timeout: {msg}");
-        }
-        Status::Ok => {}
       }
       (status, None)
     }
   };
 
-  if shared.write_snapshot {
+  if opts.write_snapshot {
     if let Some(artifacts) = captured_artifacts.as_ref() {
       if let Err(err) = write_snapshot_outputs(&snapshot_dir, artifacts, &mut log) {
         let _ = writeln!(log, "Snapshot write error: {err}");
@@ -738,59 +1389,68 @@ fn render_fixture(shared: &RenderShared, entry: &FixtureEntry) -> FixtureResult 
     } else {
       let _ = writeln!(log, "Snapshot requested but artifacts were not captured");
     }
+
+    let diag_report = DiagnosticsFile {
+      fixture: stem.clone(),
+      status: status_label(&status).to_string(),
+      error: status_error(&status).map(str::to_string),
+      time_ms,
+      png_size: size,
+      diagnostics: diagnostics.clone(),
+    };
+    let _ = write_diagnostics_file(&snapshot_dir, &diag_report, &mut log, true);
   }
 
-  let diag_report = DiagnosticsFile {
-    fixture: stem.clone(),
-    status: status_label(&status).to_string(),
-    error: status_error(&status).map(str::to_string),
-    time_ms,
-    png_size: size,
-    diagnostics: diagnostics.clone(),
-  };
-  let _ = write_diagnostics_file(&snapshot_dir, &diag_report, &mut log, shared.write_snapshot);
-
-  let _ = writeln!(log, "Metadata: {}", metadata_path.display());
-  if let Err(err) = write_render_metadata_file(
-    &metadata_path,
-    &stem,
-    shared,
-    &status,
-    time_ms,
-    blocked_urls,
-    Some(&input_sha256),
-    fixture_dir_sha256.as_deref(),
-    &mut log,
-  ) {
-    let _ = writeln!(log, "Metadata write error: {err}");
-    if matches!(status, Status::Ok) {
-      status = Status::Error(format!("write_metadata: {err}"));
-    }
-  }
-
-  let _ = fs::write(&log_path, &log);
-
-  match &status {
-    Status::Ok => {
-      if let Some(size) = size {
-        println!("✓ {stem} ({size}b, {time_ms}ms)");
-      } else {
-        println!("✓ {stem} ({time_ms}ms)");
+  if opts.write_outputs {
+    let _ = writeln!(log, "Metadata: {}", metadata_path.display());
+    if let Err(err) = write_render_metadata_file(
+      &metadata_path,
+      &stem,
+      shared,
+      &status,
+      time_ms,
+      blocked_urls,
+      input_sha256.as_deref(),
+      fixture_dir_sha256.as_deref(),
+      &mut log,
+    ) {
+      let _ = writeln!(log, "Metadata write error: {err}");
+      if matches!(status, Status::Ok) {
+        status = Status::Error(format!("write_metadata: {err}"));
       }
     }
-    Status::Error(msg) => println!("✗ {stem} ERROR: {msg} ({time_ms}ms)"),
-    Status::Crash(msg) => {
-      let short: String = msg.chars().take(50).collect();
-      println!("✗ {stem} CRASH: {short} ({time_ms}ms)");
-    }
-    Status::Timeout(msg) => println!("✗ {stem} TIMEOUT: {msg} ({time_ms}ms)"),
+
+    let _ = fs::write(&log_path, &log);
   }
 
-  FixtureResult {
-    stem,
-    status,
-    time_ms,
-    size,
+  if !opts.quiet {
+    match &status {
+      Status::Ok => {
+        if let Some(size) = size {
+          println!("✓ {stem} ({size}b, {time_ms}ms)");
+        } else {
+          println!("✓ {stem} ({time_ms}ms)");
+        }
+      }
+      Status::Error(msg) => println!("✗ {stem} ERROR: {msg} ({time_ms}ms)"),
+      Status::Crash(msg) => {
+        let short: String = msg.chars().take(50).collect();
+        println!("✗ {stem} CRASH: {short} ({time_ms}ms)");
+      }
+      Status::Timeout(msg) => println!("✗ {stem} TIMEOUT: {msg} ({time_ms}ms)"),
+    }
+  }
+
+  let pixels = matches!(&status, Status::Ok).then_some(pixels).flatten();
+
+  FixtureRunResult {
+    result: FixtureResult {
+      stem,
+      status,
+      time_ms,
+      size,
+    },
+    pixels,
   }
 }
 

@@ -3,5 +3,6 @@ pub mod asset_discovery;
 pub mod disk_cache_audit;
 pub mod disk_cache_stats;
 pub mod media_prefs;
+pub mod prng;
 pub mod render_pipeline;
 pub mod report;
