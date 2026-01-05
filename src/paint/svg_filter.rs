@@ -4419,19 +4419,43 @@ fn lighting_color_in_space(
 }
 
 fn resolve_light_point(
-  filter: &SvgFilter,
   css_bbox: &Rect,
   point: (SvgLength, SvgLength, SvgLength),
 ) -> (f32, f32, f32) {
-  (
-    filter.resolve_primitive_pos_x_len(point.0, css_bbox),
-    filter.resolve_primitive_pos_y_len(point.1, css_bbox),
-    filter.resolve_primitive_pos_z_len(point.2, css_bbox),
-  )
+  // resvg resolves `fePointLight`/`feSpotLight` positions in the filter's user-space coordinate
+  // system even when `primitiveUnits="objectBoundingBox"`. In other words, the light's numeric
+  // `x/y/z` coordinates are *not* scaled by the element bbox.
+  //
+  // We still support percentage inputs in CSS `filter:url(...)` contexts: percentages are resolved
+  // against the filtered element bbox (width for X, height for Y, and an average for Z) and are
+  // translated by the bbox origin for X/Y so they stay element-relative.
+  let x = {
+    let resolved = point
+      .0
+      .resolve(SvgCoordinateUnits::UserSpaceOnUse, css_bbox.width().abs());
+    match point.0 {
+      SvgLength::Percent(_) => css_bbox.min_x() + resolved,
+      SvgLength::Number(_) => resolved,
+    }
+  };
+  let y = {
+    let resolved = point
+      .1
+      .resolve(SvgCoordinateUnits::UserSpaceOnUse, css_bbox.height().abs());
+    match point.1 {
+      SvgLength::Percent(_) => css_bbox.min_y() + resolved,
+      SvgLength::Number(_) => resolved,
+    }
+  };
+  let z = {
+    let reference = (css_bbox.width().abs() + css_bbox.height().abs()) * 0.5;
+    point.2.resolve(SvgCoordinateUnits::UserSpaceOnUse, reference)
+  };
+
+  (x, y, z)
 }
 
 fn compute_light_direction(
-  filter: &SvgFilter,
   css_bbox: &Rect,
   light: &LightSource,
   surface_pos: (f32, f32, f32),
@@ -4445,7 +4469,7 @@ fn compute_light_direction(
       (normalize3(dir.0, dir.1, dir.2), 1.0)
     }
     LightSource::Point { x, y, z } => {
-      let point = resolve_light_point(filter, css_bbox, (*x, *y, *z));
+      let point = resolve_light_point(css_bbox, (*x, *y, *z));
       let dir = (
         point.0 - surface_pos.0,
         point.1 - surface_pos.1,
@@ -4461,8 +4485,8 @@ fn compute_light_direction(
       specular_exponent,
       limiting_cone_angle,
     } => {
-      let point = resolve_light_point(filter, css_bbox, (*x, *y, *z));
-      let target = resolve_light_point(filter, css_bbox, *points_at);
+      let point = resolve_light_point(css_bbox, (*x, *y, *z));
+      let target = resolve_light_point(css_bbox, *points_at);
       let light_to_surface = (
         surface_pos.0 - point.0,
         surface_pos.1 - point.1,
@@ -4473,7 +4497,11 @@ fn compute_light_direction(
         -light_to_surface.1,
         -light_to_surface.2,
       );
-      let to_target = normalize3(target.0 - point.0, target.1 - point.1, target.2 - point.2);
+      let to_target = normalize3(
+        target.0 - point.0,
+        target.1 - point.1,
+        target.2 - point.2,
+      );
       let cone_dot = dot3(
         normalize3(light_to_surface.0, light_to_surface.1, light_to_surface.2),
         to_target,
@@ -4569,6 +4597,11 @@ fn surface_normal(
     scale_y,
     surface_scale,
   );
+  // Match resvg/Chrome: the filter effects spec defines the surface normal using a finite
+  // difference of the height field across `kernelUnitLength` in each direction.
+  //
+  // Note: We sample height at +/- `kernelUnitLength` but divide by `kernelUnitLength` (not
+  // `2*kernelUnitLength`). This matches the reference engines' output for sharp height steps.
   let dzdx = (h_l - h_r) / ku_x;
   let dzdy = (h_t - h_b) / ku_y;
   normalize3(dzdx, dzdy, 1.0)
@@ -4663,15 +4696,10 @@ fn apply_diffuse_lighting(
               surface_scale,
             );
             let (light_dir, light_factor) =
-              compute_light_direction(filter, css_bbox, &light, (css_x, css_y, height));
+              compute_light_direction(css_bbox, &light, (css_x, css_y, height));
             let n_dot_l = dot3(normal, light_dir).max(0.0);
-            if n_dot_l <= 0.0 || base_color.a <= 0.0 {
-              *dst = PremultipliedColorU8::TRANSPARENT;
-              continue;
-            }
-
             let intensity = n_dot_l * diffuse_constant * light_factor;
-            let color_scale = if intensity.is_finite() {
+            let intensity = if intensity.is_finite() {
               intensity.max(0.0)
             } else {
               0.0
@@ -4679,9 +4707,9 @@ fn apply_diffuse_lighting(
             let out_alpha = base_color.a;
             *dst = pack_color(
               UnpremultipliedColor {
-                r: base_color.r * color_scale,
-                g: base_color.g * color_scale,
-                b: base_color.b * color_scale,
+                r: base_color.r * intensity,
+                g: base_color.g * intensity,
+                b: base_color.b * intensity,
                 a: out_alpha,
               },
               color_interpolation_filters,
@@ -4774,7 +4802,7 @@ fn apply_specular_lighting(
               surface_scale,
             );
             let (light_dir, light_factor) =
-              compute_light_direction(filter, css_bbox, &light, (css_x, css_y, height));
+              compute_light_direction(css_bbox, &light, (css_x, css_y, height));
             let n_dot_l = dot3(normal, light_dir).max(0.0);
             if n_dot_l <= 0.0 || light_factor <= 0.0 {
               *dst = PremultipliedColorU8::TRANSPARENT;

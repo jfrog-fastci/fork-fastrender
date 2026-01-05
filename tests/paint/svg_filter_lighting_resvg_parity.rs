@@ -367,3 +367,156 @@ fn resvg_parity_spot_light_cone_and_exponent() {
     &samples,
   );
 }
+
+fn make_edge_bump_map_pixmap(width: u32, height: u32) -> Pixmap {
+  const BUMP_X: u32 = 10;
+  const BUMP_Y: u32 = 12;
+  const BUMP_W: u32 = 16;
+  const BUMP_H: u32 = 12;
+
+  let mut pixmap = Pixmap::new(width, height).expect("pixmap");
+  for y in 0..height {
+    for x in 0..width {
+      let a = if (BUMP_X..BUMP_X + BUMP_W).contains(&x) && (BUMP_Y..BUMP_Y + BUMP_H).contains(&y) {
+        255
+      } else {
+        0
+      };
+      let idx = (y as usize * width as usize + x as usize) as usize;
+      pixmap.pixels_mut()[idx] = PremultipliedColorU8::from_rgba(0, 0, 0, a).unwrap();
+    }
+  }
+  pixmap
+}
+
+#[test]
+fn diffuse_lighting_distant_light_azimuth_matches_resvg() {
+  const WIDTH: u32 = 64;
+  const HEIGHT: u32 = 64;
+
+  const BUMP_X: u32 = 10;
+  const BUMP_Y: u32 = 12;
+  const BUMP_W: u32 = 16;
+  const BUMP_H: u32 = 12;
+
+  let left = (BUMP_X, BUMP_Y + BUMP_H / 2);
+  let right = (BUMP_X + BUMP_W - 1, BUMP_Y + BUMP_H / 2);
+  let top = (BUMP_X + BUMP_W / 2, BUMP_Y);
+  let bottom = (BUMP_X + BUMP_W / 2, BUMP_Y + BUMP_H - 1);
+
+  let bump_map = make_edge_bump_map_pixmap(WIDTH, HEIGHT);
+  let bump_map_url = pixmap_to_data_url_png(&bump_map);
+  let bbox = Rect::from_xywh(0.0, 0.0, WIDTH as f32, HEIGHT as f32);
+
+  for azimuth in [0, 90, 270] {
+    let filter_markup = format!(
+      r#"
+      <filter id="f" filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
+              x="0" y="0" width="{WIDTH}" height="{HEIGHT}"
+              color-interpolation-filters="linearRGB">
+        <feDiffuseLighting in="SourceAlpha" surfaceScale="4" diffuseConstant="1"
+                           lighting-color="rgb(255,255,255)">
+          <feDistantLight azimuth="{azimuth}" elevation="45" />
+        </feDiffuseLighting>
+      </filter>
+      "#
+    );
+
+    let svg = svg_fixture(WIDTH, HEIGHT, &bump_map_url, &filter_markup);
+    let expected = render_with_resvg(&svg, WIDTH, HEIGHT);
+
+    // Sanity: ensure azimuth influences the output (i.e., we didn't accidentally set elevation=90).
+    // In the SVG coordinate system, +y points down.
+    let top_r = rgba_at(&expected, top.0, top.1)[0];
+    let bottom_r = rgba_at(&expected, bottom.0, bottom.1)[0];
+    match azimuth {
+      90 => assert!(
+        bottom_r > top_r.saturating_add(10),
+        "expected azimuth=90° to light from +y (down), bottom should be brighter than top (top={top_r}, bottom={bottom_r})",
+      ),
+      270 => assert!(
+        top_r > bottom_r.saturating_add(10),
+        "expected azimuth=270° to light from -y (up), top should be brighter than bottom (top={top_r}, bottom={bottom_r})",
+      ),
+      _ => {}
+    }
+    if azimuth == 0 {
+      let left_r = rgba_at(&expected, left.0, left.1)[0];
+      let right_r = rgba_at(&expected, right.0, right.1)[0];
+      assert!(
+        right_r > left_r.saturating_add(10),
+        "expected azimuth=0° to light from +x (right), right should be brighter than left (left={left_r}, right={right_r})",
+      );
+    }
+
+    let actual = render_with_fastrender_filter(&svg, "f", &bump_map, bbox);
+    for (label, (x, y)) in [
+      ("left-edge", left),
+      ("right-edge", right),
+      ("top-edge", top),
+      ("bottom-edge", bottom),
+    ] {
+      let expected_px = rgba_at(&expected, x, y);
+      let actual_px = rgba_at(&actual, x, y);
+      assert_rgba_close(
+        &format!("azimuth={azimuth} {label}"),
+        x,
+        y,
+        actual_px,
+        expected_px,
+        2,
+      );
+    }
+  }
+}
+
+#[test]
+fn point_light_object_bounding_box_z_scaling_matches_resvg() {
+  const WIDTH: u32 = 80;
+  const HEIGHT: u32 = 40; // Non-square bbox so any objectBBox scaling is observable.
+
+  let center = (WIDTH / 2, HEIGHT / 2);
+  let off_center = (WIDTH * 3 / 4, HEIGHT / 2);
+
+  let svg = format!(
+    r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}">
+      <defs>
+        <filter id="f" filterUnits="userSpaceOnUse" primitiveUnits="objectBoundingBox"
+                x="0" y="0" width="{WIDTH}" height="{HEIGHT}"
+                color-interpolation-filters="linearRGB">
+          <feDiffuseLighting in="SourceAlpha" surfaceScale="0" diffuseConstant="1"
+                             lighting-color="rgb(255,255,255)">
+            <fePointLight x="{center_x}" y="{center_y}" z="1" />
+          </feDiffuseLighting>
+        </filter>
+      </defs>
+      <rect x="0" y="0" width="{WIDTH}" height="{HEIGHT}" fill="black" filter="url(#f)" />
+    </svg>
+    "#,
+    center_x = center.0,
+    center_y = center.1
+  );
+
+  let expected = render_with_resvg(&svg, WIDTH, HEIGHT);
+  assert_ne!(
+    rgba_at(&expected, center.0, center.1),
+    [0, 0, 0, 255],
+    "resvg should apply lighting; got the unfiltered SourceGraphic at the center"
+  );
+
+  let filter = parse_svg_filter_from_svg_document(&svg, Some("f"), &ImageCache::new())
+    .expect("parse filter");
+
+  let mut source = Pixmap::new(WIDTH, HEIGHT).expect("pixmap");
+  source.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 255));
+
+  let bbox = Rect::from_xywh(0.0, 0.0, WIDTH as f32, HEIGHT as f32);
+  apply_svg_filter(&filter, &mut source, 1.0, bbox).expect("apply filter");
+
+  for (label, (x, y)) in [("center", center), ("off-center", off_center)] {
+    let expected_px = rgba_at(&expected, x, y);
+    let actual_px = rgba_at(&source, x, y);
+    assert_rgba_close(label, x, y, actual_px, expected_px, 2);
+  }
+}
