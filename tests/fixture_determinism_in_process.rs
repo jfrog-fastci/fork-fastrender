@@ -45,6 +45,8 @@ const ENV_ALLOW_HEAVY: &str = "FASTR_IN_PROCESS_DETERMINISM_ALLOW_HEAVY";
 const FAST_VIEWPORT: (u32, u32) = (600, 600);
 const FAST_SCHEDULE: &[usize] = &[4, 1];
 
+const THREAD_POOL_STACK_SIZE: usize = 8 * 1024 * 1024;
+
 // Heavier settings (opt-in) for local debugging / chasing subtle nondeterminism.
 const HEAVY_VIEWPORT: (u32, u32) = (1040, 1240);
 const HEAVY_SCHEDULE: &[usize] = &[4, 4, 1];
@@ -176,6 +178,7 @@ fn build_thread_pools(schedule: &[usize]) -> Result<HashMap<usize, rayon::Thread
   for threads in unique {
     let pool = ThreadPoolBuilder::new()
       .num_threads(threads)
+      .stack_size(THREAD_POOL_STACK_SIZE)
       .build()
       .map_err(|e| format!("Failed to create {threads}-thread pool: {e}"))?;
     pools.insert(threads, pool);
