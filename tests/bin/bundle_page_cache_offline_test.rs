@@ -603,6 +603,81 @@ fn bundle_page_cache_falls_back_to_kind_mismatch_disk_entries() {
 }
 
 #[test]
+fn bundle_page_cache_falls_back_between_image_and_image_cors_cache_kinds() {
+  let tmp = TempDir::new().expect("tempdir");
+
+  let html_dir = tmp.path().join("fetches/html");
+  std::fs::create_dir_all(&html_dir).expect("create html dir");
+  let asset_dir = tmp.path().join("fetches/assets");
+  std::fs::create_dir_all(&asset_dir).expect("create asset dir");
+
+  let stem = "example.invalid";
+  let page_url = "https://example.invalid/";
+  let html_path = html_dir.join(format!("{stem}.html"));
+  std::fs::write(
+    &html_path,
+    "<!doctype html><html><body><img src=\"img.png\"></body></html>",
+  )
+  .expect("write html");
+  std::fs::write(
+    html_path.with_extension("html.meta"),
+    format!("content-type: text/html\nurl: {page_url}\n"),
+  )
+  .expect("write meta");
+
+  let img_url = "https://example.invalid/img.png".to_string();
+
+  let mut responses: HashMap<String, (Vec<u8>, &'static str)> = HashMap::new();
+  responses.insert(img_url.clone(), (b"png-bytes-1".to_vec(), "image/png"));
+
+  let mut disk_config = DiskCacheConfig::default();
+  disk_config.namespace = Some(disk_cache_namespace());
+  disk_config.allow_no_store = true;
+
+  let cache_writer = DiskCachingFetcher::with_configs(
+    StaticFetcher {
+      responses: Arc::new(responses),
+    },
+    asset_dir.clone(),
+    CachingFetcherConfig::default(),
+    disk_config,
+  );
+
+  // Warm the disk cache under `ImageCors` so capture has to fall back from the crawler's inferred
+  // `Image` destination.
+  cache_writer
+    .fetch_with_request(FetchRequest::new(&img_url, FetchDestination::ImageCors))
+    .expect("warm img");
+
+  let bundle_dir = tmp.path().join("bundle");
+  let status = Command::new(env!("CARGO_BIN_EXE_bundle_page"))
+    .current_dir(tmp.path())
+    .args(["cache", stem, "--out"])
+    .arg(bundle_dir.to_string_lossy().as_ref())
+    .args(["--cache-dir"])
+    .arg(&asset_dir)
+    .status()
+    .expect("run bundle_page cache");
+
+  assert!(
+    status.success(),
+    "expected cache capture to succeed when image is cached under ImageCors kind"
+  );
+
+  let bundle = Bundle::load(&bundle_dir).expect("load bundle");
+  assert!(
+    bundle.manifest().resources.contains_key(img_url.as_str()),
+    "bundle should include image referenced from HTML"
+  );
+
+  let fetcher = BundledFetcher::new(bundle);
+  assert_eq!(
+    fetcher.fetch(&img_url).expect("fetch img").bytes,
+    b"png-bytes-1".to_vec()
+  );
+}
+
+#[test]
 fn bundle_page_cache_respects_user_agent_for_namespace() {
   let tmp = TempDir::new().expect("tempdir");
 

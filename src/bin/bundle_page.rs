@@ -376,14 +376,21 @@ impl ResourceFetcher for CacheKindMismatchFallbackFetcher {
     match self.inner.fetch_with_request(req) {
       Ok(res) => Ok(res),
       Err(err) => {
-        if req.destination == FetchDestination::Other && Self::is_http_like(req.url) {
-          for dest in [
-            FetchDestination::Image,
-            FetchDestination::ImageCors,
-            FetchDestination::Font,
-            FetchDestination::Style,
-          ] {
-            let mut retry = FetchRequest::new(req.url, dest);
+        if Self::is_http_like(req.url) {
+          let retries: &[FetchDestination] = match req.destination {
+            FetchDestination::Other => &[
+              FetchDestination::Image,
+              FetchDestination::ImageCors,
+              FetchDestination::Font,
+              FetchDestination::Style,
+            ],
+            FetchDestination::Image => &[FetchDestination::ImageCors],
+            FetchDestination::ImageCors => &[FetchDestination::Image],
+            _ => &[],
+          };
+
+          for dest in retries {
+            let mut retry = FetchRequest::new(req.url, *dest);
             if let Some(referrer) = req.referrer {
               retry = retry.with_referrer(referrer);
             }
