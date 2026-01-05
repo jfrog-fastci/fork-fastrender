@@ -2094,7 +2094,7 @@ impl MediaContext {
       any_pointer: PointerCapability::Fine,
       any_pointer_coarse: false,
       any_pointer_fine: true,
-      scripting: Scripting::Enabled,
+      scripting: Scripting::None,
       update_frequency: UpdateFrequency::Fast,
       light_level: LightLevel::Normal,
       display_mode: DisplayMode::Browser,
@@ -2305,7 +2305,7 @@ impl MediaContext {
       any_pointer: PointerCapability::Coarse,
       any_pointer_coarse: true,
       any_pointer_fine: false,
-      scripting: Scripting::Enabled,
+      scripting: Scripting::None,
       update_frequency: UpdateFrequency::Fast,
       light_level: LightLevel::Normal,
       display_mode: DisplayMode::Browser,
@@ -4244,6 +4244,19 @@ mod tests {
   }
 
   #[test]
+  fn test_evaluate_scripting_defaults() {
+    let ctx = MediaContext::screen(800.0, 600.0);
+    let none = MediaQuery::parse("(scripting: none)").unwrap();
+    let enabled = MediaQuery::parse("(scripting: enabled)").unwrap();
+    assert!(ctx.evaluate(&none));
+    assert!(!ctx.evaluate(&enabled));
+
+    let mobile = MediaContext::mobile(375.0, 667.0);
+    assert!(mobile.evaluate(&none));
+    assert!(!mobile.evaluate(&enabled));
+  }
+
+  #[test]
   fn test_evaluate_any_pointer() {
     let desktop = MediaContext::screen(1024.0, 768.0);
     let mobile = MediaContext::mobile(375.0, 667.0);
@@ -4513,6 +4526,21 @@ mod tests {
   fn range_resolution_rejects_invalid_units() {
     assert!(MediaQuery::parse("(resolution < 2abc)").is_err());
     assert!(MediaQuery::parse("(2abc < resolution)").is_err());
+  }
+
+  #[test]
+  fn env_overrides_scripting() {
+    let guard_scripting = EnvGuard::new("FASTR_SCRIPTING", Some("enabled"));
+
+    let ctx = MediaContext::screen(800.0, 600.0).with_env_overrides();
+    assert_eq!(ctx.scripting, Scripting::Enabled);
+
+    let enabled = MediaQuery::parse("(scripting: enabled)").unwrap();
+    let none = MediaQuery::parse("(scripting: none)").unwrap();
+    assert!(ctx.evaluate(&enabled));
+    assert!(!ctx.evaluate(&none));
+
+    drop(guard_scripting);
   }
 
   #[test]
