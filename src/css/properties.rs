@@ -51,6 +51,7 @@ pub(crate) fn is_raw_only_property(property: &str) -> bool {
       | "animation"
       | "animation-name"
       | "animation-duration"
+      | "animation-composition"
       | "animation-timing-function"
       | "animation-delay"
       | "animation-iteration-count"
@@ -60,6 +61,7 @@ pub(crate) fn is_raw_only_property(property: &str) -> bool {
       | "-webkit-animation"
       | "-webkit-animation-name"
       | "-webkit-animation-duration"
+      | "-webkit-animation-composition"
       | "-webkit-animation-timing-function"
       | "-webkit-animation-delay"
       | "-webkit-animation-iteration-count"
@@ -85,6 +87,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "align-self",
   "all",
   "animation",
+  "animation-composition",
   "animation-delay",
   "animation-direction",
   "animation-duration",
@@ -98,6 +101,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "animation-timing-function",
   "animation-timeline",
   "-webkit-animation",
+  "-webkit-animation-composition",
   "-webkit-animation-delay",
   "-webkit-animation-direction",
   "-webkit-animation-duration",

@@ -21,6 +21,7 @@ use crate::style::properties::{
   apply_declaration_with_base, parse_transition_timing_function, split_top_level_commas,
   ANIMATION_DURATION_AUTO_SENTINEL_MS,
 };
+use crate::style::types::AnimationComposition;
 use crate::style::types::AnimationDirection;
 use crate::style::types::AnimationFillMode;
 use crate::style::types::AnimationIterationCount;
@@ -3539,6 +3540,56 @@ pub fn apply_animated_properties(
   }
 }
 
+fn apply_animated_properties_with_composition(
+  style: &mut ComputedStyle,
+  values: &HashMap<String, AnimatedValue>,
+  composition: AnimationComposition,
+  ctx: &AnimationResolveContext,
+) {
+  let composition = match composition {
+    // TODO: Implement per-iteration accumulation semantics; for now treat as additive.
+    AnimationComposition::Accumulate => AnimationComposition::Add,
+    other => other,
+  };
+
+  if matches!(composition, AnimationComposition::Replace) {
+    apply_animated_properties(style, values);
+    return;
+  }
+
+  for (name, value) in values {
+    if apply_additive_animation_value(style, name, value, ctx) {
+      continue;
+    }
+    if let Some(interpolator) = interpolator_for(name) {
+      (interpolator.apply)(style, value);
+    }
+  }
+}
+
+fn apply_additive_animation_value(
+  style: &mut ComputedStyle,
+  property: &str,
+  value: &AnimatedValue,
+  ctx: &AnimationResolveContext,
+) -> bool {
+  match (property, value) {
+    ("transform", AnimatedValue::Transform(effect_list)) => {
+      let underlying_list = resolve_transform_list(&style.transform, style, ctx);
+      let underlying = compose_transform_list(&underlying_list);
+      let effect = compose_transform_list(effect_list);
+      let combined = underlying.multiply(&effect);
+      style.transform = vec![crate::css::types::Transform::Matrix3d(combined.m)];
+      true
+    }
+    ("opacity", AnimatedValue::Opacity(effect)) => {
+      style.opacity = clamp_progress(style.opacity + effect);
+      true
+    }
+    _ => false,
+  }
+}
+
 enum TimelineState {
   Scroll {
     timeline: ScrollTimeline,
@@ -4104,7 +4155,11 @@ fn apply_animations_to_node_scoped(
       let parent_styles = parent_styles.unwrap_or_else(|| default_parent_style());
       let mut changed = false;
       let mut custom_properties_changed = false;
-      let mut applied_value_sets: Vec<HashMap<String, AnimatedValue>> = Vec::new();
+      let viewport_size = Size::new(viewport.width(), viewport.height());
+      let element_size = Size::new(node.bounds.width(), node.bounds.height());
+      let resolve_ctx = AnimationResolveContext::new(viewport_size, element_size);
+      let mut applied_value_sets: Vec<(AnimationComposition, HashMap<String, AnimatedValue>)> =
+        Vec::new();
 
       for (idx, name) in names.iter().enumerate() {
         let timeline_ref = pick(timelines_list, idx, AnimationTimeline::Auto);
@@ -4113,6 +4168,11 @@ fn apply_animations_to_node_scoped(
           &style_arc.animation_timing_functions,
           idx,
           TransitionTimingFunction::Ease,
+        );
+        let composition = pick(
+          &style_arc.animation_compositions,
+          idx,
+          AnimationComposition::default(),
         );
 
         let progress = match timeline_ref {
@@ -4202,8 +4262,6 @@ fn apply_animations_to_node_scoped(
         let Some(progress) = progress else { continue };
 
         if let Some(rule) = keyframes.get(name) {
-          let element_size = Size::new(node.bounds.width(), node.bounds.height());
-          let viewport_size = Size::new(viewport.width(), viewport.height());
           let sample = sample_keyframes_with_default_timing(
             rule,
             progress,
@@ -4239,18 +4297,30 @@ fn apply_animations_to_node_scoped(
           }
 
           if !sample.animated.is_empty() {
-            apply_animated_properties(&mut animated, &sample.animated);
-            applied_value_sets.push(sample.animated);
+            apply_animated_properties_with_composition(
+              &mut animated,
+              &sample.animated,
+              composition,
+              &resolve_ctx,
+            );
+            applied_value_sets.push((composition, sample.animated));
             changed = true;
           }
         }
       }
 
       if custom_properties_changed {
-        let viewport_size = Size::new(viewport.width(), viewport.height());
-        animated.recompute_var_dependent_properties(parent_styles, viewport_size);
-        for values in &applied_value_sets {
-          apply_animated_properties(&mut animated, values);
+        let mut recomputed = (*style_arc).clone();
+        recomputed.custom_properties = animated.custom_properties.clone();
+        recomputed.recompute_var_dependent_properties(parent_styles, viewport_size);
+        animated = recomputed;
+        for (composition, values) in &applied_value_sets {
+          apply_animated_properties_with_composition(
+            &mut animated,
+            values,
+            *composition,
+            &resolve_ctx,
+          );
         }
       }
 

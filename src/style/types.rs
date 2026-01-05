@@ -1215,6 +1215,20 @@ impl Default for AnimationFillMode {
   }
 }
 
+/// CSS `animation-composition`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnimationComposition {
+  Replace,
+  Add,
+  Accumulate,
+}
+
+impl Default for AnimationComposition {
+  fn default() -> Self {
+    AnimationComposition::Replace
+  }
+}
+
 /// CSS `animation-play-state`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnimationPlayState {

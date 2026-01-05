@@ -2319,6 +2319,29 @@ fn parse_animation_fill_mode_list(raw: &str) -> Vec<AnimationFillMode> {
   }
 }
 
+fn parse_animation_composition(raw: &str) -> Option<AnimationComposition> {
+  match raw.trim().to_ascii_lowercase().as_str() {
+    "replace" => Some(AnimationComposition::Replace),
+    "add" => Some(AnimationComposition::Add),
+    "accumulate" => Some(AnimationComposition::Accumulate),
+    _ => None,
+  }
+}
+
+fn parse_animation_composition_list(raw: &str) -> Vec<AnimationComposition> {
+  let mut compositions = Vec::new();
+  for part in split_top_level_commas(raw) {
+    if let Some(comp) = parse_animation_composition(&part) {
+      compositions.push(comp);
+    }
+  }
+  if compositions.is_empty() {
+    vec![AnimationComposition::default()]
+  } else {
+    compositions
+  }
+}
+
 fn parse_animation_play_state(raw: &str) -> Option<AnimationPlayState> {
   match raw.trim().to_ascii_lowercase().as_str() {
     "running" => Some(AnimationPlayState::Running),
@@ -2560,6 +2583,7 @@ fn parse_animation_shorthand(
   Vec<AnimationDirection>,
   Vec<AnimationFillMode>,
   Vec<AnimationPlayState>,
+  Vec<AnimationComposition>,
 )> {
   let mut names = Vec::new();
   let mut durations = Vec::new();
@@ -2569,6 +2593,7 @@ fn parse_animation_shorthand(
   let mut directions = Vec::new();
   let mut fills = Vec::new();
   let mut play_states = Vec::new();
+  let mut compositions = Vec::new();
 
   let mut saw_any = false;
 
@@ -2581,6 +2606,7 @@ fn parse_animation_shorthand(
     let mut direction: Option<AnimationDirection> = None;
     let mut fill_mode: Option<AnimationFillMode> = None;
     let mut play_state: Option<AnimationPlayState> = None;
+    let mut composition: Option<AnimationComposition> = None;
 
     let mut invalid = false;
 
@@ -2666,6 +2692,16 @@ fn parse_animation_shorthand(
         break;
       }
 
+      if composition.is_none() {
+        if let Some(comp) = parse_animation_composition(&token) {
+          composition = Some(comp);
+          continue;
+        }
+      } else if parse_animation_composition(&token).is_some() {
+        invalid = true;
+        break;
+      }
+
       if name.is_none() {
         let trimmed = token.trim();
         if trimmed.is_empty() {
@@ -2708,6 +2744,7 @@ fn parse_animation_shorthand(
     directions.push(direction.unwrap_or_default());
     fills.push(fill_mode.unwrap_or_default());
     play_states.push(play_state.unwrap_or_default());
+    compositions.push(composition.unwrap_or_default());
   }
 
   if !saw_any {
@@ -2727,6 +2764,7 @@ fn parse_animation_shorthand(
     directions,
     fills,
     play_states,
+    compositions,
   ))
 }
 
@@ -5236,6 +5274,9 @@ fn apply_property_from_source(
     "animation-direction" => styles.animation_directions = source.animation_directions.clone(),
     "animation-fill-mode" => styles.animation_fill_modes = source.animation_fill_modes.clone(),
     "animation-play-state" => styles.animation_play_states = source.animation_play_states.clone(),
+    "animation-composition" => {
+      styles.animation_compositions = source.animation_compositions.clone()
+    }
     "animation" => {
       styles.animation_names = source.animation_names.clone();
       styles.animation_durations = source.animation_durations.clone();
@@ -5245,6 +5286,7 @@ fn apply_property_from_source(
       styles.animation_directions = source.animation_directions.clone();
       styles.animation_fill_modes = source.animation_fill_modes.clone();
       styles.animation_play_states = source.animation_play_states.clone();
+      styles.animation_compositions = source.animation_compositions.clone();
     }
     "scroll-padding" => {
       styles.scroll_padding_top = source.scroll_padding_top;
@@ -6546,6 +6588,7 @@ fn apply_declaration_with_base_internal_with_order(
     "-webkit-animation-direction" => "animation-direction",
     "-webkit-animation-fill-mode" => "animation-fill-mode",
     "-webkit-animation-play-state" => "animation-play-state",
+    "-webkit-animation-composition" => "animation-composition",
     "-webkit-backdrop-filter" => "backdrop-filter",
     other => other,
   };
@@ -6581,6 +6624,7 @@ fn apply_declaration_with_base_internal_with_order(
       | "animation-direction"
       | "animation-fill-mode"
       | "animation-play-state"
+      | "animation-composition"
       | "transition-property"
       | "transition-duration"
       | "transition-delay"
@@ -10370,10 +10414,23 @@ fn apply_declaration_with_base_internal_with_order(
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
       styles.animation_play_states = parse_animation_play_state_list(css_text).into();
     }
+    "animation-composition" | "-webkit-animation-composition" => {
+      let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
+      styles.animation_compositions = parse_animation_composition_list(css_text).into();
+    }
     "animation" | "-webkit-animation" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
-      if let Some((names, durations, delays, timings, iterations, directions, fills, play_states)) =
-        parse_animation_shorthand(css_text)
+      if let Some((
+        names,
+        durations,
+        delays,
+        timings,
+        iterations,
+        directions,
+        fills,
+        play_states,
+        compositions,
+      )) = parse_animation_shorthand(css_text)
       {
         styles.animation_names = names;
         styles.animation_durations = durations.into();
@@ -10383,6 +10440,7 @@ fn apply_declaration_with_base_internal_with_order(
         styles.animation_directions = directions.into();
         styles.animation_fill_modes = fills.into();
         styles.animation_play_states = play_states.into();
+        styles.animation_compositions = compositions.into();
       }
     }
     "transition-property" => {

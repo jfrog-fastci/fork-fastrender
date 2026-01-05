@@ -51,6 +51,7 @@ use std::sync::Arc;
 use types::AccentColor;
 use types::AlignContent;
 use types::AlignItems;
+use types::AnimationComposition;
 use types::AnimationDirection;
 use types::AnimationFillMode;
 use types::AnimationIterationCount;
@@ -541,6 +542,8 @@ pub struct ComputedStyle {
   pub animation_fill_modes: Arc<[AnimationFillMode]>,
   /// Play-state for animations.
   pub animation_play_states: Arc<[AnimationPlayState]>,
+  /// Composition mode for animations.
+  pub animation_compositions: Arc<[AnimationComposition]>,
   /// Properties that participate in transitions (empty disables transitions).
   pub transition_properties: Arc<[TransitionProperty]>,
   /// Durations for transitions in milliseconds.
@@ -942,6 +945,7 @@ impl Default for ComputedStyle {
       animation_directions: vec![AnimationDirection::default()].into(),
       animation_fill_modes: vec![AnimationFillMode::default()].into(),
       animation_play_states: vec![AnimationPlayState::default()].into(),
+      animation_compositions: vec![AnimationComposition::default()].into(),
       transition_properties: vec![TransitionProperty::All].into(),
       transition_durations: vec![0.0].into(),
       transition_delays: vec![0.0].into(),
