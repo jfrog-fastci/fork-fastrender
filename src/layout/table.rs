@@ -5775,7 +5775,10 @@ impl FormattingContext for TableFormattingContext {
         }
       }
       if !positioned_children.is_empty() {
-        let padding_origin = Point::new(border_left + pad_left, border_top + pad_top);
+        // CSS 2.1 §10.1: the containing block for absolute positioned descendants is the padding
+        // box of the nearest positioned ancestor, i.e. the rectangle bounded by the padding edge
+        // (border box minus borders).
+        let padding_origin = Point::new(border_left, border_top);
         let padding_rect = Rect::new(
           padding_origin,
           crate::geometry::Size::new(
@@ -5783,11 +5786,9 @@ impl FormattingContext for TableFormattingContext {
             height - border_top - border_bottom,
           ),
         );
-        let block_base = if table_root_style.height.is_some() {
-          Some(padding_rect.size.height)
-        } else {
-          None
-        };
+        // Percentage offsets on absolutely positioned boxes resolve against the used height of
+        // the padding box even when the containing block's own height is `auto` (CSS 2.1 §10.5).
+        let block_base = Some(padding_rect.size.height);
         let padding_cb = ContainingBlock::with_viewport_and_bases(
           padding_rect,
           self.viewport_size,
@@ -7245,8 +7246,8 @@ impl FormattingContext for TableFormattingContext {
       // establishes an absolute containing block; fixed positioning uses the viewport unless a
       // transform/perspective/containment establishes a fixed containing block.
       let padding_origin = Point::new(
-        border_left + pad_left,
-        table_origin_y + border_top + pad_top,
+        border_left,
+        table_origin_y + border_top,
       );
       let padding_rect = Rect::new(
         padding_origin,
@@ -7255,11 +7256,9 @@ impl FormattingContext for TableFormattingContext {
           table_bounds.height() - border_top - border_bottom,
         ),
       );
-      let block_base = if table_root_style.height.is_some() {
-        Some(padding_rect.size.height)
-      } else {
-        None
-      };
+      // Percentage offsets on absolutely positioned boxes resolve against the used height of the
+      // padding box even when the containing block's own height is `auto` (CSS 2.1 §10.5).
+      let block_base = Some(padding_rect.size.height);
       let padding_cb = ContainingBlock::with_viewport_and_bases(
         padding_rect,
         self.viewport_size,
@@ -16178,11 +16177,19 @@ mod tests {
     assert!(fragment.bounds.height() > 0.0);
   }
 
+  #[test]
   fn running_and_positioned_children_are_preserved() {
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
+    table_style.position = Position::Relative;
     table_style.border_spacing_horizontal = Length::px(0.0);
     table_style.border_spacing_vertical = Length::px(0.0);
+    table_style.padding_left = Length::px(10.0);
+    table_style.padding_top = Length::px(10.0);
+    table_style.border_left_style = BorderStyle::Solid;
+    table_style.border_top_style = BorderStyle::Solid;
+    table_style.border_left_width = Length::px(2.0);
+    table_style.border_top_width = Length::px(2.0);
 
     let mut caption_style = ComputedStyle::default();
     caption_style.display = Display::TableCaption;
@@ -16211,6 +16218,14 @@ mod tests {
       vec![cell],
     );
 
+    let mut row_group_style = ComputedStyle::default();
+    row_group_style.display = Display::TableRowGroup;
+    let row_group = BoxNode::new_block(
+      Arc::new(row_group_style),
+      FormattingContextType::Block,
+      vec![row],
+    );
+
     let mut running_style = ComputedStyle::default();
     running_style.display = Display::Block;
     running_style.running_position = Some("header".to_string());
@@ -16227,6 +16242,8 @@ mod tests {
     let mut positioned_style = ComputedStyle::default();
     positioned_style.display = Display::Block;
     positioned_style.position = Position::Absolute;
+    positioned_style.left = Some(Length::px(5.0));
+    positioned_style.top = Some(Length::px(7.0));
     positioned_style.width = Some(Length::px(7.0));
     positioned_style.height = Some(Length::px(3.0));
     positioned_style.width_keyword = None;
@@ -16240,7 +16257,7 @@ mod tests {
     let table = BoxNode::new_block(
       Arc::new(table_style),
       FormattingContextType::Table,
-      vec![running, caption, row, positioned],
+      vec![running, caption, row_group, positioned],
     );
 
     let tfc = TableFormattingContext::new();
@@ -16269,6 +16286,12 @@ mod tests {
         .unwrap_or(false),
       "positioned child should have non-zero size"
     );
+
+    // Positioned child should be placed relative to the table's padding box (padding edge),
+    // i.e. origin at the table border box origin + borders (not including padding).
+    let positioned_fragment = positioned_fragments[0];
+    assert_eq!(positioned_fragment.bounds.x(), 7.0);
+    assert_eq!(positioned_fragment.bounds.y(), 13.0);
   }
 
   #[test]
