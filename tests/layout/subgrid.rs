@@ -1523,7 +1523,6 @@ fn row_subgrid_respects_local_direction_for_columns() {
   let subgrid_fragment = &fragment.children[0];
   let first = &subgrid_fragment.children[0];
   let second = &subgrid_fragment.children[1];
-
   assert!(
     first.bounds.x() > second.bounds.x(),
     "rtl direction on row subgrid should mirror the inline axis"
@@ -1595,6 +1594,11 @@ fn subgrid_inherits_named_lines_with_offset() {
   assert_eq!(subgrid_fragment.children.len(), 2);
   let child0 = &subgrid_fragment.children[0];
   let child1 = &subgrid_fragment.children[1];
+  assert_approx(
+    subgrid_fragment.bounds.x(),
+    25.0,
+    "subgrid starts after the first parent track",
+  );
   assert_approx(
     child0.bounds.x(),
     0.0,
@@ -1680,13 +1684,26 @@ fn subgrid_inherits_area_line_names_with_offset() {
   let subgrid_fragment = &fragment.children[0];
   let first = &subgrid_fragment.children[0];
   let second = &subgrid_fragment.children[1];
-  assert_approx(first.bounds.x(), 0.0, "main-start maps to subgrid start");
+  assert_approx(
+    subgrid_fragment.bounds.x(),
+    25.0,
+    "subgrid starts after the left area track",
+  );
+  assert_approx(
+    first.bounds.x(),
+    0.0,
+    "main-start maps to subgrid start",
+  );
   assert_approx(
     first.bounds.width(),
     35.0,
     "main area width preserved inside subgrid",
   );
-  assert_approx(second.bounds.x(), 35.0, "right area starts after main");
+  assert_approx(
+    second.bounds.x(),
+    35.0,
+    "right area starts after main",
+  );
   assert_approx(
     second.bounds.width(),
     45.0,
@@ -2032,7 +2049,11 @@ fn subgrid_named_lines_survive_writing_mode_transpose() {
   let second = &subgrid_fragment.children[1];
 
   assert_approx(first.bounds.width(), 25.0, "start/mid span first column");
-  assert_approx(first.bounds.x(), 0.0, "first column starts at origin");
+  assert_approx(
+    first.bounds.x(),
+    0.0,
+    "first column starts at origin",
+  );
   assert_approx(second.bounds.width(), 35.0, "mid/end span second column");
   assert_approx(
     second.bounds.x(),
@@ -2271,6 +2292,11 @@ fn subgrid_named_lines_resolve_in_vertical_mode() {
   let subgrid_fragment = &fragment.children[0];
   let child0 = &subgrid_fragment.children[0];
   let child1 = &subgrid_fragment.children[1];
+  assert_approx(
+    subgrid_fragment.bounds.y(),
+    25.0,
+    "subgrid starts after the first parent track",
+  );
   assert_approx(
     child0.bounds.y(),
     0.0,
