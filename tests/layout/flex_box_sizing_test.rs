@@ -120,9 +120,8 @@ fn flex_item_auto_min_size_clamps_to_min_content() {
 
   let mut child_style = ComputedStyle::default();
   child_style.display = Display::Block;
-  // Ensure overflow is not restricting min-content computation.
-  child_style.overflow_x = Overflow::Hidden;
-  child_style.overflow_y = Overflow::Hidden;
+  child_style.overflow_x = Overflow::Visible;
+  child_style.overflow_y = Overflow::Visible;
 
   let text = BoxNode::new_text(
     Arc::new(ComputedStyle::default()),
@@ -170,8 +169,8 @@ fn flex_item_auto_min_size_column_uses_block_min_content() {
 
   let mut child_style = ComputedStyle::default();
   child_style.display = Display::Block;
-  child_style.overflow_x = Overflow::Hidden;
-  child_style.overflow_y = Overflow::Hidden;
+  child_style.overflow_x = Overflow::Visible;
+  child_style.overflow_y = Overflow::Visible;
 
   let text = BoxNode::new_text(
     Arc::new(ComputedStyle::default()),

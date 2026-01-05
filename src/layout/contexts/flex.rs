@@ -44,6 +44,8 @@ use crate::layout::flex_profile::record_node_measure_store;
 use crate::layout::flex_profile::DimState;
 use crate::layout::flex_profile::{self};
 use crate::layout::formatting_context::count_flex_intrinsic_call;
+use crate::layout::formatting_context::intrinsic_block_cache_lookup;
+use crate::layout::formatting_context::intrinsic_block_cache_store;
 use crate::layout::formatting_context::intrinsic_cache_lookup;
 use crate::layout::formatting_context::intrinsic_cache_store;
 use crate::layout::formatting_context::layout_cache_lookup;
@@ -3893,6 +3895,50 @@ impl FormattingContext for FlexFormattingContext {
     intrinsic_cache_store(box_node, mode, width);
     Ok(width)
   }
+
+  fn compute_intrinsic_block_size(
+    &self,
+    box_node: &BoxNode,
+    mode: IntrinsicSizingMode,
+  ) -> Result<f32, LayoutError> {
+    if let Some(cached) = intrinsic_block_cache_lookup(box_node, mode) {
+      return Ok(cached);
+    }
+
+    let fc_type = box_node
+      .formatting_context()
+      .unwrap_or(FormattingContextType::Block);
+    if fc_type != FormattingContextType::Flex {
+      return self
+        .child_factory()
+        .get(fc_type)
+        .compute_intrinsic_block_size(box_node, mode);
+    }
+
+    let style_override = crate::layout::style_override::style_override_for(box_node.id);
+    let writing_mode = style_override
+      .as_deref()
+      .unwrap_or_else(|| box_node.style.as_ref())
+      .writing_mode;
+    let inline_is_horizontal = crate::style::inline_axis_is_horizontal(writing_mode);
+    let intrinsic_inline_space = match mode {
+      IntrinsicSizingMode::MinContent => CrateAvailableSpace::MinContent,
+      IntrinsicSizingMode::MaxContent => CrateAvailableSpace::MaxContent,
+    };
+    let constraints = if inline_is_horizontal {
+      LayoutConstraints::new(intrinsic_inline_space, CrateAvailableSpace::Indefinite)
+    } else {
+      LayoutConstraints::new(CrateAvailableSpace::Indefinite, intrinsic_inline_space)
+    };
+    let fragment = self.layout(box_node, &constraints)?;
+    let block_size = if inline_is_horizontal {
+      fragment.bounds.height()
+    } else {
+      fragment.bounds.width()
+    };
+    intrinsic_block_cache_store(box_node, mode, block_size);
+    Ok(block_size)
+  }
 }
 
 fn height_depends_on_available_height(style: &ComputedStyle) -> bool {
@@ -5785,12 +5831,6 @@ impl FlexFormattingContext {
           }
         }
       }
-      if rect_w.is_finite() && rect_w > eps {
-        layout_width = layout_width.min(rect_w);
-      }
-      if rect_h.is_finite() && rect_h > eps {
-        layout_height = layout_height.min(rect_h);
-      }
       let needs_intrinsic_main = (main_axis_is_row && raw_layout_width <= eps)
         || (!main_axis_is_row && raw_layout_height <= eps);
 
@@ -6193,12 +6233,6 @@ impl FlexFormattingContext {
           if resolved_height <= eps {
             resolved_height = target_height;
           }
-          if rect.width().is_finite() && rect.width() > 0.0 {
-            resolved_width = resolved_width.min(rect.width());
-          }
-          if rect.height().is_finite() && rect.height() > 0.0 {
-            resolved_height = resolved_height.min(rect.height());
-          }
           let mut origin_x = child_loc_x;
           let mut origin_y = child_loc_y;
           if main_axis_is_row && rect.height().is_finite() {
@@ -6396,12 +6430,6 @@ impl FlexFormattingContext {
             }
             if resolved_height <= eps && intrinsic_size.height > eps {
               resolved_height = intrinsic_size.height;
-            }
-            if rect.width().is_finite() && rect.width() > 0.0 {
-              resolved_width = resolved_width.min(rect.width());
-            }
-            if rect.height().is_finite() && rect.height() > 0.0 {
-              resolved_height = resolved_height.min(rect.height());
             }
             let mut origin_x = child_loc_x;
             let mut origin_y = child_loc_y;
@@ -6869,18 +6897,6 @@ impl FlexFormattingContext {
           }
         }
       }
-      if max_child_y > container_h * 1.5 {
-        let available = container_h.max(1.0).min(self.viewport_size.height);
-        let mut cursor_y = 0.0;
-        for child in &mut children {
-          let h = child.bounds.height().min(available);
-          child.bounds = Rect::new(
-            Point::new(child.bounds.x(), cursor_y),
-            Size::new(child.bounds.width(), h),
-          );
-          cursor_y += h;
-        }
-      }
       // Guard against cross-axis drift when column flex containers produce children far
       // outside the container width. Clamp children back to the start edge to avoid
       // dropping content offscreen when Taffy returns oversized x positions.
@@ -7066,126 +7082,59 @@ impl FlexFormattingContext {
       }
     }
 
-    // Final clamp: only adjust children that overflow the container bounds. Keep normal in-bounds
-    // items unchanged to avoid shrinking legitimate content (e.g., images taller than the parent).
-    if rect.width() > 0.0 && rect.height() > 0.0 {
-      let max_w = rect.width().min(self.viewport_size.width.max(0.0));
-      let max_h = rect.height();
+    // Final clamp: avoid shifting children out of view when Taffy returns coordinates that do not
+    // overlap the container at all. Do not clamp sizes—overflow is handled at paint-time.
+    if rect.width() > 0.0 && rect.height() > 0.0 && !children.is_empty() {
       let eps = 0.5;
-      let allow_row_overflow =
-        main_axis_is_row && matches!(box_node.style.flex_wrap, FlexWrap::NoWrap);
-      if allow_row_overflow {
-        // Preserve horizontal overflow (nowrap per spec), but avoid collapsing items at x=0.
-        // Clamp only the vertical axis and translate the row rightwards if it starts negative.
-        let mut min_x = f32::INFINITY;
-        let mut min_y = f32::INFINITY;
-        let mut max_y = f32::NEG_INFINITY;
+      let mut min_x = f32::INFINITY;
+      let mut max_x = f32::NEG_INFINITY;
+      let mut min_y = f32::INFINITY;
+      let mut max_y = f32::NEG_INFINITY;
+      for child in &children {
+        let x = child.bounds.x();
+        let y = child.bounds.y();
+        let mx = child.bounds.max_x();
+        let my = child.bounds.max_y();
+        if x.is_finite() {
+          min_x = min_x.min(x);
+        }
+        if y.is_finite() {
+          min_y = min_y.min(y);
+        }
+        if mx.is_finite() {
+          max_x = max_x.max(mx);
+        }
+        if my.is_finite() {
+          max_y = max_y.max(my);
+        }
+      }
+
+      let container_min_x = rect.origin.x;
+      let container_max_x = rect.origin.x + rect.width();
+      let container_min_y = rect.origin.y;
+      let container_max_y = rect.origin.y + rect.height();
+      let mut dx = 0.0f32;
+      let mut dy = 0.0f32;
+
+      if min_x.is_finite() && max_x.is_finite() {
+        let outside_x = min_x > container_max_x + eps || max_x < container_min_x - eps;
+        if outside_x {
+          dx = container_min_x - min_x;
+        }
+      }
+      if min_y.is_finite() && max_y.is_finite() {
+        let outside_y = min_y > container_max_y + eps || max_y < container_min_y - eps;
+        if outside_y {
+          dy = container_min_y - min_y;
+        }
+      }
+
+      if (dx != 0.0 || dy != 0.0) && dx.is_finite() && dy.is_finite() {
         for child in &mut children {
-          min_x = min_x.min(child.bounds.x());
-          min_y = min_y.min(child.bounds.y());
-          max_y = max_y.max(child.bounds.max_y());
-
-          let x = child.bounds.x();
-          let mut y = child.bounds.y();
-          let mut h = child.bounds.height();
-          let w = child.bounds.width();
-          let overflow_y = y < -eps || y + h > max_h + eps;
-          if overflow_y {
-            h = h.min(max_h);
-            y = y.clamp(0.0, (max_h - h).max(0.0));
-            child.bounds = Rect::new(Point::new(x, y), Size::new(w, h));
-          }
-        }
-        if min_x.is_finite() && min_x < -eps {
-          let dx = -min_x;
-          for child in &mut children {
-            child.bounds = Rect::new(
-              Point::new(child.bounds.x() + dx, child.bounds.y()),
-              child.bounds.size,
-            );
-          }
-        } else if min_x.is_finite() && min_x > max_w + eps {
-          // All children start past the container's inline end; flex rows still start at the
-          // line's origin even when overflow is allowed, so translate them back to x=0.
-          let dx = -min_x;
-          for child in &mut children {
-            child.bounds = Rect::new(
-              Point::new(child.bounds.x() + dx, child.bounds.y()),
-              child.bounds.size,
-            );
-          }
-        }
-        if min_y.is_finite() && min_y < -eps {
-          let dy = -min_y;
-          for child in &mut children {
-            child.bounds = Rect::new(
-              Point::new(child.bounds.x(), child.bounds.y() + dy),
-              child.bounds.size,
-            );
-          }
-        }
-      } else {
-        let mut min_x = f32::INFINITY;
-        let mut max_x = f32::NEG_INFINITY;
-        let mut min_y = f32::INFINITY;
-        let mut max_y = f32::NEG_INFINITY;
-        for child in &mut children {
-          min_x = min_x.min(child.bounds.x());
-          max_x = max_x.max(child.bounds.max_x());
-          min_y = min_y.min(child.bounds.y());
-          max_y = max_y.max(child.bounds.max_y());
-
-          let mut x = child.bounds.x();
-          let mut y = child.bounds.y();
-          let mut w = child.bounds.width();
-          let mut h = child.bounds.height();
-          let overflow_x = x < -eps || x + w > max_w + eps;
-          let overflow_y = y < -eps || y + h > max_h + eps;
-          if overflow_x {
-            w = w.min(max_w);
-            x = x.clamp(0.0, (max_w - w).max(0.0));
-          }
-          if overflow_y {
-            h = h.min(max_h);
-            y = y.clamp(0.0, (max_h - h).max(0.0));
-          }
-          if overflow_x || overflow_y {
-            child.bounds = Rect::new(Point::new(x, y), Size::new(w, h));
-          }
-        }
-
-        // If all children sit entirely outside the container (e.g., pushed to x>max_w or y>max_h),
-        // translate them back so the left/top of the tightest bounding box starts at the container origin.
-        if min_x.is_finite() && min_y.is_finite() && (min_x >= max_w - eps || min_y >= max_h - eps)
-        {
-          let dx = if min_x.is_finite() {
-            -min_x.max(0.0)
-          } else {
-            0.0
-          };
-          let dy = if min_y.is_finite() {
-            -min_y.max(0.0)
-          } else {
-            0.0
-          };
-          for child in &mut children {
-            child.bounds = Rect::new(
-              Point::new(child.bounds.x() + dx, child.bounds.y() + dy),
-              child.bounds.size,
-            );
-          }
-        } else {
-          // If children extend far to the right but still overlap the container,
-          // shift them left so the leftmost child is at 0 while preserving relative gaps.
-          if min_x.is_finite() && min_x > eps {
-            let dx = -min_x;
-            for child in &mut children {
-              child.bounds = Rect::new(
-                Point::new(child.bounds.x() + dx, child.bounds.y()),
-                child.bounds.size,
-              );
-            }
-          }
+          child.bounds = Rect::new(
+            Point::new(child.bounds.x() + dx, child.bounds.y() + dy),
+            child.bounds.size,
+          );
         }
       }
     }
