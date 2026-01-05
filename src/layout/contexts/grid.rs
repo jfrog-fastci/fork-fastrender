@@ -2010,6 +2010,44 @@ impl GridFormattingContext {
           taffy_style.justify_self = converted;
         }
       }
+
+      // Intrinsic size keywords act like non-auto preferred sizes, but we represent them as `auto`
+      // in the cached Taffy template so they can be resolved per box instance (or per measure call
+      // for fit-content). `stretch` alignment only stretches auto-sized items, so when an intrinsic
+      // keyword is specified on an axis, force `stretch` to fall back to `start` to avoid
+      // incorrectly stretching the item to fill the grid area.
+      let physical_width_positive = if inline_is_horizontal_item {
+        inline_positive_item
+      } else {
+        block_positive_item
+      };
+      let physical_height_positive = if inline_is_horizontal_item {
+        block_positive_item
+      } else {
+        inline_positive_item
+      };
+      if style.width_keyword.is_some()
+        && matches!(
+          taffy_style.justify_self,
+          Some(taffy::style::AlignItems::Stretch)
+        )
+      {
+        taffy_style.justify_self = Some(self.convert_align_items(
+          &AlignItems::FlexStart,
+          physical_width_positive,
+        ));
+      }
+      if style.height_keyword.is_some()
+        && matches!(
+          taffy_style.align_self,
+          Some(taffy::style::AlignItems::Stretch)
+        )
+      {
+        taffy_style.align_self = Some(self.convert_align_items(
+          &AlignItems::FlexStart,
+          physical_height_positive,
+        ));
+      }
     }
 
     // Grid item properties using raw line numbers (swap placements when inline axis is vertical)
@@ -6876,6 +6914,52 @@ mod tests {
     assert!(
       max_width + 0.5 < auto_width,
       "expected max-content grid item width ({max_width:.2}) to be smaller than stretched auto width ({auto_width:.2})",
+    );
+  }
+
+  #[test]
+  fn grid_item_width_keyword_fit_content_prevents_stretch() {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let make_grid = |width_keyword: Option<IntrinsicSizeKeyword>| {
+      let mut grid_style = ComputedStyle::default();
+      grid_style.display = CssDisplay::Grid;
+      grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(200.0))];
+      grid_style.grid_template_rows = vec![GridTrack::Auto];
+      grid_style.justify_items = AlignItems::Stretch;
+      let grid_style = Arc::new(grid_style);
+
+      let mut item_style = ComputedStyle::default();
+      item_style.font_size = 16.0;
+      item_style.width = None;
+      item_style.width_keyword = width_keyword;
+      let item_style = Arc::new(item_style);
+      let text_child = BoxNode::new_text(item_style.clone(), "hello world".into());
+      let item = BoxNode::new_block(item_style, FormattingContextType::Inline, vec![text_child]);
+
+      BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![item])
+    };
+
+    let constraints = LayoutConstraints::definite(200.0, 200.0);
+    let auto_fragment = fc.layout(&make_grid(None), &constraints).unwrap();
+    let fit_fragment = fc
+      .layout(
+        &make_grid(Some(IntrinsicSizeKeyword::FitContent { limit: None })),
+        &constraints,
+      )
+      .unwrap();
+
+    assert_eq!(auto_fragment.children.len(), 1);
+    assert_eq!(fit_fragment.children.len(), 1);
+    let auto_width = auto_fragment.children[0].bounds.width();
+    let fit_width = fit_fragment.children[0].bounds.width();
+    assert!(
+      (auto_width - 200.0).abs() < 0.1,
+      "expected auto grid item to stretch to 200px, got {auto_width:.2}"
+    );
+    assert!(
+      fit_width + 0.5 < auto_width,
+      "expected fit-content grid item width ({fit_width:.2}) to be smaller than stretched auto width ({auto_width:.2})",
     );
   }
 
