@@ -8444,7 +8444,7 @@ mod filter_primitive_region_override_tests {
   #[test]
   fn primitive_region_partial_override_inherits_filter_region_without_unit_reinterpretation() {
     let cache = ImageCache::new();
-    let svg = "<svg xmlns='http://www.w3.org/2000/svg'><filter id='f' filterUnits='objectBoundingBox' x='-0.5' y='-0.5' width='2' height='2'><feFlood x='5'/></filter></svg>";
+    let svg = "<svg xmlns='http://www.w3.org/2000/svg'><filter id='f' filterUnits='objectBoundingBox' x='-0.5' y='-0.5' width='2' height='2'><feFlood x='-5'/></filter></svg>";
     let filter = parse_filter_definition(svg, Some("f"), &cache).expect("filter");
 
     let mut pixmap = new_pixmap(30, 30).unwrap();
@@ -8461,7 +8461,7 @@ mod filter_primitive_region_override_tests {
   #[test]
   fn percent_filter_region_still_allows_partial_overrides() {
     let cache = ImageCache::new();
-    let svg = "<svg xmlns='http://www.w3.org/2000/svg'><filter id='f' filterUnits='objectBoundingBox' x='-50%' y='-50%' width='200%' height='200%'><feFlood x='6'/></filter></svg>";
+    let svg = "<svg xmlns='http://www.w3.org/2000/svg'><filter id='f' filterUnits='objectBoundingBox' x='-50%' y='-50%' width='200%' height='200%'><feFlood x='-4'/></filter></svg>";
     let filter = parse_filter_definition(svg, Some("f"), &cache).expect("filter");
 
     let mut pixmap = new_pixmap(30, 30).unwrap();
