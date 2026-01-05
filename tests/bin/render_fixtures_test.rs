@@ -140,6 +140,36 @@ fn render_fixtures_writes_png_output() {
 }
 
 #[test]
+fn render_fixtures_help_mentions_determinism_flags() {
+  let output = Command::new(env!("CARGO_BIN_EXE_render_fixtures"))
+    .arg("--help")
+    .output()
+    .expect("run render_fixtures --help");
+
+  assert!(
+    output.status.success(),
+    "render_fixtures --help should exit successfully"
+  );
+
+  // clap writes help to stdout; keep stderr for compatibility with older parsers
+  let help = if output.stderr.is_empty() {
+    String::from_utf8_lossy(&output.stdout)
+  } else {
+    String::from_utf8_lossy(&output.stderr)
+  };
+
+  assert!(
+    help.contains("--repeat")
+      && help.contains("--shuffle")
+      && help.contains("--seed")
+      && help.contains("--fail-on-nondeterminism")
+      && help.contains("--save-variants")
+      && help.contains("--reset-paint-scratch"),
+    "help output should mention determinism flags; got:\n{help}"
+  );
+}
+
+#[test]
 fn render_fixtures_repeat_mode_is_deterministic() {
   let temp = TempDir::new().expect("tempdir");
   let fixtures_dir = temp.path().join("fixtures");
