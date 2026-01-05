@@ -478,7 +478,7 @@ impl AbsoluteLayout {
             &self.font_context,
           )
           .map(|px| content_size_from_box_sizing(px, total_horizontal_spacing, style.box_sizing))
-          .map(|limit| preferred.min(limit.max(preferred_min))),
+          .map(shrink),
         },
       }
     };
@@ -693,9 +693,22 @@ impl AbsoluteLayout {
         .unwrap_or(HeightValue::Auto),
     };
 
+    // When top/height/bottom are specified (and both margins are definite), CSS 2.1 §10.6.4
+    // treats the box as overconstrained and ignores the bottom inset. Mirror that here so
+    // `fit-content` sizing uses the same available-space definition as the constraint equation.
+    let overconstrained_insets = top.is_some()
+      && bottom.is_some()
+      && !matches!(height_value, HeightValue::Auto)
+      && !margin_top_auto
+      && !margin_bottom_auto;
+
     let available_for_shrink = cb_height
       - top.unwrap_or(0.0)
-      - bottom.unwrap_or(0.0)
+      - if overconstrained_insets {
+        0.0
+      } else {
+        bottom.unwrap_or(0.0)
+      }
       - margin_top
       - margin_bottom
       - total_vertical_spacing;
@@ -714,7 +727,7 @@ impl AbsoluteLayout {
             &self.font_context,
           )
           .map(|px| content_size_from_box_sizing(px, total_vertical_spacing, style.box_sizing))
-          .map(|limit| preferred.min(limit.max(preferred_min))),
+          .map(shrink),
         },
       }
     };
@@ -1093,6 +1106,23 @@ mod tests {
   }
 
   #[test]
+  fn layout_absolute_width_min_content_keyword_uses_preferred_min_size() {
+    let layout = AbsoluteLayout::new();
+
+    let mut style = default_style();
+    style.position = Position::Absolute;
+    style.width_keyword = Some(IntrinsicSizeKeyword::MinContent);
+
+    let mut input = AbsoluteLayoutInput::new(style, Size::new(0.0, 0.0), Point::ZERO);
+    input.preferred_min_inline_size = Some(80.0);
+    input.preferred_inline_size = Some(150.0);
+
+    let cb = create_containing_block(100.0, 100.0);
+    let result = layout.layout_absolute(&input, &cb).unwrap();
+    assert_eq!(result.size.width, 80.0);
+  }
+
+  #[test]
   fn layout_absolute_width_max_content_keyword_uses_preferred_size() {
     let layout = AbsoluteLayout::new();
 
@@ -1107,6 +1137,38 @@ mod tests {
     let cb = create_containing_block(100.0, 100.0);
     let result = layout.layout_absolute(&input, &cb).unwrap();
     assert_eq!(result.size.width, 150.0);
+  }
+
+  #[test]
+  fn layout_absolute_width_fit_content_keyword_shrinks_even_with_fixed_insets_for_non_replaced() {
+    let layout = AbsoluteLayout::new();
+    let cb = create_containing_block(300.0, 100.0);
+
+    // Baseline: width:auto with both insets specified fills for non-replaced boxes.
+    let mut style = default_style();
+    style.position = Position::Absolute;
+    style.left = LengthOrAuto::px(50.0);
+    style.right = LengthOrAuto::px(50.0);
+    style.width = LengthOrAuto::Auto;
+
+    let mut input = AbsoluteLayoutInput::new(style, Size::new(0.0, 0.0), Point::ZERO);
+    input.preferred_min_inline_size = Some(50.0);
+    input.preferred_inline_size = Some(80.0);
+    let result = layout.layout_absolute(&input, &cb).unwrap();
+    assert_eq!(result.size.width, 200.0);
+
+    // `fit-content` must shrink-to-fit even for non-replaced boxes.
+    let mut style = default_style();
+    style.position = Position::Absolute;
+    style.left = LengthOrAuto::px(50.0);
+    style.right = LengthOrAuto::px(50.0);
+    style.width_keyword = Some(IntrinsicSizeKeyword::FitContent { limit: None });
+
+    let mut input = AbsoluteLayoutInput::new(style, Size::new(0.0, 0.0), Point::ZERO);
+    input.preferred_min_inline_size = Some(50.0);
+    input.preferred_inline_size = Some(80.0);
+    let result = layout.layout_absolute(&input, &cb).unwrap();
+    assert_eq!(result.size.width, 80.0);
   }
 
   #[test]
@@ -1145,6 +1207,66 @@ mod tests {
     let cb = create_containing_block(200.0, 100.0);
     let result = layout.layout_absolute(&input, &cb).unwrap();
     assert_eq!(result.size.width, 150.0);
+  }
+
+  #[test]
+  fn layout_absolute_max_width_min_content_keyword_clamps_width() {
+    let layout = AbsoluteLayout::new();
+
+    let mut style = default_style();
+    style.position = Position::Absolute;
+    style.width = LengthOrAuto::px(200.0);
+    style.max_width_keyword = Some(IntrinsicSizeKeyword::MinContent);
+
+    let mut input = AbsoluteLayoutInput::new(style, Size::new(0.0, 0.0), Point::ZERO);
+    input.preferred_min_inline_size = Some(80.0);
+    input.preferred_inline_size = Some(150.0);
+
+    let cb = create_containing_block(300.0, 100.0);
+    let result = layout.layout_absolute(&input, &cb).unwrap();
+    assert_eq!(result.size.width, 80.0);
+  }
+
+  #[test]
+  fn layout_absolute_aspect_ratio_uses_keyword_width_when_height_is_auto() {
+    let layout = AbsoluteLayout::new();
+
+    let mut style = default_style();
+    style.position = Position::Absolute;
+    style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+    style.height = LengthOrAuto::Auto;
+    style.aspect_ratio = crate::style::types::AspectRatio::Ratio(2.0);
+
+    let mut input = AbsoluteLayoutInput::new(style, Size::new(0.0, 0.0), Point::ZERO);
+    input.preferred_min_inline_size = Some(80.0);
+    input.preferred_inline_size = Some(150.0);
+
+    let cb = create_containing_block(300.0, 300.0);
+    let result = layout.layout_absolute(&input, &cb).unwrap();
+    assert_eq!(result.size.width, 150.0);
+    assert_eq!(result.size.height, 75.0);
+  }
+
+  #[test]
+  fn layout_absolute_aspect_ratio_does_not_override_when_both_axes_use_keywords() {
+    let layout = AbsoluteLayout::new();
+
+    let mut style = default_style();
+    style.position = Position::Absolute;
+    style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+    style.height_keyword = Some(IntrinsicSizeKeyword::MinContent);
+    style.aspect_ratio = crate::style::types::AspectRatio::Ratio(2.0);
+
+    let mut input = AbsoluteLayoutInput::new(style, Size::new(0.0, 0.0), Point::ZERO);
+    input.preferred_min_inline_size = Some(80.0);
+    input.preferred_inline_size = Some(150.0);
+    input.preferred_min_block_size = Some(80.0);
+    input.preferred_block_size = Some(100.0);
+
+    let cb = create_containing_block(300.0, 300.0);
+    let result = layout.layout_absolute(&input, &cb).unwrap();
+    assert_eq!(result.size.width, 150.0);
+    assert_eq!(result.size.height, 80.0);
   }
 
   #[test]
