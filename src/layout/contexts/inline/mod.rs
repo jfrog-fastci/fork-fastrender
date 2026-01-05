@@ -724,7 +724,7 @@ impl InlineFormattingContext {
               unicode_bidi: child.style.unicode_bidi,
             };
             current_items.push(InlineItem::Floating(floating));
-            whitespace.note_content();
+            whitespace.note_ignorable();
             continue;
           }
           if formatting_context.is_some() {
@@ -958,7 +958,7 @@ impl InlineFormattingContext {
               unicode_bidi: child.style.unicode_bidi,
             };
             current_items.push(InlineItem::Floating(floating));
-            whitespace.note_content();
+            whitespace.note_ignorable();
             continue;
           }
           if formatting_context.is_some() {
@@ -1539,7 +1539,7 @@ impl InlineFormattingContext {
               unicode_bidi: child.style.unicode_bidi,
             };
             items.push(InlineItem::Floating(floating));
-            whitespace.note_content();
+            whitespace.note_ignorable();
             continue;
           }
           if child.formatting_context().is_some() {
@@ -1752,7 +1752,7 @@ impl InlineFormattingContext {
               unicode_bidi: child.style.unicode_bidi,
             };
             items.push(InlineItem::Floating(floating));
-            whitespace.note_content();
+            whitespace.note_ignorable();
             continue;
           }
           if child.formatting_context().is_some() {
@@ -13977,6 +13977,79 @@ mod tests {
       matches!(&items[2], InlineItem::Text(t) if t.text == "world"),
       "expected text after collapsed space"
     );
+  }
+
+  #[test]
+  fn leading_collapsible_space_after_inline_float_at_stream_start_is_dropped() {
+    let ifc = InlineFormattingContext::new();
+    let mut float_style = ComputedStyle::default();
+    float_style.display = Display::Inline;
+    float_style.float = crate::style::float::Float::Left;
+    float_style.width = Some(Length::px(40.0));
+    float_style.height = Some(Length::px(20.0));
+    float_style.width_keyword = None;
+    float_style.height_keyword = None;
+    let float_node = BoxNode::new_inline(Arc::new(float_style), vec![]);
+
+    let mut style = ComputedStyle::default();
+    style.white_space = WhiteSpace::Normal;
+    let text_style = Arc::new(style);
+    let root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![float_node, BoxNode::new_text(text_style, " world".to_string())],
+    );
+
+    let items = ifc
+      .collect_inline_items(&root, 800.0, Some(800.0))
+      .expect("collect items");
+    let texts: Vec<String> = items
+      .iter()
+      .filter_map(|item| match item {
+        InlineItem::Text(t) => Some(t.text.clone()),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(texts, vec!["world"]);
+  }
+
+  #[test]
+  fn collapsible_space_survives_across_inline_float_boundary_with_leading_space() {
+    let ifc = InlineFormattingContext::new();
+    let mut float_style = ComputedStyle::default();
+    float_style.display = Display::Inline;
+    float_style.float = crate::style::float::Float::Left;
+    float_style.width = Some(Length::px(40.0));
+    float_style.height = Some(Length::px(20.0));
+    float_style.width_keyword = None;
+    float_style.height_keyword = None;
+    let float_node = BoxNode::new_inline(Arc::new(float_style), vec![]);
+
+    let mut style = ComputedStyle::default();
+    style.white_space = WhiteSpace::Normal;
+    let text_style = Arc::new(style);
+    let root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![
+        BoxNode::new_text(text_style.clone(), "Hello".to_string()),
+        float_node,
+        BoxNode::new_text(text_style, " world".to_string()),
+      ],
+    );
+
+    let items = ifc
+      .collect_inline_items(&root, 800.0, Some(800.0))
+      .expect("collect items");
+    let texts: Vec<String> = items
+      .iter()
+      .filter_map(|item| match item {
+        InlineItem::Text(t) => Some(t.text.clone()),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(texts, vec!["Hello", " ", "world"]);
+    assert_eq!(texts.concat(), "Hello world");
   }
 
   #[test]
