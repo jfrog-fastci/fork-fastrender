@@ -2392,14 +2392,16 @@ mod tests {
 
   #[test]
   fn import_ignored_when_appearing_after_style_rule() {
+    let import_url = "https://example.com/import-after-style/a.css";
     let loader = RecordingLoader::new([(
-      "https://example.com/a.css".to_string(),
+      import_url.to_string(),
       ".imported { color: blue; }".to_string(),
     )]);
 
-    let stylesheet =
-      parse_stylesheet(r#"body { color: red; } @import "https://example.com/a.css";"#)
-        .expect("stylesheet parses");
+    let stylesheet = parse_stylesheet(&format!(
+      r#"body {{ color: red; }} @import "{import_url}";"#
+    ))
+    .expect("stylesheet parses");
     let media_ctx = MediaContext::screen(800.0, 600.0);
 
     let resolved = stylesheet
@@ -2423,13 +2425,14 @@ mod tests {
 
   #[test]
   fn layer_statement_does_not_block_imports() {
+    let import_url = "https://example.com/layer-statement/a.css";
     let loader = RecordingLoader::new([(
-      "https://example.com/a.css".to_string(),
+      import_url.to_string(),
       ".imported { color: blue; }".to_string(),
     )]);
 
     let stylesheet =
-      parse_stylesheet(r#"@layer base; @import "https://example.com/a.css";"#).expect("parses");
+      parse_stylesheet(&format!(r#"@layer base; @import "{import_url}";"#)).expect("parses");
     let media_ctx = MediaContext::screen(800.0, 600.0);
 
     let resolved = stylesheet
@@ -2442,20 +2445,21 @@ mod tests {
     );
     assert_eq!(
       loader.requests().as_slice(),
-      &["https://example.com/a.css".to_string()],
+      &[import_url.to_string()],
       "@import should still be fetched after blockless @layer statements"
     );
   }
 
   #[test]
   fn empty_layer_block_blocks_imports() {
+    let import_url = "https://example.com/empty-layer-block/a.css";
     let loader = RecordingLoader::new([(
-      "https://example.com/a.css".to_string(),
+      import_url.to_string(),
       ".imported { color: blue; }".to_string(),
     )]);
 
     let stylesheet =
-      parse_stylesheet(r#"@layer base {} @import "https://example.com/a.css";"#).expect("parses");
+      parse_stylesheet(&format!(r#"@layer base {{}} @import "{import_url}";"#)).expect("parses");
     let media_ctx = MediaContext::screen(800.0, 600.0);
 
     let resolved = stylesheet
@@ -2479,20 +2483,22 @@ mod tests {
 
   #[test]
   fn layer_block_blocks_subsequent_imports() {
+    let first_import_url = "https://example.com/layer-block/a.css";
+    let second_import_url = "https://example.com/layer-block/b.css";
     let loader = RecordingLoader::new([
       (
-        "https://example.com/a.css".to_string(),
+        first_import_url.to_string(),
         ".from-a { color: blue; }".to_string(),
       ),
       (
-        "https://example.com/b.css".to_string(),
+        second_import_url.to_string(),
         ".from-b { color: green; }".to_string(),
       ),
     ]);
 
-    let stylesheet = parse_stylesheet(
-      r#"@import "https://example.com/a.css"; @layer base { .x { color: red; } } @import "https://example.com/b.css";"#,
-    )
+    let stylesheet = parse_stylesheet(&format!(
+      r#"@import "{first_import_url}"; @layer base {{ .x {{ color: red; }} }} @import "{second_import_url}";"#,
+    ))
     .expect("parses");
     let media_ctx = MediaContext::screen(800.0, 600.0);
 
@@ -2514,7 +2520,7 @@ mod tests {
     );
     assert_eq!(
       loader.requests().as_slice(),
-      &["https://example.com/a.css".to_string()],
+      &[first_import_url.to_string()],
       "ignored imports should not be fetched"
     );
   }
