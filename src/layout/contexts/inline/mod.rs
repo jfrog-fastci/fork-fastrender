@@ -7496,21 +7496,28 @@ fn apply_break_properties(
       result.extend(grapheme_boundary_breaks(text, BreakOpportunityKind::Normal));
     }
     WordBreak::KeepAll => {
-      result.retain(|brk| {
+      // `word-break: keep-all` suppresses line breaks between CJK characters, but CSS Text allows
+      // UAs to relax that restriction when there are no other acceptable break points in the line
+      // (CSS Text 3 § Overflow Wrapping, `overflow-wrap: normal`). Model this by downgrading those
+      // break opportunities to emergency-only rather than removing them entirely.
+      for brk in &mut result {
         if brk.break_type == BreakType::Mandatory {
-          return true;
+          continue;
         }
         if brk.kind == BreakOpportunityKind::Emergency {
-          return true;
+          continue;
         }
+
         let pos = brk.byte_offset.min(text.len());
         let prev = text[..pos].chars().next_back();
         let next = text[pos..].chars().next();
-        !matches!(
+        if matches!(
           (prev, next),
           (Some(prev), Some(next)) if is_cjk_character(prev) && is_cjk_character(next)
-        )
-      });
+        ) {
+          brk.kind = BreakOpportunityKind::Emergency;
+        }
+      }
     }
     WordBreak::BreakWord => {
       result.extend(grapheme_boundary_breaks(
@@ -16478,6 +16485,31 @@ mod tests {
   }
 
   #[test]
+  fn word_break_keep_all_can_break_cjk_when_overflowing() {
+    // CSS Text 3 allows UAs to relax `word-break: keep-all` when there are no other acceptable
+    // break points in the line (see `overflow-wrap: normal`). Ensure we can still break long CJK
+    // runs rather than overflowing forever.
+    let mut text_style = ComputedStyle::default();
+    text_style.word_break = WordBreak::KeepAll;
+    text_style.white_space = WhiteSpace::Normal;
+    let root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![BoxNode::new_text(
+        Arc::new(text_style),
+        "这是一些中文文本用于换行测试".to_string(),
+      )],
+    );
+    let constraints = LayoutConstraints::definite_width(40.0);
+    let ifc = InlineFormattingContext::new();
+    let fragment = ifc.layout(&root, &constraints).expect("layout");
+    assert!(
+      fragment.children.len() > 1,
+      "keep-all should still allow breaking long CJK runs to avoid overflow"
+    );
+  }
+
+  #[test]
   fn line_break_anywhere_breaks_long_words() {
     let mut text_style = ComputedStyle::default();
     text_style.line_break = LineBreak::Anywhere;
@@ -17579,21 +17611,47 @@ mod tests {
   }
 
   #[test]
-  fn word_break_keep_all_only_suppresses_cjk_inter_character_breaks() {
+  fn word_break_keep_all_downgrades_cjk_inter_character_breaks_to_emergency() {
+    use crate::text::line_break::BreakOpportunityKind;
+
     let text = "你好/世界";
     // Use explicit breaks so the test doesn't depend on UAX#14's specific break table for '/'.
     let breaks = vec![
-      BreakOpportunity::allowed(3),  // 你|好 (CJK-CJK) should be removed
+      BreakOpportunity::allowed(3),  // 你|好 (CJK-CJK) should be emergency-only
       BreakOpportunity::allowed(6),  // 好|/ should remain
       BreakOpportunity::allowed(7),  // /|世 should remain
-      BreakOpportunity::allowed(10), // 世|界 (CJK-CJK) should be removed
+      BreakOpportunity::allowed(10), // 世|界 (CJK-CJK) should be emergency-only
       BreakOpportunity::allowed(13), // end of text
     ];
 
     let result =
       apply_break_properties(text, breaks, WordBreak::KeepAll, OverflowWrap::Normal, true);
     let offsets: Vec<usize> = result.iter().map(|b| b.byte_offset).collect();
-    assert_eq!(offsets, vec![6, 7, 13]);
+    assert_eq!(offsets, vec![3, 6, 7, 10, 13]);
+
+    for &offset in &[3usize, 10usize] {
+      let brk = result
+        .iter()
+        .find(|b| b.byte_offset == offset)
+        .expect("break opportunity exists");
+      assert_eq!(
+        brk.kind,
+        BreakOpportunityKind::Emergency,
+        "CJK inter-character breaks should be emergency-only under keep-all"
+      );
+    }
+
+    for &offset in &[6usize, 7usize, 13usize] {
+      let brk = result
+        .iter()
+        .find(|b| b.byte_offset == offset)
+        .expect("break opportunity exists");
+      assert_eq!(
+        brk.kind,
+        BreakOpportunityKind::Normal,
+        "non-CJK breaks should remain normal under keep-all"
+      );
+    }
   }
 
   #[test]
