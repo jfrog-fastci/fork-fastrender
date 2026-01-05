@@ -414,6 +414,23 @@ enum Axis {
   Vertical,
 }
 
+#[derive(Clone, Copy)]
+enum FitContentAvailable {
+  Definite(f32),
+  MinContent,
+  MaxContent,
+}
+
+impl FitContentAvailable {
+  fn available_border_box(self, min: f32, max: f32) -> f32 {
+    match self {
+      Self::Definite(v) => v.max(0.0),
+      Self::MinContent => min.max(0.0),
+      Self::MaxContent => max.max(0.0),
+    }
+  }
+}
+
 /// Flexbox Formatting Context
 ///
 /// Delegates layout to Taffy's flexbox algorithm. This is a stateless struct
@@ -4207,7 +4224,7 @@ impl FlexFormattingContext {
     box_node: &BoxNode,
     root_style: &ComputedStyle,
     root_children: &[&BoxNode],
-    _constraints: &LayoutConstraints,
+    constraints: &LayoutConstraints,
     node_map: &mut FxHashMap<*const BoxNode, NodeId>,
   ) -> Result<NodeId, LayoutError> {
     let mut deadline_counter = 0usize;
@@ -4252,6 +4269,13 @@ impl FlexFormattingContext {
       let mut resolved_style = child_style.0.clone();
       self.apply_flex_intrinsic_size_keywords(child, false, &mut resolved_style)?;
       self.apply_flex_auto_min_size(child, false, Some(root_style), &mut resolved_style)?;
+      self.apply_flex_fit_content_keywords(
+        child,
+        false,
+        Some(root_style),
+        constraints,
+        &mut resolved_style,
+      )?;
       let node = taffy_tree
         .new_leaf_with_context(resolved_style, child as *const BoxNode)
         .map_err(|e| {
@@ -4671,6 +4695,330 @@ impl FlexFormattingContext {
     }
 
     Ok(())
+  }
+
+  /// Resolves `fit-content` sizing keywords for a flex item.
+  ///
+  /// Taffy asks leaf nodes for their flex base size with `AvailableSpace::MaxContent`. If we rely
+  /// solely on the measure callback, `width/height: fit-content` collapses to max-content during
+  /// flex sizing and does not clamp against the flex container. Pre-resolve fit-content against
+  /// the container's content-box size so flex shrink/grow uses the correct base size.
+  fn apply_flex_fit_content_keywords(
+    &self,
+    box_node: &BoxNode,
+    is_root: bool,
+    containing_flex: Option<&ComputedStyle>,
+    constraints: &LayoutConstraints,
+    taffy_style: &mut taffy::style::Style,
+  ) -> Result<(), LayoutError> {
+    if is_root {
+      return Ok(());
+    }
+
+    let style = box_node.style.as_ref();
+    let needs = style
+      .width_keyword
+      .is_some_and(|kw| matches!(kw, IntrinsicSizeKeyword::FitContent { .. }))
+      || style
+        .height_keyword
+        .is_some_and(|kw| matches!(kw, IntrinsicSizeKeyword::FitContent { .. }))
+      || style
+        .min_width_keyword
+        .is_some_and(|kw| matches!(kw, IntrinsicSizeKeyword::FitContent { .. }))
+      || style
+        .min_height_keyword
+        .is_some_and(|kw| matches!(kw, IntrinsicSizeKeyword::FitContent { .. }))
+      || style
+        .max_width_keyword
+        .is_some_and(|kw| matches!(kw, IntrinsicSizeKeyword::FitContent { .. }))
+      || style
+        .max_height_keyword
+        .is_some_and(|kw| matches!(kw, IntrinsicSizeKeyword::FitContent { .. }));
+    if !needs {
+      return Ok(());
+    }
+
+    let item_fc_type = box_node
+      .formatting_context()
+      .unwrap_or(FormattingContextType::Block);
+    let item_fc = self.factory.get(item_fc_type);
+
+    let avail_w = self.fit_content_available_for_axis(Axis::Horizontal, containing_flex, constraints);
+    let avail_h = self.fit_content_available_for_axis(Axis::Vertical, containing_flex, constraints);
+
+    // Padding/border percentages resolve against the containing block's physical width.
+    let inline_base = match avail_w {
+      FitContentAvailable::Definite(v) => v.max(0.0),
+      _ => constraints
+        .inline_percentage_base
+        .or(constraints.width())
+        .unwrap_or(self.viewport_size.width)
+        .max(0.0),
+    };
+
+    let axis_edges = |axis: Axis| -> f32 {
+      let padding_left = self.resolve_length_for_width(style.padding_left, inline_base, style);
+      let padding_right = self.resolve_length_for_width(style.padding_right, inline_base, style);
+      let padding_top = self.resolve_length_for_width(style.padding_top, inline_base, style);
+      let padding_bottom = self.resolve_length_for_width(style.padding_bottom, inline_base, style);
+      let border_left =
+        self.resolve_length_for_width(style.used_border_left_width(), inline_base, style);
+      let border_right =
+        self.resolve_length_for_width(style.used_border_right_width(), inline_base, style);
+      let border_top = self.resolve_length_for_width(style.used_border_top_width(), inline_base, style);
+      let border_bottom =
+        self.resolve_length_for_width(style.used_border_bottom_width(), inline_base, style);
+      match axis {
+        Axis::Horizontal => padding_left + padding_right + border_left + border_right,
+        Axis::Vertical => padding_top + padding_bottom + border_top + border_bottom,
+      }
+    };
+
+    let mut intrinsic_w: Option<(f32, f32)> = None;
+    let mut intrinsic_h: Option<(f32, f32)> = None;
+    let resolve_fit_content = |axis: Axis,
+                              limit: Option<Length>,
+                              available: FitContentAvailable,
+                              cache: &mut Option<(f32, f32)>|
+     -> Result<f32, LayoutError> {
+      let (min_intrinsic, max_intrinsic) = match cache {
+        Some(pair) => *pair,
+        None => {
+          let sizes = self.compute_intrinsic_sizes_for_axis(box_node, style, &item_fc, axis)?;
+          *cache = Some(sizes);
+          sizes
+        }
+      };
+      let min_intrinsic = min_intrinsic.max(0.0);
+      let max_intrinsic = max_intrinsic.max(0.0);
+      let available_border_box = available.available_border_box(min_intrinsic, max_intrinsic);
+
+      let preferred_border_box = match limit {
+        None => available_border_box,
+        Some(limit) => {
+          let resolved = self.resolve_length_for_width(limit, available_border_box, style).max(0.0);
+          if style.box_sizing == BoxSizing::ContentBox {
+            (resolved + axis_edges(axis)).max(0.0)
+          } else {
+            resolved
+          }
+        }
+      };
+
+      Ok(
+        crate::layout::utils::clamp_with_order(preferred_border_box, min_intrinsic, max_intrinsic)
+          .max(0.0),
+      )
+    };
+
+    if let Some(IntrinsicSizeKeyword::FitContent { limit }) = style.min_width_keyword {
+      let resolved = resolve_fit_content(Axis::Horizontal, limit, avail_w, &mut intrinsic_w)?;
+      taffy_style.min_size.width = Dimension::length(resolved);
+    }
+    if let Some(IntrinsicSizeKeyword::FitContent { limit }) = style.max_width_keyword {
+      let resolved = resolve_fit_content(Axis::Horizontal, limit, avail_w, &mut intrinsic_w)?;
+      taffy_style.max_size.width = Dimension::length(resolved);
+    }
+    if let Some(IntrinsicSizeKeyword::FitContent { limit }) = style.width_keyword {
+      let resolved = resolve_fit_content(Axis::Horizontal, limit, avail_w, &mut intrinsic_w)?;
+      taffy_style.size.width = Dimension::length(resolved);
+    }
+
+    if let Some(IntrinsicSizeKeyword::FitContent { limit }) = style.min_height_keyword {
+      let resolved = resolve_fit_content(Axis::Vertical, limit, avail_h, &mut intrinsic_h)?;
+      taffy_style.min_size.height = Dimension::length(resolved);
+    }
+    if let Some(IntrinsicSizeKeyword::FitContent { limit }) = style.max_height_keyword {
+      let resolved = resolve_fit_content(Axis::Vertical, limit, avail_h, &mut intrinsic_h)?;
+      taffy_style.max_size.height = Dimension::length(resolved);
+    }
+    if let Some(IntrinsicSizeKeyword::FitContent { limit }) = style.height_keyword {
+      let resolved = resolve_fit_content(Axis::Vertical, limit, avail_h, &mut intrinsic_h)?;
+      taffy_style.size.height = Dimension::length(resolved);
+    }
+
+    Ok(())
+  }
+
+  fn clear_intrinsic_size_keywords(style: &mut ComputedStyle) {
+    style.width_keyword = None;
+    style.height_keyword = None;
+    style.min_width_keyword = None;
+    style.min_height_keyword = None;
+    style.max_width_keyword = None;
+    style.max_height_keyword = None;
+  }
+
+  fn compute_intrinsic_sizes_for_axis(
+    &self,
+    box_node: &BoxNode,
+    style: &ComputedStyle,
+    fc: &Arc<dyn FormattingContext>,
+    axis: Axis,
+  ) -> Result<(f32, f32), LayoutError> {
+    let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+    let axis_is_inline = match axis {
+      Axis::Horizontal => inline_is_horizontal,
+      Axis::Vertical => !inline_is_horizontal,
+    };
+
+    let compute_sizes = |node: &BoxNode| -> Result<(f32, f32), LayoutError> {
+      if axis_is_inline {
+        fc.compute_intrinsic_inline_sizes(node)
+      } else {
+        let min = fc.compute_intrinsic_block_size(node, IntrinsicSizingMode::MinContent)?;
+        let max = match fc.compute_intrinsic_block_size(node, IntrinsicSizingMode::MaxContent) {
+          Ok(value) => value,
+          Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+          Err(_) => min,
+        };
+        Ok((min, max))
+      }
+    };
+
+    let needs_override = style.width_keyword.is_some()
+      || style.height_keyword.is_some()
+      || style.min_width_keyword.is_some()
+      || style.min_height_keyword.is_some()
+      || style.max_width_keyword.is_some()
+      || style.max_height_keyword.is_some();
+    if !needs_override {
+      return compute_sizes(box_node);
+    }
+
+    let mut override_style = style.clone();
+    Self::clear_intrinsic_size_keywords(&mut override_style);
+    let override_style = Arc::new(override_style);
+    let box_id = box_node.id();
+    if box_id != 0 {
+      return crate::layout::style_override::with_style_override(box_id, override_style, || {
+        compute_sizes(box_node)
+      });
+    }
+
+    // Some tests use `id=0` for all boxes, which would collide in the override stack. Deep clone
+    // in that case.
+    let mut cloned = box_node.clone();
+    cloned.style = override_style;
+    compute_sizes(&cloned)
+  }
+
+  fn fit_content_available_for_axis(
+    &self,
+    axis: Axis,
+    containing_flex: Option<&ComputedStyle>,
+    constraints: &LayoutConstraints,
+  ) -> FitContentAvailable {
+    let space = match axis {
+      Axis::Horizontal => constraints
+        .used_border_box_width
+        .map(CrateAvailableSpace::Definite)
+        .unwrap_or(constraints.available_width),
+      Axis::Vertical => constraints
+        .used_border_box_height
+        .map(CrateAvailableSpace::Definite)
+        .unwrap_or(constraints.available_height),
+    };
+
+    let mut value = match space {
+      CrateAvailableSpace::Definite(v) => FitContentAvailable::Definite(v.max(0.0)),
+      CrateAvailableSpace::MinContent => FitContentAvailable::MinContent,
+      CrateAvailableSpace::MaxContent => FitContentAvailable::MaxContent,
+      CrateAvailableSpace::Indefinite => FitContentAvailable::MaxContent,
+    };
+
+    // For flex items, `fit-content` clamps against the flex container's content box size.
+    if let (FitContentAvailable::Definite(mut definite), Some(container_style)) =
+      (value, containing_flex)
+    {
+      // Padding percentages always resolve against the container's inline size (CSS2.1 §8.1),
+      // which corresponds to the horizontal axis even in vertical writing modes.
+      let percentage_base = match axis {
+        Axis::Horizontal => definite,
+        Axis::Vertical => constraints
+          .inline_percentage_base
+          .or(constraints.used_border_box_width)
+          .or(constraints.width())
+          .unwrap_or(self.viewport_size.width)
+          .max(0.0),
+      };
+      let border_left = self.resolve_length_for_width(
+        container_style.used_border_left_width(),
+        percentage_base,
+        container_style,
+      );
+      let border_right = self.resolve_length_for_width(
+        container_style.used_border_right_width(),
+        percentage_base,
+        container_style,
+      );
+      let border_top = self.resolve_length_for_width(
+        container_style.used_border_top_width(),
+        percentage_base,
+        container_style,
+      );
+      let border_bottom = self.resolve_length_for_width(
+        container_style.used_border_bottom_width(),
+        percentage_base,
+        container_style,
+      );
+      let padding_left = self.resolve_length_for_width(
+        container_style.padding_left,
+        percentage_base,
+        container_style,
+      );
+      let padding_right = self.resolve_length_for_width(
+        container_style.padding_right,
+        percentage_base,
+        container_style,
+      );
+      let padding_top = self.resolve_length_for_width(
+        container_style.padding_top,
+        percentage_base,
+        container_style,
+      );
+      let padding_bottom = self.resolve_length_for_width(
+        container_style.padding_bottom,
+        percentage_base,
+        container_style,
+      );
+
+      let reserve_scroll_x = matches!(container_style.overflow_x, CssOverflow::Scroll)
+        || (container_style.scrollbar_gutter.stable
+          && matches!(
+            container_style.overflow_x,
+            CssOverflow::Auto | CssOverflow::Scroll
+          ));
+      let reserve_scroll_y = matches!(container_style.overflow_y, CssOverflow::Scroll)
+        || (container_style.scrollbar_gutter.stable
+          && matches!(
+            container_style.overflow_y,
+            CssOverflow::Auto | CssOverflow::Scroll
+          ));
+      let scrollbar_width = resolve_scrollbar_width(container_style);
+
+      let inset = match axis {
+        Axis::Horizontal => {
+          let mut inset = border_left + border_right + padding_left + padding_right;
+          if reserve_scroll_y {
+            inset += scrollbar_width;
+          }
+          inset
+        }
+        Axis::Vertical => {
+          let mut inset = border_top + border_bottom + padding_top + padding_bottom;
+          if reserve_scroll_x {
+            inset += scrollbar_width;
+          }
+          inset
+        }
+      };
+
+      definite = (definite - inset).max(0.0);
+      value = FitContentAvailable::Definite(definite);
+    }
+
+    value
   }
 
   /// Applies Flexbox's automatic minimum size (min-width/height:auto) for a specific box instance.
