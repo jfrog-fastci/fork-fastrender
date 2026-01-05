@@ -65,6 +65,7 @@ use crate::style::types::BoxSizing;
 use crate::style::types::CaptionSide;
 use crate::style::types::Direction;
 use crate::style::types::EmptyCells;
+use crate::style::types::IntrinsicSizeKeyword;
 use crate::style::types::TableLayout;
 use crate::style::types::VerticalAlign;
 use crate::style::values::CalcLength;
@@ -1569,15 +1570,28 @@ impl TableStructure {
     let length_is_percent = |len: &crate::style::values::Length| {
       matches!(len.unit, LengthUnit::Percent | LengthUnit::Calc)
     };
+    let keyword_has_percent = |kw: &IntrinsicSizeKeyword| kw.has_percentage();
     style.width.as_ref().map_or(false, |l| length_is_percent(l))
+      || style
+        .width_keyword
+        .as_ref()
+        .map_or(false, |kw| keyword_has_percent(kw))
       || style
         .min_width
         .as_ref()
         .map_or(false, |l| length_is_percent(l))
       || style
+        .min_width_keyword
+        .as_ref()
+        .map_or(false, |kw| keyword_has_percent(kw))
+      || style
         .max_width
         .as_ref()
         .map_or(false, |l| length_is_percent(l))
+      || style
+        .max_width_keyword
+        .as_ref()
+        .map_or(false, |kw| keyword_has_percent(kw))
       || length_is_percent(&style.padding_left)
       || length_is_percent(&style.padding_right)
   }
@@ -4522,13 +4536,25 @@ impl TableFormattingContext {
       let style = &cell_box.style;
       style.width.as_ref().map_or(false, |l| length_is_percent(l))
         || style
+          .width_keyword
+          .as_ref()
+          .map_or(false, |kw| kw.has_percentage())
+        || style
           .min_width
           .as_ref()
           .map_or(false, |l| length_is_percent(l))
         || style
+          .min_width_keyword
+          .as_ref()
+          .map_or(false, |kw| kw.has_percentage())
+        || style
           .max_width
           .as_ref()
           .map_or(false, |l| length_is_percent(l))
+        || style
+          .max_width_keyword
+          .as_ref()
+          .map_or(false, |kw| kw.has_percentage())
         || length_is_percent(&style.padding_left)
         || length_is_percent(&style.padding_right)
     };
@@ -5209,30 +5235,71 @@ impl FormattingContext for TableFormattingContext {
 
     // Honor explicit table width if present.
     let font_size = table_root_style.font_size;
-    let specified_width = table_root_style
-      .width
-      .as_ref()
-      .and_then(|len| resolve_length_against(len, font_size, containing_width));
-    let resolved_min_width = resolve_opt_length_against(
-      table_root_style.min_width.as_ref(),
-      font_size,
-      containing_width,
-    );
-    let resolved_max_width = resolve_opt_length_against(
-      table_root_style.max_width.as_ref(),
-      font_size,
-      containing_width,
-    );
-    let mut min_width = resolve_opt_length_against(
-      table_root_style.min_width.as_ref(),
-      font_size,
-      containing_width,
-    );
-    let max_width = resolve_opt_length_against(
-      table_root_style.max_width.as_ref(),
-      font_size,
-      containing_width,
-    );
+    let mut intrinsic_sizes_for_keywords: Option<(f32, f32)> = None;
+    let mut compute_intrinsic_sizes_for_keywords = || -> Result<(f32, f32), LayoutError> {
+      if let Some(sizes) = intrinsic_sizes_for_keywords {
+        return Ok(sizes);
+      }
+      let compute = || self.compute_intrinsic_inline_sizes(box_node);
+      let sizes = if box_node.id != 0 {
+        let mut override_style = table_root_style.clone();
+        override_style.width = None;
+        override_style.width_keyword = None;
+        override_style.min_width = None;
+        override_style.min_width_keyword = None;
+        override_style.max_width = None;
+        override_style.max_width_keyword = None;
+        crate::layout::style_override::with_style_override(box_node.id, Arc::new(override_style), compute)
+      } else {
+        compute()
+      }?;
+      intrinsic_sizes_for_keywords = Some(sizes);
+      Ok(sizes)
+    };
+
+    let mut resolve_size_keyword = |keyword: IntrinsicSizeKeyword| -> Result<f32, LayoutError> {
+      let (intrinsic_min, intrinsic_max) = compute_intrinsic_sizes_for_keywords()?;
+      let available = containing_width.unwrap_or(intrinsic_max);
+      let resolved = match keyword {
+        IntrinsicSizeKeyword::MinContent => intrinsic_min,
+        IntrinsicSizeKeyword::MaxContent => intrinsic_max,
+        IntrinsicSizeKeyword::FitContent { limit } => match limit {
+          None => intrinsic_max.min(available.max(intrinsic_min)),
+          Some(limit) => {
+            let limit_px =
+              resolve_length_against(&limit, font_size, containing_width).unwrap_or(f32::INFINITY);
+            intrinsic_max.min(limit_px.max(intrinsic_min))
+          }
+        },
+      };
+      Ok(resolved)
+    };
+
+    let specified_width = match table_root_style.width.as_ref() {
+      Some(len) => resolve_length_against(len, font_size, containing_width),
+      None => match table_root_style.width_keyword {
+        Some(keyword) => Some(resolve_size_keyword(keyword)?),
+        None => None,
+      },
+    };
+
+    let resolved_min_width = match table_root_style.min_width_keyword {
+      Some(keyword) => Some(resolve_size_keyword(keyword)?),
+      None => resolve_opt_length_against(table_root_style.min_width.as_ref(), font_size, containing_width),
+    };
+    let resolved_max_width = match table_root_style.max_width_keyword {
+      Some(keyword) => Some(resolve_size_keyword(keyword)?),
+      None => resolve_opt_length_against(table_root_style.max_width.as_ref(), font_size, containing_width),
+    };
+    let resolved_max_width =
+      if let (Some(min_w), Some(max_w)) = (resolved_min_width, resolved_max_width) {
+        Some(max_w.max(min_w))
+      } else {
+        resolved_max_width
+      };
+
+    let mut min_width = resolved_min_width;
+    let max_width = resolved_max_width;
     if caption_pref_width > 0.0 && specified_width.is_none() {
       min_width = Some(min_width.unwrap_or(0.0).max(caption_pref_width));
     }
@@ -7387,19 +7454,16 @@ impl FormattingContext for TableFormattingContext {
         })
         .sum()
     };
-    let mut base_columns = match mode {
-      IntrinsicSizingMode::MinContent => min_sum,
-      IntrinsicSizingMode::MaxContent => max_sum,
-    };
-    if !base_columns.is_finite() {
-      base_columns = if min_sum.is_finite() { min_sum } else { 0.0 };
-    }
+    let mut base_min_columns = if min_sum.is_finite() { min_sum } else { 0.0 };
+    let mut base_max_columns = if max_sum.is_finite() { max_sum } else { base_min_columns };
     if distribution_mode == DistributionMode::Fixed {
       if let Some(base) = percent_base {
-        base_columns = base_columns.max(base);
+        base_min_columns = base_min_columns.max(base);
+        base_max_columns = base_max_columns.max(base);
       }
     }
-    let base = base_columns + spacing + edges;
+    let base_min = base_min_columns + spacing + edges;
+    let base_max = base_max_columns + spacing + edges;
     let log_ids = runtime::runtime_toggles()
       .usize_list("FASTR_LOG_INTRINSIC_IDS")
       .unwrap_or_default();
@@ -7420,6 +7484,7 @@ impl FormattingContext for TableFormattingContext {
       );
     }
     let mut caption_min: f32 = 0.0;
+    let mut caption_max: f32 = 0.0;
     for child in table_box.children.iter().filter(|child| {
       child.style.running_position.is_none()
         && !matches!(
@@ -7434,32 +7499,57 @@ impl FormattingContext for TableFormattingContext {
       let res = match fc_type {
         FormattingContextType::Table => {
           let fc = self.factory.create(fc_type);
-          fc.compute_intrinsic_inline_size(child, mode)
+          fc.compute_intrinsic_inline_sizes(child)
         }
         _ => self
           .factory
-          .with_fc(fc_type, |fc| fc.compute_intrinsic_inline_size(child, mode)),
+          .with_fc(fc_type, |fc| fc.compute_intrinsic_inline_sizes(child)),
       };
       match res {
-        Ok(w) => caption_min = caption_min.max(w),
+        Ok((min, max)) => {
+          caption_min = caption_min.max(min);
+          caption_max = caption_max.max(max);
+        }
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
         Err(_) => {}
       }
     }
-    let width = base.max(caption_min);
+    let intrinsic_min = base_min.max(caption_min);
+    let intrinsic_max = base_max.max(caption_max);
+    let width = match mode {
+      IntrinsicSizingMode::MinContent => intrinsic_min,
+      IntrinsicSizingMode::MaxContent => intrinsic_max,
+    };
+
+    let resolve_keyword_constraint = |keyword: IntrinsicSizeKeyword| -> Option<f32> {
+      Some(match keyword {
+        IntrinsicSizeKeyword::MinContent => intrinsic_min,
+        IntrinsicSizeKeyword::MaxContent => intrinsic_max,
+        IntrinsicSizeKeyword::FitContent { limit } => match limit {
+          None => intrinsic_max,
+          Some(limit) => {
+            let limit_px =
+              resolve_length_against(&limit, font_size, None).unwrap_or(f32::INFINITY);
+            intrinsic_max.min(limit_px.max(intrinsic_min))
+          }
+        },
+      })
+    };
 
     // Apply authored min/max width to intrinsic size per CSS preferred width clamping.
-    let font_size = table_root_style.font_size;
-    let min_w = resolve_opt_length_against(
-      table_root_style.min_width.as_ref(),
-      font_size,
-      None, /* no containing width */
-    );
-    let max_w = resolve_opt_length_against(
-      table_root_style.max_width.as_ref(),
-      font_size,
-      None, /* no containing width */
-    );
+    let min_w = table_root_style
+      .min_width_keyword
+      .and_then(resolve_keyword_constraint)
+      .or_else(|| resolve_opt_length_against(table_root_style.min_width.as_ref(), font_size, None));
+    let max_w = table_root_style
+      .max_width_keyword
+      .and_then(resolve_keyword_constraint)
+      .or_else(|| resolve_opt_length_against(table_root_style.max_width.as_ref(), font_size, None));
+    let max_w = if let (Some(min_w), Some(max_w)) = (min_w, max_w) {
+      Some(max_w.max(min_w))
+    } else {
+      max_w
+    };
     let clamped = clamp_to_min_max(width, min_w, max_w);
 
     Ok(clamped.max(0.0))
@@ -7469,6 +7559,9 @@ impl FormattingContext for TableFormattingContext {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::css::properties::parse_property_value;
+  use crate::css::types::Declaration;
+  use crate::css::types::PropertyName;
   use crate::layout::constraints::AvailableSpace;
   use crate::layout::constraints::LayoutConstraints;
   use crate::layout::contexts::factory::FormattingContextFactory;
@@ -7477,6 +7570,7 @@ mod tests {
   use crate::layout::formatting_context::intrinsic_cache_test_lock;
   use crate::layout::formatting_context::intrinsic_cache_use_epoch;
   use crate::render_control::{with_deadline, RenderDeadline};
+  use crate::style::properties::apply_declaration;
   use crate::style::color::Rgba;
   use crate::style::computed::Visibility;
   use crate::style::display::Display;
@@ -7501,6 +7595,27 @@ mod tests {
 
   fn create_test_style() -> Arc<ComputedStyle> {
     Arc::new(ComputedStyle::default())
+  }
+
+  fn apply_style_property(styles: &mut ComputedStyle, property: &'static str, value: &str) {
+    let parsed = parse_property_value(property, value).unwrap_or_else(|| {
+      panic!("failed to parse declaration: {property}: {value}");
+    });
+    let decl = Declaration {
+      property: PropertyName::from(property),
+      value: parsed,
+      raw_value: value.to_string(),
+      important: false,
+      contains_var: false,
+    };
+    let parent = ComputedStyle::default();
+    apply_declaration(
+      styles,
+      &decl,
+      &parent,
+      parent.font_size,
+      parent.root_font_size,
+    );
   }
 
   fn create_table_cell(content: &str) -> BoxNode {
@@ -8336,6 +8451,134 @@ mod tests {
     let fragment = tfc.layout(&table, &constraints).expect("table layout");
 
     assert!((fragment.bounds.width() - 200.0).abs() < 0.1);
+  }
+
+  fn table_intrinsic_sizes_without_width_constraints(
+    tfc: &TableFormattingContext,
+    table: &BoxNode,
+  ) -> (f32, f32) {
+    let compute = || tfc.compute_intrinsic_inline_sizes(table);
+    if table.id != 0 {
+      let mut override_style = table.style.as_ref().clone();
+      override_style.width = None;
+      override_style.width_keyword = None;
+      override_style.min_width = None;
+      override_style.min_width_keyword = None;
+      override_style.max_width = None;
+      override_style.max_width_keyword = None;
+      crate::layout::style_override::with_style_override(table.id, Arc::new(override_style), compute)
+    } else {
+      compute()
+    }
+    .expect("intrinsic sizes")
+  }
+
+  fn single_cell_text_table(table_style: Arc<ComputedStyle>, text: &str) -> BoxNode {
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+    cell_style.font_size = 16.0;
+
+    let mut text_style = ComputedStyle::default();
+    text_style.display = Display::Inline;
+    text_style.font_size = 16.0;
+
+    let text = BoxNode::new_text(Arc::new(text_style), text.to_string());
+    let cell = BoxNode::new_block(
+      Arc::new(cell_style),
+      FormattingContextType::Block,
+      vec![text],
+    );
+    let row = BoxNode::new_block(Arc::new(row_style), FormattingContextType::Block, vec![cell]);
+    BoxNode::new_block(table_style, FormattingContextType::Table, vec![row])
+  }
+
+  #[test]
+  fn table_width_max_content_keyword_uses_intrinsic_max() {
+    let viewport = crate::geometry::Size::new(800.0, 600.0);
+    let font_ctx = FontContext::with_config(FontConfig::bundled_only());
+    let factory = FormattingContextFactory::with_font_context_and_viewport(font_ctx, viewport)
+      .with_parallelism(LayoutParallelism::disabled());
+    let tfc = TableFormattingContext::with_factory(factory);
+
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+    apply_style_property(&mut table_style, "width", "max-content");
+
+    let tree = BoxTree::new(single_cell_text_table(Arc::new(table_style), "hello world"));
+    let table = &tree.root;
+    assert_eq!(table.style.width, None);
+    assert_eq!(table.style.width_keyword, Some(IntrinsicSizeKeyword::MaxContent));
+
+    let (intrinsic_min, intrinsic_max) = table_intrinsic_sizes_without_width_constraints(&tfc, table);
+    assert!(
+      intrinsic_max > intrinsic_min + 1.0,
+      "expected min/max content widths to differ (min={intrinsic_min}, max={intrinsic_max})"
+    );
+
+    let containing_width = intrinsic_min + (intrinsic_max - intrinsic_min) / 2.0;
+    let fragment = tfc
+      .layout(table, &LayoutConstraints::definite_width(containing_width))
+      .expect("table layout");
+    let used_width = fragment.bounds.width();
+
+    assert!(
+      (used_width - intrinsic_max).abs() < 0.5,
+      "expected width:max-content to size to intrinsic max ({intrinsic_max}), got {used_width} (containing={containing_width})"
+    );
+    assert!(
+      used_width > containing_width + 0.1,
+      "max-content width should ignore shrink-to-fit (used={used_width}, containing={containing_width})"
+    );
+  }
+
+  #[test]
+  fn table_max_width_fit_content_keyword_caps_max_content_width() {
+    let viewport = crate::geometry::Size::new(800.0, 600.0);
+    let font_ctx = FontContext::with_config(FontConfig::bundled_only());
+    let factory = FormattingContextFactory::with_font_context_and_viewport(font_ctx, viewport)
+      .with_parallelism(LayoutParallelism::disabled());
+    let tfc = TableFormattingContext::with_factory(factory);
+
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+    apply_style_property(&mut table_style, "width", "max-content");
+    apply_style_property(&mut table_style, "max-width", "fit-content");
+
+    let tree = BoxTree::new(single_cell_text_table(Arc::new(table_style), "hello world"));
+    let table = &tree.root;
+    assert_eq!(
+      table.style.max_width_keyword,
+      Some(IntrinsicSizeKeyword::FitContent { limit: None })
+    );
+
+    let (intrinsic_min, intrinsic_max) = table_intrinsic_sizes_without_width_constraints(&tfc, table);
+    assert!(
+      intrinsic_max > intrinsic_min + 1.0,
+      "expected min/max content widths to differ (min={intrinsic_min}, max={intrinsic_max})"
+    );
+
+    let containing_width = intrinsic_min + (intrinsic_max - intrinsic_min) / 2.0;
+    let expected = intrinsic_max.min(containing_width.max(intrinsic_min));
+    assert!(
+      expected < intrinsic_max - 0.1,
+      "test expects fit-content clamp to reduce width (expected={expected}, intrinsic_max={intrinsic_max})"
+    );
+
+    let fragment = tfc
+      .layout(table, &LayoutConstraints::definite_width(containing_width))
+      .expect("table layout");
+    let used_width = fragment.bounds.width();
+    assert!(
+      (used_width - expected).abs() < 0.5,
+      "expected max-width:fit-content to cap width to {expected}, got {used_width} (intrinsic_max={intrinsic_max}, containing={containing_width})"
+    );
   }
 
   #[test]
