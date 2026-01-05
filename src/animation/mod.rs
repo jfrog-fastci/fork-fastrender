@@ -3235,13 +3235,14 @@ pub fn view_timeline_progress(
     .unwrap_or_else(|| inset.end.to_px())
     .clamp(0.0, view_size);
 
-  let entry = target_start - view_size + inset_end;
-  let exit = target_end - inset_start;
-  let contain = target_end - view_size + inset_end;
-  let cover = target_start - inset_start;
-  let start_base = entry;
-  let end_base = exit;
-  let phases = Some((entry, contain, cover, exit));
+  let entry_edge = target_start - view_size + inset_end;
+  let contain_edge = target_end - view_size + inset_end;
+  let cover_edge = target_start - inset_start;
+  let exit_edge = target_end - inset_start;
+  let exit_phase_start = contain_edge.max(cover_edge);
+  let start_base = entry_edge;
+  let end_base = exit_edge;
+  let phases = Some((entry_edge, contain_edge, cover_edge, exit_phase_start));
   let start = resolve_progress_offset(range.start(), start_base, end_base, view_size, phases);
   let end = resolve_progress_offset(range.end(), start_base, end_base, view_size, phases);
   Some(raw_progress(scroll_offset, start, end))

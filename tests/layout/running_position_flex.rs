@@ -1,4 +1,4 @@
-use fastrender::layout::constraints::LayoutConstraints;
+use fastrender::layout::constraints::{AvailableSpace, LayoutConstraints};
 use fastrender::layout::contexts::flex::FlexFormattingContext;
 use fastrender::style::display::Display;
 use fastrender::style::types::{FlexDirection, JustifyContent};
@@ -199,5 +199,78 @@ fn running_position_in_flex_column_reverse_is_axis_correct() {
   assert!(
     (anchor.bounds.y() - expected_anchor_y).abs() < 1e-3,
     "column-reverse anchor should use the main-start edge (block-end) of the next item"
+  );
+}
+
+#[test]
+fn flex_column_item_positions_respect_order_modified_document_order() {
+  let mut flex_style = ComputedStyle::default();
+  flex_style.display = Display::Flex;
+  flex_style.flex_direction = FlexDirection::Column;
+  flex_style.width = Some(Length::px(100.0));
+
+  let mut a_style = ComputedStyle::default();
+  a_style.display = Display::Block;
+  a_style.height = Some(Length::px(20.0));
+  a_style.order = 0;
+  let mut a = BoxNode::new_block(Arc::new(a_style), FormattingContextType::Block, vec![]);
+  a.id = 31;
+
+  let mut b_style = ComputedStyle::default();
+  b_style.display = Display::Block;
+  b_style.height = Some(Length::px(10.0));
+  b_style.order = -1;
+  let mut b = BoxNode::new_block(Arc::new(b_style), FormattingContextType::Block, vec![]);
+  b.id = 32;
+
+  let mut c_style = ComputedStyle::default();
+  c_style.display = Display::Block;
+  c_style.height = Some(Length::px(30.0));
+  c_style.order = 0;
+  let mut c = BoxNode::new_block(Arc::new(c_style), FormattingContextType::Block, vec![]);
+  c.id = 33;
+
+  let mut d_style = ComputedStyle::default();
+  d_style.display = Display::Block;
+  d_style.height = Some(Length::px(40.0));
+  d_style.order = 0;
+  let mut d = BoxNode::new_block(Arc::new(d_style), FormattingContextType::Block, vec![]);
+  d.id = 34;
+
+  let flex = BoxNode::new_block(
+    Arc::new(flex_style),
+    FormattingContextType::Flex,
+    vec![a.clone(), b.clone(), c.clone(), d.clone()],
+  );
+
+  let fc = FlexFormattingContext::new();
+  let constraints =
+    LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment = fc.layout(&flex, &constraints).expect("layout succeeds");
+
+  let b_fragment =
+    find_child_by_id(&fragment, b.id).unwrap_or_else(|| panic!("missing B child"));
+  let a_fragment =
+    find_child_by_id(&fragment, a.id).unwrap_or_else(|| panic!("missing A child"));
+  let c_fragment =
+    find_child_by_id(&fragment, c.id).unwrap_or_else(|| panic!("missing C child"));
+  let d_fragment =
+    find_child_by_id(&fragment, d.id).unwrap_or_else(|| panic!("missing D child"));
+
+  assert!(
+    (b_fragment.bounds.y() - 0.0).abs() < 1e-3,
+    "B (order:-1) should start at the flex container origin"
+  );
+  assert!(
+    (a_fragment.bounds.y() - 10.0).abs() < 1e-3,
+    "A should appear after B (10px tall)"
+  );
+  assert!(
+    (c_fragment.bounds.y() - 30.0).abs() < 1e-3,
+    "C should appear after A (20px tall)"
+  );
+  assert!(
+    (d_fragment.bounds.y() - 60.0).abs() < 1e-3,
+    "D should appear after C (30px tall)"
   );
 }
