@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Replaced object-fit content-box clip</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: #ff00ff;
+      }
+
+      .example {
+        margin-bottom: 48px;
+      }
+
+      .replaced {
+        width: 556px;
+        height: 436px;
+        padding: 18px;
+        border-radius: 44px;
+        background: #ff00ff;
+        object-fit: cover;
+        object-position: left top;
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="example">
+      <img class="replaced" src="../assets/images/gallery-tall.png" alt="" />
+    </div>
+
+    <div class="example">
+      <svg
+        class="replaced"
+        width="520"
+        height="400"
+        viewBox="0 0 520 400"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <rect width="520" height="400" fill="#2563eb" />
+        <rect x="0" y="0" width="160" height="160" fill="#ef4444" />
+        <rect x="360" y="240" width="160" height="160" fill="#ffffff" />
+      </svg>
+    </div>
+  </body>
+</html>

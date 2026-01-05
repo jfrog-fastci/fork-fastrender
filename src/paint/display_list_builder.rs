@@ -2807,6 +2807,31 @@ impl DisplayListBuilder {
     }
   }
 
+  fn replaced_content_rect_and_radii(
+    &self,
+    border_rect: Rect,
+    style: Option<&ComputedStyle>,
+  ) -> (Rect, BorderRadii) {
+    let Some(style) = style else {
+      return (border_rect, BorderRadii::ZERO);
+    };
+
+    let rects = Self::background_rects(border_rect, style, self.viewport);
+    let radii = if Self::border_radius_is_zero(style) {
+      BorderRadii::ZERO
+    } else {
+      Self::resolve_clip_radii(
+        style,
+        &rects,
+        BackgroundBox::ContentBox,
+        self.viewport,
+        self.build_breakdown.as_deref(),
+      )
+    };
+
+    (rects.content, radii)
+  }
+
   fn resolve_mask(&self, style: &ComputedStyle, bounds: Rect) -> Option<ResolvedMask> {
     if !style.mask_layers.iter().any(|layer| layer.image.is_some()) {
       return None;
@@ -4362,6 +4387,7 @@ impl DisplayListBuilder {
           .iter()
           .find_map(|s| self.decode_image(s.url, style_for_image, false))
         {
+          let (content_rect, clip_radii) = self.replaced_content_rect_and_radii(rect, style_for_image);
           let (dest_x, dest_y, dest_w, dest_h) = {
             let (fit, position, font_size) = if let Some(style) = fragment.style.as_deref() {
               (style.object_fit, style.object_position, style.font_size)
@@ -4372,23 +4398,31 @@ impl DisplayListBuilder {
             compute_object_fit(
               fit,
               position,
-              rect.width(),
-              rect.height(),
+              content_rect.width(),
+              content_rect.height(),
               image.css_width,
               image.css_height,
               font_size,
               self.viewport,
             )
-            .unwrap_or_else(|| (0.0, 0.0, rect.width(), rect.height()))
+            .unwrap_or_else(|| (0.0, 0.0, content_rect.width(), content_rect.height()))
           };
 
-          let dest_rect = Rect::from_xywh(rect.x() + dest_x, rect.y() + dest_y, dest_w, dest_h);
+          let dest_rect =
+            Rect::from_xywh(content_rect.x() + dest_x, content_rect.y() + dest_y, dest_w, dest_h);
+          self.list.push(DisplayItem::PushClip(ClipItem {
+            shape: ClipShape::Rect {
+              rect: content_rect,
+              radii: Some(clip_radii),
+            },
+          }));
           self.list.push(DisplayItem::Image(ImageItem {
             dest_rect,
             image,
             filter_quality: Self::image_filter_quality(fragment.style.as_deref()),
             src_rect: None,
           }));
+          self.list.push(DisplayItem::PopClip);
           return;
         }
 
@@ -7183,25 +7217,30 @@ impl DisplayListBuilder {
       .map(|s| s.object_position)
       .unwrap_or_else(default_object_position);
 
+    let (content_rect, clip_radii) = self.replaced_content_rect_and_radii(rect, style);
     let (dest_x, dest_y, dest_w, dest_h) = match compute_object_fit(
       fit,
       pos,
-      rect.width(),
-      rect.height(),
+      content_rect.width(),
+      content_rect.height(),
       img_w_css,
       img_h_css,
       style.map(|s| s.font_size).unwrap_or(16.0),
       self.viewport,
     ) {
       Some(v) => v,
-      None => return false,
+      None => return true,
     };
-    let dest_rect = Rect::from_xywh(rect.x() + dest_x, rect.y() + dest_y, dest_w, dest_h);
+    if dest_w <= 0.0 || dest_h <= 0.0 {
+      return true;
+    }
+    let dest_rect =
+      Rect::from_xywh(content_rect.x() + dest_x, content_rect.y() + dest_y, dest_w, dest_h);
 
     let dest_w_device = dest_w * self.device_pixel_ratio;
     let dest_h_device = dest_h * self.device_pixel_ratio;
     if dest_w_device <= 0.0 || dest_h_device <= 0.0 {
-      return false;
+      return true;
     }
     let render_w = dest_w_device.ceil().max(1.0) as u32;
     let render_h = dest_h_device.ceil().max(1.0) as u32;
@@ -7261,12 +7300,19 @@ impl DisplayListBuilder {
         .lock()
         .unwrap_or_else(|e| e.into_inner());
       if let Some(image) = decoded_cache.get(&cache_key) {
+        self.list.push(DisplayItem::PushClip(ClipItem {
+          shape: ClipShape::Rect {
+            rect: content_rect,
+            radii: Some(clip_radii),
+          },
+        }));
         self.list.push(DisplayItem::Image(ImageItem {
           dest_rect,
           image,
           filter_quality: Self::image_filter_quality(style),
           src_rect: None,
         }));
+        self.list.push(DisplayItem::PopClip);
         return true;
       }
     }
@@ -7307,12 +7353,19 @@ impl DisplayListBuilder {
       .lock()
       .unwrap_or_else(|e| e.into_inner());
     if let Some(existing) = decoded_cache.get(&cache_key) {
+      self.list.push(DisplayItem::PushClip(ClipItem {
+        shape: ClipShape::Rect {
+          rect: content_rect,
+          radii: Some(clip_radii),
+        },
+      }));
       self.list.push(DisplayItem::Image(ImageItem {
         dest_rect,
         image: existing,
         filter_quality: Self::image_filter_quality(style),
         src_rect: None,
       }));
+      self.list.push(DisplayItem::PopClip);
       if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), decode_timer) {
         breakdown.record_image_decode(start.elapsed());
       }
@@ -7320,12 +7373,19 @@ impl DisplayListBuilder {
     }
     decoded_cache.insert(cache_key, image_data.clone());
 
+    self.list.push(DisplayItem::PushClip(ClipItem {
+      shape: ClipShape::Rect {
+        rect: content_rect,
+        radii: Some(clip_radii),
+      },
+    }));
     self.list.push(DisplayItem::Image(ImageItem {
       dest_rect,
       image: image_data,
       filter_quality: Self::image_filter_quality(style),
       src_rect: None,
     }));
+    self.list.push(DisplayItem::PopClip);
     if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), decode_timer) {
       breakdown.record_image_decode(start.elapsed());
     }
@@ -8011,8 +8071,15 @@ mod tests {
     let builder = DisplayListBuilder::with_image_cache(ImageCache::new());
     let list = builder.build(&fragment);
 
-    assert_eq!(list.len(), 1);
-    assert!(matches!(list.items()[0], DisplayItem::Image(_)));
+    assert_eq!(
+      list
+        .items()
+        .iter()
+        .filter(|item| matches!(item, DisplayItem::Image(_)))
+        .count(),
+      1,
+      "expected exactly one image item"
+    );
   }
 
   #[test]
@@ -9190,8 +9257,6 @@ mod tests {
     let builder = DisplayListBuilder::with_image_cache(ImageCache::new());
     let list = builder.build(&outer);
 
-    assert_eq!(list.len(), 3);
-
     let text_count = list
       .items()
       .iter()
@@ -9215,10 +9280,14 @@ mod tests {
     let builder = DisplayListBuilder::with_image_cache(ImageCache::new());
     let list = builder.build(&fragment);
 
-    assert_eq!(list.len(), 1);
-    let DisplayItem::Image(img) = &list.items()[0] else {
-      panic!("Expected image item");
-    };
+    let img = list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::Image(img) => Some(img),
+        _ => None,
+      })
+      .expect("Expected image item");
     assert_eq!(img.image.width, 1);
     assert_eq!(img.image.height, 1);
     let pixels = img.image.pixels.as_ref();
@@ -9271,9 +9340,14 @@ mod tests {
       },
     );
     let embed_list = DisplayListBuilder::with_image_cache(ImageCache::new()).build(&embed_fragment);
-    let DisplayItem::Image(embed_img) = &embed_list.items()[0] else {
-      panic!("expected image item for embed");
-    };
+    let embed_img = embed_list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::Image(img) => Some(img),
+        _ => None,
+      })
+      .expect("expected image item for embed");
     assert_eq!(embed_img.image.width, 2);
     assert_eq!(embed_img.image.height, 2);
 
@@ -9285,9 +9359,14 @@ mod tests {
     );
     let object_list =
       DisplayListBuilder::with_image_cache(ImageCache::new()).build(&object_fragment);
-    let DisplayItem::Image(object_img) = &object_list.items()[0] else {
-      panic!("expected image item for object");
-    };
+    let object_img = object_list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::Image(img) => Some(img),
+        _ => None,
+      })
+      .expect("expected image item for object");
     assert_eq!(object_img.image.width, 2);
     assert_eq!(object_img.image.height, 2);
   }
@@ -9326,10 +9405,14 @@ mod tests {
     let builder = DisplayListBuilder::with_image_cache(ImageCache::new());
     let list = builder.build(&fragment);
 
-    assert_eq!(list.len(), 1);
-    let DisplayItem::Image(img) = &list.items()[0] else {
-      panic!("Expected image item");
-    };
+    let img = list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::Image(img) => Some(img),
+        _ => None,
+      })
+      .expect("Expected image item");
     // Image is 1x1, box is 200x100, contain => scale to min(200,100) => 100x100, centered horizontally.
     assert!((img.dest_rect.width() - 100.0).abs() < 0.1);
     assert!((img.dest_rect.height() - 100.0).abs() < 0.1);
@@ -9373,10 +9456,14 @@ mod tests {
     let builder = DisplayListBuilder::with_image_cache(ImageCache::new());
     let list = builder.build_tree(&tree);
 
-    assert_eq!(list.len(), 1);
-    let DisplayItem::Image(img) = &list.items()[0] else {
-      panic!("Expected image item");
-    };
+    let img = list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::Image(img) => Some(img),
+        _ => None,
+      })
+      .expect("Expected image item");
     // free_x = 100 - 1 = 99; but we align with 10vw (20px), so dest_rect.x should be ~20.
     assert!((img.dest_rect.x() - 20.0).abs() < 0.5);
   }
@@ -9403,9 +9490,14 @@ mod tests {
     );
 
     let list = DisplayListBuilder::new().build(&fragment);
-    let DisplayItem::Image(img) = &list.items()[0] else {
-      panic!("Expected image item");
-    };
+    let img = list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::Image(img) => Some(img),
+        _ => None,
+      })
+      .expect("Expected image item");
     assert_eq!(img.filter_quality, ImageFilterQuality::Nearest);
   }
 
@@ -9431,9 +9523,14 @@ mod tests {
     );
 
     let list = DisplayListBuilder::new().build(&fragment);
-    let DisplayItem::Image(img) = &list.items()[0] else {
-      panic!("Expected image item");
-    };
+    let img = list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::Image(img) => Some(img),
+        _ => None,
+      })
+      .expect("Expected image item");
     assert_eq!(img.filter_quality, ImageFilterQuality::Nearest);
   }
 
@@ -9695,8 +9792,22 @@ mod tests {
     let builder = DisplayListBuilder::with_image_cache(ImageCache::new());
     let list = builder.build(&fragment);
 
-    assert_eq!(list.len(), 1, "poster image should render as content");
-    assert!(matches!(list.items()[0], DisplayItem::Image(_)));
+    assert_eq!(
+      list
+        .items()
+        .iter()
+        .filter(|item| matches!(item, DisplayItem::Image(_)))
+        .count(),
+      1,
+      "poster image should render as content"
+    );
+    assert!(
+      !list
+        .items()
+        .iter()
+        .any(|item| matches!(item, DisplayItem::FillRect(_) | DisplayItem::StrokeRect(_))),
+      "poster should not fall back to the labeled placeholder"
+    );
   }
 
   #[test]
