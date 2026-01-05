@@ -2305,24 +2305,64 @@ fn collect_box_debug(node: &BoxNode, out: &mut HashMap<usize, String>) {
 }
 
 fn format_debug_info(node: &BoxNode) -> String {
-  if let Some(info) = &node.debug_info {
-    let mut label = info.to_selector();
-    let mut spans = Vec::new();
-    if info.colspan > 1 {
-      spans.push(format!("colspan={}", info.colspan));
-    }
-    if info.rowspan > 1 {
-      spans.push(format!("rowspan={}", info.rowspan));
-    }
-    if info.column_span > 1 {
-      spans.push(format!("column-span={}", info.column_span));
-    }
-    if !spans.is_empty() {
-      label.push_str(&format!(" ({})", spans.join(" ")));
-    }
-    label
-  } else {
-    format!("{:?}", node.box_type)
+  let mut label = node
+    .debug_info
+    .as_ref()
+    .map(|info| info.to_selector())
+    .unwrap_or_else(|| format!("{:?}", node.box_type));
+
+  let mut spans = Vec::new();
+  let colspan = node.table_colspan();
+  if colspan > 1 {
+    spans.push(format!("colspan={colspan}"));
+  }
+  let rowspan = node.table_rowspan();
+  if rowspan > 1 {
+    spans.push(format!("rowspan={rowspan}"));
+  }
+  let column_span = node.table_column_span();
+  if column_span > 1 {
+    spans.push(format!("column-span={column_span}"));
+  }
+  if !spans.is_empty() {
+    label.push_str(&format!(" ({})", spans.join(" ")));
+  }
+
+  label
+}
+
+#[cfg(test)]
+mod tests {
+  use super::format_debug_info;
+  use fastrender::style::display::{Display, FormattingContextType};
+  use fastrender::style::ComputedStyle;
+  use fastrender::tree::box_tree::BoxNode;
+  use fastrender::tree::debug::DebugInfo;
+  use std::sync::Arc;
+
+  #[test]
+  fn format_debug_info_includes_table_cell_spans_from_metadata() {
+    let mut style = ComputedStyle::default();
+    style.display = Display::TableCell;
+    let cell = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![])
+      .with_table_cell_spans(2, 3)
+      .with_debug_info(DebugInfo::new(Some("td".to_string()), None, vec![]));
+
+    let label = format_debug_info(&cell);
+    assert!(label.contains("colspan=2"), "label: {label}");
+    assert!(label.contains("rowspan=3"), "label: {label}");
+  }
+
+  #[test]
+  fn format_debug_info_includes_column_span_from_metadata() {
+    let mut style = ComputedStyle::default();
+    style.display = Display::TableColumn;
+    let col = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![])
+      .with_table_column_span(3)
+      .with_debug_info(DebugInfo::new(Some("col".to_string()), None, vec![]));
+
+    let label = format_debug_info(&col);
+    assert!(label.contains("column-span=3"), "label: {label}");
   }
 }
 
@@ -2340,19 +2380,19 @@ fn collect_column_info(
 ) {
   let display = node.style.display;
   if matches!(display, Display::TableColumn | Display::TableColumnGroup) {
-    let span = node.debug_info.as_ref().map(|d| d.column_span).unwrap_or(1);
+    let span = node.table_column_span();
     columns.push((node.id, display, span, format_debug_info(node)));
   }
   if matches!(display, Display::TableCell) {
-    if let Some(info) = node.debug_info.as_ref() {
-      if info.colspan > 1 || info.rowspan > 1 {
-        spanning_cells.push((
-          node.id,
-          info.colspan.max(1),
-          info.rowspan.max(1),
-          format_debug_info(node),
-        ));
-      }
+    let colspan = node.table_colspan();
+    let rowspan = node.table_rowspan();
+    if colspan > 1 || rowspan > 1 {
+      spanning_cells.push((
+        node.id,
+        colspan,
+        rowspan,
+        format_debug_info(node),
+      ));
     }
   }
 

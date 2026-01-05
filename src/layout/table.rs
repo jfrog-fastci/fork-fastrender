@@ -1744,6 +1744,7 @@ impl TableStructure {
               Self::process_row(
                 row_child,
                 current_row,
+                !matches!(row_visibility, Visibility::Collapse),
                 &mut row_span_remaining,
                 &mut occupied_columns,
                 &mut max_cols,
@@ -1780,6 +1781,7 @@ impl TableStructure {
           Self::process_row(
             child,
             current_row,
+            !matches!(child.style.visibility, Visibility::Collapse),
             &mut row_span_remaining,
             &mut occupied_columns,
             &mut max_cols,
@@ -2189,37 +2191,10 @@ impl TableStructure {
       };
     }
 
-    // As a last resort, use debug info tags if present
-    if let Some(ref debug_info) = node.debug_info {
-      if let Some(ref tag) = debug_info.tag_name {
-        let tag_lower = tag.to_lowercase();
-        return match tag_lower.as_str() {
-          "table" => TableElementType::Table,
-          "thead" => TableElementType::HeaderGroup,
-          "tbody" => TableElementType::RowGroup,
-          "tfoot" => TableElementType::FooterGroup,
-          "tr" => TableElementType::Row,
-          "td" | "th" => TableElementType::Cell,
-          "caption" => TableElementType::Caption,
-          "col" => TableElementType::Column,
-          "colgroup" => TableElementType::ColumnGroup,
-          _ => TableElementType::Unknown,
-        };
-      }
-    }
-
     TableElementType::Unknown
   }
 
-  /// Processes a table row and records cell information with collision-aware placement.
-  fn process_row(
-    row: &BoxNode,
-    row_idx: usize,
-    row_span_remaining: &mut Vec<usize>,
-    occupied: &mut Vec<bool>,
-    max_cols: &mut usize,
-    cell_data: &mut Vec<(usize, usize, usize, usize, usize, bool)>,
-  ) {
+  fn advance_row_span_remaining(row_span_remaining: &mut Vec<usize>, occupied: &mut Vec<bool>) {
     if occupied.len() < row_span_remaining.len() {
       occupied.resize(row_span_remaining.len(), false);
     }
@@ -2235,8 +2210,25 @@ impl TableStructure {
         occupied[idx] = false;
       }
     }
+  }
 
-    let mut col_cursor = 0usize;
+  /// Processes a table row and records cell information with collision-aware placement.
+  fn process_row(
+    row: &BoxNode,
+    row_idx: usize,
+    row_visible: bool,
+    row_span_remaining: &mut Vec<usize>,
+    occupied: &mut Vec<bool>,
+    max_cols: &mut usize,
+    cell_data: &mut Vec<(usize, usize, usize, usize, usize, bool)>,
+  ) {
+    // Even collapsed rows affect rowspans. Advance `row_span_remaining` for every row, but only
+    // include cells from visible rows when building the structure/grid.
+    Self::advance_row_span_remaining(row_span_remaining, occupied);
+    if !row_visible {
+      return;
+    }
+
     for (cell_idx, cell_child) in row.children.iter().enumerate() {
       if matches!(
         Self::get_table_element_type(cell_child),
@@ -2247,7 +2239,9 @@ impl TableStructure {
         let colspan = cell_child.table_colspan();
         let rowspan = cell_child.table_rowspan();
 
-        // Find the first free block of columns that can fit the span in linear time.
+        // Find the first free block of columns that can fit the span in linear time. Start each
+        // search from the left edge so later cells can fill holes left by earlier rowspans.
+        let mut col_cursor = 0usize;
         let mut run_len = 0usize;
         let start_col = loop {
           if col_cursor >= occupied.len() {
@@ -2290,7 +2284,6 @@ impl TableStructure {
             *slot = (*slot).max(span_rows);
           }
         }
-        col_cursor = start_col + colspan;
       }
     }
   }
@@ -7607,8 +7600,8 @@ mod tests {
   use std::sync::Arc;
   use std::time::Duration;
 
-  fn create_test_style() -> Arc<ComputedStyle> {
-    Arc::new(ComputedStyle::default())
+  fn create_test_style() -> ComputedStyle {
+    ComputedStyle::default()
   }
 
   fn apply_style_property(styles: &mut ComputedStyle, property: &'static str, value: &str) {
@@ -7633,8 +7626,10 @@ mod tests {
   }
 
   fn create_table_cell(content: &str) -> BoxNode {
-    let style = create_test_style();
-    BoxNode::new_block(style, FormattingContextType::Block, vec![]).with_debug_info(DebugInfo::new(
+    let mut style = create_test_style();
+    style.display = Display::TableCell;
+    BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![])
+      .with_debug_info(DebugInfo::new(
       Some("td".to_string()),
       None,
       vec![content.to_string()],
@@ -7673,8 +7668,10 @@ mod tests {
   }
 
   fn create_table_row(cells: Vec<BoxNode>) -> BoxNode {
-    let style = create_test_style();
-    BoxNode::new_block(style, FormattingContextType::Block, cells).with_debug_info(DebugInfo::new(
+    let mut style = create_test_style();
+    style.display = Display::TableRow;
+    BoxNode::new_block(Arc::new(style), FormattingContextType::Block, cells)
+      .with_debug_info(DebugInfo::new(
       Some("tr".to_string()),
       None,
       vec![],
@@ -7682,7 +7679,8 @@ mod tests {
   }
 
   fn create_simple_table(rows: usize, cols: usize) -> BoxNode {
-    let style = create_test_style();
+    let mut style = create_test_style();
+    style.display = Display::Table;
     let mut table_rows = Vec::new();
 
     for _r in 0..rows {
@@ -7693,7 +7691,7 @@ mod tests {
       table_rows.push(create_table_row(cells));
     }
 
-    BoxNode::new_block(style, FormattingContextType::Table, table_rows)
+    BoxNode::new_block(Arc::new(style), FormattingContextType::Table, table_rows)
       .with_debug_info(DebugInfo::new(Some("table".to_string()), None, vec![]))
   }
 
@@ -7994,12 +7992,9 @@ mod tests {
   fn table_cell_with_span(colspan: usize, rowspan: usize) -> BoxNode {
     let mut style = ComputedStyle::default();
     style.display = Display::TableCell;
-    let mut cell = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![]);
-    cell.table_cell_span = Some(crate::tree::box_tree::TableCellSpan {
-      colspan: colspan as u16,
-      rowspan: rowspan as u16,
-    });
-    cell
+    BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![])
+      .with_table_cell_spans(colspan, rowspan)
+      .with_debug_info(DebugInfo::new(Some("td".to_string()), None, vec![]))
   }
 
   fn table_row_with_visibility(cells: Vec<BoxNode>, visibility: Visibility) -> BoxNode {
@@ -9299,12 +9294,9 @@ mod tests {
     span_style.display = Display::TableCell;
     span_style.width = Some(Length::px(200.0));
     span_style.width_keyword = None;
-    let mut span_cell =
-      BoxNode::new_block(Arc::new(span_style), FormattingContextType::Block, vec![]);
-    span_cell.table_cell_span = Some(crate::tree::box_tree::TableCellSpan {
-      colspan: 2,
-      rowspan: 1,
-    });
+    let span_cell = BoxNode::new_block(Arc::new(span_style), FormattingContextType::Block, vec![])
+      .with_table_cell_spans(2, 1)
+      .with_debug_info(DebugInfo::new(Some("td".to_string()), None, vec![]));
 
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
@@ -9377,12 +9369,9 @@ mod tests {
     span_style.display = Display::TableCell;
     span_style.width = Some(Length::percent(50.0));
     span_style.width_keyword = None;
-    let mut span_cell =
-      BoxNode::new_block(Arc::new(span_style), FormattingContextType::Block, vec![]);
-    span_cell.table_cell_span = Some(crate::tree::box_tree::TableCellSpan {
-      colspan: 2,
-      rowspan: 1,
-    });
+    let span_cell = BoxNode::new_block(Arc::new(span_style), FormattingContextType::Block, vec![])
+      .with_table_cell_spans(2, 1)
+      .with_debug_info(DebugInfo::new(Some("td".to_string()), None, vec![]));
 
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
@@ -12259,8 +12248,9 @@ mod tests {
 
   #[test]
   fn test_table_structure_empty_table() {
-    let style = create_test_style();
-    let table = BoxNode::new_block(style, FormattingContextType::Table, vec![])
+    let mut style = create_test_style();
+    style.display = Display::Table;
+    let table = BoxNode::new_block(Arc::new(style), FormattingContextType::Table, vec![])
       .with_debug_info(DebugInfo::new(Some("table".to_string()), None, vec![]));
 
     let structure = TableStructure::from_box_tree(&table);
@@ -12335,11 +12325,9 @@ mod tests {
 
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
-    let mut cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![]);
-    cell.table_cell_span = Some(crate::tree::box_tree::TableCellSpan {
-      colspan: 2,
-      rowspan: 1,
-    });
+    let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![])
+      .with_table_cell_spans(2, 1)
+      .with_debug_info(DebugInfo::new(Some("td".to_string()), None, vec![]));
     let row = BoxNode::new_block(
       Arc::new(row_style),
       FormattingContextType::Block,
@@ -12441,12 +12429,9 @@ mod tests {
     let mut cell_style = ComputedStyle::default();
     cell_style.display = Display::TableCell;
 
-    let mut spanning_cell =
-      BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![]);
-    spanning_cell.table_cell_span = Some(crate::tree::box_tree::TableCellSpan {
-      colspan: 2,
-      rowspan: 1,
-    });
+    let spanning_cell =
+      BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![])
+        .with_table_cell_spans(2, 1);
     let row = BoxNode::new_block(
       Arc::new(row_style),
       FormattingContextType::Block,
@@ -12491,15 +12476,12 @@ mod tests {
     cell_style.width = Some(Length::px(10.0));
     cell_style.width_keyword = None;
 
-    let mut spanning_cell = BoxNode::new_block(
+    let spanning_cell = BoxNode::new_block(
       Arc::new(cell_style.clone()),
       FormattingContextType::Block,
       vec![],
-    );
-    spanning_cell.table_cell_span = Some(crate::tree::box_tree::TableCellSpan {
-      colspan: 1,
-      rowspan: 2,
-    });
+    )
+    .with_table_cell_spans(1, 2);
     let first_row_sibling = BoxNode::new_block(
       Arc::new(cell_style.clone()),
       FormattingContextType::Block,
@@ -12511,8 +12493,7 @@ mod tests {
       vec![spanning_cell, first_row_sibling],
     );
 
-    let second_row_cell =
-      BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![]);
+    let second_row_cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![]);
     let second_row = BoxNode::new_block(
       Arc::new(row_style),
       FormattingContextType::Block,
@@ -12596,15 +12577,12 @@ mod tests {
     cell_style.width = Some(Length::px(10.0));
     cell_style.width_keyword = None;
 
-    let mut top_spanning = BoxNode::new_block(
+    let top_spanning = BoxNode::new_block(
       Arc::new(cell_style.clone()),
       FormattingContextType::Block,
       vec![],
-    );
-    top_spanning.table_cell_span = Some(crate::tree::box_tree::TableCellSpan {
-      colspan: 1,
-      rowspan: 2,
-    });
+    )
+    .with_table_cell_spans(1, 2);
     let top_neighbor = BoxNode::new_block(
       Arc::new(cell_style.clone()),
       FormattingContextType::Block,
@@ -12616,12 +12594,8 @@ mod tests {
       vec![top_spanning, top_neighbor],
     );
 
-    let mut bottom_span =
-      BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![]);
-    bottom_span.table_cell_span = Some(crate::tree::box_tree::TableCellSpan {
-      colspan: 2,
-      rowspan: 1,
-    });
+    let bottom_span = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![])
+      .with_table_cell_spans(2, 1);
     let second_row = BoxNode::new_block(
       Arc::new(row_style),
       FormattingContextType::Block,
@@ -15047,15 +15021,12 @@ mod tests {
     let mut auto_cell_style = ComputedStyle::default();
     auto_cell_style.display = Display::TableCell;
 
-    let mut span_cell = BoxNode::new_block(
+    let span_cell = BoxNode::new_block(
       Arc::new(span_cell_style),
       FormattingContextType::Block,
       vec![],
-    );
-    span_cell.table_cell_span = Some(crate::tree::box_tree::TableCellSpan {
-      colspan: 2,
-      rowspan: 1,
-    });
+    )
+    .with_table_cell_spans(2, 1);
     let auto_cell = BoxNode::new_block(
       Arc::new(auto_cell_style),
       FormattingContextType::Block,
@@ -15485,15 +15456,12 @@ mod tests {
       FormattingContextType::Block,
       vec![],
     );
-    let mut span_cell = BoxNode::new_block(
+    let span_cell = BoxNode::new_block(
       Arc::new(cell_style.clone()),
       FormattingContextType::Block,
       vec![span_child],
-    );
-    span_cell.table_cell_span = Some(crate::tree::box_tree::TableCellSpan {
-      colspan: 1,
-      rowspan: 2,
-    });
+    )
+    .with_table_cell_spans(1, 2);
 
     let short_child = BoxNode::new_block(
       Arc::new(short_child_style),
@@ -15600,15 +15568,12 @@ mod tests {
       FormattingContextType::Block,
       vec![],
     );
-    let mut span_cell = BoxNode::new_block(
+    let span_cell = BoxNode::new_block(
       Arc::new(cell_style.clone()),
       FormattingContextType::Block,
       vec![span_child],
-    );
-    span_cell.table_cell_span = Some(crate::tree::box_tree::TableCellSpan {
-      colspan: 1,
-      rowspan: 2,
-    });
+    )
+    .with_table_cell_spans(1, 2);
 
     let mut filler_child_style = ComputedStyle::default();
     filler_child_style.display = Display::Block;
@@ -15705,15 +15670,12 @@ mod tests {
       FormattingContextType::Block,
       vec![],
     );
-    let mut span_cell = BoxNode::new_block(
+    let span_cell = BoxNode::new_block(
       Arc::new(cell_style.clone()),
       FormattingContextType::Block,
       vec![span_child],
-    );
-    span_cell.table_cell_span = Some(crate::tree::box_tree::TableCellSpan {
-      colspan: 1,
-      rowspan: 2,
-    });
+    )
+    .with_table_cell_spans(1, 2);
 
     let row0 = BoxNode::new_block(
       Arc::new(row_style.clone()),
@@ -15799,15 +15761,12 @@ mod tests {
       ],
     );
 
-    let mut spanning_cell = BoxNode::new_block(
+    let spanning_cell = BoxNode::new_block(
       Arc::new(cell_style.clone()),
       FormattingContextType::Block,
       vec![],
-    );
-    spanning_cell.table_cell_span = Some(crate::tree::box_tree::TableCellSpan {
-      colspan: 2,
-      rowspan: 1,
-    });
+    )
+    .with_table_cell_spans(2, 1);
     let trailing_cell =
       BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![]);
     let row1 = BoxNode::new_block(
@@ -16332,15 +16291,12 @@ mod tests {
       FormattingContextType::Block,
       vec![],
     );
-    let mut span_cell = BoxNode::new_block(
+    let span_cell = BoxNode::new_block(
       Arc::new(cell_span_style),
       FormattingContextType::Block,
       vec![],
-    );
-    span_cell.table_cell_span = Some(crate::tree::box_tree::TableCellSpan {
-      colspan: 1,
-      rowspan: 2,
-    });
+    )
+    .with_table_cell_spans(1, 2);
     let bottom_cell = BoxNode::new_block(
       Arc::new(cell_bottom_style),
       FormattingContextType::Block,
@@ -16793,12 +16749,8 @@ mod tests {
       style.height = Some(Length::px(height));
       style.width_keyword = None;
       style.height_keyword = None;
-      let mut node = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![]);
-      node.table_cell_span = Some(crate::tree::box_tree::TableCellSpan {
-        colspan: colspan as u16,
-        rowspan: rowspan as u16,
-      });
-      node
+      BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![])
+        .with_table_cell_spans(colspan, rowspan)
     };
 
     let mut row_style = ComputedStyle::default();
@@ -17013,8 +16965,9 @@ mod tests {
   #[test]
   fn test_table_layout_empty() {
     let tfc = TableFormattingContext::new();
-    let style = create_test_style();
-    let table = BoxNode::new_block(style, FormattingContextType::Table, vec![])
+    let mut style = create_test_style();
+    style.display = Display::Table;
+    let table = BoxNode::new_block(Arc::new(style), FormattingContextType::Table, vec![])
       .with_debug_info(DebugInfo::new(Some("table".to_string()), None, vec![]));
     let constraints = LayoutConstraints::definite_width(400.0);
 
@@ -17079,8 +17032,8 @@ mod tests {
     col_style.display = Display::TableColumn;
     col_style.width = Some(Length::px(10.0));
     col_style.width_keyword = None;
-    let mut col = BoxNode::new_block(Arc::new(col_style), FormattingContextType::Block, vec![]);
-    col.table_column_span = Some(3);
+    let col = BoxNode::new_block(Arc::new(col_style), FormattingContextType::Block, vec![])
+      .with_table_column_span(3);
     let mut table_style = ComputedStyle::default();
     table_style.display = Display::Table;
     let table = BoxNode::new_block(
@@ -17393,12 +17346,12 @@ mod tests {
 
     let mut col_style = ComputedStyle::default();
     col_style.display = Display::TableColumn;
-    let mut col = BoxNode::new_block(
+    let col = BoxNode::new_block(
       Arc::new(col_style.clone()),
       FormattingContextType::Block,
       vec![],
-    );
-    col.table_column_span = Some(3);
+    )
+    .with_table_column_span(3);
 
     let table = BoxNode::new_block(
       Arc::new(table_style),

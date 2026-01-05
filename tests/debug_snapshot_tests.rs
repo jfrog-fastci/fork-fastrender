@@ -5,9 +5,12 @@ use fastrender::geometry::Size;
 use fastrender::layout::engine::{LayoutConfig, LayoutEngine};
 use fastrender::paint::display_list_builder::DisplayListBuilder;
 use fastrender::style::cascade::apply_styles;
+use fastrender::style::display::{Display, FormattingContextType};
 use fastrender::text::font_db::FontConfig;
 use fastrender::text::font_loader::FontContext;
 use fastrender::tree::box_generation::generate_box_tree_with_anonymous_fixup;
+use fastrender::tree::box_tree::{BoxNode, BoxTree};
+use std::sync::Arc;
 
 #[test]
 fn pipeline_snapshot_matches_fixture() {
@@ -88,4 +91,38 @@ fn dom_snapshot_records_quirks_without_doctype() {
   assert_eq!(snapshot.quirks_mode, QuirksModeSnapshot::Quirks);
   let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
   assert_eq!(json["quirks_mode"], "quirks");
+}
+
+#[test]
+fn box_tree_snapshot_includes_table_spans_from_metadata() {
+  let mut cell_style = fastrender::ComputedStyle::default();
+  cell_style.display = Display::TableCell;
+  let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![])
+    .with_table_cell_spans(2, 3);
+
+  let mut col_style = fastrender::ComputedStyle::default();
+  col_style.display = Display::TableColumn;
+  let col = BoxNode::new_block(Arc::new(col_style), FormattingContextType::Block, vec![])
+    .with_table_column_span(4);
+
+  let root = BoxNode::new_block(
+    Arc::new(fastrender::ComputedStyle::default()),
+    FormattingContextType::Block,
+    vec![cell, col],
+  );
+  let tree = BoxTree::new(root);
+
+  let snapshot = fastrender::debug::snapshot::snapshot_box_tree(&tree);
+  let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
+
+  let children = json["root"]["children"]
+    .as_array()
+    .expect("children array");
+  let cell_json = &children[0];
+  assert_eq!(cell_json["table_spans"]["colspan"], 2);
+  assert_eq!(cell_json["table_spans"]["rowspan"], 3);
+  assert!(cell_json.get("debug").is_none(), "debug field should be omitted");
+
+  let col_json = &children[1];
+  assert_eq!(col_json["table_spans"]["column_span"], 4);
 }

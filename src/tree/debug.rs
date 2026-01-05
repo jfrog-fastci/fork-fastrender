@@ -91,15 +91,6 @@ pub struct DebugInfo {
   /// String representation of the path from root to this element
   /// Example: "html > body > div#main > p"
   pub dom_path: Option<String>,
-
-  /// Table cell colspan attribute (default 1)
-  pub colspan: usize,
-
-  /// Table cell rowspan attribute (default 1)
-  pub rowspan: usize,
-
-  /// Table column / colgroup span (default 1)
-  pub column_span: usize,
 }
 
 impl DebugInfo {
@@ -126,17 +117,7 @@ impl DebugInfo {
       id,
       classes,
       dom_path: None,
-      colspan: 1,
-      rowspan: 1,
-      column_span: 1,
     }
-  }
-
-  /// Creates debug info with colspan and rowspan
-  pub fn with_spans(mut self, colspan: usize, rowspan: usize) -> Self {
-    self.colspan = colspan;
-    self.rowspan = rowspan;
-    self
   }
 
   /// Creates debug info for a text node
@@ -155,9 +136,6 @@ impl DebugInfo {
       id: None,
       classes: Vec::new(),
       dom_path: None,
-      colspan: 1,
-      rowspan: 1,
-      column_span: 1,
     }
   }
 
@@ -177,9 +155,6 @@ impl DebugInfo {
       id: None,
       classes: Vec::new(),
       dom_path: None,
-      colspan: 1,
-      rowspan: 1,
-      column_span: 1,
     }
   }
 

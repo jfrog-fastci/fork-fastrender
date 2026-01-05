@@ -2131,7 +2131,6 @@ fn generate_boxes_for_styled_into(
 
 fn attach_debug_info(mut box_node: BoxNode, styled: &StyledNode) -> BoxNode {
   box_node.styled_node_id = Some(styled.node_id);
-
   const HTML_TABLE_SPAN_MAX: u16 = 1000;
 
   fn parse_html_table_span_attr(raw: Option<&str>) -> u16 {
@@ -2191,21 +2190,17 @@ fn attach_debug_info(mut box_node: BoxNode, styled: &StyledNode) -> BoxNode {
       box_node.table_column_span = None;
     }
 
-    if !box_debug_info_enabled() {
-      return box_node;
+    if box_debug_info_enabled() {
+      let id = styled.node.get_attribute("id");
+      let classes = styled
+        .node
+        .get_attribute_ref("class")
+        .map(|c| c.split_ascii_whitespace().map(str::to_owned).collect())
+        .unwrap_or_default();
+
+      let dbg = DebugInfo::new(Some(tag.to_string()), id, classes);
+      box_node = box_node.with_debug_info(dbg);
     }
-
-    let id = styled.node.get_attribute("id");
-    let classes = styled
-      .node
-      .get_attribute_ref("class")
-      .map(|c| c.split_ascii_whitespace().map(str::to_owned).collect())
-      .unwrap_or_default();
-
-    let mut dbg = DebugInfo::new(Some(tag.to_string()), id, classes)
-      .with_spans(box_node.table_colspan(), box_node.table_rowspan());
-    dbg.column_span = box_node.table_column_span();
-    box_node = box_node.with_debug_info(dbg);
   }
   box_node
 }

@@ -202,6 +202,23 @@ impl EnhancedTreePrinter {
 
     label.push_str(&self.colorize(&selector, colors::CYAN));
 
+    let mut spans = Vec::new();
+    let colspan = node.table_colspan();
+    if colspan > 1 {
+      spans.push(format!("colspan={colspan}"));
+    }
+    let rowspan = node.table_rowspan();
+    if rowspan > 1 {
+      spans.push(format!("rowspan={rowspan}"));
+    }
+    let column_span = node.table_column_span();
+    if column_span > 1 {
+      spans.push(format!("column-span={column_span}"));
+    }
+    if !spans.is_empty() {
+      label.push_str(&self.colorize(&format!(" ({})", spans.join(" ")), colors::GRAY));
+    }
+
     if self.config.show_box_types {
       label.push_str(&self.colorize(" (", colors::GRAY));
       let type_str = match &node.box_type {

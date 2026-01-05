@@ -561,6 +561,13 @@ pub struct TableCellSpan {
   pub rowspan: u16,
 }
 
+#[inline]
+fn clamp_table_span(span: usize) -> u16 {
+  // Span attributes must be positive integers. Clamp to at least 1 and avoid overflow when the
+  // source contains absurdly large values.
+  span.max(1).min(u16::MAX as usize) as u16
+}
+
 /// Different types of boxes in the box tree
 ///
 /// This enum discriminates between the different kinds of CSS boxes.
@@ -957,6 +964,20 @@ impl BoxNode {
   /// This is a builder-style method for convenience.
   pub fn with_debug_info(mut self, info: DebugInfo) -> Self {
     self.debug_info = Some(info);
+    self
+  }
+
+  /// Sets HTML table cell span metadata (`colspan`/`rowspan`).
+  pub fn with_table_cell_spans(mut self, colspan: usize, rowspan: usize) -> Self {
+    let colspan = clamp_table_span(colspan);
+    let rowspan = clamp_table_span(rowspan);
+    self.table_cell_span = Some(TableCellSpan { colspan, rowspan });
+    self
+  }
+
+  /// Sets HTML `<col>/<colgroup span=...>` metadata.
+  pub fn with_table_column_span(mut self, span: usize) -> Self {
+    self.table_column_span = Some(clamp_table_span(span));
     self
   }
 

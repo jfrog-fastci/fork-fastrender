@@ -220,6 +220,8 @@ pub struct BoxNodeSnapshot {
   pub styled_node_id: Option<usize>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub debug: Option<DebugInfoSnapshot>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub table_spans: Option<TableSpansSnapshot>,
   pub style: StyleSnapshot,
   pub children: Vec<BoxNodeSnapshot>,
 }
@@ -228,6 +230,17 @@ pub struct BoxNodeSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DebugInfoSnapshot {
   pub selector: String,
+}
+
+/// Snapshot of table span metadata attached to a box.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TableSpansSnapshot {
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub colspan: Option<usize>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub rowspan: Option<usize>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub column_span: Option<usize>,
 }
 
 /// Box kind snapshot.
@@ -551,6 +564,15 @@ pub fn snapshot_box_tree(tree: &BoxTree) -> BoxTreeSnapshot {
 }
 
 fn snapshot_box_node(node: &BoxNode) -> BoxNodeSnapshot {
+  let colspan = node.table_colspan();
+  let rowspan = node.table_rowspan();
+  let column_span = node.table_column_span();
+  let table_spans = (colspan > 1 || rowspan > 1 || column_span > 1).then_some(TableSpansSnapshot {
+    colspan: (colspan > 1).then_some(colspan),
+    rowspan: (rowspan > 1).then_some(rowspan),
+    column_span: (column_span > 1).then_some(column_span),
+  });
+
   BoxNodeSnapshot {
     box_id: node.id,
     kind: snapshot_box_kind(&node.box_type),
@@ -558,6 +580,7 @@ fn snapshot_box_node(node: &BoxNode) -> BoxNodeSnapshot {
     debug: node.debug_info.as_ref().map(|d| DebugInfoSnapshot {
       selector: d.to_selector(),
     }),
+    table_spans,
     style: snapshot_style(&node.style),
     children: node.children.iter().map(snapshot_box_node).collect(),
   }
