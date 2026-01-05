@@ -1,83 +1,87 @@
 <!doctype html>
 <html>
-<meta charset="utf-8" />
-<style>
-  body {
-    margin: 0;
-    background: #404040;
-    font: 12px/1 system-ui, sans-serif;
-  }
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body {
+      margin: 0;
+      background: #404040;
+      font: 12px/1 system-ui, sans-serif;
+    }
 
-  .box {
-    position: absolute;
-    width: 48px;
-    height: 48px;
-    background: #000;
-  }
+    .box {
+      position: absolute;
+      width: 48px;
+      height: 48px;
+      background: #000;
+    }
 
-  /* Fully transparent source pixels (alpha=0 everywhere) */
-  .transparent {
-    background: rgba(0, 0, 0, 0);
-  }
+    /* Fully transparent source pixels (alpha=0 everywhere) */
+    .transparent {
+      background: rgba(0, 0, 0, 0);
+    }
 
-  .box.row1 {
-    top: 12px;
-  }
+    .box.row1 {
+      top: 12px;
+    }
 
-  .box.row2 {
-    top: 72px;
-  }
+    .box.row2 {
+      top: 72px;
+    }
 
-  .box.col2 {
-    left: 72px;
-  }
+    .box.col2 {
+      left: 72px;
+    }
 
-  .box.col1 {
-    left: 12px;
-  }
+    .box.col1 {
+      left: 12px;
+    }
 
-  /* SVG filter definitions; hide the defs SVG itself. */
-  svg {
-    position: absolute;
-    width: 0;
-    height: 0;
-  }
-</style>
+    /* SVG filter definitions; hide the defs SVG itself. */
+    svg {
+      position: absolute;
+      width: 0;
+      height: 0;
+    }
+  </style>
+</head>
+<body>
+  <svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <defs>
+      <!--
+        Minimal lighting fixture for alpha/masking semantics:
+          - surfaceScale=0 => flat surface (normal math eliminated)
+          - diffuseConstant/specularConstant=0.5 + elevation=90 => intensity is exactly 0.5
+          - No feComposite/feMerge: we render ONLY the lighting output
+      -->
+      <filter id="diffuse" color-interpolation-filters="sRGB">
+        <feDiffuseLighting
+          in="SourceAlpha"
+          surfaceScale="0"
+          diffuseConstant="0.5"
+          lighting-color="white"
+        >
+          <feDistantLight azimuth="0" elevation="90" />
+        </feDiffuseLighting>
+      </filter>
 
-<svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-  <defs>
-    <!--
-      Minimal lighting fixture for alpha/masking semantics:
-        - surfaceScale=0 => flat surface (normal math eliminated)
-        - diffuseConstant/specularConstant=0.5 + elevation=90 => intensity is exactly 0.5
-        - No feComposite/feMerge: we render ONLY the lighting output
-    -->
-    <filter id="diffuse" color-interpolation-filters="sRGB">
-      <feDiffuseLighting
-        in="SourceAlpha"
-        surfaceScale="0"
-        diffuseConstant="0.5"
-        lighting-color="white"
-      >
-        <feDistantLight azimuth="0" elevation="90" />
-      </feDiffuseLighting>
-    </filter>
+      <filter id="specular" color-interpolation-filters="sRGB">
+        <feSpecularLighting
+          in="SourceAlpha"
+          surfaceScale="0"
+          specularConstant="0.5"
+          specularExponent="1"
+          lighting-color="white"
+        >
+          <feDistantLight azimuth="0" elevation="90" />
+        </feSpecularLighting>
+      </filter>
+    </defs>
+  </svg>
 
-    <filter id="specular" color-interpolation-filters="sRGB">
-      <feSpecularLighting
-        in="SourceAlpha"
-        surfaceScale="0"
-        specularConstant="0.5"
-        specularExponent="1"
-        lighting-color="white"
-      >
-        <feDistantLight azimuth="0" elevation="90" />
-      </feSpecularLighting>
-    </filter>
-  </defs>
-</svg>
-<div class="box row1 col1" style="filter: url(#diffuse)"></div>
-<div class="box row1 col2 transparent" style="filter: url(#diffuse)"></div>
-<div class="box row2 col1" style="filter: url(#specular)"></div>
-<div class="box row2 col2 transparent" style="filter: url(#specular)"></div>
+  <div class="box row1 col1" style="filter: url(#diffuse)"></div>
+  <div class="box row1 col2 transparent" style="filter: url(#diffuse)"></div>
+  <div class="box row2 col1" style="filter: url(#specular)"></div>
+  <div class="box row2 col2 transparent" style="filter: url(#specular)"></div>
+</body>
 </html>
