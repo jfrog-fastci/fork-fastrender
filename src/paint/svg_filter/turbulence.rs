@@ -289,7 +289,7 @@ mod tests {
       WIDTH,
       HEIGHT,
       filter_region,
-      (0.13, 0.27),
+      (0.08, 0.13),
       seed,
       3,
       false,
@@ -344,7 +344,7 @@ mod tests {
       .build()
       .expect("thread pool");
     let a = pool.install(|| render_bytes(0, super::super::ColorInterpolationFilters::SRGB));
-    let b = pool.install(|| render_bytes(1, super::super::ColorInterpolationFilters::SRGB));
+    let b = pool.install(|| render_bytes(2, super::super::ColorInterpolationFilters::SRGB));
     assert_eq!(a.len(), b.len(), "expected same output size");
     assert!(
       a.iter().zip(&b).any(|(a, b)| a != b),
