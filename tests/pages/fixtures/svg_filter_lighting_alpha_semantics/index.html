@@ -2,15 +2,13 @@
 <style>
   body {
     margin: 0;
-    padding: 12px;
     background: #ffffff;
-    display: flex;
-    gap: 12px;
-    align-items: flex-start;
     font: 12px/1 system-ui, sans-serif;
   }
 
   .box {
+    position: absolute;
+    top: 12px;
     width: 48px;
     height: 48px;
     background: #000;
@@ -19,6 +17,14 @@
   /* Fully transparent source pixels (alpha=0 everywhere). */
   .transparent {
     background: rgba(0, 0, 0, 0);
+  }
+
+  .box.second {
+    left: 72px;
+  }
+
+  .box.first {
+    left: 12px;
   }
 
   svg {
@@ -43,5 +49,5 @@
   </defs>
 </svg>
 
-<div class="box" style="filter: url(#lighting)"></div>
-<div class="box transparent" style="filter: url(#lighting)"></div>
+<div class="box first" style="filter: url(#lighting)"></div>
+<div class="box second transparent" style="filter: url(#lighting)"></div>
