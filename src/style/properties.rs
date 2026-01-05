@@ -7833,7 +7833,11 @@ fn apply_declaration_with_base_internal(
         other => std::slice::from_ref(other),
       };
       if let Some(parsed) = parse_border_side_shorthand(values, styles.color) {
-        if let Some(w) = parsed.width {
+        let width = parsed.width.or_else(|| {
+          (!matches!(parsed.style, BorderStyle::None | BorderStyle::Hidden))
+            .then_some(Length::px(3.0))
+        });
+        if let Some(w) = width {
           set_border_width_side(styles, crate::style::PhysicalSide::Top, w, order);
           set_border_width_side(styles, crate::style::PhysicalSide::Right, w, order);
           set_border_width_side(styles, crate::style::PhysicalSide::Bottom, w, order);
@@ -7892,7 +7896,11 @@ fn apply_declaration_with_base_internal(
         other => std::slice::from_ref(other),
       };
       if let Some(parsed) = parse_border_side_shorthand(values, styles.color) {
-        if let Some(w) = parsed.width {
+        let width = parsed.width.or_else(|| {
+          (!matches!(parsed.style, BorderStyle::None | BorderStyle::Hidden))
+            .then_some(Length::px(3.0))
+        });
+        if let Some(w) = width {
           set_border_width_side(styles, side, w, order);
         }
         set_border_style_side(styles, side, parsed.style, order);
@@ -7912,7 +7920,11 @@ fn apply_declaration_with_base_internal(
         other => std::slice::from_ref(other),
       };
       if let Some(parsed) = parse_border_side_shorthand(values, styles.color) {
-        if let Some(w) = parsed.width {
+        let width = parsed.width.or_else(|| {
+          (!matches!(parsed.style, BorderStyle::None | BorderStyle::Hidden))
+            .then_some(Length::px(3.0))
+        });
+        if let Some(w) = width {
           push_logical(
             styles,
             crate::style::LogicalProperty::BorderWidth {
@@ -7949,7 +7961,11 @@ fn apply_declaration_with_base_internal(
         other => std::slice::from_ref(other),
       };
       if let Some(parsed) = parse_border_side_shorthand(values, styles.color) {
-        if let Some(w) = parsed.width {
+        let width = parsed.width.or_else(|| {
+          (!matches!(parsed.style, BorderStyle::None | BorderStyle::Hidden))
+            .then_some(Length::px(3.0))
+        });
+        if let Some(w) = width {
           push_logical(
             styles,
             crate::style::LogicalProperty::BorderWidth {
@@ -7986,7 +8002,11 @@ fn apply_declaration_with_base_internal(
         other => std::slice::from_ref(other),
       };
       if let Some(parsed) = parse_border_side_shorthand(values, styles.color) {
-        if let Some(w) = parsed.width {
+        let width = parsed.width.or_else(|| {
+          (!matches!(parsed.style, BorderStyle::None | BorderStyle::Hidden))
+            .then_some(Length::px(3.0))
+        });
+        if let Some(w) = width {
           push_logical(
             styles,
             crate::style::LogicalProperty::BorderWidth {
