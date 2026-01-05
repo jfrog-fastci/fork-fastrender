@@ -183,7 +183,7 @@ fn thread_pool_with_toggles(threads: usize, toggles: Arc<RuntimeToggles>) -> ray
 fn backdrop_filter_pipeline_is_deterministic_across_rayon_thread_pools() {
   // Mirror the fixture harnesses (e.g. `render_fixtures`) by running on a larger stack. Some of
   // the backdrop-filter fixtures need deep recursion during layout / display-list building.
-  const STACK_SIZE: usize = 128 * 1024 * 1024; // 128MB
+  const STACK_SIZE: usize = 64 * 1024 * 1024; // 64MB
 
   std::thread::Builder::new()
     .name("backdrop-filter-determinism".to_string())
