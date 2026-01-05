@@ -185,6 +185,10 @@ def main() -> None:
     0xE0062: "tag",  # tag b
     0xE0065: "tag",  # tag e
     0xE006E: "tag",  # tag n
+    # Extra tag codepoints used by other subdivision flags (e.g. Scotland = "gbsct").
+    0xE0073: "tag",  # tag s
+    0xE0063: "tag",  # tag c
+    0xE0074: "tag",  # tag t
     0xE007F: "tag_cancel",
     # ZWJ sequences we want to keep on the emoji fallback path.
     0x1F52C: "microscope",  # 🔬

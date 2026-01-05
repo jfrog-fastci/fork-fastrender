@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Text - emoji sequence presentation</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            /* Keep fixtures deterministic under FASTR_USE_BUNDLED_FONTS=1 by preferring bundled family names. */
+            font-family: "Noto Sans Symbols 2", "Noto Sans Symbols", "Noto Sans", "FastRender Emoji";
+            background: #ffffff;
+        }
+
+        .grid {
+            width: 600px;
+            border-left: 1px solid #dee2e6;
+            border-top: 1px solid #dee2e6;
+        }
+
+        .row {
+            display: flex;
+        }
+
+        .row > div {
+            border-right: 1px solid #dee2e6;
+            border-bottom: 1px solid #dee2e6;
+            box-sizing: border-box;
+        }
+
+        .hlabel, .hcell {
+            background: #f8f9fa;
+            font-weight: 600;
+            font-size: 12px;
+            padding: 6px 4px;
+            color: #343a40;
+            text-align: center;
+        }
+
+        .hlabel {
+            width: 240px;
+        }
+
+        .hcell {
+            width: 90px;
+        }
+
+        .label {
+            width: 240px;
+            text-align: left;
+            font-family: "Noto Sans", sans-serif;
+            font-size: 11px;
+            padding: 4px 6px;
+            color: #495057;
+            white-space: nowrap;
+        }
+
+        .cell {
+            width: 90px;
+            height: 85px;
+            text-align: center;
+            font-size: 40px;
+            line-height: 1;
+            padding: 8px 0;
+        }
+
+        .fv-normal { font-variant-emoji: normal; }
+        .fv-emoji { font-variant-emoji: emoji; }
+        .fv-text { font-variant-emoji: text; }
+        .fv-unicode { font-variant-emoji: unicode; }
+    </style>
+</head>
+<body>
+    <div class="grid">
+        <div class="row header">
+            <div class="hlabel">sequence</div>
+            <div class="hcell">normal</div>
+            <div class="hcell">emoji</div>
+            <div class="hcell">text</div>
+            <div class="hcell">unicode</div>
+        </div>
+        <div class="row">
+            <div class="label">U+2602</div>
+            <div class="cell fv-normal">&#x2602;</div>
+            <div class="cell fv-emoji">&#x2602;</div>
+            <div class="cell fv-text">&#x2602;</div>
+            <div class="cell fv-unicode">&#x2602;</div>
+        </div>
+        <div class="row">
+            <div class="label">Keycap: 1 U+20E3</div>
+            <div class="cell fv-normal">&#x31;&#x20E3;</div>
+            <div class="cell fv-emoji">&#x31;&#x20E3;</div>
+            <div class="cell fv-text">&#x31;&#x20E3;</div>
+            <div class="cell fv-unicode">&#x31;&#x20E3;</div>
+        </div>
+        <div class="row">
+            <div class="label">Keycap: 1 U+FE0F U+20E3</div>
+            <div class="cell fv-normal">&#x31;&#xFE0F;&#x20E3;</div>
+            <div class="cell fv-emoji">&#x31;&#xFE0F;&#x20E3;</div>
+            <div class="cell fv-text">&#x31;&#xFE0F;&#x20E3;</div>
+            <div class="cell fv-unicode">&#x31;&#xFE0F;&#x20E3;</div>
+        </div>
+        <div class="row">
+            <div class="label">Keycap: 1 U+FE0E U+20E3</div>
+            <div class="cell fv-normal">&#x31;&#xFE0E;&#x20E3;</div>
+            <div class="cell fv-emoji">&#x31;&#xFE0E;&#x20E3;</div>
+            <div class="cell fv-text">&#x31;&#xFE0E;&#x20E3;</div>
+            <div class="cell fv-unicode">&#x31;&#xFE0E;&#x20E3;</div>
+        </div>
+        <div class="row">
+            <div class="label">Tag sequence (Scotland)</div>
+            <div class="cell fv-normal">&#x1F3F4;&#xE0067;&#xE0062;&#xE0073;&#xE0063;&#xE0074;&#xE007F;</div>
+            <div class="cell fv-emoji">&#x1F3F4;&#xE0067;&#xE0062;&#xE0073;&#xE0063;&#xE0074;&#xE007F;</div>
+            <div class="cell fv-text">&#x1F3F4;&#xE0067;&#xE0062;&#xE0073;&#xE0063;&#xE0074;&#xE007F;</div>
+            <div class="cell fv-unicode">&#x1F3F4;&#xE0067;&#xE0062;&#xE0073;&#xE0063;&#xE0074;&#xE007F;</div>
+        </div>
+        <div class="row">
+            <div class="label">ZWJ + modifier: 👩🏽‍⚕️</div>
+            <div class="cell fv-normal">&#x1F469;&#x1F3FD;&#x200D;&#x2695;&#xFE0F;</div>
+            <div class="cell fv-emoji">&#x1F469;&#x1F3FD;&#x200D;&#x2695;&#xFE0F;</div>
+            <div class="cell fv-text">&#x1F469;&#x1F3FD;&#x200D;&#x2695;&#xFE0F;</div>
+            <div class="cell fv-unicode">&#x1F469;&#x1F3FD;&#x200D;&#x2695;&#xFE0F;</div>
+        </div>
+    </div>
+</body>
+</html>

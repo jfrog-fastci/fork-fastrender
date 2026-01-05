@@ -112,7 +112,7 @@ CJK_KR_UNICODES = [
     "U+AC00-D7AF",
 ]
 
-SYMBOLS_UI_TEXT = "✓✔✕✖★☆⭐•…©®™°§€£¥☑☒☂⚠☎✈✉☕☰❤▶"
+SYMBOLS_UI_TEXT = "✓✔✕✖★☆⭐•…©®™°§€£¥☑☒☂⚠☎✈✉☕☰❤▶1\u20e3"
 SYMBOLS_ARROW_TEXT = "←→↑↓↔↕⇔⇦⇧⇨⇩↩↪"
 STIX_MATH_UNICODES = [
     "U+0000-00FF",
