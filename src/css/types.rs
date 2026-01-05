@@ -3937,6 +3937,11 @@ pub enum RotateValue {
   None,
   /// Rotation angle in degrees around the z axis.
   Angle(f32),
+  /// Rotation around an arbitrary axis.
+  ///
+  /// CSS syntax: `rotate: <number> <number> <number> <angle>`.
+  /// The axis vector is normalized at use time.
+  AxisAngle { x: f32, y: f32, z: f32, angle: f32 },
 }
 
 /// Computed value for the CSS `scale` property.

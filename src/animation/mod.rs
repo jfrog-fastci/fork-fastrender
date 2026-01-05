@@ -1328,17 +1328,44 @@ fn interpolate_rotate_value(a: &AnimatedValue, b: &AnimatedValue, t: f32) -> Opt
     return Some(AnimatedValue::Rotate(RotateValue::None));
   }
 
-  let a_deg = match ra {
-    RotateValue::None => 0.0,
-    RotateValue::Angle(deg) => *deg,
-  };
-  let b_deg = match rb {
-    RotateValue::None => 0.0,
-    RotateValue::Angle(deg) => *deg,
-  };
-  Some(AnimatedValue::Rotate(RotateValue::Angle(lerp(
-    a_deg, b_deg, t,
-  ))))
+  // Preserve exact endpoints deterministically.
+  if t <= f32::EPSILON {
+    return Some(AnimatedValue::Rotate(*ra));
+  }
+  if (1.0 - t).abs() <= f32::EPSILON {
+    return Some(AnimatedValue::Rotate(*rb));
+  }
+
+  match (ra, rb) {
+    (RotateValue::AxisAngle { x: ax, y: ay, z: az, angle: a_deg }, RotateValue::AxisAngle { x: bx, y: by, z: bz, angle: b_deg })
+      if (*ax - *bx).abs() < 1e-6
+        && (*ay - *by).abs() < 1e-6
+        && (*az - *bz).abs() < 1e-6 =>
+    {
+      Some(AnimatedValue::Rotate(RotateValue::AxisAngle {
+        x: *ax,
+        y: *ay,
+        z: *az,
+        angle: lerp(*a_deg, *b_deg, t),
+      }))
+    }
+    (RotateValue::None | RotateValue::Angle(_), RotateValue::None | RotateValue::Angle(_)) => {
+      let a_deg = match ra {
+        RotateValue::None => 0.0,
+        RotateValue::Angle(deg) => *deg,
+        RotateValue::AxisAngle { .. } => unreachable!(),
+      };
+      let b_deg = match rb {
+        RotateValue::None => 0.0,
+        RotateValue::Angle(deg) => *deg,
+        RotateValue::AxisAngle { .. } => unreachable!(),
+      };
+      Some(AnimatedValue::Rotate(RotateValue::Angle(lerp(
+        a_deg, b_deg, t,
+      ))))
+    }
+    _ => Some(AnimatedValue::Rotate(if t < 0.5 { *ra } else { *rb })),
+  }
 }
 
 fn apply_rotate(style: &mut ComputedStyle, value: &AnimatedValue) {
@@ -4991,6 +5018,7 @@ mod tests {
     match rotate {
       RotateValue::Angle(deg) => assert!((deg - 45.0).abs() < 1e-6, "deg={deg}"),
       RotateValue::None => panic!("expected rotate angle"),
+      RotateValue::AxisAngle { .. } => panic!("expected rotate angle"),
     }
   }
 

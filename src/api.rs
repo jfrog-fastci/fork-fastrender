@@ -11292,8 +11292,17 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
     hash_length(&z, &mut h);
   }
   hash_enum_discriminant(&style.rotate, &mut h);
-  if let crate::css::types::RotateValue::Angle(deg) = style.rotate {
-    hash_f32(deg, &mut h);
+  match style.rotate {
+    crate::css::types::RotateValue::None => {}
+    crate::css::types::RotateValue::Angle(deg) => {
+      hash_f32(deg, &mut h);
+    }
+    crate::css::types::RotateValue::AxisAngle { x, y, z, angle } => {
+      hash_f32(x, &mut h);
+      hash_f32(y, &mut h);
+      hash_f32(z, &mut h);
+      hash_f32(angle, &mut h);
+    }
   }
   hash_enum_discriminant(&style.scale, &mut h);
   if let crate::css::types::ScaleValue::Values { x, y, z } = style.scale {

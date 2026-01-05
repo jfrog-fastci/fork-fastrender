@@ -19,6 +19,47 @@ pub struct ResolvedTransforms {
   pub child_perspective: Option<Transform3D>,
 }
 
+fn rotate3d_axis_angle(x: f32, y: f32, z: f32, deg: f32, eps: f32) -> Transform3D {
+  if !x.is_finite() || !y.is_finite() || !z.is_finite() || !deg.is_finite() {
+    return Transform3D::identity();
+  }
+
+  let len = (x * x + y * y + z * z).sqrt();
+  if !len.is_finite() {
+    return Transform3D::identity();
+  }
+  if len < eps {
+    return Transform3D::identity();
+  }
+
+  let ax = x / len;
+  let ay = y / len;
+  let az = z / len;
+  let angle = deg.to_radians();
+  let (s, c) = angle.sin_cos();
+  let t = 1.0 - c;
+
+  // Rodrigues rotation formula (right-handed, column vectors) to match `Transform3D::rotate_*`.
+  let m00 = t * ax * ax + c;
+  let m01 = t * ax * ay - s * az;
+  let m02 = t * ax * az + s * ay;
+  let m10 = t * ax * ay + s * az;
+  let m11 = t * ay * ay + c;
+  let m12 = t * ay * az - s * ax;
+  let m20 = t * ax * az - s * ay;
+  let m21 = t * ay * az + s * ax;
+  let m22 = t * az * az + c;
+
+  Transform3D {
+    m: [
+      m00, m10, m20, 0.0, // column 1
+      m01, m11, m21, 0.0, // column 2
+      m02, m12, m22, 0.0, // column 3
+      0.0, 0.0, 0.0, 1.0, // column 4
+    ],
+  }
+}
+
 /// Resolve the computed transform (including motion path) into a 4×4 matrix.
 ///
 /// Mirrors `DisplayListBuilder::build_transform` so painter and display list pipelines stay in
@@ -90,8 +131,14 @@ pub fn resolve_transforms(
       ts = ts.multiply(&Transform3D::translate(tx, ty, tz));
     }
 
-    if let RotateValue::Angle(deg) = style.rotate {
-      ts = ts.multiply(&Transform3D::rotate_z(deg.to_radians()));
+    match style.rotate {
+      RotateValue::None => {}
+      RotateValue::Angle(deg) => {
+        ts = ts.multiply(&Transform3D::rotate_z(deg.to_radians()));
+      }
+      RotateValue::AxisAngle { x, y, z, angle } => {
+        ts = ts.multiply(&rotate3d_axis_angle(x, y, z, angle, EPS));
+      }
     }
 
     if let ScaleValue::Values { x, y, z } = style.scale {
@@ -183,37 +230,7 @@ pub fn resolve_transforms(
         crate::css::types::Transform::RotateX(deg) => Transform3D::rotate_x(deg.to_radians()),
         crate::css::types::Transform::RotateY(deg) => Transform3D::rotate_y(deg.to_radians()),
         crate::css::types::Transform::Rotate3d(x, y, z, deg) => {
-          let len = (x * x + y * y + z * z).sqrt();
-          if len < EPS {
-            Transform3D::identity()
-          } else {
-            let ax = *x / len;
-            let ay = *y / len;
-            let az = *z / len;
-            let angle = deg.to_radians();
-            let (s, c) = angle.sin_cos();
-            let t = 1.0 - c;
-
-            // Rodrigues rotation formula (right-handed, column vectors) to match `Transform3D::rotate_*`.
-            let m00 = t * ax * ax + c;
-            let m01 = t * ax * ay - s * az;
-            let m02 = t * ax * az + s * ay;
-            let m10 = t * ax * ay + s * az;
-            let m11 = t * ay * ay + c;
-            let m12 = t * ay * az - s * ax;
-            let m20 = t * ax * az - s * ay;
-            let m21 = t * ay * az + s * ax;
-            let m22 = t * az * az + c;
-
-            Transform3D {
-              m: [
-                m00, m10, m20, 0.0, // column 1
-                m01, m11, m21, 0.0, // column 2
-                m02, m12, m22, 0.0, // column 3
-                0.0, 0.0, 0.0, 1.0, // column 4
-              ],
-            }
-          }
+          rotate3d_axis_angle(*x, *y, *z, *deg, EPS)
         }
         crate::css::types::Transform::SkewX(deg) => Transform3D::skew(deg.to_radians(), 0.0),
         crate::css::types::Transform::SkewY(deg) => Transform3D::skew(0.0, deg.to_radians()),
