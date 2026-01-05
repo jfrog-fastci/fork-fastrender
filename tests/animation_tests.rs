@@ -1113,12 +1113,13 @@ fn scroll_self_custom_property_animations_recompute_var_dependent_properties() {
       <style>
         html, body {{ margin: 0; background: rgb(0, 0, 0); }}
         #scroller {{
+          box-sizing: border-box;
           overflow-y: auto;
           height: 100px;
           width: 100px;
           background: rgb(0, 0, 0);
           --can-scroll: 0;
-          border-bottom: calc(1px * var(--can-scroll)) solid rgb(255, 0, 0);
+          border-bottom: calc(var(--borderWidth-thin, .0625rem) * var(--can-scroll)) solid rgb(255, 0, 0);
           animation-timeline: scroll(self);
           animation-name: detect;
           animation-duration: 1s;
