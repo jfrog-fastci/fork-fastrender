@@ -67,6 +67,9 @@ pub fn validate_cors_allow_origin(
   }
 
   if raw.eq_ignore_ascii_case("null") {
+    if matches!(mode, CorsMode::UseCredentials) && !resource.access_control_allow_credentials {
+      return Err("blocked by CORS: missing Access-Control-Allow-Credentials: true".to_string());
+    }
     if !document_origin.is_http_like() {
       return Ok(());
     }
@@ -89,4 +92,43 @@ pub fn validate_cors_allow_origin(
   }
 
   Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{validate_cors_allow_origin, CorsMode};
+  use crate::resource::{origin_from_url, FetchedResource};
+
+  #[test]
+  fn allows_null_origin_for_anonymous_non_http_documents() {
+    let doc_origin = origin_from_url("file:///fixture.html").expect("origin");
+    let url = "https://example.com/image.png";
+    let mut resource =
+      FetchedResource::with_final_url(vec![1, 2, 3], Some("image/png".to_string()), Some(url.to_string()));
+    resource.access_control_allow_origin = Some("null".to_string());
+
+    validate_cors_allow_origin(&resource, url, &doc_origin, CorsMode::Anonymous)
+      .expect("null origin should be accepted for anonymous file origins");
+  }
+
+  #[test]
+  fn requires_allow_credentials_for_credentialed_null_origin() {
+    let doc_origin = origin_from_url("file:///fixture.html").expect("origin");
+    let url = "https://example.com/image.png";
+    let mut resource =
+      FetchedResource::with_final_url(vec![1, 2, 3], Some("image/png".to_string()), Some(url.to_string()));
+    resource.access_control_allow_origin = Some("null".to_string());
+    resource.access_control_allow_credentials = false;
+
+    let err = validate_cors_allow_origin(&resource, url, &doc_origin, CorsMode::UseCredentials)
+      .expect_err("expected credentialed null origin without ACAC to fail");
+    assert!(
+      err.contains("Access-Control-Allow-Credentials"),
+      "unexpected error message: {err}"
+    );
+
+    resource.access_control_allow_credentials = true;
+    validate_cors_allow_origin(&resource, url, &doc_origin, CorsMode::UseCredentials)
+      .expect("credentialed null origin should succeed with ACAC=true");
+  }
 }
