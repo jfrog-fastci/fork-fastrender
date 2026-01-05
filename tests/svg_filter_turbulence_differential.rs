@@ -4,6 +4,8 @@ use fastrender::paint::svg_filter::{
   SvgFilterRegion, SvgFilterUnits, SvgLength, TurbulenceType,
 };
 use std::env;
+use std::fs;
+use std::path::PathBuf;
 use tiny_skia::{Pixmap, PremultipliedColorU8};
 
 #[derive(Clone)]
@@ -166,6 +168,17 @@ fn env_u32(name: &str) -> Option<u32> {
   env::var(name).ok()?.parse::<u32>().ok()
 }
 
+fn env_u8(name: &str) -> Option<u8> {
+  env::var(name).ok()?.parse::<u8>().ok()
+}
+
+fn env_bool(name: &str) -> bool {
+  match env::var(name).ok().as_deref() {
+    Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("YES") => true,
+    _ => false,
+  }
+}
+
 fn render_with_resvg(svg: &str, width: u32, height: u32) -> resvg::tiny_skia::Pixmap {
   use resvg::usvg;
 
@@ -236,10 +249,15 @@ fn render_with_fastrender(case: &TurbulenceCase) -> Pixmap {
 fn compare_pixmaps(
   case_idx: usize,
   case: &TurbulenceCase,
+  seed: u32,
+  total_cases: usize,
+  tolerance: u8,
+  dump_artifacts: bool,
   svg: &str,
   resvg: &[u8],
   fast: &[u8],
   width: u32,
+  height: u32,
 ) {
   assert_eq!(resvg.len(), fast.len(), "pixmaps must be same byte length");
 
@@ -258,7 +276,7 @@ fn compare_pixmaps(
     }
   }
 
-  if max_delta <= 1 {
+  if max_delta <= tolerance {
     return;
   }
 
@@ -272,8 +290,54 @@ fn compare_pixmaps(
     _ => "a",
   };
 
+  let mut artifact_note = String::new();
+  if dump_artifacts {
+    let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/turbulence_differential");
+    if let Err(err) = fs::create_dir_all(&out_dir) {
+      artifact_note = format!("\n  (failed to create artifact dir {out_dir:?}: {err})");
+    } else {
+      let resvg_path = out_dir.join(format!("case_{case_idx:04}_resvg.png"));
+      let fast_path = out_dir.join(format!("case_{case_idx:04}_fastrender.png"));
+      let diff_path = out_dir.join(format!("case_{case_idx:04}_diff.png"));
+      let svg_path = out_dir.join(format!("case_{case_idx:04}.svg"));
+
+      let write_png = |path: &PathBuf, data: &[u8]| -> Result<(), String> {
+        let Some(img) = image::RgbaImage::from_raw(width, height, data.to_vec()) else {
+          return Err("failed to create RgbaImage".to_string());
+        };
+        img
+          .save(path)
+          .map_err(|err| format!("failed to write {path:?}: {err}"))
+      };
+
+      let mut diff_bytes = vec![0u8; resvg.len()];
+      for (dst, (&a, &b)) in diff_bytes.iter_mut().zip(resvg.iter().zip(fast.iter())) {
+        *dst = a.abs_diff(b).saturating_mul(8);
+      }
+
+      let write_svg =
+        fs::write(&svg_path, svg).map_err(|err| format!("failed to write {svg_path:?}: {err}"));
+
+      let writes = write_png(&resvg_path, resvg)
+        .and_then(|_| write_png(&fast_path, fast))
+        .and_then(|_| write_png(&diff_path, &diff_bytes))
+        .and_then(|_| write_svg);
+
+      match writes {
+        Ok(()) => {
+          artifact_note = format!(
+            "\n  artifacts:\n    resvg={resvg_path:?}\n    fastrender={fast_path:?}\n    diff={diff_path:?}\n    svg={svg_path:?}"
+          );
+        }
+        Err(err) => {
+          artifact_note = format!("\n  (failed to write artifacts in {out_dir:?}: {err})");
+        }
+      }
+    }
+  }
+
   panic!(
-    "feTurbulence differential mismatch (tolerance<=1)\n  case={case_idx}\n  max Δ={max_delta} at ({x},{y}) channel {channel} (resvg={} fast={})\n  differing_bytes={differing_bytes} / {}\n  params={case:?}\n  svg=\n{svg}",
+    "feTurbulence differential mismatch (tolerance<={tolerance})\n  case={case_idx} / {total_cases} (seed={seed})\n  max Δ={max_delta} at ({x},{y}) channel {channel} (resvg={} fast={})\n  differing_bytes={differing_bytes} / {}\n  rerun:\n    FASTR_TURBULENCE_DIFF_SEED={seed} FASTR_TURBULENCE_DIFF_CASES={total_cases} FASTR_TURBULENCE_DIFF_ONLY={case_idx} cargo test --test svg_filter_turbulence_differential -- --ignored\n  params={case:?}{artifact_note}\n  svg=\n{svg}",
     resvg[max_at],
     fast[max_at],
     resvg.len()
@@ -414,6 +478,9 @@ fn svg_filter_turbulence_differential_against_resvg() {
   let case_count = env_usize("FASTR_TURBULENCE_DIFF_CASES").unwrap_or(128);
   let only_case = env_usize("FASTR_TURBULENCE_DIFF_ONLY");
   let start_case = env_usize("FASTR_TURBULENCE_DIFF_START").unwrap_or(0);
+  let tolerance = env_u8("FASTR_TURBULENCE_DIFF_TOL").unwrap_or(1);
+  let tolerance = tolerance.min(1);
+  let dump_artifacts = env_bool("FASTR_TURBULENCE_DIFF_DUMP");
 
   let cases = generate_cases(seed, case_count);
   let end_case = cases.len();
@@ -438,10 +505,15 @@ fn svg_filter_turbulence_differential_against_resvg() {
     compare_pixmaps(
       case_idx,
       case,
+      seed,
+      cases.len(),
+      tolerance,
+      dump_artifacts,
       &svg,
       resvg_pixmap.data(),
       fast_pixmap.data(),
       case.canvas_w,
+      case.canvas_h,
     );
   }
 }
