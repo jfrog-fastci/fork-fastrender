@@ -24,7 +24,7 @@ Options:
   --viewport <WxH>          Viewport size (default: 1040x1240)
   --dpr <float>             Device pixel ratio (default: 1.0)
   --media <screen|print>    Media type for both Chrome + FastRender (default: screen)
-  --jobs <n>                Parallelism forwarded to render_fixtures
+  --jobs <n>, -j <n>        Parallelism forwarded to render_fixtures
   --write-snapshot          Also write render_fixtures snapshots/diagnostics (for diff_snapshots)
   --timeout <secs>          Per-fixture timeout (Chrome + FastRender) (default: 15)
   --chrome <path>           Chrome/Chromium binary (default: auto-detect)
