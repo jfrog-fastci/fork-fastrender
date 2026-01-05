@@ -119,11 +119,8 @@ struct BundledResource {
 }
 
 impl BundledResource {
-  fn from_parts(info: BundledResourceInfo, bytes: Vec<u8>) -> Self {
-    Self {
-      info,
-      bytes: Arc::new(bytes),
-    }
+  fn from_parts(info: BundledResourceInfo, bytes: Arc<Vec<u8>>) -> Self {
+    Self { info, bytes }
   }
 
   fn as_fetched(&self) -> FetchedResource {
@@ -225,7 +222,7 @@ impl Bundle {
   fn build_from_manifest(
     base_path: &Path,
     manifest: BundleManifest,
-    archive_files: Option<HashMap<String, Vec<u8>>>,
+    mut archive_files: Option<HashMap<String, Vec<u8>>>,
   ) -> Result<Self> {
     if manifest.version != BUNDLE_VERSION {
       return Err(Error::Other(format!(
@@ -234,16 +231,23 @@ impl Bundle {
       )));
     }
 
-    let fetch_file = |relative: &str| -> Result<Vec<u8>> {
+    let mut file_cache: HashMap<String, Arc<Vec<u8>>> = HashMap::new();
+    let mut fetch_file = |relative: &str| -> Result<Arc<Vec<u8>>> {
       let relative_path = validate_relative_path(relative)?;
-      let relative_str = relative_path.to_string_lossy().to_string();
-      if let Some(files) = archive_files.as_ref() {
-        files.get(&relative_str).cloned().ok_or_else(|| {
+      let relative_str = relative_path.to_string_lossy();
+      let relative_str = relative_str.trim_start_matches("./").to_string();
+
+      if let Some(cached) = file_cache.get(&relative_str) {
+        return Ok(Arc::clone(cached));
+      }
+
+      let data = if let Some(files) = archive_files.as_mut() {
+        files.remove(&relative_str).ok_or_else(|| {
           Error::Other(format!(
             "Bundle missing resource file referenced in manifest: {}",
             relative
           ))
-        })
+        })?
       } else {
         let target = base_path.join(&relative_path);
         if target.is_dir() {
@@ -252,12 +256,15 @@ impl Bundle {
             relative
           )));
         }
-        fs::read(&target).map_err(Error::Io)
-      }
+        fs::read(&target).map_err(Error::Io)?
+      };
+
+      let data = Arc::new(data);
+      file_cache.insert(relative_str, Arc::clone(&data));
+      Ok(data)
     };
 
     let document_bytes = fetch_file(&manifest.document.path)?;
-    let document_bytes = Arc::new(document_bytes);
 
     let mut resources: HashMap<String, BundledResource> = HashMap::new();
     for (original_url, info) in &manifest.resources {
@@ -356,7 +363,10 @@ impl ResourceFetcher for BundledFetcher {
 
   fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
     if cors_enforcement_enabled()
-      && matches!(req.destination, FetchDestination::Font | FetchDestination::ImageCors)
+      && matches!(
+        req.destination,
+        FetchDestination::Font | FetchDestination::ImageCors
+      )
     {
       let kind: FetchContextKind = req.destination.into();
       let origin = req
@@ -698,6 +708,106 @@ mod tests {
         )
         .expect("fetch origin B");
       assert_eq!(b.bytes, b"b");
+    });
+  }
+
+  #[test]
+  fn bundle_loader_allows_multiple_manifest_keys_to_share_one_file() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      tmp.path().join("document.html"),
+      "<!doctype html><html></html>",
+    )
+    .expect("write doc");
+
+    let url = "https://cdn.example/font.woff2";
+    let origin_a = origin_from_url("https://a.test/page.html").expect("origin A");
+    let origin_b = origin_from_url("https://b.test/page.html").expect("origin B");
+
+    let key_a = request_partitioned_resource_key(FetchContextKind::Font, url, &origin_a);
+    let key_b = request_partitioned_resource_key(FetchContextKind::Font, url, &origin_b);
+
+    std::fs::write(tmp.path().join("font.woff2"), b"ok").expect("write font");
+
+    let shared_info = |allow_origin: &str| BundledResourceInfo {
+      path: "font.woff2".to_string(),
+      content_type: Some("font/woff2".to_string()),
+      status: Some(200),
+      final_url: Some(url.to_string()),
+      etag: None,
+      last_modified: None,
+      access_control_allow_origin: Some(allow_origin.to_string()),
+      timing_allow_origin: None,
+      access_control_allow_credentials: false,
+    };
+
+    let manifest = BundleManifest {
+      version: BUNDLE_VERSION,
+      original_url: "https://example.com/".to_string(),
+      document: BundledDocument {
+        path: "document.html".to_string(),
+        content_type: Some("text/html".to_string()),
+        final_url: "https://example.com/".to_string(),
+        status: Some(200),
+        etag: None,
+        last_modified: None,
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+      },
+      render: BundleRenderConfig {
+        viewport: (1200, 800),
+        device_pixel_ratio: 1.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+        full_page: false,
+        same_origin_subresources: false,
+        allowed_subresource_origins: Vec::new(),
+        compat_profile: CompatProfile::default(),
+        dom_compat_mode: DomCompatibilityMode::default(),
+      },
+      resources: BTreeMap::from([
+        (url.to_string(), shared_info("https://a.test")),
+        (key_a, shared_info("https://a.test")),
+        (key_b, shared_info("https://b.test")),
+      ]),
+    };
+
+    std::fs::write(
+      tmp.path().join(BUNDLE_MANIFEST),
+      serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+
+    let bundle = Bundle::load(tmp.path()).expect("load bundle");
+    let fetcher = BundledFetcher::new(bundle);
+
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "1".to_string(),
+    )])));
+
+    with_thread_runtime_toggles(toggles, || {
+      let a = fetcher
+        .fetch_with_request(
+          FetchRequest::new(url, FetchDestination::Font).with_referrer("https://a.test/page.html"),
+        )
+        .expect("fetch origin A");
+      assert_eq!(a.bytes, b"ok");
+      assert_eq!(
+        a.access_control_allow_origin.as_deref(),
+        Some("https://a.test")
+      );
+
+      let b = fetcher
+        .fetch_with_request(
+          FetchRequest::new(url, FetchDestination::Font).with_referrer("https://b.test/page.html"),
+        )
+        .expect("fetch origin B");
+      assert_eq!(b.bytes, b"ok");
+      assert_eq!(
+        b.access_control_allow_origin.as_deref(),
+        Some("https://b.test")
+      );
     });
   }
 }

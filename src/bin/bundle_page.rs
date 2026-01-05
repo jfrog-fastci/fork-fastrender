@@ -19,23 +19,24 @@ use fastrender::html::images::ImageSelectionContext;
 use fastrender::html::meta_refresh::{extract_js_location_redirect, extract_meta_refresh_url};
 use fastrender::image_output::encode_image;
 use fastrender::resource::bundle::{
-  Bundle, BundleManifest, BundleRenderConfig, BundledDocument, BundledFetcher, BundledResourceInfo,
-  request_partitioned_resource_key, BUNDLE_MANIFEST, BUNDLE_VERSION,
+  request_partitioned_resource_key, Bundle, BundleManifest, BundleRenderConfig, BundledDocument,
+  BundledFetcher, BundledResourceInfo, BUNDLE_MANIFEST, BUNDLE_VERSION,
 };
 use fastrender::resource::{
-  ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane, ensure_stylesheet_mime_sane,
-  cors_enforcement_enabled, offline_placeholder_png_bytes, offline_placeholder_woff2_bytes,
-  origin_from_url, DocumentOrigin,
-  FetchContextKind, FetchDestination, FetchRequest, FetchedResource, ResourceAccessPolicy,
-  ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
+  cors_enforcement_enabled, ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane,
+  ensure_stylesheet_mime_sane, offline_placeholder_png_bytes, offline_placeholder_woff2_bytes,
+  origin_from_url, DocumentOrigin, FetchContextKind, FetchDestination, FetchRequest,
+  FetchedResource, ResourceAccessPolicy, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE,
+  DEFAULT_USER_AGENT,
 };
-use fastrender::tree::box_tree::CrossOriginAttribute;
 #[cfg(feature = "disk_cache")]
 use fastrender::resource::{
   parse_cached_html_meta, CachingFetcherConfig, DiskCacheConfig, DiskCachingFetcher, ResourcePolicy,
 };
 use fastrender::style::media::{MediaContext, MediaType};
+use fastrender::tree::box_tree::CrossOriginAttribute;
 use fastrender::{OutputFormat, Result};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::Write;
@@ -475,8 +476,10 @@ impl RecordingFetcher {
       return snapshot;
     }
 
-    let mut origins_by_resource: HashMap<(FetchContextKind, String), HashSet<Option<DocumentOrigin>>> =
-      HashMap::new();
+    let mut origins_by_resource: HashMap<
+      (FetchContextKind, String),
+      HashSet<Option<DocumentOrigin>>,
+    > = HashMap::new();
     for (key, _) in &by_request {
       origins_by_resource
         .entry((key.kind, key.url.clone()))
@@ -499,11 +502,15 @@ impl RecordingFetcher {
       };
 
       let manifest_key = request_partitioned_resource_key(key.kind, &key.url, origin);
-      snapshot.entry(manifest_key).or_insert_with(|| resource.clone());
+      snapshot
+        .entry(manifest_key)
+        .or_insert_with(|| resource.clone());
       if let Some(final_url) = resource.final_url.as_deref() {
         if final_url != key.url.as_str() {
           let manifest_key = request_partitioned_resource_key(key.kind, final_url, origin);
-          snapshot.entry(manifest_key).or_insert_with(|| resource.clone());
+          snapshot
+            .entry(manifest_key)
+            .or_insert_with(|| resource.clone());
         }
       }
     }
@@ -553,7 +560,10 @@ impl ResourceFetcher for RecordingFetcher {
     let url = req.url.to_string();
 
     if cors_enforcement_enabled()
-      && matches!(req.destination, FetchDestination::Font | FetchDestination::ImageCors)
+      && matches!(
+        req.destination,
+        FetchDestination::Font | FetchDestination::ImageCors
+      )
     {
       let key = RecordingRequestKey {
         kind: req.destination.into(),
@@ -646,7 +656,7 @@ impl ResourceFetcher for RecordingFetcher {
 }
 
 struct ResourceEntry {
-  info: BundledResourceInfo,
+  path: String,
   bytes: Vec<u8>,
 }
 
@@ -1028,13 +1038,31 @@ fn build_manifest(
 
   let mut resources: Vec<ResourceEntry> = Vec::new();
   let mut manifest_resources: BTreeMap<String, BundledResourceInfo> = BTreeMap::new();
+  let mut content_paths: HashMap<(String, [u8; 32]), String> = HashMap::new();
+  let mut resource_index: usize = 0;
   let mut urls: Vec<String> = recorded.keys().cloned().collect();
   urls.sort();
-  for (idx, url) in urls.iter().enumerate() {
+  for url in urls.iter() {
     let res = recorded.get(url).unwrap();
-    // Bundles are often written as tar archives; `tar::Header::set_path` enforces the USTAR path
-    // limit, so keep resource paths short to avoid failures on pages with very long URLs.
-    let path = format!("resources/{:05}.{}", idx, extension_for_resource(res, url));
+    let ext = extension_for_resource(res, url);
+    let mut hasher = Sha256::new();
+    hasher.update(&res.bytes);
+    let digest: [u8; 32] = hasher.finalize().into();
+    let content_key = (ext.clone(), digest);
+    let path = if let Some(existing) = content_paths.get(&content_key) {
+      existing.clone()
+    } else {
+      // Bundles are often written as tar archives; `tar::Header::set_path` enforces the USTAR path
+      // limit, so keep resource paths short to avoid failures on pages with very long URLs.
+      let path = format!("resources/{:05}.{}", resource_index, ext);
+      resource_index += 1;
+      content_paths.insert(content_key, path.clone());
+      resources.push(ResourceEntry {
+        path: path.clone(),
+        bytes: res.bytes.clone(),
+      });
+      path
+    };
     let info = BundledResourceInfo {
       path: path.clone(),
       content_type: res.content_type.clone(),
@@ -1046,11 +1074,7 @@ fn build_manifest(
       timing_allow_origin: res.timing_allow_origin.clone(),
       access_control_allow_credentials: res.access_control_allow_credentials,
     };
-    manifest_resources.insert(url.clone(), info.clone());
-    resources.push(ResourceEntry {
-      info,
-      bytes: res.bytes.clone(),
-    });
+    manifest_resources.insert(url.clone(), info);
   }
 
   let manifest = BundleManifest {
@@ -1091,7 +1115,7 @@ fn write_bundle_directory(
   fs::create_dir_all(out)?;
   write_file(out.join(&manifest.document.path), document_bytes)?;
   for entry in resources {
-    write_file(out.join(&entry.info.path), &entry.bytes)?;
+    write_file(out.join(&entry.path), &entry.bytes)?;
   }
   let manifest_bytes = serde_json::to_vec_pretty(manifest)
     .map_err(|e| fastrender::Error::Other(format!("Failed to serialize manifest: {e}")))?;
@@ -1116,7 +1140,7 @@ fn write_bundle_archive(
 
   append_tar_entry(&mut builder, &manifest.document.path, document_bytes)?;
   for entry in resources {
-    append_tar_entry(&mut builder, &entry.info.path, &entry.bytes)?;
+    append_tar_entry(&mut builder, &entry.path, &entry.bytes)?;
   }
   let manifest_bytes = serde_json::to_vec_pretty(manifest)
     .map_err(|e| fastrender::Error::Other(format!("Failed to serialize manifest: {e}")))?;
@@ -1280,7 +1304,11 @@ enum CrawlMode {
   AllowMissing,
 }
 
-fn placeholder_resource(destination: FetchDestination, url: &str, referrer: &str) -> FetchedResource {
+fn placeholder_resource(
+  destination: FetchDestination,
+  url: &str,
+  referrer: &str,
+) -> FetchedResource {
   fn allow_origin_for_referrer(referrer: &str) -> Option<String> {
     let origin = origin_from_url(referrer)?;
     if origin.is_http_like() {
@@ -1563,7 +1591,8 @@ fn crawl_document(
   // always part of the key, and for CORS-mode requests under CORS enforcement we also include the
   // initiating origin so we don't accidentally drop per-origin metadata (notably
   // Access-Control-Allow-Origin).
-  let mut fetched_urls: HashSet<(FetchContextKind, String, Option<DocumentOrigin>)> = HashSet::new();
+  let mut fetched_urls: HashSet<(FetchContextKind, String, Option<DocumentOrigin>)> =
+    HashSet::new();
   let mut fetch_errors: Vec<(String, String)> = Vec::new();
   let root_referrer = document.base_hint.as_str();
 
@@ -1689,8 +1718,10 @@ fn crawl_document(
     let kind: FetchContextKind = destination.into();
     let document_origin = origin_from_url(&referrer);
     let origin_key = if cors_enforcement_enabled()
-      && matches!(destination, FetchDestination::Font | FetchDestination::ImageCors)
-    {
+      && matches!(
+        destination,
+        FetchDestination::Font | FetchDestination::ImageCors
+      ) {
       document_origin.clone().or_else(|| origin_from_url(&url))
     } else {
       None
@@ -1714,7 +1745,15 @@ fn crawl_document(
     let res = match fetcher.fetch_with_request(req) {
       Ok(res) => res,
       Err(err) => {
-        handle_crawl_failure(fetcher, &mut fetch_errors, &url, destination, &referrer, &err, mode);
+        handle_crawl_failure(
+          fetcher,
+          &mut fetch_errors,
+          &url,
+          destination,
+          &referrer,
+          &err,
+          mode,
+        );
         if matches!(mode, CrawlMode::AllowMissing) {
           fetched_urls.insert(fetch_key);
         }
@@ -1771,7 +1810,15 @@ fn crawl_document(
       FetchDestination::Other => Ok(()),
     };
     if let Err(err) = validation {
-      handle_crawl_failure(fetcher, &mut fetch_errors, &url, destination, &referrer, &err, mode);
+      handle_crawl_failure(
+        fetcher,
+        &mut fetch_errors,
+        &url,
+        destination,
+        &referrer,
+        &err,
+        mode,
+      );
       continue;
     }
 
@@ -2240,7 +2287,11 @@ mod tests {
       let origin = req
         .referrer
         .and_then(|referrer| url::Url::parse(referrer).ok())
-        .and_then(|parsed| parsed.host_str().map(|host| format!("{}://{}", parsed.scheme(), host)));
+        .and_then(|parsed| {
+          parsed
+            .host_str()
+            .map(|host| format!("{}://{}", parsed.scheme(), host))
+        });
 
       let mut res =
         FetchedResource::with_final_url(b"ok".to_vec(), Some("text/plain".to_string()), None);
@@ -2264,10 +2315,8 @@ mod tests {
         (FetchDestination::Font, "https://example.com/font.woff2"),
         (FetchDestination::ImageCors, "https://example.com/img.png"),
       ] {
-        let req_a =
-          FetchRequest::new(url, destination).with_referrer("https://a.test/page.html");
-        let req_b =
-          FetchRequest::new(url, destination).with_referrer("https://b.test/page.html");
+        let req_a = FetchRequest::new(url, destination).with_referrer("https://a.test/page.html");
+        let req_b = FetchRequest::new(url, destination).with_referrer("https://b.test/page.html");
 
         let a = recording.fetch_with_request(req_a).expect("origin A fetch");
         let b = recording.fetch_with_request(req_b).expect("origin B fetch");
@@ -2311,10 +2360,8 @@ mod tests {
         (FetchDestination::Font, "https://example.com/font.woff2"),
         (FetchDestination::ImageCors, "https://example.com/img.png"),
       ] {
-        let req_a =
-          FetchRequest::new(url, destination).with_referrer("https://a.test/page.html");
-        let req_b =
-          FetchRequest::new(url, destination).with_referrer("https://b.test/page.html");
+        let req_a = FetchRequest::new(url, destination).with_referrer("https://a.test/page.html");
+        let req_b = FetchRequest::new(url, destination).with_referrer("https://b.test/page.html");
 
         let a = recording.fetch_with_request(req_a).expect("origin A fetch");
         let b = recording.fetch_with_request(req_b).expect("origin B fetch");
@@ -2465,10 +2512,8 @@ mod tests {
       let origin_a = origin_from_url("http://a.test/frame.html").expect("origin A");
       let origin_b = origin_from_url("http://b.test/frame.html").expect("origin B");
       let font_url = "http://cdn.test/font.woff2";
-      let key_a =
-        request_partitioned_resource_key(FetchContextKind::Font, font_url, &origin_a);
-      let key_b =
-        request_partitioned_resource_key(FetchContextKind::Font, font_url, &origin_b);
+      let key_a = request_partitioned_resource_key(FetchContextKind::Font, font_url, &origin_a);
+      let key_b = request_partitioned_resource_key(FetchContextKind::Font, font_url, &origin_b);
 
       assert!(
         snapshot.contains_key(font_url),
@@ -2500,7 +2545,75 @@ mod tests {
   }
 
   #[test]
-  fn crawl_prefers_image_cors_for_img_crossorigin_and_upgrades_existing_queue_entry() -> Result<()> {
+  fn build_manifest_reuses_resource_files_for_identical_bytes() -> Result<()> {
+    let font_url = "http://cdn.test/font.woff2";
+    let origin_a = origin_from_url("http://a.test/frame.html").expect("origin A");
+    let origin_b = origin_from_url("http://b.test/frame.html").expect("origin B");
+    let key_a = request_partitioned_resource_key(FetchContextKind::Font, font_url, &origin_a);
+    let key_b = request_partitioned_resource_key(FetchContextKind::Font, font_url, &origin_b);
+
+    let mut res_a = FetchedResource::with_final_url(
+      b"ok".to_vec(),
+      Some("font/woff2".to_string()),
+      Some(font_url.to_string()),
+    );
+    res_a.access_control_allow_origin = Some("http://a.test".to_string());
+    let mut res_b = res_a.clone();
+    res_b.access_control_allow_origin = Some("http://b.test".to_string());
+
+    let mut recorded = HashMap::new();
+    recorded.insert(font_url.to_string(), res_a.clone());
+    recorded.insert(key_a.clone(), res_a);
+    recorded.insert(key_b.clone(), res_b);
+
+    let document_url = "http://root.test/page.html".to_string();
+    let document_resource = FetchedResource::with_final_url(
+      b"<!doctype html><html></html>".to_vec(),
+      Some("text/html".to_string()),
+      Some(document_url.clone()),
+    );
+    let render = BundleRenderConfig {
+      viewport: (1200, 800),
+      device_pixel_ratio: 1.0,
+      scroll_x: 0.0,
+      scroll_y: 0.0,
+      full_page: false,
+      same_origin_subresources: false,
+      allowed_subresource_origins: Vec::new(),
+      compat_profile: fastrender::compat::CompatProfile::default(),
+      dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
+    };
+
+    let (manifest, resources, _) =
+      build_manifest(document_url, render, document_resource, recorded);
+
+    let raw_path = manifest
+      .resources
+      .get(font_url)
+      .expect("raw entry")
+      .path
+      .clone();
+    assert_eq!(
+      manifest.resources.get(&key_a).expect("origin A entry").path,
+      raw_path
+    );
+    assert_eq!(
+      manifest.resources.get(&key_b).expect("origin B entry").path,
+      raw_path
+    );
+    assert_eq!(
+      resources.len(),
+      1,
+      "expected identical resource bytes to be written once"
+    );
+    assert_eq!(resources[0].path, raw_path);
+
+    Ok(())
+  }
+
+  #[test]
+  fn crawl_prefers_image_cors_for_img_crossorigin_and_upgrades_existing_queue_entry() -> Result<()>
+  {
     #[derive(Default)]
     struct CrossoriginFetcher {
       calls: Mutex<Vec<(String, FetchDestination, Option<String>)>>,
