@@ -135,6 +135,7 @@ fn view_timeline_animation_range_entry_length_offsets_map_to_scroll_positions() 
         animation-timeline: --t;
         animation-range: entry 100px entry 500px;
         animation-fill-mode: both;
+        animation-timing-function: linear;
         animation-name: fade;
       }
       @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
