@@ -6984,30 +6984,23 @@ mod tests {
   }
 
   #[test]
-  fn displacement_map_interpolates_in_color_space() {
-    let mut primary = new_pixmap(2, 2).unwrap();
-    let pixels = [
-      premul(0, 0, 0, 255),
-      premul(255, 255, 255, 255),
-      premul(0, 0, 0, 255),
-      premul(255, 255, 255, 255),
-    ];
-    for (dst, src) in primary.pixels_mut().iter_mut().zip(pixels.iter()) {
-      *dst = *src;
-    }
+  fn displacement_map_respects_color_interpolation_filters() {
+    let mut primary = new_pixmap(1, 2).unwrap();
+    primary.pixels_mut()[0] = premul(0, 0, 0, 255);
+    primary.pixels_mut()[1] = premul(255, 255, 255, 255);
 
-    let mut map = new_pixmap(2, 2).unwrap();
-    // Displace the X coordinate by 0.5px (channel=1.0), while keeping the Y displacement within
-    // bounds even after converting to linearRGB.
+    let mut map = new_pixmap(1, 2).unwrap();
+    // Pick a value whose sRGB -> linearRGB conversion is ~0.5 (so LinearRGB displacement stays
+    // near zero). In sRGB it is > 0.5, so it produces a positive displacement.
     for px in map.pixels_mut() {
-      *px = premul(255, 188, 0, 255);
+      *px = premul(0, 188, 0, 255);
     }
 
     let srgb = apply_displacement_map(
       &primary,
       &map,
-      1.0,
-      1.0,
+      0.0,
+      2.0,
       ChannelSelector::R,
       ChannelSelector::G,
       ColorInterpolationFilters::SRGB,
@@ -7017,8 +7010,8 @@ mod tests {
     let linear = apply_displacement_map(
       &primary,
       &map,
-      1.0,
-      1.0,
+      0.0,
+      2.0,
       ChannelSelector::R,
       ChannelSelector::G,
       ColorInterpolationFilters::LinearRGB,
@@ -7031,24 +7024,15 @@ mod tests {
     assert_eq!(srgb_px.alpha(), 255);
     assert_eq!(linear_px.alpha(), 255);
 
-    let within1 = |actual: u8, expected: u8| (actual as i32 - expected as i32).abs() <= 1;
-    assert!(
-      within1(srgb_px.red(), 128) && within1(srgb_px.green(), 128) && within1(srgb_px.blue(), 128),
-      "expected ~128 gray in sRGB, got ({},{},{},{})",
-      srgb_px.red(),
-      srgb_px.green(),
-      srgb_px.blue(),
-      srgb_px.alpha()
+    assert_eq!(
+      (srgb_px.red(), srgb_px.green(), srgb_px.blue(), srgb_px.alpha()),
+      (255, 255, 255, 255),
+      "expected sRGB displacement to sample the second row"
     );
-    assert!(
-      within1(linear_px.red(), 188)
-        && within1(linear_px.green(), 188)
-        && within1(linear_px.blue(), 188),
-      "expected ~188 gray in linearRGB, got ({},{},{},{})",
-      linear_px.red(),
-      linear_px.green(),
-      linear_px.blue(),
-      linear_px.alpha()
+    assert_eq!(
+      (linear_px.red(), linear_px.green(), linear_px.blue(), linear_px.alpha()),
+      (0, 0, 0, 255),
+      "expected linearRGB displacement to sample the first row"
     );
   }
 
@@ -7070,8 +7054,8 @@ mod tests {
     let out = apply_displacement_map(
       &primary,
       &map,
+      1.0,
       2.0,
-      4.0,
       ChannelSelector::R,
       ChannelSelector::R,
       ColorInterpolationFilters::SRGB,
