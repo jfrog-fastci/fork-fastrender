@@ -6794,7 +6794,13 @@ impl DisplayListBuilder {
     // Chrome (and friends) do not draw a UA placeholder for `<video>` when there is no poster and
     // no video frame available. Keeping this transparent is important for real pages (e.g. when
     // a thumbnail image sits behind the video element until it loads).
-    if matches!(replaced_type, ReplacedType::Video { poster: None, .. }) {
+    //
+    // Likewise, `<canvas>` is transparent when nothing has been drawn (and we don't execute JS),
+    // so a placeholder would incorrectly obscure background content.
+    if matches!(
+      replaced_type,
+      ReplacedType::Video { poster: None, .. } | ReplacedType::Canvas
+    ) {
       return;
     }
 

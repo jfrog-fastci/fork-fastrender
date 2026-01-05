@@ -7563,7 +7563,13 @@ impl Painter {
   ) {
     // Browsers keep `<video>` transparent when no poster/frame is available. Painting a generic
     // placeholder breaks real pages that rely on a thumbnail image behind the video element.
-    if matches!(replaced_type, ReplacedType::Video { poster: None, .. }) {
+    //
+    // Likewise, `<canvas>` is transparent when nothing has been drawn (and we don't execute JS),
+    // so a placeholder would incorrectly obscure background content.
+    if matches!(
+      replaced_type,
+      ReplacedType::Video { poster: None, .. } | ReplacedType::Canvas
+    ) {
       return;
     }
 
