@@ -1994,8 +1994,12 @@ fn parse_min_max_time<'i, 't>(
     }
   }
 
-  if values.len() < 2 {
+  // Per CSS Values & Units, `min()`/`max()` accept 1+ arguments (one-arg is identity).
+  if values.is_empty() {
     return Err(input.new_custom_error(()));
+  }
+  if values.len() == 1 {
+    return Ok(values.pop().expect("checked len"));
   }
 
   let location = input.current_source_location();
@@ -17464,6 +17468,9 @@ mod tests {
   fn parse_time_ms_parses_min_max_clamp_math_functions() {
     assert_eq!(parse_time_ms("min(1s, 500ms)"), Some(500.0));
     assert_eq!(parse_time_ms("max(1s, 500ms)"), Some(1000.0));
+    assert_eq!(parse_time_ms("min(500ms)"), Some(500.0));
+    assert_eq!(parse_time_ms("max(0s)"), Some(0.0));
+    assert_eq!(parse_time_ms("max(0)"), Some(0.0));
     assert_eq!(parse_time_ms("clamp(0s, 1s, 500ms)"), Some(500.0));
     assert_eq!(
       parse_time_ms("min(.16s + 20ms * calc(4 - 2), .24s)"),
