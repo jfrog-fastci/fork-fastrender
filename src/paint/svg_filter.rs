@@ -4497,16 +4497,9 @@ fn resolve_kernel_unit_length(
   (resolved.0.abs(), resolved.1.abs())
 }
 
-fn sample_alpha_at(
-  pixmap: &Pixmap,
-  css_x: f32,
-  css_y: f32,
-  css_bbox: &Rect,
-  scale_x: f32,
-  scale_y: f32,
-) -> f32 {
-  let dx = (css_x - css_bbox.x()) * scale_x;
-  let dy = (css_y - css_bbox.y()) * scale_y;
+fn sample_alpha_at(pixmap: &Pixmap, css_x: f32, css_y: f32, scale_x: f32, scale_y: f32) -> f32 {
+  let dx = css_x * scale_x;
+  let dy = css_y * scale_y;
   if !dx.is_finite() || !dy.is_finite() {
     return 0.0;
   }
@@ -4517,19 +4510,17 @@ fn sample_height_at(
   pixmap: &Pixmap,
   css_x: f32,
   css_y: f32,
-  css_bbox: &Rect,
   scale_x: f32,
   scale_y: f32,
   surface_scale: f32,
 ) -> f32 {
-  sample_alpha_at(pixmap, css_x, css_y, css_bbox, scale_x, scale_y) * surface_scale
+  sample_alpha_at(pixmap, css_x, css_y, scale_x, scale_y) * surface_scale
 }
 
 fn surface_normal(
   pixmap: &Pixmap,
   css_x: f32,
   css_y: f32,
-  css_bbox: &Rect,
   scale_x: f32,
   scale_y: f32,
   surface_scale: f32,
@@ -4543,7 +4534,6 @@ fn surface_normal(
     pixmap,
     css_x - ku_x,
     css_y,
-    css_bbox,
     scale_x,
     scale_y,
     surface_scale,
@@ -4552,7 +4542,6 @@ fn surface_normal(
     pixmap,
     css_x + ku_x,
     css_y,
-    css_bbox,
     scale_x,
     scale_y,
     surface_scale,
@@ -4561,7 +4550,6 @@ fn surface_normal(
     pixmap,
     css_x,
     css_y - ku_y,
-    css_bbox,
     scale_x,
     scale_y,
     surface_scale,
@@ -4570,7 +4558,6 @@ fn surface_normal(
     pixmap,
     css_x,
     css_y + ku_y,
-    css_bbox,
     scale_x,
     scale_y,
     surface_scale,
@@ -4632,8 +4619,8 @@ fn apply_diffuse_lighting(
   } else {
     1.0
   };
-  let origin_x = css_bbox.x();
-  let origin_y = css_bbox.y();
+  let origin_x = 0.0;
+  let origin_y = 0.0;
   let light = light.clone();
   let width = input.pixmap.width() as usize;
 
@@ -4655,7 +4642,6 @@ fn apply_diffuse_lighting(
               &input.pixmap,
               css_x,
               css_y,
-              css_bbox,
               scale_x,
               scale_y,
               surface_scale,
@@ -4665,7 +4651,6 @@ fn apply_diffuse_lighting(
               &input.pixmap,
               css_x,
               css_y,
-              css_bbox,
               scale_x,
               scale_y,
               surface_scale,
@@ -4744,8 +4729,8 @@ fn apply_specular_lighting(
   } else {
     1.0
   };
-  let origin_x = css_bbox.x();
-  let origin_y = css_bbox.y();
+  let origin_x = 0.0;
+  let origin_y = 0.0;
   let light = light.clone();
   let width = input.pixmap.width() as usize;
   let exponent = specular_exponent.clamp(0.0, 128.0);
@@ -4768,7 +4753,6 @@ fn apply_specular_lighting(
               &input.pixmap,
               css_x,
               css_y,
-              css_bbox,
               scale_x,
               scale_y,
               surface_scale,
@@ -4778,7 +4762,6 @@ fn apply_specular_lighting(
               &input.pixmap,
               css_x,
               css_y,
-              css_bbox,
               scale_x,
               scale_y,
               surface_scale,

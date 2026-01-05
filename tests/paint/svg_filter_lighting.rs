@@ -409,10 +409,19 @@ fn userspace_percent_regions_resolve_against_bbox() {
 
 #[test]
 fn point_light_percentages_follow_bbox_in_userspace() {
-  let mut pixmap = solid_pixmap(4, 4, PremultipliedColorU8::from_rgba(0, 0, 0, 255).unwrap());
-  let bbox = Rect::from_xywh(10.0, 20.0, 4.0, 4.0);
+  let (surface_w, surface_h) = (8u32, 8u32);
+  let (bbox_x, bbox_y) = (2u32, 3u32);
+  let bbox = Rect::from_xywh(bbox_x as f32, bbox_y as f32, 4.0, 4.0);
+
+  let mut pixmap = solid_pixmap(surface_w, surface_h, PremultipliedColorU8::TRANSPARENT);
+  let opaque = PremultipliedColorU8::from_rgba(0, 0, 0, 255).unwrap();
+  for y in bbox_y..bbox_y + 4 {
+    for x in bbox_x..bbox_x + 4 {
+      pixmap.pixels_mut()[y as usize * surface_w as usize + x as usize] = opaque;
+    }
+  }
   let filter = with_fingerprint(SvgFilter {
-    color_interpolation_filters: ColorInterpolationFilters::LinearRGB,
+    color_interpolation_filters: ColorInterpolationFilters::SRGB,
     steps: vec![FilterStep {
       result: None,
       color_interpolation_filters: None,
@@ -424,7 +433,7 @@ fn point_light_percentages_follow_bbox_in_userspace() {
         light: LightSource::Point {
           x: SvgLength::Percent(0.0),
           y: SvgLength::Percent(0.0),
-          z: SvgLength::Number(10.0),
+          z: SvgLength::Number(1.0),
         },
         lighting_color: Rgba::WHITE,
       },
@@ -444,11 +453,16 @@ fn point_light_percentages_follow_bbox_in_userspace() {
 
   apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
 
-  let px = pixmap.pixel(0, 0).unwrap();
-  assert!(
-    px.alpha() > 240,
-    "expected bbox-relative point light to fully illuminate the corner (alpha={})",
-    px.alpha()
+  assert_eq!(
+    pixmap.pixel(0, 0).unwrap(),
+    PremultipliedColorU8::TRANSPARENT,
+    "expected pixels outside the resolved filter region to stay transparent"
+  );
+  let px = pixmap.pixel(bbox_x, bbox_y).unwrap();
+  assert_eq!(
+    [px.red(), px.green(), px.blue(), px.alpha()],
+    [255, 255, 255, 255],
+    "expected bbox-relative point light to fully illuminate the bbox corner"
   );
 }
 
@@ -510,7 +524,8 @@ fn object_bounding_box_units_match_user_space_equivalent_for_point_light() {
   let width = 40;
   let height = 20;
   let bump_map = make_bump_map_pixmap(width, height);
-  let bbox = Rect::from_xywh(7.0, 11.0, width as f32, height as f32);
+  let (bbox_x, bbox_y) = (7u32, 11u32);
+  let bbox = Rect::from_xywh(bbox_x as f32, bbox_y as f32, width as f32, height as f32);
 
   // Use the same values for x/y and let the bbox shape make the resolved distances diverge.
   let kernel_unit_obj = (0.10, 0.10);
@@ -524,8 +539,8 @@ fn object_bounding_box_units_match_user_space_equivalent_for_point_light() {
     kernel_unit_obj.1 * bbox.height().abs(),
   );
   let point_user = (
-    bbox.min_x() + point_obj.0 * bbox.width().abs(),
-    bbox.min_y() + point_obj.1 * bbox.height().abs(),
+    point_obj.0 * bbox.width().abs(),
+    point_obj.1 * bbox.height().abs(),
     point_obj.2 * scalar_ref,
   );
 
@@ -591,9 +606,21 @@ fn object_bounding_box_units_match_user_space_equivalent_for_point_light() {
     fingerprint: 0,
   });
 
-  let mut out_obj = bump_map.clone();
+  let surface_w = bbox_x + width;
+  let surface_h = bbox_y + height;
+  let mut surface = Pixmap::new(surface_w, surface_h).expect("pixmap");
+  surface.pixels_mut().fill(PremultipliedColorU8::TRANSPARENT);
+  for y in 0..height {
+    for x in 0..width {
+      let src_idx = y as usize * width as usize + x as usize;
+      let dst_idx = (y + bbox_y) as usize * surface_w as usize + (x + bbox_x) as usize;
+      surface.pixels_mut()[dst_idx] = bump_map.pixels()[src_idx];
+    }
+  }
+
+  let mut out_obj = surface.clone();
   apply_svg_filter(&filter_obj, &mut out_obj, 1.0, bbox).unwrap();
-  let mut out_user = bump_map;
+  let mut out_user = surface;
   apply_svg_filter(&filter_user, &mut out_user, 1.0, bbox).unwrap();
 
   assert_eq!(

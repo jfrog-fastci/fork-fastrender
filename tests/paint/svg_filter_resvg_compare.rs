@@ -213,19 +213,19 @@ fn svg_filter_resvg_morphology_dilate_matches_alpha_and_rgb() {
           <feComposite in="color" in2="mask" operator="in" />
         </filter>
       </defs>
-      <g filter="url(#ref)">
-        <!-- A 3px-thick cross. Erosion should shrink it; dilation should expand it. -->
-        <rect x="3" y="1" width="3" height="7" fill="rgb(255, 0, 0)" />
-        <rect x="1" y="3" width="7" height="3" fill="rgb(255, 0, 0)" />
-      </g>
-    </svg>
+       <g filter="url(#ref)">
+         <!-- A 3px-thick cross. Erosion should shrink it; dilation should expand it. -->
+         <rect x="2" y="0" width="3" height="7" fill="rgb(255, 0, 0)" />
+         <rect x="0" y="2" width="7" height="3" fill="rgb(255, 0, 0)" />
+       </g>
+     </svg>
   "#;
   assert_svg_filter_matches_resvg_custom(
     svg,
     svg,
     "ref",
     "fast",
-    Rect::from_xywh(1.0, 1.0, 7.0, 7.0),
+    Rect::from_xywh(0.0, 0.0, 7.0, 7.0),
     (9, 9),
     0,
   );
@@ -252,19 +252,19 @@ fn svg_filter_resvg_morphology_erode_matches_alpha_and_rgb() {
           <feFlood flood-color="rgb(255, 0, 0)" result="color" />
           <feComposite in="color" in2="mask" operator="in" />
         </filter>
-      </defs>
-      <g filter="url(#ref)">
-        <rect x="3" y="1" width="3" height="7" fill="rgb(255, 0, 0)" />
-        <rect x="1" y="3" width="7" height="3" fill="rgb(255, 0, 0)" />
-      </g>
-    </svg>
+       </defs>
+       <g filter="url(#ref)">
+        <rect x="2" y="0" width="3" height="7" fill="rgb(255, 0, 0)" />
+        <rect x="0" y="2" width="7" height="3" fill="rgb(255, 0, 0)" />
+       </g>
+     </svg>
   "#;
   assert_svg_filter_matches_resvg_custom(
     svg,
     svg,
     "ref",
     "fast",
-    Rect::from_xywh(1.0, 1.0, 7.0, 7.0),
+    Rect::from_xywh(0.0, 0.0, 7.0, 7.0),
     (9, 9),
     0,
   );
