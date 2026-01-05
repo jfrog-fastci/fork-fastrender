@@ -8357,6 +8357,7 @@ impl FastRender {
     )?;
 
     crate::debug::inspect::inspect(
+      &artifacts.dom,
       &artifacts.styled_tree,
       &artifacts.box_tree.root,
       &artifacts.fragment_tree,

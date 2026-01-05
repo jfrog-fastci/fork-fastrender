@@ -346,6 +346,7 @@ fn run_dump_outputs(
     (None, None) => None,
     (Some(id), None) => {
       let matches = fastrender::debug::inspect::inspect(
+        &dom,
         &styled,
         &box_tree.root,
         &fragment_tree,
@@ -355,6 +356,7 @@ fn run_dump_outputs(
     }
     (None, Some(selector)) => {
       let matches = fastrender::debug::inspect::inspect(
+        &dom,
         &styled,
         &box_tree.root,
         &fragment_tree,

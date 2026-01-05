@@ -143,6 +143,7 @@ pub struct InspectionSnapshot {
 /// The output mirrors the public snapshot structs to avoid leaking internal
 /// engine types.
 pub fn inspect(
+  dom_root: &DomNode,
   styled_root: &StyledNode,
   box_root: &BoxNode,
   fragments: &FragmentTree,
@@ -171,15 +172,15 @@ pub fn inspect(
   };
   let mut selector_caches = SelectorCaches::default();
   selector_caches.set_epoch(next_selector_cache_epoch());
-  let quirks_mode = styled_root.node.document_quirks_mode();
+  let quirks_mode = dom_root.document_quirks_mode();
   debug_assert!(
-    matches!(&styled_root.node.node_type, DomNodeType::Document { .. }),
-    "inspect expects the styled root to be a document node"
+    matches!(&dom_root.node_type, DomNodeType::Document { .. }),
+    "inspect expects the DOM root to be a document node"
   );
 
   let mut results = Vec::new();
   let mut ancestors: Vec<&DomNode> = Vec::new();
-  let mut stack: Vec<(&DomNode, bool)> = vec![(&styled_root.node, false)];
+  let mut stack: Vec<(&DomNode, bool)> = vec![(dom_root, false)];
   let mut next_id = 1usize;
 
   while let Some((node, exiting)) = stack.pop() {
