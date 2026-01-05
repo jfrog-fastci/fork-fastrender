@@ -2467,9 +2467,10 @@ impl Painter {
               inline_start,
               color,
               Some(&style),
+              None,
             );
           } else {
-            self.paint_shaped_runs(shaped, inline_start, block_baseline, color, Some(&style));
+            self.paint_shaped_runs(shaped, inline_start, block_baseline, color, Some(&style), None);
           }
         } else {
           if inline_vertical {
@@ -5416,7 +5417,7 @@ impl Painter {
       return Ok(());
     }
 
-    self.paint_shaped_runs(&shaped_runs, x, baseline_y, color, style);
+    self.paint_shaped_runs(&shaped_runs, x, baseline_y, color, style, None);
     Ok(())
   }
 
@@ -5427,12 +5428,13 @@ impl Painter {
     baseline_y: f32,
     color: Rgba,
     style: Option<&ComputedStyle>,
+    clip_mask: Option<&Mask>,
   ) {
     let mut pen_x = origin_x;
 
     for run in runs {
       let run_origin = pen_x;
-      self.paint_shaped_run(run, run_origin, baseline_y, color, style);
+      self.paint_shaped_run(run, run_origin, baseline_y, color, style, clip_mask);
       pen_x += run.advance;
     }
   }
@@ -5444,11 +5446,12 @@ impl Painter {
     inline_origin: f32,
     color: Rgba,
     style: Option<&ComputedStyle>,
+    clip_mask: Option<&Mask>,
   ) {
     let mut pen_inline = inline_origin;
     for run in runs {
       let run_origin_inline = pen_inline;
-      self.paint_shaped_run_vertical(run, block_origin, run_origin_inline, color, style);
+      self.paint_shaped_run_vertical(run, block_origin, run_origin_inline, color, style, clip_mask);
       pen_inline += run.advance;
     }
   }
@@ -5460,6 +5463,7 @@ impl Painter {
     baseline_y: f32,
     color: Rgba,
     style: Option<&ComputedStyle>,
+    clip_mask: Option<&Mask>,
   ) {
     let origin_x = self.device_x(origin_x);
     let baseline_y = self.device_y(baseline_y);
@@ -5558,7 +5562,7 @@ impl Painter {
       if !style.text_shadow.is_empty() {
         let shadows = resolve_text_shadows(style);
         if !shadows.is_empty() {
-          let _ = self.paint_text_shadows(&glyph_paths, &bounds, &shadows);
+          let _ = self.paint_text_shadows(&glyph_paths, &bounds, &shadows, clip_mask);
         }
       }
     }
@@ -5573,7 +5577,7 @@ impl Painter {
         &paint,
         tiny_skia::FillRule::EvenOdd,
         Transform::identity(),
-        None,
+        clip_mask,
       );
     }
     if diag_enabled {
@@ -5593,6 +5597,7 @@ impl Painter {
     inline_origin: f32,
     color: Rgba,
     style: Option<&ComputedStyle>,
+    clip_mask: Option<&Mask>,
   ) {
     let block_origin = self.device_x(block_origin);
     let inline_origin = self.device_y(inline_origin);
@@ -5682,7 +5687,7 @@ impl Painter {
       if !style.text_shadow.is_empty() {
         let shadows = resolve_text_shadows(style);
         if !shadows.is_empty() {
-          let _ = self.paint_text_shadows(&glyph_paths, &bounds, &shadows);
+          let _ = self.paint_text_shadows(&glyph_paths, &bounds, &shadows, clip_mask);
         }
       }
     }
@@ -5697,7 +5702,7 @@ impl Painter {
         &paint,
         tiny_skia::FillRule::EvenOdd,
         Transform::identity(),
-        None,
+        clip_mask,
       );
     }
     if diag_enabled {
@@ -5729,6 +5734,7 @@ impl Painter {
     paths: &[tiny_skia::Path],
     bounds: &PathBounds,
     shadows: &[ResolvedTextShadow],
+    clip_mask: Option<&Mask>,
   ) -> RenderResult<()> {
     for shadow in shadows {
       let offset_x = shadow.offset_x * self.scale;
@@ -5789,7 +5795,7 @@ impl Painter {
         shadow_pixmap.as_ref(),
         &pixmap_paint,
         Transform::from_translate(frac_x, frac_y),
-        None,
+        clip_mask,
       );
     }
     Ok(())
@@ -5904,7 +5910,7 @@ impl Painter {
           }
         }
         if let (Some(style), Some(alt_text)) = (style, alt.as_deref()) {
-          if self.paint_alt_text(alt_text, style, content_rect) {
+          if self.paint_alt_text(alt_text, style, content_rect, clip_mask) {
             return;
           }
         }
@@ -6523,7 +6529,7 @@ impl Painter {
             rect.height(),
           );
         }
-        let _ = self.paint_alt_text(text, &text_style, rect);
+        let _ = self.paint_alt_text(text, &text_style, rect, None);
         if affordance_space > 0.0 {
           let mut affordance_style = style.clone();
           affordance_style.color = muted_accent;
@@ -6548,11 +6554,11 @@ impl Painter {
                 affordance_rect.width(),
                 affordance_rect.height() - half,
               );
-              let _ = self.paint_alt_text("▲", &affordance_style, upper);
-              let _ = self.paint_alt_text("▼", &affordance_style, lower);
+              let _ = self.paint_alt_text("▲", &affordance_style, upper, None);
+              let _ = self.paint_alt_text("▼", &affordance_style, lower, None);
             }
             TextControlKind::Date => {
-              let _ = self.paint_alt_text("▾", &affordance_style, affordance_rect);
+              let _ = self.paint_alt_text("▾", &affordance_style, affordance_rect, None);
             }
             _ => {}
           }
@@ -6594,7 +6600,7 @@ impl Painter {
             rect.width(),
             (rect.height() - (y - rect.y())).max(0.0),
           );
-          let _ = self.paint_alt_text(line.trim_end(), &text_style, line_rect);
+          let _ = self.paint_alt_text(line.trim_end(), &text_style, line_rect, None);
           y += line_height;
         }
         true
@@ -6616,7 +6622,7 @@ impl Painter {
           (rect.width() - arrow_space).max(0.0),
           rect.height(),
         );
-        let _ = self.paint_alt_text(label, &select_style, text_rect);
+        let _ = self.paint_alt_text(label, &select_style, text_rect, None);
 
         if arrow_space > 0.0 {
           let mut arrow_style = select_style;
@@ -6627,7 +6633,7 @@ impl Painter {
             arrow_space,
             rect.height(),
           );
-          let _ = self.paint_alt_text("▾", &arrow_style, arrow_rect);
+          let _ = self.paint_alt_text("▾", &arrow_style, arrow_rect, None);
         }
         true
       }
@@ -6652,7 +6658,7 @@ impl Painter {
         } else {
           content_rect
         };
-        let _ = self.paint_alt_text(label, &button_style, label_rect);
+        let _ = self.paint_alt_text(label, &button_style, label_rect, None);
         true
       }
       FormControlKind::Checkbox {
@@ -6673,7 +6679,7 @@ impl Painter {
         } else {
           "✓"
         };
-        let _ = self.paint_alt_text(glyph, &mark_style, rect);
+        let _ = self.paint_alt_text(glyph, &mark_style, rect, None);
         true
       }
       FormControlKind::Range { value, min, max } => {
@@ -6769,7 +6775,7 @@ impl Painter {
         let label = raw
           .clone()
           .unwrap_or_else(|| format!("#{:02X}{:02X}{:02X}", value.r, value.g, value.b));
-        let _ = self.paint_alt_text(&label, &text_style, rect);
+        let _ = self.paint_alt_text(&label, &text_style, rect, None);
         true
       }
       FormControlKind::Unknown { label } => {
@@ -6779,7 +6785,7 @@ impl Painter {
           if control.invalid {
             unknown_style.color = accent;
           }
-          let _ = self.paint_alt_text(text, &unknown_style, rect);
+          let _ = self.paint_alt_text(text, &unknown_style, rect, None);
         }
         true
       }
@@ -7453,11 +7459,17 @@ impl Painter {
         (rect.width() - 2.0 * inset).max(0.0),
         (rect.height() - 2.0 * inset).max(0.0),
       );
-      let _ = self.paint_alt_text(label_text, &label_style, label_rect);
+      let _ = self.paint_alt_text(label_text, &label_style, label_rect, clip_mask);
     }
   }
 
-  fn paint_alt_text(&mut self, alt: &str, style: &ComputedStyle, rect: Rect) -> bool {
+  fn paint_alt_text(
+    &mut self,
+    alt: &str,
+    style: &ComputedStyle,
+    rect: Rect,
+    clip_mask: Option<&Mask>,
+  ) -> bool {
     let text = alt.trim();
     if text.is_empty() {
       return false;
@@ -7483,7 +7495,7 @@ impl Painter {
     let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
     let baseline_y = rect.y() + half_leading + metrics.baseline_offset;
 
-    self.paint_shaped_runs(&runs, rect.x(), baseline_y, style.color, Some(style));
+    self.paint_shaped_runs(&runs, rect.x(), baseline_y, style.color, Some(style), clip_mask);
     true
   }
 
@@ -17057,7 +17069,7 @@ mod tests {
       let mut painter =
         Painter::with_resources(200, 150, Rgba::WHITE, font_ctx.clone(), ImageCache::new())
           .expect("painter");
-      painter.paint_shaped_run(run, 40.0, 110.0, Rgba::BLACK, None);
+      painter.paint_shaped_run(run, 40.0, 110.0, Rgba::BLACK, None, None);
       painter.pixmap
     };
 
@@ -17163,7 +17175,7 @@ mod tests {
       let mut painter =
         Painter::with_resources(200, 200, Rgba::WHITE, font_ctx.clone(), ImageCache::new())
           .expect("painter");
-      painter.paint_shaped_run_vertical(run, 40.0, 120.0, Rgba::BLACK, None);
+      painter.paint_shaped_run_vertical(run, 40.0, 120.0, Rgba::BLACK, None, None);
       painter.pixmap
     };
 
