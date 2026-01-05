@@ -28,6 +28,7 @@ pub mod var_resolution;
 
 // Internal imports used by ComputedStyle
 use crate::css::types::BoxShadow;
+use crate::css::types::PropertyValue;
 use crate::css::types::RotateValue;
 use crate::css::types::ScaleValue;
 use crate::css::types::TextShadow;
@@ -862,6 +863,11 @@ pub struct ComputedStyle {
   // CSS Custom Properties (variables)
   pub custom_property_registry: Arc<CustomPropertyRegistry>,
   pub custom_properties: CustomPropertyStore,
+  /// Winning, non-custom declarations whose specified value depended on `var()`.
+  ///
+  /// This stores the pre-var-resolution value so dependent properties can be recomputed after
+  /// custom properties change (e.g. from animations).
+  pub var_dependent_declarations: Arc<HashMap<&'static str, PropertyValue>>,
 
   // Generated content (for ::before and ::after pseudo-elements)
   pub content: String,
@@ -1208,6 +1214,7 @@ impl Default for ComputedStyle {
 
       custom_property_registry: Arc::new(CustomPropertyRegistry::default()),
       custom_properties: CustomPropertyStore::default(),
+      var_dependent_declarations: Arc::new(HashMap::new()),
 
       content: String::new(),
       content_value: crate::style::content::ContentValue::Normal,

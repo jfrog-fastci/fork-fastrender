@@ -6245,6 +6245,7 @@ pub fn apply_declaration_with_base(
     parent_font_size,
     root_font_size,
     viewport,
+    true,
   );
 }
 
@@ -6269,7 +6270,53 @@ pub(crate) fn apply_declaration_with_base_and_custom_properties(
     parent_font_size,
     root_font_size,
     viewport,
+    true,
   );
+}
+
+impl ComputedStyle {
+  /// Recomputes properties whose winning declarations depended on `var()`.
+  ///
+  /// This is used after mutating `custom_properties` (for example via animations) so dependent
+  /// computed values stay in sync.
+  pub fn recompute_var_dependent_properties(
+    &mut self,
+    parent_styles: &ComputedStyle,
+    viewport: Size,
+  ) {
+    if self.var_dependent_declarations.is_empty() {
+      return;
+    }
+
+    let declarations: Vec<(&'static str, PropertyValue)> = self
+      .var_dependent_declarations
+      .iter()
+      .map(|(property, value)| (*property, value.clone()))
+      .collect();
+
+    for (property, value) in declarations {
+      let decl = Declaration {
+        property: property.into(),
+        value,
+        raw_value: String::new(),
+        important: false,
+        contains_var: true,
+      };
+
+      apply_declaration_with_base_internal(
+        self,
+        &decl,
+        parent_styles,
+        default_computed_style(),
+        None,
+        None,
+        parent_styles.font_size,
+        self.root_font_size,
+        viewport,
+        false,
+      );
+    }
+  }
 }
 
 fn apply_declaration_with_base_internal(
@@ -6282,6 +6329,7 @@ fn apply_declaration_with_base_internal(
   parent_font_size: f32,
   root_font_size: f32,
   viewport: crate::geometry::Size,
+  record_var_dependent_declarations: bool,
 ) {
   // Handle CSS Custom Properties (--*)
   if decl.property.is_custom() {
@@ -6397,7 +6445,12 @@ fn apply_declaration_with_base_internal(
     return;
   }
 
-  let property = match decl.property.as_str() {
+  let property = match &decl.property {
+    crate::css::types::PropertyName::Known(name) => *name,
+    crate::css::types::PropertyName::Custom(_) => return,
+  };
+
+  let property = match property {
     "page-break-before" => "break-before",
     "page-break-after" => "break-after",
     "page-break-inside" => "break-inside",
@@ -6413,6 +6466,14 @@ fn apply_declaration_with_base_internal(
     "-webkit-backdrop-filter" => "backdrop-filter",
     other => other,
   };
+
+  if record_var_dependent_declarations {
+    if decl.contains_var {
+      Arc::make_mut(&mut styles.var_dependent_declarations).insert(property, decl.value.clone());
+    } else if styles.var_dependent_declarations.contains_key(property) {
+      Arc::make_mut(&mut styles.var_dependent_declarations).remove(property);
+    }
+  }
 
   let needs_css_text = matches!(
     property,
@@ -6685,6 +6746,8 @@ fn apply_declaration_with_base_internal(
       // Custom properties are excluded from `all` per the cascade spec.
       let prev_custom_properties = styles.custom_properties.clone();
       let prev_custom_property_registry = styles.custom_property_registry.clone();
+      // The var-dependent declaration cache is an internal helper, not a CSS property, so it is
+      // always rebuilt as cascade application continues.
       let next_order = styles.logical.next_order_value();
 
       *styles = source.clone();
@@ -6692,6 +6755,7 @@ fn apply_declaration_with_base_internal(
       styles.unicode_bidi = prev_unicode_bidi;
       styles.custom_property_registry = prev_custom_property_registry;
       styles.custom_properties = prev_custom_properties;
+      styles.var_dependent_declarations = Arc::new(HashMap::new());
       styles.logical.reset();
       set_all_logical_orders(&mut styles.logical, order, next_order);
       return;

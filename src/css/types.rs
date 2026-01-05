@@ -3688,7 +3688,7 @@ impl LayerNode {
 }
 
 /// CSS property values
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PropertyValue {
   Color(Color),
   Length(Length),
