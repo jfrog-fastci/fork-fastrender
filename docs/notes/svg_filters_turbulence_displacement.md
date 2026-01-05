@@ -255,8 +255,8 @@ Regression coverage:
 
 - `displacement_map_object_bounding_box_scale_is_resolved_against_bbox_width`
   (`tests/paint/svg_filter_test.rs`)
-  - `displacement_map_applies_scale_without_extra_multiplier`
-    (`tests/paint/svg_filter_test.rs`)
+- `displacement_map_applies_scale_without_extra_multiplier`
+  (`tests/paint/svg_filter_test.rs`)
 
 ### Displacement math + sampling (Chrome behavior)
 
