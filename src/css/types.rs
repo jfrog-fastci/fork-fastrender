@@ -2448,6 +2448,36 @@ mod tests {
   }
 
   #[test]
+  fn empty_layer_block_blocks_imports() {
+    let loader = RecordingLoader::new([(
+      "https://example.com/a.css".to_string(),
+      ".imported { color: blue; }".to_string(),
+    )]);
+
+    let stylesheet =
+      parse_stylesheet(r#"@layer base {} @import "https://example.com/a.css";"#).expect("parses");
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+
+    let resolved = stylesheet
+      .resolve_imports_owned_with_cache(&loader, None, &media_ctx, None)
+      .expect("resolve imports");
+
+    assert!(
+      !rules_contain_selector(&resolved.rules, ".imported"),
+      "@import after an @layer block (even empty) should be ignored"
+    );
+    assert_eq!(
+      loader.request_count(),
+      0,
+      "ignored @import should not trigger fetches"
+    );
+    assert!(
+      !rules_contain_import(&resolved.rules),
+      "ignored @import rules should not be emitted into the resolved stylesheet"
+    );
+  }
+
+  #[test]
   fn layer_block_blocks_subsequent_imports() {
     let loader = RecordingLoader::new([
       (
@@ -2873,6 +2903,11 @@ pub struct LayerRule {
   pub names: Vec<Vec<String>>,
   /// Nested rules (empty for blockless declarations).
   pub rules: Vec<CssRule>,
+  /// Whether this `@layer` rule used a `{ ... }` block (as opposed to a blockless statement).
+  ///
+  /// This matters for `@import` validity: only blockless `@layer` statements are permitted in the
+  /// stylesheet import prelude, while any `@layer` block (even an empty one) terminates it.
+  pub has_block: bool,
   /// Whether this is an anonymous layer (no names).
   pub anonymous: bool,
 }
@@ -3186,8 +3221,13 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
     // blockless `@layer` statements (e.g. `@layer foo;`) before imports, but any other rule ends the
     // import-allowed region. Nested rule blocks never allow @import.
     let is_import_rule = matches!(&rule, CssRule::Import(_));
-    let is_layer_statement =
-      matches!(&rule, CssRule::Layer(LayerRule { rules, .. }) if rules.is_empty());
+    let is_layer_statement = matches!(
+      &rule,
+      CssRule::Layer(LayerRule {
+        has_block: false,
+        ..
+      })
+    );
     if imports_allowed && !is_import_rule && !is_layer_statement {
       imports_allowed = false;
     }
@@ -3322,6 +3362,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
         let LayerRule {
           names,
           rules,
+          has_block,
           anonymous,
         } = layer_rule;
         let mut resolved_children = Vec::new();
@@ -3339,6 +3380,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
         out.push(CssRule::Layer(LayerRule {
           names,
           rules: resolved_children,
+          has_block,
           anonymous,
         }));
       }
@@ -3488,11 +3530,13 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
             ImportLayer::Anonymous => LayerRule {
               names: Vec::new(),
               rules: resolved_children,
+              has_block: true,
               anonymous: true,
             },
             ImportLayer::Named(path) => LayerRule {
               names: vec![path],
               rules: resolved_children,
+              has_block: true,
               anonymous: false,
             },
           };

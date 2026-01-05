@@ -1869,6 +1869,7 @@ fn parse_layer_rule<'i, 't>(
   Ok(Some(CssRule::Layer(LayerRule {
     names,
     rules,
+    has_block: saw_block,
     anonymous,
   })))
 }
