@@ -19,6 +19,11 @@ const FAST_GAUSS_THRESHOLD_SIGMA: f32 = 4.0;
 const BLUR_DEADLINE_STRIDE: usize = 256;
 const PARALLEL_BLUR_MIN_PIXELS: usize = 512 * 512;
 
+#[inline]
+fn deterministic_paint_enabled() -> bool {
+  cfg!(test) || runtime::runtime_toggles().truthy("FASTR_DETERMINISTIC_PAINT")
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BlurParallelism {
   Auto,
@@ -58,6 +63,12 @@ impl BlurScratch {
 
   fn split(&mut self, len: usize, context: &str) -> Result<(&mut [u8], &mut [u8]), RenderError> {
     self.ensure_len(len, context)?;
+    if deterministic_paint_enabled() {
+      // Determinism guard: ensure callers never observe stale bytes from earlier uses of the TLS
+      // scratch buffers (e.g. if an algorithm forgets to write a tail row/column).
+      self.ping[..len].fill(0);
+      self.pong[..len].fill(0);
+    }
     Ok((&mut self.ping[..len], &mut self.pong[..len]))
   }
 }
@@ -94,6 +105,11 @@ fn with_blur_scratch<R>(f: impl FnOnce(&mut BlurScratch) -> R) -> R {
 
     result
   })
+}
+
+#[cfg(test)]
+pub(crate) fn reset_thread_local_scratch_for_tests() {
+  BLUR_SCRATCH.with(|cell| *cell.borrow_mut() = BlurScratch::default());
 }
 
 fn blur_buffer_len(width: usize, height: usize, context: &str) -> Result<usize, RenderError> {

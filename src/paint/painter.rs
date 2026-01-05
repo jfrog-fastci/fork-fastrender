@@ -10774,6 +10774,16 @@ thread_local! {
     RefCell::new(BackgroundClipMaskScratch::default());
 }
 
+#[cfg(test)]
+pub(crate) fn reset_thread_local_scratch_for_tests() {
+  DROP_SHADOW_SPREAD_SCRATCH.with(|cell| *cell.borrow_mut() = DropShadowSpreadScratch::default());
+  CSS_MASK_SCRATCH.with(|cell| *cell.borrow_mut() = CssMaskScratch::default());
+  CLIP_MASK_SCRATCH.with(|cell| *cell.borrow_mut() = ClipMaskScratch::default());
+  MASK_LAYER_PIXMAP_SCRATCH.with(|cell| *cell.borrow_mut() = MaskLayerPixmapScratch::default());
+  BACKDROP_FILTER_SCRATCH.with(|cell| *cell.borrow_mut() = BackdropFilterScratch::default());
+  BACKGROUND_CLIP_MASK_SCRATCH.with(|cell| *cell.borrow_mut() = BackgroundClipMaskScratch::default());
+}
+
 struct BackgroundClipMaskGuard {
   scratch: BackgroundClipMaskScratch,
 }

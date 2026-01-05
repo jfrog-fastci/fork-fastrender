@@ -496,6 +496,11 @@ fn runtime_flag(name: &str) -> bool {
   crate::debug::runtime::runtime_toggles().truthy(name)
 }
 
+#[inline]
+fn deterministic_paint_enabled() -> bool {
+  cfg!(test) || runtime_flag("FASTR_DETERMINISTIC_PAINT")
+}
+
 fn projective_warp_enabled() -> bool {
   let toggles = crate::debug::runtime::runtime_toggles();
   let warp_enabled = cfg!(feature = "preserve3d_warp") || toggles.truthy("FASTR_PRESERVE3D_WARP");
@@ -947,6 +952,11 @@ fn apply_filters_scoped(
   // Copy the pixels that are being filtered into a compact scratch pixmap.
   let bytes_per_row = pixmap.width() as usize * 4;
   let region_row_bytes = region_w as usize * 4;
+  debug_assert_eq!(
+    region.data().len(),
+    region_row_bytes.saturating_mul(region_h as usize),
+    "expected scratch region pixmap to be tightly packed"
+  );
   let start = (clamped_y as usize * bytes_per_row) + clamped_x as usize * 4;
 
   let copy_in = (|| -> RenderResult<()> {
@@ -1234,6 +1244,11 @@ fn apply_backdrop_filters(
 
   let src_bytes_per_row = src.width() as usize * 4;
   let region_row_bytes = region_w as usize * 4;
+  debug_assert_eq!(
+    region.data().len(),
+    region_row_bytes.saturating_mul(region_h as usize),
+    "expected scratch region pixmap to be tightly packed"
+  );
   let start = (clamped_y as usize * src_bytes_per_row) + clamped_x as usize * 4;
   let copy_in = (|| -> RenderResult<()> {
     let data = src.data();
@@ -1586,6 +1601,15 @@ thread_local! {
   static SPREAD_SCRATCH: RefCell<SpreadScratch> = RefCell::new(SpreadScratch::default());
 }
 
+#[cfg(test)]
+pub(crate) fn reset_thread_local_scratch_for_tests() {
+  CLIP_MASK_SCRATCH.with(|cell| *cell.borrow_mut() = ClipMaskScratch::default());
+  MASK_LAYER_PIXMAP_SCRATCH.with(|cell| *cell.borrow_mut() = MaskLayerPixmapScratch::default());
+  MASK_RENDER_SCRATCH.with(|cell| *cell.borrow_mut() = None);
+  BACKDROP_FILTER_SCRATCH.with(|cell| *cell.borrow_mut() = BackdropFilterScratch::default());
+  SPREAD_SCRATCH.with(|cell| *cell.borrow_mut() = SpreadScratch::default());
+}
+
 fn clip_mask_dirty_bounds(rect: Rect, width: u32, height: u32) -> Option<ClipMaskDirtyRect> {
   let x0 = rect.x().floor().max(0.0) as u32;
   let y0 = rect.y().floor().max(0.0) as u32;
@@ -1826,7 +1850,15 @@ fn apply_clip_mask_rect(
       };
 
       if needs_rebuild {
-        if let Some(dirty) = dirty {
+        if deterministic_paint_enabled() {
+          // In deterministic mode we clear the entire scratch mask before rebuilding to ensure
+          // output never depends on leftover bytes from a previous render on the same thread.
+          let mut deadline_counter = 0usize;
+          for chunk in mask.data_mut().chunks_mut(CLIP_MASK_DEADLINE_STRIDE) {
+            check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
+            chunk.fill(0);
+          }
+        } else if let Some(dirty) = dirty {
           clear_mask_rect(mask, dirty)?;
         } else {
           // If the dirty bounds are empty (e.g. due to weird floating point inputs), clear the
@@ -2077,6 +2109,9 @@ fn apply_spread(pixmap: &mut Pixmap, spread: f32) -> RenderResult<()> {
     scratch.source.resize(len, [0u8; 4]);
     scratch.horizontal.resize(len, [0u8; 4]);
     scratch.transposed.resize(len, [0u8; 4]);
+    debug_assert_eq!(scratch.source.len(), len);
+    debug_assert_eq!(scratch.horizontal.len(), len);
+    debug_assert_eq!(scratch.transposed.len(), len);
     let mut deadline_counter = 0usize;
     for (src, dst) in pixmap.pixels().iter().zip(scratch.source.iter_mut()) {
       check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)?;
@@ -5369,8 +5404,19 @@ impl DisplayListRenderer {
         }
 
         let mut alpha_deadline_counter = 0usize;
+        let expected_len = (region_w as usize).saturating_mul(region_h as usize);
         let mut src_idx = 3usize;
         let src = mask_pixmap.data();
+        debug_assert_eq!(
+          layer_mask.data().len(),
+          expected_len,
+          "expected mask byte length to match region dimensions"
+        );
+        debug_assert_eq!(
+          src.len(),
+          expected_len.saturating_mul(4),
+          "expected scratch mask pixmap to be tightly packed RGBA"
+        );
         for dst_chunk in layer_mask.data_mut().chunks_mut(CLIP_MASK_DEADLINE_STRIDE) {
           check_active_periodic(&mut alpha_deadline_counter, 1, RenderStage::Paint)?;
           for dst in dst_chunk.iter_mut() {
@@ -5378,6 +5424,11 @@ impl DisplayListRenderer {
             src_idx += 4;
           }
         }
+        debug_assert_eq!(
+          src_idx,
+          expected_len.saturating_mul(4).saturating_add(3),
+          "expected to copy exactly one alpha byte per RGBA pixel"
+        );
         Ok(Some(()))
       });
       let rendered_layer = rendered_layer?;

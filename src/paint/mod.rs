@@ -119,6 +119,8 @@ pub mod text_rasterize;
 pub mod text_shadow;
 pub mod transform3d;
 pub mod transform_resolver;
+#[cfg(test)]
+pub mod scratch;
 
 /// Stable debug snapshot for display lists.
 pub fn snapshot_display_list(
