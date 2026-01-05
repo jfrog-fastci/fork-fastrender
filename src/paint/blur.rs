@@ -107,7 +107,6 @@ fn with_blur_scratch<R>(f: impl FnOnce(&mut BlurScratch) -> R) -> R {
   })
 }
 
-#[cfg(test)]
 pub(crate) fn reset_thread_local_scratch_for_tests() {
   BLUR_SCRATCH.with(|cell| *cell.borrow_mut() = BlurScratch::default());
 }

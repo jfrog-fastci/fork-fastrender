@@ -111,6 +111,8 @@ pub mod preserve_3d;
 pub mod projective_warp;
 pub mod rasterize;
 pub mod scene_tree;
+#[doc(hidden)]
+pub mod scratch;
 pub mod stacking;
 pub mod svg_filter;
 mod text_decoration;
@@ -119,8 +121,6 @@ pub mod text_rasterize;
 pub mod text_shadow;
 pub mod transform3d;
 pub mod transform_resolver;
-#[cfg(test)]
-pub mod scratch;
 
 /// Stable debug snapshot for display lists.
 pub fn snapshot_display_list(

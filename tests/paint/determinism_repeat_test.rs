@@ -5,6 +5,7 @@ use fastrender::paint::display_list::{
   StackingContextItem, Transform3D,
 };
 use fastrender::paint::display_list_renderer::{DisplayListRenderer, PaintParallelism};
+use fastrender::paint::scratch::reset_thread_local_scratch;
 use fastrender::style::types::{
   BackfaceVisibility, BackgroundPosition, BackgroundPositionComponent, BackgroundRepeat,
   BackgroundSize, BackgroundSizeComponent, MaskClip, MaskComposite, MaskMode, MaskOrigin,
@@ -353,7 +354,11 @@ fn render_bytes(
   list: &DisplayList,
   font_ctx: FontContext,
   parallelism: PaintParallelism,
+  reset_scratch: bool,
 ) -> Vec<u8> {
+  if reset_scratch {
+    reset_thread_local_scratch();
+  }
   let pixmap = DisplayListRenderer::new(width, height, Rgba::WHITE, font_ctx)
     .expect("renderer")
     .with_parallelism(parallelism)
@@ -401,7 +406,7 @@ fn paint_is_repeatable_under_parallel_scheduling() {
     let list = scene_a.clone();
     let font_ctx = font_ctx.clone();
     run_on_pool(&pool, move || {
-      render_bytes(WIDTH, HEIGHT, &list, font_ctx, parallelism)
+      render_bytes(WIDTH, HEIGHT, &list, font_ctx, parallelism, false)
     })
   };
   let baseline_b = {
@@ -409,100 +414,121 @@ fn paint_is_repeatable_under_parallel_scheduling() {
     let list = scene_b.clone();
     let font_ctx = font_ctx.clone();
     run_on_pool(&pool, move || {
-      render_bytes(WIDTH, HEIGHT, &list, font_ctx, parallelism)
+      render_bytes(WIDTH, HEIGHT, &list, font_ctx, parallelism, false)
     })
   };
 
-  // Ensure serial rerenders do not depend on earlier work on the same thread (e.g. scratch buffers
-  // not fully initialized between calls).
-  let serial_pool = ThreadPoolBuilder::new().num_threads(1).build().unwrap();
-  for i in 0..SERIAL_REPEATS_PER_SCENE {
-    let list = scene_a.clone();
-    let font_ctx = font_ctx.clone();
-    let bytes = run_on_pool(&serial_pool, move || {
-      render_bytes(WIDTH, HEIGHT, &list, font_ctx, parallelism)
-    });
-    assert_rgba8888_pixels_eq(
-      WIDTH,
-      HEIGHT,
-      &baseline_a,
-      &bytes,
-      &format!("scene A serial repeat {i}"),
-    );
-  }
-  for i in 0..SERIAL_REPEATS_PER_SCENE {
-    let list = scene_b.clone();
-    let font_ctx = font_ctx.clone();
-    let bytes = run_on_pool(&serial_pool, move || {
-      render_bytes(WIDTH, HEIGHT, &list, font_ctx, parallelism)
-    });
-    assert_rgba8888_pixels_eq(
-      WIDTH,
-      HEIGHT,
-      &baseline_b,
-      &bytes,
-      &format!("scene B serial repeat {i}"),
-    );
-  }
+  // Run the repeat suite twice:
+  // - Once without any scratch resets to ensure TLS reuse does not leak state.
+  // - Once with explicit scratch resets so tests can force a clean slate between renders.
+  for reset_scratch in [false, true] {
+    let mode = if reset_scratch { "reset" } else { "reuse" };
 
-  // Interleave both scenes on the same thread to catch state leakage across unrelated workloads.
-  for i in 0..(SERIAL_REPEATS_PER_SCENE * 2) {
-    let (expected, list, label) = if i % 2 == 0 {
-      (
-        &baseline_a,
-        scene_a.clone(),
-        format!("serial interleave {i} scene A"),
-      )
-    } else {
-      (
-        &baseline_b,
-        scene_b.clone(),
-        format!("serial interleave {i} scene B"),
-      )
-    };
-    let font_ctx = font_ctx.clone();
-    let bytes = run_on_pool(&serial_pool, move || {
-      render_bytes(WIDTH, HEIGHT, &list, font_ctx, parallelism)
-    });
-    assert_rgba8888_pixels_eq(WIDTH, HEIGHT, expected, &bytes, &label);
-  }
-
-  // Interleave renders of both scenes in parallel to maximize reuse of thread-local scratch between
-  // different workloads. Any nondeterministic pixels (from partially initialized buffers, etc)
-  // should show up as byte-level differences relative to the single-thread baseline.
-  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
-  let results: Vec<(u8, Vec<u8>)> = pool.install(|| {
-    (0..(REPEATS_PER_SCENE * 2))
-      .into_par_iter()
-      .map(|i| {
-        if i % 2 == 0 {
-          let bytes = render_bytes(WIDTH, HEIGHT, &scene_a, font_ctx.clone(), parallelism);
-          (0u8, bytes)
-        } else {
-          let bytes = render_bytes(WIDTH, HEIGHT, &scene_b, font_ctx.clone(), parallelism);
-          (1u8, bytes)
-        }
-      })
-      .collect()
-  });
-
-  for (idx, (scene, bytes)) in results.iter().enumerate() {
-    match scene {
-      0 => assert_rgba8888_pixels_eq(
+    // Ensure serial rerenders do not depend on earlier work on the same thread (e.g. scratch buffers
+    // not fully initialized between calls).
+    let serial_pool = ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+    for i in 0..SERIAL_REPEATS_PER_SCENE {
+      let list = scene_a.clone();
+      let font_ctx = font_ctx.clone();
+      let bytes = run_on_pool(&serial_pool, move || {
+        render_bytes(WIDTH, HEIGHT, &list, font_ctx, parallelism, reset_scratch)
+      });
+      assert_rgba8888_pixels_eq(
         WIDTH,
         HEIGHT,
         &baseline_a,
-        bytes,
-        &format!("parallel repeat {idx} scene A"),
-      ),
-      1 => assert_rgba8888_pixels_eq(
+        &bytes,
+        &format!("scene A {mode} serial repeat {i}"),
+      );
+    }
+    for i in 0..SERIAL_REPEATS_PER_SCENE {
+      let list = scene_b.clone();
+      let font_ctx = font_ctx.clone();
+      let bytes = run_on_pool(&serial_pool, move || {
+        render_bytes(WIDTH, HEIGHT, &list, font_ctx, parallelism, reset_scratch)
+      });
+      assert_rgba8888_pixels_eq(
         WIDTH,
         HEIGHT,
         &baseline_b,
-        bytes,
-        &format!("parallel repeat {idx} scene B"),
-      ),
-      other => panic!("unexpected scene tag {other}"),
+        &bytes,
+        &format!("scene B {mode} serial repeat {i}"),
+      );
+    }
+
+    // Interleave both scenes on the same thread to catch state leakage across unrelated workloads.
+    for i in 0..(SERIAL_REPEATS_PER_SCENE * 2) {
+      let (expected, list, label) = if i % 2 == 0 {
+        (
+          &baseline_a,
+          scene_a.clone(),
+          format!("{mode} serial interleave {i} scene A"),
+        )
+      } else {
+        (
+          &baseline_b,
+          scene_b.clone(),
+          format!("{mode} serial interleave {i} scene B"),
+        )
+      };
+      let font_ctx = font_ctx.clone();
+      let bytes = run_on_pool(&serial_pool, move || {
+        render_bytes(WIDTH, HEIGHT, &list, font_ctx, parallelism, reset_scratch)
+      });
+      assert_rgba8888_pixels_eq(WIDTH, HEIGHT, expected, &bytes, &label);
+    }
+
+    // Interleave renders of both scenes in parallel to maximize reuse of thread-local scratch between
+    // different workloads. Any nondeterministic pixels (from partially initialized buffers, etc)
+    // should show up as byte-level differences relative to the single-thread baseline.
+    let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+    let results: Vec<(u8, Vec<u8>)> = pool.install(|| {
+      (0..(REPEATS_PER_SCENE * 2))
+        .into_par_iter()
+        .map(|i| {
+          if i % 2 == 0 {
+            let bytes = render_bytes(
+              WIDTH,
+              HEIGHT,
+              &scene_a,
+              font_ctx.clone(),
+              parallelism,
+              reset_scratch,
+            );
+            (0u8, bytes)
+          } else {
+            let bytes = render_bytes(
+              WIDTH,
+              HEIGHT,
+              &scene_b,
+              font_ctx.clone(),
+              parallelism,
+              reset_scratch,
+            );
+            (1u8, bytes)
+          }
+        })
+        .collect()
+    });
+
+    for (idx, (scene, bytes)) in results.iter().enumerate() {
+      match scene {
+        0 => assert_rgba8888_pixels_eq(
+          WIDTH,
+          HEIGHT,
+          &baseline_a,
+          bytes,
+          &format!("parallel {mode} repeat {idx} scene A"),
+        ),
+        1 => assert_rgba8888_pixels_eq(
+          WIDTH,
+          HEIGHT,
+          &baseline_b,
+          bytes,
+          &format!("parallel {mode} repeat {idx} scene B"),
+        ),
+        other => panic!("unexpected scene tag {other}"),
+      }
     }
   }
 }

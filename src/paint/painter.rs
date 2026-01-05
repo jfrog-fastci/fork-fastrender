@@ -10774,7 +10774,6 @@ thread_local! {
     RefCell::new(BackgroundClipMaskScratch::default());
 }
 
-#[cfg(test)]
 pub(crate) fn reset_thread_local_scratch_for_tests() {
   DROP_SHADOW_SPREAD_SCRATCH.with(|cell| *cell.borrow_mut() = DropShadowSpreadScratch::default());
   CSS_MASK_SCRATCH.with(|cell| *cell.borrow_mut() = CssMaskScratch::default());
