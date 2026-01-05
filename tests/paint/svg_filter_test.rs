@@ -1,7 +1,9 @@
 use fastrender::geometry::Rect;
 use fastrender::image_loader::ImageCache;
 use fastrender::paint::svg_filter::{apply_svg_filter, parse_svg_filter_from_svg_document};
+use resvg::usvg;
 use tiny_skia::{Pixmap, PremultipliedColorU8};
+use tiny_skia::Transform;
 
 fn empty_pixmap(width: u32, height: u32) -> Pixmap {
   let mut pixmap = Pixmap::new(width, height).expect("pixmap");
@@ -25,30 +27,6 @@ fn pixmap_with_pixel(
   pixmap
 }
 
-fn fill_rect(
-  pixmap: &mut Pixmap,
-  x: u32,
-  y: u32,
-  width: u32,
-  height: u32,
-  color: PremultipliedColorU8,
-) {
-  let pix_w = pixmap.width();
-  let pix_h = pixmap.height();
-  if pix_w == 0 || pix_h == 0 {
-    return;
-  }
-  let end_x = x.saturating_add(width).min(pix_w);
-  let end_y = y.saturating_add(height).min(pix_h);
-  let pixels = pixmap.pixels_mut();
-  for yy in y.min(pix_h)..end_y {
-    let row = (yy * pix_w) as usize;
-    for xx in x.min(pix_w)..end_x {
-      pixels[row + xx as usize] = color;
-    }
-  }
-}
-
 fn gradient_pixmap() -> Pixmap {
   let mut pixmap = Pixmap::new(3, 1).expect("pixmap");
   let colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255)];
@@ -56,6 +34,23 @@ fn gradient_pixmap() -> Pixmap {
     let (r, g, b) = colors[idx];
     *px = PremultipliedColorU8::from_rgba(r, g, b, 255).expect("premultiply");
   }
+  pixmap
+}
+
+fn render_resvg(svg: &str, width: u32, height: u32) -> Pixmap {
+  let tree = usvg::Tree::from_str(svg, &usvg::Options::default()).expect("parse SVG for resvg");
+  let size = tree.size();
+  let source_w = size.width() as f32;
+  let source_h = size.height() as f32;
+  assert!(
+    source_w.is_finite() && source_h.is_finite() && source_w > 0.0 && source_h > 0.0,
+    "resvg reported invalid SVG size: {source_w}x{source_h}"
+  );
+  let scale_x = width as f32 / source_w;
+  let scale_y = height as f32 / source_h;
+  let transform = Transform::from_scale(scale_x, scale_y);
+  let mut pixmap = Pixmap::new(width, height).expect("pixmap");
+  resvg::render(&tree, transform, &mut pixmap.as_mut());
   pixmap
 }
 
@@ -112,22 +107,17 @@ fn displacement_map_applies_scale_without_extra_multiplier() {
 }
 
 #[test]
-fn displacement_map_interprets_map_channels_as_unpremultiplied() {
-  // Chrome interprets displacement channels after un-premultiplying the map (alpha does not
-  // attenuate channel values). With `flood-opacity≈0.5`, an sRGB white channel remains 1.0, so it
-  // produces a non-zero displacement.
+fn displacement_map_uses_premultiplied_map_channels() {
+  // resvg + Chrome sample displacement map channels as premultiplied values. This matters when the
+  // displacement map is semi-transparent: alpha attenuates the channel values, reducing the
+  // displacement magnitude.
   let svg = r#"
     <svg xmlns="http://www.w3.org/2000/svg" width="3" height="1" viewBox="0 0 3 1">
       <filter id="f" x="0" y="0" width="3" height="1"
               filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse">
-        <!--
-          Use an opacity just above 0.5 so 8-bit quantization doesn't round down below 0.5 and
-          accidentally introduce a small negative Y displacement at y=0 (which would sample out of
-          bounds and turn the row fully transparent).
-        -->
         <feFlood flood-color="white" flood-opacity="0.502" result="map" />
-        <feDisplacementMap in="SourceGraphic" in2="map" scale="2"
-                           xChannelSelector="R" yChannelSelector="A" />
+         <feDisplacementMap in="SourceGraphic" in2="map" scale="2"
+                             xChannelSelector="R" yChannelSelector="A" />
       </filter>
     </svg>
   "#;
@@ -146,14 +136,68 @@ fn displacement_map_interprets_map_channels_as_unpremultiplied() {
 
   assert_eq!(
     pixmap.data(),
-    {
-      let mut expected = empty_pixmap(3, 1);
-      expected.pixels_mut()[0] = PremultipliedColorU8::from_rgba(0, 255, 0, 255).unwrap();
-      expected.pixels_mut()[1] = PremultipliedColorU8::from_rgba(0, 0, 255, 255).unwrap();
-      expected
-    }
-    .data(),
-    "expected semi-transparent white map to still displace by +1px"
+    gradient_pixmap().data(),
+    "expected premultiplied map channels to attenuate displacement for semi-transparent maps"
+  );
+}
+
+#[test]
+fn displacement_map_semitransparent_map_channels_match_resvg() {
+  // Semi-transparent displacement maps disambiguate whether feDisplacementMap samples the map
+  // channels as premultiplied or unpremultiplied values. Compare against resvg to lock down the
+  // intended behaviour.
+  let svg_filtered = r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="5" height="5" viewBox="0 0 5 5" shape-rendering="crispEdges">
+      <defs>
+        <filter id="f" x="0" y="0" width="5" height="5"
+                filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
+                color-interpolation-filters="sRGB">
+          <feFlood flood-color="white" flood-opacity="0.5" result="map" />
+          <feDisplacementMap in="SourceGraphic" in2="map" scale="2"
+                             xChannelSelector="R" yChannelSelector="R" />
+        </filter>
+      </defs>
+      <g filter="url(#f)">
+        <rect width="5" height="5" fill="rgba(0,0,0,0)" />
+        <rect x="2" y="2" width="1" height="1" fill="rgb(255,0,0)" />
+      </g>
+    </svg>
+  "#;
+  let svg_source = r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="5" height="5" viewBox="0 0 5 5" shape-rendering="crispEdges">
+      <defs>
+        <filter id="f" x="0" y="0" width="5" height="5"
+                filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
+                color-interpolation-filters="sRGB">
+          <feFlood flood-color="white" flood-opacity="0.5" result="map" />
+          <feDisplacementMap in="SourceGraphic" in2="map" scale="2"
+                             xChannelSelector="R" yChannelSelector="R" />
+        </filter>
+      </defs>
+      <g>
+        <rect width="5" height="5" fill="rgba(0,0,0,0)" />
+        <rect x="2" y="2" width="1" height="1" fill="rgb(255,0,0)" />
+      </g>
+    </svg>
+  "#;
+
+  let expected = render_resvg(svg_filtered, 5, 5);
+  let source_pixmap = render_resvg(svg_source, 5, 5);
+  let filter =
+    parse_svg_filter_from_svg_document(svg_filtered, Some("f"), &ImageCache::new()).expect("filter");
+  let mut actual = source_pixmap.clone();
+  apply_svg_filter(
+    &filter,
+    &mut actual,
+    1.0,
+    Rect::from_xywh(0.0, 0.0, 5.0, 5.0),
+  )
+  .unwrap();
+
+  assert_eq!(
+    actual.data(),
+    expected.data(),
+    "FastRender displacement map must match resvg output for semi-transparent displacement maps"
   );
 }
 
@@ -208,15 +252,21 @@ fn displacement_map_ignores_filter_res() {
       <filter id="with_res" x="0" y="0" width="3" height="1"
               filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
               filterRes="6 1">
-        <feFlood flood-color="rgb(255,0,0)" flood-opacity="0.502" result="map" />
-        <feDisplacementMap in="SourceGraphic" in2="map" scale="2"
-                           xChannelSelector="R" yChannelSelector="A" />
+        <feFlood flood-color="rgb(255,0,0)" flood-opacity="1" result="map" />
+        <feComponentTransfer in="map" result="map2">
+          <feFuncG type="linear" slope="0" intercept="0.5" />
+        </feComponentTransfer>
+        <feDisplacementMap in="SourceGraphic" in2="map2" scale="2"
+                           xChannelSelector="R" yChannelSelector="G" />
       </filter>
       <filter id="no_res" x="0" y="0" width="3" height="1"
               filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse">
-        <feFlood flood-color="rgb(255,0,0)" flood-opacity="0.502" result="map" />
-        <feDisplacementMap in="SourceGraphic" in2="map" scale="2"
-                           xChannelSelector="R" yChannelSelector="A" />
+        <feFlood flood-color="rgb(255,0,0)" flood-opacity="1" result="map" />
+        <feComponentTransfer in="map" result="map2">
+          <feFuncG type="linear" slope="0" intercept="0.5" />
+        </feComponentTransfer>
+        <feDisplacementMap in="SourceGraphic" in2="map2" scale="2"
+                           xChannelSelector="R" yChannelSelector="G" />
       </filter>
     </svg>
   "#;
@@ -274,16 +324,22 @@ fn displacement_map_interprets_map_channels_in_color_interpolation_space() {
       <filter id="srgb" x="0" y="0" width="3" height="1"
               filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
               color-interpolation-filters="sRGB">
-        <feFlood flood-color="rgb(128,0,0)" flood-opacity="0.502" result="map" />
-        <feDisplacementMap in="SourceGraphic" in2="map" scale="2"
-                           xChannelSelector="R" yChannelSelector="A" />
+        <feFlood flood-color="rgb(128,0,0)" flood-opacity="1" result="map" />
+        <feComponentTransfer in="map" result="map2">
+          <feFuncG type="linear" slope="0" intercept="0.5" />
+        </feComponentTransfer>
+        <feDisplacementMap in="SourceGraphic" in2="map2" scale="2"
+                           xChannelSelector="R" yChannelSelector="G" />
       </filter>
       <filter id="linear" x="0" y="0" width="3" height="1"
               filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
               color-interpolation-filters="linearRGB">
-        <feFlood flood-color="rgb(128,0,0)" flood-opacity="0.502" result="map" />
-        <feDisplacementMap in="SourceGraphic" in2="map" scale="2"
-                           xChannelSelector="R" yChannelSelector="A" />
+        <feFlood flood-color="rgb(128,0,0)" flood-opacity="1" result="map" />
+        <feComponentTransfer in="map" result="map2">
+          <feFuncG type="linear" slope="0" intercept="0.5" />
+        </feComponentTransfer>
+        <feDisplacementMap in="SourceGraphic" in2="map2" scale="2"
+                           xChannelSelector="R" yChannelSelector="G" />
       </filter>
     </svg>
   "#;

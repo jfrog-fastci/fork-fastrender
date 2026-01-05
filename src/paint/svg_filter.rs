@@ -4105,10 +4105,9 @@ fn apply_primitive(
       // `feDisplacementMap`'s `scale` is a scalar in the current `primitiveUnits` coordinate
       // system, but the resulting displacement vector is applied in x/y and must be converted to
       // device pixels separately.
-      //
-      // Chrome (Skia) appears to resolve objectBoundingBox scalars against the bbox width, not the
-      // width/height average. Using `resolve_primitive_x` for the base scalar matches that
-      // behaviour and keeps regression fixtures aligned with Chrome.
+      // For `primitiveUnits="objectBoundingBox"`, Chrome resolves the scalar `scale` against the
+      // bbox width (not min/avg dimension). This is observable on non-square elements where the
+      // same `scale` value should produce different displacement magnitudes.
       let base_scale = filter.resolve_primitive_x(*disp_scale, css_bbox);
       let scale_x_px = base_scale * scale_x;
       let scale_y_px = base_scale * scale_y;
@@ -5565,17 +5564,21 @@ fn apply_displacement_map(
 
     let map_x = x.clamp(map_min_x, map_max_x_incl);
     let map_y = y.clamp(map_min_y, map_max_y_incl);
-    let map_color = map
+    let map_sample = map
       .pixel(map_x as u32, map_y as u32)
-      .map(to_unpremultiplied)
-      .unwrap_or(UnpremultipliedColor {
-        r: 0.0,
-        g: 0.0,
-        b: 0.0,
-        a: 0.0,
-      });
-    let channel_value_x = channel_value(&map_color, x_channel);
-    let channel_value_y = channel_value(&map_color, y_channel);
+      .unwrap_or(PremultipliedColorU8::TRANSPARENT);
+    let channel_value_x = match x_channel {
+      ChannelSelector::R => map_sample.red() as f32 / 255.0,
+      ChannelSelector::G => map_sample.green() as f32 / 255.0,
+      ChannelSelector::B => map_sample.blue() as f32 / 255.0,
+      ChannelSelector::A => map_sample.alpha() as f32 / 255.0,
+    };
+    let channel_value_y = match y_channel {
+      ChannelSelector::R => map_sample.red() as f32 / 255.0,
+      ChannelSelector::G => map_sample.green() as f32 / 255.0,
+      ChannelSelector::B => map_sample.blue() as f32 / 255.0,
+      ChannelSelector::A => map_sample.alpha() as f32 / 255.0,
+    };
     let dx = (channel_value_x - 0.5) * scale_x;
     let dy = (channel_value_y - 0.5) * scale_y;
 
@@ -5589,29 +5592,23 @@ fn apply_displacement_map(
   Ok(Some(out))
 }
 
-fn channel_value(sample: &UnpremultipliedColor, selector: ChannelSelector) -> f32 {
-  match selector {
-    ChannelSelector::R => sample.r,
-    ChannelSelector::G => sample.g,
-    ChannelSelector::B => sample.b,
-    ChannelSelector::A => sample.a,
-  }
-}
-
 fn sample_nearest_premultiplied(pixmap: &Pixmap, x: f32, y: f32) -> PremultipliedColorU8 {
-  let width = pixmap.width() as f32;
-  let height = pixmap.height() as f32;
-  if !x.is_finite() || !y.is_finite() || x < 0.0 || y < 0.0 || x >= width || y >= height {
+  if !x.is_finite() || !y.is_finite() {
     return PremultipliedColorU8::TRANSPARENT;
   }
   // Round to nearest pixel center, with ties (e.g. 0.5) rounding toward negative infinity.
   let ix = (x - 0.5).ceil() as i32;
   let iy = (y - 0.5).ceil() as i32;
-  if ix < 0 || iy < 0 || ix >= width as i32 || iy >= height as i32 {
+  if ix < 0 || iy < 0 {
+    return PremultipliedColorU8::TRANSPARENT;
+  }
+  let ix = ix as u32;
+  let iy = iy as u32;
+  if ix >= pixmap.width() || iy >= pixmap.height() {
     return PremultipliedColorU8::TRANSPARENT;
   }
   pixmap
-    .pixel(ix as u32, iy as u32)
+    .pixel(ix, iy)
     .unwrap_or(PremultipliedColorU8::TRANSPARENT)
 }
 
@@ -6947,7 +6944,7 @@ mod tests {
       *px = premul(255, 0, 0, 255);
     }
 
-    // With channel=1.0 and scale=1, dx = (1 - 0.5) * 1 = 0.5. Chrome rounds 0.5 toward -∞
+    // With channel=1.0 and scale=1.0, dx = (1 - 0.5) * 1.0 = 0.5. Chrome rounds 0.5 toward -∞
     // (i.e. keeps the original pixel). This keeps the middle pixel green rather than sampling the
     // blue pixel.
     let out = apply_displacement_map(
@@ -7047,8 +7044,8 @@ mod tests {
       *px = premul(255, 255, 255, 255);
     }
 
-    // With channel=1.0, the signed channel range [-0.5, 0.5] maps to [-scale/2, +scale/2].
-    // Use even scales so the displacement is an integer number of pixels (avoiding 0.5 tie
+    // With channel=1.0, the signed channel range [-0.5, 0.5] maps to [-0.5*scale, +0.5*scale].
+    // Use integer scales so the displacement is an integer number of pixels (avoiding 0.5 tie
     // rounding behaviour tested separately).
     let out = apply_displacement_map(
       &primary,
