@@ -22,6 +22,7 @@ mod legend_shrink_to_fit;
 mod multicol;
 mod nested_absolute;
 mod noscript_layout;
+mod padding_offsets;
 mod paged_media;
 mod parallel_layout;
 mod render_wrap;

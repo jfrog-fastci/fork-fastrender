@@ -868,6 +868,15 @@ impl BlockFormattingContext {
       );
     }
 
+    // Child fragments are produced in the block's content coordinate space (0,0 at the content
+    // box). Translate them into the fragment's local coordinate space (border box) so padding and
+    // borders correctly offset in-flow content.
+    if padding_origin.x != 0.0 || padding_origin.y != 0.0 {
+      for fragment in child_fragments.iter_mut() {
+        fragment.translate_root_in_place(padding_origin);
+      }
+    }
+
     // Height computation (CSS 2.1 Section 10.6.3) with aspect-ratio adjustment (CSS Sizing L4)
     let mut height = specified_height.unwrap_or(content_height);
     if specified_height.is_none() {
@@ -3826,6 +3835,15 @@ impl FormattingContext for BlockFormattingContext {
         })
         .unwrap_or(0.0)
         .max(0.0);
+    }
+
+    // Child fragments are produced in the block's content coordinate space (0,0 at the content
+    // box). Translate them into the fragment's local coordinate space (border box) so padding and
+    // borders correctly offset in-flow content.
+    if padding_origin.x != 0.0 || padding_origin.y != 0.0 {
+      for fragment in child_fragments.iter_mut() {
+        fragment.translate_root_in_place(padding_origin);
+      }
     }
 
     let min_height = style
