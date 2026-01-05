@@ -987,10 +987,11 @@ impl BlockFormattingContext {
     // inline content can incorrectly resolve percentages against an ancestor CB (e.g. the
     // viewport).
     let establishes_positioned_cb = style.establishes_abs_containing_block();
-    let padding_origin = Point::new(
+    let content_origin = Point::new(
       computed_width.border_left + computed_width.padding_left,
       border_top + padding_top,
     );
+    let padding_origin = Point::new(computed_width.border_left, border_top);
     let content_height_base = specified_height.unwrap_or(0.0).max(0.0);
     let padding_size = Size::new(
       computed_width.content_width + computed_width.padding_left + computed_width.padding_right,
@@ -1016,8 +1017,8 @@ impl BlockFormattingContext {
     };
     let child_border_origin = Point::new(computed_width.margin_left, box_y);
     let child_content_origin = Point::new(
-      child_border_origin.x + padding_origin.x,
-      child_border_origin.y + padding_origin.y,
+      child_border_origin.x + content_origin.x,
+      child_border_origin.y + content_origin.y,
     );
     let child_viewport =
       paint_viewport.translate(Point::new(-child_content_origin.x, -child_content_origin.y));
@@ -1172,9 +1173,9 @@ impl BlockFormattingContext {
     // Child fragments are produced in the block's content coordinate space (0,0 at the content
     // box). Translate them into the fragment's local coordinate space (border box) so padding and
     // borders correctly offset in-flow content.
-    if padding_origin.x != 0.0 || padding_origin.y != 0.0 {
+    if content_origin.x != 0.0 || content_origin.y != 0.0 {
       for fragment in child_fragments.iter_mut() {
-        fragment.translate_root_in_place(padding_origin);
+        fragment.translate_root_in_place(content_origin);
       }
     }
 
@@ -1291,15 +1292,6 @@ impl BlockFormattingContext {
       let abs = crate::layout::absolute_positioning::AbsoluteLayout::with_font_context(
         self.font_context.clone(),
       );
-      let cb_block_base = if specified_height.is_some() {
-        Some(height + padding_top + padding_bottom)
-      } else {
-        None
-      };
-      let padding_origin = Point::new(
-        computed_width.border_left + computed_width.padding_left,
-        border_top + padding_top,
-      );
       let padding_size = Size::new(
         computed_width.content_width + computed_width.padding_left + computed_width.padding_right,
         height + padding_top + padding_bottom,
@@ -1309,7 +1301,7 @@ impl BlockFormattingContext {
         padding_rect,
         self.viewport_size,
         Some(padding_size.width),
-        cb_block_base,
+        Some(padding_size.height),
       );
       let base_factory = self.factory.clone();
       let viewport_cb = ContainingBlock::viewport(self.viewport_size);
@@ -1372,7 +1364,7 @@ impl BlockFormattingContext {
           .formatting_context()
           .unwrap_or(FormattingContextType::Block);
         let fc = factory.get(fc_type);
-        let height_available = cb.block_percentage_base().or(cb_block_base);
+        let height_available = cb.block_percentage_base();
         let child_height_space = height_available
           .map(AvailableSpace::Definite)
           .unwrap_or(AvailableSpace::Indefinite);
@@ -1389,10 +1381,13 @@ impl BlockFormattingContext {
           &self.font_context,
         );
 
-        // Static position starts at the containing block origin; AbsoluteLayout will add
-        // padding/border offsets, so use the content origin when no flow position was
-        // recorded.
-        let static_pos = static_position.unwrap_or(Point::ZERO);
+        let mut static_pos = static_position.unwrap_or(Point::ZERO);
+        if cb == parent_padding_cb {
+          static_pos = Point::new(
+            static_pos.x + computed_width.padding_left,
+            static_pos.y + padding_top,
+          );
+        }
         let is_replaced = pos_child.is_replaced();
         let has_inline_keyword = positioned_style.width_keyword.is_some()
           || positioned_style.min_width_keyword.is_some()
@@ -4726,10 +4721,11 @@ impl FormattingContext for BlockFormattingContext {
       child_height_space,
     );
 
-    let padding_origin = Point::new(
+    let content_origin = Point::new(
       computed_width.border_left + computed_width.padding_left,
       border_top + padding_top,
     );
+    let padding_origin = Point::new(computed_width.border_left, border_top);
     let content_height_base = resolved_height.unwrap_or(0.0).max(0.0);
     let padding_size = Size::new(
       computed_width.content_width + computed_width.padding_left + computed_width.padding_right,
@@ -4778,11 +4774,12 @@ impl FormattingContext for BlockFormattingContext {
     }
     // Layout uses the block's content box coordinate space; translate the viewport into that
     // coordinate system so culling decisions stay relative to `box_y`/`margin_left` placement.
-    let content_origin = Point::new(
-      computed_width.margin_left + padding_origin.x,
-      padding_origin.y,
-    );
-    paint_viewport = paint_viewport.translate(Point::new(-content_origin.x, -content_origin.y));
+    let viewport_content_origin =
+      Point::new(computed_width.margin_left + content_origin.x, content_origin.y);
+    paint_viewport = paint_viewport.translate(Point::new(
+      -viewport_content_origin.x,
+      -viewport_content_origin.y,
+    ));
     let use_columns = Self::is_multicol_container(style);
     let skip_contents = matches!(
       style.content_visibility,
@@ -4831,9 +4828,9 @@ impl FormattingContext for BlockFormattingContext {
     // Child fragments are produced in the block's content coordinate space (0,0 at the content
     // box). Translate them into the fragment's local coordinate space (border box) so padding and
     // borders correctly offset in-flow content.
-    if padding_origin.x != 0.0 || padding_origin.y != 0.0 {
+    if content_origin.x != 0.0 || content_origin.y != 0.0 {
       for fragment in child_fragments.iter_mut() {
-        fragment.translate_root_in_place(padding_origin);
+        fragment.translate_root_in_place(content_origin);
       }
     }
 
@@ -4941,10 +4938,6 @@ impl FormattingContext for BlockFormattingContext {
     let box_width = computed_width.border_box_width();
 
     // Layout out-of-flow positioned children against this block's padding box.
-    let padding_origin = Point::new(
-      computed_width.border_left + computed_width.padding_left,
-      border_top + padding_top,
-    );
     let padding_size = Size::new(
       computed_width.content_width + computed_width.padding_left + computed_width.padding_right,
       height + padding_top + padding_bottom,
@@ -4955,16 +4948,11 @@ impl FormattingContext for BlockFormattingContext {
       let abs = crate::layout::absolute_positioning::AbsoluteLayout::with_font_context(
         self.font_context.clone(),
       );
-      let cb_block_base = if resolved_height.is_some() {
-        Some(padding_size.height)
-      } else {
-        None
-      };
       let parent_padding_cb = ContainingBlock::with_viewport_and_bases(
         padding_rect,
         self.viewport_size,
         Some(padding_size.width),
-        cb_block_base,
+        Some(padding_size.height),
       );
       let base_factory = self.factory.clone();
       let viewport_cb = ContainingBlock::viewport(self.viewport_size);
@@ -5016,7 +5004,8 @@ impl FormattingContext for BlockFormattingContext {
           .formatting_context()
           .unwrap_or(FormattingContextType::Block);
         let fc = factory.get(fc_type);
-        let child_height_space = cb_block_base
+        let child_height_space = cb
+          .block_percentage_base()
           .map(AvailableSpace::Definite)
           .unwrap_or(AvailableSpace::Indefinite);
         let child_constraints = LayoutConstraints::new(
@@ -5032,10 +5021,13 @@ impl FormattingContext for BlockFormattingContext {
           &self.font_context,
         );
 
-        // Static position starts at the containing block origin; AbsoluteLayout will add
-        // padding/border offsets, so use the content origin when no flow position was
-        // recorded.
-        let static_pos = static_position.unwrap_or(Point::ZERO);
+        let mut static_pos = static_position.unwrap_or(Point::ZERO);
+        if cb == parent_padding_cb {
+          static_pos = Point::new(
+            static_pos.x + computed_width.padding_left,
+            static_pos.y + padding_top,
+          );
+        }
         let is_replaced = child.is_replaced();
         let has_inline_keyword = positioned_style.width_keyword.is_some()
           || positioned_style.min_width_keyword.is_some()
@@ -7672,6 +7664,8 @@ mod tests {
     parent_style.width_keyword = None;
     parent_style.padding_left = Length::px(10.0);
     parent_style.padding_top = Length::px(10.0);
+    parent_style.border_left_width = Length::px(2.0);
+    parent_style.border_top_width = Length::px(2.0);
     let mut child_style = ComputedStyle::default();
     child_style.display = Display::Block;
     child_style.position = Position::Absolute;
@@ -7695,10 +7689,72 @@ mod tests {
 
     assert_eq!(fragment.children.len(), 1);
     let child_frag = &fragment.children[0];
-    assert_eq!(child_frag.bounds.x(), 15.0);
-    assert_eq!(child_frag.bounds.y(), 17.0);
+    assert_eq!(child_frag.bounds.x(), 7.0);
+    assert_eq!(child_frag.bounds.y(), 9.0);
     assert_eq!(child_frag.bounds.width(), 50.0);
     assert_eq!(child_frag.bounds.height(), 20.0);
+  }
+
+  #[test]
+  fn absolutely_positioned_child_percent_top_resolves_against_auto_height_padding_box() {
+    let mut parent_style = ComputedStyle::default();
+    parent_style.display = Display::Block;
+    parent_style.position = Position::Relative;
+    parent_style.width = Some(Length::px(200.0));
+    parent_style.width_keyword = None;
+    parent_style.padding_top = Length::px(10.0);
+    parent_style.padding_bottom = Length::px(10.0);
+
+    let flow_child = BoxNode::new_block(
+      block_style_with_height(100.0),
+      FormattingContextType::Block,
+      vec![],
+    );
+
+    let mut abs_style = ComputedStyle::default();
+    abs_style.display = Display::Block;
+    abs_style.position = Position::Absolute;
+    abs_style.left = Some(Length::px(0.0));
+    abs_style.top = Some(Length::percent(50.0));
+    abs_style.width = Some(Length::px(10.0));
+    abs_style.height = Some(Length::px(10.0));
+    abs_style.width_keyword = None;
+    abs_style.height_keyword = None;
+
+    let abs_id = 4242;
+    let mut abs_child =
+      BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+    abs_child.id = abs_id;
+
+    let parent = BoxNode::new_block(
+      Arc::new(parent_style),
+      FormattingContextType::Block,
+      vec![flow_child, abs_child],
+    );
+
+    fn find_fragment<'a>(node: &'a FragmentNode, id: usize) -> Option<&'a FragmentNode> {
+      if node.box_id() == Some(id) {
+        return Some(node);
+      }
+      for child in node.children.iter() {
+        if let Some(found) = find_fragment(child, id) {
+          return Some(found);
+        }
+      }
+      None
+    }
+
+    let fc = BlockFormattingContext::new();
+    let fragment = fc
+      .layout(&parent, &LayoutConstraints::definite(300.0, 300.0))
+      .unwrap();
+    let abs_frag = find_fragment(&fragment, abs_id).expect("absolute fragment");
+
+    assert!(
+      (abs_frag.bounds.y() - 60.0).abs() < 0.01,
+      "expected top:50% to resolve against 100px content height + 20px padding (y=60); got {}",
+      abs_frag.bounds.y()
+    );
   }
 
   #[test]
