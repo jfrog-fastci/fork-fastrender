@@ -3112,6 +3112,27 @@ pub(crate) fn apply_svg_filter_with_cache(
     clip_to_region(pixmap, filter_region)?;
   }
 
+  // `FillPaint` / `StrokePaint` inference should be based on the original pixels (post-clipping),
+  // not the resampled `filterRes` surface. Resampling can remove fully-opaque pixels when the
+  // filter region extends outside the pixmap, causing the heuristic inference to fail.
+  let uses_fill_paint = def.uses_fill_paint_input();
+  let uses_stroke_paint = def.uses_stroke_paint_input();
+  let should_infer_paint = (uses_fill_paint && inputs.fill_paint.is_none())
+    || (uses_stroke_paint && inputs.stroke_paint.is_none());
+  let inferred_paint = should_infer_paint
+    .then(|| infer_solid_opaque_paint(pixmap))
+    .flatten();
+  let fill_paint = if uses_fill_paint {
+    inputs.fill_paint.or(inferred_paint)
+  } else {
+    inputs.fill_paint
+  };
+  let stroke_paint = if uses_stroke_paint {
+    inputs.stroke_paint.or(inferred_paint)
+  } else {
+    inputs.stroke_paint
+  };
+
   let Some(mut working_pixmap) = (if filter_region_is_pixmap_bounds {
     resize_pixmap(pixmap, res_w, res_h, def.color_interpolation_filters)?
   } else {
@@ -3181,8 +3202,8 @@ pub(crate) fn apply_svg_filter_with_cache(
 
   let working_inputs = SvgFilterStandardInputs {
     background_image: working_background.as_ref(),
-    fill_paint: inputs.fill_paint,
-    stroke_paint: inputs.stroke_paint,
+    fill_paint,
+    stroke_paint,
   };
 
   apply_svg_filter_scaled(
@@ -8397,6 +8418,28 @@ mod filter_res_tests {
     assert_eq!(pixel(&pixmap, 1, 0), (255, 0, 255, 255));
     assert_eq!(pixel(&pixmap, 2, 0), (255, 255, 0, 255));
     assert_eq!(pixel(&pixmap, 3, 0), (255, 255, 0, 255));
+  }
+
+  #[test]
+  fn filter_res_fill_paint_inference_is_based_on_unscaled_source() {
+    let _guard = svg_filter_test_guard();
+    let cache = ImageCache::new();
+    // The filter region extends beyond the pixmap and `filterRes` downsamples it. The resampled
+    // working surface may lose fully-opaque pixels (e.g. due to bilinear sampling at the edge),
+    // but `FillPaint` inference should still use the original source pixels.
+    let svg = "<svg xmlns='http://www.w3.org/2000/svg'><filter id='f' filterUnits='userSpaceOnUse' x='-7' y='0' width='15' height='1' filterRes='8 1'><feOffset in='FillPaint' dx='0' dy='0'/></filter></svg>";
+    let filter = load_svg_filter(&data_url(svg), &cache).expect("parsed filter");
+
+    let mut pixmap = new_pixmap(8, 1).unwrap();
+    pixmap.fill(Color::from_rgba8(0, 0, 0, 0));
+    pixmap.pixels_mut()[0] = PremultipliedColorU8::from_rgba(255, 0, 0, 255).unwrap();
+
+    let bbox = Rect::from_xywh(0.0, 0.0, 8.0, 1.0);
+    apply_svg_filter(filter.as_ref(), &mut pixmap, 1.0, bbox).unwrap();
+
+    for x in 0..pixmap.width() {
+      assert_eq!(pixel(&pixmap, x, 0), (255, 0, 0, 255));
+    }
   }
 
   #[test]
