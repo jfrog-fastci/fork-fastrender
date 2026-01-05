@@ -70,27 +70,32 @@ while [[ $# -gt 0 ]]; do
         exit 0
         ;;
       --fixtures-dir)
-        FIXTURES_DIR="${2:-}"; shift 2 ;;
+        FIXTURES_DIR="${2:-}"; shift 2; continue ;;
       --out-dir)
-        OUT_DIR="${2:-}"; shift 2 ;;
+        OUT_DIR="${2:-}"; shift 2; continue ;;
       --viewport)
-        VIEWPORT="${2:-}"; shift 2 ;;
+        VIEWPORT="${2:-}"; shift 2; continue ;;
       --dpr)
-        DPR="${2:-}"; shift 2 ;;
+        DPR="${2:-}"; shift 2; continue ;;
       --media)
-        MEDIA="${2:-}"; shift 2 ;;
+        MEDIA="${2:-}"; shift 2; continue ;;
       --timeout)
-        TIMEOUT="${2:-}"; shift 2 ;;
+        TIMEOUT="${2:-}"; shift 2; continue ;;
       --shard)
-        SHARD="${2:-}"; shift 2 ;;
+        SHARD="${2:-}"; shift 2; continue ;;
       --chrome)
-        CHROME_BIN="${2:-}"; shift 2 ;;
+        CHROME_BIN="${2:-}"; shift 2; continue ;;
       --js)
-        JS="${2:-}"; shift 2 ;;
+        JS="${2:-}"; shift 2; continue ;;
       --)
         PARSE_FLAGS=0
         shift
         continue
+        ;;
+      -*)
+        echo "unknown option: $1" >&2
+        usage >&2
+        exit 2
         ;;
     esac
   fi
