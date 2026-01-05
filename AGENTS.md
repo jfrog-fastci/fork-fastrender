@@ -109,7 +109,7 @@ cargo xtask fixture-chrome-diff
 # diffing the outputs (writes `target/fixture_determinism/report.html` by default):
 #   cargo xtask fixture-determinism --fixtures preserve_3d_stack --repeat 3
 #
-# Shortcut wrapper for the same offline fixture loop (writes `target/chrome_vs_fastrender_fixtures.html`):
+# Convenience wrapper for the same offline fixture loop (delegates to `cargo xtask fixture-chrome-diff` and inherits its defaults/validations):
 #   scripts/chrome_vs_fastrender_fixtures.sh
 #
 # Cached-pages Chrome loop (best-effort; non-deterministic):

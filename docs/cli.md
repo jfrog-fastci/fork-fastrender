@@ -21,13 +21,14 @@ These are optional wrappers for the most common loops:
   - `--pages` accepts cached stems or URLs; URL-looking inputs are normalized to cached stems best-effort (strip scheme/leading `www.`, etc).
   - Per-step timeouts: `--chrome-timeout <secs>` / `--render-timeout <secs>` override `--timeout`.
   - Passing page stems that are not present under `fetches/html/*.html` is an error (run `fetch_pages` first).
-- Offline fixture Chrome-vs-FastRender diff (deterministic; offline): `scripts/chrome_vs_fastrender_fixtures.sh [fixture_glob...]`
-  - Wraps `scripts/chrome_fixture_baseline.sh`, `render_fixtures`, and `diff_renders`.
-  - Defaults to `viewport=1040x1240`, `dpr=1.0`, JavaScript disabled, and the fixture set in `tests/pages_regression_test.rs`.
-  - Writes `target/chrome_vs_fastrender_fixtures.html` + `target/chrome_vs_fastrender_fixtures.json` plus PNG/log/metadata artifacts under `target/chrome_fixture_renders/` and PNG/log/metadata artifacts under `target/fastrender_fixture_renders/`.
-  - Diff params: `--tolerance <u8>`, `--max-diff-percent <float>`, `--max-perceptual-distance <float>`, `--ignore-alpha`, `--sort-by {pixel|percent|perceptual}`, `--fail-on-differences`, `--no-chrome`, `--no-fastrender`, `--diff-only`, `--no-build`, `--no-clean`
-  - When reusing existing FastRender renders (`--no-fastrender` / `--diff-only`), staleness is detected via per-fixture input fingerprints in `<out>/fastrender/<fixture>.json`; pass `--allow-stale-fastrender-renders` to override.
-  - Supports `--shard <index>/<total>` for deterministic sharding (0-based); forwards `--jobs <n>` and `--write-snapshot` (writes `<fastr-out-dir>/<fixture>/snapshot.json`) to `render_fixtures`.
+- Offline fixture Chrome-vs-FastRender diff (deterministic; offline): `scripts/chrome_vs_fastrender_fixtures.sh [options] [--] [fixture...]`
+  - Thin wrapper around the canonical implementation: `cargo xtask fixture-chrome-diff` (inherits its validations and default fixture selection).
+  - Defaults to `viewport=1040x1240`, `dpr=1.0`, JavaScript disabled.
+  - Writes outputs under `<out>/` (default: `target/fixture_chrome_diff/`):
+    - `<out>/chrome/`, `<out>/fastrender/`, `<out>/report.html`, `<out>/report.json`.
+  - When reusing existing FastRender renders (`--no-fastrender` / `--diff-only`), xtask validates per-fixture metadata to prevent stale diffs; pass `--allow-stale-fastrender-renders` to override.
+  - Core flags mirror `cargo xtask fixture-chrome-diff` (run `cargo xtask fixture-chrome-diff --help` for details; the wrapper forwards through newer selection flags like `--from-progress` / `--all-fixtures`).
+  - Legacy `--chrome-out-dir` / `--fastr-out-dir` / `--report-html` / `--report-json` flags are still accepted but must match the `<out>/chrome` / `<out>/fastrender` / `<out>/report.*` layout.
 - Run any command under a hard memory cap (uses `prlimit` when available): `scripts/run_limited.sh --as 8G -- <command...>`
 - Profile one page with samply (saves profile + prints summary): `scripts/profile_samply.sh <stem|--from-progress ...>` (builds `pageset_progress` with `disk_cache`)
 - Profile one page with perf: `scripts/profile_perf.sh <stem|--from-progress ...>` (builds `pageset_progress` with `disk_cache`)
@@ -246,39 +247,32 @@ Notes:
 For pixel-accuracy work where you want stable evidence artifacts without network instability, use the self-contained offline fixtures under `tests/pages/fixtures/*`:
 
 ```bash
-# One command: capture Chrome baselines + render FastRender output + generate an HTML diff report.
-scripts/chrome_vs_fastrender_fixtures.sh grid_news
+# Canonical one-command workflow (Chrome baseline + FastRender renders + diff report):
+cargo xtask fixture-chrome-diff --fixtures grid_news
+# Report: target/fixture_chrome_diff/report.html
 
-# With no positional filters, defaults to the fixture set in tests/pages_regression_test.rs:
-scripts/chrome_vs_fastrender_fixtures.sh
+# Convenience wrapper (thin shim around `cargo xtask fixture-chrome-diff`):
+scripts/chrome_vs_fastrender_fixtures.sh grid_news
 ```
 
-Outputs (all under `target/` by default):
+Outputs (all under `target/fixture_chrome_diff/` by default):
 
-- Chrome: `target/chrome_fixture_renders/<fixture>.png` + `*.chrome.log` + `*.json` metadata
-- FastRender: `target/fastrender_fixture_renders/<fixture>.png` + `*.log`
-- Diff report: `target/chrome_vs_fastrender_fixtures.html` (plus JSON and embedded images under `*_files/`)
+- Chrome: `<out>/chrome/<fixture>.png` + `*.chrome.log` + `*.json` metadata
+- FastRender: `<out>/fastrender/<fixture>.png` + `*.log`
+- Diff report: `<out>/report.html` (plus `report.json` and embedded images under `report_files/`)
 
-By default the wrapper deletes the previous Chrome/FastRender output directories before rerunning.
-Pass `--no-clean` to preserve existing artifacts.
+See `cargo xtask fixture-chrome-diff --help` for the full set of selection/output flags; the wrapper script inherits that behavior.
 
-Guarantees:
-
-- Chrome loads fixtures from `file://.../tests/pages/fixtures/<fixture>/index.html` and injects:
-  - `<base href="file://.../<fixture>/">` so patched HTML can live in a temp dir
-  - A CSP that disables JS by default (and always blocks `http(s)` via `default-src file: data:`)
-- FastRender renders fixtures with a `ResourcePolicy` that denies `http(s)://` fetches (fixtures must be self-contained).
-
-You can also run the pieces independently:
+You can also run the pieces independently (mostly useful when iterating on one step):
 
 ```bash
-scripts/chrome_fixture_baseline.sh grid_news
-cargo run --release --bin render_fixtures -- --fixtures grid_news --out-dir target/fastrender_fixture_renders
+cargo xtask chrome-baseline-fixtures --out-dir target/fixture_chrome_diff/chrome --fixtures grid_news
+cargo run --release --bin render_fixtures -- --fixtures grid_news --out-dir target/fixture_chrome_diff/fastrender
 cargo run --release --bin diff_renders -- \
-  --before target/chrome_fixture_renders \
-  --after target/fastrender_fixture_renders \
-  --json target/chrome_vs_fastrender_fixtures.json \
-  --html target/chrome_vs_fastrender_fixtures.html
+  --before target/fixture_chrome_diff/chrome \
+  --after target/fixture_chrome_diff/fastrender \
+  --json target/fixture_chrome_diff/report.json \
+  --html target/fixture_chrome_diff/report.html
 ```
 
 Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard <index>/<total>` (0-based) for deterministic parallelism.

@@ -63,6 +63,10 @@ cargo xtask fixture-chrome-diff
 # Defaults to the curated pages_regression fixture set from tests/pages_regression_test.rs.
 # Pass --all-fixtures to render everything under tests/pages/fixtures instead.
 
+# Convenience wrapper for the same command (delegates to `cargo xtask fixture-chrome-diff` and
+# inherits its validations/selection logic):
+scripts/chrome_vs_fastrender_fixtures.sh
+
 # 1) Render the offline fixture(s) with FastRender (offline; bundled fonts):
 cargo run --release --bin render_fixtures -- --out-dir target/fixture_chrome_diff/fastrender
 

@@ -1,24 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# One-command offline fixture diff loop:
-#   1) Capture Chrome baselines for local `tests/pages/fixtures/*/index.html` pages
-#   2) Render the same fixtures with FastRender (`render_fixtures`)
-#   3) Diff the two directories (`diff_renders`) and write an HTML report
+# Convenience wrapper around `cargo xtask fixture-chrome-diff`.
+#
+# This script exists mainly for backwards-compatible flags and muscle memory. The canonical
+# implementation of the offline fixture evidence loop lives in the `xtask` subcommand; keep this
+# wrapper thin so it inherits new validation/selection logic automatically.
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
 
 usage() {
   cat <<'EOF'
-usage: scripts/chrome_vs_fastrender_fixtures.sh [options] [--] [fixture_glob...]
+usage: scripts/chrome_vs_fastrender_fixtures.sh [options] [--] [fixture...]
 
 Options:
   --fixtures-dir <dir>      Fixture root (default: tests/pages/fixtures)
-  --chrome-out-dir <dir>    Chrome PNG/log output (default: target/chrome_fixture_renders)
-  --fastr-out-dir <dir>     FastRender PNG/log output (default: target/fastrender_fixture_renders)
-  --report-html <path>      HTML diff report output (default: target/chrome_vs_fastrender_fixtures.html)
-  --report-json <path>      JSON diff report output (default: target/chrome_vs_fastrender_fixtures.json)
+  --out-dir <dir>           Base output dir (default: target/fixture_chrome_diff)
+  --chrome-out-dir <dir>    (legacy) Must be <out-dir>/chrome
+  --fastr-out-dir <dir>     (legacy) Must be <out-dir>/fastrender
+  --report-html <path>      (legacy) Must be <out-dir>/report.html
+  --report-json <path>      (legacy) Must be <out-dir>/report.json
   --viewport <WxH>          Viewport size (default: 1040x1240)
   --dpr <float>             Device pixel ratio (default: 1.0)
   --media <screen|print>    Media type for both Chrome + FastRender (default: screen)
@@ -39,21 +41,25 @@ Options:
   --diff-only               Alias for --no-chrome --no-fastrender
   --fail-on-differences     Exit non-zero when diff_renders reports differences (default: keep report and exit 0)
   --no-build                Skip `cargo build --release --bin diff_renders` (reuse an existing binary)
-  --no-clean                Do not delete previous output dirs under target/
+  --no-clean                (deprecated; ignored) Output dirs are managed by `cargo xtask fixture-chrome-diff`.
   -h, --help                Show help
 
 Filtering:
-  Positional args are fixture directory globs (same matching as chrome_fixture_baseline.sh).
-  If omitted, defaults to the fixtures listed in tests/pages_regression_test.rs.
+  Positional args are forwarded to `cargo xtask fixture-chrome-diff --fixtures <csv>`.
+  If omitted, fixture selection defaults to the xtask implementation.
+  Any additional flags (e.g. `--all-fixtures`, `--from-progress`) are forwarded to `cargo xtask fixture-chrome-diff`.
 
+Output layout (matches `cargo xtask fixture-chrome-diff`):
+  <out>/chrome/        Chrome PNGs/logs/metadata
+  <out>/fastrender/    FastRender PNGs/logs/diagnostics
+  <out>/report.html    diff_renders HTML report
+  <out>/report.json    diff_renders JSON report
 EOF
 }
 
 FIXTURES_DIR="${FIXTURES_DIR:-tests/pages/fixtures}"
-CHROME_OUT_DIR="${CHROME_OUT_DIR:-target/chrome_fixture_renders}"
-FASTR_OUT_DIR="${FASTR_OUT_DIR:-target/fastrender_fixture_renders}"
-REPORT_HTML="${REPORT_HTML:-target/chrome_vs_fastrender_fixtures.html}"
-REPORT_JSON="${REPORT_JSON:-target/chrome_vs_fastrender_fixtures.json}"
+OUT_DIR="${OUT_DIR:-target/fixture_chrome_diff}"
+OUT_DIR_EXPLICIT=0
 VIEWPORT="${VIEWPORT:-1040x1240}"
 DPR="${DPR:-1.0}"
 MEDIA="${MEDIA:-screen}"
@@ -71,8 +77,20 @@ SORT_BY=""
 FAIL_ON_DIFFERENCES=0
 NO_CHROME=0
 NO_FASTRENDER=0
+DIFF_ONLY=0
 NO_BUILD=0
-CLEAN=1
+NO_CLEAN=0
+
+LEGACY_CHROME_OUT_DIR=""
+LEGACY_FASTR_OUT_DIR=""
+LEGACY_REPORT_HTML=""
+LEGACY_REPORT_JSON=""
+
+EXTRA_XTASK_ARGS=()
+EXPLICIT_FIXTURES=""
+HAS_EXPLICIT_FIXTURES=0
+DISABLE_POSITIONAL_FIXTURES=0
+FIT_CANVAS_TO_CONTENT=0
 
 FILTERS=()
 PARSE_FLAGS=1
@@ -83,56 +101,128 @@ while [[ $# -gt 0 ]]; do
         usage
         exit 0
         ;;
+      --fixtures-dir=*)
+        FIXTURES_DIR="${1#*=}"; shift; continue ;;
       --fixtures-dir)
-        FIXTURES_DIR="${2:-}"; shift 2 ;;
+        FIXTURES_DIR="${2:-}"; shift 2; continue ;;
+      --out-dir=*)
+        OUT_DIR="${1#*=}"; OUT_DIR_EXPLICIT=1; shift; continue ;;
+      --out-dir)
+        OUT_DIR="${2:-}"; OUT_DIR_EXPLICIT=1; shift 2; continue ;;
       --chrome-out-dir)
-        CHROME_OUT_DIR="${2:-}"; shift 2 ;;
+        LEGACY_CHROME_OUT_DIR="${2:-}"; shift 2; continue ;;
       --fastr-out-dir)
-        FASTR_OUT_DIR="${2:-}"; shift 2 ;;
+        LEGACY_FASTR_OUT_DIR="${2:-}"; shift 2; continue ;;
       --report-html)
-        REPORT_HTML="${2:-}"; shift 2 ;;
+        LEGACY_REPORT_HTML="${2:-}"; shift 2; continue ;;
       --report-json)
-        REPORT_JSON="${2:-}"; shift 2 ;;
+        LEGACY_REPORT_JSON="${2:-}"; shift 2; continue ;;
+      --viewport=*)
+        VIEWPORT="${1#*=}"; shift; continue ;;
       --viewport)
-        VIEWPORT="${2:-}"; shift 2 ;;
+        VIEWPORT="${2:-}"; shift 2; continue ;;
+      --dpr=*)
+        DPR="${1#*=}"; shift; continue ;;
       --dpr)
-        DPR="${2:-}"; shift 2 ;;
+        DPR="${2:-}"; shift 2; continue ;;
+      --media=*)
+        MEDIA="${1#*=}"; shift; continue ;;
       --media)
-        MEDIA="${2:-}"; shift 2 ;;
+        MEDIA="${2:-}"; shift 2; continue ;;
+      --jobs=*)
+        JOBS="${1#*=}"; shift; continue ;;
       --jobs)
-        JOBS="${2:-}"; shift 2 ;;
+        JOBS="${2:-}"; shift 2; continue ;;
       --write-snapshot)
-        WRITE_SNAPSHOT=1; shift ;;
+        WRITE_SNAPSHOT=1; shift; continue ;;
+      --timeout=*)
+        TIMEOUT="${1#*=}"; shift; continue ;;
       --timeout)
-        TIMEOUT="${2:-}"; shift 2 ;;
+        TIMEOUT="${2:-}"; shift 2; continue ;;
+      --chrome=*)
+        CHROME_BIN="${1#*=}"; shift; continue ;;
       --chrome)
-        CHROME_BIN="${2:-}"; shift 2 ;;
+        CHROME_BIN="${2:-}"; shift 2; continue ;;
+      --js=*)
+        JS="${1#*=}"; shift; continue ;;
       --js)
-        JS="${2:-}"; shift 2 ;;
+        JS="${2:-}"; shift 2; continue ;;
+      --shard=*)
+        SHARD="${1#*=}"; shift; continue ;;
       --shard)
-        SHARD="${2:-}"; shift 2 ;;
+        SHARD="${2:-}"; shift 2; continue ;;
+      --tolerance=*)
+        TOLERANCE="${1#*=}"; shift; continue ;;
       --tolerance)
-        TOLERANCE="${2:-}"; shift 2 ;;
+        TOLERANCE="${2:-}"; shift 2; continue ;;
+      --max-diff-percent=*)
+        MAX_DIFF_PERCENT="${1#*=}"; shift; continue ;;
       --max-diff-percent)
-        MAX_DIFF_PERCENT="${2:-}"; shift 2 ;;
+        MAX_DIFF_PERCENT="${2:-}"; shift 2; continue ;;
+      --max-perceptual-distance=*)
+        MAX_PERCEPTUAL_DISTANCE="${1#*=}"; shift; continue ;;
       --max-perceptual-distance)
-        MAX_PERCEPTUAL_DISTANCE="${2:-}"; shift 2 ;;
+        MAX_PERCEPTUAL_DISTANCE="${2:-}"; shift 2; continue ;;
       --ignore-alpha)
-        IGNORE_ALPHA=1; shift ;;
+        IGNORE_ALPHA=1; shift; continue ;;
+      --sort-by=*)
+        SORT_BY="${1#*=}"; shift; continue ;;
       --sort-by)
-        SORT_BY="${2:-}"; shift 2 ;;
+        SORT_BY="${2:-}"; shift 2; continue ;;
       --no-chrome)
-        NO_CHROME=1; shift ;;
+        NO_CHROME=1; shift; continue ;;
       --no-fastrender)
-        NO_FASTRENDER=1; shift ;;
+        NO_FASTRENDER=1; shift; continue ;;
       --diff-only)
-        NO_CHROME=1; NO_FASTRENDER=1; shift ;;
+        DIFF_ONLY=1; shift; continue ;;
       --fail-on-differences)
-        FAIL_ON_DIFFERENCES=1; shift ;;
+        FAIL_ON_DIFFERENCES=1; shift; continue ;;
       --no-build)
-        NO_BUILD=1; shift ;;
+        NO_BUILD=1; shift; continue ;;
       --no-clean)
-        CLEAN=0; shift ;;
+        NO_CLEAN=1; shift; continue ;;
+      --fit-canvas-to-content)
+        FIT_CANVAS_TO_CONTENT=1; shift; continue ;;
+      --fixtures=*)
+        EXPLICIT_FIXTURES="${1#*=}"; HAS_EXPLICIT_FIXTURES=1; shift; continue ;;
+      --fixtures)
+        EXPLICIT_FIXTURES="${2:-}"; HAS_EXPLICIT_FIXTURES=1; shift 2; continue ;;
+      --all-fixtures)
+        EXTRA_XTASK_ARGS+=(--all-fixtures); DISABLE_POSITIONAL_FIXTURES=1; shift; continue ;;
+      --from-progress=*)
+        EXTRA_XTASK_ARGS+=(--from-progress "${1#*=}"); DISABLE_POSITIONAL_FIXTURES=1; shift; continue ;;
+      --from-progress)
+        EXTRA_XTASK_ARGS+=(--from-progress "${2:-}"); DISABLE_POSITIONAL_FIXTURES=1; shift 2; continue ;;
+      --only-failures)
+        EXTRA_XTASK_ARGS+=(--only-failures); DISABLE_POSITIONAL_FIXTURES=1; shift; continue ;;
+      --top-worst-accuracy=*)
+        EXTRA_XTASK_ARGS+=(--top-worst-accuracy "${1#*=}"); DISABLE_POSITIONAL_FIXTURES=1; shift; continue ;;
+      --top-worst-accuracy)
+        EXTRA_XTASK_ARGS+=(--top-worst-accuracy "${2:-}"); DISABLE_POSITIONAL_FIXTURES=1; shift 2; continue ;;
+      --min-diff-percent=*)
+        EXTRA_XTASK_ARGS+=(--min-diff-percent "${1#*=}"); shift; continue ;;
+      --min-diff-percent)
+        EXTRA_XTASK_ARGS+=(--min-diff-percent "${2:-}"); shift 2; continue ;;
+      --skip-missing-fixtures)
+        EXTRA_XTASK_ARGS+=(--skip-missing-fixtures); DISABLE_POSITIONAL_FIXTURES=1; shift; continue ;;
+      --require-fastrender-metadata)
+        EXTRA_XTASK_ARGS+=(--require-fastrender-metadata); shift; continue ;;
+      --allow-stale-fastrender-renders)
+        EXTRA_XTASK_ARGS+=(--allow-stale-fastrender-renders); shift; continue ;;
+      --require-chrome-metadata)
+        EXTRA_XTASK_ARGS+=(--require-chrome-metadata); shift; continue ;;
+      --allow-stale-chrome-baselines)
+        EXTRA_XTASK_ARGS+=(--allow-stale-chrome-baselines); shift; continue ;;
+      --chrome-dir=*)
+        EXTRA_XTASK_ARGS+=(--chrome-dir "${1#*=}"); shift; continue ;;
+      --chrome-dir)
+        EXTRA_XTASK_ARGS+=(--chrome-dir "${2:-}"); shift 2; continue ;;
+      --dry-run)
+        EXTRA_XTASK_ARGS+=(--dry-run); shift; continue ;;
+      -*)
+        # Forward unknown flags to xtask so the wrapper stays in sync with new selection/validation
+        # options as `fixture-chrome-diff` evolves.
+        EXTRA_XTASK_ARGS+=("$1"); shift; continue ;;
       --)
         PARSE_FLAGS=0
         shift
@@ -155,252 +245,160 @@ refuse_unsafe_path() {
 }
 
 refuse_unsafe_path "fixtures dir" "${FIXTURES_DIR}"
-refuse_unsafe_path "chrome out dir" "${CHROME_OUT_DIR}"
-refuse_unsafe_path "fastrender out dir" "${FASTR_OUT_DIR}"
-refuse_unsafe_path "report html path" "${REPORT_HTML}"
-refuse_unsafe_path "report json path" "${REPORT_JSON}"
+refuse_unsafe_path "out dir" "${OUT_DIR}"
 
-if [[ -n "${JOBS}" ]]; then
-  if ! [[ "${JOBS}" =~ ^[0-9]+$ ]] || [[ "${JOBS}" -lt 1 ]]; then
-    echo "invalid --jobs: ${JOBS} (expected integer >= 1)" >&2
-    exit 2
-  fi
+if [[ "${NO_CLEAN}" -eq 1 ]]; then
+  echo "warning: --no-clean is deprecated and ignored (use --no-chrome/--no-fastrender to reuse outputs)." >&2
 fi
 
-discover_default_fixtures() {
-  local out=()
-  if [[ -f tests/pages_regression_test.rs ]]; then
-    # Extract `html: "name/index.html"` entries from the regression suite.
-    mapfile -t out < <(
-      (
-        grep -Eo 'html:[[:space:]]*"[^"]+"' tests/pages_regression_test.rs 2>/dev/null || true
-      ) | sed -E 's/.*"([^"]+)".*/\1/' \
-        | awk -F/ '{print $1}' \
-        | awk '!seen[$0]++'
-    )
-  fi
-
-  if [[ "${#out[@]}" -eq 0 ]]; then
-    # Fallback: all fixture dirs containing index.html at depth 1.
-    mapfile -t out < <(find "${FIXTURES_DIR}" -mindepth 2 -maxdepth 2 -type f -name index.html -print \
-      | sed -E 's#/index\\.html$##' \
-      | xargs -n1 basename \
-      | sort -u)
-  fi
-
-  printf '%s\n' "${out[@]}"
-}
-
-resolve_fixtures() {
-  local -a patterns=("$@")
-  local -a fixtures=()
-  declare -A seen=()
-
-  if [[ "${#patterns[@]}" -eq 0 ]]; then
-    mapfile -t fixtures < <(discover_default_fixtures)
-  else
-    shopt -s nullglob
-    for pat in "${patterns[@]}"; do
-      local matched=0
-      for dir in "${FIXTURES_DIR}"/${pat}; do
-        if [[ -d "${dir}" && -f "${dir}/index.html" ]]; then
-          local name
-          name="$(basename "${dir}")"
-          if [[ -z "${seen[${name}]:-}" ]]; then
-            seen["${name}"]=1
-            fixtures+=("${name}")
-          fi
-          matched=1
-        fi
-      done
-      if [[ "${matched}" -eq 0 ]]; then
-        echo "no fixtures matched pattern: ${pat}" >&2
-        exit 1
-      fi
-    done
-  fi
-
-  printf '%s\n' "${fixtures[@]}" | sort -u
-}
-
-mapfile -t FIXTURES < <(resolve_fixtures "${FILTERS[@]}")
-if [[ "${#FIXTURES[@]}" -eq 0 ]]; then
-  echo "No fixtures selected." >&2
-  exit 1
+if [[ "${MEDIA,,}" == "print" ]]; then
+  # Historically the wrapper auto-enabled this for print mode so multi-page fixtures weren't clipped.
+  FIT_CANVAS_TO_CONTENT=1
 fi
-if [[ -n "${SHARD}" ]]; then
-  if ! [[ "${SHARD}" =~ ^[0-9]+/[0-9]+$ ]]; then
-    echo "invalid --shard: ${SHARD} (expected index/total like 0/4)" >&2
-    exit 2
-  fi
-  SHARD_INDEX="${SHARD%%/*}"
-  SHARD_TOTAL="${SHARD#*/}"
-  if [[ "${SHARD_TOTAL}" -lt 1 ]]; then
-    echo "invalid --shard: ${SHARD} (total must be >= 1)" >&2
-    exit 2
-  fi
-  if [[ "${SHARD_INDEX}" -ge "${SHARD_TOTAL}" ]]; then
-    echo "invalid --shard: ${SHARD} (index must be < total)" >&2
-    exit 2
-  fi
 
-  BEFORE_SHARD_COUNT="${#FIXTURES[@]}"
-  SHARDED_FIXTURES=()
-  for i in "${!FIXTURES[@]}"; do
-    if (( i % SHARD_TOTAL == SHARD_INDEX )); then
-      SHARDED_FIXTURES+=("${FIXTURES[$i]}")
+infer_out_dir_from_legacy_path() {
+  local kind="$1"
+  local path="$2"
+  local expected_basename="$3"
+  if [[ -z "${path}" ]]; then
+    return 0
+  fi
+  refuse_unsafe_path "${kind}" "${path}"
+  local base
+  base="$(basename -- "${path}")"
+  if [[ "${base}" != "${expected_basename}" ]]; then
+    echo "${kind} must be ${expected_basename} to map onto the xtask output layout; got: ${path}" >&2
+    echo "Use --out-dir to control the output root instead." >&2
+    exit 2
+  fi
+  dirname -- "${path}"
+}
+
+LEGACY_OUT_DIRS=()
+if [[ -n "${LEGACY_CHROME_OUT_DIR}" ]]; then
+  LEGACY_OUT_DIRS+=("$(infer_out_dir_from_legacy_path "--chrome-out-dir" "${LEGACY_CHROME_OUT_DIR}" "chrome")")
+fi
+if [[ -n "${LEGACY_FASTR_OUT_DIR}" ]]; then
+  LEGACY_OUT_DIRS+=("$(infer_out_dir_from_legacy_path "--fastr-out-dir" "${LEGACY_FASTR_OUT_DIR}" "fastrender")")
+fi
+if [[ -n "${LEGACY_REPORT_HTML}" ]]; then
+  LEGACY_OUT_DIRS+=("$(infer_out_dir_from_legacy_path "--report-html" "${LEGACY_REPORT_HTML}" "report.html")")
+fi
+if [[ -n "${LEGACY_REPORT_JSON}" ]]; then
+  LEGACY_OUT_DIRS+=("$(infer_out_dir_from_legacy_path "--report-json" "${LEGACY_REPORT_JSON}" "report.json")")
+fi
+
+if [[ "${#LEGACY_OUT_DIRS[@]}" -gt 0 ]]; then
+  first="${LEGACY_OUT_DIRS[0]}"
+  for inferred in "${LEGACY_OUT_DIRS[@]}"; do
+    if [[ "${inferred}" != "${first}" ]]; then
+      echo "legacy output flags refer to different output roots:" >&2
+      printf '  %s\n' "${LEGACY_OUT_DIRS[@]}" >&2
+      echo "Use --out-dir to set a single output directory." >&2
+      exit 2
     fi
   done
-  if [[ "${#SHARDED_FIXTURES[@]}" -eq 0 ]]; then
-    echo "Shard ${SHARD_INDEX}/${SHARD_TOTAL} selected no fixtures (${BEFORE_SHARD_COUNT} matched before sharding). Nothing to do." >&2
-    exit 1
+  if [[ "${OUT_DIR_EXPLICIT}" -eq 1 && "${OUT_DIR}" != "${first}" ]]; then
+    echo "--out-dir (${OUT_DIR}) conflicts with legacy output flags (implying ${first})." >&2
+    echo "Use either --out-dir, or the legacy flags, but not both." >&2
+    exit 2
   fi
-  FIXTURES=("${SHARDED_FIXTURES[@]}")
+  OUT_DIR="${first}"
+  refuse_unsafe_path "out dir" "${OUT_DIR}"
 fi
 
-if [[ "${CLEAN}" -eq 1 ]]; then
-  if [[ "${NO_CHROME}" -eq 0 ]]; then
-    rm -rf "${CHROME_OUT_DIR}"
-  fi
-  if [[ "${NO_FASTRENDER}" -eq 0 ]]; then
-    rm -rf "${FASTR_OUT_DIR}"
-  fi
-fi
-
-if [[ "${NO_CHROME}" -eq 1 && ! -d "${CHROME_OUT_DIR}" ]]; then
-  echo "--no-chrome was set, but chrome out dir does not exist: ${CHROME_OUT_DIR}" >&2
-  exit 1
-fi
-if [[ "${NO_FASTRENDER}" -eq 1 && ! -d "${FASTR_OUT_DIR}" ]]; then
-  echo "--no-fastrender was set, but fastrender out dir does not exist: ${FASTR_OUT_DIR}" >&2
-  exit 1
-fi
-
-chrome_status=0
-fastr_status=0
-diff_status=0
-
-echo "== Chrome baseline =="
-if [[ "${NO_CHROME}" -eq 1 ]]; then
-  echo "(skipping chrome_fixture_baseline.sh; reusing ${CHROME_OUT_DIR})"
-else
-  chrome_args=(
-    scripts/chrome_fixture_baseline.sh
-    --fixtures-dir "${FIXTURES_DIR}"
-    --out-dir "${CHROME_OUT_DIR}"
-    --viewport "${VIEWPORT}"
-    --dpr "${DPR}"
-    --media "${MEDIA}"
-    --timeout "${TIMEOUT}"
-  )
-  if [[ -n "${CHROME_BIN}" ]]; then
-    chrome_args+=(--chrome "${CHROME_BIN}")
-  fi
-  chrome_args+=(--js "${JS}" -- "${FIXTURES[@]}")
-
-  if "${chrome_args[@]}"; then
-    :
-  else
-    chrome_status=$?
-  fi
-fi
-
-echo
-echo "== FastRender fixtures =="
-if [[ "${NO_FASTRENDER}" -eq 1 ]]; then
-  echo "(skipping render_fixtures; reusing ${FASTR_OUT_DIR})"
-else
-  render_args=(
-    --fixtures-dir "${FIXTURES_DIR}"
-    --out-dir "${FASTR_OUT_DIR}"
-    --fixtures "$(IFS=,; echo "${FIXTURES[*]}")"
-    --viewport "${VIEWPORT}"
-    --dpr "${DPR}"
-    --media "${MEDIA}"
-    --timeout "${TIMEOUT}"
-  )
-  if [[ "${MEDIA,,}" == "print" ]]; then
-    render_args+=(--fit-canvas-to-content)
-  fi
-  if [[ -n "${JOBS}" ]]; then
-    render_args+=(--jobs "${JOBS}")
-  fi
-  if [[ "${WRITE_SNAPSHOT}" -eq 1 ]]; then
-    render_args+=(--write-snapshot)
-  fi
-  if cargo run --release --bin render_fixtures -- "${render_args[@]}"; then
-    :
-  else
-    fastr_status=$?
-  fi
-fi
-
-echo
-echo "== Diff report =="
-diff_args=(
-  --before "${CHROME_OUT_DIR}"
-  --after "${FASTR_OUT_DIR}"
-  --html "${REPORT_HTML}"
-  --json "${REPORT_JSON}"
+CHROME_OUT_DIR="${OUT_DIR}/chrome"
+FASTR_OUT_DIR="${OUT_DIR}/fastrender"
+REPORT_HTML="${OUT_DIR}/report.html"
+REPORT_JSON="${OUT_DIR}/report.json"
+xtask_args=(
+  fixture-chrome-diff
+  --fixtures-dir "${FIXTURES_DIR}"
+  --out-dir "${OUT_DIR}"
+  --viewport "${VIEWPORT}"
+  --dpr "${DPR}"
+  --media "${MEDIA}"
+  --timeout "${TIMEOUT}"
+  --js "${JS}"
 )
+if [[ -n "${JOBS}" ]]; then
+  xtask_args+=(--jobs "${JOBS}")
+fi
+if [[ "${WRITE_SNAPSHOT}" -eq 1 ]]; then
+  xtask_args+=(--write-snapshot)
+fi
+if [[ "${FIT_CANVAS_TO_CONTENT}" -eq 1 ]]; then
+  xtask_args+=(--fit-canvas-to-content)
+fi
+if [[ -n "${CHROME_BIN}" ]]; then
+  xtask_args+=(--chrome "${CHROME_BIN}")
+fi
+if [[ -n "${SHARD}" ]]; then
+  xtask_args+=(--shard "${SHARD}")
+fi
 if [[ -n "${TOLERANCE}" ]]; then
-  diff_args+=(--tolerance "${TOLERANCE}")
+  xtask_args+=(--tolerance "${TOLERANCE}")
 fi
 if [[ -n "${MAX_DIFF_PERCENT}" ]]; then
-  diff_args+=(--max-diff-percent "${MAX_DIFF_PERCENT}")
+  xtask_args+=(--max-diff-percent "${MAX_DIFF_PERCENT}")
 fi
 if [[ -n "${MAX_PERCEPTUAL_DISTANCE}" ]]; then
-  diff_args+=(--max-perceptual-distance "${MAX_PERCEPTUAL_DISTANCE}")
+  xtask_args+=(--max-perceptual-distance "${MAX_PERCEPTUAL_DISTANCE}")
 fi
 if [[ "${IGNORE_ALPHA}" -eq 1 ]]; then
-  diff_args+=(--ignore-alpha)
+  xtask_args+=(--ignore-alpha)
 fi
 if [[ -n "${SORT_BY}" ]]; then
-  diff_args+=(--sort-by "${SORT_BY}")
+  xtask_args+=(--sort-by "${SORT_BY}")
+fi
+if [[ "${FAIL_ON_DIFFERENCES}" -eq 1 ]]; then
+  xtask_args+=(--fail-on-differences)
+fi
+if [[ "${DIFF_ONLY}" -eq 1 ]]; then
+  xtask_args+=(--diff-only)
+else
+  if [[ "${NO_CHROME}" -eq 1 ]]; then
+    xtask_args+=(--no-chrome)
+  fi
+  if [[ "${NO_FASTRENDER}" -eq 1 ]]; then
+    xtask_args+=(--no-fastrender)
+  fi
+fi
+if [[ "${NO_BUILD}" -eq 1 ]]; then
+  xtask_args+=(--no-build)
+fi
+if [[ "${HAS_EXPLICIT_FIXTURES}" -eq 1 ]]; then
+  xtask_args+=(--fixtures "${EXPLICIT_FIXTURES}")
+elif [[ "${#FILTERS[@]}" -gt 0 ]]; then
+  if [[ "${DISABLE_POSITIONAL_FIXTURES}" -eq 1 ]]; then
+    echo "warning: ignoring positional fixture list because selection flags were provided; use --fixtures to select explicitly." >&2
+  else
+    xtask_args+=(--fixtures "$(IFS=,; echo "${FILTERS[*]}")")
+  fi
+fi
+if [[ "${#EXTRA_XTASK_ARGS[@]}" -gt 0 ]]; then
+  xtask_args+=("${EXTRA_XTASK_ARGS[@]}")
 fi
 
-TARGET_DIR="${CARGO_TARGET_DIR:-target}"
-if [[ "${TARGET_DIR}" != /* ]]; then
-  TARGET_DIR="${REPO_ROOT}/${TARGET_DIR}"
-fi
-DIFF_BIN="${TARGET_DIR}/release/diff_renders"
-if [[ -f "${DIFF_BIN}.exe" ]]; then
-  DIFF_BIN="${DIFF_BIN}.exe"
-fi
+cmd=(cargo xtask "${xtask_args[@]}")
+
+printf '$'
+printf ' %q' "${cmd[@]}"
+printf '\n'
 
 set +e
-if [[ "${NO_BUILD}" -eq 1 && ! -f "${DIFF_BIN}" ]]; then
-  echo "--no-build was set, but diff_renders binary does not exist: ${DIFF_BIN}" >&2
-  diff_status=1
-else
-  build_status=0
-  if [[ "${NO_BUILD}" -eq 0 ]]; then
-    cargo build --release --bin diff_renders
-    build_status=$?
-  fi
-  if [[ "${build_status}" -eq 0 ]]; then
-    "${DIFF_BIN}" "${diff_args[@]}"
-    diff_status=$?
-  else
-    diff_status="${build_status}"
-  fi
-fi
+"${cmd[@]}"
+status=$?
 set -e
 
-if [[ "${diff_status}" -eq 1 && "${FAIL_ON_DIFFERENCES}" -eq 0 ]]; then
-  if [[ -f "${REPORT_JSON}" ]]; then
-    echo "diff_renders reported differences; keeping report and exiting 0 (pass --fail-on-differences to fail)." >&2
-    diff_status=0
-  fi
+if [[ "${status}" -ne 0 ]]; then
+  exit "${status}"
 fi
 
 echo
 echo "Outputs:"
+echo "  Output dir:      ${OUT_DIR}/"
 echo "  Chrome PNGs:     ${CHROME_OUT_DIR}/"
 echo "  FastRender PNGs: ${FASTR_OUT_DIR}/"
 echo "  Diff report:     ${REPORT_HTML}"
 echo "  Diff JSON:       ${REPORT_JSON}"
-
-if [[ "${chrome_status}" -ne 0 || "${fastr_status}" -ne 0 || "${diff_status}" -ne 0 ]]; then
-  exit 1
-fi
