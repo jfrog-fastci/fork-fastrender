@@ -1,0 +1,75 @@
+body.fixture {
+  background: #070b16;
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+}
+
+.scene {
+  width: 620px;
+  height: 420px;
+  display: grid;
+  place-items: center;
+  padding: 48px;
+  border-radius: 26px;
+  background: radial-gradient(circle at 35% 25%, rgba(59, 130, 246, 0.22), transparent 55%),
+    radial-gradient(circle at 70% 50%, rgba(16, 185, 129, 0.18), transparent 60%),
+    linear-gradient(150deg, #0f172a, #020617);
+  perspective: 920px;
+}
+
+.frame {
+  width: 280px;
+  height: 190px;
+  position: relative;
+  border-radius: 24px;
+  overflow: hidden;
+  transform-style: preserve-3d;
+  transform: rotateY(-28deg) rotateX(14deg);
+  background: rgba(15, 23, 42, 0.88);
+  border: 2px solid rgba(148, 163, 184, 0.4);
+  box-shadow: 0 30px 62px rgba(0, 0, 0, 0.45);
+}
+
+.layer {
+  position: absolute;
+  inset: -110px;
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(56, 189, 248, 0.95) 0 18px,
+    rgba(244, 63, 94, 0.9) 18px 36px
+  );
+  transform: translateZ(140px) rotateZ(20deg);
+}
+
+.overlay {
+  position: absolute;
+  inset: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transform: translateZ(0);
+  color: #e2e8f0;
+}
+
+.overlay h1 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.overlay p {
+  margin: 0;
+  line-height: 1.35;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-weight: 650;
+  font-size: 12px;
+  background: rgba(99, 102, 241, 0.18);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+}

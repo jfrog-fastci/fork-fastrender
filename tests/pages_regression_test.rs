@@ -404,6 +404,11 @@ const PAGE_FIXTURES: &[PageFixture] = &[
     shots: DEFAULT_SHOTS,
   },
   PageFixture {
+    name: "preserve_3d_projective_clip",
+    html: "preserve_3d_projective_clip/index.html",
+    shots: DEFAULT_SHOTS,
+  },
+  PageFixture {
     name: "image_grid_object_fit",
     html: "image_grid_object_fit/index.html",
     shots: DEFAULT_SHOTS,

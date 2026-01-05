@@ -1601,12 +1601,24 @@ thread_local! {
   static SPREAD_SCRATCH: RefCell<SpreadScratch> = RefCell::new(SpreadScratch::default());
 }
 
+#[derive(Default)]
+struct Preserve3dClipMaskScratch {
+  combined: Option<Mask>,
+  temp: Option<Mask>,
+}
+
+thread_local! {
+  static PRESERVE_3D_CLIP_MASK_SCRATCH: RefCell<Preserve3dClipMaskScratch> =
+    RefCell::new(Preserve3dClipMaskScratch::default());
+}
+
 pub(crate) fn reset_thread_local_scratch_for_tests() {
   CLIP_MASK_SCRATCH.with(|cell| *cell.borrow_mut() = ClipMaskScratch::default());
   MASK_LAYER_PIXMAP_SCRATCH.with(|cell| *cell.borrow_mut() = MaskLayerPixmapScratch::default());
   MASK_RENDER_SCRATCH.with(|cell| *cell.borrow_mut() = None);
   BACKDROP_FILTER_SCRATCH.with(|cell| *cell.borrow_mut() = BackdropFilterScratch::default());
   SPREAD_SCRATCH.with(|cell| *cell.borrow_mut() = SpreadScratch::default());
+  PRESERVE_3D_CLIP_MASK_SCRATCH.with(|cell| *cell.borrow_mut() = Preserve3dClipMaskScratch::default());
 }
 
 fn clip_mask_dirty_bounds(rect: Rect, width: u32, height: u32) -> Option<ClipMaskDirtyRect> {
@@ -1661,6 +1673,30 @@ fn mul_div_255_round(value: u8, alpha: u8) -> u8 {
   // Match `tiny_skia::Pixmap::apply_mask` rounding behavior.
   let prod = value as u16 * alpha as u16;
   ((prod + 255) >> 8) as u8
+}
+
+fn multiply_masks_in_place(into: &mut Mask, other: &Mask) -> RenderResult<()> {
+  if into.width() != other.width() || into.height() != other.height() {
+    return Ok(());
+  }
+  check_active(RenderStage::Paint)?;
+
+  let width = into.width() as usize;
+  let height = into.height() as usize;
+  let dst = into.data_mut();
+  let src = other.data();
+  let mut deadline_counter = 0usize;
+  for row in 0..height {
+    check_active_periodic(&mut deadline_counter, 32, RenderStage::Paint)?;
+    let offset = row * width;
+    let dst_row = &mut dst[offset..offset + width];
+    let src_row = &src[offset..offset + width];
+    for (dst_px, src_px) in dst_row.iter_mut().zip(src_row.iter()) {
+      *dst_px = mul_div_255_round(*dst_px, *src_px);
+    }
+  }
+
+  Ok(())
 }
 
 fn apply_mask_rect_rgba(
@@ -2870,14 +2906,14 @@ enum Preserve3dSceneItemSource {
 
 #[derive(Clone, Debug)]
 enum SceneEffect {
-  Clip(ClipItem),
+  Clip { clip: ClipItem, transform: Transform3D },
   Opacity(f32),
 }
 
 impl SceneEffect {
   fn push_item(&self, raster_bounds: Rect) -> DisplayItem {
     match self {
-      SceneEffect::Clip(_) => DisplayItem::PushClip(ClipItem {
+      SceneEffect::Clip { .. } => DisplayItem::PushClip(ClipItem {
         shape: ClipShape::Rect {
           rect: raster_bounds,
           radii: None,
@@ -2889,21 +2925,24 @@ impl SceneEffect {
 
   fn pop_item(&self) -> DisplayItem {
     match self {
-      SceneEffect::Clip(_) => DisplayItem::PopClip,
+      SceneEffect::Clip { .. } => DisplayItem::PopClip,
       SceneEffect::Opacity(_) => DisplayItem::PopOpacity,
     }
   }
 }
 
-fn update_scene_effect_stack(stack: &mut Vec<SceneEffect>, item: &DisplayItem) {
+fn update_scene_effect_stack(stack: &mut Vec<SceneEffect>, item: &DisplayItem, transform: Transform3D) {
   match item {
     DisplayItem::PushClip(clip) => {
-      stack.push(SceneEffect::Clip(clip.clone()));
+      stack.push(SceneEffect::Clip {
+        clip: clip.clone(),
+        transform,
+      });
     }
     DisplayItem::PopClip => {
       if let Some(pos) = stack
         .iter()
-        .rposition(|eff| matches!(eff, SceneEffect::Clip(_)))
+        .rposition(|eff| matches!(eff, SceneEffect::Clip { .. }))
       {
         stack.remove(pos);
       }
@@ -3040,7 +3079,7 @@ fn collect_scene_items(
       StackingSegment::Items(list) => {
         let prefix_effects = effects.clone();
         for it in list {
-          update_scene_effect_stack(&mut effects, it);
+          update_scene_effect_stack(&mut effects, it, combined_transform);
         }
 
         if list.is_empty() || !list.iter().any(|it| !it.is_stack_operation()) {
@@ -6638,13 +6677,6 @@ impl DisplayListRenderer {
       check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
         .map_err(Error::Render)?;
       let scene_item = &scene_items[idx];
-      let mut pushed_clips = 0usize;
-      for effect in &scene_item.effects {
-        if let SceneEffect::Clip(clip) = effect {
-          self.push_clip(clip)?;
-          pushed_clips += 1;
-        }
-      }
       let scene_result = (|| -> Result<()> {
         let has_backdrop = !scene_item.backdrop_filters.is_empty();
         let parent_transform = self.canvas.transform();
@@ -6730,15 +6762,19 @@ impl DisplayListRenderer {
           false
         };
 
-        let draw_result = (|| -> Result<()> {
+        let draw_result = self.with_preserve_3d_clip_override(&scene_item.effects, |renderer, clip_override| {
           if should_apply_backdrop {
             let Some(bounds_in_src) = backdrop_bounds else {
               return Ok(());
             };
 
-            let clip_mask = self.canvas.clip_mask_rc();
-            let clip_bounds = self.canvas.clip_bounds();
-            let radii = self.ds_radii(scene_item.radii);
+            let clip_bounds = renderer.canvas.clip_bounds();
+            let clip_mask_rc = clip_override
+              .is_none()
+              .then(|| renderer.canvas.clip_mask_rc())
+              .flatten();
+            let clip_mask = clip_override.or_else(|| clip_mask_rc.as_deref());
+            let radii = renderer.ds_radii(scene_item.radii);
             let shape_bounds = Rect::from_xywh(
               bounds_in_src.x() - layer_origin.0 as f32,
               bounds_in_src.y() - layer_origin.1 as f32,
@@ -6746,20 +6782,20 @@ impl DisplayListRenderer {
               bounds_in_src.height(),
             );
 
-            let Some((backdrop, dest_pixmap)) = self.canvas.split_backdrop_and_pixmap_mut() else {
+            let Some((backdrop, dest_pixmap)) = renderer.canvas.split_backdrop_and_pixmap_mut() else {
               // Without an active layer, there's nowhere to write the filtered backdrop.
               return Ok(());
             };
-            let scale = self.scale;
+            let scale = renderer.scale;
             let blur_cache: &mut (dyn BlurCacheOps + 'static) =
-              match self.shared_blur_cache.as_mut() {
+              match renderer.shared_blur_cache.as_mut() {
                 Some(shared) => shared,
-                None => &mut self.blur_cache,
+                None => &mut renderer.blur_cache,
               };
             let backdrop_cache: &mut (dyn BackdropFilterCacheOps + 'static) =
-              match self.shared_backdrop_filter_cache.as_mut() {
+              match renderer.shared_backdrop_filter_cache.as_mut() {
                 Some(shared) => shared,
-                None => &mut self.backdrop_filter_cache,
+                None => &mut renderer.backdrop_filter_cache,
               };
             apply_backdrop_filters(
               dest_pixmap,
@@ -6770,7 +6806,7 @@ impl DisplayListRenderer {
               &scene_item.backdrop_filters,
               radii,
               scale,
-              clip_mask.as_deref(),
+              clip_mask,
               clip_bounds,
               scene_item.filter_bounds,
               Transform::identity(),
@@ -6779,8 +6815,8 @@ impl DisplayListRenderer {
             )?;
           }
 
-          if let Some(pixmap) = self.render_scene_item(scene_item)? {
-            if self.preserve_3d_debug {
+          if let Some(pixmap) = renderer.render_scene_item(scene_item)? {
+            if renderer.preserve_3d_debug {
               let is_affine = Homography::from_transform3d_z0(&adjusted_transform).is_affine();
               let depth = {
                 let center = scene_item.plane_rect.center();
@@ -6802,10 +6838,10 @@ impl DisplayListRenderer {
                 scene_item.bounds.height(),
               );
             }
-            self.warp_pixmap(&pixmap, &adjusted_transform)?;
+            renderer.warp_pixmap(&pixmap, &adjusted_transform, clip_override)?;
           }
           Ok(())
-        })();
+        });
 
         if pushed_layer {
           // If drawing failed, still pop the layer to restore the canvas state before returning.
@@ -6818,9 +6854,6 @@ impl DisplayListRenderer {
         draw_result?;
         Ok(())
       })();
-      for _ in 0..pushed_clips {
-        self.pop_clip();
-      }
       scene_result?;
     }
 
@@ -6852,7 +6885,7 @@ impl DisplayListRenderer {
         for it in items {
           check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
             .map_err(Error::Render)?;
-          update_scene_effect_stack(&mut effects_after, it);
+          update_scene_effect_stack(&mut effects_after, it, Transform3D::identity());
           list.push(it.clone());
         }
       }
@@ -6867,12 +6900,12 @@ impl DisplayListRenderer {
               adjusted.transform = None;
               adjusted.backdrop_filters.clear();
               let display_item = DisplayItem::PushStackingContext(adjusted);
-              update_scene_effect_stack(&mut effects_after, &display_item);
+              update_scene_effect_stack(&mut effects_after, &display_item, Transform3D::identity());
               list.push(display_item);
               continue;
             }
           }
-          update_scene_effect_stack(&mut effects_after, it);
+          update_scene_effect_stack(&mut effects_after, it, Transform3D::identity());
           list.push(it.clone());
         }
       }
@@ -6975,16 +7008,288 @@ impl DisplayListRenderer {
     Some(bounds)
   }
 
+  fn with_preserve_3d_clip_override<T, F>(
+    &mut self,
+    effects: &[SceneEffect],
+    f: F,
+  ) -> Result<T>
+  where
+    F: FnOnce(&mut Self, Option<&Mask>) -> Result<T>,
+  {
+    if !effects
+      .iter()
+      .any(|effect| matches!(effect, SceneEffect::Clip { .. }))
+    {
+      return f(self, None);
+    }
+
+    let canvas_w = self.canvas.width();
+    let canvas_h = self.canvas.height();
+    let parent_transform = self.canvas.transform();
+    let warp_enabled = self.projective_warp_enabled;
+
+    let mut f = Some(f);
+    let result = PRESERVE_3D_CLIP_MASK_SCRATCH.with(|cell| -> Result<Option<T>> {
+      let mut scratch = cell.borrow_mut();
+      let scratch = &mut *scratch;
+      let resize = |slot: &mut Option<Mask>| {
+        let replace = slot
+          .as_ref()
+          .map(|mask| mask.width() != canvas_w || mask.height() != canvas_h)
+          .unwrap_or(true);
+        if replace {
+          *slot = Mask::new(canvas_w, canvas_h);
+        }
+      };
+      resize(&mut scratch.combined);
+      resize(&mut scratch.temp);
+
+      let (combined_slot, temp_slot) = (&mut scratch.combined, &mut scratch.temp);
+      let Some(combined) = combined_slot.as_mut() else {
+        return Ok(None);
+      };
+      let Some(temp) = temp_slot.as_mut() else {
+        return Ok(None);
+      };
+
+      if let Some(base) = self.canvas.clip_mask() {
+        if base.width() != canvas_w || base.height() != canvas_h {
+          return Ok(None);
+        }
+        combined.data_mut().copy_from_slice(base.data());
+      } else {
+        combined.data_mut().fill(255);
+      }
+
+      for effect in effects {
+        let SceneEffect::Clip { clip, transform } = effect else {
+          continue;
+        };
+        let Some(path) = self.projected_preserve_3d_clip_path(
+          clip,
+          transform,
+          parent_transform,
+          warp_enabled,
+        ) else {
+          return Ok(None);
+        };
+
+        temp.data_mut().fill(0);
+        temp.fill_path(
+          &path,
+          tiny_skia::FillRule::Winding,
+          true,
+          Transform::identity(),
+        );
+        multiply_masks_in_place(combined, temp).map_err(Error::Render)?;
+      }
+
+      let f = f.take().expect("callback should only run once");
+      f(self, Some(combined)).map(Some)
+    })?;
+
+    if let Some(result) = result {
+      return Ok(result);
+    }
+
+    // Fall back to affine canvas clipping when we can't build a projected clip mask (unsupported
+    // shapes, degenerate projections, etc.).
+    let f = f.take().expect("callback should only run once");
+    let mut pushed_clips = 0usize;
+    for effect in effects {
+      if let SceneEffect::Clip { clip, .. } = effect {
+        self.push_clip(clip)?;
+        pushed_clips += 1;
+      }
+    }
+    let result = f(self, None);
+    for _ in 0..pushed_clips {
+      self.pop_clip();
+    }
+    result
+  }
+
+  fn projected_preserve_3d_clip_path(
+    &self,
+    clip: &ClipItem,
+    transform: &Transform3D,
+    parent_transform: Transform,
+    warp_enabled: bool,
+  ) -> Option<tiny_skia::Path> {
+    let ClipShape::Rect { rect, radii } = &clip.shape else {
+      return None;
+    };
+
+    let rect = *rect;
+    if rect.width() <= 0.0
+      || rect.height() <= 0.0
+      || !rect.x().is_finite()
+      || !rect.y().is_finite()
+      || !rect.width().is_finite()
+      || !rect.height().is_finite()
+    {
+      return None;
+    }
+
+    let radii = radii.unwrap_or(BorderRadii::ZERO).clamped(rect.width(), rect.height());
+    let (x0, y0) = (rect.min_x(), rect.min_y());
+    let (x1, y1) = (rect.max_x(), rect.max_y());
+    let corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)];
+
+    let points_css: Vec<(f32, f32)> = if radii.is_zero() {
+      vec![corners[0], corners[1], corners[2], corners[3]]
+    } else {
+      const ARC_STEPS: usize = 8;
+      let normalize = |rx: f32, ry: f32| -> (f32, f32) {
+        let rx = rx.max(0.0);
+        let ry = ry.max(0.0);
+        if rx > 0.0 && ry > 0.0 { (rx, ry) } else { (0.0, 0.0) }
+      };
+
+      let (tl_rx, tl_ry) = normalize(radii.top_left.x, radii.top_left.y);
+      let (tr_rx, tr_ry) = normalize(radii.top_right.x, radii.top_right.y);
+      let (br_rx, br_ry) = normalize(radii.bottom_right.x, radii.bottom_right.y);
+      let (bl_rx, bl_ry) = normalize(radii.bottom_left.x, radii.bottom_left.y);
+
+      let mut pts = Vec::with_capacity(4 + ARC_STEPS * 4);
+
+      let push_arc =
+        |pts: &mut Vec<(f32, f32)>, cx: f32, cy: f32, rx: f32, ry: f32, start: f32, end: f32| {
+          if rx <= 0.0 || ry <= 0.0 {
+            return;
+          }
+          for step in 1..=ARC_STEPS {
+            let t = step as f32 / ARC_STEPS as f32;
+            let angle = start + (end - start) * t;
+            pts.push((cx + rx * angle.cos(), cy + ry * angle.sin()));
+          }
+        };
+
+      pts.push((x0 + tl_rx, y0));
+      pts.push((x1 - tr_rx, y0));
+      push_arc(
+        &mut pts,
+        x1 - tr_rx,
+        y0 + tr_ry,
+        tr_rx,
+        tr_ry,
+        -std::f32::consts::FRAC_PI_2,
+        0.0,
+      );
+
+      pts.push((x1, y1 - br_ry));
+      push_arc(
+        &mut pts,
+        x1 - br_rx,
+        y1 - br_ry,
+        br_rx,
+        br_ry,
+        0.0,
+        std::f32::consts::FRAC_PI_2,
+      );
+
+      pts.push((x0 + bl_rx, y1));
+      push_arc(
+        &mut pts,
+        x0 + bl_rx,
+        y1 - bl_ry,
+        bl_rx,
+        bl_ry,
+        std::f32::consts::FRAC_PI_2,
+        std::f32::consts::PI,
+      );
+
+      pts.push((x0, y0 + tl_ry));
+      push_arc(
+        &mut pts,
+        x0 + tl_rx,
+        y0 + tl_ry,
+        tl_rx,
+        tl_ry,
+        std::f32::consts::PI,
+        std::f32::consts::PI * 1.5,
+      );
+
+      pts
+    };
+
+    if points_css.len() < 3 {
+      return None;
+    }
+
+    let mut builder = PathBuilder::new();
+    for (idx, (x, y)) in points_css.into_iter().enumerate() {
+      let (px, py) =
+        self.project_preserve_3d_clip_point(transform, x, y, parent_transform, warp_enabled)?;
+      if idx == 0 {
+        builder.move_to(px, py);
+      } else {
+        builder.line_to(px, py);
+      }
+    }
+    builder.close();
+    builder.finish()
+  }
+
+  fn project_preserve_3d_clip_point(
+    &self,
+    transform: &Transform3D,
+    x: f32,
+    y: f32,
+    parent_transform: Transform,
+    warp_enabled: bool,
+  ) -> Option<(f32, f32)> {
+    if warp_enabled {
+      let (tx, ty, _tz, tw) = transform.transform_point(x, y, 0.0);
+      if !tw.is_finite()
+        || tw.abs() < Transform3D::MIN_PROJECTIVE_W
+        || tw < 0.0
+        || !tx.is_finite()
+        || !ty.is_finite()
+      {
+        return None;
+      }
+      let px = (tx / tw) * self.scale;
+      let py = (ty / tw) * self.scale;
+      let dst_x = px * parent_transform.sx + py * parent_transform.kx + parent_transform.tx;
+      let dst_y = px * parent_transform.ky + py * parent_transform.sy + parent_transform.ty;
+      if dst_x.is_finite() && dst_y.is_finite() {
+        Some((dst_x, dst_y))
+      } else {
+        None
+      }
+    } else {
+      let (t, _valid) = self.to_skia_transform_checked(transform);
+      let px = x * self.scale;
+      let py = y * self.scale;
+      let tx = px * t.sx + py * t.kx + t.tx;
+      let ty = px * t.ky + py * t.sy + t.ty;
+      let dst_x = tx * parent_transform.sx + ty * parent_transform.kx + parent_transform.tx;
+      let dst_y = tx * parent_transform.ky + ty * parent_transform.sy + parent_transform.ty;
+      if dst_x.is_finite() && dst_y.is_finite() {
+        Some((dst_x, dst_y))
+      } else {
+        None
+      }
+    }
+  }
+
   fn projective_warp(
     &mut self,
     pixmap: &Pixmap,
     homography: &Homography,
     dst_quad: &[(f32, f32); 4],
+    clip_override: Option<&Mask>,
+    use_cache: bool,
   ) -> RenderResult<Option<Arc<WarpedPixmap>>> {
     let target_size = (self.canvas.width(), self.canvas.height());
-    let clip = self.canvas.clip_mask();
+    let clip = clip_override.or_else(|| self.canvas.clip_mask());
     warp_pixmap_cached(
-      Some(&mut self.warp_cache),
+      if use_cache {
+        Some(&mut self.warp_cache)
+      } else {
+        None
+      },
       pixmap,
       homography,
       dst_quad,
@@ -6993,7 +7298,12 @@ impl DisplayListRenderer {
     )
   }
 
-  fn warp_pixmap(&mut self, pixmap: &Pixmap, transform: &Transform3D) -> Result<()> {
+  fn warp_pixmap(
+    &mut self,
+    pixmap: &Pixmap,
+    transform: &Transform3D,
+    clip_override: Option<&Mask>,
+  ) -> Result<()> {
     let mut paint = PixmapPaint::default();
     paint.blend_mode = self.canvas.blend_mode();
 
@@ -7005,7 +7315,13 @@ impl DisplayListRenderer {
       if self.preserve_3d_debug && !homography.is_affine() && !warp_enabled {
         eprintln!("preserve-3d warp disabled; using affine approximation");
       }
-      let clip = self.canvas.clip_mask().cloned();
+      // `draw_pixmap` needs a borrowable `&Mask` while we also mutably borrow the pixmap; grab an
+      // `Rc` clone of the canvas clip mask instead of deep-cloning the full mask.
+      let clip_rc = clip_override
+        .is_none()
+        .then(|| self.canvas.clip_mask_rc())
+        .flatten();
+      let clip_ref = clip_override.or_else(|| clip_rc.as_deref());
       let (t, _valid) = self.to_skia_transform_checked(transform);
       let skia_transform = concat_transforms(parent_transform, t);
       self.canvas.pixmap_mut().draw_pixmap(
@@ -7014,7 +7330,7 @@ impl DisplayListRenderer {
         pixmap.as_ref(),
         &paint,
         skia_transform,
-        clip.as_ref(),
+        clip_ref,
       );
       return Ok(());
     }
@@ -7052,9 +7368,10 @@ impl DisplayListRenderer {
       Point::new(src_w, src_h),
       Point::new(0.0, src_h),
     ];
+    let use_cache = clip_override.is_none();
     let warped = if valid {
       Homography::from_quad_to_quad(src_quad, dst_quad_points)
-        .map(|h| self.projective_warp(pixmap, &h, &dst_quad))
+        .map(|h| self.projective_warp(pixmap, &h, &dst_quad, clip_override, use_cache))
         .transpose()
         .map_err(Error::Render)?
         .flatten()
@@ -7078,7 +7395,11 @@ impl DisplayListRenderer {
     if self.preserve_3d_debug {
       eprintln!("preserve-3d warp fallback; using affine approximation");
     }
-    let clip = self.canvas.clip_mask().cloned();
+    let clip_rc = clip_override
+      .is_none()
+      .then(|| self.canvas.clip_mask_rc())
+      .flatten();
+    let clip_ref = clip_override.or_else(|| clip_rc.as_deref());
     let (t, _valid) = self.to_skia_transform_checked(transform);
     let skia_transform = concat_transforms(parent_transform, t);
     self.canvas.pixmap_mut().draw_pixmap(
@@ -7087,7 +7408,7 @@ impl DisplayListRenderer {
       pixmap.as_ref(),
       &paint,
       skia_transform,
-      clip.as_ref(),
+      clip_ref,
     );
     Ok(())
   }
@@ -7715,7 +8036,7 @@ impl DisplayListRenderer {
 
             let warped = if valid {
               Homography::from_quad_to_quad(src_quad, dst_quad_points)
-                .map(|homography| self.projective_warp(&layer, &homography, &dst_quad))
+                .map(|homography| self.projective_warp(&layer, &homography, &dst_quad, None, true))
                 .transpose()
                 .map_err(Error::Render)?
                 .flatten()
