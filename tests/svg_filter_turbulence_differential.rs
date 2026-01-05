@@ -95,9 +95,13 @@ struct TurbulenceCase {
 
 impl TurbulenceCase {
   fn seed_from_attr(seed_attr: f32) -> i32 {
-    // Match FastRender's filter parser (`parse_fe_turbulence`): truncate toward zero and preserve
-    // the sign.
-    seed_attr as i32
+    // Match FastRender's filter parser (`parse_fe_turbulence`): round to the nearest integer and
+    // clamp negative/non-finite seeds to 0.
+    if seed_attr.is_finite() {
+      seed_attr.round().max(0.0) as i32
+    } else {
+      0
+    }
   }
 
   fn primitive_units_attr(&self) -> &'static str {
@@ -433,6 +437,8 @@ fn generate_cases(seed: u32, case_count: usize) -> Vec<TurbulenceCase> {
   let base_freq_choices: &[(f32, f32)] = &[
     (0.0, 0.0),
     (1e-4, 1e-4),
+    (0.0, 0.2),
+    (0.2, 0.0),
     (0.2, 0.2),
     (0.2, 1e-4),
     (1e-4, 0.2),
