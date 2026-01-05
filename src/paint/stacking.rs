@@ -368,6 +368,7 @@ impl StackingContext {
 
   /// Sorts all child stacking contexts by z-index (for paint order)
   pub fn sort_children(&mut self) {
+    self.layer6_positioned.sort_by_key(|frag| frag.tree_order);
     self
       .children
       .sort_by(|a, b| match a.z_index.cmp(&b.z_index) {
@@ -1152,7 +1153,7 @@ where
         base_offset.x + child.bounds.origin.x,
         base_offset.y + child.bounds.origin.y,
       );
-      let child_context = build_stacking_tree_with_styles_internal_checked(
+      let mut child_context = build_stacking_tree_with_styles_internal_checked(
         child,
         child_style.as_ref().map(|s| s.as_ref()),
         style,
@@ -1169,14 +1170,21 @@ where
       if child_creates_context {
         context.add_child(child_context);
       } else {
-        if !child_context.children.is_empty() {
-          context.children.extend(child_context.children);
+        context.children.append(&mut child_context.children);
+        context
+          .layer6_positioned
+          .append(&mut child_context.layer6_positioned);
+
+        let child_is_positioned = child_style.as_deref().is_some_and(|style| {
+          is_positioned(style) && !creates_stacking_context(style, None, false)
+        });
+        if !child_is_positioned {
+          context.add_fragment_to_layer(
+            child.clone(),
+            child_style.as_deref(),
+            child_context.tree_order,
+          );
         }
-        context.add_fragment_to_layer(
-          child.clone(),
-          child_style.as_deref(),
-          child_context.tree_order,
-        );
       }
     }
 
@@ -1187,7 +1195,18 @@ where
     context.offset_from_parent_context = offset_from_parent_context;
 
     if let Some(s) = style {
-      context.add_fragment_to_layer(fragment.clone(), Some(s), current_order);
+      if is_positioned(s) && !creates_stacking_context(s, None, false) {
+        let mut translated = fragment.clone();
+        translated.translate_root_in_place(Point::new(
+          offset_from_parent_context.x - translated.bounds.origin.x,
+          offset_from_parent_context.y - translated.bounds.origin.y,
+        ));
+        context
+          .layer6_positioned
+          .push(OrderedFragment::new(translated, current_order));
+      } else {
+        context.add_fragment_to_layer(fragment.clone(), Some(s), current_order);
+      }
     } else {
       match &fragment.content {
         FragmentContent::Text { .. }
@@ -1208,7 +1227,7 @@ where
         base_offset.x + child.bounds.origin.x,
         base_offset.y + child.bounds.origin.y,
       );
-      let child_context = build_stacking_tree_with_styles_internal_checked(
+      let mut child_context = build_stacking_tree_with_styles_internal_checked(
         child,
         child_style.as_ref().map(|s| s.as_ref()),
         style,
@@ -1225,14 +1244,21 @@ where
       if child_creates_context {
         context.add_child(child_context);
       } else {
-        if !child_context.children.is_empty() {
-          context.children.extend(child_context.children);
+        context.children.append(&mut child_context.children);
+        context
+          .layer6_positioned
+          .append(&mut child_context.layer6_positioned);
+
+        let child_is_positioned = child_style.as_deref().is_some_and(|style| {
+          is_positioned(style) && !creates_stacking_context(style, None, false)
+        });
+        if !child_is_positioned {
+          context.add_fragment_to_layer(
+            child.clone(),
+            child_style.as_deref(),
+            child_context.tree_order,
+          );
         }
-        context.add_fragment_to_layer(
-          child.clone(),
-          child_style.as_deref(),
-          child_context.tree_order,
-        );
       }
     }
 
@@ -1287,7 +1313,7 @@ where
         base_offset.x + child.bounds.origin.x,
         base_offset.y + child.bounds.origin.y,
       );
-      let child_context = build_stacking_tree_with_styles_internal(
+      let mut child_context = build_stacking_tree_with_styles_internal(
         child,
         child_style.as_ref().map(|s| s.as_ref()),
         style,
@@ -1303,14 +1329,21 @@ where
       if child_creates_context {
         context.add_child(child_context);
       } else {
-        if !child_context.children.is_empty() {
-          context.children.extend(child_context.children);
+        context.children.append(&mut child_context.children);
+        context
+          .layer6_positioned
+          .append(&mut child_context.layer6_positioned);
+
+        let child_is_positioned = child_style.as_deref().is_some_and(|style| {
+          is_positioned(style) && !creates_stacking_context(style, None, false)
+        });
+        if !child_is_positioned {
+          context.add_fragment_to_layer(
+            child.clone(),
+            child_style.as_deref(),
+            child_context.tree_order,
+          );
         }
-        context.add_fragment_to_layer(
-          child.clone(),
-          child_style.as_deref(),
-          child_context.tree_order,
-        );
       }
     }
 
@@ -1321,7 +1354,18 @@ where
     context.offset_from_parent_context = offset_from_parent_context;
 
     if let Some(s) = style {
-      context.add_fragment_to_layer(fragment.clone(), Some(s), current_order);
+      if is_positioned(s) && !creates_stacking_context(s, None, false) {
+        let mut translated = fragment.clone();
+        translated.translate_root_in_place(Point::new(
+          offset_from_parent_context.x - translated.bounds.origin.x,
+          offset_from_parent_context.y - translated.bounds.origin.y,
+        ));
+        context
+          .layer6_positioned
+          .push(OrderedFragment::new(translated, current_order));
+      } else {
+        context.add_fragment_to_layer(fragment.clone(), Some(s), current_order);
+      }
     } else {
       match &fragment.content {
         FragmentContent::Text { .. }
@@ -1342,7 +1386,7 @@ where
         base_offset.x + child.bounds.origin.x,
         base_offset.y + child.bounds.origin.y,
       );
-      let child_context = build_stacking_tree_with_styles_internal(
+      let mut child_context = build_stacking_tree_with_styles_internal(
         child,
         child_style.as_ref().map(|s| s.as_ref()),
         style,
@@ -1358,14 +1402,21 @@ where
       if child_creates_context {
         context.add_child(child_context);
       } else {
-        if !child_context.children.is_empty() {
-          context.children.extend(child_context.children);
+        context.children.append(&mut child_context.children);
+        context
+          .layer6_positioned
+          .append(&mut child_context.layer6_positioned);
+
+        let child_is_positioned = child_style.as_deref().is_some_and(|style| {
+          is_positioned(style) && !creates_stacking_context(style, None, false)
+        });
+        if !child_is_positioned {
+          context.add_fragment_to_layer(
+            child.clone(),
+            child_style.as_deref(),
+            child_context.tree_order,
+          );
         }
-        context.add_fragment_to_layer(
-          child.clone(),
-          child_style.as_deref(),
-          child_context.tree_order,
-        );
       }
     }
 

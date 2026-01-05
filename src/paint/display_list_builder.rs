@@ -115,6 +115,7 @@ use crate::scroll::ScrollState;
 use crate::style::block_axis_is_horizontal;
 use crate::style::block_axis_positive;
 use crate::style::color::Rgba;
+use crate::style::position::Position;
 use crate::style::types::AccentColor;
 use crate::style::types::Appearance;
 use crate::style::types::BackfaceVisibility;
@@ -1731,6 +1732,11 @@ impl DisplayListBuilder {
           if self.skip_stacking_context_children {
             if let Some(child_style) = child.style.as_deref() {
               if crate::paint::stacking::creates_stacking_context(child_style, style_opt, false) {
+                continue;
+              }
+              if !matches!(child_style.position, Position::Static)
+                && !crate::paint::stacking::creates_stacking_context(child_style, None, false)
+              {
                 continue;
               }
             }
