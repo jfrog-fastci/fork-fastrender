@@ -2328,4 +2328,75 @@ mod tests {
 
     Ok(())
   }
+
+  #[test]
+  fn crawl_truncates_large_images_to_png_placeholder() -> Result<()> {
+    #[derive(Default)]
+    struct LargeImageFetcher {
+      calls: Mutex<Vec<(String, FetchDestination, Option<String>)>>,
+    }
+
+    impl ResourceFetcher for LargeImageFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.lock().unwrap().push((
+          req.url.to_string(),
+          req.destination,
+          req.referrer.map(|r| r.to_string()),
+        ));
+
+        match req.url {
+          "https://example.com/" => Ok(FetchedResource::with_final_url(
+            br#"<html><body><img src="/large.png"></body></html>"#.to_vec(),
+            Some("text/html".to_string()),
+            Some(req.url.to_string()),
+          )),
+          "https://example.com/large.png" => {
+            // Exceed `MAX_CRAWL_IMAGE_BYTES` (currently 1_000_000) to exercise truncation logic.
+            let bytes = vec![0u8; 1_000_001];
+            let mut res = FetchedResource::with_final_url(
+              bytes,
+              Some("image/png".to_string()),
+              Some(req.url.to_string()),
+            );
+            res.status = Some(200);
+            Ok(res)
+          }
+          other => Err(fastrender::Error::Other(format!(
+            "unexpected fetch: {other}"
+          ))),
+        }
+      }
+    }
+
+    let inner = Arc::new(LargeImageFetcher::default());
+    let recording = RecordingFetcher::new(inner.clone());
+    let (doc, _) = fetch_document(&recording, "https://example.com/")?;
+
+    let render = BundleRenderConfig {
+      viewport: (1200, 800),
+      device_pixel_ratio: 1.0,
+      scroll_x: 0.0,
+      scroll_y: 0.0,
+      full_page: false,
+      same_origin_subresources: false,
+      allowed_subresource_origins: Vec::new(),
+      compat_profile: fastrender::compat::CompatProfile::default(),
+      dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
+    };
+
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+
+    let recorded = recording.snapshot();
+    let res = recorded
+      .get("https://example.com/large.png")
+      .expect("expected large image resource to be recorded");
+    assert_eq!(res.content_type.as_deref(), Some("image/png"));
+    assert_eq!(res.bytes, offline_placeholder_png_bytes().to_vec());
+
+    Ok(())
+  }
 }
