@@ -55,6 +55,7 @@ mod preserve_3d_depth_sort;
 mod preserve_3d_nested_affine;
 mod preserve_3d_nested_context;
 mod preserve_3d_opacity_scope;
+mod preserve_3d_parallel_determinism;
 mod preserve_3d_test;
 mod preserve_3d_warp;
 mod projective_mapping;

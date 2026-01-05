@@ -125,6 +125,8 @@ use crate::text::pipeline::GlyphPosition;
 use lru::LruCache;
 use rayon::prelude::*;
 use rustybuzz::Variation;
+#[cfg(test)]
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
@@ -1576,6 +1578,11 @@ thread_local! {
 
 thread_local! {
   static MASK_RENDER_SCRATCH: RefCell<Option<Mask>> = RefCell::new(None);
+}
+
+#[cfg(test)]
+thread_local! {
+  static PARALLEL_RENDER_INVOCATIONS: Cell<usize> = Cell::new(0);
 }
 
 #[derive(Default)]
@@ -6469,6 +6476,8 @@ impl DisplayListRenderer {
     list: &DisplayList,
     halo_px: u32,
   ) -> Result<(Pixmap, usize, usize, usize, Duration)> {
+    #[cfg(test)]
+    PARALLEL_RENDER_INVOCATIONS.with(|count| count.set(count.get().saturating_add(1)));
     let mut tiles = self.build_tiles(list, halo_px)?;
     let tile_count = tiles.len();
     self.canvas.clear(self.background);
@@ -6933,6 +6942,7 @@ impl DisplayListRenderer {
     )?;
     renderer.preserve_3d_disabled = self.preserve_3d_disabled;
     renderer.preserve_3d_scene_depth = self.preserve_3d_scene_depth.saturating_add(1);
+    renderer.paint_parallelism = PaintParallelism::disabled();
     renderer.gradient_cache = self.gradient_cache.clone();
     renderer.gradient_pixmap_cache = self.gradient_pixmap_cache.clone();
     renderer.diagnostics_enabled = self.diagnostics_enabled;
@@ -11624,6 +11634,90 @@ mod tests {
     assert!(
       blurred_px.0 > baseline_px.0,
       "expected blur to mix in white pixels across the edge; baseline={baseline_px:?} blurred={blurred_px:?}"
+    );
+  }
+
+  #[test]
+  fn preserve_3d_scene_items_never_use_parallel_tiling() {
+    PARALLEL_RENDER_INVOCATIONS.with(|count| count.set(0));
+
+    let bounds = Rect::from_xywh(0.0, 0.0, 260.0, 260.0);
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      bounds,
+      plane_rect: bounds,
+      mix_blend_mode: BlendMode::Normal,
+      is_isolated: false,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Preserve3d,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+    }));
+
+    for (order, color) in [(0, Rgba::RED), (1, Rgba::GREEN)] {
+      list.push(DisplayItem::PushStackingContext(StackingContextItem {
+        z_index: order,
+        creates_stacking_context: true,
+        bounds,
+        plane_rect: bounds,
+        mix_blend_mode: BlendMode::Normal,
+        is_isolated: false,
+        transform: Some(Transform3D::translate(0.0, 0.0, order as f32)),
+        child_perspective: None,
+        transform_style: TransformStyle::Flat,
+        backface_visibility: BackfaceVisibility::Visible,
+        filters: Vec::new(),
+        backdrop_filters: Vec::new(),
+        radii: BorderRadii::ZERO,
+        mask: None,
+      }));
+      for _ in 0..160 {
+        list.push(DisplayItem::FillRect(FillRectItem { rect: bounds, color }));
+      }
+      list.push(DisplayItem::PopStackingContext);
+    }
+
+    list.push(DisplayItem::PopStackingContext);
+
+    let parallelism = PaintParallelism {
+      tile_size: 64,
+      log_timing: false,
+      min_display_items: 1,
+      min_tiles: 1,
+      min_build_fragments: 1,
+      build_chunk_size: 1,
+      max_threads: None,
+      mode: PaintParallelismMode::Enabled,
+    };
+
+    let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+    let report = pool.install(|| {
+      DisplayListRenderer::new(260, 260, Rgba::WHITE, FontContext::new())
+        .unwrap()
+        .with_parallelism(parallelism)
+        .render_with_report(&list)
+        .unwrap()
+    });
+
+    assert!(
+      !report.parallel_used,
+      "expected preserve-3d stacking contexts to disable top-level tiling"
+    );
+    assert_eq!(
+      report.fallback_reason.as_deref(),
+      Some("preserve-3d stacking contexts require serial painting")
+    );
+
+    let invocations = PARALLEL_RENDER_INVOCATIONS.with(|count| count.get());
+    assert_eq!(
+      invocations, 0,
+      "expected preserve-3d plane renderers to never invoke parallel tiling"
     );
   }
 
