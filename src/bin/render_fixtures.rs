@@ -481,6 +481,10 @@ fn run(cli: Cli) -> io::Result<()> {
   } else {
     // Render repeat 0 with full outputs (PNG/log/snapshot), then run additional repeats through the
     // same rayon pool to surface any scheduling-dependent nondeterminism.
+    let results_mutex: Mutex<Vec<FixtureResult>> = Mutex::new(Vec::new());
+    let determinism_mutex: Mutex<HashMap<String, FixtureDeterminism>> = Mutex::new(HashMap::new());
+    let repeat_failures_mutex: Mutex<Vec<RepeatFailure>> = Mutex::new(Vec::new());
+
     for repeat_idx in 0..cli.repeat {
       if cli.reset_paint_scratch {
         reset_paint_scratch_for_pools(&thread_pool);
@@ -499,12 +503,15 @@ fn run(cli: Cli) -> io::Result<()> {
 
       let write_outputs = repeat_idx == 0;
       let write_snapshot = write_outputs && shared.write_snapshot;
-      let run_results: Mutex<Vec<FixtureRunResult>> = Mutex::new(Vec::new());
 
       thread_pool.scope(|s| {
         for entry in ordered {
           let shared = shared.clone();
-          let run_results = &run_results;
+          let results = &results_mutex;
+          let determinism = &determinism_mutex;
+          let repeat_failures = &repeat_failures_mutex;
+          let save_variants = cli.save_variants;
+          let out_dir = cli.out_dir.clone();
           s.spawn(move |_| {
             let run = render_fixture(
               &shared,
@@ -516,60 +523,66 @@ fn run(cli: Cli) -> io::Result<()> {
                 quiet: !write_outputs,
               },
             );
-            run_results.lock().unwrap().push(run);
+            if write_outputs {
+              results.lock().unwrap().push(run.result.clone());
+            }
+
+            if repeat_idx == 0 {
+              if let (Status::Ok, Some(pixels)) = (&run.result.status, run.pixels) {
+                let (hash_hi, hash_lo) = hash128(&pixels.data);
+                determinism.lock().unwrap().insert(
+                  run.result.stem.clone(),
+                  FixtureDeterminism {
+                    stem: run.result.stem.clone(),
+                    variants: vec![VariantRecord {
+                      hash_hi,
+                      hash_lo,
+                      width: pixels.width,
+                      height: pixels.height,
+                      count: 1,
+                      diff_pixels_vs_baseline: Some(0),
+                      first_mismatch_vs_baseline: None,
+                      first_mismatch_rgba_vs_baseline: None,
+                      data: None,
+                    }],
+                  },
+                );
+              }
+            } else {
+              match run.result.status {
+                Status::Ok => {
+                  let Some(pixels) = run.pixels else {
+                    return;
+                  };
+                  let mut determinism = determinism.lock().unwrap();
+                  let Some(state) = determinism.get_mut(&run.result.stem) else {
+                    return;
+                  };
+                  record_variant(state, pixels, &out_dir, save_variants);
+                }
+                status => {
+                  repeat_failures.lock().unwrap().push(RepeatFailure {
+                    stem: run.result.stem.clone(),
+                    repeat_idx,
+                    status,
+                  });
+                }
+              }
+            }
           });
         }
       });
-
-      let mut run_results = run_results.into_inner().unwrap();
-      run_results.sort_by(|a, b| a.result.stem.cmp(&b.result.stem));
-
-      if repeat_idx == 0 {
-        results = run_results.iter().map(|r| r.result.clone()).collect();
-        results.sort_by(|a, b| a.stem.cmp(&b.stem));
-        for run in run_results {
-          if let (Status::Ok, Some(pixels)) = (&run.result.status, run.pixels) {
-            let (hash_hi, hash_lo) = hash128(&pixels.data);
-            determinism.insert(
-              run.result.stem.clone(),
-              FixtureDeterminism {
-                stem: run.result.stem.clone(),
-                variants: vec![VariantRecord {
-                  hash_hi,
-                  hash_lo,
-                  width: pixels.width,
-                  height: pixels.height,
-                  count: 1,
-                  diff_pixels_vs_baseline: Some(0),
-                  first_mismatch_vs_baseline: None,
-                  first_mismatch_rgba_vs_baseline: None,
-                  data: None,
-                }],
-              },
-            );
-          }
-        }
-      } else {
-        for run in run_results {
-          if !matches!(run.result.status, Status::Ok) {
-            repeat_failures.push(RepeatFailure {
-              stem: run.result.stem.clone(),
-              repeat_idx,
-              status: run.result.status,
-            });
-            continue;
-          }
-
-          let Some(pixels) = run.pixels else {
-            continue;
-          };
-          let Some(state) = determinism.get_mut(&run.result.stem) else {
-            continue;
-          };
-          record_variant(state, pixels, &cli.out_dir, cli.save_variants);
-        }
-      }
     }
+
+    results = results_mutex.into_inner().unwrap();
+    results.sort_by(|a, b| a.stem.cmp(&b.stem));
+    determinism = determinism_mutex.into_inner().unwrap();
+    repeat_failures = repeat_failures_mutex.into_inner().unwrap();
+    repeat_failures.sort_by(|a, b| {
+      a.stem
+        .cmp(&b.stem)
+        .then_with(|| a.repeat_idx.cmp(&b.repeat_idx))
+    });
   }
 
   let total_elapsed = start.elapsed();
