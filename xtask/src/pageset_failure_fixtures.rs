@@ -1,6 +1,24 @@
 use anyhow::{Context, Result};
+use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Copy)]
+pub struct PagesetAccuracyMetrics {
+  pub diff_percent: f64,
+  pub perceptual: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PagesetProgressPage {
+  pub stem: String,
+  pub status: String,
+  pub url: Option<String>,
+  pub accuracy: Option<PagesetAccuracyMetrics>,
+  pub progress_path: PathBuf,
+  pub fixture_index_path: PathBuf,
+  pub has_fixture: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PagesetFailurePage {
@@ -28,7 +46,63 @@ pub fn plan_missing_failure_fixtures(
   progress_pages_dir: &Path,
   fixtures_root: &Path,
 ) -> Result<PagesetFailureFixturesPlan> {
-  let mut failing_pages = Vec::new();
+  let failing_pages = read_progress_pages(progress_pages_dir, fixtures_root)?
+    .into_iter()
+    .filter(|page| page.status != "ok")
+    .map(|page| PagesetFailurePage {
+      stem: page.stem,
+      status: page.status,
+      url: page.url,
+      progress_path: page.progress_path,
+      fixture_index_path: page.fixture_index_path,
+      has_fixture: page.has_fixture,
+    })
+    .collect::<Vec<_>>();
+
+  let mut existing_fixtures = Vec::new();
+  let mut missing_fixtures = Vec::new();
+  for page in &failing_pages {
+    if page.has_fixture {
+      existing_fixtures.push(page.clone());
+    } else {
+      missing_fixtures.push(page.clone());
+    }
+  }
+
+  Ok(PagesetFailureFixturesPlan {
+    failing_pages,
+    missing_fixtures,
+    existing_fixtures,
+  })
+}
+
+#[derive(Debug, Deserialize)]
+struct ProgressAccuracy {
+  #[serde(default)]
+  diff_percent: Option<f64>,
+  #[serde(default)]
+  perceptual: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PageProgress {
+  #[serde(default = "default_status")]
+  status: String,
+  #[serde(default)]
+  url: Option<String>,
+  #[serde(default)]
+  accuracy: Option<ProgressAccuracy>,
+}
+
+fn default_status() -> String {
+  "ok".to_string()
+}
+
+pub fn read_progress_pages(
+  progress_pages_dir: &Path,
+  fixtures_root: &Path,
+) -> Result<Vec<PagesetProgressPage>> {
+  let mut pages = Vec::new();
 
   for entry in fs::read_dir(progress_pages_dir).with_context(|| {
     format!(
@@ -54,51 +128,38 @@ pub fn plan_missing_failure_fixtures(
     let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
       continue;
     };
+
     let contents =
       fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
-    let json: serde_json::Value = serde_json::from_str(&contents)
+    let progress: PageProgress = serde_json::from_str(&contents)
       .with_context(|| format!("failed to parse {}", path.display()))?;
-    let status = json
-      .get("status")
-      .and_then(|v| v.as_str())
-      .unwrap_or("ok")
-      .to_string();
-    if status == "ok" {
-      continue;
-    }
 
-    let url = json
-      .get("url")
-      .and_then(|v| v.as_str())
-      .map(|s| s.to_string());
+    let accuracy = progress
+      .accuracy
+      .and_then(|accuracy| {
+        accuracy
+          .diff_percent
+          .map(|diff_percent| (diff_percent, accuracy))
+      })
+      .filter(|(diff_percent, _)| diff_percent.is_finite())
+      .map(|(diff_percent, accuracy)| PagesetAccuracyMetrics {
+        diff_percent,
+        perceptual: accuracy.perceptual.filter(|value| value.is_finite()),
+      });
     let fixture_index_path = fixtures_root.join(stem).join("index.html");
     let has_fixture = fixture_index_path.is_file();
 
-    failing_pages.push(PagesetFailurePage {
+    pages.push(PagesetProgressPage {
       stem: stem.to_string(),
-      status,
-      url,
+      status: progress.status,
+      url: progress.url,
+      accuracy,
       progress_path: path,
       fixture_index_path,
       has_fixture,
     });
   }
 
-  failing_pages.sort_by(|a, b| a.stem.cmp(&b.stem));
-
-  let mut existing_fixtures = Vec::new();
-  let mut missing_fixtures = Vec::new();
-  for page in &failing_pages {
-    if page.has_fixture {
-      existing_fixtures.push(page.clone());
-    } else {
-      missing_fixtures.push(page.clone());
-    }
-  }
-
-  Ok(PagesetFailureFixturesPlan {
-    failing_pages,
-    missing_fixtures,
-    existing_fixtures,
-  })
+  pages.sort_by(|a, b| a.stem.cmp(&b.stem));
+  Ok(pages)
 }

@@ -81,6 +81,18 @@ cargo xtask sync-progress-accuracy --report target/fixture_chrome_diff/report.js
 cargo run --release --bin pageset_progress -- report --rank-accuracy
 ```
 
+When driving this from pageset runs, you can select the relevant fixtures directly from the
+committed `progress/pages/*.json` artifacts:
+
+```bash
+# Diff fixtures for pages that currently fail in progress/pages/*.json:
+cargo xtask fixture-chrome-diff --from-progress progress/pages --only-failures
+
+# Diff the top N worst accuracy pages (requires progress files generated with
+# `pageset_progress run --accuracy ...`):
+cargo xtask fixture-chrome-diff --from-progress progress/pages --top-worst-accuracy 10
+```
+
 Defaults are aligned with the `pages_regression` suite (`viewport=1040x1240`, `dpr=1.0`) unless you override them.
 
 Artifacts and PR guidance:

@@ -106,6 +106,9 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
   - Chrome-vs-FastRender diff report for offline fixtures (deterministic; offline): `cargo xtask fixture-chrome-diff`
     - Defaults to the curated `pages_regression` fixture set in `tests/pages_regression_test.rs`.
     - Pass `--all-fixtures` to render every fixture under `tests/pages/fixtures/`.
+    - Select fixtures from pageset progress JSON (instead of a manual `--fixtures a,b,c` list):
+      - Failing pages: `cargo xtask fixture-chrome-diff --from-progress progress/pages --only-failures`
+      - Worst accuracy pages: `cargo xtask fixture-chrome-diff --from-progress progress/pages --top-worst-accuracy 10`
     - FastRender writes `<out>/fastrender/<fixture>.json` alongside each PNG with render settings, fixture input fingerprints, and status/timing.
     - When reusing an existing FastRender output directory (`--no-fastrender` / `--diff-only`), xtask validates the metadata matches the requested `--viewport/--dpr/--media/--fit-canvas-to-content/--timeout`, font config, and fixture input fingerprints. Missing/incomplete metadata warns by default; pass `--require-fastrender-metadata` to fail instead. Use `--allow-stale-fastrender-renders` to downgrade fingerprint mismatches to warnings.
   - Import a bundled capture into a `pages_regression` fixture: `cargo xtask import-page-fixture <bundle_dir|.tar> <fixture_name> [--output-root tests/pages/fixtures --overwrite --dry-run]`

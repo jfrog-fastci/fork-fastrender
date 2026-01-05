@@ -3,7 +3,8 @@ use clap::{Args, ValueEnum};
 use regex::Regex;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashSet};
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -99,6 +100,32 @@ pub struct FixtureChromeDiffArgs {
   /// Render every fixture under `--fixtures-dir` (disable the default pages_regression fixture set).
   #[arg(long, conflicts_with = "fixtures")]
   pub all_fixtures: bool,
+
+  /// Select fixtures based on pageset progress files in this directory (typically `progress/pages`).
+  ///
+  /// Use `--only-failures` to select `status != ok` pages, and/or `--top-worst-accuracy` to select
+  /// the `status=ok` pages with the highest `accuracy.diff_percent`.
+  #[arg(long, value_name = "DIR", conflicts_with = "fixtures")]
+  pub from_progress: Option<PathBuf>,
+
+  /// When selecting from `--from-progress`, include pages whose `status != ok`.
+  #[arg(long, requires = "from_progress")]
+  pub only_failures: bool,
+
+  /// When selecting from `--from-progress`, include the top N worst `status=ok` pages with
+  /// `accuracy` metrics (sorted by `accuracy.diff_percent`, tie-breaking by perceptual distance).
+  #[arg(long, value_name = "N", requires = "from_progress")]
+  pub top_worst_accuracy: Option<usize>,
+
+  /// Minimum `accuracy.diff_percent` required when selecting via `--top-worst-accuracy`.
+  #[arg(long, value_name = "PERCENT", requires = "top_worst_accuracy")]
+  pub min_diff_percent: Option<f64>,
+
+  /// When selecting from `--from-progress`, skip stems missing `tests/pages/fixtures/<stem>/index.html`.
+  ///
+  /// By default missing fixtures cause this command to fail with instructions for capturing them.
+  #[arg(long, requires = "from_progress")]
+  pub skip_missing_fixtures: bool,
 
   /// Only process a deterministic shard of the fixtures (index/total, 0-based).
   #[arg(long, value_parser = crate::parse_shard)]
@@ -248,6 +275,7 @@ pub fn run_fixture_chrome_diff(args: FixtureChromeDiffArgs) -> Result<()> {
   }
 
   apply_default_fixture_selection(&repo_root, &mut args);
+  apply_progress_selection(&mut args, &repo_root, &fixtures_root)?;
 
   let out_root = resolve_repo_path(&repo_root, &args.out_dir);
   let layout = Layout::new(&out_root);
@@ -410,6 +438,143 @@ fn validate_args(args: &FixtureChromeDiffArgs) -> Result<()> {
       bail!("--max-perceptual-distance must be a finite number between 0 and 1");
     }
   }
+  if let Some(n) = args.top_worst_accuracy {
+    if n == 0 {
+      bail!("--top-worst-accuracy must be > 0");
+    }
+  }
+  if let Some(min) = args.min_diff_percent {
+    if !(0.0..=100.0).contains(&min) || !min.is_finite() {
+      bail!("--min-diff-percent must be a finite number between 0 and 100");
+    }
+  }
+  Ok(())
+}
+
+fn apply_progress_selection(
+  args: &mut FixtureChromeDiffArgs,
+  repo_root: &Path,
+  fixtures_root: &Path,
+) -> Result<()> {
+  let Some(progress_dir) = args.from_progress.clone() else {
+    return Ok(());
+  };
+  if !args.only_failures && args.top_worst_accuracy.is_none() {
+    bail!("--from-progress requires --only-failures and/or --top-worst-accuracy");
+  }
+
+  let progress_dir = resolve_repo_path(repo_root, &progress_dir);
+  if !progress_dir.is_dir() {
+    bail!(
+      "progress directory does not exist: {}",
+      progress_dir.display()
+    );
+  }
+
+  let pages = xtask::pageset_failure_fixtures::read_progress_pages(&progress_dir, fixtures_root)?;
+  println!(
+    "Progress selection: discovered {} entr{} in {}",
+    pages.len(),
+    if pages.len() == 1 { "y" } else { "ies" },
+    progress_dir.display()
+  );
+
+  let mut selected = BTreeSet::new();
+
+  if args.only_failures {
+    for page in pages.iter().filter(|p| p.status != "ok") {
+      selected.insert(page.stem.clone());
+    }
+  }
+
+  if let Some(n) = args.top_worst_accuracy {
+    let min = args.min_diff_percent.unwrap_or(0.0);
+    let mut candidates = pages
+      .iter()
+      .filter(|p| p.status == "ok")
+      .filter_map(|p| p.accuracy.map(|accuracy| (p.stem.clone(), accuracy)))
+      .filter(|(_, accuracy)| accuracy.diff_percent >= min)
+      .collect::<Vec<_>>();
+
+    candidates.sort_by(|a, b| {
+      b.1
+        .diff_percent
+        .partial_cmp(&a.1.diff_percent)
+        .unwrap_or(Ordering::Equal)
+        .then_with(|| {
+          b.1
+            .perceptual
+            .unwrap_or(0.0)
+            .partial_cmp(&a.1.perceptual.unwrap_or(0.0))
+            .unwrap_or(Ordering::Equal)
+        })
+        .then_with(|| a.0.cmp(&b.0))
+    });
+
+    for (stem, _) in candidates.into_iter().take(n) {
+      selected.insert(stem);
+    }
+  }
+
+  let selected_stems = selected.into_iter().collect::<Vec<_>>();
+  if selected_stems.is_empty() {
+    bail!(
+      "no fixtures selected from {} (filters: only_failures={}, top_worst_accuracy={:?})",
+      progress_dir.display(),
+      args.only_failures,
+      args.top_worst_accuracy
+    );
+  }
+  println!(
+    "Progress selection: selected {} stem(s).",
+    selected_stems.len()
+  );
+  println!("  {}", selected_stems.join(","));
+
+  let mut missing = Vec::new();
+  let mut present = Vec::new();
+  for stem in &selected_stems {
+    let fixture_path = fixtures_root.join(stem).join("index.html");
+    if fixture_path.is_file() {
+      present.push(stem.clone());
+    } else {
+      missing.push((stem.clone(), fixture_path));
+    }
+  }
+
+  if !missing.is_empty() {
+    eprintln!(
+      "Progress selection: missing {} fixture(s) under {}:",
+      missing.len(),
+      fixtures_root.display()
+    );
+    for (stem, path) in &missing {
+      eprintln!("  {stem}: {}", path.display());
+    }
+    if args.skip_missing_fixtures {
+      eprintln!("Progress selection: skipping missing fixtures (--skip-missing-fixtures set).");
+    } else {
+      bail!(
+        "missing offline fixture(s); run `cargo xtask pageset --capture-missing-failure-fixtures` \
+or `cargo xtask import-page-fixture <bundle> <stem>` to create them (or pass --skip-missing-fixtures)"
+      );
+    }
+  }
+
+  if present.is_empty() {
+    bail!(
+      "no fixtures available under {} after filtering missing fixtures",
+      fixtures_root.display()
+    );
+  }
+
+  // Ensure the fixture list is deterministic regardless of progress JSON ordering.
+  present.sort();
+
+  println!("Progress selection: using {} fixture(s).", present.len());
+  println!("  {}", present.join(","));
+
+  args.fixtures = Some(present);
   Ok(())
 }
 
