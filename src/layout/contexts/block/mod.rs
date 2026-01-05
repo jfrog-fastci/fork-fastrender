@@ -2479,13 +2479,199 @@ impl BlockFormattingContext {
 
       if let Some(running_name) = child.style.running_position.as_ref() {
         let pending_margin = margin_ctx.pending_margin();
-        let hypo_width = compute_block_width(
+        // Running elements are positioned based on the hypothetical in-flow position. Make sure we
+        // resolve intrinsic sizing keywords (`min-content`, `max-content`, `fit-content(...)`) the
+        // same way as normal-flow blocks so the anchor point lines up with the rendered box.
+        let inline_sides = inline_axis_sides(&child.style);
+        let inline_positive = inline_axis_positive(child.style.writing_mode, child.style.direction);
+        let mut hypo_width = compute_block_width(
           &child.style,
           containing_width,
           self.viewport_size,
-          inline_axis_sides(&child.style),
-          inline_axis_positive(child.style.writing_mode, child.style.direction),
+          inline_sides,
+          inline_positive,
         );
+        let width_auto = child.style.width.is_none() && child.style.width_keyword.is_none();
+        let available_content_for_fit = hypo_width.content_width;
+        let inline_edges_for_fit = hypo_width.border_left
+          + hypo_width.padding_left
+          + hypo_width.padding_right
+          + hypo_width.border_right;
+        let mut intrinsic_content_sizes = None;
+        if child.style.width.is_none() && child.style.width_keyword.is_some() {
+          let keyword = child.style.width_keyword.unwrap();
+          let factory = self.child_factory_for_cb(*nearest_positioned_cb);
+          let fc_type = child.formatting_context().unwrap_or_else(|| {
+            if child.is_block_level() {
+              FormattingContextType::Block
+            } else {
+              FormattingContextType::Inline
+            }
+          });
+          let (min_content, max_content) =
+            self.intrinsic_inline_content_sizes_for_sizing_keywords(child, fc_type, &factory)?;
+          intrinsic_content_sizes = Some((min_content, max_content));
+          let keyword_content = self.resolve_intrinsic_size_keyword_to_content_width(
+            keyword,
+            min_content,
+            max_content,
+            available_content_for_fit,
+            containing_width,
+            &child.style,
+            inline_edges_for_fit,
+          );
+          let specified_width = match child.style.box_sizing {
+            crate::style::types::BoxSizing::ContentBox => keyword_content,
+            crate::style::types::BoxSizing::BorderBox => keyword_content + inline_edges_for_fit,
+          };
+          let mut width_style = child.style.as_ref().clone();
+          width_style.width = Some(Length::px(specified_width));
+          width_style.width_keyword = None;
+          hypo_width = compute_block_width(
+            &width_style,
+            containing_width,
+            self.viewport_size,
+            inline_sides,
+            inline_positive,
+          );
+        }
+
+        // Apply min/max sizing constraints after resolving intrinsic keywords (CSS 2.1 §10.4),
+        // mirroring `layout_block_child` so auto margins stay consistent.
+        let horizontal_edges = hypo_width.border_left
+          + hypo_width.padding_left
+          + hypo_width.padding_right
+          + hypo_width.border_right;
+        let min_width = if let Some(keyword) = child.style.min_width_keyword {
+          if intrinsic_content_sizes.is_none() {
+            let factory = self.child_factory_for_cb(*nearest_positioned_cb);
+            let fc_type = child.formatting_context().unwrap_or_else(|| {
+              if child.is_block_level() {
+                FormattingContextType::Block
+              } else {
+                FormattingContextType::Inline
+              }
+            });
+            intrinsic_content_sizes = Some(
+              self.intrinsic_inline_content_sizes_for_sizing_keywords(child, fc_type, &factory)?,
+            );
+          }
+          let (min_content, max_content) = intrinsic_content_sizes.unwrap();
+          self.resolve_intrinsic_size_keyword_to_content_width(
+            keyword,
+            min_content,
+            max_content,
+            available_content_for_fit,
+            containing_width,
+            &child.style,
+            horizontal_edges,
+          )
+        } else {
+          child
+            .style
+            .min_width
+            .as_ref()
+            .map(|l| {
+              resolve_length_for_width(
+                *l,
+                containing_width,
+                &child.style,
+                &self.font_context,
+                self.viewport_size,
+              )
+            })
+            .map(|w| content_size_from_box_sizing(w, horizontal_edges, child.style.box_sizing))
+            .unwrap_or(0.0)
+        };
+        let max_width = if let Some(keyword) = child.style.max_width_keyword {
+          if intrinsic_content_sizes.is_none() {
+            let factory = self.child_factory_for_cb(*nearest_positioned_cb);
+            let fc_type = child.formatting_context().unwrap_or_else(|| {
+              if child.is_block_level() {
+                FormattingContextType::Block
+              } else {
+                FormattingContextType::Inline
+              }
+            });
+            intrinsic_content_sizes = Some(
+              self.intrinsic_inline_content_sizes_for_sizing_keywords(child, fc_type, &factory)?,
+            );
+          }
+          let (min_content, max_content) = intrinsic_content_sizes.unwrap();
+          self.resolve_intrinsic_size_keyword_to_content_width(
+            keyword,
+            min_content,
+            max_content,
+            available_content_for_fit,
+            containing_width,
+            &child.style,
+            horizontal_edges,
+          )
+        } else {
+          child
+            .style
+            .max_width
+            .as_ref()
+            .map(|l| {
+              resolve_length_for_width(
+                *l,
+                containing_width,
+                &child.style,
+                &self.font_context,
+                self.viewport_size,
+              )
+            })
+            .map(|w| content_size_from_box_sizing(w, horizontal_edges, child.style.box_sizing))
+            .unwrap_or(f32::INFINITY)
+        };
+        let max_width = if max_width.is_finite() && max_width < min_width {
+          min_width
+        } else {
+          max_width
+        };
+        let mut clamped_content_width =
+          crate::layout::utils::clamp_with_order(hypo_width.content_width, min_width, max_width);
+        if clamped_content_width > self.viewport_size.width {
+          clamped_content_width = self.viewport_size.width;
+        }
+        if clamped_content_width != hypo_width.content_width {
+          let (margin_left, margin_right) = recompute_margins_for_width(
+            &child.style,
+            containing_width,
+            clamped_content_width,
+            hypo_width.border_left,
+            hypo_width.padding_left,
+            hypo_width.padding_right,
+            hypo_width.border_right,
+            self.viewport_size,
+            &self.font_context,
+          );
+          hypo_width.content_width = clamped_content_width;
+          hypo_width.margin_left = margin_left;
+          hypo_width.margin_right = margin_right;
+        }
+
+        // If we're being asked to use a border-box width override, treat the inline size as auto
+        // so the constraint equation can resolve the new width + margins.
+        if width_auto {
+          if let Some(used_border_box) = constraints.used_border_box_width {
+            let used_content = (used_border_box - horizontal_edges).max(0.0);
+            let (margin_left, margin_right) = recompute_margins_for_width(
+              &child.style,
+              containing_width,
+              used_content,
+              hypo_width.border_left,
+              hypo_width.padding_left,
+              hypo_width.padding_right,
+              hypo_width.border_right,
+              self.viewport_size,
+              &self.font_context,
+            );
+            hypo_width.content_width = used_content;
+            hypo_width.margin_left = margin_left;
+            hypo_width.margin_right = margin_right;
+          }
+        }
         let static_x = hypo_width.margin_left;
         let static_y = current_y + pending_margin;
 
@@ -6153,6 +6339,31 @@ mod tests {
       (child_frag.bounds.width() - 80.0).abs() < 0.5,
       "expected max-content width 80, got {}",
       child_frag.bounds.width()
+    );
+  }
+
+  #[test]
+  fn root_width_max_content_keyword_uses_intrinsic_inline_size() {
+    let child_canvas = inline_canvas(9401, 80.0, 20.0);
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    root_style.width = None;
+    root_style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+
+    let root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Block,
+      vec![child_canvas],
+    );
+    let fc = BlockFormattingContext::new();
+    let fragment = fc
+      .layout(&root, &LayoutConstraints::definite(200.0, 200.0))
+      .unwrap();
+    assert!(
+      (fragment.bounds.width() - 80.0).abs() < 0.5,
+      "expected root max-content width 80, got {}",
+      fragment.bounds.width()
     );
   }
 
