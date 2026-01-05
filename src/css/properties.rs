@@ -2220,6 +2220,9 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     "animation-timeline" => return supports_animation_timeline_value(raw_value),
     "direction" => return keyword_in_list(parsed, &["ltr", "rtl"]),
     "visibility" => return keyword_in_list(parsed, &["visible", "hidden", "collapse"]),
+    "container-type" => {
+      return keyword_in_list(parsed, &["none", "normal", "style", "size", "inline-size"]);
+    }
     "flex-direction" => {
       return keyword_in_list(parsed, &["row", "row-reverse", "column", "column-reverse"])
     }

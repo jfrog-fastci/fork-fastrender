@@ -122,4 +122,10 @@ mod tests {
     assert!(supports_declaration("max-width", "none"));
     assert!(!supports_declaration("width", "none"));
   }
+
+  #[test]
+  fn supports_container_type_keywords_only() {
+    assert!(supports_declaration("container-type", "inline-size"));
+    assert!(!supports_declaration("container-type", "scroll-state"));
+  }
 }
