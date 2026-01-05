@@ -6704,7 +6704,11 @@ mod tests {
   #[test]
   fn bidi_controls_do_not_contribute_advance() {
     let style = ComputedStyle::default();
-    let ctx = FontContext::new();
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    assert!(
+      !ctx.database().is_empty(),
+      "bundled font context should load deterministic fonts for tests"
+    );
     let pipeline = ShapingPipeline::new();
     let clean = pipeline.shape("abc", &style, &ctx).expect("shape clean");
     // Inject an isolate sequence around b.
@@ -8234,7 +8238,8 @@ mod tests {
     }
     let mid = pipeline.fallback_cache_stats();
 
-    let second = match pipeline.shape("please cache me again", &style, &ctx) {
+    // Keep the leading sample character stable so the ASCII fast-path still records cache hits.
+    let second = match pipeline.shape("cache me again please", &style, &ctx) {
       Ok(runs) => runs,
       Err(_) => return,
     };

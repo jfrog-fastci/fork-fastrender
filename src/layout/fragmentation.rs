@@ -1437,7 +1437,21 @@ fn collect_break_opportunities(
     {
       strength = BreakStrength::Avoid;
     }
+    // Break opportunities between siblings span the entire gap between the end of one fragment and
+    // the start of the next. `child_abs_end` is only the end of the current child itself; when the
+    // next sibling begins later (e.g. due to margins), consumers are still free to break anywhere
+    // inside the gap. Record the boundary at the next sibling's start when available so the
+    // boundary-selection logic can still choose the fragmentainer limit without being biased toward
+    // an early break.
     let mut boundary_pos = child_abs_end;
+    if !matches!(strength, BreakStrength::Forced) {
+      if let Some(next_start) = next_abs_start {
+        if next_start > boundary_pos {
+          boundary_pos = next_start;
+        }
+      }
+    }
+
     if matches!(strength, BreakStrength::Forced) {
       if let Some(meta) = child.block_metadata.as_ref() {
         let mut candidate = child_abs_end + meta.margin_bottom;
