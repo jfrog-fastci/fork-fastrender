@@ -7090,6 +7090,48 @@ mod tests {
   }
 
   #[test]
+  fn grid_content_visibility_auto_in_view_does_not_skip() {
+    fn has_text(fragment: &FragmentNode) -> bool {
+      matches!(fragment.content, FragmentContent::Text { .. })
+        || fragment.children.iter().any(has_text)
+    }
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = CssDisplay::Grid;
+    container_style.grid_template_columns = vec![GridTrack::Length(Length::px(200.0))];
+    container_style.grid_template_rows = vec![GridTrack::Length(Length::px(50.0))];
+    let container_style = Arc::new(container_style);
+
+    let mut item_style = ComputedStyle::default();
+    item_style.content_visibility = ContentVisibility::Auto;
+    item_style.contain_intrinsic_height.length = Some(Length::px(30.0));
+    crate::style::properties::apply_content_visibility_implied_containment(&mut item_style);
+    let item_style = Arc::new(item_style);
+
+    let mut text_style = ComputedStyle::default();
+    text_style.display = CssDisplay::Inline;
+    text_style.font_size = 16.0;
+    let text_style = Arc::new(text_style);
+
+    let item = BoxNode::new_block(
+      item_style,
+      FormattingContextType::Block,
+      vec![BoxNode::new_text(text_style, "hello".to_string())],
+    );
+    let container = BoxNode::new_block(container_style, FormattingContextType::Grid, vec![item]);
+
+    let gc = GridFormattingContext::with_viewport(Size::new(200.0, 200.0));
+    let constraints = LayoutConstraints::definite(200.0, 200.0);
+    let fragment = gc.layout(&container, &constraints).expect("layout should succeed");
+
+    assert_eq!(fragment.children.len(), 1);
+    assert!(
+      has_text(&fragment.children[0]),
+      "content-visibility:auto in viewport must not skip layout"
+    );
+  }
+
+  #[test]
   fn grid_border_box_width_accounts_for_padding_and_border_with_explicit_width() {
     let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
 

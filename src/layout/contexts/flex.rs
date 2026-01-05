@@ -11366,4 +11366,41 @@ mod tests {
       },
     );
   }
+
+  #[test]
+  fn flex_content_visibility_auto_in_view_does_not_skip() {
+    fn has_text(fragment: &FragmentNode) -> bool {
+      matches!(fragment.content, FragmentContent::Text { .. })
+        || fragment.children.iter().any(has_text)
+    }
+
+    let mut item_style = ComputedStyle::default();
+    item_style.content_visibility = crate::style::types::ContentVisibility::Auto;
+    item_style.contain_intrinsic_height.length = Some(Length::px(30.0));
+    crate::style::properties::apply_content_visibility_implied_containment(&mut item_style);
+    let item_style = Arc::new(item_style);
+
+    let mut text_style = ComputedStyle::default();
+    text_style.display = Display::Inline;
+    text_style.font_size = 16.0;
+    let text_style = Arc::new(text_style);
+
+    let item = BoxNode::new_block(
+      item_style,
+      FormattingContextType::Block,
+      vec![BoxNode::new_text(text_style, "hello".to_string())],
+    );
+    let container =
+      BoxNode::new_block(create_flex_style(), FormattingContextType::Flex, vec![item]);
+
+    let fc = FlexFormattingContext::with_viewport(Size::new(200.0, 200.0));
+    let constraints = LayoutConstraints::definite(200.0, 200.0);
+    let fragment = fc.layout(&container, &constraints).expect("layout should succeed");
+
+    assert_eq!(fragment.children.len(), 1);
+    assert!(
+      has_text(&fragment.children[0]),
+      "content-visibility:auto in viewport must not skip layout"
+    );
+  }
 }
