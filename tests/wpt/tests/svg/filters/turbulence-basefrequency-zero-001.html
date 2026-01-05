@@ -6,25 +6,50 @@
     margin: 0;
     background: white;
   }
-  svg { display: block; }
+  .row {
+    width: 80px;
+    height: 20px;
+    background: black;
+  }
+  svg { display: none; }
 </style>
 <!--
-  feTurbulence(baseFrequency=0) produces Perlin noise of 0 everywhere, which maps to 0.5 gray.
+  feTurbulence(baseFrequency=0, type=fractalNoise) produces Perlin noise of 0 everywhere, which maps
+  to 0.5 gray.
 
-  This test locks down generator output encoding under color-interpolation-filters:
+  This test exercises FastRender's SVG filter pipeline via CSS `filter: url(#...)` and locks down
+  generator output encoding under color-interpolation-filters:
   - Default (linearRGB): 0.5 in *linear* RGB is encoded to sRGB bytes (~188).
   - Explicit sRGB: 0.5 in sRGB is encoded to byte 128.
+
+  Note: feTurbulence also generates alpha noise; for baseFrequency=0 + fractalNoise the alpha
+  channel is 0.5. To make the result opaque while still observing the intended channel encoding,
+  we:
+  1) Composite the turbulence output over an opaque black SourceGraphic (producing alpha=1 while
+     keeping the premultiplied RGB bytes).
+  2) Scale RGB channels by 2 via feComponentTransfer to undo the 0.5 premultiplication.
 -->
-<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40" shape-rendering="crispEdges">
+<svg xmlns="http://www.w3.org/2000/svg">
   <defs>
     <filter id="turbulence-linear" x="0" y="0" width="1" height="1">
-      <feTurbulence baseFrequency="0" numOctaves="1" seed="0"></feTurbulence>
+      <feTurbulence baseFrequency="0" numOctaves="1" seed="0" type="fractalNoise" result="noise"></feTurbulence>
+      <feComposite in="noise" in2="SourceGraphic" operator="over" color-interpolation-filters="sRGB" result="opaque"></feComposite>
+      <feComponentTransfer in="opaque" color-interpolation-filters="sRGB">
+        <feFuncR type="linear" slope="2" intercept="0"></feFuncR>
+        <feFuncG type="linear" slope="2" intercept="0"></feFuncG>
+        <feFuncB type="linear" slope="2" intercept="0"></feFuncB>
+      </feComponentTransfer>
     </filter>
     <filter id="turbulence-srgb" x="0" y="0" width="1" height="1" color-interpolation-filters="sRGB">
-      <feTurbulence baseFrequency="0" numOctaves="1" seed="0"></feTurbulence>
+      <feTurbulence baseFrequency="0" numOctaves="1" seed="0" type="fractalNoise" result="noise"></feTurbulence>
+      <feComposite in="noise" in2="SourceGraphic" operator="over" color-interpolation-filters="sRGB" result="opaque"></feComposite>
+      <feComponentTransfer in="opaque" color-interpolation-filters="sRGB">
+        <feFuncR type="linear" slope="2" intercept="0"></feFuncR>
+        <feFuncG type="linear" slope="2" intercept="0"></feFuncG>
+        <feFuncB type="linear" slope="2" intercept="0"></feFuncB>
+      </feComponentTransfer>
     </filter>
   </defs>
-
-  <rect x="0" y="0" width="80" height="20" fill="black" filter="url(#turbulence-linear)"></rect>
-  <rect x="0" y="20" width="80" height="20" fill="black" filter="url(#turbulence-srgb)"></rect>
 </svg>
+<div class="row" style="filter: url(#turbulence-linear)"></div>
+<div class="row" style="filter: url(#turbulence-srgb)"></div>

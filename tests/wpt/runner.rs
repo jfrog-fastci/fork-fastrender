@@ -1266,6 +1266,7 @@ impl WptRunner {
 
     let should_match = metadata.reftest_expectation != ReftestExpectation::Mismatch;
     let can_update_expected = config.update_expected
+      && metadata.test_type == TestType::Visual
       && should_match
       && !metadata
         .expected_status

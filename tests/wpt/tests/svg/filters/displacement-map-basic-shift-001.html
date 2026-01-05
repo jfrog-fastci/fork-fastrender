@@ -6,7 +6,33 @@
     margin: 0;
     background: white;
   }
-  svg { display: block; }
+  .frame {
+    position: relative;
+    width: 60px;
+    height: 20px;
+    background: rgb(210, 230, 255);
+    overflow: hidden;
+  }
+  .pattern {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 60px;
+    height: 20px;
+  }
+  .stripe {
+    position: absolute;
+    top: 0;
+    width: 10px;
+    height: 20px;
+  }
+  .r { left: 0px; background: rgb(255, 0, 0); }
+  .g { left: 10px; background: rgb(0, 255, 0); }
+  .b { left: 20px; background: rgb(0, 0, 255); }
+  .y { left: 30px; background: rgb(255, 255, 0); }
+  .m { left: 40px; background: rgb(255, 0, 255); }
+  .c { left: 50px; background: rgb(0, 255, 255); }
+  svg { display: none; }
 </style>
 <!--
   Basic feDisplacementMap shift.
@@ -32,22 +58,21 @@
   - sampling coordinate convention (integer displacements should be exact)
   - out-of-bounds sampling along +X (the vacated 1px column is transparent)
 -->
-<svg xmlns="http://www.w3.org/2000/svg" width="60" height="20" shape-rendering="crispEdges">
+<svg xmlns="http://www.w3.org/2000/svg">
   <defs>
     <filter id="shift-x-plus-1" x="0" y="0" width="1" height="1" color-interpolation-filters="sRGB">
       <feFlood flood-color="rgb(255, 128, 0)" flood-opacity="0.016" result="map"></feFlood>
       <feDisplacementMap in="SourceGraphic" in2="map" scale="2" xChannelSelector="R" yChannelSelector="G"></feDisplacementMap>
     </filter>
   </defs>
-
-  <rect x="0" y="0" width="60" height="20" fill="rgb(210, 230, 255)"></rect>
-
-  <g filter="url(#shift-x-plus-1)">
-    <rect x="0" y="0" width="10" height="20" fill="rgb(255, 0, 0)"></rect>
-    <rect x="10" y="0" width="10" height="20" fill="rgb(0, 255, 0)"></rect>
-    <rect x="20" y="0" width="10" height="20" fill="rgb(0, 0, 255)"></rect>
-    <rect x="30" y="0" width="10" height="20" fill="rgb(255, 255, 0)"></rect>
-    <rect x="40" y="0" width="10" height="20" fill="rgb(255, 0, 255)"></rect>
-    <rect x="50" y="0" width="10" height="20" fill="rgb(0, 255, 255)"></rect>
-  </g>
 </svg>
+<div class="frame">
+  <div class="pattern" style="filter: url(#shift-x-plus-1)">
+    <div class="stripe r"></div>
+    <div class="stripe g"></div>
+    <div class="stripe b"></div>
+    <div class="stripe y"></div>
+    <div class="stripe m"></div>
+    <div class="stripe c"></div>
+  </div>
+</div>
