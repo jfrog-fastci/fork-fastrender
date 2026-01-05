@@ -4772,8 +4772,10 @@ impl FormattingContext for BlockFormattingContext {
     }
     // Layout uses the block's content box coordinate space; translate the viewport into that
     // coordinate system so culling decisions stay relative to `box_y`/`margin_left` placement.
-    let viewport_content_origin =
-      Point::new(computed_width.margin_left + content_origin.x, content_origin.y);
+    let viewport_content_origin = Point::new(
+      computed_width.margin_left + content_origin.x,
+      content_origin.y,
+    );
     paint_viewport = paint_viewport.translate(Point::new(
       -viewport_content_origin.x,
       -viewport_content_origin.y,
@@ -8140,6 +8142,10 @@ mod tests {
     let mut auto_style = ComputedStyle::default();
     auto_style.display = Display::Block;
     auto_style.content_visibility = ContentVisibility::Auto;
+    // Provide a deterministic placeholder block-size so `content-visibility:auto` can skip layout
+    // when offscreen. Without this, the default `contain-intrinsic-size:auto` has no fallback
+    // length and we keep laying out descendants to avoid collapsing the element to 0px.
+    auto_style.contain_intrinsic_height.length = Some(Length::px(50.0));
     let mut auto_box = BoxNode::new_block(
       Arc::new(auto_style),
       FormattingContextType::Block,
@@ -8196,6 +8202,8 @@ mod tests {
     auto_style.margin_left = Some(Length::px(500.0));
     auto_style.width = Some(Length::px(100.0));
     auto_style.width_keyword = None;
+    // Ensure auto skipping uses a non-content placeholder block-size.
+    auto_style.contain_intrinsic_height.length = Some(Length::px(10.0));
     let mut auto_box = BoxNode::new_block(
       Arc::new(auto_style),
       FormattingContextType::Block,
@@ -8246,6 +8254,9 @@ mod tests {
     auto_style.display = Display::Block;
     auto_style.writing_mode = WritingMode::VerticalRl;
     auto_style.content_visibility = ContentVisibility::Auto;
+    // For vertical writing modes, the logical block axis maps to the physical inline axis, so the
+    // placeholder must come from the corresponding contain-intrinsic axis.
+    auto_style.contain_intrinsic_width.length = Some(Length::px(10.0));
     let auto_box = BoxNode::new_block(
       Arc::new(auto_style),
       FormattingContextType::Block,
@@ -8313,6 +8324,8 @@ mod tests {
     let mut auto_style = ComputedStyle::default();
     auto_style.display = Display::Block;
     auto_style.content_visibility = ContentVisibility::Auto;
+    // Provide a deterministic placeholder so offscreen auto content can be skipped pre-scroll.
+    auto_style.contain_intrinsic_height.length = Some(Length::px(10.0));
     let mut auto_box = BoxNode::new_block(
       Arc::new(auto_style),
       FormattingContextType::Block,
