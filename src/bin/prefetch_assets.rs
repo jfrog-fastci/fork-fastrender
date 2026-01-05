@@ -833,30 +833,48 @@ mod disk_cache_main {
     max_total: usize,
   ) {
     const MAX_VIDEO_POSTERS_PER_PAGE: usize = 32;
-    static VIDEO_POSTER: OnceLock<Regex> = OnceLock::new();
+    static VIDEO_TAG: OnceLock<Regex> = OnceLock::new();
+    static VIDEO_POSTER_ATTR: OnceLock<Regex> = OnceLock::new();
+    static VIDEO_GNT_GL_PS_ATTR: OnceLock<Regex> = OnceLock::new();
 
-    let video_poster = VIDEO_POSTER.get_or_init(|| {
-      Regex::new("(?is)<video[^>]*\\sposter\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
-        .expect("valid video poster regex")
+    let video_tag_re =
+      VIDEO_TAG.get_or_init(|| Regex::new("(?is)<video\\b[^>]*>").expect("valid video tag regex"));
+    let video_poster_attr = VIDEO_POSTER_ATTR.get_or_init(|| {
+      Regex::new("(?is)\\sposter\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+        .expect("valid video poster attribute regex")
+    });
+    let video_gnt_gl_ps_attr = VIDEO_GNT_GL_PS_ATTR.get_or_init(|| {
+      Regex::new("(?is)\\sgnt-gl-ps\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
+        .expect("valid video gnt-gl-ps attribute regex")
     });
 
     let mut inserted = 0usize;
-    for caps in video_poster.captures_iter(html) {
+    for tag_match in video_tag_re.find_iter(html) {
       if max_total != 0 && all.borrow().len() >= max_total {
         break;
       }
       if inserted >= MAX_VIDEO_POSTERS_PER_PAGE {
         break;
       }
-      let raw = caps
-        .get(1)
-        .or_else(|| caps.get(2))
-        .or_else(|| caps.get(3))
-        .map(|m| m.as_str())
-        .unwrap_or("");
-      if raw.trim().is_empty() {
+
+      let capture_attr = |re: &Regex| -> Option<&str> {
+        re.captures(tag_match.as_str())
+          .and_then(|caps| {
+            caps
+              .get(1)
+              .or_else(|| caps.get(2))
+              .or_else(|| caps.get(3))
+              .map(|m| m.as_str())
+          })
+          .map(str::trim)
+          .filter(|raw| !raw.is_empty())
+      };
+
+      let Some(raw) =
+        capture_attr(video_poster_attr).or_else(|| capture_attr(video_gnt_gl_ps_attr))
+      else {
         continue;
-      }
+      };
       if let Some(resolved) = resolve_href(base_url, raw) {
         let before = out.len();
         record_image_candidate(all, out, &resolved, max_total, max_total);
@@ -890,14 +908,20 @@ mod disk_cache_main {
 
       if let Some(tag) = node.tag_name() {
         if tag.eq_ignore_ascii_case("video") {
-          if let Some(poster) = node.get_attribute_ref("poster") {
-            if !poster.trim().is_empty() {
-              if let Some(resolved) = resolve_href(base_url, poster) {
-                let before = out.len();
-                record_image_candidate(all, out, &resolved, max_total, max_total);
-                if out.len() > before {
-                  inserted += 1;
-                }
+          let poster = node
+            .get_attribute_ref("poster")
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+              node
+                .get_attribute_ref("gnt-gl-ps")
+                .filter(|value| !value.trim().is_empty())
+            });
+          if let Some(poster) = poster {
+            if let Some(resolved) = resolve_href(base_url, poster) {
+              let before = out.len();
+              record_image_candidate(all, out, &resolved, max_total, max_total);
+              if out.len() > before {
+                inserted += 1;
               }
             }
           }
@@ -1573,7 +1597,7 @@ mod disk_cache_main {
       }
     }
 
-    if opts.prefetch_video_posters {
+    if opts.prefetch_images || opts.prefetch_video_posters {
       if let Some(dom) = dom.as_ref() {
         record_video_poster_candidates(
           &all_asset_urls,
@@ -2212,6 +2236,178 @@ mod disk_cache_main {
       assert_eq!(calls[0].0, "https://example.com/base/frame.html");
       assert_eq!(calls[0].1, FetchDestination::Document);
       assert_eq!(calls[0].2.as_deref(), Some(document_url));
+    }
+
+    #[test]
+    fn poster_is_still_fetched_when_image_cap_is_exceeded() {
+      use fastrender::resource::FetchContextKind;
+      use std::sync::Mutex;
+
+      #[derive(Default)]
+      struct RecordingFetcher {
+        calls: Mutex<Vec<String>>,
+      }
+
+      impl ResourceFetcher for RecordingFetcher {
+        fn fetch(&self, _url: &str) -> fastrender::Result<FetchedResource> {
+          panic!("image prefetch should use fetch_with_request");
+        }
+
+        fn fetch_with_request(&self, req: FetchRequest<'_>) -> fastrender::Result<FetchedResource> {
+          self.calls.lock().unwrap().push(req.url.to_string());
+          Ok(FetchedResource::new(
+            b"img".to_vec(),
+            Some("image/png".to_string()),
+          ))
+        }
+
+        fn fetch_partial_with_context(
+          &self,
+          _kind: FetchContextKind,
+          _url: &str,
+          _max_bytes: usize,
+        ) -> fastrender::Result<FetchedResource> {
+          // `prefetch_assets` probes image metadata after prefetching; suppress recording so tests
+          // only assert the explicit prefetch fetches.
+          Ok(FetchedResource::new(
+            Vec::new(),
+            Some("image/png".to_string()),
+          ))
+        }
+      }
+
+      let n = 1usize;
+      let mut html = "<!doctype html><html><body>".to_string();
+      for idx in 0..(n + 2) {
+        html.push_str(&format!("<img src=\"/img{idx}.png\">"));
+      }
+      html.push_str("<video poster=\"/poster.png\"></video></body></html>");
+
+      let document_url = "https://example.com/page";
+      let base_url = "https://example.com/";
+      let media_ctx = MediaContext::screen(800.0, 600.0);
+      let opts = PrefetchOptions {
+        prefetch_fonts: false,
+        prefetch_images: true,
+        prefetch_icons: false,
+        prefetch_video_posters: false,
+        prefetch_iframes: false,
+        prefetch_embeds: false,
+        prefetch_css_url_assets: false,
+        max_discovered_assets_per_page: 2000,
+        image_limits: ImagePrefetchLimits {
+          max_image_elements: n,
+          max_urls_per_element: 2,
+        },
+      };
+
+      let fetcher_impl = Arc::new(RecordingFetcher::default());
+      let fetcher: Arc<dyn ResourceFetcher> = fetcher_impl.clone();
+      let summary = prefetch_assets_for_html(
+        "test",
+        document_url,
+        &html,
+        document_url,
+        base_url,
+        &fetcher,
+        &media_ctx,
+        opts,
+      );
+
+      assert_eq!(summary.discovered_images, 2);
+      assert!(
+        fetcher_impl
+          .calls
+          .lock()
+          .unwrap()
+          .contains(&"https://example.com/poster.png".to_string()),
+        "poster URL should be requested even when image discovery cap is hit",
+      );
+    }
+
+    #[test]
+    fn gnt_gl_ps_is_recognized() {
+      use fastrender::resource::FetchContextKind;
+      use std::sync::Mutex;
+
+      #[derive(Default)]
+      struct RecordingFetcher {
+        calls: Mutex<Vec<String>>,
+      }
+
+      impl ResourceFetcher for RecordingFetcher {
+        fn fetch(&self, _url: &str) -> fastrender::Result<FetchedResource> {
+          panic!("image prefetch should use fetch_with_request");
+        }
+
+        fn fetch_with_request(&self, req: FetchRequest<'_>) -> fastrender::Result<FetchedResource> {
+          self.calls.lock().unwrap().push(req.url.to_string());
+          Ok(FetchedResource::new(
+            b"img".to_vec(),
+            Some("image/png".to_string()),
+          ))
+        }
+
+        fn fetch_partial_with_context(
+          &self,
+          _kind: FetchContextKind,
+          _url: &str,
+          _max_bytes: usize,
+        ) -> fastrender::Result<FetchedResource> {
+          Ok(FetchedResource::new(
+            Vec::new(),
+            Some("image/png".to_string()),
+          ))
+        }
+      }
+
+      let n = 1usize;
+      let mut html = "<!doctype html><html><body>".to_string();
+      for idx in 0..(n + 2) {
+        html.push_str(&format!("<img src=\"/img{idx}.png\">"));
+      }
+      html.push_str("<video gnt-gl-ps=\"/poster2.png\"></video></body></html>");
+
+      let document_url = "https://example.com/page";
+      let base_url = "https://example.com/";
+      let media_ctx = MediaContext::screen(800.0, 600.0);
+      let opts = PrefetchOptions {
+        prefetch_fonts: false,
+        prefetch_images: true,
+        prefetch_icons: false,
+        prefetch_video_posters: false,
+        prefetch_iframes: false,
+        prefetch_embeds: false,
+        prefetch_css_url_assets: false,
+        max_discovered_assets_per_page: 2000,
+        image_limits: ImagePrefetchLimits {
+          max_image_elements: n,
+          max_urls_per_element: 2,
+        },
+      };
+
+      let fetcher_impl = Arc::new(RecordingFetcher::default());
+      let fetcher: Arc<dyn ResourceFetcher> = fetcher_impl.clone();
+      let summary = prefetch_assets_for_html(
+        "test",
+        document_url,
+        &html,
+        document_url,
+        base_url,
+        &fetcher,
+        &media_ctx,
+        opts,
+      );
+
+      assert_eq!(summary.discovered_images, 2);
+      assert!(
+        fetcher_impl
+          .calls
+          .lock()
+          .unwrap()
+          .contains(&"https://example.com/poster2.png".to_string()),
+        "gnt-gl-ps should be recognized as a video poster candidate",
+      );
     }
 
     #[test]

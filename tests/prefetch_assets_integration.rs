@@ -1224,6 +1224,8 @@ fn prefetch_assets_warms_disk_cache_with_iframes_embeds_icons_and_video_posters(
     .arg("1")
     .arg("--timeout")
     .arg("5")
+    .arg("--prefetch-images")
+    .arg("false")
     .arg("--prefetch-iframes")
     .arg("--prefetch-embeds")
     .arg("--prefetch-icons")
