@@ -2412,7 +2412,9 @@ pub(crate) fn supports_parsed_declaration_is_valid(
         &["normal", "break-all", "keep-all", "break-word", "anywhere"],
       )
     }
-    "animation-duration" => return supports_animation_duration_value(raw_value),
+    "animation-duration" | "-webkit-animation-duration" => {
+      return supports_animation_duration_value(raw_value)
+    }
     "animation-timeline" => return supports_animation_timeline_value(raw_value),
     "direction" => return keyword_in_list(parsed, &["ltr", "rtl"]),
     "visibility" => return keyword_in_list(parsed, &["visible", "hidden", "collapse"]),
