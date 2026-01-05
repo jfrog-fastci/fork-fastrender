@@ -1114,7 +1114,15 @@ mod diagnostics_tests {
     let cache = test_image_cache(fetcher, diagnostics.clone());
     let rect = Rect::new(Point::ZERO, Size::new(10.0, 10.0));
 
-    let result = render_iframe_src("/bad", rect, None, &cache, &test_font_context(), 1.0, 1);
+    let result = render_iframe_src(
+      "/bad-network",
+      rect,
+      None,
+      &cache,
+      &test_font_context(),
+      1.0,
+      1,
+    );
     assert!(result.is_none());
 
     let diag = diagnostics.into_inner();
@@ -1122,7 +1130,7 @@ mod diagnostics_tests {
       diag
         .fetch_errors
         .iter()
-        .any(|e| e.kind == ResourceKind::Document && e.url == "/bad"),
+        .any(|e| e.kind == ResourceKind::Document && e.url == "/bad-network"),
       "expected iframe fetch error diagnostic"
     );
   }
@@ -1139,14 +1147,22 @@ mod diagnostics_tests {
     let cache = test_image_cache(fetcher, diagnostics.clone());
     let rect = Rect::new(Point::ZERO, Size::new(10.0, 10.0));
 
-    let result = render_iframe_src("/bad", rect, None, &cache, &test_font_context(), 1.0, 1);
+    let result = render_iframe_src(
+      "/bad-status",
+      rect,
+      None,
+      &cache,
+      &test_font_context(),
+      1.0,
+      1,
+    );
     assert!(result.is_none());
 
     let diag = diagnostics.into_inner();
     let entry = diag
       .fetch_errors
       .iter()
-      .find(|e| e.kind == ResourceKind::Document && e.url == "/bad")
+      .find(|e| e.kind == ResourceKind::Document && e.url == "/bad-status")
       .expect("expected iframe fetch error diagnostic");
     assert_eq!(entry.status, Some(403));
   }

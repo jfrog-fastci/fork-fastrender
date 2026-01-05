@@ -881,9 +881,17 @@ fn maybe_unwrap_snap_chromium(chrome: PathBuf) -> PathBuf {
     return chrome;
   }
 
-  let direct = PathBuf::from("/snap/chromium/current/usr/lib/chromium-browser/chrome");
-  if direct.is_file() {
-    return direct;
+  for direct in [
+    "/snap/chromium/current/usr/lib/chromium-browser/chrome",
+    "/snap/chromium/current/usr/lib/chromium/chrome",
+    "/snap/chromium/current/usr/lib/chromium-browser/chromium-browser",
+    "/snap/chromium/current/usr/lib/chromium-browser/chromium",
+    "/snap/chromium/current/usr/lib/chromium/chromium",
+  ] {
+    let direct = PathBuf::from(direct);
+    if direct.is_file() {
+      return direct;
+    }
   }
   chrome
 }
