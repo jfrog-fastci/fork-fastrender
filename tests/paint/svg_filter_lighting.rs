@@ -495,12 +495,19 @@ fn lighting_output_alpha_matches_resvg_for_intensity() {
 
   let filter =
     parse_svg_filter_from_svg_document(svg, Some("f"), &ImageCache::new()).expect("filter");
-  let mut pixmap = solid_pixmap(10, 10, PremultipliedColorU8::from_rgba(255, 255, 255, 255).unwrap());
+  let mut pixmap = solid_pixmap(
+    10,
+    10,
+    PremultipliedColorU8::from_rgba(255, 255, 255, 255).unwrap(),
+  );
   let bbox = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
   apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
   let actual = center_pixel(&pixmap);
 
-  assert_eq!(actual, expected, "FastRender lighting must match resvg output");
+  assert_eq!(
+    actual, expected,
+    "FastRender lighting must match resvg output"
+  );
 }
 
 #[test]
@@ -529,5 +536,8 @@ fn lighting_transparent_input_matches_resvg() {
   apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
   let actual = center_pixel(&pixmap);
 
-  assert_eq!(actual, expected, "FastRender lighting must match resvg output");
+  assert_eq!(
+    actual, expected,
+    "FastRender lighting must match resvg output"
+  );
 }

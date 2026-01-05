@@ -28,4 +28,3 @@ fn inspect_frag_filter_selector_dump_json_does_not_panic() {
     "expected inspect_frag to write dom.json into dump directory"
   );
 }
-

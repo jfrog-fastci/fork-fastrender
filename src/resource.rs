@@ -8537,11 +8537,13 @@ mod tests {
   #[test]
   fn error_looks_like_dns_failure_detects_not_found_error_sources() {
     let io_err = io::Error::new(io::ErrorKind::NotFound, "dns lookup failed");
-    let err = Error::Resource(ResourceError::new(
-      "https://example.com",
-      "error sending request for url (https://example.com)",
-    )
-    .with_source(io_err));
+    let err = Error::Resource(
+      ResourceError::new(
+        "https://example.com",
+        "error sending request for url (https://example.com)",
+      )
+      .with_source(io_err),
+    );
     assert!(error_looks_like_dns_failure(&err));
   }
 

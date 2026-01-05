@@ -18056,7 +18056,10 @@ mod tests {
       DEFAULT_VIEWPORT,
     );
 
-    assert_eq!(styles.animation_names.get(0).map(String::as_str), Some("fade"));
+    assert_eq!(
+      styles.animation_names.get(0).map(String::as_str),
+      Some("fade")
+    );
   }
 
   #[test]

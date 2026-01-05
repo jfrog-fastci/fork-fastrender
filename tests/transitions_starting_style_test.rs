@@ -244,6 +244,47 @@ fn transitions_interpolate_over_time() {
 }
 
 #[test]
+fn transitions_interpolate_registered_custom_properties_over_time() {
+  let html = r#"
+    <style>
+      @property --x {
+        syntax: "<number>";
+        inherits: false;
+        initial-value: 0;
+      }
+
+      @starting-style { #box { --x: 0; } }
+      #box {
+        width: 100px;
+        height: 100px;
+        opacity: var(--x);
+        --x: 1;
+        transition: --x 1000ms linear;
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut start = fragment_tree.clone();
+  let viewport = start.viewport_size();
+  animation::apply_transitions(&mut start, 0.0, viewport);
+  assert!((fragment_opacity(&start, box_id) - 0.0).abs() < 1e-3);
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 500.0, viewport);
+  assert!((fragment_opacity(&mid, box_id) - 0.5).abs() < 1e-3);
+
+  let mut end = fragment_tree.clone();
+  let viewport = end.viewport_size();
+  animation::apply_transitions(&mut end, 1000.0, viewport);
+  assert!((fragment_opacity(&end, box_id) - 1.0).abs() < 1e-3);
+}
+
+#[test]
 fn transitions_interpolate_box_shadow_over_time() {
   let html = r#"
     <style>

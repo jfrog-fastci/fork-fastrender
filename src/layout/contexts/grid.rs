@@ -3576,7 +3576,12 @@ impl GridFormattingContext {
                 let width = child.bounds.width();
                 let old_start = child.bounds.x();
                 let new_start = span_start + (span_end - (old_start + width));
-                translate_along_axis(child, Axis::Horizontal, new_start - old_start, deadline_counter)?;
+                translate_along_axis(
+                  child,
+                  Axis::Horizontal,
+                  new_start - old_start,
+                  deadline_counter,
+                )?;
               }
             }
             rtl_mirrored_x = true;
@@ -3676,17 +3681,16 @@ impl GridFormattingContext {
                     let mut translated = false;
                     if let Some(&child_ptr) = taffy.get_node_context(child_id) {
                       let child_node = unsafe { &*child_ptr };
-                      if child_node.style.grid_column_start > 0 && child_node.style.grid_column_end > 0
+                      if child_node.style.grid_column_start > 0
+                        && child_node.style.grid_column_end > 0
                       {
                         let child_start = child_node.style.grid_column_start as u16;
                         let child_end = child_node.style.grid_column_end as u16;
                         let mapped_child_start = ctx.line_offset.saturating_add(child_start);
                         let mapped_child_end = ctx.line_offset.saturating_add(child_end);
-                        if let Some((area_start, area_end)) = grid_area_for_item(
-                          &ctx.offsets,
-                          mapped_child_start,
-                          mapped_child_end,
-                        ) {
+                        if let Some((area_start, area_end)) =
+                          grid_area_for_item(&ctx.offsets, mapped_child_start, mapped_child_end)
+                        {
                           let area_start = area_start - ctx.node_offset;
                           let area_end = area_end - ctx.node_offset;
                           apply_translation(

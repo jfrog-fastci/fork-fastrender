@@ -21,7 +21,13 @@ fn empty_pixmap(width: u32, height: u32) -> Pixmap {
   pixmap
 }
 
-fn pixmap_with_pixel(width: u32, height: u32, x: u32, y: u32, color: PremultipliedColorU8) -> Pixmap {
+fn pixmap_with_pixel(
+  width: u32,
+  height: u32,
+  x: u32,
+  y: u32,
+  color: PremultipliedColorU8,
+) -> Pixmap {
   let mut pixmap = empty_pixmap(width, height);
   if x < width && y < height {
     pixmap.pixels_mut()[(y * width + x) as usize] = color;
@@ -86,8 +92,20 @@ fn displacement_map_matches_resvg_for_max_displacement() {
   let filter =
     parse_svg_filter_from_svg_document(svg, Some("f"), &ImageCache::new()).expect("filter");
 
-  let mut pixmap = pixmap_with_pixel(5, 5, 4, 4, PremultipliedColorU8::from_rgba(255, 0, 0, 255).unwrap());
-  apply_svg_filter(&filter, &mut pixmap, 1.0, Rect::from_xywh(0.0, 0.0, 5.0, 5.0)).unwrap();
+  let mut pixmap = pixmap_with_pixel(
+    5,
+    5,
+    4,
+    4,
+    PremultipliedColorU8::from_rgba(255, 0, 0, 255).unwrap(),
+  );
+  apply_svg_filter(
+    &filter,
+    &mut pixmap,
+    1.0,
+    Rect::from_xywh(0.0, 0.0, 5.0, 5.0),
+  )
+  .unwrap();
 
   assert_eq!(
     pixmap.data(),
@@ -130,12 +148,23 @@ fn displacement_map_uses_premultiplied_map_channels() {
     3,
     PremultipliedColorU8::from_rgba(255, 0, 0, 255).expect("red"),
   );
-  apply_svg_filter(&filter, &mut pixmap, 1.0, Rect::from_xywh(0.0, 0.0, 5.0, 5.0)).unwrap();
+  apply_svg_filter(
+    &filter,
+    &mut pixmap,
+    1.0,
+    Rect::from_xywh(0.0, 0.0, 5.0, 5.0),
+  )
+  .unwrap();
 
   let expected_px = expected.pixel(2, 2).expect("expected pixel");
   let actual_px = pixmap.pixel(2, 2).expect("actual pixel");
   assert_eq!(
-    (actual_px.red(), actual_px.green(), actual_px.blue(), actual_px.alpha()),
+    (
+      actual_px.red(),
+      actual_px.green(),
+      actual_px.blue(),
+      actual_px.alpha()
+    ),
     (
       expected_px.red(),
       expected_px.green(),
@@ -170,8 +199,20 @@ fn displacement_map_scale_respects_object_bounding_box_units() {
   let filter =
     parse_svg_filter_from_svg_document(svg, Some("f"), &ImageCache::new()).expect("filter");
 
-  let mut pixmap = pixmap_with_pixel(4, 2, 3, 1, PremultipliedColorU8::from_rgba(255, 0, 0, 255).expect("red"));
-  apply_svg_filter(&filter, &mut pixmap, 1.0, Rect::from_xywh(0.0, 0.0, 4.0, 2.0)).unwrap();
+  let mut pixmap = pixmap_with_pixel(
+    4,
+    2,
+    3,
+    1,
+    PremultipliedColorU8::from_rgba(255, 0, 0, 255).expect("red"),
+  );
+  apply_svg_filter(
+    &filter,
+    &mut pixmap,
+    1.0,
+    Rect::from_xywh(0.0, 0.0, 4.0, 2.0),
+  )
+  .unwrap();
 
   assert_eq!(
     pixmap.data(),
@@ -207,7 +248,13 @@ fn displacement_map_respects_anisotropic_filter_res_scale() {
     parse_svg_filter_from_svg_document(svg, Some("f"), &ImageCache::new()).expect("filter");
 
   let mut pixmap = gradient_pixmap();
-  apply_svg_filter(&filter, &mut pixmap, 1.0, Rect::from_xywh(0.0, 0.0, 3.0, 1.0)).unwrap();
+  apply_svg_filter(
+    &filter,
+    &mut pixmap,
+    1.0,
+    Rect::from_xywh(0.0, 0.0, 3.0, 1.0),
+  )
+  .unwrap();
 
   assert_eq!(
     pixmap.data(),
@@ -247,7 +294,13 @@ fn displacement_map_interprets_map_in_color_interpolation_space() {
     2,
     PremultipliedColorU8::from_rgba(255, 0, 0, 255).expect("red"),
   );
-  apply_svg_filter(&filter, &mut pixmap, 1.0, Rect::from_xywh(0.0, 0.0, 5.0, 5.0)).unwrap();
+  apply_svg_filter(
+    &filter,
+    &mut pixmap,
+    1.0,
+    Rect::from_xywh(0.0, 0.0, 5.0, 5.0),
+  )
+  .unwrap();
 
   assert_eq!(
     pixmap.data(),
@@ -255,4 +308,3 @@ fn displacement_map_interprets_map_in_color_interpolation_space() {
     "FastRender displacement map linearRGB channel interpretation must match resvg"
   );
 }
-

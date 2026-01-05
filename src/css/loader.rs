@@ -1137,8 +1137,7 @@ where
           continue;
         }
 
-        if imports_allowed && brace_depth == 0 && matches_at_keyword(bytes, i, b"layer")
-        {
+        if imports_allowed && brace_depth == 0 && matches_at_keyword(bytes, i, b"layer") {
           let mut j = i;
           let mut inner_state = State::Normal;
           while j < bytes.len() {
@@ -1193,8 +1192,7 @@ where
           }
         }
 
-        if imports_allowed && brace_depth == 0 && matches_at_keyword(bytes, i, b"charset")
-        {
+        if imports_allowed && brace_depth == 0 && matches_at_keyword(bytes, i, b"charset") {
           let mut j = i;
           let mut inner_state = State::Normal;
           while j < bytes.len() {
@@ -1357,10 +1355,8 @@ where
               {
                 if let Some(layer) = layer {
                   if let ImportLayerModifier::Named(path) = layer {
-                    let mut wrapped: std::borrow::Cow<'_, str> = std::borrow::Cow::Owned(format!(
-                      "@layer {};\n",
-                      serialize_layer_name(&path)
-                    ));
+                    let mut wrapped: std::borrow::Cow<'_, str> =
+                      std::borrow::Cow::Owned(format!("@layer {};\n", serialize_layer_name(&path)));
                     if let Some(condition) = supports {
                       wrapped = std::borrow::Cow::Owned(format!(
                         "@supports {} {{\n{}\n}}\n",
@@ -1431,12 +1427,10 @@ where
               // Failed imports are ignored, but `@import ... layer(foo)` still establishes the
               // layer ordering so subsequent `@layer foo { ... }` blocks don't change precedence
               // based on network outcomes.
-              if inlined.is_some()
-                || matches!(layer.as_ref(), Some(ImportLayerModifier::Named(_)))
+              if inlined.is_some() || matches!(layer.as_ref(), Some(ImportLayerModifier::Named(_)))
               {
-                let mut wrapped: std::borrow::Cow<'_, str> = std::borrow::Cow::Borrowed(
-                  inlined.unwrap_or_default(),
-                );
+                let mut wrapped: std::borrow::Cow<'_, str> =
+                  std::borrow::Cow::Borrowed(inlined.unwrap_or_default());
 
                 if let Some(layer) = layer {
                   match layer {
@@ -1453,7 +1447,10 @@ where
                           wrapped
                         ))
                       } else {
-                        std::borrow::Cow::Owned(format!("@layer {};\n", serialize_layer_name(&path)))
+                        std::borrow::Cow::Owned(format!(
+                          "@layer {};\n",
+                          serialize_layer_name(&path)
+                        ))
                       };
                     }
                   }
@@ -3336,7 +3333,10 @@ mod tests {
 
     let sheet = crate::css::parser::parse_stylesheet(&out).expect("parse output stylesheet");
     let Some(crate::css::types::CssRule::Layer(layer)) = sheet.rules.first() else {
-      panic!("expected a leading @layer declaration, got: {:?}", sheet.rules);
+      panic!(
+        "expected a leading @layer declaration, got: {:?}",
+        sheet.rules
+      );
     };
     assert_eq!(layer.names, vec![vec!["foo".to_string()]]);
     assert!(layer.rules.is_empty());
@@ -3378,7 +3378,8 @@ mod tests {
   #[test]
   fn inline_imports_preserves_escaped_layer_names() {
     let mut state = InlineImportState::new();
-    let mut fetched = |_url: &str| -> Result<String> { Ok(".imported { color: blue; }".to_string()) };
+    let mut fetched =
+      |_url: &str| -> Result<String> { Ok(".imported { color: blue; }".to_string()) };
     // Layer names can contain escaped whitespace. Ensure we re-serialize them so the parser sees a
     // single identifier rather than treating the whitespace as a separator.
     let css = r#"@import "layered.css" layer(foo\ bar);"#;
@@ -3393,7 +3394,10 @@ mod tests {
 
     let sheet = crate::css::parser::parse_stylesheet(&out).expect("parse output stylesheet");
     let Some(crate::css::types::CssRule::Layer(layer)) = sheet.rules.first() else {
-      panic!("expected first rule to be a @layer block, got: {:?}", sheet.rules);
+      panic!(
+        "expected first rule to be a @layer block, got: {:?}",
+        sheet.rules
+      );
     };
     assert_eq!(layer.names, vec![vec!["foo bar".to_string()]]);
     assert!(!layer.anonymous);
@@ -3427,7 +3431,10 @@ mod tests {
       "layer modifier must not be treated as media query: {out}"
     );
     assert!(out.contains(".imported { color: blue; }"));
-    assert_eq!(fetched_urls, vec!["https://example.com/layered.css".to_string()]);
+    assert_eq!(
+      fetched_urls,
+      vec!["https://example.com/layered.css".to_string()]
+    );
   }
 
   #[test]
@@ -3484,9 +3491,7 @@ mod tests {
     if !out.contains("@media screen") {
       eprintln!("inline_imports output: {out}");
     }
-    let media_pos = out
-      .find("@media screen")
-      .expect("expected @media wrapper");
+    let media_pos = out.find("@media screen").expect("expected @media wrapper");
     let supports_pos = out
       .find("@supports (display: grid)")
       .expect("expected @supports wrapper");
@@ -3496,7 +3501,10 @@ mod tests {
       "expected wrappers to be nested as @media > @supports > @layer: {out}"
     );
     assert!(out.contains(".imported { color: blue; }"));
-    assert_eq!(fetched_urls, vec!["https://example.com/combo.css".to_string()]);
+    assert_eq!(
+      fetched_urls,
+      vec!["https://example.com/combo.css".to_string()]
+    );
   }
 
   #[test]

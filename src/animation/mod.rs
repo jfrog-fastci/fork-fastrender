@@ -4405,6 +4405,49 @@ fn transition_value_for_property(
   Some((value, progress, delay, duration))
 }
 
+fn transition_value_for_custom_property(
+  name: &str,
+  idx: usize,
+  style: &ComputedStyle,
+  start_style: &ComputedStyle,
+  durations: &[f32],
+  delays: &[f32],
+  timings: &[TransitionTimingFunction],
+  time_ms: f32,
+  ctx: &AnimationResolveContext,
+) -> Option<(CustomPropertyValue, f32, f32, f32)> {
+  let duration = pick(durations, idx, *durations.last().unwrap_or(&0.0));
+  if duration <= 0.0 {
+    return None;
+  }
+  let delay = pick(delays, idx, *delays.last().unwrap_or(&0.0));
+  let elapsed = time_ms - delay;
+  if elapsed >= duration {
+    return None;
+  }
+  let raw_progress = if elapsed <= 0.0 {
+    0.0
+  } else {
+    (elapsed / duration).clamp(0.0, 1.0)
+  };
+  let timing = pick(timings, idx, TransitionTimingFunction::Ease);
+  let progress = timing.value_at(raw_progress);
+
+  let from_val = start_style.custom_properties.get(name)?.clone();
+  let to_val = style.custom_properties.get(name)?.clone();
+
+  let sampled = interpolate_custom_property(&from_val, &to_val, progress, start_style, style, ctx)
+    .or_else(|| {
+      if progress >= 0.5 {
+        Some(to_val.clone())
+      } else {
+        Some(from_val.clone())
+      }
+    })?;
+
+  Some((sampled, progress, delay, duration))
+}
+
 fn transition_pairs<'a>(
   properties: &'a [TransitionProperty],
 ) -> Option<Vec<(Cow<'a, str>, usize)>> {
@@ -4434,14 +4477,21 @@ fn apply_transitions_to_fragment(
   time_ms: f32,
   viewport: Size,
   log_enabled: bool,
+  parent_styles: Option<&ComputedStyle>,
 ) {
   let Some(style_arc) = fragment.style.clone() else {
     // Still traverse for running anchors/children.
     for child in fragment.children_mut() {
-      apply_transitions_to_fragment(child, time_ms, viewport, log_enabled);
+      apply_transitions_to_fragment(child, time_ms, viewport, log_enabled, parent_styles);
     }
     if let FragmentContent::RunningAnchor { snapshot, .. } = &mut fragment.content {
-      apply_transitions_to_fragment(Arc::make_mut(snapshot), time_ms, viewport, log_enabled);
+      apply_transitions_to_fragment(
+        Arc::make_mut(snapshot),
+        time_ms,
+        viewport,
+        log_enabled,
+        parent_styles,
+      );
     }
     return;
   };
@@ -4452,9 +4502,39 @@ fn apply_transitions_to_fragment(
         Size::new(fragment.bounds.width(), fragment.bounds.height()),
       );
       let mut updates: HashMap<String, AnimatedValue> = HashMap::new();
+      let mut custom_updates: Vec<(Arc<str>, CustomPropertyValue)> = Vec::new();
       for (name, idx) in pairs {
+        let name_str = name.as_ref();
+        if name_str.starts_with("--") {
+          let value = transition_value_for_custom_property(
+            name_str,
+            idx,
+            &style_arc,
+            &start_arc,
+            &style_arc.transition_durations,
+            &style_arc.transition_delays,
+            &style_arc.transition_timing_functions,
+            time_ms,
+            &ctx,
+          );
+          if let Some((sampled, progress, delay, duration)) = value {
+            custom_updates.push((Arc::from(name_str), sampled));
+            if log_enabled {
+              let identifier = fragment
+                .box_id()
+                .map(|id| format!("box_id={id}"))
+                .unwrap_or_else(|| "box_id=<none>".to_string());
+              eprintln!(
+                "[transition] {} property={} progress={:.3} delay_ms={:.1} duration_ms={:.1}",
+                identifier, name_str, progress, delay, duration
+              );
+            }
+          }
+          continue;
+        }
+
         let value = transition_value_for_property(
-          &name,
+          name_str,
           idx,
           &style_arc,
           &start_arc,
@@ -4465,7 +4545,7 @@ fn apply_transitions_to_fragment(
           &ctx,
         );
         if let Some((animated, progress, delay, duration)) = value {
-          updates.insert(name.to_string(), animated);
+          updates.insert(name_str.to_string(), animated);
           if log_enabled {
             let identifier = fragment
               .box_id()
@@ -4473,25 +4553,51 @@ fn apply_transitions_to_fragment(
               .unwrap_or_else(|| "box_id=<none>".to_string());
             eprintln!(
               "[transition] {} property={} progress={:.3} delay_ms={:.1} duration_ms={:.1}",
-              identifier, name, progress, delay, duration
+              identifier, name_str, progress, delay, duration
             );
           }
         }
       }
 
-      if !updates.is_empty() {
+      if !updates.is_empty() || !custom_updates.is_empty() {
         let mut updated_style = (*style_arc).clone();
         apply_animated_properties(&mut updated_style, &updates);
+        let mut custom_properties_changed = false;
+        for (name, value) in custom_updates {
+          let needs_update = updated_style
+            .custom_properties
+            .get(name.as_ref())
+            .map(|existing| existing != &value)
+            .unwrap_or(true);
+          if needs_update {
+            updated_style.custom_properties.insert(name, value);
+            custom_properties_changed = true;
+          }
+        }
+
+        if custom_properties_changed {
+          let parent_styles = parent_styles.unwrap_or_else(|| default_parent_style());
+          updated_style.recompute_var_dependent_properties(parent_styles, viewport);
+          apply_animated_properties(&mut updated_style, &updates);
+        }
         fragment.style = Some(Arc::new(updated_style));
       }
     }
   }
 
+  let parent_style = fragment.style.clone();
+  let parent_for_children = parent_style.as_deref().or(parent_styles);
   for child in fragment.children_mut() {
-    apply_transitions_to_fragment(child, time_ms, viewport, log_enabled);
+    apply_transitions_to_fragment(child, time_ms, viewport, log_enabled, parent_for_children);
   }
   if let FragmentContent::RunningAnchor { snapshot, .. } = &mut fragment.content {
-    apply_transitions_to_fragment(Arc::make_mut(snapshot), time_ms, viewport, log_enabled);
+    apply_transitions_to_fragment(
+      Arc::make_mut(snapshot),
+      time_ms,
+      viewport,
+      log_enabled,
+      parent_for_children,
+    );
   }
 }
 
@@ -4504,9 +4610,9 @@ pub fn apply_transitions(tree: &mut FragmentTree, time_ms: f32, viewport: Size) 
     return;
   }
   let log_enabled = runtime::runtime_toggles().truthy("FASTR_LOG_TRANSITIONS");
-  apply_transitions_to_fragment(&mut tree.root, time_ms, viewport, log_enabled);
+  apply_transitions_to_fragment(&mut tree.root, time_ms, viewport, log_enabled, None);
   for root in &mut tree.additional_fragments {
-    apply_transitions_to_fragment(root, time_ms, viewport, log_enabled);
+    apply_transitions_to_fragment(root, time_ms, viewport, log_enabled, None);
   }
 }
 

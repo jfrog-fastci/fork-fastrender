@@ -4282,7 +4282,8 @@ mod tests {
 
   #[test]
   fn audio_src_placeholder_falls_back_to_source_children() {
-    let html = "<html><body><audio src=\"about:blank\"><source src=\"a.mp3\"></audio></body></html>";
+    let html =
+      "<html><body><audio src=\"about:blank\"><source src=\"a.mp3\"></audio></body></html>";
     let dom = crate::dom::parse_html(html).expect("parse");
     let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
     let box_tree = generate_box_tree(&styled);
@@ -4318,7 +4319,10 @@ mod tests {
       node.children.iter().find_map(find_video_src)
     }
 
-    assert_eq!(find_video_src(&box_tree.root).as_deref(), Some("right.webm"));
+    assert_eq!(
+      find_video_src(&box_tree.root).as_deref(),
+      Some("right.webm")
+    );
   }
 
   #[test]

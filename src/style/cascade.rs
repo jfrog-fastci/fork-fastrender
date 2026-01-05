@@ -77,6 +77,7 @@ use crate::style::types::ColorSchemePreference;
 use crate::style::types::ContainerType;
 use crate::style::types::OutlineColor;
 use crate::style::types::PointerEvents;
+use crate::style::types::TransitionProperty;
 use crate::style::values::Length;
 use crate::style::values::LengthUnit;
 use crate::style::ComputedStyle;
@@ -23673,7 +23674,11 @@ fn apply_cascaded_declarations<'a, F>(
   apply_content_visibility_implied_containment(styles);
 
   resolve_absolute_lengths(styles, root_font_size, viewport);
-  if styles.animation_names.is_empty() {
+  let has_custom_property_transitions = styles
+    .transition_properties
+    .iter()
+    .any(|prop| matches!(prop, TransitionProperty::Name(name) if name.starts_with("--")));
+  if styles.animation_names.is_empty() && !has_custom_property_transitions {
     styles.var_dependent_declarations = Arc::new(HashMap::new());
   }
 }

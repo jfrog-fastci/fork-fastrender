@@ -2182,10 +2182,7 @@ impl DisplayListBuilder {
     if let Some(bounds) = clip_path.as_ref().map(|clip| clip.bounds()) {
       child_visibility = child_visibility.intersect(Some(bounds), true);
     }
-    if let Some(bounds) = clip_rect
-      .as_ref()
-      .and_then(|clip| Self::clip_bounds(clip))
-    {
+    if let Some(bounds) = clip_rect.as_ref().and_then(|clip| Self::clip_bounds(clip)) {
       child_visibility = child_visibility.intersect(Some(bounds), true);
     }
     if let Some(bounds) = overflow_clip
@@ -4364,7 +4361,8 @@ impl DisplayListBuilder {
           .find_map(|s| self.decode_image(s.url, style_for_image, false))
         {
           let clip_contents = Self::clip_replaced_contents(style_for_image);
-          let (content_rect, clip_radii) = self.replaced_content_rect_and_radii(rect, style_for_image);
+          let (content_rect, clip_radii) =
+            self.replaced_content_rect_and_radii(rect, style_for_image);
           let (dest_x, dest_y, dest_w, dest_h) = {
             let (fit, position, font_size) = if let Some(style) = fragment.style.as_deref() {
               (style.object_fit, style.object_position, style.font_size)
@@ -4385,8 +4383,12 @@ impl DisplayListBuilder {
             .unwrap_or_else(|| (0.0, 0.0, content_rect.width(), content_rect.height()))
           };
 
-          let dest_rect =
-            Rect::from_xywh(content_rect.x() + dest_x, content_rect.y() + dest_y, dest_w, dest_h);
+          let dest_rect = Rect::from_xywh(
+            content_rect.x() + dest_x,
+            content_rect.y() + dest_y,
+            dest_w,
+            dest_h,
+          );
           if clip_contents {
             self.list.push(DisplayItem::PushClip(ClipItem {
               shape: ClipShape::Rect {
@@ -7216,8 +7218,12 @@ impl DisplayListBuilder {
     if dest_w <= 0.0 || dest_h <= 0.0 {
       return true;
     }
-    let dest_rect =
-      Rect::from_xywh(content_rect.x() + dest_x, content_rect.y() + dest_y, dest_w, dest_h);
+    let dest_rect = Rect::from_xywh(
+      content_rect.x() + dest_x,
+      content_rect.y() + dest_y,
+      dest_w,
+      dest_h,
+    );
 
     let dest_w_device = dest_w * self.device_pixel_ratio;
     let dest_h_device = dest_h * self.device_pixel_ratio;

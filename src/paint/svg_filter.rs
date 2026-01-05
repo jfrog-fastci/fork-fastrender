@@ -4208,7 +4208,9 @@ fn apply_primitive(
       // resolving it against the *minimum* bbox dimension so that the displacement magnitude is
       // isotropic regardless of aspect ratio.
       let (sx, sy) = match filter.primitive_units {
-        SvgFilterUnits::UserSpaceOnUse => filter.resolve_primitive_pair((*disp_scale, *disp_scale), css_bbox),
+        SvgFilterUnits::UserSpaceOnUse => {
+          filter.resolve_primitive_pair((*disp_scale, *disp_scale), css_bbox)
+        }
         SvgFilterUnits::ObjectBoundingBox => {
           let reference = css_bbox.width().abs().min(css_bbox.height().abs());
           let resolved = disp_scale * reference;

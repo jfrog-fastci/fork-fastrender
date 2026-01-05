@@ -67,4 +67,3 @@ fn absolute_static_position_does_not_double_count_margin_left() {
     "unexpected green bbox: {green_bbox:?}"
   );
 }
-

@@ -48,4 +48,3 @@ fn parses_border_style_shorthand_two_values() {
   assert_eq!(div.styles.border_right_style, BorderStyle::Dashed);
   assert_eq!(div.styles.border_left_style, BorderStyle::Dashed);
 }
-

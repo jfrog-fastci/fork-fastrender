@@ -782,8 +782,12 @@ impl FormattingContext for FlexFormattingContext {
     // definite available size (fill-available), so only map min-/max-content here.
     if constraints.used_border_box_width.is_none() {
       match style.width_keyword {
-        Some(IntrinsicSizeKeyword::MinContent) => available_space.width = AvailableSpace::MinContent,
-        Some(IntrinsicSizeKeyword::MaxContent) => available_space.width = AvailableSpace::MaxContent,
+        Some(IntrinsicSizeKeyword::MinContent) => {
+          available_space.width = AvailableSpace::MinContent
+        }
+        Some(IntrinsicSizeKeyword::MaxContent) => {
+          available_space.width = AvailableSpace::MaxContent
+        }
         _ => {}
       }
     }
@@ -3174,7 +3178,9 @@ impl FormattingContext for FlexFormattingContext {
           || positioned_style.max_height_keyword.is_some();
         let needs_inline_intrinsics = has_inline_keyword
           || (positioned_style.width.is_auto()
-            && (positioned_style.left.is_auto() || positioned_style.right.is_auto() || is_replaced));
+            && (positioned_style.left.is_auto()
+              || positioned_style.right.is_auto()
+              || is_replaced));
         let needs_block_intrinsics = has_block_keyword
           || (positioned_style.height.is_auto()
             && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto()));
@@ -10200,8 +10206,11 @@ mod tests {
       item_style.width = None;
       item_style.width_keyword = Some(keyword);
       item_style.flex_shrink = 0.0;
-      let mut item =
-        BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![inline]);
+      let mut item = BoxNode::new_block(
+        Arc::new(item_style),
+        FormattingContextType::Block,
+        vec![inline],
+      );
       item.id = id;
       item
     };
@@ -10241,7 +10250,10 @@ mod tests {
     // Measure intrinsic sizes on a plain auto-sized box to pick a container width that is between
     // min- and max-content. This keeps the assertion robust across font metrics.
     let probe_id = 72001usize;
-    let probe_text = BoxNode::new_text(text_style.clone(), "fit content prefers available".to_string());
+    let probe_text = BoxNode::new_text(
+      text_style.clone(),
+      "fit content prefers available".to_string(),
+    );
     let probe_inline = BoxNode::new_inline(text_style.clone(), vec![probe_text]);
     let mut probe_box = BoxNode::new_block(
       Arc::new(ComputedStyle::default()),
@@ -10266,7 +10278,10 @@ mod tests {
     container_style.width_keyword = None;
 
     let item_id = 72002usize;
-    let item_text = BoxNode::new_text(text_style.clone(), "fit content prefers available".to_string());
+    let item_text = BoxNode::new_text(
+      text_style.clone(),
+      "fit content prefers available".to_string(),
+    );
     let item_inline = BoxNode::new_inline(text_style.clone(), vec![item_text]);
     let mut item_style = ComputedStyle::default();
     item_style.width = None;
@@ -10395,27 +10410,27 @@ mod tests {
         "1".to_string(),
       )]))),
       || {
-      let guard = start_flex_measure_inline_hint_counter();
-      let fc = FlexFormattingContext::new();
-      fc.layout(&container, &constraints).unwrap();
-      drop(guard);
-      assert_eq!(
-        flex_measure_inline_hint_calls(),
-        0,
-        "inline hint should not be computed when flex-measure logging is disabled",
-      );
+        let guard = start_flex_measure_inline_hint_counter();
+        let fc = FlexFormattingContext::new();
+        fc.layout(&container, &constraints).unwrap();
+        drop(guard);
+        assert_eq!(
+          flex_measure_inline_hint_calls(),
+          0,
+          "inline hint should not be computed when flex-measure logging is disabled",
+        );
       },
     );
 
     // When measure logging is enabled for this node, compute the hint for log output.
     with_thread_runtime_toggles(
-      Arc::new(RuntimeToggles::from_map(HashMap::from([(
-        "FASTR_LOG_FLEX_MEASURE_IDS".to_string(),
-        "65001".to_string(),
-      ), (
-        "FASTR_DISABLE_FLEX_CACHE".to_string(),
-        "1".to_string(),
-      )]))),
+      Arc::new(RuntimeToggles::from_map(HashMap::from([
+        (
+          "FASTR_LOG_FLEX_MEASURE_IDS".to_string(),
+          "65001".to_string(),
+        ),
+        ("FASTR_DISABLE_FLEX_CACHE".to_string(), "1".to_string()),
+      ]))),
       || {
         let guard = start_flex_measure_inline_hint_counter();
         let fc = FlexFormattingContext::new();

@@ -338,7 +338,7 @@ fn inline_and_block_sizes_map_in_sideways_writing_mode() {
     16.0,
   );
   resolve_pending_logical_properties(&mut style);
-  
+
   // Sideways modes share vertical inline axes with vertical writing: inline-size maps to height, block-size to width.
   assert_eq!(style.height, Some(Length::px(30.0)));
   assert_eq!(style.height_keyword, None);
@@ -365,7 +365,7 @@ fn inline_and_block_sizes_map_in_sideways_lr_writing_mode() {
     16.0,
   );
   resolve_pending_logical_properties(&mut style);
-  
+
   // Sideways modes map inline-size to the vertical axis and block-size to the horizontal axis.
   assert_eq!(style.height, Some(Length::px(24.0)));
   assert_eq!(style.height_keyword, None);

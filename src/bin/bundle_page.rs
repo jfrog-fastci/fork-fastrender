@@ -2208,9 +2208,11 @@ mod tests {
             Some("text/html".to_string()),
             Some(req.url.to_string()),
           )),
-          other if other.to_ascii_lowercase().starts_with("about:") => Err(fastrender::Error::Other(
-            "about: URL should not be fetched during bundle crawling".to_string(),
-          )),
+          other if other.to_ascii_lowercase().starts_with("about:") => {
+            Err(fastrender::Error::Other(
+              "about: URL should not be fetched during bundle crawling".to_string(),
+            ))
+          }
           other => Err(fastrender::Error::Other(format!(
             "unexpected fetch: {other}"
           ))),

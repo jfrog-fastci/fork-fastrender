@@ -74,4 +74,3 @@ fn parses_border_block_color_single_value() {
   assert_eq!(div.styles.border_top_color, Rgba::new(16, 17, 18, 1.0));
   assert_eq!(div.styles.border_bottom_color, Rgba::new(16, 17, 18, 1.0));
 }
-

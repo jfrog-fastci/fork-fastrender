@@ -9171,7 +9171,9 @@ impl InlineFormattingContext {
           || positioned_style.max_height_keyword.is_some();
         let needs_inline_intrinsics = has_inline_keyword
           || (positioned_style.width.is_auto()
-            && (positioned_style.left.is_auto() || positioned_style.right.is_auto() || is_replaced));
+            && (positioned_style.left.is_auto()
+              || positioned_style.right.is_auto()
+              || is_replaced));
         let needs_block_intrinsics = has_block_keyword
           || (positioned_style.height.is_auto()
             && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto()));
@@ -13997,7 +13999,10 @@ mod tests {
     let root = BoxNode::new_block(
       default_style(),
       FormattingContextType::Block,
-      vec![float_node, BoxNode::new_text(text_style, " world".to_string())],
+      vec![
+        float_node,
+        BoxNode::new_text(text_style, " world".to_string()),
+      ],
     );
 
     let items = ifc
