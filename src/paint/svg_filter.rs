@@ -2161,6 +2161,17 @@ fn normalize_filter_url(raw: &str) -> Option<String> {
 
   // Defensively strip nested url(...) wrappers that may have been serialized into the value.
   loop {
+    value = value.trim();
+    if value.is_empty() {
+      return None;
+    }
+
+    let unquoted = strip_matching_quotes(value);
+    if unquoted != value {
+      value = unquoted;
+      continue;
+    }
+
     let Some(open_paren) = value.find('(') else {
       break;
     };
@@ -2170,7 +2181,6 @@ fn normalize_filter_url(raw: &str) -> Option<String> {
     value = unwrap_url_function(value, open_paren)?;
   }
 
-  let value = strip_matching_quotes(value.trim());
   let normalized = value.trim();
   if normalized.is_empty() {
     None
@@ -6397,6 +6407,52 @@ mod tests {
     );
     assert_eq!(recorded.1, FetchDestination::Image);
     assert_eq!(recorded.2.as_deref(), Some(doc_url));
+  }
+
+  #[test]
+  fn svg_filter_resolver_normalizes_url_wrappers_and_resolves_svg_defs() {
+    let image_cache = ImageCache::new();
+    let mut svg_defs = HashMap::new();
+    svg_defs.insert(
+      "recolor".to_string(),
+      r#"<filter id="recolor"><feFlood flood-color="red" flood-opacity="1"/></filter>"#.to_string(),
+    );
+
+    let mut resolver =
+      SvgFilterResolver::new(Some(Arc::new(svg_defs)), Vec::new(), Some(&image_cache));
+
+    for input in [
+      "#recolor",
+      " url(#recolor) ",
+      "url(\"#recolor\")",
+      "url('url(#recolor)')",
+    ] {
+      assert!(
+        resolver.resolve(input).is_some(),
+        "expected filter reference to resolve for {input:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn svg_filter_resolver_rejects_url_wrapper_with_trailing_tokens() {
+    let image_cache = ImageCache::new();
+    let mut svg_defs = HashMap::new();
+    svg_defs.insert(
+      "recolor".to_string(),
+      r#"<filter id="recolor"><feFlood flood-color="red" flood-opacity="1"/></filter>"#.to_string(),
+    );
+
+    let mut resolver =
+      SvgFilterResolver::new(Some(Arc::new(svg_defs)), Vec::new(), Some(&image_cache));
+    assert!(
+      normalize_filter_url("url(#recolor) extra").is_none(),
+      "expected url(...) wrappers with trailing tokens to be rejected"
+    );
+    assert!(
+      resolver.resolve("url(#recolor) extra").is_none(),
+      "expected resolver to reject url(...) wrappers with trailing tokens"
+    );
   }
 
   #[test]
