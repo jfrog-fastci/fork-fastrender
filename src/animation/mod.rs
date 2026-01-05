@@ -5552,6 +5552,35 @@ mod tests {
   }
 
   #[test]
+  fn animation_time_sampling_does_not_warp_keyframe_boundaries_with_easing() {
+    let html = r#"
+      <!doctype html>
+      <style>
+        html, body { margin: 0; background: rgb(255, 255, 255); }
+        #box {
+          width: 100px;
+          height: 100px;
+          background-color: rgb(255, 0, 0);
+          animation: colors 1s ease-in forwards;
+        }
+        @keyframes colors {
+          0% { background-color: rgb(255, 0, 0); }
+          50% { background-color: rgb(0, 255, 0); }
+          100% { background-color: rgb(0, 0, 255); }
+        }
+      </style>
+      <div id="box"></div>
+    "#;
+
+    let base_url = Url::parse("https://example.com/").unwrap().to_string();
+    let rendered = render_animation_sampling_fixture(html, base_url, Some(500.0));
+    let image = decode_png(&rendered);
+    // At 50% progress the eased animation must land exactly on the 50% keyframe, not an interpolated
+    // value between the surrounding offsets.
+    assert_eq!(image.get_pixel(50, 50).0, [0, 255, 0, 255]);
+  }
+
+  #[test]
   fn animation_timeline_none_disables_time_based_animation() {
     let html = r#"<!DOCTYPE html>
 <html>
