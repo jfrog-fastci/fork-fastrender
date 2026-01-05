@@ -2550,15 +2550,10 @@ impl BlockFormattingContext {
           );
         }
         let pending_margin = margin_ctx.pending_margin();
-        // Hypothetical box for static position: use normal block width resolution to include auto margins.
-        let hypo_width = compute_block_width(
-          &child.style,
-          containing_width,
-          self.viewport_size,
-          inline_axis_sides(&child.style),
-          inline_axis_positive(child.style.writing_mode, child.style.direction),
-        );
-        let static_x = hypo_width.margin_left;
+        // Static position is based on the hypothetical in-flow margin edge. For normal blocks, the
+        // margin edge is aligned to the containing block start, so the inline coordinate is 0 and
+        // the absolute positioning constraint equation will apply the actual margin.
+        let static_x = 0.0;
         let static_y = current_y + pending_margin;
         let static_position = Some(Point::new(static_x, static_y));
         let source = match child.style.position {
