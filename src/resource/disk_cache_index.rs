@@ -293,19 +293,21 @@ impl DiskCacheIndex {
 
   fn refresh_locked(&self, state: &mut IndexState) -> std::io::Result<()> {
     let _journal_lock = self.lock_journal()?;
-    let _ = self.refresh_under_journal_lock(state)?;
-    Ok(())
+    self.refresh_under_journal_lock(state)
   }
 
   /// Replay journal changes into the in-memory index while the journal lock is held.
-  ///
-  /// Returns `true` when we had to reset and replay from the start (e.g. the journal shrank).
-  fn refresh_under_journal_lock(&self, state: &mut IndexState) -> std::io::Result<bool> {
+  fn refresh_under_journal_lock(&self, state: &mut IndexState) -> std::io::Result<()> {
     if !state.loaded {
       match self.replay_from_offset(state, 0) {
         Ok(()) => {
+          let pending = std::mem::take(&mut state.pending_backfills);
+          for record in pending.iter() {
+            self.apply_record(state, record.clone());
+          }
+          state.pending_backfills = pending;
           state.loaded = true;
-          return Ok(true);
+          return Ok(());
         }
         Err(err) => {
           // Fall through to rebuild.
@@ -324,13 +326,18 @@ impl DiskCacheIndex {
     if len < state.journal_len {
       self.reset_for_replay(state);
       self.replay_from_offset(state, 0)?;
+      let pending = std::mem::take(&mut state.pending_backfills);
+      for record in pending.iter() {
+        self.apply_record(state, record.clone());
+      }
+      state.pending_backfills = pending;
       state.loaded = true;
-      return Ok(true);
+      return Ok(());
     }
     if len > state.journal_len {
       self.replay_from_offset(state, state.journal_len)?;
     }
-    Ok(false)
+    Ok(())
   }
 
   fn append_records_locked(
@@ -342,25 +349,18 @@ impl DiskCacheIndex {
       return Ok(());
     }
 
+    let _journal_lock = self.lock_journal()?;
+    // Another process can append between the `refresh_locked()` done by the caller and this write.
+    // Catch up our in-memory `journal_len` while the journal lock is held so we don't replay our own
+    // flushed backfills after writing.
+    self.refresh_under_journal_lock(state)?;
+
     let pending = std::mem::take(&mut state.pending_backfills);
 
     let mut buf = Vec::new();
     for record in pending.iter().chain(records.iter()) {
       serde_json::to_writer(&mut buf, record)?;
       buf.push(b'\n');
-    }
-
-    let _journal_lock = self.lock_journal()?;
-    // Another process can append between the `refresh_locked()` done by the caller and this write.
-    // Catch up our in-memory `journal_len` while the journal lock is held so we don't replay our own
-    // flushed backfills after writing.
-    let reset = self.refresh_under_journal_lock(state)?;
-    if reset {
-      // A reset/replay clears the in-memory backfills; re-apply them in the same order we will
-      // append them so the in-memory index matches the resulting journal.
-      for record in pending.iter() {
-        self.apply_record(state, record.clone());
-      }
     }
     let start_offset = state.journal_len;
     let end_offset = {
@@ -372,8 +372,8 @@ impl DiskCacheIndex {
 
     let actual_start = end_offset.saturating_sub(buf.len() as u64);
     if actual_start == start_offset {
-      // `pending_backfills` were already applied to the in-memory index (either by
-      // `backfill_if_missing` or re-applied above after a reset).
+      // `pending_backfills` were already applied to the in-memory index (via `backfill_if_missing`
+      // or as part of a journal replay/reset).
       for record in records {
         self.apply_record(state, record);
       }
@@ -575,6 +575,7 @@ impl DiskCacheIndex {
           ));
         }
       };
+      self.drop_pending_backfill_record(state, &record);
       self.apply_record(state, record);
       processed_bytes = processed_bytes.saturating_add(n as u64);
       line.clear();
@@ -585,6 +586,25 @@ impl DiskCacheIndex {
     }
     state.journal_len = offset.saturating_add(processed_bytes);
     Ok(())
+  }
+
+  fn drop_pending_backfill_record(&self, state: &mut IndexState, record: &JournalRecord) {
+    if state.pending_backfills.is_empty() {
+      return;
+    }
+    let key = match record {
+      JournalRecord::Insert { key, .. } => key.as_str(),
+      JournalRecord::Remove { key } => key.as_str(),
+    };
+    state
+      .pending_backfills
+      .retain(|candidate| match candidate {
+        JournalRecord::Insert {
+          key: candidate_key,
+          ..
+        } => candidate_key.as_str() != key,
+        JournalRecord::Remove { key: candidate_key } => candidate_key.as_str() != key,
+      });
   }
 
   fn apply_record(&self, state: &mut IndexState, record: JournalRecord) {
@@ -762,6 +782,12 @@ impl DiskCacheIndex {
     state: &mut IndexState,
     record: JournalRecord,
   ) -> std::io::Result<()> {
+    let _journal_lock = self.lock_journal()?;
+    // Another process can append between the `refresh_locked()` done by the caller and this write.
+    // Catch up our in-memory `journal_len` while the journal lock is held so we don't replay our own
+    // flushed backfills after writing.
+    self.refresh_under_journal_lock(state)?;
+
     let pending = std::mem::take(&mut state.pending_backfills);
 
     let mut buf = Vec::new();
@@ -771,19 +797,6 @@ impl DiskCacheIndex {
     }
     serde_json::to_writer(&mut buf, &record)?;
     buf.push(b'\n');
-
-    let _journal_lock = self.lock_journal()?;
-    // Another process can append between the `refresh_locked()` done by the caller and this write.
-    // Catch up our in-memory `journal_len` while the journal lock is held so we don't replay our own
-    // flushed backfills after writing.
-    let reset = self.refresh_under_journal_lock(state)?;
-    if reset {
-      // A reset/replay clears the in-memory backfills; re-apply them in the same order we will
-      // append them so the in-memory index matches the resulting journal.
-      for record in pending.iter() {
-        self.apply_record(state, record.clone());
-      }
-    }
     let start_offset = state.journal_len;
     let end_offset = {
       let file = self.append_file_locked(state)?;
@@ -897,7 +910,6 @@ impl DiskCacheIndex {
     state.order.clear();
     state.total_bytes = 0;
     state.journal_len = 0;
-    state.pending_backfills.clear();
     state.journal_append = None;
     state.next_order = 0;
     state.loaded = false;
@@ -1308,6 +1320,46 @@ mod tests {
       state.pending_backfills.is_empty(),
       "pending backfills should be flushed"
     );
+  }
+
+  #[test]
+  fn pending_backfills_do_not_override_newer_journal_records_for_same_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    let journal_path = tmp.path().join("index.jsonl");
+    fs::write(&journal_path, b"").expect("seed empty journal");
+
+    // Process A reads an entry from disk and backfills it into its in-memory index, scheduling an
+    // insert to be flushed later.
+    let index_a = DiskCacheIndex::new(tmp.path().to_path_buf());
+    index_a.refresh();
+    let k_data = tmp.path().join("k.bin");
+    let k_meta = tmp.path().join("k.bin.meta");
+    index_a.backfill_if_missing("k", 1_700_000_000, 10, &k_data, &k_meta);
+
+    // Process B writes a newer version of the same key to the journal.
+    let index_b = DiskCacheIndex::new(tmp.path().to_path_buf());
+    let b_data = tmp.path().join("b.bin");
+    let b_meta = tmp.path().join("b.bin.meta");
+    index_b.record_insert("k", 1_700_000_001, 11, &b_data, &b_meta);
+
+    // When A appends anything (flushing its pending backfills), it should not append the stale
+    // backfill record after B's newer insert, which would incorrectly revert the journal state.
+    let other_data = tmp.path().join("other.bin");
+    let other_meta = tmp.path().join("other.bin.meta");
+    index_a.record_insert("other", 1_700_000_002, 1, &other_data, &other_meta);
+
+    let index = DiskCacheIndex::new(tmp.path().to_path_buf());
+    index.refresh();
+    let state = index
+      .state
+      .lock()
+      .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let entry = state.entries.get("k").expect("k should exist");
+    assert_eq!(
+      entry.stored_at, 1_700_000_001,
+      "stale pending backfills should not override newer journal inserts for the same key"
+    );
+    assert_eq!(entry.len, 11);
   }
 
   #[test]
