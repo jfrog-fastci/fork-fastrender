@@ -55,7 +55,8 @@ Filtering:
   Positional args are treated as fixture directory globs (matched against
   <fixtures-dir>/<glob>/index.html), then forwarded to `cargo xtask fixture-chrome-diff --fixtures <csv>`.
   If omitted, fixture selection defaults to the xtask implementation.
-  Any additional flags (e.g. `--all-fixtures`, `--from-progress`) are forwarded to `cargo xtask fixture-chrome-diff`.
+  Some additional `fixture-chrome-diff` selection/validation flags (e.g. `--all-fixtures`, `--from-progress`)
+  are also accepted and forwarded. For everything else, run `cargo xtask fixture-chrome-diff --help`.
 
 Output layout (matches `cargo xtask fixture-chrome-diff`):
   <out>/chrome/        Chrome PNGs/logs/metadata
@@ -140,6 +141,10 @@ while [[ $# -gt 0 ]]; do
       --jobs=*)
         JOBS="${1#*=}"; shift; continue ;;
       --jobs)
+        JOBS="${2:-}"; shift 2; continue ;;
+      -j=*)
+        JOBS="${1#*=}"; shift; continue ;;
+      -j)
         JOBS="${2:-}"; shift 2; continue ;;
       --write-snapshot)
         WRITE_SNAPSHOT=1; shift; continue ;;
@@ -228,9 +233,11 @@ while [[ $# -gt 0 ]]; do
       --dry-run)
         EXTRA_XTASK_ARGS+=(--dry-run); shift; continue ;;
       -*)
-        # Forward unknown flags to xtask so the wrapper stays in sync with new selection/validation
-        # options as `fixture-chrome-diff` evolves.
-        EXTRA_XTASK_ARGS+=("$1"); shift; continue ;;
+        echo "unknown option: $1" >&2
+        echo "Run \`cargo xtask fixture-chrome-diff --help\` for the canonical flag set." >&2
+        echo "If you meant to pass a fixture glob that begins with '-', put it after '--'." >&2
+        exit 2
+        ;;
       --)
         PARSE_FLAGS=0
         shift
