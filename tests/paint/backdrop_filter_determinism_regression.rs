@@ -193,8 +193,8 @@ fn backdrop_filter_pipeline_is_deterministic_across_rayon_thread_pools() {
     .name("backdrop-filter-determinism".to_string())
     .stack_size(STACK_SIZE)
     .spawn(|| {
-      const WIDTH: u32 = 480;
-      const HEIGHT: u32 = 360;
+      const WIDTH: u32 = 600;
+      const HEIGHT: u32 = 480;
       const RUNS_PER_POOL: usize = 3;
       const SCALE: f32 = 0.25;
       let output_width = ((WIDTH as f32) * SCALE).round().max(1.0) as u32;
@@ -202,17 +202,34 @@ fn backdrop_filter_pipeline_is_deterministic_across_rayon_thread_pools() {
       // Build the display list once so layout/paint ordering stays stable. Individual renders below
       // still exercise blur/backdrop-filter internals that use Rayon for fan-out.
       let (list, font_ctx) = build_display_list(WIDTH, HEIGHT);
-      let has_backdrop_blur = list.items().iter().any(|item| {
+      let mut has_backdrop_blur = false;
+      let mut has_filter_blur = false;
+      let mut has_mask = false;
+      for item in list.items() {
         let DisplayItem::PushStackingContext(sc) = item else {
-          return false;
+          continue;
         };
-        sc.backdrop_filters
+        has_backdrop_blur |= sc
+          .backdrop_filters
           .iter()
-          .any(|filter| matches!(filter, ResolvedFilter::Blur(_)))
-      });
+          .any(|filter| matches!(filter, ResolvedFilter::Blur(_)));
+        has_filter_blur |= sc
+          .filters
+          .iter()
+          .any(|filter| matches!(filter, ResolvedFilter::Blur(_)));
+        has_mask |= sc.mask.is_some();
+      }
       assert!(
         has_backdrop_blur,
         "fixture did not produce a backdrop blur stacking context for the chosen viewport"
+      );
+      assert!(
+        has_filter_blur,
+        "fixture did not produce a filter blur stacking context for the chosen viewport"
+      );
+      assert!(
+        has_mask,
+        "fixture did not produce a mask-image stacking context for the chosen viewport"
       );
       let toggles = blur_cache_toggles();
 
@@ -264,12 +281,15 @@ fn backdrop_filter_pipeline_is_deterministic_across_rayon_thread_pools() {
             .expect("parallel render")
         })
       });
-      assert!(
-        report.parallel_used,
-        "expected fixture to use parallel tiling (fallback={:?})",
-        report.fallback_reason
-      );
-      assert!(report.tiles > 1, "expected multiple tiles to be rendered");
+      let cpu_budget = fastrender::system::cpu_budget();
+      if cpu_budget > 1 {
+        assert!(
+          report.parallel_used,
+          "expected fixture to use parallel tiling (fallback={:?})",
+          report.fallback_reason
+        );
+        assert!(report.tiles > 1, "expected multiple tiles to be rendered");
+      }
       if reference.as_slice() != report.pixmap.data() {
         panic!(
           "parallel tiling output diverged from serial (parallel_used={}, tiles={}, fallback={:?})\n  serial_hash={:016x}\n  parallel_hash={:016x}\n  {}",
