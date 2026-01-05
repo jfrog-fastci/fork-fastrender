@@ -7632,6 +7632,48 @@ mod tests {
   }
 
   #[test]
+  fn flex_layout_cache_is_pure_memoization_for_definite_widths() {
+    // Regression test: the flex layout fragment cache must behave like pure memoization. When the
+    // cache key is lossy (quantized) and/or the cache reuses "near" fragments, the fragment
+    // returned for a given set of constraints can depend on which similar layout ran first.
+    //
+    // Use two widths that used to collide in the quantized key (5000/5020 -> 4992) and are also
+    // within the old `find_fragment` tolerance band.
+    let viewport = Size::new(10_000.0, 1_000.0);
+    let measured_fragments = Arc::new(ShardedFlexCache::new_measure());
+    let layout_fragments = Arc::new(ShardedFlexCache::new_layout());
+    let fc = FlexFormattingContext::with_viewport_and_cb(
+      viewport,
+      ContainingBlock::viewport(viewport),
+      FontContext::new(),
+      measured_fragments.clone(),
+      layout_fragments.clone(),
+    )
+    .with_parallelism(LayoutParallelism::disabled());
+
+    let mut container = BoxNode::new_block(create_flex_style(), FormattingContextType::Flex, vec![]);
+    container.id = 1;
+
+    let constraints_a = LayoutConstraints::definite(5000.0, 0.0);
+    let constraints_b = LayoutConstraints::definite(5020.0, 0.0);
+
+    // Layout A then B.
+    let fragment_a = fc.layout(&container, &constraints_a).expect("layout A");
+    assert_eq!(fragment_a.bounds.width(), 5000.0);
+    let fragment_b = fc.layout(&container, &constraints_b).expect("layout B");
+    assert_eq!(fragment_b.bounds.width(), 5020.0);
+
+    // Reset caches and repeat in the opposite order.
+    layout_fragments.clear();
+    measured_fragments.clear();
+
+    let fragment_b = fc.layout(&container, &constraints_b).expect("layout B-first");
+    assert_eq!(fragment_b.bounds.width(), 5020.0);
+    let fragment_a = fc.layout(&container, &constraints_a).expect("layout A-second");
+    assert_eq!(fragment_a.bounds.width(), 5000.0);
+  }
+
+  #[test]
   fn flex_tree_build_times_out_via_deadline_checks() {
     use crate::render_control::{DeadlineGuard, RenderDeadline};
     use std::time::Duration;
