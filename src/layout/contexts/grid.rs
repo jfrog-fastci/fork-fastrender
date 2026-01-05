@@ -5810,6 +5810,154 @@ impl FormattingContext for GridFormattingContext {
       }
     }
 
+    // Resolve intrinsic sizing keywords used in root min/max size properties. The cached Taffy
+    // template represents these keywords as `auto`, but the root node is never resolved via the
+    // per-item keyword path.
+    if (constraints.used_border_box_width.is_none()
+      && (style.min_width_keyword.is_some() || style.max_width_keyword.is_some()))
+      || (constraints.used_border_box_height.is_none()
+        && (style.min_height_keyword.is_some() || style.max_height_keyword.is_some()))
+    {
+      if let Ok(existing) = taffy.style(root_id) {
+        let mut updated = existing.clone();
+        let mut changed = false;
+
+        let keyword_to_mode = |kw: IntrinsicSizeKeyword| match kw {
+          IntrinsicSizeKeyword::MinContent => Some(IntrinsicSizingMode::MinContent),
+          IntrinsicSizeKeyword::MaxContent => Some(IntrinsicSizingMode::MaxContent),
+          IntrinsicSizeKeyword::FitContent { .. } => None,
+        };
+
+        let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+        let run_with_override = |override_style: Arc<ComputedStyle>,
+                                 f: &dyn Fn(&BoxNode) -> Result<f32, LayoutError>|
+         -> Result<f32, LayoutError> {
+          if box_node.id() != 0 {
+            crate::layout::style_override::with_style_override(box_node.id(), override_style, || {
+              f(box_node)
+            })
+          } else {
+            let mut cloned = box_node.clone();
+            cloned.style = override_style;
+            f(&cloned)
+          }
+        };
+
+        let intrinsic_physical_width =
+          |node: &BoxNode, mode: IntrinsicSizingMode| -> Result<f32, LayoutError> {
+          if inline_is_horizontal {
+            self.compute_intrinsic_inline_size(node, mode)
+          } else {
+            self.compute_intrinsic_block_size(node, mode)
+          }
+        };
+        let intrinsic_physical_height =
+          |node: &BoxNode, mode: IntrinsicSizingMode| -> Result<f32, LayoutError> {
+          if inline_is_horizontal {
+            self.compute_intrinsic_block_size(node, mode)
+          } else {
+            self.compute_intrinsic_inline_size(node, mode)
+          }
+        };
+
+        if constraints.used_border_box_width.is_none() {
+          let width_override_needed = style.min_width_keyword.is_some() || style.max_width_keyword.is_some();
+          if width_override_needed {
+            let mut override_style: ComputedStyle = (*style).clone();
+            override_style.width = None;
+            override_style.width_keyword = None;
+            override_style.min_width = None;
+            override_style.min_width_keyword = None;
+            override_style.max_width = None;
+            override_style.max_width_keyword = None;
+            let override_style = Arc::new(override_style);
+
+            if style.min_width.is_none() {
+              if let Some(mode) = style.min_width_keyword.and_then(keyword_to_mode) {
+                match run_with_override(override_style.clone(), &|node| {
+                  intrinsic_physical_width(node, mode)
+                }) {
+                  Ok(border_box) if border_box.is_finite() => {
+                    updated.min_size.width = Dimension::length(border_box.max(0.0));
+                    changed = true;
+                  }
+                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                  Err(_) => {}
+                  _ => {}
+                }
+              }
+            }
+            if style.max_width.is_none() {
+              if let Some(mode) = style.max_width_keyword.and_then(keyword_to_mode) {
+                match run_with_override(override_style.clone(), &|node| {
+                  intrinsic_physical_width(node, mode)
+                }) {
+                  Ok(border_box) if border_box.is_finite() => {
+                    updated.max_size.width = Dimension::length(border_box.max(0.0));
+                    changed = true;
+                  }
+                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                  Err(_) => {}
+                  _ => {}
+                }
+              }
+            }
+          }
+        }
+
+        if constraints.used_border_box_height.is_none() {
+          let height_override_needed = style.min_height_keyword.is_some() || style.max_height_keyword.is_some();
+          if height_override_needed {
+            let mut override_style: ComputedStyle = (*style).clone();
+            override_style.height = None;
+            override_style.height_keyword = None;
+            override_style.min_height = None;
+            override_style.min_height_keyword = None;
+            override_style.max_height = None;
+            override_style.max_height_keyword = None;
+            let override_style = Arc::new(override_style);
+
+            if style.min_height.is_none() {
+              if let Some(mode) = style.min_height_keyword.and_then(keyword_to_mode) {
+                match run_with_override(override_style.clone(), &|node| {
+                  intrinsic_physical_height(node, mode)
+                }) {
+                  Ok(border_box) if border_box.is_finite() => {
+                    updated.min_size.height = Dimension::length(border_box.max(0.0));
+                    changed = true;
+                  }
+                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                  Err(_) => {}
+                  _ => {}
+                }
+              }
+            }
+            if style.max_height.is_none() {
+              if let Some(mode) = style.max_height_keyword.and_then(keyword_to_mode) {
+                match run_with_override(override_style.clone(), &|node| {
+                  intrinsic_physical_height(node, mode)
+                }) {
+                  Ok(border_box) if border_box.is_finite() => {
+                    updated.max_size.height = Dimension::length(border_box.max(0.0));
+                    changed = true;
+                  }
+                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                  Err(_) => {}
+                  _ => {}
+                }
+              }
+            }
+          }
+        }
+
+        if changed {
+          taffy
+            .set_style(root_id, updated)
+            .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+        }
+      }
+    }
+
     // Convert constraints to Taffy available space
     let mut available_space = taffy::geometry::Size {
       width: match constraints.available_width {
@@ -7181,6 +7329,62 @@ mod tests {
     assert!(
       (fragment.bounds.width() - 200.0).abs() < 0.01,
       "expected max-content grid width to equal the sum of fixed tracks, got {:.2}",
+      fragment.bounds.width()
+    );
+  }
+
+  #[test]
+  fn grid_root_max_width_keyword_max_content_clamps_auto_width() {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut style = ComputedStyle::default();
+    style.display = CssDisplay::Grid;
+    style.width = None;
+    style.width_keyword = None;
+    style.max_width = None;
+    style.max_width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+    style.grid_template_columns = vec![
+      GridTrack::Length(Length::px(80.0)),
+      GridTrack::Length(Length::px(120.0)),
+    ];
+    style.grid_template_rows = vec![GridTrack::Length(Length::px(40.0))];
+    let child = BoxNode::new_block(make_item_style(), FormattingContextType::Block, vec![]);
+    let grid = BoxNode::new_block(Arc::new(style), FormattingContextType::Grid, vec![child]);
+
+    let constraints = LayoutConstraints::definite(500.0, 200.0);
+    let fragment = fc.layout(&grid, &constraints).expect("grid layout should succeed");
+
+    assert!(
+      (fragment.bounds.width() - 200.0).abs() < 0.01,
+      "expected max-width:max-content grid width to equal the sum of fixed tracks, got {:.2}",
+      fragment.bounds.width()
+    );
+  }
+
+  #[test]
+  fn grid_root_min_width_keyword_max_content_overflows_available_width() {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut style = ComputedStyle::default();
+    style.display = CssDisplay::Grid;
+    style.width = None;
+    style.width_keyword = None;
+    style.min_width = None;
+    style.min_width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+    style.grid_template_columns = vec![
+      GridTrack::Length(Length::px(80.0)),
+      GridTrack::Length(Length::px(120.0)),
+    ];
+    style.grid_template_rows = vec![GridTrack::Length(Length::px(40.0))];
+    let child = BoxNode::new_block(make_item_style(), FormattingContextType::Block, vec![]);
+    let grid = BoxNode::new_block(Arc::new(style), FormattingContextType::Grid, vec![child]);
+
+    let constraints = LayoutConstraints::definite(100.0, 200.0);
+    let fragment = fc.layout(&grid, &constraints).expect("grid layout should succeed");
+
+    assert!(
+      (fragment.bounds.width() - 200.0).abs() < 0.01,
+      "expected min-width:max-content grid width to equal the sum of fixed tracks, got {:.2}",
       fragment.bounds.width()
     );
   }
