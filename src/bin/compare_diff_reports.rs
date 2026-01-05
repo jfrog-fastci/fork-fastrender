@@ -2,7 +2,7 @@ mod common;
 
 use clap::Parser;
 use common::report::{
-  display_path, ensure_parent_dir, entry_anchor_id, escape_html, path_for_report,
+  display_path, ensure_parent_dir, entry_anchor_id, escape_html, format_linked_image, path_for_report,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -1827,16 +1827,6 @@ fn resolve_report_path(report_dir: &Path, report_relative_path: &str) -> PathBuf
   } else {
     report_dir.join(raw)
   }
-}
-
-fn format_linked_image(label: &str, path: &str) -> String {
-  let escaped = escape_html(path);
-  let label = escape_html(label);
-  format!(
-    r#"<div class="thumb"><a href="{p}">{l}</a><br><a href="{p}"><img src="{p}" alt="{l}" loading="lazy"></a></div>"#,
-    p = escaped,
-    l = label,
-  )
 }
 
 fn format_report_link(href: &str) -> String {

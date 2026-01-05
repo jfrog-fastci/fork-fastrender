@@ -60,3 +60,14 @@ pub fn entry_anchor_id(name: &str) -> String {
   }
   format!("entry-{hash:016x}")
 }
+
+/// Render a small thumbnail block for an image path that links to the full-size asset.
+pub fn format_linked_image(label: &str, path: &str) -> String {
+  let escaped = escape_html(path);
+  let label = escape_html(label);
+  format!(
+    r#"<div class="thumb"><a href="{p}">{l}</a><br><a href="{p}"><img src="{p}" alt="{l}" loading="lazy"></a></div>"#,
+    p = escaped,
+    l = label
+  )
+}

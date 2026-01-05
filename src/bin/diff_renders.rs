@@ -2,7 +2,7 @@ mod common;
 
 use clap::Parser;
 use common::report::{
-  display_path, ensure_parent_dir, entry_anchor_id, escape_html, path_for_report,
+  display_path, ensure_parent_dir, entry_anchor_id, escape_html, format_linked_image, path_for_report,
 };
 use fastrender::image_output::{diff_png_with_alpha, DiffMetrics};
 use serde::Serialize;
@@ -1047,16 +1047,6 @@ fn sort_entries(entries: &mut [DiffReportEntry], sort_by: SortBy) {
 
     a.name.cmp(&b.name)
   });
-}
-
-fn format_linked_image(label: &str, path: &str) -> String {
-  let escaped = escape_html(path);
-  let label = escape_html(label);
-  format!(
-    r#"<div class="thumb"><a href="{p}">{l}</a><br><a href="{p}"><img src="{p}" alt="{l}" loading="lazy"></a></div>"#,
-    p = escaped,
-    l = label
-  )
 }
 
 fn normalize_dir(path: &Path) -> Result<PathBuf, String> {

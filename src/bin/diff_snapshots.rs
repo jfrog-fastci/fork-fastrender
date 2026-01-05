@@ -2,7 +2,7 @@ mod common;
 
 use clap::Parser;
 use common::report::{
-  display_path, ensure_parent_dir, entry_anchor_id, escape_html, path_for_report,
+  display_path, ensure_parent_dir, entry_anchor_id, escape_html, format_linked_image, path_for_report,
 };
 use fastrender::debug::snapshot::{
   BoxKindSnapshot, BoxNodeSnapshot, DisplayItemSnapshot, DisplayListSnapshot, DomNodeKindSnapshot,
@@ -1452,16 +1452,6 @@ fn write_html_report(report: &SnapshotDiffReport, path: &Path) -> Result<(), Str
   );
 
   fs::write(path, content).map_err(|e| format!("failed to write {}: {e}", path.display()))
-}
-
-fn format_linked_image(label: &str, path: &str) -> String {
-  let escaped = escape_html(path);
-  let label = escape_html(label);
-  format!(
-    r#"<div class="thumb"><a href="{p}">{l}</a><br><a href="{p}"><img src="{p}" alt="{l}" loading="lazy"></a></div>"#,
-    p = escaped,
-    l = label
-  )
 }
 
 fn render_schema(schema: &SchemaSummary) -> String {
