@@ -246,6 +246,130 @@ impl InlineItem {
       }
     }
   }
+
+  fn contains_hard_break(&self) -> bool {
+    match self {
+      InlineItem::HardBreak => true,
+      InlineItem::InlineBox(b) => b.children.iter().any(|c| c.contains_hard_break()),
+      InlineItem::Ruby(r) => r.segments.iter().any(|seg| {
+        seg.base_items.iter().any(|c| c.contains_hard_break())
+          || seg
+            .annotation_top
+            .as_ref()
+            .is_some_and(|items| items.iter().any(|c| c.contains_hard_break()))
+          || seg
+            .annotation_bottom
+            .as_ref()
+            .is_some_and(|items| items.iter().any(|c| c.contains_hard_break()))
+      }),
+      InlineItem::Text(_)
+      | InlineItem::Tab(_)
+      | InlineItem::InlineBlock(_)
+      | InlineItem::Replaced(_)
+      | InlineItem::Floating(_)
+      | InlineItem::StaticPositionAnchor(_) => false,
+    }
+  }
+
+  /// Hoists hard breaks nested inside container inline items (inline boxes, ruby) into a flat stream.
+  ///
+  /// `InlineItem::HardBreak` itself does not generate fragments; it must be consumed by `LineBuilder`
+  /// at the top level. If hard breaks are left nested (e.g. inside an inline box), fragment
+  /// creation will hit the debug assertions meant to enforce that invariant.
+  fn hoist_hard_breaks(self) -> Vec<Self> {
+    match self {
+      InlineItem::HardBreak => vec![InlineItem::HardBreak],
+      InlineItem::InlineBox(inline_box) => {
+        let InlineBoxItem {
+          box_id,
+          children,
+          start_edge,
+          end_edge,
+          content_offset_y,
+          border_left,
+          border_right,
+          border_top,
+          border_bottom,
+          metrics,
+          vertical_align,
+          box_index,
+          direction,
+          unicode_bidi,
+          style,
+        } = inline_box;
+
+        let mut segments: Vec<Vec<InlineItem>> = Vec::new();
+        let mut current: Vec<InlineItem> = Vec::new();
+
+        for child in children {
+          for part in child.hoist_hard_breaks() {
+            if matches!(part, InlineItem::HardBreak) {
+              segments.push(std::mem::take(&mut current));
+            } else {
+              current.push(part);
+            }
+          }
+        }
+        segments.push(current);
+
+        let segments_len = segments.len();
+        let mut out = Vec::new();
+        for (idx, segment_children) in segments.into_iter().enumerate() {
+          if !segment_children.is_empty() {
+            out.push(InlineItem::InlineBox(InlineBoxItem {
+              box_id,
+              children: segment_children,
+              start_edge,
+              end_edge,
+              content_offset_y,
+              border_left,
+              border_right,
+              border_top,
+              border_bottom,
+              metrics,
+              vertical_align,
+              box_index,
+              direction,
+              unicode_bidi,
+              style: style.clone(),
+            }));
+          }
+          if idx + 1 < segments_len {
+            out.push(InlineItem::HardBreak);
+          }
+        }
+
+        out
+      }
+      InlineItem::Ruby(ruby) => {
+        let contains_hard_break = ruby.segments.iter().any(|seg| {
+          seg.base_items.iter().any(|c| c.contains_hard_break())
+            || seg
+              .annotation_top
+              .as_ref()
+              .is_some_and(|items| items.iter().any(|c| c.contains_hard_break()))
+            || seg
+              .annotation_bottom
+              .as_ref()
+              .is_some_and(|items| items.iter().any(|c| c.contains_hard_break()))
+        });
+        if !contains_hard_break {
+          return vec![InlineItem::Ruby(ruby)];
+        }
+
+        // Ruby is laid out as an atomic unit. If a hard break sneaks inside, degrade to emitting the
+        // base items as a plain inline stream so mandatory breaks are still honored.
+        let mut out = Vec::new();
+        for segment in ruby.segments {
+          for item in segment.base_items {
+            out.extend(item.hoist_hard_breaks());
+          }
+        }
+        out
+      }
+      other => vec![other],
+    }
+  }
 }
 
 /// Inline placeholder that marks where a positioned element would appear in flow.
@@ -2426,6 +2550,12 @@ impl<'a> LineBuilder<'a> {
       self.truncated = true;
       return Ok(());
     }
+    if item.contains_hard_break() {
+      for part in item.hoist_hard_breaks() {
+        self.add_item(part)?;
+      }
+      return Ok(());
+    }
     check_layout_deadline(&mut self.deadline_counter)?;
     let (item, item_width) = item.resolve_width_at(self.current_x);
     let line_width = self.current_line_width();
@@ -3884,6 +4014,44 @@ mod tests {
       source_range: 0..text.len(),
       source_id: TextItem::hash_text(text),
     }
+  }
+
+  #[test]
+  fn hard_breaks_nested_in_inline_boxes_are_hoisted() {
+    let mut builder = make_builder(200.0);
+    let mut inline_box = InlineBoxItem::new(
+      0.0,
+      0.0,
+      0.0,
+      make_strut_metrics(),
+      Arc::new(ComputedStyle::default()),
+      0,
+      Direction::Ltr,
+      UnicodeBidi::Normal,
+    );
+
+    inline_box.add_child(InlineItem::Text(make_text_item("foo", 30.0)));
+    inline_box.add_child(InlineItem::HardBreak);
+    inline_box.add_child(InlineItem::Text(make_text_item("bar", 30.0)));
+    builder.add_item(InlineItem::InlineBox(inline_box)).unwrap();
+
+    let lines = builder.finish().unwrap().lines;
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].ends_with_hard_break);
+    assert!(!lines[1].ends_with_hard_break);
+
+    let line0_text: String = lines[0]
+      .items
+      .iter()
+      .map(|p| flatten_text(&p.item))
+      .collect();
+    let line1_text: String = lines[1]
+      .items
+      .iter()
+      .map(|p| flatten_text(&p.item))
+      .collect();
+    assert_eq!(line0_text, "foo");
+    assert_eq!(line1_text, "bar");
   }
 
   fn old_find_break_point(item: &TextItem, max_width: f32) -> Option<BreakOpportunity> {
