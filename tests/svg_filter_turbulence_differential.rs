@@ -1,3 +1,22 @@
+//! Differential (randomized) reference test for SVG `feTurbulence`.
+//!
+//! This compares FastRender's SVG filter executor against resvg across a deterministic sweep of
+//! parameter combinations. It is intended to lock down subtle semantics such as coordinate mapping,
+//! primitiveUnits/objectBoundingBox behavior, stitchTiles periods, and rounding.
+//!
+//! The test is `#[ignore]` by default because FastRender may temporarily diverge while the
+//! turbulence implementation evolves. Run it manually with:
+//! `cargo test --test svg_filter_turbulence_differential -- --ignored`
+//!
+//! Debug knobs:
+//! - `FASTR_TURBULENCE_DIFF_SEED` (u32): RNG seed override.
+//! - `FASTR_TURBULENCE_DIFF_CASES` (usize): number of cases (clamped 1..512).
+//! - `FASTR_TURBULENCE_DIFF_ONLY` (usize): run a single case index.
+//! - `FASTR_TURBULENCE_DIFF_START` (usize): start at a case index.
+//! - `FASTR_TURBULENCE_DIFF_TOL` (u8, clamped 0..1): byte tolerance.
+//! - `FASTR_TURBULENCE_DIFF_DUMP=1`: dump PNG+SVG artifacts on mismatch to
+//!   `target/turbulence_differential/`.
+
 use fastrender::geometry::Rect;
 use fastrender::paint::svg_filter::{
   apply_svg_filter, ColorInterpolationFilters, FilterPrimitive, FilterStep, SvgFilter,
