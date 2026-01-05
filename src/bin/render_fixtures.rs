@@ -948,6 +948,11 @@ fn write_nondeterminism_outputs(
 ) -> io::Result<()> {
   let fixture_dir = snapshot_dir_for(out_dir, stem);
   let nondet_dir = fixture_dir.join("nondeterminism");
+  // Clear any existing nondeterminism artifacts so reruns don't leave behind stale variant files
+  // (e.g. a previous run found more variants than the current run).
+  if nondet_dir.exists() {
+    fs::remove_dir_all(&nondet_dir)?;
+  }
   fs::create_dir_all(&nondet_dir)?;
 
   // Variant 0 is the baseline output already written by the main render pass.
