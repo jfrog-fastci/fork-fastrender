@@ -125,9 +125,7 @@ use crate::text::pipeline::GlyphPosition;
 use lru::LruCache;
 use rayon::prelude::*;
 use rustybuzz::Variation;
-#[cfg(test)]
-use std::cell::Cell;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
@@ -161,6 +159,9 @@ use tiny_skia::Transform;
 const DEADLINE_STRIDE: usize = 256;
 const CLIP_MASK_DEADLINE_STRIDE: usize = 16 * 1024;
 const PRESERVE_3D_SCENE_RECURSION_LIMIT: usize = 32;
+const PRESERVE_3D_PLANE_PARALLEL_MIN_PLANES: usize = 8;
+const PRESERVE_3D_PLANE_PARALLEL_MIN_PLANES_WITH_WORK: usize = 4;
+const PRESERVE_3D_PLANE_PARALLEL_MIN_TOTAL_PIXELS: u64 = 512 * 512;
 const TILE_HALO_SAFETY_MARGIN_CSS: f32 = 4.0;
 const MAX_PARALLEL_TILE_PIXEL_AMPLIFICATION: u128 = 8;
 
@@ -501,6 +502,15 @@ fn runtime_flag(name: &str) -> bool {
 #[inline]
 fn deterministic_paint_enabled() -> bool {
   cfg!(test) || runtime_flag("FASTR_DETERMINISTIC_PAINT")
+}
+
+fn runtime_bool_override(name: &str) -> Option<bool> {
+  let toggles = crate::debug::runtime::runtime_toggles();
+  let raw = toggles.get(name)?;
+  if raw.trim().eq_ignore_ascii_case("auto") {
+    return None;
+  }
+  Some(toggles.truthy(name))
 }
 
 fn projective_warp_enabled() -> bool {
@@ -2915,6 +2925,127 @@ struct Preserve3dSceneItem {
 enum Preserve3dSceneItemSource {
   Segment(Vec<DisplayItem>),
   FlattenedSubtree(StackingNode),
+}
+
+thread_local! {
+  static PRESERVE_3D_PLANE_PARALLEL_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+struct Preserve3dPlaneParallelGuard;
+
+impl Preserve3dPlaneParallelGuard {
+  fn enter() -> Self {
+    PRESERVE_3D_PLANE_PARALLEL_DEPTH.with(|depth| {
+      depth.set(depth.get().saturating_add(1));
+    });
+    Self
+  }
+}
+
+impl Drop for Preserve3dPlaneParallelGuard {
+  fn drop(&mut self) {
+    PRESERVE_3D_PLANE_PARALLEL_DEPTH.with(|depth| {
+      depth.set(depth.get().saturating_sub(1));
+    });
+  }
+}
+
+fn preserve_3d_plane_parallel_active() -> bool {
+  PRESERVE_3D_PLANE_PARALLEL_DEPTH.with(|depth| depth.get() > 0)
+}
+
+#[derive(Clone)]
+struct Preserve3dSceneRasterConfig {
+  font_ctx: FontContext,
+  scale: f32,
+  preserve_3d_disabled: bool,
+  preserve_3d_scene_depth: usize,
+  gradient_cache: GradientLutCache,
+  gradient_pixmap_cache: GradientPixmapCache,
+  diagnostics_enabled: bool,
+  image_pixmap_diagnostics: Option<Arc<ImagePixmapDiagnostics>>,
+  background_paint_diagnostics: Option<Arc<BackgroundPaintDiagnostics>>,
+  clip_mask_diagnostics: Option<Arc<ClipMaskDiagnostics>>,
+  layer_alloc_diagnostics: Option<Arc<LayerAllocationDiagnostics>>,
+}
+
+impl Preserve3dSceneRasterConfig {
+  fn rasterize(&self, item: &Preserve3dSceneItem) -> Result<(Option<Pixmap>, GradientStats)> {
+    let bounds = item.bounds;
+    if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+      return Ok((None, GradientStats::default()));
+    }
+
+    let width = (bounds.width() * self.scale).ceil().max(1.0) as u32;
+    let height = (bounds.height() * self.scale).ceil().max(1.0) as u32;
+
+    let mut list = DisplayList::new();
+    let translation = Transform3D::translate(-bounds.x(), -bounds.y(), 0.0);
+    list.push(DisplayItem::PushTransform(TransformItem {
+      transform: translation,
+    }));
+    for effect in &item.effects {
+      list.push(effect.push_item(bounds));
+    }
+
+    let mut effects_after = item.effects.clone();
+    match &item.source {
+      Preserve3dSceneItemSource::Segment(items) => {
+        let mut deadline_counter = 0usize;
+        for it in items {
+          check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
+            .map_err(Error::Render)?;
+          update_scene_effect_stack(&mut effects_after, it, Transform3D::identity());
+          list.push(it.clone());
+        }
+      }
+      Preserve3dSceneItemSource::FlattenedSubtree(node) => {
+        let mut deadline_counter = 0usize;
+        for (i, it) in node.subtree_items.iter().enumerate() {
+          check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
+            .map_err(Error::Render)?;
+          if i == 0 {
+            if let DisplayItem::PushStackingContext(sc) = it {
+              let mut adjusted = sc.clone();
+              adjusted.transform = None;
+              adjusted.backdrop_filters.clear();
+              let display_item = DisplayItem::PushStackingContext(adjusted);
+              update_scene_effect_stack(&mut effects_after, &display_item, Transform3D::identity());
+              list.push(display_item);
+              continue;
+            }
+          }
+          update_scene_effect_stack(&mut effects_after, it, Transform3D::identity());
+          list.push(it.clone());
+        }
+      }
+    }
+
+    for effect in effects_after.iter().rev() {
+      list.push(effect.pop_item());
+    }
+    list.push(DisplayItem::PopTransform);
+
+    let mut renderer = DisplayListRenderer::new_scaled(
+      width,
+      height,
+      Rgba::TRANSPARENT,
+      self.font_ctx.clone(),
+      self.scale,
+    )?;
+    renderer.preserve_3d_disabled = self.preserve_3d_disabled;
+    renderer.preserve_3d_scene_depth = self.preserve_3d_scene_depth.saturating_add(1);
+    renderer.paint_parallelism = PaintParallelism::disabled();
+    renderer.gradient_cache = self.gradient_cache.clone();
+    renderer.gradient_pixmap_cache = self.gradient_pixmap_cache.clone();
+    renderer.diagnostics_enabled = self.diagnostics_enabled;
+    renderer.image_pixmap_diagnostics = self.image_pixmap_diagnostics.clone();
+    renderer.background_paint_diagnostics = self.background_paint_diagnostics.clone();
+    renderer.clip_mask_diagnostics = self.clip_mask_diagnostics.clone();
+    renderer.layer_alloc_diagnostics = self.layer_alloc_diagnostics.clone();
+    let report = renderer.render_with_report(&list)?;
+    Ok((Some(report.pixmap), report.gradient_stats))
+  }
 }
 
 #[derive(Clone, Debug)]
@@ -7059,6 +7190,137 @@ impl DisplayListRenderer {
     Ok(())
   }
 
+  fn preserve_3d_scene_raster_config(&self) -> Preserve3dSceneRasterConfig {
+    Preserve3dSceneRasterConfig {
+      font_ctx: self.font_ctx.clone(),
+      scale: self.scale,
+      preserve_3d_disabled: self.preserve_3d_disabled,
+      preserve_3d_scene_depth: self.preserve_3d_scene_depth,
+      gradient_cache: self.gradient_cache.clone(),
+      gradient_pixmap_cache: self.gradient_pixmap_cache.clone(),
+      diagnostics_enabled: self.diagnostics_enabled,
+      image_pixmap_diagnostics: self.image_pixmap_diagnostics.clone(),
+      background_paint_diagnostics: self.background_paint_diagnostics.clone(),
+      clip_mask_diagnostics: self.clip_mask_diagnostics.clone(),
+      layer_alloc_diagnostics: self.layer_alloc_diagnostics.clone(),
+    }
+  }
+
+  fn estimate_preserve_3d_plane_pixels(&self, bounds: Rect) -> u64 {
+    if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+      return 0;
+    }
+    if !bounds.width().is_finite() || !bounds.height().is_finite() {
+      return 0;
+    }
+    let width = (bounds.width() * self.scale).ceil().max(1.0) as u64;
+    let height = (bounds.height() * self.scale).ceil().max(1.0) as u64;
+    width.saturating_mul(height)
+  }
+
+  fn should_rasterize_preserve_3d_planes_parallel(&self, scene_items: &[Preserve3dSceneItem]) -> bool {
+    if scene_items.len() < 2 {
+      return false;
+    }
+
+    // Avoid recursively parallelizing preserve-3d contexts created by plane-level raster tasks.
+    if preserve_3d_plane_parallel_active() {
+      return false;
+    }
+
+    if let Some(force) = runtime_bool_override("FASTR_PRESERVE3D_PLANE_PARALLEL") {
+      return force;
+    }
+
+    let task_capacity = self.parallel_thread_budget(scene_items.len());
+    if task_capacity <= 1 {
+      return false;
+    }
+
+    let mut total_pixels = 0u64;
+    for item in scene_items {
+      total_pixels = total_pixels.saturating_add(self.estimate_preserve_3d_plane_pixels(item.bounds));
+    }
+
+    scene_items.len() >= PRESERVE_3D_PLANE_PARALLEL_MIN_PLANES
+      || (scene_items.len() >= PRESERVE_3D_PLANE_PARALLEL_MIN_PLANES_WITH_WORK
+        && total_pixels >= PRESERVE_3D_PLANE_PARALLEL_MIN_TOTAL_PIXELS)
+  }
+
+  fn rasterize_preserve_3d_planes_parallel(
+    &mut self,
+    scene_items: &[Preserve3dSceneItem],
+  ) -> Result<Vec<Option<Pixmap>>> {
+    let plane_count = scene_items.len();
+    if plane_count == 0 {
+      return Ok(Vec::new());
+    }
+
+    let paint_pool = crate::paint::paint_thread_pool::paint_pool();
+    let mut threads = paint_pool.threads.max(1);
+    if let Some(max_threads) = self.paint_parallelism.max_threads {
+      threads = threads.min(max_threads.max(1));
+    }
+    let task_capacity = threads.min(plane_count.max(1)).max(1);
+
+    let raster_config = self.preserve_3d_scene_raster_config();
+    let deadline = active_deadline();
+    let stage = active_stage();
+    let diagnostics_session = paint_diagnostics_session_id();
+
+    let chunk_size = plane_count
+      .checked_add(task_capacity.saturating_sub(1))
+      .unwrap_or(plane_count)
+      / task_capacity.max(1);
+    let mut indices: Vec<usize> = (0..plane_count).collect();
+    let mut chunks: Vec<Vec<usize>> = Vec::new();
+    while !indices.is_empty() {
+      let take = chunk_size.min(indices.len()).max(1);
+      chunks.push(indices.drain(..take).collect());
+    }
+
+    let run_planes = || -> Result<Vec<Vec<(usize, Option<Pixmap>, GradientStats)>>> {
+      chunks
+        .into_par_iter()
+        .map(|chunk| {
+          let _diagnostics_guard = diagnostics_session.map(PaintDiagnosticsThreadGuard::enter);
+          with_deadline(deadline.as_ref(), || {
+            let _stage_guard = StageGuard::install(stage);
+            let _plane_guard = Preserve3dPlaneParallelGuard::enter();
+            let mut out = Vec::with_capacity(chunk.len());
+             for idx in chunk {
+               check_active(RenderStage::Paint).map_err(Error::Render)?;
+              let (pixmap, stats) = raster_config.rasterize(&scene_items[idx])?;
+              out.push((idx, pixmap, stats));
+            }
+            Ok(out)
+          })
+        })
+        .collect()
+    };
+
+    let results = if let Some(pool) = paint_pool.pool {
+      pool.install(run_planes)
+    } else {
+      run_planes()
+    };
+
+    let results = results?;
+    let mut rendered = vec![None; plane_count];
+    let mut combined_stats = GradientStats::default();
+    let mut deadline_counter = 0usize;
+    for chunk in results {
+      for (idx, pixmap, stats) in chunk {
+        check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
+          .map_err(Error::Render)?;
+        rendered[idx] = pixmap;
+        combined_stats.merge(&stats);
+      }
+    }
+    self.gradient_stats.merge(&combined_stats);
+    Ok(rendered)
+  }
+
   fn render_preserve_3d_context<T>(&mut self, items: &T, start_index: usize) -> Result<usize>
   where
     T: DisplayItemSource + ?Sized,
@@ -7111,6 +7373,19 @@ impl DisplayListRenderer {
       })
       .collect();
     let paint_order = depth_sort::depth_sort(&sort_items);
+
+    let mut plane_pixmaps = self
+      .should_rasterize_preserve_3d_planes_parallel(&scene_items)
+      .then(|| {
+        if self.preserve_3d_debug {
+          eprintln!(
+            "preserve-3d plane-parallel rasterization enabled planes={}",
+            scene_items.len()
+          );
+        }
+        self.rasterize_preserve_3d_planes_parallel(&scene_items)
+      })
+      .transpose()?;
 
     let mut deadline_counter = 0usize;
     for idx in paint_order {
@@ -7202,108 +7477,120 @@ impl DisplayListRenderer {
           false
         };
 
-        let draw_result = self.with_preserve_3d_clip_override(&scene_item.effects, |renderer, clip_override| {
-          let mut drawable = renderer.canvas.bounds();
-          if let Some(clip) = renderer.canvas.clip_bounds() {
-            drawable = match drawable.intersection(clip) {
-              Some(r) => r,
-              None => return Ok(()),
-            };
-          }
-          if drawable.width() <= 0.0 || drawable.height() <= 0.0 {
-            return Ok(());
-          }
-
-          let plane_offscreen = renderer
-            .preserve_3d_plane_device_bounds(scene_item.bounds, &adjusted_transform)
-            .is_some_and(|bounds| bounds.intersection(drawable).is_none());
-          if plane_offscreen && !should_apply_backdrop {
-            return Ok(());
-          }
-
-          if should_apply_backdrop {
-            let Some(bounds_in_src) = backdrop_bounds else {
-              return Ok(());
-            };
-
-            let clip_bounds = renderer.canvas.clip_bounds();
-            let clip_mask_rc = clip_override
-              .is_none()
-              .then(|| renderer.canvas.clip_mask_rc())
-              .flatten();
-            let clip_mask = clip_override.or_else(|| clip_mask_rc.as_deref());
-            let radii = renderer.ds_radii(scene_item.radii);
-            let shape_bounds = Rect::from_xywh(
-              bounds_in_src.x() - layer_origin.0 as f32,
-              bounds_in_src.y() - layer_origin.1 as f32,
-              bounds_in_src.width(),
-              bounds_in_src.height(),
-            );
-
-            let Some((backdrop, dest_pixmap)) = renderer.canvas.split_backdrop_and_pixmap_mut() else {
-              // Without an active layer, there's nowhere to write the filtered backdrop.
-              return Ok(());
-            };
-            let scale = renderer.scale;
-            let blur_cache: &mut (dyn BlurCacheOps + 'static) =
-              match renderer.shared_blur_cache.as_mut() {
-                Some(shared) => shared,
-                None => &mut renderer.blur_cache,
+        let draw_result =
+          self.with_preserve_3d_clip_override(&scene_item.effects, |renderer, clip_override| {
+            let mut drawable = renderer.canvas.bounds();
+            if let Some(clip) = renderer.canvas.clip_bounds() {
+              drawable = match drawable.intersection(clip) {
+                Some(r) => r,
+                None => return Ok(()),
               };
-            let backdrop_cache: &mut (dyn BackdropFilterCacheOps + 'static) =
-              match renderer.shared_backdrop_filter_cache.as_mut() {
-                Some(shared) => shared,
-                None => &mut renderer.backdrop_filter_cache,
-              };
-            apply_backdrop_filters(
-              dest_pixmap,
-              backdrop,
-              layer_origin,
-              bounds_in_src,
-              shape_bounds,
-              &scene_item.backdrop_filters,
-              radii,
-              scale,
-              clip_mask,
-              clip_bounds,
-              scene_item.filter_bounds,
-              Transform::identity(),
-              Some(blur_cache),
-              Some(backdrop_cache),
-            )?;
-          }
-
-          if plane_offscreen {
-            return Ok(());
-          }
-
-          if let Some(pixmap) = renderer.render_scene_item(scene_item)? {
-            if renderer.preserve_3d_debug {
-              let is_affine = Homography::from_transform3d_z0(&adjusted_transform).is_affine();
-              let depth = {
-                let center = scene_item.plane_rect.center();
-                let (_tx, _ty, tz, tw) = scene_item
-                  .transform
-                  .transform_point(center.x, center.y, 0.0);
-                if tz.is_finite() && tw.is_finite() && tw.abs() >= Transform3D::MIN_PROJECTIVE_W {
-                  tz / tw
-                } else {
-                  f32::NAN
-                }
-              };
-              eprintln!(
-                "preserve-3d item order={} depth={depth:.4} affine={is_affine} bounds=({}, {}, {}, {})",
-                scene_item.paint_order,
-                scene_item.bounds.x(),
-                scene_item.bounds.y(),
-                scene_item.bounds.width(),
-                scene_item.bounds.height(),
-              );
             }
-            renderer.warp_pixmap(&pixmap, &adjusted_transform, clip_override)?;
-          }
-          Ok(())
-        });
+            if drawable.width() <= 0.0 || drawable.height() <= 0.0 {
+              return Ok(());
+            }
+
+            let plane_offscreen = renderer
+              .preserve_3d_plane_device_bounds(scene_item.bounds, &adjusted_transform)
+              .is_some_and(|bounds| bounds.intersection(drawable).is_none());
+            if plane_offscreen && !should_apply_backdrop {
+              return Ok(());
+            }
+
+            if should_apply_backdrop {
+              let Some(bounds_in_src) = backdrop_bounds else {
+                return Ok(());
+              };
+
+              let clip_bounds = renderer.canvas.clip_bounds();
+              let clip_mask_rc = clip_override
+                .is_none()
+                .then(|| renderer.canvas.clip_mask_rc())
+                .flatten();
+              let clip_mask = clip_override.or_else(|| clip_mask_rc.as_deref());
+              let radii = renderer.ds_radii(scene_item.radii);
+              let shape_bounds = Rect::from_xywh(
+                bounds_in_src.x() - layer_origin.0 as f32,
+                bounds_in_src.y() - layer_origin.1 as f32,
+                bounds_in_src.width(),
+                bounds_in_src.height(),
+              );
+
+              let Some((backdrop, dest_pixmap)) =
+                renderer.canvas.split_backdrop_and_pixmap_mut()
+              else {
+                // Without an active layer, there's nowhere to write the filtered backdrop.
+                return Ok(());
+              };
+              let scale = renderer.scale;
+              let blur_cache: &mut (dyn BlurCacheOps + 'static) =
+                match renderer.shared_blur_cache.as_mut() {
+                  Some(shared) => shared,
+                  None => &mut renderer.blur_cache,
+                };
+              let backdrop_cache: &mut (dyn BackdropFilterCacheOps + 'static) =
+                match renderer.shared_backdrop_filter_cache.as_mut() {
+                  Some(shared) => shared,
+                  None => &mut renderer.backdrop_filter_cache,
+                };
+              apply_backdrop_filters(
+                dest_pixmap,
+                backdrop,
+                layer_origin,
+                bounds_in_src,
+                shape_bounds,
+                &scene_item.backdrop_filters,
+                radii,
+                scale,
+                clip_mask,
+                clip_bounds,
+                scene_item.filter_bounds,
+                Transform::identity(),
+                Some(blur_cache),
+                Some(backdrop_cache),
+              )?;
+            }
+
+            if plane_offscreen {
+              return Ok(());
+            }
+
+            let pixmap = if let Some(pixmaps) = plane_pixmaps.as_mut() {
+              pixmaps[idx].take()
+            } else {
+              renderer.render_scene_item(scene_item)?
+            };
+
+            if let Some(pixmap) = pixmap {
+              if renderer.preserve_3d_debug {
+                let is_affine = Homography::from_transform3d_z0(&adjusted_transform).is_affine();
+                let depth = {
+                  let center = scene_item.plane_rect.center();
+                  let (_tx, _ty, tz, tw) = scene_item
+                    .transform
+                    .transform_point(center.x, center.y, 0.0);
+                  if tz.is_finite()
+                    && tw.is_finite()
+                    && tw.abs() >= Transform3D::MIN_PROJECTIVE_W
+                  {
+                    tz / tw
+                  } else {
+                    f32::NAN
+                  }
+                };
+                eprintln!(
+                  "preserve-3d item order={} depth={depth:.4} affine={is_affine} bounds=({}, {}, {}, {})",
+                  scene_item.paint_order,
+                  scene_item.bounds.x(),
+                  scene_item.bounds.y(),
+                  scene_item.bounds.width(),
+                  scene_item.bounds.height(),
+                );
+              }
+              renderer.warp_pixmap(&pixmap, &adjusted_transform, clip_override)?;
+            }
+            Ok(())
+          });
 
         if pushed_layer {
           // If drawing failed, still pop the layer to restore the canvas state before returning.
@@ -7325,82 +7612,10 @@ impl DisplayListRenderer {
   fn render_scene_item(&mut self, item: &Preserve3dSceneItem) -> Result<Option<Pixmap>> {
     #[cfg(test)]
     RENDER_SCENE_ITEM_INVOCATIONS.with(|count| count.set(count.get().saturating_add(1)));
-
-    let bounds = item.bounds;
-    if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
-      return Ok(None);
-    }
-
-    let width = (bounds.width() * self.scale).ceil().max(1.0) as u32;
-    let height = (bounds.height() * self.scale).ceil().max(1.0) as u32;
-
-    let mut list = DisplayList::new();
-    let translation = Transform3D::translate(-bounds.x(), -bounds.y(), 0.0);
-    list.push(DisplayItem::PushTransform(TransformItem {
-      transform: translation,
-    }));
-    for effect in &item.effects {
-      list.push(effect.push_item(bounds));
-    }
-
-    let mut effects_after = item.effects.clone();
-    match &item.source {
-      Preserve3dSceneItemSource::Segment(items) => {
-        let mut deadline_counter = 0usize;
-        for it in items {
-          check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
-            .map_err(Error::Render)?;
-          update_scene_effect_stack(&mut effects_after, it, Transform3D::identity());
-          list.push(it.clone());
-        }
-      }
-      Preserve3dSceneItemSource::FlattenedSubtree(node) => {
-        let mut deadline_counter = 0usize;
-        for (i, it) in node.subtree_items.iter().enumerate() {
-          check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
-            .map_err(Error::Render)?;
-          if i == 0 {
-            if let DisplayItem::PushStackingContext(sc) = it {
-              let mut adjusted = sc.clone();
-              adjusted.transform = None;
-              adjusted.backdrop_filters.clear();
-              let display_item = DisplayItem::PushStackingContext(adjusted);
-              update_scene_effect_stack(&mut effects_after, &display_item, Transform3D::identity());
-              list.push(display_item);
-              continue;
-            }
-          }
-          update_scene_effect_stack(&mut effects_after, it, Transform3D::identity());
-          list.push(it.clone());
-        }
-      }
-    }
-
-    for effect in effects_after.iter().rev() {
-      list.push(effect.pop_item());
-    }
-    list.push(DisplayItem::PopTransform);
-
-    let mut renderer = DisplayListRenderer::new_scaled(
-      width,
-      height,
-      Rgba::TRANSPARENT,
-      self.font_ctx.clone(),
-      self.scale,
-    )?;
-    renderer.preserve_3d_disabled = self.preserve_3d_disabled;
-    renderer.preserve_3d_scene_depth = self.preserve_3d_scene_depth.saturating_add(1);
-    renderer.paint_parallelism = PaintParallelism::disabled();
-    renderer.gradient_cache = self.gradient_cache.clone();
-    renderer.gradient_pixmap_cache = self.gradient_pixmap_cache.clone();
-    renderer.diagnostics_enabled = self.diagnostics_enabled;
-    renderer.image_pixmap_diagnostics = self.image_pixmap_diagnostics.clone();
-    renderer.background_paint_diagnostics = self.background_paint_diagnostics.clone();
-    renderer.clip_mask_diagnostics = self.clip_mask_diagnostics.clone();
-    renderer.layer_alloc_diagnostics = self.layer_alloc_diagnostics.clone();
-    let report = renderer.render_with_report(&list)?;
-    self.gradient_stats.merge(&report.gradient_stats);
-    Ok(Some(report.pixmap))
+    let raster_config = self.preserve_3d_scene_raster_config();
+    let (pixmap, stats) = raster_config.rasterize(item)?;
+    self.gradient_stats.merge(&stats);
+    Ok(pixmap)
   }
 
   fn preserve_3d_plane_device_bounds(&self, bounds: Rect, transform: &Transform3D) -> Option<Rect> {
@@ -12116,6 +12331,7 @@ fn div_255(value: u16) -> u16 {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::debug::runtime::{with_runtime_toggles, RuntimeToggles};
   use crate::geometry::Point;
   use crate::geometry::Rect;
   use crate::geometry::Size;
@@ -12180,6 +12396,7 @@ mod tests {
   use crate::style::ComputedStyle;
   use crate::tree::fragment_tree::FragmentNode;
   use rayon::ThreadPoolBuilder;
+  use std::collections::HashMap;
   use std::sync::atomic::Ordering;
   use std::sync::Arc;
   use std::time::Duration;
@@ -12514,6 +12731,99 @@ mod tests {
       invocations, 0,
       "expected preserve-3d plane renderers to never invoke parallel tiling"
     );
+  }
+
+  #[test]
+  fn preserve_3d_plane_parallel_raster_matches_serial_output() {
+    let bounds = Rect::from_xywh(0.0, 0.0, 120.0, 80.0);
+    let plane_rect = Rect::from_xywh(10.0, 10.0, 100.0, 60.0);
+
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      bounds,
+      plane_rect: bounds,
+      mix_blend_mode: BlendMode::Normal,
+      is_isolated: false,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Preserve3d,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+    }));
+
+    for (idx, color) in [
+      Rgba::from_rgba8(255, 0, 0, 128),
+      Rgba::from_rgba8(0, 255, 0, 128),
+      Rgba::from_rgba8(0, 0, 255, 128),
+      Rgba::from_rgba8(255, 255, 0, 128),
+      Rgba::from_rgba8(255, 0, 255, 128),
+      Rgba::from_rgba8(0, 255, 255, 128),
+      Rgba::from_rgba8(0, 0, 0, 128),
+      Rgba::from_rgba8(255, 255, 255, 128),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+      list.push(DisplayItem::PushStackingContext(StackingContextItem {
+        z_index: 0,
+        creates_stacking_context: true,
+        bounds: plane_rect,
+        plane_rect,
+        mix_blend_mode: BlendMode::Normal,
+        is_isolated: false,
+        transform: Some(Transform3D::translate(0.0, 0.0, idx as f32)),
+        child_perspective: None,
+        transform_style: TransformStyle::Flat,
+        backface_visibility: BackfaceVisibility::Visible,
+        filters: Vec::new(),
+        backdrop_filters: Vec::new(),
+        radii: BorderRadii::ZERO,
+        mask: None,
+      }));
+      list.push(DisplayItem::FillRect(FillRectItem {
+        rect: plane_rect,
+        color,
+      }));
+      list.push(DisplayItem::PopStackingContext);
+    }
+
+    list.push(DisplayItem::PopStackingContext);
+
+    let mut serial_toggles = HashMap::new();
+    serial_toggles.insert(
+      "FASTR_PRESERVE3D_PLANE_PARALLEL".to_string(),
+      "0".to_string(),
+    );
+    serial_toggles.insert("FASTR_PAINT_THREADS".to_string(), "2".to_string());
+    let serial = with_runtime_toggles(Arc::new(RuntimeToggles::from_map(serial_toggles)), || {
+      DisplayListRenderer::new(120, 80, Rgba::TRANSPARENT, FontContext::new())
+        .unwrap()
+        .render(&list)
+        .unwrap()
+    });
+
+    let mut parallel_toggles = HashMap::new();
+    parallel_toggles.insert(
+      "FASTR_PRESERVE3D_PLANE_PARALLEL".to_string(),
+      "1".to_string(),
+    );
+    parallel_toggles.insert("FASTR_PAINT_THREADS".to_string(), "2".to_string());
+    let parallel =
+      with_runtime_toggles(Arc::new(RuntimeToggles::from_map(parallel_toggles)), || {
+        DisplayListRenderer::new(120, 80, Rgba::TRANSPARENT, FontContext::new())
+          .unwrap()
+          .render(&list)
+          .unwrap()
+      });
+
+    assert_eq!(serial.width(), parallel.width());
+    assert_eq!(serial.height(), parallel.height());
+    assert_eq!(serial.data(), parallel.data());
   }
 
   fn legacy_tile_positions(
