@@ -4470,10 +4470,11 @@ impl DisplayListBuilder {
             .with_env_overrides()
         });
         let cache_base = self.image_cache.as_ref().and_then(|cache| cache.base_url());
+        let (slot_rect, _) = self.replaced_content_rect_and_radii(rect, style_for_image);
         let sources =
           replaced_type.image_sources_with_fallback(crate::tree::box_tree::ImageSelectionContext {
             device_pixel_ratio: self.device_pixel_ratio,
-            slot_width: Some(rect.width()),
+            slot_width: Some(slot_rect.width()),
             viewport: self.viewport.map(|(w, h)| crate::geometry::Size::new(w, h)),
             media_context: media_ctx.as_ref(),
             font_size: fragment.style.as_deref().map(|s| s.font_size),
