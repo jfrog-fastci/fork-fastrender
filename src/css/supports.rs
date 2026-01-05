@@ -102,4 +102,24 @@ mod tests {
     assert!(!supports_declaration("word-break", "auto-phrase"));
     assert!(supports_declaration("word-break", "break-word"));
   }
+
+  #[test]
+  fn supports_sizing_properties_require_valid_length_syntax() {
+    assert!(supports_declaration("height", "100px"));
+    assert!(supports_declaration("height", "0"));
+    assert!(supports_declaration("height", "calc(100svh - 10px)"));
+    assert!(supports_declaration("height", "min-content"));
+    assert!(supports_declaration("height", "fit-content(10px)"));
+
+    // Non-zero unitless numbers are invalid for sizing properties.
+    assert!(!supports_declaration("height", "10"));
+
+    // Unsupported/unknown units should make the query false.
+    assert!(!supports_declaration("height", "100dvb"));
+    assert!(!supports_declaration("height", "100bogusunit"));
+
+    // `none` is only valid for max-* properties.
+    assert!(supports_declaration("max-width", "none"));
+    assert!(!supports_declaration("width", "none"));
+  }
 }

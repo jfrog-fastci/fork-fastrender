@@ -2047,6 +2047,57 @@ fn background_box_list_is_valid(value: &PropertyValue, allow_text: bool) -> bool
   }
 }
 
+fn supports_intrinsic_size_keyword(raw_value: &str) -> bool {
+  let trimmed = raw_value.trim();
+  if trimmed.is_empty() {
+    return false;
+  }
+
+  let lower = trimmed.to_ascii_lowercase();
+  match lower.as_str() {
+    "min-content" | "-webkit-min-content" | "-moz-min-content" => return true,
+    "max-content" | "-webkit-max-content" | "-moz-max-content" => return true,
+    "fit-content" | "-webkit-fit-content" | "-moz-fit-content" => return true,
+    _ => {}
+  }
+
+  for prefix in ["fit-content(", "-webkit-fit-content(", "-moz-fit-content("] {
+    if !lower.starts_with(prefix) || !lower.ends_with(')') {
+      continue;
+    }
+    let inner = match lower.strip_prefix(prefix).and_then(|s| s.strip_suffix(')')) {
+      Some(inner) => inner.trim(),
+      None => continue,
+    };
+    if parse_length(inner).is_some() {
+      return true;
+    }
+  }
+
+  false
+}
+
+fn supports_sizing_value(raw_value: &str, allow_none_keyword: bool) -> bool {
+  let trimmed = raw_value.trim();
+  if trimmed.is_empty() {
+    return false;
+  }
+
+  if trimmed.eq_ignore_ascii_case("auto") {
+    return true;
+  }
+
+  if allow_none_keyword && trimmed.eq_ignore_ascii_case("none") {
+    return true;
+  }
+
+  if supports_intrinsic_size_keyword(trimmed) {
+    return true;
+  }
+
+  parse_length(trimmed).is_some()
+}
+
 pub(crate) fn supports_parsed_declaration_is_valid(
   property: &str,
   raw_value: &str,
@@ -2208,6 +2259,13 @@ pub(crate) fn supports_parsed_declaration_is_valid(
     "opacity" => return matches!(parsed, PropertyValue::Number(_)),
     "z-index" => {
       return matches!(parsed, PropertyValue::Number(_)) || keyword_in_list(parsed, &["auto"])
+    }
+    "width" | "height" | "min-width" | "min-height" | "inline-size" | "block-size"
+    | "min-inline-size" | "min-block-size" => {
+      return supports_sizing_value(raw_value, false)
+    }
+    "max-width" | "max-height" | "max-inline-size" | "max-block-size" => {
+      return supports_sizing_value(raw_value, true)
     }
     "background-origin" => return background_box_list_is_valid(parsed, false),
     "background-clip" => return background_box_list_is_valid(parsed, true),
