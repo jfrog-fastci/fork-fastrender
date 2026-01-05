@@ -385,6 +385,7 @@ mod tests {
     const HEIGHT: u32 = 32;
 
     let filter_region = Rect::from_xywh(0.0, 0.0, WIDTH as f32, HEIGHT as f32);
+    let css_bbox = filter_region;
     let pixmap = render_turbulence(
       WIDTH,
       HEIGHT,
@@ -396,7 +397,7 @@ mod tests {
       super::super::TurbulenceType::Turbulence,
       color_interpolation_filters,
       super::super::SvgFilterUnits::UserSpaceOnUse,
-      filter_region,
+      css_bbox,
       1.0,
       1.0,
       (0.0, 0.0),

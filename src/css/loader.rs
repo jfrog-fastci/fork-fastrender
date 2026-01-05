@@ -625,6 +625,128 @@ fn matches_at_keyword(bytes: &[u8], at_pos: usize, keyword: &[u8]) -> bool {
   }
 }
 
+fn consume_nested_tokens<'i, 't, E>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<(), cssparser::ParseError<'i, E>> {
+  while !parser.is_exhausted() {
+    let token = parser.next_including_whitespace()?;
+    match token {
+      Token::CurlyBracketBlock
+      | Token::ParenthesisBlock
+      | Token::SquareBracketBlock
+      | Token::Function(_) => {
+        parser.parse_nested_block(consume_nested_tokens)?;
+      }
+      _ => {}
+    }
+  }
+  Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ImportLayerModifier {
+  Anonymous,
+  Named(String),
+}
+
+fn parse_import_modifiers_and_media(
+  prelude: &str,
+) -> Option<(Option<ImportLayerModifier>, Option<String>, &str)> {
+  fn parse_import_layer_name<'i, 't>(
+    parser: &mut Parser<'i, 't>,
+  ) -> std::result::Result<String, cssparser::ParseError<'i, ()>> {
+    let mut components = Vec::new();
+    loop {
+      parser.skip_whitespace();
+      match parser.next_including_whitespace() {
+        Ok(Token::Ident(id)) => components.push(id.to_string()),
+        _ => return Err(parser.new_custom_error(())),
+      }
+
+      parser.skip_whitespace();
+      let state = parser.state();
+      if let Ok(Token::Delim('.')) = parser.next_including_whitespace() {
+        continue;
+      }
+      parser.reset(&state);
+      break;
+    }
+
+    parser.skip_whitespace();
+    if components.is_empty() || !parser.is_exhausted() {
+      return Err(parser.new_custom_error(()));
+    }
+    Ok(components.join("."))
+  }
+
+  fn parse_import_layer_modifier<'i, 't>(
+    parser: &mut Parser<'i, 't>,
+  ) -> std::result::Result<ImportLayerModifier, cssparser::ParseError<'i, ()>> {
+    if parser
+      .try_parse(|p| p.expect_ident_matching("layer"))
+      .is_ok()
+    {
+      return Ok(ImportLayerModifier::Anonymous);
+    }
+
+    parser.expect_function_matching("layer")?;
+    parser.parse_nested_block(|nested| {
+      let name = parse_import_layer_name(nested)?;
+      Ok::<_, cssparser::ParseError<'i, ()>>(ImportLayerModifier::Named(name))
+    })
+  }
+
+  fn parse_import_supports_modifier<'i, 't>(
+    parser: &mut Parser<'i, 't>,
+  ) -> std::result::Result<String, cssparser::ParseError<'i, ()>> {
+    parser.expect_function_matching("supports")?;
+    parser.parse_nested_block(|nested| {
+      let start = nested.position();
+      consume_nested_tokens(nested)?;
+      Ok::<_, cssparser::ParseError<'i, ()>>(nested.slice_from(start).trim().to_string())
+    })
+  }
+
+  let mut input = ParserInput::new(prelude.trim());
+  let mut parser = Parser::new(&mut input);
+
+  let mut layer: Option<ImportLayerModifier> = None;
+  let mut supports: Option<String> = None;
+  let mut media_start = parser.position();
+
+  while !parser.is_exhausted() {
+    parser.skip_whitespace();
+    media_start = parser.position();
+
+    if let Ok(parsed_layer) = parser.try_parse(parse_import_layer_modifier) {
+      if layer.is_some() {
+        return None;
+      }
+      layer = Some(parsed_layer);
+      media_start = parser.position();
+      continue;
+    }
+
+    if let Ok(condition) = parser.try_parse(parse_import_supports_modifier) {
+      if supports.is_some() {
+        return None;
+      }
+      supports = Some(condition);
+      media_start = parser.position();
+      continue;
+    }
+
+    break;
+  }
+
+  // `cssparser::Parser::slice_from` returns the slice between `media_start` and the current parser
+  // position. Advance to the end of the prelude so the slice captures any remaining media query
+  // tokens (which are not otherwise consumed by the modifier parser).
+  consume_nested_tokens::<()>(&mut parser).ok()?;
+  let media_tokens = parser.slice_from(media_start).trim();
+  Some((layer, supports, media_tokens))
+}
+
 fn parse_import_target(rule: &str) -> Option<(&str, &str)> {
   let bytes = rule.as_bytes();
   if bytes.len() < 7 {
@@ -1190,7 +1312,22 @@ where
             continue;
           }
 
-          if let Some((target, media)) = parse_import_target(rule) {
+          if let Some((target, rest)) = parse_import_target(rule) {
+            let Some((layer, supports, media)) = parse_import_modifiers_and_media(rest) else {
+              if !push_with_budget(
+                &mut out,
+                &css[last_emit..i],
+                base_url,
+                &mut state.budget,
+                diagnostics,
+              ) {
+                budget_exhausted = true;
+                break;
+              }
+              last_emit = j;
+              i = j;
+              continue;
+            };
             if let Some(resolved) = resolve_href(base_url, target) {
               if !push_with_budget(
                 &mut out,
@@ -1241,10 +1378,26 @@ where
                 }
 
                 if let Some(inlined) = inlined {
+                  let mut wrapped: std::borrow::Cow<'_, str> = std::borrow::Cow::Borrowed(inlined);
+                  if let Some(layer) = layer {
+                    let layer_block = match layer {
+                      ImportLayerModifier::Anonymous => format!("@layer {{\n{}\n}}\n", wrapped),
+                      ImportLayerModifier::Named(name) => {
+                        format!("@layer {} {{\n{}\n}}\n", name, wrapped)
+                      }
+                    };
+                    wrapped = std::borrow::Cow::Owned(layer_block);
+                  }
+                  if let Some(condition) = supports {
+                    wrapped = std::borrow::Cow::Owned(format!(
+                      "@supports {} {{\n{}\n}}\n",
+                      condition, wrapped
+                    ));
+                  }
                   if media.is_empty() || media.eq_ignore_ascii_case("all") {
                     if !push_with_budget(
                       &mut out,
-                      inlined,
+                      wrapped.as_ref(),
                       &resolved,
                       &mut state.budget,
                       diagnostics,
@@ -1252,7 +1405,7 @@ where
                       budget_exhausted = true;
                     }
                   } else {
-                    let to_insert = format!("@media {} {{\n{}\n}}\n", media, inlined);
+                    let to_insert = format!("@media {} {{\n{}\n}}\n", media, wrapped);
                     if !push_with_budget(
                       &mut out,
                       &to_insert,
@@ -2904,6 +3057,9 @@ mod tests {
       None,
     )
     .unwrap();
+    if !out.contains("@media screen") || !out.contains("@media print") {
+      eprintln!("inline_imports output: {out}");
+    }
     assert!(out.contains("@media screen"));
     assert!(out.contains("@media print"));
     assert_eq!(out.matches("p { color: green; }").count(), 2);
@@ -3043,6 +3199,142 @@ mod tests {
   }
 
   #[test]
+  fn inline_imports_inlines_named_layer_modifier() {
+    let mut state = InlineImportState::new();
+    let mut fetched_urls: Vec<String> = Vec::new();
+    let mut fetched = |url: &str| -> Result<String> {
+      fetched_urls.push(url.to_string());
+      Ok(".imported { color: blue; }".to_string())
+    };
+    let css = "@import \"layered.css\" layer(foo);";
+    let out = inline_imports(
+      css,
+      "https://example.com/main.css",
+      &mut fetched,
+      &mut state,
+      None,
+    )
+    .expect("inline imports");
+
+    assert!(
+      out.contains("@layer foo {"),
+      "expected layer modifier to wrap inlined stylesheet: {out}"
+    );
+    assert!(
+      !out.contains("@media layer("),
+      "layer modifier must not be treated as media query: {out}"
+    );
+    assert!(
+      out.contains(".imported { color: blue; }"),
+      "expected imported stylesheet to be inlined: {out}"
+    );
+    assert_eq!(
+      fetched_urls,
+      vec!["https://example.com/layered.css".to_string()],
+      "expected import with layer modifier to be fetched"
+    );
+  }
+
+  #[test]
+  fn inline_imports_inlines_anonymous_layer_modifier() {
+    let mut state = InlineImportState::new();
+    let mut fetched_urls: Vec<String> = Vec::new();
+    let mut fetched = |url: &str| -> Result<String> {
+      fetched_urls.push(url.to_string());
+      Ok(".imported { color: blue; }".to_string())
+    };
+    let css = "@import \"layered.css\" layer;";
+    let out = inline_imports(
+      css,
+      "https://example.com/main.css",
+      &mut fetched,
+      &mut state,
+      None,
+    )
+    .expect("inline imports");
+
+    assert!(
+      out.contains("@layer {"),
+      "expected anonymous layer modifier to wrap inlined stylesheet: {out}"
+    );
+    assert!(
+      !out.contains("@media layer"),
+      "layer modifier must not be treated as media query: {out}"
+    );
+    assert!(out.contains(".imported { color: blue; }"));
+    assert_eq!(fetched_urls, vec!["https://example.com/layered.css".to_string()]);
+  }
+
+  #[test]
+  fn inline_imports_inlines_supports_modifier() {
+    let mut state = InlineImportState::new();
+    let mut fetched_urls: Vec<String> = Vec::new();
+    let mut fetched = |url: &str| -> Result<String> {
+      fetched_urls.push(url.to_string());
+      Ok(".imported { color: blue; }".to_string())
+    };
+    let css = "@import \"supported.css\" supports((display: grid));";
+    let out = inline_imports(
+      css,
+      "https://example.com/main.css",
+      &mut fetched,
+      &mut state,
+      None,
+    )
+    .expect("inline imports");
+
+    assert!(
+      out.contains("@supports (display: grid) {"),
+      "expected supports modifier to wrap inlined stylesheet: {out}"
+    );
+    assert!(
+      !out.contains("@media supports"),
+      "supports modifier must not be treated as media query: {out}"
+    );
+    assert!(out.contains(".imported { color: blue; }"));
+    assert_eq!(
+      fetched_urls,
+      vec!["https://example.com/supported.css".to_string()]
+    );
+  }
+
+  #[test]
+  fn inline_imports_nests_layer_supports_and_media_wrappers() {
+    let mut state = InlineImportState::new();
+    let mut fetched_urls: Vec<String> = Vec::new();
+    let mut fetched = |url: &str| -> Result<String> {
+      fetched_urls.push(url.to_string());
+      Ok(".imported { color: blue; }".to_string())
+    };
+    let css = "@import \"combo.css\" layer(foo) supports((display: grid)) screen;";
+    let out = inline_imports(
+      css,
+      "https://example.com/main.css",
+      &mut fetched,
+      &mut state,
+      None,
+    )
+    .expect("inline imports");
+
+    if !out.contains("@media screen") {
+      eprintln!("inline_imports output: {out}");
+    }
+    let media_pos = out
+      .find("@media screen")
+      .expect("expected @media wrapper");
+    let supports_pos = out
+      .find("@supports (display: grid)")
+      .expect("expected @supports wrapper");
+    let layer_pos = out.find("@layer foo").expect("expected @layer wrapper");
+    assert!(
+      media_pos < supports_pos && supports_pos < layer_pos,
+      "expected wrappers to be nested as @media > @supports > @layer: {out}"
+    );
+    assert!(out.contains(".imported { color: blue; }"));
+    assert_eq!(fetched_urls, vec!["https://example.com/combo.css".to_string()]);
+  }
+
+  #[test]
   fn inline_imports_does_not_treat_at_layered_as_layer_statement() {
     let mut state = InlineImportState::new();
     let mut fetched_urls: Vec<String> = Vec::new();
@@ -3131,6 +3423,15 @@ mod tests {
     .unwrap();
     assert!(out.contains("body { color: red; }"));
     assert!(diags.iter().any(|(_, reason)| reason.contains("cyclic")));
+  }
+
+  #[test]
+  fn parse_import_modifiers_and_media_preserves_media_queries() {
+    let (layer, supports, media) =
+      parse_import_modifiers_and_media("screen").expect("expected parse");
+    assert!(layer.is_none(), "expected no layer modifier");
+    assert!(supports.is_none(), "expected no supports modifier");
+    assert_eq!(media, "screen");
   }
 
   #[test]
