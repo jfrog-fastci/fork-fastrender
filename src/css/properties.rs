@@ -1608,21 +1608,58 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
           }
         }
 
-        let x = parse_axis_component(p)?;
+        fn parse_axis<'i, 't>(
+          p: &mut Parser<'i, 't>,
+        ) -> Result<(f32, f32, f32), cssparser::ParseError<'i, ()>> {
+          if let Ok(ident) = p.try_parse(|p| p.expect_ident_cloned()) {
+            if ident.eq_ignore_ascii_case("x") {
+              return Ok((1.0, 0.0, 0.0));
+            }
+            if ident.eq_ignore_ascii_case("y") {
+              return Ok((0.0, 1.0, 0.0));
+            }
+            if ident.eq_ignore_ascii_case("z") {
+              return Ok((0.0, 0.0, 1.0));
+            }
+            return Err(p.new_custom_error(()));
+          }
+
+          let x = parse_axis_component(p)?;
+          p.skip_whitespace();
+          let y = parse_axis_component(p)?;
+          p.skip_whitespace();
+          let z = parse_axis_component(p)?;
+          Ok((x, y, z))
+        }
+
+        // CSS Transforms Level 2 allows the axis and angle in either order (`&&`).
+        let mut axis: Option<(f32, f32, f32)> = None;
+        let mut angle: Option<f32> = None;
+
+        if let Ok(parsed_axis) = p.try_parse(parse_axis) {
+          axis = Some(parsed_axis);
+        } else {
+          angle = Some(parse_angle_component(p).map_err(|_| p.new_custom_error(()))?);
+        }
+
         p.skip_whitespace();
-        let y = parse_axis_component(p)?;
-        p.skip_whitespace();
-        let z = parse_axis_component(p)?;
-        p.skip_whitespace();
-        let angle = parse_angle_component(p).map_err(|_| p.new_custom_error(()))?;
+        if axis.is_none() {
+          axis = Some(parse_axis(p)?);
+        } else {
+          angle = Some(parse_angle_component(p).map_err(|_| p.new_custom_error(()))?);
+        }
+
         p.skip_whitespace();
         if !p.is_exhausted() {
           return Err(p.new_custom_error(()));
         }
-        Ok((x, y, z, angle))
+        Ok((axis.unwrap(), angle.unwrap()))
       });
 
-      if let Ok((x, y, z, angle)) = axis_angle {
+      if let Ok(((x, y, z), angle)) = axis_angle {
+        if x == 0.0 && y == 0.0 {
+          return Some(PropertyValue::Rotate(RotateValue::Angle(angle * z.signum())));
+        }
         return Some(PropertyValue::Rotate(RotateValue::AxisAngle { x, y, z, angle }));
       }
 
@@ -5044,6 +5081,45 @@ mod tests {
     assert!((z - 0.0).abs() < 1e-6);
     assert!((angle - 90.0).abs() < 1e-6);
 
+    let PropertyValue::Rotate(RotateValue::AxisAngle { x, y, z, angle }) =
+      parse_property_value("rotate", "x 90deg").expect("parsed")
+    else {
+      panic!("expected Rotate axis-angle value");
+    };
+    assert!((x - 1.0).abs() < 1e-6);
+    assert!((y - 0.0).abs() < 1e-6);
+    assert!((z - 0.0).abs() < 1e-6);
+    assert!((angle - 90.0).abs() < 1e-6);
+
+    let PropertyValue::Rotate(RotateValue::AxisAngle { x, y, z, angle }) =
+      parse_property_value("rotate", "90deg x").expect("parsed")
+    else {
+      panic!("expected Rotate axis-angle value");
+    };
+    assert!((x - 1.0).abs() < 1e-6);
+    assert!((y - 0.0).abs() < 1e-6);
+    assert!((z - 0.0).abs() < 1e-6);
+    assert!((angle - 90.0).abs() < 1e-6);
+
+    // Axis-angle accepts the angle and axis in either order.
+    let PropertyValue::Rotate(RotateValue::AxisAngle { x, y, z, angle }) =
+      parse_property_value("rotate", "90deg 0 1 0").expect("parsed")
+    else {
+      panic!("expected Rotate axis-angle value");
+    };
+    assert!((x - 0.0).abs() < 1e-6);
+    assert!((y - 1.0).abs() < 1e-6);
+    assert!((z - 0.0).abs() < 1e-6);
+    assert!((angle - 90.0).abs() < 1e-6);
+
+    // `z <angle>` is equivalent to `<angle>` and is canonicalized.
+    let PropertyValue::Rotate(RotateValue::Angle(angle)) =
+      parse_property_value("rotate", "z 90deg").expect("parsed")
+    else {
+      panic!("expected Rotate angle value");
+    };
+    assert!((angle - 90.0).abs() < 1e-6);
+
     // Unitless nonzero angles are invalid.
     assert!(parse_property_value("rotate", "10").is_none());
     // Unitless 0 is accepted for angles.
@@ -5051,6 +5127,8 @@ mod tests {
 
     // Axis-angle also requires a valid angle component (unitless nonzero is invalid).
     assert!(parse_property_value("rotate", "0 0 1 10").is_none());
+    assert!(parse_property_value("rotate", "x 10").is_none());
+    assert!(parse_property_value("rotate", "x").is_none());
   }
 
   #[test]

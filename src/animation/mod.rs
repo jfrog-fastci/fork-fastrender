@@ -1336,6 +1336,21 @@ fn interpolate_rotate_value(a: &AnimatedValue, b: &AnimatedValue, t: f32) -> Opt
     return Some(AnimatedValue::Rotate(*rb));
   }
 
+  fn z_axis_angle_degrees(v: RotateValue) -> Option<f32> {
+    match v {
+      RotateValue::None => Some(0.0),
+      RotateValue::Angle(deg) => Some(deg),
+      RotateValue::AxisAngle { x, y, z, angle } if x == 0.0 && y == 0.0 => Some(angle * z.signum()),
+      _ => None,
+    }
+  }
+
+  if let (Some(a_deg), Some(b_deg)) = (z_axis_angle_degrees(*ra), z_axis_angle_degrees(*rb)) {
+    return Some(AnimatedValue::Rotate(RotateValue::Angle(lerp(
+      a_deg, b_deg, t,
+    ))));
+  }
+
   match (ra, rb) {
     (RotateValue::AxisAngle { x: ax, y: ay, z: az, angle: a_deg }, RotateValue::AxisAngle { x: bx, y: by, z: bz, angle: b_deg })
       if (*ax - *bx).abs() < 1e-6
@@ -1349,20 +1364,21 @@ fn interpolate_rotate_value(a: &AnimatedValue, b: &AnimatedValue, t: f32) -> Opt
         angle: lerp(*a_deg, *b_deg, t),
       }))
     }
-    (RotateValue::None | RotateValue::Angle(_), RotateValue::None | RotateValue::Angle(_)) => {
-      let a_deg = match ra {
-        RotateValue::None => 0.0,
-        RotateValue::Angle(deg) => *deg,
-        RotateValue::AxisAngle { .. } => unreachable!(),
-      };
-      let b_deg = match rb {
-        RotateValue::None => 0.0,
-        RotateValue::Angle(deg) => *deg,
-        RotateValue::AxisAngle { .. } => unreachable!(),
-      };
-      Some(AnimatedValue::Rotate(RotateValue::Angle(lerp(
-        a_deg, b_deg, t,
-      ))))
+    (RotateValue::None, RotateValue::AxisAngle { x, y, z, angle }) => {
+      Some(AnimatedValue::Rotate(RotateValue::AxisAngle {
+        x: *x,
+        y: *y,
+        z: *z,
+        angle: lerp(0.0, *angle, t),
+      }))
+    }
+    (RotateValue::AxisAngle { x, y, z, angle }, RotateValue::None) => {
+      Some(AnimatedValue::Rotate(RotateValue::AxisAngle {
+        x: *x,
+        y: *y,
+        z: *z,
+        angle: lerp(*angle, 0.0, t),
+      }))
     }
     _ => Some(AnimatedValue::Rotate(if t < 0.5 { *ra } else { *rb })),
   }
@@ -5125,6 +5141,48 @@ mod tests {
       RotateValue::Angle(deg) => assert!((deg - 45.0).abs() < 1e-6, "deg={deg}"),
       RotateValue::None => panic!("expected rotate angle"),
       RotateValue::AxisAngle { .. } => panic!("expected rotate angle"),
+    }
+  }
+
+  #[test]
+  fn sample_keyframes_rotate_interpolates_axis_angle() {
+    let sheet = parse_stylesheet(
+      "@keyframes spin { from { rotate: x 0deg; } to { rotate: x 90deg; } }",
+    )
+    .unwrap();
+    let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+    let rule = &keyframes[0];
+
+    let rotate = sampled_rotate(rule, 0.5);
+    match rotate {
+      RotateValue::AxisAngle { x, y, z, angle } => {
+        assert!((x - 1.0).abs() < 1e-6, "x={x}");
+        assert!(y.abs() < 1e-6, "y={y}");
+        assert!(z.abs() < 1e-6, "z={z}");
+        assert!((angle - 45.0).abs() < 1e-6, "angle={angle}");
+      }
+      other => panic!("expected rotate axis-angle, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn sample_keyframes_rotate_interpolates_axis_angle_from_none() {
+    let sheet = parse_stylesheet(
+      "@keyframes spin { from { rotate: none; } to { rotate: x 90deg; } }",
+    )
+    .unwrap();
+    let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+    let rule = &keyframes[0];
+
+    let rotate = sampled_rotate(rule, 0.5);
+    match rotate {
+      RotateValue::AxisAngle { x, y, z, angle } => {
+        assert!((x - 1.0).abs() < 1e-6, "x={x}");
+        assert!(y.abs() < 1e-6, "y={y}");
+        assert!(z.abs() < 1e-6, "z={z}");
+        assert!((angle - 45.0).abs() < 1e-6, "angle={angle}");
+      }
+      other => panic!("expected rotate axis-angle, got {other:?}"),
     }
   }
 
