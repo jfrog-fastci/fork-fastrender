@@ -154,6 +154,21 @@ fn fragment_mask_size(tree: &FragmentTree, box_id: usize) -> (f32, f32) {
   }
 }
 
+fn fragment_transform_origin(tree: &FragmentTree, box_id: usize) -> (f32, f32) {
+  let frag = find_fragment(&tree.root, box_id).expect("fragment present");
+  let style = frag.style.as_ref().expect("style present");
+  (style.transform_origin.x.to_px(), style.transform_origin.y.to_px())
+}
+
+fn fragment_perspective_origin(tree: &FragmentTree, box_id: usize) -> (f32, f32) {
+  let frag = find_fragment(&tree.root, box_id).expect("fragment present");
+  let style = frag.style.as_ref().expect("style present");
+  (
+    style.perspective_origin.x.to_px(),
+    style.perspective_origin.y.to_px(),
+  )
+}
+
 fn fragment_outline_color(tree: &FragmentTree, box_id: usize) -> (fastrender::Rgba, bool) {
   let frag = find_fragment(&tree.root, box_id).expect("fragment present");
   let style = frag.style.as_ref().expect("style present");
@@ -396,6 +411,95 @@ fn transitions_interpolate_border_shorthand_over_time() {
     fragment_border_top_color(&late, box_id),
     fastrender::Rgba::new(102, 0, 153, 1.0)
   );
+}
+
+#[test]
+fn transitions_interpolate_border_style_over_time() {
+  let html = r#"
+    <style>
+      @starting-style { #box { border-style: solid; } }
+      #box {
+        width: 100px;
+        height: 100px;
+        border-width: 4px;
+        border-color: rgb(0, 0, 0);
+        border-style: dashed;
+        transition: border-style 1000ms linear;
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut early = fragment_tree.clone();
+  let viewport = early.viewport_size();
+  animation::apply_transitions(&mut early, 400.0, viewport);
+  assert_eq!(fragment_border_top_style(&early, box_id), BorderStyle::Solid);
+  assert!((fragment_border_top_width(&early, box_id) - 4.0).abs() < 1e-3);
+  assert_eq!(
+    fragment_border_top_color(&early, box_id),
+    fastrender::Rgba::new(0, 0, 0, 1.0)
+  );
+
+  let mut late = fragment_tree.clone();
+  let viewport = late.viewport_size();
+  animation::apply_transitions(&mut late, 600.0, viewport);
+  assert_eq!(fragment_border_top_style(&late, box_id), BorderStyle::Dashed);
+  assert!((fragment_border_top_width(&late, box_id) - 4.0).abs() < 1e-3);
+}
+
+#[test]
+fn transitions_interpolate_transform_origin_over_time() {
+  let html = r#"
+    <style>
+      @starting-style { #box { transform-origin: 0% 0%; } }
+      #box { width: 200px; height: 100px; transform-origin: 100% 100%; transition: transform-origin 1000ms linear; }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 300, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut start = fragment_tree.clone();
+  let viewport = start.viewport_size();
+  animation::apply_transitions(&mut start, 0.0, viewport);
+  assert_eq!(fragment_transform_origin(&start, box_id), (0.0, 0.0));
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 500.0, viewport);
+  let (x, y) = fragment_transform_origin(&mid, box_id);
+  assert!((x - 100.0).abs() < 1e-3, "x={x}");
+  assert!((y - 50.0).abs() < 1e-3, "y={y}");
+}
+
+#[test]
+fn transitions_interpolate_perspective_origin_over_time() {
+  let html = r#"
+    <style>
+      @starting-style { #box { perspective-origin: 0% 0%; } }
+      #box { width: 200px; height: 100px; perspective-origin: 100% 100%; transition: perspective-origin 1000ms linear; }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 300, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut start = fragment_tree.clone();
+  let viewport = start.viewport_size();
+  animation::apply_transitions(&mut start, 0.0, viewport);
+  assert_eq!(fragment_perspective_origin(&start, box_id), (0.0, 0.0));
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 500.0, viewport);
+  let (x, y) = fragment_perspective_origin(&mid, box_id);
+  assert!((x - 100.0).abs() < 1e-3, "x={x}");
+  assert!((y - 50.0).abs() < 1e-3, "y={y}");
 }
 
 #[test]

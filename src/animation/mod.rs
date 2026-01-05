@@ -51,6 +51,7 @@ use crate::style::types::ScrollTimelineScroller;
 use crate::style::types::ShapeRadius;
 use crate::style::types::TimelineAxis;
 use crate::style::types::TimelineOffset;
+use crate::style::types::TransformOrigin;
 use crate::style::types::TransitionProperty;
 use crate::style::types::TransitionTimingFunction;
 use crate::style::types::ViewFunctionTimeline;
@@ -80,7 +81,9 @@ pub enum AnimatedValue {
   OutlineColor(OutlineColor),
   OutlineStyle(OutlineStyle),
   Outline(OutlineColor, OutlineStyle, Length),
+  BorderStyle([BorderStyle; 4]),
   Transform(Vec<crate::css::types::Transform>),
+  TransformOrigin(TransformOrigin),
   Translate(TranslateValue),
   Rotate(RotateValue),
   Scale(ScaleValue),
@@ -1426,6 +1429,66 @@ fn apply_clip_rect(style: &mut ComputedStyle, value: &AnimatedValue) {
   }
 }
 
+fn extract_transform_origin(
+  style: &ComputedStyle,
+  ctx: &AnimationResolveContext,
+) -> Option<AnimatedValue> {
+  let width = ctx.element_size.width;
+  let height = ctx.element_size.height;
+  Some(AnimatedValue::TransformOrigin(TransformOrigin {
+    x: Length::px(resolve_length_px(&style.transform_origin.x, Some(width), style, ctx)),
+    y: Length::px(resolve_length_px(&style.transform_origin.y, Some(height), style, ctx)),
+  }))
+}
+
+fn extract_perspective_origin(
+  style: &ComputedStyle,
+  ctx: &AnimationResolveContext,
+) -> Option<AnimatedValue> {
+  let width = ctx.element_size.width;
+  let height = ctx.element_size.height;
+  Some(AnimatedValue::TransformOrigin(TransformOrigin {
+    x: Length::px(resolve_length_px(
+      &style.perspective_origin.x,
+      Some(width),
+      style,
+      ctx,
+    )),
+    y: Length::px(resolve_length_px(
+      &style.perspective_origin.y,
+      Some(height),
+      style,
+      ctx,
+    )),
+  }))
+}
+
+fn interpolate_transform_origin_value(
+  a: &AnimatedValue,
+  b: &AnimatedValue,
+  t: f32,
+) -> Option<AnimatedValue> {
+  let (AnimatedValue::TransformOrigin(oa), AnimatedValue::TransformOrigin(ob)) = (a, b) else {
+    return None;
+  };
+  Some(AnimatedValue::TransformOrigin(TransformOrigin {
+    x: Length::px(lerp(oa.x.to_px(), ob.x.to_px(), t)),
+    y: Length::px(lerp(oa.y.to_px(), ob.y.to_px(), t)),
+  }))
+}
+
+fn apply_transform_origin(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::TransformOrigin(origin) = value {
+    style.transform_origin = *origin;
+  }
+}
+
+fn apply_perspective_origin(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::TransformOrigin(origin) = value {
+    style.perspective_origin = *origin;
+  }
+}
+
 fn extract_background_position(
   style: &ComputedStyle,
   ctx: &AnimationResolveContext,
@@ -1883,6 +1946,66 @@ fn apply_border_left_width(style: &mut ComputedStyle, value: &AnimatedValue) {
   }
 }
 
+fn extract_border_style(
+  style: &ComputedStyle,
+  _ctx: &AnimationResolveContext,
+) -> Option<AnimatedValue> {
+  Some(AnimatedValue::BorderStyle([
+    style.border_top_style,
+    style.border_right_style,
+    style.border_bottom_style,
+    style.border_left_style,
+  ]))
+}
+
+fn interpolate_border_style_value(
+  a: &AnimatedValue,
+  b: &AnimatedValue,
+  t: f32,
+) -> Option<AnimatedValue> {
+  let (AnimatedValue::BorderStyle(sa), AnimatedValue::BorderStyle(sb)) = (a, b) else {
+    return None;
+  };
+  Some(AnimatedValue::BorderStyle(if t < 0.5 { *sa } else { *sb }))
+}
+
+fn apply_border_style(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::BorderStyle(styles) = value {
+    style.border_top_style = styles[0];
+    style.border_right_style = styles[1];
+    style.border_bottom_style = styles[2];
+    style.border_left_style = styles[3];
+  }
+}
+
+fn apply_border_style_side(style: &mut ComputedStyle, value: &AnimatedValue, side: usize) {
+  if let AnimatedValue::BorderStyle(styles) = value {
+    match side {
+      0 => style.border_top_style = styles[0],
+      1 => style.border_right_style = styles[1],
+      2 => style.border_bottom_style = styles[2],
+      3 => style.border_left_style = styles[3],
+      _ => {}
+    }
+  }
+}
+
+fn apply_border_top_style(style: &mut ComputedStyle, value: &AnimatedValue) {
+  apply_border_style_side(style, value, 0);
+}
+
+fn apply_border_right_style(style: &mut ComputedStyle, value: &AnimatedValue) {
+  apply_border_style_side(style, value, 1);
+}
+
+fn apply_border_bottom_style(style: &mut ComputedStyle, value: &AnimatedValue) {
+  apply_border_style_side(style, value, 2);
+}
+
+fn apply_border_left_style(style: &mut ComputedStyle, value: &AnimatedValue) {
+  apply_border_style_side(style, value, 3);
+}
+
 fn extract_border(style: &ComputedStyle, ctx: &AnimationResolveContext) -> Option<AnimatedValue> {
   Some(AnimatedValue::Border(
     resolve_border_widths(style, ctx),
@@ -2267,6 +2390,18 @@ fn property_interpolators() -> &'static [PropertyInterpolator] {
       apply: apply_clip_rect,
     },
     PropertyInterpolator {
+      name: "transform-origin",
+      extract: extract_transform_origin,
+      interpolate: interpolate_transform_origin_value,
+      apply: apply_transform_origin,
+    },
+    PropertyInterpolator {
+      name: "perspective-origin",
+      extract: extract_perspective_origin,
+      interpolate: interpolate_transform_origin_value,
+      apply: apply_perspective_origin,
+    },
+    PropertyInterpolator {
       name: "background-position",
       extract: extract_background_position,
       interpolate: interpolate_background_position_value,
@@ -2337,6 +2472,36 @@ fn property_interpolators() -> &'static [PropertyInterpolator] {
       extract: extract_border_width,
       interpolate: interpolate_border_width_value,
       apply: apply_border_width,
+    },
+    PropertyInterpolator {
+      name: "border-style",
+      extract: extract_border_style,
+      interpolate: interpolate_border_style_value,
+      apply: apply_border_style,
+    },
+    PropertyInterpolator {
+      name: "border-top-style",
+      extract: extract_border_style,
+      interpolate: interpolate_border_style_value,
+      apply: apply_border_top_style,
+    },
+    PropertyInterpolator {
+      name: "border-right-style",
+      extract: extract_border_style,
+      interpolate: interpolate_border_style_value,
+      apply: apply_border_right_style,
+    },
+    PropertyInterpolator {
+      name: "border-bottom-style",
+      extract: extract_border_style,
+      interpolate: interpolate_border_style_value,
+      apply: apply_border_bottom_style,
+    },
+    PropertyInterpolator {
+      name: "border-left-style",
+      extract: extract_border_style,
+      interpolate: interpolate_border_style_value,
+      apply: apply_border_left_style,
     },
     PropertyInterpolator {
       name: "border",

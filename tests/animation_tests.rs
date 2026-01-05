@@ -19,7 +19,7 @@ use fastrender::style::types::{
   AnimationRange, AnimationTimeline, BackgroundPosition, BackgroundSize, BackgroundSizeComponent,
   BasicShape, BorderStyle, ClipComponent, FilterFunction, RangeOffset,
   ScrollFunctionTimeline, ScrollTimeline, ScrollTimelineScroller, TimelineAxis, TimelineOffset,
-  OutlineColor, OutlineStyle, ViewTimeline, ViewTimelinePhase, WritingMode,
+  OutlineColor, OutlineStyle, TransformOrigin, ViewTimeline, ViewTimelinePhase, WritingMode,
 };
 use fastrender::Rgba;
 use fastrender::{
@@ -464,6 +464,33 @@ fn keyframes_interpolate_border_shorthand() {
 }
 
 #[test]
+fn keyframes_interpolate_border_style() {
+  let sheet = parse_stylesheet(
+    "@keyframes border { from { border-style: solid; } to { border-style: dashed; } }",
+  )
+  .unwrap();
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = &keyframes[0];
+
+  let sample_styles = |progress: f32| -> [BorderStyle; 4] {
+    let sampled = sample_keyframes(
+      rule,
+      progress,
+      &ComputedStyle::default(),
+      Size::new(800.0, 600.0),
+      Size::new(200.0, 200.0),
+    );
+    match sampled.get("border-style") {
+      Some(AnimatedValue::BorderStyle(styles)) => *styles,
+      other => panic!("unexpected value {other:?}"),
+    }
+  };
+
+  assert_eq!(sample_styles(0.4), [BorderStyle::Solid; 4]);
+  assert_eq!(sample_styles(0.6), [BorderStyle::Dashed; 4]);
+}
+
+#[test]
 fn keyframes_interpolate_clip_rect() {
   let sheet = parse_stylesheet(
     "@keyframes clip { from { clip: rect(0px, 10px, 10px, 0px); } to { clip: rect(0px, 20px, 20px, 0px); } }",
@@ -547,6 +574,64 @@ fn keyframes_interpolate_mask_size() {
     }
     other => panic!("unexpected mask-size {other:?}"),
   }
+}
+
+#[test]
+fn keyframes_interpolate_transform_origin() {
+  let sheet = parse_stylesheet(
+    "@keyframes origin { from { transform-origin: 0% 0%; } to { transform-origin: 100% 100%; } }",
+  )
+  .unwrap();
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = &keyframes[0];
+
+  let sampled = sample_keyframes(
+    rule,
+    0.5,
+    &ComputedStyle::default(),
+    Size::new(800.0, 600.0),
+    Size::new(200.0, 100.0),
+  );
+  let origin = match sampled.get("transform-origin") {
+    Some(AnimatedValue::TransformOrigin(o)) => o,
+    other => panic!("unexpected value {other:?}"),
+  };
+  assert_eq!(
+    *origin,
+    TransformOrigin {
+      x: Length::px(100.0),
+      y: Length::px(50.0),
+    }
+  );
+}
+
+#[test]
+fn keyframes_interpolate_perspective_origin() {
+  let sheet = parse_stylesheet(
+    "@keyframes origin { from { perspective-origin: 0% 0%; } to { perspective-origin: 100% 100%; } }",
+  )
+  .unwrap();
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = &keyframes[0];
+
+  let sampled = sample_keyframes(
+    rule,
+    0.5,
+    &ComputedStyle::default(),
+    Size::new(800.0, 600.0),
+    Size::new(200.0, 100.0),
+  );
+  let origin = match sampled.get("perspective-origin") {
+    Some(AnimatedValue::TransformOrigin(o)) => o,
+    other => panic!("unexpected value {other:?}"),
+  };
+  assert_eq!(
+    *origin,
+    TransformOrigin {
+      x: Length::px(100.0),
+      y: Length::px(50.0),
+    }
+  );
 }
 
 #[test]

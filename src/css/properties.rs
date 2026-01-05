@@ -1695,6 +1695,7 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
       | "background-position-x"
       | "background-position-y"
       | "transform-origin"
+      | "perspective-origin"
       | "touch-action"
       | "cursor"
       | "list-style"
