@@ -12,7 +12,7 @@ use crate::debug::runtime;
 use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
 use crate::error::{RenderError, RenderStage, Result};
 use crate::render_control::{check_active, check_active_periodic, RenderDeadline};
-use cssparser::{Parser, ParserInput, Token};
+use cssparser::{serialize_identifier, Parser, ParserInput, Token};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -646,7 +646,19 @@ fn consume_nested_tokens<'i, 't, E>(
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ImportLayerModifier {
   Anonymous,
-  Named(String),
+  Named(Vec<String>),
+}
+
+fn serialize_layer_name(path: &[String]) -> String {
+  let mut out = String::new();
+  for (idx, name) in path.iter().enumerate() {
+    if idx > 0 {
+      out.push('.');
+    }
+    // Writing to a `String` cannot fail, so any formatting error is unreachable here.
+    let _ = serialize_identifier(name, &mut out);
+  }
+  out
 }
 
 fn parse_import_modifiers_and_media(
@@ -654,7 +666,7 @@ fn parse_import_modifiers_and_media(
 ) -> Option<(Option<ImportLayerModifier>, Option<String>, &str)> {
   fn parse_import_layer_name<'i, 't>(
     parser: &mut Parser<'i, 't>,
-  ) -> std::result::Result<String, cssparser::ParseError<'i, ()>> {
+  ) -> std::result::Result<Vec<String>, cssparser::ParseError<'i, ()>> {
     let mut components = Vec::new();
     loop {
       parser.skip_whitespace();
@@ -676,7 +688,7 @@ fn parse_import_modifiers_and_media(
     if components.is_empty() || !parser.is_exhausted() {
       return Err(parser.new_custom_error(()));
     }
-    Ok(components.join("."))
+    Ok(components)
   }
 
   fn parse_import_layer_modifier<'i, 't>(
@@ -1382,8 +1394,8 @@ where
                   if let Some(layer) = layer {
                     let layer_block = match layer {
                       ImportLayerModifier::Anonymous => format!("@layer {{\n{}\n}}\n", wrapped),
-                      ImportLayerModifier::Named(name) => {
-                        format!("@layer {} {{\n{}\n}}\n", name, wrapped)
+                      ImportLayerModifier::Named(path) => {
+                        format!("@layer {} {{\n{}\n}}\n", serialize_layer_name(&path), wrapped)
                       }
                     };
                     wrapped = std::borrow::Cow::Owned(layer_block);
@@ -3233,6 +3245,31 @@ mod tests {
       vec!["https://example.com/layered.css".to_string()],
       "expected import with layer modifier to be fetched"
     );
+  }
+
+  #[test]
+  fn inline_imports_preserves_escaped_layer_names() {
+    let mut state = InlineImportState::new();
+    let mut fetched = |_url: &str| -> Result<String> { Ok(".imported { color: blue; }".to_string()) };
+    // Layer names can contain escaped whitespace. Ensure we re-serialize them so the parser sees a
+    // single identifier rather than treating the whitespace as a separator.
+    let css = r#"@import "layered.css" layer(foo\ bar);"#;
+    let out = inline_imports(
+      css,
+      "https://example.com/main.css",
+      &mut fetched,
+      &mut state,
+      None,
+    )
+    .expect("inline imports");
+
+    let sheet = crate::css::parser::parse_stylesheet(&out).expect("parse output stylesheet");
+    let Some(crate::css::types::CssRule::Layer(layer)) = sheet.rules.first() else {
+      panic!("expected first rule to be a @layer block, got: {:?}", sheet.rules);
+    };
+    assert_eq!(layer.names, vec![vec!["foo bar".to_string()]]);
+    assert!(!layer.anonymous);
+    assert!(layer.has_block);
   }
 
   #[test]
