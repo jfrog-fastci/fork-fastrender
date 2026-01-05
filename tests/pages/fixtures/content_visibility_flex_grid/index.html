@@ -1,0 +1,138 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    background: #ffffff;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  /* 2x2 matrix within a 420x260 viewport (matches other content-visibility regression tests). */
+  .matrix {
+    width: 420px;
+    padding: 4px;
+    display: grid;
+    /* Use fixed track sizes to avoid `align-content: stretch` distributing extra space. */
+    grid-template-columns: 204px 204px;
+    grid-auto-rows: 120px;
+    gap: 4px;
+    align-content: start;
+    background: #ffffff;
+  }
+
+  .case {
+    height: 120px;
+    overflow: hidden;
+    border: 2px solid #111;
+    background: #f4f4f4;
+  }
+
+  /* Parent formatting contexts for the 4 cases. */
+  .case-flex {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .case-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    grid-auto-rows: max-content;
+    justify-items: stretch;
+    align-content: start;
+  }
+
+  .header {
+    height: 14px;
+    background: #222;
+  }
+
+  .after {
+    height: 14px;
+    background: #00cc66;
+  }
+
+  /* The element under test: must itself establish the relevant formatting context (flex/grid)
+     while also being a flex/grid item inside the parent case container (routed through Taffy). */
+  .cv {
+    contain-intrinsic-size: 0px 30px;
+    border: 2px solid #0077cc;
+    background: #cfe8ff;
+    width: 100%;
+  }
+  .cv-flex {
+    display: flex;
+    flex-direction: column;
+  }
+  .cv-grid {
+    display: grid;
+  }
+
+  .cv-hidden {
+    content-visibility: hidden;
+  }
+  .cv-auto {
+    content-visibility: auto;
+  }
+
+  .cv .inner {
+    height: 80px;
+    background: #ff00ff;
+  }
+
+  /* Auto cases: keep the border box offscreen regardless of placeholder-vs-real sizing. */
+  .offscreen {
+    position: relative;
+    top: 200px;
+  }
+
+  .spacer {
+    height: 270px;
+    background: #e0e0e0;
+  }
+
+  /* Marker position depends on the laid-out height of the (offscreen) auto subtree. */
+  .marker {
+    height: 14px;
+    background: #ff9900;
+  }
+
+  .marker-offset {
+    margin-top: -270px;
+  }
+</style>
+
+<div class="matrix">
+  <!-- Top-left: Flex + content-visibility:hidden -->
+  <div class="case case-flex">
+    <div class="header"></div>
+    <div class="cv cv-flex cv-hidden"><div class="inner"></div></div>
+    <div class="after"></div>
+  </div>
+
+  <!-- Top-right: Grid + content-visibility:hidden -->
+  <div class="case case-grid">
+    <div class="header"></div>
+    <div class="cv cv-grid cv-hidden"><div class="inner"></div></div>
+    <div class="after"></div>
+  </div>
+
+  <!-- Bottom-left: Flex + content-visibility:auto (offscreen) -->
+  <div class="case case-flex">
+    <div class="header"></div>
+    <div class="cv cv-flex cv-auto offscreen"><div class="inner"></div></div>
+    <div class="marker"></div>
+  </div>
+
+  <!-- Bottom-right: Grid + content-visibility:auto (offscreen) -->
+  <div class="case case-grid">
+    <div class="header"></div>
+    <div class="spacer"></div>
+    <div class="cv cv-grid cv-auto"><div class="inner"></div></div>
+    <div class="marker marker-offset"></div>
+  </div>
+</div>
