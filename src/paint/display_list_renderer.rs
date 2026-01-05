@@ -5733,7 +5733,7 @@ impl DisplayListRenderer {
       let Some(tile) = tile else { continue };
       let mut converted_tile = None;
       let mask_tile = match layer.mode {
-        MaskMode::Alpha => tile.as_ref(),
+        MaskMode::Alpha | MaskMode::MatchSource => tile.as_ref(),
         MaskMode::Luminance => {
           let Some(mask_tile) = mask_tile_from_image(tile.as_ref(), layer.mode)? else {
             continue;
@@ -11485,7 +11485,7 @@ fn tile_axis_plan(
 fn mask_value_from_pixel(pixel: &[u8], mode: MaskMode) -> u8 {
   let a = pixel.get(3).copied().unwrap_or(0) as f32 / 255.0;
   let value = match mode {
-    MaskMode::Alpha => a,
+    MaskMode::Alpha | MaskMode::MatchSource => a,
     MaskMode::Luminance => {
       if a <= 0.0 {
         0.0

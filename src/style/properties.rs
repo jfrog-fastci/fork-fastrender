@@ -14255,7 +14255,7 @@ fn parse_mask_mode(value: &PropertyValue) -> Option<MaskMode> {
     PropertyValue::Keyword(kw) => match kw.as_str() {
       "alpha" => Some(MaskMode::Alpha),
       "luminance" => Some(MaskMode::Luminance),
-      "match-source" => Some(MaskMode::Alpha),
+      "match-source" => Some(MaskMode::MatchSource),
       _ => None,
     },
     _ => None,

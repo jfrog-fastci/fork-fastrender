@@ -11574,7 +11574,7 @@ fn apply_clip_mask_rect(pixmap: &mut Pixmap, rect: Rect, radii: BorderRadii) -> 
 fn mask_value_from_pixel(pixel: &[u8], mode: MaskMode) -> u8 {
   let a = pixel.get(3).copied().unwrap_or(0) as f32 / 255.0;
   let value = match mode {
-    MaskMode::Alpha => a,
+    MaskMode::Alpha | MaskMode::MatchSource => a,
     MaskMode::Luminance => {
       if a <= 0.0 {
         0.0

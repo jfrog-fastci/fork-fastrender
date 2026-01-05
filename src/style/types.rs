@@ -194,6 +194,7 @@ pub enum BorderImageRepeat {
 /// Mask compositing mode per layer
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaskMode {
+  MatchSource,
   Alpha,
   Luminance,
 }
@@ -3570,7 +3571,7 @@ impl Default for MaskLayer {
       },
       size: BackgroundSize::Explicit(BackgroundSizeComponent::Auto, BackgroundSizeComponent::Auto),
       repeat: BackgroundRepeat::repeat(),
-      mode: MaskMode::Alpha,
+      mode: MaskMode::MatchSource,
       origin: MaskOrigin::BorderBox,
       clip: MaskClip::BorderBox,
       composite: MaskComposite::Add,

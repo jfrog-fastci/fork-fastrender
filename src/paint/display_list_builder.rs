@@ -134,6 +134,7 @@ use crate::style::types::ContentVisibility;
 use crate::style::types::ImageOrientation;
 use crate::style::types::ImageRendering;
 use crate::style::types::Isolation;
+use crate::style::types::MaskMode;
 use crate::style::types::MixBlendMode;
 use crate::style::types::ObjectFit;
 use crate::style::types::OrientationTransform;
@@ -2925,6 +2926,39 @@ impl DisplayListBuilder {
         BackgroundImage::None => continue,
       };
 
+      // `mask-mode: match-source` selects alpha for images with an alpha channel and luminance
+      // otherwise. We resolve this here while we still have access to the decoded image metadata.
+      // (The renderer only sees `ImageData`, which is always RGBA after decoding.)
+      let resolved_mode = match layer.mode {
+        MaskMode::MatchSource => match image {
+          BackgroundImage::Url(src) => {
+            let trimmed = src.trim_start();
+            if trimmed.starts_with('<') {
+              // Inline SVG is rasterized to RGBA; treat it as alpha-masked.
+              MaskMode::Alpha
+            } else if let Some(image_cache) = self.image_cache.as_ref() {
+              let resolved_src = image_cache.resolve_url(src);
+              match image_cache.load_with_crossorigin(&resolved_src, CrossOriginAttribute::None) {
+                Ok(cached) => {
+                  if cached.image.color().has_alpha() {
+                    MaskMode::Alpha
+                  } else {
+                    MaskMode::Luminance
+                  }
+                }
+                Err(_) => MaskMode::Alpha,
+              }
+            } else {
+              // Without the image cache we can't determine the source color type; fall back to
+              // alpha so we preserve previous behavior.
+              MaskMode::Alpha
+            }
+          }
+          _ => MaskMode::Alpha,
+        },
+        other => other,
+      };
+
       layers.push(ResolvedMaskLayer {
         image: resolved_image,
         repeat: layer.repeat,
@@ -2932,7 +2966,7 @@ impl DisplayListBuilder {
         size: layer.size.clone(),
         origin: layer.origin,
         clip: layer.clip,
-        mode: layer.mode,
+        mode: resolved_mode,
         composite: layer.composite,
       });
     }
