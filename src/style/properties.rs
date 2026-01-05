@@ -7419,7 +7419,7 @@ fn apply_declaration_with_base_internal(
 
     // Border width
     "border-width" => {
-      if let Some(lengths) = extract_box_values(resolved_value) {
+      if let Some(lengths) = extract_border_width_values(resolved_value) {
         let mut top = styles.border_top_width;
         let mut right = styles.border_right_width;
         let mut bottom = styles.border_bottom_width;
@@ -7432,27 +7432,27 @@ fn apply_declaration_with_base_internal(
       }
     }
     "border-top-width" => {
-      if let Some(len) = extract_length(resolved_value) {
+      if let Some(len) = parse_border_width(resolved_value) {
         set_border_width_side(styles, crate::style::PhysicalSide::Top, len, order);
       }
     }
     "border-right-width" => {
-      if let Some(len) = extract_length(resolved_value) {
+      if let Some(len) = parse_border_width(resolved_value) {
         set_border_width_side(styles, crate::style::PhysicalSide::Right, len, order);
       }
     }
     "border-bottom-width" => {
-      if let Some(len) = extract_length(resolved_value) {
+      if let Some(len) = parse_border_width(resolved_value) {
         set_border_width_side(styles, crate::style::PhysicalSide::Bottom, len, order);
       }
     }
     "border-left-width" => {
-      if let Some(len) = extract_length(resolved_value) {
+      if let Some(len) = parse_border_width(resolved_value) {
         set_border_width_side(styles, crate::style::PhysicalSide::Left, len, order);
       }
     }
     "border-inline-start-width" => {
-      if let Some(len) = extract_length(resolved_value) {
+      if let Some(len) = parse_border_width(resolved_value) {
         push_logical(
           styles,
           crate::style::LogicalProperty::BorderWidth {
@@ -7465,7 +7465,7 @@ fn apply_declaration_with_base_internal(
       }
     }
     "border-inline-end-width" => {
-      if let Some(len) = extract_length(resolved_value) {
+      if let Some(len) = parse_border_width(resolved_value) {
         push_logical(
           styles,
           crate::style::LogicalProperty::BorderWidth {
@@ -7478,7 +7478,7 @@ fn apply_declaration_with_base_internal(
       }
     }
     "border-block-start-width" => {
-      if let Some(len) = extract_length(resolved_value) {
+      if let Some(len) = parse_border_width(resolved_value) {
         push_logical(
           styles,
           crate::style::LogicalProperty::BorderWidth {
@@ -7491,7 +7491,7 @@ fn apply_declaration_with_base_internal(
       }
     }
     "border-block-end-width" => {
-      if let Some(len) = extract_length(resolved_value) {
+      if let Some(len) = parse_border_width(resolved_value) {
         push_logical(
           styles,
           crate::style::LogicalProperty::BorderWidth {
@@ -7504,7 +7504,7 @@ fn apply_declaration_with_base_internal(
       }
     }
     "border-inline-width" => {
-      if let Some((start, end)) = extract_length_pair(resolved_value) {
+      if let Some((start, end)) = extract_border_width_pair(resolved_value) {
         push_logical(
           styles,
           crate::style::LogicalProperty::BorderWidth {
@@ -7517,7 +7517,7 @@ fn apply_declaration_with_base_internal(
       }
     }
     "border-block-width" => {
-      if let Some((start, end)) = extract_length_pair(resolved_value) {
+      if let Some((start, end)) = extract_border_width_pair(resolved_value) {
         push_logical(
           styles,
           crate::style::LogicalProperty::BorderWidth {
@@ -8556,7 +8556,7 @@ fn apply_declaration_with_base_internal(
       }
     },
     "column-rule-width" => {
-      if let Some(len) = extract_length(resolved_value) {
+      if let Some(len) = parse_border_width(resolved_value) {
         styles.column_rule_width = len;
       }
     }
@@ -11366,6 +11366,20 @@ pub fn extract_length_pair(value: &PropertyValue) -> Option<(Length, Length)> {
       }
     }
     _ => None,
+  }
+}
+
+fn extract_border_width_pair(value: &PropertyValue) -> Option<(Length, Length)> {
+  match value {
+    PropertyValue::Multiple(values) => {
+      let lengths: Vec<Length> = values.iter().filter_map(parse_border_width).collect();
+      match lengths.len() {
+        1 => Some((lengths[0], lengths[0])),
+        l if l >= 2 => Some((lengths[0], lengths[1])),
+        _ => None,
+      }
+    }
+    _ => parse_border_width(value).map(|len| (len, len)),
   }
 }
 
@@ -15757,6 +15771,20 @@ pub fn extract_box_values(value: &PropertyValue) -> Option<Vec<Length>> {
   }
 }
 
+fn extract_border_width_values(value: &PropertyValue) -> Option<Vec<Length>> {
+  match value {
+    PropertyValue::Multiple(values) => {
+      let lengths: Vec<Length> = values.iter().filter_map(parse_border_width).collect();
+      if lengths.is_empty() {
+        None
+      } else {
+        Some(lengths)
+      }
+    }
+    _ => parse_border_width(value).map(|len| vec![len]),
+  }
+}
+
 pub fn apply_margin_values(
   top: &mut Option<Length>,
   right: &mut Option<Length>,
@@ -15853,6 +15881,10 @@ fn parse_border_side_shorthand(
       PropertyValue::Length(len) => width = Some(*len),
       PropertyValue::Number(n) => width = Some(Length::px(*n)),
       PropertyValue::Keyword(kw) => {
+        if let Some(len) = parse_border_width_keyword(kw) {
+          width = Some(len);
+          continue;
+        }
         if kw.eq_ignore_ascii_case("currentcolor") {
           color = Some(current_color);
         } else {
@@ -15922,12 +15954,24 @@ fn parse_outline_width(value: &PropertyValue) -> Option<Length> {
   }
 }
 
-fn parse_border_width_keyword(kw: &str) -> Option<Length> {
-  match kw {
-    "thin" => Some(Length::px(1.0)),
-    "medium" => Some(Length::px(3.0)),
-    "thick" => Some(Length::px(5.0)),
+fn parse_border_width(value: &PropertyValue) -> Option<Length> {
+  match value {
+    PropertyValue::Length(l) if l.value >= 0.0 => Some(*l),
+    PropertyValue::Keyword(kw) => parse_border_width_keyword(kw),
+    PropertyValue::Number(n) if *n >= 0.0 => Some(Length::px(*n)),
     _ => None,
+  }
+}
+
+fn parse_border_width_keyword(kw: &str) -> Option<Length> {
+  if kw.eq_ignore_ascii_case("thin") {
+    Some(Length::px(1.0))
+  } else if kw.eq_ignore_ascii_case("medium") {
+    Some(Length::px(3.0))
+  } else if kw.eq_ignore_ascii_case("thick") {
+    Some(Length::px(5.0))
+  } else {
+    None
   }
 }
 
