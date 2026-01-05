@@ -320,13 +320,17 @@ impl BlockFormattingContext {
         override_style.min_width_keyword = None;
         override_style.max_width = None;
         override_style.max_width_keyword = None;
-        crate::layout::style_override::with_style_override(node.id, Arc::new(override_style), || {
-          if fc_type == FormattingContextType::Block {
-            self.compute_intrinsic_inline_sizes(node)
-          } else {
-            factory.get(fc_type).compute_intrinsic_inline_sizes(node)
-          }
-        })
+        crate::layout::style_override::with_style_override(
+          node.id,
+          Arc::new(override_style),
+          || {
+            if fc_type == FormattingContextType::Block {
+              self.compute_intrinsic_inline_sizes(node)
+            } else {
+              factory.get(fc_type).compute_intrinsic_inline_sizes(node)
+            }
+          },
+        )
       } else if fc_type == FormattingContextType::Block {
         self.compute_intrinsic_inline_sizes(node)
       } else {
@@ -363,7 +367,8 @@ impl BlockFormattingContext {
             &self.font_context,
             self.viewport_size,
           );
-          let limit_content = content_size_from_box_sizing(limit_px, inline_edges, style.box_sizing);
+          let limit_content =
+            content_size_from_box_sizing(limit_px, inline_edges, style.box_sizing);
           max_content.min(limit_content.max(min_content))
         }
       },
@@ -751,9 +756,8 @@ impl BlockFormattingContext {
         let fc_type = child
           .formatting_context()
           .unwrap_or(FormattingContextType::Block);
-        intrinsic_content_sizes = Some(self.intrinsic_inline_content_sizes_for_sizing_keywords(
-          child, fc_type, &factory,
-        )?);
+        intrinsic_content_sizes =
+          Some(self.intrinsic_inline_content_sizes_for_sizing_keywords(child, fc_type, &factory)?);
       }
       let (min_content, max_content) = intrinsic_content_sizes.unwrap();
       self.resolve_intrinsic_size_keyword_to_content_width(
@@ -788,9 +792,8 @@ impl BlockFormattingContext {
         let fc_type = child
           .formatting_context()
           .unwrap_or(FormattingContextType::Block);
-        intrinsic_content_sizes = Some(self.intrinsic_inline_content_sizes_for_sizing_keywords(
-          child, fc_type, &factory,
-        )?);
+        intrinsic_content_sizes =
+          Some(self.intrinsic_inline_content_sizes_for_sizing_keywords(child, fc_type, &factory)?);
       }
       let (min_content, max_content) = intrinsic_content_sizes.unwrap();
       self.resolve_intrinsic_size_keyword_to_content_width(
@@ -3768,7 +3771,9 @@ impl FormattingContext for BlockFormattingContext {
     let style_for_width: &ComputedStyle = if use_percent_as_auto {
       let mut s: ComputedStyle = (**style).clone();
       if matches!(s.width, Some(len) if len.unit.is_percentage())
-        || s.width_keyword.is_some_and(|keyword| keyword.has_percentage())
+        || s
+          .width_keyword
+          .is_some_and(|keyword| keyword.has_percentage())
       {
         s.width = None;
         s.width_keyword = None;
@@ -4041,8 +4046,11 @@ impl FormattingContext for BlockFormattingContext {
       let fc_type = box_node
         .formatting_context()
         .unwrap_or(FormattingContextType::Block);
-      let (min_content, max_content) =
-        self.intrinsic_inline_content_sizes_for_sizing_keywords(box_node, fc_type, &self.factory)?;
+      let (min_content, max_content) = self.intrinsic_inline_content_sizes_for_sizing_keywords(
+        box_node,
+        fc_type,
+        &self.factory,
+      )?;
       intrinsic_content_sizes = Some((min_content, max_content));
       let keyword_content = self.resolve_intrinsic_size_keyword_to_content_width(
         keyword,
@@ -4163,7 +4171,9 @@ impl FormattingContext for BlockFormattingContext {
           .formatting_context()
           .unwrap_or(FormattingContextType::Block);
         intrinsic_content_sizes = Some(self.intrinsic_inline_content_sizes_for_sizing_keywords(
-          box_node, fc_type, &self.factory,
+          box_node,
+          fc_type,
+          &self.factory,
         )?);
       }
       let (min_content, max_content) = intrinsic_content_sizes.unwrap();
@@ -4199,7 +4209,9 @@ impl FormattingContext for BlockFormattingContext {
           .formatting_context()
           .unwrap_or(FormattingContextType::Block);
         intrinsic_content_sizes = Some(self.intrinsic_inline_content_sizes_for_sizing_keywords(
-          box_node, fc_type, &self.factory,
+          box_node,
+          fc_type,
+          &self.factory,
         )?);
       }
       let (min_content, max_content) = intrinsic_content_sizes.unwrap();
@@ -6049,7 +6061,8 @@ mod tests {
       compute_intrinsic_block_sizes_without_block_size_constraints(&fc, &child).unwrap();
     let edges_base0 = vertical_padding_and_borders(&child_style, 0.0, viewport, &font_context);
     let edges_actual = vertical_padding_and_borders(&child_style, 300.0, viewport, &font_context);
-    let expected_border_box = rebase_intrinsic_border_box_size(max_base0, edges_base0, edges_actual);
+    let expected_border_box =
+      rebase_intrinsic_border_box_size(max_base0, edges_base0, edges_actual);
 
     let fragment = fc.layout(&parent, &constraints).unwrap();
     assert_eq!(fragment.children.len(), 1);
@@ -6117,8 +6130,11 @@ mod tests {
     child_style.display = Display::Block;
     child_style.width = None;
     child_style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
-    let mut child =
-      BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![child_canvas]);
+    let mut child = BoxNode::new_block(
+      Arc::new(child_style),
+      FormattingContextType::Block,
+      vec![child_canvas],
+    );
     child.id = 9100;
 
     let root = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![child]);
@@ -6146,8 +6162,11 @@ mod tests {
     child_style.width_keyword = None;
     child_style.max_width = None;
     child_style.max_width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
-    let mut child =
-      BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![child_canvas]);
+    let mut child = BoxNode::new_block(
+      Arc::new(child_style),
+      FormattingContextType::Block,
+      vec![child_canvas],
+    );
     child.id = 9200;
 
     let root = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![child]);
@@ -6175,8 +6194,11 @@ mod tests {
     child_style.width_keyword = None;
     child_style.min_width = None;
     child_style.min_width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
-    let mut child =
-      BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![child_canvas]);
+    let mut child = BoxNode::new_block(
+      Arc::new(child_style),
+      FormattingContextType::Block,
+      vec![child_canvas],
+    );
     child.id = 9300;
 
     let root = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![child]);
@@ -7873,7 +7895,7 @@ mod tests {
       AvailableSpace::Definite(containing_width),
       AvailableSpace::Indefinite,
     );
-    let paint_viewport = Rect::from_xywh(0.0, 0.0, viewport.height, viewport.width);
+    let paint_viewport = paint_viewport_for(WritingMode::VerticalRl, Direction::Ltr, viewport);
     let current_y = viewport.width + 10.0;
     let nearest_cb = ContainingBlock::viewport(viewport);
 
@@ -7903,14 +7925,13 @@ mod tests {
     let _toggles = content_visibility_test_guard();
     let viewport = Size::new(300.0, 200.0);
     let scroll = Point::new(0.0, 300.0);
-    let factory = crate::layout::contexts::factory::FormattingContextFactory::with_font_context_viewport_and_cb(
+    let constraints = LayoutConstraints::definite(viewport.width, viewport.height);
+
+    let fc_no_scroll = BlockFormattingContext::with_font_context_viewport_and_cb(
       FontContext::new(),
       viewport,
       ContainingBlock::viewport(viewport),
-    )
-    .with_viewport_scroll(scroll);
-    let fc = BlockFormattingContext::with_factory(factory);
-    let constraints = LayoutConstraints::definite(viewport.width, viewport.height);
+    );
 
     let mut spacer = BoxNode::new_block(
       block_style_with_height(scroll.y),
@@ -7943,6 +7964,21 @@ mod tests {
     );
     root.id = 1;
 
+    let fragment_no_scroll = fc_no_scroll.layout(&root, &constraints).expect("layout");
+    let auto_fragment_no_scroll =
+      find_block_fragment(&fragment_no_scroll, 3).expect("auto fragment");
+    assert!(
+      auto_fragment_no_scroll.children.is_empty(),
+      "expected descendants to be skipped before scrolling"
+    );
+
+    let factory = crate::layout::contexts::factory::FormattingContextFactory::with_font_context_viewport_and_cb(
+      FontContext::new(),
+      viewport,
+      ContainingBlock::viewport(viewport),
+    )
+    .with_viewport_scroll(scroll);
+    let fc = BlockFormattingContext::with_factory(factory);
     let fragment = fc.layout(&root, &constraints).expect("layout");
     let auto_fragment = find_block_fragment(&fragment, 3).expect("auto fragment");
     assert!(
