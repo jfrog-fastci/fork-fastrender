@@ -148,4 +148,21 @@ mod tests {
   fn supports_calc_max_single_argument() {
     assert!(supports_declaration("border-left-width", "calc(max(0px))"));
   }
+
+  #[test]
+  fn supports_font_size_rejects_container_query_units() {
+    // The `nbcnews.com` pageset fixture uses `@supports(font-size:1cqh)` to switch a font-size
+    // custom property to a container-query driven clamp() expression. FastRender cannot currently
+    // compute container-query units for `font-size`, so the feature query must evaluate false to
+    // keep the `rem` fallback path active.
+    assert!(!supports_declaration("font-size", "1cqh"));
+    assert!(!supports_declaration("font-size", "2cqw"));
+
+    // Supported font-size syntaxes should remain true.
+    assert!(supports_declaration("font-size", "0"));
+    assert!(supports_declaration("font-size", "16px"));
+    assert!(supports_declaration("font-size", "1rem"));
+    assert!(supports_declaration("font-size", "2vw"));
+    assert!(supports_declaration("font-size", "smaller"));
+  }
 }

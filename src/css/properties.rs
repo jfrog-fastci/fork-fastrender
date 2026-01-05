@@ -2183,6 +2183,65 @@ pub(crate) fn supports_parsed_declaration_is_valid(
   }
 
   match property {
+    "font-size" => {
+      // Real-world pages (e.g. the `nbcnews.com` pageset fixture) gate fluid typography behind
+      // `@supports(font-size: 1cqh)` and then feed the result into `font-size` via `var()`.
+      //
+      // FastRender currently computes `font-size` eagerly into a pixel value and cannot resolve
+      // container-query units (cqw/cqh/...) or calc/min/max/clamp expressions there. Returning
+      // `true` for those values in `@supports` would incorrectly enable declarations that we then
+      // fail to apply, leaving the page with fallback/initial font sizing.
+      if keyword_in_list(
+        parsed,
+        &[
+          "xx-small",
+          "x-small",
+          "small",
+          "medium",
+          "large",
+          "x-large",
+          "xx-large",
+          "xxx-large",
+          "smaller",
+          "larger",
+        ],
+      ) {
+        return true;
+      }
+
+      // Unitless zero is allowed for `<length>` values.
+      if matches!(parsed, PropertyValue::Number(n) if *n == 0.0) {
+        return true;
+      }
+
+      let PropertyValue::Length(len) = parsed else {
+        return false;
+      };
+
+      if !len.value.is_finite() || len.value < 0.0 {
+        return false;
+      }
+
+      // Reject calc/min/max/clamp/etc. We keep the parsing support so other properties can store
+      // `Length::calc(...)`, but `font-size` computation does not currently resolve these.
+      if len.calc.is_some() || len.unit == LengthUnit::Calc {
+        return false;
+      }
+
+      if len.unit.is_container_query_relative() {
+        return false;
+      }
+
+      return matches!(
+        len.unit,
+        LengthUnit::Em
+          | LengthUnit::Rem
+          | LengthUnit::Ex
+          | LengthUnit::Ch
+          | LengthUnit::Percent
+      ) || len.unit.is_absolute()
+        || len.unit.is_viewport_relative();
+    }
     "color"
     | "background-color"
     | "border-color"
