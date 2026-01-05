@@ -5,6 +5,8 @@ mod util;
 mod avif_test;
 mod backdrop_filter_determinism_regression;
 mod backdrop_filter_parallel_test;
+mod backdrop_filter_filter_interaction_test;
+mod backdrop_filter_mask_image_test;
 mod backend_parity;
 mod backface_culling_test;
 mod canvas_background_propagation_test;
