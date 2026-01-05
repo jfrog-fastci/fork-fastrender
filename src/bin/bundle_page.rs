@@ -1953,6 +1953,9 @@ fn is_image_resource(res: &FetchedResource, url: &str) -> bool {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use fastrender::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
+  use std::collections::HashMap;
+  use std::sync::atomic::{AtomicUsize, Ordering};
   use std::sync::Mutex;
 
   #[derive(Default)]
@@ -2048,6 +2051,131 @@ mod tests {
         && *dest == FetchDestination::Image
         && referrer.as_deref() == Some(base_hint.as_str())
     }));
+
+    Ok(())
+  }
+
+  #[derive(Default)]
+  struct OriginSensitiveFetcher {
+    calls: AtomicUsize,
+  }
+
+  impl OriginSensitiveFetcher {
+    fn calls(&self) -> usize {
+      self.calls.load(Ordering::SeqCst)
+    }
+  }
+
+  impl ResourceFetcher for OriginSensitiveFetcher {
+    fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+      panic!("expected RecordingFetcher to use fetch_with_request");
+    }
+
+    fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+      self.calls.fetch_add(1, Ordering::SeqCst);
+
+      let origin = req
+        .referrer
+        .and_then(|referrer| url::Url::parse(referrer).ok())
+        .and_then(|parsed| parsed.host_str().map(|host| format!("{}://{}", parsed.scheme(), host)));
+
+      let mut res =
+        FetchedResource::with_final_url(b"ok".to_vec(), Some("text/plain".to_string()), None);
+      res.access_control_allow_origin = origin;
+      Ok(res)
+    }
+  }
+
+  #[test]
+  fn recording_fetcher_partitions_cors_mode_requests_by_origin_when_enforced() -> Result<()> {
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "1".to_string(),
+    )])));
+
+    with_thread_runtime_toggles(toggles, || {
+      let inner = Arc::new(OriginSensitiveFetcher::default());
+      let recording = RecordingFetcher::new(inner.clone());
+
+      for (destination, url) in [
+        (FetchDestination::Font, "https://example.com/font.woff2"),
+        (FetchDestination::ImageCors, "https://example.com/img.png"),
+      ] {
+        let req_a =
+          FetchRequest::new(url, destination).with_referrer("https://a.test/page.html");
+        let req_b =
+          FetchRequest::new(url, destination).with_referrer("https://b.test/page.html");
+
+        let a = recording.fetch_with_request(req_a).expect("origin A fetch");
+        let b = recording.fetch_with_request(req_b).expect("origin B fetch");
+
+        assert_eq!(a.bytes, b"ok");
+        assert_eq!(b.bytes, b"ok");
+        assert_eq!(
+          a.access_control_allow_origin.as_deref(),
+          Some("https://a.test"),
+          "unexpected ACAO for origin A"
+        );
+        assert_eq!(
+          b.access_control_allow_origin.as_deref(),
+          Some("https://b.test"),
+          "unexpected ACAO for origin B"
+        );
+      }
+
+      assert_eq!(
+        inner.calls(),
+        4,
+        "expected RecordingFetcher to fetch separately per (destination, origin) when CORS enforcement is enabled"
+      );
+    });
+
+    Ok(())
+  }
+
+  #[test]
+  fn recording_fetcher_does_not_partition_cors_mode_requests_without_enforcement() -> Result<()> {
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "0".to_string(),
+    )])));
+
+    with_thread_runtime_toggles(toggles, || {
+      let inner = Arc::new(OriginSensitiveFetcher::default());
+      let recording = RecordingFetcher::new(inner.clone());
+
+      for (destination, url) in [
+        (FetchDestination::Font, "https://example.com/font.woff2"),
+        (FetchDestination::ImageCors, "https://example.com/img.png"),
+      ] {
+        let req_a =
+          FetchRequest::new(url, destination).with_referrer("https://a.test/page.html");
+        let req_b =
+          FetchRequest::new(url, destination).with_referrer("https://b.test/page.html");
+
+        let a = recording.fetch_with_request(req_a).expect("origin A fetch");
+        let b = recording.fetch_with_request(req_b).expect("origin B fetch");
+
+        assert_eq!(a.bytes, b"ok");
+        assert_eq!(b.bytes, b"ok");
+        assert_eq!(
+          a.access_control_allow_origin.as_deref(),
+          Some("https://a.test"),
+          "unexpected ACAO for origin A"
+        );
+        assert_eq!(
+          b.access_control_allow_origin.as_deref(),
+          Some("https://a.test"),
+          "expected RecordingFetcher to reuse the cached CORS-mode response when CORS enforcement is disabled"
+        );
+      }
+
+      assert_eq!(
+        inner.calls(),
+        2,
+        "expected RecordingFetcher to cache by URL when CORS enforcement is disabled"
+      );
+    });
 
     Ok(())
   }
