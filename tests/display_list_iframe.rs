@@ -125,3 +125,71 @@ fn display_list_iframe_depth_limit_blocks_nested() {
     "inner iframe should be blocked at depth limit, leaving middle background visible"
   );
 }
+
+#[test]
+fn display_list_iframe_placeholder_is_clipped_to_content_box() {
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "display_list".to_string(),
+  )]));
+  let config = FastRenderConfig::new().with_runtime_toggles(toggles);
+
+  let temp = tempdir().expect("tempdir");
+  let missing_path = temp.path().join("missing.html");
+  let missing_url = Url::from_file_path(&missing_path).unwrap();
+
+  let outer = format!(
+    "<!doctype html>\
+     <style>html, body {{ margin: 0; background: rgb(0, 0, 0); }}</style>\
+     <iframe src=\"{src}\" style=\"display:block;margin:0;width:100px;height:100px;box-sizing:content-box;border:20px solid rgb(255,200,0);padding:20px;border-radius:80px;background:rgb(0,150,0);overflow:clip;\"></iframe>",
+    src = missing_url
+  );
+
+  let mut renderer = FastRender::with_config(config).expect("create renderer");
+  let pixmap = renderer
+    .render_html(&outer, 200, 200)
+    .expect("render iframe placeholder");
+
+  let border = pixmap.pixel(90, 10).unwrap();
+  assert_eq!(
+    (border.red(), border.green(), border.blue(), border.alpha()),
+    (255, 200, 0, 255),
+    "border should remain visible"
+  );
+
+  let padding = pixmap.pixel(90, 30).unwrap();
+  assert_eq!(
+    (
+      padding.red(),
+      padding.green(),
+      padding.blue(),
+      padding.alpha()
+    ),
+    (0, 150, 0, 255),
+    "placeholder should not cover padding"
+  );
+
+  let placeholder = pixmap.pixel(90, 90).unwrap();
+  assert_eq!(
+    (
+      placeholder.red(),
+      placeholder.green(),
+      placeholder.blue(),
+      placeholder.alpha()
+    ),
+    (200, 200, 200, 255),
+    "expected placeholder fill in content box"
+  );
+
+  let clipped = pixmap.pixel(45, 45).unwrap();
+  assert_eq!(
+    (
+      clipped.red(),
+      clipped.green(),
+      clipped.blue(),
+      clipped.alpha()
+    ),
+    (0, 150, 0, 255),
+    "expected placeholder to be clipped to the rounded content box"
+  );
+}

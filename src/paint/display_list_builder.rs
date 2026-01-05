@@ -6788,15 +6788,23 @@ impl DisplayListBuilder {
       return;
     }
 
+    let style = fragment.style.as_deref();
+    let (content_rect, clip_radii) = self.replaced_content_rect_and_radii(rect, style);
+    let clip_contents =
+      Self::replaced_content_clip_item(style, content_rect, content_rect, clip_radii);
+    if let Some(clip) = clip_contents.as_ref() {
+      self.list.push(DisplayItem::PushClip(clip.clone()));
+    }
+
     let placeholder_color = Rgba::rgb(200, 200, 200);
     self.list.push(DisplayItem::FillRect(FillRectItem {
-      rect,
+      rect: content_rect,
       color: placeholder_color,
     }));
 
     let stroke_color = Rgba::rgb(150, 150, 150);
     self.list.push(DisplayItem::StrokeRect(StrokeRectItem {
-      rect,
+      rect: content_rect,
       color: stroke_color,
       width: 1.0,
       blend_mode: BlendMode::Normal,
@@ -6812,16 +6820,20 @@ impl DisplayListBuilder {
       });
       let inset = 2.0;
       let label_rect = Rect::from_xywh(
-        rect.x() + inset,
-        rect.y() + inset,
-        (rect.width() - inset * 2.0).max(0.0),
-        (rect.height() - inset * 2.0).max(0.0),
+        content_rect.x() + inset,
+        content_rect.y() + inset,
+        (content_rect.width() - inset * 2.0).max(0.0),
+        (content_rect.height() - inset * 2.0).max(0.0),
       );
       let label_style_ref = label_style
         .as_ref()
         .map(|s| s as &ComputedStyle)
         .or(fragment.style.as_deref());
       let _ = self.emit_text_with_style(label_text, label_style_ref, label_rect);
+    }
+
+    if clip_contents.is_some() {
+      self.list.push(DisplayItem::PopClip);
     }
   }
 
@@ -7175,7 +7187,19 @@ impl DisplayListBuilder {
   }
 
   fn emit_alt_text(&mut self, alt: &str, fragment: &FragmentNode, rect: Rect) -> bool {
-    self.emit_text_with_style(alt, fragment.style.as_deref(), rect)
+    let style = fragment.style.as_deref();
+    let (content_rect, clip_radii) = self.replaced_content_rect_and_radii(rect, style);
+    let clip_contents =
+      Self::replaced_content_clip_item(style, content_rect, content_rect, clip_radii);
+
+    if let Some(clip) = clip_contents.as_ref() {
+      self.list.push(DisplayItem::PushClip(clip.clone()));
+    }
+    let ok = self.emit_text_with_style(alt, style, content_rect);
+    if clip_contents.is_some() {
+      self.list.push(DisplayItem::PopClip);
+    }
+    ok
   }
 
   fn emit_text_with_style(
