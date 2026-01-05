@@ -483,6 +483,11 @@ const PAGE_FIXTURES: &[PageFixture] = &[
     html: "br_linebreak/index.html",
     shots: DEFAULT_SHOTS,
   },
+  PageFixture {
+    name: "multiscript_font_fallback",
+    html: "multiscript_font_fallback/index.html",
+    shots: DEFAULT_SHOTS,
+  },
 ];
 
 fn fixtures_dir() -> PathBuf {

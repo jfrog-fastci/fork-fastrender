@@ -1770,6 +1770,33 @@ pub fn itemize_text(text: &str, bidi: &BidiAnalysis) -> Vec<ItemizedRun> {
   // like kerning/ligatures even though the control characters are default-ignorable.
   let split_by_level = bidi.needs_reordering();
 
+  let paragraphs = bidi.paragraphs();
+  let mut paragraph_index = 0usize;
+  let mut paragraph_end = paragraphs
+    .first()
+    .map(|para| para.end_byte.min(text.len()))
+    .unwrap_or(text.len());
+  let compute_paragraph_first_strong_script = |start: usize, end: usize| {
+    let start = start.min(text.len());
+    let end = end.min(text.len());
+    let Some(slice) = text.get(start..end) else {
+      return Script::Latin;
+    };
+    for ch in slice.chars() {
+      let script = Script::detect(ch);
+      if !script.is_neutral() {
+        return script;
+      }
+    }
+    Script::Latin
+  };
+  let mut paragraph_first_strong_script = match paragraphs.first() {
+    Some(first_para) => {
+      compute_paragraph_first_strong_script(first_para.start_byte, first_para.end_byte)
+    }
+    None => compute_paragraph_first_strong_script(0, text.len()),
+  };
+
   let mut runs = Vec::new();
   let mut current_start = 0;
   let mut current_text = String::new();
@@ -1778,6 +1805,35 @@ pub fn itemize_text(text: &str, bidi: &BidiAnalysis) -> Vec<ItemizedRun> {
   let mut current_level: Option<u8> = None;
 
   for (idx, ch) in text.char_indices() {
+    while idx >= paragraph_end && paragraph_index + 1 < paragraphs.len() {
+      if let (Some(script), Some(direction), Some(level)) =
+        (current_script, current_direction, current_level)
+      {
+        if !current_text.is_empty() {
+          runs.push(ItemizedRun {
+            start: current_start,
+            end: idx,
+            text: std::mem::take(&mut current_text),
+            script,
+            direction,
+            level,
+          });
+        }
+      }
+
+      current_start = idx;
+      current_text.clear();
+      current_script = None;
+      current_direction = None;
+      current_level = None;
+
+      paragraph_index += 1;
+      let para = paragraphs[paragraph_index];
+      paragraph_end = para.end_byte.min(text.len());
+      paragraph_first_strong_script =
+        compute_paragraph_first_strong_script(para.start_byte, para.end_byte);
+    }
+
     let char_script = Script::detect(ch);
     let char_direction = bidi.direction_at(idx);
     let char_level = if split_by_level {
@@ -1788,7 +1844,7 @@ pub fn itemize_text(text: &str, bidi: &BidiAnalysis) -> Vec<ItemizedRun> {
 
     // Resolve neutral scripts based on context
     let resolved_script = if char_script.is_neutral() {
-      current_script.unwrap_or(Script::Latin)
+      current_script.unwrap_or(paragraph_first_strong_script)
     } else {
       char_script
     };
@@ -1826,7 +1882,7 @@ pub fn itemize_text(text: &str, bidi: &BidiAnalysis) -> Vec<ItemizedRun> {
     if !char_script.is_neutral() {
       current_script = Some(resolved_script);
     } else if current_script.is_none() {
-      current_script = Some(Script::Latin);
+      current_script = Some(paragraph_first_strong_script);
     }
     current_direction = Some(char_direction);
     current_level = Some(char_level);
@@ -7191,6 +7247,37 @@ mod tests {
   }
 
   #[test]
+  fn itemization_assigns_leading_neutral_to_first_strong_script() {
+    // U+3001 IDEOGRAPHIC COMMA is Script=Common/Unknown depending on the script table, but it
+    // should inherit the following CJK script instead of defaulting to Latin.
+    let style = ComputedStyle::default();
+    let text = "、漢字";
+    let bidi = BidiAnalysis::analyze(text, &style);
+    let runs = itemize_text(text, &bidi);
+
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].script, Script::Han);
+    assert_eq!(runs[0].text, text);
+  }
+
+  #[test]
+  fn itemization_assigns_leading_neutral_per_paragraph() {
+    // Leading neutral characters after a paragraph break should not inherit the previous
+    // paragraph's script.
+    let style = ComputedStyle::default();
+    let text = "abc\n、漢字";
+    let bidi = BidiAnalysis::analyze(text, &style);
+    let runs = itemize_text(text, &bidi);
+    let runs = split_itemized_runs_by_paragraph(runs, bidi.paragraphs());
+
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].text, "abc\n");
+    assert_eq!(runs[0].script, Script::Latin);
+    assert_eq!(runs[1].text, "、漢字");
+    assert_eq!(runs[1].script, Script::Han);
+  }
+
+  #[test]
   fn itemization_keeps_combining_marks_with_base_script() {
     // U+07EB is a N'Ko combining mark. When it appears after a Hangul base
     // character it should not force a script run break.
@@ -8193,6 +8280,27 @@ mod tests {
       "expected CJK punctuation to share the JP face"
     );
     assert_eq!(ja_runs[0].font.family, "Noto Sans JP");
+
+    let ja_leading_punct = pipeline
+      .shape("、漢字", &ja_style, &ctx)
+      .expect("shape japanese leading punctuation");
+    assert_eq!(
+      ja_leading_punct.len(),
+      1,
+      "leading neutral characters should inherit the CJK script and stay on the JP face"
+    );
+    assert_eq!(ja_leading_punct[0].font.family, "Noto Sans JP");
+
+    let ja_multiline = pipeline
+      .shape("Hello\n、漢字", &ja_style, &ctx)
+      .expect("shape japanese multiline");
+    assert_eq!(
+      ja_multiline.len(),
+      2,
+      "expected paragraph break to split runs but keep leading punctuation with the CJK script"
+    );
+    assert_eq!(ja_multiline[1].text, "、漢字");
+    assert_eq!(ja_multiline[1].font.family, "Noto Sans JP");
 
     let mut ko_style = base_style.clone();
     ko_style.language = "ko".into();

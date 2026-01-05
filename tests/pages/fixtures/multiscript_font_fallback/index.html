@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Multiscript font fallback</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 40px;
+        background: #fff;
+        color: #000;
+        font-family: sans-serif;
+        font-size: 48px;
+        line-height: 1.25;
+      }
+
+      .row {
+        margin: 0 0 28px 0;
+      }
+
+      .label {
+        font-size: 20px;
+        line-height: 1.1;
+        font-family: sans-serif;
+        color: #444;
+        margin: 0 0 6px 0;
+      }
+
+      .emoji {
+        font-family: emoji, sans-serif;
+      }
+
+      .box {
+        border: 1px solid #ddd;
+        padding: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="row">
+      <div class="label">Japanese (leading CJK punctuation should stay in the JP run):</div>
+      <div class="box" lang="ja">、漢字かなカナ</div>
+    </div>
+
+    <div class="row">
+      <div class="label">Chinese:</div>
+      <div class="box" lang="zh">、汉字中文</div>
+    </div>
+
+    <div class="row">
+      <div class="label">Arabic (RTL shaping):</div>
+      <div class="box" lang="ar" dir="rtl">،مرحبا بالعالم</div>
+    </div>
+
+    <div class="row">
+      <div class="label">Emoji:</div>
+      <div class="box emoji">😀 🇺🇸 ▶ ✅ ✨</div>
+    </div>
+  </body>
+</html>
