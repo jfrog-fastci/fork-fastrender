@@ -5001,35 +5001,38 @@ fn blend_pixmaps(
   filter_region: Rect,
   color_interpolation_filters: ColorInterpolationFilters,
 ) -> RenderResult<Option<FilterResult>> {
-  let Some(mut base) = a else {
+  // SVG `feBlend` treats `in` as the source image and `in2` as the backdrop.
+  // tiny-skia's `draw_pixmap` blends the source (drawn pixmap) over the destination (the receiver),
+  // so the receiver must be the backdrop.
+  let Some(mut source) = a else {
     return Ok(None);
   };
-  let mut top = b.unwrap_or_else(|| base.clone());
+  let mut backdrop = b.unwrap_or_else(|| source.clone());
   let use_linear = matches!(
     color_interpolation_filters,
     ColorInterpolationFilters::LinearRGB
   );
   if use_linear {
-    reencode_pixmap_to_linear_rgb(&mut base.pixmap)?;
-    reencode_pixmap_to_linear_rgb(&mut top.pixmap)?;
+    reencode_pixmap_to_linear_rgb(&mut source.pixmap)?;
+    reencode_pixmap_to_linear_rgb(&mut backdrop.pixmap)?;
   }
 
   let mut paint = PixmapPaint::default();
   paint.blend_mode = mode;
-  base.pixmap.draw_pixmap(
+  backdrop.pixmap.draw_pixmap(
     0,
     0,
-    top.pixmap.as_ref(),
+    source.pixmap.as_ref(),
     &paint,
     Transform::identity(),
     None,
   );
   if use_linear {
-    reencode_pixmap_to_srgb(&mut base.pixmap)?;
+    reencode_pixmap_to_srgb(&mut backdrop.pixmap)?;
   }
-  let region = clip_region(base.region.union(top.region), filter_region);
+  let region = clip_region(source.region.union(backdrop.region), filter_region);
   Ok(Some(FilterResult {
-    pixmap: base.pixmap,
+    pixmap: backdrop.pixmap,
     region,
   }))
 }
