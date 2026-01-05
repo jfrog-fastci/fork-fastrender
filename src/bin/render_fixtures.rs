@@ -119,6 +119,13 @@ struct Cli {
   /// `<out-dir>/<fixture>/nondeterminism/<k>.png`, plus a small report.
   #[arg(long)]
   save_variants: bool,
+
+  /// Reset paint/filter thread-local scratch buffers before each repeat.
+  ///
+  /// This is useful when bisecting paint nondeterminism suspected to come from scheduling-dependent
+  /// reuse of per-thread scratch buffers.
+  #[arg(long)]
+  reset_paint_scratch: bool,
 }
 
 #[derive(Clone)]
@@ -414,14 +421,15 @@ fn run(cli: Cli) -> io::Result<()> {
   );
   if cli.repeat > 1 {
     println!(
-      "Determinism: repeat={} shuffle={}{}",
+      "Determinism: repeat={} shuffle={}{} reset_paint_scratch={}",
       cli.repeat,
       cli.shuffle,
       if cli.shuffle {
         format!(" seed={}", cli.seed)
       } else {
         String::new()
-      }
+      },
+      cli.reset_paint_scratch
     );
   }
   println!();
@@ -437,6 +445,9 @@ fn run(cli: Cli) -> io::Result<()> {
   let mut repeat_failures: Vec<RepeatFailure> = Vec::new();
 
   if cli.repeat == 1 {
+    if cli.reset_paint_scratch {
+      reset_paint_scratch();
+    }
     let results_mutex: Mutex<Vec<FixtureResult>> = Mutex::new(Vec::new());
     thread_pool.scope(|s| {
       for entry in fixtures {
@@ -463,6 +474,9 @@ fn run(cli: Cli) -> io::Result<()> {
     // Render repeat 0 with full outputs (PNG/log/snapshot), then run additional repeats through the
     // same rayon pool to surface any scheduling-dependent nondeterminism.
     for repeat_idx in 0..cli.repeat {
+      if cli.reset_paint_scratch {
+        reset_paint_scratch();
+      }
       let mut ordered = fixtures.clone();
       if cli.shuffle && repeat_idx > 0 {
         let seed = cli
@@ -622,14 +636,15 @@ fn run(cli: Cli) -> io::Result<()> {
     let _ = writeln!(summary, "\n=== Determinism Check ===");
     let _ = writeln!(
       summary,
-      "repeat={} shuffle={}{}",
+      "repeat={} shuffle={}{} reset_paint_scratch={}",
       cli.repeat,
       cli.shuffle,
       if cli.shuffle {
         format!(" seed={}", cli.seed)
       } else {
         String::new()
-      }
+      },
+      cli.reset_paint_scratch
     );
 
     if repeat_failure_count > 0 {
@@ -833,6 +848,17 @@ fn status_error(status: &Status) -> Option<&str> {
     Status::Crash(msg) | Status::Error(msg) | Status::Timeout(msg) => Some(msg.as_str()),
     Status::Ok => None,
   }
+}
+
+fn reset_paint_scratch() {
+  // This is best-effort. Most paint/filer code runs on Rayon worker threads, so we reset the paint
+  // scratch buffers on each global Rayon thread before starting a repeat.
+  //
+  // This relies on `fastrender::paint::scratch`'s reset helper, which currently targets the same
+  // thread-local caches used by the paint pipeline.
+  rayon::broadcast(|_| {
+    fastrender::paint::scratch::reset_thread_local_scratch();
+  });
 }
 
 fn hash64(bytes: &[u8]) -> u64 {
