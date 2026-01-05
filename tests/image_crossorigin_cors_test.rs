@@ -247,3 +247,89 @@ fn enforce_cors_does_not_affect_no_cors_images() {
   assert_eq!(image.dimensions(), (1, 1));
   handle.join().unwrap();
 }
+
+#[test]
+fn enforce_cors_blocks_use_credentials_without_allow_credentials() {
+  let Some(listener) =
+    try_bind_localhost("enforce_cors_blocks_use_credentials_without_allow_credentials")
+  else {
+    return;
+  };
+  let addr = listener.local_addr().unwrap();
+  let png = tiny_png();
+  let handle = spawn_server(listener, 1, move |_count, req, stream| {
+    let request = String::from_utf8_lossy(&req).to_ascii_lowercase();
+    assert!(
+      request.contains("sec-fetch-mode: cors"),
+      "expected cors mode request, got: {request}"
+    );
+    assert!(
+      request.contains("origin: http://example.test"),
+      "expected origin header on cors-mode image request, got: {request}"
+    );
+    let response = format!(
+      "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nAccess-Control-Allow-Origin: http://example.test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+      png.len()
+    );
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.write_all(&png);
+  });
+
+  let doc_url = "http://example.test/page.html";
+  let image_url = format!("http://{addr}/image.png");
+  let err = with_thread_runtime_toggles(enforce_cors_toggles(), || {
+    let cache = image_cache_for_document(doc_url);
+    match cache.load_with_crossorigin(&image_url, CrossOriginAttribute::UseCredentials) {
+      Ok(_) => panic!("expected credentialed CORS enforcement to fail without ACAC"),
+      Err(err) => err,
+    }
+  });
+  match err {
+    Error::Image(ImageError::LoadFailed { reason, .. }) => {
+      assert!(
+        reason.contains("Access-Control-Allow-Credentials"),
+        "unexpected error message: {reason}"
+      );
+    }
+    other => panic!("expected image load error, got {other:?}"),
+  }
+  handle.join().unwrap();
+}
+
+#[test]
+fn enforce_cors_allows_use_credentials_with_allow_credentials() {
+  let Some(listener) = try_bind_localhost("enforce_cors_allows_use_credentials_with_allow_credentials")
+  else {
+    return;
+  };
+  let addr = listener.local_addr().unwrap();
+  let png = tiny_png();
+  let handle = spawn_server(listener, 1, move |_count, req, stream| {
+    let request = String::from_utf8_lossy(&req).to_ascii_lowercase();
+    assert!(
+      request.contains("sec-fetch-mode: cors"),
+      "expected cors mode request, got: {request}"
+    );
+    assert!(
+      request.contains("origin: http://example.test"),
+      "expected origin header on cors-mode image request, got: {request}"
+    );
+    let response = format!(
+      "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nAccess-Control-Allow-Origin: http://example.test\r\nAccess-Control-Allow-Credentials: true\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+      png.len()
+    );
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.write_all(&png);
+  });
+
+  let doc_url = "http://example.test/page.html";
+  let image_url = format!("http://{addr}/image.png");
+  let image = with_thread_runtime_toggles(enforce_cors_toggles(), || {
+    let cache = image_cache_for_document(doc_url);
+    cache
+      .load_with_crossorigin(&image_url, CrossOriginAttribute::UseCredentials)
+      .expect("credentialed cors image should load with ACAC=true")
+  });
+  assert_eq!(image.dimensions(), (1, 1));
+  handle.join().unwrap();
+}
