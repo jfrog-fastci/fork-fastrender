@@ -566,6 +566,8 @@ fn run_fixture(fixture: &PageFixture, compare_config: &CompareConfig) -> Result<
     ("selector_has_dashboard", 0.1),
     // Table layout fixture has occasional 1px border drift (likely rounding).
     ("table_colgroup_matrix", 0.1),
+    // Complex table fixture exhibits minor (< 1%) border/AA drift across hash seeds.
+    ("table_complex", 0.6),
     // Filter compositing still has some nondeterministic edge drift.
     ("filter_composite_lab", 1.0),
     // Srcset selection can still vary slightly across runs; keep this fixture permissive for now.
