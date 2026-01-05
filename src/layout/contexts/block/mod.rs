@@ -5810,6 +5810,7 @@ fn resolve_border_side(
 mod tests {
   use super::*;
   use crate::css::types::Transform;
+  use crate::debug::runtime;
   use crate::layout::contexts::inline::InlineFormattingContext;
   use crate::layout::formatting_context::IntrinsicSizingMode;
   use crate::style::display::Display;
@@ -5828,6 +5829,7 @@ mod tests {
   use crate::tree::box_generation_demo::BoxGenerator;
   use crate::tree::box_generation_demo::DOMNode;
   use crate::tree::fragment_tree::FragmentContent;
+  use std::collections::HashMap;
   use std::sync::Arc;
 
   fn default_style() -> Arc<ComputedStyle> {
@@ -5842,6 +5844,17 @@ mod tests {
     style.height = Some(Length::px(height));
     style.height_keyword = None;
     Arc::new(style)
+  }
+
+  fn content_visibility_test_guard() -> runtime::ThreadRuntimeTogglesGuard {
+    // Keep content-visibility:auto tests deterministic even when developers have FASTR_* env vars
+    // set locally (e.g. activation margin experiments).
+    runtime::set_thread_runtime_toggles(Arc::new(runtime::RuntimeToggles::from_map(HashMap::from(
+      [(
+        "FASTR_CONTENT_VISIBILITY_AUTO_MARGIN_PX".to_string(),
+        "0".to_string(),
+      )],
+    ))))
   }
 
   #[test]
@@ -7598,6 +7611,7 @@ mod tests {
 
   #[test]
   fn content_visibility_auto_translates_paint_viewport_through_nested_offsets() {
+    let _toggles = content_visibility_test_guard();
     let viewport = Size::new(300.0, 200.0);
     let fc = BlockFormattingContext::with_font_context_viewport_and_cb(
       FontContext::new(),
@@ -7657,6 +7671,7 @@ mod tests {
 
   #[test]
   fn content_visibility_auto_skips_when_fully_outside_inline_axis() {
+    let _toggles = content_visibility_test_guard();
     let viewport = Size::new(300.0, 200.0);
     let fc = BlockFormattingContext::with_font_context_viewport_and_cb(
       FontContext::new(),
@@ -7705,6 +7720,7 @@ mod tests {
 
   #[test]
   fn content_visibility_auto_respects_vertical_writing_mode() {
+    let _toggles = content_visibility_test_guard();
     // Choose a viewport where physical height > width so vertical writing mode mapping matters:
     // the logical block size should come from the physical width (50), not height (100).
     let viewport = Size::new(50.0, 100.0);
