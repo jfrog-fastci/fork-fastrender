@@ -105,6 +105,7 @@ use crate::text::pipeline::compute_adjusted_font_size;
 use crate::text::pipeline::preferred_font_aspect;
 use crate::text::pipeline::ExplicitBidiContext;
 use crate::text::pipeline::ShapedRun;
+use crate::text::pipeline::shaping_style_hash;
 use crate::text::pipeline::ShapingPipeline;
 use crate::text::segmentation::segment_grapheme_clusters;
 use crate::tree::box_tree::AnonymousBox;
@@ -634,7 +635,11 @@ impl InlineFormattingContext {
               bidi_stack,
               boundary,
             )?;
-            self.append_inline_items_with_whitespace(&mut whitespace, &mut current_items, produced)?;
+            self.append_inline_items_with_whitespace(
+              &mut whitespace,
+              &mut current_items,
+              produced,
+            )?;
           }
           if normalized.trailing_collapsible {
             whitespace.note_collapsible_whitespace(child.style.clone(), normalized.allow_soft_wrap);
@@ -2163,30 +2168,35 @@ impl InlineFormattingContext {
     probe_style.max_width_keyword = None;
     let probe_style = Arc::new(probe_style);
 
-    let compute_intrinsic_sizes = |mode: Option<IntrinsicSizingMode>| -> Result<(f32, f32), LayoutError> {
-      if let Some(mode) = mode {
-        let value = if box_node.id != 0 {
-          crate::layout::style_override::with_style_override(box_node.id, probe_style.clone(), || {
-            fc.compute_intrinsic_inline_size(box_node, mode)
-          })?
+    let compute_intrinsic_sizes =
+      |mode: Option<IntrinsicSizingMode>| -> Result<(f32, f32), LayoutError> {
+        if let Some(mode) = mode {
+          let value = if box_node.id != 0 {
+            crate::layout::style_override::with_style_override(
+              box_node.id,
+              probe_style.clone(),
+              || fc.compute_intrinsic_inline_size(box_node, mode),
+            )?
+          } else {
+            let mut cloned = box_node.clone();
+            cloned.style = probe_style.clone();
+            fc.compute_intrinsic_inline_size(&cloned, mode)?
+          };
+          return Ok((value, value));
+        }
+
+        if box_node.id != 0 {
+          crate::layout::style_override::with_style_override(
+            box_node.id,
+            probe_style.clone(),
+            || fc.compute_intrinsic_inline_sizes(box_node),
+          )
         } else {
           let mut cloned = box_node.clone();
           cloned.style = probe_style.clone();
-          fc.compute_intrinsic_inline_size(&cloned, mode)?
-        };
-        return Ok((value, value));
-      }
-
-      if box_node.id != 0 {
-        crate::layout::style_override::with_style_override(box_node.id, probe_style.clone(), || {
-          fc.compute_intrinsic_inline_sizes(box_node)
-        })
-      } else {
-        let mut cloned = box_node.clone();
-        cloned.style = probe_style.clone();
-        fc.compute_intrinsic_inline_sizes(&cloned)
-      }
-    };
+          fc.compute_intrinsic_inline_sizes(&cloned)
+        }
+      };
 
     let (preferred_min_border_base0, preferred_border_base0) = match compute_intrinsic_sizes(None) {
       Ok(values) => values,
@@ -2194,11 +2204,12 @@ impl InlineFormattingContext {
       Err(_) => {
         // Preserve legacy semantics for non-timeout intrinsic sizing failures: treat
         // the min-content width as 0 but still attempt the max-content measurement.
-        let preferred_border_base0 = match compute_intrinsic_sizes(Some(IntrinsicSizingMode::MaxContent)) {
-          Ok((value, _)) => value,
-          Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-          Err(_) => 0.0,
-        };
+        let preferred_border_base0 =
+          match compute_intrinsic_sizes(Some(IntrinsicSizingMode::MaxContent)) {
+            Ok((value, _)) => value,
+            Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+            Err(_) => 0.0,
+          };
         (0.0, preferred_border_base0)
       }
     };
@@ -2215,7 +2226,9 @@ impl InlineFormattingContext {
     let preferred_border = (preferred_border_base0 - edges_base0 + edges_actual).max(0.0);
 
     let (preferred_min, preferred, available_for_fit) = match style.box_sizing {
-      crate::style::types::BoxSizing::BorderBox => (preferred_min_border, preferred_border, available_for_box),
+      crate::style::types::BoxSizing::BorderBox => {
+        (preferred_min_border, preferred_border, available_for_box)
+      }
       crate::style::types::BoxSizing::ContentBox => {
         let min_content = (preferred_min_border - edges_actual).max(0.0);
         let max_content = (preferred_border - edges_actual).max(0.0);
@@ -2253,25 +2266,26 @@ impl InlineFormattingContext {
       ))
     };
 
-    let resolve_intrinsic_keyword = |keyword: crate::style::types::IntrinsicSizeKeyword| -> Option<f32> {
-      use crate::style::types::IntrinsicSizeKeyword as Keyword;
-      match keyword {
-        Keyword::MinContent => Some(preferred_min),
-        Keyword::MaxContent => Some(preferred),
-        Keyword::FitContent { limit } => match limit {
-          None => {
-            let available = if available_for_fit.is_finite() {
-              available_for_fit
-            } else {
-              preferred
-            };
-            Some(preferred.min(available.max(preferred_min)))
-          }
-          Some(limit) => resolve_fit_content_limit(limit)
-            .map(|limit_px| preferred.min(limit_px.max(preferred_min))),
-        },
-      }
-    };
+    let resolve_intrinsic_keyword =
+      |keyword: crate::style::types::IntrinsicSizeKeyword| -> Option<f32> {
+        use crate::style::types::IntrinsicSizeKeyword as Keyword;
+        match keyword {
+          Keyword::MinContent => Some(preferred_min),
+          Keyword::MaxContent => Some(preferred),
+          Keyword::FitContent { limit } => match limit {
+            None => {
+              let available = if available_for_fit.is_finite() {
+                available_for_fit
+              } else {
+                preferred
+              };
+              Some(preferred.min(available.max(preferred_min)))
+            }
+            Some(limit) => resolve_fit_content_limit(limit)
+              .map(|limit_px| preferred.min(limit_px.max(preferred_min))),
+          },
+        }
+      };
 
     let specified_width_from_length = style.width.as_ref().and_then(|l| {
       if l.unit.is_percentage() && percentage_base.is_none() {
@@ -4384,6 +4398,52 @@ impl InlineFormattingContext {
     let descent = font_size * 0.2;
     let half_leading = (line_height - (ascent + descent)) / 2.0;
     BaselineMetrics::new(ascent + half_leading, line_height, ascent, descent)
+  }
+
+  fn compute_strut_metrics_for_segments(
+    &self,
+    style: &ComputedStyle,
+    segments: &[InlineFlowSegment],
+  ) -> BaselineMetrics {
+    // The CSS "strut" is an imaginary inline box that establishes a minimum line box height. When
+    // the authored `font-family` resolves to a face that lacks glyph coverage, text shaping will
+    // fall back to later families even though `get_font_full` can still return the missing face.
+    //
+    // If the strut metrics come from the missing face while the actual text uses a fallback face,
+    // the line box baseline calculation (max ascent + max descent) can inflate the line height and
+    // shift subsequent lines compared to browsers. Prefer the first *non-whitespace* shaped run in
+    // this formatting context so the strut uses the same font metrics as the rendered text.
+    let expected_style_hash = shaping_style_hash(style);
+    let Some(sample) = first_non_whitespace_shaped_run_in_segments(segments, expected_style_hash)
+    else {
+      return self.compute_strut_metrics(style);
+    };
+
+    let Some(scaled) = self.font_context.get_scaled_metrics_with_variations(
+      sample.font.as_ref(),
+      sample.font_size,
+      &sample.variations,
+    ) else {
+      return self.compute_strut_metrics(style);
+    };
+
+    let line_height =
+      compute_line_height_with_metrics_viewport(style, Some(&scaled), Some(self.viewport_size));
+    if !line_height.is_finite() || line_height <= 0.0 {
+      return self.compute_strut_metrics(style);
+    }
+
+    // CSS 2.1 §10.8: distribute leading equally above and below the font's ascent/descent.
+    let half_leading = (line_height - (scaled.ascent + scaled.descent)) / 2.0;
+    BaselineMetrics {
+      baseline_offset: scaled.ascent + half_leading,
+      height: line_height,
+      ascent: scaled.ascent,
+      descent: scaled.descent,
+      line_gap: scaled.line_gap,
+      line_height,
+      x_height: scaled.x_height,
+    }
   }
 
   fn first_letter_eligible(box_node: &BoxNode) -> bool {
@@ -6783,9 +6843,8 @@ fn normalize_text_for_white_space(
           _ => {
             if run_newline_count > 0 {
               // Spaces before a segment break are removed; emit each break directly.
-              mandatory_breaks.extend(
-                (0..run_newline_count).map(|_| BreakOpportunity::mandatory(out.len())),
-              );
+              mandatory_breaks
+                .extend((0..run_newline_count).map(|_| BreakOpportunity::mandatory(out.len())));
             } else if run_has_space && seen_content {
               out.push(' ');
             }
@@ -6799,7 +6858,8 @@ fn normalize_text_for_white_space(
       }
 
       if run_newline_count > 0 {
-        mandatory_breaks.extend((0..run_newline_count).map(|_| BreakOpportunity::mandatory(out.len())));
+        mandatory_breaks
+          .extend((0..run_newline_count).map(|_| BreakOpportunity::mandatory(out.len())));
       }
       let trailing_collapsible = run_has_space && run_newline_count == 0 && seen_content;
 
@@ -8046,12 +8106,12 @@ impl InlineFormattingContext {
 
     let (min_factor, scan_step, hyphen_weight, short_last_weight): (f32, f32, f32, f32) =
       match text_wrap {
-      // Pretty is tuned for headlines: prefer fewer hyphens and avoid lonely last lines.
-      TextWrap::Pretty => (0.85f32, 0.01f32, 3.0f32, 1.5f32),
-      // Balance is used more broadly; search a bit further to find a good raggedness minimum.
-      TextWrap::Balance => (0.65f32, 0.01f32, 1.5f32, 1.0f32),
-      _ => return Ok(base),
-    };
+        // Pretty is tuned for headlines: prefer fewer hyphens and avoid lonely last lines.
+        TextWrap::Pretty => (0.85f32, 0.01f32, 3.0f32, 1.5f32),
+        // Balance is used more broadly; search a bit further to find a good raggedness minimum.
+        TextWrap::Balance => (0.65f32, 0.01f32, 1.5f32, 1.0f32),
+        _ => return Ok(base),
+      };
 
     let mut best_lines = base;
     let target_line_count = best_lines.lines.len();
@@ -8283,9 +8343,11 @@ impl InlineFormattingContext {
         }
 
         if float_node.id != 0 {
-          crate::layout::style_override::with_style_override(float_node.id, probe_style.clone(), || {
-            fc.compute_intrinsic_inline_sizes(&float_node)
-          })
+          crate::layout::style_override::with_style_override(
+            float_node.id,
+            probe_style.clone(),
+            || fc.compute_intrinsic_inline_sizes(&float_node),
+          )
         } else {
           let mut cloned = float_node.clone();
           cloned.style = probe_style.clone();
@@ -8353,25 +8415,26 @@ impl InlineFormattingContext {
       ))
     };
 
-    let resolve_intrinsic_keyword = |keyword: crate::style::types::IntrinsicSizeKeyword| -> Option<f32> {
-      use crate::style::types::IntrinsicSizeKeyword as Keyword;
-      match keyword {
-        Keyword::MinContent => Some(preferred_min),
-        Keyword::MaxContent => Some(preferred),
-        Keyword::FitContent { limit } => match limit {
-          None => {
-            let available = if available_for_fit.is_finite() {
-              available_for_fit
-            } else {
-              preferred
-            };
-            Some(preferred.min(available.max(preferred_min)))
-          }
-          Some(limit) => resolve_fit_content_limit(limit)
-            .map(|limit_px| preferred.min(limit_px.max(preferred_min))),
-        },
-      }
-    };
+    let resolve_intrinsic_keyword =
+      |keyword: crate::style::types::IntrinsicSizeKeyword| -> Option<f32> {
+        use crate::style::types::IntrinsicSizeKeyword as Keyword;
+        match keyword {
+          Keyword::MinContent => Some(preferred_min),
+          Keyword::MaxContent => Some(preferred),
+          Keyword::FitContent { limit } => match limit {
+            None => {
+              let available = if available_for_fit.is_finite() {
+                available_for_fit
+              } else {
+                preferred
+              };
+              Some(preferred.min(available.max(preferred_min)))
+            }
+            Some(limit) => resolve_fit_content_limit(limit)
+              .map(|limit_px| preferred.min(limit_px.max(preferred_min))),
+          },
+        }
+      };
 
     let specified_width_from_length = float_node.style.width.as_ref().and_then(|l| {
       if l.unit.is_percentage() && percentage_base.is_none() {
@@ -8386,8 +8449,10 @@ impl InlineFormattingContext {
         ))
       }
     });
-    let specified_width_from_keyword =
-      float_node.style.width_keyword.and_then(resolve_intrinsic_keyword);
+    let specified_width_from_keyword = float_node
+      .style
+      .width_keyword
+      .and_then(resolve_intrinsic_keyword);
     let specified_width = specified_width_from_length.or(specified_width_from_keyword);
 
     let min_width = if let Some(keyword) = float_node.style.min_width_keyword {
@@ -9139,9 +9204,6 @@ impl InlineFormattingContext {
       constraints.height()
     };
 
-    // Create strut metrics from containing block style
-    let strut_metrics = self.compute_strut_metrics(style);
-
     // Resolve paragraph base direction before shaping so bidi analysis uses the correct base.
     let base_direction = resolve_base_direction_for_box(box_node);
 
@@ -9161,6 +9223,10 @@ impl InlineFormattingContext {
       &mut fixed_cb_stack,
       CombineBoundary::default(),
     )?;
+
+    // Create strut metrics from the containing block style, preferring the first shaped run (when
+    // available) so the strut's font metrics match the text that actually renders.
+    let strut_metrics = self.compute_strut_metrics_for_segments(style, &segments);
     if dump_text_enabled() {
       let mut inline_segments = 0;
       let mut inline_items = 0;
@@ -10393,6 +10459,83 @@ fn allows_boundary_break(prev: Option<char>, next: Option<char>) -> bool {
         })
         // Treat object replacement as breakable to avoid fusing text across replaced items.
         || matches!(a, OBJECT_REPLACEMENT) || matches!(b, OBJECT_REPLACEMENT)
+}
+
+fn first_non_whitespace_shaped_run_in_segments<'a>(
+  segments: &'a [InlineFlowSegment],
+  expected_style_hash: u64,
+) -> Option<&'a ShapedRun> {
+  for segment in segments {
+    let InlineFlowSegment::InlineItems(items) = segment else {
+      continue;
+    };
+    if let Some(run) = first_non_whitespace_shaped_run_in_items(items, expected_style_hash) {
+      return Some(run);
+    }
+  }
+  None
+}
+
+fn first_non_whitespace_shaped_run_in_items<'a>(
+  items: &'a [InlineItem],
+  expected_style_hash: u64,
+) -> Option<&'a ShapedRun> {
+  items
+    .iter()
+    .find_map(|item| first_non_whitespace_shaped_run_in_item(item, expected_style_hash))
+}
+
+fn first_non_whitespace_shaped_run_in_item<'a>(
+  item: &'a InlineItem,
+  expected_style_hash: u64,
+) -> Option<&'a ShapedRun> {
+  match item {
+    InlineItem::Text(text) => {
+      if text.is_marker
+        || text.runs.is_empty()
+        || shaping_style_hash(text.style.as_ref()) != expected_style_hash
+        || text.text.trim().is_empty()
+      {
+        return None;
+      }
+      text
+        .runs
+        .iter()
+        .find(|run| !run.text.trim().is_empty())
+    }
+    InlineItem::InlineBox(b) => {
+      first_non_whitespace_shaped_run_in_items(&b.children, expected_style_hash)
+    }
+    InlineItem::Ruby(ruby) => {
+      for segment in &ruby.segments {
+        if let Some(run) =
+          first_non_whitespace_shaped_run_in_items(&segment.base_items, expected_style_hash)
+        {
+          return Some(run);
+        }
+        if let Some(items) = segment.annotation_top.as_deref() {
+          if let Some(run) = first_non_whitespace_shaped_run_in_items(items, expected_style_hash) {
+            return Some(run);
+          }
+        }
+        if let Some(items) = segment.annotation_bottom.as_deref() {
+          if let Some(run) =
+            first_non_whitespace_shaped_run_in_items(items, expected_style_hash)
+          {
+            return Some(run);
+          }
+        }
+      }
+      None
+    }
+    InlineItem::SoftBreak
+    | InlineItem::Tab(_)
+    | InlineItem::HardBreak
+    | InlineItem::InlineBlock(_)
+    | InlineItem::Replaced(_)
+    | InlineItem::Floating(_)
+    | InlineItem::StaticPositionAnchor(_) => None,
+  }
 }
 
 fn first_char_of_item(item: &InlineItem) -> Option<char> {
@@ -12326,11 +12469,8 @@ mod tests {
     constrained_style.max_width = Some(Length::px(max_width));
     let constrained_style = Arc::new(constrained_style);
 
-    let constrained_node = BoxNode::new_block(
-      constrained_style,
-      FormattingContextType::Inline,
-      vec![text],
-    );
+    let constrained_node =
+      BoxNode::new_block(constrained_style, FormattingContextType::Inline, vec![text]);
     let floating = crate::layout::contexts::inline::line_builder::FloatingItem {
       box_node: constrained_node.clone(),
       metrics: BaselineMetrics::for_replaced(0.0),
@@ -20450,7 +20590,13 @@ mod tests {
     let item = ifc.create_text_item(&node, text).unwrap();
     let mut reshape_cache = ReshapeCache::default();
     let (before, after) = item
-      .split_at(3, false, &ifc.pipeline, &ifc.font_context, &mut reshape_cache)
+      .split_at(
+        3,
+        false,
+        &ifc.pipeline,
+        &ifc.font_context,
+        &mut reshape_cache,
+      )
       .expect("expected mandatory split");
     let expected = before.advance_for_layout.max(after.advance_for_layout);
 
