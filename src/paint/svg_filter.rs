@@ -2709,12 +2709,18 @@ fn parse_fe_turbulence(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   let fy = sanitize_freq(base_freq_values.get(1).copied().unwrap_or(fx));
 
   // SVG: seed is a number; implementations coerce it to an integer.
+  //
+  // Clamp negative (and non-finite) values to 0, and round fractional values so rendering is
+  // deterministic across engines and thread pools.
   let seed_raw = node
     .attribute("seed")
     .and_then(|v| v.parse::<f32>().ok())
     .unwrap_or(0.0);
-  // Match resvg/Chrome behavior: truncate the float toward zero and preserve the sign.
-  let seed = seed_raw as i32;
+  let seed = if seed_raw.is_finite() {
+    seed_raw.round().max(0.0) as i32
+  } else {
+    0
+  };
   let octaves = node
     .attribute("numOctaves")
     .and_then(|v| v.parse::<u32>().ok())
@@ -8075,7 +8081,7 @@ mod tests {
   }
 
   #[test]
-  fn turbulence_seed_defaults_to_zero() {
+  fn turbulence_seed_defaults_to_zero_when_missing() {
     let doc = roxmltree::Document::parse("<filter><feTurbulence/></filter>").unwrap();
     let node = doc
       .descendants()
@@ -8089,24 +8095,24 @@ mod tests {
   }
 
   #[test]
-  fn turbulence_seed_preserves_negative_values() {
-    let doc = roxmltree::Document::parse("<filter><feTurbulence seed=\"-1\"/></filter>").unwrap();
+  fn turbulence_seed_negative_clamps_to_zero() {
+    let doc = roxmltree::Document::parse("<filter><feTurbulence seed=\"-4\"/></filter>").unwrap();
     let node = doc
       .descendants()
       .find(|n| n.has_tag_name("feTurbulence"))
       .unwrap();
     let prim = parse_fe_turbulence(&node).expect("should parse turbulence");
     match prim {
-      FilterPrimitive::Turbulence { seed, .. } => assert_eq!(seed, -1),
+      FilterPrimitive::Turbulence { seed, .. } => assert_eq!(seed, 0),
       other => panic!("expected turbulence primitive, got {other:?}"),
     }
   }
 
   #[test]
-  fn turbulence_seed_truncates_fractional_values() {
-    fn parse_seed(seed: &str) -> i32 {
-      let svg = format!("<filter><feTurbulence seed=\"{seed}\"/></filter>");
-      let doc = roxmltree::Document::parse(&svg).unwrap();
+  fn turbulence_seed_rounds_fractional_values() {
+    let parse_seed = |seed: &str| -> i32 {
+      let markup = format!("<filter><feTurbulence seed=\"{seed}\"/></filter>");
+      let doc = roxmltree::Document::parse(&markup).unwrap();
       let node = doc
         .descendants()
         .find(|n| n.has_tag_name("feTurbulence"))
@@ -8116,12 +8122,10 @@ mod tests {
         FilterPrimitive::Turbulence { seed, .. } => seed,
         other => panic!("expected turbulence primitive, got {other:?}"),
       }
-    }
+    };
 
     assert_eq!(parse_seed("1.4"), 1);
-    assert_eq!(parse_seed("1.6"), 1);
-    assert_eq!(parse_seed("-1.4"), -1);
-    assert_eq!(parse_seed("-1.6"), -1);
+    assert_eq!(parse_seed("1.6"), 2);
   }
 
   #[test]

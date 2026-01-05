@@ -273,6 +273,7 @@ fn clear_outside_region(pixmap: &mut Pixmap, region: ResolvedRegion) {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use rayon::prelude::*;
   use rayon::ThreadPoolBuilder;
 
   fn render_bytes(
@@ -307,7 +308,7 @@ mod tests {
   }
 
   #[test]
-  fn turbulence_raster_is_deterministic_for_same_seed() {
+  fn turbulence_render_is_byte_identical_for_same_seed() {
     let pool = ThreadPoolBuilder::new()
       .num_threads(4)
       .build()
@@ -337,17 +338,36 @@ mod tests {
   }
 
   #[test]
-  fn turbulence_different_seeds_produce_different_output() {
+  fn turbulence_render_differs_for_different_seeds() {
     let pool = ThreadPoolBuilder::new()
       .num_threads(4)
       .build()
       .expect("thread pool");
-    let a = pool.install(|| render_bytes(1, super::super::ColorInterpolationFilters::SRGB));
-    let b = pool.install(|| render_bytes(2, super::super::ColorInterpolationFilters::SRGB));
+    let a = pool.install(|| render_bytes(0, super::super::ColorInterpolationFilters::SRGB));
+    let b = pool.install(|| render_bytes(1, super::super::ColorInterpolationFilters::SRGB));
     assert_eq!(a.len(), b.len(), "expected same output size");
     assert!(
       a.iter().zip(&b).any(|(a, b)| a != b),
       "expected different seeds to affect output"
     );
+  }
+
+  #[test]
+  fn turbulence_render_is_deterministic_under_rayon_pool() {
+    let baseline = render_bytes(0, super::super::ColorInterpolationFilters::SRGB);
+    let pool = ThreadPoolBuilder::new()
+      .num_threads(4)
+      .build()
+      .expect("thread pool");
+
+    pool.install(|| {
+      let outputs: Vec<Vec<u8>> = (0..16usize)
+        .into_par_iter()
+        .map(|_| render_bytes(0, super::super::ColorInterpolationFilters::SRGB))
+        .collect();
+      for (idx, output) in outputs.iter().enumerate() {
+        assert_eq!(output, &baseline, "output differed at iteration {idx}");
+      }
+    });
   }
 }
