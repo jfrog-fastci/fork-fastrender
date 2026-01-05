@@ -1981,7 +1981,10 @@ impl DisplayListBuilder {
         )
       })
       .unwrap_or(offset);
-    let mask = root_style.and_then(|style| self.resolve_mask(style, context_bounds));
+    let root_fragment_rect =
+      root_fragment.map(|fragment| fragment.bounds.translate(root_fragment_offset));
+    let root_border_bounds = root_fragment_rect.unwrap_or(context_bounds);
+    let mask = root_style.and_then(|style| self.resolve_mask(style, root_border_bounds));
     let root_background = if is_root {
       root_fragment.and_then(|fragment| {
         let viewport = self
@@ -2009,16 +2012,6 @@ impl DisplayListBuilder {
     } else {
       None
     };
-
-    let root_fragment_rect = root_fragment.map(|fragment| {
-      Rect::new(
-        Point::new(
-          fragment.bounds.origin.x + offset.x,
-          fragment.bounds.origin.y + offset.y,
-        ),
-        fragment.bounds.size,
-      )
-    });
     let skip_contents = root_style.is_some_and(|style| match style.content_visibility {
       ContentVisibility::Hidden => true,
       ContentVisibility::Auto => visibility
@@ -2060,7 +2053,7 @@ impl DisplayListBuilder {
           ),
           {
             let border_timer = breakdown.map(|_| Instant::now());
-            let radii = Self::resolve_border_radii(Some(style), context.bounds, self.viewport);
+            let radii = Self::resolve_border_radii(Some(style), root_border_bounds, self.viewport);
             if let (Some(breakdown), Some(start)) = (breakdown, border_timer) {
               breakdown.record_border_radii(start.elapsed());
             }
@@ -2073,7 +2066,7 @@ impl DisplayListBuilder {
         Vec::new(),
         crate::paint::display_list::BorderRadii::ZERO,
       ));
-    let transform_bounds = root_fragment_rect.unwrap_or(context_bounds);
+    let transform_bounds = root_border_bounds;
     let transforms = root_style
       .map(|style| {
         crate::paint::transform_resolver::resolve_transforms(style, transform_bounds, self.viewport)
@@ -2129,23 +2122,23 @@ impl DisplayListBuilder {
 
     let viewport = self
       .viewport
-      .unwrap_or_else(|| (context_bounds.width(), context_bounds.height()));
+      .unwrap_or_else(|| (root_border_bounds.width(), root_border_bounds.height()));
     let clip_path_timer = if self.build_breakdown.is_some() && root_style.is_some() {
       Some(Instant::now())
     } else {
       None
     };
     let clip_path = root_style
-      .and_then(|style| resolve_clip_path(style, context_bounds, viewport, &self.font_ctx));
+      .and_then(|style| resolve_clip_path(style, root_border_bounds, viewport, &self.font_ctx));
     if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), clip_path_timer) {
       breakdown.record_clip_path(start.elapsed());
     }
     let clip_rect = root_style
-      .and_then(|style| Self::clip_rect_from_style(style, context_bounds, Some(viewport)));
+      .and_then(|style| Self::clip_rect_from_style(style, root_border_bounds, Some(viewport)));
     let overflow_clip = root_style.and_then(|style| {
       Self::overflow_clip_from_style(
         style,
-        context_bounds,
+        root_border_bounds,
         self.viewport,
         self.build_breakdown.as_deref(),
       )
@@ -2805,12 +2798,12 @@ impl DisplayListBuilder {
     }
   }
 
-  fn resolve_mask(&self, style: &ComputedStyle, context_bounds: Rect) -> Option<ResolvedMask> {
+  fn resolve_mask(&self, style: &ComputedStyle, bounds: Rect) -> Option<ResolvedMask> {
     if !style.mask_layers.iter().any(|layer| layer.image.is_some()) {
       return None;
     }
 
-    let rects = Self::background_rects(context_bounds, style, self.viewport);
+    let rects = Self::background_rects(bounds, style, self.viewport);
     let rects = MaskReferenceRects {
       border: rects.border,
       padding: rects.padding,
@@ -7442,7 +7435,13 @@ fn collect_underline_exclusions(
   skip_all: bool,
 ) -> Vec<(f32, f32)> {
   crate::paint::text_decoration_skip_ink::collect_underline_exclusions(
-    runs, 0.0, baseline_y, band_top, band_bottom, skip_all, 1.0,
+    runs,
+    0.0,
+    baseline_y,
+    band_top,
+    band_bottom,
+    skip_all,
+    1.0,
   )
 }
 
@@ -7454,7 +7453,13 @@ fn collect_underline_exclusions_vertical(
   skip_all: bool,
 ) -> Vec<(f32, f32)> {
   crate::paint::text_decoration_skip_ink::collect_underline_exclusions_vertical(
-    runs, 0.0, block_baseline, band_left, band_right, skip_all, 1.0,
+    runs,
+    0.0,
+    block_baseline,
+    band_left,
+    band_right,
+    skip_all,
+    1.0,
   )
 }
 
@@ -8410,6 +8415,63 @@ mod tests {
   }
 
   #[test]
+  fn stacking_context_overflow_clip_uses_root_border_box() {
+    let mut style = ComputedStyle::default();
+    style.overflow_x = Overflow::Hidden;
+    style.overflow_y = Overflow::Hidden;
+    style.background_color = Rgba::BLUE;
+    style.display = Display::Block;
+    style.opacity = 0.5;
+
+    let mut fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(5.0, 6.0, 100.0, 100.0),
+      vec![],
+      Arc::new(style),
+    );
+    fragment.scroll_overflow = Rect::from_xywh(0.0, 0.0, 130.0, 100.0);
+
+    let intermediate =
+      FragmentNode::new_block(Rect::from_xywh(10.0, 20.0, 150.0, 150.0), vec![fragment]);
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 200.0, 200.0), vec![intermediate]);
+
+    let list = DisplayListBuilder::new()
+      .with_viewport_size(200.0, 200.0)
+      .build_with_stacking_tree(&root);
+    let items = list.items();
+
+    let sc_bounds = items.iter().find_map(|item| match item {
+      DisplayItem::PushStackingContext(sc) => Some(sc.bounds),
+      _ => None,
+    });
+    assert_eq!(
+      sc_bounds,
+      Some(Rect::from_xywh(15.0, 26.0, 130.0, 100.0)),
+      "stacking context bounds should include scroll overflow"
+    );
+
+    let clip_rects: Vec<Rect> = items
+      .iter()
+      .filter_map(|item| match item {
+        DisplayItem::PushClip(clip) => match &clip.shape {
+          ClipShape::Rect { rect, .. } => Some(*rect),
+          _ => None,
+        },
+        _ => None,
+      })
+      .collect();
+    assert!(
+      !clip_rects.is_empty(),
+      "expected overflow clipping to push at least one clip"
+    );
+    assert!(
+      clip_rects
+        .iter()
+        .all(|rect| *rect == Rect::from_xywh(15.0, 26.0, 100.0, 100.0)),
+      "overflow clips should be resolved against the border box, not scroll overflow"
+    );
+  }
+
+  #[test]
   fn clip_path_clip_is_inside_stacking_context() {
     let mut style = ComputedStyle::default();
     style.clip_path = ClipPath::BasicShape(
@@ -8912,7 +8974,9 @@ mod tests {
       "expected hidden ancestor opacity to wrap descendants"
     );
     assert!(
-      items.iter().any(|item| matches!(item, DisplayItem::Text(_))),
+      items
+        .iter()
+        .any(|item| matches!(item, DisplayItem::Text(_))),
       "expected visible descendant content to paint"
     );
     assert!(
