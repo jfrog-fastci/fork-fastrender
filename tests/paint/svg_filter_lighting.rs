@@ -1,5 +1,8 @@
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine;
 use fastrender::geometry::Rect;
 use fastrender::image_loader::ImageCache;
+use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::paint::svg_filter::{
   apply_svg_filter, parse_svg_filter_from_svg_document, ColorInterpolationFilters, FilterInput,
   FilterPrimitive, FilterStep, LightSource, SvgFilter, SvgFilterPrimitiveRegionOverride,
@@ -14,6 +17,51 @@ fn solid_pixmap(width: u32, height: u32, color: PremultipliedColorU8) -> Pixmap 
     *px = color;
   }
   pixmap
+}
+
+fn make_bump_map_pixmap(width: u32, height: u32) -> Pixmap {
+  let mut pixmap = Pixmap::new(width, height).expect("pixmap");
+  if width == 0 || height == 0 {
+    return pixmap;
+  }
+
+  let w = width as f32;
+  let h = height as f32;
+
+  // Non-symmetric alpha ramp with a smooth bump so normal sign, primitiveUnits scaling, and
+  // kernelUnitLength sampling all matter.
+  let bump_cx = w * 0.72;
+  let bump_cy = h * 0.28;
+  let sigma_x = (w * 0.16).max(1.0);
+  let sigma_y = (h * 0.22).max(1.0);
+
+  let denom_x = (width.saturating_sub(1)).max(1) as f32;
+  let denom_y = (height.saturating_sub(1)).max(1) as f32;
+
+  for y in 0..height {
+    let yf = y as f32 / denom_y;
+    for x in 0..width {
+      let xf = x as f32 / denom_x;
+
+      let mut alpha = xf * 180.0 + yf * 40.0;
+      let dx = x as f32 - bump_cx;
+      let dy = y as f32 - bump_cy;
+      let bump =
+        90.0 * (-((dx * dx) / (2.0 * sigma_x * sigma_x) + (dy * dy) / (2.0 * sigma_y * sigma_y))).exp();
+      alpha += bump;
+
+      let a = alpha.round().clamp(0.0, 255.0) as u8;
+      let idx = y as usize * width as usize + x as usize;
+      pixmap.pixels_mut()[idx] = PremultipliedColorU8::from_rgba(0, 0, 0, a).unwrap();
+    }
+  }
+
+  pixmap
+}
+
+fn pixmap_to_data_url_png(pixmap: &Pixmap) -> String {
+  let encoded = encode_image(pixmap, OutputFormat::Png).expect("encode bump map png");
+  format!("data:image/png;base64,{}", BASE64.encode(encoded))
 }
 
 fn with_fingerprint(filter: SvgFilter) -> SvgFilter {
@@ -405,12 +453,164 @@ fn point_light_percentages_follow_bbox_in_userspace() {
 }
 
 #[test]
+fn kernel_unit_length_changes_lighting_output() {
+  let width = 32;
+  let height = 24;
+  let bump_map = make_bump_map_pixmap(width, height);
+  let bbox = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
+
+  let make_filter = |kernel_unit_length| {
+    with_fingerprint(SvgFilter {
+      color_interpolation_filters: ColorInterpolationFilters::LinearRGB,
+      steps: vec![FilterStep {
+        result: None,
+        color_interpolation_filters: None,
+        primitive: FilterPrimitive::DiffuseLighting {
+          input: FilterInput::SourceAlpha,
+          surface_scale: 2.0,
+          diffuse_constant: 1.0,
+          kernel_unit_length,
+          light: LightSource::Distant {
+            azimuth: 0.0,
+            elevation: 45.0,
+          },
+          lighting_color: Rgba::WHITE,
+        },
+        region: None,
+      }],
+      region: SvgFilterRegion {
+        x: SvgLength::Number(0.0),
+        y: SvgLength::Number(0.0),
+        width: SvgLength::Number(width as f32),
+        height: SvgLength::Number(height as f32),
+        units: SvgFilterUnits::UserSpaceOnUse,
+      },
+      filter_res: None,
+      primitive_units: SvgFilterUnits::UserSpaceOnUse,
+      fingerprint: 0,
+    })
+  };
+
+  let mut default = bump_map.clone();
+  apply_svg_filter(&make_filter(None), &mut default, 1.0, bbox).unwrap();
+  let mut widened = bump_map.clone();
+  apply_svg_filter(&make_filter(Some((5.0, 3.0))), &mut widened, 1.0, bbox).unwrap();
+
+  let changed = default
+    .data()
+    .iter()
+    .zip(widened.data())
+    .any(|(a, b)| a != b);
+  assert!(changed, "expected kernelUnitLength to affect surface normals");
+}
+
+#[test]
+fn object_bounding_box_units_match_user_space_equivalent_for_point_light() {
+  // Non-square bbox to ensure x/y primitiveUnits scaling stays axis-specific.
+  let width = 40;
+  let height = 20;
+  let bump_map = make_bump_map_pixmap(width, height);
+  let bbox = Rect::from_xywh(7.0, 11.0, width as f32, height as f32);
+
+  // Use the same values for x/y and let the bbox shape make the resolved distances diverge.
+  let kernel_unit_obj = (0.10, 0.10);
+  let surface_scale_obj = 0.12;
+  let point_obj = (0.25, 0.60, 0.40);
+
+  let scalar_ref = (bbox.width().abs() + bbox.height().abs()) * 0.5;
+  let surface_scale_user = surface_scale_obj * scalar_ref;
+  let kernel_unit_user = (
+    kernel_unit_obj.0 * bbox.width().abs(),
+    kernel_unit_obj.1 * bbox.height().abs(),
+  );
+  let point_user = (
+    bbox.min_x() + point_obj.0 * bbox.width().abs(),
+    bbox.min_y() + point_obj.1 * bbox.height().abs(),
+    point_obj.2 * scalar_ref,
+  );
+
+  let filter_obj = with_fingerprint(SvgFilter {
+    color_interpolation_filters: ColorInterpolationFilters::LinearRGB,
+    steps: vec![FilterStep {
+      result: None,
+      color_interpolation_filters: None,
+      primitive: FilterPrimitive::DiffuseLighting {
+        input: FilterInput::SourceAlpha,
+        surface_scale: surface_scale_obj,
+        diffuse_constant: 1.0,
+        kernel_unit_length: Some(kernel_unit_obj),
+        light: LightSource::Point {
+          x: SvgLength::Number(point_obj.0),
+          y: SvgLength::Number(point_obj.1),
+          z: SvgLength::Number(point_obj.2),
+        },
+        lighting_color: Rgba::WHITE,
+      },
+      region: None,
+    }],
+    region: SvgFilterRegion {
+      x: SvgLength::Number(0.0),
+      y: SvgLength::Number(0.0),
+      width: SvgLength::Number(width as f32),
+      height: SvgLength::Number(height as f32),
+      units: SvgFilterUnits::UserSpaceOnUse,
+    },
+    filter_res: None,
+    primitive_units: SvgFilterUnits::ObjectBoundingBox,
+    fingerprint: 0,
+  });
+
+  let filter_user = with_fingerprint(SvgFilter {
+    color_interpolation_filters: ColorInterpolationFilters::LinearRGB,
+    steps: vec![FilterStep {
+      result: None,
+      color_interpolation_filters: None,
+      primitive: FilterPrimitive::DiffuseLighting {
+        input: FilterInput::SourceAlpha,
+        surface_scale: surface_scale_user,
+        diffuse_constant: 1.0,
+        kernel_unit_length: Some(kernel_unit_user),
+        light: LightSource::Point {
+          x: SvgLength::Number(point_user.0),
+          y: SvgLength::Number(point_user.1),
+          z: SvgLength::Number(point_user.2),
+        },
+        lighting_color: Rgba::WHITE,
+      },
+      region: None,
+    }],
+    region: SvgFilterRegion {
+      x: SvgLength::Number(0.0),
+      y: SvgLength::Number(0.0),
+      width: SvgLength::Number(width as f32),
+      height: SvgLength::Number(height as f32),
+      units: SvgFilterUnits::UserSpaceOnUse,
+    },
+    filter_res: None,
+    primitive_units: SvgFilterUnits::UserSpaceOnUse,
+    fingerprint: 0,
+  });
+
+  let mut out_obj = bump_map.clone();
+  apply_svg_filter(&filter_obj, &mut out_obj, 1.0, bbox).unwrap();
+  let mut out_user = bump_map;
+  apply_svg_filter(&filter_user, &mut out_user, 1.0, bbox).unwrap();
+
+  assert_eq!(
+    out_obj.data(),
+    out_user.data(),
+    "primitiveUnits=objectBoundingBox should match the userSpaceOnUse equivalent after resolving primitives"
+  );
+}
+
+#[test]
 fn diffuse_lighting_regression_premultiply_and_normal_sign() {
   let mut pixmap = Pixmap::new(3, 1).expect("pixmap");
   let alphas = [0u8, 255u8, 255u8];
   for (x, &a) in alphas.iter().enumerate() {
     pixmap.pixels_mut()[x] = PremultipliedColorU8::from_rgba(0, 0, 0, a).unwrap();
   }
+  let bump_map = pixmap.clone();
   let bbox = Rect::from_xywh(0.0, 0.0, 3.0, 1.0);
   let filter = with_fingerprint(SvgFilter {
     color_interpolation_filters: ColorInterpolationFilters::SRGB,
@@ -442,19 +642,43 @@ fn diffuse_lighting_regression_premultiply_and_normal_sign() {
     fingerprint: 0,
   });
 
-  apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
-
-  let px = pixmap.pixel(1, 0).unwrap();
-  assert!(
-    (px.red() as i32 - 81).abs() <= 1,
-    "expected middle pixel premultiplied red around 81 (n·L≈0.316), got {}",
-    px.red()
+  let bump_map_url = pixmap_to_data_url_png(&bump_map);
+  let svg_bump_map = format!(
+    r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="3" height="1">
+      <image x="0" y="0" width="3" height="1" preserveAspectRatio="none" href="{bump_map_url}" />
+    </svg>
+    "#
   );
+  let bump_map_center = center_pixel(&render_resvg(&svg_bump_map, 3, 1));
   assert_eq!(
-    px.alpha(),
-    255,
-    "expected fully opaque output for opaque input"
+    bump_map_center.3, 255,
+    "expected resvg to load the embedded bump map image"
   );
+
+  let svg = format!(
+    r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="3" height="1">
+      <defs>
+        <filter id="f" x="0" y="0" width="3" height="1"
+                filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
+                color-interpolation-filters="sRGB">
+          <feDiffuseLighting in="SourceAlpha" surfaceScale="1" diffuseConstant="1" lighting-color="white">
+            <feDistantLight azimuth="0" elevation="45" />
+          </feDiffuseLighting>
+        </filter>
+      </defs>
+      <image x="0" y="0" width="3" height="1" preserveAspectRatio="none"
+             href="{bump_map_url}" filter="url(#f)" />
+    </svg>
+    "#
+  );
+  let expected = center_pixel(&render_resvg(&svg, 3, 1));
+
+  apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
+  let actual = center_pixel(&pixmap);
+
+  assert_eq!(actual, expected, "FastRender lighting must match resvg output");
 }
 
 fn render_resvg(svg: &str, width: u32, height: u32) -> Pixmap {

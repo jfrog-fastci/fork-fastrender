@@ -1963,6 +1963,8 @@ impl SvgFilter {
       SvgFilterUnits::ObjectBoundingBox => SvgCoordinateUnits::ObjectBoundingBox,
       SvgFilterUnits::UserSpaceOnUse => SvgCoordinateUnits::UserSpaceOnUse,
     };
+    // Z lengths are not axis-aligned, so follow the same scalar mapping used elsewhere:
+    // for `objectBoundingBox`, scale against the average of the bbox dimensions.
     let reference = (bbox.width().abs() + bbox.height().abs()) * 0.5;
     value.resolve(units, reference)
   }
@@ -4564,8 +4566,8 @@ fn surface_normal(
     scale_y,
     surface_scale,
   );
-  let dzdx = (h_l - h_r) / (2.0 * ku_x);
-  let dzdy = (h_t - h_b) / (2.0 * ku_y);
+  let dzdx = (h_l - h_r) / ku_x;
+  let dzdy = (h_t - h_b) / ku_y;
   normalize3(dzdx, dzdy, 1.0)
 }
 
@@ -4662,6 +4664,11 @@ fn apply_diffuse_lighting(
             let (light_dir, light_factor) =
               compute_light_direction(filter, css_bbox, &light, (css_x, css_y, height));
             let n_dot_l = dot3(normal, light_dir).max(0.0);
+            if n_dot_l <= 0.0 || base_color.a <= 0.0 {
+              *dst = PremultipliedColorU8::TRANSPARENT;
+              continue;
+            }
+
             let intensity = n_dot_l * diffuse_constant * light_factor;
             let color_scale = if intensity.is_finite() {
               intensity.max(0.0)
@@ -4770,12 +4777,15 @@ fn apply_specular_lighting(
             let (light_dir, light_factor) =
               compute_light_direction(filter, css_bbox, &light, (css_x, css_y, height));
             let n_dot_l = dot3(normal, light_dir).max(0.0);
-            let reflect = normalize3(
-              2.0 * n_dot_l * normal.0 - light_dir.0,
-              2.0 * n_dot_l * normal.1 - light_dir.1,
-              2.0 * n_dot_l * normal.2 - light_dir.2,
-            );
-            let spec_angle = reflect.2.max(0.0).powf(exponent);
+            if n_dot_l <= 0.0 || light_factor <= 0.0 {
+              *dst = PremultipliedColorU8::TRANSPARENT;
+              continue;
+            }
+
+            // Use the SVG2/Chrome/resvg half-vector model for specular highlights. The viewer is
+            // assumed to be looking straight down the +Z axis, so V = (0, 0, 1) and H = L + V.
+            let half_vec = normalize3(light_dir.0, light_dir.1, light_dir.2 + 1.0);
+            let spec_angle = dot3(normal, half_vec).max(0.0).powf(exponent);
             let intensity = specular_constant * spec_angle * light_factor;
             // Unlike diffuse lighting, Chrome/resvg encode the specular intensity in the alpha
             // channel and keep the RGB channels fixed to the lighting color. This makes
