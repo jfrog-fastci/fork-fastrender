@@ -122,28 +122,18 @@ fn hash_option_length(len: &Option<Length>, hasher: &mut FxHasher) {
   }
 }
 
-fn hash_intrinsic_size_keyword(value: &IntrinsicSizeKeyword, hasher: &mut FxHasher) {
-  match value {
-    IntrinsicSizeKeyword::MinContent => 0u8.hash(hasher),
-    IntrinsicSizeKeyword::MaxContent => 1u8.hash(hasher),
-    IntrinsicSizeKeyword::FitContent { limit } => {
-      2u8.hash(hasher);
-      match limit {
-        Some(limit) => {
-          1u8.hash(hasher);
-          hash_length(limit, hasher);
-        }
-        None => 0u8.hash(hasher),
-      }
-    }
+fn hash_intrinsic_size_keyword(keyword: &IntrinsicSizeKeyword, hasher: &mut FxHasher) {
+  hash_enum_discriminant(keyword, hasher);
+  if let IntrinsicSizeKeyword::FitContent { limit } = keyword {
+    hash_option_length(limit, hasher);
   }
 }
 
-fn hash_option_intrinsic_size_keyword(value: &Option<IntrinsicSizeKeyword>, hasher: &mut FxHasher) {
-  match value {
-    Some(value) => {
+fn hash_option_intrinsic_size_keyword(opt: &Option<IntrinsicSizeKeyword>, hasher: &mut FxHasher) {
+  match opt {
+    Some(keyword) => {
       1u8.hash(hasher);
-      hash_intrinsic_size_keyword(value, hasher);
+      hash_intrinsic_size_keyword(keyword, hasher);
     }
     None => 0u8.hash(hasher),
   }
@@ -214,4 +204,33 @@ pub(crate) fn style_override_fingerprint_for(node_id: usize) -> Option<u64> {
       Some(fingerprint)
     })
   })
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn style_override_fingerprint_includes_intrinsic_size_keywords() {
+    let base = ComputedStyle::default();
+    let mut min_content = base.clone();
+    min_content.width_keyword = Some(IntrinsicSizeKeyword::MinContent);
+    assert_ne!(
+      style_override_fingerprint(&base),
+      style_override_fingerprint(&min_content)
+    );
+
+    let mut fit_10 = base.clone();
+    fit_10.width_keyword = Some(IntrinsicSizeKeyword::FitContent {
+      limit: Some(Length::px(10.0)),
+    });
+    let mut fit_20 = base.clone();
+    fit_20.width_keyword = Some(IntrinsicSizeKeyword::FitContent {
+      limit: Some(Length::px(20.0)),
+    });
+    assert_ne!(
+      style_override_fingerprint(&fit_10),
+      style_override_fingerprint(&fit_20)
+    );
+  }
 }
