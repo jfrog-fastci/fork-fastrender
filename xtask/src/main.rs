@@ -2498,4 +2498,19 @@ mod tests {
       "pageset_progress invocation should omit --bundled-fonts when --system-fonts is set; args={cmd_args:?}"
     );
   }
+
+  #[test]
+  fn fixture_chrome_diff_parses_fixtures_only_alias() {
+    let cli =
+      Cli::try_parse_from(["xtask", "fixture-chrome-diff", "--only", "fixture_a,fixture_b"])
+        .expect("parse fixture-chrome-diff --only <stems>");
+    let Commands::FixtureChromeDiff(args) = cli.command else {
+      panic!("expected fixture-chrome-diff command");
+    };
+
+    assert_eq!(
+      args.fixtures,
+      Some(vec!["fixture_a".to_string(), "fixture_b".to_string()])
+    );
+  }
 }

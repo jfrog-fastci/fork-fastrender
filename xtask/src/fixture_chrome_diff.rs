@@ -94,7 +94,7 @@ pub struct FixtureChromeDiffArgs {
   /// When omitted, the default fixture set is derived from `tests/pages_regression_test.rs` (the
   /// curated pages_regression suite). Pass `--all-fixtures` to render everything under
   /// `--fixtures-dir` instead.
-  #[arg(long, value_delimiter = ',', value_name = "STEM,...")]
+  #[arg(long, alias = "only", value_delimiter = ',', value_name = "STEM,...")]
   pub fixtures: Option<Vec<String>>,
 
   /// Render every fixture under `--fixtures-dir` (disable the default pages_regression fixture set).
