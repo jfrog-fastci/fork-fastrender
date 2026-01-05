@@ -647,28 +647,6 @@ impl FormattingContext for FlexFormattingContext {
         record_fragment_clone(CloneSite::FlexLayoutCacheHit, fragment.as_ref());
         return Ok((*fragment).clone());
       }
-      let target_w = constraints.width().unwrap_or(self.viewport_size.width);
-      let target_h = constraints.height().unwrap_or(self.viewport_size.height);
-      if let Some(cached) = self
-        .layout_fragments
-        .find_fragment(cache_key, Size::new(target_w.max(0.0), target_h.max(0.0)))
-      {
-        let fragment = std::sync::Arc::clone(&cached.fragment);
-        self.layout_fragments.insert(
-          cache_key,
-          key,
-          crate::layout::contexts::flex_cache::FlexCacheValue {
-            measured_size: cached.measured_size,
-            border_size: cached.border_size,
-            fragment: std::sync::Arc::clone(&fragment),
-          },
-          MAX_LAYOUT_CACHE_PER_NODE,
-        );
-        flex_profile::record_layout_cache_hit();
-        flex_profile::record_layout_cache_clone();
-        record_fragment_clone(CloneSite::FlexLayoutCacheHit, fragment.as_ref());
-        return Ok((*fragment).clone());
-      }
     }
 
     // Create a fresh Taffy tree for this layout.
@@ -1489,34 +1467,6 @@ impl FormattingContext for FlexFormattingContext {
                         record_node_measure_hit(measure_box.id);
                         flex_profile::record_measure_hit();
                         flex_profile::record_measure_time(measure_timer);
-                        return taffy::geometry::Size {
-                            width: cached.measured_size.width,
-                            height: cached.measured_size.height,
-                        };
-                    }
-                    let target_w = fallback_size(known_dimensions.width, avail.width);
-                    let target_h = fallback_size(known_dimensions.height, avail.height);
-                    if let Some(cached) =
-                        measured_fragments.find_fragment(cache_key, Size::new(target_w, target_h))
-                    {
-                        record_node_measure_hit(measure_box.id);
-                        flex_profile::record_measure_hit();
-                        flex_profile::record_measure_time(measure_timer);
-                        measured_fragments.insert(
-                            cache_key,
-                            key,
-                            crate::layout::contexts::flex_cache::FlexCacheValue {
-                              measured_size: cached.measured_size,
-                              border_size: cached.border_size,
-                              fragment: std::sync::Arc::clone(&cached.fragment),
-                            },
-                            MAX_MEASURE_CACHE_PER_NODE,
-                        );
-                        pass_cache
-                            .entry(cache_key)
-                            .or_default()
-                            .entry(key)
-                            .or_insert_with(|| cached.clone());
                         return taffy::geometry::Size {
                             width: cached.measured_size.width,
                             height: cached.measured_size.height,
@@ -5116,7 +5066,7 @@ impl FlexFormattingContext {
       }
 
       if !needs_intrinsic_main {
-        if let Some(cached) = measured_fragments.find_fragment_by_border_size(
+        if let Some(cached) = measured_fragments.find_fragment_by_border_size_exact(
           flex_cache_key(child_box),
           Size::new(target_width, target_height),
         ) {

@@ -25,6 +25,9 @@ pub(crate) struct FlexCacheValue {
 pub(crate) type FlexCacheEntry = FxHashMap<FlexCacheKey, FlexCacheValue>;
 
 const DEFAULT_SHARD_COUNT: usize = 64;
+// Match on borderline float noise only; we don't want cross-size reuse here because it can change
+// line wrapping and make layout order-dependent under parallel traversal.
+const BORDER_SIZE_EXACT_MATCH_EPS: f32 = 0.01;
 
 #[derive(Default)]
 struct FlexCacheShard {
@@ -128,6 +131,27 @@ impl ShardedFlexCache {
       let map = shard.map.read();
       let entry = map.get(&node_key)?;
       find_cached_fragment_by_border_size(entry, target_size)
+    });
+    self.record_lookup(shard_idx, result.is_some());
+    result
+  }
+
+  /// Strict border-size lookup used by default when reusing measured fragments.
+  ///
+  /// Flex/grid measure calls can be repeated with different constraints; reusing a fragment that
+  /// was computed under a *different* used border-box size can change text wrapping. Keeping this
+  /// lookup strict prevents order-dependent output when layout parallelism changes measurement
+  /// ordering.
+  pub(crate) fn find_fragment_by_border_size_exact(
+    &self,
+    node_key: u64,
+    target_size: Size,
+  ) -> Option<FlexCacheValue> {
+    let shard_idx = self.shard_index(node_key);
+    let result = self.shards.get(shard_idx).and_then(|shard| {
+      let map = shard.map.read();
+      let entry = map.get(&node_key)?;
+      find_cached_fragment_by_border_size_exact(entry, target_size)
     });
     self.record_lookup(shard_idx, result.is_some());
     result
@@ -308,6 +332,57 @@ pub(crate) fn find_cached_fragment_by_border_size(
   best.cloned()
 }
 
+pub(crate) fn find_cached_fragment_by_border_size_exact(
+  cache: &FlexCacheEntry,
+  target_size: Size,
+) -> Option<FlexCacheValue> {
+  let mut best: Option<&FlexCacheValue> = None;
+  let mut best_key: Option<FlexCacheKey> = None;
+  let mut best_score = f32::MAX;
+  let mut best_dw = f32::MAX;
+  let mut best_dh = f32::MAX;
+  let eps_w = BORDER_SIZE_EXACT_MATCH_EPS;
+  let eps_h = BORDER_SIZE_EXACT_MATCH_EPS;
+  for (key, value) in cache.iter() {
+    let size = value.border_size;
+    if !size.width.is_finite() || !size.height.is_finite() {
+      continue;
+    }
+    let dw = (size.width - target_size.width).abs();
+    let dh = (size.height - target_size.height).abs();
+    if dw <= eps_w && dh <= eps_h {
+      let score = dw + dh;
+      let better = match best {
+        None => true,
+        Some(_) => match score.total_cmp(&best_score) {
+          std::cmp::Ordering::Less => true,
+          std::cmp::Ordering::Greater => false,
+          std::cmp::Ordering::Equal => match dw.total_cmp(&best_dw) {
+            std::cmp::Ordering::Less => true,
+            std::cmp::Ordering::Greater => false,
+            std::cmp::Ordering::Equal => match dh.total_cmp(&best_dh) {
+              std::cmp::Ordering::Less => true,
+              std::cmp::Ordering::Greater => false,
+              std::cmp::Ordering::Equal => match best_key {
+                None => true,
+                Some(best_key) => *key < best_key,
+              },
+            },
+          },
+        },
+      };
+      if better {
+        best_score = score;
+        best_dw = dw;
+        best_dh = dh;
+        best_key = Some(*key);
+        best = Some(value);
+      }
+    }
+  }
+  best.cloned()
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -358,6 +433,33 @@ mod tests {
       .expect("expected border-box cache hit");
     assert_eq!(found.border_size, used_border_size);
     assert_eq!(found.fragment.bounds.size, fragment_bounds.size);
+  }
+
+  #[test]
+  fn find_fragment_by_border_size_exact_is_strict() {
+    let cache = ShardedFlexCache::new_measure();
+    let node_key = 124u64;
+    let key: FlexCacheKey = (Some(1), Some(2));
+
+    assert!(cache.insert(
+      node_key,
+      key,
+      FlexCacheValue {
+        measured_size: Size::new(0.0, 0.0),
+        border_size: Size::new(120.0, 40.0),
+        fragment: make_test_fragment(Rect::from_xywh(0.0, 0.0, 120.0, 40.0)),
+      },
+      16
+    ));
+
+    // Within the legacy fuzzy tolerance (>= 4px) but outside the strict epsilon.
+    assert!(cache
+      .find_fragment_by_border_size_exact(node_key, Size::new(123.0, 40.0))
+      .is_none());
+
+    assert!(cache
+      .find_fragment_by_border_size_exact(node_key, Size::new(120.0, 40.0))
+      .is_some());
   }
 
   fn make_test_fragment(bounds: Rect) -> Arc<FragmentNode> {
