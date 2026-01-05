@@ -2201,6 +2201,10 @@ fn parse_number_or_calc(raw: &str) -> Option<f32> {
 fn parse_animation_duration_list(raw: &str) -> Vec<f32> {
   let mut times = Vec::new();
   for part in split_top_level_commas(raw) {
+    if part.trim().eq_ignore_ascii_case("auto") {
+      times.push(0.0);
+      continue;
+    }
     if let Some(ms) = parse_time_ms(&part) {
       times.push(ms.max(0.0));
     }
@@ -2580,6 +2584,13 @@ fn parse_animation_shorthand(
           break;
         }
         continue;
+      }
+
+      if token.trim().eq_ignore_ascii_case("auto") {
+        if duration.is_none() {
+          duration = Some(0.0);
+          continue;
+        }
       }
 
       if let Some(tf) = parse_transition_timing_function(&token) {
@@ -17907,6 +17918,83 @@ mod tests {
       ]
       .into()
     );
+  }
+
+  #[test]
+  fn animation_timeline_parses_function_values_and_preserves_none_entries() {
+    let decls = parse_declarations("animation-timeline: scroll(self), none, auto, foo;");
+    assert_eq!(decls.len(), 1);
+    let decl = &decls[0];
+
+    let parent_styles = ComputedStyle::default();
+    let mut styles = ComputedStyle::default();
+    apply_declaration_with_base(
+      &mut styles,
+      decl,
+      &parent_styles,
+      default_computed_style(),
+      None,
+      16.0,
+      16.0,
+      DEFAULT_VIEWPORT,
+    );
+
+    assert_eq!(
+      styles.animation_timelines,
+      vec![
+        AnimationTimeline::Scroll(ScrollFunctionTimeline {
+          scroller: ScrollTimelineScroller::SelfElement,
+          axis: TimelineAxis::Block,
+        }),
+        AnimationTimeline::None,
+        AnimationTimeline::Auto,
+        AnimationTimeline::Named("foo".to_string()),
+      ]
+    );
+  }
+
+  #[test]
+  fn animation_duration_accepts_auto() {
+    let decls = parse_declarations("animation-duration: auto, 2s;");
+    assert_eq!(decls.len(), 1);
+    let decl = &decls[0];
+
+    let parent_styles = ComputedStyle::default();
+    let mut styles = ComputedStyle::default();
+    apply_declaration_with_base(
+      &mut styles,
+      decl,
+      &parent_styles,
+      default_computed_style(),
+      None,
+      16.0,
+      16.0,
+      DEFAULT_VIEWPORT,
+    );
+
+    assert_eq!(styles.animation_durations, vec![0.0, 2000.0].into());
+  }
+
+  #[test]
+  fn animation_shorthand_accepts_auto_duration() {
+    let decls = parse_declarations("animation: fade auto linear;");
+    assert_eq!(decls.len(), 1);
+    let decl = &decls[0];
+
+    let parent_styles = ComputedStyle::default();
+    let mut styles = ComputedStyle::default();
+    apply_declaration_with_base(
+      &mut styles,
+      decl,
+      &parent_styles,
+      default_computed_style(),
+      None,
+      16.0,
+      16.0,
+      DEFAULT_VIEWPORT,
+    );
+
+    assert_eq!(styles.animation_names.get(0).map(String::as_str), Some("fade"));
   }
 
   #[test]

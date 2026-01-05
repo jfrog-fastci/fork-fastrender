@@ -2094,7 +2094,15 @@ impl DisplayListBuilder {
     if let Some(t) = transform.as_ref() {
       world_bounds = Self::map_rect_with_transform(local_bounds, t);
     }
-    let mut context_visibility = visibility;
+    // `visibility` is expressed in the parent stacking context's coordinate space (i.e. the
+    // output/viewport space after the parent transform has been applied). Fragments within this
+    // stacking context are emitted in *local* coordinates and will be transformed at render time
+    // via the `PushStackingContext` item. For correct culling we must therefore convert the
+    // visible rect into the local (pre-transform) coordinate space.
+    let mut context_visibility = Visibility {
+      rect: Self::visible_in_local_space(visibility.rect, transform.as_ref()),
+      hard_clip: visibility.hard_clip,
+    };
     if child_perspective.is_none() {
       if let (Some(vis), Some(bounds)) = (visibility.rect, world_bounds) {
         if !vis.intersects(bounds) {
@@ -2102,9 +2110,7 @@ impl DisplayListBuilder {
         }
       }
     }
-    if let Some(bounds) = world_bounds {
-      context_visibility = context_visibility.intersect(Some(bounds), false);
-    }
+    context_visibility = context_visibility.intersect(Some(local_bounds), false);
 
     let viewport = self
       .viewport
@@ -2173,49 +2179,34 @@ impl DisplayListBuilder {
 
     let mut pushed_opacity = false;
     let mut child_visibility = context_visibility;
-    if let Some(mut bounds) = clip_path.as_ref().map(|clip| clip.bounds()) {
-      if let Some(t) = transform.as_ref() {
-        if let Some(mapped) = Self::map_rect_with_transform(bounds, t) {
-          bounds = mapped;
-        }
-      }
+    if let Some(bounds) = clip_path.as_ref().map(|clip| clip.bounds()) {
       child_visibility = child_visibility.intersect(Some(bounds), true);
     }
     if let Some(bounds) = clip_rect
       .as_ref()
-      .and_then(|clip| Self::map_clip_bounds(clip, transform.as_ref()))
+      .and_then(|clip| Self::clip_bounds(clip))
     {
       child_visibility = child_visibility.intersect(Some(bounds), true);
     }
     if let Some(bounds) = overflow_clip
       .as_ref()
-      .and_then(|clip| Self::map_clip_bounds(clip, transform.as_ref()))
+      .and_then(|clip| Self::clip_bounds(clip))
     {
       child_visibility = child_visibility.intersect(Some(bounds), true);
     }
     if let Some(bounds) = paint_containment_clip
       .as_ref()
-      .and_then(|clip| Self::map_clip_bounds(clip, transform.as_ref()))
+      .and_then(|clip| Self::clip_bounds(clip))
     {
       child_visibility = child_visibility.intersect(Some(bounds), true);
     }
-    // `child_visibility` is in the post-transform coordinate space (we intersected with
-    // transformed bounds/clips above). If the visible rect is empty, we can early-out before
-    // attempting any mapping back into local space.
+    // If the visible rect is empty after intersecting local bounds/clips, we can early-out.
     if child_visibility.rect.is_none() && visibility.rect.is_some() {
       if pushed_opacity {
         self.pop_opacity();
       }
       return;
     }
-    // `build_fragment_internal` and the stacking tree are expressed in the pre-transform coordinate
-    // space of the stacking context. Visibility culling needs to operate in that same space, so
-    // map the visible rect back through the stacking context transform before using it to decide
-    // which fragments to emit.
-    child_visibility = Visibility {
-      rect: Self::visible_in_local_space(child_visibility.rect, transform.as_ref()),
-      hard_clip: child_visibility.hard_clip,
-    };
 
     let local_child_visibility = child_visibility;
 

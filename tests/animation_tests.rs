@@ -17,9 +17,9 @@ use fastrender::style::cascade::StyledNode;
 use fastrender::style::media::MediaContext;
 use fastrender::style::types::{
   AnimationRange, AnimationTimeline, BackgroundPosition, BackgroundSize, BackgroundSizeComponent,
-  BasicShape, BorderStyle, ClipComponent, FilterFunction, OutlineColor, OutlineStyle, RangeOffset,
-  ScrollFunctionTimeline, ScrollTimeline, ScrollTimelineScroller, TimelineAxis, TimelineOffset,
-  TransformOrigin, ViewTimeline, ViewTimelinePhase, WritingMode,
+  BasicShape, BorderStyle, ClipComponent, FilterFunction, OutlineColor, OutlineStyle, Overflow,
+  RangeOffset, ScrollFunctionTimeline, ScrollTimeline, ScrollTimelineScroller, TimelineAxis,
+  TimelineOffset, TransformOrigin, ViewTimeline, ViewTimelinePhase, WritingMode,
 };
 use fastrender::Rgba;
 use fastrender::{
@@ -1361,6 +1361,71 @@ fn scroll_timeline_drives_animation_during_render() {
     red_pixels(&pixmap_bottom) > 0,
     "red content should appear when fully scrolled"
   );
+}
+
+fn find_scroll_container<'a>(node: &'a fastrender::FragmentNode) -> Option<&'a fastrender::FragmentNode> {
+  let is_scroll_container = node
+    .style
+    .as_ref()
+    .map(|style| {
+      matches!(style.overflow_x, Overflow::Scroll | Overflow::Auto)
+        || matches!(style.overflow_y, Overflow::Scroll | Overflow::Auto)
+    })
+    .unwrap_or(false);
+  if is_scroll_container {
+    return Some(node);
+  }
+  for child in node.children.iter() {
+    if let Some(found) = find_scroll_container(child) {
+      return Some(found);
+    }
+  }
+  None
+}
+
+#[test]
+fn scroll_self_timeline_drives_animation_with_element_scroll_offsets() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: black; }
+      #scroller {
+        width: 100px;
+        height: 100px;
+        overflow: scroll;
+        background: red;
+        animation-timeline: scroll(self);
+        animation: fade auto linear;
+      }
+      #content { height: 300px; }
+      @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+    </style>
+    <div id="scroller"><div id="content"></div></div>
+  "#;
+
+  let prepared = renderer
+    .prepare_html(html, RenderOptions::new().with_viewport(100, 100))
+    .expect("prepare");
+
+  let scroller_fragment = find_scroll_container(&prepared.fragment_tree().root)
+    .expect("scroll container fragment");
+  let scroller_id = scroller_fragment.box_id().expect("scroller box id");
+  let max_scroll = (scroller_fragment.scroll_overflow.height() - scroller_fragment.bounds.height()).max(0.0);
+  assert!(max_scroll > 0.0, "expected scrollable range");
+
+  let pixmap_top = prepared
+    .paint_with_scroll_state(ScrollState::with_viewport(Point::ZERO), None, None, None)
+    .expect("paint top");
+  assert_eq!(pixel(&pixmap_top, 50, 50), (0, 0, 0, 255));
+
+  let mut scrolled_state = ScrollState::with_viewport(Point::ZERO);
+  scrolled_state
+    .elements
+    .insert(scroller_id, Point::new(0.0, max_scroll));
+  let pixmap_bottom = prepared
+    .paint_with_scroll_state(scrolled_state, None, None, None)
+    .expect("paint bottom");
+  assert_eq!(pixel(&pixmap_bottom, 50, 50), (255, 0, 0, 255));
 }
 
 #[test]
