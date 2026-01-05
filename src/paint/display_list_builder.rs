@@ -2800,6 +2800,14 @@ impl DisplayListBuilder {
     (rects.content, radii)
   }
 
+  fn clip_replaced_contents(style: Option<&ComputedStyle>) -> bool {
+    let Some(style) = style else {
+      return false;
+    };
+    !matches!(style.overflow_x, crate::style::types::Overflow::Visible)
+      || !matches!(style.overflow_y, crate::style::types::Overflow::Visible)
+  }
+
   fn resolve_mask(&self, style: &ComputedStyle, bounds: Rect) -> Option<ResolvedMask> {
     if !style.mask_layers.iter().any(|layer| layer.image.is_some()) {
       return None;
@@ -4355,6 +4363,7 @@ impl DisplayListBuilder {
           .iter()
           .find_map(|s| self.decode_image(s.url, style_for_image, false))
         {
+          let clip_contents = Self::clip_replaced_contents(style_for_image);
           let (content_rect, clip_radii) = self.replaced_content_rect_and_radii(rect, style_for_image);
           let (dest_x, dest_y, dest_w, dest_h) = {
             let (fit, position, font_size) = if let Some(style) = fragment.style.as_deref() {
@@ -4378,19 +4387,23 @@ impl DisplayListBuilder {
 
           let dest_rect =
             Rect::from_xywh(content_rect.x() + dest_x, content_rect.y() + dest_y, dest_w, dest_h);
-          self.list.push(DisplayItem::PushClip(ClipItem {
-            shape: ClipShape::Rect {
-              rect: content_rect,
-              radii: Some(clip_radii),
-            },
-          }));
+          if clip_contents {
+            self.list.push(DisplayItem::PushClip(ClipItem {
+              shape: ClipShape::Rect {
+                rect: content_rect,
+                radii: Some(clip_radii),
+              },
+            }));
+          }
           self.list.push(DisplayItem::Image(ImageItem {
             dest_rect,
             image,
             filter_quality: Self::image_filter_quality(fragment.style.as_deref()),
             src_rect: None,
           }));
-          self.list.push(DisplayItem::PopClip);
+          if clip_contents {
+            self.list.push(DisplayItem::PopClip);
+          }
           return;
         }
 
@@ -7185,6 +7198,7 @@ impl DisplayListBuilder {
       .map(|s| s.object_position)
       .unwrap_or_else(default_object_position);
 
+    let clip_contents = Self::clip_replaced_contents(style);
     let (content_rect, clip_radii) = self.replaced_content_rect_and_radii(rect, style);
     let (dest_x, dest_y, dest_w, dest_h) = match compute_object_fit(
       fit,
@@ -7268,19 +7282,23 @@ impl DisplayListBuilder {
         .lock()
         .unwrap_or_else(|e| e.into_inner());
       if let Some(image) = decoded_cache.get(&cache_key) {
-        self.list.push(DisplayItem::PushClip(ClipItem {
-          shape: ClipShape::Rect {
-            rect: content_rect,
-            radii: Some(clip_radii),
-          },
-        }));
+        if clip_contents {
+          self.list.push(DisplayItem::PushClip(ClipItem {
+            shape: ClipShape::Rect {
+              rect: content_rect,
+              radii: Some(clip_radii),
+            },
+          }));
+        }
         self.list.push(DisplayItem::Image(ImageItem {
           dest_rect,
           image,
           filter_quality: Self::image_filter_quality(style),
           src_rect: None,
         }));
-        self.list.push(DisplayItem::PopClip);
+        if clip_contents {
+          self.list.push(DisplayItem::PopClip);
+        }
         return true;
       }
     }
@@ -7321,19 +7339,23 @@ impl DisplayListBuilder {
       .lock()
       .unwrap_or_else(|e| e.into_inner());
     if let Some(existing) = decoded_cache.get(&cache_key) {
-      self.list.push(DisplayItem::PushClip(ClipItem {
-        shape: ClipShape::Rect {
-          rect: content_rect,
-          radii: Some(clip_radii),
-        },
-      }));
+      if clip_contents {
+        self.list.push(DisplayItem::PushClip(ClipItem {
+          shape: ClipShape::Rect {
+            rect: content_rect,
+            radii: Some(clip_radii),
+          },
+        }));
+      }
       self.list.push(DisplayItem::Image(ImageItem {
         dest_rect,
         image: existing,
         filter_quality: Self::image_filter_quality(style),
         src_rect: None,
       }));
-      self.list.push(DisplayItem::PopClip);
+      if clip_contents {
+        self.list.push(DisplayItem::PopClip);
+      }
       if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), decode_timer) {
         breakdown.record_image_decode(start.elapsed());
       }
@@ -7341,19 +7363,23 @@ impl DisplayListBuilder {
     }
     decoded_cache.insert(cache_key, image_data.clone());
 
-    self.list.push(DisplayItem::PushClip(ClipItem {
-      shape: ClipShape::Rect {
-        rect: content_rect,
-        radii: Some(clip_radii),
-      },
-    }));
+    if clip_contents {
+      self.list.push(DisplayItem::PushClip(ClipItem {
+        shape: ClipShape::Rect {
+          rect: content_rect,
+          radii: Some(clip_radii),
+        },
+      }));
+    }
     self.list.push(DisplayItem::Image(ImageItem {
       dest_rect,
       image: image_data,
       filter_quality: Self::image_filter_quality(style),
       src_rect: None,
     }));
-    self.list.push(DisplayItem::PopClip);
+    if clip_contents {
+      self.list.push(DisplayItem::PopClip);
+    }
     if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), decode_timer) {
       breakdown.record_image_decode(start.elapsed());
     }
@@ -9388,6 +9414,147 @@ mod tests {
     assert!((img.dest_rect.height() - 100.0).abs() < 0.1);
     assert!((img.dest_rect.x() - 50.0).abs() < 0.1);
     assert!((img.dest_rect.y() - 0.0).abs() < 0.1);
+  }
+
+  #[test]
+  fn replaced_object_fit_uses_content_box_and_clips_when_overflow_hidden() {
+    let mut style = ComputedStyle::default();
+    style.display = Display::Inline;
+    style.object_fit = crate::style::types::ObjectFit::Fill;
+    style.overflow_x = Overflow::Hidden;
+    style.overflow_y = Overflow::Hidden;
+    style.padding_top = Length::px(10.0);
+    style.padding_right = Length::px(10.0);
+    style.padding_bottom = Length::px(10.0);
+    style.padding_left = Length::px(10.0);
+    let radius = crate::style::types::BorderCornerRadius::uniform(Length::px(20.0));
+    style.border_top_left_radius = radius;
+    style.border_top_right_radius = radius;
+    style.border_bottom_right_radius = radius;
+    style.border_bottom_left_radius = radius;
+
+    let fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      FragmentContent::Replaced {
+        box_id: None,
+        replaced_type: ReplacedType::Image {
+          src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
+          alt: None,
+          crossorigin: CrossOriginAttribute::None,
+          sizes: None,
+          srcset: Vec::new(),
+          picture_sources: Vec::new(),
+        },
+      },
+      vec![],
+      Arc::new(style),
+    );
+
+    let builder = DisplayListBuilder::with_image_cache(ImageCache::new());
+    let list = builder.build(&fragment);
+
+    let img_idx = list
+      .items()
+      .iter()
+      .position(|item| matches!(item, DisplayItem::Image(_)))
+      .expect("Expected image item");
+    let img = match &list.items()[img_idx] {
+      DisplayItem::Image(img) => img,
+      _ => unreachable!(),
+    };
+
+    let content_rect = Rect::from_xywh(10.0, 10.0, 80.0, 80.0);
+    assert_eq!(img.dest_rect, content_rect);
+
+    let content_clip_idx = list
+      .items()
+      .iter()
+      .position(|item| match item {
+        DisplayItem::PushClip(clip) => match &clip.shape {
+          ClipShape::Rect { rect, radii } => *rect == content_rect && radii.is_some(),
+          _ => false,
+        },
+        _ => false,
+      })
+      .expect("Expected content-box clip around replaced contents");
+    assert!(
+      content_clip_idx < img_idx,
+      "content clip should be pushed before the image"
+    );
+
+    let clip_radii = match &list.items()[content_clip_idx] {
+      DisplayItem::PushClip(clip) => match &clip.shape {
+        ClipShape::Rect { rect, radii } if *rect == content_rect => *radii,
+        _ => None,
+      },
+      _ => None,
+    };
+    assert_eq!(clip_radii, Some(BorderRadii::uniform(10.0)));
+
+    assert!(
+      list
+        .items()
+        .iter()
+        .skip(img_idx + 1)
+        .any(|item| matches!(item, DisplayItem::PopClip)),
+      "expected clip pop after the image"
+    );
+  }
+
+  #[test]
+  fn replaced_object_fit_does_not_clip_when_overflow_visible() {
+    let mut style = ComputedStyle::default();
+    style.display = Display::Inline;
+    style.object_fit = crate::style::types::ObjectFit::Fill;
+    style.overflow_x = Overflow::Visible;
+    style.overflow_y = Overflow::Visible;
+    style.padding_top = Length::px(10.0);
+    style.padding_right = Length::px(10.0);
+    style.padding_bottom = Length::px(10.0);
+    style.padding_left = Length::px(10.0);
+    let radius = crate::style::types::BorderCornerRadius::uniform(Length::px(20.0));
+    style.border_top_left_radius = radius;
+    style.border_top_right_radius = radius;
+    style.border_bottom_right_radius = radius;
+    style.border_bottom_left_radius = radius;
+
+    let fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      FragmentContent::Replaced {
+        box_id: None,
+        replaced_type: ReplacedType::Image {
+          src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%221%22%3E%3C/svg%3E".to_string(),
+          alt: None,
+          crossorigin: CrossOriginAttribute::None,
+          sizes: None,
+          srcset: Vec::new(),
+          picture_sources: Vec::new(),
+        },
+      },
+      vec![],
+      Arc::new(style),
+    );
+
+    let builder = DisplayListBuilder::with_image_cache(ImageCache::new());
+    let list = builder.build(&fragment);
+
+    let img = list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::Image(img) => Some(img),
+        _ => None,
+      })
+      .expect("Expected image item");
+    assert_eq!(img.dest_rect, Rect::from_xywh(10.0, 10.0, 80.0, 80.0));
+
+    assert!(
+      !list
+        .items()
+        .iter()
+        .any(|item| matches!(item, DisplayItem::PushClip(_))),
+      "expected no replaced-content clip when overflow is visible"
+    );
   }
 
   #[test]

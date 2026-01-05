@@ -321,6 +321,11 @@ code, kbd, samp, tt {
     font-family: monospace;
 }
 
+/* Replaced elements */
+img, svg {
+    overflow: clip;
+}
+
 /* Form elements */
 input, textarea, select, button {
     display: inline-block;
