@@ -55,6 +55,7 @@ use crate::error::{RenderStage, Result};
 use crate::render_control::{active_deadline, check_active_periodic};
 use crate::style::display::Display;
 use crate::style::display::FormattingContextType;
+use crate::style::position::Position;
 use crate::style::types::CaptionSide;
 use crate::style::ComputedStyle;
 use crate::tree::anonymous::inherited_style;
@@ -99,6 +100,11 @@ impl Drop for FixupCounterGuard {
 const TABLE_FIXUP_DEADLINE_STRIDE: usize = 256;
 
 impl TableStructureFixer {
+  fn is_passthrough_child(box_node: &BoxNode) -> bool {
+    box_node.style.running_position.is_some()
+      || matches!(box_node.style.position, Position::Absolute | Position::Fixed)
+  }
+
   /// Fixes up a table box tree, including caption wrappers.
   ///
   /// Takes a box tree that may have incomplete table structure
@@ -407,6 +413,8 @@ impl TableStructureFixer {
     for child in children {
       if Self::is_table_cell(child) {
         return true;
+      } else if Self::is_passthrough_child(child) {
+        continue;
       } else if Self::is_table_row_group(child) {
         if Self::row_group_needs_cell_fixup(child) {
           return true;
@@ -434,6 +442,8 @@ impl TableStructureFixer {
         if Self::row_needs_cell_fixup(child) {
           return true;
         }
+      } else if Self::is_passthrough_child(child) || Self::is_ignorable_table_whitespace(child) {
+        continue;
       } else {
         return true;
       }
@@ -443,7 +453,11 @@ impl TableStructureFixer {
   }
 
   fn row_needs_cell_fixup(row: &BoxNode) -> bool {
-    row.children.iter().any(|child| !Self::is_table_cell(child))
+    row.children.iter().any(|child| {
+      !Self::is_table_cell(child)
+        && !Self::is_passthrough_child(child)
+        && !Self::is_ignorable_table_whitespace(child)
+    })
   }
 
   /// Fixes children to ensure cells are in rows
@@ -466,6 +480,17 @@ impl TableStructureFixer {
       if Self::is_table_cell(&child) {
         // Accumulate loose cells
         loose_cells.push(child);
+      } else if Self::is_passthrough_child(&child) {
+        // Out-of-flow positioned/running elements should not participate in anonymous table box
+        // generation. Flush any pending loose cells first so we preserve DOM order.
+        if !loose_cells.is_empty() {
+          let style = anonymous_row_style
+            .get_or_insert_with(|| Self::inherited_table_style(parent_style, Display::TableRow));
+          let anon_row =
+            Self::create_anonymous_row_with_style(std::mem::take(&mut loose_cells), style.clone());
+          result.push(anon_row);
+        }
+        result.push(child);
       } else if Self::is_table_row_group(&child) {
         // Flush loose cells first
         if !loose_cells.is_empty() {
@@ -545,6 +570,15 @@ impl TableStructureFixer {
       )?;
       if Self::is_table_cell(&child) {
         loose_cells.push(child);
+      } else if Self::is_passthrough_child(&child) {
+        if !loose_cells.is_empty() {
+          let style = anonymous_row_style
+            .get_or_insert_with(|| Self::inherited_table_style(&group.style, Display::TableRow));
+          let anon_row =
+            Self::create_anonymous_row_with_style(std::mem::take(&mut loose_cells), style.clone());
+          result.push(anon_row);
+        }
+        result.push(child);
       } else if Self::is_table_row(&child) {
         if !loose_cells.is_empty() {
           let style = anonymous_row_style
@@ -608,6 +642,14 @@ impl TableStructureFixer {
             anonymous_cell_style.clone(),
           );
           fixed_children.push(anon_cell);
+        }
+        fixed_children.push(child);
+      } else if Self::is_passthrough_child(&child) {
+        if !pending_non_cells.is_empty() {
+          fixed_children.push(Self::create_anonymous_cell_with_style(
+            std::mem::take(&mut pending_non_cells),
+            anonymous_cell_style.clone(),
+          ));
         }
         fixed_children.push(child);
       } else {
@@ -894,15 +936,23 @@ impl TableStructureFixer {
     for child in &table.children {
       if Self::is_table_row_group(child) {
         for row_child in &child.children {
+          if Self::is_passthrough_child(row_child) || Self::is_ignorable_table_whitespace(row_child)
+          {
+            continue;
+          }
           if !Self::is_table_row(row_child) {
             return false;
           }
 
           // Check that all row children are cells
           for cell_child in &row_child.children {
-            if !Self::is_table_cell(cell_child) {
-              return false;
+            if Self::is_table_cell(cell_child)
+              || Self::is_passthrough_child(cell_child)
+              || Self::is_ignorable_table_whitespace(cell_child)
+            {
+              continue;
             }
+            return false;
           }
         }
       } else if Self::is_table_row(child) {
@@ -1395,6 +1445,62 @@ mod tests {
       .children
       .iter()
       .any(TableStructureFixer::is_table_row_group));
+  }
+
+  #[test]
+  fn test_internals_fixup_preserves_running_and_positioned_children() {
+    // `position:absolute|fixed` and running elements are out-of-flow relative to the table grid.
+    // They should remain direct children of the table box so layout can handle them separately.
+    let mut running_style = ComputedStyle::default();
+    running_style.display = Display::Block;
+    running_style.running_position = Some("header".to_string());
+    let running = BoxNode::new_block(Arc::new(running_style), FormattingContextType::Block, vec![]);
+
+    let mut abs_style = ComputedStyle::default();
+    abs_style.display = Display::Block;
+    abs_style.position = Position::Absolute;
+    let positioned = BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+
+    // Include a loose cell so internals fixup runs cell->row fixup as well.
+    let cell = cell_box(vec![]);
+    let table = table_box(vec![running, cell, positioned]);
+
+    let fixed = TableStructureFixer::fixup_table_internals(table).unwrap();
+
+    assert!(
+      fixed
+        .children
+        .iter()
+        .any(|child| child.style.running_position.is_some()),
+      "expected running child to remain at table level after fixup"
+    );
+    assert!(
+      fixed
+        .children
+        .iter()
+        .any(|child| matches!(child.style.position, Position::Absolute | Position::Fixed)),
+      "expected positioned child to remain at table level after fixup"
+    );
+
+    let row_group = fixed
+      .children
+      .iter()
+      .find(|child| TableStructureFixer::is_table_row_group(child))
+      .expect("expected loose cell to be wrapped in a row group");
+
+    fn contains_passthrough(node: &BoxNode) -> bool {
+      if TableStructureFixer::is_passthrough_child(node) {
+        return true;
+      }
+      node.children.iter().any(contains_passthrough)
+    }
+
+    assert!(
+      !contains_passthrough(row_group),
+      "running/positioned children should not be wrapped into the table grid"
+    );
+
+    assert!(TableStructureFixer::validate_table_structure(&fixed));
   }
 
   // ==================== Empty Table Tests ====================

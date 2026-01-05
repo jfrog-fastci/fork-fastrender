@@ -16218,14 +16218,6 @@ mod tests {
       vec![cell],
     );
 
-    let mut row_group_style = ComputedStyle::default();
-    row_group_style.display = Display::TableRowGroup;
-    let row_group = BoxNode::new_block(
-      Arc::new(row_group_style),
-      FormattingContextType::Block,
-      vec![row],
-    );
-
     let mut running_style = ComputedStyle::default();
     running_style.display = Display::Block;
     running_style.running_position = Some("header".to_string());
@@ -16257,7 +16249,7 @@ mod tests {
     let table = BoxNode::new_block(
       Arc::new(table_style),
       FormattingContextType::Table,
-      vec![running, caption, row_group, positioned],
+      vec![running, caption, row, positioned],
     );
 
     let tfc = TableFormattingContext::new();
