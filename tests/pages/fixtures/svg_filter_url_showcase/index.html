@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>SVG filter url() showcase</title>
+    <link rel="stylesheet" href="../assets/styles/base.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header style="margin-bottom: 12px">
+      <span class="pill">SVG filters</span>
+      <h1>CSS <code>filter: url(...)</code> end-to-end</h1>
+      <p class="muted">
+        Regression fixture for <code>url(#id)</code> resolution, data URL SVG filter documents, and
+        <code>filter</code> lists that begin with <code>url(...)</code> and include additional filter
+        functions.
+      </p>
+    </header>
+
+    <section class="grid showcase">
+      <div class="card">
+        <strong>A) Control</strong>
+        <p class="muted">No filter applied.</p>
+        <div class="mat" aria-hidden="true">
+          <div class="swatch">
+            <div class="quad red"></div>
+            <div class="quad green"></div>
+            <div class="quad blue"></div>
+            <div class="quad white"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <strong>B) Inline SVG defs</strong>
+        <p class="muted"><code>filter: url(#recolor) opacity(0.75)</code></p>
+        <div class="mat" aria-hidden="true">
+          <div class="swatch inline">
+            <div class="quad red"></div>
+            <div class="quad green"></div>
+            <div class="quad blue"></div>
+            <div class="quad white"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <strong>C) Data URL SVG document</strong>
+        <p class="muted"><code>filter: url(data:image/svg+xml...#filter) opacity(0.75)</code></p>
+        <div class="mat" aria-hidden="true">
+          <div class="swatch data">
+            <div class="quad red"></div>
+            <div class="quad green"></div>
+            <div class="quad blue"></div>
+            <div class="quad white"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Keep the defs in the DOM (not display:none) so collect_svg_filter_defs can find them. -->
+    <svg class="defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <filter id="recolor" color-interpolation-filters="sRGB">
+        <feComponentTransfer>
+          <feFuncR type="table" tableValues="1 0"></feFuncR>
+          <feFuncG type="table" tableValues="1 0"></feFuncG>
+          <feFuncB type="table" tableValues="1 0"></feFuncB>
+        </feComponentTransfer>
+      </filter>
+    </svg>
+  </body>
+</html>
+

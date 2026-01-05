@@ -1,0 +1,73 @@
+:root {
+  --frame: #111827;
+}
+
+.showcase {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: start;
+}
+
+.mat {
+  margin-top: 12px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid #d1d5db;
+  background:
+    linear-gradient(90deg, rgba(17, 24, 39, 0.08) 1px, transparent 1px) 0 0 / 18px 18px,
+    linear-gradient(0deg, rgba(17, 24, 39, 0.08) 1px, transparent 1px) 0 0 / 18px 18px,
+    linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+}
+
+.swatch {
+  position: relative;
+  width: 240px;
+  height: 240px;
+  border: 2px solid var(--frame);
+  border-radius: 12px;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+
+.swatch::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, transparent calc(50% - 1px), rgba(17, 24, 39, 0.65) calc(50% - 1px), rgba(17, 24, 39, 0.65) calc(50% + 1px), transparent calc(50% + 1px)),
+    linear-gradient(0deg, transparent calc(50% - 1px), rgba(17, 24, 39, 0.65) calc(50% - 1px), rgba(17, 24, 39, 0.65) calc(50% + 1px), transparent calc(50% + 1px));
+  pointer-events: none;
+}
+
+.quad.red {
+  background: #ef4444;
+}
+
+.quad.green {
+  background: #22c55e;
+}
+
+.quad.blue {
+  background: #3b82f6;
+}
+
+.quad.white {
+  background: #f8fafc;
+}
+
+.swatch.inline {
+  filter: url(#recolor) opacity(0.75);
+}
+
+.swatch.data {
+  filter: url('data:image/svg+xml;charset=utf-8,<svg xmlns="http://www.w3.org/2000/svg"><filter id="filter" color-interpolation-filters="sRGB"><feComponentTransfer><feFuncR type="table" tableValues="1 0"></feFuncR><feFuncG type="table" tableValues="1 0"></feFuncG><feFuncB type="table" tableValues="1 0"></feFuncB></feComponentTransfer></filter></svg>#filter') opacity(0.75);
+}
+
+.defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+

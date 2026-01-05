@@ -134,6 +134,11 @@ const PAGE_FIXTURES: &[PageFixture] = &[
     shots: DEFAULT_SHOTS,
   },
   PageFixture {
+    name: "svg_filter_url_showcase",
+    html: "svg_filter_url_showcase/index.html",
+    shots: DEFAULT_SHOTS,
+  },
+  PageFixture {
     name: "writing_modes",
     html: "writing_modes/index.html",
     shots: DEFAULT_SHOTS,
