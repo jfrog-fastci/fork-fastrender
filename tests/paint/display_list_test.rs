@@ -246,13 +246,14 @@ fn background_image_set_chooses_best_density_for_display_list() {
     .items()
     .iter()
     .find_map(|item| match item {
-      DisplayItem::Image(img) => Some(img),
+      DisplayItem::Image(img) => Some(&img.image),
+      DisplayItem::ImagePattern(img) => Some(&img.image),
       _ => None,
     })
     .expect("background image to emit an Image item");
 
-  assert_eq!(image_item.image.width, 4);
-  assert_eq!(image_item.image.height, 4);
+  assert_eq!(image_item.width, 4);
+  assert_eq!(image_item.height, 4);
 }
 
 #[test]
@@ -532,14 +533,15 @@ fn display_list_background_layers_paint_top_to_bottom() {
     .items()
     .iter()
     .filter_map(|i| match i {
-      DisplayItem::LinearGradient(item) => Some(item),
+      DisplayItem::LinearGradient(item) => Some((item.rect, item.stops.as_slice())),
+      DisplayItem::LinearGradientPattern(item) => Some((item.dest_rect, item.stops.as_slice())),
       _ => None,
     })
     .collect();
   assert_eq!(gradients.len(), 2, "expected two background gradient items");
   // First emitted gradient should be the bottom layer (blue), second the top layer (green overlay).
-  let bottom_color = gradients[0].stops[0].color;
-  let top_color = gradients[1].stops[0].color;
+  let bottom_color = gradients[0].1[0].color;
+  let top_color = gradients[1].1[0].color;
   assert_eq!(bottom_color, Rgba::BLUE);
   assert_eq!(top_color, Rgba::from_rgba8(0, 255, 0, 128));
 }
@@ -588,14 +590,15 @@ fn display_list_background_layers_use_per_layer_clip() {
     .items()
     .iter()
     .filter_map(|i| match i {
-      DisplayItem::LinearGradient(item) => Some(item),
+      DisplayItem::LinearGradient(item) => Some(item.rect),
+      DisplayItem::LinearGradientPattern(item) => Some(item.dest_rect),
       _ => None,
     })
     .collect();
   assert_eq!(gradients.len(), 2, "expected two background gradient items");
   // Bottom layer should cover border box, top should be clipped to content box (20x20 minus 4px padding).
-  assert_eq!(gradients[0].rect, Rect::from_xywh(0.0, 0.0, 20.0, 20.0));
-  assert_eq!(gradients[1].rect, Rect::from_xywh(4.0, 4.0, 12.0, 12.0));
+  assert_eq!(gradients[0], Rect::from_xywh(0.0, 0.0, 20.0, 20.0));
+  assert_eq!(gradients[1], Rect::from_xywh(4.0, 4.0, 12.0, 12.0));
 }
 
 #[test]
@@ -1944,6 +1947,15 @@ fn paint_containment_clips_stacking_context() {
   style.border_right_width = Length::px(2.0);
   style.border_bottom_width = Length::px(2.0);
   style.border_left_width = Length::px(2.0);
+  // Border widths only contribute to the used geometry when the style is not `none`/`hidden`.
+  style.border_top_style = BorderStyle::Solid;
+  style.border_right_style = BorderStyle::Solid;
+  style.border_bottom_style = BorderStyle::Solid;
+  style.border_left_style = BorderStyle::Solid;
+  style.border_top_color = Rgba::BLACK;
+  style.border_right_color = Rgba::BLACK;
+  style.border_bottom_color = Rgba::BLACK;
+  style.border_left_color = Rgba::BLACK;
   let radius = BorderCornerRadius::uniform(Length::px(5.0));
   style.border_top_left_radius = radius;
   style.border_top_right_radius = radius;
@@ -1971,13 +1983,20 @@ fn paint_containment_clips_stacking_context() {
 
   assert!(
     clip_end > clip_start,
-    "clip should wrap the stacking context"
+    "clip push/pop should be ordered"
   );
   let stacking_idx = items
     .iter()
     .position(|item| matches!(item, DisplayItem::PushStackingContext(_)))
     .expect("stacking context should be present");
-  assert!(stacking_idx > clip_start && stacking_idx < clip_end);
+  let stacking_end = items
+    .iter()
+    .rposition(|item| matches!(item, DisplayItem::PopStackingContext))
+    .expect("stacking context should be popped");
+  assert!(
+    stacking_idx < clip_start && clip_end < stacking_end,
+    "paint containment clip should apply inside the stacking context"
+  );
 
   match &items[clip_start] {
     DisplayItem::PushClip(ClipItem {

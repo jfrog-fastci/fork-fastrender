@@ -621,7 +621,6 @@ fn test_draw_text_with_glyphs() {
     .collect();
 
   // Draw the glyphs
-  let glyphs = to_glyph_instances(run);
   canvas
     .draw_text(
       Point::new(10.0, 30.0),
@@ -667,7 +666,6 @@ fn test_draw_text_colored() {
     .copied()
     .map(FontVariation::from)
     .collect();
-  let glyphs = to_glyph_instances(run);
   canvas
     .draw_text(
       Point::new(10.0, 35.0),
@@ -715,7 +713,6 @@ fn test_draw_text_with_opacity() {
     .copied()
     .map(FontVariation::from)
     .collect();
-  let glyphs = to_glyph_instances(run);
   canvas
     .draw_text(
       Point::new(10.0, 35.0),
@@ -762,7 +759,6 @@ fn canvas_renders_color_fonts() {
     .collect();
 
   let mut canvas = Canvas::new(64, 64, Rgba::WHITE).unwrap();
-  let glyphs = to_glyph_instances(run);
   canvas
     .draw_text(
       Point::new(12.0, 48.0),
@@ -867,6 +863,9 @@ fn canvas_respects_font_palette() {
 
   let golden_path =
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/golden/font_palette_dark.png");
+  if std::env::var("UPDATE_GOLDEN").is_ok() {
+    std::fs::write(&golden_path, &palette_png).expect("write palette golden");
+  }
   let expected_png = std::fs::read(&golden_path).expect("read palette golden");
   let expected_image = decode_png(&expected_png).expect("decode palette golden");
 

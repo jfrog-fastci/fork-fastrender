@@ -28,9 +28,10 @@ fn paint_containment_clips_descendants_to_padding_box() {
   child_style.background_color = Rgba::RED;
   let child_style = Arc::new(child_style);
 
-  // Child overflows the parent's padding box in all directions.
+  // Child overflows the parent's padding box in all directions so we can validate that paint
+  // containment clips descendants at the padding edge (not the content edge).
   let child =
-    FragmentNode::new_block_styled(Rect::from_xywh(0.0, 0.0, 6.0, 6.0), vec![], child_style);
+    FragmentNode::new_block_styled(Rect::from_xywh(-1.0, -1.0, 8.0, 8.0), vec![], child_style);
   let parent = FragmentNode::new_block_styled(
     Rect::from_xywh(1.0, 1.0, 6.0, 6.0),
     vec![child],
@@ -44,8 +45,8 @@ fn paint_containment_clips_descendants_to_padding_box() {
     .render(&list)
     .unwrap();
 
-  // Paint containment clips at the padding edge: with 1px padding the visible area starts at
-  // (2,2) with size 4x4. Outside pixels should remain white.
-  assert_eq!(pixel(&pixmap, 6, 3), (255, 255, 255, 255));
-  assert_eq!(pixel(&pixmap, 3, 3), (255, 0, 0, 255));
+  // Paint containment clips at the padding edge: with 1px padding the padding box is still the
+  // border box (no borders), so descendants can paint into padding but not outside the element.
+  assert_eq!(pixel(&pixmap, 0, 3), (255, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 1, 3), (255, 0, 0, 255));
 }
