@@ -32,17 +32,17 @@ use crate::style::types::BackgroundSize;
 use crate::style::types::BackgroundSizeComponent;
 use crate::style::types::BackgroundSizeKeyword;
 use crate::style::types::BasicShape;
-use crate::style::types::BorderStyle;
 use crate::style::types::BorderCornerRadius;
-use crate::style::types::ClipPath;
+use crate::style::types::BorderStyle;
 use crate::style::types::ClipComponent;
-use crate::style::types::ClipRect;
+use crate::style::types::ClipPath;
 use crate::style::types::ClipRadii;
+use crate::style::types::ClipRect;
 use crate::style::types::FilterColor;
 use crate::style::types::FilterFunction;
-use crate::style::types::Overflow;
 use crate::style::types::OutlineColor;
 use crate::style::types::OutlineStyle;
+use crate::style::types::Overflow;
 use crate::style::types::RangeOffset;
 use crate::style::types::ReferenceBox;
 use crate::style::types::ScrollFunctionTimeline;
@@ -59,7 +59,7 @@ use crate::style::types::ViewTimeline;
 use crate::style::types::ViewTimelineInset;
 use crate::style::types::ViewTimelinePhase;
 use crate::style::types::WritingMode;
-use crate::style::values::Length;
+use crate::style::values::{CustomPropertyTypedValue, CustomPropertyValue, Length, LengthUnit};
 use crate::style::var_resolution::{resolve_var_for_property, VarResolutionResult};
 use crate::style::ComputedStyle;
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
@@ -67,6 +67,7 @@ use rustc_hash::FxHashSet;
 use std::borrow::Cow;
 use std::mem::discriminant;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use crate::style::color::Rgba;
 use crate::style::computed::Visibility;
@@ -116,6 +117,12 @@ impl AnimationResolveContext {
   }
 }
 
+static DEFAULT_PARENT_STYLE: OnceLock<ComputedStyle> = OnceLock::new();
+
+fn default_parent_style() -> &'static ComputedStyle {
+  DEFAULT_PARENT_STYLE.get_or_init(ComputedStyle::default)
+}
+
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
   a + (b - a) * t
 }
@@ -129,6 +136,49 @@ fn lerp_color(a: Rgba, b: Rgba, t: f32) -> Rgba {
     lerp_chan(a.b, b.b),
     lerp(a.a, b.a, t),
   )
+}
+
+fn interpolate_custom_property(
+  from: &CustomPropertyValue,
+  to: &CustomPropertyValue,
+  t: f32,
+  base_style: &ComputedStyle,
+  ctx: &AnimationResolveContext,
+) -> Option<CustomPropertyValue> {
+  let from_typed = from.typed.as_ref()?;
+  let to_typed = to.typed.as_ref()?;
+
+  let typed = match (from_typed, to_typed) {
+    (CustomPropertyTypedValue::Number(a), CustomPropertyTypedValue::Number(b)) => {
+      CustomPropertyTypedValue::Number(lerp(*a, *b, t))
+    }
+    (CustomPropertyTypedValue::Percentage(a), CustomPropertyTypedValue::Percentage(b)) => {
+      CustomPropertyTypedValue::Percentage(lerp(*a, *b, t))
+    }
+    (CustomPropertyTypedValue::Angle(a), CustomPropertyTypedValue::Angle(b)) => {
+      CustomPropertyTypedValue::Angle(lerp(*a, *b, t))
+    }
+    (CustomPropertyTypedValue::Color(a), CustomPropertyTypedValue::Color(b)) => {
+      let from_rgba = a.to_rgba(base_style.color);
+      let to_rgba = b.to_rgba(base_style.color);
+      let rgba = lerp_color(from_rgba, to_rgba, t);
+      CustomPropertyTypedValue::Color(crate::style::color::Color::Rgba(rgba))
+    }
+    (CustomPropertyTypedValue::Length(a), CustomPropertyTypedValue::Length(b)) => {
+      let invalid_percent = |len: &Length| {
+        len.unit == LengthUnit::Percent || len.calc.is_some_and(|calc| calc.has_percentage())
+      };
+      if invalid_percent(a) || invalid_percent(b) {
+        return None;
+      }
+      let a_px = resolve_length_px(a, None, base_style, ctx);
+      let b_px = resolve_length_px(b, None, base_style, ctx);
+      CustomPropertyTypedValue::Length(Length::px(lerp(a_px, b_px, t)))
+    }
+    _ => return None,
+  };
+
+  Some(CustomPropertyValue::new(typed.to_css(), Some(typed)))
 }
 
 fn resolve_length_px(
@@ -1103,11 +1153,7 @@ fn interpolate_color(a: &AnimatedValue, b: &AnimatedValue, t: f32) -> Option<Ani
   }
 }
 
-fn interpolate_length_value(
-  a: &AnimatedValue,
-  b: &AnimatedValue,
-  t: f32,
-) -> Option<AnimatedValue> {
+fn interpolate_length_value(a: &AnimatedValue, b: &AnimatedValue, t: f32) -> Option<AnimatedValue> {
   match (a, b) {
     (AnimatedValue::Length(la), AnimatedValue::Length(lb)) => Some(AnimatedValue::Length(
       Length::px(lerp(la.to_px(), lb.to_px(), t)),
@@ -1378,7 +1424,10 @@ fn resolve_clip_component(
   }
 }
 
-fn extract_clip_rect(style: &ComputedStyle, ctx: &AnimationResolveContext) -> Option<AnimatedValue> {
+fn extract_clip_rect(
+  style: &ComputedStyle,
+  ctx: &AnimationResolveContext,
+) -> Option<AnimatedValue> {
   let rect = style.clip.as_ref().map(|rect| {
     let width = ctx.element_size.width;
     let height = ctx.element_size.height;
@@ -1392,7 +1441,11 @@ fn extract_clip_rect(style: &ComputedStyle, ctx: &AnimationResolveContext) -> Op
   Some(AnimatedValue::ClipRect(rect))
 }
 
-fn interpolate_clip_component(a: &ClipComponent, b: &ClipComponent, t: f32) -> Option<ClipComponent> {
+fn interpolate_clip_component(
+  a: &ClipComponent,
+  b: &ClipComponent,
+  t: f32,
+) -> Option<ClipComponent> {
   match (a, b) {
     (ClipComponent::Auto, ClipComponent::Auto) => Some(ClipComponent::Auto),
     (ClipComponent::Length(a), ClipComponent::Length(b)) => Some(ClipComponent::Length(
@@ -1523,7 +1576,10 @@ fn apply_background_position(style: &mut ComputedStyle, value: &AnimatedValue) {
   }
 }
 
-fn extract_mask_position(style: &ComputedStyle, ctx: &AnimationResolveContext) -> Option<AnimatedValue> {
+fn extract_mask_position(
+  style: &ComputedStyle,
+  ctx: &AnimationResolveContext,
+) -> Option<AnimatedValue> {
   let resolved = resolve_background_positions(&style.mask_positions, style, ctx);
   Some(AnimatedValue::BackgroundPosition(
     resolved_positions_to_background(&resolved),
@@ -1570,7 +1626,10 @@ fn apply_background_size(style: &mut ComputedStyle, value: &AnimatedValue) {
   }
 }
 
-fn extract_mask_size(style: &ComputedStyle, ctx: &AnimationResolveContext) -> Option<AnimatedValue> {
+fn extract_mask_size(
+  style: &ComputedStyle,
+  ctx: &AnimationResolveContext,
+) -> Option<AnimatedValue> {
   let resolved = resolve_background_sizes(&style.mask_sizes, style, ctx);
   Some(AnimatedValue::BackgroundSize(resolved_sizes_to_background(
     &resolved,
@@ -1884,9 +1943,24 @@ fn apply_border_left_color(style: &mut ComputedStyle, value: &AnimatedValue) {
 fn resolve_border_widths(style: &ComputedStyle, ctx: &AnimationResolveContext) -> [Length; 4] {
   [
     Length::px(resolve_length_px(&style.border_top_width, None, style, ctx)),
-    Length::px(resolve_length_px(&style.border_right_width, None, style, ctx)),
-    Length::px(resolve_length_px(&style.border_bottom_width, None, style, ctx)),
-    Length::px(resolve_length_px(&style.border_left_width, None, style, ctx)),
+    Length::px(resolve_length_px(
+      &style.border_right_width,
+      None,
+      style,
+      ctx,
+    )),
+    Length::px(resolve_length_px(
+      &style.border_bottom_width,
+      None,
+      style,
+      ctx,
+    )),
+    Length::px(resolve_length_px(
+      &style.border_left_width,
+      None,
+      style,
+      ctx,
+    )),
   ]
 }
 
@@ -1894,7 +1968,9 @@ fn extract_border_width(
   style: &ComputedStyle,
   ctx: &AnimationResolveContext,
 ) -> Option<AnimatedValue> {
-  Some(AnimatedValue::BorderWidth(resolve_border_widths(style, ctx)))
+  Some(AnimatedValue::BorderWidth(resolve_border_widths(
+    style, ctx,
+  )))
 }
 
 fn interpolate_border_width_value(
@@ -2122,12 +2198,16 @@ fn interpolate_outline_color_value(
   t: f32,
 ) -> Option<AnimatedValue> {
   match (a, b) {
-    (AnimatedValue::OutlineColor(OutlineColor::Color(ca)), AnimatedValue::OutlineColor(OutlineColor::Color(cb))) => Some(AnimatedValue::OutlineColor(
-      OutlineColor::Color(lerp_color(*ca, *cb, t)),
-    )),
-    (AnimatedValue::OutlineColor(OutlineColor::Invert), AnimatedValue::OutlineColor(OutlineColor::Invert)) => {
-      Some(AnimatedValue::OutlineColor(OutlineColor::Invert))
-    }
+    (
+      AnimatedValue::OutlineColor(OutlineColor::Color(ca)),
+      AnimatedValue::OutlineColor(OutlineColor::Color(cb)),
+    ) => Some(AnimatedValue::OutlineColor(OutlineColor::Color(
+      lerp_color(*ca, *cb, t),
+    ))),
+    (
+      AnimatedValue::OutlineColor(OutlineColor::Invert),
+      AnimatedValue::OutlineColor(OutlineColor::Invert),
+    ) => Some(AnimatedValue::OutlineColor(OutlineColor::Invert)),
     _ => None,
   }
 }
@@ -2157,9 +2237,9 @@ fn interpolate_outline_style_value(
   t: f32,
 ) -> Option<AnimatedValue> {
   match (a, b) {
-    (AnimatedValue::OutlineStyle(sa), AnimatedValue::OutlineStyle(sb)) => Some(
-      AnimatedValue::OutlineStyle(if t < 0.5 { *sa } else { *sb }),
-    ),
+    (AnimatedValue::OutlineStyle(sa), AnimatedValue::OutlineStyle(sb)) => {
+      Some(AnimatedValue::OutlineStyle(if t < 0.5 { *sa } else { *sb }))
+    }
     _ => None,
   }
 }
@@ -3087,11 +3167,18 @@ pub fn sample_keyframes(
     element_size,
     &default_timing,
   )
+  .animated
 }
 
 fn parse_first_timing_function(value: &str) -> Option<TransitionTimingFunction> {
   let first = split_top_level_commas(value).into_iter().next()?;
   parse_transition_timing_function(&first)
+}
+
+#[derive(Default)]
+struct SampledKeyframes {
+  animated: HashMap<String, AnimatedValue>,
+  custom_properties: Vec<(Arc<str>, Option<CustomPropertyValue>)>,
 }
 
 fn sample_keyframes_with_default_timing(
@@ -3101,9 +3188,9 @@ fn sample_keyframes_with_default_timing(
   viewport: Size,
   element_size: Size,
   default_timing_function: &TransitionTimingFunction,
-) -> HashMap<String, AnimatedValue> {
+) -> SampledKeyframes {
   if rule.keyframes.is_empty() {
-    return HashMap::new();
+    return SampledKeyframes::default();
   }
   let mut frames: Vec<&Keyframe> = rule.keyframes.iter().collect();
   frames.sort_by(|a, b| {
@@ -3209,11 +3296,8 @@ fn sample_keyframes_with_default_timing(
   }
 
   let mut result = HashMap::new();
+  let mut custom_properties = Vec::new();
   for prop in properties {
-    let Some(interpolator) = interpolator_for(prop) else {
-      continue;
-    };
-
     let group_has_property = |group: &[&Keyframe]| {
       group.iter().any(|frame| {
         frame
@@ -3265,6 +3349,26 @@ fn sample_keyframes_with_default_timing(
       .map(|idx| &resolved_styles[idx])
       .unwrap_or(base_style);
 
+    if prop.starts_with("--") {
+      let from = from_style.custom_properties.get(prop);
+      let to = to_style.custom_properties.get(prop);
+
+      let interpolated = match (from, to) {
+        (Some(from), Some(to)) => interpolate_custom_property(from, to, eased_t, base_style, &ctx),
+        _ => None,
+      };
+      let sampled = interpolated.or_else(|| {
+        let chosen = if eased_t >= 0.5 { to } else { from };
+        chosen.cloned()
+      });
+      custom_properties.push((Arc::from(prop), sampled));
+      continue;
+    }
+
+    let Some(interpolator) = interpolator_for(prop) else {
+      continue;
+    };
+
     let Some(from_val) = (interpolator.extract)(from_style, &ctx) else {
       continue;
     };
@@ -3283,7 +3387,10 @@ fn sample_keyframes_with_default_timing(
     }
   }
 
-  result
+  SampledKeyframes {
+    animated: result,
+    custom_properties,
+  }
 }
 
 /// Applies animated property values to the computed style.
@@ -3754,6 +3861,7 @@ fn apply_animations_to_node_scoped(
   node: &mut FragmentNode,
   origin: Point,
   viewport: Rect,
+  parent_styles: Option<&ComputedStyle>,
   root_context: ScrollContainerContext,
   scroll_state: &ScrollState,
   keyframes: &HashMap<String, KeyframesRule>,
@@ -3847,7 +3955,10 @@ fn apply_animations_to_node_scoped(
       let ranges_list = &style_arc.animation_ranges;
 
       let mut animated = (*style_arc).clone();
+      let parent_styles = parent_styles.unwrap_or_else(|| default_parent_style());
       let mut changed = false;
+      let mut custom_properties_changed = false;
+      let mut applied_value_sets: Vec<HashMap<String, AnimatedValue>> = Vec::new();
 
       for (idx, name) in names.iter().enumerate() {
         let timeline_ref = pick(timelines_list, idx, AnimationTimeline::Auto);
@@ -3947,18 +4058,53 @@ fn apply_animations_to_node_scoped(
         if let Some(rule) = keyframes.get(name) {
           let element_size = Size::new(node.bounds.width(), node.bounds.height());
           let viewport_size = Size::new(viewport.width(), viewport.height());
-          let values = sample_keyframes_with_default_timing(
+          let sample = sample_keyframes_with_default_timing(
             rule,
             progress,
-            &*style_arc,
+            &animated,
             viewport_size,
             element_size,
             &timing,
           );
-          if !values.is_empty() {
-            apply_animated_properties(&mut animated, &values);
+
+          for (name, maybe_value) in sample.custom_properties {
+            match maybe_value {
+              Some(value) => {
+                let needs_update = animated
+                  .custom_properties
+                  .get(name.as_ref())
+                  .map(|existing| existing != &value)
+                  .unwrap_or(true);
+                if needs_update {
+                  animated.custom_properties.insert(name, value);
+                  custom_properties_changed = true;
+                  changed = true;
+                }
+              }
+              None => {
+                let key = name.as_ref();
+                if animated.custom_properties.contains_key(key) {
+                  animated.custom_properties.remove(key);
+                  custom_properties_changed = true;
+                  changed = true;
+                }
+              }
+            }
+          }
+
+          if !sample.animated.is_empty() {
+            apply_animated_properties(&mut animated, &sample.animated);
+            applied_value_sets.push(sample.animated);
             changed = true;
           }
+        }
+      }
+
+      if custom_properties_changed {
+        let viewport_size = Size::new(viewport.width(), viewport.height());
+        animated.recompute_var_dependent_properties(parent_styles, viewport_size);
+        for values in &applied_value_sets {
+          apply_animated_properties(&mut animated, values);
         }
       }
 
@@ -3973,12 +4119,14 @@ fn apply_animations_to_node_scoped(
     ancestor_scroll_containers.push(ctx);
   }
 
+  let parent_style = node.style.clone();
   for child in node.children_mut() {
     let child_offset = Point::new(origin.x + child.bounds.x(), origin.y + child.bounds.y());
     apply_animations_to_node_scoped(
       child,
       child_offset,
       viewport,
+      parent_style.as_deref(),
       root_context,
       scroll_state,
       keyframes,
@@ -3996,6 +4144,7 @@ fn apply_animations_to_node_scoped(
       Arc::make_mut(snapshot),
       snapshot_offset,
       viewport,
+      parent_style.as_deref(),
       root_context,
       scroll_state,
       keyframes,
@@ -4060,6 +4209,7 @@ pub fn apply_animations(
       &mut tree.root,
       root_offset,
       viewport,
+      None,
       root_context,
       scroll_state,
       &tree.keyframes,
@@ -4077,6 +4227,7 @@ pub fn apply_animations(
       frag,
       offset,
       viewport,
+      None,
       root_context,
       scroll_state,
       &tree.keyframes,
@@ -4272,7 +4423,9 @@ mod tests {
   use super::*;
   use crate::css::parser::parse_stylesheet;
   use crate::css::types::CssRule;
+  use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
   use crate::image_output::{encode_image, OutputFormat};
+  use crate::style::cascade::apply_styles;
   use crate::style::media::MediaContext;
   use crate::text::font_db::FontConfig;
   use crate::{FastRender, RenderOptions, ResourcePolicy};
@@ -4314,7 +4467,8 @@ mod tests {
       Size::new(800.0, 600.0),
       Size::new(100.0, 100.0),
       timing,
-    );
+    )
+    .animated;
     match values.get("opacity") {
       Some(AnimatedValue::Opacity(v)) => *v,
       other => panic!("expected opacity, got {other:?}"),
@@ -4862,6 +5016,60 @@ mod tests {
   }
 
   #[test]
+  fn apply_animations_recomputes_var_dependent_properties_after_animating_custom_properties() {
+    let sheet = parse_stylesheet(
+      r#"
+      @property --x {
+        syntax: "<number>";
+        inherits: false;
+        initial-value: 0;
+      }
+      #el {
+        width: calc(10px * var(--x));
+        animation: varAnim 1s linear;
+      }
+      @keyframes varAnim {
+        from { --x: 0; }
+        to { --x: 1; }
+      }
+      "#,
+    )
+    .unwrap();
+
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("id".to_string(), "el".to_string())],
+      },
+      children: vec![],
+    };
+    let styled = apply_styles(&dom, &sheet);
+    assert_eq!(styled.styles.width, Some(Length::px(0.0)));
+
+    let mut tree = FragmentTree::with_viewport(
+      FragmentNode::new_block_styled(
+        Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+        Vec::new(),
+        styled.styles.clone(),
+      ),
+      Size::new(100.0, 100.0),
+    );
+
+    for rule in sheet.collect_keyframes(&MediaContext::screen(100.0, 100.0)) {
+      tree.keyframes.insert(rule.name.clone(), rule);
+    }
+
+    apply_animations(
+      &mut tree,
+      &ScrollState::default(),
+      Some(Duration::from_millis(500)),
+    );
+    let style = tree.root.style.as_deref().expect("animated style");
+    assert_eq!(style.width, Some(Length::px(5.0)));
+  }
+
+  #[test]
   fn sample_keyframes_respects_keyframe_timing_function_for_following_interval() {
     let sheet = parse_stylesheet(
       "@keyframes step {\
@@ -4918,8 +5126,7 @@ mod tests {
   #[test]
   fn sample_keyframes_interpolates_filter_against_none_as_identity() {
     let sheet =
-      parse_stylesheet("@keyframes f { from { filter: url(#a); } to { filter: none; } }")
-        .unwrap();
+      parse_stylesheet("@keyframes f { from { filter: url(#a); } to { filter: none; } }").unwrap();
     let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
     let rule = &keyframes[0];
 
