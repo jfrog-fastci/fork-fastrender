@@ -94,55 +94,34 @@ fn glyph_aabb(
   rotation: Option<Transform>,
   pad_x: f32,
   pad_y: f32,
-  fallback_advance_x: f32,
-  ascent: f32,
-  descent: f32,
 ) -> Option<(f32, f32, f32, f32)> {
   if !glyph_x.is_finite() || !glyph_y.is_finite() || !scale.is_finite() || scale == 0.0 {
     return None;
   }
 
-  let bbox = cached_glyph_bounding_box(face, font, variations_hash, glyph_id);
+  let bbox = cached_glyph_bounding_box(face, font, variations_hash, glyph_id)?;
 
   let mut min_x = f32::INFINITY;
   let mut max_x = f32::NEG_INFINITY;
   let mut min_y = f32::INFINITY;
   let mut max_y = f32::NEG_INFINITY;
 
-  if let Some(bbox) = bbox {
-    let corners = [
-      (bbox.x_min as f32, bbox.y_min as f32),
-      (bbox.x_min as f32, bbox.y_max as f32),
-      (bbox.x_max as f32, bbox.y_min as f32),
-      (bbox.x_max as f32, bbox.y_max as f32),
-    ];
-    for (px, py) in corners {
-      let mut x = glyph_x + (px + skew * py) * scale;
-      let mut y = glyph_y - py * scale;
-      if let Some(t) = rotation {
-        (x, y) = transform_point(t, x, y);
-      }
-      min_x = min_x.min(x);
-      max_x = max_x.max(x);
-      min_y = min_y.min(y);
-      max_y = max_y.max(y);
+  let corners = [
+    (bbox.x_min as f32, bbox.y_min as f32),
+    (bbox.x_min as f32, bbox.y_max as f32),
+    (bbox.x_max as f32, bbox.y_min as f32),
+    (bbox.x_max as f32, bbox.y_max as f32),
+  ];
+  for (px, py) in corners {
+    let mut x = glyph_x + (px + skew * py) * scale;
+    let mut y = glyph_y - py * scale;
+    if let Some(t) = rotation {
+      (x, y) = transform_point(t, x, y);
     }
-  } else {
-    // Conservative fallback when no bounding box is available (color fonts, missing glyphs, etc.).
-    let x0 = glyph_x.min(glyph_x + fallback_advance_x);
-    let x1 = glyph_x.max(glyph_x + fallback_advance_x);
-    let y0 = glyph_y - ascent;
-    let y1 = glyph_y + descent;
-    let corners = [(x0, y0), (x0, y1), (x1, y0), (x1, y1)];
-    for (mut x, mut y) in corners {
-      if let Some(t) = rotation {
-        (x, y) = transform_point(t, x, y);
-      }
-      min_x = min_x.min(x);
-      max_x = max_x.max(x);
-      min_y = min_y.min(y);
-      max_y = max_y.max(y);
-    }
+    min_x = min_x.min(x);
+    max_x = max_x.max(x);
+    min_y = min_y.min(y);
+    max_y = max_y.max(y);
   }
 
   if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite() {
@@ -193,12 +172,10 @@ pub(crate) fn collect_underline_exclusions(
       continue;
     }
 
+    // Match the text rasterizer: the run origin is the current pen position regardless of
+    // direction. HarfBuzz encodes RTL advancement in the sign of `x_advance`/`run.advance`.
     let run_advance = run.advance * coord_scale;
-    let origin_x = if run.direction.is_rtl() {
-      pen_x + run_advance
-    } else {
-      pen_x
-    };
+    let origin_x = pen_x;
     let origin_y = baseline_y;
     let rotation = rotation_transform(run.rotation, origin_x, origin_y);
     let scale = run.font_size * run.scale * coord_scale / units_per_em;
@@ -208,16 +185,11 @@ pub(crate) fn collect_underline_exclusions(
     let pad_y = bold_pad + tolerance;
     let variations_hash = crate::text::variations::variation_hash(&run.variations);
 
-    // Match the painter/backend behavior: RTL runs advance in the negative inline direction.
-    let dir_sign = if run.direction.is_rtl() { -1.0 } else { 1.0 };
     let mut cursor_x = origin_x;
     for glyph in &run.glyphs {
-      let glyph_x = cursor_x + dir_sign * glyph.x_offset * coord_scale;
+      // Match `TextRasterizer::render_glyph_run` positioning (with y-axis inversion).
+      let glyph_x = cursor_x + glyph.x_offset * coord_scale;
       let glyph_y = origin_y - glyph.y_offset * coord_scale;
-      let fallback_advance_x = dir_sign * glyph.x_advance * coord_scale;
-      let effective_font_size = run.font_size * run.scale * coord_scale;
-      let ascent = effective_font_size;
-      let descent = effective_font_size * 0.25;
 
       if let Ok(glyph_id) = u16::try_from(glyph.glyph_id) {
         if let Some((min_x, max_x, min_y, max_y)) = glyph_aabb(
@@ -232,9 +204,6 @@ pub(crate) fn collect_underline_exclusions(
           rotation,
           pad_x,
           pad_y,
-          fallback_advance_x,
-          ascent,
-          descent,
         ) {
           if skip_all || (max_y >= band_top && min_y <= band_bottom) {
             push_interval(&mut intervals, min_x, max_x);
@@ -242,7 +211,7 @@ pub(crate) fn collect_underline_exclusions(
         }
       }
 
-      cursor_x += dir_sign * glyph.x_advance * coord_scale;
+      cursor_x += glyph.x_advance * coord_scale;
     }
 
     pen_x += run_advance;
@@ -285,12 +254,10 @@ pub(crate) fn collect_underline_exclusions_vertical(
       continue;
     }
 
+    // Match rasterization: vertical runs are always advanced using the shaped advances; do not
+    // reinterpret bidi direction here (vertical shaping uses TopToBottom direction internally).
     let run_advance = run.advance * coord_scale;
-    let origin_y = if run.direction.is_rtl() {
-      pen_inline + run_advance
-    } else {
-      pen_inline
-    };
+    let origin_y = pen_inline;
     let origin_x = block_baseline;
     let rotation = rotation_transform(run.rotation, origin_x, origin_y);
     let scale = run.font_size * run.scale * coord_scale / units_per_em;
@@ -300,21 +267,12 @@ pub(crate) fn collect_underline_exclusions_vertical(
     let pad_y = bold_pad + tolerance;
     let variations_hash = crate::text::variations::variation_hash(&run.variations);
 
-    let dir_sign = if run.direction.is_rtl() { -1.0 } else { 1.0 };
+    let mut cursor_x = origin_x;
     let mut cursor_y = 0.0_f32;
-    let mut cursor_x = 0.0_f32;
     for glyph in &run.glyphs {
-      // Match display-list rendering: vertical text runs are positioned with the run origin at
-      // (block_baseline, inline_origin) and then advanced by the glyph's x/y advances.
-      //
-      // `y_offset` is in the opposite sign convention to tiny-skia's coordinate system, so it is
-      // subtracted to match `GlyphInstance { y_offset: -glyph.y_offset }`.
-      let glyph_x = origin_x + cursor_x + glyph.x_offset * coord_scale;
+      // Match `TextRasterizer::render_glyph_run` positioning (with y-axis inversion).
+      let glyph_x = cursor_x + glyph.x_offset * coord_scale;
       let glyph_y = origin_y + cursor_y - glyph.y_offset * coord_scale;
-      let fallback_advance_x = glyph.x_advance * coord_scale;
-      let effective_font_size = run.font_size * run.scale * coord_scale;
-      let ascent = effective_font_size;
-      let descent = effective_font_size * 0.25;
 
       if let Ok(glyph_id) = u16::try_from(glyph.glyph_id) {
         if let Some((min_x, max_x, min_y, max_y)) = glyph_aabb(
@@ -329,9 +287,6 @@ pub(crate) fn collect_underline_exclusions_vertical(
           rotation,
           pad_x,
           pad_y,
-          fallback_advance_x,
-          ascent,
-          descent,
         ) {
           if skip_all || (max_x >= band_left && min_x <= band_right) {
             push_interval(&mut intervals, min_y, max_y);
@@ -339,8 +294,8 @@ pub(crate) fn collect_underline_exclusions_vertical(
         }
       }
 
-      cursor_x += dir_sign * glyph.x_advance * coord_scale;
-      cursor_y += dir_sign * glyph.y_advance * coord_scale;
+      cursor_x += glyph.x_advance * coord_scale;
+      cursor_y += glyph.y_advance * coord_scale;
     }
 
     pen_inline += run_advance;
