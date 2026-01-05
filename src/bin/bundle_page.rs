@@ -1713,28 +1713,6 @@ fn crawl_document(
   Ok(())
 }
 
-fn destination_from_url_extension(url: &str) -> FetchDestination {
-  let path = url::Url::parse(url)
-    .ok()
-    .map(|parsed| parsed.path().to_string())
-    .unwrap_or_else(|| url.to_string());
-
-  let ext = Path::new(&path)
-    .extension()
-    .and_then(|e| e.to_str())
-    .map(|e| e.to_ascii_lowercase())
-    .unwrap_or_default();
-
-  match ext.as_str() {
-    "css" => FetchDestination::Style,
-    "woff2" | "woff" | "ttf" | "otf" => FetchDestination::Font,
-    "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "svg" | "ico" | "bmp" | "tif" | "tiff" => {
-      FetchDestination::Image
-    }
-    _ => FetchDestination::Other,
-  }
-}
-
 fn discover_css_urls_with_destination(
   css: &str,
   base_url: &str,
@@ -1757,7 +1735,11 @@ fn discover_css_urls_with_destination(
         // pageset; classifying these as images causes false disk-cache misses.
         FetchDestination::Font
       } else {
-        destination_from_url_extension(&resolved)
+        // `url(...)` tokens in CSS are overwhelmingly image-like resources (backgrounds, cursors,
+        // masks, etc). Treat unknown/extensionless URLs as images so disk-cache lookups use the same
+        // kind the renderer/prefetchers use, and so `--allow-missing` substitutes a valid PNG
+        // placeholder instead of empty bytes.
+        FetchDestination::Image
       };
       out.push((resolved, destination));
     }
@@ -2101,6 +2083,77 @@ mod tests {
         .iter()
         .any(|(url, dest, _)| url == "https://example.com/bg.png" && *dest == FetchDestination::Image),
       "expected non-font CSS url() asset to be fetched as an image"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn crawl_allow_missing_inserts_png_placeholder_for_extensionless_css_urls() -> Result<()> {
+    #[derive(Default)]
+    struct MissingCssAssetFetcher {
+      calls: Mutex<Vec<(String, FetchDestination, Option<String>)>>,
+    }
+
+    impl ResourceFetcher for MissingCssAssetFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.lock().unwrap().push((
+          req.url.to_string(),
+          req.destination,
+          req.referrer.map(|r| r.to_string()),
+        ));
+
+        match req.url {
+          "https://example.com/" => Ok(FetchedResource::with_final_url(
+            br#"<html><head><link rel="stylesheet" href="/style.css"></head><body></body></html>"#
+              .to_vec(),
+            Some("text/html".to_string()),
+            Some(req.url.to_string()),
+          )),
+          "https://example.com/style.css" => Ok(FetchedResource::with_final_url(
+            b"body { background-image: url('/bg'); }".to_vec(),
+            Some("text/css".to_string()),
+            Some(req.url.to_string()),
+          )),
+          // Simulate a cache miss / fetch failure for an extensionless CSS url() asset.
+          "https://example.com/bg" => Err(fastrender::Error::Other("missing".to_string())),
+          other => Err(fastrender::Error::Other(format!(
+            "unexpected fetch: {other}"
+          ))),
+        }
+      }
+    }
+
+    let inner = Arc::new(MissingCssAssetFetcher::default());
+    let recording = RecordingFetcher::new(inner);
+    let (doc, _) = fetch_document(&recording, "https://example.com/")?;
+
+    let render = BundleRenderConfig {
+      viewport: (1200, 800),
+      device_pixel_ratio: 1.0,
+      scroll_x: 0.0,
+      scroll_y: 0.0,
+      full_page: false,
+      same_origin_subresources: false,
+      allowed_subresource_origins: Vec::new(),
+      compat_profile: fastrender::compat::CompatProfile::default(),
+      dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
+    };
+
+    crawl_document(&recording, &doc, &render, CrawlMode::AllowMissing)?;
+
+    let recorded = recording.snapshot();
+    let res = recorded
+      .get("https://example.com/bg")
+      .expect("expected placeholder resource");
+    assert_eq!(res.content_type.as_deref(), Some("image/png"));
+    assert!(
+      res.bytes.starts_with(b"\x89PNG"),
+      "expected PNG placeholder bytes"
     );
 
     Ok(())
