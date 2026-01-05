@@ -2371,26 +2371,19 @@ impl InlineFormattingContext {
       .map(AvailableSpace::Definite)
       .unwrap_or(AvailableSpace::Indefinite);
 
-    let fragment = if fc_type == FormattingContextType::Table {
-      // Table formatting context currently does not honor `used_border_box_width`.
-      let constraints =
-        LayoutConstraints::new(AvailableSpace::Definite(constraint_width), height_space);
-      fc.layout(box_node, &constraints)?
+    // Pass the containing block inline size as the available space so percentage-based edges on
+    // the inline-block itself resolve against the correct base (CSS 2.1 §10.3.9). The computed
+    // shrink-to-fit width is provided separately via `used_border_box_width` so the inner
+    // formatting context lays out within the used size even when it differs from the containing
+    // block.
+    let width_space = if available_width.is_finite() {
+      AvailableSpace::Definite(available_width.max(0.0))
     } else {
-      // Pass the containing block inline size as the available space so percentage-based edges on
-      // the inline-block itself resolve against the correct base (CSS 2.1 §10.3.9). The computed
-      // shrink-to-fit width is provided separately via `used_border_box_width` so the inner
-      // formatting context lays out within the used size even when it differs from the containing
-      // block.
-      let width_space = if available_width.is_finite() {
-        AvailableSpace::Definite(available_width.max(0.0))
-      } else {
-        AvailableSpace::Indefinite
-      };
-      let constraints = LayoutConstraints::new(width_space, height_space)
-        .with_used_border_box_size(Some(constraint_width), None);
-      fc.layout(box_node, &constraints)?
+      AvailableSpace::Indefinite
     };
+    let constraints = LayoutConstraints::new(width_space, height_space)
+      .with_used_border_box_size(Some(constraint_width), None);
+    let fragment = fc.layout(box_node, &constraints)?;
     let mut fragment = fragment;
     let log_ids = crate::debug::runtime::runtime_toggles()
       .usize_list("FASTR_LOG_INTRINSIC_IDS")
@@ -8448,25 +8441,15 @@ impl InlineFormattingContext {
       crate::style::types::BoxSizing::ContentBox => (used_width + edges_actual).max(0.0),
     };
 
-    let content_width = (used_border_box - edges_actual).max(0.0);
     let height_space = AvailableSpace::Indefinite;
-    let mut fragment = if fc_type == FormattingContextType::Table {
-      // Table formatting context currently does not honor `used_border_box_width`. Keep the legacy
-      // behavior of passing the resolved content width as a definite constraint to force the table
-      // to lay out at the shrink-to-fit size.
-      let child_constraints =
-        LayoutConstraints::new(AvailableSpace::Definite(content_width), height_space);
-      fc.layout(&float_node, &child_constraints)?
+    let width_space = if containing_width.is_finite() {
+      AvailableSpace::Definite(containing_width.max(0.0))
     } else {
-      let width_space = if containing_width.is_finite() {
-        AvailableSpace::Definite(containing_width.max(0.0))
-      } else {
-        AvailableSpace::Indefinite
-      };
-      let constraints = LayoutConstraints::new(width_space, height_space)
-        .with_used_border_box_size(Some(used_border_box), None);
-      fc.layout(&float_node, &constraints)?
+      AvailableSpace::Indefinite
     };
+    let constraints = LayoutConstraints::new(width_space, height_space)
+      .with_used_border_box_size(Some(used_border_box), None);
+    let mut fragment = fc.layout(&float_node, &constraints)?;
 
     let margin_top = float_node
       .style
@@ -11862,6 +11845,66 @@ mod tests {
   }
 
   #[test]
+  fn inline_table_shrink_to_fit_respects_used_border_box_width_override() {
+    let ifc = InlineFormattingContext::new();
+
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::InlineTable;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+    let table_style = Arc::new(table_style);
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+    let cell = BoxNode::new_block(
+      Arc::new(cell_style),
+      FormattingContextType::Block,
+      vec![inline_canvas(40.0, 10.0)],
+    );
+    let row = BoxNode::new_block(
+      Arc::new(row_style),
+      FormattingContextType::Block,
+      vec![cell],
+    );
+
+    let inline_table = BoxNode::new_inline_block(
+      table_style,
+      FormattingContextType::Table,
+      vec![row],
+    );
+
+    let fc = ifc.factory.get(FormattingContextType::Table);
+    let expected_border = fc
+      .compute_intrinsic_inline_size(&inline_table, IntrinsicSizingMode::MaxContent)
+      .expect("intrinsic max-content width");
+    assert!(
+      expected_border.is_finite() && expected_border > 0.0,
+      "expected non-zero intrinsic width, got {:.2}",
+      expected_border
+    );
+
+    let available_width = expected_border + 200.0;
+    let item = ifc
+      .layout_inline_block(&inline_table, available_width, None)
+      .expect("layout inline-table");
+    assert!(
+      (item.width - expected_border).abs() < 0.5,
+      "expected inline-table shrink-to-fit width {:.2}, got {:.2}",
+      expected_border,
+      item.width
+    );
+    assert!(
+      item.width < available_width - 0.5,
+      "expected inline-table width {:.2} to be less than containing width {:.2}",
+      item.width,
+      available_width
+    );
+  }
+
+  #[test]
   fn inline_block_width_max_content_uses_rebased_intrinsic_border_box_width() {
     let ifc = InlineFormattingContext::new();
 
@@ -12136,6 +12179,108 @@ mod tests {
       "expected float to fit within available width {:.2}, got {:.2}",
       containing_width,
       fragment.bounds.width()
+    );
+  }
+
+  #[test]
+  fn inline_float_table_respects_used_border_box_width_override_for_column_layout() {
+    let ifc = InlineFormattingContext::new();
+
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.float = crate::style::float::Float::Left;
+    table_style.width = None;
+    table_style.width_keyword = None;
+    table_style.min_width = None;
+    table_style.min_width_keyword = None;
+    table_style.max_width = None;
+    table_style.max_width_keyword = None;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+    let table_style = Arc::new(table_style);
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+    let cell = BoxNode::new_block(
+      Arc::new(cell_style),
+      FormattingContextType::Block,
+      vec![inline_canvas(40.0, 10.0)],
+    );
+    let row = BoxNode::new_block(
+      Arc::new(row_style),
+      FormattingContextType::Block,
+      vec![cell],
+    );
+
+    let float_node = BoxNode::new_block(table_style, FormattingContextType::Table, vec![row]);
+    let floating = crate::layout::contexts::inline::line_builder::FloatingItem {
+      box_node: float_node.clone(),
+      metrics: BaselineMetrics::for_replaced(0.0),
+      vertical_align: VerticalAlign::Baseline,
+      direction: float_node.style.direction,
+      unicode_bidi: float_node.style.unicode_bidi,
+    };
+
+    let fc = ifc.factory.get(FormattingContextType::Table);
+    let expected_border = fc
+      .compute_intrinsic_inline_size(&float_node, IntrinsicSizingMode::MaxContent)
+      .expect("intrinsic max-content width");
+    assert!(
+      expected_border.is_finite() && expected_border > 0.0,
+      "expected non-zero intrinsic width, got {:.2}",
+      expected_border
+    );
+
+    let containing_width = expected_border + 200.0;
+    let mut float_ctx = crate::layout::float_context::FloatContext::new(containing_width.max(0.0));
+    let containing_size = Size::new(containing_width, 200.0);
+    let (fragment, _, _) = ifc
+      .layout_inline_float_fragment(
+        &floating,
+        containing_width,
+        containing_size,
+        0.0,
+        0.0,
+        &mut float_ctx,
+      )
+      .expect("layout float table");
+    assert!(
+      (fragment.bounds.width() - expected_border).abs() < 0.5,
+      "expected floated table width {:.2}, got {:.2}",
+      expected_border,
+      fragment.bounds.width()
+    );
+
+    fn collect_table_cells<'a>(node: &'a FragmentNode, out: &mut Vec<&'a FragmentNode>) {
+      if node
+        .style
+        .as_ref()
+        .map(|style| matches!(style.display, Display::TableCell))
+        .unwrap_or(false)
+      {
+        out.push(node);
+      }
+      for child in node.children.iter() {
+        collect_table_cells(child, out);
+      }
+    }
+
+    let mut cells = Vec::new();
+    collect_table_cells(&fragment, &mut cells);
+    assert_eq!(
+      cells.len(),
+      1,
+      "expected one table cell fragment, got {}",
+      cells.len()
+    );
+    assert!(
+      (cells[0].bounds.width() - expected_border).abs() < 0.5,
+      "expected floated table cell width {:.2}, got {:.2}",
+      expected_border,
+      cells[0].bounds.width()
     );
   }
 

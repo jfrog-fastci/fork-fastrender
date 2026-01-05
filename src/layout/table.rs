@@ -5304,8 +5304,17 @@ impl FormattingContext for TableFormattingContext {
       min_width = Some(min_width.unwrap_or(0.0).max(caption_pref_width));
     }
 
-    // Table width for sizing; percentages on columns use a definite table width when available (specified or containing).
-    let table_width = specified_width
+    // Table width for sizing; percentages on columns use a definite table width when available.
+    //
+    // `LayoutConstraints::used_border_box_width` is set by outer layout modes (block/inline/flex/grid)
+    // when they have already resolved the table wrapper's used size (e.g. inline-table shrink-to-fit
+    // or flex/grid item sizing). Honor it as an override so table layout doesn't expand back to the
+    // full containing block width.
+    let used_border_box_width = constraints
+      .used_border_box_width
+      .filter(|w| w.is_finite() && *w >= 0.0);
+    let table_width = used_border_box_width
+      .or(specified_width)
       .or(containing_width)
       .map(|w| clamp_to_min_max(w, min_width, max_width));
     let percent_base_width = table_width;
@@ -5363,7 +5372,12 @@ impl FormattingContext for TableFormattingContext {
       font_size,
       containing_height,
     );
-    let table_height = specified_height.map(|h| clamp_to_min_max(h, min_height, max_height));
+    let used_border_box_height = constraints
+      .used_border_box_height
+      .filter(|h| h.is_finite() && *h >= 0.0);
+    let table_height = used_border_box_height
+      .or(specified_height)
+      .map(|h| clamp_to_min_max(h, min_height, max_height));
 
     // Helper to position out-of-flow children against containing blocks.
     let place_out_of_flow = |fragment: &mut FragmentNode,
@@ -8405,9 +8419,56 @@ mod tests {
     let fragment = tfc.layout(&table, &constraints).expect("table layout");
 
     assert!((fragment.bounds.width() - 300.0).abs() < 0.1);
-    assert_eq!(fragment.children.len(), 2);
-    assert!((fragment.children[0].bounds.width() - 150.0).abs() < 0.1);
-    assert!((fragment.children[1].bounds.width() - 150.0).abs() < 0.1);
+    let mut cells = Vec::new();
+    collect_table_cell_fragments(&fragment, &mut cells);
+    assert_eq!(cells.len(), 2);
+    for cell in cells {
+      assert!(
+        (cell.bounds.width() - 150.0).abs() < 0.1,
+        "expected cell width 150px, got {:.2}",
+        cell.bounds.width()
+      );
+    }
+  }
+
+  #[test]
+  fn table_honors_used_border_box_width_override() {
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::Table;
+    table_style.border_spacing_horizontal = Length::px(0.0);
+    table_style.border_spacing_vertical = Length::px(0.0);
+
+    let mut row_style = ComputedStyle::default();
+    row_style.display = Display::TableRow;
+
+    let mut cell_style = ComputedStyle::default();
+    cell_style.display = Display::TableCell;
+    let cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![]);
+    let row = BoxNode::new_block(
+      Arc::new(row_style),
+      FormattingContextType::Block,
+      vec![cell],
+    );
+
+    let table = BoxNode::new_block(
+      Arc::new(table_style),
+      FormattingContextType::Table,
+      vec![row],
+    );
+
+    let tfc = TableFormattingContext::new();
+    let constraints = LayoutConstraints::new(
+      AvailableSpace::Definite(300.0),
+      AvailableSpace::Indefinite,
+    )
+    .with_used_border_box_size(Some(120.0), None);
+    let fragment = tfc.layout(&table, &constraints).expect("table layout");
+
+    assert!(
+      (fragment.bounds.width() - 120.0).abs() < 0.1,
+      "expected table width to honor used border-box override (got {:.2})",
+      fragment.bounds.width()
+    );
   }
 
   #[test]
