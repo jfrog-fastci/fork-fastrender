@@ -3299,39 +3299,103 @@ impl FormattingContext for FlexFormattingContext {
         Err(_) => FxHashMap::default(),
       };
 
+      let child_constraints = LayoutConstraints::new(
+        CrateAvailableSpace::Definite(padding_rect.size.width),
+        block_base
+          .map(CrateAvailableSpace::Definite)
+          .unwrap_or(CrateAvailableSpace::Indefinite),
+      );
+
       for candidate in positioned_candidates {
         check_layout_deadline(&mut deadline_counter)?;
+        let actual_horizontal = candidate.positioned_style.padding.left
+          + candidate.positioned_style.padding.right
+          + candidate.positioned_style.border_width.left
+          + candidate.positioned_style.border_width.right;
+        let actual_vertical = candidate.positioned_style.padding.top
+          + candidate.positioned_style.padding.bottom
+          + candidate.positioned_style.border_width.top
+          + candidate.positioned_style.border_width.bottom;
+        let content_offset = Point::new(
+          candidate.positioned_style.border_width.left + candidate.positioned_style.padding.left,
+          candidate.positioned_style.border_width.top + candidate.positioned_style.padding.top,
+        );
+        let (intrinsic_horizontal, intrinsic_vertical) =
+          crate::layout::absolute_positioning::intrinsic_edge_sizes(
+            &candidate.original_style,
+            self.viewport_size,
+            &self.font_context,
+          );
+        let preferred_min_inline = candidate
+          .preferred_min_inline
+          .map(|v| (v - intrinsic_horizontal).max(0.0));
+        let preferred_inline = candidate
+          .preferred_inline
+          .map(|v| (v - intrinsic_horizontal).max(0.0));
+        let preferred_min_block = candidate
+          .preferred_min_block
+          .map(|v| (v - intrinsic_vertical).max(0.0));
+        let preferred_block = candidate
+          .preferred_block
+          .map(|v| (v - intrinsic_vertical).max(0.0));
+        let intrinsic_size = Size::new(
+          (candidate.fragment.bounds.size.width - actual_horizontal).max(0.0),
+          (candidate.fragment.bounds.size.height - actual_vertical).max(0.0),
+        );
         let mut input = AbsoluteLayoutInput::new(
           candidate.positioned_style,
-          candidate.fragment.bounds.size,
+          intrinsic_size,
           static_positions
             .get(&candidate.child_id)
             .copied()
             .unwrap_or(Point::ZERO),
         );
         input.is_replaced = candidate.is_replaced;
-        input.preferred_min_inline_size = candidate.preferred_min_inline;
-        input.preferred_inline_size = candidate.preferred_inline;
-        input.preferred_min_block_size = candidate.preferred_min_block;
-        input.preferred_block_size = candidate.preferred_block;
+        input.preferred_min_inline_size = preferred_min_inline;
+        input.preferred_inline_size = preferred_inline;
+        input.preferred_min_block_size = preferred_min_block;
+        input.preferred_block_size = preferred_block;
         let result = abs.layout_absolute(&input, &candidate.cb)?;
         let mut child_fragment = candidate.fragment;
-        let needs_relayout = (result.size.width - child_fragment.bounds.width()).abs() > 0.01
-          || (result.size.height - child_fragment.bounds.height()).abs() > 0.01;
+        let border_size = Size::new(
+          result.size.width + actual_horizontal,
+          result.size.height + actual_vertical,
+        );
+        let border_origin = Point::new(
+          result.position.x - content_offset.x,
+          result.position.y - content_offset.y,
+        );
+        let needs_relayout = (border_size.width - child_fragment.bounds.width()).abs() > 0.01
+          || (border_size.height - child_fragment.bounds.height()).abs() > 0.01;
         if needs_relayout {
           let fc_type = candidate
             .layout_child
             .formatting_context()
             .unwrap_or(crate::style::display::FormattingContextType::Block);
           let fc = factory_for_cb(candidate.cb).get(fc_type);
-          let relayout_constraints = LayoutConstraints::new(
-            CrateAvailableSpace::Definite(result.size.width),
-            CrateAvailableSpace::Definite(result.size.height),
-          )
-          .with_used_border_box_size(Some(result.size.width), Some(result.size.height));
-          child_fragment = fc.layout(&candidate.layout_child, &relayout_constraints)?;
+          let supports_used_border_box = matches!(
+            fc_type,
+            FormattingContextType::Block
+              | FormattingContextType::Flex
+              | FormattingContextType::Grid
+              | FormattingContextType::Inline
+          );
+          let relayout_constraints = child_constraints
+            .with_used_border_box_size(Some(border_size.width), Some(border_size.height));
+          if supports_used_border_box {
+            child_fragment = fc.layout(&candidate.layout_child, &relayout_constraints)?;
+          } else {
+            let mut relayout_child = candidate.layout_child.clone();
+            let mut relayout_style = (*relayout_child.style).clone();
+            relayout_style.width = Some(crate::style::values::Length::px(border_size.width));
+            relayout_style.height = Some(crate::style::values::Length::px(border_size.height));
+            relayout_style.width_keyword = None;
+            relayout_style.height_keyword = None;
+            relayout_child.style = Arc::new(relayout_style);
+            child_fragment = fc.layout(&relayout_child, &relayout_constraints)?;
+          }
         }
-        child_fragment.bounds = Rect::new(result.position, result.size);
+        child_fragment.bounds = Rect::new(border_origin, border_size);
         child_fragment.style = Some(candidate.original_style.clone());
         fragment.children_mut().push(child_fragment);
       }

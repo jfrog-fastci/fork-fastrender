@@ -5597,18 +5597,109 @@ impl FormattingContext for TableFormattingContext {
             })?,
           }
         };
-        // Static position should start at the containing block origin; AbsoluteLayout
-        // adds padding/border offsets, so use the content origin here to avoid double
-        // counting padding.
-        let mut input =
-          AbsoluteLayoutInput::new(positioned_style, child_fragment.bounds.size, Point::ZERO);
+        let actual_horizontal = positioned_style.padding.left
+          + positioned_style.padding.right
+          + positioned_style.border_width.left
+          + positioned_style.border_width.right;
+        let actual_vertical = positioned_style.padding.top
+          + positioned_style.padding.bottom
+          + positioned_style.border_width.top
+          + positioned_style.border_width.bottom;
+        let content_offset = Point::new(
+          positioned_style.border_width.left + positioned_style.padding.left,
+          positioned_style.border_width.top + positioned_style.padding.top,
+        );
+        let (intrinsic_horizontal, intrinsic_vertical) =
+          crate::layout::absolute_positioning::intrinsic_edge_sizes(
+            &original_style,
+            self.viewport_size,
+            self.factory.font_context(),
+          );
+        let preferred_min_inline =
+          preferred_min_inline.map(|v| (v - intrinsic_horizontal).max(0.0));
+        let preferred_inline = preferred_inline.map(|v| (v - intrinsic_horizontal).max(0.0));
+        let preferred_min_block = preferred_min_block.map(|v| (v - intrinsic_vertical).max(0.0));
+        let preferred_block = preferred_block.map(|v| (v - intrinsic_vertical).max(0.0));
+        let intrinsic_size = crate::geometry::Size::new(
+          (child_fragment.bounds.size.width - actual_horizontal).max(0.0),
+          (child_fragment.bounds.size.height - actual_vertical).max(0.0),
+        );
+
+        let mut input = AbsoluteLayoutInput::new(positioned_style, intrinsic_size, Point::ZERO);
         input.is_replaced = is_replaced;
         input.preferred_min_inline_size = preferred_min_inline;
         input.preferred_inline_size = preferred_inline;
         input.preferred_min_block_size = preferred_min_block;
         input.preferred_block_size = preferred_block;
         let result = abs.layout_absolute(&input, &cb)?;
-        child_fragment.bounds = Rect::new(result.position, result.size);
+        let border_size = crate::geometry::Size::new(
+          result.size.width + actual_horizontal,
+          result.size.height + actual_vertical,
+        );
+        let border_origin = Point::new(
+          result.position.x - content_offset.x,
+          result.position.y - content_offset.y,
+        );
+
+        let needs_relayout = (border_size.width - child_fragment.bounds.width()).abs() > 0.01
+          || (border_size.height - child_fragment.bounds.height()).abs() > 0.01;
+        if needs_relayout {
+          let supports_used_border_box = matches!(
+            fc_type,
+            FormattingContextType::Block
+              | FormattingContextType::Flex
+              | FormattingContextType::Grid
+              | FormattingContextType::Inline
+          );
+          let relayout_constraints = child_constraints
+            .with_used_border_box_size(Some(border_size.width), Some(border_size.height));
+          let layout_with_fc = |node: &BoxNode,
+                                constraints: &LayoutConstraints|
+           -> Result<FragmentNode, LayoutError> {
+            match fc_type {
+              FormattingContextType::Table => {
+                let fc = factory_for_cb(cb).create(fc_type);
+                fc.layout(node, constraints)
+              }
+              _ => factory_for_cb(cb).with_fc(fc_type, |fc| fc.layout(node, constraints)),
+            }
+          };
+          if child.id != 0 {
+            if supports_used_border_box {
+              child_fragment = crate::layout::style_override::with_style_override(
+                child.id,
+                static_style.clone(),
+                || layout_with_fc(child, &relayout_constraints),
+              )?;
+            } else {
+              let mut relayout_style = (*static_style).clone();
+              relayout_style.width = Some(Length::px(border_size.width));
+              relayout_style.height = Some(Length::px(border_size.height));
+              relayout_style.width_keyword = None;
+              relayout_style.height_keyword = None;
+              child_fragment = crate::layout::style_override::with_style_override(
+                child.id,
+                Arc::new(relayout_style),
+                || layout_with_fc(child, &relayout_constraints),
+              )?;
+            }
+          } else {
+            let mut relayout_child = child.clone();
+            if supports_used_border_box {
+              relayout_child.style = static_style.clone();
+            } else {
+              let mut relayout_style = (*static_style).clone();
+              relayout_style.width = Some(Length::px(border_size.width));
+              relayout_style.height = Some(Length::px(border_size.height));
+              relayout_style.width_keyword = None;
+              relayout_style.height_keyword = None;
+              relayout_child.style = Arc::new(relayout_style);
+            }
+            child_fragment = layout_with_fc(&relayout_child, &relayout_constraints)?;
+          }
+        }
+
+        child_fragment.bounds = Rect::new(border_origin, border_size);
         child_fragment.style = Some(original_style);
         fragment.children_mut().push(child_fragment);
       }

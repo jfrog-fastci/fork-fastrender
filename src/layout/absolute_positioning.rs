@@ -2224,3 +2224,35 @@ pub fn resolve_positioned_style(
 
   resolved
 }
+
+/// Returns the padding + border edge sizes that participate in intrinsic sizing.
+///
+/// Our formatting context intrinsic size APIs report border-box contributions. When feeding those
+/// values into the absolute positioning constraint equations (which operate in the content-box),
+/// we need to subtract the edge sizes that were included during intrinsic sizing.
+///
+/// Percentage paddings are treated as `0` here (by resolving against a 0px containing block),
+/// matching how intrinsic sizing treats percentage-based padding/margins when the containing block
+/// size is not yet known.
+pub(crate) fn intrinsic_edge_sizes(
+  style: &ComputedStyle,
+  viewport: Size,
+  font_context: &FontContext,
+) -> (f32, f32) {
+  let cb = ContainingBlock::with_viewport_and_bases(
+    Rect::new(Point::ZERO, Size::new(0.0, 0.0)),
+    viewport,
+    Some(0.0),
+    Some(0.0),
+  );
+  let positioned = resolve_positioned_style(style, &cb, viewport, font_context);
+  let horizontal = positioned.padding.left
+    + positioned.padding.right
+    + positioned.border_width.left
+    + positioned.border_width.right;
+  let vertical = positioned.padding.top
+    + positioned.padding.bottom
+    + positioned.border_width.top
+    + positioned.border_width.bottom;
+  (horizontal, vertical)
+}

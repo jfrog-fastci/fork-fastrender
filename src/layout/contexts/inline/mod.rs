@@ -624,8 +624,7 @@ impl InlineFormattingContext {
             child.style.text_wrap,
           );
           if normalized.leading_collapsible {
-            whitespace
-              .note_collapsible_whitespace(child.style.clone(), normalized.allow_soft_wrap);
+            whitespace.note_collapsible_whitespace(child.style.clone(), normalized.allow_soft_wrap);
           }
           if !normalized.text.is_empty() {
             self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
@@ -641,8 +640,7 @@ impl InlineFormattingContext {
             whitespace.note_content();
           }
           if normalized.trailing_collapsible {
-            whitespace
-              .note_collapsible_whitespace(child.style.clone(), normalized.allow_soft_wrap);
+            whitespace.note_collapsible_whitespace(child.style.clone(), normalized.allow_soft_wrap);
           }
         }
         BoxType::Marker(marker_box) => match &marker_box.content {
@@ -9212,19 +9210,53 @@ impl InlineFormattingContext {
         } else {
           None
         };
-        let mut input = AbsoluteLayoutInput::new(
-          positioned_style,
-          child_fragment.bounds.size,
-          child_static_position,
+
+        let actual_horizontal = positioned_style.padding.left
+          + positioned_style.padding.right
+          + positioned_style.border_width.left
+          + positioned_style.border_width.right;
+        let actual_vertical = positioned_style.padding.top
+          + positioned_style.padding.bottom
+          + positioned_style.border_width.top
+          + positioned_style.border_width.bottom;
+        let content_offset = Point::new(
+          positioned_style.border_width.left + positioned_style.padding.left,
+          positioned_style.border_width.top + positioned_style.padding.top,
         );
+        let (intrinsic_horizontal, intrinsic_vertical) =
+          crate::layout::absolute_positioning::intrinsic_edge_sizes(
+            &original_style,
+            viewport_size,
+            &font_context,
+          );
+        let preferred_min_inline =
+          preferred_min_inline.map(|v| (v - intrinsic_horizontal).max(0.0));
+        let preferred_inline = preferred_inline.map(|v| (v - intrinsic_horizontal).max(0.0));
+        let preferred_min_block = preferred_min_block.map(|v| (v - intrinsic_vertical).max(0.0));
+        let preferred_block = preferred_block.map(|v| (v - intrinsic_vertical).max(0.0));
+        let intrinsic_size = Size::new(
+          (child_fragment.bounds.size.width - actual_horizontal).max(0.0),
+          (child_fragment.bounds.size.height - actual_vertical).max(0.0),
+        );
+
+        let mut input =
+          AbsoluteLayoutInput::new(positioned_style, intrinsic_size, child_static_position);
         input.is_replaced = is_replaced;
         input.preferred_min_inline_size = preferred_min_inline;
         input.preferred_inline_size = preferred_inline;
         input.preferred_min_block_size = preferred_min_block;
         input.preferred_block_size = preferred_block;
         let result = abs.layout_absolute(&input, &child_cb)?;
-        let needs_relayout = (result.size.width - child_fragment.bounds.width()).abs() > 0.01
-          || (result.size.height - child_fragment.bounds.height()).abs() > 0.01;
+        let border_size = Size::new(
+          result.size.width + actual_horizontal,
+          result.size.height + actual_vertical,
+        );
+        let border_origin = Point::new(
+          result.position.x - content_offset.x,
+          result.position.y - content_offset.y,
+        );
+        let needs_relayout = (border_size.width - child_fragment.bounds.width()).abs() > 0.01
+          || (border_size.height - child_fragment.bounds.height()).abs() > 0.01;
         if needs_relayout {
           let supports_used_border_box = matches!(
             fc_type,
@@ -9233,28 +9265,24 @@ impl InlineFormattingContext {
               | FormattingContextType::Grid
               | FormattingContextType::Inline
           );
-          let mut relayout_constraints = LayoutConstraints::new(
-            AvailableSpace::Definite(result.size.width),
-            AvailableSpace::Definite(result.size.height),
-          );
+          let relayout_constraints = child_constraints
+            .with_used_border_box_size(Some(border_size.width), Some(border_size.height));
           if supports_used_border_box
             && layout_child.style.width.is_none()
             && layout_child.style.height.is_none()
           {
-            relayout_constraints = relayout_constraints
-              .with_used_border_box_size(Some(result.size.width), Some(result.size.height));
             child_fragment = fc.layout(&layout_child, &relayout_constraints)?;
           } else {
             let mut relayout_style = (*layout_child.style).clone();
-            relayout_style.width = Some(Length::px(result.size.width));
-            relayout_style.height = Some(Length::px(result.size.height));
+            relayout_style.width = Some(Length::px(border_size.width));
+            relayout_style.height = Some(Length::px(border_size.height));
             relayout_style.width_keyword = None;
             relayout_style.height_keyword = None;
             layout_child.style = Arc::new(relayout_style);
             child_fragment = fc.layout(&layout_child, &relayout_constraints)?;
           }
         }
-        child_fragment.bounds = Rect::new(result.position, result.size);
+        child_fragment.bounds = Rect::new(border_origin, border_size);
         child_fragment.style = Some(original_style);
         Ok(child_fragment)
       };
