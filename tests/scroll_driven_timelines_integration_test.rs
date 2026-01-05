@@ -92,7 +92,9 @@ fn scroll_self_timeline_inactive_when_scroll_range_is_zero() -> Result<()> {
         background: rgb(255, 0, 0);
         overflow: auto;
         animation-timeline: scroll(self);
-        animation-name: fade;
+        /* Real pages commonly pair scroll-driven timelines with `animation-duration: auto`.
+         * Ensure the `animation` shorthand accepts `auto` as the duration token. */
+        animation: fade auto linear;
       }
       .scrollable { left: 0; }
       .not-scrollable { left: 60px; }
