@@ -13619,6 +13619,16 @@ fn length_from_token(token: &Token) -> Option<Length> {
       "vw" => Some(Length::new(*value, LengthUnit::Vw)),
       "vmin" => Some(Length::new(*value, LengthUnit::Vmin)),
       "vmax" => Some(Length::new(*value, LengthUnit::Vmax)),
+      // CSS Values and Units Level 4 viewport units. FastRender renders with a fixed headless
+      // viewport, so the small/large variants behave like the classic viewport units.
+      "svh" => Some(Length::new(*value, LengthUnit::Vh)),
+      "svw" => Some(Length::new(*value, LengthUnit::Vw)),
+      "svmin" => Some(Length::new(*value, LengthUnit::Vmin)),
+      "svmax" => Some(Length::new(*value, LengthUnit::Vmax)),
+      "lvh" => Some(Length::new(*value, LengthUnit::Vh)),
+      "lvw" => Some(Length::new(*value, LengthUnit::Vw)),
+      "lvmin" => Some(Length::new(*value, LengthUnit::Vmin)),
+      "lvmax" => Some(Length::new(*value, LengthUnit::Vmax)),
       "dvh" => Some(Length::new(*value, LengthUnit::Dvh)),
       "dvw" => Some(Length::new(*value, LengthUnit::Dvw)),
       "dvmin" => Some(Length::new(*value, LengthUnit::Dvmin)),
@@ -13663,6 +13673,16 @@ fn parse_length_component<'i, 't>(
         "vh" => Length::new(*value, LengthUnit::Vh),
         "vmin" => Length::new(*value, LengthUnit::Vmin),
         "vmax" => Length::new(*value, LengthUnit::Vmax),
+        // CSS Values and Units Level 4 viewport units.
+        // FastRender renders with a fixed headless viewport, so sv*/lv* behave like v*.
+        "svw" => Length::new(*value, LengthUnit::Vw),
+        "svh" => Length::new(*value, LengthUnit::Vh),
+        "svmin" => Length::new(*value, LengthUnit::Vmin),
+        "svmax" => Length::new(*value, LengthUnit::Vmax),
+        "lvw" => Length::new(*value, LengthUnit::Vw),
+        "lvh" => Length::new(*value, LengthUnit::Vh),
+        "lvmin" => Length::new(*value, LengthUnit::Vmin),
+        "lvmax" => Length::new(*value, LengthUnit::Vmax),
         _ => return Err(location.new_custom_error(())),
       };
       Ok(len)
@@ -18816,6 +18836,9 @@ mod tests {
       ("14vh", LengthUnit::Vh),
       ("16vmin", LengthUnit::Vmin),
       ("18vmax", LengthUnit::Vmax),
+      // Modern viewport units (CSS Values and Units Level 4).
+      ("80svh", LengthUnit::Vh),
+      ("50LVW", LengthUnit::Vw),
     ];
 
     for (text, unit) in cases {
