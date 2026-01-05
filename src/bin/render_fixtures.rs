@@ -17,6 +17,7 @@ use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::resource::ResourcePolicy;
 use fastrender::text::font_db::FontConfig;
 use fastrender::{snapshot_pipeline, PipelineSnapshot, RenderArtifacts};
+use image::ImageFormat;
 use rustc_hash::FxHasher;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -191,13 +192,20 @@ struct RenderRunOptions {
 
 #[derive(Clone)]
 struct VariantRecord {
-  hash: u64,
+  hash_hi: u64,
+  hash_lo: u64,
   width: u32,
   height: u32,
   count: usize,
   diff_pixels_vs_baseline: Option<u64>,
   first_mismatch_vs_baseline: Option<(u32, u32)>,
-  data: Vec<u8>,
+  first_mismatch_rgba_vs_baseline: Option<([u8; 4], [u8; 4])>,
+  /// Premultiplied pixel bytes for this variant.
+  ///
+  /// In repeat mode we avoid storing the baseline pixmap bytes for every fixture, because that can
+  /// be multiple gigabytes for a full fixture set. We only keep bytes for non-baseline variants
+  /// when `--save-variants` is enabled so we can write them out as PNGs at the end.
+  data: Option<Vec<u8>>,
 }
 
 struct FixtureDeterminism {
@@ -521,19 +529,21 @@ fn run(cli: Cli) -> io::Result<()> {
         results.sort_by(|a, b| a.stem.cmp(&b.stem));
         for run in run_results {
           if let (Status::Ok, Some(pixels)) = (&run.result.status, run.pixels) {
-            let hash = hash64(&pixels.data);
+            let (hash_hi, hash_lo) = hash128(&pixels.data);
             determinism.insert(
               run.result.stem.clone(),
               FixtureDeterminism {
                 stem: run.result.stem.clone(),
                 variants: vec![VariantRecord {
-                  hash,
+                  hash_hi,
+                  hash_lo,
                   width: pixels.width,
                   height: pixels.height,
                   count: 1,
                   diff_pixels_vs_baseline: Some(0),
                   first_mismatch_vs_baseline: None,
-                  data: pixels.data,
+                  first_mismatch_rgba_vs_baseline: None,
+                  data: None,
                 }],
               },
             );
@@ -556,7 +566,7 @@ fn run(cli: Cli) -> io::Result<()> {
           let Some(state) = determinism.get_mut(&run.result.stem) else {
             continue;
           };
-          record_variant(state, pixels);
+          record_variant(state, pixels, &cli.out_dir, cli.save_variants);
         }
       }
     }
@@ -867,10 +877,15 @@ fn reset_paint_scratch_for_pools(harness_pool: &rayon::ThreadPool) {
   });
 }
 
-fn hash64(bytes: &[u8]) -> u64 {
+fn hash64_with_salt(bytes: &[u8], salt: u64) -> u64 {
   let mut hasher = FxHasher::default();
+  hasher.write_u64(salt);
   hasher.write(bytes);
   hasher.finish()
+}
+
+fn hash128(bytes: &[u8]) -> (u64, u64) {
+  (hash64_with_salt(bytes, 0), hash64_with_salt(bytes, 1))
 }
 
 fn diff_pixels_and_first_mismatch(
@@ -900,43 +915,111 @@ fn diff_pixels_and_first_mismatch(
   (diff_pixels, first_mismatch)
 }
 
-fn record_variant(state: &mut FixtureDeterminism, pixels: PixmapBytes) {
-  let hash = hash64(&pixels.data);
+fn unpremultiply_rgba_bytes(premultiplied: &[u8]) -> Vec<u8> {
+  let mut rgba_data = Vec::with_capacity(premultiplied.len());
+  for chunk in premultiplied.chunks_exact(4) {
+    let r = chunk[0];
+    let g = chunk[1];
+    let b = chunk[2];
+    let a = chunk[3];
+
+    let (r, g, b) = if a > 0 {
+      let alpha = a as f32 / 255.0;
+      (
+        ((r as f32 / alpha).min(255.0)) as u8,
+        ((g as f32 / alpha).min(255.0)) as u8,
+        ((b as f32 / alpha).min(255.0)) as u8,
+      )
+    } else {
+      (0, 0, 0)
+    };
+
+    rgba_data.push(r);
+    rgba_data.push(g);
+    rgba_data.push(b);
+    rgba_data.push(a);
+  }
+  rgba_data
+}
+
+fn record_variant(
+  state: &mut FixtureDeterminism,
+  pixels: PixmapBytes,
+  out_dir: &Path,
+  save_variant_bytes: bool,
+) {
+  let (hash_hi, hash_lo) = hash128(&pixels.data);
 
   for variant in &mut state.variants {
-    if variant.hash == hash
+    if variant.hash_hi == hash_hi
+      && variant.hash_lo == hash_lo
       && variant.width == pixels.width
       && variant.height == pixels.height
-      && variant.data == pixels.data
     {
       variant.count += 1;
       return;
     }
   }
 
-  let baseline = state
-    .variants
-    .first()
-    .expect("fixture determinism baseline missing");
-  let (diff_pixels, first_mismatch) = if baseline.width == pixels.width
-    && baseline.height == pixels.height
-    && baseline.data.len() == pixels.data.len()
-  {
-    let (diff_pixels, first_mismatch) =
-      diff_pixels_and_first_mismatch(&baseline.data, &pixels.data, pixels.width);
-    (Some(diff_pixels), first_mismatch)
-  } else {
-    (None, None)
-  };
+  let baseline = state.variants.first().expect("fixture determinism baseline missing");
+
+  let mut diff_pixels = None;
+  let mut first_mismatch = None;
+  let mut first_mismatch_rgba = None;
+
+  if baseline.width == pixels.width && baseline.height == pixels.height {
+    // Compare against the baseline PNG output so we don't need to hold the baseline pixmap bytes in
+    // memory for every fixture in repeat mode.
+    let baseline_png = output_path_for(out_dir, &state.stem);
+    if let Ok(png_bytes) = fs::read(&baseline_png) {
+      if let Ok(img) = image::load_from_memory_with_format(&png_bytes, ImageFormat::Png) {
+        let img = img.to_rgba8();
+        if img.width() == pixels.width && img.height() == pixels.height {
+          let baseline_rgba = img.into_raw();
+          let variant_rgba = unpremultiply_rgba_bytes(&pixels.data);
+          if baseline_rgba.len() == variant_rgba.len() && pixels.width > 0 {
+            let (d, mismatch) =
+              diff_pixels_and_first_mismatch(&baseline_rgba, &variant_rgba, pixels.width);
+            diff_pixels = Some(d);
+            first_mismatch = mismatch;
+            if let Some((x, y)) = mismatch {
+              let i = ((y * pixels.width + x) as usize) * 4;
+              if baseline_rgba.len() >= i + 4 && variant_rgba.len() >= i + 4 {
+                let b = [
+                  baseline_rgba[i],
+                  baseline_rgba[i + 1],
+                  baseline_rgba[i + 2],
+                  baseline_rgba[i + 3],
+                ];
+                let v = [
+                  variant_rgba[i],
+                  variant_rgba[i + 1],
+                  variant_rgba[i + 2],
+                  variant_rgba[i + 3],
+                ];
+                first_mismatch_rgba = Some((b, v));
+              }
+            }
+          }
+        }
+      }
+    }
+  }
 
   state.variants.push(VariantRecord {
-    hash,
+    hash_hi,
+    hash_lo,
     width: pixels.width,
     height: pixels.height,
     count: 1,
     diff_pixels_vs_baseline: diff_pixels,
     first_mismatch_vs_baseline: first_mismatch,
-    data: pixels.data,
+    first_mismatch_rgba_vs_baseline: first_mismatch_rgba,
+    data: if save_variant_bytes {
+      Some(pixels.data)
+    } else {
+      None
+    },
   });
 }
 
@@ -976,16 +1059,12 @@ fn write_nondeterminism_outputs(
   let _ = writeln!(report, "variants: {}", state.variants.len());
   let _ = writeln!(report);
 
-  let baseline = state
-    .variants
-    .first()
-    .expect("fixture determinism baseline missing");
-
   for (idx, variant) in state.variants.iter().enumerate() {
     let _ = writeln!(
       report,
-      "variant {idx}: hash=0x{hash:016x} count={count} dims={w}x{h}",
-      hash = variant.hash,
+      "variant {idx}: hash=0x{hash_hi:016x}{hash_lo:016x} count={count} dims={w}x{h}",
+      hash_hi = variant.hash_hi,
+      hash_lo = variant.hash_lo,
       count = variant.count,
       w = variant.width,
       h = variant.height
@@ -998,18 +1077,12 @@ fn write_nondeterminism_outputs(
     }
     if let Some((x, y)) = variant.first_mismatch_vs_baseline {
       let _ = writeln!(report, "  first_mismatch_vs_baseline=({x}, {y})");
-      let w = baseline.width;
-      if w > 0 && baseline.width == variant.width && baseline.height == variant.height {
-        let i = ((y * w + x) as usize) * 4;
-        if baseline.data.len() >= i + 4 && variant.data.len() >= i + 4 {
-          let b = &baseline.data[i..i + 4];
-          let v = &variant.data[i..i + 4];
-          let _ = writeln!(
-            report,
-            "  baseline_rgba=[{}, {}, {}, {}] variant_rgba=[{}, {}, {}, {}]",
-            b[0], b[1], b[2], b[3], v[0], v[1], v[2], v[3]
-          );
-        }
+      if let Some((b, v)) = variant.first_mismatch_rgba_vs_baseline {
+        let _ = writeln!(
+          report,
+          "  baseline_rgba=[{}, {}, {}, {}] variant_rgba=[{}, {}, {}, {}]",
+          b[0], b[1], b[2], b[3], v[0], v[1], v[2], v[3]
+        );
       }
     }
   }
@@ -1019,9 +1092,9 @@ fn write_nondeterminism_outputs(
 
   for idx in 1..state.variants.len() {
     let variant = &mut state.variants[idx];
-    if variant.data.is_empty() {
+    let Some(bytes) = variant.data.take() else {
       continue;
-    }
+    };
     let size = IntSize::from_wh(variant.width, variant.height).ok_or_else(|| {
       io::Error::new(
         io::ErrorKind::InvalidInput,
@@ -1031,7 +1104,6 @@ fn write_nondeterminism_outputs(
         ),
       )
     })?;
-    let bytes = std::mem::take(&mut variant.data);
     let pixmap = Pixmap::from_vec(bytes, size).ok_or_else(|| {
       io::Error::new(
         io::ErrorKind::InvalidData,
