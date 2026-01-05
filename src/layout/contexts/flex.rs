@@ -8974,102 +8974,107 @@ mod tests {
 
   #[test]
   fn measured_fragments_normalize_and_reuse_fragments() {
-    use crate::debug::runtime::{set_runtime_toggles, RuntimeToggles};
-    let mut toggles = std::collections::HashMap::new();
-    toggles.insert("FASTR_FLEX_PROFILE".to_string(), "1".to_string());
+    use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
+    use std::collections::HashMap;
+
     // This test relies on the flex measure callback executing (to populate and hit the measured
-    // fragment cache). Other unit tests may enable the global layout cache, which can cause the
-    // entire flex container layout to be reused without re-measuring. Disable flex caching here so
-    // the test remains order-independent.
-    toggles.insert("FASTR_DISABLE_FLEX_CACHE".to_string(), "1".to_string());
-    let _guard = set_runtime_toggles(std::sync::Arc::new(RuntimeToggles::from_map(toggles)));
+    // fragment cache). Use thread-local toggles so other unit tests running in parallel don't see
+    // `FASTR_*` overrides (notably `FASTR_DISABLE_FLEX_CACHE`).
+    with_thread_runtime_toggles(
+      Arc::new(RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_FLEX_PROFILE".to_string(),
+        "1".to_string(),
+      )]))),
+      || {
+        let measured_fragments = Arc::new(ShardedFlexCache::new_measure());
+        let layout_fragments = Arc::new(ShardedFlexCache::new_layout());
+        let viewport = Size::new(200.0, 200.0);
+        let fc = FlexFormattingContext::with_viewport_and_cb(
+          viewport,
+          ContainingBlock::viewport(viewport),
+          FontContext::new(),
+          measured_fragments.clone(),
+          layout_fragments.clone(),
+        )
+        .with_parallelism(LayoutParallelism::disabled());
 
-    let measured_fragments = Arc::new(ShardedFlexCache::new_measure());
-    let layout_fragments = Arc::new(ShardedFlexCache::new_layout());
-    let viewport = Size::new(200.0, 200.0);
-    let mut fc = FlexFormattingContext::with_viewport_and_cb(
-      viewport,
-      ContainingBlock::viewport(viewport),
-      FontContext::new(),
-      measured_fragments.clone(),
-      layout_fragments.clone(),
+        let mut child_style = ComputedStyle::default();
+        child_style.display = Display::Block;
+        child_style.position = Position::Relative;
+        child_style.left = Some(Length::px(9.0));
+        child_style.top = Some(Length::px(11.0));
+        child_style.width = Some(Length::px(40.0));
+        child_style.height = Some(Length::px(20.0));
+        child_style.width_keyword = None;
+        child_style.height_keyword = None;
+        let grandchild = BoxNode::new_block(
+          Arc::new(ComputedStyle::default()),
+          FormattingContextType::Block,
+          vec![],
+        );
+        let mut child = BoxNode::new_block(
+          Arc::new(child_style),
+          FormattingContextType::Block,
+          vec![grandchild],
+        );
+        child.id = 2;
+
+        let mut container_style = ComputedStyle::default();
+        container_style.display = Display::Flex;
+        container_style.flex_direction = FlexDirection::Row;
+        container_style.width = Some(Length::px(120.0));
+        container_style.height = Some(Length::px(60.0));
+        container_style.width_keyword = None;
+        container_style.height_keyword = None;
+        let mut container = BoxNode::new_block(
+          Arc::new(container_style),
+          FormattingContextType::Flex,
+          vec![child.clone()],
+        );
+        // Keep the container id as 0 so it is never eligible for the global layout cache.
+        container.id = 0;
+
+        let constraints = LayoutConstraints::definite(120.0, 60.0);
+        let first_fragment = fc.layout(&container, &constraints).unwrap();
+        let first_child = &first_fragment.children[0];
+        assert!(
+          first_child.bounds.x() != 0.0 || first_child.bounds.y() != 0.0,
+          "relative positioning should offset the measured fragment"
+        );
+        let expected_origin = first_child.bounds.origin;
+
+        let cache_key = flex_cache_key(&child);
+        let cached = measured_fragments.find_fragment(
+          cache_key,
+          Size::new(first_child.bounds.width(), first_child.bounds.height()),
+        );
+        let cached_fragment = cached.expect("child fragment cached").fragment;
+        assert_eq!(cached_fragment.bounds.origin, Point::new(0.0, 0.0));
+
+        let shard_hits_before: u64 = measured_fragments
+          .shard_stats()
+          .into_iter()
+          .map(|s| s.hits)
+          .sum();
+
+        // Avoid layout cache hits so reuse flows through the measured fragment cache.
+        layout_fragments.clear();
+
+        let second_fragment = fc.layout(&container, &constraints).unwrap();
+        let second_child = &second_fragment.children[0];
+        let shard_hits_after: u64 = measured_fragments
+          .shard_stats()
+          .into_iter()
+          .map(|s| s.hits)
+          .sum();
+
+        assert!(
+          shard_hits_after > shard_hits_before,
+          "measurement cache should be hit on reuse"
+        );
+        assert_eq!(second_child.bounds.origin, expected_origin);
+      },
     );
-
-    let mut child_style = ComputedStyle::default();
-    child_style.display = Display::Block;
-    child_style.position = Position::Relative;
-    child_style.left = Some(Length::px(9.0));
-    child_style.top = Some(Length::px(11.0));
-    child_style.width = Some(Length::px(40.0));
-    child_style.height = Some(Length::px(20.0));
-    child_style.width_keyword = None;
-    child_style.height_keyword = None;
-    let grandchild = BoxNode::new_block(
-      Arc::new(ComputedStyle::default()),
-      FormattingContextType::Block,
-      vec![],
-    );
-    let mut child = BoxNode::new_block(
-      Arc::new(child_style),
-      FormattingContextType::Block,
-      vec![grandchild],
-    );
-    child.id = 2;
-
-    let mut container_style = ComputedStyle::default();
-    container_style.display = Display::Flex;
-    container_style.flex_direction = FlexDirection::Row;
-    container_style.width = Some(Length::px(120.0));
-    container_style.height = Some(Length::px(60.0));
-    container_style.width_keyword = None;
-    container_style.height_keyword = None;
-    let mut container = BoxNode::new_block(
-      Arc::new(container_style),
-      FormattingContextType::Flex,
-      vec![child.clone()],
-    );
-    // Keep the container id as 0 so it is never eligible for the global layout cache.
-    container.id = 0;
-
-    let constraints = LayoutConstraints::definite(120.0, 60.0);
-    let first_fragment = fc.layout(&container, &constraints).unwrap();
-    let first_child = &first_fragment.children[0];
-    assert!(
-      first_child.bounds.x() != 0.0 || first_child.bounds.y() != 0.0,
-      "relative positioning should offset the measured fragment"
-    );
-    let expected_origin = first_child.bounds.origin;
-
-    let cache_key = flex_cache_key(&child);
-    let cached = measured_fragments.find_fragment(
-      cache_key,
-      Size::new(first_child.bounds.width(), first_child.bounds.height()),
-    );
-    let cached_fragment = cached.expect("child fragment cached").fragment;
-    assert_eq!(cached_fragment.bounds.origin, Point::new(0.0, 0.0));
-
-    let shard_hits_before: u64 = measured_fragments
-      .shard_stats()
-      .into_iter()
-      .map(|s| s.hits)
-      .sum();
-
-    // Avoid layout cache hits so reuse flows through the measured fragment cache.
-    layout_fragments.clear();
-
-    let second_fragment = fc.layout(&container, &constraints).unwrap();
-    let second_child = &second_fragment.children[0];
-    let shard_hits_after: u64 = measured_fragments
-      .shard_stats()
-      .into_iter()
-      .map(|s| s.hits)
-      .sum();
-
-    assert!(
-      shard_hits_after > shard_hits_before,
-      "measurement cache should be hit on reuse"
-    );
-    assert_eq!(second_child.bounds.origin, expected_origin);
   }
 
   #[test]
