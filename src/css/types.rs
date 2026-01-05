@@ -3293,7 +3293,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
   media_ctx: &MediaContext,
   cache: Option<&mut MediaQueryCache>,
   state: &mut ImportResolveState,
-  mut imports_allowed: bool,
+  active: bool,
   out: &mut Vec<CssRule>,
   deadline_counter: &mut usize,
 ) -> std::result::Result<(), RenderError> {
@@ -3302,12 +3302,18 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
 
   // Keep a mutable binding so nested calls can borrow the cache mutably via as_deref_mut().
   let mut cache = cache;
+  // `@import` rules are only honored in the "import prelude" of each rule list, but we also need
+  // to avoid fetching imports from branches that cannot apply for the current media/supports
+  // context. Model this as an "active" flag that gates all import processing, plus the usual
+  // prelude tracking that disables imports after the first non-import rule.
+  let mut imports_allowed = active;
 
   for rule in rules {
     check_active_periodic(deadline_counter, DEADLINE_STRIDE, RenderStage::Css)?;
     // Browsers only honor @import rules in the stylesheet prelude. Modern CSS additionally allows
     // blockless `@layer` statements (e.g. `@layer foo;`) before imports, but any other rule ends the
-    // import-allowed region. Nested rule blocks never allow @import.
+    // import-allowed region. Nested rule blocks use the same prelude semantics, but imports are
+    // only processed when the surrounding @media/@supports branch matches.
     let is_import_rule = matches!(&rule, CssRule::Import(_));
     let is_layer_statement = matches!(
       &rule,
@@ -3328,6 +3334,11 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
         }
 
         let mut resolved_children = Vec::new();
+        let child_active = if active {
+          media_ctx.evaluate_list_with_cache(&queries, cache.as_deref_mut())
+        } else {
+          false
+        };
         resolve_rules_owned(
           rules,
           loader,
@@ -3335,7 +3346,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
           media_ctx,
           cache.as_deref_mut(),
           state,
-          false,
+          child_active,
           &mut resolved_children,
           deadline_counter,
         )?;
@@ -3367,7 +3378,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
           media_ctx,
           cache.as_deref_mut(),
           state,
-          false,
+          active,
           &mut resolved_nested,
           deadline_counter,
         )?;
@@ -3397,7 +3408,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
           media_ctx,
           cache.as_deref_mut(),
           state,
-          false,
+          active,
           &mut resolved_children,
           deadline_counter,
         )?;
@@ -3410,6 +3421,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
       CssRule::Supports(supports_rule) => {
         let SupportsRule { condition, rules } = supports_rule;
         let mut resolved_children = Vec::new();
+        let child_active = active && condition.matches();
         resolve_rules_owned(
           rules,
           loader,
@@ -3417,7 +3429,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
           media_ctx,
           cache.as_deref_mut(),
           state,
-          false,
+          child_active,
           &mut resolved_children,
           deadline_counter,
         )?;
@@ -3436,7 +3448,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
           media_ctx,
           cache.as_deref_mut(),
           state,
-          false,
+          active,
           &mut resolved_children,
           deadline_counter,
         )?;
@@ -3461,7 +3473,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
           media_ctx,
           cache.as_deref_mut(),
           state,
-          false,
+          active,
           &mut resolved_children,
           deadline_counter,
         )?;
@@ -3482,7 +3494,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
           media_ctx,
           cache.as_deref_mut(),
           state,
-          false,
+          active,
           &mut resolved_children,
           deadline_counter,
         )?;
