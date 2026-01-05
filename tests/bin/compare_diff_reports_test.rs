@@ -3,6 +3,8 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+use crate::bin::report_helpers::entry_anchor_id;
+
 fn output_text(bytes: &[u8]) -> String {
   String::from_utf8_lossy(bytes).to_string()
 }
@@ -15,15 +17,6 @@ fn compare_cmd(tmp_dir: &Path) -> Command {
   let mut cmd = Command::new(env!("CARGO_BIN_EXE_compare_diff_reports"));
   cmd.current_dir(tmp_dir);
   cmd
-}
-
-fn entry_anchor_id(name: &str) -> String {
-  let mut hash: u64 = 14695981039346656037;
-  for byte in name.as_bytes() {
-    hash ^= u64::from(*byte);
-    hash = hash.wrapping_mul(1099511628211);
-  }
-  format!("entry-{hash:016x}")
 }
 
 fn basic_report(entries: Vec<Value>) -> Value {

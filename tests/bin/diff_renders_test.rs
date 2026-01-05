@@ -4,6 +4,8 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+use crate::bin::report_helpers::entry_anchor_id;
+
 fn write_color_png(path: &Path, color: [u8; 4]) {
   write_solid_png(path, 2, 2, color);
 }
@@ -23,15 +25,6 @@ fn diff_renders_cmd(tmp_dir: &Path) -> Command {
   cmd.env_remove("FIXTURE_IGNORE_ALPHA");
   cmd.env_remove("FIXTURE_MAX_PERCEPTUAL_DISTANCE");
   cmd
-}
-
-fn entry_anchor_id(name: &str) -> String {
-  let mut hash: u64 = 14695981039346656037;
-  for byte in name.as_bytes() {
-    hash ^= u64::from(*byte);
-    hash = hash.wrapping_mul(1099511628211);
-  }
-  format!("entry-{hash:016x}")
 }
 
 #[test]
