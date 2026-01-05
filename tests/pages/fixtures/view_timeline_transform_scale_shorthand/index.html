@@ -1,0 +1,44 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>view_timeline_transform_scale_shorthand</title>
+<style>
+  html,
+  body {
+    margin: 0;
+    background: rgb(0, 0, 0);
+  }
+
+  .spacer {
+    height: 600px;
+  }
+
+  .card {
+    position: sticky;
+    top: calc(84px + 10vh);
+    width: 300px;
+    height: 300px;
+    margin: 0 auto;
+    background: rgb(255, 255, 255);
+
+    /* Match the GitLab fixture: named view timeline + animation shorthand w/out duration. */
+    view-timeline: --t block;
+    animation-timeline: --t;
+    animation-range: entry 100px entry 500px;
+    animation: scale-card linear both;
+
+    transform-origin: center top;
+  }
+
+  @keyframes scale-card {
+    0% {
+      transform: scale(0.9);
+    }
+    to {
+      transform: scale(1);
+    }
+  }
+</style>
+
+<div class="spacer"></div>
+<div class="card"></div>
+<div class="spacer"></div>

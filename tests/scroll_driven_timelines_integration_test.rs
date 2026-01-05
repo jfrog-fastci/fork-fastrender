@@ -184,3 +184,63 @@ fn view_timeline_animation_range_entry_length_offsets_map_to_scroll_positions() 
 
   Ok(())
 }
+
+#[test]
+fn view_timeline_progress_includes_sticky_offsets() -> Result<()> {
+  let viewport_width = 200;
+  let viewport_height = 200;
+  let mut renderer = FastRender::new()?;
+  let html = include_str!("pages/fixtures/view_timeline_sticky_range_px/index.html");
+
+  let prepared = renderer.prepare_html(
+    html,
+    RenderOptions::new().with_viewport(viewport_width, viewport_height),
+  )?;
+
+  let options = PreparedPaintOptions::new().with_background(Rgba::new(0, 0, 0, 1.0));
+  let pixmap_at_top = prepared.paint_with_options(options.clone().with_scroll(0.0, 0.0))?;
+  let pixmap_after_scroll = prepared.paint_with_options(options.clone().with_scroll(0.0, 200.0))?;
+
+  // The sticky element is pinned at the top and covers this sample pixel at all scroll offsets.
+  let sample_x = viewport_width / 2;
+  let sample_y = 50;
+
+  let (r0, g0, b0, a0) = pixel(&pixmap_at_top, sample_x, sample_y);
+  let (r1, g1, b1, a1) = pixel(&pixmap_after_scroll, sample_x, sample_y);
+
+  assert_eq!(a0, 255);
+  assert_eq!(a1, 255);
+
+  // When view timeline progress accounts for sticky offsets, the animation progress for this
+  // sticky target remains constant even as the scroll offset increases.
+  //
+  // For a 200px viewport with `animation-range: entry 100px entry 500px`, a sticky element pinned
+  // to the top has a stable entry position of 200px, yielding a progress of (200 - 100) / 400 =
+  // 0.25.
+  let expected = (0.25_f32 * 255.0).round() as i32;
+  let tol = 20;
+  for (chan, name) in [(r0, "r0"), (g0, "g0"), (b0, "b0"), (r1, "r1"), (g1, "g1"), (b1, "b1")] {
+    let diff = (chan as i32 - expected).abs();
+    assert!(
+      diff <= tol,
+      "expected {name}≈{expected}±{tol} (got {chan})"
+    );
+  }
+
+  // Also assert that the pixel is stable across scroll positions (regression for evaluating view
+  // timeline progress before sticky offsets are applied).
+  let stable_tol = 10;
+  for ((a, b), name) in [
+    ((r0, r1), "r"),
+    ((g0, g1), "g"),
+    ((b0, b1), "b"),
+  ] {
+    let diff = (a as i32 - b as i32).abs();
+    assert!(
+      diff <= stable_tol,
+      "expected {name} channel stable across scroll positions (diff {diff} > {stable_tol})"
+    );
+  }
+
+  Ok(())
+}

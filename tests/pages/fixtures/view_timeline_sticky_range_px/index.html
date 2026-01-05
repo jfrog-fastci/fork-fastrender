@@ -1,0 +1,39 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  html,
+  body {
+    margin: 0;
+    background: rgb(0, 0, 0);
+  }
+
+  .sticky {
+    position: sticky;
+    top: 0;
+    height: 100px;
+    background: rgb(255, 255, 255);
+
+    view-timeline: --t block;
+    animation-timeline: --t;
+    animation-range: entry 100px entry 500px;
+    animation-fill-mode: both;
+    animation-timing-function: linear;
+    animation-name: fade;
+  }
+
+  .spacer {
+    height: 2000px;
+  }
+
+  @keyframes fade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+</style>
+
+<div class="sticky"></div>
+<div class="spacer"></div>

@@ -4035,12 +4035,9 @@ fn paint_fragment_tree_with_state(
   scroll_state = scroll_result.state;
   let scroll = scroll_state.viewport;
 
-  if let Some(time_ms) = animation_time {
-    animation::apply_transitions(&mut fragment_tree, time_ms, viewport_size);
-  }
-  let animation_duration = animation_time.map(|ms| Duration::from_millis(ms.max(0.0) as u64));
-  animation::apply_animations(&mut fragment_tree, &scroll_state, animation_duration);
-
+  // Sticky positioning affects the geometry used by view timelines. Apply sticky offsets before
+  // sampling scroll-driven animations so view timeline progress reflects the element's sticky
+  // position (matching Chrome for `position: sticky` + `view-timeline`).
   let viewport_rect = Rect::from_xywh(0.0, 0.0, viewport_size.width, viewport_size.height);
   apply_sticky_offsets_to_root(
     font_context,
@@ -4058,6 +4055,12 @@ fn paint_fragment_tree_with_state(
       viewport_size,
     );
   }
+
+  if let Some(time_ms) = animation_time {
+    animation::apply_transitions(&mut fragment_tree, time_ms, viewport_size);
+  }
+  let animation_duration = animation_time.map(|ms| Duration::from_millis(ms.max(0.0) as u64));
+  animation::apply_animations(&mut fragment_tree, &scroll_state, animation_duration);
 
   let viewport_width_px = viewport_size.width.max(1.0).ceil() as u32;
   let viewport_height_px = viewport_size.height.max(1.0).ceil() as u32;
@@ -5117,13 +5120,15 @@ impl FastRender {
       scroll_state = scroll_result.state;
       let scroll = scroll_state.viewport;
 
+      // Apply sticky offsets before sampling scroll-driven animations so view timelines use the
+      // sticky-adjusted geometry.
+      self.apply_sticky_offsets_to_tree_with_scroll_state(&mut fragment_tree, &scroll_state);
+
       if let Some(time_ms) = animation_time {
         animation::apply_transitions(&mut fragment_tree, time_ms, viewport_size);
       }
       let animation_duration = animation_time.map(|ms| Duration::from_millis(ms.max(0.0) as u64));
       animation::apply_animations(&mut fragment_tree, &scroll_state, animation_duration);
-
-      self.apply_sticky_offsets_to_tree_with_scroll_state(&mut fragment_tree, &scroll_state);
 
       let viewport_width_px = viewport_size.width.max(1.0).ceil() as u32;
       let viewport_height_px = viewport_size.height.max(1.0).ceil() as u32;
@@ -6144,6 +6149,11 @@ impl FastRender {
         crate::scroll::apply_scroll_snap(&mut intermediates.fragment_tree, &scroll_state);
       let scroll_state = scroll_result.state;
 
+      self.apply_sticky_offsets_to_tree_with_scroll_state(
+        &mut intermediates.fragment_tree,
+        &scroll_state,
+      );
+
       if let Some(time_ms) = options.animation_time {
         animation::apply_transitions(&mut intermediates.fragment_tree, time_ms, viewport_size);
       }
@@ -6154,11 +6164,6 @@ impl FastRender {
         &mut intermediates.fragment_tree,
         &scroll_state,
         animation_duration,
-      );
-
-      self.apply_sticky_offsets_to_tree_with_scroll_state(
-        &mut intermediates.fragment_tree,
-        &scroll_state,
       );
 
       let mut display_list = DisplayListBuilder::new()
