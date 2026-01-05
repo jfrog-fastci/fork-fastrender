@@ -202,6 +202,85 @@ fn repaint_with_animation_composition_add_combines_translate() -> Result<()> {
 }
 
 #[test]
+fn repaint_with_animation_composition_add_combines_rotate() -> Result<()> {
+  let mut renderer = FastRender::new()?;
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(255, 255, 255); }
+      .box {
+        position: absolute;
+        left: 50px;
+        top: 50px;
+        width: 50px;
+        height: 50px;
+        background: rgb(255, 0, 0);
+        transform-origin: 0 0;
+        animation-name: r1, r2;
+        animation-duration: 1000ms, 1000ms;
+        animation-timing-function: linear, linear;
+        animation-fill-mode: forwards, forwards;
+        animation-composition: add;
+      }
+      .marker {
+        position: absolute;
+        left: 10px;
+        top: 10px;
+        width: 10px;
+        height: 10px;
+        background: rgb(0, 0, 255);
+      }
+      @keyframes r1 { to { rotate: 90deg; } }
+      @keyframes r2 { to { rotate: 90deg; } }
+    </style>
+    <div class="box"><div class="marker"></div></div>
+  "#;
+  let prepared = renderer.prepare_html(html, RenderOptions::new().with_viewport(100, 100))?;
+  let end = prepared.paint_with_options(PreparedPaintOptions::new().with_animation_time(1000.0))?;
+
+  // Two 90deg rotations should add to a 180deg rotation. With `transform-origin: 0 0` and the box
+  // positioned at (50px,50px), the marker should rotate into the top-left quadrant (a pixel like
+  // (35px,35px) becomes blue).
+  //
+  // If composition was incorrectly treated as replace, a single 90deg rotation would move the
+  // marker into the lower half of the viewport instead.
+  assert_eq!(pixel(&end, 35, 35), (0, 0, 255, 255));
+  assert_eq!(pixel(&end, 35, 65), (255, 255, 255, 255));
+  assert_eq!(pixel(&end, 65, 65), (255, 255, 255, 255));
+  Ok(())
+}
+
+#[test]
+fn repaint_with_animation_composition_add_combines_scale() -> Result<()> {
+  let mut renderer = FastRender::new()?;
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(255, 255, 255); }
+      .box {
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        transform-origin: 0 0;
+        animation-name: s1, s2;
+        animation-duration: 1000ms, 1000ms;
+        animation-timing-function: linear, linear;
+        animation-fill-mode: forwards, forwards;
+        animation-composition: add;
+      }
+      @keyframes s1 { to { scale: 2; } }
+      @keyframes s2 { to { scale: 2; } }
+    </style>
+    <div class="box"></div>
+  "#;
+  let prepared = renderer.prepare_html(html, RenderOptions::new().with_viewport(100, 100))?;
+  let end = prepared.paint_with_options(PreparedPaintOptions::new().with_animation_time(1000.0))?;
+
+  // Two scale(2) effects should multiply to scale(4), expanding the box to 40x40.
+  assert_eq!(pixel(&end, 30, 5), (255, 0, 0, 255));
+  assert_eq!(pixel(&end, 50, 5), (255, 255, 255, 255));
+  Ok(())
+}
+
+#[test]
 fn repaint_with_animation_delay_and_fill_mode_changes_pixels() -> Result<()> {
   let mut renderer = FastRender::new()?;
   let html = r#"

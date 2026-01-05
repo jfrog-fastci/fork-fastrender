@@ -3608,6 +3608,92 @@ fn apply_additive_animation_value(
       };
       true
     }
+    ("rotate", AnimatedValue::Rotate(effect)) => {
+      // `rotate: none` is an identity rotation and should not force the property into the angle
+      // form (which would incorrectly establish transform containing blocks).
+      if matches!(effect, RotateValue::None) {
+        return true;
+      }
+
+      let underlying = style.rotate;
+      if matches!(underlying, RotateValue::None) {
+        style.rotate = *effect;
+        return true;
+      }
+
+      fn axis_angle(value: RotateValue) -> Option<((f32, f32, f32), f32)> {
+        let (x, y, z, angle) = match value {
+          RotateValue::None => return None,
+          RotateValue::Angle(angle) => (0.0, 0.0, 1.0, angle),
+          RotateValue::AxisAngle { x, y, z, angle } => (x, y, z, angle),
+        };
+        if !x.is_finite() || !y.is_finite() || !z.is_finite() || !angle.is_finite() {
+          return None;
+        }
+        let len = (x * x + y * y + z * z).sqrt();
+        if !len.is_finite() || len < 1e-6 {
+          return None;
+        }
+        Some(((x / len, y / len, z / len), angle))
+      }
+
+      let Some(((ax, ay, az), a_angle)) = axis_angle(underlying) else {
+        return false;
+      };
+      let Some(((mut bx, mut by, mut bz), mut b_angle)) = axis_angle(*effect) else {
+        return false;
+      };
+
+      let dot = ax * bx + ay * by + az * bz;
+      // Axis-angle has a sign ambiguity: (a, θ) == (-a, -θ). Flip the effect axis so we can
+      // compare and add angles in a canonical direction.
+      if dot < 0.0 {
+        bx = -bx;
+        by = -by;
+        bz = -bz;
+        b_angle = -b_angle;
+      }
+
+      if (ax - bx).abs() > 1e-6 || (ay - by).abs() > 1e-6 || (az - bz).abs() > 1e-6 {
+        return false;
+      }
+
+      let angle = a_angle + b_angle;
+      if ax.abs() < 1e-6 && ay.abs() < 1e-6 {
+        style.rotate = RotateValue::Angle(angle * az.signum());
+      } else {
+        style.rotate = RotateValue::AxisAngle {
+          x: ax,
+          y: ay,
+          z: az,
+          angle,
+        };
+      }
+      true
+    }
+    ("scale", AnimatedValue::Scale(effect)) => {
+      // `scale: none` is an identity scaling and should not force the property into the numeric
+      // form (which would incorrectly establish transform containing blocks).
+      if matches!(effect, ScaleValue::None) {
+        return true;
+      }
+
+      let (ux, uy, uz) = match style.scale {
+        ScaleValue::None => (1.0, 1.0, 1.0),
+        ScaleValue::Values { x, y, z } => (x, y, z),
+      };
+      let (ex, ey, ez) = match *effect {
+        ScaleValue::None => (1.0, 1.0, 1.0),
+        ScaleValue::Values { x, y, z } => (x, y, z),
+      };
+
+      style.scale = ScaleValue::Values {
+        x: ux * ex,
+        y: uy * ey,
+        z: uz * ez,
+      };
+      true
+    }
     ("opacity", AnimatedValue::Opacity(effect)) => {
       style.opacity = clamp_progress(style.opacity + effect);
       true
