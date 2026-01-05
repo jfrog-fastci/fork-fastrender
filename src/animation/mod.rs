@@ -5461,6 +5461,22 @@ mod tests {
   }
 
   #[test]
+  fn sample_keyframes_resolves_keyframe_timing_functions_with_vars() {
+    let sheet = parse_stylesheet(
+      "@keyframes step {\
+        0% { --tf: step-end; opacity: 0; animation-timing-function: var(--tf); }\
+        100% { opacity: 1; }\
+      }",
+    )
+    .unwrap();
+    let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+    let rule = &keyframes[0];
+
+    // Halfway through the only interval, `step-end` should keep the start keyframe value.
+    assert!((sampled_opacity_with_timing(rule, 0.5, &TransitionTimingFunction::Linear) - 0.0).abs() < 1e-6);
+  }
+
+  #[test]
   fn sample_keyframes_interpolates_filter_against_none_as_identity() {
     let sheet =
       parse_stylesheet("@keyframes f { from { filter: url(#a); } to { filter: none; } }").unwrap();
