@@ -132,7 +132,8 @@ if ! [[ "${VIEWPORT}" =~ ^[0-9]+x[0-9]+$ ]]; then
 fi
 VIEWPORT_W="${VIEWPORT%x*}"
 VIEWPORT_H="${VIEWPORT#*x}"
-WINDOW_H="$((VIEWPORT_H + HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX))"
+CHROME_PADDING_CSS="${HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX}"
+WINDOW_H="$((VIEWPORT_H + CHROME_PADDING_CSS))"
 
 case "${JS,,}" in
   on|off) ;;
@@ -484,6 +485,7 @@ PY
   png_path="${OUT_DIR}/${stem}.png"
   chrome_log="${OUT_DIR}/${stem}.chrome.log"
   metadata_path="${OUT_DIR}/${stem}.json"
+  rm -f "${png_path}" "${metadata_path}"
   tmp_png_dir="${TMP_ROOT}/screenshots"
   mkdir -p "${tmp_png_dir}"
   tmp_png_path="${tmp_png_dir}/${stem}.png"
@@ -558,16 +560,25 @@ PY
   fi
 
   if [[ "${ran_ok}" -eq 1 && -s "${tmp_png_path}" ]]; then
+    rm -f "${png_path}"
     cropped_ok=0
-    if python3 - "${tmp_png_path}" "${png_path}" "${VIEWPORT_W}" "${VIEWPORT_H}" >>"${chrome_log}" 2>&1 <<'PY'
+    if python3 - "${tmp_png_path}" "${png_path}" "${VIEWPORT_W}" "${VIEWPORT_H}" "${DPR}" >>"${chrome_log}" 2>&1 <<'PY'
+import math
 import struct
 import sys
 import zlib
 
 in_path = sys.argv[1]
 out_path = sys.argv[2]
-crop_w = int(sys.argv[3])
-crop_h = int(sys.argv[4])
+viewport_w_css = int(sys.argv[3])
+viewport_h_css = int(sys.argv[4])
+dpr = float(sys.argv[5])
+
+def round_half_up(x: float) -> int:
+    return int(math.floor(x + 0.5))
+
+crop_w = max(1, round_half_up(viewport_w_css * dpr))
+crop_h = max(1, round_half_up(viewport_h_css * dpr))
 
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
 
@@ -713,7 +724,7 @@ PY
       cropped_ok=1
     fi
 
-    if [[ "${cropped_ok}" -ne 1 ]]; then
+    if [[ "${cropped_ok}" -ne 1 || ! -s "${png_path}" ]]; then
       fail=$((fail + 1))
       echo "✗ ${stem} (failed to crop screenshot; see ${chrome_log})" >&2
       continue
@@ -723,7 +734,7 @@ PY
     if [[ "${HEADLESS_FLAG}" == "--headless=new" ]]; then
       headless_mode="new"
     fi
-    python3 - "${metadata_path}" "${stem}" "${VIEWPORT_W}" "${VIEWPORT_H}" "${DPR}" "${JS,,}" "${headless_mode}" "${CHROME_VERSION}" "${base_url}" "${html_sha256}" <<'PY'
+    python3 - "${metadata_path}" "${stem}" "${VIEWPORT_W}" "${VIEWPORT_H}" "${DPR}" "${WINDOW_H}" "${CHROME_PADDING_CSS}" "${JS,,}" "${headless_mode}" "${CHROME_VERSION}" "${base_url}" "${html_sha256}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -733,15 +744,19 @@ stem = sys.argv[2]
 w = int(sys.argv[3])
 h = int(sys.argv[4])
 dpr = float(sys.argv[5])
-js = sys.argv[6]
-headless = sys.argv[7]
-chrome_version = sys.argv[8].strip()
-base_url = sys.argv[9].strip()
-html_sha256 = sys.argv[10].strip()
+window_h = int(sys.argv[6])
+padding_css = int(sys.argv[7])
+js = sys.argv[8]
+headless = sys.argv[9]
+chrome_version = sys.argv[10].strip()
+base_url = sys.argv[11].strip()
+html_sha256 = sys.argv[12].strip()
 
 data = {
     "stem": stem,
     "viewport": [w, h],
+    "chrome_window": [w, window_h],
+    "chrome_window_padding_css": padding_css,
     "dpr": dpr,
     "js": js,
     "headless": headless,

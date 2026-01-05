@@ -12,8 +12,10 @@ fn write_fake_chrome(dir: &Path) -> PathBuf {
   let path = dir.join("fake_chrome");
   // Minimal Chrome/Chromium stub:
   // - `--version` prints a plausible version string.
-  // - Any invocation that includes `--screenshot=<path>` writes a tiny PNG to that path.
+  // - Any invocation that includes `--screenshot=<path>` writes a deterministic PNG sized according
+  //   to `--window-size` and `--force-device-scale-factor`.
   let script = r#"#!/usr/bin/env python3
+import math
 import os
 import struct
 import sys
@@ -26,7 +28,9 @@ if "--version" in sys.argv:
 print("stub chrome args:", " ".join(sys.argv[1:]))
 
 screenshot = None
-window_size = None
+window_w = 1
+window_h = 1
+dpr = 1.0
 for idx, arg in enumerate(sys.argv):
     if arg.startswith("--screenshot="):
         screenshot = arg.split("=", 1)[1]
@@ -34,22 +38,28 @@ for idx, arg in enumerate(sys.argv):
     if arg == "--screenshot" and idx + 1 < len(sys.argv):
         screenshot = sys.argv[idx + 1]
         break
-
-for arg in sys.argv:
     if arg.startswith("--window-size="):
-        window_size = arg.split("=", 1)[1]
-        break
+        size = arg.split("=", 1)[1]
+        if "," in size:
+            try:
+                parts = size.split(",", 1)
+                window_w = max(1, int(parts[0]))
+                window_h = max(1, int(parts[1]))
+            except Exception:
+                pass
+    if arg.startswith("--force-device-scale-factor="):
+        try:
+            dpr = float(arg.split("=", 1)[1])
+        except Exception:
+            pass
+
+def round_half_up(x: float) -> int:
+    return int(math.floor(x + 0.5))
 
 if screenshot:
     os.makedirs(os.path.dirname(screenshot), exist_ok=True)
-    w, h = (1, 1)
-    if window_size and "," in window_size:
-        try:
-            parts = window_size.split(",", 1)
-            w = max(1, int(parts[0]))
-            h = max(1, int(parts[1]))
-        except Exception:
-            pass
+    w = max(1, round_half_up(window_w * dpr))
+    h = max(1, round_half_up(window_h * dpr))
 
     def chunk(typ: bytes, payload: bytes) -> bytes:
         crc = zlib.crc32(typ)
@@ -111,7 +121,11 @@ fn chrome_baseline_script_parses_flags_without_treating_them_as_page_stems() {
 "#,
   )
   .expect("write cached html");
-  fs::write(html_dir.join("page.html.meta"), "url: https://example.com/\n").expect("write meta");
+  fs::write(
+    html_dir.join("page.html.meta"),
+    "url: https://example.com/\n",
+  )
+  .expect("write meta");
 
   let fake_chrome = write_fake_chrome(&bin_dir);
   let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -146,7 +160,11 @@ fn chrome_baseline_script_parses_flags_without_treating_them_as_page_stems() {
   );
 
   let png_path = out_dir.join("page.png");
-  assert!(png_path.is_file(), "expected {} to exist", png_path.display());
+  assert!(
+    png_path.is_file(),
+    "expected {} to exist",
+    png_path.display()
+  );
   assert!(
     fs::metadata(&png_path).expect("stat png").len() > 0,
     "expected {} to be non-empty",
@@ -154,12 +172,16 @@ fn chrome_baseline_script_parses_flags_without_treating_them_as_page_stems() {
   );
 
   let img = image::open(&png_path).expect("decode output PNG");
-  assert_eq!(img.dimensions(), (200, 150));
+  assert_eq!(img.dimensions(), (250, 188));
 
   let chrome_log = fs::read_to_string(out_dir.join("page.chrome.log")).expect("read chrome log");
   assert!(
     chrome_log.contains("--window-size=200,238"),
     "expected headless baseline to pad window size then crop, got log:\n{chrome_log}"
+  );
+  assert!(
+    chrome_log.contains("--force-device-scale-factor=1.25"),
+    "expected headless baseline to apply the requested DPR, got log:\n{chrome_log}"
   );
 
   let meta: Value =
@@ -167,6 +189,8 @@ fn chrome_baseline_script_parses_flags_without_treating_them_as_page_stems() {
       .expect("parse json");
   assert_eq!(meta["stem"], "page");
   assert_eq!(meta["viewport"], serde_json::json!([200, 150]));
+  assert_eq!(meta["chrome_window"], serde_json::json!([200, 238]));
+  assert_eq!(meta["chrome_window_padding_css"], serde_json::json!(88));
   assert_eq!(meta["dpr"], serde_json::json!(1.25));
   assert_eq!(meta["js"], "off");
   assert_eq!(meta["headless"], "new");

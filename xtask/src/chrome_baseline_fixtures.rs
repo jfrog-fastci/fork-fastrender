@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, ValueEnum};
-use image::{GenericImage, GenericImageView, ImageBuffer, Rgba};
+use image::{GenericImage, ImageBuffer, Rgba};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -138,6 +138,10 @@ struct FixtureMetadata {
   fixture_dir: PathBuf,
   viewport: (u32, u32),
   dpr: f32,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  chrome_window: Option<(u32, u32)>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  chrome_window_padding_css: Option<u32>,
   media: &'static str,
   js: JsModeMetadata,
   input_sha256: String,
@@ -208,6 +212,12 @@ pub fn run_chrome_baseline_fixtures(args: ChromeBaselineFixturesArgs) -> Result<
   );
   println!();
 
+  let timeout = if args.timeout == 0 {
+    None
+  } else {
+    Some(Duration::from_secs(args.timeout))
+  };
+
   let mut ok = 0usize;
   let mut fail = 0usize;
 
@@ -220,6 +230,7 @@ pub fn run_chrome_baseline_fixtures(args: ChromeBaselineFixturesArgs) -> Result<
       &out_dir,
       temp_root.path(),
       &args,
+      timeout,
     ) {
       Ok(()) => {
         ok += 1;
@@ -251,6 +262,7 @@ fn render_fixture(
   out_dir: &Path,
   temp_root: &Path,
   args: &ChromeBaselineFixturesArgs,
+  timeout: Option<Duration>,
 ) -> Result<()> {
   let index_path = fixture.dir.join("index.html");
   if !index_path.is_file() {
@@ -296,10 +308,18 @@ fn render_fixture(
   fs::write(&patched_html, patched).with_context(|| format!("write {}", patched_html.display()))?;
   let url = file_url(&patched_html)?;
 
-  let timeout = if args.timeout == 0 {
-    None
-  } else {
-    Some(Duration::from_secs(args.timeout))
+  let chrome_window_meta: Option<((u32, u32), u32)> = match args.media {
+    MediaMode::Screen => Some((
+      (
+        args.viewport.0,
+        args
+          .viewport
+          .1
+          .saturating_add(HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
+      ),
+      HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX,
+    )),
+    MediaMode::Print => None,
   };
 
   let start = Instant::now();
@@ -341,23 +361,7 @@ fn render_fixture(
         );
       }
 
-       let img = image::open(&tmp_png_path)
-         .with_context(|| format!("decode screenshot {}", tmp_png_path.display()))?;
-       let (img_w, img_h) = img.dimensions();
-       if img_w < args.viewport.0 || img_h < args.viewport.1 {
-         bail!(
-           "chrome screenshot is {}x{} but requested viewport is {}x{}; see {}",
-           img_w,
-           img_h,
-           args.viewport.0,
-           args.viewport.1,
-           chrome_log.display()
-         );
-       }
-       let cropped = img.crop_imm(0, 0, args.viewport.0, args.viewport.1);
-       cropped
-         .save_with_format(&output_png, image::ImageFormat::Png)
-         .with_context(|| format!("write cropped screenshot {}", output_png.display()))?;
+      crop_chrome_screenshot(&tmp_png_path, &output_png, args.viewport, args.dpr)?;
 
       headless_used
     }
@@ -402,6 +406,7 @@ fn render_fixture(
   let metadata = build_fixture_metadata(
     fixture,
     args,
+    chrome_window_meta,
     headless_used,
     chrome_version,
     elapsed_ms,
@@ -417,6 +422,7 @@ fn render_fixture(
 fn build_fixture_metadata(
   fixture: &Fixture,
   args: &ChromeBaselineFixturesArgs,
+  chrome_window: Option<((u32, u32), u32)>,
   headless_used: HeadlessMode,
   chrome_version: Option<&str>,
   elapsed_ms: f64,
@@ -431,6 +437,8 @@ fn build_fixture_metadata(
     fixture_dir: fixture.dir.clone(),
     viewport: args.viewport,
     dpr: args.dpr,
+    chrome_window: chrome_window.map(|(window, _)| window),
+    chrome_window_padding_css: chrome_window.map(|(_, padding)| padding).filter(|v| *v > 0),
     media: args.media.as_str(),
     js: match args.js {
       JsMode::On => JsModeMetadata::On,
@@ -451,6 +459,40 @@ fn build_fixture_metadata(
 fn sha256_hex(bytes: &[u8]) -> String {
   let digest = Sha256::digest(bytes);
   digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn css_to_px(css_px: u32, dpr: f32) -> u32 {
+  ((css_px as f32) * dpr).round().max(0.0) as u32
+}
+
+fn crop_chrome_screenshot(
+  input_png: &Path,
+  output_png: &Path,
+  viewport: (u32, u32),
+  dpr: f32,
+) -> Result<()> {
+  let image = image::open(input_png).with_context(|| format!("decode {}", input_png.display()))?;
+  let expected_width = css_to_px(viewport.0, dpr);
+  let expected_height = css_to_px(viewport.1, dpr);
+
+  if image.width() < expected_width || image.height() < expected_height {
+    bail!(
+      "chrome screenshot is smaller than expected viewport: got {}x{}, expected at least {}x{} (viewport {}x{} @ dpr {})",
+      image.width(),
+      image.height(),
+      expected_width,
+      expected_height,
+      viewport.0,
+      viewport.1,
+      dpr
+    );
+  }
+
+  let cropped = image.crop_imm(0, 0, expected_width, expected_height);
+  cropped
+    .save_with_format(output_png, image::ImageFormat::Png)
+    .with_context(|| format!("write {}", output_png.display()))?;
+  Ok(())
 }
 
 fn compute_assets_sha256(fixture_dir: &Path) -> Result<Option<String>> {
@@ -1481,6 +1523,7 @@ mod tests {
     let metadata = build_fixture_metadata(
       &fixture,
       &args,
+      None,
       super::HeadlessMode::New,
       Some("Chromium 123.0.0.0"),
       12.0,
