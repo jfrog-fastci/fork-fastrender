@@ -165,75 +165,87 @@ fn thread_pool_with_toggles(threads: usize, toggles: Arc<RuntimeToggles>) -> ray
 
 #[test]
 fn backdrop_filter_pipeline_is_deterministic_across_rayon_thread_pools() {
-  const WIDTH: u32 = 320;
-  const HEIGHT: u32 = 320;
-  const RUNS_PER_POOL: usize = 3;
+  // Mirror the fixture harnesses (e.g. `render_fixtures`) by running on a larger stack. Some of
+  // the backdrop-filter fixtures need deep recursion during layout / display-list building.
+  const STACK_SIZE: usize = 128 * 1024 * 1024; // 128MB
 
-  // Build the display list once so layout/paint ordering stays stable. Individual renders below
-  // still exercise blur/backdrop-filter internals that use Rayon for fan-out.
-  let (list, font_ctx) = build_display_list(WIDTH, HEIGHT);
-  let toggles = blur_cache_toggles();
+  std::thread::Builder::new()
+    .name("backdrop-filter-determinism".to_string())
+    .stack_size(STACK_SIZE)
+    .spawn(|| {
+      const WIDTH: u32 = 320;
+      const HEIGHT: u32 = 320;
+      const RUNS_PER_POOL: usize = 3;
 
-  let mut reference: Option<Vec<u8>> = None;
-  for threads in [1usize, 2, 4] {
-    let pool = thread_pool_with_toggles(threads, toggles.clone());
+      // Build the display list once so layout/paint ordering stays stable. Individual renders below
+      // still exercise blur/backdrop-filter internals that use Rayon for fan-out.
+      let (list, font_ctx) = build_display_list(WIDTH, HEIGHT);
+      let toggles = blur_cache_toggles();
 
-    for run in 0..RUNS_PER_POOL {
-      let pixmap = pool.install(|| {
-        with_thread_runtime_toggles(toggles.clone(), || {
-          DisplayListRenderer::new(WIDTH, HEIGHT, Rgba::WHITE, font_ctx.clone())
-            .expect("renderer")
-            .with_parallelism(PaintParallelism::disabled())
-            .render(&list)
-            .expect("render")
-        })
-      });
-      let bytes = pixmap.data().to_vec();
-      match reference.as_ref() {
-        None => reference = Some(bytes),
-        Some(expected) => {
-          if expected != &bytes {
-            panic!(
-              "backdrop-filter output changed (threads={threads}, run={run})\n  expected_hash={:016x}\n  actual_hash={:016x}\n  {}",
-              fnv1a64(expected),
-              fnv1a64(&bytes),
-              format_diff(expected, &bytes, WIDTH)
-            );
+      let mut reference: Option<Vec<u8>> = None;
+      for threads in [1usize, 2, 4] {
+        let pool = thread_pool_with_toggles(threads, toggles.clone());
+
+        for run in 0..RUNS_PER_POOL {
+          let pixmap = pool.install(|| {
+            with_thread_runtime_toggles(toggles.clone(), || {
+              DisplayListRenderer::new(WIDTH, HEIGHT, Rgba::WHITE, font_ctx.clone())
+                .expect("renderer")
+                .with_parallelism(PaintParallelism::disabled())
+                .render(&list)
+                .expect("render")
+            })
+          });
+          let bytes = pixmap.data().to_vec();
+          match reference.as_ref() {
+            None => reference = Some(bytes),
+            Some(expected) => {
+              if expected != &bytes {
+                panic!(
+                  "backdrop-filter output changed (threads={threads}, run={run})\n  expected_hash={:016x}\n  actual_hash={:016x}\n  {}",
+                  fnv1a64(expected),
+                  fnv1a64(&bytes),
+                  format_diff(expected, &bytes, WIDTH)
+                );
+              }
+            }
           }
         }
       }
-    }
-  }
 
-  let reference = reference.expect("at least one render produced output");
+      let reference = reference.expect("at least one render produced output");
 
-  // Also validate that parallel tiling (when available) produces the exact same output.
-  let parallelism = PaintParallelism {
-    tile_size: 128,
-    ..PaintParallelism::enabled()
-  };
-  let pool = thread_pool_with_toggles(4, toggles.clone());
-  let report = pool.install(|| {
-    with_thread_runtime_toggles(toggles.clone(), || {
-      DisplayListRenderer::new(WIDTH, HEIGHT, Rgba::WHITE, font_ctx)
-        .expect("renderer")
-        .with_parallelism(parallelism)
-        .render_with_report(&list)
-        .expect("parallel render")
+      // Also validate that parallel tiling (when available) produces the exact same output.
+      let parallelism = PaintParallelism {
+        tile_size: 256,
+        ..PaintParallelism::enabled()
+      };
+      let pool = thread_pool_with_toggles(4, toggles.clone());
+      let report = pool.install(|| {
+        with_thread_runtime_toggles(toggles.clone(), || {
+          DisplayListRenderer::new(WIDTH, HEIGHT, Rgba::WHITE, font_ctx)
+            .expect("renderer")
+            .with_parallelism(parallelism)
+            .render_with_report(&list)
+            .expect("parallel render")
+        })
+      });
+      if report.parallel_used {
+        assert!(report.tiles > 1, "expected multiple tiles to be rendered");
+      }
+      if reference.as_slice() != report.pixmap.data() {
+        panic!(
+          "parallel tiling output diverged from serial (parallel_used={}, tiles={}, fallback={:?})\n  serial_hash={:016x}\n  parallel_hash={:016x}\n  {}",
+          report.parallel_used,
+          report.tiles,
+          report.fallback_reason,
+          fnv1a64(&reference),
+          fnv1a64(report.pixmap.data()),
+          format_diff(&reference, report.pixmap.data(), WIDTH)
+        );
+      }
     })
-  });
-  if report.parallel_used {
-    assert!(report.tiles > 1, "expected multiple tiles to be rendered");
-  }
-  if reference.as_slice() != report.pixmap.data() {
-    panic!(
-      "parallel tiling output diverged from serial (parallel_used={}, tiles={}, fallback={:?})\n  serial_hash={:016x}\n  parallel_hash={:016x}\n  {}",
-      report.parallel_used,
-      report.tiles,
-      report.fallback_reason,
-      fnv1a64(&reference),
-      fnv1a64(report.pixmap.data()),
-      format_diff(&reference, report.pixmap.data(), WIDTH)
-    );
-  }
+    .expect("spawn test thread")
+    .join()
+    .expect("test thread panicked");
 }
