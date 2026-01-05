@@ -313,6 +313,8 @@ struct ConstraintKey {
 
 const BREAK_EPSILON: f32 = 0.01;
 const LINE_FALLBACK_EPSILON: f32 = 1.0;
+const SIBLING_LIMIT_FALLBACK_MAX: f32 = 50.0;
+const SIBLING_LIMIT_FALLBACK_RATIO: f32 = 0.15;
 
 impl FragmentationAnalyzer {
   pub fn new(
@@ -541,9 +543,17 @@ impl FragmentationAnalyzer {
       // because fragment stacking assumes fixed-size fragmentainers (`fragmentainer_size +
       // fragmentainer_gap`). Prefer the natural fragmentainer limit unless the sibling boundary is
       // effectively at the limit.
-      if kind_rank == 0 && clamped + LINE_FALLBACK_EPSILON < limit {
-        self.advance_line_starts(limit);
-        return limit;
+      if kind_rank == 0 {
+        // Allow a small amount of slack for sibling boundaries near the limit: the closer the
+        // boundary is, the less it perturbs the flow→fragment mapping. Cap the slack so huge pages
+        // do not accept large shifts.
+        let sibling_limit_fallback = (fragmentainer * SIBLING_LIMIT_FALLBACK_RATIO)
+          .min(SIBLING_LIMIT_FALLBACK_MAX)
+          .max(LINE_FALLBACK_EPSILON);
+        if clamped + sibling_limit_fallback < limit {
+          self.advance_line_starts(limit);
+          return limit;
+        }
       }
       self.advance_line_starts(clamped);
       return clamped;
@@ -1700,20 +1710,6 @@ fn collect_atomic_range_for_node(
     .map(|size| height <= size + BREAK_EPSILON)
     .unwrap_or(true);
   if style.float.is_floating() {
-    ranges.push(AtomicRange { start, end });
-  }
-
-  // Leaf-level fragments that fit within a fragmentainer are effectively indivisible: they do not
-  // contain any internal break opportunities, so splitting them would require clipping their
-  // border box. Treat them as atomic so boundary selection pushes the entire fragment into the
-  // next fragmentainer when it would otherwise be split.
-  let is_leaf_atomic = fits_fragmentainer
-    && node.children.is_empty()
-    && matches!(
-      node.content,
-      FragmentContent::Block { .. } | FragmentContent::Replaced { .. }
-    );
-  if is_leaf_atomic {
     ranges.push(AtomicRange { start, end });
   }
 
