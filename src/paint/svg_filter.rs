@@ -4125,7 +4125,16 @@ fn apply_primitive(
       else {
         return Ok(None);
       };
-      let region = clip_region(primary.region.union(map.region), filter_region);
+      let margin_x = 0.5 * scale_x_px.abs();
+      let margin_y = 0.5 * scale_y_px.abs();
+      let region = if primary.region.width() > 0.0 && primary.region.height() > 0.0 {
+        clip_region(
+          inflate_rect_xy(primary.region, margin_x, margin_y),
+          filter_region,
+        )
+      } else {
+        clip_region(primary.region, filter_region)
+      };
       Some(FilterResult::new(output, region, filter_region))
     }
     FilterPrimitive::ConvolveMatrix {
@@ -5479,6 +5488,8 @@ fn apply_displacement_map(
   color_interpolation_filters: ColorInterpolationFilters,
 ) -> RenderResult<Option<Pixmap>> {
   check_active(RenderStage::Paint)?;
+  let scale_x = if scale_x.is_finite() { scale_x } else { 0.0 };
+  let scale_y = if scale_y.is_finite() { scale_y } else { 0.0 };
   let mut out = match new_pixmap(primary.width(), primary.height()) {
     Some(pixmap) => pixmap,
     None => return Ok(None),
@@ -5502,8 +5513,6 @@ fn apply_displacement_map(
     (primary, map)
   };
 
-  let scale_x = if scale_x.is_finite() { scale_x } else { 0.0 };
-  let scale_y = if scale_y.is_finite() { scale_y } else { 0.0 };
   // Chrome clamps the displacement map input (`in2`) to its primitive subregion rather than
   // treating pixels outside the subregion as transparent black. We model this by clamping
   // sampling coordinates to the resolved `FilterResult::region` of the map input.
@@ -7130,6 +7139,140 @@ mod tests {
       (0, 0, 0, 0),
     ];
     assert_eq!(pixels_to_vec(&out), expected);
+  }
+
+  #[test]
+  fn displacement_map_region_inflates_by_half_scale_and_clips_to_filter_region() {
+    let mut pixmap = new_pixmap(10, 10).unwrap();
+    for px in pixmap.pixels_mut() {
+      *px = PremultipliedColorU8::TRANSPARENT;
+    }
+    let stride = pixmap.width() as usize;
+    for y in 4..6usize {
+      for x in 4..6usize {
+        pixmap.pixels_mut()[y * stride + x] = premul(255, 0, 0, 255);
+      }
+    }
+
+    let primary_region = Rect::from_xywh(4.0, 4.0, 2.0, 2.0);
+    // Use a smaller primitive region to ensure the inflated bounds are clipped.
+    let filter_region = Rect::from_xywh(0.0, 0.0, 6.0, 6.0);
+    let source = FilterResult::new(pixmap.clone(), primary_region, filter_region);
+
+    let prim = FilterPrimitive::DisplacementMap {
+      in1: FilterInput::SourceGraphic,
+      in2: FilterInput::SourceGraphic,
+      scale: 4.0,
+      x_channel: ChannelSelector::R,
+      y_channel: ChannelSelector::G,
+    };
+
+    let standard_inputs = ResolvedStandardInputs {
+      background_image: None,
+      fill_paint: None,
+      stroke_paint: None,
+    };
+    let mut filter = SvgFilter {
+      color_interpolation_filters: ColorInterpolationFilters::LinearRGB,
+      steps: Vec::new(),
+      region: SvgFilterRegion::default_for_units(SvgFilterUnits::UserSpaceOnUse),
+      filter_res: None,
+      primitive_units: SvgFilterUnits::UserSpaceOnUse,
+      fingerprint: 0,
+    };
+    filter.refresh_fingerprint();
+
+    let out = apply_primitive(
+      &filter,
+      &filter_region,
+      &prim,
+      &source,
+      &HashMap::new(),
+      &source,
+      &standard_inputs,
+      1.0,
+      1.0,
+      (0.0, 0.0),
+      filter_region,
+      ColorInterpolationFilters::SRGB,
+      None,
+    )
+    .unwrap()
+    .expect("primitive output");
+
+    let expected = clip_region(inflate_rect_xy(primary_region, 2.0, 2.0), filter_region);
+    assert_eq!(out.region, expected);
+  }
+
+  #[test]
+  fn displacement_map_region_respects_per_axis_scaling() {
+    let mut pixmap = new_pixmap(10, 10).unwrap();
+    for px in pixmap.pixels_mut() {
+      *px = PremultipliedColorU8::TRANSPARENT;
+    }
+    let stride = pixmap.width() as usize;
+    for y in 4..6usize {
+      for x in 4..6usize {
+        pixmap.pixels_mut()[y * stride + x] = premul(255, 0, 0, 255);
+      }
+    }
+
+    let primary_region = Rect::from_xywh(4.0, 4.0, 2.0, 2.0);
+    let filter_region = filter_region_for_pixmap(&pixmap);
+    let source = FilterResult::new(pixmap.clone(), primary_region, filter_region);
+
+    let prim = FilterPrimitive::DisplacementMap {
+      in1: FilterInput::SourceGraphic,
+      in2: FilterInput::SourceGraphic,
+      scale: 4.0,
+      x_channel: ChannelSelector::R,
+      y_channel: ChannelSelector::G,
+    };
+
+    let standard_inputs = ResolvedStandardInputs {
+      background_image: None,
+      fill_paint: None,
+      stroke_paint: None,
+    };
+    let mut filter = SvgFilter {
+      color_interpolation_filters: ColorInterpolationFilters::LinearRGB,
+      steps: Vec::new(),
+      region: SvgFilterRegion::default_for_units(SvgFilterUnits::UserSpaceOnUse),
+      filter_res: None,
+      primitive_units: SvgFilterUnits::UserSpaceOnUse,
+      fingerprint: 0,
+    };
+    filter.refresh_fingerprint();
+
+    let scale_x = 2.0;
+    let scale_y = 1.0;
+    let css_bbox = Rect::from_xywh(
+      filter_region.x() / scale_x,
+      filter_region.y() / scale_y,
+      filter_region.width() / scale_x,
+      filter_region.height() / scale_y,
+    );
+
+    let out = apply_primitive(
+      &filter,
+      &css_bbox,
+      &prim,
+      &source,
+      &HashMap::new(),
+      &source,
+      &standard_inputs,
+      scale_x,
+      scale_y,
+      (0.0, 0.0),
+      filter_region,
+      ColorInterpolationFilters::SRGB,
+      None,
+    )
+    .unwrap()
+    .expect("primitive output");
+
+    let expected = clip_region(inflate_rect_xy(primary_region, 4.0, 2.0), filter_region);
+    assert_eq!(out.region, expected);
   }
 
   #[test]
