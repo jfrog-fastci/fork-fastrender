@@ -6,6 +6,7 @@ mod avif_test;
 mod backdrop_filter_parallel_test;
 mod backend_parity;
 mod backface_culling_test;
+mod canvas_background_propagation_test;
 mod canvas_test;
 mod color_bitmap_glyph_test;
 mod color_font_cache_regression;

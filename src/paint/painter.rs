@@ -2300,19 +2300,19 @@ impl Painter {
       fragment
     };
 
-    // HTML canvas background propagation: prefer a non-transparent body background (usually the
-    // first renderable child) over the html element's own background.
+    if let Some(style) = html.style.clone() {
+      if Self::has_paintable_background(&style) {
+        return Some(style);
+      }
+    }
+
+    // HTML canvas background propagation: when the root element background is transparent,
+    // propagate a paintable body background (usually the first renderable child).
     for child in html.children.iter() {
       if let Some(style) = child.style.clone() {
         if Self::has_paintable_background(&style) {
           return Some(style);
         }
-      }
-    }
-
-    if let Some(style) = html.style.clone() {
-      if Self::has_paintable_background(&style) {
-        return Some(style);
       }
     }
 

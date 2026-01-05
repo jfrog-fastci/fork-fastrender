@@ -203,6 +203,12 @@ pub struct DisplayListBuilder {
   background_tiles: Option<Arc<AtomicU64>>,
   background_layers: Option<Arc<AtomicU64>>,
   background_pattern_fast_paths: Option<Arc<AtomicU64>>,
+  /// When extending an element background to the canvas (HTML canvas background propagation),
+  /// suppress painting the background on the original element to avoid double-paint seams.
+  canvas_background_suppress_box_id: Option<usize>,
+  /// Optional override for the size used when resolving `background-size:auto` for generated
+  /// images while painting the propagated canvas background.
+  background_size_override: Option<(f32, f32)>,
   estimated_fragments: Option<usize>,
   scroll_state: ScrollState,
   max_iframe_depth: usize,
@@ -992,6 +998,8 @@ impl DisplayListBuilder {
       background_layers: paint_diagnostics_enabled().then(|| Arc::new(AtomicU64::new(0))),
       background_pattern_fast_paths: paint_diagnostics_enabled()
         .then(|| Arc::new(AtomicU64::new(0))),
+      canvas_background_suppress_box_id: None,
+      background_size_override: None,
       estimated_fragments: None,
       scroll_state: ScrollState::default(),
       max_iframe_depth: DEFAULT_MAX_IFRAME_DEPTH,
@@ -1030,6 +1038,8 @@ impl DisplayListBuilder {
       background_layers: paint_diagnostics_enabled().then(|| Arc::new(AtomicU64::new(0))),
       background_pattern_fast_paths: paint_diagnostics_enabled()
         .then(|| Arc::new(AtomicU64::new(0))),
+      canvas_background_suppress_box_id: None,
+      background_size_override: None,
       estimated_fragments: None,
       scroll_state: ScrollState::default(),
       max_iframe_depth: DEFAULT_MAX_IFRAME_DEPTH,
@@ -1604,6 +1614,9 @@ impl DisplayListBuilder {
 
     if paint_self {
       if let Some(style) = style_opt {
+        let suppress_background = self
+          .canvas_background_suppress_box_id
+          .is_some_and(|id| Self::get_box_id(fragment) == Some(id));
         let (decoration_rect, decoration_clip) =
           Self::decoration_rect_and_clip(fragment, absolute_rect, style);
         let decoration_clip_pushed = decoration_clip.is_some();
@@ -1654,7 +1667,9 @@ impl DisplayListBuilder {
               false,
             );
           }
-          self.emit_background_from_style_with_rects(rects, style);
+          if !suppress_background {
+            self.emit_background_from_style_with_rects(rects, style);
+          }
           if has_inset {
             self.emit_box_shadows_from_style_with_base(
               rects.padding,
@@ -1665,13 +1680,17 @@ impl DisplayListBuilder {
             );
           }
         } else if decoration_rect == absolute_rect {
-          if let Some(rects) = absolute_rects.as_ref() {
-            self.emit_background_from_style_with_rects(rects, style);
-          } else {
-            self.emit_background_from_style(decoration_rect, style);
+          if !suppress_background {
+            if let Some(rects) = absolute_rects.as_ref() {
+              self.emit_background_from_style_with_rects(rects, style);
+            } else {
+              self.emit_background_from_style(decoration_rect, style);
+            }
           }
         } else {
-          self.emit_background_from_style(decoration_rect, style);
+          if !suppress_background {
+            self.emit_background_from_style(decoration_rect, style);
+          }
         }
 
         self.emit_border_from_style(decoration_rect, style);
@@ -1976,13 +1995,15 @@ impl DisplayListBuilder {
         if target_w <= context_bounds.width() && target_h <= context_bounds.height() {
           return None;
         }
-        let style = Self::root_background_style(fragment)?;
+        let (style, suppress_box_id) = Self::root_background_style(fragment)?;
         if !Self::has_paintable_background(&style) {
           return None;
         }
+        self.canvas_background_suppress_box_id = suppress_box_id;
         Some((
           Rect::from_xywh(context_bounds.x(), context_bounds.y(), target_w, target_h),
           style,
+          Some((context_bounds.width(), context_bounds.height())),
         ))
       })
     } else {
@@ -2238,8 +2259,8 @@ impl DisplayListBuilder {
     }
 
     if is_root && !has_effects {
-      if let Some((rect, style)) = root_background.as_ref() {
-        self.emit_background_from_style(*rect, style);
+      if let Some((rect, style, size_override)) = root_background.as_ref() {
+        self.emit_background_from_style_with_size_override(*rect, style, *size_override);
       }
       if skip_contents {
         self.emit_fragment_list_shallow(
@@ -2357,8 +2378,8 @@ impl DisplayListBuilder {
       pushed_clips += 1;
     }
 
-    if let Some((rect, style)) = root_background.as_ref() {
-      self.emit_background_from_style(*rect, style);
+    if let Some((rect, style, size_override)) = root_background.as_ref() {
+      self.emit_background_from_style_with_size_override(*rect, style, *size_override);
     }
     // Paint the stacking context root (backgrounds, borders, shadows) before applying overflow
     // clipping so outer effects remain visible.
@@ -3997,6 +4018,8 @@ impl DisplayListBuilder {
       background_tiles: self.background_tiles.clone(),
       background_layers: self.background_layers.clone(),
       background_pattern_fast_paths: self.background_pattern_fast_paths.clone(),
+      canvas_background_suppress_box_id: self.canvas_background_suppress_box_id,
+      background_size_override: self.background_size_override,
       estimated_fragments: self.estimated_fragments,
       scroll_state: self.scroll_state.clone(),
       max_iframe_depth: self.max_iframe_depth,
@@ -4401,28 +4424,28 @@ impl DisplayListBuilder {
         .any(|layer| layer.image.is_some())
   }
 
-  fn root_background_style(fragment: &FragmentNode) -> Option<Arc<ComputedStyle>> {
+  fn root_background_style(fragment: &FragmentNode) -> Option<(Arc<ComputedStyle>, Option<usize>)> {
     let html = if fragment.children.len() == 1 {
       fragment.children.first().unwrap_or(fragment)
     } else {
       fragment
     };
 
+    if let Some(style) = html.style.clone() {
+      if Self::has_paintable_background(&style) {
+        return Some((style, Self::get_box_id(html)));
+      }
+    }
+
     for child in html.children.iter() {
       if let Some(style) = child.style.clone() {
         if Self::has_paintable_background(&style) {
-          return Some(style);
+          return Some((style, Self::get_box_id(child)));
         }
       }
     }
 
-    if let Some(style) = html.style.clone() {
-      if Self::has_paintable_background(&style) {
-        return Some(style);
-      }
-    }
-
-    fragment.style.clone()
+    None
   }
 
   /// Emits a background fill for a fragment
@@ -4462,6 +4485,18 @@ impl DisplayListBuilder {
 
     let rects = Self::background_rects(rect, style, self.viewport);
     self.emit_background_from_style_with_rects(&rects, style);
+  }
+
+  fn emit_background_from_style_with_size_override(
+    &mut self,
+    rect: Rect,
+    style: &ComputedStyle,
+    size_override: Option<(f32, f32)>,
+  ) {
+    let prev = self.background_size_override;
+    self.background_size_override = size_override;
+    self.emit_background_from_style(rect, style);
+    self.background_size_override = prev;
   }
 
   fn emit_background_from_style_with_rects(
@@ -4628,13 +4663,27 @@ impl DisplayListBuilder {
     );
 
     let compute_tile_metrics = |img_w: f32, img_h: f32| -> Option<(f32, f32, f32, f32)> {
+      let (size_area_w, size_area_h) = if img_w <= 0.0
+        && img_h <= 0.0
+        && self.background_size_override.is_some()
+        && matches!(
+          layer.size,
+          BackgroundSize::Explicit(BackgroundSizeComponent::Auto, BackgroundSizeComponent::Auto)
+        )
+      {
+        self
+          .background_size_override
+          .unwrap_or((origin_rect.width(), origin_rect.height()))
+      } else {
+        (origin_rect.width(), origin_rect.height())
+      };
       let (mut tile_w, mut tile_h) = Self::compute_background_size(
         layer,
         style.font_size,
         style.root_font_size,
         self.viewport,
-        origin_rect.width(),
-        origin_rect.height(),
+        size_area_w,
+        size_area_h,
         img_w,
         img_h,
       );
