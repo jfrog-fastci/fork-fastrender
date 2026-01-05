@@ -7153,6 +7153,7 @@ mod tests {
       available_space,
       Some(260.0),
       &taffy::style::Style::default(),
+      &FxHashSet::default(),
       &fc.factory,
       &mut measure_cache,
       &mut measured_fragments,
