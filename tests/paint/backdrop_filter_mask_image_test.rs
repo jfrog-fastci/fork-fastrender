@@ -82,3 +82,42 @@ fn backdrop_filter_respects_mask_image() {
   // Masked-in half shows the inverted backdrop (red -> cyan).
   assert_eq!(pixel(&pixmap, 75, 10), (0, 255, 255, 255));
 }
+
+#[test]
+fn backdrop_filter_respects_webkit_mask_image() {
+  // Real-world stylesheets frequently use `-webkit-mask-*` fallbacks and may omit the unprefixed
+  // spelling. Ensure these vendor-prefixed declarations still influence backdrop-filter output.
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #bg { position: absolute; inset: 0; background: rgb(255 0 0); }
+      #overlay {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100px;
+        height: 20px;
+        backdrop-filter: invert(1);
+        -webkit-mask-image: linear-gradient(to right, transparent 0% 50%, black 50% 100%);
+        -webkit-mask-mode: alpha;
+        -webkit-mask-repeat: no-repeat;
+        -webkit-mask-size: 100% 100%;
+        -webkit-mask-position: 0 0;
+      }
+    </style>
+    <div id="bg"></div>
+    <div id="overlay"></div>
+  "#;
+
+  let (list, font_ctx) = build_display_list(html, 100, 20);
+  let pixmap = DisplayListRenderer::new(100, 20, Rgba::WHITE, font_ctx)
+    .expect("renderer")
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("render");
+
+  // Masked-out half stays untouched.
+  assert_eq!(pixel(&pixmap, 10, 10), (255, 0, 0, 255));
+  // Masked-in half shows the inverted backdrop (red -> cyan).
+  assert_eq!(pixel(&pixmap, 75, 10), (0, 255, 255, 255));
+}

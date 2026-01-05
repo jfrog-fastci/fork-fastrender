@@ -78,3 +78,35 @@ fn filter_applies_to_backdrop_filter_output() {
   // Outside the overlay remains untouched.
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
+
+#[test]
+fn webkit_backdrop_filter_property_is_honored() {
+  // Many production sites still ship `-webkit-backdrop-filter` for Safari and occasionally omit
+  // the unprefixed spelling. Ensure we alias it to `backdrop-filter` so the effect applies.
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #bg { position: absolute; inset: 0; background: rgb(255 0 0); }
+      #overlay {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 40px;
+        height: 40px;
+        -webkit-backdrop-filter: invert(1);
+      }
+    </style>
+    <div id="bg"></div>
+    <div id="overlay"></div>
+  "#;
+
+  let (list, font_ctx) = build_display_list(html, 64, 64);
+  let pixmap = DisplayListRenderer::new(64, 64, Rgba::WHITE, font_ctx)
+    .expect("renderer")
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("render");
+
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
