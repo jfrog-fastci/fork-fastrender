@@ -103,6 +103,19 @@ For determinism, the Chrome baseline step disables CSS animations/transitions by
 
 - `cargo xtask chrome-baseline-fixtures --allow-animations`
 
+### Determinism audits (offline fixtures)
+
+When diagnosing paint nondeterminism (often scheduling-dependent under high parallelism), there are two complementary harnesses:
+
+- Multi-process run-to-run diffs with an HTML report: `cargo xtask fixture-determinism`
+- In-process repeat/shuffle harness (captures raw `Pixmap::data()` bytes; can save per-variant PNGs):
+
+```bash
+cargo run --release --bin render_fixtures -- \
+  --fixtures preserve_3d_stack --jobs 8 \
+  --repeat 10 --shuffle --fail-on-nondeterminism --save-variants
+```
+
 Artifacts and PR guidance:
 
 - Report: `target/fixture_chrome_diff/report.html` (plus `report.json` and per-fixture PNG/log/metadata artifacts under `target/fixture_chrome_diff/{chrome,fastrender,...}`).
