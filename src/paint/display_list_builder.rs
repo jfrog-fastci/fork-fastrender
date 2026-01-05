@@ -4328,7 +4328,18 @@ impl DisplayListBuilder {
 
       FragmentContent::Replaced { replaced_type, .. } => {
         if let ReplacedType::FormControl(control) = replaced_type {
-          if self.emit_form_control(control, fragment, rect) {
+          let style = fragment.style.as_deref();
+          let (content_rect, clip_radii) = self.replaced_content_rect_and_radii(rect, style);
+          let clip_contents =
+            Self::replaced_content_clip_item(style, content_rect, content_rect, clip_radii);
+          if let Some(clip) = clip_contents.as_ref() {
+            self.list.push(DisplayItem::PushClip(clip.clone()));
+          }
+          let painted = self.emit_form_control(control, fragment, content_rect);
+          if clip_contents.is_some() {
+            self.list.push(DisplayItem::PopClip);
+          }
+          if painted {
             return;
           }
         }
