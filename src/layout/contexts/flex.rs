@@ -3574,32 +3574,16 @@ fn layout_cache_key(
   constraints: &LayoutConstraints,
   viewport: Size,
 ) -> Option<(Option<u32>, Option<u32>)> {
-  fn quantize(val: f32) -> f32 {
-    let abs = val.abs();
-    let step = if abs > 4096.0 {
-      64.0
-    } else if abs > 2048.0 {
-      32.0
-    } else if abs > 1024.0 {
-      16.0
-    } else if abs > 512.0 {
-      8.0
-    } else if abs > 256.0 {
-      4.0
-    } else {
-      2.0
-    };
-    let quantized = (val / step).round() * step;
-    if quantized == 0.0 {
-      0.0
-    } else {
-      quantized
-    }
-  }
-
   let map_space = |space: CrateAvailableSpace, vp: f32, neg_offset: f32| -> Option<u32> {
     match space {
-      CrateAvailableSpace::Definite(v) => Some(f32_to_canonical_bits(quantize(v))),
+      // Do *not* quantize definite sizes here.
+      //
+      // The flex layout cache stores a fragment computed with the original constraints. If we
+      // quantize sizes in the cache key, multiple distinct constraint values may collide to the
+      // same key. Then whichever layout runs first determines the stored fragment, and later
+      // layouts can reuse an incompatible fragment, making output order-dependent (and therefore
+      // non-deterministic under parallel traversal).
+      CrateAvailableSpace::Definite(v) => Some(f32_to_canonical_bits(v)),
       CrateAvailableSpace::MinContent => Some(f32_to_canonical_bits(-vp - neg_offset)),
       CrateAvailableSpace::MaxContent => Some(f32_to_canonical_bits(-vp - (neg_offset + 1.0))),
       CrateAvailableSpace::Indefinite => None,
@@ -6806,6 +6790,122 @@ mod tests {
     assert_eq!(
       layout_cache_key(&constraints_zero, viewport),
       layout_cache_key(&constraints_neg_zero, viewport)
+    );
+  }
+
+  #[test]
+  fn flex_layout_cache_is_order_independent_for_previously_quantized_constraints() {
+    // Regresses: `layout_cache_key` used to quantize definite widths to 2px buckets. Layout
+    // fragments were cached under that key, but computed using the original (unquantized)
+    // constraints.
+    //
+    // Two distinct widths that rounded into the same bucket (e.g. 99px and 100px) could therefore
+    // share a cache entry, and whichever layout happened to run first would determine the reused
+    // fragment, making output depend on evaluation order.
+
+    fn bounds_signature(fragment: &FragmentNode) -> Vec<(u32, u32, u32, u32)> {
+      fn walk(node: &FragmentNode, out: &mut Vec<(u32, u32, u32, u32)>) {
+        out.push((
+          f32_to_canonical_bits(node.bounds.x()),
+          f32_to_canonical_bits(node.bounds.y()),
+          f32_to_canonical_bits(node.bounds.width()),
+          f32_to_canonical_bits(node.bounds.height()),
+        ));
+        for child in node.children.iter() {
+          walk(child, out);
+        }
+      }
+
+      let mut out = Vec::new();
+      walk(fragment, &mut out);
+      out
+    }
+
+    fn layout_with_order_capture_width(
+      container: &BoxNode,
+      first: f32,
+      second: f32,
+      capture: f32,
+    ) -> FragmentNode {
+      let viewport = Size::new(200.0, 200.0);
+      let measured_fragments = Arc::new(ShardedFlexCache::new_measure());
+      let layout_fragments = Arc::new(ShardedFlexCache::new_layout());
+      let fc = FlexFormattingContext::with_viewport_and_cb(
+        viewport,
+        ContainingBlock::viewport(viewport),
+        FontContext::new(),
+        measured_fragments,
+        layout_fragments,
+      )
+      .with_parallelism(LayoutParallelism::disabled());
+
+      // Indefinite height keeps the test focused on width-dependent wrapping, and matches common
+      // block layout usage (where height is content-based).
+      let c1 = LayoutConstraints::new(
+        CrateAvailableSpace::Definite(first),
+        CrateAvailableSpace::Indefinite,
+      );
+      let c2 = LayoutConstraints::new(
+        CrateAvailableSpace::Definite(second),
+        CrateAvailableSpace::Indefinite,
+      );
+
+      let first_fragment = fc.layout(container, &c1).expect("first layout");
+      let second_fragment = fc.layout(container, &c2).expect("second layout");
+      if first == capture {
+        first_fragment
+      } else {
+        second_fragment
+      }
+    }
+
+    let mut item_style = ComputedStyle::default();
+    item_style.display = Display::Block;
+    item_style.width = Some(Length::px(50.0));
+    item_style.height = Some(Length::px(10.0));
+
+    let mut item1 = BoxNode::new_block(
+      Arc::new(item_style.clone()),
+      FormattingContextType::Block,
+      vec![],
+    );
+    item1.id = 2;
+    let mut item2 = BoxNode::new_block(Arc::new(item_style), FormattingContextType::Block, vec![]);
+    item2.id = 3;
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Row;
+    container_style.flex_wrap = FlexWrap::Wrap;
+    let mut container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![item1, item2],
+    );
+    container.id = 1;
+
+    let w1 = 99.0;
+    let w2 = 100.0;
+
+    // Capture the fragment produced for the *w2* layout after running the two constraints in
+    // different orders.
+    let w2_after_w1 = layout_with_order_capture_width(&container, w1, w2, w2);
+    let w2_before_w1 = layout_with_order_capture_width(&container, w2, w1, w2);
+
+    assert_eq!(
+      w2_before_w1.children.len(),
+      2,
+      "expected two flex item fragments"
+    );
+    assert_eq!(
+      w2_before_w1.children[1].bounds.y(),
+      0.0,
+      "at 100px wide the second item should remain on the first flex line"
+    );
+
+    assert_eq!(
+      bounds_signature(&w2_after_w1),
+      bounds_signature(&w2_before_w1)
     );
   }
 
