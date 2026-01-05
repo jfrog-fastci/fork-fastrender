@@ -459,6 +459,11 @@ const PAGE_FIXTURES: &[PageFixture] = &[
     shots: DEFAULT_SHOTS,
   },
   PageFixture {
+    name: "intrinsic_sizing_block_keywords",
+    html: "intrinsic_sizing_block_keywords/index.html",
+    shots: DEFAULT_SHOTS,
+  },
+  PageFixture {
     name: "logical_border_shorthands",
     html: "logical_border_shorthands/index.html",
     shots: DEFAULT_SHOTS,

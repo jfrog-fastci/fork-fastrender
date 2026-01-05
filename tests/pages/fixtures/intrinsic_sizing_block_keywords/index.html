@@ -1,0 +1,69 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    background: #ffffff;
+    font-family: "DejaVu Sans", sans-serif;
+    font-size: 20px;
+  }
+
+  .cb {
+    width: 320px;
+    margin: 32px;
+    padding: 16px;
+    border: 3px dashed #333;
+    background: #fafafa;
+  }
+
+  .label {
+    margin: 0 0 6px 0;
+    font-size: 14px;
+    color: #333;
+  }
+
+  .sample {
+    margin: 0 0 18px 0;
+    border: 6px solid #0077cc;
+    background: rgba(0, 120, 204, 0.12);
+    /* Fixed height makes the border box size easy to see in goldens. */
+    min-height: 44px;
+  }
+
+  /* width: max-content should shrink-wrap the max-content contribution (not stretch). */
+  .max-content {
+    width: max-content;
+    /* Use percentage padding to exercise intrinsic edge rebasing. */
+    padding: 2% 10px;
+    box-sizing: border-box;
+  }
+
+  /* width: fit-content(50px) should clamp between min/max-content. */
+  .fit-content-limit {
+    width: fit-content(50px);
+    padding: 6px 10px;
+    box-sizing: border-box;
+  }
+
+  /* max-width: fit-content should cap an otherwise auto-stretching block. */
+  .max-width-fit-content {
+    max-width: fit-content;
+    padding: 6px 10px;
+    box-sizing: border-box;
+    border-color: #cc0000;
+    background: rgba(204, 0, 0, 0.12);
+  }
+</style>
+
+<div class="cb">
+  <div class="label">width: max-content</div>
+  <div class="sample max-content">aaaa aaaa aaaa aaaa</div>
+
+  <div class="label">width: fit-content(50px)</div>
+  <div class="sample fit-content-limit">aaaa aaaa aaaa aaaa</div>
+
+  <div class="label">max-width: fit-content (width: auto)</div>
+  <div class="sample max-width-fit-content">short short short</div>
+</div>
