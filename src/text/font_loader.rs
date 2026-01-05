@@ -2770,18 +2770,14 @@ fn ordered_sources<'a>(sources: &'a [FontFaceSource]) -> Vec<&'a FontFaceSource>
         while idx < sources.len() && matches!(sources[idx], FontFaceSource::Url(_)) {
           idx += 1;
         }
-        let mut remotes: Vec<(usize, usize, &FontFaceSource)> = (start..idx)
-          .filter_map(|i| {
-            let rank = match &sources[i] {
-              FontFaceSource::Url(url) => format_support_rank(&url.format_hints, &url.url),
-              _ => None,
-            }?;
-            Some((rank, i, &sources[i]))
-          })
-          .collect();
-
-        remotes.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-        ordered.extend(remotes.into_iter().map(|(_, _, src)| src));
+        for source in &sources[start..idx] {
+          let FontFaceSource::Url(url) = source else {
+            continue;
+          };
+          if format_support_rank(&url.format_hints, &url.url).is_some() {
+            ordered.push(source);
+          }
+        }
       }
     }
   }
@@ -3041,6 +3037,79 @@ mod tests {
       urls,
       vec![
         "https://example.com/font.woff2",
+        "https://example.com/font.woff"
+      ]
+    );
+  }
+
+  #[test]
+  fn ordered_sources_preserves_author_order_for_supported_formats() {
+    // Browser semantics preserve the authored ordering after skipping unsupported formats, even if
+    // the ordering is "suboptimal" (e.g. TTF before WOFF2).
+    let sources = vec![
+      FontFaceSource::url("https://example.com/font.ttf"),
+      FontFaceSource::url("https://example.com/font.woff2"),
+    ];
+
+    let ordered = ordered_sources(&sources);
+    let urls: Vec<&str> = ordered
+      .iter()
+      .filter_map(|src| match src {
+        FontFaceSource::Url(url) => Some(url.url.as_str()),
+        _ => None,
+      })
+      .collect();
+
+    assert_eq!(
+      urls,
+      vec![
+        "https://example.com/font.ttf",
+        "https://example.com/font.woff2"
+      ]
+    );
+  }
+
+  #[test]
+  fn ordered_sources_preserves_authored_url_order_after_filtering_unsupported_formats() {
+    // Regression for washington.edu fixture: authors sometimes list `.ttf` before `.woff` (after
+    // legacy EOT). Browsers preserve this ordering after skipping unsupported formats.
+    let mut sources = vec![
+      FontFaceSource::url("https://example.com/font.eot"),
+      FontFaceSource::url("https://example.com/font.ttf"),
+      FontFaceSource::url("https://example.com/font.woff"),
+      FontFaceSource::url("https://example.com/font.svg"),
+    ];
+
+    for (idx, hint) in [
+      FontSourceFormat::EmbeddedOpenType,
+      FontSourceFormat::Truetype,
+      FontSourceFormat::Woff,
+      FontSourceFormat::Svg,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+      match &mut sources[idx] {
+        FontFaceSource::Url(url) => {
+          url.format_hints = vec![hint];
+        }
+        FontFaceSource::Local(_) => unreachable!("expected URL source"),
+      }
+    }
+
+    let ordered = ordered_sources(&sources);
+    let urls: Vec<&str> = ordered
+      .iter()
+      .filter_map(|src| match src {
+        FontFaceSource::Url(url) => Some(url.url.as_str()),
+        _ => None,
+      })
+      .collect();
+
+    assert_eq!(
+      urls,
+      vec![
+        "https://example.com/font.ttf",
         "https://example.com/font.woff"
       ]
     );
@@ -3757,7 +3826,7 @@ mod tests {
   }
 
   #[test]
-  fn prefers_best_supported_format_source() {
+  fn preserves_authored_source_order_when_loading_remote_fonts() {
     let woff2_path = std::path::Path::new("tests/fixtures/fonts/DejaVuSans-subset.woff2");
     let ttf_path = std::path::Path::new("tests/fixtures/fonts/DejaVuSans-subset.ttf");
     if !(woff2_path.exists() && ttf_path.exists()) {
@@ -3796,7 +3865,11 @@ mod tests {
       !calls.is_empty(),
       "fetcher should have been invoked for at least one source"
     );
-    assert_eq!(calls[0], "https://example.com/font.woff2");
+    assert_eq!(
+      calls,
+      vec!["https://example.com/font.ttf".to_string()],
+      "expected the authored source order (TTF before WOFF2) to be preserved"
+    );
     assert!(ctx.has_web_faces("FormatPref"));
   }
 
