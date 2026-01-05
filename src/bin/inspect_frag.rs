@@ -368,8 +368,17 @@ fn run_dump_outputs(
   };
 
   if let Some(node_id) = target_node_id {
+    let document_quirks_mode = dom.document_quirks_mode();
     if let Some(subtree) = find_dom_node_by_preorder_id(&dom, node_id) {
-      dom = subtree;
+      dom = match subtree.node_type {
+        DomNodeType::Document { .. } => subtree,
+        _ => fastrender::dom::DomNode {
+          node_type: DomNodeType::Document {
+            quirks_mode: document_quirks_mode,
+          },
+          children: vec![subtree],
+        },
+      };
     }
     if let Some(subtree) = find_styled_node_by_id(&styled, node_id) {
       styled = subtree;

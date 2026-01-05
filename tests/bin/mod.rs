@@ -24,6 +24,7 @@ mod fetch_pages_http_reuse_test;
 mod file_stylesheet_parity;
 mod fixture_determinism_test;
 mod inspect_frag_external_css_test;
+mod inspect_frag_filter_selector_dump_json_test;
 mod inspect_frag_help_test;
 mod pageset_progress_accuracy_report_test;
 mod pageset_progress_bot_mitigation_classifier_test;
