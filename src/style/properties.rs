@@ -6342,6 +6342,14 @@ impl ComputedStyle {
         entry.order,
       );
     }
+
+    // The cascade finalization step applies deferred logical properties and resolves absolute/relative
+    // length units. When we recompute var()-dependent declarations after custom property mutation
+    // (e.g. via animations), we must mirror that finalization so logical properties like
+    // `border-inline-end-width` actually update their physical counterparts and lengths stay in px.
+    resolve_pending_logical_properties(self);
+    apply_content_visibility_implied_containment(self);
+    crate::style::cascade::resolve_absolute_lengths(self, self.root_font_size, viewport);
   }
 }
 

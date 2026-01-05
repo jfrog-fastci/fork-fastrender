@@ -59,3 +59,30 @@ fn scroll_driven_custom_property_does_not_clobber_late_border_overrides() -> Res
   assert_eq!(pixel(&pixmap, 85, 49), (0, 255, 0, 255));
   Ok(())
 }
+
+#[test]
+fn scroll_driven_custom_property_recomputes_logical_properties() -> Result<()> {
+  let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+  let fixture_path = repo_root.join(
+    "tests/pages/fixtures/scroll_driven_custom_property_logical_border/index.html",
+  );
+  let html = fs::read_to_string(&fixture_path)
+    .unwrap_or_else(|e| panic!("read fixture {}: {e}", fixture_path.display()));
+
+  let mut renderer = FastRender::new()?;
+  let prepared = renderer.prepare_html(&html, RenderOptions::new().with_viewport(110, 50))?;
+  let pixmap = prepared.paint_with_options(
+    PreparedPaintOptions::new()
+      .with_scroll(0.0, 0.0)
+      .with_background(Rgba::new(0, 0, 0, 1.0)),
+  )?;
+
+  // The scrollable box activates scroll(self), setting --can-scroll to 1 and therefore resolving the
+  // logical border width to a 1px physical right border.
+  assert_eq!(pixel(&pixmap, 49, 25), (255, 0, 0, 255));
+
+  // The non-scrollable box keeps --can-scroll at 0, so the border width stays 0 and the pixel at the
+  // right edge remains green background.
+  assert_eq!(pixel(&pixmap, 109, 25), (0, 255, 0, 255));
+  Ok(())
+}
