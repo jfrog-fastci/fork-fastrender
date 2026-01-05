@@ -6566,6 +6566,13 @@ impl DisplayListBuilder {
     fragment: &FragmentNode,
     rect: Rect,
   ) {
+    // Chrome (and friends) do not draw a UA placeholder for `<video>` when there is no poster and
+    // no video frame available. Keeping this transparent is important for real pages (e.g. when
+    // a thumbnail image sits behind the video element until it loads).
+    if matches!(replaced_type, ReplacedType::Video { poster: None, .. }) {
+      return;
+    }
+
     let placeholder_color = Rgba::rgb(200, 200, 200);
     self.list.push(DisplayItem::FillRect(FillRectItem {
       rect,
@@ -9439,7 +9446,7 @@ mod tests {
   }
 
   #[test]
-  fn non_image_replaced_uses_labeled_placeholder() {
+  fn video_without_poster_emits_no_placeholder() {
     let fragment = FragmentNode::new_replaced(
       Rect::from_xywh(0.0, 0.0, 40.0, 20.0),
       ReplacedType::Video {
@@ -9450,10 +9457,10 @@ mod tests {
     let builder = DisplayListBuilder::new();
     let list = builder.build(&fragment);
 
-    assert_eq!(list.len(), 3, "fill, stroke, and label text expected");
-    assert!(matches!(list.items()[0], DisplayItem::FillRect(_)));
-    assert!(matches!(list.items()[1], DisplayItem::StrokeRect(_)));
-    assert!(matches!(list.items()[2], DisplayItem::Text(_)));
+    assert!(
+      list.is_empty(),
+      "video without a poster should paint nothing rather than a placeholder"
+    );
   }
 
   #[test]

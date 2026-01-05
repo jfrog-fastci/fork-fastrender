@@ -7330,6 +7330,12 @@ impl Painter {
     style: Option<&ComputedStyle>,
     rect: Rect,
   ) {
+    // Browsers keep `<video>` transparent when no poster/frame is available. Painting a generic
+    // placeholder breaks real pages that rely on a thumbnail image behind the video element.
+    if matches!(replaced_type, ReplacedType::Video { poster: None, .. }) {
+      return;
+    }
+
     let log_placeholder = runtime::runtime_toggles().truthy("FASTR_LOG_IMAGE_FAIL");
     if log_placeholder {
       if let ReplacedType::Image { src, .. } = replaced_type {
