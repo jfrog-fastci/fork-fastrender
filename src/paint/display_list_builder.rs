@@ -159,6 +159,7 @@ use crate::text::pipeline::ShapedRun;
 use crate::text::pipeline::ShapingPipeline;
 use crate::tree::box_tree::FormControl;
 use crate::tree::box_tree::FormControlKind;
+use crate::tree::box_tree::CrossOriginAttribute;
 use crate::tree::box_tree::ReplacedType;
 use crate::tree::box_tree::SvgContent;
 use crate::tree::box_tree::TextControlKind;
@@ -233,6 +234,7 @@ struct RootBackground {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ImageKey {
   url: String,
+  crossorigin: CrossOriginAttribute,
   orientation: OrientationTransform,
   decorative: bool,
   used_resolution_bits: u32,
@@ -2845,7 +2847,9 @@ impl DisplayListBuilder {
           ResolvedMaskImage::Generated(Box::new(image.clone()))
         }
         BackgroundImage::Url(src) => {
-          let Some(image) = self.decode_image(src, Some(style), true) else {
+          let Some(image) =
+            self.decode_image(src, Some(style), true, CrossOriginAttribute::None)
+          else {
             continue;
           };
           ResolvedMaskImage::Raster((*image).clone())
@@ -4371,9 +4375,13 @@ impl DisplayListBuilder {
             base_url: cache_base.as_deref(),
           });
 
+        let crossorigin = match replaced_type {
+          ReplacedType::Image { crossorigin, .. } => *crossorigin,
+          _ => CrossOriginAttribute::None,
+        };
         if let Some(image) = sources
           .iter()
-          .find_map(|s| self.decode_image(s.url, style_for_image, false))
+          .find_map(|s| self.decode_image(s.url, style_for_image, false, crossorigin))
         {
           let clip_contents = Self::clip_replaced_contents(style_for_image);
           let (content_rect, clip_radii) =
@@ -5330,7 +5338,7 @@ impl DisplayListBuilder {
         }
       }
       BackgroundImage::Url(src) => {
-        if let Some(image) = self.decode_image(src, Some(style), true) {
+        if let Some(image) = self.decode_image(src, Some(style), true, CrossOriginAttribute::None) {
           let img_w = image.css_width;
           let img_h = image.css_height;
           if img_w > 0.0 && img_h > 0.0 {
@@ -5679,7 +5687,7 @@ impl DisplayListBuilder {
       BorderImageSource::Image(bg) => {
         let source = match bg.as_ref() {
           BackgroundImage::Url(src) => self
-            .decode_image(src, Some(style), true)
+            .decode_image(src, Some(style), true, CrossOriginAttribute::None)
             .map(|image| BorderImageSourceItem::Raster((*image).clone())),
           BackgroundImage::LinearGradient { .. }
           | BackgroundImage::RepeatingLinearGradient { .. }
@@ -7300,6 +7308,7 @@ impl DisplayListBuilder {
       image_resolution.used_resolution(None, meta.resolution, self.device_pixel_ratio);
     let cache_key = ImageKey {
       url: inline_key,
+      crossorigin: CrossOriginAttribute::None,
       orientation,
       decorative: false,
       used_resolution_bits: used_resolution.to_bits(),
@@ -7421,6 +7430,7 @@ impl DisplayListBuilder {
     src: &str,
     style: Option<&ComputedStyle>,
     decorative: bool,
+    crossorigin: CrossOriginAttribute,
   ) -> Option<Arc<ImageData>> {
     let image_cache = self.image_cache.as_ref()?;
     let trimmed = src.trim_start();
@@ -7436,7 +7446,9 @@ impl DisplayListBuilder {
       (cache_key, image)
     } else {
       let resolved_src = image_cache.resolve_url(src);
-      let image = image_cache.load(&resolved_src).ok()?;
+      let image = image_cache
+        .load_with_crossorigin(&resolved_src, crossorigin)
+        .ok()?;
       (resolved_src, image)
     };
 
@@ -7448,6 +7460,7 @@ impl DisplayListBuilder {
       image_resolution.used_resolution(None, image.resolution, self.device_pixel_ratio);
     let key = ImageKey {
       url: resolved_src,
+      crossorigin,
       orientation,
       decorative,
       used_resolution_bits: used_resolution.to_bits(),
@@ -9327,10 +9340,10 @@ mod tests {
     let mut builder = DisplayListBuilder::new();
 
     let first = builder
-      .decode_image(&src, None, false)
+      .decode_image(&src, None, false, CrossOriginAttribute::None)
       .expect("first decode");
     let second = builder
-      .decode_image(&src, None, false)
+      .decode_image(&src, None, false, CrossOriginAttribute::None)
       .expect("cached decode");
     assert!(Arc::ptr_eq(&first, &second));
 
@@ -9340,19 +9353,112 @@ mod tests {
       flip: false,
     };
     let rotated = builder
-      .decode_image(&src, Some(&rotated_style), false)
+      .decode_image(&src, Some(&rotated_style), false, CrossOriginAttribute::None)
       .expect("rotated decode");
     assert!(!Arc::ptr_eq(&first, &rotated));
 
     builder.set_device_pixel_ratio(2.0);
     let hidpi = builder
-      .decode_image(&src, None, false)
+      .decode_image(&src, None, false, CrossOriginAttribute::None)
       .expect("hi-dpi decode");
     assert!(!Arc::ptr_eq(&first, &hidpi));
     let hidpi_cached = builder
-      .decode_image(&src, None, false)
+      .decode_image(&src, None, false, CrossOriginAttribute::None)
       .expect("cached hi-dpi decode");
     assert!(Arc::ptr_eq(&hidpi, &hidpi_cached));
+  }
+
+  #[test]
+  fn decode_image_cache_partitions_by_crossorigin_and_enforces_cors() {
+    use crate::api::ResourceContext;
+    use crate::error::Result;
+    use crate::resource::{FetchDestination, FetchRequest, FetchedResource, ResourceAccessPolicy, ResourceFetcher};
+
+    #[derive(Clone)]
+    struct RecordingFetcher {
+      bytes: Arc<Vec<u8>>,
+      destinations: Arc<std::sync::Mutex<Vec<FetchDestination>>>,
+    }
+
+    impl RecordingFetcher {
+      fn new(bytes: Vec<u8>) -> (Self, Arc<std::sync::Mutex<Vec<FetchDestination>>>) {
+        let destinations = Arc::new(std::sync::Mutex::new(Vec::new()));
+        (
+          Self {
+            bytes: Arc::new(bytes),
+            destinations: Arc::clone(&destinations),
+          },
+          destinations,
+        )
+      }
+
+      fn make_resource(&self, url: &str) -> FetchedResource {
+        let mut res = FetchedResource::new((*self.bytes).clone(), Some("image/png".to_string()));
+        res.status = Some(200);
+        res.final_url = Some(url.to_string());
+        res
+      }
+    }
+
+    impl ResourceFetcher for RecordingFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        Ok(self.make_resource(url))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        if let Ok(mut guard) = self.destinations.lock() {
+          guard.push(req.destination);
+        }
+        self.fetch(req.url)
+      }
+    }
+
+    let _toggles_guard =
+      crate::debug::runtime::set_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::from(
+        [("FASTR_FETCH_ENFORCE_CORS".to_string(), "1".to_string())],
+      ))));
+
+    let mut buf = Vec::new();
+    PngEncoder::new(&mut buf)
+      .write_image(&[0u8, 0, 0, 255], 1, 1, ColorType::Rgba8.into())
+      .expect("encode png");
+    let (fetcher, destinations) = RecordingFetcher::new(buf);
+
+    let doc_url = "https://doc.test/";
+    let policy = ResourceAccessPolicy::default().for_origin(crate::resource::origin_from_url(doc_url));
+    let mut cache = ImageCache::with_fetcher(Arc::new(fetcher));
+    cache.set_resource_context(Some(ResourceContext {
+      document_url: Some(doc_url.to_string()),
+      policy,
+      ..Default::default()
+    }));
+
+    let builder = DisplayListBuilder::with_image_cache(cache);
+    let url = "https://img.test/no-acao.png";
+
+    // Baseline: no-cors loads should succeed and populate the decode cache.
+    assert!(
+      builder
+        .decode_image(url, None, false, CrossOriginAttribute::None)
+        .is_some(),
+      "expected no-cors decode to succeed"
+    );
+
+    // Crossorigin loads should not be able to reuse the no-cors decoded pixels when CORS
+    // enforcement is enabled; missing ACAO should surface as a load failure.
+    assert!(
+      builder
+        .decode_image(url, None, false, CrossOriginAttribute::Anonymous)
+        .is_none(),
+      "expected crossorigin decode to fail without ACAO"
+    );
+
+    let recorded = destinations.lock().unwrap().clone();
+    assert_eq!(
+      recorded,
+      vec![FetchDestination::Image, FetchDestination::ImageCors],
+      "expected decode cache to keep no-cors and cors-mode fetch profiles separate"
+    );
   }
 
   #[test]
