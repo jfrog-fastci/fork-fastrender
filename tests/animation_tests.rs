@@ -1167,6 +1167,47 @@ fn scroll_self_custom_property_animations_recompute_var_dependent_properties() {
 }
 
 #[test]
+fn custom_property_animation_recompute_preserves_parent_style_through_line_fragments() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(100, 100);
+
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(0, 0, 0); }
+      #parent { font-size: 10px; }
+      #target {
+        display: inline-block;
+        vertical-align: top;
+        box-sizing: border-box;
+        width: 100px;
+        height: 100px;
+        background: rgb(0, 0, 0);
+        --scale: 1;
+        font-size: calc(var(--scale) * 1em);
+        border-bottom: 1em solid rgb(255, 0, 0);
+        animation-name: scale;
+        animation-duration: 1s;
+        animation-fill-mode: forwards;
+      }
+      @keyframes scale { to { --scale: 2; } }
+    </style>
+    <div id="parent"><span id="target"></span></div>
+  "#;
+
+  let prepared = renderer.prepare_html(html, options).expect("prepare");
+  let pixmap = prepared
+    .paint_with_options(PreparedPaintOptions::new().with_background(Rgba::new(0, 0, 0, 1.0)))
+    .expect("paint");
+
+  // At the settled end state, `--scale: 2` makes the span's font-size 2em. When computing 1em
+  // inside `font-size`, the `em` unit is relative to the parent's font-size (10px), so the result
+  // should be 20px. The 1em border-bottom should therefore be 20px tall, leaving y=75 above the
+  // border.
+  assert_eq!(pixel(&pixmap, 10, 75), (0, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 10, 90), (255, 0, 0, 255));
+}
+
+#[test]
 fn view_timeline_animation_range_entry_length_offsets_move_pixels() {
   let mut renderer = FastRender::new().expect("renderer");
   let html = r#"

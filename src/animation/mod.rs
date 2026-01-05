@@ -4120,13 +4120,14 @@ fn apply_animations_to_node_scoped(
   }
 
   let parent_style = node.style.clone();
+  let parent_for_children = parent_style.as_deref().or(parent_styles);
   for child in node.children_mut() {
     let child_offset = Point::new(origin.x + child.bounds.x(), origin.y + child.bounds.y());
     apply_animations_to_node_scoped(
       child,
       child_offset,
       viewport,
-      parent_style.as_deref(),
+      parent_for_children,
       root_context,
       scroll_state,
       keyframes,
@@ -4144,7 +4145,7 @@ fn apply_animations_to_node_scoped(
       Arc::make_mut(snapshot),
       snapshot_offset,
       viewport,
-      parent_style.as_deref(),
+      parent_for_children,
       root_context,
       scroll_state,
       keyframes,
