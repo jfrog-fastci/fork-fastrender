@@ -440,18 +440,24 @@ fn cq_type_bit(container_type: ContainerType) -> u8 {
 }
 
 fn cq_size_query_support_mask(mq: &crate::style::media::MediaQuery) -> u8 {
-  let inline_only = mq.features.iter().all(|feature| match feature {
-    MediaFeature::Width(_)
-    | MediaFeature::MinWidth(_)
-    | MediaFeature::MaxWidth(_)
-    | MediaFeature::InlineSize(_)
-    | MediaFeature::MinInlineSize(_)
-    | MediaFeature::MaxInlineSize(_) => true,
-    MediaFeature::Range { feature, .. } => {
-      matches!(feature, RangeFeature::Width | RangeFeature::InlineSize)
+  fn feature_inline_only(feature: &MediaFeature) -> bool {
+    match feature {
+      MediaFeature::Width(_)
+      | MediaFeature::MinWidth(_)
+      | MediaFeature::MaxWidth(_)
+      | MediaFeature::InlineSize(_)
+      | MediaFeature::MinInlineSize(_)
+      | MediaFeature::MaxInlineSize(_) => true,
+      MediaFeature::Range { feature, .. } => {
+        matches!(feature, RangeFeature::Width | RangeFeature::InlineSize)
+      }
+      MediaFeature::Not(inner) => feature_inline_only(inner),
+      MediaFeature::And(list) | MediaFeature::Or(list) => list.iter().all(feature_inline_only),
+      _ => false,
     }
-    _ => false,
-  });
+  }
+
+  let inline_only = mq.features.iter().all(feature_inline_only);
 
   if inline_only {
     CQ_SUPPORT_SIZE | CQ_SUPPORT_INLINE_SIZE
@@ -21868,6 +21874,76 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       target.styles.color,
       Rgba::RED,
       "@container rule should match using the outer size container (not the inner inline-size container)"
+    );
+  }
+
+  #[test]
+  fn container_size_queries_allow_inline_size_for_inline_only_or_conditions() {
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![
+            ("id".to_string(), "target".to_string()),
+            ("class".to_string(), "fallback".to_string()),
+          ],
+        },
+        children: vec![],
+      }],
+    };
+
+    let stylesheet = parse_stylesheet(
+      r"
+        @container ((min-width: 200px) or (max-width: 100px)) {
+          #target { color: red; }
+        }
+        .fallback { color: blue; }
+      ",
+    )
+    .unwrap();
+
+    // Root node_id = 1 (inline-size container), child node_id = 2. The query uses only inline-axis
+    // features (wrapped in parentheses), so the inline-size container must be eligible.
+    let mut containers = HashMap::new();
+    containers.insert(
+      1,
+      ContainerQueryInfo {
+        inline_size: 300.0,
+        block_size: 100.0,
+        container_type: ContainerType::InlineSize,
+        names: Vec::new(),
+        font_size: 16.0,
+        styles: Arc::new(ComputedStyle::default()),
+      },
+    );
+    let container_ctx = ContainerQueryContext {
+      base_media: MediaContext::screen(800.0, 600.0),
+      containers,
+    };
+
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+    let styled = apply_styles_with_media_target_and_imports(
+      &dom,
+      &stylesheet,
+      &media_ctx,
+      None,
+      None,
+      None,
+      Some(&container_ctx),
+      None,
+      None,
+    );
+    let target = styled.children.first().expect("target");
+    assert_eq!(
+      target.styles.color,
+      Rgba::RED,
+      "@container rule should match against an inline-size container when the query uses only inline-axis features"
     );
   }
 
