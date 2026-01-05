@@ -2716,12 +2716,12 @@ fn parse_fe_turbulence(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   let fx = sanitize_freq(base_freq_values.get(0).copied().unwrap_or(0.0));
   let fy = sanitize_freq(base_freq_values.get(1).copied().unwrap_or(fx));
 
-  // SVG: seed is a number; implementations truncate it to an integer.
+  // SVG: seed is a number; implementations coerce it to an integer.
   let seed_raw = node
     .attribute("seed")
     .and_then(|v| v.parse::<f32>().ok())
     .unwrap_or(0.0);
-  let seed = (seed_raw as i32) as u32;
+  let seed = seed_raw.round() as u32;
   let octaves = node
     .attribute("numOctaves")
     .and_then(|v| v.parse::<u32>().ok())
@@ -6829,7 +6829,7 @@ mod tests {
         &kernel,
         None,
         0.0,
-        0,
+        1,
         0,
         EdgeMode::Duplicate,
         false,

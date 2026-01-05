@@ -381,6 +381,11 @@ mod tests {
       false,
       super::super::TurbulenceType::Turbulence,
       color_interpolation_filters,
+      super::super::SvgFilterUnits::UserSpaceOnUse,
+      filter_region,
+      1.0,
+      1.0,
+      (0.0, 0.0),
     )
     .expect("render should succeed")
     .expect("expected pixmap");
