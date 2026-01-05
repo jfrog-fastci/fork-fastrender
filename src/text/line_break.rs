@@ -38,8 +38,10 @@
 //!
 //! - `white-space: nowrap` - Remove all non-mandatory breaks
 //! - `word-break: break-all` - Add breaks between all characters
+//! - `word-break: anywhere` - Add breaks between all grapheme clusters
 //! - `word-break: keep-all` - Remove breaks within CJK text
-//! - `overflow-wrap: anywhere` - Add emergency breaks everywhere
+//! - `overflow-wrap: break-word` - Add emergency breaks within otherwise-unbreakable words
+//! - `overflow-wrap: anywhere` - Add breaks between all grapheme clusters (and affects intrinsic sizing)
 //!
 //! These modifications should be applied by the layout engine, not this module.
 //!
@@ -79,13 +81,19 @@ pub enum BreakType {
 
 /// Priority/kind of a break opportunity.
 ///
-/// CSS can introduce additional "emergency" break opportunities (e.g. via
-/// `overflow-wrap` or `word-break`) that should only be used when no normal
-/// break opportunity fits. These are kept separate from the Unicode line
-/// breaking result so layout can prefer normal opportunities.
+/// CSS can introduce additional break opportunities:
+///
+/// - "Normal" opportunities (e.g. `word-break: break-all|anywhere`,
+///   `overflow-wrap: anywhere`) that participate in the regular greedy line breaking.
+/// - "Emergency" opportunities (e.g. `overflow-wrap: break-word`) that are only used
+///   when no normal opportunity fits.
+///
+/// These are kept separate from the base Unicode line breaking result so layout can
+/// express UA priority rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BreakOpportunityKind {
-  /// Normal line break opportunities from UAX#14, forced breaks, and hyphenation.
+  /// Normal line break opportunities from UAX#14, forced breaks, hyphenation, and CSS
+  /// modifications that introduce additional regular wrap points.
   Normal,
   /// Emergency breaks that may be used to avoid overflow, but are lower priority
   /// than `Normal` opportunities during line layout.

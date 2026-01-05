@@ -4810,6 +4810,110 @@ mod tests {
     assert_eq!(brk.kind, BreakOpportunityKind::Normal);
   }
 
+  fn synthesize_breaks(
+    text: &str,
+    word_break: WordBreak,
+    overflow_wrap: OverflowWrap,
+  ) -> Vec<BreakOpportunity> {
+    crate::layout::contexts::inline::apply_break_properties(
+      text,
+      find_break_opportunities(text),
+      word_break,
+      overflow_wrap,
+      true,
+    )
+  }
+
+  #[test]
+  fn overflow_wrap_anywhere_breaks_have_normal_priority() {
+    use crate::text::line_break::BreakOpportunityKind;
+
+    // CSS Text: `anywhere` introduces regular soft wrap opportunities (unlike `break-word`, which
+    // introduces emergency-only wrap points). With a width where "hello w" fits but "hello wo"
+    // does not, `overflow-wrap:anywhere` should break after the "w" rather than at the earlier
+    // space.
+    let text = "hello world";
+    let max_width = 7.0;
+
+    let mut break_word = make_text_item(text, text.len() as f32);
+    Arc::make_mut(&mut break_word.style).overflow_wrap = OverflowWrap::BreakWord;
+    break_word.break_opportunities =
+      synthesize_breaks(text, WordBreak::Normal, OverflowWrap::BreakWord);
+    break_word.first_mandatory_break = TextItem::first_mandatory_break(&break_word.break_opportunities);
+
+    let mut anywhere = make_text_item(text, text.len() as f32);
+    Arc::make_mut(&mut anywhere.style).overflow_wrap = OverflowWrap::Anywhere;
+    anywhere.break_opportunities = synthesize_breaks(text, WordBreak::Normal, OverflowWrap::Anywhere);
+    anywhere.first_mandatory_break = TextItem::first_mandatory_break(&anywhere.break_opportunities);
+
+    let brk7_break_word = break_word
+      .break_opportunities
+      .iter()
+      .find(|b| b.byte_offset == 7)
+      .copied()
+      .expect("break-word should synthesize an intra-word break at offset 7");
+    assert_eq!(brk7_break_word.kind, BreakOpportunityKind::Emergency);
+
+    let brk7_anywhere = anywhere
+      .break_opportunities
+      .iter()
+      .find(|b| b.byte_offset == 7)
+      .copied()
+      .expect("anywhere should synthesize an intra-word break at offset 7");
+    assert_eq!(brk7_anywhere.kind, BreakOpportunityKind::Normal);
+
+    let chosen_break_word = break_word.find_break_point(max_width).expect("break point");
+    assert_eq!(chosen_break_word.byte_offset, 6, "break-word prefers the space break");
+
+    let chosen_anywhere = anywhere.find_break_point(max_width).expect("break point");
+    assert_eq!(chosen_anywhere.byte_offset, 7, "anywhere may choose a later intra-word break");
+    assert_eq!(chosen_anywhere.kind, BreakOpportunityKind::Normal);
+  }
+
+  #[test]
+  fn word_break_anywhere_breaks_have_normal_priority() {
+    use crate::text::line_break::BreakOpportunityKind;
+
+    // Similar to `overflow-wrap:anywhere`, `word-break:anywhere` adds regular wrap opportunities
+    // between grapheme clusters. It should therefore choose the last fitting intra-word break
+    // instead of the earlier whitespace break.
+    let text = "hello world";
+    let max_width = 7.0;
+
+    let mut break_word = make_text_item(text, text.len() as f32);
+    Arc::make_mut(&mut break_word.style).word_break = WordBreak::BreakWord;
+    break_word.break_opportunities = synthesize_breaks(text, WordBreak::BreakWord, OverflowWrap::Normal);
+    break_word.first_mandatory_break = TextItem::first_mandatory_break(&break_word.break_opportunities);
+
+    let mut anywhere = make_text_item(text, text.len() as f32);
+    Arc::make_mut(&mut anywhere.style).word_break = WordBreak::Anywhere;
+    anywhere.break_opportunities = synthesize_breaks(text, WordBreak::Anywhere, OverflowWrap::Normal);
+    anywhere.first_mandatory_break = TextItem::first_mandatory_break(&anywhere.break_opportunities);
+
+    let brk7_break_word = break_word
+      .break_opportunities
+      .iter()
+      .find(|b| b.byte_offset == 7)
+      .copied()
+      .expect("break-word should synthesize an intra-word break at offset 7");
+    assert_eq!(brk7_break_word.kind, BreakOpportunityKind::Emergency);
+
+    let brk7_anywhere = anywhere
+      .break_opportunities
+      .iter()
+      .find(|b| b.byte_offset == 7)
+      .copied()
+      .expect("anywhere should synthesize an intra-word break at offset 7");
+    assert_eq!(brk7_anywhere.kind, BreakOpportunityKind::Normal);
+
+    let chosen_break_word = break_word.find_break_point(max_width).expect("break point");
+    assert_eq!(chosen_break_word.byte_offset, 6, "break-word prefers the space break");
+
+    let chosen_anywhere = anywhere.find_break_point(max_width).expect("break point");
+    assert_eq!(chosen_anywhere.byte_offset, 7, "anywhere may choose a later intra-word break");
+    assert_eq!(chosen_anywhere.kind, BreakOpportunityKind::Normal);
+  }
+
   #[test]
   fn test_line_builder_single_item_fits() {
     let mut builder = make_builder(100.0);

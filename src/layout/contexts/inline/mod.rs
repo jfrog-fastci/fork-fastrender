@@ -7467,7 +7467,7 @@ fn apply_break_properties(
     WordBreak::Anywhere => {
       result.extend(grapheme_boundary_breaks(
         text,
-        BreakOpportunityKind::Emergency,
+        BreakOpportunityKind::Normal,
       ));
     }
     WordBreak::Normal => {}
@@ -7475,11 +7475,14 @@ fn apply_break_properties(
 
   match overflow_wrap {
     OverflowWrap::Normal => {}
-    OverflowWrap::BreakWord | OverflowWrap::Anywhere => {
+    OverflowWrap::BreakWord => {
       result.extend(grapheme_boundary_breaks(
         text,
         BreakOpportunityKind::Emergency,
       ));
+    }
+    OverflowWrap::Anywhere => {
+      result.extend(grapheme_boundary_breaks(text, BreakOpportunityKind::Normal));
     }
   }
 
