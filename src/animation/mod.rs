@@ -4716,7 +4716,7 @@ mod tests {
   }
 
   #[test]
-  fn sample_keyframes_fallbacks_to_discrete_interpolation() {
+  fn sample_keyframes_interpolates_filter_against_none_as_identity() {
     let sheet =
       parse_stylesheet("@keyframes f { from { filter: url(#a); } to { filter: none; } }")
         .unwrap();
@@ -4724,8 +4724,8 @@ mod tests {
     let rule = &keyframes[0];
 
     assert_eq!(sampled_filter_len(rule, 0.25), 1);
-    assert_eq!(sampled_filter_len(rule, 0.5), 0);
-    assert_eq!(sampled_filter_len(rule, 0.75), 0);
+    assert_eq!(sampled_filter_len(rule, 0.5), 1);
+    assert_eq!(sampled_filter_len(rule, 0.75), 1);
     assert_eq!(sampled_filter_len(rule, 1.0), 0);
   }
 

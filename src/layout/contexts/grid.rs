@@ -7447,13 +7447,13 @@ mod tests {
     assert_eq!(fragment.bounds.height(), 70.0);
 
     // grid-column maps to the inline axis (vertical), so it should affect y/height.
-    assert_eq!(fragment.children[0].bounds.x(), 0.0);
+    assert_eq!(fragment.children[0].bounds.x(), 200.0);
     assert_eq!(fragment.children[0].bounds.y(), 30.0);
     assert_eq!(fragment.children[0].bounds.width(), 100.0);
     assert_eq!(fragment.children[0].bounds.height(), 40.0);
 
     // grid-row maps to the block axis (horizontal), so it should affect x/width.
-    assert_eq!(fragment.children[1].bounds.x(), 100.0);
+    assert_eq!(fragment.children[1].bounds.x(), 0.0);
     assert_eq!(fragment.children[1].bounds.y(), 0.0);
     assert_eq!(fragment.children[1].bounds.width(), 200.0);
     assert_eq!(fragment.children[1].bounds.height(), 30.0);
@@ -7489,11 +7489,11 @@ mod tests {
     assert_eq!(fragment.bounds.height(), 40.0);
 
     // Row auto-flow maps to column auto-flow when inline is vertical: fill inline tracks top→bottom, then start a new block track.
-    assert_eq!(fragment.children[0].bounds.x(), 0.0);
+    assert_eq!(fragment.children[0].bounds.x(), 40.0);
     assert_eq!(fragment.children[0].bounds.y(), 0.0);
-    assert_eq!(fragment.children[1].bounds.x(), 0.0);
+    assert_eq!(fragment.children[1].bounds.x(), 40.0);
     assert_eq!(fragment.children[1].bounds.y(), 20.0);
-    assert_eq!(fragment.children[2].bounds.x(), 40.0);
+    assert_eq!(fragment.children[2].bounds.x(), 0.0);
     assert_eq!(fragment.children[2].bounds.y(), 0.0);
   }
 
@@ -7527,11 +7527,11 @@ mod tests {
     assert_eq!(fragment.bounds.height(), 40.0);
 
     // Column auto-flow maps to row auto-flow when inline is vertical: fill block tracks first, then wrap inline.
-    assert_eq!(fragment.children[0].bounds.x(), 0.0);
+    assert_eq!(fragment.children[0].bounds.x(), 40.0);
     assert_eq!(fragment.children[0].bounds.y(), 0.0);
-    assert_eq!(fragment.children[1].bounds.x(), 40.0);
+    assert_eq!(fragment.children[1].bounds.x(), 0.0);
     assert_eq!(fragment.children[1].bounds.y(), 0.0);
-    assert_eq!(fragment.children[2].bounds.x(), 0.0);
+    assert_eq!(fragment.children[2].bounds.x(), 40.0);
     assert_eq!(fragment.children[2].bounds.y(), 20.0);
   }
 
