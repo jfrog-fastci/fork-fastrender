@@ -379,6 +379,7 @@ impl ResourceFetcher for CacheKindMismatchFallbackFetcher {
         if req.destination == FetchDestination::Other && Self::is_http_like(req.url) {
           for dest in [
             FetchDestination::Image,
+            FetchDestination::ImageCors,
             FetchDestination::Font,
             FetchDestination::Style,
           ] {
