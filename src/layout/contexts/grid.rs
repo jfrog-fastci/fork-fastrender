@@ -2096,32 +2096,24 @@ impl GridFormattingContext {
         }
       }
 
-      // `fit-content` keywords in min/max size properties can't be represented directly in cached
-      // Taffy styles, but they still need to cap the used size. Let the measure callback compute
-      // the final size by preventing Taffy from treating the preferred size as definite or
-      // stretching the item to the full grid area.
-      let width_has_fit_content_constraint = style.min_width.is_none()
-        && matches!(
-          style.min_width_keyword,
-          Some(IntrinsicSizeKeyword::FitContent { .. })
-        ) || style.max_width.is_none()
+      // `fit-content` keywords in max-size properties can't be represented directly in cached
+      // Taffy styles (they depend on available space). Let the measure callback compute the final
+      // size by preventing Taffy from treating the preferred size as definite or stretching the
+      // item to the full grid area.
+      let width_has_fit_content_max_constraint = style.max_width.is_none()
         && matches!(
           style.max_width_keyword,
           Some(IntrinsicSizeKeyword::FitContent { .. })
         );
-      let height_has_fit_content_constraint = style.min_height.is_none()
-        && matches!(
-          style.min_height_keyword,
-          Some(IntrinsicSizeKeyword::FitContent { .. })
-        ) || style.max_height.is_none()
+      let height_has_fit_content_max_constraint = style.max_height.is_none()
         && matches!(
           style.max_height_keyword,
           Some(IntrinsicSizeKeyword::FitContent { .. })
         );
-      if width_has_fit_content_constraint {
+      if width_has_fit_content_max_constraint {
         taffy_style.size.width = Dimension::auto();
       }
-      if height_has_fit_content_constraint {
+      if height_has_fit_content_max_constraint {
         taffy_style.size.height = Dimension::auto();
       }
 
@@ -2140,7 +2132,7 @@ impl GridFormattingContext {
       } else {
         inline_positive_item
       };
-      if (style.width_keyword.is_some() || width_has_fit_content_constraint)
+      if (style.width_keyword.is_some() || width_has_fit_content_max_constraint)
         && matches!(
           taffy_style.justify_self,
           Some(taffy::style::AlignItems::Stretch)
@@ -2151,7 +2143,7 @@ impl GridFormattingContext {
           physical_width_positive,
         ));
       }
-      if (style.height_keyword.is_some() || height_has_fit_content_constraint)
+      if (style.height_keyword.is_some() || height_has_fit_content_max_constraint)
         && matches!(
           taffy_style.align_self,
           Some(taffy::style::AlignItems::Stretch)
@@ -7766,6 +7758,74 @@ mod tests {
     assert!(
       (explicit_width - auto_width).abs() < 0.1,
       "expected max-width:fit-content to clamp explicit widths to the grid area (auto={auto_width:.2}, explicit={explicit_width:.2})",
+    );
+  }
+
+  #[test]
+  fn grid_item_min_width_keyword_fit_content_does_not_prevent_stretch() {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(200.0))];
+    grid_style.grid_template_rows = vec![GridTrack::Auto];
+    grid_style.justify_items = AlignItems::Stretch;
+    let grid_style = Arc::new(grid_style);
+
+    let mut item_style = ComputedStyle::default();
+    item_style.font_size = 16.0;
+    item_style.width = None;
+    item_style.width_keyword = None;
+    item_style.min_width = None;
+    item_style.min_width_keyword = Some(IntrinsicSizeKeyword::FitContent { limit: None });
+    let item_style = Arc::new(item_style);
+    let text_child = BoxNode::new_text(item_style.clone(), "hello world".into());
+    let item = BoxNode::new_block(item_style, FormattingContextType::Inline, vec![text_child]);
+
+    let grid = BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![item]);
+
+    let constraints = LayoutConstraints::definite(200.0, 200.0);
+    let fragment = fc.layout(&grid, &constraints).unwrap();
+
+    assert_eq!(fragment.children.len(), 1);
+    let width = fragment.children[0].bounds.width();
+    assert!(
+      (width - 200.0).abs() < 0.1,
+      "expected min-width:fit-content item to still stretch to 200px, got {width:.2}"
+    );
+  }
+
+  #[test]
+  fn grid_item_min_height_keyword_fit_content_does_not_prevent_stretch() {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(200.0))];
+    grid_style.grid_template_rows = vec![GridTrack::Length(Length::px(200.0))];
+    grid_style.align_items = AlignItems::Stretch;
+    let grid_style = Arc::new(grid_style);
+
+    let mut item_style = ComputedStyle::default();
+    item_style.font_size = 16.0;
+    item_style.height = None;
+    item_style.height_keyword = None;
+    item_style.min_height = None;
+    item_style.min_height_keyword = Some(IntrinsicSizeKeyword::FitContent { limit: None });
+    let item_style = Arc::new(item_style);
+    let text_child = BoxNode::new_text(item_style.clone(), "hello world".into());
+    let item = BoxNode::new_block(item_style, FormattingContextType::Inline, vec![text_child]);
+
+    let grid = BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![item]);
+
+    let constraints = LayoutConstraints::definite(200.0, 200.0);
+    let fragment = fc.layout(&grid, &constraints).unwrap();
+
+    assert_eq!(fragment.children.len(), 1);
+    let height = fragment.children[0].bounds.height();
+    assert!(
+      (height - 200.0).abs() < 0.1,
+      "expected min-height:fit-content item to still stretch to 200px, got {height:.2}"
     );
   }
 
