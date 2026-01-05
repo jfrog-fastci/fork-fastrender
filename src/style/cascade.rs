@@ -60,7 +60,9 @@ use crate::style::display::Display;
 use crate::style::grid::finalize_grid_placement;
 use crate::style::media::ColorScheme;
 use crate::style::media::MediaContext;
+use crate::style::media::MediaFeature;
 use crate::style::media::MediaQueryCache;
+use crate::style::media::RangeFeature;
 use crate::style::normalize_language_tag;
 use crate::style::position::Position;
 use crate::style::properties::apply_content_visibility_implied_containment;
@@ -436,9 +438,30 @@ fn cq_type_bit(container_type: ContainerType) -> u8 {
   }
 }
 
+fn cq_size_query_support_mask(mq: &crate::style::media::MediaQuery) -> u8 {
+  let inline_only = mq.features.iter().all(|feature| match feature {
+    MediaFeature::Width(_)
+    | MediaFeature::MinWidth(_)
+    | MediaFeature::MaxWidth(_)
+    | MediaFeature::InlineSize(_)
+    | MediaFeature::MinInlineSize(_)
+    | MediaFeature::MaxInlineSize(_) => true,
+    MediaFeature::Range { feature, .. } => {
+      matches!(feature, RangeFeature::Width | RangeFeature::InlineSize)
+    }
+    _ => false,
+  });
+
+  if inline_only {
+    CQ_SUPPORT_SIZE | CQ_SUPPORT_INLINE_SIZE
+  } else {
+    CQ_SUPPORT_SIZE
+  }
+}
+
 fn cq_query_support_mask(query: &ContainerQuery) -> u8 {
   match query {
-    ContainerQuery::Size(_) => CQ_SUPPORT_SIZE | CQ_SUPPORT_INLINE_SIZE,
+    ContainerQuery::Size(mq) => cq_size_query_support_mask(mq),
     ContainerQuery::Style(_) => CQ_SUPPORT_ALL,
     ContainerQuery::Not(inner) => cq_query_support_mask(inner),
     ContainerQuery::And(list) => {
@@ -21694,6 +21717,98 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       child.styles.color,
       Rgba::BLUE,
       "@container rule should be rejected when container query does not match"
+    );
+  }
+
+  #[test]
+  fn container_size_queries_require_correct_container_axes() {
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "div".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![
+              ("id".to_string(), "target".to_string()),
+              ("class".to_string(), "fallback".to_string()),
+            ],
+          },
+          children: vec![],
+        }],
+      }],
+    };
+
+    let stylesheet = parse_stylesheet(
+      r"
+        @container (min-height: 200px) {
+          #target { color: red; }
+        }
+        .fallback { color: blue; }
+      ",
+    )
+    .unwrap();
+
+    // Root node_id = 1 (size container), child node_id = 2 (inline-size container), target node_id = 3.
+    // The min-height query must skip the inline-size container and use the outer size container.
+    let mut containers = HashMap::new();
+    containers.insert(
+      1,
+      ContainerQueryInfo {
+        inline_size: 300.0,
+        block_size: 300.0,
+        container_type: ContainerType::Size,
+        names: Vec::new(),
+        font_size: 16.0,
+        styles: Arc::new(ComputedStyle::default()),
+      },
+    );
+    containers.insert(
+      2,
+      ContainerQueryInfo {
+        inline_size: 300.0,
+        block_size: 100.0,
+        container_type: ContainerType::InlineSize,
+        names: Vec::new(),
+        font_size: 16.0,
+        styles: Arc::new(ComputedStyle::default()),
+      },
+    );
+    let container_ctx = ContainerQueryContext {
+      base_media: MediaContext::screen(800.0, 600.0),
+      containers,
+    };
+
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+    let styled = apply_styles_with_media_target_and_imports(
+      &dom,
+      &stylesheet,
+      &media_ctx,
+      None,
+      None,
+      None,
+      Some(&container_ctx),
+      None,
+      None,
+    );
+    let target = styled
+      .children
+      .first()
+      .and_then(|inner| inner.children.first())
+      .expect("target");
+    assert_eq!(
+      target.styles.color,
+      Rgba::RED,
+      "@container rule should match using the outer size container (not the inner inline-size container)"
     );
   }
 
