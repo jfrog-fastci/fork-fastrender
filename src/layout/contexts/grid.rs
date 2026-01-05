@@ -2834,12 +2834,20 @@ impl GridFormattingContext {
         .get(&ensure_box_id(child))
         .copied()
         .unwrap_or(crate::geometry::Point::ZERO);
-      let needs_inline_intrinsics = positioned_style.width.is_auto()
-        && (positioned_style.left.is_auto()
-          || positioned_style.right.is_auto()
-          || child.is_replaced());
-      let needs_block_intrinsics = positioned_style.height.is_auto()
-        && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto());
+      let has_inline_keyword = positioned_style.width_keyword.is_some()
+        || positioned_style.min_width_keyword.is_some()
+        || positioned_style.max_width_keyword.is_some();
+      let has_block_keyword = positioned_style.height_keyword.is_some()
+        || positioned_style.min_height_keyword.is_some()
+        || positioned_style.max_height_keyword.is_some();
+      let needs_inline_intrinsics = has_inline_keyword
+        || (positioned_style.width.is_auto()
+          && (positioned_style.left.is_auto()
+            || positioned_style.right.is_auto()
+            || child.is_replaced()));
+      let needs_block_intrinsics = has_block_keyword
+        || (positioned_style.height.is_auto()
+          && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto()));
       let mut static_style = (*child.style).clone();
       static_style.position = crate::style::position::Position::Relative;
       static_style.top = None;
@@ -4885,12 +4893,20 @@ impl FormattingContext for GridFormattingContext {
           .get(&ensure_box_id(child))
           .copied()
           .unwrap_or(crate::geometry::Point::ZERO);
-        let needs_inline_intrinsics = positioned_style.width.is_auto()
-          && (positioned_style.left.is_auto()
-            || positioned_style.right.is_auto()
-            || child.is_replaced());
-        let needs_block_intrinsics = positioned_style.height.is_auto()
-          && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto());
+        let has_inline_keyword = positioned_style.width_keyword.is_some()
+          || positioned_style.min_width_keyword.is_some()
+          || positioned_style.max_width_keyword.is_some();
+        let has_block_keyword = positioned_style.height_keyword.is_some()
+          || positioned_style.min_height_keyword.is_some()
+          || positioned_style.max_height_keyword.is_some();
+        let needs_inline_intrinsics = has_inline_keyword
+          || (positioned_style.width.is_auto()
+            && (positioned_style.left.is_auto()
+              || positioned_style.right.is_auto()
+              || child.is_replaced()));
+        let needs_block_intrinsics = has_block_keyword
+          || (positioned_style.height.is_auto()
+            && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto()));
         let mut static_style = (*child.style).clone();
         static_style.position = crate::style::position::Position::Relative;
         static_style.top = None;

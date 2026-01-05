@@ -1095,10 +1095,18 @@ impl BlockFormattingContext {
         // recorded.
         let static_pos = static_position.unwrap_or(Point::ZERO);
         let is_replaced = pos_child.is_replaced();
-        let needs_inline_intrinsics = positioned_style.width.is_auto()
-          && (positioned_style.left.is_auto() || positioned_style.right.is_auto() || is_replaced);
-        let needs_block_intrinsics = positioned_style.height.is_auto()
-          && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto());
+        let has_inline_keyword = positioned_style.width_keyword.is_some()
+          || positioned_style.min_width_keyword.is_some()
+          || positioned_style.max_width_keyword.is_some();
+        let has_block_keyword = positioned_style.height_keyword.is_some()
+          || positioned_style.min_height_keyword.is_some()
+          || positioned_style.max_height_keyword.is_some();
+        let needs_inline_intrinsics = has_inline_keyword
+          || (positioned_style.width.is_auto()
+            && (positioned_style.left.is_auto() || positioned_style.right.is_auto() || is_replaced));
+        let needs_block_intrinsics = has_block_keyword
+          || (positioned_style.height.is_auto()
+            && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto()));
         let (
           mut child_fragment,
           preferred_min_inline,
@@ -4173,10 +4181,18 @@ impl FormattingContext for BlockFormattingContext {
         // recorded.
         let static_pos = static_position.unwrap_or(Point::ZERO);
         let is_replaced = child.is_replaced();
-        let needs_inline_intrinsics = positioned_style.width.is_auto()
-          && (positioned_style.left.is_auto() || positioned_style.right.is_auto() || is_replaced);
-        let needs_block_intrinsics = positioned_style.height.is_auto()
-          && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto());
+        let has_inline_keyword = positioned_style.width_keyword.is_some()
+          || positioned_style.min_width_keyword.is_some()
+          || positioned_style.max_width_keyword.is_some();
+        let has_block_keyword = positioned_style.height_keyword.is_some()
+          || positioned_style.min_height_keyword.is_some()
+          || positioned_style.max_height_keyword.is_some();
+        let needs_inline_intrinsics = has_inline_keyword
+          || (positioned_style.width.is_auto()
+            && (positioned_style.left.is_auto() || positioned_style.right.is_auto() || is_replaced));
+        let needs_block_intrinsics = has_block_keyword
+          || (positioned_style.height.is_auto()
+            && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto()));
         let (
           mut child_fragment,
           preferred_min_inline,
@@ -5048,6 +5064,7 @@ mod tests {
   use crate::style::display::Display;
   use crate::style::display::FormattingContextType;
   use crate::style::position::Position;
+  use crate::style::types::IntrinsicSizeKeyword;
   use crate::style::types::ListStylePosition;
   use crate::style::types::ListStyleType;
   use crate::style::types::Overflow;
@@ -6301,6 +6318,60 @@ mod tests {
     assert_eq!(child_frag.bounds.y(), 7.0);
     assert_eq!(child_frag.bounds.width(), 50.0);
     assert_eq!(child_frag.bounds.height(), 20.0);
+  }
+
+  #[test]
+  fn absolutely_positioned_child_width_max_content_centers_with_insets() {
+    let mut parent_style = ComputedStyle::default();
+    parent_style.display = Display::Block;
+    parent_style.position = Position::Relative;
+    parent_style.width = Some(Length::px(200.0));
+    parent_style.width_keyword = None;
+
+    let mut child_style = ComputedStyle::default();
+    child_style.display = Display::Block;
+    child_style.position = Position::Absolute;
+    child_style.left = Some(Length::px(0.0));
+    child_style.right = Some(Length::px(0.0));
+    child_style.top = Some(Length::px(0.0));
+    child_style.height = Some(Length::px(20.0));
+    child_style.height_keyword = None;
+    child_style.margin_left = None;
+    child_style.margin_right = None;
+    child_style.width = None;
+    child_style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+
+    let text = BoxNode::new_text(default_style(), "x".to_string());
+    let child = BoxNode::new_block(
+      Arc::new(child_style),
+      FormattingContextType::Block,
+      vec![text],
+    );
+    let parent = BoxNode::new_block(
+      Arc::new(parent_style),
+      FormattingContextType::Block,
+      vec![child],
+    );
+
+    let fc = BlockFormattingContext::new();
+    let constraints = LayoutConstraints::definite(300.0, 300.0);
+    let fragment = fc.layout(&parent, &constraints).unwrap();
+    assert_eq!(fragment.children.len(), 1);
+    let child_frag = &fragment.children[0];
+
+    assert!(
+      child_frag.bounds.width() < 199.5,
+      "expected max-content width smaller than containing block; got {}",
+      child_frag.bounds.width()
+    );
+    let expected_x = (200.0 - child_frag.bounds.width()) / 2.0;
+    assert!(
+      (child_frag.bounds.x() - expected_x).abs() < 0.5,
+      "expected centered x≈{}, got {} (width={})",
+      expected_x,
+      child_frag.bounds.x(),
+      child_frag.bounds.width()
+    );
   }
 
   #[test]

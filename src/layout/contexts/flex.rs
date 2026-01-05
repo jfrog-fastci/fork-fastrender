@@ -3224,10 +3224,18 @@ impl FormattingContext for FlexFormattingContext {
 
         let positioned_style =
           resolve_positioned_style(&original_style, &cb, self.viewport_size, &self.font_context);
-        let needs_inline_intrinsics = positioned_style.width.is_auto()
-          && (positioned_style.left.is_auto() || positioned_style.right.is_auto() || is_replaced);
-        let needs_block_intrinsics = positioned_style.height.is_auto()
-          && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto());
+        let has_inline_keyword = positioned_style.width_keyword.is_some()
+          || positioned_style.min_width_keyword.is_some()
+          || positioned_style.max_width_keyword.is_some();
+        let has_block_keyword = positioned_style.height_keyword.is_some()
+          || positioned_style.min_height_keyword.is_some()
+          || positioned_style.max_height_keyword.is_some();
+        let needs_inline_intrinsics = has_inline_keyword
+          || (positioned_style.width.is_auto()
+            && (positioned_style.left.is_auto() || positioned_style.right.is_auto() || is_replaced));
+        let needs_block_intrinsics = has_block_keyword
+          || (positioned_style.height.is_auto()
+            && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto()));
         let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
           match fc.compute_intrinsic_inline_sizes(&layout_child) {
             Ok((min, max)) => (Some(min), Some(max)),

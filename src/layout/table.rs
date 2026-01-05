@@ -5351,10 +5351,20 @@ impl FormattingContext for TableFormattingContext {
           self.factory.font_context(),
         );
         let is_replaced = child.is_replaced();
-        let needs_inline_intrinsics = positioned_style.width.is_auto()
-          && (positioned_style.left.is_auto() || positioned_style.right.is_auto() || is_replaced);
-        let needs_block_intrinsics = positioned_style.height.is_auto()
-          && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto());
+        let has_inline_keyword = positioned_style.width_keyword.is_some()
+          || positioned_style.min_width_keyword.is_some()
+          || positioned_style.max_width_keyword.is_some();
+        let has_block_keyword = positioned_style.height_keyword.is_some()
+          || positioned_style.min_height_keyword.is_some()
+          || positioned_style.max_height_keyword.is_some();
+        let needs_inline_intrinsics = has_inline_keyword
+          || (positioned_style.width.is_auto()
+            && (positioned_style.left.is_auto()
+              || positioned_style.right.is_auto()
+              || is_replaced));
+        let needs_block_intrinsics = has_block_keyword
+          || (positioned_style.height.is_auto()
+            && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto()));
 
         let (
           mut child_fragment,
