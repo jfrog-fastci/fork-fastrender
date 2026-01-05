@@ -571,11 +571,7 @@ impl FragmentationAnalyzer {
     total_extent: f32,
     window: std::ops::Range<usize>,
   ) -> Option<f32> {
-    if limit >= total_extent - BREAK_EPSILON {
-      return Some(total_extent);
-    }
-
-    self.opportunities[window]
+    let forced = self.opportunities[window]
       .iter()
       .find(|o| {
         matches!(o.strength, BreakStrength::Forced)
@@ -583,7 +579,19 @@ impl FragmentationAnalyzer {
           && o.pos <= limit + BREAK_EPSILON
           && !pos_is_inside_atomic(o.pos, &self.atomic)
       })
-      .map(|o| o.pos.min(total_extent))
+      .map(|o| o.pos.min(total_extent));
+    if forced.is_some() {
+      return forced;
+    }
+
+    // Even if the fragmentainer limit lands at the end of the total extent, we still need to
+    // honour any forced breaks inside the window above. Otherwise `break-before/after` rules would
+    // be ignored whenever the content fits in a single fragmentainer.
+    if limit >= total_extent - BREAK_EPSILON {
+      return Some(total_extent);
+    }
+
+    None
   }
 
   fn near_line_boundary(
