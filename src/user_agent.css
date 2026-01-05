@@ -475,6 +475,10 @@ head, style, script, meta, link, title, template {
   display: none;
 }
 
+[hidden] {
+  display: none;
+}
+
 /* Horizontal rule */
 hr {
     display: block;

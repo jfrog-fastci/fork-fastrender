@@ -439,6 +439,11 @@ const PAGE_FIXTURES: &[PageFixture] = &[
     shots: DEFAULT_SHOTS,
   },
   PageFixture {
+    name: "hidden_attribute_display_none",
+    html: "hidden_attribute_display_none/index.html",
+    shots: DEFAULT_SHOTS,
+  },
+  PageFixture {
     name: "logical_border_shorthands",
     html: "logical_border_shorthands/index.html",
     shots: DEFAULT_SHOTS,
