@@ -7218,6 +7218,39 @@ mod tests {
   }
 
   #[test]
+  fn grid_item_width_keyword_max_content_is_clamped_by_max_width() {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(200.0))];
+    grid_style.grid_template_rows = vec![GridTrack::Auto];
+    grid_style.justify_items = AlignItems::Stretch;
+    let grid_style = Arc::new(grid_style);
+
+    let mut item_style = ComputedStyle::default();
+    item_style.font_size = 16.0;
+    item_style.width = None;
+    item_style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+    item_style.max_width = Some(Length::px(50.0));
+    item_style.max_width_keyword = None;
+    let item_style = Arc::new(item_style);
+    let text_child = BoxNode::new_text(item_style.clone(), "hello world goodbye".into());
+    let item = BoxNode::new_block(item_style, FormattingContextType::Inline, vec![text_child]);
+
+    let grid = BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![item]);
+
+    let fragment = fc.layout(&grid, &LayoutConstraints::definite(200.0, 200.0)).unwrap();
+
+    assert_eq!(fragment.children.len(), 1);
+    let width = fragment.children[0].bounds.width();
+    assert!(
+      (width - 50.0).abs() < 0.5,
+      "expected max-content width to be clamped to 50px, got {width:.2}"
+    );
+  }
+
+  #[test]
   fn grid_item_height_keyword_max_content_prevents_stretch() {
     let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
 
