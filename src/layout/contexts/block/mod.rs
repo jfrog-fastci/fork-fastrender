@@ -1007,6 +1007,7 @@ impl BlockFormattingContext {
       max_height
     };
     let height = crate::layout::utils::clamp_with_order(height, min_height, max_height);
+
     // Create the fragment
     let box_height = border_top + padding_top + height + padding_bottom + border_bottom;
     let box_width = computed_width.border_box_width();
@@ -5107,8 +5108,16 @@ mod tests {
     let fragment = fc.layout(&parent, &constraints).unwrap();
     assert_eq!(fragment.children.len(), 1);
     let child_fragment = &fragment.children[0];
-    assert!((child_fragment.bounds.x() - 10.0).abs() < 0.01);
-    assert!((child_fragment.bounds.y() - 20.0).abs() < 0.01);
+    assert!(
+      (child_fragment.bounds.x() - 10.0).abs() < 0.01,
+      "x={}",
+      child_fragment.bounds.x()
+    );
+    assert!(
+      (child_fragment.bounds.y() - 20.0).abs() < 0.01,
+      "y={}",
+      child_fragment.bounds.y()
+    );
   }
 
   #[test]

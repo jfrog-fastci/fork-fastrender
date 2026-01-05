@@ -1057,17 +1057,12 @@ impl RenderDiagnostics {
       }
     }
     let url = url.into();
-    let content_type = match error {
-      Error::Resource(res) => res.content_type.as_deref(),
-      _ => None,
-    };
     let entry = ResourceFetchError::from_error(kind, url, error);
     if is_bot_mitigation_blocked_subresource(
       entry.kind,
       &entry.url,
       entry.status,
       entry.final_url.as_deref(),
-      content_type,
     ) {
       self.blocked_fetch_errors.push(entry);
       return;
@@ -1108,7 +1103,6 @@ impl RenderDiagnostics {
       &entry.url,
       entry.status,
       entry.final_url.as_deref(),
-      None,
     ) {
       self.blocked_fetch_errors.push(entry);
       return;
@@ -1137,7 +1131,6 @@ pub(crate) fn is_bot_mitigation_blocked_subresource(
   requested_url: &str,
   status: Option<u16>,
   final_url: Option<&str>,
-  content_type: Option<&str>,
 ) -> bool {
   // Keep this intentionally narrow: the pageset should stay deterministic, but we still want
   // renderer regressions (real decode/paint failures) to surface.
@@ -1163,12 +1156,6 @@ pub(crate) fn is_bot_mitigation_blocked_subresource(
     return true;
   }
 
-  if let Some(content_type) = content_type {
-    if content_type_is_html(content_type) && url_looks_like_subresource(kind, requested_url) {
-      return true;
-    }
-  }
-
   false
 }
 
@@ -1178,45 +1165,6 @@ fn url_has_captcha_query_param(url: &str) -> bool {
     || lower.contains("&captcha=")
     || lower.contains("?challenge=")
     || lower.contains("&challenge=")
-}
-
-fn content_type_is_html(content_type: &str) -> bool {
-  let mime = content_type
-    .split(';')
-    .next()
-    .unwrap_or(content_type)
-    .trim()
-    .to_ascii_lowercase();
-  mime.starts_with("text/html") || mime.starts_with("application/xhtml+xml")
-}
-
-fn url_looks_like_subresource(kind: ResourceKind, url: &str) -> bool {
-  match kind {
-    ResourceKind::Image => url_has_any_suffix(
-      url,
-      &[
-        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".apng", ".bmp", ".ico", ".tif",
-        ".tiff", ".svg", ".svgz",
-      ],
-    ),
-    ResourceKind::Stylesheet => url_has_any_suffix(url, &[".css"]),
-    ResourceKind::Font => url_has_any_suffix(url, &[".woff2", ".woff", ".ttf", ".otf", ".eot"]),
-    _ => false,
-  }
-}
-
-fn url_has_any_suffix(url: &str, suffixes: &[&str]) -> bool {
-  let trimmed = url.trim();
-  let trimmed = trimmed
-    .split_once('#')
-    .map(|(before, _)| before)
-    .unwrap_or(trimmed);
-  let trimmed = trimmed
-    .split_once('?')
-    .map(|(before, _)| before)
-    .unwrap_or(trimmed);
-  let lower = trimmed.to_ascii_lowercase();
-  suffixes.iter().any(|suffix| lower.ends_with(suffix))
 }
 
 fn final_url_host_matches_known_waf(final_url: &str) -> bool {
@@ -1275,7 +1223,6 @@ mod bot_mitigation_tests {
       "https://example.com/a.jpg",
       Some(405),
       Some("https://example.com/a.jpg?captcha=deadbeef"),
-      None,
     ));
   }
 
@@ -1286,7 +1233,6 @@ mod bot_mitigation_tests {
       "https://example.com/a.jpg",
       Some(403),
       Some("https://example.com/a.jpg?challenge=deadbeef"),
-      None,
     ));
   }
 
@@ -1297,43 +1243,28 @@ mod bot_mitigation_tests {
       "https://example.com/a.jpg",
       Some(404),
       Some("https://example.com/a.jpg?captcha=deadbeef"),
-      None,
     ));
   }
 
   #[test]
-  fn bot_mitigation_classifier_recognizes_html_mime_for_static_subresources() {
-    assert!(is_bot_mitigation_blocked_subresource(
-      ResourceKind::Image,
-      "https://example.com/a.jpg",
-      Some(403),
-      Some("https://example.com/a.jpg"),
-      Some("text/html; charset=utf-8"),
-    ));
-    assert!(is_bot_mitigation_blocked_subresource(
-      ResourceKind::Stylesheet,
-      "https://example.com/site.css",
-      Some(403),
-      Some("https://example.com/site.css"),
-      Some("text/html"),
-    ));
-    assert!(is_bot_mitigation_blocked_subresource(
-      ResourceKind::Font,
-      "https://example.com/font.woff2",
-      Some(403),
-      Some("https://example.com/font.woff2"),
-      Some("application/xhtml+xml"),
-    ));
-  }
-
-  #[test]
-  fn bot_mitigation_classifier_does_not_trigger_on_non_html_mime() {
+  fn bot_mitigation_classifier_does_not_trigger_without_known_signal() {
     assert!(!is_bot_mitigation_blocked_subresource(
       ResourceKind::Image,
       "https://example.com/a.jpg",
       Some(403),
       Some("https://example.com/a.jpg"),
-      Some("image/jpeg"),
+    ));
+    assert!(!is_bot_mitigation_blocked_subresource(
+      ResourceKind::Stylesheet,
+      "https://example.com/site.css",
+      Some(403),
+      Some("https://example.com/site.css"),
+    ));
+    assert!(!is_bot_mitigation_blocked_subresource(
+      ResourceKind::Font,
+      "https://example.com/font.woff2",
+      Some(403),
+      Some("https://example.com/font.woff2"),
     ));
   }
 
@@ -1344,7 +1275,6 @@ mod bot_mitigation_tests {
       "https://example.com/a.jpg",
       Some(403),
       Some("https://geo.captcha-delivery.com/captcha"),
-      None,
     ));
   }
 
@@ -1355,7 +1285,6 @@ mod bot_mitigation_tests {
       "https://example.com/",
       Some(403),
       Some("https://example.com/?captcha=deadbeef"),
-      Some("text/html"),
     ));
   }
 }

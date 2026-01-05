@@ -4116,14 +4116,8 @@ impl FontPreferencePicker {
   }
 
   fn finish(&mut self) -> Option<Arc<LoadedFont>> {
-    let first_emoji = self
-      .first_emoji
-      .take()
-      .or_else(|| self.first_emoji_any.take());
-    let first_text = self
-      .first_text
-      .take()
-      .or_else(|| self.first_text_any.take());
+    let first_emoji = self.first_emoji.take();
+    let first_text = self.first_text.take();
 
     if self.prefer_emoji && !self.avoid_emoji {
       first_emoji
