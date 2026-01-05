@@ -7710,7 +7710,9 @@ mod tests {
 
   #[test]
   fn content_visibility_auto_respects_vertical_writing_mode() {
-    let viewport = Size::new(100.0, 50.0);
+    // Choose a viewport where physical height > width so vertical writing mode mapping matters:
+    // the logical block size should come from the physical width (50), not height (100).
+    let viewport = Size::new(50.0, 100.0);
     let fc = BlockFormattingContext::with_font_context_viewport_and_cb(
       FontContext::new(),
       viewport,
@@ -7746,7 +7748,7 @@ mod tests {
       AvailableSpace::Indefinite,
     );
     let paint_viewport = Rect::from_xywh(0.0, 0.0, viewport.height, viewport.width);
-    let current_y = viewport.width + 50.0;
+    let current_y = viewport.width + 10.0;
     let nearest_cb = ContainingBlock::viewport(viewport);
 
     let (fragment, _) = fc
