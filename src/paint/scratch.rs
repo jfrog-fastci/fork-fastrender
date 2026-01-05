@@ -25,6 +25,11 @@ pub fn reset_thread_local_scratch() {
 ///
 /// Tooling (such as `render_fixtures --reset-paint-scratch`) uses this to bisect paint
 /// nondeterminism suspected to be related to scheduling-dependent scratch reuse.
+///
+/// # Safety / correctness notes
+/// This should only be called when no paint work is actively running on the affected pools. The
+/// reset functions mutate thread-local caches that paint code assumes are stable for the duration
+/// of a render task.
 pub fn reset_paint_scratch_best_effort() {
   reset_thread_local_scratch();
 
@@ -39,6 +44,30 @@ pub fn reset_paint_scratch_best_effort() {
     pool.install(|| {
       rayon::broadcast(|_| {
         reset_thread_local_scratch();
+      });
+    });
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
+  use std::collections::HashMap;
+  use std::sync::Arc;
+ 
+  #[test]
+  fn reset_best_effort_supports_dedicated_paint_pool() {
+    // Use a thread-local runtime toggle override so parallel tests aren't affected.
+    let mut raw = HashMap::new();
+    raw.insert("FASTR_PAINT_THREADS".to_string(), "2".to_string());
+    let toggles = Arc::new(RuntimeToggles::from_map(raw));
+
+    // Call inside a custom pool to avoid touching the global Rayon pool in unit tests.
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+    with_thread_runtime_toggles(toggles, || {
+      pool.install(|| {
+        reset_paint_scratch_best_effort();
       });
     });
   }
