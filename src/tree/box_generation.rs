@@ -3240,6 +3240,69 @@ pub fn is_replaced_element(tag: &str) -> bool {
     || tag.eq_ignore_ascii_case("math")
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MediaElementKind {
+  Video,
+  Audio,
+}
+
+fn media_src_is_unusable(src: &str) -> bool {
+  let trimmed = src.trim();
+  trimmed.is_empty() || trimmed == "#" || trimmed.eq_ignore_ascii_case("about:blank")
+}
+
+fn media_src_from_source_children(styled: &StyledNode, kind: MediaElementKind) -> Option<String> {
+  let preferred_prefix = match kind {
+    MediaElementKind::Video => "video/",
+    MediaElementKind::Audio => "audio/",
+  };
+
+  let mut first_any: Option<String> = None;
+  for child in &styled.children {
+    let Some(tag) = child.node.tag_name() else {
+      continue;
+    };
+    if !tag.eq_ignore_ascii_case("source") {
+      continue;
+    }
+
+    let Some(src_attr) = child.node.get_attribute_ref("src") else {
+      continue;
+    };
+    let src_trimmed = src_attr.trim();
+    if src_trimmed.is_empty() {
+      continue;
+    }
+
+    if first_any.is_none() {
+      first_any = Some(src_trimmed.to_string());
+    }
+
+    // Prefer sources whose type hints match the parent element. This preserves some semantics from
+    // HTML media selection without needing full codec/`media` evaluation.
+    if let Some(type_attr) = child.node.get_attribute_ref("type") {
+      let type_trimmed = type_attr.trim();
+      if type_trimmed
+        .get(..preferred_prefix.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(preferred_prefix))
+      {
+        return Some(src_trimmed.to_string());
+      }
+    }
+  }
+
+  first_any
+}
+
+fn effective_media_src(styled: &StyledNode, kind: MediaElementKind) -> String {
+  let src = styled.node.get_attribute("src").unwrap_or_default();
+  if !media_src_is_unusable(&src) {
+    return src;
+  }
+
+  media_src_from_source_children(styled, kind).unwrap_or_default()
+}
+
 /// Creates a BoxNode for a replaced element from a StyledNode
 fn create_replaced_box_from_styled(
   styled: &StyledNode,
@@ -3286,7 +3349,7 @@ fn create_replaced_box_from_styled(
       picture_sources,
     }
   } else if tag.eq_ignore_ascii_case("video") {
-    let src = styled.node.get_attribute("src").unwrap_or_default();
+    let src = effective_media_src(styled, MediaElementKind::Video);
     let mut poster = styled
       .node
       .get_attribute_ref("poster")
@@ -3301,7 +3364,7 @@ fn create_replaced_box_from_styled(
     }
     ReplacedType::Video { src, poster }
   } else if tag.eq_ignore_ascii_case("audio") {
-    let src = styled.node.get_attribute("src").unwrap_or_default();
+    let src = effective_media_src(styled, MediaElementKind::Audio);
     ReplacedType::Audio { src }
   } else if tag.eq_ignore_ascii_case("canvas") {
     ReplacedType::Canvas
@@ -4156,6 +4219,69 @@ mod tests {
       },
       other => panic!("expected replaced box, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn video_src_falls_back_to_source_children() {
+    let html =
+      "<html><body><video><source src=\"a.mp4\"><source src=\"b.webm\"></video></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    fn find_video_src(node: &BoxNode) -> Option<String> {
+      if let BoxType::Replaced(repl) = &node.box_type {
+        if let ReplacedType::Video { src, .. } = &repl.replaced_type {
+          return Some(src.clone());
+        }
+      }
+      node.children.iter().find_map(find_video_src)
+    }
+
+    assert_eq!(find_video_src(&box_tree.root).as_deref(), Some("a.mp4"));
+  }
+
+  #[test]
+  fn audio_src_falls_back_to_source_children() {
+    let html =
+      "<html><body><audio><source src=\"a.mp3\"><source src=\"b.ogg\"></audio></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    fn find_audio_src(node: &BoxNode) -> Option<String> {
+      if let BoxType::Replaced(repl) = &node.box_type {
+        if let ReplacedType::Audio { src } = &repl.replaced_type {
+          return Some(src.clone());
+        }
+      }
+      node.children.iter().find_map(find_audio_src)
+    }
+
+    assert_eq!(find_audio_src(&box_tree.root).as_deref(), Some("a.mp3"));
+  }
+
+  #[test]
+  fn video_src_attribute_wins_over_source_children() {
+    let html =
+      "<html><body><video src=\"parent.mp4\"><source src=\"child.mp4\"></video></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    fn find_video_src(node: &BoxNode) -> Option<String> {
+      if let BoxType::Replaced(repl) = &node.box_type {
+        if let ReplacedType::Video { src, .. } = &repl.replaced_type {
+          return Some(src.clone());
+        }
+      }
+      node.children.iter().find_map(find_video_src)
+    }
+
+    assert_eq!(
+      find_video_src(&box_tree.root).as_deref(),
+      Some("parent.mp4")
+    );
   }
 
   #[test]
