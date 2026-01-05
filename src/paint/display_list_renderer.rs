@@ -2908,6 +2908,12 @@ impl<'a> DisplayItemSource for DisplayListView<'a> {
 }
 
 #[derive(Clone)]
+struct Preserve3dCompositing {
+  mix_blend_mode: BlendMode,
+  is_isolated: bool,
+}
+
+#[derive(Clone)]
 struct Preserve3dSceneItem {
   source: Preserve3dSceneItemSource,
   transform: Transform3D,
@@ -2919,12 +2925,34 @@ struct Preserve3dSceneItem {
   backdrop_filters: Vec<ResolvedFilter>,
   radii: BorderRadii,
   filter_bounds: Rect,
+  compositing: Option<Preserve3dCompositing>,
 }
 
 #[derive(Clone)]
 enum Preserve3dSceneItemSource {
   Segment(Vec<DisplayItem>),
   FlattenedSubtree(StackingNode),
+}
+
+enum Preserve3dWarpedLayer {
+  Warped(Arc<WarpedPixmap>),
+  Affine { pixmap: Pixmap, offset: (i32, i32) },
+}
+
+impl Preserve3dWarpedLayer {
+  fn pixmap(&self) -> &Pixmap {
+    match self {
+      Preserve3dWarpedLayer::Warped(warped) => &warped.pixmap,
+      Preserve3dWarpedLayer::Affine { pixmap, .. } => pixmap,
+    }
+  }
+
+  fn offset(&self) -> (i32, i32) {
+    match self {
+      Preserve3dWarpedLayer::Warped(warped) => warped.offset,
+      Preserve3dWarpedLayer::Affine { offset, .. } => *offset,
+    }
+  }
 }
 
 thread_local! {
@@ -3009,6 +3037,7 @@ impl Preserve3dSceneRasterConfig {
               let mut adjusted = sc.clone();
               adjusted.transform = None;
               adjusted.backdrop_filters.clear();
+              adjusted.mix_blend_mode = BlendMode::Normal;
               let display_item = DisplayItem::PushStackingContext(adjusted);
               update_scene_effect_stack(&mut effects_after, &display_item, Transform3D::identity());
               list.push(display_item);
@@ -3234,6 +3263,10 @@ fn collect_scene_items(
       backdrop_filters: node.context.backdrop_filters.clone(),
       radii: node.context.radii,
       filter_bounds,
+      compositing: Some(Preserve3dCompositing {
+        mix_blend_mode: node.context.mix_blend_mode,
+        is_isolated: node.context.is_isolated,
+      }),
     });
     return items;
   }
@@ -3279,6 +3312,7 @@ fn collect_scene_items(
           backdrop_filters: Vec::new(),
           radii: BorderRadii::ZERO,
           filter_bounds: bounds,
+          compositing: None,
         });
       }
       StackingSegment::Child(child) => {
@@ -7590,7 +7624,46 @@ impl DisplayListRenderer {
                   scene_item.bounds.height(),
                 );
               }
-              renderer.warp_pixmap(&pixmap, &adjusted_transform, clip_override)?;
+              let blend = scene_item
+                .compositing
+                .as_ref()
+                .map(|compositing| {
+                  let is_isolated = compositing.is_isolated || has_backdrop;
+                  (!matches!(compositing.mix_blend_mode, BlendMode::Normal) && !is_isolated)
+                    .then_some(compositing.mix_blend_mode)
+                })
+                .flatten();
+              if let Some(mode) = blend {
+                if is_manual_blend(mode) {
+                  if let Some(warped) = renderer.warp_pixmap_for_manual_blend(
+                    &pixmap,
+                    &adjusted_transform,
+                    clip_override,
+                  )? {
+                    renderer.composite_manual_layer(
+                      warped.pixmap(),
+                      1.0,
+                      mode,
+                      warped.offset(),
+                      None,
+                    )?;
+                  }
+                } else {
+                  renderer.warp_pixmap(
+                    &pixmap,
+                    &adjusted_transform,
+                    clip_override,
+                    map_blend_mode(mode),
+                  )?;
+                }
+              } else {
+                renderer.warp_pixmap(
+                  &pixmap,
+                  &adjusted_transform,
+                  clip_override,
+                  renderer.canvas.blend_mode(),
+                )?;
+              }
             }
             Ok(())
           });
@@ -8050,14 +8123,150 @@ impl DisplayListRenderer {
     )
   }
 
+  fn warp_pixmap_for_manual_blend(
+    &mut self,
+    pixmap: &Pixmap,
+    transform: &Transform3D,
+    clip_override: Option<&Mask>,
+  ) -> Result<Option<Preserve3dWarpedLayer>> {
+    let parent_transform = self.canvas.transform();
+    let homography = Homography::from_transform3d_z0(transform);
+    let warp_enabled = self.projective_warp_enabled;
+    if !homography.is_affine() && warp_enabled {
+      let src_w = pixmap.width() as f32;
+      let src_h = pixmap.height() as f32;
+      if src_w > 0.0 && src_h > 0.0 {
+        let css_w = src_w / self.scale;
+        let css_h = src_h / self.scale;
+        if css_w.is_finite() && css_h.is_finite() {
+          let corners = [(0.0, 0.0), (css_w, 0.0), (css_w, css_h), (0.0, css_h)];
+          let mut dst_quad_points = [Point::ZERO; 4];
+          let mut dst_quad = [(0.0f32, 0.0f32); 4];
+          let mut valid = true;
+
+          for (i, (x, y)) in corners.iter().enumerate() {
+            let Some(projected) = transform.project_point_2d(*x, *y) else {
+              valid = false;
+              break;
+            };
+            let px = projected.x * self.scale;
+            let py = projected.y * self.scale;
+            let dst_x = px * parent_transform.sx + py * parent_transform.kx + parent_transform.tx;
+            let dst_y = px * parent_transform.ky + py * parent_transform.sy + parent_transform.ty;
+            if !dst_x.is_finite() || !dst_y.is_finite() {
+              valid = false;
+              break;
+            }
+            dst_quad[i] = (dst_x, dst_y);
+            dst_quad_points[i] = Point::new(dst_x, dst_y);
+          }
+
+          let src_quad = [
+            Point::new(0.0, 0.0),
+            Point::new(src_w, 0.0),
+            Point::new(src_w, src_h),
+            Point::new(0.0, src_h),
+          ];
+          let use_cache = clip_override.is_none();
+          let warped = if valid {
+            Homography::from_quad_to_quad(src_quad, dst_quad_points)
+              .map(|h| self.projective_warp(pixmap, &h, &dst_quad, clip_override, use_cache))
+              .transpose()
+              .map_err(Error::Render)?
+              .flatten()
+          } else {
+            None
+          };
+          if let Some(warped) = warped {
+            return Ok(Some(Preserve3dWarpedLayer::Warped(warped)));
+          }
+        }
+      }
+    }
+
+    // Affine fallback (also used when projective warps are disabled).
+    let (t, _valid) = self.to_skia_transform_checked(transform);
+    let skia_transform = concat_transforms(parent_transform, t);
+    let src_rect = Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32);
+    let mut bounds = transform_rect(src_rect, &skia_transform);
+    if let Some(clip) = self.canvas.clip_bounds() {
+      bounds = match bounds.intersection(clip) {
+        Some(r) => r,
+        None => return Ok(None),
+      };
+    }
+    bounds = match bounds.intersection(self.canvas.bounds()) {
+      Some(r) => r,
+      None => return Ok(None),
+    };
+    if bounds.width() <= 0.0
+      || bounds.height() <= 0.0
+      || !bounds.x().is_finite()
+      || !bounds.y().is_finite()
+    {
+      return Ok(None);
+    }
+
+    let origin_x = bounds.min_x().floor() as i32;
+    let origin_y = bounds.min_y().floor() as i32;
+    let x1 = bounds.max_x().ceil() as i32;
+    let y1 = bounds.max_y().ceil() as i32;
+    let width = x1.saturating_sub(origin_x) as u32;
+    let height = y1.saturating_sub(origin_y) as u32;
+    if width == 0 || height == 0 {
+      return Ok(None);
+    }
+
+    let mut layer = match new_pixmap(width, height) {
+      Some(p) => p,
+      None => return Ok(None),
+    };
+    let local_transform = concat_transforms(
+      Transform::from_translate(-(origin_x as f32), -(origin_y as f32)),
+      skia_transform,
+    );
+    let mut paint = PixmapPaint::default();
+    paint.blend_mode = SkiaBlendMode::SourceOver;
+    layer.draw_pixmap(0, 0, pixmap.as_ref(), &paint, local_transform, None);
+
+    if let Some(mask) = clip_override.or_else(|| self.canvas.clip_mask()) {
+      let Some(cropped) =
+        crop_mask(mask, origin_x as u32, origin_y as u32, width, height).map_err(Error::Render)?
+      else {
+        return Ok(None);
+      };
+      if active_deadline().as_ref().map_or(false, |d| d.is_enabled()) {
+        apply_mask_rect_rgba(
+          &mut layer,
+          &cropped,
+          ClipMaskDirtyRect {
+            x0: 0,
+            y0: 0,
+            x1: width,
+            y1: height,
+          },
+        )
+        .map_err(Error::Render)?;
+      } else {
+        layer.apply_mask(&cropped);
+      }
+    }
+
+    Ok(Some(Preserve3dWarpedLayer::Affine {
+      pixmap: layer,
+      offset: (origin_x, origin_y),
+    }))
+  }
+
   fn warp_pixmap(
     &mut self,
     pixmap: &Pixmap,
     transform: &Transform3D,
     clip_override: Option<&Mask>,
+    blend_mode: SkiaBlendMode,
   ) -> Result<()> {
     let mut paint = PixmapPaint::default();
-    paint.blend_mode = self.canvas.blend_mode();
+    paint.blend_mode = blend_mode;
 
     let parent_transform = self.canvas.transform();
 
