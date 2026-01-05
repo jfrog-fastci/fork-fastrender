@@ -690,8 +690,11 @@ impl InlineFormattingContext {
           }
         },
         BoxType::Inline(_) => {
-          self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
+          let mut pending_space = self.take_pending_collapsible_space_item(&mut whitespace)?;
           if matches!(child.style.display, Display::Ruby) {
+            if let Some(space_item) = pending_space.take() {
+              current_items.push(space_item);
+            }
             let item = self.layout_ruby_inline_item(
               child,
               available_width,
@@ -707,6 +710,9 @@ impl InlineFormattingContext {
             continue;
           }
           if float {
+            if let Some(space_item) = pending_space.take() {
+              current_items.push(space_item);
+            }
             let metrics = self.compute_strut_metrics(&child.style);
             let va = self.convert_vertical_align(
               child.style.vertical_align,
@@ -725,6 +731,9 @@ impl InlineFormattingContext {
             continue;
           }
           if formatting_context.is_some() {
+            if let Some(space_item) = pending_space.take() {
+              current_items.push(space_item);
+            }
             let item = self.layout_inline_block(child, available_width, available_height)?;
             current_items.push(InlineItem::InlineBlock(item));
             whitespace.note_content();
@@ -837,6 +846,12 @@ impl InlineFormattingContext {
             fixed_cb_stack,
             child_boundary,
           )?;
+          let child_starts_with_hard_break = Self::inline_items_start_with_hard_break(&child_items);
+          if !child_starts_with_hard_break {
+            if let Some(space_item) = pending_space.take() {
+              current_items.push(space_item);
+            }
+          }
           if dump_text_enabled() {
             static INLINE_ANON_ITEMS_LOG: OnceLock<AtomicUsize> = OnceLock::new();
             let logged = INLINE_ANON_ITEMS_LOG.get_or_init(|| AtomicUsize::new(0));
@@ -939,8 +954,11 @@ impl InlineFormattingContext {
           }
         }
         BoxType::Anonymous(anon) if matches!(anon.anonymous_type, AnonymousType::Inline) => {
-          self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
+          let mut pending_space = self.take_pending_collapsible_space_item(&mut whitespace)?;
           if float {
+            if let Some(space_item) = pending_space.take() {
+              current_items.push(space_item);
+            }
             let metrics = self.compute_strut_metrics(&child.style);
             let va = self.convert_vertical_align(
               child.style.vertical_align,
@@ -959,6 +977,9 @@ impl InlineFormattingContext {
             continue;
           }
           if formatting_context.is_some() {
+            if let Some(space_item) = pending_space.take() {
+              current_items.push(space_item);
+            }
             let item = self.layout_inline_block(child, available_width, available_height)?;
             current_items.push(InlineItem::InlineBlock(item));
             whitespace.note_content();
@@ -1071,6 +1092,12 @@ impl InlineFormattingContext {
             fixed_cb_stack,
             child_boundary,
           )?;
+          let child_starts_with_hard_break = Self::inline_items_start_with_hard_break(&child_items);
+          if !child_starts_with_hard_break {
+            if let Some(space_item) = pending_space.take() {
+              current_items.push(space_item);
+            }
+          }
           if dump_text_enabled() {
             static INLINE_ANON_LOG: OnceLock<AtomicUsize> = OnceLock::new();
             let logged = INLINE_ANON_LOG.get_or_init(|| AtomicUsize::new(0));
@@ -1520,8 +1547,11 @@ impl InlineFormattingContext {
           }
         },
         BoxType::Inline(_) => {
-          self.flush_pending_collapsible_space(whitespace, &mut items)?;
+          let mut pending_space = self.take_pending_collapsible_space_item(whitespace)?;
           if matches!(child.style.display, Display::Ruby) {
+            if let Some(space_item) = pending_space.take() {
+              items.push(space_item);
+            }
             let item = self.layout_ruby_inline_item(
               child,
               available_width,
@@ -1538,6 +1568,9 @@ impl InlineFormattingContext {
           }
           if child.style.float.is_floating() {
             // Inline-level float: collect as a floating item so it can be placed into the float context.
+            if let Some(space_item) = pending_space.take() {
+              items.push(space_item);
+            }
             let metrics = self.compute_strut_metrics(&child.style);
             let va = self.convert_vertical_align(
               child.style.vertical_align,
@@ -1556,6 +1589,9 @@ impl InlineFormattingContext {
             continue;
           }
           if child.formatting_context().is_some() {
+            if let Some(space_item) = pending_space.take() {
+              items.push(space_item);
+            }
             let item = self.layout_inline_block(child, available_width, available_height)?;
             items.push(InlineItem::InlineBlock(item));
             whitespace.note_content();
@@ -1673,6 +1709,12 @@ impl InlineFormattingContext {
             fixed_cb_stack,
             child_boundary,
           )?;
+          let child_starts_with_hard_break = Self::inline_items_start_with_hard_break(&child_items);
+          if !child_starts_with_hard_break {
+            if let Some(space_item) = pending_space.take() {
+              items.push(space_item);
+            }
+          }
           if dump_text_enabled() {
             static INLINE_CHILD_LOG: OnceLock<AtomicUsize> = OnceLock::new();
             let logged = INLINE_CHILD_LOG.get_or_init(|| AtomicUsize::new(0));
@@ -1771,8 +1813,11 @@ impl InlineFormattingContext {
           }
         }
         BoxType::Anonymous(anon) if matches!(anon.anonymous_type, AnonymousType::Inline) => {
-          self.flush_pending_collapsible_space(whitespace, &mut items)?;
+          let mut pending_space = self.take_pending_collapsible_space_item(whitespace)?;
           if child.style.float.is_floating() {
+            if let Some(space_item) = pending_space.take() {
+              items.push(space_item);
+            }
             let metrics = self.compute_strut_metrics(&child.style);
             let va = self.convert_vertical_align(
               child.style.vertical_align,
@@ -1791,6 +1836,9 @@ impl InlineFormattingContext {
             continue;
           }
           if child.formatting_context().is_some() {
+            if let Some(space_item) = pending_space.take() {
+              items.push(space_item);
+            }
             let item = self.layout_inline_block(child, available_width, available_height)?;
             items.push(InlineItem::InlineBlock(item));
             whitespace.note_content();
@@ -1907,6 +1955,12 @@ impl InlineFormattingContext {
             fixed_cb_stack,
             child_boundary,
           )?;
+          let child_starts_with_hard_break = Self::inline_items_start_with_hard_break(&child_items);
+          if !child_starts_with_hard_break {
+            if let Some(space_item) = pending_space.take() {
+              items.push(space_item);
+            }
+          }
           if dump_text_enabled() {
             static INLINE_ANON_ITEMS_LOG: OnceLock<AtomicUsize> = OnceLock::new();
             let logged = INLINE_ANON_ITEMS_LOG.get_or_init(|| AtomicUsize::new(0));
@@ -3733,13 +3787,22 @@ impl InlineFormattingContext {
     whitespace: &mut CollapsibleWhitespaceState,
     items: &mut Vec<InlineItem>,
   ) -> Result<(), LayoutError> {
+    if let Some(space_item) = self.take_pending_collapsible_space_item(whitespace)? {
+      items.push(space_item);
+    }
+    Ok(())
+  }
+
+  fn take_pending_collapsible_space_item(
+    &self,
+    whitespace: &mut CollapsibleWhitespaceState,
+  ) -> Result<Option<InlineItem>, LayoutError> {
     let Some(space) = whitespace.pending.take() else {
-      return Ok(());
+      return Ok(None);
     };
     let space_item = self.create_collapsed_space_item(&space.style, space.allow_soft_wrap)?;
-    items.push(space_item);
     whitespace.note_space();
-    Ok(())
+    Ok(Some(space_item))
   }
 
   fn append_inline_items_with_whitespace(
@@ -3766,6 +3829,40 @@ impl InlineFormattingContext {
       }
     }
     Ok(())
+  }
+
+  fn inline_items_start_with_hard_break(items: &[InlineItem]) -> bool {
+    for item in items {
+      match item {
+        InlineItem::StaticPositionAnchor(_) | InlineItem::Floating(_) => continue,
+        InlineItem::HardBreak => return true,
+        InlineItem::InlineBox(b) => {
+          if Self::inline_items_start_with_hard_break(&b.children) {
+            return true;
+          }
+          if b.width().abs() <= f32::EPSILON {
+            continue;
+          }
+          return false;
+        }
+        InlineItem::Ruby(ruby) => {
+          for segment in &ruby.segments {
+            if Self::inline_items_start_with_hard_break(&segment.base_items) {
+              return true;
+            }
+            if segment.width.abs() > f32::EPSILON {
+              return false;
+            }
+          }
+          if ruby.width().abs() <= f32::EPSILON {
+            continue;
+          }
+          return false;
+        }
+        _ => return false,
+      }
+    }
+    false
   }
 
   fn create_collapsed_space_item(
@@ -15143,6 +15240,61 @@ mod tests {
 
     let fragment = ifc.layout(&root, &constraints).expect("layout");
     assert_eq!(collect_fragment_line_texts(&fragment), vec!["a", ""]);
+  }
+
+  #[test]
+  fn white_space_pre_line_drops_collapsible_space_before_newline_in_inline_box() {
+    let ifc = InlineFormattingContext::new();
+    let mut style = ComputedStyle::default();
+    style.white_space = WhiteSpace::PreLine;
+    style.font_size = 16.0;
+    let style = Arc::new(style);
+
+    let inline = BoxNode::new_inline(
+      style.clone(),
+      vec![BoxNode::new_text(style.clone(), "\n".to_string())],
+    );
+
+    let root = BoxNode::new_block(
+      style.clone(),
+      FormattingContextType::Block,
+      vec![
+        BoxNode::new_text(style.clone(), "a ".to_string()),
+        inline,
+      ],
+    );
+    let constraints = LayoutConstraints::definite_width(200.0);
+
+    let fragment = ifc.layout(&root, &constraints).expect("layout");
+    assert_eq!(collect_fragment_line_texts(&fragment), vec!["a", ""]);
+  }
+
+  #[test]
+  fn white_space_pre_line_drops_collapsible_space_before_newline_in_nested_inline_box() {
+    let ifc = InlineFormattingContext::new();
+    let mut style = ComputedStyle::default();
+    style.white_space = WhiteSpace::PreLine;
+    style.font_size = 16.0;
+    let style = Arc::new(style);
+
+    let inner = BoxNode::new_inline(
+      style.clone(),
+      vec![BoxNode::new_text(style.clone(), "\nfoo".to_string())],
+    );
+    let outer = BoxNode::new_inline(style.clone(), vec![inner]);
+
+    let root = BoxNode::new_block(
+      style.clone(),
+      FormattingContextType::Block,
+      vec![
+        BoxNode::new_text(style.clone(), "a ".to_string()),
+        outer,
+      ],
+    );
+    let constraints = LayoutConstraints::definite_width(200.0);
+
+    let fragment = ifc.layout(&root, &constraints).expect("layout");
+    assert_eq!(collect_fragment_line_texts(&fragment), vec!["a", "foo"]);
   }
 
   #[test]
