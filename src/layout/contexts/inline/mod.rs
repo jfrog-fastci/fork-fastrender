@@ -2021,31 +2021,83 @@ impl InlineFormattingContext {
 
     // CSS 2.1 §10.3.9: inline-block width auto -> shrink-to-fit:
     // min(max(preferred_min, available), preferred)
-    let (preferred_min_content, preferred_content) =
-      match fc.compute_intrinsic_inline_sizes(box_node) {
-        Ok(values) => values,
-        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-        Err(_) => {
-          // Preserve legacy semantics for non-timeout intrinsic sizing failures: treat
-          // the min-content width as 0 but still attempt the max-content measurement.
-          let preferred_content =
-            match fc.compute_intrinsic_inline_size(box_node, IntrinsicSizingMode::MaxContent) {
-              Ok(value) => value,
-              Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-              Err(_) => 0.0,
-            };
-          (0.0, preferred_content)
-        }
-      };
+    //
+    // `compute_intrinsic_inline_sizes` returns border-box sizes (computed against a 0px percentage
+    // base). Rebase its returned values to the actual percentage base so shrink-to-fit does not
+    // double-count padding/borders and percentage edges are resolved against the correct base.
+    let mut probe_style: ComputedStyle = (*style).clone();
+    probe_style.width = None;
+    probe_style.width_keyword = None;
+    probe_style.min_width = None;
+    probe_style.min_width_keyword = None;
+    probe_style.max_width = None;
+    probe_style.max_width_keyword = None;
+    let probe_style = Arc::new(probe_style);
 
-    let horizontal_edges = horizontal_padding_and_borders(
+    let compute_intrinsic_sizes = |mode: Option<IntrinsicSizingMode>| -> Result<(f32, f32), LayoutError> {
+      if let Some(mode) = mode {
+        let value = if box_node.id != 0 {
+          crate::layout::style_override::with_style_override(box_node.id, probe_style.clone(), || {
+            fc.compute_intrinsic_inline_size(box_node, mode)
+          })?
+        } else {
+          let mut cloned = box_node.clone();
+          cloned.style = probe_style.clone();
+          fc.compute_intrinsic_inline_size(&cloned, mode)?
+        };
+        return Ok((value, value));
+      }
+
+      if box_node.id != 0 {
+        crate::layout::style_override::with_style_override(box_node.id, probe_style.clone(), || {
+          fc.compute_intrinsic_inline_sizes(box_node)
+        })
+      } else {
+        let mut cloned = box_node.clone();
+        cloned.style = probe_style.clone();
+        fc.compute_intrinsic_inline_sizes(&cloned)
+      }
+    };
+
+    let (preferred_min_border_base0, preferred_border_base0) = match compute_intrinsic_sizes(None) {
+      Ok(values) => values,
+      Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+      Err(_) => {
+        // Preserve legacy semantics for non-timeout intrinsic sizing failures: treat
+        // the min-content width as 0 but still attempt the max-content measurement.
+        let preferred_border_base0 = match compute_intrinsic_sizes(Some(IntrinsicSizingMode::MaxContent)) {
+          Ok((value, _)) => value,
+          Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+          Err(_) => 0.0,
+        };
+        (0.0, preferred_border_base0)
+      }
+    };
+
+    let edges_base0 =
+      horizontal_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context);
+    let edges_actual = horizontal_padding_and_borders(
       style,
       percentage_base_px,
       self.viewport_size,
       &self.font_context,
     );
-    let preferred_min = preferred_min_content + horizontal_edges;
-    let preferred = preferred_content + horizontal_edges;
+    let preferred_min_border = (preferred_min_border_base0 - edges_base0 + edges_actual).max(0.0);
+    let preferred_border = (preferred_border_base0 - edges_base0 + edges_actual).max(0.0);
+
+    let (preferred_min, preferred, available_for_fit) = match style.box_sizing {
+      crate::style::types::BoxSizing::BorderBox => (preferred_min_border, preferred_border, available_for_box),
+      crate::style::types::BoxSizing::ContentBox => {
+        let min_content = (preferred_min_border - edges_actual).max(0.0);
+        let max_content = (preferred_border - edges_actual).max(0.0);
+        let available = if available_for_box.is_finite() {
+          (available_for_box - edges_actual).max(0.0)
+        } else {
+          available_for_box
+        };
+        (min_content, max_content, available)
+      }
+    };
 
     let resolved_specified_height = style.height.as_ref().and_then(|h| {
       available_height.filter(|h| h.is_finite()).and_then(|base| {
@@ -2058,6 +2110,39 @@ impl InlineFormattingContext {
         )
       })
     });
+
+    let resolve_fit_content_limit = |limit: Length| -> Option<f32> {
+      if limit.unit.is_percentage() && percentage_base.is_none() {
+        return None;
+      }
+      Some(resolve_length_for_width(
+        limit,
+        percentage_base_px,
+        style,
+        &self.font_context,
+        self.viewport_size,
+      ))
+    };
+
+    let resolve_intrinsic_keyword = |keyword: crate::style::types::IntrinsicSizeKeyword| -> Option<f32> {
+      use crate::style::types::IntrinsicSizeKeyword as Keyword;
+      match keyword {
+        Keyword::MinContent => Some(preferred_min),
+        Keyword::MaxContent => Some(preferred),
+        Keyword::FitContent { limit } => match limit {
+          None => {
+            let available = if available_for_fit.is_finite() {
+              available_for_fit
+            } else {
+              preferred
+            };
+            Some(preferred.min(available.max(preferred_min)))
+          }
+          Some(limit) => resolve_fit_content_limit(limit)
+            .map(|limit_px| preferred.min(limit_px.max(preferred_min))),
+        },
+      }
+    };
 
     let specified_width = style
       .width
@@ -2075,81 +2160,101 @@ impl InlineFormattingContext {
           ))
         }
       })
-      .map(|w| border_size_from_box_sizing(w, horizontal_edges, style.box_sizing));
+      .or_else(|| style.width_keyword.and_then(resolve_intrinsic_keyword));
 
-    let min_width = style
-      .min_width
-      .as_ref()
-      .map(|l| {
-        resolve_length_for_width(
-          *l,
-          percentage_base_px,
-          style,
-          &self.font_context,
-          self.viewport_size,
-        )
-      })
-      .map(|w| border_size_from_box_sizing(w, horizontal_edges, style.box_sizing))
-      .unwrap_or(0.0);
-    let max_width = style
-      .max_width
-      .as_ref()
-      .map(|l| {
-        resolve_length_for_width(
-          *l,
-          percentage_base_px,
-          style,
-          &self.font_context,
-          self.viewport_size,
-        )
-      })
-      .map(|w| border_size_from_box_sizing(w, horizontal_edges, style.box_sizing))
-      .unwrap_or(f32::INFINITY);
+    let min_width = if let Some(keyword) = style.min_width_keyword {
+      resolve_intrinsic_keyword(keyword).unwrap_or(0.0)
+    } else {
+      style
+        .min_width
+        .as_ref()
+        .map(|l| {
+          resolve_length_for_width(
+            *l,
+            percentage_base_px,
+            style,
+            &self.font_context,
+            self.viewport_size,
+          )
+        })
+        .unwrap_or(0.0)
+    };
+    let max_width = if let Some(keyword) = style.max_width_keyword {
+      resolve_intrinsic_keyword(keyword).unwrap_or(f32::INFINITY)
+    } else {
+      style
+        .max_width
+        .as_ref()
+        .map(|l| {
+          resolve_length_for_width(
+            *l,
+            percentage_base_px,
+            style,
+            &self.font_context,
+            self.viewport_size,
+          )
+        })
+        .unwrap_or(f32::INFINITY)
+    };
 
-    let constraint_width = if let Some(content_width) = specified_width {
-      // Honor specified width; use containing block width for layout to avoid over-constraining margins.
-      let used = crate::layout::utils::clamp_with_order(content_width, min_width, max_width);
-      if available_for_box.is_finite() {
-        used.min(available_for_box.max(preferred_min))
+    let used_width = if let Some(specified) = specified_width {
+      // Honor specified width; cap pathological values to the containing width to keep line layout
+      // stable, but still allow min-content overflow.
+      let used = crate::layout::utils::clamp_with_order(specified, min_width, max_width);
+      if available_for_fit.is_finite() {
+        used.min(available_for_fit.max(preferred_min))
       } else {
         used
       }
-    } else {
-      if let (crate::style::types::AspectRatio::Ratio(ratio), Some(h)) =
-        (style.aspect_ratio, resolved_specified_height)
-      {
-        if ratio > 0.0 {
-          let target_border = h * ratio;
-          let target_content = (target_border - horizontal_edges).max(0.0);
-          let used = crate::layout::utils::clamp_with_order(target_content, min_width, max_width);
-          if available_for_box.is_finite() {
-            used.min(available_for_box.max(preferred_min))
-          } else {
-            used
-          }
+    } else if let (crate::style::types::AspectRatio::Ratio(ratio), Some(h)) =
+      (style.aspect_ratio, resolved_specified_height)
+    {
+      if ratio > 0.0 {
+        let target = h * ratio;
+        let used = crate::layout::utils::clamp_with_order(target, min_width, max_width);
+        if available_for_fit.is_finite() {
+          used.min(available_for_fit.max(preferred_min))
         } else {
-          let shrink = preferred.min(available_for_box.max(preferred_min));
-          crate::layout::utils::clamp_with_order(shrink, min_width, max_width)
+          used
         }
       } else {
-        let available = if available_for_box.is_finite() {
-          available_for_box
-        } else {
-          preferred
-        };
-        let shrink = preferred.min(available.max(preferred_min));
-        let used = crate::layout::utils::clamp_with_order(shrink, min_width, max_width);
-        used
+        let shrink = preferred.min(available_for_fit.max(preferred_min));
+        crate::layout::utils::clamp_with_order(shrink, min_width, max_width)
       }
+    } else {
+      let available = if available_for_fit.is_finite() {
+        available_for_fit
+      } else {
+        preferred
+      };
+      let shrink = preferred.min(available.max(preferred_min));
+      crate::layout::utils::clamp_with_order(shrink, min_width, max_width)
+    };
+
+    let constraint_width = match style.box_sizing {
+      crate::style::types::BoxSizing::BorderBox => used_width.max(0.0),
+      crate::style::types::BoxSizing::ContentBox => (used_width + edges_actual).max(0.0),
     };
 
     let height_space = available_height
       .filter(|h| h.is_finite())
       .map(AvailableSpace::Definite)
       .unwrap_or(AvailableSpace::Indefinite);
-    let constraints =
-      LayoutConstraints::new(AvailableSpace::Definite(constraint_width), height_space);
-    let fragment = fc.layout(box_node, &constraints)?;
+
+    let fragment = if fc_type == FormattingContextType::Block {
+      let width_space = if available_for_box.is_finite() {
+        AvailableSpace::Definite(available_for_box.max(0.0))
+      } else {
+        AvailableSpace::Indefinite
+      };
+      let constraints = LayoutConstraints::new(width_space, height_space)
+        .with_used_border_box_size(Some(constraint_width), None);
+      fc.layout(box_node, &constraints)?
+    } else {
+      let constraints =
+        LayoutConstraints::new(AvailableSpace::Definite(constraint_width), height_space);
+      fc.layout(box_node, &constraints)?
+    };
     let mut fragment = fragment;
     let log_ids = crate::debug::runtime::runtime_toggles()
       .usize_list("FASTR_LOG_INTRINSIC_IDS")
@@ -2161,14 +2266,14 @@ impl InlineFormattingContext {
         .map(|d| d.to_selector())
         .unwrap_or_else(|| "<anon>".to_string());
       eprintln!(
-                "[intrinsic-inline-block] id={} selector={} available={:.2} preferred_min={:.2} preferred={:.2} constraint={:.2} fragment_w={:.2}",
-                box_node.id,
-                selector,
-                available_for_box,
-                preferred_min,
-                preferred,
-                constraint_width,
-                fragment.bounds.width()
+        "[intrinsic-inline-block] id={} selector={} available={:.2} preferred_min={:.2} preferred={:.2} constraint={:.2} fragment_w={:.2}",
+        box_node.id,
+        selector,
+        available_for_box,
+        preferred_min_border,
+        preferred_border,
+        constraint_width,
+        fragment.bounds.width()
             );
     }
 
@@ -10557,6 +10662,7 @@ mod tests {
   use crate::style::types::CaseTransform;
   use crate::style::types::FontSizeAdjust;
   use crate::style::types::HyphensMode;
+  use crate::style::types::IntrinsicSizeKeyword;
   use crate::style::types::LineClampSource;
   use crate::style::types::ListStylePosition;
   use crate::style::types::Overflow;
@@ -10605,6 +10711,17 @@ mod tests {
 
   fn make_inline_container(children: Vec<BoxNode>) -> BoxNode {
     BoxNode::new_block(default_style(), FormattingContextType::Block, children)
+  }
+
+  fn inline_canvas(width: f32, height: f32) -> BoxNode {
+    let mut style = ComputedStyle::default();
+    style.display = Display::Inline;
+    BoxNode::new_replaced(
+      Arc::new(style),
+      ReplacedType::Canvas,
+      Some(Size::new(width, height)),
+      None,
+    )
   }
 
   #[test]
@@ -10726,6 +10843,174 @@ mod tests {
     assert_eq!(
       FormattingContextFactory::debug_with_font_context_viewport_and_cb_call_count(),
       0
+    );
+  }
+
+  #[test]
+  fn inline_block_shrink_to_fit_does_not_double_count_edges() {
+    let ifc = InlineFormattingContext::new();
+
+    let mut inline_block_style = ComputedStyle::default();
+    inline_block_style.display = Display::InlineBlock;
+    inline_block_style.padding_left = Length::px(10.0);
+    inline_block_style.padding_right = Length::px(10.0);
+    inline_block_style.border_left_width = Length::px(2.0);
+    inline_block_style.border_right_width = Length::px(2.0);
+    let inline_block_style = Arc::new(inline_block_style);
+
+    let inline_block = BoxNode::new_inline_block(
+      inline_block_style.clone(),
+      FormattingContextType::Block,
+      vec![inline_canvas(50.0, 10.0)],
+    );
+
+    let fc = ifc.factory.get(FormattingContextType::Block);
+    let (_min_base0, max_base0) = fc
+      .compute_intrinsic_inline_sizes(&inline_block)
+      .expect("intrinsic sizes");
+    let edges = horizontal_padding_and_borders(
+      &inline_block_style,
+      0.0,
+      ifc.viewport_size,
+      &ifc.font_context,
+    );
+    let expected_border = max_base0;
+    // Pick an available width that is wider than the true max-content size but narrower than what
+    // the buggy code would produce after double-counting edges.
+    let available_width = expected_border + edges * 0.5;
+
+    let item = ifc
+      .layout_inline_block(&inline_block, available_width, None)
+      .expect("layout inline-block");
+    assert!(
+      (item.width - expected_border).abs() < 0.5,
+      "expected shrink-to-fit width {:.2}, got {:.2} (edges={:.2})",
+      expected_border,
+      item.width,
+      edges
+    );
+    assert!(
+      item.width <= available_width + 0.1,
+      "expected inline-block to fit within available width {:.2}, got {:.2}",
+      available_width,
+      item.width
+    );
+  }
+
+  #[test]
+  fn inline_block_width_max_content_uses_rebased_intrinsic_border_box_width() {
+    let ifc = InlineFormattingContext::new();
+
+    let mut base_style = ComputedStyle::default();
+    base_style.display = Display::InlineBlock;
+    base_style.padding_left = Length::percent(10.0);
+    base_style.padding_right = Length::px(5.0);
+    base_style.border_left_width = Length::px(2.0);
+    base_style.border_right_width = Length::px(2.0);
+    let base_style = Arc::new(base_style);
+
+    let intrinsic_node = BoxNode::new_inline_block(
+      base_style.clone(),
+      FormattingContextType::Block,
+      vec![inline_canvas(50.0, 10.0)],
+    );
+    let mut keyword_style: ComputedStyle = (*base_style).clone();
+    keyword_style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+    let keyword_node = BoxNode::new_inline_block(
+      Arc::new(keyword_style),
+      FormattingContextType::Block,
+      vec![inline_canvas(50.0, 10.0)],
+    );
+
+    let containing_width = 200.0;
+    let fc = ifc.factory.get(FormattingContextType::Block);
+    let intrinsic_max_base0 = fc
+      .compute_intrinsic_inline_size(&intrinsic_node, IntrinsicSizingMode::MaxContent)
+      .expect("intrinsic max-content");
+    let edges_base0 =
+      horizontal_padding_and_borders(&base_style, 0.0, ifc.viewport_size, &ifc.font_context);
+    let edges_actual = horizontal_padding_and_borders(
+      &base_style,
+      containing_width,
+      ifc.viewport_size,
+      &ifc.font_context,
+    );
+    let expected_border = (intrinsic_max_base0 - edges_base0 + edges_actual).max(0.0);
+
+    let item = ifc
+      .layout_inline_block(&keyword_node, containing_width, None)
+      .expect("layout inline-block");
+    assert!(
+      (item.width - expected_border).abs() < 0.5,
+      "expected max-content border-box width {:.2}, got {:.2}",
+      expected_border,
+      item.width
+    );
+  }
+
+  #[test]
+  fn inline_block_max_width_fit_content_caps_wider_max_content_box() {
+    let ifc = InlineFormattingContext::new();
+
+    let mut base_style = ComputedStyle::default();
+    base_style.display = Display::InlineBlock;
+    base_style.padding_left = Length::px(10.0);
+    base_style.padding_right = Length::px(10.0);
+    base_style.border_left_width = Length::px(2.0);
+    base_style.border_right_width = Length::px(2.0);
+    let base_style = Arc::new(base_style);
+
+    let text = BoxNode::new_text(default_style(), "word ".repeat(20));
+    let inline = BoxNode::new_inline(default_style(), vec![text]);
+    let intrinsic_node = BoxNode::new_inline_block(
+      base_style.clone(),
+      FormattingContextType::Block,
+      vec![inline.clone()],
+    );
+
+    let fc = ifc.factory.get(FormattingContextType::Block);
+    let (min_base0, max_base0) = fc
+      .compute_intrinsic_inline_sizes(&intrinsic_node)
+      .expect("intrinsic sizes");
+    let edges_base0 =
+      horizontal_padding_and_borders(&base_style, 0.0, ifc.viewport_size, &ifc.font_context);
+    let edges_actual =
+      horizontal_padding_and_borders(&base_style, 0.0, ifc.viewport_size, &ifc.font_context);
+    let intrinsic_min_border = (min_base0 - edges_base0 + edges_actual).max(0.0);
+    let intrinsic_max_border = (max_base0 - edges_base0 + edges_actual).max(0.0);
+    assert!(
+      intrinsic_max_border > intrinsic_min_border + 0.5,
+      "expected text to have distinct min/max-content widths (min={:.2}, max={:.2})",
+      intrinsic_min_border,
+      intrinsic_max_border
+    );
+
+    let available_width = (intrinsic_min_border + intrinsic_max_border) / 2.0;
+    let expected_border = intrinsic_max_border.min(available_width.max(intrinsic_min_border));
+
+    let mut capped_style: ComputedStyle = (*base_style).clone();
+    capped_style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+    capped_style.max_width_keyword = Some(IntrinsicSizeKeyword::FitContent { limit: None });
+    let capped_node = BoxNode::new_inline_block(
+      Arc::new(capped_style),
+      FormattingContextType::Block,
+      vec![inline],
+    );
+
+    let item = ifc
+      .layout_inline_block(&capped_node, available_width, None)
+      .expect("layout inline-block");
+    assert!(
+      (item.width - expected_border).abs() < 0.5,
+      "expected capped width {:.2}, got {:.2}",
+      expected_border,
+      item.width
+    );
+    assert!(
+      item.width < intrinsic_max_border - 0.5,
+      "expected max-width:fit-content to cap below max-content {:.2}, got {:.2}",
+      intrinsic_max_border,
+      item.width
     );
   }
 
