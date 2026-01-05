@@ -7,6 +7,7 @@ use crate::style::computed::PositionedStyle;
 use crate::style::types::BoxSizing;
 use crate::style::types::ContainIntrinsicSizeAxis;
 use crate::style::types::FontStyle as CssFontStyle;
+use crate::style::types::IntrinsicSizeKeyword;
 use crate::style::types::ScrollbarWidth;
 use crate::style::values::CalcLength;
 use crate::style::values::Length;
@@ -582,6 +583,15 @@ pub fn compute_replaced_size(
     }
   });
 
+  // When only one intrinsic axis is available, the other can be derived from an intrinsic ratio.
+  // Keep these as content-box sizes; callers apply padding/border separately.
+  let intrinsic_content_w = intrinsic_w.or_else(|| {
+    intrinsic_h.and_then(|h| intrinsic_ratio.map(|r| if r > 0.0 { h * r } else { 0.0 }))
+  });
+  let intrinsic_content_h = intrinsic_h.or_else(|| {
+    intrinsic_w.and_then(|w| intrinsic_ratio.map(|r| if r > 0.0 { w / r } else { 0.0 }))
+  });
+
   let width_base = percentage_base.and_then(|s| s.width.is_finite().then_some(s.width));
   let height_base = percentage_base.and_then(|s| s.height.is_finite().then_some(s.height));
 
@@ -598,16 +608,82 @@ pub fn compute_replaced_size(
     + resolve_for_width(style.used_border_top_width())
     + resolve_for_width(style.used_border_bottom_width());
 
+  // Intrinsic sizes are defined for the content box, but `width`/`height` (including intrinsic
+  // sizing keywords) are interpreted according to `box-sizing`. Since `compute_replaced_size`
+  // returns content-box sizes, convert intrinsic sizes through the same box-sizing adjustment
+  // used for numeric `width`/`height` values.
+  let intrinsic_keyword_w =
+    intrinsic_content_w.map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing));
+  let intrinsic_keyword_h =
+    intrinsic_content_h.map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing));
+
+  let resolve_intrinsic_width = |keyword: IntrinsicSizeKeyword| -> Option<f32> {
+    match keyword {
+      IntrinsicSizeKeyword::MinContent | IntrinsicSizeKeyword::MaxContent => intrinsic_keyword_w,
+      IntrinsicSizeKeyword::FitContent { limit } => {
+        let max_content = intrinsic_keyword_w?;
+        // Replaced elements can shrink to 0 while preserving intrinsic max-content sizing.
+        let min_content: f32 = 0.0;
+        match limit {
+          Some(limit) => {
+            let limit = resolve_replaced_length(&limit, width_base, viewport, style, None)
+              .map(|v| content_size_from_box_sizing(v, horizontal_edges, style.box_sizing))
+              .unwrap_or(max_content);
+            Some(max_content.min(min_content.max(limit)))
+          }
+          None => {
+            if let Some(base) = width_base {
+              let available = content_size_from_box_sizing(base, horizontal_edges, style.box_sizing);
+              Some(max_content.min(min_content.max(available)))
+            } else {
+              Some(max_content)
+            }
+          }
+        }
+      }
+    }
+  };
+
+  let resolve_intrinsic_height = |keyword: IntrinsicSizeKeyword| -> Option<f32> {
+    match keyword {
+      IntrinsicSizeKeyword::MinContent | IntrinsicSizeKeyword::MaxContent => intrinsic_keyword_h,
+      IntrinsicSizeKeyword::FitContent { limit } => {
+        let max_content = intrinsic_keyword_h?;
+        let min_content: f32 = 0.0;
+        match limit {
+          Some(limit) => {
+            let limit = resolve_replaced_length(&limit, height_base, viewport, style, None)
+              .map(|v| content_size_from_box_sizing(v, vertical_edges, style.box_sizing))
+              .unwrap_or(max_content);
+            Some(max_content.min(min_content.max(limit)))
+          }
+          None => {
+            if let Some(base) = height_base {
+              let available = content_size_from_box_sizing(base, vertical_edges, style.box_sizing);
+              Some(max_content.min(min_content.max(available)))
+            } else {
+              Some(max_content)
+            }
+          }
+        }
+      }
+    }
+  };
+
   let specified_w = style
     .width
     .as_ref()
     .and_then(|l| resolve_replaced_length(l, width_base, viewport, style, None))
     .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing));
+  let specified_w =
+    specified_w.or_else(|| style.width_keyword.and_then(|kw| resolve_intrinsic_width(kw)));
   let specified_h = style
     .height
     .as_ref()
     .and_then(|l| resolve_replaced_length(l, height_base, viewport, style, None))
     .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing));
+  let specified_h =
+    specified_h.or_else(|| style.height_keyword.and_then(|kw| resolve_intrinsic_height(kw)));
   let width_specified = specified_w.is_some();
   let height_specified = specified_h.is_some();
 
@@ -683,6 +759,12 @@ pub fn compute_replaced_size(
         style.box_sizing,
       ))
     });
+  let resolved_min_w = resolved_min_w.or_else(|| {
+    style
+      .min_width_keyword
+      .and_then(|kw| resolve_intrinsic_width(kw))
+      .map(sanitize)
+  });
   let resolved_max_w = style
     .max_width
     .as_ref()
@@ -694,6 +776,12 @@ pub fn compute_replaced_size(
         style.box_sizing,
       ))
     });
+  let resolved_max_w = resolved_max_w.or_else(|| {
+    style
+      .max_width_keyword
+      .and_then(|kw| resolve_intrinsic_width(kw))
+      .map(sanitize)
+  });
   let resolved_min_h = style
     .min_height
     .as_ref()
@@ -705,6 +793,12 @@ pub fn compute_replaced_size(
         style.box_sizing,
       ))
     });
+  let resolved_min_h = resolved_min_h.or_else(|| {
+    style
+      .min_height_keyword
+      .and_then(|kw| resolve_intrinsic_height(kw))
+      .map(sanitize)
+  });
   let resolved_max_h = style
     .max_height
     .as_ref()
@@ -716,6 +810,12 @@ pub fn compute_replaced_size(
         style.box_sizing,
       ))
     });
+  let resolved_max_h = resolved_max_h.or_else(|| {
+    style
+      .max_height_keyword
+      .and_then(|kw| resolve_intrinsic_height(kw))
+      .map(sanitize)
+  });
 
   // Apply min/max constraints, preserving the intrinsic aspect ratio when only one axis was authored.
   let mut width_changed = false;
@@ -801,6 +901,7 @@ fn resolve_font_relative(len: Length, font_size: f32, root_font_size: f32) -> f3
 mod tests {
   use super::*;
   use crate::style::types::BoxSizing;
+  use crate::style::types::IntrinsicSizeKeyword;
   use crate::style::types::ScrollbarWidth;
   use crate::style::values::CalcLength;
   use crate::style::values::Length;
@@ -1013,6 +1114,115 @@ mod tests {
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
     assert_eq!(size.width, 640.0);
     assert_eq!(size.height, 480.0);
+  }
+
+  #[test]
+  fn compute_replaced_width_intrinsic_max_content_uses_intrinsic_size() {
+    let mut style = ComputedStyle::default();
+    style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+
+    let replaced = ReplacedBox {
+      replaced_type: crate::tree::box_tree::ReplacedType::Image {
+        src: "img".into(),
+        alt: None,
+        crossorigin: CrossOriginAttribute::None,
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+      },
+      intrinsic_size: Some(Size::new(120.0, 80.0)),
+      aspect_ratio: None,
+    };
+
+    let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
+    assert!((size.width - 120.0).abs() < 0.01);
+    assert!((size.height - 80.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn compute_replaced_width_intrinsic_max_content_respects_border_box_sizing() {
+    let mut style = ComputedStyle::default();
+    style.box_sizing = BoxSizing::BorderBox;
+    style.padding_left = Length::px(10.0);
+    style.padding_right = Length::px(10.0);
+    style.border_left_style = crate::style::types::BorderStyle::Solid;
+    style.border_right_style = crate::style::types::BorderStyle::Solid;
+    style.border_left_width = Length::px(5.0);
+    style.border_right_width = Length::px(5.0);
+    style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+
+    let replaced = ReplacedBox {
+      replaced_type: crate::tree::box_tree::ReplacedType::Image {
+        src: "img".into(),
+        alt: None,
+        crossorigin: CrossOriginAttribute::None,
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+      },
+      intrinsic_size: Some(Size::new(100.0, 50.0)),
+      aspect_ratio: None,
+    };
+
+    let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
+    // With border-box sizing the intrinsic width applies to the border box, so the returned
+    // content-box width is reduced by padding+border.
+    assert!((size.width - 70.0).abs() < 0.01);
+    assert!((size.height - 35.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn compute_replaced_max_width_fit_content_function_clamps_width() {
+    let mut style = ComputedStyle::default();
+    style.width = Some(Length::px(200.0));
+    style.max_width_keyword = Some(IntrinsicSizeKeyword::FitContent {
+      limit: Some(Length::px(150.0)),
+    });
+
+    let replaced = ReplacedBox {
+      replaced_type: crate::tree::box_tree::ReplacedType::Image {
+        src: "img".into(),
+        alt: None,
+        crossorigin: CrossOriginAttribute::None,
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+      },
+      intrinsic_size: Some(Size::new(300.0, 150.0)),
+      aspect_ratio: Some(2.0),
+    };
+
+    let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
+    assert!((size.width - 150.0).abs() < 0.01);
+    assert!((size.height - 75.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn compute_replaced_width_fit_content_keyword_clamps_to_available_base() {
+    let mut style = ComputedStyle::default();
+    style.width_keyword = Some(IntrinsicSizeKeyword::FitContent { limit: None });
+
+    let replaced = ReplacedBox {
+      replaced_type: crate::tree::box_tree::ReplacedType::Image {
+        src: "img".into(),
+        alt: None,
+        crossorigin: CrossOriginAttribute::None,
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+      },
+      intrinsic_size: Some(Size::new(300.0, 150.0)),
+      aspect_ratio: Some(2.0),
+    };
+
+    let size = compute_replaced_size(
+      &style,
+      &replaced,
+      Some(Size::new(200.0, 200.0)),
+      Size::new(800.0, 600.0),
+    );
+    assert!((size.width - 200.0).abs() < 0.01);
+    assert!((size.height - 100.0).abs() < 0.01);
   }
 
   #[test]
