@@ -1071,14 +1071,12 @@ impl BlockFormattingContext {
             Rect::from_xywh(computed_width.margin_left, box_y, box_width, block_size);
           !viewport.intersects(border_box)
         } else {
-          // Block-size is unknown pre-layout, so only skip when we can prove the border box is
-          // outside the viewport (either fully outside the inline axis or definitely after the
-          // viewport in the block axis).
-          let min_inline = computed_width.margin_left;
-          let max_inline = min_inline + box_width;
-          let outside_inline = max_inline < viewport.min_x() || min_inline > viewport.max_x();
-          let after_block = box_y > viewport.max_y();
-          outside_inline || after_block
+          // Without a definite placeholder block-size (explicit height or a resolved
+          // `contain-intrinsic-*` length), skipping layout would collapse the element to 0px (the
+          // initial `contain-intrinsic-size: auto` has no fallback length) and pull later siblings
+          // upward. In that case, keep laying out to determine sizing; paint skipping still
+          // applies.
+          false
         }
       }
       crate::style::types::ContentVisibility::Visible => false,

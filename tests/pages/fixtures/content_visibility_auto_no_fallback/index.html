@@ -1,0 +1,49 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    background: #ffffff;
+  }
+
+  .header {
+    height: 24px;
+    background: #222;
+  }
+
+  /* Push the content-visibility:auto subtree below the viewport. */
+  .spacer {
+    height: 260px;
+    background: #f0f0f0;
+  }
+
+  /*
+    Regression target:
+    - content-visibility:auto
+    - no explicit height
+    - no contain-intrinsic-size override (defaults to `auto`, i.e. no fallback length)
+
+    If layout is incorrectly skipped, the block collapses to 0px and the red "canary" is pulled
+    upward into the viewport via its negative margin.
+  */
+  #auto {
+    content-visibility: auto;
+  }
+  #auto .inner {
+    height: 200px;
+    background: #0044ff;
+  }
+
+  #canary {
+    height: 60px;
+    margin-top: -150px;
+    background: #ff0000;
+  }
+</style>
+
+<div class="header"></div>
+<div class="spacer"></div>
+<div id="auto"><div class="inner"></div></div>
+<div id="canary"></div>
