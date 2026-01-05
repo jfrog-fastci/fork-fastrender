@@ -435,6 +435,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use clap::CommandFactory;
   use fastrender::pageset::{pageset_stem, PAGESET_URLS};
   use std::collections::HashSet;
 
@@ -466,6 +467,19 @@ mod tests {
 
   fn pageset_entries() -> Vec<PagesetEntry> {
     build_pageset_entries(false).expect("pageset ok").0
+  }
+
+  #[test]
+  fn fetch_pages_does_not_expose_cache_dir_flag() {
+    let cmd = Args::command();
+    let has_cache_dir = cmd
+      .get_arguments()
+      .any(|arg| arg.get_long() == Some("cache-dir"));
+    assert!(
+      !has_cache_dir,
+      "fetch_pages should not expose --cache-dir; the flag is reserved for the disk-backed asset cache \
+       (prefetch_assets/pageset_progress) and fetch_pages always caches HTML under {CACHE_HTML_DIR}"
+    );
   }
 
   #[test]
