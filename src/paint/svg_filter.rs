@@ -618,26 +618,8 @@ impl SvgFilterRegion {
       SvgFilterUnits::ObjectBoundingBox => SvgCoordinateUnits::ObjectBoundingBox,
       SvgFilterUnits::UserSpaceOnUse => SvgCoordinateUnits::UserSpaceOnUse,
     };
-    let resolve_x = |len: SvgLength| {
-      let offset = match self.units {
-        SvgFilterUnits::ObjectBoundingBox => bbox.min_x(),
-        SvgFilterUnits::UserSpaceOnUse => match len {
-          SvgLength::Percent(_) => bbox.min_x(),
-          SvgLength::Number(_) => 0.0,
-        },
-      };
-      offset + len.resolve(units, width_basis)
-    };
-    let resolve_y = |len: SvgLength| {
-      let offset = match self.units {
-        SvgFilterUnits::ObjectBoundingBox => bbox.min_y(),
-        SvgFilterUnits::UserSpaceOnUse => match len {
-          SvgLength::Percent(_) => bbox.min_y(),
-          SvgLength::Number(_) => 0.0,
-        },
-      };
-      offset + len.resolve(units, height_basis)
-    };
+    let resolve_x = |len: SvgLength| bbox.min_x() + len.resolve(units, width_basis);
+    let resolve_y = |len: SvgLength| bbox.min_y() + len.resolve(units, height_basis);
     let resolve_width = |len: SvgLength| len.resolve(units, width_basis);
     let resolve_height = |len: SvgLength| len.resolve(units, height_basis);
 
@@ -1964,11 +1946,7 @@ impl SvgFilter {
       SvgFilterUnits::UserSpaceOnUse => SvgCoordinateUnits::UserSpaceOnUse,
     };
     let resolved = value.resolve(units, bbox.width());
-    match (self.primitive_units, value) {
-      (SvgFilterUnits::ObjectBoundingBox, _) => bbox.min_x() + resolved,
-      (SvgFilterUnits::UserSpaceOnUse, SvgLength::Percent(_)) => bbox.min_x() + resolved,
-      _ => resolved,
-    }
+    bbox.min_x() + resolved
   }
 
   fn resolve_primitive_pos_y_len(&self, value: SvgLength, bbox: &Rect) -> f32 {
@@ -1977,11 +1955,7 @@ impl SvgFilter {
       SvgFilterUnits::UserSpaceOnUse => SvgCoordinateUnits::UserSpaceOnUse,
     };
     let resolved = value.resolve(units, bbox.height());
-    match (self.primitive_units, value) {
-      (SvgFilterUnits::ObjectBoundingBox, _) => bbox.min_y() + resolved,
-      (SvgFilterUnits::UserSpaceOnUse, SvgLength::Percent(_)) => bbox.min_y() + resolved,
-      _ => resolved,
-    }
+    bbox.min_y() + resolved
   }
 
   fn resolve_primitive_pos_z_len(&self, value: SvgLength, bbox: &Rect) -> f32 {
@@ -2942,15 +2916,8 @@ pub(crate) fn apply_svg_filter_with_cache(
               bbox.height(),
             );
 
-            let mut local_def = def.clone();
             let origin_css_x = x0 as f32 / scale;
             let origin_css_y = y0 as f32 / scale;
-            translate_filter_user_space_numbers_for_filter_res(
-              &mut local_def,
-              origin_css_x,
-              origin_css_y,
-            );
-            local_def.refresh_fingerprint();
 
             let uses_fill_paint = def.uses_fill_paint_input();
             let uses_stroke_paint = def.uses_stroke_paint_input();
@@ -3002,7 +2969,7 @@ pub(crate) fn apply_svg_filter_with_cache(
             };
 
             apply_svg_filter_scaled(
-              &local_def,
+              def,
               &mut working_pixmap,
               scale,
               scale,
@@ -3188,12 +3155,6 @@ pub(crate) fn apply_svg_filter_with_cache(
     bbox.height() * scale_region_y,
   );
 
-  let mut local_def = def.clone();
-  let origin_css_x = filter_region.x() / scale;
-  let origin_css_y = filter_region.y() / scale;
-  translate_filter_user_space_numbers_for_filter_res(&mut local_def, origin_css_x, origin_css_y);
-  local_def.refresh_fingerprint();
-
   let mut working_background: Option<Pixmap> = None;
   if def.uses_background_inputs() {
     let mut background_resized_to_target: Option<Pixmap> = None;
@@ -3230,8 +3191,14 @@ pub(crate) fn apply_svg_filter_with_cache(
     stroke_paint,
   };
 
+  // `working_pixmap` is rooted at `filter_region` when `filterRes` is applied to an offset region.
+  // Keep track of the CSS-space origin so primitives that need absolute coordinates (e.g.
+  // feTurbulence) remain stable when the filter is evaluated on a cropped/resampled surface.
+  let origin_css_x = filter_region.x() / scale;
+  let origin_css_y = filter_region.y() / scale;
+
   apply_svg_filter_scaled(
-    &local_def,
+    def,
     &mut working_pixmap,
     scale * scale_region_x,
     scale * scale_region_y,
@@ -3438,102 +3405,6 @@ fn resample_pixmap_region(
   Ok(Some(out))
 }
 
-fn translate_length_number(len: &mut SvgLength, delta: f32) {
-  if !delta.is_finite() {
-    return;
-  }
-  if let SvgLength::Number(v) = len {
-    *v -= delta;
-  }
-}
-
-fn translate_filter_region_user_space_numbers(
-  region: &mut SvgFilterRegion,
-  origin_x: f32,
-  origin_y: f32,
-) {
-  if !matches!(region.units, SvgFilterUnits::UserSpaceOnUse) {
-    return;
-  }
-  translate_length_number(&mut region.x, origin_x);
-  translate_length_number(&mut region.y, origin_y);
-}
-
-fn translate_primitive_region_override_user_space_numbers(
-  region: &mut SvgFilterPrimitiveRegionOverride,
-  origin_x: f32,
-  origin_y: f32,
-) {
-  if !matches!(region.units, SvgFilterUnits::UserSpaceOnUse) {
-    return;
-  }
-  if let Some(x) = &mut region.x {
-    translate_length_number(x, origin_x);
-  }
-  if let Some(y) = &mut region.y {
-    translate_length_number(y, origin_y);
-  }
-}
-
-fn translate_light_source_user_space_numbers(
-  light: &mut LightSource,
-  origin_x: f32,
-  origin_y: f32,
-) {
-  match light {
-    LightSource::None | LightSource::Distant { .. } => {}
-    LightSource::Point { x, y, .. } => {
-      translate_length_number(x, origin_x);
-      translate_length_number(y, origin_y);
-    }
-    LightSource::Spot {
-      x, y, points_at, ..
-    } => {
-      translate_length_number(x, origin_x);
-      translate_length_number(y, origin_y);
-      translate_length_number(&mut points_at.0, origin_x);
-      translate_length_number(&mut points_at.1, origin_y);
-    }
-  }
-}
-
-fn translate_image_primitive_user_space_numbers(
-  prim: &mut ImagePrimitive,
-  origin_x: f32,
-  origin_y: f32,
-) {
-  if !matches!(prim.units, SvgCoordinateUnits::UserSpaceOnUse) {
-    return;
-  }
-  translate_length_number(&mut prim.x, origin_x);
-  translate_length_number(&mut prim.y, origin_y);
-}
-
-fn translate_filter_user_space_numbers_for_filter_res(
-  def: &mut SvgFilter,
-  origin_x: f32,
-  origin_y: f32,
-) {
-  translate_filter_region_user_space_numbers(&mut def.region, origin_x, origin_y);
-  for step in &mut def.steps {
-    if let Some(region) = &mut step.region {
-      translate_primitive_region_override_user_space_numbers(region, origin_x, origin_y);
-    }
-    match &mut step.primitive {
-      FilterPrimitive::DiffuseLighting { light, .. }
-      | FilterPrimitive::SpecularLighting { light, .. } => {
-        if matches!(def.primitive_units, SvgFilterUnits::UserSpaceOnUse) {
-          translate_light_source_user_space_numbers(light, origin_x, origin_y);
-        }
-      }
-      FilterPrimitive::Image(prim) => {
-        translate_image_primitive_user_space_numbers(prim, origin_x, origin_y);
-      }
-      _ => {}
-    }
-  }
-}
-
 fn resolve_filter_regions(
   def: &SvgFilter,
   scale_x: f32,
@@ -3707,21 +3578,11 @@ fn apply_svg_filter_scaled(
       };
       if let Some(x) = region_override.x {
         let resolved = x.resolve(units, css_bbox.width());
-        let offset = match (region_override.units, x) {
-          (SvgFilterUnits::ObjectBoundingBox, _) => css_bbox.min_x(),
-          (SvgFilterUnits::UserSpaceOnUse, SvgLength::Percent(_)) => css_bbox.min_x(),
-          _ => 0.0,
-        };
-        css_prim_region.origin.x = offset + resolved;
+        css_prim_region.origin.x = css_bbox.min_x() + resolved;
       }
       if let Some(y) = region_override.y {
         let resolved = y.resolve(units, css_bbox.height());
-        let offset = match (region_override.units, y) {
-          (SvgFilterUnits::ObjectBoundingBox, _) => css_bbox.min_y(),
-          (SvgFilterUnits::UserSpaceOnUse, SvgLength::Percent(_)) => css_bbox.min_y(),
-          _ => 0.0,
-        };
-        css_prim_region.origin.y = offset + resolved;
+        css_prim_region.origin.y = css_bbox.min_y() + resolved;
       }
       if let Some(width) = region_override.width {
         css_prim_region.size.width = width.resolve(units, css_bbox.width()).max(0.0);
@@ -4474,20 +4335,8 @@ fn render_fe_image(
   let bbox_w = css_bbox.width();
   let bbox_h = css_bbox.height();
 
-  let resolve_pos_x_css = |len: SvgLength| match prim.units {
-    SvgCoordinateUnits::ObjectBoundingBox => css_bbox.min_x() + len.resolve(prim.units, bbox_w),
-    SvgCoordinateUnits::UserSpaceOnUse => match len {
-      SvgLength::Percent(_) => css_bbox.min_x() + len.resolve(prim.units, bbox_w),
-      SvgLength::Number(_) => len.resolve(prim.units, bbox_w),
-    },
-  };
-  let resolve_pos_y_css = |len: SvgLength| match prim.units {
-    SvgCoordinateUnits::ObjectBoundingBox => css_bbox.min_y() + len.resolve(prim.units, bbox_h),
-    SvgCoordinateUnits::UserSpaceOnUse => match len {
-      SvgLength::Percent(_) => css_bbox.min_y() + len.resolve(prim.units, bbox_h),
-      SvgLength::Number(_) => len.resolve(prim.units, bbox_h),
-    },
-  };
+  let resolve_pos_x_css = |len: SvgLength| css_bbox.min_x() + len.resolve(prim.units, bbox_w);
+  let resolve_pos_y_css = |len: SvgLength| css_bbox.min_y() + len.resolve(prim.units, bbox_h);
 
   let dest_x = resolve_pos_x_css(prim.x) * scale_x;
   let dest_y = resolve_pos_y_css(prim.y) * scale_y;
@@ -8327,7 +8176,7 @@ mod filter_primitive_region_override_tests {
   fn primitive_region_partial_override_inherits_user_space_filter_region_when_primitive_units_object_bbox(
   ) {
     let cache = ImageCache::new();
-    let svg = "<svg xmlns='http://www.w3.org/2000/svg'><filter id='f' filterUnits='userSpaceOnUse' primitiveUnits='objectBoundingBox' x='5' y='5' width='20' height='20'><feFlood x='0'/></filter></svg>";
+    let svg = "<svg xmlns='http://www.w3.org/2000/svg'><filter id='f' filterUnits='userSpaceOnUse' primitiveUnits='objectBoundingBox' x='-5' y='-5' width='20' height='20'><feFlood x='0'/></filter></svg>";
     let filter = parse_filter_definition(svg, Some("f"), &cache).expect("filter");
 
     let mut pixmap = new_pixmap(30, 30).unwrap();
@@ -8369,6 +8218,120 @@ mod fe_offset_length_tests {
 
     assert_eq!(pixmap.pixel(0, 0).unwrap().alpha(), 0);
     assert_eq!(pixmap.pixel(5, 0).unwrap().alpha(), 255);
+  }
+}
+
+#[cfg(test)]
+mod userspace_number_coordinate_space_tests {
+  use super::*;
+
+  #[test]
+  fn user_space_filter_region_numeric_xy_resolves_relative_to_bbox_origin() {
+    let bbox = Rect::from_xywh(100.0, 50.0, 20.0, 10.0);
+    let region = SvgFilterRegion {
+      x: SvgLength::Number(0.0),
+      y: SvgLength::Number(0.0),
+      width: SvgLength::Number(20.0),
+      height: SvgLength::Number(10.0),
+      units: SvgFilterUnits::UserSpaceOnUse,
+    };
+    let resolved = region.resolve(bbox);
+    assert!((resolved.x() - 100.0).abs() < 1e-6, "expected x=100, got {}", resolved.x());
+    assert!((resolved.y() - 50.0).abs() < 1e-6, "expected y=50, got {}", resolved.y());
+    assert!(
+      (resolved.width() - 20.0).abs() < 1e-6,
+      "expected width=20, got {}",
+      resolved.width()
+    );
+    assert!(
+      (resolved.height() - 10.0).abs() < 1e-6,
+      "expected height=10, got {}",
+      resolved.height()
+    );
+  }
+
+  #[test]
+  fn user_space_primitive_position_numeric_xy_resolves_relative_to_bbox_origin() {
+    let bbox = Rect::from_xywh(100.0, 50.0, 20.0, 10.0);
+    let filter = SvgFilter {
+      color_interpolation_filters: ColorInterpolationFilters::LinearRGB,
+      steps: Vec::new(),
+      region: SvgFilterRegion::default_for_units(SvgFilterUnits::UserSpaceOnUse),
+      filter_res: None,
+      primitive_units: SvgFilterUnits::UserSpaceOnUse,
+      fingerprint: 0,
+    };
+    assert_eq!(
+      filter.resolve_primitive_pos_x_len(SvgLength::Number(0.0), &bbox),
+      100.0
+    );
+    assert_eq!(
+      filter.resolve_primitive_pos_y_len(SvgLength::Number(0.0), &bbox),
+      50.0
+    );
+  }
+
+  #[test]
+  fn user_space_filter_region_clips_relative_to_bbox_origin() {
+    let cache = ImageCache::new();
+    let svg = "<svg xmlns='http://www.w3.org/2000/svg'><filter id='f' filterUnits='userSpaceOnUse' x='0' y='0' width='4' height='4'><feOffset dx='0' dy='0'/></filter></svg>";
+    let filter = parse_filter_definition(svg, Some("f"), &cache).expect("filter");
+
+    let mut pixmap = new_pixmap(20, 20).unwrap();
+    for px in pixmap.pixels_mut() {
+      *px = PremultipliedColorU8::TRANSPARENT;
+    }
+    let red = PremultipliedColorU8::from_rgba(255, 0, 0, 255).unwrap();
+    for y in 8..12 {
+      for x in 10..14 {
+        pixmap.pixels_mut()[(y * 20 + x) as usize] = red;
+      }
+    }
+
+    // The filtered content bbox is offset inside the pixmap, simulating a layer with padding/outsets.
+    let bbox = Rect::from_xywh(10.0, 8.0, 4.0, 4.0);
+    apply_svg_filter(filter.as_ref(), &mut pixmap, 1.0, bbox).unwrap();
+
+    let inside = pixmap.pixel(11, 9).unwrap();
+    assert_eq!(
+      (inside.red(), inside.green(), inside.blue(), inside.alpha()),
+      (255, 0, 0, 255),
+      "expected pixel inside bbox to survive clipping"
+    );
+    assert_eq!(
+      pixmap.pixel(0, 0).unwrap().alpha(),
+      0,
+      "expected pixels outside the resolved filter region to be cleared"
+    );
+  }
+
+  #[test]
+  fn user_space_primitive_subregion_clips_relative_to_bbox_origin() {
+    let cache = ImageCache::new();
+    // The filter region is large enough to include both the pixmap origin and the bbox origin.
+    // The primitive subregion should be placed relative to the bbox origin (x/y=0 => bbox.min_x/y).
+    let svg = "<svg xmlns='http://www.w3.org/2000/svg'><filter id='f' filterUnits='userSpaceOnUse' primitiveUnits='userSpaceOnUse' x='-20' y='-20' width='40' height='40'><feFlood flood-color='red' x='0' y='0' width='4' height='4'/></filter></svg>";
+    let filter = parse_filter_definition(svg, Some("f"), &cache).expect("filter");
+
+    let mut pixmap = new_pixmap(32, 32).unwrap();
+    for px in pixmap.pixels_mut() {
+      *px = PremultipliedColorU8::TRANSPARENT;
+    }
+
+    let bbox = Rect::from_xywh(10.0, 8.0, 4.0, 4.0);
+    apply_svg_filter(filter.as_ref(), &mut pixmap, 1.0, bbox).unwrap();
+
+    assert_eq!(
+      pixmap.pixel(0, 0).unwrap().alpha(),
+      0,
+      "expected primitive output to not start at the pixmap origin"
+    );
+    let px = pixmap.pixel(10, 8).unwrap();
+    assert_eq!(
+      (px.red(), px.green(), px.blue(), px.alpha()),
+      (255, 0, 0, 255),
+      "expected primitive output at bbox origin"
+    );
   }
 }
 
