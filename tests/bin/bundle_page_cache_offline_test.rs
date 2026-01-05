@@ -529,7 +529,7 @@ fn bundle_page_cache_allow_missing_inserts_typed_placeholders() {
 }
 
 #[test]
-fn bundle_page_cache_falls_back_to_kind_mismatch_disk_entries() {
+fn bundle_page_cache_captures_extensionless_css_url_images() {
   let tmp = TempDir::new().expect("tempdir");
 
   let html_dir = tmp.path().join("fetches/html");
@@ -552,8 +552,8 @@ fn bundle_page_cache_falls_back_to_kind_mismatch_disk_entries() {
   .expect("write meta");
 
   let css_url = "https://example.invalid/a.css".to_string();
-  // Extensionless background image URL: bundle capture will infer `FetchDestination::Other`, but the
-  // renderer typically fetches it as an image.
+  // Extensionless background image URL discovered from `url(...)`. `bundle_page cache` should treat
+  // these as images so disk-cache lookups hit the same kind used by the renderer/prefetchers.
   let bg_url = "https://example.invalid/bg".to_string();
 
   let mut responses: HashMap<String, (Vec<u8>, &'static str)> = HashMap::new();
