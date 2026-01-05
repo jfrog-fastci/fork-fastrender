@@ -2917,8 +2917,15 @@ fn build_http_header_pairs<'a>(
     ) {
       if referrer.is_some() {
         if let Some(referrer_url) = parsed_referrer_url.as_ref() {
-          if let Some((origin, _)) = http_browser_origin_and_referer_for_url(referrer_url) {
-            headers.push(("Origin".to_string(), origin));
+          match referrer_url.scheme() {
+            "http" | "https" => {
+              if let Some((origin, _)) = http_browser_origin_and_referer_for_url(referrer_url) {
+                headers.push(("Origin".to_string(), origin));
+              }
+            }
+            // Non-HTTP(S) referrers (notably `file://` fixtures) use `Origin: null` for CORS-mode
+            // subresource requests.
+            _ => headers.push(("Origin".to_string(), "null".to_string())),
           }
         } else if let Some(referrer_origin) = referrer_origin.as_ref() {
           if let Some((origin, _)) = http_browser_origin_and_referer_for_origin(referrer_origin) {
@@ -11561,6 +11568,52 @@ mod tests {
     assert!(
       req.contains(&expected_referer),
       "expected Referer header for image cors, got: {req}"
+    );
+  }
+
+  #[test]
+  fn http_fetcher_sets_image_cors_origin_null_for_file_referrer() {
+    let Some(listener) = try_bind_localhost("http_fetcher_sets_image_cors_origin_null_for_file_referrer")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(String::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let request = read_http_request(&mut stream)
+        .unwrap()
+        .expect("expected HTTP request");
+      if let Ok(mut slot) = captured_req.lock() {
+        *slot = String::from_utf8_lossy(&request).to_string();
+      }
+
+      let body = b"img";
+      let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(headers.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
+    let url = format!("http://{}/asset.png", addr);
+    let referrer = "file:///fixture.html";
+    let res = fetcher
+      .fetch_with_request(FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer(referrer))
+      .expect("fetch image cors");
+    handle.join().unwrap();
+
+    assert_eq!(res.bytes, b"img");
+    let req = captured.lock().unwrap().to_ascii_lowercase();
+    assert!(
+      req.contains("origin: null"),
+      "expected Origin: null for file referrer, got: {req}"
     );
   }
 
