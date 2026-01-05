@@ -79,6 +79,11 @@ const PAGE_FIXTURES: &[PageFixture] = &[
     shots: DEFAULT_SHOTS,
   },
   PageFixture {
+    name: "intrinsic_sizing_keywords",
+    html: "intrinsic_sizing_keywords/index.html",
+    shots: DEFAULT_SHOTS,
+  },
+  PageFixture {
     name: "table_financial",
     html: "table_financial/index.html",
     shots: DEFAULT_SHOTS,
