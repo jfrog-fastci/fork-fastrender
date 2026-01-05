@@ -9944,7 +9944,7 @@ pub(crate) fn inherit_styles(styles: &mut ComputedStyle, parent: &ComputedStyle)
 }
 
 /// Resolves line-height lengths to absolute pixels using computed font sizes and viewport metrics.
-fn resolve_line_height_length(style: &mut ComputedStyle, viewport: Size) {
+pub(crate) fn resolve_line_height_length(style: &mut ComputedStyle, viewport: Size) {
   use crate::style::types::LineHeight;
 
   if let LineHeight::Length(len) = style.line_height {

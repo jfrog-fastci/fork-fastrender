@@ -6354,6 +6354,7 @@ impl ComputedStyle {
     // `border-inline-end-width` actually update their physical counterparts and lengths stay in px.
     resolve_pending_logical_properties(self);
     apply_content_visibility_implied_containment(self);
+    crate::style::cascade::resolve_line_height_length(self, viewport);
     crate::style::cascade::resolve_absolute_lengths(self, self.root_font_size, viewport);
   }
 }
