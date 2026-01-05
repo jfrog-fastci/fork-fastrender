@@ -123,9 +123,15 @@ Noise generation happens in `turbulence::render_turbulence()`:
 pixel sampling and fill a constant output that matches resvg/Chromium:
 
 - `fractalNoise`: all channels (`R/G/B/A`) are constant `0.5` (including alpha).
-  - In `color-interpolation-filters="sRGB"` this is byte `128`.
-  - In `color-interpolation-filters="linearRGB"` the RGB channels are encoded to sRGB bytes
-    (≈`188`) while alpha remains `128`.
+  - These are **unpremultiplied** channel values. Since filter surfaces are stored premultiplied,
+    the stored RGB bytes are multiplied by `A`:
+    - `color-interpolation-filters="sRGB"`:
+      - unpremultiplied `R=G=B=A=0.5` (`128`)
+      - stored bytes are roughly `R=G=B≈64, A=128`
+    - `color-interpolation-filters="linearRGB"`:
+      - unpremultiplied `R=G=B=A=0.5` in linear space
+      - RGB are encoded to sRGB (linear `0.5` ≈ sRGB byte `188`) before storage
+      - stored bytes are roughly `R=G=B≈94, A=128`
 - `turbulence`: all channels are `0` (fully transparent)
 
 ### Output channel policy
