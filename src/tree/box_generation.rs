@@ -1730,7 +1730,10 @@ fn generate_boxes_for_styled_into(
           if !text.is_empty() {
             let is_whitespace_only = text.as_bytes().iter().all(|b| b.is_ascii_whitespace());
             if is_whitespace_only
-              && matches!(styled.styles.white_space, WhiteSpace::Normal | WhiteSpace::Nowrap)
+              && matches!(
+                styled.styles.white_space,
+                WhiteSpace::Normal | WhiteSpace::Nowrap
+              )
             {
               // Flex/grid containers treat direct text runs as anonymous items. Collapsible
               // inter-element whitespace should not generate those items, otherwise `gap` and
@@ -2076,14 +2079,17 @@ fn generate_boxes_for_styled_into(
           | Display::RubyBaseContainer
           | Display::RubyTextContainer => BoxNode::new_inline(style, children),
           Display::InlineBlock => BoxNode::new_inline_block(style, fc_type, children),
-          Display::Flex | Display::InlineFlex => {
-            BoxNode::new_block(style, FormattingContextType::Flex, children)
+          Display::Flex => BoxNode::new_block(style, FormattingContextType::Flex, children),
+          Display::InlineFlex => {
+            BoxNode::new_inline_block(style, FormattingContextType::Flex, children)
           }
-          Display::Grid | Display::InlineGrid => {
-            BoxNode::new_block(style, FormattingContextType::Grid, children)
+          Display::Grid => BoxNode::new_block(style, FormattingContextType::Grid, children),
+          Display::InlineGrid => {
+            BoxNode::new_inline_block(style, FormattingContextType::Grid, children)
           }
-          Display::Table | Display::InlineTable => {
-            BoxNode::new_block(style, FormattingContextType::Table, children)
+          Display::Table => BoxNode::new_block(style, FormattingContextType::Table, children),
+          Display::InlineTable => {
+            BoxNode::new_inline_block(style, FormattingContextType::Table, children)
           }
           // Table-internal boxes (simplified for Wave 2)
           Display::TableRow
@@ -2229,14 +2235,17 @@ fn create_backdrop_box(styled: &StyledNode) -> Option<BoxNode> {
     | Display::RubyBaseContainer
     | Display::RubyTextContainer => BoxNode::new_inline(backdrop_style, Vec::new()),
     Display::InlineBlock => BoxNode::new_inline_block(backdrop_style, fc_type, Vec::new()),
-    Display::Flex | Display::InlineFlex => {
-      BoxNode::new_block(backdrop_style, FormattingContextType::Flex, Vec::new())
+    Display::Flex => BoxNode::new_block(backdrop_style, FormattingContextType::Flex, Vec::new()),
+    Display::InlineFlex => {
+      BoxNode::new_inline_block(backdrop_style, FormattingContextType::Flex, Vec::new())
     }
-    Display::Grid | Display::InlineGrid => {
-      BoxNode::new_block(backdrop_style, FormattingContextType::Grid, Vec::new())
+    Display::Grid => BoxNode::new_block(backdrop_style, FormattingContextType::Grid, Vec::new()),
+    Display::InlineGrid => {
+      BoxNode::new_inline_block(backdrop_style, FormattingContextType::Grid, Vec::new())
     }
-    Display::Table | Display::InlineTable => {
-      BoxNode::new_block(backdrop_style, FormattingContextType::Table, Vec::new())
+    Display::Table => BoxNode::new_block(backdrop_style, FormattingContextType::Table, Vec::new()),
+    Display::InlineTable => {
+      BoxNode::new_inline_block(backdrop_style, FormattingContextType::Table, Vec::new())
     }
     // Table-internal boxes (simplified for Wave 2)
     Display::TableRow
@@ -2405,10 +2414,46 @@ fn create_pseudo_element_box(
 
   // Wrap in appropriate box type based on display
   let mut pseudo_box = match styles.display {
-    Display::Block => BoxNode::new_block(pseudo_style.clone(), fc_type, children),
-    Display::Inline | Display::None => BoxNode::new_inline(pseudo_style.clone(), children),
+    Display::None => return None,
+    Display::Block | Display::FlowRoot | Display::ListItem => {
+      BoxNode::new_block(pseudo_style.clone(), fc_type, children)
+    }
+    Display::Inline
+    | Display::Ruby
+    | Display::RubyBase
+    | Display::RubyText
+    | Display::RubyBaseContainer
+    | Display::RubyTextContainer => BoxNode::new_inline(pseudo_style.clone(), children),
     Display::InlineBlock => BoxNode::new_inline_block(pseudo_style.clone(), fc_type, children),
-    _ => BoxNode::new_inline(pseudo_style.clone(), children),
+    Display::Flex => {
+      BoxNode::new_block(pseudo_style.clone(), FormattingContextType::Flex, children)
+    }
+    Display::InlineFlex => {
+      BoxNode::new_inline_block(pseudo_style.clone(), FormattingContextType::Flex, children)
+    }
+    Display::Grid => {
+      BoxNode::new_block(pseudo_style.clone(), FormattingContextType::Grid, children)
+    }
+    Display::InlineGrid => {
+      BoxNode::new_inline_block(pseudo_style.clone(), FormattingContextType::Grid, children)
+    }
+    Display::Table => {
+      BoxNode::new_block(pseudo_style.clone(), FormattingContextType::Table, children)
+    }
+    Display::InlineTable => {
+      BoxNode::new_inline_block(pseudo_style.clone(), FormattingContextType::Table, children)
+    }
+    Display::Contents => BoxNode::new_inline(pseudo_style.clone(), children),
+    Display::TableRow
+    | Display::TableCell
+    | Display::TableRowGroup
+    | Display::TableHeaderGroup
+    | Display::TableFooterGroup
+    | Display::TableColumn
+    | Display::TableColumnGroup
+    | Display::TableCaption => {
+      BoxNode::new_block(pseudo_style.clone(), FormattingContextType::Block, children)
+    }
   };
 
   // Add debug info to mark this as a pseudo-element

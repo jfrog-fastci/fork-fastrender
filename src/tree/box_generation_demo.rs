@@ -446,15 +446,26 @@ impl BoxGenerator {
         child_boxes,
       ),
 
-      Display::Flex | Display::InlineFlex => {
+      Display::Flex => {
         BoxNode::new_block(node.style.clone(), FormattingContextType::Flex, child_boxes)
       }
-
-      Display::Grid | Display::InlineGrid => {
-        BoxNode::new_block(node.style.clone(), FormattingContextType::Grid, child_boxes)
+      Display::InlineFlex => {
+        BoxNode::new_inline_block(node.style.clone(), FormattingContextType::Flex, child_boxes)
       }
 
-      Display::Table | Display::InlineTable => BoxNode::new_block(
+      Display::Grid => {
+        BoxNode::new_block(node.style.clone(), FormattingContextType::Grid, child_boxes)
+      }
+      Display::InlineGrid => {
+        BoxNode::new_inline_block(node.style.clone(), FormattingContextType::Grid, child_boxes)
+      }
+
+      Display::Table => BoxNode::new_block(
+        node.style.clone(),
+        FormattingContextType::Table,
+        child_boxes,
+      ),
+      Display::InlineTable => BoxNode::new_inline_block(
         node.style.clone(),
         FormattingContextType::Table,
         child_boxes,
@@ -1097,6 +1108,24 @@ mod tests {
   }
 
   #[test]
+  fn test_inline_flex_container() {
+    let generator = BoxGenerator::new();
+
+    let child = DOMNode::new_element("div", style_with_display(Display::Block), vec![]);
+    let flex_container =
+      DOMNode::new_element("div", style_with_display(Display::InlineFlex), vec![child]);
+
+    let box_tree = generator.generate(&flex_container).unwrap();
+
+    assert_eq!(box_tree.count_boxes(), 2);
+    assert!(box_tree.root.is_inline_level());
+    assert_eq!(
+      box_tree.root.formatting_context(),
+      Some(FormattingContextType::Flex)
+    );
+  }
+
+  #[test]
   fn test_grid_container() {
     let generator = BoxGenerator::new();
 
@@ -1110,6 +1139,42 @@ mod tests {
     assert_eq!(
       box_tree.root.formatting_context(),
       Some(FormattingContextType::Grid)
+    );
+  }
+
+  #[test]
+  fn test_inline_grid_container() {
+    let generator = BoxGenerator::new();
+
+    let child = DOMNode::new_element("div", style_with_display(Display::Block), vec![]);
+    let grid_container =
+      DOMNode::new_element("div", style_with_display(Display::InlineGrid), vec![child]);
+
+    let box_tree = generator.generate(&grid_container).unwrap();
+
+    assert_eq!(box_tree.count_boxes(), 2);
+    assert!(box_tree.root.is_inline_level());
+    assert_eq!(
+      box_tree.root.formatting_context(),
+      Some(FormattingContextType::Grid)
+    );
+  }
+
+  #[test]
+  fn test_inline_table_container() {
+    let generator = BoxGenerator::new();
+
+    let child = DOMNode::new_element("div", style_with_display(Display::Block), vec![]);
+    let table_container =
+      DOMNode::new_element("div", style_with_display(Display::InlineTable), vec![child]);
+
+    let box_tree = generator.generate(&table_container).unwrap();
+
+    assert_eq!(box_tree.count_boxes(), 2);
+    assert!(box_tree.root.is_inline_level());
+    assert_eq!(
+      box_tree.root.formatting_context(),
+      Some(FormattingContextType::Table)
     );
   }
 
