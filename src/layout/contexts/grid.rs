@@ -522,10 +522,34 @@ fn ensure_box_id(node: &BoxNode) -> usize {
 
 fn constraints_from_taffy(
   viewport_size: crate::geometry::Size,
-  known: taffy::geometry::Size<Option<f32>>,
+  mut known: taffy::geometry::Size<Option<f32>>,
   available: taffy::geometry::Size<taffy::style::AvailableSpace>,
   inline_percentage_base: Option<f32>,
 ) -> LayoutConstraints {
+  // Taffy can probe leaf nodes with "tiny" definite constraints (0px/1px) when it really means
+  // "unknown"/unconstrained. Our integration treats these as indefinite; normalize known sizes in
+  // the same cases so we don't accidentally force a 0px layout and then cache it.
+  if let Some(w) = known.width {
+    if w <= 1.0
+      && matches!(
+        available.width,
+        taffy::style::AvailableSpace::Definite(v) if v <= 1.0
+      )
+    {
+      known.width = None;
+    }
+  }
+  if let Some(h) = known.height {
+    if h <= 1.0
+      && matches!(
+        available.height,
+        taffy::style::AvailableSpace::Definite(v) if v <= 1.0
+      )
+    {
+      known.height = None;
+    }
+  }
+
   let clamp_def_width = |w: f32| w.min(viewport_size.width);
   let width = match (known.width, available.width) {
     (Some(w), _) => CrateAvailableSpace::Definite(clamp_def_width(w)),
@@ -557,7 +581,7 @@ fn constraints_from_taffy(
     .inline_percentage_base
     .or(inline_percentage_base)
     .or(match available.width {
-      taffy::style::AvailableSpace::Definite(w) => Some(w),
+      taffy::style::AvailableSpace::Definite(w) if w > 1.0 => Some(w),
       _ => None,
     });
   constraints
@@ -4330,12 +4354,12 @@ impl GridFormattingContext {
       let (
         padding_left,
         padding_right,
-        _padding_top,
-        _padding_bottom,
+        padding_top,
+        padding_bottom,
         border_left,
         border_right,
-        _border_top,
-        _border_bottom,
+        border_top,
+        border_bottom,
       ) = self.resolved_padding_border_for_measure(&box_node.style, percentage_base);
 
       let width = intrinsic_width
@@ -4344,7 +4368,33 @@ impl GridFormattingContext {
         })
         .unwrap_or_else(|| fallback_size(known_dimensions.width, available_space.width).max(0.0));
 
-      let height = fallback_size(known_dimensions.height, available_space.height).max(0.0);
+      let normalize_known =
+        |known: Option<f32>, avail: taffy::style::AvailableSpace| match (known, avail) {
+          (Some(value), taffy::style::AvailableSpace::Definite(avail))
+            if value <= 1.0 && avail <= 1.0 =>
+          {
+            None
+          }
+          _ => known,
+        };
+      let known_height = normalize_known(known_dimensions.height, available_space.height);
+      let height = match (known_height, available_space.height) {
+        (Some(h), _) => h.max(0.0),
+        (_, taffy::style::AvailableSpace::Definite(h)) if h > 1.0 => h.max(0.0),
+        _ => {
+          let mode = match available_space.width {
+            taffy::style::AvailableSpace::MinContent => IntrinsicSizingMode::MinContent,
+            taffy::style::AvailableSpace::MaxContent => IntrinsicSizingMode::MaxContent,
+            _ => IntrinsicSizingMode::MaxContent,
+          };
+          let border_block_size = match fc.compute_intrinsic_block_size(box_node, mode) {
+            Ok(size) => size,
+            Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+            Err(_) => 0.0,
+          };
+          (border_block_size - padding_top - padding_bottom - border_top - border_bottom).max(0.0)
+        }
+      };
 
       let size = taffy::geometry::Size { width, height };
       grid_measure_size_cache_store(key, size);
@@ -6016,6 +6066,52 @@ mod tests {
     );
 
     assert_eq!(key_zero, key_neg_zero);
+  }
+
+  #[test]
+  fn grid_intrinsic_width_probe_returns_nonzero_height() {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut item = make_text_item("Flipped side", 16.0);
+    item.id = 1;
+    let node_ptr: *const BoxNode = &item;
+
+    // Use a dummy node id for the measured item (only used for per-node key tracking).
+    let mut taffy: TaffyTree<*const BoxNode> = TaffyTree::new();
+    let node_id = taffy
+      .new_leaf(taffy::style::Style::default())
+      .expect("create leaf node");
+
+    let known_dimensions = taffy::geometry::Size {
+      width: None,
+      height: Some(0.0),
+    };
+    let available_space = taffy::geometry::Size {
+      width: taffy::style::AvailableSpace::MaxContent,
+      height: taffy::style::AvailableSpace::Definite(0.0),
+    };
+
+    let mut measure_cache: FxHashMap<MeasureKey, taffy::geometry::Size<f32>> = FxHashMap::default();
+    let mut measured_fragments: FxHashMap<MeasureKey, FragmentNode> = FxHashMap::default();
+    let mut measured_node_keys: FxHashMap<TaffyNodeId, Vec<MeasureKey>> = FxHashMap::default();
+
+    let size = fc.measure_grid_item(
+      node_ptr,
+      node_id,
+      known_dimensions,
+      available_space,
+      Some(260.0),
+      &taffy::style::Style::default(),
+      &fc.factory,
+      &mut measure_cache,
+      &mut measured_fragments,
+      &mut measured_node_keys,
+    );
+
+    assert!(
+      size.height > 0.1,
+      "expected intrinsic width probes to compute a non-zero height (got {size:?})"
+    );
   }
 
   #[test]

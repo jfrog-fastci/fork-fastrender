@@ -6732,10 +6732,24 @@ impl FlexFormattingContext {
   /// Converts Taffy's available space and known dimensions into this crate's constraints.
   fn constraints_from_taffy(
     &self,
-    known: taffy::geometry::Size<Option<f32>>,
+    mut known: taffy::geometry::Size<Option<f32>>,
     available: taffy::geometry::Size<AvailableSpace>,
     inline_percentage_base: Option<f32>,
   ) -> LayoutConstraints {
+    // Taffy uses tiny definite probes (0px/1px) to represent "unknown" constraints during
+    // intrinsic sizing. Treat these as indefinite so flex measurements can't be accidentally
+    // forced to 0px and then cached/reused.
+    if let Some(w) = known.width {
+      if w <= 1.0 && matches!(available.width, AvailableSpace::Definite(v) if v <= 1.0) {
+        known.width = None;
+      }
+    }
+    if let Some(h) = known.height {
+      if h <= 1.0 && matches!(available.height, AvailableSpace::Definite(v) if v <= 1.0) {
+        known.height = None;
+      }
+    }
+
     let clamp_def_width = |w: f32| w.min(self.viewport_size.width);
     let width = match (known.width, available.width) {
       (Some(w), _) => CrateAvailableSpace::Definite(clamp_def_width(w)),
@@ -6767,7 +6781,7 @@ impl FlexFormattingContext {
       .inline_percentage_base
       .or(inline_percentage_base)
       .or(match available.width {
-        AvailableSpace::Definite(w) => Some(w),
+        AvailableSpace::Definite(w) if w > 1.0 => Some(w),
         _ => None,
       });
     constraints
@@ -7609,6 +7623,30 @@ mod tests {
   }
 
   #[test]
+  fn flex_constraints_from_taffy_treats_tiny_known_sizes_as_indefinite() {
+    let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let constraints = fc.constraints_from_taffy(
+      taffy::geometry::Size {
+        width: Some(0.0),
+        height: Some(0.0),
+      },
+      taffy::geometry::Size {
+        width: AvailableSpace::Definite(0.0),
+        height: AvailableSpace::Definite(0.0),
+      },
+      None,
+    );
+
+    assert_eq!(constraints.available_width, CrateAvailableSpace::Indefinite);
+    assert_eq!(
+      constraints.available_height,
+      CrateAvailableSpace::Indefinite
+    );
+    assert!(constraints.inline_percentage_base.is_none());
+  }
+
+  #[test]
   fn content_visibility_auto_flex_item_offscreen_skips_measure_layout() {
     let _toggles = content_visibility_test_guard();
     reset_flex_measure_layout_calls();
@@ -7925,7 +7963,8 @@ mod tests {
     )
     .with_parallelism(LayoutParallelism::disabled());
 
-    let mut container = BoxNode::new_block(create_flex_style(), FormattingContextType::Flex, vec![]);
+    let mut container =
+      BoxNode::new_block(create_flex_style(), FormattingContextType::Flex, vec![]);
     container.id = 1;
 
     let constraints_a = LayoutConstraints::definite(5000.0, 0.0);
@@ -7941,9 +7980,13 @@ mod tests {
     layout_fragments.clear();
     measured_fragments.clear();
 
-    let fragment_b = fc.layout(&container, &constraints_b).expect("layout B-first");
+    let fragment_b = fc
+      .layout(&container, &constraints_b)
+      .expect("layout B-first");
     assert_eq!(fragment_b.bounds.width(), 5020.0);
-    let fragment_a = fc.layout(&container, &constraints_a).expect("layout A-second");
+    let fragment_a = fc
+      .layout(&container, &constraints_a)
+      .expect("layout A-second");
     assert_eq!(fragment_a.bounds.width(), 5000.0);
   }
 
