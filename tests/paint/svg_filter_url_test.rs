@@ -1,5 +1,6 @@
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
+use fastrender::style::color::Rgba;
 use fastrender::FastRender;
 use resvg::tiny_skia::Pixmap;
 
@@ -76,4 +77,62 @@ fn missing_fragment_filter_is_ignored() {
   let pixmap = renderer.render_html(html, 30, 30).expect("render");
 
   assert_eq!(color_at(&pixmap, 10, 10), [255, 0, 0, 255]);
+}
+
+#[test]
+fn filter_url_fragment_can_be_combined_with_css_filter_functions() {
+  let html = r#"
+  <style>
+    body { margin: 0; }
+    #box { width: 20px; height: 20px; background: rgb(255, 0, 0); filter: url(#recolor) opacity(0.5); }
+    svg { position: absolute; width: 0; height: 0; }
+  </style>
+  <svg width="0" height="0" aria-hidden="true">
+    <defs>
+      <filter id="recolor">
+        <feFlood flood-color="rgb(0, 255, 0)" result="flood" />
+        <feComposite in="flood" in2="SourceAlpha" operator="in" />
+      </filter>
+    </defs>
+  </svg>
+  <div id="box"></div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  renderer.set_background_color(Rgba::BLACK);
+  let pixmap = renderer.render_html(html, 30, 30).expect("render");
+
+  // The URL filter recolors the element to solid green, then opacity(0.5) halves the alpha.
+  // Composited over the black background this yields a half-intensity green.
+  assert_eq!(color_at(&pixmap, 10, 10), [0, 128, 0, 255]);
+}
+
+#[test]
+fn filter_url_data_can_be_combined_with_css_filter_functions() {
+  let filter_svg = r#"
+    <svg xmlns="http://www.w3.org/2000/svg">
+      <filter id="recolor">
+        <feFlood flood-color="rgb(0, 255, 0)" result="flood" />
+        <feComposite in="flood" in2="SourceAlpha" operator="in" />
+      </filter>
+    </svg>
+  "#;
+  let encoded = BASE64.encode(filter_svg);
+  let data_url = format!("data:image/svg+xml;base64,{}#recolor", encoded);
+  let html = format!(
+    r#"
+    <style>
+      body {{ margin: 0; }}
+      #box {{ width: 20px; height: 20px; background: rgb(255, 0, 0); filter: url("{}") opacity(0.5); }}
+    </style>
+    <div id="box"></div>
+    "#,
+    data_url
+  );
+
+  let mut renderer = FastRender::new().expect("renderer");
+  renderer.set_background_color(Rgba::BLACK);
+  let pixmap = renderer.render_html(&html, 30, 30).expect("render");
+
+  assert_eq!(color_at(&pixmap, 10, 10), [0, 128, 0, 255]);
 }
