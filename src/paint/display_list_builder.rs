@@ -2014,9 +2014,12 @@ impl DisplayListBuilder {
         self.canvas_background_suppress_box_id = suppress_box_id;
         Some(RootBackground {
           paint_rect: target_rect,
-          // Keep the origin rect scoped to the original stacking context bounds so background
-          // sizing/tiling doesn't stretch when extending the paint rect to cover the viewport.
-          origin_rect: context_bounds,
+          // When propagating the canvas background, paint the chosen root/body background as if it
+          // belonged to the canvas itself. This means the background positioning/sizing area should
+          // match the paint target; otherwise generated images like gradients would repeat based on
+          // the shorter document bounds instead of stretching to the viewport (Chrome/legacy
+          // behavior).
+          origin_rect: target_rect,
           style,
         })
       })
