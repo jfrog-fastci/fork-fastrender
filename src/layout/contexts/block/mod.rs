@@ -8341,6 +8341,199 @@ mod tests {
   }
 
   #[test]
+  fn content_visibility_auto_skips_descendants_with_fixed_height_through_nested_offsets() {
+    let _toggles = content_visibility_test_guard();
+    let viewport = Size::new(200.0, 200.0);
+    let fc = BlockFormattingContext::with_font_context_viewport_and_cb(
+      FontContext::new(),
+      viewport,
+      ContainingBlock::viewport(viewport),
+    );
+    let constraints = LayoutConstraints::new(
+      AvailableSpace::Definite(viewport.width),
+      AvailableSpace::Indefinite,
+    );
+
+    let mut spacer = BoxNode::new_block(
+      block_style_with_height(300.0),
+      FormattingContextType::Block,
+      vec![],
+    );
+    spacer.id = 2;
+
+    let mut leaf = BoxNode::new_block(
+      block_style_with_height(10.0),
+      FormattingContextType::Block,
+      vec![],
+    );
+    leaf.id = 5;
+
+    let mut auto_style = ComputedStyle::default();
+    auto_style.display = Display::Block;
+    auto_style.content_visibility = ContentVisibility::Auto;
+    auto_style.height = Some(Length::px(50.0));
+    auto_style.height_keyword = None;
+    let mut auto_box = BoxNode::new_block(
+      Arc::new(auto_style),
+      FormattingContextType::Block,
+      vec![leaf],
+    );
+    auto_box.id = 4;
+
+    let mut wrapper = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![auto_box],
+    );
+    wrapper.id = 3;
+
+    let mut root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![spacer, wrapper],
+    );
+    root.id = 1;
+
+    let fragment = fc.layout(&root, &constraints).expect("layout");
+
+    let wrapper_fragment = find_block_fragment(&fragment, 3).expect("wrapper fragment");
+    assert!(
+      wrapper_fragment.bounds.y() > viewport.height,
+      "expected wrapper subtree to be positioned below the paint viewport"
+    );
+
+    let auto_fragment = find_block_fragment(&fragment, 4).expect("auto fragment");
+    assert!(
+      auto_fragment.bounds.y().abs() < 0.1,
+      "expected auto fragment to have a small local block offset (y={})",
+      auto_fragment.bounds.y()
+    );
+    assert!(
+      auto_fragment.children.is_empty(),
+      "expected descendants to be skipped when translated viewport is offscreen"
+    );
+  }
+
+  #[test]
+  fn content_visibility_auto_skips_descendants_with_fixed_height_outside_inline_axis() {
+    let _toggles = content_visibility_test_guard();
+    let viewport = Size::new(200.0, 200.0);
+    let fc = BlockFormattingContext::with_font_context_viewport_and_cb(
+      FontContext::new(),
+      viewport,
+      ContainingBlock::viewport(viewport),
+    );
+    let constraints = LayoutConstraints::new(
+      AvailableSpace::Definite(viewport.width),
+      AvailableSpace::Indefinite,
+    );
+
+    let mut leaf = BoxNode::new_block(
+      block_style_with_height(10.0),
+      FormattingContextType::Block,
+      vec![],
+    );
+    leaf.id = 12;
+
+    let mut auto_style = ComputedStyle::default();
+    auto_style.display = Display::Block;
+    auto_style.content_visibility = ContentVisibility::Auto;
+    auto_style.margin_left = Some(Length::px(viewport.width + 10.0));
+    auto_style.width = Some(Length::px(50.0));
+    auto_style.width_keyword = None;
+    auto_style.height = Some(Length::px(10.0));
+    auto_style.height_keyword = None;
+    let mut auto_box = BoxNode::new_block(
+      Arc::new(auto_style),
+      FormattingContextType::Block,
+      vec![leaf],
+    );
+    auto_box.id = 11;
+
+    let mut root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![auto_box],
+    );
+    root.id = 10;
+
+    let fragment = fc.layout(&root, &constraints).expect("layout");
+    let auto_fragment = find_block_fragment(&fragment, 11).expect("auto fragment");
+    assert!(
+      auto_fragment.bounds.x() > viewport.width,
+      "expected auto fragment to be positioned outside the inline axis (x={})",
+      auto_fragment.bounds.x()
+    );
+    assert!(
+      auto_fragment.children.is_empty(),
+      "expected descendants to be skipped when the border box is outside the inline axis"
+    );
+  }
+
+  #[test]
+  fn content_visibility_auto_skips_descendants_in_vertical_writing_mode_with_spacer_offset() {
+    let _toggles = content_visibility_test_guard();
+    let viewport = Size::new(50.0, 100.0);
+    let fc = BlockFormattingContext::with_font_context_viewport_and_cb(
+      FontContext::new(),
+      viewport,
+      ContainingBlock::viewport(viewport),
+    );
+    let constraints = LayoutConstraints::definite(viewport.width, viewport.height);
+
+    let spacer_style = {
+      let mut style = (*block_style_with_height(viewport.width + 10.0)).clone();
+      style.writing_mode = WritingMode::VerticalLr;
+      Arc::new(style)
+    };
+    let mut spacer = BoxNode::new_block(spacer_style, FormattingContextType::Block, vec![]);
+    spacer.id = 2;
+
+    let leaf_style = {
+      let mut style = (*block_style_with_height(10.0)).clone();
+      style.writing_mode = WritingMode::VerticalLr;
+      Arc::new(style)
+    };
+    let mut leaf = BoxNode::new_block(leaf_style, FormattingContextType::Block, vec![]);
+    leaf.id = 5;
+
+    let mut auto_style = ComputedStyle::default();
+    auto_style.display = Display::Block;
+    auto_style.writing_mode = WritingMode::VerticalLr;
+    auto_style.content_visibility = ContentVisibility::Auto;
+    auto_style.height = Some(Length::px(10.0));
+    auto_style.height_keyword = None;
+    let mut auto_box = BoxNode::new_block(
+      Arc::new(auto_style),
+      FormattingContextType::Block,
+      vec![leaf],
+    );
+    auto_box.id = 4;
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    root_style.writing_mode = WritingMode::VerticalLr;
+    let mut root = BoxNode::new_block(
+      Arc::new(root_style),
+      FormattingContextType::Block,
+      vec![spacer, auto_box],
+    );
+    root.id = 1;
+
+    let fragment = fc.layout(&root, &constraints).expect("layout");
+    let auto_fragment = find_block_fragment(&fragment, 4).expect("auto fragment");
+    assert!(
+      auto_fragment.bounds.x() > viewport.width,
+      "expected auto fragment to be positioned beyond the viewport block axis (x={})",
+      auto_fragment.bounds.x()
+    );
+    assert!(
+      auto_fragment.children.is_empty(),
+      "expected descendants to be skipped in vertical writing mode when offscreen"
+    );
+  }
+
+  #[test]
   fn content_visibility_auto_accounts_for_viewport_scroll() {
     let _toggles = content_visibility_test_guard();
     let viewport = Size::new(300.0, 200.0);
