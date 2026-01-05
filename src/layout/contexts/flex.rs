@@ -8941,6 +8941,11 @@ mod tests {
     use crate::debug::runtime::{set_runtime_toggles, RuntimeToggles};
     let mut toggles = std::collections::HashMap::new();
     toggles.insert("FASTR_FLEX_PROFILE".to_string(), "1".to_string());
+    // This test relies on the flex measure callback executing (to populate and hit the measured
+    // fragment cache). Other unit tests may enable the global layout cache, which can cause the
+    // entire flex container layout to be reused without re-measuring. Disable flex caching here so
+    // the test remains order-independent.
+    toggles.insert("FASTR_DISABLE_FLEX_CACHE".to_string(), "1".to_string());
     let _guard = set_runtime_toggles(std::sync::Arc::new(RuntimeToggles::from_map(toggles)));
 
     let measured_fragments = Arc::new(ShardedFlexCache::new_measure());
@@ -8987,7 +8992,8 @@ mod tests {
       FormattingContextType::Flex,
       vec![child.clone()],
     );
-    container.id = 1;
+    // Keep the container id as 0 so it is never eligible for the global layout cache.
+    container.id = 0;
 
     let constraints = LayoutConstraints::definite(120.0, 60.0);
     let first_fragment = fc.layout(&container, &constraints).unwrap();
@@ -10335,12 +10341,19 @@ mod tests {
 
     let mut container =
       BoxNode::new_block(create_flex_style(), FormattingContextType::Flex, vec![item]);
-    container.id = 65000;
+    // Keep the container id at 0 to ensure the global layout cache can't short-circuit the flex
+    // measure callback, which this test observes.
+    container.id = 0;
 
     let constraints = LayoutConstraints::definite(200.0, 200.0);
 
     // Without any flex-measure logging, we should not do the extra intrinsic sizing work.
-    with_thread_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::new())), || {
+    with_thread_runtime_toggles(
+      Arc::new(RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_DISABLE_FLEX_CACHE".to_string(),
+        "1".to_string(),
+      )]))),
+      || {
       let guard = start_flex_measure_inline_hint_counter();
       let fc = FlexFormattingContext::new();
       fc.layout(&container, &constraints).unwrap();
@@ -10350,13 +10363,17 @@ mod tests {
         0,
         "inline hint should not be computed when flex-measure logging is disabled",
       );
-    });
+      },
+    );
 
     // When measure logging is enabled for this node, compute the hint for log output.
     with_thread_runtime_toggles(
       Arc::new(RuntimeToggles::from_map(HashMap::from([(
         "FASTR_LOG_FLEX_MEASURE_IDS".to_string(),
         "65001".to_string(),
+      ), (
+        "FASTR_DISABLE_FLEX_CACHE".to_string(),
+        "1".to_string(),
       )]))),
       || {
         let guard = start_flex_measure_inline_hint_counter();
