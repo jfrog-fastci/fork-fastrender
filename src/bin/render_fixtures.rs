@@ -446,7 +446,7 @@ fn run(cli: Cli) -> io::Result<()> {
 
   if cli.repeat == 1 {
     if cli.reset_paint_scratch {
-      reset_paint_scratch();
+      reset_paint_scratch_for_pool(&thread_pool);
     }
     let results_mutex: Mutex<Vec<FixtureResult>> = Mutex::new(Vec::new());
     thread_pool.scope(|s| {
@@ -475,7 +475,7 @@ fn run(cli: Cli) -> io::Result<()> {
     // same rayon pool to surface any scheduling-dependent nondeterminism.
     for repeat_idx in 0..cli.repeat {
       if cli.reset_paint_scratch {
-        reset_paint_scratch();
+        reset_paint_scratch_for_pool(&thread_pool);
       }
       let mut ordered = fixtures.clone();
       if cli.shuffle && repeat_idx > 0 {
@@ -850,14 +850,16 @@ fn status_error(status: &Status) -> Option<&str> {
   }
 }
 
-fn reset_paint_scratch() {
-  // This is best-effort. Most paint/filer code runs on Rayon worker threads, so we reset the paint
-  // scratch buffers on each global Rayon thread before starting a repeat.
+fn reset_paint_scratch_for_pool(pool: &rayon::ThreadPool) {
+  // This is best-effort. Most paint/filter code runs on Rayon worker threads, so we reset the
+  // paint scratch buffers on each Rayon worker thread before starting a repeat.
   //
-  // This relies on `fastrender::paint::scratch`'s reset helper, which currently targets the same
-  // thread-local caches used by the paint pipeline.
-  rayon::broadcast(|_| {
-    fastrender::paint::scratch::reset_thread_local_scratch();
+  // This must run inside the same pool that will execute paint work; otherwise we would just reset
+  // scratch buffers on the global Rayon pool (which isn't necessarily used by this harness).
+  pool.install(|| {
+    rayon::broadcast(|_| {
+      fastrender::paint::scratch::reset_thread_local_scratch();
+    });
   });
 }
 
