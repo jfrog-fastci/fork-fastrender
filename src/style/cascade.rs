@@ -10000,19 +10000,21 @@ pub(crate) fn resolve_line_height_length(style: &mut ComputedStyle, viewport: Si
   use crate::style::types::LineHeight;
 
   if let LineHeight::Length(len) = style.line_height {
-    let px = match len.unit {
-      u if u.is_absolute() => len.to_px(),
-      LengthUnit::Em => len.value * style.font_size,
-      LengthUnit::Rem => len.value * style.root_font_size,
-      LengthUnit::Ex => len.value * style.font_size * 0.5,
-      LengthUnit::Ch => len.value * style.font_size * 0.5,
-      u if u.is_viewport_relative() => len
-        .resolve_with_viewport(viewport.width, viewport.height)
-        .unwrap_or(len.value),
-      _ => len.value,
-    };
+    let px = len.resolve_with_context(
+      Some(style.font_size),
+      viewport.width,
+      viewport.height,
+      style.font_size,
+      style.root_font_size,
+    );
 
-    style.line_height = LineHeight::Length(Length::px(px));
+    if let Some(px) = px.filter(|v| v.is_finite() && *v >= 0.0) {
+      style.line_height = LineHeight::Length(Length::px(px));
+    } else {
+      // An invalid length (e.g. non-finite or negative after `calc()` evaluation) should behave
+      // like an invalid computed value and fall back to the initial keyword.
+      style.line_height = LineHeight::Normal;
+    }
   }
 }
 
@@ -11118,6 +11120,46 @@ mod tests {
     let inner_second = legacy_second.children.first().expect("inner");
     assert_eq!(inner_first.styles.color, Rgba::rgb(10, 20, 30));
     assert_eq!(inner_second.styles.color, Rgba::rgb(1, 2, 3));
+  }
+
+  #[test]
+  fn line_height_calc_lengths_resolve_using_font_and_viewport_context() {
+    use crate::css::properties::parse_length;
+    use crate::style::types::LineHeight;
+    use crate::style::values::LengthUnit;
+
+    let viewport = Size::new(1200.0, 800.0);
+    let mut style = ComputedStyle::default();
+    style.font_size = 16.0;
+    style.root_font_size = 16.0;
+
+    style.line_height = LineHeight::Length(parse_length("calc(4rem - 8px)").unwrap());
+    resolve_line_height_length(&mut style, viewport);
+    match style.line_height {
+      LineHeight::Length(len) => {
+        assert_eq!(len.unit, LengthUnit::Px);
+        assert!(
+          (len.value - 56.0).abs() < 0.01,
+          "expected 56px, got {len:?}"
+        );
+      }
+      other => panic!("expected LineHeight::Length after resolution, got {other:?}"),
+    }
+
+    style.font_size = 20.0;
+    style.root_font_size = 16.0;
+    style.line_height = LineHeight::Length(parse_length("calc(50% + 2px)").unwrap());
+    resolve_line_height_length(&mut style, viewport);
+    match style.line_height {
+      LineHeight::Length(len) => {
+        assert_eq!(len.unit, LengthUnit::Px);
+        assert!(
+          (len.value - 12.0).abs() < 0.01,
+          "expected 12px, got {len:?}"
+        );
+      }
+      other => panic!("expected LineHeight::Length after resolution, got {other:?}"),
+    }
   }
 
   #[test]
