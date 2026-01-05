@@ -3073,6 +3073,20 @@ fn collect_scene_items(
   if !in_preserve_context || !matches!(transform_style, TransformStyle::Preserve3d) {
     let order = *order_counter;
     *order_counter += 1;
+    let filter_bounds = {
+      let candidate = node.context.plane_rect;
+      if candidate.width() > 0.0
+        && candidate.height() > 0.0
+        && candidate.x().is_finite()
+        && candidate.y().is_finite()
+        && candidate.width().is_finite()
+        && candidate.height().is_finite()
+      {
+        candidate
+      } else {
+        node.context.bounds
+      }
+    };
     items.push(Preserve3dSceneItem {
       source: Preserve3dSceneItemSource::FlattenedSubtree(node.clone()),
       transform: combined_transform,
@@ -3083,7 +3097,7 @@ fn collect_scene_items(
       effects: inherited_effects.to_vec(),
       backdrop_filters: node.context.backdrop_filters.clone(),
       radii: node.context.radii,
-      filter_bounds: node.context.bounds,
+      filter_bounds,
     });
     return items;
   }
@@ -8110,7 +8124,22 @@ impl DisplayListRenderer {
         let scaled_backdrop = self.ds_filters(&item.backdrop_filters);
         let has_backdrop = !scaled_backdrop.is_empty();
         let css_bounds = item.bounds;
+        let plane_css_bounds = {
+          let candidate = item.plane_rect;
+          if candidate.width() > 0.0
+            && candidate.height() > 0.0
+            && candidate.x().is_finite()
+            && candidate.y().is_finite()
+            && candidate.width().is_finite()
+            && candidate.height().is_finite()
+          {
+            candidate
+          } else {
+            css_bounds
+          }
+        };
         let bounds = self.ds_rect(css_bounds);
+        let plane_bounds = self.ds_rect(plane_css_bounds);
         let radii = self.ds_radii(item.radii);
         let mask = item.mask.clone();
 
@@ -8122,7 +8151,6 @@ impl DisplayListRenderer {
         };
 
         let parent_transform = self.canvas.transform();
-        let mask_bounds = transform_rect(bounds, &parent_transform);
         let mut local_skia_transform: Option<Transform> = None;
         let mut combined_transform = parent_transform;
         let mut applied_perspective = false;
@@ -8159,18 +8187,18 @@ impl DisplayListRenderer {
 
         let pending_backdrop = if has_backdrop {
           let backdrop_bounds = if let Some(projective_transform) = projective_transform.as_ref() {
-            let projected_css = projective_transform.transform_rect(css_bounds);
+            let projected_css = projective_transform.transform_rect(plane_css_bounds);
             let projected_device = self.ds_rect(projected_css);
             transform_rect(projected_device, &parent_transform)
           } else {
-            transform_rect(bounds, &combined_transform)
+            transform_rect(plane_bounds, &combined_transform)
           };
           Some(PendingBackdrop {
             bounds: backdrop_bounds,
-            shape_bounds: bounds,
+            shape_bounds: plane_bounds,
             filters: scaled_backdrop.clone(),
             radii,
-            filter_bounds: css_bounds,
+            filter_bounds: plane_css_bounds,
           })
         } else {
           None
@@ -14994,6 +15022,41 @@ mod tests {
     let pixmap = renderer.render(&list).unwrap();
     // Red background inverted through backdrop-filter yields cyan.
     assert_eq!(pixel(&pixmap, 0, 0), (0, 255, 255, 255));
+  }
+
+  #[test]
+  fn backdrop_filter_clips_to_plane_rect() {
+    let renderer = DisplayListRenderer::new(6, 6, Rgba::WHITE, FontContext::new()).unwrap();
+    let mut list = DisplayList::new();
+
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(0.0, 0.0, 6.0, 6.0),
+      color: Rgba::rgb(255, 0, 0),
+    }));
+
+    list.push(DisplayItem::PushStackingContext(
+      crate::paint::display_list::StackingContextItem {
+        z_index: 0,
+        creates_stacking_context: true,
+        bounds: Rect::from_xywh(0.0, 0.0, 6.0, 6.0),
+        plane_rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
+        mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
+        is_isolated: false,
+        transform: None,
+        child_perspective: None,
+        transform_style: TransformStyle::Flat,
+        backface_visibility: BackfaceVisibility::Visible,
+        filters: Vec::new(),
+        backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
+        radii: BorderRadii::ZERO,
+        mask: None,
+      },
+    ));
+    list.push(DisplayItem::PopStackingContext);
+
+    let pixmap = renderer.render(&list).unwrap();
+    assert_eq!(pixel(&pixmap, 0, 0), (0, 255, 255, 255));
+    assert_eq!(pixel(&pixmap, 3, 3), (255, 0, 0, 255));
   }
 
   #[test]
