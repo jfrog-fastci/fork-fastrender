@@ -3,6 +3,7 @@ use fastrender::paint::svg_filter::{
   apply_svg_filter, ColorInterpolationFilters, FilterPrimitive, FilterStep, SvgFilter,
   SvgFilterRegion, SvgFilterUnits, SvgLength, TurbulenceType,
 };
+use std::env;
 use tiny_skia::{Pixmap, PremultipliedColorU8};
 
 #[derive(Clone)]
@@ -157,6 +158,14 @@ fn quantize_svg_pair(values: (f32, f32)) -> (f32, f32) {
   (quantize_svg_f32(values.0), quantize_svg_f32(values.1))
 }
 
+fn env_usize(name: &str) -> Option<usize> {
+  env::var(name).ok()?.parse::<usize>().ok()
+}
+
+fn env_u32(name: &str) -> Option<u32> {
+  env::var(name).ok()?.parse::<u32>().ok()
+}
+
 fn render_with_resvg(svg: &str, width: u32, height: u32) -> resvg::tiny_skia::Pixmap {
   use resvg::usvg;
 
@@ -271,12 +280,12 @@ fn compare_pixmaps(
   );
 }
 
-fn generate_cases() -> Vec<TurbulenceCase> {
+fn generate_cases(seed: u32, case_count: usize) -> Vec<TurbulenceCase> {
   const CANVAS_W: u32 = 32;
   const CANVAS_H: u32 = 32;
-  const CASES: usize = 128;
 
-  let mut rng = XorShift32::new(0x2440_2440);
+  let case_count = case_count.clamp(1, 512);
+  let mut rng = XorShift32::new(seed);
 
   let base_freq_choices: &[(f32, f32)] = &[
     (0.0, 0.0),
@@ -290,9 +299,9 @@ fn generate_cases() -> Vec<TurbulenceCase> {
   let seed_choices: &[f32] = &[-3.6, -0.6, -0.4, 0.0, 1.0, 2.2, 7.0, 42.0, 1337.9];
   let seed_fracs: &[f32] = &[0.0, 0.2, 0.5, 0.7];
 
-  let mut cases = Vec::with_capacity(CASES);
+  let mut cases = Vec::with_capacity(case_count);
 
-  for idx in 0..CASES {
+  for idx in 0..case_count {
     let kind = if idx % 2 == 0 {
       TurbulenceType::Turbulence
     } else {
@@ -401,9 +410,27 @@ fn generate_cases() -> Vec<TurbulenceCase> {
 #[test]
 #[ignore = "Differential reference test against resvg; expected to fail until the feTurbulence rewrite lands."]
 fn svg_filter_turbulence_differential_against_resvg() {
-  let cases = generate_cases();
+  let seed = env_u32("FASTR_TURBULENCE_DIFF_SEED").unwrap_or(0x2440_2440);
+  let case_count = env_usize("FASTR_TURBULENCE_DIFF_CASES").unwrap_or(128);
+  let only_case = env_usize("FASTR_TURBULENCE_DIFF_ONLY");
+  let start_case = env_usize("FASTR_TURBULENCE_DIFF_START").unwrap_or(0);
 
-  for (case_idx, case) in cases.iter().enumerate() {
+  let cases = generate_cases(seed, case_count);
+  let end_case = cases.len();
+
+  let range = if let Some(only) = only_case {
+    only..(only + 1)
+  } else {
+    start_case..end_case
+  };
+
+  for case_idx in range {
+    let Some(case) = cases.get(case_idx) else {
+      panic!(
+        "requested case index {case_idx} but only {} cases were generated (seed={seed})",
+        cases.len()
+      );
+    };
     let svg = case.as_svg();
     let resvg_pixmap = render_with_resvg(&svg, case.canvas_w, case.canvas_h);
     let fast_pixmap = render_with_fastrender(case);
