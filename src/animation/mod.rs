@@ -32,6 +32,7 @@ use crate::style::types::BackgroundSize;
 use crate::style::types::BackgroundSizeComponent;
 use crate::style::types::BackgroundSizeKeyword;
 use crate::style::types::BasicShape;
+use crate::style::types::BorderStyle;
 use crate::style::types::BorderCornerRadius;
 use crate::style::types::ClipPath;
 use crate::style::types::ClipRadii;
@@ -88,6 +89,7 @@ pub enum AnimatedValue {
   BackgroundSize(Vec<BackgroundSize>),
   BoxShadow(Vec<BoxShadow>),
   TextShadow(Vec<TextShadow>),
+  Border([Length; 4], [BorderStyle; 4], [Rgba; 4]),
   BorderColor([Rgba; 4]),
   BorderWidth([Length; 4]),
   BorderRadius([BorderCornerRadius; 4]),
@@ -1782,6 +1784,102 @@ fn apply_border_left_width(style: &mut ComputedStyle, value: &AnimatedValue) {
   }
 }
 
+fn extract_border(style: &ComputedStyle, ctx: &AnimationResolveContext) -> Option<AnimatedValue> {
+  Some(AnimatedValue::Border(
+    resolve_border_widths(style, ctx),
+    [
+      style.border_top_style,
+      style.border_right_style,
+      style.border_bottom_style,
+      style.border_left_style,
+    ],
+    [
+      style.border_top_color,
+      style.border_right_color,
+      style.border_bottom_color,
+      style.border_left_color,
+    ],
+  ))
+}
+
+fn interpolate_border_value(a: &AnimatedValue, b: &AnimatedValue, t: f32) -> Option<AnimatedValue> {
+  let (AnimatedValue::Border(wa, sa, ca), AnimatedValue::Border(wb, sb, cb)) = (a, b) else {
+    return None;
+  };
+
+  let mut widths = [Length::px(0.0); 4];
+  let mut styles = [BorderStyle::None; 4];
+  let mut colors = [Rgba::BLACK; 4];
+  for i in 0..4 {
+    widths[i] = Length::px(lerp(wa[i].to_px(), wb[i].to_px(), t).max(0.0));
+    styles[i] = if t < 0.5 { sa[i] } else { sb[i] };
+    colors[i] = lerp_color(ca[i], cb[i], t);
+  }
+
+  Some(AnimatedValue::Border(widths, styles, colors))
+}
+
+fn apply_border(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::Border(widths, styles, colors) = value {
+    style.border_top_width = widths[0];
+    style.border_right_width = widths[1];
+    style.border_bottom_width = widths[2];
+    style.border_left_width = widths[3];
+    style.border_top_style = styles[0];
+    style.border_right_style = styles[1];
+    style.border_bottom_style = styles[2];
+    style.border_left_style = styles[3];
+    style.border_top_color = colors[0];
+    style.border_right_color = colors[1];
+    style.border_bottom_color = colors[2];
+    style.border_left_color = colors[3];
+  }
+}
+
+fn apply_border_side(style: &mut ComputedStyle, value: &AnimatedValue, side: usize) {
+  if let AnimatedValue::Border(widths, styles, colors) = value {
+    match side {
+      0 => {
+        style.border_top_width = widths[0];
+        style.border_top_style = styles[0];
+        style.border_top_color = colors[0];
+      }
+      1 => {
+        style.border_right_width = widths[1];
+        style.border_right_style = styles[1];
+        style.border_right_color = colors[1];
+      }
+      2 => {
+        style.border_bottom_width = widths[2];
+        style.border_bottom_style = styles[2];
+        style.border_bottom_color = colors[2];
+      }
+      3 => {
+        style.border_left_width = widths[3];
+        style.border_left_style = styles[3];
+        style.border_left_color = colors[3];
+      }
+      _ => {}
+    }
+  }
+}
+
+fn apply_border_top(style: &mut ComputedStyle, value: &AnimatedValue) {
+  apply_border_side(style, value, 0);
+}
+
+fn apply_border_right(style: &mut ComputedStyle, value: &AnimatedValue) {
+  apply_border_side(style, value, 1);
+}
+
+fn apply_border_bottom(style: &mut ComputedStyle, value: &AnimatedValue) {
+  apply_border_side(style, value, 2);
+}
+
+fn apply_border_left(style: &mut ComputedStyle, value: &AnimatedValue) {
+  apply_border_side(style, value, 3);
+}
+
 fn resolve_outline_color(style: &ComputedStyle) -> OutlineColor {
   match style.outline_color {
     OutlineColor::CurrentColor => OutlineColor::Color(style.color),
@@ -2122,6 +2220,36 @@ fn property_interpolators() -> &'static [PropertyInterpolator] {
       extract: extract_border_width,
       interpolate: interpolate_border_width_value,
       apply: apply_border_width,
+    },
+    PropertyInterpolator {
+      name: "border",
+      extract: extract_border,
+      interpolate: interpolate_border_value,
+      apply: apply_border,
+    },
+    PropertyInterpolator {
+      name: "border-top",
+      extract: extract_border,
+      interpolate: interpolate_border_value,
+      apply: apply_border_top,
+    },
+    PropertyInterpolator {
+      name: "border-right",
+      extract: extract_border,
+      interpolate: interpolate_border_value,
+      apply: apply_border_right,
+    },
+    PropertyInterpolator {
+      name: "border-bottom",
+      extract: extract_border,
+      interpolate: interpolate_border_value,
+      apply: apply_border_bottom,
+    },
+    PropertyInterpolator {
+      name: "border-left",
+      extract: extract_border,
+      interpolate: interpolate_border_value,
+      apply: apply_border_left,
     },
     PropertyInterpolator {
       name: "border-top-width",

@@ -16,7 +16,7 @@ use fastrender::style::cascade::apply_styles_with_media;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::media::MediaContext;
 use fastrender::style::types::{
-  AnimationRange, AnimationTimeline, BasicShape, FilterFunction, RangeOffset,
+  AnimationRange, AnimationTimeline, BasicShape, BorderStyle, FilterFunction, RangeOffset,
   ScrollFunctionTimeline, ScrollTimeline, ScrollTimelineScroller, TimelineAxis, TimelineOffset,
   OutlineColor, OutlineStyle, ViewTimeline, ViewTimelinePhase, WritingMode,
 };
@@ -407,6 +407,58 @@ fn keyframes_interpolate_border_widths() {
   };
   for width in widths {
     assert!((width.to_px() - 5.0).abs() < 1e-3);
+  }
+}
+
+#[test]
+fn keyframes_interpolate_border_shorthand() {
+  let sheet = parse_stylesheet(
+    "@keyframes border { from { border: 0px solid rgb(255, 0, 0); } to { border: 10px dashed rgb(0, 0, 255); } }",
+  )
+  .unwrap();
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = &keyframes[0];
+
+  let sampled = sample_keyframes(
+    rule,
+    0.4,
+    &ComputedStyle::default(),
+    Size::new(800.0, 600.0),
+    Size::new(200.0, 200.0),
+  );
+  let (widths, styles, colors) = match sampled.get("border") {
+    Some(AnimatedValue::Border(widths, styles, colors)) => (widths, styles, colors),
+    other => panic!("unexpected value {other:?}"),
+  };
+  for width in widths {
+    assert!((width.to_px() - 4.0).abs() < 1e-3);
+  }
+  for style in styles {
+    assert_eq!(*style, BorderStyle::Solid);
+  }
+  for color in colors {
+    assert_eq!(*color, Rgba::new(153, 0, 102, 1.0));
+  }
+
+  let sampled = sample_keyframes(
+    rule,
+    0.6,
+    &ComputedStyle::default(),
+    Size::new(800.0, 600.0),
+    Size::new(200.0, 200.0),
+  );
+  let (widths, styles, colors) = match sampled.get("border") {
+    Some(AnimatedValue::Border(widths, styles, colors)) => (widths, styles, colors),
+    other => panic!("unexpected value {other:?}"),
+  };
+  for width in widths {
+    assert!((width.to_px() - 6.0).abs() < 1e-3);
+  }
+  for style in styles {
+    assert_eq!(*style, BorderStyle::Dashed);
+  }
+  for color in colors {
+    assert_eq!(*color, Rgba::new(102, 0, 153, 1.0));
   }
 }
 

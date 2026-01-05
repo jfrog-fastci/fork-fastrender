@@ -5,7 +5,7 @@ use fastrender::api::{FastRender, RenderOptions};
 use fastrender::css::types::{BoxShadow, TextShadow};
 use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::style::cascade::StyledNode;
-use fastrender::style::types::{BasicShape, ClipPath, FilterFunction};
+use fastrender::style::types::{BasicShape, BorderStyle, ClipPath, FilterFunction};
 use fastrender::tree::box_tree::{BoxNode, BoxTree};
 use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
 use r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
@@ -108,6 +108,24 @@ fn fragment_border_top_right_radius_x(tree: &FragmentTree, box_id: usize) -> f32
   let frag = find_fragment(&tree.root, box_id).expect("fragment present");
   let style = frag.style.as_ref().expect("style present");
   style.border_top_right_radius.x.to_px()
+}
+
+fn fragment_border_top_width(tree: &FragmentTree, box_id: usize) -> f32 {
+  let frag = find_fragment(&tree.root, box_id).expect("fragment present");
+  let style = frag.style.as_ref().expect("style present");
+  style.border_top_width.to_px()
+}
+
+fn fragment_border_top_style(tree: &FragmentTree, box_id: usize) -> BorderStyle {
+  let frag = find_fragment(&tree.root, box_id).expect("fragment present");
+  let style = frag.style.as_ref().expect("style present");
+  style.border_top_style
+}
+
+fn fragment_border_top_color(tree: &FragmentTree, box_id: usize) -> fastrender::Rgba {
+  let frag = find_fragment(&tree.root, box_id).expect("fragment present");
+  let style = frag.style.as_ref().expect("style present");
+  style.border_top_color
 }
 
 fn fragment_outline_color(tree: &FragmentTree, box_id: usize) -> (fastrender::Rgba, bool) {
@@ -308,6 +326,50 @@ fn transitions_interpolate_outline_shorthand_over_time() {
   let (color, invert) = fragment_outline_color(&mid, box_id);
   assert!(!invert);
   assert_eq!(color, fastrender::Rgba::new(128, 0, 128, 1.0));
+}
+
+#[test]
+fn transitions_interpolate_border_shorthand_over_time() {
+  let html = r#"
+    <style>
+      @starting-style { #box { border: 0px solid rgb(255, 0, 0); } }
+      #box { width: 100px; height: 100px; border: 10px dashed rgb(0, 0, 255); transition: border 1000ms linear; }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut start = fragment_tree.clone();
+  let viewport = start.viewport_size();
+  animation::apply_transitions(&mut start, 0.0, viewport);
+  assert!((fragment_border_top_width(&start, box_id) - 0.0).abs() < 1e-3);
+  assert_eq!(fragment_border_top_style(&start, box_id), BorderStyle::Solid);
+  assert_eq!(
+    fragment_border_top_color(&start, box_id),
+    fastrender::Rgba::new(255, 0, 0, 1.0)
+  );
+
+  let mut early = fragment_tree.clone();
+  let viewport = early.viewport_size();
+  animation::apply_transitions(&mut early, 400.0, viewport);
+  assert!((fragment_border_top_width(&early, box_id) - 4.0).abs() < 1e-3);
+  assert_eq!(fragment_border_top_style(&early, box_id), BorderStyle::Solid);
+  assert_eq!(
+    fragment_border_top_color(&early, box_id),
+    fastrender::Rgba::new(153, 0, 102, 1.0)
+  );
+
+  let mut late = fragment_tree.clone();
+  let viewport = late.viewport_size();
+  animation::apply_transitions(&mut late, 600.0, viewport);
+  assert!((fragment_border_top_width(&late, box_id) - 6.0).abs() < 1e-3);
+  assert_eq!(fragment_border_top_style(&late, box_id), BorderStyle::Dashed);
+  assert_eq!(
+    fragment_border_top_color(&late, box_id),
+    fastrender::Rgba::new(102, 0, 153, 1.0)
+  );
 }
 
 #[test]
