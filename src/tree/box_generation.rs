@@ -32,6 +32,7 @@ use crate::style::media::MediaQuery;
 use crate::style::types::FontStyle;
 use crate::style::types::ListStyleType;
 use crate::style::types::TextTransform;
+use crate::style::types::WhiteSpace;
 use crate::style::ComputedStyle;
 use crate::svg::parse_svg_length_px;
 use crate::svg::svg_intrinsic_dimensions_from_attributes;
@@ -1727,6 +1728,29 @@ fn generate_boxes_for_styled_into(
 
         if let Some(text) = styled.node.text_content() {
           if !text.is_empty() {
+            let is_whitespace_only = text.as_bytes().iter().all(|b| b.is_ascii_whitespace());
+            if is_whitespace_only
+              && matches!(styled.styles.white_space, WhiteSpace::Normal | WhiteSpace::Nowrap)
+            {
+              // Flex/grid containers treat direct text runs as anonymous items. Collapsible
+              // inter-element whitespace should not generate those items, otherwise `gap` and
+              // auto-placement treat them as real children.
+              let mut container_display = None;
+              for frame in stack.iter().rev().skip(1) {
+                let display = frame.styled.styles.display;
+                if display != Display::Contents {
+                  container_display = Some(display);
+                  break;
+                }
+              }
+              if matches!(
+                container_display,
+                Some(Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid)
+              ) {
+                stack.pop();
+                continue;
+              }
+            }
             let style = Arc::clone(&styled.styles);
             if let Some(needle) = runtime::runtime_toggles().get("FASTR_FIND_BOX_TEXT") {
               if text.contains(&needle) {

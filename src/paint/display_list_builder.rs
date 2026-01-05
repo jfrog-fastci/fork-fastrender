@@ -1993,16 +1993,25 @@ impl DisplayListBuilder {
         }
         let target_w = viewport.0.max(context_bounds.width());
         let target_h = viewport.1.max(context_bounds.height());
-        if target_w <= context_bounds.width() && target_h <= context_bounds.height() {
+        let target_rect =
+          Rect::from_xywh(context_bounds.x(), context_bounds.y(), target_w, target_h);
+        let (style, suppress_box_id, source_rect) =
+          Self::root_background_candidate(fragment, descendant_offset)?;
+        if !Self::has_paintable_background(&style) {
           return None;
         }
-        let (style, suppress_box_id) = Self::root_background_style(fragment)?;
-        if !Self::has_paintable_background(&style) {
+        // We only need to propagate the canvas background when the source element's border box
+        // does not fully cover the paint target.
+        let source_covers_target = source_rect.min_x() <= target_rect.min_x()
+          && source_rect.min_y() <= target_rect.min_y()
+          && source_rect.max_x() >= target_rect.max_x()
+          && source_rect.max_y() >= target_rect.max_y();
+        if source_covers_target {
           return None;
         }
         self.canvas_background_suppress_box_id = suppress_box_id;
         Some(RootBackground {
-          paint_rect: Rect::from_xywh(context_bounds.x(), context_bounds.y(), target_w, target_h),
+          paint_rect: target_rect,
           // Keep the origin rect scoped to the original stacking context bounds so background
           // sizing/tiling doesn't stretch when extending the paint rect to cover the viewport.
           origin_rect: context_bounds,
@@ -4449,23 +4458,32 @@ impl DisplayListBuilder {
         .any(|layer| layer.image.is_some())
   }
 
-  fn root_background_style(fragment: &FragmentNode) -> Option<(Arc<ComputedStyle>, Option<usize>)> {
-    let html = if fragment.children.len() == 1 {
-      fragment.children.first().unwrap_or(fragment)
+  fn root_background_candidate(
+    fragment: &FragmentNode,
+    origin: Point,
+  ) -> Option<(Arc<ComputedStyle>, Option<usize>, Rect)> {
+    let (html, html_origin) = if fragment.children.len() == 1 {
+      let child = fragment.children.first().unwrap_or(fragment);
+      (child, origin.translate(child.bounds.origin))
     } else {
-      fragment
+      (fragment, origin)
     };
 
     if let Some(style) = html.style.clone() {
       if Self::has_paintable_background(&style) {
-        return Some((style, Self::get_box_id(html)));
+        return Some((
+          style,
+          Self::get_box_id(html),
+          Rect::new(html_origin, html.bounds.size),
+        ));
       }
     }
 
     for child in html.children.iter() {
       if let Some(style) = child.style.clone() {
         if Self::has_paintable_background(&style) {
-          return Some((style, Self::get_box_id(child)));
+          let rect = Rect::new(html_origin.translate(child.bounds.origin), child.bounds.size);
+          return Some((style, Self::get_box_id(child), rect));
         }
       }
     }
