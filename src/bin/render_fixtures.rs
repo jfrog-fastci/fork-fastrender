@@ -857,12 +857,9 @@ fn reset_paint_scratch_for_pools(harness_pool: &rayon::ThreadPool) {
   // - a dedicated paint pool (when `FASTR_PAINT_THREADS>1` is set),
   // - or a custom harness pool used by CLI tools.
   //
-  // We reset scratch on the calling thread, the global pool, and the fixture harness pool. The
-  // dedicated paint pool can't be reached from this binary without additional library plumbing.
-  fastrender::paint::scratch::reset_thread_local_scratch();
-  rayon::broadcast(|_| {
-    fastrender::paint::scratch::reset_thread_local_scratch();
-  });
+  // We reset scratch on the calling thread, the global pool, the dedicated paint pool, and the
+  // fixture harness pool.
+  fastrender::paint::scratch::reset_paint_scratch_best_effort();
   harness_pool.install(|| {
     rayon::broadcast(|_| {
       fastrender::paint::scratch::reset_thread_local_scratch();
