@@ -1,0 +1,283 @@
+<!doctype html>
+<meta charset="utf-8" />
+<style>
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    background: #1c1c1c;
+  }
+
+  svg {
+    display: block;
+  }
+</style>
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="192"
+  height="96"
+  viewBox="0 0 192 96"
+  shape-rendering="crispEdges"
+>
+  <defs>
+    <pattern id="checkerboard" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect width="4" height="4" fill="#000" />
+      <rect x="4" width="4" height="4" fill="#fff" />
+      <rect y="4" width="4" height="4" fill="#fff" />
+      <rect x="4" y="4" width="4" height="4" fill="#000" />
+    </pattern>
+
+    <!--
+      feTurbulence: stitchTiles should produce a seamless (tileable) texture.
+      We generate a small subregion and use feTile to repeat it across the full
+      filter region; if stitching is broken, seams show up at tile boundaries.
+    -->
+    <filter id="noise-fractal-stitch" x="0" y="0" width="100%" height="100%">
+      <feTurbulence
+        type="fractalNoise"
+        baseFrequency="0.08 0.16"
+        numOctaves="2"
+        seed="1"
+        stitchTiles="stitch"
+        x="25%"
+        y="25%"
+        width="25%"
+        height="50%"
+        result="noise"
+      />
+      <feTile in="noise" />
+    </filter>
+    <filter id="noise-turbulence-stitch" x="0" y="0" width="100%" height="100%">
+      <feTurbulence
+        type="turbulence"
+        baseFrequency="0.08 0.16"
+        numOctaves="2"
+        seed="1"
+        stitchTiles="stitch"
+        x="25%"
+        y="25%"
+        width="25%"
+        height="50%"
+        result="noise"
+      />
+      <feTile in="noise" />
+    </filter>
+
+    <!-- Displacement map pipeline with distinct R/G channels. -->
+    <filter id="rg-map" x="0" y="0" width="100%" height="100%">
+      <feTurbulence
+        type="fractalNoise"
+        baseFrequency="0.11 0.07"
+        numOctaves="2"
+        seed="2"
+        stitchTiles="stitch"
+        x="12.5%"
+        y="25%"
+        width="50%"
+        height="50%"
+        result="noiseX"
+      />
+      <feColorMatrix
+        in="noiseX"
+        type="matrix"
+        values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0"
+        result="mapR"
+      />
+      <feTurbulence
+        type="fractalNoise"
+        baseFrequency="0.05 0.12"
+        numOctaves="2"
+        seed="3"
+        stitchTiles="stitch"
+        x="25%"
+        y="12.5%"
+        width="50%"
+        height="50%"
+        result="noiseY"
+      />
+      <feColorMatrix
+        in="noiseY"
+        type="matrix"
+        values="0 0 0 0 0  1 0 0 0 0  0 0 0 0 0  0 0 0 1 0"
+        result="mapG"
+      />
+      <feComposite
+        in="mapR"
+        in2="mapG"
+        operator="arithmetic"
+        k1="0"
+        k2="1"
+        k3="1"
+        k4="0"
+        result="map"
+      />
+    </filter>
+    <filter id="displacement" x="0" y="0" width="100%" height="100%">
+      <feTurbulence
+        type="fractalNoise"
+        baseFrequency="0.11 0.07"
+        numOctaves="2"
+        seed="2"
+        stitchTiles="stitch"
+        x="12.5%"
+        y="25%"
+        width="50%"
+        height="50%"
+        result="noiseX"
+      />
+      <feColorMatrix
+        in="noiseX"
+        type="matrix"
+        values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0"
+        result="mapR"
+      />
+      <feTurbulence
+        type="fractalNoise"
+        baseFrequency="0.05 0.12"
+        numOctaves="2"
+        seed="3"
+        stitchTiles="stitch"
+        x="25%"
+        y="12.5%"
+        width="50%"
+        height="50%"
+        result="noiseY"
+      />
+      <feColorMatrix
+        in="noiseY"
+        type="matrix"
+        values="0 0 0 0 0  1 0 0 0 0  0 0 0 0 0  0 0 0 1 0"
+        result="mapG"
+      />
+      <feComposite
+        in="mapR"
+        in2="mapG"
+        operator="arithmetic"
+        k1="0"
+        k2="1"
+        k3="1"
+        k4="0"
+        result="map"
+      />
+      <feDisplacementMap
+        in="SourceGraphic"
+        in2="map"
+        scale="10"
+        xChannelSelector="R"
+        yChannelSelector="G"
+      />
+    </filter>
+    <filter id="displacement-filterres" x="0" y="0" width="100%" height="100%" filterRes="48 48">
+      <feTurbulence
+        type="fractalNoise"
+        baseFrequency="0.11 0.07"
+        numOctaves="2"
+        seed="2"
+        stitchTiles="stitch"
+        x="12.5%"
+        y="25%"
+        width="50%"
+        height="50%"
+        result="noiseX"
+      />
+      <feColorMatrix
+        in="noiseX"
+        type="matrix"
+        values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0"
+        result="mapR"
+      />
+      <feTurbulence
+        type="fractalNoise"
+        baseFrequency="0.05 0.12"
+        numOctaves="2"
+        seed="3"
+        stitchTiles="stitch"
+        x="25%"
+        y="12.5%"
+        width="50%"
+        height="50%"
+        result="noiseY"
+      />
+      <feColorMatrix
+        in="noiseY"
+        type="matrix"
+        values="0 0 0 0 0  1 0 0 0 0  0 0 0 0 0  0 0 0 1 0"
+        result="mapG"
+      />
+      <feComposite
+        in="mapR"
+        in2="mapG"
+        operator="arithmetic"
+        k1="0"
+        k2="1"
+        k3="1"
+        k4="0"
+        result="map"
+      />
+      <feDisplacementMap
+        in="SourceGraphic"
+        in2="map"
+        scale="10"
+        xChannelSelector="R"
+        yChannelSelector="G"
+      />
+    </filter>
+  </defs>
+
+  <rect width="192" height="96" fill="#1c1c1c" />
+
+  <!-- Row 1 -->
+  <g transform="translate(0 0)">
+    <rect width="64" height="48" fill="#fff" />
+    <rect x="8" y="8" width="48" height="32" fill="#fff" filter="url(#noise-fractal-stitch)" />
+    <rect width="64" height="48" fill="none" stroke="#3a3a3a" />
+  </g>
+  <g transform="translate(64 0)">
+    <rect width="64" height="48" fill="#fff" />
+    <rect
+      x="8"
+      y="8"
+      width="48"
+      height="32"
+      fill="#fff"
+      filter="url(#noise-turbulence-stitch)"
+    />
+    <rect width="64" height="48" fill="none" stroke="#3a3a3a" />
+  </g>
+  <g transform="translate(128 0)">
+    <rect width="64" height="48" fill="#fff" />
+    <rect x="8" y="8" width="48" height="32" fill="#000" filter="url(#rg-map)" />
+    <rect width="64" height="48" fill="none" stroke="#3a3a3a" />
+  </g>
+
+  <!-- Row 2 -->
+  <g transform="translate(0 48)">
+    <rect width="64" height="48" fill="#fff" />
+    <rect x="8" y="8" width="48" height="32" fill="url(#checkerboard)" />
+    <rect width="64" height="48" fill="none" stroke="#3a3a3a" />
+  </g>
+  <g transform="translate(64 48)">
+    <rect width="64" height="48" fill="#fff" />
+    <rect
+      x="8"
+      y="8"
+      width="48"
+      height="32"
+      fill="url(#checkerboard)"
+      filter="url(#displacement)"
+    />
+    <rect width="64" height="48" fill="none" stroke="#3a3a3a" />
+  </g>
+  <g transform="translate(128 48)">
+    <rect width="64" height="48" fill="#fff" />
+    <rect
+      x="8"
+      y="8"
+      width="48"
+      height="32"
+      fill="url(#checkerboard)"
+      filter="url(#displacement-filterres)"
+    />
+    <rect width="64" height="48" fill="none" stroke="#3a3a3a" />
+  </g>
+</svg>
