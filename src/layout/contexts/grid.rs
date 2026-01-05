@@ -6495,9 +6495,11 @@ mod tests {
   use crate::api::{DiagnosticsLevel, FastRender, FastRenderConfig, RenderOptions};
   use crate::debug::runtime;
   use crate::style::display::FormattingContextType;
+  use crate::style::properties::apply_content_visibility_implied_containment;
   use crate::style::types::AlignItems;
   use crate::style::types::AspectRatio;
   use crate::style::types::BorderStyle;
+  use crate::style::types::ContentVisibility;
   use crate::style::types::GridAutoFlow;
   use crate::style::types::GridTrack;
   use crate::style::types::Overflow;
@@ -8406,6 +8408,75 @@ mod tests {
     assert_eq!(abs_fragment.bounds.y(), 37.0);
     assert_eq!(abs_fragment.bounds.width(), 12.0);
     assert_eq!(abs_fragment.bounds.height(), 9.0);
+  }
+
+  #[test]
+  fn subgrid_content_visibility_establishes_positioned_cb_for_absolute_children() {
+    fn find_by_box_id<'a>(node: &'a FragmentNode, box_id: usize) -> Option<&'a FragmentNode> {
+      if node.box_id() == Some(box_id) {
+        return Some(node);
+      }
+      node.children.iter().find_map(|child| find_by_box_id(child, box_id))
+    }
+
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(50.0))];
+    grid_style.grid_template_rows = vec![GridTrack::Length(Length::px(50.0))];
+
+    let mut subgrid_style = ComputedStyle::default();
+    subgrid_style.display = CssDisplay::Grid;
+    subgrid_style.grid_row_subgrid = true;
+    subgrid_style.grid_column_subgrid = true;
+    subgrid_style.content_visibility = ContentVisibility::Auto;
+    apply_content_visibility_implied_containment(&mut subgrid_style);
+
+    let mut abs_style = ComputedStyle::default();
+    abs_style.display = CssDisplay::Block;
+    abs_style.position = crate::style::position::Position::Absolute;
+    abs_style.left = Some(Length::px(0.0));
+    abs_style.top = Some(Length::px(0.0));
+    abs_style.width = Some(Length::px(10.0));
+    abs_style.height = Some(Length::px(10.0));
+
+    let mut abs_child =
+      BoxNode::new_block(Arc::new(abs_style), FormattingContextType::Block, vec![]);
+    abs_child.id = 3;
+
+    let mut subgrid = BoxNode::new_block(
+      Arc::new(subgrid_style),
+      FormattingContextType::Grid,
+      vec![abs_child],
+    );
+    subgrid.id = 2;
+
+    let mut grid =
+      BoxNode::new_block(Arc::new(grid_style), FormattingContextType::Grid, vec![subgrid]);
+    grid.id = 1;
+
+    let viewport = crate::geometry::Size::new(300.0, 300.0);
+    let cb_rect = crate::geometry::Rect::from_xywh(20.0, 30.0, 150.0, 150.0);
+    let cb = crate::layout::contexts::positioned::ContainingBlock::with_viewport(cb_rect, viewport);
+    let fc = GridFormattingContext::with_viewport_and_cb(
+      viewport,
+      cb,
+      crate::text::font_loader::FontContext::new(),
+    )
+    .with_parallelism(LayoutParallelism::disabled());
+    let constraints = LayoutConstraints::definite(50.0, 50.0);
+    let fragment = fc.layout(&grid, &constraints).unwrap();
+
+    let subgrid_fragment = find_by_box_id(&fragment, 2).expect("subgrid fragment should exist");
+    let abs_fragment = subgrid_fragment
+      .children
+      .iter()
+      .find(|child| child.box_id() == Some(3))
+      .expect("absolute child fragment should be nested under subgrid fragment");
+
+    // Content-visibility's implied containment should establish the containing block for the
+    // absolutely positioned child. This prevents it from being offset by the outer positioned CB.
+    assert_eq!(abs_fragment.bounds.x(), 0.0);
+    assert_eq!(abs_fragment.bounds.y(), 0.0);
   }
 
   // Test 7: Grid with gap
