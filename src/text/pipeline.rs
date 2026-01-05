@@ -8247,7 +8247,7 @@ mod tests {
     let mid = pipeline.fallback_cache_stats();
 
     // Keep the leading sample character stable so the ASCII fast-path still records cache hits.
-    let second = match pipeline.shape("cache me again please", &style, &ctx) {
+    let second = match pipeline.shape("please cache me again", &style, &ctx) {
       Ok(runs) => runs,
       Err(_) => return,
     };
