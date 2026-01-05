@@ -603,11 +603,40 @@ pub fn absolutize_css_urls(css: &str, base_url: &str) -> std::result::Result<Str
   Ok(absolutize_css_urls_cow(css, base_url)?.into_owned())
 }
 
+fn css_ident_continues(byte: u8) -> bool {
+  byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_' || byte == b'\\' || byte >= 0x80
+}
+
+fn matches_at_keyword(bytes: &[u8], at_pos: usize, keyword: &[u8]) -> bool {
+  if bytes.get(at_pos).copied() != Some(b'@') {
+    return false;
+  }
+  let start = at_pos + 1;
+  let end = start.saturating_add(keyword.len());
+  if end > bytes.len() {
+    return false;
+  }
+  if !bytes[start..end].eq_ignore_ascii_case(keyword) {
+    return false;
+  }
+  match bytes.get(end).copied() {
+    None => true,
+    Some(next) => !css_ident_continues(next),
+  }
+}
+
 fn parse_import_target(rule: &str) -> Option<(&str, &str)> {
-  let after_at = rule
-    .get(..7)
-    .filter(|prefix| prefix.eq_ignore_ascii_case("@import"))?;
-  let after_at = rule[after_at.len()..].trim_start();
+  let bytes = rule.as_bytes();
+  if bytes.len() < 7 {
+    return None;
+  }
+  if !bytes[..7].eq_ignore_ascii_case(b"@import") {
+    return None;
+  }
+  if bytes.len() > 7 && css_ident_continues(bytes[7]) {
+    return None;
+  }
+  let after_at = rule[7..].trim_start();
   let bytes = after_at.as_bytes();
   let (target, rest) = if bytes.len() >= 4
     && matches!(bytes[0], b'u' | b'U')
@@ -974,11 +1003,7 @@ where
           continue;
         }
 
-        if imports_allowed
-          && brace_depth == 0
-          && bytes[i] == b'@'
-          && bytes.len().saturating_sub(i) >= 6
-          && bytes[i + 1..i + 6].eq_ignore_ascii_case(b"layer")
+        if imports_allowed && brace_depth == 0 && matches_at_keyword(bytes, i, b"layer")
         {
           let mut j = i;
           let mut inner_state = State::Normal;
@@ -1034,11 +1059,7 @@ where
           }
         }
 
-        if imports_allowed
-          && brace_depth == 0
-          && bytes[i] == b'@'
-          && bytes.len().saturating_sub(i) >= 8
-          && bytes[i + 1..i + 8].eq_ignore_ascii_case(b"charset")
+        if imports_allowed && brace_depth == 0 && matches_at_keyword(bytes, i, b"charset")
         {
           let mut j = i;
           let mut inner_state = State::Normal;
@@ -1090,12 +1111,9 @@ where
         }
 
         if imports_allowed && brace_depth == 0 && bytes[i] == b'@' {
-          let is_import = bytes.len().saturating_sub(i) >= 7
-            && bytes[i + 1..i + 7].eq_ignore_ascii_case(b"import");
-          let is_layer = bytes.len().saturating_sub(i) >= 6
-            && bytes[i + 1..i + 6].eq_ignore_ascii_case(b"layer");
-          let is_charset = bytes.len().saturating_sub(i) >= 8
-            && bytes[i + 1..i + 8].eq_ignore_ascii_case(b"charset");
+          let is_import = matches_at_keyword(bytes, i, b"import");
+          let is_layer = matches_at_keyword(bytes, i, b"layer");
+          let is_charset = matches_at_keyword(bytes, i, b"charset");
           if !is_import && !is_layer && !is_charset {
             imports_allowed = false;
           }
@@ -1108,10 +1126,7 @@ where
           imports_allowed = false;
         }
 
-        if bytes[i] == b'@'
-          && bytes.len().saturating_sub(i) >= 7
-          && bytes[i + 1..i + 7].eq_ignore_ascii_case(b"import")
-        {
+        if matches_at_keyword(bytes, i, b"import") {
           if budget_exhausted {
             diagnostics(base_url, "stylesheet byte budget exhausted");
             break;
@@ -3024,6 +3039,70 @@ mod tests {
       fetched_urls,
       vec!["https://example.com/charset.css".to_string()],
       "expected import after @charset to be fetched"
+    );
+  }
+
+  #[test]
+  fn inline_imports_does_not_treat_at_layered_as_layer_statement() {
+    let mut state = InlineImportState::new();
+    let mut fetched_urls: Vec<String> = Vec::new();
+    let mut fetched = |url: &str| -> Result<String> {
+      fetched_urls.push(url.to_string());
+      Ok(".imported { color: blue; }".to_string())
+    };
+    let css = "@layered foo; @import \"a.css\";";
+    let out = inline_imports(
+      css,
+      "https://example.com/main.css",
+      &mut fetched,
+      &mut state,
+      None,
+    )
+    .expect("inline imports");
+
+    assert!(
+      !out.contains(".imported { color: blue; }"),
+      "expected import after unknown @layered at-rule to be ignored: {out}"
+    );
+    assert!(
+      !out.contains("\"a.css\""),
+      "expected ignored import rule to be removed: {out}"
+    );
+    assert!(
+      fetched_urls.is_empty(),
+      "unknown @layered at-rule should terminate the import prelude (fetched={fetched_urls:?})"
+    );
+  }
+
+  #[test]
+  fn inline_imports_does_not_treat_at_imported_as_import() {
+    let mut state = InlineImportState::new();
+    let mut fetched_urls: Vec<String> = Vec::new();
+    let mut fetched = |url: &str| -> Result<String> {
+      fetched_urls.push(url.to_string());
+      Ok(".imported { color: blue; }".to_string())
+    };
+    let css = "@imported \"ignored.css\"; @import \"a.css\";";
+    let out = inline_imports(
+      css,
+      "https://example.com/main.css",
+      &mut fetched,
+      &mut state,
+      None,
+    )
+    .expect("inline imports");
+
+    assert!(
+      !out.contains(".imported { color: blue; }"),
+      "expected import after unknown @imported at-rule to be ignored: {out}"
+    );
+    assert!(
+      !out.contains("\"a.css\""),
+      "expected ignored import rule to be removed: {out}"
+    );
+    assert!(
+      fetched_urls.is_empty(),
+      "unknown @imported at-rule should terminate the import prelude (fetched={fetched_urls:?})"
     );
   }
 
