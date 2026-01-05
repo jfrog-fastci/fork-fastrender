@@ -427,6 +427,17 @@ pub enum MediaFeature {
     op: ComparisonOp,
     value: RangeValue,
   },
+  /// Logical negation of a nested media condition (`not`).
+  Not(Box<MediaFeature>),
+  /// Logical conjunction of nested media conditions (`and`).
+  And(Vec<MediaFeature>),
+  /// Logical disjunction of nested media conditions (`or`).
+  Or(Vec<MediaFeature>),
+  /// Unknown / unsupported media feature or "general-enclosed" construct.
+  ///
+  /// Per Media Queries, this evaluates as `false` but must not abort parsing so that other
+  /// comma-separated queries can still be considered.
+  Unknown { name: String, value: Option<String> },
 }
 
 /// Comparison operator for range-based media features
@@ -545,6 +556,13 @@ enum MediaFeatureKey {
     feature: RangeFeature,
     op: ComparisonOp,
     value: RangeValueKey,
+  },
+  Not(Box<MediaFeatureKey>),
+  And(Vec<MediaFeatureKey>),
+  Or(Vec<MediaFeatureKey>),
+  Unknown {
+    name: String,
+    value: Option<String>,
   },
 }
 
@@ -751,6 +769,19 @@ impl From<&MediaFeature> for MediaFeatureKey {
         op: *op,
         value: RangeValueKey::from(value),
       },
+      MediaFeature::Not(inner) => {
+        MediaFeatureKey::Not(Box::new(MediaFeatureKey::from(inner.as_ref())))
+      }
+      MediaFeature::And(list) => {
+        MediaFeatureKey::And(list.iter().map(MediaFeatureKey::from).collect())
+      }
+      MediaFeature::Or(list) => {
+        MediaFeatureKey::Or(list.iter().map(MediaFeatureKey::from).collect())
+      }
+      MediaFeature::Unknown { name, value } => MediaFeatureKey::Unknown {
+        name: name.clone(),
+        value: value.clone(),
+      },
     }
   }
 }
@@ -807,6 +838,8 @@ impl MediaFeature {
           | RangeFeature::Height
           | RangeFeature::AspectRatio
       ),
+      MediaFeature::Not(inner) => inner.is_size_feature(),
+      MediaFeature::And(list) | MediaFeature::Or(list) => list.iter().all(|f| f.is_size_feature()),
       _ => false,
     }
   }
@@ -942,6 +975,22 @@ impl MediaFeature {
       }
 
       // Resolution
+      "-webkit-device-pixel-ratio" | "device-pixel-ratio" => {
+        let resolution = Self::parse_resolution_value_allow_unitless_dppx(name.as_ref(), value)?;
+        Ok(MediaFeature::Resolution(resolution))
+      }
+      "-webkit-min-device-pixel-ratio"
+      | "min-device-pixel-ratio"
+      | "min--moz-device-pixel-ratio" => {
+        let resolution = Self::parse_resolution_value_allow_unitless_dppx(name.as_ref(), value)?;
+        Ok(MediaFeature::MinResolution(resolution))
+      }
+      "-webkit-max-device-pixel-ratio"
+      | "max-device-pixel-ratio"
+      | "max--moz-device-pixel-ratio" => {
+        let resolution = Self::parse_resolution_value_allow_unitless_dppx(name.as_ref(), value)?;
+        Ok(MediaFeature::MaxResolution(resolution))
+      }
       "resolution" => {
         let resolution = Self::parse_resolution_value(name.as_ref(), value)?;
         Ok(MediaFeature::Resolution(resolution))
@@ -1071,11 +1120,9 @@ impl MediaFeature {
         Ok(MediaFeature::PrefersColorScheme(scheme))
       }
       "prefers-reduced-motion" => {
-        // Common authoring pattern: `(prefers-reduced-motion)` is treated as the boolean form
-        // equivalent to `(prefers-reduced-motion: reduce)`.
         let motion = match value {
-          Some(value) => ReducedMotion::parse(value)?,
           None => ReducedMotion::Reduce,
+          Some(v) => ReducedMotion::parse(v)?,
         };
         Ok(MediaFeature::PrefersReducedMotion(motion))
       }
@@ -1086,11 +1133,9 @@ impl MediaFeature {
         Ok(MediaFeature::PrefersContrast(contrast))
       }
       "prefers-reduced-transparency" => {
-        // Like prefers-reduced-motion, browsers accept a value-less boolean form that maps to
-        // `reduce`.
         let transparency = match value {
-          Some(value) => ReducedTransparency::parse(value)?,
           None => ReducedTransparency::Reduce,
+          Some(v) => ReducedTransparency::parse(v)?,
         };
         Ok(MediaFeature::PrefersReducedTransparency(transparency))
       }
@@ -1098,8 +1143,8 @@ impl MediaFeature {
         // Like prefers-reduced-motion, browsers accept a value-less boolean form that maps to
         // `reduce`.
         let data = match value {
-          Some(value) => ReducedData::parse(value)?,
           None => ReducedData::Reduce,
+          Some(v) => ReducedData::parse(v)?,
         };
         Ok(MediaFeature::PrefersReducedData(data))
       }
@@ -1122,16 +1167,61 @@ impl MediaFeature {
         Ok(MediaFeature::InvertedColors(inverted))
       }
 
-      _ => Err(MediaParseError::UnknownFeature(name.as_ref().to_string())),
+      _ => Ok(MediaFeature::Unknown {
+        name: name.as_ref().to_string(),
+        value: value
+          .map(str::trim)
+          .filter(|v| !v.is_empty())
+          .map(|v| v.to_string()),
+      }),
     }
   }
 
   fn parse_length_value(name: &str, value: Option<&str>) -> Result<Length, MediaParseError> {
     let value = value.ok_or_else(|| MediaParseError::MissingValue(name.to_string()))?;
-    parse_length(value).ok_or_else(|| MediaParseError::InvalidValue {
-      feature: name.to_string(),
-      value: value.to_string(),
-    })
+    let value = value.trim();
+    let length =
+      crate::css::properties::parse_length(value).ok_or_else(|| MediaParseError::InvalidValue {
+        feature: name.to_string(),
+        value: value.to_string(),
+      })?;
+
+    use crate::style::values::LengthUnit;
+    if !length.value.is_finite() {
+      return Err(MediaParseError::InvalidValue {
+        feature: name.to_string(),
+        value: value.to_string(),
+      });
+    }
+
+    // MQ length values must be non-negative.
+    if !matches!(length.unit, LengthUnit::Calc) && length.value < 0.0 {
+      return Err(MediaParseError::InvalidValue {
+        feature: name.to_string(),
+        value: value.to_string(),
+      });
+    }
+
+    // Percentages are not valid for MQ <length> values, but allow percentages inside calc().
+    if matches!(length.unit, LengthUnit::Percent) {
+      return Err(MediaParseError::InvalidValue {
+        feature: name.to_string(),
+        value: value.to_string(),
+      });
+    }
+
+    if let Some(calc) = length.calc {
+      if let Some(total) = calc.absolute_sum() {
+        if total < 0.0 {
+          return Err(MediaParseError::InvalidValue {
+            feature: name.to_string(),
+            value: value.to_string(),
+          });
+        }
+      }
+    }
+
+    Ok(length)
   }
 
   fn parse_ratio_value(name: &str, value: Option<&str>) -> Result<(u32, u32), MediaParseError> {
@@ -1195,6 +1285,30 @@ impl MediaFeature {
       feature: name.to_string(),
       value: value.to_string(),
     })
+  }
+
+  fn parse_resolution_value_allow_unitless_dppx(
+    name: &str,
+    value: Option<&str>,
+  ) -> Result<Resolution, MediaParseError> {
+    let value = value.ok_or_else(|| MediaParseError::MissingValue(name.to_string()))?;
+    let value = value.trim();
+    if let Ok(res) = Resolution::parse(value) {
+      return Ok(res);
+    }
+    let ratio = value
+      .parse::<f32>()
+      .map_err(|_| MediaParseError::InvalidValue {
+        feature: name.to_string(),
+        value: value.to_string(),
+      })?;
+    if !ratio.is_finite() || ratio < 0.0 {
+      return Err(MediaParseError::InvalidValue {
+        feature: name.to_string(),
+        value: value.to_string(),
+      });
+    }
+    Ok(Resolution::dppx(ratio))
   }
 
   fn parse_integer_value(name: &str, value: Option<&str>) -> Result<u32, MediaParseError> {
@@ -1984,7 +2098,7 @@ impl MediaContext {
       update_frequency: UpdateFrequency::Fast,
       light_level: LightLevel::Normal,
       display_mode: DisplayMode::Browser,
-      prefers_color_scheme: Some(ColorScheme::NoPreference),
+      prefers_color_scheme: Some(ColorScheme::Light),
       prefers_reduced_motion: false,
       prefers_contrast: ContrastPreference::NoPreference,
       prefers_reduced_transparency: false,
@@ -2195,7 +2309,7 @@ impl MediaContext {
       update_frequency: UpdateFrequency::Fast,
       light_level: LightLevel::Normal,
       display_mode: DisplayMode::Browser,
-      prefers_color_scheme: Some(ColorScheme::NoPreference),
+      prefers_color_scheme: Some(ColorScheme::Light),
       prefers_reduced_motion: false,
       prefers_contrast: ContrastPreference::NoPreference,
       prefers_reduced_transparency: false,
@@ -2655,6 +2769,10 @@ impl MediaContext {
         }
         _ => false,
       },
+      MediaFeature::Not(inner) => !self.evaluate_feature(inner.as_ref()),
+      MediaFeature::And(list) => list.iter().all(|f| self.evaluate_feature(f)),
+      MediaFeature::Or(list) => list.iter().any(|f| self.evaluate_feature(f)),
+      MediaFeature::Unknown { .. } => false,
     }
   }
 
@@ -2786,30 +2904,38 @@ struct MediaQueryParser<'a> {
   pos: usize,
 }
 
-#[derive(Debug)]
-enum RangeParseOutput {
-  One(MediaFeature),
-  Two(MediaFeature, MediaFeature),
-}
-
 impl<'a> MediaQueryParser<'a> {
   fn new(input: &'a str) -> Self {
     Self { input, pos: 0 }
   }
 
   fn parse_query_list(&mut self) -> Result<Vec<MediaQuery>, MediaParseError> {
+    // Split on top-level commas. Commas inside parens (e.g., `min()`/`clamp()`) are part of the
+    // value and must not terminate a query.
     let mut queries = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (idx, ch) in self.input.char_indices() {
+      match ch {
+        '(' => depth = depth.saturating_add(1),
+        ')' => depth = depth.saturating_sub(1),
+        ',' if depth == 0 => {
+          let slice = self.input[start..idx].trim();
+          if !slice.is_empty() {
+            if let Ok(query) = MediaQueryParser::new(slice).parse_query() {
+              queries.push(query);
+            }
+          }
+          start = idx + ch.len_utf8();
+        }
+        _ => {}
+      }
+    }
 
-    loop {
-      self.skip_whitespace();
-      let query = self.parse_query()?;
-      queries.push(query);
-
-      self.skip_whitespace();
-      if self.peek() == Some(',') {
-        self.advance();
-      } else {
-        break;
+    let tail = self.input[start..].trim();
+    if !tail.is_empty() {
+      if let Ok(query) = MediaQueryParser::new(tail).parse_query() {
+        queries.push(query);
       }
     }
 
@@ -2823,20 +2949,14 @@ impl<'a> MediaQueryParser<'a> {
     let mut media_type = None;
     let mut features = Vec::new();
 
-    // Check for 'not' or 'only'
-    if let Some(ident) = self.peek_ident() {
-      if ident.eq_ignore_ascii_case("not") {
-        self.pos += ident.len();
-        modifier = Some(MediaModifier::Not);
-        self.skip_whitespace();
-      } else if ident.eq_ignore_ascii_case("only") {
-        self.pos += ident.len();
-        modifier = Some(MediaModifier::Only);
-        self.skip_whitespace();
-      }
+    if self.consume_ident_matching("not") {
+      modifier = Some(MediaModifier::Not);
+      self.skip_whitespace();
+    } else if self.consume_ident_matching("only") {
+      modifier = Some(MediaModifier::Only);
+      self.skip_whitespace();
     }
 
-    // Check for media type
     if let Some(ident) = self.peek_ident() {
       if let Ok(mt) = MediaType::parse(ident) {
         self.pos += ident.len();
@@ -2845,30 +2965,29 @@ impl<'a> MediaQueryParser<'a> {
       }
     }
 
-    // Parse media features
-    loop {
-      self.skip_whitespace();
+    if !self.is_eof() {
+      // MQ4 allows either a media type (optionally followed by `and <condition>`) or a plain
+      // `<media-condition>`. Be permissive and accept an omitted `and`.
+      if media_type.is_some() {
+        let _ = self.consume_ident_matching("and");
+        self.skip_whitespace();
+      }
 
-      // Check for 'and'
-      if media_type.is_some() || !features.is_empty() {
-        if let Some(ident) = self.peek_ident() {
-          if ident.eq_ignore_ascii_case("and") {
-            self.pos += ident.len();
-            self.skip_whitespace();
-          } else {
-            break;
-          }
-        } else if self.peek() != Some('(') {
-          break;
+      if !self.is_eof() {
+        let condition = self.parse_condition()?;
+        match condition {
+          MediaFeature::And(list) => features.extend(list),
+          other => features.push(other),
         }
       }
+    }
 
-      // Parse feature: (name: value) or (range syntax) or (name)
-      if self.peek() == Some('(') {
-        self.parse_feature(&mut features)?;
-      } else {
-        break;
-      }
+    self.skip_whitespace();
+    if !self.is_eof() {
+      return Err(MediaParseError::InvalidValue {
+        feature: "media query".to_string(),
+        value: self.input[self.pos..].trim().to_string(),
+      });
     }
 
     // At least one of media_type or features must be present
@@ -2883,195 +3002,207 @@ impl<'a> MediaQueryParser<'a> {
     })
   }
 
-  fn parse_feature(&mut self, features: &mut Vec<MediaFeature>) -> Result<(), MediaParseError> {
-    // Consume '('
+  fn parse_condition(&mut self) -> Result<MediaFeature, MediaParseError> {
+    self.parse_disjunction()
+  }
+
+  fn parse_disjunction(&mut self) -> Result<MediaFeature, MediaParseError> {
+    let mut parts = vec![self.parse_conjunction()?];
+    loop {
+      self.skip_whitespace();
+      if self.consume_ident_matching("or") {
+        self.skip_whitespace();
+        parts.push(self.parse_conjunction()?);
+      } else {
+        break;
+      }
+    }
+    if parts.len() == 1 {
+      Ok(parts.pop().unwrap())
+    } else {
+      Ok(MediaFeature::Or(parts))
+    }
+  }
+
+  fn parse_conjunction(&mut self) -> Result<MediaFeature, MediaParseError> {
+    let mut parts = vec![self.parse_negation()?];
+    loop {
+      self.skip_whitespace();
+      if self.consume_ident_matching("and") {
+        self.skip_whitespace();
+        parts.push(self.parse_negation()?);
+      } else {
+        break;
+      }
+    }
+    if parts.len() == 1 {
+      Ok(parts.pop().unwrap())
+    } else {
+      Ok(MediaFeature::And(parts))
+    }
+  }
+
+  fn parse_negation(&mut self) -> Result<MediaFeature, MediaParseError> {
+    self.skip_whitespace();
+    if self.consume_ident_matching("not") {
+      self.skip_whitespace();
+      let inner = self.parse_negation()?;
+      Ok(MediaFeature::Not(Box::new(inner)))
+    } else {
+      self.parse_primary()
+    }
+  }
+
+  fn parse_primary(&mut self) -> Result<MediaFeature, MediaParseError> {
+    self.skip_whitespace();
     if self.peek() != Some('(') {
       return Err(MediaParseError::ExpectedOpenParen);
     }
-    self.advance();
-    self.skip_whitespace();
-
-    // Look ahead to the matching ')' so we can (1) attempt level-4 range syntax without consuming
-    // input and (2) avoid re-scanning the same slice again when grabbing the value.
-    //
-    // Note: Media feature values can include functions like `calc()` which contain their own
-    // parentheses, so we must find the matching close paren for this feature instead of the first
-    // ')' byte.
-    let feature_end = self.find_matching_close_paren();
-    if let Some(feature_end) = feature_end {
-      let inner = &self.input[self.pos..feature_end];
-      let has_range_op = inner
-        .as_bytes()
-        .iter()
-        .any(|b| matches!(b, b'<' | b'>' | b'='));
-      if has_range_op {
-        if let Some(result) = Self::parse_range_feature_expr(inner.trim()) {
-          self.pos = feature_end;
-          if self.peek() != Some(')') {
-            return Err(MediaParseError::ExpectedCloseParen);
-          }
-          self.advance();
-          match result? {
-            RangeParseOutput::One(feature) => features.push(feature),
-            RangeParseOutput::Two(first, second) => {
-              features.push(first);
-              features.push(second);
-            }
-          }
-          return Ok(());
-        }
-      }
-    }
-
-    // Parse feature name
-    let name = self
-      .parse_ident()
-      .ok_or(MediaParseError::ExpectedFeatureName)?;
-    self.skip_whitespace();
-
-    // Check if there's a value
-    let value = if self.peek() == Some(':') {
-      self.advance();
-      self.skip_whitespace();
-
-      // Parse value until ')'
-      let value_start = self.pos;
-      if let Some(end) = feature_end {
-        self.pos = end;
-      } else {
-        // Malformed input: there is no ')' to terminate this feature. Avoid a linear scan and let
-        // the close-paren check below report the error.
-        self.pos = self.input.len();
-      }
-      let value = self.input[value_start..self.pos].trim();
-      Some(value)
-    } else {
-      None
-    };
-
-    self.skip_whitespace();
-
-    // Consume ')'
-    if self.peek() != Some(')') {
-      return Err(MediaParseError::ExpectedCloseParen);
-    }
-    self.advance();
-
-    let feature = MediaFeature::parse(name, value)?;
-    features.push(feature);
-    Ok(())
+    self.parse_in_parens()
   }
 
-  fn parse_range_feature_expr(input: &str) -> Option<Result<RangeParseOutput, MediaParseError>> {
-    #[derive(Debug)]
-    enum RangeToken<'i> {
-      Atom(&'i str),
-      Op(ComparisonOp),
+  fn parse_in_parens(&mut self) -> Result<MediaFeature, MediaParseError> {
+    let inner = self.consume_parenthesis_block()?;
+    let inner = inner.trim();
+    if inner.is_empty() {
+      return Ok(MediaFeature::Unknown {
+        name: String::new(),
+        value: None,
+      });
     }
 
-    let mut tokens = Vec::new();
-    let mut atom_start: Option<usize> = None;
-    let mut paren_depth: u32 = 0;
-    let mut bracket_depth: u32 = 0;
-    let mut brace_depth: u32 = 0;
+    let starts_with_not = inner
+      .get(..3)
+      .is_some_and(|prefix| prefix.eq_ignore_ascii_case("not"))
+      && inner
+        .as_bytes()
+        .get(3)
+        .map(|b| b.is_ascii_whitespace() || *b == b'(')
+        .unwrap_or(true);
 
+    if inner.starts_with('(') || starts_with_not {
+      if let Ok(expr) = MediaQueryParser::new(inner).parse_condition_entire() {
+        return Ok(expr);
+      }
+    }
+
+    match Self::parse_media_feature_expr(inner) {
+      Ok(feature) => Ok(feature),
+      Err(err) => {
+        // If feature parsing fails, try interpreting as a nested condition before giving up.
+        if let Ok(expr) = MediaQueryParser::new(inner).parse_condition_entire() {
+          Ok(expr)
+        } else {
+          Err(err)
+        }
+      }
+    }
+  }
+
+  fn parse_condition_entire(&mut self) -> Result<MediaFeature, MediaParseError> {
+    let expr = self.parse_condition()?;
+    self.skip_whitespace();
+    if self.is_eof() {
+      Ok(expr)
+    } else {
+      Err(MediaParseError::InvalidValue {
+        feature: "media condition".to_string(),
+        value: self.input[self.pos..].trim().to_string(),
+      })
+    }
+  }
+
+  fn parse_media_feature_expr(input: &str) -> Result<MediaFeature, MediaParseError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+      return Ok(MediaFeature::Unknown {
+        name: String::new(),
+        value: None,
+      });
+    }
+
+    if let Some((name, value)) = split_top_level_once(trimmed, ':') {
+      return MediaFeature::parse(name, Some(value.trim()));
+    }
+
+    if let Some(result) = Self::parse_range_feature_expr(trimmed) {
+      return result;
+    }
+
+    let mut parser = MediaQueryParser::new(trimmed);
+    parser.skip_whitespace();
+    let Some(name) = parser.parse_ident() else {
+      return Ok(MediaFeature::Unknown {
+        name: trimmed.to_string(),
+        value: None,
+      });
+    };
+    parser.skip_whitespace();
+    if !parser.is_eof() {
+      return Ok(MediaFeature::Unknown {
+        name: trimmed.to_string(),
+        value: None,
+      });
+    }
+    MediaFeature::parse(name, None)
+  }
+
+  fn parse_range_feature_expr(input: &str) -> Option<Result<MediaFeature, MediaParseError>> {
+    let mut parts = Vec::new();
+    let mut ops = Vec::new();
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut last = 0usize;
     let mut chars = input.char_indices().peekable();
-    while let Some((idx, c)) = chars.next() {
-      let nested = paren_depth > 0 || bracket_depth > 0 || brace_depth > 0;
-      match c {
-        '(' => {
-          paren_depth = paren_depth.saturating_add(1);
-          if atom_start.is_none() {
-            atom_start = Some(idx);
-          }
-        }
-        ')' => {
-          paren_depth = paren_depth.saturating_sub(1);
-          if atom_start.is_none() {
-            atom_start = Some(idx);
-          }
-        }
-        '[' => {
-          bracket_depth = bracket_depth.saturating_add(1);
-          if atom_start.is_none() {
-            atom_start = Some(idx);
-          }
-        }
-        ']' => {
-          bracket_depth = bracket_depth.saturating_sub(1);
-          if atom_start.is_none() {
-            atom_start = Some(idx);
-          }
-        }
-        '{' => {
-          brace_depth = brace_depth.saturating_add(1);
-          if atom_start.is_none() {
-            atom_start = Some(idx);
-          }
-        }
-        '}' => {
-          brace_depth = brace_depth.saturating_sub(1);
-          if atom_start.is_none() {
-            atom_start = Some(idx);
-          }
-        }
-        '<' | '>' if !nested => {
-          if let Some(start) = atom_start.take() {
-            let atom = input[start..idx].trim();
-            if !atom.is_empty() {
-              tokens.push(RangeToken::Atom(atom));
+
+    while let Some((idx, ch)) = chars.next() {
+      match ch {
+        '(' => paren_depth = paren_depth.saturating_add(1),
+        ')' => paren_depth = paren_depth.saturating_sub(1),
+        '[' => bracket_depth = bracket_depth.saturating_add(1),
+        ']' => bracket_depth = bracket_depth.saturating_sub(1),
+        '{' => brace_depth = brace_depth.saturating_add(1),
+        '}' => brace_depth = brace_depth.saturating_sub(1),
+        '<' | '>' | '=' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+          parts.push(input[last..idx].trim());
+          let mut end = idx + ch.len_utf8();
+          let op = match ch {
+            '<' => {
+              if let Some((eq_idx, '=')) = chars.peek().copied() {
+                let _ = chars.next();
+                end = eq_idx + 1;
+                ComparisonOp::LessThanEqual
+              } else {
+                ComparisonOp::LessThan
+              }
             }
-          }
-          let op = if let Some((_, '=')) = chars.peek() {
-            let _ = chars.next();
-            if c == '<' {
-              ComparisonOp::LessThanEqual
-            } else {
-              ComparisonOp::GreaterThanEqual
+            '>' => {
+              if let Some((eq_idx, '=')) = chars.peek().copied() {
+                let _ = chars.next();
+                end = eq_idx + 1;
+                ComparisonOp::GreaterThanEqual
+              } else {
+                ComparisonOp::GreaterThan
+              }
             }
-          } else if c == '<' {
-            ComparisonOp::LessThan
-          } else {
-            ComparisonOp::GreaterThan
+            '=' => ComparisonOp::Equal,
+            _ => unreachable!(),
           };
-          tokens.push(RangeToken::Op(op));
+          ops.push(op);
+          last = end;
         }
-        '=' if !nested => {
-          if let Some(start) = atom_start.take() {
-            let atom = input[start..idx].trim();
-            if !atom.is_empty() {
-              tokens.push(RangeToken::Atom(atom));
-            }
-          }
-          tokens.push(RangeToken::Op(ComparisonOp::Equal));
-        }
-        other if other.is_whitespace() && !nested => {
-          if let Some(start) = atom_start.take() {
-            let atom = input[start..idx].trim();
-            if !atom.is_empty() {
-              tokens.push(RangeToken::Atom(atom));
-            }
-          }
-        }
-        _ => {
-          if atom_start.is_none() {
-            atom_start = Some(idx);
-          }
-        }
-      }
-    }
-    if let Some(start) = atom_start.take() {
-      let atom = input[start..].trim();
-      if !atom.is_empty() {
-        tokens.push(RangeToken::Atom(atom));
+        _ => {}
       }
     }
 
-    if !tokens.iter().any(|t| matches!(t, RangeToken::Op(_))) {
+    if ops.is_empty() {
       return None;
     }
 
-    let parse_feature_kind = |name: &str| -> Option<RangeFeature> {
+    parts.push(input[last..].trim());
+
+    fn parse_feature_kind(name: &str) -> Option<RangeFeature> {
       let name = ascii_lowercase_cow(name.trim());
       match name.as_ref() {
         "width" => Some(RangeFeature::Width),
@@ -3085,29 +3216,40 @@ impl<'a> MediaQueryParser<'a> {
         "resolution" => Some(RangeFeature::Resolution),
         _ => None,
       }
-    };
+    }
 
-    let parse_value = |feature: RangeFeature, raw: &str| -> Result<RangeValue, MediaParseError> {
-      match feature {
+    fn invert_op(op: ComparisonOp) -> ComparisonOp {
+      match op {
+        ComparisonOp::LessThan => ComparisonOp::GreaterThan,
+        ComparisonOp::LessThanEqual => ComparisonOp::GreaterThanEqual,
+        ComparisonOp::GreaterThan => ComparisonOp::LessThan,
+        ComparisonOp::GreaterThanEqual => ComparisonOp::LessThanEqual,
+        ComparisonOp::Equal => ComparisonOp::Equal,
+      }
+    }
+
+    fn build_feature(
+      feature: RangeFeature,
+      op: ComparisonOp,
+      raw: &str,
+    ) -> Result<MediaFeature, MediaParseError> {
+      let value = match feature {
         RangeFeature::Width
         | RangeFeature::InlineSize
         | RangeFeature::BlockSize
         | RangeFeature::Height
         | RangeFeature::DeviceWidth
         | RangeFeature::DeviceHeight => {
-          let len = MediaFeature::parse_length_value(
-            match feature {
-              RangeFeature::Width => "width",
-              RangeFeature::InlineSize => "inline-size",
-              RangeFeature::BlockSize => "block-size",
-              RangeFeature::Height => "height",
-              RangeFeature::DeviceWidth => "device-width",
-              RangeFeature::DeviceHeight => "device-height",
-              _ => unreachable!(),
-            },
-            Some(raw),
-          )?;
-          Ok(RangeValue::Length(len))
+          let feature_name = match feature {
+            RangeFeature::Width => "width",
+            RangeFeature::InlineSize => "inline-size",
+            RangeFeature::BlockSize => "block-size",
+            RangeFeature::Height => "height",
+            RangeFeature::DeviceWidth => "device-width",
+            RangeFeature::DeviceHeight => "device-height",
+            _ => unreachable!(),
+          };
+          RangeValue::Length(MediaFeature::parse_length_value(feature_name, Some(raw))?)
         }
         RangeFeature::AspectRatio | RangeFeature::DeviceAspectRatio => {
           let feature_name = match feature {
@@ -3116,68 +3258,64 @@ impl<'a> MediaQueryParser<'a> {
             _ => unreachable!(),
           };
           let (w, h) = MediaFeature::parse_ratio_value(feature_name, Some(raw))?;
-          Ok(RangeValue::AspectRatio(w, h))
+          RangeValue::AspectRatio(w, h)
         }
-        RangeFeature::Resolution => {
-          let res = MediaFeature::parse_resolution_value("resolution", Some(raw))?;
-          Ok(RangeValue::Resolution(res))
-        }
-      }
-    };
-
-    let build_feature = |feature: RangeFeature,
-                         op: ComparisonOp,
-                         raw: &str|
-     -> Result<MediaFeature, MediaParseError> {
-      let value = parse_value(feature, raw)?;
+        RangeFeature::Resolution => RangeValue::Resolution(MediaFeature::parse_resolution_value(
+          "resolution",
+          Some(raw),
+        )?),
+      };
       Ok(MediaFeature::Range { feature, op, value })
-    };
+    }
 
-    let invert_op = |op: ComparisonOp| match op {
-      ComparisonOp::LessThan => ComparisonOp::GreaterThan,
-      ComparisonOp::LessThanEqual => ComparisonOp::GreaterThanEqual,
-      ComparisonOp::GreaterThan => ComparisonOp::LessThan,
-      ComparisonOp::GreaterThanEqual => ComparisonOp::LessThanEqual,
-      ComparisonOp::Equal => ComparisonOp::Equal,
-    };
-
-    match tokens.as_slice() {
-      [RangeToken::Atom(a), RangeToken::Op(op), RangeToken::Atom(b)] => {
-        // Either `feature <value` or `<value> < feature`
+    Some(match (parts.as_slice(), ops.as_slice()) {
+      ([a, b], [op]) => {
+        if a.is_empty() || b.is_empty() {
+          return Some(Err(MediaParseError::InvalidValue {
+            feature: "range".to_string(),
+            value: input.to_string(),
+          }));
+        }
         if let Some(feature) = parse_feature_kind(a) {
-          Some(build_feature(feature, *op, b).map(RangeParseOutput::One))
+          build_feature(feature, *op, b)
         } else if let Some(feature) = parse_feature_kind(b) {
-          let flipped = invert_op(*op);
-          Some(build_feature(feature, flipped, a).map(RangeParseOutput::One))
+          build_feature(feature, invert_op(*op), a)
         } else {
-          Some(Err(MediaParseError::InvalidValue {
+          Err(MediaParseError::InvalidValue {
             feature: "range".to_string(),
             value: input.to_string(),
-          }))
+          })
         }
       }
-      [RangeToken::Atom(a), RangeToken::Op(op1), RangeToken::Atom(center), RangeToken::Op(op2), RangeToken::Atom(b)] => {
+      ([a, center, b], [op1, op2]) => {
+        if a.is_empty() || center.is_empty() || b.is_empty() {
+          return Some(Err(MediaParseError::InvalidValue {
+            feature: "range".to_string(),
+            value: input.to_string(),
+          }));
+        }
         if let Some(feature) = parse_feature_kind(center) {
-          let left_op = invert_op(*op1);
-          let first = build_feature(feature, left_op, a);
-          let second = build_feature(feature, *op2, b);
-          match (first, second) {
-            (Ok(f1), Ok(f2)) => Some(Ok(RangeParseOutput::Two(f1, f2))),
-            (Err(e), _) => Some(Err(e)),
-            (_, Err(e)) => Some(Err(e)),
-          }
+          let first = match build_feature(feature, invert_op(*op1), a) {
+            Ok(value) => value,
+            Err(err) => return Some(Err(err)),
+          };
+          let second = match build_feature(feature, *op2, b) {
+            Ok(value) => value,
+            Err(err) => return Some(Err(err)),
+          };
+          Ok(MediaFeature::And(vec![first, second]))
         } else {
-          Some(Err(MediaParseError::InvalidValue {
+          Err(MediaParseError::InvalidValue {
             feature: "range".to_string(),
             value: input.to_string(),
-          }))
+          })
         }
       }
-      _ => Some(Err(MediaParseError::InvalidValue {
+      _ => Err(MediaParseError::InvalidValue {
         feature: "range".to_string(),
         value: input.to_string(),
-      })),
-    }
+      }),
+    })
   }
 
   fn skip_whitespace(&mut self) {
@@ -3202,6 +3340,42 @@ impl<'a> MediaQueryParser<'a> {
 
   fn is_eof(&self) -> bool {
     self.pos >= self.input.len()
+  }
+
+  fn consume_ident_matching(&mut self, expected: &str) -> bool {
+    let Some(ident) = self.peek_ident() else {
+      return false;
+    };
+    if ident.eq_ignore_ascii_case(expected) {
+      self.pos += ident.len();
+      true
+    } else {
+      false
+    }
+  }
+
+  fn consume_parenthesis_block(&mut self) -> Result<&'a str, MediaParseError> {
+    if self.peek() != Some('(') {
+      return Err(MediaParseError::ExpectedOpenParen);
+    }
+    self.advance(); // '('
+    let start = self.pos;
+    let mut depth = 1usize;
+    for (offset, ch) in self.input[start..].char_indices() {
+      match ch {
+        '(' => depth = depth.saturating_add(1),
+        ')' => {
+          depth = depth.saturating_sub(1);
+          if depth == 0 {
+            let end = start + offset;
+            self.pos = end + ch.len_utf8();
+            return Ok(&self.input[start..end]);
+          }
+        }
+        _ => {}
+      }
+    }
+    Err(MediaParseError::ExpectedCloseParen)
   }
 
   fn peek_ident(&self) -> Option<&'a str> {
@@ -3231,23 +3405,23 @@ impl<'a> MediaQueryParser<'a> {
     self.pos += ident.len();
     Some(ident)
   }
+}
 
-  fn find_matching_close_paren(&self) -> Option<usize> {
-    let mut depth: u32 = 0;
-    for (offset, ch) in self.input[self.pos..].char_indices() {
-      match ch {
-        '(' => depth = depth.saturating_add(1),
-        ')' => {
-          if depth == 0 {
-            return Some(self.pos + offset);
-          }
-          depth = depth.saturating_sub(1);
-        }
-        _ => {}
+fn split_top_level_once<'a>(input: &'a str, needle: char) -> Option<(&'a str, &'a str)> {
+  let mut depth = 0usize;
+  for (idx, ch) in input.char_indices() {
+    match ch {
+      '(' => depth = depth.saturating_add(1),
+      ')' => depth = depth.saturating_sub(1),
+      _ if ch == needle && depth == 0 => {
+        let (left, right) = input.split_at(idx);
+        let right = &right[needle.len_utf8()..];
+        return Some((left.trim(), right));
       }
+      _ => {}
     }
-    None
   }
+  None
 }
 
 // ============================================================================
@@ -3466,29 +3640,6 @@ fn ascii_lowercase_cow(s: &str) -> Cow<'_, str> {
   } else {
     Cow::Borrowed(s)
   }
-}
-
-/// Parse a CSS length value
-fn parse_length(s: &str) -> Option<Length> {
-  let length = crate::css::properties::parse_length(s)?;
-
-  // MQ4 size features use `<length>` values, which must not be percentages.
-  if length.unit.is_percentage() {
-    return None;
-  }
-  if let Some(calc) = length.calc {
-    if calc.has_percentage() {
-      return None;
-    }
-  }
-
-  // Negative `<length>` values are invalid in media queries (even though they're accepted in
-  // general CSS property contexts).
-  if !length.value.is_finite() || length.value < 0.0 {
-    return None;
-  }
-
-  Some(length)
 }
 
 #[cfg(test)]
@@ -3874,45 +4025,6 @@ mod tests {
     );
   }
 
-  #[test]
-  fn media_query_parses_calc_length_values() {
-    MediaQuery::parse("(max-width: calc(768px - 1px))").expect("parse calc() length");
-  }
-
-  #[test]
-  fn media_query_parses_range_syntax_calc_with_whitespace() {
-    let query = MediaQuery::parse("(width >= calc(1rem * 2 + (14rem + 2rem) * 2 + 31rem))")
-      .expect("parse range syntax with calc");
-    assert!(
-      matches!(
-        query.features.as_slice(),
-        [MediaFeature::Range {
-          feature: RangeFeature::Width,
-          op: ComparisonOp::GreaterThanEqual,
-          value: RangeValue::Length(_),
-        }]
-      ),
-      "expected a single width range feature, got {query:?}"
-    );
-  }
-
-  #[test]
-  fn media_query_parses_double_sided_range_with_calc_atoms() {
-    let query = MediaQuery::parse("(calc(400px + 1px) <= width <= calc(800px - 1px))")
-      .expect("parse double-sided range with calc atoms");
-    assert_eq!(query.features.len(), 2);
-  }
-
-  #[test]
-  fn media_query_rejects_percentage_lengths() {
-    assert!(MediaQuery::parse("(min-width: 10%)").is_err());
-  }
-
-  #[test]
-  fn media_query_rejects_calc_with_percentage_terms() {
-    assert!(MediaQuery::parse("(min-width: calc(10% + 1px))").is_err());
-  }
-
   // ============================================================================
   // MediaContext Evaluation Tests
   // ============================================================================
@@ -3937,20 +4049,6 @@ mod tests {
 
     let query = MediaQuery::parse("(max-width: 800px)").unwrap();
     assert!(!ctx.evaluate(&query));
-  }
-
-  #[test]
-  fn evaluate_max_width_calc_length() {
-    let query = MediaQuery::parse("(max-width: calc(768px - 1px))").unwrap();
-    assert!(MediaContext::screen(767.0, 100.0).evaluate(&query));
-    assert!(!MediaContext::screen(768.0, 100.0).evaluate(&query));
-  }
-
-  #[test]
-  fn evaluate_range_syntax_calc_length() {
-    let query = MediaQuery::parse("(width >= calc(1rem * 2))").unwrap();
-    assert!(MediaContext::screen(32.0, 100.0).evaluate(&query));
-    assert!(!MediaContext::screen(31.0, 100.0).evaluate(&query));
   }
 
   #[test]
@@ -4024,6 +4122,83 @@ mod tests {
     // Neither matches
     let queries = MediaQuery::parse_list("(min-width: 1200px), (max-width: 400px)").unwrap();
     assert!(!ctx.evaluate_list(&queries));
+  }
+
+  #[test]
+  fn mq4_or_grouping_with_vendor_dpr_matches() {
+    // Mirrors fortune.com patterns: `((dpr:1.875) or (dpr:2.125)) and (min-width:48rem)`.
+    let query = MediaQuery::parse(
+      "((-webkit-device-pixel-ratio: 1.875) or (-webkit-device-pixel-ratio: 2.125)) and (min-width: 48rem)",
+    )
+    .unwrap();
+
+    let ctx_1875 = MediaContext::screen(800.0, 600.0).with_dpr(1.875);
+    assert!(ctx_1875.evaluate(&query));
+
+    let ctx_2125 = MediaContext::screen(800.0, 600.0).with_dpr(2.125);
+    assert!(ctx_2125.evaluate(&query));
+
+    let ctx_miss = MediaContext::screen(800.0, 600.0).with_dpr(2.0);
+    assert!(!ctx_miss.evaluate(&query));
+  }
+
+  #[test]
+  fn vendor_dpr_query_list_parses_and_matches() {
+    // Mirrors linkedin.com vendor-prefixed DPR fallbacks.
+    let list = "only screen and (-webkit-min-device-pixel-ratio: 1.25),\
+                only screen and (min--moz-device-pixel-ratio: 1.25),\
+                only screen and (min-device-pixel-ratio: 1.25),\
+                only screen and (min-resolution: 200dpi),\
+                only screen and (min-resolution: 1.25dppx)";
+    let queries = MediaQuery::parse_list(list).unwrap();
+    assert_eq!(queries.len(), 5);
+
+    let ctx_match = MediaContext::screen(800.0, 600.0).with_dpr(1.25);
+    assert!(ctx_match.evaluate_list(&queries));
+
+    let ctx_miss = MediaContext::screen(800.0, 600.0).with_dpr(1.0);
+    assert!(!ctx_miss.evaluate_list(&queries));
+  }
+
+  #[test]
+  fn mq4_range_syntax_with_calc_parses_and_evaluates() {
+    // Mirrors MDN fixture patterns with nested `calc(...)` and heavy whitespace.
+    let query_ge =
+      MediaQuery::parse("(width >= calc(1rem * 2 + (14rem + 2rem) * 2 + 31rem))").unwrap();
+    let query_lt =
+      MediaQuery::parse("(width < calc(1rem * 2 + (14rem + 2rem) * 2 + 31rem))").unwrap();
+
+    // `calc(1rem*2 + (14rem + 2rem)*2 + 31rem)` = 65rem = 1040px @ 16px base font.
+    let wide = MediaContext::screen(1100.0, 800.0);
+    assert!(wide.evaluate(&query_ge));
+    assert!(!wide.evaluate(&query_lt));
+
+    let narrow = MediaContext::screen(1000.0, 800.0);
+    assert!(!narrow.evaluate(&query_ge));
+    assert!(narrow.evaluate(&query_lt));
+  }
+
+  #[test]
+  fn prefers_reduced_motion_boolean_syntax() {
+    let query = MediaQuery::parse("(prefers-reduced-motion)").unwrap();
+    let default_ctx = MediaContext::screen(800.0, 600.0);
+    assert!(!default_ctx.evaluate(&query));
+
+    let reduced = default_ctx.clone().with_reduced_motion(true);
+    assert!(reduced.evaluate(&query));
+
+    let transparency = MediaQuery::parse("(prefers-reduced-transparency)").unwrap();
+    assert!(!default_ctx.evaluate(&transparency));
+    let reduced_transparency = default_ctx.clone().with_reduced_transparency(true);
+    assert!(reduced_transparency.evaluate(&transparency));
+  }
+
+  #[test]
+  fn max_width_calc_parses_without_truncating() {
+    // Mirrors newyorker.com fixture patterns: `max-width:calc(1024px - 1px)`.
+    let query = MediaQuery::parse("(max-width:calc(1024px - 1px))").unwrap();
+    assert!(MediaContext::screen(1023.0, 800.0).evaluate(&query));
+    assert!(!MediaContext::screen(1024.0, 800.0).evaluate(&query));
   }
 
   #[test]
@@ -4122,7 +4297,9 @@ mod tests {
   fn test_evaluate_prefers_color_scheme() {
     let dark_ctx = MediaContext::screen(1024.0, 768.0).with_color_scheme(ColorScheme::Dark);
     let light_ctx = MediaContext::screen(1024.0, 768.0).with_color_scheme(ColorScheme::Light);
-    let no_pref_ctx = MediaContext::screen(1024.0, 768.0);
+    let default_ctx = MediaContext::screen(1024.0, 768.0);
+    let no_pref_ctx =
+      MediaContext::screen(1024.0, 768.0).with_color_scheme(ColorScheme::NoPreference);
 
     let dark_query = MediaQuery::parse("(prefers-color-scheme: dark)").unwrap();
     let light_query = MediaQuery::parse("(prefers-color-scheme: light)").unwrap();
@@ -4135,6 +4312,11 @@ mod tests {
     assert!(light_ctx.evaluate(&light_query));
     assert!(!light_ctx.evaluate(&dark_query));
     assert!(!light_ctx.evaluate(&no_pref_query));
+
+    // Default context should match Chrome's baseline (light).
+    assert!(default_ctx.evaluate(&light_query));
+    assert!(!default_ctx.evaluate(&dark_query));
+    assert!(!default_ctx.evaluate(&no_pref_query));
 
     assert!(no_pref_ctx.evaluate(&no_pref_query));
     assert!(!no_pref_ctx.evaluate(&dark_query));
@@ -4150,28 +4332,6 @@ mod tests {
 
     let query = MediaQuery::parse("(prefers-reduced-motion: no-preference)").unwrap();
     assert!(!ctx.evaluate(&query));
-  }
-
-  #[test]
-  fn test_evaluate_prefers_reduced_motion_boolean() {
-    let query = MediaQuery::parse("(prefers-reduced-motion)").unwrap();
-
-    let reduced = MediaContext::screen(1024.0, 768.0).with_reduced_motion(true);
-    assert!(reduced.evaluate(&query));
-
-    let no_preference = MediaContext::screen(1024.0, 768.0);
-    assert!(!no_preference.evaluate(&query));
-  }
-
-  #[test]
-  fn test_evaluate_not_prefers_reduced_motion_boolean() {
-    let query = MediaQuery::parse("not (prefers-reduced-motion)").unwrap();
-
-    let reduced = MediaContext::screen(1024.0, 768.0).with_reduced_motion(true);
-    assert!(!reduced.evaluate(&query));
-
-    let no_preference = MediaContext::screen(1024.0, 768.0);
-    assert!(no_preference.evaluate(&query));
   }
 
   #[test]
@@ -4521,8 +4681,13 @@ mod tests {
     let err = MediaType::parse("invalid").unwrap_err();
     assert!(err.to_string().contains("Invalid media type"));
 
-    let err = MediaQuery::parse("(unknown-feature: value)").unwrap_err();
-    assert!(err.to_string().contains("Unknown media feature"));
+    // Unknown features should parse (forward-compatible) and evaluate to false.
+    let query = MediaQuery::parse("(unknown-feature: value)").unwrap();
+    assert!(matches!(
+      query.features.as_slice(),
+      [MediaFeature::Unknown { .. }]
+    ));
+    assert!(!MediaContext::default().evaluate(&query));
 
     let err = MediaQuery::parse("(min-width)").unwrap_err();
     assert!(err.to_string().contains("Missing value"));
@@ -4562,5 +4727,6 @@ mod tests {
     assert_eq!(ctx.viewport_width, 1024.0);
     assert_eq!(ctx.viewport_height, 768.0);
     assert_eq!(ctx.media_type, MediaType::Screen);
+    assert_eq!(ctx.prefers_color_scheme, Some(ColorScheme::Light));
   }
 }
