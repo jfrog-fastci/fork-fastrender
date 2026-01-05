@@ -193,7 +193,8 @@ fn env_u8(name: &str) -> Option<u8> {
 
 fn env_bool(name: &str) -> bool {
   match env::var(name).ok().as_deref() {
-    Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("YES") => true,
+    Some("1") | Some("true") | Some("True") | Some("TRUE") | Some("yes") | Some("Yes")
+    | Some("YES") => true,
     _ => false,
   }
 }
@@ -279,6 +280,13 @@ fn compare_pixmaps(
   height: u32,
 ) {
   assert_eq!(resvg.len(), fast.len(), "pixmaps must be same byte length");
+  assert_eq!(
+    resvg.len(),
+    (width as usize)
+      .saturating_mul(height as usize)
+      .saturating_mul(4),
+    "pixmap byte length must match width*height*4"
+  );
 
   let mut max_delta = 0u8;
   let mut max_at = (0u32, 0u32, 'r', 0u8, 0u8);
