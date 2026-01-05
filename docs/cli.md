@@ -291,6 +291,11 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
 - Fonts: uses bundled fonts (`FontConfig::bundled_only`) so outputs are stable across machines.
 - Output: by default writes `<fixture>.png` into `target/fixture_renders/` (override with `--out-dir`), plus `<fixture>.log` and `_summary.log`.
 - Optional snapshot: `--write-snapshot` writes `<out-dir>/<fixture>/snapshot.json` and `<out-dir>/<fixture>/diagnostics.json` (for later `diff_snapshots`).
+- Optional determinism harness: `--repeat <N>` renders each fixture multiple times in-process and compares raw pixel output (`Pixmap::data()` bytes) to detect scheduling-dependent nondeterminism.
+  - Use `--shuffle` (and optionally `--seed`) to vary fixture ordering between repeats.
+  - Use `--fail-on-nondeterminism` to exit non-zero when any fixture produces multiple pixel variants.
+  - Use `--save-variants` to write each distinct variant under `<out-dir>/<fixture>/nondeterminism/<k>.png` plus `report.txt`.
+  - Use `--reset-paint-scratch` to clear thread-local paint/filter scratch buffers between repeats (useful to bisect scratch-reuse-related nondeterminism).
 - Core flags:
   - Selection: `--fixtures <csv>` (comma-separated stems).
   - Paths: `--fixtures-dir <dir>`, `--out-dir <dir>`.

@@ -109,6 +109,12 @@ cargo xtask fixture-chrome-diff
 # diffing the outputs (writes `target/fixture_determinism/report.html` by default):
 #   cargo xtask fixture-determinism --fixtures preserve_3d_stack --repeat 3
 #
+# For scheduling-dependent paint nondeterminism under parallel fixture jobs, use the in-process
+# repeat harness in `render_fixtures`:
+#   cargo run --release --bin render_fixtures -- \
+#     --fixtures preserve_3d_stack --jobs 8 \
+#     --repeat 10 --shuffle --fail-on-nondeterminism --save-variants
+#
 # Convenience wrapper for the same offline fixture loop (delegates to `cargo xtask fixture-chrome-diff` and inherits its defaults/validations):
 #   scripts/chrome_vs_fastrender_fixtures.sh
 #
