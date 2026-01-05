@@ -3045,15 +3045,27 @@ pub fn axis_scroll_state(
   content_width: f32,
   content_height: f32,
 ) -> (f32, f32, f32) {
+  let sanitize = |value: f32| -> f32 {
+    if value.is_finite() {
+      value.max(0.0)
+    } else {
+      0.0
+    }
+  };
+
   let horizontal = axis_is_horizontal(axis, writing_mode);
   if horizontal {
-    let unclamped = scroll_x.max(0.0);
-    let range = (content_width - view_width).max(unclamped);
-    (unclamped.min(range), range, view_width)
+    let view_width = sanitize(view_width);
+    let content_width = sanitize(content_width);
+    let range = (content_width - view_width).max(0.0);
+    let scroll_x = sanitize(scroll_x);
+    (scroll_x.min(range), range, view_width)
   } else {
-    let unclamped = scroll_y.max(0.0);
-    let range = (content_height - view_height).max(unclamped);
-    (unclamped.min(range), range, view_height)
+    let view_height = sanitize(view_height);
+    let content_height = sanitize(content_height);
+    let range = (content_height - view_height).max(0.0);
+    let scroll_y = sanitize(scroll_y);
+    (scroll_y.min(range), range, view_height)
   }
 }
 
@@ -4558,6 +4570,29 @@ mod tests {
       AnimationFillMode::Both,
     );
     assert!((opacity - 1.0).abs() < 1e-6, "opacity={opacity}");
+  }
+
+  #[test]
+  fn axis_scroll_state_does_not_extend_range_for_out_of_bounds_scroll_offsets() {
+    let (pos, range, view_size) = axis_scroll_state(
+      TimelineAxis::Block,
+      WritingMode::HorizontalTb,
+      0.0,
+      50.0,
+      100.0,
+      100.0,
+      100.0,
+      100.0,
+    );
+    assert!((range - 0.0).abs() < 1e-6, "range={range}");
+    assert!((pos - 0.0).abs() < 1e-6, "pos={pos}");
+    assert!((view_size - 100.0).abs() < 1e-6, "view_size={view_size}");
+
+    let timeline = ScrollTimeline::default();
+    assert_eq!(
+      scroll_timeline_progress(&timeline, pos, range, view_size, &AnimationRange::default()),
+      None
+    );
   }
 
   #[test]
