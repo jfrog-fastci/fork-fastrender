@@ -71,8 +71,8 @@ use crate::style::types::BoxSizing;
 use crate::style::types::Direction;
 use crate::style::types::GridAutoFlow;
 use crate::style::types::GridTrack;
-use crate::style::types::JustifyContent;
 use crate::style::types::IntrinsicSizeKeyword;
+use crate::style::types::JustifyContent;
 use crate::style::types::Overflow as CssOverflow;
 use crate::style::types::WritingMode;
 use crate::style::values::Length;
@@ -445,15 +445,36 @@ impl MeasureKey {
 }
 
 fn height_depends_on_available_height(style: &ComputedStyle) -> bool {
-  style.height.as_ref().is_some_and(Length::has_percentage)
+  let height_depends = style.height.as_ref().is_some_and(Length::has_percentage)
     || style
-      .min_height
-      .as_ref()
-      .is_some_and(Length::has_percentage)
+      .height_keyword
+      .is_some_and(|kw| matches!(kw, IntrinsicSizeKeyword::FitContent { .. }));
+  let min_depends = style
+    .min_height
+    .as_ref()
+    .is_some_and(Length::has_percentage)
     || style
-      .max_height
-      .as_ref()
-      .is_some_and(Length::has_percentage)
+      .min_height_keyword
+      .is_some_and(|kw| matches!(kw, IntrinsicSizeKeyword::FitContent { .. }));
+  let max_depends = style
+    .max_height
+    .as_ref()
+    .is_some_and(Length::has_percentage)
+    || style
+      .max_height_keyword
+      .is_some_and(|kw| matches!(kw, IntrinsicSizeKeyword::FitContent { .. }));
+
+  height_depends || min_depends || max_depends
+}
+
+#[inline]
+fn physical_width_is_auto(style: &ComputedStyle) -> bool {
+  style.width.is_none() && style.width_keyword.is_none()
+}
+
+#[inline]
+fn physical_height_is_auto(style: &ComputedStyle) -> bool {
+  style.height.is_none() && style.height_keyword.is_none()
 }
 
 fn node_or_in_flow_children_depend_on_available_height(node: &BoxNode) -> bool {
@@ -1212,8 +1233,11 @@ impl GridFormattingContext {
       let mut taffy_children = Vec::with_capacity(in_flow_children.len());
       for (child_style, child) in template.child_styles.iter().zip(in_flow_children.iter()) {
         check_layout_deadline(&mut deadline_counter)?;
+        let child = *child;
+        let mut resolved_style = child_style.0.clone();
+        self.apply_grid_intrinsic_size_keywords(child, false, &mut resolved_style)?;
         let node = taffy
-          .new_leaf_with_context(child_style.0.clone(), *child as *const BoxNode)
+          .new_leaf_with_context(resolved_style, child as *const BoxNode)
           .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
         taffy_children.push(node);
       }
@@ -1277,8 +1301,9 @@ impl GridFormattingContext {
     // scanning their children here; their full subtree will be laid out later when we re-run the
     // child formatting context with the definite sizes resolved by Taffy.
     if !is_grid_container && !is_root {
-      let taffy_style =
+      let mut taffy_style =
         self.convert_style(style, containing_grid, containing_grid_axis, false, false);
+      self.apply_grid_intrinsic_size_keywords(box_node, false, &mut taffy_style)?;
       return taffy
         .new_leaf_with_context(taffy_style, box_node as *const BoxNode)
         .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)));
@@ -1332,13 +1357,16 @@ impl GridFormattingContext {
     let simple_grid = include_children
       && is_root
       && self.is_simple_grid(style, &children_iter, deadline_counter)?;
-    let taffy_style = self.convert_style(
+    let mut taffy_style = self.convert_style(
       style,
       containing_grid,
       containing_grid_axis,
       simple_grid,
       include_children,
     );
+    if !is_root {
+      self.apply_grid_intrinsic_size_keywords(box_node, false, &mut taffy_style)?;
+    }
 
     let axis_style_for_children = if is_grid_container {
       GridAxisStyle::effective_for_grid_container(style, containing_grid_axis)
@@ -1438,31 +1466,45 @@ impl GridFormattingContext {
 
     // Size
     taffy_style.size = taffy::geometry::Size {
-      width: self.convert_opt_length_to_dimension_box_sizing(&style.width, style, Axis::Horizontal),
-      height: self.convert_opt_length_to_dimension_box_sizing(&style.height, style, Axis::Vertical),
+      width: self.convert_sizing_property_to_dimension_box_sizing(
+        &style.width,
+        &style.width_keyword,
+        style,
+        Axis::Horizontal,
+      ),
+      height: self.convert_sizing_property_to_dimension_box_sizing(
+        &style.height,
+        &style.height_keyword,
+        style,
+        Axis::Vertical,
+      ),
     };
 
     // Min/Max size
     taffy_style.min_size = taffy::geometry::Size {
-      width: self.convert_opt_length_to_dimension_box_sizing(
+      width: self.convert_sizing_property_to_dimension_box_sizing(
         &style.min_width,
+        &style.min_width_keyword,
         style,
         Axis::Horizontal,
       ),
-      height: self.convert_opt_length_to_dimension_box_sizing(
+      height: self.convert_sizing_property_to_dimension_box_sizing(
         &style.min_height,
+        &style.min_height_keyword,
         style,
         Axis::Vertical,
       ),
     };
     taffy_style.max_size = taffy::geometry::Size {
-      width: self.convert_opt_length_to_dimension_box_sizing(
+      width: self.convert_sizing_property_to_dimension_box_sizing(
         &style.max_width,
+        &style.max_width_keyword,
         style,
         Axis::Horizontal,
       ),
-      height: self.convert_opt_length_to_dimension_box_sizing(
+      height: self.convert_sizing_property_to_dimension_box_sizing(
         &style.max_height,
+        &style.max_height_keyword,
         style,
         Axis::Vertical,
       ),
@@ -1827,6 +1869,183 @@ impl GridFormattingContext {
     }
 
     taffy_style
+  }
+
+  fn convert_sizing_property_to_dimension_box_sizing(
+    &self,
+    length: &Option<Length>,
+    keyword: &Option<IntrinsicSizeKeyword>,
+    style: &ComputedStyle,
+    axis: Axis,
+  ) -> Dimension {
+    if length.is_some() {
+      return self.convert_opt_length_to_dimension_box_sizing(length, style, axis);
+    }
+    if keyword.is_some() {
+      // Intrinsic sizing keywords depend on the box's contents and/or available space. Represent
+      // them as `auto` in the cached template and resolve per box instance (or inside the measure
+      // callback for fit-content).
+      return Dimension::auto();
+    }
+    Dimension::auto()
+  }
+
+  /// Resolves intrinsic sizing keywords (`min-content` / `max-content`) for a specific grid item.
+  ///
+  /// These keyword values depend on the box's contents, so the resolution must happen per box
+  /// instance (both in the non-template path and when instantiating cached Taffy templates).
+  fn apply_grid_intrinsic_size_keywords(
+    &self,
+    box_node: &BoxNode,
+    is_root: bool,
+    taffy_style: &mut taffy::style::Style,
+  ) -> Result<(), LayoutError> {
+    if is_root {
+      return Ok(());
+    }
+
+    let style = box_node.style.as_ref();
+    let item_fc_type = box_node
+      .formatting_context()
+      .unwrap_or(FormattingContextType::Block);
+    let item_fc = self.factory.get(item_fc_type);
+    let box_id = box_node.id();
+    let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+
+    // When computing intrinsic sizes for an axis that is itself specified as an intrinsic keyword,
+    // clear that size property to avoid self-recursion.
+    let width_override = style.width_keyword.is_some().then(|| {
+      let mut override_style: ComputedStyle = (*box_node.style).clone();
+      override_style.width = None;
+      override_style.width_keyword = None;
+      Arc::new(override_style)
+    });
+    let height_override = style.height_keyword.is_some().then(|| {
+      let mut override_style: ComputedStyle = (*box_node.style).clone();
+      override_style.height = None;
+      override_style.height_keyword = None;
+      Arc::new(override_style)
+    });
+
+    let run_with_override = |override_style: Option<Arc<ComputedStyle>>,
+                             f: &dyn Fn(&BoxNode) -> Result<f32, LayoutError>|
+     -> Result<f32, LayoutError> {
+      if let Some(style_override) = override_style {
+        if box_id != 0 {
+          crate::layout::style_override::with_style_override(box_id, style_override, || f(box_node))
+        } else {
+          let mut cloned = box_node.clone();
+          cloned.style = style_override;
+          f(&cloned)
+        }
+      } else {
+        f(box_node)
+      }
+    };
+
+    let intrinsic_physical_width = |mode: IntrinsicSizingMode| -> Result<f32, LayoutError> {
+      if inline_is_horizontal {
+        run_with_override(width_override.clone(), &|node| {
+          item_fc.compute_intrinsic_inline_size(node, mode)
+        })
+      } else {
+        run_with_override(width_override.clone(), &|node| {
+          item_fc.compute_intrinsic_block_size(node, mode)
+        })
+      }
+    };
+
+    let intrinsic_physical_height = |mode: IntrinsicSizingMode| -> Result<f32, LayoutError> {
+      if inline_is_horizontal {
+        run_with_override(height_override.clone(), &|node| {
+          item_fc.compute_intrinsic_block_size(node, mode)
+        })
+      } else {
+        run_with_override(height_override.clone(), &|node| {
+          item_fc.compute_intrinsic_inline_size(node, mode)
+        })
+      }
+    };
+
+    let keyword_to_mode = |kw: IntrinsicSizeKeyword| match kw {
+      IntrinsicSizeKeyword::MinContent => Some(IntrinsicSizingMode::MinContent),
+      IntrinsicSizeKeyword::MaxContent => Some(IntrinsicSizingMode::MaxContent),
+      IntrinsicSizeKeyword::FitContent { .. } => None,
+    };
+
+    if let Some(mode) = style.width_keyword.and_then(keyword_to_mode) {
+      match intrinsic_physical_width(mode) {
+        Ok(border_box) => {
+          if border_box.is_finite() {
+            taffy_style.size.width = Dimension::length(border_box.max(0.0));
+          }
+        }
+        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+        Err(_) => {}
+      }
+    }
+
+    if let Some(mode) = style.height_keyword.and_then(keyword_to_mode) {
+      match intrinsic_physical_height(mode) {
+        Ok(border_box) => {
+          if border_box.is_finite() {
+            taffy_style.size.height = Dimension::length(border_box.max(0.0));
+          }
+        }
+        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+        Err(_) => {}
+      }
+    }
+
+    if let Some(mode) = style.min_width_keyword.and_then(keyword_to_mode) {
+      match intrinsic_physical_width(mode) {
+        Ok(border_box) => {
+          if border_box.is_finite() {
+            taffy_style.min_size.width = Dimension::length(border_box.max(0.0));
+          }
+        }
+        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+        Err(_) => {}
+      }
+    }
+
+    if let Some(mode) = style.min_height_keyword.and_then(keyword_to_mode) {
+      match intrinsic_physical_height(mode) {
+        Ok(border_box) => {
+          if border_box.is_finite() {
+            taffy_style.min_size.height = Dimension::length(border_box.max(0.0));
+          }
+        }
+        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+        Err(_) => {}
+      }
+    }
+
+    if let Some(mode) = style.max_width_keyword.and_then(keyword_to_mode) {
+      match intrinsic_physical_width(mode) {
+        Ok(border_box) => {
+          if border_box.is_finite() {
+            taffy_style.max_size.width = Dimension::length(border_box.max(0.0));
+          }
+        }
+        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+        Err(_) => {}
+      }
+    }
+
+    if let Some(mode) = style.max_height_keyword.and_then(keyword_to_mode) {
+      match intrinsic_physical_height(mode) {
+        Ok(border_box) => {
+          if border_box.is_finite() {
+            taffy_style.max_size.height = Dimension::length(border_box.max(0.0));
+          }
+        }
+        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+        Err(_) => {}
+      }
+    }
+
+    Ok(())
   }
 
   /// Converts Option<Length> to Taffy Dimension
@@ -4101,17 +4320,17 @@ impl GridFormattingContext {
           let Some(node_ptr) = node_context.as_ref().map(|p| **p) else {
             return taffy::geometry::Size::ZERO;
           };
-          let box_node = unsafe { &*node_ptr };
-          let mut available_space = available_space;
-          if known_dimensions.width.is_none()
-            && matches!(
-              available_space.width,
-              taffy::style::AvailableSpace::Definite(_)
-            )
-            && box_node.style.width.is_none()
-          {
-            available_space.width = taffy::style::AvailableSpace::MaxContent;
-          }
+           let box_node = unsafe { &*node_ptr };
+           let mut available_space = available_space;
+           if known_dimensions.width.is_none()
+             && matches!(
+               available_space.width,
+               taffy::style::AvailableSpace::Definite(_)
+             )
+            && physical_width_is_auto(box_node.style.as_ref())
+           {
+             available_space.width = taffy::style::AvailableSpace::MaxContent;
+           }
 
           let fc_type = box_node
             .formatting_context()
@@ -4141,45 +4360,97 @@ impl GridFormattingContext {
             return size;
           }
           let fc = factory.get(fc_type);
-          let mut intrinsic_width: Option<f32> = None;
-          if known_dimensions.width.is_none() {
-            intrinsic_width = match available_space.width {
-              taffy::style::AvailableSpace::MinContent => Some(
-                match fc.compute_intrinsic_inline_size(box_node, IntrinsicSizingMode::MinContent) {
-                  Ok(size) => size,
-                  Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
-                  Err(_) => 0.0,
-                },
-              ),
-              taffy::style::AvailableSpace::MaxContent => Some(
-                match fc.compute_intrinsic_inline_size(box_node, IntrinsicSizingMode::MaxContent) {
-                  Ok(size) => size,
-                  Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
-                  Err(_) => 0.0,
-                },
-              ),
-              _ => None,
+          let inline_is_horizontal =
+            crate::style::inline_axis_is_horizontal(box_node.style.writing_mode);
+          let intrinsic_physical_width =
+            |mode: IntrinsicSizingMode| -> Result<f32, LayoutError> {
+              if inline_is_horizontal {
+                fc.compute_intrinsic_inline_size(box_node, mode)
+              } else {
+                fc.compute_intrinsic_block_size(box_node, mode)
+              }
             };
-          }
+          let intrinsic_physical_height =
+            |mode: IntrinsicSizingMode| -> Result<f32, LayoutError> {
+              if inline_is_horizontal {
+                fc.compute_intrinsic_block_size(box_node, mode)
+              } else {
+                fc.compute_intrinsic_inline_size(box_node, mode)
+              }
+            };
 
-          if let Some(border_width) = intrinsic_width {
-            let percentage_base = match available_space.width {
-              taffy::style::AvailableSpace::Definite(w) => w,
-              _ => 0.0,
-            };
+           let mut intrinsic_width: Option<f32> = None;
+           if inline_is_horizontal && known_dimensions.width.is_none() {
+             intrinsic_width = match available_space.width {
+               taffy::style::AvailableSpace::MinContent => Some(match intrinsic_physical_width(
+                 IntrinsicSizingMode::MinContent,
+               ) {
+                 Ok(size) => size,
+                 Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                 Err(_) => 0.0,
+               }),
+               taffy::style::AvailableSpace::MaxContent => Some(match intrinsic_physical_width(
+                 IntrinsicSizingMode::MaxContent,
+               ) {
+                 Ok(size) => size,
+                 Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                 Err(_) => 0.0,
+               }),
+               _ => None,
+             };
+           }
+
+           let mut intrinsic_height: Option<f32> = None;
+           if !inline_is_horizontal && known_dimensions.height.is_none() {
+             intrinsic_height = match available_space.height {
+               taffy::style::AvailableSpace::MinContent => Some(match intrinsic_physical_height(
+                 IntrinsicSizingMode::MinContent,
+               ) {
+                 Ok(size) => size,
+                 Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                 Err(_) => 0.0,
+               }),
+               taffy::style::AvailableSpace::MaxContent => Some(match intrinsic_physical_height(
+                 IntrinsicSizingMode::MaxContent,
+               ) {
+                 Ok(size) => size,
+                 Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                 Err(_) => 0.0,
+               }),
+               _ => None,
+             };
+           }
+
+           if intrinsic_width.is_some() || intrinsic_height.is_some() {
+             let percentage_base = match available_space.width {
+               taffy::style::AvailableSpace::Definite(w) => w,
+               _ => 0.0,
+             };
             let (
               padding_left,
               padding_right,
-              _padding_top,
-              _padding_bottom,
+              padding_top,
+              padding_bottom,
               border_left,
               border_right,
-              _border_top,
-              _border_bottom,
+              border_top,
+              border_bottom,
             ) = this.resolved_padding_border_for_measure(&box_node.style, percentage_base);
-            let width =
-              (border_width - padding_left - padding_right - border_left - border_right).max(0.0);
-            let height = fallback_size(known_dimensions.height, available_space.height).max(0.0);
+
+             let width = intrinsic_width
+               .map(|border_width| {
+                 (border_width - padding_left - padding_right - border_left - border_right).max(0.0)
+               })
+               .unwrap_or_else(|| {
+                 fallback_size(known_dimensions.width, available_space.width).max(0.0)
+               });
+
+             let height = intrinsic_height
+               .map(|border_height| {
+                 (border_height - padding_top - padding_bottom - border_top - border_bottom).max(0.0)
+               })
+               .unwrap_or_else(|| fallback_size(known_dimensions.height, available_space.height).max(0.0));
+
             let size = taffy::geometry::Size { width, height };
             cache.insert(key, size);
             return size;
@@ -4227,7 +4498,13 @@ impl GridFormattingContext {
       .layout(root_id)
       .map_err(|e| LayoutError::MissingContext(format!("Taffy layout error: {:?}", e)))?;
 
-    let result = layout.size.width.max(0.0);
+    let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+    let result = if inline_is_horizontal {
+      layout.size.width
+    } else {
+      layout.size.height
+    }
+    .max(0.0);
     intrinsic_cache_store(box_node, mode, result);
     Ok(result)
   }
@@ -4325,28 +4602,250 @@ impl GridFormattingContext {
 
     let fc = factory.get(fc_type);
 
+    let inline_is_horizontal = crate::style::inline_axis_is_horizontal(box_node.style.writing_mode);
+    let intrinsic_physical_width = |mode: IntrinsicSizingMode| -> Result<f32, LayoutError> {
+      if inline_is_horizontal {
+        fc.compute_intrinsic_inline_size(box_node, mode)
+      } else {
+        fc.compute_intrinsic_block_size(box_node, mode)
+      }
+    };
+    let intrinsic_physical_height = |mode: IntrinsicSizingMode| -> Result<f32, LayoutError> {
+      if inline_is_horizontal {
+        fc.compute_intrinsic_block_size(box_node, mode)
+      } else {
+        fc.compute_intrinsic_inline_size(box_node, mode)
+      }
+    };
+
+    // Fit-content depends on the available space passed by Taffy. Resolve it here (per measure call)
+    // instead of during style conversion so cached templates remain valid.
+    let fit_width_limit = match (known_dimensions.width, box_node.style.width_keyword) {
+      (None, Some(IntrinsicSizeKeyword::FitContent { limit })) => Some(limit),
+      _ => None,
+    };
+    let fit_height_limit = match (known_dimensions.height, box_node.style.height_keyword) {
+      (None, Some(IntrinsicSizeKeyword::FitContent { limit })) => Some(limit),
+      _ => None,
+    };
+    let mut fit_border_box_width: Option<f32> = None;
+    let mut fit_border_box_height: Option<f32> = None;
+
+    if fit_width_limit.is_some() || fit_height_limit.is_some() {
+      fn run_with_override<T, F>(
+        box_node: &BoxNode,
+        override_style: Option<Arc<ComputedStyle>>,
+        f: F,
+      ) -> Result<T, LayoutError>
+      where
+        F: FnOnce(&BoxNode) -> Result<T, LayoutError>,
+      {
+        if let Some(style_override) = override_style {
+          if box_node.id() != 0 {
+            crate::layout::style_override::with_style_override(box_node.id(), style_override, || {
+              f(box_node)
+            })
+          } else {
+            let mut cloned = box_node.clone();
+            cloned.style = style_override;
+            f(&cloned)
+          }
+        } else {
+          f(box_node)
+        }
+      }
+
+      let percentage_base = match available_space.width {
+        taffy::style::AvailableSpace::Definite(w) => w,
+        _ => 0.0,
+      };
+      let (
+        padding_left,
+        padding_right,
+        padding_top,
+        padding_bottom,
+        border_left,
+        border_right,
+        border_top,
+        border_bottom,
+      ) = self.resolved_padding_border_for_measure(&box_node.style, percentage_base);
+      let fit_inset_w = padding_left + padding_right + border_left + border_right;
+      let fit_inset_h = padding_top + padding_bottom + border_top + border_bottom;
+
+      // Avoid self-recursion when computing intrinsic sizes for a fit-content axis by clearing the
+      // corresponding preferred size property before calling into intrinsic APIs.
+      let fit_width_override = fit_width_limit.is_some().then(|| {
+        let mut override_style: ComputedStyle = (*box_node.style).clone();
+        override_style.width = None;
+        override_style.width_keyword = None;
+        Arc::new(override_style)
+      });
+      let fit_height_override = fit_height_limit.is_some().then(|| {
+        let mut override_style: ComputedStyle = (*box_node.style).clone();
+        override_style.height = None;
+        override_style.height_keyword = None;
+        Arc::new(override_style)
+      });
+
+      let override_for_axis = |axis: Axis| match axis {
+        Axis::Horizontal => fit_width_override.clone(),
+        Axis::Vertical => fit_height_override.clone(),
+      };
+
+      let intrinsic_range_for_physical_axis = |axis: Axis| -> Result<(f32, f32), LayoutError> {
+        match axis {
+          Axis::Horizontal => {
+            if inline_is_horizontal {
+              run_with_override(box_node, override_for_axis(axis), |node| {
+                fc.compute_intrinsic_inline_sizes(node)
+              })
+            } else {
+              let min = run_with_override(box_node, override_for_axis(axis).clone(), |node| {
+                fc.compute_intrinsic_block_size(node, IntrinsicSizingMode::MinContent)
+              })?;
+              let max = match run_with_override(box_node, override_for_axis(axis), |node| {
+                fc.compute_intrinsic_block_size(node, IntrinsicSizingMode::MaxContent)
+              }) {
+                Ok(value) => value,
+                Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                Err(_) => min,
+              };
+              Ok((min, max))
+            }
+          }
+          Axis::Vertical => {
+            if inline_is_horizontal {
+              let min = run_with_override(box_node, override_for_axis(axis).clone(), |node| {
+                fc.compute_intrinsic_block_size(node, IntrinsicSizingMode::MinContent)
+              })?;
+              let max = match run_with_override(box_node, override_for_axis(axis), |node| {
+                fc.compute_intrinsic_block_size(node, IntrinsicSizingMode::MaxContent)
+              }) {
+                Ok(value) => value,
+                Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+                Err(_) => min,
+              };
+              Ok((min, max))
+            } else {
+              run_with_override(box_node, override_for_axis(axis), |node| {
+                fc.compute_intrinsic_inline_sizes(node)
+              })
+            }
+          }
+        }
+      };
+
+      let compute_fit_border_box = |axis: Axis,
+                                    limit: Option<Length>,
+                                    avail_dim: taffy::style::AvailableSpace|
+       -> Result<f32, LayoutError> {
+        let (min_intrinsic, max_intrinsic) = intrinsic_range_for_physical_axis(axis)?;
+        let min_intrinsic = min_intrinsic.max(0.0);
+        let max_intrinsic = max_intrinsic.max(0.0);
+        let axis_inset = match axis {
+          Axis::Horizontal => fit_inset_w,
+          Axis::Vertical => fit_inset_h,
+        };
+
+        let available_border_box = match avail_dim {
+          taffy::style::AvailableSpace::Definite(v) => (v + axis_inset).max(0.0),
+          taffy::style::AvailableSpace::MinContent => min_intrinsic,
+          taffy::style::AvailableSpace::MaxContent => max_intrinsic,
+        };
+
+        let preferred_border_box = match limit {
+          None => available_border_box,
+          Some(arg) => {
+            let base_content = match avail_dim {
+              taffy::style::AvailableSpace::Definite(v) => v.max(0.0),
+              _ => (available_border_box - axis_inset).max(0.0),
+            };
+            let resolved = self.resolve_length_for_width(arg, base_content, &box_node.style).max(0.0);
+            if box_node.style.box_sizing == BoxSizing::ContentBox {
+              (resolved + axis_inset).max(0.0)
+            } else {
+              resolved
+            }
+          }
+        };
+
+        Ok(crate::layout::utils::clamp_with_order(
+          preferred_border_box,
+          min_intrinsic,
+          max_intrinsic,
+        ))
+      };
+
+      if let Some(limit) = fit_width_limit {
+        match compute_fit_border_box(Axis::Horizontal, limit, available_space.width) {
+          Ok(border_box) if border_box.is_finite() => {
+            let border_box = border_box.max(0.0);
+            fit_border_box_width = Some(border_box);
+            constraints.used_border_box_width = Some(border_box);
+          }
+          Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+          Err(_) => {}
+          _ => {}
+        }
+      }
+
+      if let Some(limit) = fit_height_limit {
+        match compute_fit_border_box(Axis::Vertical, limit, available_space.height) {
+          Ok(border_box) if border_box.is_finite() => {
+            let border_box = border_box.max(0.0);
+            fit_border_box_height = Some(border_box);
+            constraints.used_border_box_height = Some(border_box);
+          }
+          Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+          Err(_) => {}
+          _ => {}
+        }
+      }
+    }
+
     let mut intrinsic_width: Option<f32> = None;
-    if known_dimensions.width.is_none() {
+    if inline_is_horizontal && known_dimensions.width.is_none() {
       intrinsic_width = match available_space.width {
-        taffy::style::AvailableSpace::MinContent => Some(
-          match fc.compute_intrinsic_inline_size(box_node, IntrinsicSizingMode::MinContent) {
+        taffy::style::AvailableSpace::MinContent => fit_border_box_width.or_else(|| {
+          Some(match intrinsic_physical_width(IntrinsicSizingMode::MinContent) {
             Ok(size) => size,
             Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
             Err(_) => 0.0,
-          },
-        ),
-        taffy::style::AvailableSpace::MaxContent => Some(
-          match fc.compute_intrinsic_inline_size(box_node, IntrinsicSizingMode::MaxContent) {
+          })
+        }),
+        taffy::style::AvailableSpace::MaxContent => fit_border_box_width.or_else(|| {
+          Some(match intrinsic_physical_width(IntrinsicSizingMode::MaxContent) {
             Ok(size) => size,
             Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
             Err(_) => 0.0,
-          },
-        ),
+          })
+        }),
         _ => None,
       };
     }
 
-    if intrinsic_width.is_some() {
+    let mut intrinsic_height: Option<f32> = None;
+    if !inline_is_horizontal && known_dimensions.height.is_none() {
+      intrinsic_height = match available_space.height {
+        taffy::style::AvailableSpace::MinContent => fit_border_box_height.or_else(|| {
+          Some(match intrinsic_physical_height(IntrinsicSizingMode::MinContent) {
+            Ok(size) => size,
+            Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+            Err(_) => 0.0,
+          })
+        }),
+        taffy::style::AvailableSpace::MaxContent => fit_border_box_height.or_else(|| {
+          Some(match intrinsic_physical_height(IntrinsicSizingMode::MaxContent) {
+            Ok(size) => size,
+            Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+            Err(_) => 0.0,
+          })
+        }),
+        _ => None,
+      };
+    }
+
+    if intrinsic_width.is_some() || intrinsic_height.is_some() {
       let percentage_base = match available_space.width {
         taffy::style::AvailableSpace::Definite(w) => w,
         _ => parent_inline_base.unwrap_or(0.0),
@@ -4368,31 +4867,35 @@ impl GridFormattingContext {
         })
         .unwrap_or_else(|| fallback_size(known_dimensions.width, available_space.width).max(0.0));
 
-      let normalize_known =
-        |known: Option<f32>, avail: taffy::style::AvailableSpace| match (known, avail) {
-          (Some(value), taffy::style::AvailableSpace::Definite(avail))
-            if value <= 1.0 && avail <= 1.0 =>
-          {
-            None
+      let height = if let Some(border_height) = intrinsic_height {
+        (border_height - padding_top - padding_bottom - border_top - border_bottom).max(0.0)
+      } else {
+        let normalize_known =
+          |known: Option<f32>, avail: taffy::style::AvailableSpace| match (known, avail) {
+            (Some(value), taffy::style::AvailableSpace::Definite(avail))
+              if value <= 1.0 && avail <= 1.0 =>
+            {
+              None
+            }
+            _ => known,
+          };
+        let known_height = normalize_known(known_dimensions.height, available_space.height);
+        match (known_height, available_space.height) {
+          (Some(h), _) => h.max(0.0),
+          (_, taffy::style::AvailableSpace::Definite(h)) if h > 1.0 => h.max(0.0),
+          _ => {
+            let mode = match available_space.width {
+              taffy::style::AvailableSpace::MinContent => IntrinsicSizingMode::MinContent,
+              taffy::style::AvailableSpace::MaxContent => IntrinsicSizingMode::MaxContent,
+              _ => IntrinsicSizingMode::MaxContent,
+            };
+            let border_block_size = match fc.compute_intrinsic_block_size(box_node, mode) {
+              Ok(size) => size,
+              Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+              Err(_) => 0.0,
+            };
+            (border_block_size - padding_top - padding_bottom - border_top - border_bottom).max(0.0)
           }
-          _ => known,
-        };
-      let known_height = normalize_known(known_dimensions.height, available_space.height);
-      let height = match (known_height, available_space.height) {
-        (Some(h), _) => h.max(0.0),
-        (_, taffy::style::AvailableSpace::Definite(h)) if h > 1.0 => h.max(0.0),
-        _ => {
-          let mode = match available_space.width {
-            taffy::style::AvailableSpace::MinContent => IntrinsicSizingMode::MinContent,
-            taffy::style::AvailableSpace::MaxContent => IntrinsicSizingMode::MaxContent,
-            _ => IntrinsicSizingMode::MaxContent,
-          };
-          let border_block_size = match fc.compute_intrinsic_block_size(box_node, mode) {
-            Ok(size) => size,
-            Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
-            Err(_) => 0.0,
-          };
-          (border_block_size - padding_top - padding_bottom - border_top - border_bottom).max(0.0)
         }
       };
 
@@ -4407,16 +4910,16 @@ impl GridFormattingContext {
         available_space.width,
         taffy::style::AvailableSpace::Definite(_)
       )
-      && box_node.style.width.is_none()
+      && physical_width_is_auto(box_node.style.as_ref())
     {
       if let taffy::style::AvailableSpace::Definite(area_width) = available_space.width {
         let justify = taffy_style
           .justify_self
           .unwrap_or(taffy::style::AlignItems::Stretch);
         if justify != taffy::style::AlignItems::Stretch {
-          match fc.compute_intrinsic_inline_size(box_node, IntrinsicSizingMode::MaxContent) {
+          match intrinsic_physical_width(IntrinsicSizingMode::MaxContent) {
             Ok(intrinsic_width) => {
-              let used_width = intrinsic_width.min(area_width);
+              let used_width = intrinsic_width.max(0.0).min(area_width.max(0.0));
               constraints.available_width = CrateAvailableSpace::Definite(used_width);
               constraints.inline_percentage_base = Some(area_width);
             }
@@ -4941,8 +5444,7 @@ impl FormattingContext for GridFormattingContext {
     // when we have one from the parent constraints.
     if let CrateAvailableSpace::Definite(outer_width) = constraints.available_width {
       if outer_width.is_finite()
-        && style.width.is_none()
-        && style.width_keyword.is_none()
+        && physical_width_is_auto(style)
         && box_node.box_type.is_block_level()
         && crate::style::inline_axis_is_horizontal(style.writing_mode)
       {
@@ -5075,23 +5577,19 @@ impl FormattingContext for GridFormattingContext {
     // definite available size (fill-available), so only map min-/max-content here.
     if constraints.used_border_box_width.is_none() {
       match style.width_keyword {
-        Some(IntrinsicSizeKeyword::MinContent) => {
-          available_space.width = taffy::style::AvailableSpace::MinContent
-        }
-        Some(IntrinsicSizeKeyword::MaxContent) => {
-          available_space.width = taffy::style::AvailableSpace::MaxContent
-        }
+        Some(IntrinsicSizeKeyword::MinContent) => available_space.width =
+          taffy::style::AvailableSpace::MinContent,
+        Some(IntrinsicSizeKeyword::MaxContent) => available_space.width =
+          taffy::style::AvailableSpace::MaxContent,
         _ => {}
       }
     }
     if constraints.used_border_box_height.is_none() {
       match style.height_keyword {
-        Some(IntrinsicSizeKeyword::MinContent) => {
-          available_space.height = taffy::style::AvailableSpace::MinContent
-        }
-        Some(IntrinsicSizeKeyword::MaxContent) => {
-          available_space.height = taffy::style::AvailableSpace::MaxContent
-        }
+        Some(IntrinsicSizeKeyword::MinContent) => available_space.height =
+          taffy::style::AvailableSpace::MinContent,
+        Some(IntrinsicSizeKeyword::MaxContent) => available_space.height =
+          taffy::style::AvailableSpace::MaxContent,
         _ => {}
       }
     }
@@ -6266,7 +6764,8 @@ mod tests {
     style.width = None;
     style.width_keyword = Some(IntrinsicSizeKeyword::FitContent { limit: None });
 
-    let container = BoxNode::new_block(Arc::new(style), FormattingContextType::Grid, vec![make_item()]);
+    let container =
+      BoxNode::new_block(Arc::new(style), FormattingContextType::Grid, vec![make_item()]);
 
     let (min_intrinsic, max_intrinsic) = fc
       .compute_intrinsic_inline_sizes(&container)
@@ -6292,6 +6791,31 @@ mod tests {
       "expected fit-content width {:.2} < max-content width {:.2}",
       fragment.bounds.width(),
       max_intrinsic,
+    );
+  }
+
+  #[test]
+  fn grid_root_max_content_width_does_not_stretch_to_available_space() {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut style = ComputedStyle::default();
+    style.display = CssDisplay::Grid;
+    style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+    style.grid_template_columns = vec![
+      GridTrack::Length(Length::px(80.0)),
+      GridTrack::Length(Length::px(120.0)),
+    ];
+    style.grid_template_rows = vec![GridTrack::Length(Length::px(40.0))];
+    let child = BoxNode::new_block(make_item_style(), FormattingContextType::Block, vec![]);
+    let grid = BoxNode::new_block(Arc::new(style), FormattingContextType::Grid, vec![child]);
+
+    let constraints = LayoutConstraints::definite(500.0, 200.0);
+    let fragment = fc.layout(&grid, &constraints).expect("grid layout should succeed");
+
+    assert!(
+      (fragment.bounds.width() - 200.0).abs() < 0.01,
+      "expected max-content grid width to equal the sum of fixed tracks, got {:.2}",
+      fragment.bounds.width()
     );
   }
 
