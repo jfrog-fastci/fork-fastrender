@@ -3057,6 +3057,12 @@ pub struct Keyframe {
   pub offset: f32,
   /// Declarations that apply at this offset.
   pub declarations: Vec<Declaration>,
+  /// `animation-timing-function` declarations inside the keyframe selector.
+  ///
+  /// These do not behave as normal animated declarations; instead they define
+  /// the easing function used when interpolating from this keyframe to the next
+  /// one.
+  pub timing_functions: Vec<Declaration>,
 }
 
 /// A @keyframes rule with a name and associated keyframes.

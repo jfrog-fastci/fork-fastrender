@@ -27,6 +27,7 @@ fn fade_keyframes(name: &str) -> KeyframesRule {
           raw_value: String::new(),
           important: false,
         }],
+        timing_functions: Vec::new(),
       },
       Keyframe {
         offset: 1.0,
@@ -37,6 +38,7 @@ fn fade_keyframes(name: &str) -> KeyframesRule {
           raw_value: String::new(),
           important: false,
         }],
+        timing_functions: Vec::new(),
       },
     ],
   }

@@ -3362,40 +3362,39 @@ fn sample_keyframes_with_default_timing(
 
     let mut keyframe_timing_function: Option<TransitionTimingFunction> = None;
     for frame in group_frames {
+      for decl in &frame.timing_functions {
+        let PropertyValue::Keyword(raw_value) = &decl.value else {
+          continue;
+        };
+
+        let resolved_css = if decl.contains_var {
+          match resolve_var_for_property(
+            &decl.value,
+            &style.custom_properties,
+            "animation-timing-function",
+          ) {
+            VarResolutionResult::Resolved { css_text, .. } => {
+              if css_text.is_empty() {
+                raw_value.clone()
+              } else {
+                css_text.into_owned()
+              }
+            }
+            _ => continue,
+          }
+        } else {
+          raw_value.clone()
+        };
+
+        if let Some(parsed) = parse_first_timing_function(&resolved_css) {
+          keyframe_timing_function = Some(parsed);
+        }
+      }
+    }
+
+    for frame in group_frames {
       for decl in &frame.declarations {
         if decl.property.is_custom() {
-          continue;
-        }
-        if matches!(
-          decl.property.as_str(),
-          "animation-timing-function" | "-webkit-animation-timing-function"
-        ) {
-          let PropertyValue::Keyword(raw_value) = &decl.value else {
-            continue;
-          };
-
-          let resolved_css = if decl.contains_var {
-            match resolve_var_for_property(
-              &decl.value,
-              &style.custom_properties,
-              "animation-timing-function",
-            ) {
-              VarResolutionResult::Resolved { css_text, .. } => {
-                if css_text.is_empty() {
-                  raw_value.clone()
-                } else {
-                  css_text.into_owned()
-                }
-              }
-              _ => continue,
-            }
-          } else {
-            raw_value.clone()
-          };
-
-          if let Some(parsed) = parse_first_timing_function(&resolved_css) {
-            keyframe_timing_function = Some(parsed);
-          }
           continue;
         }
         apply_declaration_with_base(

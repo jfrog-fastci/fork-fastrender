@@ -3017,11 +3017,26 @@ fn parse_single_keyframe<'i, 't>(
             ))
           })
         })?;
+        let mut timing_functions = Vec::new();
+        let mut filtered_declarations = Vec::new();
+        for decl in declarations {
+          if !decl.property.is_custom()
+            && matches!(
+              decl.property.as_str(),
+              "animation-timing-function" | "-webkit-animation-timing-function"
+            )
+          {
+            timing_functions.push(decl);
+          } else {
+            filtered_declarations.push(decl);
+          }
+        }
         let mut frames = Vec::new();
         for offset in offsets {
           frames.push(Keyframe {
             offset,
-            declarations: declarations.clone(),
+            declarations: filtered_declarations.clone(),
+            timing_functions: timing_functions.clone(),
           });
         }
         return Ok(Some(frames));
