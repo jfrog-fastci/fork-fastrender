@@ -4271,7 +4271,7 @@ mod tests {
   #[test]
   fn sample_keyframes_fallbacks_to_discrete_interpolation() {
     let sheet =
-      parse_stylesheet("@keyframes f { from { filter: blur(10px); } to { filter: none; } }")
+      parse_stylesheet("@keyframes f { from { filter: url(#a); } to { filter: none; } }")
         .unwrap();
     let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
     let rule = &keyframes[0];

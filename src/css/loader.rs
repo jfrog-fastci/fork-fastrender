@@ -3393,7 +3393,7 @@ mod tests {
               <link rel="canonical" href="https://good.example/app/">
             </head>
         "#;
-    let base = infer_base_url(html, "file:///tmp/cache/example.html").into_owned();
+    let base = infer_base_url(html, "file:///tmp/cache/example.net.html").into_owned();
     assert_eq!(base, "https://good.example/app/");
   }
 
@@ -3405,7 +3405,7 @@ mod tests {
               <link rel="canonical" href="https://good.example/app/">
             </head>
         "#;
-    let base = infer_base_url(html, "file:///tmp/cache/example.html").into_owned();
+    let base = infer_base_url(html, "file:///tmp/cache/example.net.html").into_owned();
     assert_eq!(base, "https://good.example/app/");
   }
 
@@ -3421,7 +3421,7 @@ mod tests {
               <link rel="canonical" href="https://good.example/app/">
             </head>
         "#;
-    let base = infer_base_url(html, "file:///tmp/cache/example.html").into_owned();
+    let base = infer_base_url(html, "file:///tmp/cache/example.net.html").into_owned();
     assert_eq!(base, "https://good.example/app/");
   }
 
@@ -3450,7 +3450,7 @@ mod tests {
               <link rel="canonical" href="https://good.example/app/">
             </head>
         "#;
-    let base = infer_base_url(html, "file:///tmp/cache/example.html").into_owned();
+    let base = infer_base_url(html, "file:///tmp/cache/example.net.html").into_owned();
     assert_eq!(base, "https://good.example/app/");
   }
 
@@ -3462,7 +3462,7 @@ mod tests {
               <meta property="og:url" content="https://good.example/app/">
             </head>
         "#;
-    let base = infer_base_url(html, "file:///tmp/cache/example.html").into_owned();
+    let base = infer_base_url(html, "file:///tmp/cache/example.net.html").into_owned();
     assert_eq!(base, "https://good.example/app/");
   }
 
@@ -3474,7 +3474,7 @@ mod tests {
               <meta property="og:url" content="https://good.example/app/">
             </head>
         "#;
-    let base = infer_base_url(html, "file:///tmp/cache/example.html").into_owned();
+    let base = infer_base_url(html, "file:///tmp/cache/example.net.html").into_owned();
     assert_eq!(base, "https://good.example/app/");
   }
 
@@ -3490,7 +3490,7 @@ mod tests {
               <meta property="og:url" content="https://good.example/app/">
             </head>
         "#;
-    let base = infer_base_url(html, "file:///tmp/cache/example.html").into_owned();
+    let base = infer_base_url(html, "file:///tmp/cache/example.net.html").into_owned();
     assert_eq!(base, "https://good.example/app/");
   }
 
@@ -3519,7 +3519,7 @@ mod tests {
               <meta property="og:url" content="https://good.example/app/">
             </head>
         "#;
-    let base = infer_base_url(html, "file:///tmp/cache/example.html").into_owned();
+    let base = infer_base_url(html, "file:///tmp/cache/example.net.html").into_owned();
     assert_eq!(base, "https://good.example/app/");
   }
 
