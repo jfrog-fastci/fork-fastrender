@@ -1471,19 +1471,21 @@ impl DisplayListBuilder {
     }
 
     let style_opt = fragment.style.as_deref();
-    if let Some(style) = style_opt {
-      if !matches!(
+    let paint_self = style_opt.map_or(true, |style| {
+      matches!(
         style.visibility,
         crate::style::computed::Visibility::Visible
-      ) {
-        return;
-      }
+      )
+    });
+    if !paint_self && (!recurse_children || fragment.children.is_empty()) {
+      return;
     }
 
     if matches!(fragment.content, FragmentContent::RunningAnchor { .. }) {
       return;
     }
 
+    let list_start = self.list.len();
     let opacity = style_opt.map(|s| s.opacity).unwrap_or(1.0);
     if opacity <= f32::EPSILON {
       return;
@@ -1518,9 +1520,6 @@ impl DisplayListBuilder {
         let transforms = Self::build_transform(style, absolute_rect, self.viewport);
         if let Some(transform) = transforms.self_transform.as_ref() {
           if backface_is_hidden(transform) {
-            if push_opacity {
-              self.pop_opacity();
-            }
             return;
           }
         }
@@ -1603,80 +1602,82 @@ impl DisplayListBuilder {
       self.push_opacity(opacity);
     }
 
-    if let Some(style) = style_opt {
-      let (decoration_rect, decoration_clip) =
-        Self::decoration_rect_and_clip(fragment, absolute_rect, style);
-      let decoration_clip_pushed = decoration_clip.is_some();
-      if let Some(clip) = decoration_clip {
-        self.list.push(DisplayItem::PushClip(clip));
-      }
+    if paint_self {
+      if let Some(style) = style_opt {
+        let (decoration_rect, decoration_clip) =
+          Self::decoration_rect_and_clip(fragment, absolute_rect, style);
+        let decoration_clip_pushed = decoration_clip.is_some();
+        if let Some(clip) = decoration_clip {
+          self.list.push(DisplayItem::PushClip(clip));
+        }
 
-      if !style.box_shadow.is_empty() {
-        let mut decoration_rects: Option<BackgroundRects> = None;
-        let rects = if decoration_rect == absolute_rect {
-          absolute_rects
-            .get_or_insert_with(|| Self::background_rects(absolute_rect, style, self.viewport))
-        } else {
-          decoration_rects
-            .get_or_insert_with(|| Self::background_rects(decoration_rect, style, self.viewport))
-        };
-
-        let has_outer = style.box_shadow.iter().any(|shadow| !shadow.inset);
-        let has_inset = style.box_shadow.iter().any(|shadow| shadow.inset);
-        let outer_radii = if has_outer {
-          Self::border_radii(decoration_rect, style)
-            .clamped(decoration_rect.width(), decoration_rect.height())
-        } else {
-          crate::paint::display_list::BorderRadii::ZERO
-        };
-        let inner_radii = if has_inset {
-          if Self::border_radius_is_zero(style) {
-            crate::paint::display_list::BorderRadii::ZERO
+        if !style.box_shadow.is_empty() {
+          let mut decoration_rects: Option<BackgroundRects> = None;
+          let rects = if decoration_rect == absolute_rect {
+            absolute_rects
+              .get_or_insert_with(|| Self::background_rects(absolute_rect, style, self.viewport))
           } else {
-            Self::resolve_clip_radii(
-              style,
-              rects,
-              BackgroundBox::PaddingBox,
-              self.viewport,
-              self.build_breakdown.as_deref(),
-            )
-          }
-        } else {
-          crate::paint::display_list::BorderRadii::ZERO
-        };
+            decoration_rects
+              .get_or_insert_with(|| Self::background_rects(decoration_rect, style, self.viewport))
+          };
 
-        if has_outer {
-          self.emit_box_shadows_from_style_with_base(
-            rects.border,
-            outer_radii,
-            decoration_rect.width(),
-            style,
-            false,
-          );
-        }
-        self.emit_background_from_style_with_rects(rects, style);
-        if has_inset {
-          self.emit_box_shadows_from_style_with_base(
-            rects.padding,
-            inner_radii,
-            decoration_rect.width(),
-            style,
-            true,
-          );
-        }
-      } else if decoration_rect == absolute_rect {
-        if let Some(rects) = absolute_rects.as_ref() {
+          let has_outer = style.box_shadow.iter().any(|shadow| !shadow.inset);
+          let has_inset = style.box_shadow.iter().any(|shadow| shadow.inset);
+          let outer_radii = if has_outer {
+            Self::border_radii(decoration_rect, style)
+              .clamped(decoration_rect.width(), decoration_rect.height())
+          } else {
+            crate::paint::display_list::BorderRadii::ZERO
+          };
+          let inner_radii = if has_inset {
+            if Self::border_radius_is_zero(style) {
+              crate::paint::display_list::BorderRadii::ZERO
+            } else {
+              Self::resolve_clip_radii(
+                style,
+                rects,
+                BackgroundBox::PaddingBox,
+                self.viewport,
+                self.build_breakdown.as_deref(),
+              )
+            }
+          } else {
+            crate::paint::display_list::BorderRadii::ZERO
+          };
+
+          if has_outer {
+            self.emit_box_shadows_from_style_with_base(
+              rects.border,
+              outer_radii,
+              decoration_rect.width(),
+              style,
+              false,
+            );
+          }
           self.emit_background_from_style_with_rects(rects, style);
+          if has_inset {
+            self.emit_box_shadows_from_style_with_base(
+              rects.padding,
+              inner_radii,
+              decoration_rect.width(),
+              style,
+              true,
+            );
+          }
+        } else if decoration_rect == absolute_rect {
+          if let Some(rects) = absolute_rects.as_ref() {
+            self.emit_background_from_style_with_rects(rects, style);
+          } else {
+            self.emit_background_from_style(decoration_rect, style);
+          }
         } else {
           self.emit_background_from_style(decoration_rect, style);
         }
-      } else {
-        self.emit_background_from_style(decoration_rect, style);
-      }
 
-      self.emit_border_from_style(decoration_rect, style);
-      if decoration_clip_pushed {
-        self.list.push(DisplayItem::PopClip);
+        self.emit_border_from_style(decoration_rect, style);
+        if decoration_clip_pushed {
+          self.list.push(DisplayItem::PopClip);
+        }
       }
     }
 
@@ -1688,6 +1689,7 @@ impl DisplayListBuilder {
 
     // Clip descendant/content painting but leave outer effects (e.g., box shadows, outlines)
     // unaffected.
+    let mut children_painted = false;
     if !skip_contents {
       let mut pushed_clips = 0;
       if let Some(clip) = overflow_clip {
@@ -1699,7 +1701,9 @@ impl DisplayListBuilder {
         pushed_clips += 1;
       }
 
-      self.emit_content(fragment, absolute_rect);
+      if paint_self {
+        self.emit_content(fragment, absolute_rect);
+      }
 
       if recurse_children {
         let element_scroll = self.element_scroll_offset(fragment);
@@ -1708,6 +1712,7 @@ impl DisplayListBuilder {
           absolute_rect.origin.y - element_scroll.y,
         );
         let mut counter = 0usize;
+        let before_children = self.list.len();
         for child in fragment.children.iter() {
           if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
             break;
@@ -1721,6 +1726,7 @@ impl DisplayListBuilder {
           }
           self.build_fragment_internal(child, child_offset, true, false, child_visibility);
         }
+        children_painted = self.list.len() != before_children;
       }
 
       if let Some(table_borders) = fragment.table_borders.as_ref() {
@@ -1732,7 +1738,7 @@ impl DisplayListBuilder {
           .chain(table_borders.horizontal_borders.iter())
           .chain(table_borders.corner_borders.iter())
           .any(|b| b.is_visible());
-        if has_visible_borders {
+        if paint_self && has_visible_borders {
           self.list.push(DisplayItem::TableCollapsedBorders(
             TableCollapsedBordersItem {
               origin,
@@ -1748,12 +1754,18 @@ impl DisplayListBuilder {
       }
     }
 
-    if let Some(style) = style_opt {
-      self.emit_outline(absolute_rect, style);
+    if paint_self {
+      if let Some(style) = style_opt {
+        self.emit_outline(absolute_rect, style);
+      }
     }
 
     if push_opacity {
       self.pop_opacity();
+    }
+
+    if !paint_self && !children_painted {
+      self.list.items_mut().truncate(list_start);
     }
   }
 
@@ -1768,20 +1780,23 @@ impl DisplayListBuilder {
     if self.deadline_reached() {
       return;
     }
-    if let Some(style) = fragment.style.as_deref() {
-      if !matches!(
+    let style_opt = fragment.style.as_deref();
+    let paint_self = style_opt.map_or(true, |style| {
+      matches!(
         style.visibility,
         crate::style::computed::Visibility::Visible
-      ) {
-        return;
-      }
+      )
+    });
+    if !paint_self && fragment.children.is_empty() {
+      return;
     }
 
     if matches!(fragment.content, FragmentContent::RunningAnchor { .. }) {
       return;
     }
 
-    let opacity = fragment.style.as_deref().map(|s| s.opacity).unwrap_or(1.0);
+    let list_start = self.list.len();
+    let opacity = style_opt.map(|s| s.opacity).unwrap_or(1.0);
     let push_opacity = opacity < 1.0 - f32::EPSILON;
 
     let absolute_rect = Rect::new(
@@ -1811,26 +1826,31 @@ impl DisplayListBuilder {
       self.push_opacity(opacity);
     }
 
-    if let Some(style) = fragment.style.as_deref() {
-      let (decoration_rect, decoration_clip) =
-        Self::decoration_rect_and_clip(fragment, absolute_rect, style);
-      let decoration_clip_pushed = decoration_clip.is_some();
-      if let Some(clip) = decoration_clip {
-        self.list.push(DisplayItem::PushClip(clip));
-      }
-      self.emit_background_from_style(decoration_rect, style);
-      self.emit_border_from_style(decoration_rect, style);
-      if decoration_clip_pushed {
-        self.list.push(DisplayItem::PopClip);
+    if paint_self {
+      if let Some(style) = style_opt {
+        let (decoration_rect, decoration_clip) =
+          Self::decoration_rect_and_clip(fragment, absolute_rect, style);
+        let decoration_clip_pushed = decoration_clip.is_some();
+        if let Some(clip) = decoration_clip {
+          self.list.push(DisplayItem::PushClip(clip));
+        }
+        self.emit_background_from_style(decoration_rect, style);
+        self.emit_border_from_style(decoration_rect, style);
+        if decoration_clip_pushed {
+          self.list.push(DisplayItem::PopClip);
+        }
       }
     }
 
     let box_id = Self::get_box_id(fragment);
     let should_clip = clips.contains(&box_id);
 
+    let mut children_painted = false;
     if !skip_contents {
       // Emit content before clipping children
-      self.emit_content(fragment, absolute_rect);
+      if paint_self {
+        self.emit_content(fragment, absolute_rect);
+      }
 
       // Push clip if needed
       if should_clip {
@@ -1849,12 +1869,14 @@ impl DisplayListBuilder {
         absolute_rect.origin.y - element_scroll.y,
       );
       let mut counter = 0usize;
+      let before_children = self.list.len();
       for child in fragment.children.iter() {
         if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
           break;
         }
         self.build_fragment_with_clips(child, child_offset, clips, visibility);
       }
+      children_painted = self.list.len() != before_children;
 
       if let Some(table_borders) = fragment.table_borders.as_ref() {
         let origin = absolute_rect.origin;
@@ -1865,7 +1887,7 @@ impl DisplayListBuilder {
           .chain(table_borders.horizontal_borders.iter())
           .chain(table_borders.corner_borders.iter())
           .any(|b| b.is_visible());
-        if has_visible_borders {
+        if paint_self && has_visible_borders {
           self.list.push(DisplayItem::TableCollapsedBorders(
             TableCollapsedBordersItem {
               origin,
@@ -1882,12 +1904,18 @@ impl DisplayListBuilder {
       }
     }
 
-    if let Some(style) = fragment.style.as_deref() {
-      self.emit_outline(absolute_rect, style);
+    if paint_self {
+      if let Some(style) = style_opt {
+        self.emit_outline(absolute_rect, style);
+      }
     }
 
     if push_opacity {
       self.pop_opacity();
+    }
+
+    if !paint_self && !children_painted {
+      self.list.items_mut().truncate(list_start);
     }
   }
 
@@ -8801,6 +8829,51 @@ mod tests {
   }
 
   #[test]
+  fn visibility_hidden_allows_visible_descendants() {
+    let mut parent_style = ComputedStyle::default();
+    parent_style.visibility = crate::style::computed::Visibility::Hidden;
+    parent_style.opacity = 0.5;
+    parent_style.background_color = Rgba::RED;
+    parent_style.display = Display::Block;
+
+    let mut child_style = ComputedStyle::default();
+    child_style.visibility = crate::style::computed::Visibility::Visible;
+
+    let child = FragmentNode::new_text_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 20.0),
+      "visible".to_string(),
+      16.0,
+      Arc::new(child_style),
+    );
+    let parent = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 120.0, 40.0),
+      vec![child],
+      Arc::new(parent_style),
+    );
+
+    let list = DisplayListBuilder::new().build(&parent);
+    let items = list.items();
+    assert!(
+      matches!(items.first(), Some(DisplayItem::PushOpacity(_))),
+      "expected hidden ancestor opacity to wrap descendants"
+    );
+    assert!(
+      items.iter().any(|item| matches!(item, DisplayItem::Text(_))),
+      "expected visible descendant content to paint"
+    );
+    assert!(
+      matches!(items.last(), Some(DisplayItem::PopOpacity)),
+      "expected hidden ancestor opacity to wrap descendants"
+    );
+    assert!(
+      !items
+        .iter()
+        .any(|item| matches!(item, DisplayItem::FillRect(fill) if fill.color == Rgba::RED)),
+      "hidden ancestor should not paint its own background"
+    );
+  }
+
+  #[test]
   fn outline_emits_stroke_rect() {
     let mut style = ComputedStyle::default();
     style.outline_style = crate::style::types::OutlineStyle::Solid;
@@ -8850,12 +8923,15 @@ mod tests {
   fn hidden_fragment_skipped_with_clips() {
     let mut style = ComputedStyle::default();
     style.visibility = crate::style::computed::Visibility::Hidden;
+    let mut child_style = ComputedStyle::default();
+    child_style.visibility = crate::style::computed::Visibility::Hidden;
     let fragment = FragmentNode::new_block_styled(
       Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
-      vec![FragmentNode::new_text(
+      vec![FragmentNode::new_text_styled(
         Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
         "hidden".to_string(),
         12.0,
+        Arc::new(child_style),
       )],
       Arc::new(style),
     );

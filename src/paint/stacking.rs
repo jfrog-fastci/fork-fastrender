@@ -1096,15 +1096,6 @@ where
   let current_order = *tree_order;
   *tree_order += 1;
 
-  if let Some(style) = style {
-    if !matches!(
-      style.visibility,
-      crate::style::computed::Visibility::Visible
-    ) {
-      return Ok(StackingContext::new(0));
-    }
-  }
-
   let creates_context = if let Some(s) = style {
     creates_stacking_context(s, parent_style, is_root)
   } else {
@@ -1132,11 +1123,6 @@ where
     let base_offset = Point::ZERO;
     for child in fragment.children.iter() {
       let child_style = get_style(child);
-      if let Some(s) = child_style.as_deref() {
-        if !matches!(s.visibility, crate::style::computed::Visibility::Visible) {
-          continue;
-        }
-      }
       let child_offset = Point::new(
         base_offset.x + child.bounds.origin.x,
         base_offset.y + child.bounds.origin.y,
@@ -1193,11 +1179,6 @@ where
     let base_offset = offset_from_parent_context;
     for child in fragment.children.iter() {
       let child_style = get_style(child);
-      if let Some(s) = child_style.as_deref() {
-        if !matches!(s.visibility, crate::style::computed::Visibility::Visible) {
-          continue;
-        }
-      }
       let child_offset = Point::new(
         base_offset.x + child.bounds.origin.x,
         base_offset.y + child.bounds.origin.y,
@@ -1250,15 +1231,6 @@ where
   let current_order = *tree_order;
   *tree_order += 1;
 
-  if let Some(style) = style {
-    if !matches!(
-      style.visibility,
-      crate::style::computed::Visibility::Visible
-    ) {
-      return StackingContext::new(0);
-    }
-  }
-
   let creates_context = if let Some(s) = style {
     creates_stacking_context(s, parent_style, is_root)
   } else {
@@ -1286,11 +1258,6 @@ where
     let base_offset = Point::ZERO;
     for child in fragment.children.iter() {
       let child_style = get_style(child);
-      if let Some(s) = child_style.as_deref() {
-        if !matches!(s.visibility, crate::style::computed::Visibility::Visible) {
-          continue;
-        }
-      }
       let child_offset = Point::new(
         base_offset.x + child.bounds.origin.x,
         base_offset.y + child.bounds.origin.y,
@@ -1346,11 +1313,6 @@ where
     let base_offset = offset_from_parent_context;
     for child in fragment.children.iter() {
       let child_style = get_style(child);
-      if let Some(s) = child_style.as_deref() {
-        if !matches!(s.visibility, crate::style::computed::Visibility::Visible) {
-          continue;
-        }
-      }
       let child_offset = Point::new(
         base_offset.x + child.bounds.origin.x,
         base_offset.y + child.bounds.origin.y,
@@ -1641,6 +1603,7 @@ mod tests {
   use crate::geometry::Rect;
   use crate::style::types::WillChange;
   use crate::style::types::WillChangeHint;
+  use std::sync::Arc;
 
   // Helper function to create a simple fragment
   fn create_block_fragment(x: f32, y: f32, width: f32, height: f32) -> FragmentNode {
@@ -1985,6 +1948,54 @@ mod tests {
 
     let tree = build_stacking_tree(&fragment, Some(&style), false);
     assert_eq!(tree.reason, StackingContextReason::Opacity);
+  }
+
+  #[test]
+  fn build_stacking_tree_does_not_prune_visibility_hidden() {
+    let root_style = {
+      let mut style = ComputedStyle::default();
+      style.display = Display::Block;
+      Arc::new(style)
+    };
+
+    let hidden_style = {
+      let mut style = ComputedStyle::default();
+      style.display = Display::Block;
+      style.opacity = 0.5;
+      style.visibility = crate::style::computed::Visibility::Hidden;
+      Arc::new(style)
+    };
+
+    let child_style = {
+      let mut style = ComputedStyle::default();
+      style.display = Display::Block;
+      style.visibility = crate::style::computed::Visibility::Visible;
+      Arc::new(style)
+    };
+
+    let visible_child = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      vec![],
+      child_style,
+    );
+    let hidden_parent = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      vec![visible_child],
+      hidden_style,
+    );
+    let root = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      vec![hidden_parent],
+      root_style,
+    );
+
+    let tree = build_stacking_tree_from_fragment_tree(&root);
+    assert_eq!(tree.children.len(), 1);
+    assert_eq!(tree.children[0].reason, StackingContextReason::Opacity);
+    assert!(
+      tree.children[0].total_fragment_count() >= 2,
+      "expected hidden context to retain visible descendants"
+    );
   }
 
   // Fragment count tests
