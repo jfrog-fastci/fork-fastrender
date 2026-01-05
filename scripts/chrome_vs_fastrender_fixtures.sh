@@ -439,10 +439,6 @@ set +e
 status=$?
 set -e
 
-if [[ "${status}" -ne 0 ]]; then
-  exit "${status}"
-fi
-
 echo
 echo "Outputs:"
 echo "  Output dir:      ${OUT_DIR}/"
@@ -450,3 +446,5 @@ echo "  Chrome PNGs:     ${CHROME_OUT_DIR}/"
 echo "  FastRender PNGs: ${FASTR_OUT_DIR}/"
 echo "  Diff report:     ${REPORT_HTML}"
 echo "  Diff JSON:       ${REPORT_JSON}"
+
+exit "${status}"
