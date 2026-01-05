@@ -614,19 +614,26 @@ impl SvgFilterRegion {
   pub fn resolve(&self, bbox: Rect) -> Rect {
     let width_basis = bbox.width();
     let height_basis = bbox.height();
-    let units = match self.units {
-      SvgFilterUnits::ObjectBoundingBox => SvgCoordinateUnits::ObjectBoundingBox,
-      SvgFilterUnits::UserSpaceOnUse => SvgCoordinateUnits::UserSpaceOnUse,
+    let (x, y, width, height) = match self.units {
+      SvgFilterUnits::ObjectBoundingBox => {
+        let units = SvgCoordinateUnits::ObjectBoundingBox;
+        (
+          bbox.min_x() + self.x.resolve(units, width_basis),
+          bbox.min_y() + self.y.resolve(units, height_basis),
+          self.width.resolve(units, width_basis).max(0.0),
+          self.height.resolve(units, height_basis).max(0.0),
+        )
+      }
+      SvgFilterUnits::UserSpaceOnUse => {
+        let units = SvgCoordinateUnits::UserSpaceOnUse;
+        (
+          bbox.min_x() + self.x.resolve(units, width_basis),
+          bbox.min_y() + self.y.resolve(units, height_basis),
+          self.width.resolve(units, width_basis).max(0.0),
+          self.height.resolve(units, height_basis).max(0.0),
+        )
+      }
     };
-    let resolve_x = |len: SvgLength| bbox.min_x() + len.resolve(units, width_basis);
-    let resolve_y = |len: SvgLength| bbox.min_y() + len.resolve(units, height_basis);
-    let resolve_width = |len: SvgLength| len.resolve(units, width_basis);
-    let resolve_height = |len: SvgLength| len.resolve(units, height_basis);
-
-    let width = resolve_width(self.width).max(0.0);
-    let height = resolve_height(self.height).max(0.0);
-    let x = resolve_x(self.x);
-    let y = resolve_y(self.y);
     Rect::from_xywh(x, y, width, height)
   }
 }
@@ -1945,8 +1952,7 @@ impl SvgFilter {
       SvgFilterUnits::ObjectBoundingBox => SvgCoordinateUnits::ObjectBoundingBox,
       SvgFilterUnits::UserSpaceOnUse => SvgCoordinateUnits::UserSpaceOnUse,
     };
-    let resolved = value.resolve(units, bbox.width());
-    bbox.min_x() + resolved
+    bbox.min_x() + value.resolve(units, bbox.width())
   }
 
   fn resolve_primitive_pos_y_len(&self, value: SvgLength, bbox: &Rect) -> f32 {
@@ -1954,8 +1960,7 @@ impl SvgFilter {
       SvgFilterUnits::ObjectBoundingBox => SvgCoordinateUnits::ObjectBoundingBox,
       SvgFilterUnits::UserSpaceOnUse => SvgCoordinateUnits::UserSpaceOnUse,
     };
-    let resolved = value.resolve(units, bbox.height());
-    bbox.min_y() + resolved
+    bbox.min_y() + value.resolve(units, bbox.height())
   }
 
   fn resolve_primitive_pos_z_len(&self, value: SvgLength, bbox: &Rect) -> f32 {
@@ -3578,12 +3583,10 @@ fn apply_svg_filter_scaled(
         SvgFilterUnits::UserSpaceOnUse => SvgCoordinateUnits::UserSpaceOnUse,
       };
       if let Some(x) = region_override.x {
-        let resolved = x.resolve(units, css_bbox.width());
-        css_prim_region.origin.x = css_bbox.min_x() + resolved;
+        css_prim_region.origin.x = css_bbox.min_x() + x.resolve(units, css_bbox.width());
       }
       if let Some(y) = region_override.y {
-        let resolved = y.resolve(units, css_bbox.height());
-        css_prim_region.origin.y = css_bbox.min_y() + resolved;
+        css_prim_region.origin.y = css_bbox.min_y() + y.resolve(units, css_bbox.height());
       }
       if let Some(width) = region_override.width {
         css_prim_region.size.width = width.resolve(units, css_bbox.width()).max(0.0);
@@ -4503,7 +4506,11 @@ fn sample_alpha_at(pixmap: &Pixmap, css_x: f32, css_y: f32, scale_x: f32, scale_
   if !dx.is_finite() || !dy.is_finite() {
     return 0.0;
   }
-  sample_premultiplied(pixmap, dx, dy)[3].clamp(0.0, 1.0)
+  // Lighting primitives sample the input surface height outside the current pixel. SVG's
+  // finite-difference normal approximation expects edge pixels to behave as if the input surface
+  // extends past the filter region (i.e. edge samples duplicate the nearest border pixel) rather
+  // than abruptly dropping to transparent black.
+  sample_premultiplied_edge_duplicate(pixmap, dx, dy)[3].clamp(0.0, 1.0)
 }
 
 fn sample_height_at(
@@ -5613,6 +5620,39 @@ fn sample_premultiplied(pixmap: &Pixmap, x: f32, y: f32) -> [f32; 4] {
     accum.iter_mut().for_each(|v| *v /= weight_sum);
   } else {
     return [0.0; 4];
+  }
+  accum
+}
+
+fn sample_premultiplied_edge_duplicate(pixmap: &Pixmap, x: f32, y: f32) -> [f32; 4] {
+  let width = pixmap.width() as i32;
+  let height = pixmap.height() as i32;
+  if width <= 0 || height <= 0 || !x.is_finite() || !y.is_finite() {
+    return [0.0; 4];
+  }
+
+  let x0 = x.floor() as i32;
+  let y0 = y.floor() as i32;
+  let tx = (x - x0 as f32).clamp(0.0, 1.0);
+  let ty = (y - y0 as f32).clamp(0.0, 1.0);
+  let max_x = width - 1;
+  let max_y = height - 1;
+
+  let mut accum = [0.0; 4];
+  for dy in 0..=1 {
+    for dx in 0..=1 {
+      let sx = (x0 + dx).clamp(0, max_x);
+      let sy = (y0 + dy).clamp(0, max_y);
+      let weight = if dx == 0 { 1.0 - tx } else { tx } * if dy == 0 { 1.0 - ty } else { ty };
+      if weight <= 0.0 {
+        continue;
+      }
+      let px = pixmap.pixel(sx as u32, sy as u32).unwrap();
+      accum[0] += px.red() as f32 / 255.0 * weight;
+      accum[1] += px.green() as f32 / 255.0 * weight;
+      accum[2] += px.blue() as f32 / 255.0 * weight;
+      accum[3] += px.alpha() as f32 / 255.0 * weight;
+    }
   }
   accum
 }

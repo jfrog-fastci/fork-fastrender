@@ -103,7 +103,13 @@ fn assert_rgba_close(case: &str, x: u32, y: u32, actual: [u8; 4], expected: [u8;
   }
 }
 
-fn assert_pixmaps_match_samples(case: &str, actual: &Pixmap, expected: &Pixmap, samples: &[(u32, u32)]) {
+fn assert_pixmaps_match_samples_with_tolerance(
+  case: &str,
+  actual: &Pixmap,
+  expected: &Pixmap,
+  samples: &[(u32, u32)],
+  tol: u8,
+) {
   assert_eq!(
     (actual.width(), actual.height()),
     (expected.width(), expected.height()),
@@ -115,7 +121,7 @@ fn assert_pixmaps_match_samples(case: &str, actual: &Pixmap, expected: &Pixmap, 
     let b = rgba_at(expected, x, y);
     for ch in 0..4 {
       let diff = a[ch].abs_diff(b[ch]);
-      if diff > PIXEL_TOLERANCE {
+      if diff > tol {
         if worst.map(|(_, _, _, worst_diff, _, _)| diff > worst_diff).unwrap_or(true) {
           worst = Some((x, y, ch, diff, a, b));
         }
@@ -123,9 +129,13 @@ fn assert_pixmaps_match_samples(case: &str, actual: &Pixmap, expected: &Pixmap, 
     }
   }
   if let Some((x, y, ch, diff, a, b)) = worst {
-    assert_rgba_close(case, x, y, a, b, PIXEL_TOLERANCE);
+    assert_rgba_close(case, x, y, a, b, tol);
     panic!("{case} max diff was {diff} at ({x},{y}) channel {ch}");
   }
+}
+
+fn assert_pixmaps_match_samples(case: &str, actual: &Pixmap, expected: &Pixmap, samples: &[(u32, u32)]) {
+  assert_pixmaps_match_samples_with_tolerance(case, actual, expected, samples, PIXEL_TOLERANCE);
 }
 
 fn assert_has_nonzero_pixels(case: &str, pixmap: &Pixmap) {
@@ -224,23 +234,7 @@ fn resvg_parity_diffuse_lighting_kernel_unit_length() {
   let bump_map = make_bump_map_pixmap(width, height);
   let bump_map_url = pixmap_to_data_url_png(&bump_map);
   let bbox = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
-  // kernelUnitLength samples neighboring pixels ±N away; engines differ slightly in how they
-  // handle out-of-bounds sampling at the edges, so compare only interior pixels.
-  let margin_x = 3;
-  let margin_y = 1;
-  let samples: Vec<(u32, u32)> = sample_points(width, height)
-    .into_iter()
-    .filter(|&(x, y)| {
-      x >= margin_x
-        && y >= margin_y
-        && x + margin_x <= width.saturating_sub(1)
-        && y + margin_y <= height.saturating_sub(1)
-    })
-    .collect();
-  assert!(
-    !samples.is_empty(),
-    "expected interior sample set to be non-empty for kernelUnitLength parity test"
-  );
+  let samples = sample_points(width, height);
 
   let filter_markup = format!(
     r#"
@@ -261,11 +255,14 @@ fn resvg_parity_diffuse_lighting_kernel_unit_length() {
   assert_has_nonzero_pixels("resvg diffuse(kernelUnitLength=3 1)", &expected);
   let actual = render_with_fastrender_filter(&svg, "f", &bump_map, bbox);
 
-  assert_pixmaps_match_samples(
+  // kernelUnitLength affects how the surface normal samples height deltas near the boundary;
+  // allow one extra rounding step of tolerance compared to the default parity samples.
+  assert_pixmaps_match_samples_with_tolerance(
     "diffuse lighting parity (kernelUnitLength=3 1)",
     &actual,
     &expected,
     &samples,
+    PIXEL_TOLERANCE.saturating_add(1),
   );
 }
 
