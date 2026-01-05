@@ -1,5 +1,5 @@
 use fastrender::debug::runtime::{
-  set_thread_runtime_toggles, with_thread_runtime_toggles, RuntimeToggles,
+  set_thread_runtime_toggles, with_thread_runtime_toggles, RuntimeToggles, ThreadRuntimeTogglesGuard,
 };
 use fastrender::image_loader::ImageCache;
 use fastrender::paint::display_list::DisplayList;
@@ -10,11 +10,16 @@ use fastrender::scroll::ScrollState;
 use fastrender::text::font_loader::FontContext;
 use fastrender::{FastRender, FontConfig, ResourcePolicy, Rgba};
 use rayon::ThreadPoolBuilder;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use url::Url;
+
+thread_local! {
+  static THREAD_TOGGLE_GUARD: RefCell<Option<ThreadRuntimeTogglesGuard>> = RefCell::new(None);
+}
 
 fn fnv1a64(bytes: &[u8]) -> u64 {
   // Deterministic, cheap hash used only for test diagnostics.
@@ -158,10 +163,17 @@ fn thread_pool_with_toggles(threads: usize, toggles: Arc<RuntimeToggles>) -> ray
   ThreadPoolBuilder::new()
     .num_threads(threads)
     .start_handler(move |_| {
-      // Keep the thread-local override installed for the lifetime of the pool thread. We intentionally
-      // leak the guard to avoid relying on TLS drop ordering when the worker thread exits.
       let guard = set_thread_runtime_toggles(toggles.clone());
-      std::mem::forget(guard);
+      THREAD_TOGGLE_GUARD.with(|slot| {
+        *slot.borrow_mut() = Some(guard);
+      });
+    })
+    .exit_handler(|_| {
+      // Drop the guard before thread-local destructors run so `ThreadRuntimeTogglesGuard::drop`
+      // can safely restore the previous toggles without tripping TLS teardown panics.
+      THREAD_TOGGLE_GUARD.with(|slot| {
+        slot.borrow_mut().take();
+      });
     })
     .build()
     .expect("rayon pool")
