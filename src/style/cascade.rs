@@ -8799,6 +8799,25 @@ fn compute_base_styles<'a>(
     inherit_styles(&mut styles, parent_styles);
     propagate_text_decorations(&mut styles, parent_styles);
 
+    resolve_container_query_font_size(
+      &mut ua_styles,
+      node_id,
+      ancestor_ids,
+      container_ctx,
+      parent_ua_styles.font_size,
+      ua_root_font_size,
+      viewport,
+    );
+    resolve_container_query_font_size(
+      &mut styles,
+      node_id,
+      ancestor_ids,
+      container_ctx,
+      parent_styles.font_size,
+      root_font_size,
+      viewport,
+    );
+
     let is_root = is_root_element(ancestors);
     let current_root_font_size = if is_root {
       styles.font_size
@@ -8894,6 +8913,16 @@ fn compute_base_styles<'a>(
   resolve_relative_font_weight(&mut ua_styles, parent_ua_styles);
   propagate_text_decorations(&mut ua_styles, parent_ua_styles);
 
+  resolve_container_query_font_size(
+    &mut ua_styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    parent_ua_styles.font_size,
+    ua_root_font_size,
+    viewport,
+  );
+
   let current_ua_root_font_size = if is_root {
     ua_styles.font_size
   } else {
@@ -8959,6 +8988,16 @@ fn compute_base_styles<'a>(
   resolve_match_parent_text_align(&mut styles, parent_styles, is_root);
   resolve_relative_font_weight(&mut styles, parent_styles);
   propagate_text_decorations(&mut styles, parent_styles);
+
+  resolve_container_query_font_size(
+    &mut styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    parent_styles.font_size,
+    root_font_size,
+    viewport,
+  );
 
   // Root font size for rem resolution: the document root sets the value for all descendants.
   let current_root_font_size = if is_root {
@@ -9821,6 +9860,7 @@ pub(crate) fn inherit_styles(styles: &mut ComputedStyle, parent: &ComputedStyle)
   // Typography properties inherit
   styles.font_family = parent.font_family.clone();
   styles.font_size = parent.font_size;
+  styles.font_size_pending = None;
   styles.root_font_size = parent.root_font_size;
   styles.font_weight = parent.font_weight;
   styles.font_style = parent.font_style;
@@ -11019,6 +11059,74 @@ mod tests {
     let inner_second = legacy_second.children.first().expect("inner");
     assert_eq!(inner_first.styles.color, Rgba::rgb(10, 20, 30));
     assert_eq!(inner_second.styles.color, Rgba::rgb(1, 2, 3));
+  }
+
+  #[test]
+  fn font_size_container_query_units_resolve_against_container_context() {
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("id".to_string(), "container".to_string())],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![("id".to_string(), "inner".to_string())],
+        },
+        children: vec![],
+      }],
+    };
+
+    let stylesheet = parse_stylesheet(
+      r#"
+        #container { container-type: size; }
+        #inner { font-size: 10cqh; }
+      "#,
+    )
+    .expect("parse stylesheet");
+    let style_set = StyleSet::from_document(stylesheet);
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+
+    let first = apply_style_set_with_media_target_and_imports_cached_with_deadline(
+      &dom, &style_set, &media_ctx, None, None, None, None, None, None, None, None,
+    )
+    .expect("first cascade");
+    let container_first = find_styled_node_by_id(&first, "container").expect("container");
+
+    let container_ctx = ContainerQueryContext {
+      base_media: media_ctx.clone(),
+      containers: HashMap::from([(
+        container_first.node_id,
+        ContainerQueryInfo {
+          inline_size: 600.0,
+          block_size: 400.0,
+          container_type: ContainerType::Size,
+          names: Vec::new(),
+          font_size: container_first.styles.font_size,
+          styles: Arc::clone(&container_first.styles),
+        },
+      )]),
+    };
+
+    let second = apply_style_set_with_media_target_and_imports_cached_with_deadline(
+      &dom,
+      &style_set,
+      &media_ctx,
+      None,
+      None,
+      None,
+      Some(&container_ctx),
+      None,
+      None,
+      None,
+      None,
+    )
+    .expect("second cascade");
+
+    let inner = find_styled_node_by_id(&second, "inner").expect("inner");
+    assert!((inner.styles.font_size - 40.0).abs() < 0.01);
   }
 
   #[test]
@@ -24322,6 +24430,48 @@ pub(crate) fn resolve_absolute_lengths(
   styles.border_spacing_vertical = resolve_len(styles.border_spacing_vertical);
 
   // Percentage radii remain relative and are handled during paint/layout.
+}
+
+fn resolve_container_query_font_size(
+  styles: &mut ComputedStyle,
+  node_id: usize,
+  ancestor_ids: &[usize],
+  container_ctx: Option<&ContainerQueryContext>,
+  parent_font_size: f32,
+  root_font_size: f32,
+  viewport: Size,
+) {
+  let Some(pending) = styles.font_size_pending.take() else {
+    return;
+  };
+  let Some(ctx) = container_ctx else {
+    return;
+  };
+
+  let inline_size = ctx
+    .find_container_impl(
+      node_id,
+      ancestor_ids,
+      None,
+      CQ_SUPPORT_SIZE | CQ_SUPPORT_INLINE_SIZE,
+    )
+    .map(|(_, info)| info.inline_size)
+    .unwrap_or(0.0);
+  let (size_container_inline, size_container_block) = ctx
+    .find_container_impl(node_id, ancestor_ids, None, CQ_SUPPORT_SIZE)
+    .map(|(_, info)| (info.inline_size, info.block_size))
+    .unwrap_or((0.0, 0.0));
+
+  let resolved =
+    pending.resolve_container_query_units(inline_size, size_container_inline, size_container_block);
+  if let Some(size) = crate::style::properties::resolve_font_size_length(
+    resolved,
+    parent_font_size,
+    root_font_size,
+    viewport,
+  ) {
+    styles.font_size = size;
+  }
 }
 
 fn resolve_container_query_lengths(

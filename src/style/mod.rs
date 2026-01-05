@@ -697,6 +697,7 @@ pub struct ComputedStyle {
   // Typography
   pub font_family: Arc<[String]>,
   pub font_size: f32,
+  pub(crate) font_size_pending: Option<Length>,
   pub font_weight: FontWeight,
   pub font_style: FontStyle,
   pub font_variant: FontVariant,
@@ -1066,6 +1067,7 @@ impl Default for ComputedStyle {
 
       font_family: Arc::from(vec!["serif".to_string()]),
       font_size: 16.0,
+      font_size_pending: None,
       font_weight: FontWeight::Normal,
       font_style: FontStyle::Normal,
       font_variant: FontVariant::Normal,

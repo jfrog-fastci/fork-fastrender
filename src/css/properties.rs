@@ -1658,9 +1658,16 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
 
       if let Ok(((x, y, z), angle)) = axis_angle {
         if x == 0.0 && y == 0.0 {
-          return Some(PropertyValue::Rotate(RotateValue::Angle(angle * z.signum())));
+          return Some(PropertyValue::Rotate(RotateValue::Angle(
+            angle * z.signum(),
+          )));
         }
-        return Some(PropertyValue::Rotate(RotateValue::AxisAngle { x, y, z, angle }));
+        return Some(PropertyValue::Rotate(RotateValue::AxisAngle {
+          x,
+          y,
+          z,
+          angle,
+        }));
       }
 
       let angle = parse_angle_component(&mut parser).ok()?;
@@ -2234,11 +2241,7 @@ pub(crate) fn supports_parsed_declaration_is_valid(
 
       return matches!(
         len.unit,
-        LengthUnit::Em
-          | LengthUnit::Rem
-          | LengthUnit::Ex
-          | LengthUnit::Ch
-          | LengthUnit::Percent
+        LengthUnit::Em | LengthUnit::Rem | LengthUnit::Ex | LengthUnit::Ch | LengthUnit::Percent
       ) || len.unit.is_absolute()
         || len.unit.is_viewport_relative();
     }
@@ -5316,9 +5319,30 @@ mod tests {
 }
 
 const MATH_PREFIXES: &[&str] = &[
-  "calc(", "min(", "max(", "clamp(", "env(", "constant(", "sin(", "cos(", "tan(", "asin(", "acos(",
-  "atan(", "atan2(", "pow(", "sqrt(", "hypot(", "log(", "exp(", "sign(", "abs(", "round(", "mod(",
-  "rem(", "clamped(",
+  "calc(",
+  "min(",
+  "max(",
+  "clamp(",
+  "env(",
+  "constant(",
+  "sin(",
+  "cos(",
+  "tan(",
+  "asin(",
+  "acos(",
+  "atan(",
+  "atan2(",
+  "pow(",
+  "sqrt(",
+  "hypot(",
+  "log(",
+  "exp(",
+  "sign(",
+  "abs(",
+  "round(",
+  "mod(",
+  "rem(",
+  "clamped(",
 ];
 
 /// Parse a CSS length value
@@ -5914,16 +5938,16 @@ fn parse_clamp<'i, 't>(
     }
     (CalcComponent::Length(a), CalcComponent::Length(b), CalcComponent::Length(c)) => {
       let Some((min_value, unit)) = extract_simple_length(&a) else {
-        return Err(location.new_custom_error(()));
+        return Ok(CalcComponent::Length(b));
       };
       let Some((pref_value, pref_unit)) = extract_simple_length(&b) else {
-        return Err(location.new_custom_error(()));
+        return Ok(CalcComponent::Length(b));
       };
       let Some((max_value, max_unit)) = extract_simple_length(&c) else {
-        return Err(location.new_custom_error(()));
+        return Ok(CalcComponent::Length(b));
       };
       if unit != pref_unit || unit != max_unit {
-        return Err(location.new_custom_error(()));
+        return Ok(CalcComponent::Length(b));
       }
       let upper = if max_value < min_value {
         min_value

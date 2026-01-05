@@ -5118,6 +5118,7 @@ fn apply_property_from_source(
       styles.font_variant_ligatures = source.font_variant_ligatures;
       styles.font_variant_position = source.font_variant_position;
       styles.font_size = source.font_size;
+      styles.font_size_pending = None;
       styles.line_height = source.line_height.clone();
       styles.font_family = source.font_family.clone();
       styles.font_stretch = source.font_stretch;
@@ -5134,6 +5135,7 @@ fn apply_property_from_source(
     "font-family" => styles.font_family = source.font_family.clone(),
     "font-size" => {
       styles.font_size = source.font_size;
+      styles.font_size_pending = None;
       styles.root_font_size = source.root_font_size;
     }
     "font-size-adjust" => styles.font_size_adjust = source.font_size_adjust,
@@ -6356,6 +6358,7 @@ impl ComputedStyle {
     apply_content_visibility_implied_containment(self);
     crate::style::cascade::resolve_line_height_length(self, viewport);
     crate::style::cascade::resolve_absolute_lengths(self, self.root_font_size, viewport);
+    self.font_size_pending = None;
   }
 }
 
@@ -8953,6 +8956,7 @@ fn apply_declaration_with_base_internal_with_order(
           }
           styles.font_stretch = font_stretch;
           styles.font_size = font_size;
+          styles.font_size_pending = None;
           styles.line_height = line_height;
           styles.font_family = families;
         }
@@ -8967,20 +8971,31 @@ fn apply_declaration_with_base_internal_with_order(
       PropertyValue::Keyword(kw) => {
         if let Some(size) = parse_font_size_keyword(kw, parent_font_size) {
           styles.font_size = size;
+          styles.font_size_pending = None;
         }
       }
       PropertyValue::Length(len) => {
-        if len.value >= 0.0 {
-          if let Some(size) =
-            resolve_font_size_length(*len, parent_font_size, root_font_size, viewport)
-          {
-            styles.font_size = size;
-          }
+        let len = *len;
+        if len.calc.is_none() && len.value < 0.0 {
+          return;
+        }
+        let needs_container_resolution = len.unit.is_container_query_relative()
+          || len
+            .calc
+            .is_some_and(|calc| calc.has_container_query_relative());
+        if needs_container_resolution {
+          styles.font_size_pending = Some(len);
+        } else if let Some(size) =
+          resolve_font_size_length(len, parent_font_size, root_font_size, viewport)
+        {
+          styles.font_size = size;
+          styles.font_size_pending = None;
         }
       }
       PropertyValue::Percentage(p) => {
         if *p >= 0.0 {
           styles.font_size = (p / 100.0) * parent_font_size;
+          styles.font_size_pending = None;
         }
       }
       _ => {}
@@ -13876,12 +13891,26 @@ fn parse_font_size_keyword(keyword: &str, parent_font_size: f32) -> Option<f32> 
   }
 }
 
-fn resolve_font_size_length(
+pub(crate) fn resolve_font_size_length(
   len: Length,
   parent_font_size: f32,
   root_font_size: f32,
   viewport: crate::geometry::Size,
 ) -> Option<f32> {
+  if let Some(calc) = len.calc {
+    let resolved = calc.resolve(
+      Some(parent_font_size),
+      viewport.width,
+      viewport.height,
+      parent_font_size,
+      root_font_size,
+    )?;
+    if resolved < 0.0 {
+      return None;
+    }
+    return Some(resolved);
+  }
+
   if len.value < 0.0 {
     return None;
   }
@@ -25799,6 +25828,31 @@ mod tests {
       viewport,
     );
     assert!((style.font_size - 25.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn font_size_clamp_with_calc_resolves_using_preferred_expression() {
+    let mut style = ComputedStyle::default();
+    let viewport = Size::new(1040.0, 1240.0);
+
+    let decl = Declaration {
+      property: "font-size".into(),
+      value: PropertyValue::Length(
+        parse_length("clamp(14px, 0.875rem + ((1vw - 3.2px) * 0.098), 15px)").unwrap(),
+      ),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration_with_viewport(
+      &mut style,
+      &decl,
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+      viewport,
+    );
+    assert!((style.font_size - 14.7056).abs() < 0.01);
   }
 
   #[test]
