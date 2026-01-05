@@ -228,6 +228,23 @@ fn ensure_box_id(node: &BoxNode) -> usize {
   EPHEMERAL_ID_BASE | (node as *const BoxNode as usize)
 }
 
+fn has_preceding_in_flow_inline_content(items: &[InlineItem]) -> bool {
+  items
+    .iter()
+    .rev()
+    .take_while(|item| !matches!(item, InlineItem::HardBreak))
+    .any(|item| match item {
+      InlineItem::Text(t) => t.advance_for_layout > 0.0,
+      InlineItem::Tab(_) => true,
+      InlineItem::InlineBox(b) => b.width() > 0.0,
+      InlineItem::InlineBlock(b) => b.total_width() > 0.0,
+      InlineItem::Ruby(r) => r.width() > 0.0,
+      InlineItem::Replaced(r) => r.total_width() > 0.0,
+      InlineItem::Floating(_) | InlineItem::StaticPositionAnchor(_) => false,
+      InlineItem::HardBreak => false,
+    })
+}
+
 impl InlineFormattingContext {
   /// Creates a new InlineFormattingContext
   pub fn new() -> Self {
@@ -538,7 +555,6 @@ impl InlineFormattingContext {
       {
         return Err(LayoutError::Timeout { elapsed });
       }
-
       // `<br>` forces a hard line break and suppresses any pending collapsible whitespace that would
       // otherwise appear at the end of the line.
       if matches!(child.box_type, BoxType::LineBreak(_)) {
@@ -547,9 +563,11 @@ impl InlineFormattingContext {
         continue;
       }
 
+      let mut inserted_pending_space = false;
       if let Some(space) = pending_space.take() {
         let space_item = self.create_collapsed_space_item(&space.style, space.allow_soft_wrap)?;
         current_items.push(space_item);
+        inserted_pending_space = true;
       }
 
       if let Some(running_name) = child.style.running_position.as_ref() {
@@ -625,6 +643,14 @@ impl InlineFormattingContext {
             child.style.white_space,
             child.style.text_wrap,
           );
+          if normalized.leading_collapsible
+            && !inserted_pending_space
+            && has_preceding_in_flow_inline_content(&current_items)
+          {
+            let space_item =
+              self.create_collapsed_space_item(&child.style, normalized.allow_soft_wrap)?;
+            current_items.push(space_item);
+          }
           let mut produced = self.create_inline_items_from_normalized_with_base(
             child,
             normalized.clone(),
@@ -668,6 +694,14 @@ impl InlineFormattingContext {
               leading_collapsible: false,
               trailing_collapsible: false,
             };
+            if normalized.leading_collapsible
+              && !inserted_pending_space
+              && has_preceding_in_flow_inline_content(&current_items)
+            {
+              let space_item =
+                self.create_collapsed_space_item(&child.style, normalized.allow_soft_wrap)?;
+              current_items.push(space_item);
+            }
             let mut produced = self.create_inline_items_from_normalized_with_base(
               child,
               normalized.clone(),
@@ -1292,7 +1326,6 @@ impl InlineFormattingContext {
       {
         return Err(LayoutError::Timeout { elapsed });
       }
-
       // `<br>` forces a hard line break and suppresses any pending collapsible whitespace that would
       // otherwise appear at the end of the line.
       if matches!(child.box_type, BoxType::LineBreak(_)) {
@@ -1301,9 +1334,11 @@ impl InlineFormattingContext {
         continue;
       }
 
+      let mut inserted_pending_space = false;
       if let Some(space) = pending_space.take() {
         let space_item = self.create_collapsed_space_item(&space.style, space.allow_soft_wrap)?;
         items.push(space_item);
+        inserted_pending_space = true;
       }
       if let Some(running_name) = child.style.running_position.as_ref() {
         let running = self.snapshot_running_fragment(child, available_width, running_name)?;
@@ -1394,6 +1429,14 @@ impl InlineFormattingContext {
             );
           }
 
+          if normalized.leading_collapsible
+            && !inserted_pending_space
+            && has_preceding_in_flow_inline_content(&items)
+          {
+            let space_item =
+              self.create_collapsed_space_item(&child.style, normalized.allow_soft_wrap)?;
+            items.push(space_item);
+          }
           let mut produced = self.create_inline_items_from_normalized_with_base(
             child,
             normalized.clone(),
@@ -1441,6 +1484,14 @@ impl InlineFormattingContext {
               leading_collapsible: false,
               trailing_collapsible: false,
             };
+            if normalized.leading_collapsible
+              && !inserted_pending_space
+              && has_preceding_in_flow_inline_content(&items)
+            {
+              let space_item =
+                self.create_collapsed_space_item(&child.style, normalized.allow_soft_wrap)?;
+              items.push(space_item);
+            }
             let mut produced = self.create_inline_items_from_normalized_with_base(
               child,
               normalized.clone(),
@@ -13722,6 +13773,34 @@ mod tests {
   }
 
   #[test]
+  fn collapsible_space_survives_when_next_text_node_has_leading_space() {
+    let mut style = ComputedStyle::default();
+    style.white_space = WhiteSpace::Normal;
+    let text_style = Arc::new(style);
+    let root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![
+        BoxNode::new_text(text_style.clone(), "Hello".to_string()),
+        BoxNode::new_text(text_style.clone(), " world".to_string()),
+      ],
+    );
+    let ifc = InlineFormattingContext::new();
+    let items = ifc
+      .collect_inline_items(&root, 800.0, Some(800.0))
+      .expect("collect items");
+    let texts: Vec<String> = items
+      .iter()
+      .filter_map(|item| match item {
+        InlineItem::Text(t) => Some(t.text.clone()),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(texts, vec!["Hello", " ", "world"]);
+    assert_eq!(texts.concat(), "Hello world");
+  }
+
+  #[test]
   fn collapsible_space_survives_across_inline_boxes() {
     let mut style = ComputedStyle::default();
     style.white_space = WhiteSpace::Normal;
@@ -13747,6 +13826,41 @@ mod tests {
         .iter()
         .any(|item| matches!(item, InlineItem::Text(t) if t.text == " ")),
       "collapsed space should appear before inline box"
+    );
+  }
+
+  #[test]
+  fn collapsible_space_survives_across_inline_box_boundary_with_leading_space() {
+    let mut style = ComputedStyle::default();
+    style.white_space = WhiteSpace::Normal;
+    let text_style = Arc::new(style);
+    let inline = BoxNode::new_inline(
+      text_style.clone(),
+      vec![BoxNode::new_text(text_style.clone(), "Hello".to_string())],
+    );
+    let root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![
+        inline,
+        BoxNode::new_text(text_style.clone(), " world".to_string()),
+      ],
+    );
+    let ifc = InlineFormattingContext::new();
+    let items = ifc
+      .collect_inline_items(&root, 800.0, Some(800.0))
+      .expect("collect items");
+
+    let mut combined = String::new();
+    for item in &items {
+      append_text_content(item, &mut combined);
+    }
+    assert_eq!(combined, "Hello world");
+
+    assert!(
+      items.windows(2).any(|w| matches!(&w[0], InlineItem::Text(t) if t.text == " ")
+        && matches!(&w[1], InlineItem::Text(t) if t.text == "world")),
+      "collapsed space should appear before world text node"
     );
   }
 
