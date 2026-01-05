@@ -484,6 +484,7 @@ fn bundle_page_cache_allow_missing_inserts_typed_placeholders() {
     .fetch(&missing_img_url)
     .expect("fetch placeholder image");
   assert_eq!(missing_img.content_type.as_deref(), Some("image/png"));
+  assert_eq!(missing_img.final_url.as_deref(), Some(missing_img_url.as_str()));
   assert!(
     missing_img.bytes.starts_with(b"\x89PNG"),
     "expected PNG placeholder bytes"
@@ -493,12 +494,14 @@ fn bundle_page_cache_allow_missing_inserts_typed_placeholders() {
     .fetch(&missing_font_url)
     .expect("fetch placeholder font");
   assert_eq!(missing_font.content_type.as_deref(), Some("font/woff2"));
+  assert_eq!(missing_font.final_url.as_deref(), Some(missing_font_url.as_str()));
   assert!(!missing_font.bytes.is_empty(), "font placeholder should be non-empty");
 
   let missing_css = fetcher
     .fetch(&missing_css_url)
     .expect("fetch placeholder stylesheet");
   assert_eq!(missing_css.content_type.as_deref(), Some("text/css"));
+  assert_eq!(missing_css.final_url.as_deref(), Some(missing_css_url.as_str()));
   assert!(
     std::str::from_utf8(&missing_css.bytes).is_ok(),
     "stylesheet placeholder should be valid UTF-8"
@@ -510,6 +513,10 @@ fn bundle_page_cache_allow_missing_inserts_typed_placeholders() {
   assert_eq!(
     missing_frame.content_type.as_deref(),
     Some("text/html; charset=utf-8")
+  );
+  assert_eq!(
+    missing_frame.final_url.as_deref(),
+    Some(missing_frame_url.as_str())
   );
   assert!(
     missing_frame
