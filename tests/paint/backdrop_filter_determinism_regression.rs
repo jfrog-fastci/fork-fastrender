@@ -158,6 +158,9 @@ fn blur_cache_toggles() -> Arc<RuntimeToggles> {
   let mut raw = std::env::vars()
     .filter(|(k, _)| k.starts_with("FASTR_"))
     .collect::<HashMap<String, String>>();
+  // Ensure the renderer doesn't hop into a dedicated paint pool that would ignore the varying rayon
+  // pools installed by this test.
+  raw.insert("FASTR_PAINT_THREADS".to_string(), "1".to_string());
   raw.insert("FASTR_SVG_FILTER_CACHE_BYTES".to_string(), MAX_BYTES.to_string());
   Arc::new(RuntimeToggles::from_map(raw))
 }
