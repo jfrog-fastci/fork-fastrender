@@ -14,7 +14,12 @@ const DEFAULT_OUT_DIR: &str = "target/fixture_determinism";
 const DEFAULT_VIEWPORT: &str = "1040x1240";
 const DEFAULT_DPR: f32 = 1.0;
 const DEFAULT_TIMEOUT: u64 = 10;
+const DEFAULT_JOBS_CAP: usize = 8;
 const DETERMINISM_DIFFS_DIR: &str = "determinism_diffs";
+
+fn default_jobs() -> usize {
+  fastrender::system::cpu_budget().min(DEFAULT_JOBS_CAP).max(1)
+}
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 #[clap(rename_all = "lowercase")]
@@ -47,8 +52,11 @@ pub struct FixtureDeterminismArgs {
   pub shard: Option<(usize, usize)>,
 
   /// Number of parallel fixture renders (forwarded to `render_fixtures --jobs/-j`).
-  #[arg(long, short, value_name = "N")]
-  pub jobs: Option<usize>,
+  ///
+  /// Defaults to a conservative cap so high-core CI machines don't trigger per-fixture timeouts
+  /// purely due to oversubscription. Override explicitly to trade off throughput vs stability.
+  #[arg(long, short, default_value_t = default_jobs(), value_name = "N")]
+  pub jobs: usize,
 
   /// Repeat the render N times (default: 2).
   #[arg(long, default_value_t = 2, value_name = "N")]
@@ -713,10 +721,8 @@ fn validate_args(args: &FixtureDeterminismArgs) -> Result<()> {
   if args.dpr <= 0.0 || !args.dpr.is_finite() {
     bail!("--dpr must be a positive, finite number");
   }
-  if let Some(jobs) = args.jobs {
-    if jobs == 0 {
-      bail!("--jobs must be > 0");
-    }
+  if args.jobs == 0 {
+    bail!("--jobs must be > 0");
   }
   if args.timeout == 0 {
     bail!("--timeout must be > 0");
@@ -797,9 +803,7 @@ fn build_render_fixtures_command(
   cmd.arg("--dpr").arg(args.dpr.to_string());
   cmd.arg("--media").arg(args.media.as_cli_value());
   cmd.arg("--timeout").arg(args.timeout.to_string());
-  if let Some(jobs) = args.jobs {
-    cmd.arg("--jobs").arg(jobs.to_string());
-  }
+  cmd.arg("--jobs").arg(args.jobs.to_string());
   if let Some(fixtures) = &args.fixtures {
     cmd.arg("--fixtures").arg(fixtures.join(","));
   }
@@ -828,9 +832,7 @@ fn build_render_fixtures_snapshot_command(
   cmd.arg("--dpr").arg(args.dpr.to_string());
   cmd.arg("--media").arg(args.media.as_cli_value());
   cmd.arg("--timeout").arg(args.timeout.to_string());
-  if let Some(jobs) = args.jobs {
-    cmd.arg("--jobs").arg(jobs.to_string());
-  }
+  cmd.arg("--jobs").arg(args.jobs.to_string());
   cmd.arg("--fixtures").arg(fixture);
   cmd.arg("--write-snapshot");
   Ok(cmd)
