@@ -4825,13 +4825,12 @@ mod tests {
   }
 
   #[test]
-  fn overflow_wrap_anywhere_breaks_have_normal_priority() {
+  fn overflow_wrap_anywhere_breaks_are_emergency_only() {
     use crate::text::line_break::BreakOpportunityKind;
 
-    // CSS Text: `anywhere` introduces regular soft wrap opportunities (unlike `break-word`, which
-    // introduces emergency-only wrap points). With a width where "hello w" fits but "hello wo"
-    // does not, `overflow-wrap:anywhere` should break after the "w" rather than at the earlier
-    // space.
+    // CSS Text (Level 3/4): `overflow-wrap:anywhere` is like `break-word`, except its introduced
+    // wrap opportunities affect min-content sizing. Line breaking still only uses these intra-word
+    // opportunities when there are no other acceptable break points in the line.
     let text = "hello world";
     let max_width = 7.0;
 
@@ -4860,23 +4859,26 @@ mod tests {
       .find(|b| b.byte_offset == 7)
       .copied()
       .expect("anywhere should synthesize an intra-word break at offset 7");
-    assert_eq!(brk7_anywhere.kind, BreakOpportunityKind::Normal);
+    assert_eq!(brk7_anywhere.kind, BreakOpportunityKind::Emergency);
 
     let chosen_break_word = break_word.find_break_point(max_width).expect("break point");
     assert_eq!(chosen_break_word.byte_offset, 6, "break-word prefers the space break");
 
     let chosen_anywhere = anywhere.find_break_point(max_width).expect("break point");
-    assert_eq!(chosen_anywhere.byte_offset, 7, "anywhere may choose a later intra-word break");
+    assert_eq!(
+      chosen_anywhere.byte_offset, 6,
+      "anywhere should not override the normal space break"
+    );
     assert_eq!(chosen_anywhere.kind, BreakOpportunityKind::Normal);
   }
 
   #[test]
-  fn word_break_anywhere_breaks_have_normal_priority() {
+  fn word_break_anywhere_breaks_are_emergency_only() {
     use crate::text::line_break::BreakOpportunityKind;
 
-    // Similar to `overflow-wrap:anywhere`, `word-break:anywhere` adds regular wrap opportunities
-    // between grapheme clusters. It should therefore choose the last fitting intra-word break
-    // instead of the earlier whitespace break.
+    // Like `overflow-wrap:anywhere`, we treat `word-break:anywhere` as adding intra-word emergency
+    // wrap opportunities (used only when no normal break fits), while still affecting intrinsic
+    // sizing in min-content calculations.
     let text = "hello world";
     let max_width = 7.0;
 
@@ -4904,13 +4906,16 @@ mod tests {
       .find(|b| b.byte_offset == 7)
       .copied()
       .expect("anywhere should synthesize an intra-word break at offset 7");
-    assert_eq!(brk7_anywhere.kind, BreakOpportunityKind::Normal);
+    assert_eq!(brk7_anywhere.kind, BreakOpportunityKind::Emergency);
 
     let chosen_break_word = break_word.find_break_point(max_width).expect("break point");
     assert_eq!(chosen_break_word.byte_offset, 6, "break-word prefers the space break");
 
     let chosen_anywhere = anywhere.find_break_point(max_width).expect("break point");
-    assert_eq!(chosen_anywhere.byte_offset, 7, "anywhere may choose a later intra-word break");
+    assert_eq!(
+      chosen_anywhere.byte_offset, 6,
+      "anywhere should not override the normal space break"
+    );
     assert_eq!(chosen_anywhere.kind, BreakOpportunityKind::Normal);
   }
 
