@@ -7019,6 +7019,47 @@ mod tests {
   }
 
   #[test]
+  fn grid_item_width_keyword_min_content_is_narrower_than_max_content() {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let make_grid = |width_keyword: IntrinsicSizeKeyword| {
+      let mut grid_style = ComputedStyle::default();
+      grid_style.display = CssDisplay::Grid;
+      grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(200.0))];
+      grid_style.grid_template_rows = vec![GridTrack::Auto];
+      grid_style.justify_items = AlignItems::Stretch;
+      let grid_style = Arc::new(grid_style);
+
+      let mut item_style = ComputedStyle::default();
+      item_style.font_size = 16.0;
+      item_style.width = None;
+      item_style.width_keyword = Some(width_keyword);
+      let item_style = Arc::new(item_style);
+      let text_child = BoxNode::new_text(item_style.clone(), "hello world goodbye".into());
+      let item = BoxNode::new_block(item_style, FormattingContextType::Inline, vec![text_child]);
+
+      BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![item])
+    };
+
+    let constraints = LayoutConstraints::definite(200.0, 200.0);
+    let min_fragment = fc
+      .layout(&make_grid(IntrinsicSizeKeyword::MinContent), &constraints)
+      .unwrap();
+    let max_fragment = fc
+      .layout(&make_grid(IntrinsicSizeKeyword::MaxContent), &constraints)
+      .unwrap();
+
+    assert_eq!(min_fragment.children.len(), 1);
+    assert_eq!(max_fragment.children.len(), 1);
+    let min_width = min_fragment.children[0].bounds.width();
+    let max_width = max_fragment.children[0].bounds.width();
+    assert!(
+      min_width + 0.5 < max_width,
+      "expected min-content width ({min_width:.2}) < max-content width ({max_width:.2})"
+    );
+  }
+
+  #[test]
   fn grid_item_height_keyword_max_content_prevents_stretch() {
     let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
 
