@@ -6,6 +6,12 @@ FastRender implements SVG filter effects for CSS `filter: url(...)` in
 This note records how we interpret `filterRes`, especially when the resolved
 filter region is *offset* and/or extends outside the current raster surface.
 
+Important compatibility note: Chromium/Chrome largely ignores `filterRes` (it was removed in SVG 2).
+FastRender still implements `filterRes` for most filter graphs, but we treat `filterRes` as **unset**
+when a filter contains `feDisplacementMap` to match Chrome/Skia behavior (see
+[`svg_filters_turbulence_displacement.md`](svg_filters_turbulence_displacement.md) and the early
+return in `apply_svg_filter_with_cache()`).
+
 ## Implementation semantics
 
 When a filter defines `filterRes="<w> <h>"`, FastRender:
@@ -86,7 +92,11 @@ There is an integration golden test:
 During investigation we found that Chromium (tested with the Snap-packaged
 Chromium 143) appears to ignore `filterRes` for CSS `filter:url(...)` SVG
 filters: changing `filterRes` does not change the output. FastRender does honor
-`filterRes`, so the golden is based on FastRender output rather than Chromium.
+`filterRes` for most primitives, so the golden is based on FastRender output
+rather than Chromium.
+
+Exception: for Chrome parity, FastRender ignores `filterRes` when the filter
+graph contains `feDisplacementMap`.
 
 Headless screenshot command (Snap confinement requires copying the fixture into
 `/root/snap/chromium/current/` first):
