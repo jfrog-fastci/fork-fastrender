@@ -308,7 +308,7 @@ pub struct OutlineItem {
 
 impl OutlineItem {
   pub fn outer_rect(&self) -> Rect {
-    let expand = self.offset + self.width * 0.5;
+    let expand = self.offset + self.width;
     Rect::from_xywh(
       self.rect.x() - expand,
       self.rect.y() - expand,

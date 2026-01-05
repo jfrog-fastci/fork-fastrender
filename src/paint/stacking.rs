@@ -1011,7 +1011,7 @@ where
     None,
     true,
     tree_order_counter,
-    Point::ZERO,
+    root.bounds.origin,
     get_style,
   );
 
@@ -1036,7 +1036,7 @@ where
     None,
     true,
     tree_order_counter,
-    Point::ZERO,
+    root.bounds.origin,
     get_style,
     deadline_counter,
   )?;

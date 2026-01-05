@@ -4789,7 +4789,7 @@ impl DisplayListRenderer {
       return;
     }
     let offset = self.ds_len(item.offset);
-    let expand = offset + width * 0.5;
+    let expand = offset + width;
     let rect = self.ds_rect(item.rect);
     let outer_x = rect.x() - expand;
     let outer_y = rect.y() - expand;
@@ -6707,7 +6707,7 @@ impl DisplayListRenderer {
           max_pad = max_pad.max(stroke.width.abs() * 0.5);
         }
         DisplayItem::Outline(outline) => {
-          max_pad = max_pad.max(outline.width.abs() * 0.5 + outline.offset.abs());
+          max_pad = max_pad.max(outline.width.abs() + outline.offset.abs());
         }
         DisplayItem::Border(border) => {
           let max_w = border

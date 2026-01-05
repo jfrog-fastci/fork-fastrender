@@ -2279,7 +2279,7 @@ impl Painter {
     if width <= 0.0 || matches!(outline_style, CssBorderStyle::None | CssBorderStyle::Hidden) {
       return None;
     }
-    let expand = style.outline_offset.to_px() + width * 0.5;
+    let expand = style.outline_offset.to_px() + width;
     Some(Rect::from_xywh(
       abs_bounds.x() - expand,
       abs_bounds.y() - expand,
@@ -12366,7 +12366,11 @@ pub fn paint_tree_display_list_with_resources_scaled_offset_depth(
   check_active(RenderStage::Paint).map_err(Error::Render)?;
   let diagnostics_enabled = paint_diagnostics_enabled();
   let build_start = diagnostics_enabled.then(Instant::now);
-  let viewport = tree.viewport_size();
+  let viewport = if tree.has_explicit_viewport() {
+    tree.viewport_size()
+  } else {
+    Size::new(width as f32, height as f32)
+  };
   let build_budget = active_deadline()
     .and_then(|deadline| deadline.remaining_timeout())
     .map(|remaining| (remaining / 2).min(std::time::Duration::from_millis(1000)));
