@@ -19,6 +19,7 @@ use crate::scroll::ScrollState;
 use crate::style::inline_axis_is_horizontal;
 use crate::style::properties::{
   apply_declaration_with_base, parse_transition_timing_function, split_top_level_commas,
+  ANIMATION_DURATION_AUTO_SENTINEL_MS,
 };
 use crate::style::types::AnimationDirection;
 use crate::style::types::AnimationFillMode;
@@ -3619,7 +3620,17 @@ fn time_based_animation_progress_impl(
     return None;
   }
 
-  let duration = pick(&style.animation_durations, idx, 0.0).max(0.0);
+  let raw_duration = pick(&style.animation_durations, idx, 0.0);
+  // CSS Animations Level 2 adds `animation-duration: auto`, primarily for scroll-driven
+  // animations. This engine stores the keyword as a negative sentinel.
+  //
+  // For time-based timelines (`animation-timeline: auto`), there is no intrinsic duration, so we
+  // treat `auto` like `0ms` to keep output deterministic and avoid dividing by a negative value.
+  let duration = if raw_duration <= ANIMATION_DURATION_AUTO_SENTINEL_MS {
+    0.0
+  } else {
+    raw_duration.max(0.0)
+  };
   let delay = pick(&style.animation_delays, idx, 0.0);
   let iteration_count = pick(
     &style.animation_iteration_counts,
@@ -3705,6 +3716,8 @@ fn time_based_animation_progress(style: &ComputedStyle, idx: usize, time_ms: f32
 }
 
 fn settled_time_based_animation_progress(style: &ComputedStyle, idx: usize) -> Option<f32> {
+  // `animation-duration: auto` is represented by a negative sentinel. For time-based timelines we
+  // treat it as `0ms`, so the end progress here depends solely on iterations and direction.
   let fill = pick(
     &style.animation_fill_modes,
     idx,

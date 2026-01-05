@@ -58,6 +58,13 @@ thread_local! {
 /// Default viewport used by tests and legacy callers.
 pub const DEFAULT_VIEWPORT: Size = Size::new(1200.0, 800.0);
 
+/// Sentinel value stored in `ComputedStyle::animation_durations` when the author specifies
+/// `animation-duration: auto`.
+///
+/// We use a negative duration because `<time>` parsing clamps negative values to `0ms`, so this
+/// cannot collide with a valid duration.
+pub(crate) const ANIMATION_DURATION_AUTO_SENTINEL_MS: f32 = -1.0;
+
 static DEFAULT_COMPUTED_STYLE: OnceLock<ComputedStyle> = OnceLock::new();
 
 fn default_computed_style() -> &'static ComputedStyle {
@@ -2202,7 +2209,7 @@ fn parse_animation_duration_list(raw: &str) -> Vec<f32> {
   let mut times = Vec::new();
   for part in split_top_level_commas(raw) {
     if part.trim().eq_ignore_ascii_case("auto") {
-      times.push(0.0);
+      times.push(ANIMATION_DURATION_AUTO_SENTINEL_MS);
       continue;
     }
     if let Some(ms) = parse_time_ms(&part) {
@@ -2588,7 +2595,7 @@ fn parse_animation_shorthand(
 
       if token.trim().eq_ignore_ascii_case("auto") {
         if duration.is_none() {
-          duration = Some(0.0);
+          duration = Some(ANIMATION_DURATION_AUTO_SENTINEL_MS);
           continue;
         }
       }
@@ -18086,7 +18093,10 @@ mod tests {
       DEFAULT_VIEWPORT,
     );
 
-    assert_eq!(styles.animation_durations, vec![0.0, 2000.0].into());
+    assert_eq!(
+      styles.animation_durations,
+      vec![ANIMATION_DURATION_AUTO_SENTINEL_MS, 2000.0].into()
+    );
   }
 
   #[test]
@@ -18111,6 +18121,10 @@ mod tests {
     assert_eq!(
       styles.animation_names.get(0).map(String::as_str),
       Some("fade")
+    );
+    assert_eq!(
+      styles.animation_durations,
+      vec![ANIMATION_DURATION_AUTO_SENTINEL_MS].into()
     );
   }
 
