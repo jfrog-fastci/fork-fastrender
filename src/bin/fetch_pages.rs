@@ -472,9 +472,20 @@ mod tests {
   #[test]
   fn fetch_pages_does_not_expose_cache_dir_flag() {
     let cmd = Args::command();
-    let has_cache_dir = cmd
-      .get_arguments()
-      .any(|arg| arg.get_long() == Some("cache-dir"));
+    let forbidden = "cache-dir";
+    let has_cache_dir = cmd.get_arguments().any(|arg| {
+      arg.get_long() == Some(forbidden)
+        || arg
+          .get_aliases()
+          .into_iter()
+          .flatten()
+          .any(|alias| alias == forbidden)
+        || arg
+          .get_visible_aliases()
+          .into_iter()
+          .flatten()
+          .any(|alias| alias == forbidden)
+    });
     assert!(
       !has_cache_dir,
       "fetch_pages should not expose --cache-dir; the flag is reserved for the disk-backed asset cache \

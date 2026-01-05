@@ -34,3 +34,22 @@ fn fetch_pages_errors_on_unknown_option() {
     status.code()
   );
 }
+
+#[test]
+fn fetch_pages_rejects_cache_dir_flag() {
+  let temp = TempDir::new().expect("tempdir");
+
+  let output = Command::new(env!("CARGO_BIN_EXE_fetch_pages"))
+    .current_dir(temp.path())
+    .args(["--cache-dir", "ignored", "--pages", "definitely-not-here"])
+    .output()
+    .expect("run fetch_pages");
+
+  assert_eq!(
+    output.status.code(),
+    Some(2),
+    "expected clap usage error when --cache-dir is provided; stdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+}
