@@ -1,4 +1,5 @@
 use base64::Engine;
+use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::image_loader::ImageCache;
 use fastrender::paint::display_list::DisplayList;
 use fastrender::paint::display_list_builder::DisplayListBuilder;
@@ -6,10 +7,23 @@ use fastrender::paint::display_list_renderer::{DisplayListRenderer, PaintParalle
 use fastrender::scroll::ScrollState;
 use fastrender::text::font_loader::FontContext;
 use fastrender::tree::fragment_tree::FragmentNode;
-use fastrender::{FastRender, FontConfig, Point, Rgba};
+use fastrender::{
+  DiagnosticsLevel, FastRender, FontConfig, Point, RenderArtifactRequest, RenderOptions, Rgba,
+};
 use rayon::ThreadPoolBuilder;
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use url::Url;
+
+fn run_with_large_stack(f: impl FnOnce() + Send + 'static) {
+  std::thread::Builder::new()
+    .stack_size(8 * 1024 * 1024)
+    .spawn(f)
+    .expect("spawn thread")
+    .join()
+    .expect("join thread");
+}
 
 fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
   let p = pixmap.pixel(x, y).unwrap();
@@ -495,4 +509,74 @@ fn parallel_mask_image_url_with_drop_shadow_matches_serial() {
 
   assert!(report.parallel_used, "expected multiple tiles");
   assert_pixmap_eq("parallel output diverged", &serial, &report.pixmap);
+}
+
+#[test]
+fn parallel_filter_backdrop_layers_fixture_matches_serial() {
+  run_with_large_stack(|| {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let fixture_root = manifest_dir.join("tests/pages/fixtures/filter_backdrop_layers");
+    let html_path = fixture_root.join("index.html");
+    let html = fs::read_to_string(&html_path).expect("read fixture html");
+    let canonical_path = html_path.canonicalize().expect("canonical fixture path");
+    let base_url = Url::from_file_path(&canonical_path)
+      .expect("fixture path should be convertible to file URL")
+      .to_string();
+
+    // Build the display list via the full HTML+stylesheet pipeline so relative resources resolve
+    // exactly as they do in `render_fixtures`.
+    let toggles = RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_PAINT_BACKEND".to_string(),
+      "display_list".to_string(),
+    )]));
+    let mut renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .expect("renderer");
+    let options = RenderOptions::new()
+      .with_viewport(600, 480)
+      .with_diagnostics_level(DiagnosticsLevel::None)
+      .with_runtime_toggles(toggles)
+      .with_paint_parallelism(PaintParallelism::disabled());
+    let artifacts = RenderArtifactRequest {
+      display_list: true,
+      ..RenderArtifactRequest::none()
+    };
+    let report = renderer
+      .render_html_with_stylesheets_report(&html, &base_url, options, artifacts)
+      .expect("serial fixture render");
+    let font_ctx = renderer.font_context().clone();
+    let list = report.artifacts.display_list.expect("display list artifact");
+
+    let serial = DisplayListRenderer::new(600, 480, Rgba::WHITE, font_ctx.clone())
+      .expect("renderer")
+      .with_parallelism(PaintParallelism::disabled())
+      .render(&list)
+      .expect("serial display-list render");
+
+    let parallelism = PaintParallelism {
+      tile_size: 512,
+      ..PaintParallelism::enabled()
+    };
+    let pool = ThreadPoolBuilder::new()
+      .num_threads(4)
+      .stack_size(8 * 1024 * 1024)
+      .build()
+      .expect("rayon pool");
+    let report = pool.install(|| {
+      DisplayListRenderer::new(600, 480, Rgba::WHITE, font_ctx)
+        .expect("renderer")
+        .with_parallelism(parallelism)
+        .render_with_report(&list)
+        .expect("parallel render")
+    });
+
+    assert!(
+      report.parallel_used,
+      "expected fixture to use parallel tiling (fallback={:?})",
+      report.fallback_reason
+    );
+    assert!(report.tiles > 1, "expected multiple tiles");
+    assert_pixmap_eq("fixture output diverged", &serial, &report.pixmap);
+  });
 }

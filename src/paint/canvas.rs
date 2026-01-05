@@ -65,6 +65,7 @@ use crate::text::color_fonts::ColorGlyphRaster;
 use crate::text::font_db::LoadedFont;
 use crate::text::pipeline::{GlyphPosition, RunRotation, ShapedRun};
 use rustybuzz::Variation as HbVariation;
+use std::cell::RefCell;
 use std::rc::Rc;
 use tiny_skia::BlendMode as SkiaBlendMode;
 use tiny_skia::FillRule;
@@ -81,6 +82,17 @@ use tiny_skia::Stroke;
 use tiny_skia::Transform;
 
 type RenderResult<T> = std::result::Result<T, RenderError>;
+
+#[derive(Default)]
+struct RoundedRectPadScratch {
+  pixmap: Option<Pixmap>,
+  mask: Option<Mask>,
+}
+
+thread_local! {
+  static ROUNDED_RECT_PAD_SCRATCH: RefCell<RoundedRectPadScratch> =
+    RefCell::new(RoundedRectPadScratch::default());
+}
 
 // ============================================================================
 // Canvas State
@@ -966,16 +978,225 @@ impl Canvas {
       }
     }
 
-    if let Some(path) = self.build_rounded_rect_path(rect, radii) {
+    let Some(path) = self.build_rounded_rect_path(rect, radii) else {
+      return;
+    };
+
+    // Parallel tiling translates the canvas so each tile renders a sub-region of the full
+    // viewport. When a large rounded-rect extends beyond the (tile + halo) pixmap bounds,
+    // tiny-skia clips the path during rasterization which can lead to seams between tiles.
+    //
+    // To keep serial and tiled output pixel-identical, rasterize into a scratch pixmap large
+    // enough to fully contain the transformed rounded-rect (so no clipping occurs), then copy the
+    // affected destination pixels back.
+    const ROUNDED_RECT_SCRATCH_MARGIN_PX: i64 = 2;
+
+    let transform = self.current_state.transform;
+    let bounds = Self::transform_rect_aabb(rect, transform);
+    let needs_scratch = bounds.min_x() < 0.0
+      || bounds.min_y() < 0.0
+      || bounds.max_x() > self.width() as f32
+      || bounds.max_y() > self.height() as f32;
+
+    if needs_scratch {
+      if bounds.width() <= 0.0
+        || bounds.height() <= 0.0
+        || !bounds.x().is_finite()
+        || !bounds.y().is_finite()
+        || !bounds.width().is_finite()
+        || !bounds.height().is_finite()
+      {
+        return;
+      }
+
+      let mut x0 = bounds.min_x().floor() as i64;
+      let mut y0 = bounds.min_y().floor() as i64;
+      let mut x1 = bounds.max_x().ceil() as i64;
+      let mut y1 = bounds.max_y().ceil() as i64;
+
+      x0 = x0.saturating_sub(ROUNDED_RECT_SCRATCH_MARGIN_PX);
+      y0 = y0.saturating_sub(ROUNDED_RECT_SCRATCH_MARGIN_PX);
+      x1 = x1.saturating_add(ROUNDED_RECT_SCRATCH_MARGIN_PX);
+      y1 = y1.saturating_add(ROUNDED_RECT_SCRATCH_MARGIN_PX);
+
+      let scratch_w_i64 = x1 - x0;
+      let scratch_h_i64 = y1 - y0;
+      let Ok(scratch_w) = u32::try_from(scratch_w_i64) else {
+        // Scratch would overflow; fall back to direct rasterization.
+        let paint = self.current_state.create_paint(color);
+        self.pixmap.fill_path(
+          &path,
+          &paint,
+          FillRule::Winding,
+          transform,
+          self.current_state.clip_mask.as_deref(),
+        );
+        return;
+      };
+      let Ok(scratch_h) = u32::try_from(scratch_h_i64) else {
+        let paint = self.current_state.create_paint(color);
+        self.pixmap.fill_path(
+          &path,
+          &paint,
+          FillRule::Winding,
+          transform,
+          self.current_state.clip_mask.as_deref(),
+        );
+        return;
+      };
+      if scratch_w == 0 || scratch_h == 0 {
+        return;
+      }
+
+      let dest_w = self.width() as i64;
+      let dest_h = self.height() as i64;
+      let inter_x0 = x0.max(0);
+      let inter_y0 = y0.max(0);
+      let inter_x1 = x1.min(dest_w);
+      let inter_y1 = y1.min(dest_h);
+      if inter_x1 <= inter_x0 || inter_y1 <= inter_y0 {
+        return;
+      }
+
+      let mut scratch =
+        ROUNDED_RECT_PAD_SCRATCH.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+      let mut tmp = match scratch.pixmap.take() {
+        Some(existing) if existing.width() == scratch_w && existing.height() == scratch_h => existing,
+        _ => match new_pixmap(scratch_w, scratch_h) {
+          Some(pixmap) => pixmap,
+          None => {
+            // Allocation failed; fall back to direct rasterization.
+            let paint = self.current_state.create_paint(color);
+            self.pixmap.fill_path(
+              &path,
+              &paint,
+              FillRule::Winding,
+              transform,
+              self.current_state.clip_mask.as_deref(),
+            );
+            scratch.pixmap = None;
+            ROUNDED_RECT_PAD_SCRATCH.with(|cell| {
+              *cell.borrow_mut() = scratch;
+            });
+            return;
+          }
+        },
+      };
+
+      tmp.data_mut().fill(0);
+
+      // Seed the scratch pixmap with the current destination contents so we can use the same
+      // blending path as a direct `fill_path` call.
+      {
+        let src = self.pixmap.data();
+        let dst = tmp.data_mut();
+        let src_stride = self.width() as usize * 4;
+        let dst_stride = scratch_w as usize * 4;
+        let copy_w = (inter_x1 - inter_x0) as usize;
+        let copy_h = (inter_y1 - inter_y0) as usize;
+        let row_bytes = copy_w * 4;
+        let src_x = inter_x0 as usize * 4;
+        let dst_x = (inter_x0 - x0) as usize * 4;
+        let src_y = inter_y0 as usize;
+        let dst_y = (inter_y0 - y0) as usize;
+        for row in 0..copy_h {
+          let src_off = (src_y + row) * src_stride + src_x;
+          let dst_off = (dst_y + row) * dst_stride + dst_x;
+          dst[dst_off..dst_off + row_bytes].copy_from_slice(&src[src_off..src_off + row_bytes]);
+        }
+      }
+
+      let clip_mask = self.current_state.clip_mask.as_deref();
+      let mut scratch_mask: Option<Mask> = None;
+      let scratch_clip: Option<&Mask> = if let Some(clip_mask) = clip_mask {
+        let mut mask = match scratch.mask.take() {
+          Some(existing) if existing.width() == scratch_w && existing.height() == scratch_h => existing,
+          _ => match Mask::new(scratch_w, scratch_h) {
+            Some(m) => m,
+            None => {
+              let paint = self.current_state.create_paint(color);
+              self.pixmap.fill_path(&path, &paint, FillRule::Winding, transform, Some(clip_mask));
+              scratch.pixmap = Some(tmp);
+              scratch.mask = None;
+              ROUNDED_RECT_PAD_SCRATCH.with(|cell| {
+                *cell.borrow_mut() = scratch;
+              });
+              return;
+            }
+          },
+        };
+        mask.data_mut().fill(0);
+        {
+          let src = clip_mask.data();
+          let dst = mask.data_mut();
+          let src_stride = clip_mask.width() as usize;
+          let dst_stride = scratch_w as usize;
+          let copy_w = (inter_x1 - inter_x0) as usize;
+          let copy_h = (inter_y1 - inter_y0) as usize;
+          let src_x = inter_x0 as usize;
+          let dst_x = (inter_x0 - x0) as usize;
+          let src_y = inter_y0 as usize;
+          let dst_y = (inter_y0 - y0) as usize;
+          for row in 0..copy_h {
+            let src_off = (src_y + row) * src_stride + src_x;
+            let dst_off = (dst_y + row) * dst_stride + dst_x;
+            dst[dst_off..dst_off + copy_w].copy_from_slice(&src[src_off..src_off + copy_w]);
+          }
+        }
+        scratch_mask = Some(mask);
+        scratch_mask.as_ref()
+      } else {
+        None
+      };
+
       let paint = self.current_state.create_paint(color);
-      self.pixmap.fill_path(
+      tmp.fill_path(
         &path,
         &paint,
         FillRule::Winding,
-        self.current_state.transform,
-        self.current_state.clip_mask.as_deref(),
+        transform.post_translate(-(x0 as f32), -(y0 as f32)),
+        scratch_clip,
       );
+
+      // Copy the updated destination contents back into the active pixmap.
+      {
+        let src = tmp.data();
+        let width = self.width() as usize;
+        let dst = self.pixmap.data_mut();
+        let src_stride = scratch_w as usize * 4;
+        let dst_stride = width * 4;
+        let copy_w = (inter_x1 - inter_x0) as usize;
+        let copy_h = (inter_y1 - inter_y0) as usize;
+        let row_bytes = copy_w * 4;
+        let src_x = (inter_x0 - x0) as usize * 4;
+        let dst_x = inter_x0 as usize * 4;
+        let src_y = (inter_y0 - y0) as usize;
+        let dst_y = inter_y0 as usize;
+        for row in 0..copy_h {
+          let src_off = (src_y + row) * src_stride + src_x;
+          let dst_off = (dst_y + row) * dst_stride + dst_x;
+          dst[dst_off..dst_off + row_bytes].copy_from_slice(&src[src_off..src_off + row_bytes]);
+        }
+      }
+
+      scratch.pixmap = Some(tmp);
+      if scratch_mask.is_some() {
+        scratch.mask = scratch_mask;
+      }
+      ROUNDED_RECT_PAD_SCRATCH.with(|cell| {
+        *cell.borrow_mut() = scratch;
+      });
+      return;
     }
+
+    let paint = self.current_state.create_paint(color);
+    self.pixmap.fill_path(
+      &path,
+      &paint,
+      FillRule::Winding,
+      transform,
+      self.current_state.clip_mask.as_deref(),
+    );
   }
 
   /// Draws a stroked rounded rectangle outline
@@ -1440,12 +1661,116 @@ impl Canvas {
     };
 
     let path = self.build_rounded_rect_path(rect, radii)?;
-    mask.fill_path(
+    let transform = self.current_state.transform;
+    let bounds = Self::transform_rect_aabb(rect, transform);
+    let needs_scratch = bounds.min_x() < 0.0
+      || bounds.min_y() < 0.0
+      || bounds.max_x() > self.width() as f32
+      || bounds.max_y() > self.height() as f32;
+
+    if !needs_scratch {
+      mask.fill_path(&path, FillRule::Winding, paint.anti_alias, transform);
+      return Some(mask);
+    }
+
+    // When tiling, the clip path can extend far beyond the tile + halo pixmap. tiny-skia clips
+    // paths to the raster surface before converting them into a coverage mask. The resulting mask
+    // can differ compared to rasterizing the same clip on a larger surface, which shows up as
+    // seams when the clipped content crosses tile boundaries.
+    //
+    // Fix this by rasterizing the clip into a scratch mask that fully contains the transformed
+    // clip bounds, then copying the overlapping region back into the tile-sized mask.
+    const CLIP_MASK_SCRATCH_MARGIN_PX: i64 = 2;
+
+    if bounds.width() <= 0.0
+      || bounds.height() <= 0.0
+      || !bounds.x().is_finite()
+      || !bounds.y().is_finite()
+      || !bounds.width().is_finite()
+      || !bounds.height().is_finite()
+    {
+      return Some(mask);
+    }
+
+    let mut x0 = bounds.min_x().floor() as i64;
+    let mut y0 = bounds.min_y().floor() as i64;
+    let mut x1 = bounds.max_x().ceil() as i64;
+    let mut y1 = bounds.max_y().ceil() as i64;
+    x0 = x0.saturating_sub(CLIP_MASK_SCRATCH_MARGIN_PX);
+    y0 = y0.saturating_sub(CLIP_MASK_SCRATCH_MARGIN_PX);
+    x1 = x1.saturating_add(CLIP_MASK_SCRATCH_MARGIN_PX);
+    y1 = y1.saturating_add(CLIP_MASK_SCRATCH_MARGIN_PX);
+
+    let scratch_w_i64 = x1 - x0;
+    let scratch_h_i64 = y1 - y0;
+    let Ok(scratch_w) = u32::try_from(scratch_w_i64) else {
+      mask.fill_path(&path, FillRule::Winding, paint.anti_alias, transform);
+      return Some(mask);
+    };
+    let Ok(scratch_h) = u32::try_from(scratch_h_i64) else {
+      mask.fill_path(&path, FillRule::Winding, paint.anti_alias, transform);
+      return Some(mask);
+    };
+    if scratch_w == 0 || scratch_h == 0 {
+      return Some(mask);
+    }
+
+    let dest_w = self.width() as i64;
+    let dest_h = self.height() as i64;
+    let inter_x0 = x0.max(0);
+    let inter_y0 = y0.max(0);
+    let inter_x1 = x1.min(dest_w);
+    let inter_y1 = y1.min(dest_h);
+    if inter_x1 <= inter_x0 || inter_y1 <= inter_y0 {
+      return Some(mask);
+    }
+
+    let mut scratch =
+      ROUNDED_RECT_PAD_SCRATCH.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+    let mut tmp = match scratch.mask.take() {
+      Some(existing) if existing.width() == scratch_w && existing.height() == scratch_h => existing,
+      _ => match Mask::new(scratch_w, scratch_h) {
+        Some(m) => m,
+        None => {
+          mask.fill_path(&path, FillRule::Winding, paint.anti_alias, transform);
+          scratch.mask = None;
+          ROUNDED_RECT_PAD_SCRATCH.with(|cell| {
+            *cell.borrow_mut() = scratch;
+          });
+          return Some(mask);
+        }
+      },
+    };
+    tmp.data_mut().fill(0);
+    tmp.fill_path(
       &path,
       FillRule::Winding,
       paint.anti_alias,
-      self.current_state.transform,
+      transform.post_translate(-(x0 as f32), -(y0 as f32)),
     );
+
+    {
+      let src = tmp.data();
+      let dst = mask.data_mut();
+      let src_stride = scratch_w as usize;
+      let dst_stride = self.width() as usize;
+      let copy_w = (inter_x1 - inter_x0) as usize;
+      let copy_h = (inter_y1 - inter_y0) as usize;
+      let src_x = (inter_x0 - x0) as usize;
+      let dst_x = inter_x0 as usize;
+      let src_y = (inter_y0 - y0) as usize;
+      let dst_y = inter_y0 as usize;
+      for row in 0..copy_h {
+        let src_off = (src_y + row) * src_stride + src_x;
+        let dst_off = (dst_y + row) * dst_stride + dst_x;
+        dst[dst_off..dst_off + copy_w].copy_from_slice(&src[src_off..src_off + copy_w]);
+      }
+    }
+
+    scratch.mask = Some(tmp);
+    ROUNDED_RECT_PAD_SCRATCH.with(|cell| {
+      *cell.borrow_mut() = scratch;
+    });
     Some(mask)
   }
 

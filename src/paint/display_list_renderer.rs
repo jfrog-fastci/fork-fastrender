@@ -3725,6 +3725,8 @@ impl DisplayListRenderer {
       return Ok(());
     }
 
+    let canvas_transform = self.canvas.transform();
+
     let width = tile_w.ceil().max(1.0) as u32;
     let height = tile_h.ceil().max(1.0) as u32;
     if width == 0 || height == 0 {
@@ -3790,6 +3792,147 @@ impl DisplayListRenderer {
       return Ok(());
     }
 
+    let clip_mask = self.canvas.clip_mask().cloned();
+
+    let axis_aligned = canvas_transform.kx.abs() <= 1e-6 && canvas_transform.ky.abs() <= 1e-6;
+    let can_invert = canvas_transform.sx.is_finite()
+      && canvas_transform.sy.is_finite()
+      && canvas_transform.sx.abs() > 1e-6
+      && canvas_transform.sy.abs() > 1e-6;
+
+    if axis_aligned && can_invert {
+      let bounds = transform_rect(dest_rect, &canvas_transform);
+      let mut x0 = bounds.min_x().floor();
+      let mut y0 = bounds.min_y().floor();
+      let mut x1 = bounds.max_x().ceil();
+      let mut y1 = bounds.max_y().ceil();
+
+      x0 = x0.clamp(0.0, self.canvas.width() as f32);
+      y0 = y0.clamp(0.0, self.canvas.height() as f32);
+      x1 = x1.clamp(0.0, self.canvas.width() as f32);
+      y1 = y1.clamp(0.0, self.canvas.height() as f32);
+
+      let x0_u32 = x0 as u32;
+      let y0_u32 = y0 as u32;
+      let x1_u32 = x1 as u32;
+      let y1_u32 = y1 as u32;
+      if x0_u32 >= x1_u32 || y0_u32 >= y1_u32 {
+        self.record_background_paint(background_timer);
+        return Ok(());
+      }
+
+      let tmp_w = x1_u32 - x0_u32;
+      let tmp_h = y1_u32 - y0_u32;
+      let Some(mut tmp) = new_pixmap(tmp_w, tmp_h) else {
+        // Allocation failed; fall back to tiny-skia's pattern fill.
+        // (This may reintroduce parallel seams, but failing to paint is worse.)
+        let mut paint = tiny_skia::Paint::default();
+        paint.shader = Pattern::new(
+          tile.as_ref().as_ref(),
+          SpreadMode::Repeat,
+          tiny_skia::FilterQuality::Nearest,
+          opacity,
+          Transform::from_row(scale_x, 0.0, 0.0, scale_y, origin.x, origin.y),
+        );
+        paint.anti_alias = false;
+        paint.blend_mode = self.canvas.blend_mode();
+
+        let Some(skia_rect) = tiny_skia::Rect::from_xywh(
+          dest_rect.x(),
+          dest_rect.y(),
+          dest_rect.width(),
+          dest_rect.height(),
+        ) else {
+          self.record_background_paint(background_timer);
+          return Ok(());
+        };
+        self
+          .canvas
+          .pixmap_mut()
+          .fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_ref());
+        self.record_background_paint(background_timer);
+        return Ok(());
+      };
+
+      let src_w = tile.width();
+      let src_h = tile.height();
+      if src_w == 0 || src_h == 0 {
+        self.record_background_paint(background_timer);
+        return Ok(());
+      }
+
+      let src_w_i64 = src_w as i64;
+      let src_h_i64 = src_h as i64;
+      let inv_canvas_sx = 1.0f64 / canvas_transform.sx as f64;
+      let inv_canvas_sy = 1.0f64 / canvas_transform.sy as f64;
+      let canvas_tx = canvas_transform.tx as f64;
+      let canvas_ty = canvas_transform.ty as f64;
+      let origin_x = origin.x as f64;
+      let origin_y = origin.y as f64;
+      let pattern_scale_x = scale_x as f64;
+      let pattern_scale_y = scale_y as f64;
+      if !pattern_scale_x.is_finite() || !pattern_scale_y.is_finite() {
+        self.record_background_paint(background_timer);
+        return Ok(());
+      }
+
+      let mut xs: Vec<u32> = Vec::with_capacity(tmp_w as usize);
+      let mut ys: Vec<u32> = Vec::with_capacity(tmp_h as usize);
+
+      for x in 0..tmp_w {
+        let dx = (x0_u32 + x) as f64 + 0.5;
+        let local_x = (dx - canvas_tx) * inv_canvas_sx;
+        let rel_x = local_x - origin_x;
+        let src_x = rel_x / pattern_scale_x - 0.5;
+        let ix = (src_x + 0.5).floor() as i64;
+        let ix = ix.rem_euclid(src_w_i64) as u32;
+        xs.push(ix);
+      }
+      for y in 0..tmp_h {
+        let dy = (y0_u32 + y) as f64 + 0.5;
+        let local_y = (dy - canvas_ty) * inv_canvas_sy;
+        let rel_y = local_y - origin_y;
+        let src_y = rel_y / pattern_scale_y - 0.5;
+        let iy = (src_y + 0.5).floor() as i64;
+        let iy = iy.rem_euclid(src_h_i64) as u32;
+        ys.push(iy);
+      }
+
+      let src = tile.data();
+      let dst = tmp.data_mut();
+      let src_stride = src_w as usize * 4;
+      let dst_stride = tmp_w as usize * 4;
+
+      let mut deadline_counter = 0usize;
+      for (y, &iy) in ys.iter().enumerate() {
+        check_active_periodic(&mut deadline_counter, 128, RenderStage::Paint).map_err(Error::Render)?;
+        let row_src = iy as usize * src_stride;
+        let row_dst = y * dst_stride;
+        for (x, &ix) in xs.iter().enumerate() {
+          let src_idx = row_src + ix as usize * 4;
+          let dst_idx = row_dst + x * 4;
+          dst[dst_idx..dst_idx + 4].copy_from_slice(&src[src_idx..src_idx + 4]);
+        }
+      }
+
+      let paint = PixmapPaint {
+        opacity,
+        blend_mode: self.canvas.blend_mode(),
+        quality: tiny_skia::FilterQuality::Nearest,
+      };
+      self.canvas.pixmap_mut().draw_pixmap(
+        x0_u32 as i32,
+        y0_u32 as i32,
+        tmp.as_ref(),
+        &paint,
+        Transform::identity(),
+        clip_mask.as_ref(),
+      );
+
+      self.record_background_paint(background_timer);
+      return Ok(());
+    }
+
     let mut paint = tiny_skia::Paint::default();
     paint.shader = Pattern::new(
       tile.as_ref().as_ref(),
@@ -3809,8 +3952,159 @@ impl DisplayListRenderer {
     ) else {
       return Ok(());
     };
-    let transform = self.canvas.transform();
-    let clip_mask = self.canvas.clip_mask().cloned();
+    let transform = canvas_transform;
+
+    let bounds = transform_rect(dest_rect, &transform);
+    let needs_scratch = bounds.min_x() < 0.0
+      || bounds.min_y() < 0.0
+      || bounds.max_x() > self.canvas.width() as f32
+      || bounds.max_y() > self.canvas.height() as f32;
+
+    if needs_scratch {
+      // When the pattern rect extends beyond the tile pixmap, tiny-skia's pattern fill can become
+      // sensitive to the raster surface clip bounds, producing seams between tiles. Avoid this by
+      // drawing into a scratch pixmap that fully contains the transformed destination rect, then
+      // copying the affected pixels back.
+      const PATTERN_SCRATCH_MARGIN_PX: i64 = 2;
+
+      let mut x0 = bounds.min_x().floor() as i64;
+      let mut y0 = bounds.min_y().floor() as i64;
+      let mut x1 = bounds.max_x().ceil() as i64;
+      let mut y1 = bounds.max_y().ceil() as i64;
+      x0 = x0.saturating_sub(PATTERN_SCRATCH_MARGIN_PX);
+      y0 = y0.saturating_sub(PATTERN_SCRATCH_MARGIN_PX);
+      x1 = x1.saturating_add(PATTERN_SCRATCH_MARGIN_PX);
+      y1 = y1.saturating_add(PATTERN_SCRATCH_MARGIN_PX);
+
+      let scratch_w_i64 = x1 - x0;
+      let scratch_h_i64 = y1 - y0;
+      let Ok(scratch_w) = u32::try_from(scratch_w_i64) else {
+        self
+          .canvas
+          .pixmap_mut()
+          .fill_rect(skia_rect, &paint, transform, clip_mask.as_ref());
+        self.record_background_paint(background_timer);
+        return Ok(());
+      };
+      let Ok(scratch_h) = u32::try_from(scratch_h_i64) else {
+        self
+          .canvas
+          .pixmap_mut()
+          .fill_rect(skia_rect, &paint, transform, clip_mask.as_ref());
+        self.record_background_paint(background_timer);
+        return Ok(());
+      };
+      if scratch_w == 0 || scratch_h == 0 {
+        self.record_background_paint(background_timer);
+        return Ok(());
+      }
+
+      let dest_w = self.canvas.width() as i64;
+      let dest_h = self.canvas.height() as i64;
+      let inter_x0 = x0.max(0);
+      let inter_y0 = y0.max(0);
+      let inter_x1 = x1.min(dest_w);
+      let inter_y1 = y1.min(dest_h);
+      if inter_x1 <= inter_x0 || inter_y1 <= inter_y0 {
+        self.record_background_paint(background_timer);
+        return Ok(());
+      }
+
+      let Some(mut tmp) = new_pixmap(scratch_w, scratch_h) else {
+        self
+          .canvas
+          .pixmap_mut()
+          .fill_rect(skia_rect, &paint, transform, clip_mask.as_ref());
+        self.record_background_paint(background_timer);
+        return Ok(());
+      };
+      tmp.data_mut().fill(0);
+
+      // Seed scratch with the destination contents so blending matches a direct fill.
+      {
+        let src = self.canvas.pixmap().data();
+        let dst = tmp.data_mut();
+        let src_stride = self.canvas.width() as usize * 4;
+        let dst_stride = scratch_w as usize * 4;
+        let copy_w = (inter_x1 - inter_x0) as usize;
+        let copy_h = (inter_y1 - inter_y0) as usize;
+        let row_bytes = copy_w * 4;
+        let src_x = inter_x0 as usize * 4;
+        let dst_x = (inter_x0 - x0) as usize * 4;
+        let src_y = inter_y0 as usize;
+        let dst_y = (inter_y0 - y0) as usize;
+        for row in 0..copy_h {
+          let src_off = (src_y + row) * src_stride + src_x;
+          let dst_off = (dst_y + row) * dst_stride + dst_x;
+          dst[dst_off..dst_off + row_bytes].copy_from_slice(&src[src_off..src_off + row_bytes]);
+        }
+      }
+
+      let mut tmp_mask: Option<Mask> = None;
+      let tmp_clip: Option<&Mask> = if let Some(clip_mask) = clip_mask.as_ref() {
+        let Some(mut mask) = Mask::new(scratch_w, scratch_h) else {
+          self
+            .canvas
+            .pixmap_mut()
+            .fill_rect(skia_rect, &paint, transform, Some(clip_mask));
+          self.record_background_paint(background_timer);
+          return Ok(());
+        };
+        mask.data_mut().fill(0);
+        {
+          let src = clip_mask.data();
+          let dst = mask.data_mut();
+          let src_stride = clip_mask.width() as usize;
+          let dst_stride = scratch_w as usize;
+          let copy_w = (inter_x1 - inter_x0) as usize;
+          let copy_h = (inter_y1 - inter_y0) as usize;
+          let src_x = inter_x0 as usize;
+          let dst_x = (inter_x0 - x0) as usize;
+          let src_y = inter_y0 as usize;
+          let dst_y = (inter_y0 - y0) as usize;
+          for row in 0..copy_h {
+            let src_off = (src_y + row) * src_stride + src_x;
+            let dst_off = (dst_y + row) * dst_stride + dst_x;
+            dst[dst_off..dst_off + copy_w].copy_from_slice(&src[src_off..src_off + copy_w]);
+          }
+        }
+        tmp_mask = Some(mask);
+        tmp_mask.as_ref()
+      } else {
+        None
+      };
+
+      tmp.fill_rect(
+        skia_rect,
+        &paint,
+        transform.post_translate(-(x0 as f32), -(y0 as f32)),
+        tmp_clip,
+      );
+
+      // Copy the updated pixels back into the destination pixmap.
+      {
+        let src = tmp.data();
+        let src_stride = scratch_w as usize * 4;
+        let dst_stride = self.canvas.width() as usize * 4;
+        let dst = self.canvas.pixmap_mut().data_mut();
+        let copy_w = (inter_x1 - inter_x0) as usize;
+        let copy_h = (inter_y1 - inter_y0) as usize;
+        let row_bytes = copy_w * 4;
+        let src_x = (inter_x0 - x0) as usize * 4;
+        let dst_x = inter_x0 as usize * 4;
+        let src_y = (inter_y0 - y0) as usize;
+        let dst_y = inter_y0 as usize;
+        for row in 0..copy_h {
+          let src_off = (src_y + row) * src_stride + src_x;
+          let dst_off = (dst_y + row) * dst_stride + dst_x;
+          dst[dst_off..dst_off + row_bytes].copy_from_slice(&src[src_off..src_off + row_bytes]);
+        }
+      }
+
+      self.record_background_paint(background_timer);
+      return Ok(());
+    }
+
     self
       .canvas
       .pixmap_mut()
@@ -4046,6 +4340,118 @@ impl DisplayListRenderer {
       return Ok(());
     }
 
+    let canvas_transform = self.canvas.transform();
+    let clip_mask = self.canvas.clip_mask().cloned();
+    let axis_aligned = canvas_transform.kx.abs() <= 1e-6 && canvas_transform.ky.abs() <= 1e-6;
+    let can_invert = canvas_transform.sx.is_finite()
+      && canvas_transform.sy.is_finite()
+      && canvas_transform.sx.abs() > 1e-6
+      && canvas_transform.sy.abs() > 1e-6;
+
+    if axis_aligned && can_invert {
+      let bounds = transform_rect(dest_rect, &canvas_transform);
+      let mut x0 = bounds.min_x().floor();
+      let mut y0 = bounds.min_y().floor();
+      let mut x1 = bounds.max_x().ceil();
+      let mut y1 = bounds.max_y().ceil();
+
+      x0 = x0.clamp(0.0, self.canvas.width() as f32);
+      y0 = y0.clamp(0.0, self.canvas.height() as f32);
+      x1 = x1.clamp(0.0, self.canvas.width() as f32);
+      y1 = y1.clamp(0.0, self.canvas.height() as f32);
+
+      let x0_u32 = x0 as u32;
+      let y0_u32 = y0 as u32;
+      let x1_u32 = x1 as u32;
+      let y1_u32 = y1 as u32;
+      if x0_u32 >= x1_u32 || y0_u32 >= y1_u32 {
+        self.record_background_paint(background_timer);
+        return Ok(());
+      }
+
+      let tmp_w = x1_u32 - x0_u32;
+      let tmp_h = y1_u32 - y0_u32;
+      let Some(mut tmp) = new_pixmap(tmp_w, tmp_h) else {
+        self.record_background_paint(background_timer);
+        return Ok(());
+      };
+
+      let src_w = tile.width();
+      let src_h = tile.height();
+      if src_w == 0 || src_h == 0 {
+        self.record_background_paint(background_timer);
+        return Ok(());
+      }
+
+      let src_w_i64 = src_w as i64;
+      let src_h_i64 = src_h as i64;
+      let inv_canvas_sx = 1.0f64 / canvas_transform.sx as f64;
+      let inv_canvas_sy = 1.0f64 / canvas_transform.sy as f64;
+      let canvas_tx = canvas_transform.tx as f64;
+      let canvas_ty = canvas_transform.ty as f64;
+      let origin_x = origin.x as f64;
+      let origin_y = origin.y as f64;
+      let pattern_scale_x = scale_x as f64;
+      let pattern_scale_y = scale_y as f64;
+
+      if !pattern_scale_x.is_finite() || !pattern_scale_y.is_finite() {
+        self.record_background_paint(background_timer);
+        return Ok(());
+      }
+
+      let mut xs: Vec<u32> = Vec::with_capacity(tmp_w as usize);
+      let mut ys: Vec<u32> = Vec::with_capacity(tmp_h as usize);
+      for x in 0..tmp_w {
+        let dx = (x0_u32 + x) as f64 + 0.5;
+        let local_x = (dx - canvas_tx) * inv_canvas_sx;
+        let rel_x = local_x - origin_x;
+        let src_x = rel_x / pattern_scale_x - 0.5;
+        let ix = (src_x + 0.5).floor() as i64;
+        xs.push(ix.rem_euclid(src_w_i64) as u32);
+      }
+      for y in 0..tmp_h {
+        let dy = (y0_u32 + y) as f64 + 0.5;
+        let local_y = (dy - canvas_ty) * inv_canvas_sy;
+        let rel_y = local_y - origin_y;
+        let src_y = rel_y / pattern_scale_y - 0.5;
+        let iy = (src_y + 0.5).floor() as i64;
+        ys.push(iy.rem_euclid(src_h_i64) as u32);
+      }
+
+      let src = tile.data();
+      let dst = tmp.data_mut();
+      let src_stride = src_w as usize * 4;
+      let dst_stride = tmp_w as usize * 4;
+      let mut deadline_counter = 0usize;
+      for (y, &sy) in ys.iter().enumerate() {
+        check_active_periodic(&mut deadline_counter, 128, RenderStage::Paint).map_err(Error::Render)?;
+        let src_row = sy as usize * src_stride;
+        let dst_row = y * dst_stride;
+        for (x, &sx) in xs.iter().enumerate() {
+          let src_idx = src_row + sx as usize * 4;
+          let dst_idx = dst_row + x * 4;
+          dst[dst_idx..dst_idx + 4].copy_from_slice(&src[src_idx..src_idx + 4]);
+        }
+      }
+
+      let paint = PixmapPaint {
+        opacity,
+        blend_mode: self.canvas.blend_mode(),
+        quality: tiny_skia::FilterQuality::Nearest,
+      };
+      self.canvas.pixmap_mut().draw_pixmap(
+        x0_u32 as i32,
+        y0_u32 as i32,
+        tmp.as_ref(),
+        &paint,
+        Transform::identity(),
+        clip_mask.as_ref(),
+      );
+
+      self.record_background_paint(background_timer);
+      return Ok(());
+    }
+
     let mut paint = tiny_skia::Paint::default();
     paint.shader = Pattern::new(
       tile.as_ref().as_ref(),
@@ -4065,12 +4471,10 @@ impl DisplayListRenderer {
     ) else {
       return Ok(());
     };
-    let transform = self.canvas.transform();
-    let clip_mask = self.canvas.clip_mask().cloned();
     self
       .canvas
       .pixmap_mut()
-      .fill_rect(skia_rect, &paint, transform, clip_mask.as_ref());
+      .fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_ref());
 
     self.record_background_paint(background_timer);
     Ok(())
@@ -9169,10 +9573,8 @@ impl DisplayListRenderer {
       return Ok(());
     }
 
-    let tile_target = transform_rect(
-      Rect::from_xywh(0.0, 0.0, tile_w, tile_h),
-      &self.canvas.transform(),
-    );
+    let canvas_transform = self.canvas.transform();
+    let tile_target = transform_rect(Rect::from_xywh(0.0, 0.0, tile_w, tile_h), &canvas_transform);
     let target_w = tile_target.width().ceil().max(1.0) as u32;
     let target_h = tile_target.height().ceil().max(1.0) as u32;
     let Some(pixmap) =
@@ -9196,6 +9598,232 @@ impl DisplayListRenderer {
       ImagePatternRepeat::Repeat => SpreadMode::Repeat,
     };
 
+    let clip_mask = self.canvas.clip_mask().cloned();
+
+    let axis_aligned = canvas_transform.kx.abs() <= 1e-6 && canvas_transform.ky.abs() <= 1e-6;
+    let can_invert = canvas_transform.sx.is_finite()
+      && canvas_transform.sy.is_finite()
+      && canvas_transform.sx.abs() > 1e-6
+      && canvas_transform.sy.abs() > 1e-6;
+
+    if axis_aligned && can_invert {
+      let bounds = transform_rect(dest_rect, &canvas_transform);
+      let mut x0 = bounds.min_x().floor();
+      let mut y0 = bounds.min_y().floor();
+      let mut x1 = bounds.max_x().ceil();
+      let mut y1 = bounds.max_y().ceil();
+
+      x0 = x0.clamp(0.0, self.canvas.width() as f32);
+      y0 = y0.clamp(0.0, self.canvas.height() as f32);
+      x1 = x1.clamp(0.0, self.canvas.width() as f32);
+      y1 = y1.clamp(0.0, self.canvas.height() as f32);
+
+      let x0_u32 = x0 as u32;
+      let y0_u32 = y0 as u32;
+      let x1_u32 = x1 as u32;
+      let y1_u32 = y1 as u32;
+      if x0_u32 >= x1_u32 || y0_u32 >= y1_u32 {
+        self.record_background_paint(background_timer);
+        return Ok(());
+      }
+
+      let tmp_w = x1_u32 - x0_u32;
+      let tmp_h = y1_u32 - y0_u32;
+      let Some(mut tmp) = new_pixmap(tmp_w, tmp_h) else {
+        // Allocation failed; fall back to tiny-skia's pattern fill.
+        // (This may reintroduce parallel seams, but failing to paint is worse.)
+        let pixmap_ref = pixmap.as_ref();
+        let mut paint = tiny_skia::Paint::default();
+        paint.shader = Pattern::new(
+          pixmap_ref.as_ref(),
+          spread,
+          item.filter_quality.into(),
+          opacity,
+          Transform::from_row(scale_x, 0.0, 0.0, scale_y, origin.x, origin.y),
+        );
+        paint.anti_alias = false;
+        paint.blend_mode = self.canvas.blend_mode();
+        if let Some(skia_rect) = tiny_skia::Rect::from_xywh(
+          dest_rect.x(),
+          dest_rect.y(),
+          dest_rect.width(),
+          dest_rect.height(),
+        ) {
+          self
+            .canvas
+            .pixmap_mut()
+            .fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_ref());
+        }
+        self.record_background_paint(background_timer);
+        return Ok(());
+      };
+
+      let src_w = pixmap.width();
+      let src_h = pixmap.height();
+      if src_w == 0 || src_h == 0 {
+        self.record_background_paint(background_timer);
+        return Ok(());
+      }
+
+      #[derive(Clone, Copy)]
+      struct AxisSample {
+        i0: u32,
+        i1: u32,
+        t: f32,
+      }
+
+      let src_w_i64 = src_w as i64;
+      let src_h_i64 = src_h as i64;
+      let inv_canvas_sx = 1.0f64 / canvas_transform.sx as f64;
+      let inv_canvas_sy = 1.0f64 / canvas_transform.sy as f64;
+      let canvas_tx = canvas_transform.tx as f64;
+      let canvas_ty = canvas_transform.ty as f64;
+      let origin_x = origin.x as f64;
+      let origin_y = origin.y as f64;
+      let pattern_scale_x = scale_x as f64;
+      let pattern_scale_y = scale_y as f64;
+
+      if !pattern_scale_x.is_finite() || !pattern_scale_y.is_finite() {
+        self.record_background_paint(background_timer);
+        return Ok(());
+      }
+
+      let mut xs: Vec<AxisSample> = Vec::with_capacity(tmp_w as usize);
+      let mut ys: Vec<AxisSample> = Vec::with_capacity(tmp_h as usize);
+
+      match item.filter_quality {
+        ImageFilterQuality::Nearest => {
+          for x in 0..tmp_w {
+            let dx = (x0_u32 + x) as f64 + 0.5;
+            let local_x = (dx - canvas_tx) * inv_canvas_sx;
+            let rel_x = local_x - origin_x;
+            let src_x = rel_x / pattern_scale_x - 0.5;
+            let ix = (src_x + 0.5).floor() as i64;
+            let ix = ix.rem_euclid(src_w_i64) as u32;
+            xs.push(AxisSample { i0: ix, i1: ix, t: 0.0 });
+          }
+          for y in 0..tmp_h {
+            let dy = (y0_u32 + y) as f64 + 0.5;
+            let local_y = (dy - canvas_ty) * inv_canvas_sy;
+            let rel_y = local_y - origin_y;
+            let src_y = rel_y / pattern_scale_y - 0.5;
+            let iy = (src_y + 0.5).floor() as i64;
+            let iy = iy.rem_euclid(src_h_i64) as u32;
+            ys.push(AxisSample { i0: iy, i1: iy, t: 0.0 });
+          }
+        }
+        ImageFilterQuality::Linear => {
+          for x in 0..tmp_w {
+            let dx = (x0_u32 + x) as f64 + 0.5;
+            let local_x = (dx - canvas_tx) * inv_canvas_sx;
+            let rel_x = local_x - origin_x;
+            let src_x = rel_x / pattern_scale_x - 0.5;
+            let x0f = src_x.floor();
+            let i0 = x0f as i64;
+            let t = (src_x - x0f).clamp(0.0, 1.0) as f32;
+            let i1 = i0 + 1;
+            let i0 = i0.rem_euclid(src_w_i64) as u32;
+            let i1 = i1.rem_euclid(src_w_i64) as u32;
+            xs.push(AxisSample { i0, i1, t });
+          }
+          for y in 0..tmp_h {
+            let dy = (y0_u32 + y) as f64 + 0.5;
+            let local_y = (dy - canvas_ty) * inv_canvas_sy;
+            let rel_y = local_y - origin_y;
+            let src_y = rel_y / pattern_scale_y - 0.5;
+            let y0f = src_y.floor();
+            let i0 = y0f as i64;
+            let t = (src_y - y0f).clamp(0.0, 1.0) as f32;
+            let i1 = i0 + 1;
+            let i0 = i0.rem_euclid(src_h_i64) as u32;
+            let i1 = i1.rem_euclid(src_h_i64) as u32;
+            ys.push(AxisSample { i0, i1, t });
+          }
+        }
+      }
+
+      let src = pixmap.data();
+      let dst = tmp.data_mut();
+      let dst_stride = tmp_w as usize * 4;
+      let src_stride = src_w as usize * 4;
+      let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+
+      let mut deadline_counter = 0usize;
+      for (y, ysamp) in ys.iter().enumerate() {
+        check_active_periodic(&mut deadline_counter, 128, RenderStage::Paint).map_err(Error::Render)?;
+        let row_dst = y * dst_stride;
+        let row0 = ysamp.i0 as usize * src_stride;
+        let row1 = ysamp.i1 as usize * src_stride;
+        let fy = ysamp.t;
+        for (x, xsamp) in xs.iter().enumerate() {
+          let col0 = xsamp.i0 as usize * 4;
+          let col1 = xsamp.i1 as usize * 4;
+          let fx = xsamp.t;
+
+          let idx00 = row0 + col0;
+          let idx10 = row0 + col1;
+          let idx01 = row1 + col0;
+          let idx11 = row1 + col1;
+
+          let read = |idx: usize| -> (f32, f32, f32, f32) {
+            (
+              src[idx] as f32,
+              src[idx + 1] as f32,
+              src[idx + 2] as f32,
+              src[idx + 3] as f32,
+            )
+          };
+
+          let (r00, g00, b00, a00) = read(idx00);
+          let (r10, g10, b10, a10) = read(idx10);
+          let (r01, g01, b01, a01) = read(idx01);
+          let (r11, g11, b11, a11) = read(idx11);
+
+          let top_r = lerp(r00, r10, fx);
+          let top_g = lerp(g00, g10, fx);
+          let top_b = lerp(b00, b10, fx);
+          let top_a = lerp(a00, a10, fx);
+
+          let bot_r = lerp(r01, r11, fx);
+          let bot_g = lerp(g01, g11, fx);
+          let bot_b = lerp(b01, b11, fx);
+          let bot_a = lerp(a01, a11, fx);
+
+          let mut r = lerp(top_r, bot_r, fy).round().clamp(0.0, 255.0) as u8;
+          let mut g = lerp(top_g, bot_g, fy).round().clamp(0.0, 255.0) as u8;
+          let mut b = lerp(top_b, bot_b, fy).round().clamp(0.0, 255.0) as u8;
+          let a = lerp(top_a, bot_a, fy).round().clamp(0.0, 255.0) as u8;
+          r = r.min(a);
+          g = g.min(a);
+          b = b.min(a);
+
+          let dst_idx = row_dst + x * 4;
+          dst[dst_idx] = r;
+          dst[dst_idx + 1] = g;
+          dst[dst_idx + 2] = b;
+          dst[dst_idx + 3] = a;
+        }
+      }
+
+      let paint = PixmapPaint {
+        opacity,
+        blend_mode: self.canvas.blend_mode(),
+        quality: item.filter_quality.into(),
+      };
+      self.canvas.pixmap_mut().draw_pixmap(
+        x0_u32 as i32,
+        y0_u32 as i32,
+        tmp.as_ref(),
+        &paint,
+        Transform::identity(),
+        clip_mask.as_ref(),
+      );
+
+      self.record_background_paint(background_timer);
+      return Ok(());
+    }
+
+    // Fallback to tiny-skia's pattern shader for non-axis-aligned transforms.
     let pixmap_ref = pixmap.as_ref();
     let mut paint = tiny_skia::Paint::default();
     paint.shader = Pattern::new(
@@ -9216,12 +9844,10 @@ impl DisplayListRenderer {
     ) else {
       return Ok(());
     };
-    let transform = self.canvas.transform();
-    let clip_mask = self.canvas.clip_mask().cloned();
     self
       .canvas
       .pixmap_mut()
-      .fill_rect(skia_rect, &paint, transform, clip_mask.as_ref());
+      .fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_ref());
 
     self.record_background_paint(background_timer);
     Ok(())
