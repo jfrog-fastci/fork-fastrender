@@ -3013,6 +3013,20 @@ fn set_border_style_side(
     crate::style::PhysicalSide::Left => styles.border_left_style = value,
   }
   *side_order_mut(&mut styles.logical.border_style_orders, side) = order;
+  if side_order(&styles.logical.border_width_orders, side) < 0 {
+    let implicit_width = if matches!(value, BorderStyle::None | BorderStyle::Hidden) {
+      Length::px(0.0)
+    } else {
+      Length::px(3.0)
+    };
+    let implicit_width = sanitize_non_negative_length(implicit_width);
+    match side {
+      crate::style::PhysicalSide::Top => styles.border_top_width = implicit_width,
+      crate::style::PhysicalSide::Right => styles.border_right_width = implicit_width,
+      crate::style::PhysicalSide::Bottom => styles.border_bottom_width = implicit_width,
+      crate::style::PhysicalSide::Left => styles.border_left_width = implicit_width,
+    }
+  }
 }
 
 fn set_border_color_side(
