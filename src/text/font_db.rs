@@ -2320,10 +2320,14 @@ mod tests {
 
   #[test]
   fn test_font_caching() {
-    let db = FontDatabase::new();
+    let mut db = FontDatabase::new();
     if db.is_empty() {
       return;
     }
+
+    // `FontDatabase::new()` may warm caches while selecting generic fallbacks when system fonts are
+    // enabled. Clear caches explicitly so this test exercises `load_font()` caching deterministically.
+    db.clear_cache();
 
     let id = db.query("sans-serif", FontWeight::NORMAL, FontStyle::Normal);
     if let Some(id) = id {

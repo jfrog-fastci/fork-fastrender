@@ -532,8 +532,19 @@ impl FragmentationAnalyzer {
       }
     }
 
-    if let Some((_, _, _, pos)) = best {
+    if let Some((_, _, kind_rank, pos)) = best {
       let clamped = pos.min(total_extent);
+      // Break opportunities between siblings can appear far before the fragmentainer limit when
+      // large empty gaps exist between siblings (common in absolutely-positioned/layered content).
+      //
+      // Choosing such an early boundary shifts the coordinate mapping for subsequent fragments
+      // because fragment stacking assumes fixed-size fragmentainers (`fragmentainer_size +
+      // fragmentainer_gap`). Prefer the natural fragmentainer limit unless the sibling boundary is
+      // effectively at the limit.
+      if kind_rank == 0 && clamped + LINE_FALLBACK_EPSILON < limit {
+        self.advance_line_starts(limit);
+        return limit;
+      }
       self.advance_line_starts(clamped);
       return clamped;
     }

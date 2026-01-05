@@ -6705,6 +6705,7 @@ mod tests {
   fn bidi_controls_do_not_contribute_advance() {
     let style = ComputedStyle::default();
     let ctx = FontContext::with_config(FontConfig::bundled_only());
+    ctx.clear_web_fonts();
     assert!(
       !ctx.database().is_empty(),
       "bundled font context should load deterministic fonts for tests"
@@ -8221,7 +8222,12 @@ mod tests {
 
   #[test]
   fn fallback_cache_hits_for_reused_clusters() {
-    let ctx = FontContext::new();
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    ctx.clear_web_fonts();
+    assert!(
+      !ctx.database().is_empty(),
+      "bundled font context should load deterministic fonts for tests"
+    );
     let mut style = ComputedStyle::default();
     style.font_family = vec!["sans-serif".to_string()].into();
     style.font_size = 16.0;
@@ -8229,7 +8235,9 @@ mod tests {
     let pipeline = ShapingPipeline::with_cache_capacity_for_test(1);
 
     let before = pipeline.fallback_cache_stats();
-    let first = match pipeline.shape("cache me please", &style, &ctx) {
+    // Keep the first non-control character stable across both runs so the ASCII fast path reuses
+    // the same glyph fallback cache key.
+    let first = match pipeline.shape("please cache me", &style, &ctx) {
       Ok(runs) => runs,
       Err(_) => return,
     };
