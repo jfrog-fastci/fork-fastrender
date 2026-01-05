@@ -7943,6 +7943,22 @@ const OFFLINE_FIXTURE_PLACEHOLDER_WOFF2: &[u8] =
   include_bytes!("../tests/pages/fixtures/assets/fonts/DejaVuSans-subset.woff2");
 const OFFLINE_FIXTURE_PLACEHOLDER_WOFF2_MIME: &str = "font/woff2";
 
+/// Deterministic 1x1 PNG placeholder used for offline fixtures.
+///
+/// Exposed so tooling (e.g. `bundle_page cache --allow-missing`) can avoid writing empty/invalid
+/// bytes for missing image resources.
+pub fn offline_placeholder_png_bytes() -> &'static [u8] {
+  OFFLINE_FIXTURE_PLACEHOLDER_PNG
+}
+
+/// Deterministic WOFF2 placeholder font used for offline fixtures.
+///
+/// Exposed so tooling (e.g. `bundle_page cache --allow-missing`) can avoid writing empty/invalid
+/// bytes for missing font resources.
+pub fn offline_placeholder_woff2_bytes() -> &'static [u8] {
+  OFFLINE_FIXTURE_PLACEHOLDER_WOFF2
+}
+
 fn should_substitute_empty_image_body(
   kind: FetchContextKind,
   status: u16,

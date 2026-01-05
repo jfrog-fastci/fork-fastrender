@@ -422,7 +422,7 @@ fn bundle_page_cache_fails_when_resource_missing() {
 }
 
 #[test]
-fn bundle_page_cache_allow_missing_inserts_placeholders() {
+fn bundle_page_cache_allow_missing_inserts_typed_placeholders() {
   let tmp = TempDir::new().expect("tempdir");
 
   let html_dir = tmp.path().join("fetches/html");
@@ -435,7 +435,105 @@ fn bundle_page_cache_allow_missing_inserts_placeholders() {
   let html_path = html_dir.join(format!("{stem}.html"));
   std::fs::write(
     &html_path,
-    "<!doctype html><html><head><link rel=\"stylesheet\" href=\"/a.css\"></head><body><img src=\"img.png\"></body></html>",
+    "<!doctype html><html><head><link rel=\"stylesheet\" href=\"/missing.css\"><style>@font-face{font-family:'Test';src:url('/missing.woff2');}</style></head><body><iframe src=\"/frame.html\"></iframe><img src=\"img.png\"></body></html>",
+  )
+  .expect("write html");
+  std::fs::write(
+    html_path.with_extension("html.meta"),
+    format!("content-type: text/html\nurl: {page_url}\n"),
+  )
+  .expect("write meta");
+
+  let missing_css_url = "https://example.invalid/missing.css".to_string();
+  let missing_img_url = "https://example.invalid/img.png".to_string();
+  let missing_font_url = "https://example.invalid/missing.woff2".to_string();
+  let missing_frame_url = "https://example.invalid/frame.html".to_string();
+
+  let bundle_dir = tmp.path().join("bundle");
+  let status = Command::new(env!("CARGO_BIN_EXE_bundle_page"))
+    .current_dir(tmp.path())
+    .args(["cache", stem, "--out"])
+    .arg(bundle_dir.to_string_lossy().as_ref())
+    .args(["--cache-dir"])
+    .arg(&asset_dir)
+    .arg("--allow-missing")
+    .status()
+    .expect("run bundle_page cache");
+
+  assert!(
+    status.success(),
+    "expected cache capture to succeed with --allow-missing"
+  );
+
+  let bundle = Bundle::load(&bundle_dir).expect("load bundle");
+  for url in [
+    missing_css_url.as_str(),
+    missing_img_url.as_str(),
+    missing_font_url.as_str(),
+    missing_frame_url.as_str(),
+  ] {
+    assert!(
+      bundle.manifest().resources.contains_key(url),
+      "bundle should include placeholder for missing resource: {url}"
+    );
+  }
+
+  let fetcher = BundledFetcher::new(bundle);
+
+  let missing_img = fetcher
+    .fetch(&missing_img_url)
+    .expect("fetch placeholder image");
+  assert_eq!(missing_img.content_type.as_deref(), Some("image/png"));
+  assert!(
+    missing_img.bytes.starts_with(b"\x89PNG"),
+    "expected PNG placeholder bytes"
+  );
+
+  let missing_font = fetcher
+    .fetch(&missing_font_url)
+    .expect("fetch placeholder font");
+  assert_eq!(missing_font.content_type.as_deref(), Some("font/woff2"));
+  assert!(!missing_font.bytes.is_empty(), "font placeholder should be non-empty");
+
+  let missing_css = fetcher
+    .fetch(&missing_css_url)
+    .expect("fetch placeholder stylesheet");
+  assert_eq!(missing_css.content_type.as_deref(), Some("text/css"));
+  assert!(
+    std::str::from_utf8(&missing_css.bytes).is_ok(),
+    "stylesheet placeholder should be valid UTF-8"
+  );
+
+  let missing_frame = fetcher
+    .fetch(&missing_frame_url)
+    .expect("fetch placeholder document");
+  assert_eq!(
+    missing_frame.content_type.as_deref(),
+    Some("text/html; charset=utf-8")
+  );
+  assert!(
+    missing_frame
+      .bytes
+      .starts_with(b"<!doctype html>"),
+    "document placeholder should start with a doctype"
+  );
+}
+
+#[test]
+fn bundle_page_cache_falls_back_to_kind_mismatch_disk_entries() {
+  let tmp = TempDir::new().expect("tempdir");
+
+  let html_dir = tmp.path().join("fetches/html");
+  std::fs::create_dir_all(&html_dir).expect("create html dir");
+  let asset_dir = tmp.path().join("fetches/assets");
+  std::fs::create_dir_all(&asset_dir).expect("create asset dir");
+
+  let stem = "example.invalid";
+  let page_url = "https://example.invalid/";
+  let html_path = html_dir.join(format!("{stem}.html"));
+  std::fs::write(
+    &html_path,
+    "<!doctype html><html><head><link rel=\"stylesheet\" href=\"/a.css\"></head><body></body></html>",
   )
   .expect("write html");
   std::fs::write(
@@ -445,10 +543,16 @@ fn bundle_page_cache_allow_missing_inserts_placeholders() {
   .expect("write meta");
 
   let css_url = "https://example.invalid/a.css".to_string();
-  let missing_img_url = "https://example.invalid/img.png".to_string();
+  // Extensionless background image URL: bundle capture will infer `FetchDestination::Other`, but the
+  // renderer typically fetches it as an image.
+  let bg_url = "https://example.invalid/bg".to_string();
 
   let mut responses: HashMap<String, (Vec<u8>, &'static str)> = HashMap::new();
-  responses.insert(css_url.clone(), (b"body {}".to_vec(), "text/css"));
+  responses.insert(
+    css_url.clone(),
+    (b"body { background-image: url(\"bg\"); }".to_vec(), "text/css"),
+  );
+  responses.insert(bg_url.clone(), (b"png-bytes".to_vec(), "image/png"));
 
   let mut disk_config = DiskCacheConfig::default();
   disk_config.namespace = Some(disk_cache_namespace());
@@ -466,37 +570,35 @@ fn bundle_page_cache_allow_missing_inserts_placeholders() {
   cache_writer
     .fetch_with_request(FetchRequest::new(&css_url, FetchDestination::Style))
     .expect("warm css");
+  cache_writer
+    .fetch_with_request(FetchRequest::new(&bg_url, FetchDestination::Image))
+    .expect("warm bg");
 
   let bundle_dir = tmp.path().join("bundle");
   let status = Command::new(env!("CARGO_BIN_EXE_bundle_page"))
     .current_dir(tmp.path())
     .args(["cache", stem, "--out"])
     .arg(bundle_dir.to_string_lossy().as_ref())
-    .arg("--allow-missing")
+    .args(["--cache-dir"])
+    .arg(&asset_dir)
     .status()
     .expect("run bundle_page cache");
 
   assert!(
     status.success(),
-    "expected cache capture to succeed with --allow-missing"
+    "expected cache capture to succeed when asset is present under a different cache kind"
   );
 
   let bundle = Bundle::load(&bundle_dir).expect("load bundle");
   assert!(
-    bundle
-      .manifest()
-      .resources
-      .contains_key(missing_img_url.as_str()),
-    "bundle should include placeholder for missing resource"
+    bundle.manifest().resources.contains_key(bg_url.as_str()),
+    "bundle should include extensionless image discovered from CSS url()"
   );
 
   let fetcher = BundledFetcher::new(bundle);
-  let missing = fetcher
-    .fetch(&missing_img_url)
-    .expect("fetch placeholder resource");
-  assert!(
-    missing.bytes.is_empty(),
-    "placeholder bytes should be empty"
+  assert_eq!(
+    fetcher.fetch(&bg_url).expect("fetch bg").bytes,
+    b"png-bytes".to_vec()
   );
 }
 

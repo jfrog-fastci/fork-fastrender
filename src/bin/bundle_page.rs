@@ -24,9 +24,9 @@ use fastrender::resource::bundle::{
 };
 use fastrender::resource::{
   ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane, ensure_stylesheet_mime_sane,
-  origin_from_url, DocumentOrigin, FetchContextKind, FetchDestination, FetchRequest,
-  FetchedResource, ResourceAccessPolicy, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE,
-  DEFAULT_USER_AGENT,
+  offline_placeholder_png_bytes, offline_placeholder_woff2_bytes, origin_from_url, DocumentOrigin,
+  FetchContextKind, FetchDestination, FetchRequest, FetchedResource, ResourceAccessPolicy,
+  ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
 };
 #[cfg(feature = "disk_cache")]
 use fastrender::resource::{
@@ -153,7 +153,7 @@ struct CacheArgs {
   #[arg(long, default_value = DEFAULT_ACCEPT_LANGUAGE)]
   accept_language: String,
 
-  /// Allow missing subresources by inserting empty placeholder bytes into the bundle.
+  /// Allow missing subresources by inserting deterministic placeholders into the bundle.
   ///
   /// By default, cache capture fails when a required subresource is missing from the disk cache so
   /// the resulting bundle is deterministic and self-contained.
@@ -328,6 +328,73 @@ impl ResourceFetcher for CacheOfflineNetworkFetcher {
       return Err(Self::cache_miss_error());
     }
     self.inner.fetch_with_validation(url, etag, last_modified)
+  }
+}
+
+/// Wrapper for cache-capture mode that retries `FetchDestination::Other` misses against the disk
+/// cache using a small ordered set of alternate destinations.
+///
+/// The disk cache keys include `FetchContextKind` (derived from destination). During bundle capture
+/// we often infer destination from URL extensions, but extensionless URLs can be requested by the
+/// renderer in an `Image`/`Font`/`Style` context. Retrying avoids false cache misses when the bytes
+/// are already present under a different kind.
+#[cfg(feature = "disk_cache")]
+#[derive(Clone)]
+struct CacheKindMismatchFallbackFetcher {
+  inner: Arc<dyn ResourceFetcher>,
+}
+
+#[cfg(feature = "disk_cache")]
+impl CacheKindMismatchFallbackFetcher {
+  fn new(inner: Arc<dyn ResourceFetcher>) -> Self {
+    Self { inner }
+  }
+
+  fn is_http_like(url: &str) -> bool {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+      return false;
+    }
+
+    match url::Url::parse(trimmed) {
+      Ok(parsed) => matches!(parsed.scheme(), "http" | "https"),
+      Err(_) => {
+        let lower = trimmed.to_ascii_lowercase();
+        lower.starts_with("http://") || lower.starts_with("https://")
+      }
+    }
+  }
+}
+
+#[cfg(feature = "disk_cache")]
+impl ResourceFetcher for CacheKindMismatchFallbackFetcher {
+  fn fetch(&self, url: &str) -> Result<FetchedResource> {
+    self.inner.fetch(url)
+  }
+
+  fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+    match self.inner.fetch_with_request(req) {
+      Ok(res) => Ok(res),
+      Err(err) => {
+        if req.destination == FetchDestination::Other && Self::is_http_like(req.url) {
+          for dest in [
+            FetchDestination::Image,
+            FetchDestination::Font,
+            FetchDestination::Style,
+          ] {
+            let mut retry = FetchRequest::new(req.url, dest);
+            if let Some(referrer) = req.referrer {
+              retry = retry.with_referrer(referrer);
+            }
+            if let Ok(res) = self.inner.fetch_with_request(retry) {
+              return Ok(res);
+            }
+          }
+        }
+
+        Err(err)
+      }
+    }
   }
 }
 
@@ -691,6 +758,8 @@ fn cache_bundle_disk_cache(args: CacheArgs) -> Result<()> {
     memory_config,
     disk_config,
   ));
+  let disk_fetcher: Arc<dyn ResourceFetcher> =
+    Arc::new(CacheKindMismatchFallbackFetcher::new(disk_fetcher));
 
   let recording = RecordingFetcher::new(disk_fetcher);
   let crawl_mode = if args.allow_missing {
@@ -1087,8 +1156,38 @@ enum CrawlMode {
   BestEffort,
   /// Fail if any discovered subresource cannot be fetched.
   Strict,
-  /// Insert empty placeholder bytes for missing resources.
+  /// Insert deterministic placeholder resources for missing resources.
   AllowMissing,
+}
+
+fn placeholder_resource(destination: FetchDestination, url: &str) -> FetchedResource {
+  match destination {
+    FetchDestination::Image => FetchedResource::with_final_url(
+      offline_placeholder_png_bytes().to_vec(),
+      Some("image/png".to_string()),
+      Some(url.to_string()),
+    ),
+    FetchDestination::Font => FetchedResource::with_final_url(
+      offline_placeholder_woff2_bytes().to_vec(),
+      Some("font/woff2".to_string()),
+      Some(url.to_string()),
+    ),
+    FetchDestination::Style => FetchedResource::with_final_url(
+      b"/* missing */".to_vec(),
+      Some("text/css".to_string()),
+      Some(url.to_string()),
+    ),
+    FetchDestination::Document => FetchedResource::with_final_url(
+      b"<!doctype html><html></html>".to_vec(),
+      Some("text/html; charset=utf-8".to_string()),
+      Some(url.to_string()),
+    ),
+    FetchDestination::Other => FetchedResource::with_final_url(
+      Vec::new(),
+      Some("application/octet-stream".to_string()),
+      Some(url.to_string()),
+    ),
+  }
 }
 
 fn crawl_document(
@@ -1206,6 +1305,7 @@ fn crawl_document(
     fetcher: &RecordingFetcher,
     fetch_errors: &mut Vec<(String, String)>,
     url: &str,
+    destination: FetchDestination,
     err: &fastrender::Error,
     mode: CrawlMode,
   ) {
@@ -1218,10 +1318,7 @@ fn crawl_document(
       }
       CrawlMode::AllowMissing => {
         eprintln!("Warning: missing resource; inserting placeholder: {url}: {err}");
-        fetcher.record_override(
-          url,
-          FetchedResource::with_final_url(Vec::new(), None, Some(url.to_string())),
-        );
+        fetcher.record_override(url, placeholder_resource(destination, url));
       }
     }
   }
@@ -1351,7 +1448,7 @@ fn crawl_document(
   const MAX_CRAWL_URLS: usize = 10_000;
   // Keep offline bundles tractable by avoiding multi-megabyte image downloads becoming part of the
   // deterministic fixture. The HTML/CSS rewrite step will still produce local references for these
-  // URLs, but the stored bytes are replaced with an empty placeholder.
+  // URLs, but the stored bytes are replaced with a deterministic 1x1 PNG placeholder.
   const MAX_CRAWL_IMAGE_BYTES: usize = 1_000_000;
   while let Some((url, destination, referrer)) = queue.pop_front() {
     if seen_urls.len() > MAX_CRAWL_URLS {
@@ -1380,21 +1477,9 @@ fn crawl_document(
     let res = match fetcher.fetch_with_request(req) {
       Ok(res) => res,
       Err(err) => {
-        match mode {
-          CrawlMode::BestEffort => {
-            eprintln!("Warning: failed to fetch {url}: {err}");
-          }
-          CrawlMode::Strict => {
-            fetch_errors.push((url, err.to_string()));
-          }
-          CrawlMode::AllowMissing => {
-            eprintln!("Warning: missing resource; inserting placeholder: {url}: {err}");
-            fetcher.record_override(
-              &url,
-              FetchedResource::with_final_url(Vec::new(), None, Some(url.clone())),
-            );
-            fetched_urls.insert(url.clone());
-          }
+        handle_crawl_failure(fetcher, &mut fetch_errors, &url, destination, &err, mode);
+        if matches!(mode, CrawlMode::AllowMissing) {
+          fetched_urls.insert(url.clone());
         }
         continue;
       }
@@ -1449,7 +1534,7 @@ fn crawl_document(
       FetchDestination::Other => Ok(()),
     };
     if let Err(err) = validation {
-      handle_crawl_failure(fetcher, &mut fetch_errors, &url, &err, mode);
+      handle_crawl_failure(fetcher, &mut fetch_errors, &url, destination, &err, mode);
       continue;
     }
 
@@ -1459,7 +1544,8 @@ fn crawl_document(
         res.bytes.len()
       );
       let mut truncated = res.clone();
-      truncated.bytes.clear();
+      truncated.bytes = offline_placeholder_png_bytes().to_vec();
+      truncated.content_type = Some("image/png".to_string());
       fetcher.replace(&url, truncated);
       continue;
     }
