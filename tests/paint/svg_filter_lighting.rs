@@ -6,7 +6,7 @@ use fastrender::paint::svg_filter::{
   SvgFilterRegion, SvgFilterUnits, SvgLength,
 };
 use fastrender::Rgba;
-use tiny_skia::{Pixmap, PremultipliedColorU8};
+use tiny_skia::{Pixmap, PremultipliedColorU8, Transform};
 
 fn solid_pixmap(width: u32, height: u32, color: PremultipliedColorU8) -> Pixmap {
   let mut pixmap = Pixmap::new(width, height).expect("pixmap");
@@ -455,4 +455,79 @@ fn diffuse_lighting_regression_premultiply_and_normal_sign() {
     255,
     "expected fully opaque output for opaque input"
   );
+}
+
+fn render_resvg(svg: &str, width: u32, height: u32) -> Pixmap {
+  use resvg::usvg;
+
+  let options = usvg::Options::default();
+  let tree = usvg::Tree::from_str(svg, &options).expect("parse SVG with resvg");
+  let mut pixmap = Pixmap::new(width, height).expect("pixmap");
+  resvg::render(&tree, Transform::identity(), &mut pixmap.as_mut());
+  pixmap
+}
+
+fn center_pixel(pixmap: &Pixmap) -> (u8, u8, u8, u8) {
+  let x = pixmap.width() / 2;
+  let y = pixmap.height() / 2;
+  let px = pixmap.pixel(x, y).expect("center pixel");
+  (px.red(), px.green(), px.blue(), px.alpha())
+}
+
+#[test]
+fn lighting_output_alpha_matches_resvg_for_intensity() {
+  // Flat surface + distant light straight on => N·L = 1, so intensity is purely the constant.
+  // This isolates the question of whether the lighting output alpha encodes intensity.
+  let svg = r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10">
+      <filter id="f" x="0" y="0" width="10" height="10"
+              filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
+              color-interpolation-filters="sRGB">
+        <feDiffuseLighting in="SourceAlpha" surfaceScale="0" diffuseConstant="0.5" lighting-color="white">
+          <feDistantLight azimuth="0" elevation="90" />
+        </feDiffuseLighting>
+      </filter>
+      <rect width="10" height="10" fill="white" filter="url(#f)" />
+    </svg>
+  "#;
+
+  let expected = center_pixel(&render_resvg(svg, 10, 10));
+
+  let filter =
+    parse_svg_filter_from_svg_document(svg, Some("f"), &ImageCache::new()).expect("filter");
+  let mut pixmap = solid_pixmap(10, 10, PremultipliedColorU8::from_rgba(255, 255, 255, 255).unwrap());
+  let bbox = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+  apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
+  let actual = center_pixel(&pixmap);
+
+  assert_eq!(actual, expected, "FastRender lighting must match resvg output");
+}
+
+#[test]
+fn lighting_transparent_input_matches_resvg() {
+  // If the bump map is fully transparent (alpha=0 everywhere), engines disagree on whether the
+  // lighting primitive should still emit a flat lit surface. Lock the behavior to resvg/Chrome.
+  let svg = r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10">
+      <filter id="f" x="0" y="0" width="10" height="10"
+              filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
+              color-interpolation-filters="sRGB">
+        <feDiffuseLighting in="SourceAlpha" surfaceScale="0" diffuseConstant="0.5" lighting-color="white">
+          <feDistantLight azimuth="0" elevation="90" />
+        </feDiffuseLighting>
+      </filter>
+      <rect width="10" height="10" fill="white" fill-opacity="0" filter="url(#f)" />
+    </svg>
+  "#;
+
+  let expected = center_pixel(&render_resvg(svg, 10, 10));
+
+  let filter =
+    parse_svg_filter_from_svg_document(svg, Some("f"), &ImageCache::new()).expect("filter");
+  let mut pixmap = solid_pixmap(10, 10, PremultipliedColorU8::TRANSPARENT);
+  let bbox = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+  apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
+  let actual = center_pixel(&pixmap);
+
+  assert_eq!(actual, expected, "FastRender lighting must match resvg output");
 }

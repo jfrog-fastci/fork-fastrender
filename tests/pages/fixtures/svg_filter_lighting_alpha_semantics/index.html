@@ -1,0 +1,47 @@
+<!doctype html>
+<style>
+  body {
+    margin: 0;
+    padding: 12px;
+    background: #ffffff;
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    font: 12px/1 system-ui, sans-serif;
+  }
+
+  .box {
+    width: 48px;
+    height: 48px;
+    background: #000;
+  }
+
+  /* Fully transparent source pixels (alpha=0 everywhere). */
+  .transparent {
+    background: rgba(0, 0, 0, 0);
+  }
+
+  svg {
+    position: absolute;
+    width: 0;
+    height: 0;
+  }
+</style>
+
+<svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  <defs>
+    <filter id="lighting" color-interpolation-filters="sRGB">
+      <feDiffuseLighting
+        in="SourceAlpha"
+        surfaceScale="0"
+        diffuseConstant="0.5"
+        lighting-color="white"
+      >
+        <feDistantLight azimuth="0" elevation="90" />
+      </feDiffuseLighting>
+    </filter>
+  </defs>
+</svg>
+
+<div class="box" style="filter: url(#lighting)"></div>
+<div class="box transparent" style="filter: url(#lighting)"></div>

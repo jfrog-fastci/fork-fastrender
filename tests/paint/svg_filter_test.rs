@@ -1,291 +1,258 @@
 use fastrender::geometry::Rect;
-use fastrender::paint::svg_filter::{
-  apply_svg_filter, ChannelSelector, ColorInterpolationFilters, FilterInput, FilterPrimitive,
-  FilterStep, ImagePrimitive, SvgFilter, SvgFilterRegion, SvgFilterUnits, SvgLength,
-};
-use tiny_skia::{Pixmap, PremultipliedColorU8};
+use fastrender::image_loader::ImageCache;
+use fastrender::paint::svg_filter::{apply_svg_filter, parse_svg_filter_from_svg_document};
+use tiny_skia::{Pixmap, PremultipliedColorU8, Transform};
+
+fn render_resvg(svg: &str, width: u32, height: u32) -> Pixmap {
+  use resvg::usvg;
+
+  let options = usvg::Options::default();
+  let tree = usvg::Tree::from_str(svg, &options).expect("parse SVG with resvg");
+  let mut pixmap = Pixmap::new(width, height).expect("pixmap");
+  resvg::render(&tree, Transform::identity(), &mut pixmap.as_mut());
+  pixmap
+}
+
+fn empty_pixmap(width: u32, height: u32) -> Pixmap {
+  let mut pixmap = Pixmap::new(width, height).expect("pixmap");
+  for px in pixmap.pixels_mut() {
+    *px = PremultipliedColorU8::TRANSPARENT;
+  }
+  pixmap
+}
+
+fn pixmap_with_pixel(width: u32, height: u32, x: u32, y: u32, color: PremultipliedColorU8) -> Pixmap {
+  let mut pixmap = empty_pixmap(width, height);
+  if x < width && y < height {
+    pixmap.pixels_mut()[(y * width + x) as usize] = color;
+  }
+  pixmap
+}
+
+fn fill_rect(
+  pixmap: &mut Pixmap,
+  x: u32,
+  y: u32,
+  width: u32,
+  height: u32,
+  color: PremultipliedColorU8,
+) {
+  let pix_w = pixmap.width();
+  let pix_h = pixmap.height();
+  if pix_w == 0 || pix_h == 0 {
+    return;
+  }
+  let end_x = x.saturating_add(width).min(pix_w);
+  let end_y = y.saturating_add(height).min(pix_h);
+  let pixels = pixmap.pixels_mut();
+  for yy in y.min(pix_h)..end_y {
+    let row = (yy * pix_w) as usize;
+    for xx in x.min(pix_w)..end_x {
+      pixels[row + xx as usize] = color;
+    }
+  }
+}
 
 fn gradient_pixmap() -> Pixmap {
-  let mut pixmap = Pixmap::new(3, 1).unwrap();
-  let colors = [(255, 0, 0, 255), (0, 255, 0, 255), (0, 0, 255, 255)];
+  let mut pixmap = Pixmap::new(3, 1).expect("pixmap");
+  let colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255)];
   for (idx, px) in pixmap.pixels_mut().iter_mut().enumerate() {
-    let (r, g, b, a) = colors[idx];
-    *px = PremultipliedColorU8::from_rgba(r, g, b, a).unwrap_or(PremultipliedColorU8::TRANSPARENT);
+    let (r, g, b) = colors[idx];
+    *px = PremultipliedColorU8::from_rgba(r, g, b, 255).expect("premultiply");
   }
   pixmap
 }
 
-fn displacement_map_pixmap() -> Pixmap {
-  let mut pixmap = Pixmap::new(3, 1).unwrap();
-  for px in pixmap.pixels_mut() {
-    // Premultiplied RGBA such that the unpremultiplied red channel is 1.0 (max rightward shift)
-    // and the unpremultiplied blue channel is exactly 0.5 (no Y displacement).
-    //
-    // Note: `apply_displacement_map` unpremultiplies the sampled map pixel before extracting
-    // channel values, so using a non-opaque alpha here makes it possible to represent 0.5 exactly.
-    *px = PremultipliedColorU8::from_rgba(254, 0, 127, 254)
-      .unwrap_or(PremultipliedColorU8::TRANSPARENT);
-  }
-  pixmap
-}
+#[test]
+fn displacement_map_matches_resvg_for_max_displacement() {
+  // Saturated map channels should yield a max-strength displacement.
+  let svg = r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="5" height="5" viewBox="0 0 5 5">
+      <filter id="f" x="0" y="0" width="5" height="5"
+              filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
+              color-interpolation-filters="sRGB">
+        <feFlood flood-color="rgb(255,0,255)" result="map" />
+        <feDisplacementMap in="SourceGraphic" in2="map" scale="2"
+                           xChannelSelector="R" yChannelSelector="B" />
+      </filter>
+      <g filter="url(#f)">
+        <rect width="5" height="5" fill="rgba(0,0,0,0)" />
+        <rect x="4" y="4" width="1" height="1" fill="rgb(255,0,0)" />
+      </g>
+    </svg>
+  "#;
 
-fn pixel(pixmap: &Pixmap, x: u32) -> (u8, u8, u8, u8) {
-  let px = pixmap.pixel(x, 0).unwrap();
-  (px.red(), px.green(), px.blue(), px.alpha())
-}
+  let expected = render_resvg(svg, 5, 5);
+  let filter =
+    parse_svg_filter_from_svg_document(svg, Some("f"), &ImageCache::new()).expect("filter");
 
-fn displacement_filter(scale: f32) -> SvgFilter {
-  let map = displacement_map_pixmap();
-  let mut filter = SvgFilter {
-    color_interpolation_filters: ColorInterpolationFilters::SRGB,
-    steps: vec![
-      FilterStep {
-        result: Some("map".to_string()),
-        color_interpolation_filters: None,
-        primitive: FilterPrimitive::Image(ImagePrimitive::from_pixmap(map)),
-        region: None,
-      },
-      FilterStep {
-        result: None,
-        color_interpolation_filters: None,
-        primitive: FilterPrimitive::DisplacementMap {
-          in1: FilterInput::SourceGraphic,
-          in2: FilterInput::Reference("map".to_string()),
-          scale,
-          x_channel: ChannelSelector::R,
-          y_channel: ChannelSelector::B,
-        },
-        region: None,
-      },
-    ],
-    region: SvgFilterRegion {
-      x: SvgLength::Percent(-0.1),
-      y: SvgLength::Percent(-0.1),
-      width: SvgLength::Percent(1.2),
-      height: SvgLength::Percent(1.2),
-      units: SvgFilterUnits::ObjectBoundingBox,
-    },
-    filter_res: None,
-    primitive_units: SvgFilterUnits::UserSpaceOnUse,
-    fingerprint: 0,
-  };
-  filter.refresh_fingerprint();
-  filter
+  let mut pixmap = pixmap_with_pixel(5, 5, 4, 4, PremultipliedColorU8::from_rgba(255, 0, 0, 255).unwrap());
+  apply_svg_filter(&filter, &mut pixmap, 1.0, Rect::from_xywh(0.0, 0.0, 5.0, 5.0)).unwrap();
+
+  assert_eq!(
+    pixmap.data(),
+    expected.data(),
+    "FastRender displacement map must match resvg output"
+  );
 }
 
 #[test]
-fn displacement_map_shifts_pixels_right() {
-  let mut pixmap = gradient_pixmap();
-  let filter = displacement_filter(2.0);
-  let bbox = Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32);
+fn displacement_map_uses_premultiplied_map_channels() {
+  // resvg interprets displacement channels as premultiplied values. When the map is
+  // semi-transparent white, the premultiplied R channel equals the alpha channel (0.5), so the
+  // displacement should be ~zero.
+  let svg = r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="5" height="5" viewBox="0 0 5 5">
+      <filter id="f" x="0" y="0" width="5" height="5"
+              filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
+              color-interpolation-filters="sRGB">
+        <feFlood flood-color="white" flood-opacity="0.5" result="map" />
+        <feDisplacementMap in="SourceGraphic" in2="map" scale="2"
+                           xChannelSelector="R" yChannelSelector="R" />
+      </filter>
+      <g filter="url(#f)">
+        <rect width="5" height="5" fill="rgba(0,0,0,0)" />
+        <rect x="1" y="1" width="3" height="3" fill="rgb(255,0,0)" />
+      </g>
+    </svg>
+  "#;
 
-  apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
+  let expected = render_resvg(svg, 5, 5);
+  let filter =
+    parse_svg_filter_from_svg_document(svg, Some("f"), &ImageCache::new()).expect("filter");
 
-  assert_eq!(pixel(&pixmap, 0), (0, 255, 0, 255));
-  assert_eq!(pixel(&pixmap, 1), (0, 0, 255, 255));
-  assert_eq!(pixel(&pixmap, 2), (0, 0, 0, 0));
+  let mut pixmap = empty_pixmap(5, 5);
+  fill_rect(
+    &mut pixmap,
+    1,
+    1,
+    3,
+    3,
+    PremultipliedColorU8::from_rgba(255, 0, 0, 255).expect("red"),
+  );
+  apply_svg_filter(&filter, &mut pixmap, 1.0, Rect::from_xywh(0.0, 0.0, 5.0, 5.0)).unwrap();
+
+  let expected_px = expected.pixel(2, 2).expect("expected pixel");
+  let actual_px = pixmap.pixel(2, 2).expect("actual pixel");
+  assert_eq!(
+    (actual_px.red(), actual_px.green(), actual_px.blue(), actual_px.alpha()),
+    (
+      expected_px.red(),
+      expected_px.green(),
+      expected_px.blue(),
+      expected_px.alpha()
+    ),
+    "FastRender displacement map must use premultiplied channel values like resvg"
+  );
 }
 
 #[test]
-fn displacement_map_scale_zero_is_identity() {
+fn displacement_map_scale_respects_object_bounding_box_units() {
+  // When primitiveUnits=objectBoundingBox, `scale` is relative to the filtered element's bbox, and
+  // scales independently in X/Y. Use a non-square bbox so per-axis scaling is observable.
+  let svg = r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="4" height="2" viewBox="0 0 4 2">
+      <filter id="f" x="0" y="0" width="4" height="2"
+              filterUnits="userSpaceOnUse" primitiveUnits="objectBoundingBox"
+              color-interpolation-filters="sRGB">
+        <feFlood flood-color="rgb(255,0,255)" result="map" />
+        <feDisplacementMap in="SourceGraphic" in2="map" scale="0.5"
+                           xChannelSelector="R" yChannelSelector="B" />
+      </filter>
+      <g filter="url(#f)">
+        <rect width="4" height="2" fill="rgba(0,0,0,0)" />
+        <rect x="3" y="1" width="1" height="1" fill="rgb(255,0,0)" />
+      </g>
+    </svg>
+  "#;
+
+  let expected = render_resvg(svg, 4, 2);
+  let filter =
+    parse_svg_filter_from_svg_document(svg, Some("f"), &ImageCache::new()).expect("filter");
+
+  let mut pixmap = pixmap_with_pixel(4, 2, 3, 1, PremultipliedColorU8::from_rgba(255, 0, 0, 255).expect("red"));
+  apply_svg_filter(&filter, &mut pixmap, 1.0, Rect::from_xywh(0.0, 0.0, 4.0, 2.0)).unwrap();
+
+  assert_eq!(
+    pixmap.data(),
+    expected.data(),
+    "FastRender displacement map objectBoundingBox scaling must match resvg"
+  );
+}
+
+#[test]
+fn displacement_map_respects_anisotropic_filter_res_scale() {
+  // Stretch the filter graph in X via `filterRes` so the displacement map scale must be converted
+  // with separate X/Y pixel scales (i.e. not using a single `scale_avg`).
+  let svg = r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="3" height="1" viewBox="0 0 3 1">
+      <filter id="f" x="0" y="0" width="3" height="1"
+              filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
+              filterRes="6 1"
+              color-interpolation-filters="sRGB">
+        <feFlood flood-color="rgb(128,0,0)" result="map" />
+        <feDisplacementMap in="SourceGraphic" in2="map" scale="1.5"
+                           xChannelSelector="R" yChannelSelector="A" />
+      </filter>
+      <g filter="url(#f)">
+        <rect x="0" y="0" width="1" height="1" fill="rgb(255,0,0)" />
+        <rect x="1" y="0" width="1" height="1" fill="rgb(0,255,0)" />
+        <rect x="2" y="0" width="1" height="1" fill="rgb(0,0,255)" />
+      </g>
+    </svg>
+  "#;
+
+  let expected = render_resvg(svg, 3, 1);
+  let filter =
+    parse_svg_filter_from_svg_document(svg, Some("f"), &ImageCache::new()).expect("filter");
+
   let mut pixmap = gradient_pixmap();
-  let expected: Vec<_> = (0..pixmap.width()).map(|x| pixel(&pixmap, x)).collect();
+  apply_svg_filter(&filter, &mut pixmap, 1.0, Rect::from_xywh(0.0, 0.0, 3.0, 1.0)).unwrap();
 
-  let filter = displacement_filter(0.0);
-  let bbox = Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32);
-  apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
-
-  for x in 0..pixmap.width() {
-    assert_eq!(pixel(&pixmap, x), expected[x as usize]);
-  }
+  assert_eq!(
+    pixmap.data(),
+    expected.data(),
+    "FastRender displacement map must match resvg when filterRes scales are anisotropic"
+  );
 }
 
 #[test]
 fn displacement_map_interprets_map_in_color_interpolation_space() {
-  let mut primary = gradient_pixmap();
-  let mut map = Pixmap::new(primary.width(), primary.height()).unwrap();
-  // Premultiplied 50% gray at 50% alpha.
-  // When interpreted in linearRGB, this becomes ~21% gray, producing a leftward displacement.
-  let half = PremultipliedColorU8::from_rgba(64, 64, 64, 128).unwrap();
-  for px in map.pixels_mut() {
-    *px = half;
-  }
+  // When `color-interpolation-filters` is linearRGB, the map channels must be interpreted after
+  // converting to linear space.
+  let svg = r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="5" height="5" viewBox="0 0 5 5">
+      <filter id="f" x="0" y="0" width="5" height="5"
+              filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
+              color-interpolation-filters="linearRGB">
+        <feFlood flood-color="rgb(128,128,128)" result="map" />
+        <feDisplacementMap in="SourceGraphic" in2="map" scale="2"
+                           xChannelSelector="R" yChannelSelector="R" />
+      </filter>
+      <g filter="url(#f)">
+        <rect width="5" height="5" fill="rgba(0,0,0,0)" />
+        <rect x="2" y="2" width="1" height="1" fill="rgb(255,0,0)" />
+      </g>
+    </svg>
+  "#;
 
-  let mut filter = SvgFilter {
-    color_interpolation_filters: ColorInterpolationFilters::LinearRGB,
-    steps: vec![
-      FilterStep {
-        result: Some("map".to_string()),
-        color_interpolation_filters: None,
-        primitive: FilterPrimitive::Image(ImagePrimitive::from_pixmap(map)),
-        region: None,
-      },
-      FilterStep {
-        result: None,
-        color_interpolation_filters: None,
-        primitive: FilterPrimitive::DisplacementMap {
-          in1: FilterInput::SourceGraphic,
-          in2: FilterInput::Reference("map".to_string()),
-          scale: 4.0,
-          x_channel: ChannelSelector::R,
-          y_channel: ChannelSelector::A,
-        },
-        region: None,
-      },
-    ],
-    region: SvgFilterRegion {
-      x: SvgLength::Percent(-0.1),
-      y: SvgLength::Percent(-0.1),
-      width: SvgLength::Percent(1.2),
-      height: SvgLength::Percent(1.2),
-      units: SvgFilterUnits::ObjectBoundingBox,
-    },
-    filter_res: None,
-    primitive_units: SvgFilterUnits::UserSpaceOnUse,
-    fingerprint: 0,
-  };
-  filter.refresh_fingerprint();
+  let expected = render_resvg(svg, 5, 5);
+  let filter =
+    parse_svg_filter_from_svg_document(svg, Some("f"), &ImageCache::new()).expect("filter");
 
-  let bbox = Rect::from_xywh(0.0, 0.0, primary.width() as f32, primary.height() as f32);
-  apply_svg_filter(&filter, &mut primary, 1.0, bbox).unwrap();
-
-  let center = pixel(&primary, 1);
-  assert!(
-    center.0 > center.1,
-    "linearRGB map values should pull color toward red, got {:?}",
-    center
+  let mut pixmap = pixmap_with_pixel(
+    5,
+    5,
+    2,
+    2,
+    PremultipliedColorU8::from_rgba(255, 0, 0, 255).expect("red"),
   );
-  assert!(center.3 > 0, "displacement map should preserve coverage");
-}
+  apply_svg_filter(&filter, &mut pixmap, 1.0, Rect::from_xywh(0.0, 0.0, 5.0, 5.0)).unwrap();
 
-#[test]
-fn displacement_map_object_bounding_box_scales_per_axis() {
-  let mut primary = Pixmap::new(4, 2).unwrap();
-  let primary_width = primary.width();
-  for y in 0..primary.height() {
-    for x in 0..primary_width {
-      let r = (x * 50) as u8;
-      let g = (y * 100) as u8;
-      primary.pixels_mut()[(y * primary_width + x) as usize] =
-        PremultipliedColorU8::from_rgba(r, g, 0, 255).unwrap_or(PremultipliedColorU8::TRANSPARENT);
-    }
-  }
-
-  let mut map = Pixmap::new(primary.width(), primary.height()).unwrap();
-  for px in map.pixels_mut() {
-    *px = PremultipliedColorU8::from_rgba(255, 0, 0, 255).unwrap();
-  }
-
-  let mut filter = SvgFilter {
-    color_interpolation_filters: ColorInterpolationFilters::SRGB,
-    steps: vec![
-      FilterStep {
-        result: Some("map".to_string()),
-        color_interpolation_filters: None,
-        primitive: FilterPrimitive::Image(ImagePrimitive::from_pixmap(map)),
-        region: None,
-      },
-      FilterStep {
-        result: None,
-        color_interpolation_filters: None,
-        primitive: FilterPrimitive::DisplacementMap {
-          in1: FilterInput::SourceGraphic,
-          in2: FilterInput::Reference("map".to_string()),
-          scale: 1.0,
-          x_channel: ChannelSelector::R,
-          y_channel: ChannelSelector::R,
-        },
-        region: None,
-      },
-    ],
-    region: SvgFilterRegion {
-      x: SvgLength::Percent(-0.1),
-      y: SvgLength::Percent(-0.1),
-      width: SvgLength::Percent(1.2),
-      height: SvgLength::Percent(1.2),
-      units: SvgFilterUnits::ObjectBoundingBox,
-    },
-    filter_res: None,
-    primitive_units: SvgFilterUnits::ObjectBoundingBox,
-    fingerprint: 0,
-  };
-  filter.refresh_fingerprint();
-
-  // For a 4x2 bbox, primitiveUnits=objectBoundingBox should make scale=1.0 resolve to
-  // scale_x=4px and scale_y=2px. With channel value 1.0 this yields dx=2 and dy=1.
-  let bbox = Rect::from_xywh(0.0, 0.0, primary.width() as f32, primary.height() as f32);
-  apply_svg_filter(&filter, &mut primary, 1.0, bbox).unwrap();
-
-  let top_left = primary.pixel(0, 0).unwrap();
   assert_eq!(
-    (
-      top_left.red(),
-      top_left.green(),
-      top_left.blue(),
-      top_left.alpha()
-    ),
-    (100, 100, 0, 255)
+    pixmap.data(),
+    expected.data(),
+    "FastRender displacement map linearRGB channel interpretation must match resvg"
   );
 }
 
-#[test]
-fn displacement_map_uses_anisotropic_filter_res_scale() {
-  // Stretch the filter graph in X via `filterRes` so the displacement map scale must be converted
-  // with separate X/Y pixel scales (i.e. not using a single `scale_avg`).
-  let mut pixmap = gradient_pixmap();
-
-  // Constant map:
-  // - X channel neutral (0.5) => dx = 0
-  // - Y channel max (1.0) => dy = +0.5 * scale_y_px
-  let mut map = Pixmap::new(pixmap.width(), pixmap.height()).unwrap();
-  for px in map.pixels_mut() {
-    *px =
-      PremultipliedColorU8::from_rgba(128, 0, 0, 255).unwrap_or(PremultipliedColorU8::TRANSPARENT);
-  }
-
-  let mut filter = SvgFilter {
-    color_interpolation_filters: ColorInterpolationFilters::SRGB,
-    steps: vec![
-      FilterStep {
-        result: Some("map".to_string()),
-        color_interpolation_filters: None,
-        primitive: FilterPrimitive::Image(ImagePrimitive::from_pixmap(map)),
-        region: None,
-      },
-      FilterStep {
-        result: None,
-        color_interpolation_filters: None,
-        primitive: FilterPrimitive::DisplacementMap {
-          in1: FilterInput::SourceGraphic,
-          in2: FilterInput::Reference("map".to_string()),
-          // With `filterRes="6 1"` on a 3×1 input, we get scale_x=2 and scale_y=1. Using a single
-          // averaged scale would over-displace Y, pushing all samples out-of-bounds (transparent).
-          scale: 1.5,
-          x_channel: ChannelSelector::R,
-          y_channel: ChannelSelector::A,
-        },
-        region: None,
-      },
-    ],
-    region: SvgFilterRegion {
-      x: SvgLength::Percent(0.0),
-      y: SvgLength::Percent(0.0),
-      width: SvgLength::Percent(1.0),
-      height: SvgLength::Percent(1.0),
-      units: SvgFilterUnits::ObjectBoundingBox,
-    },
-    filter_res: Some((6, 1)),
-    primitive_units: SvgFilterUnits::UserSpaceOnUse,
-    fingerprint: 0,
-  };
-  filter.refresh_fingerprint();
-
-  let bbox = Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32);
-  apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
-
-  let alpha = pixel(&pixmap, 1).3;
-  assert!(
-    alpha > 0 && alpha < 255,
-    "expected partial coverage from Y displacement, got alpha={alpha}"
-  );
-}

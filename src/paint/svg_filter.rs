@@ -4225,7 +4225,17 @@ fn apply_primitive(
       else {
         return Ok(None);
       };
-      let (sx, sy) = filter.resolve_primitive_pair((*disp_scale, *disp_scale), css_bbox);
+      // resvg interprets `scale` as a scalar even when `primitiveUnits="objectBoundingBox"`,
+      // resolving it against the *minimum* bbox dimension so that the displacement magnitude is
+      // isotropic regardless of aspect ratio.
+      let (sx, sy) = match filter.primitive_units {
+        SvgFilterUnits::UserSpaceOnUse => filter.resolve_primitive_pair((*disp_scale, *disp_scale), css_bbox),
+        SvgFilterUnits::ObjectBoundingBox => {
+          let reference = css_bbox.width().abs().min(css_bbox.height().abs());
+          let resolved = disp_scale * reference;
+          (resolved, resolved)
+        }
+      };
       let scale_x_px = sx * scale_x;
       let scale_y_px = sy * scale_y;
       let scale_x_px = if scale_x_px.is_finite() {
@@ -4781,11 +4791,6 @@ fn apply_diffuse_lighting(
               check_active(RenderStage::Paint)?;
             }
             let css_x = origin_x + x as f32 * inv_scale_x;
-            let alpha = sample_alpha_at(&input.pixmap, css_x, css_y, css_bbox, scale_x, scale_y);
-            if alpha <= 0.0 {
-              *dst = PremultipliedColorU8::TRANSPARENT;
-              continue;
-            }
             let normal = surface_normal(
               &input.pixmap,
               css_x,
@@ -4809,16 +4814,17 @@ fn apply_diffuse_lighting(
               compute_light_direction(filter, css_bbox, &light, (css_x, css_y, height));
             let n_dot_l = dot3(normal, light_dir).max(0.0);
             let intensity = n_dot_l * diffuse_constant * light_factor;
-            if intensity <= 0.0 {
-              *dst = PremultipliedColorU8::TRANSPARENT;
-              continue;
-            }
-            let out_alpha = (base_color.a * alpha).clamp(0.0, 1.0);
+            let color_scale = if intensity.is_finite() {
+              intensity.max(0.0)
+            } else {
+              0.0
+            };
+            let out_alpha = base_color.a;
             *dst = pack_color(
               UnpremultipliedColor {
-                r: base_color.r * intensity,
-                g: base_color.g * intensity,
-                b: base_color.b * intensity,
+                r: base_color.r * color_scale,
+                g: base_color.g * color_scale,
+                b: base_color.b * color_scale,
                 a: out_alpha,
               },
               color_interpolation_filters,
@@ -4829,7 +4835,7 @@ fn apply_diffuse_lighting(
       })?;
   }
 
-  Ok(Some(FilterResult::new(out, input.region, filter_region)))
+  Ok(Some(FilterResult::full_region(out, filter_region)))
 }
 
 fn apply_specular_lighting(
@@ -4893,11 +4899,6 @@ fn apply_specular_lighting(
               check_active(RenderStage::Paint)?;
             }
             let css_x = origin_x + x as f32 * inv_scale_x;
-            let alpha = sample_alpha_at(&input.pixmap, css_x, css_y, css_bbox, scale_x, scale_y);
-            if alpha <= 0.0 {
-              *dst = PremultipliedColorU8::TRANSPARENT;
-              continue;
-            }
             let normal = surface_normal(
               &input.pixmap,
               css_x,
@@ -4920,10 +4921,6 @@ fn apply_specular_lighting(
             let (light_dir, light_factor) =
               compute_light_direction(filter, css_bbox, &light, (css_x, css_y, height));
             let n_dot_l = dot3(normal, light_dir).max(0.0);
-            if n_dot_l <= 0.0 || light_factor <= 0.0 {
-              *dst = PremultipliedColorU8::TRANSPARENT;
-              continue;
-            }
             let reflect = normalize3(
               2.0 * n_dot_l * normal.0 - light_dir.0,
               2.0 * n_dot_l * normal.1 - light_dir.1,
@@ -4931,16 +4928,17 @@ fn apply_specular_lighting(
             );
             let spec_angle = reflect.2.max(0.0).powf(exponent);
             let intensity = specular_constant * spec_angle * light_factor;
-            if intensity <= 0.0 {
-              *dst = PremultipliedColorU8::TRANSPARENT;
-              continue;
-            }
-            let out_alpha = (base_color.a * alpha).clamp(0.0, 1.0);
+            let color_scale = if intensity.is_finite() {
+              intensity.max(0.0)
+            } else {
+              0.0
+            };
+            let out_alpha = base_color.a;
             *dst = pack_color(
               UnpremultipliedColor {
-                r: base_color.r * intensity,
-                g: base_color.g * intensity,
-                b: base_color.b * intensity,
+                r: base_color.r * color_scale,
+                g: base_color.g * color_scale,
+                b: base_color.b * color_scale,
                 a: out_alpha,
               },
               color_interpolation_filters,
@@ -4951,7 +4949,7 @@ fn apply_specular_lighting(
       })?;
   }
 
-  Ok(Some(FilterResult::new(out, input.region, filter_region)))
+  Ok(Some(FilterResult::full_region(out, filter_region)))
 }
 
 fn flood(width: u32, height: u32, color: &Rgba, opacity: f32) -> Option<Pixmap> {
@@ -4984,10 +4982,32 @@ fn offset_pixmap(
     reencode_pixmap_to_linear_rgb(&mut input)?;
   }
 
+  let mut out = offset_pixmap_in_current_space(&input, dx, dy)?;
+  if use_linear_rgb && needs_interpolation {
+    reencode_pixmap_to_srgb(&mut out)?;
+  }
+  Ok(out)
+}
+
+fn offset_result(
+  input: FilterResult,
+  dx: f32,
+  dy: f32,
+  color_interpolation_filters: ColorInterpolationFilters,
+  filter_region: Rect,
+) -> RenderResult<FilterResult> {
+  let pixmap = offset_pixmap(input.pixmap, dx, dy, color_interpolation_filters)?;
+  let offset = Point::new(dx, dy);
+  let region = clip_region(input.region.translate(offset), filter_region);
+  Ok(FilterResult { pixmap, region })
+}
+
+fn offset_pixmap_in_current_space(input: &Pixmap, dx: f32, dy: f32) -> RenderResult<Pixmap> {
+  check_active(RenderStage::Paint)?;
   let width = input.width();
   let height = input.height();
   if width == 0 || height == 0 {
-    return Ok(input);
+    return Ok(input.clone());
   }
   let w = width as i32;
   let h = height as i32;
@@ -5052,25 +5072,7 @@ fn offset_pixmap(
         PremultipliedColorU8::from_rgba(r, g, b, a).unwrap_or(PremultipliedColorU8::TRANSPARENT);
     }
   }
-
-  if use_linear_rgb && needs_interpolation {
-    reencode_pixmap_to_srgb(&mut out)?;
-  }
-
   Ok(out)
-}
-
-fn offset_result(
-  input: FilterResult,
-  dx: f32,
-  dy: f32,
-  color_interpolation_filters: ColorInterpolationFilters,
-  filter_region: Rect,
-) -> RenderResult<FilterResult> {
-  let pixmap = offset_pixmap(input.pixmap, dx, dy, color_interpolation_filters)?;
-  let offset = Point::new(dx, dy);
-  let region = clip_region(input.region.translate(offset), filter_region);
-  Ok(FilterResult { pixmap, region })
 }
 
 fn composite_pixmaps(
@@ -5322,45 +5324,63 @@ fn drop_shadow_pixmap(
     })?;
   }
 
+  let mut out = match new_pixmap(input.pixmap.width(), input.pixmap.height()) {
+    Some(p) => p,
+    None => return Ok(input),
+  };
+
   let mut paint = PixmapPaint::default();
   paint.blend_mode = tiny_skia::BlendMode::SourceOver;
+  let dx = if dx.is_finite() { dx } else { 0.0 };
+  let dy = if dy.is_finite() { dy } else { 0.0 };
+  let dx_floor = dx.floor();
+  let dy_floor = dy.floor();
+  let dx_frac = dx - dx_floor;
+  let dy_frac = dy - dy_floor;
+  let dx_int = dx_floor.clamp(i32::MIN as f32, i32::MAX as f32) as i32;
+  let dy_int = dy_floor.clamp(i32::MIN as f32, i32::MAX as f32) as i32;
 
-  let origin_x = min_x as i32 - blur_pad_x as i32;
-  let origin_y = min_y as i32 - blur_pad_y as i32;
-  let needs_interpolation = dx.fract() != 0.0 || dy.fract() != 0.0;
-
-  let mut out = if needs_interpolation {
-    // tiny-skia's draw_pixmap translation path snaps subpixel offsets, so apply the offset via our
-    // filter-space sampler to preserve fractional dx/dy like `feOffset` does.
-    let mut shadow_layer = match new_pixmap(input.pixmap.width(), input.pixmap.height()) {
+  let base_x = min_x as i32 - blur_pad_x as i32;
+  let base_y = min_y as i32 - blur_pad_y as i32;
+  if dx_frac != 0.0 || dy_frac != 0.0 {
+    // Preserve subpixel translations by applying the fractional offset via bilinear sampling.
+    // Padding is required so that fractional shifts can contribute to neighboring pixels even
+    // when the shadow pixmap is only 1px wide/high (e.g. a thin line).
+    let pad_x = if dx_frac != 0.0 { 1 } else { 0 };
+    let pad_y = if dy_frac != 0.0 { 1 } else { 0 };
+    let padded_w = shadow.width().saturating_add(pad_x * 2);
+    let padded_h = shadow.height().saturating_add(pad_y * 2);
+    let mut padded = match new_pixmap(padded_w, padded_h) {
       Some(p) => p,
       None => return Ok(input),
     };
-    shadow_layer.draw_pixmap(
-      origin_x,
-      origin_y,
+    padded.draw_pixmap(
+      pad_x as i32,
+      pad_y as i32,
       shadow.as_ref(),
       &paint,
       Transform::identity(),
       None,
     );
-    offset_pixmap(shadow_layer, dx, dy, ColorInterpolationFilters::SRGB)?
-  } else {
-    let mut out = match new_pixmap(input.pixmap.width(), input.pixmap.height()) {
-      Some(p) => p,
-      None => return Ok(input),
-    };
+    let shifted = offset_pixmap_in_current_space(&padded, dx_frac, dy_frac)?;
     out.draw_pixmap(
-      origin_x,
-      origin_y,
-      shadow.as_ref(),
+      base_x + dx_int - pad_x as i32,
+      base_y + dy_int - pad_y as i32,
+      shifted.as_ref(),
       &paint,
-      Transform::from_translate(dx, dy),
+      Transform::identity(),
       None,
     );
-    out
-  };
-
+  } else {
+    out.draw_pixmap(
+      base_x + dx_int,
+      base_y + dy_int,
+      shadow.as_ref(),
+      &paint,
+      Transform::identity(),
+      None,
+    );
+  }
   let mut input = input;
   if use_linear {
     reencode_pixmap_to_linear_rgb(&mut input.pixmap)?;
@@ -5628,19 +5648,20 @@ fn apply_displacement_map(
     let x = (idx % width) as u32;
 
     let map_sample = sample_premultiplied(map, x as f32, y as f32);
-    let map_color = unpremultiply_sample(map_sample);
-    let channel_value_x = channel_value(&map_color, x_channel);
-    let channel_value_y = channel_value(&map_color, y_channel);
-    let dx = (channel_value_x - 0.5) * scale_x;
-    let dy = (channel_value_y - 0.5) * scale_y;
+    // resvg interprets displacement channels as premultiplied values.
+    // This means semi-transparent map pixels contribute proportionally less displacement.
+    let channel_value_x = clamp_unit(channel_value(&map_sample, x_channel));
+    let channel_value_y = clamp_unit(channel_value(&map_sample, y_channel));
+    // The SVG spec defines channel values in [0, 1] centered at 0.5. Engines treat `scale`
+    // as the maximum displacement magnitude, so the signed range [-0.5, 0.5] maps to
+    // [-scale, +scale].
+    let dx = (channel_value_x - 0.5) * scale_x * 2.0;
+    let dy = (channel_value_y - 0.5) * scale_y * 2.0;
 
     let sample_x = x as f32 + dx;
     let sample_y = y as f32 + dy;
-    let sample = if sample_x.is_finite() && sample_y.is_finite() {
-      sample_premultiplied(primary, sample_x, sample_y)
-    } else {
-      [0.0; 4]
-    };
+    // resvg uses nearest-neighbor sampling for the displaced primary image.
+    let sample = sample_nearest_premultiplied(primary, sample_x, sample_y);
     let a = to_byte(sample[3]);
     *dst = PremultipliedColorU8::from_rgba(
       to_byte(sample[0].min(sample[3])),
@@ -5658,31 +5679,12 @@ fn apply_displacement_map(
   Ok(Some(out))
 }
 
-fn unpremultiply_sample(sample: [f32; 4]) -> UnpremultipliedColor {
-  let alpha = clamp01(sample[3]);
-  if alpha <= 0.0 {
-    return UnpremultipliedColor {
-      r: 0.0,
-      g: 0.0,
-      b: 0.0,
-      a: 0.0,
-    };
-  }
-  let color = UnpremultipliedColor {
-    r: clamp01(sample[0] / alpha),
-    g: clamp01(sample[1] / alpha),
-    b: clamp01(sample[2] / alpha),
-    a: alpha,
-  };
-  color
-}
-
-fn channel_value(sample: &UnpremultipliedColor, selector: ChannelSelector) -> f32 {
+fn channel_value(sample: &[f32; 4], selector: ChannelSelector) -> f32 {
   match selector {
-    ChannelSelector::R => sample.r,
-    ChannelSelector::G => sample.g,
-    ChannelSelector::B => sample.b,
-    ChannelSelector::A => sample.a,
+    ChannelSelector::R => sample[0],
+    ChannelSelector::G => sample[1],
+    ChannelSelector::B => sample[2],
+    ChannelSelector::A => sample[3],
   }
 }
 
@@ -5721,6 +5723,29 @@ fn sample_premultiplied(pixmap: &Pixmap, x: f32, y: f32) -> [f32; 4] {
     return [0.0; 4];
   }
   accum
+}
+
+fn sample_nearest_premultiplied(pixmap: &Pixmap, x: f32, y: f32) -> [f32; 4] {
+  if !x.is_finite() || !y.is_finite() {
+    return [0.0; 4];
+  }
+  let width = pixmap.width() as i32;
+  let height = pixmap.height() as i32;
+  if width <= 0 || height <= 0 {
+    return [0.0; 4];
+  }
+  let xi = x.round() as i32;
+  let yi = y.round() as i32;
+  if xi < 0 || yi < 0 || xi >= width || yi >= height {
+    return [0.0; 4];
+  }
+  let px = pixmap.pixel(xi as u32, yi as u32).unwrap();
+  [
+    px.red() as f32 / 255.0,
+    px.green() as f32 / 255.0,
+    px.blue() as f32 / 255.0,
+    px.alpha() as f32 / 255.0,
+  ]
 }
 
 fn to_byte(v: f32) -> u8 {
