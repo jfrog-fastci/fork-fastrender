@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  html, body {
+    margin: 0;
+    background: white;
+  }
+  svg { display: block; }
+</style>
+<!-- Reference for displacement-map-out-of-bounds-001.html -->
+<svg xmlns="http://www.w3.org/2000/svg" width="60" height="20" shape-rendering="crispEdges">
+  <rect x="0" y="0" width="60" height="20" fill="rgb(255, 0, 255)"></rect>
+
+  <!-- dy=+1px samples at y+1, so the visible content is shifted up by 1px and the last row is transparent. -->
+  <g transform="translate(0 -1)">
+    <rect x="0" y="0" width="60" height="20" fill="rgb(0, 200, 0)"></rect>
+  </g>
+</svg>

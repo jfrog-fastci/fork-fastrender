@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  html, body {
+    margin: 0;
+    background: white;
+  }
+  svg { display: block; }
+</style>
+<!-- Reference for displacement-map-basic-shift-001.html -->
+<svg xmlns="http://www.w3.org/2000/svg" width="60" height="20" shape-rendering="crispEdges">
+  <rect x="0" y="0" width="60" height="20" fill="rgb(210, 230, 255)"></rect>
+
+  <!-- dx=+1px samples at x+1, so the visible content is shifted left by 1px. -->
+  <g transform="translate(-1 0)">
+    <rect x="0" y="0" width="10" height="20" fill="rgb(255, 0, 0)"></rect>
+    <rect x="10" y="0" width="10" height="20" fill="rgb(0, 255, 0)"></rect>
+    <rect x="20" y="0" width="10" height="20" fill="rgb(0, 0, 255)"></rect>
+    <rect x="30" y="0" width="10" height="20" fill="rgb(255, 255, 0)"></rect>
+    <rect x="40" y="0" width="10" height="20" fill="rgb(255, 0, 255)"></rect>
+    <rect x="50" y="0" width="10" height="20" fill="rgb(0, 255, 255)"></rect>
+  </g>
+</svg>

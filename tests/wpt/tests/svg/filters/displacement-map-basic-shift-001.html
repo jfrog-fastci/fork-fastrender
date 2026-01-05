@@ -1,0 +1,53 @@
+<!doctype html>
+<meta charset="utf-8">
+<link rel="match" href="displacement-map-basic-shift-001-ref.html">
+<style>
+  html, body {
+    margin: 0;
+    background: white;
+  }
+  svg { display: block; }
+</style>
+<!--
+  Basic feDisplacementMap shift.
+
+  Map construction:
+  We want dx = +1px and dy = 0px with scale=2.
+
+    dx = (xChannel - 0.5) * scale
+    dy = (yChannel - 0.5) * scale
+
+  The displacement map samples *unpremultiplied* channel values. To get an exact 0.5 channel
+  value (and avoid subpixel interpolation noise), we use a low-alpha feFlood so unpremultiplying
+  yields exact ratios:
+
+    flood-opacity -> alpha byte = 4
+    flood-color = rgb(255, 128, 0)
+
+  After premultiplication (approximately): R=4, G=2, A=4 => unpremul R=1.0, G=0.5.
+  So with scale=2: dx = +1, dy = 0.
+
+  This pins down:
+  - displacement scale units for X
+  - sampling coordinate convention (integer displacements should be exact)
+  - out-of-bounds sampling along +X (the vacated 1px column is transparent)
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="60" height="20" shape-rendering="crispEdges">
+  <defs>
+    <filter id="shift-x-plus-1" x="0" y="0" width="1" height="1" color-interpolation-filters="sRGB">
+      <feFlood flood-color="rgb(255, 128, 0)" flood-opacity="0.016" result="map"></feFlood>
+      <feDisplacementMap in="SourceGraphic" in2="map" scale="2" xChannelSelector="R" yChannelSelector="G"></feDisplacementMap>
+    </filter>
+  </defs>
+
+  <rect x="0" y="0" width="60" height="20" fill="rgb(210, 230, 255)"></rect>
+
+  <g filter="url(#shift-x-plus-1)">
+    <rect x="0" y="0" width="10" height="20" fill="rgb(255, 0, 0)"></rect>
+    <rect x="10" y="0" width="10" height="20" fill="rgb(0, 255, 0)"></rect>
+    <rect x="20" y="0" width="10" height="20" fill="rgb(0, 0, 255)"></rect>
+    <rect x="30" y="0" width="10" height="20" fill="rgb(255, 255, 0)"></rect>
+    <rect x="40" y="0" width="10" height="20" fill="rgb(255, 0, 255)"></rect>
+    <rect x="50" y="0" width="10" height="20" fill="rgb(0, 255, 255)"></rect>
+  </g>
+</svg>

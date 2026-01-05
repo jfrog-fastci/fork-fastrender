@@ -8,6 +8,73 @@ mod wpt;
 pub use wpt::*;
 
 #[cfg(test)]
+use std::sync::Once;
+
+#[cfg(test)]
+static SET_BUNDLED_FONTS: Once = Once::new();
+
+#[cfg(test)]
+fn ensure_bundled_fonts() {
+  SET_BUNDLED_FONTS.call_once(|| {
+    std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
+  });
+}
+
+#[cfg(test)]
+fn create_test_renderer() -> fastrender::FastRender {
+  ensure_bundled_fonts();
+  fastrender::FastRender::builder()
+    .resource_policy(
+      fastrender::ResourcePolicy::default()
+        .allow_http(false)
+        .allow_https(false),
+    )
+    .build()
+    .unwrap()
+}
+
+#[test]
+fn wpt_local_suite_passes() {
+  use std::path::{Path, PathBuf};
+
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let renderer = create_test_renderer();
+      let mut config = HarnessConfig::default();
+      // The discovery directory under `tests/wpt/tests/` contains harness-focused metadata
+      // fixtures (expected failures, disables, etc.). Keep the smoke-test suite focused on the
+      // curated manifest entries so UPDATE_WPT_EXPECTED mode doesn't trip over those fixtures.
+      config.discovery_mode = DiscoveryMode::ManifestOnly;
+      config.expected_dir = PathBuf::from("target/wpt-expected");
+      if std::env::var("UPDATE_WPT_EXPECTED").is_ok() {
+        config = config.update_expected();
+      } else {
+        // Default to generating expected images into a temp dir so new tests
+        // don't require checked-in PNGs to run locally.
+        config.update_expected = true;
+      }
+
+      let mut runner = WptRunner::with_config(renderer, config);
+
+      let results = runner.run_suite(Path::new("tests/wpt/tests"));
+      assert!(!results.is_empty());
+
+      for result in &results {
+        assert!(
+          !result.status.is_failure(),
+          "{} failed with status {:?}",
+          result.metadata.id,
+          result.status
+        );
+      }
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[cfg(test)]
 mod wpt_runner_tests {
   use super::wpt::DiscoveryMode;
   use super::wpt::HarnessConfig;
@@ -23,29 +90,8 @@ mod wpt_runner_tests {
   use std::collections::HashMap;
   use std::path::Path;
   use std::path::PathBuf;
-  use std::sync::Once;
   use std::time::Duration;
   use tempfile::TempDir;
-
-  static SET_BUNDLED_FONTS: Once = Once::new();
-
-  fn ensure_bundled_fonts() {
-    SET_BUNDLED_FONTS.call_once(|| {
-      std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
-    });
-  }
-
-  fn create_test_renderer() -> fastrender::FastRender {
-    ensure_bundled_fonts();
-    fastrender::FastRender::builder()
-      .resource_policy(
-        fastrender::ResourcePolicy::default()
-          .allow_http(false)
-          .allow_https(false),
-      )
-      .build()
-      .unwrap()
-  }
 
   // =========================================================================
   // WptRunner Tests
@@ -53,7 +99,7 @@ mod wpt_runner_tests {
 
   #[test]
   fn test_wpt_runner_new() {
-    let renderer = create_test_renderer();
+    let renderer = super::create_test_renderer();
     let runner = WptRunner::new(renderer);
 
     assert_eq!(runner.stats().total, 0);
@@ -62,7 +108,7 @@ mod wpt_runner_tests {
 
   #[test]
   fn test_wpt_runner_with_config() {
-    let renderer = create_test_renderer();
+    let renderer = super::create_test_renderer();
     let config = HarnessConfig::default()
       .with_tolerance(10)
       .with_max_diff(0.5);
@@ -74,7 +120,7 @@ mod wpt_runner_tests {
 
   #[test]
   fn test_wpt_runner_builder() {
-    let renderer = create_test_renderer();
+    let renderer = super::create_test_renderer();
     let runner = WptRunnerBuilder::new()
       .renderer(renderer)
       .test_dir("custom/tests")
@@ -139,7 +185,7 @@ mod wpt_runner_tests {
 
   #[test]
   fn test_wpt_runner_stats_reset() {
-    let renderer = create_test_renderer();
+    let renderer = super::create_test_renderer();
     let mut runner = WptRunner::new(renderer);
 
     // Run some tests to populate stats
@@ -159,7 +205,7 @@ mod wpt_runner_tests {
 
   #[test]
   fn test_wpt_runner_empty_suite() {
-    let renderer = create_test_renderer();
+    let renderer = super::create_test_renderer();
     let mut runner = WptRunner::new(renderer);
 
     let temp = TempDir::new().unwrap();
@@ -170,7 +216,7 @@ mod wpt_runner_tests {
 
   #[test]
   fn test_wpt_runner_suite_with_tests() {
-    let renderer = create_test_renderer();
+    let renderer = super::create_test_renderer();
     let mut runner = WptRunner::new(renderer);
 
     let temp = TempDir::new().unwrap();
@@ -194,7 +240,7 @@ mod wpt_runner_tests {
 
   #[test]
   fn test_wpt_runner_filter() {
-    let renderer = create_test_renderer();
+    let renderer = super::create_test_renderer();
     let config = HarnessConfig::default().with_filter("box-model");
     let mut runner = WptRunner::with_config(renderer, config);
 
@@ -216,7 +262,7 @@ mod wpt_runner_tests {
 
   #[test]
   fn test_wpt_runner_sidecar_discovery() {
-    let renderer = create_test_renderer();
+    let renderer = super::create_test_renderer();
     let mut config = HarnessConfig::with_test_dir("tests/wpt/tests/discovery")
       .with_discovery_mode(DiscoveryMode::MetadataOnly);
     let temp = TempDir::new().unwrap();
@@ -237,7 +283,7 @@ mod wpt_runner_tests {
 
   #[test]
   fn wpt_relative_stylesheet_loads_with_base_url() {
-    ensure_bundled_fonts();
+    super::ensure_bundled_fonts();
     let temp = TempDir::new().unwrap();
     let support_dir = temp.path().join("support");
     std::fs::create_dir_all(&support_dir).unwrap();
@@ -298,7 +344,7 @@ mod wpt_runner_tests {
 
   #[test]
   fn wpt_reftest_base_url_isolated_per_document() {
-    ensure_bundled_fonts();
+    super::ensure_bundled_fonts();
     let temp = TempDir::new().unwrap();
 
     let test_dir = temp.path().join("test");
@@ -361,7 +407,7 @@ mod wpt_runner_tests {
 
   #[test]
   fn wpt_runner_default_is_offline() {
-    ensure_bundled_fonts();
+    super::ensure_bundled_fonts();
     let temp = TempDir::new().unwrap();
 
     let css = r#"body { margin: 0; }
@@ -457,7 +503,7 @@ mod wpt_runner_tests {
 
   #[test]
   fn test_wpt_runner_suite_aggregated() {
-    let renderer = create_test_renderer();
+    let renderer = super::create_test_renderer();
     let mut runner = WptRunner::new(renderer);
 
     let temp = TempDir::new().unwrap();
@@ -477,45 +523,6 @@ mod wpt_runner_tests {
 
     assert_eq!(suite.total(), 2);
     assert!(suite.duration.as_nanos() > 0);
-  }
-
-  #[test]
-  fn wpt_local_suite_passes() {
-    std::thread::Builder::new()
-      .stack_size(64 * 1024 * 1024)
-      .spawn(|| {
-        let renderer = create_test_renderer();
-        let mut config = HarnessConfig::default();
-        // The discovery directory under `tests/wpt/tests/` contains harness-focused metadata
-        // fixtures (expected failures, disables, etc.). Keep the smoke-test suite focused on the
-        // curated manifest entries so UPDATE_WPT_EXPECTED mode doesn't trip over those fixtures.
-        config.discovery_mode = DiscoveryMode::ManifestOnly;
-        config.expected_dir = PathBuf::from("target/wpt-expected");
-        if std::env::var("UPDATE_WPT_EXPECTED").is_ok() {
-          config = config.update_expected();
-        } else {
-          // Default to generating expected images into a temp dir so new tests
-          // don't require checked-in PNGs to run locally.
-          config.update_expected = true;
-        }
-
-        let mut runner = WptRunner::with_config(renderer, config);
-
-        let results = runner.run_suite(Path::new("tests/wpt/tests"));
-        assert!(!results.is_empty());
-
-        for result in &results {
-          assert!(
-            !result.status.is_failure(),
-            "{} failed with status {:?}",
-            result.metadata.id,
-            result.status
-          );
-        }
-      })
-      .unwrap()
-      .join()
-      .unwrap();
   }
 
   // =========================================================================

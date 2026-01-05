@@ -397,3 +397,42 @@ dpr = 1.5
 [tests.viewport]
 width = 420
 height = 240
+
+[[tests]]
+id = "svg/filters/turbulence-basefrequency-zero-001"
+path = "svg/filters/turbulence-basefrequency-zero-001.html"
+reference = "svg/filters/turbulence-basefrequency-zero-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 80
+height = 40
+
+[[tests]]
+id = "svg/filters/displacement-map-basic-shift-001"
+path = "svg/filters/displacement-map-basic-shift-001.html"
+reference = "svg/filters/displacement-map-basic-shift-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 60
+height = 20
+
+[[tests]]
+id = "svg/filters/displacement-map-out-of-bounds-001"
+path = "svg/filters/displacement-map-out-of-bounds-001.html"
+reference = "svg/filters/displacement-map-out-of-bounds-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 60
+height = 20

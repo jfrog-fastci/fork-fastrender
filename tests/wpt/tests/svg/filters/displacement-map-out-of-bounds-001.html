@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<link rel="match" href="displacement-map-out-of-bounds-001-ref.html">
+<style>
+  html, body {
+    margin: 0;
+    background: white;
+  }
+  svg { display: block; }
+</style>
+<!--
+  feDisplacementMap out-of-bounds sampling.
+
+  The map is chosen so dx = 0 and dy = +1 (scale=2):
+    flood-color = rgb(128, 255, 0)
+    flood-opacity -> alpha byte = 4
+  => unpremul R=0.5, G=1.0
+  => dx=(0.5-0.5)*2 = 0, dy=(1.0-0.5)*2 = +1
+
+  Expected behavior: sampling outside the primary image returns transparent black (not clamped).
+  With dy=+1, the last row samples beyond the bottom edge and should become transparent, revealing
+  the background rectangle.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="60" height="20" shape-rendering="crispEdges">
+  <defs>
+    <filter id="shift-y-plus-1" x="0" y="0" width="1" height="1" color-interpolation-filters="sRGB">
+      <feFlood flood-color="rgb(128, 255, 0)" flood-opacity="0.016" result="map"></feFlood>
+      <feDisplacementMap in="SourceGraphic" in2="map" scale="2" xChannelSelector="R" yChannelSelector="G"></feDisplacementMap>
+    </filter>
+  </defs>
+
+  <rect x="0" y="0" width="60" height="20" fill="rgb(255, 0, 255)"></rect>
+
+  <g filter="url(#shift-y-plus-1)">
+    <rect x="0" y="0" width="60" height="20" fill="rgb(0, 200, 0)"></rect>
+  </g>
+</svg>
