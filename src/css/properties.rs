@@ -5025,6 +5025,11 @@ mod tests {
       )
     );
   }
+
+  #[test]
+  fn parses_lh_lengths() {
+    assert_eq!(parse_length("1lh").unwrap(), Length::new(1.0, LengthUnit::Lh));
+  }
 }
 
 const MATH_PREFIXES: &[&str] = &[
@@ -5090,6 +5095,7 @@ pub fn parse_length(s: &str) -> Option<Length> {
     ("em", LengthUnit::Em),
     ("ex", LengthUnit::Ex),
     ("ch", LengthUnit::Ch),
+    ("lh", LengthUnit::Lh),
     ("px", LengthUnit::Px),
     ("pc", LengthUnit::Pc),
     ("pt", LengthUnit::Pt),
@@ -5465,6 +5471,7 @@ fn parse_calc_factor<'i, 't>(
         "rem" => LengthUnit::Rem,
         "ex" => LengthUnit::Ex,
         "ch" => LengthUnit::Ch,
+        "lh" => LengthUnit::Lh,
         "pt" => LengthUnit::Pt,
         "pc" => LengthUnit::Pc,
         "in" => LengthUnit::In,

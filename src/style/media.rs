@@ -2863,6 +2863,8 @@ impl MediaContext {
       LengthUnit::Pc => Some(length.value * 16.0),
       LengthUnit::Ex => Some(length.value * (base_font * 0.5)), // Approximate: half of em
       LengthUnit::Ch => Some(length.value * (base_font * 0.5)), // Approximate: width of '0'
+      // Media queries lack access to computed `line-height`; treat `lh` as `normal` (1.2em).
+      LengthUnit::Lh => Some(length.value * (base_font * 1.2)),
       // Container query units depend on the nearest query container's content-box size, which is
       // not available in the media query evaluation context. Treat them as unresolved.
       LengthUnit::Cqw

@@ -113,37 +113,6 @@ enum ContainingBlockSource {
   Explicit(ContainingBlock),
 }
 
-/// Helper to resolve a Length to pixels, handling em/rem units with font-size
-fn resolve_length(
-  length: &Length,
-  font_size: f32,
-  containing_block_size: f32,
-  viewport: crate::geometry::Size,
-) -> f32 {
-  use crate::style::values::LengthUnit;
-  match length.unit {
-    LengthUnit::Em | LengthUnit::Rem => length.value * font_size,
-    LengthUnit::Percent => (length.value / 100.0) * containing_block_size,
-    _ if length.unit.is_absolute() => length.to_px(),
-    _ if length.unit.is_viewport_relative() => length
-      .resolve_with_viewport(viewport.width, viewport.height)
-      .unwrap_or_else(|| length.to_px()),
-    _ => 0.0, // Fallback for unknown units
-  }
-}
-
-/// Helper to resolve an optional Length to pixels
-fn resolve_opt_length(
-  length: Option<&Length>,
-  font_size: f32,
-  containing_block_size: f32,
-  viewport: crate::geometry::Size,
-) -> f32 {
-  length
-    .map(|l| resolve_length(l, font_size, containing_block_size, viewport))
-    .unwrap_or(0.0)
-}
-
 fn axis_sides(horizontal: bool, positive: bool) -> (PhysicalSide, PhysicalSide) {
   match (horizontal, positive) {
     (true, true) => (PhysicalSide::Left, PhysicalSide::Right),
@@ -432,12 +401,14 @@ impl BlockFormattingContext {
 
     // Create constraints for child layout
     let mut specified_height = style.height.as_ref().and_then(|h| {
-      resolve_length_with_percentage(
+      resolve_length_with_percentage_metrics(
         *h,
         containing_height,
         self.viewport_size,
         font_size,
         style.root_font_size,
+        Some(style),
+        Some(&self.font_context),
       )
     });
     specified_height = specified_height
@@ -977,12 +948,14 @@ impl BlockFormattingContext {
       .min_height
       .as_ref()
       .and_then(|l| {
-        resolve_length_with_percentage(
+        resolve_length_with_percentage_metrics(
           *l,
           containing_height,
           self.viewport_size,
           font_size,
           style.root_font_size,
+          Some(style),
+          Some(&self.font_context),
         )
       })
       .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing))
@@ -991,12 +964,14 @@ impl BlockFormattingContext {
       .max_height
       .as_ref()
       .and_then(|l| {
-        resolve_length_with_percentage(
+        resolve_length_with_percentage_metrics(
           *l,
           containing_height,
           self.viewport_size,
           font_size,
           style.root_font_size,
+          Some(style),
+          Some(&self.font_context),
         )
       })
       .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing))
@@ -1518,7 +1493,6 @@ impl BlockFormattingContext {
     _nearest_positioned_cb: &ContainingBlock,
   ) -> Result<(FragmentNode, f32), LayoutError> {
     let style = &child.style;
-    let font_size = style.font_size;
     let toggles = crate::debug::runtime::runtime_toggles();
     let log_wide_flex = toggles.truthy("FASTR_LOG_WIDE_FLEX");
 
@@ -1575,18 +1549,32 @@ impl BlockFormattingContext {
     }
 
     // Vertical margins collapse as normal blocks
-    let margin_top = resolve_opt_length(
-      style.margin_top.as_ref(),
-      font_size,
-      containing_width,
-      self.viewport_size,
-    );
-    let margin_bottom = resolve_opt_length(
-      style.margin_bottom.as_ref(),
-      font_size,
-      containing_width,
-      self.viewport_size,
-    );
+    let margin_top = style
+      .margin_top
+      .as_ref()
+      .map(|len| {
+        resolve_length_for_width(
+          *len,
+          containing_width,
+          style,
+          &self.font_context,
+          self.viewport_size,
+        )
+      })
+      .unwrap_or(0.0);
+    let margin_bottom = style
+      .margin_bottom
+      .as_ref()
+      .map(|len| {
+        resolve_length_for_width(
+          *len,
+          containing_width,
+          style,
+          &self.font_context,
+          self.viewport_size,
+        )
+      })
+      .unwrap_or(0.0);
     margin_ctx.push_margin(margin_top);
     let collapsed_margin = margin_ctx.resolve();
     let box_y = current_y + collapsed_margin;
@@ -3438,23 +3426,27 @@ impl FormattingContext for BlockFormattingContext {
       }
       if let Some(ch) = containing_height {
         if let Some(max_h) = style.max_height.as_ref().and_then(|l| {
-          resolve_length_with_percentage(
+          resolve_length_with_percentage_metrics(
             *l,
             Some(ch),
             self.viewport_size,
             style.font_size,
             style.root_font_size,
+            Some(style),
+            Some(&self.font_context),
           )
         }) {
           used_size.height = used_size.height.min(max_h);
         }
         if let Some(min_h) = style.min_height.as_ref().and_then(|l| {
-          resolve_length_with_percentage(
+          resolve_length_with_percentage_metrics(
             *l,
             Some(ch),
             self.viewport_size,
             style.font_size,
             style.root_font_size,
+            Some(style),
+            Some(&self.font_context),
           )
         }) {
           used_size.height = used_size.height.max(min_h);
@@ -3844,12 +3836,14 @@ impl FormattingContext for BlockFormattingContext {
       .height
       .as_ref()
       .and_then(|h| {
-        resolve_length_with_percentage(
+        resolve_length_with_percentage_metrics(
           *h,
           containing_height,
           self.viewport_size,
           style.font_size,
           style.root_font_size,
+          Some(style),
+          Some(&self.font_context),
         )
       })
       .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing));
@@ -3955,12 +3949,14 @@ impl FormattingContext for BlockFormattingContext {
       content_height = axis
         .length
         .and_then(|l| {
-          resolve_length_with_percentage(
+          resolve_length_with_percentage_metrics(
             l,
             containing_height,
             self.viewport_size,
             style.font_size,
             style.root_font_size,
+            Some(style),
+            Some(&self.font_context),
           )
         })
         .unwrap_or(0.0)
@@ -3980,12 +3976,14 @@ impl FormattingContext for BlockFormattingContext {
       .min_height
       .as_ref()
       .and_then(|l| {
-        resolve_length_with_percentage(
+        resolve_length_with_percentage_metrics(
           *l,
           containing_height,
           self.viewport_size,
           style.font_size,
           style.root_font_size,
+          Some(style),
+          Some(&self.font_context),
         )
       })
       .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing))
@@ -3994,12 +3992,14 @@ impl FormattingContext for BlockFormattingContext {
       .max_height
       .as_ref()
       .and_then(|l| {
-        resolve_length_with_percentage(
+        resolve_length_with_percentage_metrics(
           *l,
           containing_height,
           self.viewport_size,
           style.font_size,
           style.root_font_size,
+          Some(style),
+          Some(&self.font_context),
         )
       })
       .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing))

@@ -31,7 +31,7 @@
 //! Reference: <https://www.w3.org/TR/CSS21/visudet.html#Computing_widths_and_margins>
 
 use crate::layout::utils::content_size_from_box_sizing;
-use crate::layout::utils::resolve_length_with_percentage;
+use crate::layout::utils::resolve_length_with_percentage_metrics;
 use crate::layout::utils::resolve_scrollbar_width;
 use crate::style::types::Overflow;
 use crate::style::values::Length;
@@ -170,15 +170,7 @@ pub fn compute_block_width(
   let width_value = style
     .width
     .as_ref()
-    .map(|len| {
-      resolve_length(
-        *len,
-        containing_width,
-        style.font_size,
-        style.root_font_size,
-        viewport,
-      )
-    })
+    .map(|len| resolve_length(*len, containing_width, style, viewport))
     .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing));
 
   // Compute the resolved values using the constraint equation
@@ -248,15 +240,7 @@ pub fn compute_block_width_with_auto_margins(
   let width_value = style
     .width
     .as_ref()
-    .map(|len| {
-      resolve_length(
-        *len,
-        containing_width,
-        style.font_size,
-        style.root_font_size,
-        viewport,
-      )
-    })
+    .map(|len| resolve_length(*len, containing_width, style, viewport))
     .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing));
 
   // Compute the resolved values
@@ -295,13 +279,7 @@ fn resolve_margin_length_for_side(
     PhysicalSide::Bottom => style.margin_bottom,
     PhysicalSide::Left => style.margin_left,
   }?;
-  Some(resolve_length(
-    length,
-    containing_width,
-    style.font_size,
-    style.root_font_size,
-    viewport,
-  ))
+  Some(resolve_length(length, containing_width, style, viewport))
 }
 
 fn margin_value_for_side(
@@ -327,13 +305,7 @@ fn resolve_padding_for_side(
     PhysicalSide::Bottom => style.padding_bottom,
     PhysicalSide::Left => style.padding_left,
   };
-  resolve_length(
-    length,
-    containing_width,
-    style.font_size,
-    style.root_font_size,
-    viewport,
-  )
+  resolve_length(length, containing_width, style, viewport)
 }
 
 fn resolve_border_for_side(
@@ -348,13 +320,7 @@ fn resolve_border_for_side(
     PhysicalSide::Bottom => style.border_bottom_width,
     PhysicalSide::Left => style.border_left_width,
   };
-  resolve_length(
-    length,
-    containing_width,
-    style.font_size,
-    style.root_font_size,
-    viewport,
-  )
+  resolve_length(length, containing_width, style, viewport)
 }
 
 /// Resolves the constraint equation for block width
@@ -426,8 +392,7 @@ fn resolve_constraint(
 fn resolve_length(
   length: Length,
   containing_width: f32,
-  font_size: f32,
-  root_font_size: f32,
+  style: &ComputedStyle,
   viewport: crate::geometry::Size,
 ) -> f32 {
   let base = if containing_width.is_finite() {
@@ -435,7 +400,16 @@ fn resolve_length(
   } else {
     None
   };
-  resolve_length_with_percentage(length, base, viewport, font_size, root_font_size).unwrap_or(0.0)
+  resolve_length_with_percentage_metrics(
+    length,
+    base,
+    viewport,
+    style.font_size,
+    style.root_font_size,
+    Some(style),
+    None,
+  )
+  .unwrap_or(0.0)
 }
 
 #[cfg(test)]

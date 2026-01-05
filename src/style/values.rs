@@ -7,7 +7,7 @@
 //!
 //! CSS supports various length units. We categorize them as:
 //! - **Absolute**: px, pt, pc, in, cm, mm
-//! - **Font-relative**: em, rem, ex, ch
+//! - **Font-relative**: em, rem, ex, ch, lh
 //! - **Viewport-relative**: vw, vh, vmin, vmax
 //! - **Percentages**: Relative to containing block or font size
 //!
@@ -65,6 +65,9 @@ pub enum LengthUnit {
 
   /// Ch units - relative to width of '0' character
   Ch,
+
+  /// Line-height units (lh) - relative to the element's computed line-height
+  Lh,
 
   /// Viewport width percentage (vw) - 1% of viewport width
   Vw,
@@ -137,7 +140,7 @@ impl LengthUnit {
     )
   }
 
-  /// Returns true if this is a font-relative unit (em, rem, ex, ch)
+  /// Returns true if this is a font-relative unit (em, rem, ex, ch, lh)
   ///
   /// Font-relative units require font metrics to resolve.
   ///
@@ -151,7 +154,7 @@ impl LengthUnit {
   /// assert!(!LengthUnit::Px.is_font_relative());
   /// ```
   pub fn is_font_relative(self) -> bool {
-    matches!(self, Self::Em | Self::Rem | Self::Ex | Self::Ch)
+    matches!(self, Self::Em | Self::Rem | Self::Ex | Self::Ch | Self::Lh)
   }
 
   /// Returns true if this is a viewport-relative unit (vw, vh, vmin, vmax)
@@ -217,6 +220,7 @@ impl LengthUnit {
       Self::Rem => "rem",
       Self::Ex => "ex",
       Self::Ch => "ch",
+      Self::Lh => "lh",
       Self::Vw => "vw",
       Self::Vh => "vh",
       Self::Vmin => "vmin",
@@ -425,6 +429,9 @@ impl CalcLength {
         LengthUnit::Em => Some(term.value * font_size_px),
         LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_size_px * 0.5),
         LengthUnit::Rem => Some(term.value * root_font_size_px),
+        // Without access to computed `line-height`, fall back to the `normal` approximation.
+        // Layout code that has access to `ComputedStyle` should resolve `lh` more accurately.
+        LengthUnit::Lh => Some(term.value * font_size_px * 1.2),
         LengthUnit::Calc => None,
         _ => None,
       }?;
@@ -476,6 +483,7 @@ mod tests {
 
     assert!(LengthUnit::Em.is_font_relative());
     assert!(LengthUnit::Rem.is_font_relative());
+    assert!(LengthUnit::Lh.is_font_relative());
 
     assert!(LengthUnit::Vw.is_viewport_relative());
     assert!(LengthUnit::Vh.is_viewport_relative());
@@ -487,6 +495,7 @@ mod tests {
   fn test_length_unit_as_str() {
     assert_eq!(LengthUnit::Px.as_str(), "px");
     assert_eq!(LengthUnit::Em.as_str(), "em");
+    assert_eq!(LengthUnit::Lh.as_str(), "lh");
     assert_eq!(LengthUnit::Percent.as_str(), "%");
   }
 
@@ -1094,6 +1103,8 @@ impl Length {
       LengthUnit::Em | LengthUnit::Rem => Some(self.value * font_size_px),
       // Approximate ex/ch with font metrics; fallback to 0.5em when actual x-height/zero-width is unknown.
       LengthUnit::Ex | LengthUnit::Ch => Some(self.value * font_size_px * 0.5),
+      // Without the computed `line-height` property, treat `lh` as `normal` (1.2 * font-size).
+      LengthUnit::Lh => Some(self.value * font_size_px * 1.2),
       _ if self.unit.is_absolute() => Some(self.to_px()),
       _ => None,
     }

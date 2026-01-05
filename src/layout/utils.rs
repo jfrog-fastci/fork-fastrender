@@ -8,12 +8,14 @@ use crate::style::types::BoxSizing;
 use crate::style::types::ContainIntrinsicSizeAxis;
 use crate::style::types::FontStyle as CssFontStyle;
 use crate::style::types::ScrollbarWidth;
+use crate::style::values::CalcLength;
 use crate::style::values::Length;
 use crate::style::values::LengthOrAuto;
 use crate::style::values::LengthUnit;
 use crate::style::ComputedStyle;
 use crate::text::font_db::FontStretch;
 use crate::text::font_db::FontStyle as FontFaceStyle;
+use crate::text::font_db::ScaledMetrics;
 use crate::text::font_loader::FontContext;
 use crate::tree::box_tree::ReplacedBox;
 
@@ -49,14 +51,19 @@ pub fn resolve_length_with_percentage_metrics(
   font_context: Option<&FontContext>,
 ) -> Option<f32> {
   if length.unit == LengthUnit::Calc {
-    return length.resolve_with_context(
-      percentage_base,
-      viewport.width,
-      viewport.height,
-      font_size,
-      root_font_size,
-    );
+    return length.calc.as_ref().and_then(|calc| {
+      resolve_calc_length_with_percentage_metrics(
+        calc,
+        percentage_base,
+        viewport,
+        font_size,
+        root_font_size,
+        style,
+        font_context,
+      )
+    });
   }
+
   if length.unit.is_percentage() {
     percentage_base.and_then(|b| length.resolve_against(b))
   } else if length.unit.is_viewport_relative() {
@@ -64,6 +71,15 @@ pub fn resolve_length_with_percentage_metrics(
       return None;
     }
     length.resolve_with_viewport(viewport.width, viewport.height)
+  } else if length.unit == LengthUnit::Lh {
+    resolve_lh(
+      length.value,
+      viewport,
+      font_size,
+      root_font_size,
+      style,
+      font_context,
+    )
   } else if length.unit.is_font_relative() {
     if !font_size.is_finite() || !root_font_size.is_finite() {
       return None;
@@ -114,6 +130,129 @@ pub fn resolve_contain_intrinsic_size_axis(
     value = 0.0;
   }
   value.max(0.0)
+}
+
+fn resolve_calc_length_with_percentage_metrics(
+  calc: &CalcLength,
+  percentage_base: Option<f32>,
+  viewport: Size,
+  font_size: f32,
+  root_font_size: f32,
+  style: Option<&ComputedStyle>,
+  font_context: Option<&FontContext>,
+) -> Option<f32> {
+  if !viewport.width.is_finite()
+    || !viewport.height.is_finite()
+    || !font_size.is_finite()
+    || !root_font_size.is_finite()
+  {
+    return None;
+  }
+
+  let percentage_base = percentage_base.filter(|b| b.is_finite());
+  let mut line_height_px: Option<f32> = None;
+
+  let mut total = 0.0;
+  for term in calc.terms() {
+    let resolved = match term.unit {
+      LengthUnit::Percent => percentage_base.map(|base| (term.value / 100.0) * base),
+      unit if unit.is_absolute() => Some(Length::new(term.value, unit).to_px()),
+      unit if unit.is_viewport_relative() => {
+        Length::new(term.value, unit).resolve_with_viewport(viewport.width, viewport.height)
+      }
+      LengthUnit::Lh => {
+        let lh = *line_height_px.get_or_insert_with(|| {
+          resolve_line_height_px(viewport, font_size, root_font_size, style, font_context)
+            .unwrap_or(font_size * 1.2)
+        });
+        Some(term.value * lh)
+      }
+      unit if unit.is_font_relative() => match (style, font_context) {
+        (Some(style), Some(ctx)) => Some(resolve_font_relative_length(
+          Length::new(term.value, unit),
+          style,
+          ctx,
+        )),
+        _ => Some(resolve_font_relative(
+          Length::new(term.value, unit),
+          font_size,
+          root_font_size,
+        )),
+      },
+      LengthUnit::Calc => None,
+      _ => None,
+    }?;
+    total += resolved;
+  }
+
+  Some(total)
+}
+
+fn resolve_lh(
+  value: f32,
+  viewport: Size,
+  font_size: f32,
+  root_font_size: f32,
+  style: Option<&ComputedStyle>,
+  font_context: Option<&FontContext>,
+) -> Option<f32> {
+  if !value.is_finite() || !font_size.is_finite() || !root_font_size.is_finite() {
+    return None;
+  }
+
+  let lh = resolve_line_height_px(viewport, font_size, root_font_size, style, font_context)
+    .unwrap_or(font_size * 1.2);
+
+  Some(value * lh)
+}
+
+fn resolve_line_height_px(
+  viewport: Size,
+  font_size: f32,
+  _root_font_size: f32,
+  style: Option<&ComputedStyle>,
+  font_context: Option<&FontContext>,
+) -> Option<f32> {
+  let style = style?;
+  if !font_size.is_finite() {
+    return None;
+  }
+
+  let scaled_metrics = font_context.and_then(|ctx| scaled_metrics_for_style(style, ctx));
+
+  Some(
+    crate::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport(
+      style,
+      scaled_metrics.as_ref(),
+      Some(viewport),
+    ),
+  )
+}
+
+fn scaled_metrics_for_style(
+  style: &ComputedStyle,
+  font_context: &FontContext,
+) -> Option<ScaledMetrics> {
+  if !style.font_size.is_finite() {
+    return None;
+  }
+
+  let face_style = match style.font_style {
+    CssFontStyle::Normal => FontFaceStyle::Normal,
+    CssFontStyle::Italic => FontFaceStyle::Italic,
+    CssFontStyle::Oblique(_) => FontFaceStyle::Oblique,
+  };
+  let face_stretch = FontStretch::from_percentage(style.font_stretch.to_percentage());
+
+  font_context
+    .get_font_full(
+      &style.font_family,
+      style.font_weight.to_u16(),
+      face_style,
+      face_stretch,
+    )
+    .or_else(|| font_context.get_sans_serif())
+    .and_then(|font| font_context.get_scaled_metrics(&font, style.font_size))
 }
 
 /// Resolves the CSS `scrollbar-width` keyword to an approximate physical width in CSS pixels.
@@ -179,29 +318,15 @@ pub fn resolve_offset_with_metrics(
 ) -> Option<f32> {
   match value {
     LengthOrAuto::Auto => None,
-    LengthOrAuto::Length(length) => {
-      if length.unit == LengthUnit::Calc {
-        return length.resolve_with_context(
-          Some(percentage_base),
-          viewport.width,
-          viewport.height,
-          font_size,
-          root_font_size,
-        );
-      }
-      if length.unit.is_percentage() {
-        length.resolve_against(percentage_base)
-      } else if length.unit.is_absolute() {
-        Some(length.to_px())
-      } else if length.unit.is_viewport_relative() {
-        length.resolve_with_viewport(viewport.width, viewport.height)
-      } else {
-        match (style, font_context) {
-          (Some(style), Some(ctx)) => Some(resolve_font_relative_length(*length, style, ctx)),
-          _ => Some(resolve_font_relative(*length, font_size, root_font_size)),
-        }
-      }
-    }
+    LengthOrAuto::Length(length) => resolve_length_with_percentage_metrics(
+      *length,
+      Some(percentage_base),
+      viewport,
+      font_size,
+      root_font_size,
+      style,
+      font_context,
+    ),
   }
 }
 
@@ -459,13 +584,9 @@ pub fn compute_replaced_size(
 
   let width_base = percentage_base.and_then(|s| s.width.is_finite().then_some(s.width));
   let height_base = percentage_base.and_then(|s| s.height.is_finite().then_some(s.height));
-  let font_size = style.font_size;
-  let root_font_size = style.root_font_size;
 
   let resolve_for_width = |len: Length| {
-    sanitize(
-      resolve_replaced_length(&len, width_base, viewport, font_size, root_font_size).unwrap_or(0.0),
-    )
+    sanitize(resolve_replaced_length(&len, width_base, viewport, style, None).unwrap_or(0.0))
   };
   let horizontal_edges = resolve_for_width(style.padding_left)
     + resolve_for_width(style.padding_right)
@@ -480,12 +601,12 @@ pub fn compute_replaced_size(
   let specified_w = style
     .width
     .as_ref()
-    .and_then(|l| resolve_replaced_length(l, width_base, viewport, font_size, root_font_size))
+    .and_then(|l| resolve_replaced_length(l, width_base, viewport, style, None))
     .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing));
   let specified_h = style
     .height
     .as_ref()
-    .and_then(|l| resolve_replaced_length(l, height_base, viewport, font_size, root_font_size))
+    .and_then(|l| resolve_replaced_length(l, height_base, viewport, style, None))
     .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing));
   let width_specified = specified_w.is_some();
   let height_specified = specified_h.is_some();
@@ -554,7 +675,7 @@ pub fn compute_replaced_size(
   let resolved_min_w = style
     .min_width
     .as_ref()
-    .and_then(|l| resolve_replaced_length(l, width_base, viewport, font_size, root_font_size))
+    .and_then(|l| resolve_replaced_length(l, width_base, viewport, style, None))
     .map(|w| {
       sanitize(content_size_from_box_sizing(
         w,
@@ -565,7 +686,7 @@ pub fn compute_replaced_size(
   let resolved_max_w = style
     .max_width
     .as_ref()
-    .and_then(|l| resolve_replaced_length(l, width_base, viewport, font_size, root_font_size))
+    .and_then(|l| resolve_replaced_length(l, width_base, viewport, style, None))
     .map(|w| {
       sanitize(content_size_from_box_sizing(
         w,
@@ -576,7 +697,7 @@ pub fn compute_replaced_size(
   let resolved_min_h = style
     .min_height
     .as_ref()
-    .and_then(|l| resolve_replaced_length(l, height_base, viewport, font_size, root_font_size))
+    .and_then(|l| resolve_replaced_length(l, height_base, viewport, style, None))
     .map(|h| {
       sanitize(content_size_from_box_sizing(
         h,
@@ -587,7 +708,7 @@ pub fn compute_replaced_size(
   let resolved_max_h = style
     .max_height
     .as_ref()
-    .and_then(|l| resolve_replaced_length(l, height_base, viewport, font_size, root_font_size))
+    .and_then(|l| resolve_replaced_length(l, height_base, viewport, style, None))
     .map(|h| {
       sanitize(content_size_from_box_sizing(
         h,
@@ -650,20 +771,18 @@ fn resolve_replaced_length(
   len: &Length,
   percentage_base: Option<f32>,
   viewport: Size,
-  font_size: f32,
-  root_font_size: f32,
+  style: &ComputedStyle,
+  font_context: Option<&FontContext>,
 ) -> Option<f32> {
-  if len.unit.is_percentage() {
-    percentage_base.and_then(|b| len.resolve_against(b))
-  } else if len.unit.is_viewport_relative() {
-    len.resolve_with_viewport(viewport.width, viewport.height)
-  } else if len.unit.is_font_relative() {
-    Some(resolve_font_relative(*len, font_size, root_font_size))
-  } else if len.unit.is_absolute() {
-    Some(len.to_px())
-  } else {
-    Some(len.value)
-  }
+  resolve_length_with_percentage_metrics(
+    *len,
+    percentage_base,
+    viewport,
+    style.font_size,
+    style.root_font_size,
+    Some(style),
+    font_context,
+  )
 }
 
 fn resolve_font_relative(len: Length, font_size: f32, root_font_size: f32) -> f32 {
@@ -721,6 +840,81 @@ mod tests {
         16.0
       ),
       None
+    );
+  }
+
+  #[test]
+  fn resolves_lh_with_normal_line_height() {
+    let mut style = ComputedStyle::default();
+    style.font_size = 20.0;
+    style.line_height = crate::style::types::LineHeight::Normal;
+
+    let resolved = resolve_length_with_percentage_metrics(
+      Length::new(1.0, LengthUnit::Lh),
+      None,
+      Size::new(800.0, 600.0),
+      style.font_size,
+      style.root_font_size,
+      Some(&style),
+      None,
+    )
+    .expect("resolved lh");
+
+    // With no font metrics, `line-height: normal` should follow the baseline fallback of 1.2em.
+    assert!(
+      (resolved - 24.0).abs() < 0.01,
+      "expected 24px, got {resolved}"
+    );
+  }
+
+  #[test]
+  fn resolves_lh_with_number_line_height() {
+    let mut style = ComputedStyle::default();
+    style.font_size = 10.0;
+    style.line_height = crate::style::types::LineHeight::Number(2.0);
+
+    let resolved = resolve_length_with_percentage_metrics(
+      Length::new(1.0, LengthUnit::Lh),
+      None,
+      Size::new(800.0, 600.0),
+      style.font_size,
+      style.root_font_size,
+      Some(&style),
+      None,
+    )
+    .expect("resolved lh");
+
+    assert!(
+      (resolved - 20.0).abs() < 0.01,
+      "expected 20px, got {resolved}"
+    );
+  }
+
+  #[test]
+  fn resolves_calc_with_lh_terms() {
+    let mut style = ComputedStyle::default();
+    style.font_size = 10.0;
+    style.line_height = crate::style::types::LineHeight::Number(2.0);
+
+    let calc = CalcLength::single(LengthUnit::Lh, 1.0)
+      .add_scaled(&CalcLength::single(LengthUnit::Px, 4.0), 1.0)
+      .expect("calc terms");
+    let length = Length::calc(calc);
+
+    let resolved = resolve_length_with_percentage_metrics(
+      length,
+      None,
+      Size::new(800.0, 600.0),
+      style.font_size,
+      style.root_font_size,
+      Some(&style),
+      None,
+    )
+    .expect("resolved calc");
+
+    assert!(
+      (resolved - 24.0).abs() < 0.01,
+      "expected 24px, got {resolved}"
     );
   }
 
