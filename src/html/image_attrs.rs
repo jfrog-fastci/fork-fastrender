@@ -515,6 +515,30 @@ fn parse_sizes_length(value: &str) -> Option<crate::style::values::Length> {
         Some(Length::new(*value, LengthUnit::Vmin))
       } else if unit.eq_ignore_ascii_case("vmax") {
         Some(Length::new(*value, LengthUnit::Vmax))
+      } else if unit.eq_ignore_ascii_case("svw") {
+        Some(Length::new(*value, LengthUnit::Vw))
+      } else if unit.eq_ignore_ascii_case("svh") {
+        Some(Length::new(*value, LengthUnit::Vh))
+      } else if unit.eq_ignore_ascii_case("svmin") {
+        Some(Length::new(*value, LengthUnit::Vmin))
+      } else if unit.eq_ignore_ascii_case("svmax") {
+        Some(Length::new(*value, LengthUnit::Vmax))
+      } else if unit.eq_ignore_ascii_case("lvw") {
+        Some(Length::new(*value, LengthUnit::Vw))
+      } else if unit.eq_ignore_ascii_case("lvh") {
+        Some(Length::new(*value, LengthUnit::Vh))
+      } else if unit.eq_ignore_ascii_case("lvmin") {
+        Some(Length::new(*value, LengthUnit::Vmin))
+      } else if unit.eq_ignore_ascii_case("lvmax") {
+        Some(Length::new(*value, LengthUnit::Vmax))
+      } else if unit.eq_ignore_ascii_case("dvw") {
+        Some(Length::new(*value, LengthUnit::Dvw))
+      } else if unit.eq_ignore_ascii_case("dvh") {
+        Some(Length::new(*value, LengthUnit::Dvh))
+      } else if unit.eq_ignore_ascii_case("dvmin") {
+        Some(Length::new(*value, LengthUnit::Dvmin))
+      } else if unit.eq_ignore_ascii_case("dvmax") {
+        Some(Length::new(*value, LengthUnit::Dvmax))
       } else {
         None
       }
@@ -716,6 +740,14 @@ mod tests {
     assert!(parsed.entries[0].media.is_some());
     assert_eq!(parsed.entries[0].length, Length::new(50.0, LengthUnit::Vw));
     assert!(parsed.entries[1].media.is_none());
+    assert_eq!(parsed.entries[1].length, Length::new(100.0, LengthUnit::Vw));
+  }
+
+  #[test]
+  fn parse_sizes_supports_modern_viewport_units() {
+    let parsed = parse_sizes("50SVW, 100lvw").expect("sizes parsed");
+    assert_eq!(parsed.entries.len(), 2);
+    assert_eq!(parsed.entries[0].length, Length::new(50.0, LengthUnit::Vw));
     assert_eq!(parsed.entries[1].length, Length::new(100.0, LengthUnit::Vw));
   }
 

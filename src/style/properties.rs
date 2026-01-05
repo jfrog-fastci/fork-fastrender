@@ -6485,6 +6485,16 @@ fn apply_declaration_with_base_internal(
         u if u.eq_ignore_ascii_case("vh") => LengthUnit::Vh,
         u if u.eq_ignore_ascii_case("vmin") => LengthUnit::Vmin,
         u if u.eq_ignore_ascii_case("vmax") => LengthUnit::Vmax,
+        // CSS Values and Units Level 4 viewport units. FastRender renders with a fixed headless
+        // viewport, so the small/large variants behave like the classic viewport units.
+        u if u.eq_ignore_ascii_case("svw") => LengthUnit::Vw,
+        u if u.eq_ignore_ascii_case("svh") => LengthUnit::Vh,
+        u if u.eq_ignore_ascii_case("svmin") => LengthUnit::Vmin,
+        u if u.eq_ignore_ascii_case("svmax") => LengthUnit::Vmax,
+        u if u.eq_ignore_ascii_case("lvw") => LengthUnit::Vw,
+        u if u.eq_ignore_ascii_case("lvh") => LengthUnit::Vh,
+        u if u.eq_ignore_ascii_case("lvmin") => LengthUnit::Vmin,
+        u if u.eq_ignore_ascii_case("lvmax") => LengthUnit::Vmax,
         u if u.eq_ignore_ascii_case("dvw") => LengthUnit::Dvw,
         u if u.eq_ignore_ascii_case("dvh") => LengthUnit::Dvh,
         u if u.eq_ignore_ascii_case("dvmin") => LengthUnit::Dvmin,
@@ -13606,36 +13616,42 @@ fn length_from_token(token: &Token) -> Option<Length> {
   match token {
     Token::Dimension {
       value, ref unit, ..
-    } => match unit.as_ref() {
-      "px" => Some(Length::px(*value)),
-      "em" => Some(Length::em(*value)),
-      "rem" => Some(Length::rem(*value)),
-      "pt" => Some(Length::pt(*value)),
-      "pc" => Some(Length::pc(*value)),
-      "in" => Some(Length::inches(*value)),
-      "cm" => Some(Length::cm(*value)),
-      "mm" => Some(Length::mm(*value)),
-      "vh" => Some(Length::new(*value, LengthUnit::Vh)),
-      "vw" => Some(Length::new(*value, LengthUnit::Vw)),
-      "vmin" => Some(Length::new(*value, LengthUnit::Vmin)),
-      "vmax" => Some(Length::new(*value, LengthUnit::Vmax)),
-      // CSS Values and Units Level 4 viewport units. FastRender renders with a fixed headless
-      // viewport, so the small/large variants behave like the classic viewport units.
-      "svh" => Some(Length::new(*value, LengthUnit::Vh)),
-      "svw" => Some(Length::new(*value, LengthUnit::Vw)),
-      "svmin" => Some(Length::new(*value, LengthUnit::Vmin)),
-      "svmax" => Some(Length::new(*value, LengthUnit::Vmax)),
-      "lvh" => Some(Length::new(*value, LengthUnit::Vh)),
-      "lvw" => Some(Length::new(*value, LengthUnit::Vw)),
-      "lvmin" => Some(Length::new(*value, LengthUnit::Vmin)),
-      "lvmax" => Some(Length::new(*value, LengthUnit::Vmax)),
-      "dvh" => Some(Length::new(*value, LengthUnit::Dvh)),
-      "dvw" => Some(Length::new(*value, LengthUnit::Dvw)),
-      "dvmin" => Some(Length::new(*value, LengthUnit::Dvmin)),
-      "dvmax" => Some(Length::new(*value, LengthUnit::Dvmax)),
-      "%" => Some(Length::percent(*value)),
-      _ => None,
-    },
+    } => {
+      let unit = unit.as_ref().to_ascii_lowercase();
+      match unit.as_str() {
+        "px" => Some(Length::px(*value)),
+        "em" => Some(Length::em(*value)),
+        "rem" => Some(Length::rem(*value)),
+        "ex" => Some(Length::ex(*value)),
+        "ch" => Some(Length::ch(*value)),
+        "pt" => Some(Length::pt(*value)),
+        "pc" => Some(Length::pc(*value)),
+        "in" => Some(Length::inches(*value)),
+        "cm" => Some(Length::cm(*value)),
+        "mm" => Some(Length::mm(*value)),
+        "q" => Some(Length::q(*value)),
+        "vh" => Some(Length::new(*value, LengthUnit::Vh)),
+        "vw" => Some(Length::new(*value, LengthUnit::Vw)),
+        "vmin" => Some(Length::new(*value, LengthUnit::Vmin)),
+        "vmax" => Some(Length::new(*value, LengthUnit::Vmax)),
+        // CSS Values and Units Level 4 viewport units. FastRender renders with a fixed headless
+        // viewport, so the small/large variants behave like the classic viewport units.
+        "svh" => Some(Length::new(*value, LengthUnit::Vh)),
+        "svw" => Some(Length::new(*value, LengthUnit::Vw)),
+        "svmin" => Some(Length::new(*value, LengthUnit::Vmin)),
+        "svmax" => Some(Length::new(*value, LengthUnit::Vmax)),
+        "lvh" => Some(Length::new(*value, LengthUnit::Vh)),
+        "lvw" => Some(Length::new(*value, LengthUnit::Vw)),
+        "lvmin" => Some(Length::new(*value, LengthUnit::Vmin)),
+        "lvmax" => Some(Length::new(*value, LengthUnit::Vmax)),
+        "dvh" => Some(Length::new(*value, LengthUnit::Dvh)),
+        "dvw" => Some(Length::new(*value, LengthUnit::Dvw)),
+        "dvmin" => Some(Length::new(*value, LengthUnit::Dvmin)),
+        "dvmax" => Some(Length::new(*value, LengthUnit::Dvmax)),
+        "%" => Some(Length::percent(*value)),
+        _ => None,
+      }
+    }
     Token::Percentage { unit_value, .. } => Some(Length::percent(*unit_value * 100.0)),
     Token::Number { value, .. } if *value == 0.0 => Some(Length::px(0.0)),
     _ => None,
@@ -14879,6 +14895,22 @@ fn length_unit_from_str(unit: &str) -> Option<LengthUnit> {
   } else if unit.eq_ignore_ascii_case("vmin") {
     Some(LengthUnit::Vmin)
   } else if unit.eq_ignore_ascii_case("vmax") {
+    Some(LengthUnit::Vmax)
+  } else if unit.eq_ignore_ascii_case("svw") {
+    Some(LengthUnit::Vw)
+  } else if unit.eq_ignore_ascii_case("svh") {
+    Some(LengthUnit::Vh)
+  } else if unit.eq_ignore_ascii_case("svmin") {
+    Some(LengthUnit::Vmin)
+  } else if unit.eq_ignore_ascii_case("svmax") {
+    Some(LengthUnit::Vmax)
+  } else if unit.eq_ignore_ascii_case("lvw") {
+    Some(LengthUnit::Vw)
+  } else if unit.eq_ignore_ascii_case("lvh") {
+    Some(LengthUnit::Vh)
+  } else if unit.eq_ignore_ascii_case("lvmin") {
+    Some(LengthUnit::Vmin)
+  } else if unit.eq_ignore_ascii_case("lvmax") {
     Some(LengthUnit::Vmax)
   } else if unit.eq_ignore_ascii_case("dvw") {
     Some(LengthUnit::Dvw)
@@ -16426,6 +16458,30 @@ mod tests {
       style.svg_stroke_dasharray,
       Some(StrokeDasharray::Values(
         vec![LengthOrNumber::Number(6.0), LengthOrNumber::Number(3.0)].into()
+      ))
+    );
+
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "stroke-dasharray".into(),
+        value: PropertyValue::Keyword("6svw 3".to_string()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &parent,
+      16.0,
+      16.0,
+    );
+    assert_eq!(
+      style.svg_stroke_dasharray,
+      Some(StrokeDasharray::Values(
+        vec![
+          LengthOrNumber::Length(Length::new(6.0, LengthUnit::Vw)),
+          LengthOrNumber::Number(3.0)
+        ]
+        .into()
       ))
     );
 
@@ -18033,6 +18089,44 @@ mod tests {
         } => {
           assert_eq!(*top, Length::px(10.0));
           assert_eq!(*bottom, Length::px(10.0));
+          assert_eq!(*right, Length::percent(20.0));
+          assert_eq!(*left, Length::percent(20.0));
+          let radii = border_radius.as_ref().expect("radii present");
+          assert_eq!(radii.top_left, BorderCornerRadius::uniform(Length::px(5.0)));
+          assert_eq!(
+            radii.bottom_right,
+            BorderCornerRadius::uniform(Length::px(5.0))
+          );
+        }
+        other => panic!("unexpected basic shape: {other:?}"),
+      },
+      other => panic!("unexpected clip-path parsed: {other:?}"),
+    }
+  }
+
+  #[test]
+  fn parses_clip_path_modern_viewport_units() {
+    let decl = Declaration {
+      property: "clip-path".into(),
+      value: PropertyValue::Keyword("inset(10svh 20% round 5px)".to_string()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    let mut style = ComputedStyle::default();
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+
+    match &style.clip_path {
+      ClipPath::BasicShape(basic, None) => match basic.as_ref() {
+        BasicShape::Inset {
+          top,
+          right,
+          bottom,
+          left,
+          border_radius,
+        } => {
+          assert_eq!(*top, Length::new(10.0, LengthUnit::Vh));
+          assert_eq!(*bottom, Length::new(10.0, LengthUnit::Vh));
           assert_eq!(*right, Length::percent(20.0));
           assert_eq!(*left, Length::percent(20.0));
           let radii = border_radius.as_ref().expect("radii present");
@@ -25269,6 +25363,23 @@ mod tests {
     assert!(matches!(style.font_style, FontStyle::Italic));
     assert!((style.font_size - 16.0).abs() < 0.01);
     assert!(matches!(style.line_height, LineHeight::Length(_)));
+  }
+
+  #[test]
+  fn font_shorthand_accepts_modern_viewport_units_case_insensitive() {
+    let mut style = ComputedStyle::default();
+    style.font_size = 10.0;
+    let decl = Declaration {
+      property: "font".into(),
+      value: PropertyValue::Keyword("50LVW serif".to_string()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+
+    let expected = DEFAULT_VIEWPORT.width * 0.5;
+    assert!((style.font_size - expected).abs() < 0.01);
   }
 
   #[test]
