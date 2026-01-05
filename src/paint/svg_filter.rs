@@ -4909,17 +4909,20 @@ fn apply_specular_lighting(
             );
             let spec_angle = reflect.2.max(0.0).powf(exponent);
             let intensity = specular_constant * spec_angle * light_factor;
-            let color_scale = if intensity.is_finite() {
+            // Unlike diffuse lighting, Chrome/resvg encode the specular intensity in the alpha
+            // channel and keep the RGB channels fixed to the lighting color. This makes
+            // `feComposite operator="in"` with `SourceGraphic` behave like masking the highlight.
+            let intensity = if intensity.is_finite() {
               intensity.max(0.0)
             } else {
               0.0
             };
-            let out_alpha = base_color.a;
+            let out_alpha = base_color.a * intensity;
             *dst = pack_color(
               UnpremultipliedColor {
-                r: base_color.r * color_scale,
-                g: base_color.g * color_scale,
-                b: base_color.b * color_scale,
+                r: base_color.r,
+                g: base_color.g,
+                b: base_color.b,
                 a: out_alpha,
               },
               color_interpolation_filters,

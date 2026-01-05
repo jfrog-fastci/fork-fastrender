@@ -2,13 +2,12 @@
 <style>
   body {
     margin: 0;
-    background: #ffffff;
+    background: #404040;
     font: 12px/1 system-ui, sans-serif;
   }
 
   .box {
     position: absolute;
-    top: 12px;
     width: 48px;
     height: 48px;
     background: #000;
@@ -19,11 +18,19 @@
     background: rgba(0, 0, 0, 0);
   }
 
-  .box.second {
+  .box.row1 {
+    top: 12px;
+  }
+
+  .box.row2 {
+    top: 72px;
+  }
+
+  .box.col2 {
     left: 72px;
   }
 
-  .box.first {
+  .box.col1 {
     left: 12px;
   }
 
@@ -36,7 +43,7 @@
 
 <svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
   <defs>
-    <filter id="lighting" color-interpolation-filters="sRGB">
+    <filter id="diffuse" color-interpolation-filters="sRGB">
       <feDiffuseLighting
         in="SourceAlpha"
         surfaceScale="0"
@@ -46,8 +53,22 @@
         <feDistantLight azimuth="0" elevation="90" />
       </feDiffuseLighting>
     </filter>
+
+    <filter id="specular" color-interpolation-filters="sRGB">
+      <feSpecularLighting
+        in="SourceAlpha"
+        surfaceScale="0"
+        specularConstant="0.5"
+        specularExponent="1"
+        lighting-color="white"
+      >
+        <feDistantLight azimuth="0" elevation="90" />
+      </feSpecularLighting>
+    </filter>
   </defs>
 </svg>
 
-<div class="box first" style="filter: url(#lighting)"></div>
-<div class="box second transparent" style="filter: url(#lighting)"></div>
+<div class="box row1 col1" style="filter: url(#diffuse)"></div>
+<div class="box row1 col2 transparent" style="filter: url(#diffuse)"></div>
+<div class="box row2 col1" style="filter: url(#specular)"></div>
+<div class="box row2 col2 transparent" style="filter: url(#specular)"></div>

@@ -541,3 +541,61 @@ fn lighting_transparent_input_matches_resvg() {
     "FastRender lighting must match resvg output"
   );
 }
+
+#[test]
+fn specular_lighting_output_alpha_matches_resvg_for_intensity() {
+  // Flat surface + distant light straight on => specular angle is 1.0, so intensity is purely the
+  // constant. This isolates the question of whether the lighting output alpha encodes intensity.
+  let svg = r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10">
+      <filter id="f" x="0" y="0" width="10" height="10"
+              filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
+              color-interpolation-filters="sRGB">
+        <feSpecularLighting in="SourceAlpha" surfaceScale="0" specularConstant="0.5" specularExponent="1" lighting-color="white">
+          <feDistantLight azimuth="0" elevation="90" />
+        </feSpecularLighting>
+      </filter>
+      <rect width="10" height="10" fill="white" filter="url(#f)" />
+    </svg>
+  "#;
+
+  let expected = center_pixel(&render_resvg(svg, 10, 10));
+
+  let filter =
+    parse_svg_filter_from_svg_document(svg, Some("f"), &ImageCache::new()).expect("filter");
+  let mut pixmap = solid_pixmap(10, 10, PremultipliedColorU8::from_rgba(255, 255, 255, 255).unwrap());
+  let bbox = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+  apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
+  let actual = center_pixel(&pixmap);
+
+  assert_eq!(actual, expected, "FastRender lighting must match resvg output");
+}
+
+#[test]
+fn specular_lighting_transparent_input_matches_resvg() {
+  // If the bump map is fully transparent (alpha=0 everywhere), engines disagree on whether the
+  // lighting primitive should still emit a flat lit surface. Lock the behavior to resvg/Chrome.
+  let svg = r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10">
+      <filter id="f" x="0" y="0" width="10" height="10"
+              filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
+              color-interpolation-filters="sRGB">
+        <feSpecularLighting in="SourceAlpha" surfaceScale="0" specularConstant="0.5" specularExponent="1" lighting-color="white">
+          <feDistantLight azimuth="0" elevation="90" />
+        </feSpecularLighting>
+      </filter>
+      <rect width="10" height="10" fill="white" fill-opacity="0" filter="url(#f)" />
+    </svg>
+  "#;
+
+  let expected = center_pixel(&render_resvg(svg, 10, 10));
+
+  let filter =
+    parse_svg_filter_from_svg_document(svg, Some("f"), &ImageCache::new()).expect("filter");
+  let mut pixmap = solid_pixmap(10, 10, PremultipliedColorU8::TRANSPARENT);
+  let bbox = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+  apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
+  let actual = center_pixel(&pixmap);
+
+  assert_eq!(actual, expected, "FastRender lighting must match resvg output");
+}
