@@ -9939,9 +9939,10 @@ mod blend_pixmaps_tests {
   fn blend_multiply_matches_expected() {
     let backdrop = solid_pixmap(BACKDROP);
     let filter_region = backdrop.region;
+    let source = solid_pixmap(SOURCE);
     let blended = blend_pixmaps(
+      Some(source),
       Some(backdrop),
-      Some(solid_pixmap(SOURCE)),
       BlendMode::Multiply,
       filter_region,
       ColorInterpolationFilters::SRGB,
@@ -9956,9 +9957,10 @@ mod blend_pixmaps_tests {
   fn blend_screen_matches_expected() {
     let backdrop = solid_pixmap(BACKDROP);
     let filter_region = backdrop.region;
+    let source = solid_pixmap(SOURCE);
     let blended = blend_pixmaps(
+      Some(source),
       Some(backdrop),
-      Some(solid_pixmap(SOURCE)),
       BlendMode::Screen,
       filter_region,
       ColorInterpolationFilters::SRGB,
@@ -9973,9 +9975,10 @@ mod blend_pixmaps_tests {
   fn blend_overlay_matches_expected() {
     let backdrop = solid_pixmap(BACKDROP);
     let filter_region = backdrop.region;
+    let source = solid_pixmap(SOURCE);
     let blended = blend_pixmaps(
+      Some(source),
       Some(backdrop),
-      Some(solid_pixmap(SOURCE)),
       BlendMode::Overlay,
       filter_region,
       ColorInterpolationFilters::SRGB,
@@ -9990,9 +9993,10 @@ mod blend_pixmaps_tests {
   fn blend_difference_matches_expected() {
     let backdrop = solid_pixmap(BACKDROP);
     let filter_region = backdrop.region;
+    let source = solid_pixmap(SOURCE);
     let blended = blend_pixmaps(
+      Some(source),
       Some(backdrop),
-      Some(solid_pixmap(SOURCE)),
       BlendMode::Difference,
       filter_region,
       ColorInterpolationFilters::SRGB,
@@ -10007,9 +10011,10 @@ mod blend_pixmaps_tests {
   fn blend_exclusion_matches_expected() {
     let backdrop = solid_pixmap(BACKDROP);
     let filter_region = backdrop.region;
+    let source = solid_pixmap(SOURCE);
     let blended = blend_pixmaps(
+      Some(source),
       Some(backdrop),
-      Some(solid_pixmap(SOURCE)),
       BlendMode::Exclusion,
       filter_region,
       ColorInterpolationFilters::SRGB,
@@ -10027,8 +10032,8 @@ mod blend_pixmaps_tests {
     let source = solid_pixmap((128, 128, 128, 128));
 
     let srgb = blend_pixmaps(
-      Some(backdrop.clone()),
       Some(source.clone()),
+      Some(backdrop.clone()),
       BlendMode::SourceOver,
       filter_region,
       ColorInterpolationFilters::SRGB,
@@ -10039,8 +10044,8 @@ mod blend_pixmaps_tests {
     assert_pixel_close(srgb_px, (128, 128, 128, 255));
 
     let linear = blend_pixmaps(
-      Some(backdrop),
       Some(source),
+      Some(backdrop),
       BlendMode::SourceOver,
       filter_region,
       ColorInterpolationFilters::LinearRGB,
