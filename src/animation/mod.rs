@@ -35,6 +35,8 @@ use crate::style::types::BasicShape;
 use crate::style::types::BorderStyle;
 use crate::style::types::BorderCornerRadius;
 use crate::style::types::ClipPath;
+use crate::style::types::ClipComponent;
+use crate::style::types::ClipRect;
 use crate::style::types::ClipRadii;
 use crate::style::types::FilterColor;
 use crate::style::types::FilterFunction;
@@ -85,6 +87,7 @@ pub enum AnimatedValue {
   Filter(Vec<FilterFunction>),
   BackdropFilter(Vec<FilterFunction>),
   ClipPath(ClipPath),
+  ClipRect(Option<ClipRect>),
   BackgroundPosition(Vec<BackgroundPosition>),
   BackgroundSize(Vec<BackgroundSize>),
   BoxShadow(Vec<BoxShadow>),
@@ -1355,6 +1358,74 @@ fn apply_clip_path(style: &mut ComputedStyle, value: &AnimatedValue) {
   }
 }
 
+fn resolve_clip_component(
+  component: &ClipComponent,
+  percent_base: f32,
+  style: &ComputedStyle,
+  ctx: &AnimationResolveContext,
+) -> ClipComponent {
+  match component {
+    ClipComponent::Auto => ClipComponent::Auto,
+    ClipComponent::Length(len) => ClipComponent::Length(Length::px(resolve_length_px(
+      len,
+      Some(percent_base),
+      style,
+      ctx,
+    ))),
+  }
+}
+
+fn extract_clip_rect(style: &ComputedStyle, ctx: &AnimationResolveContext) -> Option<AnimatedValue> {
+  let rect = style.clip.as_ref().map(|rect| {
+    let width = ctx.element_size.width;
+    let height = ctx.element_size.height;
+    ClipRect {
+      top: resolve_clip_component(&rect.top, height, style, ctx),
+      right: resolve_clip_component(&rect.right, width, style, ctx),
+      bottom: resolve_clip_component(&rect.bottom, height, style, ctx),
+      left: resolve_clip_component(&rect.left, width, style, ctx),
+    }
+  });
+  Some(AnimatedValue::ClipRect(rect))
+}
+
+fn interpolate_clip_component(a: &ClipComponent, b: &ClipComponent, t: f32) -> Option<ClipComponent> {
+  match (a, b) {
+    (ClipComponent::Auto, ClipComponent::Auto) => Some(ClipComponent::Auto),
+    (ClipComponent::Length(a), ClipComponent::Length(b)) => Some(ClipComponent::Length(
+      Length::px(lerp(a.to_px(), b.to_px(), t)),
+    )),
+    _ => None,
+  }
+}
+
+fn interpolate_clip_rect_value(
+  a: &AnimatedValue,
+  b: &AnimatedValue,
+  t: f32,
+) -> Option<AnimatedValue> {
+  let (AnimatedValue::ClipRect(a), AnimatedValue::ClipRect(b)) = (a, b) else {
+    return None;
+  };
+  let rect = match (a.as_ref(), b.as_ref()) {
+    (None, None) => None,
+    (Some(a), Some(b)) => Some(ClipRect {
+      top: interpolate_clip_component(&a.top, &b.top, t)?,
+      right: interpolate_clip_component(&a.right, &b.right, t)?,
+      bottom: interpolate_clip_component(&a.bottom, &b.bottom, t)?,
+      left: interpolate_clip_component(&a.left, &b.left, t)?,
+    }),
+    _ => return None,
+  };
+  Some(AnimatedValue::ClipRect(rect))
+}
+
+fn apply_clip_rect(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::ClipRect(rect) = value {
+    style.clip = rect.clone();
+  }
+}
+
 fn extract_background_position(
   style: &ComputedStyle,
   ctx: &AnimationResolveContext,
@@ -1389,6 +1460,20 @@ fn apply_background_position(style: &mut ComputedStyle, value: &AnimatedValue) {
   }
 }
 
+fn extract_mask_position(style: &ComputedStyle, ctx: &AnimationResolveContext) -> Option<AnimatedValue> {
+  let resolved = resolve_background_positions(&style.mask_positions, style, ctx);
+  Some(AnimatedValue::BackgroundPosition(
+    resolved_positions_to_background(&resolved),
+  ))
+}
+
+fn apply_mask_position(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::BackgroundPosition(pos) = value {
+    style.mask_positions = pos.clone().into();
+    style.rebuild_mask_layers();
+  }
+}
+
 fn extract_background_size(
   style: &ComputedStyle,
   ctx: &AnimationResolveContext,
@@ -1419,6 +1504,20 @@ fn apply_background_size(style: &mut ComputedStyle, value: &AnimatedValue) {
   if let AnimatedValue::BackgroundSize(sizes) = value {
     style.background_sizes = sizes.clone().into();
     style.rebuild_background_layers();
+  }
+}
+
+fn extract_mask_size(style: &ComputedStyle, ctx: &AnimationResolveContext) -> Option<AnimatedValue> {
+  let resolved = resolve_background_sizes(&style.mask_sizes, style, ctx);
+  Some(AnimatedValue::BackgroundSize(resolved_sizes_to_background(
+    &resolved,
+  )))
+}
+
+fn apply_mask_size(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::BackgroundSize(sizes) = value {
+    style.mask_sizes = sizes.clone().into();
+    style.rebuild_mask_layers();
   }
 }
 
@@ -2162,16 +2261,34 @@ fn property_interpolators() -> &'static [PropertyInterpolator] {
       apply: apply_clip_path,
     },
     PropertyInterpolator {
+      name: "clip",
+      extract: extract_clip_rect,
+      interpolate: interpolate_clip_rect_value,
+      apply: apply_clip_rect,
+    },
+    PropertyInterpolator {
       name: "background-position",
       extract: extract_background_position,
       interpolate: interpolate_background_position_value,
       apply: apply_background_position,
     },
     PropertyInterpolator {
+      name: "mask-position",
+      extract: extract_mask_position,
+      interpolate: interpolate_background_position_value,
+      apply: apply_mask_position,
+    },
+    PropertyInterpolator {
       name: "background-size",
       extract: extract_background_size,
       interpolate: interpolate_background_size_value,
       apply: apply_background_size,
+    },
+    PropertyInterpolator {
+      name: "mask-size",
+      extract: extract_mask_size,
+      interpolate: interpolate_background_size_value,
+      apply: apply_mask_size,
     },
     PropertyInterpolator {
       name: "box-shadow",

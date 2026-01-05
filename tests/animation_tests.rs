@@ -16,7 +16,8 @@ use fastrender::style::cascade::apply_styles_with_media;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::media::MediaContext;
 use fastrender::style::types::{
-  AnimationRange, AnimationTimeline, BasicShape, BorderStyle, FilterFunction, RangeOffset,
+  AnimationRange, AnimationTimeline, BackgroundPosition, BackgroundSize, BackgroundSizeComponent,
+  BasicShape, BorderStyle, ClipComponent, FilterFunction, RangeOffset,
   ScrollFunctionTimeline, ScrollTimeline, ScrollTimelineScroller, TimelineAxis, TimelineOffset,
   OutlineColor, OutlineStyle, ViewTimeline, ViewTimelinePhase, WritingMode,
 };
@@ -459,6 +460,92 @@ fn keyframes_interpolate_border_shorthand() {
   }
   for color in colors {
     assert_eq!(*color, Rgba::new(102, 0, 153, 1.0));
+  }
+}
+
+#[test]
+fn keyframes_interpolate_clip_rect() {
+  let sheet = parse_stylesheet(
+    "@keyframes clip { from { clip: rect(0px, 10px, 10px, 0px); } to { clip: rect(0px, 20px, 20px, 0px); } }",
+  )
+  .unwrap();
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = &keyframes[0];
+
+  let sampled = sample_keyframes(
+    rule,
+    0.5,
+    &ComputedStyle::default(),
+    Size::new(800.0, 600.0),
+    Size::new(200.0, 200.0),
+  );
+  let rect = match sampled.get("clip") {
+    Some(AnimatedValue::ClipRect(Some(rect))) => rect,
+    other => panic!("unexpected value {other:?}"),
+  };
+
+  assert_eq!(rect.top, ClipComponent::Length(Length::px(0.0)));
+  assert_eq!(rect.left, ClipComponent::Length(Length::px(0.0)));
+  assert_eq!(rect.right, ClipComponent::Length(Length::px(15.0)));
+  assert_eq!(rect.bottom, ClipComponent::Length(Length::px(15.0)));
+}
+
+#[test]
+fn keyframes_interpolate_mask_position() {
+  let sheet = parse_stylesheet(
+    "@keyframes mask { from { mask-position: 0px 0px; } to { mask-position: 100px 0px; } }",
+  )
+  .unwrap();
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = &keyframes[0];
+
+  let sampled = sample_keyframes(
+    rule,
+    0.5,
+    &ComputedStyle::default(),
+    Size::new(800.0, 600.0),
+    Size::new(200.0, 200.0),
+  );
+  let positions = match sampled.get("mask-position") {
+    Some(AnimatedValue::BackgroundPosition(pos)) => pos,
+    other => panic!("unexpected value {other:?}"),
+  };
+  assert_eq!(positions.len(), 1);
+  match &positions[0] {
+    BackgroundPosition::Position { x, y } => {
+      assert!((x.offset.to_px() - 50.0).abs() < 1e-3);
+      assert!((y.offset.to_px() - 0.0).abs() < 1e-3);
+    }
+  }
+}
+
+#[test]
+fn keyframes_interpolate_mask_size() {
+  let sheet = parse_stylesheet(
+    "@keyframes mask { from { mask-size: 0px 0px; } to { mask-size: 100px 50px; } }",
+  )
+  .unwrap();
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = &keyframes[0];
+
+  let sampled = sample_keyframes(
+    rule,
+    0.5,
+    &ComputedStyle::default(),
+    Size::new(800.0, 600.0),
+    Size::new(200.0, 200.0),
+  );
+  let sizes = match sampled.get("mask-size") {
+    Some(AnimatedValue::BackgroundSize(sizes)) => sizes,
+    other => panic!("unexpected value {other:?}"),
+  };
+  assert_eq!(sizes.len(), 1);
+  match &sizes[0] {
+    BackgroundSize::Explicit(BackgroundSizeComponent::Length(x), BackgroundSizeComponent::Length(y)) => {
+      assert!((x.to_px() - 50.0).abs() < 1e-3);
+      assert!((y.to_px() - 25.0).abs() < 1e-3);
+    }
+    other => panic!("unexpected mask-size {other:?}"),
   }
 }
 

@@ -5,7 +5,10 @@ use fastrender::api::{FastRender, RenderOptions};
 use fastrender::css::types::{BoxShadow, TextShadow};
 use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::style::cascade::StyledNode;
-use fastrender::style::types::{BasicShape, BorderStyle, ClipPath, FilterFunction};
+use fastrender::style::types::{
+  BackgroundPosition, BackgroundSize, BackgroundSizeComponent, BasicShape, BorderStyle, ClipComponent,
+  ClipPath, ClipRect, FilterFunction,
+};
 use fastrender::tree::box_tree::{BoxNode, BoxTree};
 use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
 use r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
@@ -126,6 +129,29 @@ fn fragment_border_top_color(tree: &FragmentTree, box_id: usize) -> fastrender::
   let frag = find_fragment(&tree.root, box_id).expect("fragment present");
   let style = frag.style.as_ref().expect("style present");
   style.border_top_color
+}
+
+fn fragment_clip_rect(tree: &FragmentTree, box_id: usize) -> Option<ClipRect> {
+  let frag = find_fragment(&tree.root, box_id).expect("fragment present");
+  frag.style.as_ref().and_then(|s| s.clip.clone())
+}
+
+fn fragment_mask_position_x(tree: &FragmentTree, box_id: usize) -> f32 {
+  let frag = find_fragment(&tree.root, box_id).expect("fragment present");
+  let style = frag.style.as_ref().expect("style present");
+  match style.mask_positions.as_ref() {
+    [BackgroundPosition::Position { x, .. }, ..] => x.offset.to_px(),
+    other => panic!("expected mask-position list, got {other:?}"),
+  }
+}
+
+fn fragment_mask_size(tree: &FragmentTree, box_id: usize) -> (f32, f32) {
+  let frag = find_fragment(&tree.root, box_id).expect("fragment present");
+  let style = frag.style.as_ref().expect("style present");
+  match style.mask_sizes.as_ref() {
+    [BackgroundSize::Explicit(BackgroundSizeComponent::Length(x), BackgroundSizeComponent::Length(y)), ..] => (x.to_px(), y.to_px()),
+    other => panic!("expected mask-size list, got {other:?}"),
+  }
 }
 
 fn fragment_outline_color(tree: &FragmentTree, box_id: usize) -> (fastrender::Rgba, bool) {
@@ -370,6 +396,69 @@ fn transitions_interpolate_border_shorthand_over_time() {
     fragment_border_top_color(&late, box_id),
     fastrender::Rgba::new(102, 0, 153, 1.0)
   );
+}
+
+#[test]
+fn transitions_interpolate_clip_rect_over_time() {
+  let html = r#"
+    <style>
+      @starting-style { #box { clip: rect(0px, 10px, 10px, 0px); } }
+      #box { width: 100px; height: 100px; clip: rect(0px, 20px, 20px, 0px); transition: clip 1000ms linear; }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 500.0, viewport);
+  let rect = fragment_clip_rect(&mid, box_id).expect("clip rect");
+  assert_eq!(rect.top, ClipComponent::Length(fastrender::Length::px(0.0)));
+  assert_eq!(rect.left, ClipComponent::Length(fastrender::Length::px(0.0)));
+  assert_eq!(rect.right, ClipComponent::Length(fastrender::Length::px(15.0)));
+  assert_eq!(rect.bottom, ClipComponent::Length(fastrender::Length::px(15.0)));
+}
+
+#[test]
+fn transitions_interpolate_mask_position_over_time() {
+  let html = r#"
+    <style>
+      @starting-style { #box { mask-position: 0px 0px; } }
+      #box { width: 100px; height: 100px; mask-position: 100px 0px; transition: mask-position 1000ms linear; }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 500.0, viewport);
+  assert!((fragment_mask_position_x(&mid, box_id) - 50.0).abs() < 1e-3);
+}
+
+#[test]
+fn transitions_interpolate_mask_size_over_time() {
+  let html = r#"
+    <style>
+      @starting-style { #box { mask-size: 0px 0px; } }
+      #box { width: 100px; height: 100px; mask-size: 100px 50px; transition: mask-size 1000ms linear; }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 500.0, viewport);
+  let (x, y) = fragment_mask_size(&mid, box_id);
+  assert!((x - 50.0).abs() < 1e-3);
+  assert!((y - 25.0).abs() < 1e-3);
 }
 
 #[test]
