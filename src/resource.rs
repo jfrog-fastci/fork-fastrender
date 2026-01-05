@@ -1082,6 +1082,11 @@ fn should_fallback_to_curl(err: &Error) -> bool {
   }
   msg.contains("timeout")
     || msg.contains("timed out")
+    // `reqwest` often surfaces connection failures as "error sending request for url (...)" without
+    // including the underlying TLS/HTTP2 detail in the top-level message. Treat this as
+    // fallback-worthy in `FASTR_HTTP_BACKEND=auto` so we can retry with the cURL backend, which is
+    // frequently more compatible with real-world CDNs.
+    || msg.contains("error sending request")
     || msg.contains("connection reset")
     || msg.contains("connection aborted")
     || msg.contains("broken pipe")
@@ -8513,6 +8518,15 @@ mod tests {
     let err = Error::Resource(ResourceError::new(
       "https://example.com",
       "HTTP/2 internal error",
+    ));
+    assert!(should_fallback_to_curl(&err));
+  }
+
+  #[test]
+  fn http_backend_auto_falls_back_to_curl_for_error_sending_request_messages() {
+    let err = Error::Resource(ResourceError::new(
+      "https://example.com",
+      "error sending request for url (https://example.com)",
     ));
     assert!(should_fallback_to_curl(&err));
   }
