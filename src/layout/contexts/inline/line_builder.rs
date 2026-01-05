@@ -3167,13 +3167,26 @@ fn reorder_paragraph(
     return Ok(());
   }
 
-  #[derive(Clone, PartialEq, Eq)]
+  #[derive(Clone)]
   struct BidiScope {
     unicode_bidi: UnicodeBidi,
-    direction: Direction,
     open: &'static [char],
     close: &'static [char],
   }
+
+  impl PartialEq for BidiScope {
+    fn eq(&self, other: &Self) -> bool {
+      // `unicode-bidi: plaintext` ignores `direction`, and in Unicode terms maps to FSI/PDI
+      // regardless of the styled direction. Comparing the actual control sequences keeps the
+      // identity stable even when `direction` differs, without affecting LTR/RTL-sensitive
+      // scopes (their opener differs).
+      self.unicode_bidi == other.unicode_bidi
+        && self.open == other.open
+        && self.close == other.close
+    }
+  }
+
+  impl Eq for BidiScope {}
 
   #[derive(Clone, Copy)]
   struct ContentChar {
@@ -3201,11 +3214,14 @@ fn reorder_paragraph(
     const PDF: char = '\u{202C}';
     const LRI: char = '\u{2066}';
     const RLI: char = '\u{2067}';
+    const FSI: char = '\u{2068}';
     const PDI: char = '\u{2069}';
 
     let (open, close) = match unicode_bidi {
       Normal => return None,
-      Plaintext => return None,
+      // CSS `unicode-bidi: plaintext` behaves like an isolate with "direction: auto", which
+      // corresponds to Unicode FSI/PDI (first-strong isolate).
+      Plaintext => (&[FSI][..], &[PDI][..]),
       Embed => {
         if matches!(direction, Direction::Rtl) {
           (&[RLE][..], &[PDF][..])
@@ -3238,7 +3254,6 @@ fn reorder_paragraph(
 
     Some(BidiScope {
       unicode_bidi,
-      direction,
       open,
       close,
     })
@@ -5797,6 +5812,66 @@ mod tests {
       texts,
       vec!["A ".to_string(), "אבג".to_string(), " C".to_string()]
     );
+  }
+
+  #[test]
+  fn bidi_plaintext_inline_box_isolates_punctuation_and_wraps_descendants() {
+    // Plaintext should behave like `dir=auto` + isolate, which maps to FSI/PDI.
+    // The trailing ':' is outside the plaintext scope; without isolation it would attach to the RTL
+    // run and reorder before it.
+    let logical = format!("A {}\u{05d0}\u{05d1}\u{05d2}{}: B", '\u{2068}', '\u{2069}');
+    let expected = reorder_with_controls(&logical, Some(Level::ltr()));
+
+    let mut builder = make_builder(200.0);
+    builder
+      .add_item(InlineItem::Text(make_text_item("A ", 20.0)))
+      .unwrap();
+
+    let mut nested = InlineBoxItem::new(
+      0.0,
+      0.0,
+      0.0,
+      make_strut_metrics(),
+      Arc::new(ComputedStyle::default()),
+      1,
+      Direction::Ltr,
+      UnicodeBidi::Normal,
+    );
+    nested.add_child(InlineItem::Text(make_text_item("\u{05d1}", 10.0)));
+
+    let mut plaintext = InlineBoxItem::new(
+      0.0,
+      0.0,
+      0.0,
+      make_strut_metrics(),
+      Arc::new(ComputedStyle::default()),
+      0,
+      // Plaintext ignores `direction`; the isolate base comes from first-strong text.
+      Direction::Ltr,
+      UnicodeBidi::Plaintext,
+    );
+    plaintext.add_child(InlineItem::Text(make_text_item("\u{05d0}", 10.0)));
+    plaintext.add_child(InlineItem::InlineBox(nested));
+    plaintext.add_child(InlineItem::Text(make_text_item("\u{05d2}", 10.0)));
+
+    builder.add_item(InlineItem::InlineBox(plaintext)).unwrap();
+    builder
+      .add_item(InlineItem::Text(make_text_item(": ", 10.0)))
+      .unwrap();
+    builder
+      .add_item(InlineItem::Text(make_text_item("B", 10.0)))
+      .unwrap();
+
+    let lines = builder.finish().unwrap().lines;
+    assert_eq!(lines.len(), 1);
+
+    let actual: String = lines[0]
+      .items
+      .iter()
+      .map(|p| flatten_text(&p.item))
+      .collect();
+
+    assert_eq!(actual, expected);
   }
 
   #[test]
