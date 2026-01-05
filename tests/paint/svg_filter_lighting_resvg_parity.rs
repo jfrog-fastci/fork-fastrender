@@ -218,6 +218,58 @@ fn resvg_parity_diffuse_lighting_distant_light() {
 }
 
 #[test]
+fn resvg_parity_diffuse_lighting_kernel_unit_length() {
+  let width = 32;
+  let height = 24;
+  let bump_map = make_bump_map_pixmap(width, height);
+  let bump_map_url = pixmap_to_data_url_png(&bump_map);
+  let bbox = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
+  // kernelUnitLength samples neighboring pixels ±N away; engines differ slightly in how they
+  // handle out-of-bounds sampling at the edges, so compare only interior pixels.
+  let margin_x = 3;
+  let margin_y = 1;
+  let samples: Vec<(u32, u32)> = sample_points(width, height)
+    .into_iter()
+    .filter(|&(x, y)| {
+      x >= margin_x
+        && y >= margin_y
+        && x + margin_x <= width.saturating_sub(1)
+        && y + margin_y <= height.saturating_sub(1)
+    })
+    .collect();
+  assert!(
+    !samples.is_empty(),
+    "expected interior sample set to be non-empty for kernelUnitLength parity test"
+  );
+
+  let filter_markup = format!(
+    r#"
+    <filter id="f" filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
+            x="0" y="0" width="{width}" height="{height}"
+            color-interpolation-filters="linearRGB">
+      <feDiffuseLighting in="SourceAlpha" surfaceScale="2" diffuseConstant="1"
+                         kernelUnitLength="3 1"
+                         lighting-color="rgb(255,255,255)">
+        <feDistantLight azimuth="0" elevation="45" />
+      </feDiffuseLighting>
+    </filter>
+    "#
+  );
+
+  let svg = svg_fixture(width, height, &bump_map_url, &filter_markup);
+  let expected = render_with_resvg(&svg, width, height);
+  assert_has_nonzero_pixels("resvg diffuse(kernelUnitLength=3 1)", &expected);
+  let actual = render_with_fastrender_filter(&svg, "f", &bump_map, bbox);
+
+  assert_pixmaps_match_samples(
+    "diffuse lighting parity (kernelUnitLength=3 1)",
+    &actual,
+    &expected,
+    &samples,
+  );
+}
+
+#[test]
 fn resvg_parity_specular_lighting_exponent() {
   let width = 32;
   let height = 24;
@@ -271,7 +323,7 @@ fn resvg_parity_point_light() {
 
   let svg = svg_fixture(width, height, &bump_map_url, &filter_markup);
   let expected = render_with_resvg(&svg, width, height);
-  assert_has_nonzero_pixels("resvg primitiveUnits=objectBoundingBox pointLight", &expected);
+  assert_has_nonzero_pixels("resvg pointLight", &expected);
   let actual = render_with_fastrender_filter(&svg, "f", &bump_map, bbox);
 
   assert_pixmaps_match_samples(
