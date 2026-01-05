@@ -747,7 +747,6 @@ pub enum FilterPrimitive {
     target_y: i32,
     edge_mode: EdgeMode,
     preserve_alpha: bool,
-    subregion: Option<(f32, f32, f32, f32)>,
   },
 }
 
@@ -1411,7 +1410,6 @@ fn hash_filter_primitive(prim: &FilterPrimitive, state: &mut impl Hasher) {
       target_y,
       edge_mode,
       preserve_alpha,
-      subregion,
     } => {
       state.write_u8(16);
       hash_filter_input(input, state);
@@ -1436,15 +1434,6 @@ fn hash_filter_primitive(prim: &FilterPrimitive, state: &mut impl Hasher) {
         EdgeMode::None => state.write_u8(2),
       }
       state.write_u8(*preserve_alpha as u8);
-      if let Some((x, y, w, h)) = subregion {
-        state.write_u8(1);
-        hash_f32(*x, state);
-        hash_f32(*y, state);
-        hash_f32(*w, state);
-        hash_f32(*h, state);
-      } else {
-        state.write_u8(0);
-      }
     }
   }
 }
@@ -2816,15 +2805,6 @@ fn parse_fe_convolve_matrix(node: &roxmltree::Node) -> Option<FilterPrimitive> {
       lower == "true" || lower == "1"
     })
     .unwrap_or(false);
-  let subregion = match (
-    node.attribute("x").and_then(|v| v.parse::<f32>().ok()),
-    node.attribute("y").and_then(|v| v.parse::<f32>().ok()),
-    node.attribute("width").and_then(|v| v.parse::<f32>().ok()),
-    node.attribute("height").and_then(|v| v.parse::<f32>().ok()),
-  ) {
-    (Some(x), Some(y), Some(w), Some(h)) => Some((x, y, w, h)),
-    _ => None,
-  };
 
   Some(FilterPrimitive::ConvolveMatrix {
     input,
@@ -2837,7 +2817,6 @@ fn parse_fe_convolve_matrix(node: &roxmltree::Node) -> Option<FilterPrimitive> {
     target_y,
     edge_mode,
     preserve_alpha,
-    subregion,
   })
 }
 
@@ -4274,7 +4253,6 @@ fn apply_primitive(
       target_y,
       edge_mode,
       preserve_alpha,
-      subregion,
     } => {
       let Some(img) = resolve_input(
         input,
@@ -4299,7 +4277,7 @@ fn apply_primitive(
         *target_y,
         *edge_mode,
         *preserve_alpha,
-        *subregion,
+        filter_region,
         color_interpolation_filters,
       )?;
       Some(FilterResult::new(output, region, filter_region))
@@ -5763,7 +5741,7 @@ fn apply_convolve_matrix(
   target_y: i32,
   edge_mode: EdgeMode,
   preserve_alpha: bool,
-  subregion: Option<(f32, f32, f32, f32)>,
+  primitive_region: Rect,
   color_interpolation_filters: ColorInterpolationFilters,
 ) -> RenderResult<Pixmap> {
   check_active(RenderStage::Paint)?;
@@ -5808,20 +5786,14 @@ fn apply_convolve_matrix(
   let height_i32 = height_u32 as i32;
   let src_pixels = input.pixels();
   let dst_pixels = out.pixels_mut();
-  let (sub_min_x, sub_min_y, sub_max_x, sub_max_y) = subregion
-    .map(|(x, y, w, h)| {
-      let min_x = x.floor() as i32;
-      let min_y = y.floor() as i32;
-      let max_x = (x + w).ceil() as i32;
-      let max_y = (y + h).ceil() as i32;
-      (
-        min_x.max(0),
-        min_y.max(0),
-        max_x.min(width_i32),
-        max_y.min(height_i32),
-      )
-    })
-    .unwrap_or((0, 0, width_i32, height_i32));
+  let sub_min_x = primitive_region.min_x().floor() as i32;
+  let sub_min_y = primitive_region.min_y().floor() as i32;
+  let sub_max_x = primitive_region.max_x().ceil() as i32;
+  let sub_max_y = primitive_region.max_y().ceil() as i32;
+  let sub_min_x = sub_min_x.clamp(0, width_i32);
+  let sub_min_y = sub_min_y.clamp(0, height_i32);
+  let sub_max_x = sub_max_x.clamp(0, width_i32);
+  let sub_max_y = sub_max_y.clamp(0, height_i32);
   if sub_min_x >= sub_max_x || sub_min_y >= sub_max_y {
     return Ok(out);
   }
@@ -6850,6 +6822,7 @@ mod tests {
   fn convolve_matrix_respects_color_interpolation_filters() {
     let pixmap = pixmap_from_rgba(&[(0, 0, 0, 255), (255, 255, 255, 255)]);
     let kernel = [0.5, 0.5];
+    let region = filter_region_for_pixmap(&pixmap);
     let apply = |space| {
       apply_convolve_matrix(
         pixmap.clone(),
@@ -6862,7 +6835,7 @@ mod tests {
         0,
         EdgeMode::Duplicate,
         false,
-        None,
+        region,
         space,
       )
       .unwrap()
@@ -6907,7 +6880,6 @@ mod tests {
       target_y: 0,
       edge_mode: EdgeMode::Duplicate,
       preserve_alpha: false,
-      subregion: None,
     };
 
     let result = with_deadline(Some(&deadline), || apply_primitive_for_test(&prim, &pixmap));
@@ -6923,6 +6895,37 @@ mod tests {
       "expected timeout, got {result:?}"
     );
     assert!(calls.load(Ordering::SeqCst) >= 2);
+  }
+
+  #[test]
+  fn convolve_matrix_primitive_region_scales_with_device_pixel_ratio() {
+    let cache = ImageCache::new();
+    let svg = "<svg xmlns='http://www.w3.org/2000/svg'><filter id='f' filterUnits='userSpaceOnUse' primitiveUnits='userSpaceOnUse' x='0' y='0' width='4' height='4'><feConvolveMatrix x='0' y='0' width='2' height='2' order='1' kernelMatrix='1'/></filter></svg>";
+    let filter = parse_filter_definition(svg, Some("f"), &cache).expect("parsed filter");
+
+    let mut pixmap = new_pixmap(8, 8).unwrap();
+    for px in pixmap.pixels_mut() {
+      *px = PremultipliedColorU8::from_rgba(255, 0, 0, 255)
+        .unwrap_or(PremultipliedColorU8::TRANSPARENT);
+    }
+
+    let bbox = Rect::from_xywh(0.0, 0.0, 8.0, 8.0);
+    apply_svg_filter(filter.as_ref(), &mut pixmap, 2.0, bbox).unwrap();
+
+    for y in 0..8 {
+      for x in 0..8 {
+        let px = pixmap.pixel(x, y).unwrap();
+        if x < 4 && y < 4 {
+          assert_eq!(
+            (px.red(), px.green(), px.blue(), px.alpha()),
+            (255, 0, 0, 255),
+            "expected scaled primitive output preserved at ({x},{y})"
+          );
+        } else {
+          assert_eq!(px.alpha(), 0, "expected output clipped at ({x},{y})");
+        }
+      }
+    }
   }
 
   #[test]
@@ -7690,7 +7693,6 @@ mod tests {
       target_y: 1,
       edge_mode: EdgeMode::Duplicate,
       preserve_alpha: false,
-      subregion: None,
     };
     let out = apply_for_test(&prim, &pixmap);
     assert_eq!(pixmap.pixels(), out.pixmap.pixels());
@@ -7715,7 +7717,6 @@ mod tests {
       target_y: 1,
       edge_mode: EdgeMode::Duplicate,
       preserve_alpha: false,
-      subregion: None,
     };
 
     let out = apply_for_test(&prim, &pixmap);
@@ -7747,7 +7748,6 @@ mod tests {
       target_y: 1,
       edge_mode: EdgeMode::Duplicate,
       preserve_alpha: false,
-      subregion: None,
     };
     let none_mode = FilterPrimitive::ConvolveMatrix {
       input: FilterInput::SourceGraphic,
@@ -7760,7 +7760,6 @@ mod tests {
       target_y: 1,
       edge_mode: EdgeMode::None,
       preserve_alpha: false,
-      subregion: None,
     };
 
     let dup = apply_for_test(&base, &pixmap);
@@ -7773,7 +7772,7 @@ mod tests {
   }
 
   #[test]
-  fn convolve_respects_subregion() {
+  fn convolve_respects_primitive_region() {
     let mut pixmap = new_pixmap(2, 2).unwrap();
     let pixels = [
       premul(255, 0, 0, 255),
@@ -7785,22 +7784,24 @@ mod tests {
       *dst = *src;
     }
 
-    let prim = FilterPrimitive::ConvolveMatrix {
-      input: FilterInput::SourceGraphic,
-      order_x: 3,
-      order_y: 3,
-      kernel: vec![0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
-      divisor: None,
-      bias: 0.0,
-      target_x: 1,
-      target_y: 1,
-      edge_mode: EdgeMode::Duplicate,
-      preserve_alpha: false,
-      subregion: Some((0.0, 0.0, 1.0, 1.0)),
-    };
-    let out = apply_for_test(&prim, &pixmap);
-    let out_pixels = out.pixmap.pixels();
-    assert_eq!(out_pixels[0], pixels[0]); // inside subregion
+    let primitive_region = Rect::from_xywh(0.0, 0.0, 1.0, 1.0);
+    let out = apply_convolve_matrix(
+      pixmap.clone(),
+      3,
+      3,
+      &[0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+      None,
+      0.0,
+      1,
+      1,
+      EdgeMode::Duplicate,
+      false,
+      primitive_region,
+      ColorInterpolationFilters::LinearRGB,
+    )
+    .unwrap();
+    let out_pixels = out.pixels();
+    assert_eq!(out_pixels[0], pixels[0]); // inside primitive region
     assert_eq!(out_pixels[1], PremultipliedColorU8::TRANSPARENT);
     assert_eq!(out_pixels[2], PremultipliedColorU8::TRANSPARENT);
     assert_eq!(out_pixels[3], PremultipliedColorU8::TRANSPARENT);
