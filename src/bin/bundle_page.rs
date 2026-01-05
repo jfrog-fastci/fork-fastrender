@@ -14,7 +14,7 @@ use fastrender::css::encoding::decode_css_bytes;
 use fastrender::css::loader::resolve_href;
 use fastrender::dom::{parse_html_with_options, DomParseOptions};
 use fastrender::geometry::Size;
-use fastrender::html::image_prefetch::{discover_image_prefetch_urls, ImagePrefetchLimits};
+use fastrender::html::image_prefetch::{discover_image_prefetch_requests, ImagePrefetchLimits};
 use fastrender::html::images::ImageSelectionContext;
 use fastrender::html::meta_refresh::{extract_js_location_redirect, extract_meta_refresh_url};
 use fastrender::image_output::encode_image;
@@ -29,6 +29,7 @@ use fastrender::resource::{
   FetchContextKind, FetchDestination, FetchRequest, FetchedResource, ResourceAccessPolicy,
   ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
 };
+use fastrender::tree::box_tree::CrossOriginAttribute;
 #[cfg(feature = "disk_cache")]
 use fastrender::resource::{
   parse_cached_html_meta, CachingFetcherConfig, DiskCacheConfig, DiskCachingFetcher, ResourcePolicy,
@@ -1230,7 +1231,33 @@ enum CrawlMode {
   AllowMissing,
 }
 
-fn placeholder_resource(destination: FetchDestination, url: &str) -> FetchedResource {
+fn placeholder_resource(destination: FetchDestination, url: &str, referrer: &str) -> FetchedResource {
+  fn allow_origin_for_referrer(referrer: &str) -> Option<String> {
+    let origin = origin_from_url(referrer)?;
+    if origin.is_http_like() {
+      let host = origin.host()?;
+      let host = match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V6(_)) => format!("[{host}]"),
+        _ => host.to_string(),
+      };
+      let mut origin_str = format!("{}://{}", origin.scheme(), host);
+      if let Some(port) = origin.port() {
+        let default_port = match origin.scheme() {
+          "http" => 80,
+          "https" => 443,
+          _ => port,
+        };
+        if port != default_port {
+          origin_str.push_str(&format!(":{port}"));
+        }
+      }
+      return Some(origin_str);
+    }
+    // Non-HTTP(S) origins (notably file://) use `null` for CORS purposes.
+    Some("null".to_string())
+  }
+
+  let allow_origin = allow_origin_for_referrer(referrer).unwrap_or_else(|| "*".to_string());
   match destination {
     FetchDestination::Image | FetchDestination::ImageCors => {
       let mut res = FetchedResource::with_final_url(
@@ -1241,7 +1268,9 @@ fn placeholder_resource(destination: FetchDestination, url: &str) -> FetchedReso
       // When CORS enforcement is enabled (`FASTR_FETCH_ENFORCE_CORS`), `<img crossorigin>` loads
       // expect an `Access-Control-Allow-Origin` header. For missing resources we prefer a
       // deterministic placeholder over failing the entire render.
-      res.access_control_allow_origin = Some("*".to_string());
+      res.access_control_allow_origin = Some(allow_origin.clone());
+      // Placeholders should satisfy both anonymous and credentialed CORS checks.
+      res.access_control_allow_credentials = true;
       res
     }
     FetchDestination::Font => {
@@ -1252,7 +1281,8 @@ fn placeholder_resource(destination: FetchDestination, url: &str) -> FetchedReso
       );
       // Fonts are always fetched in CORS mode; make placeholders usable when CORS enforcement is
       // enabled.
-      res.access_control_allow_origin = Some("*".to_string());
+      res.access_control_allow_origin = Some(allow_origin.clone());
+      res.access_control_allow_credentials = true;
       res
     }
     FetchDestination::Style => FetchedResource::with_final_url(
@@ -1322,7 +1352,7 @@ fn crawl_document(
   fn enqueue_unique(
     queue: &mut VecDeque<(String, FetchDestination, String)>,
     seen_urls: &mut HashSet<String>,
-    queued: &mut HashSet<(String, Option<DocumentOrigin>)>,
+    queued: &mut HashMap<(String, Option<DocumentOrigin>), FetchDestination>,
     url: String,
     destination: FetchDestination,
     referrer: &str,
@@ -1338,9 +1368,26 @@ fn crawl_document(
     // under `--same-origin-subresources` (a URL may be blocked for one document but allowed for
     // another).
     seen_urls.insert(url.clone());
-
-    if queued.insert((url.clone(), origin_from_url(referrer))) {
-      queue.push_back((url, destination, referrer.to_string()));
+    let origin = origin_from_url(referrer);
+    let key = (url.clone(), origin.clone());
+    match queued.get(&key).copied() {
+      None => {
+        queued.insert(key, destination);
+        queue.push_back((url, destination, referrer.to_string()));
+      }
+      Some(existing) => {
+        if existing == FetchDestination::Image && destination == FetchDestination::ImageCors {
+          queued.insert(key, destination);
+          // Upgrade the queued destination in-place so CORS-mode images are fetched first and
+          // stored in the bundle manifest.
+          for (queued_url, queued_destination, queued_referrer) in queue.iter_mut() {
+            if queued_url.as_str() == url.as_str() && origin_from_url(queued_referrer) == origin {
+              *queued_destination = FetchDestination::ImageCors;
+              break;
+            }
+          }
+        }
+      }
     }
   }
 
@@ -1365,7 +1412,7 @@ fn crawl_document(
     html: &str,
     base_url: &str,
     render: &BundleRenderConfig,
-  ) -> Result<Vec<String>> {
+  ) -> Result<Vec<(String, FetchDestination)>> {
     let dom = parse_html_with_options(
       html,
       DomParseOptions {
@@ -1384,13 +1431,36 @@ fn crawl_document(
       font_size: None,
       base_url: Some(base_url),
     };
-    Ok(
-      discover_image_prefetch_urls(&dom, ctx, ImagePrefetchLimits::default())
-        .urls
-        .into_iter()
-        .filter(|url| !should_skip_crawl_url(url))
-        .collect(),
-    )
+    let discovery = discover_image_prefetch_requests(&dom, ctx, ImagePrefetchLimits::default());
+    let mut out: Vec<(String, FetchDestination)> = Vec::new();
+    let mut indexes: HashMap<String, usize> = HashMap::new();
+    for req in discovery.requests {
+      if should_skip_crawl_url(&req.url) {
+        continue;
+      }
+
+      let destination = match req.crossorigin {
+        CrossOriginAttribute::None => FetchDestination::Image,
+        _ => FetchDestination::ImageCors,
+      };
+      match indexes.get(&req.url).copied() {
+        Some(idx) => {
+          // Prefer capturing ImageCors when any responsive candidate for a URL is marked
+          // crossorigin so offline bundles include the CORS-mode response headers.
+          if destination == FetchDestination::ImageCors
+            && matches!(out[idx].1, FetchDestination::Image)
+          {
+            out[idx].1 = FetchDestination::ImageCors;
+          }
+        }
+        None => {
+          indexes.insert(req.url.clone(), out.len());
+          out.push((req.url, destination));
+        }
+      }
+    }
+
+    Ok(out)
   }
 
   fn handle_crawl_failure(
@@ -1398,6 +1468,7 @@ fn crawl_document(
     fetch_errors: &mut Vec<(String, String)>,
     url: &str,
     destination: FetchDestination,
+    referrer: &str,
     err: &fastrender::Error,
     mode: CrawlMode,
   ) {
@@ -1410,7 +1481,7 @@ fn crawl_document(
       }
       CrawlMode::AllowMissing => {
         eprintln!("Warning: missing resource; inserting placeholder: {url}: {err}");
-        fetcher.record_override(url, placeholder_resource(destination, url));
+        fetcher.record_override(url, placeholder_resource(destination, url, referrer));
       }
     }
   }
@@ -1438,7 +1509,7 @@ fn crawl_document(
   let mut queue: VecDeque<(String, FetchDestination, String)> = VecDeque::new();
   // Cap recursion based on distinct URLs discovered, not on per-document referrer contexts.
   let mut seen_urls: HashSet<String> = HashSet::new();
-  let mut queued: HashSet<(String, Option<DocumentOrigin>)> = HashSet::new();
+  let mut queued: HashMap<(String, Option<DocumentOrigin>), FetchDestination> = HashMap::new();
   let mut fetched_urls: HashSet<String> = HashSet::new();
   let mut fetch_errors: Vec<(String, String)> = Vec::new();
   let root_referrer = document.base_hint.as_str();
@@ -1511,13 +1582,13 @@ fn crawl_document(
       );
     }
   } else {
-    for url in discover_html_images(&document.html, &document.base_url, render)? {
+    for (url, destination) in discover_html_images(&document.html, &document.base_url, render)? {
       enqueue_unique(
         &mut queue,
         &mut seen_urls,
         &mut queued,
         url,
-        FetchDestination::Image,
+        destination,
         root_referrer,
       );
     }
@@ -1565,7 +1636,7 @@ fn crawl_document(
     let res = match fetcher.fetch_with_request(req) {
       Ok(res) => res,
       Err(err) => {
-        handle_crawl_failure(fetcher, &mut fetch_errors, &url, destination, &err, mode);
+        handle_crawl_failure(fetcher, &mut fetch_errors, &url, destination, &referrer, &err, mode);
         if matches!(mode, CrawlMode::AllowMissing) {
           fetched_urls.insert(url.clone());
         }
@@ -1622,7 +1693,7 @@ fn crawl_document(
       FetchDestination::Other => Ok(()),
     };
     if let Err(err) = validation {
-      handle_crawl_failure(fetcher, &mut fetch_errors, &url, destination, &err, mode);
+      handle_crawl_failure(fetcher, &mut fetch_errors, &url, destination, &referrer, &err, mode);
       continue;
     }
 
@@ -1729,13 +1800,13 @@ fn crawl_document(
             );
           }
         } else {
-          for url in discover_html_images(&doc.html, &doc.base_url, render)? {
+          for (url, destination) in discover_html_images(&doc.html, &doc.base_url, render)? {
             enqueue_unique(
               &mut queue,
               &mut seen_urls,
               &mut queued,
               url,
-              FetchDestination::Image,
+              destination,
               doc.base_hint.as_str(),
             );
           }
@@ -2176,6 +2247,83 @@ mod tests {
         "expected RecordingFetcher to cache by URL when CORS enforcement is disabled"
       );
     });
+
+    Ok(())
+  }
+
+  #[test]
+  fn crawl_prefers_image_cors_for_img_crossorigin_and_upgrades_existing_queue_entry() -> Result<()> {
+    #[derive(Default)]
+    struct CrossoriginFetcher {
+      calls: Mutex<Vec<(String, FetchDestination, Option<String>)>>,
+    }
+
+    impl CrossoriginFetcher {
+      fn calls(&self) -> Vec<(String, FetchDestination, Option<String>)> {
+        self
+          .calls
+          .lock()
+          .map(|calls| calls.clone())
+          .unwrap_or_default()
+      }
+    }
+
+    impl ResourceFetcher for CrossoriginFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.lock().unwrap().push((
+          req.url.to_string(),
+          req.destination,
+          req.referrer.map(|r| r.to_string()),
+        ));
+
+        match req.url {
+          "https://example.com/" => Ok(FetchedResource::with_final_url(
+            br#"<html><head><style>body{background:url('/shared.png');}</style></head><body><img src="/shared.png" crossorigin></body></html>"#
+              .to_vec(),
+            Some("text/html".to_string()),
+            Some(req.url.to_string()),
+          )),
+          "https://example.com/shared.png" => Ok(FetchedResource::with_final_url(
+            vec![0u8, 1, 2, 3],
+            Some("image/png".to_string()),
+            Some(req.url.to_string()),
+          )),
+          other => Err(fastrender::Error::Other(format!(
+            "unexpected fetch: {other}"
+          ))),
+        }
+      }
+    }
+
+    let inner = Arc::new(CrossoriginFetcher::default());
+    let recording = RecordingFetcher::new(inner.clone());
+    let (doc, _) = fetch_document(&recording, "https://example.com/")?;
+
+    let render = BundleRenderConfig {
+      viewport: (1200, 800),
+      device_pixel_ratio: 1.0,
+      scroll_x: 0.0,
+      scroll_y: 0.0,
+      full_page: false,
+      same_origin_subresources: false,
+      allowed_subresource_origins: Vec::new(),
+      compat_profile: fastrender::compat::CompatProfile::default(),
+      dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
+    };
+
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+
+    let calls = inner.calls();
+    assert!(
+      calls.iter().any(|(url, dest, _)| {
+        url == "https://example.com/shared.png" && *dest == FetchDestination::ImageCors
+      }),
+      "expected <img crossorigin> URL to be fetched with ImageCors destination"
+    );
 
     Ok(())
   }

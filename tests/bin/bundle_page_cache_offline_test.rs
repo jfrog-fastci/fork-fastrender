@@ -491,7 +491,11 @@ fn bundle_page_cache_allow_missing_inserts_typed_placeholders() {
   );
   assert_eq!(
     missing_img.access_control_allow_origin.as_deref(),
-    Some("*")
+    Some("https://example.invalid")
+  );
+  assert!(
+    missing_img.access_control_allow_credentials,
+    "expected placeholder image to satisfy credentialed CORS checks"
   );
   assert!(
     missing_img.bytes.starts_with(b"\x89PNG"),
@@ -508,7 +512,11 @@ fn bundle_page_cache_allow_missing_inserts_typed_placeholders() {
   );
   assert_eq!(
     missing_font.access_control_allow_origin.as_deref(),
-    Some("*")
+    Some("https://example.invalid")
+  );
+  assert!(
+    missing_font.access_control_allow_credentials,
+    "expected placeholder font to satisfy credentialed CORS checks"
   );
   assert!(
     !missing_font.bytes.is_empty(),
@@ -702,6 +710,125 @@ fn bundle_page_cache_falls_back_between_image_and_image_cors_cache_kinds() {
   assert_eq!(
     fetcher.fetch(&img_url).expect("fetch img").bytes,
     b"png-bytes-1".to_vec()
+  );
+}
+
+#[test]
+fn bundle_page_cache_prefers_image_cors_kind_for_img_crossorigin() {
+  let tmp = TempDir::new().expect("tempdir");
+
+  let html_dir = tmp.path().join("fetches/html");
+  std::fs::create_dir_all(&html_dir).expect("create html dir");
+  let asset_dir = tmp.path().join("fetches/assets");
+  std::fs::create_dir_all(&asset_dir).expect("create asset dir");
+
+  let stem = "example.invalid";
+  let page_url = "https://example.invalid/";
+  let html_path = html_dir.join(format!("{stem}.html"));
+  std::fs::write(
+    &html_path,
+    "<!doctype html><html><body><img src=\"img.png\" crossorigin></body></html>",
+  )
+  .expect("write html");
+  std::fs::write(
+    html_path.with_extension("html.meta"),
+    format!("content-type: text/html\nurl: {page_url}\n"),
+  )
+  .expect("write meta");
+
+  let img_url = "https://example.invalid/img.png".to_string();
+
+  #[derive(Clone, Default)]
+  struct KindAwareFetcher {
+    url: String,
+  }
+
+  impl ResourceFetcher for KindAwareFetcher {
+    fn fetch(&self, url: &str) -> Result<FetchedResource, Error> {
+      self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+    }
+
+    fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource, Error> {
+      if req.url != self.url {
+        return Err(Error::Other(format!("unexpected fetch: {}", req.url)));
+      }
+
+      let mut resource = match req.destination {
+        FetchDestination::Image => FetchedResource::with_final_url(
+          b"no-cors".to_vec(),
+          Some("image/png".to_string()),
+          Some(req.url.to_string()),
+        ),
+        FetchDestination::ImageCors => {
+          let mut res = FetchedResource::with_final_url(
+            b"cors".to_vec(),
+            Some("image/png".to_string()),
+            Some(req.url.to_string()),
+          );
+          res.access_control_allow_origin = Some("https://example.invalid".to_string());
+          res.access_control_allow_credentials = true;
+          res
+        }
+        other => {
+          return Err(Error::Other(format!(
+            "unexpected destination for {}: {other:?}",
+            req.url
+          )));
+        }
+      };
+      resource.status = Some(200);
+      Ok(resource)
+    }
+  }
+
+  let mut disk_config = DiskCacheConfig::default();
+  disk_config.namespace = Some(disk_cache_namespace());
+  disk_config.allow_no_store = true;
+
+  let cache_writer = DiskCachingFetcher::with_configs(
+    KindAwareFetcher {
+      url: img_url.clone(),
+    },
+    asset_dir.clone(),
+    CachingFetcherConfig::default(),
+    disk_config,
+  );
+
+  cache_writer
+    .fetch_with_request(FetchRequest::new(&img_url, FetchDestination::Image))
+    .expect("warm img (no-cors)");
+  cache_writer
+    .fetch_with_request(FetchRequest::new(&img_url, FetchDestination::ImageCors))
+    .expect("warm img (cors)");
+
+  let bundle_dir = tmp.path().join("bundle");
+  let status = Command::new(env!("CARGO_BIN_EXE_bundle_page"))
+    .current_dir(tmp.path())
+    .args(["cache", stem, "--out"])
+    .arg(bundle_dir.to_string_lossy().as_ref())
+    .status()
+    .expect("run bundle_page cache");
+
+  assert!(
+    status.success(),
+    "bundle_page cache should succeed when both Image and ImageCors variants are cached"
+  );
+
+  let bundle = Bundle::load(&bundle_dir).expect("load bundle");
+  let fetcher = BundledFetcher::new(bundle);
+  let res = fetcher.fetch(&img_url).expect("fetch img");
+  assert_eq!(
+    res.bytes,
+    b"cors".to_vec(),
+    "expected bundle to store the ImageCors response when <img crossorigin> is used"
+  );
+  assert_eq!(
+    res.access_control_allow_origin.as_deref(),
+    Some("https://example.invalid")
+  );
+  assert!(
+    res.access_control_allow_credentials,
+    "expected bundled ImageCors response to preserve Access-Control-Allow-Credentials"
   );
 }
 
