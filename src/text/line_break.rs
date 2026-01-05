@@ -38,6 +38,7 @@
 //!
 //! - `white-space: nowrap` - Remove all non-mandatory breaks
 //! - `word-break: break-all` - Add breaks between all characters
+//! - `word-break: break-word` - Deprecated; equivalent to `overflow-wrap:anywhere` (emergency-only, affects intrinsic sizing)
 //! - `word-break: anywhere` - Add emergency breaks between all grapheme clusters (and affects intrinsic sizing)
 //! - `word-break: keep-all` - Remove breaks within CJK text
 //! - `overflow-wrap: break-word` - Add emergency breaks within otherwise-unbreakable words
@@ -86,8 +87,8 @@ pub enum BreakType {
 /// - "Normal" opportunities participate in regular line breaking (e.g. UAX#14, forced breaks,
 ///   hyphenation, `word-break: break-all`).
 /// - "Emergency" opportunities are only used to avoid overflow when no normal opportunity fits
-///   (e.g. `overflow-wrap: break-word|anywhere`, `word-break: break-word|anywhere`). Some emergency
-///   opportunities (the `anywhere` variants) still affect intrinsic sizing.
+///   (e.g. `overflow-wrap: break-word|anywhere`, the legacy `word-break: break-word`, `word-break: anywhere`).
+///   Some emergency opportunities (notably `overflow-wrap:anywhere` and its aliases) still affect intrinsic sizing.
 ///
 /// These are kept separate from the base Unicode line breaking result so layout can express UA
 /// priority rules.

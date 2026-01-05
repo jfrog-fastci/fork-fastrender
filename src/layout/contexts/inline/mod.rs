@@ -6429,7 +6429,8 @@ impl InlineFormattingContext {
     let mut last_break = 0;
     let mut hyphen_width: Option<f32> = None;
     let last_char = text_item.text.chars().last();
-    let include_emergency_breaks = matches!(text_item.style.word_break, WordBreak::Anywhere)
+    let include_emergency_breaks =
+      matches!(text_item.style.word_break, WordBreak::Anywhere | WordBreak::BreakWord)
       || matches!(text_item.style.overflow_wrap, OverflowWrap::Anywhere);
 
     for brk in &text_item.break_opportunities {
@@ -17632,7 +17633,7 @@ mod tests {
   }
 
   #[test]
-  fn word_break_break_word_keeps_min_content_width() {
+  fn word_break_break_word_is_alias_for_overflow_wrap_anywhere() {
     let mut text_style = ComputedStyle::default();
     text_style.word_break = WordBreak::BreakWord;
     text_style.white_space = WhiteSpace::Normal;
@@ -17660,12 +17661,13 @@ mod tests {
       .calculate_intrinsic_width(&normal, IntrinsicSizingMode::MinContent)
       .expect("min-content width");
     assert!(
-      (breaking_min - normal_min).abs() < 0.1,
-      "word-break: break-word should not reduce min-content widths"
+      breaking_min < normal_min * 0.75,
+      "word-break: break-word should reduce min-content width (alias for overflow-wrap:anywhere)"
     );
 
-    let mut anywhere_style = text_style;
-    anywhere_style.word_break = WordBreak::Anywhere;
+    let mut anywhere_style = ComputedStyle::default();
+    anywhere_style.overflow_wrap = OverflowWrap::Anywhere;
+    anywhere_style.white_space = WhiteSpace::Normal;
     let anywhere = BoxNode::new_block(
       default_style(),
       FormattingContextType::Block,
@@ -17678,8 +17680,8 @@ mod tests {
       .calculate_intrinsic_width(&anywhere, IntrinsicSizingMode::MinContent)
       .expect("min-content width");
     assert!(
-      anywhere_min < normal_min * 0.75,
-      "word-break:anywhere should also shrink the min-content width"
+      (anywhere_min - breaking_min).abs() < 0.1,
+      "word-break: break-word should match overflow-wrap:anywhere in intrinsic sizing"
     );
   }
 
