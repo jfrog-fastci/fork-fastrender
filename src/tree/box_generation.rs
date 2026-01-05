@@ -3442,11 +3442,19 @@ fn create_replaced_box_from_styled(
       content: serialize_svg_subtree(styled, document_css, svg_document_css_style_element),
     }
   } else if tag.eq_ignore_ascii_case("iframe") {
-    let src = styled.node.get_attribute("src").unwrap_or_default();
+    // HTML iframes default to about:blank when `src` is missing/empty.
+    // This avoids painting a UA placeholder for the common pattern of creating an iframe and
+    // populating it via JS (which FastRender does not execute).
+    let src = styled
+      .node
+      .get_attribute_ref("src")
+      .map(str::trim)
+      .filter(|s| !s.is_empty())
+      .map(|s| s.to_string())
+      .unwrap_or_else(|| "about:blank".to_string());
     let srcdoc = styled
       .node
       .get_attribute_ref("srcdoc")
-      .filter(|s| !s.is_empty())
       .map(|s| s.to_string());
     ReplacedType::Iframe { src, srcdoc }
   } else if tag.eq_ignore_ascii_case("embed") {

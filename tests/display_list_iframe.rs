@@ -193,3 +193,26 @@ fn display_list_iframe_placeholder_is_clipped_to_content_box() {
     "expected placeholder to be clipped to the rounded content box"
   );
 }
+
+#[test]
+fn display_list_iframe_missing_src_defaults_to_about_blank() {
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "display_list".to_string(),
+  )]));
+  let config = FastRenderConfig::new().with_runtime_toggles(toggles);
+
+  let outer = "<!doctype html>\
+    <style>html, body { margin: 0; background: rgb(0, 0, 0); }</style>\
+    <iframe style=\"display:block;margin:0;width:16px;height:16px;border:0;background:rgb(255,255,255);\"></iframe>";
+
+  let mut renderer = FastRender::with_config(config).expect("create renderer");
+  let pixmap = renderer.render_html(outer, 32, 32).expect("render iframe");
+
+  let px = pixmap.pixel(8, 8).unwrap();
+  assert_eq!(
+    (px.red(), px.green(), px.blue(), px.alpha()),
+    (255, 255, 255, 255),
+    "missing iframe src should render about:blank (not the UA placeholder)"
+  );
+}
