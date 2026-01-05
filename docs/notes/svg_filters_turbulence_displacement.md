@@ -10,7 +10,8 @@ This note records the **exact semantics we implement today** for `feTurbulence` 
 
 - `color-interpolation-filters` (generator vs sampling primitives)
 - `primitiveUnits` / objectBoundingBox scaling rules
-- `filterRes` resampling (and interaction with DPR / anisotropic scaling)
+- `filterRes` resampling (and interaction with DPR / anisotropic scaling), including our
+  Chrome-compatibility exception for `feDisplacementMap`
 - pixel sampling conventions and out-of-bounds behavior
 
 Related notes:
@@ -29,16 +30,23 @@ At runtime we execute the filter graph over `tiny_skia::Pixmap` surfaces:
   - `scale`: device pixel ratio (DPR) used to interpret numeric values that are in CSS px
   - `bbox`: element bbox in device pixels (used for `filterUnits`/`primitiveUnits` resolution)
 
-When `filterRes` is specified, `apply_svg_filter()` allocates a *working pixmap* of size
-`filterRes` and resamples into/out of it (see `apply_svg_filter()` / `resize_pixmap()` /
-`resample_pixmap_region()` in `src/paint/svg_filter.rs`).
+When `filterRes` is specified, `apply_svg_filter_with_cache()` normally allocates a *working pixmap*
+of size `filterRes` and resamples into/out of it (see `apply_svg_filter_with_cache()` /
+`resize_pixmap()` / `resample_pixmap_region()` in `src/paint/svg_filter.rs`).
+
+Important compatibility exception: **for Chrome parity, we treat SVG 1.1 `filterRes` as unset if the
+filter graph contains `feDisplacementMap`** (Chrome ignores `filterRes` and it was removed in SVG
+2). This is implemented by an early return in `apply_svg_filter_with_cache()` that bypasses the
+filterRes path whenever any step matches `FilterPrimitive::DisplacementMap { .. }`.
 
 Inside `apply_svg_filter_scaled()` the effective “CSS-to-filter-pixels” scales are:
 
 - No `filterRes`: `scale_x = scale_y = DPR`
-- With `filterRes`:
+- With `filterRes` (and **no** `feDisplacementMap` in the graph):
   - `scale_x = DPR * (filterRes_w / filter_region_w_device)`
   - `scale_y = DPR * (filterRes_h / filter_region_h_device)`
+- With `filterRes` **and** `feDisplacementMap`: `filterRes` is ignored, so
+  `scale_x = scale_y = DPR` (same as “No `filterRes`”).
 
 These `scale_x/scale_y` are passed into each primitive step and are the bridge between:
 
@@ -123,7 +131,7 @@ Concretely:
 - Per-pixel sampling uses `(x, y)` as **integer pixel indices** in the working pixmap.
 - `baseFrequency` is interpreted as “cycles per working pixel”.
 - As a result, the *visible* frequency in CSS/user units scales with the effective `scale_x/scale_y`
-  chosen by the filter engine:
+  chosen by the filter engine (when `filterRes` is actually applied):
   - higher DPR and/or higher `filterRes` => higher apparent frequency in CSS pixels
   - lower `filterRes` => lower apparent frequency (noise stretches when resampled back)
 
@@ -158,7 +166,7 @@ The edge stitch behavior is regression-tested by `turbulence_stitches_edges` in
 - `scale` as a float (`parse_number()`; default `0.0`)
 - `xChannelSelector` / `yChannelSelector` (`R|G|B|A`, default `A`)
 
-### Scale resolution (`primitiveUnits` and `filterRes` anisotropy)
+### Scale resolution (`primitiveUnits` + device/DPR scaling)
 
 In `apply_primitive()` the `scale` attribute is converted into a displacement magnitude in **working
 pixels**:
@@ -167,13 +175,17 @@ pixels**:
    - `SvgFilter::resolve_primitive_scalar(scale, css_bbox)`
    - `primitiveUnits="userSpaceOnUse"`: scalar is used as-is (CSS/user units).
    - `primitiveUnits="objectBoundingBox"`: scalar is multiplied by the **average** bbox dimension:
-     `scale * 0.5 * (bbox.width + bbox.height)`.
+      `scale * 0.5 * (bbox.width + bbox.height)`.
 2. Multiply by the average pixel scale:
    - `scale_avg = 0.5 * (scale_x + scale_y)`
-   - This makes displacement **isotropic** even when `filterRes` introduces anisotropic scaling.
+   - In general this makes displacement **isotropic** even when upstream engine code uses
+     anisotropic `(scale_x, scale_y)` values.
 
-Net effect: `dx` and `dy` are scaled by the **same** scalar, and that scalar changes when `filterRes`
-changes (because `scale_x/scale_y` change).
+`filterRes` note: because we currently **ignore `filterRes` for graphs containing
+`feDisplacementMap`**, `scale_x == scale_y == DPR` for displacement-map filters, so
+`scale_avg == DPR` and `filterRes` never affects displacement magnitude.
+
+Net effect: `dx` and `dy` are scaled by the **same** scalar (isotropic displacement).
 
 ### Displacement math + sampling
 
@@ -232,10 +244,13 @@ Two engine-level details matter for both primitives:
    `apply_svg_filter_scaled()` calls `clip_to_region(pixmap, filter_region)` so pixels outside the
    resolved filter region do not leak into sampling primitives.
 
-2. **`filterRes` resamples the entire filter region into a working surface.**
+2. **`filterRes` resamples the entire filter region into a working surface (usually).**
    Primitives see the filter graph in the working surface’s pixel grid; generator primitives (like
-   `feTurbulence`) will generate at that resolution, and sampling primitives (like
-   `feDisplacementMap`) will sample in that resolution.
+   `feTurbulence`) will generate at that resolution.
+
+   Exception: for Chrome parity, we treat `filterRes` as unset whenever the filter graph contains
+   `feDisplacementMap` (implemented in `apply_svg_filter_with_cache()`). In that case, all
+   primitives run at the default filter resolution (no resampling).
 
 See [svg_filter_filterres.md](svg_filter_filterres.md) for the exact filterRes mapping when the
 filter region is offset/clipped.
@@ -253,9 +268,19 @@ filter region is offset/clipped.
   - `turbulence_seed_changes_output`
   - `turbulence_stitches_edges`
   - `turbulence_midgray_displacement_map_is_nearly_identity_in_linear_rgb`
+- `tests/paint/svg_filter_test.rs`:
+  - `displacement_map_applies_scale_without_extra_multiplier`
+  - `displacement_map_interprets_map_channels_as_unpremultiplied`
+  - `displacement_map_object_bounding_box_scale_is_resolved_against_bbox_width`
+  - `displacement_map_ignores_filter_res`
+  - `displacement_map_interprets_map_channels_in_color_interpolation_space`
 
 ### Integration fixtures
 
+- Displacement-map semantics golden (validated against Chrome):
+  - Fixture: `tests/fixtures/html/svg_filter_displacement_map_semantics.html`
+  - Golden test: `tests/paint/svg_filter_displacement_map_semantics_golden.rs`
+  - Golden image: `tests/fixtures/golden/svg_filter_displacement_map_semantics.png`
 - Golden fixture exercising `feDisplacementMap` under both `linearRGB` and `sRGB`:
   - Fixture: `tests/fixtures/html/svg_filter_color_interpolation_filters.html`
     (`filter id="cif-displacement-*"`).
