@@ -563,7 +563,7 @@ fn svg_filter_turbulence_differential_against_resvg() {
   let case_count = env_usize("FASTR_TURBULENCE_DIFF_CASES").unwrap_or(128);
   let only_case = env_usize("FASTR_TURBULENCE_DIFF_ONLY");
   let start_case = env_usize("FASTR_TURBULENCE_DIFF_START").unwrap_or(0);
-  let tolerance = env_u8("FASTR_TURBULENCE_DIFF_TOL").unwrap_or(1);
+  let tolerance = env_u8("FASTR_TURBULENCE_DIFF_TOL").unwrap_or(0);
   let tolerance = tolerance.min(1);
   let dump_artifacts = env_bool("FASTR_TURBULENCE_DIFF_DUMP");
 
