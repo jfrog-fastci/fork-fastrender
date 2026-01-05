@@ -5443,6 +5443,24 @@ mod tests {
   }
 
   #[test]
+  fn sample_keyframes_respects_webkit_keyframe_timing_function() {
+    let sheet = parse_stylesheet(
+      "@keyframes step {\
+        0% { opacity: 0; }\
+        50% { opacity: 1; -webkit-animation-timing-function: step-end; }\
+        100% { opacity: 0; }\
+      }",
+    )
+    .unwrap();
+    let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+    let rule = &keyframes[0];
+
+    assert!((sampled_opacity(rule, 0.25) - 0.5).abs() < 1e-6);
+    assert!((sampled_opacity(rule, 0.75) - 1.0).abs() < 1e-6);
+    assert!((sampled_opacity(rule, 1.0) - 0.0).abs() < 1e-6);
+  }
+
+  #[test]
   fn sample_keyframes_parse_keyframe_timing_function_ignores_commas_inside_comments() {
     let sheet = parse_stylesheet(
       "@keyframes step {\
