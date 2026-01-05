@@ -22,6 +22,7 @@ mod fetch_and_render_help_test;
 mod fetch_and_render_layout_parallel_stack_size_test;
 mod fetch_and_render_output_paths;
 mod fetch_pages_exit_test;
+mod fetch_pages_help_test;
 mod fetch_pages_http_reuse_test;
 mod file_stylesheet_parity;
 mod fixture_determinism_test;

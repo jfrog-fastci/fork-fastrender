@@ -144,6 +144,7 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
 - Entry: `src/bin/fetch_pages.rs`
 - Run: `cargo run --release --bin fetch_pages -- --help`
 - HTTP fetch tuning: honors the `FASTR_HTTP_*` env vars described above (see [`docs/env-vars.md#http-fetch-tuning`](env-vars.md#http-fetch-tuning)).
+- Note: `fetch_pages` only caches HTML; it does not use the disk-backed subresource cache (`--cache-dir` is a flag on `prefetch_assets`/`pageset_progress` and pageset wrappers).
 - Supports deterministic sharding with `--shard <index>/<total>` when splitting the page list across workers.
 - Cache filenames and `--pages` filters use the canonical stem from `normalize_page_name` (strip the scheme and a leading `www.`). Colliding stems fail fast unless you opt into `--allow-collisions`, which appends a deterministic suffix.
 - `--allow-http-error-status` treats HTTP 4xx/5xx responses as fetch successes and allows caching them for debugging (e.g. Cloudflare challenges). When used with `--refresh`, `fetch_pages` will avoid clobbering an existing cached snapshot with a transient 4xx/5xx response unless the existing snapshot is also known to be an HTTP error page.
