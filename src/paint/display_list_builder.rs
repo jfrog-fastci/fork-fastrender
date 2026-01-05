@@ -9430,11 +9430,6 @@ mod tests {
       }
     }
 
-    let _toggles_guard =
-      crate::debug::runtime::set_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::from(
-        [("FASTR_FETCH_ENFORCE_CORS".to_string(), "1".to_string())],
-      ))));
-
     let mut buf = Vec::new();
     PngEncoder::new(&mut buf)
       .write_image(&[0u8, 0, 0, 255], 1, 1, ColorType::Rgba8.into())
@@ -9450,24 +9445,32 @@ mod tests {
       ..Default::default()
     }));
 
-    let builder = DisplayListBuilder::with_image_cache(cache);
-    let url = "https://img.test/no-acao.png";
+    crate::debug::runtime::with_thread_runtime_toggles(
+      Arc::new(RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_FETCH_ENFORCE_CORS".to_string(),
+        "1".to_string(),
+      )]))),
+      || {
+        let builder = DisplayListBuilder::with_image_cache(cache);
+        let url = "https://img.test/no-acao.png";
 
-    // Baseline: no-cors loads should succeed and populate the decode cache.
-    assert!(
-      builder
-        .decode_image(url, None, false, CrossOriginAttribute::None)
-        .is_some(),
-      "expected no-cors decode to succeed"
-    );
+        // Baseline: no-cors loads should succeed and populate the decode cache.
+        assert!(
+          builder
+            .decode_image(url, None, false, CrossOriginAttribute::None)
+            .is_some(),
+          "expected no-cors decode to succeed"
+        );
 
-    // Crossorigin loads should not be able to reuse the no-cors decoded pixels when CORS
-    // enforcement is enabled; missing ACAO should surface as a load failure.
-    assert!(
-      builder
-        .decode_image(url, None, false, CrossOriginAttribute::Anonymous)
-        .is_none(),
-      "expected crossorigin decode to fail without ACAO"
+        // Crossorigin loads should not be able to reuse the no-cors decoded pixels when CORS
+        // enforcement is enabled; missing ACAO should surface as a load failure.
+        assert!(
+          builder
+            .decode_image(url, None, false, CrossOriginAttribute::Anonymous)
+            .is_none(),
+          "expected crossorigin decode to fail without ACAO"
+        );
+      },
     );
 
     let recorded = destinations.lock().unwrap().clone();
