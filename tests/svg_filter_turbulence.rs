@@ -1,7 +1,9 @@
 use fastrender::geometry::Rect;
+use fastrender::image_loader::ImageCache;
 use fastrender::paint::svg_filter::{
-  apply_svg_filter, ChannelSelector, ColorInterpolationFilters, FilterInput, FilterPrimitive,
-  FilterStep, SvgFilter, SvgFilterRegion, SvgFilterUnits, SvgLength, TurbulenceType,
+  apply_svg_filter, parse_svg_filter_from_svg_document, ChannelSelector, ColorInterpolationFilters,
+  FilterInput, FilterPrimitive, FilterStep, SvgFilter, SvgFilterRegion, SvgFilterUnits, SvgLength,
+  TurbulenceType,
 };
 use tiny_skia::{Pixmap, PremultipliedColorU8};
 
@@ -627,4 +629,38 @@ fn turbulence_midgray_displacement_map_is_nearly_identity_in_linear_rgb() {
     max_at.3,
     max_at.4
   );
+}
+
+#[test]
+fn turbulence_missing_basefrequency_defaults_to_zero() {
+  let svg = r#"
+    <svg xmlns="http://www.w3.org/2000/svg">
+      <filter id="f" x="0" y="0" width="1" height="1">
+        <feTurbulence type="fractalNoise" />
+      </filter>
+    </svg>
+  "#;
+  let filter =
+    parse_svg_filter_from_svg_document(svg, Some("f"), &ImageCache::new()).expect("filter");
+
+  let mut pixmap = Pixmap::new(8, 8).unwrap();
+  let bbox = Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32);
+  apply_svg_filter(filter.as_ref(), &mut pixmap, 1.0, bbox).unwrap();
+
+  let linear_to_srgb = |v: f32| -> f32 {
+    if v <= 0.0031308 {
+      12.92 * v
+    } else {
+      1.055 * v.powf(1.0 / 2.4) - 0.055
+    }
+  };
+  let expected_byte = (linear_to_srgb(0.5) * 255.0).round().clamp(0.0, 255.0) as u8;
+  let expected =
+    PremultipliedColorU8::from_rgba(expected_byte, expected_byte, expected_byte, 255).unwrap();
+
+  let first = pixmap.pixel(0, 0).unwrap();
+  assert_eq!(first, expected, "unexpected first turbulence pixel");
+  for (idx, px) in pixmap.pixels().iter().enumerate() {
+    assert_eq!(*px, expected, "unexpected turbulence pixel at index {idx}");
+  }
 }
