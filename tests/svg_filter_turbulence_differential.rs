@@ -73,8 +73,8 @@ struct TurbulenceCase {
 
 impl TurbulenceCase {
   fn seed_from_attr(seed_attr: f32) -> i32 {
-    // Match FastRender's filter parser (`parse_fe_turbulence`):
-    // truncate toward zero and preserve sign.
+    // Match FastRender's filter parser (`parse_fe_turbulence`): truncate toward zero and preserve
+    // the sign.
     seed_attr as i32
   }
 

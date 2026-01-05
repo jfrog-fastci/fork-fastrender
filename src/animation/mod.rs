@@ -1352,11 +1352,20 @@ fn interpolate_rotate_value(a: &AnimatedValue, b: &AnimatedValue, t: f32) -> Opt
   }
 
   match (ra, rb) {
-    (RotateValue::AxisAngle { x: ax, y: ay, z: az, angle: a_deg }, RotateValue::AxisAngle { x: bx, y: by, z: bz, angle: b_deg })
-      if (*ax - *bx).abs() < 1e-6
-        && (*ay - *by).abs() < 1e-6
-        && (*az - *bz).abs() < 1e-6 =>
-    {
+    (
+      RotateValue::AxisAngle {
+        x: ax,
+        y: ay,
+        z: az,
+        angle: a_deg,
+      },
+      RotateValue::AxisAngle {
+        x: bx,
+        y: by,
+        z: bz,
+        angle: b_deg,
+      },
+    ) if (*ax - *bx).abs() < 1e-6 && (*ay - *by).abs() < 1e-6 && (*az - *bz).abs() < 1e-6 => {
       Some(AnimatedValue::Rotate(RotateValue::AxisAngle {
         x: *ax,
         y: *ay,
@@ -4872,6 +4881,65 @@ mod tests {
   }
 
   #[test]
+  fn time_based_animation_progress_does_not_warp_keyframe_boundaries() {
+    let sheet = parse_stylesheet(
+      "@keyframes k { 0% { opacity: 0; } 50% { opacity: 0.5; } 100% { opacity: 1; } }",
+    )
+    .unwrap();
+    let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+    let rule = &keyframes[0];
+
+    let timing = TransitionTimingFunction::EaseIn;
+
+    let mut style = ComputedStyle::default();
+    style.animation_names = vec!["k".to_string()];
+    style.animation_durations = vec![1000.0].into();
+    style.animation_timing_functions = vec![timing.clone()].into();
+
+    let progress = time_based_animation_progress(&style, 0, 500.0).expect("active");
+    assert!((progress - 0.5).abs() < 1e-6, "progress={progress}");
+    assert!(
+      (sampled_opacity_with_timing(rule, progress, &timing) - 0.5).abs() < 1e-6,
+      "opacity should match the 50% keyframe when sampling at 50% progress",
+    );
+  }
+
+  #[test]
+  fn sample_keyframes_applies_keyframe_timing_functions_per_interval() {
+    let sheet = parse_stylesheet(
+      "@keyframes k {
+        0% { opacity: 0; animation-timing-function: steps(2, end); }
+        40% { opacity: 0.4; }
+        60% { opacity: 0.6; animation-timing-function: steps(5, end); }
+        100% { opacity: 1; }
+      }",
+    )
+    .unwrap();
+    let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+    let rule = &keyframes[0];
+
+    let overall = TransitionTimingFunction::Linear;
+
+    let opacity_early = sampled_opacity_with_timing(rule, 0.1, &overall);
+    assert!(
+      (opacity_early - 0.0).abs() < 1e-6,
+      "opacity_early={opacity_early}"
+    );
+
+    let opacity_middle = sampled_opacity_with_timing(rule, 0.45, &overall);
+    assert!(
+      (opacity_middle - 0.45).abs() < 1e-6,
+      "opacity_middle={opacity_middle}"
+    );
+
+    let opacity_late = sampled_opacity_with_timing(rule, 0.72, &overall);
+    assert!(
+      (opacity_late - 0.68).abs() < 1e-6,
+      "opacity_late={opacity_late}"
+    );
+  }
+
+  #[test]
   fn time_based_animations_apply_timing_function_within_keyframe_intervals() {
     let sheet = parse_stylesheet(
       "@keyframes tri { 0% { opacity: 0; } 50% { opacity: 1; } 100% { opacity: 0; } }",
@@ -5146,10 +5214,9 @@ mod tests {
 
   #[test]
   fn sample_keyframes_rotate_interpolates_axis_angle() {
-    let sheet = parse_stylesheet(
-      "@keyframes spin { from { rotate: x 0deg; } to { rotate: x 90deg; } }",
-    )
-    .unwrap();
+    let sheet =
+      parse_stylesheet("@keyframes spin { from { rotate: x 0deg; } to { rotate: x 90deg; } }")
+        .unwrap();
     let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
     let rule = &keyframes[0];
 
@@ -5167,10 +5234,9 @@ mod tests {
 
   #[test]
   fn sample_keyframes_rotate_interpolates_axis_angle_from_none() {
-    let sheet = parse_stylesheet(
-      "@keyframes spin { from { rotate: none; } to { rotate: x 90deg; } }",
-    )
-    .unwrap();
+    let sheet =
+      parse_stylesheet("@keyframes spin { from { rotate: none; } to { rotate: x 90deg; } }")
+        .unwrap();
     let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
     let rule = &keyframes[0];
 
