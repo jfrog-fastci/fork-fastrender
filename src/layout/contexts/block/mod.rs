@@ -525,35 +525,10 @@ impl BlockFormattingContext {
       computed_width.margin_right = margin_right;
     }
 
-    if style.width.is_none() {
-      if let Some(used_border_box) = constraints.used_border_box_width {
-        let horizontal_edges = computed_width.border_left
-          + computed_width.padding_left
-          + computed_width.padding_right
-          + computed_width.border_right;
-        let used_content = (used_border_box - horizontal_edges).max(0.0);
-        let (margin_left, margin_right) = recompute_margins_for_width(
-          style,
-          containing_width,
-          used_content,
-          computed_width.border_left,
-          computed_width.padding_left,
-          computed_width.padding_right,
-          computed_width.border_right,
-          self.viewport_size,
-          &self.font_context,
-        );
-        computed_width.content_width = used_content;
-        computed_width.margin_left = margin_left;
-        computed_width.margin_right = margin_right;
-      }
-    }
-
-    // Clamp the resolved inline size using min-width/max-width (CSS 2.1 §10.4).
-    // Unlike the top-level `layout()` entrypoint, in-flow block children are laid out via
-    // `layout_block_child` (not via a recursive BlockFormattingContext::layout call), so we must
-    // apply min/max sizing here to keep wrappers like `max-width: 920px; margin: 0 auto` from
-    // inflating to the full containing block width.
+    // CSS 2.1 §10.4: apply min/max inline-size constraints after computing the
+    // tentative used width/margins. When clamping changes the used width, we
+    // need to re-resolve auto margins so centering works (e.g. max-width +
+    // margin: 0 auto).
     let horizontal_edges = computed_width.border_left
       + computed_width.padding_left
       + computed_width.padding_right
@@ -591,8 +566,11 @@ impl BlockFormattingContext {
     } else {
       max_width
     };
-    let clamped_content_width =
+    let mut clamped_content_width =
       crate::layout::utils::clamp_with_order(computed_width.content_width, min_width, max_width);
+    if clamped_content_width > self.viewport_size.width {
+      clamped_content_width = self.viewport_size.width;
+    }
     if clamped_content_width != computed_width.content_width {
       let (margin_left, margin_right) = recompute_margins_for_width(
         style,
@@ -608,6 +586,30 @@ impl BlockFormattingContext {
       computed_width.content_width = clamped_content_width;
       computed_width.margin_left = margin_left;
       computed_width.margin_right = margin_right;
+    }
+
+    if style.width.is_none() {
+      if let Some(used_border_box) = constraints.used_border_box_width {
+        let horizontal_edges = computed_width.border_left
+          + computed_width.padding_left
+          + computed_width.padding_right
+          + computed_width.border_right;
+        let used_content = (used_border_box - horizontal_edges).max(0.0);
+        let (margin_left, margin_right) = recompute_margins_for_width(
+          style,
+          containing_width,
+          used_content,
+          computed_width.border_left,
+          computed_width.padding_left,
+          computed_width.padding_right,
+          computed_width.border_right,
+          self.viewport_size,
+          &self.font_context,
+        );
+        computed_width.content_width = used_content;
+        computed_width.margin_left = margin_left;
+        computed_width.margin_right = margin_right;
+      }
     }
 
     let child_constraints = LayoutConstraints::new(

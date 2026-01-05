@@ -223,6 +223,13 @@ struct BackgroundRects {
   content: Rect,
 }
 
+#[derive(Clone)]
+struct RootBackground {
+  paint_rect: Rect,
+  origin_rect: Rect,
+  style: Arc<ComputedStyle>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ImageKey {
   url: String,
@@ -2003,11 +2010,13 @@ impl DisplayListBuilder {
           return None;
         }
         self.canvas_background_suppress_box_id = suppress_box_id;
-        Some((
-          Rect::from_xywh(context_bounds.x(), context_bounds.y(), target_w, target_h),
+        Some(RootBackground {
+          paint_rect: Rect::from_xywh(context_bounds.x(), context_bounds.y(), target_w, target_h),
+          // Keep the origin rect scoped to the original stacking context bounds so background
+          // sizing/tiling doesn't stretch when extending the paint rect to cover the viewport.
+          origin_rect: context_bounds,
           style,
-          Some((context_bounds.width(), context_bounds.height())),
-        ))
+        })
       })
     } else {
       None
@@ -2252,8 +2261,8 @@ impl DisplayListBuilder {
     }
 
     if is_root && !has_effects {
-      if let Some((rect, style, size_override)) = root_background.as_ref() {
-        self.emit_background_from_style_with_size_override(*rect, style, *size_override);
+      if let Some(root_background) = root_background.as_ref() {
+        self.emit_root_background(root_background);
       }
       if skip_contents {
         self.emit_fragment_list_shallow(
@@ -2371,8 +2380,8 @@ impl DisplayListBuilder {
       pushed_clips += 1;
     }
 
-    if let Some((rect, style, size_override)) = root_background.as_ref() {
-      self.emit_background_from_style_with_size_override(*rect, style, *size_override);
+    if let Some(root_background) = root_background.as_ref() {
+      self.emit_root_background(root_background);
     }
     // Paint the stacking context root (backgrounds, borders, shadows) before applying overflow
     // clipping so outer effects remain visible.
@@ -4480,21 +4489,18 @@ impl DisplayListBuilder {
     self.emit_background_from_style_with_rects(&rects, style);
   }
 
-  fn emit_background_from_style_with_size_override(
-    &mut self,
-    rect: Rect,
-    style: &ComputedStyle,
-    size_override: Option<(f32, f32)>,
-  ) {
-    let prev = self.background_size_override;
-    self.background_size_override = size_override;
-    self.emit_background_from_style(rect, style);
-    self.background_size_override = prev;
-  }
-
   fn emit_background_from_style_with_rects(
     &mut self,
     rects: &BackgroundRects,
+    style: &ComputedStyle,
+  ) {
+    self.emit_background_from_style_with_rects_and_origin(rects, rects, style);
+  }
+
+  fn emit_background_from_style_with_rects_and_origin(
+    &mut self,
+    rects: &BackgroundRects,
+    origin_rects: &BackgroundRects,
     style: &ComputedStyle,
   ) {
     let has_images = style.background_layers.iter().any(|l| l.image.is_some());
@@ -4539,14 +4545,31 @@ impl DisplayListBuilder {
 
     for layer in style.background_layers.iter().rev() {
       if let Some(image) = &layer.image {
-        self.emit_background_layer(rects, style, layer, image);
+        self.emit_background_layer_with_origin_rects(rects, origin_rects, style, layer, image);
       }
     }
+  }
+
+  fn emit_root_background(&mut self, root: &RootBackground) {
+    let rects = Self::background_rects(root.paint_rect, &root.style, self.viewport);
+    let origin_rects = Self::background_rects(root.origin_rect, &root.style, self.viewport);
+    self.emit_background_from_style_with_rects_and_origin(&rects, &origin_rects, &root.style);
   }
 
   fn emit_background_layer(
     &mut self,
     rects: &BackgroundRects,
+    style: &ComputedStyle,
+    layer: &BackgroundLayer,
+    bg: &BackgroundImage,
+  ) {
+    self.emit_background_layer_with_origin_rects(rects, rects, style, layer, bg);
+  }
+
+  fn emit_background_layer_with_origin_rects(
+    &mut self,
+    rects: &BackgroundRects,
+    origin_rects: &BackgroundRects,
     style: &ComputedStyle,
     layer: &BackgroundLayer,
     bg: &BackgroundImage,
@@ -4577,14 +4600,14 @@ impl DisplayListBuilder {
       }
     } else if is_local {
       match layer.origin {
-        BackgroundBox::ContentBox | BackgroundBox::Text => rects.content,
-        _ => rects.padding,
+        BackgroundBox::ContentBox | BackgroundBox::Text => origin_rects.content,
+        _ => origin_rects.padding,
       }
     } else {
       match layer.origin {
-        BackgroundBox::BorderBox => rects.border,
-        BackgroundBox::PaddingBox => rects.padding,
-        BackgroundBox::ContentBox | BackgroundBox::Text => rects.content,
+        BackgroundBox::BorderBox => origin_rects.border,
+        BackgroundBox::PaddingBox => origin_rects.padding,
+        BackgroundBox::ContentBox | BackgroundBox::Text => origin_rects.content,
       }
     };
 
@@ -8607,6 +8630,75 @@ mod tests {
         .iter()
         .any(|item| matches!(item, DisplayItem::LinearGradient(_))),
       "builder should not emit per-tile gradient items for repeat+repeat gradients"
+    );
+  }
+
+  #[test]
+  fn root_background_extension_preserves_gradient_tile_size() {
+    // When the canvas is taller than the root stacking context bounds, we extend the root
+    // background paint rect to the viewport. The background image tile size should still be
+    // derived from the original element bounds so repeat defaults match Chrome.
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    root_style.background_color = Rgba::TRANSPARENT;
+
+    let mut body_style = ComputedStyle::default();
+    body_style.display = Display::Block;
+    body_style.background_color = Rgba::TRANSPARENT;
+    body_style.set_background_layers(vec![BackgroundLayer {
+      image: Some(BackgroundImage::LinearGradient {
+        angle: 180.0,
+        stops: vec![
+          crate::css::types::ColorStop {
+            color: Color::Rgba(Rgba::RED),
+            position: Some(0.0),
+          },
+          crate::css::types::ColorStop {
+            color: Color::Rgba(Rgba::BLUE),
+            position: Some(1.0),
+          },
+        ],
+      }),
+      ..BackgroundLayer::default()
+    }]);
+
+    let body_fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      vec![],
+      Arc::new(body_style),
+    );
+    let root_fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      vec![body_fragment],
+      Arc::new(root_style),
+    );
+    let tree = FragmentTree::with_viewport(root_fragment, Size::new(10.0, 20.0));
+
+    let list = DisplayListBuilder::new()
+      .with_viewport_size(10.0, 20.0)
+      .build_tree_with_stacking(&tree);
+
+    let patterns: Vec<_> = list
+      .items()
+      .iter()
+      .filter_map(|item| match item {
+        DisplayItem::LinearGradientPattern(pattern) => Some(pattern),
+        _ => None,
+      })
+      .collect();
+    assert!(
+      !patterns.is_empty(),
+      "expected at least one linear gradient pattern item"
+    );
+
+    let extended = patterns
+      .iter()
+      .find(|pattern| (pattern.dest_rect.height() - 20.0).abs() < 0.01)
+      .expect("expected an extended root background pattern covering the viewport height");
+    assert!(
+      (extended.tile_size.height - 10.0).abs() < 0.01,
+      "expected root background tile height to remain 10px, got {}",
+      extended.tile_size.height
     );
   }
 

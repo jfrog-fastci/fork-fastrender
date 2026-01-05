@@ -6095,11 +6095,17 @@ impl FastRender {
         animation_duration,
       );
 
+      // Feed the visual viewport size into the display-list builder so root background
+      // extension (canvas/background transfer) and viewport-relative paint-time values
+      // (e.g. object-position) resolve against the actual viewport rather than the root
+      // stacking context bounds.
       let mut display_list = DisplayListBuilder::new()
+        .with_viewport_size(viewport_size.width, viewport_size.height)
         .with_scroll_state(scroll_state.clone())
         .build_with_stacking_tree(&intermediates.fragment_tree.root);
       for extra in &intermediates.fragment_tree.additional_fragments {
         let extra_list = DisplayListBuilder::new()
+          .with_viewport_size(viewport_size.width, viewport_size.height)
           .with_scroll_state(scroll_state.clone())
           .build_with_stacking_tree(extra);
         display_list.append(extra_list);

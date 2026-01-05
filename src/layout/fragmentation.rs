@@ -454,9 +454,19 @@ impl FragmentationAnalyzer {
       return boundary;
     }
 
-    if let Some(range) = next_atomic_in_range(start, limit, &self.atomic) {
+    // Avoid selecting a boundary that lands inside an atomic range. If the natural fragmentainer
+    // limit would split an atomic range, clamp to the atomic start so the next fragment starts
+    // before the atomic content.
+    if let Some(range) = atomic_containing(limit, &self.atomic) {
       if range.start > start + BREAK_EPSILON {
         limit = limit.min(range.start);
+      } else {
+        // The fragment starts inside (or at the beginning of) an atomic range, and the current
+        // fragmentainer limit falls within it. Prefer overflowing rather than producing an empty
+        // fragmentainer that would never advance the cursor.
+        let boundary = range.end.min(total_extent);
+        self.advance_line_starts(boundary);
+        return boundary;
       }
     }
 
@@ -832,10 +842,17 @@ pub(crate) fn clip_node(
     && node_overlaps
     && (node_flow_start < fragment_start || node_flow_end > fragment_end)
   {
-    if node_flow_start >= fragment_start && node_flow_start < fragment_end {
+    // If a fragmentation boundary falls inside an element that avoids breaks (e.g.
+    // `break-inside: avoid-*`), move the entire element to the fragment that starts
+    // inside it instead of letting it overflow the fragment that ends mid-element.
+    //
+    // This mirrors the special-case handling for indivisible line boxes below.
+    let fragment_starts_inside_node =
+      fragment_start > node_flow_start && fragment_start < node_flow_end;
+    if fragment_starts_inside_node {
       let mut cloned = clone_without_children(node);
       let node_phys_start = axis.flow_box_start_to_physical(
-        node_flow_start - parent_abs_flow_start,
+        fragment_start - parent_abs_flow_start,
         node_block_size,
         parent_block_size,
       );
@@ -1614,7 +1631,9 @@ fn atomic_containing(pos: f32, atomic: &[AtomicRange]) -> Option<AtomicRange> {
     return None;
   }
   let candidate = atomic[idx - 1];
-  if pos >= candidate.start - BREAK_EPSILON
+  // Atomic ranges represent indivisible content in the flow. Treat the endpoints as break-safe:
+  // callers can choose boundaries at the range start/end, but never *inside*.
+  if pos > candidate.start + BREAK_EPSILON
     && pos < candidate.end - BREAK_EPSILON
     && (candidate.end - candidate.start) > BREAK_EPSILON
   {
@@ -1622,17 +1641,6 @@ fn atomic_containing(pos: f32, atomic: &[AtomicRange]) -> Option<AtomicRange> {
   } else {
     None
   }
-}
-
-fn next_atomic_in_range(start: f32, end: f32, atomic: &[AtomicRange]) -> Option<AtomicRange> {
-  if atomic.is_empty() {
-    return None;
-  }
-  let idx = atomic.partition_point(|range| range.start <= start + BREAK_EPSILON);
-  atomic
-    .get(idx)
-    .filter(|range| range.start < end + BREAK_EPSILON)
-    .copied()
 }
 
 fn collect_atomic_range_for_node(
@@ -1882,11 +1890,11 @@ mod tests {
     let mut avoid = ComputedStyle::default();
     avoid.break_inside = BreakInside::Avoid;
     let atomic = FragmentNode::new_block_styled(
-      Rect::from_xywh(0.0, 0.0, 100.0, 60.0),
+      Rect::from_xywh(0.0, 0.0, 100.0, 30.0),
       vec![],
       Arc::new(avoid),
     );
-    let trailing = FragmentNode::new_block(Rect::from_xywh(0.0, 60.0, 100.0, 40.0), vec![]);
+    let trailing = FragmentNode::new_block(Rect::from_xywh(0.0, 30.0, 100.0, 70.0), vec![]);
     let root = FragmentNode::new_block(
       Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
       vec![atomic, trailing],
@@ -1905,14 +1913,86 @@ mod tests {
       .find(|b| *b > BREAK_EPSILON)
       .unwrap_or(total_extent);
     assert!(
-      first_break >= 60.0 - BREAK_EPSILON,
+      first_break >= 30.0 - BREAK_EPSILON,
       "first break should land after the atomic range, got {first_break}"
     );
     assert!(
       boundaries
         .iter()
-        .all(|b| *b <= 0.0 + BREAK_EPSILON || *b >= 60.0 - BREAK_EPSILON),
+        .all(|b| *b <= 0.0 + BREAK_EPSILON || *b >= 30.0 - BREAK_EPSILON),
       "no boundary should fall inside the atomic range: {boundaries:?}"
+    );
+  }
+
+  #[test]
+  fn avoid_inside_blocks_move_to_next_fragment_when_boundary_splits() {
+    let mut avoid = ComputedStyle::default();
+    avoid.break_inside = BreakInside::AvoidColumn;
+    let avoid = Arc::new(avoid);
+
+    let leading = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 80.0), vec![]);
+    let atomic =
+      FragmentNode::new_block_styled(Rect::from_xywh(0.0, 80.0, 100.0, 30.0), vec![], avoid);
+
+    // Root is intentionally taller than the content so we can clip two full fragmentainers.
+    let root = FragmentNode::new_block(
+      Rect::from_xywh(0.0, 0.0, 100.0, 200.0),
+      vec![leading, atomic],
+    );
+    let axis = fragmentation_axis(&root);
+    let root_block_size = axis.block_size(&root.bounds);
+
+    let fragment1 = clip_node(
+      &root,
+      &axis,
+      0.0,
+      100.0,
+      0.0,
+      0.0,
+      100.0,
+      root_block_size,
+      0,
+      2,
+      FragmentationContext::Column,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+      fragment1.children.len(),
+      1,
+      "avoid-inside child should not be included in the fragment that ends mid-node"
+    );
+
+    let fragment2 = clip_node(
+      &root,
+      &axis,
+      100.0,
+      200.0,
+      0.0,
+      100.0,
+      200.0,
+      root_block_size,
+      1,
+      2,
+      FragmentationContext::Column,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+      fragment2.children.len(),
+      1,
+      "avoid-inside child should be moved to the fragment that starts inside it"
+    );
+    let moved = &fragment2.children[0];
+    assert!(
+      (moved.bounds.y() - 0.0).abs() < 0.01,
+      "moved node should start at the top of the fragment, got y={}",
+      moved.bounds.y()
+    );
+    assert!(
+      (moved.bounds.height() - 30.0).abs() < 0.01,
+      "moved node should retain its full block size, got h={}",
+      moved.bounds.height()
     );
   }
 }
