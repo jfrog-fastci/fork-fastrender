@@ -12087,6 +12087,52 @@ mod tests {
   }
 
   #[test]
+  fn container_query_block_axis_size_query_skips_inline_size_container() {
+    reset_container_query_memo();
+    let mut containers = HashMap::new();
+    containers.insert(
+      1,
+      ContainerQueryInfo {
+        inline_size: 600.0,
+        block_size: 800.0,
+        container_type: ContainerType::Size,
+        names: Vec::new(),
+        font_size: 16.0,
+        styles: Arc::new(ComputedStyle::default()),
+      },
+    );
+    containers.insert(
+      2,
+      ContainerQueryInfo {
+        inline_size: 600.0,
+        block_size: 0.0,
+        container_type: ContainerType::InlineSize,
+        names: Vec::new(),
+        font_size: 16.0,
+        styles: Arc::new(ComputedStyle::default()),
+      },
+    );
+    let ctx = ContainerQueryContext {
+      base_media: MediaContext::default(),
+      containers,
+    };
+
+    let condition = ContainerCondition {
+      name: None,
+      query_list: vec![ContainerQuery::Size(
+        MediaQuery::parse("(min-height: 700px)").expect("media query"),
+      )],
+    };
+    let ancestor_ids = vec![0, 1, 2];
+
+    let (container_id, _) = ctx
+      .find_container(3, &ancestor_ids, &condition)
+      .expect("container");
+    assert_eq!(container_id, 1);
+    assert!(ctx.matches(3, &ancestor_ids, &[condition]));
+  }
+
+  #[test]
   fn rule_index_deduplicates_identical_selectors_in_rule() {
     let stylesheet = parse_stylesheet(".foo, .foo { color: red; }").unwrap();
     let media_ctx = MediaContext::default();
