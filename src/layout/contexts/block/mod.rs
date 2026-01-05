@@ -1292,6 +1292,7 @@ impl BlockFormattingContext {
       let abs = crate::layout::absolute_positioning::AbsoluteLayout::with_font_context(
         self.font_context.clone(),
       );
+      let padding_origin = Point::new(computed_width.border_left, border_top);
       let padding_size = Size::new(
         computed_width.content_width + computed_width.padding_left + computed_width.padding_right,
         height + padding_top + padding_bottom,
@@ -4937,6 +4938,7 @@ impl FormattingContext for BlockFormattingContext {
     let box_width = computed_width.border_box_width();
 
     // Layout out-of-flow positioned children against this block's padding box.
+    let padding_origin = Point::new(computed_width.border_left, border_top);
     let padding_size = Size::new(
       computed_width.content_width + computed_width.padding_left + computed_width.padding_right,
       height + padding_top + padding_bottom,
