@@ -167,12 +167,12 @@ fn style_override_fingerprint(style: &ComputedStyle) -> u64 {
   hash_option_length(&style.height, &mut h);
   hash_option_intrinsic_size_keyword(&style.height_keyword, &mut h);
   hash_option_length(&style.min_width, &mut h);
-  hash_option_length(&style.max_width, &mut h);
   hash_option_intrinsic_size_keyword(&style.min_width_keyword, &mut h);
+  hash_option_length(&style.max_width, &mut h);
   hash_option_intrinsic_size_keyword(&style.max_width_keyword, &mut h);
   hash_option_length(&style.min_height, &mut h);
-  hash_option_length(&style.max_height, &mut h);
   hash_option_intrinsic_size_keyword(&style.min_height_keyword, &mut h);
+  hash_option_length(&style.max_height, &mut h);
   hash_option_intrinsic_size_keyword(&style.max_height_keyword, &mut h);
   hash_option_length(&style.margin_top, &mut h);
   hash_option_length(&style.margin_right, &mut h);

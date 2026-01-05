@@ -3101,53 +3101,59 @@ fn parse_intrinsic_size_keyword(value: &PropertyValue) -> Option<IntrinsicSizeKe
   let PropertyValue::Keyword(raw) = value else {
     return None;
   };
-  let raw = raw.trim();
-  if raw.is_empty() {
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
     return None;
   }
 
-  let lower = raw.to_ascii_lowercase();
-  match lower.as_str() {
-    "min-content" | "-webkit-min-content" | "-moz-min-content" => {
-      return Some(IntrinsicSizeKeyword::MinContent);
-    }
-    "max-content" | "-webkit-max-content" | "-moz-max-content" => {
-      return Some(IntrinsicSizeKeyword::MaxContent);
-    }
-    "fit-content" | "-webkit-fit-content" | "-moz-fit-content" => {
-      return Some(IntrinsicSizeKeyword::FitContent { limit: None });
-    }
-    _ => {}
+  if trimmed.eq_ignore_ascii_case("min-content")
+    || trimmed.eq_ignore_ascii_case("-webkit-min-content")
+    || trimmed.eq_ignore_ascii_case("-moz-min-content")
+  {
+    return Some(IntrinsicSizeKeyword::MinContent);
+  }
+  if trimmed.eq_ignore_ascii_case("max-content")
+    || trimmed.eq_ignore_ascii_case("-webkit-max-content")
+    || trimmed.eq_ignore_ascii_case("-moz-max-content")
+  {
+    return Some(IntrinsicSizeKeyword::MaxContent);
+  }
+  if trimmed.eq_ignore_ascii_case("fit-content")
+    || trimmed.eq_ignore_ascii_case("-webkit-fit-content")
+    || trimmed.eq_ignore_ascii_case("-moz-fit-content")
+  {
+    return Some(IntrinsicSizeKeyword::FitContent { limit: None });
   }
 
-  for prefix in ["fit-content(", "-webkit-fit-content(", "-moz-fit-content("] {
-    if raw.len() < prefix.len() + 1 {
-      continue;
-    }
-    if !raw
-      .get(..prefix.len())
-      .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
-    {
-      continue;
-    }
-    if !raw.ends_with(')') {
-      continue;
-    }
-    let inner = raw.get(prefix.len()..raw.len() - 1)?.trim();
-    let limit = match crate::css::properties::parse_property_value("", inner)? {
-      PropertyValue::Length(l) => Some(l),
-      PropertyValue::Percentage(p) => Some(Length::percent(p)),
-      PropertyValue::Number(n) if n == 0.0 => Some(Length::px(n)),
-      PropertyValue::Keyword(raw) => parse_length(raw.as_str()),
-      _ => None,
-    };
-    let Some(limit) = sanitize_min_length(limit) else {
-      continue;
-    };
-    return Some(IntrinsicSizeKeyword::FitContent { limit: Some(limit) });
+  // Parse `fit-content(<length-percentage>)` from the raw string. The CSS parser currently stores
+  // the entire value as a keyword token, so we need a permissive string parser here.
+  //
+  // Accept vendor-prefixed names as well (`-webkit-fit-content(...)`, `-moz-fit-content(...)`).
+  let open = trimmed.find('(')?;
+  let head = trimmed.get(..open)?.trim();
+  if !head.eq_ignore_ascii_case("fit-content")
+    && !head.eq_ignore_ascii_case("-webkit-fit-content")
+    && !head.eq_ignore_ascii_case("-moz-fit-content")
+  {
+    return None;
   }
-
-  None
+  let close = trimmed.rfind(')')?;
+  if close <= open {
+    return None;
+  }
+  if !trimmed.get(close + 1..)?.trim().is_empty() {
+    return None;
+  }
+  let inner = trimmed.get(open + 1..close)?.trim();
+  let limit = match crate::css::properties::parse_property_value("", inner)? {
+    PropertyValue::Length(l) => Some(l),
+    PropertyValue::Percentage(p) => Some(Length::percent(p)),
+    PropertyValue::Number(n) if n == 0.0 => Some(Length::px(n)),
+    PropertyValue::Keyword(raw) => parse_length(raw.as_str()),
+    _ => None,
+  };
+  let limit = sanitize_min_length(limit)?;
+  Some(IntrinsicSizeKeyword::FitContent { limit: Some(limit) })
 }
 
 fn extract_sizing_value(value: &PropertyValue) -> crate::style::LogicalSizingValue {
@@ -3162,7 +3168,6 @@ fn extract_sizing_value(value: &PropertyValue) -> crate::style::LogicalSizingVal
     keyword: None,
   }
 }
-
 #[derive(Debug, Clone, Copy)]
 enum PhysicalCorner {
   TopLeft,
@@ -16264,6 +16269,84 @@ mod tests {
       styles.animation_timelines[1],
       AnimationTimeline::None
     ));
+  }
+
+  #[test]
+  fn sizing_intrinsic_keywords_are_preserved_in_computed_style() {
+    let parent = ComputedStyle::default();
+
+    for kw in ["fit-content", "-moz-fit-content", "-webkit-fit-content"] {
+      let mut styles = ComputedStyle::default();
+      let decl = Declaration {
+        property: "width".into(),
+        value: PropertyValue::Keyword(kw.into()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      };
+      apply_declaration(&mut styles, &decl, &parent, 16.0, 16.0);
+      assert_eq!(styles.width, None);
+      assert_eq!(
+        styles.width_keyword,
+        Some(IntrinsicSizeKeyword::FitContent { limit: None })
+      );
+    }
+
+    for kw in ["max-content", "-moz-max-content", "-webkit-max-content"] {
+      let mut styles = ComputedStyle::default();
+      let decl = Declaration {
+        property: "width".into(),
+        value: PropertyValue::Keyword(kw.into()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      };
+      apply_declaration(&mut styles, &decl, &parent, 16.0, 16.0);
+      assert_eq!(styles.width, None);
+      assert_eq!(styles.width_keyword, Some(IntrinsicSizeKeyword::MaxContent));
+    }
+
+    let mut styles = ComputedStyle::default();
+    let decl = Declaration {
+      property: "max-width".into(),
+      value: PropertyValue::Keyword("fit-content( 50% )".into()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut styles, &decl, &parent, 16.0, 16.0);
+    assert_eq!(styles.max_width, None);
+    assert_eq!(
+      styles.max_width_keyword,
+      Some(IntrinsicSizeKeyword::FitContent {
+        limit: Some(Length::percent(50.0))
+      })
+    );
+
+    let mut styles = ComputedStyle::default();
+    let decl = Declaration {
+      property: "width".into(),
+      value: PropertyValue::Keyword("fit-content".into()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut styles, &decl, &parent, 16.0, 16.0);
+    assert_eq!(
+      styles.width_keyword,
+      Some(IntrinsicSizeKeyword::FitContent { limit: None })
+    );
+
+    let decl = Declaration {
+      property: "width".into(),
+      value: PropertyValue::Length(Length::px(10.0)),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut styles, &decl, &parent, 16.0, 16.0);
+    assert_eq!(styles.width, Some(Length::px(10.0)));
+    assert_eq!(styles.width_keyword, None);
   }
 
   #[test]

@@ -8,6 +8,7 @@ use crate::css::types::RadialGradientShape;
 use crate::css::types::RadialGradientSize;
 use crate::style::color::Rgba;
 use crate::style::values::Length;
+use std::hash::{Hash, Hasher};
 pub use crate::text::hyphenation::HyphensMode;
 use std::sync::Arc;
 
@@ -1873,6 +1874,49 @@ impl IntrinsicSizeKeyword {
       Self::FitContent { limit } => *limit,
       _ => None,
     }
+  }
+}
+
+impl Eq for IntrinsicSizeKeyword {}
+
+impl Hash for IntrinsicSizeKeyword {
+  fn hash<H: Hasher>(&self, state: &mut H) {
+    std::mem::discriminant(self).hash(state);
+    match self {
+      IntrinsicSizeKeyword::FitContent { limit } => match limit {
+        Some(len) => {
+          1u8.hash(state);
+          hash_length_for_intrinsic_size_keyword(len, state);
+        }
+        None => 0u8.hash(state),
+      },
+      _ => {}
+    }
+  }
+}
+
+fn f32_to_canonical_bits_for_intrinsic_size_keyword(value: f32) -> u32 {
+  if value == 0.0 {
+    0.0f32.to_bits()
+  } else {
+    value.to_bits()
+  }
+}
+
+fn hash_length_for_intrinsic_size_keyword<H: Hasher>(len: &Length, state: &mut H) {
+  len.unit.hash(state);
+  f32_to_canonical_bits_for_intrinsic_size_keyword(len.value).hash(state);
+  match &len.calc {
+    Some(calc) => {
+      1u8.hash(state);
+      let terms = calc.terms();
+      (terms.len() as u8).hash(state);
+      for term in terms {
+        term.unit.hash(state);
+        f32_to_canonical_bits_for_intrinsic_size_keyword(term.value).hash(state);
+      }
+    }
+    None => 0u8.hash(state),
   }
 }
 
