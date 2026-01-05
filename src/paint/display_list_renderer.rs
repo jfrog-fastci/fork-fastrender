@@ -1585,6 +1585,11 @@ thread_local! {
   static PARALLEL_RENDER_INVOCATIONS: Cell<usize> = Cell::new(0);
 }
 
+#[cfg(test)]
+thread_local! {
+  static RENDER_SCENE_ITEM_INVOCATIONS: Cell<usize> = Cell::new(0);
+}
+
 #[derive(Default)]
 struct BackdropFilterScratch {
   region: Option<Pixmap>,
@@ -7198,6 +7203,24 @@ impl DisplayListRenderer {
         };
 
         let draw_result = self.with_preserve_3d_clip_override(&scene_item.effects, |renderer, clip_override| {
+          let mut drawable = renderer.canvas.bounds();
+          if let Some(clip) = renderer.canvas.clip_bounds() {
+            drawable = match drawable.intersection(clip) {
+              Some(r) => r,
+              None => return Ok(()),
+            };
+          }
+          if drawable.width() <= 0.0 || drawable.height() <= 0.0 {
+            return Ok(());
+          }
+
+          let plane_offscreen = renderer
+            .preserve_3d_plane_device_bounds(scene_item.bounds, &adjusted_transform)
+            .is_some_and(|bounds| bounds.intersection(drawable).is_none());
+          if plane_offscreen && !should_apply_backdrop {
+            return Ok(());
+          }
+
           if should_apply_backdrop {
             let Some(bounds_in_src) = backdrop_bounds else {
               return Ok(());
@@ -7250,6 +7273,10 @@ impl DisplayListRenderer {
             )?;
           }
 
+          if plane_offscreen {
+            return Ok(());
+          }
+
           if let Some(pixmap) = renderer.render_scene_item(scene_item)? {
             if renderer.preserve_3d_debug {
               let is_affine = Homography::from_transform3d_z0(&adjusted_transform).is_affine();
@@ -7296,6 +7323,9 @@ impl DisplayListRenderer {
   }
 
   fn render_scene_item(&mut self, item: &Preserve3dSceneItem) -> Result<Option<Pixmap>> {
+    #[cfg(test)]
+    RENDER_SCENE_ITEM_INVOCATIONS.with(|count| count.set(count.get().saturating_add(1)));
+
     let bounds = item.bounds;
     if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
       return Ok(None);
@@ -7371,6 +7401,75 @@ impl DisplayListRenderer {
     let report = renderer.render_with_report(&list)?;
     self.gradient_stats.merge(&report.gradient_stats);
     Ok(Some(report.pixmap))
+  }
+
+  fn preserve_3d_plane_device_bounds(&self, bounds: Rect, transform: &Transform3D) -> Option<Rect> {
+    if bounds.width() <= 0.0
+      || bounds.height() <= 0.0
+      || !bounds.width().is_finite()
+      || !bounds.height().is_finite()
+    {
+      return None;
+    }
+
+    let src_w_px = (bounds.width() * self.scale).ceil().max(1.0) as u32;
+    let src_h_px = (bounds.height() * self.scale).ceil().max(1.0) as u32;
+    if src_w_px == 0 || src_h_px == 0 {
+      return None;
+    }
+    let src_w = src_w_px as f32;
+    let src_h = src_h_px as f32;
+    let parent_transform = self.canvas.transform();
+
+    let homography = Homography::from_transform3d_z0(transform);
+    let warp_enabled = self.projective_warp_enabled;
+    if homography.is_affine() || !warp_enabled {
+      let (t, _valid) = self.to_skia_transform_checked(transform);
+      let skia_transform = concat_transforms(parent_transform, t);
+      let rect = transform_rect(Rect::from_xywh(0.0, 0.0, src_w, src_h), &skia_transform);
+      if rect.x().is_finite()
+        && rect.y().is_finite()
+        && rect.width().is_finite()
+        && rect.height().is_finite()
+      {
+        return Some(rect);
+      }
+      return None;
+    }
+
+    let css_w = src_w / self.scale;
+    let css_h = src_h / self.scale;
+    if !css_w.is_finite() || !css_h.is_finite() {
+      return None;
+    }
+
+    let corners = [(0.0, 0.0), (css_w, 0.0), (css_w, css_h), (0.0, css_h)];
+
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+
+    for (x, y) in corners {
+      let projected = transform.project_point_2d(x, y)?;
+      let px = projected.x * self.scale;
+      let py = projected.y * self.scale;
+      let dst_x = px * parent_transform.sx + py * parent_transform.kx + parent_transform.tx;
+      let dst_y = px * parent_transform.ky + py * parent_transform.sy + parent_transform.ty;
+      if !dst_x.is_finite() || !dst_y.is_finite() {
+        return None;
+      }
+      min_x = min_x.min(dst_x);
+      min_y = min_y.min(dst_y);
+      max_x = max_x.max(dst_x);
+      max_y = max_y.max(dst_y);
+    }
+
+    if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite() {
+      return None;
+    }
+
+    Some(Rect::from_xywh(min_x, min_y, max_x - min_x, max_y - min_y))
   }
 
   fn preserve_3d_rect_device_bounds(
@@ -12288,6 +12387,48 @@ mod tests {
     assert!(
       blurred_px.0 > baseline_px.0,
       "expected blur to mix in white pixels across the edge; baseline={baseline_px:?} blurred={blurred_px:?}"
+    );
+  }
+
+  #[test]
+  fn preserve_3d_offscreen_plane_is_culled_before_rasterization() {
+    RENDER_SCENE_ITEM_INVOCATIONS.with(|count| count.set(0));
+
+    let bounds = Rect::from_xywh(0.0, 0.0, 50.0, 50.0);
+    let plane = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      bounds,
+      plane_rect: bounds,
+      mix_blend_mode: BlendMode::Normal,
+      is_isolated: false,
+      transform: Some(Transform3D::translate(10_000.0, 0.0, 0.0)),
+      child_perspective: None,
+      transform_style: TransformStyle::Preserve3d,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+    }));
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: plane,
+      color: Rgba::RED,
+    }));
+    list.push(DisplayItem::PopStackingContext);
+
+    DisplayListRenderer::new(50, 50, Rgba::TRANSPARENT, FontContext::new())
+      .unwrap()
+      .render(&list)
+      .unwrap();
+
+    let calls = RENDER_SCENE_ITEM_INVOCATIONS.with(|count| count.get());
+    assert_eq!(
+      calls, 0,
+      "expected offscreen preserve-3d planes to skip render_scene_item"
     );
   }
 
