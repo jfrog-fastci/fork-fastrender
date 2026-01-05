@@ -2,13 +2,13 @@ use fastrender::debug::runtime::{
   set_thread_runtime_toggles, with_thread_runtime_toggles, RuntimeToggles, ThreadRuntimeTogglesGuard,
 };
 use fastrender::image_loader::ImageCache;
-use fastrender::paint::display_list::DisplayList;
+use fastrender::paint::display_list::{DisplayItem, DisplayList, ResolvedFilter};
 use fastrender::paint::display_list_builder::DisplayListBuilder;
 use fastrender::paint::display_list_renderer::{DisplayListRenderer, PaintParallelism};
 use fastrender::resource::{CachingFetcher, HttpFetcher};
 use fastrender::scroll::ScrollState;
 use fastrender::text::font_loader::FontContext;
-use fastrender::{FastRender, FontConfig, Point, ResourcePolicy, Rgba};
+use fastrender::{FastRender, FontConfig, ResourcePolicy, Rgba};
 use rayon::ThreadPoolBuilder;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -80,7 +80,7 @@ fn format_diff(expected: &[u8], actual: &[u8], width: u32) -> String {
 
 fn fixture_path() -> PathBuf {
   PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-    .join("tests/pages/fixtures/filter_backdrop_scene/index.html")
+    .join("tests/pages/fixtures/filter_backdrop_layers/index.html")
 }
 
 fn base_url_for(html_path: &Path) -> String {
@@ -125,9 +125,7 @@ fn build_display_list(width: u32, height: u32) -> (DisplayList, FontContext) {
   let image_cache = ImageCache::with_base_url_and_fetcher(base_url, fetcher);
 
   let viewport = tree.viewport_size();
-  // Render a scrolled view so the fixture exercises masks/clip-path/backdrop-filter interactions
-  // without needing a full-size viewport.
-  let scroll_state = ScrollState::with_viewport(Point::new(0.0, 320.0));
+  let scroll_state = ScrollState::default();
   let list = DisplayListBuilder::with_image_cache(image_cache)
     .with_font_context(font_ctx.clone())
     .with_svg_filter_defs(tree.svg_filter_defs.clone())
@@ -153,7 +151,7 @@ fn blur_cache_toggles() -> Arc<RuntimeToggles> {
   // would run serially. Drop the filter cache max-bytes threshold below the typical blur surface
   // size so `apply_gaussian_blur_cached` routes through `tile_blur`, which uses rayon to fan out
   // over blur tiles when the pool has multiple threads.
-  const MAX_BYTES: usize = 120_000;
+  const MAX_BYTES: usize = 30_000;
 
   let mut raw = std::env::vars()
     .filter(|(k, _)| k.starts_with("FASTR_"))
@@ -195,13 +193,27 @@ fn backdrop_filter_pipeline_is_deterministic_across_rayon_thread_pools() {
     .name("backdrop-filter-determinism".to_string())
     .stack_size(STACK_SIZE)
     .spawn(|| {
-      const WIDTH: u32 = 192;
-      const HEIGHT: u32 = 192;
+      const WIDTH: u32 = 480;
+      const HEIGHT: u32 = 360;
       const RUNS_PER_POOL: usize = 3;
+      const SCALE: f32 = 0.25;
+      let output_width = ((WIDTH as f32) * SCALE).round().max(1.0) as u32;
 
       // Build the display list once so layout/paint ordering stays stable. Individual renders below
       // still exercise blur/backdrop-filter internals that use Rayon for fan-out.
       let (list, font_ctx) = build_display_list(WIDTH, HEIGHT);
+      let has_backdrop_blur = list.items().iter().any(|item| {
+        let DisplayItem::PushStackingContext(sc) = item else {
+          return false;
+        };
+        sc.backdrop_filters
+          .iter()
+          .any(|filter| matches!(filter, ResolvedFilter::Blur(_)))
+      });
+      assert!(
+        has_backdrop_blur,
+        "fixture did not produce a backdrop blur stacking context for the chosen viewport"
+      );
       let toggles = blur_cache_toggles();
 
       let mut reference: Option<Vec<u8>> = None;
@@ -211,7 +223,7 @@ fn backdrop_filter_pipeline_is_deterministic_across_rayon_thread_pools() {
         for run in 0..RUNS_PER_POOL {
           let pixmap = pool.install(|| {
             with_thread_runtime_toggles(toggles.clone(), || {
-              DisplayListRenderer::new(WIDTH, HEIGHT, Rgba::WHITE, font_ctx.clone())
+              DisplayListRenderer::new_scaled(WIDTH, HEIGHT, Rgba::WHITE, font_ctx.clone(), SCALE)
                 .expect("renderer")
                 .with_parallelism(PaintParallelism::disabled())
                 .render(&list)
@@ -227,7 +239,7 @@ fn backdrop_filter_pipeline_is_deterministic_across_rayon_thread_pools() {
                   "backdrop-filter output changed (threads={threads}, run={run})\n  expected_hash={:016x}\n  actual_hash={:016x}\n  {}",
                   fnv1a64(expected),
                   fnv1a64(&bytes),
-                  format_diff(expected, &bytes, WIDTH)
+                  format_diff(expected, &bytes, output_width)
                 );
               }
             }
@@ -239,22 +251,25 @@ fn backdrop_filter_pipeline_is_deterministic_across_rayon_thread_pools() {
 
       // Also validate that parallel tiling (when available) produces the exact same output.
       let parallelism = PaintParallelism {
-        tile_size: 128,
+        tile_size: 64,
         ..PaintParallelism::enabled()
       };
       let pool = thread_pool_with_toggles(4, toggles.clone());
       let report = pool.install(|| {
         with_thread_runtime_toggles(toggles.clone(), || {
-          DisplayListRenderer::new(WIDTH, HEIGHT, Rgba::WHITE, font_ctx)
+          DisplayListRenderer::new_scaled(WIDTH, HEIGHT, Rgba::WHITE, font_ctx, SCALE)
             .expect("renderer")
             .with_parallelism(parallelism)
             .render_with_report(&list)
             .expect("parallel render")
         })
       });
-      if report.parallel_used {
-        assert!(report.tiles > 1, "expected multiple tiles to be rendered");
-      }
+      assert!(
+        report.parallel_used,
+        "expected fixture to use parallel tiling (fallback={:?})",
+        report.fallback_reason
+      );
+      assert!(report.tiles > 1, "expected multiple tiles to be rendered");
       if reference.as_slice() != report.pixmap.data() {
         panic!(
           "parallel tiling output diverged from serial (parallel_used={}, tiles={}, fallback={:?})\n  serial_hash={:016x}\n  parallel_hash={:016x}\n  {}",
@@ -263,7 +278,7 @@ fn backdrop_filter_pipeline_is_deterministic_across_rayon_thread_pools() {
           report.fallback_reason,
           fnv1a64(&reference),
           fnv1a64(report.pixmap.data()),
-          format_diff(&reference, report.pixmap.data(), WIDTH)
+          format_diff(&reference, report.pixmap.data(), output_width)
         );
       }
     })
