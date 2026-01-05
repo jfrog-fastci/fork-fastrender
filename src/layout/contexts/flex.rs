@@ -5352,9 +5352,39 @@ impl FlexFormattingContext {
     let mut unordered_children_need_sort = false;
     let mut last_unordered_key: Option<(i32, usize)> = None;
 
-    // Sequential assembly: apply placement/fallback logic in DOM order, but reuse/compute child
-    // fragments using the results from the parallel stage above.
+    // Sequential assembly: apply placement/fallback logic in *flex order* (CSS `order` then DOM
+    // index). Taffy computes layout positions using this ordering; iterating in DOM order can
+    // observe non-monotonic main-axis positions (when `order` reorders items) and incorrectly trip
+    // the "manual placement" fallback, shifting items down and leaving blank space at the start
+    // of the container.
+    let mut ordered_dom_indices: Vec<usize> = Vec::new();
+    let mut needs_dom_sort = false;
+    let mut last_order: Option<i32> = None;
     for (dom_idx, child_box) in box_node.children.iter().enumerate() {
+      if child_metrics[dom_idx].is_none() {
+        continue;
+      }
+      if let Some(prev) = last_order {
+        if child_box.style.order < prev {
+          needs_dom_sort = true;
+        }
+      }
+      last_order = Some(child_box.style.order);
+      ordered_dom_indices.push(dom_idx);
+    }
+    if needs_dom_sort {
+      ordered_dom_indices.sort_by(|a_idx, b_idx| {
+        let a = &box_node.children[*a_idx];
+        let b = &box_node.children[*b_idx];
+        a.style
+          .order
+          .cmp(&b.style.order)
+          .then_with(|| a_idx.cmp(b_idx))
+      });
+    }
+
+    for dom_idx in ordered_dom_indices {
+      let child_box = &box_node.children[dom_idx];
       check_layout_deadline(&mut deadline_counter)?;
       let plan = mem::replace(&mut child_plans[dom_idx], ChildPlan::Skip);
       let Some(metrics) = child_metrics[dom_idx] else {
@@ -7396,6 +7426,64 @@ mod tests {
       "expected offscreen auto item y={} to be beyond viewport height={}",
       offscreen_fragment.bounds.y(),
       fc.viewport_size.height
+    );
+  }
+
+  #[test]
+  fn flex_item_order_does_not_trigger_manual_main_axis_placement() {
+    let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Column;
+
+    let nav_id = 10usize;
+    let banner_id = 11usize;
+
+    let mut nav_style = ComputedStyle::default();
+    nav_style.width = Some(Length::px(200.0));
+    nav_style.height = Some(Length::px(175.0));
+    nav_style.width_keyword = None;
+    nav_style.height_keyword = None;
+    nav_style.order = 0;
+    let mut nav = BoxNode::new_block(Arc::new(nav_style), FormattingContextType::Block, vec![]);
+    nav.id = nav_id;
+
+    let mut banner_style = ComputedStyle::default();
+    banner_style.width = Some(Length::px(200.0));
+    banner_style.height = Some(Length::px(56.0));
+    banner_style.width_keyword = None;
+    banner_style.height_keyword = None;
+    banner_style.order = -1;
+    let mut banner =
+      BoxNode::new_block(Arc::new(banner_style), FormattingContextType::Block, vec![]);
+    banner.id = banner_id;
+
+    // DOM order is nav then banner, but `order:-1` should place the banner at the top.
+    let mut container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![nav, banner],
+    );
+    container.id = 1;
+
+    let constraints = LayoutConstraints::definite(200.0, 1000.0);
+    let fragment = fc
+      .layout(&container, &constraints)
+      .expect("layout should succeed");
+
+    let banner_fragment = find_block_child(&fragment, banner_id);
+    let nav_fragment = find_block_child(&fragment, nav_id);
+
+    assert!(
+      banner_fragment.bounds.y().abs() < 0.5,
+      "expected banner y≈0, got {}",
+      banner_fragment.bounds.y()
+    );
+    assert!(
+      (nav_fragment.bounds.y() - 56.0).abs() < 0.5,
+      "expected nav y≈56, got {}",
+      nav_fragment.bounds.y()
     );
   }
 
