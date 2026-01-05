@@ -25,6 +25,7 @@ fn repo_root() -> PathBuf {
 }
 
 #[test]
+#[cfg(unix)]
 fn wrapper_help_runs() {
   let output = Command::new("bash")
     .current_dir(repo_root())
