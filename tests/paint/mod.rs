@@ -77,6 +77,7 @@ mod svg_filter_gaussian_blur;
 mod svg_filter_layer_bounds;
 mod svg_filter_lighting;
 mod svg_filter_lighting_golden;
+mod svg_filter_displacement_map_semantics_golden;
 mod svg_filter_turbulence_displacement_golden;
 mod svg_filter_offset_test;
 mod svg_filter_painter_test;

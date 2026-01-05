@@ -1,0 +1,307 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #1c1c1c;
+      }
+
+      #canvas {
+        position: relative;
+        width: 256px;
+        height: 128px;
+      }
+
+      .cell-bg {
+        position: absolute;
+        top: 8px;
+        width: 32px;
+        height: 32px;
+        background: #003a3a;
+      }
+
+      .label {
+        position: absolute;
+        top: 1px;
+        width: 5px;
+        height: 7px;
+      }
+
+      .content {
+        position: absolute;
+        width: 32px;
+        height: 32px;
+        top: 8px;
+      }
+
+      svg {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="0"
+      height="0"
+      style="position: absolute; width: 0; height: 0; overflow: hidden"
+    >
+      <defs>
+        <filter
+          id="disp-a"
+          filterUnits="objectBoundingBox"
+          primitiveUnits="userSpaceOnUse"
+          x="0"
+          y="0"
+          width="1"
+          height="1"
+        >
+          <feFlood flood-color="rgb(255 0 0)" flood-opacity="1" result="map" />
+          <feComponentTransfer in="map" result="map2">
+            <feFuncG type="linear" slope="0" intercept="0.5" />
+          </feComponentTransfer>
+          <feDisplacementMap
+            in="SourceGraphic"
+            in2="map2"
+            scale="1"
+            xChannelSelector="R"
+            yChannelSelector="G"
+          />
+        </filter>
+
+        <filter
+          id="disp-b"
+          filterUnits="objectBoundingBox"
+          primitiveUnits="objectBoundingBox"
+          x="0"
+          y="0"
+          width="1"
+          height="1"
+        >
+          <feFlood flood-color="rgb(255 255 0)" flood-opacity="1" result="map" />
+          <feDisplacementMap
+            in="SourceGraphic"
+            in2="map"
+            scale="0.2"
+            xChannelSelector="R"
+            yChannelSelector="G"
+          />
+        </filter>
+
+        <filter
+          id="disp-c"
+          filterUnits="objectBoundingBox"
+          primitiveUnits="userSpaceOnUse"
+          x="0"
+          y="0"
+          width="1"
+          height="1"
+          filterRes="16 32"
+        >
+          <feFlood flood-color="rgb(255 0 0)" flood-opacity="1" result="map" />
+          <feDisplacementMap
+            in="SourceGraphic"
+            in2="map"
+            scale="4"
+            xChannelSelector="R"
+            yChannelSelector="G"
+          />
+        </filter>
+
+        <filter
+          id="disp-d"
+          filterUnits="objectBoundingBox"
+          primitiveUnits="userSpaceOnUse"
+          x="0"
+          y="0"
+          width="1"
+          height="1"
+        >
+          <feFlood flood-color="rgb(255 0 0)" flood-opacity="1" result="map" />
+          <feComponentTransfer in="map" result="map2">
+            <feFuncG type="linear" slope="0" intercept="0.5" />
+          </feComponentTransfer>
+          <feDisplacementMap
+            in="SourceGraphic"
+            in2="map2"
+            scale="24"
+            xChannelSelector="R"
+            yChannelSelector="G"
+          />
+        </filter>
+      </defs>
+    </svg>
+
+    <div id="canvas">
+      <div class="cell-bg" style="left: 0px"></div>
+      <div class="cell-bg" style="left: 32px"></div>
+      <div class="cell-bg" style="left: 64px"></div>
+      <div class="cell-bg" style="left: 96px"></div>
+
+      <svg
+        class="label"
+        xmlns="http://www.w3.org/2000/svg"
+        style="left: 2px"
+        width="5"
+        height="7"
+        viewBox="0 0 5 7"
+        shape-rendering="crispEdges"
+      >
+        <rect x="1" y="0" width="3" height="1" fill="#fff" />
+        <rect x="0" y="1" width="1" height="1" fill="#fff" />
+        <rect x="4" y="1" width="1" height="1" fill="#fff" />
+        <rect x="0" y="2" width="1" height="1" fill="#fff" />
+        <rect x="4" y="2" width="1" height="1" fill="#fff" />
+        <rect x="0" y="3" width="5" height="1" fill="#fff" />
+        <rect x="0" y="4" width="1" height="1" fill="#fff" />
+        <rect x="4" y="4" width="1" height="1" fill="#fff" />
+        <rect x="0" y="5" width="1" height="1" fill="#fff" />
+        <rect x="4" y="5" width="1" height="1" fill="#fff" />
+        <rect x="0" y="6" width="1" height="1" fill="#fff" />
+        <rect x="4" y="6" width="1" height="1" fill="#fff" />
+      </svg>
+      <svg
+        class="label"
+        xmlns="http://www.w3.org/2000/svg"
+        style="left: 34px"
+        width="5"
+        height="7"
+        viewBox="0 0 5 7"
+        shape-rendering="crispEdges"
+      >
+        <rect x="0" y="0" width="4" height="1" fill="#fff" />
+        <rect x="0" y="1" width="1" height="1" fill="#fff" />
+        <rect x="4" y="1" width="1" height="1" fill="#fff" />
+        <rect x="0" y="2" width="1" height="1" fill="#fff" />
+        <rect x="4" y="2" width="1" height="1" fill="#fff" />
+        <rect x="0" y="3" width="4" height="1" fill="#fff" />
+        <rect x="0" y="4" width="1" height="1" fill="#fff" />
+        <rect x="4" y="4" width="1" height="1" fill="#fff" />
+        <rect x="0" y="5" width="1" height="1" fill="#fff" />
+        <rect x="4" y="5" width="1" height="1" fill="#fff" />
+        <rect x="0" y="6" width="4" height="1" fill="#fff" />
+      </svg>
+      <svg
+        class="label"
+        xmlns="http://www.w3.org/2000/svg"
+        style="left: 66px"
+        width="5"
+        height="7"
+        viewBox="0 0 5 7"
+        shape-rendering="crispEdges"
+      >
+        <rect x="1" y="0" width="4" height="1" fill="#fff" />
+        <rect x="0" y="1" width="1" height="1" fill="#fff" />
+        <rect x="0" y="2" width="1" height="1" fill="#fff" />
+        <rect x="0" y="3" width="1" height="1" fill="#fff" />
+        <rect x="0" y="4" width="1" height="1" fill="#fff" />
+        <rect x="0" y="5" width="1" height="1" fill="#fff" />
+        <rect x="1" y="6" width="4" height="1" fill="#fff" />
+      </svg>
+      <svg
+        class="label"
+        xmlns="http://www.w3.org/2000/svg"
+        style="left: 98px"
+        width="5"
+        height="7"
+        viewBox="0 0 5 7"
+        shape-rendering="crispEdges"
+      >
+        <rect x="0" y="0" width="4" height="1" fill="#fff" />
+        <rect x="0" y="1" width="1" height="1" fill="#fff" />
+        <rect x="4" y="1" width="1" height="1" fill="#fff" />
+        <rect x="0" y="2" width="1" height="1" fill="#fff" />
+        <rect x="4" y="2" width="1" height="1" fill="#fff" />
+        <rect x="0" y="3" width="1" height="1" fill="#fff" />
+        <rect x="4" y="3" width="1" height="1" fill="#fff" />
+        <rect x="0" y="4" width="1" height="1" fill="#fff" />
+        <rect x="4" y="4" width="1" height="1" fill="#fff" />
+        <rect x="0" y="5" width="1" height="1" fill="#fff" />
+        <rect x="4" y="5" width="1" height="1" fill="#fff" />
+        <rect x="0" y="6" width="4" height="1" fill="#fff" />
+      </svg>
+
+      <div class="content" style="left: 0px; filter: url(#disp-a)">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="32"
+          height="32"
+          viewBox="0 0 32 32"
+          shape-rendering="crispEdges"
+        >
+          <defs>
+            <pattern id="stripes-a" width="2" height="1" patternUnits="userSpaceOnUse">
+              <rect width="1" height="1" fill="#000" />
+              <rect x="1" width="1" height="1" fill="#fff" />
+            </pattern>
+          </defs>
+          <rect width="32" height="32" fill="url(#stripes-a)" />
+        </svg>
+      </div>
+
+      <div
+        style="position: absolute; left: 34px; top: 17px; width: 28px; height: 14px; filter: url(#disp-b)"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="28"
+          height="14"
+          viewBox="0 0 28 14"
+          shape-rendering="crispEdges"
+        >
+          <defs>
+            <pattern id="checker-b" width="2" height="2" patternUnits="userSpaceOnUse">
+              <rect width="1" height="1" fill="#000" />
+              <rect x="1" width="1" height="1" fill="#fff" />
+              <rect y="1" width="1" height="1" fill="#fff" />
+              <rect x="1" y="1" width="1" height="1" fill="#000" />
+            </pattern>
+          </defs>
+          <rect width="28" height="14" fill="url(#checker-b)" />
+        </svg>
+      </div>
+
+      <div class="content" style="left: 64px; filter: url(#disp-c)">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="32"
+          height="32"
+          viewBox="0 0 32 32"
+          shape-rendering="crispEdges"
+        >
+          <defs>
+            <pattern id="checker-c" width="2" height="2" patternUnits="userSpaceOnUse">
+              <rect width="1" height="1" fill="#000" />
+              <rect x="1" width="1" height="1" fill="#fff" />
+              <rect y="1" width="1" height="1" fill="#fff" />
+              <rect x="1" y="1" width="1" height="1" fill="#000" />
+            </pattern>
+          </defs>
+          <rect width="32" height="32" fill="url(#checker-c)" />
+        </svg>
+      </div>
+
+      <div class="content" style="left: 96px; filter: url(#disp-d)">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="32"
+          height="32"
+          viewBox="0 0 32 32"
+          shape-rendering="crispEdges"
+        >
+          <defs>
+            <pattern id="stripes-d" width="2" height="1" patternUnits="userSpaceOnUse">
+              <rect width="1" height="1" fill="#000" />
+              <rect x="1" width="1" height="1" fill="#fff" />
+            </pattern>
+          </defs>
+          <rect width="32" height="32" fill="url(#stripes-d)" />
+        </svg>
+      </div>
+    </div>
+  </body>
+</html>

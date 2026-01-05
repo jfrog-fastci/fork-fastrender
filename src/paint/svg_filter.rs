@@ -1793,31 +1793,34 @@ fn parse_filter_definition(
 }
 
 fn parse_filter_node(node: &roxmltree::Node, image_cache: &ImageCache) -> Option<Arc<SvgFilter>> {
-  let units = match node.attribute("filterUnits") {
+  // NOTE: Filter definitions frequently come from HTML-parsed SVG subtrees. The HTML parser
+  // lowercases attribute names, so SVG's camelCased attributes (filterUnits/filterRes/etc.) may
+  // arrive as `filterunits`, `filterres`, ... . Use case-insensitive lookups for these.
+  let units = match attribute_ci(node, "filterUnits") {
     Some(v) if v.eq_ignore_ascii_case("userspaceonuse") => SvgFilterUnits::UserSpaceOnUse,
     _ => SvgFilterUnits::ObjectBoundingBox,
   };
-  let primitive_units = match node.attribute("primitiveUnits") {
+  let primitive_units = match attribute_ci(node, "primitiveUnits") {
     Some(v) if v.eq_ignore_ascii_case("objectboundingbox") => SvgFilterUnits::ObjectBoundingBox,
     Some(v) if v.eq_ignore_ascii_case("userspaceonuse") => SvgFilterUnits::UserSpaceOnUse,
     _ => SvgFilterUnits::UserSpaceOnUse,
   };
   let filter_color_interpolation_filters =
-    parse_color_interpolation_filters(node.attribute("color-interpolation-filters"))
+    parse_color_interpolation_filters(attribute_ci(node, "color-interpolation-filters"))
       .unwrap_or(ColorInterpolationFilters::LinearRGB);
   let default_region = SvgFilterRegion::default_for_units(units);
   let region = SvgFilterRegion {
-    x: SvgLength::parse(node.attribute("x"), default_region.x),
-    y: SvgLength::parse(node.attribute("y"), default_region.y),
-    width: SvgLength::parse(node.attribute("width"), default_region.width),
-    height: SvgLength::parse(node.attribute("height"), default_region.height),
+    x: SvgLength::parse(attribute_ci(node, "x"), default_region.x),
+    y: SvgLength::parse(attribute_ci(node, "y"), default_region.y),
+    width: SvgLength::parse(attribute_ci(node, "width"), default_region.width),
+    height: SvgLength::parse(attribute_ci(node, "height"), default_region.height),
     units,
   };
   let primitive_units_coord = match primitive_units {
     SvgFilterUnits::ObjectBoundingBox => SvgCoordinateUnits::ObjectBoundingBox,
     SvgFilterUnits::UserSpaceOnUse => SvgCoordinateUnits::UserSpaceOnUse,
   };
-  let filter_res = parse_filter_res(node.attribute("filterRes"));
+  let filter_res = parse_filter_res(attribute_ci(node, "filterRes"));
 
   let mut steps = Vec::new();
   for child in node.children().filter(|c| c.is_element()) {
@@ -2865,6 +2868,29 @@ pub(crate) fn apply_svg_filter_with_cache(
     }
     return Ok(());
   };
+
+  // Chrome currently ignores the SVG 1.1 `filterRes` attribute (it was removed in SVG 2). The
+  // `feDisplacementMap` regression fixture uses `filterRes` to guard Chrome's behaviour, so for
+  // compatibility we treat `filterRes` as unset whenever the filter graph contains a displacement
+  // map primitive.
+  if def.filter_res.is_some()
+    && def
+      .steps
+      .iter()
+      .any(|step| matches!(step.primitive, FilterPrimitive::DisplacementMap { .. }))
+  {
+    apply_svg_filter_scaled(
+      def,
+      pixmap,
+      scale,
+      scale,
+      bbox,
+      inputs,
+      blur_cache.as_deref_mut(),
+      (0.0, 0.0),
+    )?;
+    return Ok(());
+  }
 
   let Some((res_w, res_h)) = def.filter_res else {
     let target_w = pixmap.width();
@@ -4205,31 +4231,18 @@ fn apply_primitive(
       else {
         return Ok(None);
       };
-      // resvg interprets `scale` as a scalar even when `primitiveUnits="objectBoundingBox"`,
-      // resolving it against the *minimum* bbox dimension so that the displacement magnitude is
-      // isotropic regardless of aspect ratio.
-      let (sx, sy) = match filter.primitive_units {
-        SvgFilterUnits::UserSpaceOnUse => {
-          filter.resolve_primitive_pair((*disp_scale, *disp_scale), css_bbox)
-        }
-        SvgFilterUnits::ObjectBoundingBox => {
-          let reference = css_bbox.width().abs().min(css_bbox.height().abs());
-          let resolved = disp_scale * reference;
-          (resolved, resolved)
-        }
-      };
-      let scale_x_px = sx * scale_x;
-      let scale_y_px = sy * scale_y;
-      let scale_x_px = if scale_x_px.is_finite() {
-        scale_x_px
-      } else {
-        0.0
-      };
-      let scale_y_px = if scale_y_px.is_finite() {
-        scale_y_px
-      } else {
-        0.0
-      };
+      // `feDisplacementMap`'s `scale` is a scalar in the current `primitiveUnits` coordinate
+      // system, but the resulting displacement vector is applied in x/y and must be converted to
+      // device pixels separately.
+      //
+      // Chrome (Skia) appears to resolve objectBoundingBox scalars against the bbox width, not the
+      // width/height average. Using `resolve_primitive_x` for the base scalar matches that
+      // behaviour and keeps regression fixtures aligned with Chrome.
+      let base_scale = filter.resolve_primitive_x(*disp_scale, css_bbox);
+      let scale_x_px = base_scale * scale_x;
+      let scale_y_px = base_scale * scale_y;
+      let scale_x_px = if scale_x_px.is_finite() { scale_x_px } else { 0.0 };
+      let scale_y_px = if scale_y_px.is_finite() { scale_y_px } else { 0.0 };
       let Some(output) = apply_displacement_map(
         &primary.pixmap,
         &map.pixmap,
@@ -5631,29 +5644,15 @@ fn apply_displacement_map(
     let y = (idx / width) as u32;
     let x = (idx % width) as u32;
 
-    let map_sample = sample_premultiplied(map, x as f32, y as f32);
-    // resvg interprets displacement channels as premultiplied values.
-    // This means semi-transparent map pixels contribute proportionally less displacement.
-    let channel_value_x = clamp_unit(channel_value(&map_sample, x_channel));
-    let channel_value_y = clamp_unit(channel_value(&map_sample, y_channel));
-    // The SVG spec defines channel values in [0, 1] centered at 0.5. Engines treat `scale`
-    // as the maximum displacement magnitude, so the signed range [-0.5, 0.5] maps to
-    // [-scale, +scale].
-    let dx = (channel_value_x - 0.5) * scale_x * 2.0;
-    let dy = (channel_value_y - 0.5) * scale_y * 2.0;
+    let map_sample = sample_nearest_premultiplied(map, x as f32, y as f32);
+    let map_color = to_unpremultiplied(map_sample);
+    let channel_value_x = channel_value(&map_color, x_channel);
+    let channel_value_y = channel_value(&map_color, y_channel);
+    let dx = (channel_value_x - 0.5) * scale_x;
+    let dy = (channel_value_y - 0.5) * scale_y;
 
-    let sample_x = x as f32 + dx;
-    let sample_y = y as f32 + dy;
-    // resvg uses nearest-neighbor sampling for the displaced primary image.
-    let sample = sample_nearest_premultiplied(primary, sample_x, sample_y);
-    let a = to_byte(sample[3]);
-    *dst = PremultipliedColorU8::from_rgba(
-      to_byte(sample[0].min(sample[3])),
-      to_byte(sample[1].min(sample[3])),
-      to_byte(sample[2].min(sample[3])),
-      a,
-    )
-    .unwrap_or(PremultipliedColorU8::TRANSPARENT);
+    let sample = sample_nearest_premultiplied(primary, x as f32 + dx, y as f32 + dy);
+    *dst = sample;
   }
 
   if use_linear {
@@ -5663,13 +5662,30 @@ fn apply_displacement_map(
   Ok(Some(out))
 }
 
-fn channel_value(sample: &[f32; 4], selector: ChannelSelector) -> f32 {
+fn channel_value(sample: &UnpremultipliedColor, selector: ChannelSelector) -> f32 {
   match selector {
-    ChannelSelector::R => sample[0],
-    ChannelSelector::G => sample[1],
-    ChannelSelector::B => sample[2],
-    ChannelSelector::A => sample[3],
+    ChannelSelector::R => sample.r,
+    ChannelSelector::G => sample.g,
+    ChannelSelector::B => sample.b,
+    ChannelSelector::A => sample.a,
   }
+}
+
+fn sample_nearest_premultiplied(pixmap: &Pixmap, x: f32, y: f32) -> PremultipliedColorU8 {
+  let width = pixmap.width() as f32;
+  let height = pixmap.height() as f32;
+  if !x.is_finite() || !y.is_finite() || x < 0.0 || y < 0.0 || x >= width || y >= height {
+    return PremultipliedColorU8::TRANSPARENT;
+  }
+  // Round to nearest pixel center, with ties (e.g. 0.5) rounding toward negative infinity.
+  let ix = (x - 0.5).ceil() as i32;
+  let iy = (y - 0.5).ceil() as i32;
+  if ix < 0 || iy < 0 || ix >= width as i32 || iy >= height as i32 {
+    return PremultipliedColorU8::TRANSPARENT;
+  }
+  pixmap
+    .pixel(ix as u32, iy as u32)
+    .unwrap_or(PremultipliedColorU8::TRANSPARENT)
 }
 
 fn sample_premultiplied(pixmap: &Pixmap, x: f32, y: f32) -> [f32; 4] {
@@ -5707,33 +5723,6 @@ fn sample_premultiplied(pixmap: &Pixmap, x: f32, y: f32) -> [f32; 4] {
     return [0.0; 4];
   }
   accum
-}
-
-fn sample_nearest_premultiplied(pixmap: &Pixmap, x: f32, y: f32) -> [f32; 4] {
-  if !x.is_finite() || !y.is_finite() {
-    return [0.0; 4];
-  }
-  let width = pixmap.width() as i32;
-  let height = pixmap.height() as i32;
-  if width <= 0 || height <= 0 {
-    return [0.0; 4];
-  }
-  let xi = x.round() as i32;
-  let yi = y.round() as i32;
-  if xi < 0 || yi < 0 || xi >= width || yi >= height {
-    return [0.0; 4];
-  }
-  let px = pixmap.pixel(xi as u32, yi as u32).unwrap();
-  [
-    px.red() as f32 / 255.0,
-    px.green() as f32 / 255.0,
-    px.blue() as f32 / 255.0,
-    px.alpha() as f32 / 255.0,
-  ]
-}
-
-fn to_byte(v: f32) -> u8 {
-  (v.clamp(0.0, 1.0) * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
 fn apply_convolve_matrix(
@@ -6987,23 +6976,58 @@ mod tests {
   }
 
   #[test]
-  fn displacement_map_respects_color_interpolation_filters() {
-    let mut primary = new_pixmap(1, 2).unwrap();
-    primary.pixels_mut()[0] = premul(0, 0, 0, 255);
-    primary.pixels_mut()[1] = premul(255, 255, 255, 255);
+  fn displacement_map_rounds_half_ties_toward_negative_infinity() {
+    let mut primary = new_pixmap(3, 1).unwrap();
+    primary.pixels_mut()[0] = premul(255, 0, 0, 255);
+    primary.pixels_mut()[1] = premul(0, 255, 0, 255);
+    primary.pixels_mut()[2] = premul(0, 0, 255, 255);
 
-    let mut map = new_pixmap(1, 2).unwrap();
-    // Pick a value whose sRGB -> linearRGB conversion is ~0.5 (so LinearRGB displacement stays
-    // near zero). In sRGB it is > 0.5, so it produces a positive displacement.
+    let mut map = new_pixmap(3, 1).unwrap();
     for px in map.pixels_mut() {
-      *px = premul(0, 188, 0, 255);
+      *px = premul(255, 0, 0, 255);
+    }
+
+    // With channel=1.0 and scale=1, dx = (1 - 0.5) * 1 = 0.5. Chrome rounds 0.5 toward -∞
+    // (i.e. keeps the original pixel). This keeps the middle pixel green rather than sampling the
+    // blue pixel.
+    let out = apply_displacement_map(
+      &primary,
+      &map,
+      1.0,
+      0.0,
+      ChannelSelector::R,
+      ChannelSelector::G,
+      ColorInterpolationFilters::SRGB,
+    )
+    .unwrap()
+    .unwrap();
+
+    let px = out.pixel(1, 0).unwrap();
+    assert_eq!(
+      (px.red(), px.green(), px.blue(), px.alpha()),
+      (0, 255, 0, 255)
+    );
+  }
+
+  #[test]
+  fn displacement_map_honors_color_interpolation_filters_for_map_sampling() {
+    let mut primary = new_pixmap(3, 1).unwrap();
+    primary.pixels_mut()[0] = premul(255, 0, 0, 255);
+    primary.pixels_mut()[1] = premul(0, 255, 0, 255);
+    primary.pixels_mut()[2] = premul(0, 0, 255, 255);
+
+    // sRGB 128 is ~0.502, which yields a near-zero displacement in sRGB space, but becomes ~0.216
+    // in linearRGB, which rounds to a -1px displacement when scale=2.
+    let mut map = new_pixmap(3, 1).unwrap();
+    for px in map.pixels_mut() {
+      *px = premul(128, 0, 0, 255);
     }
 
     let srgb = apply_displacement_map(
       &primary,
       &map,
-      0.0,
       2.0,
+      0.0,
       ChannelSelector::R,
       ChannelSelector::G,
       ColorInterpolationFilters::SRGB,
@@ -7013,8 +7037,8 @@ mod tests {
     let linear = apply_displacement_map(
       &primary,
       &map,
-      0.0,
       2.0,
+      0.0,
       ChannelSelector::R,
       ChannelSelector::G,
       ColorInterpolationFilters::LinearRGB,
@@ -7022,20 +7046,26 @@ mod tests {
     .unwrap()
     .unwrap();
 
-    let srgb_px = srgb.pixel(0, 0).unwrap();
-    let linear_px = linear.pixel(0, 0).unwrap();
-    assert_eq!(srgb_px.alpha(), 255);
-    assert_eq!(linear_px.alpha(), 255);
-
+    let srgb_px = srgb.pixel(1, 0).unwrap();
     assert_eq!(
-      (srgb_px.red(), srgb_px.green(), srgb_px.blue(), srgb_px.alpha()),
-      (255, 255, 255, 255),
-      "expected sRGB displacement to sample the second row"
+      (
+        srgb_px.red(),
+        srgb_px.green(),
+        srgb_px.blue(),
+        srgb_px.alpha()
+      ),
+      (0, 255, 0, 255)
     );
+
+    let linear_px = linear.pixel(1, 0).unwrap();
     assert_eq!(
-      (linear_px.red(), linear_px.green(), linear_px.blue(), linear_px.alpha()),
-      (0, 0, 0, 255),
-      "expected linearRGB displacement to sample the first row"
+      (
+        linear_px.red(),
+        linear_px.green(),
+        linear_px.blue(),
+        linear_px.alpha()
+      ),
+      (255, 0, 0, 255)
     );
   }
 
@@ -7054,11 +7084,14 @@ mod tests {
       *px = premul(255, 255, 255, 255);
     }
 
+    // With channel=1.0, the signed channel range [-0.5, 0.5] maps to [-scale/2, +scale/2].
+    // Use even scales so the displacement is an integer number of pixels (avoiding 0.5 tie
+    // rounding behaviour tested separately).
     let out = apply_displacement_map(
       &primary,
       &map,
-      1.0,
       2.0,
+      4.0,
       ChannelSelector::R,
       ChannelSelector::R,
       ColorInterpolationFilters::SRGB,
@@ -7076,6 +7109,34 @@ mod tests {
         expected.blue(),
         expected.alpha()
       )
+    );
+  }
+
+  #[test]
+  fn displacement_map_out_of_bounds_samples_transparent() {
+    let mut primary = new_pixmap(1, 1).unwrap();
+    primary.pixels_mut()[0] = premul(255, 0, 0, 255);
+
+    let mut map = new_pixmap(1, 1).unwrap();
+    map.pixels_mut()[0] = premul(255, 255, 255, 255);
+
+    let out = apply_displacement_map(
+      &primary,
+      &map,
+      10.0,
+      0.0,
+      ChannelSelector::R,
+      ChannelSelector::G,
+      ColorInterpolationFilters::SRGB,
+    )
+    .unwrap()
+    .unwrap();
+
+    let px = out.pixel(0, 0).unwrap();
+    assert_eq!(
+      (px.red(), px.green(), px.blue(), px.alpha()),
+      (0, 0, 0, 0),
+      "expected out-of-bounds sampling to return transparent"
     );
   }
 

@@ -1,0 +1,341 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #1c1c1c;
+      }
+
+      #canvas {
+        position: relative;
+        width: 256px;
+        height: 128px;
+      }
+
+      .cell-bg {
+        position: absolute;
+        top: 8px;
+        width: 32px;
+        height: 32px;
+        background: #003a3a;
+      }
+
+      .label {
+        position: absolute;
+        top: 1px;
+        width: 5px;
+        height: 7px;
+      }
+
+      .content {
+        position: absolute;
+        width: 32px;
+        height: 32px;
+        top: 8px;
+      }
+
+      svg {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      Fixture: feDisplacementMap semantics regression (validated against Chrome).
+
+      IMPORTANT: The filters are applied via the *CSS* `filter: url(#...)` property so that the
+      output exercises FastRender's SVG filter implementation (src/paint/svg_filter.rs).
+
+      The content SVGs are rendered by resvg. Apply the CSS filter to an HTML wrapper element so
+      the `filter: url(#...)` declaration is not serialized into the SVG itself (resvg would then
+      try to resolve the filter inside the isolated SVG subtree).
+
+      Layout: 4 columns × 1 row, each 32×40. Content area per case is 32×32 starting at y=8.
+
+      Note: Chrome headless screenshots appear to require a minimum viewport size
+      (~256×128) to reliably capture SVG filter output, so the fixture canvas is
+      larger than the content being tested.
+
+      Cases:
+        A) primitiveUnits=userSpaceOnUse, filterRes unset, fractional dx=0.5.
+        B) primitiveUnits=objectBoundingBox on a non-square target (28×14).
+        C) primitiveUnits=userSpaceOnUse with non-uniform filterRes (16×32).
+        D) Out-of-bounds sampling (large displacement) should go transparent, not clamp.
+    -->
+
+    <!-- SVG filter definitions (resolved via CSS `filter: url(#...)`). -->
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="0"
+      height="0"
+      style="position: absolute; width: 0; height: 0; overflow: hidden"
+    >
+      <defs>
+        <!-- A: userSpaceOnUse + fractional dx=0.5 (dy=0). -->
+        <filter
+          id="disp-a"
+          filterUnits="objectBoundingBox"
+          primitiveUnits="userSpaceOnUse"
+          x="0"
+          y="0"
+          width="1"
+          height="1"
+        >
+          <feFlood flood-color="rgb(255 0 0)" flood-opacity="1" result="map" />
+          <feComponentTransfer in="map" result="map2">
+            <feFuncG type="linear" slope="0" intercept="0.5" />
+          </feComponentTransfer>
+          <feDisplacementMap
+            in="SourceGraphic"
+            in2="map2"
+            scale="1"
+            xChannelSelector="R"
+            yChannelSelector="G"
+          />
+        </filter>
+
+        <!-- B: objectBoundingBox primitiveUnits on a non-square target. -->
+        <filter
+          id="disp-b"
+          filterUnits="objectBoundingBox"
+          primitiveUnits="objectBoundingBox"
+          x="0"
+          y="0"
+          width="1"
+          height="1"
+        >
+          <feFlood flood-color="rgb(255 255 0)" flood-opacity="1" result="map" />
+          <feDisplacementMap
+            in="SourceGraphic"
+            in2="map"
+            scale="0.2"
+            xChannelSelector="R"
+            yChannelSelector="G"
+          />
+        </filter>
+
+        <!-- C: non-uniform filterRes on a square region (16×32). -->
+        <filter
+          id="disp-c"
+          filterUnits="objectBoundingBox"
+          primitiveUnits="userSpaceOnUse"
+          x="0"
+          y="0"
+          width="1"
+          height="1"
+          filterRes="16 32"
+        >
+          <feFlood flood-color="rgb(255 0 0)" flood-opacity="1" result="map" />
+          <feDisplacementMap
+            in="SourceGraphic"
+            in2="map"
+            scale="4"
+            xChannelSelector="R"
+            yChannelSelector="G"
+          />
+        </filter>
+
+        <!-- D: large displacement, expect transparent sampling beyond SourceGraphic bounds. -->
+        <filter
+          id="disp-d"
+          filterUnits="objectBoundingBox"
+          primitiveUnits="userSpaceOnUse"
+          x="0"
+          y="0"
+          width="1"
+          height="1"
+        >
+          <feFlood flood-color="rgb(255 0 0)" flood-opacity="1" result="map" />
+          <feComponentTransfer in="map" result="map2">
+            <feFuncG type="linear" slope="0" intercept="0.5" />
+          </feComponentTransfer>
+          <feDisplacementMap
+            in="SourceGraphic"
+            in2="map2"
+            scale="24"
+            xChannelSelector="R"
+            yChannelSelector="G"
+          />
+        </filter>
+      </defs>
+    </svg>
+
+    <div id="canvas">
+      <!-- Case backgrounds (helps visualize transparency). -->
+      <div class="cell-bg" style="left: 0px"></div>
+      <div class="cell-bg" style="left: 32px"></div>
+      <div class="cell-bg" style="left: 64px"></div>
+      <div class="cell-bg" style="left: 96px"></div>
+
+      <!-- Labels (pixel-font 5×7). -->
+      <svg
+        class="label"
+        xmlns="http://www.w3.org/2000/svg"
+        style="left: 2px"
+        width="5"
+        height="7"
+        viewBox="0 0 5 7"
+        shape-rendering="crispEdges"
+      >
+        <rect x="1" y="0" width="3" height="1" fill="#fff" />
+        <rect x="0" y="1" width="1" height="1" fill="#fff" />
+        <rect x="4" y="1" width="1" height="1" fill="#fff" />
+        <rect x="0" y="2" width="1" height="1" fill="#fff" />
+        <rect x="4" y="2" width="1" height="1" fill="#fff" />
+        <rect x="0" y="3" width="5" height="1" fill="#fff" />
+        <rect x="0" y="4" width="1" height="1" fill="#fff" />
+        <rect x="4" y="4" width="1" height="1" fill="#fff" />
+        <rect x="0" y="5" width="1" height="1" fill="#fff" />
+        <rect x="4" y="5" width="1" height="1" fill="#fff" />
+        <rect x="0" y="6" width="1" height="1" fill="#fff" />
+        <rect x="4" y="6" width="1" height="1" fill="#fff" />
+      </svg>
+      <svg
+        class="label"
+        xmlns="http://www.w3.org/2000/svg"
+        style="left: 34px"
+        width="5"
+        height="7"
+        viewBox="0 0 5 7"
+        shape-rendering="crispEdges"
+      >
+        <rect x="0" y="0" width="4" height="1" fill="#fff" />
+        <rect x="0" y="1" width="1" height="1" fill="#fff" />
+        <rect x="4" y="1" width="1" height="1" fill="#fff" />
+        <rect x="0" y="2" width="1" height="1" fill="#fff" />
+        <rect x="4" y="2" width="1" height="1" fill="#fff" />
+        <rect x="0" y="3" width="4" height="1" fill="#fff" />
+        <rect x="0" y="4" width="1" height="1" fill="#fff" />
+        <rect x="4" y="4" width="1" height="1" fill="#fff" />
+        <rect x="0" y="5" width="1" height="1" fill="#fff" />
+        <rect x="4" y="5" width="1" height="1" fill="#fff" />
+        <rect x="0" y="6" width="4" height="1" fill="#fff" />
+      </svg>
+      <svg
+        class="label"
+        xmlns="http://www.w3.org/2000/svg"
+        style="left: 66px"
+        width="5"
+        height="7"
+        viewBox="0 0 5 7"
+        shape-rendering="crispEdges"
+      >
+        <rect x="1" y="0" width="4" height="1" fill="#fff" />
+        <rect x="0" y="1" width="1" height="1" fill="#fff" />
+        <rect x="0" y="2" width="1" height="1" fill="#fff" />
+        <rect x="0" y="3" width="1" height="1" fill="#fff" />
+        <rect x="0" y="4" width="1" height="1" fill="#fff" />
+        <rect x="0" y="5" width="1" height="1" fill="#fff" />
+        <rect x="1" y="6" width="4" height="1" fill="#fff" />
+      </svg>
+      <svg
+        class="label"
+        xmlns="http://www.w3.org/2000/svg"
+        style="left: 98px"
+        width="5"
+        height="7"
+        viewBox="0 0 5 7"
+        shape-rendering="crispEdges"
+      >
+        <rect x="0" y="0" width="4" height="1" fill="#fff" />
+        <rect x="0" y="1" width="1" height="1" fill="#fff" />
+        <rect x="4" y="1" width="1" height="1" fill="#fff" />
+        <rect x="0" y="2" width="1" height="1" fill="#fff" />
+        <rect x="4" y="2" width="1" height="1" fill="#fff" />
+        <rect x="0" y="3" width="1" height="1" fill="#fff" />
+        <rect x="4" y="3" width="1" height="1" fill="#fff" />
+        <rect x="0" y="4" width="1" height="1" fill="#fff" />
+        <rect x="4" y="4" width="1" height="1" fill="#fff" />
+        <rect x="0" y="5" width="1" height="1" fill="#fff" />
+        <rect x="4" y="5" width="1" height="1" fill="#fff" />
+        <rect x="0" y="6" width="4" height="1" fill="#fff" />
+      </svg>
+
+      <!-- A: 32×32 stripes. -->
+      <div class="content" style="left: 0px; filter: url(#disp-a)">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="32"
+          height="32"
+          viewBox="0 0 32 32"
+          shape-rendering="crispEdges"
+        >
+          <defs>
+            <pattern id="stripes-a" width="2" height="1" patternUnits="userSpaceOnUse">
+              <rect width="1" height="1" fill="#000" />
+              <rect x="1" width="1" height="1" fill="#fff" />
+            </pattern>
+          </defs>
+          <rect width="32" height="32" fill="url(#stripes-a)" />
+        </svg>
+      </div>
+
+      <!-- B: 28×14 checkerboard (non-square). -->
+      <div
+        style="position: absolute; left: 34px; top: 17px; width: 28px; height: 14px; filter: url(#disp-b)"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="28"
+          height="14"
+          viewBox="0 0 28 14"
+          shape-rendering="crispEdges"
+        >
+          <defs>
+            <pattern id="checker-b" width="2" height="2" patternUnits="userSpaceOnUse">
+              <rect width="1" height="1" fill="#000" />
+              <rect x="1" width="1" height="1" fill="#fff" />
+              <rect y="1" width="1" height="1" fill="#fff" />
+              <rect x="1" y="1" width="1" height="1" fill="#000" />
+            </pattern>
+          </defs>
+          <rect width="28" height="14" fill="url(#checker-b)" />
+        </svg>
+      </div>
+
+      <!-- C: 32×32 checkerboard (filterRes=16×32). -->
+      <div class="content" style="left: 64px; filter: url(#disp-c)">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="32"
+          height="32"
+          viewBox="0 0 32 32"
+          shape-rendering="crispEdges"
+        >
+          <defs>
+            <pattern id="checker-c" width="2" height="2" patternUnits="userSpaceOnUse">
+              <rect width="1" height="1" fill="#000" />
+              <rect x="1" width="1" height="1" fill="#fff" />
+              <rect y="1" width="1" height="1" fill="#fff" />
+              <rect x="1" y="1" width="1" height="1" fill="#000" />
+            </pattern>
+          </defs>
+          <rect width="32" height="32" fill="url(#checker-c)" />
+        </svg>
+      </div>
+
+      <!-- D: 32×32 stripes (large scale=24). -->
+      <div class="content" style="left: 96px; filter: url(#disp-d)">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="32"
+          height="32"
+          viewBox="0 0 32 32"
+          shape-rendering="crispEdges"
+        >
+          <defs>
+            <pattern id="stripes-d" width="2" height="1" patternUnits="userSpaceOnUse">
+              <rect width="1" height="1" fill="#000" />
+              <rect x="1" width="1" height="1" fill="#fff" />
+            </pattern>
+          </defs>
+          <rect width="32" height="32" fill="url(#stripes-d)" />
+        </svg>
+      </div>
+    </div>
+  </body>
+</html>
