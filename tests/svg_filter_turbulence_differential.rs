@@ -66,20 +66,16 @@ struct TurbulenceCase {
   kind: TurbulenceType,
   base_frequency: (f32, f32),
   seed_attr: f32,
-  seed: u32,
+  seed: i32,
   octaves: u32,
   stitch_tiles: bool,
 }
 
 impl TurbulenceCase {
-  fn seed_from_attr(seed_attr: f32) -> u32 {
-    // Match FastRender's filter parser (`parse_fe_turbulence`).
-    let seed_raw = seed_attr.round();
-    if seed_raw < 0.0 {
-      0
-    } else {
-      seed_raw as u32
-    }
+  fn seed_from_attr(seed_attr: f32) -> i32 {
+    // Match FastRender's filter parser (`parse_fe_turbulence`):
+    // truncate toward zero and preserve sign.
+    seed_attr as i32
   }
 
   fn primitive_units_attr(&self) -> &'static str {
