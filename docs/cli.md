@@ -18,6 +18,7 @@ These are optional wrappers for the most common loops:
   - Wraps `scripts/chrome_baseline.sh`, `render_pages`, and `diff_renders` into one command.
   - Defaults to `viewport=1200x800`, `dpr=1.0`, JavaScript disabled (to match FastRender’s “no JS” model).
   - Disables CSS animations/transitions by default for more deterministic Chrome screenshots; set `ALLOW_ANIMATIONS=1` to opt out when debugging.
+  - `scripts/chrome_baseline.sh` also patches HTML to force a light color scheme + white background by default to avoid platform dark-mode/background differences (set `ALLOW_DARK_MODE=1` or run it with `--allow-dark-mode` to opt out).
   - Writes a report at `<out>/report.html` (default: `target/chrome_vs_fastrender/report.html`).
   - Core flags: `--pages <csv>`, `--shard <index>/<total>`, `--viewport <WxH>`, `--dpr <float>`, `--jobs <n>`, `--timeout <secs>`, `--out-dir <dir>`, `--chrome <path>`, `--js {on|off}`, `--no-chrome`, `--no-fastrender`, `--diff-only`, `--tolerance <u8>`, `--max-diff-percent <float>`, `--max-perceptual-distance <float>`, `--ignore-alpha`, `--sort-by {pixel|percent|perceptual}`, `--fail-on-differences`, `--no-build`.
   - `--pages` accepts cached stems or URLs; URL-looking inputs are normalized to cached stems best-effort (strip scheme/leading `www.`, etc).
@@ -108,6 +109,7 @@ FASTR_HTTP_BACKEND=reqwest FASTR_HTTP_BROWSER_HEADERS=1 \
   - Use `--no-build` to reuse an existing `target/release/diff_renders` binary (skips `cargo build`).
 - Chrome baseline screenshots for offline fixtures (local-only; not committed): `cargo xtask chrome-baseline-fixtures`
   - Disables CSS animations/transitions by default for deterministic baselines; pass `--allow-animations` to opt out.
+  - Forces a light color scheme + white background by default to avoid platform dark-mode/background differences; pass `--allow-dark-mode` to opt out.
   - Chrome-vs-FastRender diff report for offline fixtures (deterministic; offline): `cargo xtask fixture-chrome-diff`
     - Defaults to the curated `pages_regression` fixture set in `tests/pages_regression_test.rs`.
     - Pass `--all-fixtures` to render every fixture under `tests/pages/fixtures/`.

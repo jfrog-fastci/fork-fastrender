@@ -56,6 +56,13 @@ Artifacts for failures land in `target/pages_diffs/<page>_{actual,expected,diff}
 
 When doing accuracy work, it’s often useful to compare an offline fixture render against Chrome using the **same** deterministic inputs (no network). Chrome baselines are **local-only artifacts** and are not committed.
 
+For determinism, the fixture baseline step patches the HTML before loading it in Chrome:
+
+- Forces a light color scheme and white `html/body` background (to match FastRender’s default white canvas and avoid platform dark-mode defaults).
+- Injects a CSP that disables JS by default and blocks `http(s)` subresources so the run stays offline.
+
+Pass `cargo xtask chrome-baseline-fixtures --allow-dark-mode` to opt out of the light-mode/background enforcement when debugging dark-mode pages.
+
 ```bash
 # One-command evidence report (runs FastRender render + Chrome baseline + diff):
 cargo xtask fixture-chrome-diff

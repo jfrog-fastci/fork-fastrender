@@ -40,10 +40,11 @@ Options:
   --dpr <float>        Device pixel ratio (default: 1.0)
   --timeout <secs>     Per-page hard timeout (default: 15)
   --shard <index>/<total>
-                      Process only a deterministic shard of selected cached pages (0-based)
+                        Process only a deterministic shard of selected cached pages (0-based)
   --chrome <path>      Chrome/Chromium binary (default: auto-detect)
   --js <on|off>        Enable JavaScript (default: off)
   --allow-animations   Allow CSS animations/transitions (default: off for determinism)
+  --allow-dark-mode    Do not force a light color scheme + white background in the patched HTML
   -h, --help           Show help
 
 Filtering:
@@ -51,7 +52,7 @@ Filtering:
   and only those pages will be rendered.
 
 Environment (optional):
-  HTML_DIR, OUT_DIR, VIEWPORT, DPR, TIMEOUT, SHARD, CHROME_BIN, JS, ALLOW_ANIMATIONS
+  HTML_DIR, OUT_DIR, VIEWPORT, DPR, TIMEOUT, SHARD, CHROME_BIN, JS, ALLOW_ANIMATIONS, ALLOW_DARK_MODE
 
 Output:
   <out-dir>/<stem>.png        Screenshot
@@ -70,6 +71,7 @@ SHARD="${SHARD:-}"
 CHROME_BIN="${CHROME_BIN:-}"
 JS="${JS:-off}"
 ALLOW_ANIMATIONS="${ALLOW_ANIMATIONS:-0}"
+ALLOW_DARK_MODE="${ALLOW_DARK_MODE:-0}"
 HEADLESS_FLAG="--headless=new"
 # When Chrome runs in headless screenshot mode, `--window-size=WxH` sets the *outer* window size,
 # but the CSS/layout viewport height is consistently shorter by 88px (leaving a white bar at the
@@ -109,6 +111,8 @@ while [[ $# -gt 0 ]]; do
         JS="${2:-}"; shift 2; continue ;;
       --allow-animations)
         ALLOW_ANIMATIONS="1"; shift; continue ;;
+      --allow-dark-mode)
+        ALLOW_DARK_MODE="1"; shift; continue ;;
       --)
         PARSE_FLAGS=0
         shift
@@ -152,6 +156,19 @@ case "${ALLOW_ANIMATIONS,,}" in
     ;;
   *)
     echo "invalid --allow-animations/ALLOW_ANIMATIONS: ${ALLOW_ANIMATIONS} (expected 0/1)" >&2
+    exit 2
+    ;;
+esac
+
+case "${ALLOW_DARK_MODE,,}" in
+  ""|0|false|off|no)
+    ALLOW_DARK_MODE="0"
+    ;;
+  1|true|on|yes)
+    ALLOW_DARK_MODE="1"
+    ;;
+  *)
+    echo "invalid --allow-dark-mode/ALLOW_DARK_MODE: ${ALLOW_DARK_MODE} (expected 0/1)" >&2
     exit 2
     ;;
 esac
@@ -353,7 +370,7 @@ total=0
 echo "Chrome: ${CHROME}"
 echo "Input:  ${HTML_DIR}"
 echo "Output: ${OUT_DIR}"
-echo "Viewport: ${VIEWPORT}  DPR: ${DPR}  JS: ${JS,,}  Animations: $([[ "${ALLOW_ANIMATIONS}" -eq 1 ]] && echo on || echo off)  Timeout: ${TIMEOUT}s"
+echo "Viewport: ${VIEWPORT}  DPR: ${DPR}  JS: ${JS,,}  Animations: $([[ "${ALLOW_ANIMATIONS}" -eq 1 ]] && echo on || echo off)  Color scheme: $([[ "${ALLOW_DARK_MODE}" -eq 1 ]] && echo auto || echo light)  Timeout: ${TIMEOUT}s"
 if [[ -n "${SHARD}" ]]; then
   echo "Shard: ${SHARD}"
 fi
@@ -392,7 +409,7 @@ for html_path in "${HTML_FILES[@]}"; do
     disable_animations="0"
   fi
 
-  html_sha256="$(python3 - "${html_path}" "${patched_html}" "${base_url}" "${disable_js}" "${disable_animations}" <<'PY'
+  html_sha256="$(python3 - "${html_path}" "${patched_html}" "${base_url}" "${disable_js}" "${disable_animations}" "${ALLOW_DARK_MODE}" <<'PY'
 import sys
 import hashlib
 
@@ -405,10 +422,13 @@ if len(sys.argv) >= 5:
 disable_animations = True
 if len(sys.argv) >= 6:
     disable_animations = sys.argv[5].strip() != "0"
+allow_dark_mode = False
+if len(sys.argv) >= 7:
+    allow_dark_mode = sys.argv[6].strip() == "1"
 
 data = open(in_path, "rb").read()
 sha256 = hashlib.sha256(data).hexdigest()
-if not base_url and not disable_js and not disable_animations:
+if not base_url and not disable_js and not disable_animations and allow_dark_mode:
     open(out_path, "wb").write(data)
     print(sha256, end="")
     sys.exit(0)
@@ -451,6 +471,9 @@ def insert_after_doctype(insertion: bytes):
 inserts = []
 if base_url:
     inserts.append(f'<base href="{base_url}">'.encode("utf-8") + b"\n")
+if not allow_dark_mode:
+    inserts.append(b"<meta name=\"color-scheme\" content=\"light\">\n")
+    inserts.append(b"<style>html, body { background: white !important; color-scheme: light !important; forced-color-adjust: none !important; }</style>\n")
 if disable_js:
     # Best-effort JS disable: inject a CSP that blocks script execution.
     # This is more portable than Chromium flag hacks and matches our "no JS" renderer model.

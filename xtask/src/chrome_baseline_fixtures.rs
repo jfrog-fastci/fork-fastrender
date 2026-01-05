@@ -96,6 +96,10 @@ pub struct ChromeBaselineFixturesArgs {
   /// semantics.
   #[arg(long)]
   allow_animations: bool,
+
+  /// Allow dark-mode / prefers-color-scheme defaults (do not force light color-scheme + white background).
+  #[arg(long)]
+  allow_dark_mode: bool,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -304,6 +308,7 @@ fn render_fixture(
     Some(&base_url),
     matches!(args.js, JsMode::Off),
     !args.allow_animations,
+    args.allow_dark_mode,
   );
   fs::write(&patched_html, patched).with_context(|| format!("write {}", patched_html.display()))?;
   let url = file_url(&patched_html)?;
@@ -1294,12 +1299,20 @@ fn patch_html_bytes(
   base_url: Option<&str>,
   disable_js: bool,
   disable_animations: bool,
+  allow_dark_mode: bool,
 ) -> Vec<u8> {
   const DISABLE_ANIMATIONS_STYLE: &str =
     "<style>*, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }</style>\n";
+  const FORCE_LIGHT_META: &str = "<meta name=\"color-scheme\" content=\"light\">\n";
+  const FORCE_LIGHT_STYLE: &str = "<style>html, body { background: white !important; color-scheme: light !important; forced-color-adjust: none !important; }</style>\n";
+
   let mut inserts = Vec::new();
   if let Some(base_url) = base_url {
     inserts.extend_from_slice(format!("<base href=\"{base_url}\">\n").as_bytes());
+  }
+  if !allow_dark_mode {
+    inserts.extend_from_slice(FORCE_LIGHT_META.as_bytes());
+    inserts.extend_from_slice(FORCE_LIGHT_STYLE.as_bytes());
   }
   // Enforce a deterministic/offline page load: allow only file/data subresources.
   // If JS is enabled, allow inline/file scripts for experimentation; otherwise block scripts.
@@ -1433,13 +1446,21 @@ mod tests {
   #[test]
   fn patch_html_keeps_doctype_first_when_head_missing() {
     let input = b"<!doctype html>\n<meta charset=\"utf-8\">\n<body>Hello</body>\n";
-    let output = patch_html_bytes(input, Some("file:///tmp/fixture/"), true, true);
+    let output = patch_html_bytes(input, Some("file:///tmp/fixture/"), true, true, false);
     assert!(
       output.starts_with(b"<!doctype html>"),
       "doctype must remain the first token to avoid quirks mode"
     );
 
     let output_str = String::from_utf8_lossy(&output);
+    assert!(
+      output_str.contains("<meta name=\"color-scheme\" content=\"light\">"),
+      "patched HTML should force a deterministic light color scheme"
+    );
+    assert!(
+      output_str.contains("background: white !important"),
+      "patched HTML should force a white background"
+    );
     assert!(
       output_str.contains("Content-Security-Policy"),
       "patched HTML should include CSP injection"
@@ -1457,7 +1478,7 @@ mod tests {
   #[test]
   fn patch_html_can_opt_out_of_animation_disabling() {
     let input = b"<!doctype html><html><head></head><body>Hello</body></html>";
-    let output = patch_html_bytes(input, Some("file:///tmp/fixture/"), true, false);
+    let output = patch_html_bytes(input, Some("file:///tmp/fixture/"), true, false, false);
     let output_str = String::from_utf8_lossy(&output);
     assert!(
       !output_str.contains("animation: none !important"),
@@ -1518,6 +1539,7 @@ mod tests {
       timeout: 15,
       js: super::JsMode::Off,
       allow_animations: false,
+      allow_dark_mode: false,
     };
 
     let metadata = build_fixture_metadata(
