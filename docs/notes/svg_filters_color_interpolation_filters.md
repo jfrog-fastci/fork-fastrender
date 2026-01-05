@@ -4,7 +4,11 @@ FastRender’s SVG filter implementation lives in [`src/paint/svg_filter.rs`](..
 This note documents how we currently handle **color spaces** and **premultiplication** for filter
 primitives so future edits don’t accidentally regress `color-interpolation-filters`.
 
-Related: [SVG filter percentage resolution](svg_filters_percentages.md).
+Related:
+
+- [SVG filter percentage resolution](svg_filters_percentages.md).
+- [`feTurbulence` / `feDisplacementMap` semantics](svg_filters_turbulence_displacement.md) (covers
+  generator-vs-sampling details and Chrome-aligned edge cases).
 
 ## Spec default: `linearRGB`
 
@@ -99,6 +103,9 @@ means we operate on the stored (sRGB-encoded) bytes/floats.
   - Resampling honors the filter’s `color-interpolation-filters`: for `linearRGB`, the source is
     re-encoded via `reencode_pixmap_to_linear_rgb()` before resampling, then the resized result is
     re-encoded back to sRGB via `reencode_pixmap_to_srgb()`.
+  - Chrome parity note: SVG 1.1 `filterRes` is ignored when the filter graph contains
+    `feDisplacementMap` (see `apply_svg_filter_with_cache()` and
+    [`svg_filters_turbulence_displacement.md`](svg_filters_turbulence_displacement.md)).
 - `feColorMatrix`
   - Runs in **linearRGB** when requested.
   - Implementation uses `unpack_color()` / `pack_color()` per pixel.
@@ -127,9 +134,11 @@ means we operate on the stored (sRGB-encoded) bytes/floats.
 - `feDisplacementMap`
   - Runs in **linearRGB** when requested.
   - For `linearRGB`, both `in1` (primary) and `in2` (the displacement map) are cloned and re-encoded
-    to linearRGB. The displacement map sampling (for channel selection) and the displaced primary
-    resampling/interpolation are performed in that space, then the output pixmap is re-encoded back
-    to sRGB.
+    to linearRGB. Channel selection + displacement math are performed in that space, then the output
+    pixmap is re-encoded back to sRGB.
+  - Sampling is Chrome-aligned (nearest-neighbor + clamped map subregion); see
+    [`svg_filters_turbulence_displacement.md`](svg_filters_turbulence_displacement.md) for the full
+    algorithm.
 - `feFlood`
   - Outputs a solid color pixmap (premultiplied RGBA8).
   - In FastRender this primitive does not need to branch on `color-interpolation-filters`: the
@@ -143,8 +152,10 @@ means we operate on the stored (sRGB-encoded) bytes/floats.
     `color-interpolation-filters` in our current implementation.
 - `feTurbulence`
   - Procedurally generates noise and encodes the output according to the step’s
-    `color-interpolation-filters`: for `linearRGB`, the generated values are treated as linear and
-    encoded via `linear_to_srgb()` before being written to the pixmap.
+    `color-interpolation-filters`.
+  - For `linearRGB`, the generated channel values are treated as linear and encoded to sRGB bytes
+    before being written to the pixmap (using resvg’s conversion table to match Chromium/Skia; see
+    `src/paint/svg_filter/turbulence.rs`).
 
 No known remaining gaps in `color-interpolation-filters` handling for the currently-supported
 primitives.
