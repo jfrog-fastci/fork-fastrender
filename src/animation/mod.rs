@@ -3575,6 +3575,12 @@ fn apply_additive_animation_value(
 ) -> bool {
   match (property, value) {
     ("transform", AnimatedValue::Transform(effect_list)) => {
+      // `transform: none` is represented as an empty list and should be treated as a no-op for
+      // additive composition. Converting it into an explicit identity matrix would incorrectly
+      // establish transform containing blocks/stacking contexts.
+      if effect_list.is_empty() {
+        return true;
+      }
       let underlying_list = resolve_transform_list(&style.transform, style, ctx);
       let underlying = compose_transform_list(&underlying_list);
       let effect = compose_transform_list(effect_list);
