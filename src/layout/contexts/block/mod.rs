@@ -7880,6 +7880,59 @@ mod tests {
   }
 
   #[test]
+  fn content_visibility_auto_accounts_for_viewport_scroll() {
+    let _toggles = content_visibility_test_guard();
+    let viewport = Size::new(300.0, 200.0);
+    let scroll = Point::new(0.0, 300.0);
+    let factory = crate::layout::contexts::factory::FormattingContextFactory::with_font_context_viewport_and_cb(
+      FontContext::new(),
+      viewport,
+      ContainingBlock::viewport(viewport),
+    )
+    .with_viewport_scroll(scroll);
+    let fc = BlockFormattingContext::with_factory(factory);
+    let constraints = LayoutConstraints::definite(viewport.width, viewport.height);
+
+    let mut spacer = BoxNode::new_block(
+      block_style_with_height(scroll.y),
+      FormattingContextType::Block,
+      vec![],
+    );
+    spacer.id = 2;
+
+    let mut leaf = BoxNode::new_block(
+      block_style_with_height(10.0),
+      FormattingContextType::Block,
+      vec![],
+    );
+    leaf.id = 4;
+
+    let mut auto_style = ComputedStyle::default();
+    auto_style.display = Display::Block;
+    auto_style.content_visibility = ContentVisibility::Auto;
+    let mut auto_box = BoxNode::new_block(
+      Arc::new(auto_style),
+      FormattingContextType::Block,
+      vec![leaf],
+    );
+    auto_box.id = 3;
+
+    let mut root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![spacer, auto_box],
+    );
+    root.id = 1;
+
+    let fragment = fc.layout(&root, &constraints).expect("layout");
+    let auto_fragment = find_block_fragment(&fragment, 3).expect("auto fragment");
+    assert!(
+      !auto_fragment.children.is_empty(),
+      "expected scrolled viewport to keep descendants active"
+    );
+  }
+
+  #[test]
   fn block_layout_reuses_shaping_pipeline_across_children() {
     // Regression: block layout used to instantiate a new shaping pipeline for each block box that
     // buffered inline children, preventing font fallback caches from being reused across blocks.
