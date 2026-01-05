@@ -118,5 +118,5 @@ fn turbulence_is_deterministic() {
   apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
 
   let checksum: u32 = pixmap.data().iter().map(|b| *b as u32).sum();
-  assert_eq!(checksum, 3333);
+  assert_eq!(checksum, 2134);
 }

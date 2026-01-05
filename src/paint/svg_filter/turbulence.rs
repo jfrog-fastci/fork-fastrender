@@ -5,7 +5,9 @@ use crate::render_control::{active_deadline, check_active, with_deadline};
 use rayon::prelude::*;
 use tiny_skia::{Pixmap, PremultipliedColorU8};
 
-use super::{ColorInterpolationFilters, RenderResult, TurbulenceType, FILTER_DEADLINE_STRIDE};
+use super::{
+  ColorInterpolationFilters, RenderResult, SvgFilterUnits, TurbulenceType, FILTER_DEADLINE_STRIDE,
+};
 
 #[derive(Clone, Copy, Debug)]
 struct ResolvedRegion {
@@ -59,6 +61,11 @@ pub(super) fn render_turbulence(
   stitch_tiles: bool,
   kind: TurbulenceType,
   color_interpolation_filters: ColorInterpolationFilters,
+  primitive_units: SvgFilterUnits,
+  css_bbox: Rect,
+  scale_x: f32,
+  scale_y: f32,
+  surface_origin: (f32, f32),
 ) -> RenderResult<Option<Pixmap>> {
   check_active(RenderStage::Paint)?;
   let region = match resolve_region(filter_region, output_width, output_height) {
@@ -71,7 +78,38 @@ pub(super) fn render_turbulence(
     None => return Ok(None),
   };
 
-  let perm_table = build_permutation(seed);
+  let perm_r = build_permutation(seed);
+  let perm_g = build_permutation(seed.wrapping_add(1));
+  let perm_b = build_permutation(seed.wrapping_add(2));
+
+  let scale_x = if scale_x.is_finite() && scale_x > 0.0 {
+    scale_x
+  } else {
+    1.0
+  };
+  let scale_y = if scale_y.is_finite() && scale_y > 0.0 {
+    scale_y
+  } else {
+    1.0
+  };
+  let origin_x = if surface_origin.0.is_finite() {
+    surface_origin.0
+  } else {
+    0.0
+  };
+  let origin_y = if surface_origin.1.is_finite() {
+    surface_origin.1
+  } else {
+    0.0
+  };
+
+  let bbox = Rect::from_xywh(
+    css_bbox.x() + origin_x,
+    css_bbox.y() + origin_y,
+    css_bbox.width(),
+    css_bbox.height(),
+  );
+
   let octaves = octaves.max(1);
   let normalization: f32 = (0..octaves).map(|i| 0.5_f32.powi(i as i32)).sum();
 
@@ -80,8 +118,34 @@ pub(super) fn render_turbulence(
   let end_x = start_x + region.width as usize;
   let base_freq_x = base_frequency.0.abs();
   let base_freq_y = base_frequency.1.abs();
-  let stitch_width = region.width.saturating_sub(1).max(1);
-  let stitch_height = region.height.saturating_sub(1).max(1);
+  let base_freq_x = if base_freq_x.is_finite() { base_freq_x } else { 0.0 };
+  let base_freq_y = if base_freq_y.is_finite() { base_freq_y } else { 0.0 };
+
+  let extent_px_x = region.width.saturating_sub(1) as f32;
+  let extent_px_y = region.height.saturating_sub(1) as f32;
+
+  let bbox_w = bbox.width().abs();
+  let bbox_h = bbox.height().abs();
+  let extent_x = match primitive_units {
+    SvgFilterUnits::UserSpaceOnUse => extent_px_x / scale_x,
+    SvgFilterUnits::ObjectBoundingBox => {
+      if bbox_w > 0.0 {
+        extent_px_x / scale_x / bbox_w
+      } else {
+        0.0
+      }
+    }
+  };
+  let extent_y = match primitive_units {
+    SvgFilterUnits::UserSpaceOnUse => extent_px_y / scale_y,
+    SvgFilterUnits::ObjectBoundingBox => {
+      if bbox_h > 0.0 {
+        extent_px_y / scale_y / bbox_h
+      } else {
+        0.0
+      }
+    }
+  };
 
   let deadline = active_deadline();
   pixmap
@@ -92,54 +156,84 @@ pub(super) fn render_turbulence(
     .take(region.height as usize)
     .try_for_each(|(y, row)| {
       with_deadline(deadline.as_ref(), || -> RenderResult<()> {
-        let y_coord = (y - region.y as usize) as f32;
         let row_slice = &mut row[start_x..end_x];
         for (x_offset, px) in row_slice.iter_mut().enumerate() {
           if x_offset % FILTER_DEADLINE_STRIDE == 0 {
             check_active(RenderStage::Paint)?;
           }
-          let x_coord = x_offset as f32;
-          let mut freq_x = base_freq_x;
-          let mut freq_y = base_freq_y;
-          let mut amplitude = 1.0;
-          let mut value = 0.0;
+          let x = (start_x + x_offset) as f32;
+          let y = y as f32;
 
-          for _ in 0..octaves {
-            let (freq_x_adj, wrap_x) = adjust_frequency(freq_x, stitch_width, stitch_tiles);
-            let (freq_y_adj, wrap_y) = adjust_frequency(freq_y, stitch_height, stitch_tiles);
-            let noise = if freq_x_adj == 0.0 && freq_y_adj == 0.0 {
-              0.0
+          let css_x = origin_x + x / scale_x;
+          let css_y = origin_y + y / scale_y;
+
+          let (coord_x, coord_y) = match primitive_units {
+            SvgFilterUnits::UserSpaceOnUse => (css_x, css_y),
+            SvgFilterUnits::ObjectBoundingBox => {
+              let nx = if bbox_w > 0.0 {
+                (css_x - bbox.min_x()) / bbox_w
+              } else {
+                0.0
+              };
+              let ny = if bbox_h > 0.0 {
+                (css_y - bbox.min_y()) / bbox_h
+              } else {
+                0.0
+              };
+              (nx, ny)
+            }
+          };
+
+          let render_channel = |perm: &[u8; 512]| -> f32 {
+            let mut freq_x = base_freq_x;
+            let mut freq_y = base_freq_y;
+            let mut amplitude = 1.0;
+            let mut value = 0.0;
+
+            for _ in 0..octaves {
+              let (freq_x_adj, wrap_x) = adjust_frequency(freq_x, extent_x, stitch_tiles);
+              let (freq_y_adj, wrap_y) = adjust_frequency(freq_y, extent_y, stitch_tiles);
+              let noise = if freq_x_adj == 0.0 && freq_y_adj == 0.0 {
+                0.0
+              } else {
+                perlin(coord_x * freq_x_adj, coord_y * freq_y_adj, perm, wrap_x, wrap_y)
+              };
+              let noise = match kind {
+                TurbulenceType::FractalNoise => noise,
+                TurbulenceType::Turbulence => noise.abs(),
+              };
+              value += noise * amplitude;
+              freq_x *= 2.0;
+              freq_y *= 2.0;
+              amplitude *= 0.5;
+            }
+
+            if normalization > 0.0 {
+              value / normalization
             } else {
-              perlin(
-                x_coord * freq_x_adj,
-                y_coord * freq_y_adj,
-                &perm_table,
-                wrap_x,
-                wrap_y,
-              )
-            };
-            let noise = match kind {
-              TurbulenceType::FractalNoise => noise,
-              TurbulenceType::Turbulence => noise.abs(),
-            };
-            value += noise * amplitude;
-            freq_x *= 2.0;
-            freq_y *= 2.0;
-            amplitude *= 0.5;
-          }
+              0.0
+            }
+          };
 
-          let normalized = if normalization > 0.0 {
-            value / normalization
-          } else {
-            0.0
+          let map_result = |v: f32| match kind {
+            TurbulenceType::FractalNoise => v * 0.5 + 0.5,
+            TurbulenceType::Turbulence => v,
           };
-          let mapped = (normalized * 0.5 + 0.5).clamp(0.0, 1.0);
-          let encoded = match color_interpolation_filters {
-            ColorInterpolationFilters::SRGB => mapped,
-            ColorInterpolationFilters::LinearRGB => super::linear_to_srgb(mapped),
+
+          let encode_rgb = |v: f32| -> u8 {
+            let mapped = map_result(v).clamp(0.0, 1.0);
+            let encoded = match color_interpolation_filters {
+              ColorInterpolationFilters::SRGB => mapped,
+              ColorInterpolationFilters::LinearRGB => super::linear_to_srgb(mapped),
+            };
+            (encoded * 255.0).round().clamp(0.0, 255.0) as u8
           };
-          let byte = (encoded * 255.0).round().clamp(0.0, 255.0) as u8;
-          *px = PremultipliedColorU8::from_rgba(byte, byte, byte, 255)
+
+          let r = encode_rgb(render_channel(&perm_r));
+          let g = encode_rgb(render_channel(&perm_g));
+          let b = encode_rgb(render_channel(&perm_b));
+
+          *px = PremultipliedColorU8::from_rgba(r, g, b, 255)
             .unwrap_or(PremultipliedColorU8::TRANSPARENT);
         }
         Ok(())
@@ -149,11 +243,11 @@ pub(super) fn render_turbulence(
   Ok(Some(pixmap))
 }
 
-fn adjust_frequency(freq: f32, extent: u32, stitch: bool) -> (f32, Option<i32>) {
-  if !stitch || extent == 0 {
+fn adjust_frequency(freq: f32, extent: f32, stitch: bool) -> (f32, Option<i32>) {
+  if !stitch || extent <= f32::EPSILON || !extent.is_finite() || !freq.is_finite() {
     return (freq, None);
   }
-  let mut wrap = (freq * extent as f32).round() as i32;
+  let mut wrap = (freq * extent).round() as i32;
   if wrap == 0 {
     if freq == 0.0 {
       return (0.0, None);
@@ -163,7 +257,7 @@ fn adjust_frequency(freq: f32, extent: u32, stitch: bool) -> (f32, Option<i32>) 
   if wrap < 0 {
     wrap = -wrap;
   }
-  let adjusted = wrap as f32 / extent as f32;
+  let adjusted = wrap as f32 / extent;
   (adjusted, Some(wrap))
 }
 

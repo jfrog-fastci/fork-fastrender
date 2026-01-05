@@ -198,6 +198,8 @@ struct SvgFilterCacheKey {
   scale_y_bits: u32,
   width: u32,
   height: u32,
+  surface_origin_x_bits: u32,
+  surface_origin_y_bits: u32,
   bbox: [u32; 4],
 }
 
@@ -252,6 +254,7 @@ impl SvgFilterCacheKey {
     stroke_paint: Option<u32>,
     scale_x: f32,
     scale_y: f32,
+    surface_origin_css: (f32, f32),
     bbox: Rect,
     filter_region: Rect,
   ) -> Option<Self> {
@@ -275,6 +278,8 @@ impl SvgFilterCacheKey {
       scale_y_bits: scale_y.to_bits(),
       width: pixmap.width(),
       height: pixmap.height(),
+      surface_origin_x_bits: surface_origin_css.0.to_bits(),
+      surface_origin_y_bits: surface_origin_css.1.to_bits(),
       bbox: [
         bbox.x().to_bits(),
         bbox.y().to_bits(),
@@ -2690,14 +2695,23 @@ fn parse_fe_tile(node: &roxmltree::Node) -> Option<FilterPrimitive> {
 
 fn parse_fe_turbulence(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   let base_freq_values = parse_number_list(node.attribute("baseFrequency"));
-  let fx = base_freq_values.get(0).copied().unwrap_or(0.05).max(0.0);
-  let fy = base_freq_values.get(1).copied().unwrap_or(fx).max(0.0);
+  let sanitize_freq = |v: f32| -> f32 {
+    if v.is_finite() {
+      v.max(0.0)
+    } else {
+      0.0
+    }
+  };
+  // SVG: default baseFrequency is 0 (produces a constant output).
+  let fx = sanitize_freq(base_freq_values.get(0).copied().unwrap_or(0.0));
+  let fy = sanitize_freq(base_freq_values.get(1).copied().unwrap_or(fx));
+
+  // SVG: seed is a number; implementations truncate it to an integer.
   let seed_raw = node
     .attribute("seed")
     .and_then(|v| v.parse::<f32>().ok())
-    .unwrap_or(0.0)
-    .round();
-  let seed = if seed_raw < 0.0 { 0 } else { seed_raw as u32 };
+    .unwrap_or(0.0);
+  let seed = (seed_raw as i32) as u32;
   let octaves = node
     .attribute("numOctaves")
     .and_then(|v| v.parse::<u32>().ok())
@@ -2989,6 +3003,7 @@ pub(crate) fn apply_svg_filter_with_cache(
       bbox,
       inputs,
       blur_cache.as_deref_mut(),
+      (0.0, 0.0),
     )?;
     return Ok(());
   };
@@ -3004,6 +3019,7 @@ pub(crate) fn apply_svg_filter_with_cache(
       bbox,
       inputs,
       blur_cache.as_deref_mut(),
+      (0.0, 0.0),
     )?;
     return Ok(());
   }
@@ -3018,6 +3034,7 @@ pub(crate) fn apply_svg_filter_with_cache(
       bbox,
       inputs,
       blur_cache.as_deref_mut(),
+      (0.0, 0.0),
     )?;
     return Ok(());
   }
@@ -3039,6 +3056,7 @@ pub(crate) fn apply_svg_filter_with_cache(
       bbox,
       inputs,
       blur_cache.as_deref_mut(),
+      (0.0, 0.0),
     )?;
     return Ok(());
   }
@@ -3058,6 +3076,7 @@ pub(crate) fn apply_svg_filter_with_cache(
       bbox,
       inputs,
       blur_cache.as_deref_mut(),
+      (0.0, 0.0),
     )?;
     return Ok(());
   }
@@ -3080,6 +3099,7 @@ pub(crate) fn apply_svg_filter_with_cache(
       bbox,
       inputs,
       blur_cache.as_deref_mut(),
+      (0.0, 0.0),
     )?;
     return Ok(());
   }
@@ -3110,6 +3130,7 @@ pub(crate) fn apply_svg_filter_with_cache(
       bbox,
       inputs,
       blur_cache.as_deref_mut(),
+      (0.0, 0.0),
     )?;
     return Ok(());
   };
@@ -3171,6 +3192,7 @@ pub(crate) fn apply_svg_filter_with_cache(
     bbox_working,
     working_inputs,
     blur_cache.as_deref_mut(),
+    (origin_css_x, origin_css_y),
   )?;
 
   let Some(mut out_pixmap) = new_pixmap(target_w, target_h) else {
@@ -3182,6 +3204,7 @@ pub(crate) fn apply_svg_filter_with_cache(
       bbox,
       inputs,
       blur_cache.as_deref_mut(),
+      (0.0, 0.0),
     )?;
     return Ok(());
   };
@@ -3516,6 +3539,7 @@ fn apply_svg_filter_scaled(
   bbox: Rect,
   inputs: SvgFilterStandardInputs,
   mut blur_cache: Option<&mut (dyn BlurCacheOps + 'static)>,
+  surface_origin_css: (f32, f32),
 ) -> RenderResult<()> {
   let Some((css_bbox, filter_region)) = resolve_filter_regions(def, scale_x, scale_y, bbox) else {
     for px in pixmap.pixels_mut() {
@@ -3577,6 +3601,7 @@ fn apply_svg_filter_scaled(
       stroke_paint_key,
       scale_x,
       scale_y,
+      surface_origin_css,
       css_bbox,
       filter_region,
     )
@@ -3699,6 +3724,7 @@ fn apply_svg_filter_scaled(
       &resolved_inputs,
       scale_x,
       scale_y,
+      surface_origin_css,
       primitive_region,
       color_interpolation_filters,
       blur_cache.as_deref_mut(),
@@ -3780,6 +3806,7 @@ fn apply_primitive(
   standard_inputs: &ResolvedStandardInputs,
   scale_x: f32,
   scale_y: f32,
+  surface_origin_css: (f32, f32),
   filter_region: Rect,
   color_interpolation_filters: ColorInterpolationFilters,
   blur_cache: Option<&mut (dyn BlurCacheOps + 'static)>,
@@ -4124,6 +4151,11 @@ fn apply_primitive(
         *stitch_tiles,
         *kind,
         color_interpolation_filters,
+        filter.primitive_units,
+        *css_bbox,
+        scale_x,
+        scale_y,
+        surface_origin_css,
       )?
       else {
         return Ok(None);
@@ -6455,6 +6487,7 @@ mod tests {
       &standard_inputs,
       1.0,
       1.0,
+      (0.0, 0.0),
       region,
       ColorInterpolationFilters::LinearRGB,
       None,
@@ -6499,6 +6532,7 @@ mod tests {
       &standard_inputs,
       1.0,
       1.0,
+      (0.0, 0.0),
       region,
       color_interpolation_filters,
       None,
