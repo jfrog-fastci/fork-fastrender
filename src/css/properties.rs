@@ -1737,6 +1737,8 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
       | "scrollbar-color"
       | "margin"
       | "padding"
+      | "scroll-margin"
+      | "scroll-padding"
       | "border-inline"
       | "border-inline-start"
       | "border-inline-end"
