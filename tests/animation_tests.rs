@@ -604,6 +604,7 @@ fn keyframes_interpolate_transform_origin() {
     TransformOrigin {
       x: Length::px(100.0),
       y: Length::px(50.0),
+      z: Length::px(0.0),
     }
   );
 }
@@ -633,6 +634,7 @@ fn keyframes_interpolate_perspective_origin() {
     TransformOrigin {
       x: Length::px(100.0),
       y: Length::px(50.0),
+      z: Length::px(0.0),
     }
   );
 }
@@ -1240,7 +1242,10 @@ fn scroll_self_custom_property_length_percentage_interpolates_calc_values() {
   let box_id = find_box_id_by_dom_id(&prepared.box_tree().root, "box").expect("box box_id");
   let box_frag = find_fragment_by_box_id(prepared.fragment_tree(), box_id).expect("box fragment");
   let max_scroll = (box_frag.scroll_overflow.height() - box_frag.bounds.height()).max(0.0);
-  assert!(max_scroll > 0.0, "expected scroll range for scroll(self) custom property test");
+  assert!(
+    max_scroll > 0.0,
+    "expected scroll range for scroll(self) custom property test"
+  );
 
   // Scroll slightly past 50% so a discrete fallback would snap to the 100% keyframe. With proper
   // `<length-percentage>` interpolation we expect `--tx` ~= calc(60% + 4px), so the 40px-wide box
@@ -1418,7 +1423,9 @@ fn scroll_timeline_drives_animation_during_render() {
   );
 }
 
-fn find_scroll_container<'a>(node: &'a fastrender::FragmentNode) -> Option<&'a fastrender::FragmentNode> {
+fn find_scroll_container<'a>(
+  node: &'a fastrender::FragmentNode,
+) -> Option<&'a fastrender::FragmentNode> {
   let is_scroll_container = node
     .style
     .as_ref()
@@ -1462,10 +1469,11 @@ fn scroll_self_timeline_drives_animation_with_element_scroll_offsets() {
     .prepare_html(html, RenderOptions::new().with_viewport(100, 100))
     .expect("prepare");
 
-  let scroller_fragment = find_scroll_container(&prepared.fragment_tree().root)
-    .expect("scroll container fragment");
+  let scroller_fragment =
+    find_scroll_container(&prepared.fragment_tree().root).expect("scroll container fragment");
   let scroller_id = scroller_fragment.box_id().expect("scroller box id");
-  let max_scroll = (scroller_fragment.scroll_overflow.height() - scroller_fragment.bounds.height()).max(0.0);
+  let max_scroll =
+    (scroller_fragment.scroll_overflow.height() - scroller_fragment.bounds.height()).max(0.0);
   assert!(max_scroll > 0.0, "expected scrollable range");
 
   let pixmap_top = prepared

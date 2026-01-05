@@ -476,7 +476,8 @@ impl BlockFormattingContext {
         Some(&self.font_context),
       )
     });
-    specified_height = specified_height.map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing));
+    specified_height =
+      specified_height.map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing));
     if let Some(height_keyword) = style.height_keyword {
       let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
       let used_border_box = match height_keyword {
@@ -740,26 +741,26 @@ impl BlockFormattingContext {
       (containing_width - ml - mr).max(0.0)
     };
 
-    let intrinsic_inline_sizes = if style.min_width_keyword.is_some() || style.max_width_keyword.is_some()
-    {
-      let factory = self.child_factory_for_cb(*nearest_positioned_cb);
-      let fc_type = child
-        .formatting_context()
-        .unwrap_or(FormattingContextType::Block);
-      let (min_base0, max_base0) = if fc_type == FormattingContextType::Block {
-        self.compute_intrinsic_inline_sizes(child)?
+    let intrinsic_inline_sizes =
+      if style.min_width_keyword.is_some() || style.max_width_keyword.is_some() {
+        let factory = self.child_factory_for_cb(*nearest_positioned_cb);
+        let fc_type = child
+          .formatting_context()
+          .unwrap_or(FormattingContextType::Block);
+        let (min_base0, max_base0) = if fc_type == FormattingContextType::Block {
+          self.compute_intrinsic_inline_sizes(child)?
+        } else {
+          factory.get(fc_type).compute_intrinsic_inline_sizes(child)?
+        };
+        let edges_base0 =
+          inline_axis_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context);
+        Some((
+          rebase_intrinsic_border_box_size(min_base0, edges_base0, horizontal_edges),
+          rebase_intrinsic_border_box_size(max_base0, edges_base0, horizontal_edges),
+        ))
       } else {
-        factory.get(fc_type).compute_intrinsic_inline_sizes(child)?
+        None
       };
-      let edges_base0 =
-        inline_axis_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context);
-      Some((
-        rebase_intrinsic_border_box_size(min_base0, edges_base0, horizontal_edges),
-        rebase_intrinsic_border_box_size(max_base0, edges_base0, horizontal_edges),
-      ))
-    } else {
-      None
-    };
 
     let min_width = if let Some(keyword) = style.min_width_keyword {
       let (min_border, max_border) = intrinsic_inline_sizes.unwrap_or((0.0, 0.0));
@@ -1418,7 +1419,9 @@ impl BlockFormattingContext {
           || positioned_style.max_height_keyword.is_some();
         let needs_inline_intrinsics = has_inline_keyword
           || (positioned_style.width.is_auto()
-            && (positioned_style.left.is_auto() || positioned_style.right.is_auto() || is_replaced));
+            && (positioned_style.left.is_auto()
+              || positioned_style.right.is_auto()
+              || is_replaced));
         let needs_block_intrinsics = has_block_keyword
           || (positioned_style.height.is_auto()
             && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto()));
@@ -2664,12 +2667,8 @@ impl BlockFormattingContext {
             }
           };
 
-        let edges_base0 = horizontal_padding_and_borders(
-          &child.style,
-          0.0,
-          self.viewport_size,
-          &self.font_context,
-        );
+        let edges_base0 =
+          horizontal_padding_and_borders(&child.style, 0.0, self.viewport_size, &self.font_context);
         let intrinsic_min =
           rebase_intrinsic_border_box_size(preferred_min_content, edges_base0, horizontal_edges);
         let intrinsic_max =
@@ -4039,7 +4038,10 @@ impl FormattingContext for BlockFormattingContext {
       let (intrinsic_min_base0, intrinsic_max_base0) = if fc_type == FormattingContextType::Block {
         self.compute_intrinsic_inline_sizes(box_node)?
       } else {
-        self.factory.get(fc_type).compute_intrinsic_inline_sizes(box_node)?
+        self
+          .factory
+          .get(fc_type)
+          .compute_intrinsic_inline_sizes(box_node)?
       };
       let edges_base0 =
         inline_axis_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context);
@@ -4104,7 +4106,8 @@ impl FormattingContext for BlockFormattingContext {
         inline_axis_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context);
       let preferred_min =
         rebase_intrinsic_border_box_size(preferred_min_content, edges_base0, inline_edges);
-      let preferred = rebase_intrinsic_border_box_size(preferred_content, edges_base0, inline_edges);
+      let preferred =
+        rebase_intrinsic_border_box_size(preferred_content, edges_base0, inline_edges);
       let shrink_border_box = preferred.min(available_inline_border_box.max(preferred_min));
       let shrink_content = (shrink_border_box - inline_edges).max(0.0);
       if log_shrink {
@@ -4164,7 +4167,8 @@ impl FormattingContext for BlockFormattingContext {
     if let Some(pref_border) = flex_pref_border {
       let edges_base0 =
         inline_axis_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context);
-      let pref_border = rebase_intrinsic_border_box_size(pref_border, edges_base0, horizontal_edges);
+      let pref_border =
+        rebase_intrinsic_border_box_size(pref_border, edges_base0, horizontal_edges);
       let pref_content = (pref_border - horizontal_edges).max(0.0);
       computed_width.content_width = pref_content;
     }
@@ -4178,7 +4182,10 @@ impl FormattingContext for BlockFormattingContext {
       let (min_base0, max_base0) = if fc_type == FormattingContextType::Block {
         self.compute_intrinsic_inline_sizes(box_node)?
       } else {
-        self.factory.get(fc_type).compute_intrinsic_inline_sizes(box_node)?
+        self
+          .factory
+          .get(fc_type)
+          .compute_intrinsic_inline_sizes(box_node)?
       };
       let edges_base0 =
         inline_axis_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context);
@@ -4880,7 +4887,9 @@ impl FormattingContext for BlockFormattingContext {
           || positioned_style.max_height_keyword.is_some();
         let needs_inline_intrinsics = has_inline_keyword
           || (positioned_style.width.is_auto()
-            && (positioned_style.left.is_auto() || positioned_style.right.is_auto() || is_replaced));
+            && (positioned_style.left.is_auto()
+              || positioned_style.right.is_auto()
+              || is_replaced));
         let needs_block_intrinsics = has_block_keyword
           || (positioned_style.height.is_auto()
             && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto()));
@@ -5634,13 +5643,13 @@ fn vertical_padding_and_borders(
     style,
     font_context,
     viewport,
-   ) + resolve_length_for_width(
-     style.border_bottom_width,
-     percentage_base,
-     style,
-     font_context,
-     viewport,
-   )
+  ) + resolve_length_for_width(
+    style.border_bottom_width,
+    percentage_base,
+    style,
+    font_context,
+    viewport,
+  )
 }
 
 fn inline_axis_padding_and_borders(
@@ -5811,6 +5820,7 @@ mod tests {
   use crate::style::display::Display;
   use crate::style::display::FormattingContextType;
   use crate::style::position::Position;
+  use crate::style::types::ContentVisibility;
   use crate::style::types::IntrinsicSizeKeyword;
   use crate::style::types::ListStylePosition;
   use crate::style::types::ListStyleType;
@@ -5854,7 +5864,11 @@ mod tests {
     child_style.margin_left = Some(Length::px(0.0));
     child_style.margin_right = Some(Length::px(0.0));
 
-    let child = BoxNode::new_block(Arc::new(child_style.clone()), FormattingContextType::Block, vec![]);
+    let child = BoxNode::new_block(
+      Arc::new(child_style.clone()),
+      FormattingContextType::Block,
+      vec![],
+    );
     let parent = BoxNode::new_block(
       Arc::new(parent_style),
       FormattingContextType::Block,
@@ -5955,9 +5969,8 @@ mod tests {
 
     let mut child_style = ComputedStyle::default();
     child_style.display = Display::Block;
-    child_style.max_width_keyword = Some(crate::style::types::IntrinsicSizeKeyword::FitContent {
-      limit: None,
-    });
+    child_style.max_width_keyword =
+      Some(crate::style::types::IntrinsicSizeKeyword::FitContent { limit: None });
     child_style.padding_left = Length::percent(10.0);
     child_style.padding_right = Length::px(5.0);
     child_style.border_left_width = Length::px(2.0);
@@ -7565,6 +7578,195 @@ mod tests {
       "max-content: expected {}, got {}",
       expected_max,
       actual_max
+    );
+  }
+
+  fn find_block_fragment<'a>(
+    fragment: &'a FragmentNode,
+    box_id: usize,
+  ) -> Option<&'a FragmentNode> {
+    if let FragmentContent::Block {
+      box_id: Some(found),
+    } = &fragment.content
+    {
+      if *found == box_id {
+        return Some(fragment);
+      }
+    }
+    for child in fragment.children.iter() {
+      if let Some(found) = find_block_fragment(child, box_id) {
+        return Some(found);
+      }
+    }
+    None
+  }
+
+  #[test]
+  fn content_visibility_auto_translates_paint_viewport_through_nested_offsets() {
+    let viewport = Size::new(300.0, 200.0);
+    let fc = BlockFormattingContext::with_font_context_viewport_and_cb(
+      FontContext::new(),
+      viewport,
+      ContainingBlock::viewport(viewport),
+    );
+    let constraints = LayoutConstraints::new(
+      AvailableSpace::Definite(viewport.width),
+      AvailableSpace::Indefinite,
+    );
+
+    let mut spacer = BoxNode::new_block(
+      block_style_with_height(400.0),
+      FormattingContextType::Block,
+      vec![],
+    );
+    spacer.id = 2;
+
+    let mut leaf = BoxNode::new_block(
+      block_style_with_height(50.0),
+      FormattingContextType::Block,
+      vec![],
+    );
+    leaf.id = 5;
+
+    let mut auto_style = ComputedStyle::default();
+    auto_style.display = Display::Block;
+    auto_style.content_visibility = ContentVisibility::Auto;
+    let mut auto_box = BoxNode::new_block(
+      Arc::new(auto_style),
+      FormattingContextType::Block,
+      vec![leaf],
+    );
+    auto_box.id = 4;
+
+    let mut wrapper = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![auto_box],
+    );
+    wrapper.id = 3;
+
+    let mut root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![spacer, wrapper],
+    );
+    root.id = 1;
+
+    let fragment = fc.layout(&root, &constraints).expect("layout");
+    let auto_fragment = find_block_fragment(&fragment, 4).expect("auto fragment");
+    assert!(
+      auto_fragment.children.is_empty(),
+      "expected descendants to be skipped when translated viewport is offscreen"
+    );
+  }
+
+  #[test]
+  fn content_visibility_auto_skips_when_fully_outside_inline_axis() {
+    let viewport = Size::new(300.0, 200.0);
+    let fc = BlockFormattingContext::with_font_context_viewport_and_cb(
+      FontContext::new(),
+      viewport,
+      ContainingBlock::viewport(viewport),
+    );
+    let constraints = LayoutConstraints::new(
+      AvailableSpace::Definite(viewport.width),
+      AvailableSpace::Indefinite,
+    );
+
+    let mut leaf = BoxNode::new_block(
+      block_style_with_height(10.0),
+      FormattingContextType::Block,
+      vec![],
+    );
+    leaf.id = 12;
+
+    let mut auto_style = ComputedStyle::default();
+    auto_style.display = Display::Block;
+    auto_style.content_visibility = ContentVisibility::Auto;
+    auto_style.margin_left = Some(Length::px(500.0));
+    auto_style.width = Some(Length::px(100.0));
+    auto_style.width_keyword = None;
+    let mut auto_box = BoxNode::new_block(
+      Arc::new(auto_style),
+      FormattingContextType::Block,
+      vec![leaf],
+    );
+    auto_box.id = 11;
+
+    let mut root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![auto_box],
+    );
+    root.id = 10;
+
+    let fragment = fc.layout(&root, &constraints).expect("layout");
+    let auto_fragment = find_block_fragment(&fragment, 11).expect("auto fragment");
+    assert!(
+      auto_fragment.children.is_empty(),
+      "expected descendants to be skipped when the border box is outside the inline axis"
+    );
+  }
+
+  #[test]
+  fn content_visibility_auto_respects_vertical_writing_mode() {
+    let viewport = Size::new(100.0, 50.0);
+    let fc = BlockFormattingContext::with_font_context_viewport_and_cb(
+      FontContext::new(),
+      viewport,
+      ContainingBlock::viewport(viewport),
+    );
+
+    let mut parent_style = ComputedStyle::default();
+    parent_style.display = Display::Block;
+    parent_style.writing_mode = WritingMode::VerticalRl;
+    let parent = BoxNode::new_block(Arc::new(parent_style), FormattingContextType::Block, vec![]);
+
+    let mut leaf = BoxNode::new_block(
+      block_style_with_height(10.0),
+      FormattingContextType::Block,
+      vec![],
+    );
+    leaf.id = 22;
+
+    let mut auto_style = ComputedStyle::default();
+    auto_style.display = Display::Block;
+    auto_style.writing_mode = WritingMode::VerticalRl;
+    auto_style.content_visibility = ContentVisibility::Auto;
+    let auto_box = BoxNode::new_block(
+      Arc::new(auto_style),
+      FormattingContextType::Block,
+      vec![leaf],
+    );
+
+    let mut margin_ctx = MarginCollapseContext::new();
+    let containing_width = viewport.height;
+    let constraints = LayoutConstraints::new(
+      AvailableSpace::Definite(containing_width),
+      AvailableSpace::Indefinite,
+    );
+    let paint_viewport = Rect::from_xywh(0.0, 0.0, viewport.height, viewport.width);
+    let current_y = viewport.width + 50.0;
+    let nearest_cb = ContainingBlock::viewport(viewport);
+
+    let (fragment, _) = fc
+      .layout_block_child(
+        &parent,
+        &auto_box,
+        containing_width,
+        &constraints,
+        &mut margin_ctx,
+        current_y,
+        &nearest_cb,
+        None,
+        0.0,
+        paint_viewport,
+      )
+      .expect("layout_block_child");
+
+    assert!(
+      fragment.children.is_empty(),
+      "expected descendants to be skipped in vertical writing modes when offscreen"
     );
   }
 

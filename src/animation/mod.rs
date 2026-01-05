@@ -3473,7 +3473,10 @@ fn sample_keyframes_with_default_timing(
 }
 
 /// Applies animated property values to the computed style.
-pub fn apply_animated_properties(style: &mut ComputedStyle, values: &HashMap<String, AnimatedValue>) {
+pub fn apply_animated_properties(
+  style: &mut ComputedStyle,
+  values: &HashMap<String, AnimatedValue>,
+) {
   for (name, value) in values {
     if let Some(interpolator) = interpolator_for(name) {
       (interpolator.apply)(style, value);
