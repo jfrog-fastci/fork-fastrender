@@ -889,7 +889,7 @@ impl BlockFormattingContext {
       AvailableSpace::Definite(computed_width.content_width),
       child_height_space,
     );
-
+ 
     // Check if this child establishes a different formatting context
     let fc_type = child.formatting_context();
     let log_flex_child = toggles.truthy("FASTR_LOG_FLEX_CHILD");
@@ -1332,7 +1332,7 @@ impl BlockFormattingContext {
       max_height
     };
     let height = crate::layout::utils::clamp_with_order(height, min_height, max_height);
-
+ 
     // Create the fragment
     let box_height = border_top + padding_top + height + padding_bottom + border_bottom;
     let box_width = computed_width.border_box_width();
@@ -1747,24 +1747,18 @@ impl BlockFormattingContext {
       })
   }
 
-  fn translate_fragment_tree(fragment: &mut FragmentNode, delta_y: f32) {
-    if delta_y == 0.0 {
+  fn translate_fragment_tree(fragment: &mut FragmentNode, delta: Point) {
+    if delta.x == 0.0 && delta.y == 0.0 {
       return;
     }
     // `FragmentNode` positions are stored in the coordinate space of their parent
     // fragment. Child bounds (and `scroll_overflow`) are expressed in the fragment's
     // local coordinate space, so adjusting a block's placement within its parent
     // should only translate the fragment root, not its descendants.
-    fragment.bounds = Rect::new(
-      Point::new(fragment.bounds.x(), fragment.bounds.y() + delta_y),
-      fragment.bounds.size,
-    );
-    if let Some(logical) = fragment.logical_override {
-      fragment.logical_override = Some(Rect::new(
-        Point::new(logical.x(), logical.y() + delta_y),
-        logical.size,
-      ));
-    }
+    fragment.bounds = fragment.bounds.translate(delta);
+    fragment.logical_override = fragment
+      .logical_override
+      .map(|logical| logical.translate(delta));
   }
 
   #[allow(clippy::too_many_arguments)]
@@ -1854,7 +1848,7 @@ impl BlockFormattingContext {
       margin_ctx.push_margin(meta.margin_top);
       let box_y = current_y + margin_ctx.resolve();
       let delta = box_y - fragment.bounds.y();
-      Self::translate_fragment_tree(&mut fragment, delta);
+      Self::translate_fragment_tree(&mut fragment, Point::new(0.0, delta));
       content_height = content_height.max(fragment.bounds.max_y());
       current_y = box_y + fragment.bounds.height();
       margin_ctx.push_margin(meta.margin_bottom);
@@ -5040,7 +5034,7 @@ impl FormattingContext for BlockFormattingContext {
       height + padding_top + padding_bottom,
     );
     let padding_rect = Rect::new(padding_origin, padding_size);
-
+ 
     if !positioned_children.is_empty() {
       let abs = crate::layout::absolute_positioning::AbsoluteLayout::with_font_context(
         self.font_context.clone(),
@@ -6576,6 +6570,46 @@ mod tests {
       (fragment.children[0].bounds.height() - 85.0).abs() < 0.5,
       "expected child height ~85, got {}",
       fragment.children[0].bounds.height()
+    );
+  }
+
+  #[test]
+  fn block_children_are_offset_by_parent_padding_and_border() {
+    let mut parent_style = ComputedStyle::default();
+    parent_style.display = Display::Block;
+    parent_style.padding_left = Length::px(10.0);
+    parent_style.padding_top = Length::px(20.0);
+    parent_style.border_left_style = BorderStyle::Solid;
+    parent_style.border_top_style = BorderStyle::Solid;
+    parent_style.border_left_width = Length::px(5.0);
+    parent_style.border_top_width = Length::px(2.0);
+
+    let mut child_style = ComputedStyle::default();
+    child_style.display = Display::Block;
+    child_style.height = Some(Length::px(10.0));
+
+    let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+    let parent = BoxNode::new_block(
+      Arc::new(parent_style),
+      FormattingContextType::Block,
+      vec![child],
+    );
+
+    let fc = BlockFormattingContext::new();
+    let constraints = LayoutConstraints::definite(200.0, 200.0);
+    let fragment = fc.layout(&parent, &constraints).unwrap();
+
+    assert_eq!(fragment.children.len(), 1);
+    let child = &fragment.children[0];
+    assert!(
+      (child.bounds.x() - 15.0).abs() < 0.01,
+      "expected child x≈15px, got {}",
+      child.bounds.x()
+    );
+    assert!(
+      (child.bounds.y() - 22.0).abs() < 0.01,
+      "expected child y≈22px, got {}",
+      child.bounds.y()
     );
   }
 

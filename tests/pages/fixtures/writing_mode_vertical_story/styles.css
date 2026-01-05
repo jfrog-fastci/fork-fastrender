@@ -1,4 +1,13 @@
+@font-face {
+  font-family: "Noto Sans JP";
+  src: url("../../../fixtures/fonts/NotoSansJP-subset.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 body.vertical {
+  font-family: "DejaVu Pages", "Noto Sans JP", "DejaVu Sans", sans-serif;
   background: linear-gradient(135deg, #f8fafc, #eef2ff 50%, #e0f2fe);
 }
 
