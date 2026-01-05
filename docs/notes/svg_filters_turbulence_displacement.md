@@ -146,7 +146,12 @@ pixel sampling and fill a constant output that matches resvg/Chromium:
 ### `color-interpolation-filters` (generator primitive semantics)
 
 For generator primitives, FastRender must decide how to encode computed numeric channel values into
-the pixmap’s stored bytes (which are always sRGB-encoded bytes in our engine).
+the pixmap’s stored bytes.
+
+Note: filter-graph intermediate results are stored as **premultiplied RGBA8 with sRGB-encoded RGB
+bytes**. When a primitive runs in `linearRGB`, it typically re-encodes to linear for its computation
+and then re-encodes back to sRGB at the primitive boundary (see
+[`svg_filters_color_interpolation_filters.md`](svg_filters_color_interpolation_filters.md)).
 
 `render_turbulence()` treats the generated channel bytes as being in the step’s
 `color-interpolation-filters` space:
