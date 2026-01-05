@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, ValueEnum};
-use image::{GenericImage, ImageBuffer, Rgba};
+use image::{GenericImage, GenericImageView, ImageBuffer, Rgba};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -12,6 +12,17 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use url::Url;
 use walkdir::WalkDir;
+
+/// When Chrome runs in headless mode, `--window-size=WxH` sets the outer window size, but the
+/// layout viewport (what CSS `position: fixed` / `100vh` uses) is consistently shorter by 88px.
+///
+/// This manifests as a white bar at the bottom of `--screenshot` outputs. To make the captured PNG
+/// match the requested viewport, we:
+/// 1) add this padding to the window height passed to Chrome, then
+/// 2) crop the resulting screenshot back down to the requested size.
+///
+/// Keep this constant in sync with `scripts/chrome_baseline.sh` (used by pageset_progress).
+const HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX: u32 = 88;
 
 #[derive(Args, Debug)]
 pub struct ChromeBaselineFixturesArgs {
@@ -330,13 +341,23 @@ fn render_fixture(
         );
       }
 
-      fs::copy(&tmp_png_path, &output_png).with_context(|| {
-        format!(
-          "copy screenshot from {} to {}",
-          tmp_png_path.display(),
-          output_png.display()
-        )
-      })?;
+       let img = image::open(&tmp_png_path)
+         .with_context(|| format!("decode screenshot {}", tmp_png_path.display()))?;
+       let (img_w, img_h) = img.dimensions();
+       if img_w < args.viewport.0 || img_h < args.viewport.1 {
+         bail!(
+           "chrome screenshot is {}x{} but requested viewport is {}x{}; see {}",
+           img_w,
+           img_h,
+           args.viewport.0,
+           args.viewport.1,
+           chrome_log.display()
+         );
+       }
+       let cropped = img.crop_imm(0, 0, args.viewport.0, args.viewport.1);
+       cropped
+         .save_with_format(&output_png, image::ImageFormat::Png)
+         .with_context(|| format!("write cropped screenshot {}", output_png.display()))?;
 
       headless_used
     }
@@ -1031,10 +1052,16 @@ fn run_chrome_screenshot(
   log_path: &Path,
   timeout: Option<Duration>,
 ) -> Result<HeadlessMode> {
+  let window_size = (
+    viewport.0,
+    viewport
+      .1
+      .saturating_add(HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
+  );
   let mut args = build_chrome_args(
     HeadlessMode::New,
     profile_dir,
-    viewport,
+    window_size,
     dpr,
     screenshot_path,
   )?;
@@ -1056,7 +1083,7 @@ fn run_chrome_screenshot(
     args = build_chrome_args(
       HeadlessMode::Legacy,
       profile_dir,
-      viewport,
+      window_size,
       dpr,
       screenshot_path,
     )?;
@@ -1104,7 +1131,7 @@ fn build_chrome_args(
 fn build_chrome_common_args(
   headless: HeadlessMode,
   profile_dir: &Path,
-  viewport: (u32, u32),
+  window_size: (u32, u32),
   dpr: f32,
 ) -> Result<Vec<String>> {
   let headless_flag = match headless {
@@ -1112,7 +1139,7 @@ fn build_chrome_common_args(
     HeadlessMode::Legacy => "--headless",
   };
 
-  let viewport_arg = format!("--window-size={},{}", viewport.0, viewport.1);
+  let viewport_arg = format!("--window-size={},{}", window_size.0, window_size.1);
   let dpr_arg = format!("--force-device-scale-factor={}", dpr);
   let profile_arg = format!("--user-data-dir={}", profile_dir.display());
 

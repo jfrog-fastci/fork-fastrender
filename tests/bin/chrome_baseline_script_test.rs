@@ -1,3 +1,4 @@
+use image::GenericImageView;
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,15 +14,19 @@ fn write_fake_chrome(dir: &Path) -> PathBuf {
   // - `--version` prints a plausible version string.
   // - Any invocation that includes `--screenshot=<path>` writes a tiny PNG to that path.
   let script = r#"#!/usr/bin/env python3
-import base64
 import os
+import struct
 import sys
+import zlib
 
 if "--version" in sys.argv:
     print("Chromium 123.0.0.0")
     sys.exit(0)
 
+print("stub chrome args:", " ".join(sys.argv[1:]))
+
 screenshot = None
+window_size = None
 for idx, arg in enumerate(sys.argv):
     if arg.startswith("--screenshot="):
         screenshot = arg.split("=", 1)[1]
@@ -30,10 +35,37 @@ for idx, arg in enumerate(sys.argv):
         screenshot = sys.argv[idx + 1]
         break
 
+for arg in sys.argv:
+    if arg.startswith("--window-size="):
+        window_size = arg.split("=", 1)[1]
+        break
+
 if screenshot:
     os.makedirs(os.path.dirname(screenshot), exist_ok=True)
-    png = base64.b64decode(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMB/6XnXQAAAABJRU5ErkJggg=="
+    w, h = (1, 1)
+    if window_size and "," in window_size:
+        try:
+            parts = window_size.split(",", 1)
+            w = max(1, int(parts[0]))
+            h = max(1, int(parts[1]))
+        except Exception:
+            pass
+
+    def chunk(typ: bytes, payload: bytes) -> bytes:
+        crc = zlib.crc32(typ)
+        crc = zlib.crc32(payload, crc) & 0xFFFFFFFF
+        return struct.pack(">I", len(payload)) + typ + payload + struct.pack(">I", crc)
+
+    # Solid green RGBA with filter type 0 per scanline.
+    row = b"\x00" + (b"\x00\xff\x00\xff" * w)
+    raw = row * h
+    compressed = zlib.compress(raw)
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", compressed)
+        + chunk(b"IEND", b"")
     )
     with open(screenshot, "wb") as f:
         f.write(png)
@@ -119,6 +151,15 @@ fn chrome_baseline_script_parses_flags_without_treating_them_as_page_stems() {
     fs::metadata(&png_path).expect("stat png").len() > 0,
     "expected {} to be non-empty",
     png_path.display()
+  );
+
+  let img = image::open(&png_path).expect("decode output PNG");
+  assert_eq!(img.dimensions(), (200, 150));
+
+  let chrome_log = fs::read_to_string(out_dir.join("page.chrome.log")).expect("read chrome log");
+  assert!(
+    chrome_log.contains("--window-size=200,238"),
+    "expected headless baseline to pad window size then crop, got log:\n{chrome_log}"
   );
 
   let meta: Value =

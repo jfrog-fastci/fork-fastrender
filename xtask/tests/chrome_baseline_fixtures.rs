@@ -2,8 +2,13 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-use image::{ImageBuffer, Rgba};
+use image::{GenericImageView, ImageBuffer, Rgba};
 use tempfile::tempdir;
+
+const TEST_VIEWPORT: &str = "64x64";
+const TEST_VIEWPORT_W: u32 = 64;
+const TEST_VIEWPORT_H: u32 = 64;
+const HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX: u32 = 88;
 
 fn repo_root() -> PathBuf {
   let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -30,6 +35,21 @@ fn write_shared_assets(root: &std::path::Path) {
 }
 
 fn write_stub_chrome(dir: &std::path::Path) -> PathBuf {
+  let template_png = dir.join("stub_screenshot.png");
+  image::DynamicImage::ImageRgba8(ImageBuffer::from_fn(
+    TEST_VIEWPORT_W,
+    TEST_VIEWPORT_H + HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX,
+    |_, y| {
+      if y < TEST_VIEWPORT_H {
+        Rgba([255, 0, 0, 255])
+      } else {
+        Rgba([0, 255, 0, 255])
+      }
+    },
+  ))
+  .save_with_format(&template_png, image::ImageFormat::Png)
+  .expect("write stub screenshot template PNG");
+
   let path = dir.join("chrome");
   fs::write(
     &path,
@@ -46,8 +66,7 @@ for arg in "$@"; do
     --screenshot=*)
       out="${arg#--screenshot=}"
       mkdir -p "$(dirname "$out")"
-      # Minimal non-empty PNG header.
-      printf '\x89PNG\r\n\x1a\n' > "$out"
+      cp "$0.stub_screenshot.png" "$out"
       ;;
   esac
 done
@@ -55,6 +74,11 @@ exit 0
 "#,
   )
   .expect("write stub chrome");
+
+  // Keep the template alongside the script so the shell stub can locate it without needing to
+  // inject an absolute path into the heredoc.
+  fs::copy(&template_png, format!("{}.stub_screenshot.png", path.display()))
+    .expect("copy stub screenshot template PNG");
 
   #[cfg(unix)]
   {
@@ -98,6 +122,15 @@ exit 1
 }
 
 fn write_headless_fallback_stub_chrome(dir: &std::path::Path) -> PathBuf {
+  let template_png = dir.join("stub_screenshot.png");
+  image::DynamicImage::ImageRgba8(ImageBuffer::from_fn(
+    TEST_VIEWPORT_W,
+    TEST_VIEWPORT_H + HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX,
+    |_, _| Rgba([0, 0, 255, 255]),
+  ))
+  .save_with_format(&template_png, image::ImageFormat::Png)
+  .expect("write stub screenshot template PNG");
+
   let path = dir.join("chrome");
   fs::write(
     &path,
@@ -122,8 +155,7 @@ for arg in "$@"; do
     --screenshot=*)
       out="${arg#--screenshot=}"
       mkdir -p "$(dirname "$out")"
-      # Minimal non-empty PNG header.
-      printf '\x89PNG\r\n\x1a\n' > "$out"
+      cp "$0.stub_screenshot.png" "$out"
       ;;
   esac
 done
@@ -131,6 +163,9 @@ exit 0
 "#,
   )
   .expect("write headless fallback stub chrome");
+
+  fs::copy(&template_png, format!("{}.stub_screenshot.png", path.display()))
+    .expect("copy stub screenshot template PNG");
 
   #[cfg(unix)]
   {
@@ -258,6 +293,8 @@ fn chrome_baseline_fixtures_respects_sharding_and_writes_outputs() {
     .arg(&out_dir)
     .arg("--chrome-dir")
     .arg(&chrome_dir)
+    .arg("--viewport")
+    .arg(TEST_VIEWPORT)
     .arg("--shard")
     .arg("1/2")
     .status()
@@ -271,6 +308,13 @@ fn chrome_baseline_fixtures_respects_sharding_and_writes_outputs() {
   assert!(out_dir.join("d.png").is_file());
   assert!(out_dir.join("d.chrome.log").is_file());
   assert!(out_dir.join("d.json").is_file());
+
+  let image = image::open(out_dir.join("b.png")).expect("decode cropped b.png");
+  assert_eq!(
+    image.dimensions(),
+    (TEST_VIEWPORT_W, TEST_VIEWPORT_H),
+    "expected the output PNG to be cropped down to the requested viewport"
+  );
 
   assert!(!out_dir.join("a.png").exists());
   assert!(!out_dir.join("c.png").exists());
@@ -297,6 +341,8 @@ fn chrome_baseline_fixtures_builds_expected_chrome_command_flags() {
     .arg(&out_dir)
     .arg("--chrome-dir")
     .arg(&chrome_dir)
+    .arg("--viewport")
+    .arg(TEST_VIEWPORT)
     .arg("--fixtures")
     .arg("hello, hello")
     .status()
@@ -316,8 +362,8 @@ fn chrome_baseline_fixtures_builds_expected_chrome_command_flags() {
     "chrome args should include CI-safe flags; got:\n{log}"
   );
   assert!(
-    log.contains("--window-size=1040,1240"),
-    "chrome args should include default viewport; got:\n{log}"
+    log.contains("--window-size=64,152"),
+    "chrome args should include viewport height padding for headless screenshots; got:\n{log}"
   );
   assert!(
     log.contains("--force-device-scale-factor=1"),
@@ -333,6 +379,9 @@ fn chrome_baseline_fixtures_builds_expected_chrome_command_flags() {
     log.contains("--screenshot="),
     "chrome args should include --screenshot=...; got:\n{log}"
   );
+
+  let image = image::open(out_dir.join("hello.png")).expect("decode cropped hello.png");
+  assert_eq!(image.dimensions(), (TEST_VIEWPORT_W, TEST_VIEWPORT_H));
 }
 
 #[test]
@@ -464,6 +513,8 @@ fn chrome_baseline_fixtures_falls_back_to_legacy_headless() {
     .arg(&out_dir)
     .arg("--chrome-dir")
     .arg(&chrome_dir)
+    .arg("--viewport")
+    .arg(TEST_VIEWPORT)
     .arg("--fixtures")
     .arg("hello")
     .status()
@@ -488,6 +539,9 @@ fn chrome_baseline_fixtures_falls_back_to_legacy_headless() {
     Some("legacy"),
     "metadata should record legacy headless mode; got:\n{meta}"
   );
+
+  let image = image::open(out_dir.join("hello.png")).expect("decode cropped legacy screenshot");
+  assert_eq!(image.dimensions(), (TEST_VIEWPORT_W, TEST_VIEWPORT_H));
 }
 
 #[test]

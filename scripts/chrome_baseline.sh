@@ -71,6 +71,16 @@ CHROME_BIN="${CHROME_BIN:-}"
 JS="${JS:-off}"
 ALLOW_ANIMATIONS="${ALLOW_ANIMATIONS:-0}"
 HEADLESS_FLAG="--headless=new"
+# When Chrome runs in headless screenshot mode, `--window-size=WxH` sets the *outer* window size,
+# but the CSS/layout viewport height is consistently shorter by 88px (leaving a white bar at the
+# bottom of `--screenshot` PNGs).
+#
+# To capture an image that matches the requested viewport, we:
+# 1) add this padding to the window height passed to Chrome, then
+# 2) crop the resulting screenshot back down to the requested viewport size.
+#
+# Keep this constant in sync with `xtask/src/chrome_baseline_fixtures.rs`.
+HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX=88
 
 FILTERS=()
 PARSE_FLAGS=1
@@ -122,6 +132,7 @@ if ! [[ "${VIEWPORT}" =~ ^[0-9]+x[0-9]+$ ]]; then
 fi
 VIEWPORT_W="${VIEWPORT%x*}"
 VIEWPORT_H="${VIEWPORT#*x}"
+WINDOW_H="$((VIEWPORT_H + HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX))"
 
 case "${JS,,}" in
   on|off) ;;
@@ -486,7 +497,7 @@ PY
     --disable-dev-shm-usage
     --disable-gpu
     --hide-scrollbars
-    --window-size="${VIEWPORT_W},${VIEWPORT_H}"
+    --window-size="${VIEWPORT_W},${WINDOW_H}"
     --force-device-scale-factor="${DPR}"
     --disable-web-security
     --allow-file-access-from-files
@@ -547,7 +558,167 @@ PY
   fi
 
   if [[ "${ran_ok}" -eq 1 && -s "${tmp_png_path}" ]]; then
-    cp -f "${tmp_png_path}" "${png_path}"
+    cropped_ok=0
+    if python3 - "${tmp_png_path}" "${png_path}" "${VIEWPORT_W}" "${VIEWPORT_H}" >>"${chrome_log}" 2>&1 <<'PY'
+import struct
+import sys
+import zlib
+
+in_path = sys.argv[1]
+out_path = sys.argv[2]
+crop_w = int(sys.argv[3])
+crop_h = int(sys.argv[4])
+
+PNG_SIG = b"\x89PNG\r\n\x1a\n"
+
+def parse_chunks(data: bytes):
+    if not data.startswith(PNG_SIG):
+        raise ValueError("input is not a PNG (bad signature)")
+    off = len(PNG_SIG)
+    while off + 8 <= len(data):
+        length = struct.unpack(">I", data[off : off + 4])[0]
+        ctype = data[off + 4 : off + 8]
+        off += 8
+        if off + length + 4 > len(data):
+            raise ValueError(f"truncated PNG chunk {ctype!r}")
+        chunk = data[off : off + length]
+        off += length
+        off += 4  # crc
+        yield ctype, chunk
+        if ctype == b"IEND":
+            break
+
+def paeth(a: int, b: int, c: int) -> int:
+    p = a + b - c
+    pa = abs(p - a)
+    pb = abs(p - b)
+    pc = abs(p - c)
+    if pa <= pb and pa <= pc:
+        return a
+    if pb <= pc:
+        return b
+    return c
+
+def unfilter(raw: bytes, width: int, height: int, bpp: int):
+    stride = width * bpp
+    expected = height * (stride + 1)
+    if len(raw) < expected:
+        raise ValueError(f"decompressed IDAT is too small: {len(raw)} bytes, expected {expected}")
+    if len(raw) > expected:
+        # Some encoders may include a trailing zlib stream; ignore the extra bytes if present.
+        raw = raw[:expected]
+    rows = []
+    prev = bytearray(stride)
+    i = 0
+    for _ in range(height):
+        f = raw[i]
+        i += 1
+        scan = raw[i : i + stride]
+        i += stride
+        cur = bytearray(stride)
+        if f == 0:  # None
+            cur[:] = scan
+        elif f == 1:  # Sub
+            for x in range(stride):
+                left = cur[x - bpp] if x >= bpp else 0
+                cur[x] = (scan[x] + left) & 0xFF
+        elif f == 2:  # Up
+            for x in range(stride):
+                cur[x] = (scan[x] + prev[x]) & 0xFF
+        elif f == 3:  # Average
+            for x in range(stride):
+                left = cur[x - bpp] if x >= bpp else 0
+                up = prev[x]
+                cur[x] = (scan[x] + ((left + up) // 2)) & 0xFF
+        elif f == 4:  # Paeth
+            for x in range(stride):
+                left = cur[x - bpp] if x >= bpp else 0
+                up = prev[x]
+                up_left = prev[x - bpp] if x >= bpp else 0
+                cur[x] = (scan[x] + paeth(left, up, up_left)) & 0xFF
+        else:
+            raise ValueError(f"unsupported PNG filter type {f}")
+        rows.append(cur)
+        prev = cur
+    return rows
+
+def png_bpp(color_type: int, bit_depth: int) -> int:
+    if bit_depth != 8:
+        raise ValueError(f"unsupported PNG bit depth {bit_depth} (expected 8)")
+    if color_type == 6:  # RGBA
+        return 4
+    if color_type == 2:  # RGB
+        return 3
+    if color_type == 0:  # grayscale
+        return 1
+    if color_type == 4:  # grayscale + alpha
+        return 2
+    raise ValueError(f"unsupported PNG color type {color_type} (expected 6 or 2)")
+
+def write_chunk(ctype: bytes, payload: bytes) -> bytes:
+    crc = zlib.crc32(ctype)
+    crc = zlib.crc32(payload, crc) & 0xFFFFFFFF
+    return struct.pack(">I", len(payload)) + ctype + payload + struct.pack(">I", crc)
+
+data = open(in_path, "rb").read()
+ihdr = None
+idat = bytearray()
+for ctype, chunk in parse_chunks(data):
+    if ctype == b"IHDR":
+        ihdr = chunk
+    elif ctype == b"IDAT":
+        idat.extend(chunk)
+
+if ihdr is None:
+    raise ValueError("missing IHDR chunk")
+
+width, height, bit_depth, color_type, compression, filter_method, interlace = struct.unpack(
+    ">IIBBBBB", ihdr
+)
+if compression != 0 or filter_method != 0 or interlace != 0:
+    raise ValueError("unsupported PNG encoding (expected compression=0, filter=0, interlace=0)")
+
+if crop_w > width or crop_h > height:
+    raise ValueError(
+        f"cannot crop {crop_w}x{crop_h} from screenshot {width}x{height}"
+    )
+
+bpp = png_bpp(color_type, bit_depth)
+raw = zlib.decompress(bytes(idat))
+rows = unfilter(raw, width, height, bpp)
+cropped_rows = [row[: crop_w * bpp] for row in rows[:crop_h]]
+
+out_raw = bytearray()
+for row in cropped_rows:
+    out_raw.append(0)
+    out_raw.extend(row)
+compressed = zlib.compress(bytes(out_raw))
+
+out = bytearray()
+out.extend(PNG_SIG)
+out.extend(
+    write_chunk(
+        b"IHDR",
+        struct.pack(
+            ">IIBBBBB", crop_w, crop_h, bit_depth, color_type, 0, 0, 0
+        ),
+    )
+)
+out.extend(write_chunk(b"IDAT", compressed))
+out.extend(write_chunk(b"IEND", b""))
+
+open(out_path, "wb").write(out)
+PY
+    then
+      cropped_ok=1
+    fi
+
+    if [[ "${cropped_ok}" -ne 1 ]]; then
+      fail=$((fail + 1))
+      echo "✗ ${stem} (failed to crop screenshot; see ${chrome_log})" >&2
+      continue
+    fi
+
     headless_mode="legacy"
     if [[ "${HEADLESS_FLAG}" == "--headless=new" ]]; then
       headless_mode="new"

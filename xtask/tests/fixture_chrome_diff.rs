@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use image::{ImageBuffer, Rgba};
 use sha2::{Digest, Sha256};
 use tempfile::tempdir;
 use walkdir::WalkDir;
@@ -1458,6 +1459,10 @@ esac
 
   let chrome_dir = temp.path().join("chrome-bin");
   fs::create_dir_all(&chrome_dir).expect("create chrome dir");
+  let template_png = chrome_dir.join("stub_screenshot.png");
+  image::DynamicImage::ImageRgba8(ImageBuffer::from_pixel(64, 64 + 88, Rgba([255, 0, 255, 255])))
+    .save_with_format(&template_png, image::ImageFormat::Png)
+    .expect("write stub screenshot template png");
   let fake_chrome = chrome_dir.join("chrome");
   fs::write(
     &fake_chrome,
@@ -1477,12 +1482,14 @@ if [ -z "$screenshot" ]; then
 fi
 
 mkdir -p "$(dirname "$screenshot")"
-echo "PNG" > "$screenshot"
+cp "$0.stub_screenshot.png" "$screenshot"
 exit 0
 "#,
   )
   .expect("write fake chrome");
   make_executable(&fake_chrome);
+  fs::copy(&template_png, format!("{}.stub_screenshot.png", fake_chrome.display()))
+    .expect("copy template png for fake chrome");
 
   let path_var = std::env::var_os("PATH").unwrap_or_default();
   let mut paths = vec![bin_dir];
@@ -1502,7 +1509,7 @@ exit 0
       "--out-dir",
       out_dir.to_string_lossy().as_ref(),
       "--viewport",
-      "800x600",
+      "64x64",
       "--dpr",
       "1",
       "--tolerance",
@@ -1552,7 +1559,7 @@ exit 0
       "--out-dir",
       out_dir.to_string_lossy().as_ref(),
       "--viewport",
-      "800x600",
+      "64x64",
       "--dpr",
       "1",
       "--tolerance",
@@ -1584,7 +1591,7 @@ exit 0
       "--out-dir",
       out_dir.to_string_lossy().as_ref(),
       "--viewport",
-      "800x600",
+      "64x64",
       "--dpr",
       "1",
       "--tolerance",
