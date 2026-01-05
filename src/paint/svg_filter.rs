@@ -7164,6 +7164,11 @@ mod tests {
         false,
         TurbulenceType::FractalNoise,
         cif,
+        SvgFilterUnits::UserSpaceOnUse,
+        region,
+        1.0,
+        1.0,
+        (0.0, 0.0),
       )
       .unwrap()
       .unwrap()

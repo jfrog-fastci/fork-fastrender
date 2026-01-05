@@ -6022,6 +6022,15 @@ pub struct StartingStyleSet {
   pub first_letter: Option<Arc<ComputedStyle>>,
 }
 
+#[derive(Clone)]
+struct FlatTreeInheritanceParent {
+  styles: Arc<ComputedStyle>,
+  ua_styles: Arc<ComputedStyle>,
+  starting_styles: Option<Arc<ComputedStyle>>,
+}
+
+type FlatTreeInheritanceCache = FxHashMap<usize, FlatTreeInheritanceParent>;
+
 /// A styled DOM node with computed CSS styles
 #[derive(Debug)]
 pub struct StyledNode {
@@ -6980,6 +6989,7 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
       }
       let mut scratch = CascadeScratch::new(max_rules.max(1), max_candidates.max(1), max_parts);
       let mut inline_style_decls = vec![None; dom_node_count + 1];
+      let mut flat_tree_inheritance_cache = FlatTreeInheritanceCache::default();
       let mut node_counter: usize = 1;
       let mut ancestor_ids: Vec<usize> = Vec::new();
       let reuse_counter_opt = if container_scope.is_some() || reuse_map.is_some() {
@@ -6997,6 +7007,7 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
         &mut selector_caches,
         &mut scratch,
         &mut inline_style_decls,
+        &mut flat_tree_inheritance_cache,
         &base_styles,
         None,
         &base_ua_styles,
@@ -7056,6 +7067,7 @@ pub(crate) struct PreparedCascade<'a> {
   dom_maps: DomMaps,
   needs_selector_bloom_summaries: bool,
   slot_assignment: SlotAssignment,
+  flat_tree_inheritance_cache: FlatTreeInheritanceCache,
   base_styles: ComputedStyle,
   base_ua_styles: ComputedStyle,
   has_starting_styles: bool,
@@ -7453,6 +7465,7 @@ impl<'a> PreparedCascade<'a> {
       dom_maps,
       needs_selector_bloom_summaries,
       slot_assignment,
+      flat_tree_inheritance_cache: FlatTreeInheritanceCache::default(),
       base_styles,
       base_ua_styles,
       has_starting_styles,
@@ -7666,6 +7679,7 @@ impl<'a> PreparedCascade<'a> {
           &mut self.selector_caches,
           &mut self.scratch,
           &mut self.inline_style_decls,
+          &mut self.flat_tree_inheritance_cache,
           &self.base_styles,
           None,
           &self.base_ua_styles,
@@ -8944,6 +8958,7 @@ fn apply_styles_internal(
   selector_caches: &mut SelectorCaches,
   scratch: &mut CascadeScratch,
   inline_style_decls: &mut Vec<Option<Arc<[Declaration]>>>,
+  flat_tree_inheritance_cache: &mut FlatTreeInheritanceCache,
   parent_styles: &ComputedStyle,
   parent_starting_styles: Option<&ComputedStyle>,
   parent_ua_styles: &ComputedStyle,
@@ -8996,6 +9011,7 @@ fn apply_styles_internal(
     reuse_counter,
     dom_maps,
     slot_assignment,
+    flat_tree_inheritance_cache,
     sibling_cache,
     element_attr_cache,
     &mut deadline_counter,
@@ -9285,6 +9301,7 @@ fn apply_styles_internal_with_ancestors<'a>(
   reuse_counter: Option<&mut usize>,
   dom_maps: &DomMaps,
   slot_assignment: &SlotAssignment,
+  flat_tree_inheritance_cache: &mut FlatTreeInheritanceCache,
   sibling_cache: &SiblingListCache,
   element_attr_cache: &ElementAttrCache,
   deadline_counter: &mut usize,
@@ -9304,16 +9321,7 @@ fn apply_styles_internal_with_ancestors<'a>(
     entered_shadow_bloom_scope: bool,
   }
 
-  #[derive(Clone)]
-  struct FlatTreeInheritanceParent {
-    styles: Arc<ComputedStyle>,
-    ua_styles: Arc<ComputedStyle>,
-    starting_styles: Option<Arc<ComputedStyle>>,
-  }
-
   let mut reuse_counter = reuse_counter;
-  let mut flat_tree_inheritance_cache: FxHashMap<usize, FlatTreeInheritanceParent> =
-    FxHashMap::default();
 
   record_node_visit(node);
 
@@ -10886,6 +10894,151 @@ mod tests {
     let inner_second = legacy_second.children.first().expect("inner");
     assert_eq!(inner_first.styles.color, Rgba::rgb(10, 20, 30));
     assert_eq!(inner_second.styles.color, Rgba::rgb(1, 2, 3));
+  }
+
+  #[test]
+  fn prepared_cascade_preserves_flat_tree_inheritance_when_shadow_subtree_reused() {
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("id".to_string(), "host".to_string())],
+      },
+      children: vec![
+        DomNode {
+          node_type: DomNodeType::ShadowRoot {
+            mode: crate::dom::ShadowRootMode::Open,
+            delegates_focus: false,
+          },
+          children: vec![DomNode {
+            node_type: DomNodeType::Element {
+              tag_name: "div".to_string(),
+              namespace: HTML_NAMESPACE.to_string(),
+              attributes: vec![("id".to_string(), "wrapper".to_string())],
+            },
+            children: vec![DomNode {
+              node_type: DomNodeType::Slot {
+                namespace: HTML_NAMESPACE.to_string(),
+                attributes: vec![
+                  ("id".to_string(), "slot".to_string()),
+                  ("name".to_string(), "s".to_string()),
+                ],
+                assigned: false,
+              },
+              children: vec![],
+            }],
+          }],
+        },
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "span".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![
+              ("id".to_string(), "slotted".to_string()),
+              ("slot".to_string(), "s".to_string()),
+            ],
+          },
+          children: vec![DomNode {
+            node_type: DomNodeType::Text {
+              content: "Text".to_string(),
+            },
+            children: vec![],
+          }],
+        },
+      ],
+    };
+
+    let document_stylesheet = parse_stylesheet(
+      r#"
+        #host { color: rgb(255, 0, 0); container-type: inline-size; }
+        #slotted { opacity: 1; }
+        @container (min-width: 500px) {
+          #slotted { opacity: 0.5; }
+        }
+      "#,
+    )
+    .expect("parse document stylesheet");
+    let shadow_stylesheet =
+      parse_stylesheet("#wrapper { color: rgb(0, 0, 255); }").expect("parse shadow stylesheet");
+
+    let mut style_set = StyleSet::from_document(document_stylesheet);
+    // Shadow stylesheets are keyed by shadow host node id; the root <div id="host"> is node_id=1.
+    style_set.shadows.insert(1, shadow_stylesheet);
+
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+    let mut prepared =
+      PreparedCascade::new_for_style_set(&dom, &style_set, &media_ctx, None, None, None, false)
+        .expect("build prepared cascade");
+    let first = prepared
+      .apply(None, None, None, None, None)
+      .expect("first cascade");
+
+    let slot_first = find_styled_node_by_id(&first, "slot").expect("slot node");
+    let slotted_first = find_styled_node_by_id(&first, "slotted").expect("slotted node");
+    assert_eq!(slotted_first.styles.color, Rgba::rgb(0, 0, 255));
+    assert_eq!(slotted_first.styles.opacity, 1.0);
+
+    fn build_reuse_map(node: &StyledNode) -> HashMap<usize, *const StyledNode> {
+      let mut map: HashMap<usize, *const StyledNode> = HashMap::new();
+      let mut stack = vec![node];
+      while let Some(node) = stack.pop() {
+        map.insert(node.node_id, node as *const StyledNode);
+        stack.extend(node.children.iter());
+      }
+      map
+    }
+
+    let reuse_map = build_reuse_map(&first);
+
+    let container_ctx = ContainerQueryContext {
+      base_media: media_ctx.clone(),
+      containers: HashMap::from([(
+        first.node_id,
+        ContainerQueryInfo {
+          inline_size: 600.0,
+          block_size: 400.0,
+          container_type: ContainerType::InlineSize,
+          names: Vec::new(),
+          font_size: 16.0,
+          styles: Arc::clone(&first.styles),
+        },
+      )]),
+    };
+
+    let mut container_scope: HashSet<usize> = HashSet::new();
+    container_scope.insert(first.node_id);
+    container_scope.insert(slotted_first.node_id);
+    if let Some(text_node) = slotted_first.children.first() {
+      container_scope.insert(text_node.node_id);
+    }
+
+    assert!(container_scope.contains(&slotted_first.node_id));
+    assert!(!container_scope.contains(&slot_first.node_id));
+
+    let second = prepared
+      .apply(
+        None,
+        Some(&container_ctx),
+        Some(&container_scope),
+        Some(&reuse_map),
+        None,
+      )
+      .expect("second cascade");
+
+    let slot_second = find_styled_node_by_id(&second, "slot").expect("slot node");
+    let slotted_second = find_styled_node_by_id(&second, "slotted").expect("slotted node");
+
+    assert!(
+      Arc::ptr_eq(&slot_first.styles, &slot_second.styles),
+      "expected <slot> subtree to be reused outside the container scope"
+    );
+    assert!(
+      !Arc::ptr_eq(&slotted_first.styles, &slotted_second.styles),
+      "expected slotted light DOM node to be recomputed inside the container scope"
+    );
+
+    assert_eq!(slotted_second.styles.color, Rgba::rgb(0, 0, 255));
+    assert_eq!(slotted_second.styles.opacity, 0.5);
   }
 
   #[test]

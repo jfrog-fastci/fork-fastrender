@@ -5680,8 +5680,8 @@ impl<'a> Element for ElementRef<'a> {
       PseudoClass::Empty => self.is_empty(),
       PseudoClass::Disabled => self.supports_disabled() && self.is_disabled(),
       PseudoClass::Enabled => self.supports_disabled() && !self.is_disabled(),
-      PseudoClass::Required => self.is_required(),
-      PseudoClass::Optional => self.supports_required() && !self.is_required(),
+      PseudoClass::Required => self.is_required() && !self.is_disabled(),
+      PseudoClass::Optional => self.supports_required() && !self.is_disabled() && !self.is_required(),
       PseudoClass::Valid => {
         (self.supports_validation() && self.is_disabled())
           || (self.supports_validation() && self.is_valid_control())
@@ -8785,7 +8785,7 @@ mod tests {
       },
       children: vec![],
     };
-    assert!(matches(&disabled_required, &[], &PseudoClass::Required));
+    assert!(!matches(&disabled_required, &[], &PseudoClass::Required));
     assert!(!matches(&disabled_required, &[], &PseudoClass::Optional));
 
     let submit_input = DomNode {
@@ -8832,7 +8832,7 @@ mod tests {
     };
     let ancestors: Vec<&DomNode> = vec![&fieldset];
     let child = &fieldset.children[0];
-    assert!(matches(child, &ancestors, &PseudoClass::Required));
+    assert!(!matches(child, &ancestors, &PseudoClass::Required));
     assert!(!matches(child, &ancestors, &PseudoClass::Optional));
   }
 
