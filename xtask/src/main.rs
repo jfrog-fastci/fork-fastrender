@@ -1151,17 +1151,7 @@ fn run_pageset(args: PagesetArgs) -> Result<()> {
   }
 
   if disk_cache_enabled {
-    let mut cmd = Command::new("cargo");
-    cmd
-      .arg("run")
-      .arg("--release")
-      .apply_disk_cache_feature(true)
-      .args(["--bin", "prefetch_assets"])
-      .arg("--")
-      .arg("--jobs")
-      .arg(jobs.to_string())
-      .arg("--timeout")
-      .arg(fetch_timeout.to_string());
+    let mut cmd = build_prefetch_assets_command(jobs, fetch_timeout, &cache_dir);
     if let Some(pages) = &pages_arg {
       cmd.arg("--pages").arg(pages);
     }
@@ -1779,6 +1769,23 @@ fn build_pageset_progress_run_command(
     cmd.arg("--bundled-fonts");
   }
   cmd.arg("--cache-dir").arg(cache_dir);
+  cmd
+}
+
+fn build_prefetch_assets_command(jobs: usize, fetch_timeout: u64, cache_dir: &Path) -> Command {
+  let mut cmd = Command::new("cargo");
+  cmd
+    .arg("run")
+    .arg("--release")
+    .apply_disk_cache_feature(true)
+    .args(["--bin", "prefetch_assets"])
+    .arg("--")
+    .arg("--jobs")
+    .arg(jobs.to_string())
+    .arg("--timeout")
+    .arg(fetch_timeout.to_string())
+    .arg("--cache-dir")
+    .arg(cache_dir);
   cmd
 }
 
@@ -2500,10 +2507,36 @@ mod tests {
   }
 
   #[test]
+  fn prefetch_assets_command_includes_cache_dir() {
+    let cache_dir = PathBuf::from("target/cache_dir");
+    let cmd = build_prefetch_assets_command(2, 30, &cache_dir);
+    let args: Vec<String> = cmd
+      .get_args()
+      .map(|arg| arg.to_string_lossy().to_string())
+      .collect();
+
+    let mut found = false;
+    for window in args.windows(2) {
+      if window[0] == "--cache-dir" && window[1] == cache_dir.to_string_lossy() {
+        found = true;
+        break;
+      }
+    }
+    assert!(
+      found,
+      "prefetch_assets invocation should include --cache-dir so warmed entries match pageset_progress; args={args:?}"
+    );
+  }
+
+  #[test]
   fn fixture_chrome_diff_parses_fixtures_only_alias() {
-    let cli =
-      Cli::try_parse_from(["xtask", "fixture-chrome-diff", "--only", "fixture_a,fixture_b"])
-        .expect("parse fixture-chrome-diff --only <stems>");
+    let cli = Cli::try_parse_from([
+      "xtask",
+      "fixture-chrome-diff",
+      "--only",
+      "fixture_a,fixture_b",
+    ])
+    .expect("parse fixture-chrome-diff --only <stems>");
     let Commands::FixtureChromeDiff(args) = cli.command else {
       panic!("expected fixture-chrome-diff command");
     };
