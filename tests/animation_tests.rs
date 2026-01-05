@@ -1101,6 +1101,72 @@ fn scroll_self_timeline_progress_tracks_element_scroll_offsets() {
 }
 
 #[test]
+fn scroll_self_custom_property_animations_recompute_var_dependent_properties() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(100, 100);
+
+  let html_template = |content_height: u32| {
+    format!(
+      r#"
+      <style>
+        html, body {{ margin: 0; background: rgb(0, 0, 0); }}
+        #scroller {{
+          overflow-y: auto;
+          height: 100px;
+          width: 100px;
+          background: rgb(0, 0, 0);
+          --can-scroll: 0;
+          border-bottom: calc(1px * var(--can-scroll)) solid rgb(255, 0, 0);
+          animation-timeline: scroll(self);
+          animation-name: detect;
+          animation-duration: 1s;
+          animation-timing-function: linear;
+        }}
+        @keyframes detect {{ 0%, to {{ --can-scroll: 1; }} }}
+      </style>
+      <div id="scroller"><div style="height: {content_height}px;"></div></div>
+    "#,
+    )
+  };
+
+  let prepared_inactive = renderer
+    .prepare_html(&html_template(100), options.clone())
+    .expect("prepare inactive");
+  let scroller_id =
+    find_box_id_by_dom_id(&prepared_inactive.box_tree().root, "scroller").expect("scroller box_id");
+  let scroll_state = ScrollState::from_parts(
+    Point::ZERO,
+    HashMap::from([(scroller_id, Point::new(0.0, 0.0))]),
+  );
+  let pixmap_inactive = prepared_inactive
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_scroll_state(scroll_state)
+        .with_background(Rgba::new(0, 0, 0, 1.0)),
+    )
+    .expect("paint inactive");
+  assert_eq!(pixel(&pixmap_inactive, 10, 99), (0, 0, 0, 255));
+
+  let prepared_active = renderer
+    .prepare_html(&html_template(200), options)
+    .expect("prepare active");
+  let scroller_id =
+    find_box_id_by_dom_id(&prepared_active.box_tree().root, "scroller").expect("scroller box_id");
+  let scroll_state = ScrollState::from_parts(
+    Point::ZERO,
+    HashMap::from([(scroller_id, Point::new(0.0, 0.0))]),
+  );
+  let pixmap_active = prepared_active
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_scroll_state(scroll_state)
+        .with_background(Rgba::new(0, 0, 0, 1.0)),
+    )
+    .expect("paint active");
+  assert_eq!(pixel(&pixmap_active, 10, 99), (255, 0, 0, 255));
+}
+
+#[test]
 fn view_timeline_animation_range_entry_length_offsets_move_pixels() {
   let mut renderer = FastRender::new().expect("renderer");
   let html = r#"
