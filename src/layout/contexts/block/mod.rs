@@ -569,19 +569,21 @@ impl BlockFormattingContext {
         crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
         crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
         crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
-          if let Some(limit) = limit {
-            let resolved = resolve_length_with_percentage(
+          let basis_border = match limit {
+            Some(limit) => resolve_length_with_percentage_metrics(
               limit,
               containing_height,
               self.viewport_size,
               font_size,
               style.root_font_size,
+              Some(style),
+              Some(&self.font_context),
             )
-            .unwrap_or(f32::INFINITY);
-            intrinsic_max.min(intrinsic_min.max(resolved))
-          } else {
-            intrinsic_max.min(available_block_border_box.max(intrinsic_min))
-          }
+            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
+            .unwrap_or(f32::INFINITY),
+            None => available_block_border_box,
+          };
+          crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
         }
       };
       specified_height = Some((used_border_box - vertical_edges).max(0.0));
@@ -1237,8 +1239,8 @@ impl BlockFormattingContext {
         crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
         crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
         crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
-          if let Some(limit) = limit {
-            let resolved = resolve_length_with_percentage_metrics(
+          let basis_border = match limit {
+            Some(limit) => resolve_length_with_percentage_metrics(
               limit,
               containing_height,
               self.viewport_size,
@@ -1247,11 +1249,11 @@ impl BlockFormattingContext {
               Some(style),
               Some(&self.font_context),
             )
-            .unwrap_or(f32::INFINITY);
-            intrinsic_max.min(intrinsic_min.max(resolved))
-          } else {
-            intrinsic_max.min(available_block_border_box.max(intrinsic_min))
-          }
+            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
+            .unwrap_or(f32::INFINITY),
+            None => available_block_border_box,
+          };
+          crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
         }
       };
       (min_border - vertical_edges).max(0.0)
@@ -1279,8 +1281,8 @@ impl BlockFormattingContext {
         crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
         crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
         crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
-          if let Some(limit) = limit {
-            let resolved = resolve_length_with_percentage_metrics(
+          let basis_border = match limit {
+            Some(limit) => resolve_length_with_percentage_metrics(
               limit,
               containing_height,
               self.viewport_size,
@@ -1289,11 +1291,11 @@ impl BlockFormattingContext {
               Some(style),
               Some(&self.font_context),
             )
-            .unwrap_or(f32::INFINITY);
-            intrinsic_max.min(intrinsic_min.max(resolved))
-          } else {
-            intrinsic_max.min(available_block_border_box.max(intrinsic_min))
-          }
+            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
+            .unwrap_or(f32::INFINITY),
+            None => available_block_border_box,
+          };
+          crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
         }
       };
       (max_border - vertical_edges).max(0.0)
@@ -2928,7 +2930,9 @@ impl BlockFormattingContext {
                     &self.font_context,
                     self.viewport_size,
                   );
-                  intrinsic_max.min(intrinsic_min.max(resolved))
+                  let resolved_border =
+                    border_size_from_box_sizing(resolved, horizontal_edges, child.style.box_sizing);
+                  intrinsic_max.min(intrinsic_min.max(resolved_border))
                 } else {
                   intrinsic_max.min(available.max(intrinsic_min))
                 }
@@ -2949,7 +2953,9 @@ impl BlockFormattingContext {
                   &self.font_context,
                   self.viewport_size,
                 );
-                intrinsic_max.min(intrinsic_min.max(resolved))
+                let resolved_border =
+                  border_size_from_box_sizing(resolved, horizontal_edges, child.style.box_sizing);
+                intrinsic_max.min(intrinsic_min.max(resolved_border))
               } else {
                 intrinsic_max.min(available.max(intrinsic_min))
               }
@@ -2985,7 +2991,9 @@ impl BlockFormattingContext {
                   &self.font_context,
                   self.viewport_size,
                 );
-                intrinsic_max.min(intrinsic_min.max(resolved))
+                let resolved_border =
+                  border_size_from_box_sizing(resolved, horizontal_edges, child.style.box_sizing);
+                intrinsic_max.min(intrinsic_min.max(resolved_border))
               } else {
                 intrinsic_max.min(available.max(intrinsic_min))
               }
@@ -4726,19 +4734,21 @@ impl FormattingContext for BlockFormattingContext {
         crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
         crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
         crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
-          if let Some(limit) = limit {
-            let resolved = resolve_length_with_percentage(
+          let basis_border = match limit {
+            Some(limit) => resolve_length_with_percentage_metrics(
               limit,
               containing_height,
               self.viewport_size,
               style.font_size,
               style.root_font_size,
+              Some(style),
+              Some(&self.font_context),
             )
-            .unwrap_or(f32::INFINITY);
-            intrinsic_max.min(intrinsic_min.max(resolved))
-          } else {
-            intrinsic_max.min(available_block_border_box.max(intrinsic_min))
-          }
+            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
+            .unwrap_or(f32::INFINITY),
+            None => available_block_border_box,
+          };
+          crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
         }
       };
       resolved_height = Some((used_border_box - vertical_edges).max(0.0));
@@ -4908,8 +4918,8 @@ impl FormattingContext for BlockFormattingContext {
         crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
         crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
         crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
-          if let Some(limit) = limit {
-            let resolved = resolve_length_with_percentage_metrics(
+          let basis_border = match limit {
+            Some(limit) => resolve_length_with_percentage_metrics(
               limit,
               containing_height,
               self.viewport_size,
@@ -4918,11 +4928,11 @@ impl FormattingContext for BlockFormattingContext {
               Some(style),
               Some(&self.font_context),
             )
-            .unwrap_or(f32::INFINITY);
-            intrinsic_max.min(intrinsic_min.max(resolved))
-          } else {
-            intrinsic_max.min(available_block_border_box.max(intrinsic_min))
-          }
+            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
+            .unwrap_or(f32::INFINITY),
+            None => available_block_border_box,
+          };
+          crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
         }
       };
       (min_border - vertical_edges).max(0.0)
@@ -4950,8 +4960,8 @@ impl FormattingContext for BlockFormattingContext {
         crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
         crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
         crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
-          if let Some(limit) = limit {
-            let resolved = resolve_length_with_percentage_metrics(
+          let basis_border = match limit {
+            Some(limit) => resolve_length_with_percentage_metrics(
               limit,
               containing_height,
               self.viewport_size,
@@ -4960,11 +4970,11 @@ impl FormattingContext for BlockFormattingContext {
               Some(style),
               Some(&self.font_context),
             )
-            .unwrap_or(f32::INFINITY);
-            intrinsic_max.min(intrinsic_min.max(resolved))
-          } else {
-            intrinsic_max.min(available_block_border_box.max(intrinsic_min))
-          }
+            .map(|resolved| border_size_from_box_sizing(resolved, vertical_edges, style.box_sizing))
+            .unwrap_or(f32::INFINITY),
+            None => available_block_border_box,
+          };
+          crate::layout::utils::clamp_with_order(basis_border, intrinsic_min, intrinsic_max)
         }
       };
       (max_border - vertical_edges).max(0.0)

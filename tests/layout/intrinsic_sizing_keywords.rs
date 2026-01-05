@@ -1,6 +1,7 @@
 use fastrender::layout::constraints::LayoutConstraints;
 use fastrender::layout::formatting_context::IntrinsicSizingMode;
 use fastrender::style::display::Display;
+use fastrender::style::float::Float;
 use fastrender::style::types::IntrinsicSizeKeyword;
 use fastrender::style::values::Length;
 use fastrender::BoxNode;
@@ -214,5 +215,121 @@ fn height_max_content_includes_percentage_padding() {
     intrinsic_fragment.bounds.height(),
     auto_fragment.bounds.height(),
     "height: max-content should include percentage padding resolved against the container width",
+  );
+}
+
+#[test]
+fn height_fit_content_limit_respects_box_sizing() {
+  let factory = FormattingContextFactory::new();
+  let ctx = factory.create(FormattingContextType::Block);
+
+  let mut base_style = ComputedStyle::default();
+  base_style.display = Display::Block;
+  base_style.padding_top = Length::px(10.0);
+  base_style.padding_bottom = Length::px(10.0);
+  let edges = base_style.padding_top.to_px() + base_style.padding_bottom.to_px();
+
+  let text = "lorem ipsum dolor sit amet";
+  let measure = BoxNode::new_block(
+    Arc::new(base_style.clone()),
+    FormattingContextType::Block,
+    vec![BoxNode::new_text(default_style(), text.into())],
+  );
+
+  let min_border = ctx
+    .compute_intrinsic_block_size(&measure, IntrinsicSizingMode::MinContent)
+    .expect("intrinsic min-content block size");
+  let max_border = ctx
+    .compute_intrinsic_block_size(&measure, IntrinsicSizingMode::MaxContent)
+    .expect("intrinsic max-content block size");
+  let lo = min_border.min(max_border);
+  let hi = min_border.max(max_border);
+  let target_border = (lo + hi) / 2.0;
+  let limit_content = target_border - edges;
+  assert!(
+    limit_content > 0.0,
+    "expected positive fit-content limit (limit={} edges={} target_border={})",
+    limit_content,
+    edges,
+    target_border
+  );
+
+  let mut child_style = base_style;
+  child_style.height_keyword = Some(IntrinsicSizeKeyword::FitContent {
+    limit: Some(Length::px(limit_content)),
+  });
+  let child = BoxNode::new_block(
+    Arc::new(child_style),
+    FormattingContextType::Block,
+    vec![BoxNode::new_text(default_style(), text.into())],
+  );
+
+  let root = block_container(vec![child]);
+  let fragment = ctx
+    .layout(&root, &LayoutConstraints::definite_width(400.0))
+    .expect("layout");
+  let child_fragment = &fragment.children[0];
+  assert_approx(
+    child_fragment.bounds.height(),
+    target_border,
+    "height: fit-content(<len>) should account for content-box padding when clamping border sizes",
+  );
+}
+
+#[test]
+fn float_width_fit_content_limit_respects_box_sizing() {
+  let factory = FormattingContextFactory::new();
+  let ctx = factory.create(FormattingContextType::Block);
+
+  let mut base_style = ComputedStyle::default();
+  base_style.display = Display::Block;
+  base_style.float = Float::Left;
+  base_style.padding_left = Length::px(10.0);
+  base_style.padding_right = Length::px(10.0);
+  let edges = base_style.padding_left.to_px() + base_style.padding_right.to_px();
+
+  let text = "lorem ipsum dolor";
+  let measure = BoxNode::new_block(
+    Arc::new(base_style.clone()),
+    FormattingContextType::Block,
+    vec![BoxNode::new_text(default_style(), text.into())],
+  );
+  let (min_border, max_border) = ctx
+    .compute_intrinsic_inline_sizes(&measure)
+    .expect("intrinsic inline sizes");
+  let target_border = (min_border + max_border) / 2.0;
+  let limit_content = target_border - edges;
+  assert!(
+    limit_content > 0.0,
+    "expected positive fit-content limit (limit={} edges={} target_border={})",
+    limit_content,
+    edges,
+    target_border
+  );
+
+  let mut float_style = base_style;
+  float_style.width_keyword = Some(IntrinsicSizeKeyword::FitContent {
+    limit: Some(Length::px(limit_content)),
+  });
+  let float_box = BoxNode::new_block(
+    Arc::new(float_style),
+    FormattingContextType::Block,
+    vec![BoxNode::new_text(default_style(), text.into())],
+  );
+
+  let container = block_container(vec![float_box]);
+  let fragment = ctx
+    .layout(
+      &container,
+      &LayoutConstraints::definite_width(max_border + 200.0),
+    )
+    .expect("layout");
+
+  assert_eq!(fragment.children.len(), 1);
+  let float_fragment = &fragment.children[0];
+  assert_approx(
+    float_fragment.bounds.width(),
+    target_border,
+    "float width: fit-content(<len>) should account for content-box padding when clamping border sizes",
   );
 }
