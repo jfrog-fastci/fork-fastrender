@@ -21,7 +21,7 @@ These are optional wrappers for the most common loops:
   - `--pages` accepts cached stems or URLs; URL-looking inputs are normalized to cached stems best-effort (strip scheme/leading `www.`, etc).
   - Per-step timeouts: `--chrome-timeout <secs>` / `--render-timeout <secs>` override `--timeout`.
   - Passing page stems that are not present under `fetches/html/*.html` is an error (run `fetch_pages` first).
-- Offline fixture Chrome-vs-FastRender diff (deterministic; offline): `scripts/chrome_vs_fastrender_fixtures.sh [options] [--] [fixture...]`
+- Offline fixture Chrome-vs-FastRender diff (deterministic; offline): `scripts/chrome_vs_fastrender_fixtures.sh [options] [--] [fixture_glob...]`
   - Thin wrapper around the canonical implementation: `cargo xtask fixture-chrome-diff` (inherits its validations and default fixture selection).
   - Defaults to `viewport=1040x1240`, `dpr=1.0`, JavaScript disabled.
   - Writes outputs under `<out>/` (default: `target/fixture_chrome_diff/`):

@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The wrapper uses bash 4+ features (associative arrays, `${var,,}`).
-if [[ "${BASH_VERSINFO[0]:-0}" -lt 4 ]]; then
-  echo "error: ${0##*/} requires bash >= 4 (found ${BASH_VERSION:-unknown})." >&2
-  echo "On macOS, install a newer bash (e.g. \`brew install bash\`) and ensure it is first in PATH." >&2
-  exit 2
-fi
-
 # Convenience wrapper around `cargo xtask fixture-chrome-diff`.
 #
 # This script exists mainly for backwards-compatible flags and muscle memory. The canonical
@@ -65,6 +58,23 @@ Output layout (matches `cargo xtask fixture-chrome-diff`):
   <out>/report.json    diff_renders JSON report
 EOF
 }
+
+# Allow `--help` to work even on older bash versions (macOS ships bash 3.2).
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+  esac
+done
+
+# The wrapper uses bash 4+ features (associative arrays, `${var,,}`).
+if [[ "${BASH_VERSINFO[0]:-0}" -lt 4 ]]; then
+  echo "error: ${0##*/} requires bash >= 4 (found ${BASH_VERSION:-unknown})." >&2
+  echo "On macOS, install a newer bash (e.g. \`brew install bash\`) and ensure it is first in PATH." >&2
+  exit 2
+fi
 
 FIXTURES_DIR="${FIXTURES_DIR:-tests/pages/fixtures}"
 OUT_DIR="${OUT_DIR:-target/fixture_chrome_diff}"

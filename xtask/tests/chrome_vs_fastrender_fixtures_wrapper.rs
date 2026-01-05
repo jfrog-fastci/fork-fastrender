@@ -46,14 +46,6 @@ fn has_bash4() -> bool {
 #[test]
 #[cfg(unix)]
 fn wrapper_help_runs() {
-  if !has_bash4() {
-    eprintln!(
-      "skipping wrapper test: bash >= 4 is required (found {:?})",
-      bash_version_major()
-    );
-    return;
-  }
-
   let output = Command::new("bash")
     .current_dir(repo_root())
     .args(["scripts/chrome_vs_fastrender_fixtures.sh", "--help"])
