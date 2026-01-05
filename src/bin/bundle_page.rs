@@ -41,6 +41,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::{collections::HashSet, collections::VecDeque};
 
+fn is_data_url(url: &str) -> bool {
+  url
+    .get(..5)
+    .map(|prefix| prefix.eq_ignore_ascii_case("data:"))
+    .unwrap_or(false)
+}
+
 #[derive(Parser, Debug)]
 #[command(
   name = "bundle_page",
@@ -452,11 +459,7 @@ impl ResourceFetcher for RecordingFetcher {
     let result = self.inner.fetch(url)?;
     // Don't store `data:` URLs in bundle manifests: they can be extremely large (embedded
     // fonts/images) and are already self-contained.
-    if !url
-      .get(..5)
-      .map(|prefix| prefix.eq_ignore_ascii_case("data:"))
-      .unwrap_or(false)
-    {
+    if !is_data_url(url) {
       if let Ok(mut map) = self.recorded.lock() {
         map.insert(url.to_string(), result.clone());
       }
@@ -473,11 +476,7 @@ impl ResourceFetcher for RecordingFetcher {
 
     let url = req.url.to_string();
     let result = self.inner.fetch_with_request(req)?;
-    if !url
-      .get(..5)
-      .map(|prefix| prefix.eq_ignore_ascii_case("data:"))
-      .unwrap_or(false)
-    {
+    if !is_data_url(&url) {
       if let Ok(mut map) = self.recorded.lock() {
         map.insert(url, result.clone());
       }
@@ -498,11 +497,7 @@ impl ResourceFetcher for RecordingFetcher {
     }
 
     let result = self.inner.fetch_with_validation(url, etag, last_modified)?;
-    if !url
-      .get(..5)
-      .map(|prefix| prefix.eq_ignore_ascii_case("data:"))
-      .unwrap_or(false)
-    {
+    if !is_data_url(url) {
       if let Ok(mut map) = self.recorded.lock() {
         map.insert(url.to_string(), result.clone());
       }
@@ -1268,6 +1263,9 @@ fn crawl_document(
     if url.is_empty() {
       return;
     }
+    if is_data_url(&url) {
+      return;
+    }
     // Track unique URLs separately from per-document queue entries so that the same URL can be
     // retried when discovered under a different document origin. This matches renderer behavior
     // under `--same-origin-subresources` (a URL may be blocked for one document but allowed for
@@ -1319,7 +1317,13 @@ fn crawl_document(
       font_size: None,
       base_url: Some(base_url),
     };
-    Ok(discover_image_prefetch_urls(&dom, ctx, ImagePrefetchLimits::default()).urls)
+    Ok(
+      discover_image_prefetch_urls(&dom, ctx, ImagePrefetchLimits::default())
+        .urls
+        .into_iter()
+        .filter(|url| !is_data_url(url))
+        .collect(),
+    )
   }
 
   fn handle_crawl_failure(
@@ -1427,11 +1431,7 @@ fn crawl_document(
     fastrender::html::asset_discovery::discover_html_asset_urls(&document.html, &document.base_url);
   if matches!(mode, CrawlMode::BestEffort) {
     for url in html_image_urls {
-      if url
-        .get(..5)
-        .map(|prefix| prefix.eq_ignore_ascii_case("data:"))
-        .unwrap_or(false)
-      {
+      if is_data_url(&url) {
         continue;
       }
       enqueue_unique(
@@ -1649,11 +1649,7 @@ fn crawl_document(
         } = fastrender::html::asset_discovery::discover_html_asset_urls(&doc.html, &doc.base_url);
         if matches!(mode, CrawlMode::BestEffort) {
           for url in html_image_urls {
-            if url
-              .get(..5)
-              .map(|prefix| prefix.eq_ignore_ascii_case("data:"))
-              .unwrap_or(false)
-            {
+            if is_data_url(&url) {
               continue;
             }
             enqueue_unique(
@@ -1727,6 +1723,9 @@ fn discover_css_urls_with_destination(
     in_font_face: bool,
   ) {
     if let Some(resolved) = resolve_href(base_url, raw) {
+      if is_data_url(&resolved) {
+        return;
+      }
       let destination = if from_import {
         FetchDestination::Style
       } else if in_font_face {
@@ -2083,6 +2082,81 @@ mod tests {
         .iter()
         .any(|(url, dest, _)| url == "https://example.com/bg.png" && *dest == FetchDestination::Image),
       "expected non-font CSS url() asset to be fetched as an image"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn crawl_skips_data_urls_discovered_in_css() -> Result<()> {
+    #[derive(Default)]
+    struct DataUrlCssFetcher {
+      urls: Mutex<Vec<String>>,
+    }
+
+    impl DataUrlCssFetcher {
+      fn urls(&self) -> Vec<String> {
+        self
+          .urls
+          .lock()
+          .map(|urls| urls.clone())
+          .unwrap_or_default()
+      }
+    }
+
+    impl ResourceFetcher for DataUrlCssFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.urls.lock().unwrap().push(req.url.to_string());
+
+        match req.url {
+          "https://example.com/" => Ok(FetchedResource::with_final_url(
+            br#"<html><head><link rel="stylesheet" href="/style.css"></head><body></body></html>"#
+              .to_vec(),
+            Some("text/html".to_string()),
+            Some(req.url.to_string()),
+          )),
+          "https://example.com/style.css" => Ok(FetchedResource::with_final_url(
+            br#"body { background-image: url("data:image/png;base64,AAAA"); }"#.to_vec(),
+            Some("text/css".to_string()),
+            Some(req.url.to_string()),
+          )),
+          other if other.to_ascii_lowercase().starts_with("data:") => Err(fastrender::Error::Other(
+            "data: URL should not be fetched during bundle crawling".to_string(),
+          )),
+          other => Err(fastrender::Error::Other(format!(
+            "unexpected fetch: {other}"
+          ))),
+        }
+      }
+    }
+
+    let inner = Arc::new(DataUrlCssFetcher::default());
+    let recording = RecordingFetcher::new(inner.clone());
+    let (doc, _) = fetch_document(&recording, "https://example.com/")?;
+
+    let render = BundleRenderConfig {
+      viewport: (1200, 800),
+      device_pixel_ratio: 1.0,
+      scroll_x: 0.0,
+      scroll_y: 0.0,
+      full_page: false,
+      same_origin_subresources: false,
+      allowed_subresource_origins: Vec::new(),
+      compat_profile: fastrender::compat::CompatProfile::default(),
+      dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
+    };
+
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+
+    let urls = inner.urls();
+    assert_eq!(
+      urls,
+      vec!["https://example.com/", "https://example.com/style.css"],
+      "expected bundle crawler to skip data: URLs entirely"
     );
 
     Ok(())
