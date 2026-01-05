@@ -110,6 +110,18 @@ fn fragment_border_top_right_radius_x(tree: &FragmentTree, box_id: usize) -> f32
   style.border_top_right_radius.x.to_px()
 }
 
+fn fragment_outline_color(tree: &FragmentTree, box_id: usize) -> (fastrender::Rgba, bool) {
+  let frag = find_fragment(&tree.root, box_id).expect("fragment present");
+  let style = frag.style.as_ref().expect("style present");
+  style.outline_color.resolve(style.color)
+}
+
+fn fragment_outline_width(tree: &FragmentTree, box_id: usize) -> f32 {
+  let frag = find_fragment(&tree.root, box_id).expect("fragment present");
+  let style = frag.style.as_ref().expect("style present");
+  style.outline_width.to_px()
+}
+
 fn fragment_box_shadows(tree: &FragmentTree, box_id: usize) -> Vec<BoxShadow> {
   let frag = find_fragment(&tree.root, box_id).expect("fragment present");
   frag
@@ -246,6 +258,56 @@ fn transitions_interpolate_filter_from_none() {
   animation::apply_transitions(&mut mid, 500.0, viewport);
   let blur = fragment_blur_filter(&mid, box_id).expect("blur filter");
   assert!((blur - 5.0).abs() < 1e-3);
+}
+
+#[test]
+fn transitions_interpolate_outline_color_over_time() {
+  let html = r#"
+    <style>
+      @starting-style { #box { outline-color: rgb(255, 0, 0); outline-style: solid; outline-width: 4px; } }
+      #box { width: 100px; height: 100px; outline-color: rgb(0, 0, 255); outline-style: solid; outline-width: 4px; transition: outline-color 1000ms linear; }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut start = fragment_tree.clone();
+  let viewport = start.viewport_size();
+  animation::apply_transitions(&mut start, 0.0, viewport);
+  let (color, invert) = fragment_outline_color(&start, box_id);
+  assert!(!invert);
+  assert_eq!(color, fastrender::Rgba::new(255, 0, 0, 1.0));
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 500.0, viewport);
+  let (color, invert) = fragment_outline_color(&mid, box_id);
+  assert!(!invert);
+  assert_eq!(color, fastrender::Rgba::new(128, 0, 128, 1.0));
+}
+
+#[test]
+fn transitions_interpolate_outline_shorthand_over_time() {
+  let html = r#"
+    <style>
+      @starting-style { #box { outline: 0px solid rgb(255, 0, 0); } }
+      #box { width: 100px; height: 100px; outline: 10px solid rgb(0, 0, 255); transition: outline 1000ms linear; }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 500.0, viewport);
+  assert!((fragment_outline_width(&mid, box_id) - 5.0).abs() < 1e-3);
+  let (color, invert) = fragment_outline_color(&mid, box_id);
+  assert!(!invert);
+  assert_eq!(color, fastrender::Rgba::new(128, 0, 128, 1.0));
 }
 
 #[test]

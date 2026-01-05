@@ -18,7 +18,7 @@ use fastrender::style::media::MediaContext;
 use fastrender::style::types::{
   AnimationRange, AnimationTimeline, BasicShape, FilterFunction, RangeOffset,
   ScrollFunctionTimeline, ScrollTimeline, ScrollTimelineScroller, TimelineAxis, TimelineOffset,
-  ViewTimeline, ViewTimelinePhase, WritingMode,
+  OutlineColor, OutlineStyle, ViewTimeline, ViewTimelinePhase, WritingMode,
 };
 use fastrender::Rgba;
 use fastrender::{
@@ -430,6 +430,55 @@ fn keyframes_interpolate_outline_offset() {
     other => panic!("unexpected value {other:?}"),
   };
   assert!((offset - 0.0).abs() < 1e-3);
+}
+
+#[test]
+fn keyframes_interpolate_outline_color() {
+  let sheet = parse_stylesheet(
+    "@keyframes outline { from { outline-color: rgb(255, 0, 0); } to { outline-color: rgb(0, 0, 255); } }",
+  )
+  .unwrap();
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = &keyframes[0];
+  let sampled = sample_keyframes(
+    rule,
+    0.5,
+    &ComputedStyle::default(),
+    Size::new(800.0, 600.0),
+    Size::new(200.0, 200.0),
+  );
+  let color = match sampled.get("outline-color") {
+    Some(AnimatedValue::OutlineColor(OutlineColor::Color(c))) => c,
+    other => panic!("unexpected value {other:?}"),
+  };
+  assert_eq!(*color, Rgba::new(128, 0, 128, 1.0));
+}
+
+#[test]
+fn keyframes_interpolate_outline_shorthand() {
+  let sheet = parse_stylesheet(
+    "@keyframes outline { from { outline: 0px solid rgb(255, 0, 0); } to { outline: 10px solid rgb(0, 0, 255); } }",
+  )
+  .unwrap();
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = &keyframes[0];
+  let sampled = sample_keyframes(
+    rule,
+    0.5,
+    &ComputedStyle::default(),
+    Size::new(800.0, 600.0),
+    Size::new(200.0, 200.0),
+  );
+  let (color, style, width) = match sampled.get("outline") {
+    Some(AnimatedValue::Outline(c, s, w)) => (c, s, w),
+    other => panic!("unexpected value {other:?}"),
+  };
+  assert_eq!(*style, OutlineStyle::Solid);
+  assert_eq!(*width, Length::px(5.0));
+  assert_eq!(
+    *color,
+    OutlineColor::Color(Rgba::new(128, 0, 128, 1.0))
+  );
 }
 
 #[test]

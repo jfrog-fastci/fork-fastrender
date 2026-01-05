@@ -38,6 +38,8 @@ use crate::style::types::ClipRadii;
 use crate::style::types::FilterColor;
 use crate::style::types::FilterFunction;
 use crate::style::types::Overflow;
+use crate::style::types::OutlineColor;
+use crate::style::types::OutlineStyle;
 use crate::style::types::RangeOffset;
 use crate::style::types::ReferenceBox;
 use crate::style::types::ScrollFunctionTimeline;
@@ -72,6 +74,9 @@ pub enum AnimatedValue {
   Visibility(Visibility),
   Color(Rgba),
   Length(Length),
+  OutlineColor(OutlineColor),
+  OutlineStyle(OutlineStyle),
+  Outline(OutlineColor, OutlineStyle, Length),
   Transform(Vec<crate::css::types::Transform>),
   Translate(TranslateValue),
   Rotate(RotateValue),
@@ -1777,6 +1782,68 @@ fn apply_border_left_width(style: &mut ComputedStyle, value: &AnimatedValue) {
   }
 }
 
+fn resolve_outline_color(style: &ComputedStyle) -> OutlineColor {
+  match style.outline_color {
+    OutlineColor::CurrentColor => OutlineColor::Color(style.color),
+    other => other,
+  }
+}
+
+fn extract_outline_color(
+  style: &ComputedStyle,
+  _ctx: &AnimationResolveContext,
+) -> Option<AnimatedValue> {
+  Some(AnimatedValue::OutlineColor(resolve_outline_color(style)))
+}
+
+fn interpolate_outline_color_value(
+  a: &AnimatedValue,
+  b: &AnimatedValue,
+  t: f32,
+) -> Option<AnimatedValue> {
+  match (a, b) {
+    (AnimatedValue::OutlineColor(OutlineColor::Color(ca)), AnimatedValue::OutlineColor(OutlineColor::Color(cb))) => Some(AnimatedValue::OutlineColor(
+      OutlineColor::Color(lerp_color(*ca, *cb, t)),
+    )),
+    (AnimatedValue::OutlineColor(OutlineColor::Invert), AnimatedValue::OutlineColor(OutlineColor::Invert)) => {
+      Some(AnimatedValue::OutlineColor(OutlineColor::Invert))
+    }
+    _ => None,
+  }
+}
+
+fn apply_outline_color(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::OutlineColor(color) = value {
+    style.outline_color = *color;
+  }
+}
+
+fn extract_outline_style(
+  style: &ComputedStyle,
+  _ctx: &AnimationResolveContext,
+) -> Option<AnimatedValue> {
+  Some(AnimatedValue::OutlineStyle(style.outline_style))
+}
+
+fn apply_outline_style(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::OutlineStyle(style_value) = value {
+    style.outline_style = *style_value;
+  }
+}
+
+fn interpolate_outline_style_value(
+  a: &AnimatedValue,
+  b: &AnimatedValue,
+  t: f32,
+) -> Option<AnimatedValue> {
+  match (a, b) {
+    (AnimatedValue::OutlineStyle(sa), AnimatedValue::OutlineStyle(sb)) => Some(
+      AnimatedValue::OutlineStyle(if t < 0.5 { *sa } else { *sb }),
+    ),
+    _ => None,
+  }
+}
+
 fn extract_outline_width(
   style: &ComputedStyle,
   ctx: &AnimationResolveContext,
@@ -1810,6 +1877,50 @@ fn apply_outline_width(style: &mut ComputedStyle, value: &AnimatedValue) {
 fn apply_outline_offset(style: &mut ComputedStyle, value: &AnimatedValue) {
   if let AnimatedValue::Length(len) = value {
     style.outline_offset = *len;
+  }
+}
+
+fn extract_outline(style: &ComputedStyle, ctx: &AnimationResolveContext) -> Option<AnimatedValue> {
+  Some(AnimatedValue::Outline(
+    resolve_outline_color(style),
+    style.outline_style,
+    Length::px(resolve_length_px(&style.outline_width, None, style, ctx)),
+  ))
+}
+
+fn interpolate_outline_value(
+  a: &AnimatedValue,
+  b: &AnimatedValue,
+  t: f32,
+) -> Option<AnimatedValue> {
+  let (AnimatedValue::Outline(ca, sa, wa), AnimatedValue::Outline(cb, sb, wb)) = (a, b) else {
+    return None;
+  };
+
+  let width = Length::px(lerp(wa.to_px(), wb.to_px(), t).max(0.0));
+  let style = if t < 0.5 { *sa } else { *sb };
+
+  let color = match (ca, cb) {
+    (OutlineColor::Color(ca), OutlineColor::Color(cb)) => {
+      OutlineColor::Color(lerp_color(*ca, *cb, t))
+    }
+    _ => {
+      if t < 0.5 {
+        *ca
+      } else {
+        *cb
+      }
+    }
+  };
+
+  Some(AnimatedValue::Outline(color, style, width))
+}
+
+fn apply_outline(style: &mut ComputedStyle, value: &AnimatedValue) {
+  if let AnimatedValue::Outline(color, outline_style, width) = value {
+    style.outline_color = *color;
+    style.outline_style = *outline_style;
+    style.outline_width = *width;
   }
 }
 
@@ -2035,6 +2146,24 @@ fn property_interpolators() -> &'static [PropertyInterpolator] {
       extract: extract_border_width,
       interpolate: interpolate_border_width_value,
       apply: apply_border_left_width,
+    },
+    PropertyInterpolator {
+      name: "outline-color",
+      extract: extract_outline_color,
+      interpolate: interpolate_outline_color_value,
+      apply: apply_outline_color,
+    },
+    PropertyInterpolator {
+      name: "outline-style",
+      extract: extract_outline_style,
+      interpolate: interpolate_outline_style_value,
+      apply: apply_outline_style,
+    },
+    PropertyInterpolator {
+      name: "outline",
+      extract: extract_outline,
+      interpolate: interpolate_outline_value,
+      apply: apply_outline,
     },
     PropertyInterpolator {
       name: "outline-width",
