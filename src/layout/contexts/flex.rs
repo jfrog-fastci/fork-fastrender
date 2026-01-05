@@ -7254,6 +7254,18 @@ mod tests {
       .unwrap_or_else(|| panic!("missing fragment for box_id={box_id}"))
   }
 
+  fn content_visibility_test_guard() -> crate::debug::runtime::ThreadRuntimeTogglesGuard {
+    use crate::debug::runtime;
+    use std::collections::HashMap;
+
+    runtime::set_thread_runtime_toggles(Arc::new(runtime::RuntimeToggles::from_map(HashMap::from(
+      [(
+        "FASTR_CONTENT_VISIBILITY_AUTO_MARGIN_PX".to_string(),
+        "0".to_string(),
+      )],
+    ))))
+  }
+
   #[test]
   fn content_visibility_hidden_flex_item_skips_measure_layout() {
     reset_flex_measure_layout_calls();
@@ -7347,6 +7359,7 @@ mod tests {
 
   #[test]
   fn content_visibility_auto_flex_item_offscreen_skips_measure_layout() {
+    let _toggles = content_visibility_test_guard();
     reset_flex_measure_layout_calls();
 
     let fc = FlexFormattingContext::with_viewport(Size::new(400.0, 200.0))
