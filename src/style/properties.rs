@@ -6313,11 +6313,16 @@ impl ComputedStyle {
       return;
     }
 
-    let declarations: Vec<(&'static str, crate::style::VarDependentDeclaration)> = self
+    let mut declarations: Vec<(&'static str, crate::style::VarDependentDeclaration)> = self
       .var_dependent_declarations
       .iter()
       .map(|(property, entry)| (*property, entry.clone()))
       .collect();
+
+    // The cascade applies declarations in source order, and some computed values depend on the
+    // already-applied state (e.g. `currentColor`). Preserve that ordering when reapplying cached
+    // var()-dependent declarations after custom property mutation.
+    declarations.sort_unstable_by_key(|(_, entry)| entry.order);
 
     for (property, entry) in declarations {
       let decl = Declaration {
