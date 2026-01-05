@@ -2584,6 +2584,17 @@ pub fn view_timeline_progress(
   scroll_offset: f32,
   range: &AnimationRange,
 ) -> Option<f32> {
+  // Degenerate geometries produce an inactive timeline.
+  if !view_size.is_finite()
+    || view_size <= f32::EPSILON
+    || !target_start.is_finite()
+    || !target_end.is_finite()
+    || !scroll_offset.is_finite()
+    || (target_end - target_start).abs() <= f32::EPSILON
+  {
+    return None;
+  }
+
   let view_size = view_size.max(0.0);
   let inset = timeline.inset.unwrap_or(ViewTimelineInset {
     start: Length::px(0.0),
