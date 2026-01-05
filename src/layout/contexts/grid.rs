@@ -4828,12 +4828,71 @@ impl GridFormattingContext {
             }
           }
         };
-
-        Ok(crate::layout::utils::clamp_with_order(
+        let mut border_box = crate::layout::utils::clamp_with_order(
           preferred_border_box,
           min_intrinsic,
           max_intrinsic,
-        ))
+        );
+
+        // Apply authored min/max constraints on the axis, including intrinsic keyword constraints.
+        // These clamp the fit-content result so the subtree is laid out at the same size Taffy will
+        // ultimately use.
+        let (author_min_len, author_max_len, author_min_kw, author_max_kw) = match axis {
+          Axis::Horizontal => (
+            box_node.style.min_width,
+            box_node.style.max_width,
+            box_node.style.min_width_keyword,
+            box_node.style.max_width_keyword,
+          ),
+          Axis::Vertical => (
+            box_node.style.min_height,
+            box_node.style.max_height,
+            box_node.style.min_height_keyword,
+            box_node.style.max_height_keyword,
+          ),
+        };
+        let keyword_to_bound = |kw: IntrinsicSizeKeyword| -> Option<f32> {
+          match kw {
+            IntrinsicSizeKeyword::MinContent => Some(min_intrinsic),
+            IntrinsicSizeKeyword::MaxContent => Some(max_intrinsic),
+            IntrinsicSizeKeyword::FitContent { .. } => None,
+          }
+        };
+        let percentage_base_opt = match avail_dim {
+          taffy::style::AvailableSpace::Definite(v) => Some(v.max(0.0)),
+          _ => None,
+        };
+        let resolve_length_px = |len: Length| -> Option<f32> {
+          if len.has_percentage() && percentage_base_opt.is_none() {
+            return None;
+          }
+          let base = percentage_base_opt.unwrap_or(self.viewport_size.width.max(0.0));
+          Some(self.resolve_length_for_width(len, base, &box_node.style).max(0.0))
+        };
+        let to_border_box = |value: f32| -> f32 {
+          if box_node.style.box_sizing == BoxSizing::ContentBox {
+            (value + axis_inset).max(0.0)
+          } else {
+            value.max(0.0)
+          }
+        };
+
+        let author_min = author_min_kw
+          .and_then(keyword_to_bound)
+          .or_else(|| author_min_len.and_then(resolve_length_px).map(to_border_box));
+        let author_max = author_max_kw
+          .and_then(keyword_to_bound)
+          .or_else(|| author_max_len.and_then(resolve_length_px).map(to_border_box));
+        if author_min.is_some() || author_max.is_some() {
+          let min_bound = author_min.unwrap_or(0.0);
+          let mut max_bound = author_max.unwrap_or(f32::INFINITY);
+          if max_bound < min_bound {
+            max_bound = min_bound;
+          }
+          border_box = crate::layout::utils::clamp_with_order(border_box, min_bound, max_bound);
+        }
+
+        Ok(border_box)
       };
 
       if let Some(limit) = fit_width_limit {
@@ -6970,6 +7029,56 @@ mod tests {
     assert!(
       fit_width + 0.5 < auto_width,
       "expected fit-content grid item width ({fit_width:.2}) to be smaller than stretched auto width ({auto_width:.2})",
+    );
+  }
+
+  #[test]
+  fn grid_item_fit_content_with_max_width_affects_row_sizing() {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let make_grid = |max_width: Option<Length>| {
+      let mut grid_style = ComputedStyle::default();
+      grid_style.display = CssDisplay::Grid;
+      grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(200.0))];
+      grid_style.grid_template_rows = vec![GridTrack::Auto];
+      grid_style.justify_items = AlignItems::Stretch;
+      let grid_style = Arc::new(grid_style);
+
+      let mut item_style = ComputedStyle::default();
+      item_style.font_size = 16.0;
+      item_style.width = None;
+      item_style.width_keyword = Some(IntrinsicSizeKeyword::FitContent { limit: None });
+      item_style.max_width = max_width;
+      item_style.max_width_keyword = None;
+      let item_style = Arc::new(item_style);
+      let text_child = BoxNode::new_text(item_style.clone(), "hello world goodbye".into());
+      let item = BoxNode::new_block(item_style, FormattingContextType::Inline, vec![text_child]);
+
+      BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![item])
+    };
+
+    let constraints = LayoutConstraints::definite(200.0, 200.0);
+    let unconstrained = fc.layout(&make_grid(None), &constraints).unwrap();
+    let constrained = fc
+      .layout(&make_grid(Some(Length::px(50.0))), &constraints)
+      .unwrap();
+
+    assert_eq!(unconstrained.children.len(), 1);
+    assert_eq!(constrained.children.len(), 1);
+    let unconstrained_bounds = unconstrained.children[0].bounds;
+    let constrained_bounds = constrained.children[0].bounds;
+
+    assert!(
+      constrained_bounds.width() + 0.5 < unconstrained_bounds.width(),
+      "expected max-width to narrow fit-content width (unconstrained={:.2}, constrained={:.2})",
+      unconstrained_bounds.width(),
+      constrained_bounds.width()
+    );
+    assert!(
+      constrained_bounds.height() > unconstrained_bounds.height() + 5.0,
+      "expected narrower fit-content width to increase row height (unconstrained={:.2}, constrained={:.2})",
+      unconstrained_bounds.height(),
+      constrained_bounds.height()
     );
   }
 
