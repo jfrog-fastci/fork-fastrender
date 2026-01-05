@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 const HTML_PATH: &str = "tests/fixtures/html/svg_filter_lighting.html";
 const GOLDEN_PATH: &str = "tests/fixtures/golden/svg_filter_lighting.png";
 const DIFF_DIR: &str = "target/svg_filter_lighting_diffs";
-const VIEWPORT: (u32, u32) = (210, 90);
+const VIEWPORT: (u32, u32) = (508, 72);
 
 fn render_fixture() -> Vec<u8> {
   let mut renderer = FastRender::new().expect("renderer");

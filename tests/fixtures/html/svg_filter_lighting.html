@@ -13,15 +13,35 @@
     height: 48px;
     background: #c8c8c8;
     border-radius: 6px;
+    flex: none;
+  }
+  .wide {
+    width: 64px;
+    height: 32px;
   }
   #diffuse {
     filter: url(#diffuse-light);
   }
+  #diffuse-half {
+    filter: url(#diffuse-half-light);
+  }
+  #diffuse-nonflat {
+    filter: url(#diffuse-nonflat-light);
+  }
+  #diffuse-nonflat-kul {
+    filter: url(#diffuse-nonflat-kul-light);
+  }
   #specular {
     filter: url(#specular-light);
   }
+  #specular-half {
+    filter: url(#specular-half-light);
+  }
   #spot {
     filter: url(#spot-light);
+  }
+  #diffuse-obb {
+    filter: url(#diffuse-obb-light);
   }
   svg {
     position: absolute;
@@ -52,6 +72,67 @@
       <feComposite in="diffuse" in2="SourceGraphic" operator="in" />
     </filter>
     <filter
+      id="diffuse-half-light"
+      x="-20%"
+      y="-20%"
+      width="140%"
+      height="140%"
+      color-interpolation-filters="sRGB"
+    >
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0" result="blur" />
+      <feDiffuseLighting
+        in="blur"
+        surfaceScale="0"
+        diffuseConstant="0.5"
+        lighting-color="rgb(240 200 160)"
+        result="diffuse"
+      >
+        <feDistantLight azimuth="0" elevation="90" />
+      </feDiffuseLighting>
+      <feComposite in="diffuse" in2="SourceGraphic" operator="in" />
+    </filter>
+    <filter
+      id="diffuse-nonflat-light"
+      x="-20%"
+      y="-20%"
+      width="140%"
+      height="140%"
+      color-interpolation-filters="sRGB"
+    >
+      <feGaussianBlur in="SourceAlpha" stdDeviation="2" result="blur" />
+      <feDiffuseLighting
+        in="blur"
+        surfaceScale="3"
+        diffuseConstant="1"
+        lighting-color="rgb(200 200 200)"
+        result="diffuse"
+      >
+        <feDistantLight azimuth="0" elevation="45" />
+      </feDiffuseLighting>
+      <feComposite in="diffuse" in2="SourceGraphic" operator="in" />
+    </filter>
+    <filter
+      id="diffuse-nonflat-kul-light"
+      x="-20%"
+      y="-20%"
+      width="140%"
+      height="140%"
+      color-interpolation-filters="sRGB"
+    >
+      <feGaussianBlur in="SourceAlpha" stdDeviation="2" result="blur" />
+      <feDiffuseLighting
+        in="blur"
+        surfaceScale="3"
+        diffuseConstant="1"
+        kernelUnitLength="3 1"
+        lighting-color="rgb(200 200 200)"
+        result="diffuse"
+      >
+        <feDistantLight azimuth="0" elevation="45" />
+      </feDiffuseLighting>
+      <feComposite in="diffuse" in2="SourceGraphic" operator="in" />
+    </filter>
+    <filter
       id="specular-light"
       x="-20%"
       y="-20%"
@@ -69,6 +150,27 @@
         result="spec"
       >
         <feDistantLight azimuth="180" elevation="90" />
+      </feSpecularLighting>
+      <feComposite in="spec" in2="SourceGraphic" operator="in" />
+    </filter>
+    <filter
+      id="specular-half-light"
+      x="-20%"
+      y="-20%"
+      width="140%"
+      height="140%"
+      color-interpolation-filters="sRGB"
+    >
+      <feGaussianBlur in="SourceAlpha" stdDeviation="0" result="blur" />
+      <feSpecularLighting
+        in="blur"
+        surfaceScale="0"
+        specularConstant="0.5"
+        specularExponent="1"
+        lighting-color="rgb(160 200 240)"
+        result="spec"
+      >
+        <feDistantLight azimuth="0" elevation="90" />
       </feSpecularLighting>
       <feComposite in="spec" in2="SourceGraphic" operator="in" />
     </filter>
@@ -100,9 +202,35 @@
       </feSpecularLighting>
       <feComposite in="spot" in2="SourceGraphic" operator="in" />
     </filter>
+    <filter
+      id="diffuse-obb-light"
+      primitiveUnits="objectBoundingBox"
+      x="-20%"
+      y="-20%"
+      width="140%"
+      height="140%"
+      color-interpolation-filters="sRGB"
+    >
+      <feGaussianBlur in="SourceAlpha" stdDeviation="2" result="blur" />
+      <feDiffuseLighting
+        in="blur"
+        surfaceScale="3"
+        diffuseConstant="1"
+        lighting-color="rgb(200 160 200)"
+        result="diffuse"
+      >
+        <fePointLight x="0" y="0" z="1" />
+      </feDiffuseLighting>
+      <feComposite in="diffuse" in2="SourceGraphic" operator="in" />
+    </filter>
   </defs>
 </svg>
 <div id="diffuse" class="box"></div>
+<div id="diffuse-half" class="box"></div>
+<div id="diffuse-nonflat" class="box"></div>
+<div id="diffuse-nonflat-kul" class="box"></div>
 <div id="specular" class="box"></div>
+<div id="specular-half" class="box"></div>
 <div id="spot" class="box"></div>
+<div id="diffuse-obb" class="box wide"></div>
 </html>
