@@ -6313,22 +6313,22 @@ impl ComputedStyle {
       return;
     }
 
-    let declarations: Vec<(&'static str, PropertyValue)> = self
+    let declarations: Vec<(&'static str, crate::style::VarDependentDeclaration)> = self
       .var_dependent_declarations
       .iter()
-      .map(|(property, value)| (*property, value.clone()))
+      .map(|(property, entry)| (*property, entry.clone()))
       .collect();
 
-    for (property, value) in declarations {
+    for (property, entry) in declarations {
       let decl = Declaration {
         property: property.into(),
-        value,
+        value: entry.value,
         raw_value: String::new(),
         important: false,
         contains_var: true,
       };
 
-      apply_declaration_with_base_internal(
+      apply_declaration_with_base_internal_with_order(
         self,
         &decl,
         parent_styles,
@@ -6339,6 +6339,7 @@ impl ComputedStyle {
         self.root_font_size,
         viewport,
         false,
+        entry.order,
       );
     }
   }
@@ -6355,6 +6356,35 @@ fn apply_declaration_with_base_internal(
   root_font_size: f32,
   viewport: crate::geometry::Size,
   record_var_dependent_declarations: bool,
+) {
+  let order = styles.logical.next_order();
+  apply_declaration_with_base_internal_with_order(
+    styles,
+    decl,
+    parent_styles,
+    revert_base,
+    revert_layer_base,
+    revert_layer_custom_properties,
+    parent_font_size,
+    root_font_size,
+    viewport,
+    record_var_dependent_declarations,
+    order,
+  );
+}
+
+fn apply_declaration_with_base_internal_with_order(
+  styles: &mut ComputedStyle,
+  decl: &Declaration,
+  parent_styles: &ComputedStyle,
+  revert_base: &ComputedStyle,
+  revert_layer_base: Option<&ComputedStyle>,
+  revert_layer_custom_properties: Option<&CustomPropertyStore>,
+  parent_font_size: f32,
+  root_font_size: f32,
+  viewport: crate::geometry::Size,
+  record_var_dependent_declarations: bool,
+  order: i32,
 ) {
   // Handle CSS Custom Properties (--*)
   if decl.property.is_custom() {
@@ -6494,7 +6524,13 @@ fn apply_declaration_with_base_internal(
 
   if record_var_dependent_declarations {
     if decl.contains_var {
-      Arc::make_mut(&mut styles.var_dependent_declarations).insert(property, decl.value.clone());
+      Arc::make_mut(&mut styles.var_dependent_declarations).insert(
+        property,
+        crate::style::VarDependentDeclaration {
+          order,
+          value: decl.value.clone(),
+        },
+      );
     } else if styles.var_dependent_declarations.contains_key(property) {
       Arc::make_mut(&mut styles.var_dependent_declarations).remove(property);
     }
@@ -6542,7 +6578,6 @@ fn apply_declaration_with_base_internal(
     None
   };
   let resolved_value = resolved_value_owned.as_ref().unwrap_or(&decl.value);
-  let order = styles.logical.next_order();
   if let Some(global) = global_keyword(resolved_value) {
     if apply_global_keyword(
       styles,

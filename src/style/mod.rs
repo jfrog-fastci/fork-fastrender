@@ -449,6 +449,18 @@ impl LogicalState {
   }
 }
 
+/// Winning, non-custom declaration whose specified value depended on `var()`.
+///
+/// Stores the pre-var-resolution value so dependent properties can be recomputed after custom
+/// properties change (for example via animations).
+#[derive(Debug, Clone, PartialEq)]
+pub struct VarDependentDeclaration {
+  /// Cascade order of the declaration.
+  pub order: i32,
+  /// Specified value before `var()` substitution.
+  pub value: PropertyValue,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComputedStyle {
   // Display and positioning
@@ -867,7 +879,7 @@ pub struct ComputedStyle {
   ///
   /// This stores the pre-var-resolution value so dependent properties can be recomputed after
   /// custom properties change (e.g. from animations).
-  pub var_dependent_declarations: Arc<HashMap<&'static str, PropertyValue>>,
+  pub var_dependent_declarations: Arc<HashMap<&'static str, VarDependentDeclaration>>,
 
   // Generated content (for ::before and ::after pseudo-elements)
   pub content: String,

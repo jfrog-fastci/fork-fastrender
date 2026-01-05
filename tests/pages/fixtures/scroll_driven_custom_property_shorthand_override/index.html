@@ -1,0 +1,47 @@
+<!doctype html>
+<style>
+  html,
+  body {
+    margin: 0;
+    background: rgb(0, 255, 0);
+  }
+  .box {
+    position: absolute;
+    top: 0;
+    width: 50px;
+    height: 50px;
+    box-sizing: border-box;
+    overflow: auto;
+    background: rgb(0, 255, 0);
+    --can-scroll: 0;
+
+    /* GitHub-style pattern: a scroll-driven animation sets a custom property, which then affects
+       a real property via var(). This uses a shorthand, plus a var-free override that should NOT
+       be clobbered during recomputation. */
+    border-bottom: calc(1px * var(--can-scroll)) solid rgb(255, 0, 0);
+    border-bottom-color: rgb(0, 0, 255);
+
+    animation-timeline: scroll(self);
+    animation-name: detect-scroll;
+  }
+  .scrollable {
+    left: 0;
+  }
+  .not-scrollable {
+    left: 60px;
+  }
+  .scrollable .inner {
+    height: 120px;
+  }
+  .not-scrollable .inner {
+    height: 20px;
+  }
+  @keyframes detect-scroll {
+    0%,
+    to {
+      --can-scroll: 1;
+    }
+  }
+</style>
+<div class="box scrollable"><div class="inner"></div></div>
+<div class="box not-scrollable"><div class="inner"></div></div>
