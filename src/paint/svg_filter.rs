@@ -656,8 +656,8 @@ pub enum FilterPrimitive {
   },
   Offset {
     input: FilterInput,
-    dx: f32,
-    dy: f32,
+    dx: SvgLength,
+    dy: SvgLength,
   },
   ColorMatrix {
     input: FilterInput,
@@ -673,8 +673,8 @@ pub enum FilterPrimitive {
   },
   DropShadow {
     input: FilterInput,
-    dx: f32,
-    dy: f32,
+    dx: SvgLength,
+    dy: SvgLength,
     std_dev: (f32, f32),
     color: Rgba,
     opacity: f32,
@@ -1216,8 +1216,8 @@ fn hash_filter_primitive(prim: &FilterPrimitive, state: &mut impl Hasher) {
     FilterPrimitive::Offset { input, dx, dy } => {
       state.write_u8(2);
       hash_filter_input(input, state);
-      hash_f32(*dx, state);
-      hash_f32(*dy, state);
+      hash_length(dx, state);
+      hash_length(dy, state);
     }
     FilterPrimitive::ColorMatrix { input, kind } => {
       state.write_u8(3);
@@ -1264,8 +1264,8 @@ fn hash_filter_primitive(prim: &FilterPrimitive, state: &mut impl Hasher) {
     } => {
       state.write_u8(6);
       hash_filter_input(input, state);
-      hash_f32(*dx, state);
-      hash_f32(*dy, state);
+      hash_length(dx, state);
+      hash_length(dy, state);
       hash_f32(std_dev.0, state);
       hash_f32(std_dev.1, state);
       hash_color(color, state);
@@ -2376,8 +2376,8 @@ fn parse_fe_gaussian_blur(node: &roxmltree::Node) -> Option<FilterPrimitive> {
 
 fn parse_fe_offset(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   let input = parse_input(node.attribute("in"));
-  let dx = parse_number(node.attribute("dx"));
-  let dy = parse_number(node.attribute("dy"));
+  let dx = SvgLength::parse(node.attribute("dx"), SvgLength::Number(0.0));
+  let dy = SvgLength::parse(node.attribute("dy"), SvgLength::Number(0.0));
   Some(FilterPrimitive::Offset { input, dx, dy })
 }
 
@@ -2625,8 +2625,8 @@ fn parse_fe_merge(node: &roxmltree::Node) -> Option<FilterPrimitive> {
 
 fn parse_fe_drop_shadow(node: &roxmltree::Node) -> Option<FilterPrimitive> {
   let input = parse_input(node.attribute("in"));
-  let dx = parse_number(node.attribute("dx"));
-  let dy = parse_number(node.attribute("dy"));
+  let dx = SvgLength::parse(node.attribute("dx"), SvgLength::Number(0.0));
+  let dy = SvgLength::parse(node.attribute("dy"), SvgLength::Number(0.0));
   let (sx, sy) = parse_number_pair(node.attribute("stdDeviation"));
   let std_dev = (sx.max(0.0), sy.max(0.0));
   let color = parse_color(node.attribute("flood-color")).unwrap_or(Rgba::BLACK);
@@ -2863,6 +2863,124 @@ pub(crate) fn apply_svg_filter_with_cache(
   };
 
   let Some((res_w, res_h)) = def.filter_res else {
+    let target_w = pixmap.width();
+    let target_h = pixmap.height();
+    if target_w > 0
+      && target_h > 0
+      && rect_exceeds_pixmap_bounds(filter_region, target_w, target_h)
+    {
+      let min_x = filter_region.min_x().floor();
+      let min_y = filter_region.min_y().floor();
+      let max_x = filter_region.max_x().ceil();
+      let max_y = filter_region.max_y().ceil();
+      let i32_min_safe = (i32::MIN + 1) as f32;
+      let i32_max = i32::MAX as f32;
+      if min_x.is_finite()
+        && min_y.is_finite()
+        && max_x.is_finite()
+        && max_y.is_finite()
+        && min_x >= i32_min_safe
+        && min_y >= i32_min_safe
+        && max_x <= i32_max
+        && max_y <= i32_max
+      {
+        let x0 = min_x as i32;
+        let y0 = min_y as i32;
+        let x1 = max_x as i32;
+        let y1 = max_y as i32;
+        let working_w_i64 = x1 as i64 - x0 as i64;
+        let working_h_i64 = y1 as i64 - y0 as i64;
+        if working_w_i64 > 0
+          && working_h_i64 > 0
+          && working_w_i64 <= u32::MAX as i64
+          && working_h_i64 <= u32::MAX as i64
+        {
+          let working_w = working_w_i64 as u32;
+          let working_h = working_h_i64 as u32;
+          if let Some(mut working_pixmap) = new_pixmap(working_w, working_h) {
+            working_pixmap.data_mut().fill(0);
+            copy_pixmap_region_with_offset(&mut working_pixmap, pixmap, x0, y0)?;
+
+            let bbox_working = Rect::from_xywh(
+              bbox.x() - x0 as f32,
+              bbox.y() - y0 as f32,
+              bbox.width(),
+              bbox.height(),
+            );
+
+            let mut local_def = def.clone();
+            let origin_css_x = x0 as f32 / scale;
+            let origin_css_y = y0 as f32 / scale;
+            translate_filter_user_space_numbers_for_filter_res(&mut local_def, origin_css_x, origin_css_y);
+            local_def.refresh_fingerprint();
+
+            let uses_fill_paint = def.uses_fill_paint_input();
+            let uses_stroke_paint = def.uses_stroke_paint_input();
+            let should_infer_paint = (uses_fill_paint && inputs.fill_paint.is_none())
+              || (uses_stroke_paint && inputs.stroke_paint.is_none());
+            let inferred_paint = if should_infer_paint {
+              let mut clipped = pixmap.clone();
+              clip_to_region(&mut clipped, filter_region)?;
+              infer_solid_opaque_paint(&clipped)
+            } else {
+              None
+            };
+            let fill_paint = if uses_fill_paint {
+              inputs.fill_paint.or(inferred_paint)
+            } else {
+              inputs.fill_paint
+            };
+            let stroke_paint = if uses_stroke_paint {
+              inputs.stroke_paint.or(inferred_paint)
+            } else {
+              inputs.stroke_paint
+            };
+
+            let mut working_background: Option<Pixmap> = None;
+            if def.uses_background_inputs() {
+              let mut background_resized_to_target: Option<Pixmap> = None;
+              let background_for_copy = match inputs.background_image {
+                Some(bg) if bg.width() == target_w && bg.height() == target_h => Some(bg),
+                Some(bg) => {
+                  background_resized_to_target =
+                    resize_pixmap(bg, target_w, target_h, def.color_interpolation_filters)?;
+                  background_resized_to_target.as_ref()
+                }
+                None => None,
+              };
+              if let Some(bg) = background_for_copy {
+                if let Some(mut bg_working) = new_pixmap(working_w, working_h) {
+                  bg_working.data_mut().fill(0);
+                  copy_pixmap_region_with_offset(&mut bg_working, bg, x0, y0)?;
+                  working_background = Some(bg_working);
+                }
+              }
+            }
+
+            let working_inputs = SvgFilterStandardInputs {
+              background_image: working_background.as_ref(),
+              fill_paint,
+              stroke_paint,
+            };
+
+            apply_svg_filter_scaled(
+              &local_def,
+              &mut working_pixmap,
+              scale,
+              scale,
+              bbox_working,
+              working_inputs,
+              blur_cache.as_deref_mut(),
+            )?;
+
+            pixmap.data_mut().fill(0);
+            copy_pixmap_region_with_offset(pixmap, &working_pixmap, -x0, -y0)?;
+            return Ok(());
+          }
+        }
+      }
+    }
+
     apply_svg_filter_scaled(
       def,
       pixmap,
@@ -3149,6 +3267,63 @@ fn rect_matches_pixmap_bounds(region: Rect, width: u32, height: u32) -> bool {
     && (region.y().abs() <= eps)
     && ((region.width() - width as f32).abs() <= eps)
     && ((region.height() - height as f32).abs() <= eps)
+}
+
+fn rect_exceeds_pixmap_bounds(region: Rect, width: u32, height: u32) -> bool {
+  let eps = 1e-4;
+  region.min_x() < -eps
+    || region.min_y() < -eps
+    || region.max_x() > width as f32 + eps
+    || region.max_y() > height as f32 + eps
+}
+
+fn copy_pixmap_region_with_offset(
+  dst: &mut Pixmap,
+  src: &Pixmap,
+  src_x: i32,
+  src_y: i32,
+) -> RenderResult<()> {
+  check_active(RenderStage::Paint)?;
+  let dst_w = dst.width() as i32;
+  let dst_h = dst.height() as i32;
+  if dst_w <= 0 || dst_h <= 0 {
+    return Ok(());
+  }
+  let src_w = src.width() as i32;
+  let src_h = src.height() as i32;
+  if src_w <= 0 || src_h <= 0 {
+    return Ok(());
+  }
+
+  let x0 = src_x.max(0);
+  let y0 = src_y.max(0);
+  let x1 = (src_x + dst_w).min(src_w);
+  let y1 = (src_y + dst_h).min(src_h);
+  if x0 >= x1 || y0 >= y1 {
+    return Ok(());
+  }
+
+  let dst_off_x = (x0 - src_x) as usize;
+  let dst_off_y = (y0 - src_y) as usize;
+  let copy_w = (x1 - x0) as usize;
+  let copy_h = (y1 - y0) as usize;
+
+  let src_stride = src.width() as usize * 4;
+  let dst_stride = dst.width() as usize * 4;
+  let row_bytes = copy_w * 4;
+  let src_data = src.data();
+  let dst_data = dst.data_mut();
+
+  for row in 0..copy_h {
+    if row % 32 == 0 {
+      check_active(RenderStage::Paint)?;
+    }
+    let src_idx = (y0 as usize + row) * src_stride + x0 as usize * 4;
+    let dst_idx = (dst_off_y + row) * dst_stride + dst_off_x * 4;
+    dst_data[dst_idx..dst_idx + row_bytes].copy_from_slice(&src_data[src_idx..src_idx + row_bytes]);
+  }
+
+  Ok(())
 }
 
 fn resample_pixmap_region(
@@ -3658,8 +3833,14 @@ fn apply_primitive(
       Some(img)
     }
     FilterPrimitive::Offset { input, dx, dy } => {
-      let dx = filter.resolve_primitive_x(*dx, css_bbox) * scale_x;
-      let dy = filter.resolve_primitive_y(*dy, css_bbox) * scale_y;
+      let units = match filter.primitive_units {
+        SvgFilterUnits::ObjectBoundingBox => SvgCoordinateUnits::ObjectBoundingBox,
+        SvgFilterUnits::UserSpaceOnUse => SvgCoordinateUnits::UserSpaceOnUse,
+      };
+      let dx = dx.resolve(units, css_bbox.width().abs());
+      let dy = dy.resolve(units, css_bbox.height().abs());
+      let dx = if dx.is_finite() { dx * scale_x } else { 0.0 };
+      let dy = if dy.is_finite() { dy * scale_y } else { 0.0 };
       match resolve_input(
         input,
         source,
@@ -3746,8 +3927,14 @@ fn apply_primitive(
       else {
         return Ok(None);
       };
-      let dx = filter.resolve_primitive_x(*dx, css_bbox) * scale_x;
-      let dy = filter.resolve_primitive_y(*dy, css_bbox) * scale_y;
+      let units = match filter.primitive_units {
+        SvgFilterUnits::ObjectBoundingBox => SvgCoordinateUnits::ObjectBoundingBox,
+        SvgFilterUnits::UserSpaceOnUse => SvgCoordinateUnits::UserSpaceOnUse,
+      };
+      let dx = dx.resolve(units, css_bbox.width().abs());
+      let dy = dy.resolve(units, css_bbox.height().abs());
+      let dx = if dx.is_finite() { dx * scale_x } else { 0.0 };
+      let dy = if dy.is_finite() { dy * scale_y } else { 0.0 };
       let std_dev = filter.resolve_primitive_pair(*std_dev, css_bbox);
       let std_dev = (std_dev.0 * scale_x, std_dev.1 * scale_y);
       Some(drop_shadow_pixmap(
@@ -5494,6 +5681,15 @@ fn apply_convolve_matrix(
     return Ok(input);
   }
 
+  let width_u32 = input.width();
+  let height_u32 = input.height();
+  let Some(mut out) = new_pixmap(width_u32, height_u32) else {
+    return Ok(input);
+  };
+  for px in out.pixels_mut() {
+    *px = PremultipliedColorU8::TRANSPARENT;
+  }
+
   let use_linear = matches!(
     color_interpolation_filters,
     ColorInterpolationFilters::LinearRGB
@@ -5516,13 +5712,9 @@ fn apply_convolve_matrix(
   };
 
   let kernel_rows: Vec<&[f32]> = kernel.chunks(order_x).collect();
-  let width = input.width() as usize;
-  let width_i32 = input.width() as i32;
-  let height_i32 = input.height() as i32;
-  let mut out = new_pixmap(input.width(), input.height()).unwrap();
-  for px in out.pixels_mut() {
-    *px = PremultipliedColorU8::TRANSPARENT;
-  }
+  let width = width_u32 as usize;
+  let width_i32 = width_u32 as i32;
+  let height_i32 = height_u32 as i32;
   let src_pixels = input.pixels();
   let dst_pixels = out.pixels_mut();
   let (sub_min_x, sub_min_y, sub_max_x, sub_max_y) = subregion
@@ -6883,8 +7075,8 @@ mod tests {
     let pixmap = new_pixmap(1, 1).unwrap();
     let prim = FilterPrimitive::Offset {
       input: FilterInput::SourceGraphic,
-      dx: 1.0,
-      dy: 1.0,
+      dx: SvgLength::Number(1.0),
+      dy: SvgLength::Number(1.0),
     };
 
     let result = with_deadline(Some(&deadline), || apply_primitive_for_test(&prim, &pixmap));
@@ -7021,8 +7213,8 @@ mod tests {
       PremultipliedColorU8::from_rgba(255, 0, 0, 255).unwrap_or(PremultipliedColorU8::TRANSPARENT);
     let prim = FilterPrimitive::DropShadow {
       input: FilterInput::SourceGraphic,
-      dx: 0.0,
-      dy: 0.0,
+      dx: SvgLength::Number(0.0),
+      dy: SvgLength::Number(0.0),
       std_dev: (0.0, 0.0),
       color: Rgba::new(0, 0, 0, 1.0),
       opacity: 1.0,
@@ -7151,8 +7343,8 @@ mod tests {
     let pixmap = pixmap_from_rgba(&[(0, 0, 0, 255), (255, 255, 255, 255)]);
     let prim = FilterPrimitive::Offset {
       input: FilterInput::SourceGraphic,
-      dx: 0.5,
-      dy: 0.0,
+      dx: SvgLength::Number(0.5),
+      dy: SvgLength::Number(0.0),
     };
 
     let srgb_out = apply_for_test_with_cif(&prim, &pixmap, ColorInterpolationFilters::SRGB);
@@ -7526,8 +7718,8 @@ mod tests {
           color_interpolation_filters: None,
           primitive: FilterPrimitive::Offset {
             input: FilterInput::Previous,
-            dx: 0.0,
-            dy: 0.0,
+            dx: SvgLength::Number(0.0),
+            dy: SvgLength::Number(0.0),
           },
           region: Some(SvgFilterPrimitiveRegionOverride {
             x: Some(SvgLength::Number(0.0)),
@@ -7896,6 +8088,31 @@ mod filter_primitive_region_override_tests {
 }
 
 #[cfg(test)]
+mod fe_offset_length_tests {
+  use super::*;
+
+  #[test]
+  fn fe_offset_resolves_percent_lengths_against_bbox() {
+    let cache = ImageCache::new();
+    let svg = "<svg xmlns='http://www.w3.org/2000/svg'><filter id='f' filterUnits='userSpaceOnUse' primitiveUnits='userSpaceOnUse' x='0' y='0' width='10' height='1'><feOffset dx='50%' dy='0'/></filter></svg>";
+    let filter = parse_filter_definition(svg, Some("f"), &cache).expect("parsed filter");
+
+    let mut pixmap = new_pixmap(10, 1).unwrap();
+    for px in pixmap.pixels_mut() {
+      *px = PremultipliedColorU8::TRANSPARENT;
+    }
+    pixmap.pixels_mut()[0] = PremultipliedColorU8::from_rgba(255, 255, 255, 255)
+      .unwrap_or(PremultipliedColorU8::TRANSPARENT);
+
+    let bbox = Rect::from_xywh(0.0, 0.0, 10.0, 1.0);
+    apply_svg_filter(filter.as_ref(), &mut pixmap, 1.0, bbox).unwrap();
+
+    assert_eq!(pixmap.pixel(0, 0).unwrap().alpha(), 0);
+    assert_eq!(pixmap.pixel(5, 0).unwrap().alpha(), 255);
+  }
+}
+
+#[cfg(test)]
 mod filter_res_tests {
   use super::*;
   use base64::engine::general_purpose::STANDARD;
@@ -8068,6 +8285,81 @@ mod filter_res_tests {
   }
 
   #[test]
+  fn default_filter_region_outside_pixmap_is_transparent() {
+    let _guard = svg_filter_test_guard();
+    let cache = ImageCache::new();
+    // When filterRes is omitted, the default filter resolution is the resolved filter region size.
+    // If the filter region extends outside the current raster surface, pixels outside the pixmap
+    // must behave as transparent for sampling primitives (e.g. blurs) so edge clamping does not
+    // smear the last visible pixels.
+    let svg = "<svg xmlns='http://www.w3.org/2000/svg'><filter id='f' filterUnits='userSpaceOnUse' x='-7' y='0' width='22' height='8'><feGaussianBlur stdDeviation='1'/></filter></svg>";
+    let filter = load_svg_filter(&data_url(svg), &cache).expect("parsed filter");
+
+    let mut pixmap = new_pixmap(8, 8).unwrap();
+    pixmap.fill(Color::from_rgba8(0, 0, 255, 255));
+    let bbox = Rect::from_xywh(0.0, 0.0, 8.0, 8.0);
+    apply_svg_filter(filter.as_ref(), &mut pixmap, 1.0, bbox).unwrap();
+
+    let left = pixel(&pixmap, 0, 4);
+    let center = pixel(&pixmap, 4, 4);
+    let right = pixel(&pixmap, 7, 4);
+    assert!(
+      left.3 < 250,
+      "expected left edge to blend with transparency from outside pixmap, got alpha {}",
+      left.3
+    );
+    assert!(
+      right.3 < 250,
+      "expected right edge to blend with transparency from outside pixmap, got alpha {}",
+      right.3
+    );
+    assert!(
+      center.3 > 250,
+      "expected center pixel to remain mostly opaque, got alpha {}",
+      center.3
+    );
+  }
+
+  #[test]
+  fn background_image_is_aligned_when_filter_region_exceeds_pixmap() {
+    let _guard = svg_filter_test_guard();
+    let cache = ImageCache::new();
+    let svg = "<svg xmlns='http://www.w3.org/2000/svg'><filter id='f' filterUnits='userSpaceOnUse' x='-2' y='0' width='8' height='1'><feBlend in='SourceGraphic' in2='BackgroundImage' mode='screen'/></filter></svg>";
+    let filter = load_svg_filter(&data_url(svg), &cache).expect("parsed filter");
+
+    let mut pixmap = new_pixmap(4, 1).unwrap();
+    pixmap.fill(Color::from_rgba8(255, 0, 0, 255));
+
+    let mut backdrop = new_pixmap(4, 1).unwrap();
+    for idx in 0..4 {
+      backdrop.pixels_mut()[idx] = if idx < 2 {
+        PremultipliedColorU8::from_rgba(0, 0, 255, 255).unwrap()
+      } else {
+        PremultipliedColorU8::from_rgba(0, 255, 0, 255).unwrap()
+      };
+    }
+
+    let bbox = Rect::from_xywh(0.0, 0.0, 4.0, 1.0);
+    apply_svg_filter_with_cache(
+      filter.as_ref(),
+      &mut pixmap,
+      1.0,
+      bbox,
+      SvgFilterStandardInputs {
+        background_image: Some(&backdrop),
+        ..Default::default()
+      },
+      None,
+    )
+    .unwrap();
+
+    assert_eq!(pixel(&pixmap, 0, 0), (255, 0, 255, 255));
+    assert_eq!(pixel(&pixmap, 1, 0), (255, 0, 255, 255));
+    assert_eq!(pixel(&pixmap, 2, 0), (255, 255, 0, 255));
+    assert_eq!(pixel(&pixmap, 3, 0), (255, 255, 0, 255));
+  }
+
+  #[test]
   fn filter_res_resampling_honors_color_interpolation_filters() {
     let bbox = Rect::from_xywh(0.0, 0.0, 2.0, 1.0);
 
@@ -8079,8 +8371,8 @@ mod filter_res_tests {
           color_interpolation_filters: None,
           primitive: FilterPrimitive::Offset {
             input: FilterInput::SourceGraphic,
-            dx: 0.0,
-            dy: 0.0,
+            dx: SvgLength::Number(0.0),
+            dy: SvgLength::Number(0.0),
           },
           region: None,
         }],

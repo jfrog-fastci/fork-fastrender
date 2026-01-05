@@ -38,6 +38,24 @@ transparent during the resample, so that enlarging the filter region does not
 This is regression-tested by
 `filter_res_region_outside_pixmap_is_transparent` in `src/paint/svg_filter.rs`.
 
+### Default filter resolution (no `filterRes`)
+
+When `filterRes` is omitted, SVG filters execute at the default filter resolution
+for the resolved filter region (i.e. one filter pixel per device pixel in the
+resolved region).
+
+If the resolved filter region extends outside the current raster surface (e.g.
+an element near the viewport edge where the offscreen filter pixmap is clipped),
+FastRender expands the working pixmap to cover the pixel-aligned bounds of the
+full filter region, copies the source/backdrop into that working surface, runs
+the filter graph, then copies the overlapping result back into the destination
+pixmap. Pixels that are outside the available raster surface are therefore
+treated as transparent instead of being edge-clamped by sampling primitives
+(gaussian blur, morphology, convolution, etc.).
+
+This is regression-tested by
+`default_filter_region_outside_pixmap_is_transparent` in `src/paint/svg_filter.rs`.
+
 ## Fixture + tests
 
 The main repro fixture is:

@@ -27,8 +27,8 @@ fn render_offset(dx: f32) -> Pixmap {
       color_interpolation_filters: None,
       primitive: FilterPrimitive::Offset {
         input: FilterInput::SourceGraphic,
-        dx,
-        dy: 0.0,
+        dx: SvgLength::Number(dx),
+        dy: SvgLength::Number(0.0),
       },
       region: None,
     }],
@@ -58,8 +58,8 @@ fn render_drop_shadow(dx: f32) -> Pixmap {
       color_interpolation_filters: None,
       primitive: FilterPrimitive::DropShadow {
         input: FilterInput::SourceGraphic,
-        dx,
-        dy: 0.0,
+        dx: SvgLength::Number(dx),
+        dy: SvgLength::Number(0.0),
         std_dev: (0.0, 0.0),
         color: Rgba::new(0, 0, 0, 1.0),
         opacity: 1.0,
