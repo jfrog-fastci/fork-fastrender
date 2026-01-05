@@ -1789,7 +1789,7 @@ fn parse_view_function_timeline<'i, 't>(
   })
 }
 
-fn parse_time_ms(raw: &str) -> Option<f32> {
+pub(crate) fn parse_time_ms(raw: &str) -> Option<f32> {
   let trimmed = raw.trim();
   if trimmed.is_empty() {
     return None;

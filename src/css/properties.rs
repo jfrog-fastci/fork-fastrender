@@ -1970,6 +1970,62 @@ fn supports_animation_timeline_value(raw_value: &str) -> bool {
   !timelines.is_empty()
 }
 
+fn supports_animation_duration_value(raw_value: &str) -> bool {
+  let raw_value = raw_value.trim();
+  if raw_value.is_empty() {
+    return false;
+  }
+
+  let mut input = ParserInput::new(raw_value);
+  let mut parser = Parser::new(&mut input);
+  parser.skip_whitespace();
+  let times = match parser.parse_comma_separated(|p| {
+    p.skip_whitespace();
+    let token = p.next()?;
+    match token {
+      Token::Ident(ident) => {
+        if ident.eq_ignore_ascii_case("auto") {
+          Ok(())
+        } else {
+          Err(p.new_custom_error(()))
+        }
+      }
+      Token::Number { .. } | Token::Dimension { .. } => {
+        let token_text = token.to_css_string();
+        if crate::style::properties::parse_time_ms(&token_text).is_some() {
+          Ok(())
+        } else {
+          Err(p.new_custom_error(()))
+        }
+      }
+      Token::Function(name) => {
+        let func = name.as_ref().to_string();
+        let inner = p.parse_nested_block(|block| {
+          let start = block.position();
+          consume_nested_tokens_for_slice(block)?;
+          Ok(block.slice_from(start).to_string())
+        })?;
+        let token_text = format!("{func}({inner})");
+        if crate::style::properties::parse_time_ms(&token_text).is_some() {
+          Ok(())
+        } else {
+          Err(p.new_custom_error(()))
+        }
+      }
+      _ => Err(p.new_custom_error(())),
+    }
+  }) {
+    Ok(times) => times,
+    Err(_) => return false,
+  };
+  parser.skip_whitespace();
+  if !parser.is_exhausted() {
+    return false;
+  }
+
+  !times.is_empty()
+}
+
 fn supports_scroll_timeline_function<'i, 't>(
   input: &mut Parser<'i, 't>,
 ) -> Result<(), cssparser::ParseError<'i, ()>> {
@@ -2356,6 +2412,7 @@ pub(crate) fn supports_parsed_declaration_is_valid(
         &["normal", "break-all", "keep-all", "break-word", "anywhere"],
       )
     }
+    "animation-duration" => return supports_animation_duration_value(raw_value),
     "animation-timeline" => return supports_animation_timeline_value(raw_value),
     "direction" => return keyword_in_list(parsed, &["ltr", "rtl"]),
     "visibility" => return keyword_in_list(parsed, &["visible", "hidden", "collapse"]),

@@ -107,6 +107,18 @@ mod tests {
   }
 
   #[test]
+  fn supports_animation_duration_accepts_auto_and_rejects_invalid_values() {
+    assert!(supports_declaration("animation-duration", "auto"));
+    assert!(supports_declaration("animation-duration", "1s"));
+    assert!(supports_declaration("animation-duration", "auto, 2s"));
+    assert!(supports_declaration("animation-duration", "calc(1s + 500ms)"));
+
+    assert!(!supports_declaration("animation-duration", "bogus"));
+    assert!(!supports_declaration("animation-duration", "auto 2s"));
+    assert!(!supports_declaration("animation-duration", "1s,"));
+  }
+
+  #[test]
   fn supports_sizing_properties_require_valid_length_syntax() {
     assert!(supports_declaration("height", "100px"));
     assert!(supports_declaration("height", "0"));
