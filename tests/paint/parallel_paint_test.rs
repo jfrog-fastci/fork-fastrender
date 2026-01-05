@@ -34,6 +34,13 @@ impl Drop for EnvGuard {
   }
 }
 
+fn cpu_budget_allows_parallel_paint() -> bool {
+  // Paint parallelism is clamped by `fastrender::system::cpu_budget()` (e.g. cgroup quotas).
+  // When the budget is single-threaded, parallel tiling is expected to be disabled even if the
+  // test installs a larger Rayon thread pool.
+  fastrender::system::cpu_budget() > 1
+}
+
 fn assert_rgba8888_pixels_eq(width: u32, height: u32, expected: &[u8], actual: &[u8], label: &str) {
   assert_eq!(
     expected.len(),
@@ -241,7 +248,13 @@ fn parallel_paint_matches_serial_output() {
       .expect("parallel paint")
   });
 
-  assert!(report.parallel_used, "expected tiling to be used");
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
   assert_pixmap_eq(&serial, &report.pixmap);
 }
 
@@ -335,7 +348,13 @@ fn mask_parallel_paint_matches_serial_output() {
       .expect("parallel paint")
   });
 
-  assert!(report.parallel_used, "expected tiling to be used");
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
   let serial_data = serial.data();
   let parallel_data = report.pixmap.data();
   if serial_data != parallel_data {
@@ -450,7 +469,13 @@ fn viewport_unit_masks_match_serial_output() {
       .expect("parallel paint")
   });
 
-  assert!(report.parallel_used, "expected tiling to be used");
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
   assert_pixmap_eq(&serial, &report.pixmap);
 }
 
@@ -500,7 +525,13 @@ fn thick_strokes_survive_tiling() {
       .expect("parallel paint")
   });
 
-  assert!(report.parallel_used, "expected tiling to be used");
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
   assert_pixmap_eq(&serial, &report.pixmap);
 }
 
@@ -580,7 +611,13 @@ fn clip_transform_and_stacking_context_match_serial_output() {
       .expect("parallel paint")
   });
 
-  assert!(report.parallel_used, "expected tiling to be used");
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
   assert_pixmap_eq(&serial, &report.pixmap);
 }
 
@@ -654,7 +691,13 @@ fn stacking_context_mask_matches_serial_output() {
       .expect("parallel paint")
   });
 
-  assert!(report.parallel_used, "expected tiling to be used");
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
   assert_pixmap_eq(&serial, &report.pixmap);
 }
 
@@ -717,7 +760,13 @@ fn stacking_context_isolated_layer_matches_serial_output() {
       .expect("parallel paint")
   });
 
-  assert!(report.parallel_used, "expected tiling to be used");
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
   assert_pixmap_eq(&serial, &report.pixmap);
 }
 
@@ -810,7 +859,13 @@ fn svg_filter_and_rounded_clip_match_serial_output_in_translated_tiles() {
       .expect("parallel paint")
   });
 
-  assert!(report.parallel_used, "expected tiling to be used");
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
   assert_eq!(serial.data(), report.pixmap.data());
 }
 
@@ -933,7 +988,13 @@ fn clip_path_polygon_matches_serial_output_under_tiling() {
       .expect("parallel paint")
   });
 
-  assert!(report.parallel_used, "expected tiling to be used");
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
   assert_pixmap_eq(&serial, &report.pixmap);
 }
 
@@ -1032,7 +1093,13 @@ fn mask_layers_survive_tiling() {
       .expect("parallel paint")
   });
 
-  assert!(report.parallel_used, "expected tiling to be used");
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
   assert_pixmap_eq(&serial, &report.pixmap);
 }
 
@@ -1128,7 +1195,13 @@ fn mask_viewport_units_match_serial_output() {
       .expect("parallel paint")
   });
 
-  assert!(report.parallel_used, "expected tiling to be used");
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
   assert_pixmap_eq(&serial, &report.pixmap);
 }
 
@@ -1190,7 +1263,13 @@ fn stacking_context_filter_radii_match_serial_output_under_tiling() {
       .expect("parallel paint")
   });
 
-  assert!(report.parallel_used, "expected tiling to be used");
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
   assert_eq!(serial.data(), report.pixmap.data());
 }
 
@@ -1253,8 +1332,14 @@ fn path_clips_survive_tiling() {
       .expect("parallel paint")
   });
 
-  assert!(report.parallel_used, "expected tiling to be used");
-  assert!(report.tiles > 1, "expected multiple tiles to be rendered");
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+    assert!(report.tiles > 1, "expected multiple tiles to be rendered");
+  }
   assert_rgba8888_pixels_eq(
     width,
     height,
@@ -1320,12 +1405,14 @@ fn backdrop_filters_survive_tiling() {
       .expect("parallel paint")
   });
 
-  assert!(
-    report.parallel_used,
-    "expected backdrop-filter rendering to use parallel painting (fallback={:?})",
-    report.fallback_reason
-  );
-  assert!(report.tiles > 1, "expected multiple tiles to be rendered");
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected backdrop-filter rendering to use parallel painting (fallback={:?})",
+      report.fallback_reason
+    );
+    assert!(report.tiles > 1, "expected multiple tiles to be rendered");
+  }
   assert_rgba8888_pixels_eq(
     128,
     64,
@@ -1418,11 +1505,13 @@ fn preserve_3d_stacking_contexts_trigger_serial_fallback() {
     !report.parallel_used,
     "preserve-3d should disable parallel painting"
   );
-  let reason = report.fallback_reason.as_deref().unwrap_or_default();
-  assert!(
-    reason.contains("preserve"),
-    "expected preserve-3d fallback reason, got {reason:?}"
-  );
+  if cpu_budget_allows_parallel_paint() {
+    let reason = report.fallback_reason.as_deref().unwrap_or_default();
+    assert!(
+      reason.contains("preserve"),
+      "expected preserve-3d fallback reason, got {reason:?}"
+    );
+  }
   assert_pixmap_eq(&serial, &report.pixmap);
 }
 
@@ -1588,8 +1677,10 @@ fn auto_parallelizes_expensive_gradients() {
       .expect("auto render")
   });
 
-  assert!(report.parallel_used, "expected AUTO to enable tiling");
-  assert!(report.parallel_threads > 1, "expected multiple threads");
+  if cpu_budget_allows_parallel_paint() {
+    assert!(report.parallel_used, "expected AUTO to enable tiling");
+    assert!(report.parallel_threads > 1, "expected multiple threads");
+  }
   assert_eq!(serial.data(), report.pixmap.data());
 }
 
@@ -1639,15 +1730,17 @@ fn huge_effect_halo_triggers_serial_fallback() {
     !report.parallel_used,
     "expected tiling to be disabled due to huge halo amplification"
   );
-  assert!(
-    report
-      .fallback_reason
-      .as_deref()
-      .unwrap_or_default()
-      .contains("halo amplification"),
-    "expected halo amplification fallback reason, got {:?}",
-    report.fallback_reason
-  );
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report
+        .fallback_reason
+        .as_deref()
+        .unwrap_or_default()
+        .contains("halo amplification"),
+      "expected halo amplification fallback reason, got {:?}",
+      report.fallback_reason
+    );
+  }
   assert_eq!(serial.data(), report.pixmap.data());
 }
 
@@ -1740,7 +1833,13 @@ fn parallel_paint_masked_element_matches_serial_off_origin_tiles() {
       .expect("parallel paint")
   });
 
-  assert!(report.parallel_used, "expected tiling to be used");
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
   assert_eq!(serial.data(), report.pixmap.data());
 }
 
@@ -1778,9 +1877,11 @@ fn modest_halo_allows_parallel_tiling() {
       .expect("render")
   });
 
-  assert!(
-    report.parallel_used,
-    "expected modest halo to keep parallel tiling enabled (fallback={:?})",
-    report.fallback_reason
-  );
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected modest halo to keep parallel tiling enabled (fallback={:?})",
+      report.fallback_reason
+    );
+  }
 }

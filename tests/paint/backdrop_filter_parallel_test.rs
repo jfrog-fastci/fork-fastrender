@@ -311,12 +311,15 @@ fn parallel_paint_is_used_with_backdrop_filter_and_matches_serial() {
       .expect("parallel render")
   });
 
-  assert!(
-    report.parallel_used,
-    "expected backdrop-filter scene to use parallel tiling (fallback={:?})",
-    report.fallback_reason
-  );
-  assert!(report.tiles > 1, "expected multiple tiles to be rendered");
+  let cpu_budget = fastrender::system::cpu_budget();
+  if cpu_budget > 1 {
+    assert!(
+      report.parallel_used,
+      "expected backdrop-filter scene to use parallel tiling (fallback={:?})",
+      report.fallback_reason
+    );
+    assert!(report.tiles > 1, "expected multiple tiles to be rendered");
+  }
   assert_pixmap_eq(
     "parallel backdrop-filter output diverged from serial",
     &serial,
@@ -387,7 +390,10 @@ fn parallel_backdrop_filter_with_large_box_shadow_matches_serial() {
       .expect("parallel render")
   });
 
-  assert!(report.parallel_used, "expected multiple tiles");
+  let cpu_budget = fastrender::system::cpu_budget();
+  if cpu_budget > 1 {
+    assert!(report.parallel_used, "expected multiple tiles");
+  }
   assert_pixmap_eq("parallel output diverged", &serial, &report.pixmap);
 }
 
@@ -549,12 +555,15 @@ fn parallel_drop_shadow_and_clip_path_cross_tile_matches_serial() {
       .expect("parallel render")
   });
 
-  assert!(
-    report.parallel_used,
-    "expected scene to use parallel tiling (fallback={:?})",
-    report.fallback_reason
-  );
-  assert!(report.tiles > 1, "expected multiple tiles");
+  let cpu_budget = fastrender::system::cpu_budget();
+  if cpu_budget > 1 {
+    assert!(
+      report.parallel_used,
+      "expected scene to use parallel tiling (fallback={:?})",
+      report.fallback_reason
+    );
+    assert!(report.tiles > 1, "expected multiple tiles");
+  }
   assert_pixmap_eq("parallel output diverged", &serial, &report.pixmap);
 }
 
@@ -657,7 +666,10 @@ fn parallel_mask_image_url_with_drop_shadow_matches_serial() {
       .expect("parallel render")
   });
 
-  assert!(report.parallel_used, "expected multiple tiles");
+  let cpu_budget = fastrender::system::cpu_budget();
+  if cpu_budget > 1 {
+    assert!(report.parallel_used, "expected multiple tiles");
+  }
   assert_pixmap_eq("parallel output diverged", &serial, &report.pixmap);
 }
 
@@ -713,20 +725,23 @@ fn parallel_filter_backdrop_layers_fixture_matches_serial() {
       .stack_size(8 * 1024 * 1024)
       .build()
       .expect("rayon pool");
-    let report = pool.install(|| {
-      DisplayListRenderer::new(600, 480, Rgba::WHITE, font_ctx)
-        .expect("renderer")
-        .with_parallelism(parallelism)
-        .render_with_report(&list)
-        .expect("parallel render")
-    });
+     let report = pool.install(|| {
+       DisplayListRenderer::new(600, 480, Rgba::WHITE, font_ctx)
+         .expect("renderer")
+         .with_parallelism(parallelism)
+         .render_with_report(&list)
+         .expect("parallel render")
+     });
 
-    assert!(
-      report.parallel_used,
-      "expected fixture to use parallel tiling (fallback={:?})",
-      report.fallback_reason
-    );
-    assert!(report.tiles > 1, "expected multiple tiles");
-    assert_pixmap_eq("fixture output diverged", &serial, &report.pixmap);
-  });
+     let cpu_budget = fastrender::system::cpu_budget();
+     if cpu_budget > 1 {
+       assert!(
+         report.parallel_used,
+         "expected fixture to use parallel tiling (fallback={:?})",
+         report.fallback_reason
+       );
+       assert!(report.tiles > 1, "expected multiple tiles");
+     }
+     assert_pixmap_eq("fixture output diverged", &serial, &report.pixmap);
+   });
 }

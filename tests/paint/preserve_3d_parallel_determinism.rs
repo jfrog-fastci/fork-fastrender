@@ -66,6 +66,7 @@ fn preserve_3d_renders_are_deterministic_with_parallel_paint_enabled() {
   let bounds = Rect::from_xywh(0.0, 0.0, 260.0, 260.0);
   let list = preserve_3d_list(bounds);
 
+  let cpu_budget = fastrender::system::cpu_budget();
   let parallelism = PaintParallelism {
     tile_size: 64,
     min_display_items: 1,
@@ -90,11 +91,13 @@ fn preserve_3d_renders_are_deterministic_with_parallel_paint_enabled() {
         !report.parallel_used,
         "preserve-3d stacking contexts should disable outer tiling (iteration {iteration})"
       );
-      assert_eq!(
-        report.fallback_reason.as_deref(),
-        Some("preserve-3d stacking contexts require serial painting"),
-        "unexpected parallel fallback reason (iteration {iteration})"
-      );
+      if cpu_budget > 1 {
+        assert_eq!(
+          report.fallback_reason.as_deref(),
+          Some("preserve-3d stacking contexts require serial painting"),
+          "unexpected parallel fallback reason (iteration {iteration})"
+        );
+      }
 
       let bytes = report.pixmap.data().to_vec();
       match &baseline {

@@ -149,6 +149,7 @@ fn svg_filter_parallel_paint_is_byte_identical_and_deterministic() {
   let filter = build_svg_filter();
   let list = build_display_list(filter);
   let font_ctx = FontContext::new();
+  let cpu_budget = fastrender::system::cpu_budget();
 
   let serial_pixmap = DisplayListRenderer::new(WIDTH, HEIGHT, Rgba::WHITE, font_ctx.clone())
     .expect("renderer")
@@ -180,12 +181,14 @@ fn svg_filter_parallel_paint_is_byte_identical_and_deterministic() {
       .render_with_report(&list)
       .expect("parallel render")
   });
-  assert!(
-    first.parallel_used,
-    "expected svg-filter scene to use parallel tiling (fallback={:?})",
-    first.fallback_reason
-  );
-  assert!(first.tiles > 1, "expected multiple tiles to be rendered");
+  if cpu_budget > 1 {
+    assert!(
+      first.parallel_used,
+      "expected svg-filter scene to use parallel tiling (fallback={:?})",
+      first.fallback_reason
+    );
+    assert!(first.tiles > 1, "expected multiple tiles to be rendered");
+  }
   assert_pixmap_eq(&serial_pixmap, &first.pixmap);
 
   // (B) Parallel determinism under repeated/concurrent runs. This stresses shared caches (blur
@@ -200,11 +203,13 @@ fn svg_filter_parallel_paint_is_byte_identical_and_deterministic() {
           .with_parallelism(parallelism)
           .render_with_report(&list)
           .expect("parallel render");
-        assert!(
-          report.parallel_used,
-          "expected parallel tiling on repeated svg-filter render (fallback={:?})",
-          report.fallback_reason
-        );
+        if cpu_budget > 1 {
+          assert!(
+            report.parallel_used,
+            "expected parallel tiling on repeated svg-filter render (fallback={:?})",
+            report.fallback_reason
+          );
+        }
         report.pixmap.data().to_vec()
       })
       .collect()

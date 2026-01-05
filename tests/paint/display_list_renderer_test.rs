@@ -3864,26 +3864,29 @@ fn parallel_renderer_uses_multiple_threads_on_large_list() {
       .expect("parallel render")
   });
 
-  assert!(
-    report.parallel_used,
-    "parallel renderer should tile large scenes"
-  );
-  assert!(
-    report.parallel_threads > 1,
-    "expected multiple threads to render tiles (got {})",
-    report.parallel_threads
-  );
-  assert!(
-    report.parallel_tasks > 1,
-    "expected multiple tiles to be rendered in parallel"
-  );
-  assert!(
-    report.parallel_duration > Duration::ZERO,
-    "parallel render should record elapsed time"
-  );
-  assert!(
-    report.serial_duration < report.duration,
-    "serial overhead should be captured separately"
-  );
+  let cpu_budget = fastrender::system::cpu_budget();
+  if cpu_budget > 1 {
+    assert!(
+      report.parallel_used,
+      "parallel renderer should tile large scenes"
+    );
+    assert!(
+      report.parallel_threads > 1,
+      "expected multiple threads to render tiles (got {})",
+      report.parallel_threads
+    );
+    assert!(
+      report.parallel_tasks > 1,
+      "expected multiple tiles to be rendered in parallel"
+    );
+    assert!(
+      report.parallel_duration > Duration::ZERO,
+      "parallel render should record elapsed time"
+    );
+    assert!(
+      report.serial_duration < report.duration,
+      "serial overhead should be captured separately"
+    );
+  }
   assert_eq!(serial.data(), report.pixmap.data());
 }
