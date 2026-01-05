@@ -3435,9 +3435,15 @@ fn reorder_paragraph(
       if let Some(para_leaf) = paragraph_leaves.get(seg.leaf_index) {
         let item = match &para_leaf.leaf.item {
           InlineItem::Text(text_item) => {
+            let slice_base_direction =
+              if matches!(text_item.style.unicode_bidi, UnicodeBidi::Plaintext) {
+                text_item.base_direction
+              } else {
+                paragraph_direction
+              };
             let full_range = seg.local_start == 0 && seg.local_end == text_item.text.len();
             if full_range
-              && text_item.base_direction == paragraph_direction
+              && text_item.base_direction == slice_base_direction
               && explicit_bidi_eq(text_item.explicit_bidi, para_leaf.bidi_context)
             {
               InlineItem::Text(text_item.clone())
@@ -3447,7 +3453,7 @@ fn reorder_paragraph(
                 seg.local_start..seg.local_end,
                 shaper,
                 font_context,
-                paragraph_direction,
+                slice_base_direction,
                 para_leaf.bidi_context,
                 &mut reshape_cache,
               ) else {
@@ -4310,6 +4316,125 @@ mod tests {
       )
       .expect("split should succeed");
     assert_split_matches_original(&ltr_base, split_offset, &before_ltr, &after_ltr);
+  }
+
+  #[test]
+  fn bidi_nested_plaintext_preserves_element_base_direction_when_slicing() {
+    let pipeline = ShapingPipeline::new();
+    let font_context = FontContext::new();
+
+    let mut style_normal = ComputedStyle::default();
+    style_normal.font_kerning = FontKerning::None;
+    style_normal.direction = Direction::Ltr;
+    style_normal.unicode_bidi = UnicodeBidi::Normal;
+    let style_normal = Arc::new(style_normal);
+
+    let mut style_plaintext = (*style_normal).clone();
+    style_plaintext.unicode_bidi = UnicodeBidi::Plaintext;
+    let style_plaintext = Arc::new(style_plaintext);
+
+    // Shape the mixed-direction text with a plaintext base (first strong RTL).
+    let mixed = "אבג ABC";
+    let abc_start = mixed
+      .find('A')
+      .expect("expected Latin segment in plaintext test string");
+    let abc_end = abc_start + "ABC".len();
+
+    let expected_rtl = make_shaped_text_item(
+      mixed,
+      style_normal.clone(),
+      Direction::Rtl,
+      None,
+      &pipeline,
+      &font_context,
+    );
+    let expected_ltr = make_shaped_text_item(
+      mixed,
+      style_normal.clone(),
+      Direction::Ltr,
+      None,
+      &pipeline,
+      &font_context,
+    );
+
+    let expected_rtl_abc: Vec<(usize, u8, bool)> = glyph_signature_sequence(&expected_rtl)
+      .into_iter()
+      .filter(|(cluster, _, _)| *cluster >= abc_start && *cluster < abc_end)
+      .collect();
+    let expected_ltr_abc: Vec<(usize, u8, bool)> = glyph_signature_sequence(&expected_ltr)
+      .into_iter()
+      .filter(|(cluster, _, _)| *cluster >= abc_start && *cluster < abc_end)
+      .collect();
+    assert_ne!(
+      expected_rtl_abc, expected_ltr_abc,
+      "expected mixed-direction shaping to depend on the paragraph base direction"
+    );
+
+    let strut = make_strut_metrics();
+    let mut builder = LineBuilder::new(
+      500.0,
+      500.0,
+      true,
+      TextWrap::Auto,
+      0.0,
+      false,
+      false,
+      strut,
+      pipeline.clone(),
+      font_context.clone(),
+      Some(Level::ltr()),
+      UnicodeBidi::Normal,
+      Direction::Ltr,
+      None,
+      0.0,
+      None,
+    );
+
+    // Add a non-plaintext prefix to keep the paragraph base fixed to LTR.
+    let mut prefix = make_shaped_text_item(
+      "X ",
+      style_normal.clone(),
+      Direction::Ltr,
+      None,
+      &pipeline,
+      &font_context,
+    );
+    prefix.box_id = 1;
+    builder.add_item(InlineItem::Text(prefix)).unwrap();
+
+    let mut plaintext_item = make_shaped_text_item(
+      mixed,
+      style_plaintext,
+      Direction::Rtl,
+      None,
+      &pipeline,
+      &font_context,
+    );
+    plaintext_item.box_id = 2;
+    builder.add_item(InlineItem::Text(plaintext_item)).unwrap();
+
+    let lines = builder.finish().unwrap().lines;
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].resolved_direction, Direction::Ltr);
+
+    let mut observed_abc: Vec<(usize, u8, bool)> = Vec::new();
+    for positioned in &lines[0].items {
+      if let InlineItem::Text(item) = &positioned.item {
+        if item.box_id == 2 {
+          observed_abc.extend(
+            glyph_signature_sequence(item)
+              .into_iter()
+              .filter(|(cluster, _, _)| *cluster >= abc_start && *cluster < abc_end),
+          );
+        }
+      }
+    }
+    assert!(
+      !observed_abc.is_empty(),
+      "expected to find shaped glyphs for the nested plaintext segment"
+    );
+    assert_eq!(observed_abc, expected_rtl_abc);
+    assert_ne!(observed_abc, expected_ltr_abc);
   }
 
   #[test]
