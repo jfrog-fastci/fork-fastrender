@@ -1,5 +1,6 @@
 #![cfg(feature = "disk_cache")]
 
+use fastrender::css::parser::parse_stylesheet;
 use fastrender::resource::bundle::{Bundle, BundledFetcher};
 use fastrender::resource::{
   normalize_user_agent_for_log, CachingFetcherConfig, DiskCacheConfig, DiskCachingFetcher,
@@ -504,10 +505,9 @@ fn bundle_page_cache_allow_missing_inserts_typed_placeholders() {
     .expect("fetch placeholder stylesheet");
   assert_eq!(missing_css.content_type.as_deref(), Some("text/css"));
   assert_eq!(missing_css.final_url.as_deref(), Some(missing_css_url.as_str()));
-  assert!(
-    std::str::from_utf8(&missing_css.bytes).is_ok(),
-    "stylesheet placeholder should be valid UTF-8"
-  );
+  let css_text =
+    std::str::from_utf8(&missing_css.bytes).expect("stylesheet placeholder should be valid UTF-8");
+  parse_stylesheet(css_text).expect("stylesheet placeholder should parse");
 
   let missing_frame = fetcher
     .fetch(&missing_frame_url)
