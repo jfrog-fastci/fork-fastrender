@@ -633,34 +633,28 @@ fn turbulence_midgray_displacement_map_is_nearly_identity_in_linear_rgb() {
 
 #[test]
 fn turbulence_missing_basefrequency_defaults_to_zero() {
+  // Match resvg defaults: missing baseFrequency behaves like baseFrequency="0".
   let svg = r#"
-    <svg xmlns="http://www.w3.org/2000/svg">
-      <filter id="f" x="0" y="0" width="1" height="1">
-        <feTurbulence type="fractalNoise" />
-      </filter>
+    <svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" shape-rendering="crispEdges">
+      <defs>
+        <filter id="f" x="0" y="0" width="8" height="8" filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse">
+          <feTurbulence type="fractalNoise" />
+        </filter>
+      </defs>
+      <rect x="0" y="0" width="8" height="8" fill="white" filter="url(#f)" />
     </svg>
   "#;
-  let filter =
-    parse_svg_filter_from_svg_document(svg, Some("f"), &ImageCache::new()).expect("filter");
+
+  let cache = ImageCache::new();
+  let expected = cache
+    .render_svg_pixmap_at_size(svg, 8, 8, "test://turbulence_missing_basefrequency_expected", 1.0)
+    .expect("render via resvg");
+
+  let filter = parse_svg_filter_from_svg_document(svg, Some("f"), &cache).expect("filter");
 
   let mut pixmap = Pixmap::new(8, 8).unwrap();
   let bbox = Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32);
   apply_svg_filter(filter.as_ref(), &mut pixmap, 1.0, bbox).unwrap();
 
-  let linear_to_srgb = |v: f32| -> f32 {
-    if v <= 0.0031308 {
-      12.92 * v
-    } else {
-      1.055 * v.powf(1.0 / 2.4) - 0.055
-    }
-  };
-  let expected_byte = (linear_to_srgb(0.5) * 255.0).round().clamp(0.0, 255.0) as u8;
-  let expected =
-    PremultipliedColorU8::from_rgba(expected_byte, expected_byte, expected_byte, 255).unwrap();
-
-  let first = pixmap.pixel(0, 0).unwrap();
-  assert_eq!(first, expected, "unexpected first turbulence pixel");
-  for (idx, px) in pixmap.pixels().iter().enumerate() {
-    assert_eq!(*px, expected, "unexpected turbulence pixel at index {idx}");
-  }
+  assert_eq!(pixmap.data(), expected.as_ref().data());
 }

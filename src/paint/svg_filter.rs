@@ -2686,14 +2686,13 @@ fn parse_fe_turbulence(node: &roxmltree::Node) -> Option<FilterPrimitive> {
 
   // SVG: seed is a number; implementations coerce it to an integer.
   //
-  // Clamp negative (and non-finite) values to 0, and round fractional values so rendering is
-  // deterministic across engines and thread pools.
+  // resvg truncates fractional values toward zero while preserving the sign.
   let seed_raw = node
     .attribute("seed")
     .and_then(|v| v.parse::<f32>().ok())
     .unwrap_or(0.0);
   let seed = if seed_raw.is_finite() {
-    seed_raw.round().max(0.0) as i32
+    seed_raw as i32
   } else {
     0
   };
@@ -8224,7 +8223,7 @@ mod tests {
   }
 
   #[test]
-  fn turbulence_seed_negative_clamps_to_zero() {
+  fn turbulence_seed_preserves_negative_values() {
     let doc = roxmltree::Document::parse("<filter><feTurbulence seed=\"-4\"/></filter>").unwrap();
     let node = doc
       .descendants()
@@ -8232,13 +8231,13 @@ mod tests {
       .unwrap();
     let prim = parse_fe_turbulence(&node).expect("should parse turbulence");
     match prim {
-      FilterPrimitive::Turbulence { seed, .. } => assert_eq!(seed, 0),
+      FilterPrimitive::Turbulence { seed, .. } => assert_eq!(seed, -4),
       other => panic!("expected turbulence primitive, got {other:?}"),
     }
   }
 
   #[test]
-  fn turbulence_seed_rounds_fractional_values() {
+  fn turbulence_seed_truncates_fractional_values() {
     let parse_seed = |seed: &str| -> i32 {
       let markup = format!("<filter><feTurbulence seed=\"{seed}\"/></filter>");
       let doc = roxmltree::Document::parse(&markup).unwrap();
@@ -8254,7 +8253,9 @@ mod tests {
     };
 
     assert_eq!(parse_seed("1.4"), 1);
-    assert_eq!(parse_seed("1.6"), 2);
+    assert_eq!(parse_seed("1.6"), 1);
+    assert_eq!(parse_seed("-1.4"), -1);
+    assert_eq!(parse_seed("-1.6"), -1);
   }
 
   #[test]
