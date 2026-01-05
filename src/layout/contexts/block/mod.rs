@@ -47,6 +47,8 @@ use crate::layout::formatting_context::intrinsic_cache_lookup;
 use crate::layout::formatting_context::intrinsic_cache_store;
 use crate::layout::formatting_context::layout_cache_lookup;
 use crate::layout::formatting_context::layout_cache_store;
+use crate::layout::formatting_context::remembered_size_cache_lookup;
+use crate::layout::formatting_context::remembered_size_cache_store;
 use crate::layout::formatting_context::FormattingContext;
 use crate::layout::formatting_context::IntrinsicSizingMode;
 use crate::layout::formatting_context::LayoutError;
@@ -1044,23 +1046,40 @@ impl BlockFormattingContext {
           .filter(|h| h.is_finite())
           .map(|h| h.max(0.0))
           .or_else(|| {
-            let axis = if block_axis_is_horizontal(style.writing_mode) {
+            let axis_is_width = block_axis_is_horizontal(style.writing_mode);
+            let axis = if axis_is_width {
               style.contain_intrinsic_width
             } else {
               style.contain_intrinsic_height
             };
             axis
-              .length
-              .and_then(|l| {
-                resolve_length_with_percentage(
-                  l,
-                  containing_height,
-                  self.viewport_size,
-                  style.font_size,
-                  style.root_font_size,
-                )
+              .auto
+              .then(|| {
+                remembered_size_cache_lookup(child).map(|size| {
+                  if axis_is_width {
+                    size.width
+                  } else {
+                    size.height
+                  }
+                })
               })
+              .flatten()
+              .filter(|v| v.is_finite())
               .map(|v| v.max(0.0))
+              .or_else(|| {
+                axis
+                  .length
+                  .and_then(|l| {
+                    resolve_length_with_percentage(
+                      l,
+                      containing_height,
+                      self.viewport_size,
+                      style.font_size,
+                      style.root_font_size,
+                    )
+                  })
+                  .map(|v| v.max(0.0))
+              })
           })
           .and_then(|content_estimate| {
             let border_box = content_estimate + vertical_edges;
@@ -1116,6 +1135,14 @@ impl BlockFormattingContext {
           if offset != Point::ZERO {
             fragment.translate_root_in_place(offset);
           }
+          let remembered_block = (fragment.bounds.height() - vertical_edges).max(0.0);
+          let remembered_inline = computed_width.content_width;
+          let remembered = if block_axis_is_horizontal(style.writing_mode) {
+            Size::new(remembered_block, remembered_inline)
+          } else {
+            Size::new(remembered_inline, remembered_block)
+          };
+          remembered_size_cache_store(child, remembered);
           fragment.block_metadata = Some(BlockFragmentMetadata {
             margin_top,
             margin_bottom,
@@ -1154,14 +1181,27 @@ impl BlockFormattingContext {
       };
 
     if skip_contents || style.containment.size {
-      let axis = if block_axis_is_horizontal(style.writing_mode) {
+      let axis_is_width = block_axis_is_horizontal(style.writing_mode);
+      let axis = if axis_is_width {
         style.contain_intrinsic_width
       } else {
         style.contain_intrinsic_height
       };
+      let remembered = axis
+        .auto
+        .then(|| {
+          remembered_size_cache_lookup(child).map(|size| {
+            if axis_is_width {
+              size.width
+            } else {
+              size.height
+            }
+          })
+        })
+        .flatten();
       content_height = crate::layout::utils::resolve_contain_intrinsic_size_axis(
         axis,
-        None,
+        remembered,
         containing_height,
         self.viewport_size,
         style.font_size,
@@ -1659,6 +1699,17 @@ impl BlockFormattingContext {
       // Keep logical bounds aligned with the physical multi-column fragment geometry so
       // pagination uses the clipped height rather than the unfragmented flow height.
       fragment.logical_override = Some(fragment.bounds);
+    }
+
+    if !skip_contents {
+      // Remember the laid out content-box size so skipped-content placeholder sizing can reuse it
+      // in subsequent layout passes (`contain-intrinsic-size: auto`).
+      let remembered = if block_axis_is_horizontal(style.writing_mode) {
+        Size::new(height, computed_width.content_width)
+      } else {
+        Size::new(computed_width.content_width, height)
+      };
+      remembered_size_cache_store(child, remembered);
     }
 
     // Push bottom margin for next collapse
@@ -4790,14 +4841,40 @@ impl FormattingContext for BlockFormattingContext {
         (frags, height, positioned, None)
       };
     if skip_contents || style.containment.size {
-      let axis = if block_axis_is_horizontal(style.writing_mode) {
+      let axis_is_width = block_axis_is_horizontal(style.writing_mode);
+      let axis = if axis_is_width {
         style.contain_intrinsic_width
       } else {
         style.contain_intrinsic_height
       };
-      content_height = axis
-        .length
-        .and_then(|l| {
+      let remembered = axis
+        .auto
+        .then(|| {
+          remembered_size_cache_lookup(box_node).map(|size| {
+            if axis_is_width {
+              size.width
+            } else {
+              size.height
+            }
+          })
+        })
+        .flatten();
+      let resolved = if axis.auto {
+        remembered.or_else(|| {
+          axis.length.and_then(|l| {
+            resolve_length_with_percentage_metrics(
+              l,
+              containing_height,
+              self.viewport_size,
+              style.font_size,
+              style.root_font_size,
+              Some(style),
+              Some(&self.font_context),
+            )
+          })
+        })
+      } else {
+        axis.length.and_then(|l| {
           resolve_length_with_percentage_metrics(
             l,
             containing_height,
@@ -4808,8 +4885,12 @@ impl FormattingContext for BlockFormattingContext {
             Some(&self.font_context),
           )
         })
-        .unwrap_or(0.0)
-        .max(0.0);
+      };
+      let mut value = resolved.unwrap_or(0.0);
+      if !value.is_finite() {
+        value = 0.0;
+      }
+      content_height = value.max(0.0);
     }
 
     // Child fragments are produced in the block's content coordinate space (0,0 at the content
@@ -4916,6 +4997,15 @@ impl FormattingContext for BlockFormattingContext {
       min_height,
       max_height,
     );
+
+    if !skip_contents {
+      let remembered = if block_axis_is_horizontal(style.writing_mode) {
+        Size::new(height, computed_width.content_width)
+      } else {
+        Size::new(computed_width.content_width, height)
+      };
+      remembered_size_cache_store(box_node, remembered);
+    }
 
     let box_height = border_top + padding_top + height + padding_bottom + border_bottom;
     // For root/layout entry points, keep fragment bounds scoped to the border box so margins

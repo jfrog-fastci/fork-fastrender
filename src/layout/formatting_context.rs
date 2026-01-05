@@ -92,6 +92,7 @@ pub enum IntrinsicSizingMode {
 }
 
 type IntrinsicCacheKey = (usize, usize, IntrinsicSizingMode);
+type RememberedSizeCacheKey = (usize, usize);
 
 /// Number of shards used for intrinsic sizing caches.
 ///
@@ -146,6 +147,54 @@ static GLOBAL_INTRINSIC_INLINE_CACHE: LazyLock<ShardedIntrinsicCache> =
 static GLOBAL_INTRINSIC_BLOCK_CACHE: LazyLock<ShardedIntrinsicCache> =
   LazyLock::new(ShardedIntrinsicCache::new);
 
+/// Stores remembered *content-box* sizes (physical width + height) for skipped content.
+///
+/// This cache exists to implement `contain-intrinsic-size: auto` semantics. When an element's
+/// contents are skipped (e.g., `content-visibility: auto` or size containment), the used size along
+/// the relevant axis should fall back to the last known content-box size when available.
+///
+/// Values are tagged with the active cache epoch so entries can be invalidated between layout runs.
+struct ShardedRememberedSizeCache {
+  shards: [RwLock<FxHashMap<RememberedSizeCacheKey, (usize, Size)>>; INTRINSIC_CACHE_SHARDS],
+}
+
+impl ShardedRememberedSizeCache {
+  fn new() -> Self {
+    Self {
+      shards: std::array::from_fn(|_| RwLock::new(FxHashMap::default())),
+    }
+  }
+
+  #[inline]
+  fn shard_index_for_box_id(box_id: usize) -> usize {
+    box_id % INTRINSIC_CACHE_SHARDS
+  }
+
+  #[inline]
+  fn get(&self, key: &RememberedSizeCacheKey, epoch: usize) -> Option<Size> {
+    let shard = &self.shards[Self::shard_index_for_box_id(key.0)];
+    let map = shard.read();
+    map
+      .get(key)
+      .and_then(|(entry_epoch, value)| (*entry_epoch == epoch).then_some(*value))
+  }
+
+  #[inline]
+  fn insert(&self, key: RememberedSizeCacheKey, epoch: usize, value: Size) {
+    let shard = &self.shards[Self::shard_index_for_box_id(key.0)];
+    shard.write().insert(key, (epoch, value));
+  }
+
+  fn clear(&self) {
+    for shard in &self.shards {
+      shard.write().clear();
+    }
+  }
+}
+
+static GLOBAL_REMEMBERED_SIZE_CACHE: LazyLock<ShardedRememberedSizeCache> =
+  LazyLock::new(ShardedRememberedSizeCache::new);
+
 thread_local! {
   /// Intrinsic sizing cache for callers that temporarily override the effective `ComputedStyle`
   /// via `layout::style_override`.
@@ -165,6 +214,16 @@ thread_local! {
   static INTRINSIC_BLOCK_OVERRIDE_CACHE: RefCell<
     FxHashMap<(usize, u64, IntrinsicSizingMode), (usize, f32)>,
   > = RefCell::new(FxHashMap::default());
+}
+
+thread_local! {
+  /// Remembered content-box sizes for style overrides.
+  ///
+  /// Like intrinsic sizing, style overrides keep the `BoxNode` style pointer stable while changing
+  /// the effective layout inputs. Keying by the override signature avoids accidentally attributing
+  /// a temporary sizing probe to the base style pointer.
+  static REMEMBERED_SIZE_OVERRIDE_CACHE: RefCell<FxHashMap<(usize, u64), (usize, Size)>> =
+    RefCell::new(FxHashMap::default());
 }
 
 thread_local! {
@@ -350,6 +409,7 @@ fn ensure_intrinsic_thread_epoch(epoch: usize) {
     INTRINSIC_BLOCK_CACHE_TL.with(|cache| cache.borrow_mut().clear());
     INTRINSIC_INLINE_OVERRIDE_CACHE.with(|cache| cache.borrow_mut().clear());
     INTRINSIC_BLOCK_OVERRIDE_CACHE.with(|cache| cache.borrow_mut().clear());
+    REMEMBERED_SIZE_OVERRIDE_CACHE.with(|cache| cache.borrow_mut().clear());
     cell.set(epoch);
   });
 }
@@ -419,8 +479,48 @@ pub(crate) fn intrinsic_cache_clear() {
   INTRINSIC_BLOCK_CACHE_TL.with(|cache| cache.borrow_mut().clear());
   INTRINSIC_INLINE_OVERRIDE_CACHE.with(|cache| cache.borrow_mut().clear());
   INTRINSIC_BLOCK_OVERRIDE_CACHE.with(|cache| cache.borrow_mut().clear());
+  GLOBAL_REMEMBERED_SIZE_CACHE.clear();
+  REMEMBERED_SIZE_OVERRIDE_CACHE.with(|cache| cache.borrow_mut().clear());
   INTRINSIC_CACHE_TL_EPOCH.with(|cell| cell.set(0));
   clear_subgrid_cache();
+}
+
+pub(crate) fn remembered_size_cache_lookup(node: &BoxNode) -> Option<Size> {
+  let epoch = CACHE_EPOCH.load(Ordering::Relaxed);
+  ensure_intrinsic_thread_epoch(epoch);
+  let id = node.id();
+  if id == 0 {
+    return None;
+  }
+  if let Some(fingerprint) = crate::layout::style_override::style_override_fingerprint_for(id) {
+    let signature = style_override_signature(node, fingerprint);
+    return REMEMBERED_SIZE_OVERRIDE_CACHE.with(|cache| {
+      cache
+        .borrow()
+        .get(&(id, signature))
+        .and_then(|(entry_epoch, value)| (*entry_epoch == epoch).then_some(*value))
+    });
+  }
+  let style_ptr = Arc::as_ptr(&node.style) as usize;
+  GLOBAL_REMEMBERED_SIZE_CACHE.get(&(id, style_ptr), epoch)
+}
+
+pub(crate) fn remembered_size_cache_store(node: &BoxNode, value: Size) {
+  let epoch = CACHE_EPOCH.load(Ordering::Relaxed);
+  ensure_intrinsic_thread_epoch(epoch);
+  let id = node.id();
+  if id == 0 {
+    return;
+  }
+  if let Some(fingerprint) = crate::layout::style_override::style_override_fingerprint_for(id) {
+    let signature = style_override_signature(node, fingerprint);
+    REMEMBERED_SIZE_OVERRIDE_CACHE.with(|cache| {
+      cache.borrow_mut().insert((id, signature), (epoch, value));
+    });
+    return;
+  }
+  let style_ptr = Arc::as_ptr(&node.style) as usize;
+  GLOBAL_REMEMBERED_SIZE_CACHE.insert((id, style_ptr), epoch, value);
 }
 
 /// Sets the active intrinsic cache epoch, clearing stale entries when it changes.
