@@ -1264,6 +1264,17 @@ fn write_json_report(report: &SnapshotDiffReport, path: &Path) -> Result<(), Str
 fn write_html_report(report: &SnapshotDiffReport, path: &Path) -> Result<(), String> {
   ensure_parent_dir(path)?;
 
+  let missing_before = report
+    .entries
+    .iter()
+    .filter(|entry| entry.status == PageStatus::MissingBefore)
+    .count();
+  let missing_after = report
+    .entries
+    .iter()
+    .filter(|entry| entry.status == PageStatus::MissingAfter)
+    .count();
+
   let mut entries_html = String::new();
   let mut sorted: Vec<&PageReport> = report.entries.iter().collect();
   sorted.sort_by(|a, b| {
@@ -1274,6 +1285,7 @@ fn write_html_report(report: &SnapshotDiffReport, path: &Path) -> Result<(), Str
   });
 
   for entry in sorted {
+    let anchor_id = entry_anchor_id(&entry.name);
     let open_attr = if entry.status == PageStatus::Matched {
       ""
     } else {
@@ -1297,9 +1309,10 @@ fn write_html_report(report: &SnapshotDiffReport, path: &Path) -> Result<(), Str
       summary_bits.push(parts.join(" | "));
     }
     entries_html.push_str(&format!(
-      r#"<details class="{class}"{open}>
-  <summary><strong>{name}</strong> <span class="status">{status}</span> {summary}</summary>
-  "#,
+      r##"<details id="{anchor_id}" class="{class}"{open}>
+  <summary><strong><a href="#{anchor_id}">{name}</a></strong> <span class="status">{status}</span> {summary}</summary>
+  "##,
+      anchor_id = escape_html(&anchor_id),
       class = entry.status.label(),
       open = open_attr,
       name = escape_html(&entry.name),
@@ -1362,6 +1375,27 @@ fn write_html_report(report: &SnapshotDiffReport, path: &Path) -> Result<(), Str
       summary .status {{ text-transform: uppercase; font-size: 0.9em; padding: 2px 6px; border-radius: 4px; margin-left: 6px; background: #eef; }}
       details.missing-before, details.missing-after, details.error {{ background: #fff0f0; }}
       details.schema-mismatch {{ background: #fff7e0; }}
+      details:target {{ outline: 3px solid #0066cc; }}
+      details[id] {{ scroll-margin-top: 12px; }}
+      #entries-controls input[type="checkbox"] {{ position: absolute; left: -10000px; }}
+      .entry-filters {{ margin: 16px 0 10px; }}
+      .entry-filters label {{ display: inline-block; margin-right: 12px; }}
+      .entry-filters label:hover {{ text-decoration: underline; cursor: pointer; }}
+      #show-matched:not(:checked) ~ .entry-filters label[for="show-matched"],
+      #show-missing-before:not(:checked) ~ .entry-filters label[for="show-missing-before"],
+      #show-missing-after:not(:checked) ~ .entry-filters label[for="show-missing-after"],
+      #show-schema-mismatch:not(:checked) ~ .entry-filters label[for="show-schema-mismatch"],
+      #show-error:not(:checked) ~ .entry-filters label[for="show-error"],
+      #show-thumbnails:not(:checked) ~ .entry-filters label[for="show-thumbnails"] {{
+        opacity: 0.5;
+      }}
+      #show-matched:not(:checked) ~ #entries details.matched {{ display: none; }}
+      #show-missing-before:not(:checked) ~ #entries details.missing-before {{ display: none; }}
+      #show-missing-after:not(:checked) ~ #entries details.missing-after {{ display: none; }}
+      #show-schema-mismatch:not(:checked) ~ #entries details.schema-mismatch {{ display: none; }}
+      #show-error:not(:checked) ~ #entries details.error {{ display: none; }}
+      #show-thumbnails:not(:checked) ~ #entries .thumb br {{ display: none; }}
+      #show-thumbnails:not(:checked) ~ #entries .thumb a:nth-of-type(2) {{ display: none; }}
       .paths {{ font-size: 0.9em; color: #444; }}
       .thumbs {{ display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px; }}
       .thumb img {{ max-width: 320px; max-height: 240px; display: block; }}
@@ -1380,7 +1414,26 @@ fn write_html_report(report: &SnapshotDiffReport, path: &Path) -> Result<(), Str
     <p><strong>Before:</strong> {before}</p>
     <p><strong>After:</strong> {after}</p>
     <p>Processed {matched} matching pairs out of {discovered} (missing: {missing}, schema mismatches: {schema}, errors: {errors}).</p>
-    {entries}
+    <div id="entries-controls">
+      <input type="checkbox" id="show-matched" checked>
+      <input type="checkbox" id="show-missing-before" checked>
+      <input type="checkbox" id="show-missing-after" checked>
+      <input type="checkbox" id="show-schema-mismatch" checked>
+      <input type="checkbox" id="show-error" checked>
+      <input type="checkbox" id="show-thumbnails" checked>
+      <div class="entry-filters">
+        <strong>Show:</strong>
+        <label for="show-matched">Matched ({matched})</label>
+        <label for="show-missing-before">Missing before ({missing_before})</label>
+        <label for="show-missing-after">Missing after ({missing_after})</label>
+        <label for="show-schema-mismatch">Schema mismatch ({schema})</label>
+        <label for="show-error">Error ({errors})</label>
+        <label for="show-thumbnails">Thumbnails</label>
+      </div>
+      <div id="entries">
+        {entries}
+      </div>
+    </div>
   </body>
 </html>
 "#,
@@ -1391,6 +1444,8 @@ fn write_html_report(report: &SnapshotDiffReport, path: &Path) -> Result<(), Str
     missing = report.totals.missing,
     schema = report.totals.schema_mismatch,
     errors = report.totals.errors,
+    missing_before = missing_before,
+    missing_after = missing_after,
     entries = entries_html,
   );
 
@@ -1405,6 +1460,15 @@ fn format_linked_image(label: &str, path: &str) -> String {
     p = escaped,
     l = label
   )
+}
+
+fn entry_anchor_id(name: &str) -> String {
+  let mut hash: u64 = 14695981039346656037;
+  for byte in name.as_bytes() {
+    hash ^= u64::from(*byte);
+    hash = hash.wrapping_mul(1099511628211);
+  }
+  format!("entry-{hash:016x}")
 }
 
 fn render_schema(schema: &SchemaSummary) -> String {

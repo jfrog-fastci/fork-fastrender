@@ -4,6 +4,15 @@ use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
 
+fn entry_anchor_id(name: &str) -> String {
+  let mut hash: u64 = 14695981039346656037;
+  for byte in name.as_bytes() {
+    hash ^= u64::from(*byte);
+    hash = hash.wrapping_mul(1099511628211);
+  }
+  format!("entry-{hash:016x}")
+}
+
 fn minimal_style() -> Value {
   json!({
     "display": "block",
@@ -154,6 +163,19 @@ fn diff_snapshots_links_render_fixtures_layout_pngs() {
   assert!(
     html.contains(r#"<img src="after/foo.png""#),
     "expected after.png thumbnail"
+  );
+  assert!(
+    html.contains("id=\"entries-controls\""),
+    "expected entry filter controls in diff_snapshots HTML:\n{html}"
+  );
+  assert!(
+    html.contains("id=\"show-matched\""),
+    "expected matched toggle in diff_snapshots HTML:\n{html}"
+  );
+  let anchor = entry_anchor_id(stem);
+  assert!(
+    html.contains(&format!("id=\"{anchor}\" class=\"matched\"")),
+    "expected per-entry anchor id in diff_snapshots HTML:\n{html}"
   );
 
   let report: Value = serde_json::from_str(&fs::read_to_string(&report_json).expect("read report"))
