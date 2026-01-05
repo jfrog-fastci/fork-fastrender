@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Modern Viewport Units - svh/lvw</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+        }
+        .header {
+            width: 50lvw;
+            height: 80px;
+            background-color: #51cf66;
+        }
+        .content {
+            height: calc(100svh - 80px);
+            background-color: #ff6b6b;
+        }
+    </style>
+</head>
+<body>
+    <div class="header"></div>
+    <div class="content"></div>
+</body>
+</html>

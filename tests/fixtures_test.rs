@@ -216,6 +216,8 @@ fn test_all_fixture_files_exist() {
     // Positioned
     "positioned_relative",
     "positioned_absolute",
+    // Viewport units
+    "viewport_units_modern",
     // Transforms
     "transform_layer",
     "mask_composite",
@@ -327,6 +329,11 @@ fn test_fixture_block_margin_collapse() {
 #[test]
 fn test_fixture_block_clearance() {
   test_fixture("block_clearance").expect("block_clearance fixture should render");
+}
+
+#[test]
+fn test_fixture_viewport_units_modern() {
+  test_fixture("viewport_units_modern").expect("viewport_units_modern fixture should render");
 }
 
 //
