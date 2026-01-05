@@ -143,4 +143,9 @@ mod tests {
       "calc(22px + constant(safe-area-inset-left))"
     ));
   }
+
+  #[test]
+  fn supports_calc_max_single_argument() {
+    assert!(supports_declaration("border-left-width", "calc(max(0px))"));
+  }
 }

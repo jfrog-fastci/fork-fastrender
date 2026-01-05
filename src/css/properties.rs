@@ -5176,6 +5176,9 @@ mod tests {
   fn parses_min_max_clamp_lengths() {
     assert_eq!(parse_length("min(10px, 20px)").unwrap(), Length::px(10.0));
     assert_eq!(parse_length("max(10px, 20px)").unwrap(), Length::px(20.0));
+    // `min()`/`max()` accept a single argument.
+    assert_eq!(parse_length("min(10px)").unwrap(), Length::px(10.0));
+    assert_eq!(parse_length("max(20px)").unwrap(), Length::px(20.0));
     assert_eq!(
       parse_length("clamp(10px, 5px, 15px)").unwrap(),
       Length::px(10.0)
@@ -5798,7 +5801,8 @@ fn parse_min_max<'i, 't>(
     }
   }
 
-  if values.len() < 2 {
+  // The `min()`/`max()` functions accept a comma-separated list of one or more values.
+  if values.is_empty() {
     return Err(input.new_custom_error(()));
   }
 
