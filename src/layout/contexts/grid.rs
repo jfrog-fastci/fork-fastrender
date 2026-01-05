@@ -4866,10 +4866,34 @@ impl GridFormattingContext {
       (None, Some(IntrinsicSizeKeyword::FitContent { limit })) => Some(limit),
       _ => None,
     };
+    let fit_max_width_limit = match (
+      known_dimensions.width,
+      box_node.style.max_width,
+      box_node.style.max_width_keyword,
+    ) {
+      (None, None, Some(IntrinsicSizeKeyword::FitContent { limit })) => Some(limit),
+      _ => None,
+    };
+    let fit_max_height_limit = match (
+      known_dimensions.height,
+      box_node.style.max_height,
+      box_node.style.max_height_keyword,
+    ) {
+      (None, None, Some(IntrinsicSizeKeyword::FitContent { limit })) => Some(limit),
+      _ => None,
+    };
+    let resolve_fit_max_width =
+      fit_max_width_limit.is_some() && !physical_width_is_auto(box_node.style.as_ref());
+    let resolve_fit_max_height =
+      fit_max_height_limit.is_some() && !physical_height_is_auto(box_node.style.as_ref());
     let mut fit_border_box_width: Option<f32> = None;
     let mut fit_border_box_height: Option<f32> = None;
 
-    if fit_width_limit.is_some() || fit_height_limit.is_some() {
+    if fit_width_limit.is_some()
+      || fit_height_limit.is_some()
+      || resolve_fit_max_width
+      || resolve_fit_max_height
+    {
       fn run_with_override<T, F>(
         box_node: &BoxNode,
         override_style: Option<Arc<ComputedStyle>>,
@@ -4895,7 +4919,7 @@ impl GridFormattingContext {
 
       let percentage_base = match available_space.width {
         taffy::style::AvailableSpace::Definite(w) => w,
-        _ => 0.0,
+        _ => parent_inline_base.unwrap_or(0.0),
       };
       let (
         padding_left,
@@ -4912,16 +4936,24 @@ impl GridFormattingContext {
 
       // Avoid self-recursion when computing intrinsic sizes for a fit-content axis by clearing the
       // corresponding preferred size property before calling into intrinsic APIs.
-      let fit_width_override = fit_width_limit.is_some().then(|| {
+      let fit_width_override = (fit_width_limit.is_some() || resolve_fit_max_width).then(|| {
         let mut override_style: ComputedStyle = (*box_node.style).clone();
         override_style.width = None;
         override_style.width_keyword = None;
+        if resolve_fit_max_width {
+          override_style.max_width = None;
+          override_style.max_width_keyword = None;
+        }
         Arc::new(override_style)
       });
-      let fit_height_override = fit_height_limit.is_some().then(|| {
+      let fit_height_override = (fit_height_limit.is_some() || resolve_fit_max_height).then(|| {
         let mut override_style: ComputedStyle = (*box_node.style).clone();
         override_style.height = None;
         override_style.height_keyword = None;
+        if resolve_fit_max_height {
+          override_style.max_height = None;
+          override_style.max_height_keyword = None;
+        }
         Arc::new(override_style)
       });
 
@@ -5096,6 +5128,65 @@ impl GridFormattingContext {
           Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
           Err(_) => {}
           _ => {}
+        }
+      }
+
+      if resolve_fit_max_width {
+        if let Some(limit) = fit_max_width_limit {
+          match compute_fit_border_box(Axis::Horizontal, limit, available_space.width) {
+            Ok(max_border_box) if max_border_box.is_finite() => {
+              let max_border_box = max_border_box.max(0.0);
+              if let Some(existing) = constraints.used_border_box_width {
+                constraints.used_border_box_width = Some(existing.min(max_border_box));
+              } else if let Some(width) = box_node.style.width {
+                let base = constraints
+                  .inline_percentage_base
+                  .unwrap_or(percentage_base)
+                  .max(0.0);
+                let resolved =
+                  self.resolve_length_for_width(width, base, &box_node.style).max(0.0);
+                let border_box = if box_node.style.box_sizing == BoxSizing::ContentBox {
+                  (resolved + fit_inset_w).max(0.0)
+                } else {
+                  resolved.max(0.0)
+                };
+                constraints.used_border_box_width = Some(border_box.min(max_border_box));
+              }
+            }
+            Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+            Err(_) => {}
+            _ => {}
+          }
+        }
+      }
+
+      if resolve_fit_max_height {
+        if let Some(limit) = fit_max_height_limit {
+          match compute_fit_border_box(Axis::Vertical, limit, available_space.height) {
+            Ok(max_border_box) if max_border_box.is_finite() => {
+              let max_border_box = max_border_box.max(0.0);
+              if let Some(existing) = constraints.used_border_box_height {
+                constraints.used_border_box_height = Some(existing.min(max_border_box));
+              } else if let Some(height) = box_node.style.height {
+                let base = match available_space.height {
+                  taffy::style::AvailableSpace::Definite(v) => v,
+                  _ => 0.0,
+                }
+                .max(0.0);
+                let resolved =
+                  self.resolve_length_for_width(height, base, &box_node.style).max(0.0);
+                let border_box = if box_node.style.box_sizing == BoxSizing::ContentBox {
+                  (resolved + fit_inset_h).max(0.0)
+                } else {
+                  resolved.max(0.0)
+                };
+                constraints.used_border_box_height = Some(border_box.min(max_border_box));
+              }
+            }
+            Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+            Err(_) => {}
+            _ => {}
+          }
         }
       }
     }
@@ -7707,6 +7798,7 @@ mod tests {
       let grid_style = Arc::new(grid_style);
 
       let mut item_style = ComputedStyle::default();
+      item_style.display = CssDisplay::Block;
       item_style.font_size = 16.0;
       item_style.width = explicit_width;
       item_style.width_keyword = None;
@@ -7757,8 +7849,8 @@ mod tests {
       "expected max-width:fit-content to cap below stretched width (auto={auto_width:.2}, clamped={clamped_width:.2})",
     );
     assert!(
-      (explicit_width - auto_width).abs() < 0.1,
-      "expected max-width:fit-content to clamp explicit widths to the grid area (auto={auto_width:.2}, explicit={explicit_width:.2})",
+      (explicit_width - clamped_width).abs() < 0.5,
+      "expected max-width:fit-content to clamp explicit widths the same as auto (clamped={clamped_width:.2}, explicit={explicit_width:.2})",
     );
   }
 
