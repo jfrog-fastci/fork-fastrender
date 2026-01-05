@@ -3643,24 +3643,36 @@ mod tests {
     img_none.node_id = 1;
     set_attr(&mut img_none, "src", "/a.png");
 
+    let mut img_empty = styled_element("img");
+    img_empty.node_id = 2;
+    set_attr(&mut img_empty, "src", "/a.png");
+    set_attr(&mut img_empty, "crossorigin", "");
+
     let mut img_anonymous = styled_element("img");
-    img_anonymous.node_id = 2;
+    img_anonymous.node_id = 3;
     set_attr(&mut img_anonymous, "src", "/a.png");
     set_attr(&mut img_anonymous, "crossorigin", "anonymous");
 
+    let mut img_invalid = styled_element("img");
+    img_invalid.node_id = 4;
+    set_attr(&mut img_invalid, "src", "/a.png");
+    set_attr(&mut img_invalid, "crossorigin", "iNvAlId");
+
     let mut img_creds = styled_element("img");
-    img_creds.node_id = 3;
+    img_creds.node_id = 5;
     set_attr(&mut img_creds, "src", "/a.png");
-    set_attr(&mut img_creds, "crossorigin", "use-credentials");
+    set_attr(&mut img_creds, "crossorigin", "UsE-CrEdEnTiAlS");
 
     let mut root = styled_element("div");
-    root.children = vec![img_none, img_anonymous, img_creds];
+    root.children = vec![img_none, img_empty, img_anonymous, img_invalid, img_creds];
 
     let tree = generate_box_tree(&root);
-    assert_eq!(tree.root.children.len(), 3);
+    assert_eq!(tree.root.children.len(), 5);
 
     let expected = [
       CrossOriginAttribute::None,
+      CrossOriginAttribute::Anonymous,
+      CrossOriginAttribute::Anonymous,
       CrossOriginAttribute::Anonymous,
       CrossOriginAttribute::UseCredentials,
     ];
