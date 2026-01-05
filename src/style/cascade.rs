@@ -10065,6 +10065,7 @@ mod tests {
   use crate::dom::DomNode;
   use crate::dom::DomNodeType;
   use crate::dom::HTML_NAMESPACE;
+  use crate::dom::SVG_NAMESPACE;
   use crate::style::color::Color;
   use crate::style::color::Rgba;
   use crate::style::computed::Visibility;
@@ -10081,6 +10082,7 @@ mod tests {
   use crate::style::types::LineBreak;
   use crate::style::types::ListStylePosition;
   use crate::style::types::ListStyleType;
+  use crate::style::types::Overflow;
   use crate::style::types::ScrollbarColor;
   use crate::style::types::TextCombineUpright;
   use crate::style::types::TextDecorationLine;
@@ -10101,6 +10103,62 @@ mod tests {
   fn cascade_global_test_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+  }
+
+  #[test]
+  fn ua_default_overflow_for_replaced_elements_matches_chrome() {
+    let stylesheet = StyleSheet::new();
+
+    let img_dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "img".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![],
+    };
+    let styled_img = apply_styles(&img_dom, &stylesheet);
+    assert_eq!(styled_img.styles.overflow_x, Overflow::Clip);
+    assert_eq!(styled_img.styles.overflow_y, Overflow::Clip);
+
+    let svg_dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "svg".to_string(),
+        namespace: SVG_NAMESPACE.to_string(),
+        attributes: vec![
+          ("width".to_string(), "10".to_string()),
+          ("height".to_string(), "10".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+    let styled_svg = apply_styles(&svg_dom, &stylesheet);
+    assert_eq!(styled_svg.styles.overflow_x, Overflow::Hidden);
+    assert_eq!(styled_svg.styles.overflow_y, Overflow::Hidden);
+
+    let iframe_dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "iframe".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![],
+    };
+    let styled_iframe = apply_styles(&iframe_dom, &stylesheet);
+    assert_eq!(styled_iframe.styles.overflow_x, Overflow::Clip);
+    assert_eq!(styled_iframe.styles.overflow_y, Overflow::Clip);
+
+    let audio_dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "audio".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![],
+    };
+    let styled_audio = apply_styles(&audio_dom, &stylesheet);
+    assert_eq!(styled_audio.styles.overflow_x, Overflow::Visible);
+    assert_eq!(styled_audio.styles.overflow_y, Overflow::Visible);
   }
 
   #[test]

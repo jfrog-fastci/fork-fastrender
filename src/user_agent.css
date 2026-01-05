@@ -322,8 +322,18 @@ code, kbd, samp, tt {
 }
 
 /* Replaced elements */
-img, svg {
+img,
+video,
+canvas,
+iframe,
+object,
+embed {
     overflow: clip;
+}
+
+/* SVG defaults */
+svg {
+    overflow: hidden;
 }
 
 /* Form elements */
