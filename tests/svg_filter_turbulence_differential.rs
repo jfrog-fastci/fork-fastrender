@@ -136,7 +136,9 @@ impl TurbulenceCase {
       <feTurbulence type="{kind}" baseFrequency="{bfx} {bfy}" seed="{seed_attr}" numOctaves="{octaves}" stitchTiles="{stitch}"/>
     </filter>
   </defs>
-  <rect x="{rx}" y="{ry}" width="{rw}" height="{rh}" fill="white" filter="url(#f)"/>
+  <g transform="translate({rx} {ry})">
+    <rect x="0" y="0" width="{rw}" height="{rh}" fill="white" filter="url(#f)"/>
+  </g>
 </svg>"#,
       prim_units = self.primitive_units_attr(),
       fx = fmt_num(self.filter_x),
@@ -523,13 +525,19 @@ fn generate_cases(seed: u32, case_count: usize) -> Vec<TurbulenceCase> {
     let viewport_y0 = 0.0;
     let viewport_x1 = CANVAS_W as f32;
     let viewport_y1 = CANVAS_H as f32;
-    let inter_x0 = filter_x.max(viewport_x0);
-    let inter_y0 = filter_y.max(viewport_y0);
-    let inter_x1 = (filter_x + filter_w).min(viewport_x1);
-    let inter_y1 = (filter_y + filter_h).min(viewport_y1);
+    // FastRender's `SvgFilterRegion` numeric `userSpaceOnUse` coordinates are resolved relative to
+    // the filtered object's bbox origin. Mirror that by treating filter_x/y as local coordinates
+    // (global = rect_x/y + filter_x/y) so the resvg SVG and direct `SvgFilter` construction match.
+    let global_filter_x = rect_x + filter_x;
+    let global_filter_y = rect_y + filter_y;
+    let inter_x0 = global_filter_x.max(viewport_x0);
+    let inter_y0 = global_filter_y.max(viewport_y0);
+    let inter_x1 = (global_filter_x + filter_w).min(viewport_x1);
+    let inter_y1 = (global_filter_y + filter_h).min(viewport_y1);
     if inter_x1 <= inter_x0 || inter_y1 <= inter_y0 {
-      filter_x = quantize_svg_f32(-(filter_w * 0.25));
-      filter_y = quantize_svg_f32(-(filter_h * 0.25));
+      // Nudge the local region so that, after bbox-origin translation, it overlaps the viewport.
+      filter_x = quantize_svg_f32(-(filter_w * 0.25) - rect_x);
+      filter_y = quantize_svg_f32(-(filter_h * 0.25) - rect_y);
     }
 
     cases.push(TurbulenceCase {
