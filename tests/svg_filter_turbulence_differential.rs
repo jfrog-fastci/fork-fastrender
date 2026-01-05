@@ -149,6 +149,14 @@ fn fmt_num(value: f32) -> String {
   s
 }
 
+fn quantize_svg_f32(value: f32) -> f32 {
+  fmt_num(value).parse::<f32>().unwrap_or(0.0)
+}
+
+fn quantize_svg_pair(values: (f32, f32)) -> (f32, f32) {
+  (quantize_svg_f32(values.0), quantize_svg_f32(values.1))
+}
+
 fn render_with_resvg(svg: &str, width: u32, height: u32) -> resvg::tiny_skia::Pixmap {
   use resvg::usvg;
 
@@ -306,16 +314,17 @@ fn generate_cases() -> Vec<TurbulenceCase> {
     } else if rng.next_bool() {
       rng.choose(base_freq_choices)
     } else {
-      let fx = rng.gen_range_f32(0.0, 0.6);
+      let fx = quantize_svg_f32(rng.gen_range_f32(0.0, 0.6));
       let fy = if rng.next_bool() {
         fx
       } else if rng.next_bool() {
-        rng.gen_range_f32(0.0, 0.6)
+        quantize_svg_f32(rng.gen_range_f32(0.0, 0.6))
       } else {
-        rng.gen_range_f32(0.0, 0.0002)
+        quantize_svg_f32(rng.gen_range_f32(0.0, 0.0002))
       };
       (fx, fy)
     };
+    let base_frequency = quantize_svg_pair(base_frequency);
 
     let seed_attr = if idx < seed_choices.len() {
       seed_choices[idx]
@@ -323,6 +332,7 @@ fn generate_cases() -> Vec<TurbulenceCase> {
       let base = rng.gen_range_f32(-10.0, 100.0);
       base + rng.choose(seed_fracs)
     };
+    let seed_attr = quantize_svg_f32(seed_attr);
     let seed = TurbulenceCase::seed_from_attr(seed_attr);
 
     let octaves = rng.gen_range_u32(1, 4);
@@ -341,10 +351,14 @@ fn generate_cases() -> Vec<TurbulenceCase> {
       };
 
     // Make the filter region wander so we cover coordinate translation and viewport clipping.
-    let filter_w = rng.gen_range_f32(CANVAS_W as f32 * 0.75, CANVAS_W as f32 * 1.75);
-    let filter_h = rng.gen_range_f32(CANVAS_H as f32 * 0.75, CANVAS_H as f32 * 1.75);
-    let mut filter_x = rng.gen_range_f32(-(CANVAS_W as f32) * 0.75, CANVAS_W as f32 * 0.75);
-    let mut filter_y = rng.gen_range_f32(-(CANVAS_H as f32) * 0.75, CANVAS_H as f32 * 0.75);
+    let filter_w =
+      quantize_svg_f32(rng.gen_range_f32(CANVAS_W as f32 * 0.75, CANVAS_W as f32 * 1.75));
+    let filter_h =
+      quantize_svg_f32(rng.gen_range_f32(CANVAS_H as f32 * 0.75, CANVAS_H as f32 * 1.75));
+    let mut filter_x =
+      quantize_svg_f32(rng.gen_range_f32(-(CANVAS_W as f32) * 0.75, CANVAS_W as f32 * 0.75));
+    let mut filter_y =
+      quantize_svg_f32(rng.gen_range_f32(-(CANVAS_H as f32) * 0.75, CANVAS_H as f32 * 0.75));
 
     // Ensure the region intersects the rasterized viewport so we get meaningful output.
     let viewport_x0 = 0.0;
@@ -356,8 +370,8 @@ fn generate_cases() -> Vec<TurbulenceCase> {
     let inter_x1 = (filter_x + filter_w).min(viewport_x1);
     let inter_y1 = (filter_y + filter_h).min(viewport_y1);
     if inter_x1 <= inter_x0 || inter_y1 <= inter_y0 {
-      filter_x = -(filter_w * 0.25);
-      filter_y = -(filter_h * 0.25);
+      filter_x = quantize_svg_f32(-(filter_w * 0.25));
+      filter_y = quantize_svg_f32(-(filter_h * 0.25));
     }
 
     cases.push(TurbulenceCase {
