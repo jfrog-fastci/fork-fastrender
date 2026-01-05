@@ -10208,6 +10208,53 @@ mod tests {
   }
 
   #[test]
+  fn overflow_axis_normalization_matches_chrome() {
+    let stylesheet = StyleSheet::new();
+
+    let styled = apply_styles(
+      &element_with_style("overflow-x: visible; overflow-y: hidden;"),
+      &stylesheet,
+    );
+    assert_eq!(styled.styles.overflow_x, Overflow::Auto);
+    assert_eq!(styled.styles.overflow_y, Overflow::Hidden);
+
+    let styled = apply_styles(
+      &element_with_style("overflow-x: hidden; overflow-y: visible;"),
+      &stylesheet,
+    );
+    assert_eq!(styled.styles.overflow_x, Overflow::Hidden);
+    assert_eq!(styled.styles.overflow_y, Overflow::Auto);
+
+    let styled = apply_styles(
+      &element_with_style("overflow-x: visible; overflow-y: clip;"),
+      &stylesheet,
+    );
+    assert_eq!(styled.styles.overflow_x, Overflow::Visible);
+    assert_eq!(styled.styles.overflow_y, Overflow::Clip);
+
+    let styled = apply_styles(
+      &element_with_style("overflow-x: clip; overflow-y: visible;"),
+      &stylesheet,
+    );
+    assert_eq!(styled.styles.overflow_x, Overflow::Clip);
+    assert_eq!(styled.styles.overflow_y, Overflow::Visible);
+
+    let styled = apply_styles(
+      &element_with_style("overflow-x: clip; overflow-y: auto;"),
+      &stylesheet,
+    );
+    assert_eq!(styled.styles.overflow_x, Overflow::Hidden);
+    assert_eq!(styled.styles.overflow_y, Overflow::Auto);
+
+    let styled = apply_styles(
+      &element_with_style("overflow-x: auto; overflow-y: clip;"),
+      &stylesheet,
+    );
+    assert_eq!(styled.styles.overflow_x, Overflow::Auto);
+    assert_eq!(styled.styles.overflow_y, Overflow::Hidden);
+  }
+
+  #[test]
   fn candidate_set_reset_allows_reuse_of_indices() {
     let mut set = CandidateSet::new(2);
     assert!(set.insert(1));
@@ -23634,6 +23681,43 @@ fn find_pseudo_element_rules<'a>(
   matches
 }
 
+fn normalize_overflow_axes(styles: &mut ComputedStyle) {
+  use crate::style::types::Overflow;
+
+  let non_visible = |overflow: Overflow| {
+    matches!(
+      overflow,
+      Overflow::Hidden | Overflow::Scroll | Overflow::Auto
+    )
+  };
+
+  // https://drafts.csswg.org/css-overflow-3/#overflow-properties
+  //
+  // Normalize axis-specific `overflow-x`/`overflow-y` computed values so we don't end up with a
+  // scrollable axis alongside `visible`/`clip` in the other axis.
+  //
+  // Chrome behaviour (and the spec) differs for `visible` vs `clip`:
+  // - `visible + hidden/scroll/auto` => `auto + hidden/scroll/auto`
+  // - `clip + hidden/scroll/auto` => `hidden + hidden/scroll/auto`
+  // - `visible + clip` is preserved (axis-specific clipping is allowed).
+  let x = styles.overflow_x;
+  let y = styles.overflow_y;
+
+  if matches!(x, Overflow::Visible) && non_visible(y) {
+    styles.overflow_x = Overflow::Auto;
+  } else if matches!(y, Overflow::Visible) && non_visible(x) {
+    styles.overflow_y = Overflow::Auto;
+  }
+
+  let x = styles.overflow_x;
+  let y = styles.overflow_y;
+  if matches!(x, Overflow::Clip) && non_visible(y) {
+    styles.overflow_x = Overflow::Hidden;
+  } else if matches!(y, Overflow::Clip) && non_visible(x) {
+    styles.overflow_y = Overflow::Hidden;
+  }
+}
+
 fn apply_cascaded_declarations<'a, F>(
   styles: &mut ComputedStyle,
   mut matched_rules: Vec<MatchedRule<'a>>,
@@ -23658,6 +23742,7 @@ fn apply_cascaded_declarations<'a, F>(
   }
   if total_decls == 0 {
     resolve_pending_logical_properties(styles);
+    normalize_overflow_axes(styles);
     apply_content_visibility_implied_containment(styles);
     resolve_absolute_lengths(styles, root_font_size, viewport);
     return;
@@ -24038,6 +24123,7 @@ fn apply_cascaded_declarations<'a, F>(
     }
   }
   resolve_pending_logical_properties(styles);
+  normalize_overflow_axes(styles);
   apply_content_visibility_implied_containment(styles);
 
   resolve_absolute_lengths(styles, root_font_size, viewport);

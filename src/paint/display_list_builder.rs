@@ -157,9 +157,9 @@ use crate::text::font_db::ScaledMetrics;
 use crate::text::font_loader::FontContext;
 use crate::text::pipeline::ShapedRun;
 use crate::text::pipeline::ShapingPipeline;
+use crate::tree::box_tree::CrossOriginAttribute;
 use crate::tree::box_tree::FormControl;
 use crate::tree::box_tree::FormControlKind;
-use crate::tree::box_tree::CrossOriginAttribute;
 use crate::tree::box_tree::ReplacedType;
 use crate::tree::box_tree::SvgContent;
 use crate::tree::box_tree::TextControlKind;
@@ -1549,27 +1549,23 @@ impl DisplayListBuilder {
 
     let mut absolute_rects: Option<BackgroundRects> = None;
     let (overflow_clip, clip_rect) = if let Some(style) = style_opt {
-      let clip_x = matches!(
-        style.overflow_x,
-        crate::style::types::Overflow::Hidden
-          | crate::style::types::Overflow::Scroll
-          | crate::style::types::Overflow::Auto
-          | crate::style::types::Overflow::Clip
-      );
-      let clip_y = matches!(
-        style.overflow_y,
-        crate::style::types::Overflow::Hidden
-          | crate::style::types::Overflow::Scroll
-          | crate::style::types::Overflow::Auto
-          | crate::style::types::Overflow::Clip
-      );
+      // Replaced elements clip their own contents to the content box (see `replaced_content_clip_item`),
+      // so avoid applying the generic padding-box overflow clip here.
+      let is_replaced = matches!(&fragment.content, FragmentContent::Replaced { .. });
+      let clip_x = !is_replaced && Self::overflow_axis_clips(style.overflow_x);
+      let clip_y = !is_replaced && Self::overflow_axis_clips(style.overflow_y);
       (
         if clip_x || clip_y {
+          let overflow_bounds =
+            absolute_rect.union(fragment.scroll_overflow.translate(absolute_rect.origin));
           let rects = absolute_rects
             .get_or_insert_with(|| Self::background_rects(absolute_rect, style, self.viewport));
           Self::overflow_clip_from_style_with_rects(
             style,
             rects,
+            clip_x,
+            clip_y,
+            overflow_bounds,
             self.viewport,
             self.build_breakdown.as_deref(),
           )
@@ -2151,6 +2147,7 @@ impl DisplayListBuilder {
       Self::overflow_clip_from_style(
         style,
         root_border_bounds,
+        context_bounds,
         self.viewport,
         self.build_breakdown.as_deref(),
       )
@@ -2477,51 +2474,81 @@ impl DisplayListBuilder {
 
   fn overflow_clip_from_style(
     style: &ComputedStyle,
-    bounds: Rect,
+    border_bounds: Rect,
+    expansion_bounds: Rect,
     viewport: Option<(f32, f32)>,
     breakdown: Option<&BuildBreakdown>,
   ) -> Option<ClipItem> {
-    let clip_x = matches!(
-      style.overflow_x,
-      crate::style::types::Overflow::Hidden
-        | crate::style::types::Overflow::Scroll
-        | crate::style::types::Overflow::Auto
-        | crate::style::types::Overflow::Clip
-    );
-    let clip_y = matches!(
-      style.overflow_y,
-      crate::style::types::Overflow::Hidden
-        | crate::style::types::Overflow::Scroll
-        | crate::style::types::Overflow::Auto
-        | crate::style::types::Overflow::Clip
-    );
+    let clip_x = Self::overflow_axis_clips(style.overflow_x);
+    let clip_y = Self::overflow_axis_clips(style.overflow_y);
     if !clip_x && !clip_y {
       return None;
     }
 
-    let rects = Self::background_rects(bounds, style, viewport);
-    Self::overflow_clip_from_style_with_rects(style, &rects, viewport, breakdown)
+    let rects = Self::background_rects(border_bounds, style, viewport);
+    Self::overflow_clip_from_style_with_rects(
+      style,
+      &rects,
+      clip_x,
+      clip_y,
+      expansion_bounds,
+      viewport,
+      breakdown,
+    )
+  }
+
+  fn overflow_axis_clips(overflow: crate::style::types::Overflow) -> bool {
+    matches!(
+      overflow,
+      crate::style::types::Overflow::Hidden
+        | crate::style::types::Overflow::Scroll
+        | crate::style::types::Overflow::Auto
+        | crate::style::types::Overflow::Clip
+    )
   }
 
   fn overflow_clip_from_style_with_rects(
     style: &ComputedStyle,
     rects: &BackgroundRects,
+    clip_x: bool,
+    clip_y: bool,
+    expansion_bounds: Rect,
     viewport: Option<(f32, f32)>,
     breakdown: Option<&BuildBreakdown>,
   ) -> Option<ClipItem> {
-    let clip_rect = rects.padding;
+    let mut clip_rect = rects.padding;
     if clip_rect.width() <= 0.0 || clip_rect.height() <= 0.0 {
       return None;
     }
-    let radii = if Self::border_radius_is_zero(style) {
-      crate::paint::display_list::BorderRadii::ZERO
+
+    if !clip_x {
+      let min_x = clip_rect.min_x().min(expansion_bounds.min_x());
+      let max_x = clip_rect.max_x().max(expansion_bounds.max_x());
+      clip_rect.origin.x = min_x;
+      clip_rect.size.width = (max_x - min_x).max(0.0);
+    }
+    if !clip_y {
+      let min_y = clip_rect.min_y().min(expansion_bounds.min_y());
+      let max_y = clip_rect.max_y().max(expansion_bounds.max_y());
+      clip_rect.origin.y = min_y;
+      clip_rect.size.height = (max_y - min_y).max(0.0);
+    }
+
+    if clip_rect.width() <= 0.0 || clip_rect.height() <= 0.0 {
+      return None;
+    }
+
+    let radii = if clip_x && clip_y && !Self::border_radius_is_zero(style) {
+      let radii =
+        Self::resolve_clip_radii(style, rects, BackgroundBox::PaddingBox, viewport, breakdown);
+      (!radii.is_zero()).then_some(radii)
     } else {
-      Self::resolve_clip_radii(style, rects, BackgroundBox::PaddingBox, viewport, breakdown)
+      None
     };
     Some(ClipItem {
       shape: ClipShape::Rect {
         rect: clip_rect,
-        radii: if radii.is_zero() { None } else { Some(radii) },
+        radii,
       },
     })
   }
@@ -2817,12 +2844,51 @@ impl DisplayListBuilder {
     (rects.content, radii)
   }
 
-  fn clip_replaced_contents(style: Option<&ComputedStyle>) -> bool {
+  fn replaced_content_clip_item(
+    style: Option<&ComputedStyle>,
+    content_rect: Rect,
+    dest_rect: Rect,
+    clip_radii: BorderRadii,
+  ) -> Option<ClipItem> {
     let Some(style) = style else {
-      return false;
+      return None;
     };
-    !matches!(style.overflow_x, crate::style::types::Overflow::Visible)
-      || !matches!(style.overflow_y, crate::style::types::Overflow::Visible)
+
+    let clip_x = Self::overflow_axis_clips(style.overflow_x);
+    let clip_y = Self::overflow_axis_clips(style.overflow_y);
+    if !clip_x && !clip_y {
+      return None;
+    }
+
+    let mut clip_rect = content_rect;
+    if !clip_x {
+      let min_x = clip_rect.min_x().min(dest_rect.min_x());
+      let max_x = clip_rect.max_x().max(dest_rect.max_x());
+      clip_rect.origin.x = min_x;
+      clip_rect.size.width = (max_x - min_x).max(0.0);
+    }
+    if !clip_y {
+      let min_y = clip_rect.min_y().min(dest_rect.min_y());
+      let max_y = clip_rect.max_y().max(dest_rect.max_y());
+      clip_rect.origin.y = min_y;
+      clip_rect.size.height = (max_y - min_y).max(0.0);
+    }
+    if clip_rect.width() <= 0.0 || clip_rect.height() <= 0.0 {
+      return None;
+    }
+
+    let radii = if clip_x && clip_y && !clip_radii.is_zero() {
+      Some(clip_radii)
+    } else {
+      None
+    };
+
+    Some(ClipItem {
+      shape: ClipShape::Rect {
+        rect: clip_rect,
+        radii,
+      },
+    })
   }
 
   fn resolve_mask(&self, style: &ComputedStyle, bounds: Rect) -> Option<ResolvedMask> {
@@ -2850,8 +2916,7 @@ impl DisplayListBuilder {
           ResolvedMaskImage::Generated(Box::new(image.clone()))
         }
         BackgroundImage::Url(src) => {
-          let Some(image) =
-            self.decode_image(src, Some(style), true, CrossOriginAttribute::None)
+          let Some(image) = self.decode_image(src, Some(style), true, CrossOriginAttribute::None)
           else {
             continue;
           };
@@ -4387,7 +4452,6 @@ impl DisplayListBuilder {
           .iter()
           .find_map(|s| self.decode_image(s.url, style_for_image, false, crossorigin))
         {
-          let clip_contents = Self::clip_replaced_contents(style_for_image);
           let (content_rect, clip_radii) =
             self.replaced_content_rect_and_radii(rect, style_for_image);
           let (dest_x, dest_y, dest_w, dest_h) = {
@@ -4416,13 +4480,10 @@ impl DisplayListBuilder {
             dest_w,
             dest_h,
           );
-          if clip_contents {
-            self.list.push(DisplayItem::PushClip(ClipItem {
-              shape: ClipShape::Rect {
-                rect: content_rect,
-                radii: Some(clip_radii),
-              },
-            }));
+          let clip_contents =
+            Self::replaced_content_clip_item(style_for_image, content_rect, dest_rect, clip_radii);
+          if let Some(clip) = clip_contents.as_ref() {
+            self.list.push(DisplayItem::PushClip(clip.clone()));
           }
           self.list.push(DisplayItem::Image(ImageItem {
             dest_rect,
@@ -4430,7 +4491,7 @@ impl DisplayListBuilder {
             filter_quality: Self::image_filter_quality(fragment.style.as_deref()),
             src_rect: None,
           }));
-          if clip_contents {
+          if clip_contents.is_some() {
             self.list.push(DisplayItem::PopClip);
           }
           return;
@@ -4494,7 +4555,10 @@ impl DisplayListBuilder {
     for child in html.children.iter() {
       if let Some(style) = child.style.clone() {
         if Self::has_paintable_background(&style) {
-          let rect = Rect::new(html_origin.translate(child.bounds.origin), child.bounds.size);
+          let rect = Rect::new(
+            html_origin.translate(child.bounds.origin),
+            child.bounds.size,
+          );
           return Some((style, Self::get_box_id(child), rect));
         }
       }
@@ -7177,16 +7241,12 @@ impl DisplayListBuilder {
     rect: Rect,
     style: Option<&ComputedStyle>,
   ) {
-    let clip_contents = Self::clip_replaced_contents(style);
     let (content_rect, clip_radii) = self.replaced_content_rect_and_radii(rect, style);
+    let clip_contents =
+      Self::replaced_content_clip_item(style, content_rect, content_rect, clip_radii);
 
-    if clip_contents {
-      self.list.push(DisplayItem::PushClip(ClipItem {
-        shape: ClipShape::Rect {
-          rect: content_rect,
-          radii: Some(clip_radii),
-        },
-      }));
+    if let Some(clip) = clip_contents.as_ref() {
+      self.list.push(DisplayItem::PushClip(clip.clone()));
     }
 
     self.list.push(DisplayItem::Image(ImageItem {
@@ -7196,7 +7256,7 @@ impl DisplayListBuilder {
       src_rect: None,
     }));
 
-    if clip_contents {
+    if clip_contents.is_some() {
       self.list.push(DisplayItem::PopClip);
     }
   }
@@ -7252,7 +7312,6 @@ impl DisplayListBuilder {
       .map(|s| s.object_position)
       .unwrap_or_else(default_object_position);
 
-    let clip_contents = Self::clip_replaced_contents(style);
     let (content_rect, clip_radii) = self.replaced_content_rect_and_radii(rect, style);
     let (dest_x, dest_y, dest_w, dest_h) = match compute_object_fit(
       fit,
@@ -7276,6 +7335,8 @@ impl DisplayListBuilder {
       dest_w,
       dest_h,
     );
+    let clip_contents =
+      Self::replaced_content_clip_item(style, content_rect, dest_rect, clip_radii);
 
     let dest_w_device = dest_w * self.device_pixel_ratio;
     let dest_h_device = dest_h * self.device_pixel_ratio;
@@ -7341,13 +7402,8 @@ impl DisplayListBuilder {
         .lock()
         .unwrap_or_else(|e| e.into_inner());
       if let Some(image) = decoded_cache.get(&cache_key) {
-        if clip_contents {
-          self.list.push(DisplayItem::PushClip(ClipItem {
-            shape: ClipShape::Rect {
-              rect: content_rect,
-              radii: Some(clip_radii),
-            },
-          }));
+        if let Some(clip) = clip_contents.as_ref() {
+          self.list.push(DisplayItem::PushClip(clip.clone()));
         }
         self.list.push(DisplayItem::Image(ImageItem {
           dest_rect,
@@ -7355,7 +7411,7 @@ impl DisplayListBuilder {
           filter_quality: Self::image_filter_quality(style),
           src_rect: None,
         }));
-        if clip_contents {
+        if clip_contents.is_some() {
           self.list.push(DisplayItem::PopClip);
         }
         return true;
@@ -7398,13 +7454,8 @@ impl DisplayListBuilder {
       .lock()
       .unwrap_or_else(|e| e.into_inner());
     if let Some(existing) = decoded_cache.get(&cache_key) {
-      if clip_contents {
-        self.list.push(DisplayItem::PushClip(ClipItem {
-          shape: ClipShape::Rect {
-            rect: content_rect,
-            radii: Some(clip_radii),
-          },
-        }));
+      if let Some(clip) = clip_contents.as_ref() {
+        self.list.push(DisplayItem::PushClip(clip.clone()));
       }
       self.list.push(DisplayItem::Image(ImageItem {
         dest_rect,
@@ -7412,7 +7463,7 @@ impl DisplayListBuilder {
         filter_quality: Self::image_filter_quality(style),
         src_rect: None,
       }));
-      if clip_contents {
+      if clip_contents.is_some() {
         self.list.push(DisplayItem::PopClip);
       }
       if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), decode_timer) {
@@ -7422,13 +7473,8 @@ impl DisplayListBuilder {
     }
     decoded_cache.insert(cache_key, image_data.clone());
 
-    if clip_contents {
-      self.list.push(DisplayItem::PushClip(ClipItem {
-        shape: ClipShape::Rect {
-          rect: content_rect,
-          radii: Some(clip_radii),
-        },
-      }));
+    if let Some(clip) = clip_contents.as_ref() {
+      self.list.push(DisplayItem::PushClip(clip.clone()));
     }
     self.list.push(DisplayItem::Image(ImageItem {
       dest_rect,
@@ -7436,7 +7482,7 @@ impl DisplayListBuilder {
       filter_quality: Self::image_filter_quality(style),
       src_rect: None,
     }));
-    if clip_contents {
+    if clip_contents.is_some() {
       self.list.push(DisplayItem::PopClip);
     }
     if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), decode_timer) {
@@ -8563,6 +8609,86 @@ mod tests {
   }
 
   #[test]
+  fn axis_specific_overflow_clip_expands_rect_and_skips_radii() {
+    let mut style = ComputedStyle::default();
+    style.overflow_x = Overflow::Visible;
+    style.overflow_y = Overflow::Clip;
+    style.background_color = Rgba::BLUE;
+    let radius = crate::style::types::BorderCornerRadius::uniform(Length::px(20.0));
+    style.border_top_left_radius = radius;
+    style.border_top_right_radius = radius;
+    style.border_bottom_right_radius = radius;
+    style.border_bottom_left_radius = radius;
+
+    let child = create_text_fragment(0.0, 0.0, 100.0, 10.0, "wide");
+    let mut fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+      vec![child],
+      Arc::new(style),
+    );
+    fragment.scroll_overflow = Rect::from_xywh(0.0, 0.0, 100.0, 50.0);
+
+    let list = DisplayListBuilder::new().build_with_stacking_tree(&fragment);
+    let clip_radii = list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::PushClip(clip) => match &clip.shape {
+          ClipShape::Rect { rect, radii } if *rect == Rect::from_xywh(0.0, 0.0, 100.0, 50.0) => {
+            Some(*radii)
+          }
+          _ => None,
+        },
+        _ => None,
+      })
+      .expect("Expected axis-specific overflow clip");
+    assert!(
+      clip_radii.is_none(),
+      "axis-specific overflow clipping should ignore border-radius"
+    );
+  }
+
+  #[test]
+  fn axis_specific_overflow_clip_expands_rect_vertically_and_skips_radii() {
+    let mut style = ComputedStyle::default();
+    style.overflow_x = Overflow::Clip;
+    style.overflow_y = Overflow::Visible;
+    style.background_color = Rgba::BLUE;
+    let radius = crate::style::types::BorderCornerRadius::uniform(Length::px(20.0));
+    style.border_top_left_radius = radius;
+    style.border_top_right_radius = radius;
+    style.border_bottom_right_radius = radius;
+    style.border_bottom_left_radius = radius;
+
+    let child = create_text_fragment(0.0, 0.0, 10.0, 100.0, "tall");
+    let mut fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 50.0, 50.0),
+      vec![child],
+      Arc::new(style),
+    );
+    fragment.scroll_overflow = Rect::from_xywh(0.0, 0.0, 50.0, 100.0);
+
+    let list = DisplayListBuilder::new().build_with_stacking_tree(&fragment);
+    let clip_radii = list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::PushClip(clip) => match &clip.shape {
+          ClipShape::Rect { rect, radii } if *rect == Rect::from_xywh(0.0, 0.0, 50.0, 100.0) => {
+            Some(*radii)
+          }
+          _ => None,
+        },
+        _ => None,
+      })
+      .expect("Expected axis-specific overflow clip");
+    assert!(
+      clip_radii.is_none(),
+      "axis-specific overflow clipping should ignore border-radius"
+    );
+  }
+
+  #[test]
   fn stacking_context_overflow_clip_uses_root_border_box() {
     let mut style = ComputedStyle::default();
     style.overflow_x = Overflow::Hidden;
@@ -9373,7 +9499,12 @@ mod tests {
       flip: false,
     };
     let rotated = builder
-      .decode_image(&src, Some(&rotated_style), false, CrossOriginAttribute::None)
+      .decode_image(
+        &src,
+        Some(&rotated_style),
+        false,
+        CrossOriginAttribute::None,
+      )
       .expect("rotated decode");
     assert!(!Arc::ptr_eq(&first, &rotated));
 
@@ -9392,7 +9523,9 @@ mod tests {
   fn decode_image_cache_partitions_by_crossorigin_and_enforces_cors() {
     use crate::api::ResourceContext;
     use crate::error::Result;
-    use crate::resource::{FetchDestination, FetchRequest, FetchedResource, ResourceAccessPolicy, ResourceFetcher};
+    use crate::resource::{
+      FetchDestination, FetchRequest, FetchedResource, ResourceAccessPolicy, ResourceFetcher,
+    };
 
     #[derive(Clone)]
     struct RecordingFetcher {
@@ -9440,7 +9573,8 @@ mod tests {
     let (fetcher, destinations) = RecordingFetcher::new(buf);
 
     let doc_url = "https://doc.test/";
-    let policy = ResourceAccessPolicy::default().for_origin(crate::resource::origin_from_url(doc_url));
+    let policy =
+      ResourceAccessPolicy::default().for_origin(crate::resource::origin_from_url(doc_url));
     let mut cache = ImageCache::with_fetcher(Arc::new(fetcher));
     cache.set_resource_context(Some(ResourceContext {
       document_url: Some(doc_url.to_string()),
@@ -9713,6 +9847,148 @@ mod tests {
         .iter()
         .any(|item| matches!(item, DisplayItem::PushClip(_))),
       "expected no replaced-content clip when overflow is visible"
+    );
+  }
+
+  #[test]
+  fn replaced_object_fit_clips_only_y_when_overflow_x_visible_overflow_y_clip() {
+    let mut style = ComputedStyle::default();
+    style.display = Display::Inline;
+    style.object_fit = crate::style::types::ObjectFit::Cover;
+    style.overflow_x = Overflow::Visible;
+    style.overflow_y = Overflow::Clip;
+    style.padding_top = Length::px(10.0);
+    style.padding_right = Length::px(10.0);
+    style.padding_bottom = Length::px(10.0);
+    style.padding_left = Length::px(10.0);
+    let radius = crate::style::types::BorderCornerRadius::uniform(Length::px(20.0));
+    style.border_top_left_radius = radius;
+    style.border_top_right_radius = radius;
+    style.border_bottom_right_radius = radius;
+    style.border_bottom_left_radius = radius;
+
+    let fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      FragmentContent::Replaced {
+        box_id: None,
+        replaced_type: ReplacedType::Image {
+          src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%222%22%20height=%221%22%3E%3C/svg%3E".to_string(),
+          alt: None,
+          crossorigin: CrossOriginAttribute::None,
+          sizes: None,
+          srcset: Vec::new(),
+          picture_sources: Vec::new(),
+        },
+      },
+      vec![],
+      Arc::new(style),
+    );
+
+    let builder = DisplayListBuilder::with_image_cache(ImageCache::new());
+    let list = builder.build(&fragment);
+
+    let img_idx = list
+      .items()
+      .iter()
+      .position(|item| matches!(item, DisplayItem::Image(_)))
+      .expect("Expected image item");
+    let img = match &list.items()[img_idx] {
+      DisplayItem::Image(img) => img,
+      _ => unreachable!(),
+    };
+    let expected_dest = Rect::from_xywh(-30.0, 10.0, 160.0, 80.0);
+    assert_eq!(img.dest_rect, expected_dest);
+
+    let clip_idx = list
+      .items()
+      .iter()
+      .position(|item| match item {
+        DisplayItem::PushClip(clip) => match &clip.shape {
+          ClipShape::Rect { rect, radii } => *rect == expected_dest && radii.is_none(),
+          _ => false,
+        },
+        _ => false,
+      })
+      .expect("Expected axis-specific clip around replaced contents");
+    assert!(clip_idx < img_idx, "clip should be pushed before image");
+    assert!(
+      list
+        .items()
+        .iter()
+        .skip(img_idx + 1)
+        .any(|item| matches!(item, DisplayItem::PopClip)),
+      "expected clip pop after image"
+    );
+  }
+
+  #[test]
+  fn replaced_object_fit_clips_only_x_when_overflow_x_clip_overflow_y_visible() {
+    let mut style = ComputedStyle::default();
+    style.display = Display::Inline;
+    style.object_fit = crate::style::types::ObjectFit::Cover;
+    style.overflow_x = Overflow::Clip;
+    style.overflow_y = Overflow::Visible;
+    style.padding_top = Length::px(10.0);
+    style.padding_right = Length::px(10.0);
+    style.padding_bottom = Length::px(10.0);
+    style.padding_left = Length::px(10.0);
+    let radius = crate::style::types::BorderCornerRadius::uniform(Length::px(20.0));
+    style.border_top_left_radius = radius;
+    style.border_top_right_radius = radius;
+    style.border_bottom_right_radius = radius;
+    style.border_bottom_left_radius = radius;
+
+    let fragment = FragmentNode::new_with_style(
+      Rect::from_xywh(0.0, 0.0, 100.0, 100.0),
+      FragmentContent::Replaced {
+        box_id: None,
+        replaced_type: ReplacedType::Image {
+          src: "data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20width=%221%22%20height=%222%22%3E%3C/svg%3E".to_string(),
+          alt: None,
+          crossorigin: CrossOriginAttribute::None,
+          sizes: None,
+          srcset: Vec::new(),
+          picture_sources: Vec::new(),
+        },
+      },
+      vec![],
+      Arc::new(style),
+    );
+
+    let builder = DisplayListBuilder::with_image_cache(ImageCache::new());
+    let list = builder.build(&fragment);
+
+    let img_idx = list
+      .items()
+      .iter()
+      .position(|item| matches!(item, DisplayItem::Image(_)))
+      .expect("Expected image item");
+    let img = match &list.items()[img_idx] {
+      DisplayItem::Image(img) => img,
+      _ => unreachable!(),
+    };
+    let expected_dest = Rect::from_xywh(10.0, -30.0, 80.0, 160.0);
+    assert_eq!(img.dest_rect, expected_dest);
+
+    let clip_idx = list
+      .items()
+      .iter()
+      .position(|item| match item {
+        DisplayItem::PushClip(clip) => match &clip.shape {
+          ClipShape::Rect { rect, radii } => *rect == expected_dest && radii.is_none(),
+          _ => false,
+        },
+        _ => false,
+      })
+      .expect("Expected axis-specific clip around replaced contents");
+    assert!(clip_idx < img_idx, "clip should be pushed before image");
+    assert!(
+      list
+        .items()
+        .iter()
+        .skip(img_idx + 1)
+        .any(|item| matches!(item, DisplayItem::PopClip)),
+      "expected clip pop after image"
     );
   }
 
