@@ -75,7 +75,7 @@ fn format_diff(expected: &[u8], actual: &[u8], width: u32) -> String {
 
 fn fixture_path() -> PathBuf {
   PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-    .join("tests/pages/fixtures/filter_backdrop_stagecraft/index.html")
+    .join("tests/pages/fixtures/filter_backdrop_scene/index.html")
 }
 
 fn base_url_for(html_path: &Path) -> String {
@@ -141,7 +141,11 @@ fn blur_cache_toggles() -> Arc<RuntimeToggles> {
   //
   // We install this as a per-thread override for the scoped rayon pools used by this test so we
   // don't perturb other tests running in the same process.
-  const MAX_BYTES: usize = 220_000;
+  // The determinism regression renders at a relatively small viewport, so the default blur paths
+  // would run serially. Drop the filter cache max-bytes threshold below the typical blur surface
+  // size so `apply_gaussian_blur_cached` routes through `tile_blur`, which uses rayon to fan out
+  // over blur tiles when the pool has multiple threads.
+  const MAX_BYTES: usize = 120_000;
 
   let mut raw = std::env::vars()
     .filter(|(k, _)| k.starts_with("FASTR_"))
@@ -173,8 +177,8 @@ fn backdrop_filter_pipeline_is_deterministic_across_rayon_thread_pools() {
     .name("backdrop-filter-determinism".to_string())
     .stack_size(STACK_SIZE)
     .spawn(|| {
-      const WIDTH: u32 = 320;
-      const HEIGHT: u32 = 320;
+      const WIDTH: u32 = 192;
+      const HEIGHT: u32 = 192;
       const RUNS_PER_POOL: usize = 3;
 
       // Build the display list once so layout/paint ordering stays stable. Individual renders below
@@ -217,7 +221,7 @@ fn backdrop_filter_pipeline_is_deterministic_across_rayon_thread_pools() {
 
       // Also validate that parallel tiling (when available) produces the exact same output.
       let parallelism = PaintParallelism {
-        tile_size: 256,
+        tile_size: 128,
         ..PaintParallelism::enabled()
       };
       let pool = thread_pool_with_toggles(4, toggles.clone());
