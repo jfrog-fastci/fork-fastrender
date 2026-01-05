@@ -3783,4 +3783,85 @@ mod tests {
       "mixed box/kernel anisotropic blur output mismatch"
     );
   }
+
+  #[test]
+  fn blur_output_is_independent_of_scratch_contents() {
+    use std::collections::HashMap;
+
+    fn patterned_pixmap(width: u32, height: u32) -> Pixmap {
+      let mut pixmap = new_pixmap(width, height).unwrap();
+      let w = width as usize;
+      for y in 0..height as usize {
+        for x in 0..w {
+          // Ensure channels are premultiplied so blur paths can safely clamp to alpha.
+          let a = (((x * 29 + y * 31) % 255) + 1) as u8;
+          let r0 = ((x * 11 + y * 7) % 256) as u8;
+          let g0 = ((x * 5 + y * 13) % 256) as u8;
+          let b0 = ((x * 17 + y * 19) % 256) as u8;
+          let premul = |c: u8| ((c as u16 * a as u16) / 255) as u8;
+          pixmap.pixels_mut()[y * w + x] =
+            PremultipliedColorU8::from_rgba(premul(r0), premul(g0), premul(b0), a).unwrap();
+        }
+      }
+      pixmap
+    }
+
+    fn fill_scratch(len: usize, ping: u8, pong: u8) {
+      with_blur_scratch(|scratch| {
+        scratch
+          .ensure_len(len, "blur scratch determinism test")
+          .unwrap();
+        scratch.ping[..len].fill(ping);
+        scratch.pong[..len].fill(pong);
+      });
+    }
+
+    fn assert_deterministic<F>(width: u32, height: u32, label: &str, op: F)
+    where
+      F: Fn(&mut Pixmap) -> Result<(), RenderError> + Copy,
+    {
+      let len = blur_buffer_len(width as usize, height as usize, "blur scratch determinism test")
+        .unwrap();
+
+      fill_scratch(len, 0xAA, 0x55);
+      let mut pixmap_a = patterned_pixmap(width, height);
+      op(&mut pixmap_a).unwrap();
+      let out_a = pixmap_a.data().to_vec();
+
+      fill_scratch(len, 0x11, 0x22);
+      let mut pixmap_b = patterned_pixmap(width, height);
+      op(&mut pixmap_b).unwrap();
+      let out_b = pixmap_b.data().to_vec();
+
+      assert_eq!(out_a, out_b, "{label} depends on BLUR_SCRATCH contents");
+    }
+
+    fn run(width: u32, height: u32) {
+      assert_deterministic(width, height, "gaussian (kernel path)", |pixmap| {
+        apply_gaussian_blur(pixmap, 2.0)
+      });
+      assert_deterministic(width, height, "gaussian (box approx path)", |pixmap| {
+        apply_gaussian_blur(pixmap, FAST_GAUSS_THRESHOLD_SIGMA + 1.0)
+      });
+      assert_deterministic(width, height, "anisotropic gaussian", |pixmap| {
+        apply_gaussian_blur_anisotropic(pixmap, 1.5, 3.0)
+      });
+    }
+
+    // Disable FASTR_FAST_BLUR so `sigma > FAST_GAUSS_THRESHOLD_SIGMA` takes the box approximation
+    // path regardless of environment configuration.
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::new()));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      // Serial blur path (below PARALLEL_BLUR_MIN_PIXELS).
+      run(37, 41);
+
+      // Parallel blur path (>= PARALLEL_BLUR_MIN_PIXELS) within a dedicated pool so the test remains
+      // stable regardless of the global Rayon thread count.
+      ThreadPoolBuilder::new()
+        .num_threads(2)
+        .build()
+        .unwrap()
+        .install(|| run(513, 512));
+    });
+  }
 }
