@@ -3179,6 +3179,29 @@ pub(crate) const COMPAT_SOURCE_SRCSET_DATA_ATTR_CANDIDATES: [&str; 6] = [
 
 pub(crate) const COMPAT_SIZES_DATA_ATTR_CANDIDATES: [&str; 1] = ["data-sizes"];
 
+pub(crate) const COMPAT_VIDEO_SRC_DATA_ATTR_CANDIDATES: [&str; 5] = [
+  "data-video-src",
+  "data-video-url",
+  "data-src",
+  "data-src-url",
+  "data-url",
+];
+
+pub(crate) const COMPAT_AUDIO_SRC_DATA_ATTR_CANDIDATES: [&str; 4] = [
+  "data-audio-src",
+  "data-audio-url",
+  "data-src",
+  "data-url",
+];
+
+pub(crate) const COMPAT_VIDEO_POSTER_DATA_ATTR_CANDIDATES: [&str; 5] = [
+  "data-poster",
+  "data-poster-url",
+  "data-posterimage",
+  "data-poster-image",
+  "data-poster-image-override",
+];
+
 pub(crate) fn img_src_is_placeholder(value: &str) -> bool {
   let value = value.trim();
   if value.is_empty() {
@@ -3265,6 +3288,125 @@ fn apply_dom_compatibility_mutations(
     None
   }
 
+  fn looks_like_url(value: &str) -> bool {
+    let value = value.trim();
+    if value.is_empty() {
+      return false;
+    }
+    if value.contains("://") || value.starts_with('/') {
+      return true;
+    }
+    if value.starts_with("data:") || value.starts_with("blob:") {
+      return true;
+    }
+    value.contains('.')
+  }
+
+  fn url_from_jsonish(value: &str) -> Option<String> {
+    fn extract(value: &serde_json::Value) -> Option<String> {
+      match value {
+        serde_json::Value::String(s) => {
+          let s = s.trim();
+          if s.is_empty() || !looks_like_url(s) {
+            return None;
+          }
+          Some(s.to_string())
+        }
+        serde_json::Value::Array(values) => values.iter().find_map(extract),
+        serde_json::Value::Object(map) => {
+          const PRIORITY_KEYS: [&str; 7] = ["url", "src", "poster", "href", "poster_url", "posterUrl", "imageUrl"];
+          for key in PRIORITY_KEYS {
+            if let Some(value) = map.get(key) {
+              if let Some(url) = extract(value) {
+                return Some(url);
+              }
+            }
+          }
+          map.values().find_map(extract)
+        }
+        _ => None,
+      }
+    }
+
+    let value = value.trim();
+    if value.is_empty() {
+      return None;
+    }
+    let first = value.chars().next()?;
+    if first != '{' && first != '[' && first != '"' {
+      return None;
+    }
+    let parsed = serde_json::from_str::<serde_json::Value>(value).ok()?;
+    extract(&parsed)
+  }
+
+  fn first_non_empty_url_attr(attrs: &[(String, String)], names: &[&str]) -> Option<String> {
+    for &name in names {
+      if let Some((_, value)) = attrs.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)) {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+          continue;
+        }
+        if let Some(url) = url_from_jsonish(trimmed) {
+          return Some(url);
+        }
+        if trimmed.starts_with('{') || trimmed.starts_with('[') || trimmed.starts_with('"') {
+          continue;
+        }
+        return Some(trimmed.to_string());
+      }
+    }
+    None
+  }
+
+  fn url_looks_like_mp4(url: &str) -> bool {
+    let url = url.trim();
+    if url.is_empty() {
+      return false;
+    }
+    let lower = url.to_ascii_lowercase();
+    let stem = lower.split(['?', '#']).next().unwrap_or(lower.as_str());
+    stem.ends_with(".mp4")
+  }
+
+  fn video_url_from_urls_list(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+      return None;
+    }
+    if let Some(url) = url_from_jsonish(value) {
+      return Some(url);
+    }
+
+    let mut first: Option<&str> = None;
+    let mut mp4: Option<&str> = None;
+    for part in value.split(',') {
+      let part = part.trim();
+      if part.is_empty() {
+        continue;
+      }
+      if first.is_none() {
+        first = Some(part);
+      }
+      if mp4.is_none() && url_looks_like_mp4(part) {
+        mp4 = Some(part);
+      }
+    }
+    mp4.or(first).map(|url| url.to_string())
+  }
+
+  fn first_non_empty_video_src_candidate(attrs: &[(String, String)]) -> Option<String> {
+    if let Some((_, urls)) = attrs
+      .iter()
+      .find(|(k, _)| k.eq_ignore_ascii_case("data-video-urls"))
+    {
+      if let Some(url) = video_url_from_urls_list(urls) {
+        return Some(url);
+      }
+    }
+    first_non_empty_url_attr(attrs, &COMPAT_VIDEO_SRC_DATA_ATTR_CANDIDATES)
+  }
+
   let mut stack: Vec<*mut DomNode> = Vec::new();
   stack.push(node as *mut DomNode);
 
@@ -3279,6 +3421,8 @@ fn apply_dom_compatibility_mutations(
     // `children` vec while any of its child pointers are in the stack, so raw pointers remain
     // valid for the duration of this traversal.
     let node = unsafe { &mut *ptr };
+    let mut wrapper_video_urls: Option<String> = None;
+    let mut wrapper_poster_url: Option<String> = None;
 
     if let DomNodeType::Element {
       tag_name,
@@ -3486,6 +3630,187 @@ fn apply_dom_compatibility_mutations(
                 attributes.push(("src".to_string(), candidate));
               }
             }
+          }
+        }
+      } else if tag_name.eq_ignore_ascii_case("video") {
+        let src_idx = attributes
+          .iter()
+          .position(|(name, _)| name.eq_ignore_ascii_case("src"));
+        let poster_idx = attributes
+          .iter()
+          .position(|(name, _)| name.eq_ignore_ascii_case("poster"));
+
+        let needs_src = match src_idx {
+          Some(idx) => img_src_is_placeholder(&attributes[idx].1),
+          None => true,
+        };
+        if needs_src {
+          if let Some(candidate) = first_non_empty_video_src_candidate(attributes) {
+            match src_idx {
+              Some(idx) => {
+                if img_src_is_placeholder(&attributes[idx].1) {
+                  attributes[idx].1 = candidate;
+                }
+              }
+              None => {
+                attributes.push(("src".to_string(), candidate));
+              }
+            }
+          }
+        }
+
+        let needs_poster = match poster_idx {
+          Some(idx) => img_src_is_placeholder(&attributes[idx].1),
+          None => true,
+        };
+        if needs_poster {
+          if let Some(candidate) =
+            first_non_empty_url_attr(attributes, &COMPAT_VIDEO_POSTER_DATA_ATTR_CANDIDATES)
+          {
+            match poster_idx {
+              Some(idx) => {
+                if img_src_is_placeholder(&attributes[idx].1) {
+                  attributes[idx].1 = candidate;
+                }
+              }
+              None => {
+                attributes.push(("poster".to_string(), candidate));
+              }
+            }
+          }
+        }
+      } else if tag_name.eq_ignore_ascii_case("audio") {
+        let src_idx = attributes
+          .iter()
+          .position(|(name, _)| name.eq_ignore_ascii_case("src"));
+        let needs_src = match src_idx {
+          Some(idx) => img_src_is_placeholder(&attributes[idx].1),
+          None => true,
+        };
+        if needs_src {
+          if let Some(candidate) =
+            first_non_empty_url_attr(attributes, &COMPAT_AUDIO_SRC_DATA_ATTR_CANDIDATES)
+          {
+            match src_idx {
+              Some(idx) => {
+                if img_src_is_placeholder(&attributes[idx].1) {
+                  attributes[idx].1 = candidate;
+                }
+              }
+              None => {
+                attributes.push(("src".to_string(), candidate));
+              }
+            }
+          }
+        }
+      }
+
+      if !tag_name.eq_ignore_ascii_case("video") {
+        wrapper_video_urls = first_non_empty_attr(attributes, &["data-video-urls"]);
+        wrapper_poster_url = first_non_empty_attr(attributes, &["data-poster-url"]);
+      }
+    }
+
+    if wrapper_video_urls.is_some() || wrapper_poster_url.is_some() {
+      let wrapper_src = wrapper_video_urls
+        .as_deref()
+        .and_then(video_url_from_urls_list);
+      let wrapper_poster = wrapper_poster_url.as_deref().and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+          return None;
+        }
+        if let Some(url) = url_from_jsonish(trimmed) {
+          return Some(url);
+        }
+        if trimmed.starts_with('{') || trimmed.starts_with('[') || trimmed.starts_with('"') {
+          return None;
+        }
+        Some(trimmed.to_string())
+      });
+
+      if wrapper_src.is_some() || wrapper_poster.is_some() {
+        let mut descendant_stack: Vec<*mut DomNode> = Vec::new();
+        let len = node.children.len();
+        let children_ptr = node.children.as_mut_ptr();
+        for idx in (0..len).rev() {
+          descendant_stack.push(unsafe { children_ptr.add(idx) });
+        }
+
+        while let Some(ptr) = descendant_stack.pop() {
+          check_active_periodic(
+            deadline_counter,
+            DOM_PARSE_NODE_DEADLINE_STRIDE,
+            RenderStage::DomParse,
+          )?;
+
+          // Safety: descendant pointers are stable because we never mutate any `children` vectors.
+          let current = unsafe { &mut *ptr };
+
+          let mut is_video = false;
+          if let DomNodeType::Element {
+            tag_name,
+            attributes,
+            ..
+          } = &mut current.node_type
+          {
+            if tag_name.eq_ignore_ascii_case("video") {
+              is_video = true;
+
+              if let Some(candidate) = &wrapper_src {
+                let src_idx = attributes
+                  .iter()
+                  .position(|(name, _)| name.eq_ignore_ascii_case("src"));
+                let needs_src = match src_idx {
+                  Some(idx) => img_src_is_placeholder(&attributes[idx].1),
+                  None => true,
+                };
+                if needs_src {
+                  match src_idx {
+                    Some(idx) => {
+                      if img_src_is_placeholder(&attributes[idx].1) {
+                        attributes[idx].1 = candidate.clone();
+                      }
+                    }
+                    None => {
+                      attributes.push(("src".to_string(), candidate.clone()));
+                    }
+                  }
+                }
+              }
+
+              if let Some(candidate) = &wrapper_poster {
+                let poster_idx = attributes
+                  .iter()
+                  .position(|(name, _)| name.eq_ignore_ascii_case("poster"));
+                let needs_poster = match poster_idx {
+                  Some(idx) => img_src_is_placeholder(&attributes[idx].1),
+                  None => true,
+                };
+                if needs_poster {
+                  match poster_idx {
+                    Some(idx) => {
+                      if img_src_is_placeholder(&attributes[idx].1) {
+                        attributes[idx].1 = candidate.clone();
+                      }
+                    }
+                    None => {
+                      attributes.push(("poster".to_string(), candidate.clone()));
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          if is_video {
+            break;
+          }
+
+          let len = current.children.len();
+          let children_ptr = current.children.as_mut_ptr();
+          for idx in (0..len).rev() {
+            descendant_stack.push(unsafe { children_ptr.add(idx) });
           }
         }
       }
@@ -10188,6 +10513,52 @@ mod tests {
       source.get_attribute_ref("srcset"),
       Some("a.webp 1x, b.webp 2x")
     );
+  }
+
+  #[test]
+  fn parse_html_compat_mode_copies_data_video_urls_to_video_src() {
+    let dom = parse_html_with_options(
+      "<video id='video' data-video-urls='video.webm, video.mp4'></video>",
+      DomParseOptions::compatibility(),
+    )
+    .expect("parse");
+    let video = find_element_by_id(&dom, "video").expect("video element");
+    assert_eq!(video.get_attribute_ref("src"), Some("video.mp4"));
+  }
+
+  #[test]
+  fn parse_html_compat_mode_copies_data_poster_url_to_video_poster() {
+    let dom = parse_html_with_options(
+      "<video id='video' data-poster-url='poster.jpg'></video>",
+      DomParseOptions::compatibility(),
+    )
+    .expect("parse");
+    let video = find_element_by_id(&dom, "video").expect("video element");
+    assert_eq!(video.get_attribute_ref("poster"), Some("poster.jpg"));
+  }
+
+  #[test]
+  fn parse_html_compat_mode_propagates_wrapper_data_video_urls_into_child_video() {
+    let dom = parse_html_with_options(
+      "<div data-video-urls='bg.webm, bg.mp4' data-poster-url='bg.jpg'><video id='video'></video></div>",
+      DomParseOptions::compatibility(),
+    )
+    .expect("parse");
+    let video = find_element_by_id(&dom, "video").expect("video element");
+    assert_eq!(video.get_attribute_ref("src"), Some("bg.mp4"));
+    assert_eq!(video.get_attribute_ref("poster"), Some("bg.jpg"));
+  }
+
+  #[test]
+  fn parse_html_compat_mode_does_not_override_authored_video_src_or_poster() {
+    let dom = parse_html_with_options(
+      "<video id='video' src='author.mp4' poster='author.jpg' data-video-urls='lazy.mp4' data-poster-url='lazy.jpg'></video>",
+      DomParseOptions::compatibility(),
+    )
+    .expect("parse");
+    let video = find_element_by_id(&dom, "video").expect("video element");
+    assert_eq!(video.get_attribute_ref("src"), Some("author.mp4"));
+    assert_eq!(video.get_attribute_ref("poster"), Some("author.jpg"));
   }
 
   #[test]
