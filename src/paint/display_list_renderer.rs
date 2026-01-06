@@ -3880,7 +3880,7 @@ impl DisplayListRenderer {
       transform_stack: vec![Transform3D::identity()],
       perspective_stack: vec![Transform3D::identity()],
       culled_depth: 0,
-      preserve_3d_disabled: false,
+      preserve_3d_disabled: runtime_flag("FASTR_PRESERVE3D_DISABLE_SCENE"),
       preserve_3d_scene_depth: 0,
       projective_warp_enabled: projective_warp_enabled(),
       preserve_3d_debug: runtime_flag("FASTR_PRESERVE3D_DEBUG"),
@@ -12897,6 +12897,86 @@ mod tests {
     let idx = ((y * pixmap.width() + x) * 4) as usize;
     let data = pixmap.data();
     (data[idx], data[idx + 1], data[idx + 2], data[idx + 3])
+  }
+
+  #[test]
+  fn preserve_3d_scene_toggle_enables_parallel_tiling() {
+    let mut list = DisplayList::new();
+    let rect = Rect::from_xywh(0.0, 0.0, 512.0, 512.0);
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      bounds: rect,
+      plane_rect: rect,
+      mix_blend_mode: BlendMode::Normal,
+      is_isolated: false,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Preserve3d,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+    }));
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect,
+      color: Rgba::RED,
+    }));
+    list.push(DisplayItem::PopStackingContext);
+
+    let parallelism = PaintParallelism::enabled();
+
+    let paint_threads = Arc::new(crate::debug::runtime::RuntimeToggles::from_map(
+      std::collections::HashMap::from([(
+        "FASTR_PAINT_THREADS".to_string(),
+        "2".to_string(),
+      )]),
+    ));
+
+    let report = crate::debug::runtime::with_thread_runtime_toggles(Arc::clone(&paint_threads), || {
+      DisplayListRenderer::new(512, 512, Rgba::WHITE, FontContext::new())
+        .unwrap()
+        .with_parallelism(parallelism)
+        .render_with_report(&list)
+        .unwrap()
+    });
+    assert!(
+      !report.parallel_used,
+      "expected preserve-3d scene compositor to force serial paint"
+    );
+    assert!(
+      report
+        .fallback_reason
+        .as_deref()
+        .unwrap_or_default()
+        .contains("preserve-3d"),
+      "expected preserve-3d to be the serial fallback reason, got {:?}",
+      report.fallback_reason
+    );
+
+    let renderer = crate::debug::runtime::with_runtime_toggles(
+      Arc::new(crate::debug::runtime::RuntimeToggles::from_map(
+        std::collections::HashMap::from([(
+          "FASTR_PRESERVE3D_DISABLE_SCENE".to_string(),
+          "1".to_string(),
+        )]),
+      )),
+      || {
+        DisplayListRenderer::new(512, 512, Rgba::WHITE, FontContext::new())
+          .unwrap()
+          .with_parallelism(parallelism)
+      },
+    );
+    let report = crate::debug::runtime::with_thread_runtime_toggles(Arc::clone(&paint_threads), || {
+      renderer.render_with_report(&list).unwrap()
+    });
+    assert!(
+      report.parallel_used,
+      "expected preserve-3d scene compositor toggle to allow parallel tiling (fallback_reason={:?})",
+      report.fallback_reason
+    );
+    assert!(report.tiles > 1, "expected multiple tiles, got {}", report.tiles);
   }
 
   #[test]
