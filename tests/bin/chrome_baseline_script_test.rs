@@ -192,8 +192,8 @@ fn chrome_baseline_script_parses_flags_without_treating_them_as_page_stems() {
       .expect("parse json");
   assert_eq!(meta["stem"], "page");
   assert_eq!(meta["viewport"], serde_json::json!([200, 150]));
-  assert_eq!(meta["chrome_window"], serde_json::json!([200, 238]));
-  assert_eq!(meta["chrome_window_padding_css"], serde_json::json!(88));
+  assert_eq!(meta["chrome_window"], serde_json::json!([200, expected_window_h]));
+  assert_eq!(meta["chrome_window_padding_css"], serde_json::json!(pad_px));
   assert_eq!(meta["dpr"], serde_json::json!(1.25));
   assert_eq!(meta["js"], "off");
   assert_eq!(meta["headless"], "new");

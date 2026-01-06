@@ -339,16 +339,10 @@ fn render_fixture(
   let url = file_url(&patched_html)?;
 
   let chrome_window_meta: Option<((u32, u32), u32)> = match args.media {
-    MediaMode::Screen => Some((
-      (
-        args.viewport.0,
-        args
-          .viewport
-          .1
-          .saturating_add(HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
-      ),
-      HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX,
-    )),
+    MediaMode::Screen => {
+      let pad_px = headless_window_viewport_height_pad_px()?;
+      Some(((args.viewport.0, args.viewport.1.saturating_add(pad_px)), pad_px))
+    }
     MediaMode::Print => None,
   };
 
