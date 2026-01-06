@@ -3766,6 +3766,10 @@ mod tests {
     const SIGMA_BOX: f32 = 8.0;
     const SIGMA_X_MIXED: f32 = 12.0;
     const SIGMA_Y_MIXED: f32 = 2.0;
+    const SIGMA_X_MIXED_Y: f32 = 2.0;
+    const SIGMA_Y_MIXED_Y: f32 = 5.0;
+    const SIGMA_X_BOX_ANISO: f32 = 8.0;
+    const SIGMA_Y_BOX_ANISO: f32 = 12.0;
 
     // Disable the fast blur path so sigma-dependent algorithm selection stays stable (and
     // reasonably quick) regardless of environment variables.
@@ -3795,27 +3799,73 @@ mod tests {
     );
 
     let pool = build_pool_with_toggles(1, toggles.clone());
-    let (direct_kernel, direct_box, direct_anisotropic) =
+    let (direct_kernel, direct_box, direct_mixed_x, direct_mixed_y, direct_box_aniso) =
       runtime::with_thread_runtime_toggles(toggles.clone(), || {
         pool.install(|| {
           let mut direct_cache = BlurCache::new(direct_config);
 
           let mut kernel = base.clone();
-          apply_gaussian_blur_cached(&mut kernel, SIGMA_KERNEL, SIGMA_KERNEL, Some(&mut direct_cache), 1.0)
-            .unwrap();
+          apply_gaussian_blur_cached(
+            &mut kernel,
+            SIGMA_KERNEL,
+            SIGMA_KERNEL,
+            Some(&mut direct_cache),
+            1.0,
+          )
+          .unwrap();
           let kernel = kernel.data().to_vec();
 
           let mut isotropic = base.clone();
-          apply_gaussian_blur_cached(&mut isotropic, SIGMA_BOX, SIGMA_BOX, Some(&mut direct_cache), 1.0)
-            .unwrap();
+          apply_gaussian_blur_cached(
+            &mut isotropic,
+            SIGMA_BOX,
+            SIGMA_BOX,
+            Some(&mut direct_cache),
+            1.0,
+          )
+          .unwrap();
           let isotropic = isotropic.data().to_vec();
 
-          let mut anisotropic = base.clone();
-          apply_gaussian_blur_cached(&mut anisotropic, SIGMA_X_MIXED, SIGMA_Y_MIXED, Some(&mut direct_cache), 1.0)
-            .unwrap();
-          let anisotropic = anisotropic.data().to_vec();
+          let mut mixed_x = base.clone();
+          apply_gaussian_blur_cached(
+            &mut mixed_x,
+            SIGMA_X_MIXED,
+            SIGMA_Y_MIXED,
+            Some(&mut direct_cache),
+            1.0,
+          )
+          .unwrap();
+          let mixed_x = mixed_x.data().to_vec();
 
-          (Arc::new(kernel), Arc::new(isotropic), Arc::new(anisotropic))
+          let mut mixed_y = base.clone();
+          apply_gaussian_blur_cached(
+            &mut mixed_y,
+            SIGMA_X_MIXED_Y,
+            SIGMA_Y_MIXED_Y,
+            Some(&mut direct_cache),
+            1.0,
+          )
+          .unwrap();
+          let mixed_y = mixed_y.data().to_vec();
+
+          let mut box_aniso = base.clone();
+          apply_gaussian_blur_cached(
+            &mut box_aniso,
+            SIGMA_X_BOX_ANISO,
+            SIGMA_Y_BOX_ANISO,
+            Some(&mut direct_cache),
+            1.0,
+          )
+          .unwrap();
+          let box_aniso = box_aniso.data().to_vec();
+
+          (
+            Arc::new(kernel),
+            Arc::new(isotropic),
+            Arc::new(mixed_x),
+            Arc::new(mixed_y),
+            Arc::new(box_aniso),
+          )
         })
       });
 
@@ -3824,121 +3874,61 @@ mod tests {
       let base = base.clone();
       let direct_kernel = direct_kernel.clone();
       let direct_box = direct_box.clone();
-      let direct_anisotropic = direct_anisotropic.clone();
+      let direct_mixed_x = direct_mixed_x.clone();
+      let direct_mixed_y = direct_mixed_y.clone();
+      let direct_box_aniso = direct_box_aniso.clone();
 
       runtime::with_thread_runtime_toggles(toggles.clone(), || {
         pool.install(|| {
-          let plan = tile_blur_plan(WIDTH, HEIGHT, SIGMA_KERNEL, SIGMA_KERNEL, tiled_config);
-          assert!(
-            !plan.parallel_tiles,
-            "expected hybrid tiled blur to schedule tiles serially (threads={threads} budget={} tiles={} max_tile_pixels={})",
-            blur_thread_budget(),
-            plan.tiles,
-            plan.max_tile_pixels,
-          );
-          assert!(
-            plan.max_tile_pixels >= PARALLEL_BLUR_MIN_PIXELS && plan.tiles > 1,
-            "expected tiling with large tiles (threads={threads} tiles={} max_tile_pixels={})",
-            plan.tiles,
-            plan.max_tile_pixels,
-          );
+          let cases = [
+            (SIGMA_KERNEL, SIGMA_KERNEL, &direct_kernel, "kernel"),
+            (SIGMA_BOX, SIGMA_BOX, &direct_box, "box"),
+            (SIGMA_X_MIXED, SIGMA_Y_MIXED, &direct_mixed_x, "mixed_x"),
+            (SIGMA_X_MIXED_Y, SIGMA_Y_MIXED_Y, &direct_mixed_y, "mixed_y"),
+            (SIGMA_X_BOX_ANISO, SIGMA_Y_BOX_ANISO, &direct_box_aniso, "box_aniso"),
+          ];
 
-          if blur_thread_budget() > 1 {
-            let edge_src_w = plan.tile_w.saturating_add(plan.pad_x).min(WIDTH);
-            let edge_src_h = plan.tile_h.saturating_add(plan.pad_y).min(HEIGHT);
+          for (sigma_x, sigma_y, reference, label) in cases {
+            let plan = tile_blur_plan(WIDTH, HEIGHT, sigma_x, sigma_y, tiled_config);
             assert!(
-              blur_should_parallelize(edge_src_w as usize, edge_src_h as usize),
-              "expected per-tile blur to parallelize (threads={threads} budget={} tile={edge_src_w}x{edge_src_h})",
+              !plan.parallel_tiles,
+              "expected hybrid tiled blur to schedule tiles serially ({label} threads={threads} budget={} tiles={} max_tile_pixels={})",
               blur_thread_budget(),
+              plan.tiles,
+              plan.max_tile_pixels,
+            );
+            assert!(
+              plan.max_tile_pixels >= PARALLEL_BLUR_MIN_PIXELS && plan.tiles > 1,
+              "expected tiling with large tiles ({label} threads={threads} tiles={} max_tile_pixels={})",
+              plan.tiles,
+              plan.max_tile_pixels,
+            );
+
+            if blur_thread_budget() > 1 {
+              let edge_src_w = plan.tile_w.saturating_add(plan.pad_x).min(WIDTH);
+              let edge_src_h = plan.tile_h.saturating_add(plan.pad_y).min(HEIGHT);
+              assert!(
+                blur_should_parallelize(edge_src_w as usize, edge_src_h as usize),
+                "expected per-tile blur to parallelize ({label} threads={threads} budget={} tile={edge_src_w}x{edge_src_h})",
+                blur_thread_budget(),
+              );
+            }
+
+            let mut cache = BlurCache::new(tiled_config);
+            let mut pixmap = base.clone();
+            enable_paint_diagnostics();
+            apply_gaussian_blur_cached(&mut pixmap, sigma_x, sigma_y, Some(&mut cache), 1.0).unwrap();
+            let diag = take_paint_diagnostics().expect("diagnostics enabled");
+            assert_eq!(
+              diag.blur_tiles, plan.tiles,
+              "expected tiled blur to report tile count ({label} threads={threads})"
+            );
+            assert_eq!(
+              pixmap.data(),
+              reference.as_slice(),
+              "hybrid tiled blur output mismatch ({label} threads={threads})"
             );
           }
-
-          let mut cache = BlurCache::new(tiled_config);
-          let mut pixmap = base.clone();
-          enable_paint_diagnostics();
-          apply_gaussian_blur_cached(&mut pixmap, SIGMA_KERNEL, SIGMA_KERNEL, Some(&mut cache), 1.0)
-            .unwrap();
-          let diag = take_paint_diagnostics().expect("diagnostics enabled");
-          assert_eq!(
-            diag.blur_tiles, plan.tiles,
-            "expected tiled blur to report tile count (threads={threads})"
-          );
-          assert_eq!(
-            pixmap.data(),
-            direct_kernel.as_slice(),
-            "hybrid kernel tiled blur output mismatch (threads={threads})"
-          );
-
-          let plan = tile_blur_plan(WIDTH, HEIGHT, SIGMA_BOX, SIGMA_BOX, tiled_config);
-          assert!(
-            !plan.parallel_tiles,
-            "expected hybrid tiled blur to schedule tiles serially (threads={threads} budget={} tiles={} max_tile_pixels={})",
-            blur_thread_budget(),
-            plan.tiles,
-            plan.max_tile_pixels,
-          );
-          assert!(
-            plan.max_tile_pixels >= PARALLEL_BLUR_MIN_PIXELS && plan.tiles > 1,
-            "expected tiling with large tiles (threads={threads} tiles={} max_tile_pixels={})",
-            plan.tiles,
-            plan.max_tile_pixels,
-          );
-
-          if blur_thread_budget() > 1 {
-            let edge_src_w = plan.tile_w.saturating_add(plan.pad_x).min(WIDTH);
-            let edge_src_h = plan.tile_h.saturating_add(plan.pad_y).min(HEIGHT);
-            assert!(
-              blur_should_parallelize(edge_src_w as usize, edge_src_h as usize),
-              "expected per-tile blur to parallelize (threads={threads} budget={} tile={edge_src_w}x{edge_src_h})",
-              blur_thread_budget(),
-            );
-          }
-
-          let mut cache = BlurCache::new(tiled_config);
-          let mut pixmap = base.clone();
-          enable_paint_diagnostics();
-          apply_gaussian_blur_cached(&mut pixmap, SIGMA_BOX, SIGMA_BOX, Some(&mut cache), 1.0).unwrap();
-          let diag = take_paint_diagnostics().expect("diagnostics enabled");
-          assert_eq!(
-            diag.blur_tiles, plan.tiles,
-            "expected tiled blur to report tile count (threads={threads})"
-          );
-          assert_eq!(
-            pixmap.data(),
-            direct_box.as_slice(),
-            "hybrid isotropic tiled blur output mismatch (threads={threads})"
-          );
-
-          let plan = tile_blur_plan(WIDTH, HEIGHT, SIGMA_X_MIXED, SIGMA_Y_MIXED, tiled_config);
-          assert!(
-            !plan.parallel_tiles,
-            "expected hybrid tiled blur to schedule tiles serially (threads={threads} budget={} tiles={} max_tile_pixels={})",
-            blur_thread_budget(),
-            plan.tiles,
-            plan.max_tile_pixels,
-          );
-          assert!(
-            plan.max_tile_pixels >= PARALLEL_BLUR_MIN_PIXELS && plan.tiles > 1,
-            "expected tiling with large tiles (threads={threads} tiles={} max_tile_pixels={})",
-            plan.tiles,
-            plan.max_tile_pixels,
-          );
-
-          let mut cache = BlurCache::new(tiled_config);
-          let mut pixmap = base.clone();
-          enable_paint_diagnostics();
-          apply_gaussian_blur_cached(&mut pixmap, SIGMA_X_MIXED, SIGMA_Y_MIXED, Some(&mut cache), 1.0)
-            .unwrap();
-          let diag = take_paint_diagnostics().expect("diagnostics enabled");
-          assert_eq!(
-            diag.blur_tiles, plan.tiles,
-            "expected tiled blur to report tile count (threads={threads})"
-          );
-          assert_eq!(
-            pixmap.data(),
-            direct_anisotropic.as_slice(),
-            "hybrid anisotropic tiled blur output mismatch (threads={threads})"
-          );
         });
       });
     }
@@ -3953,7 +3943,9 @@ mod tests {
     let cases = [
       (2.0f32, 2.0f32, "kernel"),
       (8.0f32, 8.0f32, "box"),
+      (2.0f32, 5.0f32, "mixed_y"),
       (12.0f32, 2.0f32, "mixed"),
+      (8.0f32, 12.0f32, "box_aniso"),
     ];
 
     let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
