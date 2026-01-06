@@ -336,6 +336,12 @@ pub struct CollectedCssMetadata {
   pub keyframes: Vec<KeyframesRule>,
   pub has_container_rules: bool,
   pub needs_container_pass: bool,
+  /// True when at least one `@container` rule contains a style query (e.g. `style(--foo: bar)`).
+  pub has_container_style_queries: bool,
+  /// Names of custom properties referenced by style queries (deduplicated across all sheets).
+  pub container_style_query_custom_properties: FxHashSet<String>,
+  /// Names of computed properties referenced by style queries (deduplicated across all sheets).
+  pub container_style_query_properties: FxHashSet<String>,
   pub has_starting_style_rules: bool,
 }
 
@@ -1353,6 +1359,7 @@ fn collect_css_metadata_recursive(
       CssRule::Container(container_rule) => {
         out.has_container_rules = true;
         out.needs_container_pass = true;
+        collect_container_style_query_metadata(&container_rule.query_list, out);
         collect_css_metadata_recursive(
           &container_rule.rules,
           media_ctx,
@@ -1452,6 +1459,36 @@ fn collect_css_metadata_recursive(
       | CssRule::Import(_)
       | CssRule::FontPaletteValues(_)
       | CssRule::Property(_) => {}
+    }
+  }
+}
+
+fn collect_container_style_query_metadata(
+  queries: &[ContainerQuery],
+  out: &mut CollectedCssMetadata,
+) {
+  for query in queries {
+    match query {
+      ContainerQuery::Size(_) => {}
+      ContainerQuery::Style(style_query) => {
+        out.has_container_style_queries = true;
+        match style_query {
+          ContainerStyleQuery::CustomProperty { name, .. } => {
+            out
+              .container_style_query_custom_properties
+              .insert(name.clone());
+          }
+          ContainerStyleQuery::Property { name, .. } => {
+            out.container_style_query_properties.insert(name.clone());
+          }
+        }
+      }
+      ContainerQuery::Not(inner) => {
+        collect_container_style_query_metadata(std::slice::from_ref(inner.as_ref()), out);
+      }
+      ContainerQuery::And(list) | ContainerQuery::Or(list) => {
+        collect_container_style_query_metadata(list, out);
+      }
     }
   }
 }

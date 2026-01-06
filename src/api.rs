@@ -155,7 +155,7 @@ use crate::style::media::{MediaContext, MediaQuery, MediaQueryCache};
 use crate::style::page::resolve_page_style;
 use crate::style::page::PageSide;
 use crate::style::style_set::StyleSet;
-use crate::style::types::ContainerType;
+use crate::style::types::{ContainerType, WritingMode};
 use crate::style::values::Length;
 use crate::style::ComputedStyle;
 use crate::text::font_db::FontConfig;
@@ -202,6 +202,7 @@ use url::Url;
 
 use std::time::{Duration, Instant};
 pub(crate) const DEFAULT_MAX_IFRAME_DEPTH: usize = 3;
+const MAX_CONTAINER_QUERY_ITERATIONS: usize = 6;
 // Re-export Pixmap from tiny-skia for public use
 pub use crate::image_loader::ImageCacheConfig;
 pub use crate::layout::pagination::PageStacking;
@@ -1009,6 +1010,19 @@ pub struct LayoutParallelismDiagnostics {
   pub work_items: usize,
 }
 
+/// Diagnostics about the container-query fixpoint iteration performed during style/layout.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct ContainerQueryDiagnostics {
+  /// Number of container-query iterations performed (cascade + optional relayout), excluding the
+  /// initial pre-layout cascade.
+  pub iterations: u32,
+  /// True when the container-query-dependent cascade/layout reached a fixed point before hitting
+  /// the hard iteration limit.
+  pub converged: bool,
+  /// Hard cap on the number of iterations attempted.
+  pub max_iterations: u32,
+}
+
 /// Diagnostics collected during rendering.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct RenderDiagnostics {
@@ -1035,6 +1049,9 @@ pub struct RenderDiagnostics {
   /// Layout parallelism decision and observed worker usage.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub layout_parallelism: Option<LayoutParallelismDiagnostics>,
+  /// Container query iteration diagnostics, when `@container` rules were present.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub container_queries: Option<ContainerQueryDiagnostics>,
 }
 
 impl RenderDiagnostics {
@@ -2101,6 +2118,8 @@ pub struct CascadeDiagnostics {
   pub has_bloom_prunes: Option<u64>,
   pub has_filter_prunes: Option<u64>,
   pub has_evaluated: Option<u64>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub container_queries: Option<ContainerQueryDiagnostics>,
 }
 
 /// Layout cache and intrinsic sizing statistics.
@@ -7371,15 +7390,21 @@ impl FastRender {
     let style_load_start = timings_enabled.then(Instant::now);
     self.font_context.clear_web_fonts();
     let css_metadata_timer = stats.as_deref().and_then(|rec| rec.timer());
-    let css_metadata = style_set
+    let crate::css::types::CollectedCssMetadata {
+      font_faces,
+      keyframes,
+      has_container_rules: _,
+      needs_container_pass,
+      has_container_style_queries,
+      container_style_query_custom_properties,
+      container_style_query_properties,
+      has_starting_style_rules,
+    } = style_set
       .collect_css_metadata_all_scopes_with_cache(&media_ctx, Some(&mut media_query_cache));
-    let font_faces = css_metadata.font_faces;
-    let keyframes = css_metadata.keyframes;
-    let mut has_container_queries = css_metadata.needs_container_pass;
+    let mut has_container_queries = needs_container_pass;
     if !has_container_queries {
       has_container_queries = needs_container_pass_inline_styles(&dom_with_state)?;
     }
-    let has_starting_style_rules = css_metadata.has_starting_style_rules;
     if let Some(rec) = stats.as_deref_mut() {
       RenderStatsRecorder::add_ms(
         &mut rec.stats.timings.css_parse_collect_font_faces_ms,
@@ -7475,8 +7500,6 @@ impl FastRender {
     if let Some(start) = style_apply_start {
       eprintln!("timing:style_apply {:?}", start.elapsed());
     }
-    let first_style_fingerprints =
-      has_container_queries.then(|| styled_fingerprint_map(&styled_tree));
     let mut svg_filter_defs = crate::tree::box_generation::collect_svg_filter_defs(&styled_tree);
 
     let fallback_page_size = viewport_size;
@@ -7852,7 +7875,7 @@ impl FastRender {
       RenderStatsRecorder::add_ms(&mut rec.stats.timings.layout_ms, layout_timer);
     }
     let capture_container_fields = toggles.truthy("FASTR_LOG_CONTAINER_FIELDS");
-    let first_styled_snapshot = if has_container_queries && capture_container_fields {
+    let _first_styled_snapshot = if has_container_queries && capture_container_fields {
       Some(styled_tree.clone())
     } else {
       None
@@ -7861,61 +7884,108 @@ impl FastRender {
     // Re-run cascade/layout when container queries are present and we have resolved container sizes.
     let log_container_pass = toggles.truthy("FASTR_LOG_CONTAINER_PASS");
     let log_reuse = toggles.truthy("FASTR_LOG_CONTAINER_REUSE");
+    let mut container_query_diag: Option<ContainerQueryDiagnostics> = None;
 
     if has_container_queries {
-      let first_styled_tree = styled_tree.clone();
-      let container_ctx = build_container_query_context(&box_tree, &fragment_tree, &media_ctx);
-      if log_container_pass {
-        let total = container_ctx.containers.len();
-        let (size_cnt, inline_cnt) =
-          container_ctx
-            .containers
-            .values()
-            .fold((0usize, 0usize), |(s, i), info| match info.container_type {
-              ContainerType::Size => (s + 1, i),
-              ContainerType::InlineSize => (s, i + 1),
-              _ => (s, i),
-            });
-        let mut sample: Vec<String> = Vec::new();
-        for (idx, (id, info)) in container_ctx.containers.iter().take(5).enumerate() {
-          sample.push(format!(
-            "#{idx}: styled_id={} type={:?} inline={:.1} block={:.1} names={:?}",
-            id, info.container_type, info.inline_size, info.block_size, info.names
-          ));
+      let style_query_fingerprint = if has_container_style_queries {
+        let mut custom_properties: Vec<String> = container_style_query_custom_properties
+          .into_iter()
+          .collect();
+        custom_properties.sort();
+        let mut include_color = false;
+        let mut include_background_color = false;
+        for name in container_style_query_properties.iter() {
+          match name.to_ascii_lowercase().as_str() {
+            "color" => include_color = true,
+            "background-color" => include_background_color = true,
+            _ => {}
+          }
         }
-        eprintln!(
-          "[container-pass] containers={} size={} inline_size={} samples=[{}]",
-          total,
-          size_cnt,
-          inline_cnt,
-          sample.join(" | ")
-        );
+        Some(ContainerStyleQueryFingerprintConfig {
+          custom_properties,
+          include_color,
+          include_background_color,
+        })
+      } else {
+        None
+      };
+
+      let mut container_ctx =
+        build_container_query_context(&box_tree, &fragment_tree, &styled_tree, &media_ctx);
+      let mut layout_fingerprint = styled_layout_fingerprint_digest(&styled_tree);
+      let mut iterations: u32 = 0;
+      let mut converged = true;
+
+      // If the initial layout resolved no containers, container queries cannot apply (and no new
+      // containers can be introduced by @container rules without an existing query container).
+      if !container_ctx.containers.is_empty() {
+        converged = false;
       }
 
-      if !container_ctx.containers.is_empty() {
-        let container_scope = build_container_scope(&first_styled_tree, &container_ctx);
-        let mut reuse_map: HashMap<usize, *const StyledNode> = HashMap::new();
-        build_styled_lookup(&first_styled_tree, &mut reuse_map);
-        if log_container_pass && log_reuse {
-          let base_total = count_styled_nodes_api(&first_styled_tree);
+      for iter_idx in 0..MAX_CONTAINER_QUERY_ITERATIONS {
+        if converged {
+          break;
+        }
+
+        let ctx_fp_before =
+          container_query_context_fingerprint(&container_ctx, style_query_fingerprint.as_ref());
+
+        if log_container_pass {
+          let total = container_ctx.containers.len();
+          let (size_cnt, inline_cnt) =
+            container_ctx
+              .containers
+              .values()
+              .fold((0usize, 0usize), |(s, i), info| match info.container_type {
+                ContainerType::Size => (s + 1, i),
+                ContainerType::InlineSize => (s, i + 1),
+                _ => (s, i),
+              });
           eprintln!(
-            "[container-reuse] base_total={} scope_size={}",
-            base_total,
-            container_scope.len()
+            "[container-pass] iter={} containers={} size={} inline_size={}",
+            iter_idx + 1,
+            total,
+            size_cnt,
+            inline_cnt
           );
         }
-        let log_container_ids = toggles.usize_list("FASTR_LOG_CONTAINER_IDS");
 
+        let (container_scope, reuse_map) = if container_ctx.containers.is_empty() {
+          (None, None)
+        } else {
+          let container_scope = build_container_scope(&styled_tree, &container_ctx);
+          let mut reuse_map: HashMap<usize, *const StyledNode> = HashMap::new();
+          build_styled_lookup(&styled_tree, &mut reuse_map);
+          if log_container_pass && log_reuse {
+            let base_total = count_styled_nodes_api(&styled_tree);
+            eprintln!(
+              "[container-reuse] iter={} base_total={} scope_size={}",
+              iter_idx + 1,
+              base_total,
+              container_scope.len()
+            );
+          }
+          (Some(container_scope), Some(reuse_map))
+        };
+
+        let log_container_ids = toggles.usize_list("FASTR_LOG_CONTAINER_IDS");
         let container_cascade_timer = stats.as_deref().and_then(|rec| rec.timer());
         record_stage(StageHeartbeat::Cascade);
+
+        let previous_styled_tree = styled_tree;
         let new_styled_tree = prepared_cascade.apply(
           target_fragment.as_deref(),
           Some(&container_ctx),
-          Some(&container_scope),
-          Some(&reuse_map),
+          container_scope.as_ref(),
+          reuse_map.as_ref(),
           deadline,
         )?;
+        drop((container_scope, reuse_map));
         svg_filter_defs = crate::tree::box_generation::collect_svg_filter_defs(&new_styled_tree);
+
+        if let Some(rec) = stats.as_deref_mut() {
+          RenderStatsRecorder::add_ms(&mut rec.stats.timings.cascade_ms, container_cascade_timer);
+        }
 
         if let (true, Some(ids)) = (log_container_pass, log_container_ids.as_ref()) {
           let summaries = styled_summary_map(&new_styled_tree);
@@ -7926,111 +7996,45 @@ impl FastRender {
               .unwrap_or_else(|| "<unknown>".to_string());
             if let Some(node) = find_styled_by_id(&new_styled_tree, *id) {
               eprintln!(
-                "[container-pass] styled_id={} node={} styles={}",
+                "[container-pass] iter={} styled_id={} node={} styles={}",
+                iter_idx + 1,
                 id,
                 summary,
                 styled_style_summary(&node.styles)
               );
             } else {
               eprintln!(
-                "[container-pass] styled_id={} node={} not found",
-                id, summary
+                "[container-pass] iter={} styled_id={} node={} not found",
+                iter_idx + 1,
+                id,
+                summary
               );
             }
           }
         }
 
-        let fingerprints_match = first_style_fingerprints
-          .as_ref()
-          .map(|first| {
-            let second = styled_fingerprint_map(&new_styled_tree);
-            *first == second
-          })
-          .unwrap_or(false);
         styled_tree = new_styled_tree;
+        let next_layout_fingerprint = styled_layout_fingerprint_digest(&styled_tree);
 
-        if fingerprints_match {
+        if next_layout_fingerprint == layout_fingerprint {
           if log_container_pass {
             eprintln!(
-              "[container-pass] fingerprints match; reuse layout, refresh fragment styles only"
+              "[container-pass] iter={} layout fingerprints match; reuse layout",
+              iter_idx + 1
             );
           }
           let style_map = styled_style_map(&styled_tree);
           let mut box_map = HashMap::new();
           collect_box_nodes(&box_tree.root, &mut box_map);
           refresh_fragment_styles(&mut fragment_tree.root, &box_map, &style_map);
-          if let Some(rec) = stats.as_deref_mut() {
-            RenderStatsRecorder::add_ms(&mut rec.stats.timings.cascade_ms, container_cascade_timer);
-          }
           record_stage(StageHeartbeat::Layout);
         } else {
           if log_container_pass {
-            let mut diff = 0usize;
-            let mut changed_entries = Vec::new();
-            if let Some(first) = &first_style_fingerprints {
-              let second = styled_fingerprint_map(&styled_tree);
-              for (k, v) in &second {
-                if first.get(k) != Some(v) {
-                  diff += 1;
-                  changed_entries.push(*k);
-                }
-              }
-            }
             eprintln!(
-                            "[container-pass] fingerprints differ; rebuild box tree and layout (changed_entries={})",
-                            diff
-                        );
-            if diff > 0 {
-              if let Some(n) = toggles.usize("FASTR_LOG_CONTAINER_DIFF") {
-                let summaries = styled_summary_map(&styled_tree);
-                let second = styled_fingerprint_map(&styled_tree);
-                let mut lines = Vec::new();
-                for id in changed_entries.iter().take(n) {
-                  let kind = match id & STYLE_KEY_MASK {
-                    0 => "main",
-                    STYLE_KEY_BEFORE => "before",
-                    STYLE_KEY_AFTER => "after",
-                    STYLE_KEY_MARKER => "marker",
-                    STYLE_KEY_BACKDROP => "backdrop",
-                    _ => "unknown",
-                  };
-                  let base = id >> STYLE_KEY_SHIFT;
-                  let summary = summaries
-                    .get(&base)
-                    .cloned()
-                    .unwrap_or_else(|| "<unknown>".to_string());
-                  let fp = second.get(id).copied().unwrap_or(0);
-                  lines.push(format!(
-                    "styled_id={} kind={} {} fp={}",
-                    base, kind, summary, fp
-                  ));
-                  if capture_container_fields {
-                    if let (Some(first_tree), Some(new_node)) = (
-                      first_styled_snapshot.as_ref(),
-                      find_styled_by_id(&styled_tree, base),
-                    ) {
-                      if let Some(old_node) = find_styled_by_id(first_tree, base) {
-                        let diffs = diff_layout_fields(&old_node.styles, &new_node.styles);
-                        if !diffs.is_empty() {
-                          lines.push(format!("  ↳ layout fields changed: {}", diffs.join(",")));
-                        }
-                      }
-                    }
-                  }
-                }
-                eprintln!(
-                  "[container-pass] changed entries sample ({} of {}): {}",
-                  lines.len(),
-                  diff,
-                  lines.join(" | ")
-                );
-              }
-            }
+              "[container-pass] iter={} layout fingerprints differ; rebuild box tree + relayout",
+              iter_idx + 1
+            );
           }
-          if let Some(rec) = stats.as_deref_mut() {
-            RenderStatsRecorder::add_ms(&mut rec.stats.timings.cascade_ms, container_cascade_timer);
-          }
-
           let container_box_tree_timer = stats.as_deref().and_then(|rec| rec.timer());
           record_stage(StageHeartbeat::BoxTree);
           box_tree =
@@ -8088,6 +8092,57 @@ impl FastRender {
           if let Some(rec) = stats.as_deref_mut() {
             RenderStatsRecorder::add_ms(&mut rec.stats.timings.layout_ms, relayout_timer);
           }
+        }
+
+        layout_fingerprint = next_layout_fingerprint;
+
+        let next_container_ctx =
+          build_container_query_context(&box_tree, &fragment_tree, &styled_tree, &media_ctx);
+        let ctx_fp_after = container_query_context_fingerprint(
+          &next_container_ctx,
+          style_query_fingerprint.as_ref(),
+        );
+
+        iterations = iterations.saturating_add(1);
+
+        if ctx_fp_after == ctx_fp_before {
+          converged = true;
+          drop(previous_styled_tree);
+          break;
+        }
+
+        if iter_idx + 1 == MAX_CONTAINER_QUERY_ITERATIONS {
+          // Deterministic fallback: keep the last iteration's snapshot (already applied to
+          // `styled_tree`/`fragment_tree` above).
+          drop(previous_styled_tree);
+          break;
+        }
+
+        container_ctx = next_container_ctx;
+        drop(previous_styled_tree);
+      }
+
+      if log_container_pass && !converged {
+        eprintln!(
+          "[container-pass] did not converge after {} iterations (limit={})",
+          iterations, MAX_CONTAINER_QUERY_ITERATIONS
+        );
+      }
+
+      container_query_diag = Some(ContainerQueryDiagnostics {
+        iterations,
+        converged,
+        max_iterations: MAX_CONTAINER_QUERY_ITERATIONS as u32,
+      });
+    }
+
+    if let Some(diag) = container_query_diag.clone() {
+      if let Some(rec) = stats.as_deref_mut() {
+        rec.stats.cascade.container_queries = Some(diag.clone());
+      }
+      if let Some(sink) = self.diagnostics.as_ref() {
+        if let Ok(mut guard) = sink.lock() {
+          guard.container_queries = Some(diag);
         }
       }
     }
@@ -11366,6 +11421,102 @@ fn styled_fingerprint_map(root: &StyledNode) -> HashMap<usize, u64> {
   map
 }
 
+#[derive(Debug, Clone, Default)]
+struct ContainerStyleQueryFingerprintConfig {
+  custom_properties: Vec<String>,
+  include_color: bool,
+  include_background_color: bool,
+}
+
+fn styled_layout_fingerprint_digest(root: &StyledNode) -> u64 {
+  fn walk(node: &StyledNode, hasher: &mut DefaultHasher) {
+    let base = node.node_id << 2;
+    base.hash(hasher);
+    style_layout_fingerprint(&node.styles).hash(hasher);
+    if let Some(before) = &node.before_styles {
+      (base | 1).hash(hasher);
+      style_layout_fingerprint(before).hash(hasher);
+    }
+    if let Some(after) = &node.after_styles {
+      (base | 2).hash(hasher);
+      style_layout_fingerprint(after).hash(hasher);
+    }
+    if let Some(marker) = &node.marker_styles {
+      (base | 3).hash(hasher);
+      style_layout_fingerprint(marker).hash(hasher);
+    }
+    for child in node.children.iter() {
+      walk(child, hasher);
+    }
+  }
+
+  let mut hasher = DefaultHasher::default();
+  walk(root, &mut hasher);
+  hasher.finish()
+}
+
+fn container_type_fingerprint(container_type: ContainerType) -> u8 {
+  match container_type {
+    ContainerType::None => 0,
+    ContainerType::Normal => 1,
+    ContainerType::Style => 2,
+    ContainerType::Size => 3,
+    ContainerType::InlineSize => 4,
+  }
+}
+
+fn container_query_context_fingerprint(
+  ctx: &ContainerQueryContext,
+  style_query: Option<&ContainerStyleQueryFingerprintConfig>,
+) -> u64 {
+  let mut hasher = DefaultHasher::default();
+  ctx.base_media.fingerprint().hash(&mut hasher);
+  let mut keys: Vec<usize> = ctx.containers.keys().copied().collect();
+  keys.sort_unstable();
+  keys.len().hash(&mut hasher);
+  for id in keys {
+    let Some(info) = ctx.containers.get(&id) else {
+      continue;
+    };
+    id.hash(&mut hasher);
+    container_type_fingerprint(info.container_type).hash(&mut hasher);
+    info.inline_size.to_bits().hash(&mut hasher);
+    info.block_size.to_bits().hash(&mut hasher);
+    info.font_size.to_bits().hash(&mut hasher);
+    info.names.len().hash(&mut hasher);
+    for name in info.names.iter() {
+      name.hash(&mut hasher);
+    }
+    if let Some(style_query) = style_query {
+      if style_query.include_color {
+        info.styles.color.r.hash(&mut hasher);
+        info.styles.color.g.hash(&mut hasher);
+        info.styles.color.b.hash(&mut hasher);
+        info.styles.color.a.to_bits().hash(&mut hasher);
+      }
+      if style_query.include_background_color {
+        info.styles.background_color.r.hash(&mut hasher);
+        info.styles.background_color.g.hash(&mut hasher);
+        info.styles.background_color.b.hash(&mut hasher);
+        info.styles.background_color.a.to_bits().hash(&mut hasher);
+      }
+        for prop in style_query.custom_properties.iter() {
+          prop.hash(&mut hasher);
+          match info.styles.custom_properties.get(prop) {
+            Some(value) => value
+              .value
+              .trim()
+              .trim_end_matches(';')
+              .trim()
+              .hash(&mut hasher),
+            None => 0u8.hash(&mut hasher),
+          }
+        }
+      }
+  }
+  hasher.finish()
+}
+
 fn extract_fragment(url: &str) -> Option<String> {
   url.find('#').and_then(|idx| {
     let frag = &url[idx + 1..];
@@ -11699,35 +11850,24 @@ fn refresh_fragment_styles(
 fn build_container_query_context(
   box_tree: &BoxTree,
   fragments: &FragmentTree,
+  styled_tree: &StyledNode,
   media_ctx: &MediaContext,
 ) -> ContainerQueryContext {
-  fn content_box_sizes(node: &BoxNode, inline: f32, block: f32) -> (f32, f32) {
-    let mut w = inline;
-    let mut h = block;
-
-    let hp = node.style.padding_left.to_px()
-      + node.style.padding_right.to_px()
-      + node.style.used_border_left_width().to_px()
-      + node.style.used_border_right_width().to_px();
-    let vp = node.style.padding_top.to_px()
-      + node.style.padding_bottom.to_px()
-      + node.style.used_border_top_width().to_px()
-      + node.style.used_border_bottom_width().to_px();
-
-    if hp.is_finite() {
-      w = (w - hp).max(0.0);
-    }
-    if vp.is_finite() {
-      h = (h - vp).max(0.0);
-    }
-    (w, h)
-  }
-
   let mut sizes: HashMap<usize, (f32, f32)> = HashMap::new();
   collect_fragment_sizes(&fragments.root, &mut sizes);
 
   let mut boxes: HashMap<usize, &BoxNode> = HashMap::new();
   collect_box_nodes(&box_tree.root, &mut boxes);
+
+  fn collect_main_styles(node: &StyledNode, out: &mut HashMap<usize, Arc<ComputedStyle>>) {
+    out.insert(node.node_id, Arc::clone(&node.styles));
+    for child in node.children.iter() {
+      collect_main_styles(child, out);
+    }
+  }
+
+  let mut styles: HashMap<usize, Arc<ComputedStyle>> = HashMap::new();
+  collect_main_styles(styled_tree, &mut styles);
 
   let mut containers: HashMap<usize, ContainerQueryInfo> = HashMap::new();
   for (box_id, node) in boxes {
@@ -11735,16 +11875,39 @@ fn build_container_query_context(
       Some(id) => id,
       None => continue,
     };
-    match node.style.container_type {
+    let style = styles.get(&styled_id).unwrap_or(&node.style);
+    match style.container_type {
       ContainerType::Size | ContainerType::InlineSize | ContainerType::Style => {
         if let Some((inline, block)) = sizes.get(&box_id) {
-          let (content_inline, content_block) = content_box_sizes(node, *inline, *block);
+          let mut content_width = *inline;
+          let mut content_height = *block;
+
+          let hp = style.padding_left.to_px()
+            + style.padding_right.to_px()
+            + style.used_border_left_width().to_px()
+            + style.used_border_right_width().to_px();
+          let vp = style.padding_top.to_px()
+            + style.padding_bottom.to_px()
+            + style.used_border_top_width().to_px()
+            + style.used_border_bottom_width().to_px();
+
+          if hp.is_finite() {
+            content_width = (content_width - hp).max(0.0);
+          }
+          if vp.is_finite() {
+            content_height = (content_height - vp).max(0.0);
+          }
+
+          let (content_inline, content_block) = match style.writing_mode {
+            WritingMode::HorizontalTb => (content_width, content_height),
+            _ => (content_height, content_width),
+          };
           if runtime::runtime_toggles().truthy("FASTR_LOG_CONTAINER_QUERY") {
             eprintln!(
-                            "[cq] box_id={} styled_id={} type={:?} inline={:.2} block={:.2} content_inline={:.2} content_block={:.2}",
+                             "[cq] box_id={} styled_id={} type={:?} inline={:.2} block={:.2} content_inline={:.2} content_block={:.2}",
                             box_id,
                             styled_id,
-                            node.style.container_type,
+                            style.container_type,
                             inline,
                             block,
                             content_inline,
@@ -11756,16 +11919,18 @@ fn build_container_query_context(
             .and_modify(|entry| {
               entry.inline_size = entry.inline_size.max(content_inline);
               entry.block_size = entry.block_size.max(content_block);
-              entry.font_size = entry.font_size.max(node.style.font_size);
-              entry.styles = node.style.clone();
+              entry.font_size = entry.font_size.max(style.font_size);
+              entry.container_type = style.container_type;
+              entry.names = style.container_name.clone();
+              entry.styles = Arc::clone(style);
             })
             .or_insert_with(|| ContainerQueryInfo {
               inline_size: content_inline,
               block_size: content_block,
-              container_type: node.style.container_type,
-              names: node.style.container_name.clone(),
-              font_size: node.style.font_size,
-              styles: node.style.clone(),
+              container_type: style.container_type,
+              names: style.container_name.clone(),
+              font_size: style.font_size,
+              styles: Arc::clone(style),
             });
         }
       }
@@ -14695,7 +14860,7 @@ mod tests {
     intrinsic_cache_clear();
     let fragments = renderer.layout_engine.layout_tree(&box_tree).unwrap();
 
-    let cq_ctx = build_container_query_context(&box_tree, &fragments, &media_ctx);
+    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx);
     assert!(!cq_ctx.containers.is_empty(), "expected container context");
     let info = cq_ctx.containers.values().next().unwrap();
     eprintln!(
@@ -14785,7 +14950,7 @@ mod tests {
     intrinsic_cache_clear();
     let fragments = renderer.layout_engine.layout_tree(&box_tree).unwrap();
 
-    let cq_ctx = build_container_query_context(&box_tree, &fragments, &media_ctx);
+    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx);
     assert!(
       !cq_ctx.containers.is_empty(),
       "expected named container context"
@@ -14851,7 +15016,7 @@ mod tests {
     intrinsic_cache_clear();
     let fragments = renderer.layout_engine.layout_tree(&box_tree).unwrap();
 
-    let cq_ctx = build_container_query_context(&box_tree, &fragments, &media_ctx);
+    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx);
     let styled_with_containers = apply_styles_with_media_target_and_imports(
       &dom,
       &stylesheet,
@@ -14910,7 +15075,7 @@ mod tests {
     intrinsic_cache_clear();
     let fragments = renderer.layout_engine.layout_tree(&box_tree).unwrap();
 
-    let cq_ctx = build_container_query_context(&box_tree, &fragments, &media_ctx);
+    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx);
     let styled_with_containers = apply_styles_with_media_target_and_imports(
       &dom,
       &stylesheet,
@@ -14969,7 +15134,7 @@ mod tests {
     intrinsic_cache_clear();
     let fragments = renderer.layout_engine.layout_tree(&box_tree).unwrap();
 
-    let cq_ctx = build_container_query_context(&box_tree, &fragments, &media_ctx);
+    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx);
     let styled_with_containers = apply_styles_with_media_target_and_imports(
       &dom,
       &stylesheet,
@@ -15029,7 +15194,7 @@ mod tests {
     intrinsic_cache_clear();
     let fragments = renderer.layout_engine.layout_tree(&box_tree).unwrap();
 
-    let cq_ctx = build_container_query_context(&box_tree, &fragments, &media_ctx);
+    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx);
     let styled_with_containers = apply_styles_with_media_target_and_imports(
       &dom,
       &stylesheet,

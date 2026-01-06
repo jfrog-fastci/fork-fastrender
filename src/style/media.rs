@@ -2620,6 +2620,9 @@ impl MediaContext {
 
       // Orientation
       MediaFeature::Orientation(orientation) => {
+        if !self.viewport_width.is_finite() || !self.viewport_height.is_finite() {
+          return false;
+        }
         let is_portrait = self.viewport_height >= self.viewport_width;
         match orientation {
           Orientation::Portrait => is_portrait,

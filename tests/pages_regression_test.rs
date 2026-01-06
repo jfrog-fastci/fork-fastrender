@@ -154,6 +154,11 @@ const PAGE_FIXTURES: &[PageFixture] = &[
     shots: DEFAULT_SHOTS,
   },
   PageFixture {
+    name: "container_query_fixpoint",
+    html: "container_query_fixpoint/index.html",
+    shots: DEFAULT_SHOTS,
+  },
+  PageFixture {
     name: "subgrid_showcase",
     html: "subgrid_showcase/index.html",
     shots: DEFAULT_SHOTS,

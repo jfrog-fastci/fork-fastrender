@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: white;
+      }
+
+      #container {
+        display: inline-block;
+        container-type: inline-size;
+        border: 4px solid black;
+        margin: 40px;
+      }
+
+      #content {
+        width: 220px;
+        height: 80px;
+        background: rgb(200 0 0);
+      }
+
+      /* This fixture intentionally requires multiple iterations to converge:
+         - first layout: container width = 220px (no container queries applied)
+         - pass 1: width >= 200px => content becomes 320px (orange)
+         - pass 2: width >= 300px => content becomes 420px (green)
+       */
+      @container (width >= 200px) {
+        #content {
+          width: 320px;
+          background: rgb(255 165 0);
+        }
+      }
+
+      @container (width >= 300px) {
+        #content {
+          width: 420px;
+          background: rgb(0 128 0);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="container">
+      <div id="content"></div>
+    </div>
+  </body>
+</html>
