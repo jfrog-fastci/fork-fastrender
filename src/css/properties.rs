@@ -5022,6 +5022,30 @@ mod tests {
   }
 
   #[test]
+  fn trig_functions_accept_unitless_numbers_as_radians() {
+    let len = parse_length("calc(10px * cos(3.141593))").expect("cos length");
+    assert_eq!(len.unit, LengthUnit::Px);
+    assert!((len.value + 10.0).abs() < 1e-3);
+
+    let len = parse_length("calc(10px * sin(1))").expect("sin length");
+    let expected = 10.0 * 1.0f32.sin();
+    assert_eq!(len.unit, LengthUnit::Px);
+    assert!((len.value - expected).abs() < 1e-3);
+  }
+
+  #[test]
+  fn trig_functions_accept_angles() {
+    let len = parse_length("calc(10px * cos(180deg))").expect("cos angle length");
+    assert_eq!(len.unit, LengthUnit::Px);
+    assert!((len.value + 10.0).abs() < 1e-3);
+  }
+
+  #[test]
+  fn trig_functions_reject_other_dimensions() {
+    assert!(parse_length("calc(10px * sin(1px))").is_none());
+  }
+
+  #[test]
   fn parses_common_3d_transforms() {
     assert!(parse_transform_list("translate3d(10px, 20px, 30px)").is_some());
     assert!(parse_transform_list("translateZ(5px)").is_some());
@@ -6166,6 +6190,17 @@ fn expect_angle<'i>(
   calc_component_to_angle(component).ok_or_else(|| location.new_custom_error(()))
 }
 
+fn expect_trig_arg_radians<'i>(
+  component: CalcComponent,
+  location: cssparser::SourceLocation,
+) -> Result<f32, cssparser::ParseError<'i, ()>> {
+  match component {
+    CalcComponent::Angle(deg) => ensure_finite(deg.to_radians(), location),
+    CalcComponent::Number(n) => ensure_finite(n, location),
+    _ => Err(location.new_custom_error(())),
+  }
+}
+
 fn expect_simple_length<'i>(
   component: CalcComponent,
   location: cssparser::SourceLocation,
@@ -6414,18 +6449,18 @@ fn parse_math_function<'i, 't>(
     }
     "sin" => input.parse_nested_block(|block| {
       block.skip_whitespace();
-      let angle = expect_angle(parse_calc_sum(block)?, location)?.to_radians();
-      ensure_finite(angle.sin(), location).map(CalcComponent::Number)
+      let radians = expect_trig_arg_radians(parse_calc_sum(block)?, location)?;
+      ensure_finite(radians.sin(), location).map(CalcComponent::Number)
     }),
     "cos" => input.parse_nested_block(|block| {
       block.skip_whitespace();
-      let angle = expect_angle(parse_calc_sum(block)?, location)?.to_radians();
-      ensure_finite(angle.cos(), location).map(CalcComponent::Number)
+      let radians = expect_trig_arg_radians(parse_calc_sum(block)?, location)?;
+      ensure_finite(radians.cos(), location).map(CalcComponent::Number)
     }),
     "tan" => input.parse_nested_block(|block| {
       block.skip_whitespace();
-      let angle = expect_angle(parse_calc_sum(block)?, location)?.to_radians();
-      ensure_finite(angle.tan(), location).map(CalcComponent::Number)
+      let radians = expect_trig_arg_radians(parse_calc_sum(block)?, location)?;
+      ensure_finite(radians.tan(), location).map(CalcComponent::Number)
     }),
     "asin" => input.parse_nested_block(|block| {
       block.skip_whitespace();
