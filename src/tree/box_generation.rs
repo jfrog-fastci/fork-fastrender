@@ -2263,6 +2263,7 @@ fn create_backdrop_box(styled: &StyledNode) -> Option<BoxNode> {
     vec!["pseudo-element".to_string()],
   ));
   box_node.styled_node_id = Some(styled.node_id);
+  box_node.generated_pseudo = Some(GeneratedPseudoElement::Backdrop);
   Some(box_node)
 }
 

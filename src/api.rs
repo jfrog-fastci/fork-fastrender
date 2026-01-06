@@ -7986,14 +7986,15 @@ impl FastRender {
                 let second = styled_fingerprint_map(&styled_tree);
                 let mut lines = Vec::new();
                 for id in changed_entries.iter().take(n) {
-                  let kind = match id & 3 {
+                  let kind = match id & STYLE_KEY_MASK {
                     0 => "main",
-                    1 => "before",
-                    2 => "after",
-                    3 => "marker",
+                    STYLE_KEY_BEFORE => "before",
+                    STYLE_KEY_AFTER => "after",
+                    STYLE_KEY_MARKER => "marker",
+                    STYLE_KEY_BACKDROP => "backdrop",
                     _ => "unknown",
                   };
-                  let base = id >> 2;
+                  let base = id >> STYLE_KEY_SHIFT;
                   let summary = summaries
                     .get(&base)
                     .cloned()
@@ -11341,16 +11342,19 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
 
 fn styled_fingerprint_map(root: &StyledNode) -> HashMap<usize, u64> {
   fn walk(node: &StyledNode, out: &mut HashMap<usize, u64>) {
-    let base = node.node_id << 2;
+    let base = node.node_id << STYLE_KEY_SHIFT;
     out.insert(base, style_layout_fingerprint(&node.styles));
     if let Some(before) = &node.before_styles {
-      out.insert(base | 1, style_layout_fingerprint(before));
+      out.insert(base | STYLE_KEY_BEFORE, style_layout_fingerprint(before));
     }
     if let Some(after) = &node.after_styles {
-      out.insert(base | 2, style_layout_fingerprint(after));
+      out.insert(base | STYLE_KEY_AFTER, style_layout_fingerprint(after));
     }
     if let Some(marker) = &node.marker_styles {
-      out.insert(base | 3, style_layout_fingerprint(marker));
+      out.insert(base | STYLE_KEY_MARKER, style_layout_fingerprint(marker));
+    }
+    if let Some(backdrop) = node.styles.backdrop.as_ref() {
+      out.insert(base | STYLE_KEY_BACKDROP, style_layout_fingerprint(backdrop));
     }
     for child in node.children.iter() {
       walk(child, out);
@@ -11403,16 +11407,19 @@ fn collect_box_nodes<'a>(node: &'a BoxNode, map: &mut HashMap<usize, &'a BoxNode
 
 fn styled_style_map(root: &StyledNode) -> HashMap<usize, Arc<ComputedStyle>> {
   fn walk(node: &StyledNode, out: &mut HashMap<usize, Arc<ComputedStyle>>) {
-    let base = node.node_id << 2;
+    let base = node.node_id << STYLE_KEY_SHIFT;
     out.insert(base, Arc::clone(&node.styles));
     if let Some(before) = &node.before_styles {
-      out.insert(base | 1, Arc::clone(before));
+      out.insert(base | STYLE_KEY_BEFORE, Arc::clone(before));
     }
     if let Some(after) = &node.after_styles {
-      out.insert(base | 2, Arc::clone(after));
+      out.insert(base | STYLE_KEY_AFTER, Arc::clone(after));
     }
     if let Some(marker) = &node.marker_styles {
-      out.insert(base | 3, Arc::clone(marker));
+      out.insert(base | STYLE_KEY_MARKER, Arc::clone(marker));
+    }
+    if let Some(backdrop) = node.styles.backdrop.as_ref() {
+      out.insert(base | STYLE_KEY_BACKDROP, Arc::clone(backdrop));
     }
     for child in node.children.iter() {
       walk(child, out);
@@ -11627,17 +11634,31 @@ fn diff_layout_fields(old: &ComputedStyle, new: &ComputedStyle) -> Vec<String> {
   out
 }
 
+// Style/box identity keys are encoded as `styled_node_id << STYLE_KEY_SHIFT | kind`.
+//
+// We keep these stable across container query passes so we can refresh fragment styles without
+// rebuilding the box tree when layout-affecting properties did not change.
+const STYLE_KEY_SHIFT: usize = 3;
+const STYLE_KEY_MASK: usize = (1usize << STYLE_KEY_SHIFT) - 1;
+const STYLE_KEY_BEFORE: usize = 1;
+const STYLE_KEY_AFTER: usize = 2;
+const STYLE_KEY_MARKER: usize = 3;
+const STYLE_KEY_BACKDROP: usize = 4;
+
 fn box_style_key(node: &BoxNode) -> Option<usize> {
   let styled_id = node.styled_node_id?;
-  let base = styled_id << 2;
+  let base = styled_id << STYLE_KEY_SHIFT;
 
   if matches!(node.box_type, BoxType::Marker(_)) {
-    return Some(base | 3);
+    return Some(base | STYLE_KEY_MARKER);
   }
 
   match node.generated_pseudo {
-    Some(crate::tree::box_tree::GeneratedPseudoElement::Before) => return Some(base | 1),
-    Some(crate::tree::box_tree::GeneratedPseudoElement::After) => return Some(base | 2),
+    Some(crate::tree::box_tree::GeneratedPseudoElement::Before) => return Some(base | STYLE_KEY_BEFORE),
+    Some(crate::tree::box_tree::GeneratedPseudoElement::After) => return Some(base | STYLE_KEY_AFTER),
+    Some(crate::tree::box_tree::GeneratedPseudoElement::Backdrop) => {
+      return Some(base | STYLE_KEY_BACKDROP);
+    }
     None => {}
   }
 
@@ -12105,7 +12126,7 @@ mod tests {
     let mut base = BoxNode::new_block(style, FormattingContextType::Block, vec![]);
     base.styled_node_id = Some(7);
 
-    assert_eq!(super::box_style_key(&base), Some(7 << 2));
+    assert_eq!(super::box_style_key(&base), Some(7 << super::STYLE_KEY_SHIFT));
 
     // DebugInfo must not influence the semantic style key.
     let mut with_debug = base.clone();
@@ -12114,15 +12135,83 @@ mod tests {
       None,
       vec!["pseudo-element".to_string()],
     ));
-    assert_eq!(super::box_style_key(&with_debug), Some(7 << 2));
+    assert_eq!(
+      super::box_style_key(&with_debug),
+      Some(7 << super::STYLE_KEY_SHIFT)
+    );
 
     let mut before = base.clone();
     before.generated_pseudo = Some(crate::tree::box_tree::GeneratedPseudoElement::Before);
-    assert_eq!(super::box_style_key(&before), Some((7 << 2) | 1));
+    assert_eq!(
+      super::box_style_key(&before),
+      Some((7 << super::STYLE_KEY_SHIFT) | super::STYLE_KEY_BEFORE)
+    );
 
     let mut after = base;
     after.generated_pseudo = Some(crate::tree::box_tree::GeneratedPseudoElement::After);
-    assert_eq!(super::box_style_key(&after), Some((7 << 2) | 2));
+    assert_eq!(
+      super::box_style_key(&after),
+      Some((7 << super::STYLE_KEY_SHIFT) | super::STYLE_KEY_AFTER)
+    );
+
+    let mut backdrop = after.clone();
+    backdrop.generated_pseudo = Some(crate::tree::box_tree::GeneratedPseudoElement::Backdrop);
+    assert_eq!(
+      super::box_style_key(&backdrop),
+      Some((7 << super::STYLE_KEY_SHIFT) | super::STYLE_KEY_BACKDROP)
+    );
+  }
+
+  #[test]
+  fn styled_style_maps_include_backdrop() {
+    let backdrop_style = Arc::new(ComputedStyle::default());
+    let mut base_style = ComputedStyle::default();
+    base_style.backdrop = Some(Arc::clone(&backdrop_style));
+    let base_style = Arc::new(base_style);
+
+    let styled = StyledNode {
+      node_id: 7,
+      node: DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: String::new(),
+          attributes: Vec::new(),
+        },
+        children: Vec::new(),
+      },
+      styles: Arc::clone(&base_style),
+      starting_styles: Default::default(),
+      before_styles: None,
+      after_styles: None,
+      marker_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: Vec::new(),
+    };
+
+    let base_key = styled.node_id << super::STYLE_KEY_SHIFT;
+    let backdrop_key = base_key | super::STYLE_KEY_BACKDROP;
+
+    let style_map = super::styled_style_map(&styled);
+    assert!(
+      Arc::ptr_eq(style_map.get(&base_key).expect("base style entry"), &base_style),
+      "expected base style stored under base key"
+    );
+    assert!(
+      Arc::ptr_eq(
+        style_map.get(&backdrop_key).expect("backdrop style entry"),
+        &backdrop_style
+      ),
+      "expected ::backdrop style stored under backdrop key"
+    );
+
+    let fingerprint_map = super::styled_fingerprint_map(&styled);
+    assert_eq!(
+      fingerprint_map.get(&backdrop_key).copied(),
+      Some(super::style_layout_fingerprint(backdrop_style.as_ref()))
+    );
   }
 
   #[test]

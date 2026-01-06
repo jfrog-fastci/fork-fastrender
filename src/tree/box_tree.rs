@@ -732,7 +732,7 @@ pub struct BoxNode {
 
   /// Generated pseudo-element kind for this box, if any.
   ///
-  /// This is semantic metadata used to distinguish generated boxes (e.g. `::before`/`::after`)
+  /// This is semantic metadata used to distinguish generated boxes (e.g. `::before`/`::after`/`::backdrop`)
   /// from their originating element without relying on `debug_info`, which is optional in
   /// release builds.
   pub generated_pseudo: Option<GeneratedPseudoElement>,
@@ -755,6 +755,7 @@ pub struct BoxNode {
 pub enum GeneratedPseudoElement {
   Before,
   After,
+  Backdrop,
 }
 
 impl Drop for BoxNode {
