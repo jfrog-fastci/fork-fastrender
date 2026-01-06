@@ -13,6 +13,8 @@ Pageset wrappers (`cargo xtask pageset`, `scripts/pageset.sh`, and the profiling
 
 The rendering pipeline parses the environment once into a typed [`RuntimeToggles`](../src/debug/runtime.rs) structure. Library callers can override these values without mutating the process environment by constructing a `RuntimeToggles` instance and supplying it via `FastRender::builder().runtime_toggles(...)` or `RenderOptions::with_runtime_toggles(...)`.
 
+Pageset/profiling runners typically invoke FastRender in `--release` mode, so `FASTR_*` toggles are the primary way to run controlled compatibility experiments (A/B against Chrome/pageset fixtures) without rebuilding.
+
 ## Pageset disk cache tuning
 
 These are parsed by the pageset CLI binaries (`prefetch_assets`, `render_pages`, `pageset_progress`, `fetch_and_render`) and wire into `DiskCacheConfig` when built with the `disk_cache` cargo feature.
@@ -47,6 +49,12 @@ blocked endpoints. Non-deadline fetches still attempt a refresh.
 - `FASTR_FETCH_ENFORCE_CORS=0|1` – enforce browser-like CORS checks (`Access-Control-Allow-Origin`) for cross-origin web fonts and `<img crossorigin>` images (default off).
 - `FASTR_PAINT_BACKEND=display_list|legacy` – select the paint pipeline (defaults to `display_list`). Use `legacy` to force the immediate painter.
 - `FASTR_PERF_SMOKE_PAGESET_GUARDRAILS_MANIFEST=/path/to/pageset_guardrails.json` – override the guardrails manifest consumed by the `perf_smoke` binary for the `--suite pageset-guardrails` suite. `FASTR_PERF_SMOKE_PAGESET_TIMEOUT_MANIFEST` is accepted as a legacy alias.
+
+## Compatibility toggles
+
+- `FASTR_COMPAT_REPLACED_MAX_WIDTH_100=0|1` – control whether FastRender applies a **non-standard** default `max-width: 100%` to replaced elements (`img`, `video`, `audio`, `canvas`, `svg`, `iframe`).
+  - Default: `1` (enabled) to preserve historical fixture/CI expectations.
+  - Set `0` to use spec-correct defaults (no `max-width` by default), which may allow replaced elements to overflow their containing block unless author CSS constrains them.
 
 ## HTTP fetch tuning
 

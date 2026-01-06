@@ -8,6 +8,7 @@
 
 use crate::dom::DomNode;
 use crate::dom::DomNodeType;
+use crate::debug::runtime::runtime_toggles;
 use crate::style::ComputedStyle;
 use crate::style::Display;
 use crate::style::Length;
@@ -16,6 +17,8 @@ use std::sync::OnceLock;
 
 static DEFAULT_COMPUTED_STYLE: OnceLock<ComputedStyle> = OnceLock::new();
 
+const ENV_COMPAT_REPLACED_MAX_WIDTH_100: &str = "FASTR_COMPAT_REPLACED_MAX_WIDTH_100";
+
 fn default_computed_style() -> &'static ComputedStyle {
   DEFAULT_COMPUTED_STYLE.get_or_init(ComputedStyle::default)
 }
@@ -23,7 +26,9 @@ fn default_computed_style() -> &'static ComputedStyle {
 /// Get default styles for an HTML element
 ///
 /// Returns a ComputedStyle with appropriate default values for the given element.
-/// These defaults match the user-agent stylesheet behavior for HTML elements.
+/// These defaults generally match the user-agent stylesheet behavior for HTML elements.
+/// Some non-standard compatibility defaults are gated behind `FASTR_*` runtime toggles so we can
+/// A/B them against Chrome/pageset fixtures.
 ///
 /// Note: All styling should come from CSS (user-agent.css or author styles),
 /// not from class-name checks in Rust code. This function only sets tag-based defaults.
@@ -145,9 +150,16 @@ pub fn get_default_styles_for_element(node: &DomNode) -> ComputedStyle {
         styles.font_style = crate::style::FontStyle::Oblique(None);
       }
       "img" | "video" | "audio" | "canvas" | "svg" | "iframe" => {
-        // Responsive default: limit replaced elements to their containing block
-        styles.max_width = Some(Length::percent(100.0));
-        styles.max_width_keyword = None;
+        // Compatibility default (non-standard): `max-width: 100%` on replaced elements.
+        //
+        // This is *not* a standard UA default, but many "responsive" pages rely on author CSS that
+        // effectively does the same thing (e.g. `img { max-width: 100%; height: auto; }`). Keeping
+        // this behavior behind a runtime toggle makes it possible to A/B against Chrome/pageset
+        // fixtures without silently masking missing author styles.
+        if runtime_toggles().truthy_with_default(ENV_COMPAT_REPLACED_MAX_WIDTH_100, true) {
+          styles.max_width = Some(Length::percent(100.0));
+          styles.max_width_keyword = None;
+        }
       }
       "math" => {
         // Prefer math fonts when available and honor display="block" attribute
