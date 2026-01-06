@@ -373,6 +373,10 @@ impl DebugConfig {
     );
     config.insert_bool("FASTR_FULL_PAGE", truthy(raw.get("FASTR_FULL_PAGE"), false));
     config.insert_bool(
+      "FASTR_COMPAT_REPLACED_MAX_WIDTH_100",
+      truthy(raw.get("FASTR_COMPAT_REPLACED_MAX_WIDTH_100"), true),
+    );
+    config.insert_bool(
       "FASTR_CASCADE_PROFILE",
       truthy(raw.get("FASTR_CASCADE_PROFILE"), false),
     );
