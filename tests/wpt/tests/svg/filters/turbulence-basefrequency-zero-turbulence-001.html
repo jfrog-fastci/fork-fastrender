@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>feTurbulence baseFrequency=0 turbulence is fully transparent</title>
+<style>
+html, body {
+  margin: 0;
+  background: black;
+}
+svg {
+  display: block;
+}
+</style>
+<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" shape-rendering="crispEdges">
+  <defs>
+    <filter id="turb" x="0" y="0" width="1" height="1"
+            filterUnits="objectBoundingBox">
+      <feTurbulence type="turbulence" baseFrequency="0" numOctaves="1" seed="0"/>
+    </filter>
+  </defs>
+
+  <!-- Border (unfiltered). -->
+  <rect x="0" y="0" width="40" height="1" fill="white"/>
+  <rect x="0" y="39" width="40" height="1" fill="white"/>
+  <rect x="0" y="0" width="1" height="40" fill="white"/>
+  <rect x="39" y="0" width="1" height="40" fill="white"/>
+
+  <!-- Interior is filtered; baseFrequency=0 for type=turbulence currently yields transparent output. -->
+  <rect x="1" y="1" width="38" height="38" fill="white" filter="url(#turb)"/>
+</svg>

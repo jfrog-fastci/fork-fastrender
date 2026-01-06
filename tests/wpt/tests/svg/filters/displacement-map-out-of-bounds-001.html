@@ -28,9 +28,9 @@
 
   The map is chosen so dx = 0 and dy = +1 (scale=2):
     flood-color = rgb(128, 255, 0)
-    flood-opacity -> alpha byte = 4
-  => unpremul R=0.5, G=1.0
-  => dx=(0.5-0.5)*2 = 0, dy=(1.0-0.5)*2 = +1
+    flood-opacity = 1 (opaque, so premultiplied channel bytes match the requested color)
+  => R≈0.5, G=1.0
+  => dx≈(128/255-0.5)*2 ≈ 0, dy=(1.0-0.5)*2 = +1
 
   Expected behavior: sampling outside the primary image returns transparent black (not clamped).
   With dy=+1, the last row samples beyond the bottom edge and should become transparent, revealing
@@ -39,7 +39,7 @@
 <svg xmlns="http://www.w3.org/2000/svg">
   <defs>
     <filter id="shift-y-plus-1" x="0" y="0" width="1" height="1" color-interpolation-filters="sRGB">
-      <feFlood flood-color="rgb(128, 255, 0)" flood-opacity="0.016" result="map"></feFlood>
+      <feFlood flood-color="rgb(128, 255, 0)" flood-opacity="1" result="map"></feFlood>
       <feDisplacementMap in="SourceGraphic" in2="map" scale="2" xChannelSelector="R" yChannelSelector="G"></feDisplacementMap>
     </filter>
   </defs>

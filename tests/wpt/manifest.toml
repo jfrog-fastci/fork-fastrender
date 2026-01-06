@@ -412,6 +412,32 @@ width = 80
 height = 40
 
 [[tests]]
+id = "svg/filters/turbulence-basefrequency-zero-fractalnoise-001"
+path = "svg/filters/turbulence-basefrequency-zero-fractalnoise-001.html"
+reference = "svg/filters/turbulence-basefrequency-zero-fractalnoise-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 100
+height = 40
+
+[[tests]]
+id = "svg/filters/turbulence-basefrequency-zero-turbulence-001"
+path = "svg/filters/turbulence-basefrequency-zero-turbulence-001.html"
+reference = "svg/filters/turbulence-basefrequency-zero-turbulence-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 40
+height = 40
+
+[[tests]]
 id = "svg/filters/displacement-map-basic-shift-001"
 path = "svg/filters/displacement-map-basic-shift-001.html"
 reference = "svg/filters/displacement-map-basic-shift-001-ref.html"
@@ -435,4 +461,17 @@ dpr = 1.0
 
 [tests.viewport]
 width = 60
+height = 20
+
+[[tests]]
+id = "svg/filters/displacement-map-scale-basic-001"
+path = "svg/filters/displacement-map-scale-basic-001.html"
+reference = "svg/filters/displacement-map-scale-basic-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 20
 height = 20

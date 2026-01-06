@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>feDisplacementMap scale basic semantics</title>
+<style>
+html, body {
+  margin: 0;
+  background: black;
+}
+svg {
+  display: block;
+}
+.defs {
+  display: none;
+}
+#scene {
+  width: 5px;
+  height: 5px;
+  filter: url(#f);
+}
+</style>
+<svg class="defs" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="f" x="0" y="0" width="5" height="5"
+            filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
+            color-interpolation-filters="sRGB">
+      <feFlood flood-color="rgb(255,0,255)" result="map" />
+      <feDisplacementMap in="SourceGraphic" in2="map" scale="2"
+                         xChannelSelector="R" yChannelSelector="B" />
+    </filter>
+  </defs>
+</svg>
+<div id="scene">
+  <svg xmlns="http://www.w3.org/2000/svg" width="5" height="5" viewBox="0 0 5 5"
+       shape-rendering="crispEdges">
+    <rect width="5" height="5" fill="rgba(0,0,0,0)" />
+    <rect x="4" y="4" width="1" height="1" fill="rgb(255,0,0)" />
+  </svg>
+</div>

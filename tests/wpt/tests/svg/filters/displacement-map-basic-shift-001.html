@@ -43,15 +43,15 @@
     dx = (xChannel - 0.5) * scale
     dy = (yChannel - 0.5) * scale
 
-  The displacement map samples *unpremultiplied* channel values. To get an exact 0.5 channel
-  value (and avoid subpixel interpolation noise), we use a low-alpha feFlood so unpremultiplying
-  yields exact ratios:
+  The displacement map samples *premultiplied* channel values (matching Chrome/resvg). Use an
+  opaque feFlood so the sampled channel values are the intended bytes:
 
-    flood-opacity -> alpha byte = 4
-    flood-color = rgb(255, 128, 0)
+    flood-color = rgb(255, 128, 0)  ->  R=1.0, G≈0.5
 
-  After premultiplication (approximately): R=4, G=2, A=4 => unpremul R=1.0, G=0.5.
-  So with scale=2: dx = +1, dy = 0.
+  So with scale=2:
+    dx = (1.0 - 0.5) * 2 = +1
+    dy ≈ (128/255 - 0.5) * 2 ≈ 0   (small enough that nearest-neighbor pixel-center rounding
+                                   keeps the Y coordinate unchanged)
 
   This pins down:
   - displacement scale units for X
@@ -61,7 +61,7 @@
 <svg xmlns="http://www.w3.org/2000/svg">
   <defs>
     <filter id="shift-x-plus-1" x="0" y="0" width="1" height="1" color-interpolation-filters="sRGB">
-      <feFlood flood-color="rgb(255, 128, 0)" flood-opacity="0.016" result="map"></feFlood>
+      <feFlood flood-color="rgb(255, 128, 0)" flood-opacity="1" result="map"></feFlood>
       <feDisplacementMap in="SourceGraphic" in2="map" scale="2" xChannelSelector="R" yChannelSelector="G"></feDisplacementMap>
     </filter>
   </defs>
