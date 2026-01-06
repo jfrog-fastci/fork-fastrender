@@ -930,7 +930,10 @@ impl GridFormattingContext {
     match keyword {
       IntrinsicSizeKeyword::MinContent => min,
       IntrinsicSizeKeyword::MaxContent => max,
-      IntrinsicSizeKeyword::FillAvailable => available.filter(|v| v.is_finite()).unwrap_or(max),
+      IntrinsicSizeKeyword::FillAvailable => available
+        .filter(|v| v.is_finite())
+        .unwrap_or(max)
+        .max(0.0),
       IntrinsicSizeKeyword::FitContent { limit } => {
         let preferred = limit
           .and_then(|limit| self.resolve_length_px_with_base(limit, available, style))

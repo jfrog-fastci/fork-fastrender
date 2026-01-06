@@ -997,12 +997,12 @@ fn record_variant(
   state: &mut FixtureDeterminism,
   width: u32,
   height: u32,
+  hash_hi: u64,
+  hash_lo: u64,
   premultiplied: &[u8],
   out_dir: &Path,
   save_variant_bytes: bool,
 ) {
-  let (hash_hi, hash_lo) = hash128(premultiplied);
-
   for variant in &mut state.variants {
     if variant.hash_hi == hash_hi
       && variant.hash_lo == hash_lo
@@ -1398,10 +1398,10 @@ fn render_fixture(
         let width = report.pixmap.width();
         let height = report.pixmap.height();
         let data = report.pixmap.data();
+        let (hash_hi, hash_lo) = hash128(data);
 
         let mut determinism_map = lock_mutex(&determinism.determinism);
         if determinism.repeat_idx == 0 {
-          let (hash_hi, hash_lo) = hash128(data);
           determinism_map
             .entry(stem_for_determinism.clone())
             .or_insert_with(|| FixtureDeterminism {
@@ -1424,6 +1424,8 @@ fn render_fixture(
             state,
             width,
             height,
+            hash_hi,
+            hash_lo,
             data,
             &out_dir_for_determinism,
             determinism.save_variants,
@@ -1818,7 +1820,16 @@ mod tests {
       baseline_rgba: None,
     };
 
-    record_variant(&mut state, 1, 1, &baseline_bytes, out_dir, false);
+    record_variant(
+      &mut state,
+      1,
+      1,
+      hash_hi,
+      hash_lo,
+      &baseline_bytes,
+      out_dir,
+      false,
+    );
 
     assert_eq!(state.variants.len(), 1);
     assert_eq!(state.variants[0].count, 2);
@@ -1862,7 +1873,16 @@ mod tests {
     let variant_bytes = pixmap_bytes_rgba(1, 1, [0, 255, 0, 255]);
     let (variant_hi, variant_lo) = hash128(&variant_bytes);
 
-    record_variant(&mut state, 1, 1, &variant_bytes, out_dir, true);
+    record_variant(
+      &mut state,
+      1,
+      1,
+      variant_hi,
+      variant_lo,
+      &variant_bytes,
+      out_dir,
+      true,
+    );
 
     assert_eq!(state.variants.len(), 2);
     let variant = &state.variants[1];
@@ -1879,7 +1899,16 @@ mod tests {
 
     // When variant bytes are stored (because `--save-variants` is enabled), the tracker should
     // confirm equality before incrementing the count.
-    record_variant(&mut state, 1, 1, &variant_bytes, out_dir, true);
+    record_variant(
+      &mut state,
+      1,
+      1,
+      variant_hi,
+      variant_lo,
+      &variant_bytes,
+      out_dir,
+      true,
+    );
 
     assert_eq!(state.variants.len(), 2);
     let variant = &state.variants[1];
@@ -1917,11 +1946,15 @@ mod tests {
       baseline_rgba: None,
     };
 
+    let variant_bytes = pixmap_bytes_rgba(1, 1, [0, 255, 0, 255]);
+    let (variant_hi, variant_lo) = hash128(&variant_bytes);
     record_variant(
       &mut state,
       1,
       1,
-      &pixmap_bytes_rgba(1, 1, [0, 255, 0, 255]),
+      variant_hi,
+      variant_lo,
+      &variant_bytes,
       out_dir,
       false,
     );
@@ -1963,11 +1996,15 @@ mod tests {
       baseline_rgba: None,
     };
 
+    let variant_bytes = pixmap_bytes_rgba(1, 1, [0, 255, 0, 255]);
+    let (variant_hi, variant_lo) = hash128(&variant_bytes);
     record_variant(
       &mut state,
       1,
       1,
-      &pixmap_bytes_rgba(1, 1, [0, 255, 0, 255]),
+      variant_hi,
+      variant_lo,
+      &variant_bytes,
       out_dir,
       false,
     );
@@ -1980,11 +2017,15 @@ mod tests {
     // baseline decode is cached in memory.
     fs::remove_file(&baseline_png_path).expect("remove baseline png");
 
+    let variant_bytes = pixmap_bytes_rgba(1, 1, [0, 0, 255, 255]);
+    let (variant_hi, variant_lo) = hash128(&variant_bytes);
     record_variant(
       &mut state,
       1,
       1,
-      &pixmap_bytes_rgba(1, 1, [0, 0, 255, 255]),
+      variant_hi,
+      variant_lo,
+      &variant_bytes,
       out_dir,
       false,
     );
