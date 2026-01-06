@@ -10,7 +10,7 @@ use clap::Parser;
 use common::args::{default_jobs, parse_shard, parse_viewport, MediaTypeArg};
 use common::prng;
 use common::render_pipeline::{
-  compute_soft_timeout_ms, format_error_with_chain, CLI_RENDER_STACK_SIZE,
+  apply_test_render_delay, compute_soft_timeout_ms, format_error_with_chain, CLI_RENDER_STACK_SIZE,
 };
 use fastrender::api::{FastRenderPool, FastRenderPoolConfig, RenderArtifactRequest, RenderOptions};
 use fastrender::debug::runtime::RuntimeToggles;
@@ -576,9 +576,13 @@ fn run(cli: Cli) -> io::Result<()> {
 
     results = results_mutex.into_inner().unwrap();
     results.sort_by(|a, b| a.stem.cmp(&b.stem));
-    determinism = match Arc::try_unwrap(determinism_mutex) {
-      Ok(mutex) => mutex.into_inner().unwrap(),
-      Err(_) => panic!("determinism mutex still shared"),
+    // Do not `try_unwrap` here: timeouts can leave the worker thread alive (and still holding an
+    // `Arc` clone) even after the harness marks the fixture as timed out.
+    determinism = {
+      let mut guard = determinism_mutex
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+      std::mem::take(&mut *guard)
     };
     repeat_failures = repeat_failures_mutex.into_inner().unwrap();
     repeat_failures.sort_by(|a, b| {
@@ -1362,6 +1366,7 @@ fn render_fixture(
   let out_dir_for_determinism = shared.out_dir.clone();
 
   let render_work = move || -> Result<RenderOutcome, fastrender::Error> {
+    apply_test_render_delay(Some(&stem_for_determinism));
     let report = render_pool.with_renderer(|renderer| {
       renderer.render_html_with_stylesheets_report(&html, &base_url, options, artifact_request)
     })?;

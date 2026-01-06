@@ -308,6 +308,64 @@ fn render_fixtures_fail_on_nondeterminism_requires_repeat_gt_one() {
 }
 
 #[test]
+fn render_fixtures_repeat_mode_timeout_does_not_panic() {
+  let temp = TempDir::new().expect("tempdir");
+  let fixtures_dir = temp.path().join("fixtures");
+  let out_dir = temp.path().join("out");
+  fs::create_dir_all(&fixtures_dir).expect("create fixtures dir");
+
+  write_fixture(
+    &fixtures_dir,
+    "slow",
+    "<!doctype html><html><body>slow</body></html>",
+  );
+
+  let output = Command::new(env!("CARGO_BIN_EXE_render_fixtures"))
+    .current_dir(temp.path())
+    .env("RAYON_NUM_THREADS", "2")
+    .env("FASTR_PAINT_THREADS", "1")
+    // Inject a deterministic delay so the render worker times out but continues running.
+    .env("FASTR_TEST_RENDER_DELAY_MS", "2000")
+    .env("FASTR_TEST_RENDER_DELAY_STEM", "slow")
+    .args([
+      "--fixtures-dir",
+      fixtures_dir.to_str().unwrap(),
+      "--out-dir",
+      out_dir.to_str().unwrap(),
+      "--fixtures",
+      "slow",
+      "--viewport",
+      "64x64",
+      "--jobs",
+      "1",
+      "--timeout",
+      "1",
+      "--repeat",
+      "2",
+      "--shuffle",
+      "--seed",
+      "1",
+    ])
+    .output()
+    .expect("run render_fixtures");
+
+  assert!(
+    !output.status.success(),
+    "expected render_fixtures to exit non-zero when a fixture times out"
+  );
+  assert_eq!(
+    output.status.code(),
+    Some(1),
+    "expected timeout to exit with code 1 (not panic)"
+  );
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  assert!(
+    !stderr.contains("panicked at"),
+    "did not expect panic output; got stderr:\n{stderr}"
+  );
+}
+
+#[test]
 fn render_fixtures_repeat_mode_is_deterministic() {
   let temp = TempDir::new().expect("tempdir");
   let fixtures_dir = temp.path().join("fixtures");
