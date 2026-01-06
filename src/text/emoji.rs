@@ -821,8 +821,10 @@ mod tests {
   #[test]
   fn test_is_emoji_presentation_misc_symbols_and_arrows() {
     assert!(is_emoji_presentation('⭐'));
-    assert!(is_emoji_presentation('⬆'));
-    assert!(is_emoji_presentation('⬇'));
+    assert!(is_emoji('⬆'));
+    assert!(is_emoji('⬇'));
+    assert!(!is_emoji_presentation('⬆'));
+    assert!(!is_emoji_presentation('⬇'));
   }
 
   #[test]

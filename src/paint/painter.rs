@@ -16959,6 +16959,10 @@ mod tests {
     style.border_right_width = Length::px(4.0);
     style.border_bottom_width = Length::px(4.0);
     style.border_left_width = Length::px(4.0);
+    style.border_top_style = CssBorderStyle::Solid;
+    style.border_right_style = CssBorderStyle::Solid;
+    style.border_bottom_style = CssBorderStyle::Solid;
+    style.border_left_style = CssBorderStyle::Solid;
     style.border_image = BorderImage {
       source: BorderImageSource::Image(Box::new(BackgroundImage::Url(data_url))),
       slice: BorderImageSlice {
@@ -17060,6 +17064,10 @@ mod tests {
     style.border_right_width = Length::px(3.0);
     style.border_bottom_width = Length::px(3.0);
     style.border_left_width = Length::px(3.0);
+    style.border_top_style = CssBorderStyle::Solid;
+    style.border_right_style = CssBorderStyle::Solid;
+    style.border_bottom_style = CssBorderStyle::Solid;
+    style.border_left_style = CssBorderStyle::Solid;
     style.border_image = BorderImage {
       source: BorderImageSource::Image(Box::new(BackgroundImage::Url(data_url))),
       slice: BorderImageSlice {
@@ -17113,6 +17121,10 @@ mod tests {
     style.border_right_width = Length::px(4.0);
     style.border_bottom_width = Length::px(4.0);
     style.border_left_width = Length::px(4.0);
+    style.border_top_style = CssBorderStyle::Solid;
+    style.border_right_style = CssBorderStyle::Solid;
+    style.border_bottom_style = CssBorderStyle::Solid;
+    style.border_left_style = CssBorderStyle::Solid;
     style.border_image = BorderImage {
       source: BorderImageSource::Image(Box::new(BackgroundImage::LinearGradient {
         angle: 180.0,

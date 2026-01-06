@@ -8926,7 +8926,7 @@ mod tests {
     root.add_child(neg);
     root.add_child(pos);
     root.sort_children();
-    root.compute_bounds();
+    root.compute_bounds(None);
 
     let list = DisplayListBuilder::new().build_from_stacking(&root);
     let origins: Vec<f32> = list

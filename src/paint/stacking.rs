@@ -60,6 +60,7 @@
 use crate::error::{Error, RenderStage, Result};
 use crate::geometry::Point;
 use crate::geometry::Rect;
+use crate::paint::display_list::Transform3D;
 use crate::render_control::check_active_periodic;
 use crate::style::display::Display;
 use crate::style::position::Position;
@@ -383,10 +384,10 @@ impl StackingContext {
   }
 
   /// Computes bounds from all fragments in this context
-  pub fn compute_bounds(&mut self) {
+  pub fn compute_bounds(&mut self, viewport: Option<(f32, f32)>) {
     // Compute child bounds first so they contribute accurately.
     for child in &mut self.children {
-      child.compute_bounds();
+      child.compute_bounds(viewport);
     }
 
     let mut bounds: Option<Rect> = None;
@@ -395,6 +396,69 @@ impl StackingContext {
       None => *current = Some(rect),
     };
     let translate = |rect: Rect| rect.translate(self.offset_from_parent_context);
+    let map_rect_with_transform = |rect: Rect, transform: &Transform3D| -> Option<Rect> {
+      if transform.is_identity() {
+        return Some(rect);
+      }
+      let corners = [
+        (rect.min_x(), rect.min_y()),
+        (rect.max_x(), rect.min_y()),
+        (rect.max_x(), rect.max_y()),
+        (rect.min_x(), rect.max_y()),
+      ];
+      let mut min_x = f32::INFINITY;
+      let mut min_y = f32::INFINITY;
+      let mut max_x = f32::NEG_INFINITY;
+      let mut max_y = f32::NEG_INFINITY;
+
+      for (x, y) in corners {
+        let (tx, ty, _tz, tw) = transform.transform_point(x, y, 0.0);
+        if !tx.is_finite()
+          || !ty.is_finite()
+          || !tw.is_finite()
+          || tw.abs() < Transform3D::MIN_PROJECTIVE_W
+        {
+          return None;
+        }
+        let px = tx / tw;
+        let py = ty / tw;
+        min_x = min_x.min(px);
+        min_y = min_y.min(py);
+        max_x = max_x.max(px);
+        max_y = max_y.max(py);
+      }
+
+      let width = max_x - min_x;
+      let height = max_y - min_y;
+      if width <= 0.0 || height <= 0.0 {
+        return None;
+      }
+      Some(Rect::from_xywh(min_x, min_y, width, height))
+    };
+    let apply_self_transform = |context: &StackingContext, rect: Rect| -> Rect {
+      let Some(root_fragment) = context.fragments.first() else {
+        return rect;
+      };
+      let Some(style) = root_fragment.style.as_deref() else {
+        return rect;
+      };
+      if !style.has_transform() {
+        return rect;
+      }
+      let transform_bounds = Rect::new(
+        context.offset_from_parent_context,
+        root_fragment.bounds.size,
+      );
+      let transforms =
+        crate::paint::transform_resolver::resolve_transforms(style, transform_bounds, viewport);
+      let Some(transform) = transforms.self_transform.as_ref() else {
+        return rect;
+      };
+      match map_rect_with_transform(rect, transform) {
+        Some(mapped) => rect.union(mapped),
+        None => rect,
+      }
+    };
 
     // Union all fragment paint bounds from all layers in the parent stacking context's
     // coordinate space.
@@ -439,7 +503,7 @@ impl StackingContext {
 
     // Union child stacking context bounds
     for child in &self.children {
-      accumulate(child.bounds, &mut bounds);
+      accumulate(apply_self_transform(child, child.bounds), &mut bounds);
     }
 
     self.bounds = bounds.unwrap_or_else(|| {
@@ -825,7 +889,7 @@ pub fn build_stacking_tree(
   context.sort_children();
 
   // Compute bounds
-  context.compute_bounds();
+  context.compute_bounds(Some((root.bounds.width(), root.bounds.height())));
 
   context
 }
@@ -971,7 +1035,12 @@ where
   F: Fn(&FragmentNode) -> Option<Arc<ComputedStyle>> + Clone,
 {
   let mut tree_order_counter = 0;
-  build_stacking_tree_with_styles_and_counter(root, &get_style, &mut tree_order_counter)
+  build_stacking_tree_with_styles_and_counter(
+    root,
+    &get_style,
+    &mut tree_order_counter,
+    Some((root.bounds.width(), root.bounds.height())),
+  )
 }
 
 /// Builds a stacking context tree with cooperative cancellation.
@@ -993,6 +1062,7 @@ where
     &get_style,
     &mut tree_order_counter,
     &mut deadline_counter,
+    Some((root.bounds.width(), root.bounds.height())),
   )
 }
 
@@ -1000,6 +1070,7 @@ fn build_stacking_tree_with_styles_and_counter<F>(
   root: &FragmentNode,
   get_style: &F,
   tree_order_counter: &mut usize,
+  viewport: Option<(f32, f32)>,
 ) -> StackingContext
 where
   F: Fn(&FragmentNode) -> Option<Arc<ComputedStyle>> + Clone,
@@ -1016,7 +1087,7 @@ where
   );
 
   context.sort_children();
-  context.compute_bounds();
+  context.compute_bounds(viewport);
   context
 }
 
@@ -1025,6 +1096,7 @@ fn build_stacking_tree_with_styles_and_counter_checked<F>(
   get_style: &F,
   tree_order_counter: &mut usize,
   deadline_counter: &mut usize,
+  viewport: Option<(f32, f32)>,
 ) -> Result<StackingContext>
 where
   F: Fn(&FragmentNode) -> Option<Arc<ComputedStyle>> + Clone,
@@ -1042,7 +1114,7 @@ where
   )?;
 
   context.sort_children();
-  context.compute_bounds();
+  context.compute_bounds(viewport);
   Ok(context)
 }
 
@@ -1064,18 +1136,22 @@ pub fn build_stacking_tree_from_fragment_tree_checked(
 /// Returns contexts in fragmentainer/page order: the primary root first followed by
 /// `additional_fragments` in order.
 pub fn build_stacking_tree_from_tree(tree: &FragmentTree) -> Vec<StackingContext> {
+  let viewport = tree.viewport_size();
+  let viewport = Some((viewport.width, viewport.height));
   let mut tree_order_counter = 0;
   let mut contexts = Vec::with_capacity(1 + tree.additional_fragments.len());
   contexts.push(build_stacking_tree_with_styles_and_counter(
     &tree.root,
     &|fragment| fragment.style.clone(),
     &mut tree_order_counter,
+    viewport,
   ));
   for fragment in &tree.additional_fragments {
     contexts.push(build_stacking_tree_with_styles_and_counter(
       fragment,
       &|node| node.style.clone(),
       &mut tree_order_counter,
+      viewport,
     ));
   }
   contexts
@@ -1083,6 +1159,8 @@ pub fn build_stacking_tree_from_tree(tree: &FragmentTree) -> Vec<StackingContext
 
 /// Builds stacking context trees for every root in a FragmentTree while surfacing timeouts.
 pub fn build_stacking_tree_from_tree_checked(tree: &FragmentTree) -> Result<Vec<StackingContext>> {
+  let viewport = tree.viewport_size();
+  let viewport = Some((viewport.width, viewport.height));
   let mut tree_order_counter = 0;
   let mut deadline_counter = 0usize;
   let mut contexts = Vec::with_capacity(1 + tree.additional_fragments.len());
@@ -1091,6 +1169,7 @@ pub fn build_stacking_tree_from_tree_checked(tree: &FragmentTree) -> Result<Vec<
     &|fragment| fragment.style.clone(),
     &mut tree_order_counter,
     &mut deadline_counter,
+    viewport,
   )?);
   for fragment in &tree.additional_fragments {
     contexts.push(build_stacking_tree_with_styles_and_counter_checked(
@@ -1098,6 +1177,7 @@ pub fn build_stacking_tree_from_tree_checked(tree: &FragmentTree) -> Result<Vec<
       &|node| node.style.clone(),
       &mut tree_order_counter,
       &mut deadline_counter,
+      viewport,
     )?);
   }
   Ok(contexts)
@@ -2304,7 +2384,7 @@ mod tests {
     sc.layer3_blocks
       .push(create_block_fragment(40.0, 40.0, 60.0, 60.0));
 
-    sc.compute_bounds();
+    sc.compute_bounds(None);
 
     // Should encompass both fragments: (0,0) to (100, 100)
     assert_eq!(sc.bounds.min_x(), 0.0);
@@ -2322,7 +2402,7 @@ mod tests {
       .push(create_block_fragment(0.0, 0.0, 5.0, 5.0));
 
     parent.children.push(child);
-    parent.compute_bounds();
+    parent.compute_bounds(None);
 
     assert_eq!(parent.bounds, Rect::from_xywh(0.0, 0.0, 5.0, 5.0));
   }
@@ -2337,7 +2417,7 @@ mod tests {
       .push(create_block_fragment(0.0, 0.0, 10.0, 10.0));
 
     parent.children.push(child);
-    parent.compute_bounds();
+    parent.compute_bounds(None);
 
     assert_eq!(parent.bounds, Rect::from_xywh(5.0, 5.0, 10.0, 10.0));
   }

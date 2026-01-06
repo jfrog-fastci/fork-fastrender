@@ -2273,14 +2273,16 @@ mod tests {
       .render_glyphs(&glyphs, &font, 16.0, 10.0, 35.0, Rgba::BLACK, &mut pixmap)
       .unwrap();
 
+    let stats_after_first = rasterizer.cache_stats();
+
     let mut pixmap2 = new_pixmap(50, 50).unwrap();
     rasterizer
       .render_glyphs(&glyphs, &font, 16.0, 20.0, 40.0, Rgba::BLACK, &mut pixmap2)
       .unwrap();
 
-    let stats = rasterizer.cache_stats();
-    assert_eq!(stats.misses, 1);
-    assert!(stats.hits >= 1);
+    let stats_after_second = rasterizer.cache_stats();
+    assert_eq!(stats_after_second.misses, stats_after_first.misses);
+    assert!(stats_after_second.hits > stats_after_first.hits);
   }
 
   #[test]

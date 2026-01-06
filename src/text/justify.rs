@@ -1093,7 +1093,7 @@ mod tests {
   use super::*;
 
   fn make_glyph(id: u16, x: f32, advance: f32, is_word_boundary: bool) -> GlyphPosition {
-    GlyphPosition::new(id, x, 0.0, advance, is_word_boundary)
+    GlyphPosition::with_cluster(id, x, 0.0, advance, 0.0, is_word_boundary, id as usize)
   }
 
   #[test]
