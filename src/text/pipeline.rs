@@ -1240,6 +1240,14 @@ impl Script {
       return Self::Hangul;
     }
 
+    // CJK Symbols and Punctuation (U+3000..=U+303F) are Script=Common in Unicode, but they need
+    // language-specific glyph selection when we fall back across multiple bundled CJK faces (JP,
+    // KR, SC). Treat them as Han so script-aware fallback will route through the language-specific
+    // CJK mapping instead of the generic `Common` fallback list (which defaults to SC).
+    if (0x3000..=0x303f).contains(&cp) {
+      return Self::Han;
+    }
+
     // Hiragana
     if (0x3040..=0x309f).contains(&cp) {
       return Self::Hiragana;
@@ -7248,10 +7256,10 @@ mod tests {
 
   #[test]
   fn itemization_assigns_leading_neutral_to_first_strong_script() {
-    // U+3001 IDEOGRAPHIC COMMA is Script=Common/Unknown depending on the script table, but it
-    // should inherit the following CJK script instead of defaulting to Latin.
+    // U+201C LEFT DOUBLE QUOTATION MARK is Script=Common, but it should inherit the following CJK
+    // script instead of defaulting to Latin.
     let style = ComputedStyle::default();
-    let text = "、漢字";
+    let text = "\u{201C}漢字";
     let bidi = BidiAnalysis::analyze(text, &style);
     let runs = itemize_text(text, &bidi);
 
@@ -7265,7 +7273,7 @@ mod tests {
     // Leading neutral characters after a paragraph break should not inherit the previous
     // paragraph's script.
     let style = ComputedStyle::default();
-    let text = "abc\n、漢字";
+    let text = "abc\n\u{201C}漢字";
     let bidi = BidiAnalysis::analyze(text, &style);
     let runs = itemize_text(text, &bidi);
     let runs = split_itemized_runs_by_paragraph(runs, bidi.paragraphs());
@@ -7273,7 +7281,7 @@ mod tests {
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[0].text, "abc\n");
     assert_eq!(runs[0].script, Script::Latin);
-    assert_eq!(runs[1].text, "、漢字");
+    assert_eq!(runs[1].text, "\u{201C}漢字");
     assert_eq!(runs[1].script, Script::Han);
   }
 
@@ -8301,6 +8309,17 @@ mod tests {
     );
     assert_eq!(ja_multiline[1].text, "、漢字");
     assert_eq!(ja_multiline[1].font.family, "Noto Sans JP");
+
+    let ja_mixed = pipeline
+      .shape("Hello、漢字", &ja_style, &ctx)
+      .expect("shape japanese punctuation after latin");
+    assert_eq!(
+      ja_mixed.len(),
+      2,
+      "expected CJK punctuation following Latin to use the JP face instead of generic common fallbacks"
+    );
+    assert_eq!(ja_mixed[1].text, "、漢字");
+    assert_eq!(ja_mixed[1].font.family, "Noto Sans JP");
 
     let mut ko_style = base_style.clone();
     ko_style.language = "ko".into();
