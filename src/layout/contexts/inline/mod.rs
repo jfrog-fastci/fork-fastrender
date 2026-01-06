@@ -949,6 +949,8 @@ impl InlineFormattingContext {
           inline_box.border_right = border_right;
           inline_box.border_top = border_top;
           inline_box.border_bottom = border_bottom;
+          inline_box.bottom_inset = padding_bottom + border_bottom;
+          inline_box.strut_metrics = fallback_metrics;
           inline_box.vertical_align = self.convert_vertical_align(
             child.style.vertical_align,
             child.style.font_size,
@@ -1210,6 +1212,8 @@ impl InlineFormattingContext {
           inline_box.border_right = border_right;
           inline_box.border_top = border_top;
           inline_box.border_bottom = border_bottom;
+          inline_box.bottom_inset = padding_bottom + border_bottom;
+          inline_box.strut_metrics = fallback_metrics;
           inline_box.vertical_align = self.convert_vertical_align(
             child.style.vertical_align,
             child.style.font_size,
@@ -1816,6 +1820,8 @@ impl InlineFormattingContext {
           inline_box.border_right = border_right;
           inline_box.border_top = border_top;
           inline_box.border_bottom = border_bottom;
+          inline_box.bottom_inset = padding_bottom + border_bottom;
+          inline_box.strut_metrics = fallback_metrics;
           inline_box.vertical_align = self.convert_vertical_align(
             child.style.vertical_align,
             child.style.font_size,
@@ -2072,6 +2078,8 @@ impl InlineFormattingContext {
           inline_box.border_right = border_right;
           inline_box.border_top = border_top;
           inline_box.border_bottom = border_bottom;
+          inline_box.bottom_inset = padding_bottom + border_bottom;
+          inline_box.strut_metrics = fallback_metrics;
           inline_box.vertical_align = self.convert_vertical_align(
             child.style.vertical_align,
             child.style.font_size,

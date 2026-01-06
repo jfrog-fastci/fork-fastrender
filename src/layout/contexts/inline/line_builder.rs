@@ -65,6 +65,7 @@ use crate::tree::fragment_tree::FragmentNode;
 use rustc_hash::FxHashMap;
 use rustc_hash::FxHasher;
 use smallvec::SmallVec;
+use std::collections::VecDeque;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::ops::Range;
@@ -303,7 +304,9 @@ impl InlineItem {
           border_right,
           border_top,
           border_bottom,
+          bottom_inset,
           metrics,
+          strut_metrics,
           vertical_align,
           box_index,
           direction,
@@ -339,7 +342,9 @@ impl InlineItem {
               border_right,
               border_top,
               border_bottom,
+              bottom_inset,
               metrics,
+              strut_metrics,
               vertical_align,
               box_index,
               direction,
@@ -1735,8 +1740,12 @@ pub struct InlineBoxItem {
   pub border_top: f32,
   pub border_bottom: f32,
 
+  pub bottom_inset: f32,
+
   /// Baseline metrics for this box
   pub metrics: BaselineMetrics,
+
+  pub strut_metrics: BaselineMetrics,
 
   /// Vertical alignment
   pub vertical_align: VerticalAlign,
@@ -1776,7 +1785,9 @@ impl InlineBoxItem {
       border_right: 0.0,
       border_top: 0.0,
       border_bottom: 0.0,
+      bottom_inset: 0.0,
       metrics,
+      strut_metrics: metrics,
       vertical_align: VerticalAlign::Baseline,
       box_index,
       direction,
@@ -2790,25 +2801,298 @@ impl<'a> LineBuilder<'a> {
         return Ok(());
       }
 
-      // If nothing has been placed yet, flatten the inline box and lay out its children so they can break.
       if !self.current_line.is_empty() {
         self.finish_line()?;
       }
+      self.add_fragmented_inline_box(inline_box)?;
+    }
+    Ok(())
+  }
 
-      if inline_box.start_edge > 0.0 {
-        self.current_x += inline_box.start_edge;
-      }
-      for child in inline_box.children {
-        if self.line_clamp_reached {
-          self.truncated = true;
+  fn split_inline_box_for_line(
+    &mut self,
+    inline_box: InlineBoxItem,
+    box_start_x: f32,
+    available_width: f32,
+  ) -> Result<(InlineBoxItem, Option<InlineBoxItem>, bool, bool), LayoutError> {
+    let box_id = inline_box.box_id;
+    let box_index = inline_box.box_index;
+    let direction = inline_box.direction;
+    let unicode_bidi = inline_box.unicode_bidi;
+    let vertical_align = inline_box.vertical_align;
+    let content_offset_y = inline_box.content_offset_y;
+    let border_top = inline_box.border_top;
+    let border_bottom = inline_box.border_bottom;
+    let bottom_inset = inline_box.bottom_inset;
+    let strut_metrics = inline_box.strut_metrics;
+    let style = inline_box.style.clone();
+
+    let start_edge = inline_box.start_edge;
+    let end_edge = inline_box.end_edge;
+    let border_left = inline_box.border_left;
+    let border_right = inline_box.border_right;
+
+    let mut remaining: VecDeque<InlineItem> = inline_box.children.into();
+    let mut fragment_children: Vec<InlineItem> = Vec::new();
+    let mut ends_with_hard_break = false;
+    let mut force_break = false;
+    let mut used_width: f32 = 0.0;
+
+    let available_children_width = (available_width - start_edge).max(0.0);
+
+    while let Some(next) = remaining.pop_front() {
+      check_layout_deadline(&mut self.deadline_counter)?;
+
+      match next {
+        InlineItem::SoftBreak => {
+          force_break = true;
           break;
         }
-        self.add_item(child)?;
-      }
-      if inline_box.end_edge > 0.0 {
-        self.current_x += inline_box.end_edge;
+        InlineItem::HardBreak => {
+          ends_with_hard_break = true;
+          force_break = true;
+          break;
+        }
+        next => {
+          let start_x = box_start_x + start_edge + used_width;
+          let (next, next_width) = next.resolve_width_at(start_x);
+
+          if used_width + next_width <= available_children_width {
+            fragment_children.push(next);
+            used_width += next_width;
+            continue;
+          }
+
+          match next {
+            InlineItem::Text(text_item) => {
+              let remaining_width = (available_children_width - used_width).max(0.0);
+              let mut break_opportunity = text_item.find_break_point(remaining_width);
+              if break_opportunity.is_none() && fragment_children.is_empty() {
+                break_opportunity = text_item.break_opportunities.first().copied();
+                if break_opportunity.is_none()
+                  && allows_soft_wrap(text_item.style.as_ref())
+                  && (matches!(
+                    text_item.style.word_break,
+                    WordBreak::BreakWord | WordBreak::Anywhere
+                  ) || matches!(
+                    text_item.style.overflow_wrap,
+                    OverflowWrap::BreakWord | OverflowWrap::Anywhere
+                  ))
+                {
+                  if let Some((idx, _)) = text_item.text.char_indices().nth(1) {
+                    break_opportunity = Some(BreakOpportunity::emergency(idx));
+                  }
+                }
+              }
+
+              if let Some(mut candidate) = break_opportunity {
+                if candidate.adds_hyphen
+                  && !self.break_fits_with_hyphen(&text_item, &candidate, remaining_width)
+                {
+                  if let Some(fitting) = self
+                    .find_fitting_break_at_or_before(
+                      &text_item,
+                      BreakOpportunityKind::Normal,
+                      remaining_width,
+                    )
+                    .or_else(|| {
+                      self.find_fitting_break_at_or_before(
+                        &text_item,
+                        BreakOpportunityKind::Emergency,
+                        remaining_width,
+                      )
+                    })
+                  {
+                    candidate = fitting;
+                  }
+                }
+                break_opportunity = Some(candidate);
+              }
+
+              if let Some(break_opportunity) = break_opportunity {
+                if let Some((before, after)) = text_item.split_at(
+                  break_opportunity.byte_offset,
+                  break_opportunity.adds_hyphen,
+                  &self.shaper,
+                  &self.font_context,
+                  &mut self.reshape_cache,
+                ) {
+                  let mut before = before;
+                  let mut drop_before = false;
+                  if matches!(break_opportunity.break_type, BreakType::Allowed)
+                    && matches!(
+                      text_item.style.white_space,
+                      WhiteSpace::Normal | WhiteSpace::Nowrap | WhiteSpace::PreLine
+                    )
+                  {
+                    let trimmed_len = before.text.trim_end_matches(' ').len();
+                    if trimmed_len < before.text.len() {
+                      if trimmed_len == 0 {
+                        drop_before = true;
+                      } else if let Some((trimmed, _)) = before.split_at(
+                        trimmed_len,
+                        false,
+                        &self.shaper,
+                        &self.font_context,
+                        &mut self.reshape_cache,
+                      ) {
+                        before = trimmed;
+                      }
+                    }
+                  }
+
+                  if !drop_before && before.advance_for_layout > 0.0 {
+                    fragment_children.push(InlineItem::Text(before));
+                  }
+                  remaining.push_front(InlineItem::Text(after));
+                  if matches!(break_opportunity.break_type, BreakType::Mandatory) {
+                    ends_with_hard_break = true;
+                    force_break = true;
+                  }
+                  break;
+                }
+              }
+
+              if fragment_children.is_empty() || !allows_soft_wrap(text_item.style.as_ref()) {
+                fragment_children.push(InlineItem::Text(text_item));
+              } else {
+                remaining.push_front(InlineItem::Text(text_item));
+              }
+              break;
+            }
+            InlineItem::InlineBox(child_box) => {
+              if fragment_children.is_empty() {
+                let remaining_width = (available_children_width - used_width).max(0.0);
+                let (fragment, remainder, child_hard_break, child_force_break) = self
+                  .split_inline_box_for_line(child_box, start_x, remaining_width)?;
+                fragment_children.push(InlineItem::InlineBox(fragment));
+                if let Some(remainder) = remainder {
+                  remaining.push_front(InlineItem::InlineBox(remainder));
+                }
+                if child_hard_break {
+                  ends_with_hard_break = true;
+                }
+                if child_force_break {
+                  force_break = true;
+                }
+                break;
+              }
+
+              remaining.push_front(InlineItem::InlineBox(child_box));
+              break;
+            }
+            other if fragment_children.is_empty() => {
+              fragment_children.push(other);
+              break;
+            }
+            other => {
+              remaining.push_front(other);
+              break;
+            }
+          }
+        }
       }
     }
+
+    let remaining_children: Vec<InlineItem> = remaining.into();
+    let has_remainder = !remaining_children.is_empty();
+    let fragment_end_edge = if has_remainder { 0.0 } else { end_edge };
+    let fragment_border_right = if has_remainder { 0.0 } else { border_right };
+
+    let fragment_metrics = super::compute_inline_box_metrics(
+      &fragment_children,
+      content_offset_y,
+      bottom_inset,
+      strut_metrics,
+    );
+    let mut fragment = InlineBoxItem::new(
+      start_edge,
+      fragment_end_edge,
+      content_offset_y,
+      fragment_metrics,
+      style.clone(),
+      box_index,
+      direction,
+      unicode_bidi,
+    );
+    fragment.box_id = box_id;
+    fragment.border_left = border_left;
+    fragment.border_right = fragment_border_right;
+    fragment.border_top = border_top;
+    fragment.border_bottom = border_bottom;
+    fragment.bottom_inset = bottom_inset;
+    fragment.strut_metrics = strut_metrics;
+    fragment.vertical_align = vertical_align;
+    fragment.children = fragment_children;
+
+    let remainder = if has_remainder {
+      let remainder_metrics = super::compute_inline_box_metrics(
+        &remaining_children,
+        content_offset_y,
+        bottom_inset,
+        strut_metrics,
+      );
+      let mut remainder = InlineBoxItem::new(
+        0.0,
+        end_edge,
+        content_offset_y,
+        remainder_metrics,
+        style,
+        box_index,
+        direction,
+        unicode_bidi,
+      );
+      remainder.box_id = box_id;
+      remainder.border_left = 0.0;
+      remainder.border_right = border_right;
+      remainder.border_top = border_top;
+      remainder.border_bottom = border_bottom;
+      remainder.bottom_inset = bottom_inset;
+      remainder.strut_metrics = strut_metrics;
+      remainder.vertical_align = vertical_align;
+      remainder.children = remaining_children;
+      Some(remainder)
+    } else {
+      None
+    };
+
+    Ok((fragment, remainder, ends_with_hard_break, force_break))
+  }
+
+  fn add_fragmented_inline_box(&mut self, inline_box: InlineBoxItem) -> Result<(), LayoutError> {
+    let mut remaining_box = inline_box;
+    loop {
+      if self.line_clamp_reached {
+        self.truncated = true;
+        return Ok(());
+      }
+      check_layout_deadline(&mut self.deadline_counter)?;
+
+      let available_width = (self.current_line_width() - self.current_x).max(0.0);
+      let box_start_x = self.current_x;
+      let (fragment, remainder, ends_with_hard_break, force_break) =
+        self.split_inline_box_for_line(remaining_box, box_start_x, available_width)?;
+
+      let fragment_width = fragment.width();
+      self.place_item_with_width(InlineItem::InlineBox(fragment), fragment_width);
+
+      if ends_with_hard_break {
+        self.current_line.ends_with_hard_break = true;
+      }
+
+      if remainder.is_none() && !ends_with_hard_break && !force_break {
+        break;
+      }
+
+      self.finish_line()?;
+
+      if let Some(remainder) = remainder {
+        remaining_box = remainder;
+        continue;
+      }
+      break;
+    }
+
     Ok(())
   }
 
@@ -3703,6 +3987,8 @@ fn reorder_paragraph(
         inline_box.border_right = border_right;
         inline_box.border_top = ctx.border_top;
         inline_box.border_bottom = ctx.border_bottom;
+        inline_box.bottom_inset = ctx.bottom_inset;
+        inline_box.strut_metrics = ctx.strut_metrics;
         inline_box.vertical_align = ctx.vertical_align;
         inline_box.add_child(item);
         item = InlineItem::InlineBox(inline_box);
@@ -3932,7 +4218,9 @@ struct BoxContext {
   border_right: f32,
   border_top: f32,
   border_bottom: f32,
+  bottom_inset: f32,
   metrics: BaselineMetrics,
+  strut_metrics: BaselineMetrics,
   vertical_align: VerticalAlign,
   box_index: usize,
   direction: Direction,
@@ -3973,7 +4261,9 @@ fn flatten_positioned_item(
         border_right: inline_box.border_right,
         border_top: inline_box.border_top,
         border_bottom: inline_box.border_bottom,
+        bottom_inset: inline_box.bottom_inset,
         metrics: inline_box.metrics,
+        strut_metrics: inline_box.strut_metrics,
         vertical_align: inline_box.vertical_align,
         box_index: inline_box.box_index,
         direction: inline_box.direction,
@@ -7444,5 +7734,100 @@ mod tests {
 
     assert_eq!(format!("{}{}", before.text, after.text), text);
     assert!(after.text.starts_with('’'));
+  }
+
+  #[test]
+  fn inline_box_wrap_preserves_fragments_and_slice_edges() {
+    // Force the inline box to wrap across multiple lines so we can assert that each line contains
+    // an inline-box fragment rather than flattened children.
+    let mut builder = make_builder(15.0);
+
+    let mut inline_box = InlineBoxItem::new(
+      2.0,
+      3.0,
+      0.0,
+      make_strut_metrics(),
+      Arc::new(ComputedStyle::default()),
+      1,
+      Direction::Ltr,
+      UnicodeBidi::Normal,
+    );
+    inline_box.box_id = 42;
+    for _ in 0..8 {
+      inline_box.add_child(InlineItem::Text(make_text_item("x", 4.0)));
+    }
+
+    builder.add_item(InlineItem::InlineBox(inline_box)).unwrap();
+    let result = builder.finish().unwrap();
+    let lines = result.lines;
+    assert_eq!(lines.len(), 3);
+
+    let fragments: Vec<InlineBoxItem> = lines
+      .iter()
+      .map(|line| {
+        assert_eq!(line.items.len(), 1);
+        match &line.items[0].item {
+          InlineItem::InlineBox(b) => b.clone(),
+          other => panic!("expected inline box fragment, got {other:?}"),
+        }
+      })
+      .collect();
+
+    assert_eq!(fragments[0].box_id, 42);
+    assert!((fragments[0].start_edge - 2.0).abs() < f32::EPSILON);
+    assert_eq!(fragments[0].end_edge, 0.0);
+
+    assert_eq!(fragments[1].start_edge, 0.0);
+    assert_eq!(fragments[1].end_edge, 0.0);
+
+    assert_eq!(fragments[2].start_edge, 0.0);
+    assert!((fragments[2].end_edge - 3.0).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn bidi_override_inline_box_wrap_keeps_scope_across_fragments() {
+    // Regression: when an inline box wrapped, LineBuilder used to flatten it, dropping the
+    // unicode-bidi scope. That meant the bidi override was not applied on subsequent lines.
+    let mut builder = make_builder(30.0);
+
+    let mut inline_box = InlineBoxItem::new(
+      0.0,
+      0.0,
+      0.0,
+      make_strut_metrics(),
+      Arc::new(ComputedStyle::default()),
+      1,
+      Direction::Rtl,
+      UnicodeBidi::BidiOverride,
+    );
+
+    for ch in ["a", "b", "c", "d", "e", "f"] {
+      inline_box.add_child(InlineItem::Text(make_text_item(ch, 10.0)));
+    }
+
+    builder.add_item(InlineItem::InlineBox(inline_box)).unwrap();
+    let lines = builder.finish().unwrap().lines;
+    assert_eq!(lines.len(), 2);
+
+    let line_texts: Vec<String> = lines
+      .iter()
+      .map(|line| {
+        assert_eq!(line.items.len(), 1);
+        let InlineItem::InlineBox(b) = &line.items[0].item else {
+          panic!("expected inline box fragment");
+        };
+        b.children
+          .iter()
+          .filter_map(|child| match child {
+            InlineItem::Text(t) => Some(t.text.clone()),
+            _ => None,
+          })
+          .collect::<String>()
+      })
+      .collect();
+
+    // Each line fragment should have the override applied, reversing the visual order of the LTR
+    // text children within the RTL override scope.
+    assert_eq!(line_texts, vec!["cba".to_string(), "fed".to_string()]);
   }
 }
