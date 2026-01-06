@@ -528,12 +528,7 @@ fn run(cli: Cli) -> io::Result<()> {
         // later repeats. Additionally, if a fixture times out in any repeat, avoid spawning more
         // render worker threads for it; timed-out workers continue running and would otherwise
         // accumulate across repeats.
-        let skipped = {
-          let guard = skip_mutex
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
-          guard.clone()
-        };
+        let skipped = lock_mutex(&skip_mutex);
         if !skipped.is_empty() {
           ordered.retain(|entry| !skipped.contains(&entry.stem));
         }
@@ -581,16 +576,10 @@ fn run(cli: Cli) -> io::Result<()> {
 
             if write_outputs {
               if !matches!(run.status, Status::Ok) {
-                skip
-                  .lock()
-                  .unwrap_or_else(|err| err.into_inner())
-                  .insert(run.stem.clone());
+                lock_mutex(&skip).insert(run.stem.clone());
               }
             } else if matches!(run.status, Status::Timeout(_)) {
-              skip
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .insert(run.stem.clone());
+              lock_mutex(&skip).insert(run.stem.clone());
             }
 
             if repeat_idx > 0 && !matches!(run.status, Status::Ok) {
@@ -610,9 +599,7 @@ fn run(cli: Cli) -> io::Result<()> {
     // Do not `try_unwrap` here: timeouts can leave the worker thread alive (and still holding an
     // `Arc` clone) even after the harness marks the fixture as timed out.
     determinism = {
-      let mut guard = determinism_mutex
-        .lock()
-        .unwrap_or_else(|err| err.into_inner());
+      let mut guard = lock_mutex(&determinism_mutex);
       std::mem::take(&mut *guard)
     };
     repeat_failures = repeat_failures_mutex.into_inner().unwrap();
@@ -939,6 +926,10 @@ fn hash64_with_salt(bytes: &[u8], salt: u64) -> u64 {
   hasher.write_u64(salt);
   hasher.write(bytes);
   hasher.finish()
+}
+
+fn lock_mutex<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+  mutex.lock().unwrap_or_else(|err| err.into_inner())
 }
 
 fn hash128(bytes: &[u8]) -> (u64, u64) {
@@ -1408,10 +1399,7 @@ fn render_fixture(
         let height = report.pixmap.height();
         let data = report.pixmap.data();
 
-        let mut determinism_map = determinism
-          .determinism
-          .lock()
-          .expect("determinism mutex poisoned");
+        let mut determinism_map = lock_mutex(&determinism.determinism);
         if determinism.repeat_idx == 0 {
           let (hash_hi, hash_lo) = hash128(data);
           determinism_map
@@ -1791,6 +1779,19 @@ mod tests {
       bytes.extend_from_slice(&rgba);
     }
     bytes
+  }
+
+  #[test]
+  fn lock_mutex_is_poison_tolerant() {
+    let mutex = Mutex::new(0u32);
+    let _ = std::panic::catch_unwind(|| {
+      let _guard = mutex.lock().unwrap();
+      panic!("poison");
+    });
+
+    let mut guard = lock_mutex(&mutex);
+    *guard += 1;
+    assert_eq!(*guard, 1);
   }
 
   #[test]
