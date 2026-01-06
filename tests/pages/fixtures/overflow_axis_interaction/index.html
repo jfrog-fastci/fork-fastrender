@@ -1,187 +1,195 @@
 <!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>Overflow axis interaction</title>
-    <link rel="stylesheet" href="../assets/styles/base.css" />
-    <style>
-      body {
-        padding: 24px;
-      }
+<meta charset="utf-8" />
+<title>overflow_axis_interaction</title>
+<style>
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    background: #ffffff;
+  }
 
-      .note {
-        margin-top: 8px;
-        max-width: 760px;
-      }
+  .case {
+    position: absolute;
+    width: 480px;
+    height: 190px;
+    border: 1px solid #d6d9df;
+    box-sizing: border-box;
+    background: #ffffff;
+  }
 
-      .cases {
-        margin-top: 20px;
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 18px;
-      }
+  .demo {
+    position: absolute;
+    left: 10px;
+    top: 10px;
+    width: 180px;
+    height: 120px;
+    background: rgb(235, 240, 252);
+    border: 2px solid rgb(92, 138, 240);
+    box-sizing: content-box;
+  }
 
-      .case-title {
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
-          "Courier New", monospace;
-        font-size: 13px;
-        font-weight: 700;
-        color: #0f172a;
-        margin-bottom: 10px;
-      }
+  .demo-inner {
+    position: relative;
+    width: 180px;
+    height: 120px;
+  }
 
-      .demo {
-        width: 180px;
-        height: 120px;
-        background: rgba(37, 99, 235, 0.08);
-        border: 2px solid rgba(37, 99, 235, 0.75);
-        position: relative;
-      }
+  .demo-inner .x {
+    position: absolute;
+    left: 10px;
+    top: 10px;
+    width: 260px;
+    height: 18px;
+    background: rgb(239, 68, 68);
+  }
 
-      .demo .x {
-        position: absolute;
-        left: 10px;
-        top: 10px;
-        width: 260px;
-        height: 18px;
-        background: rgba(239, 68, 68, 0.9);
-      }
+  .demo-inner .y {
+    position: absolute;
+    left: 10px;
+    top: 34px;
+    width: 18px;
+    height: 210px;
+    background: rgb(34, 197, 94);
+  }
 
-      .demo .y {
-        position: absolute;
-        left: 10px;
-        top: 34px;
-        width: 18px;
-        height: 210px;
-        background: rgba(34, 197, 94, 0.9);
-      }
+  .demo-inner .both {
+    position: absolute;
+    left: 74px;
+    top: 58px;
+    width: 200px;
+    height: 140px;
+    background: rgb(59, 130, 246);
+  }
 
-      .demo .both {
-        position: absolute;
-        left: 74px;
-        top: 58px;
-        width: 200px;
-        height: 140px;
-        background: rgba(59, 130, 246, 0.85);
-      }
+  .c0 {
+    left: 20px;
+  }
+  .c1 {
+    left: 540px;
+  }
+  .r0 {
+    top: 20px;
+  }
+  .r1 {
+    top: 230px;
+  }
+  .r2 {
+    top: 440px;
+  }
+  .r3 {
+    top: 650px;
+  }
 
-      /* Overflow combinations under test */
-      .ov-visible {
-        overflow: visible;
-      }
-      .ov-hidden {
-        overflow: hidden;
-      }
-      .ox-visible-oy-hidden {
-        overflow-x: visible;
-        overflow-y: hidden;
-      }
-      .ox-visible-oy-scroll {
-        overflow-x: visible;
-        overflow-y: scroll;
-      }
-      .ox-visible-oy-auto {
-        overflow-x: visible;
-        overflow-y: auto;
-      }
-      .ox-visible-oy-clip {
-        overflow-x: visible;
-        overflow-y: clip;
-      }
-      .ox-clip-oy-visible {
-        overflow-x: clip;
-        overflow-y: visible;
-      }
-      .ox-hidden-oy-visible {
-        overflow-x: hidden;
-        overflow-y: visible;
-      }
-    </style>
-  </head>
-  <body>
-    <header class="card">
-      <span class="pill">Paint hotspot</span>
-      <h1 style="margin-top: 10px">Overflow axis interaction</h1>
-      <p class="muted note">
-        Each demo box contains three absolutely-positioned blocks: red overflows <strong>only X</strong>,
-        green overflows <strong>only Y</strong>, and blue overflows <strong>both</strong>. The goal is
-        to match Chrome's computed-value axis coupling and paint-time clipping.
-      </p>
-    </header>
+  /* Overflow combinations under test */
+  .ov-visible {
+    overflow: visible;
+  }
+  .ov-hidden {
+    overflow: hidden;
+  }
+  .ox-visible-oy-hidden {
+    overflow-x: visible;
+    overflow-y: hidden;
+  }
+  .ox-visible-oy-scroll {
+    overflow-x: visible;
+    overflow-y: scroll;
+  }
+  .ox-visible-oy-auto {
+    overflow-x: visible;
+    overflow-y: auto;
+  }
+  .ox-visible-oy-clip {
+    overflow-x: visible;
+    overflow-y: clip;
+  }
+  .ox-clip-oy-visible {
+    overflow-x: clip;
+    overflow-y: visible;
+  }
+  .ox-hidden-oy-visible {
+    overflow-x: hidden;
+    overflow-y: visible;
+  }
+</style>
 
-    <main class="cases">
-      <section class="card">
-        <div class="case-title">overflow: visible (control)</div>
-        <div class="demo ov-visible">
-          <div class="x"></div>
-          <div class="y"></div>
-          <div class="both"></div>
-        </div>
-      </section>
+<div class="case c0 r0" data-case="overflow: visible (control)">
+  <div class="demo ov-visible">
+    <div class="demo-inner">
+      <div class="x"></div>
+      <div class="y"></div>
+      <div class="both"></div>
+    </div>
+  </div>
+</div>
 
-      <section class="card">
-        <div class="case-title">overflow: hidden (control)</div>
-        <div class="demo ov-hidden">
-          <div class="x"></div>
-          <div class="y"></div>
-          <div class="both"></div>
-        </div>
-      </section>
+<div class="case c1 r0" data-case="overflow: hidden (control)">
+  <div class="demo ov-hidden">
+    <div class="demo-inner">
+      <div class="x"></div>
+      <div class="y"></div>
+      <div class="both"></div>
+    </div>
+  </div>
+</div>
 
-      <section class="card">
-        <div class="case-title">overflow-x: visible; overflow-y: hidden</div>
-        <div class="demo ox-visible-oy-hidden">
-          <div class="x"></div>
-          <div class="y"></div>
-          <div class="both"></div>
-        </div>
-      </section>
+<div class="case c0 r1" data-case="overflow-x: visible; overflow-y: hidden">
+  <div class="demo ox-visible-oy-hidden">
+    <div class="demo-inner">
+      <div class="x"></div>
+      <div class="y"></div>
+      <div class="both"></div>
+    </div>
+  </div>
+</div>
 
-      <section class="card">
-        <div class="case-title">overflow-x: visible; overflow-y: scroll</div>
-        <div class="demo ox-visible-oy-scroll">
-          <div class="x"></div>
-          <div class="y"></div>
-          <div class="both"></div>
-        </div>
-      </section>
+<div class="case c1 r1" data-case="overflow-x: visible; overflow-y: scroll">
+  <div class="demo ox-visible-oy-scroll">
+    <div class="demo-inner">
+      <div class="x"></div>
+      <div class="y"></div>
+      <div class="both"></div>
+    </div>
+  </div>
+</div>
 
-      <section class="card">
-        <div class="case-title">overflow-x: visible; overflow-y: auto</div>
-        <div class="demo ox-visible-oy-auto">
-          <div class="x"></div>
-          <div class="y"></div>
-          <div class="both"></div>
-        </div>
-      </section>
+<div class="case c0 r2" data-case="overflow-x: visible; overflow-y: auto">
+  <div class="demo ox-visible-oy-auto">
+    <div class="demo-inner">
+      <div class="x"></div>
+      <div class="y"></div>
+      <div class="both"></div>
+    </div>
+  </div>
+</div>
 
-      <section class="card">
-        <div class="case-title">overflow-x: visible; overflow-y: clip</div>
-        <div class="demo ox-visible-oy-clip">
-          <div class="x"></div>
-          <div class="y"></div>
-          <div class="both"></div>
-        </div>
-      </section>
+<div class="case c1 r2" data-case="overflow-x: visible; overflow-y: clip">
+  <div class="demo ox-visible-oy-clip">
+    <div class="demo-inner">
+      <div class="x"></div>
+      <div class="y"></div>
+      <div class="both"></div>
+    </div>
+  </div>
+</div>
 
-      <section class="card">
-        <div class="case-title">overflow-x: clip; overflow-y: visible</div>
-        <div class="demo ox-clip-oy-visible">
-          <div class="x"></div>
-          <div class="y"></div>
-          <div class="both"></div>
-        </div>
-      </section>
+<div class="case c0 r3" data-case="overflow-x: clip; overflow-y: visible">
+  <div class="demo ox-clip-oy-visible">
+    <div class="demo-inner">
+      <div class="x"></div>
+      <div class="y"></div>
+      <div class="both"></div>
+    </div>
+  </div>
+</div>
 
-      <section class="card">
-        <div class="case-title">overflow-x: hidden; overflow-y: visible</div>
-        <div class="demo ox-hidden-oy-visible">
-          <div class="x"></div>
-          <div class="y"></div>
-          <div class="both"></div>
-        </div>
-      </section>
-    </main>
-  </body>
-</html>
-
+<div class="case c1 r3" data-case="overflow-x: hidden; overflow-y: visible">
+  <div class="demo ox-hidden-oy-visible">
+    <div class="demo-inner">
+      <div class="x"></div>
+      <div class="y"></div>
+      <div class="both"></div>
+    </div>
+  </div>
+</div>
