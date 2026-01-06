@@ -282,11 +282,15 @@ For each output pixel `(x, y)` (integer pixel indices):
    - This models Chrome’s behavior: pixels outside the map’s primitive subregion behave like the
      nearest edge pixel, not transparent black (see the comment in `apply_displacement_map()`).
    - Sampling is **nearest neighbor** (no bilinear interpolation).
-2. Convert that map pixel from premultiplied RGBA8 into **unpremultiplied floats** using
-   `to_unpremultiplied()`.
-3. Select channels and compute displacements:
-   - `dx = (channel(map, xChannelSelector) - 0.5) * scale_x_px`
-   - `dy = (channel(map, yChannelSelector) - 0.5) * scale_y_px`
+2. Convert that map pixel into channel values by reading **premultiplied bytes** from
+   `PremultipliedColorU8`:
+   - `channel = map_sample.{red,green,blue,alpha} as f32 / 255.0`
+   - Because filter surfaces are stored premultiplied, the `red/green/blue` bytes are already
+     attenuated by `alpha`. (So semi-transparent displacement maps reduce the displacement magnitude,
+     matching Chrome/resvg.)
+3. Compute displacements:
+   - `dx = (channel_x - 0.5) * scale_x_px`
+   - `dy = (channel_y - 0.5) * scale_y_px`
 4. Sample the primary input (`in1`) at `(x + dx, y + dy)` using `sample_nearest_premultiplied()`.
 5. Store the sampled premultiplied pixel.
 
@@ -343,8 +347,8 @@ When the step uses `sRGB`, no conversion is performed.
 
 Regression coverage:
 
-- `displacement_map_interprets_map_channels_as_unpremultiplied`
-  (`tests/paint/svg_filter_test.rs`)
+- `displacement_map_uses_premultiplied_map_channels` (`tests/paint/svg_filter_test.rs`)
+- `displacement_map_semitransparent_map_channels_match_resvg` (`tests/paint/svg_filter_test.rs`)
 - `displacement_map_interprets_map_channels_in_color_interpolation_space`
   (`tests/paint/svg_filter_test.rs`)
 
@@ -389,7 +393,8 @@ Regression coverage:
 
 - `tests/paint/svg_filter_test.rs`:
   - `displacement_map_applies_scale_without_extra_multiplier`
-  - `displacement_map_interprets_map_channels_as_unpremultiplied`
+  - `displacement_map_uses_premultiplied_map_channels`
+  - `displacement_map_semitransparent_map_channels_match_resvg`
   - `displacement_map_object_bounding_box_scale_is_resolved_against_bbox_width`
   - `displacement_map_ignores_filter_res`
   - `displacement_map_interprets_map_channels_in_color_interpolation_space`
