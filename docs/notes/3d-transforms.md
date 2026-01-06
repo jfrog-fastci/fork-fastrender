@@ -42,5 +42,11 @@ all projective warps to use the affine approximation instead. If you build
 without default features, set `FASTR_PRESERVE3D_WARP=1` to opt back into the
 projective warp path.
 
+FastRender also has an escape hatch to disable the preserve-3d *scene* compositor
+entirely (`FASTR_PRESERVE3D_DISABLE_SCENE=1`). When enabled, preserve-3d
+subtrees are precomposed into a depth-sorted display list instead of being
+rendered through the scene compositor. This is less correct, but it keeps
+preserve-3d from forcing serial paint and can unlock tiled parallel painting.
+
 Set `FASTR_PRESERVE3D_DEBUG=1` to log preserve-3d scene sorting + warp fallback
 decisions while debugging real pages.
