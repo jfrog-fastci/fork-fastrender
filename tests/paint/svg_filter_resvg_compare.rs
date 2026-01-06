@@ -203,6 +203,27 @@ fn svg_filter_resvg_missing_in2_defaults_to_previous_for_fe_blend() {
 }
 
 #[test]
+fn svg_filter_resvg_empty_in2_treated_as_missing_for_fe_blend() {
+  let svg = r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="4" height="4" shape-rendering="crispEdges">
+      <defs>
+        <filter id="f" x="0" y="0" width="4" height="4" filterUnits="userSpaceOnUse"
+                color-interpolation-filters="sRGB">
+          <feFlood flood-color="rgb(255,0,0)" result="a"/>
+          <feFlood flood-color="rgb(0,255,0)" result="b"/>
+          <feBlend in="a" in2="" mode="difference"/>
+        </filter>
+      </defs>
+      <g filter="url(#f)">
+        <rect x="0" y="0" width="4" height="4" fill="rgb(0,0,255)"/>
+      </g>
+    </svg>
+  "#;
+
+  assert_svg_filter_matches_resvg(svg, "f", Rect::from_xywh(0.0, 0.0, 4.0, 4.0), (4, 4), 0);
+}
+
+#[test]
 fn svg_filter_resvg_missing_in2_defaults_to_previous_for_fe_displacement_map() {
   let svg = r#"
     <svg xmlns="http://www.w3.org/2000/svg" width="5" height="5" viewBox="0 0 5 5" shape-rendering="crispEdges">
@@ -211,6 +232,27 @@ fn svg_filter_resvg_missing_in2_defaults_to_previous_for_fe_displacement_map() {
                 primitiveUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
           <feFlood flood-color="white" flood-opacity="0.5" result="map"/>
           <feDisplacementMap in="SourceGraphic" scale="2" xChannelSelector="R" yChannelSelector="R"/>
+        </filter>
+      </defs>
+      <g filter="url(#f)">
+        <rect width="5" height="5" fill="rgba(0,0,0,0)"/>
+        <rect x="2" y="2" width="1" height="1" fill="rgb(255,0,0)"/>
+      </g>
+    </svg>
+  "#;
+
+  assert_svg_filter_matches_resvg(svg, "f", Rect::from_xywh(0.0, 0.0, 5.0, 5.0), (5, 5), 0);
+}
+
+#[test]
+fn svg_filter_resvg_empty_in2_treated_as_missing_for_fe_displacement_map() {
+  let svg = r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="5" height="5" viewBox="0 0 5 5" shape-rendering="crispEdges">
+      <defs>
+        <filter id="f" x="0" y="0" width="5" height="5" filterUnits="userSpaceOnUse"
+                primitiveUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+          <feFlood flood-color="white" flood-opacity="0.5" result="map"/>
+          <feDisplacementMap in="SourceGraphic" in2="" scale="2" xChannelSelector="R" yChannelSelector="R"/>
         </filter>
       </defs>
       <g filter="url(#f)">
