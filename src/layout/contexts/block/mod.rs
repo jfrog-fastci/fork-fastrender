@@ -1458,20 +1458,18 @@ impl BlockFormattingContext {
           );
         }
         let is_replaced = pos_child.is_replaced();
-        let has_inline_keyword = positioned_style.width_keyword.is_some()
-          || positioned_style.min_width_keyword.is_some()
-          || positioned_style.max_width_keyword.is_some();
-        let has_block_keyword = positioned_style.height_keyword.is_some()
-          || positioned_style.min_height_keyword.is_some()
-          || positioned_style.max_height_keyword.is_some();
-        let needs_inline_intrinsics = has_inline_keyword
-          || (positioned_style.width.is_auto()
-            && (positioned_style.left.is_auto()
-              || positioned_style.right.is_auto()
-              || is_replaced));
-        let needs_block_intrinsics = has_block_keyword
-          || (positioned_style.height.is_auto()
-            && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto()));
+        let needs_inline_intrinsics = (positioned_style.width.is_auto()
+          && (positioned_style.left.is_auto()
+            || positioned_style.right.is_auto()
+            || is_replaced))
+          || original_style.width_keyword.is_some()
+          || original_style.min_width_keyword.is_some()
+          || original_style.max_width_keyword.is_some();
+        let needs_block_intrinsics = (positioned_style.height.is_auto()
+          && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto()))
+          || original_style.height_keyword.is_some()
+          || original_style.min_height_keyword.is_some()
+          || original_style.max_height_keyword.is_some();
         let (
           mut child_fragment,
           preferred_min_inline,
@@ -1630,6 +1628,12 @@ impl BlockFormattingContext {
         input.preferred_inline_size = preferred_inline;
         input.preferred_min_block_size = preferred_min_block;
         input.preferred_block_size = preferred_block;
+        input.style.width_keyword = original_style.width_keyword;
+        input.style.min_width_keyword = original_style.min_width_keyword;
+        input.style.max_width_keyword = original_style.max_width_keyword;
+        input.style.height_keyword = original_style.height_keyword;
+        input.style.min_height_keyword = original_style.min_height_keyword;
+        input.style.max_height_keyword = original_style.max_height_keyword;
 
         let result = abs.layout_absolute(&input, &cb)?;
         let border_size = Size::new(
@@ -1665,6 +1669,10 @@ impl BlockFormattingContext {
               relayout_style.height = Some(crate::style::values::Length::px(border_size.height));
               relayout_style.width_keyword = None;
               relayout_style.height_keyword = None;
+              relayout_style.min_width_keyword = None;
+              relayout_style.max_width_keyword = None;
+              relayout_style.min_height_keyword = None;
+              relayout_style.max_height_keyword = None;
               child_fragment = crate::layout::style_override::with_style_override(
                 pos_child.id,
                 Arc::new(relayout_style),
@@ -1681,6 +1689,10 @@ impl BlockFormattingContext {
               relayout_style.height = Some(crate::style::values::Length::px(border_size.height));
               relayout_style.width_keyword = None;
               relayout_style.height_keyword = None;
+              relayout_style.min_width_keyword = None;
+              relayout_style.max_width_keyword = None;
+              relayout_style.min_height_keyword = None;
+              relayout_style.max_height_keyword = None;
               relayout_child.style = Arc::new(relayout_style);
             }
             child_fragment = fc.layout(&relayout_child, &relayout_constraints)?;
@@ -5139,20 +5151,18 @@ impl FormattingContext for BlockFormattingContext {
           );
         }
         let is_replaced = child.is_replaced();
-        let has_inline_keyword = positioned_style.width_keyword.is_some()
-          || positioned_style.min_width_keyword.is_some()
-          || positioned_style.max_width_keyword.is_some();
-        let has_block_keyword = positioned_style.height_keyword.is_some()
-          || positioned_style.min_height_keyword.is_some()
-          || positioned_style.max_height_keyword.is_some();
-        let needs_inline_intrinsics = has_inline_keyword
-          || (positioned_style.width.is_auto()
-            && (positioned_style.left.is_auto()
-              || positioned_style.right.is_auto()
-              || is_replaced));
-        let needs_block_intrinsics = has_block_keyword
-          || (positioned_style.height.is_auto()
-            && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto()));
+        let needs_inline_intrinsics = (positioned_style.width.is_auto()
+          && (positioned_style.left.is_auto()
+            || positioned_style.right.is_auto()
+            || is_replaced))
+          || original_style.width_keyword.is_some()
+          || original_style.min_width_keyword.is_some()
+          || original_style.max_width_keyword.is_some();
+        let needs_block_intrinsics = (positioned_style.height.is_auto()
+          && (positioned_style.top.is_auto() || positioned_style.bottom.is_auto()))
+          || original_style.height_keyword.is_some()
+          || original_style.min_height_keyword.is_some()
+          || original_style.max_height_keyword.is_some();
         let (
           mut child_fragment,
           preferred_min_inline,
@@ -5311,6 +5321,12 @@ impl FormattingContext for BlockFormattingContext {
         input.preferred_inline_size = preferred_inline;
         input.preferred_min_block_size = preferred_min_block;
         input.preferred_block_size = preferred_block;
+        input.style.width_keyword = original_style.width_keyword;
+        input.style.min_width_keyword = original_style.min_width_keyword;
+        input.style.max_width_keyword = original_style.max_width_keyword;
+        input.style.height_keyword = original_style.height_keyword;
+        input.style.min_height_keyword = original_style.min_height_keyword;
+        input.style.max_height_keyword = original_style.max_height_keyword;
 
         let result = abs.layout_absolute(&input, &cb)?;
         let border_size = Size::new(
@@ -5346,6 +5362,10 @@ impl FormattingContext for BlockFormattingContext {
               relayout_style.height = Some(crate::style::values::Length::px(border_size.height));
               relayout_style.width_keyword = None;
               relayout_style.height_keyword = None;
+              relayout_style.min_width_keyword = None;
+              relayout_style.max_width_keyword = None;
+              relayout_style.min_height_keyword = None;
+              relayout_style.max_height_keyword = None;
               child_fragment = crate::layout::style_override::with_style_override(
                 child.id,
                 Arc::new(relayout_style),
@@ -5362,6 +5382,10 @@ impl FormattingContext for BlockFormattingContext {
               relayout_style.height = Some(crate::style::values::Length::px(border_size.height));
               relayout_style.width_keyword = None;
               relayout_style.height_keyword = None;
+              relayout_style.min_width_keyword = None;
+              relayout_style.max_width_keyword = None;
+              relayout_style.min_height_keyword = None;
+              relayout_style.max_height_keyword = None;
               relayout_child.style = Arc::new(relayout_style);
             }
             child_fragment = fc.layout(&relayout_child, &relayout_constraints)?;
