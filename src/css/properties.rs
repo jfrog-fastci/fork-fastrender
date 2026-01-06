@@ -5411,6 +5411,23 @@ mod tests {
       Length::px(0.0)
     );
   }
+
+  #[test]
+  fn trig_functions_accept_unitless_radians() {
+    let len = parse_length("calc(cos(0) * 10px)").expect("cos(0) parses");
+    assert_eq!(len.unit, LengthUnit::Px);
+    assert!((len.value - 10.0).abs() < 1e-6);
+
+    let len = parse_length("calc(cos(0deg) * 10px)").expect("cos(angle) parses");
+    assert_eq!(len.unit, LengthUnit::Px);
+    assert!((len.value - 10.0).abs() < 1e-6);
+
+    let len = parse_length("calc(sin(3.141592653589793/2) * 10px)").expect("sin() parses");
+    assert_eq!(len.unit, LengthUnit::Px);
+    assert!((len.value - 10.0).abs() < 1e-3);
+
+    assert!(parse_length("calc(cos(1px) * 10px)").is_none());
+  }
 }
 
 const MATH_PREFIXES: &[&str] = &[
