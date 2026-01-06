@@ -45,6 +45,10 @@ Options:
   --js <on|off>        Enable JavaScript (default: off)
   --allow-animations   Allow CSS animations/transitions (default: off for determinism)
   --allow-dark-mode    Do not force a light color scheme + white background in the patched HTML
+  --user-agent <str>   Override the Chrome User-Agent string
+  --accept-language <str>
+                        Accept-Language header value to align with FastRender (passed to Chrome via
+                        `--lang=<primary>` derived from the first language tag)
   -h, --help           Show help
 
 Filtering:
@@ -52,13 +56,14 @@ Filtering:
   and only those pages will be rendered.
 
 Environment (optional):
-  HTML_DIR, OUT_DIR, VIEWPORT, DPR, TIMEOUT, SHARD, CHROME_BIN, JS, ALLOW_ANIMATIONS, ALLOW_DARK_MODE
+  HTML_DIR, OUT_DIR, VIEWPORT, DPR, TIMEOUT, SHARD, CHROME_BIN, JS, USER_AGENT, ACCEPT_LANGUAGE,
+  ALLOW_ANIMATIONS, ALLOW_DARK_MODE
   HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX
 
 Output:
   <out-dir>/<stem>.png        Screenshot
   <out-dir>/<stem>.chrome.log Chrome stdout/stderr for debugging
-  <out-dir>/<stem>.json       JSON metadata (viewport/DPR/JS/headless mode/input hash/etc.)
+  <out-dir>/<stem>.json       JSON metadata (viewport/DPR/JS/headers/headless mode/input hash/etc.)
 
 EOF
 }
@@ -71,6 +76,8 @@ TIMEOUT="${TIMEOUT:-15}"
 SHARD="${SHARD:-}"
 CHROME_BIN="${CHROME_BIN:-}"
 JS="${JS:-off}"
+USER_AGENT="${USER_AGENT:-}"
+ACCEPT_LANGUAGE="${ACCEPT_LANGUAGE:-}"
 ALLOW_ANIMATIONS="${ALLOW_ANIMATIONS:-0}"
 ALLOW_DARK_MODE="${ALLOW_DARK_MODE:-0}"
 HEADLESS_FLAG="--headless=new"
@@ -123,6 +130,10 @@ while [[ $# -gt 0 ]]; do
         ALLOW_ANIMATIONS="1"; shift; continue ;;
       --allow-dark-mode)
         ALLOW_DARK_MODE="1"; shift; continue ;;
+      --user-agent)
+        USER_AGENT="${2:-}"; shift 2; continue ;;
+      --accept-language)
+        ACCEPT_LANGUAGE="${2:-}"; shift 2; continue ;;
       --)
         PARSE_FLAGS=0
         shift
@@ -182,6 +193,43 @@ case "${ALLOW_DARK_MODE,,}" in
     exit 2
     ;;
 esac
+
+trim_ws() {
+  local s="$1"
+  # Trim leading whitespace.
+  s="${s#"${s%%[![:space:]]*}"}"
+  # Trim trailing whitespace.
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+
+USER_AGENT="$(trim_ws "${USER_AGENT}")"
+ACCEPT_LANGUAGE="$(trim_ws "${ACCEPT_LANGUAGE}")"
+
+derive_lang_from_accept_language() {
+  local raw="$1"
+  # Take the first non-empty item before a comma, then strip any `;q=...` suffix.
+  local part
+  IFS=',' read -ra parts <<<"${raw}"
+  for part in "${parts[@]}"; do
+    part="$(trim_ws "${part}")"
+    part="${part%%;*}"
+    part="$(trim_ws "${part}")"
+    if [[ -n "${part}" ]]; then
+      printf '%s' "${part}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+CHROME_LANG=""
+if [[ -n "${ACCEPT_LANGUAGE}" ]]; then
+  if ! CHROME_LANG="$(derive_lang_from_accept_language "${ACCEPT_LANGUAGE}")"; then
+    echo "invalid --accept-language: ${ACCEPT_LANGUAGE} (could not derive a primary language tag)" >&2
+    exit 2
+  fi
+fi
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "python3 is required for HTML base-tag injection." >&2
@@ -381,6 +429,12 @@ echo "Chrome: ${CHROME}"
 echo "Input:  ${HTML_DIR}"
 echo "Output: ${OUT_DIR}"
 echo "Viewport: ${VIEWPORT}  DPR: ${DPR}  JS: ${JS,,}  Animations: $([[ "${ALLOW_ANIMATIONS}" -eq 1 ]] && echo on || echo off)  Color scheme: $([[ "${ALLOW_DARK_MODE}" -eq 1 ]] && echo auto || echo light)  Timeout: ${TIMEOUT}s"
+if [[ -n "${USER_AGENT}" ]]; then
+  echo "User-Agent: ${USER_AGENT}"
+fi
+if [[ -n "${ACCEPT_LANGUAGE}" ]]; then
+  echo "Accept-Language: ${ACCEPT_LANGUAGE}  (Chrome --lang=${CHROME_LANG})"
+fi
 if [[ -n "${SHARD}" ]]; then
   echo "Shard: ${SHARD}"
 fi
@@ -550,6 +604,12 @@ PY
     # Always write the screenshot to a temp directory and then copy it into OUT_DIR.
     --screenshot="${tmp_png_path}"
   )
+  if [[ -n "${USER_AGENT}" ]]; then
+    chrome_args+=(--user-agent="${USER_AGENT}")
+  fi
+  if [[ -n "${CHROME_LANG}" ]]; then
+    chrome_args+=(--lang="${CHROME_LANG}")
+  fi
 
   # Use `timeout` if available; otherwise run without a hard kill.
   ran_ok=0
@@ -767,7 +827,7 @@ PY
     if [[ "${HEADLESS_FLAG}" == "--headless=new" ]]; then
       headless_mode="new"
     fi
-    python3 - "${metadata_path}" "${stem}" "${VIEWPORT_W}" "${VIEWPORT_H}" "${DPR}" "${WINDOW_H}" "${CHROME_PADDING_CSS}" "${JS,,}" "${headless_mode}" "${CHROME_VERSION}" "${base_url}" "${html_sha256}" <<'PY'
+    python3 - "${metadata_path}" "${stem}" "${VIEWPORT_W}" "${VIEWPORT_H}" "${DPR}" "${WINDOW_H}" "${CHROME_PADDING_CSS}" "${JS,,}" "${headless_mode}" "${CHROME_VERSION}" "${base_url}" "${html_sha256}" "${USER_AGENT}" "${ACCEPT_LANGUAGE}" "${CHROME_LANG}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -784,6 +844,9 @@ headless = sys.argv[9]
 chrome_version = sys.argv[10].strip()
 base_url = sys.argv[11].strip()
 html_sha256 = sys.argv[12].strip()
+user_agent = sys.argv[13].strip()
+accept_language = sys.argv[14].strip()
+lang = sys.argv[15].strip()
 
 data = {
     "stem": stem,
@@ -799,6 +862,12 @@ if chrome_version:
     data["chrome_version"] = chrome_version
 if base_url:
     data["base_url"] = base_url
+if user_agent:
+    data["user_agent"] = user_agent
+if accept_language:
+    data["accept_language"] = accept_language
+if lang:
+    data["lang"] = lang
 
 out_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
 PY

@@ -623,3 +623,11 @@ Both `scripts/chrome_fixture_baseline.sh` and `render_fixtures` support `--shard
       to `target/pageset/cascade-progress/`).
   - Optional traces: `--trace-failures` / `--trace-slow-ms <ms>` rerun targeted pages with Chrome tracing enabled; tune trace rerun budgets with `--trace-timeout` (defaults to `timeout * 2`), `--trace-soft-timeout-ms`, and `--trace-jobs` (defaults to 1 to avoid contention). Traces land in `target/pageset/traces/<stem>.json` with rerun progress under `target/pageset/trace-progress/<stem>.json` and logs at `target/pageset/logs/<stem>.trace.log`.
   - Workers accept `--layout-parallel {off|on|auto}` (plus `--layout-parallel-min-fanout` / `--layout-parallel-auto-min-nodes` / `--layout-parallel-max-threads`). The default is `auto`, so small pages stay serial while large pages can fan out across Rayon threads.
+
+### Accuracy baselines (`pageset_progress run --accuracy`)
+
+When `--accuracy` is enabled, ok pages record pixel-diff telemetry against baseline PNGs (stored in `progress/pages/*.json` under the `accuracy` field).
+
+- Provide baseline PNGs via `--baseline-dir <dir>` (expected layout: `<dir>/<stem>.png`).
+- Or use `--baseline=chrome` to auto-generate missing/stale baselines via `scripts/chrome_baseline.sh` into the resolved baseline directory (defaults to `fetches/chrome_renders/`).
+- `pageset_progress` forwards the current run’s `--user-agent` and `--accept-language` to Chrome baseline generation so the Chrome screenshot uses the same request header knobs as FastRender. This reduces misleading accuracy metrics when live subresources vary by UA/locale.

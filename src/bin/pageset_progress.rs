@@ -7125,6 +7125,21 @@ fn work_item_from_cache(
   }
 }
 
+fn chrome_lang_from_accept_language(header: &str) -> Option<String> {
+  for raw_part in header.split(',') {
+    let part = raw_part.trim();
+    if part.is_empty() {
+      continue;
+    }
+    let primary = part.split(';').next().unwrap_or_default().trim();
+    if primary.is_empty() {
+      continue;
+    }
+    return Some(primary.to_string());
+  }
+  None
+}
+
 #[derive(Debug, Deserialize)]
 struct ChromeBaselineMetadata {
   stem: String,
@@ -7134,6 +7149,12 @@ struct ChromeBaselineMetadata {
   chrome_window_padding_css: Option<u32>,
   dpr: f32,
   js: String,
+  #[serde(default)]
+  user_agent: Option<String>,
+  #[serde(default)]
+  accept_language: Option<String>,
+  #[serde(default)]
+  lang: Option<String>,
   html_sha256: String,
 }
 
@@ -7233,6 +7254,9 @@ fn compute_needed_baselines(
   dpr: f32,
   js: &str,
   expected_window_padding_css: Option<u32>,
+  expected_user_agent: Option<&str>,
+  expected_accept_language: Option<&str>,
+  expected_lang: Option<&str>,
   refresh_all: bool,
   refresh_if_unverified: bool,
 ) -> Vec<String> {
@@ -7305,6 +7329,45 @@ fn compute_needed_baselines(
         _ => {}
       }
     }
+    if let Some(expected) = expected_user_agent {
+      match meta.user_agent.as_deref().map(str::trim) {
+        Some(actual) if actual != expected => {
+          needed.insert(stem.to_string());
+          continue;
+        }
+        None if refresh_if_unverified => {
+          needed.insert(stem.to_string());
+          continue;
+        }
+        _ => {}
+      }
+    }
+    if let Some(expected) = expected_accept_language {
+      match meta.accept_language.as_deref().map(str::trim) {
+        Some(actual) if actual != expected => {
+          needed.insert(stem.to_string());
+          continue;
+        }
+        None if refresh_if_unverified => {
+          needed.insert(stem.to_string());
+          continue;
+        }
+        _ => {}
+      }
+    }
+    if let Some(expected) = expected_lang {
+      match meta.lang.as_deref().map(str::trim) {
+        Some(actual) if actual != expected => {
+          needed.insert(stem.to_string());
+          continue;
+        }
+        None if refresh_if_unverified => {
+          needed.insert(stem.to_string());
+          continue;
+        }
+        _ => {}
+      }
+    }
 
     let current_sha = match sha256_file_hex(&item.cache_path) {
       Ok(value) => value,
@@ -7327,10 +7390,18 @@ fn generate_missing_chrome_baselines(
   items: &[WorkItem],
   viewport: (u32, u32),
   dpr: f32,
+  user_agent: &str,
+  accept_language: &str,
   baseline_refresh: bool,
   baseline_refresh_if_unverified: bool,
 ) {
   let expected_js = "off";
+  let expected_user_agent = user_agent.trim();
+  let expected_user_agent = (!expected_user_agent.is_empty()).then_some(expected_user_agent);
+  let expected_accept_language = accept_language.trim();
+  let expected_accept_language =
+    (!expected_accept_language.is_empty()).then_some(expected_accept_language);
+  let expected_lang = expected_accept_language.and_then(chrome_lang_from_accept_language);
 
   let expected_window_padding_css = match headless_window_viewport_height_pad_px() {
     Ok(value) => Some(value),
@@ -7355,16 +7426,22 @@ fn generate_missing_chrome_baselines(
       continue;
     }
 
-    let Some(_) = expected_window_padding_css else {
-      continue;
-    };
     let Ok(meta_bytes) = fs::read(&meta_path) else {
       continue;
     };
     let Ok(meta) = serde_json::from_slice::<ChromeBaselineMetadata>(&meta_bytes) else {
       continue;
     };
-    if meta.chrome_window_padding_css.is_none() {
+    if expected_window_padding_css.is_some() && meta.chrome_window_padding_css.is_none() {
+      unverified.push(stem.to_string());
+    }
+    if expected_user_agent.is_some() && meta.user_agent.is_none() {
+      unverified.push(stem.to_string());
+    }
+    if expected_accept_language.is_some() && meta.accept_language.is_none() {
+      unverified.push(stem.to_string());
+    }
+    if expected_lang.is_some() && meta.lang.is_none() {
       unverified.push(stem.to_string());
     }
   }
@@ -7373,7 +7450,7 @@ fn generate_missing_chrome_baselines(
   if !unverified.is_empty() && !(baseline_refresh || baseline_refresh_if_unverified) {
     let suffix = if unverified.len() == 1 { "" } else { "s" };
     eprintln!(
-      "Warning: chrome baseline PNG{suffix} exist but metadata sidecars are missing or incomplete for {} page{suffix}. These baselines are unverified and may be stale if cached HTML/viewport/DPR/headless padding changed.\n\
+      "Warning: chrome baseline PNG{suffix} exist but metadata sidecars are missing or incomplete for {} page{suffix}. These baselines are unverified and may be stale if cached HTML/viewport/DPR/User-Agent/Accept-Language/headless padding changed.\n\
        Re-run with --baseline-refresh-if-unverified (or --baseline-refresh) to regenerate: {}",
       unverified.len(),
       unverified.join(", ")
@@ -7387,6 +7464,9 @@ fn generate_missing_chrome_baselines(
     dpr,
     expected_js,
     expected_window_padding_css,
+    expected_user_agent,
+    expected_accept_language,
+    expected_lang.as_deref(),
     baseline_refresh,
     baseline_refresh_if_unverified,
   );
@@ -7430,7 +7510,8 @@ fn generate_missing_chrome_baselines(
   }
 
   let viewport_arg = format!("{}x{}", viewport.0, viewport.1);
-  let status = Command::new(script)
+  let mut cmd = Command::new(script);
+  cmd
     .arg("--html-dir")
     .arg(CACHE_HTML_DIR)
     .arg("--out-dir")
@@ -7440,10 +7521,14 @@ fn generate_missing_chrome_baselines(
     .arg("--dpr")
     .arg(format!("{dpr}"))
     .arg("--js")
-    .arg(expected_js)
-    .arg("--")
-    .args(&needed)
-    .status();
+    .arg(expected_js);
+  if let Some(value) = expected_user_agent {
+    cmd.arg("--user-agent").arg(value);
+  }
+  if let Some(value) = expected_accept_language {
+    cmd.arg("--accept-language").arg(value);
+  }
+  let status = cmd.arg("--").args(&needed).status();
 
   match status {
     Ok(status) if status.success() => {}
@@ -8602,6 +8687,8 @@ fn run(mut args: RunArgs) -> io::Result<()> {
         &items,
         args.viewport,
         args.dpr,
+        &args.user_agent,
+        &args.accept_language,
         args.baseline_refresh,
         args.baseline_refresh_if_unverified,
       );
@@ -11081,6 +11168,23 @@ mod tests {
   }
 
   #[test]
+  fn chrome_lang_from_accept_language_picks_first_tag_and_strips_q_values() {
+    assert_eq!(
+      chrome_lang_from_accept_language("en-US,en;q=0.9"),
+      Some("en-US".to_string())
+    );
+    assert_eq!(
+      chrome_lang_from_accept_language("  fr-CA ;q=0.8, fr;q=0.7"),
+      Some("fr-CA".to_string())
+    );
+    assert_eq!(
+      chrome_lang_from_accept_language(", de"),
+      Some("de".to_string())
+    );
+    assert_eq!(chrome_lang_from_accept_language(" , "), None);
+  }
+
+  #[test]
   fn chrome_baseline_needs_regeneration_when_html_sha256_mismatches() {
     let dir = tempdir().expect("tempdir");
     let baseline_dir = dir.path().join("baselines");
@@ -11125,6 +11229,9 @@ mod tests {
       1.0,
       "off",
       Some(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
+      None,
+      None,
+      None,
       false,
       false,
     );
@@ -11177,6 +11284,9 @@ mod tests {
       1.0,
       "off",
       Some(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
+      None,
+      None,
+      None,
       false,
       false,
     );
@@ -11189,6 +11299,127 @@ mod tests {
       2.0,
       "off",
       Some(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
+      None,
+      None,
+      None,
+      false,
+      false,
+    );
+    assert_eq!(needed, vec!["test".to_string()]);
+  }
+
+  #[test]
+  fn chrome_baseline_needs_regeneration_when_user_agent_mismatches() {
+    let dir = tempdir().expect("tempdir");
+    let baseline_dir = dir.path().join("baselines");
+    fs::create_dir_all(&baseline_dir).expect("baseline dir");
+
+    let html_dir = dir.path().join("html");
+    fs::create_dir_all(&html_dir).expect("html dir");
+    let html_path = html_dir.join("test.html");
+    fs::write(&html_path, "<html>one</html>").expect("write html");
+    let sha = sha256_file_hex(&html_path).expect("sha");
+
+    let item = WorkItem {
+      stem: "test".to_string(),
+      cache_stem: "test".to_string(),
+      url: "https://example.com/".to_string(),
+      cache_path: html_path,
+      progress_path: PathBuf::new(),
+      log_path: PathBuf::new(),
+      stderr_path: PathBuf::new(),
+      stage_path: PathBuf::new(),
+      trace_out: None,
+    };
+
+    fs::write(baseline_dir.join("test.png"), b"png").expect("write png");
+    let meta = serde_json::json!({
+      "stem": "test",
+      "viewport": [1200, 800],
+      "dpr": 1.0,
+      "js": "off",
+      "headless": "new",
+      "chrome_window_padding_css": DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX,
+      "user_agent": "ua-one",
+      "accept_language": "en-US,en;q=0.9",
+      "lang": "en-US",
+      "html_sha256": sha
+    });
+    fs::write(
+      baseline_dir.join("test.json"),
+      serde_json::to_vec_pretty(&meta).expect("meta json"),
+    )
+    .expect("write meta");
+
+    let needed = compute_needed_baselines(
+      &baseline_dir,
+      &[item],
+      (1200, 800),
+      1.0,
+      "off",
+      Some(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
+      Some("ua-two"),
+      Some("en-US,en;q=0.9"),
+      Some("en-US"),
+      false,
+      false,
+    );
+    assert_eq!(needed, vec!["test".to_string()]);
+  }
+
+  #[test]
+  fn chrome_baseline_needs_regeneration_when_accept_language_mismatches() {
+    let dir = tempdir().expect("tempdir");
+    let baseline_dir = dir.path().join("baselines");
+    fs::create_dir_all(&baseline_dir).expect("baseline dir");
+
+    let html_dir = dir.path().join("html");
+    fs::create_dir_all(&html_dir).expect("html dir");
+    let html_path = html_dir.join("test.html");
+    fs::write(&html_path, "<html>one</html>").expect("write html");
+    let sha = sha256_file_hex(&html_path).expect("sha");
+
+    let item = WorkItem {
+      stem: "test".to_string(),
+      cache_stem: "test".to_string(),
+      url: "https://example.com/".to_string(),
+      cache_path: html_path,
+      progress_path: PathBuf::new(),
+      log_path: PathBuf::new(),
+      stderr_path: PathBuf::new(),
+      stage_path: PathBuf::new(),
+      trace_out: None,
+    };
+
+    fs::write(baseline_dir.join("test.png"), b"png").expect("write png");
+    let meta = serde_json::json!({
+      "stem": "test",
+      "viewport": [1200, 800],
+      "dpr": 1.0,
+      "js": "off",
+      "headless": "new",
+      "chrome_window_padding_css": DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX,
+      "user_agent": "ua-one",
+      "accept_language": "en-US,en;q=0.9",
+      "lang": "en-US",
+      "html_sha256": sha
+    });
+    fs::write(
+      baseline_dir.join("test.json"),
+      serde_json::to_vec_pretty(&meta).expect("meta json"),
+    )
+    .expect("write meta");
+
+    let needed = compute_needed_baselines(
+      &baseline_dir,
+      &[item],
+      (1200, 800),
+      1.0,
+      "off",
+      Some(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
+      Some("ua-one"),
+      Some("fr-CA,fr;q=0.8"),
+      Some("fr-CA"),
       false,
       false,
     );
@@ -11242,6 +11473,9 @@ mod tests {
       1.0,
       "off",
       Some(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
+      None,
+      None,
+      None,
       false,
       false,
     );
@@ -11294,6 +11528,9 @@ mod tests {
       1.0,
       "off",
       Some(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
+      None,
+      None,
+      None,
       false,
       false,
     );
@@ -11306,6 +11543,9 @@ mod tests {
       1.0,
       "off",
       Some(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
+      None,
+      None,
+      None,
       false,
       true,
     );
@@ -11344,6 +11584,9 @@ mod tests {
       1.0,
       "off",
       Some(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
+      None,
+      None,
+      None,
       false,
       false,
     );
@@ -11356,6 +11599,9 @@ mod tests {
       1.0,
       "off",
       Some(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
+      None,
+      None,
+      None,
       false,
       true,
     );
@@ -11408,6 +11654,9 @@ mod tests {
       1.0,
       "off",
       Some(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
+      None,
+      None,
+      None,
       true,
       false,
     );
