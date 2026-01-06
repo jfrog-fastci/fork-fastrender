@@ -363,6 +363,15 @@ fn render_fixtures_repeat_mode_timeout_does_not_panic() {
     !stderr.contains("panicked at"),
     "did not expect panic output; got stderr:\n{stderr}"
   );
+
+  // Repeat mode should skip subsequent repeats after a baseline timeout. This avoids spawning an
+  // unbounded number of render worker threads (timed-out workers continue running until the
+  // process exits).
+  let summary = fs::read_to_string(out_dir.join("_summary.log")).expect("read summary log");
+  assert!(
+    summary.contains("Repeat failures: 0"),
+    "expected repeat mode to skip repeats after baseline timeouts; got summary:\n{summary}"
+  );
 }
 
 #[test]
