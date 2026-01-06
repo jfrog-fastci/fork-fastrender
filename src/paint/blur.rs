@@ -2979,6 +2979,21 @@ mod tests {
   }
 
   #[test]
+  fn pixel_fingerprint_is_order_sensitive() {
+    // Regression test: the blur cache fingerprint must not treat differently-ordered data as the
+    // same input, otherwise parallel tiling can reuse blurred results from the wrong tile.
+    let mut a = Vec::new();
+    a.extend_from_slice(&0x0123_4567_89AB_CDEFu64.to_le_bytes());
+    a.extend_from_slice(&0xFEDC_BA98_7654_3210u64.to_le_bytes());
+
+    let mut b = Vec::new();
+    b.extend_from_slice(&0xFEDC_BA98_7654_3210u64.to_le_bytes());
+    b.extend_from_slice(&0x0123_4567_89AB_CDEFu64.to_le_bytes());
+
+    assert_ne!(pixel_fingerprint(&a), pixel_fingerprint(&b));
+  }
+
+  #[test]
   fn fast_div_u32_matches_builtin_division() {
     for divisor in 1u32..=2048 {
       let fast = FastDivU32::new(divisor);
