@@ -3762,6 +3762,10 @@ mod tests {
   fn hybrid_tile_blur_matches_direct_output_across_rayon_thread_counts() {
     const WIDTH: u32 = 600;
     const HEIGHT: u32 = 600;
+    const SIGMA_KERNEL: f32 = 2.0;
+    const SIGMA_BOX: f32 = 8.0;
+    const SIGMA_X_MIXED: f32 = 12.0;
+    const SIGMA_Y_MIXED: f32 = 2.0;
 
     // Disable the fast blur path so sigma-dependent algorithm selection stays stable (and
     // reasonably quick) regardless of environment variables.
@@ -3791,34 +3795,40 @@ mod tests {
     );
 
     let pool = build_pool_with_toggles(1, toggles.clone());
-    let (direct_isotropic, direct_anisotropic) =
+    let (direct_kernel, direct_box, direct_anisotropic) =
       runtime::with_thread_runtime_toggles(toggles.clone(), || {
         pool.install(|| {
           let mut direct_cache = BlurCache::new(direct_config);
 
+          let mut kernel = base.clone();
+          apply_gaussian_blur_cached(&mut kernel, SIGMA_KERNEL, SIGMA_KERNEL, Some(&mut direct_cache), 1.0)
+            .unwrap();
+          let kernel = kernel.data().to_vec();
+
           let mut isotropic = base.clone();
-          apply_gaussian_blur_cached(&mut isotropic, 8.0, 8.0, Some(&mut direct_cache), 1.0)
+          apply_gaussian_blur_cached(&mut isotropic, SIGMA_BOX, SIGMA_BOX, Some(&mut direct_cache), 1.0)
             .unwrap();
           let isotropic = isotropic.data().to_vec();
 
           let mut anisotropic = base.clone();
-          apply_gaussian_blur_cached(&mut anisotropic, 12.0, 2.0, Some(&mut direct_cache), 1.0)
+          apply_gaussian_blur_cached(&mut anisotropic, SIGMA_X_MIXED, SIGMA_Y_MIXED, Some(&mut direct_cache), 1.0)
             .unwrap();
           let anisotropic = anisotropic.data().to_vec();
 
-          (Arc::new(isotropic), Arc::new(anisotropic))
+          (Arc::new(kernel), Arc::new(isotropic), Arc::new(anisotropic))
         })
       });
 
     for &threads in &[2usize, 4, 8] {
       let pool = build_pool_with_toggles(threads, toggles.clone());
       let base = base.clone();
-      let direct_isotropic = direct_isotropic.clone();
+      let direct_kernel = direct_kernel.clone();
+      let direct_box = direct_box.clone();
       let direct_anisotropic = direct_anisotropic.clone();
 
       runtime::with_thread_runtime_toggles(toggles.clone(), || {
         pool.install(|| {
-          let plan = tile_blur_plan(WIDTH, HEIGHT, 8.0, 8.0, tiled_config);
+          let plan = tile_blur_plan(WIDTH, HEIGHT, SIGMA_KERNEL, SIGMA_KERNEL, tiled_config);
           assert!(
             !plan.parallel_tiles,
             "expected hybrid tiled blur to schedule tiles serially (threads={threads} budget={} tiles={} max_tile_pixels={})",
@@ -3846,7 +3856,8 @@ mod tests {
           let mut cache = BlurCache::new(tiled_config);
           let mut pixmap = base.clone();
           enable_paint_diagnostics();
-          apply_gaussian_blur_cached(&mut pixmap, 8.0, 8.0, Some(&mut cache), 1.0).unwrap();
+          apply_gaussian_blur_cached(&mut pixmap, SIGMA_KERNEL, SIGMA_KERNEL, Some(&mut cache), 1.0)
+            .unwrap();
           let diag = take_paint_diagnostics().expect("diagnostics enabled");
           assert_eq!(
             diag.blur_tiles, plan.tiles,
@@ -3854,11 +3865,51 @@ mod tests {
           );
           assert_eq!(
             pixmap.data(),
-            direct_isotropic.as_slice(),
+            direct_kernel.as_slice(),
+            "hybrid kernel tiled blur output mismatch (threads={threads})"
+          );
+
+          let plan = tile_blur_plan(WIDTH, HEIGHT, SIGMA_BOX, SIGMA_BOX, tiled_config);
+          assert!(
+            !plan.parallel_tiles,
+            "expected hybrid tiled blur to schedule tiles serially (threads={threads} budget={} tiles={} max_tile_pixels={})",
+            blur_thread_budget(),
+            plan.tiles,
+            plan.max_tile_pixels,
+          );
+          assert!(
+            plan.max_tile_pixels >= PARALLEL_BLUR_MIN_PIXELS && plan.tiles > 1,
+            "expected tiling with large tiles (threads={threads} tiles={} max_tile_pixels={})",
+            plan.tiles,
+            plan.max_tile_pixels,
+          );
+
+          if blur_thread_budget() > 1 {
+            let edge_src_w = plan.tile_w.saturating_add(plan.pad_x).min(WIDTH);
+            let edge_src_h = plan.tile_h.saturating_add(plan.pad_y).min(HEIGHT);
+            assert!(
+              blur_should_parallelize(edge_src_w as usize, edge_src_h as usize),
+              "expected per-tile blur to parallelize (threads={threads} budget={} tile={edge_src_w}x{edge_src_h})",
+              blur_thread_budget(),
+            );
+          }
+
+          let mut cache = BlurCache::new(tiled_config);
+          let mut pixmap = base.clone();
+          enable_paint_diagnostics();
+          apply_gaussian_blur_cached(&mut pixmap, SIGMA_BOX, SIGMA_BOX, Some(&mut cache), 1.0).unwrap();
+          let diag = take_paint_diagnostics().expect("diagnostics enabled");
+          assert_eq!(
+            diag.blur_tiles, plan.tiles,
+            "expected tiled blur to report tile count (threads={threads})"
+          );
+          assert_eq!(
+            pixmap.data(),
+            direct_box.as_slice(),
             "hybrid isotropic tiled blur output mismatch (threads={threads})"
           );
 
-          let plan = tile_blur_plan(WIDTH, HEIGHT, 12.0, 2.0, tiled_config);
+          let plan = tile_blur_plan(WIDTH, HEIGHT, SIGMA_X_MIXED, SIGMA_Y_MIXED, tiled_config);
           assert!(
             !plan.parallel_tiles,
             "expected hybrid tiled blur to schedule tiles serially (threads={threads} budget={} tiles={} max_tile_pixels={})",
@@ -3876,7 +3927,8 @@ mod tests {
           let mut cache = BlurCache::new(tiled_config);
           let mut pixmap = base.clone();
           enable_paint_diagnostics();
-          apply_gaussian_blur_cached(&mut pixmap, 12.0, 2.0, Some(&mut cache), 1.0).unwrap();
+          apply_gaussian_blur_cached(&mut pixmap, SIGMA_X_MIXED, SIGMA_Y_MIXED, Some(&mut cache), 1.0)
+            .unwrap();
           let diag = take_paint_diagnostics().expect("diagnostics enabled");
           assert_eq!(
             diag.blur_tiles, plan.tiles,
