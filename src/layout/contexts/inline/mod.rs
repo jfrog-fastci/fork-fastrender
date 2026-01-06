@@ -7492,6 +7492,12 @@ fn is_kinsoku_strict_prohibited_line_start(ch: char) -> bool {
       | '\u{309E}' // ゞ
       | '\u{30FD}' // ヽ
       | '\u{30FE}' // ヾ
+      // Vertical kana repeat marks
+      | '\u{3031}' // 〱
+      | '\u{3032}' // 〲
+      | '\u{3033}' // 〳
+      | '\u{3034}' // 〴
+      | '\u{3035}' // 〵
     )
 }
 
@@ -17850,6 +17856,47 @@ mod tests {
       brk_3.kind,
       BreakOpportunityKind::Emergency,
       "breaks before iteration marks should be emergency-only under line-break: strict"
+    );
+
+    let brk_6 = result
+      .iter()
+      .find(|b| b.byte_offset == 6)
+      .expect("break at 6");
+    assert_eq!(
+      brk_6.kind,
+      BreakOpportunityKind::Normal,
+      "breaks not affected by kinsoku rules should remain normal"
+    );
+  }
+
+  #[test]
+  fn line_break_strict_downgrades_breaks_before_vertical_kana_repeat_marks_to_emergency() {
+    use crate::text::line_break::BreakOpportunityKind;
+
+    let text = "あ〱い"; // break before vertical kana repeat mark '〱' should be emergency-only in strict mode
+    let breaks = vec![
+      BreakOpportunity::allowed(3), // あ|〱
+      BreakOpportunity::allowed(6), // 〱|い
+      BreakOpportunity::allowed(9), // end
+    ];
+
+    let result = apply_break_properties(
+      text,
+      breaks,
+      LineBreak::Strict,
+      WordBreak::Normal,
+      OverflowWrap::Normal,
+      true,
+    );
+
+    let brk_3 = result
+      .iter()
+      .find(|b| b.byte_offset == 3)
+      .expect("break at 3");
+    assert_eq!(
+      brk_3.kind,
+      BreakOpportunityKind::Emergency,
+      "breaks before vertical kana repeat marks should be emergency-only under line-break: strict"
     );
 
     let brk_6 = result
