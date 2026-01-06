@@ -77,8 +77,11 @@ exit 0
 
   // Keep the template alongside the script so the shell stub can locate it without needing to
   // inject an absolute path into the heredoc.
-  fs::copy(&template_png, format!("{}.stub_screenshot.png", path.display()))
-    .expect("copy stub screenshot template PNG");
+  fs::copy(
+    &template_png,
+    format!("{}.stub_screenshot.png", path.display()),
+  )
+  .expect("copy stub screenshot template PNG");
 
   #[cfg(unix)]
   {
@@ -164,8 +167,11 @@ exit 0
   )
   .expect("write headless fallback stub chrome");
 
-  fs::copy(&template_png, format!("{}.stub_screenshot.png", path.display()))
-    .expect("copy stub screenshot template PNG");
+  fs::copy(
+    &template_png,
+    format!("{}.stub_screenshot.png", path.display()),
+  )
+  .expect("copy stub screenshot template PNG");
 
   #[cfg(unix)]
   {
@@ -429,7 +435,9 @@ fn chrome_baseline_fixtures_respects_viewport_height_pad_env_var() {
 
   let log = fs::read_to_string(out_dir.join("hello.chrome.log")).expect("read chrome log");
   assert!(
-    log.contains(&format!("--window-size={TEST_VIEWPORT_W},{expected_window_h}")),
+    log.contains(&format!(
+      "--window-size={TEST_VIEWPORT_W},{expected_window_h}"
+    )),
     "chrome args should respect HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX override; got:\n{log}"
   );
 
@@ -437,7 +445,10 @@ fn chrome_baseline_fixtures_respects_viewport_height_pad_env_var() {
     serde_json::from_slice(&fs::read(out_dir.join("hello.json")).expect("read metadata json"))
       .expect("parse metadata json");
   assert_eq!(meta["viewport"], serde_json::json!([64, 64]));
-  assert_eq!(meta["chrome_window"], serde_json::json!([64, expected_window_h]));
+  assert_eq!(
+    meta["chrome_window"],
+    serde_json::json!([64, expected_window_h])
+  );
   assert_eq!(
     meta["chrome_window_padding_css"],
     serde_json::json!(override_pad_px)

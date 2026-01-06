@@ -86,4 +86,3 @@ fn legacy_iframe_http_error_renders_html() {
   assert_eq!(calls, 1, "iframe HTML should be fetched exactly once");
   assert_iframe_renders_html_error_page(&pixmap);
 }
-

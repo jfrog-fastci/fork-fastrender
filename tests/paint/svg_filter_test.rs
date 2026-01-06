@@ -2,8 +2,8 @@ use fastrender::geometry::Rect;
 use fastrender::image_loader::ImageCache;
 use fastrender::paint::svg_filter::{apply_svg_filter, parse_svg_filter_from_svg_document};
 use resvg::usvg;
-use tiny_skia::{Pixmap, PremultipliedColorU8};
 use tiny_skia::Transform;
+use tiny_skia::{Pixmap, PremultipliedColorU8};
 
 fn empty_pixmap(width: u32, height: u32) -> Pixmap {
   let mut pixmap = Pixmap::new(width, height).expect("pixmap");
@@ -183,8 +183,8 @@ fn displacement_map_semitransparent_map_channels_match_resvg() {
 
   let expected = render_resvg(svg_filtered, 5, 5);
   let source_pixmap = render_resvg(svg_source, 5, 5);
-  let filter =
-    parse_svg_filter_from_svg_document(svg_filtered, Some("f"), &ImageCache::new()).expect("filter");
+  let filter = parse_svg_filter_from_svg_document(svg_filtered, Some("f"), &ImageCache::new())
+    .expect("filter");
   let mut actual = source_pixmap.clone();
   apply_svg_filter(
     &filter,

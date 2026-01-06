@@ -8,7 +8,8 @@ use fastrender::{FastRender, Pixmap};
 use std::fs;
 
 const HTML_PATH: &str = "tests/fixtures/html/svg_filter_background_image.html";
-const HTML_BLEND_NORMAL_PATH: &str = "tests/fixtures/html/svg_filter_blend_normal_background_image.html";
+const HTML_BLEND_NORMAL_PATH: &str =
+  "tests/fixtures/html/svg_filter_blend_normal_background_image.html";
 
 fn pixel(pixmap: &Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
   let px = pixmap.pixel(x, y).expect("pixel in bounds");

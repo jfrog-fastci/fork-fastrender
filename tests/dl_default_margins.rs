@@ -55,4 +55,3 @@ fn legacy_dl_has_default_margins() {
   let pixmap = render_with_backend("legacy");
   assert_dl_margins(&pixmap);
 }
-

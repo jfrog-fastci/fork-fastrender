@@ -57,4 +57,3 @@ fn display_list_srcset_width_descriptors_use_content_box_slot_width() {
     inside.alpha()
   );
 }
-

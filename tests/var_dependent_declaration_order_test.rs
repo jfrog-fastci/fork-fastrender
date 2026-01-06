@@ -22,9 +22,10 @@ fn recompute_var_dependent_properties_preserves_cascade_order() {
     styles.border_bottom_color = Rgba::new(0, 255, 0, 1.0);
 
     // Simulate `color` being var()-dependent and updated by a custom property change.
-    styles
-      .custom_properties
-      .insert(Arc::from("--text-color"), CustomPropertyValue::new("#ff0000", None));
+    styles.custom_properties.insert(
+      Arc::from("--text-color"),
+      CustomPropertyValue::new("#ff0000", None),
+    );
 
     // Make the border color depend on `currentcolor`, but via `var()` so it participates in the
     // var-dependent recomputation path.
@@ -57,4 +58,3 @@ fn recompute_var_dependent_properties_preserves_cascade_order() {
     assert_eq!(styles.border_bottom_color, Rgba::new(255, 0, 0, 1.0));
   }
 }
-

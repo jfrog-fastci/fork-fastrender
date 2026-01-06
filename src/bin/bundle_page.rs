@@ -2496,12 +2496,15 @@ mod tests {
         )
         .expect("cors image fetch");
 
-      assert_eq!(inner.calls(), 2, "expected inner fetcher to be invoked twice");
+      assert_eq!(
+        inner.calls(),
+        2,
+        "expected inner fetcher to be invoked twice"
+      );
 
       let snapshot = recording.snapshot();
       let origin = origin_from_url(referrer).expect("origin");
-      let partitioned =
-        request_partitioned_resource_key(FetchContextKind::ImageCors, url, &origin);
+      let partitioned = request_partitioned_resource_key(FetchContextKind::ImageCors, url, &origin);
 
       assert!(
         snapshot.contains_key(url),
@@ -2596,15 +2599,11 @@ mod tests {
 
       let snapshot = recording.snapshot();
       let origin = origin_from_url(referrer).expect("origin");
-      let partitioned =
-        request_partitioned_resource_key(FetchContextKind::ImageCors, url, &origin);
+      let partitioned = request_partitioned_resource_key(FetchContextKind::ImageCors, url, &origin);
 
       assert_eq!(snapshot.get(url).expect("url entry").bytes, b"no-cors");
       assert_eq!(
-        snapshot
-          .get(&partitioned)
-          .expect("partitioned entry")
-          .bytes,
+        snapshot.get(&partitioned).expect("partitioned entry").bytes,
         b"cors"
       );
     });

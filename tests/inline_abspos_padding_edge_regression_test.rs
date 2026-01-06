@@ -68,6 +68,9 @@ fn absolute_descendant_in_inline_flow_positions_against_padding_edge_of_position
   let red_bbox = find_exact_color_bbox(&pixmap, red).expect("expected red pixels to be painted");
 
   // Offsets resolve against the padding edge: border-left 4 + left 5 = 9; border-top 4 + top 7 = 11.
-  assert_eq!(red_bbox, (9, 11, 14, 16), "unexpected red bbox: {red_bbox:?}");
+  assert_eq!(
+    red_bbox,
+    (9, 11, 14, 16),
+    "unexpected red bbox: {red_bbox:?}"
+  );
 }
-

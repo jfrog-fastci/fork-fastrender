@@ -285,7 +285,10 @@ fn turbulence_output_is_rgba_noise() {
     }
   }
 
-  assert!(seen_non_zero_alpha, "expected at least one non-transparent pixel");
+  assert!(
+    seen_non_zero_alpha,
+    "expected at least one non-transparent pixel"
+  );
   assert!(
     seen_non_gray,
     "expected at least one pixel with non-grayscale RGB output"
@@ -647,7 +650,13 @@ fn turbulence_missing_basefrequency_defaults_to_zero() {
 
   let cache = ImageCache::new();
   let expected = cache
-    .render_svg_pixmap_at_size(svg, 8, 8, "test://turbulence_missing_basefrequency_expected", 1.0)
+    .render_svg_pixmap_at_size(
+      svg,
+      8,
+      8,
+      "test://turbulence_missing_basefrequency_expected",
+      1.0,
+    )
     .expect("render via resvg");
 
   let filter = parse_svg_filter_from_svg_document(svg, Some("f"), &cache).expect("filter");

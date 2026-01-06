@@ -248,14 +248,10 @@ fn flex_column_item_positions_respect_order_modified_document_order() {
     LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
   let fragment = fc.layout(&flex, &constraints).expect("layout succeeds");
 
-  let b_fragment =
-    find_child_by_id(&fragment, b.id).unwrap_or_else(|| panic!("missing B child"));
-  let a_fragment =
-    find_child_by_id(&fragment, a.id).unwrap_or_else(|| panic!("missing A child"));
-  let c_fragment =
-    find_child_by_id(&fragment, c.id).unwrap_or_else(|| panic!("missing C child"));
-  let d_fragment =
-    find_child_by_id(&fragment, d.id).unwrap_or_else(|| panic!("missing D child"));
+  let b_fragment = find_child_by_id(&fragment, b.id).unwrap_or_else(|| panic!("missing B child"));
+  let a_fragment = find_child_by_id(&fragment, a.id).unwrap_or_else(|| panic!("missing A child"));
+  let c_fragment = find_child_by_id(&fragment, c.id).unwrap_or_else(|| panic!("missing C child"));
+  let d_fragment = find_child_by_id(&fragment, d.id).unwrap_or_else(|| panic!("missing D child"));
 
   assert!(
     (b_fragment.bounds.y() - 0.0).abs() < 1e-3,

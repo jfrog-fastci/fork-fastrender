@@ -72,4 +72,3 @@ fn absolute_static_position_respects_collapsed_vertical_margins() {
     "unexpected green bbox: {green_bbox:?}"
   );
 }
-

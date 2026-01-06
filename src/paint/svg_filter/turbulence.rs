@@ -176,8 +176,8 @@ pub(super) fn render_turbulence(
         )
       }
     };
-    let constant = PremultipliedColorU8::from_rgba(r, g, b, a)
-      .unwrap_or(PremultipliedColorU8::TRANSPARENT);
+    let constant =
+      PremultipliedColorU8::from_rgba(r, g, b, a).unwrap_or(PremultipliedColorU8::TRANSPARENT);
 
     let row_len = output_width as usize;
     let start_x = region.x as usize;
@@ -399,8 +399,8 @@ impl TurbulenceTables {
             ((seed % (B_SIZE_I32 + B_SIZE_I32)) - B_SIZE_I32) as f64 / B_SIZE_I32 as f64;
         }
 
-        let s = (gradient[k][i][0] * gradient[k][i][0] + gradient[k][i][1] * gradient[k][i][1])
-          .sqrt();
+        let s =
+          (gradient[k][i][0] * gradient[k][i][0] + gradient[k][i][1] * gradient[k][i][1]).sqrt();
         gradient[k][i][0] /= s;
         gradient[k][i][1] /= s;
       }

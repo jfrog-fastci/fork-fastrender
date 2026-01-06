@@ -237,7 +237,8 @@ fn view_timeline_animation_range_exit_length_offsets_map_to_scroll_positions() -
         .with_scroll(0.0, scroll_y)
         .with_background(Rgba::new(0, 0, 0, 1.0)),
     )?;
-    let (sx, sy) = sample_point_in_rect(target_rect, 0.0, scroll_y, viewport_width, viewport_height);
+    let (sx, sy) =
+      sample_point_in_rect(target_rect, 0.0, scroll_y, viewport_width, viewport_height);
     let (r, g, b, a) = pixel(&pixmap, sx, sy);
     assert_eq!(a, 255, "expected fully opaque output pixel");
     let expected = (expected_progress.clamp(0.0, 1.0) * 255.0).round() as i32;

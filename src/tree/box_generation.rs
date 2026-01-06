@@ -4495,7 +4495,12 @@ mod tests {
       2,
       "contents element should not create a box"
     );
-    let styled_ids: Vec<_> = tree.root.children.iter().map(|c| c.styled_node_id).collect();
+    let styled_ids: Vec<_> = tree
+      .root
+      .children
+      .iter()
+      .map(|c| c.styled_node_id)
+      .collect();
     assert_eq!(styled_ids, vec![Some(3), Some(4)]);
   }
 

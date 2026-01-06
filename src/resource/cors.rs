@@ -103,8 +103,11 @@ mod tests {
   fn allows_null_origin_for_anonymous_non_http_documents() {
     let doc_origin = origin_from_url("file:///fixture.html").expect("origin");
     let url = "https://example.com/image.png";
-    let mut resource =
-      FetchedResource::with_final_url(vec![1, 2, 3], Some("image/png".to_string()), Some(url.to_string()));
+    let mut resource = FetchedResource::with_final_url(
+      vec![1, 2, 3],
+      Some("image/png".to_string()),
+      Some(url.to_string()),
+    );
     resource.access_control_allow_origin = Some("null".to_string());
 
     validate_cors_allow_origin(&resource, url, &doc_origin, CorsMode::Anonymous)
@@ -115,8 +118,11 @@ mod tests {
   fn requires_allow_credentials_for_credentialed_null_origin() {
     let doc_origin = origin_from_url("file:///fixture.html").expect("origin");
     let url = "https://example.com/image.png";
-    let mut resource =
-      FetchedResource::with_final_url(vec![1, 2, 3], Some("image/png".to_string()), Some(url.to_string()));
+    let mut resource = FetchedResource::with_final_url(
+      vec![1, 2, 3],
+      Some("image/png".to_string()),
+      Some(url.to_string()),
+    );
     resource.access_control_allow_origin = Some("null".to_string());
     resource.access_control_allow_credentials = false;
 

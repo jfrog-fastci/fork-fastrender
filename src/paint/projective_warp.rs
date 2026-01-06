@@ -86,7 +86,10 @@ pub fn warp_cache_key(
     *out = v.to_bits();
   }
 
-  if dst_quad.iter().any(|(x, y)| !x.is_finite() || !y.is_finite()) {
+  if dst_quad
+    .iter()
+    .any(|(x, y)| !x.is_finite() || !y.is_finite())
+  {
     return None;
   }
   if quad_area(dst_quad).abs() < 1e-3 {
@@ -633,9 +636,15 @@ mod tests {
     .expect("warp result")
     .expect("warp output");
 
-    let expected = warp_pixmap(&src, &Homography::identity(), &dst_quad, (4, 4), Some(&mask))
-      .expect("warp result")
-      .expect("warp output");
+    let expected = warp_pixmap(
+      &src,
+      &Homography::identity(),
+      &dst_quad,
+      (4, 4),
+      Some(&mask),
+    )
+    .expect("warp result")
+    .expect("warp output");
 
     assert_eq!(second.offset, expected.offset);
     assert_eq!(second.pixmap.data(), expected.pixmap.data());

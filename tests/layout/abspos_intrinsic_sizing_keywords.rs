@@ -129,4 +129,3 @@ fn abspos_width_fit_content_clamps_to_available_between_insets() {
     "abspos width:fit-content should clamp to available size between insets",
   );
 }
-

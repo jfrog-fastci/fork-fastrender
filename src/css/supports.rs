@@ -111,19 +111,31 @@ mod tests {
     assert!(supports_declaration("animation-duration", "auto"));
     assert!(supports_declaration("animation-duration", "1s"));
     assert!(supports_declaration("animation-duration", "auto, 2s"));
-    assert!(supports_declaration("animation-duration", "calc(1s + 500ms)"));
+    assert!(supports_declaration(
+      "animation-duration",
+      "calc(1s + 500ms)"
+    ));
 
     assert!(supports_declaration("-webkit-animation-duration", "auto"));
     assert!(supports_declaration("-webkit-animation-duration", "1s"));
-    assert!(supports_declaration("-webkit-animation-duration", "auto, 2s"));
-    assert!(supports_declaration("-webkit-animation-duration", "calc(1s + 500ms)"));
+    assert!(supports_declaration(
+      "-webkit-animation-duration",
+      "auto, 2s"
+    ));
+    assert!(supports_declaration(
+      "-webkit-animation-duration",
+      "calc(1s + 500ms)"
+    ));
 
     assert!(!supports_declaration("animation-duration", "bogus"));
     assert!(!supports_declaration("animation-duration", "auto 2s"));
     assert!(!supports_declaration("animation-duration", "1s,"));
 
     assert!(!supports_declaration("-webkit-animation-duration", "bogus"));
-    assert!(!supports_declaration("-webkit-animation-duration", "auto 2s"));
+    assert!(!supports_declaration(
+      "-webkit-animation-duration",
+      "auto 2s"
+    ));
     assert!(!supports_declaration("-webkit-animation-duration", "1s,"));
   }
 

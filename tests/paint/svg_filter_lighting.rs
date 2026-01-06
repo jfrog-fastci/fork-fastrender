@@ -46,8 +46,8 @@ fn make_bump_map_pixmap(width: u32, height: u32) -> Pixmap {
       let mut alpha = xf * 180.0 + yf * 40.0;
       let dx = x as f32 - bump_cx;
       let dy = y as f32 - bump_cy;
-      let bump =
-        90.0 * (-((dx * dx) / (2.0 * sigma_x * sigma_x) + (dy * dy) / (2.0 * sigma_y * sigma_y))).exp();
+      let bump = 90.0
+        * (-((dx * dx) / (2.0 * sigma_x * sigma_x) + (dy * dy) / (2.0 * sigma_y * sigma_y))).exp();
       alpha += bump;
 
       let a = alpha.round().clamp(0.0, 255.0) as u8;
@@ -515,7 +515,10 @@ fn kernel_unit_length_changes_lighting_output() {
     .iter()
     .zip(widened.data())
     .any(|(a, b)| a != b);
-  assert!(changed, "expected kernelUnitLength to affect surface normals");
+  assert!(
+    changed,
+    "expected kernelUnitLength to affect surface normals"
+  );
 }
 
 #[test]
@@ -704,7 +707,10 @@ fn diffuse_lighting_regression_premultiply_and_normal_sign() {
   apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
   let actual = center_pixel(&pixmap);
 
-  assert_eq!(actual, expected, "FastRender lighting must match resvg output");
+  assert_eq!(
+    actual, expected,
+    "FastRender lighting must match resvg output"
+  );
 }
 
 fn render_resvg(svg: &str, width: u32, height: u32) -> Pixmap {
@@ -813,12 +819,19 @@ fn specular_lighting_output_alpha_matches_resvg_for_intensity() {
 
   let filter =
     parse_svg_filter_from_svg_document(svg, Some("f"), &ImageCache::new()).expect("filter");
-  let mut pixmap = solid_pixmap(10, 10, PremultipliedColorU8::from_rgba(255, 255, 255, 255).unwrap());
+  let mut pixmap = solid_pixmap(
+    10,
+    10,
+    PremultipliedColorU8::from_rgba(255, 255, 255, 255).unwrap(),
+  );
   let bbox = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
   apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
   let actual = center_pixel(&pixmap);
 
-  assert_eq!(actual, expected, "FastRender lighting must match resvg output");
+  assert_eq!(
+    actual, expected,
+    "FastRender lighting must match resvg output"
+  );
 }
 
 #[test]
@@ -847,7 +860,10 @@ fn specular_lighting_transparent_input_matches_resvg() {
   apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
   let actual = center_pixel(&pixmap);
 
-  assert_eq!(actual, expected, "FastRender lighting must match resvg output");
+  assert_eq!(
+    actual, expected,
+    "FastRender lighting must match resvg output"
+  );
 }
 
 #[test]

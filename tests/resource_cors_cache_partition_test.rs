@@ -1,9 +1,9 @@
 use fastrender::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
+#[cfg(feature = "disk_cache")]
+use fastrender::resource::DiskCachingFetcher;
 use fastrender::resource::{
   CachingFetcher, FetchDestination, FetchRequest, HttpFetcher, ResourceFetcher,
 };
-#[cfg(feature = "disk_cache")]
-use fastrender::resource::DiskCachingFetcher;
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -16,7 +16,12 @@ use url::Url;
 fn try_bind_localhost(context: &str) -> Option<TcpListener> {
   match TcpListener::bind("127.0.0.1:0") {
     Ok(listener) => Some(listener),
-    Err(err) if matches!(err.kind(), io::ErrorKind::PermissionDenied | io::ErrorKind::AddrNotAvailable) => {
+    Err(err)
+      if matches!(
+        err.kind(),
+        io::ErrorKind::PermissionDenied | io::ErrorKind::AddrNotAvailable
+      ) =>
+    {
       eprintln!("skipping {context}: cannot bind localhost in this environment: {err}");
       None
     }
@@ -141,16 +146,14 @@ fn wait_for_hits(server: &OriginEchoServer, expected: usize, context: &str) {
   // Give the accept loop a brief chance to observe any additional requests so we don't race
   // against the non-blocking server thread.
   thread::sleep(Duration::from_millis(10));
-  assert_eq!(
-    server.hits.load(Ordering::SeqCst),
-    expected,
-    "{context}"
-  );
+  assert_eq!(server.hits.load(Ordering::SeqCst), expected, "{context}");
 }
 
 #[test]
 fn in_memory_cache_partitions_cors_mode_by_request_origin_when_enforced() {
-  let Some(server) = OriginEchoServer::start("in_memory_cache_partitions_cors_mode_by_request_origin_when_enforced") else {
+  let Some(server) =
+    OriginEchoServer::start("in_memory_cache_partitions_cors_mode_by_request_origin_when_enforced")
+  else {
     return;
   };
 
@@ -190,9 +193,9 @@ fn in_memory_cache_partitions_cors_mode_by_request_origin_when_enforced() {
 
 #[test]
 fn in_memory_cache_does_not_partition_cors_mode_by_origin_when_not_enforced() {
-  let Some(server) =
-    OriginEchoServer::start("in_memory_cache_does_not_partition_cors_mode_by_origin_when_not_enforced")
-  else {
+  let Some(server) = OriginEchoServer::start(
+    "in_memory_cache_does_not_partition_cors_mode_by_origin_when_not_enforced",
+  ) else {
     return;
   };
 
@@ -235,7 +238,9 @@ fn in_memory_cache_does_not_partition_cors_mode_by_origin_when_not_enforced() {
 #[cfg(feature = "disk_cache")]
 #[test]
 fn disk_cache_partitions_cors_mode_by_request_origin_when_enforced() {
-  let Some(server) = OriginEchoServer::start("disk_cache_partitions_cors_mode_by_request_origin_when_enforced") else {
+  let Some(server) =
+    OriginEchoServer::start("disk_cache_partitions_cors_mode_by_request_origin_when_enforced")
+  else {
     return;
   };
 

@@ -3187,12 +3187,8 @@ pub(crate) const COMPAT_VIDEO_SRC_DATA_ATTR_CANDIDATES: [&str; 5] = [
   "data-url",
 ];
 
-pub(crate) const COMPAT_AUDIO_SRC_DATA_ATTR_CANDIDATES: [&str; 4] = [
-  "data-audio-src",
-  "data-audio-url",
-  "data-src",
-  "data-url",
-];
+pub(crate) const COMPAT_AUDIO_SRC_DATA_ATTR_CANDIDATES: [&str; 4] =
+  ["data-audio-src", "data-audio-url", "data-src", "data-url"];
 
 pub(crate) const COMPAT_VIDEO_POSTER_DATA_ATTR_CANDIDATES: [&str; 5] = [
   "data-poster",
@@ -3314,7 +3310,15 @@ fn apply_dom_compatibility_mutations(
         }
         serde_json::Value::Array(values) => values.iter().find_map(extract),
         serde_json::Value::Object(map) => {
-          const PRIORITY_KEYS: [&str; 7] = ["url", "src", "poster", "href", "poster_url", "posterUrl", "imageUrl"];
+          const PRIORITY_KEYS: [&str; 7] = [
+            "url",
+            "src",
+            "poster",
+            "href",
+            "poster_url",
+            "posterUrl",
+            "imageUrl",
+          ];
           for key in PRIORITY_KEYS {
             if let Some(value) = map.get(key) {
               if let Some(url) = extract(value) {

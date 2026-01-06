@@ -2681,11 +2681,7 @@ pub trait ResourceFetcher: Send + Sync {
   ///
   /// This mirrors [`ResourceFetcher::remove_cache_artifact`] but allows implementations to
   /// incorporate request metadata (e.g. the initiating document origin) into their cache keys.
-  fn remove_cache_artifact_with_request(
-    &self,
-    req: FetchRequest<'_>,
-    artifact: CacheArtifactKind,
-  ) {
+  fn remove_cache_artifact_with_request(&self, req: FetchRequest<'_>, artifact: CacheArtifactKind) {
     self.remove_cache_artifact(req.destination.into(), req.url, artifact);
   }
 }
@@ -11619,7 +11615,8 @@ mod tests {
 
   #[test]
   fn http_fetcher_sets_image_cors_origin_null_for_file_referrer() {
-    let Some(listener) = try_bind_localhost("http_fetcher_sets_image_cors_origin_null_for_file_referrer")
+    let Some(listener) =
+      try_bind_localhost("http_fetcher_sets_image_cors_origin_null_for_file_referrer")
     else {
       return;
     };
@@ -11651,7 +11648,9 @@ mod tests {
     let url = format!("http://{}/asset.png", addr);
     let referrer = "file:///fixture.html";
     let res = fetcher
-      .fetch_with_request(FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer(referrer))
+      .fetch_with_request(
+        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer(referrer),
+      )
       .expect("fetch image cors");
     handle.join().unwrap();
 

@@ -1460,9 +1460,13 @@ esac
   let chrome_dir = temp.path().join("chrome-bin");
   fs::create_dir_all(&chrome_dir).expect("create chrome dir");
   let template_png = chrome_dir.join("stub_screenshot.png");
-  image::DynamicImage::ImageRgba8(ImageBuffer::from_pixel(64, 64 + 88, Rgba([255, 0, 255, 255])))
-    .save_with_format(&template_png, image::ImageFormat::Png)
-    .expect("write stub screenshot template png");
+  image::DynamicImage::ImageRgba8(ImageBuffer::from_pixel(
+    64,
+    64 + 88,
+    Rgba([255, 0, 255, 255]),
+  ))
+  .save_with_format(&template_png, image::ImageFormat::Png)
+  .expect("write stub screenshot template png");
   let fake_chrome = chrome_dir.join("chrome");
   fs::write(
     &fake_chrome,
@@ -1488,8 +1492,11 @@ exit 0
   )
   .expect("write fake chrome");
   make_executable(&fake_chrome);
-  fs::copy(&template_png, format!("{}.stub_screenshot.png", fake_chrome.display()))
-    .expect("copy template png for fake chrome");
+  fs::copy(
+    &template_png,
+    format!("{}.stub_screenshot.png", fake_chrome.display()),
+  )
+  .expect("copy template png for fake chrome");
 
   let path_var = std::env::var_os("PATH").unwrap_or_default();
   let mut paths = vec![bin_dir];

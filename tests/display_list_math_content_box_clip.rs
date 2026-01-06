@@ -48,4 +48,3 @@ fn display_list_math_is_clipped_to_content_box() {
     "expected math glyph overflow to be clipped (red pixels in padding={padding_red})"
   );
 }
-

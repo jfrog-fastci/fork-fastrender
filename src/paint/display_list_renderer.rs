@@ -1960,12 +1960,7 @@ fn apply_clip_mask_rect(
 
         // Match `fill_rounded_rect` semantics (anti-aliased) without allocating an intermediate
         // RGBA pixmap or converting it to a mask.
-        mask.fill_path(
-          &path,
-          tiny_skia::FillRule::Winding,
-          true,
-          fill_transform,
-        );
+        mask.fill_path(&path, tiny_skia::FillRule::Winding, true, fill_transform);
       }
 
       if let Some(dirty) = dirty {
@@ -2104,7 +2099,11 @@ fn apply_clip_mask_rect_transformed(
   // Fast path: fully outside the pixmap bounds.
   let right = clip_rect.x() + clip_rect.width();
   let bottom = clip_rect.y() + clip_rect.height();
-  if right <= 0.0 || bottom <= 0.0 || clip_rect.x() >= width as f32 || clip_rect.y() >= height as f32 {
+  if right <= 0.0
+    || bottom <= 0.0
+    || clip_rect.x() >= width as f32
+    || clip_rect.y() >= height as f32
+  {
     pixmap.data_mut().fill(0);
     record(timer);
     return Ok(());
@@ -2151,12 +2150,7 @@ fn apply_clip_mask_rect_transformed(
           return Ok(false);
         };
 
-        mask.fill_path(
-          &path,
-          tiny_skia::FillRule::Winding,
-          true,
-          transform,
-        );
+        mask.fill_path(&path, tiny_skia::FillRule::Winding, true, transform);
       }
 
       if let Some(dirty) = dirty {
@@ -3403,7 +3397,8 @@ fn collect_scene_items(
         return None;
       }
 
-      let filter_outset = filter_outset_with_bounds(&node.context.filters, 1.0, Some(node.context.bounds));
+      let filter_outset =
+        filter_outset_with_bounds(&node.context.filters, 1.0, Some(node.context.bounds));
       let expanded = Rect::from_xywh(
         bounds.x() - filter_outset.left,
         bounds.y() - filter_outset.top,
@@ -4272,7 +4267,8 @@ impl DisplayListRenderer {
 
       let mut deadline_counter = 0usize;
       for (y, &iy) in ys.iter().enumerate() {
-        check_active_periodic(&mut deadline_counter, 128, RenderStage::Paint).map_err(Error::Render)?;
+        check_active_periodic(&mut deadline_counter, 128, RenderStage::Paint)
+          .map_err(Error::Render)?;
         let row_src = iy as usize * src_stride;
         let row_dst = y * dst_stride;
         for (x, &ix) in xs.iter().enumerate() {
@@ -4791,7 +4787,8 @@ impl DisplayListRenderer {
       let dst_stride = tmp_w as usize * 4;
       let mut deadline_counter = 0usize;
       for (y, &sy) in ys.iter().enumerate() {
-        check_active_periodic(&mut deadline_counter, 128, RenderStage::Paint).map_err(Error::Render)?;
+        check_active_periodic(&mut deadline_counter, 128, RenderStage::Paint)
+          .map_err(Error::Render)?;
         let src_row = sy as usize * src_stride;
         let dst_row = y * dst_stride;
         for (x, &sx) in xs.iter().enumerate() {
@@ -7438,7 +7435,10 @@ impl DisplayListRenderer {
     width.saturating_mul(height)
   }
 
-  fn should_rasterize_preserve_3d_planes_parallel(&self, scene_items: &[Preserve3dSceneItem]) -> bool {
+  fn should_rasterize_preserve_3d_planes_parallel(
+    &self,
+    scene_items: &[Preserve3dSceneItem],
+  ) -> bool {
     if scene_items.len() < 2 {
       return false;
     }
@@ -7459,7 +7459,8 @@ impl DisplayListRenderer {
 
     let mut total_pixels = 0u64;
     for item in scene_items {
-      total_pixels = total_pixels.saturating_add(self.estimate_preserve_3d_plane_pixels(item.bounds));
+      total_pixels =
+        total_pixels.saturating_add(self.estimate_preserve_3d_plane_pixels(item.bounds));
     }
 
     scene_items.len() >= PRESERVE_3D_PLANE_PARALLEL_MIN_PLANES
@@ -8998,8 +8999,8 @@ impl DisplayListRenderer {
         let layer_transform_for_canvas = local_skia_transform.map(|t| {
           let mut layer_transform = parent_transform.post_concat(t);
           if needs_layer && layer_origin != (0, 0) {
-            layer_transform = layer_transform
-              .post_translate(-(layer_origin.0 as f32), -(layer_origin.1 as f32));
+            layer_transform =
+              layer_transform.post_translate(-(layer_origin.0 as f32), -(layer_origin.1 as f32));
           }
           layer_transform
         });
@@ -10421,10 +10422,12 @@ impl DisplayListRenderer {
           dest_rect.width(),
           dest_rect.height(),
         ) {
-          self
-            .canvas
-            .pixmap_mut()
-            .fill_rect(skia_rect, &paint, canvas_transform, clip_mask.as_ref());
+          self.canvas.pixmap_mut().fill_rect(
+            skia_rect,
+            &paint,
+            canvas_transform,
+            clip_mask.as_ref(),
+          );
         }
         self.record_background_paint(background_timer);
         return Ok(());
@@ -10472,7 +10475,11 @@ impl DisplayListRenderer {
             let src_x = rel_x / pattern_scale_x - 0.5;
             let ix = (src_x + 0.5).floor() as i64;
             let ix = ix.rem_euclid(src_w_i64) as u32;
-            xs.push(AxisSample { i0: ix, i1: ix, t: 0.0 });
+            xs.push(AxisSample {
+              i0: ix,
+              i1: ix,
+              t: 0.0,
+            });
           }
           for y in 0..tmp_h {
             let dy = (y0_u32 + y) as f64 + 0.5;
@@ -10481,7 +10488,11 @@ impl DisplayListRenderer {
             let src_y = rel_y / pattern_scale_y - 0.5;
             let iy = (src_y + 0.5).floor() as i64;
             let iy = iy.rem_euclid(src_h_i64) as u32;
-            ys.push(AxisSample { i0: iy, i1: iy, t: 0.0 });
+            ys.push(AxisSample {
+              i0: iy,
+              i1: iy,
+              t: 0.0,
+            });
           }
         }
         ImageFilterQuality::Linear => {
@@ -10522,7 +10533,8 @@ impl DisplayListRenderer {
 
       let mut deadline_counter = 0usize;
       for (y, ysamp) in ys.iter().enumerate() {
-        check_active_periodic(&mut deadline_counter, 128, RenderStage::Paint).map_err(Error::Render)?;
+        check_active_periodic(&mut deadline_counter, 128, RenderStage::Paint)
+          .map_err(Error::Render)?;
         let row_dst = y * dst_stride;
         let row0 = ysamp.i0 as usize * src_stride;
         let row1 = ysamp.i1 as usize * src_stride;
@@ -13133,7 +13145,10 @@ mod tests {
         mask: None,
       }));
       for _ in 0..160 {
-        list.push(DisplayItem::FillRect(FillRectItem { rect: bounds, color }));
+        list.push(DisplayItem::FillRect(FillRectItem {
+          rect: bounds,
+          color,
+        }));
       }
       list.push(DisplayItem::PopStackingContext);
     }
@@ -15926,8 +15941,13 @@ mod tests {
     list.push(DisplayItem::PopStackingContext);
 
     let report = renderer.render_with_report(&list).unwrap();
-    assert_eq!(report.layer_allocations, 1, "expected exactly one isolated layer allocation");
-    let full_canvas_bytes = u64::from(SIZE).saturating_mul(u64::from(SIZE)).saturating_mul(4);
+    assert_eq!(
+      report.layer_allocations, 1,
+      "expected exactly one isolated layer allocation"
+    );
+    let full_canvas_bytes = u64::from(SIZE)
+      .saturating_mul(u64::from(SIZE))
+      .saturating_mul(4);
     assert!(
       report.layer_alloc_bytes < full_canvas_bytes / 4,
       "expected backdrop-filter to allocate a bounded layer; got {} bytes for a {}-byte canvas",

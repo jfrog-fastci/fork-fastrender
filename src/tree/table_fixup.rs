@@ -102,7 +102,10 @@ const TABLE_FIXUP_DEADLINE_STRIDE: usize = 256;
 impl TableStructureFixer {
   fn is_passthrough_child(box_node: &BoxNode) -> bool {
     box_node.style.running_position.is_some()
-      || matches!(box_node.style.position, Position::Absolute | Position::Fixed)
+      || matches!(
+        box_node.style.position,
+        Position::Absolute | Position::Fixed
+      )
   }
 
   /// Fixes up a table box tree, including caption wrappers.
@@ -1470,7 +1473,11 @@ mod tests {
     let mut running_style = ComputedStyle::default();
     running_style.display = Display::Block;
     running_style.running_position = Some("header".to_string());
-    let running = BoxNode::new_block(Arc::new(running_style), FormattingContextType::Block, vec![]);
+    let running = BoxNode::new_block(
+      Arc::new(running_style),
+      FormattingContextType::Block,
+      vec![],
+    );
 
     let mut abs_style = ComputedStyle::default();
     abs_style.display = Display::Block;

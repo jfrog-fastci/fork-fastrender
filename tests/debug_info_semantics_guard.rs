@@ -63,11 +63,7 @@ fn debug_info_semantics_guard() {
     for (label, pattern) in &forbidden {
       for mat in pattern.find_iter(&contents) {
         let line_idx = contents[..mat.start()].lines().count();
-        let line = contents
-          .lines()
-          .nth(line_idx)
-          .unwrap_or_default()
-          .trim();
+        let line = contents.lines().nth(line_idx).unwrap_or_default().trim();
         violations.push(format!(
           "{}:{}: {}: {}",
           rel_path.display(),

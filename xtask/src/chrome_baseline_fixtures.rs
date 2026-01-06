@@ -341,7 +341,10 @@ fn render_fixture(
   let chrome_window_meta: Option<((u32, u32), u32)> = match args.media {
     MediaMode::Screen => {
       let pad_px = headless_window_viewport_height_pad_px()?;
-      Some(((args.viewport.0, args.viewport.1.saturating_add(pad_px)), pad_px))
+      Some((
+        (args.viewport.0, args.viewport.1.saturating_add(pad_px)),
+        pad_px,
+      ))
     }
     MediaMode::Print => None,
   };

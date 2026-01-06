@@ -15,10 +15,9 @@ fn recompute_var_dependent_properties_resolves_line_height_lengths() {
   styles.font_size = 10.0;
   styles.root_font_size = 10.0;
 
-  styles.custom_properties.insert(
-    Arc::from("--lh"),
-    CustomPropertyValue::new("2em", None),
-  );
+  styles
+    .custom_properties
+    .insert(Arc::from("--lh"), CustomPropertyValue::new("2em", None));
 
   let mut deps = HashMap::new();
   deps.insert(
@@ -35,9 +34,11 @@ fn recompute_var_dependent_properties_resolves_line_height_lengths() {
   match styles.line_height {
     LineHeight::Length(len) => {
       assert_eq!(len.unit, LengthUnit::Px);
-      assert!((len.value - 20.0).abs() < 0.01, "expected 20px, got {len:?}");
+      assert!(
+        (len.value - 20.0).abs() < 0.01,
+        "expected 20px, got {len:?}"
+      );
     }
     other => panic!("expected LineHeight::Length after recompute, got {other:?}"),
   }
 }
-

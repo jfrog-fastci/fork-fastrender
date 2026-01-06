@@ -909,7 +909,7 @@ impl BlockFormattingContext {
       AvailableSpace::Definite(computed_width.content_width),
       child_height_space,
     );
- 
+
     // Check if this child establishes a different formatting context
     let fc_type = child.formatting_context();
     let log_flex_child = toggles.truthy("FASTR_LOG_FLEX_CHILD");
@@ -1368,7 +1368,7 @@ impl BlockFormattingContext {
       max_height
     };
     let height = crate::layout::utils::clamp_with_order(height, min_height, max_height);
- 
+
     // Create the fragment
     let box_height = border_top + padding_top + height + padding_bottom + border_bottom;
     let box_width = computed_width.border_box_width();
@@ -1477,9 +1477,7 @@ impl BlockFormattingContext {
         }
         let is_replaced = pos_child.is_replaced();
         let needs_inline_intrinsics = (positioned_style.width.is_auto()
-          && (positioned_style.left.is_auto()
-            || positioned_style.right.is_auto()
-            || is_replaced))
+          && (positioned_style.left.is_auto() || positioned_style.right.is_auto() || is_replaced))
           || original_style.width_keyword.is_some()
           || original_style.min_width_keyword.is_some()
           || original_style.max_width_keyword.is_some();
@@ -5083,7 +5081,7 @@ impl FormattingContext for BlockFormattingContext {
       height + padding_top + padding_bottom,
     );
     let padding_rect = Rect::new(padding_origin, padding_size);
- 
+
     if !positioned_children.is_empty() {
       let abs = crate::layout::absolute_positioning::AbsoluteLayout::with_font_context(
         self.font_context.clone(),
@@ -5170,9 +5168,7 @@ impl FormattingContext for BlockFormattingContext {
         }
         let is_replaced = child.is_replaced();
         let needs_inline_intrinsics = (positioned_style.width.is_auto()
-          && (positioned_style.left.is_auto()
-            || positioned_style.right.is_auto()
-            || is_replaced))
+          && (positioned_style.left.is_auto() || positioned_style.right.is_auto() || is_replaced))
           || original_style.width_keyword.is_some()
           || original_style.min_width_keyword.is_some()
           || original_style.max_width_keyword.is_some();
@@ -6452,7 +6448,9 @@ mod tests {
       vec![child.clone()],
     );
 
-    let fragment = fc.layout(&parent, &LayoutConstraints::definite_width(80.0)).unwrap();
+    let fragment = fc
+      .layout(&parent, &LayoutConstraints::definite_width(80.0))
+      .unwrap();
     assert!(
       (fragment.bounds.width() - 80.0).abs() < 0.5,
       "expected parent width to be 80px, got {:.2}",
@@ -7994,10 +7992,7 @@ mod tests {
       IntrinsicSizingMode::MaxContent,
       0.0,
     );
-    crate::layout::formatting_context::remembered_size_cache_store(
-      &node,
-      Size::new(123.0, 456.0),
-    );
+    crate::layout::formatting_context::remembered_size_cache_store(&node, Size::new(123.0, 456.0));
 
     let bfc = BlockFormattingContext::new();
     let (min, max) = bfc.compute_intrinsic_inline_sizes(&node).unwrap();

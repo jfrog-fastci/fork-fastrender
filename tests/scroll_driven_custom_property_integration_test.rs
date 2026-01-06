@@ -63,9 +63,8 @@ fn scroll_driven_custom_property_does_not_clobber_late_border_overrides() -> Res
 #[test]
 fn scroll_driven_custom_property_recomputes_logical_properties() -> Result<()> {
   let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-  let fixture_path = repo_root.join(
-    "tests/pages/fixtures/scroll_driven_custom_property_logical_border/index.html",
-  );
+  let fixture_path =
+    repo_root.join("tests/pages/fixtures/scroll_driven_custom_property_logical_border/index.html");
   let html = fs::read_to_string(&fixture_path)
     .unwrap_or_else(|e| panic!("read fixture {}: {e}", fixture_path.display()));
 

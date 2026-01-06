@@ -55,7 +55,7 @@ mod tests {
   use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
   use std::collections::HashMap;
   use std::sync::Arc;
- 
+
   #[test]
   fn reset_best_effort_supports_dedicated_paint_pool() {
     // Use a thread-local runtime toggle override so parallel tests aren't affected.
@@ -64,7 +64,10 @@ mod tests {
     let toggles = Arc::new(RuntimeToggles::from_map(raw));
 
     // Call inside a custom pool to avoid touching the global Rayon pool in unit tests.
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+    let pool = rayon::ThreadPoolBuilder::new()
+      .num_threads(2)
+      .build()
+      .unwrap();
     with_thread_runtime_toggles(toggles, || {
       pool.install(|| {
         reset_paint_scratch_best_effort();

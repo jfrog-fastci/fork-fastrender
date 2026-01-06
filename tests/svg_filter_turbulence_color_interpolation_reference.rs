@@ -165,14 +165,7 @@ fn turbulence_respects_color_interpolation_filters_reference_base_frequency_zero
 
 #[test]
 fn turbulence_respects_primitive_color_interpolation_filters_override_reference() {
-  let svg_override = svg_turbulence(
-    Some("linearRGB"),
-    Some("sRGB"),
-    "0",
-    1,
-    0,
-    "fractalNoise",
-  );
+  let svg_override = svg_turbulence(Some("linearRGB"), Some("sRGB"), "0", 1, 0, "fractalNoise");
 
   let resvg = render_with_resvg(&svg_override);
   let fastr = render_with_fastrender(&svg_override);

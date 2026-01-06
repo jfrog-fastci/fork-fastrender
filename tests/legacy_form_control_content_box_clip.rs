@@ -53,4 +53,3 @@ fn legacy_form_control_text_is_clipped_to_content_box() {
     "expected form control text overflow to be clipped (red pixels in padding={padding_red})"
   );
 }
-

@@ -1,5 +1,6 @@
 use fastrender::debug::runtime::{
-  set_thread_runtime_toggles, with_thread_runtime_toggles, RuntimeToggles, ThreadRuntimeTogglesGuard,
+  set_thread_runtime_toggles, with_thread_runtime_toggles, RuntimeToggles,
+  ThreadRuntimeTogglesGuard,
 };
 use fastrender::image_loader::ImageCache;
 use fastrender::paint::display_list::{DisplayItem, DisplayList, ResolvedFilter};
@@ -32,15 +33,16 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 }
 
 fn first_byte_diff(expected: &[u8], actual: &[u8]) -> Option<usize> {
-  expected
-    .iter()
-    .zip(actual.iter())
-    .position(|(a, b)| a != b)
+  expected.iter().zip(actual.iter()).position(|(a, b)| a != b)
 }
 
 fn format_diff(expected: &[u8], actual: &[u8], width: u32) -> String {
   if expected.len() != actual.len() {
-    return format!("len mismatch: expected {} bytes, got {}", expected.len(), actual.len());
+    return format!(
+      "len mismatch: expected {} bytes, got {}",
+      expected.len(),
+      actual.len()
+    );
   }
   let Some(idx) = first_byte_diff(expected, actual) else {
     return "no diff".to_string();
@@ -84,9 +86,12 @@ fn fixture_path() -> PathBuf {
 }
 
 fn base_url_for(html_path: &Path) -> String {
-  let dir = html_path
-    .parent()
-    .unwrap_or_else(|| panic!("fixture HTML has no parent directory: {}", html_path.display()));
+  let dir = html_path.parent().unwrap_or_else(|| {
+    panic!(
+      "fixture HTML has no parent directory: {}",
+      html_path.display()
+    )
+  });
   Url::from_directory_path(dir)
     .unwrap_or_else(|_| panic!("Failed to build file:// base URL for {}", dir.display()))
     .to_string()
@@ -159,7 +164,10 @@ fn blur_cache_toggles() -> Arc<RuntimeToggles> {
   // Ensure the renderer doesn't hop into a dedicated paint pool that would ignore the varying rayon
   // pools installed by this test.
   raw.insert("FASTR_PAINT_THREADS".to_string(), "1".to_string());
-  raw.insert("FASTR_SVG_FILTER_CACHE_BYTES".to_string(), MAX_BYTES.to_string());
+  raw.insert(
+    "FASTR_SVG_FILTER_CACHE_BYTES".to_string(),
+    MAX_BYTES.to_string(),
+  );
   Arc::new(RuntimeToggles::from_map(raw))
 }
 

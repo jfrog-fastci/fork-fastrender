@@ -1244,7 +1244,9 @@ impl Canvas {
       let mut scratch =
         ROUNDED_RECT_PAD_SCRATCH.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
       let mut tmp = match scratch.pixmap.take() {
-        Some(existing) if existing.width() == scratch_w && existing.height() == scratch_h => existing,
+        Some(existing) if existing.width() == scratch_w && existing.height() == scratch_h => {
+          existing
+        }
         _ => match new_pixmap(scratch_w, scratch_h) {
           Some(pixmap) => pixmap,
           None => {
@@ -1293,12 +1295,16 @@ impl Canvas {
       let mut scratch_mask: Option<Mask> = None;
       let scratch_clip: Option<&Mask> = if let Some(clip_mask) = clip_mask {
         let mut mask = match scratch.mask.take() {
-          Some(existing) if existing.width() == scratch_w && existing.height() == scratch_h => existing,
+          Some(existing) if existing.width() == scratch_w && existing.height() == scratch_h => {
+            existing
+          }
           _ => match Mask::new(scratch_w, scratch_h) {
             Some(m) => m,
             None => {
               let paint = self.current_state.create_paint(color);
-              self.pixmap.fill_path(&path, &paint, FillRule::Winding, transform, Some(clip_mask));
+              self
+                .pixmap
+                .fill_path(&path, &paint, FillRule::Winding, transform, Some(clip_mask));
               scratch.pixmap = Some(tmp);
               scratch.mask = None;
               ROUNDED_RECT_PAD_SCRATCH.with(|cell| {
@@ -1908,8 +1914,7 @@ impl Canvas {
       return Some(mask);
     }
 
-    let mut scratch =
-      ROUNDED_RECT_PAD_SCRATCH.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+    let mut scratch = ROUNDED_RECT_PAD_SCRATCH.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
     let mut tmp = match scratch.mask.take() {
       Some(existing) if existing.width() == scratch_w && existing.height() == scratch_h => existing,
       _ => match Mask::new(scratch_w, scratch_h) {

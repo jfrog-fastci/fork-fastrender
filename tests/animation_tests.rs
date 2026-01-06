@@ -391,8 +391,7 @@ fn keyframes_sample_preserves_translate_none_at_keyframe_boundary() {
 
 #[test]
 fn keyframes_sample_preserves_scale_none_at_keyframe_boundary() {
-  let sheet =
-    parse_stylesheet("@keyframes k { from { scale: none; } to { scale: 2; } }").unwrap();
+  let sheet = parse_stylesheet("@keyframes k { from { scale: none; } to { scale: 2; } }").unwrap();
   let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
   let rule = &keyframes[0];
   let base = ComputedStyle::default();

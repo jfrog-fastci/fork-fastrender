@@ -6,9 +6,9 @@
 //! Reference: HTML5 Living Standard - Rendering
 //! <https://html.spec.whatwg.org/multipage/rendering.html>
 
+use crate::debug::runtime::runtime_toggles;
 use crate::dom::DomNode;
 use crate::dom::DomNodeType;
-use crate::debug::runtime::runtime_toggles;
 use crate::style::ComputedStyle;
 use crate::style::Display;
 use crate::style::Length;

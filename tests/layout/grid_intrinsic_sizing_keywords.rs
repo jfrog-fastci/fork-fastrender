@@ -18,8 +18,10 @@ fn grid_container_width_max_content_shrinkwraps_tracks_and_gaps() {
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Grid;
   container_style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
-  container_style.grid_template_columns =
-    vec![GridTrack::Length(Length::px(40.0)), GridTrack::Length(Length::px(60.0))];
+  container_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(40.0)),
+    GridTrack::Length(Length::px(60.0)),
+  ];
   container_style.grid_template_rows = vec![GridTrack::Auto];
   container_style.grid_column_gap = Length::px(10.0);
   let container_style = Arc::new(container_style);
@@ -73,7 +75,11 @@ fn make_break_all_text_item(
   let text_style = Arc::new(text_style);
 
   let text_child = BoxNode::new_text(text_style, text.to_string());
-  let mut item = BoxNode::new_block(wrapper_style, FormattingContextType::Inline, vec![text_child]);
+  let mut item = BoxNode::new_block(
+    wrapper_style,
+    FormattingContextType::Inline,
+    vec![text_child],
+  );
   item.id = id;
   item
 }
@@ -91,12 +97,8 @@ fn grid_item_width_max_content_influences_track_sizing() {
 
   let long_text = "a".repeat(64);
   let item_auto = make_break_all_text_item(11, None, &long_text, 1);
-  let item_keyword = make_break_all_text_item(
-    21,
-    Some(IntrinsicSizeKeyword::MaxContent),
-    &long_text,
-    1,
-  );
+  let item_keyword =
+    make_break_all_text_item(21, Some(IntrinsicSizeKeyword::MaxContent), &long_text, 1);
 
   let mut sibling_style = ComputedStyle::default();
   sibling_style.display = Display::Block;

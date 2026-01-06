@@ -2302,12 +2302,12 @@ pub(crate) fn supports_parsed_declaration_is_valid(
         return true;
       }
 
-       return matches!(
-         len.unit,
-         LengthUnit::Em | LengthUnit::Rem | LengthUnit::Ex | LengthUnit::Ch | LengthUnit::Percent
-       ) || len.unit.is_absolute()
-         || len.unit.is_viewport_relative()
-     }
+      return matches!(
+        len.unit,
+        LengthUnit::Em | LengthUnit::Rem | LengthUnit::Ex | LengthUnit::Ch | LengthUnit::Percent
+      ) || len.unit.is_absolute()
+        || len.unit.is_viewport_relative();
+    }
     "color"
     | "-webkit-text-fill-color"
     | "background-color"

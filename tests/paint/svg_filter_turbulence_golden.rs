@@ -63,4 +63,3 @@ fn svg_filter_turbulence_matches_golden() {
   )
   .unwrap_or_else(|e| panic!("{}", e));
 }
-

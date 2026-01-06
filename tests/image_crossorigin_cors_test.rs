@@ -19,7 +19,11 @@ use test_support::net::try_bind_localhost;
 
 const MAX_WAIT: Duration = Duration::from_secs(3);
 
-fn spawn_server<F>(listener: TcpListener, max_requests: usize, mut handler: F) -> thread::JoinHandle<()>
+fn spawn_server<F>(
+  listener: TcpListener,
+  max_requests: usize,
+  mut handler: F,
+) -> thread::JoinHandle<()>
 where
   F: FnMut(usize, Vec<u8>, &mut std::net::TcpStream) + Send + 'static,
 {
@@ -298,7 +302,8 @@ fn enforce_cors_blocks_use_credentials_without_allow_credentials() {
 
 #[test]
 fn enforce_cors_allows_use_credentials_with_allow_credentials() {
-  let Some(listener) = try_bind_localhost("enforce_cors_allows_use_credentials_with_allow_credentials")
+  let Some(listener) =
+    try_bind_localhost("enforce_cors_allows_use_credentials_with_allow_credentials")
   else {
     return;
   };
@@ -336,8 +341,7 @@ fn enforce_cors_allows_use_credentials_with_allow_credentials() {
 
 #[test]
 fn enforce_cors_allows_file_origin_img_with_acao_null() {
-  let Some(listener) =
-    try_bind_localhost("enforce_cors_allows_file_origin_img_with_acao_null")
+  let Some(listener) = try_bind_localhost("enforce_cors_allows_file_origin_img_with_acao_null")
   else {
     return;
   };

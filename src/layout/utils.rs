@@ -612,8 +612,8 @@ pub fn compute_replaced_size(
   // sizing keywords) are interpreted according to `box-sizing`. Since `compute_replaced_size`
   // returns content-box sizes, convert intrinsic sizes through the same box-sizing adjustment
   // used for numeric `width`/`height` values.
-  let intrinsic_keyword_w =
-    intrinsic_content_w.map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing));
+  let intrinsic_keyword_w = intrinsic_content_w
+    .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing));
   let intrinsic_keyword_h =
     intrinsic_content_h.map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing));
 
@@ -633,7 +633,8 @@ pub fn compute_replaced_size(
           }
           None => {
             if let Some(base) = width_base {
-              let available = content_size_from_box_sizing(base, horizontal_edges, style.box_sizing);
+              let available =
+                content_size_from_box_sizing(base, horizontal_edges, style.box_sizing);
               Some(max_content.min(min_content.max(available)))
             } else {
               Some(max_content)
@@ -675,15 +676,21 @@ pub fn compute_replaced_size(
     .as_ref()
     .and_then(|l| resolve_replaced_length(l, width_base, viewport, style, None))
     .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing));
-  let specified_w =
-    specified_w.or_else(|| style.width_keyword.and_then(|kw| resolve_intrinsic_width(kw)));
+  let specified_w = specified_w.or_else(|| {
+    style
+      .width_keyword
+      .and_then(|kw| resolve_intrinsic_width(kw))
+  });
   let specified_h = style
     .height
     .as_ref()
     .and_then(|l| resolve_replaced_length(l, height_base, viewport, style, None))
     .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing));
-  let specified_h =
-    specified_h.or_else(|| style.height_keyword.and_then(|kw| resolve_intrinsic_height(kw)));
+  let specified_h = specified_h.or_else(|| {
+    style
+      .height_keyword
+      .and_then(|kw| resolve_intrinsic_height(kw))
+  });
   let width_specified = specified_w.is_some();
   let height_specified = specified_h.is_some();
 

@@ -5,7 +5,10 @@ use crate::layout::formatting_context::LayoutError;
 use crate::tree::box_tree::BoxNode;
 
 #[inline]
-fn physical_axis_is_inline_axis(writing_mode: crate::style::types::WritingMode, axis: PhysicalAxis) -> bool {
+fn physical_axis_is_inline_axis(
+  writing_mode: crate::style::types::WritingMode,
+  axis: PhysicalAxis,
+) -> bool {
   let inline_is_horizontal = crate::style::inline_axis_is_horizontal(writing_mode);
   match axis {
     PhysicalAxis::X => inline_is_horizontal,
@@ -161,7 +164,10 @@ mod tests {
       })
     }
 
-    fn compute_intrinsic_inline_sizes(&self, _box_node: &BoxNode) -> Result<(f32, f32), LayoutError> {
+    fn compute_intrinsic_inline_sizes(
+      &self,
+      _box_node: &BoxNode,
+    ) -> Result<(f32, f32), LayoutError> {
       self.inline_sizes_calls.fetch_add(1, Ordering::Relaxed);
       Ok((self.inline_min(), self.inline_max()))
     }
@@ -182,11 +188,7 @@ mod tests {
   fn box_node_with_writing_mode(writing_mode: WritingMode) -> BoxNode {
     let mut style = crate::style::ComputedStyle::default();
     style.writing_mode = writing_mode;
-    BoxNode::new_block(
-      Arc::new(style),
-      FormattingContextType::Block,
-      Vec::new(),
-    )
+    BoxNode::new_block(Arc::new(style), FormattingContextType::Block, Vec::new())
   }
 
   #[test]
@@ -225,8 +227,14 @@ mod tests {
       fc.inline_sizes_calls.load(Ordering::Relaxed),
       inline_sizes_calls_before + 1
     );
-    assert_eq!(fc.inline_size_calls.load(Ordering::Relaxed), inline_size_calls_before);
-    assert_eq!(fc.block_size_calls.load(Ordering::Relaxed), block_size_calls_before);
+    assert_eq!(
+      fc.inline_size_calls.load(Ordering::Relaxed),
+      inline_size_calls_before
+    );
+    assert_eq!(
+      fc.block_size_calls.load(Ordering::Relaxed),
+      block_size_calls_before
+    );
 
     let block_size_calls_before = fc.block_size_calls.load(Ordering::Relaxed);
     let sizes =
@@ -305,7 +313,10 @@ mod tests {
       resolve_fit_content_border_box(Some(100.0), Some(120.0), 50.0, 200.0),
       120.0
     );
-    assert_eq!(resolve_fit_content_border_box(None, None, 50.0, 200.0), 200.0);
+    assert_eq!(
+      resolve_fit_content_border_box(None, None, 50.0, 200.0),
+      200.0
+    );
   }
 
   #[test]

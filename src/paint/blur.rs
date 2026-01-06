@@ -3970,19 +3970,21 @@ mod tests {
     );
 
     let reference_pool = build_pool_with_toggles(1, toggles.clone());
-    let references: Vec<Arc<Vec<u8>>> = runtime::with_thread_runtime_toggles(toggles.clone(), || {
-      reference_pool.install(|| {
-        let mut outputs = Vec::with_capacity(cases.len());
-        for &(sigma_x, sigma_y, _label) in &cases {
-          let mut pixmap = new_pixmap(WIDTH, HEIGHT).unwrap();
-          pixmap.data_mut().copy_from_slice(&base_data);
-          let mut cache = BlurCache::new(direct_config);
-          apply_gaussian_blur_cached(&mut pixmap, sigma_x, sigma_y, Some(&mut cache), 1.0).unwrap();
-          outputs.push(Arc::new(pixmap.data().to_vec()));
-        }
-        outputs
-      })
-    });
+    let references: Vec<Arc<Vec<u8>>> =
+      runtime::with_thread_runtime_toggles(toggles.clone(), || {
+        reference_pool.install(|| {
+          let mut outputs = Vec::with_capacity(cases.len());
+          for &(sigma_x, sigma_y, _label) in &cases {
+            let mut pixmap = new_pixmap(WIDTH, HEIGHT).unwrap();
+            pixmap.data_mut().copy_from_slice(&base_data);
+            let mut cache = BlurCache::new(direct_config);
+            apply_gaussian_blur_cached(&mut pixmap, sigma_x, sigma_y, Some(&mut cache), 1.0)
+              .unwrap();
+            outputs.push(Arc::new(pixmap.data().to_vec()));
+          }
+          outputs
+        })
+      });
 
     let pool = build_pool_with_toggles(THREADS, toggles.clone());
     runtime::with_thread_runtime_toggles(toggles.clone(), || {

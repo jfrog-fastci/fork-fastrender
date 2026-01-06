@@ -89,7 +89,12 @@ struct RenderedPair {
   expected: Pixmap,
 }
 
-fn render_filter_pair(svg: &str, filter_id: &str, bbox_css_px: Rect, viewport: (u32, u32)) -> RenderedPair {
+fn render_filter_pair(
+  svg: &str,
+  filter_id: &str,
+  bbox_css_px: Rect,
+  viewport: (u32, u32),
+) -> RenderedPair {
   let cache = ImageCache::new();
   let (viewport_w, viewport_h) = viewport;
 
@@ -106,7 +111,13 @@ fn render_filter_pair(svg: &str, filter_id: &str, bbox_css_px: Rect, viewport: (
   RenderedPair { actual, expected }
 }
 
-fn assert_svg_filter_matches_resvg(svg: &str, filter_id: &str, bbox_css_px: Rect, viewport: (u32, u32), tolerance: u8) {
+fn assert_svg_filter_matches_resvg(
+  svg: &str,
+  filter_id: &str,
+  bbox_css_px: Rect,
+  viewport: (u32, u32),
+  tolerance: u8,
+) {
   let pair = render_filter_pair(svg, filter_id, bbox_css_px, viewport);
   assert_pixmaps_match_with_tolerance(&pair.actual, &pair.expected, tolerance);
 }
@@ -159,7 +170,13 @@ fn object_bbox_turbulence_svg(size: (u32, u32), base_frequency: &str, seed: &str
 fn fe_turbulence_type_matches_resvg() {
   for kind in ["fractalNoise", "turbulence"] {
     let svg = user_space_turbulence_svg((32, 32), kind, "0.12 0.08", "2", 2, false, None);
-    assert_svg_filter_matches_resvg(&svg, "f", Rect::from_xywh(0.0, 0.0, 32.0, 32.0), (32, 32), 0);
+    assert_svg_filter_matches_resvg(
+      &svg,
+      "f",
+      Rect::from_xywh(0.0, 0.0, 32.0, 32.0),
+      (32, 32),
+      0,
+    );
   }
 }
 
@@ -167,7 +184,13 @@ fn fe_turbulence_type_matches_resvg() {
 fn fe_turbulence_seed_truncation_matches_resvg() {
   for seed in ["1.2", "1.6", "-1.2", "-1.6"] {
     let svg = user_space_turbulence_svg((32, 32), "turbulence", "0.09 0.07", seed, 2, false, None);
-    assert_svg_filter_matches_resvg(&svg, "f", Rect::from_xywh(0.0, 0.0, 32.0, 32.0), (32, 32), 0);
+    assert_svg_filter_matches_resvg(
+      &svg,
+      "f",
+      Rect::from_xywh(0.0, 0.0, 32.0, 32.0),
+      (32, 32),
+      0,
+    );
   }
 }
 
@@ -254,5 +277,11 @@ fn fe_turbulence_primitive_region_offset_matches_resvg() {
     false,
     Some((7, 9, 18, 15)),
   );
-  assert_svg_filter_matches_resvg(&svg, "f", Rect::from_xywh(0.0, 0.0, 32.0, 32.0), (32, 32), 0);
+  assert_svg_filter_matches_resvg(
+    &svg,
+    "f",
+    Rect::from_xywh(0.0, 0.0, 32.0, 32.0),
+    (32, 32),
+    0,
+  );
 }

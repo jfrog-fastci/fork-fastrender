@@ -8151,8 +8151,7 @@ fn apply_declaration_with_base_internal_with_order(
         PropertyValue::Multiple(values) => values,
         other => std::slice::from_ref(other),
       };
-      if let Some(parsed) =
-        parse_border_side_shorthand(values, styles.color, is_dark_color_scheme)
+      if let Some(parsed) = parse_border_side_shorthand(values, styles.color, is_dark_color_scheme)
       {
         let width = parsed.width.or_else(|| {
           (!matches!(parsed.style, BorderStyle::None | BorderStyle::Hidden))
@@ -8216,8 +8215,7 @@ fn apply_declaration_with_base_internal_with_order(
         PropertyValue::Multiple(values) => values,
         other => std::slice::from_ref(other),
       };
-      if let Some(parsed) =
-        parse_border_side_shorthand(values, styles.color, is_dark_color_scheme)
+      if let Some(parsed) = parse_border_side_shorthand(values, styles.color, is_dark_color_scheme)
       {
         let width = parsed.width.or_else(|| {
           (!matches!(parsed.style, BorderStyle::None | BorderStyle::Hidden))
@@ -8242,8 +8240,7 @@ fn apply_declaration_with_base_internal_with_order(
         PropertyValue::Multiple(values) => values,
         other => std::slice::from_ref(other),
       };
-      if let Some(parsed) =
-        parse_border_side_shorthand(values, styles.color, is_dark_color_scheme)
+      if let Some(parsed) = parse_border_side_shorthand(values, styles.color, is_dark_color_scheme)
       {
         let width = parsed.width.or_else(|| {
           (!matches!(parsed.style, BorderStyle::None | BorderStyle::Hidden))
@@ -8285,8 +8282,7 @@ fn apply_declaration_with_base_internal_with_order(
         PropertyValue::Multiple(values) => values,
         other => std::slice::from_ref(other),
       };
-      if let Some(parsed) =
-        parse_border_side_shorthand(values, styles.color, is_dark_color_scheme)
+      if let Some(parsed) = parse_border_side_shorthand(values, styles.color, is_dark_color_scheme)
       {
         let width = parsed.width.or_else(|| {
           (!matches!(parsed.style, BorderStyle::None | BorderStyle::Hidden))
@@ -8328,8 +8324,7 @@ fn apply_declaration_with_base_internal_with_order(
         PropertyValue::Multiple(values) => values,
         other => std::slice::from_ref(other),
       };
-      if let Some(parsed) =
-        parse_border_side_shorthand(values, styles.color, is_dark_color_scheme)
+      if let Some(parsed) = parse_border_side_shorthand(values, styles.color, is_dark_color_scheme)
       {
         let width = parsed.width.or_else(|| {
           (!matches!(parsed.style, BorderStyle::None | BorderStyle::Hidden))
@@ -15624,7 +15619,9 @@ fn parse_text_decoration_color(
   is_dark_color_scheme: bool,
 ) -> Option<Option<Rgba>> {
   match value {
-    PropertyValue::Color(c) => Some(Some(c.to_rgba_with_scheme(current_color, is_dark_color_scheme))),
+    PropertyValue::Color(c) => Some(Some(
+      c.to_rgba_with_scheme(current_color, is_dark_color_scheme),
+    )),
     PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("currentcolor") => Some(None),
     _ => None,
   }
@@ -15789,9 +15786,9 @@ fn parse_text_emphasis_color(
   is_dark_color_scheme: bool,
 ) -> Option<Option<Rgba>> {
   match value {
-    PropertyValue::Color(c) => {
-      Some(Some(c.to_rgba_with_scheme(current_color, is_dark_color_scheme)))
-    }
+    PropertyValue::Color(c) => Some(Some(
+      c.to_rgba_with_scheme(current_color, is_dark_color_scheme),
+    )),
     PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("currentcolor") => Some(None),
     PropertyValue::Keyword(kw) => crate::style::color::Color::parse(kw).ok().map(|color| {
       if color.is_current_color() {
@@ -24580,9 +24577,13 @@ mod tests {
 
   #[test]
   fn background_shorthand_empty_url_treated_as_none() {
-    let parsed =
-      parse_background_shorthand(&[PropertyValue::Url(String::new())], Rgba::BLACK, false, true)
-        .expect("background shorthand parsed");
+    let parsed = parse_background_shorthand(
+      &[PropertyValue::Url(String::new())],
+      Rgba::BLACK,
+      false,
+      true,
+    )
+    .expect("background shorthand parsed");
     assert!(matches!(parsed.image, Some(BackgroundImage::None)));
   }
 

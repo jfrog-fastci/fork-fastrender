@@ -46,7 +46,10 @@ fn legacy_img_alt_text_is_clipped_to_content_box() {
 
   // Content box: (x,y)=(20,20), size=(20,40). Ensure alt text renders somewhere inside.
   let content_red = count_red(&pixmap, 21, 21, 39, 59);
-  assert!(content_red > 0, "expected alt text to paint inside content box");
+  assert!(
+    content_red > 0,
+    "expected alt text to paint inside content box"
+  );
 
   // Right padding box: x=[40..50). Text should be clipped to the content box, leaving padding green.
   let padding_red = count_red(&pixmap, 41, 21, 49, 59);
@@ -55,4 +58,3 @@ fn legacy_img_alt_text_is_clipped_to_content_box() {
     "expected alt text overflow to be clipped (red pixels in padding={padding_red})"
   );
 }
-

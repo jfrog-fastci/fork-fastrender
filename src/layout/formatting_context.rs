@@ -1228,7 +1228,14 @@ pub(crate) fn layout_cache_lookup(
 ) -> Option<FragmentNode> {
   layout_cache_sync_thread_state();
   let epoch = LAYOUT_CACHE_EPOCH.with(|cell| cell.get());
-  let key = layout_cache_key(box_node, fc_type, constraints, viewport_scroll, viewport, epoch)?;
+  let key = layout_cache_key(
+    box_node,
+    fc_type,
+    constraints,
+    viewport_scroll,
+    viewport,
+    epoch,
+  )?;
   if key.subgrid_dependent {
     evict_cache_entries_for_box(key.key.box_id);
     return None;
@@ -1303,7 +1310,14 @@ pub(crate) fn layout_cache_store(
 ) {
   layout_cache_sync_thread_state();
   let epoch = LAYOUT_CACHE_EPOCH.with(|cell| cell.get());
-  let key = match layout_cache_key(box_node, fc_type, constraints, viewport_scroll, viewport, epoch) {
+  let key = match layout_cache_key(
+    box_node,
+    fc_type,
+    constraints,
+    viewport_scroll,
+    viewport,
+    epoch,
+  ) {
     Some(k) => k,
     None => return,
   };
@@ -2132,7 +2146,8 @@ mod tests {
 
     LAYOUT_RESULT_CACHE.with(|cache| assert_eq!(cache.borrow().len(), 2));
 
-    let base_hit = layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport).unwrap();
+    let base_hit =
+      layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport).unwrap();
     assert_eq!(base_hit.bounds.width(), 100.0);
 
     let override_hit =
@@ -2208,8 +2223,14 @@ mod tests {
       "expected cache hit when scroll offset matches"
     );
     assert!(
-      layout_cache_lookup(&node, fc_type, &constraints, Point::new(-100.0, 0.0), viewport)
-        .is_none(),
+      layout_cache_lookup(
+        &node,
+        fc_type,
+        &constraints,
+        Point::new(-100.0, 0.0),
+        viewport
+      )
+      .is_none(),
       "expected cache miss when scroll offset differs for scroll-sensitive subtrees"
     );
 
@@ -2224,8 +2245,11 @@ mod tests {
     let mut container_style = ComputedStyle::default();
     container_style.display = Display::Flex;
 
-    let mut node =
-      BoxNode::new_block(Arc::new(container_style), FormattingContextType::Flex, vec![]);
+    let mut node = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![],
+    );
     node.id = 1;
 
     let constraints = LayoutConstraints::definite(800.0, 600.0);
@@ -2241,8 +2265,14 @@ mod tests {
       viewport,
     );
     assert!(
-      layout_cache_lookup(&node, fc_type, &constraints, Point::new(-100.0, 0.0), viewport)
-        .is_some(),
+      layout_cache_lookup(
+        &node,
+        fc_type,
+        &constraints,
+        Point::new(-100.0, 0.0),
+        viewport
+      )
+      .is_some(),
       "expected cache hit even when scroll differs for scroll-insensitive subtrees"
     );
 
@@ -2401,8 +2431,14 @@ mod tests {
     let (tx, rx) = std::sync::mpsc::channel();
     pool.spawn(move || {
       assert!(
-        layout_cache_lookup(&node, FormattingContextType::Flex, &constraints, Point::ZERO, viewport)
-          .is_none(),
+        layout_cache_lookup(
+          &node,
+          FormattingContextType::Flex,
+          &constraints,
+          Point::ZERO,
+          viewport
+        )
+        .is_none(),
         "cache should be empty before store"
       );
       let fragment = block_fragment(123.0, 45.0);
@@ -2415,8 +2451,14 @@ mod tests {
         viewport,
       );
       tx.send(
-        layout_cache_lookup(&node, FormattingContextType::Flex, &constraints, Point::ZERO, viewport)
-          .is_some(),
+        layout_cache_lookup(
+          &node,
+          FormattingContextType::Flex,
+          &constraints,
+          Point::ZERO,
+          viewport,
+        )
+        .is_some(),
       )
       .expect("send result");
     });

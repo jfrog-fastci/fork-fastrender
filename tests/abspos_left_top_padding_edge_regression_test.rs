@@ -52,4 +52,3 @@ fn abspos_left_top_are_relative_to_padding_edge_not_content_edge() {
   // content box (which starts at padding).
   assert_eq!(bbox, (0, 0, 9, 9), "unexpected green bbox: {bbox:?}");
 }
-

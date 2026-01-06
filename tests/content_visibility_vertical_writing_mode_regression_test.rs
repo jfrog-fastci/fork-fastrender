@@ -86,4 +86,3 @@ fn content_visibility_vertical_writing_mode_regression() {
   )
   .unwrap_or_else(|e| panic!("Comparison failed: {e}"));
 }
-

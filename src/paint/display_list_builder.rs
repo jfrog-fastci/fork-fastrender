@@ -1674,7 +1674,11 @@ impl DisplayListBuilder {
             );
           }
           if !suppress_background {
-            self.emit_background_from_style_with_rects_and_text_clip(rects, style, text_clip.as_ref());
+            self.emit_background_from_style_with_rects_and_text_clip(
+              rects,
+              style,
+              text_clip.as_ref(),
+            );
           }
           if has_inset {
             self.emit_box_shadows_from_style_with_base(
@@ -1702,7 +1706,11 @@ impl DisplayListBuilder {
             }
           }
         } else if !suppress_background {
-          self.emit_background_from_style_with_text_clip(decoration_rect, style, text_clip.as_ref());
+          self.emit_background_from_style_with_text_clip(
+            decoration_rect,
+            style,
+            text_clip.as_ref(),
+          );
         }
 
         self.emit_border_from_style(decoration_rect, style);
@@ -4606,11 +4614,7 @@ impl DisplayListBuilder {
     if let Some(style) = html.style.clone() {
       if Self::has_paintable_background(&style) {
         let box_id = Self::get_box_id(html)?;
-        return Some((
-          style,
-          box_id,
-          Rect::new(html_origin, html.bounds.size),
-        ));
+        return Some((style, box_id, Rect::new(html_origin, html.bounds.size)));
       }
     }
 
@@ -4924,7 +4928,9 @@ impl DisplayListBuilder {
     style: &ComputedStyle,
     text_clip: Option<&Arc<[TextItem]>>,
   ) {
-    self.emit_background_from_style_with_rects_and_origin_and_text_clip(rects, rects, style, text_clip);
+    self.emit_background_from_style_with_rects_and_origin_and_text_clip(
+      rects, rects, style, text_clip,
+    );
   }
 
   fn emit_background_from_style_with_rects_and_origin_and_text_clip(
@@ -4991,7 +4997,14 @@ impl DisplayListBuilder {
 
     for layer in style.background_layers.iter().rev() {
       if let Some(image) = &layer.image {
-        self.emit_background_layer_with_origin_rects(rects, origin_rects, style, layer, image, text_clip);
+        self.emit_background_layer_with_origin_rects(
+          rects,
+          origin_rects,
+          style,
+          layer,
+          image,
+          text_clip,
+        );
       }
     }
   }
@@ -8269,7 +8282,11 @@ mod tests {
     })
   }
 
-  fn shaped_run_for_char(font: Arc<crate::text::font_db::LoadedFont>, ch: char, font_size: f32) -> ShapedRun {
+  fn shaped_run_for_char(
+    font: Arc<crate::text::font_db::LoadedFont>,
+    ch: char,
+    font_size: f32,
+  ) -> ShapedRun {
     let cached_face = face_cache::get_ttf_face(&font).expect("parse test font");
     let face = cached_face.face();
     let glyph_id = face
@@ -8394,10 +8411,7 @@ mod tests {
       Arc::clone(&style),
     );
 
-    let fragment = FragmentNode::new_block(
-      Rect::from_xywh(0.0, 0.0, 200.0, 60.0),
-      vec![text],
-    );
+    let fragment = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 200.0, 60.0), vec![text]);
 
     let builder = DisplayListBuilder::new();
     let tree = FragmentTree::new(fragment);
@@ -9488,7 +9502,10 @@ mod tests {
       panic!("expected rectangular overflow clip");
     };
     assert_eq!(*rect, fragment.bounds);
-    assert!(radii.is_some(), "expected rounded overflow clip when both axes clip");
+    assert!(
+      radii.is_some(),
+      "expected rounded overflow clip when both axes clip"
+    );
   }
 
   #[test]

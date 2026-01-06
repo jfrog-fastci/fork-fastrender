@@ -752,10 +752,7 @@ pub enum Color {
   /// Choose between two colors depending on the element's used color scheme.
   ///
   /// CSS Color 5: `light-dark(<color>, <color>)`.
-  LightDark {
-    light: Box<Color>,
-    dark: Box<Color>,
-  },
+  LightDark { light: Box<Color>, dark: Box<Color> },
 
   /// Special keyword: currentColor
   /// Uses the current value of the 'color' property
@@ -836,9 +833,13 @@ impl Color {
     match self {
       Color::Rgba(rgba) => *rgba,
       Color::Hsla(hsla) => hsla.to_rgba(),
-      Color::Mix { components, space } => {
-        mix_colors(*space, &components[0], &components[1], current_color, is_dark)
-      }
+      Color::Mix { components, space } => mix_colors(
+        *space,
+        &components[0],
+        &components[1],
+        current_color,
+        is_dark,
+      ),
       Color::Contrast { against, options } => {
         let background = against
           .as_ref()
@@ -907,7 +908,10 @@ impl Color {
         against: against
           .as_ref()
           .map(|c| Box::new(c.resolve_light_dark(is_dark))),
-        options: options.iter().map(|c| c.resolve_light_dark(is_dark)).collect(),
+        options: options
+          .iter()
+          .map(|c| c.resolve_light_dark(is_dark))
+          .collect(),
       },
       Color::Relative(relative) => Color::Relative(RelativeColor {
         base: Box::new(relative.base.resolve_light_dark(is_dark)),

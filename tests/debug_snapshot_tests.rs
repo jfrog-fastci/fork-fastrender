@@ -115,13 +115,14 @@ fn box_tree_snapshot_includes_table_spans_from_metadata() {
   let snapshot = fastrender::debug::snapshot::snapshot_box_tree(&tree);
   let json = serde_json::to_value(&snapshot).expect("serialize snapshot");
 
-  let children = json["root"]["children"]
-    .as_array()
-    .expect("children array");
+  let children = json["root"]["children"].as_array().expect("children array");
   let cell_json = &children[0];
   assert_eq!(cell_json["table_spans"]["colspan"], 2);
   assert_eq!(cell_json["table_spans"]["rowspan"], 3);
-  assert!(cell_json.get("debug").is_none(), "debug field should be omitted");
+  assert!(
+    cell_json.get("debug").is_none(),
+    "debug field should be omitted"
+  );
 
   let col_json = &children[1];
   assert_eq!(col_json["table_spans"]["column_span"], 4);

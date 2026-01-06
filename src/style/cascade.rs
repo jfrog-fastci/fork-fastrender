@@ -501,7 +501,9 @@ fn cq_condition_support_mask(condition: &ContainerCondition) -> u8 {
     condition
       .query_list
       .iter()
-      .fold(CQ_SUPPORT_ALL, |acc, query| acc & cq_query_support_mask(query))
+      .fold(CQ_SUPPORT_ALL, |acc, query| {
+        acc & cq_query_support_mask(query)
+      })
   }
 }
 
@@ -24433,7 +24435,8 @@ fn apply_cascaded_declarations<'a, F>(
   // Resolve `color-scheme` early so `light-dark()` can be resolved consistently based on the final
   // used scheme, not declaration order.
   if any_color_scheme_decl {
-    let mut color_scheme_layer_snapshots: FxHashMap<Arc<[u32]>, ComputedStyle> = FxHashMap::default();
+    let mut color_scheme_layer_snapshots: FxHashMap<Arc<[u32]>, ComputedStyle> =
+      FxHashMap::default();
     let mut color_scheme_layer_snapshot_stratum: Option<(u8, bool)> = None;
 
     if any_other_normal {

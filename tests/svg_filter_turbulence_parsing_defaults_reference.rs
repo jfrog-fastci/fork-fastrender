@@ -31,7 +31,11 @@ fn render_resvg(svg: &str) -> Pixmap {
   let tree = resvg::usvg::Tree::from_str(svg, &options).expect("parse svg with resvg");
 
   let mut pixmap = resvg::tiny_skia::Pixmap::new(W, H).expect("allocate resvg pixmap");
-  resvg::render(&tree, resvg::tiny_skia::Transform::default(), &mut pixmap.as_mut());
+  resvg::render(
+    &tree,
+    resvg::tiny_skia::Transform::default(),
+    &mut pixmap.as_mut(),
+  );
   pixmap
 }
 
@@ -98,7 +102,8 @@ fn assert_pixmaps_match(test_case: &str, resvg_pixmap: &Pixmap, fastrender_pixma
 
 #[test]
 fn fe_turbulence_missing_base_frequency_matches_resvg_default() {
-  let svg = svg_with_turbulence(r#"type="turbulence" seed="2" numOctaves="3" stitchTiles="stitch""#);
+  let svg =
+    svg_with_turbulence(r#"type="turbulence" seed="2" numOctaves="3" stitchTiles="stitch""#);
   let resvg = render_resvg(&svg);
   let fastrender = render_fastrender(&svg);
   assert_pixmaps_match("missing baseFrequency", &resvg, &fastrender);
@@ -115,7 +120,11 @@ fn fe_turbulence_single_value_base_frequency_matches_resvg_and_expands_to_both_a
 
   let resvg_single = render_resvg(&svg_single);
   let resvg_double = render_resvg(&svg_double);
-  assert_pixmaps_match("single-value baseFrequency expands in resvg", &resvg_double, &resvg_single);
+  assert_pixmaps_match(
+    "single-value baseFrequency expands in resvg",
+    &resvg_double,
+    &resvg_single,
+  );
 
   let fastrender_single = render_fastrender(&svg_single);
   let fastrender_double = render_fastrender(&svg_double);
@@ -134,7 +143,8 @@ fn fe_turbulence_single_value_base_frequency_matches_resvg_and_expands_to_both_a
 
 #[test]
 fn fe_turbulence_missing_type_matches_resvg_default() {
-  let svg = svg_with_turbulence(r#"baseFrequency="0.08 0.1" seed="4" numOctaves="2" stitchTiles="stitch""#);
+  let svg =
+    svg_with_turbulence(r#"baseFrequency="0.08 0.1" seed="4" numOctaves="2" stitchTiles="stitch""#);
   let resvg = render_resvg(&svg);
   let fastrender = render_fastrender(&svg);
   assert_pixmaps_match("missing type", &resvg, &fastrender);
@@ -142,7 +152,9 @@ fn fe_turbulence_missing_type_matches_resvg_default() {
 
 #[test]
 fn fe_turbulence_missing_seed_matches_resvg_default() {
-  let svg = svg_with_turbulence(r#"baseFrequency="0.08 0.1" type="turbulence" numOctaves="2" stitchTiles="stitch""#);
+  let svg = svg_with_turbulence(
+    r#"baseFrequency="0.08 0.1" type="turbulence" numOctaves="2" stitchTiles="stitch""#,
+  );
   let resvg = render_resvg(&svg);
   let fastrender = render_fastrender(&svg);
   assert_pixmaps_match("missing seed", &resvg, &fastrender);
@@ -160,11 +172,9 @@ fn fe_turbulence_missing_num_octaves_matches_resvg_default() {
 
 #[test]
 fn fe_turbulence_missing_stitch_tiles_matches_resvg_default() {
-  let svg = svg_with_turbulence(
-    r#"baseFrequency="0.08 0.1" type="turbulence" seed="4" numOctaves="2""#,
-  );
+  let svg =
+    svg_with_turbulence(r#"baseFrequency="0.08 0.1" type="turbulence" seed="4" numOctaves="2""#);
   let resvg = render_resvg(&svg);
   let fastrender = render_fastrender(&svg);
   assert_pixmaps_match("missing stitchTiles", &resvg, &fastrender);
 }
-

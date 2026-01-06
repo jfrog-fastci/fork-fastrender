@@ -16,8 +16,8 @@ use fastrender::style::types::{
 use fastrender::text::font_loader::FontContext;
 use fastrender::tree::fragment_tree::FragmentNode;
 use fastrender::{
-  BorderRadii, DiagnosticsLevel, FastRender, FontConfig, Length, Point, Rect, RenderArtifactRequest,
-  RenderOptions, Rgba,
+  BorderRadii, DiagnosticsLevel, FastRender, FontConfig, Length, Point, Rect,
+  RenderArtifactRequest, RenderOptions, Rgba,
 };
 use rayon::ThreadPoolBuilder;
 use std::collections::HashMap;
@@ -781,7 +781,10 @@ fn parallel_filter_backdrop_layers_fixture_matches_serial() {
       .render_html_with_stylesheets_report(&html, &base_url, options, artifacts)
       .expect("serial fixture render");
     let font_ctx = renderer.font_context().clone();
-    let list = report.artifacts.display_list.expect("display list artifact");
+    let list = report
+      .artifacts
+      .display_list
+      .expect("display list artifact");
 
     let serial = DisplayListRenderer::new(600, 480, Rgba::WHITE, font_ctx.clone())
       .expect("renderer")
@@ -798,23 +801,23 @@ fn parallel_filter_backdrop_layers_fixture_matches_serial() {
       .stack_size(8 * 1024 * 1024)
       .build()
       .expect("rayon pool");
-     let report = pool.install(|| {
-       DisplayListRenderer::new(600, 480, Rgba::WHITE, font_ctx)
-         .expect("renderer")
-         .with_parallelism(parallelism)
-         .render_with_report(&list)
-         .expect("parallel render")
-     });
+    let report = pool.install(|| {
+      DisplayListRenderer::new(600, 480, Rgba::WHITE, font_ctx)
+        .expect("renderer")
+        .with_parallelism(parallelism)
+        .render_with_report(&list)
+        .expect("parallel render")
+    });
 
-     let cpu_budget = fastrender::system::cpu_budget();
-     if cpu_budget > 1 {
-       assert!(
-         report.parallel_used,
-         "expected fixture to use parallel tiling (fallback={:?})",
-         report.fallback_reason
-       );
-       assert!(report.tiles > 1, "expected multiple tiles");
-     }
-     assert_pixmap_eq("fixture output diverged", &serial, &report.pixmap);
-   });
+    let cpu_budget = fastrender::system::cpu_budget();
+    if cpu_budget > 1 {
+      assert!(
+        report.parallel_used,
+        "expected fixture to use parallel tiling (fallback={:?})",
+        report.fallback_reason
+      );
+      assert!(report.tiles > 1, "expected multiple tiles");
+    }
+    assert_pixmap_eq("fixture output diverged", &serial, &report.pixmap);
+  });
 }

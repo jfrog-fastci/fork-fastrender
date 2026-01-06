@@ -1982,10 +1982,7 @@ fn paint_containment_clips_stacking_context() {
     .rposition(|item| matches!(item, DisplayItem::PopClip))
     .expect("paint containment should pop a clip");
 
-  assert!(
-    clip_end > clip_start,
-    "clip push/pop should be ordered"
-  );
+  assert!(clip_end > clip_start, "clip push/pop should be ordered");
   let stacking_idx = items
     .iter()
     .position(|item| matches!(item, DisplayItem::PushStackingContext(_)))

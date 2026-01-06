@@ -52,10 +52,7 @@ fn width_max_content_uses_intrinsic_max_inline_size() {
 
   let root = block_container(vec![child]);
   let fragment = ctx
-    .layout(
-      &root,
-      &LayoutConstraints::definite_width(expected + 200.0),
-    )
+    .layout(&root, &LayoutConstraints::definite_width(expected + 200.0))
     .expect("layout");
 
   let child_fragment = &fragment.children[0];
@@ -79,7 +76,10 @@ fn width_fit_content_clamps_to_available_and_max_content() {
   let child = BoxNode::new_block(
     Arc::new(child_style),
     FormattingContextType::Block,
-    vec![BoxNode::new_text(default_style(), "lorem ipsum dolor".into())],
+    vec![BoxNode::new_text(
+      default_style(),
+      "lorem ipsum dolor".into(),
+    )],
   );
 
   let (min_content, max_content) = ctx
@@ -139,7 +139,10 @@ fn intrinsic_keyword_constraints_clamp_used_width() {
   let measure = BoxNode::new_block(
     Arc::new(measure_style),
     FormattingContextType::Block,
-    vec![BoxNode::new_text(default_style(), "lorem ipsum dolor".into())],
+    vec![BoxNode::new_text(
+      default_style(),
+      "lorem ipsum dolor".into(),
+    )],
   );
   let min_content = ctx
     .compute_intrinsic_inline_size(&measure, IntrinsicSizingMode::MinContent)
@@ -157,7 +160,10 @@ fn intrinsic_keyword_constraints_clamp_used_width() {
   let child = BoxNode::new_block(
     Arc::new(child_style),
     FormattingContextType::Block,
-    vec![BoxNode::new_text(default_style(), "lorem ipsum dolor".into())],
+    vec![BoxNode::new_text(
+      default_style(),
+      "lorem ipsum dolor".into(),
+    )],
   );
 
   let root = block_container(vec![child]);

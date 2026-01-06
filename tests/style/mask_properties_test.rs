@@ -38,7 +38,11 @@ fn mask_longhands_ignore_extra_layer_values() {
   let styled = apply_styles_with_media(&dom, &stylesheet, &MediaContext::screen(800.0, 600.0));
 
   let style = &find_first(&styled, "div").expect("div").styles;
-  assert_eq!(style.mask_layers.len(), 1, "layer count should follow mask-image");
+  assert_eq!(
+    style.mask_layers.len(),
+    1,
+    "layer count should follow mask-image"
+  );
 
   assert_eq!(style.mask_layers[0].clip, MaskClip::PaddingBox);
   assert_eq!(style.mask_layers[0].origin, MaskOrigin::ContentBox);

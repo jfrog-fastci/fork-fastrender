@@ -54,4 +54,3 @@ fn legacy_canvas_without_content_is_transparent() {
   let pixmap = render_canvas_with_backend("legacy");
   assert_canvas_is_transparent(&pixmap);
 }
-

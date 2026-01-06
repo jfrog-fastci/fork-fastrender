@@ -36,7 +36,8 @@ fn make_bump_map_pixmap(width: u32, height: u32) -> Pixmap {
       let mut alpha = xf * 180.0 + yf * 40.0;
       let dx = x as f32 - bump_cx;
       let dy = y as f32 - bump_cy;
-      let bump = 90.0 * (-((dx * dx) / (2.0 * sigma_x * sigma_x) + (dy * dy) / (2.0 * sigma_y * sigma_y))).exp();
+      let bump = 90.0
+        * (-((dx * dx) / (2.0 * sigma_x * sigma_x) + (dy * dy) / (2.0 * sigma_y * sigma_y))).exp();
       alpha += bump;
 
       let a = alpha.round().clamp(0.0, 255.0) as u8;
@@ -122,7 +123,10 @@ fn assert_pixmaps_match_samples_with_tolerance(
     for ch in 0..4 {
       let diff = a[ch].abs_diff(b[ch]);
       if diff > tol {
-        if worst.map(|(_, _, _, worst_diff, _, _)| diff > worst_diff).unwrap_or(true) {
+        if worst
+          .map(|(_, _, _, worst_diff, _, _)| diff > worst_diff)
+          .unwrap_or(true)
+        {
           worst = Some((x, y, ch, diff, a, b));
         }
       }
@@ -134,7 +138,12 @@ fn assert_pixmaps_match_samples_with_tolerance(
   }
 }
 
-fn assert_pixmaps_match_samples(case: &str, actual: &Pixmap, expected: &Pixmap, samples: &[(u32, u32)]) {
+fn assert_pixmaps_match_samples(
+  case: &str,
+  actual: &Pixmap,
+  expected: &Pixmap,
+  samples: &[(u32, u32)],
+) {
   assert_pixmaps_match_samples_with_tolerance(case, actual, expected, samples, PIXEL_TOLERANCE);
 }
 
@@ -293,7 +302,12 @@ fn resvg_parity_specular_lighting_exponent() {
   assert_has_nonzero_pixels("resvg specular(exponent=16)", &expected);
   let actual = render_with_fastrender_filter(&svg, "f", &bump_map, bbox);
 
-  assert_pixmaps_match_samples("specular lighting parity (specularExponent=16)", &actual, &expected, &samples);
+  assert_pixmaps_match_samples(
+    "specular lighting parity (specularExponent=16)",
+    &actual,
+    &expected,
+    &samples,
+  );
 }
 
 #[test]
@@ -505,8 +519,8 @@ fn point_light_object_bounding_box_z_scaling_matches_resvg() {
     "resvg should apply lighting; got the unfiltered SourceGraphic at the center"
   );
 
-  let filter = parse_svg_filter_from_svg_document(&svg, Some("f"), &ImageCache::new())
-    .expect("parse filter");
+  let filter =
+    parse_svg_filter_from_svg_document(&svg, Some("f"), &ImageCache::new()).expect("parse filter");
 
   let mut source = Pixmap::new(WIDTH, HEIGHT).expect("pixmap");
   source.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 255));

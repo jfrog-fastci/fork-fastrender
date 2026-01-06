@@ -934,7 +934,12 @@ fn diff_premultiplied_against_rgba_baseline(
       (0, 0, 0)
     };
     let other_rgba = [r, g, b, a];
-    let baseline_arr = [baseline_px[0], baseline_px[1], baseline_px[2], baseline_px[3]];
+    let baseline_arr = [
+      baseline_px[0],
+      baseline_px[1],
+      baseline_px[2],
+      baseline_px[3],
+    ];
 
     if baseline_arr != other_rgba {
       diff_pixels += 1;
@@ -983,7 +988,10 @@ fn record_variant(
     }
   }
 
-  let baseline = state.variants.first().expect("fixture determinism baseline missing");
+  let baseline = state
+    .variants
+    .first()
+    .expect("fixture determinism baseline missing");
 
   let mut diff_pixels = None;
   let mut first_mismatch = None;
@@ -1358,8 +1366,9 @@ fn render_fixture(
           .expect("determinism mutex poisoned");
         if determinism.repeat_idx == 0 {
           let (hash_hi, hash_lo) = hash128(data);
-          determinism_map.entry(stem_for_determinism.clone()).or_insert_with(|| {
-            FixtureDeterminism {
+          determinism_map
+            .entry(stem_for_determinism.clone())
+            .or_insert_with(|| FixtureDeterminism {
               stem: stem_for_determinism.clone(),
               variants: vec![VariantRecord {
                 hash_hi,
@@ -1373,8 +1382,7 @@ fn render_fixture(
                 data: None,
               }],
               baseline_rgba: None,
-            }
-          });
+            });
         } else if let Some(state) = determinism_map.get_mut(&stem_for_determinism) {
           record_variant(
             state,
@@ -1761,14 +1769,7 @@ mod tests {
       baseline_rgba: None,
     };
 
-    record_variant(
-      &mut state,
-      1,
-      1,
-      &baseline_bytes,
-      out_dir,
-      false,
-    );
+    record_variant(&mut state, 1, 1, &baseline_bytes, out_dir, false);
 
     assert_eq!(state.variants.len(), 1);
     assert_eq!(state.variants[0].count, 2);
@@ -1789,8 +1790,7 @@ mod tests {
     let baseline_bytes = pixmap_bytes_rgba(1, 1, [255, 0, 0, 255]);
     let (baseline_hi, baseline_lo) = hash128(&baseline_bytes);
     let size = IntSize::from_wh(1, 1).expect("size");
-    let baseline_pixmap =
-      Pixmap::from_vec(baseline_bytes.clone(), size).expect("baseline pixmap");
+    let baseline_pixmap = Pixmap::from_vec(baseline_bytes.clone(), size).expect("baseline pixmap");
     let baseline_png = encode_image(&baseline_pixmap, OutputFormat::Png).expect("encode baseline");
     fs::write(output_path_for(out_dir, stem), baseline_png).expect("write baseline png");
 
@@ -1813,14 +1813,7 @@ mod tests {
     let variant_bytes = pixmap_bytes_rgba(1, 1, [0, 255, 0, 255]);
     let (variant_hi, variant_lo) = hash128(&variant_bytes);
 
-    record_variant(
-      &mut state,
-      1,
-      1,
-      &variant_bytes,
-      out_dir,
-      true,
-    );
+    record_variant(&mut state, 1, 1, &variant_bytes, out_dir, true);
 
     assert_eq!(state.variants.len(), 2);
     let variant = &state.variants[1];
@@ -1837,14 +1830,7 @@ mod tests {
 
     // When variant bytes are stored (because `--save-variants` is enabled), the tracker should
     // confirm equality before incrementing the count.
-    record_variant(
-      &mut state,
-      1,
-      1,
-      &variant_bytes,
-      out_dir,
-      true,
-    );
+    record_variant(&mut state, 1, 1, &variant_bytes, out_dir, true);
 
     assert_eq!(state.variants.len(), 2);
     let variant = &state.variants[1];
@@ -1862,8 +1848,7 @@ mod tests {
     let baseline_bytes = pixmap_bytes_rgba(1, 1, [255, 0, 0, 255]);
     let (baseline_hi, baseline_lo) = hash128(&baseline_bytes);
     let size = IntSize::from_wh(1, 1).expect("size");
-    let baseline_pixmap =
-      Pixmap::from_vec(baseline_bytes.clone(), size).expect("baseline pixmap");
+    let baseline_pixmap = Pixmap::from_vec(baseline_bytes.clone(), size).expect("baseline pixmap");
     let baseline_png = encode_image(&baseline_pixmap, OutputFormat::Png).expect("encode baseline");
     fs::write(output_path_for(out_dir, stem), baseline_png).expect("write baseline png");
 
@@ -1908,8 +1893,7 @@ mod tests {
     let baseline_bytes = pixmap_bytes_rgba(1, 1, [255, 0, 0, 255]);
     let (baseline_hi, baseline_lo) = hash128(&baseline_bytes);
     let size = IntSize::from_wh(1, 1).expect("size");
-    let baseline_pixmap =
-      Pixmap::from_vec(baseline_bytes.clone(), size).expect("baseline pixmap");
+    let baseline_pixmap = Pixmap::from_vec(baseline_bytes.clone(), size).expect("baseline pixmap");
     let baseline_png = encode_image(&baseline_pixmap, OutputFormat::Png).expect("encode baseline");
     let baseline_png_path = output_path_for(out_dir, stem);
     fs::write(&baseline_png_path, baseline_png).expect("write baseline png");
@@ -1938,7 +1922,10 @@ mod tests {
       out_dir,
       false,
     );
-    assert!(state.baseline_rgba.is_some(), "expected baseline RGBA to be cached");
+    assert!(
+      state.baseline_rgba.is_some(),
+      "expected baseline RGBA to be cached"
+    );
 
     // If the baseline PNG disappears, subsequent variant diffs should still work because the
     // baseline decode is cached in memory.
@@ -2005,8 +1992,7 @@ mod tests {
     let baseline_bytes = pixmap_bytes_rgba(1, 1, [0, 0, 0, 255]);
     let (baseline_hi, baseline_lo) = hash128(&baseline_bytes);
     let size = IntSize::from_wh(1, 1).expect("size");
-    let baseline_pixmap =
-      Pixmap::from_vec(baseline_bytes.clone(), size).expect("baseline pixmap");
+    let baseline_pixmap = Pixmap::from_vec(baseline_bytes.clone(), size).expect("baseline pixmap");
     let baseline_png = encode_image(&baseline_pixmap, OutputFormat::Png).expect("encode baseline");
     fs::write(output_path_for(out_dir, stem), baseline_png).expect("write baseline png");
 

@@ -2471,7 +2471,14 @@ impl Painter {
               None,
             );
           } else {
-            self.paint_shaped_runs(shaped, inline_start, block_baseline, color, Some(&style), None);
+            self.paint_shaped_runs(
+              shaped,
+              inline_start,
+              block_baseline,
+              color,
+              Some(&style),
+              None,
+            );
           }
         } else {
           if inline_vertical {
@@ -5452,7 +5459,14 @@ impl Painter {
     let mut pen_inline = inline_origin;
     for run in runs {
       let run_origin_inline = pen_inline;
-      self.paint_shaped_run_vertical(run, block_origin, run_origin_inline, color, style, clip_mask);
+      self.paint_shaped_run_vertical(
+        run,
+        block_origin,
+        run_origin_inline,
+        color,
+        style,
+        clip_mask,
+      );
       pen_inline += run.advance;
     }
   }
@@ -6149,7 +6163,11 @@ impl Painter {
         let layout = match math.layout.as_deref() {
           Some(layout) => layout,
           None => {
-            fallback_layout = Some(crate::math::layout_mathml(&math.root, style_ref, &self.font_ctx));
+            fallback_layout = Some(crate::math::layout_mathml(
+              &math.root,
+              style_ref,
+              &self.font_ctx,
+            ));
             fallback_layout.as_ref().expect("inserted layout")
           }
         };
@@ -6195,7 +6213,14 @@ impl Painter {
               let baseline_y = content_rect.y() + origin.y * scale_y;
               let start_x = content_rect.x() + origin.x * scale_x;
               let runs = [scaled_run];
-              self.paint_shaped_runs(&runs, start_x, baseline_y, color, Some(style_ref), clip_mask);
+              self.paint_shaped_runs(
+                &runs,
+                start_x,
+                baseline_y,
+                color,
+                Some(style_ref),
+                clip_mask,
+              );
             }
             MathFragment::Rule(r) => {
               let scaled_rect = Rect::from_xywh(
@@ -6265,22 +6290,14 @@ impl Painter {
                 ) else {
                   continue;
                 };
-                self.pixmap.stroke_path(
-                  &path,
-                  &paint,
-                  &stroke,
-                  Transform::identity(),
-                  clip_mask,
-                );
+                self
+                  .pixmap
+                  .stroke_path(&path, &paint, &stroke, Transform::identity(), clip_mask);
               } else {
                 let path = PathBuilder::from_rect(rect);
-                self.pixmap.stroke_path(
-                  &path,
-                  &paint,
-                  &stroke,
-                  Transform::identity(),
-                  clip_mask,
-                );
+                self
+                  .pixmap
+                  .stroke_path(&path, &paint, &stroke, Transform::identity(), clip_mask);
               }
             }
           }
@@ -7669,7 +7686,14 @@ impl Painter {
     let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
     let baseline_y = rect.y() + half_leading + metrics.baseline_offset;
 
-    self.paint_shaped_runs(&runs, rect.x(), baseline_y, style.color, Some(style), clip_mask);
+    self.paint_shaped_runs(
+      &runs,
+      rect.x(),
+      baseline_y,
+      style.color,
+      Some(style),
+      clip_mask,
+    );
     true
   }
 
@@ -7874,9 +7898,7 @@ impl Painter {
       | crate::style::types::TextUnderlinePosition::FromFont => font_center,
       crate::style::types::TextUnderlinePosition::Under
       | crate::style::types::TextUnderlinePosition::UnderLeft
-      | crate::style::types::TextUnderlinePosition::UnderRight => {
-        font_center.min(under_base)
-      }
+      | crate::style::types::TextUnderlinePosition::UnderRight => font_center.min(under_base),
       crate::style::types::TextUnderlinePosition::Left
       | crate::style::types::TextUnderlinePosition::Right => font_center,
     };

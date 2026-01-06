@@ -300,7 +300,10 @@ fn subtree_contains_content_visibility_auto(
   let mut stack: Vec<&BoxNode> = vec![root];
   while let Some(node) = stack.pop() {
     check_layout_deadline(deadline_counter)?;
-    if matches!(node.style.content_visibility, crate::style::types::ContentVisibility::Auto) {
+    if matches!(
+      node.style.content_visibility,
+      crate::style::types::ContentVisibility::Auto
+    ) {
       return Ok(true);
     }
     for child in node.children.iter() {
@@ -675,8 +678,12 @@ impl FormattingContext for FlexFormattingContext {
     let layout_cache_entry = if disable_cache {
       None
     } else {
-      layout_cache_key(&constraints, self.viewport_size)
-        .map(|k| (flex_cache_key_with_style_and_scroll(box_node, style, viewport_scroll), k))
+      layout_cache_key(&constraints, self.viewport_size).map(|k| {
+        (
+          flex_cache_key_with_style_and_scroll(box_node, style, viewport_scroll),
+          k,
+        )
+      })
     };
 
     let _trace_text_ids = trace_flex_text_ids();
@@ -5230,14 +5237,26 @@ impl FlexFormattingContext {
           .max(0.0);
 
         let resolve_edges = |axis: Axis| -> f32 {
-          let padding_left =
-            self.resolve_length_for_width(container_style.padding_left, inline_base, container_style);
-          let padding_right =
-            self.resolve_length_for_width(container_style.padding_right, inline_base, container_style);
-          let padding_top =
-            self.resolve_length_for_width(container_style.padding_top, inline_base, container_style);
-          let padding_bottom =
-            self.resolve_length_for_width(container_style.padding_bottom, inline_base, container_style);
+          let padding_left = self.resolve_length_for_width(
+            container_style.padding_left,
+            inline_base,
+            container_style,
+          );
+          let padding_right = self.resolve_length_for_width(
+            container_style.padding_right,
+            inline_base,
+            container_style,
+          );
+          let padding_top = self.resolve_length_for_width(
+            container_style.padding_top,
+            inline_base,
+            container_style,
+          );
+          let padding_bottom = self.resolve_length_for_width(
+            container_style.padding_bottom,
+            inline_base,
+            container_style,
+          );
           let border_left = self.resolve_length_for_width(
             container_style.used_border_left_width(),
             inline_base,
@@ -6052,17 +6071,15 @@ impl FlexFormattingContext {
       if !needs_intrinsic_main {
         let child_ptr = child_box as *const BoxNode;
         let parent_scroll = sanitize_viewport_scroll(factory.viewport_scroll());
-        let child_scroll =
-          Point::new(parent_scroll.x - child_loc_x, parent_scroll.y - child_loc_y);
+        let child_scroll = Point::new(parent_scroll.x - child_loc_x, parent_scroll.y - child_loc_y);
         let cache_key = if scroll_sensitive.contains(&child_ptr) {
           flex_cache_key_with_scroll(child_box, child_scroll)
         } else {
           flex_cache_key(child_box)
         };
-        if let Some(cached) = measured_fragments.find_fragment_by_border_size_exact(
-          cache_key,
-          Size::new(target_width, target_height),
-        ) {
+        if let Some(cached) = measured_fragments
+          .find_fragment_by_border_size_exact(cache_key, Size::new(target_width, target_height))
+        {
           child_plans[dom_idx] = ChildPlan::Reuse {
             stored_size: cached.border_size,
             fragment: cached.fragment,
@@ -8638,7 +8655,8 @@ mod tests {
     // nested container offscreen without being flex-shrunk to fit the viewport height.
     let constraints = LayoutConstraints::definite(viewport.width, 1000.0);
 
-    let fc = FlexFormattingContext::with_viewport(viewport).with_parallelism(LayoutParallelism::disabled());
+    let fc = FlexFormattingContext::with_viewport(viewport)
+      .with_parallelism(LayoutParallelism::disabled());
 
     let mut root_style = ComputedStyle::default();
     root_style.display = Display::Flex;
@@ -10657,7 +10675,8 @@ mod tests {
         item_style.height_keyword = None;
         let item_style = Arc::new(item_style);
 
-        let mut item_a = BoxNode::new_block(item_style.clone(), FormattingContextType::Block, vec![]);
+        let mut item_a =
+          BoxNode::new_block(item_style.clone(), FormattingContextType::Block, vec![]);
         item_a.id = 2;
         let mut item_b = BoxNode::new_block(item_style, FormattingContextType::Block, vec![]);
         item_b.id = 3;

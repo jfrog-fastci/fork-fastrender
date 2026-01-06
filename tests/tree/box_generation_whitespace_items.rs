@@ -66,4 +66,3 @@ fn grid_container_ignores_collapsible_whitespace_text_nodes() {
   assert!(node_has_class(&grid.children[0], "a"));
   assert!(node_has_class(&grid.children[1], "b"));
 }
-

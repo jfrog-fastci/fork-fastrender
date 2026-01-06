@@ -4348,7 +4348,10 @@ impl InlineFormattingContext {
     // with text descent (and vice versa).
     const STRUT_SAMPLE_TEXT: &str = "x";
     if !self.font_context.is_effectively_empty() {
-      if let Ok(runs) = self.pipeline.shape(STRUT_SAMPLE_TEXT, style, &self.font_context) {
+      if let Ok(runs) = self
+        .pipeline
+        .shape(STRUT_SAMPLE_TEXT, style, &self.font_context)
+      {
         for run in &runs {
           if let Some(metrics) = self.font_context.get_scaled_metrics_with_variations(
             run.font.as_ref(),
@@ -5430,12 +5433,8 @@ impl InlineFormattingContext {
 
     if let Some(style) = style {
       if style.position.is_relative() {
-        let positioned_style = resolve_positioned_style(
-          style,
-          relative_cb,
-          self.viewport_size,
-          &self.font_context,
-        );
+        let positioned_style =
+          resolve_positioned_style(style, relative_cb, self.viewport_size, &self.font_context);
         let viewport = relative_cb.viewport_size();
         let inline_base = relative_cb.inline_percentage_base();
         let block_base = relative_cb.block_percentage_base();
@@ -6453,8 +6452,10 @@ impl InlineFormattingContext {
     let mut hyphen_width: Option<f32> = None;
     let last_char = text_item.text.chars().last();
     let include_emergency_breaks =
-      matches!(text_item.style.word_break, WordBreak::Anywhere | WordBreak::BreakWord)
-      || matches!(text_item.style.overflow_wrap, OverflowWrap::Anywhere);
+      matches!(
+        text_item.style.word_break,
+        WordBreak::Anywhere | WordBreak::BreakWord
+      ) || matches!(text_item.style.overflow_wrap, OverflowWrap::Anywhere);
 
     for brk in &text_item.break_opportunities {
       if brk.kind == crate::text::line_break::BreakOpportunityKind::Emergency
@@ -9903,7 +9904,10 @@ impl InlineFormattingContext {
     let relative_cb_width = relative_cb_width.max(0.0);
     let relative_cb_height = relative_cb_height.max(0.0);
     let relative_cb = ContainingBlock::with_viewport_and_bases(
-      Rect::new(Point::ZERO, Size::new(relative_cb_width, relative_cb_height)),
+      Rect::new(
+        Point::ZERO,
+        Size::new(relative_cb_width, relative_cb_height),
+      ),
       self.viewport_size,
       Some(relative_cb_width),
       relative_cb_height.is_finite().then_some(relative_cb_height),
@@ -10603,14 +10607,9 @@ fn first_non_whitespace_shaped_run_in_item<'a>(
       {
         return None;
       }
-      text
-        .runs
-        .iter()
-        .find(|run| !run.text.trim().is_empty())
+      text.runs.iter().find(|run| !run.text.trim().is_empty())
     }
-    InlineItem::InlineBox(b) => {
-      first_non_whitespace_shaped_run_in_items(&b.children, strut_style)
-    }
+    InlineItem::InlineBox(b) => first_non_whitespace_shaped_run_in_items(&b.children, strut_style),
     InlineItem::Ruby(ruby) => {
       for segment in &ruby.segments {
         if let Some(run) =
@@ -10624,9 +10623,7 @@ fn first_non_whitespace_shaped_run_in_item<'a>(
           }
         }
         if let Some(items) = segment.annotation_bottom.as_deref() {
-          if let Some(run) =
-            first_non_whitespace_shaped_run_in_items(items, strut_style)
-          {
+          if let Some(run) = first_non_whitespace_shaped_run_in_items(items, strut_style) {
             return Some(run);
           }
         }
@@ -12121,11 +12118,8 @@ mod tests {
       vec![cell],
     );
 
-    let inline_table = BoxNode::new_inline_block(
-      table_style,
-      FormattingContextType::Table,
-      vec![row],
-    );
+    let inline_table =
+      BoxNode::new_inline_block(table_style, FormattingContextType::Table, vec![row]);
 
     let fc = ifc.factory.get(FormattingContextType::Table);
     let expected_border = fc
@@ -15901,10 +15895,7 @@ mod tests {
     let root = BoxNode::new_block(
       style.clone(),
       FormattingContextType::Block,
-      vec![
-        BoxNode::new_text(style.clone(), "a ".to_string()),
-        inline,
-      ],
+      vec![BoxNode::new_text(style.clone(), "a ".to_string()), inline],
     );
     let constraints = LayoutConstraints::definite_width(200.0);
 
@@ -15929,10 +15920,7 @@ mod tests {
     let root = BoxNode::new_block(
       style.clone(),
       FormattingContextType::Block,
-      vec![
-        BoxNode::new_text(style.clone(), "a ".to_string()),
-        outer,
-      ],
+      vec![BoxNode::new_text(style.clone(), "a ".to_string()), outer],
     );
     let constraints = LayoutConstraints::definite_width(200.0);
 
@@ -17726,8 +17714,14 @@ mod tests {
       BreakOpportunity::allowed(2),
       BreakOpportunity::with_hyphen(2, BreakType::Allowed, true),
     ];
-    let result =
-      apply_break_properties("abc", breaks, LineBreak::Auto, WordBreak::Normal, OverflowWrap::Normal, true);
+    let result = apply_break_properties(
+      "abc",
+      breaks,
+      LineBreak::Auto,
+      WordBreak::Normal,
+      OverflowWrap::Normal,
+      true,
+    );
 
     let mut at_1 = result.iter().filter(|b| b.byte_offset == 1);
     let brk_1 = at_1.next().expect("break at 1");
@@ -17752,8 +17746,14 @@ mod tests {
 
     let text = "hello world";
     let base = find_break_opportunities(text);
-    let result =
-      apply_break_properties(text, base, LineBreak::Auto, WordBreak::BreakWord, OverflowWrap::Normal, true);
+    let result = apply_break_properties(
+      text,
+      base,
+      LineBreak::Auto,
+      WordBreak::BreakWord,
+      OverflowWrap::Normal,
+      true,
+    );
 
     let space_break = result
       .iter()
@@ -17783,15 +17783,21 @@ mod tests {
     let text = "你好/世界";
     // Use explicit breaks so the test doesn't depend on UAX#14's specific break table for '/'.
     let breaks = vec![
-      BreakOpportunity::allowed(3),  // 你|好 (CJK-CJK) should be emergency-only
-      BreakOpportunity::allowed(6),  // 好|/ should remain
-      BreakOpportunity::allowed(7),  // /|世 should remain
+      BreakOpportunity::allowed(3), // 你|好 (CJK-CJK) should be emergency-only
+      BreakOpportunity::allowed(6), // 好|/ should remain
+      BreakOpportunity::allowed(7), // /|世 should remain
       BreakOpportunity::allowed(10), // 世|界 (CJK-CJK) should be emergency-only
       BreakOpportunity::allowed(13), // end of text
     ];
 
-    let result =
-      apply_break_properties(text, breaks, LineBreak::Auto, WordBreak::KeepAll, OverflowWrap::Normal, true);
+    let result = apply_break_properties(
+      text,
+      breaks,
+      LineBreak::Auto,
+      WordBreak::KeepAll,
+      OverflowWrap::Normal,
+      true,
+    );
     let offsets: Vec<usize> = result.iter().map(|b| b.byte_offset).collect();
     assert_eq!(offsets, vec![3, 6, 7, 10, 13]);
 

@@ -2388,12 +2388,7 @@ fn collect_column_info(
     let colspan = node.table_colspan();
     let rowspan = node.table_rowspan();
     if colspan > 1 || rowspan > 1 {
-      spanning_cells.push((
-        node.id,
-        colspan,
-        rowspan,
-        format_debug_info(node),
-      ));
+      spanning_cells.push((node.id, colspan, rowspan, format_debug_info(node)));
     }
   }
 
