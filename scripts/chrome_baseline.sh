@@ -614,11 +614,11 @@ PY
   # Use `timeout` if available; otherwise run without a hard kill.
   ran_ok=0
   if command -v timeout >/dev/null 2>&1; then
-    if timeout "${TIMEOUT}s" "${CHROME}" "${chrome_args[@]}" "${url}" >"${chrome_log}" 2>&1; then
+    if TMPDIR= TMP= TEMP= timeout "${TIMEOUT}s" "${CHROME}" "${chrome_args[@]}" "${url}" >"${chrome_log}" 2>&1; then
       ran_ok=1
     fi
   else
-    if "${CHROME}" "${chrome_args[@]}" "${url}" >"${chrome_log}" 2>&1; then
+    if TMPDIR= TMP= TEMP= "${CHROME}" "${chrome_args[@]}" "${url}" >"${chrome_log}" 2>&1; then
       ran_ok=1
     fi
   fi
@@ -640,11 +640,11 @@ PY
         printf "\n\n# Retrying with --headless\n" >>"${chrome_log}" 2>/dev/null || true
         ran_ok=0
         if command -v timeout >/dev/null 2>&1; then
-          if timeout "${TIMEOUT}s" "${CHROME}" "${chrome_args[@]}" "${url}" >>"${chrome_log}" 2>&1; then
+          if TMPDIR= TMP= TEMP= timeout "${TIMEOUT}s" "${CHROME}" "${chrome_args[@]}" "${url}" >>"${chrome_log}" 2>&1; then
             ran_ok=1
           fi
         else
-          if "${CHROME}" "${chrome_args[@]}" "${url}" >>"${chrome_log}" 2>&1; then
+          if TMPDIR= TMP= TEMP= "${CHROME}" "${chrome_args[@]}" "${url}" >>"${chrome_log}" 2>&1; then
             ran_ok=1
           fi
         fi

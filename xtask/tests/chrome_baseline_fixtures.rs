@@ -94,6 +94,68 @@ exit 0
   path
 }
 
+fn write_tmpdir_sensitive_stub_chrome(dir: &std::path::Path) -> PathBuf {
+  let template_png = dir.join("stub_screenshot.png");
+  image::DynamicImage::ImageRgba8(ImageBuffer::from_fn(
+    TEST_VIEWPORT_W,
+    TEST_VIEWPORT_H + HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX,
+    |_, y| {
+      if y < TEST_VIEWPORT_H {
+        Rgba([0, 0, 0, 255])
+      } else {
+        Rgba([255, 255, 255, 255])
+      }
+    },
+  ))
+  .save_with_format(&template_png, image::ImageFormat::Png)
+  .expect("write stub screenshot template PNG");
+
+  let path = dir.join("chrome");
+  fs::write(
+    &path,
+    r#"#!/usr/bin/env sh
+set -eu
+if [ "${1:-}" = "--version" ]; then
+  echo "Chromium 123.0.0.0"
+  exit 0
+fi
+
+if [ -n "${TMPDIR:-}" ] || [ -n "${TMP:-}" ] || [ -n "${TEMP:-}" ]; then
+  echo "stub chrome saw inherited temp env: TMPDIR=${TMPDIR:-} TMP=${TMP:-} TEMP=${TEMP:-}" >&2
+  exit 1
+fi
+
+echo "stub chrome args: $@"
+for arg in "$@"; do
+  case "$arg" in
+    --screenshot=*)
+      out="${arg#--screenshot=}"
+      mkdir -p "$(dirname "$out")"
+      cp "$0.stub_screenshot.png" "$out"
+      ;;
+  esac
+done
+exit 0
+"#,
+  )
+  .expect("write temp-sensitive stub chrome");
+
+  fs::copy(&template_png, format!("{}.stub_screenshot.png", path.display()))
+    .expect("copy stub screenshot template PNG");
+
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = fs::metadata(&path)
+      .expect("stat temp-sensitive chrome")
+      .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&path, perms).expect("chmod temp-sensitive chrome");
+  }
+
+  path
+}
+
 fn write_failing_stub_chrome(dir: &std::path::Path) -> PathBuf {
   let path = dir.join("chrome");
   fs::write(
@@ -396,6 +458,49 @@ fn chrome_baseline_fixtures_builds_expected_chrome_command_flags() {
 
   let image = image::open(out_dir.join("hello.png")).expect("decode cropped hello.png");
   assert_eq!(image.dimensions(), (TEST_VIEWPORT_W, TEST_VIEWPORT_H));
+}
+
+#[test]
+fn chrome_baseline_fixtures_does_not_inherit_tmpdir_env() {
+  let repo_root = repo_root();
+  let temp = tempdir().expect("temp dir");
+  let fixture_root = temp.path().join("fixtures");
+  let out_dir = temp.path().join("out");
+  let chrome_dir = temp.path().join("chrome");
+  fs::create_dir_all(&chrome_dir).expect("create chrome dir");
+  write_tmpdir_sensitive_stub_chrome(&chrome_dir);
+
+  write_fixture(&fixture_root, "hello");
+
+  let custom_tmpdir = temp.path().join("tmpdir");
+  fs::create_dir_all(&custom_tmpdir).expect("create custom tmpdir");
+  let custom_home = temp.path().join("home");
+  fs::create_dir_all(&custom_home).expect("create custom HOME");
+
+  let status = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(&repo_root)
+    .env(
+      "HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX",
+      HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX.to_string(),
+    )
+    .env("TMPDIR", &custom_tmpdir)
+    .env("HOME", &custom_home)
+    .arg("chrome-baseline-fixtures")
+    .arg("--fixture-dir")
+    .arg(&fixture_root)
+    .arg("--out-dir")
+    .arg(&out_dir)
+    .arg("--chrome-dir")
+    .arg(&chrome_dir)
+    .arg("--viewport")
+    .arg(TEST_VIEWPORT)
+    .arg("--fixtures")
+    .arg("hello")
+    .status()
+    .expect("run chrome-baseline-fixtures with TMPDIR override");
+  assert!(status.success(), "command exited with {status}");
+
+  assert!(out_dir.join("hello.png").is_file());
 }
 
 #[test]

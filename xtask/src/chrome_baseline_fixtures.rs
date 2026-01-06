@@ -1270,6 +1270,15 @@ fn run_chrome_with_timeout(
 
   let mut cmd = Command::new(chrome);
   cmd.args(args).arg(url);
+  // Some Chrome/Chromium builds (notably the snap-packaged Chromium used in CI-like containers)
+  // will crash with SIGTRAP when TMPDIR points outside their expected temp locations.
+  //
+  // This commonly happens when callers set TMPDIR to work around rustc filling `/tmp` during
+  // builds; ensure the spawned browser uses its default temp directory instead of inheriting the
+  // override.
+  cmd.env_remove("TMPDIR");
+  cmd.env_remove("TMP");
+  cmd.env_remove("TEMP");
   cmd
     .stdout(Stdio::from(log_file))
     .stderr(Stdio::from(stderr));
