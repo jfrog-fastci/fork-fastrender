@@ -10486,18 +10486,27 @@ fn hash_enum_discriminant<T>(value: &T, hasher: &mut DefaultHasher) {
   mem::discriminant(value).hash(hasher);
 }
 
+#[inline]
+fn f32_to_canonical_bits(value: f32) -> u32 {
+  if value == 0.0 {
+    0.0f32.to_bits()
+  } else {
+    value.to_bits()
+  }
+}
+
 fn hash_calc_length(calc: &crate::style::values::CalcLength, hasher: &mut DefaultHasher) {
   let terms = calc.terms();
   (terms.len() as u8).hash(hasher);
   for term in terms {
     hash_enum_discriminant(&term.unit, hasher);
-    term.value.to_bits().hash(hasher);
+    f32_to_canonical_bits(term.value).hash(hasher);
   }
 }
 
 fn hash_length(len: &Length, hasher: &mut DefaultHasher) {
   hash_enum_discriminant(&len.unit, hasher);
-  len.value.to_bits().hash(hasher);
+  f32_to_canonical_bits(len.value).hash(hasher);
   match &len.calc {
     Some(calc) => {
       1u8.hash(hasher);
@@ -10528,7 +10537,7 @@ fn hash_flex_basis(basis: &crate::style::types::FlexBasis, hasher: &mut DefaultH
 }
 
 fn hash_f32(value: f32, hasher: &mut DefaultHasher) {
-  value.to_bits().hash(hasher);
+  f32_to_canonical_bits(value).hash(hasher);
 }
 
 fn hash_overflow(overflow: &crate::style::types::Overflow, hasher: &mut DefaultHasher) {
@@ -10549,11 +10558,11 @@ fn hash_scrollbar_color(color: &crate::style::types::ScrollbarColor, hasher: &mu
       thumb.r.hash(hasher);
       thumb.g.hash(hasher);
       thumb.b.hash(hasher);
-      thumb.a.to_bits().hash(hasher);
+      hash_f32(thumb.a, hasher);
       track.r.hash(hasher);
       track.g.hash(hasher);
       track.b.hash(hasher);
-      track.a.to_bits().hash(hasher);
+      hash_f32(track.a, hasher);
     }
   }
 }
@@ -11183,7 +11192,7 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
       c.r.hash(&mut h);
       c.g.hash(&mut h);
       c.b.hash(&mut h);
-      c.a.to_bits().hash(&mut h);
+      hash_f32(c.a, &mut h);
     }
     None => 0u8.hash(&mut h),
   }
@@ -11211,8 +11220,8 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
     }
     None => 0u8.hash(&mut h),
   }
-  style.flex_grow.to_bits().hash(&mut h);
-  style.flex_shrink.to_bits().hash(&mut h);
+  hash_f32(style.flex_grow, &mut h);
+  hash_f32(style.flex_shrink, &mut h);
   hash_flex_basis(&style.flex_basis, &mut h);
   hash_aspect_ratio(&style.aspect_ratio, &mut h);
   // Intrinsic/text sizing influences: include font + text layout knobs.
@@ -11235,8 +11244,8 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   hash_enum_discriminant(&style.font_variant_emoji, &mut h);
   hash_enum_discriminant(&style.font_stretch, &mut h);
   hash_enum_discriminant(&style.font_kerning, &mut h);
-  style.font_size.to_bits().hash(&mut h);
-  style.root_font_size.to_bits().hash(&mut h);
+  hash_f32(style.font_size, &mut h);
+  hash_f32(style.root_font_size, &mut h);
   hash_line_height(&style.line_height, &mut h);
   hash_enum_discriminant(&style.direction, &mut h);
   hash_enum_discriminant(&style.unicode_bidi, &mut h);
@@ -11255,8 +11264,8 @@ fn style_layout_fingerprint(style: &ComputedStyle) -> u64 {
   hash_enum_discriminant(&style.ruby_position, &mut h);
   hash_enum_discriminant(&style.ruby_align, &mut h);
   hash_enum_discriminant(&style.ruby_merge, &mut h);
-  style.letter_spacing.to_bits().hash(&mut h);
-  style.word_spacing.to_bits().hash(&mut h);
+  hash_f32(style.letter_spacing, &mut h);
+  hash_f32(style.word_spacing, &mut h);
   hash_enum_discriminant(&style.white_space, &mut h);
   hash_enum_discriminant(&style.line_break, &mut h);
   hash_enum_discriminant(&style.hyphens, &mut h);
@@ -15591,6 +15600,20 @@ mod tests {
       style_layout_fingerprint(&a),
       style_layout_fingerprint(&b),
       "distinct calc() expressions must influence layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn layout_fingerprint_canonicalizes_negative_zero() {
+    let mut style_zero = ComputedStyle::default();
+    style_zero.width = Some(Length::px(0.0));
+    let mut style_neg_zero = style_zero.clone();
+    style_neg_zero.width = Some(Length::px(-0.0));
+
+    assert_eq!(
+      style_layout_fingerprint(&style_zero),
+      style_layout_fingerprint(&style_neg_zero),
+      "negative zero lengths should not affect layout fingerprints"
     );
   }
 

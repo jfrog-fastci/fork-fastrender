@@ -13681,7 +13681,6 @@ mod tests {
       Transform::identity(),
       None,
       None,
-      None,
     )
     .expect("backdrop filter");
     let allocations = recorder.take();
@@ -13725,7 +13724,6 @@ mod tests {
       Transform::identity(),
       None,
       None,
-      None,
     )
     .expect("backdrop filter warm-up");
 
@@ -13743,7 +13741,6 @@ mod tests {
       None,
       bounds,
       Transform::identity(),
-      None,
       None,
       None,
     )
@@ -13836,7 +13833,6 @@ mod tests {
         None,
         bounds,
         Transform::identity(),
-        None,
         None,
         None,
       )
