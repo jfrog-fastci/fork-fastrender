@@ -179,6 +179,15 @@ pub(crate) fn collect_variations_for_face(
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x100000001b3;
 
+#[inline]
+fn f32_to_canonical_bits(value: f32) -> u32 {
+  if value == 0.0 {
+    0.0f32.to_bits()
+  } else {
+    value.to_bits()
+  }
+}
+
 fn fnv1a_extend(mut hash: u64, byte: u8) -> u64 {
   hash ^= byte as u64;
   hash.wrapping_mul(FNV_PRIME)
@@ -188,7 +197,7 @@ fn fnv1a_extend(mut hash: u64, byte: u8) -> u64 {
 pub fn variation_hash(variations: &[Variation]) -> u64 {
   let mut entries: Vec<([u8; 4], u32)> = variations
     .iter()
-    .map(|v| (v.tag.to_bytes(), v.value.to_bits()))
+    .map(|v| (v.tag.to_bytes(), f32_to_canonical_bits(v.value)))
     .collect();
   entries.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
@@ -298,5 +307,14 @@ mod tests {
 
     assert_eq!(before, after_first);
     assert_eq!(after_first, after_second);
+  }
+
+  #[test]
+  fn variation_hash_canonicalizes_negative_zero() {
+    let tag = Tag::from_bytes(b"wght");
+    let positive = [Variation { tag, value: 0.0 }];
+    let negative = [Variation { tag, value: -0.0 }];
+
+    assert_eq!(variation_hash(&positive), variation_hash(&negative));
   }
 }

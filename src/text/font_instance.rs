@@ -11,6 +11,15 @@ use std::sync::Arc;
 use tiny_skia::{Path, PathBuilder, Rect, Transform};
 use ttf_parser::GlyphId as ParserGlyphId;
 
+#[inline]
+fn f32_to_canonical_bits(value: f32) -> u32 {
+  if value == 0.0 {
+    0.0f32.to_bits()
+  } else {
+    value.to_bits()
+  }
+}
+
 /// Hash variations to use in cache keys.
 pub fn variation_hash(variations: &[Variation]) -> u64 {
   let mut hasher = FxHasher::default();
@@ -20,9 +29,24 @@ pub fn variation_hash(variations: &[Variation]) -> u64 {
   }
   for (tag, value) in ordered {
     tag.hash(&mut hasher);
-    value.to_bits().hash(&mut hasher);
+    f32_to_canonical_bits(value).hash(&mut hasher);
   }
   hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use ttf_parser::Tag;
+
+  #[test]
+  fn variation_hash_canonicalizes_negative_zero() {
+    let tag = Tag::from_bytes(b"wght");
+    let positive = [Variation { tag, value: 0.0 }];
+    let negative = [Variation { tag, value: -0.0 }];
+
+    assert_eq!(variation_hash(&positive), variation_hash(&negative));
+  }
 }
 
 /// Bounding box for a glyph outline in font units (Y-up).
@@ -246,7 +270,9 @@ impl<'a> FontInstance<'a> {
           .or_else(|| build_ttf_outline(face.face(), glyph_id).and_then(|outline| outline.bbox))
       }
       // Variable fonts: use `skrifa` outline extraction so gvar/HVAR deltas are applied.
-      FontBackend::Skrifa { .. } => self.glyph_outline(glyph_id).and_then(|outline| outline.bbox),
+      FontBackend::Skrifa { .. } => self
+        .glyph_outline(glyph_id)
+        .and_then(|outline| outline.bbox),
     }
   }
 }

@@ -2821,7 +2821,8 @@ fn assign_fonts_internal(
 ) -> Result<Vec<FontRun>> {
   let descriptor_stats_enabled =
     font_cache.is_some() && text_diagnostics_enabled() && text_fallback_descriptor_stats_enabled();
-  let track_last_resort_fallbacks = text_diagnostics_enabled() || text_diagnostics_verbose_logging();
+  let track_last_resort_fallbacks =
+    text_diagnostics_enabled() || text_diagnostics_verbose_logging();
 
   let features: Arc<[Feature]> = collect_opentype_features(style).into_boxed_slice().into();
   let authored_variations = crate::text::variations::authored_variations_from_style(style);
@@ -5418,7 +5419,8 @@ fn shape_font_run(run: &FontRun) -> Result<ShapedRun> {
 
     if info.glyph_id == 0 {
       if let Some((clusters, can_suppress)) = suppress_optional_mark_notdefs.as_ref() {
-        let cluster_idx = match clusters.binary_search_by_key(&logical_cluster, |(start, _)| *start) {
+        let cluster_idx = match clusters.binary_search_by_key(&logical_cluster, |(start, _)| *start)
+        {
           Ok(idx) => idx,
           Err(0) => 0,
           Err(idx) => idx.saturating_sub(1),
@@ -5530,6 +5532,15 @@ struct ShapingCacheEntry {
   runs: Arc<Vec<ShapedRun>>,
 }
 
+#[inline]
+fn f32_to_canonical_bits(value: f32) -> u32 {
+  if value == 0.0 {
+    0.0f32.to_bits()
+  } else {
+    value.to_bits()
+  }
+}
+
 pub(crate) fn shaping_style_hash(style: &ComputedStyle) -> u64 {
   use std::hash::Hash;
   use std::hash::Hasher;
@@ -5541,20 +5552,16 @@ pub(crate) fn shaping_style_hash(style: &ComputedStyle) -> u64 {
   std::mem::discriminant(&style.text_orientation).hash(&mut hasher);
   style.language.hash(&mut hasher);
   style.font_family.hash(&mut hasher);
-  style.font_size.to_bits().hash(&mut hasher);
+  f32_to_canonical_bits(style.font_size).hash(&mut hasher);
   style.font_weight.to_u16().hash(&mut hasher);
-  style
-    .font_stretch
-    .to_percentage()
-    .to_bits()
-    .hash(&mut hasher);
+  f32_to_canonical_bits(style.font_stretch.to_percentage()).hash(&mut hasher);
 
   match style.font_style {
     CssFontStyle::Normal => 0u8.hash(&mut hasher),
     CssFontStyle::Italic => 1u8.hash(&mut hasher),
     CssFontStyle::Oblique(angle) => {
       2u8.hash(&mut hasher);
-      angle.unwrap_or_default().to_bits().hash(&mut hasher);
+      f32_to_canonical_bits(angle.unwrap_or_default()).hash(&mut hasher);
     }
   }
 
@@ -5631,7 +5638,7 @@ pub(crate) fn shaping_style_hash(style: &ComputedStyle) -> u64 {
     FontSizeAdjust::None => 0u8.hash(&mut hasher),
     FontSizeAdjust::Number(v) => {
       1u8.hash(&mut hasher);
-      v.to_bits().hash(&mut hasher);
+      f32_to_canonical_bits(v).hash(&mut hasher);
     }
     FontSizeAdjust::FromFont => 2u8.hash(&mut hasher),
   }
@@ -5642,7 +5649,7 @@ pub(crate) fn shaping_style_hash(style: &ComputedStyle) -> u64 {
   }
   for setting in style.font_variation_settings.iter() {
     setting.tag.hash(&mut hasher);
-    setting.value.to_bits().hash(&mut hasher);
+    f32_to_canonical_bits(setting.value).hash(&mut hasher);
   }
 
   hasher.finish()
@@ -7178,9 +7185,9 @@ mod tests {
     // Emoji sequences that contain joiners/variation selectors/keycaps/tag chars must never be
     // split into multiple shaping/fallback clusters.
     for text in [
-      "👨\u{200D}👩\u{200D}👧", // ZWJ sequence
-      "1\u{20E3}",            // keycap (digit + combining enclosing keycap)
-      "❤️",                   // variation selector-16
+      "👨\u{200D}👩\u{200D}👧",                                   // ZWJ sequence
+      "1\u{20E3}", // keycap (digit + combining enclosing keycap)
+      "❤️",        // variation selector-16
       "🏴\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}", // tag sequence (gb-sct)
     ] {
       let clusters = atomic_shaping_clusters(text);
@@ -7481,6 +7488,32 @@ mod tests {
     assert_eq!(stats_after_second.misses, 2);
     assert_eq!(stats_after_second.hits, 0);
     assert_eq!(pipeline.cache_len(), 2);
+  }
+
+  #[test]
+  fn shaping_style_hash_canonicalizes_negative_zero() {
+    let mut positive = ComputedStyle::default();
+    positive.font_size = 0.0;
+    positive.font_style = CssFontStyle::Oblique(Some(0.0));
+    positive.font_size_adjust = FontSizeAdjust::Number(0.0);
+    positive.font_variation_settings = vec![FontVariationSetting {
+      tag: *b"wght",
+      value: 0.0,
+    }]
+    .into();
+    let positive_hash = shaping_style_hash(&positive);
+
+    let mut negative = positive.clone();
+    negative.font_size = -0.0;
+    negative.font_style = CssFontStyle::Oblique(Some(-0.0));
+    negative.font_size_adjust = FontSizeAdjust::Number(-0.0);
+    negative.font_variation_settings = vec![FontVariationSetting {
+      tag: *b"wght",
+      value: -0.0,
+    }]
+    .into();
+
+    assert_eq!(positive_hash, shaping_style_hash(&negative));
   }
 
   #[test]
