@@ -146,6 +146,36 @@ fn filter_url_missing_in2_defaults_to_previous_result() {
 }
 
 #[test]
+fn filter_url_missing_in2_defaults_to_previous_for_fe_composite() {
+  let html = r#"
+  <style>
+    body { margin: 0; background: white; }
+    #box { width: 20px; height: 20px; background: rgb(0, 0, 255); filter: url(#comp); }
+    svg { position: absolute; width: 0; height: 0; }
+  </style>
+  <svg width="0" height="0" aria-hidden="true">
+    <defs>
+      <filter id="comp" x="0" y="0" width="20" height="20" filterUnits="userSpaceOnUse"
+              color-interpolation-filters="sRGB">
+        <feFlood flood-color="rgb(255,0,0)" result="a" />
+        <feFlood flood-color="rgb(0,0,0)" flood-opacity="0" />
+        <!-- Missing `in2` should default to the previous primitive result (transparent flood),
+             leaving the red flood unchanged. If `in2` incorrectly defaulted to SourceGraphic, the
+             `out` operator would erase the red flood because SourceGraphic is opaque. -->
+        <feComposite in="a" operator="out" />
+      </filter>
+    </defs>
+  </svg>
+  <div id="box"></div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let pixmap = renderer.render_html(html, 30, 30).expect("render");
+
+  assert_eq!(color_at(&pixmap, 10, 10), [255, 0, 0, 255]);
+}
+
+#[test]
 fn filter_url_fragment_can_be_combined_with_css_filter_functions() {
   let html = r#"
   <style>
