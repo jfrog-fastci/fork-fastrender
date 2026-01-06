@@ -1713,17 +1713,11 @@ impl FontDatabase {
     let mut emoji_fonts = Vec::new();
 
     for face in self.db.faces() {
-      let is_color_font = self.is_color_capable_font(face.id);
-      if matches!(is_color_font, Some(true)) {
-        emoji_fonts.push(face.id);
-        continue;
-      }
-
-      if is_color_font.is_none()
-        && face
-          .families
-          .iter()
-          .any(|(name, _)| Self::family_name_is_emoji_font(name))
+      if face
+        .families
+        .iter()
+        .any(|(name, _)| Self::family_name_is_emoji_font(name))
+        || matches!(self.is_color_capable_font(face.id), Some(true))
       {
         emoji_fonts.push(face.id);
       }
