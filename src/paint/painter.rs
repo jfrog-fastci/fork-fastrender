@@ -480,6 +480,25 @@ struct TextCacheKey {
   text: String,
 }
 
+#[inline]
+fn f32_to_canonical_bits(value: f32) -> u32 {
+  if value == 0.0 {
+    0.0f32.to_bits()
+  } else {
+    value.to_bits()
+  }
+}
+
+impl TextCacheKey {
+  fn new(style_ptr: usize, font_size: f32, text: &str) -> Self {
+    Self {
+      style_ptr,
+      font_size_bits: f32_to_canonical_bits(font_size),
+      text: text.to_string(),
+    }
+  }
+}
+
 fn dump_stack_enabled() -> bool {
   runtime::runtime_toggles().truthy("FASTR_DUMP_STACK")
 }
@@ -5398,12 +5417,7 @@ impl Painter {
 
     // Shape text with the full pipeline (bidi, script, fallback fonts)
     let style_ptr = style_for_shaping.as_ref() as *const ComputedStyle as usize;
-    let font_size_bits = style_for_shaping.font_size.to_bits();
-    let key = TextCacheKey {
-      style_ptr,
-      font_size_bits,
-      text: text.to_string(),
-    };
+    let key = TextCacheKey::new(style_ptr, style_for_shaping.font_size, text);
 
     let shaped_runs = if let Ok(cache) = self.text_shape_cache.lock() {
       cache.get(&key).cloned()
@@ -13392,6 +13406,13 @@ mod tests {
   use image::ImageEncoder;
   use image::RgbaImage;
   use std::sync::Arc;
+
+  #[test]
+  fn text_cache_key_canonicalizes_negative_zero_font_size() {
+    let key = TextCacheKey::new(1, 0.0, "hello");
+    let key_neg = TextCacheKey::new(1, -0.0, "hello");
+    assert_eq!(key, key_neg);
+  }
 
   fn make_empty_tree() -> FragmentTree {
     let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), vec![]);

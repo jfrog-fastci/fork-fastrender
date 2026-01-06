@@ -623,7 +623,11 @@ impl FontVariation {
   pub fn new(tag: Tag, value: f32) -> Self {
     Self {
       tag,
-      value_bits: value.to_bits(),
+      value_bits: if value == 0.0 {
+        0.0f32.to_bits()
+      } else {
+        value.to_bits()
+      },
     }
   }
 
@@ -2523,6 +2527,12 @@ mod tests {
   // ========================================================================
   // BorderRadii Tests
   // ========================================================================
+
+  #[test]
+  fn font_variation_canonicalizes_negative_zero() {
+    let tag = Tag::from_bytes(b"wght");
+    assert_eq!(FontVariation::new(tag, 0.0), FontVariation::new(tag, -0.0));
+  }
 
   #[test]
   fn test_border_radii_zero() {

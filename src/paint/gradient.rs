@@ -34,6 +34,15 @@ const BAYER_4X4_XY: [u8; 16] = [
   10, 6, 9, 5, //
 ];
 
+#[inline]
+fn f32_to_canonical_bits(value: f32) -> u32 {
+  if value == 0.0 {
+    0.0f32.to_bits()
+  } else {
+    value.to_bits()
+  }
+}
+
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 pub enum SpreadModeKey {
   Pad,
@@ -130,10 +139,10 @@ impl GradientPixmapCacheKey {
       width,
       height,
       params: vec![
-        start.x.to_bits(),
-        start.y.to_bits(),
-        end.x.to_bits(),
-        end.y.to_bits(),
+        f32_to_canonical_bits(start.x),
+        f32_to_canonical_bits(start.y),
+        f32_to_canonical_bits(end.x),
+        f32_to_canonical_bits(end.y),
         u32::from(dither_phase),
       ],
       lut_key: Some(GradientCacheKey::new(stops, spread, period, bucket)),
@@ -163,9 +172,9 @@ impl GradientPixmapCacheKey {
       width,
       height,
       params: vec![
-        center.x.to_bits(),
-        center.y.to_bits(),
-        canonical_angle.to_bits(),
+        f32_to_canonical_bits(center.x),
+        f32_to_canonical_bits(center.y),
+        f32_to_canonical_bits(canonical_angle),
       ],
       lut_key: Some(GradientCacheKey::new(stops, spread, period, bucket)),
     })
@@ -200,11 +209,11 @@ impl GradientPixmapCacheKey {
       width,
       height,
       params: vec![
-        center.x.to_bits(),
-        center.y.to_bits(),
-        canonical_angle.to_bits(),
-        scale_x.to_bits(),
-        scale_y.to_bits(),
+        f32_to_canonical_bits(center.x),
+        f32_to_canonical_bits(center.y),
+        f32_to_canonical_bits(canonical_angle),
+        f32_to_canonical_bits(scale_x),
+        f32_to_canonical_bits(scale_y),
       ],
       lut_key: Some(GradientCacheKey::new(stops, spread, period, bucket)),
     })
@@ -235,10 +244,10 @@ impl GradientPixmapCacheKey {
       width,
       height,
       params: vec![
-        center.x.to_bits(),
-        center.y.to_bits(),
-        radii.x.to_bits(),
-        radii.y.to_bits(),
+        f32_to_canonical_bits(center.x),
+        f32_to_canonical_bits(center.y),
+        f32_to_canonical_bits(radii.x),
+        f32_to_canonical_bits(radii.y),
       ],
       lut_key: Some(GradientCacheKey::new(
         stops,
@@ -428,15 +437,15 @@ impl GradientCacheKey {
       stops: stops
         .iter()
         .map(|(pos, color)| GradientStopKey {
-          pos_bits: pos.to_bits(),
+          pos_bits: f32_to_canonical_bits(*pos),
           r: color.r,
           g: color.g,
           b: color.b,
-          a_bits: color.a.to_bits(),
+          a_bits: f32_to_canonical_bits(color.a),
         })
         .collect(),
       spread: spread.into(),
-      period_bits: period.to_bits(),
+      period_bits: f32_to_canonical_bits(period),
       bucket,
     }
   }
@@ -1193,6 +1202,25 @@ mod tests {
   use super::*;
   use crate::render_control::{with_deadline, RenderDeadline};
   use std::time::Instant;
+
+  #[test]
+  fn gradient_cache_keys_canonicalize_negative_zero() {
+    let stops = &[(0.0, Rgba::WHITE), (1.0, Rgba::BLACK)];
+    let key = GradientCacheKey::new(stops, SpreadMode::Pad, 0.0, 0);
+    let key_neg = GradientCacheKey::new(stops, SpreadMode::Pad, -0.0, 0);
+    assert!(key == key_neg);
+
+    let start = Point::new(0.0, 0.0);
+    let end = Point::new(100.0, 100.0);
+    let start_neg = Point::new(-0.0, -0.0);
+    let end_neg = Point::new(100.0, 100.0);
+    let pixmap_key =
+      GradientPixmapCacheKey::linear(10, 10, start, end, SpreadMode::Pad, stops, 0, 0).unwrap();
+    let pixmap_key_neg =
+      GradientPixmapCacheKey::linear(10, 10, start_neg, end_neg, SpreadMode::Pad, stops, 0, 0)
+        .unwrap();
+    assert!(pixmap_key == pixmap_key_neg);
+  }
 
   fn naive_conic(
     width: u32,

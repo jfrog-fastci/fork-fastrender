@@ -12929,19 +12929,17 @@ mod tests {
     let parallelism = PaintParallelism::enabled();
 
     let paint_threads = Arc::new(crate::debug::runtime::RuntimeToggles::from_map(
-      std::collections::HashMap::from([(
-        "FASTR_PAINT_THREADS".to_string(),
-        "2".to_string(),
-      )]),
+      std::collections::HashMap::from([("FASTR_PAINT_THREADS".to_string(), "2".to_string())]),
     ));
 
-    let report = crate::debug::runtime::with_thread_runtime_toggles(Arc::clone(&paint_threads), || {
-      DisplayListRenderer::new(512, 512, Rgba::WHITE, FontContext::new())
-        .unwrap()
-        .with_parallelism(parallelism)
-        .render_with_report(&list)
-        .unwrap()
-    });
+    let report =
+      crate::debug::runtime::with_thread_runtime_toggles(Arc::clone(&paint_threads), || {
+        DisplayListRenderer::new(512, 512, Rgba::WHITE, FontContext::new())
+          .unwrap()
+          .with_parallelism(parallelism)
+          .render_with_report(&list)
+          .unwrap()
+      });
     assert!(
       !report.parallel_used,
       "expected preserve-3d scene compositor to force serial paint"
@@ -12969,15 +12967,20 @@ mod tests {
           .with_parallelism(parallelism)
       },
     );
-    let report = crate::debug::runtime::with_thread_runtime_toggles(Arc::clone(&paint_threads), || {
-      renderer.render_with_report(&list).unwrap()
-    });
+    let report =
+      crate::debug::runtime::with_thread_runtime_toggles(Arc::clone(&paint_threads), || {
+        renderer.render_with_report(&list).unwrap()
+      });
     assert!(
       report.parallel_used,
       "expected preserve-3d scene compositor toggle to allow parallel tiling (fallback_reason={:?})",
       report.fallback_reason
     );
-    assert!(report.tiles > 1, "expected multiple tiles, got {}", report.tiles);
+    assert!(
+      report.tiles > 1,
+      "expected multiple tiles, got {}",
+      report.tiles
+    );
   }
 
   #[test]

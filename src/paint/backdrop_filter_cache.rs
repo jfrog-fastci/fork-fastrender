@@ -12,6 +12,15 @@ use tiny_skia::Pixmap;
 
 type BackdropFilterHasher = BuildHasherDefault<FxHasher>;
 
+#[inline]
+fn f32_to_canonical_bits(value: f32) -> u32 {
+  if value == 0.0 {
+    0.0f32.to_bits()
+  } else {
+    value.to_bits()
+  }
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(crate) struct BackdropFilterCacheKey {
   pub(crate) width: u32,
@@ -33,12 +42,12 @@ impl BackdropFilterCacheKey {
     Some(Self {
       width: pixmap.width(),
       height: pixmap.height(),
-      scale_bits: scale.to_bits(),
+      scale_bits: f32_to_canonical_bits(scale),
       filter_hash,
-      bbox_x_bits: bbox.x().to_bits(),
-      bbox_y_bits: bbox.y().to_bits(),
-      bbox_w_bits: bbox.width().to_bits(),
-      bbox_h_bits: bbox.height().to_bits(),
+      bbox_x_bits: f32_to_canonical_bits(bbox.x()),
+      bbox_y_bits: f32_to_canonical_bits(bbox.y()),
+      bbox_w_bits: f32_to_canonical_bits(bbox.width()),
+      bbox_h_bits: f32_to_canonical_bits(bbox.height()),
       fingerprint: pixel_fingerprint(pixmap.data()),
     })
   }
@@ -51,39 +60,39 @@ pub(crate) fn hash_filter_chain(filters: &[ResolvedFilter]) -> u64 {
     match filter {
       ResolvedFilter::Blur(radius) => {
         hasher.write_u8(0);
-        hasher.write_u32(radius.to_bits());
+        hasher.write_u32(f32_to_canonical_bits(*radius));
       }
       ResolvedFilter::Brightness(v) => {
         hasher.write_u8(1);
-        hasher.write_u32(v.to_bits());
+        hasher.write_u32(f32_to_canonical_bits(*v));
       }
       ResolvedFilter::Contrast(v) => {
         hasher.write_u8(2);
-        hasher.write_u32(v.to_bits());
+        hasher.write_u32(f32_to_canonical_bits(*v));
       }
       ResolvedFilter::Grayscale(v) => {
         hasher.write_u8(3);
-        hasher.write_u32(v.to_bits());
+        hasher.write_u32(f32_to_canonical_bits(*v));
       }
       ResolvedFilter::Sepia(v) => {
         hasher.write_u8(4);
-        hasher.write_u32(v.to_bits());
+        hasher.write_u32(f32_to_canonical_bits(*v));
       }
       ResolvedFilter::Saturate(v) => {
         hasher.write_u8(5);
-        hasher.write_u32(v.to_bits());
+        hasher.write_u32(f32_to_canonical_bits(*v));
       }
       ResolvedFilter::HueRotate(v) => {
         hasher.write_u8(6);
-        hasher.write_u32(v.to_bits());
+        hasher.write_u32(f32_to_canonical_bits(*v));
       }
       ResolvedFilter::Invert(v) => {
         hasher.write_u8(7);
-        hasher.write_u32(v.to_bits());
+        hasher.write_u32(f32_to_canonical_bits(*v));
       }
       ResolvedFilter::Opacity(v) => {
         hasher.write_u8(8);
-        hasher.write_u32(v.to_bits());
+        hasher.write_u32(f32_to_canonical_bits(*v));
       }
       ResolvedFilter::DropShadow {
         offset_x,
@@ -93,14 +102,14 @@ pub(crate) fn hash_filter_chain(filters: &[ResolvedFilter]) -> u64 {
         color,
       } => {
         hasher.write_u8(9);
-        hasher.write_u32(offset_x.to_bits());
-        hasher.write_u32(offset_y.to_bits());
-        hasher.write_u32(blur_radius.to_bits());
-        hasher.write_u32(spread.to_bits());
+        hasher.write_u32(f32_to_canonical_bits(*offset_x));
+        hasher.write_u32(f32_to_canonical_bits(*offset_y));
+        hasher.write_u32(f32_to_canonical_bits(*blur_radius));
+        hasher.write_u32(f32_to_canonical_bits(*spread));
         hasher.write_u8(color.r);
         hasher.write_u8(color.g);
         hasher.write_u8(color.b);
-        hasher.write_u32(color.a.to_bits());
+        hasher.write_u32(f32_to_canonical_bits(color.a));
       }
       ResolvedFilter::SvgFilter(filter) => {
         hasher.write_u8(10);
@@ -109,6 +118,29 @@ pub(crate) fn hash_filter_chain(filters: &[ResolvedFilter]) -> u64 {
     }
   }
   hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn filter_chain_hash_canonicalizes_negative_zero() {
+    let pos = [ResolvedFilter::Blur(0.0)];
+    let neg = [ResolvedFilter::Blur(-0.0)];
+    assert_eq!(hash_filter_chain(&pos), hash_filter_chain(&neg));
+  }
+
+  #[test]
+  fn backdrop_filter_cache_key_canonicalizes_negative_zero() {
+    let pixmap = Pixmap::new(1, 1).expect("pixmap allocation failed");
+    let bbox_pos = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+    let bbox_neg = Rect::from_xywh(-0.0, -0.0, 10.0, 10.0);
+
+    let pos = BackdropFilterCacheKey::new(1, 0.0, bbox_pos, &pixmap).expect("key");
+    let neg = BackdropFilterCacheKey::new(1, -0.0, bbox_neg, &pixmap).expect("key");
+    assert_eq!(pos, neg);
+  }
 }
 
 pub(crate) trait BackdropFilterCacheOps {
