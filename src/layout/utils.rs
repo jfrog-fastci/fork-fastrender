@@ -1536,6 +1536,8 @@ mod tests {
     style.width_keyword = None;
     style.padding_left = Length::px(10.0);
     style.padding_right = Length::px(10.0);
+    style.border_left_style = crate::style::types::BorderStyle::Solid;
+    style.border_right_style = crate::style::types::BorderStyle::Solid;
     style.border_left_width = Length::px(5.0);
     style.border_right_width = Length::px(5.0);
 
