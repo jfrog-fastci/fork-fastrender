@@ -1909,6 +1909,73 @@ mod tests {
       "variant bytes should only be retained when --save-variants is enabled"
     );
   }
+
+  #[test]
+  fn record_variant_caches_baseline_rgba_for_multiple_variants() {
+    let temp = tempdir().expect("tempdir");
+    let out_dir = temp.path();
+
+    let stem = "fixture";
+    let baseline_bytes = pixmap_bytes_rgba(1, 1, [255, 0, 0, 255]);
+    let (baseline_hi, baseline_lo) = hash128(&baseline_bytes);
+    let size = IntSize::from_wh(1, 1).expect("size");
+    let baseline_pixmap =
+      Pixmap::from_vec(baseline_bytes.clone(), size).expect("baseline pixmap");
+    let baseline_png = encode_image(&baseline_pixmap, OutputFormat::Png).expect("encode baseline");
+    let baseline_png_path = output_path_for(out_dir, stem);
+    fs::write(&baseline_png_path, baseline_png).expect("write baseline png");
+
+    let mut state = FixtureDeterminism {
+      stem: stem.to_string(),
+      variants: vec![VariantRecord {
+        hash_hi: baseline_hi,
+        hash_lo: baseline_lo,
+        width: 1,
+        height: 1,
+        count: 1,
+        diff_pixels_vs_baseline: Some(0),
+        first_mismatch_vs_baseline: None,
+        first_mismatch_rgba_vs_baseline: None,
+        data: None,
+      }],
+      baseline_rgba: None,
+    };
+
+    record_variant(
+      &mut state,
+      PixmapBytes {
+        width: 1,
+        height: 1,
+        data: pixmap_bytes_rgba(1, 1, [0, 255, 0, 255]),
+      },
+      out_dir,
+      false,
+    );
+    assert!(state.baseline_rgba.is_some(), "expected baseline RGBA to be cached");
+
+    // If the baseline PNG disappears, subsequent variant diffs should still work because the
+    // baseline decode is cached in memory.
+    fs::remove_file(&baseline_png_path).expect("remove baseline png");
+
+    record_variant(
+      &mut state,
+      PixmapBytes {
+        width: 1,
+        height: 1,
+        data: pixmap_bytes_rgba(1, 1, [0, 0, 255, 255]),
+      },
+      out_dir,
+      false,
+    );
+
+    assert_eq!(state.variants.len(), 3);
+    assert_eq!(state.variants[2].diff_pixels_vs_baseline, Some(1));
+    assert_eq!(state.variants[2].first_mismatch_vs_baseline, Some((0, 0)));
+    assert_eq!(
+      state.variants[2].first_mismatch_rgba_vs_baseline,
+      Some(([255, 0, 0, 255], [0, 0, 255, 255]))
+    );
+  }
 }
 
 fn build_snapshot(artifacts: &RenderArtifacts) -> io::Result<PipelineSnapshot> {
