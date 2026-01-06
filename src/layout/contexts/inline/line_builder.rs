@@ -2587,18 +2587,19 @@ impl<'a> LineBuilder<'a> {
       return Ok(());
     }
     check_layout_deadline(&mut self.deadline_counter)?;
-
     match item {
-      InlineItem::SoftBreak => return self.finish_line(),
-      other => {
-        // Keep processing below.
-        return self.add_item_internal(other);
-      }
+      InlineItem::SoftBreak => self.finish_line(),
+      other => self.add_item_internal(other),
     }
   }
 
   fn add_item_internal(&mut self, item: InlineItem) -> Result<(), LayoutError> {
-    let (item, item_width) = item.resolve_width_at(self.current_x);
+    // Tabs resolve to the next tab stop, which is defined relative to the inline start edge of the
+    // line box. `current_x` tracks the width used by items *before* indentation; indentation is
+    // applied later during fragment placement. Include the authored indentation here so tab stops
+    // line up correctly on indented lines.
+    let start_x = self.current_x + self.current_line.indent;
+    let (item, item_width) = item.resolve_width_at(start_x);
     let line_width = self.current_line_width();
 
     let kind = match &item {
@@ -2640,7 +2641,8 @@ impl<'a> LineBuilder<'a> {
         self.place_item_with_width(item, item_width);
       } else {
         self.finish_line()?;
-        let (resolved, width) = item.resolve_width_at(self.current_x);
+        let start_x = self.current_x + self.current_line.indent;
+        let (resolved, width) = item.resolve_width_at(start_x);
         self.place_item_with_width(resolved, width);
       }
     }
@@ -4065,6 +4067,28 @@ mod tests {
     )
   }
 
+  fn make_builder_with_indent(width: f32, indent: f32) -> LineBuilder<'static> {
+    let strut = make_strut_metrics();
+    LineBuilder::new(
+      width,
+      width,
+      true,
+      TextWrap::Auto,
+      indent,
+      false,
+      false,
+      strut,
+      ShapingPipeline::new(),
+      FontContext::new(),
+      Some(Level::ltr()),
+      UnicodeBidi::Normal,
+      Direction::Ltr,
+      None,
+      0.0,
+      None,
+    )
+  }
+
   #[test]
   fn reshape_cache_canonicalizes_negative_zero_spacing() {
     let font_context = FontContext::new();
@@ -4213,6 +4237,57 @@ mod tests {
       brk2.adds_hyphen,
       "cluster breaks should not clear hyphen flags"
     );
+  }
+
+  #[test]
+  fn tab_width_accounts_for_text_indent_at_line_start() {
+    let mut builder = make_builder_with_indent(200.0, 3.0);
+    builder
+      .add_item(InlineItem::Tab(TabItem::new(
+        Arc::new(ComputedStyle::default()),
+        make_strut_metrics(),
+        8.0,
+        true,
+      )))
+      .unwrap();
+
+    let lines = builder.finish().unwrap().lines;
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].indent, 3.0);
+    assert_eq!(lines[0].items.len(), 1);
+
+    let tab_width = match &lines[0].items[0].item {
+      InlineItem::Tab(tab) => tab.width(),
+      other => panic!("expected TabItem, got {other:?}"),
+    };
+    assert!((tab_width - 5.0).abs() < 0.001, "tab width was {tab_width}");
+  }
+
+  #[test]
+  fn tab_width_accounts_for_text_indent_after_preceding_text() {
+    let mut builder = make_builder_with_indent(200.0, 3.0);
+    builder
+      .add_item(InlineItem::Text(make_text_item("a", 4.0)))
+      .unwrap();
+    builder
+      .add_item(InlineItem::Tab(TabItem::new(
+        Arc::new(ComputedStyle::default()),
+        make_strut_metrics(),
+        8.0,
+        true,
+      )))
+      .unwrap();
+
+    let lines = builder.finish().unwrap().lines;
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].indent, 3.0);
+    assert_eq!(lines[0].items.len(), 2);
+
+    let tab_width = match &lines[0].items[1].item {
+      InlineItem::Tab(tab) => tab.width(),
+      other => panic!("expected TabItem, got {other:?}"),
+    };
+    assert!((tab_width - 1.0).abs() < 0.001, "tab width was {tab_width}");
   }
 
   fn make_text_item_with_bidi(text: &str, advance: f32, ub: UnicodeBidi) -> TextItem {
