@@ -4479,7 +4479,13 @@ impl FlexFormattingContext {
       check_layout_deadline(&mut deadline_counter)?;
       let child = *child;
       let mut resolved_style = child_style.0.clone();
-      self.apply_flex_intrinsic_size_keywords(child, false, &mut resolved_style)?;
+      self.apply_flex_intrinsic_size_keywords(
+        child,
+        false,
+        Some(root_style),
+        Some(constraints),
+        &mut resolved_style,
+      )?;
       self.apply_flex_auto_min_size(child, false, Some(root_style), &mut resolved_style)?;
       self.apply_flex_fit_content_keywords(
         child,
@@ -4590,7 +4596,7 @@ impl FlexFormattingContext {
   ) -> Result<taffy::style::Style, LayoutError> {
     let mut style =
       self.computed_style_to_taffy_base(box_node.style.as_ref(), is_root, containing_flex)?;
-    self.apply_flex_intrinsic_size_keywords(box_node, is_root, &mut style)?;
+    self.apply_flex_intrinsic_size_keywords(box_node, is_root, containing_flex, None, &mut style)?;
     self.apply_flex_auto_min_size(box_node, is_root, containing_flex, &mut style)?;
     Ok(style)
   }
@@ -4759,6 +4765,8 @@ impl FlexFormattingContext {
     &self,
     box_node: &BoxNode,
     is_root: bool,
+    containing_flex: Option<&ComputedStyle>,
+    constraints: Option<&LayoutConstraints>,
     taffy_style: &mut taffy::style::Style,
   ) -> Result<(), LayoutError> {
     if is_root {
@@ -4772,6 +4780,66 @@ impl FlexFormattingContext {
     let item_fc = self.factory.get(item_fc_type);
     let box_id = box_node.id();
     let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+
+    // Intrinsic size computations treat percentage padding/borders as 0px because the containing
+    // block width is not yet known. When applying an intrinsic keyword to a flex item in a
+    // definite-width flex container, rebase those percentage edges against the actual flex
+    // container content box width (CSS Sizing L3 §4.5 / §4.7).
+    //
+    // This mirrors the rebasing behavior in the block formatting context and ensures
+    // `width/max-width/min-width: max-content|min-content` include percentage padding/borders.
+    let mut edges_base0_w: Option<f32> = None;
+    let mut edges_base0_h: Option<f32> = None;
+    let mut edges_actual_w: Option<f32> = None;
+    let mut edges_actual_h: Option<f32> = None;
+    if let (Some(container_style), Some(constraints)) = (containing_flex, constraints) {
+      let content_base = match self.fit_content_available_for_axis(
+        Axis::Horizontal,
+        Some(container_style),
+        constraints,
+      ) {
+        FitContentAvailable::Definite(v) if v.is_finite() => Some(v.max(0.0)),
+        _ => None,
+      };
+      if let Some(content_base) = content_base {
+        let axis_edges = |axis: Axis, percentage_base: f32| -> f32 {
+          let padding_left = self.resolve_length_for_width(style.padding_left, percentage_base, style);
+          let padding_right =
+            self.resolve_length_for_width(style.padding_right, percentage_base, style);
+          let padding_top = self.resolve_length_for_width(style.padding_top, percentage_base, style);
+          let padding_bottom =
+            self.resolve_length_for_width(style.padding_bottom, percentage_base, style);
+          let border_left =
+            self.resolve_length_for_width(style.used_border_left_width(), percentage_base, style);
+          let border_right =
+            self.resolve_length_for_width(style.used_border_right_width(), percentage_base, style);
+          let border_top =
+            self.resolve_length_for_width(style.used_border_top_width(), percentage_base, style);
+          let border_bottom =
+            self.resolve_length_for_width(style.used_border_bottom_width(), percentage_base, style);
+          match axis {
+            Axis::Horizontal => padding_left + padding_right + border_left + border_right,
+            Axis::Vertical => padding_top + padding_bottom + border_top + border_bottom,
+          }
+        };
+
+        edges_base0_w = Some(axis_edges(Axis::Horizontal, 0.0));
+        edges_base0_h = Some(axis_edges(Axis::Vertical, 0.0));
+        edges_actual_w = Some(axis_edges(Axis::Horizontal, content_base));
+        edges_actual_h = Some(axis_edges(Axis::Vertical, content_base));
+      }
+    }
+    let rebase_intrinsic_border_box = |border_box: f32, axis: Axis| -> f32 {
+      let (edges_base0, edges_actual) = match axis {
+        Axis::Horizontal => (edges_base0_w, edges_actual_w),
+        Axis::Vertical => (edges_base0_h, edges_actual_h),
+      };
+      if let (Some(edges_base0), Some(edges_actual)) = (edges_base0, edges_actual) {
+        (border_box - edges_base0 + edges_actual).max(0.0)
+      } else {
+        border_box.max(0.0)
+      }
+    };
 
     // When computing intrinsic sizes for an axis that is itself specified as an intrinsic keyword,
     // clear that size property to avoid self-recursion.
@@ -4838,7 +4906,8 @@ impl FlexFormattingContext {
       match intrinsic_physical_width(mode) {
         Ok(border_box) => {
           if border_box.is_finite() {
-            taffy_style.size.width = Dimension::length(border_box.max(0.0));
+            let rebased = rebase_intrinsic_border_box(border_box, Axis::Horizontal);
+            taffy_style.size.width = Dimension::length(rebased);
           }
         }
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -4850,7 +4919,8 @@ impl FlexFormattingContext {
       match intrinsic_physical_height(mode) {
         Ok(border_box) => {
           if border_box.is_finite() {
-            taffy_style.size.height = Dimension::length(border_box.max(0.0));
+            let rebased = rebase_intrinsic_border_box(border_box, Axis::Vertical);
+            taffy_style.size.height = Dimension::length(rebased);
           }
         }
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -4862,7 +4932,8 @@ impl FlexFormattingContext {
       match intrinsic_physical_width(mode) {
         Ok(border_box) => {
           if border_box.is_finite() {
-            taffy_style.min_size.width = Dimension::length(border_box.max(0.0));
+            let rebased = rebase_intrinsic_border_box(border_box, Axis::Horizontal);
+            taffy_style.min_size.width = Dimension::length(rebased);
           }
         }
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -4874,7 +4945,8 @@ impl FlexFormattingContext {
       match intrinsic_physical_height(mode) {
         Ok(border_box) => {
           if border_box.is_finite() {
-            taffy_style.min_size.height = Dimension::length(border_box.max(0.0));
+            let rebased = rebase_intrinsic_border_box(border_box, Axis::Vertical);
+            taffy_style.min_size.height = Dimension::length(rebased);
           }
         }
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -4886,7 +4958,8 @@ impl FlexFormattingContext {
       match intrinsic_physical_width(mode) {
         Ok(border_box) => {
           if border_box.is_finite() {
-            taffy_style.max_size.width = Dimension::length(border_box.max(0.0));
+            let rebased = rebase_intrinsic_border_box(border_box, Axis::Horizontal);
+            taffy_style.max_size.width = Dimension::length(rebased);
           }
         }
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
@@ -4898,7 +4971,8 @@ impl FlexFormattingContext {
       match intrinsic_physical_height(mode) {
         Ok(border_box) => {
           if border_box.is_finite() {
-            taffy_style.max_size.height = Dimension::length(border_box.max(0.0));
+            let rebased = rebase_intrinsic_border_box(border_box, Axis::Vertical);
+            taffy_style.max_size.height = Dimension::length(rebased);
           }
         }
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),

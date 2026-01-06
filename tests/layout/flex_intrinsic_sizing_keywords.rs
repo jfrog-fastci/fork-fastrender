@@ -6,6 +6,7 @@ use fastrender::layout::formatting_context::FormattingContext;
 use fastrender::layout::formatting_context::IntrinsicSizingMode;
 use fastrender::style::display::Display;
 use fastrender::style::display::FormattingContextType;
+use fastrender::style::types::BorderStyle;
 use fastrender::style::types::IntrinsicSizeKeyword;
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
@@ -229,5 +230,96 @@ fn flex_item_width_fit_content_clamps_against_container_width_when_constraints_a
   assert!(
     (b_width - expected_b).abs() < 0.5,
     "expected fixed item to shrink to ~{expected_b:.2}, got {b_width:.2}"
+  );
+}
+
+#[test]
+fn flex_item_width_max_content_rebases_percent_padding_and_borders() {
+  let container_width = 300.0;
+
+  let mut flex_container_style = ComputedStyle::default();
+  flex_container_style.display = Display::Flex;
+  flex_container_style.width = Some(Length::px(container_width));
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  // Prevent flexbox from shrinking the item back to the container width; we want to validate the
+  // resolved max-content *base* size (which may legitimately overflow).
+  child_style.flex_shrink = 0.0;
+  child_style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+  child_style.padding_left = Length::percent(10.0);
+  child_style.padding_right = Length::px(5.0);
+  child_style.border_left_style = BorderStyle::Solid;
+  child_style.border_right_style = BorderStyle::Solid;
+  child_style.border_left_width = Length::px(2.0);
+  child_style.border_right_width = Length::px(2.0);
+
+  let text = BoxNode::new_text(
+    Arc::new(ComputedStyle::default()),
+    "word ".repeat(20),
+  );
+  let child = BoxNode::new_block(
+    Arc::new(child_style),
+    FormattingContextType::Block,
+    vec![text],
+  );
+
+  // Compute the expected max-content border-box size by taking the intrinsic border-box size
+  // computed with a 0px percentage base and rebasing the percentage padding/border edges against
+  // the actual containing block width.
+  let mut measure_style = child.style.as_ref().clone();
+  measure_style.width_keyword = None;
+  let measure = BoxNode::new_block(
+    Arc::new(measure_style),
+    FormattingContextType::Block,
+    child.children.clone(),
+  );
+  let block_fc = BlockFormattingContext::new();
+  let intrinsic_base0 = block_fc
+    .compute_intrinsic_inline_size(&measure, IntrinsicSizingMode::MaxContent)
+    .expect("intrinsic max-content size");
+  let edges = |percentage_base: f32| -> f32 {
+    measure
+      .style
+      .padding_left
+      .resolve_against(percentage_base)
+      .unwrap_or(0.0)
+      + measure
+        .style
+        .padding_right
+        .resolve_against(percentage_base)
+        .unwrap_or(0.0)
+      + measure
+        .style
+        .used_border_left_width()
+        .resolve_against(percentage_base)
+        .unwrap_or(0.0)
+      + measure
+        .style
+        .used_border_right_width()
+        .resolve_against(percentage_base)
+        .unwrap_or(0.0)
+  };
+  let edges_base0 = edges(0.0);
+  let edges_actual = edges(container_width);
+  let expected = (intrinsic_base0 - edges_base0 + edges_actual).max(0.0);
+
+  let flex_container = BoxNode::new_block(
+    Arc::new(flex_container_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
+  let flex_fc = FlexFormattingContext::new();
+  let fragment = flex_fc
+    .layout(
+      &flex_container,
+      &LayoutConstraints::new(AvailableSpace::Definite(container_width), AvailableSpace::Indefinite),
+    )
+    .expect("flex layout should succeed");
+  let actual = fragment.children[0].bounds.width();
+
+  assert!(
+    (actual - expected).abs() < 0.5,
+    "expected flex max-content width to include rebased percentage padding (expected {expected:.2}, got {actual:.2})"
   );
 }
