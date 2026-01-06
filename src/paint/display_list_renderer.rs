@@ -1222,6 +1222,7 @@ fn apply_backdrop_filters(
   scale: f32,
   clip_mask: Option<&Mask>,
   clip_bounds: Option<Rect>,
+  clip_origin: (i32, i32),
   filter_bounds: Rect,
   world_to_dest: Transform,
   blur_cache: Option<&mut (dyn BlurCacheOps + 'static)>,
@@ -1428,6 +1429,16 @@ fn apply_backdrop_filters(
 
   let mut write_rect = bounds_in_dest;
   if let Some(clip) = clip_bounds {
+    let clip = if clip_origin.0 != 0 || clip_origin.1 != 0 {
+      Rect::from_xywh(
+        clip.x() + clip_origin.0 as f32,
+        clip.y() + clip_origin.1 as f32,
+        clip.width(),
+        clip.height(),
+      )
+    } else {
+      clip
+    };
     let Some(intersection) = write_rect.intersection(clip) else {
       scratch.region = Some(region);
       if let Some(mask) = radii_mask {
@@ -1472,12 +1483,14 @@ fn apply_backdrop_filters(
     return Ok(());
   }
 
-  let src_start_x = (write_x as i32 + dest_origin_in_src.0 - clamped_x as i32).max(0) as u32;
-  let src_start_y = (write_y as i32 + dest_origin_in_src.1 - clamped_y as i32).max(0) as u32;
+  let src_start_x =
+    (write_x as i32 + dest_origin_in_src.0 - clamped_x as i32).max(0) as u32;
+  let src_start_y =
+    (write_y as i32 + dest_origin_in_src.1 - clamped_y as i32).max(0) as u32;
 
   let dest_bytes_per_row = dest.width() as usize * 4;
   let clip_mask_data =
-    clip_mask.map(|mask| (mask.data(), mask.width() as usize, mask.height() as usize));
+    clip_mask.map(|mask| (mask.data(), mask.width() as i32, mask.height() as i32));
   let radii_mask_data = radii_mask.as_ref().map(|mask| mask.data());
 
   let write_result = (|| -> RenderResult<()> {
@@ -1499,7 +1512,7 @@ fn apply_backdrop_filters(
         check_active_periodic(&mut deadline_counter, 32, RenderStage::Paint)?;
         let dst_idx = (write_y as usize + row) * dest_bytes_per_row + write_x as usize * 4;
         let src_idx = ((src_start_y as usize + row) * filtered_width + src_start_x as usize) * 4;
-        let mask_y = write_y as usize + row;
+        let mask_y = write_y as i32 + row as i32 - clip_origin.1;
 
         for col in 0..write_w as usize {
           if pixel_counter & 4095 == 0 {
@@ -1511,11 +1524,11 @@ fn apply_backdrop_filters(
           let mut coverage = 255u16;
 
           if let Some((mask_data, mask_w, mask_h)) = &clip_mask_data {
-            let mask_x = write_x as usize + col;
-            if mask_x >= *mask_w || mask_y >= *mask_h {
+            let mask_x = write_x as i32 + col as i32 - clip_origin.0;
+            if mask_x < 0 || mask_y < 0 || mask_x >= *mask_w || mask_y >= *mask_h {
               coverage = 0;
             } else {
-              let mask_idx = mask_y * mask_w + mask_x;
+              let mask_idx = (mask_y * mask_w + mask_x) as usize;
               coverage = div_255(coverage * mask_data[mask_idx] as u16);
             }
           }
@@ -6691,6 +6704,7 @@ impl DisplayListRenderer {
     let Some((backdrop, dest_pixmap)) = self.canvas.split_backdrop_and_pixmap_mut() else {
       return Ok(());
     };
+    let clip_origin = (0, 0);
     let blur_cache: &mut (dyn BlurCacheOps + 'static) = match self.shared_blur_cache.as_mut() {
       Some(shared) => shared,
       None => &mut self.blur_cache,
@@ -6712,6 +6726,7 @@ impl DisplayListRenderer {
       scale,
       clip_mask.as_deref(),
       clip_bounds,
+      clip_origin,
       pending.filter_bounds,
       world_to_dest,
       Some(blur_cache),
@@ -7677,6 +7692,7 @@ impl DisplayListRenderer {
               None => return Ok(()),
             };
           }
+ 
           layer_bounds = match layer_bounds.intersection(parent_bounds) {
             Some(r) => r,
             None => return Ok(()),
@@ -7778,6 +7794,7 @@ impl DisplayListRenderer {
                 scale,
                 clip_mask,
                 clip_bounds,
+                (0, 0),
                 scene_item.filter_bounds,
                 Transform::identity(),
                 Some(blur_cache),
@@ -13840,6 +13857,7 @@ mod tests {
       1.0,
       None,
       None,
+      (0, 0),
       bounds,
       Transform::identity(),
       None,
@@ -13883,6 +13901,7 @@ mod tests {
       1.0,
       None,
       None,
+      (0, 0),
       bounds,
       Transform::identity(),
       None,
@@ -13902,6 +13921,7 @@ mod tests {
       1.0,
       None,
       None,
+      (0, 0),
       bounds,
       Transform::identity(),
       None,
@@ -13913,6 +13933,156 @@ mod tests {
     assert!(
       allocations.is_empty(),
       "expected apply_backdrop_filters to reuse scratch pixmaps, got {allocations:?}"
+    );
+  }
+
+  #[test]
+  fn backdrop_filters_offset_clip_matches_global_clip() {
+    BACKDROP_FILTER_SCRATCH.with(|cell| {
+      *cell.borrow_mut() = BackdropFilterScratch::default();
+    });
+
+    let mut base = new_pixmap(10, 10).unwrap();
+    for y in 0..base.height() {
+      for x in 0..base.width() {
+        let idx = ((y * base.width() + x) * 4) as usize;
+        base.data_mut()[idx] = 100;
+        base.data_mut()[idx + 1] = 110;
+        base.data_mut()[idx + 2] = 120;
+        base.data_mut()[idx + 3] = 255;
+      }
+    }
+
+    let bounds = Rect::from_xywh(2.0, 2.0, 6.0, 6.0);
+    let filters = vec![ResolvedFilter::Brightness(1.25)];
+
+    let clip_bounds_global = Rect::from_xywh(3.0, 4.0, 4.0, 3.0);
+    let clip_origin = (clip_bounds_global.x() as i32, clip_bounds_global.y() as i32);
+    let clip_bounds_local = Rect::from_xywh(
+      clip_bounds_global.x() - clip_origin.0 as f32,
+      clip_bounds_global.y() - clip_origin.1 as f32,
+      clip_bounds_global.width(),
+      clip_bounds_global.height(),
+    );
+
+    let mut clip_mask_global = Mask::new(10, 10).unwrap();
+    clip_mask_global.data_mut().fill(0);
+    for y in clip_origin.1 as u32..(clip_origin.1 as u32 + clip_bounds_global.height() as u32) {
+      for x in clip_origin.0 as u32..(clip_origin.0 as u32 + clip_bounds_global.width() as u32) {
+        let idx = (y * clip_mask_global.width() + x) as usize;
+        // Make the mask non-rectangular so the per-pixel clip path is exercised.
+        clip_mask_global.data_mut()[idx] = if (x + y) % 2 == 0 { 255 } else { 0 };
+      }
+    }
+
+    let mut clip_mask_local = Mask::new(
+      clip_bounds_global.width() as u32,
+      clip_bounds_global.height() as u32,
+    )
+    .unwrap();
+    for y in 0..clip_mask_local.height() {
+      for x in 0..clip_mask_local.width() {
+        let global_x = x + clip_origin.0 as u32;
+        let global_y = y + clip_origin.1 as u32;
+        let global_idx = (global_y * clip_mask_global.width() + global_x) as usize;
+        let local_idx = (y * clip_mask_local.width() + x) as usize;
+        clip_mask_local.data_mut()[local_idx] = clip_mask_global.data()[global_idx];
+      }
+    }
+
+    let mut global_clip = base.clone();
+    let mut offset_clip = base.clone();
+
+    apply_backdrop_filters(
+      &mut global_clip,
+      &base,
+      (0, 0),
+      bounds,
+      bounds,
+      &filters,
+      BorderRadii::ZERO,
+      1.0,
+      Some(&clip_mask_global),
+      Some(clip_bounds_global),
+      (0, 0),
+      bounds,
+      Transform::identity(),
+      None,
+      None,
+    )
+    .unwrap();
+
+    apply_backdrop_filters(
+      &mut offset_clip,
+      &base,
+      (0, 0),
+      bounds,
+      bounds,
+      &filters,
+      BorderRadii::ZERO,
+      1.0,
+      Some(&clip_mask_local),
+      Some(clip_bounds_local),
+      clip_origin,
+      bounds,
+      Transform::identity(),
+      None,
+      None,
+    )
+    .unwrap();
+
+    assert_eq!(
+      global_clip.data(),
+      offset_clip.data(),
+      "expected clip mask/bounds origins to be interpreted in the target pixmap coordinate space"
+    );
+
+    // Spot-check that at least one pixel inside the mask changed.
+    let masked = pixel(&global_clip, 4, 4);
+    let baseline = pixel(&base, 4, 4);
+    assert_ne!(masked, baseline, "expected filtered pixel to change");
+    // And that pixels outside the clip bounds remain unchanged.
+    assert_eq!(
+      pixel(&global_clip, 0, 0),
+      pixel(&base, 0, 0),
+      "expected pixels outside the clip bounds to remain unchanged"
+    );
+  }
+
+  #[test]
+  fn backdrop_filter_stacking_context_uses_bounded_layer_allocation() {
+    let diag = Arc::new(LayerAllocationDiagnostics::default());
+    let mut renderer = DisplayListRenderer::new(100, 100, Rgba::WHITE, FontContext::new()).unwrap();
+    renderer.set_parallelism(PaintParallelism::disabled());
+    renderer.layer_alloc_diagnostics = Some(diag.clone());
+
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      bounds: Rect::from_xywh(10.0, 10.0, 20.0, 20.0),
+      plane_rect: Rect::from_xywh(10.0, 10.0, 20.0, 20.0),
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: false,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: vec![ResolvedFilter::Brightness(1.0)],
+      radii: BorderRadii::ZERO,
+      mask: None,
+    }));
+    list.push(DisplayItem::PopStackingContext);
+
+    renderer.render(&list).unwrap();
+    let snapshot = diag.snapshot();
+    assert_eq!(snapshot.allocations, 1);
+    assert_eq!(
+      snapshot.bytes,
+      20u64.saturating_mul(20).saturating_mul(4),
+      "expected backdrop-filter stacking context to allocate a bounded layer"
     );
   }
 
@@ -13994,6 +14164,7 @@ mod tests {
         1.0,
         None,
         None,
+        (0, 0),
         bounds,
         Transform::identity(),
         None,
@@ -14178,6 +14349,83 @@ mod tests {
       report.parallel_threads > 1,
       "expected dedicated paint pool to use >1 thread, got {}",
       report.parallel_threads
+    );
+  }
+
+  #[test]
+  fn parallel_tiling_supports_backdrop_filter_stacking_contexts() {
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(0.0, 0.0, 512.0, 512.0),
+      color: Rgba::from_rgba8(60, 90, 120, 255),
+    }));
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      bounds: Rect::from_xywh(10.0, 10.0, 80.0, 80.0),
+      plane_rect: Rect::from_xywh(10.0, 10.0, 80.0, 80.0),
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: false,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: vec![ResolvedFilter::Brightness(1.25)],
+      radii: BorderRadii::ZERO,
+      mask: None,
+    }));
+    list.push(DisplayItem::PushClip(ClipItem {
+      shape: ClipShape::Rect {
+        rect: Rect::from_xywh(10.0, 10.0, 80.0, 80.0),
+        radii: Some(BorderRadii::uniform(12.0)),
+      },
+    }));
+    list.push(DisplayItem::PopClip);
+    list.push(DisplayItem::PopStackingContext);
+
+    let serial = DisplayListRenderer::new(512, 512, Rgba::WHITE, FontContext::new())
+      .unwrap()
+      .with_parallelism(PaintParallelism::disabled())
+      .render(&list)
+      .unwrap();
+
+    let one_thread = ThreadPoolBuilder::new()
+      .num_threads(1)
+      .build()
+      .expect("single-thread rayon pool");
+
+    let toggles = Arc::new(crate::debug::runtime::RuntimeToggles::from_map(
+      std::collections::HashMap::from([("FASTR_PAINT_THREADS".to_string(), "4".to_string())]),
+    ));
+
+    let report = one_thread.install(|| {
+      crate::debug::runtime::with_thread_runtime_toggles(Arc::clone(&toggles), || {
+        let mut parallelism = PaintParallelism::enabled();
+        parallelism.tile_size = 128;
+        DisplayListRenderer::new(512, 512, Rgba::WHITE, FontContext::new())
+          .unwrap()
+          .with_parallelism(parallelism)
+          .render_with_report(&list)
+          .unwrap()
+      })
+    });
+
+    assert!(
+      report.parallel_used,
+      "expected tiled parallel paint to support backdrop-filter stacking contexts"
+    );
+
+    let diffs = serial
+      .data()
+      .iter()
+      .zip(report.pixmap.data().iter())
+      .filter(|(a, b)| a != b)
+      .count();
+    assert_eq!(
+      diffs, 0,
+      "expected serial and parallel output to match, found {diffs} differing bytes"
     );
   }
 
