@@ -468,6 +468,7 @@ impl AbsoluteLayout {
       match keyword {
         IntrinsicSizeKeyword::MinContent => Some(preferred_min),
         IntrinsicSizeKeyword::MaxContent => Some(preferred),
+        IntrinsicSizeKeyword::FillAvailable => Some(available.max(0.0)),
         IntrinsicSizeKeyword::FitContent { limit } => match limit {
           None => Some(shrink(available)),
           Some(limit) => resolve_length_for_positioned_size(
@@ -704,6 +705,7 @@ impl AbsoluteLayout {
       match keyword {
         IntrinsicSizeKeyword::MinContent => Some(preferred_min),
         IntrinsicSizeKeyword::MaxContent => Some(preferred),
+        IntrinsicSizeKeyword::FillAvailable => Some(available.max(0.0)),
         IntrinsicSizeKeyword::FitContent { limit } => match limit {
           None => Some(shrink(available)),
           Some(limit) => resolve_length_for_positioned_size(

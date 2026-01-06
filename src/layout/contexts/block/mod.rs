@@ -376,6 +376,7 @@ impl BlockFormattingContext {
     let used_border = match keyword {
       IntrinsicSizeKeyword::MinContent => min_border,
       IntrinsicSizeKeyword::MaxContent => max_border,
+      IntrinsicSizeKeyword::FillAvailable => available_border,
       IntrinsicSizeKeyword::FitContent { limit } => match limit {
         None => max_border.min(available_border.max(min_border)),
         Some(limit) => {
@@ -600,6 +601,13 @@ impl BlockFormattingContext {
       let used_border_box = match height_keyword {
         crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
         crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
+        crate::style::types::IntrinsicSizeKeyword::FillAvailable => {
+          if available_block_border_box.is_finite() {
+            available_block_border_box
+          } else {
+            intrinsic_max
+          }
+        }
         crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
           let basis_border = match limit {
             Some(limit) => resolve_length_with_percentage_metrics(
@@ -1315,6 +1323,13 @@ impl BlockFormattingContext {
       let min_border = match keyword {
         crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
         crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
+        crate::style::types::IntrinsicSizeKeyword::FillAvailable => {
+          if available_block_border_box.is_finite() {
+            available_block_border_box
+          } else {
+            intrinsic_max
+          }
+        }
         crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
           let basis_border = match limit {
             Some(limit) => resolve_length_with_percentage_metrics(
@@ -1357,6 +1372,13 @@ impl BlockFormattingContext {
       let max_border = match keyword {
         crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
         crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
+        crate::style::types::IntrinsicSizeKeyword::FillAvailable => {
+          if available_block_border_box.is_finite() {
+            available_block_border_box
+          } else {
+            intrinsic_max
+          }
+        }
         crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
           let basis_border = match limit {
             Some(limit) => resolve_length_with_percentage_metrics(
@@ -3028,6 +3050,7 @@ impl BlockFormattingContext {
             child.style.width_keyword.map(|keyword| match keyword {
               crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
               crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
+              crate::style::types::IntrinsicSizeKeyword::FillAvailable => available,
               crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
                 if let Some(limit) = limit {
                   let resolved = resolve_length_for_width(
@@ -3051,6 +3074,7 @@ impl BlockFormattingContext {
           match keyword {
             crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
             crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
+            crate::style::types::IntrinsicSizeKeyword::FillAvailable => available,
             crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
               if let Some(limit) = limit {
                 let resolved = resolve_length_for_width(
@@ -3089,6 +3113,7 @@ impl BlockFormattingContext {
           match keyword {
             crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
             crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
+            crate::style::types::IntrinsicSizeKeyword::FillAvailable => available,
             crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
               if let Some(limit) = limit {
                 let resolved = resolve_length_for_width(
@@ -4838,6 +4863,13 @@ impl FormattingContext for BlockFormattingContext {
       let used_border_box = match height_keyword {
         crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
         crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
+        crate::style::types::IntrinsicSizeKeyword::FillAvailable => {
+          if available_block_border_box.is_finite() {
+            available_block_border_box
+          } else {
+            intrinsic_max
+          }
+        }
         crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
           let basis_border = match limit {
             Some(limit) => resolve_length_with_percentage_metrics(
@@ -5038,6 +5070,13 @@ impl FormattingContext for BlockFormattingContext {
       let min_border = match keyword {
         crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
         crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
+        crate::style::types::IntrinsicSizeKeyword::FillAvailable => {
+          if available_block_border_box.is_finite() {
+            available_block_border_box
+          } else {
+            intrinsic_max
+          }
+        }
         crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
           let basis_border = match limit {
             Some(limit) => resolve_length_with_percentage_metrics(
@@ -5080,6 +5119,13 @@ impl FormattingContext for BlockFormattingContext {
       let max_border = match keyword {
         crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
         crate::style::types::IntrinsicSizeKeyword::MaxContent => intrinsic_max,
+        crate::style::types::IntrinsicSizeKeyword::FillAvailable => {
+          if available_block_border_box.is_finite() {
+            available_block_border_box
+          } else {
+            intrinsic_max
+          }
+        }
         crate::style::types::IntrinsicSizeKeyword::FitContent { limit } => {
           let basis_border = match limit {
             Some(limit) => resolve_length_with_percentage_metrics(

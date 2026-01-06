@@ -119,6 +119,11 @@ const PAGE_FIXTURES: &[PageFixture] = &[
     shots: DEFAULT_SHOTS,
   },
   PageFixture {
+    name: "fill_available_height",
+    html: "fill_available_height/index.html",
+    shots: DEFAULT_SHOTS,
+  },
+  PageFixture {
     name: "webkit_line_clamp",
     html: "webkit_line_clamp/index.html",
     shots: DEFAULT_SHOTS,

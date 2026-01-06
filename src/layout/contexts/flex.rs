@@ -1971,6 +1971,7 @@ impl FormattingContext for FlexFormattingContext {
                             match kw {
                               IntrinsicSizeKeyword::MinContent => Some(min_intrinsic),
                               IntrinsicSizeKeyword::MaxContent => Some(max_intrinsic),
+                              IntrinsicSizeKeyword::FillAvailable => None,
                               IntrinsicSizeKeyword::FitContent { .. } => None,
                             }
                           };
@@ -4241,8 +4242,9 @@ fn hash_intrinsic_size_keyword(value: &IntrinsicSizeKeyword, hasher: &mut Finger
   match value {
     IntrinsicSizeKeyword::MinContent => 0u8.hash(hasher),
     IntrinsicSizeKeyword::MaxContent => 1u8.hash(hasher),
+    IntrinsicSizeKeyword::FillAvailable => 2u8.hash(hasher),
     IntrinsicSizeKeyword::FitContent { limit } => {
-      2u8.hash(hasher);
+      3u8.hash(hasher);
       match limit {
         Some(limit) => {
           1u8.hash(hasher);
@@ -4956,6 +4958,7 @@ impl FlexFormattingContext {
     let keyword_to_mode = |kw: IntrinsicSizeKeyword| match kw {
       IntrinsicSizeKeyword::MinContent => Some(IntrinsicSizingMode::MinContent),
       IntrinsicSizeKeyword::MaxContent => Some(IntrinsicSizingMode::MaxContent),
+      IntrinsicSizeKeyword::FillAvailable => None,
       IntrinsicSizeKeyword::FitContent { .. } => None,
     };
 
@@ -5805,6 +5808,7 @@ impl FlexFormattingContext {
       match kw {
         IntrinsicSizeKeyword::MinContent => Some(min_intrinsic),
         IntrinsicSizeKeyword::MaxContent => Some(max_intrinsic),
+        IntrinsicSizeKeyword::FillAvailable => None,
         IntrinsicSizeKeyword::FitContent { .. } => None,
       }
     };

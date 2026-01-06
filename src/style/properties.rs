@@ -3226,6 +3226,13 @@ fn parse_intrinsic_size_keyword(value: &PropertyValue) -> Option<IntrinsicSizeKe
   {
     return Some(IntrinsicSizeKeyword::FitContent { limit: None });
   }
+  if trimmed.eq_ignore_ascii_case("fill-available")
+    || trimmed.eq_ignore_ascii_case("-webkit-fill-available")
+    || trimmed.eq_ignore_ascii_case("-moz-available")
+    || trimmed.eq_ignore_ascii_case("-moz-fill-available")
+  {
+    return Some(IntrinsicSizeKeyword::FillAvailable);
+  }
 
   // Parse `fit-content(<length-percentage>)` from the raw string. The CSS parser currently stores
   // the entire value as a keyword token, so we need a permissive string parser here.

@@ -1627,6 +1627,7 @@ impl GridFormattingContext {
       match kw {
         IntrinsicSizeKeyword::MinContent => Some(min_intrinsic),
         IntrinsicSizeKeyword::MaxContent => Some(max_intrinsic),
+        IntrinsicSizeKeyword::FillAvailable => None,
         IntrinsicSizeKeyword::FitContent { .. } => None,
       }
     };
@@ -1669,6 +1670,7 @@ impl GridFormattingContext {
     let keyword_to_mode = |kw: IntrinsicSizeKeyword| match kw {
       IntrinsicSizeKeyword::MinContent => Some(IntrinsicSizingMode::MinContent),
       IntrinsicSizeKeyword::MaxContent => Some(IntrinsicSizingMode::MaxContent),
+      IntrinsicSizeKeyword::FillAvailable => None,
       IntrinsicSizeKeyword::FitContent { .. } => None,
     };
     let width_has_fit_content_max_constraint = style.max_width.is_none()
@@ -5642,6 +5644,7 @@ impl GridFormattingContext {
           match kw {
             IntrinsicSizeKeyword::MinContent => Some(min_intrinsic),
             IntrinsicSizeKeyword::MaxContent => Some(max_intrinsic),
+            IntrinsicSizeKeyword::FillAvailable => None,
             IntrinsicSizeKeyword::FitContent { .. } => None,
           }
         };
@@ -6639,6 +6642,7 @@ impl FormattingContext for GridFormattingContext {
         let keyword_to_mode = |kw: IntrinsicSizeKeyword| match kw {
           IntrinsicSizeKeyword::MinContent => Some(IntrinsicSizingMode::MinContent),
           IntrinsicSizeKeyword::MaxContent => Some(IntrinsicSizingMode::MaxContent),
+          IntrinsicSizeKeyword::FillAvailable => None,
           IntrinsicSizeKeyword::FitContent { .. } => None,
         };
 

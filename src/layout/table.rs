@@ -5272,6 +5272,7 @@ impl FormattingContext for TableFormattingContext {
       let resolved = match keyword {
         IntrinsicSizeKeyword::MinContent => intrinsic_min,
         IntrinsicSizeKeyword::MaxContent => intrinsic_max,
+        IntrinsicSizeKeyword::FillAvailable => available,
         IntrinsicSizeKeyword::FitContent { limit } => match limit {
           None => intrinsic_max.min(available.max(intrinsic_min)),
           Some(limit) => {
@@ -7622,6 +7623,7 @@ impl FormattingContext for TableFormattingContext {
       Some(match keyword {
         IntrinsicSizeKeyword::MinContent => intrinsic_min,
         IntrinsicSizeKeyword::MaxContent => intrinsic_max,
+        IntrinsicSizeKeyword::FillAvailable => intrinsic_max,
         IntrinsicSizeKeyword::FitContent { limit } => match limit {
           None => intrinsic_max,
           Some(limit) => {

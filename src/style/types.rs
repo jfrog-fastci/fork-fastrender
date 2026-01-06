@@ -1870,6 +1870,7 @@ impl Default for ContentVisibility {
 pub enum IntrinsicSizeKeyword {
   MinContent,
   MaxContent,
+  FillAvailable,
   /// Represents `fit-content` and `fit-content(<length-percentage>)`.
   FitContent {
     limit: Option<Length>,
@@ -1880,6 +1881,7 @@ impl IntrinsicSizeKeyword {
   pub fn has_percentage(&self) -> bool {
     match self {
       Self::FitContent { limit: Some(limit) } => limit.has_percentage(),
+      Self::FillAvailable => false,
       _ => false,
     }
   }
@@ -1905,6 +1907,7 @@ impl Hash for IntrinsicSizeKeyword {
         }
         None => 0u8.hash(state),
       },
+      IntrinsicSizeKeyword::FillAvailable => {}
       _ => {}
     }
   }

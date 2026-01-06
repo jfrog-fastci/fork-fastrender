@@ -2303,6 +2303,11 @@ impl InlineFormattingContext {
         match keyword {
           Keyword::MinContent => Some(preferred_min),
           Keyword::MaxContent => Some(preferred),
+          Keyword::FillAvailable => Some(if available_for_fit.is_finite() {
+            available_for_fit
+          } else {
+            preferred
+          }),
           Keyword::FitContent { limit } => match limit {
             None => {
               let available = if available_for_fit.is_finite() {
@@ -8619,6 +8624,11 @@ impl InlineFormattingContext {
         match keyword {
           Keyword::MinContent => Some(preferred_min),
           Keyword::MaxContent => Some(preferred),
+          Keyword::FillAvailable => Some(if available_for_fit.is_finite() {
+            available_for_fit
+          } else {
+            preferred
+          }),
           Keyword::FitContent { limit } => match limit {
             None => {
               let available = if available_for_fit.is_finite() {
