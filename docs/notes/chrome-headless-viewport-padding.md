@@ -61,5 +61,9 @@ asserts:
 - the output PNG dimensions match `VIEWPORT` exactly, and
 - the bottom strip is red (a heuristic that catches both under-padding and over-padding).
 
+It also renders a representative offline fixture HTML (`tests/pages/fixtures/br_linebreak/index.html`)
+to validate that the cached-HTML path (meta sidecar + `<base href=...>` injection) still produces
+the exact requested dimensions.
+
 If it fails on your machine, rerun with a different `HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX`
 (binary search works well) until it passes.

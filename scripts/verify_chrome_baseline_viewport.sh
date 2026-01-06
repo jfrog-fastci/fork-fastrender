@@ -11,7 +11,9 @@ set -euo pipefail
 #
 # This script:
 # 1) writes a tiny test HTML page with a solid red bar pinned to the bottom of the viewport,
-# 2) runs `scripts/chrome_baseline.sh` on it,
+# 2) runs `scripts/chrome_baseline.sh` on it (for multiple DPRs),
+# 3) also runs `scripts/chrome_baseline.sh` against a representative offline fixture HTML
+#    (`tests/pages/fixtures/br_linebreak/index.html`) to validate the cached-HTML path,
 # 3) asserts the output PNG dimensions match the requested viewport exactly, and
 # 4) asserts the bottom strip is red (heuristic that catches pad mismatch).
 #
@@ -22,6 +24,7 @@ set -euo pipefail
 #   CHROME_BIN=/path/to/chrome
 #   VIEWPORT=320x240
 #   DPRS=1.0,1.333
+#   FIXTURE_HTML=tests/pages/fixtures/br_linebreak/index.html
 #   HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX=88  (override if your Chrome/OS differs)
 #   KEEP_TMP=1  (keep the temporary output directory for debugging)
 
@@ -30,6 +33,7 @@ cd "${REPO_ROOT}"
 
 VIEWPORT="${VIEWPORT:-320x240}"
 DPRS="${DPRS:-1.0,1.333}"
+FIXTURE_HTML="${FIXTURE_HTML:-tests/pages/fixtures/br_linebreak/index.html}"
 KEEP_TMP="${KEEP_TMP:-0}"
 
 if ! [[ "${VIEWPORT}" =~ ^[0-9]+x[0-9]+$ ]]; then
@@ -111,8 +115,22 @@ for raw_dpr in "${DPR_VALUES[@]}"; do
   echo "url: file://${REPO_ROOT}/" >"${html_dir}/${stem}.html.meta"
 done
 
+fixture_stem="viewport_pad_fixture"
+fixture_src="${REPO_ROOT}/${FIXTURE_HTML}"
+if [[ -f "${fixture_src}" ]]; then
+  cp "${fixture_src}" "${html_dir}/${fixture_stem}.html"
+  fixture_dir="$(cd "$(dirname "${fixture_src}")" && pwd)"
+  echo "url: file://${fixture_dir}/" >"${html_dir}/${fixture_stem}.html.meta"
+else
+  echo "warning: fixture not found: ${FIXTURE_HTML} (skipping fixture dimension check)" >&2
+  fixture_stem=""
+fi
+
 echo "Viewport: ${VIEWPORT}"
 echo "DPR(s):   ${DPRS}"
+if [[ -n "${fixture_stem}" ]]; then
+  echo "Fixture:  ${FIXTURE_HTML}"
+fi
 if [[ -n "${CHROME_BIN:-}" ]]; then
   echo "Chrome:    ${CHROME_BIN}"
 fi
@@ -303,6 +321,59 @@ if ratio < 0.95:
 print(f"ok: {width}x{height}, redish_ratio={ratio:.3f}")
 PY
 done
+
+if [[ -n "${fixture_stem}" ]]; then
+  echo "Running chrome_baseline.sh (fixture, dpr=1.0)..."
+  if ! scripts/chrome_baseline.sh \
+    --html-dir "${html_dir}" \
+    --out-dir "${out_dir}" \
+    --viewport "${VIEWPORT}" \
+    --dpr 1.0 \
+    --timeout 30 \
+    -- \
+    "${fixture_stem}"; then
+    echo "chrome_baseline.sh failed for fixture; log follows:" >&2
+    cat "${out_dir}/${fixture_stem}.chrome.log" >&2 || true
+    exit 1
+  fi
+
+  fixture_png="${out_dir}/${fixture_stem}.png"
+  if [[ ! -s "${fixture_png}" ]]; then
+    echo "missing output PNG for fixture: ${fixture_png}" >&2
+    cat "${out_dir}/${fixture_stem}.chrome.log" >&2 || true
+    exit 1
+  fi
+
+  python3 - "${fixture_png}" "${VIEWPORT_W}" "${VIEWPORT_H}" <<'PY'
+import struct
+import sys
+
+png_path = sys.argv[1]
+expected_w = int(sys.argv[2])
+expected_h = int(sys.argv[3])
+
+data = open(png_path, "rb").read()
+if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+    raise AssertionError("fixture output is not a PNG (bad signature)")
+
+off = 8
+length = struct.unpack(">I", data[off : off + 4])[0]
+off += 4
+ctype = data[off : off + 4]
+off += 4
+if ctype != b"IHDR":
+    raise AssertionError("fixture PNG missing IHDR chunk")
+ihdr = data[off : off + length]
+width, height = struct.unpack(">II", ihdr[:8])
+
+if (width, height) != (expected_w, expected_h):
+    raise AssertionError(
+        f"fixture output PNG is {width}x{height}, expected {expected_w}x{expected_h}"
+    )
+
+print(f"fixture ok: {width}x{height}")
+PY
+fi
 
 echo
 echo "Success."
