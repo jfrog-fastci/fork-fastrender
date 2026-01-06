@@ -446,6 +446,22 @@ impl DebugConfig {
       truthy(raw.get("FASTR_PAINT_STATS"), false),
     );
     config.insert_bool(
+      "FASTR_PRESERVE3D_DEBUG",
+      truthy(raw.get("FASTR_PRESERVE3D_DEBUG"), false),
+    );
+    config.insert_bool(
+      "FASTR_PRESERVE3D_DISABLE_SCENE",
+      truthy(raw.get("FASTR_PRESERVE3D_DISABLE_SCENE"), false),
+    );
+    config.insert_bool(
+      "FASTR_PRESERVE3D_DISABLE_WARP",
+      truthy(raw.get("FASTR_PRESERVE3D_DISABLE_WARP"), false),
+    );
+    config.insert_bool(
+      "FASTR_PRESERVE3D_WARP",
+      truthy(raw.get("FASTR_PRESERVE3D_WARP"), false),
+    );
+    config.insert_bool(
       "FASTR_PAINT_BUILD_BREAKDOWN",
       truthy(raw.get("FASTR_PAINT_BUILD_BREAKDOWN"), false),
     );
