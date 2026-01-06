@@ -274,17 +274,17 @@ impl SvgFilterCacheKey {
         .unwrap_or(0),
       fill_paint: fill_paint.unwrap_or(0),
       stroke_paint: stroke_paint.unwrap_or(0),
-      scale_x_bits: scale_x.to_bits(),
-      scale_y_bits: scale_y.to_bits(),
+      scale_x_bits: f32_to_canonical_bits(scale_x),
+      scale_y_bits: f32_to_canonical_bits(scale_y),
       width: pixmap.width(),
       height: pixmap.height(),
-      surface_origin_x_bits: surface_origin_css.0.to_bits(),
-      surface_origin_y_bits: surface_origin_css.1.to_bits(),
+      surface_origin_x_bits: f32_to_canonical_bits(surface_origin_css.0),
+      surface_origin_y_bits: f32_to_canonical_bits(surface_origin_css.1),
       bbox: [
-        bbox.x().to_bits(),
-        bbox.y().to_bits(),
-        bbox.width().to_bits(),
-        bbox.height().to_bits(),
+        f32_to_canonical_bits(bbox.x()),
+        f32_to_canonical_bits(bbox.y()),
+        f32_to_canonical_bits(bbox.width()),
+        f32_to_canonical_bits(bbox.height()),
       ],
     })
   }
@@ -1006,8 +1006,17 @@ pub enum TransferFn {
   },
 }
 
+#[inline]
+fn f32_to_canonical_bits(value: f32) -> u32 {
+  if value == 0.0 {
+    0.0f32.to_bits()
+  } else {
+    value.to_bits()
+  }
+}
+
 fn hash_f32(value: f32, state: &mut impl Hasher) {
-  state.write_u32(value.to_bits());
+  state.write_u32(f32_to_canonical_bits(value));
 }
 
 fn hash_length(len: &SvgLength, state: &mut impl Hasher) {
@@ -6286,6 +6295,105 @@ mod tests {
       delta <= 1,
       "expected {expected}±1, got {actual} (Δ={delta})"
     );
+  }
+
+  #[test]
+  fn svg_filter_fingerprint_canonicalizes_negative_zero() {
+    let base_region = SvgFilterRegion::default_for_units(SvgFilterUnits::ObjectBoundingBox);
+
+    let mut pos = SvgFilter {
+      color_interpolation_filters: ColorInterpolationFilters::SRGB,
+      steps: vec![FilterStep {
+        result: None,
+        color_interpolation_filters: None,
+        primitive: FilterPrimitive::Flood {
+          color: Rgba::BLACK,
+          opacity: 0.0,
+        },
+        region: None,
+      }],
+      region: base_region,
+      filter_res: None,
+      primitive_units: SvgFilterUnits::UserSpaceOnUse,
+      fingerprint: 0,
+    };
+    pos.refresh_fingerprint();
+
+    let mut neg = SvgFilter {
+      color_interpolation_filters: ColorInterpolationFilters::SRGB,
+      steps: vec![FilterStep {
+        result: None,
+        color_interpolation_filters: None,
+        primitive: FilterPrimitive::Flood {
+          color: Rgba::BLACK,
+          opacity: -0.0,
+        },
+        region: None,
+      }],
+      region: base_region,
+      filter_res: None,
+      primitive_units: SvgFilterUnits::UserSpaceOnUse,
+      fingerprint: 0,
+    };
+    neg.refresh_fingerprint();
+
+    assert_eq!(pos.fingerprint, neg.fingerprint);
+  }
+
+  #[test]
+  fn svg_filter_cache_key_canonicalizes_negative_zero() {
+    let base_region = SvgFilterRegion::default_for_units(SvgFilterUnits::ObjectBoundingBox);
+    let mut filter = SvgFilter {
+      color_interpolation_filters: ColorInterpolationFilters::SRGB,
+      steps: vec![FilterStep {
+        result: None,
+        color_interpolation_filters: None,
+        primitive: FilterPrimitive::Flood {
+          color: Rgba::BLACK,
+          opacity: 1.0,
+        },
+        region: None,
+      }],
+      region: base_region,
+      filter_res: None,
+      primitive_units: SvgFilterUnits::UserSpaceOnUse,
+      fingerprint: 0,
+    };
+    filter.refresh_fingerprint();
+
+    let pixmap = new_pixmap(1, 1).unwrap();
+    let filter_region = Rect::from_xywh(0.0, 0.0, 1.0, 1.0);
+    let bbox_pos = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+    let bbox_neg = Rect::from_xywh(-0.0, -0.0, 10.0, 10.0);
+
+    let key = SvgFilterCacheKey::new(
+      &filter,
+      &pixmap,
+      None,
+      None,
+      None,
+      0.0,
+      0.0,
+      (0.0, 0.0),
+      bbox_pos,
+      filter_region,
+    )
+    .expect("key");
+    let key_neg = SvgFilterCacheKey::new(
+      &filter,
+      &pixmap,
+      None,
+      None,
+      None,
+      -0.0,
+      -0.0,
+      (-0.0, -0.0),
+      bbox_neg,
+      filter_region,
+    )
+    .expect("key");
+
+    assert_eq!(key, key_neg);
   }
 
   #[test]

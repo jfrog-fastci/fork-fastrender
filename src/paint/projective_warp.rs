@@ -14,6 +14,15 @@ use tiny_skia::PremultipliedColorU8;
 
 type RenderResult<T> = std::result::Result<T, RenderError>;
 
+#[inline]
+fn f32_to_canonical_bits(value: f32) -> u32 {
+  if value == 0.0 {
+    0.0f32.to_bits()
+  } else {
+    value.to_bits()
+  }
+}
+
 pub struct WarpedPixmap {
   pub pixmap: Pixmap,
   pub offset: (i32, i32),
@@ -83,7 +92,7 @@ pub fn warp_cache_key(
     if !v.is_finite() {
       return None;
     }
-    *out = v.to_bits();
+    *out = f32_to_canonical_bits(*v);
   }
 
   if dst_quad
@@ -97,8 +106,8 @@ pub fn warp_cache_key(
   }
   let mut quad_bits = [0u32; 8];
   for (i, (x, y)) in dst_quad.iter().enumerate() {
-    quad_bits[i * 2] = x.to_bits();
-    quad_bits[i * 2 + 1] = y.to_bits();
+    quad_bits[i * 2] = f32_to_canonical_bits(*x);
+    quad_bits[i * 2 + 1] = f32_to_canonical_bits(*y);
   }
 
   // Compute the clamped destination bounds (matching `warp_pixmap`) so we can fingerprint only the
@@ -428,6 +437,23 @@ mod tests {
   use std::sync::atomic::{AtomicUsize, Ordering};
   use std::sync::Arc;
   use tiny_skia::MaskType;
+
+  #[test]
+  fn warp_cache_key_canonicalizes_negative_zero() {
+    let src = new_pixmap(1, 1).unwrap();
+
+    let dst_quad = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+    let dst_quad_neg = [(-0.0, -0.0), (1.0, -0.0), (1.0, 1.0), (-0.0, 1.0)];
+
+    let homography = Homography::identity();
+    let homography_neg = Homography {
+      m: [1.0, -0.0, -0.0, -0.0, 1.0, -0.0, -0.0, -0.0, 1.0],
+    };
+
+    let key = warp_cache_key(&src, &homography, &dst_quad, (1, 1), None).expect("key");
+    let key_neg = warp_cache_key(&src, &homography_neg, &dst_quad_neg, (1, 1), None).expect("key");
+    assert_eq!(key, key_neg);
+  }
 
   fn color(r: u8, g: u8, b: u8, a: u8) -> PremultipliedColorU8 {
     PremultipliedColorU8::from_rgba(r, g, b, a).unwrap()

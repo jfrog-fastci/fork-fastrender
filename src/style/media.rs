@@ -796,17 +796,26 @@ impl From<&RangeValue> for RangeValueKey {
   }
 }
 
+#[inline]
+fn f32_to_canonical_bits(value: f32) -> u32 {
+  if value == 0.0 {
+    0.0f32.to_bits()
+  } else {
+    value.to_bits()
+  }
+}
+
 fn length_key(length: &Length) -> LengthKey {
   LengthKey {
     unit: length.unit,
-    bits: length.value.to_bits(),
+    bits: f32_to_canonical_bits(length.value),
   }
 }
 
 fn resolution_key(resolution: &Resolution) -> ResolutionKey {
   ResolutionKey {
     unit: resolution.unit,
-    bits: resolution.value.to_bits(),
+    bits: f32_to_canonical_bits(resolution.value),
   }
 }
 
@@ -2028,12 +2037,12 @@ impl MediaContext {
   pub(crate) fn fingerprint(&self) -> MediaContextFingerprint {
     MediaContextFingerprint {
       media_type: self.media_type,
-      viewport_width_bits: self.viewport_width.to_bits(),
-      viewport_height_bits: self.viewport_height.to_bits(),
-      device_width_bits: self.device_width.to_bits(),
-      device_height_bits: self.device_height.to_bits(),
-      device_pixel_ratio_bits: self.device_pixel_ratio.to_bits(),
-      base_font_bits: self.base_font_size.to_bits(),
+      viewport_width_bits: f32_to_canonical_bits(self.viewport_width),
+      viewport_height_bits: f32_to_canonical_bits(self.viewport_height),
+      device_width_bits: f32_to_canonical_bits(self.device_width),
+      device_height_bits: f32_to_canonical_bits(self.device_height),
+      device_pixel_ratio_bits: f32_to_canonical_bits(self.device_pixel_ratio),
+      base_font_bits: f32_to_canonical_bits(self.base_font_size),
       can_hover: self.can_hover,
       any_can_hover: self.any_can_hover,
       pointer: self.pointer,
@@ -3737,6 +3746,30 @@ mod tests {
         ));
       }
     }
+  }
+
+  #[test]
+  fn media_context_fingerprint_canonicalizes_negative_zero() {
+    let mut pos = MediaContext::screen(0.0, 0.0);
+    pos.device_pixel_ratio = 0.0;
+    pos.base_font_size = 0.0;
+
+    let mut neg = pos.clone();
+    neg.viewport_width = -0.0;
+    neg.viewport_height = -0.0;
+    neg.device_width = -0.0;
+    neg.device_height = -0.0;
+    neg.device_pixel_ratio = -0.0;
+    neg.base_font_size = -0.0;
+
+    assert_eq!(pos.fingerprint(), neg.fingerprint());
+  }
+
+  #[test]
+  fn media_length_key_canonicalizes_negative_zero() {
+    let pos = Length::new(0.0, LengthUnit::Px);
+    let neg = Length::new(-0.0, LengthUnit::Px);
+    assert_eq!(length_key(&pos), length_key(&neg));
   }
 
   // ============================================================================

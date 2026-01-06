@@ -25,6 +25,15 @@ const IFRAME_NESTING_LIMIT_MESSAGE: &str = "iframe nesting limit exceeded";
 const IFRAME_RENDER_CACHE_MAX_ENTRIES: usize = 128;
 const IFRAME_RENDER_CACHE_MAX_BYTES: usize = 128 * 1024 * 1024;
 
+#[inline]
+fn f32_to_canonical_bits(value: f32) -> u32 {
+  if value == 0.0 {
+    0.0f32.to_bits()
+  } else {
+    value.to_bits()
+  }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct BackgroundKey {
   r: u8,
@@ -39,7 +48,7 @@ impl From<Rgba> for BackgroundKey {
       r: value.r,
       g: value.g,
       b: value.b,
-      a_bits: value.a.to_bits(),
+      a_bits: f32_to_canonical_bits(value.a),
     }
   }
 }
@@ -447,7 +456,7 @@ pub(crate) fn render_iframe_srcdoc(
     },
     css_width: width,
     css_height: height,
-    device_pixel_ratio_bits: device_pixel_ratio.to_bits(),
+    device_pixel_ratio_bits: f32_to_canonical_bits(device_pixel_ratio),
     nested_depth,
     background: background.into(),
     policy_hash: policy_fingerprint(&policy),
@@ -584,7 +593,7 @@ pub(crate) fn render_iframe_src(
     },
     css_width: width,
     css_height: height,
-    device_pixel_ratio_bits: device_pixel_ratio.to_bits(),
+    device_pixel_ratio_bits: f32_to_canonical_bits(device_pixel_ratio),
     nested_depth,
     background: background.into(),
     policy_hash: policy_fingerprint(&policy),
@@ -837,6 +846,70 @@ mod tests {
 
     let second = render_iframe_srcdoc(html, None, rect, None, &image_cache, &font_ctx, 1.0, 3)
       .expect("second iframe render");
+    assert_eq!(
+      take_last_iframe_cache_hit(),
+      Some(true),
+      "second render should hit cache"
+    );
+    assert!(
+      Arc::ptr_eq(&first, &second),
+      "cache hit should return the same Arc<ImageData>"
+    );
+  }
+
+  #[test]
+  fn iframe_render_cache_key_canonicalizes_negative_zero_background_alpha() {
+    let font_ctx = FontContext::new();
+    let image_cache = ImageCache::with_fetcher(Arc::new(RejectingFetcher::default()));
+    let rect = Rect::from_xywh(0.0, 0.0, 16.0, 16.0);
+    let html = r#"
+      <style>html, body { margin: 0; padding: 0; background: rgb(0, 255, 0); }</style>
+      <div data-fastr-test="iframe-render-cache-alpha-negzero-113"></div>
+    "#;
+
+    let mut style_pos = ComputedStyle::default();
+    style_pos.background_color = Rgba {
+      r: 0,
+      g: 0,
+      b: 0,
+      a: 0.0,
+    };
+    let mut style_neg = ComputedStyle::default();
+    style_neg.background_color = Rgba {
+      r: 0,
+      g: 0,
+      b: 0,
+      a: -0.0,
+    };
+
+    let first = render_iframe_srcdoc(
+      html,
+      None,
+      rect,
+      Some(&style_pos),
+      &image_cache,
+      &font_ctx,
+      1.0,
+      3,
+    )
+    .expect("first iframe render");
+    assert_eq!(
+      take_last_iframe_cache_hit(),
+      Some(false),
+      "first render should miss cache"
+    );
+
+    let second = render_iframe_srcdoc(
+      html,
+      None,
+      rect,
+      Some(&style_neg),
+      &image_cache,
+      &font_ctx,
+      1.0,
+      3,
+    )
+    .expect("second iframe render");
     assert_eq!(
       take_last_iframe_cache_hit(),
       Some(true),

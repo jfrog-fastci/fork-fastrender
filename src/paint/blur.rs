@@ -32,6 +32,15 @@ enum BlurParallelism {
 
 type BlurHasher = BuildHasherDefault<FxHasher>;
 
+#[inline]
+fn f32_to_canonical_bits(value: f32) -> u32 {
+  if value == 0.0 {
+    0.0f32.to_bits()
+  } else {
+    value.to_bits()
+  }
+}
+
 #[derive(Default)]
 struct BlurScratch {
   ping: Vec<u8>,
@@ -145,9 +154,9 @@ impl BlurCacheKey {
     Some(Self {
       width: pixmap.width(),
       height: pixmap.height(),
-      sigma_x_bits: radius_x.to_bits(),
-      sigma_y_bits: radius_y.to_bits(),
-      scale_bits: scale.to_bits(),
+      sigma_x_bits: f32_to_canonical_bits(radius_x),
+      sigma_y_bits: f32_to_canonical_bits(radius_y),
+      scale_bits: f32_to_canonical_bits(scale),
       fingerprint: pixel_fingerprint(pixmap.data()),
     })
   }
@@ -2827,6 +2836,14 @@ mod tests {
       })
       .build()
       .unwrap()
+  }
+
+  #[test]
+  fn blur_cache_key_canonicalizes_negative_zero() {
+    let pixmap = new_pixmap(1, 1).unwrap();
+    let key = BlurCacheKey::new(1.0, 0.0, 0.0, &pixmap).expect("key");
+    let key_neg = BlurCacheKey::new(1.0, 0.0, -0.0, &pixmap).expect("key");
+    assert_eq!(key, key_neg);
   }
 
   #[derive(Clone, Copy, Debug)]

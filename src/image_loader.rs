@@ -374,6 +374,15 @@ struct SvgPixmapKey {
   device_pixel_ratio_bits: u32,
 }
 
+#[inline]
+fn f32_to_canonical_bits(value: f32) -> u32 {
+  if value == 0.0 {
+    0.0f32.to_bits()
+  } else {
+    value.to_bits()
+  }
+}
+
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 struct RasterPixmapKey {
   url_hash: u64,
@@ -441,7 +450,7 @@ fn svg_pixmap_key(
     len: svg_content.len(),
     width,
     height,
-    device_pixel_ratio_bits: device_pixel_ratio.to_bits(),
+    device_pixel_ratio_bits: f32_to_canonical_bits(device_pixel_ratio),
   }
 }
 
@@ -3158,7 +3167,7 @@ impl ImageCache {
       len: prefix.len() + style_element.len() + suffix.len(),
       width: render_width,
       height: render_height,
-      device_pixel_ratio_bits: device_pixel_ratio.to_bits(),
+      device_pixel_ratio_bits: f32_to_canonical_bits(device_pixel_ratio),
     };
 
     record_image_cache_request();
@@ -4463,6 +4472,15 @@ mod tests {
         .push((req.url.to_string(), req.destination));
       self.fetch(req.url)
     }
+  }
+
+  #[test]
+  fn svg_pixmap_key_canonicalizes_negative_zero() {
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#;
+    let url = "https://example.com/negzero.svg";
+    let key = svg_pixmap_key(svg, url, 0.0, 10, 10);
+    let key_neg = svg_pixmap_key(svg, url, -0.0, 10, 10);
+    assert_eq!(key, key_neg);
   }
 
   #[test]

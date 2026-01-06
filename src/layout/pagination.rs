@@ -222,11 +222,20 @@ struct PageLayoutKey {
   font_generation: u64,
 }
 
+#[inline]
+fn f32_to_canonical_bits(value: f32) -> u32 {
+  if value == 0.0 {
+    0.0f32.to_bits()
+  } else {
+    value.to_bits()
+  }
+}
+
 impl PageLayoutKey {
   fn new(style: &ResolvedPageStyle, style_hash: u64, font_generation: u64) -> Self {
     Self {
-      width_bits: style.content_size.width.to_bits() as u64,
-      height_bits: style.content_size.height.to_bits() as u64,
+      width_bits: f32_to_canonical_bits(style.content_size.width) as u64,
+      height_bits: f32_to_canonical_bits(style.content_size.height) as u64,
       style_hash,
       font_generation,
     }
@@ -1270,6 +1279,30 @@ mod tests {
   fn contains_running_anchor(node: &FragmentNode) -> bool {
     matches!(node.content, FragmentContent::RunningAnchor { .. })
       || node.children.iter().any(contains_running_anchor)
+  }
+
+  #[test]
+  fn page_layout_key_canonicalizes_negative_zero() {
+    let style = ResolvedPageStyle {
+      page_size: Size::new(100.0, 100.0),
+      total_size: Size::new(100.0, 100.0),
+      content_size: Size::new(0.0, 80.0),
+      content_origin: Point::new(0.0, 0.0),
+      margin_top: 0.0,
+      margin_right: 0.0,
+      margin_bottom: 0.0,
+      margin_left: 0.0,
+      bleed: 0.0,
+      trim: 0.0,
+      margin_boxes: BTreeMap::new(),
+      page_style: ComputedStyle::default(),
+    };
+    let mut style_neg = style.clone();
+    style_neg.content_size = Size::new(-0.0, 80.0);
+
+    let key = PageLayoutKey::new(&style, 1, 2);
+    let key_neg = PageLayoutKey::new(&style_neg, 1, 2);
+    assert_eq!(key, key_neg);
   }
 
   #[test]

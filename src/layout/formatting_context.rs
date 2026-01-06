@@ -760,9 +760,17 @@ thread_local! {
 }
 
 fn pack_viewport_size(size: Size) -> u64 {
-  let w = size.width.to_bits() as u64;
-  let h = size.height.to_bits() as u64;
-  (w << 32) | h
+  let w_bits = if size.width == 0.0 {
+    0.0f32.to_bits() as u64
+  } else {
+    size.width.to_bits() as u64
+  };
+  let h_bits = if size.height == 0.0 {
+    0.0f32.to_bits() as u64
+  } else {
+    size.height.to_bits() as u64
+  };
+  (w_bits << 32) | h_bits
 }
 
 fn sanitize_viewport_scroll(scroll: Point) -> Point {
@@ -1686,6 +1694,18 @@ mod tests {
   /// the FormattingContext trait contract.
   #[derive(Debug)]
   struct StubFormattingContext;
+
+  #[test]
+  fn pack_viewport_size_canonicalizes_negative_zero() {
+    assert_eq!(
+      pack_viewport_size(Size::new(0.0, 10.0)),
+      pack_viewport_size(Size::new(-0.0, 10.0))
+    );
+    assert_eq!(
+      pack_viewport_size(Size::new(10.0, 0.0)),
+      pack_viewport_size(Size::new(10.0, -0.0))
+    );
+  }
 
   impl FormattingContext for StubFormattingContext {
     fn layout(

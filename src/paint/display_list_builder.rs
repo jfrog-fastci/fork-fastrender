@@ -229,6 +229,15 @@ struct RootBackground {
   style: Arc<ComputedStyle>,
 }
 
+#[inline]
+fn f32_to_canonical_bits(value: f32) -> u32 {
+  if value == 0.0 {
+    0.0f32.to_bits()
+  } else {
+    value.to_bits()
+  }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ImageKey {
   url: String,
@@ -237,6 +246,26 @@ struct ImageKey {
   decorative: bool,
   used_resolution_bits: u32,
   device_pixel_ratio_bits: u32,
+}
+
+impl ImageKey {
+  fn new(
+    url: String,
+    crossorigin: CrossOriginAttribute,
+    orientation: OrientationTransform,
+    decorative: bool,
+    used_resolution: f32,
+    device_pixel_ratio: f32,
+  ) -> Self {
+    Self {
+      url,
+      crossorigin,
+      orientation,
+      decorative,
+      used_resolution_bits: f32_to_canonical_bits(used_resolution),
+      device_pixel_ratio_bits: f32_to_canonical_bits(device_pixel_ratio),
+    }
+  }
 }
 
 struct DecodedImageCache {
@@ -7859,14 +7888,14 @@ impl DisplayListBuilder {
     );
     let used_resolution =
       image_resolution.used_resolution(None, meta.resolution, self.device_pixel_ratio);
-    let cache_key = ImageKey {
-      url: inline_key,
-      crossorigin: CrossOriginAttribute::None,
+    let cache_key = ImageKey::new(
+      inline_key,
+      CrossOriginAttribute::None,
       orientation,
-      decorative: false,
-      used_resolution_bits: used_resolution.to_bits(),
-      device_pixel_ratio_bits: self.device_pixel_ratio.to_bits(),
-    };
+      false,
+      used_resolution,
+      self.device_pixel_ratio,
+    );
 
     {
       let mut decoded_cache = self
@@ -7996,14 +8025,14 @@ impl DisplayListBuilder {
       .unwrap_or_else(|| ImageOrientation::default().resolve(image.orientation, decorative));
     let used_resolution =
       image_resolution.used_resolution(None, image.resolution, self.device_pixel_ratio);
-    let key = ImageKey {
-      url: resolved_src,
+    let key = ImageKey::new(
+      resolved_src,
       crossorigin,
       orientation,
       decorative,
-      used_resolution_bits: used_resolution.to_bits(),
-      device_pixel_ratio_bits: self.device_pixel_ratio.to_bits(),
-    };
+      used_resolution,
+      self.device_pixel_ratio,
+    );
 
     {
       let mut decoded_cache = self
@@ -8235,6 +8264,27 @@ mod tests {
 
   fn create_text_fragment(x: f32, y: f32, width: f32, height: f32, text: &str) -> FragmentNode {
     FragmentNode::new_text(Rect::from_xywh(x, y, width, height), text.to_string(), 12.0)
+  }
+
+  #[test]
+  fn image_key_canonicalizes_negative_zero() {
+    let key = ImageKey::new(
+      "https://example.com/image.png".to_string(),
+      CrossOriginAttribute::None,
+      OrientationTransform::IDENTITY,
+      false,
+      0.0,
+      0.0,
+    );
+    let key_neg = ImageKey::new(
+      "https://example.com/image.png".to_string(),
+      CrossOriginAttribute::None,
+      OrientationTransform::IDENTITY,
+      false,
+      -0.0,
+      -0.0,
+    );
+    assert_eq!(key, key_neg);
   }
 
   fn data_url_for_color(color: [u8; 4]) -> String {
