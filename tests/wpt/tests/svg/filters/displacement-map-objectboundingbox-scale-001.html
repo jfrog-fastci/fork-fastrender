@@ -1,0 +1,55 @@
+<!doctype html>
+<meta charset="utf-8">
+<link rel="match" href="displacement-map-objectboundingbox-scale-001-ref.html">
+<title>feDisplacementMap scale resolves against bbox width for primitiveUnits=objectBoundingBox</title>
+<style>
+  html, body {
+    margin: 0;
+    background: black;
+  }
+  svg { display: none; }
+  .frame {
+    position: relative;
+    width: 6px;
+    height: 4px;
+    box-sizing: border-box;
+    border: 1px solid white;
+  }
+  #scene {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    filter: url(#f);
+  }
+  .px {
+    position: absolute;
+    left: 2px;
+    top: 1px;
+    width: 1px;
+    height: 1px;
+    background: rgb(255, 0, 0);
+  }
+</style>
+<!--
+  Chrome (Skia) resolves feDisplacementMap's scalar `scale` against the bbox width when
+  primitiveUnits="objectBoundingBox", and applies the resulting displacement in both X and Y.
+
+  With a 4×2 bbox and scale=1, channel=1.0 yields dx=dy=2px (because the reference is bbox width 4).
+  The red pixel at (2,1) is shifted up by 2px and disappears, leaving the interior black.
+-->
+<svg xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="f" x="0" y="0" width="1" height="1"
+            filterUnits="objectBoundingBox" primitiveUnits="objectBoundingBox"
+            color-interpolation-filters="sRGB">
+      <feFlood flood-color="rgb(255,0,255)" result="map" />
+      <feDisplacementMap in="SourceGraphic" in2="map" scale="1"
+                         xChannelSelector="R" yChannelSelector="B" />
+    </filter>
+  </defs>
+</svg>
+<div class="frame">
+  <div id="scene">
+    <div class="px"></div>
+  </div>
+</div>

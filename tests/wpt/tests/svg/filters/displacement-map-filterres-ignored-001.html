@@ -1,0 +1,48 @@
+<!doctype html>
+<meta charset="utf-8">
+<link rel="match" href="displacement-map-filterres-ignored-001-ref.html">
+<title>feDisplacementMap ignores filterRes (Chrome)</title>
+<style>
+  html, body {
+    margin: 0;
+    background: black;
+  }
+  svg { display: none; }
+  #scene {
+    position: relative;
+    width: 5px;
+    height: 5px;
+    filter: url(#f);
+  }
+  .px {
+    position: absolute;
+    left: 4px;
+    top: 4px;
+    width: 1px;
+    height: 1px;
+    background: rgb(255, 0, 0);
+  }
+</style>
+<!--
+  Chrome ignores the SVG 1.1 filterRes attribute (removed in SVG 2). FastRender matches this
+  behavior when a filter graph contains feDisplacementMap.
+
+  If filterRes were applied here (1×1), the source would be resampled and the output would no
+  longer be a single crisp pixel. The expected output (with filterRes ignored) is the same as
+  displacement-map-scale-basic-001: the pixel shifts from (4,4) to (3,3).
+-->
+<svg xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="f" x="0" y="0" width="5" height="5"
+            filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
+            filterRes="1 1"
+            color-interpolation-filters="sRGB">
+      <feFlood flood-color="rgb(255,0,255)" result="map" />
+      <feDisplacementMap in="SourceGraphic" in2="map" scale="2"
+                         xChannelSelector="R" yChannelSelector="B" />
+    </filter>
+  </defs>
+</svg>
+<div id="scene">
+  <div class="px"></div>
+</div>
