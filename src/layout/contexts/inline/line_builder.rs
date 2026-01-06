@@ -3326,7 +3326,13 @@ fn reorder_paragraph(
       let mut stack: Vec<(UnicodeBidi, Direction)> = Vec::with_capacity(leaf.box_stack.len() + 2);
       stack.push(root_context);
       stack.extend(leaf.box_stack.iter().map(|c| (c.unicode_bidi, c.direction)));
-      stack.push((leaf.item.unicode_bidi(), leaf.item.direction()));
+      let leaf_dir = match &leaf.item {
+        InlineItem::Text(t) if matches!(t.style.unicode_bidi, UnicodeBidi::Plaintext) => {
+          t.base_direction
+        }
+        _ => leaf.item.direction(),
+      };
+      stack.push((leaf.item.unicode_bidi(), leaf_dir));
       paragraph_leaves.push(ParagraphLeaf {
         leaf: leaf.clone(),
         bidi_context: None,
@@ -6189,6 +6195,72 @@ mod tests {
       .map(|p| flatten_text(&p.item))
       .collect();
     assert_eq!(actual, expected_separate);
+  }
+
+  #[test]
+  fn bidi_plaintext_does_not_disable_nested_override_context() {
+    // `unicode-bidi: plaintext` establishes an isolate, but it should not suppress nested
+    // embed/override contexts for shaping/reordering purposes.
+    let mut builder = make_builder(200.0);
+    builder
+      .add_item(InlineItem::Text(make_text_item("L ", 20.0)))
+      .unwrap();
+
+    let mut inner_override = InlineBoxItem::new(
+      0.0,
+      0.0,
+      0.0,
+      make_strut_metrics(),
+      Arc::new(ComputedStyle::default()),
+      1,
+      Direction::Rtl,
+      UnicodeBidi::BidiOverride,
+    );
+    inner_override.add_child(InlineItem::Text(make_text_item("a", 10.0)));
+
+    let mut plaintext = InlineBoxItem::new(
+      0.0,
+      0.0,
+      0.0,
+      make_strut_metrics(),
+      Arc::new(ComputedStyle::default()),
+      0,
+      Direction::Ltr,
+      UnicodeBidi::Plaintext,
+    );
+    plaintext.add_child(InlineItem::InlineBox(inner_override));
+
+    builder.add_item(InlineItem::InlineBox(plaintext)).unwrap();
+    builder
+      .add_item(InlineItem::Text(make_text_item(" R", 20.0)))
+      .unwrap();
+
+    let lines = builder.finish().unwrap().lines;
+    assert_eq!(lines.len(), 1);
+
+    fn find_text<'a>(item: &'a InlineItem, needle: &str) -> Option<&'a TextItem> {
+      match item {
+        InlineItem::Text(t) if t.text == needle => Some(t),
+        InlineItem::InlineBox(b) => b.children.iter().find_map(|c| find_text(c, needle)),
+        InlineItem::Ruby(r) => r.segments.iter().find_map(|seg| {
+          seg
+            .base_items
+            .iter()
+            .find_map(|c| find_text(c, needle))
+        }),
+        _ => None,
+      }
+    }
+
+    let text_item = lines[0]
+      .items
+      .iter()
+      .find_map(|p| find_text(&p.item, "a"))
+      .expect("expected to find inner override text item");
+    assert!(
+      text_item.explicit_bidi.is_some_and(|ctx| ctx.override_all),
+      "expected nested override to set explicit bidi context even inside plaintext"
+    );
   }
 
   #[test]

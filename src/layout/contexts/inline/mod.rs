@@ -479,7 +479,12 @@ impl InlineFormattingContext {
     positioned_children: &mut Vec<PositionedChild>,
   ) -> Result<Vec<InlineItem>, LayoutError> {
     let mut whitespace = CollapsibleWhitespaceState::default();
-    let mut bidi_stack = vec![(box_node.style.unicode_bidi, box_node.style.direction)];
+    let root_dir = if matches!(box_node.style.unicode_bidi, UnicodeBidi::Plaintext) {
+      base_direction
+    } else {
+      box_node.style.direction
+    };
+    let mut bidi_stack = vec![(box_node.style.unicode_bidi, root_dir)];
     let mut abs_cb_stack = Vec::new();
     let mut fixed_cb_stack = Vec::new();
     self.collect_inline_items_internal(
@@ -822,7 +827,14 @@ impl InlineFormattingContext {
           if establishes_fixed_cb {
             fixed_cb_stack.push(box_id);
           }
-          bidi_stack.push((child.style.unicode_bidi, child.style.direction));
+          let child_bidi_direction = if matches!(child.style.unicode_bidi, UnicodeBidi::Plaintext) {
+            let mut logical = String::new();
+            collect_logical_text_for_direction(child, &mut logical);
+            first_strong_direction(&logical).unwrap_or(child.style.direction)
+          } else {
+            child.style.direction
+          };
+          bidi_stack.push((child.style.unicode_bidi, child_bidi_direction));
           let mut inherited_boundary = CombineBoundary::default();
           if Some(idx) == first_combinable {
             inherited_boundary.prev = boundary.prev;
@@ -929,13 +941,7 @@ impl InlineFormattingContext {
             metrics,
             child.style.clone(),
             0,
-            if matches!(child.style.unicode_bidi, UnicodeBidi::Plaintext) {
-              let mut logical = String::new();
-              collect_logical_text_for_direction(child, &mut logical);
-              first_strong_direction(&logical).unwrap_or(child.style.direction)
-            } else {
-              child.style.direction
-            },
+            child_bidi_direction,
             child.style.unicode_bidi,
           );
           inline_box.box_id = box_id;
@@ -1068,7 +1074,14 @@ impl InlineFormattingContext {
           if establishes_fixed_cb {
             fixed_cb_stack.push(box_id);
           }
-          bidi_stack.push((child.style.unicode_bidi, child.style.direction));
+          let child_bidi_direction = if matches!(child.style.unicode_bidi, UnicodeBidi::Plaintext) {
+            let mut logical = String::new();
+            collect_logical_text_for_direction(child, &mut logical);
+            first_strong_direction(&logical).unwrap_or(child.style.direction)
+          } else {
+            child.style.direction
+          };
+          bidi_stack.push((child.style.unicode_bidi, child_bidi_direction));
           let mut inherited_boundary = CombineBoundary::default();
           if Some(idx) == first_combinable {
             inherited_boundary.prev = boundary.prev;
@@ -1189,13 +1202,7 @@ impl InlineFormattingContext {
             metrics,
             child.style.clone(),
             0,
-            if matches!(child.style.unicode_bidi, UnicodeBidi::Plaintext) {
-              let mut logical = String::new();
-              collect_logical_text_for_direction(child, &mut logical);
-              first_strong_direction(&logical).unwrap_or(child.style.direction)
-            } else {
-              child.style.direction
-            },
+            child_bidi_direction,
             child.style.unicode_bidi,
           );
           inline_box.box_id = box_id;
@@ -1681,7 +1688,14 @@ impl InlineFormattingContext {
           if establishes_fixed_cb {
             fixed_cb_stack.push(box_id);
           }
-          bidi_stack.push((child.style.unicode_bidi, child.style.direction));
+          let child_bidi_direction = if matches!(child.style.unicode_bidi, UnicodeBidi::Plaintext) {
+            let mut logical = String::new();
+            collect_logical_text_for_direction(child, &mut logical);
+            first_strong_direction(&logical).unwrap_or(child.style.direction)
+          } else {
+            child.style.direction
+          };
+          bidi_stack.push((child.style.unicode_bidi, child_bidi_direction));
           let mut inherited_boundary = CombineBoundary::default();
           if Some(idx) == first_combinable {
             inherited_boundary.prev = boundary.prev;
@@ -1794,7 +1808,7 @@ impl InlineFormattingContext {
             metrics,
             child.style.clone(),
             0,
-            child.style.direction,
+            child_bidi_direction,
             child.style.unicode_bidi,
           );
           inline_box.box_id = box_id;
@@ -1927,7 +1941,14 @@ impl InlineFormattingContext {
           if establishes_fixed_cb {
             fixed_cb_stack.push(box_id);
           }
-          bidi_stack.push((child.style.unicode_bidi, child.style.direction));
+          let child_bidi_direction = if matches!(child.style.unicode_bidi, UnicodeBidi::Plaintext) {
+            let mut logical = String::new();
+            collect_logical_text_for_direction(child, &mut logical);
+            first_strong_direction(&logical).unwrap_or(child.style.direction)
+          } else {
+            child.style.direction
+          };
+          bidi_stack.push((child.style.unicode_bidi, child_bidi_direction));
           let mut inherited_boundary = CombineBoundary::default();
           if Some(idx) == first_combinable {
             inherited_boundary.prev = boundary.prev;
@@ -2043,7 +2064,7 @@ impl InlineFormattingContext {
             metrics,
             child.style.clone(),
             0,
-            child.style.direction,
+            child_bidi_direction,
             child.style.unicode_bidi,
           );
           inline_box.box_id = box_id;
@@ -3464,7 +3485,14 @@ impl InlineFormattingContext {
     base_direction: crate::style::types::Direction,
     bidi_stack: &[(UnicodeBidi, Direction)],
   ) -> Result<TextItem, LayoutError> {
-    let current_context = (style.unicode_bidi, style.direction);
+    let current_context = (
+      style.unicode_bidi,
+      if matches!(style.unicode_bidi, UnicodeBidi::Plaintext) {
+        base_direction
+      } else {
+        style.direction
+      },
+    );
     let bidi_context = if bidi_stack.last().copied() == Some(current_context) {
       explicit_bidi_context(base_direction, bidi_stack)
     } else {
@@ -9362,7 +9390,12 @@ impl InlineFormattingContext {
 
     // Collect inline items and block segments
     let mut positioned_children: Vec<PositionedChild> = Vec::new();
-    let mut bidi_stack = vec![(box_node.style.unicode_bidi, box_node.style.direction)];
+    let root_dir = if matches!(box_node.style.unicode_bidi, UnicodeBidi::Plaintext) {
+      base_direction
+    } else {
+      box_node.style.direction
+    };
+    let mut bidi_stack = vec![(box_node.style.unicode_bidi, root_dir)];
     let mut abs_cb_stack: Vec<usize> = Vec::new();
     let mut fixed_cb_stack: Vec<usize> = Vec::new();
     let segments = self.collect_inline_flow_segments_with_base(
@@ -11335,11 +11368,7 @@ pub(crate) fn explicit_bidi_context(
   base_direction: Direction,
   stack: &[(UnicodeBidi, Direction)],
 ) -> Option<crate::text::pipeline::ExplicitBidiContext> {
-  if stack.is_empty()
-    || stack
-      .iter()
-      .any(|(ub, _)| matches!(ub, UnicodeBidi::Plaintext))
-  {
+  if stack.is_empty() {
     return None;
   }
   let mut level = match base_direction {
@@ -11350,7 +11379,7 @@ pub(crate) fn explicit_bidi_context(
   let mut changed = false;
   for (ub, dir) in stack {
     match ub {
-      UnicodeBidi::Normal | UnicodeBidi::Plaintext => {}
+      UnicodeBidi::Normal => {}
       UnicodeBidi::Embed => {
         let next = push_embedding_level(level, *dir);
         if next != level {
@@ -11360,6 +11389,17 @@ pub(crate) fn explicit_bidi_context(
         }
       }
       UnicodeBidi::Isolate => {
+        let next = push_embedding_level(level, *dir);
+        if next != level {
+          level = next;
+          override_all = false;
+          changed = true;
+        }
+      }
+      UnicodeBidi::Plaintext => {
+        // `unicode-bidi: plaintext` behaves like an isolate whose direction is resolved by
+        // first-strong character. Callers are responsible for providing the resolved direction in
+        // the bidi stack (e.g. from `resolve_base_direction_for_box` / `first_strong_direction`).
         let next = push_embedding_level(level, *dir);
         if next != level {
           level = next;
