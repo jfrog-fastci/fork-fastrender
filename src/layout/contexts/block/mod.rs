@@ -7305,6 +7305,95 @@ mod tests {
   }
 
   #[test]
+  fn multicol_segment_offset_skips_offscreen_auto() {
+    let _guard = content_visibility_test_guard();
+
+    fn block_with_id(id: usize, style: Arc<ComputedStyle>, children: Vec<BoxNode>) -> BoxNode {
+      let mut node = BoxNode::new_block(style, FormattingContextType::Block, children);
+      node.id = id;
+      node
+    }
+
+    fn fragments_with_id<'a>(root: &'a FragmentNode, id: usize) -> Vec<&'a FragmentNode> {
+      fn walk<'a>(node: &'a FragmentNode, id: usize, out: &mut Vec<&'a FragmentNode>) {
+        if let FragmentContent::Block {
+          box_id: Some(box_id),
+        } = &node.content
+        {
+          if *box_id == id {
+            out.push(node);
+          }
+        }
+        for child in node.children.iter() {
+          walk(child, id, out);
+        }
+      }
+
+      let mut out = Vec::new();
+      walk(root, id, &mut out);
+      out
+    }
+
+    let viewport = Size::new(200.0, 100.0);
+    let fc = BlockFormattingContext::with_font_context_viewport_and_cb(
+      FontContext::new(),
+      viewport,
+      ContainingBlock::viewport(viewport),
+    );
+    let constraints =
+      LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Indefinite);
+
+    let mut multicol_style = ComputedStyle::default();
+    multicol_style.display = Display::Block;
+    multicol_style.column_count = Some(2);
+    let multicol_style = Arc::new(multicol_style);
+
+    let seg1 = block_with_id(6001, block_style_with_height(200.0), vec![]);
+    let span_all = block_with_id(
+      6002,
+      {
+        let mut style = (*block_style_with_height(10.0)).clone();
+        style.column_span = ColumnSpan::All;
+        Arc::new(style)
+      },
+      vec![],
+    );
+
+    let inner_child = block_with_id(6004, block_style_with_height(60.0), vec![]);
+    let auto = block_with_id(
+      6003,
+      {
+        let mut style = (*block_style_with_height(60.0)).clone();
+        style.content_visibility = ContentVisibility::Auto;
+        Arc::new(style)
+      },
+      vec![inner_child],
+    );
+
+    let root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![BoxNode::new_block(
+        multicol_style,
+        FormattingContextType::Block,
+        vec![seg1, span_all, auto],
+      )],
+    );
+
+    let fragment = fc.layout(&root, &constraints).unwrap();
+
+    let auto_fragments = fragments_with_id(&fragment, 6003);
+    assert!(
+      !auto_fragments.is_empty(),
+      "expected to find fragment(s) for box_id=6003"
+    );
+    assert!(
+      auto_fragments.iter().all(|frag| frag.children.is_empty()),
+      "expected content-visibility:auto descendants to be skipped when the segment is offscreen"
+    );
+  }
+
+  #[test]
   fn multicol_column_count_width_resolves_used_count() {
     let fc = BlockFormattingContext::new();
 
