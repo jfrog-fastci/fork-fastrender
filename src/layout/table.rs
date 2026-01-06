@@ -7438,6 +7438,35 @@ impl FormattingContext for TableFormattingContext {
     let table_root_style: &ComputedStyle = style_override
       .as_deref()
       .unwrap_or_else(|| table_box.style.as_ref());
+    if table_root_style.containment.isolates_inline_size() {
+      let resolve_abs_no_pct = |l: &crate::style::values::Length| match l.unit {
+        LengthUnit::Percent => 0.0,
+        _ if l.unit.is_absolute() => l.to_px(),
+        _ => l.value,
+      };
+      let edges = if table_root_style.border_collapse == BorderCollapse::Collapse {
+        0.0
+      } else {
+        resolve_abs_no_pct(&table_root_style.padding_left)
+          + resolve_abs_no_pct(&table_root_style.padding_right)
+          + resolve_abs_no_pct(&table_root_style.border_left_width)
+          + resolve_abs_no_pct(&table_root_style.border_right_width)
+      };
+
+      let font_size = table_root_style.font_size;
+      let min_w = resolve_opt_length_against(
+        table_root_style.min_width.as_ref(),
+        font_size,
+        None, /* no containing width */
+      );
+      let max_w = resolve_opt_length_against(
+        table_root_style.max_width.as_ref(),
+        font_size,
+        None, /* no containing width */
+      );
+      let clamped = clamp_to_min_max(edges, min_w, max_w);
+      return Ok(clamped.max(0.0));
+    }
     let structure = table_structure_cached(table_box);
     let spacing = structure.total_horizontal_spacing();
     let font_size = table_root_style.font_size;
