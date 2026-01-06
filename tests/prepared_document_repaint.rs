@@ -281,6 +281,76 @@ fn repaint_with_animation_composition_add_combines_scale() -> Result<()> {
 }
 
 #[test]
+fn repaint_with_animation_composition_accumulate_accumulates_translate_iterations() -> Result<()> {
+  let mut renderer = FastRender::new()?;
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(255, 255, 255); }
+      .box {
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        animation-name: move;
+        animation-duration: 1000ms;
+        animation-timing-function: linear;
+        animation-iteration-count: 2;
+        animation-fill-mode: forwards;
+        animation-composition: accumulate;
+      }
+      @keyframes move {
+        from { translate: 0px 0px; }
+        to { translate: 20px 0px; }
+      }
+    </style>
+    <div class="box"></div>
+  "#;
+  let prepared = renderer.prepare_html(html, RenderOptions::new().with_viewport(80, 20))?;
+  let mid_second =
+    prepared.paint_with_options(PreparedPaintOptions::new().with_animation_time(1500.0))?;
+
+  // With `accumulate`, the second iteration continues from the end of the first one.
+  // At t=1500ms we are halfway through the second iteration: 20px (first iteration) + 10px = 30px.
+  assert_eq!(pixel(&mid_second, 35, 5), (255, 0, 0, 255));
+  assert_eq!(pixel(&mid_second, 15, 5), (255, 255, 255, 255));
+  Ok(())
+}
+
+#[test]
+fn repaint_with_animation_composition_accumulate_accumulates_scale_iterations() -> Result<()> {
+  let mut renderer = FastRender::new()?;
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(255, 255, 255); }
+      .box {
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        transform-origin: 0 0;
+        animation-name: grow;
+        animation-duration: 1000ms;
+        animation-timing-function: linear;
+        animation-iteration-count: 2;
+        animation-fill-mode: forwards;
+        animation-composition: accumulate;
+      }
+      @keyframes grow {
+        from { scale: 1; }
+        to { scale: 2; }
+      }
+    </style>
+    <div class="box"></div>
+  "#;
+  let prepared = renderer.prepare_html(html, RenderOptions::new().with_viewport(60, 20))?;
+  let end = prepared.paint_with_options(PreparedPaintOptions::new().with_animation_time(2000.0))?;
+
+  // Each iteration scales by a factor of 2. After two iterations the box should be scaled by 4,
+  // expanding to 40x40.
+  assert_eq!(pixel(&end, 30, 5), (255, 0, 0, 255));
+  assert_eq!(pixel(&end, 45, 5), (255, 255, 255, 255));
+  Ok(())
+}
+
+#[test]
 fn repaint_with_animation_delay_and_fill_mode_changes_pixels() -> Result<()> {
   let mut renderer = FastRender::new()?;
   let html = r#"

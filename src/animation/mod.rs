@@ -3548,7 +3548,8 @@ fn apply_animated_properties_with_composition(
   ctx: &AnimationResolveContext,
 ) {
   let composition = match composition {
-    // TODO: Implement per-iteration accumulation semantics; for now treat as additive.
+    // Per-iteration accumulation semantics are applied during keyframe sampling. At this stage,
+    // `accumulate` behaves like additive composition against the underlying value.
     AnimationComposition::Accumulate => AnimationComposition::Add,
     other => other,
   };
@@ -3709,6 +3710,217 @@ fn apply_additive_animation_value(
   }
 }
 
+fn apply_iteration_accumulation(
+  values: &mut HashMap<String, AnimatedValue>,
+  start: &HashMap<String, AnimatedValue>,
+  end: &HashMap<String, AnimatedValue>,
+  iteration: u64,
+) {
+  if iteration == 0 {
+    return;
+  }
+  for (name, value) in values.iter_mut() {
+    let (Some(start_val), Some(end_val)) = (start.get(name), end.get(name)) else {
+      continue;
+    };
+    if let Some(accumulated) = accumulate_iteration_value(value, start_val, end_val, iteration) {
+      *value = accumulated;
+    }
+  }
+}
+
+fn pow_transform3d(mut base: Transform3D, mut exp: u64) -> Transform3D {
+  let mut result = Transform3D::identity();
+  while exp > 0 {
+    if exp & 1 == 1 {
+      result = result.multiply(&base);
+    }
+    exp >>= 1;
+    if exp > 0 {
+      base = base.multiply(&base);
+    }
+  }
+  result
+}
+
+fn accumulate_iteration_value(
+  current: &AnimatedValue,
+  start: &AnimatedValue,
+  end: &AnimatedValue,
+  iteration: u64,
+) -> Option<AnimatedValue> {
+  match (current, start, end) {
+    (AnimatedValue::Opacity(cur), AnimatedValue::Opacity(start), AnimatedValue::Opacity(end)) => {
+      if !cur.is_finite() || !start.is_finite() || !end.is_finite() {
+        return None;
+      }
+      let delta = end - start;
+      Some(AnimatedValue::Opacity(cur + (iteration as f32) * delta))
+    }
+    (
+      AnimatedValue::Translate(cur),
+      AnimatedValue::Translate(start),
+      AnimatedValue::Translate(end),
+    ) => {
+      if matches!(cur, TranslateValue::None) {
+        return None;
+      }
+      let (cx, cy, cz) = match cur {
+        TranslateValue::None => return None,
+        TranslateValue::Values { x, y, z } => (x.to_px(), y.to_px(), z.to_px()),
+      };
+      let (sx, sy, sz) = match start {
+        TranslateValue::None => (0.0, 0.0, 0.0),
+        TranslateValue::Values { x, y, z } => (x.to_px(), y.to_px(), z.to_px()),
+      };
+      let (ex, ey, ez) = match end {
+        TranslateValue::None => (0.0, 0.0, 0.0),
+        TranslateValue::Values { x, y, z } => (x.to_px(), y.to_px(), z.to_px()),
+      };
+      let delta_x = ex - sx;
+      let delta_y = ey - sy;
+      let delta_z = ez - sz;
+      let iter = iteration as f32;
+      Some(AnimatedValue::Translate(TranslateValue::Values {
+        x: Length::px(cx + iter * delta_x),
+        y: Length::px(cy + iter * delta_y),
+        z: Length::px(cz + iter * delta_z),
+      }))
+    }
+    (AnimatedValue::Rotate(cur), AnimatedValue::Rotate(start), AnimatedValue::Rotate(end)) => {
+      if matches!(cur, RotateValue::None) {
+        return None;
+      }
+
+      fn axis_angle(value: RotateValue) -> Option<((f32, f32, f32), f32)> {
+        let (x, y, z, angle) = match value {
+          RotateValue::None => return None,
+          RotateValue::Angle(angle) => (0.0, 0.0, 1.0, angle),
+          RotateValue::AxisAngle { x, y, z, angle } => (x, y, z, angle),
+        };
+        if !x.is_finite() || !y.is_finite() || !z.is_finite() || !angle.is_finite() {
+          return None;
+        }
+        let len = (x * x + y * y + z * z).sqrt();
+        if !len.is_finite() || len < 1e-6 {
+          return None;
+        }
+        Some(((x / len, y / len, z / len), angle))
+      }
+
+      let Some(((ax, ay, az), start_angle)) = axis_angle(*start) else {
+        return None;
+      };
+      let Some(((mut bx, mut by, mut bz), mut end_angle)) = axis_angle(*end) else {
+        return None;
+      };
+      let Some(((mut cx, mut cy, mut cz), mut cur_angle)) = axis_angle(*cur) else {
+        return None;
+      };
+
+      // Axis-angle has a sign ambiguity: (a, θ) == (-a, -θ). Canonicalize both values to the
+      // start axis direction so we can subtract/add angles reliably.
+      let end_dot = ax * bx + ay * by + az * bz;
+      if end_dot < 0.0 {
+        bx = -bx;
+        by = -by;
+        bz = -bz;
+        end_angle = -end_angle;
+      }
+      let cur_dot = ax * cx + ay * cy + az * cz;
+      if cur_dot < 0.0 {
+        cx = -cx;
+        cy = -cy;
+        cz = -cz;
+        cur_angle = -cur_angle;
+      }
+
+      if (ax - bx).abs() > 1e-6
+        || (ay - by).abs() > 1e-6
+        || (az - bz).abs() > 1e-6
+        || (ax - cx).abs() > 1e-6
+        || (ay - cy).abs() > 1e-6
+        || (az - cz).abs() > 1e-6
+      {
+        return None;
+      }
+
+      let delta = end_angle - start_angle;
+      let angle = cur_angle + (iteration as f32) * delta;
+      if !angle.is_finite() {
+        return None;
+      }
+
+      if ax.abs() < 1e-6 && ay.abs() < 1e-6 {
+        Some(AnimatedValue::Rotate(RotateValue::Angle(
+          angle * az.signum(),
+        )))
+      } else {
+        Some(AnimatedValue::Rotate(RotateValue::AxisAngle {
+          x: ax,
+          y: ay,
+          z: az,
+          angle,
+        }))
+      }
+    }
+    (AnimatedValue::Scale(cur), AnimatedValue::Scale(start), AnimatedValue::Scale(end)) => {
+      if matches!(cur, ScaleValue::None) {
+        return None;
+      }
+      let exp = i32::try_from(iteration).ok()?;
+      let (cx, cy, cz) = match cur {
+        ScaleValue::None => return None,
+        ScaleValue::Values { x, y, z } => (*x, *y, *z),
+      };
+      let (sx, sy, sz) = match start {
+        ScaleValue::None => (1.0, 1.0, 1.0),
+        ScaleValue::Values { x, y, z } => (*x, *y, *z),
+      };
+      let (ex, ey, ez) = match end {
+        ScaleValue::None => (1.0, 1.0, 1.0),
+        ScaleValue::Values { x, y, z } => (*x, *y, *z),
+      };
+      if sx.abs() < 1e-6 || sy.abs() < 1e-6 || sz.abs() < 1e-6 {
+        return None;
+      }
+      let rx = ex / sx;
+      let ry = ey / sy;
+      let rz = ez / sz;
+      if !rx.is_finite() || !ry.is_finite() || !rz.is_finite() {
+        return None;
+      }
+      Some(AnimatedValue::Scale(ScaleValue::Values {
+        x: cx * rx.powi(exp),
+        y: cy * ry.powi(exp),
+        z: cz * rz.powi(exp),
+      }))
+    }
+    (
+      AnimatedValue::Transform(cur_list),
+      AnimatedValue::Transform(start_list),
+      AnimatedValue::Transform(end_list),
+    ) => {
+      if cur_list.is_empty() {
+        return None;
+      }
+
+      let start_matrix = compose_transform_list(start_list);
+      if !start_matrix.is_identity() {
+        return None;
+      }
+      let end_matrix = compose_transform_list(end_list);
+      let delta_pow = pow_transform3d(end_matrix, iteration);
+      let cur_matrix = compose_transform_list(cur_list);
+      let accumulated = cur_matrix.multiply(&delta_pow);
+      Some(AnimatedValue::Transform(vec![
+        crate::css::types::Transform::Matrix3d(accumulated.m),
+      ]))
+    }
+    _ => None,
+  }
+}
+
 enum TimelineState {
   Scroll {
     timeline: ScrollTimeline,
@@ -3783,12 +3995,44 @@ fn animation_end_progress(direction: AnimationDirection, iterations: f32) -> f32
   }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct AnimationProgress {
+  progress: f32,
+  iteration: u64,
+}
+
+fn animation_end_iteration(iterations: f32) -> u64 {
+  if !iterations.is_finite() {
+    return 0;
+  }
+  let iterations = iterations.max(0.0);
+  if iterations <= 0.0 {
+    return 0;
+  }
+  let whole = iterations.floor();
+  let frac = (iterations - whole).clamp(0.0, 1.0);
+  if frac <= f32::EPSILON {
+    (whole.max(1.0) as u64).saturating_sub(1)
+  } else {
+    whole as u64
+  }
+}
+
 fn time_based_animation_progress_impl(
   style: &ComputedStyle,
   idx: usize,
   time_ms: f32,
   respect_play_state: bool,
 ) -> Option<f32> {
+  time_based_animation_state_impl(style, idx, time_ms, respect_play_state).map(|s| s.progress)
+}
+
+fn time_based_animation_state_impl(
+  style: &ComputedStyle,
+  idx: usize,
+  time_ms: f32,
+  respect_play_state: bool,
+) -> Option<AnimationProgress> {
   if time_ms < 0.0 {
     return None;
   }
@@ -3851,10 +4095,14 @@ fn time_based_animation_progress_impl(
     0.0
   };
   let end_progress = animation_end_progress(direction, iterations);
+  let end_iteration = animation_end_iteration(iterations);
 
   if local_time < 0.0 {
     return if fill_backwards(fill) {
-      Some(start_progress)
+      Some(AnimationProgress {
+        progress: start_progress,
+        iteration: 0,
+      })
     } else {
       None
     };
@@ -3862,14 +4110,20 @@ fn time_based_animation_progress_impl(
 
   if active_duration.is_finite() && local_time >= active_duration {
     return if fill_forwards(fill) {
-      Some(end_progress)
+      Some(AnimationProgress {
+        progress: end_progress,
+        iteration: end_iteration,
+      })
     } else {
       None
     };
   }
 
   if duration <= 0.0 {
-    return Some(end_progress);
+    return Some(AnimationProgress {
+      progress: end_progress,
+      iteration: end_iteration,
+    });
   }
 
   let total = (local_time / duration).max(0.0);
@@ -3881,7 +4135,10 @@ fn time_based_animation_progress_impl(
   } else {
     iteration_progress
   };
-  Some(directed)
+  Some(AnimationProgress {
+    progress: directed,
+    iteration,
+  })
 }
 
 fn time_based_animation_progress(style: &ComputedStyle, idx: usize, time_ms: f32) -> Option<f32> {
@@ -3889,13 +4146,20 @@ fn time_based_animation_progress(style: &ComputedStyle, idx: usize, time_ms: f32
 }
 
 fn settled_time_based_animation_progress(style: &ComputedStyle, idx: usize) -> Option<f32> {
+  settled_time_based_animation_state(style, idx).map(|s| s.progress)
+}
+
+fn settled_time_based_animation_state(
+  style: &ComputedStyle,
+  idx: usize,
+) -> Option<AnimationProgress> {
   let play_state = pick(
     &style.animation_play_states,
     idx,
     AnimationPlayState::default(),
   );
   if matches!(play_state, AnimationPlayState::Paused) {
-    return time_based_animation_progress_impl(style, idx, 0.0, true);
+    return time_based_animation_state_impl(style, idx, 0.0, true);
   }
 
   // `animation-duration: auto` is represented by a negative sentinel. For time-based timelines we
@@ -3927,7 +4191,10 @@ fn settled_time_based_animation_progress(style: &ComputedStyle, idx: usize) -> O
   );
 
   let end_progress = animation_end_progress(direction, iterations);
-  Some(end_progress)
+  Some(AnimationProgress {
+    progress: end_progress,
+    iteration: animation_end_iteration(iterations),
+  })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -4041,6 +4308,14 @@ fn scroll_driven_fill_progress(raw: f32, fill: AnimationFillMode) -> Option<f32>
 }
 
 fn scroll_driven_effect_progress(style: &ComputedStyle, idx: usize, overall: f32) -> f32 {
+  scroll_driven_effect_state(style, idx, overall).progress
+}
+
+fn scroll_driven_effect_state(
+  style: &ComputedStyle,
+  idx: usize,
+  overall: f32,
+) -> AnimationProgress {
   let iteration_count = pick(
     &style.animation_iteration_counts,
     idx,
@@ -4059,30 +4334,40 @@ fn scroll_driven_effect_progress(style: &ComputedStyle, idx: usize, overall: f32
     0.0
   };
   let end_progress = animation_end_progress(direction, iterations);
+  let end_iteration = animation_end_iteration(iterations);
 
   let overall = overall.clamp(0.0, 1.0);
-  let directed = if overall <= f32::EPSILON {
-    start_progress
-  } else if overall >= 1.0 - f32::EPSILON {
-    end_progress
-  } else {
-    let finite_iterations = if iterations.is_finite() {
-      iterations.max(0.0)
-    } else {
-      1.0
+  if overall <= f32::EPSILON {
+    return AnimationProgress {
+      progress: start_progress,
+      iteration: 0,
     };
-    let total = overall * finite_iterations;
-    let iteration = total.floor() as u64;
-    let iteration_progress = (total - iteration as f32).clamp(0.0, 1.0);
-    let reversed = iteration_reverses(direction, iteration);
-    if reversed {
-      1.0 - iteration_progress
-    } else {
-      iteration_progress
-    }
-  };
+  }
+  if overall >= 1.0 - f32::EPSILON {
+    return AnimationProgress {
+      progress: end_progress,
+      iteration: end_iteration,
+    };
+  }
 
-  directed
+  let finite_iterations = if iterations.is_finite() {
+    iterations.max(0.0)
+  } else {
+    1.0
+  };
+  let total = overall * finite_iterations;
+  let iteration = total.floor() as u64;
+  let iteration_progress = (total - iteration as f32).clamp(0.0, 1.0);
+  let reversed = iteration_reverses(direction, iteration);
+  let directed = if reversed {
+    1.0 - iteration_progress
+  } else {
+    iteration_progress
+  };
+  AnimationProgress {
+    progress: directed,
+    iteration,
+  }
 }
 
 fn scroll_progress_for_function(
@@ -4305,8 +4590,8 @@ fn apply_animations_to_node_scoped(
 
         let progress = match timeline_ref {
           AnimationTimeline::Auto => match animation_time_ms {
-            Some(time_ms) => time_based_animation_progress(&*style_arc, idx, time_ms),
-            None => settled_time_based_animation_progress(&*style_arc, idx),
+            Some(time_ms) => time_based_animation_state_impl(&*style_arc, idx, time_ms, true),
+            None => settled_time_based_animation_state(&*style_arc, idx),
           },
           AnimationTimeline::None => None,
           AnimationTimeline::Named(ref timeline_name) => {
@@ -4345,7 +4630,7 @@ fn apply_animations_to_node_scoped(
             );
             raw
               .and_then(|raw| scroll_driven_fill_progress(raw, fill))
-              .map(|overall| scroll_driven_effect_progress(&*style_arc, idx, overall))
+              .map(|overall| scroll_driven_effect_state(&*style_arc, idx, overall))
           }
           AnimationTimeline::Scroll(ref func) => {
             let raw = scroll_progress_for_function(
@@ -4364,7 +4649,7 @@ fn apply_animations_to_node_scoped(
             );
             raw
               .and_then(|raw| scroll_driven_fill_progress(raw, fill))
-              .map(|overall| scroll_driven_effect_progress(&*style_arc, idx, overall))
+              .map(|overall| scroll_driven_effect_state(&*style_arc, idx, overall))
           }
           AnimationTimeline::View(ref func) => {
             let raw = view_progress_for_function(
@@ -4383,21 +4668,48 @@ fn apply_animations_to_node_scoped(
             );
             raw
               .and_then(|raw| scroll_driven_fill_progress(raw, fill))
-              .map(|overall| scroll_driven_effect_progress(&*style_arc, idx, overall))
+              .map(|overall| scroll_driven_effect_state(&*style_arc, idx, overall))
           }
         };
 
         let Some(progress) = progress else { continue };
 
         if let Some(rule) = keyframes.get(name) {
-          let sample = sample_keyframes_with_default_timing(
+          let mut sample = sample_keyframes_with_default_timing(
             rule,
-            progress,
+            progress.progress,
             &animated,
             viewport_size,
             element_size,
             &timing,
           );
+          if matches!(composition, AnimationComposition::Accumulate)
+            && progress.iteration > 0
+            && !sample.animated.is_empty()
+          {
+            let start = sample_keyframes_with_default_timing(
+              rule,
+              0.0,
+              &animated,
+              viewport_size,
+              element_size,
+              &timing,
+            );
+            let end = sample_keyframes_with_default_timing(
+              rule,
+              1.0,
+              &animated,
+              viewport_size,
+              element_size,
+              &timing,
+            );
+            apply_iteration_accumulation(
+              &mut sample.animated,
+              &start.animated,
+              &end.animated,
+              progress.iteration,
+            );
+          }
 
           for (name, maybe_value) in sample.custom_properties {
             match maybe_value {
@@ -5331,7 +5643,8 @@ mod tests {
   }
 
   #[test]
-  fn settled_time_based_animation_progress_paused_with_positive_delay_is_none_without_backwards_fill() {
+  fn settled_time_based_animation_progress_paused_with_positive_delay_is_none_without_backwards_fill(
+  ) {
     let mut style = ComputedStyle::default();
     style.animation_names = vec!["fade".to_string()];
     style.animation_durations = vec![1000.0].into();
@@ -5743,7 +6056,10 @@ mod tests {
     let rule = &keyframes[0];
 
     // Halfway through the only interval, `step-end` should keep the start keyframe value.
-    assert!((sampled_opacity_with_timing(rule, 0.5, &TransitionTimingFunction::Linear) - 0.0).abs() < 1e-6);
+    assert!(
+      (sampled_opacity_with_timing(rule, 0.5, &TransitionTimingFunction::Linear) - 0.0).abs()
+        < 1e-6
+    );
   }
 
   #[test]
