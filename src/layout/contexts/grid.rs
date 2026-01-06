@@ -7348,6 +7348,26 @@ mod tests {
   }
 
   #[test]
+  fn grid_measure_key_uses_box_id_when_available() {
+    use taffy::style::AvailableSpace;
+
+    let mut node = BoxNode::new_block(make_item_style(), FormattingContextType::Block, vec![]);
+    node.id = 123;
+    let viewport = Size::new(800.0, 600.0);
+    let known = taffy::geometry::Size {
+      width: None,
+      height: None,
+    };
+    let available = taffy::geometry::Size {
+      width: AvailableSpace::MaxContent,
+      height: AvailableSpace::MaxContent,
+    };
+
+    let key = MeasureKey::new(&node, known, available, viewport, false);
+    assert_eq!(key.box_id, 123);
+  }
+
+  #[test]
   fn grid_measure_key_canonicalizes_negative_zero() {
     let node = BoxNode::new_block(make_item_style(), FormattingContextType::Block, vec![]);
     let viewport = Size::new(800.0, 600.0);
