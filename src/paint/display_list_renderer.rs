@@ -235,6 +235,25 @@ fn invert_transform(ts: Transform) -> Option<Transform> {
   Some(Transform::from_row(sx, ky, kx, sy, tx, ty))
 }
 
+fn transform_requires_transformed_clip(transform: Transform, radii: BorderRadii) -> bool {
+  let eps = 1e-6;
+  if !(transform.sx.is_finite()
+    && transform.sy.is_finite()
+    && transform.kx.is_finite()
+    && transform.ky.is_finite())
+  {
+    return false;
+  }
+
+  // Translation-only transforms keep the clip axis-aligned and do not affect radii.
+  let has_skew_or_rotation = transform.kx.abs() > eps || transform.ky.abs() > eps;
+  if radii.is_zero() {
+    return has_skew_or_rotation;
+  }
+
+  has_skew_or_rotation || (transform.sx - 1.0).abs() > eps || (transform.sy - 1.0).abs() > eps
+}
+
 fn shade_color(color: &Rgba, factor: f32) -> Rgba {
   let clamp = |v: f32| v.clamp(0.0, 255.0) as u8;
   let r = clamp(color.r as f32 * factor);
@@ -1570,6 +1589,7 @@ struct ClipMaskScratch {
   mask: Option<Mask>,
   last_rect: Option<Rect>,
   last_radii: Option<BorderRadii>,
+  last_transform: Option<Transform>,
 }
 
 thread_local! {
@@ -1896,10 +1916,14 @@ fn apply_clip_mask_rect(
       scratch.mask = Mask::new(width, height);
       scratch.last_rect = None;
       scratch.last_radii = None;
+      scratch.last_transform = None;
     }
 
     let clamped = radii.clamped(rect.width(), rect.height());
-    let needs_rebuild = scratch.last_rect != Some(rect) || scratch.last_radii != Some(clamped);
+    let fill_transform = Transform::identity();
+    let needs_rebuild = scratch.last_rect != Some(rect)
+      || scratch.last_radii != Some(clamped)
+      || scratch.last_transform != Some(fill_transform);
     let dirty = clip_mask_dirty_bounds(rect, width, height);
 
     {
@@ -1940,7 +1964,7 @@ fn apply_clip_mask_rect(
           &path,
           tiny_skia::FillRule::Winding,
           true,
-          Transform::identity(),
+          fill_transform,
         );
       }
 
@@ -2032,6 +2056,7 @@ fn apply_clip_mask_rect(
     if needs_rebuild {
       scratch.last_rect = Some(rect);
       scratch.last_radii = Some(clamped);
+      scratch.last_transform = Some(fill_transform);
     }
     Ok(true)
   });
@@ -2043,6 +2068,129 @@ fn apply_clip_mask_rect(
   }
 
   hard_clip_pixmap_outside_rect_rgba(pixmap, rect)?;
+  record(timer);
+  Ok(())
+}
+
+fn apply_clip_mask_rect_transformed(
+  pixmap: &mut Pixmap,
+  clip_rect: Rect,
+  radii: BorderRadii,
+  source_rect: Rect,
+  transform: Transform,
+  diagnostics: Option<&Arc<ClipMaskDiagnostics>>,
+) -> RenderResult<()> {
+  check_active(RenderStage::Paint)?;
+  if clip_rect.width() <= 0.0 || clip_rect.height() <= 0.0 {
+    return Ok(());
+  }
+
+  let width = pixmap.width();
+  let height = pixmap.height();
+  if width == 0 || height == 0 {
+    return Ok(());
+  }
+
+  let timer = diagnostics.map(|_| Instant::now());
+  let pixels = diagnostics
+    .map(|_| u64::from(width).saturating_mul(u64::from(height)))
+    .unwrap_or(0);
+  let record = |timer: Option<Instant>| {
+    if let (Some(diag), Some(start)) = (diagnostics, timer) {
+      diag.record(pixels, start.elapsed());
+    }
+  };
+
+  // Fast path: fully outside the pixmap bounds.
+  let right = clip_rect.x() + clip_rect.width();
+  let bottom = clip_rect.y() + clip_rect.height();
+  if right <= 0.0 || bottom <= 0.0 || clip_rect.x() >= width as f32 || clip_rect.y() >= height as f32 {
+    pixmap.data_mut().fill(0);
+    record(timer);
+    return Ok(());
+  }
+
+  let applied_mask = CLIP_MASK_SCRATCH.with(|cell| -> RenderResult<bool> {
+    let mut scratch = cell.borrow_mut();
+    let replace = match scratch.mask.as_ref() {
+      Some(existing) => existing.width() != width || existing.height() != height,
+      None => true,
+    };
+    if replace {
+      scratch.mask = Mask::new(width, height);
+      scratch.last_rect = None;
+      scratch.last_radii = None;
+      scratch.last_transform = None;
+    }
+
+    let clamped = radii.clamped(source_rect.width(), source_rect.height());
+    let needs_rebuild = scratch.last_rect != Some(source_rect)
+      || scratch.last_radii != Some(clamped)
+      || scratch.last_transform != Some(transform);
+    let dirty = clip_mask_dirty_bounds(clip_rect, width, height);
+
+    {
+      let Some(mask) = scratch.mask.as_mut() else {
+        return Ok(false);
+      };
+
+      if needs_rebuild {
+        if let Some(dirty) = dirty {
+          clear_mask_rect(mask, dirty)?;
+        } else {
+          mask.data_mut().fill(0);
+        }
+
+        let Some(path) = crate::paint::rasterize::build_rounded_rect_path(
+          source_rect.x(),
+          source_rect.y(),
+          source_rect.width(),
+          source_rect.height(),
+          &clamped,
+        ) else {
+          return Ok(false);
+        };
+
+        mask.fill_path(
+          &path,
+          tiny_skia::FillRule::Winding,
+          true,
+          transform,
+        );
+      }
+
+      if let Some(dirty) = dirty {
+        apply_mask_rect_rgba(pixmap, mask, dirty)?;
+      } else {
+        apply_mask_rect_rgba(
+          pixmap,
+          mask,
+          ClipMaskDirtyRect {
+            x0: 0,
+            y0: 0,
+            x1: width,
+            y1: height,
+          },
+        )?;
+      }
+    }
+
+    if needs_rebuild {
+      scratch.last_rect = Some(source_rect);
+      scratch.last_radii = Some(clamped);
+      scratch.last_transform = Some(transform);
+    }
+
+    Ok(true)
+  });
+
+  let applied_mask = applied_mask?;
+  if !applied_mask {
+    record(timer);
+    return Ok(());
+  }
+
+  hard_clip_pixmap_outside_rect_rgba(pixmap, clip_rect)?;
   record(timer);
   Ok(())
 }
@@ -2831,6 +2979,7 @@ struct StackingRecord {
   needs_layer: bool,
   filters: Vec<ResolvedFilter>,
   radii: BorderRadii,
+  bounds: Rect,
   mask_bounds: Rect,
   mask: Option<ResolvedMask>,
   css_bounds: Rect,
@@ -2839,8 +2988,15 @@ struct StackingRecord {
   layer_origin: (i32, i32),
   projective_transform: Option<Transform3D>,
   parent_transform: Transform,
+  clip: Option<TransformedClipRect>,
   culled: bool,
   pending_backdrop: Option<PendingBackdrop>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TransformedClipRect {
+  rect: Rect,
+  transform: Transform,
 }
 
 #[derive(Debug, Clone)]
@@ -8718,7 +8874,7 @@ impl DisplayListRenderer {
           .unwrap_or(perspective_base);
         self.perspective_stack.push(next_perspective);
 
-        let pending_backdrop = if has_backdrop {
+        let mut pending_backdrop = if has_backdrop {
           let backdrop_bounds = if let Some(projective_transform) = projective_transform.as_ref() {
             let projected_css = projective_transform.transform_rect(plane_css_bounds);
             let projected_device = self.ds_rect(projected_css);
@@ -8811,10 +8967,28 @@ impl DisplayListRenderer {
         } else {
           self.canvas.save();
         }
+
+        let layer_transform_for_canvas = local_skia_transform.map(|t| {
+          let mut layer_transform = parent_transform.post_concat(t);
+          if needs_layer && layer_origin != (0, 0) {
+            layer_transform = layer_transform
+              .post_translate(-(layer_origin.0 as f32), -(layer_origin.1 as f32));
+          }
+          layer_transform
+        });
+        let clip_transform = layer_transform_for_canvas.unwrap_or_else(|| self.canvas.transform());
+        let clip = (needs_layer
+          && projective_transform.is_none()
+          && transform_requires_transformed_clip(clip_transform, radii))
+        .then_some(TransformedClipRect {
+          rect: bounds,
+          transform: clip_transform,
+        });
         self.stacking_layers.push(StackingRecord {
           needs_layer,
           filters: scaled_filters,
           radii,
+          bounds,
           mask_bounds,
           mask,
           css_bounds,
@@ -8823,16 +8997,12 @@ impl DisplayListRenderer {
           layer_origin,
           projective_transform,
           parent_transform,
+          clip,
           culled: false,
           pending_backdrop,
         });
 
-        if let Some(t) = local_skia_transform {
-          let mut layer_transform = parent_transform.post_concat(t);
-          if needs_layer && layer_origin != (0, 0) {
-            layer_transform =
-              layer_transform.post_translate(-(layer_origin.0 as f32), -(layer_origin.1 as f32));
-          }
+        if let Some(layer_transform) = layer_transform_for_canvas {
           self.canvas.set_transform(layer_transform);
         }
       }
@@ -8844,6 +9014,7 @@ impl DisplayListRenderer {
             needs_layer: false,
             filters: Vec::new(),
             radii: BorderRadii::ZERO,
+            bounds: Rect::ZERO,
             mask_bounds: Rect::ZERO,
             mask: None,
             css_bounds: Rect::ZERO,
@@ -8852,6 +9023,7 @@ impl DisplayListRenderer {
             layer_origin: (0, 0),
             projective_transform: None,
             parent_transform: Transform::identity(),
+            clip: None,
             culled: false,
             pending_backdrop: None,
           });
@@ -8945,12 +9117,23 @@ impl DisplayListRenderer {
               record.mask_bounds.height() + out_t + out_b,
             );
             if let Some(local_clip) = self.layer_space_bounds(clip_rect, origin, &layer) {
-              apply_clip_mask_rect(
-                &mut layer,
-                local_clip,
-                record.radii,
-                self.clip_mask_diagnostics.as_ref(),
-              )?;
+              if let Some(clip) = record.clip {
+                apply_clip_mask_rect_transformed(
+                  &mut layer,
+                  local_clip,
+                  record.radii,
+                  clip.rect,
+                  clip.transform,
+                  self.clip_mask_diagnostics.as_ref(),
+                )?;
+              } else {
+                apply_clip_mask_rect(
+                  &mut layer,
+                  local_clip,
+                  record.radii,
+                  self.clip_mask_diagnostics.as_ref(),
+                )?;
+              }
             }
           }
 
@@ -13494,6 +13677,7 @@ mod tests {
       Transform::identity(),
       None,
       None,
+      None,
     )
     .expect("backdrop filter");
     let allocations = recorder.take();
@@ -13537,6 +13721,7 @@ mod tests {
       Transform::identity(),
       None,
       None,
+      None,
     )
     .expect("backdrop filter warm-up");
 
@@ -13554,6 +13739,7 @@ mod tests {
       None,
       bounds,
       Transform::identity(),
+      None,
       None,
       None,
     )
@@ -13646,6 +13832,7 @@ mod tests {
         None,
         bounds,
         Transform::identity(),
+        None,
         None,
         None,
       )

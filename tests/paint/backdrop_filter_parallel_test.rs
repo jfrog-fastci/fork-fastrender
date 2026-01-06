@@ -254,6 +254,79 @@ fn backdrop_filter_is_masked_by_mask_image() {
 }
 
 #[test]
+fn backdrop_filter_clips_with_affine_transform() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #bg { position: absolute; inset: 0; background: rgb(255 0 0); }
+      #overlay {
+        position: absolute;
+        left: 20px;
+        top: 20px;
+        width: 40px;
+        height: 40px;
+        border-radius: 8px;
+        backdrop-filter: invert(1);
+        transform: rotate(45deg);
+      }
+    </style>
+    <div id="bg"></div>
+    <div id="overlay"></div>
+  "#;
+
+  let (list, font_ctx) = build_display_list(html, 128, 128);
+  let pixmap = DisplayListRenderer::new(128, 128, Rgba::WHITE, font_ctx)
+    .expect("renderer")
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("render");
+
+  // Inside the overlay's AABB but outside the rotated rounded rect: should remain red.
+  assert_eq!(pixel(&pixmap, 60, 16), (255, 0, 0, 255));
+  // Inside the rotated rounded rect: red backdrop is inverted to cyan.
+  assert_eq!(pixel(&pixmap, 40, 40), (0, 255, 255, 255));
+}
+
+#[test]
+fn filter_layer_clips_with_affine_transform() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #bg { position: absolute; inset: 0; background: rgb(255 0 0); }
+      #overlay {
+        position: absolute;
+        left: 20px;
+        top: 20px;
+        width: 40px;
+        height: 40px;
+        border-radius: 14px;
+        filter: invert(1);
+        transform: rotate(45deg);
+      }
+      #fill {
+        position: absolute;
+        inset: 0;
+        background: rgb(0 0 0);
+      }
+    </style>
+    <div id="bg"></div>
+    <div id="overlay"><div id="fill"></div></div>
+  "#;
+
+  let (list, font_ctx) = build_display_list(html, 128, 128);
+  let pixmap = DisplayListRenderer::new(128, 128, Rgba::WHITE, font_ctx)
+    .expect("renderer")
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("render");
+
+  // Inside the unrounded rotated quad but outside the rotated rounded rect: should remain red.
+  assert_eq!(pixel(&pixmap, 40, 12), (255, 0, 0, 255));
+  // Interior pixels from the black fill are inverted to white.
+  assert_eq!(pixel(&pixmap, 40, 40), (255, 255, 255, 255));
+}
+
+#[test]
 fn parallel_paint_is_used_with_backdrop_filter_and_matches_serial() {
   let html = r#"<!doctype html>
     <style>
