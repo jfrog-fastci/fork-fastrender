@@ -3,6 +3,7 @@ use fastrender::{FastRender, FontConfig, RenderOptions, ResourcePolicy};
 
 #[test]
 fn bundled_emoji_does_not_hit_last_resort_fallbacks() {
+  let _guard = super::text_diagnostics_guard();
   let html = r#"
     <!doctype html>
     <meta charset="utf-8">
@@ -47,6 +48,7 @@ fn bundled_emoji_does_not_hit_last_resort_fallbacks() {
 
 #[test]
 fn bundled_pageset_emoji_regressions_do_not_hit_last_resort_fallbacks() {
+  let _guard = super::text_diagnostics_guard();
   let html = r#"
     <!doctype html>
     <meta charset="utf-8">
@@ -91,6 +93,7 @@ fn bundled_pageset_emoji_regressions_do_not_hit_last_resort_fallbacks() {
 
 #[test]
 fn bundled_pageset_icon_codepoints_do_not_hit_last_resort_fallbacks() {
+  let _guard = super::text_diagnostics_guard();
   let html = r#"
     <!doctype html>
     <meta charset="utf-8">

@@ -1,5 +1,20 @@
 //! Text/shaping integration tests.
 
+use std::sync::{Mutex, OnceLock};
+
+fn text_diagnostics_mutex() -> &'static Mutex<()> {
+  static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+  LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// Text diagnostics are collected via process-global state, so tests that enable diagnostics must
+/// not overlap with tests that deliberately trigger last-resort fallback.
+pub(super) fn text_diagnostics_guard() -> std::sync::MutexGuard<'static, ()> {
+  text_diagnostics_mutex()
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 mod bidi;
 mod bidi_visual_order;
 mod bundled_emoji_last_resort;

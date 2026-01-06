@@ -190,6 +190,7 @@ fn vertical_shaping_uses_vertical_advances() {
 
 #[test]
 fn last_resort_font_fallback_shapes_missing_scripts() {
+  let _guard = super::text_diagnostics_guard();
   let pipeline = ShapingPipeline::new();
   let font_ctx = FontContext::with_config(FontConfig::bundled_only());
   let style = ComputedStyle::default();
