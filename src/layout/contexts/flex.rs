@@ -4242,6 +4242,11 @@ fn flex_style_fingerprint(style: &ComputedStyle) -> u64 {
   hash_enum_discriminant(&style.display, &mut h);
   hash_enum_discriminant(&style.position, &mut h);
   hash_enum_discriminant(&style.box_sizing, &mut h);
+  hash_enum_discriminant(&style.content_visibility, &mut h);
+  style.contain_intrinsic_width.auto.hash(&mut h);
+  hash_option_length(&style.contain_intrinsic_width.length, &mut h);
+  style.contain_intrinsic_height.auto.hash(&mut h);
+  hash_option_length(&style.contain_intrinsic_height.length, &mut h);
   hash_sizing_property(&style.width, &style.width_keyword, &mut h);
   hash_sizing_property(&style.height, &style.height_keyword, &mut h);
   hash_sizing_property(&style.min_width, &style.min_width_keyword, &mut h);
@@ -8096,6 +8101,7 @@ mod tests {
   use crate::style::types::AlignItems;
   use crate::style::types::AspectRatio;
   use crate::style::types::BorderStyle;
+  use crate::style::types::ContainIntrinsicSizeAxis;
   use crate::style::types::ContentVisibility;
   use crate::style::types::FlexWrap;
   use crate::style::types::Overflow;
@@ -8793,6 +8799,36 @@ mod tests {
   }
 
   #[test]
+  fn flex_style_fingerprint_accounts_for_content_visibility() {
+    let mut style_visible = ComputedStyle::default();
+    style_visible.display = Display::Flex;
+    style_visible.content_visibility = ContentVisibility::Visible;
+
+    let mut style_hidden = style_visible.clone();
+    style_hidden.content_visibility = ContentVisibility::Hidden;
+
+    let mut style_auto = style_visible.clone();
+    style_auto.content_visibility = ContentVisibility::Auto;
+
+    let fp_visible = flex_style_fingerprint(&style_visible);
+    let fp_hidden = flex_style_fingerprint(&style_hidden);
+    let fp_auto = flex_style_fingerprint(&style_auto);
+
+    assert_ne!(
+      fp_visible, fp_hidden,
+      "content-visibility should affect flex style fingerprint"
+    );
+    assert_ne!(
+      fp_visible, fp_auto,
+      "content-visibility should affect flex style fingerprint"
+    );
+    assert_ne!(
+      fp_hidden, fp_auto,
+      "content-visibility should affect flex style fingerprint"
+    );
+  }
+
+  #[test]
   fn flex_style_fingerprint_includes_calc_lengths() {
     let mut base = ComputedStyle::default();
     base.display = Display::Flex;
@@ -8825,6 +8861,27 @@ mod tests {
     assert_ne!(
       flex_style_fingerprint(&fit_content_a),
       flex_style_fingerprint(&fit_content_b)
+    );
+  }
+
+  #[test]
+  fn flex_style_fingerprint_accounts_for_contain_intrinsic_size() {
+    let mut style_a = ComputedStyle::default();
+    style_a.display = Display::Flex;
+    style_a.contain_intrinsic_height = ContainIntrinsicSizeAxis {
+      auto: true,
+      length: Some(Length::px(10.0)),
+    };
+
+    let mut style_b = style_a.clone();
+    style_b.contain_intrinsic_height.length = Some(Length::px(20.0));
+
+    let fp_a = flex_style_fingerprint(&style_a);
+    let fp_b = flex_style_fingerprint(&style_b);
+
+    assert_ne!(
+      fp_a, fp_b,
+      "contain-intrinsic-height should affect flex style fingerprint"
     );
   }
 
