@@ -27,6 +27,15 @@ fn assert_rgba_near(actual: [u8; 4], expected: [u8; 4]) {
   }
 }
 
+fn unpremultiply_rgba(pixel: [u8; 4]) -> [u8; 4] {
+  let [r, g, b, a] = pixel;
+  if a == 0 {
+    return [0, 0, 0, 0];
+  }
+  let unpremul = |c: u8| -> u8 { ((c as u32 * 255 + (a as u32 / 2)) / a as u32).min(255) as u8 };
+  [unpremul(r), unpremul(g), unpremul(b), a]
+}
+
 #[test]
 fn filter_url_fragment_uses_inline_svg_filter() {
   let html = r#"
@@ -85,20 +94,33 @@ fn filter_url_data_svg_is_applied() {
 fn filter_url_data_svg_component_transfer_inverts_rgb_and_preserves_alpha() {
   // Match the Wikipedia pageset pattern: a `filter:url(data:image/svg+xml...)` containing an
   // `feComponentTransfer` invert filter (no alpha transfer).
-  let data_url = r#"data:image/svg+xml;charset=utf-8,<svg xmlns="http://www.w3.org/2000/svg"><filter id="filter" color-interpolation-filters="sRGB"><feComponentTransfer><feFuncR type="table" tableValues="1 0" /><feFuncG type="table" tableValues="1 0" /><feFuncB type="table" tableValues="1 0" /></feComponentTransfer></filter></svg>#filter"#;
+  //
+  // Wikipedia sets `color-interpolation-filters="sRGB"` on the `feComponentTransfer` primitive,
+  // not on the parent `<filter>` element (whose default is `linearRGB`).
+  let data_url = r#"data:image/svg+xml;charset=utf-8,<svg xmlns="http://www.w3.org/2000/svg"><filter id="filter"><feComponentTransfer color-interpolation-filters="sRGB"><feFuncR type="table" tableValues="1 0" /><feFuncG type="table" tableValues="1 0" /><feFuncB type="table" tableValues="1 0" /></feComponentTransfer></filter></svg>#filter"#;
 
   let html = format!(
     r#"
     <style>
       body {{ margin: 0; }}
-      #box {{
+      #box1 {{
         width: 20px;
         height: 20px;
         background: rgba(255, 0, 0, 0.5);
         filter: url('{data_url}');
       }}
+      #box2 {{
+        position: absolute;
+        left: 20px;
+        top: 0;
+        width: 20px;
+        height: 20px;
+        background: rgba(200, 0, 0, 0.5);
+        filter: url('{data_url}');
+      }}
     </style>
-    <div id="box"></div>
+    <div id="box1"></div>
+    <div id="box2"></div>
     "#
   );
 
@@ -107,31 +129,43 @@ fn filter_url_data_svg_component_transfer_inverts_rgb_and_preserves_alpha() {
     .background_color(Rgba::TRANSPARENT)
     .build()
     .expect("renderer");
-  let pixmap = renderer.render_html(&html, 30, 30).expect("render");
+  let pixmap = renderer.render_html(&html, 50, 30).expect("render");
 
-  assert_eq!(color_at(&pixmap, 25, 25), [0, 0, 0, 0]);
+  assert_eq!(color_at(&pixmap, 45, 25), [0, 0, 0, 0]);
 
   // Red (rgba(255, 0, 0, 0.5)) → Cyan (rgba(0, 255, 255, 0.5)) with alpha preserved.
   //
   // Note: FastRender stores alpha as `u8` via truncation (see `Rgba::alpha_u8`), so `0.5`
   // becomes `127` instead of `128`.
-  assert_eq!(color_at(&pixmap, 10, 10), [0, 127, 127, 127]);
+  let box1_px = color_at(&pixmap, 10, 10);
+  assert_eq!(box1_px[3], 127);
+  assert_eq!(unpremultiply_rgba(box1_px)[..3], [0, 255, 255]);
+
+  // Second sample uses non-extremal input channels so the `color-interpolation-filters="sRGB"`
+  // override is observable (linearRGB vs sRGB differs at intermediate values).
+  let box2_px = color_at(&pixmap, 30, 10);
+  assert_eq!(box2_px[3], 127);
+  let box2_unpremul = unpremultiply_rgba(box2_px);
+  // rgba(200, 0, 0, 0.5) → rgba(55, 255, 255, 0.5)
+  assert_rgba_near(box2_unpremul, [55, 255, 255, 127]);
 
   // Baseline against resvg for the same filter + rect.
   let svg = r#"
-    <svg xmlns="http://www.w3.org/2000/svg" width="30" height="30">
-      <filter id="filter" color-interpolation-filters="sRGB">
-        <feComponentTransfer>
+    <svg xmlns="http://www.w3.org/2000/svg" width="50" height="30">
+      <filter id="filter">
+        <feComponentTransfer color-interpolation-filters="sRGB">
           <feFuncR type="table" tableValues="1 0" />
           <feFuncG type="table" tableValues="1 0" />
           <feFuncB type="table" tableValues="1 0" />
         </feComponentTransfer>
       </filter>
       <rect width="20" height="20" fill="rgb(255, 0, 0)" fill-opacity="0.5" filter="url(#filter)" />
+      <rect x="20" width="20" height="20" fill="rgb(200, 0, 0)" fill-opacity="0.5" filter="url(#filter)" />
     </svg>
   "#;
-  let baseline = render_svg_with_resvg(svg, 30, 30);
-  assert_rgba_near(color_at(&pixmap, 10, 10), color_at(&baseline, 10, 10));
+  let baseline = render_svg_with_resvg(svg, 50, 30);
+  assert_rgba_near(box1_px, color_at(&baseline, 10, 10));
+  assert_rgba_near(box2_px, color_at(&baseline, 30, 10));
 }
 
 #[test]
