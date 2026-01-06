@@ -1,8 +1,10 @@
 mod r#ref;
 
+use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::{FastRender, RenderOptions};
 use r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use url::Url;
@@ -36,6 +38,15 @@ fn base_url_for(html_path: &Path) -> Result<String, String> {
     .map(|url| url.to_string())
 }
 
+fn content_visibility_runtime_toggles() -> RuntimeToggles {
+  // Keep the regression stable even when developers have FASTR_* env vars set locally (e.g.
+  // activation margin experiments).
+  RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_CONTENT_VISIBILITY_AUTO_MARGIN_PX".to_string(),
+    "0".to_string(),
+  )]))
+}
+
 #[test]
 fn content_visibility_inline_axis_regression() {
   let mut compare_config =
@@ -52,7 +63,9 @@ fn content_visibility_inline_axis_regression() {
     .base_url(base_url)
     .build()
     .expect("renderer should build");
-  let options = RenderOptions::new().with_viewport(420, 260);
+  let options = RenderOptions::new()
+    .with_viewport(420, 260)
+    .with_runtime_toggles(content_visibility_runtime_toggles());
   let pixmap = renderer
     .render_html_with_options(&html, options)
     .expect("render should succeed");
@@ -85,4 +98,3 @@ fn content_visibility_inline_axis_regression() {
   )
   .unwrap_or_else(|e| panic!("Comparison failed: {e}"));
 }
-
