@@ -119,9 +119,14 @@ fn fallback_chain_resolve_emoji_scans_emoji_family_names_when_emoji_font_list_is
   let text_face = face_id_for_family(&db, TEXT_SYMBOL_FAMILY);
   assert_fixture_coverage(&db, emoji_face, text_face);
 
+  let emoji_fonts = db.find_emoji_fonts();
   assert!(
-    db.find_emoji_fonts().is_empty(),
-    "fixture database contains no color emoji fonts, so the emoji list should be empty"
+    emoji_fonts.contains(&emoji_face),
+    "emoji font list should include monochrome emoji-named fonts even when they have no color tables"
+  );
+  assert!(
+    !emoji_fonts.contains(&text_face),
+    "emoji font list should not include regular text fonts"
   );
 
   let chain = FallbackChain::new();
