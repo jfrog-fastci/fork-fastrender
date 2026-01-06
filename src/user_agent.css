@@ -491,7 +491,8 @@ dialog[data-fastr-modal="true"]::backdrop {
 }
 
 /* Hidden elements - these should not be rendered */
-head, style, script, meta, link, title, template {
+head, style, script, meta, link, title, template,
+base, basefont, datalist, noembed, noframes, param, area {
   display: none;
 }
 
