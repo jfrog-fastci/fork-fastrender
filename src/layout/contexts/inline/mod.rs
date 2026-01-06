@@ -7586,6 +7586,13 @@ fn is_kinsoku_strict_prohibited_line_start(ch: char) -> bool {
       | '\u{FF1B}' // ；
       | '\u{FF01}' // ！
       | '\u{FF1F}' // ？
+      // ASCII punctuation often used alongside Japanese text.
+      | ',' // ,
+      | '.' // .
+      | ':' // :
+      | ';' // ;
+      | '!' // !
+      | '?' // ?
       // Closing brackets/quotes that should not start a line.
       | '\u{3009}' // 〉
       | '\u{300B}' // 》
@@ -18559,6 +18566,49 @@ mod tests {
       BreakOpportunityKind::Normal,
       "breaks before open punctuation should remain normal"
     );
+  }
+
+  #[test]
+  fn line_break_strict_downgrades_breaks_before_ascii_punctuation_to_emergency() {
+    use crate::text::line_break::BreakOpportunityKind;
+
+    // ASCII punctuation should follow the same kinsoku restrictions as their fullwidth variants.
+    for mark in [',', '.', ':', ';', '!', '?'] {
+      let text = format!("a{}b", mark);
+      let breaks = vec![
+        BreakOpportunity::allowed(1), // a|mark
+        BreakOpportunity::allowed(2), // mark|b
+        BreakOpportunity::allowed(3), // end
+      ];
+      let result = apply_break_properties(
+        text.as_str(),
+        breaks,
+        LineBreak::Strict,
+        WordBreak::Normal,
+        OverflowWrap::Normal,
+        true,
+      );
+
+      let brk_1 = result
+        .iter()
+        .find(|b| b.byte_offset == 1)
+        .expect("break at 1");
+      assert_eq!(
+        brk_1.kind,
+        BreakOpportunityKind::Emergency,
+        "breaks before ASCII punctuation should be emergency-only under line-break: strict"
+      );
+
+      let brk_2 = result
+        .iter()
+        .find(|b| b.byte_offset == 2)
+        .expect("break at 2");
+      assert_eq!(
+        brk_2.kind,
+        BreakOpportunityKind::Normal,
+        "breaks after ASCII punctuation should remain normal"
+      );
+    }
   }
 
   #[test]
