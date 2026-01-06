@@ -83,6 +83,7 @@ use crate::style::types::IntrinsicSizeKeyword;
 use crate::style::types::JustifyContent;
 use crate::style::types::Overflow as CssOverflow;
 use crate::style::types::WritingMode;
+use crate::style::values::CalcLength;
 use crate::style::values::Length;
 use crate::style::values::LengthUnit;
 use crate::style::ComputedStyle;
@@ -4164,14 +4165,24 @@ fn f32_to_canonical_bits(value: f32) -> u32 {
   }
 }
 
+fn hash_calc_length(calc: &CalcLength, hasher: &mut FingerprintHasher) {
+  let terms = calc.terms();
+  (terms.len() as u8).hash(hasher);
+  for term in terms {
+    hash_enum_discriminant(&term.unit, hasher);
+    f32_to_canonical_bits(term.value).hash(hasher);
+  }
+}
+
 fn hash_length(len: &Length, hasher: &mut FingerprintHasher) {
   hash_enum_discriminant(&len.unit, hasher);
   f32_to_canonical_bits(len.value).hash(hasher);
-  // Treat calc lengths as distinct from raw by hashing a marker.
-  if len.calc.is_some() {
-    1u8.hash(hasher);
-  } else {
-    0u8.hash(hasher);
+  match &len.calc {
+    Some(calc) => {
+      1u8.hash(hasher);
+      hash_calc_length(calc, hasher);
+    }
+    None => 0u8.hash(hasher),
   }
 }
 
@@ -8491,6 +8502,42 @@ mod tests {
     assert_ne!(
       flex_style_fingerprint(&max_width_none),
       flex_style_fingerprint(&max_width_max_content)
+    );
+  }
+
+  #[test]
+  fn flex_style_fingerprint_includes_calc_lengths() {
+    let mut base = ComputedStyle::default();
+    base.display = Display::Flex;
+
+    let percent = CalcLength::single(LengthUnit::Percent, 10.0);
+    let calc_a = CalcLength::single(LengthUnit::Px, 10.0)
+      .add_scaled(&percent, 1.0)
+      .expect("calc terms");
+    let calc_b = CalcLength::single(LengthUnit::Px, 20.0)
+      .add_scaled(&percent, 1.0)
+      .expect("calc terms");
+
+    let mut style_a = base.clone();
+    style_a.width = Some(Length::calc(calc_a));
+    let mut style_b = base.clone();
+    style_b.width = Some(Length::calc(calc_b));
+    assert_ne!(
+      flex_style_fingerprint(&style_a),
+      flex_style_fingerprint(&style_b)
+    );
+
+    let mut fit_content_a = base.clone();
+    fit_content_a.width_keyword = Some(IntrinsicSizeKeyword::FitContent {
+      limit: Some(Length::calc(calc_a)),
+    });
+    let mut fit_content_b = base;
+    fit_content_b.width_keyword = Some(IntrinsicSizeKeyword::FitContent {
+      limit: Some(Length::calc(calc_b)),
+    });
+    assert_ne!(
+      flex_style_fingerprint(&fit_content_a),
+      flex_style_fingerprint(&fit_content_b)
     );
   }
 

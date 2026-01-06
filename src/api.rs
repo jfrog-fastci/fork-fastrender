@@ -10486,14 +10486,24 @@ fn hash_enum_discriminant<T>(value: &T, hasher: &mut DefaultHasher) {
   mem::discriminant(value).hash(hasher);
 }
 
+fn hash_calc_length(calc: &crate::style::values::CalcLength, hasher: &mut DefaultHasher) {
+  let terms = calc.terms();
+  (terms.len() as u8).hash(hasher);
+  for term in terms {
+    hash_enum_discriminant(&term.unit, hasher);
+    term.value.to_bits().hash(hasher);
+  }
+}
+
 fn hash_length(len: &Length, hasher: &mut DefaultHasher) {
   hash_enum_discriminant(&len.unit, hasher);
   len.value.to_bits().hash(hasher);
-  // Treat calc lengths as distinct from raw by hashing a marker.
-  if len.calc.is_some() {
-    1u8.hash(hasher);
-  } else {
-    0u8.hash(hasher);
+  match &len.calc {
+    Some(calc) => {
+      1u8.hash(hasher);
+      hash_calc_length(calc, hasher);
+    }
+    None => 0u8.hash(hasher),
   }
 }
 
@@ -15529,6 +15539,32 @@ mod tests {
     assert_ne!(
       hash_a, hash_b,
       "scroll snap settings must influence layout fingerprints"
+    );
+  }
+
+  #[test]
+  fn calc_lengths_change_layout_fingerprint() {
+    let mut a = ComputedStyle::default();
+    let mut b = a.clone();
+
+    let percent =
+      crate::style::values::CalcLength::single(crate::style::values::LengthUnit::Percent, 10.0);
+    let calc_a =
+      crate::style::values::CalcLength::single(crate::style::values::LengthUnit::Px, 10.0)
+        .add_scaled(&percent, 1.0)
+        .expect("calc terms");
+    let calc_b =
+      crate::style::values::CalcLength::single(crate::style::values::LengthUnit::Px, 20.0)
+        .add_scaled(&percent, 1.0)
+        .expect("calc terms");
+
+    a.width = Some(Length::calc(calc_a));
+    b.width = Some(Length::calc(calc_b));
+
+    assert_ne!(
+      style_layout_fingerprint(&a),
+      style_layout_fingerprint(&b),
+      "distinct calc() expressions must influence layout fingerprints"
     );
   }
 
