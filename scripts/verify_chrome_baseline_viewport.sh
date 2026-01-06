@@ -11,11 +11,13 @@ set -euo pipefail
 #
 # This script:
 # 1) writes a tiny test HTML page with a solid red bar pinned to the bottom of the viewport,
-# 2) runs `scripts/chrome_baseline.sh` on it (for multiple DPRs),
+# 2) runs `scripts/chrome_baseline.sh` on it for multiple DPRs,
 # 3) also runs `scripts/chrome_baseline.sh` against a representative offline fixture HTML
 #    (`tests/pages/fixtures/br_linebreak/index.html`) to validate the cached-HTML path,
-# 3) asserts the output PNG dimensions match the requested viewport exactly, and
-# 4) asserts the bottom strip is red (heuristic that catches pad mismatch).
+# 4) asserts the output PNG dimensions match the requested viewport exactly,
+# 5) asserts the bottom strip is red (heuristic that catches pad mismatch), and
+# 6) asserts the emitted metadata sidecar (`chrome_window`, `chrome_window_padding_css`, etc) matches
+#    the current padding configuration.
 #
 # Usage:
 #   scripts/verify_chrome_baseline_viewport.sh
@@ -137,11 +139,9 @@ echo "DPR(s):   ${DPRS}"
 if [[ -n "${fixture_stem}" ]]; then
   echo "Fixture:  ${FIXTURE_HTML}"
 fi
+echo "Pad px:   ${EXPECTED_PAD_PX}"
 if [[ -n "${CHROME_BIN:-}" ]]; then
   echo "Chrome:    ${CHROME_BIN}"
-fi
-if [[ -n "${HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX:-}" ]]; then
-  echo "Pad px:    ${HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX}"
 fi
 echo
 
