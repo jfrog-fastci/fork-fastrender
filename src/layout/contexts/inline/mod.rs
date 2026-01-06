@@ -105,7 +105,6 @@ use crate::text::pipeline::compute_adjusted_font_size;
 use crate::text::pipeline::preferred_font_aspect;
 use crate::text::pipeline::ExplicitBidiContext;
 use crate::text::pipeline::ShapedRun;
-use crate::text::pipeline::shaping_style_hash;
 use crate::text::pipeline::ShapingPipeline;
 use crate::text::segmentation::segment_grapheme_clusters;
 use crate::tree::box_tree::AnonymousBox;
@@ -4414,11 +4413,10 @@ impl InlineFormattingContext {
     //
     // If the strut metrics come from the missing face while the actual text uses a fallback face,
     // the line box baseline calculation (max ascent + max descent) can inflate the line height and
-    // shift subsequent lines compared to browsers. Prefer the first *non-whitespace* shaped run in
-    // this formatting context so the strut uses the same font metrics as the rendered text.
-    let expected_style_hash = shaping_style_hash(style);
-    let Some(sample) = first_non_whitespace_shaped_run_in_segments(segments, expected_style_hash)
-    else {
+    // shift subsequent lines compared to browsers. Prefer the first *non-whitespace* shaped run
+    // whose font selection matches the containing block so the strut uses the same font metrics as
+    // the rendered text, even when other inherited properties like `color` differ.
+    let Some(sample) = first_non_whitespace_shaped_run_in_segments(segments, style) else {
       return self.compute_strut_metrics(style);
     };
 
@@ -10518,15 +10516,26 @@ fn allows_boundary_break(prev: Option<char>, next: Option<char>) -> bool {
         || matches!(a, OBJECT_REPLACEMENT) || matches!(b, OBJECT_REPLACEMENT)
 }
 
+fn strut_sample_style_matches(text_style: &ComputedStyle, strut_style: &ComputedStyle) -> bool {
+  text_style.font_family == strut_style.font_family
+    && text_style.font_size.to_bits() == strut_style.font_size.to_bits()
+    && text_style.font_weight.to_u16() == strut_style.font_weight.to_u16()
+    && text_style.font_style == strut_style.font_style
+    && text_style.font_stretch.to_percentage().to_bits()
+      == strut_style.font_stretch.to_percentage().to_bits()
+    && text_style.font_size_adjust == strut_style.font_size_adjust
+    && text_style.font_variation_settings == strut_style.font_variation_settings
+}
+
 fn first_non_whitespace_shaped_run_in_segments<'a>(
   segments: &'a [InlineFlowSegment],
-  expected_style_hash: u64,
+  strut_style: &ComputedStyle,
 ) -> Option<&'a ShapedRun> {
   for segment in segments {
     let InlineFlowSegment::InlineItems(items) = segment else {
       continue;
     };
-    if let Some(run) = first_non_whitespace_shaped_run_in_items(items, expected_style_hash) {
+    if let Some(run) = first_non_whitespace_shaped_run_in_items(items, strut_style) {
       return Some(run);
     }
   }
@@ -10535,22 +10544,22 @@ fn first_non_whitespace_shaped_run_in_segments<'a>(
 
 fn first_non_whitespace_shaped_run_in_items<'a>(
   items: &'a [InlineItem],
-  expected_style_hash: u64,
+  strut_style: &ComputedStyle,
 ) -> Option<&'a ShapedRun> {
   items
     .iter()
-    .find_map(|item| first_non_whitespace_shaped_run_in_item(item, expected_style_hash))
+    .find_map(|item| first_non_whitespace_shaped_run_in_item(item, strut_style))
 }
 
 fn first_non_whitespace_shaped_run_in_item<'a>(
   item: &'a InlineItem,
-  expected_style_hash: u64,
+  strut_style: &ComputedStyle,
 ) -> Option<&'a ShapedRun> {
   match item {
     InlineItem::Text(text) => {
       if text.is_marker
         || text.runs.is_empty()
-        || shaping_style_hash(text.style.as_ref()) != expected_style_hash
+        || !strut_sample_style_matches(text.style.as_ref(), strut_style)
         || text.text.trim().is_empty()
       {
         return None;
@@ -10561,23 +10570,23 @@ fn first_non_whitespace_shaped_run_in_item<'a>(
         .find(|run| !run.text.trim().is_empty())
     }
     InlineItem::InlineBox(b) => {
-      first_non_whitespace_shaped_run_in_items(&b.children, expected_style_hash)
+      first_non_whitespace_shaped_run_in_items(&b.children, strut_style)
     }
     InlineItem::Ruby(ruby) => {
       for segment in &ruby.segments {
         if let Some(run) =
-          first_non_whitespace_shaped_run_in_items(&segment.base_items, expected_style_hash)
+          first_non_whitespace_shaped_run_in_items(&segment.base_items, strut_style)
         {
           return Some(run);
         }
         if let Some(items) = segment.annotation_top.as_deref() {
-          if let Some(run) = first_non_whitespace_shaped_run_in_items(items, expected_style_hash) {
+          if let Some(run) = first_non_whitespace_shaped_run_in_items(items, strut_style) {
             return Some(run);
           }
         }
         if let Some(items) = segment.annotation_bottom.as_deref() {
           if let Some(run) =
-            first_non_whitespace_shaped_run_in_items(items, expected_style_hash)
+            first_non_whitespace_shaped_run_in_items(items, strut_style)
           {
             return Some(run);
           }
