@@ -3952,6 +3952,7 @@ mod tests {
     const JOBS: usize = THREADS * 2;
     let cases = [
       (2.0f32, 2.0f32, "kernel"),
+      (8.0f32, 8.0f32, "box"),
       (12.0f32, 2.0f32, "mixed"),
     ];
 
