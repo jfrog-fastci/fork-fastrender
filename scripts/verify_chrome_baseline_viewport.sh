@@ -21,6 +21,7 @@ set -euo pipefail
 # Environment:
 #   CHROME_BIN=/path/to/chrome
 #   VIEWPORT=320x240
+#   DPRS=1.0,1.333
 #   HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX=88  (override if your Chrome/OS differs)
 #   KEEP_TMP=1  (keep the temporary output directory for debugging)
 
@@ -28,6 +29,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
 
 VIEWPORT="${VIEWPORT:-320x240}"
+DPRS="${DPRS:-1.0,1.333}"
 KEEP_TMP="${KEEP_TMP:-0}"
 
 if ! [[ "${VIEWPORT}" =~ ^[0-9]+x[0-9]+$ ]]; then
@@ -37,6 +39,23 @@ fi
 
 VIEWPORT_W="${VIEWPORT%x*}"
 VIEWPORT_H="${VIEWPORT#*x}"
+
+IFS=',' read -r -a DPR_VALUES <<<"${DPRS}"
+if [[ "${#DPR_VALUES[@]}" -eq 0 ]]; then
+  echo "invalid DPRS: ${DPRS} (expected a comma-separated list like 1.0,2.0)" >&2
+  exit 2
+fi
+for raw_dpr in "${DPR_VALUES[@]}"; do
+  dpr="$(echo "${raw_dpr}" | xargs)"
+  if [[ -z "${dpr}" ]]; then
+    echo "invalid DPRS entry: empty value in ${DPRS}" >&2
+    exit 2
+  fi
+  if ! [[ "${dpr}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    echo "invalid DPR value: ${dpr} (from DPRS=${DPRS}; expected a positive number like 1.0)" >&2
+    exit 2
+  fi
+done
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "python3 is required." >&2
@@ -57,9 +76,8 @@ html_dir="${tmp_root}/html"
 out_dir="${tmp_root}/out"
 mkdir -p "${html_dir}" "${out_dir}"
 
-stem="viewport_pad_smoke"
-cat >"${html_dir}/${stem}.html" <<'HTML'
-<!doctype html>
+base_stem="viewport_pad_smoke"
+html_template='<!doctype html>
 <meta charset="utf-8">
 <title>chrome_baseline viewport pad smoke</title>
 <style>
@@ -80,13 +98,21 @@ cat >"${html_dir}/${stem}.html" <<'HTML'
     background: rgb(255, 0, 0);
   }
 </style>
-<div id="bottom"></div>
-HTML
+<div id="bottom"></div>'
 
-# Provide a harmless base URL so `<base href=...>` injection is exercised.
-echo "url: file://${REPO_ROOT}/" >"${html_dir}/${stem}.html.meta"
+# Write the per-DPR HTML snapshots + sidecars. (The content is identical; we duplicate so the
+# outputs have distinct stems.)
+for raw_dpr in "${DPR_VALUES[@]}"; do
+  dpr="$(echo "${raw_dpr}" | xargs)"
+  dpr_stem="${dpr//./_}"
+  stem="${base_stem}_dpr_${dpr_stem}"
+  printf '%s\n' "${html_template}" >"${html_dir}/${stem}.html"
+  # Provide a harmless base URL so `<base href=...>` injection is exercised.
+  echo "url: file://${REPO_ROOT}/" >"${html_dir}/${stem}.html.meta"
+done
 
 echo "Viewport: ${VIEWPORT}"
+echo "DPR(s):   ${DPRS}"
 if [[ -n "${CHROME_BIN:-}" ]]; then
   echo "Chrome:    ${CHROME_BIN}"
 fi
@@ -95,35 +121,49 @@ if [[ -n "${HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX:-}" ]]; then
 fi
 echo
 
-if ! scripts/chrome_baseline.sh \
-  --html-dir "${html_dir}" \
-  --out-dir "${out_dir}" \
-  --viewport "${VIEWPORT}" \
-  --dpr 1.0 \
-  --timeout 30 \
-  -- \
-  "${stem}"; then
-  echo "chrome_baseline.sh failed; log follows:" >&2
-  cat "${out_dir}/${stem}.chrome.log" >&2 || true
-  exit 1
-fi
+for raw_dpr in "${DPR_VALUES[@]}"; do
+  dpr="$(echo "${raw_dpr}" | xargs)"
+  dpr_stem="${dpr//./_}"
+  stem="${base_stem}_dpr_${dpr_stem}"
 
-png="${out_dir}/${stem}.png"
-log="${out_dir}/${stem}.chrome.log"
-if [[ ! -s "${png}" ]]; then
-  echo "missing output PNG: ${png}" >&2
-  cat "${log}" >&2 || true
-  exit 1
-fi
+  echo "Running chrome_baseline.sh (dpr=${dpr})..."
+  if ! scripts/chrome_baseline.sh \
+    --html-dir "${html_dir}" \
+    --out-dir "${out_dir}" \
+    --viewport "${VIEWPORT}" \
+    --dpr "${dpr}" \
+    --timeout 30 \
+    -- \
+    "${stem}"; then
+    echo "chrome_baseline.sh failed; log follows:" >&2
+    cat "${out_dir}/${stem}.chrome.log" >&2 || true
+    exit 1
+  fi
 
-python3 - "${png}" "${VIEWPORT_W}" "${VIEWPORT_H}" <<'PY'
+  png="${out_dir}/${stem}.png"
+  log="${out_dir}/${stem}.chrome.log"
+  if [[ ! -s "${png}" ]]; then
+    echo "missing output PNG: ${png}" >&2
+    cat "${log}" >&2 || true
+    exit 1
+  fi
+
+  python3 - "${png}" "${VIEWPORT_W}" "${VIEWPORT_H}" "${dpr}" <<'PY'
 import struct
 import sys
 import zlib
+import math
 
 png_path = sys.argv[1]
-expected_w = int(sys.argv[2])
-expected_h = int(sys.argv[3])
+viewport_w_css = int(sys.argv[2])
+viewport_h_css = int(sys.argv[3])
+dpr = float(sys.argv[4])
+
+def round_half_up(x: float) -> int:
+    return int(math.floor(x + 0.5))
+
+expected_w = max(1, round_half_up(viewport_w_css * dpr))
+expected_h = max(1, round_half_up(viewport_h_css * dpr))
 
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
 
@@ -255,13 +295,14 @@ ratio = redish / total if total else 0.0
 if ratio < 0.95:
     raise AssertionError(
         f"bottom strip is not red enough (redish_ratio={ratio:.3f}, expected >= 0.95). "
-        "This usually means the headless viewport height pad constant is wrong; "
-        "try overriding HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX."
+        "This usually means the headless viewport height pad/crop logic is wrong. "
+        "Try overriding HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX if you see a persistent "
+        "white bar at the bottom."
     )
 
 print(f"ok: {width}x{height}, redish_ratio={ratio:.3f}")
 PY
+done
 
 echo
 echo "Success."
-echo "Log: ${log}"

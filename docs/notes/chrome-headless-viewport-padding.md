@@ -46,6 +46,15 @@ CHROME_BIN=/path/to/chrome \
   scripts/verify_chrome_baseline_viewport.sh
 ```
 
+By default it runs the smoke test at multiple DPR values (`DPRS=1.0,1.333`) so we also exercise
+viewport-to-pixel rounding. Override as needed:
+
+```bash
+CHROME_BIN=/path/to/chrome \
+  DPRS=1.0,2.0 \
+  scripts/verify_chrome_baseline_viewport.sh
+```
+
 The script renders a tiny test page with a solid red bar pinned to the bottom of the viewport and
 asserts:
 
@@ -54,4 +63,3 @@ asserts:
 
 If it fails on your machine, rerun with a different `HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX`
 (binary search works well) until it passes.
-
