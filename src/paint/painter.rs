@@ -1057,11 +1057,10 @@ impl Painter {
       ReplacedType::FormControl(control) => {
         if replaced_box.intrinsic_size.is_none() {
           let metrics = self.resolve_scaled_metrics(style);
-          let char_width = metrics
-            .as_ref()
-            .and_then(|m| m.x_height)
-            .unwrap_or(style.font_size * 0.6)
-            * 0.6;
+          // Use the font's `ch` unit for intrinsic sizing so default controls line up with
+          // the UA expectation of ~20 "characters" wide.
+          let char_width =
+            resolve_font_relative_length(Length::new(1.0, LengthUnit::Ch), style, &self.font_ctx);
           let line_height =
             compute_line_height_with_metrics_viewport(style, metrics.as_ref(), Some(viewport));
           let size = match &control.control {
@@ -6596,7 +6595,9 @@ impl Painter {
   fn resolved_accent_color(style: &ComputedStyle) -> Rgba {
     match style.accent_color {
       AccentColor::Color(c) => c,
-      AccentColor::Auto => style.color,
+      // `accent-color: auto` is a UA-defined value. Use a stable, browser-like default rather
+      // than inheriting from the text color so checkbox/radio controls don't render as black.
+      AccentColor::Auto => Rgba::rgb(26, 115, 232),
     }
   }
 
@@ -6897,26 +6898,78 @@ impl Painter {
         if (!*checked && !*indeterminate) || matches!(control.appearance, Appearance::None) {
           return true;
         }
-        let mut mark_style = style.clone();
-        mark_style.color = muted_accent;
-        let rect = inset_rect(content_rect, 2.0);
-        let glyph = if *is_radio {
-          "●"
-        } else if *indeterminate {
-          "−"
+        if *is_radio {
+          if *checked {
+            let diameter = content_rect.width().min(content_rect.height()) * 0.55;
+            let dot_rect = Rect::from_xywh(
+              content_rect.x() + (content_rect.width() - diameter) / 2.0,
+              content_rect.y() + (content_rect.height() - diameter) / 2.0,
+              diameter,
+              diameter,
+            );
+            let radii = BorderRadii::uniform(diameter / 2.0);
+            let device_rect = self.device_rect(dot_rect);
+            let radii = self.device_radii(radii);
+            let _ = fill_rounded_rect(
+              &mut self.pixmap,
+              device_rect.x(),
+              device_rect.y(),
+              device_rect.width(),
+              device_rect.height(),
+              &radii,
+              muted_accent,
+            );
+          }
+          return true;
+        }
+
+        let fill_rect = content_rect;
+        let radii = BorderRadii::uniform((fill_rect.height().min(fill_rect.width()) / 6.0).max(2.0));
+        let device_rect = self.device_rect(fill_rect);
+        let device_radii = self.device_radii(radii);
+        let _ = fill_rounded_rect(
+          &mut self.pixmap,
+          device_rect.x(),
+          device_rect.y(),
+          device_rect.width(),
+          device_rect.height(),
+          &device_radii,
+          muted_accent,
+        );
+
+        let luminance =
+          (0.299 * muted_accent.r as f32 + 0.587 * muted_accent.g as f32 + 0.114 * muted_accent.b as f32)
+            / 255.0;
+        let mark_color = if luminance > 0.5 {
+          Rgba::rgb(24, 24, 24)
         } else {
-          "✓"
+          Rgba::rgb(245, 245, 245)
         };
-        let _ = self.paint_alt_text(glyph, &mark_style, rect, clip_mask);
+        let glyph = if *indeterminate { "−" } else { "✓" };
+        let mut mark_style = style.clone();
+        mark_style.color = mark_color;
+        mark_style.font_size = (fill_rect.height() * 0.9).max(8.0);
+
+        let mark_rect = if let Some(size) = self.measure_alt_text(glyph, &mark_style) {
+          let start_x = fill_rect.x() + ((fill_rect.width() - size.width).max(0.0) / 2.0);
+          let start_y = fill_rect.y() + ((fill_rect.height() - size.height).max(0.0) / 2.0);
+          Rect::from_xywh(
+            start_x,
+            start_y,
+            size.width.min(fill_rect.width()),
+            size.height.min(fill_rect.height()),
+          )
+        } else {
+          fill_rect
+        };
+        let _ = self.paint_alt_text(glyph, &mark_style, mark_rect, clip_mask);
         true
       }
       FormControlKind::Range { value, min, max } => {
         let track_height = 4.0_f32.min(content_rect.height());
         let track_y = content_rect.y() + (content_rect.height() - track_height) / 2.0;
         let radii = BorderRadii::uniform(track_height / 2.0);
-        let track_color = style
-          .background_color
-          .with_alpha((style.background_color.a * 0.8).max(0.1));
+        let track_color = Rgba::rgb(190, 190, 190);
         let device_track_rect = self.device_rect(Rect::from_xywh(
           content_rect.x(),
           track_y,
@@ -6940,20 +6993,34 @@ impl Painter {
         let knob_center_x =
           content_rect.x() + knob_radius + clamped * (content_rect.width() - 2.0 * knob_radius);
         let knob_center_y = content_rect.y() + content_rect.height() / 2.0;
+
+        let fill_rect = Rect::from_xywh(
+          content_rect.x(),
+          track_y,
+          (knob_center_x - content_rect.x()).max(0.0),
+          track_height,
+        );
+        if fill_rect.width() > 0.0 {
+          let radii = radii.clamped(fill_rect.width(), fill_rect.height());
+          let device_fill_rect = self.device_rect(fill_rect);
+          let device_radii = self.device_radii(radii);
+          let _ = fill_rounded_rect(
+            &mut self.pixmap,
+            device_fill_rect.x(),
+            device_fill_rect.y(),
+            device_fill_rect.width(),
+            device_fill_rect.height(),
+            &device_radii,
+            muted_accent,
+          );
+        }
+
         let knob_center_x = self.device_x(knob_center_x);
         let knob_center_y = self.device_y(knob_center_y);
         let knob_radius = self.device_length(knob_radius);
         if let Some(path) = PathBuilder::from_circle(knob_center_x, knob_center_y, knob_radius) {
           let mut paint = Paint::default();
-          paint.set_color(
-            tiny_skia::Color::from_rgba(
-              muted_accent.r as f32 / 255.0,
-              muted_accent.g as f32 / 255.0,
-              muted_accent.b as f32 / 255.0,
-              muted_accent.a,
-            )
-            .unwrap_or(tiny_skia::Color::BLACK),
-          );
+          paint.set_color_rgba8(255, 255, 255, 255);
           paint.anti_alias = true;
           self.pixmap.fill_path(
             &path,
@@ -6962,11 +7029,22 @@ impl Painter {
             Transform::identity(),
             clip_mask,
           );
+
+          let mut stroke_paint = Paint::default();
+          stroke_paint.set_color_rgba8(130, 130, 130, 255);
+          stroke_paint.anti_alias = true;
+          let stroke = tiny_skia::Stroke {
+            width: 1.0 * self.scale,
+            ..Default::default()
+          };
+          self
+            .pixmap
+            .stroke_path(&path, &stroke_paint, &stroke, Transform::identity(), None);
         }
         true
       }
       FormControlKind::Color { value, raw } => {
-        let rect = inset_rect(content_rect, 3.0);
+        let rect = inset_rect(content_rect, 2.0);
         let radii = BorderRadii::uniform((rect.height().min(rect.width()) / 5.0).max(2.0));
         let device_rect = self.device_rect(rect);
         let radii = self.device_radii(radii);
@@ -6993,7 +7071,19 @@ impl Painter {
         let label = raw
           .clone()
           .unwrap_or_else(|| format!("#{:02X}{:02X}{:02X}", value.r, value.g, value.b));
-        let _ = self.paint_alt_text(&label, &text_style, rect, clip_mask);
+        let label_rect = if let Some(size) = self.measure_alt_text(&label, &text_style) {
+          let start_x = rect.x() + ((rect.width() - size.width).max(0.0) / 2.0);
+          let start_y = rect.y() + ((rect.height() - size.height).max(0.0) / 2.0);
+          Rect::from_xywh(
+            start_x,
+            start_y,
+            size.width.min(rect.width()),
+            size.height.min(rect.height()),
+          )
+        } else {
+          rect
+        };
+        let _ = self.paint_alt_text(&label, &text_style, label_rect, clip_mask);
         true
       }
       FormControlKind::Unknown { label } => {

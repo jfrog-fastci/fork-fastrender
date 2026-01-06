@@ -7318,7 +7318,9 @@ impl DisplayListBuilder {
   fn resolved_accent_color(style: &ComputedStyle) -> Rgba {
     match style.accent_color {
       AccentColor::Color(c) => c,
-      AccentColor::Auto => style.color,
+      // `accent-color: auto` is a UA-defined value. Use a stable, browser-like default rather
+      // than inheriting from the text color so checkbox/radio controls don't render as black.
+      AccentColor::Auto => Rgba::rgb(26, 115, 232),
     }
   }
 
@@ -7331,6 +7333,13 @@ impl DisplayListBuilder {
     let Some(style) = fragment.style.as_deref() else {
       return false;
     };
+
+    let rects = Self::background_rects(rect, style, self.viewport);
+    let padding_rect = rects.padding;
+    let content_rect = rects.content;
+    if padding_rect.width() <= 0.0 || padding_rect.height() <= 0.0 {
+      return true;
+    }
 
     let mut accent = Self::resolved_accent_color(style);
     if control.invalid {
@@ -7356,6 +7365,71 @@ impl DisplayListBuilder {
       )
     };
 
+    let mut emit_text_aligned = |builder: &mut Self,
+                                 text: &str,
+                                 style: &ComputedStyle,
+                                 rect: Rect,
+                                 center_x: bool,
+                                 center_y: bool|
+     -> bool {
+      let text = text.trim();
+      if text.is_empty() {
+        return false;
+      }
+
+      let Some(viewport) = builder.viewport.map(|(w, h)| Size::new(w, h)) else {
+        return builder.emit_text_with_style(text, Some(style), rect);
+      };
+
+      let shape_timer = builder.build_breakdown.as_ref().map(|_| Instant::now());
+      let shaped = builder.shaper.shape(text, style, &builder.font_ctx);
+      if let (Some(breakdown), Some(start)) = (builder.build_breakdown.as_ref(), shape_timer) {
+        breakdown.record_text_shape(start.elapsed());
+      }
+      let mut runs = match shaped {
+        Ok(r) => r,
+        Err(_) => return builder.emit_naive_text(text, rect, Some(style)),
+      };
+      InlineTextItem::apply_spacing_to_runs(
+        &mut runs,
+        text,
+        style.letter_spacing,
+        style.word_spacing,
+      );
+
+      let metrics_scaled = Self::resolve_scaled_metrics(style, &builder.font_ctx);
+      let line_height =
+        compute_line_height_with_metrics_viewport(style, metrics_scaled.as_ref(), Some(viewport));
+      let metrics =
+        InlineTextItem::metrics_from_runs(&builder.font_ctx, &runs, line_height, style.font_size);
+      let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
+      let baseline_offset_y = if center_y {
+        (rect.height() - line_height) / 2.0
+      } else {
+        0.0
+      };
+      let baseline = rect.y() + baseline_offset_y + half_leading + metrics.baseline_offset;
+
+      let advance_width: f32 = runs.iter().map(|run| run.advance).sum();
+      let start_x = if center_x {
+        rect.x() + ((rect.width() - advance_width).max(0.0) / 2.0)
+      } else {
+        rect.x()
+      };
+
+      let shadows = Self::text_shadows_from_style(Some(style));
+      builder.emit_shaped_runs(
+        &runs,
+        style.color,
+        baseline,
+        start_x,
+        &shadows,
+        Some(style),
+        false,
+      );
+      true
+    };
+
     let highlight = if control.invalid {
       Some(muted_accent.with_alpha((muted_accent.a * 0.25).max(0.18)))
     } else if control.focus_visible {
@@ -7368,14 +7442,24 @@ impl DisplayListBuilder {
       None
     };
     if let Some(tint) = highlight {
-      let rect = inset_rect(rect, 1.0);
-      self
-        .list
-        .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
-          rect,
-          color: tint,
-          radii: BorderRadii::uniform((rect.height().min(rect.width()) / 6.0).max(2.0)),
-        }));
+      let rect = inset_rect(content_rect, 1.0);
+      if rect.width() > 0.0 && rect.height() > 0.0 {
+        let radii = Self::resolve_clip_radii(
+          style,
+          &rects,
+          BackgroundBox::ContentBox,
+          self.viewport,
+          self.build_breakdown.as_deref(),
+        )
+        .clamped(rect.width(), rect.height());
+        self
+          .list
+          .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
+            rect,
+            color: tint,
+            radii,
+          }));
+      }
     }
 
     match &control.control {
@@ -7432,31 +7516,36 @@ impl DisplayListBuilder {
 
         let mut text_style = style.clone();
         text_style.color = color;
-        let mut rect = inset_rect(rect, 2.0);
+        let mut text_rect = content_rect;
         let mut affordance_space = 0.0;
         match kind {
           TextControlKind::Number => affordance_space = 14.0,
           TextControlKind::Date => affordance_space = 12.0,
           _ => {}
         }
-        if affordance_space > 0.0 {
-          rect = Rect::from_xywh(
-            rect.x(),
-            rect.y(),
-            (rect.width() - affordance_space).max(0.0),
-            rect.height(),
+        let mut affordance_rect: Option<Rect> = None;
+        if affordance_space > 0.0 && padding_rect.width() > 0.0 {
+          let right = padding_rect.max_x();
+          let left = (right - affordance_space).max(content_rect.x());
+          affordance_rect = Some(Rect::from_xywh(
+            left,
+            content_rect.y(),
+            (right - left).max(0.0),
+            content_rect.height(),
+          ));
+          text_rect = Rect::from_xywh(
+            content_rect.x(),
+            content_rect.y(),
+            (left - content_rect.x()).max(0.0),
+            content_rect.height(),
           );
         }
-        let _ = self.emit_text_with_style(text, Some(&text_style), rect);
-        if affordance_space > 0.0 {
+
+        let _ = self.emit_text_with_style(text, Some(&text_style), text_rect);
+        if let Some(affordance_rect) = affordance_rect {
           let mut affordance_style = style.clone();
           affordance_style.color = muted_accent;
-          let affordance_rect = Rect::from_xywh(
-            rect.x() + rect.width(),
-            rect.y(),
-            affordance_space,
-            rect.height(),
-          );
+          affordance_style.font_size = (style.font_size * 0.7).max(8.0);
           match kind {
             TextControlKind::Number => {
               let half = affordance_rect.height() / 2.0;
@@ -7472,11 +7561,11 @@ impl DisplayListBuilder {
                 affordance_rect.width(),
                 affordance_rect.height() - half,
               );
-              let _ = self.emit_text_with_style("▲", Some(&affordance_style), upper);
-              let _ = self.emit_text_with_style("▼", Some(&affordance_style), lower);
+              let _ = emit_text_aligned(self, "▲", &affordance_style, upper, true, true);
+              let _ = emit_text_aligned(self, "▼", &affordance_style, lower, true, true);
             }
             TextControlKind::Date => {
-              let _ = self.emit_text_with_style("▾", Some(&affordance_style), affordance_rect);
+              let _ = emit_text_aligned(self, "▾", &affordance_style, affordance_rect, true, true);
             }
             _ => {}
           }
@@ -7497,7 +7586,7 @@ impl DisplayListBuilder {
         } else {
           return true;
         };
-        let rect = inset_rect(rect, 2.0);
+        let rect = content_rect;
         let mut text_style = style.clone();
         text_style.color = color;
         let line_height = compute_line_height_with_metrics_viewport(
@@ -7510,41 +7599,34 @@ impl DisplayListBuilder {
           if y > rect.y() + rect.height() {
             break;
           }
-          let line_rect = Rect::from_xywh(rect.x(), y, rect.width(), rect.height());
+          let line_rect = Rect::from_xywh(rect.x(), y, rect.width(), line_height);
           let _ = self.emit_text_with_style(line.trim_end(), Some(&text_style), line_rect);
           y += line_height;
         }
         true
       }
       FormControlKind::Select { label, .. } => {
-        let rect = inset_rect(rect, 2.0);
-        let arrow_space = if matches!(control.appearance, Appearance::None) {
-          0.0
-        } else {
-          14.0
-        };
         let mut select_style = style.clone();
         if control.invalid {
           select_style.color = accent;
         }
-        let text_rect = Rect::from_xywh(
-          rect.x(),
-          rect.y(),
-          (rect.width() - arrow_space).max(0.0),
-          rect.height(),
-        );
-        let _ = self.emit_text_with_style(label, Some(&select_style), text_rect);
+        let _ = self.emit_text_with_style(label, Some(&select_style), content_rect);
 
-        if arrow_space > 0.0 {
-          let mut arrow_style = select_style;
-          arrow_style.color = muted_accent;
+        if !matches!(control.appearance, Appearance::None) {
+          let arrow_space = 14.0_f32.min(padding_rect.width().max(0.0));
+          let arrow_left = (padding_rect.max_x() - arrow_space).max(content_rect.max_x());
           let arrow_rect = Rect::from_xywh(
-            rect.x() + rect.width() - arrow_space,
-            rect.y(),
-            arrow_space,
-            rect.height(),
+            arrow_left,
+            content_rect.y(),
+            (padding_rect.max_x() - arrow_left).max(0.0),
+            content_rect.height(),
           );
-          let _ = self.emit_text_with_style("▾", Some(&arrow_style), arrow_rect);
+          if arrow_rect.width() > 0.0 {
+            let mut arrow_style = select_style;
+            arrow_style.color = muted_accent;
+            arrow_style.font_size = (style.font_size * 0.9).max(8.0);
+            let _ = emit_text_aligned(self, "▾", &arrow_style, arrow_rect, true, true);
+          }
         }
         true
       }
@@ -7552,12 +7634,12 @@ impl DisplayListBuilder {
         if label.trim().is_empty() {
           return true;
         }
-        let rect = inset_rect(rect, 2.0);
+        let rect = content_rect;
         let mut button_style = style.clone();
         if control.invalid {
           button_style.color = accent;
         }
-        let _ = self.emit_text_with_style(label, Some(&button_style), rect);
+        let _ = emit_text_aligned(self, label, &button_style, rect, true, true);
         true
       }
       FormControlKind::Checkbox {
@@ -7568,30 +7650,70 @@ impl DisplayListBuilder {
         if (!*checked && !*indeterminate) || matches!(control.appearance, Appearance::None) {
           return true;
         }
-        let mut mark_style = style.clone();
-        mark_style.color = muted_accent;
-        let glyph = if *is_radio {
-          "●"
-        } else if *indeterminate {
-          "−"
+
+        let fill_rect = padding_rect;
+        if *is_radio {
+          if *checked {
+            let diameter = fill_rect.width().min(fill_rect.height()) * 0.55;
+            let dot_rect = Rect::from_xywh(
+              fill_rect.x() + (fill_rect.width() - diameter) / 2.0,
+              fill_rect.y() + (fill_rect.height() - diameter) / 2.0,
+              diameter,
+              diameter,
+            );
+            self
+              .list
+              .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
+                rect: dot_rect,
+                color: muted_accent,
+                radii: BorderRadii::uniform(diameter / 2.0),
+              }));
+          }
+          return true;
+        }
+
+        // Fill the inner area using the accent color, then draw the check/indeterminate mark in a
+        // contrasting color.
+        let radii = Self::resolve_clip_radii(
+          style,
+          &rects,
+          BackgroundBox::PaddingBox,
+          self.viewport,
+          self.build_breakdown.as_deref(),
+        )
+        .clamped(fill_rect.width(), fill_rect.height());
+        self
+          .list
+          .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
+            rect: fill_rect,
+            color: muted_accent,
+            radii,
+          }));
+
+        let luminance =
+          (0.299 * muted_accent.r as f32 + 0.587 * muted_accent.g as f32 + 0.114 * muted_accent.b as f32)
+            / 255.0;
+        let mark_color = if luminance > 0.5 {
+          Rgba::rgb(24, 24, 24)
         } else {
-          "✓"
+          Rgba::rgb(245, 245, 245)
         };
-        let rect = inset_rect(rect, 2.0);
-        let _ = self.emit_text_with_style(glyph, Some(&mark_style), rect);
+        let glyph = if *indeterminate { "−" } else { "✓" };
+        let mut mark_style = style.clone();
+        mark_style.color = mark_color;
+        mark_style.font_size = (fill_rect.height() * 0.9).max(8.0);
+        let _ = emit_text_aligned(self, glyph, &mark_style, fill_rect, true, true);
         true
       }
       FormControlKind::Range { value, min, max } => {
-        let track_height = 4.0_f32.min(rect.height());
-        let track_y = rect.y() + (rect.height() - track_height) / 2.0;
-        let track_rect = Rect::from_xywh(rect.x(), track_y, rect.width(), track_height);
+        let track_height = 4.0_f32.min(padding_rect.height());
+        let track_y = padding_rect.y() + (padding_rect.height() - track_height) / 2.0;
+        let track_rect = Rect::from_xywh(padding_rect.x(), track_y, padding_rect.width(), track_height);
         self
           .list
           .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
             rect: track_rect,
-            color: style
-              .background_color
-              .with_alpha((style.background_color.a * 0.8).max(0.1)),
+            color: Rgba::rgb(190, 190, 190),
             radii: BorderRadii::uniform(track_height / 2.0),
           }));
 
@@ -7599,25 +7721,50 @@ impl DisplayListBuilder {
         let max_val = max.unwrap_or(100.0);
         let span = (max_val - min_val).abs().max(0.0001);
         let clamped = ((*value - min_val) / span).clamp(0.0, 1.0);
-        let knob_radius = (rect.height().min(16.0)) / 2.0;
-        let knob_center_x = rect.x() + knob_radius + clamped * (rect.width() - 2.0 * knob_radius);
+        let knob_radius = (padding_rect.height().min(16.0)) / 2.0;
+        let knob_center_x =
+          padding_rect.x() + knob_radius + clamped * (padding_rect.width() - 2.0 * knob_radius);
         let knob_rect = Rect::from_xywh(
           knob_center_x - knob_radius,
-          rect.y() + (rect.height() - knob_radius * 2.0) / 2.0,
+          padding_rect.y() + (padding_rect.height() - knob_radius * 2.0) / 2.0,
           knob_radius * 2.0,
           knob_radius * 2.0,
         );
+        let filled_rect = Rect::from_xywh(
+          track_rect.x(),
+          track_rect.y(),
+          (knob_center_x - track_rect.x()).max(0.0),
+          track_rect.height(),
+        );
+        if filled_rect.width() > 0.0 {
+          let radii = BorderRadii::uniform(track_height / 2.0).clamped(filled_rect.width(), filled_rect.height());
+          self
+            .list
+            .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
+              rect: filled_rect,
+              color: muted_accent,
+              radii,
+            }));
+        }
         self
           .list
           .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
             rect: knob_rect,
-            color: muted_accent,
+            color: Rgba::rgb(255, 255, 255),
+            radii: BorderRadii::uniform(knob_radius),
+          }));
+        self
+          .list
+          .push(DisplayItem::StrokeRoundedRect(StrokeRoundedRectItem {
+            rect: knob_rect,
+            color: Rgba::rgb(130, 130, 130),
+            width: 1.0,
             radii: BorderRadii::uniform(knob_radius),
           }));
         true
       }
       FormControlKind::Color { value, raw } => {
-        let rect = inset_rect(rect, 3.0);
+        let rect = inset_rect(padding_rect, 2.0);
         self
           .list
           .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
@@ -7647,12 +7794,12 @@ impl DisplayListBuilder {
         let label = raw
           .clone()
           .unwrap_or_else(|| format!("#{:02X}{:02X}{:02X}", value.r, value.g, value.b));
-        let _ = self.emit_text_with_style(&label, Some(&text_style), rect);
+        let _ = emit_text_aligned(self, &label, &text_style, rect, true, true);
         true
       }
       FormControlKind::Unknown { label } => {
         if let Some(text) = label {
-          let rect = inset_rect(rect, 2.0);
+          let rect = content_rect;
           let mut unknown_style = style.clone();
           if control.invalid {
             unknown_style.color = accent;

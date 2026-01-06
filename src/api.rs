@@ -97,6 +97,7 @@ use crate::layout::absolute_positioning::resolve_positioned_style;
 use crate::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport;
 use crate::layout::contexts::inline::line_builder::TextItem;
 use crate::layout::contexts::positioned::ContainingBlock;
+use crate::layout::utils::resolve_font_relative_length;
 use crate::layout::engine::enable_layout_parallel_debug_counters;
 use crate::layout::engine::layout_parallel_debug_counters;
 use crate::layout::engine::layout_parallelism_workload;
@@ -157,6 +158,7 @@ use crate::style::page::PageSide;
 use crate::style::style_set::StyleSet;
 use crate::style::types::{ContainerType, WritingMode};
 use crate::style::values::Length;
+use crate::style::values::LengthUnit;
 use crate::style::ComputedStyle;
 use crate::text::font_db::FontConfig;
 use crate::text::font_db::FontDatabase;
@@ -9838,12 +9840,13 @@ impl FastRender {
         }
         explicit_no_ratio = true;
         if replaced_box.intrinsic_size.is_none() {
+          // Match HTML's "character width" sizing semantics by using the font's `ch` unit
+          // (advance of the `0` glyph). This keeps default text inputs close to modern browser
+          // sizing (~20ch at 16px ~= 160px) and avoids wildly undersized controls when using
+          // x-height as a proxy.
           let metrics_scaled = self.resolve_scaled_metrics(style);
-          let char_width = metrics_scaled
-            .as_ref()
-            .and_then(|m| m.x_height)
-            .unwrap_or(style.font_size * 0.6)
-            * 0.6;
+          let char_width =
+            resolve_font_relative_length(Length::new(1.0, LengthUnit::Ch), style, &self.font_context);
           let line_height = compute_line_height_with_metrics_viewport(
             style,
             metrics_scaled.as_ref(),
@@ -15555,6 +15558,56 @@ mod tests {
       replaced.aspect_ratio,
       Some(20.0 / 12.0),
       "inline svg should populate aspect ratio"
+    );
+  }
+
+  #[test]
+  fn form_control_intrinsic_sizes_use_ch_unit() {
+    // Keep the assertion deterministic across machines by using only bundled fallback fonts.
+    let renderer = FastRender::builder()
+      .font_sources(FontConfig::bundled_only())
+      .build()
+      .expect("init renderer");
+    let style = Arc::new(ComputedStyle::default());
+    let control = crate::tree::box_tree::FormControl {
+      control: FormControlKind::Text {
+        value: String::new(),
+        placeholder: None,
+        size_attr: None,
+        kind: TextControlKind::Plain,
+      },
+      appearance: crate::style::types::Appearance::Auto,
+      disabled: false,
+      focused: false,
+      focus_visible: false,
+      required: false,
+      invalid: false,
+    };
+    let mut node = BoxNode::new_replaced(
+      Arc::clone(&style),
+      ReplacedType::FormControl(control),
+      None,
+      None,
+    );
+
+    renderer.resolve_replaced_intrinsic_sizes(&mut node, Size::new(800.0, 600.0));
+    let replaced = match node.box_type {
+      BoxType::Replaced(ref r) => r,
+      _ => panic!("not replaced"),
+    };
+    let intrinsic = replaced.intrinsic_size.expect("intrinsic size");
+
+    let char_width = resolve_font_relative_length(
+      Length::new(1.0, LengthUnit::Ch),
+      style.as_ref(),
+      &renderer.font_context,
+    );
+    let expected_width = char_width * 20.0;
+    assert!(
+      (intrinsic.width - expected_width).abs() < 0.25,
+      "expected intrinsic width ~= 20ch (expected {:.2}, got {:.2})",
+      expected_width,
+      intrinsic.width
     );
   }
 

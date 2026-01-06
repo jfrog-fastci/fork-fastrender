@@ -373,6 +373,8 @@ svg {
 /* Form elements */
 input, textarea, select, button {
     display: inline-block;
+    box-sizing: border-box;
+    margin: 0;
     padding: 4px 6px;
     border: 1px solid #767676;
     background-color: white;
@@ -391,7 +393,7 @@ input:not([type]) {
 
 input[type="submit"], input[type="button"], button {
     padding: 4px 10px;
-    background-color: white;
+    background-color: rgb(240, 240, 240);
     border: 1px solid #767676;
 }
 
@@ -414,6 +416,12 @@ input[type="checkbox"], input[type="radio"] {
 
 input[type="radio"] {
     border-radius: 50%;
+}
+
+input[type="range"] {
+    padding: 0;
+    border: none;
+    background-color: transparent;
 }
 
 input[type="hidden"] {

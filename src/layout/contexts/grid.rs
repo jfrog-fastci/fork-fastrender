@@ -1017,12 +1017,58 @@ impl GridFormattingContext {
         Err(_) => Ok((0.0, 0.0)),
       }
     } else {
-      let min = match fc.compute_intrinsic_block_size(box_node, IntrinsicSizingMode::MinContent) {
+      // When resolving intrinsic sizing keywords we need the box's *content-driven* sizes, which
+      // must not depend on the box's own intrinsic keyword constraints along the same physical
+      // axis. In vertical writing modes, `width: max-content` maps to the block axis; querying the
+      // block intrinsic size without clearing that keyword would re-enter grid layout and recurse
+      // indefinitely (stack overflow).
+      //
+      // Clear any intrinsic keyword sizing on the physical axis we're measuring so the nested
+      // layout pass treats it as `auto` instead of trying to resolve the same keyword again.
+      let needs_keyword_clear = match axis {
+        Axis::Horizontal => {
+          style.width_keyword.is_some()
+            || style.min_width_keyword.is_some()
+            || style.max_width_keyword.is_some()
+        }
+        Axis::Vertical => {
+          style.height_keyword.is_some()
+            || style.min_height_keyword.is_some()
+            || style.max_height_keyword.is_some()
+        }
+      };
+
+      let compute = |mode| -> Result<f32, LayoutError> {
+        if needs_keyword_clear && box_node.id != 0 {
+          let mut cleared: ComputedStyle = style.clone();
+          match axis {
+            Axis::Horizontal => {
+              cleared.width = None;
+              cleared.width_keyword = None;
+              cleared.min_width_keyword = None;
+              cleared.max_width_keyword = None;
+            }
+            Axis::Vertical => {
+              cleared.height = None;
+              cleared.height_keyword = None;
+              cleared.min_height_keyword = None;
+              cleared.max_height_keyword = None;
+            }
+          }
+          crate::layout::style_override::with_style_override(box_node.id, Arc::new(cleared), || {
+            fc.compute_intrinsic_block_size(box_node, mode)
+          })
+        } else {
+          fc.compute_intrinsic_block_size(box_node, mode)
+        }
+      };
+
+      let min = match compute(IntrinsicSizingMode::MinContent) {
         Ok(value) => value.max(0.0),
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
         Err(_) => 0.0,
       };
-      let max = match fc.compute_intrinsic_block_size(box_node, IntrinsicSizingMode::MaxContent) {
+      let max = match compute(IntrinsicSizingMode::MaxContent) {
         Ok(value) => value.max(0.0),
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
         Err(_) => min,

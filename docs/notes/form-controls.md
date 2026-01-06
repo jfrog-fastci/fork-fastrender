@@ -10,7 +10,17 @@ FastRender treats native form controls as replaced elements so they participate 
 - Disabled, focus, focus-visible, required, and invalid states come from normal selector matching (`disabled`, `required`, constraint validity, `data-fastr-focus*` hints) and are reflected in the native painting (tinted overlays, accent changes). The `data-fastr-focus-visible` hint implies focus for native painting so standalone focus-visible markers are captured.
 - Setting `appearance: none` skips the native replacement and leaves the element as a normal box for author styling.
 
-The reference fixture at `tests/ref/fixtures/form_controls` exercises common control types and states (including size/rows/cols hints, invalid and disabled colors, unknown types, date/time variants, and focus-visible highlights). Regenerate the golden with:
+The pageset regression suite includes form-heavy fixtures under `tests/pages/fixtures/form_controls*`
+so we can catch large visual diffs caused by missing UA form control styling/painting. Regenerate
+their goldens with:
+
+```
+UPDATE_PAGES_GOLDEN=1 PAGES_FIXTURE_FILTER=form_controls cargo test pages_regression_suite
+```
+
+The reference fixture at `tests/ref/fixtures/form_controls` exercises common control types and
+states (including size/rows/cols hints, invalid and disabled colors, unknown types, date/time
+variants, and focus-visible highlights). Regenerate the reference golden with:
 
 ```
 UPDATE_GOLDEN=1 cargo test form_controls_reference_image_matches_golden
