@@ -7559,6 +7559,11 @@ fn is_kinsoku_strict_prohibited_line_start(ch: char) -> bool {
       | '\u{2025}' // ‥
       | '\u{22EF}' // ⋯
       | '\u{FE19}' // ︙
+      // Common dash-like marks used in Japanese text.
+      | '\u{2014}' // —
+      | '\u{2015}' // ―
+      | '\u{301C}' // 〜
+      | '\u{FF5E}' // ～
       | '\u{FF0C}' // ，
       | '\u{FF0E}' // ．
       | '\u{FF1A}' // ：
@@ -18166,6 +18171,10 @@ mod tests {
       '\u{2025}', // ‥
       '\u{22EF}', // ⋯
       '\u{FE19}', // ︙
+      '\u{2014}', // —
+      '\u{2015}', // ―
+      '\u{301C}', // 〜
+      '\u{FF5E}', // ～
       '\u{FF0C}', // ，
       '\u{FF0E}', // ．
       '\u{FF1A}', // ：
