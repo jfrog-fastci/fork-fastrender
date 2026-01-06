@@ -7287,11 +7287,17 @@ impl DisplayListRenderer {
   fn rasterize_preserve_3d_planes_parallel(
     &mut self,
     scene_items: &[Preserve3dSceneItem],
+    order: &[usize],
   ) -> Result<Vec<Option<Pixmap>>> {
     let plane_count = scene_items.len();
     if plane_count == 0 {
       return Ok(Vec::new());
     }
+    debug_assert_eq!(
+      plane_count,
+      order.len(),
+      "preserve-3d paint order should reference every plane exactly once"
+    );
 
     let paint_pool = crate::paint::paint_thread_pool::paint_pool();
     let mut threads = paint_pool.threads.max(1);
@@ -7309,7 +7315,7 @@ impl DisplayListRenderer {
       .checked_add(task_capacity.saturating_sub(1))
       .unwrap_or(plane_count)
       / task_capacity.max(1);
-    let mut indices: Vec<usize> = (0..plane_count).collect();
+    let mut indices: Vec<usize> = order.to_vec();
     let mut chunks: Vec<Vec<usize>> = Vec::new();
     while !indices.is_empty() {
       let take = chunk_size.min(indices.len()).max(1);
@@ -7325,8 +7331,8 @@ impl DisplayListRenderer {
             let _stage_guard = StageGuard::install(stage);
             let _plane_guard = Preserve3dPlaneParallelGuard::enter();
             let mut out = Vec::with_capacity(chunk.len());
-             for idx in chunk {
-               check_active(RenderStage::Paint).map_err(Error::Render)?;
+            for idx in chunk {
+              check_active(RenderStage::Paint).map_err(Error::Render)?;
               let (pixmap, stats) = raster_config.rasterize(&scene_items[idx])?;
               out.push((idx, pixmap, stats));
             }
@@ -7420,7 +7426,7 @@ impl DisplayListRenderer {
             scene_items.len()
           );
         }
-        self.rasterize_preserve_3d_planes_parallel(&scene_items)
+        self.rasterize_preserve_3d_planes_parallel(&scene_items, &paint_order)
       })
       .transpose()?;
 
