@@ -4683,6 +4683,11 @@ fn apply_animations_to_node_scoped(
           idx,
           TransitionTimingFunction::Ease,
         );
+        let direction = pick(
+          &style_arc.animation_directions,
+          idx,
+          AnimationDirection::default(),
+        );
         let composition = pick(
           &style_arc.animation_compositions,
           idx,
@@ -4788,9 +4793,14 @@ fn apply_animations_to_node_scoped(
             && progress.iteration > 0
             && !sample.animated.is_empty()
           {
+            let (start_progress, end_progress) = if iteration_reverses(direction, 0) {
+              (1.0, 0.0)
+            } else {
+              (0.0, 1.0)
+            };
             let start = sample_keyframes_with_default_timing(
               rule,
-              0.0,
+              start_progress,
               &animated,
               viewport_size,
               element_size,
@@ -4798,7 +4808,7 @@ fn apply_animations_to_node_scoped(
             );
             let end = sample_keyframes_with_default_timing(
               rule,
-              1.0,
+              end_progress,
               &animated,
               viewport_size,
               element_size,

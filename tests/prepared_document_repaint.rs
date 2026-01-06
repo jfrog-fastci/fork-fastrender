@@ -316,6 +316,45 @@ fn repaint_with_animation_composition_accumulate_accumulates_translate_iteration
 }
 
 #[test]
+fn repaint_with_animation_composition_accumulate_respects_reverse_direction() -> Result<()> {
+  let mut renderer = FastRender::new()?;
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(255, 255, 255); }
+      .box {
+        position: absolute;
+        left: 30px;
+        top: 0;
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        animation-name: move;
+        animation-duration: 1000ms;
+        animation-timing-function: linear;
+        animation-iteration-count: 2;
+        animation-direction: reverse;
+        animation-fill-mode: forwards;
+        animation-composition: accumulate;
+      }
+      @keyframes move {
+        from { translate: 0px 0px; }
+        to { translate: 20px 0px; }
+      }
+    </style>
+    <div class="box"></div>
+  "#;
+  let prepared = renderer.prepare_html(html, RenderOptions::new().with_viewport(80, 20))?;
+  let mid_second =
+    prepared.paint_with_options(PreparedPaintOptions::new().with_animation_time(1500.0))?;
+
+  // With `direction: reverse`, each iteration runs from the end keyframe to the start keyframe.
+  // At t=1500ms we're halfway through the second iteration: 10px + (0px - 20px) = -10px.
+  assert_eq!(pixel(&mid_second, 25, 5), (255, 0, 0, 255));
+  assert_eq!(pixel(&mid_second, 35, 5), (255, 255, 255, 255));
+  Ok(())
+}
+
+#[test]
 fn repaint_with_animation_composition_accumulate_accumulates_transform_iterations() -> Result<()> {
   let mut renderer = FastRender::new()?;
   let html = r#"
