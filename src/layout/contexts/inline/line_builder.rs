@@ -49,6 +49,7 @@ use crate::style::types::TextWrap;
 use crate::style::types::UnicodeBidi;
 use crate::style::types::WhiteSpace;
 use crate::style::types::WordBreak;
+use crate::style::values::{Length, LengthUnit};
 use crate::style::ComputedStyle;
 use crate::text::font_loader::FontContext;
 use crate::text::justify::InlineAxis;
@@ -1825,6 +1826,54 @@ impl InlineBoxItem {
   /// Adds a child item
   pub fn add_child(&mut self, child: InlineItem) {
     self.children.push(child);
+  }
+
+  /// Returns a paint-time style snapshot whose border/padding widths match the inline fragment.
+  ///
+  /// Inline boxes can be fragmented (line wraps, bidi segmentation). Layout represents fragment
+  /// edges via `start_edge`/`end_edge` and the resolved border widths; paint should use the same
+  /// values so borders and backgrounds do not overlap content when an edge is suppressed for a
+  /// continuation fragment.
+  pub fn paint_style(&self) -> Arc<ComputedStyle> {
+    let padding_left = (self.start_edge - self.border_left).max(0.0);
+    let padding_right = (self.end_edge - self.border_right).max(0.0);
+    let padding_top = (self.content_offset_y - self.border_top).max(0.0);
+    let padding_bottom = (self.bottom_inset - self.border_bottom).max(0.0);
+    let border_left = self.border_left.max(0.0);
+    let border_right = self.border_right.max(0.0);
+    let border_top = self.border_top.max(0.0);
+    let border_bottom = self.border_bottom.max(0.0);
+
+    fn px_matches(length: &Length, value: f32) -> bool {
+      const EPS: f32 = 0.01;
+      length.calc.is_none()
+        && matches!(length.unit, LengthUnit::Px)
+        && (length.value - value).abs() <= EPS
+    }
+
+    let style = self.style.as_ref();
+    if px_matches(&style.padding_left, padding_left)
+      && px_matches(&style.padding_right, padding_right)
+      && px_matches(&style.padding_top, padding_top)
+      && px_matches(&style.padding_bottom, padding_bottom)
+      && px_matches(&style.border_left_width, border_left)
+      && px_matches(&style.border_right_width, border_right)
+      && px_matches(&style.border_top_width, border_top)
+      && px_matches(&style.border_bottom_width, border_bottom)
+    {
+      return self.style.clone();
+    }
+
+    let mut updated = style.clone();
+    updated.padding_left = Length::px(padding_left);
+    updated.padding_right = Length::px(padding_right);
+    updated.padding_top = Length::px(padding_top);
+    updated.padding_bottom = Length::px(padding_bottom);
+    updated.border_left_width = Length::px(border_left);
+    updated.border_right_width = Length::px(border_right);
+    updated.border_top_width = Length::px(border_top);
+    updated.border_bottom_width = Length::px(border_bottom);
+    Arc::new(updated)
   }
 
   /// Returns the total width of this inline box
@@ -7874,6 +7923,52 @@ mod tests {
 
     assert_eq!(fragments[2].start_edge, 0.0);
     assert!((fragments[2].end_edge - 3.0).abs() < f32::EPSILON);
+  }
+
+  #[test]
+  fn inline_box_paint_style_uses_fragment_edges() {
+    let mut style = ComputedStyle::default();
+    style.padding_left = crate::style::values::Length::px(5.0);
+    style.padding_right = crate::style::values::Length::px(6.0);
+    style.border_left_width = crate::style::values::Length::px(2.0);
+    style.border_right_width = crate::style::values::Length::px(3.0);
+    style.border_left_style = crate::style::types::BorderStyle::Solid;
+    style.border_right_style = crate::style::types::BorderStyle::Solid;
+    let style = Arc::new(style);
+
+    // Simulate a continuation fragment: layout has removed the left/right edges, but the authored
+    // style still has border/padding. The paint style must follow the fragment edges so borders do
+    // not overlap content.
+    let mut inline_box = InlineBoxItem::new(
+      0.0,
+      0.0,
+      0.0,
+      make_strut_metrics(),
+      style,
+      1,
+      Direction::Ltr,
+      UnicodeBidi::Normal,
+    );
+    inline_box.border_left = 0.0;
+    inline_box.border_right = 0.0;
+
+    let paint_style = inline_box.paint_style();
+    assert_eq!(
+      paint_style.padding_left,
+      crate::style::values::Length::px(0.0)
+    );
+    assert_eq!(
+      paint_style.padding_right,
+      crate::style::values::Length::px(0.0)
+    );
+    assert_eq!(
+      paint_style.border_left_width,
+      crate::style::values::Length::px(0.0)
+    );
+    assert_eq!(
+      paint_style.border_right_width,
+      crate::style::values::Length::px(0.0)
+    );
   }
 
   #[test]

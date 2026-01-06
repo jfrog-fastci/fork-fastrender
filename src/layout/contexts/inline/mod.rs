@@ -5710,7 +5710,7 @@ impl InlineFormattingContext {
               fragment_index: box_item.box_index,
             },
             children,
-            box_item.style.clone(),
+            box_item.paint_style(),
           )
         } else {
           let mut child_x = box_item.start_edge;
@@ -5751,7 +5751,7 @@ impl InlineFormattingContext {
               fragment_index: box_item.box_index,
             },
             children,
-            box_item.style.clone(),
+            box_item.paint_style(),
           )
         }
       }
@@ -5915,7 +5915,7 @@ impl InlineFormattingContext {
             fragment_index: box_item.box_index,
           },
           children,
-          box_item.style.clone(),
+          box_item.paint_style(),
         )
       }
       InlineItem::Ruby(ruby_item) => {
