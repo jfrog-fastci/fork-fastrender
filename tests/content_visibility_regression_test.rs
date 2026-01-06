@@ -47,9 +47,9 @@ fn content_visibility_runtime_toggles() -> RuntimeToggles {
   )]))
 }
 
-fn run_fixture_with_options(options: RenderOptions) -> Vec<u8> {
+fn run_fixture_with_options(fixture_path: &str, options: RenderOptions) -> Vec<u8> {
   let options = options.with_runtime_toggles(content_visibility_runtime_toggles());
-  let html_path = fixtures_dir().join("content_visibility/index.html");
+  let html_path = fixtures_dir().join(fixture_path);
   let html =
     fs::read_to_string(&html_path).unwrap_or_else(|e| panic!("Failed to read fixture: {e}"));
   let base_url = base_url_for(&html_path).expect("failed to build base url");
@@ -97,12 +97,16 @@ fn content_visibility_regression() {
   // Keep the test stable across platforms by allowing a small amount of per-pixel drift.
   compare_config.max_different_percent = compare_config.max_different_percent.max(0.05);
 
-  let rendered = run_fixture_with_options(RenderOptions::new().with_viewport(420, 260));
+  let rendered = run_fixture_with_options(
+    "content_visibility/index.html",
+    RenderOptions::new().with_viewport(420, 260),
+  );
   assert_matches_golden("content_visibility", &rendered, &compare_config);
 
   // Also validate behavior when rendering at a non-zero scroll offset (both layout- and paint-time
   // visibility decisions should respect the scroll position).
   let rendered_scrolled = run_fixture_with_options(
+    "content_visibility/index.html",
     RenderOptions::new()
       .with_viewport(420, 260)
       .with_scroll(0.0, 150.0),
@@ -110,6 +114,16 @@ fn content_visibility_regression() {
   assert_matches_golden(
     "content_visibility_scrolled",
     &rendered_scrolled,
+    &compare_config,
+  );
+
+  let rendered_no_intrinsic = run_fixture_with_options(
+    "content_visibility_auto_no_intrinsic/index.html",
+    RenderOptions::new().with_viewport(420, 260),
+  );
+  assert_matches_golden(
+    "content_visibility_auto_no_intrinsic",
+    &rendered_no_intrinsic,
     &compare_config,
   );
 }

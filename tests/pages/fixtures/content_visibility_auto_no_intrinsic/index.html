@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    background: #ffffff;
+  }
+
+  /* Push the auto subtree just below the viewport (420x260 in the regression test). */
+  .spacer {
+    height: 280px;
+    background: #e0e0e0;
+  }
+
+  /*
+    This subtree is offscreen and uses `content-visibility:auto`, but it has no definite height and
+    no `contain-intrinsic-size` fallback. Layout skipping would collapse it to 0px, which can pull
+    later content up.
+  */
+  #auto-box {
+    content-visibility: auto;
+    background: #f5f5f5;
+  }
+  #auto-box .tall {
+    height: 1000px;
+    background: #b3d4ff;
+  }
+
+  /*
+    A sentinel after the subtree. It is shifted upward with relative positioning so that if the
+    offscreen subtree collapses to 0px, the sentinel is pulled into the viewport.
+  */
+  #sentinel {
+    height: 40px;
+    background: #d50000;
+    position: relative;
+    top: -250px;
+  }
+</style>
+
+<div class="spacer"></div>
+<div id="auto-box"><div class="tall"></div></div>
+<div id="sentinel"></div>
