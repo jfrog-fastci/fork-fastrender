@@ -987,7 +987,10 @@ impl GridFormattingContext {
       Axis::Horizontal => constraints.available_width,
       Axis::Vertical => constraints.available_height,
     };
-    let inline_axis_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+    let physical_axis = match axis {
+      Axis::Horizontal => PhysicalAxis::X,
+      Axis::Vertical => PhysicalAxis::Y,
+    };
 
     let width_base = constraints
       .width()
@@ -1011,36 +1014,11 @@ impl GridFormattingContext {
     };
 
     let intrinsic_range = |node: &BoxNode| -> Result<(f32, f32), LayoutError> {
-      match axis {
-        Axis::Horizontal => {
-          if inline_axis_is_horizontal {
-            self.compute_intrinsic_inline_sizes(node)
-          } else {
-            let min = self.compute_intrinsic_block_size(node, IntrinsicSizingMode::MinContent)?;
-            let max = match self.compute_intrinsic_block_size(node, IntrinsicSizingMode::MaxContent)
-            {
-              Ok(value) => value,
-              Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-              Err(_) => min,
-            };
-            Ok((min, max))
-          }
-        }
-        Axis::Vertical => {
-          if inline_axis_is_horizontal {
-            let min = self.compute_intrinsic_block_size(node, IntrinsicSizingMode::MinContent)?;
-            let max = match self.compute_intrinsic_block_size(node, IntrinsicSizingMode::MaxContent)
-            {
-              Ok(value) => value,
-              Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-              Err(_) => min,
-            };
-            Ok((min, max))
-          } else {
-            self.compute_intrinsic_inline_sizes(node)
-          }
-        }
-      }
+      crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_sizes(
+        self,
+        node,
+        physical_axis,
+      )
     };
 
     // Avoid self-recursion when intrinsic sizing needs to re-enter layout by clearing any
@@ -1103,16 +1081,17 @@ impl GridFormattingContext {
     };
 
     let preferred_border_box = match limit {
-      None => available_border_box,
+      None => None,
       Some(limit) => {
         let Some(resolved) = resolve_length_px(limit) else {
           return Ok(None);
         };
-        to_border_box(resolved)
+        Some(to_border_box(resolved))
       }
     };
 
-    let mut border_box = crate::layout::utils::clamp_with_order(
+    let mut border_box = crate::layout::intrinsic_sizing_keywords::resolve_fit_content_border_box(
+      Some(available_border_box),
       preferred_border_box,
       min_intrinsic,
       max_intrinsic,
@@ -1205,7 +1184,6 @@ impl GridFormattingContext {
       .formatting_context()
       .unwrap_or(FormattingContextType::Block);
     let item_fc = self.factory.get(item_fc_type);
-    let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
     let box_id = box_node.id();
 
     // When computing intrinsic sizes for an axis that is itself specified as an intrinsic keyword,
@@ -1242,27 +1220,25 @@ impl GridFormattingContext {
     };
 
     let intrinsic_physical_width = |mode: IntrinsicSizingMode| -> Result<f32, LayoutError> {
-      if inline_is_horizontal {
-        run_with_override(width_override.clone(), &|node| {
-          item_fc.compute_intrinsic_inline_size(node, mode)
-        })
-      } else {
-        run_with_override(width_override.clone(), &|node| {
-          item_fc.compute_intrinsic_block_size(node, mode)
-        })
-      }
+      run_with_override(width_override.clone(), &|node| {
+        crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_size(
+          item_fc.as_ref(),
+          node,
+          PhysicalAxis::X,
+          mode,
+        )
+      })
     };
 
     let intrinsic_physical_height = |mode: IntrinsicSizingMode| -> Result<f32, LayoutError> {
-      if inline_is_horizontal {
-        run_with_override(height_override.clone(), &|node| {
-          item_fc.compute_intrinsic_block_size(node, mode)
-        })
-      } else {
-        run_with_override(height_override.clone(), &|node| {
-          item_fc.compute_intrinsic_inline_size(node, mode)
-        })
-      }
+      run_with_override(height_override.clone(), &|node| {
+        crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_size(
+          item_fc.as_ref(),
+          node,
+          PhysicalAxis::Y,
+          mode,
+        )
+      })
     };
 
     if let Some(mode) = style.width_keyword.and_then(keyword_to_mode) {
@@ -4886,18 +4862,20 @@ impl GridFormattingContext {
 
     let inline_is_horizontal = crate::style::inline_axis_is_horizontal(box_node.style.writing_mode);
     let intrinsic_physical_width = |mode: IntrinsicSizingMode| -> Result<f32, LayoutError> {
-      if inline_is_horizontal {
-        fc.compute_intrinsic_inline_size(box_node, mode)
-      } else {
-        fc.compute_intrinsic_block_size(box_node, mode)
-      }
+      crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_size(
+        fc.as_ref(),
+        box_node,
+        PhysicalAxis::X,
+        mode,
+      )
     };
     let intrinsic_physical_height = |mode: IntrinsicSizingMode| -> Result<f32, LayoutError> {
-      if inline_is_horizontal {
-        fc.compute_intrinsic_block_size(box_node, mode)
-      } else {
-        fc.compute_intrinsic_inline_size(box_node, mode)
-      }
+      crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_size(
+        fc.as_ref(),
+        box_node,
+        PhysicalAxis::Y,
+        mode,
+      )
     };
 
     // Fit-content depends on the available space passed by Taffy. Resolve it here (per measure call)
@@ -5007,46 +4985,17 @@ impl GridFormattingContext {
       };
 
       let intrinsic_range_for_physical_axis = |axis: Axis| -> Result<(f32, f32), LayoutError> {
-        match axis {
-          Axis::Horizontal => {
-            if inline_is_horizontal {
-              run_with_override(box_node, override_for_axis(axis), |node| {
-                fc.compute_intrinsic_inline_sizes(node)
-              })
-            } else {
-              let min = run_with_override(box_node, override_for_axis(axis).clone(), |node| {
-                fc.compute_intrinsic_block_size(node, IntrinsicSizingMode::MinContent)
-              })?;
-              let max = match run_with_override(box_node, override_for_axis(axis), |node| {
-                fc.compute_intrinsic_block_size(node, IntrinsicSizingMode::MaxContent)
-              }) {
-                Ok(value) => value,
-                Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                Err(_) => min,
-              };
-              Ok((min, max))
-            }
-          }
-          Axis::Vertical => {
-            if inline_is_horizontal {
-              let min = run_with_override(box_node, override_for_axis(axis).clone(), |node| {
-                fc.compute_intrinsic_block_size(node, IntrinsicSizingMode::MinContent)
-              })?;
-              let max = match run_with_override(box_node, override_for_axis(axis), |node| {
-                fc.compute_intrinsic_block_size(node, IntrinsicSizingMode::MaxContent)
-              }) {
-                Ok(value) => value,
-                Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                Err(_) => min,
-              };
-              Ok((min, max))
-            } else {
-              run_with_override(box_node, override_for_axis(axis), |node| {
-                fc.compute_intrinsic_inline_sizes(node)
-              })
-            }
-          }
-        }
+        let physical_axis = match axis {
+          Axis::Horizontal => PhysicalAxis::X,
+          Axis::Vertical => PhysicalAxis::Y,
+        };
+        run_with_override(box_node, override_for_axis(axis), |node| {
+          crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_sizes(
+            fc.as_ref(),
+            node,
+            physical_axis,
+          )
+        })
       };
 
       let compute_fit_border_box = |axis: Axis,
@@ -5068,21 +5017,23 @@ impl GridFormattingContext {
         };
 
         let preferred_border_box = match limit {
-          None => available_border_box,
+          None => None,
           Some(arg) => {
             let base_content = match avail_dim {
               taffy::style::AvailableSpace::Definite(v) => v.max(0.0),
               _ => (available_border_box - axis_inset).max(0.0),
             };
-            let resolved = self.resolve_length_for_width(arg, base_content, &box_node.style).max(0.0);
-            if box_node.style.box_sizing == BoxSizing::ContentBox {
+            let resolved =
+              self.resolve_length_for_width(arg, base_content, &box_node.style).max(0.0);
+            Some(if box_node.style.box_sizing == BoxSizing::ContentBox {
               (resolved + axis_inset).max(0.0)
             } else {
               resolved
-            }
+            })
           }
         };
-        let mut border_box = crate::layout::utils::clamp_with_order(
+        let mut border_box = crate::layout::intrinsic_sizing_keywords::resolve_fit_content_border_box(
+          Some(available_border_box),
           preferred_border_box,
           min_intrinsic,
           max_intrinsic,

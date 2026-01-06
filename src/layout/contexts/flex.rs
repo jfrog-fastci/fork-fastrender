@@ -28,7 +28,7 @@ use crate::geometry::Size;
 use crate::layout::absolute_positioning::resolve_positioned_style;
 use crate::layout::absolute_positioning::AbsoluteLayout;
 use crate::layout::absolute_positioning::AbsoluteLayoutInput;
-use crate::layout::axis::FragmentAxes;
+use crate::layout::axis::{FragmentAxes, PhysicalAxis};
 use crate::layout::constraints::AvailableSpace as CrateAvailableSpace;
 use crate::layout::constraints::LayoutConstraints;
 use crate::layout::contexts::block::BlockFormattingContext;
@@ -1731,8 +1731,6 @@ impl FormattingContext for FlexFormattingContext {
                     let height_is_fit_content = fit_height_limit.is_some();
 
                     if fit_width_limit.is_some() || fit_height_limit.is_some() {
-                      let inline_axis_is_horizontal =
-                        crate::style::inline_axis_is_horizontal(measure_style.writing_mode);
                       let percentage_base = this.viewport_size.width.max(0.0);
                       let reserve_scroll_x = matches!(measure_style.overflow_x, CssOverflow::Scroll)
                         || (measure_style.scrollbar_gutter.stable
@@ -1810,71 +1808,31 @@ impl FormattingContext for FlexFormattingContext {
                         }
                       };
 
-                      let run_intrinsic_inline_sizes =
-                        |style_override: Option<Arc<ComputedStyle>>| -> Result<(f32, f32), LayoutError> {
-                        if let Some(style) = style_override {
-                          crate::layout::style_override::with_style_override(
-                            measure_box.id,
-                            style,
-                            || fc.compute_intrinsic_inline_sizes(measure_box),
-                          )
-                        } else {
-                          fc.compute_intrinsic_inline_sizes(measure_box)
-                        }
-                      };
-
-                      let run_intrinsic_block_size = |mode: IntrinsicSizingMode,
-                                                      style_override: Option<Arc<ComputedStyle>>|
-                       -> Result<f32, LayoutError> {
-                          if let Some(style) = style_override {
+                      let intrinsic_range_for_physical_axis =
+                        |axis: Axis| -> Result<(f32, f32), LayoutError> {
+                          let physical_axis = match axis {
+                            Axis::Horizontal => PhysicalAxis::X,
+                            Axis::Vertical => PhysicalAxis::Y,
+                          };
+                          let axis_override = override_for_axis(axis);
+                          if let Some(style) = axis_override {
                             crate::layout::style_override::with_style_override(
                               measure_box.id,
                               style,
-                              || fc.compute_intrinsic_block_size(measure_box, mode),
+                              || {
+                                crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_sizes(
+                                  fc.as_ref(),
+                                  measure_box,
+                                  physical_axis,
+                                )
+                              },
                             )
                           } else {
-                            fc.compute_intrinsic_block_size(measure_box, mode)
-                          }
-                        };
-
-                      let intrinsic_range_for_physical_axis =
-                        |axis: Axis| -> Result<(f32, f32), LayoutError> {
-                          let axis_override = override_for_axis(axis);
-                          match axis {
-                            Axis::Horizontal => {
-                              if inline_axis_is_horizontal {
-                                run_intrinsic_inline_sizes(axis_override)
-                              } else {
-                                let min =
-                                  run_intrinsic_block_size(IntrinsicSizingMode::MinContent, axis_override.clone())?;
-                                let max = match run_intrinsic_block_size(
-                                  IntrinsicSizingMode::MaxContent,
-                                  axis_override,
-                                ) {
-                                  Ok(value) => value,
-                                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                                  Err(_) => min,
-                                };
-                                Ok((min, max))
-                              }
-                            }
-                            Axis::Vertical => {
-                              if inline_axis_is_horizontal {
-                                let min =
-                                  run_intrinsic_block_size(IntrinsicSizingMode::MinContent, axis_override.clone())?;
-                                let max = match run_intrinsic_block_size(
-                                  IntrinsicSizingMode::MaxContent,
-                                  axis_override,
-                                ) {
-                                  Ok(value) => value,
-                                  Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-                                  Err(_) => min,
-                                };
-                                Ok((min, max))
-                              } else {
-                                run_intrinsic_inline_sizes(axis_override)
-                              }
-                            }
+                            crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_sizes(
+                              fc.as_ref(),
+                              measure_box,
+                              physical_axis,
+                            )
                           }
                         };
 
@@ -1896,7 +1854,7 @@ impl FormattingContext for FlexFormattingContext {
                           };
 
                           let preferred_border_box = match limit {
-                            None => available_border_box,
+                            None => None,
                             Some(arg) => {
                               let base_content = match avail_dim {
                                 AvailableSpace::Definite(v) => v.max(0.0),
@@ -1904,19 +1862,21 @@ impl FormattingContext for FlexFormattingContext {
                               };
                               let resolved =
                                 this.resolve_length_for_width(arg, base_content, measure_style).max(0.0);
-                              if measure_style.box_sizing == BoxSizing::ContentBox {
+                              Some(if measure_style.box_sizing == BoxSizing::ContentBox {
                                 (resolved + axis_inset).max(0.0)
                               } else {
                                 resolved
-                              }
+                              })
                             }
                           };
 
-                          let mut border_box = crate::layout::utils::clamp_with_order(
-                            preferred_border_box,
-                            min_intrinsic,
-                            max_intrinsic,
-                          );
+                          let mut border_box =
+                            crate::layout::intrinsic_sizing_keywords::resolve_fit_content_border_box(
+                              Some(available_border_box),
+                              preferred_border_box,
+                              min_intrinsic,
+                              max_intrinsic,
+                            );
 
                           // Apply authored min/max constraints on the axis, including intrinsic keyword
                           // constraints. These clamp the fit-content result.
@@ -5037,20 +4997,25 @@ impl FlexFormattingContext {
       let available_border_box = available.available_border_box(min_intrinsic, max_intrinsic);
 
       let preferred_border_box = match limit {
-        None => available_border_box,
+        None => None,
         Some(limit) => {
           let resolved = self.resolve_length_for_width(limit, available_border_box, style).max(0.0);
-          if style.box_sizing == BoxSizing::ContentBox {
+          Some(if style.box_sizing == BoxSizing::ContentBox {
             (resolved + axis_edges(axis)).max(0.0)
           } else {
             resolved
-          }
+          })
         }
       };
 
       Ok(
-        crate::layout::utils::clamp_with_order(preferred_border_box, min_intrinsic, max_intrinsic)
-          .max(0.0),
+        crate::layout::intrinsic_sizing_keywords::resolve_fit_content_border_box(
+          Some(available_border_box),
+          preferred_border_box,
+          min_intrinsic,
+          max_intrinsic,
+        )
+        .max(0.0),
       )
     };
 
@@ -5099,24 +5064,17 @@ impl FlexFormattingContext {
     fc: &Arc<dyn FormattingContext>,
     axis: Axis,
   ) -> Result<(f32, f32), LayoutError> {
-    let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
-    let axis_is_inline = match axis {
-      Axis::Horizontal => inline_is_horizontal,
-      Axis::Vertical => !inline_is_horizontal,
+    let physical_axis = match axis {
+      Axis::Horizontal => PhysicalAxis::X,
+      Axis::Vertical => PhysicalAxis::Y,
     };
 
     let compute_sizes = |node: &BoxNode| -> Result<(f32, f32), LayoutError> {
-      if axis_is_inline {
-        fc.compute_intrinsic_inline_sizes(node)
-      } else {
-        let min = fc.compute_intrinsic_block_size(node, IntrinsicSizingMode::MinContent)?;
-        let max = match fc.compute_intrinsic_block_size(node, IntrinsicSizingMode::MaxContent) {
-          Ok(value) => value,
-          Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-          Err(_) => min,
-        };
-        Ok((min, max))
-      }
+      crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_sizes(
+        fc.as_ref(),
+        node,
+        physical_axis,
+      )
     };
 
     let needs_override = style.width_keyword.is_some()
@@ -5477,7 +5435,10 @@ impl FlexFormattingContext {
       Axis::Horizontal => constraints.available_width,
       Axis::Vertical => constraints.available_height,
     };
-    let inline_axis_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+    let physical_axis = match axis {
+      Axis::Horizontal => PhysicalAxis::X,
+      Axis::Vertical => PhysicalAxis::Y,
+    };
 
     let width_base = constraints
       .width()
@@ -5500,36 +5461,11 @@ impl FlexFormattingContext {
     };
 
     let intrinsic_range = |node: &BoxNode| -> Result<(f32, f32), LayoutError> {
-      match axis {
-        Axis::Horizontal => {
-          if inline_axis_is_horizontal {
-            self.compute_intrinsic_inline_sizes(node)
-          } else {
-            let min = self.compute_intrinsic_block_size(node, IntrinsicSizingMode::MinContent)?;
-            let max = match self.compute_intrinsic_block_size(node, IntrinsicSizingMode::MaxContent)
-            {
-              Ok(value) => value,
-              Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-              Err(_) => min,
-            };
-            Ok((min, max))
-          }
-        }
-        Axis::Vertical => {
-          if inline_axis_is_horizontal {
-            let min = self.compute_intrinsic_block_size(node, IntrinsicSizingMode::MinContent)?;
-            let max = match self.compute_intrinsic_block_size(node, IntrinsicSizingMode::MaxContent)
-            {
-              Ok(value) => value,
-              Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-              Err(_) => min,
-            };
-            Ok((min, max))
-          } else {
-            self.compute_intrinsic_inline_sizes(node)
-          }
-        }
-      }
+      crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_sizes(
+        self,
+        node,
+        physical_axis,
+      )
     };
 
     // Avoid self-recursion when intrinsic sizing needs to re-enter layout (e.g. block-size probes)
@@ -5592,17 +5528,21 @@ impl FlexFormattingContext {
     };
 
     let preferred_border_box = match limit {
-      None => available_border_box,
+      None => None,
       Some(limit) => {
         let Some(resolved) = resolve_length_px(limit) else {
           return Ok(None);
         };
-        to_border_box(resolved)
+        Some(to_border_box(resolved))
       }
     };
 
-    let mut border_box =
-      crate::layout::utils::clamp_with_order(preferred_border_box, min_intrinsic, max_intrinsic);
+    let mut border_box = crate::layout::intrinsic_sizing_keywords::resolve_fit_content_border_box(
+      Some(available_border_box),
+      preferred_border_box,
+      min_intrinsic,
+      max_intrinsic,
+    );
 
     // Apply authored min/max constraints on the same axis. These clamp the fit-content result.
     let (author_min_len, author_max_len, author_min_kw, author_max_kw) = match axis {

@@ -15,17 +15,17 @@ fn render_audio_without_controls(backend: &str) -> tiny_skia::Pixmap {
     <style>html,body{margin:0;background:rgb(0,200,0);}</style>\
     <audio src='' style='width:40px;height:40px;background:rgb(255,0,0);'></audio>";
 
-  let mut renderer = FastRender::with_config(config).expect(\"create renderer\");
-  renderer.render_html(html, 80, 80).expect(\"render audio\")
+  let mut renderer = FastRender::with_config(config).expect("create renderer");
+  renderer.render_html(html, 80, 80).expect("render audio")
 }
 
 fn assert_audio_hidden(pixmap: &tiny_skia::Pixmap) {
   // If the audio element were painted (or its placeholder), we'd see non-green pixels near the
   // origin. The UA rule should keep it display:none, leaving only the page background.
-  let px = pixmap.pixel(5, 5).expect(\"sample pixel\");
+  let px = pixmap.pixel(5, 5).expect("sample pixel");
   assert!(
     px.green() > 150 && px.red() < 100 && px.blue() < 100,
-    \"expected audio without controls to be hidden (got rgba=({}, {}, {}, {}))\",
+    "expected audio without controls to be hidden (got rgba=({}, {}, {}, {}))",
     px.red(),
     px.green(),
     px.blue(),
@@ -35,13 +35,12 @@ fn assert_audio_hidden(pixmap: &tiny_skia::Pixmap) {
 
 #[test]
 fn display_list_audio_without_controls_is_hidden() {
-  let pixmap = render_audio_without_controls(\"display_list\");
+  let pixmap = render_audio_without_controls("display_list");
   assert_audio_hidden(&pixmap);
 }
 
 #[test]
 fn legacy_audio_without_controls_is_hidden() {
-  let pixmap = render_audio_without_controls(\"legacy\");
+  let pixmap = render_audio_without_controls("legacy");
   assert_audio_hidden(&pixmap);
 }
-

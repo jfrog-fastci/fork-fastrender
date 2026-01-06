@@ -71,31 +71,8 @@ pub(crate) fn resolve_fit_content_border_box(
   min: f32,
   max: f32,
 ) -> f32 {
-  let mut min = if min.is_nan() { 0.0 } else { min };
-  if min < 0.0 {
-    min = 0.0;
-  }
-
-  let mut max = if max.is_nan() { min } else { max };
-  if max < min {
-    max = min;
-  }
-
-  let mut target = preferred.or(available).unwrap_or(max);
-  if target.is_nan() {
-    target = max;
-  }
-  if target < 0.0 {
-    target = 0.0;
-  }
-
-  if target <= min {
-    min
-  } else if target >= max {
-    max
-  } else {
-    target
-  }
+  let target = preferred.or(available).unwrap_or(max);
+  crate::layout::utils::clamp_with_order(target, min, max)
 }
 
 /// Runs `f` with a style override installed that clears the authored size on `physical_axis`.
@@ -110,8 +87,14 @@ pub(crate) fn with_size_axis_cleared_style_override<R>(
 ) -> R {
   let mut override_style = (**style).clone();
   match physical_axis {
-    PhysicalAxis::X => override_style.width = None,
-    PhysicalAxis::Y => override_style.height = None,
+    PhysicalAxis::X => {
+      override_style.width = None;
+      override_style.width_keyword = None;
+    }
+    PhysicalAxis::Y => {
+      override_style.height = None;
+      override_style.height_keyword = None;
+    }
   }
   crate::layout::style_override::with_style_override(box_id, std::sync::Arc::new(override_style), f)
 }
@@ -122,6 +105,7 @@ mod tests {
   use crate::geometry::Rect;
   use crate::layout::constraints::LayoutConstraints;
   use crate::style::display::FormattingContextType;
+  use crate::style::types::IntrinsicSizeKeyword;
   use crate::style::types::WritingMode;
   use crate::tree::fragment_tree::FragmentNode;
   use std::sync::atomic::{AtomicUsize, Ordering};
@@ -330,6 +314,7 @@ mod tests {
     let mut style = crate::style::ComputedStyle::default();
     style.width = Some(crate::style::values::Length::px(10.0));
     style.height = Some(crate::style::values::Length::px(20.0));
+    style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
     let style = Arc::new(style);
 
     let node = BoxNode::new_block(style.clone(), FormattingContextType::Block, Vec::new());
@@ -337,7 +322,8 @@ mod tests {
     // Clearing width should not affect which intrinsic API is called, but should install a style override
     // so callers can observe `width == None` if needed.
     let result = with_size_axis_cleared_style_override(node.id(), &style, PhysicalAxis::X, || {
-      crate::layout::style_override::style_override_for(node.id()).map(|s| s.width.is_none())
+      crate::layout::style_override::style_override_for(node.id())
+        .map(|s| s.width.is_none() && s.width_keyword.is_none())
     });
     assert_eq!(result, Some(true));
 
