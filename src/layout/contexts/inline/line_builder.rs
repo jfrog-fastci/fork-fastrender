@@ -3170,19 +3170,26 @@ fn reorder_paragraph(
   #[derive(Clone)]
   struct BidiScope {
     unicode_bidi: UnicodeBidi,
+    key: Option<u64>,
     open: &'static [char],
     close: &'static [char],
   }
 
   impl PartialEq for BidiScope {
     fn eq(&self, other: &Self) -> bool {
-      // `unicode-bidi: plaintext` ignores `direction`, and in Unicode terms maps to FSI/PDI
-      // regardless of the styled direction. Comparing the actual control sequences keeps the
-      // identity stable even when `direction` differs, without affecting LTR/RTL-sensitive
-      // scopes (their opener differs).
-      self.unicode_bidi == other.unicode_bidi
-        && self.open == other.open
-        && self.close == other.close
+      if self.unicode_bidi != other.unicode_bidi {
+        return false;
+      }
+
+      // `unicode-bidi: plaintext` ignores the styled `direction`. Use a per-element key so
+      // adjacent plaintext boxes don't merge into a single FSI scope (each plaintext element must
+      // resolve its own first-strong direction), while still keeping all leaves within the same
+      // plaintext element grouped.
+      if matches!(self.unicode_bidi, UnicodeBidi::Plaintext) {
+        return self.key == other.key;
+      }
+
+      self.open == other.open && self.close == other.close
     }
   }
 
@@ -3197,6 +3204,14 @@ fn reorder_paragraph(
   }
 
   #[derive(Clone, Copy)]
+  struct BidiChar {
+    /// Index into `content_map` when this entry corresponds to visible content; `None` for
+    /// explicit embedding/isolate control characters injected into `paragraph_text`.
+    content_index: Option<usize>,
+    bidi_byte_index: usize,
+  }
+
+  #[derive(Clone, Copy)]
   struct VisualSegment {
     leaf_index: usize,
     local_start: usize,
@@ -3204,7 +3219,7 @@ fn reorder_paragraph(
     level: Level,
   }
 
-  fn scope_for(unicode_bidi: UnicodeBidi, direction: Direction) -> Option<BidiScope> {
+  fn scope_for(unicode_bidi: UnicodeBidi, direction: Direction, key: Option<u64>) -> Option<BidiScope> {
     use UnicodeBidi::*;
 
     const LRE: char = '\u{202A}';
@@ -3217,43 +3232,44 @@ fn reorder_paragraph(
     const FSI: char = '\u{2068}';
     const PDI: char = '\u{2069}';
 
-    let (open, close) = match unicode_bidi {
+    let (open, close, key) = match unicode_bidi {
       Normal => return None,
       // CSS `unicode-bidi: plaintext` behaves like an isolate with "direction: auto", which
       // corresponds to Unicode FSI/PDI (first-strong isolate).
-      Plaintext => (&[FSI][..], &[PDI][..]),
+      Plaintext => (&[FSI][..], &[PDI][..], key),
       Embed => {
         if matches!(direction, Direction::Rtl) {
-          (&[RLE][..], &[PDF][..])
+          (&[RLE][..], &[PDF][..], None)
         } else {
-          (&[LRE][..], &[PDF][..])
+          (&[LRE][..], &[PDF][..], None)
         }
       }
       BidiOverride => {
         if matches!(direction, Direction::Rtl) {
-          (&[RLO][..], &[PDF][..])
+          (&[RLO][..], &[PDF][..], None)
         } else {
-          (&[LRO][..], &[PDF][..])
+          (&[LRO][..], &[PDF][..], None)
         }
       }
       Isolate => {
         if matches!(direction, Direction::Rtl) {
-          (&[RLI][..], &[PDI][..])
+          (&[RLI][..], &[PDI][..], None)
         } else {
-          (&[LRI][..], &[PDI][..])
+          (&[LRI][..], &[PDI][..], None)
         }
       }
       IsolateOverride => {
         if matches!(direction, Direction::Rtl) {
-          (&[RLI, RLO][..], &[PDF, PDI][..])
+          (&[RLI, RLO][..], &[PDF, PDI][..], None)
         } else {
-          (&[LRI, LRO][..], &[PDF, PDI][..])
+          (&[LRI, LRO][..], &[PDF, PDI][..], None)
         }
       }
     };
 
     Some(BidiScope {
       unicode_bidi,
+      key,
       open,
       close,
     })
@@ -3282,13 +3298,13 @@ fn reorder_paragraph(
   let mut paragraph_text = String::new();
   let mut open_scopes: Vec<BidiScope> = Vec::with_capacity(8);
   let mut content_map: Vec<ContentChar> = Vec::new();
+  let mut bidi_chars: Vec<BidiChar> = Vec::new();
   let mut line_ranges: Vec<std::ops::Range<usize>> = Vec::with_capacity(lines.len());
-  let mut content_index = 0usize;
   let root_context = (root_unicode_bidi, root_direction);
 
   for leaves in &line_leaves {
     check_layout_deadline(deadline_counter)?;
-    let line_start = content_index;
+    let line_start = bidi_chars.len();
     for leaf in leaves {
       check_layout_deadline(deadline_counter)?;
       let leaf_index = paragraph_leaves.len();
@@ -3301,9 +3317,47 @@ fn reorder_paragraph(
         bidi_context: None,
       });
 
-      let desired_scopes: SmallVec<[BidiScope; 8]> = stack
-        .iter()
-        .filter_map(|(ub, dir)| scope_for(*ub, *dir))
+      let plaintext_key_for_box = |ctx: &BoxContext| -> u64 {
+        if ctx.box_id != 0 {
+          ctx.box_id as u64
+        } else {
+          ctx.id as u64
+        }
+      };
+      let plaintext_key_for_item = |item: &InlineItem| -> u64 {
+        match item {
+          InlineItem::Text(t) => {
+            if t.box_id != 0 {
+              t.box_id as u64
+            } else {
+              t.source_id
+            }
+          }
+          InlineItem::SoftBreak => leaf_index as u64,
+          InlineItem::Tab(_) => leaf_index as u64,
+          InlineItem::HardBreak => leaf_index as u64,
+          InlineItem::InlineBox(_) => leaf_index as u64,
+          InlineItem::InlineBlock(_) => leaf_index as u64,
+          InlineItem::Ruby(_) => leaf_index as u64,
+          InlineItem::Replaced(_) => leaf_index as u64,
+          InlineItem::Floating(_) => leaf_index as u64,
+          InlineItem::StaticPositionAnchor(_) => leaf_index as u64,
+        }
+      };
+
+      let desired_scopes: SmallVec<[BidiScope; 8]> = std::iter::once((root_context.0, root_context.1, None))
+        .chain(leaf.box_stack.iter().map(|ctx| {
+          let key = matches!(ctx.unicode_bidi, UnicodeBidi::Plaintext)
+            .then(|| plaintext_key_for_box(ctx));
+          (ctx.unicode_bidi, ctx.direction, key)
+        }))
+        .chain(std::iter::once({
+          let ub = leaf.item.unicode_bidi();
+          let dir = leaf.item.direction();
+          let key = matches!(ub, UnicodeBidi::Plaintext).then(|| plaintext_key_for_item(&leaf.item));
+          (ub, dir, key)
+        }))
+        .filter_map(|(ub, dir, key)| scope_for(ub, dir, key))
         .collect();
       let common = desired_scopes
         .iter()
@@ -3314,14 +3368,24 @@ fn reorder_paragraph(
       for scope in open_scopes.drain(common..).rev() {
         check_layout_deadline(deadline_counter)?;
         for ch in scope.close {
+          let bidi_byte_index = paragraph_text.len();
           paragraph_text.push(*ch);
+          bidi_chars.push(BidiChar {
+            content_index: None,
+            bidi_byte_index,
+          });
         }
       }
 
       for scope in desired_scopes.iter().skip(common) {
         check_layout_deadline(deadline_counter)?;
         for ch in scope.open {
+          let bidi_byte_index = paragraph_text.len();
           paragraph_text.push(*ch);
+          bidi_chars.push(BidiChar {
+            content_index: None,
+            bidi_byte_index,
+          });
         }
         open_scopes.push(scope.clone());
       }
@@ -3333,6 +3397,7 @@ fn reorder_paragraph(
           for (byte_idx, ch) in t.text.char_indices() {
             check_layout_deadline(deadline_counter)?;
             let bidi_byte_index = paragraph_text.len();
+            let content_index = content_map.len();
             content_map.push(ContentChar {
               leaf_index,
               local_start: byte_idx,
@@ -3340,11 +3405,15 @@ fn reorder_paragraph(
               bidi_byte_index,
             });
             paragraph_text.push(ch);
-            content_index += 1;
+            bidi_chars.push(BidiChar {
+              content_index: Some(content_index),
+              bidi_byte_index,
+            });
           }
         }
         InlineItem::Tab(_) => {
           let bidi_byte_index = paragraph_text.len();
+          let content_index = content_map.len();
           content_map.push(ContentChar {
             leaf_index,
             local_start: 0,
@@ -3352,11 +3421,15 @@ fn reorder_paragraph(
             bidi_byte_index,
           });
           paragraph_text.push('\t');
-          content_index += 1;
+          bidi_chars.push(BidiChar {
+            content_index: Some(content_index),
+            bidi_byte_index,
+          });
         }
         InlineItem::InlineBox(_) => {}
         _ => {
           let bidi_byte_index = paragraph_text.len();
+          let content_index = content_map.len();
           content_map.push(ContentChar {
             leaf_index,
             local_start: 0,
@@ -3364,11 +3437,14 @@ fn reorder_paragraph(
             bidi_byte_index,
           });
           paragraph_text.push('\u{FFFC}');
-          content_index += 1;
+          bidi_chars.push(BidiChar {
+            content_index: Some(content_index),
+            bidi_byte_index,
+          });
         }
       }
     }
-    line_ranges.push(line_start..content_index);
+    line_ranges.push(line_start..bidi_chars.len());
   }
 
   for scope in open_scopes.iter().rev() {
@@ -3412,15 +3488,15 @@ fn reorder_paragraph(
       crate::layout::contexts::inline::explicit_bidi_context(paragraph_direction, stack);
   }
 
-  let mut content_levels: Vec<Level> = Vec::with_capacity(content_map.len());
-  for entry in &content_map {
+  let mut bidi_levels: Vec<Level> = Vec::with_capacity(bidi_chars.len());
+  for entry in &bidi_chars {
     check_layout_deadline(deadline_counter)?;
     let lvl = bidi
       .levels
       .get(entry.bidi_byte_index)
       .copied()
       .unwrap_or(resolved_base);
-    content_levels.push(lvl);
+    bidi_levels.push(lvl);
   }
 
   let push_segment = |entry: &ContentChar, level: Level, segments: &mut Vec<VisualSegment>| {
@@ -3453,7 +3529,7 @@ fn reorder_paragraph(
       continue;
     }
 
-    let slice_levels = &content_levels[line_range.clone()];
+    let slice_levels = &bidi_levels[line_range.clone()];
     let order = unicode_bidi::BidiInfo::reorder_visual(slice_levels);
     let leaf_count = line_leaves
       .get(line_idx)
@@ -3466,13 +3542,18 @@ fn reorder_paragraph(
     let mut segments: Vec<VisualSegment> = Vec::with_capacity(segment_capacity);
     for visual_idx in order {
       check_layout_deadline(deadline_counter)?;
-      let content_idx = line_range.start + visual_idx;
-      if let Some(entry) = content_map.get(content_idx) {
-        let lvl = content_levels
-          .get(content_idx)
-          .copied()
-          .unwrap_or(resolved_base);
-        push_segment(entry, lvl, &mut segments);
+      let bidi_idx = line_range.start + visual_idx;
+      if let Some(content_idx) = bidi_chars
+        .get(bidi_idx)
+        .and_then(|entry| entry.content_index)
+      {
+        if let Some(entry) = content_map.get(content_idx) {
+          let lvl = bidi_levels
+            .get(bidi_idx)
+            .copied()
+            .unwrap_or(resolved_base);
+          push_segment(entry, lvl, &mut segments);
+        }
       }
     }
 
@@ -5873,6 +5954,69 @@ mod tests {
       .collect();
 
     assert_eq!(actual, expected);
+  }
+
+  #[test]
+  fn bidi_plaintext_adjacent_boxes_do_not_merge() {
+    // Adjacent plaintext boxes must remain separate FSI/PDI scopes so each resolves its own
+    // first-strong direction (`dir=auto` semantics). If the scopes merge, the second box would
+    // inherit the first box's base direction.
+    let logical_separate = "\u{05d3}\u{2068}x\u{2069}\u{2068}\u{05d0}\u{05d1}\u{05d2}\u{2069}\u{05d4}"
+      .to_string();
+    let logical_merged =
+      "\u{05d3}\u{2068}x\u{05d0}\u{05d1}\u{05d2}\u{2069}\u{05d4}".to_string();
+    let expected_separate = reorder_with_controls(&logical_separate, Some(Level::rtl()));
+    let expected_merged = reorder_with_controls(&logical_merged, Some(Level::rtl()));
+    assert_ne!(
+      expected_separate, expected_merged,
+      "test strings should differ when plaintext scopes merge"
+    );
+
+    let mut builder = make_builder_with_base(200.0, Level::rtl());
+    builder
+      .add_item(InlineItem::Text(make_text_item("\u{05d3}", 10.0)))
+      .unwrap();
+
+    let mut first = InlineBoxItem::new(
+      0.0,
+      0.0,
+      0.0,
+      make_strut_metrics(),
+      Arc::new(ComputedStyle::default()),
+      0,
+      Direction::Rtl,
+      UnicodeBidi::Plaintext,
+    );
+    first.add_child(InlineItem::Text(make_text_item("x", 10.0)));
+
+    let mut second = InlineBoxItem::new(
+      0.0,
+      0.0,
+      0.0,
+      make_strut_metrics(),
+      Arc::new(ComputedStyle::default()),
+      1,
+      Direction::Ltr,
+      UnicodeBidi::Plaintext,
+    );
+    second.add_child(InlineItem::Text(make_text_item("\u{05d0}", 10.0)));
+    second.add_child(InlineItem::Text(make_text_item("\u{05d1}", 10.0)));
+    second.add_child(InlineItem::Text(make_text_item("\u{05d2}", 10.0)));
+
+    builder.add_item(InlineItem::InlineBox(first)).unwrap();
+    builder.add_item(InlineItem::InlineBox(second)).unwrap();
+    builder
+      .add_item(InlineItem::Text(make_text_item("\u{05d4}", 10.0)))
+      .unwrap();
+
+    let lines = builder.finish().unwrap().lines;
+    assert_eq!(lines.len(), 1);
+    let actual: String = lines[0]
+      .items
+      .iter()
+      .map(|p| flatten_text(&p.item))
+      .collect();
+    assert_eq!(actual, expected_separate);
   }
 
   #[test]
