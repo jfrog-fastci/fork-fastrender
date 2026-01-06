@@ -7517,6 +7517,17 @@ fn is_kinsoku_strict_prohibited_line_start(ch: char) -> bool {
       | '\u{FF1B}' // ；
       | '\u{FF01}' // ！
       | '\u{FF1F}' // ？
+      // Closing brackets/quotes that should not start a line.
+      | '\u{3009}' // 〉
+      | '\u{300B}' // 》
+      | '\u{300D}' // 」
+      | '\u{300F}' // 』
+      | '\u{3011}' // 】
+      | '\u{3015}' // 〕
+      | '\u{3017}' // 〗
+      | '\u{FF09}' // ）
+      | '\u{FF3D}' // ］
+      | '\u{FF5D}' // ｝
       // Kinsoku punctuation often treated as conditional Japanese starters.
       | '\u{30A0}' // ゠
       | '\u{30FB}' // ・
@@ -18082,6 +18093,60 @@ mod tests {
         brk_3.kind,
         BreakOpportunityKind::Emergency,
         "breaks before Japanese punctuation should be emergency-only under line-break: strict"
+      );
+
+      let brk_6 = result
+        .iter()
+        .find(|b| b.byte_offset == 6)
+        .expect("break at 6");
+      assert_eq!(
+        brk_6.kind,
+        BreakOpportunityKind::Normal,
+        "breaks not affected by kinsoku rules should remain normal"
+      );
+    }
+  }
+
+  #[test]
+  fn line_break_strict_downgrades_breaks_before_closing_brackets_to_emergency() {
+    use crate::text::line_break::BreakOpportunityKind;
+
+    for mark in [
+      '\u{3009}', // 〉
+      '\u{300B}', // 》
+      '\u{300D}', // 」
+      '\u{300F}', // 』
+      '\u{3011}', // 】
+      '\u{3015}', // 〕
+      '\u{3017}', // 〗
+      '\u{FF09}', // ）
+      '\u{FF3D}', // ］
+      '\u{FF5D}', // ｝
+    ] {
+      let text = format!("あ{}い", mark);
+      let breaks = vec![
+        BreakOpportunity::allowed(3), // あ|mark
+        BreakOpportunity::allowed(6), // mark|い
+        BreakOpportunity::allowed(9), // end
+      ];
+
+      let result = apply_break_properties(
+        text.as_str(),
+        breaks,
+        LineBreak::Strict,
+        WordBreak::Normal,
+        OverflowWrap::Normal,
+        true,
+      );
+
+      let brk_3 = result
+        .iter()
+        .find(|b| b.byte_offset == 3)
+        .expect("break at 3");
+      assert_eq!(
+        brk_3.kind,
+        BreakOpportunityKind::Emergency,
+        "breaks before closing brackets should be emergency-only under line-break: strict"
       );
 
       let brk_6 = result
