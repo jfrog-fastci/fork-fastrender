@@ -12,6 +12,10 @@
 //! - Element classes
 //! - DOM tree path
 //!
+//! Note: `DebugInfo` is intentionally **diagnostic-only**. Any metadata required for layout (e.g.
+//! HTML table spans) must live on always-present box/fragment structures instead, since debug info
+//! is optional and typically disabled in `--release`.
+//!
 //! # Usage
 //!
 //! ```
@@ -52,6 +56,9 @@ thread_local! {
 ///
 /// This information is optional and used only for debugging and dev tools.
 /// In release builds, this can be omitted to save memory.
+///
+/// Important: this type must not contain layout semantics (e.g. HTML table spans). All semantics
+/// required for correct rendering must live on always-present data structures like `BoxNode`.
 ///
 /// # Examples
 ///

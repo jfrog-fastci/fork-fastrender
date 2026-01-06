@@ -724,7 +724,11 @@ pub struct BoxNode {
 
   /// Debug information (element name, class, id)
   ///
-  /// Optional - only populated in debug builds or with dev tools enabled
+  /// Optional - only populated in debug builds or with dev tools enabled.
+  ///
+  /// Do not rely on this for layout semantics; `DebugInfo` is typically disabled in `--release`
+  /// builds. Semantic metadata lives on always-present fields such as `generated_pseudo` and the
+  /// HTML table span metadata.
   pub debug_info: Option<DebugInfo>,
 
   /// Styled node identifier that produced this box (pre-order traversal id).
