@@ -7564,6 +7564,15 @@ fn is_kinsoku_strict_prohibited_line_start(ch: char) -> bool {
       | '\u{2025}' // ‥
       | '\u{22EF}' // ⋯
       | '\u{FE19}' // ︙
+      // Vertical/small presentation forms for common punctuation.
+      | '\u{FE30}' // ︰
+      | '\u{FE50}' // ﹐
+      | '\u{FE51}' // ﹑
+      | '\u{FE52}' // ﹒
+      | '\u{FE54}' // ﹔
+      | '\u{FE55}' // ﹕
+      | '\u{FE56}' // ﹖
+      | '\u{FE57}' // ﹗
       // Common dash-like marks used in Japanese text.
       | '\u{2014}' // —
       | '\u{2015}' // ―
@@ -7592,6 +7601,19 @@ fn is_kinsoku_strict_prohibited_line_start(ch: char) -> bool {
       | '\u{FF5D}' // ｝
       | '\u{FF60}' // ｠
       | '\u{FF63}' // ｣
+      // Vertical/small presentation forms for common closing brackets.
+      | '\u{FE36}' // ︶
+      | '\u{FE38}' // ︸
+      | '\u{FE3A}' // ︺
+      | '\u{FE3C}' // ︼
+      | '\u{FE3E}' // ︾
+      | '\u{FE40}' // ﹀
+      | '\u{FE42}' // ﹂
+      | '\u{FE44}' // ﹄
+      | '\u{FE48}' // ﹈
+      | '\u{FE5A}' // ﹚
+      | '\u{FE5C}' // ﹜
+      | '\u{FE5E}' // ﹞
       // Kinsoku punctuation often treated as conditional Japanese starters.
       | '\u{30A0}' // ゠
       | '\u{30FB}' // ・
@@ -7638,6 +7660,19 @@ fn is_kinsoku_strict_prohibited_line_end(ch: char) -> bool {
       | '\u{FF5B}' // ｛
       | '\u{FF5F}' // ｟
       | '\u{FF62}' // ｢
+      // Vertical/small presentation forms for common opening brackets.
+      | '\u{FE35}' // ︵
+      | '\u{FE37}' // ︷
+      | '\u{FE39}' // ︹
+      | '\u{FE3B}' // ︻
+      | '\u{FE3D}' // ︽
+      | '\u{FE3F}' // ︿
+      | '\u{FE41}' // ﹁
+      | '\u{FE43}' // ﹃
+      | '\u{FE47}' // ﹇
+      | '\u{FE59}' // ﹙
+      | '\u{FE5B}' // ﹛
+      | '\u{FE5D}' // ﹝
   )
 }
 
@@ -18181,6 +18216,14 @@ mod tests {
       '\u{2025}', // ‥
       '\u{22EF}', // ⋯
       '\u{FE19}', // ︙
+      '\u{FE30}', // ︰
+      '\u{FE50}', // ﹐
+      '\u{FE51}', // ﹑
+      '\u{FE52}', // ﹒
+      '\u{FE54}', // ﹔
+      '\u{FE55}', // ﹕
+      '\u{FE56}', // ﹖
+      '\u{FE57}', // ﹗
       '\u{2014}', // —
       '\u{2015}', // ―
       '\u{301C}', // 〜
@@ -18251,6 +18294,18 @@ mod tests {
       '\u{FF5D}', // ｝
       '\u{FF60}', // ｠
       '\u{FF63}', // ｣
+      '\u{FE36}', // ︶
+      '\u{FE38}', // ︸
+      '\u{FE3A}', // ︺
+      '\u{FE3C}', // ︼
+      '\u{FE3E}', // ︾
+      '\u{FE40}', // ﹀
+      '\u{FE42}', // ﹂
+      '\u{FE44}', // ﹄
+      '\u{FE48}', // ﹈
+      '\u{FE5A}', // ﹚
+      '\u{FE5C}', // ﹜
+      '\u{FE5E}', // ﹞
     ] {
       let text = format!("あ{}い", mark);
       let breaks = vec![
@@ -18311,6 +18366,18 @@ mod tests {
       '\u{FF5B}', // ｛
       '\u{FF5F}', // ｟
       '\u{FF62}', // ｢
+      '\u{FE35}', // ︵
+      '\u{FE37}', // ︷
+      '\u{FE39}', // ︹
+      '\u{FE3B}', // ︻
+      '\u{FE3D}', // ︽
+      '\u{FE3F}', // ︿
+      '\u{FE41}', // ﹁
+      '\u{FE43}', // ﹃
+      '\u{FE47}', // ﹇
+      '\u{FE59}', // ﹙
+      '\u{FE5B}', // ﹛
+      '\u{FE5D}', // ﹝
     ] {
       let text = format!("あ{}い", mark);
       let breaks = vec![
