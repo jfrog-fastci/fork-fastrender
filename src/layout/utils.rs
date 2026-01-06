@@ -621,7 +621,10 @@ pub fn compute_replaced_size(
     match keyword {
       IntrinsicSizeKeyword::MinContent | IntrinsicSizeKeyword::MaxContent => intrinsic_keyword_w,
       IntrinsicSizeKeyword::FillAvailable => width_base
-        .map(|base| content_size_from_box_sizing(base, horizontal_edges, style.box_sizing))
+        .map(|base| {
+          let base = base.max(0.0);
+          content_size_from_box_sizing(base, horizontal_edges, style.box_sizing)
+        })
         .or(intrinsic_keyword_w),
       IntrinsicSizeKeyword::FitContent { limit } => {
         let max_content = intrinsic_keyword_w?;
@@ -652,7 +655,10 @@ pub fn compute_replaced_size(
     match keyword {
       IntrinsicSizeKeyword::MinContent | IntrinsicSizeKeyword::MaxContent => intrinsic_keyword_h,
       IntrinsicSizeKeyword::FillAvailable => height_base
-        .map(|base| content_size_from_box_sizing(base, vertical_edges, style.box_sizing))
+        .map(|base| {
+          let base = base.max(0.0);
+          content_size_from_box_sizing(base, vertical_edges, style.box_sizing)
+        })
         .or(intrinsic_keyword_h),
       IntrinsicSizeKeyword::FitContent { limit } => {
         let max_content = intrinsic_keyword_h?;
