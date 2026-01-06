@@ -34,6 +34,7 @@ mod nth_child_cache_test;
 mod nth_child_of_selector_index_test;
 mod nth_child_of_test;
 mod order_property_test;
+mod overflow_axis_interaction_test;
 mod required_optional_pseudo_test;
 mod root_font_size_percent_test;
 mod rule_index_normalization_test;
