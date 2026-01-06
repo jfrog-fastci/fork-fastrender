@@ -5,8 +5,9 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::ffi::OsString;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use walkdir::WalkDir;
 
@@ -419,6 +420,7 @@ fn validate_args(args: &FixtureChromeDiffArgs) -> Result<()> {
   if args.dpr <= 0.0 || !args.dpr.is_finite() {
     bail!("--dpr must be a positive, finite number");
   }
+  validate_out_dir(args)?;
   if let Some(jobs) = args.jobs {
     if jobs == 0 {
       bail!("--jobs must be > 0");
@@ -448,6 +450,95 @@ fn validate_args(args: &FixtureChromeDiffArgs) -> Result<()> {
       bail!("--min-diff-percent must be a finite number between 0 and 100");
     }
   }
+  Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NormalizedPath {
+  prefix: Option<OsString>,
+  has_root: bool,
+  components: Vec<OsString>,
+}
+
+impl NormalizedPath {
+  fn is_filesystem_root(&self) -> bool {
+    self.has_root && self.components.is_empty()
+  }
+}
+
+fn normalize_path(path: &Path) -> NormalizedPath {
+  let mut prefix = None;
+  let mut has_root = false;
+  let mut components: Vec<OsString> = Vec::new();
+
+  for component in path.components() {
+    match component {
+      Component::Prefix(value) => {
+        prefix = Some(value.as_os_str().to_os_string());
+      }
+      Component::RootDir => {
+        has_root = true;
+      }
+      Component::CurDir => {}
+      Component::ParentDir => {
+        if has_root {
+          if !components.is_empty() {
+            components.pop();
+          }
+        } else if !components.is_empty() && components.last().unwrap() != ".." {
+          components.pop();
+        } else {
+          components.push(OsString::from(".."));
+        }
+      }
+      Component::Normal(value) => components.push(value.to_os_string()),
+    }
+  }
+
+  NormalizedPath {
+    prefix,
+    has_root,
+    components,
+  }
+}
+
+fn validate_out_dir(args: &FixtureChromeDiffArgs) -> Result<()> {
+  if args.out_dir.as_os_str().is_empty() {
+    bail!(
+      "refusing unsafe --out-dir: empty path\n\
+       pass something like --out-dir target/fixture_chrome_diff"
+    );
+  }
+
+  let repo_root = crate::repo_root();
+  let out_root = resolve_repo_path(&repo_root, &args.out_dir);
+  let out_norm = normalize_path(&out_root);
+  if out_norm.is_filesystem_root() {
+    bail!(
+      "refusing unsafe --out-dir: {} (filesystem root)",
+      out_root.display()
+    );
+  }
+
+  let fixtures_root = resolve_repo_path(&repo_root, &args.fixtures_dir);
+  let fixtures_norm = normalize_path(&fixtures_root);
+  if out_norm == fixtures_norm {
+    bail!(
+      "refusing unsafe --out-dir: {} (matches fixtures dir {})",
+      out_root.display(),
+      fixtures_root.display()
+    );
+  }
+
+  let repo_norm = normalize_path(&repo_root);
+  if out_norm == repo_norm {
+    bail!(
+      "refusing unsafe --out-dir: {} (matches repo root {})",
+      out_root.display(),
+      repo_root.display()
+    );
+  }
+
   Ok(())
 }
 

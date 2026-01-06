@@ -1351,6 +1351,62 @@ fn require_chrome_metadata_errors_when_missing() {
 
 #[test]
 #[cfg(unix)]
+fn dry_run_rejects_filesystem_root_out_dir() {
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .args(["fixture-chrome-diff", "--dry-run", "--out-dir", "/"])
+    .output()
+    .expect("run fixture-chrome-diff --dry-run --out-dir /");
+
+  assert!(
+    !output.status.success(),
+    "expected non-zero exit status; stdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  assert!(
+    stderr.contains("refusing unsafe --out-dir"),
+    "expected stderr to mention refusing unsafe out-dir; got:\n{stderr}"
+  );
+}
+
+#[test]
+fn dry_run_rejects_out_dir_equal_to_fixtures_dir() {
+  let temp = tempdir().expect("tempdir");
+  let fixtures_root = temp.path().join("fixtures");
+  write_fixture(&fixtures_root, "a");
+
+  let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(repo_root())
+    .args([
+      "fixture-chrome-diff",
+      "--dry-run",
+      "--fixtures-dir",
+      fixtures_root.to_string_lossy().as_ref(),
+      "--out-dir",
+      fixtures_root.to_string_lossy().as_ref(),
+    ])
+    .output()
+    .expect("run fixture-chrome-diff --dry-run with out-dir pointing at fixtures-dir");
+
+  assert!(
+    !output.status.success(),
+    "expected non-zero exit status; stdout:\n{}\nstderr:\n{}",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  assert!(
+    stderr.contains("refusing unsafe --out-dir") && stderr.contains("fixtures dir"),
+    "expected stderr to mention refusing unsafe out-dir + fixtures dir; got:\n{stderr}"
+  );
+}
+
+#[test]
+#[cfg(unix)]
 fn end_to_end_runs_with_stub_cargo_and_fake_chrome() {
   let temp = tempdir().expect("tempdir");
   let fixtures_root = temp.path().join("fixtures");
