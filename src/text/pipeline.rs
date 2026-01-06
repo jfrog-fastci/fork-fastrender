@@ -2496,6 +2496,7 @@ fn is_non_rendering_for_coverage(ch: char) -> bool {
     || ('\u{fe00}'..='\u{fe0f}').contains(&ch)
     || ('\u{e0100}'..='\u{e01ef}').contains(&ch)
     || ('\u{180b}'..='\u{180d}').contains(&ch)
+    || emoji::is_tag_character(ch)
 }
 
 fn is_unicode_mark(ch: char) -> bool {
@@ -2510,7 +2511,7 @@ fn is_unicode_mark(ch: char) -> bool {
 
 fn required_coverage_chars_for_cluster<'a>(
   cluster_text: &str,
-  first_char: char,
+  _first_char: char,
   base_char: char,
   coverage_chars_all: &'a [char],
   required_chars: &'a mut ClusterCharBuf,
@@ -2526,9 +2527,7 @@ fn required_coverage_chars_for_cluster<'a>(
   // but for keycap sequences the mark is required to render the emoji cluster as a single keycap
   // glyph. Keep marks required for these clusters so we prefer emoji fonts that support both the
   // base and the keycap mark (and avoid `.notdef` for the mark).
-  let is_keycap_sequence =
-    matches!(first_char, '0'..='9' | '#' | '*') && cluster_text.chars().any(|ch| ch == '\u{20e3}');
-  if is_keycap_sequence {
+  if is_keycap_cluster(cluster_text) {
     return coverage_chars_all;
   }
 
@@ -2564,6 +2563,29 @@ fn is_mark_only_cluster(text: &str) -> bool {
     }
   }
   saw_mark
+}
+
+#[inline]
+fn is_keycap_cluster(text: &str) -> bool {
+  let mut iter = text.chars();
+  let Some(base) = iter.next() else {
+    return false;
+  };
+  if !emoji::is_keycap_base(base) {
+    return false;
+  }
+
+  let Some(mut ch) = iter.next() else {
+    return false;
+  };
+  if emoji::is_variation_selector(ch) {
+    let Some(next) = iter.next() else {
+      return false;
+    };
+    ch = next;
+  }
+
+  emoji::is_combining_enclosing_keycap(ch) && iter.next().is_none()
 }
 
 /// Inline character buffer tuned for shaping clusters.
@@ -7045,6 +7067,79 @@ mod tests {
       0,
       "ASCII text should not run emoji sequence detection"
     );
+  }
+
+  #[test]
+  fn tag_sequence_components_are_non_rendering_for_coverage() {
+    // TAG LATIN SMALL LETTER A (emoji tag character) and CANCEL TAG.
+    assert!(is_non_rendering_for_coverage('\u{E0061}'));
+    assert!(is_non_rendering_for_coverage('\u{E007F}'));
+  }
+
+  #[test]
+  fn tag_sequences_do_not_require_tag_character_coverage() {
+    let ctx = FontContext::with_config(FontConfig::bundled_only());
+    assert!(
+      !ctx.database().is_empty(),
+      "bundled font context should load deterministic fonts for tests"
+    );
+
+    // Declare a "web emoji" font family that does *not* support the base emoji. This ensures the
+    // fallback resolver sees an emoji font early that can't render the cluster, and would otherwise
+    // short-circuit before considering the bundled emoji font when tag characters are treated as
+    // required for coverage.
+    let web_data = fs::read("tests/fixtures/fonts/NotoSans-subset.ttf").expect("read web font data");
+    let Some((_dir, web_url)) = temp_font_url(&web_data) else {
+      return;
+    };
+    let face = FontFaceRule {
+      family: Some("WebEmoji".to_string()),
+      sources: vec![FontFaceSource::url(web_url.to_string())],
+      ..Default::default()
+    };
+    ctx
+      .load_web_fonts(&[face], None, None)
+      .expect("load web emoji font");
+
+    let pipeline = ShapingPipeline::new();
+    let mut style = ComputedStyle::default();
+    style.font_family = vec!["WebEmoji".to_string(), "FastRender Emoji".to_string()].into();
+    style.font_size = 24.0;
+    style.font_variant_emoji = FontVariantEmoji::Normal;
+
+    // Base emoji + tag letters + cancel tag. The tag characters should not be considered required
+    // for font coverage; otherwise the resolver can end up stuck on the "WebEmoji" font and lose
+    // the base glyph.
+    let text = "\u{1F600}\u{E0061}\u{E007F}";
+    let shaped = pipeline.shape(text, &style, &ctx).expect("shape tag cluster");
+    assert_eq!(shaped.len(), 1, "expected a single run for tag cluster");
+
+    let run = &shaped[0];
+    assert_eq!(
+      run.font.family, "FastRender Emoji",
+      "tag components should not force fallback away from the bundled emoji font"
+    );
+    let face = crate::text::face_cache::get_ttf_face(&run.font).expect("parse resolved font");
+    assert!(
+      face.has_glyph('\u{1F600}'),
+      "resolved font ({}) should have glyph for base emoji",
+      run.font.family
+    );
+    assert!(
+      run.glyphs
+        .iter()
+        .any(|glyph| glyph.cluster == 0 && glyph.glyph_id != 0),
+      "base emoji should not shape to .notdef"
+    );
+
+    for glyph in run.glyphs.iter().filter(|glyph| glyph.glyph_id == 0) {
+      assert!(
+        glyph.x_advance.abs() <= 0.0001 && glyph.y_advance.abs() <= 0.0001,
+        "unexpected visible .notdef glyph (cluster={}, advance={})",
+        glyph.cluster,
+        glyph.x_advance
+      );
+    }
   }
 
   #[test]
