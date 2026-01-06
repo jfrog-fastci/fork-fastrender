@@ -16884,6 +16884,67 @@ mod tests {
   }
 
   #[test]
+  fn parses_fit_content_function_for_width_with_absolute_length() {
+    let parent = ComputedStyle::default();
+
+    let decls = parse_declarations("width: fit-content(12px);");
+    assert_eq!(decls.len(), 1);
+    let mut styles = ComputedStyle::default();
+    apply_declaration(&mut styles, &decls[0], &parent, 16.0, 16.0);
+    assert_eq!(styles.width, None);
+    assert_eq!(
+      styles.width_keyword,
+      Some(IntrinsicSizeKeyword::FitContent {
+        limit: Some(Length::px(12.0))
+      })
+    );
+  }
+
+  #[test]
+  fn logical_size_properties_map_intrinsic_keywords_to_physical_axes() {
+    let parent = ComputedStyle::default();
+
+    let decls = parse_declarations("inline-size: max-content; block-size: min-content;");
+    assert_eq!(decls.len(), 2);
+
+    let mut horizontal = ComputedStyle::default();
+    horizontal.writing_mode = WritingMode::HorizontalTb;
+    for decl in &decls {
+      apply_declaration(&mut horizontal, decl, &parent, 16.0, 16.0);
+    }
+    resolve_pending_logical_properties(&mut horizontal);
+    assert_eq!(horizontal.width, None);
+    assert_eq!(
+      horizontal.width_keyword,
+      Some(IntrinsicSizeKeyword::MaxContent)
+    );
+    assert_eq!(horizontal.height, None);
+    assert_eq!(
+      horizontal.height_keyword,
+      Some(IntrinsicSizeKeyword::MinContent)
+    );
+
+    let mut vertical = ComputedStyle::default();
+    vertical.writing_mode = WritingMode::VerticalRl;
+    for decl in &decls {
+      apply_declaration(&mut vertical, decl, &parent, 16.0, 16.0);
+    }
+    resolve_pending_logical_properties(&mut vertical);
+    // In vertical writing modes the inline axis is vertical (maps to height) and the block axis is
+    // horizontal (maps to width).
+    assert_eq!(
+      vertical.height_keyword,
+      Some(IntrinsicSizeKeyword::MaxContent)
+    );
+    assert_eq!(vertical.height, None);
+    assert_eq!(vertical.width, None);
+    assert_eq!(
+      vertical.width_keyword,
+      Some(IntrinsicSizeKeyword::MinContent)
+    );
+  }
+
+  #[test]
   fn intrinsic_size_keywords_apply_to_min_and_max_width() {
     let parent = ComputedStyle::default();
 
