@@ -7547,6 +7547,8 @@ fn grapheme_boundary_breaks(
 }
 
 fn is_kinsoku_strict_prohibited_line_start(ch: char) -> bool {
+  use unicode_general_category::GeneralCategory;
+
   // CSS Text `line-break: strict` applies Japanese kinsoku shori restrictions. Model the most
   // common ones: small kana, Japanese punctuation/iteration marks/sound marks, and prolonged sound
   // marks can't start a line unless needed to avoid overflow.
@@ -7639,9 +7641,17 @@ fn is_kinsoku_strict_prohibited_line_start(ch: char) -> bool {
       | '\u{FF9E}' // ﾞ
       | '\u{FF9F}' // ﾟ
     )
+    // As a fallback, treat general Unicode close/final punctuation as kinsoku non-starters so we
+    // also cover ASCII/Unicode bracket/quote forms when authors opt into strict line breaking.
+    || matches!(
+      get_general_category(ch),
+      GeneralCategory::ClosePunctuation | GeneralCategory::FinalPunctuation
+    )
 }
 
 fn is_kinsoku_strict_prohibited_line_end(ch: char) -> bool {
+  use unicode_general_category::GeneralCategory;
+
   matches!(
     ch,
     // Opening brackets/quotes should not end a line.
@@ -7674,6 +7684,12 @@ fn is_kinsoku_strict_prohibited_line_end(ch: char) -> bool {
       | '\u{FE5B}' // ﹛
       | '\u{FE5D}' // ﹝
   )
+    // As a fallback, treat general Unicode open/initial punctuation as prohibited line-end
+    // characters, covering ASCII/Unicode opening bracket/quote forms.
+    || matches!(
+      get_general_category(ch),
+      GeneralCategory::OpenPunctuation | GeneralCategory::InitialPunctuation
+    )
 }
 
 fn apply_break_properties(
@@ -18470,6 +18486,79 @@ mod tests {
         "breaks not affected by kinsoku rules should remain normal"
       );
     }
+  }
+
+  #[test]
+  fn line_break_strict_uses_unicode_punctuation_categories_for_brackets() {
+    use crate::text::line_break::BreakOpportunityKind;
+
+    // `line-break: strict` should treat generic open/close punctuation as kinsoku restrictions even
+    // when the exact character isn't in our explicit Japanese lists (e.g. ASCII parentheses).
+    let text_close = "a)b";
+    let breaks_close = vec![
+      BreakOpportunity::allowed(1), // a|)
+      BreakOpportunity::allowed(2), // )|b
+      BreakOpportunity::allowed(3), // end
+    ];
+    let result_close = apply_break_properties(
+      text_close,
+      breaks_close,
+      LineBreak::Strict,
+      WordBreak::Normal,
+      OverflowWrap::Normal,
+      true,
+    );
+    assert_eq!(
+      result_close
+        .iter()
+        .find(|b| b.byte_offset == 1)
+        .expect("break at 1")
+        .kind,
+      BreakOpportunityKind::Emergency,
+      "close punctuation should not start a line under line-break: strict"
+    );
+    assert_eq!(
+      result_close
+        .iter()
+        .find(|b| b.byte_offset == 2)
+        .expect("break at 2")
+        .kind,
+      BreakOpportunityKind::Normal,
+      "breaks after close punctuation should remain normal"
+    );
+
+    let text_open = "a(b";
+    let breaks_open = vec![
+      BreakOpportunity::allowed(1), // a|(
+      BreakOpportunity::allowed(2), // (|b
+      BreakOpportunity::allowed(3), // end
+    ];
+    let result_open = apply_break_properties(
+      text_open,
+      breaks_open,
+      LineBreak::Strict,
+      WordBreak::Normal,
+      OverflowWrap::Normal,
+      true,
+    );
+    assert_eq!(
+      result_open
+        .iter()
+        .find(|b| b.byte_offset == 2)
+        .expect("break at 2")
+        .kind,
+      BreakOpportunityKind::Emergency,
+      "open punctuation should not end a line under line-break: strict"
+    );
+    assert_eq!(
+      result_open
+        .iter()
+        .find(|b| b.byte_offset == 1)
+        .expect("break at 1")
+        .kind,
+      BreakOpportunityKind::Normal,
+      "breaks before open punctuation should remain normal"
+    );
   }
 
   #[test]

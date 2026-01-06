@@ -5798,25 +5798,35 @@ impl GridFormattingContext {
                 };
                 constraints.used_border_box_width = Some(border_box.min(max_border_box));
               } else if let Some(keyword) = style.width_keyword {
-                let mode = match keyword {
-                  IntrinsicSizeKeyword::MinContent => Some(true),
-                  IntrinsicSizeKeyword::MaxContent => Some(false),
-                  IntrinsicSizeKeyword::FillAvailable => None,
-                  IntrinsicSizeKeyword::FitContent { .. } => None,
-                };
-                if let Some(use_min) = mode {
-                  match intrinsic_range_for_physical_axis(Axis::Horizontal) {
-                    Ok((min_intrinsic, max_intrinsic)) => {
-                      let preferred = if use_min {
-                        min_intrinsic.max(0.0)
-                      } else {
-                        max_intrinsic.max(0.0)
-                      };
-                      constraints.used_border_box_width = Some(preferred.min(max_border_box));
+                match keyword {
+                  IntrinsicSizeKeyword::MinContent | IntrinsicSizeKeyword::MaxContent => {
+                    let use_min = matches!(keyword, IntrinsicSizeKeyword::MinContent);
+                    match intrinsic_range_for_physical_axis(Axis::Horizontal) {
+                      Ok((min_intrinsic, max_intrinsic)) => {
+                        let preferred = if use_min {
+                          min_intrinsic.max(0.0)
+                        } else {
+                          max_intrinsic.max(0.0)
+                        };
+                        constraints.used_border_box_width = Some(preferred.min(max_border_box));
+                      }
+                      Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                      Err(_) => {}
                     }
-                    Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
-                    Err(_) => {}
                   }
+                  IntrinsicSizeKeyword::FillAvailable => {
+                    let base = constraints
+                      .inline_percentage_base
+                      .unwrap_or(percentage_base)
+                      .max(0.0);
+                    let border_box = if style.box_sizing == BoxSizing::ContentBox {
+                      (base + fit_inset_w).max(0.0)
+                    } else {
+                      base.max(0.0)
+                    };
+                    constraints.used_border_box_width = Some(border_box.min(max_border_box));
+                  }
+                  IntrinsicSizeKeyword::FitContent { .. } => {}
                 }
               }
             }
@@ -5848,25 +5858,36 @@ impl GridFormattingContext {
                 };
                 constraints.used_border_box_height = Some(border_box.min(max_border_box));
               } else if let Some(keyword) = style.height_keyword {
-                let mode = match keyword {
-                  IntrinsicSizeKeyword::MinContent => Some(true),
-                  IntrinsicSizeKeyword::MaxContent => Some(false),
-                  IntrinsicSizeKeyword::FillAvailable => None,
-                  IntrinsicSizeKeyword::FitContent { .. } => None,
-                };
-                if let Some(use_min) = mode {
-                  match intrinsic_range_for_physical_axis(Axis::Vertical) {
-                    Ok((min_intrinsic, max_intrinsic)) => {
-                      let preferred = if use_min {
-                        min_intrinsic.max(0.0)
-                      } else {
-                        max_intrinsic.max(0.0)
-                      };
-                      constraints.used_border_box_height = Some(preferred.min(max_border_box));
+                match keyword {
+                  IntrinsicSizeKeyword::MinContent | IntrinsicSizeKeyword::MaxContent => {
+                    let use_min = matches!(keyword, IntrinsicSizeKeyword::MinContent);
+                    match intrinsic_range_for_physical_axis(Axis::Vertical) {
+                      Ok((min_intrinsic, max_intrinsic)) => {
+                        let preferred = if use_min {
+                          min_intrinsic.max(0.0)
+                        } else {
+                          max_intrinsic.max(0.0)
+                        };
+                        constraints.used_border_box_height = Some(preferred.min(max_border_box));
+                      }
+                      Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                      Err(_) => {}
                     }
-                    Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
-                    Err(_) => {}
                   }
+                  IntrinsicSizeKeyword::FillAvailable => {
+                    let base = match available_space.height {
+                      taffy::style::AvailableSpace::Definite(v) => v,
+                      _ => 0.0,
+                    }
+                    .max(0.0);
+                    let border_box = if style.box_sizing == BoxSizing::ContentBox {
+                      (base + fit_inset_h).max(0.0)
+                    } else {
+                      base.max(0.0)
+                    };
+                    constraints.used_border_box_height = Some(border_box.min(max_border_box));
+                  }
+                  IntrinsicSizeKeyword::FitContent { .. } => {}
                 }
               }
             }
