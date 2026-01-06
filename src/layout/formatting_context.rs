@@ -939,10 +939,20 @@ fn fragmentation_fingerprint(options: Option<FragmentationOptions>) -> u64 {
   options
     .map(|opts| {
       let mut h = DefaultHasher::default();
-      opts.fragmentainer_size.to_bits().hash(&mut h);
-      opts.fragmentainer_gap.to_bits().hash(&mut h);
+      let hash_f32 = |val: f32, hasher: &mut DefaultHasher| {
+        // Canonicalize -0.0 so cache keys don't splinter on harmless sign differences.
+        let bits = if val == 0.0 {
+          0.0f32.to_bits()
+        } else {
+          val.to_bits()
+        };
+        bits.hash(hasher);
+      };
+
+      hash_f32(opts.fragmentainer_size, &mut h);
+      hash_f32(opts.fragmentainer_gap, &mut h);
       opts.column_count.hash(&mut h);
-      opts.column_gap.to_bits().hash(&mut h);
+      hash_f32(opts.column_gap, &mut h);
       h.finish()
     })
     .unwrap_or(0)
@@ -1867,6 +1877,28 @@ mod tests {
     });
 
     intrinsic_cache_use_epoch(1, true);
+  }
+
+  #[test]
+  fn fragmentation_fingerprint_canonicalizes_negative_zero() {
+    let options_zero = FragmentationOptions {
+      fragmentainer_size: 0.0,
+      fragmentainer_gap: 0.0,
+      column_count: 1,
+      column_gap: 0.0,
+    };
+    let options_neg_zero = FragmentationOptions {
+      fragmentainer_size: -0.0,
+      fragmentainer_gap: -0.0,
+      column_count: 1,
+      column_gap: -0.0,
+    };
+
+    assert_eq!(
+      fragmentation_fingerprint(Some(options_zero)),
+      fragmentation_fingerprint(Some(options_neg_zero)),
+      "negative zero should not affect fragmentation fingerprint"
+    );
   }
 
   #[test]
