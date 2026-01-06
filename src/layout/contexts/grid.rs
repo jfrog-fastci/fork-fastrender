@@ -3788,6 +3788,27 @@ impl GridFormattingContext {
       node_offset: f32,
     }
 
+    let axes_swapped = {
+      let mut effective_writing_mode = box_node.style.writing_mode;
+      let mut current_id = node_id;
+      let mut current_is_subgrid =
+        box_node.style.grid_row_subgrid || box_node.style.grid_column_subgrid;
+      while current_is_subgrid {
+        let Some(parent_id) = taffy.parent(current_id) else {
+          break;
+        };
+        let Some(parent_ptr) = taffy.get_node_context(parent_id).copied() else {
+          break;
+        };
+        let parent_box_node = unsafe { &*parent_ptr };
+        effective_writing_mode = parent_box_node.style.writing_mode;
+        current_is_subgrid = parent_box_node.style.grid_row_subgrid
+          || parent_box_node.style.grid_column_subgrid;
+        current_id = parent_id;
+      }
+      !crate::style::inline_axis_is_horizontal(effective_writing_mode)
+    };
+
     let mut row_offsets: Option<Vec<f32>> = None;
     let mut col_offsets: Option<Vec<f32>> = None;
     let mut row_subgrid_ctx: Option<SubgridAxisContext> = None;
@@ -3829,6 +3850,11 @@ impl GridFormattingContext {
       // local grid line numbers into the ancestor grid's line space.
       let toggles = crate::debug::runtime::runtime_toggles();
       let maybe_axis_ctx = |axis_is_columns: bool| -> Option<SubgridAxisContext> {
+        let axis_is_physical_x = if axes_swapped {
+          !axis_is_columns
+        } else {
+          axis_is_columns
+        };
         let mut line_offset: i32 = 0;
         let mut node_offset: f32 = 0.0;
         let mut current = node_id;
@@ -3855,7 +3881,7 @@ impl GridFormattingContext {
           line_offset = line_offset.saturating_add(start_line.saturating_sub(1) as i32);
 
           let layout = taffy.layout(current).ok()?;
-          node_offset += if axis_is_columns {
+          node_offset += if axis_is_physical_x {
             layout.location.x
           } else {
             layout.location.y
@@ -3918,7 +3944,7 @@ impl GridFormattingContext {
               &ancestor_box_node.style,
             );
 
-            let offsets = if axis_is_columns {
+            let offsets = if axis_is_physical_x {
               compute_track_offsets(
                 &info.columns,
                 ancestor_bounds.width(),
@@ -3976,17 +4002,27 @@ impl GridFormattingContext {
     for &child_ptr in positioned_children {
       let child = unsafe { &*child_ptr };
       let mut pos = Point::ZERO;
-      if child.style.grid_column_start > 0
-        && child.style.grid_column_end > 0
-        && child.style.grid_column_end == child.style.grid_column_start + 1
-      {
-        let start_line = child.style.grid_column_start as u16;
-        let end_line = child.style.grid_column_end as u16;
+      let (x_start, x_end, x_ctx) = if axes_swapped {
+        (
+          child.style.grid_row_start,
+          child.style.grid_row_end,
+          row_subgrid_ctx.as_ref(),
+        )
+      } else {
+        (
+          child.style.grid_column_start,
+          child.style.grid_column_end,
+          col_subgrid_ctx.as_ref(),
+        )
+      };
+      if x_start > 0 && x_end > 0 && x_end == x_start + 1 {
+        let start_line = x_start as u16;
+        let end_line = x_end as u16;
         if let Some(col_offsets) = col_offsets.as_ref() {
           if let Some((start, _)) = grid_area_for_item(col_offsets, start_line, end_line) {
             pos.x = start - padding_origin.x;
           }
-        } else if let Some(ctx) = col_subgrid_ctx.as_ref() {
+        } else if let Some(ctx) = x_ctx {
           let mapped_start = ctx.line_offset.saturating_add(start_line);
           let mapped_end = ctx.line_offset.saturating_add(end_line);
           if let Some((start, _)) = grid_area_for_item(&ctx.offsets, mapped_start, mapped_end) {
@@ -3994,17 +4030,28 @@ impl GridFormattingContext {
           }
         }
       }
-      if child.style.grid_row_start > 0
-        && child.style.grid_row_end > 0
-        && child.style.grid_row_end == child.style.grid_row_start + 1
-      {
-        let start_line = child.style.grid_row_start as u16;
-        let end_line = child.style.grid_row_end as u16;
+
+      let (y_start, y_end, y_ctx) = if axes_swapped {
+        (
+          child.style.grid_column_start,
+          child.style.grid_column_end,
+          col_subgrid_ctx.as_ref(),
+        )
+      } else {
+        (
+          child.style.grid_row_start,
+          child.style.grid_row_end,
+          row_subgrid_ctx.as_ref(),
+        )
+      };
+      if y_start > 0 && y_end > 0 && y_end == y_start + 1 {
+        let start_line = y_start as u16;
+        let end_line = y_end as u16;
         if let Some(row_offsets) = row_offsets.as_ref() {
           if let Some((start, _)) = grid_area_for_item(row_offsets, start_line, end_line) {
             pos.y = start - padding_origin.y;
           }
-        } else if let Some(ctx) = row_subgrid_ctx.as_ref() {
+        } else if let Some(ctx) = y_ctx {
           let mapped_start = ctx.line_offset.saturating_add(start_line);
           let mapped_end = ctx.line_offset.saturating_add(end_line);
           if let Some((start, _)) = grid_area_for_item(&ctx.offsets, mapped_start, mapped_end) {
@@ -7225,6 +7272,8 @@ impl FormattingContext for GridFormattingContext {
         positioned_factory.with_positioned_cb(cb_for_absolute)
       };
 
+      let axes_swapped = !crate::style::inline_axis_is_horizontal(box_node.style.writing_mode);
+
       let mut static_positions: FxHashMap<usize, Point> = FxHashMap::default();
       if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(root_id) {
         if let Ok(container_style) = taffy.style(root_id) {
@@ -7253,27 +7302,28 @@ impl FormattingContext for GridFormattingContext {
 
           for child in &positioned_children {
             let mut pos = Point::ZERO;
-            if child.style.grid_column_start > 0
-              && child.style.grid_column_end > 0
-              && child.style.grid_column_end == child.style.grid_column_start + 1
-            {
-              if let Some((start, _)) = grid_area_for_item(
-                &col_offsets,
-                child.style.grid_column_start as u16,
-                child.style.grid_column_end as u16,
-              ) {
+            let (x_start, x_end) = if axes_swapped {
+              (child.style.grid_row_start, child.style.grid_row_end)
+            } else {
+              (child.style.grid_column_start, child.style.grid_column_end)
+            };
+            if x_start > 0 && x_end > 0 && x_end == x_start + 1 {
+              if let Some((start, _)) =
+                grid_area_for_item(&col_offsets, x_start as u16, x_end as u16)
+              {
                 pos.x = start - padding_origin.x;
               }
             }
-            if child.style.grid_row_start > 0
-              && child.style.grid_row_end > 0
-              && child.style.grid_row_end == child.style.grid_row_start + 1
-            {
-              if let Some((start, _)) = grid_area_for_item(
-                &row_offsets,
-                child.style.grid_row_start as u16,
-                child.style.grid_row_end as u16,
-              ) {
+
+            let (y_start, y_end) = if axes_swapped {
+              (child.style.grid_column_start, child.style.grid_column_end)
+            } else {
+              (child.style.grid_row_start, child.style.grid_row_end)
+            };
+            if y_start > 0 && y_end > 0 && y_end == y_start + 1 {
+              if let Some((start, _)) =
+                grid_area_for_item(&row_offsets, y_start as u16, y_end as u16)
+              {
                 pos.y = start - padding_origin.y;
               }
             }
