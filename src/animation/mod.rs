@@ -218,8 +218,8 @@ fn interpolate_custom_property(
       CustomPropertyTypedValue::Angle(lerp(*a, *b, t))
     }
     (CustomPropertyTypedValue::Color(a), CustomPropertyTypedValue::Color(b)) => {
-      let from_rgba = a.to_rgba(from_style.color);
-      let to_rgba = b.to_rgba(to_style.color);
+      let from_rgba = a.to_rgba_with_scheme(from_style.color, from_style.used_dark_color_scheme);
+      let to_rgba = b.to_rgba_with_scheme(to_style.color, to_style.used_dark_color_scheme);
       let rgba = lerp_color(from_rgba, to_rgba, t);
       CustomPropertyTypedValue::Color(crate::style::color::Color::Rgba(rgba))
     }
@@ -3372,6 +3372,7 @@ fn sample_keyframes_with_default_timing(
   let mut timing_functions = Vec::with_capacity(groups.len());
   for (_, group_frames) in &groups {
     let mut style = base_style.clone();
+    let is_dark_color_scheme = base_style.used_dark_color_scheme;
 
     for frame in group_frames {
       for decl in &frame.declarations {
@@ -3387,7 +3388,7 @@ fn sample_keyframes_with_default_timing(
           base_style.font_size,
           base_style.root_font_size,
           viewport,
-          false,
+          is_dark_color_scheme,
         );
       }
     }
@@ -3438,7 +3439,7 @@ fn sample_keyframes_with_default_timing(
           base_style.font_size,
           base_style.root_font_size,
           viewport,
-          false,
+          is_dark_color_scheme,
         );
       }
     }
@@ -5550,6 +5551,46 @@ mod tests {
     match values.get("filter") {
       Some(AnimatedValue::Filter(filters)) => filters.len(),
       other => panic!("expected filter, got {other:?}"),
+    }
+  }
+
+  #[test]
+  fn sample_keyframes_resolves_light_dark_using_base_used_color_scheme() {
+    let sheet = parse_stylesheet(
+      "@keyframes k {
+        0% { color: light-dark(red, blue); }
+        100% { color: light-dark(green, red); }
+      }",
+    )
+    .unwrap();
+    let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+    let rule = &keyframes[0];
+
+    let mut base_style = ComputedStyle::default();
+    base_style.used_dark_color_scheme = true;
+
+    let values = sample_keyframes(
+      rule,
+      0.0,
+      &base_style,
+      Size::new(800.0, 600.0),
+      Size::new(100.0, 100.0),
+    );
+    match values.get("color") {
+      Some(AnimatedValue::Color(v)) => assert_eq!(*v, Rgba::BLUE),
+      other => panic!("expected color, got {other:?}"),
+    }
+
+    let values = sample_keyframes(
+      rule,
+      1.0,
+      &base_style,
+      Size::new(800.0, 600.0),
+      Size::new(100.0, 100.0),
+    );
+    match values.get("color") {
+      Some(AnimatedValue::Color(v)) => assert_eq!(*v, Rgba::RED),
+      other => panic!("expected color, got {other:?}"),
     }
   }
 

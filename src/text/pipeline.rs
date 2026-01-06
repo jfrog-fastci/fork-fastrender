@@ -4834,6 +4834,7 @@ fn push_font_run(
     &style.font_palettes,
     &font.family,
     style.color,
+    style.used_dark_color_scheme,
   );
   let palette_index = select_palette_index(&font, resolved_palette.base);
   let palette_overrides = Arc::new(resolved_palette.overrides);

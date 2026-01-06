@@ -9027,6 +9027,8 @@ fn compute_base_styles<'a>(
   resolve_container_query_lengths(&mut styles, node_id, ancestor_ids, container_ctx);
 
   let selected_scheme = select_color_scheme(&styles.color_scheme, color_scheme_pref);
+  styles.used_dark_color_scheme = matches!(selected_scheme, Some(ColorSchemeEntry::Dark));
+  ua_styles.used_dark_color_scheme = styles.used_dark_color_scheme;
 
   if is_root {
     if let Some(selected) = &selected_scheme {

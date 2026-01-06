@@ -6529,7 +6529,7 @@ impl ComputedStyle {
         self.root_font_size,
         viewport,
         false,
-        false,
+        self.used_dark_color_scheme,
         entry.order,
       );
     }
@@ -6543,6 +6543,88 @@ impl ComputedStyle {
     crate::style::cascade::resolve_line_height_length(self, viewport);
     crate::style::cascade::resolve_absolute_lengths(self, self.root_font_size, viewport);
     self.font_size_pending = None;
+  }
+}
+
+#[cfg(test)]
+mod light_dark_resolution_tests {
+  use super::*;
+  use crate::css::parser::parse_declarations;
+
+  #[test]
+  fn webkit_text_fill_color_resolves_light_dark_at_computed_value_time() {
+    let parent = ComputedStyle::default();
+    let decls = parse_declarations("-webkit-text-fill-color: light-dark(red, blue);");
+    assert_eq!(decls.len(), 1);
+    let decl = &decls[0];
+
+    let mut light = ComputedStyle::default();
+    apply_declaration_with_base(
+      &mut light,
+      decl,
+      &parent,
+      default_computed_style(),
+      None,
+      16.0,
+      16.0,
+      DEFAULT_VIEWPORT,
+      false,
+    );
+    assert_eq!(light.webkit_text_fill_color, Color::Rgba(Rgba::RED));
+
+    let mut dark = ComputedStyle::default();
+    apply_declaration_with_base(
+      &mut dark,
+      decl,
+      &parent,
+      default_computed_style(),
+      None,
+      16.0,
+      16.0,
+      DEFAULT_VIEWPORT,
+      true,
+    );
+    assert_eq!(dark.webkit_text_fill_color, Color::Rgba(Rgba::BLUE));
+  }
+
+  #[test]
+  fn recompute_var_dependent_properties_resolves_light_dark_using_used_color_scheme() {
+    let parent = ComputedStyle::default();
+    let mut styles = ComputedStyle::default();
+    styles.used_dark_color_scheme = true;
+
+    let decls = parse_declarations("--c: light-dark(red, blue); color: var(--c);");
+    for decl in &decls {
+      apply_declaration_with_base(
+        &mut styles,
+        decl,
+        &parent,
+        default_computed_style(),
+        None,
+        16.0,
+        16.0,
+        DEFAULT_VIEWPORT,
+        true,
+      );
+    }
+    assert_eq!(styles.color, Rgba::BLUE);
+    assert!(styles.var_dependent_declarations.contains_key("color"));
+
+    let decls = parse_declarations("--c: light-dark(green, red);");
+    apply_declaration_with_base(
+      &mut styles,
+      &decls[0],
+      &parent,
+      default_computed_style(),
+      None,
+      16.0,
+      16.0,
+      DEFAULT_VIEWPORT,
+      true,
+    );
+
+    styles.recompute_var_dependent_properties(&parent, DEFAULT_VIEWPORT);
+    assert_eq!(styles.color, Rgba::RED);
   }
 }
 
@@ -10833,10 +10915,12 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "-webkit-text-fill-color" => match resolved_value {
-      PropertyValue::Color(c) => styles.webkit_text_fill_color = c.clone(),
+      PropertyValue::Color(c) => {
+        styles.webkit_text_fill_color = c.resolve_light_dark(is_dark_color_scheme)
+      }
       PropertyValue::Keyword(kw) => {
         if let Ok(color) = Color::parse(kw) {
-          styles.webkit_text_fill_color = color;
+          styles.webkit_text_fill_color = color.resolve_light_dark(is_dark_color_scheme);
         }
       }
       _ => {}

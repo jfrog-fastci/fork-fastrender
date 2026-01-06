@@ -59,6 +59,7 @@ pub fn resolve_font_palette_for_font(
   registry: &FontPaletteRegistry,
   font_family: &str,
   current_color: Rgba,
+  is_dark_color_scheme: bool,
 ) -> ResolvedFontPalette {
   let (base, overrides): (FontPaletteBase, Vec<FontPaletteOverride>) = match palette {
     FontPalette::Normal => (FontPaletteBase::Normal, Vec::new()),
@@ -78,7 +79,9 @@ pub fn resolve_font_palette_for_font(
           a: 1.0,
           ..current_color
         },
-        _ => ov.color.to_rgba(current_color),
+        _ => ov
+          .color
+          .to_rgba_with_scheme(current_color, is_dark_color_scheme),
       };
       (ov.index, resolved)
     })
@@ -94,5 +97,33 @@ pub fn resolve_font_palette_for_font(
     base,
     overrides: resolved_overrides,
     override_hash,
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn resolves_light_dark_overrides_using_color_scheme() {
+    let mut registry = FontPaletteRegistry::default();
+    let mut rule = FontPaletteValuesRule::new("custom");
+    rule.font_families.push("Example".to_string());
+    rule.base_palette = FontPaletteBase::Normal;
+    rule.overrides.push(FontPaletteOverride {
+      index: 1,
+      color: Color::LightDark {
+        light: Box::new(Color::Rgba(Rgba::RED)),
+        dark: Box::new(Color::Rgba(Rgba::BLUE)),
+      },
+    });
+    registry.register(rule);
+
+    let palette = FontPalette::Named("custom".to_string());
+    let light = resolve_font_palette_for_font(&palette, &registry, "Example", Rgba::BLACK, false);
+    assert_eq!(light.overrides, vec![(1, Rgba::RED)]);
+
+    let dark = resolve_font_palette_for_font(&palette, &registry, "Example", Rgba::BLACK, true);
+    assert_eq!(dark.overrides, vec![(1, Rgba::BLUE)]);
   }
 }
