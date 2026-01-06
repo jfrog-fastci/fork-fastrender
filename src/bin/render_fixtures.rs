@@ -13,6 +13,7 @@ use common::render_pipeline::{
   compute_soft_timeout_ms, format_error_with_chain, CLI_RENDER_STACK_SIZE,
 };
 use fastrender::api::{FastRenderPool, FastRenderPoolConfig, RenderArtifactRequest, RenderOptions};
+use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::resource::ResourcePolicy;
 use fastrender::text::font_db::FontConfig;
@@ -282,6 +283,16 @@ fn main() {
   }
 }
 
+fn fixture_runtime_toggles() -> RuntimeToggles {
+  let mut raw = std::env::vars()
+    .filter(|(k, _)| k.starts_with("FASTR_"))
+    .collect::<HashMap<_, _>>();
+  raw
+    .entry("FASTR_DETERMINISTIC_PAINT".to_string())
+    .or_insert_with(|| "1".to_string());
+  RuntimeToggles::from_map(raw)
+}
+
 fn run(cli: Cli) -> io::Result<()> {
   if cli.jobs == 0 {
     return Err(io::Error::new(
@@ -395,7 +406,8 @@ fn run(cli: Cli) -> io::Result<()> {
     .with_device_pixel_ratio(cli.dpr)
     .with_meta_viewport(true)
     .with_resource_policy(resource_policy)
-    .with_font_sources(font_config.clone());
+    .with_font_sources(font_config.clone())
+    .with_runtime_toggles(fixture_runtime_toggles());
 
   let render_pool = FastRenderPool::with_config(
     FastRenderPoolConfig::new()
