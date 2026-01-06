@@ -159,6 +159,44 @@ fn blend_mode_screen_applies() {
 }
 
 #[test]
+fn blend_mode_applies_for_isolated_stacking_context() {
+  // Regression for cases where a stacking context is isolated (e.g. `isolation: isolate`) but the
+  // element itself still has a non-normal `mix-blend-mode`. Chrome continues to apply the blend
+  // mode when compositing the isolated group.
+  let html = r#"
+    <!doctype html>
+    <style>
+      body { margin: 0; background: rgb(120 120 120); }
+      .scene { position: relative; width: 50px; height: 50px; }
+      .base {
+        position: absolute;
+        inset: 0;
+        background: rgb(200 0 0);
+      }
+      .blend {
+        position: absolute;
+        left: 10px;
+        top: 10px;
+        width: 30px;
+        height: 30px;
+        background: rgb(0 200 0);
+        mix-blend-mode: screen;
+        isolation: isolate;
+      }
+    </style>
+    <div class="scene">
+      <div class="base"></div>
+      <div class="blend"></div>
+    </div>
+  "#;
+
+  let pixmap = render(html, 64, 64);
+  assert_close(pixel(&pixmap, 5, 5), (200, 0, 0, 255), 1);
+  assert_close(pixel(&pixmap, 20, 20), (200, 200, 0, 255), 5);
+  assert_close(pixel(&pixmap, 60, 60), (120, 120, 120, 255), 1);
+}
+
+#[test]
 fn filter_blur_renders() {
   let blurred_html = r#"
     <!doctype html>
