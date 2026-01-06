@@ -644,12 +644,6 @@ pub(crate) fn render_iframe_src(
       return None;
     }
   }
-  if let Err(err) = ensure_http_success(&resource, &resolved) {
-    if let Some(ctx) = context.as_ref() {
-      record_resource_error(ctx, ResourceKind::Document, &resolved, &err);
-    }
-    return None;
-  }
   let content_type = resource.content_type.as_deref();
   let is_html = content_type
     .map(|ct| {
@@ -663,6 +657,17 @@ pub(crate) fn render_iframe_src(
       let lower = resolved.to_ascii_lowercase();
       lower.ends_with(".html") || lower.ends_with(".htm") || lower.ends_with(".xhtml")
     });
+  if let Err(err) = ensure_http_success(&resource, &resolved) {
+    // Unlike subresources (images/fonts/stylesheets), iframe navigations render as documents: most
+    // browsers still display an HTML response body even when the HTTP status is an error (404,
+    // 500, etc.). Record the failure for diagnostics, but continue rendering when the body is HTML.
+    if let Some(ctx) = context.as_ref() {
+      record_resource_error(ctx, ResourceKind::Document, &resolved, &err);
+    }
+    if !is_html {
+      return None;
+    }
+  }
   if !is_html {
     if let Some(ctx) = context.as_ref() {
       let content_type = content_type.unwrap_or("<missing>");
@@ -1156,7 +1161,10 @@ mod diagnostics_tests {
       1.0,
       1,
     );
-    assert!(result.is_none());
+    assert!(
+      result.is_some(),
+      "expected iframe HTML to render even on an HTTP error status"
+    );
 
     let diag = diagnostics.into_inner();
     let entry = diag
