@@ -5195,6 +5195,26 @@ impl GridFormattingContext {
                   resolved.max(0.0)
                 };
                 constraints.used_border_box_width = Some(border_box.min(max_border_box));
+              } else if let Some(keyword) = box_node.style.width_keyword {
+                let mode = match keyword {
+                  IntrinsicSizeKeyword::MinContent => Some(true),
+                  IntrinsicSizeKeyword::MaxContent => Some(false),
+                  IntrinsicSizeKeyword::FitContent { .. } => None,
+                };
+                if let Some(use_min) = mode {
+                  match intrinsic_range_for_physical_axis(Axis::Horizontal) {
+                    Ok((min_intrinsic, max_intrinsic)) => {
+                      let preferred = if use_min {
+                        min_intrinsic.max(0.0)
+                      } else {
+                        max_intrinsic.max(0.0)
+                      };
+                      constraints.used_border_box_width = Some(preferred.min(max_border_box));
+                    }
+                    Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                    Err(_) => {}
+                  }
+                }
               }
             }
             Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
@@ -5225,6 +5245,26 @@ impl GridFormattingContext {
                   resolved.max(0.0)
                 };
                 constraints.used_border_box_height = Some(border_box.min(max_border_box));
+              } else if let Some(keyword) = box_node.style.height_keyword {
+                let mode = match keyword {
+                  IntrinsicSizeKeyword::MinContent => Some(true),
+                  IntrinsicSizeKeyword::MaxContent => Some(false),
+                  IntrinsicSizeKeyword::FitContent { .. } => None,
+                };
+                if let Some(use_min) = mode {
+                  match intrinsic_range_for_physical_axis(Axis::Vertical) {
+                    Ok((min_intrinsic, max_intrinsic)) => {
+                      let preferred = if use_min {
+                        min_intrinsic.max(0.0)
+                      } else {
+                        max_intrinsic.max(0.0)
+                      };
+                      constraints.used_border_box_height = Some(preferred.min(max_border_box));
+                    }
+                    Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
+                    Err(_) => {}
+                  }
+                }
               }
             }
             Err(LayoutError::Timeout { .. }) => taffy::abort_layout_now(),
@@ -7183,6 +7223,7 @@ mod tests {
   use crate::style::types::GridTrack;
   use crate::style::types::Overflow;
   use crate::style::types::ScrollbarWidth;
+  use crate::style::types::WhiteSpace;
   use crate::style::types::WordBreak;
   use crate::style::types::WritingMode;
   use crate::text::font_db::FontConfig;
@@ -8120,6 +8161,58 @@ mod tests {
     assert!(
       (width - 80.0).abs() < 0.5,
       "expected max-width:fit-content to clamp max-content width to available 80px, got {width:.2}",
+    );
+  }
+
+  #[test]
+  fn grid_item_width_keyword_max_content_with_max_width_keyword_fit_content_can_overflow() {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let make_grid = |max_width_keyword: Option<IntrinsicSizeKeyword>| {
+      let mut grid_style = ComputedStyle::default();
+      grid_style.display = CssDisplay::Grid;
+      grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(80.0))];
+      grid_style.grid_template_rows = vec![GridTrack::Auto];
+      grid_style.justify_items = AlignItems::Stretch;
+      let grid_style = Arc::new(grid_style);
+
+      let mut item_style = ComputedStyle::default();
+      item_style.font_size = 16.0;
+      item_style.white_space = WhiteSpace::Nowrap;
+      item_style.width = None;
+      item_style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+      item_style.max_width = None;
+      item_style.max_width_keyword = max_width_keyword;
+      let item_style = Arc::new(item_style);
+      let text_child = BoxNode::new_text(item_style.clone(), "hello world goodbye".into());
+      let item = BoxNode::new_block(item_style, FormattingContextType::Inline, vec![text_child]);
+
+      BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![item])
+    };
+
+    let constraints = LayoutConstraints::definite(80.0, 200.0);
+    let unconstrained = fc
+      .layout(&make_grid(None), &constraints)
+      .expect("unconstrained grid should layout");
+    let fit_content_max = fc
+      .layout(
+        &make_grid(Some(IntrinsicSizeKeyword::FitContent { limit: None })),
+        &constraints,
+      )
+      .expect("fit-content max grid should layout");
+
+    assert_eq!(unconstrained.children.len(), 1);
+    assert_eq!(fit_content_max.children.len(), 1);
+    let base_width = unconstrained.children[0].bounds.width();
+    let fit_width = fit_content_max.children[0].bounds.width();
+
+    assert!(
+      base_width > 80.0 + 0.5,
+      "expected max-content width to overflow the 80px grid area under nowrap text, got {base_width:.2}",
+    );
+    assert!(
+      (fit_width - base_width).abs() < 0.5,
+      "expected max-width:fit-content to match max-content width when min-content exceeds available (base={base_width:.2}, fit={fit_width:.2})",
     );
   }
 
