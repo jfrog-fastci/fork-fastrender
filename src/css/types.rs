@@ -21,7 +21,7 @@ use cssparser::Parser;
 use cssparser::ParserInput;
 use cssparser::ToCss;
 use cssparser::Token;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use selectors::parser::SelectorList;
 use std::cell::RefCell;
 use std::fmt;
