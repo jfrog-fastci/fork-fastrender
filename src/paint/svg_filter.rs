@@ -3987,6 +3987,7 @@ fn apply_primitive(
         lighting_color,
         scale_x,
         scale_y,
+        surface_origin_css,
         filter_region,
         color_interpolation_filters,
       )?
@@ -4023,6 +4024,7 @@ fn apply_primitive(
         lighting_color,
         scale_x,
         scale_y,
+        surface_origin_css,
         filter_region,
         color_interpolation_filters,
       )?
@@ -4116,8 +4118,16 @@ fn apply_primitive(
       let base_scale = filter.resolve_primitive_x(*disp_scale, css_bbox);
       let scale_x_px = base_scale * scale_x;
       let scale_y_px = base_scale * scale_y;
-      let scale_x_px = if scale_x_px.is_finite() { scale_x_px } else { 0.0 };
-      let scale_y_px = if scale_y_px.is_finite() { scale_y_px } else { 0.0 };
+      let scale_x_px = if scale_x_px.is_finite() {
+        scale_x_px
+      } else {
+        0.0
+      };
+      let scale_y_px = if scale_y_px.is_finite() {
+        scale_y_px
+      } else {
+        0.0
+      };
       let Some(output) = apply_displacement_map(
         &primary.pixmap,
         &map.pixmap,
@@ -4453,7 +4463,9 @@ fn resolve_light_point(
   };
   let z = {
     let reference = (css_bbox.width().abs() + css_bbox.height().abs()) * 0.5;
-    point.2.resolve(SvgCoordinateUnits::UserSpaceOnUse, reference)
+    point
+      .2
+      .resolve(SvgCoordinateUnits::UserSpaceOnUse, reference)
   };
 
   (x, y, z)
@@ -4501,11 +4513,7 @@ fn compute_light_direction(
         -light_to_surface.1,
         -light_to_surface.2,
       );
-      let to_target = normalize3(
-        target.0 - point.0,
-        target.1 - point.1,
-        target.2 - point.2,
-      );
+      let to_target = normalize3(target.0 - point.0, target.1 - point.1, target.2 - point.2);
       let cone_dot = dot3(
         normalize3(light_to_surface.0, light_to_surface.1, light_to_surface.2),
         to_target,
@@ -4569,38 +4577,10 @@ fn surface_normal(
     kernel_unit.0.max(f32::EPSILON),
     kernel_unit.1.max(f32::EPSILON),
   );
-  let h_l = sample_height_at(
-    pixmap,
-    css_x - ku_x,
-    css_y,
-    scale_x,
-    scale_y,
-    surface_scale,
-  );
-  let h_r = sample_height_at(
-    pixmap,
-    css_x + ku_x,
-    css_y,
-    scale_x,
-    scale_y,
-    surface_scale,
-  );
-  let h_t = sample_height_at(
-    pixmap,
-    css_x,
-    css_y - ku_y,
-    scale_x,
-    scale_y,
-    surface_scale,
-  );
-  let h_b = sample_height_at(
-    pixmap,
-    css_x,
-    css_y + ku_y,
-    scale_x,
-    scale_y,
-    surface_scale,
-  );
+  let h_l = sample_height_at(pixmap, css_x - ku_x, css_y, scale_x, scale_y, surface_scale);
+  let h_r = sample_height_at(pixmap, css_x + ku_x, css_y, scale_x, scale_y, surface_scale);
+  let h_t = sample_height_at(pixmap, css_x, css_y - ku_y, scale_x, scale_y, surface_scale);
+  let h_b = sample_height_at(pixmap, css_x, css_y + ku_y, scale_x, scale_y, surface_scale);
   // Match resvg/Chrome: the filter effects spec defines the surface normal using a finite
   // difference of the height field across `kernelUnitLength` in each direction.
   //
@@ -4634,6 +4614,7 @@ fn apply_diffuse_lighting(
   lighting_color: &Rgba,
   scale_x: f32,
   scale_y: f32,
+  surface_origin_css: (f32, f32),
   filter_region: Rect,
   color_interpolation_filters: ColorInterpolationFilters,
 ) -> RenderResult<Option<FilterResult>> {
@@ -4663,8 +4644,22 @@ fn apply_diffuse_lighting(
   } else {
     1.0
   };
-  let origin_x = 0.0;
-  let origin_y = 0.0;
+  let origin_x = if surface_origin_css.0.is_finite() {
+    surface_origin_css.0
+  } else {
+    0.0
+  };
+  let origin_y = if surface_origin_css.1.is_finite() {
+    surface_origin_css.1
+  } else {
+    0.0
+  };
+  let global_css_bbox = Rect::from_xywh(
+    css_bbox.x() + origin_x,
+    css_bbox.y() + origin_y,
+    css_bbox.width(),
+    css_bbox.height(),
+  );
   let light = light.clone();
   let width = input.pixmap.width() as usize;
 
@@ -4676,16 +4671,18 @@ fn apply_diffuse_lighting(
       .enumerate()
       .try_for_each(|(y, row)| {
         with_deadline(deadline.as_ref(), || -> RenderResult<()> {
-          let css_y = origin_y + y as f32 * inv_scale_y;
+          let local_css_y = y as f32 * inv_scale_y;
+          let css_y = origin_y + local_css_y;
           for (x, dst) in row.iter_mut().enumerate() {
             if x % FILTER_DEADLINE_STRIDE == 0 {
               check_active(RenderStage::Paint)?;
             }
-            let css_x = origin_x + x as f32 * inv_scale_x;
+            let local_css_x = x as f32 * inv_scale_x;
+            let css_x = origin_x + local_css_x;
             let normal = surface_normal(
               &input.pixmap,
-              css_x,
-              css_y,
+              local_css_x,
+              local_css_y,
               scale_x,
               scale_y,
               surface_scale,
@@ -4693,14 +4690,14 @@ fn apply_diffuse_lighting(
             );
             let height = sample_height_at(
               &input.pixmap,
-              css_x,
-              css_y,
+              local_css_x,
+              local_css_y,
               scale_x,
               scale_y,
               surface_scale,
             );
             let (light_dir, light_factor) =
-              compute_light_direction(css_bbox, &light, (css_x, css_y, height));
+              compute_light_direction(&global_css_bbox, &light, (css_x, css_y, height));
             let n_dot_l = dot3(normal, light_dir).max(0.0);
             let intensity = n_dot_l * diffuse_constant * light_factor;
             let intensity = if intensity.is_finite() {
@@ -4708,6 +4705,15 @@ fn apply_diffuse_lighting(
             } else {
               0.0
             };
+            // resvg/Chromium: for `color-interpolation-filters="sRGB"`, pixels with zero diffuse
+            // intensity are fully transparent instead of opaque black. In `linearRGB` mode, the
+            // alpha is left at 1.0 even when the lighting contribution is black.
+            if intensity <= 0.0
+              && matches!(color_interpolation_filters, ColorInterpolationFilters::SRGB)
+            {
+              *dst = PremultipliedColorU8::TRANSPARENT;
+              continue;
+            }
             let out_alpha = base_color.a;
             *dst = pack_color(
               UnpremultipliedColor {
@@ -4739,6 +4745,7 @@ fn apply_specular_lighting(
   lighting_color: &Rgba,
   scale_x: f32,
   scale_y: f32,
+  surface_origin_css: (f32, f32),
   filter_region: Rect,
   color_interpolation_filters: ColorInterpolationFilters,
 ) -> RenderResult<Option<FilterResult>> {
@@ -4768,8 +4775,22 @@ fn apply_specular_lighting(
   } else {
     1.0
   };
-  let origin_x = 0.0;
-  let origin_y = 0.0;
+  let origin_x = if surface_origin_css.0.is_finite() {
+    surface_origin_css.0
+  } else {
+    0.0
+  };
+  let origin_y = if surface_origin_css.1.is_finite() {
+    surface_origin_css.1
+  } else {
+    0.0
+  };
+  let global_css_bbox = Rect::from_xywh(
+    css_bbox.x() + origin_x,
+    css_bbox.y() + origin_y,
+    css_bbox.width(),
+    css_bbox.height(),
+  );
   let light = light.clone();
   let width = input.pixmap.width() as usize;
   let exponent = specular_exponent.clamp(0.0, 128.0);
@@ -4782,16 +4803,18 @@ fn apply_specular_lighting(
       .enumerate()
       .try_for_each(|(y, row)| {
         with_deadline(deadline.as_ref(), || -> RenderResult<()> {
-          let css_y = origin_y + y as f32 * inv_scale_y;
+          let local_css_y = y as f32 * inv_scale_y;
+          let css_y = origin_y + local_css_y;
           for (x, dst) in row.iter_mut().enumerate() {
             if x % FILTER_DEADLINE_STRIDE == 0 {
               check_active(RenderStage::Paint)?;
             }
-            let css_x = origin_x + x as f32 * inv_scale_x;
+            let local_css_x = x as f32 * inv_scale_x;
+            let css_x = origin_x + local_css_x;
             let normal = surface_normal(
               &input.pixmap,
-              css_x,
-              css_y,
+              local_css_x,
+              local_css_y,
               scale_x,
               scale_y,
               surface_scale,
@@ -4799,14 +4822,14 @@ fn apply_specular_lighting(
             );
             let height = sample_height_at(
               &input.pixmap,
-              css_x,
-              css_y,
+              local_css_x,
+              local_css_y,
               scale_x,
               scale_y,
               surface_scale,
             );
             let (light_dir, light_factor) =
-              compute_light_direction(css_bbox, &light, (css_x, css_y, height));
+              compute_light_direction(&global_css_bbox, &light, (css_x, css_y, height));
             let n_dot_l = dot3(normal, light_dir).max(0.0);
             if n_dot_l <= 0.0 || light_factor <= 0.0 {
               *dst = PremultipliedColorU8::TRANSPARENT;
@@ -5545,7 +5568,11 @@ fn apply_displacement_map(
   let clamp_region_to_bounds = |min: i32, max: i32, bound: i32| -> (i32, i32) {
     let min = min.clamp(0, bound);
     let max = max.clamp(0, bound);
-    if min < max { (min, max) } else { (0, bound) }
+    if min < max {
+      (min, max)
+    } else {
+      (0, bound)
+    }
   };
   let (map_min_x, map_max_x) = clamp_region_to_bounds(
     map_region.min_x().floor() as i32,
@@ -7126,7 +7153,10 @@ mod tests {
     .unwrap();
 
     let px0 = out.pixel(0, 0).unwrap();
-    assert_eq!((px0.red(), px0.green(), px0.blue(), px0.alpha()), (0, 0, 0, 255));
+    assert_eq!(
+      (px0.red(), px0.green(), px0.blue(), px0.alpha()),
+      (0, 0, 0, 255)
+    );
     let px1 = out.pixel(1, 0).unwrap();
     assert_eq!(
       (px1.red(), px1.green(), px1.blue(), px1.alpha()),
@@ -7153,9 +7183,15 @@ mod tests {
     .unwrap();
 
     let px0 = out.pixel(0, 0).unwrap();
-    assert_eq!((px0.red(), px0.green(), px0.blue(), px0.alpha()), (0, 0, 0, 0));
+    assert_eq!(
+      (px0.red(), px0.green(), px0.blue(), px0.alpha()),
+      (0, 0, 0, 0)
+    );
     let px1 = out.pixel(1, 0).unwrap();
-    assert_eq!((px1.red(), px1.green(), px1.blue(), px1.alpha()), (0, 0, 0, 255));
+    assert_eq!(
+      (px1.red(), px1.green(), px1.blue(), px1.alpha()),
+      (0, 0, 0, 255)
+    );
   }
 
   #[test]
@@ -7543,14 +7579,8 @@ mod tests {
         diff <= 1,
         "expected ~{expected} for linearRGB encoding, got {actual}"
       );
-      assert_eq!(
-        (unpremul.g * 255.0).round().clamp(0.0, 255.0) as u8,
-        actual
-      );
-      assert_eq!(
-        (unpremul.b * 255.0).round().clamp(0.0, 255.0) as u8,
-        actual
-      );
+      assert_eq!((unpremul.g * 255.0).round().clamp(0.0, 255.0) as u8, actual);
+      assert_eq!((unpremul.b * 255.0).round().clamp(0.0, 255.0) as u8, actual);
       assert_eq!((unpremul.a * 255.0).round() as u8, 128);
     }
   }
@@ -8573,8 +8603,16 @@ mod userspace_number_coordinate_space_tests {
       units: SvgFilterUnits::UserSpaceOnUse,
     };
     let resolved = region.resolve(bbox);
-    assert!((resolved.x() - 100.0).abs() < 1e-6, "expected x=100, got {}", resolved.x());
-    assert!((resolved.y() - 50.0).abs() < 1e-6, "expected y=50, got {}", resolved.y());
+    assert!(
+      (resolved.x() - 100.0).abs() < 1e-6,
+      "expected x=100, got {}",
+      resolved.x()
+    );
+    assert!(
+      (resolved.y() - 50.0).abs() < 1e-6,
+      "expected y=50, got {}",
+      resolved.y()
+    );
     assert!(
       (resolved.width() - 20.0).abs() < 1e-6,
       "expected width=20, got {}",

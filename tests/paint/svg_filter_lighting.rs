@@ -538,11 +538,10 @@ fn object_bounding_box_units_match_user_space_equivalent_for_point_light() {
     kernel_unit_obj.0 * bbox.width().abs(),
     kernel_unit_obj.1 * bbox.height().abs(),
   );
-  let point_user = (
-    point_obj.0 * bbox.width().abs(),
-    point_obj.1 * bbox.height().abs(),
-    point_obj.2 * scalar_ref,
-  );
+  // resvg/Chrome resolve point/spot light numeric coordinates in user space even when
+  // `primitiveUnits="objectBoundingBox"`, so the userSpace equivalent should keep the same
+  // x/y/z values for the light source.
+  let point_user = point_obj;
 
   let filter_obj = with_fingerprint(SvgFilter {
     color_interpolation_filters: ColorInterpolationFilters::LinearRGB,
@@ -849,4 +848,64 @@ fn specular_lighting_transparent_input_matches_resvg() {
   let actual = center_pixel(&pixmap);
 
   assert_eq!(actual, expected, "FastRender lighting must match resvg output");
+}
+
+#[test]
+fn point_light_numbers_follow_filter_userspace_when_bbox_is_offset() {
+  let svg = r##"
+    <svg xmlns="http://www.w3.org/2000/svg" width="128" height="96">
+      <defs>
+        <filter id="f" filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
+                x="0" y="0" width="128" height="96">
+          <feDiffuseLighting in="SourceAlpha" surfaceScale="0" diffuseConstant="1" result="lit">
+            <fePointLight x="50" y="35" z="60" />
+          </feDiffuseLighting>
+          <feComposite in="lit" in2="SourceAlpha" operator="in" />
+        </filter>
+      </defs>
+      <rect x="30" y="20" width="40" height="30" fill="white" filter="url(#f)" />
+    </svg>
+  "##;
+
+  let expected = render_resvg(svg, 128, 96);
+
+  let filter =
+    parse_svg_filter_from_svg_document(svg, Some("f"), &ImageCache::new()).expect("filter");
+  let mut pixmap = Pixmap::new(128, 96).expect("pixmap");
+  let fill = PremultipliedColorU8::from_rgba(255, 255, 255, 255).unwrap();
+  let width = pixmap.width();
+  {
+    let pixels = pixmap.pixels_mut();
+    for y in 20..50 {
+      for x in 30..70 {
+        pixels[(y * width + x) as usize] = fill;
+      }
+    }
+  }
+  let bbox = Rect::from_xywh(30.0, 20.0, 40.0, 30.0);
+  apply_svg_filter(filter.as_ref(), &mut pixmap, 1.0, bbox).unwrap();
+
+  let rgba_at = |pixmap: &Pixmap, x: u32, y: u32| {
+    let px = pixmap.pixel(x, y).expect("pixel in bounds");
+    (px.red(), px.green(), px.blue(), px.alpha())
+  };
+  let assert_close = |label: &str, actual: (u8, u8, u8, u8), expected: (u8, u8, u8, u8)| {
+    let tolerance = 3u8;
+    for (chan, a, e) in [
+      ("r", actual.0, expected.0),
+      ("g", actual.1, expected.1),
+      ("b", actual.2, expected.2),
+      ("a", actual.3, expected.3),
+    ] {
+      let diff = a.abs_diff(e);
+      assert!(
+        diff <= tolerance,
+        "{label} {chan} differs too much: got {a} expected {e} (diff {diff} > {tolerance}); actual={actual:?} expected={expected:?}"
+      );
+    }
+  };
+
+  for (label, x, y) in [("center", 50, 35), ("corner", 30, 20), ("outside", 0, 0)] {
+    assert_close(label, rgba_at(&pixmap, x, y), rgba_at(&expected, x, y));
+  }
 }
