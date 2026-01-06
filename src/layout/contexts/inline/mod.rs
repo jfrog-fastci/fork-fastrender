@@ -7507,6 +7507,10 @@ fn is_kinsoku_strict_prohibited_line_start(ch: char) -> bool {
       ch,
       // Prolonged sound marks
       '\u{30FC}' | '\u{FF70}'
+      // Kinsoku punctuation often treated as conditional Japanese starters.
+      | '\u{30A0}' // ゠
+      | '\u{30FB}' // ・
+      | '\u{FF65}' // ･
       // Iteration marks
       | '\u{3005}' // 々
       | '\u{303B}' // 〻
@@ -17978,6 +17982,50 @@ mod tests {
       BreakOpportunityKind::Normal,
       "breaks not affected by kinsoku rules should remain normal"
     );
+  }
+
+  #[test]
+  fn line_break_strict_downgrades_breaks_before_middle_dot_to_emergency() {
+    use crate::text::line_break::BreakOpportunityKind;
+
+    // Katakana middle dot (・) and related marks are treated as conditional Japanese starters.
+    for mark in ['\u{30FB}', '\u{FF65}', '\u{30A0}'] {
+      let text = format!("あ{}い", mark);
+      let breaks = vec![
+        BreakOpportunity::allowed(3), // あ|mark
+        BreakOpportunity::allowed(6), // mark|い
+        BreakOpportunity::allowed(9), // end
+      ];
+
+      let result = apply_break_properties(
+        text.as_str(),
+        breaks,
+        LineBreak::Strict,
+        WordBreak::Normal,
+        OverflowWrap::Normal,
+        true,
+      );
+
+      let brk_3 = result
+        .iter()
+        .find(|b| b.byte_offset == 3)
+        .expect("break at 3");
+      assert_eq!(
+        brk_3.kind,
+        BreakOpportunityKind::Emergency,
+        "breaks before middle dot-like marks should be emergency-only under line-break: strict"
+      );
+
+      let brk_6 = result
+        .iter()
+        .find(|b| b.byte_offset == 6)
+        .expect("break at 6");
+      assert_eq!(
+        brk_6.kind,
+        BreakOpportunityKind::Normal,
+        "breaks not affected by kinsoku rules should remain normal"
+      );
+    }
   }
 
   #[test]
