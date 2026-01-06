@@ -189,6 +189,51 @@ fn filter_url_data_svg_component_transfer_inverts_rgb_and_preserves_alpha() {
 }
 
 #[test]
+fn filter_url_data_svg_component_transfer_base64_inverts_rgb_and_preserves_alpha() {
+  let filter_svg = r#"<svg xmlns="http://www.w3.org/2000/svg"><filter id="filter"><feComponentTransfer color-interpolation-filters="sRGB"><feFuncR type="table" tableValues="1 0" /><feFuncG type="table" tableValues="1 0" /><feFuncB type="table" tableValues="1 0" /></feComponentTransfer></filter></svg>"#;
+  let encoded = BASE64.encode(filter_svg);
+  let data_url = format!("data:image/svg+xml;base64,{}#filter", encoded);
+
+  let html = format!(
+    r#"
+    <style>
+      body {{ margin: 0; }}
+      #box, #ref {{
+        width: 20px;
+        height: 20px;
+        position: absolute;
+        top: 0;
+      }}
+      #box {{
+        left: 0;
+        background: rgba(128, 64, 192, 0.5);
+        filter: url("{data_url}");
+      }}
+      #ref {{
+        left: 20px;
+        background: rgba(128, 64, 192, 0.5);
+      }}
+    </style>
+    <div id="box"></div>
+    <div id="ref"></div>
+    "#
+  );
+
+  let mut renderer = FastRender::builder()
+    .background_color(Rgba::TRANSPARENT)
+    .build()
+    .expect("renderer");
+  let pixmap = renderer.render_html(&html, 40, 30).expect("render");
+
+  assert_eq!(color_at(&pixmap, 39, 25), [0, 0, 0, 0]);
+
+  let box_px = color_at(&pixmap, 10, 10);
+  let ref_px = color_at(&pixmap, 30, 10);
+  assert_eq!(box_px[3], ref_px[3]);
+  assert_unpremultiplied_rgb_near(box_px, [127, 191, 63]);
+}
+
+#[test]
 fn filter_url_data_svg_component_transfer_inherits_color_interpolation_filters_from_filter() {
   // Same invert filter as above, but specify `color-interpolation-filters="sRGB"` on the parent
   // `<filter>` element (the primitive inherits it). This matches authoring patterns that rely on
