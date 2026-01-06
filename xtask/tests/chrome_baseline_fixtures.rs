@@ -393,6 +393,61 @@ fn chrome_baseline_fixtures_builds_expected_chrome_command_flags() {
 }
 
 #[test]
+fn chrome_baseline_fixtures_respects_viewport_height_pad_env_var() {
+  let repo_root = repo_root();
+  let temp = tempdir().expect("temp dir");
+  let fixture_root = temp.path().join("fixtures");
+  let out_dir = temp.path().join("out");
+  let chrome_dir = temp.path().join("chrome");
+  fs::create_dir_all(&chrome_dir).expect("create chrome dir");
+  write_stub_chrome(&chrome_dir);
+  write_fixture(&fixture_root, "hello");
+
+  let override_pad_px = 99u32;
+  let expected_window_h = TEST_VIEWPORT_H + override_pad_px;
+
+  let status = Command::new(env!("CARGO_BIN_EXE_xtask"))
+    .current_dir(&repo_root)
+    .env(
+      "HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX",
+      override_pad_px.to_string(),
+    )
+    .arg("chrome-baseline-fixtures")
+    .arg("--fixture-dir")
+    .arg(&fixture_root)
+    .arg("--out-dir")
+    .arg(&out_dir)
+    .arg("--chrome-dir")
+    .arg(&chrome_dir)
+    .arg("--viewport")
+    .arg(TEST_VIEWPORT)
+    .arg("--fixtures")
+    .arg("hello")
+    .status()
+    .expect("run chrome-baseline-fixtures");
+  assert!(status.success(), "command exited with {status}");
+
+  let log = fs::read_to_string(out_dir.join("hello.chrome.log")).expect("read chrome log");
+  assert!(
+    log.contains(&format!("--window-size={TEST_VIEWPORT_W},{expected_window_h}")),
+    "chrome args should respect HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX override; got:\n{log}"
+  );
+
+  let meta: serde_json::Value =
+    serde_json::from_slice(&fs::read(out_dir.join("hello.json")).expect("read metadata json"))
+      .expect("parse metadata json");
+  assert_eq!(meta["viewport"], serde_json::json!([64, 64]));
+  assert_eq!(meta["chrome_window"], serde_json::json!([64, expected_window_h]));
+  assert_eq!(
+    meta["chrome_window_padding_css"],
+    serde_json::json!(override_pad_px)
+  );
+
+  let image = image::open(out_dir.join("hello.png")).expect("decode cropped hello.png");
+  assert_eq!(image.dimensions(), (TEST_VIEWPORT_W, TEST_VIEWPORT_H));
+}
+
+#[test]
 fn chrome_baseline_fixtures_errors_when_chrome_missing() {
   let repo_root = repo_root();
   let temp = tempdir().expect("temp dir");
