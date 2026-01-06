@@ -169,8 +169,8 @@ fn resolve_font_palette_current_color_override_ignores_text_alpha() {
   let current_a = Rgba::new(10, 20, 30, 0.5);
   let current_b = Rgba::new(10, 20, 30, 0.25);
 
-  let resolved_a = resolve_font_palette_for_font(&palette, &registry, "TestFont", current_a);
-  let resolved_b = resolve_font_palette_for_font(&palette, &registry, "TestFont", current_b);
+  let resolved_a = resolve_font_palette_for_font(&palette, &registry, "TestFont", current_a, false);
+  let resolved_b = resolve_font_palette_for_font(&palette, &registry, "TestFont", current_b, false);
 
   assert_eq!(
     resolved_a.overrides,
