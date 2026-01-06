@@ -1489,7 +1489,7 @@ impl Canvas {
   /// canvas.draw_shaped_run(run, Point::new(10.0, 50.0), Rgba::BLACK)?;
   /// ```
   pub fn draw_shaped_run(&mut self, run: &ShapedRun, position: Point, color: Rgba) -> Result<()> {
-    if run.glyphs.is_empty() || (color.a == 0.0 && self.current_state.opacity == 0.0) {
+    if run.glyphs.is_empty() || color.a == 0.0 || self.current_state.opacity == 0.0 {
       return Ok(());
     }
 
@@ -1591,7 +1591,7 @@ impl Canvas {
     palette_override_hash: u64,
     variations: &[FontVariation],
   ) -> Result<()> {
-    if glyphs.is_empty() || (color.a == 0.0 && self.current_state.opacity == 0.0) {
+    if glyphs.is_empty() || color.a == 0.0 || self.current_state.opacity == 0.0 {
       return Ok(());
     }
 
@@ -2651,6 +2651,72 @@ mod tests {
     canvas.draw_rect(Rect::from_xywh(10.0, 10.0, 20.0, 20.0), Rgba::TRANSPARENT);
 
     let _ = canvas.into_pixmap();
+  }
+
+  #[test]
+  fn transparent_text_run_skips_rasterization() {
+    use crate::text::face_cache;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    let font_path =
+      PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fonts/DejaVuSans-subset.ttf");
+    let data = Arc::new(std::fs::read(font_path).expect("read test font"));
+    let font = LoadedFont {
+      id: None,
+      data,
+      index: 0,
+      face_metrics_overrides: crate::text::font_db::FontFaceMetricsOverrides::default(),
+      family: "DejaVu Sans Subset".to_string(),
+      weight: crate::text::font_db::FontWeight::NORMAL,
+      style: crate::text::font_db::FontStyle::Normal,
+      stretch: crate::text::font_db::FontStretch::Normal,
+    };
+
+    let cached_face = face_cache::get_ttf_face(&font).expect("parse test font");
+    let face = cached_face.face();
+    let ch = ['W', 'O', 'F', '2']
+      .iter()
+      .copied()
+      .find(|ch| face.glyph_index(*ch).is_some())
+      .expect("expected test font to contain at least one ASCII glyph");
+    let glyph_id = face.glyph_index(ch).expect("glyph present").0 as u32;
+
+    let glyphs = [GlyphInstance {
+      glyph_id,
+      cluster: 0,
+      x_offset: 0.0,
+      y_offset: 0.0,
+      x_advance: 0.0,
+      y_advance: 0.0,
+    }];
+    let palette_overrides: &[(u16, Rgba)] = &[];
+    let variations: &[FontVariation] = &[];
+
+    let mut canvas = Canvas::new(64, 64, Rgba::WHITE).unwrap();
+    let before = canvas.text_cache_stats();
+    canvas
+      .draw_text_run(
+        Point::new(10.0, 20.0),
+        &glyphs,
+        &font,
+        16.0,
+        1.0,
+        RunRotation::None,
+        Rgba::TRANSPARENT,
+        0.0,
+        0.0,
+        0,
+        palette_overrides,
+        0,
+        variations,
+      )
+      .expect("draw transparent text");
+    let after = canvas.text_cache_stats();
+    assert_eq!(
+      before, after,
+      "transparent text should skip glyph rasterization and cache touches"
+    );
   }
 
   #[test]
