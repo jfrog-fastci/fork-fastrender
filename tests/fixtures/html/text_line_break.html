@@ -53,6 +53,34 @@
             hyphens: auto;
             -webkit-hyphens: auto;
         }
+
+        /* Kinsoku shori: demonstrate line-break strictness for Japanese small kana / prolonged sound mark */
+        .kinsoku-grid {
+            display: flex;
+            gap: 16px;
+            margin-bottom: 15px;
+        }
+
+        .kinsoku-title {
+            font-size: 12px;
+            font-weight: bold;
+            margin: 0 0 6px 0;
+            color: #495057;
+        }
+
+        .kinsoku-sample {
+            width: 3em; /* 3 full-width kana per line */
+            border: 1px solid #dee2e6;
+            background-color: #f8f9fa;
+            padding: 6px;
+            margin: 0 0 8px 0;
+            font-family: "Noto Sans JP", "Noto Sans", sans-serif;
+            font-size: 22px;
+            line-height: 1.2;
+            word-break: normal;
+            overflow-wrap: normal;
+            white-space: normal;
+        }
     </style>
 </head>
 <body>
@@ -64,6 +92,20 @@
     <div class="label">word-break: break-all</div>
     <div class="container break-all narrow">
         <p>Supercalifragilisticexpialidocious is an extraordinarily long word.</p>
+    </div>
+
+    <div class="label">line-break: normal vs strict (Japanese kinsoku)</div>
+    <div class="kinsoku-grid">
+        <div style="line-break: normal">
+            <div class="kinsoku-title">line-break: normal</div>
+            <div class="kinsoku-sample">あいきゃうえ</div>
+            <div class="kinsoku-sample">あいりーうえ</div>
+        </div>
+        <div style="line-break: strict">
+            <div class="kinsoku-title">line-break: strict</div>
+            <div class="kinsoku-sample">あいきゃうえ</div>
+            <div class="kinsoku-sample">あいりーうえ</div>
+        </div>
     </div>
 
     <div class="label">white-space: normal (default)</div>
