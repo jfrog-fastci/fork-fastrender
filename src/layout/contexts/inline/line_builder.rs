@@ -533,6 +533,15 @@ fn inline_reshape_cache_diagnostics_enabled() -> bool {
   INLINE_RESHAPE_CACHE_DIAGNOSTICS_ENABLED.load(Ordering::Acquire)
 }
 
+#[inline]
+fn f32_to_canonical_bits(value: f32) -> u32 {
+  if value == 0.0 {
+    0.0f32.to_bits()
+  } else {
+    value.to_bits()
+  }
+}
+
 #[derive(Debug)]
 pub struct ReshapeCache {
   runs: FxHashMap<ReshapeCacheKey, Arc<Vec<ShapedRun>>>,
@@ -1632,8 +1641,8 @@ impl ReshapeCache {
       explicit_bidi: item
         .explicit_bidi
         .map(|ctx| (ctx.level.number(), ctx.override_all)),
-      letter_spacing_bits: item.style.letter_spacing.to_bits(),
-      word_spacing_bits: item.style.word_spacing.to_bits(),
+      letter_spacing_bits: f32_to_canonical_bits(item.style.letter_spacing),
+      word_spacing_bits: f32_to_canonical_bits(item.style.word_spacing),
     };
 
     if self.diagnostics_enabled {
@@ -2371,8 +2380,8 @@ impl<'a> LineBuilder<'a> {
       font_generation: self.font_context.font_generation(),
       base_direction_rtl: matches!(base_direction, Direction::Rtl),
       explicit_bidi: explicit_bidi.map(|ctx| (ctx.level.number(), ctx.override_all)),
-      letter_spacing_bits: style.letter_spacing.to_bits(),
-      word_spacing_bits: style.word_spacing.to_bits(),
+      letter_spacing_bits: f32_to_canonical_bits(style.letter_spacing),
+      word_spacing_bits: f32_to_canonical_bits(style.word_spacing),
     };
 
     if let Some(cached) = self.hyphen_advance_cache.get(&key) {
@@ -3219,7 +3228,11 @@ fn reorder_paragraph(
     level: Level,
   }
 
-  fn scope_for(unicode_bidi: UnicodeBidi, direction: Direction, key: Option<u64>) -> Option<BidiScope> {
+  fn scope_for(
+    unicode_bidi: UnicodeBidi,
+    direction: Direction,
+    key: Option<u64>,
+  ) -> Option<BidiScope> {
     use UnicodeBidi::*;
 
     const LRE: char = '\u{202A}';
@@ -3345,20 +3358,22 @@ fn reorder_paragraph(
         }
       };
 
-      let desired_scopes: SmallVec<[BidiScope; 8]> = std::iter::once((root_context.0, root_context.1, None))
-        .chain(leaf.box_stack.iter().map(|ctx| {
-          let key = matches!(ctx.unicode_bidi, UnicodeBidi::Plaintext)
-            .then(|| plaintext_key_for_box(ctx));
-          (ctx.unicode_bidi, ctx.direction, key)
-        }))
-        .chain(std::iter::once({
-          let ub = leaf.item.unicode_bidi();
-          let dir = leaf.item.direction();
-          let key = matches!(ub, UnicodeBidi::Plaintext).then(|| plaintext_key_for_item(&leaf.item));
-          (ub, dir, key)
-        }))
-        .filter_map(|(ub, dir, key)| scope_for(ub, dir, key))
-        .collect();
+      let desired_scopes: SmallVec<[BidiScope; 8]> =
+        std::iter::once((root_context.0, root_context.1, None))
+          .chain(leaf.box_stack.iter().map(|ctx| {
+            let key = matches!(ctx.unicode_bidi, UnicodeBidi::Plaintext)
+              .then(|| plaintext_key_for_box(ctx));
+            (ctx.unicode_bidi, ctx.direction, key)
+          }))
+          .chain(std::iter::once({
+            let ub = leaf.item.unicode_bidi();
+            let dir = leaf.item.direction();
+            let key =
+              matches!(ub, UnicodeBidi::Plaintext).then(|| plaintext_key_for_item(&leaf.item));
+            (ub, dir, key)
+          }))
+          .filter_map(|(ub, dir, key)| scope_for(ub, dir, key))
+          .collect();
       let common = desired_scopes
         .iter()
         .zip(open_scopes.iter())
@@ -3548,10 +3563,7 @@ fn reorder_paragraph(
         .and_then(|entry| entry.content_index)
       {
         if let Some(entry) = content_map.get(content_idx) {
-          let lvl = bidi_levels
-            .get(bidi_idx)
-            .copied()
-            .unwrap_or(resolved_base);
+          let lvl = bidi_levels.get(bidi_idx).copied().unwrap_or(resolved_base);
           push_segment(entry, lvl, &mut segments);
         }
       }
@@ -3657,8 +3669,16 @@ fn reorder_paragraph(
           0.0
         };
         let end_edge = if vis_pos == last { ctx.end_edge } else { 0.0 };
-        let border_left = if vis_pos == first { ctx.border_left } else { 0.0 };
-        let border_right = if vis_pos == last { ctx.border_right } else { 0.0 };
+        let border_left = if vis_pos == first {
+          ctx.border_left
+        } else {
+          0.0
+        };
+        let border_right = if vis_pos == last {
+          ctx.border_right
+        } else {
+          0.0
+        };
 
         let mut inline_box = InlineBoxItem::new(
           start_edge,
@@ -4043,6 +4063,73 @@ mod tests {
       0.0,
       None,
     )
+  }
+
+  #[test]
+  fn reshape_cache_canonicalizes_negative_zero_spacing() {
+    let font_context = FontContext::new();
+    let shaper = ShapingPipeline::new();
+    let text = "Hello";
+
+    let mut style = ComputedStyle::default();
+    style.letter_spacing = 0.0;
+    style.word_spacing = 0.0;
+    let mut style_neg = style.clone();
+    style_neg.letter_spacing = -0.0;
+    style_neg.word_spacing = -0.0;
+
+    let runs = shaper
+      .shape(text, &style, &font_context)
+      .expect("shape succeeds");
+    let metrics =
+      TextItem::metrics_from_runs(&font_context, &runs, style.font_size, style.font_size);
+    let breaks = find_break_opportunities(text);
+
+    let item = TextItem::new(
+      runs.clone(),
+      text.to_string(),
+      metrics,
+      breaks.clone(),
+      Vec::new(),
+      Arc::new(style),
+      Direction::Ltr,
+    );
+    let item_neg = TextItem::new(
+      runs,
+      text.to_string(),
+      metrics,
+      breaks,
+      Vec::new(),
+      Arc::new(style_neg),
+      Direction::Ltr,
+    );
+
+    let mut reshape_cache = ReshapeCache::default();
+    reshape_cache
+      .shape(&item, 0..text.len(), &shaper, &font_context)
+      .expect("expected reshape cache miss to shape");
+    assert_eq!(reshape_cache.runs.len(), 1);
+    reshape_cache
+      .shape(&item_neg, 0..text.len(), &shaper, &font_context)
+      .expect("expected reshape cache to reuse entry");
+    assert_eq!(reshape_cache.runs.len(), 1);
+  }
+
+  #[test]
+  fn hyphen_advance_cache_canonicalizes_negative_zero_spacing() {
+    let mut builder = make_builder(200.0);
+    let mut style = ComputedStyle::default();
+    style.letter_spacing = 0.0;
+    style.word_spacing = 0.0;
+    let mut style_neg = style.clone();
+    style_neg.letter_spacing = -0.0;
+    style_neg.word_spacing = -0.0;
+
+    let expected = builder.hyphen_advance(&style, Direction::Ltr, None);
+    assert_eq!(builder.hyphen_advance_cache.len(), 1);
+    let got = builder.hyphen_advance(&style_neg, Direction::Ltr, None);
+    assert_eq!(builder.hyphen_advance_cache.len(), 1);
+    assert_eq!(expected, got);
   }
 
   #[test]
@@ -4935,11 +5022,13 @@ mod tests {
     Arc::make_mut(&mut break_word.style).overflow_wrap = OverflowWrap::BreakWord;
     break_word.break_opportunities =
       synthesize_breaks(text, WordBreak::Normal, OverflowWrap::BreakWord);
-    break_word.first_mandatory_break = TextItem::first_mandatory_break(&break_word.break_opportunities);
+    break_word.first_mandatory_break =
+      TextItem::first_mandatory_break(&break_word.break_opportunities);
 
     let mut anywhere = make_text_item(text, text.len() as f32);
     Arc::make_mut(&mut anywhere.style).overflow_wrap = OverflowWrap::Anywhere;
-    anywhere.break_opportunities = synthesize_breaks(text, WordBreak::Normal, OverflowWrap::Anywhere);
+    anywhere.break_opportunities =
+      synthesize_breaks(text, WordBreak::Normal, OverflowWrap::Anywhere);
     anywhere.first_mandatory_break = TextItem::first_mandatory_break(&anywhere.break_opportunities);
 
     let brk7_break_word = break_word
@@ -4959,7 +5048,10 @@ mod tests {
     assert_eq!(brk7_anywhere.kind, BreakOpportunityKind::Emergency);
 
     let chosen_break_word = break_word.find_break_point(max_width).expect("break point");
-    assert_eq!(chosen_break_word.byte_offset, 6, "break-word prefers the space break");
+    assert_eq!(
+      chosen_break_word.byte_offset, 6,
+      "break-word prefers the space break"
+    );
 
     let chosen_anywhere = anywhere.find_break_point(max_width).expect("break point");
     assert_eq!(
@@ -4981,12 +5073,15 @@ mod tests {
 
     let mut break_word = make_text_item(text, text.len() as f32);
     Arc::make_mut(&mut break_word.style).word_break = WordBreak::BreakWord;
-    break_word.break_opportunities = synthesize_breaks(text, WordBreak::BreakWord, OverflowWrap::Normal);
-    break_word.first_mandatory_break = TextItem::first_mandatory_break(&break_word.break_opportunities);
+    break_word.break_opportunities =
+      synthesize_breaks(text, WordBreak::BreakWord, OverflowWrap::Normal);
+    break_word.first_mandatory_break =
+      TextItem::first_mandatory_break(&break_word.break_opportunities);
 
     let mut anywhere = make_text_item(text, text.len() as f32);
     Arc::make_mut(&mut anywhere.style).word_break = WordBreak::Anywhere;
-    anywhere.break_opportunities = synthesize_breaks(text, WordBreak::Anywhere, OverflowWrap::Normal);
+    anywhere.break_opportunities =
+      synthesize_breaks(text, WordBreak::Anywhere, OverflowWrap::Normal);
     anywhere.first_mandatory_break = TextItem::first_mandatory_break(&anywhere.break_opportunities);
 
     let brk7_break_word = break_word
@@ -5006,7 +5101,10 @@ mod tests {
     assert_eq!(brk7_anywhere.kind, BreakOpportunityKind::Emergency);
 
     let chosen_break_word = break_word.find_break_point(max_width).expect("break point");
-    assert_eq!(chosen_break_word.byte_offset, 6, "break-word prefers the space break");
+    assert_eq!(
+      chosen_break_word.byte_offset, 6,
+      "break-word prefers the space break"
+    );
 
     let chosen_anywhere = anywhere.find_break_point(max_width).expect("break point");
     assert_eq!(
@@ -5961,10 +6059,9 @@ mod tests {
     // Adjacent plaintext boxes must remain separate FSI/PDI scopes so each resolves its own
     // first-strong direction (`dir=auto` semantics). If the scopes merge, the second box would
     // inherit the first box's base direction.
-    let logical_separate = "\u{05d3}\u{2068}x\u{2069}\u{2068}\u{05d0}\u{05d1}\u{05d2}\u{2069}\u{05d4}"
-      .to_string();
-    let logical_merged =
-      "\u{05d3}\u{2068}x\u{05d0}\u{05d1}\u{05d2}\u{2069}\u{05d4}".to_string();
+    let logical_separate =
+      "\u{05d3}\u{2068}x\u{2069}\u{2068}\u{05d0}\u{05d1}\u{05d2}\u{2069}\u{05d4}".to_string();
+    let logical_merged = "\u{05d3}\u{2068}x\u{05d0}\u{05d1}\u{05d2}\u{2069}\u{05d4}".to_string();
     let expected_separate = reorder_with_controls(&logical_separate, Some(Level::rtl()));
     let expected_merged = reorder_with_controls(&logical_merged, Some(Level::rtl()));
     assert_ne!(

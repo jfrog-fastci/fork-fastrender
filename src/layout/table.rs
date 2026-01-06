@@ -4198,7 +4198,11 @@ pub(crate) fn log_table_stats() {
 fn percent_base_cache_key(base: Option<f32>) -> Option<u32> {
   base.and_then(|v| {
     if v.is_finite() {
-      Some(v.to_bits())
+      Some(if v == 0.0 {
+        0.0f32.to_bits()
+      } else {
+        v.to_bits()
+      })
     } else {
       None
     }
@@ -7647,15 +7651,20 @@ mod tests {
     );
   }
 
+  #[test]
+  fn percent_base_cache_key_canonicalizes_negative_zero() {
+    assert_eq!(
+      percent_base_cache_key(Some(0.0)),
+      percent_base_cache_key(Some(-0.0))
+    );
+  }
+
   fn create_table_cell(content: &str) -> BoxNode {
     let mut style = create_test_style();
     style.display = Display::TableCell;
-    BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![])
-      .with_debug_info(DebugInfo::new(
-      Some("td".to_string()),
-      None,
-      vec![content.to_string()],
-    ))
+    BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![]).with_debug_info(
+      DebugInfo::new(Some("td".to_string()), None, vec![content.to_string()]),
+    )
   }
 
   fn collect_table_cell_tops(fragment: &FragmentNode, tops: &mut Vec<f32>) {
@@ -7693,11 +7702,7 @@ mod tests {
     let mut style = create_test_style();
     style.display = Display::TableRow;
     BoxNode::new_block(Arc::new(style), FormattingContextType::Block, cells)
-      .with_debug_info(DebugInfo::new(
-      Some("tr".to_string()),
-      None,
-      vec![],
-    ))
+      .with_debug_info(DebugInfo::new(Some("tr".to_string()), None, vec![]))
   }
 
   fn create_simple_table(rows: usize, cols: usize) -> BoxNode {
@@ -12538,7 +12543,8 @@ mod tests {
       vec![spanning_cell, first_row_sibling],
     );
 
-    let second_row_cell = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![]);
+    let second_row_cell =
+      BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![]);
     let second_row = BoxNode::new_block(
       Arc::new(row_style),
       FormattingContextType::Block,
@@ -12639,8 +12645,9 @@ mod tests {
       vec![top_spanning, top_neighbor],
     );
 
-    let bottom_span = BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![])
-      .with_table_cell_spans(2, 1);
+    let bottom_span =
+      BoxNode::new_block(Arc::new(cell_style), FormattingContextType::Block, vec![])
+        .with_table_cell_spans(2, 1);
     let second_row = BoxNode::new_block(
       Arc::new(row_style),
       FormattingContextType::Block,

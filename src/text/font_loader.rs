@@ -369,6 +369,15 @@ struct ScaledMetricsCacheKey {
   variation_hash: u64,
 }
 
+#[inline]
+fn f32_to_canonical_bits(value: f32) -> u32 {
+  if value == 0.0 {
+    0.0f32.to_bits()
+  } else {
+    value.to_bits()
+  }
+}
+
 impl ScaledMetricsCacheKey {
   fn new(
     font: &LoadedFont,
@@ -379,20 +388,20 @@ impl ScaledMetricsCacheKey {
     let ascent_override_bits = overrides
       .ascent_override
       .filter(|v| v.is_finite() && *v >= 0.0)
-      .map(f32::to_bits);
+      .map(f32_to_canonical_bits);
     let descent_override_bits = overrides
       .descent_override
       .filter(|v| v.is_finite() && *v >= 0.0)
-      .map(f32::to_bits);
+      .map(f32_to_canonical_bits);
     let line_gap_override_bits = overrides
       .line_gap_override
       .filter(|v| v.is_finite() && *v >= 0.0)
-      .map(f32::to_bits);
+      .map(f32_to_canonical_bits);
 
     Self {
       font_ptr: Arc::as_ptr(&font.data) as usize,
       font_index: font.index,
-      effective_font_size_bits: effective_font_size.to_bits(),
+      effective_font_size_bits: f32_to_canonical_bits(effective_font_size),
       ascent_override_bits,
       descent_override_bits,
       line_gap_override_bits,
@@ -3006,11 +3015,11 @@ pub struct TextMeasurement {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-  use base64::Engine;
   use crate::debug::runtime::{set_runtime_toggles, RuntimeToggles};
   use crate::style::media::MediaContext;
   use crate::ComputedStyle;
+  use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+  use base64::Engine;
   use std::collections::HashMap;
   use std::io::Read;
   use std::io::Write;
@@ -3019,6 +3028,31 @@ mod tests {
   use std::sync::Mutex;
   use std::thread;
   use std::time::Duration;
+
+  #[test]
+  fn scaled_metrics_cache_key_canonicalizes_negative_zero() {
+    let ctx = FontContext::new();
+    let Some(font) = ctx.get_sans_serif() else {
+      return;
+    };
+
+    let overrides = FontFaceMetricsOverrides {
+      size_adjust: 1.0,
+      ascent_override: Some(0.0),
+      descent_override: Some(0.0),
+      line_gap_override: Some(0.0),
+    };
+    let overrides_neg = FontFaceMetricsOverrides {
+      size_adjust: 1.0,
+      ascent_override: Some(-0.0),
+      descent_override: Some(-0.0),
+      line_gap_override: Some(-0.0),
+    };
+
+    let key = ScaledMetricsCacheKey::new(&font, 0.0, overrides, &[]);
+    let key_neg = ScaledMetricsCacheKey::new(&font, -0.0, overrides_neg, &[]);
+    assert_eq!(key, key_neg);
+  }
 
   #[test]
   fn pending_web_font_counter_recovers_from_poisoned_lock() {
@@ -3285,7 +3319,11 @@ mod tests {
       if delay > Duration::ZERO {
         thread::sleep(delay);
       }
-      Ok(FetchedResource::with_final_url(data, None, Some(url.to_string())))
+      Ok(FetchedResource::with_final_url(
+        data,
+        None,
+        Some(url.to_string()),
+      ))
     }
   }
 
@@ -4401,7 +4439,8 @@ mod tests {
       },
     ];
 
-    ctx.load_web_fonts(&faces, None, None)
+    ctx
+      .load_web_fonts(&faces, None, None)
       .expect("schedule web font loads");
 
     // Wait for the background threads to finish without activating the web font generation. The
