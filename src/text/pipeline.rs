@@ -1303,6 +1303,15 @@ impl Script {
       return Self::Han;
     }
 
+    // Halfwidth Katakana (U+FF66..=U+FF9F).
+    //
+    // These are strong Katakana letters, not neutral punctuation. Classifying them as `Unknown`
+    // causes script-aware fallback to treat them as Latin/Common, which in turn prefers the
+    // default SC CJK face instead of the language-specific JP/KR mapping.
+    if (0xff66..=0xff9f).contains(&cp) {
+      return Self::Katakana;
+    }
+
     // General punctuation, symbols, numbers
     if (0x2000..=0x206f).contains(&cp)
       || (0x2070..=0x209f).contains(&cp)
@@ -6628,6 +6637,7 @@ mod tests {
     assert_eq!(Script::detect('中'), Script::Han);
     assert_eq!(Script::detect('あ'), Script::Hiragana);
     assert_eq!(Script::detect('カ'), Script::Katakana);
+    assert_eq!(Script::detect('ｶ'), Script::Katakana);
     assert_eq!(Script::detect('한'), Script::Hangul);
   }
 
@@ -8364,6 +8374,17 @@ mod tests {
         "fullwidth parentheses should follow JP glyph shapes, not generic CJK fallbacks"
       );
     }
+
+    let ja_halfwidth_katakana = pipeline
+      .shape("Helloｶﾀｶﾅ", &ja_style, &ctx)
+      .expect("shape japanese halfwidth katakana after latin");
+    assert_eq!(
+      ja_halfwidth_katakana.len(),
+      2,
+      "expected halfwidth Katakana to start a CJK run under ja language"
+    );
+    assert_eq!(ja_halfwidth_katakana[1].text, "ｶﾀｶﾅ");
+    assert_eq!(ja_halfwidth_katakana[1].font.family, "Noto Sans JP");
 
     let mut ko_style = base_style.clone();
     ko_style.language = "ko".into();
