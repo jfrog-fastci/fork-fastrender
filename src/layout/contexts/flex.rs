@@ -4645,7 +4645,13 @@ impl FlexFormattingContext {
   ) -> Result<taffy::style::Style, LayoutError> {
     let mut style =
       self.computed_style_to_taffy_base(box_node.style.as_ref(), is_root, containing_flex)?;
-    self.apply_flex_intrinsic_size_keywords(box_node, is_root, containing_flex, None, &mut style)?;
+    self.apply_flex_intrinsic_size_keywords(
+      box_node,
+      is_root,
+      containing_flex,
+      None,
+      &mut style,
+    )?;
     self.apply_flex_auto_min_size(box_node, is_root, containing_flex, &mut style)?;
     Ok(style)
   }
@@ -4852,10 +4858,12 @@ impl FlexFormattingContext {
       };
       if let Some(content_base) = content_base {
         let axis_edges = |axis: Axis, percentage_base: f32| -> f32 {
-          let padding_left = self.resolve_length_for_width(style.padding_left, percentage_base, style);
+          let padding_left =
+            self.resolve_length_for_width(style.padding_left, percentage_base, style);
           let padding_right =
             self.resolve_length_for_width(style.padding_right, percentage_base, style);
-          let padding_top = self.resolve_length_for_width(style.padding_top, percentage_base, style);
+          let padding_top =
+            self.resolve_length_for_width(style.padding_top, percentage_base, style);
           let padding_bottom =
             self.resolve_length_for_width(style.padding_bottom, percentage_base, style);
           let border_left =

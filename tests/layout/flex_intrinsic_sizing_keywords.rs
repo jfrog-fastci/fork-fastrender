@@ -254,10 +254,7 @@ fn flex_item_width_max_content_rebases_percent_padding_and_borders() {
   child_style.border_left_width = Length::px(2.0);
   child_style.border_right_width = Length::px(2.0);
 
-  let text = BoxNode::new_text(
-    Arc::new(ComputedStyle::default()),
-    "word ".repeat(20),
-  );
+  let text = BoxNode::new_text(Arc::new(ComputedStyle::default()), "word ".repeat(20));
   let child = BoxNode::new_block(
     Arc::new(child_style),
     FormattingContextType::Block,
@@ -313,7 +310,10 @@ fn flex_item_width_max_content_rebases_percent_padding_and_borders() {
   let fragment = flex_fc
     .layout(
       &flex_container,
-      &LayoutConstraints::new(AvailableSpace::Definite(container_width), AvailableSpace::Indefinite),
+      &LayoutConstraints::new(
+        AvailableSpace::Definite(container_width),
+        AvailableSpace::Indefinite,
+      ),
     )
     .expect("flex layout should succeed");
   let actual = fragment.children[0].bounds.width();

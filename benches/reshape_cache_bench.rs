@@ -24,7 +24,7 @@ fn prepare_item() -> Option<(TextItem, ShapingPipeline, FontContext, Vec<Range<u
     return None;
   }
 
-  let metrics = TextItem::metrics_from_runs(&runs, style.font_size, style.font_size);
+  let metrics = TextItem::metrics_from_runs(&font_ctx, &runs, style.font_size, style.font_size);
   let item = TextItem::new(
     runs,
     text.clone(),

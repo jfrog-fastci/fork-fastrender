@@ -65,7 +65,7 @@ fn bench_line_break_dense_paragraph(c: &mut Criterion) {
     Ok(runs) => runs,
     Err(_) => return,
   };
-  let metrics = TextItem::metrics_from_runs(&runs, style.font_size, style.font_size);
+  let metrics = TextItem::metrics_from_runs(&font_ctx, &runs, style.font_size, style.font_size);
   let mut item = TextItem::new(
     runs,
     text.clone(),
@@ -96,6 +96,7 @@ fn bench_line_break_dense_paragraph(c: &mut Criterion) {
         Direction::Ltr,
         None,
         0.0,
+        None,
       );
       builder.add_item(InlineItem::Text(item.clone()));
       black_box(builder.finish());
