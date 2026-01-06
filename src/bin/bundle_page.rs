@@ -1510,25 +1510,11 @@ fn crawl_document(
     seen_urls.insert(url.clone());
     let origin = origin_from_url(referrer);
     let key = (url.clone(), origin.clone());
-    match queued.get(&key).copied() {
-      None => {
-        queued.insert(key, destination);
-        queue.push_back((url, destination, referrer.to_string()));
-      }
-      Some(existing) => {
-        if existing == FetchDestination::Image && destination == FetchDestination::ImageCors {
-          queued.insert(key, destination);
-          // Upgrade the queued destination in-place so CORS-mode images are fetched first and
-          // stored in the bundle manifest.
-          for (queued_url, queued_destination, queued_referrer) in queue.iter_mut() {
-            if queued_url.as_str() == url.as_str() && origin_from_url(queued_referrer) == origin {
-              *queued_destination = FetchDestination::ImageCors;
-              break;
-            }
-          }
-        }
-      }
+    if queued.contains_key(&key) {
+      return;
     }
+    queued.insert(key, destination);
+    queue.push_back((url, destination, referrer.to_string()));
   }
 
   fn document_response_looks_like_html(res: &FetchedResource, requested_url: &str) -> bool {
@@ -1694,25 +1680,28 @@ fn crawl_document(
     }
   }
 
-  for css_chunk in extract_inline_css_chunks(&document.html) {
-    for (url, destination) in discover_css_urls_with_destination(&css_chunk, &document.base_url) {
-      enqueue_unique(
-        &mut queue,
-        &mut seen_urls,
-        &mut queued,
-        url,
-        destination,
-        root_referrer,
-      );
-    }
-  }
-
   let fastrender::html::asset_discovery::HtmlAssetUrls {
     images: html_image_urls,
     documents: html_documents,
   } =
     fastrender::html::asset_discovery::discover_html_asset_urls(&document.html, &document.base_url);
   if matches!(mode, CrawlMode::BestEffort) {
+    // Best-effort mode historically uses regex-based discovery, which loses `<img crossorigin>`
+    // metadata. Prefer renderer-aligned discovery when possible, but fall back to regex results
+    // so malformed HTML still yields assets.
+    if let Ok(requests) = discover_html_images(&document.html, &document.base_url, render) {
+      for (url, destination) in requests {
+        enqueue_unique(
+          &mut queue,
+          &mut seen_urls,
+          &mut queued,
+          url,
+          destination,
+          root_referrer,
+        );
+      }
+    }
+
     for url in html_image_urls {
       if should_skip_crawl_url(&url) {
         continue;
@@ -1726,21 +1715,6 @@ fn crawl_document(
         root_referrer,
       );
     }
-    // Best-effort mode historically uses regex-based discovery, which loses `<img crossorigin>`
-    // metadata. Opportunistically run the renderer-aligned responsive image discovery and upgrade
-    // any matching URLs to CORS mode.
-    if let Ok(requests) = discover_html_images(&document.html, &document.base_url, render) {
-      for (url, destination) in requests {
-        enqueue_unique(
-          &mut queue,
-          &mut seen_urls,
-          &mut queued,
-          url,
-          destination,
-          root_referrer,
-        );
-      }
-    }
   } else {
     for (url, destination) in discover_html_images(&document.html, &document.base_url, render)? {
       enqueue_unique(
@@ -1753,6 +1727,22 @@ fn crawl_document(
       );
     }
   }
+
+  // Ensure image candidates discovered from HTML (including `<img crossorigin>`) win over URLs
+  // discovered from inline CSS `url(...)` so we capture the same request mode as the renderer.
+  for css_chunk in extract_inline_css_chunks(&document.html) {
+    for (url, destination) in discover_css_urls_with_destination(&css_chunk, &document.base_url) {
+      enqueue_unique(
+        &mut queue,
+        &mut seen_urls,
+        &mut queued,
+        url,
+        destination,
+        root_referrer,
+      );
+    }
+  }
+
   for url in html_documents {
     enqueue_unique(
       &mut queue,
@@ -1956,24 +1946,24 @@ fn crawl_document(
           }
         }
 
-        for css_chunk in extract_inline_css_chunks(&doc.html) {
-          for (url, destination) in discover_css_urls_with_destination(&css_chunk, &doc.base_url) {
-            enqueue_unique(
-              &mut queue,
-              &mut seen_urls,
-              &mut queued,
-              url,
-              destination,
-              doc.base_hint.as_str(),
-            );
-          }
-        }
-
         let fastrender::html::asset_discovery::HtmlAssetUrls {
           images: html_image_urls,
           documents: html_documents,
         } = fastrender::html::asset_discovery::discover_html_asset_urls(&doc.html, &doc.base_url);
         if matches!(mode, CrawlMode::BestEffort) {
+          if let Ok(requests) = discover_html_images(&doc.html, &doc.base_url, render) {
+            for (url, destination) in requests {
+              enqueue_unique(
+                &mut queue,
+                &mut seen_urls,
+                &mut queued,
+                url,
+                destination,
+                doc.base_hint.as_str(),
+              );
+            }
+          }
+
           for url in html_image_urls {
             if should_skip_crawl_url(&url) {
               continue;
@@ -1987,22 +1977,21 @@ fn crawl_document(
               doc.base_hint.as_str(),
             );
           }
-          // As with the root document, attempt renderer-aligned discovery so `<img crossorigin>`
-          // resources are fetched in CORS mode when possible.
-          if let Ok(requests) = discover_html_images(&doc.html, &doc.base_url, render) {
-            for (url, destination) in requests {
-              enqueue_unique(
-                &mut queue,
-                &mut seen_urls,
-                &mut queued,
-                url,
-                destination,
-                doc.base_hint.as_str(),
-              );
-            }
-          }
         } else {
           for (url, destination) in discover_html_images(&doc.html, &doc.base_url, render)? {
+            enqueue_unique(
+              &mut queue,
+              &mut seen_urls,
+              &mut queued,
+              url,
+              destination,
+              doc.base_hint.as_str(),
+            );
+          }
+        }
+
+        for css_chunk in extract_inline_css_chunks(&doc.html) {
+          for (url, destination) in discover_css_urls_with_destination(&css_chunk, &doc.base_url) {
             enqueue_unique(
               &mut queue,
               &mut seen_urls,
@@ -2845,8 +2834,7 @@ mod tests {
   }
 
   #[test]
-  fn crawl_prefers_image_cors_for_img_crossorigin_and_upgrades_existing_queue_entry() -> Result<()>
-  {
+  fn crawl_prefers_image_cors_for_img_crossorigin_over_css_background() -> Result<()> {
     #[derive(Default)]
     struct CrossoriginFetcher {
       calls: Mutex<Vec<(String, FetchDestination, Option<String>)>>,
@@ -2918,12 +2906,18 @@ mod tests {
       }),
       "expected <img crossorigin> URL to be fetched with ImageCors destination"
     );
+    assert!(
+      !calls.iter().any(|(url, dest, _)| {
+        url == "https://example.com/shared.png" && *dest == FetchDestination::Image
+      }),
+      "expected <img crossorigin> URL to not be fetched with Image destination"
+    );
 
     Ok(())
   }
 
   #[test]
-  fn crawl_best_effort_upgrades_img_crossorigin_to_image_cors() -> Result<()> {
+  fn crawl_best_effort_prefers_image_cors_for_img_crossorigin() -> Result<()> {
     #[derive(Default)]
     struct CrossoriginFetcher {
       calls: Mutex<Vec<(String, FetchDestination, Option<String>)>>,
@@ -2993,13 +2987,96 @@ mod tests {
       calls.iter().any(|(url, dest, _)| {
         url == "https://example.com/shared.png" && *dest == FetchDestination::ImageCors
       }),
-      "expected best-effort crawl to upgrade <img crossorigin> URL to ImageCors destination"
+      "expected best-effort crawl to fetch <img crossorigin> URL with ImageCors destination"
     );
     assert!(
       !calls.iter().any(|(url, dest, _)| {
         url == "https://example.com/shared.png" && *dest == FetchDestination::Image
       }),
       "expected best-effort crawl to avoid fetching the <img crossorigin> URL in no-cors mode"
+    );
+
+    Ok(())
+  }
+
+  #[test]
+  fn crawl_prefers_image_cors_for_link_preload_crossorigin() -> Result<()> {
+    #[derive(Default)]
+    struct PreloadFetcher {
+      calls: Mutex<Vec<(String, FetchDestination, Option<String>)>>,
+    }
+
+    impl PreloadFetcher {
+      fn calls(&self) -> Vec<(String, FetchDestination, Option<String>)> {
+        self
+          .calls
+          .lock()
+          .map(|calls| calls.clone())
+          .unwrap_or_default()
+      }
+    }
+
+    impl ResourceFetcher for PreloadFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.lock().unwrap().push((
+          req.url.to_string(),
+          req.destination,
+          req.referrer.map(|r| r.to_string()),
+        ));
+
+        match req.url {
+          "https://example.com/" => Ok(FetchedResource::with_final_url(
+            br#"<html><head><link rel="preload" as="image" href="/p.png" crossorigin></head><body></body></html>"#
+              .to_vec(),
+            Some("text/html".to_string()),
+            Some(req.url.to_string()),
+          )),
+          "https://example.com/p.png" => Ok(FetchedResource::with_final_url(
+            vec![0u8, 1, 2, 3],
+            Some("image/png".to_string()),
+            Some(req.url.to_string()),
+          )),
+          other => Err(fastrender::Error::Other(format!(
+            "unexpected fetch: {other}"
+          ))),
+        }
+      }
+    }
+
+    let inner = Arc::new(PreloadFetcher::default());
+    let recording = RecordingFetcher::new(inner.clone());
+    let (doc, _) = fetch_document(&recording, "https://example.com/")?;
+
+    let render = BundleRenderConfig {
+      viewport: (1200, 800),
+      device_pixel_ratio: 1.0,
+      scroll_x: 0.0,
+      scroll_y: 0.0,
+      full_page: false,
+      same_origin_subresources: false,
+      allowed_subresource_origins: Vec::new(),
+      compat_profile: fastrender::compat::CompatProfile::default(),
+      dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
+    };
+
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+
+    let calls = inner.calls();
+    assert!(
+      calls.iter().any(|(url, dest, _)| {
+        url == "https://example.com/p.png" && *dest == FetchDestination::ImageCors
+      }),
+      "expected <link rel=preload as=image crossorigin> URL to be fetched with ImageCors destination"
+    );
+    assert!(
+      !calls.iter().any(|(url, dest, _)| {
+        url == "https://example.com/p.png" && *dest == FetchDestination::Image
+      }),
+      "expected preload image URL to not be fetched with Image destination"
     );
 
     Ok(())
