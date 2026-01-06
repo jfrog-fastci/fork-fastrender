@@ -119,7 +119,7 @@ thread_local! {
   /// Scope this cache to the intrinsic/layout cache epoch so we do not retain stale pointers across
   /// renders.
   static FLEX_AUTO_MIN_CACHE_EPOCH: Cell<usize> = const { Cell::new(0) };
-  static FLEX_AUTO_MIN_CACHE: RefCell<FxHashMap<(usize, usize, bool), Option<f32>>> =
+  static FLEX_AUTO_MIN_CACHE: RefCell<FxHashMap<(usize, usize, bool, bool), Option<f32>>> =
     RefCell::new(FxHashMap::default());
 }
 
@@ -142,6 +142,7 @@ fn flex_auto_min_cache_lookup(
   box_id: usize,
   style_ptr: usize,
   main_axis_is_horizontal: bool,
+  skip_contents: bool,
 ) -> Option<Option<f32>> {
   if box_id == 0 {
     return None;
@@ -150,7 +151,7 @@ fn flex_auto_min_cache_lookup(
   FLEX_AUTO_MIN_CACHE.with(|cache| {
     cache
       .borrow()
-      .get(&(box_id, style_ptr, main_axis_is_horizontal))
+      .get(&(box_id, style_ptr, main_axis_is_horizontal, skip_contents))
       .cloned()
   })
 }
@@ -160,6 +161,7 @@ fn flex_auto_min_cache_store(
   box_id: usize,
   style_ptr: usize,
   main_axis_is_horizontal: bool,
+  skip_contents: bool,
   value: Option<f32>,
 ) {
   if box_id == 0 {
@@ -169,11 +171,11 @@ fn flex_auto_min_cache_store(
   FLEX_AUTO_MIN_CACHE.with(|cache| {
     let mut map = cache.borrow_mut();
     if map.len() >= FLEX_AUTO_MIN_CACHE_MAX_ENTRIES
-      && !map.contains_key(&(box_id, style_ptr, main_axis_is_horizontal))
+      && !map.contains_key(&(box_id, style_ptr, main_axis_is_horizontal, skip_contents))
     {
       map.clear();
     }
-    map.insert((box_id, style_ptr, main_axis_is_horizontal), value);
+    map.insert((box_id, style_ptr, main_axis_is_horizontal, skip_contents), value);
   });
 }
 
@@ -1085,6 +1087,38 @@ impl FormattingContext for FlexFormattingContext {
         // If we hit the pass cap without reaching a stable viewport set, fall back to fully
         // laying out all `content-visibility:auto` items so in-viewport content is never skipped.
         auto_unskipped_nodes = auto_all_nodes.clone();
+        for (child, node_id) in auto_item_nodes.iter() {
+          let mut resolved_style = self.computed_style_to_taffy_base(
+            child.style.as_ref(),
+            false,
+            Some(style),
+          )?;
+          self.apply_flex_intrinsic_size_keywords(
+            child,
+            false,
+            Some(style),
+            Some(&constraints),
+            &mut resolved_style,
+          )?;
+          let skip_contents = self.flex_item_should_skip_contents(child, &auto_unskipped_nodes);
+          self.apply_flex_auto_min_size(
+            child,
+            false,
+            Some(style),
+            skip_contents,
+            &mut resolved_style,
+          )?;
+          self.apply_flex_fit_content_keywords(
+            child,
+            false,
+            Some(style),
+            &constraints,
+            &mut resolved_style,
+          )?;
+          taffy_tree
+            .set_style(*node_id, resolved_style)
+            .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
+        }
         for (_, node_id) in auto_item_nodes.iter() {
           taffy_tree
             .mark_dirty(*node_id)
@@ -1493,14 +1527,8 @@ impl FormattingContext for FlexFormattingContext {
                      }
 
                     let constraints = this.constraints_from_taffy(known_dimensions, avail, None);
-                    let skip_contents = match box_node.style.content_visibility {
-                      crate::style::types::ContentVisibility::Hidden => true,
-                      crate::style::types::ContentVisibility::Auto => {
-                        this.content_visibility_auto_has_definite_placeholder(box_node)
-                          && !auto_unskipped_for_pass.contains(&box_ptr)
-                      }
-                      crate::style::types::ContentVisibility::Visible => false,
-                    };
+                    let skip_contents =
+                      this.flex_item_should_skip_contents(box_node, auto_unskipped_for_pass);
                     if skip_contents {
                       let placeholder = this.content_visibility_placeholder_content_size(
                         box_node,
@@ -2695,6 +2723,7 @@ impl FormattingContext for FlexFormattingContext {
       let positioned_layout = PositionedLayout::with_font_context(self.font_context.clone());
 
       let mut changed = false;
+      let mut newly_unskipped_nodes: Vec<(&BoxNode, NodeId)> = Vec::new();
       for (child, node_id) in auto_item_nodes.iter() {
         let ptr = *child as *const BoxNode;
         if auto_unskipped_nodes.contains(&ptr) {
@@ -2724,12 +2753,46 @@ impl FormattingContext for FlexFormattingContext {
         let should_unskip = viewport_rect.intersects(child_bounds);
         if should_unskip {
           auto_unskipped_nodes.insert(ptr);
+          newly_unskipped_nodes.push((*child, *node_id));
           changed = true;
         }
       }
 
       if !changed {
         break;
+      }
+
+      for (child, node_id) in newly_unskipped_nodes {
+        let mut resolved_style = self.computed_style_to_taffy_base(
+          child.style.as_ref(),
+          false,
+          Some(style),
+        )?;
+        self.apply_flex_intrinsic_size_keywords(
+          child,
+          false,
+          Some(style),
+          Some(&constraints),
+          &mut resolved_style,
+        )?;
+        let skip_contents = self.flex_item_should_skip_contents(child, &auto_unskipped_nodes);
+        self.apply_flex_auto_min_size(
+          child,
+          false,
+          Some(style),
+          skip_contents,
+          &mut resolved_style,
+        )?;
+        self.apply_flex_fit_content_keywords(
+          child,
+          false,
+          Some(style),
+          &constraints,
+          &mut resolved_style,
+        )?;
+        taffy_tree
+          .set_style(node_id, resolved_style)
+          .map_err(|e| LayoutError::MissingContext(format!("Taffy error: {:?}", e)))?;
       }
 
       for (_, node_id) in auto_item_nodes.iter() {
@@ -3515,6 +3578,7 @@ impl FormattingContext for FlexFormattingContext {
         &fragment,
         &in_flow_children,
         &positioned_candidates,
+        auto_unskipped,
         padding_origin,
       ) {
         Ok(positions) => positions,
@@ -3949,6 +4013,7 @@ impl FormattingContext for FlexFormattingContext {
     box_node: &BoxNode,
     mode: IntrinsicSizingMode,
   ) -> Result<f32, LayoutError> {
+    count_flex_intrinsic_call();
     if let Some(cached) = intrinsic_block_cache_lookup(box_node, mode) {
       return Ok(cached);
     }
@@ -4525,6 +4590,7 @@ impl FlexFormattingContext {
       template
     };
 
+    let auto_unskipped_empty: FxHashSet<*const BoxNode> = FxHashSet::default();
     let mut taffy_children = Vec::with_capacity(root_children.len());
     for (child_style, child) in template.child_styles.iter().zip(root_children.iter()) {
       check_layout_deadline(&mut deadline_counter)?;
@@ -4537,7 +4603,14 @@ impl FlexFormattingContext {
         Some(constraints),
         &mut resolved_style,
       )?;
-      self.apply_flex_auto_min_size(child, false, Some(root_style), &mut resolved_style)?;
+      let skip_contents = self.flex_item_should_skip_contents(child, &auto_unskipped_empty);
+      self.apply_flex_auto_min_size(
+        child,
+        false,
+        Some(root_style),
+        skip_contents,
+        &mut resolved_style,
+      )?;
       self.apply_flex_fit_content_keywords(
         child,
         false,
@@ -4580,8 +4653,10 @@ impl FlexFormattingContext {
     containing_flex: Option<&ComputedStyle>,
     root_children: Option<&[&BoxNode]>,
   ) -> Result<NodeId, LayoutError> {
+    let auto_unskipped_empty: FxHashSet<*const BoxNode> = FxHashSet::default();
     // Convert style to Taffy style
-    let taffy_style = self.computed_style_to_taffy(box_node, is_root, containing_flex)?;
+    let taffy_style =
+      self.computed_style_to_taffy(box_node, is_root, containing_flex, &auto_unskipped_empty)?;
 
     // Create Taffy node
     let children_iter: Vec<&BoxNode> = if is_root {
@@ -4644,6 +4719,7 @@ impl FlexFormattingContext {
     box_node: &BoxNode,
     is_root: bool,
     containing_flex: Option<&ComputedStyle>,
+    auto_unskipped_for_pass: &FxHashSet<*const BoxNode>,
   ) -> Result<taffy::style::Style, LayoutError> {
     let mut style =
       self.computed_style_to_taffy_base(box_node.style.as_ref(), is_root, containing_flex)?;
@@ -4654,7 +4730,8 @@ impl FlexFormattingContext {
       None,
       &mut style,
     )?;
-    self.apply_flex_auto_min_size(box_node, is_root, containing_flex, &mut style)?;
+    let skip_contents = self.flex_item_should_skip_contents(box_node, auto_unskipped_for_pass);
+    self.apply_flex_auto_min_size(box_node, is_root, containing_flex, skip_contents, &mut style)?;
     Ok(style)
   }
 
@@ -5475,6 +5552,7 @@ impl FlexFormattingContext {
     box_node: &BoxNode,
     is_root: bool,
     containing_flex: Option<&ComputedStyle>,
+    skip_contents: bool,
     taffy_style: &mut taffy::style::Style,
   ) -> Result<(), LayoutError> {
     if is_root {
@@ -5503,24 +5581,6 @@ impl FlexFormattingContext {
     };
 
     let style = &box_node.style;
-    // `min-size:auto` uses a content-based minimum size suggestion (CSS Flexbox §4.5). When
-    // `content-visibility` skips an element's contents, that content-driven sizing must *not*
-    // force the flex item to its full (skipped) contents size.
-    //
-    // The flex measurement callback already handles `content-visibility` by returning
-    // `contain-intrinsic-size` placeholders for skipped items. Avoid running intrinsic sizing
-    // probes here (which would lay out the skipped subtree and clamp the item back to the real
-    // contents size via `min_size`).
-    if !matches!(
-      style.content_visibility,
-      crate::style::types::ContentVisibility::Visible
-    ) {
-      return Ok(());
-    }
-    let item_fc_type = box_node
-      .formatting_context()
-      .unwrap_or(FormattingContextType::Block);
-    let item_fc = self.factory.get(item_fc_type);
     let style_ptr = Arc::as_ptr(&box_node.style) as usize;
     let box_id = box_node.id();
 
@@ -5528,7 +5588,7 @@ impl FlexFormattingContext {
       if taffy_style.min_size.width == Dimension::AUTO
         && matches!(style.overflow_x, CssOverflow::Visible)
       {
-        if let Some(cached) = flex_auto_min_cache_lookup(box_id, style_ptr, true) {
+        if let Some(cached) = flex_auto_min_cache_lookup(box_id, style_ptr, true, skip_contents) {
           if let Some(min_candidate) = cached {
             if min_candidate.is_finite() && min_candidate > 0.0 {
               taffy_style.min_size.width = Dimension::length(min_candidate);
@@ -5547,6 +5607,40 @@ impl FlexFormattingContext {
           }
           Some(value.max(0.0))
         });
+
+        if skip_contents {
+          let mut content_size_suggestion = style
+            .contain_intrinsic_width
+            .length
+            .as_ref()
+            .and_then(|len| self.resolve_length_px(len, style))
+            .unwrap_or(0.0);
+          if style.box_sizing == BoxSizing::ContentBox {
+            content_size_suggestion += self.horizontal_edges_px(style).unwrap_or(0.0);
+          }
+          content_size_suggestion = content_size_suggestion.max(0.0);
+
+          let mut min_candidate = content_size_suggestion;
+          if let Some(specified) = specified_size_suggestion {
+            min_candidate = min_candidate.min(specified);
+          }
+          if min_candidate.is_finite() && min_candidate > 0.0 {
+            taffy_style.min_size.width = Dimension::length(min_candidate);
+          }
+          flex_auto_min_cache_store(
+            box_id,
+            style_ptr,
+            true,
+            skip_contents,
+            (min_candidate.is_finite() && min_candidate > 0.0).then_some(min_candidate),
+          );
+          return Ok(());
+        }
+
+        let item_fc_type = box_node
+          .formatting_context()
+          .unwrap_or(FormattingContextType::Block);
+        let item_fc = self.factory.get(item_fc_type);
 
         // `compute_intrinsic_inline_size` for block formatting contexts respects authored widths.
         // For flexbox auto minimum sizing we want the *content size suggestion* instead, which
@@ -5589,19 +5683,20 @@ impl FlexFormattingContext {
               box_id,
               style_ptr,
               true,
+              skip_contents,
               (min_candidate.is_finite() && min_candidate > 0.0).then_some(min_candidate),
             );
           }
           Err(err @ LayoutError::Timeout { .. }) => return Err(err),
           Err(_) => {
-            flex_auto_min_cache_store(box_id, style_ptr, true, None);
+            flex_auto_min_cache_store(box_id, style_ptr, true, skip_contents, None);
           }
         }
       }
     } else if taffy_style.min_size.height == Dimension::AUTO
       && matches!(style.overflow_y, CssOverflow::Visible)
     {
-      if let Some(cached) = flex_auto_min_cache_lookup(box_id, style_ptr, false) {
+      if let Some(cached) = flex_auto_min_cache_lookup(box_id, style_ptr, false, skip_contents) {
         if let Some(min_candidate) = cached {
           if min_candidate.is_finite() && min_candidate > 0.0 {
             taffy_style.min_size.height = Dimension::length(min_candidate);
@@ -5621,6 +5716,39 @@ impl FlexFormattingContext {
         Some(value.max(0.0))
       });
 
+      if skip_contents {
+        let mut content_size_suggestion = style
+          .contain_intrinsic_height
+          .length
+          .as_ref()
+          .and_then(|len| self.resolve_length_px(len, style))
+          .unwrap_or(0.0);
+        if style.box_sizing == BoxSizing::ContentBox {
+          content_size_suggestion += self.vertical_edges_px(style).unwrap_or(0.0);
+        }
+        content_size_suggestion = content_size_suggestion.max(0.0);
+
+        let mut min_candidate = content_size_suggestion;
+        if let Some(specified) = specified_size_suggestion {
+          min_candidate = min_candidate.min(specified);
+        }
+        if min_candidate.is_finite() && min_candidate > 0.0 {
+          taffy_style.min_size.height = Dimension::length(min_candidate);
+        }
+        flex_auto_min_cache_store(
+          box_id,
+          style_ptr,
+          false,
+          skip_contents,
+          (min_candidate.is_finite() && min_candidate > 0.0).then_some(min_candidate),
+        );
+        return Ok(());
+      }
+
+      let item_fc_type = box_node
+        .formatting_context()
+        .unwrap_or(FormattingContextType::Block);
+      let item_fc = self.factory.get(item_fc_type);
       let needs_override = style.height.is_some() || style.height_keyword.is_some();
       let intrinsic_result = if needs_override {
         let mut override_style: ComputedStyle = (*box_node.style).clone();
@@ -5654,12 +5782,13 @@ impl FlexFormattingContext {
             box_id,
             style_ptr,
             false,
+            skip_contents,
             (min_candidate.is_finite() && min_candidate > 0.0).then_some(min_candidate),
           );
         }
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
         Err(_) => {
-          flex_auto_min_cache_store(box_id, style_ptr, false, None);
+          flex_auto_min_cache_store(box_id, style_ptr, false, skip_contents, None);
         }
       }
     }
@@ -7694,6 +7823,21 @@ impl FlexFormattingContext {
     false
   }
 
+  fn flex_item_should_skip_contents(
+    &self,
+    node: &BoxNode,
+    auto_unskipped_for_pass: &FxHashSet<*const BoxNode>,
+  ) -> bool {
+    match node.style.content_visibility {
+      crate::style::types::ContentVisibility::Hidden => true,
+      crate::style::types::ContentVisibility::Auto => {
+        self.content_visibility_auto_has_definite_placeholder(node)
+          && !auto_unskipped_for_pass.contains(&(node as *const BoxNode))
+      }
+      crate::style::types::ContentVisibility::Visible => false,
+    }
+  }
+
   fn content_visibility_placeholder_content_size(
     &self,
     node: &BoxNode,
@@ -7749,12 +7893,16 @@ impl FlexFormattingContext {
     fragment: &FragmentNode,
     in_flow_children: &[&BoxNode],
     positioned: &[PositionedCandidate],
+    auto_unskipped: Option<&FxHashSet<*const BoxNode>>,
     padding_origin: Point,
   ) -> Result<FxHashMap<usize, Point>, LayoutError> {
     let mut deadline_counter = 0usize;
     if positioned.is_empty() {
       return Ok(FxHashMap::default());
     }
+
+    let auto_unskipped_empty: FxHashSet<*const BoxNode> = FxHashSet::default();
+    let auto_unskipped_for_pass = auto_unskipped.unwrap_or(&auto_unskipped_empty);
     let mut positions: FxHashMap<usize, Point> =
       FxHashMap::with_capacity_and_hasher(positioned.len(), Default::default());
 
@@ -7811,8 +7959,12 @@ impl FlexFormattingContext {
       let child_id = ensure_box_id(child);
       if let Some(&pos_idx) = positioned_index.get(&child_id) {
         let candidate = &positioned[pos_idx];
-        let mut style =
-          self.computed_style_to_taffy(&candidate.layout_child, false, Some(&box_node.style))?;
+        let mut style = self.computed_style_to_taffy(
+          &candidate.layout_child,
+          false,
+          Some(&box_node.style),
+          auto_unskipped_for_pass,
+        )?;
         style.size.width = Dimension::length(candidate.fragment.bounds.width().max(0.0));
         style.size.height = Dimension::length(candidate.fragment.bounds.height().max(0.0));
         let node = taffy.new_leaf(style).map_err(|e| {
@@ -7825,7 +7977,12 @@ impl FlexFormattingContext {
           .get(&child_id)
           .cloned()
           .unwrap_or(Size::new(0.0, 0.0));
-        let mut style = self.computed_style_to_taffy(child, false, Some(&box_node.style))?;
+        let mut style = self.computed_style_to_taffy(
+          child,
+          false,
+          Some(&box_node.style),
+          auto_unskipped_for_pass,
+        )?;
         style.size.width = Dimension::length(size.width.max(0.0));
         style.size.height = Dimension::length(size.height.max(0.0));
         let node = taffy.new_leaf(style).map_err(|e| {
@@ -7835,7 +7992,7 @@ impl FlexFormattingContext {
       }
     }
 
-    let mut root_style = self.computed_style_to_taffy(box_node, true, None)?;
+    let mut root_style = self.computed_style_to_taffy(box_node, true, None, auto_unskipped_for_pass)?;
     root_style.size.width = Dimension::length(fragment.bounds.width());
     root_style.size.height = Dimension::length(fragment.bounds.height());
     let root = taffy
@@ -8324,7 +8481,7 @@ mod tests {
 
     let mut container_style = ComputedStyle::default();
     container_style.display = Display::Flex;
-    container_style.flex_direction = FlexDirection::Column;
+    container_style.flex_direction = FlexDirection::Row;
 
     let mut text_style = ComputedStyle::default();
     text_style.font_size = 16.0;
@@ -8404,6 +8561,42 @@ mod tests {
       "expected hidden fragment height {:.1}, got {:.1}",
       expected_height,
       hidden_fragment.bounds.height()
+    );
+  }
+
+  #[test]
+  fn flex_auto_min_size_skips_intrinsic_probes_for_content_visibility_hidden() {
+    let _intrinsic_guard = crate::layout::formatting_context::intrinsic_cache_test_lock();
+    let next_epoch = crate::layout::formatting_context::intrinsic_cache_epoch() + 1;
+    crate::layout::formatting_context::intrinsic_cache_use_epoch(next_epoch, true);
+
+    let fc = FlexFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Row;
+
+    let mut child_style = ComputedStyle::default();
+    child_style.display = Display::Flex;
+    child_style.flex_direction = FlexDirection::Column;
+    child_style.content_visibility = ContentVisibility::Hidden;
+    child_style.contain_intrinsic_width.length = Some(Length::px(10.0));
+    let mut child =
+      BoxNode::new_block(Arc::new(child_style), FormattingContextType::Flex, vec![]);
+    child.id = 10;
+
+    let container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![child],
+    );
+    let constraints = LayoutConstraints::definite(200.0, 200.0);
+    fc.layout(&container, &constraints).expect("layout");
+
+    assert_eq!(
+      crate::layout::formatting_context::intrinsic_cache_stats().4,
+      0,
+      "content-visibility:hidden flex item must not trigger flex intrinsic probes during auto min-size"
     );
   }
 
@@ -8521,6 +8714,92 @@ mod tests {
       "expected offscreen auto item y={} to be beyond viewport height={}",
       offscreen_fragment.bounds.y(),
       fc.viewport_size.height
+    );
+  }
+
+  #[test]
+  fn flex_auto_min_size_runs_intrinsic_probes_after_content_visibility_auto_unskip() {
+    let _intrinsic_guard = crate::layout::formatting_context::intrinsic_cache_test_lock();
+    let next_epoch = crate::layout::formatting_context::intrinsic_cache_epoch() + 1;
+    crate::layout::formatting_context::intrinsic_cache_use_epoch(next_epoch, true);
+    let _toggles = content_visibility_test_guard();
+
+    let fc = FlexFormattingContext::with_viewport(Size::new(400.0, 200.0))
+      .with_parallelism(LayoutParallelism::disabled());
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Column;
+
+    let mut auto_style = ComputedStyle::default();
+    auto_style.display = Display::Flex;
+    auto_style.flex_direction = FlexDirection::Column;
+    auto_style.content_visibility = ContentVisibility::Auto;
+    // Provide a definite inline size so Taffy doesn't need to perform intrinsic inline probes
+    // during flex base-size resolution (those would also increment FLEX_INTRINSIC_CALLS, masking
+    // regressions in the auto-min-size path we're testing here).
+    auto_style.width = Some(Length::px(100.0));
+    // Ensure the item participates in the multi-pass unskip logic.
+    auto_style.contain_intrinsic_height.length = Some(Length::px(20.0));
+    let mut auto_item =
+      BoxNode::new_block(Arc::new(auto_style), FormattingContextType::Flex, vec![]);
+    auto_item.id = 20;
+
+    let container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![auto_item],
+    );
+    let constraints = LayoutConstraints::definite(200.0, 1000.0);
+    fc.layout(&container, &constraints).expect("layout");
+
+    assert!(
+      crate::layout::formatting_context::intrinsic_cache_stats().4 > 0,
+      "expected unskipped content-visibility:auto item to compute flex auto-min-size via intrinsic probes"
+    );
+  }
+
+  #[test]
+  fn flex_auto_min_size_skips_intrinsic_probes_for_offscreen_content_visibility_auto() {
+    let _intrinsic_guard = crate::layout::formatting_context::intrinsic_cache_test_lock();
+    let next_epoch = crate::layout::formatting_context::intrinsic_cache_epoch() + 1;
+    crate::layout::formatting_context::intrinsic_cache_use_epoch(next_epoch, true);
+    let _toggles = content_visibility_test_guard();
+
+    let fc = FlexFormattingContext::with_viewport(Size::new(400.0, 200.0))
+      .with_parallelism(LayoutParallelism::disabled());
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Row;
+
+    let mut spacer_style = ComputedStyle::default();
+    spacer_style.width = Some(Length::px(500.0));
+    let mut spacer =
+      BoxNode::new_block(Arc::new(spacer_style), FormattingContextType::Block, vec![]);
+    spacer.id = 30;
+
+    let mut auto_style = ComputedStyle::default();
+    auto_style.display = Display::Flex;
+    auto_style.flex_direction = FlexDirection::Column;
+    auto_style.content_visibility = ContentVisibility::Auto;
+    auto_style.contain_intrinsic_height.length = Some(Length::px(20.0));
+    let mut auto_item =
+      BoxNode::new_block(Arc::new(auto_style), FormattingContextType::Flex, vec![]);
+    auto_item.id = 31;
+
+    let container = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![spacer, auto_item],
+    );
+    let constraints = LayoutConstraints::definite(1000.0, 200.0);
+    fc.layout(&container, &constraints).expect("layout");
+
+    assert_eq!(
+      crate::layout::formatting_context::intrinsic_cache_stats().4,
+      0,
+      "offscreen content-visibility:auto item must not trigger flex intrinsic probes during auto min-size"
     );
   }
 
@@ -9742,8 +10021,9 @@ mod tests {
 
     let node = BoxNode::new_block(Arc::new(style), FormattingContextType::Flex, vec![]);
     let fc = FlexFormattingContext::new();
+    let auto_unskipped_empty: FxHashSet<*const BoxNode> = FxHashSet::default();
     let taffy_style = fc
-      .computed_style_to_taffy(&node, true, None)
+      .computed_style_to_taffy(&node, true, None, &auto_unskipped_empty)
       .expect("taffy style");
 
     assert_eq!(
