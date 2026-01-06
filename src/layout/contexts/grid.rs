@@ -3803,8 +3803,8 @@ impl GridFormattingContext {
         };
         let parent_box_node = unsafe { &*parent_ptr };
         effective_writing_mode = parent_box_node.style.writing_mode;
-        current_is_subgrid = parent_box_node.style.grid_row_subgrid
-          || parent_box_node.style.grid_column_subgrid;
+        current_is_subgrid =
+          parent_box_node.style.grid_row_subgrid || parent_box_node.style.grid_column_subgrid;
         current_id = parent_id;
       }
       !crate::style::inline_axis_is_horizontal(effective_writing_mode)
@@ -6505,7 +6505,8 @@ impl FormattingContext for GridFormattingContext {
       let padding_left = ctx.resolve_length_for_width(style.padding_left, percentage_base, style);
       let padding_right = ctx.resolve_length_for_width(style.padding_right, percentage_base, style);
       let padding_top = ctx.resolve_length_for_width(style.padding_top, percentage_base, style);
-      let padding_bottom = ctx.resolve_length_for_width(style.padding_bottom, percentage_base, style);
+      let padding_bottom =
+        ctx.resolve_length_for_width(style.padding_bottom, percentage_base, style);
       let border_left =
         ctx.resolve_length_for_width(style.used_border_left_width(), percentage_base, style);
       let border_top =
@@ -6518,12 +6519,13 @@ impl FormattingContext for GridFormattingContext {
         content_height + padding_top + padding_bottom,
       );
       let padding_rect = Rect::new(padding_origin, padding_size);
-      let padding_cb = crate::layout::contexts::positioned::ContainingBlock::with_viewport_and_bases(
-        padding_rect,
-        ctx.viewport_size,
-        Some(padding_rect.size.width),
-        constraints.height().map(|_| padding_rect.size.height),
-      );
+      let padding_cb =
+        crate::layout::contexts::positioned::ContainingBlock::with_viewport_and_bases(
+          padding_rect,
+          ctx.viewport_size,
+          Some(padding_rect.size.width),
+          constraints.height().map(|_| padding_rect.size.height),
+        );
       ctx.nearest_fixed_cb = padding_cb;
       ctx.factory = ctx.factory.with_fixed_cb(padding_cb);
     }

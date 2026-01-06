@@ -1153,7 +1153,8 @@ mod tests {
   }
 
   #[test]
-  fn compute_replaced_width_intrinsic_max_content_returns_content_box_size_with_border_box_sizing() {
+  fn compute_replaced_width_intrinsic_max_content_returns_content_box_size_with_border_box_sizing()
+  {
     let mut style = ComputedStyle::default();
     style.box_sizing = BoxSizing::BorderBox;
     style.padding_left = Length::px(10.0);
