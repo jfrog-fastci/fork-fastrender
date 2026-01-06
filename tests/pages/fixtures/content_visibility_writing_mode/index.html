@@ -1,0 +1,41 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    background: #ffffff;
+  }
+
+  /* Exercise vertical writing mode block progression (block axis is physical X). */
+  body {
+    writing-mode: vertical-rl;
+  }
+
+  /* A visible reference marker inside the viewport. */
+  .marker {
+    width: 40px;
+    height: 40px;
+    background: #222;
+  }
+
+  /*
+    The auto subtree is placed "before" the viewport along the block axis (to the physical right).
+    When content is *not* skipped, its large contents expand the border box back into the viewport,
+    and the red inner block becomes visible. When layout skipping works, the subtree uses the
+    contain-intrinsic-size placeholder and stays fully offscreen.
+  */
+  #auto-box {
+    content-visibility: auto;
+    contain-intrinsic-size: 80px 0px;
+    margin-right: -140px; /* 40px marker + 100px offset → logical y ≈ -100 */
+  }
+  #auto-box .inner {
+    height: 600px;
+    background: #ff0000;
+  }
+</style>
+
+<div class="marker"></div>
+<div id="auto-box"><div class="inner"></div></div>

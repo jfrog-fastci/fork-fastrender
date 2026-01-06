@@ -4976,10 +4976,82 @@ impl FormattingContext for BlockFormattingContext {
       -viewport_content_origin.y,
     ));
     let use_columns = Self::is_multicol_container(style);
-    let skip_contents = matches!(
-      style.content_visibility,
-      crate::style::types::ContentVisibility::Hidden
-    );
+    let skip_contents = match style.content_visibility {
+      crate::style::types::ContentVisibility::Hidden => true,
+      crate::style::types::ContentVisibility::Auto => {
+        let activation_margin = toggles
+          .f64("FASTR_CONTENT_VISIBILITY_AUTO_MARGIN_PX")
+          .unwrap_or(0.0)
+          .max(0.0) as f32;
+        let viewport = if activation_margin > 0.0 {
+          paint_viewport.inflate(activation_margin)
+        } else {
+          paint_viewport
+        };
+
+        let box_width = computed_width.border_box_width();
+        let box_width = if box_width.is_finite() {
+          box_width.max(0.0)
+        } else {
+          0.0
+        };
+
+        let estimated_border_box_block_size = resolved_height
+          .filter(|h| h.is_finite())
+          .map(|h| h.max(0.0))
+          .or_else(|| {
+            let axis_is_width = block_axis_is_horizontal(style.writing_mode);
+            let axis = if axis_is_width {
+              style.contain_intrinsic_width
+            } else {
+              style.contain_intrinsic_height
+            };
+            axis
+              .auto
+              .then(|| {
+                remembered_size_cache_lookup(box_node).map(|size| {
+                  if axis_is_width {
+                    size.width
+                  } else {
+                    size.height
+                  }
+                })
+              })
+              .flatten()
+              .filter(|v| v.is_finite())
+              .map(|v| v.max(0.0))
+              .or_else(|| {
+                axis
+                  .length
+                  .and_then(|l| {
+                    resolve_length_with_percentage_metrics(
+                      l,
+                      containing_height,
+                      self.viewport_size,
+                      style.font_size,
+                      style.root_font_size,
+                      Some(style),
+                      Some(&self.font_context),
+                    )
+                  })
+                  .map(|v| v.max(0.0))
+              })
+          })
+          .and_then(|content_estimate| {
+            let border_box = content_estimate + vertical_edges;
+            border_box.is_finite().then_some(border_box.max(0.0))
+          });
+
+        if let Some(block_size) = estimated_border_box_block_size {
+          let border_box =
+            Rect::from_xywh(-content_origin.x, -content_origin.y, box_width, block_size);
+          !viewport.intersects(border_box)
+        } else {
+          false
+        }
+      }
+      crate::style::types::ContentVisibility::Visible => false,
+    };
     let (mut child_fragments, mut content_height, positioned_children, column_info) =
       if skip_contents {
         (Vec::new(), 0.0, Vec::new(), None)
