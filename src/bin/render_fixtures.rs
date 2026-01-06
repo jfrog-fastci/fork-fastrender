@@ -1074,6 +1074,18 @@ fn write_nondeterminism_outputs(
   state: &mut FixtureDeterminism,
   cli: &Cli,
 ) -> io::Result<()> {
+  if state.variants.len() > 2 {
+    // Variants are discovered in parallel across fixture jobs, so their insertion order can depend
+    // on scheduling. Sort them for stable `nondeterminism/<k>.png` numbering and report output.
+    state.variants[1..].sort_by(|a, b| {
+      a.hash_hi
+        .cmp(&b.hash_hi)
+        .then_with(|| a.hash_lo.cmp(&b.hash_lo))
+        .then_with(|| a.width.cmp(&b.width))
+        .then_with(|| a.height.cmp(&b.height))
+    });
+  }
+
   let fixture_dir = snapshot_dir_for(out_dir, stem);
   let nondet_dir = fixture_dir.join("nondeterminism");
   // Clear any existing nondeterminism artifacts so reruns don't leave behind stale variant files
