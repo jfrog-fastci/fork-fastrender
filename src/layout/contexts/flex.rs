@@ -5110,16 +5110,101 @@ impl FlexFormattingContext {
     containing_flex: Option<&ComputedStyle>,
     constraints: &LayoutConstraints,
   ) -> FitContentAvailable {
-    let space = match axis {
-      Axis::Horizontal => constraints
-        .used_border_box_width
-        .map(CrateAvailableSpace::Definite)
-        .unwrap_or(constraints.available_width),
-      Axis::Vertical => constraints
-        .used_border_box_height
-        .map(CrateAvailableSpace::Definite)
-        .unwrap_or(constraints.available_height),
+    let used_border_box = match axis {
+      Axis::Horizontal => constraints.used_border_box_width,
+      Axis::Vertical => constraints.used_border_box_height,
     };
+
+    // Prefer the flex container's resolved border-box size for computing the available size that
+    // `fit-content` clamps against. In many call sites (notably the root formatting context),
+    // `constraints.available_width` is the *containing block* width, while the flex container
+    // itself has a definite `width`/`height` smaller than that.
+    //
+    // Using the containing block width here would cause `fit-content` flex items to clamp against
+    // the wrong size (effectively behaving like `fit-content(<containing-block>)`).
+    let mut space = match (axis, used_border_box) {
+      (_, Some(v)) => CrateAvailableSpace::Definite(v),
+      (Axis::Horizontal, None) => constraints.available_width,
+      (Axis::Vertical, None) => constraints.available_height,
+    };
+
+    if used_border_box.is_none() {
+      if let Some(container_style) = containing_flex {
+        // Percentages on `width` and padding resolve against the flex container's containing block
+        // inline size; percentages on `height` resolve against the containing block block size.
+        let inline_base = constraints
+          .inline_percentage_base
+          .or(constraints.width())
+          .unwrap_or(self.viewport_size.width)
+          .max(0.0);
+        let block_base = constraints
+          .height()
+          .unwrap_or(self.viewport_size.height)
+          .max(0.0);
+
+        let resolve_edges = |axis: Axis| -> f32 {
+          let padding_left =
+            self.resolve_length_for_width(container_style.padding_left, inline_base, container_style);
+          let padding_right =
+            self.resolve_length_for_width(container_style.padding_right, inline_base, container_style);
+          let padding_top =
+            self.resolve_length_for_width(container_style.padding_top, inline_base, container_style);
+          let padding_bottom =
+            self.resolve_length_for_width(container_style.padding_bottom, inline_base, container_style);
+          let border_left = self.resolve_length_for_width(
+            container_style.used_border_left_width(),
+            inline_base,
+            container_style,
+          );
+          let border_right = self.resolve_length_for_width(
+            container_style.used_border_right_width(),
+            inline_base,
+            container_style,
+          );
+          let border_top = self.resolve_length_for_width(
+            container_style.used_border_top_width(),
+            inline_base,
+            container_style,
+          );
+          let border_bottom = self.resolve_length_for_width(
+            container_style.used_border_bottom_width(),
+            inline_base,
+            container_style,
+          );
+          match axis {
+            Axis::Horizontal => padding_left + padding_right + border_left + border_right,
+            Axis::Vertical => padding_top + padding_bottom + border_top + border_bottom,
+          }
+        };
+
+        let border_box_size = match axis {
+          Axis::Horizontal => container_style.width.map(|len| {
+            let resolved = self
+              .resolve_length_for_width(len, inline_base, container_style)
+              .max(0.0);
+            if container_style.box_sizing == BoxSizing::ContentBox {
+              (resolved + resolve_edges(Axis::Horizontal)).max(0.0)
+            } else {
+              resolved
+            }
+          }),
+          Axis::Vertical => container_style.height.map(|len| {
+            let resolved = self
+              .resolve_length_for_width(len, block_base, container_style)
+              .max(0.0);
+            if container_style.box_sizing == BoxSizing::ContentBox {
+              (resolved + resolve_edges(Axis::Vertical)).max(0.0)
+            } else {
+              resolved
+            }
+          }),
+        };
+
+        if let Some(border_box) = border_box_size {
+          space = CrateAvailableSpace::Definite(border_box);
+        }
+      }
+    }
 
     let mut value = match space {
       CrateAvailableSpace::Definite(v) => FitContentAvailable::Definite(v.max(0.0)),
@@ -5132,17 +5217,17 @@ impl FlexFormattingContext {
     if let (FitContentAvailable::Definite(mut definite), Some(container_style)) =
       (value, containing_flex)
     {
-      // Padding percentages always resolve against the container's inline size (CSS2.1 §8.1),
-      // which corresponds to the horizontal axis even in vertical writing modes.
-      let percentage_base = match axis {
-        Axis::Horizontal => definite,
-        Axis::Vertical => constraints
-          .inline_percentage_base
-          .or(constraints.used_border_box_width)
-          .or(constraints.width())
-          .unwrap_or(self.viewport_size.width)
-          .max(0.0),
-      };
+      // Padding percentages always resolve against the containing block's physical width
+      // (CSS2.1 §8.1), even for vertical edges.
+      let percentage_base = constraints
+        .inline_percentage_base
+        .or(constraints.used_border_box_width)
+        .or(constraints.width())
+        .unwrap_or_else(|| match axis {
+          Axis::Horizontal => definite,
+          Axis::Vertical => self.viewport_size.width,
+        })
+        .max(0.0);
       let border_left = self.resolve_length_for_width(
         container_style.used_border_left_width(),
         percentage_base,
