@@ -7501,13 +7501,22 @@ fn grapheme_boundary_breaks(
 
 fn is_kinsoku_strict_prohibited_line_start(ch: char) -> bool {
   // CSS Text `line-break: strict` applies Japanese kinsoku shori restrictions. Model the most
-  // common ones: small kana, iteration marks, and prolonged sound marks can't start a line unless
-  // needed to avoid overflow.
+  // common ones: small kana, Japanese punctuation/iteration marks/sound marks, and prolonged sound
+  // marks can't start a line unless needed to avoid overflow.
   map_small_kana(ch).is_some()
     || matches!(
       ch,
       // Prolonged sound marks
       '\u{30FC}' | '\u{FF70}'
+      // Japanese punctuation that should not start a line.
+      | '\u{3001}' // 、
+      | '\u{3002}' // 。
+      | '\u{FF0C}' // ，
+      | '\u{FF0E}' // ．
+      | '\u{FF1A}' // ：
+      | '\u{FF1B}' // ；
+      | '\u{FF01}' // ！
+      | '\u{FF1F}' // ？
       // Kinsoku punctuation often treated as conditional Japanese starters.
       | '\u{30A0}' // ゠
       | '\u{30FB}' // ・
@@ -18020,6 +18029,59 @@ mod tests {
         brk_3.kind,
         BreakOpportunityKind::Emergency,
         "breaks before middle dot-like marks should be emergency-only under line-break: strict"
+      );
+
+      let brk_6 = result
+        .iter()
+        .find(|b| b.byte_offset == 6)
+        .expect("break at 6");
+      assert_eq!(
+        brk_6.kind,
+        BreakOpportunityKind::Normal,
+        "breaks not affected by kinsoku rules should remain normal"
+      );
+    }
+  }
+
+  #[test]
+  fn line_break_strict_downgrades_breaks_before_japanese_punctuation_to_emergency() {
+    use crate::text::line_break::BreakOpportunityKind;
+
+    // Common punctuation that should not start a line under kinsoku shori rules.
+    for mark in [
+      '\u{3001}', // 、
+      '\u{3002}', // 。
+      '\u{FF0C}', // ，
+      '\u{FF0E}', // ．
+      '\u{FF1A}', // ：
+      '\u{FF1B}', // ；
+      '\u{FF01}', // ！
+      '\u{FF1F}', // ？
+    ] {
+      let text = format!("あ{}い", mark);
+      let breaks = vec![
+        BreakOpportunity::allowed(3), // あ|mark
+        BreakOpportunity::allowed(6), // mark|い
+        BreakOpportunity::allowed(9), // end
+      ];
+
+      let result = apply_break_properties(
+        text.as_str(),
+        breaks,
+        LineBreak::Strict,
+        WordBreak::Normal,
+        OverflowWrap::Normal,
+        true,
+      );
+
+      let brk_3 = result
+        .iter()
+        .find(|b| b.byte_offset == 3)
+        .expect("break at 3");
+      assert_eq!(
+        brk_3.kind,
+        BreakOpportunityKind::Emergency,
+        "breaks before Japanese punctuation should be emergency-only under line-break: strict"
       );
 
       let brk_6 = result

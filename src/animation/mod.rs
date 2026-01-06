@@ -6578,6 +6578,7 @@ mod tests {
       defaults.font_size,
       defaults.root_font_size,
       Size::new(800.0, 600.0),
+      false,
     );
 
     assert_eq!(&*style.animation_names, &["fade".to_string()]);

@@ -17633,6 +17633,7 @@ mod tests {
       16.0,
       16.0,
       DEFAULT_VIEWPORT,
+      false,
     );
 
     assert_eq!(
@@ -17662,6 +17663,7 @@ mod tests {
       16.0,
       16.0,
       DEFAULT_VIEWPORT,
+      false,
     );
 
     assert_eq!(
@@ -17693,6 +17695,7 @@ mod tests {
       16.0,
       16.0,
       DEFAULT_VIEWPORT,
+      false,
     );
 
     assert_eq!(
@@ -17725,6 +17728,7 @@ mod tests {
       16.0,
       16.0,
       DEFAULT_VIEWPORT,
+      false,
     );
 
     assert_eq!(
@@ -17756,6 +17760,7 @@ mod tests {
       16.0,
       16.0,
       DEFAULT_VIEWPORT,
+      false,
     );
 
     assert_eq!(
@@ -17813,6 +17818,7 @@ mod tests {
       16.0,
       16.0,
       DEFAULT_VIEWPORT,
+      false,
     );
 
     assert_eq!(
@@ -17859,6 +17865,7 @@ mod tests {
       16.0,
       16.0,
       DEFAULT_VIEWPORT,
+      false,
     );
 
     assert_eq!(
@@ -18040,6 +18047,7 @@ mod tests {
       16.0,
       16.0,
       DEFAULT_VIEWPORT,
+      false,
     );
 
     assert_eq!(styles.animation_durations, vec![500.0].into());
@@ -18067,6 +18075,7 @@ mod tests {
       16.0,
       16.0,
       DEFAULT_VIEWPORT,
+      false,
     );
 
     assert_eq!(
@@ -18157,6 +18166,7 @@ mod tests {
       16.0,
       16.0,
       DEFAULT_VIEWPORT,
+      false,
     );
 
     assert_eq!(styles.animation_names, vec!["spin".to_string()]);
@@ -18185,6 +18195,7 @@ mod tests {
       16.0,
       16.0,
       DEFAULT_VIEWPORT,
+      false,
     );
 
     let mut styles = ComputedStyle::default();
@@ -18199,6 +18210,7 @@ mod tests {
       16.0,
       16.0,
       DEFAULT_VIEWPORT,
+      false,
     );
 
     let inherit_decls = parse_declarations("animation-range-start: inherit;");
@@ -18211,6 +18223,7 @@ mod tests {
       16.0,
       16.0,
       DEFAULT_VIEWPORT,
+      false,
     );
 
     assert_eq!(
@@ -18239,6 +18252,7 @@ mod tests {
       16.0,
       16.0,
       DEFAULT_VIEWPORT,
+      false,
     );
 
     assert_eq!(styles.animation_names, vec!["spin".to_string()]);
@@ -18270,6 +18284,7 @@ mod tests {
       16.0,
       16.0,
       DEFAULT_VIEWPORT,
+      false,
     );
 
     assert_eq!(styles.animation_names, vec!["spin".to_string()]);
@@ -18315,6 +18330,7 @@ mod tests {
       16.0,
       16.0,
       DEFAULT_VIEWPORT,
+      false,
     );
 
     assert_eq!(styles.animation_names, vec!["spin,fast".to_string()]);
@@ -18346,6 +18362,7 @@ mod tests {
       16.0,
       16.0,
       DEFAULT_VIEWPORT,
+      false,
     );
 
     assert_eq!(
@@ -18388,6 +18405,7 @@ mod tests {
       16.0,
       16.0,
       DEFAULT_VIEWPORT,
+      false,
     );
 
     assert_eq!(
@@ -18421,6 +18439,7 @@ mod tests {
       16.0,
       16.0,
       DEFAULT_VIEWPORT,
+      false,
     );
 
     assert_eq!(
@@ -18446,6 +18465,7 @@ mod tests {
       16.0,
       16.0,
       DEFAULT_VIEWPORT,
+      false,
     );
 
     assert_eq!(
