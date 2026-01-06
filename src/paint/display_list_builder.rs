@@ -8311,16 +8311,24 @@ mod tests {
   #[test]
   fn background_clip_text_emits_text_clip_item() {
     let font = test_font();
-    let run = shaped_run_for_char(Arc::clone(&font), 'A', 16.0);
+    let cached_face = face_cache::get_ttf_face(font.as_ref()).expect("parse test font");
+    let face = cached_face.face();
+    let ch = ['W', 'O', 'F', '2']
+      .iter()
+      .copied()
+      .find(|ch| face.glyph_index(*ch).is_some())
+      .expect("expected test font to contain at least one ASCII glyph");
+    let run = shaped_run_for_char(Arc::clone(&font), ch, 16.0);
     let runs: Arc<Vec<ShapedRun>> = Arc::new(vec![run]);
 
     let mut text_style = ComputedStyle::default();
     text_style.font_size = 16.0;
     let text_style = Arc::new(text_style);
 
+    let text_contents = ch.to_string();
     let text = FragmentNode::new_text_shaped(
       Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
-      "A",
+      text_contents,
       14.0,
       runs,
       Arc::clone(&text_style),
@@ -8376,7 +8384,14 @@ mod tests {
   #[test]
   fn webkit_text_fill_color_overrides_text_item_color() {
     let font = test_font();
-    let run = shaped_run_for_char(Arc::clone(&font), 'A', 16.0);
+    let cached_face = face_cache::get_ttf_face(font.as_ref()).expect("parse test font");
+    let face = cached_face.face();
+    let ch = ['W', 'O', 'F', '2']
+      .iter()
+      .copied()
+      .find(|ch| face.glyph_index(*ch).is_some())
+      .expect("expected test font to contain at least one ASCII glyph");
+    let run = shaped_run_for_char(Arc::clone(&font), ch, 16.0);
     let runs: Arc<Vec<ShapedRun>> = Arc::new(vec![run]);
 
     let mut style = ComputedStyle::default();
@@ -8385,9 +8400,10 @@ mod tests {
     style.webkit_text_fill_color = Color::Rgba(Rgba::rgb(0, 0, 255));
     let style = Arc::new(style);
 
+    let text_contents = ch.to_string();
     let text = FragmentNode::new_text_shaped(
       Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
-      "A",
+      text_contents,
       14.0,
       runs,
       Arc::clone(&style),
