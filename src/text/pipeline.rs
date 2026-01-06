@@ -1288,6 +1288,21 @@ impl Script {
       return Self::Gothic;
     }
 
+    // Halfwidth and Fullwidth Forms (U+FF00..=U+FFEF).
+    //
+    // Many of the punctuation codepoints in this block are Script=Common in Unicode, but they
+    // are commonly used as East Asian typography forms (e.g. fullwidth parentheses, fullwidth
+    // comma). When we fall back across multiple bundled CJK faces (JP/KR/SC), we want these
+    // punctuation glyphs to use the language-specific CJK face instead of the generic `Common`
+    // fallback list.
+    if (0xff01..=0xff0f).contains(&cp)
+      || (0xff1a..=0xff20).contains(&cp)
+      || (0xff3b..=0xff40).contains(&cp)
+      || (0xff5b..=0xff65).contains(&cp)
+    {
+      return Self::Han;
+    }
+
     // General punctuation, symbols, numbers
     if (0x2000..=0x206f).contains(&cp)
       || (0x2070..=0x209f).contains(&cp)
@@ -8320,6 +8335,35 @@ mod tests {
     );
     assert_eq!(ja_mixed[1].text, "、漢字");
     assert_eq!(ja_mixed[1].font.family, "Noto Sans JP");
+
+    let ja_fullwidth_comma = pipeline
+      .shape("Hello，漢字", &ja_style, &ctx)
+      .expect("shape japanese fullwidth comma after latin");
+    assert_eq!(
+      ja_fullwidth_comma.len(),
+      2,
+      "expected fullwidth punctuation following Latin to start the CJK run"
+    );
+    assert_eq!(ja_fullwidth_comma[1].text, "，漢字");
+    assert_eq!(ja_fullwidth_comma[1].font.family, "Noto Sans JP");
+
+    let ja_fullwidth_parens = pipeline
+      .shape("Daruma（だるま）", &ja_style, &ctx)
+      .expect("shape japanese fullwidth parens after latin");
+    let paren_runs = ja_fullwidth_parens
+      .iter()
+      .filter(|run| run.text.contains('（') || run.text.contains('）'))
+      .collect::<Vec<_>>();
+    assert!(
+      !paren_runs.is_empty(),
+      "expected fullwidth parentheses to survive shaping runs"
+    );
+    for run in paren_runs {
+      assert_eq!(
+        run.font.family, "Noto Sans JP",
+        "fullwidth parentheses should follow JP glyph shapes, not generic CJK fallbacks"
+      );
+    }
 
     let mut ko_style = base_style.clone();
     ko_style.language = "ko".into();
