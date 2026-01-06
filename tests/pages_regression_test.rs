@@ -264,6 +264,11 @@ const PAGE_FIXTURES: &[PageFixture] = &[
     shots: DEFAULT_SHOTS,
   },
   PageFixture {
+    name: "table_span_minimal",
+    html: "table_span_minimal/index.html",
+    shots: DEFAULT_SHOTS,
+  },
+  PageFixture {
     name: "table_span_layout",
     html: "table_span_layout/index.html",
     shots: DEFAULT_SHOTS,

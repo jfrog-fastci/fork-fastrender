@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Table span minimal</title>
+    <style>
+      body {
+        margin: 0;
+        background: #fff;
+      }
+
+      table {
+        border-collapse: collapse;
+        table-layout: fixed;
+        width: 360px;
+        margin: 40px;
+      }
+
+      td {
+        border: 4px solid #111;
+        height: 60px;
+        padding: 0;
+        /* Avoid font rasterization differences; the fixture is geometry-driven. */
+        font-size: 0;
+      }
+
+      /* Colgroup span should apply this fill to the first two columns. */
+      colgroup.cg-a {
+        background: #ffd7d7;
+      }
+
+      /* Col span should apply this fill to the last two columns. */
+      col.col-b {
+        background: #d7e7ff;
+      }
+
+      /* Cell spans should override the column background so they are easy to spot. */
+      td.colspan {
+        background: #d7ffd7;
+      }
+
+      td.rowspan {
+        background: #fff2b8;
+      }
+    </style>
+  </head>
+  <body>
+    <table>
+      <colgroup span="2" class="cg-a"></colgroup>
+      <colgroup>
+        <col span="2" class="col-b" />
+      </colgroup>
+      <tbody>
+        <tr>
+          <td></td>
+          <td></td>
+          <td></td>
+          <td></td>
+        </tr>
+        <tr>
+          <td class="colspan" colspan="2"></td>
+          <td class="rowspan" rowspan="2"></td>
+          <td></td>
+        </tr>
+        <tr>
+          <td></td>
+          <td></td>
+          <td></td>
+        </tr>
+      </tbody>
+    </table>
+  </body>
+</html>
