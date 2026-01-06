@@ -1576,6 +1576,10 @@ impl ImageCache {
     self.instance_id
   }
 
+  pub(crate) fn is_placeholder_image(&self, image: &Arc<CachedImage>) -> bool {
+    Arc::ptr_eq(image, &about_url_placeholder_image())
+  }
+
   /// Attach a diagnostics sink for recording fetch failures.
   pub fn set_diagnostics_sink(&mut self, diagnostics: Option<Arc<Mutex<RenderDiagnostics>>>) {
     self.diagnostics = diagnostics;

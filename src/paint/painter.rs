@@ -6125,7 +6125,7 @@ impl Painter {
           density: None,
           from_picture: false,
         };
-        if self.paint_image_from_src(
+        if self.paint_image_from_src_reject_placeholder(
           &image_source,
           CrossOriginAttribute::None,
           style,
@@ -6136,6 +6136,25 @@ impl Painter {
           clip_mask,
         ) {
           return;
+        }
+
+        if let Some(image) = self.render_iframe_src(content, content_rect, style) {
+          if let Some(pixmap) =
+            PixmapRef::from_bytes(image.pixels.as_ref(), image.width, image.height)
+          {
+            let device_x = self.device_x(content_rect.x());
+            let device_y = self.device_y(content_rect.y());
+            let paint = PixmapPaint::default();
+            self.pixmap.draw_pixmap(
+              device_x as i32,
+              device_y as i32,
+              pixmap,
+              &paint,
+              Transform::identity(),
+              clip_mask,
+            );
+            return;
+          }
         }
       }
       ReplacedType::Video { .. } => {
@@ -7046,6 +7065,55 @@ impl Painter {
     height: f32,
     clip_mask: Option<&Mask>,
   ) -> bool {
+    self.paint_image_from_src_impl(
+      src,
+      crossorigin,
+      style,
+      x,
+      y,
+      width,
+      height,
+      clip_mask,
+      false,
+    )
+  }
+
+  fn paint_image_from_src_reject_placeholder(
+    &mut self,
+    src: &crate::tree::box_tree::SelectedImageSource<'_>,
+    crossorigin: CrossOriginAttribute,
+    style: Option<&ComputedStyle>,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    clip_mask: Option<&Mask>,
+  ) -> bool {
+    self.paint_image_from_src_impl(
+      src,
+      crossorigin,
+      style,
+      x,
+      y,
+      width,
+      height,
+      clip_mask,
+      true,
+    )
+  }
+
+  fn paint_image_from_src_impl(
+    &mut self,
+    src: &crate::tree::box_tree::SelectedImageSource<'_>,
+    crossorigin: CrossOriginAttribute,
+    style: Option<&ComputedStyle>,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    clip_mask: Option<&Mask>,
+    reject_placeholder: bool,
+  ) -> bool {
     if src.url.is_empty() {
       return false;
     }
@@ -7096,6 +7164,10 @@ impl Painter {
         }
       }
     };
+
+    if reject_placeholder && !inline_svg && self.image_cache.is_placeholder_image(&image) {
+      return false;
+    }
 
     if let Some(limit) = trace_image_paint_limit() {
       let seen = TRACE_IMAGE_PAINT_COUNT.load(Ordering::Relaxed);
@@ -7415,6 +7487,9 @@ impl Painter {
       Ok(img) => img,
       Err(_) => return false,
     };
+    if self.image_cache.is_placeholder_image(&image) {
+      return false;
+    }
 
     let image_resolution = style.map(|s| s.image_resolution).unwrap_or_default();
     let orientation = style

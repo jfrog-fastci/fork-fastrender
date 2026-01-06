@@ -2950,7 +2950,8 @@ impl DisplayListBuilder {
           ResolvedMaskImage::Generated(Box::new(image.clone()))
         }
         BackgroundImage::Url(src) => {
-          let Some(image) = self.decode_image(src, Some(style), true, CrossOriginAttribute::None)
+          let Some(image) =
+            self.decode_image(src, Some(style), true, CrossOriginAttribute::None, false)
           else {
             continue;
           };
@@ -4540,10 +4541,19 @@ impl DisplayListBuilder {
           ReplacedType::Image { crossorigin, .. } => *crossorigin,
           _ => CrossOriginAttribute::None,
         };
-        if let Some(image) = sources
-          .iter()
-          .find_map(|s| self.decode_image(s.url, style_for_image, false, crossorigin))
-        {
+        let reject_placeholder = matches!(
+          replaced_type,
+          ReplacedType::Embed { .. } | ReplacedType::Object { .. }
+        );
+        if let Some(image) = sources.iter().find_map(|s| {
+          self.decode_image(
+            s.url,
+            style_for_image,
+            false,
+            crossorigin,
+            reject_placeholder,
+          )
+        }) {
           let (content_rect, clip_radii) =
             self.replaced_content_rect_and_radii(rect, style_for_image);
           let (dest_x, dest_y, dest_w, dest_h) = {
@@ -4587,6 +4597,29 @@ impl DisplayListBuilder {
             self.list.push(DisplayItem::PopClip);
           }
           return;
+        }
+
+        if reject_placeholder {
+          if let Some(cache) = self.image_cache.as_ref() {
+            let (content_rect, _) = self.replaced_content_rect_and_radii(rect, style_for_image);
+            let src = match replaced_type {
+              ReplacedType::Embed { src } => src.as_str(),
+              ReplacedType::Object { data } => data.as_str(),
+              _ => "",
+            };
+            if let Some(image) = render_iframe_src(
+              src,
+              content_rect,
+              style_for_image,
+              cache,
+              &self.font_ctx,
+              self.device_pixel_ratio,
+              self.max_iframe_depth,
+            ) {
+              self.emit_iframe_image(image, rect, style_for_image);
+              return;
+            }
+          }
         }
 
         if let ReplacedType::Image { alt: Some(alt), .. } = replaced_type {
@@ -5766,7 +5799,9 @@ impl DisplayListBuilder {
         }
       }
       BackgroundImage::Url(src) => {
-        if let Some(image) = self.decode_image(src, Some(style), true, CrossOriginAttribute::None) {
+        if let Some(image) =
+          self.decode_image(src, Some(style), true, CrossOriginAttribute::None, false)
+        {
           let img_w = image.css_width;
           let img_h = image.css_height;
           if img_w > 0.0 && img_h > 0.0 {
@@ -6118,7 +6153,7 @@ impl DisplayListBuilder {
       BorderImageSource::Image(bg) => {
         let source = match bg.as_ref() {
           BackgroundImage::Url(src) => self
-            .decode_image(src, Some(style), true, CrossOriginAttribute::None)
+            .decode_image(src, Some(style), true, CrossOriginAttribute::None, false)
             .map(|image| BorderImageSourceItem::Raster((*image).clone())),
           BackgroundImage::LinearGradient { .. }
           | BackgroundImage::RepeatingLinearGradient { .. }
@@ -7998,6 +8033,7 @@ impl DisplayListBuilder {
     style: Option<&ComputedStyle>,
     decorative: bool,
     crossorigin: CrossOriginAttribute,
+    reject_placeholder: bool,
   ) -> Option<Arc<ImageData>> {
     let image_cache = self.image_cache.as_ref()?;
     let trimmed = src.trim_start();
@@ -8018,6 +8054,10 @@ impl DisplayListBuilder {
         .ok()?;
       (resolved_src, image)
     };
+
+    if reject_placeholder && !inline_svg && image_cache.is_placeholder_image(&image) {
+      return None;
+    }
 
     let image_resolution = style.map(|s| s.image_resolution).unwrap_or_default();
     let orientation = style
@@ -10227,10 +10267,10 @@ mod tests {
     let mut builder = DisplayListBuilder::new();
 
     let first = builder
-      .decode_image(&src, None, false, CrossOriginAttribute::None)
+      .decode_image(&src, None, false, CrossOriginAttribute::None, false)
       .expect("first decode");
     let second = builder
-      .decode_image(&src, None, false, CrossOriginAttribute::None)
+      .decode_image(&src, None, false, CrossOriginAttribute::None, false)
       .expect("cached decode");
     assert!(Arc::ptr_eq(&first, &second));
 
@@ -10245,17 +10285,18 @@ mod tests {
         Some(&rotated_style),
         false,
         CrossOriginAttribute::None,
+        false,
       )
       .expect("rotated decode");
     assert!(!Arc::ptr_eq(&first, &rotated));
 
     builder.set_device_pixel_ratio(2.0);
     let hidpi = builder
-      .decode_image(&src, None, false, CrossOriginAttribute::None)
+      .decode_image(&src, None, false, CrossOriginAttribute::None, false)
       .expect("hi-dpi decode");
     assert!(!Arc::ptr_eq(&first, &hidpi));
     let hidpi_cached = builder
-      .decode_image(&src, None, false, CrossOriginAttribute::None)
+      .decode_image(&src, None, false, CrossOriginAttribute::None, false)
       .expect("cached hi-dpi decode");
     assert!(Arc::ptr_eq(&hidpi, &hidpi_cached));
   }
@@ -10335,7 +10376,7 @@ mod tests {
         // Baseline: no-cors loads should succeed and populate the decode cache.
         assert!(
           builder
-            .decode_image(url, None, false, CrossOriginAttribute::None)
+            .decode_image(url, None, false, CrossOriginAttribute::None, false)
             .is_some(),
           "expected no-cors decode to succeed"
         );
@@ -10344,7 +10385,7 @@ mod tests {
         // enforcement is enabled; missing ACAO should surface as a load failure.
         assert!(
           builder
-            .decode_image(url, None, false, CrossOriginAttribute::Anonymous)
+            .decode_image(url, None, false, CrossOriginAttribute::Anonymous, false)
             .is_none(),
           "expected crossorigin decode to fail without ACAO"
         );
