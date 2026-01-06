@@ -18,20 +18,23 @@ fn debug_info_semantics_guard() {
   let forbidden = [
     (
       "semantic fallback to debug_info.tag_name",
-      Regex::new(r"\bdebug_info\b[^\n]*\btag_name\b").expect("valid regex"),
+      Regex::new(r"(?s)\.debug_info\b.{0,500}?\.tag_name(?:[^\(]|$)").expect("valid regex"),
     ),
     (
       "semantic fallback to debug_info spans",
-      Regex::new(r"\bdebug_info\b[^\n]*\b(colspan|rowspan|column_span)\b").expect("valid regex"),
-    ),
-    (
-      "binding debug_info for non-diagnostic control flow",
-      Regex::new(r"\bif\s+let\s+Some\s*\(\s*ref\s+debug_info\s*\)\s*=\s*.*\.debug_info\b")
+      Regex::new(r"(?s)\.debug_info\b.{0,500}?\.(colspan|rowspan|column_span)(?:[^\(]|$)")
         .expect("valid regex"),
     ),
     (
+      "binding debug_info for non-diagnostic control flow",
+      Regex::new(
+        r"(?s)\bif\s+let\s+Some\s*\(\s*ref\s+debug_info\s*\)\s*=\s*[^;]{0,500}\.debug_info\b",
+      )
+      .expect("valid regex"),
+    ),
+    (
       "hash_components() usage (DebugInfo must not influence cache keys)",
-      Regex::new(r"\.hash_components\(").expect("valid regex"),
+      Regex::new(r"\.hash_components\s*\(").expect("valid regex"),
     ),
   ];
 
@@ -57,17 +60,21 @@ fn debug_info_semantics_guard() {
       continue;
     };
 
-    for (line_idx, line) in contents.lines().enumerate() {
-      for (label, pattern) in &forbidden {
-        if pattern.is_match(line) {
-          violations.push(format!(
-            "{}:{}: {}: {}",
-            rel_path.display(),
-            line_idx + 1,
-            label,
-            line.trim()
-          ));
-        }
+    for (label, pattern) in &forbidden {
+      for mat in pattern.find_iter(&contents) {
+        let line_idx = contents[..mat.start()].lines().count();
+        let line = contents
+          .lines()
+          .nth(line_idx)
+          .unwrap_or_default()
+          .trim();
+        violations.push(format!(
+          "{}:{}: {}: {}",
+          rel_path.display(),
+          line_idx + 1,
+          label,
+          line
+        ));
       }
     }
   }

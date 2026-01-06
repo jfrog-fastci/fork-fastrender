@@ -945,9 +945,7 @@ mod tests {
     assert!(box_tree.root.debug_info.is_some());
 
     let info = box_tree.root.debug_info.as_ref().unwrap();
-    assert_eq!(info.tag_name, Some("div".to_string()));
-    assert_eq!(info.id, Some("header".to_string()));
-    assert_eq!(info.classes.len(), 1);
+    assert_eq!(info.to_selector(), "div#header.navbar");
   }
 
   #[test]

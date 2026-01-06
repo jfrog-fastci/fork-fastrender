@@ -1413,23 +1413,24 @@ impl FormattingContext for FlexFormattingContext {
                             }
                         }
                      }
-                     if trace_enabled {
-                         let mut remaining = TRACE_COUNT
-                           .get_or_init(|| Mutex::new(50))
-                           .lock()
-                           .unwrap_or_else(|poisoned| poisoned.into_inner());
-                         if *remaining > 0 {
-                              eprintln!(
-                                  "flex-trace node={:?} display={:?} known=({:?},{:?}) avail=({:?},{:?}) flex=({}, {}, {:?})",
-                                 box_node
-                                    .debug_info
-                                    .as_ref()
-                                    .and_then(|d| d.tag_name.clone())
-                                    .unwrap_or_else(|| "?".into()),
-                                box_node.style.display,
-                                known_dimensions.width,
-                                known_dimensions.height,
-                                avail.width,
+                      if trace_enabled {
+                          let mut remaining = TRACE_COUNT
+                            .get_or_init(|| Mutex::new(50))
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                          if *remaining > 0 {
+                              let selector = box_node
+                                .debug_info
+                                .as_ref()
+                                .map(|d| d.to_selector())
+                                .unwrap_or_else(|| "<anon>".to_string());
+                               eprintln!(
+                                   "flex-trace selector={} display={:?} known=({:?},{:?}) avail=({:?},{:?}) flex=({}, {}, {:?})",
+                                  selector,
+                                 box_node.style.display,
+                                 known_dimensions.width,
+                                 known_dimensions.height,
+                                 avail.width,
                                 avail.height,
                                 box_node.style.flex_grow,
                                 box_node.style.flex_shrink,
@@ -3218,13 +3219,8 @@ impl FormattingContext for FlexFormattingContext {
         let child_ids: Vec<usize> = box_node.children.iter().take(5).map(|c| c.id).collect();
         let style = &box_node.style;
         eprintln!(
-                    "[flex-wide] box_id={:?} tag={:?} selector={} avail_w={:?} avail_h={:?} frag_w={:.1} frag_h={:.1} viewport_w={:.1} display={:?} width={:?} min_w={:?} max_w={:?} margins=({:.1},{:.1}) children_first5={:?}",
+                    "[flex-wide] box_id={:?} selector={} avail_w={:?} avail_h={:?} frag_w={:.1} frag_h={:.1} viewport_w={:.1} display={:?} width={:?} min_w={:?} max_w={:?} margins=({:.1},{:.1}) children_first5={:?}",
                     box_node.id,
-                    box_node
-                        .debug_info
-                        .as_ref()
-                        .and_then(|d| d.tag_name.clone())
-                        .unwrap_or_default(),
                     selector,
                     avail_w,
                     constraints.height(),
@@ -3260,14 +3256,15 @@ impl FormattingContext for FlexFormattingContext {
         }
       }
       if log_skinny_frag && fragment.bounds.width() <= 1.0 {
+        let selector = box_node
+          .debug_info
+          .as_ref()
+          .map(|d| d.to_selector())
+          .unwrap_or_else(|| "<anon>".to_string());
         eprintln!(
-                    "[skinny-flex-frag] box_id={:?} tag={:?} avail_w={:?} avail_h={:?} frag_w={:.2} frag_h={:.2} display={:?}",
+                    "[skinny-flex-frag] box_id={:?} selector={} avail_w={:?} avail_h={:?} frag_w={:.2} frag_h={:.2} display={:?}",
                     box_node.id,
-                    box_node
-                        .debug_info
-                        .as_ref()
-                        .and_then(|d| d.tag_name.clone())
-                        .unwrap_or_default(),
+                    selector,
                     avail_w,
                     constraints.height(),
                     fragment.bounds.width(),
