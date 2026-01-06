@@ -29,7 +29,7 @@ use std::io;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, RecvTimeoutError};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tiny_skia::{IntSize, Pixmap};
@@ -169,29 +169,23 @@ struct FixtureResult {
 
 struct RenderOutcome {
   png: Option<Vec<u8>>,
-  pixels: Option<PixmapBytes>,
   diagnostics: fastrender::RenderDiagnostics,
   artifacts: RenderArtifacts,
 }
 
 #[derive(Clone)]
-struct PixmapBytes {
-  width: u32,
-  height: u32,
-  data: Vec<u8>,
-}
-
-struct FixtureRunResult {
-  result: FixtureResult,
-  pixels: Option<PixmapBytes>,
-}
-
-#[derive(Clone, Copy)]
 struct RenderRunOptions {
   write_outputs: bool,
   write_snapshot: bool,
-  capture_pixels: bool,
   quiet: bool,
+  determinism: Option<DeterminismRun>,
+}
+
+#[derive(Clone)]
+struct DeterminismRun {
+  repeat_idx: usize,
+  save_variants: bool,
+  determinism: Arc<Mutex<HashMap<String, FixtureDeterminism>>>,
 }
 
 #[derive(Clone)]
@@ -493,11 +487,11 @@ fn run(cli: Cli) -> io::Result<()> {
             RenderRunOptions {
               write_outputs: true,
               write_snapshot: shared.write_snapshot,
-              capture_pixels: false,
               quiet: false,
+              determinism: None,
             },
           );
-          results.lock().unwrap().push(run.result);
+          results.lock().unwrap().push(run);
         });
       }
     });
@@ -507,8 +501,9 @@ fn run(cli: Cli) -> io::Result<()> {
     // Render repeat 0 with full outputs (PNG/log/snapshot), then run additional repeats through the
     // same rayon pool to surface any scheduling-dependent nondeterminism.
     let results_mutex: Mutex<Vec<FixtureResult>> = Mutex::new(Vec::new());
-    let determinism_mutex: Mutex<HashMap<String, FixtureDeterminism>> = Mutex::new(HashMap::new());
     let repeat_failures_mutex: Mutex<Vec<RepeatFailure>> = Mutex::new(Vec::new());
+    let determinism_mutex: Arc<Mutex<HashMap<String, FixtureDeterminism>>> =
+      Arc::new(Mutex::new(HashMap::new()));
 
     for repeat_idx in 0..cli.repeat {
       if cli.reset_paint_scratch {
@@ -533,10 +528,9 @@ fn run(cli: Cli) -> io::Result<()> {
         for entry in ordered {
           let shared = shared.clone();
           let results = &results_mutex;
-          let determinism = &determinism_mutex;
           let repeat_failures = &repeat_failures_mutex;
+          let determinism = Arc::clone(&determinism_mutex);
           let save_variants = cli.save_variants;
-          let out_dir = cli.out_dir.clone();
           s.spawn(move |_| {
             let run = render_fixture(
               &shared,
@@ -544,56 +538,24 @@ fn run(cli: Cli) -> io::Result<()> {
               RenderRunOptions {
                 write_outputs,
                 write_snapshot,
-                capture_pixels: true,
                 quiet: !write_outputs,
+                determinism: Some(DeterminismRun {
+                  repeat_idx,
+                  save_variants,
+                  determinism,
+                }),
               },
             );
             if write_outputs {
-              results.lock().unwrap().push(run.result.clone());
+              results.lock().unwrap().push(run.clone());
             }
 
-            if repeat_idx == 0 {
-              if let (Status::Ok, Some(pixels)) = (&run.result.status, run.pixels) {
-                let (hash_hi, hash_lo) = hash128(&pixels.data);
-                determinism.lock().unwrap().insert(
-                  run.result.stem.clone(),
-                  FixtureDeterminism {
-                    stem: run.result.stem.clone(),
-                    variants: vec![VariantRecord {
-                      hash_hi,
-                      hash_lo,
-                      width: pixels.width,
-                      height: pixels.height,
-                      count: 1,
-                      diff_pixels_vs_baseline: Some(0),
-                      first_mismatch_vs_baseline: None,
-                      first_mismatch_rgba_vs_baseline: None,
-                      data: None,
-                    }],
-                    baseline_rgba: None,
-                  },
-                );
-              }
-            } else {
-              match run.result.status {
-                Status::Ok => {
-                  let Some(pixels) = run.pixels else {
-                    return;
-                  };
-                  let mut determinism = determinism.lock().unwrap();
-                  let Some(state) = determinism.get_mut(&run.result.stem) else {
-                    return;
-                  };
-                  record_variant(state, pixels, &out_dir, save_variants);
-                }
-                status => {
-                  repeat_failures.lock().unwrap().push(RepeatFailure {
-                    stem: run.result.stem.clone(),
-                    repeat_idx,
-                    status,
-                  });
-                }
-              }
+            if repeat_idx > 0 && !matches!(run.status, Status::Ok) {
+              repeat_failures.lock().unwrap().push(RepeatFailure {
+                stem: run.stem.clone(),
+                repeat_idx,
+                status: run.status.clone(),
+              });
             }
           });
         }
@@ -602,7 +564,10 @@ fn run(cli: Cli) -> io::Result<()> {
 
     results = results_mutex.into_inner().unwrap();
     results.sort_by(|a, b| a.stem.cmp(&b.stem));
-    determinism = determinism_mutex.into_inner().unwrap();
+    determinism = match Arc::try_unwrap(determinism_mutex) {
+      Ok(mutex) => mutex.into_inner().unwrap(),
+      Err(_) => panic!("determinism mutex still shared"),
+    };
     repeat_failures = repeat_failures_mutex.into_inner().unwrap();
     repeat_failures.sort_by(|a, b| {
       a.stem
@@ -987,23 +952,25 @@ fn diff_premultiplied_against_rgba_baseline(
 
 fn record_variant(
   state: &mut FixtureDeterminism,
-  pixels: PixmapBytes,
+  width: u32,
+  height: u32,
+  premultiplied: &[u8],
   out_dir: &Path,
   save_variant_bytes: bool,
 ) {
-  let (hash_hi, hash_lo) = hash128(&pixels.data);
+  let (hash_hi, hash_lo) = hash128(premultiplied);
 
   for variant in &mut state.variants {
     if variant.hash_hi == hash_hi
       && variant.hash_lo == hash_lo
-      && variant.width == pixels.width
-      && variant.height == pixels.height
+      && variant.width == width
+      && variant.height == height
     {
       // The hashes are our primary key, but confirm equality with the stored bytes when available
       // (e.g. when `--save-variants` is enabled). This keeps the variant tracker effectively exact
       // while still avoiding retaining baseline pixmap bytes for every fixture.
       if let Some(existing) = variant.data.as_deref() {
-        if existing == pixels.data.as_slice() {
+        if existing == premultiplied {
           variant.count += 1;
           return;
         }
@@ -1022,7 +989,7 @@ fn record_variant(
   let mut first_mismatch = None;
   let mut first_mismatch_rgba = None;
 
-  if baseline.width == pixels.width && baseline.height == pixels.height {
+  if baseline.width == width && baseline.height == height {
     // Compare against the baseline PNG output so we don't need to hold the baseline pixmap bytes in
     // memory for every fixture in repeat mode.
     if state.baseline_rgba.is_none() {
@@ -1030,7 +997,7 @@ fn record_variant(
       let decoded = fs::read(&baseline_png).ok().and_then(|png_bytes| {
         let img = image::load_from_memory_with_format(&png_bytes, ImageFormat::Png).ok()?;
         let img = img.to_rgba8();
-        if img.width() != pixels.width || img.height() != pixels.height {
+        if img.width() != width || img.height() != height {
           return None;
         }
         Some(img.into_raw())
@@ -1041,9 +1008,9 @@ fn record_variant(
     }
 
     if let Some(baseline_rgba) = state.baseline_rgba.as_deref() {
-      if baseline_rgba.len() == pixels.data.len() && pixels.width > 0 {
+      if baseline_rgba.len() == premultiplied.len() && width > 0 {
         let (d, mismatch, mismatch_rgba) =
-          diff_premultiplied_against_rgba_baseline(baseline_rgba, &pixels.data, pixels.width);
+          diff_premultiplied_against_rgba_baseline(baseline_rgba, premultiplied, width);
         diff_pixels = Some(d);
         first_mismatch = mismatch;
         first_mismatch_rgba = mismatch_rgba;
@@ -1054,14 +1021,14 @@ fn record_variant(
   state.variants.push(VariantRecord {
     hash_hi,
     hash_lo,
-    width: pixels.width,
-    height: pixels.height,
+    width,
+    height,
     count: 1,
     diff_pixels_vs_baseline: diff_pixels,
     first_mismatch_vs_baseline: first_mismatch,
     first_mismatch_rgba_vs_baseline: first_mismatch_rgba,
     data: if save_variant_bytes {
-      Some(pixels.data)
+      Some(premultiplied.to_vec())
     } else {
       None
     },
@@ -1179,7 +1146,7 @@ fn render_fixture(
   shared: &RenderShared,
   entry: &FixtureEntry,
   opts: RenderRunOptions,
-) -> FixtureRunResult {
+) -> FixtureResult {
   let stem = entry.stem.clone();
   let log_path = log_path_for(&shared.out_dir, &stem);
   let output_path = output_path_for(&shared.out_dir, &stem);
@@ -1225,14 +1192,11 @@ fn render_fixture(
         );
         let _ = fs::write(&log_path, log);
       }
-      return FixtureRunResult {
-        result: FixtureResult {
-          stem,
-          status,
-          time_ms: 0,
-          size: None,
-        },
-        pixels: None,
+      return FixtureResult {
+        stem,
+        status,
+        time_ms: 0,
+        size: None,
       };
     }
   };
@@ -1259,14 +1223,11 @@ fn render_fixture(
         );
         let _ = fs::write(&log_path, log);
       }
-      return FixtureRunResult {
-        result: FixtureResult {
-          stem,
-          status,
-          time_ms: 0,
-          size: None,
-        },
-        pixels: None,
+      return FixtureResult {
+        stem,
+        status,
+        time_ms: 0,
+        size: None,
       };
     }
   };
@@ -1295,14 +1256,11 @@ fn render_fixture(
             &mut log,
           );
           let _ = fs::write(&log_path, log);
-          return FixtureRunResult {
-            result: FixtureResult {
-              stem,
-              status,
-              time_ms: 0,
-              size: None,
-            },
-            pixels: None,
+          return FixtureResult {
+            stem,
+            status,
+            time_ms: 0,
+            size: None,
           };
         }
       },
@@ -1324,14 +1282,11 @@ fn render_fixture(
           &mut log,
         );
         let _ = fs::write(&log_path, log);
-        return FixtureRunResult {
-          result: FixtureResult {
-            stem,
-            status,
-            time_ms: 0,
-            size: None,
-          },
-          pixels: None,
+        return FixtureResult {
+          stem,
+          status,
+          time_ms: 0,
+          size: None,
         };
       }
     };
@@ -1363,14 +1318,11 @@ fn render_fixture(
         );
         let _ = fs::write(&log_path, log);
       }
-      return FixtureRunResult {
-        result: FixtureResult {
-          stem,
-          status,
-          time_ms: 0,
-          size: None,
-        },
-        pixels: None,
+      return FixtureResult {
+        stem,
+        status,
+        time_ms: 0,
+        size: None,
       };
     }
   };
@@ -1384,23 +1336,57 @@ fn render_fixture(
   } else {
     RenderArtifactRequest::none()
   };
-  let capture_pixels = opts.capture_pixels;
   let encode_png = opts.write_outputs;
+  let determinism = opts.determinism.clone();
+  let stem_for_determinism = stem.clone();
+  let out_dir_for_determinism = shared.out_dir.clone();
 
   let render_work = move || -> Result<RenderOutcome, fastrender::Error> {
     let report = render_pool.with_renderer(|renderer| {
       renderer.render_html_with_stylesheets_report(&html, &base_url, options, artifact_request)
     })?;
 
-    let pixels = if capture_pixels {
-      Some(PixmapBytes {
-        width: report.pixmap.width(),
-        height: report.pixmap.height(),
-        data: report.pixmap.data().to_vec(),
-      })
-    } else {
-      None
-    };
+    if let Some(determinism) = determinism.as_ref() {
+      if blocked_network_urls(&report.diagnostics).is_empty() {
+        let width = report.pixmap.width();
+        let height = report.pixmap.height();
+        let data = report.pixmap.data();
+
+        let mut determinism_map = determinism
+          .determinism
+          .lock()
+          .expect("determinism mutex poisoned");
+        if determinism.repeat_idx == 0 {
+          let (hash_hi, hash_lo) = hash128(data);
+          determinism_map.entry(stem_for_determinism.clone()).or_insert_with(|| {
+            FixtureDeterminism {
+              stem: stem_for_determinism.clone(),
+              variants: vec![VariantRecord {
+                hash_hi,
+                hash_lo,
+                width,
+                height,
+                count: 1,
+                diff_pixels_vs_baseline: Some(0),
+                first_mismatch_vs_baseline: None,
+                first_mismatch_rgba_vs_baseline: None,
+                data: None,
+              }],
+              baseline_rgba: None,
+            }
+          });
+        } else if let Some(state) = determinism_map.get_mut(&stem_for_determinism) {
+          record_variant(
+            state,
+            width,
+            height,
+            data,
+            &out_dir_for_determinism,
+            determinism.save_variants,
+          );
+        }
+      }
+    }
 
     let png = if encode_png {
       Some(encode_image(&report.pixmap, OutputFormat::Png)?)
@@ -1410,7 +1396,6 @@ fn render_fixture(
 
     Ok(RenderOutcome {
       png,
-      pixels,
       diagnostics: report.diagnostics,
       artifacts: report.artifacts,
     })
@@ -1444,13 +1429,11 @@ fn render_fixture(
 
   let mut captured_artifacts: Option<RenderArtifacts> = None;
   let mut diagnostics = fastrender::RenderDiagnostics::default();
-  let mut pixels: Option<PixmapBytes> = None;
   let mut blocked_urls: Option<Vec<String>> = None;
 
   let (mut status, size) = match result {
     Ok(outcome) => {
       diagnostics = outcome.diagnostics;
-      pixels = outcome.pixels;
 
       let mut status = Status::Ok;
 
@@ -1474,14 +1457,11 @@ fn render_fixture(
           if !log.is_empty() {
             let _ = writeln!(log, "PNG encode missing despite write_outputs=true");
           }
-          return FixtureRunResult {
-            result: FixtureResult {
-              stem,
-              status: Status::Error("internal: missing PNG".to_string()),
-              time_ms,
-              size: None,
-            },
-            pixels: None,
+          return FixtureResult {
+            stem,
+            status: Status::Error("internal: missing PNG".to_string()),
+            time_ms,
+            size: None,
           };
         };
 
@@ -1607,16 +1587,11 @@ fn render_fixture(
     }
   }
 
-  let pixels = matches!(&status, Status::Ok).then_some(pixels).flatten();
-
-  FixtureRunResult {
-    result: FixtureResult {
-      stem,
-      status,
-      time_ms,
-      size,
-    },
-    pixels,
+  FixtureResult {
+    stem,
+    status,
+    time_ms,
+    size,
   }
 }
 
@@ -1788,11 +1763,9 @@ mod tests {
 
     record_variant(
       &mut state,
-      PixmapBytes {
-        width: 1,
-        height: 1,
-        data: baseline_bytes,
-      },
+      1,
+      1,
+      &baseline_bytes,
       out_dir,
       false,
     );
@@ -1842,11 +1815,9 @@ mod tests {
 
     record_variant(
       &mut state,
-      PixmapBytes {
-        width: 1,
-        height: 1,
-        data: variant_bytes.clone(),
-      },
+      1,
+      1,
+      &variant_bytes,
       out_dir,
       true,
     );
@@ -1868,11 +1839,9 @@ mod tests {
     // confirm equality before incrementing the count.
     record_variant(
       &mut state,
-      PixmapBytes {
-        width: 1,
-        height: 1,
-        data: variant_bytes.clone(),
-      },
+      1,
+      1,
+      &variant_bytes,
       out_dir,
       true,
     );
@@ -1916,11 +1885,9 @@ mod tests {
 
     record_variant(
       &mut state,
-      PixmapBytes {
-        width: 1,
-        height: 1,
-        data: pixmap_bytes_rgba(1, 1, [0, 255, 0, 255]),
-      },
+      1,
+      1,
+      &pixmap_bytes_rgba(1, 1, [0, 255, 0, 255]),
       out_dir,
       false,
     );
@@ -1965,11 +1932,9 @@ mod tests {
 
     record_variant(
       &mut state,
-      PixmapBytes {
-        width: 1,
-        height: 1,
-        data: pixmap_bytes_rgba(1, 1, [0, 255, 0, 255]),
-      },
+      1,
+      1,
+      &pixmap_bytes_rgba(1, 1, [0, 255, 0, 255]),
       out_dir,
       false,
     );
@@ -1981,11 +1946,9 @@ mod tests {
 
     record_variant(
       &mut state,
-      PixmapBytes {
-        width: 1,
-        height: 1,
-        data: pixmap_bytes_rgba(1, 1, [0, 0, 255, 255]),
-      },
+      1,
+      1,
+      &pixmap_bytes_rgba(1, 1, [0, 0, 255, 255]),
       out_dir,
       false,
     );
