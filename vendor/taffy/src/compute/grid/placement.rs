@@ -10,6 +10,39 @@ use crate::util::check_layout_abort;
 use crate::util::sys::Vec;
 use crate::{CoreStyle, GridItemStyle};
 
+#[inline]
+fn clamp_span_to_explicit_tracks(
+  span: Line<OriginZeroLine>,
+  explicit_track_count: u16,
+) -> Line<OriginZeroLine> {
+  // Subgrids do not generate implicit tracks in the subgridded axis. When an item's placement would
+  // otherwise extend beyond the explicit grid (e.g. `grid-column: 2` in a 1-track subgrid), clamp
+  // the resolved span back into the explicit track range. This matches browser behaviour where the
+  // item falls back into the available tracks rather than expanding the grid.
+  let track_count = explicit_track_count as i16;
+  if track_count <= 0 {
+    return Line {
+      start: OriginZeroLine(0),
+      end: OriginZeroLine(0),
+    };
+  }
+
+  let mut span_len = span.end.0 - span.start.0;
+  if span_len <= 0 {
+    span_len = 1;
+  }
+  if span_len > track_count {
+    span_len = track_count;
+  }
+
+  let max_start = track_count - span_len;
+  let start = span.start.0.clamp(0, max_start);
+  Line {
+    start: OriginZeroLine(start),
+    end: OriginZeroLine(start + span_len),
+  }
+}
+
 /// 8.5. Grid Item Placement Algorithm
 /// Place items into the grid, generating new rows/column into the implicit grid as required
 ///
@@ -22,12 +55,28 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
   align_items: AlignItems,
   justify_items: AlignItems,
   named_line_resolver: &NamedLineResolver<<S as CoreStyle>::CustomIdent>,
+  disallow_implicit_tracks: InBothAbsAxis<bool>,
 ) where
   S: GridItemStyle + 'a,
   ChildIter: Iterator<Item = (usize, NodeId, S)>,
 {
   let primary_axis = grid_auto_flow.primary_axis();
   let secondary_axis = primary_axis.other_axis();
+
+  let explicit_track_counts = InBothAbsAxis {
+    horizontal: cell_occupancy_matrix
+      .track_counts(AbsoluteAxis::Horizontal)
+      .explicit,
+    vertical: cell_occupancy_matrix
+      .track_counts(AbsoluteAxis::Vertical)
+      .explicit,
+  };
+  let clamp_span = |axis: AbsoluteAxis, span: Line<OriginZeroLine>| {
+    if !disallow_implicit_tracks.get(axis) {
+      return span;
+    }
+    clamp_span_to_explicit_tracks(span, explicit_track_counts.get(axis))
+  };
 
   let map_child_style_to_origin_zero_placement = {
     let explicit_col_count = cell_occupancy_matrix
@@ -79,6 +128,8 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
       println!("Definite Item {}\n==============", index);
 
       let (primary_span, secondary_span) = place_definite_grid_item(*child_placement, primary_axis);
+      let primary_span = clamp_span(primary_axis, primary_span);
+      let secondary_span = clamp_span(secondary_axis, secondary_span);
       record_grid_placement(
         cell_occupancy_matrix,
         items,
@@ -144,6 +195,8 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
         sec_idx += 1;
       }
     };
+    let primary_span = clamp_span(primary_axis, primary_span);
+    let secondary_span = clamp_span(secondary_axis, secondary_span);
 
     record_grid_placement(
       cell_occupancy_matrix,
@@ -184,6 +237,8 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
       grid_auto_flow,
       grid_position,
     );
+    let primary_span = clamp_span(primary_axis, primary_span);
+    let secondary_span = clamp_span(secondary_axis, secondary_span);
 
     // Record item
     record_grid_placement(
@@ -469,6 +524,10 @@ mod tests {
         AlignSelf::Start,
         // TODO: actually test named line resolution
         &name_resolver,
+        crate::geometry::InBothAbsAxis {
+          horizontal: false,
+          vertical: false,
+        },
       );
 
       // Assert that each item has been placed in the right location

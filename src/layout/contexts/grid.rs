@@ -81,6 +81,7 @@ use crate::style::types::GridTrack;
 use crate::style::types::IntrinsicSizeKeyword;
 use crate::style::types::JustifyContent;
 use crate::style::types::Overflow as CssOverflow;
+use crate::style::types::WhiteSpace;
 use crate::style::types::WritingMode;
 use crate::style::values::Length;
 use crate::style::ComputedStyle;
@@ -173,17 +174,12 @@ impl GridAxisStyle {
     }
   }
 
-  fn effective_for_grid_container(style: &ComputedStyle, parent_axis: Option<Self>) -> Self {
-    let mut axis = Self::from_style(style);
-    if style.grid_row_subgrid || style.grid_column_subgrid {
-      if let Some(parent) = parent_axis {
-        axis.writing_mode = parent.writing_mode;
-        if style.grid_column_subgrid {
-          axis.direction = parent.direction;
-        }
-      }
-    }
-    axis
+  fn effective_for_grid_container(style: &ComputedStyle, _parent_axis: Option<Self>) -> Self {
+    // Grid container axes are defined by the element's own writing-mode/direction (even when the
+    // element is a subgrid). Track inheritance is handled by transposing the subgrid flags/line
+    // names into Taffy's physical axes; inheriting the parent writing-mode here breaks vertical
+    // writing-mode subgrids (e.g. `grid-template-rows: subgrid` under `writing-mode: vertical-rl`).
+    Self::from_style(style)
   }
 
   fn inline_is_horizontal(self) -> bool {
@@ -595,6 +591,59 @@ fn ensure_box_id(node: &BoxNode) -> usize {
     return node.id;
   }
   EPHEMERAL_BOX_ID_BASE | (node as *const BoxNode as usize)
+}
+
+fn is_collapsible_ascii_whitespace_only(text: &str) -> bool {
+  // Only treat the ASCII whitespace characters that participate in CSS white-space collapsing as
+  // collapsible. In particular, do not consider NBSP collapsible.
+  text.chars().all(|ch| {
+    matches!(
+      ch,
+      '\r' | '\n' | '\u{000B}' | '\u{000C}' | '\u{0085}' | '\u{2028}' | '\u{2029}' | ' ' | '\t'
+    )
+  })
+}
+
+fn is_collapsible_whitespace_grid_item(node: &BoxNode) -> bool {
+  // Inter-element whitespace commonly appears in HTML source, but whitespace-only text nodes that
+  // collapse to empty should not generate grid items (matching browser behavior). If we keep these
+  // nodes, Taffy will place them into grid tracks, shifting real items and expanding the implicit
+  // grid.
+  if !matches!(
+    node.style.white_space,
+    WhiteSpace::Normal | WhiteSpace::Nowrap
+  ) {
+    return false;
+  }
+
+  fn subtree_is_whitespace_only(node: &BoxNode) -> bool {
+    match &node.box_type {
+      crate::tree::box_tree::BoxType::Text(text) => is_collapsible_ascii_whitespace_only(&text.text),
+      crate::tree::box_tree::BoxType::Marker(marker) => match &marker.content {
+        crate::tree::box_tree::MarkerContent::Text(text) => is_collapsible_ascii_whitespace_only(text),
+        crate::tree::box_tree::MarkerContent::Image(_) => false,
+      },
+      crate::tree::box_tree::BoxType::Anonymous(_) => node.children.iter().all(subtree_is_whitespace_only),
+      _ => false,
+    }
+  }
+
+  match &node.box_type {
+    crate::tree::box_tree::BoxType::Text(text) => is_collapsible_ascii_whitespace_only(&text.text),
+    crate::tree::box_tree::BoxType::Marker(marker) => match &marker.content {
+      crate::tree::box_tree::MarkerContent::Text(text) => is_collapsible_ascii_whitespace_only(text),
+      crate::tree::box_tree::MarkerContent::Image(_) => false,
+    },
+    crate::tree::box_tree::BoxType::Anonymous(anon)
+      if matches!(
+        anon.anonymous_type,
+        crate::tree::box_tree::AnonymousType::Block | crate::tree::box_tree::AnonymousType::Inline
+      ) =>
+    {
+      subtree_is_whitespace_only(node)
+    }
+    _ => false,
+  }
 }
 
 fn constraints_from_taffy(
@@ -1023,6 +1072,56 @@ impl GridFormattingContext {
       return Ok(None);
     }
 
+    // Resolving intrinsic sizing keywords (`min/max/fit-content`) requires querying the intrinsic
+    // size of *this same node*. Those intrinsic size queries can re-enter grid layout, which in
+    // turn will attempt to resolve intrinsic keywords again, causing infinite recursion
+    // (manifesting as a stack overflow).
+    //
+    // Avoid this by clearing any intrinsic sizing keywords on the axis being measured while we
+    // compute the node's intrinsic min/max sizes. We still apply the authored keyword constraints
+    // after measuring by clamping against the computed intrinsic min/max values.
+    let cleared_style_for_axis = |axis: Axis| -> Option<Arc<ComputedStyle>> {
+      let mut next_style: ComputedStyle = style.clone();
+      let mut changed = false;
+      match axis {
+        Axis::Horizontal => {
+          if next_style.width_keyword.is_some() {
+            next_style.width = None;
+            next_style.width_keyword = None;
+            changed = true;
+          }
+          if next_style.min_width_keyword.is_some() {
+            next_style.min_width = None;
+            next_style.min_width_keyword = None;
+            changed = true;
+          }
+          if next_style.max_width_keyword.is_some() {
+            next_style.max_width = None;
+            next_style.max_width_keyword = None;
+            changed = true;
+          }
+        }
+        Axis::Vertical => {
+          if next_style.height_keyword.is_some() {
+            next_style.height = None;
+            next_style.height_keyword = None;
+            changed = true;
+          }
+          if next_style.min_height_keyword.is_some() {
+            next_style.min_height = None;
+            next_style.min_height_keyword = None;
+            changed = true;
+          }
+          if next_style.max_height_keyword.is_some() {
+            next_style.max_height = None;
+            next_style.max_height_keyword = None;
+            changed = true;
+          }
+        }
+      }
+      changed.then(|| Arc::new(next_style))
+    };
+
     let should_resolve_keyword = |keyword: IntrinsicSizeKeyword| match keyword {
       IntrinsicSizeKeyword::FitContent { .. } => resolve_fit_content,
       _ => true,
@@ -1054,12 +1153,24 @@ impl GridFormattingContext {
     let vertical_edges = self.edges_px(style, Axis::Vertical).unwrap_or(0.0);
 
     let (intrinsic_min_w, intrinsic_max_w) = if has_horizontal_keyword {
-      self.intrinsic_min_max_for_physical_axis(box_node, style, Axis::Horizontal)?
+      if let Some(cleared) = cleared_style_for_axis(Axis::Horizontal) {
+        crate::layout::style_override::with_style_override(box_node.id, cleared.clone(), || {
+          self.intrinsic_min_max_for_physical_axis(box_node, cleared.as_ref(), Axis::Horizontal)
+        })?
+      } else {
+        self.intrinsic_min_max_for_physical_axis(box_node, style, Axis::Horizontal)?
+      }
     } else {
       (0.0, 0.0)
     };
     let (intrinsic_min_h, intrinsic_max_h) = if has_vertical_keyword {
-      self.intrinsic_min_max_for_physical_axis(box_node, style, Axis::Vertical)?
+      if let Some(cleared) = cleared_style_for_axis(Axis::Vertical) {
+        crate::layout::style_override::with_style_override(box_node.id, cleared.clone(), || {
+          self.intrinsic_min_max_for_physical_axis(box_node, cleared.as_ref(), Axis::Vertical)
+        })?
+      } else {
+        self.intrinsic_min_max_for_physical_axis(box_node, style, Axis::Vertical)?
+      }
     } else {
       (0.0, 0.0)
     };
@@ -2124,6 +2235,9 @@ impl GridFormattingContext {
       if let Some(children_override) = children_override {
         for child in children_override {
           check_layout_deadline(deadline_counter)?;
+          if is_collapsible_whitespace_grid_item(child) {
+            continue;
+          }
           match child.style.position {
             crate::style::position::Position::Absolute
             | crate::style::position::Position::Fixed => positioned.push(*child as *const BoxNode),
@@ -2138,6 +2252,9 @@ impl GridFormattingContext {
       } else {
         for child in box_node.children.iter() {
           check_layout_deadline(deadline_counter)?;
+          if is_collapsible_whitespace_grid_item(child) {
+            continue;
+          }
           match child.style.position {
             crate::style::position::Position::Absolute
             | crate::style::position::Position::Fixed => positioned.push(child as *const BoxNode),
@@ -10683,7 +10800,7 @@ mod tests {
   }
 
   #[test]
-  fn convert_style_subgrids_inherit_axes_swapped_from_containing_grid() {
+  fn convert_style_subgrids_use_own_writing_mode_for_axes_swapped() {
     let gc = GridFormattingContext::new();
 
     let mut parent_style = ComputedStyle::default();
@@ -10704,8 +10821,8 @@ mod tests {
       true,
     );
     assert!(
-      !taffy_style.axes_swapped,
-      "subgrids must inherit axes from the containing grid (not their own writing-mode)"
+      taffy_style.axes_swapped,
+      "subgrids should transpose axes based on their own writing-mode"
     );
 
     parent_style.writing_mode = WritingMode::VerticalRl;
@@ -10719,8 +10836,8 @@ mod tests {
       true,
     );
     assert!(
-      taffy_style.axes_swapped,
-      "subgrids should inherit axes_swapped when the containing grid uses a vertical writing-mode"
+      !taffy_style.axes_swapped,
+      "horizontal-tb subgrids should not transpose axes even when the parent is vertical"
     );
   }
 

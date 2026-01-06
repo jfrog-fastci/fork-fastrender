@@ -69,12 +69,20 @@ impl Sub<OriginZeroLine> for OriginZeroLine {
 impl Add<u16> for OriginZeroLine {
   type Output = Self;
   fn add(self, rhs: u16) -> Self::Output {
-    OriginZeroLine(self.0 + rhs as i16)
+    let sum = self.0 as i32 + rhs as i32;
+    let clamped = sum.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+    debug_assert!(
+      clamped as i32 == sum,
+      "OriginZeroLine overflow: {} + {}",
+      self.0,
+      rhs
+    );
+    OriginZeroLine(clamped)
   }
 }
 impl AddAssign<u16> for OriginZeroLine {
   fn add_assign(&mut self, rhs: u16) {
-    self.0 += rhs as i16;
+    *self = *self + rhs;
   }
 }
 impl Sub<u16> for OriginZeroLine {

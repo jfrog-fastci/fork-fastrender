@@ -133,15 +133,18 @@ fn store_subgrid_override(node: NodeId, data: SubgridOverride) {
 }
 
 #[cfg(feature = "std")]
-fn take_subgrid_override(node: NodeId) -> Option<SubgridOverride> {
-  SUBGRID_OVERRIDES.with(|map| map.borrow_mut().remove(&node))
+fn lookup_subgrid_override(node: NodeId) -> Option<SubgridOverride> {
+  // Subgrid children may be laid out multiple times during track sizing / intrinsic measurement.
+  // Keep overrides in the map for the duration of the layout run so every invocation can apply
+  // the resolved track sizes/gaps. The outermost layout guard clears the map on exit.
+  SUBGRID_OVERRIDES.with(|map| map.borrow().get(&node).cloned())
 }
 
 #[cfg(not(feature = "std"))]
 fn store_subgrid_override(_node: NodeId, _data: SubgridOverride) {}
 
 #[cfg(not(feature = "std"))]
-fn take_subgrid_override(_node: NodeId) -> Option<SubgridOverride> {
+fn lookup_subgrid_override(_node: NodeId) -> Option<SubgridOverride> {
   None
 }
 
@@ -234,17 +237,18 @@ fn inherited_line_names(
   result
 }
 
-fn collect_child_subgrid_line_names(style: &Style, css_rows: bool) -> Vec<Vec<Ident>> {
-  if css_rows {
-    if style.axes_swapped {
-      to_ident_line_names(&style.subgrid_column_names)
-    } else {
-      to_ident_line_names(&style.subgrid_row_names)
-    }
-  } else if style.axes_swapped {
-    to_ident_line_names(&style.subgrid_row_names)
-  } else {
-    to_ident_line_names(&style.subgrid_column_names)
+fn collect_child_subgrid_line_names(style: &Style, axis: AbstractAxis) -> Vec<Vec<Ident>> {
+  // `Style::{subgrid_column_names, subgrid_row_names}` are stored in the same coordinate space as
+  // `grid_template_{columns,rows}`. The FastRender integration transposes these fields when the CSS
+  // inline axis is vertical so that:
+  // - `*_column_*` always corresponds to the physical horizontal axis
+  // - `*_row_*` always corresponds to the physical vertical axis
+  //
+  // That means we can treat `AbstractAxis::Inline` as "horizontal" and `AbstractAxis::Block` as
+  // "vertical" regardless of `axes_swapped`.
+  match axis {
+    AbstractAxis::Inline => to_ident_line_names(&style.subgrid_column_names),
+    AbstractAxis::Block => to_ident_line_names(&style.subgrid_row_names),
   }
 }
 
@@ -257,17 +261,11 @@ fn collect_subgrid_virtual_items<
   final_col_counts: TrackCounts,
   final_row_counts: TrackCounts,
 ) -> Vec<GridItem> {
-  let parent_axes_swapped = parent_style.axes_swapped;
-  let parent_row_names = if parent_axes_swapped {
-    to_ident_line_names(&parent_style.grid_template_column_names)
-  } else {
-    to_ident_line_names(&parent_style.grid_template_row_names)
-  };
-  let parent_col_names = if parent_axes_swapped {
-    to_ident_line_names(&parent_style.grid_template_row_names)
-  } else {
-    to_ident_line_names(&parent_style.grid_template_column_names)
-  };
+  // Track/line-name storage is already transposed into physical space by the wrapper. Treat the
+  // Taffy inline axis as physical X (columns vector) and the Taffy block axis as physical Y (rows
+  // vector), independent of `axes_swapped`.
+  let parent_row_names = to_ident_line_names(&parent_style.grid_template_row_names);
+  let parent_col_names = to_ident_line_names(&parent_style.grid_template_column_names);
   let mut virtuals = Vec::new();
 
   for item in items.iter() {
@@ -278,79 +276,41 @@ fn collect_subgrid_virtual_items<
       continue;
     }
     let child_style_ref: &Style<_> = &child_style_owned;
-    let child_axes_swapped = child_style_ref.axes_swapped;
-    let css_row_subgrid = if child_axes_swapped {
-      child_style_ref.is_column_subgrid()
-    } else {
-      child_style_ref.is_row_subgrid()
-    };
-    let css_col_subgrid = if child_axes_swapped {
-      child_style_ref.is_row_subgrid()
-    } else {
-      child_style_ref.is_column_subgrid()
-    };
-    if !css_row_subgrid && !css_col_subgrid {
+    let subgrid_columns = child_style_ref.is_column_subgrid();
+    let subgrid_rows = child_style_ref.is_row_subgrid();
+    if !subgrid_columns && !subgrid_rows {
       continue;
     }
 
-    let row_span = if parent_axes_swapped {
-      item.column.span()
-    } else {
-      item.row.span()
-    };
-    let col_span = if parent_axes_swapped {
-      item.row.span()
-    } else {
-      item.column.span()
-    };
-    let row_start = if parent_axes_swapped {
-      item.column.start
-    } else {
-      item.row.start
-    };
-    let col_start = if parent_axes_swapped {
-      item.row.start
-    } else {
-      item.column.start
-    };
+    let row_span = item.row.span();
+    let col_span = item.column.span();
+    let row_start = item.row.start;
+    let col_start = item.column.start;
 
-    let child_row_extra = if css_row_subgrid {
-      collect_child_subgrid_line_names(child_style_ref, true)
+    let child_row_extra = if subgrid_rows {
+      collect_child_subgrid_line_names(child_style_ref, AbstractAxis::Block)
     } else {
       Vec::new()
     };
-    let child_col_extra = if css_col_subgrid {
-      collect_child_subgrid_line_names(child_style_ref, false)
+    let child_col_extra = if subgrid_columns {
+      collect_child_subgrid_line_names(child_style_ref, AbstractAxis::Inline)
     } else {
       Vec::new()
     };
 
-    let css_row_line_names = if css_row_subgrid {
+    let row_line_names = if subgrid_rows {
       inherited_line_names(row_span, row_start, &parent_row_names, &child_row_extra)
     } else {
-      if child_axes_swapped {
-        to_ident_line_names(&child_style_ref.grid_template_column_names)
-      } else {
-        to_ident_line_names(&child_style_ref.grid_template_row_names)
-      }
+      to_ident_line_names(&child_style_ref.grid_template_row_names)
     };
-    let css_col_line_names = if css_col_subgrid {
+    let col_line_names = if subgrid_columns {
       inherited_line_names(col_span, col_start, &parent_col_names, &child_col_extra)
     } else {
-      if child_axes_swapped {
-        to_ident_line_names(&child_style_ref.grid_template_row_names)
-      } else {
-        to_ident_line_names(&child_style_ref.grid_template_column_names)
-      }
+      to_ident_line_names(&child_style_ref.grid_template_column_names)
     };
 
-    let mut row_explicit = if css_row_subgrid {
+    let mut row_explicit = if subgrid_rows {
       row_span
-    } else if child_axes_swapped {
-      child_style_ref
-        .grid_template_columns()
-        .map(|iter| iter.count() as u16)
-        .unwrap_or(0)
     } else {
       child_style_ref
         .grid_template_rows()
@@ -358,19 +318,14 @@ fn collect_subgrid_virtual_items<
         .unwrap_or(0)
     };
     if row_explicit == 0 {
-      row_explicit = css_row_line_names.len().saturating_sub(1) as u16;
+      row_explicit = row_line_names.len().saturating_sub(1) as u16;
     }
     if row_explicit == 0 {
       row_explicit = 1;
     }
 
-    let mut col_explicit = if css_col_subgrid {
+    let mut col_explicit = if subgrid_columns {
       col_span
-    } else if child_axes_swapped {
-      child_style_ref
-        .grid_template_rows()
-        .map(|iter| iter.count() as u16)
-        .unwrap_or(0)
     } else {
       child_style_ref
         .grid_template_columns()
@@ -378,45 +333,28 @@ fn collect_subgrid_virtual_items<
         .unwrap_or(0)
     };
     if col_explicit == 0 {
-      col_explicit = css_col_line_names.len().saturating_sub(1) as u16;
+      col_explicit = col_line_names.len().saturating_sub(1) as u16;
     }
     if col_explicit == 0 {
       col_explicit = 1;
     }
 
-    let (row_line_names, col_line_names, taffy_row_explicit, taffy_col_explicit) =
-      if child_axes_swapped {
-        (
-          css_col_line_names.clone(),
-          css_row_line_names.clone(),
-          col_explicit,
-          row_explicit,
-        )
-      } else {
-        (
-          css_row_line_names.clone(),
-          css_col_line_names.clone(),
-          row_explicit,
-          col_explicit,
-        )
-      };
-
     let line_resolver = NamedLineResolver::from_line_names(
       row_line_names.clone(),
       col_line_names.clone(),
-      taffy_row_explicit,
-      taffy_col_explicit,
+      row_explicit,
+      col_explicit,
     );
 
     let mut subgrid_items: Vec<GridItem> = Vec::new();
     let row_counts = TrackCounts {
       negative_implicit: 0,
-      explicit: taffy_row_explicit,
+      explicit: row_explicit,
       positive_implicit: 0,
     };
     let col_counts = TrackCounts {
       negative_implicit: 0,
-      explicit: taffy_col_explicit,
+      explicit: col_explicit,
       positive_implicit: 0,
     };
     let mut cell_occupancy_matrix = CellOccupancyMatrix::with_track_counts(col_counts, row_counts);
@@ -446,6 +384,10 @@ fn collect_subgrid_virtual_items<
       align_items,
       justify_items,
       &line_resolver,
+      InBothAbsAxis {
+        horizontal: child_style_ref.is_column_subgrid(),
+        vertical: child_style_ref.is_row_subgrid(),
+      },
     );
 
     #[cfg(all(feature = "std", debug_assertions))]
@@ -526,114 +468,66 @@ fn record_subgrid_overrides<
   let debug_subgrid = std::env::var("FASTR_DEBUG_SUBGRID").is_ok();
   #[cfg(not(feature = "std"))]
   let debug_subgrid = false;
-  let parent_axes_swapped = parent_style.axes_swapped;
-  let parent_row_names = if parent_axes_swapped {
-    to_ident_line_names(&parent_style.grid_template_column_names)
-  } else {
-    to_ident_line_names(&parent_style.grid_template_row_names)
-  };
-  let parent_col_names = if parent_axes_swapped {
-    to_ident_line_names(&parent_style.grid_template_row_names)
-  } else {
-    to_ident_line_names(&parent_style.grid_template_column_names)
-  };
+  // Track/line-name storage is already transposed into physical space by the wrapper, so we can
+  // always treat:
+  // - `rows` + `grid_template_row_names` as the physical vertical axis
+  // - `columns` + `grid_template_column_names` as the physical horizontal axis
+  let parent_row_names = to_ident_line_names(&parent_style.grid_template_row_names);
+  let parent_col_names = to_ident_line_names(&parent_style.grid_template_column_names);
 
   for item in items.iter().filter(|item| !item.is_virtual) {
     let child_style_owned = tree.clone_grid_container_style(item.node);
     let child_style_ref: &Style<_> = &child_style_owned;
-    let child_axes_swapped = child_style_ref.axes_swapped;
-    let css_row_subgrid = if child_axes_swapped {
-      child_style_ref.is_column_subgrid()
-    } else {
-      child_style_ref.is_row_subgrid()
-    };
-    let css_col_subgrid = if child_axes_swapped {
-      child_style_ref.is_row_subgrid()
-    } else {
-      child_style_ref.is_column_subgrid()
-    };
-    if !css_row_subgrid && !css_col_subgrid {
+    let subgrid_rows = child_style_ref.is_row_subgrid();
+    let subgrid_columns = child_style_ref.is_column_subgrid();
+    if !subgrid_rows && !subgrid_columns {
       continue;
     }
 
     let mut rows_override = None;
     let mut cols_override = None;
-    if record_rows && css_row_subgrid {
-      let (span_start, _) = if parent_axes_swapped {
-        (item.column.start, item.column.end)
-      } else {
-        (item.row.start, item.row.end)
-      };
-      let row_span = if parent_axes_swapped {
-        item.column.span()
-      } else {
-        item.row.span()
-      };
+    if record_rows && subgrid_rows {
+      let span_start = item.row.start;
+      let row_span = item.row.span();
       let mut track_sizes = Vec::new();
       let mut gap = 0.0;
-      let (row_tracks, axis) = if parent_axes_swapped {
-        (columns, AbstractAxis::Inline)
-      } else {
-        (rows, AbstractAxis::Block)
-      };
-      for track in row_tracks[item.track_range_excluding_lines(axis)].iter() {
+      for track in rows[item.track_range_excluding_lines(AbstractAxis::Block)].iter() {
         if track.kind == GridTrackKind::Track {
           track_sizes.push(track.base_size);
         } else if gap == 0.0 {
           gap = track.base_size;
         }
       }
-      let child_extra = collect_child_subgrid_line_names(child_style_ref, true);
+      let child_extra = collect_child_subgrid_line_names(child_style_ref, AbstractAxis::Block);
       let line_names = inherited_line_names(row_span, span_start, &parent_row_names, &child_extra);
       let override_data = SubgridAxisOverride {
         track_sizes,
         line_names,
         gap,
       };
-      if child_axes_swapped {
-        cols_override = Some(override_data);
-      } else {
-        rows_override = Some(override_data);
-      }
+      rows_override = Some(override_data);
     }
 
-    if record_columns && css_col_subgrid {
-      let (span_start, _) = if parent_axes_swapped {
-        (item.row.start, item.row.end)
-      } else {
-        (item.column.start, item.column.end)
-      };
-      let col_span = if parent_axes_swapped {
-        item.row.span()
-      } else {
-        item.column.span()
-      };
+    if record_columns && subgrid_columns {
+      let span_start = item.column.start;
+      let col_span = item.column.span();
       let mut track_sizes = Vec::new();
       let mut gap = 0.0;
-      let (col_tracks, axis) = if parent_axes_swapped {
-        (rows, AbstractAxis::Block)
-      } else {
-        (columns, AbstractAxis::Inline)
-      };
-      for track in col_tracks[item.track_range_excluding_lines(axis)].iter() {
+      for track in columns[item.track_range_excluding_lines(AbstractAxis::Inline)].iter() {
         if track.kind == GridTrackKind::Track {
           track_sizes.push(track.base_size);
         } else if gap == 0.0 {
           gap = track.base_size;
         }
       }
-      let child_extra = collect_child_subgrid_line_names(child_style_ref, false);
+      let child_extra = collect_child_subgrid_line_names(child_style_ref, AbstractAxis::Inline);
       let line_names = inherited_line_names(col_span, span_start, &parent_col_names, &child_extra);
       let override_data = SubgridAxisOverride {
         track_sizes,
         line_names,
         gap,
       };
-      if child_axes_swapped {
-        rows_override = Some(override_data);
-      } else {
-        cols_override = Some(override_data);
-      }
+      cols_override = Some(override_data);
     }
 
     if rows_override.is_some() || cols_override.is_some() {
@@ -693,7 +587,7 @@ where
   } = inputs;
 
   let mut style_storage = tree.clone_grid_container_style(node);
-  if let Some(override_data) = take_subgrid_override(node) {
+  if let Some(override_data) = lookup_subgrid_override(node) {
     apply_subgrid_override(&mut style_storage, &override_data);
   }
   let style: &Style<_> = &style_storage;
@@ -857,8 +751,26 @@ where
   // 3. Implicit Grid: Estimate Track Counts
   // Estimate the number of rows and columns in the implicit grid (= the entire grid)
   // This is necessary as part of placement. Doing it early here is a perf optimisation to reduce allocations.
-  let (est_col_counts, est_row_counts) =
+  let disallow_implicit_columns = style.is_column_subgrid() && grid_template_col_count > 0;
+  let disallow_implicit_rows = style.is_row_subgrid() && grid_template_row_count > 0;
+
+  let (mut est_col_counts, mut est_row_counts) =
     compute_grid_size_estimate(explicit_col_count, explicit_row_count, child_styles_iter);
+  // Subgrids do not create implicit tracks in the subgridded axis. Clamp the initial estimates so
+  // auto-placement cannot preallocate (or later rely on) implicit tracks for those axes.
+  //
+  // Only apply this behaviour when the subgrid axis has already been resolved into concrete track
+  // sizes (i.e. we have a non-empty template track list from `apply_subgrid_override`). When
+  // subgrid values are encountered without overrides (invalid usage, or during early intrinsic
+  // probes), fall back to normal implicit-track behaviour to avoid pathological placement loops.
+  if disallow_implicit_columns {
+    est_col_counts.negative_implicit = 0;
+    est_col_counts.positive_implicit = 0;
+  }
+  if disallow_implicit_rows {
+    est_row_counts.negative_implicit = 0;
+    est_row_counts.positive_implicit = 0;
+  }
 
   // 4. Grid Item Placement
   // Match items (children) to a definite grid position (row start/end and column start/end position)
@@ -883,6 +795,10 @@ where
     align_items.unwrap_or(AlignItems::Stretch),
     justify_items.unwrap_or(AlignItems::Stretch),
     &name_resolver,
+    InBothAbsAxis {
+      horizontal: disallow_implicit_columns,
+      vertical: disallow_implicit_rows,
+    },
   );
 
   // Extract track counts from previous step (auto-placement can expand the number of tracks)
@@ -963,13 +879,13 @@ where
     .for_each(|item| item.available_space_cache = None);
 
   // The block-axis track sizing algorithm measures grid items (RunMode::ComputeSize) to determine
-  // intrinsic block-size contributions. Subgrids can only measure correctly once the inline-axis
-  // track sizes they inherit are known, so record the relevant overrides before row sizing begins.
-  let (record_rows, record_columns) = if style.axes_swapped {
-    (true, false)
-  } else {
-    (false, true)
-  };
+  // intrinsic block-size contributions. Subgrids need the inline-axis (horizontal) track sizes
+  // they inherit in order to measure correctly (e.g. text wrapping).
+  //
+  // FastRender maps writing-mode dependent axes into Taffy's physical axes, so Taffy's inline axis
+  // always corresponds to the physical horizontal axis, regardless of `style.axes_swapped`.
+  // Therefore we record column overrides (but not row overrides) before the block-axis sizing pass.
+  let (record_rows, record_columns) = (false, true);
   record_subgrid_overrides(
     tree,
     &items,
@@ -1138,11 +1054,9 @@ where
     // The first row sizing pass may have already consumed the overrides recorded earlier. Refresh
     // them now that column sizes have been rerun so subsequent block-axis measurements inherit the
     // updated track sizes.
-    let (record_rows, record_columns) = if style.axes_swapped {
-      (true, false)
-    } else {
-      (false, true)
-    };
+    // As above, refresh the inline-axis (horizontal) overrides after rerunning column sizing so
+    // subsequent block-axis measurements of subgrids see the updated track sizes.
+    let (record_rows, record_columns) = (false, true);
     record_subgrid_overrides(
       tree,
       &items,
