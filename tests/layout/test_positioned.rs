@@ -20,6 +20,7 @@ use fastrender::paint::stacking::build_stacking_tree_from_fragment_tree;
 use fastrender::paint::stacking::StackingContextReason;
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::types::FontSizeAdjust;
+use fastrender::style::types::IntrinsicSizeKeyword;
 use fastrender::text::font_loader::FontContext;
 use fastrender::BoxNode;
 use fastrender::ComputedStyle;
@@ -354,6 +355,94 @@ fn absolute_inline_child_reflows_to_used_width() {
     "text should not overflow used width (max_x {:.1} > {:.1})",
     text_right,
     abs_fragment.bounds.max_x()
+  );
+}
+
+#[test]
+fn absolute_inline_child_width_fit_content_uses_intrinsics_when_both_insets_specified() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Inline;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(200.0));
+  container_style.padding_left = Length::px(0.0);
+  container_style.padding_right = Length::px(0.0);
+  container_style.padding_top = Length::px(0.0);
+  container_style.padding_bottom = Length::px(0.0);
+  container_style.border_left_width = Length::px(0.0);
+  container_style.border_right_width = Length::px(0.0);
+  container_style.border_top_width = Length::px(0.0);
+  container_style.border_bottom_width = Length::px(0.0);
+
+  let mut abs_style = ComputedStyle::default();
+  abs_style.position = Position::Absolute;
+  abs_style.left = Some(Length::px(70.0));
+  abs_style.right = Some(Length::px(70.0));
+  abs_style.width = None;
+  abs_style.width_keyword = Some(IntrinsicSizeKeyword::FitContent { limit: None });
+  abs_style.font_size = 10.0;
+  abs_style.padding_left = Length::px(0.0);
+  abs_style.padding_right = Length::px(0.0);
+  abs_style.padding_top = Length::px(0.0);
+  abs_style.padding_bottom = Length::px(0.0);
+  abs_style.border_left_width = Length::px(0.0);
+  abs_style.border_right_width = Length::px(0.0);
+  abs_style.border_top_width = Length::px(0.0);
+  abs_style.border_bottom_width = Length::px(0.0);
+  let abs_style = Arc::new(abs_style);
+
+  let mut text_style = ComputedStyle::default();
+  text_style.font_size = 10.0;
+  text_style.border_left_width = Length::px(0.0);
+  text_style.border_right_width = Length::px(0.0);
+  text_style.border_top_width = Length::px(0.0);
+  text_style.border_bottom_width = Length::px(0.0);
+  let text_style = Arc::new(text_style);
+
+  let abs_id = 11usize;
+  let text = BoxNode::new_text(
+    text_style,
+    "Intrinsic sizing keywords should clamp absolute positioned width".to_string(),
+  );
+  let mut abs_child = BoxNode::new_block(abs_style.clone(), FormattingContextType::Inline, vec![text]);
+  abs_child.id = abs_id;
+
+  // Intrinsic sizing for absolute positioning is measured on a temporary "static" relayout style.
+  let mut intrinsic_child = abs_child.clone();
+  let mut intrinsic_style = (*intrinsic_child.style).clone();
+  intrinsic_style.position = Position::Relative;
+  intrinsic_style.top = None;
+  intrinsic_style.right = None;
+  intrinsic_style.bottom = None;
+  intrinsic_style.left = None;
+  intrinsic_child.style = Arc::new(intrinsic_style);
+
+  let constraints = LayoutConstraints::definite_width(200.0);
+  let ifc = InlineFormattingContext::new();
+  let (min_content, max_content) = ifc
+    .compute_intrinsic_inline_sizes(&intrinsic_child)
+    .expect("intrinsic sizes");
+  let available: f32 = 200.0 - 70.0; // right should be ignored for overconstrained LTR insets
+  let expected = max_content.min(available.max(min_content));
+
+  let mut container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Inline,
+    vec![abs_child],
+  );
+  container.id = 10;
+  let fragment = ifc.layout(&container, &constraints).expect("inline layout");
+
+  let abs_fragment = find_fragment_by_box_id(&fragment, abs_id).expect("abs fragment present");
+  assert!(
+    (abs_fragment.bounds.width() - expected).abs() < 0.5,
+    "fit-content width should clamp using intrinsic sizes (got {:.2}, expected {:.2})",
+    abs_fragment.bounds.width(),
+    expected
+  );
+  assert!(
+    abs_fragment.bounds.width() > 80.0,
+    "fit-content width should not collapse to the left/right fill width (got {:.2})",
+    abs_fragment.bounds.width()
   );
 }
 

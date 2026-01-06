@@ -10407,12 +10407,12 @@ impl InlineFormattingContext {
         let positioned_style =
           resolve_positioned_style(&original_style, &child_cb, viewport_size, &font_context);
         let is_replaced = child.is_replaced();
-        let has_inline_keyword = positioned_style.width_keyword.is_some()
-          || positioned_style.min_width_keyword.is_some()
-          || positioned_style.max_width_keyword.is_some();
-        let has_block_keyword = positioned_style.height_keyword.is_some()
-          || positioned_style.min_height_keyword.is_some()
-          || positioned_style.max_height_keyword.is_some();
+        let has_inline_keyword = original_style.width_keyword.is_some()
+          || original_style.min_width_keyword.is_some()
+          || original_style.max_width_keyword.is_some();
+        let has_block_keyword = original_style.height_keyword.is_some()
+          || original_style.min_height_keyword.is_some()
+          || original_style.max_height_keyword.is_some();
         let needs_inline_intrinsics = has_inline_keyword
           || (positioned_style.width.is_auto()
             && (positioned_style.left.is_auto()
@@ -10495,6 +10495,12 @@ impl InlineFormattingContext {
 
         let mut input =
           AbsoluteLayoutInput::new(positioned_style, intrinsic_size, child_static_position);
+        input.style.width_keyword = original_style.width_keyword;
+        input.style.min_width_keyword = original_style.min_width_keyword;
+        input.style.max_width_keyword = original_style.max_width_keyword;
+        input.style.height_keyword = original_style.height_keyword;
+        input.style.min_height_keyword = original_style.min_height_keyword;
+        input.style.max_height_keyword = original_style.max_height_keyword;
         input.is_replaced = is_replaced;
         input.preferred_min_inline_size = preferred_min_inline;
         input.preferred_inline_size = preferred_inline;
@@ -10539,6 +10545,13 @@ impl InlineFormattingContext {
         }
         child_fragment.bounds = Rect::new(border_origin, border_size);
         child_fragment.style = Some(original_style);
+        match &mut child_fragment.content {
+          FragmentContent::Block { box_id: id } => *id = Some(box_id),
+          FragmentContent::Inline { box_id: id, .. } => *id = Some(box_id),
+          FragmentContent::Text { box_id: id, .. } => *id = Some(box_id),
+          FragmentContent::Replaced { box_id: id, .. } => *id = Some(box_id),
+          FragmentContent::Line { .. } | FragmentContent::RunningAnchor { .. } => {}
+        }
         Ok(child_fragment)
       };
 
