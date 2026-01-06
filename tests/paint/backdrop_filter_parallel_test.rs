@@ -327,6 +327,41 @@ fn filter_layer_clips_with_affine_transform() {
 }
 
 #[test]
+fn filter_drop_shadow_preserves_outsets_with_affine_transform() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #bg { position: absolute; inset: 0; background: rgb(255 0 0); }
+      #overlay {
+        position: absolute;
+        left: 20px;
+        top: 20px;
+        width: 40px;
+        height: 40px;
+        border-radius: 10px;
+        background: rgb(0 255 0);
+        transform: rotate(45deg);
+        filter: drop-shadow(60px 0 0 rgb(0 0 0));
+      }
+    </style>
+    <div id="bg"></div>
+    <div id="overlay"></div>
+  "#;
+
+  let (list, font_ctx) = build_display_list(html, 200, 128);
+  let pixmap = DisplayListRenderer::new(200, 128, Rgba::WHITE, font_ctx)
+    .expect("renderer")
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("render");
+
+  // The drop-shadow extends beyond the rounded box; sample a pixel well inside the shadow region.
+  assert_eq!(pixel(&pixmap, 100, 40), (0, 0, 0, 255));
+  // Background remains red away from the shadow.
+  assert_eq!(pixel(&pixmap, 180, 10), (255, 0, 0, 255));
+}
+
+#[test]
 fn parallel_paint_is_used_with_backdrop_filter_and_matches_serial() {
   let html = r#"<!doctype html>
     <style>

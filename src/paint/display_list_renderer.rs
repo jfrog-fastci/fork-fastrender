@@ -9115,6 +9115,27 @@ impl DisplayListRenderer {
             }
           }
 
+          // When an affine transform makes the border-radius clip non-axis-aligned, apply the
+          // transformed rounded-rect mask *before* filters run. This ensures filters that generate
+          // pixels outside the element bounds (e.g. drop-shadow) are computed from the correctly
+          // clipped source graphic, while still allowing the filter outsets to remain visible.
+          if !record.filters.is_empty() && !record.radii.is_zero() {
+            if let Some(clip) = record.clip {
+              if let Some(local_shape_bounds) =
+                self.layer_space_bounds(record.mask_bounds, origin, &layer)
+              {
+                apply_clip_mask_rect_transformed(
+                  &mut layer,
+                  local_shape_bounds,
+                  record.radii,
+                  clip.rect,
+                  clip.transform,
+                  self.clip_mask_diagnostics.as_ref(),
+                )?;
+              }
+            }
+          }
+
           if !record.filters.is_empty() {
             let bbox = Rect::from_xywh(
               record.mask_bounds.x() - origin.0 as f32,
@@ -9152,15 +9173,28 @@ impl DisplayListRenderer {
               record.mask_bounds.height() + out_t + out_b,
             );
             if let Some(local_clip) = self.layer_space_bounds(clip_rect, origin, &layer) {
-              if let Some(clip) = record.clip {
-                apply_clip_mask_rect_transformed(
-                  &mut layer,
-                  local_clip,
-                  record.radii,
-                  clip.rect,
-                  clip.transform,
-                  self.clip_mask_diagnostics.as_ref(),
-                )?;
+              // If filters were applied, we already clipped the source graphic above (when needed).
+              // At this point we only need to clamp the final filtered output to the filter region
+              // (expanded by `filter_outset_with_bounds`) to avoid bleed; using the transformed
+              // rounded-rect here would incorrectly clip filter outsets like drop shadows.
+              if record.filters.is_empty() {
+                if let Some(clip) = record.clip {
+                  apply_clip_mask_rect_transformed(
+                    &mut layer,
+                    local_clip,
+                    record.radii,
+                    clip.rect,
+                    clip.transform,
+                    self.clip_mask_diagnostics.as_ref(),
+                  )?;
+                } else {
+                  apply_clip_mask_rect(
+                    &mut layer,
+                    local_clip,
+                    record.radii,
+                    self.clip_mask_diagnostics.as_ref(),
+                  )?;
+                }
               } else {
                 apply_clip_mask_rect(
                   &mut layer,
