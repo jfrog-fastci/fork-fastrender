@@ -3948,10 +3948,12 @@ mod tests {
   fn hybrid_tile_blur_is_deterministic_under_nested_rayon_parallelism() {
     const WIDTH: u32 = 600;
     const HEIGHT: u32 = 600;
-    const SIGMA_X: f32 = 12.0;
-    const SIGMA_Y: f32 = 2.0;
     const THREADS: usize = 4;
     const JOBS: usize = THREADS * 2;
+    let cases = [
+      (2.0f32, 2.0f32, "kernel"),
+      (12.0f32, 2.0f32, "mixed"),
+    ];
 
     let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
       "FASTR_FAST_BLUR".to_string(),
@@ -3975,55 +3977,62 @@ mod tests {
     );
 
     let reference_pool = build_pool_with_toggles(1, toggles.clone());
-    let reference = runtime::with_thread_runtime_toggles(toggles.clone(), || {
+    let references: Vec<Arc<Vec<u8>>> = runtime::with_thread_runtime_toggles(toggles.clone(), || {
       reference_pool.install(|| {
-        let mut pixmap = new_pixmap(WIDTH, HEIGHT).unwrap();
-        pixmap.data_mut().copy_from_slice(&base_data);
-        let mut cache = BlurCache::new(direct_config);
-        apply_gaussian_blur_cached(&mut pixmap, SIGMA_X, SIGMA_Y, Some(&mut cache), 1.0).unwrap();
-        Arc::new(pixmap.data().to_vec())
+        let mut outputs = Vec::with_capacity(cases.len());
+        for &(sigma_x, sigma_y, _label) in &cases {
+          let mut pixmap = new_pixmap(WIDTH, HEIGHT).unwrap();
+          pixmap.data_mut().copy_from_slice(&base_data);
+          let mut cache = BlurCache::new(direct_config);
+          apply_gaussian_blur_cached(&mut pixmap, sigma_x, sigma_y, Some(&mut cache), 1.0).unwrap();
+          outputs.push(Arc::new(pixmap.data().to_vec()));
+        }
+        outputs
       })
     });
 
     let pool = build_pool_with_toggles(THREADS, toggles.clone());
     runtime::with_thread_runtime_toggles(toggles.clone(), || {
       pool.install(|| {
-        let plan = tile_blur_plan(WIDTH, HEIGHT, SIGMA_X, SIGMA_Y, tiled_config);
-        assert!(
-          !plan.parallel_tiles,
-          "expected hybrid tiled blur to schedule tiles serially (budget={} tiles={} max_tile_pixels={})",
-          blur_thread_budget(),
-          plan.tiles,
-          plan.max_tile_pixels,
-        );
-        assert!(
-          plan.max_tile_pixels >= PARALLEL_BLUR_MIN_PIXELS && plan.tiles > 1,
-          "expected tiling with large tiles (tiles={} max_tile_pixels={})",
-          plan.tiles,
-          plan.max_tile_pixels,
-        );
-
-        if blur_thread_budget() > 1 {
-          let edge_src_w = plan.tile_w.saturating_add(plan.pad_x).min(WIDTH);
-          let edge_src_h = plan.tile_h.saturating_add(plan.pad_y).min(HEIGHT);
+        for ((sigma_x, sigma_y, label), reference) in cases.iter().zip(references.iter()) {
+          let plan = tile_blur_plan(WIDTH, HEIGHT, *sigma_x, *sigma_y, tiled_config);
           assert!(
-            blur_should_parallelize(edge_src_w as usize, edge_src_h as usize),
-            "expected per-tile blur to parallelize (budget={} tile={edge_src_w}x{edge_src_h})",
+            !plan.parallel_tiles,
+            "expected hybrid tiled blur to schedule tiles serially ({label} budget={} tiles={} max_tile_pixels={})",
             blur_thread_budget(),
+            plan.tiles,
+            plan.max_tile_pixels,
           );
-        }
+          assert!(
+            plan.max_tile_pixels >= PARALLEL_BLUR_MIN_PIXELS && plan.tiles > 1,
+            "expected tiling with large tiles ({label} tiles={} max_tile_pixels={})",
+            plan.tiles,
+            plan.max_tile_pixels,
+          );
 
-        (0..JOBS).into_par_iter().for_each(|job| {
-          let mut pixmap = new_pixmap(WIDTH, HEIGHT).unwrap();
-          pixmap.data_mut().copy_from_slice(&base_data);
-          let mut cache = BlurCache::new(tiled_config);
-          apply_gaussian_blur_cached(&mut pixmap, SIGMA_X, SIGMA_Y, Some(&mut cache), 1.0).unwrap();
-          assert_eq!(
-            pixmap.data(),
-            reference.as_slice(),
-            "nested hybrid tiled blur output mismatch (job={job})"
-          );
-        });
+          if blur_thread_budget() > 1 {
+            let edge_src_w = plan.tile_w.saturating_add(plan.pad_x).min(WIDTH);
+            let edge_src_h = plan.tile_h.saturating_add(plan.pad_y).min(HEIGHT);
+            assert!(
+              blur_should_parallelize(edge_src_w as usize, edge_src_h as usize),
+              "expected per-tile blur to parallelize ({label} budget={} tile={edge_src_w}x{edge_src_h})",
+              blur_thread_budget(),
+            );
+          }
+
+          (0..JOBS).into_par_iter().for_each(|job| {
+            let mut pixmap = new_pixmap(WIDTH, HEIGHT).unwrap();
+            pixmap.data_mut().copy_from_slice(&base_data);
+            let mut cache = BlurCache::new(tiled_config);
+            apply_gaussian_blur_cached(&mut pixmap, *sigma_x, *sigma_y, Some(&mut cache), 1.0)
+              .unwrap();
+            assert_eq!(
+              pixmap.data(),
+              reference.as_slice(),
+              "nested hybrid tiled blur output mismatch ({label} job={job})"
+            );
+          });
+        }
       });
     });
   }
