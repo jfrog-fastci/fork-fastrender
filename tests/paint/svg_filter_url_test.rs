@@ -98,6 +98,39 @@ fn filter_url_data_svg_missing_in2_defaults_to_previous_result() {
 }
 
 #[test]
+fn filter_url_data_svg_missing_in2_defaults_to_previous_for_fe_composite() {
+  let filter_svg = r#"
+    <svg xmlns="http://www.w3.org/2000/svg">
+      <filter id="comp" x="0" y="0" width="20" height="20" filterUnits="userSpaceOnUse"
+              color-interpolation-filters="sRGB">
+        <feFlood flood-color="rgb(255,0,0)" result="a" />
+        <feFlood flood-color="rgb(0,0,0)" flood-opacity="0" />
+        <!-- Missing `in2` should default to the previous primitive result (transparent flood),
+             leaving the red flood unchanged. -->
+        <feComposite in="a" operator="out" />
+      </filter>
+    </svg>
+  "#;
+  let encoded = BASE64.encode(filter_svg);
+  let data_url = format!("data:image/svg+xml;base64,{}#comp", encoded);
+  let html = format!(
+    r#"
+    <style>
+      body {{ margin: 0; background: white; }}
+      #box {{ width: 20px; height: 20px; background: rgb(0, 0, 255); filter: url("{}"); }}
+    </style>
+    <div id="box"></div>
+    "#,
+    data_url
+  );
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let pixmap = renderer.render_html(&html, 30, 30).expect("render");
+
+  assert_eq!(color_at(&pixmap, 10, 10), [255, 0, 0, 255]);
+}
+
+#[test]
 fn missing_fragment_filter_is_ignored() {
   let html = r#"
   <style>
