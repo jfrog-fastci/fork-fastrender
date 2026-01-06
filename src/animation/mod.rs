@@ -1251,6 +1251,15 @@ fn interpolate_transform_value(
 ) -> Option<AnimatedValue> {
   match (a, b) {
     (AnimatedValue::Transform(ta), AnimatedValue::Transform(tb)) => {
+      // Preserve exact endpoints deterministically (and avoid turning `none` into an explicit
+      // identity matrix which would incorrectly establish transform containing blocks).
+      if t <= f32::EPSILON {
+        return Some(AnimatedValue::Transform(ta.clone()));
+      }
+      if t >= 1.0 - f32::EPSILON {
+        return Some(AnimatedValue::Transform(tb.clone()));
+      }
+
       let interpolated = interpolate_transform_lists(ta, tb, t).unwrap_or_else(|| {
         let ma = compose_transform_list(ta);
         let mb = compose_transform_list(tb);
@@ -1296,6 +1305,14 @@ fn interpolate_translate_value(
   let (AnimatedValue::Translate(ta), AnimatedValue::Translate(tb)) = (a, b) else {
     return None;
   };
+  // Preserve exact endpoints deterministically, especially when `none` is involved (to avoid
+  // spuriously establishing transform containing blocks).
+  if t <= f32::EPSILON {
+    return Some(AnimatedValue::Translate(*ta));
+  }
+  if t >= 1.0 - f32::EPSILON {
+    return Some(AnimatedValue::Translate(*tb));
+  }
   if matches!(ta, TranslateValue::None) && matches!(tb, TranslateValue::None) {
     return Some(AnimatedValue::Translate(TranslateValue::None));
   }
@@ -1412,6 +1429,14 @@ fn interpolate_scale_value(a: &AnimatedValue, b: &AnimatedValue, t: f32) -> Opti
   let (AnimatedValue::Scale(sa), AnimatedValue::Scale(sb)) = (a, b) else {
     return None;
   };
+  // Preserve exact endpoints deterministically so `scale:none` remains `none` at keyframe
+  // boundaries.
+  if t <= f32::EPSILON {
+    return Some(AnimatedValue::Scale(*sa));
+  }
+  if t >= 1.0 - f32::EPSILON {
+    return Some(AnimatedValue::Scale(*sb));
+  }
   if matches!(sa, ScaleValue::None) && matches!(sb, ScaleValue::None) {
     return Some(AnimatedValue::Scale(ScaleValue::None));
   }
@@ -3866,11 +3891,14 @@ fn accumulate_iteration_value(
       AnimatedValue::Translate(start),
       AnimatedValue::Translate(end),
     ) => {
-      if matches!(cur, TranslateValue::None) {
+      let wants_values = !matches!(cur, TranslateValue::None)
+        || !matches!(start, TranslateValue::None)
+        || !matches!(end, TranslateValue::None);
+      if !wants_values {
         return None;
       }
       let (cx, cy, cz) = match cur {
-        TranslateValue::None => return None,
+        TranslateValue::None => (0.0, 0.0, 0.0),
         TranslateValue::Values { x, y, z } => (x.to_px(), y.to_px(), z.to_px()),
       };
       let (sx, sy, sz) = match start {
@@ -3997,12 +4025,15 @@ fn accumulate_iteration_value(
       }
     }
     (AnimatedValue::Scale(cur), AnimatedValue::Scale(start), AnimatedValue::Scale(end)) => {
-      if matches!(cur, ScaleValue::None) {
+      let wants_values = !matches!(cur, ScaleValue::None)
+        || !matches!(start, ScaleValue::None)
+        || !matches!(end, ScaleValue::None);
+      if !wants_values {
         return None;
       }
       let exp = i32::try_from(iteration).ok()?;
       let (cx, cy, cz) = match cur {
-        ScaleValue::None => return None,
+        ScaleValue::None => (1.0, 1.0, 1.0),
         ScaleValue::Values { x, y, z } => (*x, *y, *z),
       };
       let (sx, sy, sz) = match start {
@@ -4033,7 +4064,7 @@ fn accumulate_iteration_value(
       AnimatedValue::Transform(start_list),
       AnimatedValue::Transform(end_list),
     ) => {
-      if cur_list.is_empty() {
+      if cur_list.is_empty() && start_list.is_empty() && end_list.is_empty() {
         return None;
       }
 
@@ -4042,7 +4073,11 @@ fn accumulate_iteration_value(
       let end_matrix = compose_transform_list(end_list);
       let delta = end_matrix.multiply(&inv_start);
       let delta_pow = pow_transform3d(delta, iteration);
-      let cur_matrix = compose_transform_list(cur_list);
+      let cur_matrix = if cur_list.is_empty() {
+        Transform3D::identity()
+      } else {
+        compose_transform_list(cur_list)
+      };
       let accumulated = delta_pow.multiply(&cur_matrix);
       Some(AnimatedValue::Transform(vec![
         crate::css::types::Transform::Matrix3d(accumulated.m),

@@ -335,6 +335,88 @@ fn keyframes_sample_inserts_implicit_boundaries_for_translate() {
 }
 
 #[test]
+fn keyframes_sample_preserves_transform_none_at_keyframe_boundary() {
+  let sheet = parse_stylesheet(
+    "@keyframes k { from { transform: none; } to { transform: translateX(10px); } }",
+  )
+  .unwrap();
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = &keyframes[0];
+  let base = ComputedStyle::default();
+  let viewport = Size::new(800.0, 600.0);
+  let element_size = Size::new(100.0, 100.0);
+
+  let start = sample_keyframes(rule, 0.0, &base, viewport, element_size);
+  match start.get("transform") {
+    Some(AnimatedValue::Transform(list)) => assert!(list.is_empty(), "start={list:?}"),
+    other => panic!("unexpected transform value {other:?}"),
+  }
+
+  let end = sample_keyframes(rule, 1.0, &base, viewport, element_size);
+  match end.get("transform") {
+    Some(AnimatedValue::Transform(list)) => {
+      assert_eq!(list, &vec![CssTransform::TranslateX(Length::px(10.0))]);
+    }
+    other => panic!("unexpected transform value {other:?}"),
+  }
+}
+
+#[test]
+fn keyframes_sample_preserves_translate_none_at_keyframe_boundary() {
+  let sheet =
+    parse_stylesheet("@keyframes k { from { translate: none; } to { translate: 10px 0px; } }")
+      .unwrap();
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = &keyframes[0];
+  let base = ComputedStyle::default();
+  let viewport = Size::new(800.0, 600.0);
+  let element_size = Size::new(100.0, 100.0);
+
+  let start = sample_keyframes(rule, 0.0, &base, viewport, element_size);
+  match start.get("translate") {
+    Some(AnimatedValue::Translate(TranslateValue::None)) => {}
+    other => panic!("unexpected translate value {other:?}"),
+  }
+
+  let end = sample_keyframes(rule, 1.0, &base, viewport, element_size);
+  match end.get("translate") {
+    Some(AnimatedValue::Translate(TranslateValue::Values { x, y, z })) => {
+      assert!((x.to_px() - 10.0).abs() < 1e-6);
+      assert!((y.to_px() - 0.0).abs() < 1e-6);
+      assert!((z.to_px() - 0.0).abs() < 1e-6);
+    }
+    other => panic!("unexpected translate value {other:?}"),
+  }
+}
+
+#[test]
+fn keyframes_sample_preserves_scale_none_at_keyframe_boundary() {
+  let sheet =
+    parse_stylesheet("@keyframes k { from { scale: none; } to { scale: 2; } }").unwrap();
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = &keyframes[0];
+  let base = ComputedStyle::default();
+  let viewport = Size::new(800.0, 600.0);
+  let element_size = Size::new(100.0, 100.0);
+
+  let start = sample_keyframes(rule, 0.0, &base, viewport, element_size);
+  match start.get("scale") {
+    Some(AnimatedValue::Scale(fastrender::css::types::ScaleValue::None)) => {}
+    other => panic!("unexpected scale value {other:?}"),
+  }
+
+  let end = sample_keyframes(rule, 1.0, &base, viewport, element_size);
+  match end.get("scale") {
+    Some(AnimatedValue::Scale(fastrender::css::types::ScaleValue::Values { x, y, z })) => {
+      assert!((*x - 2.0).abs() < 1e-6);
+      assert!((*y - 2.0).abs() < 1e-6);
+      assert!((*z - 1.0).abs() < 1e-6);
+    }
+    other => panic!("unexpected scale value {other:?}"),
+  }
+}
+
+#[test]
 fn keyframes_interpolate_colors_and_currentcolor() {
   let sheet = parse_stylesheet(
     "@keyframes tint { from { background-color: currentColor; } to { background-color: rgb(0, 0, 255); } }",

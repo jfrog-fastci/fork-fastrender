@@ -316,6 +316,42 @@ fn repaint_with_animation_composition_accumulate_accumulates_translate_iteration
 }
 
 #[test]
+fn repaint_with_animation_composition_accumulate_accumulates_translate_from_none_at_iteration_boundary(
+) -> Result<()> {
+  let mut renderer = FastRender::new()?;
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(255, 255, 255); }
+      .box {
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        animation-name: move;
+        animation-duration: 1000ms;
+        animation-timing-function: linear;
+        animation-iteration-count: 2;
+        animation-fill-mode: forwards;
+        animation-composition: accumulate;
+      }
+      @keyframes move {
+        from { translate: none; }
+        to { translate: 20px 0px; }
+      }
+    </style>
+    <div class="box"></div>
+  "#;
+  let prepared = renderer.prepare_html(html, RenderOptions::new().with_viewport(80, 20))?;
+  let start_second =
+    prepared.paint_with_options(PreparedPaintOptions::new().with_animation_time(1000.0))?;
+
+  // At the iteration boundary (`t = 1000ms`), accumulate should keep the 20px offset from the first
+  // iteration even though the underlying keyframe value is `translate: none`.
+  assert_eq!(pixel(&start_second, 25, 5), (255, 0, 0, 255));
+  assert_eq!(pixel(&start_second, 5, 5), (255, 255, 255, 255));
+  Ok(())
+}
+
+#[test]
 fn repaint_with_animation_composition_accumulate_respects_reverse_direction() -> Result<()> {
   let mut renderer = FastRender::new()?;
   let html = r#"
@@ -429,6 +465,40 @@ fn repaint_with_animation_composition_accumulate_accumulates_transform_iteration
   // At t=1500ms we are halfway through the second iteration: 15px + (20px - 10px) = 25px.
   assert_eq!(pixel(&mid_second, 30, 5), (255, 0, 0, 255));
   assert_eq!(pixel(&mid_second, 15, 5), (255, 255, 255, 255));
+  Ok(())
+}
+
+#[test]
+fn repaint_with_animation_composition_accumulate_accumulates_transform_from_none_at_iteration_boundary(
+) -> Result<()> {
+  let mut renderer = FastRender::new()?;
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(255, 255, 255); }
+      .box {
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        animation-name: move;
+        animation-duration: 1000ms;
+        animation-timing-function: linear;
+        animation-iteration-count: 2;
+        animation-fill-mode: forwards;
+        animation-composition: accumulate;
+      }
+      @keyframes move {
+        from { transform: none; }
+        to { transform: translateX(20px); }
+      }
+    </style>
+    <div class="box"></div>
+  "#;
+  let prepared = renderer.prepare_html(html, RenderOptions::new().with_viewport(80, 20))?;
+  let start_second =
+    prepared.paint_with_options(PreparedPaintOptions::new().with_animation_time(1000.0))?;
+
+  assert_eq!(pixel(&start_second, 25, 5), (255, 0, 0, 255));
+  assert_eq!(pixel(&start_second, 5, 5), (255, 255, 255, 255));
   Ok(())
 }
 
