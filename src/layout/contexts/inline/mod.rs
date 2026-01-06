@@ -4339,6 +4339,28 @@ impl InlineFormattingContext {
   }
 
   fn resolve_scaled_metrics(&self, style: &ComputedStyle) -> Option<ScaledMetrics> {
+    // Prefer using the shaping pipeline to resolve the effective font metrics. This matches the
+    // actual font fallback logic used for text runs (e.g., when a requested family is present but
+    // missing glyph coverage and shaping falls back to a different bundled font).
+    //
+    // Using `get_font_full` here can select a font that is never used for real glyphs, which then
+    // diverges from `TextItem::metrics_from_runs` and can inflate line boxes by mixing strut ascent
+    // with text descent (and vice versa).
+    const STRUT_SAMPLE_TEXT: &str = "x";
+    if !self.font_context.is_effectively_empty() {
+      if let Ok(runs) = self.pipeline.shape(STRUT_SAMPLE_TEXT, style, &self.font_context) {
+        for run in &runs {
+          if let Some(metrics) = self.font_context.get_scaled_metrics_with_variations(
+            run.font.as_ref(),
+            run.font_size,
+            &run.variations,
+          ) {
+            return Some(metrics);
+          }
+        }
+      }
+    }
+
     let italic = matches!(style.font_style, FontStyle::Italic);
     let oblique = matches!(style.font_style, FontStyle::Oblique(_));
     let stretch =
