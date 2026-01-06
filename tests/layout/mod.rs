@@ -18,6 +18,7 @@ mod fragmentation_widows_orphans;
 mod grid_box_sizing_test;
 mod grid_overflow_auto_min_size;
 mod grid_writing_mode_in_block;
+mod grid_intrinsic_sizing_keywords;
 mod inline_float_min_width;
 mod inline_shaping_fallback;
 mod legend_shrink_to_fit;

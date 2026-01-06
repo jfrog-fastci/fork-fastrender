@@ -1525,10 +1525,10 @@ fn apply_style_overrides(base: &ComputedStyle, flags: StyleOverrideFlags) -> Com
   }
   if flags.contains(StyleOverrideFlags::LAYOUT_CLEAR_WIDTHS_AND_MARGINS) {
     style.width = None;
-    style.min_width = None;
-    style.max_width = None;
     style.width_keyword = None;
+    style.min_width = None;
     style.min_width_keyword = None;
+    style.max_width = None;
     style.max_width_keyword = None;
     style.margin_left = Some(Length::px(0.0));
     style.margin_right = Some(Length::px(0.0));

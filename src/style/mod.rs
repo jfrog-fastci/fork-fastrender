@@ -314,6 +314,8 @@ pub struct LogicalSizingValue {
   pub keyword: Option<IntrinsicSizeKeyword>,
 }
 
+/// Pending logical properties (margin/padding/border/size/inset) to resolve after writing-mode is known.
+// Outer `Option` tracks presence in the cascade; inner values carry keyword vs length (e.g. auto vs length).
 #[allow(clippy::option_option)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum LogicalProperty {
