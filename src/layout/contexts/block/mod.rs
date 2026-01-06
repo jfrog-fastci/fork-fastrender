@@ -5489,14 +5489,23 @@ impl FormattingContext for BlockFormattingContext {
   fn compute_intrinsic_inline_sizes(&self, box_node: &BoxNode) -> Result<(f32, f32), LayoutError> {
     count_block_intrinsic_call();
     let style_override = crate::layout::style_override::style_override_for(box_node.id);
-    let min_cached = intrinsic_cache_lookup(box_node, IntrinsicSizingMode::MinContent);
-    let max_cached = intrinsic_cache_lookup(box_node, IntrinsicSizingMode::MaxContent);
-    if let (Some(min), Some(max)) = (min_cached, max_cached) {
-      return Ok((min, max));
-    }
-
     let style = style_override.as_ref().unwrap_or(&box_node.style);
     let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+
+    // Intrinsic inline sizes are normally memoized since they can require expensive inline layout.
+    // However, when inline-size containment is enabled and `contain-intrinsic-*: auto` is in effect,
+    // the returned size depends on the element's remembered size, which can change within a cache
+    // epoch as elements are laid out (e.g., as `content-visibility:auto` boxes transition from
+    // skipped → laid out). In that case, bypass the intrinsic cache so callers always observe the
+    // latest remembered size.
+    if !style.containment.isolates_inline_size() {
+      let min_cached = intrinsic_cache_lookup(box_node, IntrinsicSizingMode::MinContent);
+      let max_cached = intrinsic_cache_lookup(box_node, IntrinsicSizingMode::MaxContent);
+      if let (Some(min), Some(max)) = (min_cached, max_cached) {
+        return Ok((min, max));
+      }
+    }
+
     let edges = if inline_is_horizontal {
       horizontal_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context)
     } else {
@@ -5526,17 +5535,31 @@ impl FormattingContext for BlockFormattingContext {
       } else {
         style.contain_intrinsic_height
       };
+      let remembered = axis
+        .auto
+        .then(|| {
+          remembered_size_cache_lookup(box_node).map(|size| {
+            if inline_is_horizontal {
+              size.width
+            } else {
+              size.height
+            }
+          })
+        })
+        .flatten();
       let fallback = crate::layout::utils::resolve_contain_intrinsic_size_axis(
         axis,
-        None,
+        remembered,
         Some(0.0),
         self.viewport_size,
         style.font_size,
         style.root_font_size,
       );
       let result = (edges + fallback).max(0.0);
-      intrinsic_cache_store(box_node, IntrinsicSizingMode::MinContent, result);
-      intrinsic_cache_store(box_node, IntrinsicSizingMode::MaxContent, result);
+      if !axis.auto {
+        intrinsic_cache_store(box_node, IntrinsicSizingMode::MinContent, result);
+        intrinsic_cache_store(box_node, IntrinsicSizingMode::MaxContent, result);
+      }
       return Ok((result, result));
     }
 
@@ -5729,6 +5752,24 @@ impl FormattingContext for BlockFormattingContext {
     box_node: &BoxNode,
     mode: IntrinsicSizingMode,
   ) -> Result<f32, LayoutError> {
+    let style_override = crate::layout::style_override::style_override_for(box_node.id);
+    let style = style_override.as_ref().unwrap_or(&box_node.style);
+    if style.containment.isolates_inline_size() {
+      let inline_is_horizontal = crate::style::inline_axis_is_horizontal(style.writing_mode);
+      let axis = if inline_is_horizontal {
+        style.contain_intrinsic_width
+      } else {
+        style.contain_intrinsic_height
+      };
+      if axis.auto {
+        let (min, max) = self.compute_intrinsic_inline_sizes(box_node)?;
+        return Ok(match mode {
+          IntrinsicSizingMode::MinContent => min,
+          IntrinsicSizingMode::MaxContent => max,
+        });
+      }
+    }
+
     if let Some(cached) = intrinsic_cache_lookup(box_node, mode) {
       count_block_intrinsic_call();
       return Ok(cached);
@@ -7925,6 +7966,62 @@ mod tests {
 
     assert!((max - 12.0).abs() < 0.001);
     assert!((min - 12.0).abs() < 0.001);
+  }
+
+  #[test]
+  fn contain_intrinsic_size_auto_uses_remembered_size_for_intrinsic_sizing_under_containment() {
+    let _guard = crate::layout::formatting_context::intrinsic_cache_test_lock();
+    crate::layout::formatting_context::intrinsic_cache_use_epoch(1, true);
+    crate::layout::formatting_context::intrinsic_cache_clear();
+
+    let mut style = ComputedStyle::default();
+    style.display = Display::Block;
+    style.containment =
+      crate::style::types::Containment::with_flags(false, true, false, false, false);
+
+    let mut node = BoxNode::new_block(Arc::new(style), FormattingContextType::Block, vec![]);
+    node.id = 4242;
+
+    // Pre-seed the intrinsic cache to ensure `contain-intrinsic-size: auto` bypasses stale cached
+    // values when a remembered size is available.
+    crate::layout::formatting_context::intrinsic_cache_store(
+      &node,
+      IntrinsicSizingMode::MinContent,
+      0.0,
+    );
+    crate::layout::formatting_context::intrinsic_cache_store(
+      &node,
+      IntrinsicSizingMode::MaxContent,
+      0.0,
+    );
+    crate::layout::formatting_context::remembered_size_cache_store(
+      &node,
+      Size::new(123.0, 456.0),
+    );
+
+    let bfc = BlockFormattingContext::new();
+    let (min, max) = bfc.compute_intrinsic_inline_sizes(&node).unwrap();
+    assert!((min - 123.0).abs() < 0.001, "expected remembered min {min}");
+    assert!((max - 123.0).abs() < 0.001, "expected remembered max {max}");
+    assert!(
+      (bfc
+        .compute_intrinsic_inline_size(&node, IntrinsicSizingMode::MinContent)
+        .unwrap()
+        - 123.0)
+        .abs()
+        < 0.001
+    );
+    assert!(
+      (bfc
+        .compute_intrinsic_inline_size(&node, IntrinsicSizingMode::MaxContent)
+        .unwrap()
+        - 123.0)
+        .abs()
+        < 0.001
+    );
+
+    crate::layout::formatting_context::intrinsic_cache_use_epoch(1, true);
+    crate::layout::formatting_context::intrinsic_cache_clear();
   }
 
   #[test]
