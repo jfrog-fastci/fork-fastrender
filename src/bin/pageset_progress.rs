@@ -525,8 +525,9 @@ struct RunArgs {
   /// Regenerate Chrome baselines that have a PNG but are missing the metadata sidecar.
   ///
   /// This is useful for migrating older baseline directories (PNGs created before metadata
-  /// support). Without this flag, pageset_progress will warn that such baselines are unverified
-  /// but will not re-run Chrome by default.
+  /// support, or metadata generated before headless viewport padding was recorded). Without this
+  /// flag, pageset_progress will warn that such baselines are unverified but will not re-run Chrome
+  /// by default.
   ///
   /// Requires `--accuracy --baseline=chrome`.
   #[arg(long, requires_all = ["accuracy", "baseline"])]
@@ -7129,9 +7130,30 @@ struct ChromeBaselineMetadata {
   stem: String,
   #[serde(deserialize_with = "deserialize_baseline_viewport")]
   viewport: (u32, u32),
+  #[serde(default)]
+  chrome_window_padding_css: Option<u32>,
   dpr: f32,
   js: String,
   html_sha256: String,
+}
+
+const DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX: u32 = 88;
+
+fn headless_window_viewport_height_pad_px() -> Result<u32, String> {
+  const KEY: &str = "HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX";
+  match std::env::var(KEY) {
+    Ok(raw) => {
+      let raw = raw.trim();
+      if raw.is_empty() {
+        return Ok(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX);
+      }
+      raw
+        .parse::<u32>()
+        .map_err(|_| format!("invalid {KEY}={raw} (expected a non-negative integer)"))
+    }
+    Err(std::env::VarError::NotPresent) => Ok(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
+    Err(err) => Err(format!("failed to read {KEY}: {err}")),
+  }
 }
 
 fn deserialize_baseline_viewport<'de, D>(deserializer: D) -> Result<(u32, u32), D::Error>
@@ -7210,6 +7232,7 @@ fn compute_needed_baselines(
   viewport: (u32, u32),
   dpr: f32,
   js: &str,
+  expected_window_padding_css: Option<u32>,
   refresh_all: bool,
   refresh_if_unverified: bool,
 ) -> Vec<String> {
@@ -7269,6 +7292,19 @@ fn compute_needed_baselines(
       needed.insert(stem.to_string());
       continue;
     }
+    if let Some(expected_padding_css) = expected_window_padding_css {
+      match meta.chrome_window_padding_css {
+        Some(actual) if actual != expected_padding_css => {
+          needed.insert(stem.to_string());
+          continue;
+        }
+        None if refresh_if_unverified => {
+          needed.insert(stem.to_string());
+          continue;
+        }
+        _ => {}
+      }
+    }
 
     let current_sha = match sha256_file_hex(&item.cache_path) {
       Ok(value) => value,
@@ -7296,21 +7332,48 @@ fn generate_missing_chrome_baselines(
 ) {
   let expected_js = "off";
 
-  let mut unverified: Vec<String> = items
-    .iter()
-    .filter(|item| {
-      let stem = item.cache_stem.as_str();
-      baseline_dir.join(format!("{stem}.png")).exists()
-        && !baseline_dir.join(format!("{stem}.json")).exists()
-    })
-    .map(|item| item.cache_stem.clone())
-    .collect();
+  let expected_window_padding_css = match headless_window_viewport_height_pad_px() {
+    Ok(value) => Some(value),
+    Err(err) => {
+      eprintln!(
+        "Warning: {err}. `chrome_window_padding_css` baseline verification will be skipped."
+      );
+      None
+    }
+  };
+
+  let mut unverified: Vec<String> = Vec::new();
+  for item in items {
+    let stem = item.cache_stem.as_str();
+    if !baseline_dir.join(format!("{stem}.png")).exists() {
+      continue;
+    }
+
+    let meta_path = baseline_dir.join(format!("{stem}.json"));
+    if !meta_path.exists() {
+      unverified.push(stem.to_string());
+      continue;
+    }
+
+    let Some(_) = expected_window_padding_css else {
+      continue;
+    };
+    let Ok(meta_bytes) = fs::read(&meta_path) else {
+      continue;
+    };
+    let Ok(meta) = serde_json::from_slice::<ChromeBaselineMetadata>(&meta_bytes) else {
+      continue;
+    };
+    if meta.chrome_window_padding_css.is_none() {
+      unverified.push(stem.to_string());
+    }
+  }
   unverified.sort();
   unverified.dedup();
   if !unverified.is_empty() && !(baseline_refresh || baseline_refresh_if_unverified) {
     let suffix = if unverified.len() == 1 { "" } else { "s" };
     eprintln!(
-      "Warning: chrome baseline PNG{suffix} exist but metadata sidecars are missing for {} page{suffix}. These baselines are unverified and may be stale if cached HTML/viewport/DPR changed.\n\
+      "Warning: chrome baseline PNG{suffix} exist but metadata sidecars are missing or incomplete for {} page{suffix}. These baselines are unverified and may be stale if cached HTML/viewport/DPR/headless padding changed.\n\
        Re-run with --baseline-refresh-if-unverified (or --baseline-refresh) to regenerate: {}",
       unverified.len(),
       unverified.join(", ")
@@ -7323,6 +7386,7 @@ fn generate_missing_chrome_baselines(
     viewport,
     dpr,
     expected_js,
+    expected_window_padding_css,
     baseline_refresh,
     baseline_refresh_if_unverified,
   );
@@ -11060,6 +11124,7 @@ mod tests {
       (1200, 800),
       1.0,
       "off",
+      Some(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
       false,
       false,
     );
@@ -11111,6 +11176,7 @@ mod tests {
       (1000, 800),
       1.0,
       "off",
+      Some(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
       false,
       false,
     );
@@ -11122,8 +11188,126 @@ mod tests {
       (1200, 800),
       2.0,
       "off",
+      Some(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
       false,
       false,
+    );
+    assert_eq!(needed, vec!["test".to_string()]);
+  }
+
+  #[test]
+  fn chrome_baseline_needs_regeneration_when_headless_padding_mismatches() {
+    let dir = tempdir().expect("tempdir");
+    let baseline_dir = dir.path().join("baselines");
+    fs::create_dir_all(&baseline_dir).expect("baseline dir");
+
+    let html_dir = dir.path().join("html");
+    fs::create_dir_all(&html_dir).expect("html dir");
+    let html_path = html_dir.join("test.html");
+    fs::write(&html_path, "<html>one</html>").expect("write html");
+    let sha = sha256_file_hex(&html_path).expect("sha");
+
+    let item = WorkItem {
+      stem: "test".to_string(),
+      cache_stem: "test".to_string(),
+      url: "https://example.com/".to_string(),
+      cache_path: html_path.clone(),
+      progress_path: PathBuf::new(),
+      log_path: PathBuf::new(),
+      stderr_path: PathBuf::new(),
+      stage_path: PathBuf::new(),
+      trace_out: None,
+    };
+
+    fs::write(baseline_dir.join("test.png"), b"png").expect("write png");
+    let meta = serde_json::json!({
+      "stem": "test",
+      "viewport": [1200, 800],
+      "dpr": 1.0,
+      "js": "off",
+      "headless": "new",
+      "chrome_window_padding_css": DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX + 1,
+      "html_sha256": sha
+    });
+    fs::write(
+      baseline_dir.join("test.json"),
+      serde_json::to_vec_pretty(&meta).expect("meta json"),
+    )
+    .expect("write meta");
+
+    let needed = compute_needed_baselines(
+      &baseline_dir,
+      &[item],
+      (1200, 800),
+      1.0,
+      "off",
+      Some(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
+      false,
+      false,
+    );
+    assert_eq!(needed, vec!["test".to_string()]);
+  }
+
+  #[test]
+  fn chrome_baseline_missing_headless_padding_is_not_regenerated_unless_requested() {
+    let dir = tempdir().expect("tempdir");
+    let baseline_dir = dir.path().join("baselines");
+    fs::create_dir_all(&baseline_dir).expect("baseline dir");
+
+    let html_dir = dir.path().join("html");
+    fs::create_dir_all(&html_dir).expect("html dir");
+    let html_path = html_dir.join("test.html");
+    fs::write(&html_path, "<html>one</html>").expect("write html");
+    let sha = sha256_file_hex(&html_path).expect("sha");
+
+    let item = WorkItem {
+      stem: "test".to_string(),
+      cache_stem: "test".to_string(),
+      url: "https://example.com/".to_string(),
+      cache_path: html_path.clone(),
+      progress_path: PathBuf::new(),
+      log_path: PathBuf::new(),
+      stderr_path: PathBuf::new(),
+      stage_path: PathBuf::new(),
+      trace_out: None,
+    };
+
+    fs::write(baseline_dir.join("test.png"), b"png").expect("write png");
+    let meta = serde_json::json!({
+      "stem": "test",
+      "viewport": [1200, 800],
+      "dpr": 1.0,
+      "js": "off",
+      "headless": "new",
+      "html_sha256": sha
+    });
+    fs::write(
+      baseline_dir.join("test.json"),
+      serde_json::to_vec_pretty(&meta).expect("meta json"),
+    )
+    .expect("write meta");
+
+    let needed = compute_needed_baselines(
+      &baseline_dir,
+      &[item.clone()],
+      (1200, 800),
+      1.0,
+      "off",
+      Some(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
+      false,
+      false,
+    );
+    assert!(needed.is_empty());
+
+    let needed = compute_needed_baselines(
+      &baseline_dir,
+      &[item],
+      (1200, 800),
+      1.0,
+      "off",
+      Some(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
+      false,
+      true,
     );
     assert_eq!(needed, vec!["test".to_string()]);
   }
@@ -11159,13 +11343,22 @@ mod tests {
       (1200, 800),
       1.0,
       "off",
+      Some(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
       false,
       false,
     );
     assert!(needed.is_empty());
 
-    let needed =
-      compute_needed_baselines(&baseline_dir, &[item], (1200, 800), 1.0, "off", false, true);
+    let needed = compute_needed_baselines(
+      &baseline_dir,
+      &[item],
+      (1200, 800),
+      1.0,
+      "off",
+      Some(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
+      false,
+      true,
+    );
     assert_eq!(needed, vec!["test".to_string()]);
   }
 
@@ -11208,8 +11401,16 @@ mod tests {
     )
     .expect("write meta");
 
-    let needed =
-      compute_needed_baselines(&baseline_dir, &[item], (1200, 800), 1.0, "off", true, false);
+    let needed = compute_needed_baselines(
+      &baseline_dir,
+      &[item],
+      (1200, 800),
+      1.0,
+      "off",
+      Some(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
+      true,
+      false,
+    );
     assert_eq!(needed, vec!["test".to_string()]);
   }
 
