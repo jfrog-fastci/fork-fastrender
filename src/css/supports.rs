@@ -172,13 +172,13 @@ mod tests {
   }
 
   #[test]
-  fn supports_font_size_rejects_container_query_units() {
+  fn supports_font_size_accepts_container_query_units() {
     // The `nbcnews.com` pageset fixture uses `@supports(font-size:1cqh)` to switch a font-size
-    // custom property to a container-query driven clamp() expression. FastRender cannot currently
-    // compute container-query units for `font-size`, so the feature query must evaluate false to
-    // keep the `rem` fallback path active.
-    assert!(!supports_declaration("font-size", "1cqh"));
-    assert!(!supports_declaration("font-size", "2cqw"));
+    // custom property to a container-query driven clamp() expression. FastRender resolves
+    // container-query units for `font-size` during the container pass, so the query should
+    // evaluate true.
+    assert!(supports_declaration("font-size", "1cqh"));
+    assert!(supports_declaration("font-size", "2cqw"));
 
     // Supported font-size syntaxes should remain true.
     assert!(supports_declaration("font-size", "0"));

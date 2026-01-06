@@ -10121,6 +10121,7 @@ mod tests {
   use crate::css::parser::inline_style_declaration_parse_count;
   use crate::css::parser::parse_declarations;
   use crate::css::parser::parse_stylesheet;
+  use crate::css::parser::parse_stylesheet_with_media;
   use crate::css::parser::reset_inline_style_declaration_parse_count;
   use crate::css::types::CssImportLoader;
   use crate::css::types::StyleSheet;
@@ -11191,6 +11192,78 @@ mod tests {
     .expect("parse stylesheet");
     let style_set = StyleSet::from_document(stylesheet);
     let media_ctx = MediaContext::screen(800.0, 600.0);
+
+    let first = apply_style_set_with_media_target_and_imports_cached_with_deadline(
+      &dom, &style_set, &media_ctx, None, None, None, None, None, None, None, None,
+    )
+    .expect("first cascade");
+    let container_first = find_styled_node_by_id(&first, "container").expect("container");
+
+    let container_ctx = ContainerQueryContext {
+      base_media: media_ctx.clone(),
+      containers: HashMap::from([(
+        container_first.node_id,
+        ContainerQueryInfo {
+          inline_size: 600.0,
+          block_size: 400.0,
+          container_type: ContainerType::Size,
+          names: Vec::new(),
+          font_size: container_first.styles.font_size,
+          styles: Arc::clone(&container_first.styles),
+        },
+      )]),
+    };
+
+    let second = apply_style_set_with_media_target_and_imports_cached_with_deadline(
+      &dom,
+      &style_set,
+      &media_ctx,
+      None,
+      None,
+      None,
+      Some(&container_ctx),
+      None,
+      None,
+      None,
+      None,
+    )
+    .expect("second cascade");
+
+    let inner = find_styled_node_by_id(&second, "inner").expect("inner");
+    assert!((inner.styles.font_size - 40.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn font_size_container_query_units_survive_supports_pruning() {
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("id".to_string(), "container".to_string())],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![("id".to_string(), "inner".to_string())],
+        },
+        children: vec![],
+      }],
+    };
+
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+    let stylesheet = parse_stylesheet_with_media(
+      r#"
+        #container { container-type: size; }
+        @supports (font-size: 1cqh) {
+          #inner { font-size: 10cqh; }
+        }
+      "#,
+      &media_ctx,
+      None,
+    )
+    .expect("parse stylesheet");
+    let style_set = StyleSet::from_document(stylesheet);
 
     let first = apply_style_set_with_media_target_and_imports_cached_with_deadline(
       &dom, &style_set, &media_ctx, None, None, None, None, None, None, None, None,

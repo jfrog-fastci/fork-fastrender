@@ -2254,10 +2254,9 @@ pub(crate) fn supports_parsed_declaration_is_valid(
       // Real-world pages (e.g. the `nbcnews.com` pageset fixture) gate fluid typography behind
       // `@supports(font-size: 1cqh)` and then feed the result into `font-size` via `var()`.
       //
-      // FastRender currently computes `font-size` eagerly into a pixel value and cannot resolve
-      // container-query units (cqw/cqh/...) or calc/min/max/clamp expressions there. Returning
-      // `true` for those values in `@supports` would incorrectly enable declarations that we then
-      // fail to apply, leaving the page with fallback/initial font sizing.
+      // FastRender can resolve container-query units for `font-size` during the container pass
+      // (see `ComputedStyle::font_size_pending` + `resolve_container_query_font_size`), so
+      // `@supports` should treat those values as supported.
       if keyword_in_list(
         parsed,
         &[
@@ -2285,26 +2284,26 @@ pub(crate) fn supports_parsed_declaration_is_valid(
         return false;
       };
 
+      // Treat calc/min/max/clamp expressions as supported. Individual resolutions may still fail at
+      // computed-value time (e.g. negative results), but the syntax is understood by the engine.
+      if len.calc.is_some() {
+        return true;
+      }
+
       if !len.value.is_finite() || len.value < 0.0 {
         return false;
       }
 
-      // Reject calc/min/max/clamp/etc. We keep the parsing support so other properties can store
-      // `Length::calc(...)`, but `font-size` computation does not currently resolve these.
-      if len.calc.is_some() || len.unit == LengthUnit::Calc {
-        return false;
-      }
-
       if len.unit.is_container_query_relative() {
-        return false;
+        return true;
       }
 
-      return matches!(
-        len.unit,
-        LengthUnit::Em | LengthUnit::Rem | LengthUnit::Ex | LengthUnit::Ch | LengthUnit::Percent
-      ) || len.unit.is_absolute()
-        || len.unit.is_viewport_relative();
-    }
+       return matches!(
+         len.unit,
+         LengthUnit::Em | LengthUnit::Rem | LengthUnit::Ex | LengthUnit::Ch | LengthUnit::Percent
+       ) || len.unit.is_absolute()
+         || len.unit.is_viewport_relative()
+     }
     "color"
     | "background-color"
     | "border-color"
