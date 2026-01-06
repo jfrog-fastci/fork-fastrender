@@ -315,29 +315,31 @@ impl BlockFormattingContext {
       vertical_padding_and_borders(style, 0.0, self.viewport_size, &self.font_context)
     };
     let compute = || {
+      let mut override_style = style.clone();
+      override_style.width = None;
+      override_style.width_keyword = None;
+      override_style.min_width = None;
+      override_style.min_width_keyword = None;
+      override_style.max_width = None;
+      override_style.max_width_keyword = None;
+      let override_style = Arc::new(override_style);
+
       if node.id != 0 {
-        let mut override_style = style.clone();
-        override_style.width = None;
-        override_style.width_keyword = None;
-        override_style.min_width = None;
-        override_style.min_width_keyword = None;
-        override_style.max_width = None;
-        override_style.max_width_keyword = None;
-        crate::layout::style_override::with_style_override(
-          node.id,
-          Arc::new(override_style),
-          || {
-            if fc_type == FormattingContextType::Block {
-              self.compute_intrinsic_inline_sizes(node)
-            } else {
-              factory.get(fc_type).compute_intrinsic_inline_sizes(node)
-            }
-          },
-        )
-      } else if fc_type == FormattingContextType::Block {
-        self.compute_intrinsic_inline_sizes(node)
+        crate::layout::style_override::with_style_override(node.id, override_style, || {
+          if fc_type == FormattingContextType::Block {
+            self.compute_intrinsic_inline_sizes(node)
+          } else {
+            factory.get(fc_type).compute_intrinsic_inline_sizes(node)
+          }
+        })
       } else {
-        factory.get(fc_type).compute_intrinsic_inline_sizes(node)
+        let mut cloned = node.clone();
+        cloned.style = override_style;
+        if fc_type == FormattingContextType::Block {
+          self.compute_intrinsic_inline_sizes(&cloned)
+        } else {
+          factory.get(fc_type).compute_intrinsic_inline_sizes(&cloned)
+        }
       }
     };
     let (min_border, max_border) = compute()?;
@@ -619,11 +621,27 @@ impl BlockFormattingContext {
       inline_positive,
     );
     let width_auto = style.width.is_none() && style.width_keyword.is_none();
-    let available_content_for_fit = computed_width.content_width;
     let inline_edges_for_fit = computed_width.border_left
       + computed_width.padding_left
       + computed_width.padding_right
       + computed_width.border_right;
+    let available_inline_border_box = (containing_width
+      - resolve_margin_side(
+        style,
+        inline_sides.0,
+        containing_width,
+        &self.font_context,
+        self.viewport_size,
+      )
+      - resolve_margin_side(
+        style,
+        inline_sides.1,
+        containing_width,
+        &self.font_context,
+        self.viewport_size,
+      ))
+    .max(0.0);
+    let available_content_for_fit = (available_inline_border_box - inline_edges_for_fit).max(0.0);
     let mut intrinsic_content_sizes = None;
     if style.width.is_none() && style.width_keyword.is_some() {
       let keyword = style.width_keyword.unwrap();
@@ -2569,11 +2587,28 @@ impl BlockFormattingContext {
           inline_positive,
         );
         let width_auto = child.style.width.is_none() && child.style.width_keyword.is_none();
-        let available_content_for_fit = hypo_width.content_width;
         let inline_edges_for_fit = hypo_width.border_left
           + hypo_width.padding_left
           + hypo_width.padding_right
           + hypo_width.border_right;
+        let available_inline_border_box = (containing_width
+          - resolve_margin_side(
+            &child.style,
+            inline_sides.0,
+            containing_width,
+            &self.font_context,
+            self.viewport_size,
+          )
+          - resolve_margin_side(
+            &child.style,
+            inline_sides.1,
+            containing_width,
+            &self.font_context,
+            self.viewport_size,
+          ))
+        .max(0.0);
+        let available_content_for_fit =
+          (available_inline_border_box - inline_edges_for_fit).max(0.0);
         let mut intrinsic_content_sizes = None;
         if child.style.width.is_none() && child.style.width_keyword.is_some() {
           let keyword = child.style.width_keyword.unwrap();
@@ -4274,36 +4309,24 @@ impl FormattingContext for BlockFormattingContext {
       + computed_width.padding_left
       + computed_width.padding_right
       + computed_width.border_right;
-    let resolved_margin_left = style
-      .margin_left
-      .as_ref()
-      .map(|l| {
-        resolve_length_for_width(
-          *l,
-          containing_width,
-          style,
-          &self.font_context,
-          self.viewport_size,
-        )
-      })
-      .unwrap_or(0.0);
-    let resolved_margin_right = style
-      .margin_right
-      .as_ref()
-      .map(|l| {
-        resolve_length_for_width(
-          *l,
-          containing_width,
-          style,
-          &self.font_context,
-          self.viewport_size,
-        )
-      })
-      .unwrap_or(0.0);
-    let available_inline_border_box =
-      (containing_width - resolved_margin_left - resolved_margin_right).max(0.0);
+    let available_inline_border_box = (containing_width
+      - resolve_margin_side(
+        style,
+        inline_sides.0,
+        containing_width,
+        &self.font_context,
+        self.viewport_size,
+      )
+      - resolve_margin_side(
+        style,
+        inline_sides.1,
+        containing_width,
+        &self.font_context,
+        self.viewport_size,
+      ))
+    .max(0.0);
 
-    let available_content_for_fit = computed_width.content_width;
+    let available_content_for_fit = (available_inline_border_box - inline_edges).max(0.0);
     let mut intrinsic_content_sizes = None;
     if style_for_width.width.is_none() && style_for_width.width_keyword.is_some() {
       let keyword = style_for_width.width_keyword.unwrap();
@@ -6343,6 +6366,71 @@ mod tests {
   }
 
   #[test]
+  fn max_width_fit_content_clamps_explicit_width_against_available_space() {
+    let mut parent_style = ComputedStyle::default();
+    parent_style.display = Display::Block;
+
+    let mut base_style = ComputedStyle::default();
+    base_style.display = Display::Block;
+    base_style.margin_left = Some(Length::px(0.0));
+    base_style.margin_right = Some(Length::px(0.0));
+
+    let text = BoxNode::new_text(default_style(), "hello world goodbye".into());
+    let inline = BoxNode::new_inline(default_style(), vec![text]);
+
+    let intrinsic_child = BoxNode::new_block(
+      Arc::new(base_style.clone()),
+      FormattingContextType::Block,
+      vec![inline.clone()],
+    );
+
+    let viewport = Size::new(300.0, 200.0);
+    let font_context = FontContext::new();
+    let fc = BlockFormattingContext::with_font_context_viewport_and_cb(
+      font_context.clone(),
+      viewport,
+      ContainingBlock::viewport(viewport),
+    );
+
+    let (min_border, max_border) = fc.compute_intrinsic_inline_sizes(&intrinsic_child).unwrap();
+    assert!(
+      min_border + 0.5 < 80.0 && max_border > 80.0 + 0.5,
+      "expected intrinsic widths to straddle 80px (min={min_border:.2}, max={max_border:.2})",
+    );
+
+    let mut child_style = base_style;
+    child_style.width = Some(Length::px(500.0));
+    child_style.width_keyword = None;
+    child_style.max_width = None;
+    child_style.max_width_keyword = Some(IntrinsicSizeKeyword::FitContent { limit: None });
+
+    let child = BoxNode::new_block(
+      Arc::new(child_style),
+      FormattingContextType::Block,
+      vec![inline],
+    );
+    let parent = BoxNode::new_block(
+      Arc::new(parent_style),
+      FormattingContextType::Block,
+      vec![child.clone()],
+    );
+
+    let fragment = fc.layout(&parent, &LayoutConstraints::definite_width(80.0)).unwrap();
+    assert!(
+      (fragment.bounds.width() - 80.0).abs() < 0.5,
+      "expected parent width to be 80px, got {:.2}",
+      fragment.bounds.width()
+    );
+    assert_eq!(fragment.children.len(), 1);
+    let child_frag = &fragment.children[0];
+    assert!(
+      (child_frag.bounds.width() - 80.0).abs() < 0.5,
+      "expected max-width:fit-content to clamp explicit width to 80px, got {:.2}",
+      child_frag.bounds.width()
+    );
+  }
+
+  #[test]
   fn height_max_content_rebases_percent_padding_and_borders() {
     let mut parent_style = ComputedStyle::default();
     parent_style.display = Display::Block;
@@ -7852,6 +7940,8 @@ mod tests {
     parent_style.width_keyword = None;
     parent_style.padding_left = Length::px(10.0);
     parent_style.padding_top = Length::px(10.0);
+    parent_style.border_left_style = BorderStyle::Solid;
+    parent_style.border_top_style = BorderStyle::Solid;
     parent_style.border_left_width = Length::px(2.0);
     parent_style.border_top_width = Length::px(2.0);
     let mut child_style = ComputedStyle::default();
