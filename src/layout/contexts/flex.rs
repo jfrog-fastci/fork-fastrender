@@ -291,6 +291,23 @@ fn translate_fragment_tree(
   Ok(())
 }
 
+fn subtree_contains_content_visibility_auto(
+  root: &BoxNode,
+  deadline_counter: &mut usize,
+) -> Result<bool, LayoutError> {
+  let mut stack: Vec<&BoxNode> = vec![root];
+  while let Some(node) = stack.pop() {
+    check_layout_deadline(deadline_counter)?;
+    if matches!(node.style.content_visibility, crate::style::types::ContentVisibility::Auto) {
+      return Ok(true);
+    }
+    for child in node.children.iter() {
+      stack.push(child);
+    }
+  }
+  Ok(false)
+}
+
 fn normalize_fragment_origin(
   fragment: &mut FragmentNode,
   deadline_counter: &mut usize,
@@ -896,6 +913,12 @@ impl FormattingContext for FlexFormattingContext {
     let base_factory = self.child_factory();
     let factory = base_factory.clone();
     let viewport_scroll = sanitize_viewport_scroll(factory.viewport_scroll());
+    let mut scroll_sensitive_items: FxHashSet<*const BoxNode> = FxHashSet::default();
+    for child in in_flow_children.iter() {
+      if subtree_contains_content_visibility_auto(child, &mut deadline_counter)? {
+        scroll_sensitive_items.insert(*child as *const BoxNode);
+      }
+    }
     let flex_item_block_fc: Arc<dyn FormattingContext> = Arc::new(
       BlockFormattingContext::for_flex_item_with_factory(base_factory.clone())
         .with_parallelism(self.parallelism),
@@ -1522,8 +1545,15 @@ impl FormattingContext for FlexFormattingContext {
                     let measure_style: &ComputedStyle = override_style
                       .as_deref()
                       .unwrap_or_else(|| measure_box.style.as_ref());
-                    let cache_key =
-                      flex_cache_key_with_style_and_scroll(measure_box, measure_style, viewport_scroll);
+                    let cache_key = if scroll_sensitive_items.contains(&box_ptr) {
+                      flex_cache_key_with_style_and_scroll(
+                        measure_box,
+                        measure_style,
+                        viewport_scroll,
+                      )
+                    } else {
+                      flex_cache_key_with_style(measure_box, measure_style)
+                    };
                     if let Some(cached) = pass_cache.get(&cache_key).and_then(|m| m.get(&key)).cloned() {
                         record_node_measure_hit(measure_box.id);
                         flex_profile::record_measure_hit();
@@ -2729,6 +2759,7 @@ impl FormattingContext for FlexFormattingContext {
       &node_map,
       &constraints,
       auto_unskipped,
+      &scroll_sensitive_items,
     )?;
     // Respect align-items/align-self in the container's coordinate system (parent axes), even
     // when the child uses a different writing mode. Taffy resolves alignment in its own
@@ -5660,6 +5691,7 @@ impl FlexFormattingContext {
     node_map: &FxHashMap<*const BoxNode, NodeId>,
     constraints: &LayoutConstraints,
     auto_unskipped: Option<&FxHashSet<*const BoxNode>>,
+    scroll_sensitive: &FxHashSet<*const BoxNode>,
   ) -> Result<FragmentNode, LayoutError> {
     // Get layout from Taffy
     let layout = taffy_tree
@@ -5908,10 +5940,16 @@ impl FlexFormattingContext {
         continue;
       }
 
-       if !needs_intrinsic_main {
+      if !needs_intrinsic_main {
+        let child_ptr = child_box as *const BoxNode;
         let parent_scroll = sanitize_viewport_scroll(factory.viewport_scroll());
-        let child_scroll = Point::new(parent_scroll.x - child_loc_x, parent_scroll.y - child_loc_y);
-        let cache_key = flex_cache_key_with_scroll(child_box, child_scroll);
+        let child_scroll =
+          Point::new(parent_scroll.x - child_loc_x, parent_scroll.y - child_loc_y);
+        let cache_key = if scroll_sensitive.contains(&child_ptr) {
+          flex_cache_key_with_scroll(child_box, child_scroll)
+        } else {
+          flex_cache_key(child_box)
+        };
         if let Some(cached) = measured_fragments.find_fragment_by_border_size_exact(
           cache_key,
           Size::new(target_width, target_height),
@@ -10203,6 +10241,83 @@ mod tests {
           "measurement cache should be hit on reuse"
         );
         assert_eq!(second_child.bounds.origin, expected_origin);
+      },
+    );
+  }
+
+  #[test]
+  fn measured_fragments_reuse_for_offset_children_without_content_visibility_auto() {
+    use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    with_thread_runtime_toggles(
+      Arc::new(RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_FLEX_PROFILE".to_string(),
+        "1".to_string(),
+      )]))),
+      || {
+        let measured_fragments = Arc::new(ShardedFlexCache::new_measure());
+        let layout_fragments = Arc::new(ShardedFlexCache::new_layout());
+        let viewport = Size::new(200.0, 200.0);
+        let fc = FlexFormattingContext::with_viewport_and_cb(
+          viewport,
+          ContainingBlock::viewport(viewport),
+          FontContext::new(),
+          measured_fragments.clone(),
+          layout_fragments,
+        )
+        .with_parallelism(LayoutParallelism::disabled());
+
+        let mut item_style = ComputedStyle::default();
+        item_style.display = Display::Block;
+        item_style.width = Some(Length::px(40.0));
+        item_style.height = Some(Length::px(20.0));
+        item_style.width_keyword = None;
+        item_style.height_keyword = None;
+        let item_style = Arc::new(item_style);
+
+        let mut item_a = BoxNode::new_block(item_style.clone(), FormattingContextType::Block, vec![]);
+        item_a.id = 2;
+        let mut item_b = BoxNode::new_block(item_style, FormattingContextType::Block, vec![]);
+        item_b.id = 3;
+
+        let mut container_style = ComputedStyle::default();
+        container_style.display = Display::Flex;
+        container_style.flex_direction = FlexDirection::Row;
+        container_style.width = Some(Length::px(120.0));
+        container_style.height = Some(Length::px(40.0));
+        container_style.width_keyword = None;
+        container_style.height_keyword = None;
+        let mut container = BoxNode::new_block(
+          Arc::new(container_style),
+          FormattingContextType::Flex,
+          vec![item_a, item_b],
+        );
+        // Use id=0 to avoid hitting the global layout cache in this test.
+        container.id = 0;
+
+        let hits_before: u64 = measured_fragments
+          .shard_stats()
+          .into_iter()
+          .map(|s| s.hits)
+          .sum();
+
+        let constraints = LayoutConstraints::definite(120.0, 40.0);
+        let fragment = fc.layout(&container, &constraints).expect("layout");
+        assert_eq!(fragment.children.len(), 2);
+
+        let hits_after: u64 = measured_fragments
+          .shard_stats()
+          .into_iter()
+          .map(|s| s.hits)
+          .sum();
+
+        assert!(
+          hits_after.saturating_sub(hits_before) >= 2,
+          "expected measured fragment cache hits for both children, got {}",
+          hits_after.saturating_sub(hits_before)
+        );
       },
     );
   }
