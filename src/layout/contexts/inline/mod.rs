@@ -7561,6 +7561,23 @@ fn is_kinsoku_strict_prohibited_line_start(ch: char) -> bool {
     )
 }
 
+fn is_kinsoku_strict_prohibited_line_end(ch: char) -> bool {
+  matches!(
+    ch,
+    // Opening brackets/quotes should not end a line.
+    '\u{3008}' // 〈
+      | '\u{300A}' // 《
+      | '\u{300C}' // 「
+      | '\u{300E}' // 『
+      | '\u{3010}' // 【
+      | '\u{3014}' // 〔
+      | '\u{3016}' // 〖
+      | '\u{FF08}' // （
+      | '\u{FF3B}' // ［
+      | '\u{FF5B}' // ｛
+  )
+}
+
 fn apply_break_properties(
   text: &str,
   breaks: Vec<crate::text::line_break::BreakOpportunity>,
@@ -7654,7 +7671,10 @@ fn apply_break_properties(
           continue;
         }
         let next = text[pos..].chars().next();
-        if matches!(next, Some(ch) if is_kinsoku_strict_prohibited_line_start(ch)) {
+        let prev = text[..pos].chars().next_back();
+        if matches!(next, Some(ch) if is_kinsoku_strict_prohibited_line_start(ch))
+          || matches!(prev, Some(ch) if is_kinsoku_strict_prohibited_line_end(ch))
+        {
           brk.kind = BreakOpportunityKind::Emergency;
         }
       }
@@ -18170,6 +18190,61 @@ mod tests {
         brk_6.kind,
         BreakOpportunityKind::Normal,
         "breaks not affected by kinsoku rules should remain normal"
+      );
+    }
+  }
+
+  #[test]
+  fn line_break_strict_downgrades_breaks_after_opening_brackets_to_emergency() {
+    use crate::text::line_break::BreakOpportunityKind;
+
+    // Opening brackets should not end a line under kinsoku shori rules.
+    for mark in [
+      '\u{3008}', // 〈
+      '\u{300A}', // 《
+      '\u{300C}', // 「
+      '\u{300E}', // 『
+      '\u{3010}', // 【
+      '\u{3014}', // 〔
+      '\u{3016}', // 〖
+      '\u{FF08}', // （
+      '\u{FF3B}', // ［
+      '\u{FF5B}', // ｛
+    ] {
+      let text = format!("あ{}い", mark);
+      let breaks = vec![
+        BreakOpportunity::allowed(3), // あ|mark
+        BreakOpportunity::allowed(6), // mark|い
+        BreakOpportunity::allowed(9), // end
+      ];
+
+      let result = apply_break_properties(
+        text.as_str(),
+        breaks,
+        LineBreak::Strict,
+        WordBreak::Normal,
+        OverflowWrap::Normal,
+        true,
+      );
+
+      let brk_3 = result
+        .iter()
+        .find(|b| b.byte_offset == 3)
+        .expect("break at 3");
+      assert_eq!(
+        brk_3.kind,
+        BreakOpportunityKind::Normal,
+        "breaks before opening brackets should remain normal under line-break: strict"
+      );
+
+      let brk_6 = result
+        .iter()
+        .find(|b| b.byte_offset == 6)
+        .expect("break at 6");
+      assert_eq!(
+        brk_6.kind,
+        BreakOpportunityKind::Emergency,
+        "breaks after opening brackets should be emergency-only under line-break: strict"
       );
     }
   }
