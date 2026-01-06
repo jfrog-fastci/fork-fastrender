@@ -1986,6 +1986,39 @@ mod tests {
       Some(([255, 0, 0, 255], [0, 0, 255, 255]))
     );
   }
+
+  #[test]
+  fn diff_premultiplied_against_rgba_baseline_handles_alpha() {
+    // A premultiplied pixel whose corresponding straight RGBA value is not perfectly representable
+    // via the unpremultiply math (due to rounding) should still compare equal against the baseline
+    // PNG, because both code paths use the same unpremultiply logic.
+    let premultiplied = vec![50u8, 75u8, 100u8, 128u8];
+    let size = IntSize::from_wh(1, 1).expect("size");
+    let pixmap = Pixmap::from_vec(premultiplied.clone(), size).expect("pixmap");
+    let png = encode_image(&pixmap, OutputFormat::Png).expect("encode png");
+    let baseline_rgba = image::load_from_memory_with_format(&png, ImageFormat::Png)
+      .expect("decode png")
+      .to_rgba8()
+      .into_raw();
+
+    let (diff, mismatch, mismatch_rgba) =
+      diff_premultiplied_against_rgba_baseline(&baseline_rgba, &premultiplied, 1);
+    assert_eq!(diff, 0);
+    assert_eq!(mismatch, None);
+    assert_eq!(mismatch_rgba, None);
+
+    // Small perturbation should register as a diff.
+    let mut different = premultiplied.clone();
+    different[0] = different[0].saturating_add(1);
+    let (diff, mismatch, mismatch_rgba) =
+      diff_premultiplied_against_rgba_baseline(&baseline_rgba, &different, 1);
+    assert_eq!(diff, 1);
+    assert_eq!(mismatch, Some((0, 0)));
+    assert!(
+      mismatch_rgba.is_some(),
+      "expected baseline/variant RGBA details for first mismatch"
+    );
+  }
 }
 
 fn build_snapshot(artifacts: &RenderArtifacts) -> io::Result<PipelineSnapshot> {
