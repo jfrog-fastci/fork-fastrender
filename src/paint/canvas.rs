@@ -1030,7 +1030,7 @@ impl Canvas {
   /// ```
   pub fn draw_rect(&mut self, rect: Rect, color: Rgba) {
     // Skip fully transparent colors
-    if color.a == 0.0 && self.current_state.opacity == 0.0 {
+    if color.a == 0.0 || self.current_state.opacity == 0.0 {
       return;
     }
 
@@ -1067,7 +1067,7 @@ impl Canvas {
   /// canvas.stroke_rect(rect, Rgba::BLACK, 2.0);
   /// ```
   pub fn stroke_rect(&mut self, rect: Rect, color: Rgba, width: f32) {
-    if color.a == 0.0 && self.current_state.opacity == 0.0 {
+    if color.a == 0.0 || self.current_state.opacity == 0.0 {
       return;
     }
 
@@ -1096,7 +1096,7 @@ impl Canvas {
     width: f32,
     blend_mode: BlendMode,
   ) {
-    if color.a == 0.0 && self.current_state.opacity == 0.0 {
+    if color.a == 0.0 || self.current_state.opacity == 0.0 {
       return;
     }
 
@@ -1134,7 +1134,7 @@ impl Canvas {
   /// canvas.draw_rounded_rect(rect, radii, Rgba::BLUE);
   /// ```
   pub fn draw_rounded_rect(&mut self, rect: Rect, radii: BorderRadii, color: Rgba) {
-    if color.a == 0.0 && self.current_state.opacity == 0.0 {
+    if color.a == 0.0 || self.current_state.opacity == 0.0 {
       return;
     }
 
@@ -1390,7 +1390,7 @@ impl Canvas {
 
   /// Draws a stroked rounded rectangle outline
   pub fn stroke_rounded_rect(&mut self, rect: Rect, radii: BorderRadii, color: Rgba, width: f32) {
-    if color.a == 0.0 && self.current_state.opacity == 0.0 {
+    if color.a == 0.0 || self.current_state.opacity == 0.0 {
       return;
     }
 
@@ -1670,7 +1670,7 @@ impl Canvas {
   /// * `color` - Line color
   /// * `width` - Line width in pixels
   pub fn draw_line(&mut self, start: Point, end: Point, color: Rgba, width: f32) {
-    if color.a == 0.0 && self.current_state.opacity == 0.0 {
+    if color.a == 0.0 || self.current_state.opacity == 0.0 {
       return;
     }
 
