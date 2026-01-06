@@ -523,6 +523,11 @@ const PAGE_FIXTURES: &[PageFixture] = &[
     html: "background_clip_text/index.html",
     shots: DEFAULT_SHOTS,
   },
+  PageFixture {
+    name: "overflow_axis_interaction",
+    html: "overflow_axis_interaction/index.html",
+    shots: DEFAULT_SHOTS,
+  },
 ];
 
 fn fixtures_dir() -> PathBuf {
