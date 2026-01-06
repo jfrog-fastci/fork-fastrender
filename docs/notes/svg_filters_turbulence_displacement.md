@@ -294,6 +294,11 @@ For each output pixel `(x, y)` (integer pixel indices):
 4. Sample the primary input (`in1`) at `(x + dx, y + dy)` using `sample_nearest_premultiplied()`.
 5. Store the sampled premultiplied pixel.
 
+Because channel selection happens on unpremultiplied values, a semi-transparent displacement-map
+pixel (e.g. white at `opacity=0.5`) still yields an `R` channel of `1.0` for displacement purposes.
+This matches Chrome/Skia; resvg currently samples premultiplied channels for `feDisplacementMap`, so
+FastRender intentionally diverges from resvg for semi-transparent maps.
+
 ### Pixel coordinate convention (nearest pixel centers)
 
 Primary sampling uses `sample_nearest_premultiplied()`:
@@ -398,6 +403,8 @@ Regression coverage:
   - `displacement_map_object_bounding_box_scale_is_resolved_against_bbox_width`
   - `displacement_map_ignores_filter_res`
   - `displacement_map_interprets_map_channels_in_color_interpolation_space`
+- Semi-transparent map-channel semantics probe (validated against Chrome):
+  - Fixture: `tests/pages/fixtures/svg_filter_displacement_map_alpha_semantics/index.html`
 - Displacement-map semantics golden (validated against Chrome):
   - Fixture: `tests/fixtures/html/svg_filter_displacement_map_semantics.html`
   - Golden test: `tests/paint/svg_filter_displacement_map_semantics_golden.rs`

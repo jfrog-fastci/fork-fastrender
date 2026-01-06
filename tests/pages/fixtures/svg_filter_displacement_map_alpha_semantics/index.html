@@ -1,0 +1,157 @@
+<!doctype html>
+<meta charset="utf-8" />
+<style>
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    background: #fff;
+  }
+
+  body {
+    display: flex;
+    gap: 0;
+  }
+
+  .cell {
+    width: 16px;
+    height: 16px;
+    background: #f0f;
+    position: relative;
+  }
+
+  .filtered {
+    width: 16px;
+    height: 16px;
+    position: relative;
+  }
+
+  .row {
+    display: flex;
+    width: 16px;
+    height: 16px;
+  }
+
+  .px {
+    width: 1px;
+    height: 16px;
+  }
+</style>
+
+<!--
+  feDisplacementMap semi-transparent displacement-map semantics probe.
+
+  The input displacement map is a constant `feFlood flood-color="white"` but with `flood-opacity=0.5`.
+
+  If an engine interprets map channel selectors as *unpremultiplied* values, then the red channel is
+  still 1.0 and `scale=2` yields `dx=dy=+1px`, shifting the source image up-left and leaving a
+  1px magenta border on the right and bottom (out-of-bounds primary sampling goes transparent).
+
+  If an engine interprets map channel selectors as *premultiplied* values, then the red channel is
+  attenuated by alpha to ~0.5, yielding ~no displacement and no magenta border.
+
+  The third cell uses an opaque (alpha=1) map as a reference for the displaced output.
+
+  Chrome behavior: the semi-transparent cell matches the opaque reference (unpremultiplied channels).
+
+  IMPORTANT: Apply the filter via the CSS `filter: url(#...)` property so this exercises
+  FastRender's SVG filter implementation (`src/paint/svg_filter.rs`).
+-->
+
+<svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" style="position: absolute">
+  <defs>
+    <filter id="semi" filterUnits="objectBoundingBox" x="0" y="0" width="1" height="1">
+      <feFlood flood-color="white" flood-opacity="0.5" result="map" />
+      <feDisplacementMap
+        in="SourceGraphic"
+        in2="map"
+        scale="2"
+        xChannelSelector="R"
+        yChannelSelector="R"
+      />
+    </filter>
+
+    <filter id="opaque" filterUnits="objectBoundingBox" x="0" y="0" width="1" height="1">
+      <feFlood flood-color="white" flood-opacity="1" result="map" />
+      <feDisplacementMap
+        in="SourceGraphic"
+        in2="map"
+        scale="2"
+        xChannelSelector="R"
+        yChannelSelector="R"
+      />
+    </filter>
+  </defs>
+</svg>
+
+<!-- Control (no filter). -->
+<div class="cell">
+  <div class="filtered">
+    <div class="row">
+      <div class="px" style="background: #f00"></div>
+      <div class="px" style="background: #0f0"></div>
+      <div class="px" style="background: #00f"></div>
+      <div class="px" style="background: #fff"></div>
+      <div class="px" style="background: #f00"></div>
+      <div class="px" style="background: #0f0"></div>
+      <div class="px" style="background: #00f"></div>
+      <div class="px" style="background: #fff"></div>
+      <div class="px" style="background: #f00"></div>
+      <div class="px" style="background: #0f0"></div>
+      <div class="px" style="background: #00f"></div>
+      <div class="px" style="background: #fff"></div>
+      <div class="px" style="background: #f00"></div>
+      <div class="px" style="background: #0f0"></div>
+      <div class="px" style="background: #00f"></div>
+      <div class="px" style="background: #fff"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Semi-transparent displacement map (alpha=0.5). -->
+<div class="cell">
+  <div class="filtered" style="filter: url(#semi)">
+    <div class="row">
+      <div class="px" style="background: #f00"></div>
+      <div class="px" style="background: #0f0"></div>
+      <div class="px" style="background: #00f"></div>
+      <div class="px" style="background: #fff"></div>
+      <div class="px" style="background: #f00"></div>
+      <div class="px" style="background: #0f0"></div>
+      <div class="px" style="background: #00f"></div>
+      <div class="px" style="background: #fff"></div>
+      <div class="px" style="background: #f00"></div>
+      <div class="px" style="background: #0f0"></div>
+      <div class="px" style="background: #00f"></div>
+      <div class="px" style="background: #fff"></div>
+      <div class="px" style="background: #f00"></div>
+      <div class="px" style="background: #0f0"></div>
+      <div class="px" style="background: #00f"></div>
+      <div class="px" style="background: #fff"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Opaque displacement map (alpha=1) reference. -->
+<div class="cell">
+  <div class="filtered" style="filter: url(#opaque)">
+    <div class="row">
+      <div class="px" style="background: #f00"></div>
+      <div class="px" style="background: #0f0"></div>
+      <div class="px" style="background: #00f"></div>
+      <div class="px" style="background: #fff"></div>
+      <div class="px" style="background: #f00"></div>
+      <div class="px" style="background: #0f0"></div>
+      <div class="px" style="background: #00f"></div>
+      <div class="px" style="background: #fff"></div>
+      <div class="px" style="background: #f00"></div>
+      <div class="px" style="background: #0f0"></div>
+      <div class="px" style="background: #00f"></div>
+      <div class="px" style="background: #fff"></div>
+      <div class="px" style="background: #f00"></div>
+      <div class="px" style="background: #0f0"></div>
+      <div class="px" style="background: #00f"></div>
+      <div class="px" style="background: #fff"></div>
+    </div>
+  </div>
+</div>

@@ -107,20 +107,23 @@ fn displacement_map_applies_scale_without_extra_multiplier() {
 }
 
 #[test]
-fn displacement_map_uses_premultiplied_map_channels() {
-  // resvg + Chrome sample displacement map channels as premultiplied values. This matters when the
-  // displacement map is semi-transparent: alpha attenuates the channel values, reducing the
-  // displacement magnitude.
+fn displacement_map_interprets_map_channels_as_unpremultiplied() {
+  // Chrome (Skia) samples displacement-map channel selectors as *unpremultiplied* values. This
+  // matters when the displacement map is semi-transparent: alpha does *not* attenuate the RGB
+  // channel values, so a semi-transparent white map still yields channel=1.0.
+  //
+  // Validated against the offline Chrome fixture:
+  // `tests/pages/fixtures/svg_filter_displacement_map_alpha_semantics/index.html`.
   let svg = r#"
-    <svg xmlns="http://www.w3.org/2000/svg" width="3" height="1" viewBox="0 0 3 1">
-      <filter id="f" x="0" y="0" width="3" height="1"
-              filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse">
-        <feFlood flood-color="white" flood-opacity="0.502" result="map" />
-         <feDisplacementMap in="SourceGraphic" in2="map" scale="2"
-                             xChannelSelector="R" yChannelSelector="A" />
-      </filter>
-    </svg>
-  "#;
+     <svg xmlns="http://www.w3.org/2000/svg" width="3" height="1" viewBox="0 0 3 1">
+       <filter id="f" x="0" y="0" width="3" height="1"
+               filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse">
+         <feFlood flood-color="white" flood-opacity="0.502" result="map" />
+          <feDisplacementMap in="SourceGraphic" in2="map" scale="2"
+                              xChannelSelector="R" yChannelSelector="A" />
+       </filter>
+     </svg>
+   "#;
 
   let filter =
     parse_svg_filter_from_svg_document(svg, Some("f"), &ImageCache::new()).expect("filter");
@@ -134,22 +137,28 @@ fn displacement_map_uses_premultiplied_map_channels() {
   )
   .unwrap();
 
+  let mut expected = empty_pixmap(3, 1);
+  expected.pixels_mut()[0] = PremultipliedColorU8::from_rgba(0, 255, 0, 255).unwrap();
+  expected.pixels_mut()[1] = PremultipliedColorU8::from_rgba(0, 0, 255, 255).unwrap();
   assert_eq!(
     pixmap.data(),
-    gradient_pixmap().data(),
-    "expected premultiplied map channels to attenuate displacement for semi-transparent maps"
+    expected.data(),
+    "expected semi-transparent displacement map to still displace by 1px (unpremultiplied channels)"
   );
 }
 
 #[test]
-fn displacement_map_semitransparent_map_channels_match_resvg() {
+fn displacement_map_semitransparent_map_channels_differ_from_resvg() {
   // Semi-transparent displacement maps disambiguate whether feDisplacementMap samples the map
-  // channels as premultiplied or unpremultiplied values. Compare against resvg to lock down the
-  // intended behaviour.
+  // channels as premultiplied or unpremultiplied values.
+  //
+  // Chrome samples channel selectors as *unpremultiplied* (alpha does not attenuate RGB), while
+  // resvg currently samples as premultiplied. FastRender follows Chrome for compatibility, so this
+  // test documents (and locks in) the intentional divergence from resvg.
   let svg_filtered = r#"
-    <svg xmlns="http://www.w3.org/2000/svg" width="5" height="5" viewBox="0 0 5 5" shape-rendering="crispEdges">
-      <defs>
-        <filter id="f" x="0" y="0" width="5" height="5"
+     <svg xmlns="http://www.w3.org/2000/svg" width="5" height="5" viewBox="0 0 5 5" shape-rendering="crispEdges">
+       <defs>
+         <filter id="f" x="0" y="0" width="5" height="5"
                 filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
                 color-interpolation-filters="sRGB">
           <feFlood flood-color="white" flood-opacity="0.5" result="map" />
@@ -161,8 +170,8 @@ fn displacement_map_semitransparent_map_channels_match_resvg() {
         <rect width="5" height="5" fill="rgba(0,0,0,0)" />
         <rect x="2" y="2" width="1" height="1" fill="rgb(255,0,0)" />
       </g>
-    </svg>
-  "#;
+     </svg>
+   "#;
   let svg_source = r#"
     <svg xmlns="http://www.w3.org/2000/svg" width="5" height="5" viewBox="0 0 5 5" shape-rendering="crispEdges">
       <defs>
@@ -194,10 +203,26 @@ fn displacement_map_semitransparent_map_channels_match_resvg() {
   )
   .unwrap();
 
+  let red = PremultipliedColorU8::from_rgba(255, 0, 0, 255).unwrap();
   assert_eq!(
-    actual.data(),
-    expected.data(),
-    "FastRender displacement map must match resvg output for semi-transparent displacement maps"
+    actual.pixel(1, 1).unwrap(),
+    red,
+    "Chrome semantics: displaced pixel should land at (1,1)"
+  );
+  assert_eq!(
+    actual.pixel(2, 2).unwrap(),
+    PremultipliedColorU8::TRANSPARENT,
+    "Chrome semantics: original pixel position should become transparent"
+  );
+  assert_eq!(
+    expected.pixel(2, 2).unwrap(),
+    red,
+    "resvg semantics: displaced pixel should remain at (2,2)"
+  );
+  assert_eq!(
+    expected.pixel(1, 1).unwrap(),
+    PremultipliedColorU8::TRANSPARENT,
+    "resvg semantics: (1,1) should remain transparent"
   );
 }
 

@@ -5551,7 +5551,6 @@ fn apply_displacement_map(
     None => return Ok(None),
   };
   let width = primary.width() as usize;
-  let height = primary.height() as usize;
 
   let use_linear = matches!(
     color_interpolation_filters,
@@ -5608,17 +5607,22 @@ fn apply_displacement_map(
     let map_sample = map
       .pixel(map_x as u32, map_y as u32)
       .unwrap_or(PremultipliedColorU8::TRANSPARENT);
+    // Chrome interprets displacement-map channel selectors on *unpremultiplied* RGBA values, even
+    // though intermediate filter surfaces are stored premultiplied. In other words, a semi-
+    // transparent white map pixel still yields an `R` channel of 1.0 for displacement purposes
+    // (alpha does not attenuate the RGB channel values).
+    let map_sample = to_unpremultiplied(map_sample);
     let channel_value_x = match x_channel {
-      ChannelSelector::R => map_sample.red() as f32 / 255.0,
-      ChannelSelector::G => map_sample.green() as f32 / 255.0,
-      ChannelSelector::B => map_sample.blue() as f32 / 255.0,
-      ChannelSelector::A => map_sample.alpha() as f32 / 255.0,
+      ChannelSelector::R => map_sample.r,
+      ChannelSelector::G => map_sample.g,
+      ChannelSelector::B => map_sample.b,
+      ChannelSelector::A => map_sample.a,
     };
     let channel_value_y = match y_channel {
-      ChannelSelector::R => map_sample.red() as f32 / 255.0,
-      ChannelSelector::G => map_sample.green() as f32 / 255.0,
-      ChannelSelector::B => map_sample.blue() as f32 / 255.0,
-      ChannelSelector::A => map_sample.alpha() as f32 / 255.0,
+      ChannelSelector::R => map_sample.r,
+      ChannelSelector::G => map_sample.g,
+      ChannelSelector::B => map_sample.b,
+      ChannelSelector::A => map_sample.a,
     };
     let dx = (channel_value_x - 0.5) * scale_x;
     let dy = (channel_value_y - 0.5) * scale_y;
