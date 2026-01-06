@@ -6,13 +6,12 @@ html, body {
   margin: 0;
   background: black;
 }
-svg {
-  display: block;
+.frame {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  box-sizing: border-box;
+  border: 1px solid white;
 }
 </style>
-<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" shape-rendering="crispEdges">
-  <rect x="0" y="0" width="40" height="1" fill="white"/>
-  <rect x="0" y="39" width="40" height="1" fill="white"/>
-  <rect x="0" y="0" width="1" height="40" fill="white"/>
-  <rect x="39" y="0" width="1" height="40" fill="white"/>
-</svg>
+<div class="frame"></div>

@@ -6,11 +6,20 @@ html, body {
   margin: 0;
   background: black;
 }
-svg {
-  display: block;
+.box {
+  position: absolute;
+  top: 0;
+  width: 40px;
+  height: 40px;
+}
+#srgb {
+  left: 0;
+  background: rgb(64,64,64);
+}
+#linear {
+  left: 60px;
+  background: rgb(94,94,94);
 }
 </style>
-<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40" shape-rendering="crispEdges">
-  <rect x="0" y="0" width="40" height="40" fill="rgb(64,64,64)"/>
-  <rect x="60" y="0" width="40" height="40" fill="rgb(94,94,94)"/>
-</svg>
+<div class="box" id="srgb"></div>
+<div class="box" id="linear"></div>

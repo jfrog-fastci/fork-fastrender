@@ -1,0 +1,46 @@
+<!doctype html>
+<meta charset="utf-8">
+<link rel="match" href="displacement-map-map-subregion-clamp-001-ref.html">
+<title>feDisplacementMap clamps in2 sampling to the map primitive subregion</title>
+<style>
+  html, body {
+    margin: 0;
+    background: black;
+  }
+  svg { display: none; }
+  #scene {
+    position: relative;
+    width: 5px;
+    height: 5px;
+    filter: url(#f);
+  }
+  .px {
+    position: absolute;
+    left: 2px;
+    top: 2px;
+    width: 1px;
+    height: 1px;
+    background: rgb(255, 0, 0);
+  }
+</style>
+<!--
+  Chrome clamps displacement-map (`in2`) sampling coordinates to the primitive subregion of the
+  map input, instead of treating samples outside that subregion as transparent black.
+
+  The map is a 1px-wide feFlood at x=0. With clamping, every pixel samples map_x=0 => dx=+1px
+  (scale=2, xChannel=R). The red pixel (2,2) therefore appears at (1,2).
+-->
+<svg xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="f" x="0" y="0" width="5" height="5"
+            filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
+            color-interpolation-filters="sRGB">
+      <feFlood flood-color="rgb(255, 128, 0)" x="0" y="0" width="1" height="5" result="map" />
+      <feDisplacementMap in="SourceGraphic" in2="map" scale="2"
+                         xChannelSelector="R" yChannelSelector="G" />
+    </filter>
+  </defs>
+</svg>
+<div id="scene">
+  <div class="px"></div>
+</div>
