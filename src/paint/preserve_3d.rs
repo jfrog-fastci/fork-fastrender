@@ -448,11 +448,16 @@ mod tests {
       radii: crate::paint::display_list::BorderRadii::ZERO,
       mask: None,
     }));
-    let back = basic_context(Transform3D::identity(), 0.0);
-    let front = basic_context(Transform3D::identity(), 50.0);
-    list.push(DisplayItem::PushStackingContext(back.clone()));
-    list.push(DisplayItem::PopStackingContext);
+    let mut back = basic_context(Transform3D::identity(), 0.0);
+    back.z_index = 1;
+    let mut front = basic_context(Transform3D::identity(), 50.0);
+    front.z_index = 2;
+
+    // Emit the closer plane first in DOM order; the compositor should reorder by depth so the
+    // farther plane is painted first (back-to-front).
     list.push(DisplayItem::PushStackingContext(front.clone()));
+    list.push(DisplayItem::PopStackingContext);
+    list.push(DisplayItem::PushStackingContext(back.clone()));
     list.push(DisplayItem::PopStackingContext);
     list.push(DisplayItem::PopStackingContext);
 
@@ -464,23 +469,16 @@ mod tests {
       },
     );
 
-    let mut stacking_transforms: Vec<Transform3D> = Vec::new();
+    let mut order: Vec<i32> = Vec::new();
     for item in composed.items() {
       if let DisplayItem::PushStackingContext(ctx) = item {
         if ctx.transform_style == TransformStyle::Preserve3d && ctx.transform.is_some() {
-          stacking_transforms.push(ctx.transform.unwrap());
+          order.push(ctx.z_index);
         }
       }
     }
 
-    // Expect back (z=0) then front (z=50) in paint order.
-    assert_eq!(stacking_transforms.len(), 2);
-    let depth0 = stacking_transforms[0].transform_point(0.0, 0.0, 0.0).2;
-    let depth1 = stacking_transforms[1].transform_point(0.0, 0.0, 0.0).2;
-    assert!(
-      depth0 < depth1,
-      "expected back element before front element"
-    );
+    assert_eq!(order, vec![1, 2], "expected back-to-front depth sort without warping");
   }
 
   #[test]
