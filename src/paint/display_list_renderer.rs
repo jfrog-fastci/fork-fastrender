@@ -7821,15 +7821,10 @@ impl DisplayListRenderer {
                   scene_item.bounds.height(),
                 );
               }
-              let blend = scene_item
-                .compositing
-                .as_ref()
-                .map(|compositing| {
-                  let is_isolated = compositing.is_isolated || has_backdrop;
-                  (!matches!(compositing.mix_blend_mode, BlendMode::Normal) && !is_isolated)
-                    .then_some(compositing.mix_blend_mode)
-                })
-                .flatten();
+              let blend = scene_item.compositing.as_ref().and_then(|compositing| {
+                (!matches!(compositing.mix_blend_mode, BlendMode::Normal))
+                  .then_some(compositing.mix_blend_mode)
+              });
               if let Some(mode) = blend {
                 if is_manual_blend(mode) {
                   if let Some(warped) = renderer.warp_pixmap_for_manual_blend(
@@ -8982,11 +8977,7 @@ impl DisplayListRenderer {
               self.canvas.push_layer(opacity)?;
             }
           } else {
-            let blend = if is_isolated {
-              tiny_skia::BlendMode::SourceOver
-            } else {
-              map_blend_mode(item.mix_blend_mode)
-            };
+            let blend = map_blend_mode(item.mix_blend_mode);
             if let Some(layer_rect) = bounded_rect {
               self
                 .canvas
@@ -14244,6 +14235,148 @@ mod tests {
       report.parallel_threads > 1,
       "expected dedicated paint pool to use >1 thread, got {}",
       report.parallel_threads
+    );
+  }
+
+  #[test]
+  fn non_isolated_mix_blend_mode_disables_parallel_tiling() {
+    let bounds = Rect::from_xywh(0.0, 0.0, 260.0, 260.0);
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: bounds,
+      color: Rgba::from_rgba8(128, 128, 128, 255),
+    }));
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      bounds,
+      plane_rect: bounds,
+      mix_blend_mode: BlendMode::Multiply,
+      opacity: 1.0,
+      is_isolated: false,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+    }));
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: bounds,
+      color: Rgba::rgb(255, 0, 0),
+    }));
+    list.push(DisplayItem::PopStackingContext);
+
+    let parallelism = PaintParallelism {
+      tile_size: 64,
+      log_timing: false,
+      min_display_items: 1,
+      min_tiles: 1,
+      min_build_fragments: 1,
+      build_chunk_size: 1,
+      max_threads: None,
+      mode: PaintParallelismMode::Enabled,
+    };
+
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_PAINT_THREADS".to_string(),
+      "4".to_string(),
+    )])));
+    let pool = ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+    let report = pool.install(|| {
+      crate::debug::runtime::with_thread_runtime_toggles(Arc::clone(&toggles), || {
+        DisplayListRenderer::new(260, 260, Rgba::WHITE, FontContext::new())
+          .unwrap()
+          .with_parallelism(parallelism)
+          .render_with_report(&list)
+          .unwrap()
+      })
+    });
+
+    assert!(
+      !report.parallel_used,
+      "expected non-isolated mix-blend-mode to disable parallel tiling"
+    );
+    assert_eq!(
+      report.fallback_reason.as_deref(),
+      Some("mix-blend-mode on non-isolated context requires serial painting")
+    );
+  }
+
+  #[test]
+  fn isolated_mix_blend_mode_allows_parallel_tiling_and_matches_serial() {
+    let bounds = Rect::from_xywh(0.0, 0.0, 260.0, 260.0);
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: bounds,
+      color: Rgba::from_rgba8(128, 128, 128, 255),
+    }));
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      bounds,
+      plane_rect: bounds,
+      mix_blend_mode: BlendMode::Multiply,
+      opacity: 1.0,
+      is_isolated: true,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+    }));
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: bounds,
+      color: Rgba::rgb(255, 0, 0),
+    }));
+    list.push(DisplayItem::PopStackingContext);
+
+    let parallelism = PaintParallelism {
+      tile_size: 64,
+      log_timing: false,
+      min_display_items: 1,
+      min_tiles: 1,
+      min_build_fragments: 1,
+      build_chunk_size: 1,
+      max_threads: None,
+      mode: PaintParallelismMode::Enabled,
+    };
+
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_PAINT_THREADS".to_string(),
+      "4".to_string(),
+    )])));
+    let pool = ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+    let report = pool.install(|| {
+      crate::debug::runtime::with_thread_runtime_toggles(Arc::clone(&toggles), || {
+        DisplayListRenderer::new(260, 260, Rgba::WHITE, FontContext::new())
+          .unwrap()
+          .with_parallelism(parallelism)
+          .render_with_report(&list)
+          .unwrap()
+      })
+    });
+
+    assert!(
+      report.parallel_used,
+      "expected isolated mix-blend-mode to allow parallel tiling"
+    );
+    assert_eq!(pixel(&report.pixmap, 0, 0), (128, 0, 0, 255));
+
+    let serial = DisplayListRenderer::new(260, 260, Rgba::WHITE, FontContext::new())
+      .unwrap()
+      .with_parallelism(PaintParallelism::disabled())
+      .render(&list)
+      .unwrap();
+    assert_eq!(
+      report.pixmap.data(),
+      serial.data(),
+      "parallel and serial output should match for isolated mix-blend-mode"
     );
   }
 
