@@ -282,12 +282,14 @@ For each output pixel `(x, y)` (integer pixel indices):
    - This models Chrome’s behavior: pixels outside the map’s primitive subregion behave like the
      nearest edge pixel, not transparent black (see the comment in `apply_displacement_map()`).
    - Sampling is **nearest neighbor** (no bilinear interpolation).
-2. Convert that map pixel into channel values by reading **premultiplied bytes** from
-   `PremultipliedColorU8`:
-   - `channel = map_sample.{red,green,blue,alpha} as f32 / 255.0`
-   - Because filter surfaces are stored premultiplied, the `red/green/blue` bytes are already
-     attenuated by `alpha`. (So semi-transparent displacement maps reduce the displacement magnitude,
-     matching Chrome/resvg.)
+2. Convert that map pixel into channel values by interpreting channel selectors on **unpremultiplied**
+   RGBA:
+   - The map pixmap is stored as premultiplied RGBA8 (`PremultipliedColorU8`), but for displacement
+     we immediately demultiply via `to_unpremultiplied(map_sample)` to obtain `r/g/b/a` floats in
+     `[0, 1]`.
+   - `xChannelSelector` / `yChannelSelector` are applied to those **unpremultiplied** values. In
+     particular, alpha does **not** attenuate the `R/G/B` displacement channels (e.g. a
+     semi-transparent white map pixel still yields `R=1.0`).
 3. Compute displacements:
    - `dx = (channel_x - 0.5) * scale_x_px`
    - `dy = (channel_y - 0.5) * scale_y_px`
@@ -352,8 +354,8 @@ When the step uses `sRGB`, no conversion is performed.
 
 Regression coverage:
 
-- `displacement_map_uses_premultiplied_map_channels` (`tests/paint/svg_filter_test.rs`)
-- `displacement_map_semitransparent_map_channels_match_resvg` (`tests/paint/svg_filter_test.rs`)
+- `displacement_map_interprets_map_channels_as_unpremultiplied` (`tests/paint/svg_filter_test.rs`)
+- `displacement_map_semitransparent_map_channels_differ_from_resvg` (`tests/paint/svg_filter_test.rs`)
 - `displacement_map_interprets_map_channels_in_color_interpolation_space`
   (`tests/paint/svg_filter_test.rs`)
 
@@ -398,8 +400,8 @@ Regression coverage:
 
 - `tests/paint/svg_filter_test.rs`:
   - `displacement_map_applies_scale_without_extra_multiplier`
-  - `displacement_map_uses_premultiplied_map_channels`
-  - `displacement_map_semitransparent_map_channels_match_resvg`
+  - `displacement_map_interprets_map_channels_as_unpremultiplied`
+  - `displacement_map_semitransparent_map_channels_differ_from_resvg`
   - `displacement_map_object_bounding_box_scale_is_resolved_against_bbox_width`
   - `displacement_map_ignores_filter_res`
   - `displacement_map_interprets_map_channels_in_color_interpolation_space`
