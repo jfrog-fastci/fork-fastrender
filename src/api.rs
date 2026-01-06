@@ -11573,10 +11573,10 @@ fn diff_layout_fields(old: &ComputedStyle, new: &ComputedStyle) -> Vec<String> {
   cmp!(align_self);
   cmp!(justify_items);
   cmp!(justify_self);
-  if old.flex_grow.to_bits() != new.flex_grow.to_bits() {
+  if f32_to_canonical_bits(old.flex_grow) != f32_to_canonical_bits(new.flex_grow) {
     out.push("flex_grow".to_string());
   }
-  if old.flex_shrink.to_bits() != new.flex_shrink.to_bits() {
+  if f32_to_canonical_bits(old.flex_shrink) != f32_to_canonical_bits(new.flex_shrink) {
     out.push("flex_shrink".to_string());
   }
   if old.flex_basis != new.flex_basis {
@@ -12119,6 +12119,22 @@ mod tests {
   use std::io;
   use std::sync::{Arc, Mutex};
   use std::time::Duration;
+
+  #[test]
+  fn diff_layout_fields_canonicalizes_negative_zero() {
+    let mut old = ComputedStyle::default();
+    let mut new = ComputedStyle::default();
+    old.flex_grow = 0.0;
+    new.flex_grow = -0.0;
+    old.flex_shrink = 0.0;
+    new.flex_shrink = -0.0;
+
+    let diffs = diff_layout_fields(&old, &new);
+    assert!(
+      diffs.is_empty(),
+      "expected -0.0 to match 0.0 in layout diffs, got {diffs:?}"
+    );
+  }
 
   #[test]
   fn box_style_key_uses_generated_pseudo_instead_of_debug_info() {

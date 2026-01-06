@@ -10733,13 +10733,22 @@ fn allows_boundary_break(prev: Option<char>, next: Option<char>) -> bool {
         || matches!(a, OBJECT_REPLACEMENT) || matches!(b, OBJECT_REPLACEMENT)
 }
 
+#[inline]
+fn f32_to_canonical_bits(value: f32) -> u32 {
+  if value == 0.0 {
+    0.0f32.to_bits()
+  } else {
+    value.to_bits()
+  }
+}
+
 fn strut_sample_style_matches(text_style: &ComputedStyle, strut_style: &ComputedStyle) -> bool {
   text_style.font_family == strut_style.font_family
-    && text_style.font_size.to_bits() == strut_style.font_size.to_bits()
+    && f32_to_canonical_bits(text_style.font_size) == f32_to_canonical_bits(strut_style.font_size)
     && text_style.font_weight.to_u16() == strut_style.font_weight.to_u16()
     && text_style.font_style == strut_style.font_style
-    && text_style.font_stretch.to_percentage().to_bits()
-      == strut_style.font_stretch.to_percentage().to_bits()
+    && f32_to_canonical_bits(text_style.font_stretch.to_percentage())
+      == f32_to_canonical_bits(strut_style.font_stretch.to_percentage())
     && text_style.font_size_adjust == strut_style.font_size_adjust
     && text_style.font_variation_settings == strut_style.font_variation_settings
 }
@@ -11991,6 +12000,19 @@ mod tests {
     let mut style = ComputedStyle::default();
     style.font_size = 16.0;
     Arc::new(style)
+  }
+
+  #[test]
+  fn strut_sample_style_matches_canonicalizes_negative_zero() {
+    let mut text_style = ComputedStyle::default();
+    let mut strut_style = ComputedStyle::default();
+    text_style.font_size = -0.0;
+    strut_style.font_size = 0.0;
+
+    assert!(
+      strut_sample_style_matches(&text_style, &strut_style),
+      "expected -0.0 font_size to match 0.0"
+    );
   }
 
   fn make_text_box(text: &str) -> BoxNode {
