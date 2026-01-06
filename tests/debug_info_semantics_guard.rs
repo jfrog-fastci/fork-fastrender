@@ -25,6 +25,11 @@ fn debug_info_semantics_guard() {
       Regex::new(r"\bdebug_info\b[^\n]*\b(colspan|rowspan|column_span)\b").expect("valid regex"),
     ),
     (
+      "binding debug_info for non-diagnostic control flow",
+      Regex::new(r"\bif\s+let\s+Some\s*\(\s*ref\s+debug_info\s*\)\s*=\s*.*\.debug_info\b")
+        .expect("valid regex"),
+    ),
+    (
       "hash_components() usage (DebugInfo must not influence cache keys)",
       Regex::new(r"\.hash_components\(").expect("valid regex"),
     ),
