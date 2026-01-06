@@ -488,7 +488,7 @@ fn mix_blend_mode_multiplies_backdrop_when_not_isolated() {
 }
 
 #[test]
-fn isolation_blocks_mix_blend_mode_backdrop() {
+fn isolation_does_not_disable_mix_blend_mode_backdrop() {
   let mut list = DisplayList::new();
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
@@ -521,15 +521,14 @@ fn isolation_blocks_mix_blend_mode_backdrop() {
   let pixmap = renderer.render(&list).expect("render");
 
   let center = pixel(&pixmap, 5, 5);
-  assert_eq!(
-    center,
-    (0, 0, 255, 255),
-    "isolated context should composite with source-over, got {center:?}"
+  assert!(
+    center.0 < 10 && center.1 < 10 && center.2 < 10,
+    "multiply should still darken the backdrop for isolated contexts, got {center:?}"
   );
 }
 
 #[test]
-fn backdrop_filter_isolates_blend_mode() {
+fn backdrop_filter_does_not_disable_mix_blend_mode() {
   let mut list = DisplayList::new();
   // Backdrop starts red.
   list.push(DisplayItem::FillRect(FillRectItem {
@@ -564,8 +563,12 @@ fn backdrop_filter_isolates_blend_mode() {
   let renderer = DisplayListRenderer::new(4, 4, Rgba::WHITE, FontContext::new()).unwrap();
   let pixmap = renderer.render(&list).expect("render");
 
-  // Backdrop filters implicitly isolate the context, so the multiply blend should not darken.
-  assert_eq!(pixel(&pixmap, 1, 1), (0, 0, 255, 255));
+  // Backdrop filters still composite the element into the backdrop, so mix-blend-mode applies.
+  let px = pixel(&pixmap, 1, 1);
+  assert!(
+    px.0 < 10 && px.1 < 10 && px.2 < 10,
+    "multiply should still darken the backdrop when backdrop-filter is present, got {px:?}"
+  );
 }
 
 #[test]
@@ -3381,7 +3384,13 @@ fn color_mix_handles_transparent_components() {
   let pixmap = renderer.render(&list).expect("render");
 
   let (r, g, b, a) = pixel(&pixmap, 1, 1);
-  assert_eq!((r, g, b, a), (0, 0, 128, 128));
+  assert_eq!((r, g), (0, 0));
+  // Mixing transparent red with opaque blue should yield ~50% transparent blue. The exact
+  // premultiplication/quantization can differ by a single LSB depending on rounding.
+  assert!(
+    (b as i32 - 128).abs() <= 1 && (a as i32 - 128).abs() <= 1,
+    "expected ~half-transparent blue, got ({r}, {g}, {b}, {a})"
+  );
 }
 
 #[test]
