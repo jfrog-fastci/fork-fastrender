@@ -3743,6 +3743,108 @@ fn pow_transform3d(mut base: Transform3D, mut exp: u64) -> Transform3D {
   result
 }
 
+fn invert_transform3d(matrix: &Transform3D) -> Option<Transform3D> {
+  let m = matrix.m;
+  if !m.iter().all(|v| v.is_finite()) {
+    return None;
+  }
+
+  let mut inv = [0.0f32; 16];
+
+  inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15]
+    + m[9] * m[7] * m[14]
+    + m[13] * m[6] * m[11]
+    - m[13] * m[7] * m[10];
+
+  inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15]
+    - m[8] * m[7] * m[14]
+    - m[12] * m[6] * m[11]
+    + m[12] * m[7] * m[10];
+
+  inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15]
+    + m[8] * m[7] * m[13]
+    + m[12] * m[5] * m[11]
+    - m[12] * m[7] * m[9];
+
+  inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14]
+    - m[8] * m[6] * m[13]
+    - m[12] * m[5] * m[10]
+    + m[12] * m[6] * m[9];
+
+  inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15]
+    - m[9] * m[3] * m[14]
+    - m[13] * m[2] * m[11]
+    + m[13] * m[3] * m[10];
+
+  inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15]
+    + m[8] * m[3] * m[14]
+    + m[12] * m[2] * m[11]
+    - m[12] * m[3] * m[10];
+
+  inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15]
+    - m[8] * m[3] * m[13]
+    - m[12] * m[1] * m[11]
+    + m[12] * m[3] * m[9];
+
+  inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14]
+    + m[8] * m[2] * m[13]
+    + m[12] * m[1] * m[10]
+    - m[12] * m[2] * m[9];
+
+  inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15]
+    + m[5] * m[3] * m[14]
+    + m[13] * m[2] * m[7]
+    - m[13] * m[3] * m[6];
+
+  inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15]
+    - m[4] * m[3] * m[14]
+    - m[12] * m[2] * m[7]
+    + m[12] * m[3] * m[6];
+
+  inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15]
+    + m[4] * m[3] * m[13]
+    + m[12] * m[1] * m[7]
+    - m[12] * m[3] * m[5];
+
+  inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14]
+    - m[4] * m[2] * m[13]
+    - m[12] * m[1] * m[6]
+    + m[12] * m[2] * m[5];
+
+  inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11]
+    - m[5] * m[3] * m[10]
+    - m[9] * m[2] * m[7]
+    + m[9] * m[3] * m[6];
+
+  inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11]
+    + m[4] * m[3] * m[10]
+    + m[8] * m[2] * m[7]
+    - m[8] * m[3] * m[6];
+
+  inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11]
+    - m[4] * m[3] * m[9]
+    - m[8] * m[1] * m[7]
+    + m[8] * m[3] * m[5];
+
+  inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10]
+    + m[4] * m[2] * m[9]
+    + m[8] * m[1] * m[6]
+    - m[8] * m[2] * m[5];
+
+  let det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+  if !det.is_finite() || det.abs() < 1e-6 {
+    return None;
+  }
+  let inv_det = 1.0 / det;
+  for v in inv.iter_mut() {
+    *v *= inv_det;
+  }
+  if !inv.iter().all(|v| v.is_finite()) {
+    return None;
+  }
+  Some(Transform3D { m: inv })
+}
+
 fn accumulate_iteration_value(
   current: &AnimatedValue,
   start: &AnimatedValue,
@@ -3906,13 +4008,12 @@ fn accumulate_iteration_value(
       }
 
       let start_matrix = compose_transform_list(start_list);
-      if !start_matrix.is_identity() {
-        return None;
-      }
+      let inv_start = invert_transform3d(&start_matrix)?;
       let end_matrix = compose_transform_list(end_list);
-      let delta_pow = pow_transform3d(end_matrix, iteration);
+      let delta = end_matrix.multiply(&inv_start);
+      let delta_pow = pow_transform3d(delta, iteration);
       let cur_matrix = compose_transform_list(cur_list);
-      let accumulated = cur_matrix.multiply(&delta_pow);
+      let accumulated = delta_pow.multiply(&cur_matrix);
       Some(AnimatedValue::Transform(vec![
         crate::css::types::Transform::Matrix3d(accumulated.m),
       ]))

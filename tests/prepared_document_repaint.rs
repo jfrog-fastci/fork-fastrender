@@ -316,6 +316,41 @@ fn repaint_with_animation_composition_accumulate_accumulates_translate_iteration
 }
 
 #[test]
+fn repaint_with_animation_composition_accumulate_accumulates_transform_iterations() -> Result<()> {
+  let mut renderer = FastRender::new()?;
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(255, 255, 255); }
+      .box {
+        width: 10px;
+        height: 10px;
+        background: rgb(255, 0, 0);
+        animation-name: move;
+        animation-duration: 1000ms;
+        animation-timing-function: linear;
+        animation-iteration-count: 2;
+        animation-fill-mode: forwards;
+        animation-composition: accumulate;
+      }
+      @keyframes move {
+        from { transform: translateX(10px); }
+        to { transform: translateX(20px); }
+      }
+    </style>
+    <div class="box"></div>
+  "#;
+  let prepared = renderer.prepare_html(html, RenderOptions::new().with_viewport(80, 20))?;
+  let mid_second =
+    prepared.paint_with_options(PreparedPaintOptions::new().with_animation_time(1500.0))?;
+
+  // With `accumulate`, each iteration adds the delta between the end and start keyframe values.
+  // At t=1500ms we are halfway through the second iteration: 15px + (20px - 10px) = 25px.
+  assert_eq!(pixel(&mid_second, 30, 5), (255, 0, 0, 255));
+  assert_eq!(pixel(&mid_second, 15, 5), (255, 255, 255, 255));
+  Ok(())
+}
+
+#[test]
 fn repaint_with_animation_composition_accumulate_accumulates_scale_iterations() -> Result<()> {
   let mut renderer = FastRender::new()?;
   let html = r#"
