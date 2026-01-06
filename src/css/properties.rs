@@ -2204,6 +2204,10 @@ fn supports_intrinsic_size_keyword(raw_value: &str) -> bool {
     "min-content" | "-webkit-min-content" | "-moz-min-content" => return true,
     "max-content" | "-webkit-max-content" | "-moz-max-content" => return true,
     "fit-content" | "-webkit-fit-content" | "-moz-fit-content" => return true,
+    "fill-available"
+    | "-webkit-fill-available"
+    | "-moz-available"
+    | "-moz-fill-available" => return true,
     _ => {}
   }
 

@@ -146,6 +146,9 @@ mod tests {
     assert!(supports_declaration("height", "calc(100svh - 10px)"));
     assert!(supports_declaration("height", "min-content"));
     assert!(supports_declaration("height", "fit-content(10px)"));
+    assert!(supports_declaration("height", "fill-available"));
+    assert!(supports_declaration("height", "-webkit-fill-available"));
+    assert!(supports_declaration("height", "-moz-available"));
 
     // Non-zero unitless numbers are invalid for sizing properties.
     assert!(!supports_declaration("height", "10"));
