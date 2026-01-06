@@ -189,6 +189,85 @@ fn filter_url_data_svg_component_transfer_inverts_rgb_and_preserves_alpha() {
 }
 
 #[test]
+fn filter_url_data_svg_component_transfer_inherits_color_interpolation_filters_from_filter() {
+  // Same invert filter as above, but specify `color-interpolation-filters="sRGB"` on the parent
+  // `<filter>` element (the primitive inherits it). This matches authoring patterns that rely on
+  // inheritance instead of per-primitive overrides.
+  let data_url = r#"data:image/svg+xml;charset=utf-8,<svg xmlns="http://www.w3.org/2000/svg"><filter id="filter" color-interpolation-filters="sRGB"><feComponentTransfer><feFuncR type="table" tableValues="1 0" /><feFuncG type="table" tableValues="1 0" /><feFuncB type="table" tableValues="1 0" /></feComponentTransfer></filter></svg>#filter"#;
+
+  let html = format!(
+    r#"
+    <style>
+      body {{ margin: 0; }}
+      #box1, #box2, #ref1, #ref2 {{
+        width: 20px;
+        height: 20px;
+        position: absolute;
+        top: 0;
+      }}
+      #box1 {{
+        left: 0;
+        background: rgba(255, 0, 0, 0.5);
+        filter: url('{data_url}');
+      }}
+      #box2 {{
+        left: 20px;
+        background: rgba(200, 0, 0, 0.5);
+        filter: url('{data_url}');
+      }}
+      #ref1 {{
+        left: 40px;
+        background: rgba(255, 0, 0, 0.5);
+      }}
+      #ref2 {{
+        left: 60px;
+        background: rgba(200, 0, 0, 0.5);
+      }}
+    </style>
+    <div id="box1"></div>
+    <div id="box2"></div>
+    <div id="ref1"></div>
+    <div id="ref2"></div>
+    "#
+  );
+
+  let mut renderer = FastRender::builder()
+    .background_color(Rgba::TRANSPARENT)
+    .build()
+    .expect("renderer");
+  let pixmap = renderer.render_html(&html, 80, 30).expect("render");
+
+  assert_eq!(color_at(&pixmap, 79, 25), [0, 0, 0, 0]);
+
+  let box1_px = color_at(&pixmap, 10, 10);
+  let ref1_px = color_at(&pixmap, 50, 10);
+  assert_eq!(box1_px[3], ref1_px[3]);
+  assert_unpremultiplied_rgb_near(box1_px, [0, 255, 255]);
+
+  let box2_px = color_at(&pixmap, 30, 10);
+  let ref2_px = color_at(&pixmap, 70, 10);
+  assert_eq!(box2_px[3], ref2_px[3]);
+  assert_unpremultiplied_rgb_near(box2_px, [55, 255, 255]);
+
+  let svg = r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">
+      <filter id="filter" color-interpolation-filters="sRGB">
+        <feComponentTransfer>
+          <feFuncR type="table" tableValues="1 0" />
+          <feFuncG type="table" tableValues="1 0" />
+          <feFuncB type="table" tableValues="1 0" />
+        </feComponentTransfer>
+      </filter>
+      <rect width="20" height="20" fill="rgb(255, 0, 0)" fill-opacity="0.5" filter="url(#filter)" />
+      <rect x="20" width="20" height="20" fill="rgb(200, 0, 0)" fill-opacity="0.5" filter="url(#filter)" />
+    </svg>
+  "#;
+  let baseline = render_svg_with_resvg(svg, 40, 20);
+  assert_rgba_near(box1_px, color_at(&baseline, 10, 10));
+  assert_rgba_near(box2_px, color_at(&baseline, 30, 10));
+}
+
+#[test]
 fn filter_url_data_svg_missing_in2_defaults_to_previous_result() {
   let filter_svg = r#"
     <svg xmlns="http://www.w3.org/2000/svg">
