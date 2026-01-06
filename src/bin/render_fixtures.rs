@@ -1821,6 +1821,7 @@ mod tests {
     let variant = &state.variants[1];
     assert_eq!(variant.hash_hi, variant_hi);
     assert_eq!(variant.hash_lo, variant_lo);
+    assert_eq!(variant.count, 1);
     assert_eq!(variant.diff_pixels_vs_baseline, Some(1));
     assert_eq!(variant.first_mismatch_vs_baseline, Some((0, 0)));
     assert_eq!(
@@ -1828,6 +1829,25 @@ mod tests {
       Some(([255, 0, 0, 255], [0, 255, 0, 255]))
     );
     assert_eq!(variant.data.as_deref(), Some(variant_bytes.as_slice()));
+
+    // When variant bytes are stored (because `--save-variants` is enabled), the tracker should
+    // confirm equality before incrementing the count.
+    record_variant(
+      &mut state,
+      PixmapBytes {
+        width: 1,
+        height: 1,
+        data: variant_bytes.clone(),
+      },
+      out_dir,
+      true,
+    );
+
+    assert_eq!(state.variants.len(), 2);
+    let variant = &state.variants[1];
+    assert_eq!(variant.count, 2);
+    assert_eq!(variant.diff_pixels_vs_baseline, Some(1));
+    assert_eq!(variant.first_mismatch_vs_baseline, Some((0, 0)));
   }
 
   #[test]
