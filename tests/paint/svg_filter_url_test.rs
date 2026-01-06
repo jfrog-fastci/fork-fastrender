@@ -2,11 +2,29 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use fastrender::style::color::Rgba;
 use fastrender::FastRender;
-use resvg::tiny_skia::Pixmap;
+use resvg::tiny_skia::{Pixmap, Transform};
 
 fn color_at(pixmap: &Pixmap, x: u32, y: u32) -> [u8; 4] {
   let pixel = pixmap.pixel(x, y).expect("pixel");
   [pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()]
+}
+
+fn render_svg_with_resvg(svg: &str, width: u32, height: u32) -> Pixmap {
+  let options = resvg::usvg::Options::default();
+  let tree = resvg::usvg::Tree::from_str(svg, &options).expect("parse SVG");
+  let mut pixmap = Pixmap::new(width, height).expect("pixmap");
+  resvg::render(&tree, Transform::default(), &mut pixmap.as_mut());
+  pixmap
+}
+
+fn assert_rgba_near(actual: [u8; 4], expected: [u8; 4]) {
+  for (channel, (actual, expected)) in actual.iter().zip(expected.iter()).enumerate() {
+    let diff = actual.abs_diff(*expected);
+    assert!(
+      diff <= 1,
+      "channel {channel}: expected {expected}±1, got {actual} (diff {diff})"
+    );
+  }
 }
 
 #[test]
@@ -61,6 +79,59 @@ fn filter_url_data_svg_is_applied() {
   let pixmap = renderer.render_html(&html, 30, 30).expect("render");
 
   assert_eq!(color_at(&pixmap, 10, 10), [0, 255, 0, 255]);
+}
+
+#[test]
+fn filter_url_data_svg_component_transfer_inverts_rgb_and_preserves_alpha() {
+  // Match the Wikipedia pageset pattern: a `filter:url(data:image/svg+xml...)` containing an
+  // `feComponentTransfer` invert filter (no alpha transfer).
+  let data_url = r#"data:image/svg+xml;charset=utf-8,<svg xmlns="http://www.w3.org/2000/svg"><filter id="filter" color-interpolation-filters="sRGB"><feComponentTransfer><feFuncR type="table" tableValues="1 0" /><feFuncG type="table" tableValues="1 0" /><feFuncB type="table" tableValues="1 0" /></feComponentTransfer></filter></svg>#filter"#;
+
+  let html = format!(
+    r#"
+    <style>
+      body {{ margin: 0; }}
+      #box {{
+        width: 20px;
+        height: 20px;
+        background: rgba(255, 0, 0, 0.5);
+        filter: url('{data_url}');
+      }}
+    </style>
+    <div id="box"></div>
+    "#
+  );
+
+  // Use a transparent canvas background so we can assert the filtered alpha.
+  let mut renderer = FastRender::builder()
+    .background_color(Rgba::TRANSPARENT)
+    .build()
+    .expect("renderer");
+  let pixmap = renderer.render_html(&html, 30, 30).expect("render");
+
+  assert_eq!(color_at(&pixmap, 25, 25), [0, 0, 0, 0]);
+
+  // Red (rgba(255, 0, 0, 0.5)) → Cyan (rgba(0, 255, 255, 0.5)) with alpha preserved.
+  //
+  // Note: FastRender stores alpha as `u8` via truncation (see `Rgba::alpha_u8`), so `0.5`
+  // becomes `127` instead of `128`.
+  assert_eq!(color_at(&pixmap, 10, 10), [0, 127, 127, 127]);
+
+  // Baseline against resvg for the same filter + rect.
+  let svg = r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="30" height="30">
+      <filter id="filter" color-interpolation-filters="sRGB">
+        <feComponentTransfer>
+          <feFuncR type="table" tableValues="1 0" />
+          <feFuncG type="table" tableValues="1 0" />
+          <feFuncB type="table" tableValues="1 0" />
+        </feComponentTransfer>
+      </filter>
+      <rect width="20" height="20" fill="rgb(255, 0, 0)" fill-opacity="0.5" filter="url(#filter)" />
+    </svg>
+  "#;
+  let baseline = render_svg_with_resvg(svg, 30, 30);
+  assert_rgba_near(color_at(&pixmap, 10, 10), color_at(&baseline, 10, 10));
 }
 
 #[test]
