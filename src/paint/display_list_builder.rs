@@ -4182,7 +4182,7 @@ impl DisplayListBuilder {
         let (baseline_block, baseline_inline) = if inline_vertical {
           (rect.origin.x + baseline_offset, rect.origin.y)
         } else {
-          (rect.origin.x, rect.origin.y + baseline_offset)
+          (rect.origin.y + baseline_offset, rect.origin.x)
         };
 
         let mut shaped_storage: Option<Vec<ShapedRun>> = None;
@@ -4233,8 +4233,8 @@ impl DisplayListBuilder {
             self.emit_list_marker_runs(
               runs,
               color,
-              baseline_inline,
               baseline_block,
+              baseline_inline,
               &shadows,
               style_opt,
               inline_vertical,
@@ -4243,8 +4243,8 @@ impl DisplayListBuilder {
             self.emit_shaped_runs(
               runs,
               color,
-              baseline_inline,
               baseline_block,
+              baseline_inline,
               &shadows,
               style_opt,
               inline_vertical,
@@ -4262,7 +4262,7 @@ impl DisplayListBuilder {
           let origin = if inline_vertical {
             Point::new(baseline_block, baseline_inline)
           } else {
-            Point::new(baseline_block, baseline_inline)
+            Point::new(baseline_inline, baseline_block)
           };
           let mut bounds = ConservativeGlyphRunBoundsBuilder::new(origin, advance_width);
           let mut glyphs = Vec::new();
