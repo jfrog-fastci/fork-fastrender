@@ -202,6 +202,41 @@ fn filter_url_data_svg_missing_in2_defaults_to_previous_for_fe_composite() {
 }
 
 #[test]
+fn filter_url_data_svg_missing_in2_defaults_to_previous_for_fe_displacement_map() {
+  let filter_svg = r#"
+    <svg xmlns="http://www.w3.org/2000/svg">
+      <filter id="disp" x="0" y="0" width="20" height="20" filterUnits="userSpaceOnUse"
+              primitiveUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+        <!-- Missing `in2` should default to the previous primitive result (black flood), yielding
+             dx=dy=-1 (scale=2) and shifting the red pixel from (10,10) to (11,11). -->
+        <feFlood flood-color="rgb(0,0,0)" />
+        <feDisplacementMap in="SourceGraphic" scale="2" xChannelSelector="R" yChannelSelector="G" />
+      </filter>
+    </svg>
+  "#;
+  let encoded = BASE64.encode(filter_svg);
+  let data_url = format!("data:image/svg+xml;base64,{}#disp", encoded);
+  let html = format!(
+    r#"
+    <style>
+      body {{ margin: 0; background: white; }}
+      #box {{ width: 20px; height: 20px; background: white; position: relative; filter: url("{}"); }}
+      #dot {{ width: 1px; height: 1px; background: rgb(255, 0, 0); position: absolute; left: 10px; top: 10px; }}
+    </style>
+    <div id="box"><div id="dot"></div></div>
+    "#,
+    data_url
+  );
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let pixmap = renderer.render_html(&html, 30, 30).expect("render");
+
+  assert_eq!(color_at(&pixmap, 11, 11), [255, 0, 0, 255]);
+  assert_eq!(color_at(&pixmap, 10, 10), [255, 255, 255, 255]);
+  assert_eq!(color_at(&pixmap, 9, 9), [255, 255, 255, 255]);
+}
+
+#[test]
 fn missing_fragment_filter_is_ignored() {
   let html = r#"
   <style>
@@ -277,6 +312,39 @@ fn filter_url_missing_in2_defaults_to_previous_for_fe_composite() {
   let pixmap = renderer.render_html(html, 30, 30).expect("render");
 
   assert_eq!(color_at(&pixmap, 10, 10), [255, 0, 0, 255]);
+}
+
+#[test]
+fn filter_url_missing_in2_defaults_to_previous_for_fe_displacement_map() {
+  let html = r#"
+  <style>
+    body { margin: 0; background: white; }
+    #box { width: 20px; height: 20px; background: white; position: relative; filter: url(#disp); }
+    #dot { width: 1px; height: 1px; background: rgb(255, 0, 0); position: absolute; left: 10px; top: 10px; }
+    svg { position: absolute; width: 0; height: 0; }
+  </style>
+  <svg width="0" height="0" aria-hidden="true">
+    <defs>
+      <filter id="disp" x="0" y="0" width="20" height="20" filterUnits="userSpaceOnUse"
+              primitiveUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+        <!-- Missing `in2` should default to the previous primitive result (black flood), yielding
+             dx=dy=-1 (scale=2) and shifting the red pixel from (10,10) to (11,11). If `in2`
+             incorrectly defaulted to SourceGraphic, the mostly-white map would instead shift the
+             pixel to (9,9). -->
+        <feFlood flood-color="rgb(0,0,0)" />
+        <feDisplacementMap in="SourceGraphic" scale="2" xChannelSelector="R" yChannelSelector="G" />
+      </filter>
+    </defs>
+  </svg>
+  <div id="box"><div id="dot"></div></div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let pixmap = renderer.render_html(html, 30, 30).expect("render");
+
+  assert_eq!(color_at(&pixmap, 11, 11), [255, 0, 0, 255]);
+  assert_eq!(color_at(&pixmap, 10, 10), [255, 255, 255, 255]);
+  assert_eq!(color_at(&pixmap, 9, 9), [255, 255, 255, 255]);
 }
 
 #[test]
