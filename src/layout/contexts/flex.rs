@@ -9657,6 +9657,47 @@ mod tests {
   }
 
   #[test]
+  fn flex_cache_key_includes_generated_pseudo() {
+    let style = Arc::new(ComputedStyle::default());
+    let mut base = BoxNode::new_block(style, FormattingContextType::Block, vec![]);
+    base.styled_node_id = Some(42);
+
+    let mut before = base.clone();
+    before.generated_pseudo = Some(crate::tree::box_tree::GeneratedPseudoElement::Before);
+
+    let mut after = base.clone();
+    after.generated_pseudo = Some(crate::tree::box_tree::GeneratedPseudoElement::After);
+
+    assert_ne!(
+      super::flex_cache_key(&base),
+      super::flex_cache_key(&before),
+      "expected ::before boxes to have distinct cache keys"
+    );
+    assert_ne!(
+      super::flex_cache_key(&base),
+      super::flex_cache_key(&after),
+      "expected ::after boxes to have distinct cache keys"
+    );
+    assert_ne!(
+      super::flex_cache_key(&before),
+      super::flex_cache_key(&after),
+      "expected ::before and ::after boxes to have distinct cache keys"
+    );
+  }
+
+  #[test]
+  fn flex_cache_key_ignores_debug_info() {
+    let style = Arc::new(ComputedStyle::default());
+    let mut a = BoxNode::new_block(style.clone(), FormattingContextType::Block, vec![]);
+    a.styled_node_id = Some(5);
+    let mut b = BoxNode::new_block(style, FormattingContextType::Block, vec![]);
+    b.styled_node_id = Some(5);
+    b.debug_info = Some(DebugInfo::new(Some("div".to_string()), None, vec![]));
+
+    assert_eq!(super::flex_cache_key(&a), super::flex_cache_key(&b));
+  }
+
+  #[test]
   fn flex_does_not_shrink_below_min_width_when_overflowing() {
     let fc = FlexFormattingContext::new();
 

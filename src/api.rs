@@ -12091,6 +12091,32 @@ mod tests {
   use std::time::Duration;
 
   #[test]
+  fn box_style_key_uses_generated_pseudo_instead_of_debug_info() {
+    let style = Arc::new(ComputedStyle::default());
+    let mut base = BoxNode::new_block(style, FormattingContextType::Block, vec![]);
+    base.styled_node_id = Some(7);
+
+    assert_eq!(super::box_style_key(&base), Some(7 << 2));
+
+    // DebugInfo must not influence the semantic style key.
+    let mut with_debug = base.clone();
+    with_debug.debug_info = Some(crate::tree::debug::DebugInfo::new(
+      Some("before".to_string()),
+      None,
+      vec!["pseudo-element".to_string()],
+    ));
+    assert_eq!(super::box_style_key(&with_debug), Some(7 << 2));
+
+    let mut before = base.clone();
+    before.generated_pseudo = Some(crate::tree::box_tree::GeneratedPseudoElement::Before);
+    assert_eq!(super::box_style_key(&before), Some((7 << 2) | 1));
+
+    let mut after = base;
+    after.generated_pseudo = Some(crate::tree::box_tree::GeneratedPseudoElement::After);
+    assert_eq!(super::box_style_key(&after), Some((7 << 2) | 2));
+  }
+
+  #[test]
   fn layout_image_cache_configuration_changes_reset_cached_formatting_contexts() {
     let mut renderer = FastRender::new().expect("renderer");
     renderer.set_base_url("https://example.com/a/");
