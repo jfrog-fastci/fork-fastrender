@@ -246,4 +246,41 @@ mod tests {
       style_override_fingerprint(&max_width_max_content)
     );
   }
+
+  #[test]
+  fn style_override_fingerprint_includes_calc_lengths() {
+    use crate::style::values::LengthUnit;
+
+    let base = ComputedStyle::default();
+
+    let percent = CalcLength::single(LengthUnit::Percent, 10.0);
+    let calc_a = CalcLength::single(LengthUnit::Px, 10.0)
+      .add_scaled(&percent, 1.0)
+      .expect("calc terms");
+    let calc_b = CalcLength::single(LengthUnit::Px, 20.0)
+      .add_scaled(&percent, 1.0)
+      .expect("calc terms");
+
+    let mut style_a = base.clone();
+    style_a.width = Some(Length::calc(calc_a));
+    let mut style_b = base.clone();
+    style_b.width = Some(Length::calc(calc_b));
+    assert_ne!(
+      style_override_fingerprint(&style_a),
+      style_override_fingerprint(&style_b)
+    );
+
+    let mut fit_content_a = base.clone();
+    fit_content_a.width_keyword = Some(IntrinsicSizeKeyword::FitContent {
+      limit: Some(Length::calc(calc_a)),
+    });
+    let mut fit_content_b = base;
+    fit_content_b.width_keyword = Some(IntrinsicSizeKeyword::FitContent {
+      limit: Some(Length::calc(calc_b)),
+    });
+    assert_ne!(
+      style_override_fingerprint(&fit_content_a),
+      style_override_fingerprint(&fit_content_b)
+    );
+  }
 }
