@@ -64,6 +64,40 @@ fn filter_url_data_svg_is_applied() {
 }
 
 #[test]
+fn filter_url_data_svg_missing_in2_defaults_to_previous_result() {
+  let filter_svg = r#"
+    <svg xmlns="http://www.w3.org/2000/svg">
+      <filter id="blend" x="0" y="0" width="20" height="20" filterUnits="userSpaceOnUse"
+              color-interpolation-filters="sRGB">
+        <feFlood flood-color="rgb(255,0,0)" result="a" />
+        <feFlood flood-color="rgb(0,255,0)" result="b" />
+        <!-- Omit `in2`: should default to the previous primitive result ("b"). -->
+        <feBlend in="a" mode="difference" />
+      </filter>
+    </svg>
+  "#;
+  let encoded = BASE64.encode(filter_svg);
+  let data_url = format!("data:image/svg+xml;base64,{}#blend", encoded);
+  let html = format!(
+    r#"
+    <style>
+      body {{ margin: 0; background: white; }}
+      #box {{ width: 20px; height: 20px; background: rgb(0, 0, 255); filter: url("{}"); }}
+    </style>
+    <div id="box"></div>
+    "#,
+    data_url
+  );
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let pixmap = renderer.render_html(&html, 30, 30).expect("render");
+
+  // difference(red, green) => yellow (if `in2` defaults to previous); difference(red, blue) =>
+  // magenta (if `in2` incorrectly defaulted to SourceGraphic).
+  assert_eq!(color_at(&pixmap, 10, 10), [255, 255, 0, 255]);
+}
+
+#[test]
 fn missing_fragment_filter_is_ignored() {
   let html = r#"
   <style>
