@@ -59,6 +59,17 @@
     text-shadow: 6px 6px 0 rgba(15, 23, 42, 0.25);
   }
 
+  .color-transparent {
+    margin: 10px 0 0;
+    font-family: "DejaVu Pages", sans-serif;
+    font-size: 34px;
+    font-weight: 400;
+    background: linear-gradient(90deg, #f97316, #06b6d4);
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: transparent;
+  }
+
   .multiline {
     width: 420px;
     margin-top: 18px;
@@ -72,6 +83,7 @@
     <p class="control">Control: normal fill uses <code>color</code>.</p>
     <p class="fill-override">Text fill overrides <code>color</code>.</p>
     <p class="shadow-only">Shadow still renders.</p>
+    <p class="color-transparent"><code>color: transparent</code> also works.</p>
     <div class="gradient-text multiline"><span>Multi-line gradient</span> text wraps.</div>
   </section>
 </div>
