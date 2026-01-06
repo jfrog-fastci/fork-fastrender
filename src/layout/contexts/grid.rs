@@ -928,6 +928,7 @@ impl GridFormattingContext {
     match keyword {
       IntrinsicSizeKeyword::MinContent => min,
       IntrinsicSizeKeyword::MaxContent => max,
+      IntrinsicSizeKeyword::FillAvailable => available.unwrap_or(max),
       IntrinsicSizeKeyword::FitContent { limit } => {
         let preferred = limit
           .and_then(|limit| self.resolve_length_px_with_base(limit, available, style))
@@ -5785,6 +5786,7 @@ impl GridFormattingContext {
                 let mode = match keyword {
                   IntrinsicSizeKeyword::MinContent => Some(true),
                   IntrinsicSizeKeyword::MaxContent => Some(false),
+                  IntrinsicSizeKeyword::FillAvailable => None,
                   IntrinsicSizeKeyword::FitContent { .. } => None,
                 };
                 if let Some(use_min) = mode {
@@ -5834,6 +5836,7 @@ impl GridFormattingContext {
                 let mode = match keyword {
                   IntrinsicSizeKeyword::MinContent => Some(true),
                   IntrinsicSizeKeyword::MaxContent => Some(false),
+                  IntrinsicSizeKeyword::FillAvailable => None,
                   IntrinsicSizeKeyword::FitContent { .. } => None,
                 };
                 if let Some(use_min) = mode {

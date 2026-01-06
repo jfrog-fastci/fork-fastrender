@@ -620,6 +620,9 @@ pub fn compute_replaced_size(
   let resolve_intrinsic_width = |keyword: IntrinsicSizeKeyword| -> Option<f32> {
     match keyword {
       IntrinsicSizeKeyword::MinContent | IntrinsicSizeKeyword::MaxContent => intrinsic_keyword_w,
+      IntrinsicSizeKeyword::FillAvailable => width_base
+        .map(|base| content_size_from_box_sizing(base, horizontal_edges, style.box_sizing))
+        .or(intrinsic_keyword_w),
       IntrinsicSizeKeyword::FitContent { limit } => {
         let max_content = intrinsic_keyword_w?;
         // Replaced elements can shrink to 0 while preserving intrinsic max-content sizing.
@@ -648,6 +651,9 @@ pub fn compute_replaced_size(
   let resolve_intrinsic_height = |keyword: IntrinsicSizeKeyword| -> Option<f32> {
     match keyword {
       IntrinsicSizeKeyword::MinContent | IntrinsicSizeKeyword::MaxContent => intrinsic_keyword_h,
+      IntrinsicSizeKeyword::FillAvailable => height_base
+        .map(|base| content_size_from_box_sizing(base, vertical_edges, style.box_sizing))
+        .or(intrinsic_keyword_h),
       IntrinsicSizeKeyword::FitContent { limit } => {
         let max_content = intrinsic_keyword_h?;
         let min_content: f32 = 0.0;
