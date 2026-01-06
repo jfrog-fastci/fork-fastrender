@@ -76,7 +76,6 @@ mod svg_filter_color_matrix_comma;
 mod svg_filter_display_none_defs_test;
 mod svg_filter_filterres_offset_clip_golden;
 mod svg_filter_gaussian_blur;
-mod svg_filter_in2_default_resvg;
 mod svg_filter_layer_bounds;
 mod svg_filter_lighting;
 mod svg_filter_lighting_resvg_parity;
