@@ -516,12 +516,28 @@ fn run(cli: Cli) -> io::Result<()> {
     let repeat_failures_mutex: Mutex<Vec<RepeatFailure>> = Mutex::new(Vec::new());
     let determinism_mutex: Arc<Mutex<HashMap<String, FixtureDeterminism>>> =
       Arc::new(Mutex::new(HashMap::new()));
+    let skip_mutex: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
 
     for repeat_idx in 0..cli.repeat {
       if cli.reset_paint_scratch {
         reset_paint_scratch_for_pools(&thread_pool);
       }
       let mut ordered = fixtures.clone();
+      if repeat_idx > 0 {
+        // If the baseline run for a fixture failed we cannot compare pixel outputs, so skip it in
+        // later repeats. Additionally, if a fixture times out in any repeat, avoid spawning more
+        // render worker threads for it; timed-out workers continue running and would otherwise
+        // accumulate across repeats.
+        let skipped = {
+          let guard = skip_mutex
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+          guard.clone()
+        };
+        if !skipped.is_empty() {
+          ordered.retain(|entry| !skipped.contains(&entry.stem));
+        }
+      }
       if cli.shuffle && repeat_idx > 0 {
         let seed = cli
           .seed
@@ -542,6 +558,7 @@ fn run(cli: Cli) -> io::Result<()> {
           let results = &results_mutex;
           let repeat_failures = &repeat_failures_mutex;
           let determinism = Arc::clone(&determinism_mutex);
+          let skip = Arc::clone(&skip_mutex);
           let save_variants = cli.save_variants;
           s.spawn(move |_| {
             let run = render_fixture(
@@ -560,6 +577,20 @@ fn run(cli: Cli) -> io::Result<()> {
             );
             if write_outputs {
               results.lock().unwrap().push(run.clone());
+            }
+
+            if write_outputs {
+              if !matches!(run.status, Status::Ok) {
+                skip
+                  .lock()
+                  .unwrap_or_else(|err| err.into_inner())
+                  .insert(run.stem.clone());
+              }
+            } else if matches!(run.status, Status::Timeout(_)) {
+              skip
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .insert(run.stem.clone());
             }
 
             if repeat_idx > 0 && !matches!(run.status, Status::Ok) {

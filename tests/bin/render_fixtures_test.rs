@@ -422,6 +422,57 @@ fn render_fixtures_repeat_mode_is_deterministic() {
 }
 
 #[test]
+fn render_fixtures_repeat_mode_skips_repeats_after_baseline_error() {
+  let temp = TempDir::new().expect("tempdir");
+  let fixtures_dir = temp.path().join("fixtures");
+  let out_dir = temp.path().join("out");
+  fs::create_dir_all(&fixtures_dir).expect("create fixtures dir");
+
+  write_fixture(
+    &fixtures_dir,
+    "blocked",
+    "<!doctype html><html><body><img src=\"http://example.com/a.png\"></body></html>",
+  );
+
+  let output = Command::new(env!("CARGO_BIN_EXE_render_fixtures"))
+    .current_dir(temp.path())
+    .env("RAYON_NUM_THREADS", "2")
+    .env("FASTR_PAINT_THREADS", "1")
+    .args([
+      "--fixtures-dir",
+      fixtures_dir.to_str().unwrap(),
+      "--out-dir",
+      out_dir.to_str().unwrap(),
+      "--fixtures",
+      "blocked",
+      "--viewport",
+      "64x64",
+      "--jobs",
+      "1",
+      "--timeout",
+      "2",
+      "--repeat",
+      "2",
+      "--shuffle",
+      "--seed",
+      "1",
+    ])
+    .output()
+    .expect("run render_fixtures");
+
+  assert!(
+    !output.status.success(),
+    "expected render_fixtures to fail when http subresources are referenced"
+  );
+
+  let summary = fs::read_to_string(out_dir.join("_summary.log")).expect("read summary log");
+  assert!(
+    summary.contains("Repeat failures: 0"),
+    "expected repeat mode to skip repeats after baseline errors; got summary:\n{summary}"
+  );
+}
+
+#[test]
 fn render_fixtures_blocks_http_subresources() {
   let temp = TempDir::new().expect("tempdir");
   let fixtures_dir = temp.path().join("fixtures");
