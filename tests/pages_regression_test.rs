@@ -459,6 +459,11 @@ const PAGE_FIXTURES: &[PageFixture] = &[
     shots: DEFAULT_SHOTS,
   },
   PageFixture {
+    name: "replaced_max_width_probe",
+    html: "replaced_max_width_probe/index.html",
+    shots: DEFAULT_SHOTS,
+  },
+  PageFixture {
     name: "font_face_metric_overrides",
     html: "font_face_metric_overrides/index.html",
     shots: DEFAULT_SHOTS,
