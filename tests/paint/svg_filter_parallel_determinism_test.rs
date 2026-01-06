@@ -181,6 +181,7 @@ fn build_seam_display_list(filter: Arc<fastrender::paint::svg_filter::SvgFilter>
     bounds,
     plane_rect: bounds,
     mix_blend_mode: BlendMode::Normal,
+    opacity: 1.0,
     is_isolated: true,
     transform: None,
     child_perspective: None,
