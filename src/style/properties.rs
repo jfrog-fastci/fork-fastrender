@@ -3642,6 +3642,7 @@ fn is_inherited_property(name: &str) -> bool {
   matches!(
     name,
     "color"
+      | "-webkit-text-fill-color"
       | "color-scheme"
       | "caret-color"
       | "accent-color"
@@ -5408,6 +5409,9 @@ fn apply_property_from_source(
     "caret-color" => styles.caret_color = source.caret_color,
     "color-scheme" => styles.color_scheme = source.color_scheme.clone(),
     "color" => styles.color = source.color,
+    "-webkit-text-fill-color" => {
+      styles.webkit_text_fill_color = source.webkit_text_fill_color.clone()
+    }
     "background-color" => styles.background_color = source.background_color,
     "fill" => styles.svg_fill = source.svg_fill,
     "stroke" => styles.svg_stroke = source.svg_stroke,
@@ -5514,7 +5518,7 @@ fn apply_property_from_source(
       styles.background_origins = source.background_origins.clone();
       styles.rebuild_background_layers();
     }
-    "background-clip" => {
+    "background-clip" | "-webkit-background-clip" => {
       styles.background_clips = source.background_clips.clone();
       styles.rebuild_background_layers();
     }
@@ -10770,6 +10774,15 @@ fn apply_declaration_with_base_internal_with_order(
         styles.color = c;
       }
     }
+    "-webkit-text-fill-color" => match resolved_value {
+      PropertyValue::Color(c) => styles.webkit_text_fill_color = c.clone(),
+      PropertyValue::Keyword(kw) => {
+        if let Ok(color) = Color::parse(kw) {
+          styles.webkit_text_fill_color = color;
+        }
+      }
+      _ => {}
+    },
     "background-color" => {
       if let Some(c) = resolve_color_value(resolved_value) {
         styles.background_color = c;
@@ -11115,7 +11128,7 @@ fn apply_declaration_with_base_internal_with_order(
         styles.rebuild_background_layers();
       }
     }
-    "background-clip" => {
+    "background-clip" | "-webkit-background-clip" => {
       if let Some(clips) = parse_layer_list(resolved_value, parse_background_clip) {
         styles.background_clips = clips.into();
         styles.rebuild_background_layers();

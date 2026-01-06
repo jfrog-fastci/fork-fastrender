@@ -1029,6 +1029,7 @@ fn display_item_value(item: &DisplayItem) -> Value {
         match &it.shape {
           crate::paint::display_list::ClipShape::Rect { rect, .. } => rect_value(*rect, None),
           crate::paint::display_list::ClipShape::Path { .. } => Value::String("path".into()),
+          crate::paint::display_list::ClipShape::Text { .. } => Value::String("text".into()),
         },
       ),
     ]),

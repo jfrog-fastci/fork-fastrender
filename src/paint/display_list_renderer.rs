@@ -10616,6 +10616,10 @@ impl DisplayListRenderer {
       ClipShape::Path { path } => {
         self.canvas.set_clip_path(path, self.scale)?;
       }
+      ClipShape::Text { runs } => {
+        let scaled: Vec<TextItem> = runs.iter().map(|run| self.scale_text_item(run)).collect();
+        self.canvas.set_clip_text(&scaled)?;
+      }
     }
 
     if let (Some(diag), Some(start)) = (diag, timer) {

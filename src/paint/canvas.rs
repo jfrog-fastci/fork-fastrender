@@ -54,6 +54,7 @@ use crate::geometry::Rect;
 use crate::geometry::Size;
 use crate::paint::clip_path::ResolvedClipPath;
 use crate::paint::display_list::GlyphInstance;
+use crate::paint::display_list::TextItem;
 use crate::paint::pixmap::{new_pixmap, new_pixmap_with_context};
 use crate::paint::text_rasterize::{
   concat_transforms, rotation_transform, GlyphCacheStats, TextRasterizer, TextRenderState,
@@ -72,6 +73,7 @@ use tiny_skia::FillRule;
 use tiny_skia::FilterQuality;
 use tiny_skia::IntSize;
 use tiny_skia::Mask;
+use tiny_skia::MaskType;
 use tiny_skia::Paint;
 use tiny_skia::PathBuilder;
 use tiny_skia::Pixmap;
@@ -784,6 +786,187 @@ impl Canvas {
     } else {
       None
     };
+    self.current_state.clip_mask = match (new_mask, self.current_state.clip_mask.take()) {
+      (Some(mut next), Some(existing)) => {
+        combine_masks(&mut next, existing.as_ref())?;
+        Some(Rc::new(next))
+      }
+      (Some(mask), None) => Some(Rc::new(mask)),
+      (None, existing) => existing,
+    };
+    Ok(())
+  }
+
+  /// Sets a clip mask that is the union of the provided text runs.
+  ///
+  /// This is used for `background-clip: text` / `-webkit-background-clip: text` by rasterizing
+  /// glyphs into an alpha mask and intersecting with any existing clip.
+  pub fn set_clip_text(&mut self, runs: &[TextItem]) -> Result<()> {
+    // Parallel tiling renders each tile into a smaller pixmap with a translated canvas transform.
+    // When glyph edges extend beyond the tile's pixmap bounds, tiny-skia clips the rasterization
+    // to the surface extents, introducing subtle numerical differences compared to rasterizing the
+    // same glyphs on the full surface. This can show up as seams at tile boundaries when the clip
+    // edge is anti-aliased.
+    //
+    // Keep serial and tiled output pixel-identical by rasterizing text clip masks into a padded
+    // scratch surface and then cropping back down to the target pixmap size, matching
+    // `set_clip_path`.
+    const CLIP_TEXT_MASK_PADDING_PX: u32 = 32;
+
+    let pixmap_w = self.pixmap.width();
+    let pixmap_h = self.pixmap.height();
+    if pixmap_w == 0 || pixmap_h == 0 {
+      self.current_state.clip_rect = Some(Rect::ZERO);
+      self.current_state.clip_mask = None;
+      return Ok(());
+    }
+    let pixmap_bounds = Rect::from_xywh(0.0, 0.0, pixmap_w as f32, pixmap_h as f32);
+
+    let mut clip_bounds: Option<Rect> = None;
+    let base_transform = self.current_state.transform;
+    for run in runs {
+      let mut run_bounds = crate::paint::display_list::text_bounds(run);
+      let outline_size = run.font_size * run.scale;
+      let overhang = outline_size.abs() * 0.5;
+      let synthetic = run.synthetic_bold.abs() * 2.0;
+      let pad = (overhang + synthetic).max(0.0);
+      if pad > 0.0 {
+        run_bounds = run_bounds.inflate(pad);
+      }
+      if run.scale != 1.0 {
+        // Scale only affects glyph outlines, not positions. Inflate to keep bounds conservative.
+        let extra = (run.font_size * (run.scale - 1.0).abs()).max(0.0);
+        if extra > 0.0 {
+          run_bounds = run_bounds.inflate(extra);
+        }
+      }
+      let rotation = rotation_transform(run.rotation, run.origin.x, run.origin.y);
+      let mut transform = rotation.unwrap_or_else(Transform::identity);
+      transform = concat_transforms(base_transform, transform);
+      let mapped = if transform == Transform::identity() {
+        run_bounds
+      } else {
+        Self::transform_rect_aabb(run_bounds, transform)
+      };
+      clip_bounds = Some(match clip_bounds {
+        Some(prev) => prev.union(mapped),
+        None => mapped,
+      });
+    }
+
+    let clip_bounds = clip_bounds.unwrap_or(Rect::ZERO);
+    let clip_bounds = if runs.is_empty() {
+      Rect::ZERO
+    } else if clip_bounds.width() <= 0.0
+      || clip_bounds.height() <= 0.0
+      || !clip_bounds.x().is_finite()
+      || !clip_bounds.y().is_finite()
+      || !clip_bounds.width().is_finite()
+      || !clip_bounds.height().is_finite()
+    {
+      pixmap_bounds
+    } else {
+      clip_bounds
+    };
+
+    if runs.is_empty() {
+      self.current_state.clip_rect = Some(Rect::ZERO);
+    } else if self.current_state.clip_rect.is_none() {
+      self.current_state.clip_rect = Some(pixmap_bounds);
+    }
+
+    let mut render_mask = |size: IntSize, transform: Transform| -> Result<Mask> {
+      let mut mask_pixmap = new_pixmap_with_context(size.width(), size.height(), "text clip mask")?;
+
+      let state = TextRenderState {
+        transform,
+        clip_mask: None,
+        opacity: 1.0,
+        blend_mode: SkiaBlendMode::SourceOver,
+      };
+
+      for run in runs {
+        if run.glyphs.is_empty() {
+          continue;
+        }
+        let Some(font) = run.font.as_deref() else {
+          continue;
+        };
+
+        let hb_variations = Self::hb_variations(&run.variations);
+        let positions: Vec<GlyphPosition> = run
+          .glyphs
+          .iter()
+          .map(|g| GlyphPosition {
+            glyph_id: g.glyph_id,
+            cluster: g.cluster,
+            x_offset: g.x_offset,
+            y_offset: g.y_offset,
+            x_advance: g.x_advance,
+            y_advance: g.y_advance,
+          })
+          .collect();
+        let rotation = rotation_transform(run.rotation, run.origin.x, run.origin.y);
+        self.text_rasterizer.render_glyph_run(
+          &positions,
+          font,
+          run.font_size * run.scale,
+          run.synthetic_bold,
+          run.synthetic_oblique,
+          run.palette_index,
+          run.palette_overrides.as_slice(),
+          run.palette_override_hash,
+          &hb_variations,
+          rotation,
+          run.origin.x,
+          run.origin.y,
+          Rgba::WHITE,
+          state,
+          &mut mask_pixmap,
+        )?;
+      }
+
+      Ok(Mask::from_pixmap(mask_pixmap.as_ref(), MaskType::Alpha))
+    };
+
+    let new_mask = if runs.is_empty() {
+      let Some(mut mask) = Mask::new(pixmap_w, pixmap_h) else {
+        return Ok(());
+      };
+      mask.data_mut().fill(0);
+      Some(mask)
+    } else if let Some(size) = IntSize::from_wh(pixmap_w, pixmap_h) {
+      let needs_padding = CLIP_TEXT_MASK_PADDING_PX > 0
+        && (clip_bounds.min_x() < 0.0
+          || clip_bounds.min_y() < 0.0
+          || clip_bounds.max_x() > pixmap_w as f32
+          || clip_bounds.max_y() > pixmap_h as f32);
+
+      if !needs_padding {
+        Some(render_mask(size, self.current_state.transform)?)
+      } else {
+        let pad = CLIP_TEXT_MASK_PADDING_PX;
+        let padded_w = pixmap_w.checked_add(pad.saturating_mul(2));
+        let padded_h = pixmap_h.checked_add(pad.saturating_mul(2));
+        let padded_size = padded_w.and_then(|w| padded_h.and_then(|h| IntSize::from_wh(w, h)));
+        if let Some(padded_size) = padded_size {
+          let padded_transform = self
+            .current_state
+            .transform
+            .post_translate(pad as f32, pad as f32);
+          let padded_mask = render_mask(padded_size, padded_transform)?;
+          match crop_mask(&padded_mask, pad, pad, pixmap_w, pixmap_h)? {
+            Some(mask) => Some(mask),
+            None => Some(render_mask(size, self.current_state.transform)?),
+          }
+        } else {
+          Some(render_mask(size, self.current_state.transform)?)
+        }
+      }
+    } else {
+      None
+    };
+
     self.current_state.clip_mask = match (new_mask, self.current_state.clip_mask.take()) {
       (Some(mut next), Some(existing)) => {
         combine_masks(&mut next, existing.as_ref())?;

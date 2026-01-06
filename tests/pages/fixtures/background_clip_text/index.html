@@ -1,0 +1,77 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>background_clip_text</title>
+<link rel="stylesheet" href="../assets/styles/base.css" />
+<style>
+  body {
+    background: #ffffff;
+  }
+
+  .frame {
+    max-width: 860px;
+    margin: 0 auto;
+  }
+
+  .gradient-text {
+    font-family: "DejaVu Pages", sans-serif;
+    font-size: 72px;
+    font-weight: 400;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    margin: 0;
+    padding: 0;
+
+    color: #16a34a;
+    background: linear-gradient(90deg, #ff0033 0%, #7c3aed 55%, #2563eb 100%);
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .control {
+    margin: 18px 0 0;
+    font-family: "DejaVu Pages", sans-serif;
+    font-size: 34px;
+    font-weight: 400;
+    color: #0f172a;
+  }
+
+  .fill-override {
+    margin: 10px 0 0;
+    font-family: "DejaVu Pages", sans-serif;
+    font-size: 34px;
+    font-weight: 400;
+    color: #dc2626;
+    -webkit-text-fill-color: #2563eb;
+  }
+
+  .shadow-only {
+    margin: 10px 0 0;
+    font-family: "DejaVu Pages", sans-serif;
+    font-size: 34px;
+    font-weight: 400;
+    color: #111827;
+
+    background: linear-gradient(90deg, #f97316, #06b6d4);
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-shadow: 6px 6px 0 rgba(15, 23, 42, 0.25);
+  }
+
+  .multiline {
+    width: 420px;
+    margin-top: 18px;
+    font-size: 54px;
+  }
+</style>
+
+<div class="frame">
+  <section class="card">
+    <h1 class="gradient-text">Gradient Text</h1>
+    <p class="control">Control: normal fill uses <code>color</code>.</p>
+    <p class="fill-override">Text fill overrides <code>color</code>.</p>
+    <p class="shadow-only">Shadow still renders.</p>
+    <div class="gradient-text multiline"><span>Multi-line gradient</span> text wraps.</div>
+  </section>
+</div>

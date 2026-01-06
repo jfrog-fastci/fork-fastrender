@@ -218,6 +218,7 @@ impl DisplayItem {
       DisplayItem::PushClip(item) => Some(match &item.shape {
         ClipShape::Rect { rect, .. } => *rect,
         ClipShape::Path { path } => path.bounds(),
+        ClipShape::Text { runs } => text_runs_bounds(runs.as_ref()),
       }),
       DisplayItem::TextDecoration(item) => Some(item.bounds),
       // Stack operations don't have bounds
@@ -882,6 +883,19 @@ pub fn text_bounds(item: &TextItem) -> Rect {
   })
 }
 
+/// Conservative bounds for a set of text runs (e.g. union clip masks).
+pub fn text_runs_bounds(runs: &[TextItem]) -> Rect {
+  let mut out: Option<Rect> = None;
+  for run in runs {
+    let bounds = text_bounds(run);
+    out = Some(match out {
+      Some(prev) => prev.union(bounds),
+      None => bounds,
+    });
+  }
+  out.unwrap_or(Rect::ZERO)
+}
+
 /// Conservative bounds for a list marker item.
 pub fn list_marker_bounds(item: &ListMarkerItem) -> Rect {
   item.cached_bounds.unwrap_or_else(|| {
@@ -1518,6 +1532,10 @@ pub enum ClipShape {
   },
   Path {
     path: ResolvedClipPath,
+  },
+  Text {
+    /// Text runs defining the clip region (unioned together).
+    runs: Arc<[TextItem]>,
   },
 }
 

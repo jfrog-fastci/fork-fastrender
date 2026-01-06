@@ -1054,6 +1054,11 @@ fn snapshot_clip(clip: &crate::paint::display_list::ClipItem) -> serde_json::Val
       "shape": "path",
       "bounds": snapshot_rect(path.bounds()),
     }),
+    ClipShape::Text { runs } => serde_json::json!({
+      "shape": "text",
+      "bounds": snapshot_rect(crate::paint::display_list::text_runs_bounds(runs.as_ref())),
+      "runs": runs.len(),
+    }),
   }
 }
 

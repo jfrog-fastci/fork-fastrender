@@ -9946,6 +9946,7 @@ pub(crate) fn inherit_styles(styles: &mut ComputedStyle, parent: &ComputedStyle)
 
   // Color inherits
   styles.color = parent.color;
+  styles.webkit_text_fill_color = parent.webkit_text_fill_color.clone();
 
   // SVG presentation properties inherit per SVG/CSS painting rules.
   styles.svg_fill = parent.svg_fill;

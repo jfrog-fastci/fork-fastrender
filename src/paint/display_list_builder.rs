@@ -677,6 +677,7 @@ impl DisplayListBuilder {
     match &clip.shape {
       ClipShape::Rect { rect, .. } => Some(*rect),
       ClipShape::Path { path } => Some(path.bounds()),
+      ClipShape::Text { runs } => Some(crate::paint::display_list::text_runs_bounds(runs.as_ref())),
     }
   }
 
@@ -1616,6 +1617,19 @@ impl DisplayListBuilder {
           self.list.push(DisplayItem::PushClip(clip));
         }
 
+        let text_clip = if !skip_contents
+          && !suppress_background
+          && Self::has_paintable_background(style)
+          && style
+            .background_layers
+            .iter()
+            .any(|layer| layer.clip == BackgroundBox::Text)
+        {
+          self.build_text_clip_runs(fragment, offset, child_visibility)
+        } else {
+          None
+        };
+
         if !style.box_shadow.is_empty() {
           let mut decoration_rects: Option<BackgroundRects> = None;
           let rects = if decoration_rect == absolute_rect {
@@ -1660,7 +1674,7 @@ impl DisplayListBuilder {
             );
           }
           if !suppress_background {
-            self.emit_background_from_style_with_rects(rects, style);
+            self.emit_background_from_style_with_rects_and_text_clip(rects, style, text_clip.as_ref());
           }
           if has_inset {
             self.emit_box_shadows_from_style_with_base(
@@ -1674,15 +1688,21 @@ impl DisplayListBuilder {
         } else if decoration_rect == absolute_rect {
           if !suppress_background {
             if let Some(rects) = absolute_rects.as_ref() {
-              self.emit_background_from_style_with_rects(rects, style);
+              self.emit_background_from_style_with_rects_and_text_clip(
+                rects,
+                style,
+                text_clip.as_ref(),
+              );
             } else {
-              self.emit_background_from_style(decoration_rect, style);
+              self.emit_background_from_style_with_text_clip(
+                decoration_rect,
+                style,
+                text_clip.as_ref(),
+              );
             }
           }
-        } else {
-          if !suppress_background {
-            self.emit_background_from_style(decoration_rect, style);
-          }
+        } else if !suppress_background {
+          self.emit_background_from_style_with_text_clip(decoration_rect, style, text_clip.as_ref());
         }
 
         self.emit_border_from_style(decoration_rect, style);
@@ -4145,7 +4165,10 @@ impl DisplayListBuilder {
         }
 
         let style_opt = fragment.style.as_deref();
-        let color = style_opt.map(|s| s.color).unwrap_or(Rgba::BLACK);
+        let current = style_opt.map(|s| s.color).unwrap_or(Rgba::BLACK);
+        let color = style_opt
+          .map(|s| s.webkit_text_fill_color.to_rgba(current))
+          .unwrap_or(current);
         let shadows = Self::text_shadows_from_style(style_opt);
         let inline_vertical = style_opt.is_some_and(|s| {
           matches!(
@@ -4340,7 +4363,8 @@ impl DisplayListBuilder {
             .as_ref()
             .map(|l| l.as_ref().clone())
             .unwrap_or_else(|| layout_mathml(&math.root, style_ref, &self.font_ctx));
-          let color = style_ref.color;
+          let current = style_ref.color;
+          let color = style_ref.webkit_text_fill_color.to_rgba(current);
           let shadows = Self::text_shadows_from_style(Some(style_ref));
           let layout_w = layout_owned.width.max(0.01);
           let layout_h = layout_owned.height.max(0.01);
@@ -4606,6 +4630,224 @@ impl DisplayListBuilder {
     None
   }
 
+  fn build_text_clip_runs(
+    &mut self,
+    fragment: &FragmentNode,
+    offset: Point,
+    visibility: Visibility,
+  ) -> Option<Arc<[TextItem]>> {
+    let mut runs = Vec::new();
+    self.collect_text_clip_runs(fragment, offset, visibility, &mut runs);
+    if runs.is_empty() {
+      None
+    } else {
+      Some(runs.into())
+    }
+  }
+
+  fn collect_text_clip_runs(
+    &mut self,
+    fragment: &FragmentNode,
+    offset: Point,
+    visibility: Visibility,
+    out: &mut Vec<TextItem>,
+  ) {
+    if self.deadline_reached() {
+      return;
+    }
+
+    let style_opt = fragment.style.as_deref();
+    let paint_self = style_opt.map_or(true, |style| {
+      matches!(
+        style.visibility,
+        crate::style::computed::Visibility::Visible
+      )
+    });
+    if !paint_self && fragment.children.is_empty() {
+      return;
+    }
+
+    if matches!(fragment.content, FragmentContent::RunningAnchor { .. }) {
+      return;
+    }
+
+    let opacity = style_opt.map(|s| s.opacity).unwrap_or(1.0);
+    if opacity <= f32::EPSILON {
+      return;
+    }
+
+    let absolute_rect = Rect::new(
+      Point::new(
+        fragment.bounds.origin.x + offset.x,
+        fragment.bounds.origin.y + offset.y,
+      ),
+      fragment.bounds.size,
+    );
+    let skip_contents = style_opt.is_some_and(|style| match style.content_visibility {
+      ContentVisibility::Hidden => true,
+      ContentVisibility::Auto => visibility
+        .rect
+        .is_some_and(|vis| !vis.intersects(absolute_rect)),
+      ContentVisibility::Visible => false,
+    });
+
+    let mut paint_bounds = self.fragment_paint_bounds(fragment, absolute_rect, style_opt);
+    paint_bounds = paint_bounds.union(fragment.scroll_overflow.translate(absolute_rect.origin));
+    if let Some(vis) = visibility.rect {
+      if !vis.intersects(paint_bounds) {
+        return;
+      }
+      if visibility.hard_clip {
+        paint_bounds = match paint_bounds.intersection(vis) {
+          Some(intersection) if intersection.width() > 0.0 && intersection.height() > 0.0 => {
+            intersection
+          }
+          _ => return,
+        };
+      } else {
+        paint_bounds = paint_bounds.intersection(vis).unwrap_or(paint_bounds);
+      }
+    }
+
+    // Mirror the main fragment traversal's clipping rules so we only include text that will
+    // actually be painted. In particular, text outside overflow/clip edges should not contribute
+    // to `background-clip:text`.
+    let mut absolute_rects: Option<BackgroundRects> = None;
+    let (overflow_clip, clip_rect) = if let Some(style) = style_opt {
+      let is_replaced = matches!(&fragment.content, FragmentContent::Replaced { .. });
+      let clip_x = !is_replaced && Self::overflow_axis_clips(style.overflow_x);
+      let clip_y = !is_replaced && Self::overflow_axis_clips(style.overflow_y);
+      (
+        if clip_x || clip_y {
+          let overflow_bounds =
+            absolute_rect.union(fragment.scroll_overflow.translate(absolute_rect.origin));
+          let rects = absolute_rects
+            .get_or_insert_with(|| Self::background_rects(absolute_rect, style, self.viewport));
+          Self::overflow_clip_from_style_with_rects(
+            style,
+            rects,
+            clip_x,
+            clip_y,
+            overflow_bounds,
+            self.viewport,
+            self.build_breakdown.as_deref(),
+          )
+        } else {
+          None
+        },
+        Self::clip_rect_from_style(style, absolute_rect, self.viewport),
+      )
+    } else {
+      (None, None)
+    };
+    let mut child_visibility = visibility;
+    if let Some(clip) = overflow_clip.as_ref() {
+      child_visibility = child_visibility.intersect(Self::clip_bounds(clip), true);
+    }
+    if let Some(clip) = clip_rect.as_ref() {
+      child_visibility = child_visibility.intersect(Self::clip_bounds(clip), true);
+    }
+    if child_visibility.rect.is_none() && visibility.rect.is_some() {
+      return;
+    }
+    if let Some(vis) = child_visibility.rect {
+      if !vis.intersects(paint_bounds) {
+        return;
+      }
+      if child_visibility.hard_clip {
+        match paint_bounds.intersection(vis) {
+          Some(intersection) if intersection.width() > 0.0 && intersection.height() > 0.0 => {}
+          _ => return,
+        };
+      }
+    }
+
+    if paint_self {
+      if let FragmentContent::Text {
+        text,
+        baseline_offset,
+        shaped,
+        is_marker,
+        ..
+      } = &fragment.content
+      {
+        if !text.is_empty() && !is_marker {
+          if let Some(style) = style_opt {
+            let inline_vertical = matches!(
+              style.writing_mode,
+              crate::style::types::WritingMode::VerticalRl
+                | crate::style::types::WritingMode::VerticalLr
+                | crate::style::types::WritingMode::SidewaysRl
+                | crate::style::types::WritingMode::SidewaysLr
+            );
+            let (baseline_block, baseline_inline) = if inline_vertical {
+              (
+                absolute_rect.origin.x + baseline_offset,
+                absolute_rect.origin.y,
+              )
+            } else {
+              (
+                absolute_rect.origin.x,
+                absolute_rect.origin.y + baseline_offset,
+              )
+            };
+
+            let mut shaped_storage: Option<Vec<ShapedRun>> = None;
+            let runs_ref: Option<&[ShapedRun]> = if let Some(runs) = shaped {
+              Some(runs.as_ref())
+            } else {
+              let shape_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
+              let shaped_result = self.shaper.shape(text, style, &self.font_ctx);
+              if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), shape_timer) {
+                breakdown.record_text_shape(start.elapsed());
+              }
+              if let Ok(mut runs) = shaped_result {
+                InlineTextItem::apply_spacing_to_runs(
+                  &mut runs,
+                  text,
+                  style.letter_spacing,
+                  style.word_spacing,
+                );
+                shaped_storage = Some(runs);
+              }
+              shaped_storage.as_deref()
+            };
+
+            if let Some(runs) = runs_ref {
+              if inline_vertical {
+                self.collect_shaped_runs_for_text_clip_vertical(
+                  out,
+                  runs,
+                  baseline_block,
+                  baseline_inline,
+                );
+              } else {
+                self.collect_shaped_runs_for_text_clip(out, runs, baseline_inline, baseline_block);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if skip_contents {
+      return;
+    }
+
+    let element_scroll = self.element_scroll_offset(fragment);
+    let child_offset = Point::new(
+      absolute_rect.origin.x - element_scroll.x,
+      absolute_rect.origin.y - element_scroll.y,
+    );
+    let mut counter = 0usize;
+    for child in fragment.children.iter() {
+      if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
+        break;
+      }
+      self.collect_text_clip_runs(child, child_offset, child_visibility, out);
+    }
+  }
+
   /// Emits a background fill for a fragment
   pub fn emit_background(&mut self, rect: Rect, color: Rgba) {
     if !color.is_transparent() {
@@ -4636,13 +4878,22 @@ impl DisplayListBuilder {
   }
 
   fn emit_background_from_style(&mut self, rect: Rect, style: &ComputedStyle) {
+    self.emit_background_from_style_with_text_clip(rect, style, None);
+  }
+
+  fn emit_background_from_style_with_text_clip(
+    &mut self,
+    rect: Rect,
+    style: &ComputedStyle,
+    text_clip: Option<&Arc<[TextItem]>>,
+  ) {
     let has_images = style.background_layers.iter().any(|l| l.image.is_some());
     if style.background_color.is_transparent() && !has_images {
       return;
     }
 
     let rects = Self::background_rects(rect, style, self.viewport);
-    self.emit_background_from_style_with_rects(&rects, style);
+    self.emit_background_from_style_with_rects_and_text_clip(&rects, style, text_clip);
   }
 
   fn emit_background_from_style_with_rects(
@@ -4650,7 +4901,7 @@ impl DisplayListBuilder {
     rects: &BackgroundRects,
     style: &ComputedStyle,
   ) {
-    self.emit_background_from_style_with_rects_and_origin(rects, rects, style);
+    self.emit_background_from_style_with_rects_and_origin_and_text_clip(rects, rects, style, None);
   }
 
   fn emit_background_from_style_with_rects_and_origin(
@@ -4659,6 +4910,30 @@ impl DisplayListBuilder {
     origin_rects: &BackgroundRects,
     style: &ComputedStyle,
   ) {
+    self.emit_background_from_style_with_rects_and_origin_and_text_clip(
+      rects,
+      origin_rects,
+      style,
+      None,
+    );
+  }
+
+  fn emit_background_from_style_with_rects_and_text_clip(
+    &mut self,
+    rects: &BackgroundRects,
+    style: &ComputedStyle,
+    text_clip: Option<&Arc<[TextItem]>>,
+  ) {
+    self.emit_background_from_style_with_rects_and_origin_and_text_clip(rects, rects, style, text_clip);
+  }
+
+  fn emit_background_from_style_with_rects_and_origin_and_text_clip(
+    &mut self,
+    rects: &BackgroundRects,
+    origin_rects: &BackgroundRects,
+    style: &ComputedStyle,
+    text_clip: Option<&Arc<[TextItem]>>,
+  ) {
     let has_images = style.background_layers.iter().any(|l| l.image.is_some());
     if style.background_color.is_transparent() && !has_images {
       return;
@@ -4666,6 +4941,7 @@ impl DisplayListBuilder {
 
     let fallback = BackgroundLayer::default();
     let color_layer = style.background_layers.first().unwrap_or(&fallback);
+    let color_clips_text = color_layer.clip == BackgroundBox::Text;
     let color_clip_rect = match color_layer.clip {
       BackgroundBox::BorderBox => rects.border,
       BackgroundBox::PaddingBox => rects.padding,
@@ -4675,33 +4951,47 @@ impl DisplayListBuilder {
       && color_clip_rect.width() > 0.0
       && color_clip_rect.height() > 0.0
     {
-      let radii = if Self::border_radius_is_zero(style) {
-        crate::paint::display_list::BorderRadii::ZERO
-      } else {
-        Self::resolve_clip_radii(
-          style,
-          rects,
-          color_layer.clip,
-          self.viewport,
-          self.build_breakdown.as_deref(),
-        )
-      };
-      if radii.is_zero() {
-        self.emit_background(color_clip_rect, style.background_color);
-      } else {
-        self.list.push(DisplayItem::FillRoundedRect(
-          crate::paint::display_list::FillRoundedRectItem {
-            rect: color_clip_rect,
-            color: style.background_color,
-            radii,
-          },
-        ));
+      let pushed_text_clip =
+        color_clips_text && text_clip.is_some_and(|runs| !runs.is_empty()) && {
+          self.list.push(DisplayItem::PushClip(ClipItem {
+            shape: ClipShape::Text {
+              runs: Arc::clone(text_clip.unwrap()),
+            },
+          }));
+          true
+        };
+      if !color_clips_text || pushed_text_clip {
+        let radii = if Self::border_radius_is_zero(style) {
+          crate::paint::display_list::BorderRadii::ZERO
+        } else {
+          Self::resolve_clip_radii(
+            style,
+            rects,
+            color_layer.clip,
+            self.viewport,
+            self.build_breakdown.as_deref(),
+          )
+        };
+        if radii.is_zero() {
+          self.emit_background(color_clip_rect, style.background_color);
+        } else {
+          self.list.push(DisplayItem::FillRoundedRect(
+            crate::paint::display_list::FillRoundedRectItem {
+              rect: color_clip_rect,
+              color: style.background_color,
+              radii,
+            },
+          ));
+        }
+        if pushed_text_clip {
+          self.list.push(DisplayItem::PopClip);
+        }
       }
     }
 
     for layer in style.background_layers.iter().rev() {
       if let Some(image) = &layer.image {
-        self.emit_background_layer_with_origin_rects(rects, origin_rects, style, layer, image);
+        self.emit_background_layer_with_origin_rects(rects, origin_rects, style, layer, image, text_clip);
       }
     }
   }
@@ -4712,16 +5002,6 @@ impl DisplayListBuilder {
     self.emit_background_from_style_with_rects_and_origin(&rects, &origin_rects, &root.style);
   }
 
-  fn emit_background_layer(
-    &mut self,
-    rects: &BackgroundRects,
-    style: &ComputedStyle,
-    layer: &BackgroundLayer,
-    bg: &BackgroundImage,
-  ) {
-    self.emit_background_layer_with_origin_rects(rects, rects, style, layer, bg);
-  }
-
   fn emit_background_layer_with_origin_rects(
     &mut self,
     rects: &BackgroundRects,
@@ -4729,12 +5009,14 @@ impl DisplayListBuilder {
     style: &ComputedStyle,
     layer: &BackgroundLayer,
     bg: &BackgroundImage,
+    text_clip: Option<&Arc<[TextItem]>>,
   ) {
     if self.deadline_reached() {
       return;
     }
 
     let is_local = layer.attachment == BackgroundAttachment::Local;
+    let clips_text = layer.clip == BackgroundBox::Text;
     let clip_box = if is_local {
       match layer.clip {
         BackgroundBox::ContentBox | BackgroundBox::Text => BackgroundBox::ContentBox,
@@ -4811,7 +5093,7 @@ impl DisplayListBuilder {
     };
     let blend_mode = Self::convert_blend_mode(layer.blend_mode);
     let use_blend = blend_mode != BlendMode::Normal;
-    let pushed_clip = !clip_radii.is_zero() && {
+    let pushed_radii_clip = !clip_radii.is_zero() && {
       self.list.push(DisplayItem::PushClip(ClipItem {
         shape: ClipShape::Rect {
           rect: clip_rect,
@@ -4820,6 +5102,21 @@ impl DisplayListBuilder {
       }));
       true
     };
+    let pushed_text_clip = clips_text && text_clip.is_some_and(|runs| !runs.is_empty()) && {
+      self.list.push(DisplayItem::PushClip(ClipItem {
+        shape: ClipShape::Text {
+          runs: Arc::clone(text_clip.unwrap()),
+        },
+      }));
+      true
+    };
+    if clips_text && !pushed_text_clip {
+      // No text to clip to; skip painting this layer entirely.
+      if pushed_radii_clip {
+        self.list.push(DisplayItem::PopClip);
+      }
+      return;
+    }
     if use_blend {
       self.list.push(DisplayItem::PushBlendMode(BlendModeItem {
         mode: blend_mode,
@@ -5636,7 +5933,10 @@ impl DisplayListBuilder {
     if use_blend {
       self.list.push(DisplayItem::PopBlendMode);
     }
-    if pushed_clip {
+    if pushed_text_clip {
+      self.list.push(DisplayItem::PopClip);
+    }
+    if pushed_radii_clip {
       self.list.push(DisplayItem::PopClip);
     }
   }
@@ -5937,6 +6237,57 @@ impl DisplayListBuilder {
     }
   }
 
+  fn collect_shaped_runs_for_text_clip(
+    &mut self,
+    out: &mut Vec<TextItem>,
+    runs: &[ShapedRun],
+    baseline_y: f32,
+    start_x: f32,
+  ) {
+    let mut pen_x = start_x;
+    let mut counter = 0usize;
+    for run in runs {
+      if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
+        break;
+      }
+      let origin_x = if run.direction.is_rtl() {
+        pen_x + run.advance
+      } else {
+        pen_x
+      };
+      let (glyphs, cached_bounds) = self.glyphs_from_run(run, origin_x, baseline_y);
+      let font_id = self.font_id_from_run(run);
+      let variations: Vec<FontVariation> = run
+        .variations
+        .iter()
+        .map(|v| FontVariation::new(v.tag, v.value))
+        .collect();
+      out.push(TextItem {
+        origin: Point::new(origin_x, baseline_y),
+        cached_bounds: Some(cached_bounds),
+        glyphs,
+        color: Rgba::WHITE,
+        palette_index: run.palette_index,
+        palette_overrides: Arc::clone(&run.palette_overrides),
+        palette_override_hash: run.palette_override_hash,
+        rotation: run.rotation,
+        scale: run.scale,
+        shadows: Vec::new(),
+        font_size: run.font_size,
+        advance_width: run.advance,
+        font_id,
+        font: Some(run.font.clone()),
+        variations,
+        synthetic_bold: run.synthetic_bold,
+        synthetic_oblique: run.synthetic_oblique,
+        emphasis: None,
+        decorations: Vec::new(),
+        ..Default::default()
+      });
+      pen_x += run.advance;
+    }
+  }
+
   fn emit_shaped_runs_vertical(
     &mut self,
     runs: &[ShapedRun],
@@ -5988,6 +6339,58 @@ impl DisplayListBuilder {
       };
       self.list.push(DisplayItem::Text(item));
 
+      pen_inline += run.advance;
+    }
+  }
+
+  fn collect_shaped_runs_for_text_clip_vertical(
+    &mut self,
+    out: &mut Vec<TextItem>,
+    runs: &[ShapedRun],
+    block_baseline: f32,
+    inline_start: f32,
+  ) {
+    let mut pen_inline = inline_start;
+    let mut counter = 0usize;
+    for run in runs {
+      if self.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
+        break;
+      }
+      let run_origin_inline = if run.direction.is_rtl() {
+        pen_inline + run.advance
+      } else {
+        pen_inline
+      };
+      let (glyphs, cached_bounds) =
+        self.glyphs_from_run_vertical(run, block_baseline, run_origin_inline);
+      let font_id = self.font_id_from_run(run);
+      let variations: Vec<FontVariation> = run
+        .variations
+        .iter()
+        .map(|v| FontVariation::new(v.tag, v.value))
+        .collect();
+      out.push(TextItem {
+        origin: Point::new(block_baseline, run_origin_inline),
+        cached_bounds: Some(cached_bounds),
+        glyphs,
+        color: Rgba::WHITE,
+        palette_index: run.palette_index,
+        palette_overrides: Arc::clone(&run.palette_overrides),
+        palette_override_hash: run.palette_override_hash,
+        rotation: run.rotation,
+        scale: run.scale,
+        shadows: Vec::new(),
+        font_size: run.font_size,
+        advance_width: run.advance,
+        font_id,
+        font: Some(run.font.clone()),
+        variations,
+        synthetic_bold: run.synthetic_bold,
+        synthetic_oblique: run.synthetic_oblique,
+        emphasis: None,
+        decorations: Vec::new(),
+        ..Default::default()
+      });
       pen_inline += run.advance;
     }
   }

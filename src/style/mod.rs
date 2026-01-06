@@ -39,7 +39,7 @@ use crate::style::custom_properties::CustomPropertyRegistry;
 use crate::style::custom_property_store::CustomPropertyStore;
 use crate::style::float::Clear;
 use crate::style::float::Float;
-use color::Rgba;
+use color::{Color, Rgba};
 use counter_styles::CounterStyleRegistry;
 use counters::CounterProperties;
 use display::Display;
@@ -805,6 +805,7 @@ pub struct ComputedStyle {
   pub caret_color: CaretColor,
   pub accent_color: AccentColor,
   pub color: Rgba,
+  pub webkit_text_fill_color: Color,
 
   // SVG presentation properties (used when serializing inline SVG for resvg)
   pub svg_fill: Option<ColorOrNone>,
@@ -1175,6 +1176,7 @@ impl Default for ComputedStyle {
       caret_color: CaretColor::Auto,
       accent_color: AccentColor::Auto,
       color: Rgba::BLACK,
+      webkit_text_fill_color: Color::CurrentColor,
       svg_fill: None,
       svg_stroke: None,
       svg_stroke_width: None,

@@ -117,6 +117,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "background-attachment",
   "background-blend-mode",
   "background-clip",
+  "-webkit-background-clip",
   "background-color",
   "background-image",
   "background-origin",
@@ -439,6 +440,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "text-rendering",
   "text-size-adjust",
   "text-shadow",
+  "-webkit-text-fill-color",
   "text-transform",
   "text-underline-offset",
   "text-underline-position",
@@ -1528,6 +1530,7 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
   if matches!(
     property,
     "color"
+      | "-webkit-text-fill-color"
       | "background-color"
       | "border-color"
       | "border-top-color"
@@ -1790,6 +1793,7 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
       | "background-attachment"
       | "background-origin"
       | "background-clip"
+      | "-webkit-background-clip"
       | "background-position-inline"
       | "background-position-block"
       | "background-size-inline"
@@ -2305,6 +2309,7 @@ pub(crate) fn supports_parsed_declaration_is_valid(
          || len.unit.is_viewport_relative()
      }
     "color"
+    | "-webkit-text-fill-color"
     | "background-color"
     | "border-color"
     | "border-top-color"
@@ -2468,7 +2473,9 @@ pub(crate) fn supports_parsed_declaration_is_valid(
       return supports_sizing_value(raw_value, true)
     }
     "background-origin" => return background_box_list_is_valid(parsed, false),
-    "background-clip" => return background_box_list_is_valid(parsed, true),
+    "background-clip" | "-webkit-background-clip" => {
+      return background_box_list_is_valid(parsed, true)
+    }
     _ => {}
   }
 
