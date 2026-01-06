@@ -945,17 +945,30 @@ impl Canvas {
       if !needs_padding {
         Some(render_mask(size, self.current_state.transform)?)
       } else {
-        let pad = CLIP_TEXT_MASK_PADDING_PX;
-        let padded_w = pixmap_w.checked_add(pad.saturating_mul(2));
-        let padded_h = pixmap_h.checked_add(pad.saturating_mul(2));
+        let overflow_left = (0.0 - clip_bounds.min_x()).ceil().max(0.0) as u32;
+        let overflow_top = (0.0 - clip_bounds.min_y()).ceil().max(0.0) as u32;
+        let overflow_right = (clip_bounds.max_x() - pixmap_w as f32).ceil().max(0.0) as u32;
+        let overflow_bottom = (clip_bounds.max_y() - pixmap_h as f32).ceil().max(0.0) as u32;
+
+        let pad_left = overflow_left.saturating_add(CLIP_TEXT_MASK_PADDING_PX);
+        let pad_top = overflow_top.saturating_add(CLIP_TEXT_MASK_PADDING_PX);
+        let pad_right = overflow_right.saturating_add(CLIP_TEXT_MASK_PADDING_PX);
+        let pad_bottom = overflow_bottom.saturating_add(CLIP_TEXT_MASK_PADDING_PX);
+
+        let padded_w = pixmap_w
+          .checked_add(pad_left)
+          .and_then(|w| w.checked_add(pad_right));
+        let padded_h = pixmap_h
+          .checked_add(pad_top)
+          .and_then(|h| h.checked_add(pad_bottom));
         let padded_size = padded_w.and_then(|w| padded_h.and_then(|h| IntSize::from_wh(w, h)));
         if let Some(padded_size) = padded_size {
           let padded_transform = self
             .current_state
             .transform
-            .post_translate(pad as f32, pad as f32);
+            .post_translate(pad_left as f32, pad_top as f32);
           let padded_mask = render_mask(padded_size, padded_transform)?;
-          match crop_mask(&padded_mask, pad, pad, pixmap_w, pixmap_h)? {
+          match crop_mask(&padded_mask, pad_left, pad_top, pixmap_w, pixmap_h)? {
             Some(mask) => Some(mask),
             None => Some(render_mask(size, self.current_state.transform)?),
           }
