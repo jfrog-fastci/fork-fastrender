@@ -1241,6 +1241,70 @@ mod tests {
   }
 
   #[test]
+  fn compute_replaced_width_fill_available_keyword_uses_available_base() {
+    let mut style = ComputedStyle::default();
+    style.width_keyword = Some(IntrinsicSizeKeyword::FillAvailable);
+
+    let replaced = ReplacedBox {
+      replaced_type: crate::tree::box_tree::ReplacedType::Image {
+        src: "img".into(),
+        alt: None,
+        crossorigin: CrossOriginAttribute::None,
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+      },
+      intrinsic_size: Some(Size::new(300.0, 150.0)),
+      aspect_ratio: Some(2.0),
+    };
+
+    let size = compute_replaced_size(
+      &style,
+      &replaced,
+      Some(Size::new(200.0, 200.0)),
+      Size::new(800.0, 600.0),
+    );
+    assert!((size.width - 200.0).abs() < 0.01);
+    assert!((size.height - 100.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn compute_replaced_width_fill_available_keyword_respects_border_box_sizing() {
+    let mut style = ComputedStyle::default();
+    style.box_sizing = BoxSizing::BorderBox;
+    style.padding_left = Length::px(10.0);
+    style.padding_right = Length::px(10.0);
+    style.border_left_style = crate::style::types::BorderStyle::Solid;
+    style.border_right_style = crate::style::types::BorderStyle::Solid;
+    style.border_left_width = Length::px(5.0);
+    style.border_right_width = Length::px(5.0);
+    style.width_keyword = Some(IntrinsicSizeKeyword::FillAvailable);
+
+    let replaced = ReplacedBox {
+      replaced_type: crate::tree::box_tree::ReplacedType::Image {
+        src: "img".into(),
+        alt: None,
+        crossorigin: CrossOriginAttribute::None,
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+      },
+      intrinsic_size: Some(Size::new(300.0, 150.0)),
+      aspect_ratio: Some(2.0),
+    };
+
+    let size = compute_replaced_size(
+      &style,
+      &replaced,
+      Some(Size::new(200.0, 200.0)),
+      Size::new(800.0, 600.0),
+    );
+    // 200px available border-box - 10px padding each side - 5px borders each side = 170px content box.
+    assert!((size.width - 170.0).abs() < 0.01);
+    assert!((size.height - 85.0).abs() < 0.01);
+  }
+
+  #[test]
   fn test_replaced_auto_auto_ratio_only_uses_default_with_ratio() {
     let style = ComputedStyle::default();
     let replaced = ReplacedBox {
