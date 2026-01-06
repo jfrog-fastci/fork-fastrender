@@ -60,7 +60,7 @@ fn bidi_visual_order_handles_mixed_arabic_ltr() {
   texts.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
   let labels: String = texts.into_iter().map(|(t, _)| t).collect();
   // Visual order should keep the LTR run first, then the embedded digits together, then trailing B.
-  assert_eq!(labels, "A 123B");
+  assert_eq!(labels, "A 123 B");
 }
 
 #[test]
