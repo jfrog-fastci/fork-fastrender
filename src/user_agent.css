@@ -331,6 +331,11 @@ embed {
     overflow: clip;
 }
 
+/* HTML media elements */
+audio:not([controls]) {
+    display: none;
+}
+
 /* SVG defaults */
 svg {
     overflow: hidden;
