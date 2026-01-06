@@ -901,41 +901,31 @@ fn hash128(bytes: &[u8]) -> (u64, u64) {
   (hash64_with_salt(bytes, 0), hash64_with_salt(bytes, 1))
 }
 
-fn diff_pixels_and_first_mismatch(
-  baseline: &[u8],
-  other: &[u8],
+fn diff_premultiplied_against_rgba_baseline(
+  baseline_rgba: &[u8],
+  other_premultiplied: &[u8],
   width: u32,
-) -> (u64, Option<(u32, u32)>) {
-  if baseline.len() != other.len() || width == 0 {
-    return (0, None);
+) -> (u64, Option<(u32, u32)>, Option<([u8; 4], [u8; 4])>) {
+  if baseline_rgba.len() != other_premultiplied.len() || width == 0 {
+    return (0, None, None);
   }
 
   let mut diff_pixels = 0u64;
   let mut first_mismatch = None;
-  for (idx, (a, b)) in baseline
+  let mut first_mismatch_rgba = None;
+
+  for (idx, (baseline_px, other_px)) in baseline_rgba
     .chunks_exact(4)
-    .zip(other.chunks_exact(4))
+    .zip(other_premultiplied.chunks_exact(4))
     .enumerate()
   {
-    if a != b {
-      diff_pixels += 1;
-      if first_mismatch.is_none() {
-        let pixel_idx = idx as u32;
-        first_mismatch = Some((pixel_idx % width, pixel_idx / width));
-      }
-    }
-  }
-  (diff_pixels, first_mismatch)
-}
+    let r = other_px[0];
+    let g = other_px[1];
+    let b = other_px[2];
+    let a = other_px[3];
 
-fn unpremultiply_rgba_bytes(premultiplied: &[u8]) -> Vec<u8> {
-  let mut rgba_data = Vec::with_capacity(premultiplied.len());
-  for chunk in premultiplied.chunks_exact(4) {
-    let r = chunk[0];
-    let g = chunk[1];
-    let b = chunk[2];
-    let a = chunk[3];
-
+    // tiny-skia stores premultiplied RGBA bytes. Convert to straight RGBA to match the baseline PNG
+    // decode.
     let (r, g, b) = if a > 0 {
       let alpha = a as f32 / 255.0;
       (
@@ -946,13 +936,21 @@ fn unpremultiply_rgba_bytes(premultiplied: &[u8]) -> Vec<u8> {
     } else {
       (0, 0, 0)
     };
+    let other_rgba = [r, g, b, a];
+    let baseline_arr = [baseline_px[0], baseline_px[1], baseline_px[2], baseline_px[3]];
 
-    rgba_data.push(r);
-    rgba_data.push(g);
-    rgba_data.push(b);
-    rgba_data.push(a);
+    if baseline_arr != other_rgba {
+      diff_pixels += 1;
+      if first_mismatch.is_none() {
+        let pixel_idx = idx as u32;
+        let xy = (pixel_idx % width, pixel_idx / width);
+        first_mismatch = Some(xy);
+        first_mismatch_rgba = Some((baseline_arr, other_rgba));
+      }
+    }
   }
-  rgba_data
+
+  (diff_pixels, first_mismatch, first_mismatch_rgba)
 }
 
 fn record_variant(
@@ -997,39 +995,24 @@ fn record_variant(
     // memory for every fixture in repeat mode.
     let baseline_png = output_path_for(out_dir, &state.stem);
     if let Ok(png_bytes) = fs::read(&baseline_png) {
-      if let Ok(img) = image::load_from_memory_with_format(&png_bytes, ImageFormat::Png) {
-        let img = img.to_rgba8();
-        if img.width() == pixels.width && img.height() == pixels.height {
-          let baseline_rgba = img.into_raw();
-          let variant_rgba = unpremultiply_rgba_bytes(&pixels.data);
-          if baseline_rgba.len() == variant_rgba.len() && pixels.width > 0 {
-            let (d, mismatch) =
-              diff_pixels_and_first_mismatch(&baseline_rgba, &variant_rgba, pixels.width);
-            diff_pixels = Some(d);
-            first_mismatch = mismatch;
-            if let Some((x, y)) = mismatch {
-              let i = ((y * pixels.width + x) as usize) * 4;
-              if baseline_rgba.len() >= i + 4 && variant_rgba.len() >= i + 4 {
-                let b = [
-                  baseline_rgba[i],
-                  baseline_rgba[i + 1],
-                  baseline_rgba[i + 2],
-                  baseline_rgba[i + 3],
-                ];
-                let v = [
-                  variant_rgba[i],
-                  variant_rgba[i + 1],
-                  variant_rgba[i + 2],
-                  variant_rgba[i + 3],
-                ];
-                first_mismatch_rgba = Some((b, v));
+          if let Ok(img) = image::load_from_memory_with_format(&png_bytes, ImageFormat::Png) {
+            let img = img.to_rgba8();
+            if img.width() == pixels.width && img.height() == pixels.height {
+              let baseline_rgba = img.into_raw();
+              if baseline_rgba.len() == pixels.data.len() && pixels.width > 0 {
+                let (d, mismatch, mismatch_rgba) = diff_premultiplied_against_rgba_baseline(
+                  &baseline_rgba,
+                  &pixels.data,
+                  pixels.width,
+                );
+                diff_pixels = Some(d);
+                first_mismatch = mismatch;
+                first_mismatch_rgba = mismatch_rgba;
               }
             }
           }
         }
       }
-    }
-  }
 
   state.variants.push(VariantRecord {
     hash_hi,
