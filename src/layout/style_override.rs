@@ -183,8 +183,8 @@ fn style_override_fingerprint(style: &ComputedStyle) -> u64 {
   hash_enum_discriminant(&style.overflow_y, &mut h);
   hash_enum_discriminant(&style.scrollbar_width, &mut h);
   hash_enum_discriminant(&style.line_height, &mut h);
-  style.font_size.to_bits().hash(&mut h);
-  style.root_font_size.to_bits().hash(&mut h);
+  f32_to_canonical_bits(style.font_size).hash(&mut h);
+  f32_to_canonical_bits(style.root_font_size).hash(&mut h);
   h.finish()
 }
 
@@ -281,6 +281,19 @@ mod tests {
     assert_ne!(
       style_override_fingerprint(&fit_content_a),
       style_override_fingerprint(&fit_content_b)
+    );
+  }
+
+  #[test]
+  fn style_override_fingerprint_canonicalizes_negative_zero() {
+    let mut style_zero = ComputedStyle::default();
+    style_zero.font_size = 0.0;
+    let mut style_neg_zero = style_zero.clone();
+    style_neg_zero.font_size = -0.0;
+
+    assert_eq!(
+      style_override_fingerprint(&style_zero),
+      style_override_fingerprint(&style_neg_zero)
     );
   }
 }
