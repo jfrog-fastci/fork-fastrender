@@ -113,11 +113,15 @@ struct Cli {
   seed: u64,
 
   /// Exit non-zero if any fixture produces different pixels across repeats.
+  ///
+  /// Requires `--repeat > 1`.
   #[arg(long)]
   fail_on_nondeterminism: bool,
 
   /// When nondeterminism is detected, save each distinct pixel output as a PNG under:
   /// `<out-dir>/<fixture>/nondeterminism/<k>.png`, plus a small report.
+  ///
+  /// Requires `--repeat > 1`.
   #[arg(long)]
   save_variants: bool,
 

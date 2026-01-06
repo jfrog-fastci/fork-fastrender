@@ -216,6 +216,98 @@ fn render_fixtures_shuffle_requires_repeat_gt_one() {
 }
 
 #[test]
+fn render_fixtures_save_variants_requires_repeat_gt_one() {
+  let temp = TempDir::new().expect("tempdir");
+  let fixtures_dir = temp.path().join("fixtures");
+  let out_dir = temp.path().join("out");
+  fs::create_dir_all(&fixtures_dir).expect("create fixtures dir");
+
+  write_fixture(
+    &fixtures_dir,
+    "basic",
+    "<!doctype html><html><body>ok</body></html>",
+  );
+
+  let output = Command::new(env!("CARGO_BIN_EXE_render_fixtures"))
+    .current_dir(temp.path())
+    .env("RAYON_NUM_THREADS", "2")
+    .env("FASTR_PAINT_THREADS", "1")
+    .args([
+      "--fixtures-dir",
+      fixtures_dir.to_str().unwrap(),
+      "--out-dir",
+      out_dir.to_str().unwrap(),
+      "--fixtures",
+      "basic",
+      "--viewport",
+      "64x64",
+      "--jobs",
+      "1",
+      "--timeout",
+      "2",
+      "--save-variants",
+    ])
+    .output()
+    .expect("run render_fixtures");
+
+  assert!(
+    !output.status.success(),
+    "expected render_fixtures to fail when --save-variants is used without --repeat > 1"
+  );
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  assert!(
+    stderr.contains("save-variants requires --repeat > 1"),
+    "expected error message to mention repeat requirement; got:\n{stderr}"
+  );
+}
+
+#[test]
+fn render_fixtures_fail_on_nondeterminism_requires_repeat_gt_one() {
+  let temp = TempDir::new().expect("tempdir");
+  let fixtures_dir = temp.path().join("fixtures");
+  let out_dir = temp.path().join("out");
+  fs::create_dir_all(&fixtures_dir).expect("create fixtures dir");
+
+  write_fixture(
+    &fixtures_dir,
+    "basic",
+    "<!doctype html><html><body>ok</body></html>",
+  );
+
+  let output = Command::new(env!("CARGO_BIN_EXE_render_fixtures"))
+    .current_dir(temp.path())
+    .env("RAYON_NUM_THREADS", "2")
+    .env("FASTR_PAINT_THREADS", "1")
+    .args([
+      "--fixtures-dir",
+      fixtures_dir.to_str().unwrap(),
+      "--out-dir",
+      out_dir.to_str().unwrap(),
+      "--fixtures",
+      "basic",
+      "--viewport",
+      "64x64",
+      "--jobs",
+      "1",
+      "--timeout",
+      "2",
+      "--fail-on-nondeterminism",
+    ])
+    .output()
+    .expect("run render_fixtures");
+
+  assert!(
+    !output.status.success(),
+    "expected render_fixtures to fail when --fail-on-nondeterminism is used without --repeat > 1"
+  );
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  assert!(
+    stderr.contains("fail-on-nondeterminism requires --repeat > 1"),
+    "expected error message to mention repeat requirement; got:\n{stderr}"
+  );
+}
+
+#[test]
 fn render_fixtures_repeat_mode_is_deterministic() {
   let temp = TempDir::new().expect("tempdir");
   let fixtures_dir = temp.path().join("fixtures");
