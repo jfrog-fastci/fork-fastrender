@@ -7480,9 +7480,21 @@ fn grapheme_boundary_breaks(
 
 fn is_kinsoku_strict_prohibited_line_start(ch: char) -> bool {
   // CSS Text `line-break: strict` applies Japanese kinsoku shori restrictions. Model the most
-  // common ones: small kana and prolonged sound marks can't start a line unless needed to avoid
-  // overflow.
-  map_small_kana(ch).is_some() || matches!(ch, '\u{30FC}' | '\u{FF70}')
+  // common ones: small kana, iteration marks, and prolonged sound marks can't start a line unless
+  // needed to avoid overflow.
+  map_small_kana(ch).is_some()
+    || matches!(
+      ch,
+      // Prolonged sound marks
+      '\u{30FC}' | '\u{FF70}'
+      // Iteration marks
+      | '\u{3005}' // 々
+      | '\u{303B}' // 〻
+      | '\u{309D}' // ゝ
+      | '\u{309E}' // ゞ
+      | '\u{30FD}' // ヽ
+      | '\u{30FE}' // ヾ
+    )
 }
 
 fn apply_break_properties(
@@ -17788,6 +17800,47 @@ mod tests {
       brk_3.kind,
       BreakOpportunityKind::Emergency,
       "breaks before small kana should be emergency-only under line-break: strict"
+    );
+
+    let brk_6 = result
+      .iter()
+      .find(|b| b.byte_offset == 6)
+      .expect("break at 6");
+    assert_eq!(
+      brk_6.kind,
+      BreakOpportunityKind::Normal,
+      "breaks not affected by kinsoku rules should remain normal"
+    );
+  }
+
+  #[test]
+  fn line_break_strict_downgrades_breaks_before_iteration_marks_to_emergency() {
+    use crate::text::line_break::BreakOpportunityKind;
+
+    let text = "あゝい"; // break before hiragana iteration mark 'ゝ' should be emergency-only in strict mode
+    let breaks = vec![
+      BreakOpportunity::allowed(3), // あ|ゝ
+      BreakOpportunity::allowed(6), // ゝ|い
+      BreakOpportunity::allowed(9), // end
+    ];
+
+    let result = apply_break_properties(
+      text,
+      breaks,
+      LineBreak::Strict,
+      WordBreak::Normal,
+      OverflowWrap::Normal,
+      true,
+    );
+
+    let brk_3 = result
+      .iter()
+      .find(|b| b.byte_offset == 3)
+      .expect("break at 3");
+    assert_eq!(
+      brk_3.kind,
+      BreakOpportunityKind::Emergency,
+      "breaks before iteration marks should be emergency-only under line-break: strict"
     );
 
     let brk_6 = result
