@@ -7517,6 +7517,8 @@ fn is_kinsoku_strict_prohibited_line_start(ch: char) -> bool {
       // Japanese punctuation that should not start a line.
       | '\u{3001}' // 、
       | '\u{3002}' // 。
+      | '\u{FF64}' // ､
+      | '\u{FF61}' // ｡
       | '\u{FF0C}' // ，
       | '\u{FF0E}' // ．
       | '\u{FF1A}' // ：
@@ -7531,9 +7533,15 @@ fn is_kinsoku_strict_prohibited_line_start(ch: char) -> bool {
       | '\u{3011}' // 】
       | '\u{3015}' // 〕
       | '\u{3017}' // 〗
+      | '\u{3019}' // 〙
+      | '\u{301B}' // 〛
+      | '\u{301E}' // 〞
+      | '\u{301F}' // 〟
       | '\u{FF09}' // ）
       | '\u{FF3D}' // ］
       | '\u{FF5D}' // ｝
+      | '\u{FF60}' // ｠
+      | '\u{FF63}' // ｣
       // Kinsoku punctuation often treated as conditional Japanese starters.
       | '\u{30A0}' // ゠
       | '\u{30FB}' // ・
@@ -7572,9 +7580,14 @@ fn is_kinsoku_strict_prohibited_line_end(ch: char) -> bool {
       | '\u{3010}' // 【
       | '\u{3014}' // 〔
       | '\u{3016}' // 〖
+      | '\u{3018}' // 〘
+      | '\u{301A}' // 〚
+      | '\u{301D}' // 〝
       | '\u{FF08}' // （
       | '\u{FF3B}' // ［
       | '\u{FF5B}' // ｛
+      | '\u{FF5F}' // ｟
+      | '\u{FF62}' // ｢
   )
 }
 
@@ -18095,6 +18108,8 @@ mod tests {
     for mark in [
       '\u{3001}', // 、
       '\u{3002}', // 。
+      '\u{FF64}', // ､
+      '\u{FF61}', // ｡
       '\u{FF0C}', // ，
       '\u{FF0E}', // ．
       '\u{FF1A}', // ：
@@ -18152,9 +18167,15 @@ mod tests {
       '\u{3011}', // 】
       '\u{3015}', // 〕
       '\u{3017}', // 〗
+      '\u{3019}', // 〙
+      '\u{301B}', // 〛
+      '\u{301E}', // 〞
+      '\u{301F}', // 〟
       '\u{FF09}', // ）
       '\u{FF3D}', // ］
       '\u{FF5D}', // ｝
+      '\u{FF60}', // ｠
+      '\u{FF63}', // ｣
     ] {
       let text = format!("あ{}い", mark);
       let breaks = vec![
@@ -18207,9 +18228,14 @@ mod tests {
       '\u{3010}', // 【
       '\u{3014}', // 〔
       '\u{3016}', // 〖
+      '\u{3018}', // 〘
+      '\u{301A}', // 〚
+      '\u{301D}', // 〝
       '\u{FF08}', // （
       '\u{FF3B}', // ［
       '\u{FF5B}', // ｛
+      '\u{FF5F}', // ｟
+      '\u{FF62}', // ｢
     ] {
       let text = format!("あ{}い", mark);
       let breaks = vec![
