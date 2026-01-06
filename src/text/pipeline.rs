@@ -72,6 +72,7 @@ use crate::style::types::NumericSpacing;
 use crate::style::ComputedStyle;
 use crate::text::color_fonts::select_cpal_palette;
 use crate::text::emoji;
+use crate::text::emoji_presentation::font_is_emoji_font;
 use crate::text::font_db::FontDatabase;
 use crate::text::font_db::FontStretch as DbFontStretch;
 use crate::text::font_db::FontStyle;
@@ -4079,17 +4080,6 @@ fn is_emoji_dominant(text: &str) -> bool {
   saw_emoji
 }
 
-fn font_is_emoji_font(db: &FontDatabase, id: Option<fontdb::ID>, font: &LoadedFont) -> bool {
-  let is_color_capable = if let Some(id) = id {
-    db.is_color_capable_font(id).unwrap_or(false)
-  } else {
-    crate::text::face_cache::with_face(font, crate::text::font_db::face_has_color_tables)
-      .unwrap_or(false)
-  };
-
-  is_color_capable || FontDatabase::family_name_is_emoji_font(&font.family)
-}
-
 fn consider_local_font_candidate(
   db: &FontDatabase,
   picker: &mut FontPreferencePicker,
@@ -4104,13 +4094,13 @@ fn consider_local_font_candidate(
   let is_emoji_font = if picker.prefer_emoji || picker.avoid_emoji {
     let has_color_tables =
       cached_face.is_some_and(|face| crate::text::font_db::face_has_color_tables(face.face()));
-    let is_emoji_family = db.inner().face(id).is_some_and(|face| {
-      face
-        .families
-        .iter()
-        .any(|(name, _)| FontDatabase::family_name_is_emoji_font(name))
-    });
-    has_color_tables || is_emoji_family
+    has_color_tables
+      || db.inner().face(id).is_some_and(|face| {
+        face
+          .families
+          .iter()
+          .any(|(name, _)| FontDatabase::family_name_is_emoji_font(name))
+      })
   } else {
     false
   };
@@ -4242,118 +4232,20 @@ impl FontPreferencePicker {
   }
 }
 
-fn emoji_preference_for_char(ch: char, variant: FontVariantEmoji) -> EmojiPreference {
-  let emoji_capable = emoji::is_emoji(ch);
+pub(crate) fn emoji_preference_for_char(ch: char, variant: FontVariantEmoji) -> EmojiPreference {
+  crate::text::emoji_presentation::emoji_preference_for_char(ch, variant)
+}
 
-  match variant {
-    FontVariantEmoji::Emoji => {
-      if emoji_capable {
-        EmojiPreference::PreferEmoji
-      } else {
-        EmojiPreference::Neutral
-      }
-    }
-    FontVariantEmoji::Text => {
-      if emoji_capable {
-        EmojiPreference::AvoidEmoji
-      } else {
-        EmojiPreference::Neutral
-      }
-    }
-    FontVariantEmoji::Unicode => {
-      if !emoji_capable {
-        return EmojiPreference::Neutral;
-      }
-      if emoji::is_emoji_presentation(ch) {
-        EmojiPreference::PreferEmoji
-      } else {
-        EmojiPreference::AvoidEmoji
-      }
-    }
-    FontVariantEmoji::Normal => {
-      if emoji::is_emoji_presentation(ch) {
-        EmojiPreference::PreferEmoji
-      } else {
-        EmojiPreference::Neutral
-      }
-    }
-  }
+pub(crate) fn emoji_preference_with_selector(
+  ch: char,
+  next: Option<char>,
+  variant: FontVariantEmoji,
+) -> EmojiPreference {
+  crate::text::emoji_presentation::emoji_preference_with_selector(ch, next, variant)
 }
 
 fn emoji_preference_for_cluster(cluster_text: &str, variant: FontVariantEmoji) -> EmojiPreference {
-  let mut chars = cluster_text.chars();
-  let Some(first) = chars.next() else {
-    return EmojiPreference::Neutral;
-  };
-  if chars.as_str().is_empty() {
-    return emoji_preference_for_char(first, variant);
-  }
-
-  let mut base_char: Option<char> = None;
-  let mut prev_renderable: Option<char> = None;
-  let mut saw_vs15 = false;
-  let mut saw_vs16 = false;
-  let mut has_zwj = false;
-  let mut has_keycap = false;
-  let mut has_tag_chars = false;
-  let mut has_emoji = false;
-
-  for ch in cluster_text.chars() {
-    let cp = ch as u32;
-    match cp {
-      0x200d => has_zwj = true,
-      0x20e3 => has_keycap = true,
-      0xfe0e => {
-        if prev_renderable.is_some() {
-          saw_vs15 = true;
-        }
-      }
-      0xfe0f => {
-        if prev_renderable.is_some() {
-          saw_vs16 = true;
-        }
-      }
-      _ => {}
-    }
-
-    if (0xe0020..=0xe007f).contains(&cp) {
-      has_tag_chars = true;
-    }
-
-    if !is_non_rendering_for_coverage(ch) {
-      prev_renderable = Some(ch);
-      base_char.get_or_insert(ch);
-      if emoji::is_emoji(ch) || emoji::is_emoji_presentation(ch) {
-        has_emoji = true;
-      }
-    }
-  }
-
-  // Explicit variation selectors always win.
-  if saw_vs15 {
-    return EmojiPreference::AvoidEmoji;
-  }
-  if saw_vs16 {
-    return EmojiPreference::PreferEmoji;
-  }
-
-  // Keycap sequences render as emoji even without an explicit VS16 (UAX #51).
-  if matches!(first, '0'..='9' | '#' | '*') && has_keycap {
-    return EmojiPreference::PreferEmoji;
-  }
-
-  // Emoji tag sequences (subdivision flags).
-  if first == '\u{1F3F4}' && has_tag_chars {
-    return EmojiPreference::PreferEmoji;
-  }
-
-  // ZWJ sequences that involve emoji should prefer emoji fonts even under
-  // `font-variant-emoji: text`.
-  if has_zwj && has_emoji {
-    return EmojiPreference::PreferEmoji;
-  }
-
-  emoji_preference_for_char(base_char.unwrap_or(first), variant)
+  crate::text::emoji_presentation::emoji_preference_for_cluster(cluster_text, variant)
 }
 
 fn build_family_entries(style: &ComputedStyle) -> Vec<crate::text::font_fallback::FamilyEntry> {

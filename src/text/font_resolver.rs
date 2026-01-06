@@ -1,5 +1,4 @@
 use crate::style::types::FontVariantEmoji;
-use crate::text::emoji;
 use crate::text::font_db::FontDatabase;
 use crate::text::font_db::FontStretch as DbFontStretch;
 use crate::text::font_db::FontStyle;
@@ -9,6 +8,18 @@ use crate::text::font_fallback::EmojiPreference;
 use crate::text::font_fallback::FamilyEntry;
 use fontdb::Family;
 use fontdb::ID;
+
+pub(crate) fn emoji_preference_for_char(ch: char, variant: FontVariantEmoji) -> EmojiPreference {
+  crate::text::emoji_presentation::emoji_preference_for_char(ch, variant)
+}
+
+pub(crate) fn emoji_preference_with_selector(
+  ch: char,
+  next: Option<char>,
+  variant: FontVariantEmoji,
+) -> EmojiPreference {
+  crate::text::emoji_presentation::emoji_preference_with_selector(ch, next, variant)
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct ResolvedFont {
@@ -138,17 +149,7 @@ fn stretch_order_key(candidate: f32, desired: f32) -> (u8, f32) {
 }
 
 pub fn font_is_emoji_font(db: &FontDatabase, id: Option<ID>, font: &LoadedFont) -> bool {
-  if let Some(id) = id {
-    if let Some(is_color) = db.is_color_capable_font(id) {
-      return is_color;
-    }
-  } else if let Some(is_color) =
-    crate::text::face_cache::with_face(font, crate::text::font_db::face_has_color_tables)
-  {
-    return is_color;
-  }
-
-  FontDatabase::family_name_is_emoji_font(&font.family)
+  crate::text::emoji_presentation::font_is_emoji_font(db, id, font)
 }
 
 #[derive(Default)]
@@ -253,52 +254,6 @@ impl FontPreferencePicker {
       }
     }
   }
-}
-
-pub(crate) fn emoji_preference_for_char(ch: char, variant: FontVariantEmoji) -> EmojiPreference {
-  match variant {
-    FontVariantEmoji::Emoji => EmojiPreference::PreferEmoji,
-    FontVariantEmoji::Text => EmojiPreference::AvoidEmoji,
-    FontVariantEmoji::Unicode => {
-      if emoji::is_emoji_presentation(ch) {
-        EmojiPreference::PreferEmoji
-      } else {
-        EmojiPreference::AvoidEmoji
-      }
-    }
-    FontVariantEmoji::Normal => {
-      if emoji::is_emoji_presentation(ch) {
-        EmojiPreference::PreferEmoji
-      } else {
-        EmojiPreference::Neutral
-      }
-    }
-  }
-}
-
-pub(crate) fn emoji_preference_with_selector(
-  ch: char,
-  next: Option<char>,
-  variant: FontVariantEmoji,
-) -> EmojiPreference {
-  if let Some(sel) = next {
-    if sel == '\u{FE0F}' {
-      return EmojiPreference::PreferEmoji;
-    }
-    if sel == '\u{FE0E}' {
-      return EmojiPreference::AvoidEmoji;
-    }
-  }
-
-  let base_pref = emoji_preference_for_char(ch, variant);
-
-  if let Some('\u{200d}') = next {
-    if emoji::is_emoji(ch) || emoji::is_emoji_presentation(ch) {
-      return EmojiPreference::PreferEmoji;
-    }
-  }
-
-  base_pref
 }
 
 fn font_supports_all_chars(font: &LoadedFont, chars: &[char]) -> bool {
