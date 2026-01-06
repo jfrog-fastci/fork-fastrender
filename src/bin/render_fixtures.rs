@@ -611,6 +611,12 @@ fn run(cli: Cli) -> io::Result<()> {
     });
   }
 
+  // We only need the decoded baseline PNG while collecting variants. Drop it before building the
+  // summary / saving variant outputs to keep peak memory use low when debugging large fixtures.
+  for state in determinism.values_mut() {
+    state.baseline_rgba = None;
+  }
+
   let total_elapsed = start.elapsed();
 
   let pass = results
