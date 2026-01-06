@@ -44,6 +44,12 @@ fi
 VIEWPORT_W="${VIEWPORT%x*}"
 VIEWPORT_H="${VIEWPORT#*x}"
 
+EXPECTED_PAD_PX="${HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX:-88}"
+if ! [[ "${EXPECTED_PAD_PX}" =~ ^[0-9]+$ ]]; then
+  echo "invalid HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX: ${EXPECTED_PAD_PX} (expected a non-negative integer)" >&2
+  exit 2
+fi
+
 IFS=',' read -r -a DPR_VALUES <<<"${DPRS}"
 if [[ "${#DPR_VALUES[@]}" -eq 0 ]]; then
   echo "invalid DPRS: ${DPRS} (expected a comma-separated list like 1.0,2.0)" >&2
@@ -160,22 +166,31 @@ for raw_dpr in "${DPR_VALUES[@]}"; do
 
   png="${out_dir}/${stem}.png"
   log="${out_dir}/${stem}.chrome.log"
+  meta="${out_dir}/${stem}.json"
   if [[ ! -s "${png}" ]]; then
     echo "missing output PNG: ${png}" >&2
     cat "${log}" >&2 || true
     exit 1
   fi
+  if [[ ! -s "${meta}" ]]; then
+    echo "missing output metadata JSON: ${meta}" >&2
+    cat "${log}" >&2 || true
+    exit 1
+  fi
 
-  python3 - "${png}" "${VIEWPORT_W}" "${VIEWPORT_H}" "${dpr}" <<'PY'
+  python3 - "${png}" "${meta}" "${VIEWPORT_W}" "${VIEWPORT_H}" "${dpr}" "${EXPECTED_PAD_PX}" <<'PY'
 import struct
 import sys
 import zlib
 import math
+import json
 
 png_path = sys.argv[1]
-viewport_w_css = int(sys.argv[2])
-viewport_h_css = int(sys.argv[3])
-dpr = float(sys.argv[4])
+meta_path = sys.argv[2]
+viewport_w_css = int(sys.argv[3])
+viewport_h_css = int(sys.argv[4])
+dpr = float(sys.argv[5])
+expected_pad_css = int(sys.argv[6])
 
 def round_half_up(x: float) -> int:
     return int(math.floor(x + 0.5))
@@ -318,6 +333,25 @@ if ratio < 0.95:
         "white bar at the bottom."
     )
 
+meta = json.loads(open(meta_path, "r", encoding="utf-8").read())
+if meta.get("viewport") != [viewport_w_css, viewport_h_css]:
+    raise AssertionError(f"metadata viewport mismatch: {meta.get('viewport')!r}")
+
+meta_dpr = meta.get("dpr")
+if not isinstance(meta_dpr, (int, float)) or abs(float(meta_dpr) - dpr) > 0.0001:
+    raise AssertionError(f"metadata dpr mismatch: {meta_dpr!r} vs {dpr}")
+
+if meta.get("chrome_window_padding_css") != expected_pad_css:
+    raise AssertionError(
+        f"metadata chrome_window_padding_css mismatch: {meta.get('chrome_window_padding_css')!r} vs {expected_pad_css}"
+    )
+
+expected_window_h = viewport_h_css + expected_pad_css
+if meta.get("chrome_window") != [viewport_w_css, expected_window_h]:
+    raise AssertionError(
+        f"metadata chrome_window mismatch: {meta.get('chrome_window')!r} vs {[viewport_w_css, expected_window_h]}"
+    )
+
 print(f"ok: {width}x{height}, redish_ratio={ratio:.3f}")
 PY
 done
@@ -338,19 +372,28 @@ if [[ -n "${fixture_stem}" ]]; then
   fi
 
   fixture_png="${out_dir}/${fixture_stem}.png"
+  fixture_meta="${out_dir}/${fixture_stem}.json"
   if [[ ! -s "${fixture_png}" ]]; then
     echo "missing output PNG for fixture: ${fixture_png}" >&2
     cat "${out_dir}/${fixture_stem}.chrome.log" >&2 || true
     exit 1
   fi
+  if [[ ! -s "${fixture_meta}" ]]; then
+    echo "missing output metadata JSON for fixture: ${fixture_meta}" >&2
+    cat "${out_dir}/${fixture_stem}.chrome.log" >&2 || true
+    exit 1
+  fi
 
-  python3 - "${fixture_png}" "${VIEWPORT_W}" "${VIEWPORT_H}" <<'PY'
+  python3 - "${fixture_png}" "${fixture_meta}" "${VIEWPORT_W}" "${VIEWPORT_H}" "${EXPECTED_PAD_PX}" <<'PY'
 import struct
 import sys
+import json
 
 png_path = sys.argv[1]
-expected_w = int(sys.argv[2])
-expected_h = int(sys.argv[3])
+meta_path = sys.argv[2]
+expected_w = int(sys.argv[3])
+expected_h = int(sys.argv[4])
+expected_pad_css = int(sys.argv[5])
 
 data = open(png_path, "rb").read()
 if not data.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -369,6 +412,19 @@ width, height = struct.unpack(">II", ihdr[:8])
 if (width, height) != (expected_w, expected_h):
     raise AssertionError(
         f"fixture output PNG is {width}x{height}, expected {expected_w}x{expected_h}"
+    )
+
+meta = json.loads(open(meta_path, "r", encoding="utf-8").read())
+if meta.get("viewport") != [expected_w, expected_h]:
+    raise AssertionError(f"fixture metadata viewport mismatch: {meta.get('viewport')!r}")
+if meta.get("chrome_window_padding_css") != expected_pad_css:
+    raise AssertionError(
+        f"fixture metadata chrome_window_padding_css mismatch: {meta.get('chrome_window_padding_css')!r} vs {expected_pad_css}"
+    )
+expected_window_h = expected_h + expected_pad_css
+if meta.get("chrome_window") != [expected_w, expected_window_h]:
+    raise AssertionError(
+        f"fixture metadata chrome_window mismatch: {meta.get('chrome_window')!r} vs {[expected_w, expected_window_h]}"
     )
 
 print(f"fixture ok: {width}x{height}")

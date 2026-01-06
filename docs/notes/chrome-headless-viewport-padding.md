@@ -60,6 +60,7 @@ asserts:
 
 - the output PNG dimensions match `VIEWPORT` exactly, and
 - the bottom strip is red (a heuristic that catches both under-padding and over-padding).
+- the metadata sidecar records the expected `chrome_window` and `chrome_window_padding_css` values.
 
 It also renders a representative offline fixture HTML (`tests/pages/fixtures/br_linebreak/index.html`)
 to validate that the cached-HTML path (meta sidecar + `<base href=...>` injection) still produces
