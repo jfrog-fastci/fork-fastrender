@@ -1,0 +1,46 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  html,
+  body {
+    writing-mode: vertical-rl;
+    margin: 0;
+    padding: 0;
+    background: #ffffff;
+
+    /* In this engine, vertical writing modes swap the logical/physical axes.
+       The viewport is 420x260 (physical), so size the logical axes accordingly. */
+    width: 260px;
+    height: 420px;
+  }
+
+  /* A simple reference bar to anchor the viewport. */
+  .header {
+    height: 24px;
+    background: #222;
+  }
+
+  /* Push the content-visibility:auto subtree offscreen in the block axis (physical X). */
+  .spacer {
+    height: 450px;
+  }
+
+  /* content-visibility:auto should skip descendants when the border box is offscreen. */
+  #auto-box {
+    content-visibility: auto;
+    height: 80px;
+    /* Transparent shadow ensures the subtree is visited even though the border box is offscreen. */
+    box-shadow: 260px 0 0 0 rgba(0, 0, 0, 0);
+  }
+  #auto-box .inner {
+    width: 60px;
+    height: 60px;
+    background: #ff0000;
+    position: relative;
+    left: 260px;
+  }
+</style>
+
+<div class="header"></div>
+<div class="spacer"></div>
+<div id="auto-box"><div class="inner"></div></div>
