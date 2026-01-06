@@ -1,6 +1,7 @@
 //! Layout module integration tests.
 
 mod absolute_position_body;
+mod abspos_intrinsic_sizing_keywords;
 mod abspos_static_position;
 mod abspos_static_position_subgrid;
 mod aria_hidden_has_no_effect;

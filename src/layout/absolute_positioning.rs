@@ -458,8 +458,8 @@ impl AbsoluteLayout {
     };
 
     let available_for_shrink = cb_width
-      - resolved_left.unwrap_or(0.0)
-      - resolved_right.unwrap_or(0.0)
+      - left.unwrap_or(0.0)
+      - right.unwrap_or(0.0)
       - margin_left
       - margin_right
       - total_horizontal_spacing;
@@ -693,22 +693,9 @@ impl AbsoluteLayout {
         .unwrap_or(HeightValue::Auto),
     };
 
-    // When top/height/bottom are specified (and both margins are definite), CSS 2.1 §10.6.4
-    // treats the box as overconstrained and ignores the bottom inset. Mirror that here so
-    // `fit-content` sizing uses the same available-space definition as the constraint equation.
-    let overconstrained_insets = top.is_some()
-      && bottom.is_some()
-      && !matches!(height_value, HeightValue::Auto)
-      && !margin_top_auto
-      && !margin_bottom_auto;
-
     let available_for_shrink = cb_height
       - top.unwrap_or(0.0)
-      - if overconstrained_insets {
-        0.0
-      } else {
-        bottom.unwrap_or(0.0)
-      }
+      - bottom.unwrap_or(0.0)
       - margin_top
       - margin_bottom
       - total_vertical_spacing;
