@@ -674,6 +674,7 @@ mod tests {
       parent.font_size,
       parent.root_font_size,
       DEFAULT_VIEWPORT,
+      false,
     );
 
     let bounds = Rect::from_xywh(0.0, 0.0, 100.0, 50.0);
@@ -762,6 +763,7 @@ mod tests {
       parent.font_size,
       parent.root_font_size,
       DEFAULT_VIEWPORT,
+      false,
     );
     apply_declaration_with_base(
       &mut style,
@@ -772,6 +774,7 @@ mod tests {
       parent.font_size,
       parent.root_font_size,
       DEFAULT_VIEWPORT,
+      false,
     );
 
     let bounds = Rect::from_xywh(0.0, 0.0, 200.0, 100.0);

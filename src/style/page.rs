@@ -149,6 +149,7 @@ pub fn resolve_page_style(
           parent_font_size,
           root_font_size,
           fallback_size,
+          false,
         );
       }
     }
@@ -601,6 +602,7 @@ fn apply_page_box_declaration(
     root_font_size,
     root_font_size,
     viewport,
+    false,
   );
   true
 }

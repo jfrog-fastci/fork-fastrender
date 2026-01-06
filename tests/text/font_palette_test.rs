@@ -71,6 +71,7 @@ fn font_palette_property_accepts_named_identifiers() {
     parent.font_size,
     parent.root_font_size,
     DEFAULT_VIEWPORT,
+    false,
   );
 
   assert_eq!(

@@ -8902,6 +8902,7 @@ fn compute_base_styles<'a>(
     parent_ua_styles.font_size,
     ua_root_font_size,
     viewport,
+    color_scheme_pref,
     default_computed_style(),
     |_| true,
   );
@@ -8978,6 +8979,7 @@ fn compute_base_styles<'a>(
     parent_styles.font_size,
     root_font_size,
     viewport,
+    color_scheme_pref,
     &ua_styles,
     |_| true,
   );
@@ -9158,6 +9160,7 @@ fn compute_pseudo_styles(
   root_font_size: f32,
   ua_root_font_size: f32,
   viewport: Size,
+  color_scheme_pref: ColorScheme,
   include_starting_style: bool,
 ) -> (
   Option<Arc<ComputedStyle>>,
@@ -9201,6 +9204,7 @@ fn compute_pseudo_styles(
       root_font_size,
       ua_root_font_size,
       viewport,
+      color_scheme_pref,
       &PseudoElement::Backdrop,
       include_starting_style,
     )
@@ -9235,6 +9239,7 @@ fn compute_pseudo_styles(
     root_font_size,
     ua_root_font_size,
     viewport,
+    color_scheme_pref,
     include_starting_style,
   )
   .map(|(line, ua)| {
@@ -9262,6 +9267,7 @@ fn compute_pseudo_styles(
     root_font_size,
     ua_root_font_size,
     viewport,
+    color_scheme_pref,
     include_starting_style,
   )
   .map(Arc::new);
@@ -9291,6 +9297,7 @@ fn compute_pseudo_styles(
       root_font_size,
       ua_root_font_size,
       viewport,
+      color_scheme_pref,
       &PseudoElement::Before,
       include_starting_style,
     )
@@ -9324,6 +9331,7 @@ fn compute_pseudo_styles(
       root_font_size,
       ua_root_font_size,
       viewport,
+      color_scheme_pref,
       &PseudoElement::After,
       include_starting_style,
     )
@@ -9348,6 +9356,7 @@ fn compute_pseudo_styles(
     root_font_size,
     ua_root_font_size,
     viewport,
+    color_scheme_pref,
     include_starting_style,
   )
   .map(Arc::new);
@@ -9777,6 +9786,7 @@ fn apply_styles_internal_with_ancestors<'a>(
         base.current_root_font_size,
         base.current_ua_root_font_size,
         viewport,
+        color_scheme_pref,
         false,
       );
 
@@ -9801,6 +9811,7 @@ fn apply_styles_internal_with_ancestors<'a>(
         start.current_root_font_size,
         start.current_ua_root_font_size,
         viewport,
+        color_scheme_pref,
         true,
       );
       starting_styles = StartingStyleSet {
@@ -16801,6 +16812,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       parent.font_size,
       16.0,
       viewport,
+      ColorScheme::NoPreference,
       default_computed_style(),
       |_| true,
     );
@@ -16816,6 +16828,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       parent.font_size,
       16.0,
       viewport,
+      ColorScheme::NoPreference,
       default_computed_style(),
       |_| true,
     );
@@ -16857,6 +16870,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       parent.font_size,
       16.0,
       viewport,
+      ColorScheme::NoPreference,
       default_computed_style(),
       |_| true,
     );
@@ -16890,6 +16904,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       parent.font_size,
       16.0,
       viewport,
+      ColorScheme::NoPreference,
       default_computed_style(),
       |_| true,
     );
@@ -16929,6 +16944,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       parent.font_size,
       16.0,
       viewport,
+      ColorScheme::NoPreference,
       default_computed_style(),
       |_| true,
     );
@@ -16961,6 +16977,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       parent.font_size,
       16.0,
       viewport,
+      ColorScheme::NoPreference,
       default_computed_style(),
       |_| true,
     );
@@ -16994,6 +17011,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       parent.font_size,
       16.0,
       viewport,
+      ColorScheme::NoPreference,
       default_computed_style(),
       |_| true,
     );
@@ -17042,6 +17060,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       parent.font_size,
       16.0,
       viewport,
+      ColorScheme::NoPreference,
       default_computed_style(),
       |_| true,
     );
@@ -18412,6 +18431,30 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     let styled = apply_styles_with_media(&dom, &stylesheet, &media);
     assert_eq!(styled.styles.color, Rgba::BLACK);
     assert_eq!(styled.styles.background_color, Rgba::TRANSPARENT);
+  }
+
+  #[test]
+  fn light_dark_resolves_from_used_color_scheme_regardless_of_declaration_order() {
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "html".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![],
+    };
+    let stylesheet = parse_stylesheet(
+      "html { color: light-dark(rgb(1, 2, 3), rgb(4, 5, 6)); color-scheme: light dark; }",
+    )
+    .unwrap();
+
+    let media = MediaContext::screen(800.0, 600.0).with_color_scheme(ColorScheme::Dark);
+    let styled = apply_styles_with_media(&dom, &stylesheet, &media);
+    assert_eq!(styled.styles.color, Rgba::rgb(4, 5, 6));
+
+    let media = MediaContext::screen(800.0, 600.0).with_color_scheme(ColorScheme::Light);
+    let styled = apply_styles_with_media(&dom, &stylesheet, &media);
+    assert_eq!(styled.styles.color, Rgba::rgb(1, 2, 3));
   }
 
   #[test]
@@ -24088,6 +24131,7 @@ fn apply_cascaded_declarations<'a, F>(
   parent_font_size: f32,
   root_font_size: f32,
   viewport: Size,
+  color_scheme_pref: ColorScheme,
   revert_base_styles: &ComputedStyle,
   filter: F,
 ) where
@@ -24147,6 +24191,7 @@ fn apply_cascaded_declarations<'a, F>(
   let mut any_custom_important = false;
   let mut any_other_normal = false;
   let mut any_other_important = false;
+  let mut any_color_scheme_decl = false;
   let mut any_custom_revert_layer = false;
   let mut any_registered_custom_var = false;
   let mut any_non_custom_revert_layer = false;
@@ -24187,6 +24232,9 @@ fn apply_cascaded_declarations<'a, F>(
           important_other_decl_orders.push(decl_order);
         } else {
           mask |= HAS_OTHER_NORMAL;
+        }
+        if !any_color_scheme_decl && declaration.property.as_str() == "color-scheme" {
+          any_color_scheme_decl = true;
         }
         if !any_non_custom_revert_layer {
           if let PropertyValue::Keyword(kw) = &declaration.value {
@@ -24382,6 +24430,128 @@ fn apply_cascaded_declarations<'a, F>(
   let mut layer_snapshots: FxHashMap<Arc<[u32]>, ComputedStyle> = FxHashMap::default();
   let mut layer_snapshot_stratum: Option<(u8, bool)> = None;
 
+  // Resolve `color-scheme` early so `light-dark()` can be resolved consistently based on the final
+  // used scheme, not declaration order.
+  if any_color_scheme_decl {
+    let mut color_scheme_layer_snapshots: FxHashMap<Arc<[u32]>, ComputedStyle> = FxHashMap::default();
+    let mut color_scheme_layer_snapshot_stratum: Option<(u8, bool)> = None;
+
+    if any_other_normal {
+      for &rule_idx in rule_order.iter() {
+        if rule_decl_kinds[rule_idx] & HAS_OTHER_NORMAL == 0 {
+          continue;
+        }
+        let rule = &matched_rules[rule_idx];
+        let revert_base = match rule.origin {
+          StyleOrigin::UserAgent => defaults,
+          StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
+        };
+        for declaration in rule.declarations.iter() {
+          if declaration.important || declaration.property.is_custom() {
+            continue;
+          }
+          if declaration.property.as_str() != "color-scheme" {
+            continue;
+          }
+          if !filter(declaration) {
+            continue;
+          }
+          let revert_layer_base = if track_revert_layer {
+            let stratum = (rule.origin.rank(), false);
+            if color_scheme_layer_snapshot_stratum != Some(stratum) {
+              color_scheme_layer_snapshots.clear();
+              color_scheme_layer_snapshot_stratum = Some(stratum);
+            }
+            let layer_order = &rule.layer_order;
+            let layer_base = match color_scheme_layer_snapshots.get_mut(layer_order.as_ref()) {
+              Some(existing) => existing,
+              None => {
+                color_scheme_layer_snapshots.insert(Arc::clone(layer_order), styles.clone());
+                color_scheme_layer_snapshots
+                  .get_mut(layer_order.as_ref())
+                  .expect("layer snapshot inserted")
+              }
+            };
+            Some(&*layer_base)
+          } else {
+            None
+          };
+          apply_declaration_with_base(
+            styles,
+            declaration,
+            parent_styles,
+            revert_base,
+            revert_layer_base,
+            parent_font_size,
+            root_font_size,
+            viewport,
+            false,
+          );
+        }
+      }
+    }
+
+    if any_other_important {
+      for &rule_idx in important_rule_order.iter() {
+        if rule_decl_kinds[rule_idx] & HAS_OTHER_IMPORTANT == 0 {
+          continue;
+        }
+        let rule = &matched_rules[rule_idx];
+        let revert_base = match rule.origin {
+          StyleOrigin::UserAgent => defaults,
+          StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
+        };
+        let (start, end) = important_other_ranges[rule_idx];
+        let decls = rule.declarations.as_ref();
+        for &decl_order in important_other_decl_orders[start..end].iter() {
+          let declaration = &decls[decl_order];
+          debug_assert!(declaration.important);
+          debug_assert!(!declaration.property.is_custom());
+          if declaration.property.as_str() != "color-scheme" {
+            continue;
+          }
+          if !filter(declaration) {
+            continue;
+          }
+          let revert_layer_base = if track_revert_layer {
+            let stratum = (rule.origin.rank(), true);
+            if color_scheme_layer_snapshot_stratum != Some(stratum) {
+              color_scheme_layer_snapshots.clear();
+              color_scheme_layer_snapshot_stratum = Some(stratum);
+            }
+            let layer_order = &rule.layer_order;
+            let layer_base = match color_scheme_layer_snapshots.get_mut(layer_order.as_ref()) {
+              Some(existing) => existing,
+              None => {
+                color_scheme_layer_snapshots.insert(Arc::clone(layer_order), styles.clone());
+                color_scheme_layer_snapshots
+                  .get_mut(layer_order.as_ref())
+                  .expect("layer snapshot inserted")
+              }
+            };
+            Some(&*layer_base)
+          } else {
+            None
+          };
+          apply_declaration_with_base(
+            styles,
+            declaration,
+            parent_styles,
+            revert_base,
+            revert_layer_base,
+            parent_font_size,
+            root_font_size,
+            viewport,
+            false,
+          );
+        }
+      }
+    }
+  }
+
+  let selected_scheme = select_color_scheme(&styles.color_scheme, color_scheme_pref);
+  let is_dark_color_scheme = matches!(selected_scheme, Some(ColorSchemeEntry::Dark));
+
   // Then apply all other declarations in cascade order
   if any_other_normal {
     for &rule_idx in rule_order.iter() {
@@ -24394,7 +24564,10 @@ fn apply_cascaded_declarations<'a, F>(
         StyleOrigin::Author | StyleOrigin::Inline => revert_base_styles,
       };
       for declaration in rule.declarations.iter() {
-        if declaration.important || declaration.property.is_custom() {
+        if declaration.important
+          || declaration.property.is_custom()
+          || declaration.property.as_str() == "color-scheme"
+        {
           continue;
         }
         if !filter(declaration) {
@@ -24429,6 +24602,7 @@ fn apply_cascaded_declarations<'a, F>(
           parent_font_size,
           root_font_size,
           viewport,
+          is_dark_color_scheme,
         );
       }
     }
@@ -24449,6 +24623,9 @@ fn apply_cascaded_declarations<'a, F>(
         let declaration = &decls[decl_order];
         debug_assert!(declaration.important);
         debug_assert!(!declaration.property.is_custom());
+        if declaration.property.as_str() == "color-scheme" {
+          continue;
+        }
         if !filter(declaration) {
           continue;
         }
@@ -24481,6 +24658,7 @@ fn apply_cascaded_declarations<'a, F>(
           parent_font_size,
           root_font_size,
           viewport,
+          is_dark_color_scheme,
         );
       }
     }
@@ -26185,6 +26363,7 @@ fn compute_pseudo_element_styles(
   root_font_size: f32,
   ua_root_font_size: f32,
   viewport: Size,
+  color_scheme_pref: ColorScheme,
   pseudo: &PseudoElement,
   include_starting_style: bool,
 ) -> Option<ComputedStyle> {
@@ -26252,6 +26431,7 @@ fn compute_pseudo_element_styles(
     ua_parent_styles.font_size,
     ua_root_font_size,
     viewport,
+    color_scheme_pref,
     default_computed_style(),
     |_| true,
   );
@@ -26281,6 +26461,7 @@ fn compute_pseudo_element_styles(
     parent_styles.font_size,
     root_font_size,
     viewport,
+    color_scheme_pref,
     &ua_styles,
     |_| true,
   );
@@ -26382,6 +26563,7 @@ fn compute_first_line_styles(
   root_font_size: f32,
   ua_root_font_size: f32,
   viewport: Size,
+  color_scheme_pref: ColorScheme,
   include_starting_style: bool,
 ) -> Option<(ComputedStyle, ComputedStyle)> {
   if !scope_has_pseudo_rules(
@@ -26433,6 +26615,7 @@ fn compute_first_line_styles(
     base_ua_styles.font_size,
     ua_root_font_size,
     viewport,
+    color_scheme_pref,
     default_computed_style(),
     |decl| first_line_allows_property(&decl.property),
   );
@@ -26456,6 +26639,7 @@ fn compute_first_line_styles(
     base_styles.font_size,
     root_font_size,
     viewport,
+    color_scheme_pref,
     &ua_styles,
     |decl| first_line_allows_property(&decl.property),
   );
@@ -26490,6 +26674,7 @@ fn compute_first_letter_styles(
   root_font_size: f32,
   ua_root_font_size: f32,
   viewport: Size,
+  color_scheme_pref: ColorScheme,
   include_starting_style: bool,
 ) -> Option<ComputedStyle> {
   if !scope_has_pseudo_rules(
@@ -26542,6 +26727,7 @@ fn compute_first_letter_styles(
     base_ua_styles.font_size,
     ua_root_font_size,
     viewport,
+    color_scheme_pref,
     default_computed_style(),
     |decl| first_letter_allows_property(&decl.property),
   );
@@ -26565,6 +26751,7 @@ fn compute_first_letter_styles(
     base_styles.font_size,
     root_font_size,
     viewport,
+    color_scheme_pref,
     &ua_styles,
     |decl| first_letter_allows_property(&decl.property),
   );
@@ -26598,6 +26785,7 @@ fn compute_marker_styles(
   root_font_size: f32,
   ua_root_font_size: f32,
   viewport: Size,
+  color_scheme_pref: ColorScheme,
   include_starting_style: bool,
 ) -> Option<ComputedStyle> {
   if list_item_styles.display != Display::ListItem {
@@ -26659,6 +26847,7 @@ fn compute_marker_styles(
     ua_list_item_styles.font_size,
     ua_root_font_size,
     viewport,
+    color_scheme_pref,
     default_computed_style(),
     |_| true,
   );
@@ -26691,6 +26880,7 @@ fn compute_marker_styles(
     list_item_styles.font_size,
     root_font_size,
     viewport,
+    color_scheme_pref,
     &ua_styles,
     |decl| marker_allows_property(&decl.property),
   );

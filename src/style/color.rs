@@ -749,6 +749,14 @@ pub enum Color {
   /// Relative color derived from a source color in another space
   Relative(RelativeColor),
 
+  /// Choose between two colors depending on the element's used color scheme.
+  ///
+  /// CSS Color 5: `light-dark(<color>, <color>)`.
+  LightDark {
+    light: Box<Color>,
+    dark: Box<Color>,
+  },
+
   /// Special keyword: currentColor
   /// Uses the current value of the 'color' property
   CurrentColor,
@@ -818,16 +826,23 @@ impl Color {
   /// assert_eq!(current.to_rgba(Rgba::BLUE), Rgba::BLUE);
   /// ```
   pub fn to_rgba(&self, current_color: Rgba) -> Rgba {
+    self.to_rgba_with_scheme(current_color, false)
+  }
+
+  /// Converts to RGBA, resolving `light-dark()` using the given color scheme.
+  ///
+  /// `is_dark` should be true when the element's *used* color scheme is dark.
+  pub fn to_rgba_with_scheme(&self, current_color: Rgba, is_dark: bool) -> Rgba {
     match self {
       Color::Rgba(rgba) => *rgba,
       Color::Hsla(hsla) => hsla.to_rgba(),
       Color::Mix { components, space } => {
-        mix_colors(*space, &components[0], &components[1], current_color)
+        mix_colors(*space, &components[0], &components[1], current_color, is_dark)
       }
       Color::Contrast { against, options } => {
         let background = against
           .as_ref()
-          .map(|c| c.to_rgba(current_color))
+          .map(|c| c.to_rgba_with_scheme(current_color, is_dark))
           .unwrap_or(current_color);
         let visible_background = composite_over(background, Rgba::WHITE);
         if options.is_empty() {
@@ -836,7 +851,7 @@ impl Color {
 
         let mut best = None;
         for candidate in options {
-          let resolved = candidate.to_rgba(current_color);
+          let resolved = candidate.to_rgba_with_scheme(current_color, is_dark);
           let composited = composite_over(resolved, visible_background);
           let ratio = contrast_ratio(composited, visible_background);
           match best {
@@ -847,8 +862,59 @@ impl Color {
 
         best.map(|(c, _)| c).unwrap_or(visible_background)
       }
-      Color::Relative(relative) => relative.to_rgba(current_color),
+      Color::Relative(relative) => relative.to_rgba_with_scheme(current_color, is_dark),
+      Color::LightDark { light, dark } => {
+        if is_dark {
+          dark.to_rgba_with_scheme(current_color, is_dark)
+        } else {
+          light.to_rgba_with_scheme(current_color, is_dark)
+        }
+      }
       Color::CurrentColor => current_color,
+    }
+  }
+
+  /// Resolve `light-dark()` to a concrete color based on the used color scheme.
+  ///
+  /// This is useful for contexts where the chosen branch needs to be stored (e.g. gradient stops)
+  /// and later resolved without access to the color scheme.
+  pub fn resolve_light_dark(&self, is_dark: bool) -> Color {
+    match self {
+      Color::Rgba(rgba) => Color::Rgba(*rgba),
+      Color::Hsla(hsla) => Color::Hsla(*hsla),
+      Color::CurrentColor => Color::CurrentColor,
+      Color::LightDark { light, dark } => {
+        if is_dark {
+          dark.resolve_light_dark(is_dark)
+        } else {
+          light.resolve_light_dark(is_dark)
+        }
+      }
+      Color::Mix { components, space } => Color::Mix {
+        components: [
+          (
+            Box::new(components[0].0.resolve_light_dark(is_dark)),
+            components[0].1,
+          ),
+          (
+            Box::new(components[1].0.resolve_light_dark(is_dark)),
+            components[1].1,
+          ),
+        ],
+        space: *space,
+      },
+      Color::Contrast { against, options } => Color::Contrast {
+        against: against
+          .as_ref()
+          .map(|c| Box::new(c.resolve_light_dark(is_dark))),
+        options: options.iter().map(|c| c.resolve_light_dark(is_dark)).collect(),
+      },
+      Color::Relative(relative) => Color::Relative(RelativeColor {
+        base: Box::new(relative.base.resolve_light_dark(is_dark)),
+        space: relative.space,
+        components: relative.components,
+        alpha: relative.alpha,
+      }),
     }
   }
 
@@ -916,6 +982,10 @@ impl Color {
       return parse_color_contrast(s);
     }
 
+    if starts_with_ignore_ascii_case(s, "light-dark(") {
+      return parse_light_dark(s);
+    }
+
     // RGB/RGBA functions
     if starts_with_ignore_ascii_case(s, "rgb(") || starts_with_ignore_ascii_case(s, "rgba(") {
       return parse_rgb(s);
@@ -963,8 +1033,8 @@ impl Color {
 }
 
 impl RelativeColor {
-  fn to_rgba(&self, current_color: Rgba) -> Rgba {
-    let base = self.base.to_rgba(current_color);
+  fn to_rgba_with_scheme(&self, current_color: Rgba, is_dark: bool) -> Rgba {
+    let base = self.base.to_rgba_with_scheme(current_color, is_dark);
     let (source_channels, source_alpha) = rgba_to_relative_space(self.space, base);
 
     let mut channels = [0.0; 3];
@@ -1000,6 +1070,7 @@ impl fmt::Display for Color {
       Color::Mix { .. } => write!(f, "color-mix(...)"),
       Color::Contrast { .. } => write!(f, "color-contrast(...)"),
       Color::Relative(_) => write!(f, "color(...)"),
+      Color::LightDark { .. } => write!(f, "light-dark(...)"),
       Color::CurrentColor => write!(f, "currentColor"),
     }
   }
@@ -1822,6 +1893,23 @@ fn parse_color_contrast(input: &str) -> Result<Color, ColorParseError> {
   Ok(Color::Contrast { against, options })
 }
 
+fn parse_light_dark(input: &str) -> Result<Color, ColorParseError> {
+  let inner = strip_prefix_ignore_ascii_case(input, "light-dark(")
+    .and_then(|rest| rest.strip_suffix(')'))
+    .ok_or_else(|| ColorParseError::InvalidFormat(input.to_string()))?
+    .trim();
+
+  let parts = split_top_level_commas(inner);
+  if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+    return Err(ColorParseError::InvalidFormat(input.to_string()));
+  }
+
+  Ok(Color::LightDark {
+    light: Box::new(Color::parse(parts[0])?),
+    dark: Box::new(Color::parse(parts[1])?),
+  })
+}
+
 fn split_relative_color_source(input: &str) -> Option<(String, String)> {
   let mut depth = 0i32;
   let mut last_space: Option<usize> = None;
@@ -2368,13 +2456,14 @@ fn mix_colors(
   first: &(Box<Color>, f32),
   second: &(Box<Color>, f32),
   current: Rgba,
+  is_dark: bool,
 ) -> Rgba {
   let (w0, w1) = normalize_mix_weights(Some(first.1), Some(second.1));
 
   match space {
     ColorMixSpace::Srgb => {
-      let c0 = first.0.to_rgba(current);
-      let c1 = second.0.to_rgba(current);
+      let c0 = first.0.to_rgba_with_scheme(current, is_dark);
+      let c1 = second.0.to_rgba_with_scheme(current, is_dark);
       let premix = |c: u8, a: f32| (c as f32 / 255.0) * a;
       let alpha = (c0.a * w0 + c1.a * w1).clamp(0.0, 1.0);
       if alpha == 0.0 {
@@ -2391,8 +2480,8 @@ fn mix_colors(
       )
     }
     ColorMixSpace::SrgbLinear => {
-      let c0 = first.0.to_rgba(current);
-      let c1 = second.0.to_rgba(current);
+      let c0 = first.0.to_rgba_with_scheme(current, is_dark);
+      let c1 = second.0.to_rgba_with_scheme(current, is_dark);
       let premix = |c: u8, a: f32| srgb_to_linear_component(c) * a;
       let alpha = (c0.a * w0 + c1.a * w1).clamp(0.0, 1.0);
       if alpha == 0.0 {
@@ -2409,8 +2498,8 @@ fn mix_colors(
       )
     }
     ColorMixSpace::Lab => {
-      let (l0, a0, b0, alpha0) = rgba_to_lab(first.0.to_rgba(current));
-      let (l1, a1, b1, alpha1) = rgba_to_lab(second.0.to_rgba(current));
+      let (l0, a0, b0, alpha0) = rgba_to_lab(first.0.to_rgba_with_scheme(current, is_dark));
+      let (l1, a1, b1, alpha1) = rgba_to_lab(second.0.to_rgba_with_scheme(current, is_dark));
       let l = l0 * w0 + l1 * w1;
       let a = a0 * w0 + a1 * w1;
       let b = b0 * w0 + b1 * w1;
@@ -2418,8 +2507,8 @@ fn mix_colors(
       lab_to_rgba(l, a, b, alpha)
     }
     ColorMixSpace::Lch => {
-      let (l0, a0, b0, alpha0) = rgba_to_lab(first.0.to_rgba(current));
-      let (l1, a1, b1, alpha1) = rgba_to_lab(second.0.to_rgba(current));
+      let (l0, a0, b0, alpha0) = rgba_to_lab(first.0.to_rgba_with_scheme(current, is_dark));
+      let (l1, a1, b1, alpha1) = rgba_to_lab(second.0.to_rgba_with_scheme(current, is_dark));
       let c0 = (a0 * a0 + b0 * b0).sqrt();
       let c1 = (a1 * a1 + b1 * b1).sqrt();
       let h0 = b0.atan2(a0);
@@ -2431,8 +2520,8 @@ fn mix_colors(
       lab_to_rgba(l, a_vec, b_vec, alpha)
     }
     ColorMixSpace::Oklab => {
-      let (l0, a0, b0, alpha0) = rgba_to_oklab(first.0.to_rgba(current));
-      let (l1, a1, b1, alpha1) = rgba_to_oklab(second.0.to_rgba(current));
+      let (l0, a0, b0, alpha0) = rgba_to_oklab(first.0.to_rgba_with_scheme(current, is_dark));
+      let (l1, a1, b1, alpha1) = rgba_to_oklab(second.0.to_rgba_with_scheme(current, is_dark));
       let l = l0 * w0 + l1 * w1;
       let a = a0 * w0 + a1 * w1;
       let b = b0 * w0 + b1 * w1;
@@ -2440,8 +2529,8 @@ fn mix_colors(
       oklab_to_rgba(l, a, b, alpha)
     }
     ColorMixSpace::Oklch => {
-      let (l0, a0, b0, alpha0) = rgba_to_oklab(first.0.to_rgba(current));
-      let (l1, a1, b1, alpha1) = rgba_to_oklab(second.0.to_rgba(current));
+      let (l0, a0, b0, alpha0) = rgba_to_oklab(first.0.to_rgba_with_scheme(current, is_dark));
+      let (l1, a1, b1, alpha1) = rgba_to_oklab(second.0.to_rgba_with_scheme(current, is_dark));
       let c0 = (a0 * a0 + b0 * b0).sqrt();
       let c1 = (a1 * a1 + b1 * b1).sqrt();
       let h0 = b0.atan2(a0);
@@ -2872,6 +2961,19 @@ mod tests {
     let color = Color::parse("currentColor").unwrap();
     assert!(color.is_current_color());
     assert_eq!(color.to_rgba(Rgba::BLUE), Rgba::BLUE);
+  }
+
+  #[test]
+  fn parses_light_dark() {
+    let color = Color::parse("light-dark( #000 , #fff )").unwrap();
+    assert_eq!(color.to_rgba_with_scheme(Rgba::BLACK, false), Rgba::BLACK);
+    assert_eq!(color.to_rgba_with_scheme(Rgba::BLACK, true), Rgba::WHITE);
+  }
+
+  #[test]
+  fn light_dark_rejects_wrong_arity() {
+    assert!(Color::parse("light-dark(red)").is_err());
+    assert!(Color::parse("light-dark(red, blue, green)").is_err());
   }
 
   #[test]

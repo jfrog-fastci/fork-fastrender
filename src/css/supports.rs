@@ -187,4 +187,9 @@ mod tests {
     assert!(supports_declaration("font-size", "2vw"));
     assert!(supports_declaration("font-size", "smaller"));
   }
+
+  #[test]
+  fn supports_light_dark_color_function() {
+    assert!(supports_declaration("color", "light-dark(red,red)"));
+  }
 }

@@ -3362,6 +3362,7 @@ fn sample_keyframes_with_default_timing(
           base_style.font_size,
           base_style.root_font_size,
           viewport,
+          false,
         );
       }
     }
@@ -3412,6 +3413,7 @@ fn sample_keyframes_with_default_timing(
           base_style.font_size,
           base_style.root_font_size,
           viewport,
+          false,
         );
       }
     }
