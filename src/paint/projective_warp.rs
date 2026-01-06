@@ -1,6 +1,6 @@
 use crate::error::{RenderError, RenderStage};
 use crate::geometry::Point;
-use crate::paint::blur::pixel_fingerprint;
+use crate::paint::blur::{pixel_fingerprint, PixelFingerprintHasher};
 use crate::paint::homography::{quad_bounds, Homography};
 use crate::paint::pixmap::new_pixmap;
 use crate::render_control::{active_deadline, check_active, with_deadline};
@@ -26,7 +26,8 @@ pub struct WarpCacheKey {
   homography: [u32; 9],
   dst_quad: [u32; 8],
   target: (u32, u32),
-  clip: Option<(u64, u32, u32)>,
+  clip_fingerprint: Option<u64>,
+  clip_dims: Option<(u32, u32)>,
 }
 
 pub struct WarpCache {
@@ -85,10 +86,10 @@ pub fn warp_cache_key(
     *out = v.to_bits();
   }
 
-  if dst_quad
-    .iter()
-    .any(|(x, y)| !x.is_finite() || !y.is_finite())
-  {
+  if dst_quad.iter().any(|(x, y)| !x.is_finite() || !y.is_finite()) {
+    return None;
+  }
+  if quad_area(dst_quad).abs() < 1e-3 {
     return None;
   }
   let mut quad_bits = [0u32; 8];
@@ -97,17 +98,71 @@ pub fn warp_cache_key(
     quad_bits[i * 2 + 1] = y.to_bits();
   }
 
-  if quad_area(dst_quad).abs() < 1e-3 {
+  // Compute the clamped destination bounds (matching `warp_pixmap`) so we can fingerprint only the
+  // clip mask bytes the warp can touch and avoid hashing large inputs for warps that produce no
+  // output.
+  let dst_points: [Point; 4] = dst_quad.map(|(x, y)| Point::new(x, y));
+  let bounds = quad_bounds(&dst_points);
+  if bounds.width() <= 0.0
+    || bounds.height() <= 0.0
+    || !bounds.x().is_finite()
+    || !bounds.y().is_finite()
+  {
     return None;
   }
 
+  let (target_w, target_h) = target_size;
+  let (mask_w, mask_h) = clip
+    .map(|m| (m.width(), m.height()))
+    .unwrap_or((target_w, target_h));
+  let bound_w = target_w.min(mask_w);
+  let bound_h = target_h.min(mask_h);
+
+  let mut min_x_i = bounds.min_x().floor() as i32;
+  let mut max_x_i = bounds.max_x().ceil() as i32;
+  let mut min_y_i = bounds.min_y().floor() as i32;
+  let mut max_y_i = bounds.max_y().ceil() as i32;
+  min_x_i = min_x_i.clamp(0, bound_w as i32);
+  max_x_i = max_x_i.clamp(0, bound_w as i32);
+  min_y_i = min_y_i.clamp(0, bound_h as i32);
+  max_y_i = max_y_i.clamp(0, bound_h as i32);
+
+  let width = max_x_i.saturating_sub(min_x_i) as usize;
+  let height = max_y_i.saturating_sub(min_y_i) as usize;
+  if width == 0 || height == 0 {
+    return None;
+  }
+
+  let src_fingerprint = pixel_fingerprint(src.data());
+
+  let (clip_fingerprint, clip_dims) = if let Some(mask) = clip {
+    let stride = mask.width() as usize;
+    let x0 = min_x_i as usize;
+    let x1 = max_x_i as usize;
+    let y0 = min_y_i as usize;
+    let y1 = max_y_i as usize;
+    let region_len = width.checked_mul(height)?;
+
+    let mut hasher = PixelFingerprintHasher::new(region_len);
+    let data = mask.data();
+    for row in y0..y1 {
+      let offset = row * stride;
+      hasher.write(&data[offset + x0..offset + x1]);
+    }
+
+    (Some(hasher.finish()), Some((mask.width(), mask.height())))
+  } else {
+    (None, None)
+  };
+
   Some(WarpCacheKey {
-    src_fingerprint: pixel_fingerprint(src.data()),
+    src_fingerprint,
     src_dims: (src.width(), src.height()),
     homography: homography_bits,
     dst_quad: quad_bits,
     target: target_size,
-    clip: clip.map(|mask| (pixel_fingerprint(mask.data()), mask.width(), mask.height())),
+    clip_fingerprint,
+    clip_dims,
   })
 }
 
@@ -490,38 +545,49 @@ mod tests {
   }
 
   #[test]
-  fn warp_cache_invalidates_when_source_content_changes() {
-    let mut cache = WarpCache::new(1);
+  fn warp_cache_invalidates_when_src_pixels_change() {
+    let mut cache = WarpCache::new(8);
 
-    let mut src = new_pixmap(2, 2).unwrap();
-    src.pixels_mut().fill(color(10, 20, 30, 255));
+    let mut src = new_pixmap(4, 4).unwrap();
+    for (idx, px) in src.pixels_mut().iter_mut().enumerate() {
+      let value = (idx as u8).wrapping_mul(17);
+      *px = color(value, 0, 0, 255);
+    }
 
-    let dst_quad = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)];
+    let dst_quad = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)];
     let first = warp_pixmap_cached(
       Some(&mut cache),
       &src,
       &Homography::identity(),
       &dst_quad,
-      (2, 2),
+      (4, 4),
       None,
     )
     .expect("warp result")
     .expect("warp output");
 
-    src.pixels_mut()[0] = color(1, 2, 3, 255);
+    // Mutate the source pixmap in-place; the cache key should change based on the bytes, not the
+    // underlying allocation address.
+    src.pixels_mut()[0] = color(0, 255, 0, 255);
+
     let second = warp_pixmap_cached(
       Some(&mut cache),
       &src,
       &Homography::identity(),
       &dst_quad,
-      (2, 2),
+      (4, 4),
       None,
     )
     .expect("warp result")
     .expect("warp output");
 
-    assert_eq!(pixel(&first.pixmap, 0, 0), color(10, 20, 30, 255));
-    assert_eq!(pixel(&second.pixmap, 0, 0), color(1, 2, 3, 255));
+    let expected = warp_pixmap(&src, &Homography::identity(), &dst_quad, (4, 4), None)
+      .expect("warp result")
+      .expect("warp output");
+
+    assert_eq!(second.offset, expected.offset);
+    assert_eq!(second.pixmap.data(), expected.pixmap.data());
+    assert_ne!(first.pixmap.data(), second.pixmap.data());
     assert!(
       !Arc::ptr_eq(&first, &second),
       "expected cache miss after mutating source pixmap"
@@ -529,46 +595,51 @@ mod tests {
   }
 
   #[test]
-  fn warp_cache_invalidates_when_clip_mask_content_changes() {
-    let mut cache = WarpCache::new(1);
+  fn warp_cache_invalidates_when_clip_mask_changes() {
+    let mut cache = WarpCache::new(8);
 
-    let mut src = new_pixmap(2, 2).unwrap();
-    src.pixels_mut().fill(color(200, 0, 0, 255));
+    let mut src = new_pixmap(4, 4).unwrap();
+    src.pixels_mut().fill(color(40, 0, 0, 255));
 
-    let mut mask = Mask::new(2, 2).unwrap();
+    let mut mask = Mask::new(4, 4).expect("mask");
     mask.data_mut().fill(0);
     mask.data_mut()[0] = 255;
 
-    let dst_quad = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)];
+    let dst_quad = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)];
     let first = warp_pixmap_cached(
       Some(&mut cache),
       &src,
       &Homography::identity(),
       &dst_quad,
-      (2, 2),
+      (4, 4),
       Some(&mask),
     )
     .expect("warp result")
     .expect("warp output");
 
-    mask.data_mut().fill(0);
-    mask.data_mut()[3] = 255;
+    // Move the opaque pixel to ensure the warped output should change.
+    let mask_data = mask.data_mut();
+    mask_data[0] = 0;
+    mask_data[1] = 255;
 
     let second = warp_pixmap_cached(
       Some(&mut cache),
       &src,
       &Homography::identity(),
       &dst_quad,
-      (2, 2),
+      (4, 4),
       Some(&mask),
     )
     .expect("warp result")
     .expect("warp output");
 
-    assert_eq!(pixel(&first.pixmap, 0, 0), color(200, 0, 0, 255));
-    assert_eq!(pixel(&first.pixmap, 1, 1), PremultipliedColorU8::TRANSPARENT);
-    assert_eq!(pixel(&second.pixmap, 0, 0), PremultipliedColorU8::TRANSPARENT);
-    assert_eq!(pixel(&second.pixmap, 1, 1), color(200, 0, 0, 255));
+    let expected = warp_pixmap(&src, &Homography::identity(), &dst_quad, (4, 4), Some(&mask))
+      .expect("warp result")
+      .expect("warp output");
+
+    assert_eq!(second.offset, expected.offset);
+    assert_eq!(second.pixmap.data(), expected.pixmap.data());
+    assert_ne!(first.pixmap.data(), second.pixmap.data());
     assert!(
       !Arc::ptr_eq(&first, &second),
       "expected cache miss after mutating clip mask"
