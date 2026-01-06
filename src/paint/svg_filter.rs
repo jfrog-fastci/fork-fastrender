@@ -2883,10 +2883,15 @@ pub(crate) fn apply_svg_filter_with_cache(
     let target_h = pixmap.height();
     if target_w > 0 && target_h > 0 && rect_exceeds_pixmap_bounds(filter_region, target_w, target_h)
     {
-      let min_x = filter_region.min_x().floor();
-      let min_y = filter_region.min_y().floor();
-      let max_x = filter_region.max_x().ceil();
-      let max_y = filter_region.max_y().ceil();
+      // Keep a small transparent border around the filter region when shifting to a working
+      // surface. Kernel-based primitives (e.g. `feGaussianBlur`) sample outside the region and our
+      // blur implementation clamps sampling to the pixmap edge; without a guard, out-of-bounds
+      // reads clamp to in-bounds pixels instead of transparent, producing seams in tiled painting.
+      let guard = 1.0;
+      let min_x = filter_region.min_x().floor() - guard;
+      let min_y = filter_region.min_y().floor() - guard;
+      let max_x = filter_region.max_x().ceil() + guard;
+      let max_y = filter_region.max_y().ceil() + guard;
       let i32_min_safe = (i32::MIN + 1) as f32;
       let i32_max = i32::MAX as f32;
       if min_x.is_finite()
