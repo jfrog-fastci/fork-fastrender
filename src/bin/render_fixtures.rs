@@ -211,6 +211,7 @@ struct VariantRecord {
 struct FixtureDeterminism {
   stem: String,
   variants: Vec<VariantRecord>,
+  baseline_rgba: Option<Vec<u8>>,
 }
 
 struct RepeatFailure {
@@ -307,6 +308,26 @@ fn run(cli: Cli) -> io::Result<()> {
       io::ErrorKind::InvalidInput,
       "dpr must be a finite number > 0",
     ));
+  }
+  if cli.repeat == 1 {
+    if cli.shuffle {
+      return Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "shuffle requires --repeat > 1",
+      ));
+    }
+    if cli.fail_on_nondeterminism {
+      return Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "fail-on-nondeterminism requires --repeat > 1",
+      ));
+    }
+    if cli.save_variants {
+      return Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "save-variants requires --repeat > 1",
+      ));
+    }
   }
 
   fs::create_dir_all(&cli.out_dir)?;
@@ -545,6 +566,7 @@ fn run(cli: Cli) -> io::Result<()> {
                       first_mismatch_rgba_vs_baseline: None,
                       data: None,
                     }],
+                    baseline_rgba: None,
                   },
                 );
               }
@@ -993,26 +1015,31 @@ fn record_variant(
   if baseline.width == pixels.width && baseline.height == pixels.height {
     // Compare against the baseline PNG output so we don't need to hold the baseline pixmap bytes in
     // memory for every fixture in repeat mode.
-    let baseline_png = output_path_for(out_dir, &state.stem);
-    if let Ok(png_bytes) = fs::read(&baseline_png) {
-          if let Ok(img) = image::load_from_memory_with_format(&png_bytes, ImageFormat::Png) {
-            let img = img.to_rgba8();
-            if img.width() == pixels.width && img.height() == pixels.height {
-              let baseline_rgba = img.into_raw();
-              if baseline_rgba.len() == pixels.data.len() && pixels.width > 0 {
-                let (d, mismatch, mismatch_rgba) = diff_premultiplied_against_rgba_baseline(
-                  &baseline_rgba,
-                  &pixels.data,
-                  pixels.width,
-                );
-                diff_pixels = Some(d);
-                first_mismatch = mismatch;
-                first_mismatch_rgba = mismatch_rgba;
-              }
-            }
-          }
+    if state.baseline_rgba.is_none() {
+      let baseline_png = output_path_for(out_dir, &state.stem);
+      let decoded = fs::read(&baseline_png).ok().and_then(|png_bytes| {
+        let img = image::load_from_memory_with_format(&png_bytes, ImageFormat::Png).ok()?;
+        let img = img.to_rgba8();
+        if img.width() != pixels.width || img.height() != pixels.height {
+          return None;
         }
+        Some(img.into_raw())
+      });
+      if let Some(bytes) = decoded {
+        state.baseline_rgba = Some(bytes);
       }
+    }
+
+    if let Some(baseline_rgba) = state.baseline_rgba.as_deref() {
+      if baseline_rgba.len() == pixels.data.len() && pixels.width > 0 {
+        let (d, mismatch, mismatch_rgba) =
+          diff_premultiplied_against_rgba_baseline(baseline_rgba, &pixels.data, pixels.width);
+        diff_pixels = Some(d);
+        first_mismatch = mismatch;
+        first_mismatch_rgba = mismatch_rgba;
+      }
+    }
+  }
 
   state.variants.push(VariantRecord {
     hash_hi,
@@ -1734,6 +1761,7 @@ mod tests {
         first_mismatch_rgba_vs_baseline: None,
         data: None,
       }],
+      baseline_rgba: None,
     };
 
     record_variant(
@@ -1784,6 +1812,7 @@ mod tests {
         first_mismatch_rgba_vs_baseline: None,
         data: None,
       }],
+      baseline_rgba: None,
     };
 
     let variant_bytes = pixmap_bytes_rgba(1, 1, [0, 255, 0, 255]);
@@ -1860,6 +1889,7 @@ mod tests {
         first_mismatch_rgba_vs_baseline: None,
         data: None,
       }],
+      baseline_rgba: None,
     };
 
     record_variant(
