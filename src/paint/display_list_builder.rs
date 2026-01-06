@@ -8253,6 +8253,172 @@ mod tests {
     )
   }
 
+  fn test_font() -> Arc<crate::text::font_db::LoadedFont> {
+    let font_path =
+      PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fonts/DejaVuSans-subset.ttf");
+    let data = Arc::new(std::fs::read(font_path).expect("read test font"));
+    Arc::new(crate::text::font_db::LoadedFont {
+      id: None,
+      data,
+      index: 0,
+      face_metrics_overrides: crate::text::font_db::FontFaceMetricsOverrides::default(),
+      family: "DejaVu Sans Subset".to_string(),
+      weight: crate::text::font_db::FontWeight::NORMAL,
+      style: FontStyle::Normal,
+      stretch: FontStretch::Normal,
+    })
+  }
+
+  fn shaped_run_for_char(font: Arc<crate::text::font_db::LoadedFont>, ch: char, font_size: f32) -> ShapedRun {
+    let cached_face = face_cache::get_ttf_face(&font).expect("parse test font");
+    let face = cached_face.face();
+    let glyph_id = face
+      .glyph_index(ch)
+      .unwrap_or_else(|| panic!("expected glyph for {ch}"))
+      .0 as u32;
+    let text = ch.to_string();
+    let end = text.len();
+    let advance = font_size * 0.6;
+    ShapedRun {
+      text,
+      start: 0,
+      end,
+      glyphs: vec![crate::text::pipeline::GlyphPosition {
+        glyph_id,
+        cluster: 0,
+        x_offset: 0.0,
+        y_offset: 0.0,
+        x_advance: advance,
+        y_advance: 0.0,
+      }],
+      direction: crate::text::pipeline::Direction::LeftToRight,
+      level: 0,
+      advance,
+      font,
+      font_size,
+      baseline_shift: 0.0,
+      language: None,
+      synthetic_bold: 0.0,
+      synthetic_oblique: 0.0,
+      rotation: crate::text::pipeline::RunRotation::None,
+      palette_index: 0,
+      palette_overrides: Arc::new(Vec::new()),
+      palette_override_hash: 0,
+      variations: Vec::new(),
+      scale: 1.0,
+    }
+  }
+
+  #[test]
+  fn background_clip_text_emits_text_clip_item() {
+    let font = test_font();
+    let run = shaped_run_for_char(Arc::clone(&font), 'A', 16.0);
+    let runs: Arc<Vec<ShapedRun>> = Arc::new(vec![run]);
+
+    let mut text_style = ComputedStyle::default();
+    text_style.font_size = 16.0;
+    let text_style = Arc::new(text_style);
+
+    let text = FragmentNode::new_text_shaped(
+      Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
+      "A",
+      14.0,
+      runs,
+      Arc::clone(&text_style),
+    );
+
+    let mut bg_style = ComputedStyle::default();
+    bg_style.background_color = Rgba::rgb(255, 0, 0);
+    let mut layer = BackgroundLayer::default();
+    layer.clip = BackgroundBox::Text;
+    bg_style.background_layers = vec![layer].into();
+
+    let fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 200.0, 60.0),
+      vec![text],
+      Arc::new(bg_style),
+    );
+
+    let builder = DisplayListBuilder::new();
+    let tree = FragmentTree::new(fragment);
+    let list = builder.build_tree(&tree);
+
+    let items = list.items();
+    let mut found = false;
+    for idx in 0..items.len().saturating_sub(2) {
+      let DisplayItem::PushClip(clip) = &items[idx] else {
+        continue;
+      };
+      let ClipShape::Text { runs } = &clip.shape else {
+        continue;
+      };
+      if runs.is_empty() {
+        continue;
+      }
+      let DisplayItem::FillRect(fill) = &items[idx + 1] else {
+        continue;
+      };
+      if fill.color != Rgba::rgb(255, 0, 0) {
+        continue;
+      }
+      if !matches!(items[idx + 2], DisplayItem::PopClip) {
+        continue;
+      }
+      found = true;
+      break;
+    }
+
+    assert!(
+      found,
+      "expected background-clip:text to push a text clip around background-color paints"
+    );
+  }
+
+  #[test]
+  fn webkit_text_fill_color_overrides_text_item_color() {
+    let font = test_font();
+    let run = shaped_run_for_char(Arc::clone(&font), 'A', 16.0);
+    let runs: Arc<Vec<ShapedRun>> = Arc::new(vec![run]);
+
+    let mut style = ComputedStyle::default();
+    style.font_size = 16.0;
+    style.color = Rgba::rgb(255, 0, 0);
+    style.webkit_text_fill_color = Color::Rgba(Rgba::rgb(0, 0, 255));
+    let style = Arc::new(style);
+
+    let text = FragmentNode::new_text_shaped(
+      Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
+      "A",
+      14.0,
+      runs,
+      Arc::clone(&style),
+    );
+
+    let fragment = FragmentNode::new_block(
+      Rect::from_xywh(0.0, 0.0, 200.0, 60.0),
+      vec![text],
+    );
+
+    let builder = DisplayListBuilder::new();
+    let tree = FragmentTree::new(fragment);
+    let list = builder.build_tree(&tree);
+
+    let painted = list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::Text(text) => Some(text),
+        _ => None,
+      })
+      .expect("expected a Text display item");
+
+    assert_eq!(
+      painted.color,
+      Rgba::rgb(0, 0, 255),
+      "expected -webkit-text-fill-color to override the glyph fill color"
+    );
+  }
+
   #[test]
   fn text_decoration_thickness_auto_resolves_to_ua_default() {
     let builder = DisplayListBuilder::new();
