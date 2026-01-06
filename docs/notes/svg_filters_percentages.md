@@ -12,10 +12,20 @@ This rule is shared across filter regions and primitive subregions via
 
 Light source coordinates for lighting primitives are also parsed as `SvgLength`
 so percentage inputs continue to track the filtered element's bounding box even
-when `primitiveUnits` is `userSpaceOnUse`. resvg interprets the **numeric**
-`x/y/z` attributes on `<fePointLight>` / `<feSpotLight>`
-in user space regardless of `primitiveUnits`, so FastRender resolves those
-numeric coordinates without object-bbox scaling (see `resolve_light_point`).
+when `primitiveUnits` is `userSpaceOnUse`.
+
+For `<fePointLight>` / `<feSpotLight>`, FastRender resolves **numeric**
+`x/y/z` (and `pointsAt*`) in the coordinate system established by
+`primitiveUnits`, matching Chromium:
+
+- `primitiveUnits="objectBoundingBox"`: numeric values are scaled against the
+  element bbox (width for X, height for Y, and average dimension for Z).
+- `primitiveUnits="userSpaceOnUse"`: numeric values are treated as offsets from
+  the element bbox origin, consistent with our CSS `filter:url(...)` baseline
+  documented in `docs/notes/svg_filters_userspace_numbers.md`.
+
+Note: resvg currently diverges here by treating **numeric** light coordinates
+as user space even when `primitiveUnits="objectBoundingBox"`.
 
 Paired values that come from a single input (e.g.
 `stdDeviation="2"` or `kernelUnitLength="1"`) are still resolved per-axis so

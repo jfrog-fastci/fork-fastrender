@@ -4442,45 +4442,19 @@ fn lighting_color_in_space(
 }
 
 fn resolve_light_point(
+  filter: &SvgFilter,
   css_bbox: &Rect,
   point: (SvgLength, SvgLength, SvgLength),
 ) -> (f32, f32, f32) {
-  // resvg resolves `fePointLight`/`feSpotLight` positions in the filter's user-space coordinate
-  // system even when `primitiveUnits="objectBoundingBox"`. In other words, the light's numeric
-  // `x/y/z` coordinates are *not* scaled by the element bbox.
-  //
-  // We still support percentage inputs in CSS `filter:url(...)` contexts: percentages are resolved
-  // against the filtered element bbox (width for X, height for Y, and an average for Z) and are
-  // translated by the bbox origin for X/Y so they stay element-relative.
-  let x = {
-    let resolved = point
-      .0
-      .resolve(SvgCoordinateUnits::UserSpaceOnUse, css_bbox.width().abs());
-    match point.0 {
-      SvgLength::Percent(_) => css_bbox.min_x() + resolved,
-      SvgLength::Number(_) => resolved,
-    }
-  };
-  let y = {
-    let resolved = point
-      .1
-      .resolve(SvgCoordinateUnits::UserSpaceOnUse, css_bbox.height().abs());
-    match point.1 {
-      SvgLength::Percent(_) => css_bbox.min_y() + resolved,
-      SvgLength::Number(_) => resolved,
-    }
-  };
-  let z = {
-    let reference = (css_bbox.width().abs() + css_bbox.height().abs()) * 0.5;
-    point
-      .2
-      .resolve(SvgCoordinateUnits::UserSpaceOnUse, reference)
-  };
-
-  (x, y, z)
+  (
+    filter.resolve_primitive_pos_x_len(point.0, css_bbox),
+    filter.resolve_primitive_pos_y_len(point.1, css_bbox),
+    filter.resolve_primitive_pos_z_len(point.2, css_bbox),
+  )
 }
 
 fn compute_light_direction(
+  filter: &SvgFilter,
   css_bbox: &Rect,
   light: &LightSource,
   surface_pos: (f32, f32, f32),
@@ -4494,7 +4468,7 @@ fn compute_light_direction(
       (normalize3(dir.0, dir.1, dir.2), 1.0)
     }
     LightSource::Point { x, y, z } => {
-      let point = resolve_light_point(css_bbox, (*x, *y, *z));
+      let point = resolve_light_point(filter, css_bbox, (*x, *y, *z));
       let dir = (
         point.0 - surface_pos.0,
         point.1 - surface_pos.1,
@@ -4510,8 +4484,8 @@ fn compute_light_direction(
       specular_exponent,
       limiting_cone_angle,
     } => {
-      let point = resolve_light_point(css_bbox, (*x, *y, *z));
-      let target = resolve_light_point(css_bbox, *points_at);
+      let point = resolve_light_point(filter, css_bbox, (*x, *y, *z));
+      let target = resolve_light_point(filter, css_bbox, *points_at);
       let light_to_surface = (
         surface_pos.0 - point.0,
         surface_pos.1 - point.1,
@@ -4706,7 +4680,7 @@ fn apply_diffuse_lighting(
               surface_scale,
             );
             let (light_dir, light_factor) =
-              compute_light_direction(&global_css_bbox, &light, (css_x, css_y, height));
+              compute_light_direction(filter, &global_css_bbox, &light, (css_x, css_y, height));
             let n_dot_l = dot3(normal, light_dir).max(0.0);
             let intensity = n_dot_l * diffuse_constant * light_factor;
             let intensity = if intensity.is_finite() {
@@ -4838,7 +4812,7 @@ fn apply_specular_lighting(
               surface_scale,
             );
             let (light_dir, light_factor) =
-              compute_light_direction(&global_css_bbox, &light, (css_x, css_y, height));
+              compute_light_direction(filter, &global_css_bbox, &light, (css_x, css_y, height));
             let n_dot_l = dot3(normal, light_dir).max(0.0);
             if n_dot_l <= 0.0 || light_factor <= 0.0 {
               *dst = PremultipliedColorU8::TRANSPARENT;

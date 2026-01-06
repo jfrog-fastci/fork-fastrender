@@ -467,6 +467,65 @@ fn point_light_percentages_follow_bbox_in_userspace() {
 }
 
 #[test]
+fn point_light_numbers_follow_bbox_in_userspace() {
+  let (surface_w, surface_h) = (8u32, 8u32);
+  let (bbox_x, bbox_y) = (2u32, 3u32);
+  let bbox = Rect::from_xywh(bbox_x as f32, bbox_y as f32, 4.0, 4.0);
+
+  let mut pixmap = solid_pixmap(surface_w, surface_h, PremultipliedColorU8::TRANSPARENT);
+  let opaque = PremultipliedColorU8::from_rgba(0, 0, 0, 255).unwrap();
+  for y in bbox_y..bbox_y + 4 {
+    for x in bbox_x..bbox_x + 4 {
+      pixmap.pixels_mut()[y as usize * surface_w as usize + x as usize] = opaque;
+    }
+  }
+  let filter = with_fingerprint(SvgFilter {
+    color_interpolation_filters: ColorInterpolationFilters::SRGB,
+    steps: vec![FilterStep {
+      result: None,
+      color_interpolation_filters: None,
+      primitive: FilterPrimitive::DiffuseLighting {
+        input: FilterInput::SourceAlpha,
+        surface_scale: 0.0,
+        diffuse_constant: 1.0,
+        kernel_unit_length: None,
+        light: LightSource::Point {
+          x: SvgLength::Number(0.0),
+          y: SvgLength::Number(0.0),
+          z: SvgLength::Number(1.0),
+        },
+        lighting_color: Rgba::WHITE,
+      },
+      region: None,
+    }],
+    region: SvgFilterRegion {
+      x: SvgLength::Number(0.0),
+      y: SvgLength::Number(0.0),
+      width: SvgLength::Number(4.0),
+      height: SvgLength::Number(4.0),
+      units: SvgFilterUnits::UserSpaceOnUse,
+    },
+    filter_res: None,
+    primitive_units: SvgFilterUnits::UserSpaceOnUse,
+    fingerprint: 0,
+  });
+
+  apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
+
+  assert_eq!(
+    pixmap.pixel(0, 0).unwrap(),
+    PremultipliedColorU8::TRANSPARENT,
+    "expected pixels outside the resolved filter region to stay transparent"
+  );
+  let px = pixmap.pixel(bbox_x, bbox_y).unwrap();
+  assert_eq!(
+    [px.red(), px.green(), px.blue(), px.alpha()],
+    [255, 255, 255, 255],
+    "expected bbox-relative point light to fully illuminate the bbox corner"
+  );
+}
+
+#[test]
 fn kernel_unit_length_changes_lighting_output() {
   let width = 32;
   let height = 24;
@@ -522,44 +581,33 @@ fn kernel_unit_length_changes_lighting_output() {
 }
 
 #[test]
-fn object_bounding_box_units_match_user_space_equivalent_for_point_light() {
-  // Non-square bbox to ensure x/y primitiveUnits scaling stays axis-specific.
-  let width = 40;
-  let height = 20;
-  let bump_map = make_bump_map_pixmap(width, height);
-  let (bbox_x, bbox_y) = (7u32, 11u32);
-  let bbox = Rect::from_xywh(bbox_x as f32, bbox_y as f32, width as f32, height as f32);
+fn point_light_object_bounding_box_numbers_resolve_against_bbox() {
+  // Use a non-square bbox so that x/y scaling is axis-specific and z uses the average dimension.
+  let (bbox_w, bbox_h) = (80u32, 40u32);
+  let bbox = Rect::from_xywh(10.0, 10.0, bbox_w as f32, bbox_h as f32);
 
-  // Use the same values for x/y and let the bbox shape make the resolved distances diverge.
-  let kernel_unit_obj = (0.10, 0.10);
-  let surface_scale_obj = 0.12;
-  let point_obj = (0.25, 0.60, 0.40);
-
-  let scalar_ref = (bbox.width().abs() + bbox.height().abs()) * 0.5;
-  let surface_scale_user = surface_scale_obj * scalar_ref;
-  let kernel_unit_user = (
-    kernel_unit_obj.0 * bbox.width().abs(),
-    kernel_unit_obj.1 * bbox.height().abs(),
+  let mut pixmap = solid_pixmap(
+    100,
+    60,
+    PremultipliedColorU8::from_rgba(0, 0, 0, 255).unwrap(),
   );
-  // resvg/Chrome resolve point/spot light numeric coordinates in user space even when
-  // `primitiveUnits="objectBoundingBox"`, so the userSpace equivalent should keep the same
-  // x/y/z values for the light source.
-  let point_user = point_obj;
 
-  let filter_obj = with_fingerprint(SvgFilter {
-    color_interpolation_filters: ColorInterpolationFilters::LinearRGB,
+  let filter = with_fingerprint(SvgFilter {
+    color_interpolation_filters: ColorInterpolationFilters::SRGB,
     steps: vec![FilterStep {
       result: None,
       color_interpolation_filters: None,
       primitive: FilterPrimitive::DiffuseLighting {
         input: FilterInput::SourceAlpha,
-        surface_scale: surface_scale_obj,
+        // Flat surface -> surface normal is always (0,0,1) so diffuse intensity can be computed
+        // analytically from the point-light direction.
+        surface_scale: 0.0,
         diffuse_constant: 1.0,
-        kernel_unit_length: Some(kernel_unit_obj),
+        kernel_unit_length: None,
         light: LightSource::Point {
-          x: SvgLength::Number(point_obj.0),
-          y: SvgLength::Number(point_obj.1),
-          z: SvgLength::Number(point_obj.2),
+          x: SvgLength::Number(0.5),
+          y: SvgLength::Number(0.5),
+          z: SvgLength::Number(1.0),
         },
         lighting_color: Rgba::WHITE,
       },
@@ -568,8 +616,8 @@ fn object_bounding_box_units_match_user_space_equivalent_for_point_light() {
     region: SvgFilterRegion {
       x: SvgLength::Number(0.0),
       y: SvgLength::Number(0.0),
-      width: SvgLength::Number(width as f32),
-      height: SvgLength::Number(height as f32),
+      width: SvgLength::Number(bbox_w as f32),
+      height: SvgLength::Number(bbox_h as f32),
       units: SvgFilterUnits::UserSpaceOnUse,
     },
     filter_res: None,
@@ -577,20 +625,84 @@ fn object_bounding_box_units_match_user_space_equivalent_for_point_light() {
     fingerprint: 0,
   });
 
-  let filter_user = with_fingerprint(SvgFilter {
-    color_interpolation_filters: ColorInterpolationFilters::LinearRGB,
+  apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
+
+  let reference = (bbox.width() + bbox.height()) * 0.5;
+  let light_pos = (
+    bbox.min_x() + 0.5 * bbox.width(),
+    bbox.min_y() + 0.5 * bbox.height(),
+    reference,
+  );
+  let expected_channel_at = |x: u32, y: u32| -> u8 {
+    let dx = light_pos.0 - x as f32;
+    let dy = light_pos.1 - y as f32;
+    let dz = light_pos.2;
+    let len = (dx * dx + dy * dy + dz * dz).sqrt();
+    if len <= f32::EPSILON || !len.is_finite() {
+      return 0;
+    }
+    let intensity = (dz / len).clamp(0.0, 1.0);
+    (intensity * 255.0).round().clamp(0.0, 255.0) as u8
+  };
+
+  let center = (
+    bbox.min_x() as u32 + bbox_w / 2,
+    bbox.min_y() as u32 + bbox_h / 2,
+  );
+  let edge = (
+    bbox.min_x() as u32 + bbox_w - 1,
+    bbox.min_y() as u32 + bbox_h / 2,
+  );
+
+  let center_px = pixmap.pixel(center.0, center.1).unwrap();
+  let edge_px = pixmap.pixel(edge.0, edge.1).unwrap();
+
+  let expected_center = expected_channel_at(center.0, center.1);
+  let expected_edge = expected_channel_at(edge.0, edge.1);
+  let tol = 2u8;
+  assert!(
+    center_px.red().abs_diff(expected_center) <= tol,
+    "center pixel red expected {expected_center} got {}",
+    center_px.red()
+  );
+  assert!(
+    edge_px.red().abs_diff(expected_edge) <= tol,
+    "edge pixel red expected {expected_edge} got {}",
+    edge_px.red()
+  );
+  assert!(
+    center_px.red() > edge_px.red().saturating_add(20),
+    "expected centered point light to produce a brighter center pixel; center={} edge={}",
+    center_px.red(),
+    edge_px.red()
+  );
+}
+
+#[test]
+fn point_light_object_bounding_box_large_numbers_resolve_far_away() {
+  let (bbox_w, bbox_h) = (80u32, 40u32);
+  let bbox = Rect::from_xywh(10.0, 10.0, bbox_w as f32, bbox_h as f32);
+
+  let mut pixmap = solid_pixmap(
+    100,
+    60,
+    PremultipliedColorU8::from_rgba(0, 0, 0, 255).unwrap(),
+  );
+
+  let filter = with_fingerprint(SvgFilter {
+    color_interpolation_filters: ColorInterpolationFilters::SRGB,
     steps: vec![FilterStep {
       result: None,
       color_interpolation_filters: None,
       primitive: FilterPrimitive::DiffuseLighting {
         input: FilterInput::SourceAlpha,
-        surface_scale: surface_scale_user,
+        surface_scale: 0.0,
         diffuse_constant: 1.0,
-        kernel_unit_length: Some(kernel_unit_user),
+        kernel_unit_length: None,
         light: LightSource::Point {
-          x: SvgLength::Number(point_user.0),
-          y: SvgLength::Number(point_user.1),
-          z: SvgLength::Number(point_user.2),
+          x: SvgLength::Number(40.0),
+          y: SvgLength::Number(20.0),
+          z: SvgLength::Number(1.0),
         },
         lighting_color: Rgba::WHITE,
       },
@@ -599,36 +711,67 @@ fn object_bounding_box_units_match_user_space_equivalent_for_point_light() {
     region: SvgFilterRegion {
       x: SvgLength::Number(0.0),
       y: SvgLength::Number(0.0),
-      width: SvgLength::Number(width as f32),
-      height: SvgLength::Number(height as f32),
+      width: SvgLength::Number(bbox_w as f32),
+      height: SvgLength::Number(bbox_h as f32),
       units: SvgFilterUnits::UserSpaceOnUse,
     },
     filter_res: None,
-    primitive_units: SvgFilterUnits::UserSpaceOnUse,
+    primitive_units: SvgFilterUnits::ObjectBoundingBox,
     fingerprint: 0,
   });
 
-  let surface_w = bbox_x + width;
-  let surface_h = bbox_y + height;
-  let mut surface = Pixmap::new(surface_w, surface_h).expect("pixmap");
-  surface.pixels_mut().fill(PremultipliedColorU8::TRANSPARENT);
-  for y in 0..height {
-    for x in 0..width {
-      let src_idx = y as usize * width as usize + x as usize;
-      let dst_idx = (y + bbox_y) as usize * surface_w as usize + (x + bbox_x) as usize;
-      surface.pixels_mut()[dst_idx] = bump_map.pixels()[src_idx];
+  apply_svg_filter(&filter, &mut pixmap, 1.0, bbox).unwrap();
+
+  let reference = (bbox.width() + bbox.height()) * 0.5;
+  let light_pos = (
+    bbox.min_x() + 40.0 * bbox.width(),
+    bbox.min_y() + 20.0 * bbox.height(),
+    reference,
+  );
+  let expected_channel_at = |x: u32, y: u32| -> u8 {
+    let dx = light_pos.0 - x as f32;
+    let dy = light_pos.1 - y as f32;
+    let dz = light_pos.2;
+    let len = (dx * dx + dy * dy + dz * dz).sqrt();
+    if len <= f32::EPSILON || !len.is_finite() {
+      return 0;
     }
-  }
+    let intensity = (dz / len).clamp(0.0, 1.0);
+    (intensity * 255.0).round().clamp(0.0, 255.0) as u8
+  };
 
-  let mut out_obj = surface.clone();
-  apply_svg_filter(&filter_obj, &mut out_obj, 1.0, bbox).unwrap();
-  let mut out_user = surface;
-  apply_svg_filter(&filter_user, &mut out_user, 1.0, bbox).unwrap();
+  let a = (bbox.min_x() as u32 + 30, bbox.min_y() as u32 + 10);
+  let b = (
+    bbox.min_x() as u32 + bbox_w - 1,
+    bbox.min_y() as u32 + bbox_h - 1,
+  );
+  let a_px = pixmap.pixel(a.0, a.1).unwrap();
+  let b_px = pixmap.pixel(b.0, b.1).unwrap();
 
-  assert_eq!(
-    out_obj.data(),
-    out_user.data(),
-    "primitiveUnits=objectBoundingBox should match the userSpaceOnUse equivalent after resolving primitives"
+  let expected_a = expected_channel_at(a.0, a.1);
+  let expected_b = expected_channel_at(b.0, b.1);
+  let tol = 2u8;
+  assert!(
+    a_px.red().abs_diff(expected_a) <= tol,
+    "pixel A red expected {expected_a} got {}",
+    a_px.red()
+  );
+  assert!(
+    b_px.red().abs_diff(expected_b) <= tol,
+    "pixel B red expected {expected_b} got {}",
+    b_px.red()
+  );
+  assert!(
+    a_px.red().abs_diff(b_px.red()) <= 2,
+    "expected far-away light to produce nearly uniform intensity; A={} B={}",
+    a_px.red(),
+    b_px.red()
+  );
+  assert!(
+    a_px.red() <= 15 && b_px.red() <= 15,
+    "expected far-away light to be dim; A={} B={}",
+    a_px.red(),
+    b_px.red()
   );
 }
 
@@ -864,64 +1007,4 @@ fn specular_lighting_transparent_input_matches_resvg() {
     actual, expected,
     "FastRender lighting must match resvg output"
   );
-}
-
-#[test]
-fn point_light_numbers_follow_filter_userspace_when_bbox_is_offset() {
-  let svg = r##"
-    <svg xmlns="http://www.w3.org/2000/svg" width="128" height="96">
-      <defs>
-        <filter id="f" filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
-                x="0" y="0" width="128" height="96">
-          <feDiffuseLighting in="SourceAlpha" surfaceScale="0" diffuseConstant="1" result="lit">
-            <fePointLight x="50" y="35" z="60" />
-          </feDiffuseLighting>
-          <feComposite in="lit" in2="SourceAlpha" operator="in" />
-        </filter>
-      </defs>
-      <rect x="30" y="20" width="40" height="30" fill="white" filter="url(#f)" />
-    </svg>
-  "##;
-
-  let expected = render_resvg(svg, 128, 96);
-
-  let filter =
-    parse_svg_filter_from_svg_document(svg, Some("f"), &ImageCache::new()).expect("filter");
-  let mut pixmap = Pixmap::new(128, 96).expect("pixmap");
-  let fill = PremultipliedColorU8::from_rgba(255, 255, 255, 255).unwrap();
-  let width = pixmap.width();
-  {
-    let pixels = pixmap.pixels_mut();
-    for y in 20..50 {
-      for x in 30..70 {
-        pixels[(y * width + x) as usize] = fill;
-      }
-    }
-  }
-  let bbox = Rect::from_xywh(30.0, 20.0, 40.0, 30.0);
-  apply_svg_filter(filter.as_ref(), &mut pixmap, 1.0, bbox).unwrap();
-
-  let rgba_at = |pixmap: &Pixmap, x: u32, y: u32| {
-    let px = pixmap.pixel(x, y).expect("pixel in bounds");
-    (px.red(), px.green(), px.blue(), px.alpha())
-  };
-  let assert_close = |label: &str, actual: (u8, u8, u8, u8), expected: (u8, u8, u8, u8)| {
-    let tolerance = 3u8;
-    for (chan, a, e) in [
-      ("r", actual.0, expected.0),
-      ("g", actual.1, expected.1),
-      ("b", actual.2, expected.2),
-      ("a", actual.3, expected.3),
-    ] {
-      let diff = a.abs_diff(e);
-      assert!(
-        diff <= tolerance,
-        "{label} {chan} differs too much: got {a} expected {e} (diff {diff} > {tolerance}); actual={actual:?} expected={expected:?}"
-      );
-    }
-  };
-
-  for (label, x, y) in [("center", 50, 35), ("corner", 30, 20), ("outside", 0, 0)] {
-    assert_close(label, rgba_at(&pixmap, x, y), rgba_at(&expected, x, y));
-  }
 }
