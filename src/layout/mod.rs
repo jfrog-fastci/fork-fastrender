@@ -52,6 +52,10 @@ pub mod axis;
 // Shared layout utilities
 pub mod utils;
 
+// Shared helpers for resolving intrinsic sizing keywords (min-content/max-content/fit-content) in
+// Taffy adapters.
+pub(crate) mod intrinsic_sizing_keywords;
+
 // W2.T09 - Formatting context factory
 pub mod contexts;
 
