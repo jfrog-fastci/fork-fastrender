@@ -3392,6 +3392,33 @@ fn collect_scene_items(
   let transform_style = node.context.transform_style;
 
   if !in_preserve_context || !matches!(transform_style, TransformStyle::Preserve3d) {
+    let computed_bounds = compute_items_bounds(&node.subtree_items).and_then(|bounds| {
+      let is_valid = bounds.width() > 0.0
+        && bounds.height() > 0.0
+        && bounds.x().is_finite()
+        && bounds.y().is_finite()
+        && bounds.width().is_finite()
+        && bounds.height().is_finite();
+      if !is_valid {
+        return None;
+      }
+
+      let filter_outset = filter_outset_with_bounds(&node.context.filters, 1.0, Some(node.context.bounds));
+      let expanded = Rect::from_xywh(
+        bounds.x() - filter_outset.left,
+        bounds.y() - filter_outset.top,
+        bounds.width() + filter_outset.left + filter_outset.right,
+        bounds.height() + filter_outset.top + filter_outset.bottom,
+      );
+
+      let expanded_valid = expanded.width() > 0.0
+        && expanded.height() > 0.0
+        && expanded.x().is_finite()
+        && expanded.y().is_finite()
+        && expanded.width().is_finite()
+        && expanded.height().is_finite();
+      expanded_valid.then_some(expanded)
+    });
     let order = *order_counter;
     *order_counter += 1;
     let filter_bounds = {
@@ -3411,7 +3438,7 @@ fn collect_scene_items(
     items.push(Preserve3dSceneItem {
       source: Preserve3dSceneItemSource::FlattenedSubtree(node.clone()),
       transform: combined_transform,
-      bounds: node.context.bounds,
+      bounds: computed_bounds.unwrap_or(node.context.bounds),
       plane_rect: node.context.plane_rect,
       backface_visibility: node.context.backface_visibility,
       paint_order: order,

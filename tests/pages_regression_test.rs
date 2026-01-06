@@ -394,6 +394,11 @@ const PAGE_FIXTURES: &[PageFixture] = &[
     shots: DEFAULT_SHOTS,
   },
   PageFixture {
+    name: "preserve_3d_outsets",
+    html: "preserve_3d_outsets/index.html",
+    shots: DEFAULT_SHOTS,
+  },
+  PageFixture {
     name: "preserve_3d_backface_nested",
     html: "preserve_3d_backface_nested/index.html",
     shots: DEFAULT_SHOTS,

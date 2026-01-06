@@ -1,0 +1,45 @@
+.stage {
+  display: grid;
+  gap: 18px;
+  max-width: 700px;
+  margin: 0 auto;
+}
+
+.masthead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.viewport {
+  height: 420px;
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: repeating-linear-gradient(135deg, #f8fafc 0 16px, #e2e8f0 16px 32px);
+  perspective: 900px;
+  display: grid;
+  place-items: center;
+  overflow: visible;
+}
+
+.scene {
+  position: relative;
+  width: 460px;
+  height: 260px;
+  transform-style: preserve-3d;
+  transform: rotateX(38deg) rotateY(-24deg);
+}
+
+.plane {
+  position: absolute;
+  left: 140px;
+  top: 60px;
+  width: 180px;
+  height: 120px;
+  border-radius: 18px;
+  background: linear-gradient(140deg, rgba(59, 130, 246, 0.45), rgba(217, 70, 239, 0.35));
+  border: 1px solid rgba(15, 23, 42, 0.22);
+  box-shadow: 0 0 0 24px rgba(217, 70, 239, 0.45);
+  filter: drop-shadow(0 34px 0 rgba(15, 23, 42, 0.35));
+  transform: translateZ(80px) rotateY(18deg);
+}
