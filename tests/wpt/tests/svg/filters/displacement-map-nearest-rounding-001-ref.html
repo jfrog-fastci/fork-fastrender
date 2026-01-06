@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>feDisplacementMap nearest-neighbor rounding reference</title>
+<style>
+  html, body {
+    margin: 0;
+    background: black;
+  }
+  #scene {
+    position: relative;
+    width: 2px;
+    height: 1px;
+  }
+  .px {
+    position: absolute;
+    top: 0;
+    width: 1px;
+    height: 1px;
+    background: rgb(255, 0, 0);
+  }
+  /* dx=-0.5 makes x=1 sample x=0.5, which rounds toward negative infinity -> red. */
+  .at1 { left: 1px; }
+</style>
+<div id="scene">
+  <div class="px at1"></div>
+</div>

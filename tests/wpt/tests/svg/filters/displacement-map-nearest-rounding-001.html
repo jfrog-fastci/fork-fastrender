@@ -1,0 +1,51 @@
+<!doctype html>
+<meta charset="utf-8">
+<link rel="match" href="displacement-map-nearest-rounding-001-ref.html">
+<title>feDisplacementMap nearest-neighbor rounding ties toward negative infinity</title>
+<style>
+  html, body {
+    margin: 0;
+    background: black;
+  }
+  svg { display: none; }
+  #scene {
+    position: relative;
+    width: 2px;
+    height: 1px;
+    filter: url(#f);
+  }
+  .px {
+    position: absolute;
+    top: 0;
+    width: 1px;
+    height: 1px;
+  }
+  .r { left: 0; background: rgb(255, 0, 0); }
+  .g { left: 1; background: rgb(0, 255, 0); }
+</style>
+<!--
+  Chrome samples the primary input using nearest-neighbor with a pixel-center rounding rule:
+  ties at x=0.5 round toward negative infinity. FastRender matches this behavior.
+
+  This test forces a tie at x=0.5 by using an exact -0.5px displacement:
+    dx = (R - 0.5) * scale
+    R=0.0 and scale=1 => dx = -0.5
+
+  For output pixel x=1, sampling at x+dx = 0.5 must choose the left pixel (red), not the right
+  pixel (green).
+-->
+<svg xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="f" x="0" y="0" width="2" height="1"
+            filterUnits="userSpaceOnUse" primitiveUnits="userSpaceOnUse"
+            color-interpolation-filters="sRGB">
+      <feFlood flood-color="rgb(0, 128, 0)" result="map" />
+      <feDisplacementMap in="SourceGraphic" in2="map" scale="1"
+                         xChannelSelector="R" yChannelSelector="G" />
+    </filter>
+  </defs>
+</svg>
+<div id="scene">
+  <div class="px r"></div>
+  <div class="px g"></div>
+</div>
