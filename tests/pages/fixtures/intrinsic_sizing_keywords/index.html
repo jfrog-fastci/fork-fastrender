@@ -1,86 +1,47 @@
 <!doctype html>
-<meta charset="utf-8">
-<title>Intrinsic sizing keywords (min/max/fit-content)</title>
-<link rel="stylesheet" href="styles.css">
+<meta charset="utf-8" />
+<title>Intrinsic sizing keywords</title>
+<link rel="stylesheet" href="styles.css" />
 <body>
-  <main class="page">
-    <h1>Intrinsic sizing keywords</h1>
-    <p class="intro">
-      Minimal offline coverage for <code>min-content</code>, <code>max-content</code>, and <code>fit-content</code> sizing
-      keywords in flex/grid (Taffy-backed layout).
-    </p>
+  <div class="case">
+    <div class="label">block width: max-content</div>
+    <div class="box block block-max-content">Max-content shrinks this block.</div>
+  </div>
 
-    <section class="section">
-      <h2>Flex</h2>
+  <div class="case">
+    <div class="label">block width: -moz-fit-content; width: fit-content</div>
+    <div class="box block block-fit-content">Fit-content shrinks this block.</div>
+  </div>
 
-      <div class="demo">
-        <div class="caption">Two items with identical content: <code>width: min-content</code> vs <code>width: max-content</code></div>
-        <div class="sandbox sandbox-grid">
-          <div class="flex-row">
-            <div class="card min">
-              <div class="label">min-content</div>
-              <div class="text">
-                characteristically spaced text wraps differently between intrinsic sizing keywords
-              </div>
-            </div>
-            <div class="card max">
-              <div class="label">max-content</div>
-              <div class="text">
-                characteristically spaced text wraps differently between intrinsic sizing keywords
-              </div>
-            </div>
-          </div>
-        </div>
+  <div class="case">
+    <div class="label">block width: fit-content(160px) + box-sizing: border-box</div>
+    <div class="box block block-fit-content-func">
+      Fit-content clamps to 160px for this longer line of text.
+    </div>
+  </div>
+
+  <div class="case">
+    <div class="label">block max-width: -webkit-fit-content; max-width: fit-content</div>
+    <div class="box block block-max-width-fit-content">
+      Auto width should be capped to fit-content.
+    </div>
+  </div>
+
+  <div class="case">
+    <div class="label">inline-block width: max-content (padding+border), constrained container</div>
+    <div class="narrow">
+      <div class="box inline inline-max-content">
+        Inline-block max-content prefers one long line of words.
       </div>
+    </div>
+  </div>
 
-      <div class="demo">
-        <div class="caption">Definite-width flex container with one <code>width: fit-content</code> item</div>
-        <div class="sandbox sandbox-grid fit-width">
-          <div class="flex-row fit-row">
-            <div class="chip fit">
-              fit-content clamps to the container width and wraps, instead of expanding like max-content
-            </div>
-            <div class="chip max">
-              fit-content clamps to the container width and wraps, instead of expanding like max-content
-            </div>
-          </div>
-        </div>
+  <div class="case">
+    <div class="label">inline-block max-width: fit-content, constrained container</div>
+    <div class="narrow">
+      <div class="box inline inline-max-width-fit-content">
+        Inline-block with max-width fit-content should wrap inside the container.
       </div>
-    </section>
-
-    <section class="section">
-      <h2>Grid</h2>
-
-      <div class="demo">
-        <div class="caption">Grid container: <code>width: max-content</code> should shrink-wrap tracks</div>
-        <div class="sandbox sandbox-grid">
-          <div class="grid-shrink">
-            <div class="cell head">ID</div>
-            <div class="cell head">Title</div>
-            <div class="cell">01</div>
-            <div class="cell">max-content grid</div>
-            <div class="cell">02</div>
-            <div class="cell">wraps to content</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="demo">
-        <div class="caption">Grid item: <code>min-width: fit-content</code> (common in real pages)</div>
-        <div class="sandbox sandbox-grid">
-          <div class="grid-min-fit">
-            <div class="pill control">
-              <div class="label">control</div>
-              <div class="text">professional networking layout</div>
-            </div>
-            <div class="pill fit">
-              <div class="label">min-width: fit-content</div>
-              <div class="text">professional networking layout</div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
-  </main>
+    </div>
+  </div>
 </body>
-
