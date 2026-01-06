@@ -7502,28 +7502,6 @@ fn apply_break_properties(
 
   let mut result = breaks;
 
-  match line_break {
-    LineBreak::Strict => {
-      // CSS Text: breaks before Japanese small kana / prolonged sound marks are forbidden in
-      // strict line breaking. Treat them as emergency-only so they can still be used as a last
-      // resort to avoid overflow.
-      for brk in &mut result {
-        if brk.break_type == BreakType::Mandatory {
-          continue;
-        }
-        if brk.kind == BreakOpportunityKind::Emergency {
-          continue;
-        }
-        let pos = brk.byte_offset.min(text.len());
-        let next = text[pos..].chars().next();
-        if matches!(next, Some(ch) if is_kinsoku_strict_prohibited_line_start(ch)) {
-          brk.kind = BreakOpportunityKind::Emergency;
-        }
-      }
-    }
-    _ => {}
-  }
-
   match word_break {
     WordBreak::BreakAll => {
       result.extend(grapheme_boundary_breaks(text, BreakOpportunityKind::Normal));
@@ -7581,6 +7559,31 @@ fn apply_break_properties(
         BreakOpportunityKind::Emergency,
       ));
     }
+  }
+
+  match line_break {
+    LineBreak::Strict => {
+      // CSS Text: breaks before Japanese small kana / prolonged sound marks are forbidden in
+      // strict line breaking. Apply this *after* adding `word-break`/`overflow-wrap` synthesized
+      // opportunities so they can't re-introduce forbidden normal breaks.
+      for brk in &mut result {
+        if brk.break_type == BreakType::Mandatory {
+          continue;
+        }
+        if brk.kind == BreakOpportunityKind::Emergency {
+          continue;
+        }
+        let pos = brk.byte_offset.min(text.len());
+        if !text.is_char_boundary(pos) {
+          continue;
+        }
+        let next = text[pos..].chars().next();
+        if matches!(next, Some(ch) if is_kinsoku_strict_prohibited_line_start(ch)) {
+          brk.kind = BreakOpportunityKind::Emergency;
+        }
+      }
+    }
+    _ => {}
   }
 
   let mut sorted = true;
@@ -17795,6 +17798,48 @@ mod tests {
       brk_6.kind,
       BreakOpportunityKind::Normal,
       "breaks not affected by kinsoku rules should remain normal"
+    );
+  }
+
+  #[test]
+  fn line_break_strict_downgrades_breaks_before_small_kana_even_with_break_all() {
+    use crate::text::line_break::BreakOpportunityKind;
+
+    // `word-break: break-all` synthesizes extra normal break opportunities; ensure kinsoku
+    // restrictions still apply for `line-break: strict`.
+    let text = "あぁい";
+    let breaks = vec![
+      BreakOpportunity::allowed(3), // あ|ぁ
+      BreakOpportunity::allowed(6), // ぁ|い
+      BreakOpportunity::allowed(9), // end
+    ];
+    let result = apply_break_properties(
+      text,
+      breaks,
+      LineBreak::Strict,
+      WordBreak::BreakAll,
+      OverflowWrap::Normal,
+      true,
+    );
+
+    let brk_3 = result
+      .iter()
+      .find(|b| b.byte_offset == 3)
+      .expect("break at 3");
+    assert_eq!(
+      brk_3.kind,
+      BreakOpportunityKind::Emergency,
+      "breaks before small kana should remain emergency-only even when break-all is set"
+    );
+
+    let brk_6 = result
+      .iter()
+      .find(|b| b.byte_offset == 6)
+      .expect("break at 6");
+    assert_eq!(
+      brk_6.kind,
+      BreakOpportunityKind::Normal,
+      "unrestricted breaks should remain normal even when break-all is set"
     );
   }
 
