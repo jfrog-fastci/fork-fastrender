@@ -2031,6 +2031,116 @@ mod tests {
       "expected baseline/variant RGBA details for first mismatch"
     );
   }
+
+  #[test]
+  fn write_nondeterminism_outputs_sorts_variants_by_hash() {
+    let temp = tempdir().expect("tempdir");
+    let out_dir = temp.path();
+
+    let stem = "fixture";
+
+    let baseline_bytes = pixmap_bytes_rgba(1, 1, [0, 0, 0, 255]);
+    let (baseline_hi, baseline_lo) = hash128(&baseline_bytes);
+    let size = IntSize::from_wh(1, 1).expect("size");
+    let baseline_pixmap =
+      Pixmap::from_vec(baseline_bytes.clone(), size).expect("baseline pixmap");
+    let baseline_png = encode_image(&baseline_pixmap, OutputFormat::Png).expect("encode baseline");
+    fs::write(output_path_for(out_dir, stem), baseline_png).expect("write baseline png");
+
+    let v1_bytes = pixmap_bytes_rgba(1, 1, [1, 0, 0, 255]);
+    let v2_bytes = pixmap_bytes_rgba(1, 1, [2, 0, 0, 255]);
+    let (v1_hi, v1_lo) = hash128(&v1_bytes);
+    let (v2_hi, v2_lo) = hash128(&v2_bytes);
+
+    let ((small_hi, small_lo, small_bytes), (large_hi, large_lo, large_bytes)) =
+      if (v1_hi, v1_lo) <= (v2_hi, v2_lo) {
+        ((v1_hi, v1_lo, v1_bytes), (v2_hi, v2_lo, v2_bytes))
+      } else {
+        ((v2_hi, v2_lo, v2_bytes), (v1_hi, v1_lo, v1_bytes))
+      };
+
+    // Insert variants in reverse hash order (large then small) so we can validate sorting.
+    let mut state = FixtureDeterminism {
+      stem: stem.to_string(),
+      variants: vec![
+        VariantRecord {
+          hash_hi: baseline_hi,
+          hash_lo: baseline_lo,
+          width: 1,
+          height: 1,
+          count: 1,
+          diff_pixels_vs_baseline: Some(0),
+          first_mismatch_vs_baseline: None,
+          first_mismatch_rgba_vs_baseline: None,
+          data: None,
+        },
+        VariantRecord {
+          hash_hi: large_hi,
+          hash_lo: large_lo,
+          width: 1,
+          height: 1,
+          count: 1,
+          diff_pixels_vs_baseline: Some(1),
+          first_mismatch_vs_baseline: Some((0, 0)),
+          first_mismatch_rgba_vs_baseline: None,
+          data: Some(large_bytes),
+        },
+        VariantRecord {
+          hash_hi: small_hi,
+          hash_lo: small_lo,
+          width: 1,
+          height: 1,
+          count: 1,
+          diff_pixels_vs_baseline: Some(1),
+          first_mismatch_vs_baseline: Some((0, 0)),
+          first_mismatch_rgba_vs_baseline: None,
+          data: Some(small_bytes),
+        },
+      ],
+      baseline_rgba: None,
+    };
+
+    let cli = Cli {
+      fixtures_dir: PathBuf::new(),
+      out_dir: out_dir.to_path_buf(),
+      fixtures: None,
+      shard: None,
+      jobs: 1,
+      viewport: (1, 1),
+      dpr: 1.0,
+      media: MediaTypeArg::Screen,
+      fit_canvas_to_content: false,
+      timeout: 1,
+      write_snapshot: false,
+      font_dir: Vec::new(),
+      repeat: 2,
+      shuffle: false,
+      seed: 0,
+      fail_on_nondeterminism: false,
+      save_variants: true,
+      reset_paint_scratch: false,
+    };
+
+    write_nondeterminism_outputs(out_dir, stem, &mut state, &cli).expect("write variants");
+
+    let report_path = snapshot_dir_for(out_dir, stem)
+      .join("nondeterminism")
+      .join("report.txt");
+    let report = fs::read_to_string(report_path).expect("read report");
+
+    let small_tag = format!("hash=0x{small_hi:016x}{small_lo:016x}");
+    let large_tag = format!("hash=0x{large_hi:016x}{large_lo:016x}");
+    let small_pos = report
+      .find(&small_tag)
+      .expect("expected report to mention small hash");
+    let large_pos = report
+      .find(&large_tag)
+      .expect("expected report to mention large hash");
+    assert!(
+      small_pos < large_pos,
+      "expected variants to be sorted by hash in report; got:\n{report}"
+    );
+  }
 }
 
 fn build_snapshot(artifacts: &RenderArtifacts) -> io::Result<PipelineSnapshot> {
