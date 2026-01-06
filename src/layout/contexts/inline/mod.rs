@@ -12596,6 +12596,98 @@ mod tests {
   }
 
   #[test]
+  fn inline_float_width_max_content_uses_rebased_intrinsic_border_box_width() {
+    let ifc = InlineFormattingContext::new();
+
+    let mut base_style = ComputedStyle::default();
+    base_style.display = Display::Block;
+    base_style.float = crate::style::float::Float::Left;
+    base_style.padding_left = Length::percent(10.0);
+    base_style.padding_right = Length::px(5.0);
+    base_style.border_left_style = crate::style::types::BorderStyle::Solid;
+    base_style.border_right_style = crate::style::types::BorderStyle::Solid;
+    base_style.border_left_width = Length::px(2.0);
+    base_style.border_right_width = Length::px(3.0);
+    base_style.width = None;
+    base_style.width_keyword = None;
+    base_style.min_width = None;
+    base_style.min_width_keyword = None;
+    base_style.max_width = None;
+    base_style.max_width_keyword = None;
+    let base_style = Arc::new(base_style);
+
+    let text = BoxNode::new_text(default_style(), "word ".repeat(40));
+    let intrinsic_node = BoxNode::new_block(
+      base_style.clone(),
+      FormattingContextType::Inline,
+      vec![text.clone()],
+    );
+
+    let mut keyword_style: ComputedStyle = (*base_style).clone();
+    keyword_style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+    let float_node = BoxNode::new_block(
+      Arc::new(keyword_style),
+      FormattingContextType::Inline,
+      vec![text],
+    );
+    let floating = crate::layout::contexts::inline::line_builder::FloatingItem {
+      box_node: float_node.clone(),
+      metrics: BaselineMetrics::for_replaced(0.0),
+      vertical_align: VerticalAlign::Baseline,
+      direction: float_node.style.direction,
+      unicode_bidi: float_node.style.unicode_bidi,
+    };
+
+    let fc = ifc.factory.get(FormattingContextType::Inline);
+    let (_min_base0, max_base0) = fc
+      .compute_intrinsic_inline_sizes(&intrinsic_node)
+      .expect("intrinsic sizes");
+    assert!(
+      max_base0.is_finite() && max_base0 > 0.0,
+      "expected non-zero intrinsic width, got {:.2}",
+      max_base0
+    );
+
+    let edges_base0 =
+      horizontal_padding_and_borders(&base_style, 0.0, ifc.viewport_size, &ifc.font_context);
+    let containing_width = (max_base0 * 0.5).max(1.0);
+    let edges_actual = horizontal_padding_and_borders(
+      &base_style,
+      containing_width,
+      ifc.viewport_size,
+      &ifc.font_context,
+    );
+    let expected_border = (max_base0 - edges_base0 + edges_actual).max(0.0);
+
+    let mut float_ctx = crate::layout::float_context::FloatContext::new(containing_width.max(0.0));
+    let containing_size = Size::new(containing_width, 200.0);
+    let (fragment, _, _) = ifc
+      .layout_inline_float_fragment(
+        &floating,
+        containing_width,
+        containing_size,
+        0.0,
+        0.0,
+        &mut float_ctx,
+      )
+      .expect("layout float");
+    assert!(
+      (fragment.bounds.width() - expected_border).abs() < 0.5,
+      "expected max-content border-box width {:.2}, got {:.2} (edges_base0={:.2}, edges_actual={:.2})",
+      expected_border,
+      fragment.bounds.width(),
+      edges_base0,
+      edges_actual
+    );
+    assert!(
+      fragment.bounds.width() > containing_width + 0.5,
+      "expected max-content float width to overflow available width {:.2}, got {:.2}",
+      containing_width,
+      fragment.bounds.width()
+    );
+  }
+
+  #[test]
   fn inline_float_table_respects_used_border_box_width_override_for_column_layout() {
     let ifc = InlineFormattingContext::new();
 
