@@ -4100,12 +4100,16 @@ impl GridFormattingContext {
         .get(&ensure_box_id(child))
         .copied()
         .unwrap_or(crate::geometry::Point::ZERO);
-      let has_inline_keyword = positioned_style.width_keyword.is_some()
-        || positioned_style.min_width_keyword.is_some()
-        || positioned_style.max_width_keyword.is_some();
-      let has_block_keyword = positioned_style.height_keyword.is_some()
-        || positioned_style.min_height_keyword.is_some()
-        || positioned_style.max_height_keyword.is_some();
+      let width_keyword = child.style.width_keyword;
+      let min_width_keyword = child.style.min_width_keyword;
+      let max_width_keyword = child.style.max_width_keyword;
+      let height_keyword = child.style.height_keyword;
+      let min_height_keyword = child.style.min_height_keyword;
+      let max_height_keyword = child.style.max_height_keyword;
+      let has_inline_keyword =
+        width_keyword.is_some() || min_width_keyword.is_some() || max_width_keyword.is_some();
+      let has_block_keyword =
+        height_keyword.is_some() || min_height_keyword.is_some() || max_height_keyword.is_some();
       let needs_inline_intrinsics = has_inline_keyword
         || (positioned_style.width.is_auto()
           && (positioned_style.left.is_auto()
@@ -4268,6 +4272,12 @@ impl GridFormattingContext {
         intrinsic_size,
         static_pos,
       );
+      input.style.width_keyword = width_keyword;
+      input.style.min_width_keyword = min_width_keyword;
+      input.style.max_width_keyword = max_width_keyword;
+      input.style.height_keyword = height_keyword;
+      input.style.min_height_keyword = min_height_keyword;
+      input.style.max_height_keyword = max_height_keyword;
       input.is_replaced = child.is_replaced();
       input.preferred_min_inline_size = preferred_min_inline;
       input.preferred_inline_size = preferred_inline;
@@ -7370,12 +7380,16 @@ impl FormattingContext for GridFormattingContext {
           .get(&ensure_box_id(child))
           .copied()
           .unwrap_or(crate::geometry::Point::ZERO);
-        let has_inline_keyword = positioned_style.width_keyword.is_some()
-          || positioned_style.min_width_keyword.is_some()
-          || positioned_style.max_width_keyword.is_some();
-        let has_block_keyword = positioned_style.height_keyword.is_some()
-          || positioned_style.min_height_keyword.is_some()
-          || positioned_style.max_height_keyword.is_some();
+        let width_keyword = child.style.width_keyword;
+        let min_width_keyword = child.style.min_width_keyword;
+        let max_width_keyword = child.style.max_width_keyword;
+        let height_keyword = child.style.height_keyword;
+        let min_height_keyword = child.style.min_height_keyword;
+        let max_height_keyword = child.style.max_height_keyword;
+        let has_inline_keyword =
+          width_keyword.is_some() || min_width_keyword.is_some() || max_width_keyword.is_some();
+        let has_block_keyword =
+          height_keyword.is_some() || min_height_keyword.is_some() || max_height_keyword.is_some();
         let needs_inline_intrinsics = has_inline_keyword
           || (positioned_style.width.is_auto()
             && (positioned_style.left.is_auto()
@@ -7545,6 +7559,12 @@ impl FormattingContext for GridFormattingContext {
           intrinsic_size,
           static_pos,
         );
+        input.style.width_keyword = width_keyword;
+        input.style.min_width_keyword = min_width_keyword;
+        input.style.max_width_keyword = max_width_keyword;
+        input.style.height_keyword = height_keyword;
+        input.style.min_height_keyword = min_height_keyword;
+        input.style.max_height_keyword = max_height_keyword;
         input.is_replaced = child.is_replaced();
         input.preferred_min_inline_size = preferred_min_inline;
         input.preferred_inline_size = preferred_inline;
