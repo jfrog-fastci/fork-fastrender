@@ -286,6 +286,10 @@ fn chrome_baseline_fixtures_respects_sharding_and_writes_outputs() {
 
   let status = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .current_dir(&repo_root)
+    .env(
+      "HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX",
+      HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX.to_string(),
+    )
     .arg("chrome-baseline-fixtures")
     .arg("--fixtures-dir")
     .arg(&fixture_root)
@@ -334,6 +338,10 @@ fn chrome_baseline_fixtures_builds_expected_chrome_command_flags() {
 
   let status = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .current_dir(&repo_root)
+    .env(
+      "HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX",
+      HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX.to_string(),
+    )
     .arg("chrome-baseline-fixtures")
     .arg("--fixture-dir")
     .arg(&fixture_root)
@@ -397,6 +405,10 @@ fn chrome_baseline_fixtures_errors_when_chrome_missing() {
 
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .current_dir(&repo_root)
+    .env(
+      "HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX",
+      HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX.to_string(),
+    )
     .arg("chrome-baseline-fixtures")
     .arg("--fixture-dir")
     .arg(&fixture_root)
@@ -426,6 +438,10 @@ fn chrome_baseline_fixtures_errors_on_non_finite_dpr() {
   let repo_root = repo_root();
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .current_dir(&repo_root)
+    .env(
+      "HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX",
+      HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX.to_string(),
+    )
     .arg("chrome-baseline-fixtures")
     .arg("--dpr")
     .arg("NaN")
@@ -462,6 +478,10 @@ fn chrome_baseline_fixtures_removes_stale_outputs_on_failure() {
 
   let output = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .current_dir(&repo_root)
+    .env(
+      "HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX",
+      HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX.to_string(),
+    )
     .arg("chrome-baseline-fixtures")
     .arg("--fixture-dir")
     .arg(&fixture_root)
@@ -506,6 +526,10 @@ fn chrome_baseline_fixtures_falls_back_to_legacy_headless() {
 
   let status = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .current_dir(&repo_root)
+    .env(
+      "HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX",
+      HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX.to_string(),
+    )
     .arg("chrome-baseline-fixtures")
     .arg("--fixture-dir")
     .arg(&fixture_root)
@@ -583,6 +607,10 @@ fn chrome_baseline_fixtures_print_mode_stacks_pdf_pages() {
 
   let status = Command::new(env!("CARGO_BIN_EXE_xtask"))
     .current_dir(&repo_root)
+    .env(
+      "HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX",
+      HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX.to_string(),
+    )
     .env("PATH", &path)
     .arg("chrome-baseline-fixtures")
     .arg("--fixture-dir")
