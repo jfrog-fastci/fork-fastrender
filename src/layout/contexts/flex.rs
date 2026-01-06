@@ -50,6 +50,8 @@ use crate::layout::formatting_context::intrinsic_cache_lookup;
 use crate::layout::formatting_context::intrinsic_cache_store;
 use crate::layout::formatting_context::layout_cache_lookup;
 use crate::layout::formatting_context::layout_cache_store;
+use crate::layout::formatting_context::remembered_size_cache_lookup;
+use crate::layout::formatting_context::remembered_size_cache_store;
 use crate::layout::formatting_context::FormattingContext;
 use crate::layout::formatting_context::IntrinsicSizingMode;
 use crate::layout::formatting_context::LayoutError;
@@ -933,7 +935,7 @@ impl FormattingContext for FlexFormattingContext {
           crate::style::types::ContentVisibility::Auto
         )
       })
-      .filter(|child| self.content_visibility_auto_has_definite_placeholder(child.style.as_ref()))
+      .filter(|child| self.content_visibility_auto_has_definite_placeholder(child))
       .filter_map(|child| {
         node_map
           .get(&(*child as *const BoxNode))
@@ -1444,14 +1446,14 @@ impl FormattingContext for FlexFormattingContext {
                     let skip_contents = match box_node.style.content_visibility {
                       crate::style::types::ContentVisibility::Hidden => true,
                       crate::style::types::ContentVisibility::Auto => {
-                        this.content_visibility_auto_has_definite_placeholder(box_node.style.as_ref())
+                        this.content_visibility_auto_has_definite_placeholder(box_node)
                           && !auto_unskipped_for_pass.contains(&box_ptr)
                       }
                       crate::style::types::ContentVisibility::Visible => false,
                     };
                     if skip_contents {
                       let placeholder = this.content_visibility_placeholder_content_size(
-                        box_node.style.as_ref(),
+                        box_node,
                         &constraints,
                         known_dimensions,
                       );
@@ -4946,7 +4948,8 @@ impl FlexFormattingContext {
       .unwrap_or(FormattingContextType::Block);
     let item_fc = self.factory.get(item_fc_type);
 
-    let avail_w = self.fit_content_available_for_axis(Axis::Horizontal, containing_flex, constraints);
+    let avail_w =
+      self.fit_content_available_for_axis(Axis::Horizontal, containing_flex, constraints);
     let avail_h = self.fit_content_available_for_axis(Axis::Vertical, containing_flex, constraints);
 
     // Padding/border percentages resolve against the containing block's physical width.
@@ -4968,7 +4971,8 @@ impl FlexFormattingContext {
         self.resolve_length_for_width(style.used_border_left_width(), inline_base, style);
       let border_right =
         self.resolve_length_for_width(style.used_border_right_width(), inline_base, style);
-      let border_top = self.resolve_length_for_width(style.used_border_top_width(), inline_base, style);
+      let border_top =
+        self.resolve_length_for_width(style.used_border_top_width(), inline_base, style);
       let border_bottom =
         self.resolve_length_for_width(style.used_border_bottom_width(), inline_base, style);
       match axis {
@@ -4980,9 +4984,9 @@ impl FlexFormattingContext {
     let mut intrinsic_w: Option<(f32, f32)> = None;
     let mut intrinsic_h: Option<(f32, f32)> = None;
     let resolve_fit_content = |axis: Axis,
-                              limit: Option<Length>,
-                              available: FitContentAvailable,
-                              cache: &mut Option<(f32, f32)>|
+                               limit: Option<Length>,
+                               available: FitContentAvailable,
+                               cache: &mut Option<(f32, f32)>|
      -> Result<f32, LayoutError> {
       let (min_intrinsic, max_intrinsic) = match cache {
         Some(pair) => *pair,
@@ -4999,7 +5003,9 @@ impl FlexFormattingContext {
       let preferred_border_box = match limit {
         None => None,
         Some(limit) => {
-          let resolved = self.resolve_length_for_width(limit, available_border_box, style).max(0.0);
+          let resolved = self
+            .resolve_length_for_width(limit, available_border_box, style)
+            .max(0.0);
           Some(if style.box_sizing == BoxSizing::ContentBox {
             (resolved + axis_edges(axis)).max(0.0)
           } else {
@@ -5950,7 +5956,7 @@ impl FlexFormattingContext {
       let skip_contents = match child_box.style.content_visibility {
         crate::style::types::ContentVisibility::Hidden => true,
         crate::style::types::ContentVisibility::Auto => {
-          self.content_visibility_auto_has_definite_placeholder(child_box.style.as_ref())
+          self.content_visibility_auto_has_definite_placeholder(child_box)
             && auto_unskipped
               .map(|set| !set.contains(&(child_box as *const BoxNode)))
               .unwrap_or(false)
@@ -6322,6 +6328,7 @@ impl FlexFormattingContext {
       let target_height = metrics.target_height;
 
       let mut final_fragment: Option<FragmentNode> = None;
+      let mut store_remembered_size = false;
       match plan {
         ChildPlan::Skip => {}
         ChildPlan::ContentVisibilityPlaceholder => {
@@ -6342,6 +6349,7 @@ impl FlexFormattingContext {
           stored_size,
           fragment,
         } => {
+          store_remembered_size = true;
           record_fragment_clone(CloneSite::FlexMeasureReuse, fragment.as_ref());
           let template = CachedFragmentTemplate::new(fragment);
           let intrinsic_size =
@@ -6492,6 +6500,7 @@ impl FlexFormattingContext {
           final_fragment = Some(template.place(bounds).materialize());
         }
         ChildPlan::Replaced => {
+          store_remembered_size = true;
           if let crate::tree::box_tree::BoxType::Replaced(replaced_box) = &child_box.box_type {
             let bounds = Rect::new(
               Point::new(child_loc_x, child_loc_y),
@@ -6510,6 +6519,7 @@ impl FlexFormattingContext {
           }
         }
         ChildPlan::NeedsLayout => {
+          store_remembered_size = true;
           let Some(output) = layout_results[dom_idx].take() else {
             return Err(LayoutError::MissingContext(
               "Missing flex child layout output".to_string(),
@@ -6692,6 +6702,20 @@ impl FlexFormattingContext {
       }
 
       if let Some(fragment) = final_fragment {
+        if store_remembered_size {
+          let percentage_base = if rect_w.is_finite() && rect_w > eps {
+            rect_w
+          } else {
+            constraints
+              .inline_percentage_base
+              .or_else(|| constraints.width())
+              .filter(|base| base.is_finite() && *base > eps)
+              .unwrap_or(self.viewport_size.width)
+          };
+          let content_size =
+            self.content_box_size(&fragment, child_box.style.as_ref(), percentage_base);
+          remembered_size_cache_store(child_box, content_size);
+        }
         let key = (child_box.style.order, dom_idx);
         if let Some(prev) = last_unordered_key {
           if key < prev {
@@ -7473,26 +7497,58 @@ impl FlexFormattingContext {
     Size::new(content_width, content_height)
   }
 
-  fn content_visibility_auto_has_definite_placeholder(&self, style: &ComputedStyle) -> bool {
-    style
-      .height
+  fn content_visibility_auto_has_definite_placeholder(&self, node: &BoxNode) -> bool {
+    let style = node.style.as_ref();
+    let axis_is_width = crate::style::block_axis_is_horizontal(style.writing_mode);
+    let explicit = if axis_is_width {
+      style.width.as_ref()
+    } else {
+      style.height.as_ref()
+    };
+    if explicit
+      .and_then(|l| self.resolve_length_px(l, style))
+      .is_some()
+    {
+      return true;
+    }
+
+    let axis = if axis_is_width {
+      style.contain_intrinsic_width
+    } else {
+      style.contain_intrinsic_height
+    };
+    if axis
+      .length
       .as_ref()
       .and_then(|l| self.resolve_length_px(l, style))
       .is_some()
-      || style
-        .contain_intrinsic_height
-        .length
-        .as_ref()
-        .and_then(|l| self.resolve_length_px(l, style))
-        .is_some()
+    {
+      return true;
+    }
+
+    if axis.auto {
+      if let Some(size) = remembered_size_cache_lookup(node) {
+        let value = if axis_is_width {
+          size.width
+        } else {
+          size.height
+        };
+        if value.is_finite() {
+          return true;
+        }
+      }
+    }
+
+    false
   }
 
   fn content_visibility_placeholder_content_size(
     &self,
-    style: &ComputedStyle,
+    node: &BoxNode,
     constraints: &LayoutConstraints,
     known_dimensions: taffy::geometry::Size<Option<f32>>,
   ) -> Size {
+    let style = node.style.as_ref();
     let sanitize = |value: f32| {
       if value.is_finite() && value >= 0.0 {
         value
@@ -7501,47 +7557,35 @@ impl FlexFormattingContext {
       }
     };
 
+    let remembered = remembered_size_cache_lookup(node);
+    let remembered_width = remembered.map(|size| size.width).filter(|v| v.is_finite());
+    let remembered_height = remembered.map(|size| size.height).filter(|v| v.is_finite());
+
     let width = known_dimensions.width.unwrap_or_else(|| {
       let base = constraints
         .inline_percentage_base
         .or_else(|| constraints.width())
         .filter(|b| b.is_finite());
-      style
-        .contain_intrinsic_width
-        .length
-        .and_then(|l| {
-          resolve_length_with_percentage_metrics(
-            l,
-            base,
-            self.viewport_size,
-            style.font_size,
-            style.root_font_size,
-            Some(style),
-            Some(&self.font_context),
-          )
-        })
-        .map(sanitize)
-        .unwrap_or(0.0)
+      crate::layout::utils::resolve_contain_intrinsic_size_axis(
+        style.contain_intrinsic_width,
+        remembered_width,
+        base,
+        self.viewport_size,
+        style.font_size,
+        style.root_font_size,
+      )
     });
 
     let height = known_dimensions.height.unwrap_or_else(|| {
       let base = constraints.height().filter(|b| b.is_finite());
-      style
-        .contain_intrinsic_height
-        .length
-        .and_then(|l| {
-          resolve_length_with_percentage_metrics(
-            l,
-            base,
-            self.viewport_size,
-            style.font_size,
-            style.root_font_size,
-            Some(style),
-            Some(&self.font_context),
-          )
-        })
-        .map(sanitize)
-        .unwrap_or(0.0)
+      crate::layout::utils::resolve_contain_intrinsic_size_axis(
+        style.contain_intrinsic_height,
+        remembered_height,
+        base,
+        self.viewport_size,
+        style.font_size,
+        style.root_font_size,
+      )
     });
 
     Size::new(sanitize(width), sanitize(height))
@@ -8393,6 +8437,118 @@ mod tests {
   }
 
   #[test]
+  fn contain_intrinsic_size_auto_uses_remembered_size_when_skipped_in_flex() {
+    let _intrinsic_guard = crate::layout::formatting_context::intrinsic_cache_test_lock();
+    let _toggles = content_visibility_test_guard();
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Column;
+    let container_style = Arc::new(container_style);
+
+    let mut text_style = ComputedStyle::default();
+    text_style.font_size = 16.0;
+    let text_style = Arc::new(text_style);
+
+    let spacer_id = 201usize;
+    let auto_id = 202usize;
+    let after_id = 203usize;
+
+    let mut spacer_style = ComputedStyle::default();
+    spacer_style.height = Some(Length::px(300.0));
+    let mut spacer =
+      BoxNode::new_block(Arc::new(spacer_style), FormattingContextType::Block, vec![]);
+    spacer.id = spacer_id;
+
+    let padding_top = 5.0;
+    let padding_bottom = 7.0;
+    let border_top = 2.0;
+    let border_bottom = 3.0;
+
+    let mut auto_style = ComputedStyle::default();
+    auto_style.content_visibility = ContentVisibility::Auto;
+    auto_style.padding_top = Length::px(padding_top);
+    auto_style.padding_bottom = Length::px(padding_bottom);
+    auto_style.border_top_width = Length::px(border_top);
+    auto_style.border_bottom_width = Length::px(border_bottom);
+    auto_style.border_top_style = BorderStyle::Solid;
+    auto_style.border_bottom_style = BorderStyle::Solid;
+
+    let auto_text = BoxNode::new_text(text_style.clone(), "Remember me".to_string());
+    let auto_inline = BoxNode::new_inline(text_style.clone(), vec![auto_text]);
+    let mut auto_item = BoxNode::new_block(
+      Arc::new(auto_style),
+      FormattingContextType::Block,
+      vec![auto_inline],
+    );
+    auto_item.id = auto_id;
+
+    let mut after_style = ComputedStyle::default();
+    after_style.height = Some(Length::px(50.0));
+    let mut after_item =
+      BoxNode::new_block(Arc::new(after_style), FormattingContextType::Block, vec![]);
+    after_item.id = after_id;
+
+    let container = BoxNode::new_block(
+      container_style,
+      FormattingContextType::Flex,
+      vec![spacer, auto_item, after_item],
+    );
+    let constraints = LayoutConstraints::definite(200.0, 1000.0);
+
+    reset_flex_measure_layout_calls();
+    let fc_large = FlexFormattingContext::with_viewport(Size::new(400.0, 800.0))
+      .with_parallelism(LayoutParallelism::disabled());
+    let fragment_large = fc_large
+      .layout(&container, &constraints)
+      .expect("layout should succeed");
+
+    assert!(
+      flex_measure_layout_calls_for(auto_id) > 0,
+      "expected first pass to lay out the content-visibility:auto item to establish a remembered size"
+    );
+
+    let auto_fragment_large = find_block_child(&fragment_large, auto_id);
+    assert!(
+      !auto_fragment_large.children.is_empty(),
+      "expected first pass to fully lay out the auto item"
+    );
+    let remembered_border_box_height = auto_fragment_large.bounds.height();
+    let after_y_large = find_block_child(&fragment_large, after_id).bounds.y();
+
+    reset_flex_measure_layout_calls();
+    let fc_small = FlexFormattingContext::with_viewport(Size::new(400.0, 100.0))
+      .with_parallelism(LayoutParallelism::disabled());
+    let fragment_small = fc_small
+      .layout(&container, &constraints)
+      .expect("layout should succeed");
+
+    assert_eq!(
+      flex_measure_layout_calls_for(auto_id),
+      0,
+      "expected second pass to skip the offscreen content-visibility:auto item"
+    );
+
+    let auto_fragment_small = find_block_child(&fragment_small, auto_id);
+    assert!(
+      auto_fragment_small.children.is_empty(),
+      "expected second pass auto item fragment to be a placeholder"
+    );
+    assert!(
+      (auto_fragment_small.bounds.height() - remembered_border_box_height).abs() < 0.5,
+      "expected placeholder height {:.1}, got {:.1}",
+      remembered_border_box_height,
+      auto_fragment_small.bounds.height()
+    );
+
+    let after_y_small = find_block_child(&fragment_small, after_id).bounds.y();
+    assert!(
+      (after_y_small - after_y_large).abs() < 0.5,
+      "expected following flex item y to remain stable (first={after_y_large:.1}, second={after_y_small:.1})"
+    );
+  }
+
+  #[test]
   fn content_visibility_auto_nested_flex_in_flex_accounts_for_child_offset() {
     let _toggles = content_visibility_test_guard();
     let viewport = Size::new(200.0, 200.0);
@@ -8455,6 +8611,75 @@ mod tests {
     assert!(
       auto_fragment.children.is_empty(),
       "expected nested flex content-visibility:auto item to remain skipped when its flex container is offscreen within the parent"
+    );
+  }
+
+  #[test]
+  fn content_visibility_auto_respects_vertical_writing_mode_in_flex_placeholder_gate() {
+    let _toggles = content_visibility_test_guard();
+    reset_flex_measure_layout_calls();
+
+    let fc = FlexFormattingContext::with_viewport(Size::new(400.0, 100.0))
+      .with_parallelism(LayoutParallelism::disabled());
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    container_style.flex_direction = FlexDirection::Column;
+    let container_style = Arc::new(container_style);
+
+    let mut text_style = ComputedStyle::default();
+    text_style.font_size = 16.0;
+    let text_style = Arc::new(text_style);
+
+    let spacer_id = 401usize;
+    let auto_id = 402usize;
+
+    let mut spacer_style = ComputedStyle::default();
+    spacer_style.height = Some(Length::px(300.0));
+    let mut spacer =
+      BoxNode::new_block(Arc::new(spacer_style), FormattingContextType::Block, vec![]);
+    spacer.id = spacer_id;
+
+    let mut auto_style = ComputedStyle::default();
+    auto_style.content_visibility = ContentVisibility::Auto;
+    auto_style.writing_mode = WritingMode::VerticalRl;
+    auto_style.contain_intrinsic_width.length = Some(Length::px(40.0));
+
+    let auto_text = BoxNode::new_text(text_style.clone(), "Offscreen".to_string());
+    let auto_inline = BoxNode::new_inline(text_style.clone(), vec![auto_text]);
+    let mut auto_item = BoxNode::new_block(
+      Arc::new(auto_style),
+      FormattingContextType::Block,
+      vec![auto_inline],
+    );
+    auto_item.id = auto_id;
+
+    let container = BoxNode::new_block(
+      container_style,
+      FormattingContextType::Flex,
+      vec![spacer, auto_item],
+    );
+    let constraints = LayoutConstraints::definite(200.0, 1000.0);
+    let fragment = fc
+      .layout(&container, &constraints)
+      .expect("layout should succeed");
+
+    assert_eq!(
+      flex_measure_layout_calls_for(auto_id),
+      0,
+      "expected offscreen vertical-writing-mode content-visibility:auto item to skip layout when it has a definite contain-intrinsic-width"
+    );
+
+    let auto_fragment = find_block_child(&fragment, auto_id);
+    assert!(
+      auto_fragment.children.is_empty(),
+      "expected offscreen auto fragment to be a placeholder"
+    );
+    assert!(
+      auto_fragment.bounds.y() > fc.viewport_size.height,
+      "expected offscreen auto item y={} to be beyond viewport height={}",
+      auto_fragment.bounds.y(),
+      fc.viewport_size.height
     );
   }
 
@@ -11808,7 +12033,9 @@ mod tests {
 
     let fc = FlexFormattingContext::with_viewport(Size::new(200.0, 200.0));
     let constraints = LayoutConstraints::definite(200.0, 200.0);
-    let fragment = fc.layout(&container, &constraints).expect("layout should succeed");
+    let fragment = fc
+      .layout(&container, &constraints)
+      .expect("layout should succeed");
 
     assert_eq!(fragment.children.len(), 1);
     assert!(

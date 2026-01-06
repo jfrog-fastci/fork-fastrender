@@ -14,15 +14,15 @@ fn render_datalist(backend: &str) -> tiny_skia::Pixmap {
     <style>html,body{margin:0;background:rgb(0,200,0);}</style>\
     <datalist style='width:40px;height:40px;background:rgb(255,0,0);'></datalist>";
 
-  let mut renderer = FastRender::with_config(config).expect(\"create renderer\");
-  renderer.render_html(html, 80, 80).expect(\"render datalist\")
+  let mut renderer = FastRender::with_config(config).expect("create renderer");
+  renderer.render_html(html, 80, 80).expect("render datalist")
 }
 
 fn assert_hidden(pixmap: &tiny_skia::Pixmap) {
-  let px = pixmap.pixel(5, 5).expect(\"sample pixel\");
+  let px = pixmap.pixel(5, 5).expect("sample pixel");
   assert!(
     px.green() > 150 && px.red() < 100 && px.blue() < 100,
-    \"expected element to be hidden (got rgba=({}, {}, {}, {}))\",
+    "expected element to be hidden (got rgba=({}, {}, {}, {}))",
     px.red(),
     px.green(),
     px.blue(),
@@ -32,13 +32,12 @@ fn assert_hidden(pixmap: &tiny_skia::Pixmap) {
 
 #[test]
 fn display_list_datalist_is_hidden_by_default() {
-  let pixmap = render_datalist(\"display_list\");
+  let pixmap = render_datalist("display_list");
   assert_hidden(&pixmap);
 }
 
 #[test]
 fn legacy_datalist_is_hidden_by_default() {
-  let pixmap = render_datalist(\"legacy\");
+  let pixmap = render_datalist("legacy");
   assert_hidden(&pixmap);
 }
-
