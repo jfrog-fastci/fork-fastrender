@@ -161,6 +161,27 @@ fn svg_filter_resvg_missing_in2_defaults_to_previous_for_fe_composite() {
 }
 
 #[test]
+fn svg_filter_resvg_empty_in2_treated_as_missing_for_fe_composite() {
+  let svg = r#"
+    <svg xmlns="http://www.w3.org/2000/svg" width="4" height="4" shape-rendering="crispEdges">
+      <defs>
+        <filter id="f" x="0" y="0" width="4" height="4" filterUnits="userSpaceOnUse"
+                color-interpolation-filters="sRGB">
+          <feFlood flood-color="rgb(255,0,0)" result="a"/>
+          <feFlood flood-color="rgb(0,0,0)" result="b"/>
+          <feComposite in="a" in2="" operator="out"/>
+        </filter>
+      </defs>
+      <g filter="url(#f)">
+        <rect x="0" y="0" width="4" height="4" fill="rgb(0,0,255)" fill-opacity="0.5"/>
+      </g>
+    </svg>
+  "#;
+
+  assert_svg_filter_matches_resvg(svg, "f", Rect::from_xywh(0.0, 0.0, 4.0, 4.0), (4, 4), 0);
+}
+
+#[test]
 fn svg_filter_resvg_missing_in2_defaults_to_previous_for_fe_blend() {
   let svg = r#"
     <svg xmlns="http://www.w3.org/2000/svg" width="4" height="4" shape-rendering="crispEdges">
