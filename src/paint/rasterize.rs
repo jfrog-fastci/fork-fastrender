@@ -1247,25 +1247,66 @@ fn render_inset_shadow(
     None => return Ok(false),
   };
 
-  // Position of the shadow shape in destination coordinates (independent of how we clamp the
-  // offscreen surface).
-  let outer_dest_x = x + shadow.offset_x + spread;
-  let outer_dest_y = y + shadow.offset_y + spread;
-  let outer_x = outer_dest_x - min_x;
-  let outer_y = outer_dest_y - min_y;
-  let outer_w = (width - 2.0 * spread).max(0.0);
-  let outer_h = (height - 2.0 * spread).max(0.0);
+  // Inset shadows are painted inside the original box. The shadow "shape" is the area of the box
+  // excluding an inner cutout rectangle (offset + spread). This yields the expected behavior for
+  // `inset 0 0 0 <spread>` which acts like an inner border rather than a translucent fill.
+  //
+  // This implementation builds that ring in an offscreen surface, blurs it, then clips it back to
+  // the original outer box bounds.
+  let outer_x = x - min_x;
+  let outer_y = y - min_y;
+  let outer_w = width.max(0.0);
+  let outer_h = height.max(0.0);
 
-  let adjusted_radii = radii.shrink(spread).clamped(outer_w, outer_h);
   let _ = fill_rounded_rect(
     &mut tmp,
     outer_x,
     outer_y,
     outer_w,
     outer_h,
-    &adjusted_radii,
+    radii,
     shadow.color,
   );
+
+  let cutout_w = (width - 2.0 * spread).max(0.0);
+  let cutout_h = (height - 2.0 * spread).max(0.0);
+  if cutout_w > 0.0 && cutout_h > 0.0 {
+    let cutout_dest_x = x + shadow.offset_x + spread;
+    let cutout_dest_y = y + shadow.offset_y + spread;
+    let cutout_x = cutout_dest_x - min_x;
+    let cutout_y = cutout_dest_y - min_y;
+    let cutout_radii = radii.shrink(spread).clamped(cutout_w, cutout_h);
+
+    // Clear the inner cutout so only a ring (outer minus inner) remains before blur.
+    if cutout_radii.is_zero() {
+      if let Some(rect) = tiny_skia::Rect::from_xywh(cutout_x, cutout_y, cutout_w, cutout_h) {
+        let path = PathBuilder::from_rect(rect);
+        let mut paint = Paint::default();
+        paint.blend_mode = tiny_skia::BlendMode::Clear;
+        paint.anti_alias = true;
+        tmp.fill_path(
+          &path,
+          &paint,
+          FillRule::Winding,
+          Transform::identity(),
+          None,
+        );
+      }
+    } else if let Some(path) =
+      build_rounded_rect_path(cutout_x, cutout_y, cutout_w, cutout_h, &cutout_radii)
+    {
+      let mut paint = Paint::default();
+      paint.blend_mode = tiny_skia::BlendMode::Clear;
+      paint.anti_alias = true;
+      tmp.fill_path(
+        &path,
+        &paint,
+        FillRule::Winding,
+        Transform::identity(),
+        None,
+      );
+    }
+  }
   crate::render_control::check_active(RenderStage::Paint)?;
 
   if sigma > 0.0 {

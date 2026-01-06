@@ -208,9 +208,6 @@ pub struct DisplayListBuilder {
   /// When extending an element background to the canvas (HTML canvas background propagation),
   /// suppress painting the background on the original element to avoid double-paint seams.
   canvas_background_suppress_box_id: Option<usize>,
-  /// Optional override for the size used when resolving `background-size:auto` for generated
-  /// images while painting the propagated canvas background.
-  background_size_override: Option<(f32, f32)>,
   estimated_fragments: Option<usize>,
   scroll_state: ScrollState,
   max_iframe_depth: usize,
@@ -1010,7 +1007,6 @@ impl DisplayListBuilder {
       background_pattern_fast_paths: paint_diagnostics_enabled()
         .then(|| Arc::new(AtomicU64::new(0))),
       canvas_background_suppress_box_id: None,
-      background_size_override: None,
       estimated_fragments: None,
       scroll_state: ScrollState::default(),
       max_iframe_depth: DEFAULT_MAX_IFRAME_DEPTH,
@@ -1050,7 +1046,6 @@ impl DisplayListBuilder {
       background_pattern_fast_paths: paint_diagnostics_enabled()
         .then(|| Arc::new(AtomicU64::new(0))),
       canvas_background_suppress_box_id: None,
-      background_size_override: None,
       estimated_fragments: None,
       scroll_state: ScrollState::default(),
       max_iframe_depth: DEFAULT_MAX_IFRAME_DEPTH,
@@ -2039,12 +2034,12 @@ impl DisplayListBuilder {
         self.canvas_background_suppress_box_id = Some(suppress_box_id);
         Some(RootBackground {
           paint_rect: target_rect,
-          // When propagating the canvas background, paint the chosen root/body background as if it
-          // belonged to the canvas itself. This means the background positioning/sizing area should
-          // match the paint target; otherwise generated images like gradients would repeat based on
-          // the shorter document bounds instead of stretching to the viewport (Chrome/legacy
-          // behavior).
-          origin_rect: target_rect,
+          // When propagating the canvas background, Chrome continues to resolve
+          // `background-size:auto` against the *source element's* background positioning area
+          // (typically the body's padding box). This can be shorter than the viewport, meaning
+          // generated images like gradients repeat to fill the canvas when `background-repeat`
+          // is `repeat` (the default).
+          origin_rect: source_rect,
           style,
         })
       })
@@ -4149,7 +4144,6 @@ impl DisplayListBuilder {
       background_layers: self.background_layers.clone(),
       background_pattern_fast_paths: self.background_pattern_fast_paths.clone(),
       canvas_background_suppress_box_id: self.canvas_background_suppress_box_id,
-      background_size_override: self.background_size_override,
       estimated_fragments: self.estimated_fragments,
       scroll_state: self.scroll_state.clone(),
       max_iframe_depth: self.max_iframe_depth,
@@ -5145,19 +5139,7 @@ impl DisplayListBuilder {
     );
 
     let compute_tile_metrics = |img_w: f32, img_h: f32| -> Option<(f32, f32, f32, f32)> {
-      let (size_area_w, size_area_h) = if img_w <= 0.0
-        && img_h <= 0.0
-        && self.background_size_override.is_some()
-        && matches!(
-          layer.size,
-          BackgroundSize::Explicit(BackgroundSizeComponent::Auto, BackgroundSizeComponent::Auto)
-        ) {
-        self
-          .background_size_override
-          .unwrap_or((origin_rect.width(), origin_rect.height()))
-      } else {
-        (origin_rect.width(), origin_rect.height())
-      };
+      let (size_area_w, size_area_h) = (origin_rect.width(), origin_rect.height());
       let (mut tile_w, mut tile_h) = Self::compute_background_size(
         layer,
         style.font_size,

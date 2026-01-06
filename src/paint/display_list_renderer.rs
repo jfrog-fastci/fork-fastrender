@@ -4026,6 +4026,9 @@ impl DisplayListRenderer {
       .as_ref()
       .map(|_| Instant::now());
     let timer = self.diagnostics_enabled.then(Instant::now);
+    let dest_x = visible_rect.x().floor() as i32;
+    let dest_y = visible_rect.y().floor() as i32;
+    let dither_phase = (((dest_y & 3) as u8) << 2) | ((dest_x & 3) as u8);
     let Some(pix) = rasterize_linear_gradient_cached(
       &self.gradient_pixmap_cache,
       width,
@@ -4036,6 +4039,7 @@ impl DisplayListRenderer {
       &stops,
       &self.gradient_cache,
       gradient_bucket(original_width.max(original_height)),
+      dither_phase,
     )?
     else {
       return Ok(());
@@ -4049,8 +4053,6 @@ impl DisplayListRenderer {
       blend_mode: self.canvas.blend_mode(),
       ..Default::default()
     };
-    let dest_x = visible_rect.x().floor() as i32;
-    let dest_y = visible_rect.y().floor() as i32;
     let frac_x = visible_rect.x() - dest_x as f32;
     let frac_y = visible_rect.y() - dest_y as f32;
     let transform = Transform::from_translate(frac_x, frac_y).post_concat(self.canvas.transform());
@@ -4109,6 +4111,11 @@ impl DisplayListRenderer {
       return Ok(());
     }
 
+    let origin = self.ds_point(item.origin);
+    let origin_x = origin.x.floor() as i32;
+    let origin_y = origin.y.floor() as i32;
+    let dither_phase = (((origin_y & 3) as u8) << 2) | ((origin_x & 3) as u8);
+
     let start = Point::new(
       self.ds_len(item.start.x) * raster_scale_x,
       self.ds_len(item.start.y) * raster_scale_y,
@@ -4139,6 +4146,7 @@ impl DisplayListRenderer {
       &stops,
       &self.gradient_cache,
       gradient_bucket(width.max(height)),
+      dither_phase,
     )?
     else {
       return Ok(());
@@ -4147,7 +4155,6 @@ impl DisplayListRenderer {
       self.record_gradient_usage((width * height) as u64, start);
     }
 
-    let origin = self.ds_point(item.origin);
     let scale_x = tile_w / tile.width() as f32;
     let scale_y = tile_h / tile.height() as f32;
     if !scale_x.is_finite() || !scale_y.is_finite() {
@@ -11598,6 +11605,9 @@ fn render_generated_border_image_subrect(
 
   let crop_x = if crop_x.is_finite() { crop_x } else { 0.0 };
   let crop_y = if crop_y.is_finite() { crop_y } else { 0.0 };
+  let crop_x_i32 = crop_x.floor() as i32;
+  let crop_y_i32 = crop_y.floor() as i32;
+  let dither_phase = (((crop_y_i32 & 3) as u8) << 2) | ((crop_x_i32 & 3) as u8);
   let rect = Rect::from_xywh(0.0, 0.0, full_width as f32, full_height as f32);
   match bg {
     BackgroundImage::LinearGradient { angle, stops } => {
@@ -11623,6 +11633,7 @@ fn render_generated_border_image_subrect(
         &resolved,
         cache,
         gradient_bucket(full_width.max(full_height)),
+        dither_phase,
       )
       .ok()
       .flatten()
@@ -11650,6 +11661,7 @@ fn render_generated_border_image_subrect(
         &resolved,
         cache,
         gradient_bucket(full_width.max(full_height)),
+        dither_phase,
       )
       .ok()
       .flatten()

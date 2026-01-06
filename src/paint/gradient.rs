@@ -21,6 +21,19 @@ const DEFAULT_GRADIENT_PIXMAP_CACHE_ITEMS: usize = 64;
 // memory usage when a page triggers unique gradients.
 const DEFAULT_GRADIENT_PIXMAP_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
+// Ordered dither matrix used by Chrome/Skia when quantizing gradients to 8-bit channels.
+//
+// Values are in the range 0-15. Indexing is `idx = (y & 3) * 4 + (x & 3)`.
+//
+// We keep this as a small integer table and derive the floating dither offset on demand:
+// `dither = (m + 0.5) / 16.0`.
+const BAYER_4X4_XY: [u8; 16] = [
+  0, 12, 3, 15, //
+  8, 4, 11, 7, //
+  2, 14, 1, 13, //
+  10, 6, 9, 5, //
+];
+
 #[derive(Clone, Copy, Hash, PartialEq, Eq)]
 pub enum SpreadModeKey {
   Pad,
@@ -103,6 +116,7 @@ impl GradientPixmapCacheKey {
     spread: SpreadMode,
     stops: &[(f32, Rgba)],
     bucket: u16,
+    dither_phase: u8,
   ) -> Option<Self> {
     if width == 0 || height == 0 || stops.is_empty() {
       return None;
@@ -120,6 +134,7 @@ impl GradientPixmapCacheKey {
         start.y.to_bits(),
         end.x.to_bits(),
         end.y.to_bits(),
+        u32::from(dither_phase),
       ],
       lut_key: Some(GradientCacheKey::new(stops, spread, period, bucket)),
     })
@@ -429,7 +444,7 @@ impl GradientCacheKey {
 
 #[derive(Clone)]
 pub struct GradientLut {
-  colors: Arc<Vec<PremultipliedColorU8>>,
+  colors: Arc<Vec<[f32; 4]>>,
   spread: SpreadModeKey,
   period: f32,
   scale: f32,
@@ -440,19 +455,17 @@ pub struct GradientLut {
 
 impl GradientLut {
   #[inline(always)]
-  fn sample_mapped(&self, t: f32) -> PremultipliedColorU8 {
+  fn sample_mapped_f32(&self, t: f32) -> [f32; 4] {
     debug_assert!(t.is_finite());
     debug_assert!(t >= 0.0);
-    if self.last_idx == 0 {
-      return self.first;
-    }
+    debug_assert!(self.last_idx > 0);
 
     let scaled = t * self.scale;
     let idx = scaled as usize;
     if idx >= self.last_idx {
-      return self.last;
+      // SAFETY: idx >= last_idx implies the last entry exists because last_idx > 0.
+      return unsafe { *self.colors.get_unchecked(self.last_idx) };
     }
-    // Fast path: exact hit on a LUT entry.
     let frac = scaled - idx as f32;
     if frac <= 0.0 {
       // SAFETY: idx < last_idx implies idx is within the LUT.
@@ -461,7 +474,49 @@ impl GradientLut {
     // SAFETY: idx < last_idx implies idx+1 is within the LUT.
     let c0 = unsafe { *self.colors.get_unchecked(idx) };
     let c1 = unsafe { *self.colors.get_unchecked(idx + 1) };
-    blend_premul(c0, c1, frac)
+    let inv = 1.0 - frac;
+    [
+      c0[0] * inv + c1[0] * frac,
+      c0[1] * inv + c1[1] * frac,
+      c0[2] * inv + c1[2] * frac,
+      c0[3] * inv + c1[3] * frac,
+    ]
+  }
+
+  #[inline(always)]
+  fn quantize_round(color: [f32; 4]) -> PremultipliedColorU8 {
+    // Convert premultiplied f32 channels to premultiplied u8 with round-half-up semantics.
+    let alpha = (color[3] + 0.5) as i32;
+    let alpha = alpha.clamp(0, 255) as u8;
+    let mut r = (color[0] + 0.5) as i32;
+    let mut g = (color[1] + 0.5) as i32;
+    let mut b = (color[2] + 0.5) as i32;
+    r = r.clamp(0, 255);
+    g = g.clamp(0, 255);
+    b = b.clamp(0, 255);
+    let r = (r as u8).min(alpha);
+    let g = (g as u8).min(alpha);
+    let b = (b as u8).min(alpha);
+    PremultipliedColorU8::from_rgba(r, g, b, alpha).unwrap_or(PremultipliedColorU8::TRANSPARENT)
+  }
+
+  #[inline(always)]
+  fn quantize_dither(color: [f32; 4], dither: f32) -> PremultipliedColorU8 {
+    // Convert premultiplied f32 channels to premultiplied u8 using ordered dithering.
+    //
+    // The dither value is in (0, 1) and is added before truncation (floor for positive inputs).
+    let alpha = (color[3] + dither) as i32;
+    let alpha = alpha.clamp(0, 255) as u8;
+    let mut r = (color[0] + dither) as i32;
+    let mut g = (color[1] + dither) as i32;
+    let mut b = (color[2] + dither) as i32;
+    r = r.clamp(0, 255);
+    g = g.clamp(0, 255);
+    b = b.clamp(0, 255);
+    let r = (r as u8).min(alpha);
+    let g = (g as u8).min(alpha);
+    let b = (b as u8).min(alpha);
+    PremultipliedColorU8::from_rgba(r, g, b, alpha).unwrap_or(PremultipliedColorU8::TRANSPARENT)
   }
 
   #[inline(always)]
@@ -475,7 +530,7 @@ impl GradientLut {
     if t >= self.period {
       return self.last;
     }
-    self.sample_mapped(t)
+    Self::quantize_round(self.sample_mapped_f32(t))
   }
 
   #[inline(always)]
@@ -491,7 +546,7 @@ impl GradientLut {
     if t < 0.0 {
       t += p;
     }
-    self.sample_mapped(t)
+    Self::quantize_round(self.sample_mapped_f32(t))
   }
 
   #[inline(always)]
@@ -511,7 +566,7 @@ impl GradientLut {
     if t > p {
       t = two_p - t;
     }
-    self.sample_mapped(t)
+    Self::quantize_round(self.sample_mapped_f32(t))
   }
 
   #[inline(always)]
@@ -521,6 +576,56 @@ impl GradientLut {
       SpreadModeKey::Repeat => self.sample_repeat(t),
       SpreadModeKey::Reflect => self.sample_reflect(t),
     }
+  }
+
+  #[inline(always)]
+  fn sample_pad_dither(&self, t: f32, dither: f32) -> PremultipliedColorU8 {
+    if self.last_idx == 0 || !t.is_finite() {
+      return self.first;
+    }
+    if t <= 0.0 {
+      return self.first;
+    }
+    if t >= self.period {
+      return self.last;
+    }
+    Self::quantize_dither(self.sample_mapped_f32(t), dither)
+  }
+
+  #[inline(always)]
+  fn sample_repeat_dither(&self, mut t: f32, dither: f32) -> PremultipliedColorU8 {
+    if self.last_idx == 0 || !t.is_finite() {
+      return self.first;
+    }
+    let p = self.period;
+    if p <= 0.0 {
+      return self.first;
+    }
+    t = t % p;
+    if t < 0.0 {
+      t += p;
+    }
+    Self::quantize_dither(self.sample_mapped_f32(t), dither)
+  }
+
+  #[inline(always)]
+  fn sample_reflect_dither(&self, mut t: f32, dither: f32) -> PremultipliedColorU8 {
+    if self.last_idx == 0 || !t.is_finite() {
+      return self.first;
+    }
+    let p = self.period;
+    if p <= 0.0 {
+      return self.first;
+    }
+    let two_p = p * 2.0;
+    t = t % two_p;
+    if t < 0.0 {
+      t += two_p;
+    }
+    if t > p {
+      t = two_p - t;
+    }
+    Self::quantize_dither(self.sample_mapped_f32(t), dither)
   }
 }
 
@@ -553,17 +658,9 @@ impl GradientLutCache {
 }
 
 #[inline(always)]
-fn blend_premul(a: PremultipliedColorU8, b: PremultipliedColorU8, t: f32) -> PremultipliedColorU8 {
-  debug_assert!(t.is_finite());
-  debug_assert!((0.0..=1.0).contains(&t));
-
-  let inv = 1.0 - t;
-  let r = (a.red() as f32 * inv + b.red() as f32 * t + 0.5) as u8;
-  let g = (a.green() as f32 * inv + b.green() as f32 * t + 0.5) as u8;
-  let blue = (a.blue() as f32 * inv + b.blue() as f32 * t + 0.5) as u8;
-  let alpha = (a.alpha() as f32 * inv + b.alpha() as f32 * t + 0.5) as u8;
-
-  PremultipliedColorU8::from_rgba(r, g, blue, alpha).unwrap_or(PremultipliedColorU8::TRANSPARENT)
+fn premultiply_rgba(color: Rgba) -> PremultipliedColorU8 {
+  let alpha_u8 = (color.a * 255.0).round().clamp(0.0, 255.0) as u8;
+  ColorU8::from_rgba(color.r, color.g, color.b, alpha_u8).premultiply()
 }
 
 fn build_gradient_lut(
@@ -572,11 +669,6 @@ fn build_gradient_lut(
   period: f32,
   bucket: u16,
 ) -> GradientLut {
-  let premultiply_rgba = |color: Rgba| -> PremultipliedColorU8 {
-    let alpha_u8 = (color.a * 255.0).round().clamp(0.0, 255.0) as u8;
-    ColorU8::from_rgba(color.r, color.g, color.b, alpha_u8).premultiply()
-  };
-
   let max_idx = bucket.max(1) as usize;
   let step_count = max_idx + 1;
   let max_idx = max_idx as f32;
@@ -591,30 +683,27 @@ fn build_gradient_lut(
         break;
       }
     }
-    let color = if let Some(segment) = window.peek() {
+    let (r, g, b, a) = if let Some(segment) = window.peek() {
       let (p0, c0) = segment[0];
       let (p1, c1) = segment[1];
       if (p1 - p0).abs() < f32::EPSILON {
-        c0
+        (c0.r as f32, c0.g as f32, c0.b as f32, c0.a.clamp(0.0, 1.0))
       } else {
         let frac = ((pos - p0) / (p1 - p0)).clamp(0.0, 1.0);
-        Rgba {
-          r: (c0.r as f32 + (c1.r as f32 - c0.r as f32) * frac)
-            .round()
-            .clamp(0.0, 255.0) as u8,
-          g: (c0.g as f32 + (c1.g as f32 - c0.g as f32) * frac)
-            .round()
-            .clamp(0.0, 255.0) as u8,
-          b: (c0.b as f32 + (c1.b as f32 - c0.b as f32) * frac)
-            .round()
-            .clamp(0.0, 255.0) as u8,
-          a: c0.a + (c1.a - c0.a) * frac,
-        }
+        (
+          c0.r as f32 + (c1.r as f32 - c0.r as f32) * frac,
+          c0.g as f32 + (c1.g as f32 - c0.g as f32) * frac,
+          c0.b as f32 + (c1.b as f32 - c0.b as f32) * frac,
+          (c0.a + (c1.a - c0.a) * frac).clamp(0.0, 1.0),
+        )
       }
+    } else if let Some((_, c)) = stops.last() {
+      (c.r as f32, c.g as f32, c.b as f32, c.a.clamp(0.0, 1.0))
     } else {
-      stops.last().map(|(_, c)| *c).unwrap_or(Rgba::TRANSPARENT)
+      (0.0, 0.0, 0.0, 0.0)
     };
-    colors.push(premultiply_rgba(color));
+    let a255 = a * 255.0;
+    colors.push([r * a, g * a, b * a, a255]);
   }
 
   let colors = Arc::new(colors);
@@ -671,13 +760,25 @@ pub fn rasterize_linear_gradient(
   cache: &GradientLutCache,
   bucket: u16,
 ) -> Result<Option<Pixmap>, RenderError> {
+  rasterize_linear_gradient_with_phase(width, height, start, end, spread, stops, cache, bucket, 0)
+}
+
+fn rasterize_linear_gradient_with_phase(
+  width: u32,
+  height: u32,
+  start: Point,
+  end: Point,
+  spread: SpreadMode,
+  stops: &[(f32, Rgba)],
+  cache: &GradientLutCache,
+  bucket: u16,
+  dither_phase: u8,
+) -> Result<Option<Pixmap>, RenderError> {
   check_active(RenderStage::Paint)?;
   if width == 0 || height == 0 || stops.is_empty() {
     return Ok(None);
   }
   let period = gradient_period(stops);
-  let key = GradientCacheKey::new(stops, spread, period, bucket);
-  let lut = cache.get_or_build(key, || build_gradient_lut(stops, spread, period, bucket));
 
   let dx = end.x - start.x;
   let dy = end.y - start.y;
@@ -687,7 +788,7 @@ pub fn rasterize_linear_gradient(
   };
   let pixels_len = width as usize * height as usize;
   if denom.abs() <= f32::EPSILON {
-    let color = lut.sample(0.0);
+    let color = premultiply_rgba(stops[0].1);
     let pixels = pixmap.pixels_mut();
     if pixels_len >= GRADIENT_PARALLEL_THRESHOLD_PIXELS {
       let deadline = active_deadline();
@@ -719,35 +820,65 @@ pub fn rasterize_linear_gradient(
   let stride = width as usize;
   let pixels = pixmap.pixels_mut();
   let spread_key: SpreadModeKey = spread.into();
+  let phase_x = (dither_phase & 3) as usize;
+  let phase_y = ((dither_phase >> 2) & 3) as usize;
+
+  let key = GradientCacheKey::new(stops, spread, period, bucket);
+  let lut = cache.get_or_build(key, || build_gradient_lut(stops, spread, period, bucket));
   let sample_row = |y: usize, row: &mut [PremultipliedColorU8]| -> Result<(), RenderError> {
     let mut t = row_start0 + y as f32 * step_y;
+    let y_mod = (y + phase_y) & 3;
     let mut deadline_counter = 0usize;
     match spread_key {
       SpreadModeKey::Pad => {
+        let mut x = 0usize;
         for chunk in row.chunks_mut(DEADLINE_PIXELS_STRIDE) {
           check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
-          for pixel in chunk {
-            *pixel = lut.sample_pad(t);
+          let mut x_mod = (x + phase_x) & 3;
+          let chunk_len = chunk.len();
+          for pixel in chunk.iter_mut() {
+            let idx = y_mod * 4 + x_mod;
+            let m = BAYER_4X4_XY[idx] as f32;
+            let dither = m * 0.0625 + 0.03125;
+            *pixel = lut.sample_pad_dither(t, dither);
             t += step_x;
+            x_mod = (x_mod + 1) & 3;
           }
+          x += chunk_len;
         }
       }
       SpreadModeKey::Repeat => {
+        let mut x = 0usize;
         for chunk in row.chunks_mut(DEADLINE_PIXELS_STRIDE) {
           check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
-          for pixel in chunk {
-            *pixel = lut.sample_repeat(t);
+          let mut x_mod = (x + phase_x) & 3;
+          let chunk_len = chunk.len();
+          for pixel in chunk.iter_mut() {
+            let idx = y_mod * 4 + x_mod;
+            let m = BAYER_4X4_XY[idx] as f32;
+            let dither = m * 0.0625 + 0.03125;
+            *pixel = lut.sample_repeat_dither(t, dither);
             t += step_x;
+            x_mod = (x_mod + 1) & 3;
           }
+          x += chunk_len;
         }
       }
       SpreadModeKey::Reflect => {
+        let mut x = 0usize;
         for chunk in row.chunks_mut(DEADLINE_PIXELS_STRIDE) {
           check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
-          for pixel in chunk {
-            *pixel = lut.sample_reflect(t);
+          let mut x_mod = (x + phase_x) & 3;
+          let chunk_len = chunk.len();
+          for pixel in chunk.iter_mut() {
+            let idx = y_mod * 4 + x_mod;
+            let m = BAYER_4X4_XY[idx] as f32;
+            let dither = m * 0.0625 + 0.03125;
+            *pixel = lut.sample_reflect_dither(t, dither);
             t += step_x;
+            x_mod = (x_mod + 1) & 3;
           }
+          x += chunk_len;
         }
       }
     };
@@ -783,13 +914,32 @@ pub fn rasterize_linear_gradient_cached(
   stops: &[(f32, Rgba)],
   cache: &GradientLutCache,
   bucket: u16,
+  dither_phase: u8,
 ) -> Result<Option<Arc<Pixmap>>, RenderError> {
-  let Some(key) = GradientPixmapCacheKey::linear(width, height, start, end, spread, stops, bucket)
-  else {
+  let Some(key) = GradientPixmapCacheKey::linear(
+    width,
+    height,
+    start,
+    end,
+    spread,
+    stops,
+    bucket,
+    dither_phase,
+  ) else {
     return Ok(None);
   };
   pixmap_cache.get_or_insert(key, || {
-    rasterize_linear_gradient(width, height, start, end, spread, stops, cache, bucket)
+    rasterize_linear_gradient_with_phase(
+      width,
+      height,
+      start,
+      end,
+      spread,
+      stops,
+      cache,
+      bucket,
+      dither_phase,
+    )
   })
 }
 
@@ -1178,6 +1328,7 @@ mod tests {
       &stops,
       &lut_cache,
       bucket,
+      0,
     )
     .expect("first rasterize")
     .expect("first pixmap");
@@ -1195,6 +1346,7 @@ mod tests {
       &stops,
       &lut_cache,
       bucket,
+      0,
     )
     .expect("second rasterize")
     .expect("second pixmap");
@@ -1292,6 +1444,52 @@ mod tests {
     let stops = vec![(0.0, Rgba::RED), (1.0, Rgba::BLUE)];
     let cache = GradientLutCache::default();
     let width = 32;
+    let height = 8;
+    let start = Point::new(0.0, 0.0);
+    let end = Point::new(width as f32, 0.0);
+    let lut_pixmap = rasterize_linear_gradient(
+      width,
+      height,
+      start,
+      end,
+      SpreadMode::Pad,
+      &stops,
+      &cache,
+      gradient_bucket(width.max(height)),
+    )
+    .expect("lut rasterize")
+    .expect("lut pixmap");
+
+    let mut naive = new_pixmap(width, height).expect("pixmap");
+    let denom = (end.x - start.x) * (end.x - start.x) + (end.y - start.y) * (end.y - start.y);
+    let inv = 1.0 / denom;
+    let stride = width as usize;
+    let pixels = naive.pixels_mut();
+    for y in 0..height as usize {
+      for x in 0..width as usize {
+        let px = x as f32 + 0.5;
+        let py = y as f32 + 0.5;
+        let t = ((px - start.x) * (end.x - start.x) + (py - start.y) * (end.y - start.y)) * inv;
+        let pos = t.clamp(0.0, 1.0);
+        let color = sample_stop_color(&stops, pos, 1.0, SpreadMode::Pad);
+        pixels[y * stride + x] = PremultipliedColorU8::from_rgba(
+          color.r,
+          color.g,
+          color.b,
+          (color.a * 255.0).round().clamp(0.0, 255.0) as u8,
+        )
+        .unwrap();
+      }
+    }
+
+    assert!(max_diff(&lut_pixmap, &naive) <= 1);
+  }
+
+  #[test]
+  fn linear_multi_stop_lut_matches_naive_with_low_error() {
+    let stops = vec![(0.0, Rgba::RED), (0.33, Rgba::GREEN), (1.0, Rgba::BLUE)];
+    let cache = GradientLutCache::default();
+    let width = 64;
     let height = 8;
     let start = Point::new(0.0, 0.0);
     let end = Point::new(width as f32, 0.0);
