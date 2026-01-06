@@ -7520,6 +7520,13 @@ fn is_kinsoku_strict_prohibited_line_start(ch: char) -> bool {
       | '\u{3033}' // 〳
       | '\u{3034}' // 〴
       | '\u{3035}' // 〵
+      // Sound marks (dakuten / handakuten), including halfwidth variants.
+      | '\u{3099}' // ゙
+      | '\u{309A}' // ゚
+      | '\u{309B}' // ゛
+      | '\u{309C}' // ゜
+      | '\u{FF9E}' // ﾞ
+      | '\u{FF9F}' // ﾟ
     )
 }
 
@@ -17919,6 +17926,47 @@ mod tests {
       brk_3.kind,
       BreakOpportunityKind::Emergency,
       "breaks before vertical kana repeat marks should be emergency-only under line-break: strict"
+    );
+
+    let brk_6 = result
+      .iter()
+      .find(|b| b.byte_offset == 6)
+      .expect("break at 6");
+    assert_eq!(
+      brk_6.kind,
+      BreakOpportunityKind::Normal,
+      "breaks not affected by kinsoku rules should remain normal"
+    );
+  }
+
+  #[test]
+  fn line_break_strict_downgrades_breaks_before_sound_marks_to_emergency() {
+    use crate::text::line_break::BreakOpportunityKind;
+
+    let text = "あ゛い"; // break before dakuten (spacing) should be emergency-only in strict mode
+    let breaks = vec![
+      BreakOpportunity::allowed(3), // あ|゛
+      BreakOpportunity::allowed(6), // ゛|い
+      BreakOpportunity::allowed(9), // end
+    ];
+
+    let result = apply_break_properties(
+      text,
+      breaks,
+      LineBreak::Strict,
+      WordBreak::Normal,
+      OverflowWrap::Normal,
+      true,
+    );
+
+    let brk_3 = result
+      .iter()
+      .find(|b| b.byte_offset == 3)
+      .expect("break at 3");
+    assert_eq!(
+      brk_3.kind,
+      BreakOpportunityKind::Emergency,
+      "breaks before sound marks should be emergency-only under line-break: strict"
     );
 
     let brk_6 = result
