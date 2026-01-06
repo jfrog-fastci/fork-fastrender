@@ -305,7 +305,7 @@ impl InlineItem {
           border_top,
           border_bottom,
           bottom_inset,
-          metrics,
+          metrics: _,
           strut_metrics,
           vertical_align,
           box_index,
@@ -328,10 +328,36 @@ impl InlineItem {
         }
         segments.push(current);
 
+        let non_empty: Vec<usize> = segments
+          .iter()
+          .enumerate()
+          .filter_map(|(idx, segment)| (!segment.is_empty()).then_some(idx))
+          .collect();
+        let first_non_empty = non_empty.first().copied();
+        let last_non_empty = non_empty.last().copied();
+
         let segments_len = segments.len();
         let mut out = Vec::new();
         for (idx, segment_children) in segments.into_iter().enumerate() {
           if !segment_children.is_empty() {
+            let is_first = first_non_empty.is_some_and(|first| first == idx);
+            let is_last = last_non_empty.is_some_and(|last| last == idx);
+
+            // Match `box-decoration-break: slice` semantics: the first fragment keeps the original
+            // start edge; the last fragment keeps the original end edge; intermediate fragments
+            // have no horizontal edges.
+            let start_edge = if is_first { start_edge } else { 0.0 };
+            let end_edge = if is_last { end_edge } else { 0.0 };
+            let border_left = if is_first { border_left } else { 0.0 };
+            let border_right = if is_last { border_right } else { 0.0 };
+
+            let metrics = super::compute_inline_box_metrics(
+              &segment_children,
+              content_offset_y,
+              bottom_inset,
+              strut_metrics,
+            );
+
             out.push(InlineItem::InlineBox(InlineBoxItem {
               box_id,
               children: segment_children,
@@ -4635,8 +4661,8 @@ mod tests {
   fn hard_breaks_nested_in_inline_boxes_are_hoisted() {
     let mut builder = make_builder(200.0);
     let mut inline_box = InlineBoxItem::new(
-      0.0,
-      0.0,
+      2.0,
+      3.0,
       0.0,
       make_strut_metrics(),
       Arc::new(ComputedStyle::default()),
@@ -4654,6 +4680,19 @@ mod tests {
     assert_eq!(lines.len(), 2);
     assert!(lines[0].ends_with_hard_break);
     assert!(!lines[1].ends_with_hard_break);
+    assert_eq!(lines[0].items.len(), 1);
+    assert_eq!(lines[1].items.len(), 1);
+
+    let InlineItem::InlineBox(b0) = &lines[0].items[0].item else {
+      panic!("expected inline box fragment on line 0");
+    };
+    let InlineItem::InlineBox(b1) = &lines[1].items[0].item else {
+      panic!("expected inline box fragment on line 1");
+    };
+    assert!((b0.start_edge - 2.0).abs() < f32::EPSILON);
+    assert_eq!(b0.end_edge, 0.0);
+    assert_eq!(b1.start_edge, 0.0);
+    assert!((b1.end_edge - 3.0).abs() < f32::EPSILON);
 
     let line0_text: String = lines[0]
       .items
