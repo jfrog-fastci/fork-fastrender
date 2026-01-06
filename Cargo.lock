@@ -943,6 +943,7 @@ dependencies = [
  "ureq",
  "url",
  "urlencoding",
+ "usvg",
  "walkdir",
  "webp",
  "wuff",
