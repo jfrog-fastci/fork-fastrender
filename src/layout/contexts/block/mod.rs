@@ -6245,6 +6245,7 @@ mod tests {
   use crate::text::font_loader::FontContext;
   use crate::tree::box_generation_demo::BoxGenerator;
   use crate::tree::box_generation_demo::DOMNode;
+  use crate::tree::box_tree::BoxTree;
   use crate::tree::fragment_tree::FragmentContent;
   use std::collections::HashMap;
   use std::sync::Arc;
@@ -6951,6 +6952,82 @@ mod tests {
       "expected grandchild y≈20, got {}",
       grandchild_fragment.bounds.y()
     );
+  }
+
+  #[test]
+  fn content_visibility_auto_skips_after_remembered_size() {
+    let _toggles_guard = content_visibility_test_guard();
+    let _cache_guard = crate::layout::formatting_context::intrinsic_cache_test_lock();
+    crate::layout::formatting_context::remembered_size_cache_clear();
+
+    let viewport = Size::new(200.0, 200.0);
+    let fc = BlockFormattingContext::with_font_context_viewport_and_cb(
+      FontContext::new(),
+      viewport,
+      ContainingBlock::viewport(viewport),
+    );
+    let constraints =
+      LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Indefinite);
+
+    let spacer_style = block_style_with_height(300.0);
+    let spacer = BoxNode::new_block(spacer_style, FormattingContextType::Block, vec![]);
+
+    let mut content_child_style = ComputedStyle::default();
+    content_child_style.display = Display::Block;
+    content_child_style.height = Some(Length::px(50.0));
+    let content_child = BoxNode::new_block(
+      Arc::new(content_child_style),
+      FormattingContextType::Block,
+      vec![],
+    );
+
+    let mut cv_style = ComputedStyle::default();
+    cv_style.display = Display::Block;
+    cv_style.content_visibility = ContentVisibility::Auto;
+    let cv_node = BoxNode::new_block(
+      Arc::new(cv_style),
+      FormattingContextType::Block,
+      vec![content_child],
+    );
+
+    let root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![spacer, cv_node],
+    );
+    let tree = BoxTree::new(root);
+
+    // Pass #1: offscreen heuristic is satisfied, but there is no definite placeholder size yet, so
+    // we must NOT skip descendant layout.
+    let frag1 = fc.layout(&tree.root, &constraints).expect("layout pass #1");
+    assert_eq!(frag1.children.len(), 2);
+    let cv_frag1 = &frag1.children[1];
+    assert_eq!(
+      cv_frag1.children.len(),
+      1,
+      "first pass should lay out descendants to establish remembered size"
+    );
+    assert!(
+      (cv_frag1.bounds.height() - 50.0).abs() < 0.1,
+      "expected cv:auto placeholder height to match laid-out content on pass #1"
+    );
+
+    // Pass #2: the element now has a remembered size, so it can skip layout and use that size as a
+    // definite placeholder.
+    let frag2 = fc.layout(&tree.root, &constraints).expect("layout pass #2");
+    assert_eq!(frag2.children.len(), 2);
+    let cv_frag2 = &frag2.children[1];
+    assert_eq!(
+      cv_frag2.children.len(),
+      0,
+      "second pass should skip descendant layout using remembered size"
+    );
+    assert!(
+      (cv_frag2.bounds.height() - 50.0).abs() < 0.1,
+      "expected cv:auto placeholder height to come from remembered size on pass #2"
+    );
+
+    crate::layout::formatting_context::remembered_size_cache_clear();
   }
 
   fn block_style_with_margin(margin: f32) -> Arc<ComputedStyle> {

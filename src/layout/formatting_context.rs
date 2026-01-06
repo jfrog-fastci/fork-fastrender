@@ -505,8 +505,7 @@ pub(crate) fn intrinsic_cache_clear() {
   INTRINSIC_BLOCK_CACHE_TL.with(|cache| cache.borrow_mut().clear());
   INTRINSIC_INLINE_OVERRIDE_CACHE.with(|cache| cache.borrow_mut().clear());
   INTRINSIC_BLOCK_OVERRIDE_CACHE.with(|cache| cache.borrow_mut().clear());
-  GLOBAL_REMEMBERED_SIZE_CACHE.clear();
-  REMEMBERED_SIZE_OVERRIDE_CACHE.with(|cache| cache.borrow_mut().clear());
+  remembered_size_cache_clear();
   INTRINSIC_CACHE_TL_EPOCH.with(|cell| cell.set(0));
   clear_subgrid_cache();
 }
@@ -547,6 +546,11 @@ pub(crate) fn remembered_size_cache_store(node: &BoxNode, value: Size) {
   }
   let style_ptr = Arc::as_ptr(&node.style) as usize;
   GLOBAL_REMEMBERED_SIZE_CACHE.insert((id, style_ptr), epoch, value);
+}
+
+pub(crate) fn remembered_size_cache_clear() {
+  GLOBAL_REMEMBERED_SIZE_CACHE.clear();
+  REMEMBERED_SIZE_OVERRIDE_CACHE.with(|cache| cache.borrow_mut().clear());
 }
 
 /// Sets the active intrinsic cache epoch, clearing stale entries when it changes.
