@@ -278,6 +278,43 @@ jobs:
           if-no-files-found: error
 
   # ===========================================================================
+  # Chrome Baseline Viewport Smoke - Validate headless window-size padding/crop logic
+  # ===========================================================================
+  chrome_baseline_viewport:
+    name: Chrome baseline viewport smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Chrome
+        id: setup_chrome
+        uses: browser-actions/setup-chrome@v1
+
+      - name: Export CHROME_BIN
+        shell: bash
+        run: |
+          set -euo pipefail
+          chrome_path="${{ steps.setup_chrome.outputs.chrome-path }}"
+          if [[ -n "${chrome_path}" && -x "${chrome_path}" ]]; then
+            echo "CHROME_BIN=${chrome_path}" >> "$GITHUB_ENV"
+            "${chrome_path}" --version
+            exit 0
+          fi
+
+          chrome="$(command -v google-chrome-stable || command -v google-chrome || command -v chromium || command -v chromium-browser)"
+          echo "CHROME_BIN=${chrome}" >> "$GITHUB_ENV"
+          "${chrome}" --version
+
+      - name: Verify headless viewport padding/crop
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX
+          scripts/verify_chrome_baseline_viewport.sh
+
+  # ===========================================================================
   # MSRV Job - Verify minimum supported Rust version
   # ===========================================================================
   msrv:
@@ -607,18 +644,19 @@ jobs:
   ci-status:
     name: CI Status
     runs-on: ubuntu-latest
-    needs: [lockfile, test, msrv, clippy, format, docs, audit, fuzz-smoke]
+    needs: [lockfile, test, chrome_baseline_viewport, msrv, clippy, format, docs, audit, fuzz-smoke]
     if: always()
     steps:
       - name: Check CI Status
         run: |
           if [ "${{ needs.test.result }}" != "success" ] || \
-             [ "${{ needs.lockfile.result }}" != "success" ] || \
-             [ "${{ needs.msrv.result }}" != "success" ] || \
-             [ "${{ needs.clippy.result }}" != "success" ] || \
-             [ "${{ needs.format.result }}" != "success" ] || \
-             [ "${{ needs.docs.result }}" != "success" ] || \
-             [ "${{ needs.audit.result }}" != "success" ] || \
+              [ "${{ needs.lockfile.result }}" != "success" ] || \
+              [ "${{ needs.chrome_baseline_viewport.result }}" != "success" ] || \
+              [ "${{ needs.msrv.result }}" != "success" ] || \
+              [ "${{ needs.clippy.result }}" != "success" ] || \
+              [ "${{ needs.format.result }}" != "success" ] || \
+              [ "${{ needs.docs.result }}" != "success" ] || \
+              [ "${{ needs.audit.result }}" != "success" ] || \
              [ "${{ needs.fuzz-smoke.result }}" != "success" ]; then
             echo "One or more CI jobs failed"
             exit 1

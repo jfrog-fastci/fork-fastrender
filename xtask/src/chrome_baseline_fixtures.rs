@@ -14,15 +14,40 @@ use url::Url;
 use walkdir::WalkDir;
 
 /// When Chrome runs in headless mode, `--window-size=WxH` sets the outer window size, but the
-/// layout viewport (what CSS `position: fixed` / `100vh` uses) is consistently shorter by 88px.
+/// layout viewport (what CSS `position: fixed` / `100vh` uses) is consistently shorter by ~88px
+/// (default).
 ///
 /// This manifests as a white bar at the bottom of `--screenshot` outputs. To make the captured PNG
 /// match the requested viewport, we:
 /// 1) add this padding to the window height passed to Chrome, then
 /// 2) crop the resulting screenshot back down to the requested size.
 ///
-/// Keep this constant in sync with `scripts/chrome_baseline.sh` (used by pageset_progress).
-const HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX: u32 = 88;
+/// The default value is shared with `scripts/chrome_baseline.sh` (used by pageset_progress).
+///
+/// Override via `HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX` if you see persistent viewport mismatch
+/// artifacts on a different Chrome build/OS.
+///
+/// See `docs/notes/chrome-headless-viewport-padding.md`.
+const DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX: u32 = 88;
+
+fn headless_window_viewport_height_pad_px() -> Result<u32> {
+  match std::env::var("HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX") {
+    Ok(raw) => {
+      let raw = raw.trim().to_string();
+      if raw.is_empty() {
+        return Ok(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX);
+      }
+      let value = raw.parse::<u32>().with_context(|| {
+        format!(
+          "invalid HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX={raw} (expected a non-negative integer)"
+        )
+      })?;
+      Ok(value)
+    }
+    Err(std::env::VarError::NotPresent) => Ok(DEFAULT_HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
+    Err(err) => bail!("failed to read HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX: {err}"),
+  }
+}
 
 #[derive(Args, Debug)]
 pub struct ChromeBaselineFixturesArgs {
@@ -1103,7 +1128,7 @@ fn run_chrome_screenshot(
     viewport.0,
     viewport
       .1
-      .saturating_add(HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX),
+      .saturating_add(headless_window_viewport_height_pad_px()?),
   );
   let mut args = build_chrome_args(
     HeadlessMode::New,

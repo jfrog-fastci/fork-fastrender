@@ -130,10 +130,12 @@ fn chrome_baseline_script_parses_flags_without_treating_them_as_page_stems() {
   let fake_chrome = write_fake_chrome(&bin_dir);
   let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
   let script_path = repo_root.join("scripts/chrome_baseline.sh");
+  let pad_px = 99u32;
 
   // Use a non-default DPR/viewport so the metadata proves the flags were actually applied.
   let output = Command::new(&script_path)
     .env("CHROME_BIN", &fake_chrome)
+    .env("HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX", pad_px.to_string())
     .args([
       "--html-dir",
       html_dir.to_str().unwrap(),
@@ -175,8 +177,9 @@ fn chrome_baseline_script_parses_flags_without_treating_them_as_page_stems() {
   assert_eq!(img.dimensions(), (250, 188));
 
   let chrome_log = fs::read_to_string(out_dir.join("page.chrome.log")).expect("read chrome log");
+  let expected_window_h = 150 + pad_px;
   assert!(
-    chrome_log.contains("--window-size=200,238"),
+    chrome_log.contains(&format!("--window-size=200,{expected_window_h}")),
     "expected headless baseline to pad window size then crop, got log:\n{chrome_log}"
   );
   assert!(
@@ -208,6 +211,7 @@ fn chrome_baseline_script_errors_on_unknown_flag() {
   let script_path = repo_root.join("scripts/chrome_baseline.sh");
 
   let output = Command::new(&script_path)
+    .env("HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX", "88")
     .arg("--definitely-not-a-flag")
     .output()
     .expect("run scripts/chrome_baseline.sh");

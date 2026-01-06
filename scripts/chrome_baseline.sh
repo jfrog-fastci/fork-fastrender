@@ -53,6 +53,7 @@ Filtering:
 
 Environment (optional):
   HTML_DIR, OUT_DIR, VIEWPORT, DPR, TIMEOUT, SHARD, CHROME_BIN, JS, ALLOW_ANIMATIONS, ALLOW_DARK_MODE
+  HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX
 
 Output:
   <out-dir>/<stem>.png        Screenshot
@@ -74,15 +75,24 @@ ALLOW_ANIMATIONS="${ALLOW_ANIMATIONS:-0}"
 ALLOW_DARK_MODE="${ALLOW_DARK_MODE:-0}"
 HEADLESS_FLAG="--headless=new"
 # When Chrome runs in headless screenshot mode, `--window-size=WxH` sets the *outer* window size,
-# but the CSS/layout viewport height is consistently shorter by 88px (leaving a white bar at the
-# bottom of `--screenshot` PNGs).
+# but the CSS/layout viewport height is consistently shorter by ~88px (default; leaving a white bar
+# at the bottom of `--screenshot` PNGs).
 #
 # To capture an image that matches the requested viewport, we:
 # 1) add this padding to the window height passed to Chrome, then
 # 2) crop the resulting screenshot back down to the requested viewport size.
 #
 # Keep this constant in sync with `xtask/src/chrome_baseline_fixtures.rs`.
-HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX=88
+# See `docs/notes/chrome-headless-viewport-padding.md` for details and verification steps.
+#
+# If you see cropped screenshots with a missing bottom edge (pad too large) or a persistent white
+# bar (pad too small), override this value. Different Chrome builds/OSes may report different
+# window chrome heights even in headless mode.
+HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX="${HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX:-88}"
+if ! [[ "${HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX}" =~ ^[0-9]+$ ]]; then
+  echo "invalid HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX: ${HEADLESS_WINDOW_VIEWPORT_HEIGHT_PAD_PX} (expected a non-negative integer)" >&2
+  exit 2
+fi
 
 FILTERS=()
 PARSE_FLAGS=1
