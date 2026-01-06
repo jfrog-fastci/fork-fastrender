@@ -462,6 +462,29 @@ pub struct VarDependentDeclaration {
   pub value: PropertyValue,
 }
 
+/// Winning custom-property declaration for this element.
+///
+/// Stores the specified value (pre-`var()` resolution) so inherited custom properties can be
+/// recomputed at paint time when an ancestor animates/updates a variable.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CustomPropertyDeclaration {
+  /// Cascade order of the winning declaration.
+  pub order: i32,
+  /// Specified value as authored (pre-`var()` resolution).
+  pub value: PropertyValue,
+  /// Whether the specified value contained a `var()` reference.
+  pub contains_var: bool,
+  /// Whether the declaration's revert base was the UA/default style (as opposed to the author
+  /// revert base).
+  pub revert_base_is_default: bool,
+  /// Custom-property store snapshot for resolving `revert-layer` when applying this declaration.
+  ///
+  /// This is only needed for registered custom properties, but is stored opportunistically when
+  /// the cascade provides a layer base so paint-time recomputation can mirror cascade-time keyword
+  /// handling.
+  pub revert_layer_base: Option<CustomPropertyStore>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComputedStyle {
   // Display and positioning
@@ -879,6 +902,17 @@ pub struct ComputedStyle {
   // CSS Custom Properties (variables)
   pub custom_property_registry: Arc<CustomPropertyRegistry>,
   pub custom_properties: CustomPropertyStore,
+  /// Author-specified winning custom-property declarations for this element.
+  ///
+  /// This is used to rebuild `custom_properties` from a new inherited base at paint time (e.g.
+  /// after ancestor custom-property animations) while preserving explicit overrides that may have
+  /// matched the inherited value at cascade time.
+  pub custom_property_declarations: Arc<HashMap<Arc<str>, CustomPropertyDeclaration>>,
+  /// Revert base for author/inline custom property declarations (the UA cascade result).
+  ///
+  /// This is needed to recompute registered custom properties that use CSS-wide keywords like
+  /// `revert`/`revert-layer` when the inherited custom-property base changes at paint time.
+  pub custom_property_revert_base: CustomPropertyStore,
   /// Winning, non-custom declarations whose specified value depended on `var()`.
   ///
   /// This stores the pre-var-resolution value so dependent properties can be recomputed after
@@ -1234,6 +1268,8 @@ impl Default for ComputedStyle {
 
       custom_property_registry: Arc::new(CustomPropertyRegistry::default()),
       custom_properties: CustomPropertyStore::default(),
+      custom_property_declarations: Arc::new(HashMap::new()),
+      custom_property_revert_base: CustomPropertyStore::default(),
       var_dependent_declarations: Arc::new(HashMap::new()),
 
       content: String::new(),

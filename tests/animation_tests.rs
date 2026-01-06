@@ -1548,3 +1548,55 @@ fn registered_custom_property_interpolates_and_recomputes_var_dependent_values()
   assert!(r > 120 && r < 140, "r={r}");
   assert_eq!((g, b, a), (0, 0, 255));
 }
+
+#[test]
+fn inherited_custom_property_animation_updates_descendant_var_consumers() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: black; }
+      @property --x { syntax: "<number>"; inherits: true; initial-value: 0; }
+      #parent { --x: 0; animation: a 1000ms linear both; }
+      #child { width: 50px; height: 50px; background: rgb(255, 0, 0); opacity: var(--x); }
+      @keyframes a { from { --x: 0 } to { --x: 1 } }
+    </style>
+    <div id="parent"><div id="child"></div></div>
+  "#;
+  let options = RenderOptions::new()
+    .with_viewport(60, 60)
+    .with_animation_time(500.0);
+  let pixmap = renderer
+    .render_html_with_options(html, options)
+    .expect("render");
+  let (r, g, b, a) = pixel(&pixmap, 25, 25);
+  assert!(r > 120 && r < 140, "r={r}");
+  assert_eq!((g, b, a), (0, 0, 255));
+}
+
+#[test]
+fn descendant_custom_property_override_blocks_inherited_animation_changes() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: black; }
+      @property --x { syntax: "<number>"; inherits: true; initial-value: 0; }
+      #parent { --x: 0; animation: a 1000ms linear both; }
+      #child {
+        --x: 0;
+        width: 50px;
+        height: 50px;
+        background: rgb(255, 0, 0);
+        opacity: var(--x);
+      }
+      @keyframes a { from { --x: 0 } to { --x: 1 } }
+    </style>
+    <div id="parent"><div id="child"></div></div>
+  "#;
+  let options = RenderOptions::new()
+    .with_viewport(60, 60)
+    .with_animation_time(500.0);
+  let pixmap = renderer
+    .render_html_with_options(html, options)
+    .expect("render");
+  assert_eq!(pixel(&pixmap, 25, 25), (0, 0, 0, 255));
+}

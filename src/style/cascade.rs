@@ -9869,6 +9869,8 @@ pub(crate) fn inherit_styles(styles: &mut ComputedStyle, parent: &ComputedStyle)
   // Reset cascade bookkeeping for the new style; logical pending state should not inherit.
   styles.logical.reset();
   styles.var_dependent_declarations = Arc::new(HashMap::new());
+  styles.custom_property_declarations = Arc::new(HashMap::new());
+  styles.custom_property_revert_base = CustomPropertyStore::default();
   // Typography properties inherit
   styles.font_family = parent.font_family.clone();
   styles.font_size = parent.font_size;
@@ -24018,6 +24020,8 @@ fn apply_cascaded_declarations<'a, F>(
   F: Fn(&Declaration) -> bool,
 {
   styles.var_dependent_declarations = Arc::new(HashMap::new());
+  styles.custom_property_declarations = Arc::new(HashMap::new());
+  styles.custom_property_revert_base = revert_base_styles.custom_properties.clone();
   let mut total_decls = matched_rules
     .iter()
     .map(|rule| rule.declarations.len())

@@ -4776,14 +4776,23 @@ fn apply_animations_to_node_scoped(
   }
 
   let parent_style = node.style.clone();
-  let parent_for_children = parent_style.as_deref().or(parent_styles);
+  let parent_for_children = parent_style
+    .as_deref()
+    .or(parent_styles)
+    .unwrap_or_else(|| default_parent_style());
+  let viewport_size = Size::new(viewport.width(), viewport.height());
   for child in node.children_mut() {
+    if let Some(child_style_arc) = child.style.as_mut() {
+      let child_style = Arc::make_mut(child_style_arc);
+      child_style.recompute_inherited_custom_properties(parent_for_children);
+      child_style.recompute_var_dependent_properties(parent_for_children, viewport_size);
+    }
     let child_offset = Point::new(origin.x + child.bounds.x(), origin.y + child.bounds.y());
     apply_animations_to_node_scoped(
       child,
       child_offset,
       viewport,
-      parent_for_children,
+      Some(parent_for_children),
       root_context,
       scroll_state,
       keyframes,
@@ -4793,15 +4802,21 @@ fn apply_animations_to_node_scoped(
     );
   }
   if let FragmentContent::RunningAnchor { snapshot, .. } = &mut node.content {
+    let snapshot_node = Arc::make_mut(snapshot);
+    if let Some(snapshot_style_arc) = snapshot_node.style.as_mut() {
+      let snapshot_style = Arc::make_mut(snapshot_style_arc);
+      snapshot_style.recompute_inherited_custom_properties(parent_for_children);
+      snapshot_style.recompute_var_dependent_properties(parent_for_children, viewport_size);
+    }
     let snapshot_offset = Point::new(
-      origin.x + snapshot.bounds.x(),
-      origin.y + snapshot.bounds.y(),
+      origin.x + snapshot_node.bounds.x(),
+      origin.y + snapshot_node.bounds.y(),
     );
     apply_animations_to_node_scoped(
-      Arc::make_mut(snapshot),
+      snapshot_node,
       snapshot_offset,
       viewport,
-      parent_for_children,
+      Some(parent_for_children),
       root_context,
       scroll_state,
       keyframes,
@@ -5136,17 +5151,37 @@ fn apply_transitions_to_fragment(
   }
 
   let parent_style = fragment.style.clone();
-  let parent_for_children = parent_style.as_deref().or(parent_styles);
+  let parent_for_children = parent_style
+    .as_deref()
+    .or(parent_styles)
+    .unwrap_or_else(|| default_parent_style());
   for child in fragment.children_mut() {
-    apply_transitions_to_fragment(child, time_ms, viewport, log_enabled, parent_for_children);
-  }
-  if let FragmentContent::RunningAnchor { snapshot, .. } = &mut fragment.content {
+    if let Some(child_style_arc) = child.style.as_mut() {
+      let child_style = Arc::make_mut(child_style_arc);
+      child_style.recompute_inherited_custom_properties(parent_for_children);
+      child_style.recompute_var_dependent_properties(parent_for_children, viewport);
+    }
     apply_transitions_to_fragment(
-      Arc::make_mut(snapshot),
+      child,
       time_ms,
       viewport,
       log_enabled,
-      parent_for_children,
+      Some(parent_for_children),
+    );
+  }
+  if let FragmentContent::RunningAnchor { snapshot, .. } = &mut fragment.content {
+    let snapshot_node = Arc::make_mut(snapshot);
+    if let Some(snapshot_style_arc) = snapshot_node.style.as_mut() {
+      let snapshot_style = Arc::make_mut(snapshot_style_arc);
+      snapshot_style.recompute_inherited_custom_properties(parent_for_children);
+      snapshot_style.recompute_var_dependent_properties(parent_for_children, viewport);
+    }
+    apply_transitions_to_fragment(
+      snapshot_node,
+      time_ms,
+      viewport,
+      log_enabled,
+      Some(parent_for_children),
     );
   }
 }

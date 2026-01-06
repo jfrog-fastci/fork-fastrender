@@ -6355,6 +6355,93 @@ pub(crate) fn apply_declaration_with_base_and_custom_properties(
 }
 
 impl ComputedStyle {
+  /// Recomputes this element's custom-property store from the current inherited base.
+  ///
+  /// FastRender applies animations/transitions at paint time by mutating `ComputedStyle` per
+  /// fragment. When an ancestor animates an inherited custom property, descendants that reference
+  /// it via `var(--x)` must see the updated value even if the descendant itself has no animation.
+  ///
+  /// This method rebuilds `self.custom_properties` from:
+  /// - the *current* parent `custom_properties`,
+  /// - registry inheritance semantics (registered `inherits: false`),
+  /// - this element's stored winning custom-property declarations (in cascade order).
+  pub fn recompute_inherited_custom_properties(&mut self, parent_styles: &ComputedStyle) {
+    // Start from the current parent store (animations may have mutated it).
+    let mut store = parent_styles.custom_properties.clone();
+
+    // Mirror `inherit_styles()` custom-property behavior for registered properties.
+    for (name, rule) in self.custom_property_registry.iter() {
+      if rule.inherits {
+        if !store.contains_key(name) {
+          if let Some(initial) = &rule.initial_value {
+            store.insert(name.as_str().into(), initial.clone());
+          }
+        }
+        continue;
+      }
+
+      if let Some(initial) = &rule.initial_value {
+        let already_initial = store
+          .get(name.as_str())
+          .map(|value| value == initial)
+          .unwrap_or(false);
+        if !already_initial {
+          store.insert(name.as_str().into(), initial.clone());
+        }
+      } else {
+        store.remove(name.as_str());
+      }
+    }
+
+    self.custom_properties = store;
+
+    if self.custom_property_declarations.is_empty() {
+      return;
+    }
+
+    let mut declarations: Vec<(Arc<str>, crate::style::CustomPropertyDeclaration)> = self
+      .custom_property_declarations
+      .iter()
+      .map(|(name, entry)| (Arc::clone(name), entry.clone()))
+      .collect();
+    declarations.sort_unstable_by_key(|(_, entry)| entry.order);
+
+    let default_revert_base = CustomPropertyStore::default();
+    let author_revert_base = self.custom_property_revert_base.clone();
+    for (name, entry) in declarations {
+      let crate::style::CustomPropertyDeclaration {
+        order: _,
+        value,
+        contains_var,
+        revert_base_is_default,
+        revert_layer_base,
+      } = entry;
+
+      let revert_base = if revert_base_is_default {
+        &default_revert_base
+      } else {
+        &author_revert_base
+      };
+
+      // Reapply the specified declaration (pre-var-resolution) so the current inherited base can
+      // influence var() and CSS-wide keyword resolution for registered custom properties.
+      let decl = Declaration {
+        property: crate::css::types::PropertyName::Custom(Arc::clone(&name)),
+        value,
+        raw_value: String::new(),
+        important: false,
+        contains_var,
+      };
+      let _ = apply_custom_property_declaration(
+        self,
+        &decl,
+        parent_styles,
+        revert_base,
+        revert_layer_base.as_ref(),
+      );
+    }
+  }
+
   /// Recomputes properties whose winning declarations depended on `var()`.
   ///
   /// This is used after mutating `custom_properties` (for example via animations) so dependent
@@ -6415,6 +6502,126 @@ impl ComputedStyle {
   }
 }
 
+fn apply_custom_property_declaration(
+  styles: &mut ComputedStyle,
+  decl: &Declaration,
+  parent_styles: &ComputedStyle,
+  revert_base_custom_properties: &CustomPropertyStore,
+  revert_layer_custom_properties: Option<&CustomPropertyStore>,
+) -> bool {
+  let crate::css::types::PropertyName::Custom(custom_name) = &decl.property else {
+    return false;
+  };
+  let raw_text = decl_raw_text(decl);
+  let raw_trimmed = raw_text.trim();
+  let registration = styles.custom_property_registry.get(decl.property.as_str());
+
+  // Unregistered custom properties behave like token streams: keep the authored value verbatim and
+  // do not interpret CSS-wide keywords at computed-value time.
+  let Some(rule) = registration else {
+    if styles
+      .custom_properties
+      .get(custom_name.as_ref())
+      .is_some_and(|existing| existing.typed.is_none() && existing.value == raw_text)
+    {
+      return true;
+    }
+    styles.custom_properties.insert(
+      Arc::clone(custom_name),
+      CustomPropertyValue::new(raw_text, None),
+    );
+    return true;
+  };
+
+  // Registered custom properties resolve var() at computed-value time (even for `syntax: *`) and
+  // support CSS-wide keywords.
+  if decl.contains_var {
+    let resolved = match resolve_var_for_property(&decl.value, &styles.custom_properties, "") {
+      VarResolutionResult::Resolved { value, css_text } => match value {
+        ResolvedPropertyValue::Borrowed(_) => raw_trimmed.to_string(),
+        ResolvedPropertyValue::Owned(_) => css_text.into_owned(),
+      },
+      _ => return false,
+    };
+
+    if let Some(global) = global_keyword_text(&resolved) {
+      apply_registered_custom_property_global_keyword(
+        &mut styles.custom_properties,
+        &parent_styles.custom_properties,
+        revert_base_custom_properties,
+        revert_layer_custom_properties,
+        custom_name,
+        rule,
+        global,
+      );
+      return true;
+    }
+
+    if matches!(rule.syntax, CustomPropertySyntax::Universal) {
+      styles.custom_properties.insert(
+        Arc::clone(custom_name),
+        CustomPropertyValue::new(resolved, None),
+      );
+      return true;
+    }
+
+    let Some(typed) = rule.syntax.parse_value(resolved.trim()) else {
+      return false;
+    };
+    styles.custom_properties.insert(
+      Arc::clone(custom_name),
+      CustomPropertyValue::new(resolved, Some(typed)),
+    );
+    return true;
+  }
+
+  if let Some(global) = global_keyword_text(raw_trimmed) {
+    apply_registered_custom_property_global_keyword(
+      &mut styles.custom_properties,
+      &parent_styles.custom_properties,
+      revert_base_custom_properties,
+      revert_layer_custom_properties,
+      custom_name,
+      rule,
+      global,
+    );
+    return true;
+  }
+
+  // Registered custom properties with `syntax: *` behave like token streams, but still use the
+  // registered keyword behavior (handled above).
+  if matches!(rule.syntax, CustomPropertySyntax::Universal) {
+    if styles
+      .custom_properties
+      .get(custom_name.as_ref())
+      .is_some_and(|existing| existing.typed.is_none() && existing.value == raw_text)
+    {
+      return true;
+    }
+    styles.custom_properties.insert(
+      Arc::clone(custom_name),
+      CustomPropertyValue::new(raw_text, None),
+    );
+    return true;
+  }
+
+  if styles
+    .custom_properties
+    .get(custom_name.as_ref())
+    .is_some_and(|existing| existing.value == raw_text && existing.typed.is_some())
+  {
+    return true;
+  }
+  let Some(typed) = rule.syntax.parse_value(raw_trimmed) else {
+    return false;
+  };
+  styles.custom_properties.insert(
+    Arc::clone(custom_name),
+    CustomPropertyValue::new(raw_text, Some(typed)),
+  );
+  true
+}
+
 fn apply_declaration_with_base_internal(
   styles: &mut ComputedStyle,
   decl: &Declaration,
@@ -6461,112 +6668,45 @@ fn apply_declaration_with_base_internal_with_order(
     let crate::css::types::PropertyName::Custom(custom_name) = &decl.property else {
       return;
     };
-    let raw_text = decl_raw_text(decl);
-    let raw_trimmed = raw_text.trim();
-    let registration = styles.custom_property_registry.get(decl.property.as_str());
-    // Unregistered custom properties behave like token streams: keep the authored value verbatim and
-    // do not interpret CSS-wide keywords at computed-value time.
-    let Some(rule) = registration else {
-      if styles
-        .custom_properties
-        .get(custom_name.as_ref())
-        .is_some_and(|existing| existing.typed.is_none() && existing.value == raw_text)
-      {
-        return;
-      }
-      styles.custom_properties.insert(
-        Arc::clone(custom_name),
-        CustomPropertyValue::new(raw_text, None),
-      );
-      return;
-    };
 
-    // Registered custom properties resolve var() at computed-value time (even for `syntax: *`) and
-    // support CSS-wide keywords.
-    if decl.contains_var {
-      let resolved = match resolve_var_for_property(&decl.value, &styles.custom_properties, "") {
-        VarResolutionResult::Resolved { value, css_text } => match value {
-          ResolvedPropertyValue::Borrowed(_) => raw_trimmed.to_string(),
-          ResolvedPropertyValue::Owned(_) => css_text.into_owned(),
-        },
-        _ => return,
-      };
-
-      if let Some(global) = global_keyword_text(&resolved) {
-        apply_registered_custom_property_global_keyword(
-          &mut styles.custom_properties,
-          &parent_styles.custom_properties,
-          &revert_base.custom_properties,
-          revert_layer_custom_properties,
-          custom_name,
-          rule,
-          global,
-        );
-        return;
-      }
-
-      if matches!(rule.syntax, CustomPropertySyntax::Universal) {
-        styles.custom_properties.insert(
-          Arc::clone(custom_name),
-          CustomPropertyValue::new(resolved, None),
-        );
-        return;
-      }
-
-      let Some(typed) = rule.syntax.parse_value(resolved.trim()) else {
-        return;
-      };
-      styles.custom_properties.insert(
-        Arc::clone(custom_name),
-        CustomPropertyValue::new(resolved, Some(typed)),
-      );
-      return;
-    }
-
-    if let Some(global) = global_keyword_text(raw_trimmed) {
-      apply_registered_custom_property_global_keyword(
-        &mut styles.custom_properties,
-        &parent_styles.custom_properties,
-        &revert_base.custom_properties,
-        revert_layer_custom_properties,
-        custom_name,
-        rule,
-        global,
-      );
-      return;
-    }
-
-    // Registered custom properties with `syntax: *` behave like token streams, but still use the
-    // registered keyword behavior (handled above).
-    if matches!(rule.syntax, CustomPropertySyntax::Universal) {
-      if styles
-        .custom_properties
-        .get(custom_name.as_ref())
-        .is_some_and(|existing| existing.typed.is_none() && existing.value == raw_text)
-      {
-        return;
-      }
-      styles.custom_properties.insert(
-        Arc::clone(custom_name),
-        CustomPropertyValue::new(raw_text, None),
-      );
-      return;
-    }
-
-    if styles
-      .custom_properties
-      .get(custom_name.as_ref())
-      .is_some_and(|existing| existing.value == raw_text && existing.typed.is_some())
-    {
-      return;
-    }
-    let Some(typed) = rule.syntax.parse_value(raw_trimmed) else {
-      return;
-    };
-    styles.custom_properties.insert(
-      Arc::clone(custom_name),
-      CustomPropertyValue::new(raw_text, Some(typed)),
+    let applied = apply_custom_property_declaration(
+      styles,
+      decl,
+      parent_styles,
+      &revert_base.custom_properties,
+      revert_layer_custom_properties,
     );
+    if applied {
+      let revert_base_is_default = std::ptr::eq(revert_base, default_computed_style());
+      let needs_revert_layer_base = revert_layer_custom_properties.is_some()
+        && styles
+          .custom_property_registry
+          .get(decl.property.as_str())
+          .is_some()
+        && (decl.contains_var
+          || match &decl.value {
+            PropertyValue::Keyword(raw) | PropertyValue::Custom(raw) => {
+              crate::style::custom_property_store::contains_revert_layer_token(raw)
+            }
+            _ => false,
+          });
+      let revert_layer_base = needs_revert_layer_base.then(|| {
+        revert_layer_custom_properties
+          .expect("checked Some above")
+          .clone()
+      });
+
+      Arc::make_mut(&mut styles.custom_property_declarations).insert(
+        Arc::clone(custom_name),
+        crate::style::CustomPropertyDeclaration {
+          order,
+          value: decl.value.clone(),
+          contains_var: decl.contains_var,
+          revert_base_is_default,
+          revert_layer_base,
+        },
+      );
+    }
     return;
   }
 
@@ -6878,6 +7018,8 @@ fn apply_declaration_with_base_internal_with_order(
       // Custom properties are excluded from `all` per the cascade spec.
       let prev_custom_properties = styles.custom_properties.clone();
       let prev_custom_property_registry = styles.custom_property_registry.clone();
+      let prev_custom_property_declarations = styles.custom_property_declarations.clone();
+      let prev_custom_property_revert_base = styles.custom_property_revert_base.clone();
       // The var-dependent declaration cache is an internal helper, not a CSS property, so it is
       // always rebuilt as cascade application continues.
       let next_order = styles.logical.next_order_value();
@@ -6887,6 +7029,8 @@ fn apply_declaration_with_base_internal_with_order(
       styles.unicode_bidi = prev_unicode_bidi;
       styles.custom_property_registry = prev_custom_property_registry;
       styles.custom_properties = prev_custom_properties;
+      styles.custom_property_declarations = prev_custom_property_declarations;
+      styles.custom_property_revert_base = prev_custom_property_revert_base;
       styles.var_dependent_declarations = Arc::new(HashMap::new());
       styles.logical.reset();
       set_all_logical_orders(&mut styles.logical, order, next_order);
