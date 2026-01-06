@@ -30,3 +30,16 @@ At the time this was implemented, no pageset fixtures referenced these standard 
 is provided by the offline fixture `tests/fixtures/html/svg_filter_background_image.html` and unit
 tests in `src/paint/svg_filter.rs`.
 
+## Input defaults (`in` / `in2`)
+
+Many SVG filter primitives accept one input via `in`, and some accept a second input via `in2`
+(`feComposite`, `feBlend`, `feDisplacementMap`, etc).
+
+FastRender follows the behavior of our in-repo reference engine (resvg) for omitted inputs:
+
+- When `in` is **missing** (or `in=""`), it defaults to the **previous filter primitive result**
+  (the filter-chain default).
+- When `in2` is **missing** (or `in2=""`), it also defaults to the **previous filter primitive
+  result** (not `SourceGraphic`).
+
+Regression coverage lives in `tests/paint/svg_filter_resvg_compare.rs`.
