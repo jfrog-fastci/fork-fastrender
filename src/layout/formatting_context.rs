@@ -1681,6 +1681,7 @@ mod tests {
   use super::*;
   use crate::geometry::{Rect, Size};
   use crate::style::display::{Display, FormattingContextType};
+  use crate::style::types::IntrinsicSizeKeyword;
   use crate::style::values::Length;
   use crate::style::ComputedStyle;
   use rayon::ThreadPoolBuilder;
@@ -1912,6 +1913,34 @@ mod tests {
         intrinsic_cache_lookup(&node, IntrinsicSizingMode::MinContent),
         None
       );
+    });
+
+    // Intrinsic sizing keywords/functions must participate in style override fingerprinting too.
+    let mut override_style = ComputedStyle::default();
+    override_style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+    crate::layout::style_override::with_style_override(node.id, Arc::new(override_style), || {
+      intrinsic_cache_store(&node, IntrinsicSizingMode::MinContent, 30.0);
+      assert_eq!(
+        intrinsic_cache_lookup(&node, IntrinsicSizingMode::MinContent),
+        Some(30.0)
+      );
+    });
+    assert_eq!(
+      intrinsic_cache_lookup(&node, IntrinsicSizingMode::MinContent),
+      Some(10.0)
+    );
+    let mut override_style = ComputedStyle::default();
+    override_style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+    crate::layout::style_override::with_style_override(node.id, Arc::new(override_style), || {
+      assert_eq!(
+        intrinsic_cache_lookup(&node, IntrinsicSizingMode::MinContent),
+        Some(30.0)
+      );
+    });
+    let mut override_style = ComputedStyle::default();
+    override_style.width_keyword = Some(IntrinsicSizeKeyword::MinContent);
+    crate::layout::style_override::with_style_override(node.id, Arc::new(override_style), || {
+      assert_eq!(intrinsic_cache_lookup(&node, IntrinsicSizingMode::MinContent), None);
     });
 
     intrinsic_cache_use_epoch(1, true);
