@@ -379,6 +379,8 @@ impl BlockFormattingContext {
             &self.font_context,
             self.viewport_size,
           );
+          let limit_border =
+            border_size_from_box_sizing(limit_border, inline_edges, style.box_sizing);
           max_border.min(limit_border.max(min_border))
         }
       },
@@ -6238,7 +6240,8 @@ mod tests {
       inline_axis_padding_and_borders(&child_style, 300.0, viewport, &font_context);
     let intrinsic_min = rebase_intrinsic_border_box_size(min_base0, edges_base0, edges_actual);
     let intrinsic_max = rebase_intrinsic_border_box_size(max_base0, edges_base0, edges_actual);
-    let expected_border_box = intrinsic_max.min(intrinsic_min.max(50.0));
+    let limit_border = border_size_from_box_sizing(50.0, edges_actual, child_style.box_sizing);
+    let expected_border_box = intrinsic_max.min(intrinsic_min.max(limit_border));
 
     let fragment = fc.layout(&parent, &constraints).unwrap();
     assert_eq!(fragment.children.len(), 1);

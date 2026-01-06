@@ -277,6 +277,61 @@ fn height_fit_content_limit_respects_box_sizing() {
 }
 
 #[test]
+fn block_width_fit_content_limit_respects_box_sizing() {
+  let factory = FormattingContextFactory::new();
+  let ctx = factory.create(FormattingContextType::Block);
+
+  let mut base_style = ComputedStyle::default();
+  base_style.display = Display::Block;
+  base_style.padding_left = Length::px(10.0);
+  base_style.padding_right = Length::px(10.0);
+  let edges = base_style.padding_left.to_px() + base_style.padding_right.to_px();
+
+  let text = "lorem ipsum dolor";
+  let measure = BoxNode::new_block(
+    Arc::new(base_style.clone()),
+    FormattingContextType::Block,
+    vec![BoxNode::new_text(default_style(), text.into())],
+  );
+  let (min_border, max_border) = ctx
+    .compute_intrinsic_inline_sizes(&measure)
+    .expect("intrinsic inline sizes");
+  let target_border = (min_border + max_border) / 2.0;
+  let limit_content = target_border - edges;
+  assert!(
+    limit_content > 0.0,
+    "expected positive fit-content limit (limit={} edges={} target_border={})",
+    limit_content,
+    edges,
+    target_border
+  );
+
+  let mut child_style = base_style;
+  child_style.width_keyword = Some(IntrinsicSizeKeyword::FitContent {
+    limit: Some(Length::px(limit_content)),
+  });
+  let child = BoxNode::new_block(
+    Arc::new(child_style),
+    FormattingContextType::Block,
+    vec![BoxNode::new_text(default_style(), text.into())],
+  );
+
+  let root = block_container(vec![child]);
+  let fragment = ctx
+    .layout(
+      &root,
+      &LayoutConstraints::definite_width(max_border + 200.0),
+    )
+    .expect("layout");
+  let child_fragment = &fragment.children[0];
+  assert_approx(
+    child_fragment.bounds.width(),
+    target_border,
+    "width: fit-content(<len>) should account for content-box padding when clamping border sizes",
+  );
+}
+
+#[test]
 fn float_width_fit_content_limit_respects_box_sizing() {
   let factory = FormattingContextFactory::new();
   let ctx = factory.create(FormattingContextType::Block);
