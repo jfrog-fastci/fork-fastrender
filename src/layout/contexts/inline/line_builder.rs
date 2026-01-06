@@ -3931,7 +3931,11 @@ fn reorder_paragraph(
           if let (InlineItem::InlineBox(prev), InlineItem::InlineBox(curr)) =
             (&mut last.item, &mut item.item)
           {
-            if prev.box_index == curr.box_index {
+            // Coalesce fragments that belong to the same original inline box (e.g. after bidi
+            // segmentation). `box_index` alone is not a stable identity (real inline boxes are
+            // commonly constructed with `box_index = 0`), so include `box_id` when available to
+            // avoid merging distinct sibling boxes.
+            if prev.box_id == curr.box_id && prev.box_index == curr.box_index {
               prev.children.append(&mut curr.children);
               prev.end_edge = curr.end_edge;
               prev.border_right = curr.border_right;
@@ -6076,6 +6080,55 @@ mod tests {
       texts,
       vec!["A ".to_string(), "cba".to_string(), " C".to_string()]
     );
+  }
+
+  #[test]
+  fn bidi_reorder_does_not_coalesce_distinct_inline_boxes_with_same_box_index() {
+    let mut builder = make_builder(200.0);
+
+    let mut first = InlineBoxItem::new(
+      0.0,
+      0.0,
+      0.0,
+      make_strut_metrics(),
+      Arc::new(ComputedStyle::default()),
+      0,
+      Direction::Ltr,
+      UnicodeBidi::Normal,
+    );
+    first.box_id = 1;
+    first.add_child(InlineItem::Text(make_text_item("one", 30.0)));
+
+    let mut second = InlineBoxItem::new(
+      0.0,
+      0.0,
+      0.0,
+      make_strut_metrics(),
+      Arc::new(ComputedStyle::default()),
+      0,
+      Direction::Ltr,
+      UnicodeBidi::Normal,
+    );
+    second.box_id = 2;
+    second.add_child(InlineItem::Text(make_text_item("two", 30.0)));
+
+    builder.add_item(InlineItem::InlineBox(first)).unwrap();
+    builder.add_item(InlineItem::InlineBox(second)).unwrap();
+
+    let lines = builder.finish().unwrap().lines;
+    assert_eq!(lines.len(), 1);
+
+    let top_level_boxes: Vec<&InlineBoxItem> = lines[0]
+      .items
+      .iter()
+      .filter_map(|p| match &p.item {
+        InlineItem::InlineBox(b) => Some(b),
+        _ => None,
+      })
+      .collect();
+    assert_eq!(top_level_boxes.len(), 2);
+    assert_eq!(top_level_boxes[0].box_id, 1);
+    assert_eq!(top_level_boxes[1].box_id, 2);
   }
 
   #[test]
