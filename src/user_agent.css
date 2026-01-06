@@ -350,6 +350,15 @@ embed {
     overflow: clip;
 }
 
+iframe {
+    border: 2px inset rgb(204, 204, 204);
+}
+
+iframe[frameborder="0"],
+iframe[frameborder="no"] {
+    border: 0;
+}
+
 /* HTML media elements */
 audio:not([controls]) {
     display: none;
