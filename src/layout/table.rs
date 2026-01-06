@@ -30,6 +30,7 @@ use crate::debug::runtime;
 use crate::error::{Error, RenderError, RenderStage};
 use crate::geometry::Point;
 use crate::geometry::Rect;
+use crate::geometry::Size;
 use crate::layout::absolute_positioning::resolve_positioned_style;
 use crate::layout::absolute_positioning::AbsoluteLayout;
 use crate::layout::absolute_positioning::AbsoluteLayoutInput;
@@ -4306,6 +4307,7 @@ pub struct TableFormattingContext {
   cell_bfc: BlockFormattingContext,
   viewport_size: crate::geometry::Size,
   nearest_positioned_cb: ContainingBlock,
+  nearest_fixed_cb: ContainingBlock,
   parallelism: LayoutParallelism,
 }
 
@@ -4320,6 +4322,7 @@ impl TableFormattingContext {
     let parallelism = factory.parallelism();
     let viewport_size = factory.viewport_size();
     let nearest_positioned_cb = factory.nearest_positioned_cb();
+    let nearest_fixed_cb = factory.nearest_fixed_cb();
     let cell_bfc = BlockFormattingContext::with_factory(factory.detached());
     Self {
       structure: None,
@@ -4327,6 +4330,7 @@ impl TableFormattingContext {
       cell_bfc,
       viewport_size,
       nearest_positioned_cb,
+      nearest_fixed_cb,
       parallelism,
     }
   }
@@ -5401,28 +5405,19 @@ impl FormattingContext for TableFormattingContext {
         return Ok(());
       }
       let abs = AbsoluteLayout::with_font_context(self.factory.font_context().clone());
-      // `FormattingContextFactory::with_positioned_cb` resets the per-factory cached formatting
-      // contexts store. Build factory variants once so we can reuse cached formatting contexts
-      // when multiple positioned children share the same containing block.
+      // `FormattingContextFactory::with_positioned_cb` and `with_fixed_cb` reset the per-factory
+      // cached formatting contexts store. Build factory variants once so we can reuse cached
+      // formatting contexts when multiple positioned children share the same containing block.
       let base_factory = self.factory.clone();
-      let abs_factory = if cb_for_absolute == base_factory.nearest_positioned_cb() {
-        base_factory.clone()
+      let positioned_factory = if cb_for_fixed == base_factory.nearest_fixed_cb() {
+        base_factory
       } else {
-        base_factory.with_positioned_cb(cb_for_absolute)
+        base_factory.with_fixed_cb(cb_for_fixed)
       };
-      let fixed_factory = if cb_for_fixed == cb_for_absolute {
-        abs_factory.clone()
-      } else if cb_for_fixed == base_factory.nearest_positioned_cb() {
-        base_factory.clone()
+      let abs_factory = if cb_for_absolute == positioned_factory.nearest_positioned_cb() {
+        positioned_factory
       } else {
-        base_factory.with_positioned_cb(cb_for_fixed)
-      };
-      let factory_for_cb = |cb: ContainingBlock| -> &FormattingContextFactory {
-        if cb == cb_for_fixed {
-          &fixed_factory
-        } else {
-          &abs_factory
-        }
+        positioned_factory.with_positioned_cb(cb_for_absolute)
       };
       for child in positioned_children.iter().copied() {
         let original_style = child.style.clone();
@@ -5480,7 +5475,7 @@ impl FormattingContext for TableFormattingContext {
             static_style.clone(),
             || match fc_type {
               FormattingContextType::Table => {
-                let fc = factory_for_cb(cb).create(fc_type);
+                let fc = abs_factory.create(fc_type);
                 let fragment = fc.layout(child, &child_constraints)?;
                 let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
                   match fc.compute_intrinsic_inline_sizes(child) {
@@ -5533,7 +5528,7 @@ impl FormattingContext for TableFormattingContext {
                   preferred_block,
                 ))
               }
-              _ => factory_for_cb(cb).with_fc(fc_type, |fc| {
+              _ => abs_factory.with_fc(fc_type, |fc| {
                 let fragment = fc.layout(child, &child_constraints)?;
                 let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
                   match fc.compute_intrinsic_inline_sizes(child) {
@@ -5593,7 +5588,7 @@ impl FormattingContext for TableFormattingContext {
           layout_child.style = static_style.clone();
           match fc_type {
             FormattingContextType::Table => {
-              let fc = factory_for_cb(cb).create(fc_type);
+              let fc = abs_factory.create(fc_type);
               let fragment = fc.layout(&layout_child, &child_constraints)?;
               let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
                 match fc.compute_intrinsic_inline_sizes(&layout_child) {
@@ -5650,7 +5645,7 @@ impl FormattingContext for TableFormattingContext {
                 preferred_block,
               )
             }
-            _ => factory_for_cb(cb).with_fc(fc_type, |fc| {
+            _ => abs_factory.with_fc(fc_type, |fc| {
               let fragment = fc.layout(&layout_child, &child_constraints)?;
               let (preferred_min_inline, preferred_inline) = if needs_inline_intrinsics {
                 match fc.compute_intrinsic_inline_sizes(&layout_child) {
@@ -5770,10 +5765,10 @@ impl FormattingContext for TableFormattingContext {
            -> Result<FragmentNode, LayoutError> {
             match fc_type {
               FormattingContextType::Table => {
-                let fc = factory_for_cb(cb).create(fc_type);
+                let fc = abs_factory.create(fc_type);
                 fc.layout(node, constraints)
               }
-              _ => factory_for_cb(cb).with_fc(fc_type, |fc| fc.layout(node, constraints)),
+              _ => abs_factory.with_fc(fc_type, |fc| fc.layout(node, constraints)),
             }
           };
           if child.id != 0 {
@@ -5889,7 +5884,6 @@ impl FormattingContext for TableFormattingContext {
           Some(padding_rect.size.width),
           block_base,
         );
-        let viewport_cb = ContainingBlock::viewport(self.viewport_size);
         let establishes_abs_cb = table_root_style.establishes_abs_containing_block();
         let establishes_fixed_cb = table_root_style.establishes_fixed_containing_block();
         let cb_for_absolute = if establishes_abs_cb {
@@ -5900,7 +5894,7 @@ impl FormattingContext for TableFormattingContext {
         let cb_for_fixed = if establishes_fixed_cb {
           padding_cb
         } else {
-          viewport_cb
+          self.nearest_fixed_cb
         };
         place_out_of_flow(&mut fragment, cb_for_absolute, cb_for_fixed)?;
       }
@@ -6088,7 +6082,48 @@ impl FormattingContext for TableFormattingContext {
       let next = col_prefix.last().copied().unwrap_or(0.0) + *width;
       col_prefix.push(next);
     }
-    let cell_bfc = &self.cell_bfc;
+    let establishes_fixed_cb = table_root_style.has_transform()
+      || table_root_style.perspective.is_some()
+      || table_root_style.containment.layout
+      || table_root_style.containment.paint;
+    let mut cell_bfc_owned = None;
+    let cell_bfc = if establishes_fixed_cb {
+      let content_width = if col_widths.is_empty() {
+        available_content
+      } else {
+        col_widths.iter().sum::<f32>() + h_spacing * structure.column_count as f32
+      };
+      let padding_width = if structure.border_collapse == BorderCollapse::Collapse {
+        content_width
+      } else {
+        content_width + padding_h
+      };
+      let padding_height = table_height
+        .map(|h| (h - border_top - border_bottom).max(0.0))
+        .unwrap_or(padding_v.max(0.0));
+      let block_base = if table_root_style.height.is_some() {
+        Some(padding_height)
+      } else {
+        None
+      };
+      let padding_origin = Point::new(border_left + pad_left, border_top + pad_top);
+      let padding_rect = Rect::new(
+        padding_origin,
+        Size::new(padding_width.max(0.0), padding_height.max(0.0)),
+      );
+      let fixed_cb = ContainingBlock::with_viewport_and_bases(
+        padding_rect,
+        self.viewport_size,
+        Some(padding_rect.size.width),
+        block_base,
+      );
+      cell_bfc_owned = Some(BlockFormattingContext::with_factory(
+        self.factory.detached().with_fixed_cb(fixed_cb),
+      ));
+      cell_bfc_owned.as_ref().unwrap()
+    } else {
+      &self.cell_bfc
+    };
     let mut fragments = Vec::new();
 
     struct LaidOutCell {
@@ -7361,7 +7396,6 @@ impl FormattingContext for TableFormattingContext {
         Some(padding_rect.size.width),
         block_base,
       );
-      let viewport_cb = ContainingBlock::viewport(self.viewport_size);
       let establishes_abs_cb = table_root_style.establishes_abs_containing_block();
       let establishes_fixed_cb = table_root_style.establishes_fixed_containing_block();
       let cb_for_absolute = if establishes_abs_cb {
@@ -7372,7 +7406,7 @@ impl FormattingContext for TableFormattingContext {
       let cb_for_fixed = if establishes_fixed_cb {
         padding_cb
       } else {
-        viewport_cb
+        self.nearest_fixed_cb
       };
 
       place_out_of_flow(&mut wrapper_fragment, cb_for_absolute, cb_for_fixed)?;

@@ -485,6 +485,7 @@ pub struct FlexFormattingContext {
   viewport_size: Size,
   font_context: FontContext,
   nearest_positioned_cb: ContainingBlock,
+  nearest_fixed_cb: ContainingBlock,
   parallelism: LayoutParallelism,
   measured_fragments: Arc<ShardedFlexCache>,
   layout_fragments: Arc<ShardedFlexCache>,
@@ -539,11 +540,13 @@ impl FlexFormattingContext {
       flex_taffy_cache.clone(),
       grid_taffy_cache,
     );
+    let nearest_fixed_cb = factory.nearest_fixed_cb();
     Self {
       factory,
       viewport_size,
       font_context,
       nearest_positioned_cb,
+      nearest_fixed_cb,
       parallelism: LayoutParallelism::default(),
       measured_fragments,
       layout_fragments,
@@ -554,6 +557,7 @@ impl FlexFormattingContext {
   pub(crate) fn with_factory(factory: FormattingContextFactory) -> Self {
     let viewport_size = factory.viewport_size();
     let nearest_positioned_cb = factory.nearest_positioned_cb();
+    let nearest_fixed_cb = factory.nearest_fixed_cb();
     let font_context = factory.font_context().clone();
     let measured_fragments = factory.flex_measure_cache();
     let layout_fragments = factory.flex_layout_cache();
@@ -564,6 +568,7 @@ impl FlexFormattingContext {
       viewport_size,
       font_context,
       nearest_positioned_cb,
+      nearest_fixed_cb,
       parallelism,
       measured_fragments,
       layout_fragments,
@@ -920,7 +925,44 @@ impl FormattingContext for FlexFormattingContext {
     }
     let viewport_size = self.viewport_size;
     let measured_fragments = self.measured_fragments.clone();
-    let base_factory = self.child_factory();
+
+    let establishes_fixed_cb = style.has_transform()
+      || style.perspective.is_some()
+      || style.containment.layout
+      || style.containment.paint;
+    let descendant_nearest_fixed_cb = if establishes_fixed_cb {
+      let percentage_base = container_inline_base.unwrap_or(viewport_size.width);
+      let padding_left = self.resolve_length_for_width(style.padding_left, percentage_base, style);
+      let padding_right = self.resolve_length_for_width(style.padding_right, percentage_base, style);
+      let padding_top = self.resolve_length_for_width(style.padding_top, percentage_base, style);
+      let padding_bottom = self.resolve_length_for_width(style.padding_bottom, percentage_base, style);
+      let border_left =
+        self.resolve_length_for_width(style.border_left_width, percentage_base, style);
+      let border_top = self.resolve_length_for_width(style.border_top_width, percentage_base, style);
+
+      let padding_origin = Point::new(border_left + padding_left, border_top + padding_top);
+      let content_width = constraints.width().unwrap_or(0.0).max(0.0);
+      let content_height = constraints.height().unwrap_or(0.0).max(0.0);
+      let padding_size = Size::new(
+        content_width + padding_left + padding_right,
+        content_height + padding_top + padding_bottom,
+      );
+      let padding_rect = Rect::new(padding_origin, padding_size);
+      ContainingBlock::with_viewport_and_bases(
+        padding_rect,
+        viewport_size,
+        Some(padding_rect.size.width),
+        constraints.height().map(|_| padding_rect.size.height),
+      )
+    } else {
+      self.nearest_fixed_cb
+    };
+
+    let base_factory = if descendant_nearest_fixed_cb == self.factory.nearest_fixed_cb() {
+      self.child_factory()
+    } else {
+      self.factory.with_fixed_cb(descendant_nearest_fixed_cb)
+    };
     let factory = base_factory.clone();
     let viewport_scroll = sanitize_viewport_scroll(factory.viewport_scroll());
     let mut scroll_sensitive_items: FxHashSet<*const BoxNode> = FxHashSet::default();
@@ -3333,20 +3375,26 @@ impl FormattingContext for FlexFormattingContext {
         Some(padding_rect.size.width),
         block_base,
       );
-      let viewport_cb = ContainingBlock::viewport(self.viewport_size);
       let cb_for_absolute = if establishes_abs_cb {
         padding_cb
       } else {
         self.nearest_positioned_cb
       };
-      let abs_factory = positioned_factory.with_positioned_cb(cb_for_absolute);
-      let fixed_factory = positioned_factory.with_positioned_cb(viewport_cb);
-      let factory_for_cb = |cb: ContainingBlock| -> &FormattingContextFactory {
-        if cb == viewport_cb {
-          &fixed_factory
-        } else {
-          &abs_factory
-        }
+      let cb_for_fixed = if establishes_fixed_cb {
+        padding_cb
+      } else {
+        self.nearest_fixed_cb
+      };
+
+      let positioned_factory = if cb_for_fixed == positioned_factory.nearest_fixed_cb() {
+        positioned_factory
+      } else {
+        positioned_factory.with_fixed_cb(cb_for_fixed)
+      };
+      let abs_factory = if cb_for_absolute == positioned_factory.nearest_positioned_cb() {
+        positioned_factory.clone()
+      } else {
+        positioned_factory.with_positioned_cb(cb_for_absolute)
       };
 
       let mut positioned_candidates: Vec<PositionedCandidate> = Vec::new();
@@ -3357,13 +3405,7 @@ impl FormattingContext for FlexFormattingContext {
         let original_style = child.style.clone();
         let is_replaced = child.is_replaced();
         let cb = match child.style.position {
-          Position::Fixed => {
-            if establishes_fixed_cb {
-              padding_cb
-            } else {
-              viewport_cb
-            }
-          }
+          Position::Fixed => cb_for_fixed,
           Position::Absolute => cb_for_absolute,
           _ => cb_for_absolute,
         };
@@ -3383,7 +3425,7 @@ impl FormattingContext for FlexFormattingContext {
         let fc_type = layout_child
           .formatting_context()
           .unwrap_or(crate::style::display::FormattingContextType::Block);
-        let fc = factory_for_cb(cb).get(fc_type);
+        let fc = abs_factory.get(fc_type);
         let child_constraints = LayoutConstraints::new(
           CrateAvailableSpace::Definite(padding_rect.size.width),
           block_base
@@ -3552,7 +3594,7 @@ impl FormattingContext for FlexFormattingContext {
             .layout_child
             .formatting_context()
             .unwrap_or(crate::style::display::FormattingContextType::Block);
-          let fc = factory_for_cb(candidate.cb).get(fc_type);
+          let fc = abs_factory.get(fc_type);
           let supports_used_border_box = matches!(
             fc_type,
             FormattingContextType::Block

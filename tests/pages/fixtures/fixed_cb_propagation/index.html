@@ -1,0 +1,42 @@
+<!doctype html>
+<meta charset="utf-8" />
+<style>
+  body {
+    margin: 0;
+    background: white;
+  }
+
+  .viewport-fixed {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 20px;
+    height: 20px;
+    background: red;
+  }
+
+  .fixed-cb {
+    margin: 80px;
+    width: 100px;
+    height: 100px;
+    contain: paint;
+    background: #eee;
+  }
+
+  .scoped-fixed {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 20px;
+    height: 20px;
+    background: green;
+  }
+</style>
+
+<div class="viewport-fixed"></div>
+
+<div class="fixed-cb">
+  <div class="wrapper">
+    <div class="scoped-fixed"></div>
+  </div>
+</div>

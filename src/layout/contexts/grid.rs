@@ -689,6 +689,7 @@ pub struct GridFormattingContext {
   viewport_size: crate::geometry::Size,
   font_context: crate::text::font_loader::FontContext,
   nearest_positioned_cb: crate::layout::contexts::positioned::ContainingBlock,
+  nearest_fixed_cb: crate::layout::contexts::positioned::ContainingBlock,
   taffy_cache: std::sync::Arc<crate::layout::taffy_integration::TaffyNodeCache>,
   parallelism: LayoutParallelism,
 }
@@ -825,6 +826,7 @@ impl GridFormattingContext {
   pub(crate) fn with_factory(factory: FormattingContextFactory) -> Self {
     let viewport_size = factory.viewport_size();
     let nearest_positioned_cb = factory.nearest_positioned_cb();
+    let nearest_fixed_cb = factory.nearest_fixed_cb();
     let font_context = factory.font_context().clone();
     let parallelism = factory.parallelism();
     let taffy_cache = factory.grid_taffy_cache();
@@ -833,6 +835,7 @@ impl GridFormattingContext {
       viewport_size,
       font_context,
       nearest_positioned_cb,
+      nearest_fixed_cb,
       taffy_cache,
       parallelism,
     }
@@ -3750,8 +3753,6 @@ impl GridFormattingContext {
       Some(padding_rect.size.width),
       block_base,
     );
-    let viewport_cb =
-      crate::layout::contexts::positioned::ContainingBlock::viewport(self.viewport_size);
     let cb_for_absolute = if establishes_abs_cb {
       padding_cb
     } else {
@@ -3760,21 +3761,22 @@ impl GridFormattingContext {
     let cb_for_fixed = if establishes_fixed_cb {
       padding_cb
     } else {
-      viewport_cb
+      self.nearest_fixed_cb
     };
 
-    // `FormattingContextFactory::with_positioned_cb` resets the per-factory cached formatting
-    // contexts store. If we call it per positioned child we'd end up rebuilding a detached
-    // Block/Inline/Flex/etc formatting context per child.
+    // `FormattingContextFactory::with_fixed_cb` / `with_positioned_cb` reset the per-factory cached
+    // formatting contexts store. Build factory variants once so multiple positioned children can
+    // reuse cached formatting contexts instead of rebuilding detached ones per child.
     let positioned_factory = self.factory.clone();
-    let abs_factory = positioned_factory.with_positioned_cb(cb_for_absolute);
-    let fixed_factory = positioned_factory.with_positioned_cb(cb_for_fixed);
-    let factory_for_cb = |cb: crate::layout::contexts::positioned::ContainingBlock| {
-      if cb == cb_for_fixed {
-        &fixed_factory
-      } else {
-        &abs_factory
-      }
+    let positioned_factory = if cb_for_fixed == positioned_factory.nearest_fixed_cb() {
+      positioned_factory
+    } else {
+      positioned_factory.with_fixed_cb(cb_for_fixed)
+    };
+    let abs_factory = if cb_for_absolute == positioned_factory.nearest_positioned_cb() {
+      positioned_factory.clone()
+    } else {
+      positioned_factory.with_positioned_cb(cb_for_absolute)
     };
 
     #[derive(Clone)]
@@ -4028,7 +4030,7 @@ impl GridFormattingContext {
       let fc_type = child
         .formatting_context()
         .unwrap_or(crate::style::display::FormattingContextType::Block);
-      let fc = factory_for_cb(cb).get(fc_type);
+      let fc = abs_factory.get(fc_type);
       let child_constraints = LayoutConstraints::new(
         CrateAvailableSpace::Definite(padding_rect.size.width),
         block_base
@@ -6427,10 +6429,47 @@ impl FormattingContext for GridFormattingContext {
       .as_deref()
       .unwrap_or_else(|| box_node.style.as_ref());
 
+    // Grid containers that establish a fixed containing block (`transform`, `perspective`, filters,
+    // or `contain: paint/layout`) need to thread that containing block into the factories used for
+    // laying out descendants. Otherwise `position: fixed` descendants inside in-flow grid items can
+    // incorrectly fall back to the viewport.
+    let mut ctx = self.clone();
+    if style.establishes_fixed_containing_block() {
+      let percentage_base = constraints
+        .inline_percentage_base
+        .or_else(|| constraints.width())
+        .unwrap_or(self.viewport_size.width);
+      let padding_left = ctx.resolve_length_for_width(style.padding_left, percentage_base, style);
+      let padding_right = ctx.resolve_length_for_width(style.padding_right, percentage_base, style);
+      let padding_top = ctx.resolve_length_for_width(style.padding_top, percentage_base, style);
+      let padding_bottom = ctx.resolve_length_for_width(style.padding_bottom, percentage_base, style);
+      let border_left =
+        ctx.resolve_length_for_width(style.used_border_left_width(), percentage_base, style);
+      let border_top =
+        ctx.resolve_length_for_width(style.used_border_top_width(), percentage_base, style);
+      let padding_origin = Point::new(border_left, border_top);
+      let content_width = constraints.width().unwrap_or(0.0).max(0.0);
+      let content_height = constraints.height().unwrap_or(0.0).max(0.0);
+      let padding_size = Size::new(
+        content_width + padding_left + padding_right,
+        content_height + padding_top + padding_bottom,
+      );
+      let padding_rect = Rect::new(padding_origin, padding_size);
+      let padding_cb = crate::layout::contexts::positioned::ContainingBlock::with_viewport_and_bases(
+        padding_rect,
+        ctx.viewport_size,
+        Some(padding_rect.size.width),
+        constraints.height().map(|_| padding_rect.size.height),
+      );
+      ctx.nearest_fixed_cb = padding_cb;
+      ctx.factory = ctx.factory.with_fixed_cb(padding_cb);
+    }
+    let ctx = &ctx;
+
     let has_subgrid = style.grid_row_subgrid || style.grid_column_subgrid;
 
     // Build Taffy tree from in-flow children
-    let root_id = self.build_taffy_tree_children(
+    let root_id = ctx.build_taffy_tree_children(
       &mut taffy,
       box_node,
       style,
@@ -6442,7 +6481,7 @@ impl FormattingContext for GridFormattingContext {
       // Patch the root style in-place so we can avoid deep-cloning box subtrees when sizing hints
       // are temporarily overridden (e.g. flex/grid intrinsic probes or final item sizing).
       let mut style_deadline_counter = 0usize;
-      let simple_grid = self.is_simple_grid(
+      let simple_grid = ctx.is_simple_grid(
         style_override,
         &in_flow_children,
         &mut style_deadline_counter,
@@ -7028,7 +7067,7 @@ impl FormattingContext for GridFormattingContext {
     let auto_unskipped = (auto_item_count > 0).then_some(&auto_unskipped_nodes);
     let mut deadline_counter = 0usize;
     let mut fragment = if !has_subgrid && !child_has_subgrid {
-      if let Some(result) = self.try_parallel_root_children_conversion(
+      if let Some(result) = ctx.try_parallel_root_children_conversion(
         &taffy,
         root_id,
         box_node,
@@ -7040,7 +7079,7 @@ impl FormattingContext for GridFormattingContext {
       ) {
         result?
       } else {
-        self.convert_to_fragments(
+        ctx.convert_to_fragments(
           &taffy,
           root_id,
           root_id,
@@ -7054,7 +7093,7 @@ impl FormattingContext for GridFormattingContext {
         )?
       }
     } else {
-      self.convert_to_fragments(
+      ctx.convert_to_fragments(
         &taffy,
         root_id,
         root_id,
@@ -7094,42 +7133,42 @@ impl FormattingContext for GridFormattingContext {
 
     // Position out-of-flow children against the appropriate containing block.
     if !positioned_children.is_empty() {
-      let padding_left = self.resolve_length_for_width(
+      let padding_left = ctx.resolve_length_for_width(
         box_node.style.padding_left,
         constraints.width().unwrap_or(0.0),
         &box_node.style,
       );
-      let padding_top = self.resolve_length_for_width(
+      let padding_top = ctx.resolve_length_for_width(
         box_node.style.padding_top,
         constraints.width().unwrap_or(0.0),
         &box_node.style,
       );
-      let padding_right = self.resolve_length_for_width(
+      let padding_right = ctx.resolve_length_for_width(
         box_node.style.padding_right,
         constraints.width().unwrap_or(0.0),
         &box_node.style,
       );
-      let padding_bottom = self.resolve_length_for_width(
+      let padding_bottom = ctx.resolve_length_for_width(
         box_node.style.padding_bottom,
         constraints.width().unwrap_or(0.0),
         &box_node.style,
       );
-      let border_left = self.resolve_length_for_width(
+      let border_left = ctx.resolve_length_for_width(
         box_node.style.used_border_left_width(),
         constraints.width().unwrap_or(0.0),
         &box_node.style,
       );
-      let border_top = self.resolve_length_for_width(
+      let border_top = ctx.resolve_length_for_width(
         box_node.style.used_border_top_width(),
         constraints.width().unwrap_or(0.0),
         &box_node.style,
       );
-      let border_right = self.resolve_length_for_width(
+      let border_right = ctx.resolve_length_for_width(
         box_node.style.used_border_right_width(),
         constraints.width().unwrap_or(0.0),
         &box_node.style,
       );
-      let border_bottom = self.resolve_length_for_width(
+      let border_bottom = ctx.resolve_length_for_width(
         box_node.style.used_border_bottom_width(),
         constraints.width().unwrap_or(0.0),
         &box_node.style,
@@ -7152,35 +7191,34 @@ impl FormattingContext for GridFormattingContext {
       let padding_cb =
         crate::layout::contexts::positioned::ContainingBlock::with_viewport_and_bases(
           padding_rect,
-          self.viewport_size,
+          ctx.viewport_size,
           Some(padding_rect.size.width),
           block_base,
         );
-      let viewport_cb =
-        crate::layout::contexts::positioned::ContainingBlock::viewport(self.viewport_size);
       let cb_for_absolute = if establishes_abs_cb {
         padding_cb
       } else {
-        self.nearest_positioned_cb
+        ctx.nearest_positioned_cb
       };
       let cb_for_fixed = if establishes_fixed_cb {
         padding_cb
       } else {
-        viewport_cb
+        ctx.nearest_fixed_cb
       };
 
-      // `FormattingContextFactory::with_positioned_cb` resets the per-factory cached formatting
-      // contexts store. If we call it per positioned child we'd end up rebuilding a detached
-      // Block/Inline/Flex/etc formatting context per child.
-      let positioned_factory = self.factory.clone();
-      let abs_factory = positioned_factory.with_positioned_cb(cb_for_absolute);
-      let fixed_factory = positioned_factory.with_positioned_cb(cb_for_fixed);
-      let factory_for_cb = |cb: crate::layout::contexts::positioned::ContainingBlock| {
-        if cb == cb_for_fixed {
-          &fixed_factory
-        } else {
-          &abs_factory
-        }
+      // `FormattingContextFactory::with_fixed_cb` / `with_positioned_cb` reset the per-factory cached
+      // formatting contexts store. Build factory variants once so multiple positioned children can
+      // reuse cached formatting contexts instead of rebuilding detached ones per child.
+      let positioned_factory = ctx.factory.clone();
+      let positioned_factory = if cb_for_fixed == positioned_factory.nearest_fixed_cb() {
+        positioned_factory
+      } else {
+        positioned_factory.with_fixed_cb(cb_for_fixed)
+      };
+      let abs_factory = if cb_for_absolute == positioned_factory.nearest_positioned_cb() {
+        positioned_factory.clone()
+      } else {
+        positioned_factory.with_positioned_cb(cb_for_absolute)
       };
 
       let mut static_positions: FxHashMap<usize, Point> = FxHashMap::default();
@@ -7241,7 +7279,7 @@ impl FormattingContext for GridFormattingContext {
       }
 
       let abs = crate::layout::absolute_positioning::AbsoluteLayout::with_font_context(
-        self.font_context.clone(),
+        ctx.font_context.clone(),
       );
       let mut abs_deadline_counter = 0usize;
       for child in &positioned_children {
@@ -7255,7 +7293,7 @@ impl FormattingContext for GridFormattingContext {
         let fc_type = child
           .formatting_context()
           .unwrap_or(crate::style::display::FormattingContextType::Block);
-        let fc = factory_for_cb(cb).get(fc_type);
+        let fc = abs_factory.get(fc_type);
         let child_constraints = LayoutConstraints::new(
           CrateAvailableSpace::Definite(padding_rect.size.width),
           block_base
@@ -7266,8 +7304,8 @@ impl FormattingContext for GridFormattingContext {
         let positioned_style = crate::layout::absolute_positioning::resolve_positioned_style(
           &child.style,
           &cb,
-          self.viewport_size,
-          &self.font_context,
+          ctx.viewport_size,
+          &ctx.font_context,
         );
         // Static position resolves to where the element would be in flow, relative to the containing
         // block origin (padding edge).
@@ -7540,21 +7578,20 @@ impl FormattingContext for GridFormattingContext {
         if let Ok(container_style) = taffy.style(root_id) {
           let percentage_base = constraints.width().unwrap_or(fragment.bounds.width());
           let padding_left =
-            self.resolve_length_for_width(style.padding_left, percentage_base, style);
+            ctx.resolve_length_for_width(style.padding_left, percentage_base, style);
           let padding_right =
-            self.resolve_length_for_width(style.padding_right, percentage_base, style);
-          let padding_top =
-            self.resolve_length_for_width(style.padding_top, percentage_base, style);
+            ctx.resolve_length_for_width(style.padding_right, percentage_base, style);
+          let padding_top = ctx.resolve_length_for_width(style.padding_top, percentage_base, style);
           let padding_bottom =
-            self.resolve_length_for_width(style.padding_bottom, percentage_base, style);
+            ctx.resolve_length_for_width(style.padding_bottom, percentage_base, style);
           let border_left =
-            self.resolve_length_for_width(style.used_border_left_width(), percentage_base, style);
+            ctx.resolve_length_for_width(style.used_border_left_width(), percentage_base, style);
           let border_right =
-            self.resolve_length_for_width(style.used_border_right_width(), percentage_base, style);
+            ctx.resolve_length_for_width(style.used_border_right_width(), percentage_base, style);
           let border_top =
-            self.resolve_length_for_width(style.used_border_top_width(), percentage_base, style);
+            ctx.resolve_length_for_width(style.used_border_top_width(), percentage_base, style);
           let border_bottom =
-            self.resolve_length_for_width(style.used_border_bottom_width(), percentage_base, style);
+            ctx.resolve_length_for_width(style.used_border_bottom_width(), percentage_base, style);
 
           row_offsets = Some(compute_track_offsets(
             &info.rows,
@@ -7582,7 +7619,7 @@ impl FormattingContext for GridFormattingContext {
       }
 
       let axes = FragmentAxes::from_writing_mode_and_direction(style.writing_mode, style.direction);
-      let snapshot_factory = self.factory.clone();
+      let snapshot_factory = ctx.factory.clone();
 
       let parse_explicit_single_track =
         |raw: Option<&str>, start: i32, end: i32| -> Option<(u16, u16)> {

@@ -177,6 +177,7 @@ pub struct BlockFormattingContext {
   viewport_size: crate::geometry::Size,
   viewport_scroll: Point,
   nearest_positioned_cb: ContainingBlock,
+  nearest_fixed_cb: ContainingBlock,
   /// When true, treat the root box as a flex item for width resolution (auto margins resolve to
   /// 0 and specified margins stay fixed instead of being rebalanced to satisfy the block width
   /// equation). This is only meant for the flex-item root; descendants revert to normal block
@@ -230,6 +231,7 @@ impl BlockFormattingContext {
     let viewport_size = factory.viewport_size();
     let viewport_scroll = factory.viewport_scroll();
     let nearest_positioned_cb = factory.nearest_positioned_cb();
+    let nearest_fixed_cb = factory.nearest_fixed_cb();
     let font_context = factory.font_context().clone();
     let parallelism = factory.parallelism();
     let intrinsic_inline_fc = Arc::new(InlineFormattingContext::with_factory(factory.clone()));
@@ -240,6 +242,7 @@ impl BlockFormattingContext {
       viewport_size,
       viewport_scroll,
       nearest_positioned_cb,
+      nearest_fixed_cb,
       flex_item_mode: false,
       parallelism,
     }
@@ -263,6 +266,7 @@ impl BlockFormattingContext {
     let viewport_size = factory.viewport_size();
     let viewport_scroll = factory.viewport_scroll();
     let nearest_positioned_cb = factory.nearest_positioned_cb();
+    let nearest_fixed_cb = factory.nearest_fixed_cb();
     let font_context = factory.font_context().clone();
     let parallelism = factory.parallelism();
     let intrinsic_inline_fc = Arc::new(InlineFormattingContext::with_factory(factory.clone()));
@@ -273,6 +277,7 @@ impl BlockFormattingContext {
       viewport_size,
       viewport_scroll,
       nearest_positioned_cb,
+      nearest_fixed_cb,
       flex_item_mode: true,
       parallelism,
     }
@@ -391,6 +396,19 @@ impl BlockFormattingContext {
     (used_border - inline_edges).max(0.0)
   }
 
+  fn child_factory_for_cbs(
+    &self,
+    positioned_cb: ContainingBlock,
+    fixed_cb: ContainingBlock,
+  ) -> FormattingContextFactory {
+    let factory = self.child_factory_for_cb(positioned_cb);
+    if fixed_cb == factory.nearest_fixed_cb() {
+      factory
+    } else {
+      factory.with_fixed_cb(fixed_cb)
+    }
+  }
+
   /// Lays out a single block-level child and returns its fragment
   #[allow(clippy::cognitive_complexity)]
   fn layout_block_child(
@@ -402,6 +420,7 @@ impl BlockFormattingContext {
     margin_ctx: &mut MarginCollapseContext,
     current_y: f32,
     nearest_positioned_cb: &ContainingBlock,
+    nearest_fixed_cb: &ContainingBlock,
     external_float_ctx: Option<&mut FloatContext>,
     external_float_base_y: f32,
     paint_viewport: Rect,
@@ -740,7 +759,7 @@ impl BlockFormattingContext {
         })
         .unwrap_or(0.0);
 
-      let factory = self.child_factory_for_cb(*nearest_positioned_cb);
+      let factory = self.child_factory_for_cbs(*nearest_positioned_cb, *nearest_fixed_cb);
       let fc_type = child
         .formatting_context()
         .unwrap_or(FormattingContextType::Block);
@@ -1021,6 +1040,7 @@ impl BlockFormattingContext {
     // inline content can incorrectly resolve percentages against an ancestor CB (e.g. the
     // viewport).
     let establishes_positioned_cb = style.establishes_abs_containing_block();
+    let establishes_fixed_cb = style.establishes_fixed_containing_block();
     let content_origin = Point::new(
       computed_width.border_left + computed_width.padding_left,
       border_top + padding_top,
@@ -1041,6 +1061,16 @@ impl BlockFormattingContext {
       )
     } else {
       *nearest_positioned_cb
+    };
+    let descendant_nearest_fixed_cb = if establishes_fixed_cb {
+      ContainingBlock::with_viewport_and_bases(
+        Rect::new(padding_origin, padding_size),
+        self.viewport_size,
+        Some(padding_size.width),
+        cb_block_base,
+      )
+    } else {
+      *nearest_fixed_cb
     };
 
     let box_width = computed_width.border_box_width();
@@ -1211,6 +1241,7 @@ impl BlockFormattingContext {
           child,
           &child_constraints,
           &descendant_nearest_positioned_cb,
+          &descendant_nearest_fixed_cb,
           computed_width.content_width,
           child_viewport,
         )?;
@@ -1220,6 +1251,7 @@ impl BlockFormattingContext {
           child,
           &child_constraints,
           &descendant_nearest_positioned_cb,
+          &descendant_nearest_fixed_cb,
           child_viewport,
           external_float_ctx,
           external_float_base_y + child_content_origin.y,
@@ -1813,6 +1845,7 @@ impl BlockFormattingContext {
     parent: &BoxNode,
     constraints: &LayoutConstraints,
     nearest_positioned_cb: &ContainingBlock,
+    nearest_fixed_cb: &ContainingBlock,
     margin_ctx: MarginCollapseContext,
     relative_cb: &ContainingBlock,
     containing_width: f32,
@@ -1838,18 +1871,19 @@ impl BlockFormattingContext {
           let _stage_guard = StageGuard::install(stage);
           crate::layout::engine::debug_record_parallel_work();
           let mut margin_ctx = MarginCollapseContext::new();
-          let (fragment, _) = self.layout_block_child(
-            parent,
-            child,
-            containing_width,
-            constraints,
-            &mut margin_ctx,
-            0.0,
-            nearest_positioned_cb,
-            None,
-            0.0,
-            paint_viewport,
-          )?;
+           let (fragment, _) = self.layout_block_child(
+             parent,
+             child,
+             containing_width,
+             constraints,
+             &mut margin_ctx,
+             0.0,
+             nearest_positioned_cb,
+             nearest_fixed_cb,
+             None,
+             0.0,
+             paint_viewport,
+           )?;
           let meta = fragment.block_metadata.clone().ok_or_else(|| {
             LayoutError::MissingContext(
               "Block fragment missing metadata for parallel layout".into(),
@@ -2126,12 +2160,14 @@ impl BlockFormattingContext {
     parent: &BoxNode,
     constraints: &LayoutConstraints,
     nearest_positioned_cb: &ContainingBlock,
+    nearest_fixed_cb: &ContainingBlock,
     paint_viewport: Rect,
   ) -> Result<(Vec<FragmentNode>, f32, Vec<PositionedCandidate>), LayoutError> {
     self.layout_children_with_external_floats(
       parent,
       constraints,
       nearest_positioned_cb,
+      nearest_fixed_cb,
       paint_viewport,
       None,
       0.0,
@@ -2144,6 +2180,7 @@ impl BlockFormattingContext {
     parent: &BoxNode,
     constraints: &LayoutConstraints,
     nearest_positioned_cb: &ContainingBlock,
+    nearest_fixed_cb: &ContainingBlock,
     paint_viewport: Rect,
     mut external_float_ctx: Option<&mut FloatContext>,
     external_float_base_y: f32,
@@ -2377,6 +2414,7 @@ impl BlockFormattingContext {
         parent,
         constraints,
         nearest_positioned_cb,
+        nearest_fixed_cb,
         margin_ctx.clone(),
         &relative_cb,
         containing_width,
@@ -2387,13 +2425,15 @@ impl BlockFormattingContext {
       }
     }
 
-    let inline_fc_owned = if *nearest_positioned_cb == self.nearest_positioned_cb {
-      None
-    } else {
-      Some(InlineFormattingContext::with_factory(
-        self.child_factory_for_cb(*nearest_positioned_cb),
-      ))
-    };
+    let inline_fc_owned =
+      if *nearest_positioned_cb == self.nearest_positioned_cb && *nearest_fixed_cb == self.nearest_fixed_cb
+      {
+        None
+      } else {
+        Some(InlineFormattingContext::with_factory(
+          self.child_factory_for_cbs(*nearest_positioned_cb, *nearest_fixed_cb),
+        ))
+      };
     let inline_fc = inline_fc_owned
       .as_ref()
       .unwrap_or_else(|| self.intrinsic_inline_fc.as_ref());
@@ -2435,6 +2475,7 @@ impl BlockFormattingContext {
             margin_ctx,
             *current_y,
             nearest_positioned_cb,
+            nearest_fixed_cb,
             Some(&mut *float_ctx_ref),
             float_base_y,
             paint_viewport,
@@ -2791,7 +2832,7 @@ impl BlockFormattingContext {
         snapshot_style.position = Position::Static;
         snapshot_node.style = Arc::new(snapshot_style);
 
-        let factory = self.child_factory_for_cb(*nearest_positioned_cb);
+        let factory = self.child_factory_for_cbs(*nearest_positioned_cb, *nearest_fixed_cb);
         let fc_type = snapshot_node.formatting_context().unwrap_or_else(|| {
           if snapshot_node.is_block_level() {
             FormattingContextType::Block
@@ -2858,7 +2899,7 @@ impl BlockFormattingContext {
             if establishes_fixed_cb {
               ContainingBlockSource::ParentPadding
             } else {
-              ContainingBlockSource::Explicit(ContainingBlock::viewport(self.viewport_size))
+              ContainingBlockSource::Explicit(*nearest_fixed_cb)
             }
           }
           Position::Absolute => {
@@ -2937,7 +2978,7 @@ impl BlockFormattingContext {
         );
 
         // CSS 2.1 shrink-to-fit formula for floats
-        let factory = self.child_factory_for_cb(*nearest_positioned_cb);
+        let factory = self.child_factory_for_cbs(*nearest_positioned_cb, *nearest_fixed_cb);
         let fc_type = child
           .formatting_context()
           .unwrap_or(FormattingContextType::Block);
@@ -3246,6 +3287,7 @@ impl BlockFormattingContext {
           &mut margin_ctx,
           current_y,
           nearest_positioned_cb,
+          nearest_fixed_cb,
           Some(&mut *float_ctx),
           float_base_y,
           paint_viewport,
@@ -3318,6 +3360,7 @@ impl BlockFormattingContext {
             &mut margin_ctx,
             current_y,
             nearest_positioned_cb,
+            nearest_fixed_cb,
             Some(&mut *float_ctx),
             float_base_y,
             paint_viewport,
@@ -3518,6 +3561,7 @@ impl BlockFormattingContext {
     column_gap: f32,
     available_height: AvailableSpace,
     nearest_positioned_cb: &ContainingBlock,
+    nearest_fixed_cb: &ContainingBlock,
     paint_viewport: Rect,
   ) -> Result<(Vec<FragmentNode>, f32, Vec<PositionedCandidate>, f32), LayoutError> {
     let mut deadline_counter = 0usize;
@@ -3531,6 +3575,7 @@ impl BlockFormattingContext {
         &parent_clone,
         &LayoutConstraints::new(AvailableSpace::Definite(column_width), available_height),
         nearest_positioned_cb,
+        nearest_fixed_cb,
         paint_viewport,
       )?;
       return Ok((frags, height, positioned, height));
@@ -3543,6 +3588,7 @@ impl BlockFormattingContext {
       &parent_clone,
       &column_constraints,
       nearest_positioned_cb,
+      nearest_fixed_cb,
       paint_viewport,
     )?;
     let flow_fragments: Vec<FragmentNode> = flow_fragments
@@ -3879,6 +3925,7 @@ impl BlockFormattingContext {
     parent: &BoxNode,
     constraints: &LayoutConstraints,
     nearest_positioned_cb: &ContainingBlock,
+    nearest_fixed_cb: &ContainingBlock,
     available_inline: f32,
     paint_viewport: Rect,
   ) -> Result<
@@ -3894,7 +3941,7 @@ impl BlockFormattingContext {
       self.compute_column_geometry(&parent.style, available_inline);
     if column_count <= 1 {
       let (frags, height, positioned) =
-        self.layout_children(parent, constraints, nearest_positioned_cb, paint_viewport)?;
+        self.layout_children(parent, constraints, nearest_positioned_cb, nearest_fixed_cb, paint_viewport)?;
       return Ok((frags, height, positioned, None));
     }
 
@@ -3928,6 +3975,7 @@ impl BlockFormattingContext {
             column_gap,
             constraints.available_height,
             nearest_positioned_cb,
+            nearest_fixed_cb,
             segment_viewport,
           )?;
         for frag in &mut seg_fragments {
@@ -3955,6 +4003,7 @@ impl BlockFormattingContext {
           &span_parent,
           &span_constraints,
           nearest_positioned_cb,
+          nearest_fixed_cb,
           paint_viewport.translate(Point::new(0.0, -physical_offset)),
         )?;
         for frag in &mut span_fragments {
@@ -4835,6 +4884,7 @@ impl FormattingContext for BlockFormattingContext {
     );
     let cb_block_base = resolved_height.map(|h| h.max(0.0) + padding_top + padding_bottom);
     let establishes_positioned_cb = style.establishes_abs_containing_block();
+    let establishes_fixed_cb = style.establishes_fixed_containing_block();
     let nearest_cb = if establishes_positioned_cb {
       ContainingBlock::with_viewport_and_bases(
         Rect::new(padding_origin, padding_size),
@@ -4845,15 +4895,30 @@ impl FormattingContext for BlockFormattingContext {
     } else {
       self.nearest_positioned_cb
     };
+    let nearest_fixed_cb = if establishes_fixed_cb {
+      ContainingBlock::with_viewport_and_bases(
+        Rect::new(padding_origin, padding_size),
+        self.viewport_size,
+        Some(padding_size.width),
+        cb_block_base,
+      )
+    } else {
+      self.nearest_fixed_cb
+    };
 
     let mut child_ctx = self.clone();
     child_ctx.flex_item_mode = false;
     child_ctx.nearest_positioned_cb = nearest_cb;
-    if nearest_cb != self.nearest_positioned_cb {
-      child_ctx.factory = child_ctx.factory.with_positioned_cb(nearest_cb);
-      child_ctx.intrinsic_inline_fc = Arc::new(InlineFormattingContext::with_factory(
-        child_ctx.factory.clone(),
-      ));
+    child_ctx.nearest_fixed_cb = nearest_fixed_cb;
+    if nearest_cb != self.nearest_positioned_cb || nearest_fixed_cb != self.nearest_fixed_cb {
+      if nearest_cb != self.nearest_positioned_cb {
+        child_ctx.factory = child_ctx.factory.with_positioned_cb(nearest_cb);
+      }
+      if nearest_fixed_cb != self.nearest_fixed_cb {
+        child_ctx.factory = child_ctx.factory.with_fixed_cb(nearest_fixed_cb);
+      }
+      child_ctx.intrinsic_inline_fc =
+        Arc::new(InlineFormattingContext::with_factory(child_ctx.factory.clone()));
     }
     let mut paint_viewport = base_paint_viewport;
     // The viewport rectangle is expressed in the formatting context's coordinate space. When this
@@ -4891,13 +4956,19 @@ impl FormattingContext for BlockFormattingContext {
           box_node,
           &child_constraints,
           &nearest_cb,
+          &nearest_fixed_cb,
           computed_width.content_width,
           paint_viewport,
         )?;
         (frags, height, positioned, info)
       } else {
-        let (frags, height, positioned) =
-          child_ctx.layout_children(box_node, &child_constraints, &nearest_cb, paint_viewport)?;
+        let (frags, height, positioned) = child_ctx.layout_children(
+          box_node,
+          &child_constraints,
+          &nearest_cb,
+          &nearest_fixed_cb,
+          paint_viewport,
+        )?;
         (frags, height, positioned, None)
       };
     if skip_contents || style.containment.size {
@@ -8693,6 +8764,7 @@ mod tests {
         &mut margin_ctx,
         current_y,
         &nearest_cb,
+        &nearest_cb,
         None,
         0.0,
         paint_viewport,
@@ -9078,6 +9150,7 @@ mod tests {
       .layout_children_with_external_floats(
         &outer,
         &constraints,
+        &nearest_cb,
         &nearest_cb,
         paint_viewport,
         Some(&mut float_ctx),

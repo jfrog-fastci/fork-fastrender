@@ -103,6 +103,7 @@ pub struct FormattingContextFactory {
   viewport_size: crate::geometry::Size,
   viewport_scroll: Point,
   nearest_positioned_cb: ContainingBlock,
+  nearest_fixed_cb: ContainingBlock,
   flex_measure_cache: std::sync::Arc<ShardedFlexCache>,
   flex_layout_cache: std::sync::Arc<ShardedFlexCache>,
   flex_taffy_cache: std::sync::Arc<TaffyNodeCache>,
@@ -238,6 +239,7 @@ impl FormattingContextFactory {
       viewport_size,
       viewport_scroll: Point::ZERO,
       nearest_positioned_cb,
+      nearest_fixed_cb: ContainingBlock::viewport(viewport_size),
       flex_measure_cache,
       flex_layout_cache,
       flex_taffy_cache,
@@ -268,6 +270,17 @@ impl FormattingContextFactory {
     }
     let mut clone = self.clone();
     clone.nearest_positioned_cb = cb;
+    clone.reset_cached_contexts();
+    clone
+  }
+
+  /// Returns a copy of this factory with an updated nearest fixed containing block.
+  pub fn with_fixed_cb(&self, cb: ContainingBlock) -> Self {
+    if cb == self.nearest_fixed_cb {
+      return self.clone();
+    }
+    let mut clone = self.clone();
+    clone.nearest_fixed_cb = cb;
     clone.reset_cached_contexts();
     clone
   }
@@ -369,6 +382,11 @@ impl FormattingContextFactory {
   /// Returns the nearest positioned containing block threaded into newly constructed contexts.
   pub fn nearest_positioned_cb(&self) -> ContainingBlock {
     self.nearest_positioned_cb
+  }
+
+  /// Returns the nearest fixed containing block threaded into newly constructed contexts.
+  pub fn nearest_fixed_cb(&self) -> ContainingBlock {
+    self.nearest_fixed_cb
   }
 
   /// Creates the appropriate FormattingContext for a box
@@ -755,6 +773,11 @@ mod tests {
     let cb_fc = with_cb.get(FormattingContextType::Block);
     assert!(!Arc::ptr_eq(&original, &cb_fc));
 
+    let fixed_cb = ContainingBlock::viewport(crate::geometry::Size::new(500.0, 400.0));
+    let with_fixed_cb = factory.with_fixed_cb(fixed_cb);
+    let fixed_fc = with_fixed_cb.get(FormattingContextType::Block);
+    assert!(!Arc::ptr_eq(&original, &fixed_fc));
+
     let parallel = factory.with_parallelism(LayoutParallelism::enabled(2));
     let parallel_fc = parallel.get(FormattingContextType::Block);
     assert!(!Arc::ptr_eq(&original, &parallel_fc));
@@ -770,6 +793,13 @@ mod tests {
     assert!(
       Arc::ptr_eq(&original, &same_cb_fc),
       "with_positioned_cb should not reset cached contexts when the CB is unchanged"
+    );
+
+    let same_fixed_cb_factory = factory.with_fixed_cb(factory.nearest_fixed_cb());
+    let same_fixed_fc = same_fixed_cb_factory.get(FormattingContextType::Block);
+    assert!(
+      Arc::ptr_eq(&original, &same_fixed_fc),
+      "with_fixed_cb should not reset cached contexts when the CB is unchanged"
     );
 
     let same_parallel_factory = factory.clone().with_parallelism(factory.parallelism());
