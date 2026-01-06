@@ -1177,6 +1177,16 @@ impl GridFormattingContext {
       IntrinsicSizeKeyword::MaxContent => Some(IntrinsicSizingMode::MaxContent),
       IntrinsicSizeKeyword::FitContent { .. } => None,
     };
+    let width_has_fit_content_max_constraint = style.max_width.is_none()
+      && matches!(
+        style.max_width_keyword,
+        Some(IntrinsicSizeKeyword::FitContent { .. })
+      );
+    let height_has_fit_content_max_constraint = style.max_height.is_none()
+      && matches!(
+        style.max_height_keyword,
+        Some(IntrinsicSizeKeyword::FitContent { .. })
+      );
 
     let has_intrinsic_keyword = style
       .width_keyword
@@ -1256,26 +1266,33 @@ impl GridFormattingContext {
     };
 
     if let Some(mode) = style.width_keyword.and_then(keyword_to_mode) {
-      match intrinsic_physical_width(mode) {
-        Ok(border_box) => {
-          if border_box.is_finite() {
-            taffy_style.size.width = Dimension::length(border_box.max(0.0));
+      // `max-width: fit-content(...)` must be resolved using the available grid area size. Since
+      // the Taffy template cache can't represent this dependency, keep the preferred size as `auto`
+      // and let the measure callback compute the final used size for this axis.
+      if !width_has_fit_content_max_constraint {
+        match intrinsic_physical_width(mode) {
+          Ok(border_box) => {
+            if border_box.is_finite() {
+              taffy_style.size.width = Dimension::length(border_box.max(0.0));
+            }
           }
+          Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+          Err(_) => {}
         }
-        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-        Err(_) => {}
       }
     }
 
     if let Some(mode) = style.height_keyword.and_then(keyword_to_mode) {
-      match intrinsic_physical_height(mode) {
-        Ok(border_box) => {
-          if border_box.is_finite() {
-            taffy_style.size.height = Dimension::length(border_box.max(0.0));
+      if !height_has_fit_content_max_constraint {
+        match intrinsic_physical_height(mode) {
+          Ok(border_box) => {
+            if border_box.is_finite() {
+              taffy_style.size.height = Dimension::length(border_box.max(0.0));
+            }
           }
+          Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+          Err(_) => {}
         }
-        Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-        Err(_) => {}
       }
     }
 
@@ -8068,6 +8085,41 @@ mod tests {
     assert!(
       (width - 50.0).abs() < 0.5,
       "expected max-content width to be clamped to 50px, got {width:.2}"
+    );
+  }
+
+  #[test]
+  fn grid_item_width_keyword_max_content_is_clamped_by_max_width_keyword_fit_content() {
+    let fc = GridFormattingContext::new().with_parallelism(LayoutParallelism::disabled());
+
+    // Make the max-content width wider than the grid area, but keep min-content smaller so
+    // fit-content clamps to the available width.
+    let mut grid_style = ComputedStyle::default();
+    grid_style.display = CssDisplay::Grid;
+    grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(80.0))];
+    grid_style.grid_template_rows = vec![GridTrack::Auto];
+    grid_style.justify_items = AlignItems::Stretch;
+    let grid_style = Arc::new(grid_style);
+
+    let mut item_style = ComputedStyle::default();
+    item_style.font_size = 16.0;
+    item_style.width = None;
+    item_style.width_keyword = Some(IntrinsicSizeKeyword::MaxContent);
+    item_style.max_width = None;
+    item_style.max_width_keyword = Some(IntrinsicSizeKeyword::FitContent { limit: None });
+    let item_style = Arc::new(item_style);
+    let text_child = BoxNode::new_text(item_style.clone(), "hello world goodbye".into());
+    let item = BoxNode::new_block(item_style, FormattingContextType::Inline, vec![text_child]);
+
+    let grid = BoxNode::new_block(grid_style, FormattingContextType::Grid, vec![item]);
+
+    let fragment = fc.layout(&grid, &LayoutConstraints::definite(80.0, 200.0)).unwrap();
+
+    assert_eq!(fragment.children.len(), 1);
+    let width = fragment.children[0].bounds.width();
+    assert!(
+      (width - 80.0).abs() < 0.5,
+      "expected max-width:fit-content to clamp max-content width to available 80px, got {width:.2}",
     );
   }
 
