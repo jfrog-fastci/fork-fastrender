@@ -3890,13 +3890,19 @@ fn accumulate_iteration_value(
       }))
     }
     (AnimatedValue::Rotate(cur), AnimatedValue::Rotate(start), AnimatedValue::Rotate(end)) => {
-      if matches!(cur, RotateValue::None) {
+      if matches!(cur, RotateValue::None)
+        && matches!(start, RotateValue::None)
+        && matches!(end, RotateValue::None)
+      {
         return None;
       }
 
-      fn axis_angle(value: RotateValue) -> Option<((f32, f32, f32), f32)> {
+      fn axis_angle(
+        value: RotateValue,
+        fallback_axis: (f32, f32, f32),
+      ) -> Option<((f32, f32, f32), f32)> {
         let (x, y, z, angle) = match value {
-          RotateValue::None => return None,
+          RotateValue::None => (fallback_axis.0, fallback_axis.1, fallback_axis.2, 0.0),
           RotateValue::Angle(angle) => (0.0, 0.0, 1.0, angle),
           RotateValue::AxisAngle { x, y, z, angle } => (x, y, z, angle),
         };
@@ -3910,13 +3916,35 @@ fn accumulate_iteration_value(
         Some(((x / len, y / len, z / len), angle))
       }
 
-      let Some(((ax, ay, az), start_angle)) = axis_angle(*start) else {
+      fn axis_hint(value: RotateValue) -> Option<(f32, f32, f32)> {
+        match value {
+          RotateValue::None => None,
+          RotateValue::Angle(_) => Some((0.0, 0.0, 1.0)),
+          RotateValue::AxisAngle { x, y, z, angle: _ } => {
+            if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+              return None;
+            }
+            let len = (x * x + y * y + z * z).sqrt();
+            if !len.is_finite() || len < 1e-6 {
+              return None;
+            }
+            Some((x / len, y / len, z / len))
+          }
+        }
+      }
+
+      let fallback_axis = axis_hint(*start)
+        .or_else(|| axis_hint(*end))
+        .or_else(|| axis_hint(*cur))
+        .unwrap_or((0.0, 0.0, 1.0));
+
+      let Some(((ax, ay, az), start_angle)) = axis_angle(*start, fallback_axis) else {
         return None;
       };
-      let Some(((mut bx, mut by, mut bz), mut end_angle)) = axis_angle(*end) else {
+      let Some(((mut bx, mut by, mut bz), mut end_angle)) = axis_angle(*end, (ax, ay, az)) else {
         return None;
       };
-      let Some(((mut cx, mut cy, mut cz), mut cur_angle)) = axis_angle(*cur) else {
+      let Some(((mut cx, mut cy, mut cz), mut cur_angle)) = axis_angle(*cur, (ax, ay, az)) else {
         return None;
       };
 

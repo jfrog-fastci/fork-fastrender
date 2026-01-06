@@ -355,6 +355,49 @@ fn repaint_with_animation_composition_accumulate_respects_reverse_direction() ->
 }
 
 #[test]
+fn repaint_with_animation_composition_accumulate_accumulates_rotate_iterations() -> Result<()> {
+  let mut renderer = FastRender::new()?;
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(255, 255, 255); }
+      .box {
+        position: absolute;
+        left: 50px;
+        top: 50px;
+        width: 50px;
+        height: 50px;
+        background: rgb(255, 0, 0);
+        transform-origin: 0 0;
+        animation-name: spin;
+        animation-duration: 1000ms;
+        animation-timing-function: linear;
+        animation-iteration-count: 2;
+        animation-fill-mode: forwards;
+        animation-composition: accumulate;
+      }
+      .marker {
+        position: absolute;
+        left: 10px;
+        top: 10px;
+        width: 10px;
+        height: 10px;
+        background: rgb(0, 0, 255);
+      }
+      @keyframes spin { from { rotate: none; } to { rotate: 90deg; } }
+    </style>
+    <div class="box"><div class="marker"></div></div>
+  "#;
+  let prepared = renderer.prepare_html(html, RenderOptions::new().with_viewport(100, 100))?;
+  let end = prepared.paint_with_options(PreparedPaintOptions::new().with_animation_time(2000.0))?;
+
+  // The second iteration should accumulate on the first, resulting in a 180deg rotation.
+  assert_eq!(pixel(&end, 35, 35), (0, 0, 255, 255));
+  assert_eq!(pixel(&end, 35, 65), (255, 255, 255, 255));
+  assert_eq!(pixel(&end, 65, 65), (255, 255, 255, 255));
+  Ok(())
+}
+
+#[test]
 fn repaint_with_animation_composition_accumulate_accumulates_transform_iterations() -> Result<()> {
   let mut renderer = FastRender::new()?;
   let html = r#"
