@@ -95,10 +95,11 @@ struct TurbulenceCase {
 
 impl TurbulenceCase {
   fn seed_from_attr(seed_attr: f32) -> i32 {
-    // Match FastRender's filter parser (`parse_fe_turbulence`): round to the nearest integer and
-    // clamp negative/non-finite seeds to 0.
+    // Match FastRender's filter parser (`parse_fe_turbulence`) and resvg semantics:
+    // parse as float, then truncate toward zero while preserving the sign. Non-finite values
+    // become 0.
     if seed_attr.is_finite() {
-      seed_attr.round().max(0.0) as i32
+      seed_attr as i32
     } else {
       0
     }
@@ -565,7 +566,7 @@ fn generate_cases(seed: u32, case_count: usize) -> Vec<TurbulenceCase> {
 }
 
 #[test]
-#[ignore = "Differential reference test against resvg; expected to fail until the feTurbulence rewrite lands."]
+#[ignore = "Ignored by default because it is a large randomized resvg differential; run with --ignored."]
 fn svg_filter_turbulence_differential_against_resvg() {
   let seed = env_u32("FASTR_TURBULENCE_DIFF_SEED").unwrap_or(0x2440_2440);
   let case_count = env_usize("FASTR_TURBULENCE_DIFF_CASES").unwrap_or(128);
