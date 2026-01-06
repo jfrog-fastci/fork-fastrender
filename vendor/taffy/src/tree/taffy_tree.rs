@@ -869,6 +869,14 @@ impl<NodeContext> TaffyTree<NodeContext> {
   /// Drops all nodes in the tree
   pub fn clear(&mut self) {
     self.nodes.clear();
+    // `node_context_data` stores per-node measure contexts keyed by the same slotmap keys as
+    // `nodes`. When reusing a `TaffyTree` (FastRender pools them to avoid allocations), failing to
+    // clear this map can leak stale contexts into newly created nodes if the slotmap reuses keys.
+    //
+    // This manifests as nondeterministic layout output that depends on allocator/key reuse and
+    // thread scheduling (different threads/pool entries have different stale contexts). Always
+    // clear the context map alongside the node storage.
+    self.node_context_data.clear();
     self.children.clear();
     self.parents.clear();
   }
