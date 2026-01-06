@@ -660,6 +660,7 @@ impl FormattingContext for FlexFormattingContext {
         box_node,
         FormattingContextType::Flex,
         &constraints,
+        self.factory.viewport_scroll(),
         self.viewport_size,
       ) {
         return Ok(cached);
@@ -3735,6 +3736,7 @@ impl FormattingContext for FlexFormattingContext {
         FormattingContextType::Flex,
         &constraints,
         &fragment,
+        self.factory.viewport_scroll(),
         self.viewport_size,
       );
     }

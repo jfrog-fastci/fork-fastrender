@@ -4017,6 +4017,7 @@ impl FormattingContext for BlockFormattingContext {
       box_node,
       FormattingContextType::Block,
       constraints,
+      self.viewport_scroll,
       self.viewport_size,
     ) {
       return Ok(cached);
@@ -4857,23 +4858,17 @@ impl FormattingContext for BlockFormattingContext {
       ));
     }
     let mut paint_viewport = base_paint_viewport;
-    let viewport_like = matches!(
-      constraints.available_width,
-      AvailableSpace::Definite(w) if (w - self.viewport_size.width).abs() < 0.01
-    ) && matches!(
-      constraints.available_height,
-      AvailableSpace::Definite(h) if (h - self.viewport_size.height).abs() < 0.01
-    );
-    if viewport_like {
-      let scroll = self.viewport_scroll;
-      if scroll.x.is_finite() && scroll.y.is_finite() {
-        let (scroll_inline, scroll_block) = if inline_is_horizontal {
-          (scroll.x, scroll.y)
-        } else {
-          (scroll.y, scroll.x)
-        };
-        paint_viewport = paint_viewport.translate(Point::new(scroll_inline, scroll_block));
-      }
+    // The viewport rectangle is expressed in the formatting context's coordinate space. When this
+    // block formatting context is nested inside another formatting context, the caller translates
+    // the factory's `viewport_scroll` so it already accounts for the nested origin.
+    let scroll = self.viewport_scroll;
+    if scroll.x.is_finite() && scroll.y.is_finite() {
+      let (scroll_inline, scroll_block) = if inline_is_horizontal {
+        (scroll.x, scroll.y)
+      } else {
+        (scroll.y, scroll.x)
+      };
+      paint_viewport = paint_viewport.translate(Point::new(scroll_inline, scroll_block));
     }
     // Layout uses the block's content box coordinate space; translate the viewport into that
     // coordinate system so culling decisions stay relative to `box_y`/`margin_left` placement.
@@ -5484,6 +5479,7 @@ impl FormattingContext for BlockFormattingContext {
       FormattingContextType::Block,
       constraints,
       &converted,
+      self.viewport_scroll,
       self.viewport_size,
     );
 
@@ -8876,6 +8872,61 @@ mod tests {
     assert!(
       !auto_fragment.children.is_empty(),
       "expected scrolled viewport to keep descendants active"
+    );
+  }
+
+  #[test]
+  fn content_visibility_auto_uses_viewport_scroll_when_constraints_are_not_viewport_sized() {
+    let _toggles = content_visibility_test_guard();
+    let viewport = Size::new(200.0, 200.0);
+    // The scroll is expressed in the nested formatting context's coordinate space. A negative
+    // scroll offset corresponds to the nested context being shifted positively relative to the
+    // viewport.
+    let scroll = Point::new(-300.0, 0.0);
+    // Use constraints that do not match the viewport size to mirror nested layout calls (e.g., flex
+    // items, table cells) that still need viewport-relative `content-visibility:auto` decisions.
+    let constraints = LayoutConstraints::definite(100.0, viewport.height);
+
+    let factory =
+      crate::layout::contexts::factory::FormattingContextFactory::with_font_context_viewport_and_cb(
+        FontContext::new(),
+        viewport,
+        ContainingBlock::viewport(viewport),
+      )
+      .with_viewport_scroll(scroll);
+    let fc = BlockFormattingContext::with_factory(factory);
+
+    let mut leaf = BoxNode::new_block(
+      block_style_with_height(10.0),
+      FormattingContextType::Block,
+      vec![],
+    );
+    leaf.id = 3;
+
+    let mut auto_style = ComputedStyle::default();
+    auto_style.display = Display::Block;
+    auto_style.content_visibility = ContentVisibility::Auto;
+    // Provide a deterministic placeholder so offscreen auto content can be skipped.
+    auto_style.contain_intrinsic_height.length = Some(Length::px(10.0));
+    let mut auto_box = BoxNode::new_block(
+      Arc::new(auto_style),
+      FormattingContextType::Block,
+      vec![leaf],
+    );
+    auto_box.id = 2;
+
+    let mut root = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![auto_box],
+    );
+    root.id = 1;
+
+    let fragment = fc.layout(&root, &constraints).expect("layout");
+    let auto_fragment = find_block_fragment(&fragment, 2).expect("auto fragment");
+    assert!(
+      auto_fragment.children.is_empty(),
+      "expected descendants to be skipped when the viewport does not intersect the translated subtree",
     );
   }
 

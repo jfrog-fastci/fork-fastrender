@@ -5836,6 +5836,7 @@ impl FormattingContext for GridFormattingContext {
         box_node,
         FormattingContextType::Grid,
         constraints,
+        self.factory.viewport_scroll(),
         self.viewport_size,
       ) {
         return Ok(cached);
@@ -7213,6 +7214,7 @@ impl FormattingContext for GridFormattingContext {
         FormattingContextType::Grid,
         constraints,
         &fragment,
+        self.factory.viewport_scroll(),
         self.viewport_size,
       );
     }

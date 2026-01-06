@@ -5065,6 +5065,7 @@ impl FormattingContext for TableFormattingContext {
         box_node,
         FormattingContextType::Table,
         constraints,
+        self.factory.viewport_scroll(),
         self.viewport_size,
       ) {
         return Ok(cached);
@@ -5905,6 +5906,7 @@ impl FormattingContext for TableFormattingContext {
           FormattingContextType::Table,
           constraints,
           &fragment,
+          self.factory.viewport_scroll(),
           self.viewport_size,
         );
       }
@@ -7158,6 +7160,7 @@ impl FormattingContext for TableFormattingContext {
           FormattingContextType::Table,
           constraints,
           &fragment,
+          self.factory.viewport_scroll(),
           self.viewport_size,
         );
       }
@@ -7377,6 +7380,7 @@ impl FormattingContext for TableFormattingContext {
         FormattingContextType::Table,
         constraints,
         &wrapper_fragment,
+        self.factory.viewport_scroll(),
         self.viewport_size,
       );
     }

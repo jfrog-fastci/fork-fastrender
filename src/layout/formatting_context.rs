@@ -32,6 +32,7 @@
 //! - CSS Grid: <https://www.w3.org/TR/css-grid-1/>
 
 use crate::debug::runtime;
+use crate::geometry::Point;
 use crate::geometry::Size;
 use crate::layout::constraints::AvailableSpace;
 use crate::layout::constraints::LayoutConstraints;
@@ -247,6 +248,16 @@ thread_local! {
   static SUBGRID_DEPENDENT_CACHE: RefCell<FxHashMap<usize, (usize, bool)>> =
     RefCell::new(FxHashMap::default());
   static SUBGRID_CACHE_EPOCH: Cell<usize> = const { Cell::new(0) };
+
+  /// `content-visibility:auto` dependency memoization keyed by node id within a cache epoch.
+  ///
+  /// Layout caching needs to know whether a subtree's layout result can depend on the viewport
+  /// scroll offset (translated into the subtree's coordinate space). When `content-visibility:auto`
+  /// is present anywhere in the subtree, layout skipping can produce different fragment trees for
+  /// different scroll offsets.
+  static CONTENT_VISIBILITY_AUTO_DEPENDENT_CACHE: RefCell<FxHashMap<usize, (usize, bool)>> =
+    RefCell::new(FxHashMap::default());
+  static CONTENT_VISIBILITY_AUTO_CACHE_EPOCH: Cell<usize> = const { Cell::new(0) };
 }
 
 const COUNTER_SHARDS: usize = 64;
@@ -359,6 +370,21 @@ fn subgrid_cache_use_epoch(epoch: usize, force_clear: bool) {
     let previous = cell.get();
     if force_clear || previous != epoch {
       clear_subgrid_cache();
+      cell.set(epoch);
+    }
+  });
+}
+
+fn clear_content_visibility_auto_cache() {
+  CONTENT_VISIBILITY_AUTO_DEPENDENT_CACHE.with(|cache| cache.borrow_mut().clear());
+}
+
+fn content_visibility_auto_cache_use_epoch(epoch: usize, force_clear: bool) {
+  let epoch = epoch.max(1);
+  CONTENT_VISIBILITY_AUTO_CACHE_EPOCH.with(|cell| {
+    let previous = cell.get();
+    if force_clear || previous != epoch {
+      clear_content_visibility_auto_cache();
       cell.set(epoch);
     }
   });
@@ -542,6 +568,7 @@ pub(crate) fn intrinsic_cache_use_epoch(epoch: usize, reset_counters: bool) {
     intrinsic_cache_reset_counters();
   }
   subgrid_cache_use_epoch(epoch, reset_counters || epoch_changed);
+  content_visibility_auto_cache_use_epoch(epoch, reset_counters || epoch_changed);
 }
 
 /// Returns the active epoch used for intrinsic and layout-adjacent caches.
@@ -591,6 +618,7 @@ pub(crate) struct LayoutCacheKey {
   constraints_hash: u64,
   fragmentation_hash: u64,
   viewport_hash: u64,
+  viewport_scroll_hash: u64,
   /// Distinguishes base-style layout results from those computed under an active style override.
   ///
   /// Layout caching traditionally keys off the box id + constraints and stores a separate
@@ -733,6 +761,28 @@ fn pack_viewport_size(size: Size) -> u64 {
   (w << 32) | h
 }
 
+fn sanitize_viewport_scroll(scroll: Point) -> Point {
+  if scroll.x.is_finite() && scroll.y.is_finite() {
+    scroll
+  } else {
+    Point::ZERO
+  }
+}
+
+fn pack_viewport_scroll(scroll: Point) -> u64 {
+  let x_bits = if scroll.x == 0.0 {
+    0.0f32.to_bits() as u64
+  } else {
+    scroll.x.to_bits() as u64
+  };
+  let y_bits = if scroll.y == 0.0 {
+    0.0f32.to_bits() as u64
+  } else {
+    scroll.y.to_bits() as u64
+  };
+  (x_bits << 32) | y_bits
+}
+
 #[cfg(test)]
 thread_local! {
   static SUBGRID_WALK_COUNT: Cell<usize> = const { Cell::new(0) };
@@ -787,6 +837,41 @@ fn subtree_contains_subgrid(node: &BoxNode, epoch: usize) -> bool {
 
   let contains = subtree_contains_subgrid_uncached(node, epoch);
   SUBGRID_DEPENDENT_CACHE.with(|cache| {
+    cache.borrow_mut().insert(id, (epoch, contains));
+  });
+  contains
+}
+
+fn subtree_contains_content_visibility_auto_uncached(node: &BoxNode, epoch: usize) -> bool {
+  if matches!(
+    node.style.content_visibility,
+    crate::style::types::ContentVisibility::Auto
+  ) {
+    return true;
+  }
+  node
+    .children
+    .iter()
+    .any(|child| subtree_contains_content_visibility_auto(child, epoch))
+}
+
+fn subtree_contains_content_visibility_auto(node: &BoxNode, epoch: usize) -> bool {
+  let id = node.id();
+  if id == 0 {
+    return subtree_contains_content_visibility_auto_uncached(node, epoch);
+  }
+
+  if let Some(cached) = CONTENT_VISIBILITY_AUTO_DEPENDENT_CACHE.with(|cache| {
+    cache
+      .borrow()
+      .get(&id)
+      .and_then(|(cached_epoch, contains)| (*cached_epoch == epoch).then_some(*contains))
+  }) {
+    return cached;
+  }
+
+  let contains = subtree_contains_content_visibility_auto_uncached(node, epoch);
+  CONTENT_VISIBILITY_AUTO_DEPENDENT_CACHE.with(|cache| {
     cache.borrow_mut().insert(id, (epoch, contains));
   });
   contains
@@ -894,6 +979,7 @@ fn layout_cache_sync_thread_state() {
   if epoch_changed || !enabled || fragmentation_changed {
     LAYOUT_RESULT_CACHE.with(|cache| cache.borrow_mut().clear());
     subgrid_cache_use_epoch(epoch, true);
+    content_visibility_auto_cache_use_epoch(epoch, true);
   }
 
   LAYOUT_CACHE_EPOCH.with(|cell| cell.set(epoch));
@@ -934,6 +1020,7 @@ fn layout_cache_key(
   box_node: &BoxNode,
   fc_type: FormattingContextType,
   constraints: &LayoutConstraints,
+  viewport_scroll: Point,
   viewport: Size,
   epoch: usize,
 ) -> Option<LayoutCacheKeyParts> {
@@ -951,6 +1038,11 @@ fn layout_cache_key(
     };
   let constraints_hash = layout_constraints_hash(constraints);
   let fragmentation_hash = LAYOUT_CACHE_FRAGMENTATION.with(|hash| hash.get());
+  let viewport_scroll_hash = if subtree_contains_content_visibility_auto(box_node, epoch) {
+    pack_viewport_scroll(sanitize_viewport_scroll(viewport_scroll))
+  } else {
+    0
+  };
   Some(LayoutCacheKeyParts {
     key: LayoutCacheKey {
       box_id: id,
@@ -958,6 +1050,7 @@ fn layout_cache_key(
       constraints_hash,
       fragmentation_hash,
       viewport_hash: pack_viewport_size(viewport),
+      viewport_scroll_hash,
       style_variant,
     },
     style_hash,
@@ -1063,6 +1156,7 @@ pub(crate) fn layout_cache_reset_counters() {
   LAYOUT_CACHE_EVICTIONS.store(0);
   let epoch = LAYOUT_CACHE_EPOCH.with(|cell| cell.get());
   subgrid_cache_use_epoch(epoch, true);
+  content_visibility_auto_cache_use_epoch(epoch, true);
   LAYOUT_CACHE_CLONE_RETURNS.store(0);
 }
 
@@ -1110,6 +1204,7 @@ pub(crate) fn layout_cache_use_epoch(
     layout_cache_clear();
   } else {
     subgrid_cache_use_epoch(epoch, false);
+    content_visibility_auto_cache_use_epoch(epoch, false);
   }
 }
 
@@ -1118,11 +1213,12 @@ pub(crate) fn layout_cache_lookup(
   box_node: &BoxNode,
   fc_type: FormattingContextType,
   constraints: &LayoutConstraints,
+  viewport_scroll: Point,
   viewport: Size,
 ) -> Option<FragmentNode> {
   layout_cache_sync_thread_state();
   let epoch = LAYOUT_CACHE_EPOCH.with(|cell| cell.get());
-  let key = layout_cache_key(box_node, fc_type, constraints, viewport, epoch)?;
+  let key = layout_cache_key(box_node, fc_type, constraints, viewport_scroll, viewport, epoch)?;
   if key.subgrid_dependent {
     evict_cache_entries_for_box(key.key.box_id);
     return None;
@@ -1192,11 +1288,12 @@ pub(crate) fn layout_cache_store(
   fc_type: FormattingContextType,
   constraints: &LayoutConstraints,
   fragment: &FragmentNode,
+  viewport_scroll: Point,
   viewport: Size,
 ) {
   layout_cache_sync_thread_state();
   let epoch = LAYOUT_CACHE_EPOCH.with(|cell| cell.get());
-  let key = match layout_cache_key(box_node, fc_type, constraints, viewport, epoch) {
+  let key = match layout_cache_key(box_node, fc_type, constraints, viewport_scroll, viewport, epoch) {
     Some(k) => k,
     None => return,
   };
@@ -1945,15 +2042,16 @@ mod tests {
     let viewport = Size::new(800.0, 600.0);
     let fc_type = FormattingContextType::Block;
 
-    assert!(layout_cache_lookup(&node, fc_type, &constraints, viewport).is_none());
+    assert!(layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport).is_none());
     layout_cache_store(
       &node,
       fc_type,
       &constraints,
       &block_fragment(100.0, 50.0),
+      Point::ZERO,
       viewport,
     );
-    let hit = layout_cache_lookup(&node, fc_type, &constraints, viewport);
+    let hit = layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport);
     assert!(hit.is_some());
 
     let (lookups, hits, stores, evictions, _clones) = layout_cache_stats();
@@ -1981,6 +2079,7 @@ mod tests {
       fc_type,
       &constraints,
       &block_fragment(100.0, 50.0),
+      Point::ZERO,
       viewport,
     );
 
@@ -1994,18 +2093,19 @@ mod tests {
         fc_type,
         &constraints,
         &block_fragment(200.0, 60.0),
+        Point::ZERO,
         viewport,
       );
     });
 
     LAYOUT_RESULT_CACHE.with(|cache| assert_eq!(cache.borrow().len(), 2));
 
-    let base_hit = layout_cache_lookup(&node, fc_type, &constraints, viewport).unwrap();
+    let base_hit = layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport).unwrap();
     assert_eq!(base_hit.bounds.width(), 100.0);
 
     let override_hit =
       crate::layout::style_override::with_style_override(node.id, override_style.clone(), || {
-        layout_cache_lookup(&node, fc_type, &constraints, viewport)
+        layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport)
       })
       .expect("override cache hit");
     assert_eq!(override_hit.bounds.width(), 200.0);
@@ -2018,7 +2118,7 @@ mod tests {
     let override_hit_again = crate::layout::style_override::with_style_override(
       node.id,
       Arc::new(override_style_again),
-      || layout_cache_lookup(&node, fc_type, &constraints, viewport),
+      || layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport),
     )
     .expect("override cache hit (fresh arc)");
     assert_eq!(override_hit_again.bounds.width(), 200.0);
@@ -2030,9 +2130,89 @@ mod tests {
     let miss = crate::layout::style_override::with_style_override(
       node.id,
       Arc::new(different_override),
-      || layout_cache_lookup(&node, fc_type, &constraints, viewport),
+      || layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport),
     );
     assert!(miss.is_none());
+
+    layout_cache_use_epoch(1, false, true, None, None);
+  }
+
+  #[test]
+  fn layout_cache_includes_viewport_scroll_for_content_visibility_auto_subtrees() {
+    let _guard = layout_cache_test_lock();
+    layout_cache_use_epoch(1, true, true, None, None);
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+    let mut auto_style = ComputedStyle::default();
+    auto_style.display = Display::Block;
+    auto_style.content_visibility = crate::style::types::ContentVisibility::Auto;
+
+    let mut auto_child =
+      BoxNode::new_block(Arc::new(auto_style), FormattingContextType::Block, vec![]);
+    auto_child.id = 2;
+
+    let mut node = BoxNode::new_block(
+      Arc::new(container_style),
+      FormattingContextType::Flex,
+      vec![auto_child],
+    );
+    node.id = 1;
+
+    let constraints = LayoutConstraints::definite(800.0, 600.0);
+    let viewport = Size::new(800.0, 600.0);
+    let fc_type = FormattingContextType::Flex;
+
+    layout_cache_store(
+      &node,
+      fc_type,
+      &constraints,
+      &block_fragment(100.0, 50.0),
+      Point::ZERO,
+      viewport,
+    );
+    assert!(
+      layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport).is_some(),
+      "expected cache hit when scroll offset matches"
+    );
+    assert!(
+      layout_cache_lookup(&node, fc_type, &constraints, Point::new(-100.0, 0.0), viewport)
+        .is_none(),
+      "expected cache miss when scroll offset differs for scroll-sensitive subtrees"
+    );
+
+    layout_cache_use_epoch(1, false, true, None, None);
+  }
+
+  #[test]
+  fn layout_cache_ignores_viewport_scroll_for_scroll_insensitive_subtrees() {
+    let _guard = layout_cache_test_lock();
+    layout_cache_use_epoch(1, true, true, None, None);
+
+    let mut container_style = ComputedStyle::default();
+    container_style.display = Display::Flex;
+
+    let mut node =
+      BoxNode::new_block(Arc::new(container_style), FormattingContextType::Flex, vec![]);
+    node.id = 1;
+
+    let constraints = LayoutConstraints::definite(800.0, 600.0);
+    let viewport = Size::new(800.0, 600.0);
+    let fc_type = FormattingContextType::Flex;
+
+    layout_cache_store(
+      &node,
+      fc_type,
+      &constraints,
+      &block_fragment(100.0, 50.0),
+      Point::ZERO,
+      viewport,
+    );
+    assert!(
+      layout_cache_lookup(&node, fc_type, &constraints, Point::new(-100.0, 0.0), viewport)
+        .is_some(),
+      "expected cache hit even when scroll differs for scroll-insensitive subtrees"
+    );
 
     layout_cache_use_epoch(1, false, true, None, None);
   }
@@ -2052,6 +2232,7 @@ mod tests {
       constraints_hash: 0,
       fragmentation_hash: 0,
       viewport_hash: 0,
+      viewport_scroll_hash: 0,
       style_variant: 0,
     };
     let entry = LayoutCacheEntry {
@@ -2068,6 +2249,7 @@ mod tests {
         constraints_hash: 0,
         fragmentation_hash: 0,
         viewport_hash: 0,
+        viewport_scroll_hash: 0,
         style_variant: 0,
       };
       map.insert(key, entry.clone());
@@ -2088,6 +2270,7 @@ mod tests {
       constraints_hash: 0,
       fragmentation_hash: 0,
       viewport_hash: 0,
+      viewport_scroll_hash: 0,
       style_variant: 0,
     };
     map.insert(extra_key, entry);
@@ -2123,10 +2306,11 @@ mod tests {
       fc_type,
       &constraints_a,
       &block_fragment(100.0, 50.0),
+      Point::ZERO,
       viewport,
     );
     assert!(
-      layout_cache_lookup(&node, fc_type, &constraints_b, viewport).is_none(),
+      layout_cache_lookup(&node, fc_type, &constraints_b, Point::ZERO, viewport).is_none(),
       "changing constraints must invalidate the cached entry"
     );
 
@@ -2152,11 +2336,12 @@ mod tests {
       fc_type,
       &constraints,
       &block_fragment(100.0, 50.0),
+      Point::ZERO,
       viewport,
     );
 
     assert!(
-      layout_cache_lookup(&node_b, fc_type, &constraints, viewport).is_none(),
+      layout_cache_lookup(&node_b, fc_type, &constraints, Point::ZERO, viewport).is_none(),
       "layout cache entries must not be reused across different box ids"
     );
 
@@ -2184,7 +2369,8 @@ mod tests {
     let (tx, rx) = std::sync::mpsc::channel();
     pool.spawn(move || {
       assert!(
-        layout_cache_lookup(&node, FormattingContextType::Flex, &constraints, viewport).is_none(),
+        layout_cache_lookup(&node, FormattingContextType::Flex, &constraints, Point::ZERO, viewport)
+          .is_none(),
         "cache should be empty before store"
       );
       let fragment = block_fragment(123.0, 45.0);
@@ -2193,10 +2379,12 @@ mod tests {
         FormattingContextType::Flex,
         &constraints,
         &fragment,
+        Point::ZERO,
         viewport,
       );
       tx.send(
-        layout_cache_lookup(&node, FormattingContextType::Flex, &constraints, viewport).is_some(),
+        layout_cache_lookup(&node, FormattingContextType::Flex, &constraints, Point::ZERO, viewport)
+          .is_some(),
       )
       .expect("send result");
     });
@@ -2225,6 +2413,7 @@ mod tests {
       fc_type,
       &constraints,
       &block_fragment(50.0, 20.0),
+      Point::ZERO,
       viewport,
     );
     LAYOUT_RESULT_CACHE.with(|cache| assert_eq!(cache.borrow().len(), 1));
@@ -2234,18 +2423,22 @@ mod tests {
     let mut changed_node = BoxNode::new_block(Arc::new(style), fc_type, vec![]);
     changed_node.id = node.id;
 
-    assert!(layout_cache_lookup(&changed_node, fc_type, &constraints, viewport).is_none());
+    assert!(
+      layout_cache_lookup(&changed_node, fc_type, &constraints, Point::ZERO, viewport).is_none()
+    );
     layout_cache_store(
       &changed_node,
       fc_type,
       &constraints,
       &block_fragment(60.0, 30.0),
+      Point::ZERO,
       viewport,
     );
 
     LAYOUT_RESULT_CACHE.with(|cache| assert_eq!(cache.borrow().len(), 1));
 
-    let updated = layout_cache_lookup(&changed_node, fc_type, &constraints, viewport).unwrap();
+    let updated =
+      layout_cache_lookup(&changed_node, fc_type, &constraints, Point::ZERO, viewport).unwrap();
     assert_eq!(updated.bounds.width(), 60.0);
 
     let (lookups, hits, stores, evictions, _clones) = layout_cache_stats();
@@ -2273,13 +2466,14 @@ mod tests {
       fc_type,
       &constraints,
       &block_fragment(40.0, 10.0),
+      Point::ZERO,
       viewport,
     );
     // Simulate a new layout run starting on another thread by bumping the global epoch.
     // Worker threads should observe the change and drop any stale TLS cache entries.
     LAYOUT_CACHE_GLOBAL_EPOCH.store(2, Ordering::Relaxed);
 
-    assert!(layout_cache_lookup(&node, fc_type, &constraints, viewport).is_none());
+    assert!(layout_cache_lookup(&node, fc_type, &constraints, Point::ZERO, viewport).is_none());
     LAYOUT_RESULT_CACHE.with(|cache| assert!(cache.borrow().is_empty()));
 
     let (lookups, hits, stores, evictions, _clones) = layout_cache_stats();
