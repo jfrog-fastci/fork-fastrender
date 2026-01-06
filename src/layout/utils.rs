@@ -608,14 +608,14 @@ pub fn compute_replaced_size(
     + resolve_for_width(style.used_border_top_width())
     + resolve_for_width(style.used_border_bottom_width());
 
-  // Intrinsic sizes are defined for the content box, but `width`/`height` (including intrinsic
-  // sizing keywords) are interpreted according to `box-sizing`. Since `compute_replaced_size`
-  // returns content-box sizes, convert intrinsic sizes through the same box-sizing adjustment
-  // used for numeric `width`/`height` values.
-  let intrinsic_keyword_w = intrinsic_content_w
-    .map(|w| content_size_from_box_sizing(w, horizontal_edges, style.box_sizing));
-  let intrinsic_keyword_h =
-    intrinsic_content_h.map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing));
+  // Intrinsic replaced sizes are defined for the content box. Intrinsic sizing keywords
+  // (`min-content`, `max-content`, `fit-content`) resolve in terms of that intrinsic content size
+  // as well. `box-sizing` affects the *specified* box size, but since `compute_replaced_size`
+  // returns content-box sizes (callers add padding/border afterwards), we keep intrinsic keyword
+  // sizes in content-box space here and only consult `box-sizing` when interpreting `fit-content`
+  // limits / available space.
+  let intrinsic_keyword_w = intrinsic_content_w;
+  let intrinsic_keyword_h = intrinsic_content_h;
 
   let resolve_intrinsic_width = |keyword: IntrinsicSizeKeyword| -> Option<f32> {
     match keyword {
@@ -1147,7 +1147,7 @@ mod tests {
   }
 
   #[test]
-  fn compute_replaced_width_intrinsic_max_content_respects_border_box_sizing() {
+  fn compute_replaced_width_intrinsic_max_content_returns_content_box_size_with_border_box_sizing() {
     let mut style = ComputedStyle::default();
     style.box_sizing = BoxSizing::BorderBox;
     style.padding_left = Length::px(10.0);
@@ -1172,10 +1172,11 @@ mod tests {
     };
 
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
-    // With border-box sizing the intrinsic width applies to the border box, so the returned
-    // content-box width is reduced by padding+border.
-    assert!((size.width - 70.0).abs() < 0.01);
-    assert!((size.height - 35.0).abs() < 0.01);
+    // Intrinsic sizing keywords (`min/max-content`, `fit-content`) resolve to the intrinsic content
+    // size. `box-sizing` only affects how specified lengths are interpreted; callers account for
+    // padding/border when constructing the border box.
+    assert!((size.width - 100.0).abs() < 0.01);
+    assert!((size.height - 50.0).abs() < 0.01);
   }
 
   #[test]
