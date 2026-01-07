@@ -67,7 +67,7 @@ use crate::paint::rasterize::fill_rounded_rect;
 use crate::paint::stacking::creates_stacking_context;
 use crate::paint::svg_filter::SvgFilterResolver;
 use crate::paint::text_decoration::{resolve_underline_side, UnderlineSide};
-use crate::paint::text_shadow::resolve_text_shadows;
+use crate::paint::text_shadow::resolve_text_shadows_with_viewport;
 use crate::paint::text_shadow::PathBounds;
 use crate::paint::text_shadow::ResolvedTextShadow;
 use crate::paint::transform_resolver::{backface_is_hidden, resolve_transform3d};
@@ -5811,7 +5811,8 @@ impl Painter {
 
     if let Some(style) = style {
       if !style.text_shadow.is_empty() {
-        let shadows = resolve_text_shadows(style);
+        let shadows =
+          resolve_text_shadows_with_viewport(style, Some((self.css_width, self.css_height)));
         if !shadows.is_empty() {
           let _ = self.paint_text_shadows(&glyph_paths, &bounds, &shadows, clip_mask);
         }
@@ -5936,7 +5937,8 @@ impl Painter {
 
     if let Some(style) = style {
       if !style.text_shadow.is_empty() {
-        let shadows = resolve_text_shadows(style);
+        let shadows =
+          resolve_text_shadows_with_viewport(style, Some((self.css_width, self.css_height)));
         if !shadows.is_empty() {
           let _ = self.paint_text_shadows(&glyph_paths, &bounds, &shadows, clip_mask);
         }

@@ -107,7 +107,7 @@ use crate::paint::stacking::ClipChainLink;
 use crate::paint::stacking::StackingContext;
 use crate::paint::svg_filter::SvgFilterResolver;
 use crate::paint::text_decoration::{resolve_underline_side, UnderlineSide};
-use crate::paint::text_shadow::resolve_text_shadows;
+use crate::paint::text_shadow::resolve_text_shadows_with_viewport;
 use crate::paint::transform_resolver::ResolvedTransforms;
 use crate::render_control::{
   active_deadline, active_stage, check_active, check_active_periodic, with_deadline, StageGuard,
@@ -4335,7 +4335,7 @@ impl DisplayListBuilder {
         let color = style_opt
           .map(|s| s.webkit_text_fill_color.to_rgba(current))
           .unwrap_or(current);
-        let shadows = Self::text_shadows_from_style(style_opt);
+        let shadows = Self::text_shadows_from_style(style_opt, self.viewport);
         let inline_vertical = style_opt.is_some_and(|s| {
           matches!(
             s.writing_mode,
@@ -4555,7 +4555,7 @@ impl DisplayListBuilder {
             .unwrap_or_else(|| layout_mathml(&math.root, style_ref, &self.font_ctx));
           let current = style_ref.color;
           let color = style_ref.webkit_text_fill_color.to_rgba(current);
-          let shadows = Self::text_shadows_from_style(Some(style_ref));
+          let shadows = Self::text_shadows_from_style(Some(style_ref), self.viewport);
           let layout_w = layout_owned.width.max(0.01);
           let layout_h = layout_owned.height.max(0.01);
           let scale_x = if layout_w > 0.0 {
@@ -7524,10 +7524,13 @@ impl DisplayListBuilder {
     run.font.id
   }
 
-  fn text_shadows_from_style(style: Option<&ComputedStyle>) -> Vec<TextShadowItem> {
+  fn text_shadows_from_style(
+    style: Option<&ComputedStyle>,
+    viewport: Option<(f32, f32)>,
+  ) -> Vec<TextShadowItem> {
     style
       .map(|s| {
-        resolve_text_shadows(s)
+        resolve_text_shadows_with_viewport(s, viewport)
           .into_iter()
           .map(|shadow| TextShadowItem {
             offset: Point::new(shadow.offset_x, shadow.offset_y),
@@ -7709,7 +7712,7 @@ impl DisplayListBuilder {
         rect.x()
       };
 
-      let shadows = Self::text_shadows_from_style(Some(style));
+      let shadows = Self::text_shadows_from_style(Some(style), builder.viewport);
       builder.emit_shaped_runs(
         &runs,
         style.color,
@@ -8606,7 +8609,7 @@ impl DisplayListBuilder {
     let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
     let baseline = rect.y() + half_leading + metrics.baseline_offset;
 
-    let shadows = Self::text_shadows_from_style(Some(style));
+    let shadows = Self::text_shadows_from_style(Some(style), self.viewport);
     self.emit_shaped_runs(
       &runs,
       style.color,
@@ -8623,7 +8626,7 @@ impl DisplayListBuilder {
   fn emit_naive_text(&mut self, text: &str, rect: Rect, style: Option<&ComputedStyle>) -> bool {
     let font_size = style.map(|s| s.font_size).unwrap_or(16.0);
     let color = style.map(|s| s.color).unwrap_or(Rgba::BLACK);
-    let shadows = Self::text_shadows_from_style(style);
+    let shadows = Self::text_shadows_from_style(style, self.viewport);
     let char_width = font_size * 0.6;
     let origin = Point::new(rect.x(), rect.y() + font_size * 0.8);
     let advance_width = text.len() as f32 * char_width;

@@ -1,6 +1,5 @@
 use crate::style::color::Rgba;
 use crate::style::values::Length;
-use crate::style::values::LengthUnit;
 use crate::style::ComputedStyle;
 
 #[derive(Debug, Clone)]
@@ -45,46 +44,54 @@ impl PathBounds {
 }
 
 pub fn resolve_text_shadows(style: &ComputedStyle) -> Vec<ResolvedTextShadow> {
+  resolve_text_shadows_with_viewport(style, None)
+}
+
+pub fn resolve_text_shadows_with_viewport(
+  style: &ComputedStyle,
+  viewport: Option<(f32, f32)>,
+) -> Vec<ResolvedTextShadow> {
   style
     .text_shadow
     .iter()
     .map(|shadow| ResolvedTextShadow {
-      offset_x: resolve_shadow_length(&shadow.offset_x, style.font_size, style.root_font_size),
-      offset_y: resolve_shadow_length(&shadow.offset_y, style.font_size, style.root_font_size),
-      blur_radius: resolve_shadow_length(&shadow.blur_radius, style.font_size, style.root_font_size)
-        .max(0.0),
+      offset_x: resolve_shadow_length(
+        &shadow.offset_x,
+        style.font_size,
+        style.root_font_size,
+        viewport,
+      ),
+      offset_y: resolve_shadow_length(
+        &shadow.offset_y,
+        style.font_size,
+        style.root_font_size,
+        viewport,
+      ),
+      blur_radius: resolve_shadow_length(
+        &shadow.blur_radius,
+        style.font_size,
+        style.root_font_size,
+        viewport,
+      )
+      .max(0.0),
       color: shadow.color.unwrap_or(style.color),
     })
     .collect()
 }
 
-fn resolve_shadow_length(len: &Length, font_size: f32, root_font_size: f32) -> f32 {
-  match len.unit {
-    LengthUnit::Percent => len.resolve_against(font_size).unwrap_or(0.0),
-    LengthUnit::Calc => {
-      let needs_viewport = len
-        .calc
-        .as_ref()
-        .map(|c| c.has_viewport_relative())
-        .unwrap_or(false);
-      let (vw, vh) = if needs_viewport {
-        (f32::NAN, f32::NAN)
-      } else {
-        (0.0, 0.0)
-      };
-      len
-        .resolve_with_context(Some(font_size), vw, vh, font_size, root_font_size)
-        .unwrap_or(len.value * font_size)
-    }
-    LengthUnit::Em => len
-      .resolve_with_font_size(font_size)
-      .unwrap_or(len.value * font_size),
-    LengthUnit::Rem => len
-      .resolve_with_font_size(root_font_size)
-      .unwrap_or(len.value * root_font_size),
-    _ if len.unit.is_absolute() => len.to_px(),
-    _ => len.value * font_size,
-  }
+fn resolve_shadow_length(
+  len: &Length,
+  font_size: f32,
+  root_font_size: f32,
+  viewport: Option<(f32, f32)>,
+) -> f32 {
+  crate::paint::paint_bounds::resolve_length_for_paint(
+    len,
+    font_size,
+    root_font_size,
+    font_size,
+    viewport,
+  )
 }
 
 #[cfg(test)]
@@ -92,6 +99,7 @@ mod tests {
   use super::*;
   use crate::css::types::TextShadow;
   use crate::style::values::Length;
+  use crate::style::values::LengthUnit;
   use std::sync::Arc;
 
   #[test]
@@ -107,9 +115,45 @@ mod tests {
       color: None,
     }]);
 
-    let shadows = resolve_text_shadows(&style);
+    let shadows = resolve_text_shadows_with_viewport(&style, None);
     assert_eq!(shadows.len(), 1);
     assert!((shadows[0].offset_x - 20.0).abs() < 0.01);
     assert!((shadows[0].offset_y - 0.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn text_shadow_vw_resolves_against_viewport() {
+    let mut style = ComputedStyle::default();
+    style.font_size = 10.0;
+    style.root_font_size = 20.0;
+    style.color = Rgba::BLACK;
+    style.text_shadow = Arc::from(vec![TextShadow {
+      offset_x: Length::new(10.0, LengthUnit::Vw),
+      offset_y: Length::px(0.0),
+      blur_radius: Length::px(0.0),
+      color: None,
+    }]);
+
+    let shadows = resolve_text_shadows_with_viewport(&style, Some((200.0, 100.0)));
+    assert_eq!(shadows.len(), 1);
+    assert!((shadows[0].offset_x - 20.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn text_shadow_vw_requires_viewport() {
+    let mut style = ComputedStyle::default();
+    style.font_size = 10.0;
+    style.root_font_size = 20.0;
+    style.color = Rgba::BLACK;
+    style.text_shadow = Arc::from(vec![TextShadow {
+      offset_x: Length::new(10.0, LengthUnit::Vw),
+      offset_y: Length::px(0.0),
+      blur_radius: Length::px(0.0),
+      color: None,
+    }]);
+
+    let shadows = resolve_text_shadows_with_viewport(&style, None);
+    assert_eq!(shadows.len(), 1);
+    assert_eq!(shadows[0].offset_x, 0.0);
   }
 }
