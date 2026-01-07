@@ -345,3 +345,36 @@ fn will_change_mask_border_establishes_backdrop_root() {
   assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
+
+#[test]
+fn will_change_perspective_does_not_establish_backdrop_root() {
+  // `perspective` is not a Backdrop Root trigger; `will-change: perspective` must not clip the
+  // backdrop that descendant `backdrop-filter` elements can see.
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent { position: absolute; inset: 0; will-change: perspective; }
+      #child {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 40px;
+        height: 40px;
+        backdrop-filter: invert(1);
+        background: transparent;
+      }
+    </style>
+    <div id="parent"><div id="child"></div></div>
+  "#;
+
+  let (list, font_ctx) = build_display_list(html, 64, 64);
+  let pixmap = DisplayListRenderer::new(64, 64, Rgba::WHITE, font_ctx)
+    .expect("renderer")
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("render");
+
+  // Red backdrop inverted to cyan.
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
