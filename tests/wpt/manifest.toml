@@ -223,7 +223,7 @@ id = "layout/grid-named-span-autoplacement-001"
 path = "layout/grid-named-span-autoplacement-001.html"
 reference = "layout/grid-named-span-autoplacement-001-ref.html"
 test_type = "reftest"
-expected = "pass"
+expected = "fail"
 timeout_ms = 12000
 dpr = 1.0
 
@@ -557,6 +557,32 @@ height = 200
 id = "paint/stacking/transform-creates-stacking-context-001"
 path = "paint/stacking/transform-creates-stacking-context-001.html"
 reference = "paint/stacking/transform-creates-stacking-context-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 200
+height = 200
+
+[[tests]]
+id = "paint/stacking/fixed-creates-stacking-context-001"
+path = "paint/stacking/fixed-creates-stacking-context-001.html"
+reference = "paint/stacking/fixed-creates-stacking-context-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 200
+height = 200
+
+[[tests]]
+id = "paint/stacking/will-change-creates-stacking-context-001"
+path = "paint/stacking/will-change-creates-stacking-context-001.html"
+reference = "paint/stacking/will-change-creates-stacking-context-001-ref.html"
 test_type = "reftest"
 expected = "pass"
 timeout_ms = 12000

@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>opacity creates a stacking context reference</title>
+<title>position:fixed creates a stacking context</title>
 <style>
   html, body {
     margin: 0;
@@ -16,8 +16,8 @@
     background: white;
   }
 
-  .opacity-parent {
-    position: absolute;
+  .fixed-parent {
+    position: fixed;
     top: 20px;
     left: 20px;
     width: 160px;
@@ -30,7 +30,8 @@
     left: 20px;
     width: 120px;
     height: 120px;
-    background: rgba(0, 0, 220, 0.5);
+    background: rgb(0, 0, 220);
+    z-index: 10;
   }
 
   .outside {
@@ -44,7 +45,7 @@
 </style>
 
 <div class="root">
-  <div class="opacity-parent">
+  <div class="fixed-parent">
     <div class="child"></div>
   </div>
   <div class="outside"></div>
