@@ -110,3 +110,71 @@ fn document_source_order_still_applies_before_shadow_host() {
   let host = find_by_id(&styled, "host").expect("styled host");
   assert_eq!(host.styles.color, Rgba::rgb(10, 200, 30));
 }
+
+#[test]
+fn important_document_rules_override_shadow_host_normal() {
+  // Per CSS Cascade's "Context" ordering, normal shadow-host declarations lose to the outer
+  // document context, but importance is still evaluated first.
+  let html = r#"
+    <style>
+      x-host { color: rgb(255, 0, 0) !important; }
+    </style>
+    <x-host id="host">
+      <template shadowroot="open">
+        <style>
+          :host { color: rgb(0, 0, 255); }
+        </style>
+        <slot></slot>
+      </template>
+    </x-host>
+  "#;
+
+  let styled = apply_scoped_styles(html);
+  let host = find_by_id(&styled, "host").expect("styled host");
+  assert_eq!(host.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn important_shadow_host_rules_override_document_normal() {
+  let html = r#"
+    <style>
+      x-host { color: rgb(255, 0, 0); }
+    </style>
+    <x-host id="host">
+      <template shadowroot="open">
+        <style>
+          :host { color: rgb(0, 0, 255) !important; }
+        </style>
+        <slot></slot>
+      </template>
+    </x-host>
+  "#;
+
+  let styled = apply_scoped_styles(html);
+  let host = find_by_id(&styled, "host").expect("styled host");
+  assert_eq!(host.styles.color, Rgba::rgb(0, 0, 255));
+}
+
+#[test]
+fn shadow_host_rules_respect_layer_order() {
+  // Layers inside a shadow stylesheet should affect ordering among :host rules, even though those
+  // rules are extracted into a dedicated host-only index.
+  //
+  // The explicit @layer statement puts `base` after `theme`, so `base` is the later layer and wins
+  // for normal declarations even though its rule appears first in source order.
+  let html = r#"
+    <x-host id="host">
+      <template shadowroot="open">
+        <style>
+          @layer theme, base;
+          @layer base { :host { color: rgb(1, 2, 3); } }
+          @layer theme { :host { color: rgb(4, 5, 6); } }
+        </style>
+      </template>
+    </x-host>
+  "#;
+
+  let styled = apply_scoped_styles(html);
+  let host = find_by_id(&styled, "host").expect("styled host");
+  assert_eq!(host.styles.color, Rgba::rgb(1, 2, 3));
+}

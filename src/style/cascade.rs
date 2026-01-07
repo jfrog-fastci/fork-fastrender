@@ -2205,6 +2205,21 @@ fn shadow_tree_scope_prefix(shadow_root_id: usize) -> u32 {
     .saturating_add(1)
 }
 
+// Cascade-layer ordering within a single tree scope is represented as:
+//   [tree_scope_prefix, kind, ...layer_path]
+//
+// `kind` allows us to insert additional cascade "contexts" that are ordered before regular
+// author/UA layers within the same tree scope. This is currently used for shadow-host rules
+// extracted from shadow-root stylesheets:
+//   - For normal declarations, outer-document rules should win over shadow-host rules.
+//   - For !important declarations, the shadow-host rules should win (CSS Cascade "Context").
+//
+// By giving shadow-host rules a lower `kind` value than regular rules, and by reusing the
+// layer-order reversal already performed for !important declarations, we get spec-correct context
+// ordering while still preserving @layer ordering *within* the extracted host rules.
+const LAYER_ORDER_KIND_SHADOW_HOST: u32 = 0;
+const LAYER_ORDER_KIND_NORMAL: u32 = 1;
+
 static DOCUMENT_UNLAYERED_LAYER_ORDER: OnceLock<Arc<[u32]>> = OnceLock::new();
 static UNPREFIXED_UNLAYERED_LAYER_ORDER: OnceLock<Arc<[u32]>> = OnceLock::new();
 
@@ -2224,11 +2239,12 @@ impl LayerOrderInterner {
       return document_unlayered_layer_order();
     }
 
-    let total_len = layer_order.len().saturating_add(1);
+    let total_len = layer_order.len().saturating_add(2);
     if total_len <= LAYER_ORDER_INTERN_STACK_LEN {
       let mut buf = [0u32; LAYER_ORDER_INTERN_STACK_LEN];
       buf[0] = tree_scope_prefix;
-      buf[1..total_len].copy_from_slice(layer_order);
+      buf[1] = LAYER_ORDER_KIND_NORMAL;
+      buf[2..total_len].copy_from_slice(layer_order);
       let slice = &buf[..total_len];
       if let Some(hit) = self.interned.get(slice) {
         return hit.clone();
@@ -2240,6 +2256,39 @@ impl LayerOrderInterner {
 
     let mut prefixed = Vec::with_capacity(total_len);
     prefixed.push(tree_scope_prefix);
+    prefixed.push(LAYER_ORDER_KIND_NORMAL);
+    prefixed.extend_from_slice(layer_order);
+    if let Some(hit) = self.interned.get(prefixed.as_slice()) {
+      return hit.clone();
+    }
+    let arc: Arc<[u32]> = Arc::from(prefixed);
+    self.interned.insert(arc.clone());
+    arc
+  }
+
+  fn intern_shadow_host_prefixed(
+    &mut self,
+    layer_order: &[u32],
+    tree_scope_prefix: u32,
+  ) -> Arc<[u32]> {
+    let total_len = layer_order.len().saturating_add(2);
+    if total_len <= LAYER_ORDER_INTERN_STACK_LEN {
+      let mut buf = [0u32; LAYER_ORDER_INTERN_STACK_LEN];
+      buf[0] = tree_scope_prefix;
+      buf[1] = LAYER_ORDER_KIND_SHADOW_HOST;
+      buf[2..total_len].copy_from_slice(layer_order);
+      let slice = &buf[..total_len];
+      if let Some(hit) = self.interned.get(slice) {
+        return hit.clone();
+      }
+      let arc: Arc<[u32]> = Arc::from(slice);
+      self.interned.insert(arc.clone());
+      return arc;
+    }
+
+    let mut prefixed = Vec::with_capacity(total_len);
+    prefixed.push(tree_scope_prefix);
+    prefixed.push(LAYER_ORDER_KIND_SHADOW_HOST);
     prefixed.extend_from_slice(layer_order);
     if let Some(hit) = self.interned.get(prefixed.as_slice()) {
       return hit.clone();
@@ -2252,7 +2301,11 @@ impl LayerOrderInterner {
 
 fn document_unlayered_layer_order() -> Arc<[u32]> {
   DOCUMENT_UNLAYERED_LAYER_ORDER
-    .get_or_init(|| Arc::from(vec![DOCUMENT_TREE_SCOPE_PREFIX, u32::MAX]))
+    .get_or_init(|| {
+      Arc::from(
+        [DOCUMENT_TREE_SCOPE_PREFIX, LAYER_ORDER_KIND_NORMAL, u32::MAX].as_slice(),
+      )
+    })
     .clone()
 }
 
@@ -2269,8 +2322,9 @@ fn layer_order_with_tree_scope(layer_order: &[u32], tree_scope_prefix: u32) -> A
   {
     return document_unlayered_layer_order();
   }
-  let mut prefixed = Vec::with_capacity(layer_order.len().saturating_add(1));
+  let mut prefixed = Vec::with_capacity(layer_order.len().saturating_add(2));
   prefixed.push(tree_scope_prefix);
+  prefixed.push(LAYER_ORDER_KIND_NORMAL);
   prefixed.extend_from_slice(layer_order);
   Arc::from(prefixed)
 }
@@ -3065,7 +3119,8 @@ impl CascadeScratch {
     if let Some(hit) = self.unlayered_layer_orders.get(&tree_scope_prefix) {
       return hit.clone();
     }
-    let layer_order: Arc<[u32]> = Arc::from([tree_scope_prefix, u32::MAX].as_slice());
+    let layer_order: Arc<[u32]> =
+      Arc::from([tree_scope_prefix, LAYER_ORDER_KIND_NORMAL, u32::MAX].as_slice());
     self
       .unlayered_layer_orders
       .insert(tree_scope_prefix, layer_order.clone());
@@ -7158,8 +7213,7 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
     );
     let mut rules: Vec<CascadeRule<'_>> = Vec::new();
     let mut host_rules: Vec<CascadeRule<'_>> = Vec::new();
-    let host_layer_order =
-      layer_order_interner.intern_prefixed(&[], tree_scope_prefix_for_node(&dom_maps, *host));
+    let host_tree_scope_prefix = tree_scope_prefix_for_node(&dom_maps, *host);
 
     for (idx, rule) in collected.iter().enumerate() {
       let cascade_rule = CascadeRule {
@@ -7181,7 +7235,8 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
       if rule_targets_shadow_host(rule.rule) {
         let host_rule = CascadeRule {
           scope: RuleScope::Document,
-          layer_order: host_layer_order.clone(),
+          layer_order: layer_order_interner
+            .intern_shadow_host_prefixed(rule.layer_order.as_ref(), host_tree_scope_prefix),
           ..cascade_rule.clone()
         };
         host_rules.push(host_rule);
@@ -7208,7 +7263,9 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
         origin: StyleOrigin::Author,
         order: document_order_base + idx,
         rule: rule.rule,
-        layer_order: document_unlayered_layer_order(),
+        // Keep the unprefixed layer path so we can re-prefix it per host's tree scope when
+        // synthesizing shadow-host indices.
+        layer_order: rule.layer_order.clone(),
         container_conditions: rule.container_conditions.clone(),
         scopes: rule.scopes.clone(),
         scope_signature: ScopeSignature::compute(&rule.scopes),
@@ -7232,12 +7289,12 @@ fn apply_styles_with_media_target_and_imports_cached_with_deadline_impl(
         if shadow_host_indices.contains_key(&host_id) {
           continue;
         }
-        let host_layer_order =
-          layer_order_interner.intern_prefixed(&[], tree_scope_prefix_for_node(&dom_maps, host_id));
+        let host_tree_scope_prefix = tree_scope_prefix_for_node(&dom_maps, host_id);
         let mut rules = Vec::with_capacity(fallback_host_rule_templates.len());
         for template in fallback_host_rule_templates.iter() {
           let mut rule = template.clone();
-          rule.layer_order = host_layer_order.clone();
+          rule.layer_order = layer_order_interner
+            .intern_shadow_host_prefixed(template.layer_order.as_ref(), host_tree_scope_prefix);
           rules.push(rule);
         }
         shadow_host_indices.insert(host_id, RuleIndex::new(rules, quirks_mode));
@@ -7677,8 +7734,7 @@ impl<'a> PreparedCascade<'a> {
       );
       let mut rules: Vec<CascadeRule<'a>> = Vec::new();
       let mut host_rules: Vec<CascadeRule<'a>> = Vec::new();
-      let host_layer_order =
-        layer_order_interner.intern_prefixed(&[], tree_scope_prefix_for_node(&dom_maps, *host));
+      let host_tree_scope_prefix = tree_scope_prefix_for_node(&dom_maps, *host);
 
       for (idx, rule) in collected.iter().enumerate() {
         let cascade_rule = CascadeRule {
@@ -7698,7 +7754,8 @@ impl<'a> PreparedCascade<'a> {
         if rule_targets_shadow_host(rule.rule) {
           let host_rule = CascadeRule {
             scope: RuleScope::Document,
-            layer_order: host_layer_order.clone(),
+            layer_order: layer_order_interner
+              .intern_shadow_host_prefixed(rule.layer_order.as_ref(), host_tree_scope_prefix),
             ..cascade_rule.clone()
           };
           host_rules.push(host_rule);
