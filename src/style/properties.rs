@@ -1200,6 +1200,44 @@ fn parse_scroll_timeline_list(raw: &str) -> Vec<ScrollTimeline> {
   timelines
 }
 
+fn parse_named_timeline_name_list(raw: &str) -> Vec<Option<String>> {
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return Vec::new();
+  }
+  let mut names = Vec::new();
+  for part in split_top_level_commas(trimmed) {
+    let name = part.trim();
+    if name.is_empty() {
+      continue;
+    }
+    if name.eq_ignore_ascii_case("none") {
+      names.push(None);
+    } else {
+      names.push(Some(name.to_string()));
+    }
+  }
+  names
+}
+
+fn parse_timeline_axis_list(raw: &str) -> Vec<TimelineAxis> {
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return Vec::new();
+  }
+  let mut axes = Vec::new();
+  for part in split_top_level_commas(trimmed) {
+    let token = part.trim();
+    if token.is_empty() {
+      continue;
+    }
+    if let Some(axis) = parse_timeline_axis(&token.to_ascii_lowercase()) {
+      axes.push(axis);
+    }
+  }
+  axes
+}
+
 fn parse_view_timeline_list(raw: &str) -> Vec<ViewTimeline> {
   let mut timelines = Vec::new();
   let trimmed = raw.trim();
@@ -1252,6 +1290,42 @@ fn parse_view_timeline_list(raw: &str) -> Vec<ViewTimeline> {
     timelines.push(ViewTimeline { name, axis, inset });
   }
   timelines
+}
+
+fn parse_view_timeline_inset_list(raw: &str) -> Vec<Option<ViewTimelineInset>> {
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return Vec::new();
+  }
+  let mut insets = Vec::new();
+  for part in split_top_level_commas(trimmed) {
+    let tokens = split_top_level_whitespace(&part);
+    if tokens.is_empty() {
+      continue;
+    }
+    let mut values = Vec::new();
+    for token in tokens.into_iter().take(2) {
+      if token.eq_ignore_ascii_case("auto") {
+        continue;
+      }
+      if let Some(len) = parse_length(&token) {
+        values.push(len);
+      }
+    }
+    let inset = match values.len() {
+      0 => None,
+      1 => Some(ViewTimelineInset {
+        start: values[0],
+        end: values[0],
+      }),
+      _ => Some(ViewTimelineInset {
+        start: values[0],
+        end: values[1],
+      }),
+    };
+    insets.push(inset);
+  }
+  insets
 }
 
 fn parse_timeline_scope(raw: &str) -> Option<TimelineScopeProperty> {
@@ -7032,8 +7106,13 @@ fn apply_declaration_with_base_internal_with_order(
   let needs_css_text = matches!(
     property,
     "scroll-timeline"
+      | "scroll-timeline-name"
+      | "scroll-timeline-axis"
       | "timeline-scope"
       | "view-timeline"
+      | "view-timeline-name"
+      | "view-timeline-axis"
+      | "view-timeline-inset"
       | "animation-timeline"
       | "animation-range"
       | "animation-range-start"
@@ -10992,9 +11071,89 @@ fn apply_declaration_with_base_internal_with_order(
         styles.timeline_scope = scope;
       }
     }
+    "scroll-timeline-name" => {
+      let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
+      let names = parse_named_timeline_name_list(css_text);
+      if names.is_empty() {
+        return;
+      }
+      let target_len = styles.scroll_timelines.len().max(names.len());
+      styles
+        .scroll_timelines
+        .resize_with(target_len, ScrollTimeline::default);
+      let fallback = names.last().cloned().unwrap_or(None);
+      for idx in 0..target_len {
+        let name = names
+          .get(idx)
+          .cloned()
+          .unwrap_or_else(|| fallback.clone());
+        styles.scroll_timelines[idx].name = name;
+      }
+    }
+    "scroll-timeline-axis" => {
+      let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
+      let axes = parse_timeline_axis_list(css_text);
+      if axes.is_empty() {
+        return;
+      }
+      let target_len = styles.scroll_timelines.len().max(axes.len());
+      styles
+        .scroll_timelines
+        .resize_with(target_len, ScrollTimeline::default);
+      let fallback = *axes.last().unwrap_or(&TimelineAxis::Block);
+      for idx in 0..target_len {
+        let axis = axes.get(idx).copied().unwrap_or(fallback);
+        styles.scroll_timelines[idx].axis = axis;
+      }
+    }
     "scroll-timeline" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
       styles.scroll_timelines = parse_scroll_timeline_list(css_text);
+    }
+    "view-timeline-name" => {
+      let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
+      let names = parse_named_timeline_name_list(css_text);
+      if names.is_empty() {
+        return;
+      }
+      let target_len = styles.view_timelines.len().max(names.len());
+      styles.view_timelines.resize_with(target_len, ViewTimeline::default);
+      let fallback = names.last().cloned().unwrap_or(None);
+      for idx in 0..target_len {
+        let name = names
+          .get(idx)
+          .cloned()
+          .unwrap_or_else(|| fallback.clone());
+        styles.view_timelines[idx].name = name;
+      }
+    }
+    "view-timeline-axis" => {
+      let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
+      let axes = parse_timeline_axis_list(css_text);
+      if axes.is_empty() {
+        return;
+      }
+      let target_len = styles.view_timelines.len().max(axes.len());
+      styles.view_timelines.resize_with(target_len, ViewTimeline::default);
+      let fallback = *axes.last().unwrap_or(&TimelineAxis::Block);
+      for idx in 0..target_len {
+        let axis = axes.get(idx).copied().unwrap_or(fallback);
+        styles.view_timelines[idx].axis = axis;
+      }
+    }
+    "view-timeline-inset" => {
+      let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
+      let insets = parse_view_timeline_inset_list(css_text);
+      if insets.is_empty() {
+        return;
+      }
+      let target_len = styles.view_timelines.len().max(insets.len());
+      styles.view_timelines.resize_with(target_len, ViewTimeline::default);
+      let fallback = insets.last().copied().unwrap_or(None);
+      for idx in 0..target_len {
+        let inset = insets.get(idx).copied().unwrap_or(fallback);
+        styles.view_timelines[idx].inset = inset;
+      }
     }
     "view-timeline" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());

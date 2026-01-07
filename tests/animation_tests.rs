@@ -80,6 +80,68 @@ fn parses_timelines_and_keyframes() {
 }
 
 #[test]
+fn scroll_timeline_longhands_combine() {
+  let css = r#"
+    #box {
+      scroll-timeline-name: main;
+      scroll-timeline-axis: inline;
+    }
+  "#;
+  let html = r#"<div id="box"></div>"#;
+  let dom = dom::parse_html(html).unwrap();
+  let sheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &sheet, &MediaContext::screen(800.0, 600.0));
+  let div = find_by_tag(&styled, "div").expect("div present");
+  assert_eq!(div.styles.scroll_timelines.len(), 1);
+  assert_eq!(div.styles.scroll_timelines[0].name.as_deref(), Some("main"));
+  assert_eq!(div.styles.scroll_timelines[0].axis, TimelineAxis::Inline);
+}
+
+#[test]
+fn scroll_timeline_longhands_combine_when_reversed() {
+  let css = r#"
+    #box {
+      scroll-timeline-axis: inline;
+      scroll-timeline-name: main;
+    }
+  "#;
+  let html = r#"<div id="box"></div>"#;
+  let dom = dom::parse_html(html).unwrap();
+  let sheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &sheet, &MediaContext::screen(800.0, 600.0));
+  let div = find_by_tag(&styled, "div").expect("div present");
+  assert_eq!(div.styles.scroll_timelines.len(), 1);
+  assert_eq!(div.styles.scroll_timelines[0].name.as_deref(), Some("main"));
+  assert_eq!(div.styles.scroll_timelines[0].axis, TimelineAxis::Inline);
+}
+
+#[test]
+fn view_timeline_longhands_combine() {
+  let css = r#"
+    #box {
+      view-timeline-name: viewy;
+      view-timeline-axis: inline;
+      view-timeline-inset: 10px 20px;
+    }
+  "#;
+  let html = r#"<div id="box"></div>"#;
+  let dom = dom::parse_html(html).unwrap();
+  let sheet = parse_stylesheet(css).unwrap();
+  let styled = apply_styles_with_media(&dom, &sheet, &MediaContext::screen(800.0, 600.0));
+  let div = find_by_tag(&styled, "div").expect("div present");
+  assert_eq!(div.styles.view_timelines.len(), 1);
+  assert_eq!(div.styles.view_timelines[0].name.as_deref(), Some("viewy"));
+  assert_eq!(div.styles.view_timelines[0].axis, TimelineAxis::Inline);
+  assert_eq!(
+    div.styles.view_timelines[0].inset,
+    Some(fastrender::style::types::ViewTimelineInset {
+      start: Length::px(10.0),
+      end: Length::px(20.0),
+    })
+  );
+}
+
+#[test]
 fn scroll_timeline_list_allows_none_items() {
   let css = r#"
     #box { scroll-timeline: none, main block 0% 100%; }

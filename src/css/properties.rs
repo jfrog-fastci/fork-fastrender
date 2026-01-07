@@ -43,8 +43,13 @@ pub(crate) fn is_raw_only_property(property: &str) -> bool {
   matches!(
     property,
     "scroll-timeline"
+      | "scroll-timeline-name"
+      | "scroll-timeline-axis"
       | "timeline-scope"
       | "view-timeline"
+      | "view-timeline-name"
+      | "view-timeline-axis"
+      | "view-timeline-inset"
       | "animation-timeline"
       | "animation-range"
       | "animation-range-start"
@@ -377,7 +382,12 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "scroll-snap-type",
   "scroll-snap-align",
   "scroll-snap-stop",
+  "scroll-timeline-axis",
+  "scroll-timeline-name",
   "scroll-timeline",
+  "view-timeline-axis",
+  "view-timeline-inset",
+  "view-timeline-name",
   "view-timeline",
   "timeline-scope",
   "scroll-padding",
