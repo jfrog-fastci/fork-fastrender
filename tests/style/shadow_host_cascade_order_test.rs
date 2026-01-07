@@ -201,6 +201,51 @@ fn shadow_host_important_rules_respect_layer_order() {
 }
 
 #[test]
+fn document_context_wins_over_shadow_host_regardless_of_layer_for_normal() {
+  // Cascade context ordering is evaluated before cascade layers. Even though the document rule is
+  // inside an earlier explicit layer and the shadow :host rule is unlayered (implicit final layer),
+  // the outer document context should still win for normal declarations.
+  let html = r#"
+    <style>
+      @layer base { x-host { color: rgb(255, 0, 0); } }
+    </style>
+    <x-host id="host">
+      <template shadowroot="open">
+        <style>
+          :host { color: rgb(0, 0, 255); }
+        </style>
+      </template>
+    </x-host>
+  "#;
+
+  let styled = apply_scoped_styles(html);
+  let host = find_by_id(&styled, "host").expect("styled host");
+  assert_eq!(host.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn shadow_host_context_wins_over_document_layers_for_important() {
+  // For !important declarations, the inner (shadow) context wins even if the outer (document)
+  // declaration is in an earlier layer that would otherwise outrank unlayered rules.
+  let html = r#"
+    <style>
+      @layer base { x-host { color: rgb(255, 0, 0) !important; } }
+    </style>
+    <x-host id="host">
+      <template shadowroot="open">
+        <style>
+          :host { color: rgb(0, 0, 255) !important; }
+        </style>
+      </template>
+    </x-host>
+  "#;
+
+  let styled = apply_scoped_styles(html);
+  let host = find_by_id(&styled, "host").expect("styled host");
+  assert_eq!(host.styles.color, Rgba::rgb(0, 0, 255));
+}
+
+#[test]
 fn document_rules_outrank_shadow_host_context_rules() {
   let html = r#"
     <style>
