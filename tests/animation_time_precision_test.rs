@@ -1,5 +1,18 @@
 use fastrender::api::FastRender;
 use fastrender::{PreparedPaintOptions, RenderOptions, Rgba};
+use std::sync::Once;
+
+static INIT_ENV: Once = Once::new();
+
+fn ensure_test_env() {
+  INIT_ENV.call_once(|| {
+    // FastRender uses Rayon for parallel layout/paint. Rayon defaults to the host CPU count, which
+    // can exceed sandbox thread budgets and cause the global pool init to fail.
+    if std::env::var("RAYON_NUM_THREADS").is_err() {
+      std::env::set_var("RAYON_NUM_THREADS", "1");
+    }
+  });
+}
 
 fn pixel(pixmap: &fastrender::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
   let px = pixmap.pixel(x, y).unwrap();
@@ -8,6 +21,7 @@ fn pixel(pixmap: &fastrender::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
 
 #[test]
 fn animation_time_preserves_sub_millisecond_precision() {
+  ensure_test_env();
   let mut renderer = FastRender::new().expect("renderer");
   let options = RenderOptions::new().with_viewport(20, 20);
   let html = r#"
@@ -54,4 +68,3 @@ fn animation_time_preserves_sub_millisecond_precision() {
     "expected red blended over black at 0.5ms, got rgba=({r},{g},{b},{a})"
   );
 }
-
