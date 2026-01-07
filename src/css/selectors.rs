@@ -881,9 +881,7 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       | "-moz-placeholder"
       | "-ms-input-placeholder" => Ok(PseudoElement::Placeholder),
       "-webkit-slider-thumb" | "-moz-range-thumb" | "-ms-thumb" => Ok(PseudoElement::SliderThumb),
-      "-webkit-slider-runnable-track" | "-moz-range-track" | "-ms-track" => {
-        Ok(PseudoElement::SliderTrack)
-      }
+      "-webkit-slider-runnable-track" | "-moz-range-track" | "-ms-track" => Ok(PseudoElement::SliderTrack),
       _ => Err(ParseError {
         kind: cssparser::ParseErrorKind::Custom(
           SelectorParseErrorKind::UnsupportedPseudoClassOrElement(name),
@@ -1525,6 +1523,22 @@ mod tests {
     assert!(SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok());
 
     let mut input = ParserInput::new("button::part(name)");
+    let mut parser = Parser::new(&mut input);
+    assert!(SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok());
+  }
+
+  #[test]
+  fn parses_placeholder_pseudo_elements() {
+    let mut input = ParserInput::new("input::-ms-input-placeholder, input::placeholder");
+    let mut parser = Parser::new(&mut input);
+    assert!(SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok());
+  }
+
+  #[test]
+  fn parses_vendor_placeholder_selector_list() {
+    let mut input = ParserInput::new(
+      "input::-webkit-input-placeholder, input::-moz-placeholder, input::-ms-input-placeholder, input::placeholder",
+    );
     let mut parser = Parser::new(&mut input);
     assert!(SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok());
   }
