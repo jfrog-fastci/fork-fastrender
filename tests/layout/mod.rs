@@ -64,6 +64,7 @@ mod sticky_padding;
 mod subgrid;
 mod subgrid_auto_span;
 mod subgrid_autorepeat_named_lines;
+mod subgrid_nested_contributions;
 mod table_anonymous_inheritance;
 mod table_cell_placement;
 mod table_caption_layout;

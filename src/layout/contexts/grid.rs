@@ -176,15 +176,18 @@ impl GridAxisStyle {
   }
 
   fn effective_for_grid_container(style: &ComputedStyle, parent_axis: Option<Self>) -> Self {
-    // Grid container axes are defined by the element's own writing-mode. However, for column
-    // subgrids the inherited track axis direction is fixed by the parent grid's inline direction
-    // (the shared line numbering runs in that direction), even if the subgrid specifies a different
-    // `direction` value locally.
+    // Grid containers normally define their axes using their own writing-mode. Subgrids are
+    // different: their track axes are inherited from the parent grid, so they must not rotate when
+    // the subgrid specifies a different writing-mode locally. (Otherwise inherited track numbering
+    // would no longer align with the parent grid.)
     //
-    // Track inheritance across writing modes is handled by transposing the subgrid flags/line names
-    // into Taffy's physical axes; inheriting the parent writing-mode here breaks vertical writing
-    // mode subgrids (e.g. `grid-template-rows: subgrid` under `writing-mode: vertical-rl`).
+    // Therefore, if this element is a subgrid, use the parent grid's writing-mode for axis mapping.
+    // We still allow the local `direction` to affect non-subgridded axes; for column-subgrids we
+    // must inherit the parent's `direction` because inline line numbering is shared.
     let mut axis = Self::from_style(style);
+    if (style.grid_row_subgrid || style.grid_column_subgrid) && parent_axis.is_some() {
+      axis.writing_mode = parent_axis.unwrap().writing_mode;
+    }
     if style.grid_column_subgrid {
       if let Some(parent) = parent_axis {
         axis.direction = parent.direction;

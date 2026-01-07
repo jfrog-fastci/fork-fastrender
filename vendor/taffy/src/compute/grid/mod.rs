@@ -277,6 +277,299 @@ fn child_subgrid_auto_span<
   InBothAbsAxis { horizontal, vertical }
 }
 
+/// Maximum recursion depth when collecting virtual grid items for nested subgrids.
+///
+/// Taffy layout trees are expected to be acyclic, but we defensively cap the depth to avoid
+/// pathological behaviour on malformed trees.
+const MAX_SUBGRID_VIRTUAL_ITEM_DEPTH: usize = 64;
+
+/// Mapping from a subgrid container's local grid coordinate space to an ancestor grid's coordinate
+/// space for one axis.
+///
+/// When an axis is subgridded all the way up to the ancestor grid, the mapping is a simple
+/// translation (local line + offset). If the subgrid chain is broken for an axis, descendants no
+/// longer participate in that axis's track sizing; we clamp them to the ancestor-space span of the
+/// container that broke the chain so that their contributions can still be considered in the other
+/// axis.
+#[derive(Clone, Copy, Debug)]
+struct SubgridVirtualItemMapping {
+  inherited: bool,
+  offset: OriginZeroLine,
+  fallback_span: Line<OriginZeroLine>,
+}
+
+impl SubgridVirtualItemMapping {
+  #[inline]
+  fn map_span(self, span: Line<OriginZeroLine>) -> Line<OriginZeroLine> {
+    if self.inherited {
+      Line {
+        start: span.start + self.offset,
+        end: span.end + self.offset,
+      }
+    } else {
+      self.fallback_span
+    }
+  }
+}
+
+/// Collects virtual grid items representing descendants of a subgrid item.
+///
+/// CSS Grid Level 3 specifies that subgrid item contributions should propagate through chains of
+/// nested subgrids (so a grandchild inside a subgrid-of-a-subgrid contributes directly to the
+/// ancestor's track sizing). Taffy models this by synthesising "virtual" `GridItem`s for subgrid
+/// descendants and feeding them into the ancestor's track sizing algorithm.
+///
+/// This helper performs that synthesis recursively while keeping the work bounded:
+/// - We only recurse into grid containers that are themselves subgrids.
+/// - Recursion stops once the subgrid chain is broken in both axes (the descendant no longer maps
+///   to the ancestor's tracks).
+fn collect_subgrid_virtual_items_recursive<
+  Tree: LayoutGridContainer + LayoutPartialTree<CustomIdent = DefaultCheapStr>,
+>(
+  tree: &mut Tree,
+  container_item: &GridItem,
+  parent_row_names: &[Vec<Ident>],
+  parent_col_names: &[Vec<Ident>],
+  parent_mapping: InBothAbsAxis<SubgridVirtualItemMapping>,
+  depth: usize,
+  out: &mut Vec<GridItem>,
+) {
+  if depth >= MAX_SUBGRID_VIRTUAL_ITEM_DEPTH {
+    return;
+  }
+
+  let container_style_owned = tree.clone_grid_container_style(container_item.node);
+  if container_style_owned.box_generation_mode() == BoxGenerationMode::None
+    || container_style_owned.position() == Position::Absolute
+  {
+    return;
+  }
+
+  let container_style_ref: &Style<_> = &container_style_owned;
+  let subgrid_columns = container_style_ref.is_column_subgrid();
+  let subgrid_rows = container_style_ref.is_row_subgrid();
+  if !subgrid_columns && !subgrid_rows {
+    return;
+  }
+
+  // Determine whether this subgrid shares any axis with the ancestor grid. If the chain is broken
+  // in both axes then descendants cannot be mapped to ancestor tracks at all, and their
+  // contributions are already accounted for via the intermediate grid item's intrinsic size.
+  let inherits_columns = parent_mapping.horizontal.inherited && subgrid_columns;
+  let inherits_rows = parent_mapping.vertical.inherited && subgrid_rows;
+  if !inherits_columns && !inherits_rows {
+    return;
+  }
+
+  let row_span = container_item.row.span();
+  let col_span = container_item.column.span();
+  let row_start = container_item.row.start;
+  let col_start = container_item.column.start;
+
+  let container_row_in_parent_space = container_item.row;
+  let container_col_in_parent_space = container_item.column;
+
+  let container_row_in_root_space = parent_mapping.vertical.map_span(container_row_in_parent_space);
+  let container_col_in_root_space =
+    parent_mapping.horizontal.map_span(container_col_in_parent_space);
+
+  let container_mapping = InBothAbsAxis {
+    horizontal: if inherits_columns {
+      SubgridVirtualItemMapping {
+        inherited: true,
+        offset: container_col_in_root_space.start,
+        fallback_span: container_col_in_root_space,
+      }
+    } else {
+      SubgridVirtualItemMapping {
+        inherited: false,
+        offset: OriginZeroLine(0),
+        fallback_span: container_col_in_root_space,
+      }
+    },
+    vertical: if inherits_rows {
+      SubgridVirtualItemMapping {
+        inherited: true,
+        offset: container_row_in_root_space.start,
+        fallback_span: container_row_in_root_space,
+      }
+    } else {
+      SubgridVirtualItemMapping {
+        inherited: false,
+        offset: OriginZeroLine(0),
+        fallback_span: container_row_in_root_space,
+      }
+    },
+  };
+
+  let child_row_extra = if subgrid_rows {
+    collect_child_subgrid_line_names(container_style_ref, AbstractAxis::Block)
+  } else {
+    Vec::new()
+  };
+  let child_col_extra = if subgrid_columns {
+    collect_child_subgrid_line_names(container_style_ref, AbstractAxis::Inline)
+  } else {
+    Vec::new()
+  };
+
+  let row_line_names = if subgrid_rows {
+    inherited_line_names(row_span, row_start, parent_row_names, &child_row_extra)
+  } else {
+    to_ident_line_names(&container_style_ref.grid_template_row_names)
+  };
+  let col_line_names = if subgrid_columns {
+    inherited_line_names(col_span, col_start, parent_col_names, &child_col_extra)
+  } else {
+    to_ident_line_names(&container_style_ref.grid_template_column_names)
+  };
+
+  let mut row_explicit = if subgrid_rows {
+    row_span
+  } else {
+    container_style_ref
+      .grid_template_rows()
+      .map(|iter| iter.count() as u16)
+      .unwrap_or(0)
+  };
+  if row_explicit == 0 {
+    row_explicit = row_line_names.len().saturating_sub(1) as u16;
+  }
+  if row_explicit == 0 {
+    row_explicit = 1;
+  }
+
+  let mut col_explicit = if subgrid_columns {
+    col_span
+  } else {
+    container_style_ref
+      .grid_template_columns()
+      .map(|iter| iter.count() as u16)
+      .unwrap_or(0)
+  };
+  if col_explicit == 0 {
+    col_explicit = col_line_names.len().saturating_sub(1) as u16;
+  }
+  if col_explicit == 0 {
+    col_explicit = 1;
+  }
+
+  let line_resolver = NamedLineResolver::from_line_names(
+    row_line_names.clone(),
+    col_line_names.clone(),
+    row_explicit,
+    col_explicit,
+  );
+
+  let mut subgrid_items: Vec<GridItem> = Vec::new();
+  let row_counts = TrackCounts {
+    negative_implicit: 0,
+    explicit: row_explicit,
+    positive_implicit: 0,
+  };
+  let col_counts = TrackCounts {
+    negative_implicit: 0,
+    explicit: col_explicit,
+    positive_implicit: 0,
+  };
+  let mut cell_occupancy_matrix = CellOccupancyMatrix::with_track_counts(col_counts, row_counts);
+
+  let align_items = container_style_ref
+    .align_items()
+    .unwrap_or(AlignItems::Stretch);
+  let justify_items = container_style_ref
+    .justify_items()
+    .unwrap_or(AlignItems::Stretch);
+  let grid_auto_flow = container_style_ref.grid_auto_flow();
+
+  let subgrid_children_iter = || {
+    tree
+      .child_ids(container_item.node)
+      .enumerate()
+      .map(|(index, child_node)| (index, child_node, tree.get_grid_child_style(child_node)))
+      .filter(|(_, _, style)| {
+        style.box_generation_mode() != BoxGenerationMode::None
+          && style.position() != Position::Absolute
+      })
+  };
+
+  place_grid_items(
+    &mut cell_occupancy_matrix,
+    &mut subgrid_items,
+    subgrid_children_iter,
+    grid_auto_flow,
+    align_items,
+    justify_items,
+    &line_resolver,
+    InBothAbsAxis {
+      horizontal: subgrid_columns,
+      vertical: subgrid_rows,
+    },
+    |node| child_subgrid_auto_span(tree, node),
+  );
+
+  #[cfg(all(feature = "std", debug_assertions))]
+  {
+    if std::env::var("FASTR_DEBUG_SUBGRID").is_ok() {
+      eprintln!(
+        "[subgrid-debug] node={:?} row_span={} col_span={} row_explicit={} col_explicit={} items={}",
+        container_item.node,
+        row_span,
+        col_span,
+        row_explicit,
+        col_explicit,
+        subgrid_items.len()
+      );
+      for (idx, sub_item) in subgrid_items.iter().enumerate() {
+        eprintln!(
+          "  item {idx}: row=({},{}) col=({},{})",
+          sub_item.row.start.0,
+          sub_item.row.end.0,
+          sub_item.column.start.0,
+          sub_item.column.end.0
+        );
+      }
+    }
+  }
+
+  // Convert placements from subgrid coordinates to ancestor coordinates, clamping in any axis
+  // where the subgrid chain is broken.
+  for (index, mut sub_item) in subgrid_items.into_iter().enumerate() {
+    // Recurse into nested subgrids before we mutate the placement coordinates into ancestor space.
+    if depth + 1 < MAX_SUBGRID_VIRTUAL_ITEM_DEPTH {
+      let child_style_owned = tree.clone_grid_container_style(sub_item.node);
+      if child_style_owned.box_generation_mode() != BoxGenerationMode::None
+        && child_style_owned.position() != Position::Absolute
+      {
+        let child_style_ref: &Style<_> = &child_style_owned;
+        let child_subgrid_columns = child_style_ref.is_column_subgrid();
+        let child_subgrid_rows = child_style_ref.is_row_subgrid();
+
+        // Only descend if the nested subgrid still shares at least one axis with the ancestor grid.
+        if (container_mapping.horizontal.inherited && child_subgrid_columns)
+          || (container_mapping.vertical.inherited && child_subgrid_rows)
+        {
+          collect_subgrid_virtual_items_recursive(
+            tree,
+            &sub_item,
+            &row_line_names,
+            &col_line_names,
+            container_mapping,
+            depth + 1,
+            out,
+          );
+        }
+      }
+    }
+
+    sub_item.row = container_mapping.vertical.map_span(sub_item.row);
+    sub_item.column = container_mapping.horizontal.map_span(sub_item.column);
+    sub_item.is_virtual = true;
+    sub_item.source_order = index as u16;
+    out.push(sub_item);
+  }
+}
+
 fn collect_subgrid_virtual_items<
   Tree: LayoutGridContainer + LayoutPartialTree<CustomIdent = DefaultCheapStr>,
 >(
@@ -292,163 +585,35 @@ fn collect_subgrid_virtual_items<
   // vector), independent of `axes_swapped`.
   let mut virtuals = Vec::new();
 
-  for item in items.iter() {
-    let child_style_owned = tree.clone_grid_container_style(item.node);
-    if child_style_owned.box_generation_mode() == BoxGenerationMode::None
-      || child_style_owned.position() == Position::Absolute
-    {
-      continue;
-    }
-    let child_style_ref: &Style<_> = &child_style_owned;
-    let subgrid_columns = child_style_ref.is_column_subgrid();
-    let subgrid_rows = child_style_ref.is_row_subgrid();
-    if !subgrid_columns && !subgrid_rows {
-      continue;
-    }
-
-    let row_span = item.row.span();
-    let col_span = item.column.span();
-    let row_start = item.row.start;
-    let col_start = item.column.start;
-
-    let child_row_extra = if subgrid_rows {
-      collect_child_subgrid_line_names(child_style_ref, AbstractAxis::Block)
-    } else {
-      Vec::new()
-    };
-    let child_col_extra = if subgrid_columns {
-      collect_child_subgrid_line_names(child_style_ref, AbstractAxis::Inline)
-    } else {
-      Vec::new()
-    };
-
-    let row_line_names = if subgrid_rows {
-      inherited_line_names(row_span, row_start, parent_row_names, &child_row_extra)
-    } else {
-      to_ident_line_names(&child_style_ref.grid_template_row_names)
-    };
-    let col_line_names = if subgrid_columns {
-      inherited_line_names(col_span, col_start, parent_col_names, &child_col_extra)
-    } else {
-      to_ident_line_names(&child_style_ref.grid_template_column_names)
-    };
-
-    let mut row_explicit = if subgrid_rows {
-      row_span
-    } else {
-      child_style_ref
-        .grid_template_rows()
-        .map(|iter| iter.count() as u16)
-        .unwrap_or(0)
-    };
-    if row_explicit == 0 {
-      row_explicit = row_line_names.len().saturating_sub(1) as u16;
-    }
-    if row_explicit == 0 {
-      row_explicit = 1;
-    }
-
-    let mut col_explicit = if subgrid_columns {
-      col_span
-    } else {
-      child_style_ref
-        .grid_template_columns()
-        .map(|iter| iter.count() as u16)
-        .unwrap_or(0)
-    };
-    if col_explicit == 0 {
-      col_explicit = col_line_names.len().saturating_sub(1) as u16;
-    }
-    if col_explicit == 0 {
-      col_explicit = 1;
-    }
-
-    let line_resolver = NamedLineResolver::from_line_names(
-      row_line_names.clone(),
-      col_line_names.clone(),
-      row_explicit,
-      col_explicit,
-    );
-
-    let mut subgrid_items: Vec<GridItem> = Vec::new();
-    let row_counts = TrackCounts {
-      negative_implicit: 0,
-      explicit: row_explicit,
-      positive_implicit: 0,
-    };
-    let col_counts = TrackCounts {
-      negative_implicit: 0,
-      explicit: col_explicit,
-      positive_implicit: 0,
-    };
-    let mut cell_occupancy_matrix = CellOccupancyMatrix::with_track_counts(col_counts, row_counts);
-
-    let align_items = child_style_ref.align_items().unwrap_or(AlignItems::Stretch);
-    let justify_items = child_style_ref
-      .justify_items()
-      .unwrap_or(AlignItems::Stretch);
-    let grid_auto_flow = child_style_ref.grid_auto_flow();
-
-    let subgrid_children_iter = || {
-      tree
-        .child_ids(item.node)
-        .enumerate()
-        .map(|(index, child_node)| (index, child_node, tree.get_grid_child_style(child_node)))
-        .filter(|(_, _, style)| {
-          style.box_generation_mode() != BoxGenerationMode::None
-            && style.position() != Position::Absolute
-        })
-    };
-
-    place_grid_items(
-      &mut cell_occupancy_matrix,
-      &mut subgrid_items,
-      subgrid_children_iter,
-      grid_auto_flow,
-      align_items,
-      justify_items,
-      &line_resolver,
-      InBothAbsAxis {
-        horizontal: child_style_ref.is_column_subgrid(),
-        vertical: child_style_ref.is_row_subgrid(),
+  let root_mapping = InBothAbsAxis {
+    horizontal: SubgridVirtualItemMapping {
+      inherited: true,
+      offset: OriginZeroLine(0),
+      fallback_span: Line {
+        start: OriginZeroLine(0),
+        end: OriginZeroLine(0),
       },
-      |node| child_subgrid_auto_span(tree, node),
+    },
+    vertical: SubgridVirtualItemMapping {
+      inherited: true,
+      offset: OriginZeroLine(0),
+      fallback_span: Line {
+        start: OriginZeroLine(0),
+        end: OriginZeroLine(0),
+      },
+    },
+  };
+
+  for item in items.iter().filter(|item| !item.is_virtual) {
+    collect_subgrid_virtual_items_recursive(
+      tree,
+      item,
+      parent_row_names,
+      parent_col_names,
+      root_mapping,
+      0,
+      &mut virtuals,
     );
-
-    #[cfg(all(feature = "std", debug_assertions))]
-    {
-      if std::env::var("FASTR_DEBUG_SUBGRID").is_ok() {
-        eprintln!(
-          "[subgrid-debug] node={:?} row_span={} col_span={} row_explicit={} col_explicit={} items={}",
-          item.node,
-          row_span,
-          col_span,
-          row_explicit,
-          col_explicit,
-          subgrid_items.len()
-        );
-        for (idx, sub_item) in subgrid_items.iter().enumerate() {
-          eprintln!(
-            "  item {idx}: row=({},{}) col=({},{})",
-            sub_item.row.start.0,
-            sub_item.row.end.0,
-            sub_item.column.start.0,
-            sub_item.column.end.0
-          );
-        }
-      }
-    }
-
-    // Convert placements from subgrid coordinates to parent coordinates
-    for (index, mut sub_item) in subgrid_items.into_iter().enumerate() {
-      sub_item.row.start = sub_item.row.start + item.row.start;
-      sub_item.row.end = sub_item.row.end + item.row.start;
-      sub_item.column.start = sub_item.column.start + item.column.start;
-      sub_item.column.end = sub_item.column.end + item.column.start;
-      sub_item.is_virtual = true;
-      sub_item.source_order = index as u16;
-      virtuals.push(sub_item);
-    }
   }
 
   // Resolve track indexes for the virtual items against the parent grid counts
