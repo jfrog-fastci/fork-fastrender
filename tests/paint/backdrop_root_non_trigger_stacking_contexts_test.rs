@@ -4,19 +4,34 @@
 use fastrender::image_loader::ImageCache;
 use fastrender::paint::display_list_renderer::PaintParallelism;
 use fastrender::paint::painter::paint_tree_with_resources_scaled_offset;
+use fastrender::paint::stacking::{build_stacking_tree_from_fragment_tree, StackingContextReason};
 use fastrender::scroll::ScrollState;
 use fastrender::{FastRender, Point, Rgba};
 
-fn render(html: &str, width: u32, height: u32) -> tiny_skia::Pixmap {
+fn collect_stacking_context_reasons(
+  context: &fastrender::paint::stacking::StackingContext,
+  out: &mut Vec<StackingContextReason>,
+) {
+  out.push(context.reason);
+  for child in &context.children {
+    collect_stacking_context_reasons(child, out);
+  }
+}
+
+fn render(html: &str, width: u32, height: u32) -> (tiny_skia::Pixmap, Vec<StackingContextReason>) {
   let mut renderer = FastRender::new().expect("renderer");
   let dom = renderer.parse_html(html).expect("parsed");
   let fragment_tree = renderer
     .layout_document(&dom, width, height)
     .expect("laid out");
 
+  let stacking = build_stacking_tree_from_fragment_tree(&fragment_tree.root);
+  let mut stacking_reasons = Vec::new();
+  collect_stacking_context_reasons(&stacking, &mut stacking_reasons);
+
   let font_ctx = renderer.font_context().clone();
   let image_cache = ImageCache::new();
-  paint_tree_with_resources_scaled_offset(
+  let pixmap = paint_tree_with_resources_scaled_offset(
     &fragment_tree,
     width,
     height,
@@ -29,7 +44,9 @@ fn render(html: &str, width: u32, height: u32) -> tiny_skia::Pixmap {
     PaintParallelism::disabled(),
     &ScrollState::default(),
   )
-  .expect("painted")
+  .expect("painted");
+
+  (pixmap, stacking_reasons)
 }
 
 fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
@@ -48,7 +65,11 @@ fn backdrop_filter_crosses_z_index_stacking_context() {
     <div id="sc"><div id="overlay"></div></div>
   "#;
 
-  let pixmap = render(html, 64, 64);
+  let (pixmap, stacking_reasons) = render(html, 64, 64);
+  assert!(
+    stacking_reasons.contains(&StackingContextReason::PositionedWithZIndex),
+    "expected a z-index stacking context; got {stacking_reasons:?}"
+  );
   assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
@@ -64,7 +85,11 @@ fn backdrop_filter_crosses_fixed_position_stacking_context() {
     <div id="sc"><div id="overlay"></div></div>
   "#;
 
-  let pixmap = render(html, 64, 64);
+  let (pixmap, stacking_reasons) = render(html, 64, 64);
+  assert!(
+    stacking_reasons.contains(&StackingContextReason::FixedPositioning),
+    "expected a position: fixed stacking context; got {stacking_reasons:?}"
+  );
   assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
@@ -85,7 +110,11 @@ fn backdrop_filter_crosses_sticky_position_stacking_context() {
     </div>
   "#;
 
-  let pixmap = render(html, 64, 64);
+  let (pixmap, stacking_reasons) = render(html, 64, 64);
+  assert!(
+    stacking_reasons.contains(&StackingContextReason::StickyPositioning),
+    "expected a position: sticky stacking context; got {stacking_reasons:?}"
+  );
   assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
