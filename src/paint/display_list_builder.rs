@@ -4511,6 +4511,9 @@ impl DisplayListBuilder {
             }
             let overflow_bounds = rect.union(fragment.scroll_overflow.translate(rect.origin));
             let rects = Self::background_rects(rect, style, self.viewport);
+            // Form controls can paint UI affordances (e.g. dropdown arrows) into the padding box.
+            // Clip to the padding box (not the content box) so `overflow: clip` doesn't cut them
+            // off.
             Self::overflow_clip_from_style_with_rects(
               style,
               &rects,
@@ -4524,6 +4527,8 @@ impl DisplayListBuilder {
           if let Some(clip) = clip_contents.as_ref() {
             self.list.push(DisplayItem::PushClip(clip.clone()));
           }
+          // `emit_form_control` expects the border box and computes the padding/content
+          // boxes internally. Passing an already-inset rect causes double insets.
           let painted = self.emit_form_control(control, fragment, rect);
           if clip_contents.is_some() {
             self.list.push(DisplayItem::PopClip);

@@ -38,6 +38,7 @@ mod filter_cache_regressions;
 mod filter_premultiplication;
 mod filter_url_svg_display_list;
 mod fit_canvas_to_content;
+mod form_control_overflow_clip_padding_box;
 mod fragmented_root_paint;
 mod individual_transform_properties_test;
 mod intrinsic_srcset;
