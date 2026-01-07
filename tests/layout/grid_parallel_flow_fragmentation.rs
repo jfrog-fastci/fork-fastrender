@@ -1,4 +1,5 @@
 use fastrender::api::FastRender;
+use fastrender::style::media::MediaType;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 
 fn pages<'a>(tree: &'a FragmentTree) -> Vec<&'a FragmentNode> {
@@ -55,7 +56,9 @@ fn forced_break_inside_grid_item_does_not_force_siblings() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document(&dom, 200, 200).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(page_roots.len() >= 2, "forced break should create multiple pages");
@@ -105,7 +108,9 @@ fn grid_container_adds_pages_for_item_continuations() {
 
   let mut renderer = FastRender::new().unwrap();
   let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document(&dom, 200, 200).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 200, MediaType::Print)
+    .unwrap();
   let page_roots = pages(&tree);
 
   assert!(
@@ -120,4 +125,3 @@ fn grid_container_adds_pages_for_item_continuations() {
     "continuation text should appear on the second page"
   );
 }
-

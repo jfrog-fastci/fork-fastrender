@@ -1160,7 +1160,24 @@ pub(crate) fn clip_node(
       node_bbox_block_size,
       parent_block_size,
     );
-  let node_bbox_flow_end = (node_bbox_flow_start + node_bbox_block_size).max(node_flow_end);
+  let mut node_bbox_flow_end = (node_bbox_flow_start + node_bbox_block_size).max(node_flow_end);
+
+  // Parallel flows (grid items in a row) can extend the effective block size of descendants even
+  // when their laid-out bounds fit within a single page. Pagination inflates the total extent using
+  // `parallel_flow_content_extent`, so clipping must also treat ancestor nodes as overlapping later
+  // pages or the continuation content would be dropped.
+  if matches!(context, FragmentationContext::Page)
+    && fragmentainer_size.is_finite()
+    && fragmentainer_size > 0.0
+    && node_bbox_flow_end <= fragment_start
+  {
+    let required = parallel_flow_content_extent(node, axes, Some(fragmentainer_size), context);
+    if required > node_block_size + BREAK_EPSILON {
+      node_block_size = node_block_size.max(required);
+      node_flow_end = node_flow_start + node_block_size;
+      node_bbox_flow_end = node_bbox_flow_end.max(node_flow_end);
+    }
+  }
 
   if node_bbox_flow_end <= fragment_start || node_bbox_flow_start >= fragment_end {
     return Ok(None);
