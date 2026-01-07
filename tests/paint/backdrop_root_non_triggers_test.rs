@@ -127,3 +127,15 @@ fn will_change_perspective_is_not_a_backdrop_root() {
   let pixmap = render("will-change: perspective;");
   assert_child_inverts_body_bg(&pixmap);
 }
+
+#[test]
+fn contain_paint_is_not_a_backdrop_root() {
+  let pixmap = render("contain: paint;");
+  assert_child_inverts_body_bg(&pixmap);
+}
+
+#[test]
+fn will_change_contain_is_not_a_backdrop_root() {
+  let pixmap = render("will-change: contain;");
+  assert_child_inverts_body_bg(&pixmap);
+}
