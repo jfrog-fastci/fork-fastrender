@@ -7496,7 +7496,7 @@ impl FlexFormattingContext {
       let log_this_shrink = !log_shrink_ids.is_empty() && log_shrink_ids.contains(&box_node.id);
 
       if allow_overflow_fallback && max_child_x > container_w + 0.5 {
-        let available = container_w.max(1.0).min(self.viewport_size.width);
+        let available = container_w.max(1.0);
         // Apply flex-shrink distribution to bring the total width back to the available span.
         let mut total_main = 0.0;
         let mut total_weight = 0.0;
@@ -7769,7 +7769,11 @@ impl FlexFormattingContext {
         .map(|c| c.bounds.max_x())
         .fold(0.0, f32::max);
       if max_child_x > container_w + 0.5 {
-        let available = container_w.max(1.0).min(self.viewport_size.width);
+        let available = if container_w.is_finite() {
+          container_w.max(1.0)
+        } else {
+          self.viewport_size.width.max(1.0)
+        };
         for child in &mut children {
           let w = child.bounds.width().min(available);
           child.bounds = Rect::new(
