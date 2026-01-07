@@ -528,3 +528,129 @@ fn foreign_object_overflow_visible_allows_filter_effects_outside_bounds() {
     .join()
     .unwrap();
 }
+
+#[test]
+fn inline_svg_respects_display_none_when_document_css_injection_disabled() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        rect { display: none; }
+      </style>
+      <svg width="10" height="10" viewBox="0 0 10 10">
+        <rect width="10" height="10" fill="rgb(255, 0, 0)" />
+      </svg>
+      "#;
+
+      let toggles = RuntimeToggles::from_map(HashMap::from([
+        (
+          "FASTR_SVG_EMBED_DOCUMENT_CSS".to_string(),
+          "0".to_string(),
+        ),
+        ("FASTR_PAINT_BACKEND".to_string(), "legacy".to_string()),
+      ]));
+      let options = RenderOptions::new()
+        .with_viewport(20, 20)
+        .with_runtime_toggles(toggles);
+
+      let pixmap = renderer
+        .render_html_with_options(html, options)
+        .expect("render svg");
+      assert_eq!(
+        pixel(&pixmap, 5, 5),
+        [255, 255, 255, 255],
+        "rect should be hidden via serialized display:none"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn inline_svg_respects_visibility_hidden_when_document_css_injection_disabled() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        rect { visibility: hidden; }
+      </style>
+      <svg width="10" height="10" viewBox="0 0 10 10">
+        <rect width="10" height="10" fill="rgb(255, 0, 0)" />
+      </svg>
+      "#;
+
+      let toggles = RuntimeToggles::from_map(HashMap::from([
+        (
+          "FASTR_SVG_EMBED_DOCUMENT_CSS".to_string(),
+          "0".to_string(),
+        ),
+        ("FASTR_PAINT_BACKEND".to_string(), "legacy".to_string()),
+      ]));
+      let options = RenderOptions::new()
+        .with_viewport(20, 20)
+        .with_runtime_toggles(toggles);
+
+      let pixmap = renderer
+        .render_html_with_options(html, options)
+        .expect("render svg");
+      assert_eq!(
+        pixel(&pixmap, 5, 5),
+        [255, 255, 255, 255],
+        "rect should be hidden via serialized visibility:hidden"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn inline_svg_respects_opacity_when_document_css_injection_disabled() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        rect { opacity: 0; }
+      </style>
+      <svg width="10" height="10" viewBox="0 0 10 10">
+        <rect width="10" height="10" fill="rgb(255, 0, 0)" />
+      </svg>
+      "#;
+
+      let toggles = RuntimeToggles::from_map(HashMap::from([
+        (
+          "FASTR_SVG_EMBED_DOCUMENT_CSS".to_string(),
+          "0".to_string(),
+        ),
+        ("FASTR_PAINT_BACKEND".to_string(), "legacy".to_string()),
+      ]));
+      let options = RenderOptions::new()
+        .with_viewport(20, 20)
+        .with_runtime_toggles(toggles);
+
+      let pixmap = renderer
+        .render_html_with_options(html, options)
+        .expect("render svg");
+      assert_eq!(
+        pixel(&pixmap, 5, 5),
+        [255, 255, 255, 255],
+        "rect should be transparent via serialized opacity"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}

@@ -1025,6 +1025,7 @@ fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>)
   use crate::style::types::StrokeDasharray;
   use crate::style::types::StrokeLinecap;
   use crate::style::types::StrokeLinejoin;
+  use crate::style::display::Display;
   use std::fmt::Write as _;
 
   let mut out = String::new();
@@ -1181,7 +1182,29 @@ fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>)
     }
   }
 
-  if style.opacity != 1.0 {
+  if style.display == Display::None {
+    start_decl(&mut out, &mut any);
+    out.push_str("display: none");
+  }
+
+  let normalize_visibility = |value: Visibility| match value {
+    Visibility::Visible => Visibility::Visible,
+    Visibility::Hidden | Visibility::Collapse => Visibility::Hidden,
+  };
+  let visibility = normalize_visibility(style.visibility);
+  let parent_visibility =
+    normalize_visibility(parent.map(|p| p.visibility).unwrap_or(Visibility::Visible));
+  if visibility != parent_visibility {
+    start_decl(&mut out, &mut any);
+    out.push_str("visibility: ");
+    match visibility {
+      Visibility::Visible => out.push_str("visible"),
+      Visibility::Hidden => out.push_str("hidden"),
+      Visibility::Collapse => unreachable!("collapse is normalized to hidden"),
+    }
+  }
+
+  if style.opacity.is_finite() && style.opacity != 1.0 {
     start_decl(&mut out, &mut any);
     let _ = write!(&mut out, "opacity: {:.3}", style.opacity.clamp(0.0, 1.0));
   }
