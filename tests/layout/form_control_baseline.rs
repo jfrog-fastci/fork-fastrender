@@ -2,7 +2,9 @@ use fastrender::style::display::Display;
 use fastrender::style::types::Appearance;
 use fastrender::text::font_db::FontConfig;
 use fastrender::text::font_loader::FontContext;
-use fastrender::tree::box_tree::{FormControl, FormControlKind, ReplacedType, TextControlKind};
+use fastrender::tree::box_tree::{
+  FormControl, FormControlKind, ReplacedType, SelectControl, SelectItem, TextControlKind,
+};
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use fastrender::{BoxNode, BoxTree, ComputedStyle, FormattingContextType, LayoutConfig, LayoutEngine, Size};
 use std::sync::Arc;
@@ -37,8 +39,10 @@ fn find_form_control<'a>(node: &'a FragmentNode) -> Option<&'a FragmentNode> {
   None
 }
 
-#[test]
-fn inline_text_like_form_control_uses_text_baseline() {
+fn baseline_and_control_bottom(
+  kind: FormControlKind,
+  intrinsic_size: Size,
+) -> (f32, f32) {
   let mut root_style = ComputedStyle::default();
   root_style.display = Display::Block;
 
@@ -52,12 +56,7 @@ fn inline_text_like_form_control_uses_text_baseline() {
   let control = BoxNode::new_replaced(
     control_style,
     ReplacedType::FormControl(FormControl {
-      control: FormControlKind::Text {
-        value: String::new(),
-        placeholder: None,
-        size_attr: None,
-        kind: TextControlKind::Plain,
-      },
+      control: kind,
       appearance: Appearance::Auto,
       disabled: false,
       focused: false,
@@ -68,7 +67,7 @@ fn inline_text_like_form_control_uses_text_baseline() {
       slider_thumb_style: None,
       slider_track_style: None,
     }),
-    Some(Size::new(100.0, 40.0)),
+    Some(intrinsic_size),
     None,
   );
 
@@ -96,14 +95,77 @@ fn inline_text_like_form_control_uses_text_baseline() {
   let control_fragment =
     find_form_control(line_fragment).expect("expected form control fragment on the first line");
 
+  (baseline, control_fragment.bounds.max_y())
+}
+
+#[test]
+fn inline_text_like_form_controls_use_text_baseline() {
+  let epsilon = 0.01;
   // Fragment bounds are expressed in their containing fragment's coordinate space; compare within
   // the line fragment. Old behavior used the replaced baseline (bottom edge), which would make
   // these equal.
-  let baseline_y = baseline;
-  let control_bottom_y = control_fragment.bounds.max_y();
+
+  let intrinsic = Size::new(100.0, 40.0);
+  let cases = [
+    (
+      "input[type=text]",
+      FormControlKind::Text {
+        value: String::new(),
+        placeholder: None,
+        size_attr: None,
+        kind: TextControlKind::Plain,
+      },
+    ),
+    (
+      "textarea",
+      FormControlKind::TextArea {
+        value: String::new(),
+        placeholder: None,
+        rows: None,
+        cols: None,
+      },
+    ),
+    (
+      "select",
+      FormControlKind::Select(SelectControl {
+        multiple: false,
+        size: 1,
+        items: vec![SelectItem::Option {
+          label: "Option".to_string(),
+          value: "option".to_string(),
+          selected: true,
+          disabled: false,
+        }],
+        selected: vec![0],
+      }),
+    ),
+    ("button", FormControlKind::Button { label: "Ok".to_string() }),
+  ];
+
+  for (label, kind) in cases {
+    let (baseline_y, control_bottom_y) = baseline_and_control_bottom(kind, intrinsic);
+    assert!(
+      control_bottom_y > baseline_y + epsilon,
+      "expected {label} control to extend below the line baseline: bottom={control_bottom_y:.3} baseline={baseline_y:.3}",
+    );
+  }
+}
+
+#[test]
+fn inline_non_text_form_control_keeps_replaced_baseline() {
+  // Non-text controls keep the default replaced baseline (bottom edge). That means the control's
+  // bottom edge coincides with the line baseline.
+  let (baseline_y, control_bottom_y) = baseline_and_control_bottom(
+    FormControlKind::Checkbox {
+      is_radio: false,
+      checked: false,
+      indeterminate: false,
+    },
+    Size::new(16.0, 16.0),
+  );
   let epsilon = 0.01;
   assert!(
-    control_bottom_y > baseline_y + epsilon,
-    "expected form control to extend below the line baseline: bottom={control_bottom_y:.3} baseline={baseline_y:.3}",
+    (control_bottom_y - baseline_y).abs() <= epsilon,
+    "expected checkbox baseline to be bottom edge: bottom={control_bottom_y:.3} baseline={baseline_y:.3}",
   );
 }
