@@ -5997,23 +5997,32 @@ impl Painter {
         ) {
           return;
         }
-        let image_source = crate::tree::box_tree::SelectedImageSource {
-          url: src.as_str(),
-          descriptor: None,
-          density: None,
-          from_picture: false,
-        };
-        if self.paint_image_from_src(
-          &image_source,
-          CrossOriginAttribute::None,
-          style,
-          content_rect.x(),
-          content_rect.y(),
-          content_rect.width(),
-          content_rect.height(),
-          clip_mask,
-        ) {
-          return;
+        let media_ctx = crate::style::media::MediaContext::screen(self.css_width, self.css_height)
+          .with_device_pixel_ratio(self.scale)
+          .with_env_overrides();
+        let cache_base = self.image_cache.base_url();
+        let sources =
+          replaced_type.image_sources_with_fallback(crate::tree::box_tree::ImageSelectionContext {
+            device_pixel_ratio: self.scale,
+            slot_width: Some(content_rect.width()),
+            viewport: Some(Size::new(self.css_width, self.css_height)),
+            media_context: Some(&media_ctx),
+            font_size: style.map(|s| s.font_size),
+            base_url: cache_base.as_deref(),
+          });
+        for candidate in sources {
+          if self.paint_image_from_src(
+            &candidate,
+            CrossOriginAttribute::None,
+            style,
+            content_rect.x(),
+            content_rect.y(),
+            content_rect.width(),
+            content_rect.height(),
+            clip_mask,
+          ) {
+            return;
+          }
         }
       }
       ReplacedType::Svg { content } => {
@@ -6107,23 +6116,32 @@ impl Painter {
         ) {
           return;
         }
-        let image_source = crate::tree::box_tree::SelectedImageSource {
-          url: content.as_str(),
-          descriptor: None,
-          density: None,
-          from_picture: false,
-        };
-        if self.paint_image_from_src(
-          &image_source,
-          CrossOriginAttribute::None,
-          style,
-          content_rect.x(),
-          content_rect.y(),
-          content_rect.width(),
-          content_rect.height(),
-          clip_mask,
-        ) {
-          return;
+        let media_ctx = crate::style::media::MediaContext::screen(self.css_width, self.css_height)
+          .with_device_pixel_ratio(self.scale)
+          .with_env_overrides();
+        let cache_base = self.image_cache.base_url();
+        let sources =
+          replaced_type.image_sources_with_fallback(crate::tree::box_tree::ImageSelectionContext {
+            device_pixel_ratio: self.scale,
+            slot_width: Some(content_rect.width()),
+            viewport: Some(Size::new(self.css_width, self.css_height)),
+            media_context: Some(&media_ctx),
+            font_size: style.map(|s| s.font_size),
+            base_url: cache_base.as_deref(),
+          });
+        for candidate in sources {
+          if self.paint_image_from_src(
+            &candidate,
+            CrossOriginAttribute::None,
+            style,
+            content_rect.x(),
+            content_rect.y(),
+            content_rect.width(),
+            content_rect.height(),
+            clip_mask,
+          ) {
+            return;
+          }
         }
       }
       ReplacedType::Embed { src: content } | ReplacedType::Object { data: content } => {
@@ -17953,6 +17971,29 @@ mod tests {
     assert!(
       center.red() > 200 && center.green() < 50 && center.blue() < 50,
       "iframe srcdoc should paint red"
+    );
+  }
+
+  #[test]
+  fn iframe_invalid_src_falls_back_to_placeholder() {
+    let mut painter = Painter::new(20, 20, Rgba::WHITE).expect("painter");
+    painter.fill_background();
+    painter.paint_replaced(
+      &ReplacedType::Iframe {
+        src: "   ".to_string(),
+        srcdoc: None,
+      },
+      None,
+      0.0,
+      0.0,
+      10.0,
+      10.0,
+    );
+    let pixmap = painter.pixmap;
+    assert_eq!(
+      color_at(&pixmap, 5, 5),
+      (200, 200, 200, 255),
+      "invalid iframe src should paint UA placeholder fill"
     );
   }
 
