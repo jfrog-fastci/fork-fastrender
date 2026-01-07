@@ -532,15 +532,20 @@ pub fn compute_replaced_size(
   let natural_ratio = if replaced.no_intrinsic_ratio {
     None
   } else {
-    replaced.aspect_ratio.or_else(|| {
-      if !allow_intrinsic_ratio_from_size {
-        return None;
-      }
-      match (intrinsic_w, intrinsic_h) {
-        (Some(w), Some(h)) if h > 0.0 => Some(w / h),
-        _ => None,
-      }
-    })
+    // Treat non-finite / non-positive ratios as missing. This keeps "intrinsic width/height only"
+    // fallbacks stable and avoids collapsing replaced boxes to 0 when a bogus ratio sneaks in.
+    replaced
+      .aspect_ratio
+      .filter(|r| r.is_finite() && *r > 0.0)
+      .or_else(|| {
+        if !allow_intrinsic_ratio_from_size {
+          return None;
+        }
+        match (intrinsic_w, intrinsic_h) {
+          (Some(w), Some(h)) if h > 0.0 => Some(w / h),
+          _ => None,
+        }
+      })
   };
 
   let intrinsic_ratio = if uses_auto {
@@ -1467,6 +1472,50 @@ mod tests {
     let size = compute_replaced_size(&style, &replaced, None, Size::new(800.0, 600.0));
     assert_eq!(size.width, 300.0);
     assert_eq!(size.height, 80.0);
+  }
+
+  #[test]
+  fn test_replaced_ignores_invalid_intrinsic_ratios() {
+    let style = ComputedStyle::default();
+
+    // A non-positive ratio must be treated as missing so the intrinsic-height-only fallback
+    // doesn't collapse the width to zero.
+    let replaced_zero_ratio = ReplacedBox {
+      replaced_type: crate::tree::box_tree::ReplacedType::Image {
+        src: String::new(),
+        alt: None,
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+      },
+      intrinsic_size: Some(Size::new(0.0, 80.0)),
+      aspect_ratio: Some(0.0),
+      no_intrinsic_ratio: false,
+    };
+    let size = compute_replaced_size(&style, &replaced_zero_ratio, None, Size::new(800.0, 600.0));
+    assert_eq!(size.width, 300.0);
+    assert_eq!(size.height, 80.0);
+
+    // A NaN ratio should not override intrinsic-size fallbacks either.
+    let replaced_nan_ratio = ReplacedBox {
+      replaced_type: crate::tree::box_tree::ReplacedType::Image {
+        src: String::new(),
+        alt: None,
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+      },
+      intrinsic_size: Some(Size::new(120.0, 0.0)),
+      aspect_ratio: Some(f32::NAN),
+      no_intrinsic_ratio: false,
+    };
+    let size = compute_replaced_size(&style, &replaced_nan_ratio, None, Size::new(800.0, 600.0));
+    assert_eq!(size.width, 120.0);
+    assert_eq!(size.height, 150.0);
   }
 
   #[test]
