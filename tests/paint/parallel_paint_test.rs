@@ -974,6 +974,7 @@ fn mix_blend_mode_allows_parallel_tiling_with_isolation() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
   list.push(DisplayItem::FillRect(FillRectItem {

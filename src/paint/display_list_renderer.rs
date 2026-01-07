@@ -14231,6 +14231,7 @@ mod tests {
       backdrop_filters: vec![ResolvedFilter::Brightness(1.0)],
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
     list.push(DisplayItem::PopStackingContext);
 
@@ -14278,6 +14279,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
     base.push(DisplayItem::PopStackingContext);
 
