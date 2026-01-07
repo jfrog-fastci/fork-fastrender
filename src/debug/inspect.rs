@@ -193,25 +193,31 @@ pub fn inspect(
     next_id += 1;
 
     let matched = match &query {
-      InspectQuery::NodeId(id) => node_id == *id,
-      InspectQuery::Id(id) => node
-        .get_attribute_ref("id")
-        .is_some_and(|value| value == id),
+      InspectQuery::NodeId(id) => Ok::<bool, Error>(node_id == *id),
+      InspectQuery::Id(id) => Ok::<bool, Error>(
+        node
+          .get_attribute_ref("id")
+          .is_some_and(|value| value == id),
+      ),
       InspectQuery::Selector(_) => {
         if !node.is_element() {
-          false
+          Ok::<bool, Error>(false)
         } else {
-          let selectors = selectors.as_ref().expect("selector query parsed above");
-          node_matches_selector(
+          let selectors = selectors.as_ref().ok_or_else(|| {
+            Error::Render(RenderError::InvalidParameters {
+              message: "Inspection failed: selector query could not be parsed".to_string(),
+            })
+          })?;
+          Ok::<bool, Error>(node_matches_selector(
             node,
             &ancestors,
             selectors,
             &mut selector_caches,
             quirks_mode,
-          )
+          ))
         }
       }
-    };
+    }?;
 
     if matched {
       let styled = styled_index

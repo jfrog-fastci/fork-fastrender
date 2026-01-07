@@ -78,18 +78,6 @@
     "count": 1
   },
   {
-    "path": "src/css/value_cache.rs",
-    "kind": "expect",
-    "line": ".expect(\"Parsed property value cache capacity must be non-zero\");",
-    "count": 1
-  },
-  {
-    "path": "src/debug/inspect.rs",
-    "kind": "expect",
-    "line": "let selectors = selectors.as_ref().expect(\"selector query parsed above\");",
-    "count": 1
-  },
-  {
     "path": "src/image_loader.rs",
     "kind": "expect",
     "line": "Arc::new(new_pixmap(1, 1).expect(\"1x1 pixmap allocation must succeed\"))",
