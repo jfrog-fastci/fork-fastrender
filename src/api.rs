@@ -12351,8 +12351,16 @@ fn container_query_context_fingerprint(
         match info.styles.custom_properties.get(prop) {
           Some(value) => {
             let raw = value.value.trim().trim_end_matches(';').trim();
+            // Style queries against custom properties compare the query container's stored custom
+            // property token stream. When the stored value contains `var()` calls, the *raw* value
+            // can matter (e.g. `--x: var(--y)` does not equal `--x: 10px` for unregistered custom
+            // properties). At the same time, size/style query `var()` inputs depend on the
+            // resolved token stream, including transitive `var()` dependencies. Hash both so the
+            // fingerprint tracks either kind of change.
+            raw.hash(&mut hasher);
 
             if crate::style::var_resolution::contains_var(raw) {
+              "var_resolution".hash(&mut hasher);
               let value = crate::css::types::PropertyValue::Custom(raw.to_string());
               match crate::style::var_resolution::resolve_var_for_property(
                 &value,
@@ -12379,8 +12387,6 @@ fn container_query_context_fingerprint(
                   "var_recursion_limit".hash(&mut hasher);
                 }
               }
-            } else {
-              raw.hash(&mut hasher);
             }
           }
           None => 0u8.hash(&mut hasher),
@@ -16390,6 +16396,80 @@ mod tests {
     assert_ne!(
       fp_a, fp_b,
       "fingerprint should change when var() dependencies change"
+    );
+  }
+
+  #[test]
+  fn container_query_fingerprint_tracks_raw_custom_props_used_by_style_query_subjects() {
+    // Style queries against unregistered custom properties compare the authored token stream (with
+    // no var() substitution). Ensure the fingerprint captures changes in that raw token stream even
+    // when the var-resolved token stream would be identical.
+    let stylesheet = crate::css::parser::parse_stylesheet(
+      "@container style(--foo: 10px) { .a { color: red; } }",
+    )
+    .expect("stylesheet parses");
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+    let metadata = stylesheet.collect_css_metadata_with_cache(&media_ctx, None);
+
+    assert!(
+      metadata
+        .container_style_query_custom_properties
+        .contains("--foo"),
+      "metadata should track referenced style-query custom property"
+    );
+
+    let mut custom_properties: Vec<String> = metadata
+      .container_style_query_custom_properties
+      .into_iter()
+      .chain(metadata.container_size_query_custom_properties.into_iter())
+      .collect();
+    custom_properties.sort();
+    custom_properties.dedup();
+    let cfg = ContainerQueryFingerprintConfig {
+      custom_properties,
+      include_color: false,
+      include_background_color: false,
+      include_display: false,
+      include_font_size: false,
+    };
+
+    fn ctx_with_values(media_ctx: &MediaContext, foo: &str, y: &str) -> ContainerQueryContext {
+      let mut style = ComputedStyle::default();
+      style.custom_properties.insert(
+        "--foo".into(),
+        crate::style::values::CustomPropertyValue::new(foo, None),
+      );
+      style.custom_properties.insert(
+        "--y".into(),
+        crate::style::values::CustomPropertyValue::new(y, None),
+      );
+      let mut containers = HashMap::new();
+      containers.insert(
+        1usize,
+        crate::style::cascade::ContainerQueryInfo {
+          width: 100.0,
+          height: 200.0,
+          inline_size: 100.0,
+          block_size: 200.0,
+          container_type: crate::style::types::ContainerType::InlineSize,
+          names: Vec::new(),
+          font_size: 16.0,
+          styles: Arc::new(style),
+        },
+      );
+      ContainerQueryContext {
+        base_media: media_ctx.clone(),
+        containers,
+      }
+    }
+
+    let ctx_a = ctx_with_values(&media_ctx, "var(--y)", "10px");
+    let ctx_b = ctx_with_values(&media_ctx, "10px", "10px");
+    let fp_a = container_query_context_fingerprint(&ctx_a, Some(&cfg));
+    let fp_b = container_query_context_fingerprint(&ctx_b, Some(&cfg));
+    assert_ne!(
+      fp_a, fp_b,
+      "fingerprint should change when raw custom property tokens change"
     );
   }
 
