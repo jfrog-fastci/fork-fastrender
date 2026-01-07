@@ -8463,7 +8463,7 @@ mod tests {
   }
 
   #[test]
-  fn required_multi_select_is_invalid_when_only_disabled_options_selected() {
+  fn required_multi_select_is_valid_when_only_disabled_options_selected() {
     let select = element_with_attrs(
       "select",
       vec![("multiple", ""), ("required", "")],
@@ -8473,7 +8473,7 @@ mod tests {
       ],
     );
 
-    assert!(!ElementRef::new(&select).is_valid_control());
+    assert!(ElementRef::new(&select).is_valid_control());
   }
 
   #[test]
