@@ -269,3 +269,94 @@ fn grid_template_columns_subgrid_sets_line_names() {
     vec![vec!["a".to_string()], vec!["b".to_string()]]
   );
 }
+
+#[test]
+fn grid_template_shorthand_supports_subgrid_columns_only() {
+  let mut style = ComputedStyle::default();
+
+  apply_declaration(
+    &mut style,
+    &decl("grid-template", PropertyValue::Keyword("auto / subgrid".into())),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+
+  assert_eq!(style.grid_template_rows, vec![GridTrack::Auto]);
+  assert!(style.grid_template_columns.is_empty());
+  assert!(style.grid_column_subgrid);
+}
+
+#[test]
+fn grid_template_shorthand_supports_subgrid_rows_only() {
+  let mut style = ComputedStyle::default();
+
+  apply_declaration(
+    &mut style,
+    &decl("grid-template", PropertyValue::Keyword("subgrid / auto".into())),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+
+  assert_eq!(style.grid_template_columns, vec![GridTrack::Auto]);
+  assert!(style.grid_template_rows.is_empty());
+  assert!(style.grid_row_subgrid);
+}
+
+#[test]
+fn grid_shorthand_supports_subgrid_columns_only() {
+  let mut style = ComputedStyle::default();
+
+  apply_declaration(
+    &mut style,
+    &decl("grid", PropertyValue::Keyword("auto / subgrid".into())),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+
+  assert_eq!(style.grid_template_rows, vec![GridTrack::Auto]);
+  assert!(style.grid_template_columns.is_empty());
+  assert!(style.grid_column_subgrid);
+}
+
+#[test]
+fn grid_shorthand_supports_subgrid_rows_only() {
+  let mut style = ComputedStyle::default();
+
+  apply_declaration(
+    &mut style,
+    &decl("grid", PropertyValue::Keyword("subgrid / auto".into())),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+
+  assert_eq!(style.grid_template_columns, vec![GridTrack::Auto]);
+  assert!(style.grid_template_rows.is_empty());
+  assert!(style.grid_row_subgrid);
+}
+
+#[test]
+fn grid_template_shorthand_parses_subgrid_line_names() {
+  let mut style = ComputedStyle::default();
+
+  apply_declaration(
+    &mut style,
+    &decl(
+      "grid-template",
+      PropertyValue::Keyword("subgrid [a] [b] / auto".into()),
+    ),
+    &ComputedStyle::default(),
+    16.0,
+    16.0,
+  );
+
+  assert!(style.grid_row_subgrid);
+  assert!(style.grid_template_rows.is_empty());
+  assert_eq!(
+    style.subgrid_row_line_names,
+    vec![vec!["a".to_string()], vec!["b".to_string()]]
+  );
+}

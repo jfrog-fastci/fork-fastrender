@@ -161,6 +161,14 @@ pub struct ParsedGridTemplate {
   pub areas: Option<Vec<Vec<Option<String>>>>,
   pub row_tracks: Option<(Vec<GridTrack>, Vec<Vec<String>>)>,
   pub column_tracks: Option<(Vec<GridTrack>, Vec<Vec<String>>)>,
+  /// Whether the row axis uses `subgrid` instead of an explicit track list.
+  pub row_is_subgrid: bool,
+  /// Whether the column axis uses `subgrid` instead of an explicit track list.
+  pub col_is_subgrid: bool,
+  /// Optional author-provided line name lists that accompany `subgrid` for rows.
+  pub row_subgrid_line_names: Option<Vec<Vec<String>>>,
+  /// Optional author-provided line name lists that accompany `subgrid` for columns.
+  pub col_subgrid_line_names: Option<Vec<Vec<String>>>,
 }
 
 /// Parsed representation of the `grid` shorthand.
@@ -184,6 +192,10 @@ pub fn parse_grid_template_shorthand(value: &str) -> Option<ParsedGridTemplate> 
       areas: Some(Vec::new()),
       row_tracks: Some((Vec::new(), Vec::new())),
       column_tracks: Some((Vec::new(), Vec::new())),
+      row_is_subgrid: false,
+      col_is_subgrid: false,
+      row_subgrid_line_names: None,
+      col_subgrid_line_names: None,
     });
   }
 
@@ -203,28 +215,46 @@ pub fn parse_grid_template_shorthand(value: &str) -> Option<ParsedGridTemplate> 
   if !main.contains('"') {
     // Per spec the track-list form requires both rows and columns separated by a slash.
     let cols_raw = cols_part?;
-    let ParsedTracks {
-      tracks: row_tracks,
-      line_names: row_line_names,
-      ..
-    } = parse_track_list(main);
-    if row_tracks.is_empty() {
-      return None;
-    }
+    let (row_tracks, row_line_names, row_is_subgrid, row_subgrid_line_names) =
+      match parse_subgrid_line_names(main) {
+        Some(line_names) => (None, None, true, Some(line_names)),
+        None => {
+          let ParsedTracks {
+            tracks,
+            line_names,
+            ..
+          } = parse_track_list(main);
+          if tracks.is_empty() {
+            return None;
+          }
+          (Some(tracks), Some(line_names), false, None)
+        }
+      };
 
-    let ParsedTracks {
-      tracks: col_tracks,
-      line_names: col_line_names,
-      ..
-    } = parse_track_list(cols_raw);
-    if col_tracks.is_empty() {
-      return None;
-    }
+    let (col_tracks, col_line_names, col_is_subgrid, col_subgrid_line_names) =
+      match parse_subgrid_line_names(cols_raw) {
+        Some(line_names) => (None, None, true, Some(line_names)),
+        None => {
+          let ParsedTracks {
+            tracks,
+            line_names,
+            ..
+          } = parse_track_list(cols_raw);
+          if tracks.is_empty() {
+            return None;
+          }
+          (Some(tracks), Some(line_names), false, None)
+        }
+      };
 
     return Some(ParsedGridTemplate {
       areas: None,
-      row_tracks: Some((row_tracks, row_line_names)),
-      column_tracks: Some((col_tracks, col_line_names)),
+      row_tracks: row_tracks.zip(row_line_names),
+      column_tracks: col_tracks.zip(col_line_names),
+      row_is_subgrid,
+      col_is_subgrid,
+      row_subgrid_line_names,
+      col_subgrid_line_names,
     });
   }
 
@@ -253,23 +283,35 @@ pub fn parse_grid_template_shorthand(value: &str) -> Option<ParsedGridTemplate> 
   };
 
   // Column tracks: explicit slash wins; otherwise derive auto from area width.
-  let column_tracks = if let Some(cols_raw) = cols_part {
-    let ParsedTracks {
-      tracks, line_names, ..
-    } = parse_track_list(cols_raw);
-    if tracks.is_empty() {
-      return None;
+  let (column_tracks, col_is_subgrid, col_subgrid_line_names) = if let Some(cols_raw) = cols_part {
+    if let Some(names) = parse_subgrid_line_names(cols_raw) {
+      (None, true, Some(names))
+    } else {
+      let ParsedTracks {
+        tracks, line_names, ..
+      } = parse_track_list(cols_raw);
+      if tracks.is_empty() {
+        return None;
+      }
+      (Some((tracks, line_names)), false, None)
     }
-    Some((tracks, line_names))
   } else {
     let cols = areas.first().map(|r| r.len()).unwrap_or(0);
-    Some((vec![GridTrack::Auto; cols], vec![Vec::new(); cols + 1]))
+    (
+      Some((vec![GridTrack::Auto; cols], vec![Vec::new(); cols + 1])),
+      false,
+      None,
+    )
   };
 
   Some(ParsedGridTemplate {
     areas: Some(areas),
     row_tracks,
     column_tracks,
+    row_is_subgrid: false,
+    col_is_subgrid,
+    row_subgrid_line_names: None,
+    col_subgrid_line_names,
   })
 }
 
@@ -397,6 +439,10 @@ fn empty_template_reset() -> ParsedGridTemplate {
     areas: Some(Vec::new()),
     row_tracks: Some((Vec::new(), Vec::new())),
     column_tracks: Some((Vec::new(), Vec::new())),
+    row_is_subgrid: false,
+    col_is_subgrid: false,
+    row_subgrid_line_names: None,
+    col_subgrid_line_names: None,
   }
 }
 
