@@ -197,6 +197,22 @@ fn blend_mode_applies_for_isolated_stacking_context() {
 }
 
 #[test]
+fn mix_blend_mode_blends_with_page_backdrop_without_intermediate_context() {
+  let html = r#"
+    <!doctype html>
+    <style>
+      body { margin: 0; background: rgb(0 200 0); }
+      .blend { width: 40px; height: 40px; background: rgb(200 0 0); mix-blend-mode: screen; }
+    </style>
+    <div class="blend"></div>
+  "#;
+
+  let pixmap = render(html, 64, 64);
+  assert_close(pixel(&pixmap, 20, 20), (200, 200, 0, 255), 2);
+  assert_close(pixel(&pixmap, 60, 60), (0, 200, 0, 255), 1);
+}
+
+#[test]
 fn mix_blend_mode_isolated_from_z_index_stacking_context_backdrop() {
   let html = r#"
     <!doctype html>

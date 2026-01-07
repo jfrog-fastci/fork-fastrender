@@ -2155,8 +2155,8 @@ pub struct StackingContextItem {
 
   /// Whether this stacking context is rendered as an isolated group surface.
   ///
-  /// Used for `isolation: isolate`, `backdrop-filter`, and to confine descendant `mix-blend-mode`
-  /// blending to the stacking context's backdrop (CSS Compositing & Blending).
+  /// Used for `isolation: isolate`, for `backdrop-filter` (which needs an intermediate surface),
+  /// and to confine descendant `mix-blend-mode` blending to this stacking context's backdrop.
   pub is_isolated: bool,
 
   /// Optional transform applied to this stacking context
