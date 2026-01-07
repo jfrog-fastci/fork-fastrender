@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Form Controls Whitespace Value Fixture</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 20px;
+      background: #0f172a;
+      font: 15px/1.4 "Segoe UI", Arial, sans-serif;
+      color: #e2e8f0;
+    }
+
+    .panel {
+      width: 460px;
+      background: #ffffff;
+      border: 1px solid #94a3b8;
+      border-radius: 10px;
+      padding: 16px;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+      color: #0f172a;
+    }
+
+    h1 {
+      font-size: 16px;
+      margin: 0 0 12px;
+    }
+
+    .field {
+      margin: 0 0 14px;
+    }
+
+    label {
+      display: block;
+      margin: 0 0 6px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #334155;
+    }
+
+    input,
+    textarea {
+      display: block;
+      width: 100%;
+      box-sizing: border-box;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid #334155;
+      background: #ffffff;
+      color: #0f172a;
+      font: inherit;
+    }
+
+    textarea {
+      height: 68px;
+      resize: none;
+      white-space: pre-wrap;
+    }
+
+    .hint {
+      margin: 6px 0 0;
+      font-size: 12px;
+      color: #64748b;
+    }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <h1>Whitespace values should not trigger placeholders</h1>
+
+    <div class="field">
+      <label for="input-spaces">Input value="   " (placeholder must NOT render)</label>
+      <input id="input-spaces" type="text" value="   " placeholder="PLACEHOLDER SHOULD NOT SHOW">
+      <p class="hint">The input looks empty, but its value is not the empty string.</p>
+    </div>
+
+    <div class="field">
+      <label for="input-empty">Input empty (placeholder SHOULD render)</label>
+      <input id="input-empty" type="text" value="" placeholder="PLACEHOLDER SHOULD SHOW">
+    </div>
+
+    <div class="field">
+      <label for="textarea-spaces">Textarea value="   " (placeholder must NOT render)</label>
+      <textarea id="textarea-spaces" placeholder="PLACEHOLDER SHOULD NOT SHOW">   </textarea>
+    </div>
+
+    <div class="field">
+      <label for="textarea-empty">Textarea empty (placeholder SHOULD render)</label>
+      <textarea id="textarea-empty" placeholder="PLACEHOLDER SHOULD SHOW"></textarea>
+    </div>
+  </div>
+</body>
+</html>

@@ -226,6 +226,7 @@ fn test_all_fixture_files_exist() {
     "form_controls_appearance_none",
     "form_controls_textarea_placeholder",
     "form_controls_placeholder_vendor_alias",
+    "form_controls_whitespace_value_placeholder",
     // Top layer
     "top_layer_dialog_popover",
     // Text
@@ -519,6 +520,12 @@ fn test_fixture_form_controls_placeholder_vendor_alias() {
     .expect("form_controls_placeholder_vendor_alias fixture should render");
 }
 
+#[test]
+fn test_fixture_form_controls_whitespace_value_placeholder() {
+  test_fixture("form_controls_whitespace_value_placeholder")
+    .expect("form_controls_whitespace_value_placeholder fixture should render");
+}
+
 //
 // Top layer Tests
 //
@@ -725,6 +732,7 @@ pub fn list_fixtures() -> Vec<&'static str> {
     "form_controls_appearance_none",
     "form_controls_textarea_placeholder",
     "form_controls_placeholder_vendor_alias",
+    "form_controls_whitespace_value_placeholder",
     // Top layer
     "top_layer_dialog_popover",
     // Text
@@ -881,6 +889,11 @@ pub fn fixture_descriptions() -> Vec<(&'static str, &'static str, &'static str)>
       "form_controls_placeholder_vendor_alias",
       "Forms",
       "Vendor placeholder pseudo-elements should alias to ::placeholder in selector lists",
+    ),
+    (
+      "form_controls_whitespace_value_placeholder",
+      "Forms",
+      "Form control values consisting of whitespace should not show placeholders",
     ),
     (
       "text_complex_scripts",

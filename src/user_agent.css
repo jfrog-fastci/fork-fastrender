@@ -383,7 +383,6 @@ input, textarea, select, button {
     font-size: inherit;
     line-height: 1.2;
     border-radius: 4px;
-    overflow: clip;
 }
 
 input::placeholder,

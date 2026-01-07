@@ -6258,25 +6258,40 @@ impl Painter {
 
     // Replaced elements default to `overflow: clip` in the UA stylesheet, so their content needs
     // to be clipped. Most replaced content is clipped to the content box (and its inner border
-    // radius). Form controls are special-cased to clip to the padding box so UA affordances (e.g.
-    // `<select>` arrows) that live in the padding area are not clipped away.
+    // radius).
+    //
+    // Form controls are special-cased:
+    // - When `overflow` clips, use the padding box so UA affordances (e.g. `<select>` arrows) that
+    //   live in the padding area are not clipped away.
+    // - Otherwise, still clip internal painting by default to the content box so values do not
+    //   bleed into padding.
     //
     // The display-list backend handles this via explicit clip items; mirror that behavior in the
     // legacy painter.
     let mut clip_mask_guard: Option<BackgroundClipMaskGuard> = None;
     let mut clip_mask: Option<&Mask> = None;
     if let (Some(style), Some(rects)) = (style, rects.as_ref()) {
-      let clip_x = matches!(
+      let mut clip_x = matches!(
         style.overflow_x,
         Overflow::Hidden | Overflow::Scroll | Overflow::Auto | Overflow::Clip
       ) || style.containment.paint;
-      let clip_y = matches!(
+      let mut clip_y = matches!(
         style.overflow_y,
         Overflow::Hidden | Overflow::Scroll | Overflow::Auto | Overflow::Clip
       ) || style.containment.paint;
+      let internal_clip_form_control = matches!(replaced_type, ReplacedType::FormControl(_)) && !clip_x && !clip_y;
+      if internal_clip_form_control {
+        clip_x = true;
+        clip_y = true;
+      }
+
       if clip_x || clip_y {
         let clip_box = if matches!(replaced_type, ReplacedType::FormControl(_)) {
-          crate::style::types::BackgroundBox::PaddingBox
+          if internal_clip_form_control {
+            crate::style::types::BackgroundBox::ContentBox
+          } else {
+            crate::style::types::BackgroundBox::PaddingBox
+          }
         } else {
           crate::style::types::BackgroundBox::ContentBox
         };
@@ -7048,125 +7063,6 @@ impl Painter {
       return true;
     }
 
-    // Native form controls should clip their internal painting to the content box by default
-    // (without requiring authors to set `overflow: clip`). This keeps long values from painting
-    // into the padding area, matching browser native controls.
-    let incoming_clip_mask = clip_mask;
-    let mut content_clip_guard = BackgroundClipMaskGuard::take();
-    let canvas_w = self.pixmap.width();
-    let canvas_h = self.pixmap.height();
-    let viewport = (self.css_width, self.css_height);
-    let base = content_rect.width().max(0.0);
-    let font_size = style.font_size;
-    let border_left = resolve_length_for_paint(
-      &style.used_border_left_width(),
-      font_size,
-      style.root_font_size,
-      base,
-      viewport,
-    );
-    let border_right = resolve_length_for_paint(
-      &style.used_border_right_width(),
-      font_size,
-      style.root_font_size,
-      base,
-      viewport,
-    );
-    let border_top = resolve_length_for_paint(
-      &style.used_border_top_width(),
-      font_size,
-      style.root_font_size,
-      base,
-      viewport,
-    );
-    let border_bottom = resolve_length_for_paint(
-      &style.used_border_bottom_width(),
-      font_size,
-      style.root_font_size,
-      base,
-      viewport,
-    );
-    let padding_left = resolve_length_for_paint(
-      &style.padding_left,
-      font_size,
-      style.root_font_size,
-      base,
-      viewport,
-    );
-    let padding_right = resolve_length_for_paint(
-      &style.padding_right,
-      font_size,
-      style.root_font_size,
-      base,
-      viewport,
-    );
-    let padding_top = resolve_length_for_paint(
-      &style.padding_top,
-      font_size,
-      style.root_font_size,
-      base,
-      viewport,
-    );
-    let padding_bottom = resolve_length_for_paint(
-      &style.padding_bottom,
-      font_size,
-      style.root_font_size,
-      base,
-      viewport,
-    );
-    let border_rect = Rect::from_xywh(
-      content_rect.x() - border_left - padding_left,
-      content_rect.y() - border_top - padding_top,
-      content_rect.width() + border_left + border_right + padding_left + padding_right,
-      content_rect.height() + border_top + border_bottom + padding_top + padding_bottom,
-    );
-    let rects = background_rects(
-      border_rect.x(),
-      border_rect.y(),
-      border_rect.width(),
-      border_rect.height(),
-      style,
-      Some(viewport),
-    );
-    let content_radii = resolve_clip_radii(
-      style,
-      &rects,
-      crate::style::types::BackgroundBox::ContentBox,
-      Some(viewport),
-    );
-    let content_clip_rect = self.device_rect(content_rect);
-    let content_clip_radii = self.device_radii(content_radii);
-    let content_clip_mask = content_clip_guard.mask(
-      content_clip_rect,
-      content_clip_radii,
-      canvas_w,
-      canvas_h,
-    );
-    let clip_mask = match (incoming_clip_mask, content_clip_mask) {
-      (None, Some(mask)) => Some(mask),
-      (Some(existing), Some(_mask)) => {
-        if let Some(dest) = content_clip_guard.scratch.mask.as_mut() {
-          if dest.width() == existing.width() && dest.height() == existing.height() {
-            let dest_data = dest.data_mut();
-            let src_data = existing.data();
-            for (d, s) in dest_data.iter_mut().zip(src_data.iter()) {
-              *d = div_255((*d as u16) * (*s as u16)) as u8;
-            }
-            // The mask is now dependent on the incoming clip as well; prevent stale reuse.
-            content_clip_guard.scratch.last_rect = None;
-            content_clip_guard.scratch.last_radii = None;
-            content_clip_guard.scratch.mask.as_ref()
-          } else {
-            Some(existing)
-          }
-        } else {
-          Some(existing)
-        }
-      }
-      (Some(existing), None) => Some(existing),
-      (None, None) => None,
-    };
-
     fn fill_rounded_rect_masked(
       pixmap: &mut Pixmap,
       rect: Rect,
@@ -7291,9 +7187,9 @@ impl Painter {
         kind,
         ..
       } => {
-        let value_is_empty = value.is_empty();
         let base_color = if control.invalid { accent } else { style.color };
         let placeholder_color = base_color.with_alpha(0.6);
+        let value_is_empty = value.is_empty();
 
         let mut generated: Option<String> = None;
         let mut paint_text: Option<&str> = None;
@@ -7307,40 +7203,30 @@ impl Painter {
               generated = Some("•".repeat(mask_len));
               paint_text = generated.as_deref();
               fallback_color = base_color;
-            } else if let Some(ph) = placeholder.as_deref() {
-              if !ph.is_empty() {
-                paint_text = Some(ph);
-                fallback_color = placeholder_color;
-                is_placeholder = true;
-              }
+            } else if let Some(ph) = placeholder.as_deref().filter(|p| !p.is_empty()) {
+              paint_text = Some(ph);
+              fallback_color = placeholder_color;
+              is_placeholder = true;
             }
           }
           TextControlKind::Number => {
             if !value_is_empty {
               paint_text = Some(value.as_str());
               fallback_color = base_color;
-            } else if let Some(ph) = placeholder.as_deref() {
-              if !ph.is_empty() {
-                paint_text = Some(ph);
-                fallback_color = placeholder_color;
-                is_placeholder = true;
-              }
+            } else if let Some(ph) = placeholder.as_deref().filter(|p| !p.is_empty()) {
+              paint_text = Some(ph);
+              fallback_color = placeholder_color;
+              is_placeholder = true;
             }
           }
           TextControlKind::Date => {
             if !value_is_empty {
               paint_text = Some(value.as_str());
               fallback_color = base_color;
-            } else if let Some(ph) = placeholder.as_deref() {
-              if !ph.is_empty() {
-                paint_text = Some(ph);
-                fallback_color = placeholder_color;
-                is_placeholder = true;
-              } else {
-                paint_text = Some("yyyy-mm-dd");
-                fallback_color = placeholder_color;
-                is_placeholder = true;
-              }
+            } else if let Some(ph) = placeholder.as_deref().filter(|p| !p.is_empty()) {
+              paint_text = Some(ph);
+              fallback_color = placeholder_color;
+              is_placeholder = true;
             } else {
               paint_text = Some("yyyy-mm-dd");
               fallback_color = placeholder_color;
@@ -7351,12 +7237,10 @@ impl Painter {
             if !value_is_empty {
               paint_text = Some(value.as_str());
               fallback_color = base_color;
-            } else if let Some(ph) = placeholder.as_deref() {
-              if !ph.is_empty() {
-                paint_text = Some(ph);
-                fallback_color = placeholder_color;
-                is_placeholder = true;
-              }
+            } else if let Some(ph) = placeholder.as_deref().filter(|p| !p.is_empty()) {
+              paint_text = Some(ph);
+              fallback_color = placeholder_color;
+              is_placeholder = true;
             }
           }
         }
@@ -7398,7 +7282,7 @@ impl Painter {
         }
         if text_style.color.a > f32::EPSILON {
           if let Some(text) = paint_text {
-            let _ = self.paint_alt_text(text, &text_style, rect, clip_mask);
+            let _ = self.paint_alt_text_raw(text, &text_style, rect, clip_mask);
           }
         }
         if affordance_space > 0.0 {
@@ -7425,11 +7309,11 @@ impl Painter {
                 affordance_rect.width(),
                 affordance_rect.height() - half,
               );
-              let _ = self.paint_alt_text("▲", &affordance_style, upper, clip_mask);
-              let _ = self.paint_alt_text("▼", &affordance_style, lower, clip_mask);
+              let _ = self.paint_alt_text_raw("▲", &affordance_style, upper, clip_mask);
+              let _ = self.paint_alt_text_raw("▼", &affordance_style, lower, clip_mask);
             }
             TextControlKind::Date => {
-              let _ = self.paint_alt_text("▾", &affordance_style, affordance_rect, clip_mask);
+              let _ = self.paint_alt_text_raw("▾", &affordance_style, affordance_rect, clip_mask);
             }
             _ => {}
           }
@@ -7546,7 +7430,7 @@ impl Painter {
                 rect.width(),
                 (rect.height() - (y - rect.y())).max(0.0),
               );
-              let _ = self.paint_alt_text(line, &text_style, line_rect, clip_mask);
+              let _ = self.paint_alt_text_raw(line, &text_style, line_rect, clip_mask);
               y += line_height;
             }
           }
@@ -7703,7 +7587,7 @@ impl Painter {
                   (row_rect.width() - 2.0).max(0.0),
                   row_rect.height(),
                 );
-                let _ = self.paint_alt_text(label, &row_style, row_rect, list_clip_mask);
+                let _ = self.paint_alt_text_raw(label, &row_style, row_rect, list_clip_mask);
               }
               SelectItem::Option {
                 label,
@@ -7744,7 +7628,7 @@ impl Painter {
                   (row_rect.width() - indent).max(0.0),
                   row_rect.height(),
                 );
-                let _ = self.paint_alt_text(label, &row_style, row_rect, list_clip_mask);
+                let _ = self.paint_alt_text_raw(label, &row_style, row_rect, list_clip_mask);
               }
             }
           }
@@ -7798,15 +7682,28 @@ impl Painter {
           if control.invalid {
             select_style.color = accent;
           }
-          let _ = self.paint_alt_text(label, &select_style, rect, clip_mask);
-
-          if !matches!(control.appearance, Appearance::None) {
-            let arrow_space = 14.0_f32.min(padding_rect.width().max(0.0));
-            let arrow_left = (padding_rect.max_x() - arrow_space).max(content_rect.max_x());
-            let arrow_rect = Rect::from_xywh(
-              arrow_left,
+          let arrow_space = if matches!(control.appearance, Appearance::None) {
+            0.0
+          } else {
+            14.0_f32.min(rect.width().max(0.0))
+          };
+          let label_rect = if arrow_space > 0.0 {
+            Rect::from_xywh(
+              rect.x(),
               rect.y(),
-              (padding_rect.max_x() - arrow_left).max(0.0),
+              (rect.width() - arrow_space).max(0.0),
+              rect.height(),
+            )
+          } else {
+            rect
+          };
+          let _ = self.paint_alt_text_raw(label, &select_style, label_rect, clip_mask);
+
+          if arrow_space > 0.0 {
+            let arrow_rect = Rect::from_xywh(
+              rect.max_x() - arrow_space,
+              rect.y(),
+              arrow_space,
               rect.height(),
             );
             if arrow_rect.width() <= 0.0 {
@@ -7814,7 +7711,8 @@ impl Painter {
             }
             let mut arrow_style = select_style;
             arrow_style.color = muted_accent;
-            let _ = self.paint_alt_text("▾", &arrow_style, arrow_rect, incoming_clip_mask);
+            arrow_style.font_size = (style.font_size * 0.9).max(8.0);
+            let _ = self.paint_alt_text_raw("▾", &arrow_style, arrow_rect, clip_mask);
           }
           true
         }
@@ -7829,7 +7727,7 @@ impl Painter {
           button_style.color = accent;
         }
 
-        let label_rect = if let Some(size) = self.measure_alt_text(label, &button_style) {
+        let label_rect = if let Some(size) = self.measure_alt_text_raw(label, &button_style) {
           let start_x = content_rect.x() + ((content_rect.width() - size.width).max(0.0) / 2.0);
           Rect::from_xywh(
             start_x,
@@ -7840,7 +7738,7 @@ impl Painter {
         } else {
           content_rect
         };
-        let _ = self.paint_alt_text(label, &button_style, label_rect, clip_mask);
+        let _ = self.paint_alt_text_raw(label, &button_style, label_rect, clip_mask);
         true
       }
       FormControlKind::Checkbox {
@@ -8416,7 +8314,7 @@ impl Painter {
         let label = raw
           .clone()
           .unwrap_or_else(|| format!("#{:02X}{:02X}{:02X}", value.r, value.g, value.b));
-        let label_rect = if let Some(size) = self.measure_alt_text(&label, &text_style) {
+        let label_rect = if let Some(size) = self.measure_alt_text_raw(&label, &text_style) {
           let start_x = rect.x() + ((rect.width() - size.width).max(0.0) / 2.0);
           let start_y = rect.y() + ((rect.height() - size.height).max(0.0) / 2.0);
           Rect::from_xywh(
@@ -8428,7 +8326,7 @@ impl Painter {
         } else {
           rect
         };
-        let _ = self.paint_alt_text(&label, &text_style, label_rect, clip_mask);
+        let _ = self.paint_alt_text_raw(&label, &text_style, label_rect, clip_mask);
         true
       }
       FormControlKind::File { value } => {
@@ -8468,6 +8366,7 @@ impl Painter {
           return true;
         }
 
+        let viewport = (self.css_width, self.css_height);
         let resolve_px = |style: &ComputedStyle, len: Length, percentage_base: f32| -> f32 {
           resolve_length_for_paint(&len, style.font_size, style.root_font_size, percentage_base, viewport)
         };
@@ -8635,7 +8534,7 @@ impl Painter {
           if control.invalid {
             unknown_style.color = accent;
           }
-          let _ = self.paint_alt_text(text, &unknown_style, rect, clip_mask);
+          let _ = self.paint_alt_text_raw(text, &unknown_style, rect, clip_mask);
         }
         true
       }
@@ -9440,10 +9339,31 @@ impl Painter {
     rect: Rect,
     clip_mask: Option<&Mask>,
   ) -> bool {
-    if alt.is_empty() {
+    self.paint_alt_text_impl(alt, style, rect, clip_mask, true)
+  }
+
+  fn paint_alt_text_raw(
+    &mut self,
+    alt: &str,
+    style: &ComputedStyle,
+    rect: Rect,
+    clip_mask: Option<&Mask>,
+  ) -> bool {
+    self.paint_alt_text_impl(alt, style, rect, clip_mask, false)
+  }
+
+  fn paint_alt_text_impl(
+    &mut self,
+    alt: &str,
+    style: &ComputedStyle,
+    rect: Rect,
+    clip_mask: Option<&Mask>,
+    trim: bool,
+  ) -> bool {
+    let text = if trim { alt.trim() } else { alt };
+    if text.is_empty() {
       return false;
     }
-    let text = alt;
 
     let mut runs = match self.shaper.shape(text, style, &self.font_ctx) {
       Ok(runs) => runs,
@@ -9479,10 +9399,18 @@ impl Painter {
   }
 
   fn measure_alt_text(&self, alt: &str, style: &ComputedStyle) -> Option<Size> {
-    if alt.is_empty() {
+    self.measure_alt_text_impl(alt, style, true)
+  }
+
+  fn measure_alt_text_raw(&self, alt: &str, style: &ComputedStyle) -> Option<Size> {
+    self.measure_alt_text_impl(alt, style, false)
+  }
+
+  fn measure_alt_text_impl(&self, alt: &str, style: &ComputedStyle, trim: bool) -> Option<Size> {
+    let text = if trim { alt.trim() } else { alt };
+    if text.is_empty() {
       return None;
     }
-    let text = alt;
     let mut runs = self.shaper.shape(text, style, &self.font_ctx).ok()?;
     TextItem::apply_spacing_to_runs(&mut runs, text, style.letter_spacing, style.word_spacing);
     let metrics_scaled = Self::resolve_scaled_metrics_static(style, &self.font_ctx);

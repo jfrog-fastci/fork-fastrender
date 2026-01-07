@@ -4986,25 +4986,49 @@ impl DisplayListBuilder {
         'paint: {
           if let ReplacedType::FormControl(control) = replaced_type {
             let clip_contents = style_for_image.and_then(|style| {
+              let rects = Self::background_rects(rect, style, self.viewport);
               let clip_x = Self::overflow_axis_clips(style.overflow_x);
               let clip_y = Self::overflow_axis_clips(style.overflow_y);
-              if !clip_x && !clip_y {
+              if clip_x || clip_y {
+                let overflow_bounds = rect.union(fragment.scroll_overflow.translate(rect.origin));
+                // Form controls can paint UI affordances (e.g. dropdown arrows) into the padding
+                // box. Clip to the padding box (not the content box) so `overflow: clip` doesn't
+                // cut them off.
+                return Self::overflow_clip_from_style_with_rects(
+                  style,
+                  &rects,
+                  clip_x,
+                  clip_y,
+                  overflow_bounds,
+                  self.viewport,
+                  self.build_breakdown.as_deref(),
+                );
+              }
+
+              // Form controls should clip their internal painting by default, even when
+              // `overflow` does not clip. Use the content box to avoid allowing text to bleed into
+              // padding (unlike `overflow: clip`, which clips to the padding box).
+              let content_rect = rects.content;
+              if content_rect.width() <= 0.0 || content_rect.height() <= 0.0 {
                 return None;
               }
-              let overflow_bounds = rect.union(fragment.scroll_overflow.translate(rect.origin));
-              let rects = Self::background_rects(rect, style, self.viewport);
-              // Form controls can paint UI affordances (e.g. dropdown arrows) into the padding box.
-              // Clip to the padding box (not the content box) so `overflow: clip` doesn't cut them
-              // off.
-              Self::overflow_clip_from_style_with_rects(
+
+              let radii = Self::resolve_clip_radii(
                 style,
                 &rects,
-                clip_x,
-                clip_y,
-                overflow_bounds,
+                BackgroundBox::ContentBox,
                 self.viewport,
                 self.build_breakdown.as_deref(),
               )
+              .clamped(content_rect.width(), content_rect.height());
+              let radii = (!radii.is_zero()).then_some(radii);
+
+              Some(ClipItem {
+                shape: ClipShape::Rect {
+                  rect: content_rect,
+                  radii,
+                },
+              })
             });
             if let Some(clip) = clip_contents.as_ref() {
               self.list.push(DisplayItem::PushClip(clip.clone()));
@@ -8541,27 +8565,6 @@ impl DisplayListBuilder {
     if padding_rect.width() <= 0.0 || padding_rect.height() <= 0.0 {
       return true;
     }
-    let content_clip = (content_rect.width() > 0.0 && content_rect.height() > 0.0).then(|| {
-      let radii = if Self::border_radius_is_zero(style) {
-        None
-      } else {
-        let radii = Self::resolve_clip_radii(
-          style,
-          &rects,
-          BackgroundBox::ContentBox,
-          self.viewport,
-          self.build_breakdown.as_deref(),
-        )
-        .clamped(content_rect.width(), content_rect.height());
-        (!radii.is_zero()).then_some(radii)
-      };
-      ClipItem {
-        shape: ClipShape::Rect {
-          rect: content_rect,
-          radii,
-        },
-      }
-    });
 
     let mut accent = Self::resolved_accent_color(style);
     if control.invalid {
@@ -8599,7 +8602,7 @@ impl DisplayListBuilder {
       }
 
       let Some(viewport) = builder.viewport.map(|(w, h)| Size::new(w, h)) else {
-        return builder.emit_text_with_style(text, Some(style), rect);
+        return builder.emit_text_with_style_raw(text, Some(style), rect);
       };
 
       let shape_timer = builder.build_breakdown.as_ref().map(|_| Instant::now());
@@ -8654,7 +8657,6 @@ impl DisplayListBuilder {
 
     let shape_text_runs =
       |builder: &mut Self, text: &str, style: &ComputedStyle| -> Option<Vec<ShapedRun>> {
-        let text = text.trim();
         if text.is_empty() {
           return Some(Vec::new());
         }
@@ -8723,10 +8725,9 @@ impl DisplayListBuilder {
         kind,
         ..
       } => {
-        let value_is_empty = value.is_empty();
         let base_color = if control.invalid { accent } else { style.color };
         let placeholder_color = base_color.with_alpha(0.6);
-
+        let value_is_empty = value.is_empty();
         let mut generated: Option<String> = None;
         let mut paint_text: Option<&str> = None;
         let mut fallback_color = base_color;
@@ -8739,40 +8740,30 @@ impl DisplayListBuilder {
               generated = Some("•".repeat(mask_len));
               paint_text = generated.as_deref();
               fallback_color = base_color;
-            } else if let Some(ph) = placeholder.as_deref() {
-              if !ph.is_empty() {
-                paint_text = Some(ph);
-                fallback_color = placeholder_color;
-                is_placeholder = true;
-              }
+            } else if let Some(ph) = placeholder.as_deref().filter(|p| !p.is_empty()) {
+              paint_text = Some(ph);
+              fallback_color = placeholder_color;
+              is_placeholder = true;
             }
           }
           TextControlKind::Number => {
             if !value_is_empty {
               paint_text = Some(value.as_str());
               fallback_color = base_color;
-            } else if let Some(ph) = placeholder.as_deref() {
-              if !ph.is_empty() {
-                paint_text = Some(ph);
-                fallback_color = placeholder_color;
-                is_placeholder = true;
-              }
+            } else if let Some(ph) = placeholder.as_deref().filter(|p| !p.is_empty()) {
+              paint_text = Some(ph);
+              fallback_color = placeholder_color;
+              is_placeholder = true;
             }
           }
           TextControlKind::Date => {
             if !value_is_empty {
               paint_text = Some(value.as_str());
               fallback_color = base_color;
-            } else if let Some(ph) = placeholder.as_deref() {
-              if !ph.is_empty() {
-                paint_text = Some(ph);
-                fallback_color = placeholder_color;
-                is_placeholder = true;
-              } else {
-                paint_text = Some("yyyy-mm-dd");
-                fallback_color = placeholder_color;
-                is_placeholder = true;
-              }
+            } else if let Some(ph) = placeholder.as_deref().filter(|p| !p.is_empty()) {
+              paint_text = Some(ph);
+              fallback_color = placeholder_color;
+              is_placeholder = true;
             } else {
               paint_text = Some("yyyy-mm-dd");
               fallback_color = placeholder_color;
@@ -8783,12 +8774,10 @@ impl DisplayListBuilder {
             if !value_is_empty {
               paint_text = Some(value.as_str());
               fallback_color = base_color;
-            } else if let Some(ph) = placeholder.as_deref() {
-              if !ph.is_empty() {
-                paint_text = Some(ph);
-                fallback_color = placeholder_color;
-                is_placeholder = true;
-              }
+            } else if let Some(ph) = placeholder.as_deref().filter(|p| !p.is_empty()) {
+              paint_text = Some(ph);
+              fallback_color = placeholder_color;
+              is_placeholder = true;
             }
           }
         }
@@ -8821,8 +8810,8 @@ impl DisplayListBuilder {
           }
         }
         let mut affordance_rect: Option<Rect> = None;
-        if affordance_space > 0.0 && padding_rect.width() > 0.0 {
-          let right = padding_rect.max_x();
+        if affordance_space > 0.0 {
+          let right = content_rect.max_x();
           let left = (right - affordance_space).max(content_rect.x());
           affordance_rect = Some(Rect::from_xywh(
             left,
@@ -8840,13 +8829,7 @@ impl DisplayListBuilder {
 
         if text_style.color.a > f32::EPSILON {
           if let Some(text) = paint_text {
-            if let Some(clip) = content_clip.as_ref() {
-              self.list.push(DisplayItem::PushClip(clip.clone()));
-            }
-            let _ = self.emit_text_with_style(text, Some(&text_style), text_rect);
-            if content_clip.is_some() {
-              self.list.push(DisplayItem::PopClip);
-            }
+            let _ = self.emit_text_with_style_raw(text, Some(&text_style), text_rect);
           }
         }
         if let Some(affordance_rect) = affordance_rect {
@@ -8986,19 +8969,13 @@ impl DisplayListBuilder {
         if text_style.color.a > f32::EPSILON {
           if let Some(text) = paint_text {
             let mut y = rect.y();
-            if let Some(clip) = content_clip.as_ref() {
-              self.list.push(DisplayItem::PushClip(clip.clone()));
-            }
             for line in text.split('\n') {
               if y > rect.y() + rect.height() {
                 break;
               }
               let line_rect = Rect::from_xywh(rect.x(), y, rect.width(), line_height);
-              let _ = self.emit_text_with_style(line, Some(&text_style), line_rect);
+              let _ = self.emit_text_with_style_raw(line, Some(&text_style), line_rect);
               y += line_height;
-            }
-            if content_clip.is_some() {
-              self.list.push(DisplayItem::PopClip);
             }
           }
         }
@@ -9145,7 +9122,7 @@ impl DisplayListBuilder {
                   (row_rect.width() - 2.0).max(0.0),
                   row_rect.height(),
                 );
-                let _ = self.emit_text_with_style(label, Some(&row_style), row_rect);
+                let _ = self.emit_text_with_style_raw(label, Some(&row_style), row_rect);
               }
               SelectItem::Option {
                 label,
@@ -9182,7 +9159,7 @@ impl DisplayListBuilder {
                   (row_rect.width() - indent).max(0.0),
                   row_rect.height(),
                 );
-                let _ = self.emit_text_with_style(label, Some(&row_style), row_rect);
+                let _ = self.emit_text_with_style_raw(label, Some(&row_style), row_rect);
               }
             }
           }
@@ -9228,29 +9205,34 @@ impl DisplayListBuilder {
           if control.invalid {
             select_style.color = accent;
           }
-          if let Some(clip) = content_clip.as_ref() {
-            self.list.push(DisplayItem::PushClip(clip.clone()));
-          }
-          let _ = self.emit_text_with_style(label, Some(&select_style), content_rect);
-          if content_clip.is_some() {
-            self.list.push(DisplayItem::PopClip);
-          }
-
-          if !matches!(control.appearance, Appearance::None) {
-            let arrow_space = 14.0_f32.min(padding_rect.width().max(0.0));
-            let arrow_left = (padding_rect.max_x() - arrow_space).max(content_rect.max_x());
-            let arrow_rect = Rect::from_xywh(
-              arrow_left,
+          let arrow_space = if matches!(control.appearance, Appearance::None) {
+            0.0
+          } else {
+            14.0_f32.min(content_rect.width().max(0.0))
+          };
+          let label_rect = if arrow_space > 0.0 {
+            Rect::from_xywh(
+              content_rect.x(),
               content_rect.y(),
-              (padding_rect.max_x() - arrow_left).max(0.0),
+              (content_rect.width() - arrow_space).max(0.0),
+              content_rect.height(),
+            )
+          } else {
+            content_rect
+          };
+          let _ = self.emit_text_with_style_raw(label, Some(&select_style), label_rect);
+
+          if arrow_space > 0.0 {
+            let arrow_rect = Rect::from_xywh(
+              content_rect.max_x() - arrow_space,
+              content_rect.y(),
+              arrow_space,
               content_rect.height(),
             );
-            if arrow_rect.width() > 0.0 {
-              let mut arrow_style = select_style;
-              arrow_style.color = muted_accent;
-              arrow_style.font_size = (style.font_size * 0.9).max(8.0);
-              let _ = emit_text_aligned(self, "▾", &arrow_style, arrow_rect, true, true);
-            }
+            let mut arrow_style = select_style;
+            arrow_style.color = muted_accent;
+            arrow_style.font_size = (style.font_size * 0.9).max(8.0);
+            let _ = emit_text_aligned(self, "▾", &arrow_style, arrow_rect, true, true);
           }
           true
         }
@@ -9264,13 +9246,7 @@ impl DisplayListBuilder {
         if control.invalid {
           button_style.color = accent;
         }
-        if let Some(clip) = content_clip.as_ref() {
-          self.list.push(DisplayItem::PushClip(clip.clone()));
-        }
         let _ = emit_text_aligned(self, label, &button_style, rect, true, true);
-        if content_clip.is_some() {
-          self.list.push(DisplayItem::PopClip);
-        }
         true
       }
       FormControlKind::Checkbox {
@@ -9640,10 +9616,6 @@ impl DisplayListBuilder {
           rect.height(),
         );
 
-        if let Some(clip) = content_clip.as_ref() {
-          self.list.push(DisplayItem::PushClip(clip.clone()));
-        }
-
         if let Some(button_style) = button_pseudo_style {
           self.emit_box_shadows_from_style(button_rect, button_style, false);
           self.emit_background_from_style(button_rect, button_style);
@@ -9683,10 +9655,6 @@ impl DisplayListBuilder {
           let _ = emit_text_aligned(self, file_label, &file_style, text_rect, false, true);
         }
 
-        if content_clip.is_some() {
-          self.list.push(DisplayItem::PopClip);
-        }
-
         true
       }
       FormControlKind::Unknown { label } => {
@@ -9696,13 +9664,7 @@ impl DisplayListBuilder {
           if control.invalid {
             unknown_style.color = accent;
           }
-          if let Some(clip) = content_clip.as_ref() {
-            self.list.push(DisplayItem::PushClip(clip.clone()));
-          }
-          let _ = self.emit_text_with_style(text, Some(&unknown_style), rect);
-          if content_clip.is_some() {
-            self.list.push(DisplayItem::PopClip);
-          }
+          let _ = self.emit_text_with_style_raw(text, Some(&unknown_style), rect);
         }
         true
       }
@@ -9766,6 +9728,26 @@ impl DisplayListBuilder {
     style: Option<&ComputedStyle>,
     rect: Rect,
   ) -> bool {
+    self.emit_text_with_style_impl(text, style, rect, true)
+  }
+
+  fn emit_text_with_style_raw(
+    &mut self,
+    text: &str,
+    style: Option<&ComputedStyle>,
+    rect: Rect,
+  ) -> bool {
+    self.emit_text_with_style_impl(text, style, rect, false)
+  }
+
+  fn emit_text_with_style_impl(
+    &mut self,
+    text: &str,
+    style: Option<&ComputedStyle>,
+    rect: Rect,
+    trim: bool,
+  ) -> bool {
+    let text = if trim { text.trim() } else { text };
     if text.is_empty() {
       return false;
     }
