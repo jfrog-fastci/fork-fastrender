@@ -51,6 +51,52 @@ fn container_style_query_matches_custom_property() {
 }
 
 #[test]
+fn container_style_query_resolves_var_in_custom_property_value() {
+  let html = r#"
+    <style>
+      .match { container-type: inline-size; --foo: bar; --bar: bar; }
+      .miss { container-type: inline-size; --foo: bar; --bar: baz; }
+      .child { color: rgb(0 0 255); }
+      @container style(--foo: var(--bar)) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="match">
+      <div id="match" class="child">hello</div>
+    </div>
+    <div class="miss">
+      <div id="miss" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let matched = find_by_id(&styled, "match").expect("match element");
+  let missed = find_by_id(&styled, "miss").expect("miss element");
+  assert_eq!(matched.styles.color, Rgba::rgb(255, 0, 0));
+  assert_eq!(missed.styles.color, Rgba::rgb(0, 0, 255));
+}
+
+#[test]
+fn container_style_query_resolves_var_in_property_value() {
+  let html = r#"
+    <style>
+      .container { container-type: inline-size; color: rgb(255 0 0); --c: rgb(255 0 0); }
+      .child { color: rgb(0 0 255); }
+      @container style(color: var(--c)) {
+        .child { color: rgb(1 2 3); }
+      }
+    </style>
+    <div class="container">
+      <div id="target" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(target.styles.color, Rgba::rgb(1, 2, 3));
+}
+
+#[test]
 fn container_style_query_matches_without_explicit_container_type() {
   let html = r#"
     <style>
@@ -211,6 +257,26 @@ fn container_style_query_range_feature_matches() {
   let large = find_by_id(&styled, "large").expect("large element");
   assert_eq!(small.styles.color, Rgba::rgb(0, 0, 255));
   assert_eq!(large.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_resolves_var_value() {
+  let html = r#"
+    <style>
+      .container { container-type: inline-size; font-size: 16px; --min: 12px; }
+      .child { color: rgb(0 0 255); }
+      @container style(font-size > var(--min)) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container">
+      <div id="target" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(target.styles.color, Rgba::rgb(255, 0, 0));
 }
 
 #[test]

@@ -16276,6 +16276,83 @@ mod tests {
   }
 
   #[test]
+  fn container_query_fingerprint_tracks_custom_props_used_by_style_query_value_vars() {
+    let stylesheet = crate::css::parser::parse_stylesheet(
+      "@container style(--foo: var(--bar)) { .a { color: red; } }",
+    )
+    .expect("stylesheet parses");
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+    let metadata = stylesheet.collect_css_metadata_with_cache(&media_ctx, None);
+
+    assert!(
+      metadata
+        .container_style_query_custom_properties
+        .contains("--foo"),
+      "metadata should track referenced style-query custom property"
+    );
+    assert!(
+      metadata
+        .container_style_query_custom_properties
+        .contains("--bar"),
+      "metadata should track var() dependency custom property"
+    );
+
+    let mut custom_properties: Vec<String> = metadata
+      .container_style_query_custom_properties
+      .into_iter()
+      .chain(metadata.container_size_query_custom_properties.into_iter())
+      .collect();
+    custom_properties.sort();
+    custom_properties.dedup();
+    let cfg = ContainerQueryFingerprintConfig {
+      custom_properties,
+      include_color: false,
+      include_background_color: false,
+      include_display: false,
+      include_font_size: false,
+    };
+
+    fn ctx_with_values(media_ctx: &MediaContext, foo: &str, bar: &str) -> ContainerQueryContext {
+      let mut style = ComputedStyle::default();
+      style.custom_properties.insert(
+        "--foo".into(),
+        crate::style::values::CustomPropertyValue::new(foo, None),
+      );
+      style.custom_properties.insert(
+        "--bar".into(),
+        crate::style::values::CustomPropertyValue::new(bar, None),
+      );
+      let mut containers = HashMap::new();
+      containers.insert(
+        1usize,
+        crate::style::cascade::ContainerQueryInfo {
+          width: 100.0,
+          height: 200.0,
+          inline_size: 100.0,
+          block_size: 200.0,
+          container_type: crate::style::types::ContainerType::InlineSize,
+          names: Vec::new(),
+          font_size: 16.0,
+          styles: Arc::new(style),
+        },
+      );
+      ContainerQueryContext {
+        base_media: media_ctx.clone(),
+        containers,
+      }
+    }
+
+    let ctx_a = ctx_with_values(&media_ctx, "bar", "bar");
+    let ctx_b = ctx_with_values(&media_ctx, "bar", "baz");
+    let fp_a = container_query_context_fingerprint(&ctx_a, Some(&cfg));
+    let fp_b = container_query_context_fingerprint(&ctx_b, Some(&cfg));
+    assert_ne!(
+      fp_a, fp_b,
+      "fingerprint should change when var() dependencies change"
+    );
+  }
+
+  #[test]
   fn resolve_intrinsic_sizes_use_alt_text_when_image_missing() {
     let renderer = FastRender::new().expect("init renderer");
     let style = Arc::new(ComputedStyle::default());

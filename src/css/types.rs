@@ -1493,7 +1493,19 @@ fn collect_container_query_metadata(
     match expr {
       StyleQueryExpr::Unknown => {}
       StyleQueryExpr::Feature(feature) => match feature {
-        StyleQueryFeature::Plain { name, .. } | StyleQueryFeature::Boolean { name } => {
+        StyleQueryFeature::Plain { name, value } => {
+          if name.starts_with("--") {
+            out
+              .container_style_query_custom_properties
+              .insert(name.clone());
+          } else {
+            out.container_style_query_properties.insert(name.clone());
+          }
+          for var_name in crate::style::var_resolution::extract_var_references(value) {
+            out.container_style_query_custom_properties.insert(var_name);
+          }
+        }
+        StyleQueryFeature::Boolean { name } => {
           if name.starts_with("--") {
             out
               .container_style_query_custom_properties
@@ -1512,7 +1524,11 @@ fn collect_container_query_metadata(
                 .container_style_query_custom_properties
                 .insert(name.clone());
             }
-            StyleRangeValue::Value(_) => {}
+            StyleRangeValue::Value(raw) => {
+              for var_name in crate::style::var_resolution::extract_var_references(raw) {
+                out.container_style_query_custom_properties.insert(var_name);
+              }
+            }
           };
           match range {
             StyleRange::Single { left, right, .. } => {

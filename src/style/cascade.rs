@@ -1194,11 +1194,39 @@ fn eval_plain_style_feature(
   }
 
   let styles = container.styles.as_ref();
+  let resolved_value = if crate::style::var_resolution::contains_var(value) {
+    let raw = PropertyValue::Custom(value.to_string());
+    match crate::style::var_resolution::resolve_var_for_property(&raw, &styles.custom_properties, "")
+    {
+      crate::style::var_resolution::VarResolutionResult::Resolved { css_text, value } => {
+        // `css_text` is empty on the fast path when no `var()` calls were present. Avoid treating an
+        // actual empty resolution (`var(--x,)`) as "no substitution" by also checking whether the
+        // resolver had to materialize a new value.
+        let no_substitution = matches!(
+          (&value, css_text.as_ref()),
+          (crate::style::var_resolution::ResolvedPropertyValue::Borrowed(_), "")
+        );
+        if no_substitution {
+          value.as_str()
+        } else {
+          css_text.as_ref()
+        }
+      }
+      _ => return false,
+    }
+  } else {
+    value
+  };
+
+  if contains_cascade_dependent_keyword(resolved_value) {
+    return false;
+  }
+
   if name.starts_with("--") {
     let Some(actual) = styles.custom_properties.get(name) else {
       return false;
     };
-    let expected_norm = normalize_query_value(value);
+    let expected_norm = normalize_query_value(resolved_value);
 
     // Prefer typed comparisons for registered properties when possible.
     if let Some(rule) = styles.custom_property_registry.get(name) {
@@ -1213,15 +1241,17 @@ fn eval_plain_style_feature(
   }
 
   match name {
-    "color" => Color::parse(value)
+    "color" => Color::parse(resolved_value)
       .map(|color: Color| color.to_rgba(styles.color) == styles.color)
       .unwrap_or(false),
-    "background-color" => Color::parse(value)
+    "background-color" => Color::parse(resolved_value)
       .map(|color: Color| color.to_rgba(styles.color) == styles.background_color)
       .unwrap_or(false),
-    "display" => Display::parse(value).map(|display| display == styles.display).unwrap_or(false),
+    "display" => Display::parse(resolved_value)
+      .map(|display| display == styles.display)
+      .unwrap_or(false),
     "font-size" => {
-      let Some(expected) = crate::css::properties::parse_length(value) else {
+      let Some(expected) = crate::css::properties::parse_length(resolved_value) else {
         return false;
       };
       // Resolve container query units relative to the query container itself.
@@ -1478,8 +1508,36 @@ fn parse_numeric_value(raw: &str, container: &ContainerQueryInfo, ctx: &Containe
     return None;
   }
 
+  let resolved = if crate::style::var_resolution::contains_var(trimmed) {
+    let value = PropertyValue::Custom(trimmed.to_string());
+    match crate::style::var_resolution::resolve_var_for_property(
+      &value,
+      &container.styles.custom_properties,
+      "",
+    ) {
+      crate::style::var_resolution::VarResolutionResult::Resolved { css_text, value } => {
+        let no_substitution = matches!(
+          (&value, css_text.as_ref()),
+          (crate::style::var_resolution::ResolvedPropertyValue::Borrowed(_), "")
+        );
+        if no_substitution {
+          trimmed
+        } else {
+          css_text.as_ref()
+        }
+      }
+      _ => return None,
+    }
+  } else {
+    trimmed
+  };
+
+  if resolved.is_empty() || contains_cascade_dependent_keyword(resolved) {
+    return None;
+  }
+
   // Try number first.
-  if let Ok(num) = trimmed.parse::<f32>() {
+  if let Ok(num) = resolved.parse::<f32>() {
     if num.is_finite() {
       return Some(NumericValue {
         ty: NumericType::Number,
@@ -1489,7 +1547,7 @@ fn parse_numeric_value(raw: &str, container: &ContainerQueryInfo, ctx: &Containe
   }
 
   // Percentage.
-  if let Some(percent) = trimmed.strip_suffix('%') {
+  if let Some(percent) = resolved.strip_suffix('%') {
     if let Ok(num) = percent.trim().parse::<f32>() {
       if num.is_finite() {
         return Some(NumericValue {
@@ -1501,7 +1559,7 @@ fn parse_numeric_value(raw: &str, container: &ContainerQueryInfo, ctx: &Containe
   }
 
   // Length (including unitless zero).
-  if let Some(length) = crate::css::properties::parse_length(trimmed) {
+  if let Some(length) = crate::css::properties::parse_length(resolved) {
     if length.unit == LengthUnit::Percent {
       return Some(NumericValue {
         ty: NumericType::Percentage,
@@ -1517,7 +1575,7 @@ fn parse_numeric_value(raw: &str, container: &ContainerQueryInfo, ctx: &Containe
 
   // Angle.
   {
-    let mut input = cssparser::ParserInput::new(trimmed);
+    let mut input = cssparser::ParserInput::new(resolved);
     let mut parser = cssparser::Parser::new(&mut input);
     if let Ok(deg) = crate::css::properties::parse_angle_component(&mut parser) {
       parser.skip_whitespace();
@@ -1531,7 +1589,7 @@ fn parse_numeric_value(raw: &str, container: &ContainerQueryInfo, ctx: &Containe
   }
 
   // Time.
-  if let Some(ms) = crate::style::properties::parse_time_ms(trimmed) {
+  if let Some(ms) = crate::style::properties::parse_time_ms(resolved) {
     if ms.is_finite() {
       return Some(NumericValue {
         ty: NumericType::TimeMs,
@@ -1541,7 +1599,7 @@ fn parse_numeric_value(raw: &str, container: &ContainerQueryInfo, ctx: &Containe
   }
 
   // Resolution.
-  if let Some(dppx) = parse_resolution_dppx(trimmed) {
+  if let Some(dppx) = parse_resolution_dppx(resolved) {
     if dppx.is_finite() {
       return Some(NumericValue {
         ty: NumericType::ResolutionDppx,
