@@ -1498,7 +1498,11 @@ impl BlockFormattingContext {
       // Allow descendants to anchor against the containing block element itself.
       anchor_index.insert_names(
         &style.anchor_names,
-        Rect::from_xywh(0.0, 0.0, box_width, box_height),
+        crate::layout::anchor_positioning::AnchorBox {
+          rect: Rect::from_xywh(0.0, 0.0, box_width, box_height),
+          writing_mode: style.writing_mode,
+          direction: style.direction,
+        },
       );
       let padding_origin = Point::new(computed_width.border_left, border_top);
       let padding_size = Size::new(
@@ -5666,7 +5670,11 @@ impl FormattingContext for BlockFormattingContext {
       // Allow descendants to anchor against the containing block element itself.
       anchor_index.insert_names(
         &style.anchor_names,
-        Rect::from_xywh(0.0, 0.0, box_width, box_height),
+        crate::layout::anchor_positioning::AnchorBox {
+          rect: Rect::from_xywh(0.0, 0.0, box_width, box_height),
+          writing_mode: style.writing_mode,
+          direction: style.direction,
+        },
       );
       let parent_padding_cb = ContainingBlock::with_viewport_and_bases(
         padding_rect,

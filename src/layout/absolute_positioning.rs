@@ -2254,7 +2254,8 @@ pub(crate) fn resolve_positioned_style_with_anchors(
       crate::style::types::PositionAnchor::Name(name) => Some(name.as_str()),
       _ => None,
     })?;
-    let anchor_rect = anchors?.get(anchor_name)?;
+    let anchor = anchors?.get_anchor(anchor_name)?;
+    let anchor_rect = anchor.rect;
     let cb_rect = containing_block.rect;
 
     let side = match func.side {
@@ -2270,6 +2271,51 @@ pub(crate) fn resolve_positioned_style_with_anchors(
         InsetEdge::Bottom => crate::style::types::AnchorSide::Top,
         InsetEdge::Left => crate::style::types::AnchorSide::Right,
       },
+      other => other,
+    };
+
+    let axis_sides = |horizontal: bool, positive: bool| -> (crate::style::types::AnchorSide, crate::style::types::AnchorSide) {
+      match (horizontal, positive) {
+        (true, true) => (
+          crate::style::types::AnchorSide::Left,
+          crate::style::types::AnchorSide::Right,
+        ),
+        (true, false) => (
+          crate::style::types::AnchorSide::Right,
+          crate::style::types::AnchorSide::Left,
+        ),
+        (false, true) => (
+          crate::style::types::AnchorSide::Top,
+          crate::style::types::AnchorSide::Bottom,
+        ),
+        (false, false) => (
+          crate::style::types::AnchorSide::Bottom,
+          crate::style::types::AnchorSide::Top,
+        ),
+      }
+    };
+
+    let side = match side {
+      crate::style::types::AnchorSide::InlineStart | crate::style::types::AnchorSide::InlineEnd => {
+        let horizontal = crate::style::inline_axis_is_horizontal(anchor.writing_mode);
+        let positive = crate::style::inline_axis_positive(anchor.writing_mode, anchor.direction);
+        let (start, end) = axis_sides(horizontal, positive);
+        if matches!(side, crate::style::types::AnchorSide::InlineStart) {
+          start
+        } else {
+          end
+        }
+      }
+      crate::style::types::AnchorSide::BlockStart | crate::style::types::AnchorSide::BlockEnd => {
+        let horizontal = crate::style::block_axis_is_horizontal(anchor.writing_mode);
+        let positive = crate::style::block_axis_positive(anchor.writing_mode);
+        let (start, end) = axis_sides(horizontal, positive);
+        if matches!(side, crate::style::types::AnchorSide::BlockStart) {
+          start
+        } else {
+          end
+        }
+      }
       other => other,
     };
 

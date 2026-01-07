@@ -554,6 +554,10 @@ fn format_inset_value(value: &crate::style::types::InsetValue) -> String {
         crate::style::types::AnchorSide::Right => "right".to_string(),
         crate::style::types::AnchorSide::Bottom => "bottom".to_string(),
         crate::style::types::AnchorSide::Left => "left".to_string(),
+        crate::style::types::AnchorSide::InlineStart => "inline-start".to_string(),
+        crate::style::types::AnchorSide::InlineEnd => "inline-end".to_string(),
+        crate::style::types::AnchorSide::BlockStart => "block-start".to_string(),
+        crate::style::types::AnchorSide::BlockEnd => "block-end".to_string(),
         crate::style::types::AnchorSide::Center => "center".to_string(),
         crate::style::types::AnchorSide::Percent(pct) => format!("{pct}%"),
       };

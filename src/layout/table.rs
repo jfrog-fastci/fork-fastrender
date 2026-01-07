@@ -5712,7 +5712,11 @@ impl FormattingContext for TableFormattingContext {
       if let Some(style) = fragment.style.as_ref() {
         anchor_index.insert_names(
           &style.anchor_names,
-          Rect::new(Point::ZERO, fragment.bounds.size),
+          crate::layout::anchor_positioning::AnchorBox {
+            rect: Rect::new(Point::ZERO, fragment.bounds.size),
+            writing_mode: style.writing_mode,
+            direction: style.direction,
+          },
         );
       }
       let abs = AbsoluteLayout::with_font_context(self.factory.font_context().clone());

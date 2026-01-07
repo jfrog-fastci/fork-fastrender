@@ -16,13 +16,22 @@
 
 use crate::geometry::Point;
 use crate::geometry::Rect;
+use crate::style::types::Direction;
+use crate::style::types::WritingMode;
 use crate::tree::fragment_tree::FragmentNode;
 use std::collections::HashMap;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct AnchorBox {
+  pub rect: Rect,
+  pub writing_mode: WritingMode,
+  pub direction: Direction,
+}
 
 /// Lookup table mapping `anchor-name` identifiers (e.g. `--tooltip`) to anchor rectangles.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct AnchorIndex {
-  by_name: HashMap<String, Rect>,
+  by_name: HashMap<String, AnchorBox>,
 }
 
 impl AnchorIndex {
@@ -39,12 +48,16 @@ impl AnchorIndex {
   }
 
   pub(crate) fn get(&self, name: &str) -> Option<Rect> {
+    self.by_name.get(name).map(|anchor| anchor.rect)
+  }
+
+  pub(crate) fn get_anchor(&self, name: &str) -> Option<AnchorBox> {
     self.by_name.get(name).copied()
   }
 
-  pub(crate) fn insert_names(&mut self, names: &[String], rect: Rect) {
+  pub(crate) fn insert_names(&mut self, names: &[String], anchor: AnchorBox) {
     for name in names {
-      self.by_name.insert(name.clone(), rect);
+      self.by_name.insert(name.clone(), anchor);
     }
   }
 
@@ -58,11 +71,17 @@ impl AnchorIndex {
     let abs_bounds = fragment.bounds.translate(parent_origin);
 
     if let Some(style) = fragment.style.as_ref() {
-      self.insert_names(&style.anchor_names, abs_bounds);
+      self.insert_names(
+        &style.anchor_names,
+        AnchorBox {
+          rect: abs_bounds,
+          writing_mode: style.writing_mode,
+          direction: style.direction,
+        },
+      );
     }
 
     let child_origin = parent_origin.translate(fragment.bounds.origin);
     self.collect_from_fragments(fragment.children.as_ref(), child_origin);
   }
 }
-

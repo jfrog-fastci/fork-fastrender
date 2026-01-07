@@ -3357,6 +3357,14 @@ pub enum AnchorSide {
   Right,
   Bottom,
   Left,
+  /// Logical inline-start side of the anchor element.
+  InlineStart,
+  /// Logical inline-end side of the anchor element.
+  InlineEnd,
+  /// Logical block-start side of the anchor element.
+  BlockStart,
+  /// Logical block-end side of the anchor element.
+  BlockEnd,
   /// `center` is equivalent to `50%`.
   Center,
   /// Percentage position between the two sides of the relevant axis (e.g. 0% = left/top).

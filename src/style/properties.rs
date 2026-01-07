@@ -12407,6 +12407,10 @@ fn parse_anchor_side(token: &str) -> Option<AnchorSide> {
     t if t.eq_ignore_ascii_case("right") => Some(AnchorSide::Right),
     t if t.eq_ignore_ascii_case("bottom") => Some(AnchorSide::Bottom),
     t if t.eq_ignore_ascii_case("left") => Some(AnchorSide::Left),
+    t if t.eq_ignore_ascii_case("inline-start") => Some(AnchorSide::InlineStart),
+    t if t.eq_ignore_ascii_case("inline-end") => Some(AnchorSide::InlineEnd),
+    t if t.eq_ignore_ascii_case("block-start") => Some(AnchorSide::BlockStart),
+    t if t.eq_ignore_ascii_case("block-end") => Some(AnchorSide::BlockEnd),
     t if t.eq_ignore_ascii_case("center") => Some(AnchorSide::Center),
     t => {
       let t = t.trim();

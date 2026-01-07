@@ -8045,7 +8045,11 @@ impl FormattingContext for GridFormattingContext {
         crate::layout::anchor_positioning::AnchorIndex::from_fragments(fragment.children_ref());
       anchor_index.insert_names(
         &box_node.style.anchor_names,
-        crate::geometry::Rect::new(crate::geometry::Point::ZERO, fragment.bounds.size),
+        crate::layout::anchor_positioning::AnchorBox {
+          rect: crate::geometry::Rect::new(crate::geometry::Point::ZERO, fragment.bounds.size),
+          writing_mode: box_node.style.writing_mode,
+          direction: box_node.style.direction,
+        },
       );
       let cb_for_absolute = if establishes_abs_cb {
         padding_cb

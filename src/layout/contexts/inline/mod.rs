@@ -10433,7 +10433,14 @@ impl InlineFormattingContext {
     if !positioned_children.is_empty() {
       let mut anchor_index =
         crate::layout::anchor_positioning::AnchorIndex::from_fragments(merged_children.as_slice());
-      anchor_index.insert_names(&style.anchor_names, Rect::new(Point::ZERO, bounds.size));
+      anchor_index.insert_names(
+        &style.anchor_names,
+        crate::layout::anchor_positioning::AnchorBox {
+          rect: Rect::new(Point::ZERO, bounds.size),
+          writing_mode: style.writing_mode,
+          direction: style.direction,
+        },
+      );
       let percentage_base_px = inline_percent_base.unwrap_or(available_inline);
       let padding_left = resolve_length_for_width(
         style.padding_left,
