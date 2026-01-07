@@ -6008,6 +6008,7 @@ impl Painter {
             viewport: Some(Size::new(self.css_width, self.css_height)),
             media_context: Some(&media_ctx),
             font_size: style.map(|s| s.font_size),
+            root_font_size: style.map(|s| s.root_font_size),
             base_url: cache_base.as_deref(),
           });
         for candidate in sources {
@@ -6127,6 +6128,7 @@ impl Painter {
             viewport: Some(Size::new(self.css_width, self.css_height)),
             media_context: Some(&media_ctx),
             font_size: style.map(|s| s.font_size),
+            root_font_size: style.map(|s| s.root_font_size),
             base_url: cache_base.as_deref(),
           });
         for candidate in sources {
