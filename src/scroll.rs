@@ -155,6 +155,14 @@ fn resolve_snap_length(len: Length, percentage_base: f32) -> f32 {
     .unwrap_or_else(|| len.to_px())
 }
 
+fn sanitize_snap_length(value: f32) -> f32 {
+  if value.is_finite() { value } else { 0.0 }
+}
+
+fn sanitize_scroll_padding(value: f32) -> f32 {
+  sanitize_snap_length(value).max(0.0)
+}
+
 fn scroll_padding_for_side(style: &ComputedStyle, side: PhysicalSide) -> Length {
   match side {
     PhysicalSide::Top => style.scroll_padding_top,
@@ -229,7 +237,7 @@ fn snap_position(
     padding_end
   };
 
-  match alignment {
+  let pos = match alignment {
     ScrollSnapAlign::None => None,
     ScrollSnapAlign::Start => Some(target_start - snapport_start_offset),
     ScrollSnapAlign::End => Some(target_end - snapport_end_offset),
@@ -238,7 +246,9 @@ fn snap_position(
       let snapport_center = (snapport_start_offset + snapport_end_offset) * 0.5;
       Some(target_center - snapport_center)
     }
-  }
+  };
+
+  pos.and_then(|pos| pos.is_finite().then_some(pos))
 }
 
 fn pick_snap_target(
@@ -248,31 +258,66 @@ fn pick_snap_target(
   threshold: f32,
   candidates: &[(f32, ScrollSnapStop)],
 ) -> f32 {
-  if candidates.is_empty() {
-    return current.min(max_scroll).max(0.0);
+  // Scroll snapping must not panic, even when upstream layout produces NaN/+inf/-inf geometry.
+  // Any non-finite candidate positions are ignored and, if none remain, we fall back to clamping
+  // the current offset.
+  if !current.is_finite() || !max_scroll.is_finite() {
+    return current;
   }
 
-  let mut best = current;
-  let mut best_dist = f32::INFINITY;
-  let mut best_stop_always = false;
+  let max_scroll = max_scroll.max(0.0);
+  if candidates.is_empty() {
+    return current.clamp(0.0, max_scroll);
+  }
+
+  let mut best: Option<(f32, f32, bool)> = None;
+  let epsilon = 1e-3;
 
   for &(candidate, stop) in candidates {
-    let clamped = candidate.min(max_scroll).max(0.0);
+    if !candidate.is_finite() {
+      continue;
+    }
+
+    let clamped = candidate.clamp(0.0, max_scroll);
     let dist = (clamped - current).abs();
-    let prefer = dist + 1e-3 < best_dist
-      || ((dist - best_dist).abs() <= 1e-3 && stop == ScrollSnapStop::Always && !best_stop_always);
-    if prefer {
-      best = clamped;
-      best_dist = dist;
-      best_stop_always = stop == ScrollSnapStop::Always;
+    if !dist.is_finite() {
+      continue;
+    }
+    let stop_always = stop == ScrollSnapStop::Always;
+
+    let replace = match best {
+      None => true,
+      Some((best_pos, best_dist, best_stop_always)) => {
+        if dist + epsilon < best_dist {
+          true
+        } else if (dist - best_dist).abs() <= epsilon {
+          if stop_always && !best_stop_always {
+            true
+          } else if stop_always == best_stop_always {
+            clamped.total_cmp(&best_pos).is_lt()
+          } else {
+            false
+          }
+        } else {
+          false
+        }
+      }
+    };
+
+    if replace {
+      best = Some((clamped, dist, stop_always));
     }
   }
 
+  let Some((best_pos, best_dist, _)) = best else {
+    return current.clamp(0.0, max_scroll);
+  };
+
   match strictness {
-    ScrollSnapStrictness::Mandatory => best,
+    ScrollSnapStrictness::Mandatory => best_pos,
     ScrollSnapStrictness::Proximity => {
       if best_dist <= threshold {
-        best
+        best_pos
       } else {
         current
       }
@@ -355,28 +400,24 @@ impl PendingContainer {
       block_sides
     };
     let padding_x = (
-      resolve_snap_length(
+      sanitize_scroll_padding(resolve_snap_length(
         scroll_padding_for_side(style, padding_x_sides.0),
         base_for_side(padding_x_sides.0, viewport),
-      )
-      .max(0.0),
-      resolve_snap_length(
+      )),
+      sanitize_scroll_padding(resolve_snap_length(
         scroll_padding_for_side(style, padding_x_sides.1),
         base_for_side(padding_x_sides.1, viewport),
-      )
-      .max(0.0),
+      )),
     );
     let padding_y = (
-      resolve_snap_length(
+      sanitize_scroll_padding(resolve_snap_length(
         scroll_padding_for_side(style, padding_y_sides.0),
         base_for_side(padding_y_sides.0, viewport),
-      )
-      .max(0.0),
-      resolve_snap_length(
+      )),
+      sanitize_scroll_padding(resolve_snap_length(
         scroll_padding_for_side(style, padding_y_sides.1),
         base_for_side(padding_y_sides.1, viewport),
-      )
-      .max(0.0),
+      )),
     );
 
     Some(Self {
@@ -425,8 +466,14 @@ impl PendingContainer {
         self.block_sides
       };
       let base = base_for_side(sides.0, self.viewport);
-      let margin_start = resolve_snap_length(scroll_margin_for_side(style, sides.0), base);
-      let margin_end = resolve_snap_length(scroll_margin_for_side(style, sides.1), base);
+      let margin_start = sanitize_snap_length(resolve_snap_length(
+        scroll_margin_for_side(style, sides.0),
+        base,
+      ));
+      let margin_end = sanitize_snap_length(resolve_snap_length(
+        scroll_margin_for_side(style, sides.1),
+        base,
+      ));
       let align = if self.axis_is_inline_for_x {
         style.scroll_snap_align.inline
       } else {
@@ -457,8 +504,14 @@ impl PendingContainer {
         self.block_sides
       };
       let base = base_for_side(sides.0, self.viewport);
-      let margin_start = resolve_snap_length(scroll_margin_for_side(style, sides.0), base);
-      let margin_end = resolve_snap_length(scroll_margin_for_side(style, sides.1), base);
+      let margin_start = sanitize_snap_length(resolve_snap_length(
+        scroll_margin_for_side(style, sides.0),
+        base,
+      ));
+      let margin_end = sanitize_snap_length(resolve_snap_length(
+        scroll_margin_for_side(style, sides.1),
+        base,
+      ));
       let align = if self.axis_is_inline_for_y {
         style.scroll_snap_align.inline
       } else {
@@ -493,14 +546,16 @@ impl PendingContainer {
       if let Some(max_target_x) = targets_x
         .iter()
         .map(|t| t.position)
-        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .filter(|p| p.is_finite())
+        .max_by(|a, b| a.total_cmp(b))
       {
         max_x = max_x.max(max_target_x + self.viewport.width);
       }
       if let Some(min_target_x) = targets_x
         .iter()
         .map(|t| t.position)
-        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .filter(|p| p.is_finite())
+        .min_by(|a, b| a.total_cmp(b))
       {
         min_x = min_x.min(min_target_x);
       }
@@ -512,14 +567,16 @@ impl PendingContainer {
       if let Some(max_target_y) = targets_y
         .iter()
         .map(|t| t.position)
-        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .filter(|p| p.is_finite())
+        .max_by(|a, b| a.total_cmp(b))
       {
         max_y = max_y.max(max_target_y + self.viewport.height);
       }
       if let Some(min_target_y) = targets_y
         .iter()
         .map(|t| t.position)
-        .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .filter(|p| p.is_finite())
+        .min_by(|a, b| a.total_cmp(b))
       {
         min_y = min_y.min(min_target_y);
       }
@@ -743,19 +800,39 @@ fn snap_axis(
   bounds: &Rect,
   vertical: bool,
 ) -> f32 {
+  if !current.is_finite() || !viewport_extent.is_finite() {
+    return current;
+  }
+
   let origin = if vertical {
     bounds.min_y()
   } else {
     bounds.min_x()
   };
+  if !origin.is_finite() {
+    return current;
+  }
+
+  let bounds_max = if vertical { bounds.max_y() } else { bounds.max_x() };
+  if !bounds_max.is_finite() {
+    return current;
+  }
+
   let max_scroll = if vertical {
-    (bounds.max_y() - origin - viewport_extent).max(0.0)
+    (bounds_max - origin - viewport_extent).max(0.0)
   } else {
-    (bounds.max_x() - origin - viewport_extent).max(0.0)
+    (bounds_max - origin - viewport_extent).max(0.0)
   };
+  if !max_scroll.is_finite() {
+    return current;
+  }
+
   let candidates: Vec<(f32, ScrollSnapStop)> = targets
     .iter()
-    .map(|t| (t.position - origin, t.stop))
+    .filter_map(|t| {
+      let pos = t.position - origin;
+      pos.is_finite().then_some((pos, t.stop))
+    })
     .collect();
   pick_snap_target(
     current - origin,
@@ -874,9 +951,17 @@ pub struct ScrollBounds {
 
 impl ScrollBounds {
   pub fn clamp(&self, scroll: Point) -> Point {
+    let clamp_axis = |value: f32, min: f32, max: f32| {
+      if value.is_finite() && min.is_finite() && max.is_finite() && min <= max {
+        value.clamp(min, max)
+      } else {
+        value
+      }
+    };
+
     Point::new(
-      scroll.x.clamp(self.min_x, self.max_x),
-      scroll.y.clamp(self.min_y, self.max_y),
+      clamp_axis(scroll.x, self.min_x, self.max_x),
+      clamp_axis(scroll.y, self.min_y, self.max_y),
     )
   }
 }
@@ -1087,8 +1172,16 @@ fn apply_scroll_to_state(
   let target_x = state.scroll.x + delta.x;
   let target_y = state.scroll.y + delta.y;
 
-  let clamped_x = target_x.clamp(state.bounds.min_x, state.bounds.max_x);
-  let clamped_y = target_y.clamp(state.bounds.min_y, state.bounds.max_y);
+  let clamp_axis = |value: f32, min: f32, max: f32| {
+    if value.is_finite() && min.is_finite() && max.is_finite() && min <= max {
+      value.clamp(min, max)
+    } else {
+      value
+    }
+  };
+
+  let clamped_x = clamp_axis(target_x, state.bounds.min_x, state.bounds.max_x);
+  let clamped_y = clamp_axis(target_y, state.bounds.min_y, state.bounds.max_y);
 
   state.scroll = Point::new(clamped_x, clamped_y);
 
@@ -1178,12 +1271,15 @@ fn apply_scroll_snap_for_container(
   }
 
   let padding_x = (
-    resolve_snap_length(style.scroll_padding_left, viewport.width).max(0.0),
-    resolve_snap_length(style.scroll_padding_right, viewport.width).max(0.0),
+    sanitize_scroll_padding(resolve_snap_length(style.scroll_padding_left, viewport.width)),
+    sanitize_scroll_padding(resolve_snap_length(style.scroll_padding_right, viewport.width)),
   );
   let padding_y = (
-    resolve_snap_length(style.scroll_padding_top, viewport.height).max(0.0),
-    resolve_snap_length(style.scroll_padding_bottom, viewport.height).max(0.0),
+    sanitize_scroll_padding(resolve_snap_length(style.scroll_padding_top, viewport.height)),
+    sanitize_scroll_padding(resolve_snap_length(
+      style.scroll_padding_bottom,
+      viewport.height,
+    )),
   );
   let mut targets_x = Vec::new();
   let mut targets_y = Vec::new();
@@ -1203,17 +1299,20 @@ fn apply_scroll_snap_for_container(
     &mut targets_y,
   );
 
+  targets_x.retain(|(p, _)| p.is_finite());
+  targets_y.retain(|(p, _)| p.is_finite());
+
   if let Some(max_target_x) = targets_x
     .iter()
     .map(|(p, _)| *p)
-    .max_by(|a, b| a.partial_cmp(b).unwrap())
+    .max_by(|a, b| a.total_cmp(b))
   {
     snap_bounds.max_x = snap_bounds.max_x.max(max_target_x + viewport.width);
   }
   if let Some(max_target_y) = targets_y
     .iter()
     .map(|(p, _)| *p)
-    .max_by(|a, b| a.partial_cmp(b).unwrap())
+    .max_by(|a, b| a.total_cmp(b))
   {
     snap_bounds.max_y = snap_bounds.max_y.max(max_target_y + viewport.height);
   }
@@ -1221,12 +1320,12 @@ fn apply_scroll_snap_for_container(
   let min_target_x = targets_x
     .iter()
     .map(|(p, _)| *p)
-    .min_by(|a, b| a.partial_cmp(b).unwrap())
+    .min_by(|a, b| a.total_cmp(b))
     .unwrap_or(0.0);
   let min_target_y = targets_y
     .iter()
     .map(|(p, _)| *p)
-    .min_by(|a, b| a.partial_cmp(b).unwrap())
+    .min_by(|a, b| a.total_cmp(b))
     .unwrap_or(0.0);
   if min_target_x > 0.0 {
     for (p, _) in &mut targets_x {
@@ -1297,8 +1396,14 @@ pub struct SnapBounds {
 
 impl SnapBounds {
   pub fn update(&mut self, rect: Rect) {
-    self.max_x = self.max_x.max(rect.max_x());
-    self.max_y = self.max_y.max(rect.max_y());
+    let max_x = rect.max_x();
+    if max_x.is_finite() {
+      self.max_x = self.max_x.max(max_x);
+    }
+    let max_y = rect.max_y();
+    if max_y.is_finite() {
+      self.max_y = self.max_y.max(max_y);
+    }
   }
 }
 
@@ -1325,8 +1430,14 @@ pub(crate) fn collect_snap_targets(
 
   if let Some(style) = node.style.as_ref() {
     if snap_x {
-      let margin_start = resolve_snap_length(style.scroll_margin_left, viewport.width);
-      let margin_end = resolve_snap_length(style.scroll_margin_right, viewport.width);
+      let margin_start = sanitize_snap_length(resolve_snap_length(
+        style.scroll_margin_left,
+        viewport.width,
+      ));
+      let margin_end = sanitize_snap_length(resolve_snap_length(
+        style.scroll_margin_right,
+        viewport.width,
+      ));
       let (padding_start, padding_end) = padding_x;
       let align_x = if inline_vertical {
         style.scroll_snap_align.block
@@ -1358,8 +1469,12 @@ pub(crate) fn collect_snap_targets(
       }
     }
     if snap_y {
-      let margin_start = resolve_snap_length(style.scroll_margin_top, viewport.height);
-      let margin_end = resolve_snap_length(style.scroll_margin_bottom, viewport.height);
+      let margin_start =
+        sanitize_snap_length(resolve_snap_length(style.scroll_margin_top, viewport.height));
+      let margin_end = sanitize_snap_length(resolve_snap_length(
+        style.scroll_margin_bottom,
+        viewport.height,
+      ));
       let (padding_start, padding_end) = padding_y;
       let align_y = if inline_vertical {
         style.scroll_snap_align.inline
