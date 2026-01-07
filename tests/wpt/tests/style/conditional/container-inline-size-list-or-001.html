@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>@container query list OR semantics</title>
+<style>
+  body {
+    margin: 0;
+    background: white;
+  }
+  #container {
+    width: 100px;
+    height: 100px;
+    container-type: inline-size;
+  }
+  #box {
+    width: 100%;
+    height: 100%;
+    background: rgb(255, 0, 0);
+  }
+
+  /* First query is false, second is true. Comma-separated query lists use OR semantics. */
+  @container (min-width: 150px), (max-width: 120px) {
+    #box {
+      background: rgb(0, 160, 0);
+    }
+  }
+</style>
+<div id="container">
+  <div id="box"></div>
+</div>
+
