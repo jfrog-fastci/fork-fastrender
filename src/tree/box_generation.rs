@@ -4332,40 +4332,64 @@ fn object_has_renderable_external_content(styled: &StyledNode) -> bool {
     return false;
   }
 
-  if !styled
+  let data = styled
     .node
     .get_attribute_ref("data")
-    .is_some_and(|data| !data.trim().is_empty())
-  {
+    .map(str::trim)
+    .unwrap_or("");
+  if data.is_empty() {
     return false;
-  }
-
-  let Some(type_attr) = styled.node.get_attribute_ref("type") else {
-    return true;
-  };
-  let type_trimmed = type_attr.trim();
-  if type_trimmed.is_empty() {
-    return true;
-  }
-
-  let normalized_type = type_trimmed
-    .split(';')
-    .next()
-    .unwrap_or("")
-    .trim()
-    .to_ascii_lowercase();
-  if normalized_type.is_empty() {
-    return true;
   }
 
   // FastRender supports rendering `<object>` external resources when they are images, or when the
   // resource is an HTML document that can be rendered as an embedded iframe.
-  is_supported_image_mime(&normalized_type)
-    || matches!(
-      normalized_type.as_str(),
-      "text/html" | "application/xhtml+xml" | "application/html"
-    )
-    || normalized_type.contains("+html")
+  fn is_supported_object_mime(mime: &str) -> bool {
+    let normalized = mime
+      .split(';')
+      .next()
+      .unwrap_or("")
+      .trim()
+      .to_ascii_lowercase();
+    if normalized.is_empty() {
+      return false;
+    }
+    is_supported_image_mime(&normalized)
+      || matches!(
+        normalized.as_str(),
+        "text/html" | "application/xhtml+xml" | "application/html"
+      )
+      || normalized.contains("+html")
+  }
+
+  // When no `type` attribute is provided, infer basic support from the data URL mediatype.
+  // For non-data URLs, we keep the previous behavior of treating the external content as renderable.
+  let infer_supported_from_data_url = || {
+    if !data
+      .get(..5)
+      .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
+    {
+      return None;
+    }
+    let rest = &data["data:".len()..];
+    let (metadata, _payload) = match rest.split_once(',') {
+      Some(split) => split,
+      None => return Some(false),
+    };
+    let mediatype = metadata.split(';').next().unwrap_or("").trim();
+    let mediatype = if mediatype.is_empty() {
+      "text/plain"
+    } else {
+      mediatype
+    };
+    Some(is_supported_object_mime(mediatype))
+  };
+
+  let type_attr = styled.node.get_attribute_ref("type").map(str::trim).unwrap_or("");
+  if type_attr.is_empty() {
+    return infer_supported_from_data_url().unwrap_or(true);
+  }
+
+  is_supported_object_mime(type_attr)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -5277,6 +5301,49 @@ mod tests {
       first_object_data(&box_tree.root).as_deref(),
       Some("img.png"),
       "replaced object data should be whitespace-trimmed"
+    );
+  }
+
+  #[test]
+  fn object_with_unsupported_data_url_renders_children_when_type_missing() {
+    let html =
+      "<html><body><object data=\"data:application/pdf,hello\"><p>fallback</p></object></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    assert_eq!(
+      count_object_replacements(&box_tree.root),
+      0,
+      "object data URLs with unsupported mediatypes should render fallback children when `type` is missing"
+    );
+
+    let mut texts = Vec::new();
+    collect_text(&box_tree.root, &mut texts);
+    assert!(
+      texts.iter().any(|t| t.contains("fallback")),
+      "fallback text should be present"
+    );
+  }
+
+  #[test]
+  fn object_with_image_data_url_is_replaced_when_type_missing() {
+    let html = "<html><body><object data=\"data:image/png,hello\"><p>fallback</p></object></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    assert_eq!(
+      count_object_replacements(&box_tree.root),
+      1,
+      "object data URLs with supported image mediatypes should create replaced content even when `type` is missing"
+    );
+
+    let mut texts = Vec::new();
+    collect_text(&box_tree.root, &mut texts);
+    assert!(
+      !texts.iter().any(|t| t.contains("fallback")),
+      "fallback text should not be present when object is replaced"
     );
   }
 
