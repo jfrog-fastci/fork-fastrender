@@ -7663,6 +7663,8 @@ impl DisplayListRenderer {
       return Ok(end_idx);
     }
 
+    let push_isolation_layer = node.context.is_isolated;
+
     let mut order = 0;
     let mut scene_items = collect_scene_items(&node, &parent_transform, true, &mut order, &[]);
     let before_backface_cull = scene_items.len();
@@ -7704,225 +7706,243 @@ impl DisplayListRenderer {
       })
       .transpose()?;
 
-    let mut deadline_counter = 0usize;
-    for idx in paint_order {
-      check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
-        .map_err(Error::Render)?;
-      let scene_item = &scene_items[idx];
-      let scene_result = (|| -> Result<()> {
-        let has_backdrop = !scene_item.backdrop_filters.is_empty();
-        let parent_transform = self.canvas.transform();
-        let parent_bounds = self.canvas.bounds();
-        let parent_clip_bounds = self.canvas.clip_bounds();
-        let adjusted_transform = scene_item.transform.multiply(&Transform3D::translate(
-          scene_item.bounds.x(),
-          scene_item.bounds.y(),
-          0.0,
-        ));
+    if push_isolation_layer {
+      self.canvas.push_layer(1.0)?;
+      self.record_layer_allocation(self.canvas.width(), self.canvas.height());
+    }
 
-        let backdrop_bounds = if has_backdrop {
-          let local_bounds = Rect::from_xywh(
-            scene_item.filter_bounds.x() - scene_item.bounds.x(),
-            scene_item.filter_bounds.y() - scene_item.bounds.y(),
-            scene_item.filter_bounds.width(),
-            scene_item.filter_bounds.height(),
-          );
-          self.preserve_3d_rect_device_bounds(local_bounds, &adjusted_transform, parent_transform)
-        } else {
-          None
-        };
+    let paint_result = (|| -> Result<()> {
+      let mut deadline_counter = 0usize;
+      for idx in paint_order {
+        check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
+          .map_err(Error::Render)?;
+        let scene_item = &scene_items[idx];
+        let scene_result = (|| -> Result<()> {
+          let has_backdrop = !scene_item.backdrop_filters.is_empty();
+          let parent_transform = self.canvas.transform();
+          let parent_bounds = self.canvas.bounds();
+          let parent_clip_bounds = self.canvas.clip_bounds();
+          let adjusted_transform = scene_item.transform.multiply(&Transform3D::translate(
+            scene_item.bounds.x(),
+            scene_item.bounds.y(),
+            0.0,
+          ));
 
-        let should_apply_backdrop = has_backdrop && backdrop_bounds.is_some();
-
-        // Match the normal stacking-context backdrop-filter pipeline: paint into an isolated
-        // layer, populate it with the filtered backdrop from the already-composited scene, then
-        // warp/draw the plane content over it.
-        let (layer_bounds, layer_origin) = if should_apply_backdrop {
-          let Some(bounds) = backdrop_bounds.as_ref() else {
-            return Ok(());
-          };
-          let (out_l, out_t, out_r, out_b) = filter_outset_with_bounds(
-            &scene_item.backdrop_filters,
-            self.scale,
-            Some(scene_item.filter_bounds),
-          )
-          .as_tuple();
-          let mut layer_bounds = Rect::from_xywh(
-            bounds.x() - out_l,
-            bounds.y() - out_t,
-            bounds.width() + out_l + out_r,
-            bounds.height() + out_t + out_b,
-          );
-
-          if let Some(clip) = parent_clip_bounds {
-            layer_bounds = match layer_bounds.intersection(clip) {
-              Some(r) => r,
-              None => return Ok(()),
-            };
-          }
-
-          layer_bounds = match layer_bounds.intersection(parent_bounds) {
-            Some(r) => r,
-            None => return Ok(()),
-          };
-
-          if layer_bounds.width() <= 0.0
-            || layer_bounds.height() <= 0.0
-            || !layer_bounds.x().is_finite()
-            || !layer_bounds.y().is_finite()
-          {
-            (None, (0, 0))
-          } else {
-            let origin = (
-              layer_bounds.min_x().floor() as i32,
-              layer_bounds.min_y().floor() as i32,
+          let backdrop_bounds = if has_backdrop {
+            let local_bounds = Rect::from_xywh(
+              scene_item.filter_bounds.x() - scene_item.bounds.x(),
+              scene_item.filter_bounds.y() - scene_item.bounds.y(),
+              scene_item.filter_bounds.width(),
+              scene_item.filter_bounds.height(),
             );
-            (Some(layer_bounds), origin)
-          }
-        } else {
-          (None, (0, 0))
-        };
-
-        let pushed_layer = if should_apply_backdrop {
-          if let Some(bounds) = layer_bounds {
-            self.canvas.push_layer_bounded(1.0, None, bounds)?;
+            self.preserve_3d_rect_device_bounds(
+              local_bounds,
+              &adjusted_transform,
+              parent_transform,
+            )
           } else {
-            self.canvas.push_layer(1.0)?;
-          }
-          self.record_layer_allocation(self.canvas.width(), self.canvas.height());
-          true
-        } else {
-          false
-        };
+            None
+          };
 
-        let draw_result =
-          self.with_preserve_3d_clip_override(&scene_item.effects, |renderer, clip_override| {
-            let mut drawable = renderer.canvas.bounds();
-            if let Some(clip) = renderer.canvas.clip_bounds() {
-              drawable = match drawable.intersection(clip) {
+          let should_apply_backdrop = has_backdrop && backdrop_bounds.is_some();
+
+          // Match the normal stacking-context backdrop-filter pipeline: paint into an isolated
+          // layer, populate it with the filtered backdrop from the already-composited scene, then
+          // warp/draw the plane content over it.
+          let (layer_bounds, layer_origin) = if should_apply_backdrop {
+            let Some(bounds) = backdrop_bounds.as_ref() else {
+              return Ok(());
+            };
+            let (out_l, out_t, out_r, out_b) = filter_outset_with_bounds(
+              &scene_item.backdrop_filters,
+              self.scale,
+              Some(scene_item.filter_bounds),
+            )
+            .as_tuple();
+            let mut layer_bounds = Rect::from_xywh(
+              bounds.x() - out_l,
+              bounds.y() - out_t,
+              bounds.width() + out_l + out_r,
+              bounds.height() + out_t + out_b,
+            );
+
+            if let Some(clip) = parent_clip_bounds {
+              layer_bounds = match layer_bounds.intersection(clip) {
                 Some(r) => r,
                 None => return Ok(()),
               };
             }
-            if drawable.width() <= 0.0 || drawable.height() <= 0.0 {
-              return Ok(());
-            }
 
-            let plane_offscreen = renderer
-              .preserve_3d_plane_device_bounds(scene_item.bounds, &adjusted_transform)
-              .is_some_and(|bounds| bounds.intersection(drawable).is_none());
-            if plane_offscreen && !should_apply_backdrop {
-              return Ok(());
-            }
-
-            if should_apply_backdrop {
-              let Some(bounds_in_src) = backdrop_bounds else {
-                return Ok(());
-              };
-
-              let clip_bounds = renderer.canvas.clip_bounds();
-              let clip_mask_rc = clip_override
-                .is_none()
-                .then(|| renderer.canvas.clip_mask_rc())
-                .flatten();
-              let clip_mask = clip_override.or_else(|| clip_mask_rc.as_deref());
-              let radii = renderer.ds_radii(scene_item.radii);
-              let shape_bounds = Rect::from_xywh(
-                bounds_in_src.x() - layer_origin.0 as f32,
-                bounds_in_src.y() - layer_origin.1 as f32,
-                bounds_in_src.width(),
-                bounds_in_src.height(),
-              );
-
-              let Some((backdrop, dest_pixmap)) =
-                renderer.canvas.split_backdrop_and_pixmap_mut()
-              else {
-                // Without an active layer, there's nowhere to write the filtered backdrop.
-                return Ok(());
-              };
-              let scale = renderer.scale;
-              let blur_cache: &mut (dyn BlurCacheOps + 'static) =
-                match renderer.shared_blur_cache.as_mut() {
-                  Some(shared) => shared,
-                  None => &mut renderer.blur_cache,
-                };
-              let backdrop_cache: &mut (dyn BackdropFilterCacheOps + 'static) =
-                match renderer.shared_backdrop_filter_cache.as_mut() {
-                  Some(shared) => shared,
-                  None => &mut renderer.backdrop_filter_cache,
-                };
-              apply_backdrop_filters(
-                dest_pixmap,
-                backdrop,
-                layer_origin,
-                bounds_in_src,
-                shape_bounds,
-                &scene_item.backdrop_filters,
-                radii,
-                scale,
-                clip_mask,
-                clip_bounds,
-                (0, 0),
-                scene_item.filter_bounds,
-                Transform::identity(),
-                Some(blur_cache),
-                Some(backdrop_cache),
-              )?;
-            }
-
-            if plane_offscreen {
-              return Ok(());
-            }
-
-            let pixmap = if let Some(pixmaps) = plane_pixmaps.as_mut() {
-              pixmaps[idx].take()
-            } else {
-              renderer.render_scene_item(scene_item)?
+            layer_bounds = match layer_bounds.intersection(parent_bounds) {
+              Some(r) => r,
+              None => return Ok(()),
             };
 
-            if let Some(pixmap) = pixmap {
-              if renderer.preserve_3d_debug {
-                let is_affine = Homography::from_transform3d_z0(&adjusted_transform).is_affine();
-                let depth = {
-                  let center = scene_item.plane_rect.center();
-                  let (_tx, _ty, tz, tw) = scene_item
-                    .transform
-                    .transform_point(center.x, center.y, 0.0);
-                  if tz.is_finite()
-                    && tw.is_finite()
-                    && tw.abs() >= Transform3D::MIN_PROJECTIVE_W
-                  {
-                    tz / tw
-                  } else {
-                    f32::NAN
-                  }
+            if layer_bounds.width() <= 0.0
+              || layer_bounds.height() <= 0.0
+              || !layer_bounds.x().is_finite()
+              || !layer_bounds.y().is_finite()
+            {
+              (None, (0, 0))
+            } else {
+              let origin = (
+                layer_bounds.min_x().floor() as i32,
+                layer_bounds.min_y().floor() as i32,
+              );
+              (Some(layer_bounds), origin)
+            }
+          } else {
+            (None, (0, 0))
+          };
+
+          let pushed_layer = if should_apply_backdrop {
+            if let Some(bounds) = layer_bounds {
+              self.canvas.push_layer_bounded(1.0, None, bounds)?;
+            } else {
+              self.canvas.push_layer(1.0)?;
+            }
+            self.record_layer_allocation(self.canvas.width(), self.canvas.height());
+            true
+          } else {
+            false
+          };
+
+          let draw_result =
+            self.with_preserve_3d_clip_override(&scene_item.effects, |renderer, clip_override| {
+              let mut drawable = renderer.canvas.bounds();
+              if let Some(clip) = renderer.canvas.clip_bounds() {
+                drawable = match drawable.intersection(clip) {
+                  Some(r) => r,
+                  None => return Ok(()),
                 };
-                eprintln!(
-                  "preserve-3d item order={} depth={depth:.4} affine={is_affine} bounds=({}, {}, {}, {})",
-                  scene_item.paint_order,
-                  scene_item.bounds.x(),
-                  scene_item.bounds.y(),
-                  scene_item.bounds.width(),
-                  scene_item.bounds.height(),
-                );
               }
-              let blend = scene_item.compositing.as_ref().and_then(|compositing| {
-                (!matches!(compositing.mix_blend_mode, BlendMode::Normal))
-                  .then_some(compositing.mix_blend_mode)
-              });
-              if let Some(mode) = blend {
-                if is_manual_blend(mode) {
-                  if let Some(warped) = renderer.warp_pixmap_for_manual_blend(
-                    &pixmap,
-                    &adjusted_transform,
-                    clip_override,
-                  )? {
-                    renderer.composite_manual_layer(
-                      warped.pixmap(),
-                      1.0,
-                      mode,
-                      warped.offset(),
-                      None,
+              if drawable.width() <= 0.0 || drawable.height() <= 0.0 {
+                return Ok(());
+              }
+
+              let plane_offscreen = renderer
+                .preserve_3d_plane_device_bounds(scene_item.bounds, &adjusted_transform)
+                .is_some_and(|bounds| bounds.intersection(drawable).is_none());
+              if plane_offscreen && !should_apply_backdrop {
+                return Ok(());
+              }
+
+              if should_apply_backdrop {
+                let Some(bounds_in_src) = backdrop_bounds else {
+                  return Ok(());
+                };
+
+                let clip_bounds = renderer.canvas.clip_bounds();
+                let clip_mask_rc = clip_override
+                  .is_none()
+                  .then(|| renderer.canvas.clip_mask_rc())
+                  .flatten();
+                let clip_mask = clip_override.or_else(|| clip_mask_rc.as_deref());
+                let radii = renderer.ds_radii(scene_item.radii);
+                let shape_bounds = Rect::from_xywh(
+                  bounds_in_src.x() - layer_origin.0 as f32,
+                  bounds_in_src.y() - layer_origin.1 as f32,
+                  bounds_in_src.width(),
+                  bounds_in_src.height(),
+                );
+
+                let Some((backdrop, dest_pixmap)) =
+                  renderer.canvas.split_backdrop_and_pixmap_mut()
+                else {
+                  // Without an active layer, there's nowhere to write the filtered backdrop.
+                  return Ok(());
+                };
+                let scale = renderer.scale;
+                let blur_cache: &mut (dyn BlurCacheOps + 'static) =
+                  match renderer.shared_blur_cache.as_mut() {
+                    Some(shared) => shared,
+                    None => &mut renderer.blur_cache,
+                  };
+                let backdrop_cache: &mut (dyn BackdropFilterCacheOps + 'static) =
+                  match renderer.shared_backdrop_filter_cache.as_mut() {
+                    Some(shared) => shared,
+                    None => &mut renderer.backdrop_filter_cache,
+                  };
+                apply_backdrop_filters(
+                  dest_pixmap,
+                  backdrop,
+                  layer_origin,
+                  bounds_in_src,
+                  shape_bounds,
+                  &scene_item.backdrop_filters,
+                  radii,
+                  scale,
+                  clip_mask,
+                  clip_bounds,
+                  (0, 0),
+                  scene_item.filter_bounds,
+                  Transform::identity(),
+                  Some(blur_cache),
+                  Some(backdrop_cache),
+                )?;
+              }
+
+              if plane_offscreen {
+                return Ok(());
+              }
+
+              let pixmap = if let Some(pixmaps) = plane_pixmaps.as_mut() {
+                pixmaps[idx].take()
+              } else {
+                renderer.render_scene_item(scene_item)?
+              };
+
+              if let Some(pixmap) = pixmap {
+                if renderer.preserve_3d_debug {
+                  let is_affine = Homography::from_transform3d_z0(&adjusted_transform).is_affine();
+                  let depth = {
+                    let center = scene_item.plane_rect.center();
+                    let (_tx, _ty, tz, tw) = scene_item
+                      .transform
+                      .transform_point(center.x, center.y, 0.0);
+                    if tz.is_finite()
+                      && tw.is_finite()
+                      && tw.abs() >= Transform3D::MIN_PROJECTIVE_W
+                    {
+                      tz / tw
+                    } else {
+                      f32::NAN
+                    }
+                  };
+                  eprintln!(
+                    "preserve-3d item order={} depth={depth:.4} affine={is_affine} bounds=({}, {}, {}, {})",
+                    scene_item.paint_order,
+                    scene_item.bounds.x(),
+                    scene_item.bounds.y(),
+                    scene_item.bounds.width(),
+                    scene_item.bounds.height(),
+                  );
+                }
+                let blend = scene_item.compositing.as_ref().and_then(|compositing| {
+                  (!matches!(compositing.mix_blend_mode, BlendMode::Normal))
+                    .then_some(compositing.mix_blend_mode)
+                });
+                if let Some(mode) = blend {
+                  if is_manual_blend(mode) {
+                    if let Some(warped) = renderer.warp_pixmap_for_manual_blend(
+                      &pixmap,
+                      &adjusted_transform,
+                      clip_override,
+                    )? {
+                      renderer.composite_manual_layer(
+                        warped.pixmap(),
+                        1.0,
+                        mode,
+                        warped.offset(),
+                        None,
+                      )?;
+                    }
+                  } else {
+                    renderer.warp_pixmap(
+                      &pixmap,
+                      &adjusted_transform,
+                      clip_override,
+                      map_blend_mode(mode),
                     )?;
                   }
                 } else {
@@ -7930,35 +7950,39 @@ impl DisplayListRenderer {
                     &pixmap,
                     &adjusted_transform,
                     clip_override,
-                    map_blend_mode(mode),
+                    renderer.canvas.blend_mode(),
                   )?;
                 }
-              } else {
-                renderer.warp_pixmap(
-                  &pixmap,
-                  &adjusted_transform,
-                  clip_override,
-                  renderer.canvas.blend_mode(),
-                )?;
               }
-            }
-            Ok(())
-          });
+              Ok(())
+            });
 
-        if pushed_layer {
-          // If drawing failed, still pop the layer to restore the canvas state before returning.
-          if draw_result.is_err() {
-            let _ = self.canvas.pop_layer_raw();
-          } else {
-            self.canvas.pop_layer()?;
+          if pushed_layer {
+            // If drawing failed, still pop the layer to restore the canvas state before returning.
+            if draw_result.is_err() {
+              let _ = self.canvas.pop_layer_raw();
+            } else {
+              self.canvas.pop_layer()?;
+            }
           }
-        }
-        draw_result?;
-        Ok(())
-      })();
-      scene_result?;
+          draw_result?;
+          Ok(())
+        })();
+        scene_result?;
+      }
+
+      Ok(())
+    })();
+
+    if push_isolation_layer {
+      if paint_result.is_err() {
+        let _ = self.canvas.pop_layer_raw();
+      } else {
+        self.canvas.pop_layer()?;
+      }
     }
 
+    paint_result?;
     Ok(end_idx)
   }
 
