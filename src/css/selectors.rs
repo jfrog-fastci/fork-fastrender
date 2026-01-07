@@ -1256,10 +1256,22 @@ mod tests {
 
   #[test]
   fn moz_placeholder_shown_alias_serializes_to_standard_form() {
-    let list = parse_selector_list(".a:not(:-moz-placeholder-shown), .a:not(:placeholder-shown)");
-    assert_eq!(list.slice().len(), 2);
+    for selector_text in [
+      "input:-moz-placeholder-shown",
+      "input:not(:-moz-placeholder-shown)",
+      "input:focus, input:-moz-placeholder-shown, input:disabled",
+    ] {
+      let mut input = ParserInput::new(selector_text);
+      let mut parser = Parser::new(&mut input);
+      assert!(
+        SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok(),
+        "{selector_text} should parse"
+      );
+    }
 
     // The vendor pseudo-class should behave like a pure alias and serialize to the standard form.
+    let list = parse_selector_list(".a:not(:-moz-placeholder-shown), .a:not(:placeholder-shown)");
+    assert_eq!(list.slice().len(), 2);
     let selectors: Vec<String> = list.slice().iter().map(|sel| sel.to_css_string()).collect();
     assert_eq!(
       selectors,
