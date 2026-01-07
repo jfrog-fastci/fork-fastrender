@@ -194,6 +194,7 @@ fn build_dom(card_count: usize) -> DomNode {
 }
 
 fn dom_clone_benchmarks(c: &mut Criterion) {
+  common::bench_print_config_once("dom_clone_bench", &[]);
   // 4k cards × 13 elements/card ~= 52k element nodes, plus dialogs/popovers/text nodes.
   let dom = build_dom(4_000);
 

@@ -21,6 +21,8 @@ use std::fmt::Write;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use fastrender::dom::parse_html;
 
+mod common;
+
 fn build_dom_parse_html(card_count: usize, include_templates: bool) -> String {
   let mut html = String::from("<!doctype html><html><head><title>bench</title></head><body>");
   for idx in 0..card_count {
@@ -45,6 +47,7 @@ fn build_dom_parse_html(card_count: usize, include_templates: bool) -> String {
 }
 
 fn dom_parse_benchmarks(c: &mut Criterion) {
+  common::bench_print_config_once("dom_parse_bench", &[]);
   let mut group = c.benchmark_group("dom_parse");
 
   // 10k cards: ~20k elements (plain) and ~23k elements (template variant, depending on stride),

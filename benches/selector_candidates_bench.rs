@@ -8,6 +8,8 @@ use fastrender::style::cascade::SelectorCandidateBench;
 use fastrender::style::media::MediaContext;
 use std::fmt::Write;
 
+mod common;
+
 fn long_ident(prefix: &str, idx: usize, total_len: usize) -> String {
   let mut out = format!("{prefix}{idx:x}_");
   while out.len() < total_len {
@@ -173,6 +175,7 @@ fn generate_html_for_mandatory_anchor_is_selectors(
 }
 
 fn selector_candidates_benchmark(c: &mut Criterion) {
+  common::bench_print_config_once("selector_candidates_bench", &[]);
   let node_count = 2000;
   let class_variants = 256;
   let classes_per_node = 8;

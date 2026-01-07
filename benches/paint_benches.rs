@@ -75,6 +75,8 @@ use tiny_skia::Pixmap;
 use tiny_skia::PremultipliedColorU8;
 use tiny_skia::SpreadMode;
 
+mod common;
+
 // ============================================================================
 // Helper Functions
 // ============================================================================
@@ -272,6 +274,7 @@ fn create_display_list_for_culling(total_items: usize, _viewport_height: f32) ->
 // ============================================================================
 
 fn bench_display_list_creation(c: &mut Criterion) {
+  common::bench_print_config_once("paint_benches", &[]);
   let mut group = c.benchmark_group("display_list_creation");
 
   // Empty list creation
@@ -310,6 +313,7 @@ fn bench_display_list_creation(c: &mut Criterion) {
 }
 
 fn bench_display_list_operations(c: &mut Criterion) {
+  common::bench_print_config_once("paint_benches", &[]);
   let mut group = c.benchmark_group("display_list_operations");
 
   // List iteration
@@ -352,6 +356,7 @@ fn bench_display_list_operations(c: &mut Criterion) {
 // ============================================================================
 
 fn bench_display_list_builder(c: &mut Criterion) {
+  common::bench_print_config_once("paint_benches", &[]);
   let mut group = c.benchmark_group("display_list_builder");
 
   // Builder creation
@@ -391,7 +396,11 @@ fn bench_display_list_builder(c: &mut Criterion) {
   }
 
   // Huge repeating background tiling (viewport clamping should keep this bounded).
-  let tiling_tree = create_background_tiling_fragment_tree(1_000_000.0);
+  // Bench safety: cap the potential tile count even if the clamping regresses.
+  let limits = common::bench_limits();
+  let tiles_per_row = 80usize; // 800px viewport / 10px background-size.
+  let max_rows = (limits.max_display_list_items / tiles_per_row.max(1)).max(1);
+  let tiling_tree = create_background_tiling_fragment_tree(max_rows as f32 * 10.0);
   group.bench_function("background_tiling_repeat_huge", |b| {
     b.iter(|| {
       let builder = DisplayListBuilder::new();
@@ -407,6 +416,7 @@ fn bench_display_list_builder(c: &mut Criterion) {
 // ============================================================================
 
 fn bench_display_list_optimization(c: &mut Criterion) {
+  common::bench_print_config_once("paint_benches", &[]);
   let mut group = c.benchmark_group("display_list_optimization");
 
   // Optimizer creation
@@ -489,6 +499,7 @@ fn bench_display_list_optimization(c: &mut Criterion) {
 }
 
 fn bench_display_list_optimization_large(c: &mut Criterion) {
+  common::bench_print_config_once("paint_benches", &[]);
   let mut group = c.benchmark_group("display_list_optimization_large");
   group.sample_size(10);
 
@@ -522,6 +533,7 @@ fn bench_display_list_optimization_large(c: &mut Criterion) {
 // ============================================================================
 
 fn bench_stacking_context(c: &mut Criterion) {
+  common::bench_print_config_once("paint_benches", &[]);
   let mut group = c.benchmark_group("stacking_context");
 
   // Building stacking tree from simple fragment trees
@@ -548,6 +560,7 @@ fn bench_stacking_context(c: &mut Criterion) {
 // ============================================================================
 
 fn bench_display_item_creation(c: &mut Criterion) {
+  common::bench_print_config_once("paint_benches", &[]);
   let mut group = c.benchmark_group("display_item_creation");
 
   // FillRect item
@@ -670,6 +683,7 @@ fn bench_display_item_creation(c: &mut Criterion) {
 // ============================================================================
 
 fn bench_fragment_tree_operations(c: &mut Criterion) {
+  common::bench_print_config_once("paint_benches", &[]);
   let mut group = c.benchmark_group("fragment_tree_operations");
 
   // Fragment node creation
@@ -737,6 +751,7 @@ fn bench_fragment_tree_operations(c: &mut Criterion) {
 // ============================================================================
 
 fn bench_paint_stress_tests(c: &mut Criterion) {
+  common::bench_print_config_once("paint_benches", &[]);
   let mut group = c.benchmark_group("paint_stress_tests");
   group.sample_size(10); // Fewer samples for expensive tests
 
@@ -777,6 +792,7 @@ fn bench_paint_stress_tests(c: &mut Criterion) {
 }
 
 fn bench_large_repeating_background(c: &mut Criterion) {
+  common::bench_print_config_once("paint_benches", &[]);
   std::env::set_var("FASTR_PAINT_BACKEND", "legacy");
 
   let img = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]));
@@ -825,6 +841,7 @@ fn bench_large_repeating_background(c: &mut Criterion) {
 // ============================================================================
 
 fn bench_text_rasterizer_cache(c: &mut Criterion) {
+  common::bench_print_config_once("paint_benches", &[]);
   let font_ctx = FontContext::new();
   if !font_ctx.has_fonts() {
     return;
@@ -887,6 +904,7 @@ fn bench_text_rasterizer_cache(c: &mut Criterion) {
 
 /// Benchmark serial vs parallel display list painting to highlight tiling gains.
 fn bench_parallel_display_list_raster(c: &mut Criterion) {
+  common::bench_print_config_once("paint_benches", &[]);
   let mut list = DisplayList::new();
   for y in 0..32 {
     for x in 0..32 {
@@ -919,6 +937,7 @@ fn bench_parallel_display_list_raster(c: &mut Criterion) {
       min_tiles: 1,
       min_build_fragments: 1,
       build_chunk_size: 1,
+      max_threads: Some(common::bench_limits().max_threads),
       ..PaintParallelism::enabled()
     };
     b.iter(|| {
@@ -937,6 +956,7 @@ fn bench_parallel_display_list_raster(c: &mut Criterion) {
 /// is specified. The renderer should avoid allocating for full-image `src_rect`
 /// values and reuse cached crops for repeated `src_rect` values.
 fn bench_tiled_background_image_src_rect(c: &mut Criterion) {
+  common::bench_print_config_once("paint_benches", &[]);
   let tile = 64u32;
   let item_count = 4096usize;
 
@@ -1014,6 +1034,7 @@ fn bench_tiled_background_image_src_rect(c: &mut Criterion) {
 
 /// Bench repeated box-shadow rendering with and without BlurCache enabled.
 fn bench_display_list_box_shadow_blur_cache(c: &mut Criterion) {
+  common::bench_print_config_once("paint_benches", &[]);
   fn restore_env(name: &str, prev: Option<std::ffi::OsString>) {
     if let Some(value) = prev {
       std::env::set_var(name, value);
@@ -1090,6 +1111,7 @@ fn bench_display_list_box_shadow_blur_cache(c: &mut Criterion) {
 }
 
 fn bench_filter_blur(c: &mut Criterion) {
+  common::bench_print_config_once("paint_benches", &[]);
   let mut group = c.benchmark_group("filters_blur");
   group.sample_size(10);
 
@@ -1175,6 +1197,7 @@ fn bench_filter_blur(c: &mut Criterion) {
 /// Benchmark the manual mix-blend-mode compositor (used when tiny-skia cannot represent the mode
 /// directly).
 fn bench_manual_layer_composite(c: &mut Criterion) {
+  common::bench_print_config_once("paint_benches", &[]);
   let size = 1024u32;
   let mut src = Pixmap::new(size, size).expect("pixmap");
   let mut dst = Pixmap::new(size, size).expect("pixmap");
@@ -1295,6 +1318,7 @@ fn sample_stop_color(stops: &[(f32, Rgba)], pos: f32) -> Rgba {
 }
 
 fn bench_conic_gradient(c: &mut Criterion) {
+  common::bench_print_config_once("paint_benches", &[]);
   let width: u32 = 256;
   let height: u32 = 256;
   let center = Point::new(width as f32 / 2.0, height as f32 / 2.0);

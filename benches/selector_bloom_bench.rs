@@ -28,7 +28,29 @@ use std::fmt::Write;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::sync::OnceLock;
 use std::time::Instant;
+
+mod common;
+
+fn max_has_tree_elems() -> u128 {
+  static MAX: OnceLock<u128> = OnceLock::new();
+  *MAX.get_or_init(|| {
+    if let Ok(raw) = std::env::var("FASTR_BLOOM_BENCH_MAX_ELEMS") {
+      if let Ok(value) = raw.trim().parse::<u128>() {
+        return value.max(1);
+      }
+    }
+    common::bench_limits().max_dom_nodes as u128
+  })
+}
+
+fn bench_config() {
+  common::bench_print_config_once(
+    "selector_bloom_bench",
+    &[("max_has_tree_elems", max_has_tree_elems().to_string())],
+  );
+}
 
 fn build_branching_tree_html(depth: usize, branching: usize, class_variants: usize) -> String {
   fn build_level(
@@ -308,15 +330,12 @@ fn build_has_tree_html_inner(
 
   // Guardrail: prevent accidental runaway allocations during benches.
   // If you need a larger stress case, explicitly raise this cap.
-  let max_elems: u128 = std::env::var("FASTR_BLOOM_BENCH_MAX_ELEMS")
-    .ok()
-    .and_then(|v| v.trim().parse::<u128>().ok())
-    .unwrap_or(2_000_000);
+  let max_elems = max_has_tree_elems();
   if let Some(estimated) = estimated_has_tree_element_count(depth, branching) {
     assert!(
       estimated <= max_elems,
       "has-tree bench would generate ~{estimated} elements (depth={depth}, branching={branching}); \
-set FASTR_BLOOM_BENCH_MAX_ELEMS to raise the cap"
+set FASTR_BENCH_MAX_DOM_NODES (or legacy FASTR_BLOOM_BENCH_MAX_ELEMS) to raise the cap"
     );
   }
 
@@ -537,6 +556,7 @@ fn build_nested_shadow_dom(
 }
 
 fn selector_bloom_benchmark(c: &mut Criterion) {
+  bench_config();
   let depth = 64;
   let branching = 5;
   let class_variants = 48;
@@ -569,6 +589,7 @@ fn selector_bloom_benchmark(c: &mut Criterion) {
 }
 
 fn ancestor_bloom_benchmark(c: &mut Criterion) {
+  bench_config();
   let depth = 200;
   let branching = 5;
   let class_variants = 48;
@@ -601,6 +622,7 @@ fn ancestor_bloom_benchmark(c: &mut Criterion) {
 }
 
 fn shadow_scoping_selector_bloom_benchmark(c: &mut Criterion) {
+  bench_config();
   let shadow_depth = 32;
   let chain_len = 8;
   let selectors_per_depth = 120;
@@ -655,8 +677,9 @@ fn shadow_scoping_selector_bloom_benchmark(c: &mut Criterion) {
 }
 
 fn has_selector_bloom_benchmark(c: &mut Criterion) {
+  bench_config();
   let depth = 7;
-  let branching = 5;
+  let branching = 4;
   let needle_stride = 37;
 
   let html = build_has_tree_html(depth, branching, needle_stride);
@@ -686,9 +709,10 @@ fn has_selector_bloom_benchmark(c: &mut Criterion) {
 }
 
 fn has_selector_summary_benchmark(c: &mut Criterion) {
+  bench_config();
   // Keep this benchmark representative but *safe* by default.
   // Previous values could generate hundreds of millions of elements and OOM machines.
-  let depth = 8;
+  let depth = 7;
   let branching = 4;
   let needle_stride = 23;
 
@@ -719,7 +743,8 @@ fn has_selector_summary_benchmark(c: &mut Criterion) {
 }
 
 fn selector_bloom_summary_bits_build_benchmark(c: &mut Criterion) {
-  let depth = 8;
+  bench_config();
+  let depth = 7;
   let branching = 4;
   let needle_stride = 23;
 
@@ -747,6 +772,7 @@ fn selector_bloom_summary_bits_build_benchmark(c: &mut Criterion) {
 }
 
 fn has_selector_summary_bits_benchmark(c: &mut Criterion) {
+  bench_config();
   // Stress-case for bloom-summary false positives:
   // - Inject unique leaf class names (never referenced by selectors) to saturate the summary.
   // - Use many missing :has() selectors so false positives translate into expensive evaluations.
@@ -855,9 +881,10 @@ fn nested_has_selector_summary_benchmark(c: &mut Criterion) {
 }
 
 fn selector_bloom_lookup_benchmark(c: &mut Criterion) {
+  bench_config();
   // Focused micro-benchmark: compare per-element bloom summary lookups using the dense
   // node-id indexed store vs a legacy pointer-keyed HashMap.
-  let depth = 9;
+  let depth = 7;
   let branching = 4;
   let needle_stride = 29;
 
@@ -922,6 +949,7 @@ fn selector_bloom_lookup_benchmark(c: &mut Criterion) {
 }
 
 fn bloom_hash_insert_benchmark(c: &mut Criterion) {
+  bench_config();
   use rustc_hash::FxHasher;
   use selectors::bloom::BLOOM_HASH_MASK;
 

@@ -12,6 +12,8 @@ use std::sync::Arc;
 use tiny_skia::Pixmap;
 use unicode_bidi::Level;
 
+mod common;
+
 fn prepare_runs() -> Option<(Vec<ShapedRun>, Pixmap)> {
   let ctx = FontContext::new();
   let mut style = ComputedStyle::default();
@@ -28,6 +30,7 @@ fn prepare_runs() -> Option<(Vec<ShapedRun>, Pixmap)> {
 }
 
 fn bench_rasterize_cached_faces(c: &mut Criterion) {
+  common::bench_print_config_once("text_benches", &[]);
   let Some((runs, mut pixmap)) = prepare_runs() else {
     return;
   };
@@ -52,6 +55,7 @@ fn bench_rasterize_cached_faces(c: &mut Criterion) {
 }
 
 fn bench_line_break_dense_paragraph(c: &mut Criterion) {
+  common::bench_print_config_once("text_benches", &[]);
   let mut style = ComputedStyle::default();
   style.font_family = vec!["sans-serif".to_string()].into();
   style.font_size = 14.0;
@@ -105,6 +109,7 @@ fn bench_line_break_dense_paragraph(c: &mut Criterion) {
 }
 
 fn bench_shape_fallback_cache(c: &mut Criterion) {
+  common::bench_print_config_once("text_benches", &[]);
   let mut style = ComputedStyle::default();
   style.font_family = vec!["sans-serif".to_string()].into();
   style.font_size = 14.0;
@@ -126,6 +131,7 @@ fn bench_shape_fallback_cache(c: &mut Criterion) {
 }
 
 fn bench_shape_fallback_cache_pipeline_clones(c: &mut Criterion) {
+  common::bench_print_config_once("text_benches", &[]);
   let mut style = ComputedStyle::default();
   style.font_family = vec!["sans-serif".to_string()].into();
   style.font_size = 14.0;

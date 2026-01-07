@@ -10,6 +10,8 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use fastrender::resource::HttpFetcher;
 use fastrender::ResourceFetcher;
 
+mod common;
+
 fn start_keep_alive_server(
   body: &'static [u8],
 ) -> (String, mpsc::Sender<()>, thread::JoinHandle<()>) {
@@ -63,6 +65,7 @@ fn start_keep_alive_server(
 }
 
 fn bench_agent_pool(c: &mut Criterion) {
+  common::bench_print_config_once("http_agent_pool", &[]);
   let body = b"ok";
   let (url, stop_tx, handle) = start_keep_alive_server(body);
   let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));

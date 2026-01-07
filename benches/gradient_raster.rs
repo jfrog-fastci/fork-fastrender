@@ -4,7 +4,10 @@ use fastrender::paint::gradient::{gradient_bucket, rasterize_linear_gradient, Gr
 use fastrender::style::color::Rgba;
 use tiny_skia::SpreadMode;
 
+mod common;
+
 fn bench_linear_gradient_large(c: &mut Criterion) {
+  common::bench_print_config_once("gradient_raster", &[]);
   // ~8.4M pixels: representative of the `about.gitlab.com` hotspot (~10M gradient pixels).
   let width: u32 = 4096;
   let height: u32 = 2048;

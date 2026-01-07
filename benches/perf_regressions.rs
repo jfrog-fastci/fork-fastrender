@@ -187,6 +187,7 @@ fn find_first_table<'a>(node: &'a BoxNode) -> Option<&'a BoxNode> {
 }
 
 fn perf_criterion() -> Criterion {
+  common::bench_print_config_once("perf_regressions", &[]);
   Criterion::default()
     .sample_size(25)
     .warm_up_time(Duration::from_secs(1))

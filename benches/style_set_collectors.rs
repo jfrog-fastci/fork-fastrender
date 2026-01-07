@@ -3,6 +3,8 @@ use fastrender::css::parser::parse_stylesheet;
 use fastrender::style::media::{MediaContext, MediaQueryCache};
 use fastrender::style::style_set::StyleSet;
 
+mod common;
+
 fn generate_large_css(rule_count: usize, decls_per_rule: usize) -> String {
   let mut css = String::new();
   css.push_str(
@@ -30,6 +32,7 @@ fn generate_large_css(rule_count: usize, decls_per_rule: usize) -> String {
 }
 
 fn bench_style_set_collectors(c: &mut Criterion) {
+  common::bench_print_config_once("style_set_collectors", &[]);
   let css = generate_large_css(2000, 8);
   let document = parse_stylesheet(&css).expect("benchmark stylesheet parses");
   let style_set = StyleSet::from_document(document);

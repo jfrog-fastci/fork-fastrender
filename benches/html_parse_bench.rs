@@ -276,6 +276,7 @@ fn build_synthetic_html(target_nodes: usize) -> (String, usize) {
 }
 
 fn html_parse_benchmarks(c: &mut Criterion) {
+  common::bench_print_config_once("html_parse_bench", &[]);
   let sizes = [
     ("10k_nodes", 10_000usize),
     ("50k_nodes", 50_000usize),

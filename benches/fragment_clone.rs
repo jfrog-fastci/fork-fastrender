@@ -8,6 +8,8 @@ use fastrender::tree::fragment_tree::{
 };
 use fastrender::{FragmentNode, Rect};
 
+mod common;
+
 struct CountingAllocator;
 
 static ALLOC_CALLS: AtomicUsize = AtomicUsize::new(0);
@@ -104,6 +106,7 @@ fn assert_children_unshared(a: &FragmentNode, b: &FragmentNode) {
 }
 
 fn fragment_clone_benchmarks(c: &mut Criterion) {
+  common::bench_print_config_once("fragment_clone", &[]);
   // Moderately deep tree with many text leaves to exercise Arc sharing.
   let fragment = build_fragment_subtree(4, 6, 1);
 

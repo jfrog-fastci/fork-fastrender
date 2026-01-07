@@ -13,8 +13,11 @@ use fastrender::{
 use rayon::ThreadPoolBuilder;
 use std::{env, sync::Arc};
 
+mod common;
+
 fn available_threads() -> usize {
-  std::thread::available_parallelism().map_or(1, |n| n.get())
+  let available = std::thread::available_parallelism().map_or(1, |n| n.get());
+  available.min(common::bench_limits().max_threads).max(1)
 }
 
 fn build_table(rows: usize, cols: usize) -> BoxTree {
@@ -428,6 +431,7 @@ fn build_grid_sibling_containers_fixed(
 }
 
 fn bench_layout_parallel(c: &mut Criterion) {
+  common::bench_print_config_once("layout_parallel", &[]);
   let box_tree = build_table(40, 18);
   let viewport = Size::new(1280.0, 900.0);
   let font_ctx = FontContext::new();
@@ -435,7 +439,7 @@ fn bench_layout_parallel(c: &mut Criterion) {
   let serial_engine =
     LayoutEngine::with_font_context(LayoutConfig::for_viewport(viewport), font_ctx.clone());
   let parallelism =
-    LayoutParallelism::enabled(4).with_max_threads(Some(available_threads().max(2)));
+    LayoutParallelism::enabled(4).with_max_threads(Some(available_threads()));
   let parallel_engine = LayoutEngine::with_font_context(
     LayoutConfig::for_viewport(viewport).with_parallelism(parallelism),
     font_ctx,
@@ -452,6 +456,7 @@ fn bench_layout_parallel(c: &mut Criterion) {
 }
 
 fn bench_layout_parallel_dense(c: &mut Criterion) {
+  common::bench_print_config_once("layout_parallel", &[]);
   let box_tree = build_table(80, 32);
   let viewport = Size::new(1440.0, 960.0);
   let font_ctx = FontContext::new();
@@ -460,7 +465,7 @@ fn bench_layout_parallel_dense(c: &mut Criterion) {
     LayoutEngine::with_font_context(LayoutConfig::for_viewport(viewport), font_ctx.clone());
   let parallelism = LayoutParallelism::enabled(8)
     .with_min_fanout(4)
-    .with_max_threads(Some(available_threads().max(2)));
+    .with_max_threads(Some(available_threads()));
   let parallel_engine = LayoutEngine::with_font_context(
     LayoutConfig::for_viewport(viewport).with_parallelism(parallelism),
     font_ctx,
@@ -477,6 +482,7 @@ fn bench_layout_parallel_dense(c: &mut Criterion) {
 }
 
 fn bench_grid_parallel(c: &mut Criterion) {
+  common::bench_print_config_once("layout_parallel", &[]);
   // 256 grid items (>= 64) with non-trivial subtrees. This benchmark uses indefinite inline
   // constraints to mimic shrink-to-fit sizing, which minimizes Taffy's measure/layout reuse and
   // shifts most work into fragment conversion (the parallelized hotspot).
@@ -492,7 +498,7 @@ fn bench_grid_parallel(c: &mut Criterion) {
     .with_parallelism(LayoutParallelism::enabled(8));
 
   let pool = ThreadPoolBuilder::new()
-    .num_threads(available_threads().max(2))
+    .num_threads(available_threads())
     .build()
     .expect("build rayon pool");
 
@@ -519,6 +525,7 @@ fn bench_grid_parallel(c: &mut Criterion) {
 }
 
 fn bench_block_parallel(c: &mut Criterion) {
+  common::bench_print_config_once("layout_parallel", &[]);
   let box_tree = build_block_stack(180);
   let viewport = Size::new(1280.0, 900.0);
   let font_ctx = FontContext::new();
@@ -526,7 +533,7 @@ fn bench_block_parallel(c: &mut Criterion) {
   let serial_engine =
     LayoutEngine::with_font_context(LayoutConfig::for_viewport(viewport), font_ctx.clone());
   let parallelism =
-    LayoutParallelism::enabled(8).with_max_threads(Some(available_threads().max(2)));
+    LayoutParallelism::enabled(8).with_max_threads(Some(available_threads()));
   let parallel_engine = LayoutEngine::with_font_context(
     LayoutConfig::for_viewport(viewport).with_parallelism(parallelism),
     font_ctx,
@@ -543,6 +550,7 @@ fn bench_block_parallel(c: &mut Criterion) {
 }
 
 fn bench_flex_parallel(c: &mut Criterion) {
+  common::bench_print_config_once("layout_parallel", &[]);
   let box_tree = build_flex_row(160);
   let viewport = Size::new(1280.0, 900.0);
   let font_ctx = FontContext::new();
@@ -550,7 +558,7 @@ fn bench_flex_parallel(c: &mut Criterion) {
   let serial_engine =
     LayoutEngine::with_font_context(LayoutConfig::for_viewport(viewport), font_ctx.clone());
   let parallelism =
-    LayoutParallelism::enabled(8).with_max_threads(Some(available_threads().max(2)));
+    LayoutParallelism::enabled(8).with_max_threads(Some(available_threads()));
   let parallel_engine = LayoutEngine::with_font_context(
     LayoutConfig::for_viewport(viewport).with_parallelism(parallelism),
     font_ctx,
@@ -567,6 +575,7 @@ fn bench_flex_parallel(c: &mut Criterion) {
 }
 
 fn bench_flex_item_children_parallel(c: &mut Criterion) {
+  common::bench_print_config_once("layout_parallel", &[]);
   let box_tree = build_flex_row_heavy(1024);
   let viewport = Size::new(1280.0, 900.0);
   let font_ctx = FontContext::new();
@@ -574,7 +583,7 @@ fn bench_flex_item_children_parallel(c: &mut Criterion) {
   let serial_engine =
     LayoutEngine::with_font_context(LayoutConfig::for_viewport(viewport), font_ctx.clone());
   let parallelism =
-    LayoutParallelism::enabled(8).with_max_threads(Some(available_threads().max(2)));
+    LayoutParallelism::enabled(8).with_max_threads(Some(available_threads()));
   let parallel_engine = LayoutEngine::with_font_context(
     LayoutConfig::for_viewport(viewport).with_parallelism(parallelism),
     font_ctx,
@@ -596,6 +605,7 @@ fn bench_flex_cache_contention_case(
   children_per_flex: usize,
   nested_flex: bool,
 ) {
+  common::bench_print_config_once("layout_parallel", &[]);
   // Construct many sibling flex containers to trigger layout fan-out. Each benchmark run compares
   // serial vs parallel layout with cold caches as well as a two-pass sequence that reuses
   // flex/layout caches on the second pass to quantify contention and reuse wins.
@@ -609,7 +619,7 @@ fn bench_flex_cache_contention_case(
 
   let parallelism = LayoutParallelism::enabled(8)
     .with_min_fanout(4)
-    .with_max_threads(Some(available_threads().max(2)));
+    .with_max_threads(Some(available_threads()));
   let mut parallel_config = LayoutConfig::for_viewport(viewport).with_parallelism(parallelism);
   parallel_config.enable_cache = true;
   let parallel_engine = LayoutEngine::with_font_context(parallel_config, font_ctx);
@@ -663,6 +673,7 @@ fn bench_flex_cache_contention(c: &mut Criterion) {
 }
 
 fn bench_taffy_node_cache_contention(c: &mut Criterion) {
+  common::bench_print_config_once("layout_parallel", &[]);
   let viewport = Size::new(1280.0, 900.0);
   let font_ctx = FontContext::new();
 
@@ -672,7 +683,7 @@ fn bench_taffy_node_cache_contention(c: &mut Criterion) {
 
   let parallelism = LayoutParallelism::enabled(8)
     .with_min_fanout(4)
-    .with_max_threads(Some(available_threads().max(2)));
+    .with_max_threads(Some(available_threads()));
   let mut parallel_config = LayoutConfig::for_viewport(viewport).with_parallelism(parallelism);
   parallel_config.enable_cache = true;
   let parallel_engine = LayoutEngine::with_font_context(parallel_config, font_ctx);

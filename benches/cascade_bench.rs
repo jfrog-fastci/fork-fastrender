@@ -16,7 +16,10 @@ use selectors::context::QuirksMode;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::fmt::Write;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+
+mod common;
 
 struct CountingAllocator;
 
@@ -145,6 +148,65 @@ fn generate_balanced_dom(depth: usize, fan_out: usize, payload_bytes: usize) -> 
   };
 
   (dom, node_count)
+}
+
+#[derive(Clone, Copy)]
+struct DeepDomBenchParams {
+  depth: usize,
+  fan_out: usize,
+  payload_bytes: usize,
+}
+
+fn estimate_balanced_dom_nodes(depth: usize, fan_out: usize) -> Option<u128> {
+  let mut total = 0u128;
+  let mut level = 1u128;
+  let fan_out = fan_out as u128;
+  for _ in 0..=depth {
+    total = total.checked_add(level)?;
+    level = level.checked_mul(fan_out)?;
+  }
+  Some(total)
+}
+
+fn deep_dom_bench_params() -> DeepDomBenchParams {
+  static PARAMS: OnceLock<DeepDomBenchParams> = OnceLock::new();
+  *PARAMS.get_or_init(|| {
+    let limits = common::bench_limits();
+    let max_nodes = limits.max_dom_nodes as u128;
+
+    let mut depth = common::env_usize("FASTR_CASCADE_DEEP_DEPTH")
+      .unwrap_or(10)
+      .min(limits.max_depth);
+    let mut fan_out = common::env_usize("FASTR_CASCADE_DEEP_FAN_OUT")
+      .unwrap_or(2)
+      .min(limits.max_dom_nodes);
+    let payload_bytes = common::env_usize("FASTR_CASCADE_DEEP_PAYLOAD_BYTES")
+      .unwrap_or(512)
+      .min(4096);
+
+    // Clamp depth/fanout until the estimated node count fits inside `max_dom_nodes`.
+    loop {
+      let estimated = estimate_balanced_dom_nodes(depth, fan_out).unwrap_or(u128::MAX);
+      if estimated <= max_nodes {
+        break;
+      }
+      if depth > 0 {
+        depth -= 1;
+        continue;
+      }
+      if fan_out > 1 {
+        fan_out -= 1;
+        continue;
+      }
+      break;
+    }
+
+    DeepDomBenchParams {
+      depth,
+      fan_out,
+      payload_bytes,
+    }
+  })
 }
 
 fn generate_cascade_css(class_variants: usize) -> String {
@@ -406,26 +468,16 @@ fn cascade_deep_dom_benchmark(c: &mut Criterion) {
   // Stress the cost of cloning DOM subtrees by constructing a balanced tree where each node carries
   // a large attribute payload. A balanced tree keeps recursion depth bounded while still producing
   // thousands of nodes.
-  let depth = std::env::var("FASTR_CASCADE_DEEP_DEPTH")
-    .ok()
-    .and_then(|v| v.trim().parse::<usize>().ok())
-    .unwrap_or(10);
-  let fan_out = std::env::var("FASTR_CASCADE_DEEP_FAN_OUT")
-    .ok()
-    .and_then(|v| v.trim().parse::<usize>().ok())
-    .unwrap_or(2);
-  let payload_bytes = std::env::var("FASTR_CASCADE_DEEP_PAYLOAD_BYTES")
-    .ok()
-    .and_then(|v| v.trim().parse::<usize>().ok())
-    .unwrap_or(512);
-
-  let (dom, node_count) = generate_balanced_dom(depth, fan_out, payload_bytes);
+  let params = deep_dom_bench_params();
+  let (dom, node_count) =
+    generate_balanced_dom(params.depth, params.fan_out, params.payload_bytes);
   let stylesheet = parse_stylesheet("div { color: #222; }").expect("parse stylesheet");
   let media = MediaContext::screen(1280.0, 720.0);
   static PRINTED: AtomicBool = AtomicBool::new(false);
 
   let id = format!(
-    "cascade apply_styles deep-dom depth{depth} fan{fan_out} nodes{node_count} payload{payload_bytes}B"
+    "cascade apply_styles deep-dom depth{} fan{} nodes{node_count} payload{}B",
+    params.depth, params.fan_out, params.payload_bytes
   );
   c.bench_function(&id, |b| {
     b.iter_custom(|iters| {
@@ -733,6 +785,15 @@ fn var_resolution_width_benchmark(c: &mut Criterion) {
 }
 
 fn cascade_bench_config() -> Criterion {
+  let deep = deep_dom_bench_params();
+  common::bench_print_config_once(
+    "cascade_bench",
+    &[
+      ("deep_dom_depth", deep.depth.to_string()),
+      ("deep_dom_fan_out", deep.fan_out.to_string()),
+      ("deep_dom_payload_bytes", deep.payload_bytes.to_string()),
+    ],
+  );
   if std::env::var("FASTR_CASCADE_PROFILE")
     .map(|value| !value.trim().is_empty() && value.trim() != "0")
     .unwrap_or(false)

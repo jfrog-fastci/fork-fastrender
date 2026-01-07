@@ -8,15 +8,23 @@ use std::sync::Arc;
 use tiny_skia::{Color, Pixmap};
 use ttf_parser::GlyphId;
 
+mod common;
+
 fn fixtures_dir() -> PathBuf {
   PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fonts")
 }
 
-fn load_fixture_font(name: &str) -> LoadedFont {
-  let bytes = std::fs::read(fixtures_dir().join(name)).expect("load font bytes");
+fn load_fixture_font(name: &str, max_bytes: usize) -> Option<LoadedFont> {
+  let bytes = match common::read_fixture_bytes_skip(fixtures_dir().join(name), max_bytes) {
+    Ok(bytes) => bytes,
+    Err(err) => {
+      eprintln!("colr_sweep: skipping fixture {name}: {err}");
+      return None;
+    }
+  };
   let mut db = FontDatabase::empty();
   db.load_font_data(bytes).expect("load fixture font");
-  db.first_font().expect("fixture font present")
+  db.first_font()
 }
 
 fn shaped_run(font: &LoadedFont, ch: char, font_size: f32, palette_index: u16) -> ShapedRun {
@@ -64,7 +72,11 @@ fn shaped_run(font: &LoadedFont, ch: char, font_size: f32, palette_index: u16) -
 }
 
 fn bench_colr_sweep(c: &mut Criterion) {
-  let font = load_fixture_font("colrv1-sweep-test.ttf");
+  common::bench_print_config_once("colr_sweep", &[]);
+  let max_bytes = common::bench_limits().max_fixture_bytes;
+  let Some(font) = load_fixture_font("colrv1-sweep-test.ttf", max_bytes) else {
+    return;
+  };
   let run = shaped_run(&font, 'G', 96.0, 0);
   let mut rasterizer = TextRasterizer::new();
   let mut pixmap = Pixmap::new(180, 180).expect("pixmap");

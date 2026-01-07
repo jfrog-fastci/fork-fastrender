@@ -1,6 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use fastrender::layout::float_context::{FloatContext, FloatSide};
 
+mod common;
+
 fn build_float_context(count: usize) -> FloatContext {
   let mut ctx = FloatContext::new(200.0);
   for i in 0..count {
@@ -15,6 +17,7 @@ fn build_float_context(count: usize) -> FloatContext {
 }
 
 fn bench_available_width(c: &mut Criterion) {
+  common::bench_print_config_once("float_bench", &[]);
   let ctx = build_float_context(5_000);
   c.bench_function("float_available_width_dense", |b| {
     b.iter(|| {
@@ -28,6 +31,7 @@ fn bench_available_width(c: &mut Criterion) {
 }
 
 fn bench_compute_float_position(c: &mut Criterion) {
+  common::bench_print_config_once("float_bench", &[]);
   c.bench_function("float_place_many", |b| {
     b.iter(|| {
       let mut ctx = build_float_context(2_500);

@@ -11,6 +11,8 @@ use fastrender::css::parser::{
 use fastrender::css::types::CssImportLoader;
 use fastrender::style::media::{MediaContext, MediaQueryCache};
 
+mod common;
+
 const APPLE_STYLESHEET: &str =
   include_str!("../tests/pages/fixtures/apple.com/assets/bc56bc2a7a8f28c1f7d1f49327547b3b.css");
 
@@ -115,6 +117,7 @@ fn allocation_delta<R>(f: impl FnOnce() -> R) -> (usize, usize, R) {
 }
 
 fn bench_css_parse_pageset(c: &mut Criterion) {
+  common::bench_print_config_once("css_parse_pageset", &[]);
   let mut group = c.benchmark_group("css_parse_pageset");
   group
     .sample_size(10)

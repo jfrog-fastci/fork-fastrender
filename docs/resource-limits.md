@@ -79,11 +79,49 @@ OS caps are blunt: they stop the process, but don’t tell us *why*. For FastRen
 - **Add per-stage “allocation budget” counters** for known hotspots (images, CSS parse, display list build).
   - Goal: fail with a diagnostic like “paint rasterize exceeded 512MB budget” instead of OOM.
 - **Make every unbounded cache bounded** (items and/or bytes) with explicit configuration knobs.
-- **Bench safety**: benches must never allocate unboundedly by default.
-  - Example: `benches/selector_bloom_bench.rs` now has a guardrail (`FASTR_BLOOM_BENCH_MAX_ELEMS`).
+- **Bench safety**: benches must never allocate unboundedly by default (see below).
 
 ## Operational guidance
 
 - For pageset runs, set an OS memory cap by default (cgroups or prlimit).
 - When a cap is hit, treat it as a **bug**: either an algorithmic explosion or an unbounded cache.
 - The “correct fix” is almost always: reduce asymptotic work, add early exits, and bound caches—**not** “skip rendering”.
+
+## Bench safety
+
+Agents occasionally run `cargo bench`. A single pathological benchmark can OOM the host.
+Benchmarks must be **safe-by-default**: bounded memory/CPU even when inputs (env vars, fixture
+files) are hostile.
+
+### Standard env vars (benches)
+
+Set `FASTR_BENCH_VERBOSE=1` to print the *effective* caps once at bench startup.
+
+Common caps (with conservative defaults):
+
+- `FASTR_BENCH_MAX_FIXTURE_BYTES` (default: `8MiB`)
+  - Max bytes a benchmark will read from any on-disk fixture.
+  - Oversized fixtures are skipped with a clear message (or truncated deterministically when
+    appropriate for the bench).
+- `FASTR_BENCH_MAX_THREADS` (default: `8`)
+  - Caps rayon threadpools / parallel paint/layout benchmarks.
+- `FASTR_BENCH_MAX_DOM_NODES` (default: `100_000`)
+  - Caps synthetic DOM generators (depth, fan-out, list size env knobs).
+- `FASTR_BENCH_MAX_DISPLAY_LIST_ITEMS` (default: `200_000`)
+  - Caps synthetic display-list / background-tiling workloads.
+- `FASTR_BENCH_MAX_DEPTH` (default: `256`)
+  - Caps recursion depth for synthetic tree builders.
+
+Some benches also accept legacy, bench-specific knobs. For example,
+`benches/selector_bloom_bench.rs` still accepts `FASTR_BLOOM_BENCH_MAX_ELEMS` as an override for the
+DOM node cap.
+
+### Always use OS-level caps too
+
+In-process caps prevent accidental runaway allocations, but the most reliable protection is still
+an OS-enforced ceiling. Prefer:
+
+```bash
+FASTR_BENCH_VERBOSE=1 scripts/run_limited.sh --as 12G --cpu 60 -- \
+  cargo bench --bench selector_bloom_bench -- --noplot
+```

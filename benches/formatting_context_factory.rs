@@ -1,7 +1,10 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use fastrender::{FormattingContextFactory, FormattingContextType};
 
+mod common;
+
 fn bench_factory_cached_vs_create(c: &mut Criterion) {
+  common::bench_print_config_once("formatting_context_factory", &[]);
   let mut group = c.benchmark_group("formatting_context_factory");
   for &fc_type in &[
     FormattingContextType::Block,

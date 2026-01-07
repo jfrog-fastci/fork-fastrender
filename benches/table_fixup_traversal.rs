@@ -3,6 +3,8 @@ use fastrender::tree::table_fixup::TableStructureFixer;
 use fastrender::{BoxNode, ComputedStyle, FormattingContextType};
 use std::sync::Arc;
 
+mod common;
+
 fn build_block_tree(depth: usize, branching: usize, style: &Arc<ComputedStyle>) -> BoxNode {
   if depth == 0 {
     return BoxNode::new_block(style.clone(), FormattingContextType::Block, Vec::new());
@@ -16,6 +18,7 @@ fn build_block_tree(depth: usize, branching: usize, style: &Arc<ComputedStyle>) 
 }
 
 fn bench_table_fixup_traversal(c: &mut Criterion) {
+  common::bench_print_config_once("table_fixup_traversal", &[]);
   let mut group = c.benchmark_group("table_fixup_traversal");
 
   // Large tree with no table formatting contexts. This isolates the traversal overhead of
@@ -42,6 +45,7 @@ fn bench_table_fixup_traversal(c: &mut Criterion) {
 }
 
 fn perf_criterion() -> Criterion {
+  common::bench_print_config_once("table_fixup_traversal", &[]);
   Criterion::default().configure_from_args()
 }
 

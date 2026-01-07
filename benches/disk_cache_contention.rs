@@ -18,6 +18,9 @@ use std::fs;
 use std::sync::Arc;
 
 #[cfg(feature = "disk_cache")]
+mod common;
+
+#[cfg(feature = "disk_cache")]
 #[derive(Clone)]
 struct StaticFetcher {
   body: Arc<Vec<u8>>,
@@ -45,7 +48,10 @@ impl ResourceFetcher for PanicFetcher {
 
 #[cfg(feature = "disk_cache")]
 fn bench_disk_cache_parallel_hits(c: &mut Criterion) {
-  let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
+  common::bench_print_config_once("disk_cache_contention", &[]);
+  let limits = common::bench_limits();
+  let available = std::thread::available_parallelism().map_or(1, |n| n.get());
+  let workers = available.min(limits.max_threads).max(1);
   let url_count = 16usize;
   let urls: Vec<String> = (0..url_count)
     .map(|i| format!("https://example.com/resource/{i}"))
@@ -146,7 +152,10 @@ fn bench_disk_cache_parallel_hits(c: &mut Criterion) {
 
 #[cfg(feature = "disk_cache")]
 fn bench_disk_cache_parallel_inserts_with_eviction(c: &mut Criterion) {
-  let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
+  common::bench_print_config_once("disk_cache_contention", &[]);
+  let limits = common::bench_limits();
+  let available = std::thread::available_parallelism().map_or(1, |n| n.get());
+  let workers = available.min(limits.max_threads).max(1);
   let inserts_per_worker = 64usize;
   let body: Arc<Vec<u8>> = Arc::new(vec![42u8; 64]);
 

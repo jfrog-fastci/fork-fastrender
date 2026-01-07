@@ -7,6 +7,8 @@ use fastrender::ComputedStyle;
 use std::ops::Range;
 use std::sync::Arc;
 
+mod common;
+
 fn prepare_item() -> Option<(TextItem, ShapingPipeline, FontContext, Vec<Range<usize>>)> {
   let mut style = ComputedStyle::default();
   style.font_family = vec!["sans-serif".to_string()].into();
@@ -46,6 +48,7 @@ fn prepare_item() -> Option<(TextItem, ShapingPipeline, FontContext, Vec<Range<u
 }
 
 fn bench_inline_reshape_cache_hits(c: &mut Criterion) {
+  common::bench_print_config_once("reshape_cache_bench", &[]);
   let Some((item, pipeline, font_ctx, ranges)) = prepare_item() else {
     return;
   };
@@ -65,6 +68,7 @@ fn bench_inline_reshape_cache_hits(c: &mut Criterion) {
 }
 
 fn bench_inline_reshape_cache_misses(c: &mut Criterion) {
+  common::bench_print_config_once("reshape_cache_bench", &[]);
   let Some((item, pipeline, font_ctx, ranges)) = prepare_item() else {
     return;
   };

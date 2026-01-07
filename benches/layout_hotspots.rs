@@ -237,6 +237,7 @@ fn build_table_tree(rows: usize, cols: usize) -> BoxNode {
 }
 
 fn bench_flex_measure_hot_path(c: &mut Criterion) {
+  common::bench_print_config_once("layout_hotspots", &[]);
   let viewport = Size::new(800.0, 600.0);
   let font_ctx = common::fixed_font_context();
   let engine = LayoutEngine::with_font_context(
@@ -280,6 +281,7 @@ fn bench_flex_measure_hot_path(c: &mut Criterion) {
 }
 
 fn bench_block_intrinsic_sizing(c: &mut Criterion) {
+  common::bench_print_config_once("layout_hotspots", &[]);
   let viewport = Size::new(800.0, 600.0);
   let font_ctx = common::fixed_font_context();
   let factory = FormattingContextFactory::with_font_context_and_viewport(font_ctx, viewport)
@@ -322,6 +324,7 @@ fn bench_block_intrinsic_sizing(c: &mut Criterion) {
 }
 
 fn bench_block_intrinsic_many_inline_runs(c: &mut Criterion) {
+  common::bench_print_config_once("layout_hotspots", &[]);
   let viewport = Size::new(800.0, 600.0);
   let font_ctx = common::fixed_font_context();
   let factory = FormattingContextFactory::with_font_context_and_viewport(font_ctx, viewport)
@@ -353,6 +356,7 @@ fn bench_block_intrinsic_many_inline_runs(c: &mut Criterion) {
 }
 
 fn bench_table_cell_intrinsic_and_distribution(c: &mut Criterion) {
+  common::bench_print_config_once("layout_hotspots", &[]);
   let viewport = Size::new(960.0, 720.0);
   let font_ctx = common::fixed_font_context();
   let factory = FormattingContextFactory::with_font_context_and_viewport(font_ctx, viewport)

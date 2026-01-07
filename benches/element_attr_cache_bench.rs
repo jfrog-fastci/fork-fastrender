@@ -23,6 +23,8 @@ use selectors::parser::ParseRelative;
 use selectors::parser::SelectorList;
 use std::fmt::Write;
 
+mod common;
+
 fn build_test_node(num_classes: usize, num_attrs: usize) -> DomNode {
   let mut attrs = Vec::with_capacity(num_attrs + 1);
   let mut class_attr = String::new();
@@ -77,6 +79,7 @@ fn build_selector_list(
 }
 
 fn bench_element_attr_cache(c: &mut Criterion) {
+  common::bench_print_config_once("element_attr_cache_bench", &[]);
   const NUM_CLASSES: usize = 64;
   const NUM_ATTRS: usize = 64;
   const NUM_SELECTORS: usize = 2048;

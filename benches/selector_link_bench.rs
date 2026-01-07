@@ -18,6 +18,8 @@ use selectors::matching::SelectorCaches;
 use selectors::parser::ParseRelative;
 use selectors::parser::SelectorList;
 
+mod common;
+
 fn build_link_list(count: usize) -> DomNode {
   let mut children = Vec::with_capacity(count);
   for _ in 0..count {
@@ -81,10 +83,20 @@ fn parse_selector(
 }
 
 fn selector_link_bench(c: &mut Criterion) {
-  let count = std::env::var("FASTR_LINK_BENCH_COUNT")
-    .ok()
-    .and_then(|value| value.parse::<usize>().ok())
-    .unwrap_or(8192);
+  let limits = common::bench_limits();
+  let count = common::env_usize("FASTR_LINK_BENCH_COUNT")
+    .unwrap_or(8192)
+    .min(limits.max_dom_nodes);
+  let depth = common::env_usize("FASTR_LINK_BENCH_DEPTH")
+    .unwrap_or(4096)
+    .min(limits.max_dom_nodes);
+  common::bench_print_config_once(
+    "selector_link_bench",
+    &[
+      ("link_count", count.to_string()),
+      ("link_depth", depth.to_string()),
+    ],
+  );
 
   let list_root = build_link_list(count);
   let list_ancestors: [&DomNode; 1] = [&list_root];
@@ -127,11 +139,6 @@ fn selector_link_bench(c: &mut Criterion) {
       black_box(matched);
     })
   });
-
-  let depth = std::env::var("FASTR_LINK_BENCH_DEPTH")
-    .ok()
-    .and_then(|value| value.parse::<usize>().ok())
-    .unwrap_or(4096);
 
   let root = build_deep_link_chain(depth);
   let mut ancestors: Vec<&DomNode> = Vec::with_capacity(depth.saturating_add(1));

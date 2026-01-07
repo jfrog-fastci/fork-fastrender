@@ -4,6 +4,8 @@ use fastrender::layout::fragmentation::{FragmentationAnalyzer, FragmentationCont
 use fastrender::style::types::{Direction, WritingMode};
 use fastrender::{FragmentNode, Rect};
 
+mod common;
+
 fn build_flow_root(lines: usize, line_height: f32) -> FragmentNode {
   let mut children = Vec::with_capacity(lines);
   for i in 0..lines {
@@ -19,6 +21,7 @@ fn build_flow_root(lines: usize, line_height: f32) -> FragmentNode {
 }
 
 fn bench_fragmentation(c: &mut Criterion) {
+  common::bench_print_config_once("fragmentation_bench", &[]);
   let root = build_flow_root(5_000, 1.0);
   let axes =
     FragmentAxes::from_writing_mode_and_direction(WritingMode::HorizontalTb, Direction::Ltr);
