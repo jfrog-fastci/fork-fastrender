@@ -650,9 +650,142 @@ fn consume_nested_tokens_for_slice<'i, 't>(
   Ok(())
 }
 
+fn parse_sizes_calc_sum(value: &str) -> Option<SizesLength> {
+  use crate::style::values::Length;
+
+  fn strip_wrapping_parentheses(mut value: &str) -> (&str, bool) {
+    let mut stripped_any = false;
+    loop {
+      let trimmed = value.trim();
+      if !(trimmed.starts_with('(') && trimmed.ends_with(')')) {
+        return (trimmed, stripped_any);
+      }
+
+      let bytes = trimmed.as_bytes();
+      let mut depth = 0usize;
+      let mut closing_idx = None;
+      for (idx, &b) in bytes.iter().enumerate() {
+        match b {
+          b'(' => depth += 1,
+          b')' => {
+            if depth > 0 {
+              depth -= 1;
+            }
+            if depth == 0 {
+              closing_idx = Some(idx);
+              break;
+            }
+          }
+          _ => {}
+        }
+      }
+
+      if closing_idx == Some(trimmed.len() - 1) {
+        stripped_any = true;
+        value = &trimmed[1..trimmed.len() - 1];
+        continue;
+      }
+
+      return (trimmed, stripped_any);
+    }
+  }
+
+  fn parse_term(term: &str) -> Option<SizesLength> {
+    let (term, stripped) = strip_wrapping_parentheses(term);
+    if term.is_empty() {
+      return None;
+    }
+    if stripped {
+      return parse_sizes_calc_sum(term);
+    }
+    parse_sizes_length(term)
+  }
+
+  let (value, _) = strip_wrapping_parentheses(value);
+  if value.is_empty() {
+    return None;
+  }
+
+  let bytes = value.as_bytes();
+  let mut depth = 0usize;
+  let mut start = 0usize;
+  let mut sign: i8 = 1;
+  let mut terms: Vec<(i8, &str)> = Vec::new();
+
+  for (idx, &b) in bytes.iter().enumerate() {
+    match b {
+      b'(' => depth += 1,
+      b')' => {
+        if depth > 0 {
+          depth -= 1;
+        }
+      }
+      b'*' | b'/' if depth == 0 => {
+        // Fall back to the full CSS calc parser (which supports multiplication/division) when the
+        // expression uses operators we don't support here.
+        return None;
+      }
+      b'+' | b'-' if depth == 0 => {
+        let before = &value[start..idx];
+        let has_content = before.chars().any(|ch| !ch.is_ascii_whitespace());
+        if has_content {
+          terms.push((sign, before));
+          sign = if b == b'-' { -1 } else { 1 };
+          start = idx + 1;
+        } else {
+          // Unary sign.
+          if b == b'-' {
+            sign *= -1;
+          }
+          start = idx + 1;
+        }
+      }
+      _ => {}
+    }
+  }
+
+  let tail = &value[start..];
+  if tail.chars().any(|ch| !ch.is_ascii_whitespace()) {
+    terms.push((sign, tail));
+  }
+  if terms.is_empty() {
+    return None;
+  }
+
+  let mut iter = terms.into_iter();
+  let (first_sign, first) = iter.next()?;
+  let mut out = parse_term(first)?;
+  if first_sign < 0 {
+    out = SizesLength::Sub(Box::new(Length::px(0.0).into()), Box::new(out));
+  }
+
+  for (sign, term) in iter {
+    let rhs = parse_term(term)?;
+    out = if sign < 0 {
+      SizesLength::Sub(Box::new(out), Box::new(rhs))
+    } else {
+      SizesLength::Add(Box::new(out), Box::new(rhs))
+    };
+  }
+
+  Some(out)
+}
+
 fn parse_sizes_length(value: &str) -> Option<SizesLength> {
-  use crate::css::properties::parse_calc_function_length;
+  use crate::css::properties::parse_length;
   use crate::style::values::{Length, LengthUnit};
+  fn contains_calc_math_functions(input: &str) -> bool {
+    fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+      let needle_bytes = needle.as_bytes();
+      haystack
+        .as_bytes()
+        .windows(needle_bytes.len())
+        .any(|window| window.eq_ignore_ascii_case(needle_bytes))
+    }
+    contains_ignore_ascii_case(input, "min(")
+      || contains_ignore_ascii_case(input, "max(")
+      || contains_ignore_ascii_case(input, "clamp(")
+  }
 
   fn split_top_level_commas(input: &str) -> Vec<&str> {
     let bytes = input.as_bytes();
@@ -748,7 +881,20 @@ fn parse_sizes_length(value: &str) -> Option<SizesLength> {
       .map(Into::into)
     }
     Ok(Token::Function(ref name)) if name.eq_ignore_ascii_case("calc") => {
-      parse_calc_function_length(&mut parser).ok().map(Into::into)
+      parser
+        .parse_nested_block(|block| {
+          let start = block.position();
+          consume_nested_tokens_for_slice(block)?;
+          Ok(block.slice_from(start))
+        })
+        .ok()
+        .and_then(|inner| {
+          if contains_calc_math_functions(inner) {
+            parse_sizes_calc_sum(inner).or_else(|| parse_length(value).map(Into::into))
+          } else {
+            parse_length(value).map(Into::into)
+          }
+        })
     }
     Ok(Token::Function(ref name)) if name.eq_ignore_ascii_case("min") => parser
       .parse_nested_block(|block| {
@@ -1084,6 +1230,26 @@ mod tests {
     };
     assert_eq!(len.unit, LengthUnit::Calc);
     assert!(len.calc.is_some());
+  }
+
+  #[test]
+  fn parse_sizes_supports_calc_with_nested_min_function() {
+    let parsed = parse_sizes("calc(min(100vw, 80px) - 20px), 100vw").expect("sizes parsed");
+    assert_eq!(parsed.entries.len(), 2);
+    assert_eq!(
+      parsed.entries[0].length,
+      SizesLength::Sub(
+        Box::new(SizesLength::Min(vec![
+          Length::new(100.0, LengthUnit::Vw).into(),
+          Length::px(80.0).into(),
+        ])),
+        Box::new(Length::px(20.0).into()),
+      )
+    );
+    assert_eq!(
+      parsed.entries[1].length,
+      Length::new(100.0, LengthUnit::Vw).into()
+    );
   }
 
   #[test]

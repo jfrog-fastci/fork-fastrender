@@ -422,6 +422,12 @@ pub enum SizesLength {
     preferred: Box<SizesLength>,
     max: Box<SizesLength>,
   },
+  /// Arithmetic from a `calc()` expression that can't be represented as a linear `CalcLength`.
+  ///
+  /// We only need runtime evaluation for responsive image selection, so we store a small AST
+  /// instead of trying to normalize the expression into a single `Length`.
+  Add(Box<SizesLength>, Box<SizesLength>),
+  Sub(Box<SizesLength>, Box<SizesLength>),
 }
 
 impl From<crate::style::values::Length> for SizesLength {
@@ -713,6 +719,18 @@ impl SizesLength {
           max_value
         };
         Some(preferred_value.max(min_value).min(upper))
+      }
+      SizesLength::Add(left, right) => {
+        let left_value = left.resolve(viewport, font_size, root_font_size)?;
+        let right_value = right.resolve(viewport, font_size, root_font_size)?;
+        let sum = left_value + right_value;
+        sum.is_finite().then_some(sum)
+      }
+      SizesLength::Sub(left, right) => {
+        let left_value = left.resolve(viewport, font_size, root_font_size)?;
+        let right_value = right.resolve(viewport, font_size, root_font_size)?;
+        let diff = left_value - right_value;
+        diff.is_finite().then_some(diff)
       }
     }
   }
@@ -1870,6 +1888,58 @@ mod tests {
     assert_eq!(
       chosen, "200w",
       "calc() sizes should reduce slot width and keep the smaller width candidate"
+    );
+  }
+
+  #[test]
+  fn sizes_calc_with_nested_min_function_controls_width_descriptor_selection() {
+    let img = ReplacedType::Image {
+      src: "fallback".to_string(),
+      alt: None,
+      srcset: vec![
+        SrcsetCandidate {
+          url: "200w".to_string(),
+          descriptor: SrcsetDescriptor::Width(200),
+        },
+        SrcsetCandidate {
+          url: "400w".to_string(),
+          descriptor: SrcsetDescriptor::Width(400),
+        },
+      ],
+      sizes: Some(SizesList {
+        entries: vec![SizesEntry {
+          media: None,
+          // Viewport=200px => calc(min(100vw, 80px) - 20px) = 60px slot width.
+          length: SizesLength::Sub(
+            Box::new(SizesLength::Min(vec![
+              Length::new(100.0, LengthUnit::Vw).into(),
+              Length::px(80.0).into(),
+            ])),
+            Box::new(Length::px(20.0).into()),
+          ),
+        }],
+      }),
+      picture_sources: Vec::new(),
+      crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
+    };
+
+    let viewport = Size::new(200.0, 100.0);
+    let media_ctx =
+      MediaContext::screen(viewport.width, viewport.height).with_device_pixel_ratio(2.0);
+    let chosen = img.image_source_for_context(ImageSelectionContext {
+      device_pixel_ratio: 2.0,
+      slot_width: None,
+      viewport: Some(viewport),
+      media_context: Some(&media_ctx),
+      font_size: Some(16.0),
+      root_font_size: Some(16.0),
+      base_url: None,
+    });
+
+    assert_eq!(
+      chosen, "200w",
+      "calc(min(...)) sizes should reduce slot width and keep the smaller width candidate"
     );
   }
 
