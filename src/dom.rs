@@ -5559,6 +5559,7 @@ pub(crate) fn supports_placeholder(input_type: Option<&str>) -> bool {
 
 fn inline_style_display_is_none(node: &DomNode) -> Option<bool> {
   let style_attr = node.get_attribute_ref("style")?;
+  let mut display_is_none = None;
   for decl in style_attr.split(';') {
     let Some((name, value)) = decl.split_once(':') else {
       continue;
@@ -5572,11 +5573,12 @@ fn inline_style_display_is_none(node: &DomNode) -> Option<bool> {
       .next()
       .unwrap_or("");
     if token.is_empty() {
-      return None;
+      continue;
     }
-    return Some(token.eq_ignore_ascii_case("none"));
+    // Inline style declarations follow standard CSS rules: later declarations override earlier ones.
+    display_is_none = Some(token.eq_ignore_ascii_case("none"));
   }
-  None
+  display_is_none
 }
 
 fn node_hidden_for_select(node: &DomNode) -> bool {
@@ -11822,6 +11824,29 @@ mod tests {
     assert!(
       ElementRef::new(&single_last_selected_wins).accessibility_is_valid(),
       "single selects should treat the last selected option as the effective selection"
+    );
+  }
+
+  #[test]
+  fn inline_style_display_uses_last_valid_declaration_for_select_hidden_heuristics() {
+    let display_none_then_block = element_with_attrs(
+      "option",
+      vec![("style", "display:none; display:block")],
+      vec![],
+    );
+    assert!(
+      !node_hidden_for_select(&display_none_then_block),
+      "later inline display declaration should override earlier ones"
+    );
+
+    let invalid_then_none = element_with_attrs(
+      "option",
+      vec![("style", "display:; display:none")],
+      vec![],
+    );
+    assert!(
+      node_hidden_for_select(&invalid_then_none),
+      "invalid inline display declarations should not mask later valid ones"
     );
   }
 
