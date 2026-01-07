@@ -3518,42 +3518,20 @@ fn collect_text_content(node: &StyledNode) -> String {
   text
 }
 
-fn normalize_select_label_text(input: &str) -> String {
-  let mut out = String::new();
-  let mut last_space = false;
-  for ch in input.chars() {
-    // Ignore zero-width characters that may be injected for break opportunities.
-    if matches!(ch, '\u{200B}' | '\u{FEFF}' | '\u{2060}') {
-      continue;
-    }
-
-    if ch.is_whitespace() {
-      if !last_space {
-        out.push(' ');
-      }
-      last_space = true;
-    } else {
-      out.push(ch);
-      last_space = false;
-    }
-  }
-  out.trim().to_string()
-}
-
 fn option_label_from_node(node: &StyledNode) -> String {
   if let Some(label) = node.node.get_attribute_ref("label") {
-    return normalize_select_label_text(label);
+    // When present, use the `label` attribute verbatim per HTML.
+    return label.to_string();
   }
 
-  let text = collect_text_content(node);
-  normalize_select_label_text(&text)
+  crate::dom::strip_and_collapse_ascii_whitespace(&collect_text_content(node))
 }
 
 fn optgroup_label_from_node(node: &StyledNode) -> String {
   node
     .node
     .get_attribute_ref("label")
-    .map(normalize_select_label_text)
+    .map(|label| label.to_string())
     .unwrap_or_default()
 }
 
@@ -3562,13 +3540,7 @@ fn option_value_from_node(node: &StyledNode) -> String {
     return value.to_string();
   }
 
-  let mut value = String::new();
-  for child in node.children.iter() {
-    if let DomNodeType::Text { content } = &child.node.node_type {
-      value.push_str(content);
-    }
-  }
-  value
+  crate::dom::strip_and_collapse_ascii_whitespace(&collect_text_content(node))
 }
 
 fn parse_select_size(node: &StyledNode, multiple: bool) -> u32 {
@@ -3688,7 +3660,7 @@ fn build_select_control(node: &StyledNode) -> SelectControl {
   SelectControl {
     multiple,
     size,
-    items,
+    items: Arc::new(items),
     selected,
   }
 }
@@ -5400,16 +5372,44 @@ mod tests {
   }
 
   #[test]
-  fn select_option_label_trims_text_content() {
+  fn select_option_label_strips_and_collapses_ascii_whitespace() {
     let control = first_select_control_from_html(
-      "<html><body><select><option>  Foo \n</option></select></body></html>",
+      "<html><body><select><option>  Foo \n  Bar\tBaz  </option></select></body></html>",
     );
     let FormControlKind::Select(select) = &control.control else {
       panic!("expected select form control kind");
     };
     assert!(matches!(
       select.items.first(),
-      Some(SelectItem::Option { label, .. }) if label == "Foo"
+      Some(SelectItem::Option { label, .. }) if label == "Foo Bar Baz"
+    ));
+  }
+
+  #[test]
+  fn select_option_label_uses_empty_label_attribute() {
+    let control = first_select_control_from_html(
+      "<html><body><select><option label=\"\" value=\"v\">Text</option></select></body></html>",
+    );
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select form control kind");
+    };
+    assert!(matches!(
+      select.items.first(),
+      Some(SelectItem::Option { label, value, .. }) if label.is_empty() && value == "v"
+    ));
+  }
+
+  #[test]
+  fn select_option_value_defaults_to_stripped_text_content() {
+    let control = first_select_control_from_html(
+      "<html><body><select><option>  Foo \n Bar  </option></select></body></html>",
+    );
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select form control kind");
+    };
+    assert!(matches!(
+      select.items.first(),
+      Some(SelectItem::Option { value, .. }) if value == "Foo Bar"
     ));
   }
 
@@ -5442,16 +5442,16 @@ mod tests {
   }
 
   #[test]
-  fn select_option_label_attribute_is_normalized_like_text() {
+  fn select_option_label_attribute_is_verbatim() {
     let control = first_select_control_from_html(
-      "<html><body><select><option label=\"  Foo\n  Bar\tBaz \">Text</option></select></body></html>",
+      "<html><body><select><option label=\"  Foo  Bar  \">Text</option></select></body></html>",
     );
     let FormControlKind::Select(select) = &control.control else {
       panic!("expected select form control kind");
     };
     assert!(matches!(
       select.items.first(),
-      Some(SelectItem::Option { label, value, .. }) if label == "Foo Bar Baz" && value == "Text"
+      Some(SelectItem::Option { label, value, .. }) if label == "  Foo  Bar  " && value == "Text"
     ));
   }
 

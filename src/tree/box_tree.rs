@@ -301,7 +301,10 @@ pub struct SelectControl {
   /// Computed visible row count (`size` attribute semantics).
   pub size: u32,
   /// Flattened rows in tree order (includes optgroup labels).
-  pub items: Vec<SelectItem>,
+  ///
+  /// Stored behind an `Arc` because this snapshot can be large and is cloned into the fragment
+  /// tree; sharing avoids quadratic memory use for large `<select>` lists.
+  pub items: Arc<Vec<SelectItem>>,
   /// Indices into `items` for selected `<option>` rows (tree order).
   pub selected: Vec<usize>,
 }

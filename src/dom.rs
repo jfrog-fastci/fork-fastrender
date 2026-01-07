@@ -4879,10 +4879,6 @@ impl<'a> ElementRef<'a> {
     {
       return false;
     }
-    let explicitly_selected = self.node.get_attribute_ref("selected").is_some();
-    if explicitly_selected {
-      return true;
-    }
 
     // Find the nearest select ancestor.
     let select = self.all_ancestors.iter().rev().copied().find(|ancestor| {
@@ -4893,23 +4889,18 @@ impl<'a> ElementRef<'a> {
     });
 
     let Some(select_node) = select else {
-      return false;
+      // Without a <select>, treat the `selected` attribute as selectedness.
+      return self.node.get_attribute_ref("selected").is_some();
     };
 
-    let is_multiple = select_node.get_attribute_ref("multiple").is_some();
-    if is_multiple {
-      // Multiple selects require explicit selection.
-      return explicitly_selected;
+    if select_node.get_attribute_ref("multiple").is_some() {
+      // Multiple selects have no default selected option; selectedness is driven by the `selected`
+      // attribute.
+      return self.node.get_attribute_ref("selected").is_some();
     }
 
-    // If any option under this select has an explicit selected attribute, only that one is selected.
-    if select_has_explicit_selection(select_node) {
-      return false;
-    }
-
-    // Otherwise, the first non-disabled option is selected by default.
-    let first_option = first_enabled_option(select_node, false);
-    matches!(first_option, Some(opt) if ptr::eq(opt, self.node))
+    let selected = single_select_selected_option(select_node);
+    matches!(selected, Some(opt) if ptr::eq(opt, self.node))
   }
 
   fn is_checked(&self) -> bool {
@@ -5036,19 +5027,14 @@ impl<'a> ElementRef<'a> {
     let multiple = self.node.get_attribute_ref("multiple").is_some();
     if multiple {
       let mut values = Vec::new();
-      collect_selected_option_values(self.node, false, &mut values);
+      collect_selected_option_values(self.node, &mut values);
       if values.is_empty() {
         return None;
       }
       return Some(values.join(", "));
     }
-
-    let explicit = find_selected_option_value(self.node, false);
-    if explicit.is_some() {
-      return explicit;
-    }
-
-    first_enabled_option(self.node, false).map(option_value_from_node)
+    let selected = single_select_selected_option(self.node)?;
+    Some(option_value_from_node(selected))
   }
 
   fn parse_number(value: &str) -> Option<f64> {
@@ -5575,26 +5561,46 @@ fn node_hidden_for_select(node: &DomNode) -> bool {
   node_is_hidden(attributes)
 }
 
-fn select_has_explicit_selection(select: &DomNode) -> bool {
-  let mut stack: Vec<&DomNode> = Vec::new();
-  stack.push(select);
+pub(crate) fn strip_and_collapse_ascii_whitespace(value: &str) -> String {
+  fn is_ascii_ws(c: char) -> bool {
+    matches!(c, '\u{0009}' | '\u{000A}' | '\u{000C}' | '\u{000D}' | '\u{0020}')
+  }
 
-  while let Some(node) = stack.pop() {
-    if node_hidden_for_select(node) {
+  let mut out = String::with_capacity(value.len());
+  let mut pending_space = false;
+
+  for c in value.chars() {
+    if is_ascii_ws(c) {
+      if !out.is_empty() {
+        pending_space = true;
+      }
       continue;
     }
-    if let Some(tag) = node.tag_name() {
-      if tag.eq_ignore_ascii_case("option") && node.get_attribute_ref("selected").is_some() {
-        return true;
-      }
+    if pending_space {
+      out.push(' ');
+      pending_space = false;
     }
+    out.push(c);
+  }
 
+  out
+}
+
+fn collect_descendant_text_content(node: &DomNode) -> String {
+  let mut text = String::new();
+  let mut stack: Vec<&DomNode> = Vec::new();
+  stack.push(node);
+
+  while let Some(node) = stack.pop() {
+    if let DomNodeType::Text { content } = &node.node_type {
+      text.push_str(content);
+    }
     for child in node.children.iter().rev() {
       stack.push(child);
     }
   }
 
-  false
+  text
 }
 
 fn option_value_from_node(node: &DomNode) -> String {
@@ -5607,77 +5613,39 @@ fn option_value_from_node(node: &DomNode) -> String {
     }
   }
 
-  node
-    .children
-    .iter()
-    .filter_map(|c| match &c.node_type {
-      DomNodeType::Text { content } => Some(content.clone()),
-      _ => None,
-    })
-    .collect()
+  strip_and_collapse_ascii_whitespace(&collect_descendant_text_content(node))
 }
 
-fn collect_selected_option_values(node: &DomNode, optgroup_disabled: bool, out: &mut Vec<String>) {
-  let mut stack: Vec<(&DomNode, bool)> = Vec::new();
-  stack.push((node, optgroup_disabled));
+fn collect_selected_option_values(node: &DomNode, out: &mut Vec<String>) {
+  let mut stack: Vec<&DomNode> = Vec::new();
+  stack.push(node);
 
-  while let Some((node, optgroup_disabled)) = stack.pop() {
+  while let Some(node) = stack.pop() {
     if node_hidden_for_select(node) {
       continue;
     }
-    let tag = node.tag_name().unwrap_or("");
-    let is_option = tag.eq_ignore_ascii_case("option");
-    let is_optgroup = tag.eq_ignore_ascii_case("optgroup");
 
-    let option_disabled = node.get_attribute_ref("disabled").is_some();
-    let next_optgroup_disabled = optgroup_disabled || (is_optgroup && option_disabled);
-
-    if is_option
+    if node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("option"))
       && node.get_attribute_ref("selected").is_some()
-      && !(option_disabled || optgroup_disabled)
     {
       out.push(option_value_from_node(node));
     }
 
     for child in node.children.iter().rev() {
-      stack.push((child, next_optgroup_disabled));
+      stack.push(child);
     }
   }
 }
 
-fn find_selected_option_value(node: &DomNode, optgroup_disabled: bool) -> Option<String> {
-  let mut stack: Vec<(&DomNode, bool)> = Vec::new();
-  stack.push((node, optgroup_disabled));
+fn single_select_selected_option<'a>(select: &'a DomNode) -> Option<&'a DomNode> {
+  let mut first_option = None;
+  let mut first_enabled_option = None;
+  let mut last_selected_option = None;
 
-  while let Some((node, optgroup_disabled)) = stack.pop() {
-    if node_hidden_for_select(node) {
-      continue;
-    }
-    let tag = node.tag_name().unwrap_or("");
-    let is_option = tag.eq_ignore_ascii_case("option");
-    let is_optgroup = tag.eq_ignore_ascii_case("optgroup");
-
-    let option_disabled = node.get_attribute_ref("disabled").is_some();
-    let next_optgroup_disabled = optgroup_disabled || (is_optgroup && option_disabled);
-
-    if is_option
-      && node.get_attribute_ref("selected").is_some()
-      && !(option_disabled || optgroup_disabled)
-    {
-      return Some(option_value_from_node(node));
-    }
-
-    for child in node.children.iter().rev() {
-      stack.push((child, next_optgroup_disabled));
-    }
-  }
-
-  None
-}
-
-fn first_enabled_option<'a>(node: &'a DomNode, optgroup_disabled: bool) -> Option<&'a DomNode> {
   let mut stack: Vec<(&'a DomNode, bool)> = Vec::new();
-  stack.push((node, optgroup_disabled));
+  stack.push((select, false));
 
   while let Some((node, optgroup_disabled)) = stack.pop() {
     if node_hidden_for_select(node) {
@@ -5687,11 +5655,22 @@ fn first_enabled_option<'a>(node: &'a DomNode, optgroup_disabled: bool) -> Optio
     let is_option = tag.eq_ignore_ascii_case("option");
     let is_optgroup = tag.eq_ignore_ascii_case("optgroup");
 
-    let option_disabled = node.get_attribute_ref("disabled").is_some();
-    let next_optgroup_disabled = optgroup_disabled || (is_optgroup && option_disabled);
+    let disabled_attr = node.get_attribute_ref("disabled").is_some();
+    let next_optgroup_disabled = optgroup_disabled || (is_optgroup && disabled_attr);
 
-    if is_option && !(option_disabled || optgroup_disabled) {
-      return Some(node);
+    if is_option {
+      if first_option.is_none() {
+        first_option = Some(node);
+      }
+
+      let disabled = disabled_attr || optgroup_disabled;
+      if first_enabled_option.is_none() && !disabled {
+        first_enabled_option = Some(node);
+      }
+
+      if node.get_attribute_ref("selected").is_some() {
+        last_selected_option = Some(node);
+      }
     }
 
     for child in node.children.iter().rev() {
@@ -5699,7 +5678,9 @@ fn first_enabled_option<'a>(node: &'a DomNode, optgroup_disabled: bool) -> Optio
     }
   }
 
-  None
+  last_selected_option
+    .or(first_enabled_option)
+    .or(first_option)
 }
 
 impl<'a> Element for ElementRef<'a> {
@@ -8168,20 +8149,13 @@ mod tests {
       children: vec![node],
     };
 
-    assert!(select_has_explicit_selection(&select));
-
     let mut values = Vec::new();
-    collect_selected_option_values(&select, false, &mut values);
+    collect_selected_option_values(&select, &mut values);
     assert_eq!(values, vec!["x".to_string()]);
 
-    assert_eq!(
-      find_selected_option_value(&select, false),
-      Some("x".to_string())
-    );
-
-    let first = first_enabled_option(&select, false).expect("expected enabled option");
-    assert_eq!(first.tag_name().unwrap_or(""), "option");
-    assert_eq!(first.get_attribute_ref("value"), Some("x"));
+    let selected = single_select_selected_option(&select).expect("expected selected option");
+    assert_eq!(selected.tag_name().unwrap_or(""), "option");
+    assert_eq!(selected.get_attribute_ref("value"), Some("x"));
   }
 
   #[test]
@@ -10646,6 +10620,71 @@ mod tests {
     assert!(!matches(first, &ancestors, &PseudoClass::Checked));
     assert!(matches(second, &ancestors, &PseudoClass::Checked));
 
+    let select_disabled_selected_placeholder = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "select".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "option".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![
+            ("disabled".to_string(), "disabled".to_string()),
+            ("selected".to_string(), "selected".to_string()),
+            ("value".to_string(), String::new()),
+          ],
+        },
+        children: vec![DomNode {
+          node_type: DomNodeType::Text {
+            content: "Placeholder".to_string(),
+          },
+          children: vec![],
+        }],
+      }],
+    };
+    let ancestors: Vec<&DomNode> = vec![&select_disabled_selected_placeholder];
+    let placeholder = &select_disabled_selected_placeholder.children[0];
+    assert!(
+      matches(placeholder, &ancestors, &PseudoClass::Checked),
+      "disabled selected placeholder should still be :checked"
+    );
+
+    let select_two_selected = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "select".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "option".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![("selected".to_string(), "selected".to_string())],
+          },
+          children: vec![],
+        },
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "option".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![("selected".to_string(), "selected".to_string())],
+          },
+          children: vec![],
+        },
+      ],
+    };
+    let ancestors: Vec<&DomNode> = vec![&select_two_selected];
+    let first = &select_two_selected.children[0];
+    let second = &select_two_selected.children[1];
+    assert!(
+      !matches(first, &ancestors, &PseudoClass::Checked),
+      "single-select should only select the last <option selected> in tree order"
+    );
+    assert!(matches(second, &ancestors, &PseudoClass::Checked));
+
     let select_disabled_first = DomNode {
       node_type: DomNodeType::Element {
         tag_name: "select".to_string(),
@@ -10714,6 +10753,40 @@ mod tests {
     let ancestors: Vec<&DomNode> = vec![&select_multiple_selected];
     let selected_option = &select_multiple_selected.children[0];
     assert!(matches(selected_option, &ancestors, &PseudoClass::Checked));
+
+    let select_all_disabled = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "select".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "option".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![("disabled".to_string(), "disabled".to_string())],
+          },
+          children: vec![],
+        },
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "option".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![("disabled".to_string(), "disabled".to_string())],
+          },
+          children: vec![],
+        },
+      ],
+    };
+    let ancestors: Vec<&DomNode> = vec![&select_all_disabled];
+    let first = &select_all_disabled.children[0];
+    let second = &select_all_disabled.children[1];
+    assert!(
+      matches(first, &ancestors, &PseudoClass::Checked),
+      "single-select with all options disabled should default to the first option"
+    );
+    assert!(!matches(second, &ancestors, &PseudoClass::Checked));
 
     let select_hidden_selected = DomNode {
       node_type: DomNodeType::Element {

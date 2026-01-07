@@ -10369,9 +10369,10 @@ impl FastRender {
               let max_label_len = select
                 .items
                 .iter()
-                .map(|item| match item {
-                  SelectItem::OptGroupLabel { label, .. } => label.chars().count(),
-                  SelectItem::Option { label, .. } => label.chars().count(),
+                .filter_map(|item| match item {
+                  SelectItem::OptGroupLabel { label, .. } if is_listbox => Some(label.chars().count()),
+                  SelectItem::Option { label, .. } => Some(label.chars().count()),
+                  _ => None,
                 })
                 .max()
                 .unwrap_or(4) as f32;

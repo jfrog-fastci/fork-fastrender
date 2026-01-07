@@ -12247,13 +12247,13 @@ mod tests {
         control: box_tree::FormControlKind::Select(box_tree::SelectControl {
           multiple: true,
           size: 1,
-          items: vec![box_tree::SelectItem::Option {
+          items: Arc::new(vec![box_tree::SelectItem::Option {
             label: "Option".to_string(),
             value: "Option".to_string(),
             selected: true,
             disabled: false,
             in_optgroup: false,
-          }],
+          }]),
           selected: vec![0],
         }),
         appearance: crate::style::types::Appearance::Auto,
