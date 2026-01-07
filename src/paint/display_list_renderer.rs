@@ -9162,7 +9162,9 @@ impl DisplayListRenderer {
 
         // Tracks whether this stacking context should be treated as a Backdrop Root for sampling
         // the Backdrop Root Image (Filter Effects Level 2).
-        let creates_backdrop_root = !scaled_filters.is_empty()
+        let creates_backdrop_root = item.establishes_backdrop_root
+          || item.has_clip_path
+          || !scaled_filters.is_empty()
           || has_backdrop
           || opacity < 1.0 - f32::EPSILON
           || mask.is_some()
@@ -13456,6 +13458,82 @@ mod tests {
     assert!(
       blurred_px.0 > baseline_px.0,
       "expected blur to mix in white pixels across the edge; baseline={baseline_px:?} blurred={blurred_px:?}"
+    );
+  }
+
+  #[test]
+  fn backdrop_filter_scopes_to_explicit_backdrop_root_layers() {
+    let viewport = 16u32;
+    let bounds = Rect::from_xywh(0.0, 0.0, viewport as f32, viewport as f32);
+
+    let render = |outer_backdrop_root: bool| -> Pixmap {
+      let mut list = DisplayList::new();
+      list.push(DisplayItem::FillRect(FillRectItem {
+        rect: bounds,
+        color: Rgba::rgb(255, 0, 0),
+      }));
+
+      list.push(DisplayItem::PushStackingContext(StackingContextItem {
+        z_index: 0,
+        creates_stacking_context: true,
+        establishes_backdrop_root: outer_backdrop_root,
+        bounds,
+        plane_rect: bounds,
+        mix_blend_mode: BlendMode::Normal,
+        opacity: 1.0,
+        is_isolated: false,
+        transform: None,
+        child_perspective: None,
+        transform_style: TransformStyle::Flat,
+        backface_visibility: BackfaceVisibility::Visible,
+        filters: Vec::new(),
+        backdrop_filters: Vec::new(),
+        radii: BorderRadii::ZERO,
+        mask: None,
+        has_clip_path: false,
+      }));
+
+      list.push(DisplayItem::PushStackingContext(StackingContextItem {
+        z_index: 0,
+        creates_stacking_context: true,
+        establishes_backdrop_root: true,
+        bounds,
+        plane_rect: bounds,
+        mix_blend_mode: BlendMode::Normal,
+        opacity: 1.0,
+        is_isolated: false,
+        transform: None,
+        child_perspective: None,
+        transform_style: TransformStyle::Flat,
+        backface_visibility: BackfaceVisibility::Visible,
+        filters: Vec::new(),
+        backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
+        radii: BorderRadii::ZERO,
+        mask: None,
+        has_clip_path: false,
+      }));
+      list.push(DisplayItem::PopStackingContext);
+
+      list.push(DisplayItem::PopStackingContext);
+
+      DisplayListRenderer::new(viewport, viewport, Rgba::WHITE, FontContext::new())
+        .unwrap()
+        .render(&list)
+        .unwrap()
+    };
+
+    let baseline = render(false);
+    let scoped = render(true);
+
+    assert_eq!(
+      pixel(&baseline, 8, 8),
+      (0, 255, 255, 255),
+      "expected backdrop-filter to sample the red backdrop when no backdrop root is present"
+    );
+    assert_eq!(
+      pixel(&scoped, 8, 8),
+      (255, 0, 0, 255),
+      "expected establishes_backdrop_root to scope backdrop-filter sampling (preventing sampling from the red base)"
     );
   }
 

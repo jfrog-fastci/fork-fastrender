@@ -1526,9 +1526,12 @@ fn parse_numeric_value(
       &container.styles.custom_properties,
       "",
     ) {
-      crate::style::var_resolution::VarResolutionResult::Resolved { css_text, value } => {
+      crate::style::var_resolution::VarResolutionResult::Resolved {
+        css_text,
+        value: resolved,
+      } => {
         let no_substitution = matches!(
-          (&value, css_text.as_ref()),
+          (&resolved, css_text.as_ref()),
           (crate::style::var_resolution::ResolvedPropertyValue::Borrowed(_), "")
         );
         if no_substitution {
