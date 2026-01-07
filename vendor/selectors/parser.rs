@@ -2084,7 +2084,12 @@ fn collect_relative_selector_hashes<Impl: SelectorImpl>(
         ids: &mut SmallVec<[u32; RELATIVE_SELECTOR_BLOOM_HASHES_INLINE_CAPACITY]>,
         attrs: &mut SmallVec<[u32; RELATIVE_SELECTOR_BLOOM_HASHES_INLINE_CAPACITY]>,
     ) {
-        for component in selector.iter_raw_parse_order_from(0) {
+        // Only collect hashes from the selector's rightmost compound. Collecting hashes from
+        // ancestor compounds can cause false-negative pruning for selectors that "break out" of the
+        // :has() anchor subtree via inner selectors (e.g. `.anchor:has(:is(.a .b) .c)` can match
+        // when `.a` is an ancestor of `.anchor`). See `RelativeSelectorFilterMap::fast_reject` for
+        // the same rationale.
+        for component in selector.iter() {
             match component {
                 Component::LocalName(local) => {
                     let hash_source = if local.name == local.lower_name {
@@ -2104,13 +2109,13 @@ fn collect_relative_selector_hashes<Impl: SelectorImpl>(
                         classes.push(class.precomputed_hash() & BLOOM_HASH_MASK);
                     }
                 },
-                Component::AttributeInNoNamespaceExists { ref local_name_lower, .. } => {
+                Component::AttributeInNoNamespaceExists { local_name_lower, .. } => {
                     // Attribute names are matched case-insensitively in HTML documents. Emit the
                     // canonical ASCII-lowercased name so callers can safely use these hashes for
                     // pruning without depending on the original casing used in the selector.
                     attrs.push(local_name_lower.precomputed_hash() & BLOOM_HASH_MASK);
                 },
-                Component::AttributeInNoNamespace { ref local_name, .. } => {
+                Component::AttributeInNoNamespace { local_name, .. } => {
                     attrs.push(local_name.precomputed_hash() & BLOOM_HASH_MASK);
                 },
                 Component::AttributeOther(selector) => {

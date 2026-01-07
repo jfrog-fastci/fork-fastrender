@@ -6338,7 +6338,10 @@ fn append_relative_selector_quirks_id_class_hashes(
 ) {
   use selectors::parser::Component;
 
-  for component in selector.iter_raw_parse_order_from(0) {
+  // Only consider the selector's rightmost compound. Inner selectors (e.g. within `:is()`) can
+  // "break out" and match ancestors outside the :has() anchor subtree, so treating ancestor-side
+  // class/id selectors as mandatory would lead to false negatives.
+  for component in selector.iter() {
     match component {
       Component::ID(id) => out.push(selector_bloom_hash_ascii_lowercase(id.as_str())),
       Component::Class(class) => out.push(selector_bloom_hash_ascii_lowercase(class.as_str())),
@@ -6540,6 +6543,25 @@ fn matches_has_relative(
           continue;
         }
 
+        if use_ancestor_bloom {
+          // Seed the ancestor bloom filter with hashes for the anchor's outer ancestors. Nested
+          // selectors inside `:has()` (e.g. within `:is()`) can match ancestors outside the anchor
+          // subtree, so pruning must account for those ancestors to avoid false negatives.
+          if let Some(cache) = ctx.extra_data.element_attr_cache {
+            for ancestor in anchor.all_ancestors {
+              cache.for_each_selector_bloom_hash(ancestor, |hash| {
+                ancestor_bloom_filter.insert_hash(hash);
+              });
+            }
+          } else {
+            for ancestor in anchor.all_ancestors {
+              add_selector_bloom_hashes(ancestor, &mut |hash| {
+                ancestor_bloom_filter.insert_hash(hash);
+              });
+            }
+          }
+        }
+
         record_has_relative_eval();
         let matched = match_relative_selector(
           selector,
@@ -6552,6 +6574,11 @@ fn matches_has_relative(
         );
         debug_assert_eq!(ancestors.len(), ancestors.baseline_len());
         ancestors.reset();
+        if use_ancestor_bloom {
+          // Reset the bloom filter after each match to avoid contamination between selectors.
+          // (The filter may not return to the all-zero state if counters saturate on deep trees.)
+          ancestor_bloom_filter = BloomFilter::new();
+        }
         debug_assert!(!use_ancestor_bloom || ancestor_bloom_filter.is_zeroed());
 
         if ctx.extra_data.deadline_error.is_some() {
@@ -8090,6 +8117,78 @@ mod tests {
     assert_eq!(
       counters.evaluated, 1,
       "expected only the outer :has() to run a relative selector evaluation"
+    );
+  }
+
+  #[test]
+  fn bloom_summary_pruning_handles_is_breakouts() {
+    // `:is()` can contain selectors that match ancestors of the current element, which may live
+    // outside the :has() anchor's subtree. Bloom-summary pruning must never treat those ancestor
+    // selectors as mandatory within the anchor subtree (no false negatives).
+    reset_has_counters();
+    set_selector_bloom_enabled(true);
+
+    let dom = element_with_attrs(
+      "div",
+      vec![("class", "a")],
+      vec![element_with_attrs(
+        "div",
+        vec![("class", "anchor")],
+        vec![element_with_attrs(
+          "div",
+          vec![("class", "b")],
+          vec![element_with_attrs("div", vec![("class", "c")], vec![])],
+        )],
+      )],
+    );
+    let id_map = enumerate_dom_ids(&dom);
+    let bloom_store = build_selector_bloom_store(&dom, &id_map).expect("selector bloom store");
+
+    let selector = parse_selector(".anchor:has(:is(.a .b) .c)");
+    let anchor_node = dom.children.first().expect("anchor exists");
+    let anchor_id = *id_map
+      .get(&(anchor_node as *const DomNode))
+      .expect("anchor id exists");
+    let anchor_ancestors = [&dom];
+    let anchor = ElementRef::with_ancestors(anchor_node, &anchor_ancestors).with_node_id(anchor_id);
+
+    // First verify the selector semantics without bloom-summary pruning.
+    let matched_without_summary = {
+      let mut caches = SelectorCaches::default();
+      caches.set_epoch(next_selector_cache_epoch());
+      let mut context = MatchingContext::new(
+        MatchingMode::Normal,
+        None,
+        &mut caches,
+        QuirksMode::NoQuirks,
+        NeedsSelectorFlags::No,
+        MatchingForInvalidation::No,
+      );
+      context.extra_data = ShadowMatchData::for_document();
+      matches_selector(&selector, 0, None, &anchor, &mut context)
+    };
+    assert!(
+      matched_without_summary,
+      "expected selector semantics to match when bloom-summary pruning is disabled"
+    );
+
+    let mut caches = SelectorCaches::default();
+    caches.set_epoch(next_selector_cache_epoch());
+    let mut context = MatchingContext::new(
+      MatchingMode::Normal,
+      None,
+      &mut caches,
+      QuirksMode::NoQuirks,
+      NeedsSelectorFlags::No,
+      MatchingForInvalidation::No,
+    );
+    context.extra_data = ShadowMatchData::for_document()
+      .with_selector_blooms(Some(&bloom_store))
+      .with_node_to_id(Some(&id_map));
+
+    assert!(
+      matches_selector(&selector, 0, None, &anchor, &mut context),
+      "expected :has() selector to match even though `.a` is outside the anchor subtree"
     );
   }
 
