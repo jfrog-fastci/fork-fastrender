@@ -1359,6 +1359,7 @@ fn accessibility_fixture_snapshots() {
     "modal_top_layer",
     "modal_and_readonly",
     "header_footer_landmarks",
+    "search_landmark",
     "form_role_gating",
     "landmark_gating_section_form",
     "aria_states",

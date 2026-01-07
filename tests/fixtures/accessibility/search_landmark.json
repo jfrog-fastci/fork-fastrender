@@ -1,0 +1,36 @@
+{
+  "present": {
+    "site-search": {
+      "role": "search",
+      "name": "Site search",
+      "description": null,
+      "value": null,
+      "level": null,
+      "html_tag": "search",
+      "states": {
+        "focusable": false,
+        "disabled": false,
+        "required": false,
+        "invalid": false,
+        "visited": false,
+        "readonly": false
+      }
+    },
+    "nested-search": {
+      "role": "search",
+      "name": "Article search",
+      "description": null,
+      "value": null,
+      "level": null,
+      "html_tag": "search",
+      "states": {
+        "focusable": false,
+        "disabled": false,
+        "required": false,
+        "invalid": false,
+        "visited": false,
+        "readonly": false
+      }
+    }
+  }
+}

@@ -939,7 +939,7 @@ fn has_landmark_ancestor(ancestors: &[&DomNode]) -> bool {
 
     if matches!(
       tag.as_str(),
-      "article" | "aside" | "main" | "nav" | "section"
+      "article" | "aside" | "main" | "nav" | "search" | "section"
     ) {
       return true;
     }
@@ -1140,6 +1140,7 @@ fn compute_role(
       }
     }
     "nav" => Some("navigation".to_string()),
+    "search" => Some("search".to_string()),
     "header" => {
       if has_landmark_ancestor(ancestors) {
         None
