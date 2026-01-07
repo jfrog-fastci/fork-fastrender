@@ -646,17 +646,18 @@ fn relative_position_vertical_rl_offsets_apply_to_physical_axes() {
   let child_style = Arc::new(child_style);
 
   let mut child = BoxNode::new_block(child_style, FormattingContextType::Block, vec![]);
-  child.id = 1;
+  child.id = 2;
 
   let mut root = BoxNode::new_block(root_style, FormattingContextType::Block, vec![child]);
-  root.id = 2;
+  // Treat the test root as the document root so block-start margins do not collapse away.
+  root.id = 1;
 
   let fc = BlockFormattingContext::new();
   let fragment = fc
     .layout(&root, &LayoutConstraints::definite(200.0, 100.0))
     .expect("layout succeeds");
 
-  let child_fragment = find_fragment_by_box_id(&fragment, 1).expect("child fragment present");
+  let child_fragment = find_fragment_by_box_id(&fragment, 2).expect("child fragment present");
   assert!(
     (child_fragment.bounds.x() - 150.0).abs() < 0.5,
     "left offset should move along physical x (got {:.2})",
