@@ -350,6 +350,7 @@ impl PartialEq for MathReplaced {
 pub enum SrcsetDescriptor {
   Density(f32),
   Width(u32),
+  WidthHeight { width: u32, height: u32 },
 }
 
 impl fmt::Display for SrcsetDescriptor {
@@ -363,6 +364,7 @@ impl fmt::Display for SrcsetDescriptor {
         }
       }
       SrcsetDescriptor::Width(w) => write!(f, "{}w", w),
+      SrcsetDescriptor::WidthHeight { width, height } => write!(f, "{}w {}h", width, height),
     }
   }
 }
@@ -1689,7 +1691,6 @@ mod tests {
     let calc = CalcLength::single(LengthUnit::Vw, 50.0)
       .add_scaled(&CalcLength::single(LengthUnit::Px, 20.0), -1.0)
       .expect("calc length fits term budget");
-
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
       alt: None,
@@ -1730,6 +1731,60 @@ mod tests {
     assert_eq!(
       chosen, "200w",
       "calc() sizes should reduce slot width and keep the smaller width candidate"
+    );
+  }
+
+  #[test]
+  fn image_source_selects_width_height_descriptor_candidates() {
+    let img = ReplacedType::Image {
+      src: "fallback".to_string(),
+      alt: None,
+      srcset: vec![
+        SrcsetCandidate {
+          url: "100w".to_string(),
+          descriptor: SrcsetDescriptor::WidthHeight {
+            width: 100,
+            height: 50,
+          },
+        },
+        SrcsetCandidate {
+          url: "300w".to_string(),
+          descriptor: SrcsetDescriptor::WidthHeight {
+            width: 300,
+            height: 150,
+          },
+        },
+      ],
+      sizes: Some(SizesList {
+        entries: vec![SizesEntry {
+          media: None,
+          length: Length::new(50.0, LengthUnit::Vw),
+        }],
+      }),
+      picture_sources: Vec::new(),
+      crossorigin: CrossOriginAttribute::None,
+    };
+
+    let viewport = Size::new(200.0, 100.0);
+    let media_ctx =
+      MediaContext::screen(viewport.width, viewport.height).with_device_pixel_ratio(2.0);
+    let selected = img.selected_image_source_for_context(ImageSelectionContext {
+      device_pixel_ratio: 2.0,
+      slot_width: None,
+      viewport: Some(viewport),
+      media_context: Some(&media_ctx),
+      font_size: Some(16.0),
+      root_font_size: Some(16.0),
+      base_url: None,
+    });
+
+    assert_eq!(selected.url, "300w");
+    assert_eq!(
+      selected.descriptor,
+      Some(SrcsetDescriptor::WidthHeight {
+        width: 300,
+        height: 150,
+      })
     );
   }
 

@@ -402,33 +402,100 @@ pub fn parse_srcset_with_limit(attr: &str, max_candidates: usize) -> Vec<SrcsetC
     }
     let desc_str = attr[desc_start..idx].trim();
 
-    let mut descriptor: Option<SrcsetDescriptor> = None;
+    let mut density: Option<f32> = None;
+    let mut width: Option<u32> = None;
+    let mut height: Option<u32> = None;
+    let mut unknown = false;
     let mut valid = true;
     for desc in desc_str.split_whitespace() {
-      if descriptor.is_some() {
-        valid = false;
-        break;
-      }
       let d = desc.trim();
+      if d.is_empty() {
+        continue;
+      }
+
       if let Some(raw) = d.strip_suffix('x') {
-        if let Ok(val) = raw.parse::<f32>() {
-          descriptor = Some(SrcsetDescriptor::Density(val));
+        match raw.parse::<f32>() {
+          Ok(val) if val.is_finite() && val > 0.0 => {
+            if density.is_some() {
+              valid = false;
+              break;
+            }
+            density = Some(val);
+          }
+          _ => {
+            valid = false;
+            break;
+          }
         }
       } else if let Some(raw) = d.strip_suffix("dppx") {
-        if let Ok(val) = raw.parse::<f32>() {
-          descriptor = Some(SrcsetDescriptor::Density(val));
+        match raw.parse::<f32>() {
+          Ok(val) if val.is_finite() && val > 0.0 => {
+            if density.is_some() {
+              valid = false;
+              break;
+            }
+            density = Some(val);
+          }
+          _ => {
+            valid = false;
+            break;
+          }
         }
       } else if let Some(raw) = d.strip_suffix('w') {
-        if let Ok(val) = raw.parse::<u32>() {
-          descriptor = Some(SrcsetDescriptor::Width(val));
+        match raw.parse::<u32>() {
+          Ok(val) if val > 0 => {
+            if width.is_some() {
+              valid = false;
+              break;
+            }
+            width = Some(val);
+          }
+          _ => {
+            valid = false;
+            break;
+          }
         }
+      } else if let Some(raw) = d.strip_suffix('h') {
+        match raw.parse::<u32>() {
+          Ok(val) if val > 0 => {
+            if height.is_some() {
+              valid = false;
+              break;
+            }
+            height = Some(val);
+          }
+          _ => {
+            valid = false;
+            break;
+          }
+        }
+      } else {
+        unknown = true;
       }
     }
+
     if valid {
-      out.push(SrcsetCandidate {
-        url: url.to_string(),
-        descriptor: descriptor.unwrap_or(SrcsetDescriptor::Density(1.0)),
-      });
+      let descriptor = match (density, width, height) {
+        (Some(d), None, None) if !unknown => Some(SrcsetDescriptor::Density(d)),
+        (None, Some(w), None) if !unknown => Some(SrcsetDescriptor::Width(w)),
+        (None, Some(w), Some(h)) if !unknown => Some(SrcsetDescriptor::WidthHeight {
+          width: w,
+          height: h,
+        }),
+        // Height descriptors without a width descriptor are invalid.
+        (None, None, Some(_)) => None,
+        // Any unknown tokens or invalid descriptor combinations make the candidate invalid.
+        _ if density.is_some() || width.is_some() || height.is_some() => None,
+        // No valid descriptors -> default to 1x (unknown tokens ignored).
+        _ => Some(SrcsetDescriptor::Density(1.0)),
+      };
+
+      if let Some(descriptor) = descriptor {
+        out.push(SrcsetCandidate {
+          url: url.to_string(),
+          descriptor,
+        });
+      }
     }
 
     if idx < bytes.len() && bytes[idx] == b',' {
@@ -783,6 +850,28 @@ mod tests {
   }
 
   #[test]
+  fn parse_srcset_parses_width_height_descriptors() {
+    let parsed = parse_srcset("a.png 100w 50h, b.png 200w 100h");
+    assert_eq!(parsed.len(), 2);
+    assert_eq!(parsed[0].url, "a.png");
+    assert!(matches!(
+      parsed[0].descriptor,
+      SrcsetDescriptor::WidthHeight {
+        width: 100,
+        height: 50
+      }
+    ));
+    assert_eq!(parsed[1].url, "b.png");
+    assert!(matches!(
+      parsed[1].descriptor,
+      SrcsetDescriptor::WidthHeight {
+        width: 200,
+        height: 100
+      }
+    ));
+  }
+
+  #[test]
   fn parse_srcset_ignores_invalid_descriptor_tokens() {
     // Unknown descriptor tokens should be ignored, producing the default 1x descriptor.
     let parsed = parse_srcset("a.png foo, b.png 2x bar, c.png 2x");
@@ -791,6 +880,22 @@ mod tests {
     assert!(matches!(parsed[0].descriptor, SrcsetDescriptor::Density(d) if d == 1.0));
     assert_eq!(parsed[1].url, "c.png");
     assert!(matches!(parsed[1].descriptor, SrcsetDescriptor::Density(d) if d == 2.0));
+  }
+
+  #[test]
+  fn parse_srcset_skips_invalid_descriptor_combinations() {
+    let parsed = parse_srcset(
+      "a.png 100w 50h 2x, b.png 100w 0h, c.png 2x 100w, d.png 1x 2x, e.png 100h, ok.png 100w 50h",
+    );
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(parsed[0].url, "ok.png");
+    assert!(matches!(
+      parsed[0].descriptor,
+      SrcsetDescriptor::WidthHeight {
+        width: 100,
+        height: 50
+      }
+    ));
   }
 
   #[test]

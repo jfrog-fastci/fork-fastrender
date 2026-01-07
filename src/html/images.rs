@@ -123,7 +123,7 @@ fn select_picture_source<'a>(
 fn descriptor_kind(candidates: &[SrcsetCandidate]) -> DescriptorKind {
   if candidates
     .iter()
-    .any(|c| matches!(c.descriptor, SrcsetDescriptor::Width(_)))
+    .any(|c| matches!(c.descriptor, SrcsetDescriptor::Width(_) | SrcsetDescriptor::WidthHeight { .. }))
   {
     DescriptorKind::Width
   } else {
@@ -219,6 +219,10 @@ fn select_from_srcset<'a>(
         (DescriptorKind::Width, SrcsetDescriptor::Width(w)) => {
           let slot = source_size?;
           Some(w as f32 / slot)
+        }
+        (DescriptorKind::Width, SrcsetDescriptor::WidthHeight { width, .. }) => {
+          let slot = source_size?;
+          Some(width as f32 / slot)
         }
         (DescriptorKind::Density, SrcsetDescriptor::Density(d)) => Some(d),
         // Ignore density descriptors when width descriptors are present.

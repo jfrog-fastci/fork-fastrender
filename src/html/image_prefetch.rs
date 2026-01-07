@@ -237,7 +237,7 @@ fn estimate_source_size(sizes: Option<&SizesList>, ctx: ImageSelectionContext<'_
 fn srcset_has_width_descriptors(srcset: &[crate::tree::box_tree::SrcsetCandidate]) -> bool {
   srcset
     .iter()
-    .any(|c| matches!(c.descriptor, SrcsetDescriptor::Width(_)))
+    .any(|c| matches!(c.descriptor, SrcsetDescriptor::Width(_) | SrcsetDescriptor::WidthHeight { .. }))
 }
 
 fn link_rel_is_preload_image(rel_tokens: &[String], as_attr: Option<&str>) -> bool {

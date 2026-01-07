@@ -475,7 +475,8 @@ mod tests {
   #[test]
   fn caps_srcset_candidates() {
     let srcset = (0..20)
-      .map(|i| format!("img{i}.png {i}x"))
+      // Density descriptors must be positive; use 1x.. for deterministic ordering.
+      .map(|i| format!("img{i}.png {}x", i + 1))
       .collect::<Vec<_>>()
       .join(", ");
     let html = format!(r#"<img srcset="{srcset}">"#);
