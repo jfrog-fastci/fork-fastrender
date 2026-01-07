@@ -7851,12 +7851,23 @@ impl DisplayListBuilder {
         if is_listbox {
           let metrics_scaled = Self::resolve_scaled_metrics(style, &self.font_ctx);
           let viewport = self.viewport.map(|(w, h)| Size::new(w, h));
-          let line_height =
+          let row_height =
             compute_line_height_with_metrics_viewport(style, metrics_scaled.as_ref(), viewport);
+          if row_height <= 0.0 || !row_height.is_finite() {
+            return true;
+          }
 
-          let visible_rows = select.size.max(1) as usize;
           let total_rows = select.items.len();
-          let scrollbar_width = if total_rows > visible_rows {
+          let viewport_height = content_rect.height().max(0.0);
+          let content_height = row_height * total_rows as f32;
+          let mut scroll_y = self.element_scroll_offset(fragment).y;
+          if !scroll_y.is_finite() {
+            scroll_y = 0.0;
+          }
+          let max_scroll_y = (content_height - viewport_height).max(0.0);
+          scroll_y = scroll_y.clamp(0.0, max_scroll_y);
+
+          let scrollbar_width = if max_scroll_y > 0.0 {
             resolve_scrollbar_width(style).min(content_rect.width().max(0.0))
           } else {
             0.0
@@ -7868,39 +7879,32 @@ impl DisplayListBuilder {
             content_rect.height(),
           );
 
-          let mut scroll_start = 0usize;
-          if total_rows > visible_rows && visible_rows > 0 {
-            if let Some(first_selected) = select.selected.iter().copied().min() {
-              if first_selected >= visible_rows {
-                scroll_start = first_selected + 1 - visible_rows;
-              }
-            }
-            let max_scroll = total_rows.saturating_sub(visible_rows);
-            scroll_start = scroll_start.min(max_scroll);
-          }
-
-          let group_present = select
-            .items
-            .iter()
-            .any(|item| matches!(item, SelectItem::OptGroupLabel { .. }));
-          let option_indent = if group_present { 10.0 } else { 2.0 };
+          let start_row = (scroll_y / row_height).floor().max(0.0) as usize;
+          let end_row = ((scroll_y + viewport_height) / row_height)
+            .ceil()
+            .max(start_row as f32) as usize;
+          let end_row = end_row.min(total_rows);
+          let y_offset = scroll_y - start_row as f32 * row_height;
+          let mut y = content_rect.y() - y_offset;
 
           self.push_clip(content_rect);
-          for row in 0..visible_rows {
-            let item_idx = scroll_start + row;
-            if item_idx >= total_rows {
-              break;
+          for item_idx in start_row..end_row {
+            let row_rect = Rect::from_xywh(text_rect.x(), y, text_rect.width(), row_height);
+            y += row_height;
+
+            if row_rect.max_y() <= content_rect.y() || row_rect.y() >= content_rect.max_y() {
+              continue;
             }
-            let y = content_rect.y() + row as f32 * line_height;
-            let row_rect = Rect::from_xywh(text_rect.x(), y, text_rect.width(), line_height);
             if row_rect.width() <= 0.0 || row_rect.height() <= 0.0 {
               continue;
             }
 
             match &select.items[item_idx] {
               SelectItem::OptGroupLabel { label, disabled } => {
+                let row_disabled = control.disabled || *disabled;
                 let mut row_style = style.clone();
-                row_style.color = if *disabled {
+                row_style.font_weight = crate::style::types::FontWeight::Bold;
+                row_style.color = if row_disabled {
                   style.color.with_alpha(0.5)
                 } else {
                   style.color.with_alpha(0.75)
@@ -7917,11 +7921,16 @@ impl DisplayListBuilder {
                 label,
                 selected,
                 disabled,
+                in_optgroup,
                 ..
               } => {
+                let row_disabled = control.disabled || *disabled;
                 if *selected {
-                  let highlight =
-                    muted_accent.with_alpha((muted_accent.a * 0.25).max(0.15).min(0.4));
+                  let mut alpha = (muted_accent.a * 0.25).max(0.15).min(0.4);
+                  if row_disabled {
+                    alpha = (alpha * 0.6).max(0.1);
+                  }
+                  let highlight = muted_accent.with_alpha(alpha);
                   self.list.push(DisplayItem::FillRect(FillRectItem {
                     rect: row_rect,
                     color: highlight,
@@ -7929,17 +7938,18 @@ impl DisplayListBuilder {
                 }
 
                 let mut row_style = style.clone();
-                row_style.color = if *disabled {
+                row_style.color = if row_disabled {
                   style.color.with_alpha(0.5)
                 } else if control.invalid {
                   accent
                 } else {
                   style.color
                 };
+                let indent = if *in_optgroup { 10.0 } else { 2.0 };
                 let row_rect = Rect::from_xywh(
-                  row_rect.x() + option_indent,
+                  row_rect.x() + indent,
                   row_rect.y(),
-                  (row_rect.width() - option_indent).max(0.0),
+                  (row_rect.width() - indent).max(0.0),
                   row_rect.height(),
                 );
                 let _ = self.emit_text_with_style(label, Some(&row_style), row_rect);
@@ -7947,7 +7957,7 @@ impl DisplayListBuilder {
             }
           }
 
-          if scrollbar_width > 0.0 && content_rect.height() > 0.0 {
+          if scrollbar_width > 0.0 && max_scroll_y > 0.0 && content_rect.height() > 0.0 {
             let track_rect = Rect::from_xywh(
               content_rect.max_x() - scrollbar_width,
               content_rect.y(),
@@ -7959,11 +7969,11 @@ impl DisplayListBuilder {
               color: Rgba::rgb(240, 240, 240),
             }));
 
-            let max_scroll = total_rows.saturating_sub(visible_rows).max(1) as f32;
-            let visible_fraction = visible_rows as f32 / total_rows.max(1) as f32;
+            let visible_fraction = (viewport_height / content_height.max(1.0)).clamp(0.0, 1.0);
             let thumb_height = (track_rect.height() * visible_fraction).max(8.0);
+            let thumb_height = thumb_height.min(track_rect.height());
             let travel = (track_rect.height() - thumb_height).max(0.0);
-            let thumb_y = track_rect.y() + travel * (scroll_start as f32 / max_scroll);
+            let thumb_y = track_rect.y() + travel * (scroll_y / max_scroll_y.max(1.0));
             let thumb_rect =
               Rect::from_xywh(track_rect.x(), thumb_y, track_rect.width(), thumb_height);
             self.list.push(DisplayItem::FillRect(FillRectItem {

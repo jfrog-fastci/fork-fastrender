@@ -383,6 +383,7 @@ input, textarea, select, button {
     font-size: inherit;
     line-height: 1.2;
     border-radius: 4px;
+    overflow: clip;
 }
 
 input[type="text"], input[type="password"], input[type="email"],
@@ -406,7 +407,8 @@ textarea {
     cursor: text;
 }
 
-select {
+select:not([multiple]):not([size]),
+select:not([multiple])[size="1"] {
     padding-right: 20px;
     cursor: default;
 }
@@ -414,7 +416,8 @@ select {
 select[multiple],
 select[size]:not([size="1"]) {
     padding-right: 6px;
-    overflow: auto;
+    overflow-y: auto;
+    overflow-x: hidden;
 }
 
 input[type="reset"] {

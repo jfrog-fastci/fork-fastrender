@@ -307,6 +307,7 @@ pub enum SelectItem {
     value: String,
     selected: bool,
     disabled: bool,
+    in_optgroup: bool,
   },
 }
 

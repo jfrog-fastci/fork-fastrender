@@ -69,6 +69,7 @@ mod rasterize_test;
 mod responsive_srcset_golden;
 mod responsive_width_srcset_golden;
 mod scene_tree_test;
+mod select_listbox_paint;
 mod shadow_dom_slotted_paint;
 mod stacking_test;
 mod stacking_context_descendant_shadow_bounds;

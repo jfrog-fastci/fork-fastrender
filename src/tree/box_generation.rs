@@ -3367,11 +3367,11 @@ fn build_select_control(node: &StyledNode) -> SelectControl {
 
   let mut items = Vec::new();
   let mut option_item_indices = Vec::new();
-  let mut stack: Vec<(&StyledNode, bool)> = Vec::new();
+  let mut stack: Vec<(&StyledNode, bool, bool)> = Vec::new();
   for child in node.children.iter().rev() {
-    stack.push((child, false));
+    stack.push((child, false, false));
   }
-  while let Some((node, optgroup_disabled)) = stack.pop() {
+  while let Some((node, optgroup_disabled, in_optgroup)) = stack.pop() {
     if node.styles.display == Display::None {
       continue;
     }
@@ -3385,6 +3385,7 @@ fn build_select_control(node: &StyledNode) -> SelectControl {
           value: option_value_from_node(node),
           selected: node.node.get_attribute_ref("selected").is_some(),
           disabled,
+          in_optgroup,
         });
         option_item_indices.push(idx);
         continue;
@@ -3398,14 +3399,14 @@ fn build_select_control(node: &StyledNode) -> SelectControl {
           disabled,
         });
         for child in node.children.iter().rev() {
-          stack.push((child, disabled));
+          stack.push((child, disabled, true));
         }
         continue;
       }
     }
 
     for child in node.children.iter().rev() {
-      stack.push((child, optgroup_disabled));
+      stack.push((child, optgroup_disabled, in_optgroup));
     }
   }
 

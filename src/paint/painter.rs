@@ -704,6 +704,7 @@ enum DisplayCommand {
   Replaced {
     rect: Rect,
     replaced_type: ReplacedType,
+    box_id: Option<usize>,
     style: Arc<ComputedStyle>,
   },
   Outline {
@@ -2385,11 +2386,15 @@ impl Painter {
           });
         }
       }
-      FragmentContent::Replaced { replaced_type, .. } => {
+      FragmentContent::Replaced {
+        replaced_type,
+        box_id,
+      } => {
         if let Some(style) = fragment.style.clone() {
           items.push(DisplayCommand::Replaced {
             rect: abs_bounds,
             replaced_type: replaced_type.clone(),
+            box_id: *box_id,
             style,
           });
         }
@@ -2593,9 +2598,11 @@ impl Painter {
       DisplayCommand::Replaced {
         rect,
         replaced_type,
+        box_id,
         style,
       } => self.paint_replaced(
         &replaced_type,
+        box_id,
         Some(&style),
         rect.x(),
         rect.y(),
@@ -6021,6 +6028,7 @@ impl Painter {
   fn paint_replaced(
     &mut self,
     replaced_type: &ReplacedType,
+    box_id: Option<usize>,
     style: Option<&ComputedStyle>,
     x: f32,
     y: f32,
@@ -6090,7 +6098,7 @@ impl Painter {
     match replaced_type {
       ReplacedType::FormControl(control) => {
         if let Some(style) = style {
-          if self.paint_form_control(control, style, content_rect, clip_mask) {
+          if self.paint_form_control(control, style, content_rect, clip_mask, box_id) {
             return;
           }
         }
@@ -6725,6 +6733,7 @@ impl Painter {
     style: &ComputedStyle,
     content_rect: Rect,
     clip_mask: Option<&Mask>,
+    box_id: Option<usize>,
   ) -> bool {
     if content_rect.width() <= 0.0 || content_rect.height() <= 0.0 {
       return true;
@@ -6987,43 +6996,36 @@ impl Painter {
 
         if is_listbox {
           let metrics = self.resolve_scaled_metrics(style);
-          let line_height = compute_line_height_with_metrics_viewport(
+          let row_height = compute_line_height_with_metrics_viewport(
             style,
             metrics.as_ref(),
             Some(Size::new(self.css_width, self.css_height)),
           );
+          if row_height <= 0.0 || !row_height.is_finite() {
+            return true;
+          }
 
-          let visible_rows = select.size.max(1) as usize;
           let total_rows = select.items.len();
-          let scrollbar_width = if total_rows > visible_rows {
+          let viewport_height = content_rect.height().max(0.0);
+          let content_height = row_height * total_rows as f32;
+          let mut scroll_y = box_id.map(|id| self.scroll_state.element_offset(id).y).unwrap_or(0.0);
+          if !scroll_y.is_finite() {
+            scroll_y = 0.0;
+          }
+          let max_scroll_y = (content_height - viewport_height).max(0.0);
+          scroll_y = scroll_y.clamp(0.0, max_scroll_y);
+
+          let scrollbar_width = if max_scroll_y > 0.0 {
             crate::layout::utils::resolve_scrollbar_width(style).min(content_rect.width().max(0.0))
           } else {
             0.0
           };
 
-          let mut scroll_start = 0usize;
-          if total_rows > visible_rows && visible_rows > 0 {
-            if let Some(first_selected) = select.selected.iter().copied().min() {
-              if first_selected >= visible_rows {
-                scroll_start = first_selected + 1 - visible_rows;
-              }
-            }
-            let max_scroll = total_rows.saturating_sub(visible_rows);
-            scroll_start = scroll_start.min(max_scroll);
-          }
-
-          let group_present = select
-            .items
-            .iter()
-            .any(|item| matches!(item, SelectItem::OptGroupLabel { .. }));
-          let option_indent = if group_present { 10.0 } else { 2.0 };
-
-          let rect = inset_rect(content_rect, 1.0);
           let text_rect = Rect::from_xywh(
-            rect.x(),
-            rect.y(),
-            (rect.width() - scrollbar_width).max(0.0),
-            rect.height(),
+            content_rect.x(),
+            content_rect.y(),
+            (content_rect.width() - scrollbar_width).max(0.0),
+            content_rect.height(),
           );
 
           let mut local_clip_mask: Option<Mask> = None;
@@ -7039,21 +7041,31 @@ impl Painter {
             local_clip_mask.as_ref()
           });
 
-          for row in 0..visible_rows {
-            let item_idx = scroll_start + row;
-            if item_idx >= total_rows {
-              break;
+          let start_row = (scroll_y / row_height).floor().max(0.0) as usize;
+          let end_row = ((scroll_y + viewport_height) / row_height)
+            .ceil()
+            .max(start_row as f32) as usize;
+          let end_row = end_row.min(total_rows);
+          let y_offset = scroll_y - start_row as f32 * row_height;
+          let mut y = content_rect.y() - y_offset;
+
+          for item_idx in start_row..end_row {
+            let row_rect = Rect::from_xywh(text_rect.x(), y, text_rect.width(), row_height);
+            y += row_height;
+
+            if row_rect.max_y() <= content_rect.y() || row_rect.y() >= content_rect.max_y() {
+              continue;
             }
-            let y = rect.y() + row as f32 * line_height;
-            let row_rect = Rect::from_xywh(text_rect.x(), y, text_rect.width(), line_height);
             if row_rect.width() <= 0.0 || row_rect.height() <= 0.0 {
               continue;
             }
 
             match &select.items[item_idx] {
               SelectItem::OptGroupLabel { label, disabled } => {
+                let row_disabled = control.disabled || *disabled;
                 let mut row_style = style.clone();
-                row_style.color = if *disabled {
+                row_style.font_weight = crate::style::types::FontWeight::Bold;
+                row_style.color = if row_disabled {
                   style.color.with_alpha(0.5)
                 } else {
                   style.color.with_alpha(0.75)
@@ -7070,11 +7082,16 @@ impl Painter {
                 label,
                 selected,
                 disabled,
+                in_optgroup,
                 ..
               } => {
+                let row_disabled = control.disabled || *disabled;
                 if *selected {
-                  let highlight =
-                    muted_accent.with_alpha((muted_accent.a * 0.25).max(0.15).min(0.4));
+                  let mut alpha = (muted_accent.a * 0.25).max(0.15).min(0.4);
+                  if row_disabled {
+                    alpha = (alpha * 0.6).max(0.1);
+                  }
+                  let highlight = muted_accent.with_alpha(alpha);
                   let device_rect = self.device_rect(row_rect);
                   fill_rounded_rect_masked(
                     &mut self.pixmap,
@@ -7086,17 +7103,18 @@ impl Painter {
                 }
 
                 let mut row_style = style.clone();
-                row_style.color = if *disabled {
+                row_style.color = if row_disabled {
                   style.color.with_alpha(0.5)
                 } else if control.invalid {
                   accent
                 } else {
                   style.color
                 };
+                let indent = if *in_optgroup { 10.0 } else { 2.0 };
                 let row_rect = Rect::from_xywh(
-                  row_rect.x() + option_indent,
+                  row_rect.x() + indent,
                   row_rect.y(),
-                  (row_rect.width() - option_indent).max(0.0),
+                  (row_rect.width() - indent).max(0.0),
                   row_rect.height(),
                 );
                 let _ = self.paint_alt_text(label, &row_style, row_rect, list_clip_mask);
@@ -7104,12 +7122,12 @@ impl Painter {
             }
           }
 
-          if scrollbar_width > 0.0 && rect.height() > 0.0 {
+          if scrollbar_width > 0.0 && max_scroll_y > 0.0 && content_rect.height() > 0.0 {
             let track_rect = Rect::from_xywh(
-              rect.max_x() - scrollbar_width,
-              rect.y(),
+              content_rect.max_x() - scrollbar_width,
+              content_rect.y(),
               scrollbar_width,
-              rect.height(),
+              content_rect.height(),
             );
             let device_track = self.device_rect(track_rect);
             fill_rounded_rect_masked(
@@ -7120,11 +7138,11 @@ impl Painter {
               list_clip_mask,
             );
 
-            let max_scroll = total_rows.saturating_sub(visible_rows).max(1) as f32;
-            let visible_fraction = visible_rows as f32 / total_rows.max(1) as f32;
+            let visible_fraction = (viewport_height / content_height.max(1.0)).clamp(0.0, 1.0);
             let thumb_height = (track_rect.height() * visible_fraction).max(8.0);
+            let thumb_height = thumb_height.min(track_rect.height());
             let travel = (track_rect.height() - thumb_height).max(0.0);
-            let thumb_y = track_rect.y() + travel * (scroll_start as f32 / max_scroll);
+            let thumb_y = track_rect.y() + travel * (scroll_y / max_scroll_y.max(1.0));
             let thumb_rect =
               Rect::from_xywh(track_rect.x(), thumb_y, track_rect.width(), thumb_height);
             let device_thumb = self.device_rect(thumb_rect);
@@ -15562,6 +15580,7 @@ mod tests {
       &ReplacedType::Svg {
         content: SvgContent::raw(red_svg()),
       },
+      None,
       Some(&style),
       box_x,
       box_y,
@@ -15741,7 +15760,7 @@ mod tests {
       2.0,
     )
     .expect("painter");
-    painter.paint_replaced(&replaced, Some(&style), 0.0, 0.0, 1.0, 1.0);
+    painter.paint_replaced(&replaced, None, Some(&style), 0.0, 0.0, 1.0, 1.0);
 
     let px = painter.pixmap.pixel(0, 0).unwrap();
     assert_eq!(
@@ -15785,7 +15804,7 @@ mod tests {
     )
     .expect("painter");
 
-    painter.paint_replaced(&replaced, Some(&style), 0.0, 0.0, 100.0, 10.0);
+    painter.paint_replaced(&replaced, None, Some(&style), 0.0, 0.0, 100.0, 10.0);
 
     let px = painter.pixmap.pixel(100, 10).unwrap();
     assert_eq!(
