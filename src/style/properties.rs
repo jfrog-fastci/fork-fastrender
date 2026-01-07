@@ -10055,6 +10055,8 @@ fn apply_declaration_with_base_internal_with_order(
       let mut apply_component = |value: &PropertyValue| match value {
         PropertyValue::Length(len) => length = *len,
         PropertyValue::Percentage(pct) => length = Length::percent(*pct),
+        // CSS `<length-percentage>` allows unitless `0` as a `<length>`.
+        PropertyValue::Number(n) if *n == 0.0 => length = Length::px(0.0),
         PropertyValue::Keyword(kw) => match kw.as_str() {
           "hanging" => hanging = true,
           "each-line" => each_line = true,
@@ -17116,6 +17118,25 @@ mod tests {
     assert_eq!(
       styles.text_underline_offset,
       TextUnderlineOffset::Length(Length::percent(25.0))
+    );
+  }
+
+  #[test]
+  fn text_indent_accepts_unitless_zero() {
+    let parent = ComputedStyle::default();
+    let mut styles = ComputedStyle::default();
+
+    let decls = parse_declarations("text-indent: 2em;");
+    assert_eq!(decls.len(), 1);
+    apply_declaration(&mut styles, &decls[0], &parent, 16.0, 16.0);
+    assert_eq!(styles.text_indent.length, Length::em(2.0));
+
+    let decls = parse_declarations("text-indent: 0;");
+    assert_eq!(decls.len(), 1);
+    apply_declaration(&mut styles, &decls[0], &parent, 16.0, 16.0);
+    assert!(
+      styles.text_indent.length.is_zero(),
+      "unitless 0 should reset text-indent to zero length"
     );
   }
 
