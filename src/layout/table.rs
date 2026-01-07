@@ -5226,6 +5226,43 @@ impl TableFormattingContext {
       } else {
         let start = cell.col;
         let end = (cell.col + cell.colspan).min(constraints.len());
+
+        if mode == DistributionMode::Fixed {
+          if let Some(span_width) = span_specified_width {
+            // CSS 2.1 §17.5.2.1: if the first-row cell spans multiple columns, its width is
+            // divided over those columns. Treat this as a fixed width contribution so the
+            // remaining columns share the remaining table space instead of forcing an
+            // over-constrained expansion.
+            let any_assigned = constraints
+              .iter()
+              .take(end)
+              .skip(start)
+              .any(|col| col.fixed_width.is_some() || col.percentage.is_some());
+            if !any_assigned {
+              let span = (end - start) as f32;
+              if span > 0.0 {
+                let internal_spacing = match structure.border_collapse {
+                  BorderCollapse::Separate => {
+                    structure.border_spacing.0 * (span - 1.0).max(0.0)
+                  }
+                  BorderCollapse::Collapse => 0.0,
+                };
+                let available_for_cols = (span_width - internal_spacing).max(0.0);
+                let per = available_for_cols / span;
+                for col in constraints.iter_mut().take(end).skip(start) {
+                  col.fixed_width = Some(col.fixed_width.unwrap_or(0.0).max(per));
+                  col.is_flexible = false;
+                  if !(col.has_max_cap && col.max_width.is_finite()) {
+                    col.min_width = col.min_width.max(per);
+                    col.max_width = col.max_width.max(per);
+                  }
+                }
+              }
+              continue;
+            }
+          }
+        }
+
         if width_is_percent && percent_base.is_some() {
           if mode == DistributionMode::Fixed {
             // Column widths (<col>/<colgroup>) take precedence. If any column in the span is
