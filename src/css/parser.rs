@@ -1117,12 +1117,18 @@ fn parse_container_negation<'i, 't>(
   parser: &mut Parser<'i, 't>,
 ) -> std::result::Result<ContainerQuery, ParseError<'i, ()>> {
   parser.skip_whitespace();
-  if parser.try_parse(|p| p.expect_ident_matching("not")).is_ok() {
+  let mut negate = false;
+  while parser.try_parse(|p| p.expect_ident_matching("not")).is_ok() {
+    negate = !negate;
     parser.skip_whitespace();
-    let inner = parse_container_negation(parser)?;
-    return Ok(ContainerQuery::Not(Box::new(inner)));
   }
-  parse_container_query_in_parens(parser)
+
+  let query = parse_container_query_in_parens(parser)?;
+  if negate {
+    Ok(ContainerQuery::Not(Box::new(query)))
+  } else {
+    Ok(query)
+  }
 }
 
 fn parse_container_query_in_parens<'i, 't>(
@@ -5961,6 +5967,23 @@ mod tests {
 
     let stylesheet = extract_css(&dom).expect("extract css");
     assert_eq!(stylesheet.rules.len(), 1);
+  }
+
+  #[test]
+  fn container_query_many_nots_does_not_overflow_stack() {
+    const NOTS: usize = 20_000;
+
+    let mut prelude = String::with_capacity(NOTS.saturating_mul(4) + "(width)".len());
+    for _ in 0..NOTS {
+      prelude.push_str("not ");
+    }
+    prelude.push_str("(width)");
+
+    let conditions = parse_container_prelude(&prelude);
+    assert!(
+      conditions.is_some(),
+      "expected container prelude to parse even with many `not`s"
+    );
   }
 
   #[test]

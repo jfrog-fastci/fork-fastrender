@@ -126,6 +126,12 @@
     "count": 1
   },
   {
+    "path": "src/layout/contexts/grid.rs",
+    "kind": "unwrap",
+    "line": "axis.writing_mode = parent_axis.unwrap().writing_mode;",
+    "count": 1
+  },
+  {
     "path": "src/layout/pagination.rs",
     "kind": "expect",
     "line": "Ok(cache.get(&key).expect(\"layout cache just populated\"))",
