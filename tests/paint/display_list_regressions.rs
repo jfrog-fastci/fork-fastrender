@@ -197,6 +197,44 @@ fn blend_mode_applies_for_isolated_stacking_context() {
 }
 
 #[test]
+fn mix_blend_mode_isolated_from_z_index_stacking_context_backdrop() {
+  let html = r#"
+    <!doctype html>
+    <style>
+      body { margin: 0; background: rgb(0 200 0); }
+      .stack { position: relative; z-index: 0; width: 40px; height: 40px; }
+      .blend { width: 40px; height: 40px; background: rgb(200 0 0); mix-blend-mode: screen; }
+    </style>
+    <div class="stack">
+      <div class="blend"></div>
+    </div>
+  "#;
+
+  let pixmap = render(html, 64, 64);
+  assert_close(pixel(&pixmap, 20, 20), (200, 0, 0, 255), 1);
+  assert_close(pixel(&pixmap, 60, 60), (0, 200, 0, 255), 1);
+}
+
+#[test]
+fn mix_blend_mode_isolated_from_transform_stacking_context_backdrop() {
+  let html = r#"
+    <!doctype html>
+    <style>
+      body { margin: 0; background: rgb(0 200 0); }
+      .stack { transform: translate(0px); width: 40px; height: 40px; }
+      .blend { width: 40px; height: 40px; background: rgb(200 0 0); mix-blend-mode: screen; }
+    </style>
+    <div class="stack">
+      <div class="blend"></div>
+    </div>
+  "#;
+
+  let pixmap = render(html, 64, 64);
+  assert_close(pixel(&pixmap, 20, 20), (200, 0, 0, 255), 1);
+  assert_close(pixel(&pixmap, 60, 60), (0, 200, 0, 255), 1);
+}
+
+#[test]
 fn filter_blur_renders() {
   let blurred_html = r#"
     <!doctype html>
