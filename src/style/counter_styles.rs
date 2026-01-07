@@ -246,7 +246,8 @@ impl CounterStyleRegistry {
       match def {
         CounterStyleDefinition::Builtin(builtin) => return builtin.format(value),
         CounterStyleDefinition::Custom(rule) => {
-          if let Some(resolved) = self.resolve_rule(rule, visited) {
+          let mut resolving_extends = HashSet::new();
+          if let Some(resolved) = self.resolve_rule(rule, &mut resolving_extends) {
             return resolved.format(value, self, visited);
           }
         }
@@ -263,12 +264,18 @@ impl CounterStyleRegistry {
   fn resolve_rule(
     &self,
     rule: &CounterStyleRule,
-    visited: &mut HashSet<String>,
+    resolving_extends: &mut HashSet<String>,
   ) -> Option<ResolvedCounterStyle> {
+    // `system: extends <name>` can be cyclic. Guard against infinite recursion by tracking the
+    // chain of styles being resolved through `extends`.
+    if !resolving_extends.insert(rule.name.clone()) {
+      return None;
+    }
+
     let mut base: Option<ResolvedCounterStyle> = None;
     let mut system = rule.system.clone().unwrap_or(CounterSystem::Symbolic);
     if let CounterSystem::Extends(ref parent) = system {
-      base = self.resolve_by_name(parent, visited);
+      base = self.resolve_by_name(parent, resolving_extends);
       system = base.as_ref()?.system.clone();
     }
 
@@ -323,13 +330,13 @@ impl CounterStyleRegistry {
   fn resolve_by_name(
     &self,
     name: &str,
-    visited: &mut HashSet<String>,
+    resolving_extends: &mut HashSet<String>,
   ) -> Option<ResolvedCounterStyle> {
     let key = name.to_ascii_lowercase();
     if let Some(def) = self.styles.get(&key) {
       return match def {
         CounterStyleDefinition::Builtin(builtin) => Some(builtin_style(*builtin)),
-        CounterStyleDefinition::Custom(rule) => self.resolve_rule(rule, visited),
+        CounterStyleDefinition::Custom(rule) => self.resolve_rule(rule, resolving_extends),
       };
     }
     CounterStyle::parse(&key).map(builtin_style)
