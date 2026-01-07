@@ -99,6 +99,26 @@ fn collected_text_compacted(node: &FragmentNode) -> String {
   out
 }
 
+fn count_text_fragments_by_column(page: &FragmentNode, needle: &str) -> (usize, usize) {
+  let content = page.children.first().expect("page content");
+  let mut texts = Vec::new();
+  collect_text_fragments(content, (0.0, 0.0), &mut texts);
+  let split_x = content.bounds.x() + content.bounds.width() / 2.0;
+  let mut left = 0usize;
+  let mut right = 0usize;
+  for t in texts {
+    if t.text.trim() != needle {
+      continue;
+    }
+    if t.x < split_x {
+      left += 1;
+    } else {
+      right += 1;
+    }
+  }
+  (left, right)
+}
+
 fn collect_floats<'a>(node: &'a FragmentNode, out: &mut Vec<&'a FragmentNode>) {
   if node
     .style
@@ -1738,6 +1758,100 @@ fn multicol_columns_continue_across_pages() {
     "next column set starts at top of next page"
   );
   assert!(find_text_position(second, "One", (0.0, 0.0)).is_none());
+}
+
+fn multicol_balance_html(column_fill: &str) -> String {
+  let mut lines = String::new();
+  for idx in 0..36 {
+    if idx == 11 {
+      lines.push_str(r#"<div class="line break">x</div>"#);
+    } else {
+      lines.push_str(r#"<div class="line">x</div>"#);
+    }
+  }
+
+  format!(
+    r#"
+    <html>
+      <head>
+        <style>
+          @page {{ size: 200px 100px; margin: 0; }}
+          body {{ margin: 0; font-size: 10px; line-height: 10px; }}
+          .multi {{ column-count: 2; column-gap: 0; column-fill: {column_fill}; }}
+          .line {{ height: 10px; margin: 0; padding: 0; }}
+          .break {{ break-after: column; }}
+        </style>
+      </head>
+      <body>
+        <div class="multi">{lines}</div>
+      </body>
+    </html>
+  "#,
+    column_fill = column_fill,
+    lines = lines
+  )
+}
+
+#[test]
+fn multicol_column_fill_balance_only_balances_last_page() {
+  let html = multicol_balance_html("balance");
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(
+    page_roots.len() >= 3,
+    "expected multicol content to span multiple pages, got {}",
+    page_roots.len()
+  );
+
+  let (first_left, first_right) = count_text_fragments_by_column(page_roots[0], "x");
+  assert!(
+    first_left > first_right + 3,
+    "balance should fill early fragments sequentially; got left={first_left} right={first_right}"
+  );
+
+  let last = *page_roots.last().expect("last page");
+  let (last_left, last_right) = count_text_fragments_by_column(last, "x");
+  assert!(last_left + last_right > 0);
+  assert!(
+    (last_left as isize - last_right as isize).abs() <= 1,
+    "balance should balance the last fragment; got left={last_left} right={last_right}"
+  );
+}
+
+#[test]
+fn multicol_column_fill_balance_all_balances_every_page() {
+  let html = multicol_balance_html("balance-all");
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(&html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 400, 400, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(
+    page_roots.len() >= 3,
+    "expected multicol content to span multiple pages, got {}",
+    page_roots.len()
+  );
+
+  let (first_left, first_right) = count_text_fragments_by_column(page_roots[0], "x");
+  assert!(
+    (first_left as isize - first_right as isize).abs() <= 1,
+    "balance-all should balance early fragments; got left={first_left} right={first_right}"
+  );
+
+  let last = *page_roots.last().expect("last page");
+  let (last_left, last_right) = count_text_fragments_by_column(last, "x");
+  assert!(last_left + last_right > 0);
+  assert!(
+    (last_left as isize - last_right as isize).abs() <= 1,
+    "balance-all should balance the last fragment; got left={last_left} right={last_right}"
+  );
 }
 
 #[test]

@@ -9605,6 +9605,8 @@ fn apply_declaration_with_base_internal_with_order(
           ColumnFill::Auto
         } else if kw.eq_ignore_ascii_case("balance") {
           ColumnFill::Balance
+        } else if kw.eq_ignore_ascii_case("balance-all") {
+          ColumnFill::BalanceAll
         } else {
           styles.column_fill
         };
@@ -24739,6 +24741,25 @@ mod tests {
     );
     assert_eq!(shorthand.column_count, Some(4));
     assert_eq!(shorthand.column_width, Some(Length::px(60.0)));
+  }
+
+  #[test]
+  fn parses_column_fill_balance_all() {
+    let mut style = ComputedStyle::default();
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "column-fill".into(),
+        value: PropertyValue::Keyword("balance-all".to_string()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+    assert_eq!(style.column_fill, ColumnFill::BalanceAll);
   }
 
   #[test]

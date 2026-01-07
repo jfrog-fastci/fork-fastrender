@@ -4053,14 +4053,17 @@ impl BlockFormattingContext {
         AvailableSpace::Definite(h) => h,
         _ => balanced_height,
       },
-      ColumnFill::Balance => balanced_height,
+      ColumnFill::Balance | ColumnFill::BalanceAll => balanced_height,
     };
     if matches!(available_height, AvailableSpace::Indefinite) {
       if let Some(hint) = fragmentainer_hint {
         column_height = hint;
       }
     }
-    if matches!(column_fill, ColumnFill::Balance)
+    if matches!(
+      column_fill,
+      ColumnFill::Balance | ColumnFill::BalanceAll
+    )
       && fragmentainer_hint.is_none()
       && column_height.is_finite()
       && column_height > 0.0
@@ -4128,20 +4131,205 @@ impl BlockFormattingContext {
       ));
     }
 
+    let root_block_size = axis.block_size(&flow_root.bounds);
     let total_extent = flow_extent.max(column_height);
     let mut boundaries = analyzer.boundaries(column_height, total_extent)?;
     let mut fragment_count = boundaries.len().saturating_sub(1);
     if fragmentainer_hint.is_none()
-      && matches!(column_fill, ColumnFill::Balance)
+      && matches!(
+        column_fill,
+        ColumnFill::Balance | ColumnFill::BalanceAll
+      )
       && fragment_count == column_count
     {
       let balanced = analyzer.balanced_boundaries(column_count, column_height, total_extent)?;
       let balanced_count = balanced.len().saturating_sub(1);
       if balanced_count == column_count {
         boundaries = balanced;
-        fragment_count = balanced_count;
       }
     }
+
+    // In paged/fragmented contexts the fragmentainer block-size hint pins the physical column
+    // height to a fixed value (e.g. the page height). `column-fill: balance` and `balance-all`
+    // still need to distribute content evenly across the columns inside each fragmentainer,
+    // leaving whitespace at the bottom of shorter columns rather than filling sequentially.
+    if fragmentainer_hint.is_some()
+      && matches!(available_height, AvailableSpace::Indefinite)
+      && matches!(
+        column_fill,
+        ColumnFill::Balance | ColumnFill::BalanceAll
+      )
+      && column_count > 1
+    {
+      let base_boundaries = boundaries;
+      let base_fragment_count = base_boundaries.len().saturating_sub(1);
+      let set_count = (base_fragment_count + column_count - 1) / column_count;
+      if base_fragment_count > 0 && set_count > 0 {
+        let last_set = set_count.saturating_sub(1);
+        let mut balanced_boundaries =
+          Vec::with_capacity(set_count.saturating_mul(column_count) + 1);
+        balanced_boundaries.push(*base_boundaries.first().unwrap_or(&0.0));
+
+        for set in 0..set_count {
+          if let Err(RenderError::Timeout { elapsed, .. }) =
+            check_active_periodic(&mut deadline_counter, 16, RenderStage::Layout)
+          {
+            return Err(LayoutError::Timeout { elapsed });
+          }
+
+          let start_idx = set * column_count;
+          let end_idx = ((set + 1) * column_count).min(base_fragment_count);
+          let set_start = base_boundaries.get(start_idx).copied().unwrap_or(0.0);
+          let set_end = base_boundaries.get(end_idx).copied().unwrap_or(set_start);
+          let should_balance = match column_fill {
+            ColumnFill::BalanceAll => true,
+            ColumnFill::Balance => set == last_set,
+            _ => false,
+          };
+
+          if !should_balance {
+            if start_idx + 1 <= end_idx && end_idx < base_boundaries.len() {
+              balanced_boundaries.extend_from_slice(&base_boundaries[start_idx + 1..=end_idx]);
+            }
+            // Ensure subsequent sets map to the correct column indices even if the analyzer
+            // produces fewer fragments (empty columns are represented as zero-length fragments).
+            while balanced_boundaries.len() < (set + 1) * column_count + 1 {
+              balanced_boundaries.push(set_end);
+            }
+            continue;
+          }
+
+          let set_total_extent = (set_end - set_start).max(0.0);
+          if set_total_extent <= 0.0 {
+            for _ in 0..column_count {
+              balanced_boundaries.push(set_end);
+            }
+            continue;
+          }
+
+          // Only analyze the actual content in the set. Some callers extend the boundary list to
+          // include trailing empty space (e.g. when the content is shorter than the fragmentainer).
+          // Fragmenting that trailing empty region can create spurious extra "columns".
+          let set_content_end = flow_extent.min(set_end).max(set_start);
+          let set_content_total = (set_content_end - set_start).max(0.0);
+          if set_content_total <= 0.0 {
+            for _ in 0..column_count {
+              balanced_boundaries.push(set_end);
+            }
+            continue;
+          }
+
+          let clipped_content = clip_node(
+            &flow_root,
+            &axis,
+            set_start,
+            set_content_end,
+            0.0,
+            set_start,
+            set_content_end,
+            root_block_size,
+            0,
+            1,
+            FragmentationContext::Column,
+            column_height,
+            axes,
+          )?;
+          let Some(mut clipped_content) = clipped_content else {
+            for _ in 0..column_count {
+              balanced_boundaries.push(set_end);
+            }
+            continue;
+          };
+          // `clip_node` preserves logical overrides from the original flow tree. Those overrides
+          // reflect the pre-clipped coordinates and would cause the analyzer to think the clipped
+          // subtree is much taller than it is (because `FragmentationAnalyzer` bases
+          // `content_extent` on logical bounds). Reset logical overrides so fragmentation decisions
+          // operate on the clipped geometry.
+          Self::set_logical_from_bounds(&mut clipped_content);
+
+          let mut set_analyzer =
+            FragmentationAnalyzer::new(&clipped_content, FragmentationContext::Column, axes, None);
+          let content_extent = set_analyzer.content_extent().max(0.0).min(set_content_total);
+          if content_extent <= 0.0 {
+            for _ in 0..column_count {
+              balanced_boundaries.push(set_end);
+            }
+            continue;
+          }
+
+          let min_height = (content_extent / column_count as f32).max(0.0);
+          let max_height = column_height.min(content_extent).max(0.0);
+          if min_height > column_height || max_height <= 0.0 {
+            if start_idx + 1 <= end_idx && end_idx < base_boundaries.len() {
+              balanced_boundaries.extend_from_slice(&base_boundaries[start_idx + 1..=end_idx]);
+            }
+            while balanced_boundaries.len() < (set + 1) * column_count + 1 {
+              balanced_boundaries.push(set_end);
+            }
+            continue;
+          }
+
+          let mut fragment_count_for = |height: f32| -> Result<usize, LayoutError> {
+            Ok(
+              set_analyzer
+                .boundaries(height, content_extent)?
+                .len()
+                .saturating_sub(1),
+            )
+          };
+          let count_at_max = fragment_count_for(max_height)?;
+          if count_at_max > column_count {
+            if start_idx + 1 <= end_idx && end_idx < base_boundaries.len() {
+              balanced_boundaries.extend_from_slice(&base_boundaries[start_idx + 1..=end_idx]);
+            }
+            while balanced_boundaries.len() < (set + 1) * column_count + 1 {
+              balanced_boundaries.push(set_end);
+            }
+            continue;
+          }
+
+          let used_height = {
+            let count_at_min = fragment_count_for(min_height)?;
+            if count_at_min > column_count {
+              let mut low = min_height;
+              let mut high = max_height;
+              for _ in 0..16 {
+                let mid = (low + high) / 2.0;
+                let count_at_mid = fragment_count_for(mid)?;
+                if count_at_mid <= column_count {
+                  high = mid;
+                } else {
+                  low = mid;
+                }
+              }
+              let mut height = high;
+              if fragment_count_for(height)? > column_count {
+                height = max_height;
+              }
+              height
+            } else {
+              min_height
+            }
+          };
+
+          let mut set_boundaries = set_analyzer.boundaries(used_height, content_extent)?;
+          if let Some(last) = set_boundaries.last_mut() {
+            *last = set_total_extent;
+          }
+          while set_boundaries.len() < column_count + 1 {
+            set_boundaries.push(set_total_extent);
+          }
+          for boundary in set_boundaries.iter().skip(1) {
+            balanced_boundaries.push(set_start + *boundary);
+          }
+        }
+
+        boundaries = balanced_boundaries;
+      } else {
+        boundaries = base_boundaries;
+      }
+    }
+    fragment_count = boundaries.len().saturating_sub(1);
     if fragment_count == 0 {
       return Ok((
         flow_root.children.to_vec(),
@@ -4153,7 +4341,6 @@ impl BlockFormattingContext {
 
     let inline_sign = if inline_positive { 1.0 } else { -1.0 };
     let stride = column_width + column_gap;
-    let root_block_size = axis.block_size(&flow_root.bounds);
     let mut fragments = Vec::new();
     let mut fragment_heights = vec![0.0f32; fragment_count];
     let mut fragment_has_content = vec![false; fragment_count];

@@ -425,6 +425,7 @@ pub enum FlexWrap {
 pub enum ColumnFill {
   Auto,
   Balance,
+  BalanceAll,
 }
 
 impl Default for ColumnFill {
