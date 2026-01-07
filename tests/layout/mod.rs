@@ -86,6 +86,7 @@ mod table_anonymous_inheritance;
 mod table_border_spacing_edges;
 mod table_caption_does_not_widen_table;
 mod table_caption_explicit_width_overflows_wrapper;
+mod table_caption_percentage_width_resolves_against_wrapper;
 mod table_caption_respects_explicit_width_and_auto_margins;
 mod table_cell_placement;
 mod table_caption_layout;
