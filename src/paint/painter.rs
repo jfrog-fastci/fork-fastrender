@@ -10051,6 +10051,12 @@ impl Painter {
       if !s.is_empty() {
         let mut mark_style = style.clone();
         mark_style.font_size = style.font_size * 0.5;
+        mark_style.font_variant_east_asian.ruby = true;
+        if crate::style::is_vertical_typographic_mode(style.writing_mode) {
+          // CSS Text Decoration 4: emphasis marks must remain upright in vertical typographic modes,
+          // regardless of the element's authored `text-orientation`.
+          mark_style.text_orientation = crate::style::types::TextOrientation::Upright;
+        }
         let Ok(mark_runs) = self.shaper.shape(s, &mark_style, &self.font_ctx) else {
           return;
         };
