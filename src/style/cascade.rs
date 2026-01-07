@@ -792,11 +792,6 @@ fn log_cascade_profile(elapsed_ms: f64) {
   );
 }
 
-static UA_TEXTAREA_DECLS: OnceLock<Vec<Declaration>> = OnceLock::new();
-static UA_INPUT_BASE_DECLS: OnceLock<Vec<Declaration>> = OnceLock::new();
-static UA_INPUT_HIDDEN_DECLS: OnceLock<Vec<Declaration>> = OnceLock::new();
-static UA_INPUT_TEXT_CURSOR_DECLS: OnceLock<Vec<Declaration>> = OnceLock::new();
-static UA_INPUT_POINTER_CURSOR_DECLS: OnceLock<Vec<Declaration>> = OnceLock::new();
 static UA_LINK_VISITED_DECLS: OnceLock<Vec<Declaration>> = OnceLock::new();
 static UA_LINK_ACTIVE_DECLS: OnceLock<Vec<Declaration>> = OnceLock::new();
 static UA_LINK_HOVER_DECLS: OnceLock<Vec<Declaration>> = OnceLock::new();
@@ -8123,63 +8118,6 @@ fn ua_default_rules(
       ),
       0,
     );
-  } else if tag.eq_ignore_ascii_case("textarea") {
-    add_rule(
-      cached_declarations(
-        &UA_TEXTAREA_DECLS,
-        "font: inherit; color: inherit; border: 2px inset rgb(204,204,204); background: white; padding: 2px 3px; box-sizing: border-box; display: inline-block; cursor: text;",
-      ),
-      0,
-    );
-  } else if tag.eq_ignore_ascii_case("input") {
-    let input_type = node.get_attribute_ref("type").unwrap_or("text");
-    if input_type.eq_ignore_ascii_case("hidden") {
-      rules.push(MatchedRule {
-        origin: StyleOrigin::UserAgent,
-        specificity: 11, // input[type="hidden"] should outrank generic UA form rules
-        order: 0,
-        layer_order: layer_order.clone(),
-        declarations: cached_declarations(&UA_INPUT_HIDDEN_DECLS, "display: none;"),
-        starting_style: false,
-      });
-      return rules;
-    }
-    add_rule(
-      cached_declarations(
-        &UA_INPUT_BASE_DECLS,
-        "font: inherit; color: inherit; border: 2px inset rgb(204,204,204); background: white; padding: 2px 3px; box-sizing: border-box; display: inline-block;",
-      ),
-      0,
-    );
-    if input_type.eq_ignore_ascii_case("text")
-      || input_type.eq_ignore_ascii_case("search")
-      || input_type.eq_ignore_ascii_case("email")
-      || input_type.eq_ignore_ascii_case("url")
-      || input_type.eq_ignore_ascii_case("tel")
-      || input_type.eq_ignore_ascii_case("password")
-      || input_type.eq_ignore_ascii_case("number")
-    {
-      add_rule(
-        cached_declarations(&UA_INPUT_TEXT_CURSOR_DECLS, "cursor: text;"),
-        1,
-      );
-    } else if input_type.eq_ignore_ascii_case("button")
-      || input_type.eq_ignore_ascii_case("submit")
-      || input_type.eq_ignore_ascii_case("reset")
-    {
-      add_rule(
-        cached_declarations(&UA_INPUT_POINTER_CURSOR_DECLS, "cursor: pointer;"),
-        1,
-      );
-    }
-  } else if tag.eq_ignore_ascii_case("select") || tag.eq_ignore_ascii_case("button") {
-    add_rule(
-      cached_declarations(
-        &UA_INPUT_BASE_DECLS,
-        "font: inherit; color: inherit; border: 2px inset rgb(204,204,204); background: white; padding: 2px 3px; box-sizing: border-box; display: inline-block;",
-      ),
-      0,
-    );
   }
 
   rules
@@ -10269,6 +10207,71 @@ mod tests {
     let styled_audio = apply_styles(&audio_dom, &stylesheet);
     assert_eq!(styled_audio.styles.overflow_x, Overflow::Visible);
     assert_eq!(styled_audio.styles.overflow_y, Overflow::Visible);
+  }
+
+  #[test]
+  fn ua_form_control_defaults_come_from_user_agent_stylesheet() {
+    let stylesheet = StyleSheet::new();
+
+    let input_dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![],
+    };
+    let styled_input = apply_styles(&input_dom, &stylesheet);
+    assert_eq!(styled_input.styles.border_top_width, Length::px(1.0));
+    assert_eq!(styled_input.styles.border_right_width, Length::px(1.0));
+    assert_eq!(styled_input.styles.border_bottom_width, Length::px(1.0));
+    assert_eq!(styled_input.styles.border_left_width, Length::px(1.0));
+    assert_eq!(styled_input.styles.border_top_style, BorderStyle::Solid);
+    assert_eq!(styled_input.styles.border_right_style, BorderStyle::Solid);
+    assert_eq!(styled_input.styles.border_bottom_style, BorderStyle::Solid);
+    assert_eq!(styled_input.styles.border_left_style, BorderStyle::Solid);
+    assert_eq!(styled_input.styles.border_top_color, Rgba::rgb(0x76, 0x76, 0x76));
+    assert_eq!(
+      styled_input.styles.padding_top,
+      Length::px(4.0),
+      "expected UA padding to come from src/user_agent.css"
+    );
+    assert_eq!(styled_input.styles.padding_right, Length::px(6.0));
+    assert_eq!(styled_input.styles.padding_bottom, Length::px(4.0));
+    assert_eq!(styled_input.styles.padding_left, Length::px(6.0));
+
+    let text_input_dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("type".to_string(), "text".to_string())],
+      },
+      children: vec![],
+    };
+    let styled_text_input = apply_styles(&text_input_dom, &stylesheet);
+    assert_eq!(styled_text_input.styles.cursor, CursorKeyword::Text);
+
+    let button_dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "button".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![],
+    };
+    let styled_button = apply_styles(&button_dom, &stylesheet);
+    assert_eq!(styled_button.styles.cursor, CursorKeyword::Pointer);
+
+    let hidden_input_dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("type".to_string(), "hidden".to_string())],
+      },
+      children: vec![],
+    };
+    let styled_hidden_input = apply_styles(&hidden_input_dom, &stylesheet);
+    assert_eq!(styled_hidden_input.styles.display, Display::None);
   }
 
   #[test]

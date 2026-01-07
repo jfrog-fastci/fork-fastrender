@@ -387,23 +387,31 @@ input, textarea, select, button {
 
 input[type="text"], input[type="password"], input[type="email"],
 input[type="search"], input[type="tel"], input[type="url"],
+input[type="number"],
 input:not([type]) {
     padding: 4px 6px;
+    cursor: text;
 }
 
 input[type="submit"], input[type="button"], button {
     padding: 4px 10px;
     background-color: rgb(240, 240, 240);
     border: 1px solid #767676;
+    cursor: pointer;
 }
 
 textarea {
     white-space: pre-wrap;
     min-height: 3em;
+    cursor: text;
 }
 
 select {
     padding-right: 20px;
+}
+
+input[type="reset"] {
+    cursor: pointer;
 }
 
 input[type="checkbox"], input[type="radio"] {
