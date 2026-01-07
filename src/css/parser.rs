@@ -4352,82 +4352,118 @@ pub fn extract_css_sources(dom: &DomNode) -> Vec<ScopedStylesheetSource> {
     )
   }
 
-  fn walk(
-    node: &DomNode,
-    scope: &CssTreeScope,
-    path: &mut Vec<usize>,
-    sources: &mut Vec<ScopedStylesheetSource>,
-  ) {
-    if node.template_contents_are_inert() {
-      return;
-    }
-    if let Some(tag) = node.tag_name() {
-      if tag.eq_ignore_ascii_case("style") {
-        let mut css = String::new();
-        for child in node.children.iter() {
-          if let Some(text) = child.text_content() {
-            css.push_str(text);
-          }
-        }
+  struct Frame<'a> {
+    node: &'a DomNode,
+    scope: CssTreeScope,
+    next_child: usize,
+    next_contributing_child_index: usize,
+    pushed_path: bool,
+    entered: bool,
+  }
 
-        sources.push(ScopedStylesheetSource {
-          scope: scope.clone(),
-          source: StylesheetSource::Inline(InlineStyle {
-            css,
-            media: node.get_attribute("media"),
-            type_attr: node.get_attribute("type"),
-            disabled: node.get_attribute_ref("disabled").is_some(),
-          }),
-        });
-      } else if tag.eq_ignore_ascii_case("link")
-        && matches!(scope, CssTreeScope::Document)
-        && matches!(node.namespace(), Some(ns) if ns.is_empty() || ns == HTML_NAMESPACE)
-      {
-        let rel_attr = node.get_attribute("rel");
-        let href_attr = node.get_attribute("href");
-        if let (Some(rel), Some(href)) = (rel_attr, href_attr) {
-          let rel = tokenize_rel_list(&rel);
+  let mut sources = Vec::new();
+  let mut path = Vec::new();
+  let mut stack = vec![Frame {
+    node: dom,
+    scope: CssTreeScope::Document,
+    next_child: 0,
+    next_contributing_child_index: 0,
+    pushed_path: false,
+    entered: false,
+  }];
+
+  while let Some(mut frame) = stack.pop() {
+    if !frame.entered {
+      if frame.node.template_contents_are_inert() {
+        if frame.pushed_path {
+          path.pop();
+        }
+        continue;
+      }
+
+      if let Some(tag) = frame.node.tag_name() {
+        if tag.eq_ignore_ascii_case("style") {
+          let mut css = String::new();
+          for child in frame.node.children.iter() {
+            if let Some(text) = child.text_content() {
+              css.push_str(text);
+            }
+          }
+
           sources.push(ScopedStylesheetSource {
-            scope: CssTreeScope::Document,
-            source: StylesheetSource::External(StylesheetLink {
-              href,
-              rel,
-              as_attr: node.get_attribute("as"),
-              media: node.get_attribute("media"),
-              type_attr: node.get_attribute("type"),
-              disabled: node.get_attribute_ref("disabled").is_some(),
+            scope: frame.scope.clone(),
+            source: StylesheetSource::Inline(InlineStyle {
+              css,
+              media: frame.node.get_attribute("media"),
+              type_attr: frame.node.get_attribute("type"),
+              disabled: frame.node.get_attribute_ref("disabled").is_some(),
             }),
           });
+        } else if tag.eq_ignore_ascii_case("link")
+          && matches!(frame.scope, CssTreeScope::Document)
+          && matches!(
+            frame.node.namespace(),
+            Some(ns) if ns.is_empty() || ns == HTML_NAMESPACE
+          )
+        {
+          let rel_attr = frame.node.get_attribute("rel");
+          let href_attr = frame.node.get_attribute("href");
+          if let (Some(rel), Some(href)) = (rel_attr, href_attr) {
+            let rel = tokenize_rel_list(&rel);
+            sources.push(ScopedStylesheetSource {
+              scope: CssTreeScope::Document,
+              source: StylesheetSource::External(StylesheetLink {
+                href,
+                rel,
+                as_attr: frame.node.get_attribute("as"),
+                media: frame.node.get_attribute("media"),
+                type_attr: frame.node.get_attribute("type"),
+                disabled: frame.node.get_attribute_ref("disabled").is_some(),
+              }),
+            });
+          }
         }
       }
+
+      frame.entered = true;
     }
 
-    let mut child_index = 0;
-    for child in node.children.iter() {
-      let mut child_scope = scope.clone();
+    if frame.next_child < frame.node.children.len() {
+      let child = &frame.node.children[frame.next_child];
+      frame.next_child += 1;
+
+      let mut child_scope = frame.scope.clone();
       if matches!(child.node_type, DomNodeType::ShadowRoot { .. }) {
         child_scope = CssTreeScope::ShadowRoot {
           host_path: path.clone(),
         };
       }
 
-      let contributes = contributes_to_scope_path(child);
-      if contributes {
-        path.push(child_index);
-        child_index += 1;
+      let mut pushed_path = false;
+      if contributes_to_scope_path(child) {
+        let idx = frame.next_contributing_child_index;
+        frame.next_contributing_child_index += 1;
+        path.push(idx);
+        pushed_path = true;
       }
 
-      walk(child, &child_scope, path, sources);
+      stack.push(frame);
+      stack.push(Frame {
+        node: child,
+        scope: child_scope,
+        next_child: 0,
+        next_contributing_child_index: 0,
+        pushed_path,
+        entered: false,
+      });
+      continue;
+    }
 
-      if contributes {
-        path.pop();
-      }
+    if frame.pushed_path {
+      path.pop();
     }
   }
 
-  let mut sources = Vec::new();
-  let mut path = Vec::new();
-  walk(dom, &CssTreeScope::Document, &mut path, &mut sources);
   sources
 }
 
@@ -4436,19 +4472,19 @@ pub fn extract_css_sources(dom: &DomNode) -> Vec<ScopedStylesheetSource> {
 /// Node ids are assigned in pre-order, matching the styling traversal so that
 /// the returned host ids can be used directly during cascade.
 pub fn extract_scoped_css_sources(dom: &DomNode) -> ScopedStylesheetSources {
-  fn walk(
-    node: &DomNode,
-    scope: Option<usize>,
-    counter: &mut usize,
-    out: &mut ScopedStylesheetSources,
-  ) {
-    let node_id = *counter;
-    *counter += 1;
+  let mut scoped = ScopedStylesheetSources::default();
+  let mut counter: usize = 1;
+  let mut stack: Vec<(&DomNode, Option<usize>)> = Vec::new();
+  stack.push((dom, None));
+
+  while let Some((node, scope)) = stack.pop() {
+    let node_id = counter;
+    counter += 1;
 
     if let Some(tag) = node.tag_name() {
       let bucket = match scope {
-        Some(host) => out.shadows.entry(host).or_default(),
-        None => &mut out.document,
+        Some(host) => scoped.shadows.entry(host).or_default(),
+        None => &mut scoped.document,
       };
 
       if tag.eq_ignore_ascii_case("style") {
@@ -4485,21 +4521,18 @@ pub fn extract_scoped_css_sources(dom: &DomNode) -> ScopedStylesheetSources {
     }
 
     if node.template_contents_are_inert() {
-      return;
+      continue;
     }
 
-    for child in node.children.iter() {
+    for child in node.children.iter().rev() {
       let child_scope = match child.node_type {
         DomNodeType::ShadowRoot { .. } => Some(node_id),
         _ => scope,
       };
-      walk(child, child_scope, counter, out);
+      stack.push((child, child_scope));
     }
   }
 
-  let mut scoped = ScopedStylesheetSources::default();
-  let mut counter: usize = 1;
-  walk(dom, None, &mut counter, &mut scoped);
   scoped
 }
 
@@ -4510,12 +4543,13 @@ pub fn extract_scoped_css_sources(dom: &DomNode) -> ScopedStylesheetSources {
 pub fn extract_css(dom: &DomNode) -> Result<StyleSheet> {
   let mut css_content = String::new();
 
-  fn walk(node: &DomNode, css_content: &mut String) {
+  let mut stack = vec![dom];
+  while let Some(node) = stack.pop() {
     if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) {
-      return;
+      continue;
     }
     if node.template_contents_are_inert() {
-      return;
+      continue;
     }
     if let Some(tag) = node.tag_name() {
       if tag == "style" {
@@ -4527,12 +4561,10 @@ pub fn extract_css(dom: &DomNode) -> Result<StyleSheet> {
         }
       }
     }
-    for child in node.children.iter() {
-      walk(child, css_content);
+    for child in node.children.iter().rev() {
+      stack.push(child);
     }
   }
-
-  walk(dom, &mut css_content);
 
   if css_content.is_empty() {
     Ok(StyleSheet::new())
@@ -5789,6 +5821,61 @@ mod tests {
       }
       other => panic!("expected inline style, got {:?}", other),
     }
+  }
+
+  #[test]
+  fn extract_css_sources_deep_dom_does_not_overflow_stack() {
+    use crate::dom::{DomNode, DomNodeType};
+    use selectors::context::QuirksMode;
+
+    const DEPTH: usize = 20_000;
+
+    let style = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "style".to_string(),
+        namespace: String::new(),
+        attributes: Vec::new(),
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Text {
+          content: "body { color: red; }".to_string(),
+        },
+        children: Vec::new(),
+      }],
+    };
+
+    let mut node = style;
+    for _ in 0..DEPTH {
+      node = DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: String::new(),
+          attributes: Vec::new(),
+        },
+        children: vec![node],
+      };
+    }
+
+    let dom = DomNode {
+      node_type: DomNodeType::Document {
+        quirks_mode: QuirksMode::NoQuirks,
+      },
+      children: vec![node],
+    };
+
+    let flat = extract_css_sources(&dom);
+    assert_eq!(flat.len(), 1);
+    match &flat[0].source {
+      StylesheetSource::Inline(inline) => assert!(inline.css.contains("color")),
+      other => panic!("expected inline stylesheet, got {other:?}"),
+    }
+
+    let scoped = extract_scoped_css_sources(&dom);
+    assert_eq!(scoped.document.len(), 1);
+    assert!(scoped.shadows.is_empty());
+
+    let stylesheet = extract_css(&dom).expect("extract css");
+    assert_eq!(stylesheet.rules.len(), 1);
   }
 
   #[test]
