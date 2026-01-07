@@ -17013,88 +17013,73 @@ fn parse_text_emphasis_color(
 }
 
 fn parse_text_emphasis_position(value: &PropertyValue) -> Option<TextEmphasisPosition> {
-  #[derive(Default)]
-  struct PositionParse {
-    over_under: Option<bool>, // true over, false under
-    side: Option<bool>,       // true right, false left
-  }
+  // CSS Text Decoration Level 3:
+  //   Value: [ over | under ] && [ right | left ]?
+  //
+  // The `right|left` part defaults to `right` when omitted, but the computed value preserves the
+  // specified keywords (so we represent the "only over/under specified" case explicitly).
 
-  let mut state = PositionParse::default();
-
-  let handle_kw = |kw: &str, state: &mut PositionParse| -> bool {
-    match kw {
-      "over" => {
-        if state.over_under.is_some() {
-          return false;
-        }
-        state.over_under = Some(true);
-      }
-      "under" => {
-        if state.over_under.is_some() {
-          return false;
-        }
-        state.over_under = Some(false);
-      }
-      "left" => {
-        if state.side.is_some() {
-          return false;
-        }
-        state.side = Some(false);
-      }
-      "right" => {
-        if state.side.is_some() {
-          return false;
-        }
-        state.side = Some(true);
-      }
-      "auto" => {
-        if state.over_under.is_some() || state.side.is_some() {
-          return false;
-        }
-        return true;
-      }
-      _ => return false,
-    }
-    true
-  };
-
-  let keywords: Vec<String> = match value {
+  let tokens: Vec<String> = match value {
+    PropertyValue::Keyword(kw) => kw
+      .split_whitespace()
+      .map(|s| s.to_ascii_lowercase())
+      .collect(),
     PropertyValue::Multiple(values) => {
-      let mut kws = Vec::new();
+      let mut out = Vec::new();
       for v in values {
-        if let PropertyValue::Keyword(kw) = v {
-          kws.extend(kw.split_whitespace().map(|s| s.to_string()));
-        } else {
+        let PropertyValue::Keyword(kw) = v else {
           return None;
-        }
+        };
+        out.extend(kw.split_whitespace().map(|s| s.to_ascii_lowercase()));
       }
-      kws
+      out
     }
-    PropertyValue::Keyword(kw) => kw.split_whitespace().map(|s| s.to_string()).collect(),
     _ => return None,
   };
 
-  if keywords.is_empty() {
+  // Only one or two keywords are allowed.
+  if tokens.is_empty() || tokens.len() > 2 {
     return None;
   }
 
-  for kw in &keywords {
-    if !handle_kw(kw, &mut state) {
-      return None;
+  let mut over_under: Option<bool> = None; // true over, false under
+  let mut side: Option<bool> = None; // true right, false left
+
+  for token in tokens {
+    match token.as_str() {
+      "over" => {
+        if over_under.replace(true).is_some() {
+          return None;
+        }
+      }
+      "under" => {
+        if over_under.replace(false).is_some() {
+          return None;
+        }
+      }
+      "right" => {
+        if side.replace(true).is_some() {
+          return None;
+        }
+      }
+      "left" => {
+        if side.replace(false).is_some() {
+          return None;
+        }
+      }
+      _ => return None,
     }
   }
 
-  match (state.over_under, state.side) {
-    (None, None) => Some(TextEmphasisPosition::Auto),
-    (Some(true), None) => Some(TextEmphasisPosition::Over),
-    (Some(false), None) => Some(TextEmphasisPosition::Under),
-    (Some(true), Some(false)) => Some(TextEmphasisPosition::OverLeft),
-    (Some(true), Some(true)) => Some(TextEmphasisPosition::OverRight),
-    (Some(false), Some(false)) => Some(TextEmphasisPosition::UnderLeft),
-    (Some(false), Some(true)) => Some(TextEmphasisPosition::UnderRight),
-    (None, Some(false)) => Some(TextEmphasisPosition::OverLeft),
-    (None, Some(true)) => Some(TextEmphasisPosition::OverRight),
-  }
+  let over_under = over_under?;
+  Some(match (over_under, side) {
+    (true, None) => TextEmphasisPosition::Over,
+    (false, None) => TextEmphasisPosition::Under,
+    (true, Some(false)) => TextEmphasisPosition::OverLeft,
+    (true, Some(true)) => TextEmphasisPosition::OverRight,
+    (false, Some(false)) => TextEmphasisPosition::UnderLeft,
+    (false, Some(true)) => TextEmphasisPosition::UnderRight,
+  })
 }
 
 #[allow(clippy::option_option)]
@@ -25133,6 +25118,79 @@ mod tests {
       }
     ));
     assert_eq!(style.text_emphasis_color, Some(Rgba::BLUE));
+  }
+
+  #[test]
+  fn text_emphasis_position_rejects_auto_keyword() {
+    let mut style = ComputedStyle::default();
+    style.text_emphasis_position = TextEmphasisPosition::UnderRight;
+
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "text-emphasis-position".into(),
+        value: PropertyValue::Keyword("auto".to_string()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+
+    assert_eq!(
+      style.text_emphasis_position,
+      TextEmphasisPosition::UnderRight,
+      "`text-emphasis-position:auto` is invalid and should be ignored"
+    );
+  }
+
+  #[test]
+  fn text_emphasis_position_rejects_side_only_keyword() {
+    let mut style = ComputedStyle::default();
+    style.text_emphasis_position = TextEmphasisPosition::UnderRight;
+
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "text-emphasis-position".into(),
+        value: PropertyValue::Keyword("left".to_string()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+
+    assert_eq!(
+      style.text_emphasis_position,
+      TextEmphasisPosition::UnderRight,
+      "`text-emphasis-position:left` is invalid without `over|under` and should be ignored"
+    );
+  }
+
+  #[test]
+  fn text_emphasis_position_parses_case_insensitively() {
+    let mut style = ComputedStyle::default();
+
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "text-emphasis-position".into(),
+        value: PropertyValue::Keyword("UnDeR LeFt".to_string()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+
+    assert_eq!(style.text_emphasis_position, TextEmphasisPosition::UnderLeft);
   }
 
   #[test]
