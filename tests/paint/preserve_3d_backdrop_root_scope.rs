@@ -58,6 +58,7 @@ fn preserve_3d_backdrop_filter_respects_backdrop_root_scope() {
   preserve_root.establishes_backdrop_root = true;
   preserve_root.has_backdrop_sensitive_descendants = true;
   preserve_root.has_clip_path = true;
+  preserve_root.has_backdrop_sensitive_descendants = true;
   list.push(DisplayItem::PushStackingContext(preserve_root));
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: left_half,
