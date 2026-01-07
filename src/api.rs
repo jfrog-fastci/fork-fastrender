@@ -7196,7 +7196,11 @@ impl FastRender {
             continue;
           }
 
-          let sheet = parse_stylesheet_with_media(&inline.css, media_ctx, Some(media_query_cache))?;
+          let mut sheet =
+            parse_stylesheet_with_media(&inline.css, media_ctx, Some(media_query_cache))?;
+          if let Some(base_url) = self.base_url.as_deref() {
+            sheet.set_font_face_source_stylesheet_url(base_url);
+          }
           if sheet.contains_imports() {
             let resolved = sheet.resolve_imports_owned_with_cache(
               &inline_loader,
@@ -7298,8 +7302,9 @@ impl FastRender {
                 std::borrow::Cow::Owned(rewritten) => std::borrow::Cow::Owned(rewritten),
               };
 
-              let sheet =
+              let mut sheet =
                 parse_stylesheet_with_media(css_text.as_ref(), media_ctx, Some(media_query_cache))?;
+              sheet.set_font_face_source_stylesheet_url(&sheet_base);
               if sheet.contains_imports() {
                 let loader = CssImportFetcher::new(
                   Some(sheet_base.clone()),
@@ -19827,6 +19832,42 @@ mod tests {
     };
 
     assert_eq!(url, "https://example.com/app/images/bg.png");
+  }
+
+  #[test]
+  fn font_face_rules_track_source_stylesheet_url_in_collect_document_stylesheet() {
+    let base_url = "https://example.com/app/page.html";
+    let stylesheet_url = "https://example.com/app/styles/main.css";
+    let fetcher = MapFetcher::default().with_entry(
+      stylesheet_url,
+      r#"@font-face { font-family: "TestFace"; src: url("font.ttf"); }"#,
+    );
+
+    let renderer = FastRender::builder()
+      .base_url(base_url.to_string())
+      .fetcher(Arc::new(fetcher) as Arc<dyn ResourceFetcher>)
+      .build()
+      .unwrap();
+
+    let html = r#"<link rel="stylesheet" href="styles/main.css">"#;
+
+    let mut dom = renderer.parse_html(html).unwrap();
+    let modal_open = dom::modal_dialog_present(&dom);
+    dom::apply_top_layer_state(&mut dom, modal_open);
+
+    let media_ctx = MediaContext::screen(200.0, 200.0)
+      .with_device_pixel_ratio(renderer.device_pixel_ratio)
+      .with_env_overrides();
+    let mut media_query_cache = MediaQueryCache::default();
+    let stylesheet = renderer
+      .collect_document_stylesheet(&dom, &media_ctx, &mut media_query_cache, None)
+      .unwrap();
+    let metadata = stylesheet.collect_css_metadata_with_cache(&media_ctx, Some(&mut media_query_cache));
+    assert_eq!(metadata.font_faces.len(), 1);
+    assert_eq!(
+      metadata.font_faces[0].source_stylesheet_url.as_deref(),
+      Some(stylesheet_url)
+    );
   }
 
   #[test]
