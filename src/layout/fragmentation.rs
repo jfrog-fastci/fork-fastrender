@@ -573,6 +573,97 @@ impl FragmentationAnalyzer {
     Ok(boundaries)
   }
 
+  /// Computes balanced fragmentation boundaries for a fixed number of fragmentainers.
+  ///
+  /// This is primarily used for `column-fill: balance`, where we want content to be distributed
+  /// more evenly across a fixed number of columns instead of greedily filling each column up to the
+  /// fragmentainer limit.
+  ///
+  /// The algorithm selects each boundary by targeting the *average remaining extent per remaining
+  /// fragmentainer*, clamped to `max_fragmentainer_size`, while ensuring that the remaining content
+  /// can still fit in the remaining fragmentainers.
+  pub fn balanced_boundaries(
+    &mut self,
+    fragmentainer_count: usize,
+    max_fragmentainer_size: f32,
+    total_extent: f32,
+  ) -> Result<Vec<f32>, LayoutError> {
+    let effective_total = total_extent.max(self.content_extent);
+    if fragmentainer_count <= 1 || max_fragmentainer_size <= 0.0 {
+      return Ok(vec![0.0, effective_total]);
+    }
+
+    self.reset_state();
+    let mut boundaries = vec![0.0];
+    let mut start = 0.0f32;
+    let mut opportunity_cursor = 0usize;
+    let mut remaining = fragmentainer_count;
+
+    while remaining > 1 && start < effective_total - BREAK_EPSILON {
+      if self.deadline_counter % 8 == 0 {
+        check_layout_deadline()?;
+      }
+      self.deadline_counter = self.deadline_counter.wrapping_add(1);
+
+      let remaining_extent = effective_total - start;
+      let ideal = remaining_extent / remaining as f32;
+
+      // Do not pick a boundary so early that the remaining content cannot fit within the remaining
+      // fragmentainers when each is capped at `max_fragmentainer_size`.
+      let remaining_after = remaining - 1;
+      let min_boundary = effective_total - max_fragmentainer_size * remaining_after as f32;
+      let min_size = (min_boundary - start).max(0.0);
+
+      let mut fragmentainer_size = ideal
+        .min(max_fragmentainer_size)
+        .max(min_size)
+        .max(BREAK_EPSILON);
+
+      // When balancing across a fixed number of fragmentainers we still must honour explicit breaks
+      // (`break-before/after`, etc). Ensure the next forced boundary is inside the selection
+      // window so `select_next_boundary` can pick it even when the ideal balanced size would stop
+      // short.
+      if opportunity_cursor > self.opportunities.len() {
+        opportunity_cursor = self.opportunities.len();
+      }
+      let advance = self.opportunities[opportunity_cursor..]
+        .partition_point(|o| o.pos <= start + BREAK_EPSILON);
+      opportunity_cursor = (opportunity_cursor + advance).min(self.opportunities.len());
+      if let Some(forced_pos) = self.opportunities[opportunity_cursor..]
+        .iter()
+        .find(|o| matches!(o.strength, BreakStrength::Forced) && o.pos > start + BREAK_EPSILON)
+        .map(|o| o.pos)
+      {
+        fragmentainer_size = fragmentainer_size.max((forced_pos - start).max(BREAK_EPSILON));
+      }
+
+      let next = self.select_next_boundary(
+        start,
+        fragmentainer_size,
+        effective_total,
+        &mut opportunity_cursor,
+      );
+      debug_assert!(
+        next + BREAK_EPSILON >= start,
+        "boundaries must not move backwards"
+      );
+      if (next - start).abs() < BREAK_EPSILON {
+        boundaries.push(effective_total);
+        break;
+      }
+      boundaries.push(next);
+      start = next;
+      remaining = remaining.saturating_sub(1);
+    }
+
+    if effective_total - *boundaries.last().unwrap_or(&0.0) > BREAK_EPSILON {
+      boundaries.push(effective_total);
+    }
+    boundaries.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    boundaries.dedup_by(|a, b| (*a - *b).abs() < BREAK_EPSILON);
+    Ok(boundaries)
+  }
+
   fn reset_state(&mut self) {
     for start in &mut self.line_starts {
       *start = 0;
@@ -692,7 +783,7 @@ impl FragmentationAnalyzer {
       // because fragment stacking assumes fixed-size fragmentainers (`fragmentainer_size +
       // fragmentainer_gap`). Prefer the natural fragmentainer limit unless the sibling boundary is
       // effectively at the limit.
-      if kind_rank == 0 {
+      if kind_rank == 0 && matches!(self._context, FragmentationContext::Page) {
         // Allow a small amount of slack for sibling boundaries near the limit: the closer the
         // boundary is, the less it perturbs the flow→fragment mapping. Cap the slack so huge pages
         // do not accept large shifts.

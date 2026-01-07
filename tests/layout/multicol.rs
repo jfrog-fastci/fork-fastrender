@@ -1,6 +1,9 @@
+use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::layout::constraints::LayoutConstraints;
 use fastrender::layout::contexts::block::BlockFormattingContext;
+use fastrender::layout::engine::LayoutParallelism;
 use fastrender::paint::display_list_builder::DisplayListBuilder;
+use fastrender::paint::display_list_renderer::PaintParallelism;
 use fastrender::style::color::Rgba;
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::types::BorderStyle;
@@ -14,6 +17,7 @@ use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
+use fastrender::{FastRender, FastRenderConfig};
 use fastrender::FormattingContext;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -263,7 +267,7 @@ fn balanced_fill_spreads_lines_evenly() {
   let max = counts.values().copied().max().unwrap_or(0);
   assert!(
     max.saturating_sub(min) <= 1,
-    "balanced fill should distribute lines evenly"
+    "balanced fill should distribute lines evenly (counts={counts:?})"
   );
 }
 
@@ -280,6 +284,7 @@ fn column_fill_auto_uses_definite_height() {
   let child_style = |height: f32| -> Arc<ComputedStyle> {
     let mut style = ComputedStyle::default();
     style.height = Some(Length::px(height));
+    style.break_inside = BreakInside::AvoidColumn;
     Arc::new(style)
   };
 
@@ -289,11 +294,13 @@ fn column_fill_auto_uses_definite_height() {
   second.id = 42;
   let mut third = BoxNode::new_block(child_style(40.0), FormattingContextType::Block, vec![]);
   third.id = 43;
+  let mut fourth = BoxNode::new_block(child_style(40.0), FormattingContextType::Block, vec![]);
+  fourth.id = 44;
 
   let mut parent = BoxNode::new_block(
     parent_style,
     FormattingContextType::Block,
-    vec![first.clone(), second.clone(), third.clone()],
+    vec![first.clone(), second.clone(), third.clone(), fourth.clone()],
   );
   parent.id = 40;
 
@@ -305,6 +312,14 @@ fn column_fill_auto_uses_definite_height() {
   let first_frag = find_fragment(&fragment, first.id).expect("first fragment");
   let second_frag = find_fragment(&fragment, second.id).expect("second fragment");
   let third_frag = find_fragment(&fragment, third.id).expect("third fragment");
+  let fourth_frag = find_fragment(&fragment, fourth.id).expect("fourth fragment");
+
+  let container = find_fragment(&fragment, parent.id).expect("multicol container fragment");
+  let info = container
+    .fragmentation
+    .as_ref()
+    .expect("fragmentation info for multicol container");
+  let stride = info.column_width + info.column_gap;
 
   assert!(
     (first_frag.bounds.y() - 0.0).abs() < 0.1,
@@ -315,8 +330,25 @@ fn column_fill_auto_uses_definite_height() {
     "second column should share the same set origin"
   );
   assert!(
-    (third_frag.bounds.y() - 60.0).abs() < 0.6,
-    "overflow content should begin a new set using the definite height"
+    (third_frag.bounds.y() - 0.0).abs() < 0.1,
+    "overflow content should start at the top of the overflow column"
+  );
+  assert!(
+    (fourth_frag.bounds.y() - 0.0).abs() < 0.1,
+    "additional overflow columns should also start at the top"
+  );
+
+  assert!(first_frag.bounds.x() < second_frag.bounds.x());
+  assert!(second_frag.bounds.x() < third_frag.bounds.x());
+  assert!(third_frag.bounds.x() < fourth_frag.bounds.x());
+
+  assert!(
+    third_frag.bounds.x() >= stride * 2.0 - 0.5,
+    "overflow column should be placed in the inline direction"
+  );
+  assert!(
+    fourth_frag.bounds.x() >= stride * 3.0 - 0.5,
+    "additional overflow columns should continue in the inline direction"
   );
 }
 
@@ -749,8 +781,73 @@ fn overflow_creates_additional_column_set() {
     .expect("layout");
 
   let third_frag = find_fragment(&fragment, third_id).expect("third fragment");
+  let second_frag = find_fragment(&fragment, third_id - 1).expect("second fragment");
   assert!(
-    third_frag.bounds.y() >= 59.0,
-    "third fragment should appear in a second column set"
+    (third_frag.bounds.y() - 0.0).abs() < 0.1,
+    "third fragment should share the first column set block origin"
+  );
+  assert!(
+    third_frag.bounds.x() > second_frag.bounds.x() + 0.1,
+    "third fragment should overflow into an additional column in the inline direction"
+  );
+}
+
+fn sample_pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
+  let px = pixmap.pixel(x, y).expect("sample pixel");
+  (px.red(), px.green(), px.blue(), px.alpha())
+}
+
+fn render_multicol_overflow(overflow: &str) -> tiny_skia::Pixmap {
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "display_list".to_string(),
+  )]));
+  let config = FastRenderConfig::new()
+    .with_runtime_toggles(toggles)
+    .with_paint_parallelism(PaintParallelism::disabled())
+    .with_layout_parallelism(LayoutParallelism::disabled());
+  let mut renderer = FastRender::with_config(config).expect("create renderer");
+
+  let html = format!(
+    r#"<!doctype html>
+      <style>
+        html, body {{ margin: 0; background: rgb(255, 0, 255); }}
+        .multi {{
+          width: 200px;
+          height: 60px;
+          column-count: 2;
+          column-gap: 10px;
+          column-fill: auto;
+          overflow: {overflow};
+        }}
+        .block {{ height: 40px; break-inside: avoid-column; }}
+        #one {{ background: rgb(255, 0, 0); }}
+        #two {{ background: rgb(0, 255, 0); }}
+        #three {{ background: rgb(0, 0, 255); }}
+      </style>
+      <div class="multi">
+        <div id="one" class="block"></div>
+        <div id="two" class="block"></div>
+        <div id="three" class="block"></div>
+      </div>"#
+  );
+
+  renderer.render_html(&html, 400, 100).expect("render multicol")
+}
+
+#[test]
+fn overflow_hidden_clips_overflow_columns() {
+  let overflow_visible = render_multicol_overflow("visible");
+  assert_eq!(
+    sample_pixel(&overflow_visible, 215, 20),
+    (0, 0, 255, 255),
+    "overflow column should be visible when overflow is not clipped"
+  );
+
+  let overflow_hidden = render_multicol_overflow("hidden");
+  assert_eq!(
+    sample_pixel(&overflow_hidden, 215, 20),
+    (255, 0, 255, 255),
+    "overflow:hidden should clip overflow columns outside the multicol container"
   );
 }
