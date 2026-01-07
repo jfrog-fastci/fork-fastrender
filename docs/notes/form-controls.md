@@ -59,23 +59,25 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
     - Date-like dropdown caret (▾) is only painted when `appearance != none` (`TextControlKind::Date`)
     - See `src/paint/display_list_builder.rs::emit_form_control` and `src/paint/painter.rs::paint_form_control`
       (`FormControlKind::Text`)
-  - Range controls treat `appearance:none` as “custom range” mode:
-    - UA track/fill painting is skipped when `control.appearance == Appearance::None`, so the
-      element’s own `background`/`border` becomes the “track”.
-    - The thumb is still painted; in `Appearance::None` mode it can be styled via
-      `slider_thumb_style` (captured from `::-webkit-slider-thumb` and vendor/legacy aliases like
-      `::-moz-range-thumb`/`:-moz-range-thumb`/`::-ms-thumb`).
-    - `slider_track_style` is captured (e.g. `::-webkit-slider-runnable-track`, `::-moz-range-track`,
-      `:-ms-track`) but is not yet used for `appearance:none` painting.
-    - See `src/paint/display_list_builder.rs::emit_form_control` and
-      `src/paint/painter.rs::paint_form_control` (`FormControlKind::Range`).
+- Range controls treat `appearance:none` as “custom range” mode:
+  - UA accent fill painting is skipped when `control.appearance == Appearance::None`, but author
+    track pseudo-element styling can still paint a custom track (over the element background).
+  - The thumb is still painted; in `Appearance::None` mode it can be styled via
+    `slider_thumb_style` (captured from `::-webkit-slider-thumb` and vendor/legacy aliases like
+    `::-moz-range-thumb`/`:-moz-range-thumb`/`::-ms-thumb`).
+  - `slider_track_style` is captured (e.g. `::-webkit-slider-runnable-track`, `::-moz-range-track`,
+    `:-ms-track`) and is used by the painters to draw the track when present (including under
+    `appearance:none`), but the accent fill segment is only painted when `appearance != none`.
+  - See `src/paint/display_list_builder.rs::emit_form_control` and
+    `src/paint/painter.rs::paint_form_control` (`FormControlKind::Range`).
 - Task 80 tracks further broadening of the suppressed affordance set for `appearance:none` (beyond the current select/checkbox/range/number/date hooks).
 - Current limitations:
   - `appearance:none` does **not** turn the element into a normal container: the control is still a `ReplacedType::FormControl`, so its DOM children are not laid out (e.g. `<button><svg>…</svg>Label</button>` collapses to a plain text label).
   - `appearance:none` does **not** yet disable all affordances (e.g. `<input type=color>` still paints a swatch + hex label; `FormControlKind::Color` does not currently special-case `Appearance::None`).
 - Range pseudo-element selectors are normalized internally (WebKit/Mozilla/MS spellings are accepted), but painters still only consume a subset of the style hooks:
   - `slider_thumb_style` is used by both painters to style the thumb (including in `appearance:none` mode for custom sliders).
-  - `slider_track_style` is used by both painters when `appearance != none` (the UA track/fill path); it is still not used for `appearance:none` painting (the element’s own background/border acts as the track).
+  - `slider_track_style` is used by both painters to style the track; in `appearance:none` mode the
+    track paints but the UA accent fill segment is suppressed.
 
 ## Intended direction (fallback rendering model)
 

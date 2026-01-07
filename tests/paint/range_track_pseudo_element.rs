@@ -4,7 +4,7 @@ use fastrender::paint::painter::{paint_tree_with_resources_scaled_offset_backend
 use fastrender::scroll::ScrollState;
 use fastrender::{FastRender, Point, Rgba};
 
-fn render(html: &str, width: u32, height: u32) -> tiny_skia::Pixmap {
+fn render(html: &str, width: u32, height: u32, backend: PaintBackend) -> tiny_skia::Pixmap {
   let mut renderer = FastRender::new().expect("renderer");
   let dom = renderer.parse_html(html).expect("parsed");
   let fragment_tree = renderer
@@ -25,7 +25,7 @@ fn render(html: &str, width: u32, height: u32) -> tiny_skia::Pixmap {
     Point::ZERO,
     PaintParallelism::disabled(),
     &ScrollState::default(),
-    PaintBackend::DisplayList,
+    backend,
   )
   .expect("painted")
 }
@@ -68,16 +68,17 @@ fn range_track_pseudo_element_paints_under_appearance_none() {
     <input id="slider" type="range" value="50" min="0" max="100" />
   "#;
 
-  let pixmap = render(html, 120, 40);
-  assert_eq!(
-    pixel(&pixmap, 10, 10),
-    (255, 0, 0, 255),
-    "expected track pseudo-element background to paint over the input background"
-  );
-  assert_eq!(
-    pixel(&pixmap, 10, 2),
-    (0, 255, 0, 255),
-    "expected input background to remain visible outside the track rect"
-  );
+  for backend in [PaintBackend::DisplayList, PaintBackend::Legacy] {
+    let pixmap = render(html, 120, 40, backend);
+    assert_eq!(
+      pixel(&pixmap, 10, 10),
+      (255, 0, 0, 255),
+      "expected track pseudo-element background to paint over the input background (backend={backend:?})"
+    );
+    assert_eq!(
+      pixel(&pixmap, 10, 2),
+      (0, 255, 0, 255),
+      "expected input background to remain visible outside the track rect (backend={backend:?})"
+    );
+  }
 }
-
