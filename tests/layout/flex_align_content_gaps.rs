@@ -275,6 +275,47 @@ fn vertical_writing_mode_column_gap_affects_main_axis_spacing() {
 }
 
 #[test]
+fn vertical_rl_writing_mode_space_evenly_respects_row_gap_between_lines() {
+  let fc = FlexFormattingContext::new();
+
+  // Same scenario as `vertical_writing_mode_space_evenly_respects_row_gap_between_lines`, but in
+  // `VerticalRl` the block axis points in the negative physical X direction (cross-start is on the
+  // right edge). FastRender mirrors wrapped line placement to emulate that.
+  let container = build_multiline_container(
+    AlignContent::SpaceEvenly,
+    WritingMode::VerticalRl,
+    FlexDirection::Row,
+    FlexWrap::Wrap,
+    50.0,
+    60.0,
+    5.0,
+    0.0,
+    10.0,
+    30.0,
+  );
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(50.0, 60.0))
+    .expect("layout succeeds");
+
+  // Container: 50px wide
+  // Two flex lines (each 10px), plus a 5px row-gap => used cross size = 25px, free = 25px.
+  // align-content: space-evenly => first line offset = free/(lines+1) = 25/3 = 8.333.
+  // second line offset = 8.333 + 10 + 5 + 8.333 = 31.666.
+  //
+  // In `VerticalRl`, these offsets are measured from the right edge (block-start), so the physical
+  // x positions are mirrored within the 50px container.
+  let epsilon = 0.6;
+  let first_line_from_left = 25.0 / 3.0;
+  let second_line_from_left = first_line_from_left + 10.0 + 5.0 + first_line_from_left;
+  let first_line_x = 50.0 - 10.0 - first_line_from_left;
+  let second_line_x = 50.0 - 10.0 - second_line_from_left;
+
+  assert_approx(find_block_child(&fragment, 1).bounds.x(), first_line_x, epsilon, "child1 x");
+  assert_approx(find_block_child(&fragment, 2).bounds.x(), first_line_x, epsilon, "child2 x");
+  assert_approx(find_block_child(&fragment, 3).bounds.x(), second_line_x, epsilon, "child3 x");
+}
+
+#[test]
 fn wrap_reverse_space_evenly_respects_row_gap_between_lines() {
   let fc = FlexFormattingContext::new();
 
