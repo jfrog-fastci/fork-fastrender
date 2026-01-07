@@ -260,7 +260,7 @@ fn build_foreign_object_document(
   height: u32,
 ) -> String {
   let mut html = format!(
-    "<!DOCTYPE html><html style=\"margin:0;padding:0;width:{width}px;height:{height}px;\"><head><meta charset=\"utf-8\">"
+    "<!DOCTYPE html><html style=\"margin:0;padding:0;width:{width}px;height:{height}px;background:transparent !important;\"><head><meta charset=\"utf-8\">"
   );
   if !shared_css.trim().is_empty() {
     let sanitized_css = escape_style_end_tags(shared_css);
@@ -282,6 +282,7 @@ fn foreign_object_body_style(info: &ForeignObjectInfo) -> String {
   let mut style = format!(
     "margin:0;padding:0;width:{width}px;height:{height}px;display:block;box-sizing:border-box;"
   );
+  style.push_str("background:transparent !important;border:none !important;box-shadow:none !important;outline:none !important;");
   let overflow_keyword = |overflow: Overflow| match overflow {
     Overflow::Visible => "visible",
     Overflow::Hidden => "hidden",
