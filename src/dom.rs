@@ -724,7 +724,12 @@ pub fn build_selector_bloom_store(
     DomNodeType::Document { quirks_mode } => *quirks_mode,
     _ => QuirksMode::NoQuirks,
   };
-  let bits = selector_bloom_summary_bits();
+  let raw_bits = selector_bloom_summary_bits();
+  let bits = normalize_selector_bloom_summary_bits(raw_bits);
+  debug_assert_eq!(
+    raw_bits, bits,
+    "selector bloom summary bits should be normalised: {raw_bits}"
+  );
   match bits {
     256 => Some(SelectorBloomStore::Bits256(
       build_selector_bloom_store_impl::<4>(root, id_map, quirks_mode),
@@ -732,10 +737,9 @@ pub fn build_selector_bloom_store(
     512 => Some(SelectorBloomStore::Bits512(
       build_selector_bloom_store_impl::<8>(root, id_map, quirks_mode),
     )),
-    1024 => Some(SelectorBloomStore::Bits1024(
+    _ => Some(SelectorBloomStore::Bits1024(
       build_selector_bloom_store_impl::<16>(root, id_map, quirks_mode),
     )),
-    _ => unreachable!("selector bloom summary bits should be normalised: {bits}"),
   }
 }
 
