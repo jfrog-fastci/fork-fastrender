@@ -13128,7 +13128,7 @@ fn parse_aspect_ratio(value: &PropertyValue) -> Option<AspectRatio> {
 
     let ratio = match ratio_tokens.as_slice() {
       [] => None,
-      [tok] => parse_ratio_token(*tok),
+      [tok] => Some(parse_ratio_token(*tok)?),
       [lhs, Tok::Ident(op), rhs] if *op == "/" => {
         let num = parse_number_token(*lhs)?;
         let denom = parse_number_token(*rhs)?;
@@ -13147,7 +13147,7 @@ fn parse_aspect_ratio(value: &PropertyValue) -> Option<AspectRatio> {
             Tok::Number(n) => joined.push_str(&n.to_string()),
           }
         }
-        parse_ratio_string(&joined)
+        Some(parse_ratio_string(&joined)?)
       }
     };
 
@@ -21717,6 +21717,25 @@ mod tests {
       16.0,
     );
     assert!(matches!(style.aspect_ratio, AspectRatio::Ratio(r) if (r - 2.0).abs() < 0.0001));
+
+    // Invalid values must not override the current computed value.
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "aspect-ratio".into(),
+        value: PropertyValue::Keyword("auto foo".to_string()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+    assert!(
+      matches!(style.aspect_ratio, AspectRatio::Ratio(r) if (r - 2.0).abs() < 0.0001),
+      "invalid aspect-ratio should be ignored"
+    );
 
     apply_declaration(
       &mut style,
