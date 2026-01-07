@@ -2209,10 +2209,22 @@ pub fn parse_html_with_options(html: &str, options: DomParseOptions) -> Result<D
 
   let quirks_mode = map_quirks_mode(dom.quirks_mode.get());
 
+  fn convert_document_handle_to_root(
+    handle: &Handle,
+    quirks_mode: QuirksMode,
+    deadline_counter: &mut usize,
+  ) -> Result<DomNode> {
+    convert_handle_to_node(handle, quirks_mode, deadline_counter)?.ok_or_else(|| {
+      Error::Parse(ParseError::InvalidHtml {
+        message: "DOM conversion produced no document root node".to_string(),
+        line: 0,
+      })
+    })
+  }
+
   let convert_timer = dom_parse_diagnostics_timer();
   let mut deadline_counter = 0usize;
-  let mut root = convert_handle_to_node(&dom.document, quirks_mode, &mut deadline_counter)?
-    .expect("DOM must have a document root node");
+  let mut root = convert_document_handle_to_root(&dom.document, quirks_mode, &mut deadline_counter)?;
   if let Some(start) = convert_timer {
     let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
     with_dom_parse_diagnostics(|diag| {
@@ -2289,7 +2301,11 @@ pub(crate) fn clone_dom_with_deadline(node: &DomNode, stage: RenderStage) -> Res
         node_type: child_src.node_type.clone(),
         children: Vec::with_capacity(child_src.children.len()),
       });
-      let child_dst = dst.children.last_mut().expect("child was just pushed") as *mut DomNode;
+      let child_dst = dst
+        .children
+        .last_mut()
+        .map(|node| node as *mut DomNode)
+        .ok_or_else(|| Error::Other("clone_dom_with_deadline: child node missing after push".into()))?;
 
       stack.push(frame);
       stack.push(Frame {
@@ -2412,7 +2428,13 @@ pub(crate) fn clone_dom_with_deadline_and_top_layer_hint(
         node_type: child_src.node_type.clone(),
         children: Vec::with_capacity(child_src.children.len()),
       });
-      let child_dst = dst.children.last_mut().expect("child was just pushed") as *mut DomNode;
+      let child_dst = dst
+        .children
+        .last_mut()
+        .map(|node| node as *mut DomNode)
+        .ok_or_else(|| {
+          Error::Other("clone_dom_with_deadline_and_top_layer_hint: child node missing after push".into())
+        })?;
 
       let child_scan_suppressed = frame.scan_children_suppressed;
       let child_children_suppressed = if top_layer_hint {
@@ -2961,10 +2983,14 @@ pub fn composed_dom_snapshot_with_ids_and_assignment(
       continue;
     }
 
-    let finished = stack
-      .pop()
-      .expect("stack non-empty implies a frame is present")
-      .out;
+    let finished = match stack.pop() {
+      Some(frame) => frame.out,
+      None => {
+        return Err(Error::Other(
+          "composed_dom_snapshot: traversal stack unexpectedly empty".to_string(),
+        ))
+      }
+    };
     if let Some(parent) = stack.last_mut() {
       parent.out.children.push(finished);
     } else {
@@ -3951,20 +3977,21 @@ fn convert_handle_to_node(
           stack.push(frame);
           continue;
         };
-        content
-          .children
-          .borrow()
-          .get(frame.next_child)
-          .cloned()
-          .expect("template child index should be in bounds")
+        let handle = content.children.borrow().get(frame.next_child).cloned();
+        handle.ok_or_else(|| {
+          Error::Parse(ParseError::InvalidHtml {
+            message: "DOM conversion encountered an out-of-bounds template content child".to_string(),
+            line: 0,
+          })
+        })?
       } else {
-        frame
-          .handle
-          .children
-          .borrow()
-          .get(frame.next_child)
-          .cloned()
-          .expect("child index should be in bounds")
+        let handle = frame.handle.children.borrow().get(frame.next_child).cloned();
+        handle.ok_or_else(|| {
+          Error::Parse(ParseError::InvalidHtml {
+            message: "DOM conversion encountered an out-of-bounds child".to_string(),
+            line: 0,
+          })
+        })?
       };
       frame.next_child += 1;
       stack.push(frame);
@@ -3984,7 +4011,16 @@ fn convert_handle_to_node(
         node_type: child_type,
         children: Vec::with_capacity(child_len),
       });
-      let child_dst = dst.children.last_mut().expect("child was just pushed") as *mut DomNode;
+      let child_dst = dst
+        .children
+        .last_mut()
+        .map(|node| node as *mut DomNode)
+        .ok_or_else(|| {
+          Error::Parse(ParseError::InvalidHtml {
+            message: "DOM conversion failed to append a child node".to_string(),
+            line: 0,
+          })
+        })?;
 
       stack.push(Frame {
         handle: child_handle,
@@ -6809,7 +6845,15 @@ fn match_relative_selector_subtree<'a>(
     }
 
     if frame.next_child >= children.len() {
-      let finished = stack.pop().expect("frame exists");
+      let Some(finished) = stack.pop() else {
+        // Invariant violation: `frame` came from `stack.last_mut()`, so `stack` must be non-empty.
+        // Treat as non-match and reset any local traversal state so future selector evaluations
+        // start from a known-good baseline.
+        result = false;
+        ancestors.reset();
+        *bloom_filter = BloomFilter::new();
+        break;
+      };
       if finished.bloomed {
         pop_bloom(
           finished.node,
@@ -7074,6 +7118,74 @@ mod tests {
       }
       other => panic!("expected dom_parse timeout during clone, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn parse_html_empty_input_does_not_panic() {
+    let result = std::panic::catch_unwind(|| parse_html(""));
+    assert!(result.is_ok(), "parse_html panicked on empty input");
+    assert!(
+      result.unwrap().is_ok(),
+      "parse_html returned error on empty input"
+    );
+  }
+
+  #[test]
+  fn parse_html_broken_markup_does_not_panic() {
+    let html = "<div><span></div><p><b><i>unclosed";
+    let result = std::panic::catch_unwind(|| parse_html(html));
+    assert!(result.is_ok(), "parse_html panicked on malformed input");
+    assert!(
+      result.unwrap().is_ok(),
+      "parse_html returned error on malformed input"
+    );
+  }
+
+  #[test]
+  fn parse_html_deeply_nested_markup_does_not_panic() {
+    // Keep this large enough to exercise the non-recursive DOM conversion/drop paths without
+    // turning the unit test suite into a stress benchmark.
+    const DEPTH: usize = 20_000;
+    let mut html = String::with_capacity(DEPTH * 11);
+    for _ in 0..DEPTH {
+      html.push_str("<div>");
+    }
+    for _ in 0..DEPTH {
+      html.push_str("</div>");
+    }
+
+    let result = std::panic::catch_unwind(|| parse_html(&html));
+    assert!(
+      result.is_ok(),
+      "parse_html panicked on deeply nested markup"
+    );
+    assert!(
+      result.unwrap().is_ok(),
+      "parse_html returned error on deeply nested markup"
+    );
+  }
+
+  #[test]
+  fn convert_handle_to_node_can_return_none_without_panicking() {
+    let dom = parse_document(RcDom::default(), ParseOpts::default()).one("<!--x-->".to_string());
+
+    let mut stack = vec![dom.document.clone()];
+    let mut comment = None;
+    while let Some(handle) = stack.pop() {
+      if matches!(&handle.data, NodeData::Comment { .. }) {
+        comment = Some(handle);
+        break;
+      }
+      for child in handle.children.borrow().iter() {
+        stack.push(child.clone());
+      }
+    }
+
+    let comment = comment.expect("expected html5ever to create a comment node");
+    let mut deadline_counter = 0usize;
+    let converted = convert_handle_to_node(&comment, QuirksMode::NoQuirks, &mut deadline_counter)
+      .expect("convert handle");
+    assert!(converted.is_none());
   }
 
   #[test]
