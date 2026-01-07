@@ -9382,34 +9382,30 @@ impl FastRender {
           return;
         }
 
-        let selected = if srcset.is_empty() && picture_sources.is_empty() {
-          crate::tree::box_tree::SelectedImageSource {
-            url: src.as_str(),
-            descriptor: None,
-            density: None,
-            from_picture: false,
-          }
-        } else {
-          let select_start = profile_enabled.then(Instant::now);
-          let selected = replaced_box
-            .replaced_type
-            .selected_image_source_for_context(crate::tree::box_tree::ImageSelectionContext {
-              device_pixel_ratio: self.device_pixel_ratio,
-              slot_width: None,
-              viewport: Some(viewport),
-              media_context: Some(media_ctx),
-              font_size: Some(style.font_size),
-              base_url: self.base_url.as_deref(),
-            });
-          if let Some(start) = select_start {
-            let ms = start.elapsed().as_secs_f64() * 1000.0;
-            REPLACED_INTRINSIC_PROFILE.with(|state| {
-              let mut state = state.borrow_mut();
-              state.selection_calls += 1;
-              state.selection_ms += ms;
-            });
-          }
-          selected
+        let select_start = profile_enabled.then(Instant::now);
+        let selected = replaced_box
+          .replaced_type
+          .image_sources_with_fallback(crate::tree::box_tree::ImageSelectionContext {
+            device_pixel_ratio: self.device_pixel_ratio,
+            slot_width: None,
+            viewport: Some(viewport),
+            media_context: Some(media_ctx),
+            font_size: Some(style.font_size),
+            base_url: self.base_url.as_deref(),
+          })
+          .into_iter()
+          .next();
+        if let Some(start) = select_start {
+          let ms = start.elapsed().as_secs_f64() * 1000.0;
+          REPLACED_INTRINSIC_PROFILE.with(|state| {
+            let mut state = state.borrow_mut();
+            state.selection_calls += 1;
+            state.selection_ms += ms;
+          });
+        }
+
+        let Some(selected) = selected else {
+          return;
         };
 
         let selected_url = selected.url.trim();
@@ -10027,21 +10023,24 @@ impl FastRender {
 
         let mut have_resource_dimensions = replaced_box.intrinsic_size.is_some();
 
-        let has_image_source = !src.is_empty() || !srcset.is_empty() || !picture_sources.is_empty();
+        let has_image_source =
+          !src.trim().is_empty() || !srcset.is_empty() || !picture_sources.is_empty();
 
         let selected = if has_image_source {
           let select_start = profile_enabled.then(Instant::now);
           let media_ctx = self.media_context_for_media(media_type, viewport.width, viewport.height);
           let selected = replaced_box
             .replaced_type
-            .selected_image_source_for_context(crate::tree::box_tree::ImageSelectionContext {
+            .image_sources_with_fallback(crate::tree::box_tree::ImageSelectionContext {
               device_pixel_ratio: self.device_pixel_ratio,
               slot_width: None,
               viewport: Some(viewport),
               media_context: Some(&media_ctx),
               font_size: Some(style.font_size),
               base_url: self.base_url.as_deref(),
-            });
+            })
+            .into_iter()
+            .next();
           if let Some(start) = select_start {
             let ms = start.elapsed().as_secs_f64() * 1000.0;
             REPLACED_INTRINSIC_PROFILE.with(|state| {
@@ -10050,7 +10049,7 @@ impl FastRender {
               state.selection_ms += ms;
             });
           }
-          Some(selected)
+          selected
         } else {
           None
         };
@@ -15445,6 +15444,151 @@ mod tests {
       replaced.aspect_ratio,
       Some(expected.width / expected.height),
       "alt text should set aspect ratio"
+    );
+  }
+
+  #[test]
+  fn resolve_intrinsic_sizes_whitespace_src_uses_alt_text() {
+    #[derive(Clone)]
+    struct PanicFetcher;
+
+    impl ResourceFetcher for PanicFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("image intrinsic sizing should not fetch resources for whitespace src");
+      }
+    }
+
+    let renderer = FastRender::builder()
+      .fetcher(Arc::new(PanicFetcher) as Arc<dyn ResourceFetcher>)
+      .build()
+      .expect("init renderer");
+    let style = Arc::new(ComputedStyle::default());
+    let alt_text = "fallback alt";
+
+    let mut node = BoxNode::new_replaced(
+      style.clone(),
+      ReplacedType::Image {
+        src: "   ".to_string(),
+        alt: Some(alt_text.to_string()),
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+        crossorigin: CrossOriginAttribute::None,
+      },
+      None,
+      None,
+    );
+
+    renderer.resolve_replaced_intrinsic_sizes(&mut node, Size::new(800.0, 600.0));
+    let replaced = match node.box_type {
+      BoxType::Replaced(ref r) => r,
+      _ => panic!("not replaced"),
+    };
+
+    let mut runs = ShapingPipeline::new()
+      .shape(alt_text, &style, renderer.font_context())
+      .expect("shape alt text");
+    TextItem::apply_spacing_to_runs(
+      &mut runs,
+      alt_text,
+      style.letter_spacing,
+      style.word_spacing,
+    );
+    let scaled = {
+      let italic = matches!(style.font_style, crate::style::types::FontStyle::Italic);
+      let oblique = matches!(style.font_style, crate::style::types::FontStyle::Oblique(_));
+      let stretch = FontStretch::from_percentage(style.font_stretch.to_percentage());
+      renderer
+        .font_context()
+        .get_font_full(
+          &style.font_family,
+          style.font_weight.to_u16(),
+          if italic {
+            DbFontStyle::Italic
+          } else if oblique {
+            DbFontStyle::Oblique
+          } else {
+            DbFontStyle::Normal
+          },
+          stretch,
+        )
+        .or_else(|| renderer.font_context().get_sans_serif())
+        .and_then(|font| renderer.font_context().get_scaled_metrics(&font, style.font_size))
+    };
+    let viewport = Size::new(
+      renderer.default_width as f32,
+      renderer.default_height as f32,
+    );
+    let line_height =
+      compute_line_height_with_metrics_viewport(&style, scaled.as_ref(), Some(viewport));
+    let metrics =
+      TextItem::metrics_from_runs(renderer.font_context(), &runs, line_height, style.font_size);
+    let expected = Size::new(runs.iter().map(|r| r.advance).sum(), metrics.height);
+
+    let intrinsic = replaced.intrinsic_size.expect("alt intrinsic size");
+    assert_ne!(
+      intrinsic,
+      Size::new(1.0, 1.0),
+      "whitespace src must not resolve to placeholder intrinsic size"
+    );
+    assert!(
+      (intrinsic.width - expected.width).abs() < 0.01,
+      "alt text width should drive intrinsic width"
+    );
+    assert!(
+      (intrinsic.height - expected.height).abs() < 0.01,
+      "alt text height should match line height"
+    );
+    assert_eq!(
+      replaced.aspect_ratio,
+      Some(expected.width / expected.height),
+      "alt text should set aspect ratio"
+    );
+  }
+
+  #[test]
+  fn resolve_intrinsic_sizes_fragment_src_uses_alt_text() {
+    #[derive(Clone)]
+    struct PanicFetcher;
+
+    impl ResourceFetcher for PanicFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("image intrinsic sizing should not fetch resources for fragment src");
+      }
+    }
+
+    let renderer = FastRender::builder()
+      .fetcher(Arc::new(PanicFetcher) as Arc<dyn ResourceFetcher>)
+      .build()
+      .expect("init renderer");
+    let style = Arc::new(ComputedStyle::default());
+    let alt_text = "fallback alt";
+
+    let mut node = BoxNode::new_replaced(
+      style.clone(),
+      ReplacedType::Image {
+        src: "#".to_string(),
+        alt: Some(alt_text.to_string()),
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+        crossorigin: CrossOriginAttribute::None,
+      },
+      None,
+      None,
+    );
+
+    renderer.resolve_replaced_intrinsic_sizes(&mut node, Size::new(800.0, 600.0));
+    let replaced = match node.box_type {
+      BoxType::Replaced(ref r) => r,
+      _ => panic!("not replaced"),
+    };
+
+    let intrinsic = replaced.intrinsic_size.expect("alt intrinsic size");
+    assert_ne!(
+      intrinsic,
+      Size::new(1.0, 1.0),
+      "fragment src must not resolve to placeholder intrinsic size"
     );
   }
 
