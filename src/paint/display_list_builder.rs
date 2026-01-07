@@ -1155,7 +1155,7 @@ impl DisplayListBuilder {
     }
     let visibility = self.root_visibility();
     for context in &contexts {
-      self.build_stacking_context(context, Point::ZERO, true, &mut svg_filters, visibility);
+      let _ = self.build_stacking_context(context, Point::ZERO, true, &mut svg_filters, visibility);
     }
 
     self.finish()
@@ -1182,7 +1182,7 @@ impl DisplayListBuilder {
       svg_roots,
       image_cache.as_ref(),
     );
-    self.build_stacking_context(
+    let _ = self.build_stacking_context(
       stacking,
       Point::ZERO,
       true,
@@ -1216,7 +1216,7 @@ impl DisplayListBuilder {
       vec![root],
       image_cache.as_ref(),
     );
-    self.build_stacking_context(
+    let _ = self.build_stacking_context(
       &stacking,
       Point::ZERO,
       true,
@@ -1263,7 +1263,7 @@ impl DisplayListBuilder {
       svg_roots,
       image_cache.as_ref(),
     );
-    self.build_stacking_context(
+    let _ = self.build_stacking_context(
       &stacking,
       offset,
       true,
@@ -1303,7 +1303,8 @@ impl DisplayListBuilder {
     );
     let visibility = self.root_visibility();
     for stacking in stackings {
-      self.build_stacking_context(stacking, Point::ZERO, true, &mut svg_filters, visibility);
+      let _ =
+        self.build_stacking_context(stacking, Point::ZERO, true, &mut svg_filters, visibility);
     }
     self.finish()
   }
@@ -2107,9 +2108,9 @@ impl DisplayListBuilder {
     is_root: bool,
     svg_filters: &mut SvgFilterResolver,
     visibility: Visibility,
-  ) {
+  ) -> bool {
     if self.deadline_reached() {
-      return;
+      return false;
     }
     // Children are already sorted by (z_index, tree_order) by the stacking tree builder.
     // Split into negative and positive z-index slices; z-index==0 contexts are handled by
@@ -2130,7 +2131,7 @@ impl DisplayListBuilder {
     let root_style = root_fragment.and_then(|f| f.style.as_deref());
     let root_opacity = root_style.map(|s| s.opacity).unwrap_or(1.0);
     if root_opacity <= f32::EPSILON {
-      return;
+      return false;
     }
     let has_opacity = root_opacity < 1.0 - f32::EPSILON;
     let paint_contained = root_style.map(|s| s.containment.paint).unwrap_or(false);
@@ -2295,7 +2296,7 @@ impl DisplayListBuilder {
     if child_perspective.is_none() {
       if let (Some(vis), Some(bounds)) = (visibility.rect, world_bounds) {
         if !vis.intersects(bounds) {
-          return;
+          return false;
         }
       }
     }
@@ -2318,7 +2319,7 @@ impl DisplayListBuilder {
         Ok(clip_path) => clip_path,
         Err(err) => {
           self.error = Some(err);
-          return;
+          return false;
         }
       },
       None => None,
@@ -2400,7 +2401,7 @@ impl DisplayListBuilder {
     }
     // If the visible rect is empty after intersecting local bounds/clips, we can early-out.
     if child_visibility.rect.is_none() && visibility.rect.is_some() {
-      return;
+      return false;
     }
 
     let local_child_visibility = child_visibility;
@@ -2435,6 +2436,9 @@ impl DisplayListBuilder {
     );
     let ancestor_clips_pushed = self.push_clip_chain(&context.clip_chain, offset);
 
+    let mut has_backdrop_sensitive_descendants =
+      !backdrop_filters.is_empty() || mix_blend_mode != BlendMode::Normal;
+
     if is_root && !has_effects {
       if let Some(root_background) = root_background.as_ref() {
         self.emit_root_background(root_background);
@@ -2447,14 +2451,14 @@ impl DisplayListBuilder {
           local_child_visibility,
         );
         self.pop_clips(ancestor_clips_pushed);
-        return;
+        return has_backdrop_sensitive_descendants;
       }
       let mut deadline_counter = 0usize;
       for child in neg {
         if self.deadline_reached_periodic(&mut deadline_counter, DEADLINE_STRIDE) {
           break;
         }
-        self.build_stacking_context(
+        has_backdrop_sensitive_descendants |= self.build_stacking_context(
           child,
           descendant_offset,
           false,
@@ -2494,13 +2498,15 @@ impl DisplayListBuilder {
             self.build_fragment(&fragment.fragment, descendant_offset, local_child_visibility);
             self.pop_clips(pushed);
           }
-          Layer6Item::ZeroContext(child) => self.build_stacking_context(
-            child,
-            descendant_offset,
-            false,
-            svg_filters,
-            local_child_visibility,
-          ),
+          Layer6Item::ZeroContext(child) => {
+            has_backdrop_sensitive_descendants |= self.build_stacking_context(
+              child,
+              descendant_offset,
+              false,
+              svg_filters,
+              local_child_visibility,
+            );
+          }
         }
       }
 
@@ -2508,7 +2514,7 @@ impl DisplayListBuilder {
         if self.deadline_reached_periodic(&mut deadline_counter, DEADLINE_STRIDE) {
           break;
         }
-        self.build_stacking_context(
+        has_backdrop_sensitive_descendants |= self.build_stacking_context(
           child,
           descendant_offset,
           false,
@@ -2517,7 +2523,7 @@ impl DisplayListBuilder {
         );
       }
       self.pop_clips(ancestor_clips_pushed);
-      return;
+      return has_backdrop_sensitive_descendants;
     }
 
     let needs_layer_bounds = is_isolated
@@ -2536,6 +2542,7 @@ impl DisplayListBuilder {
         creates_stacking_context: true,
         is_root,
         establishes_backdrop_root,
+        has_backdrop_sensitive_descendants: false,
         bounds: context_bounds,
         plane_rect,
         mix_blend_mode,
@@ -2583,8 +2590,13 @@ impl DisplayListBuilder {
         self.expand_stacking_context_bounds_from_items(stacking_push_index, context_bounds);
       }
       self.list.push(DisplayItem::PopStackingContext);
+      if let Some(DisplayItem::PushStackingContext(item)) =
+        self.list.items_mut().get_mut(stacking_push_index)
+      {
+        item.has_backdrop_sensitive_descendants = has_backdrop_sensitive_descendants;
+      }
       self.pop_clips(ancestor_clips_pushed);
-      return;
+      return has_backdrop_sensitive_descendants;
     }
 
     let mut paint_containment_clip_pushed = false;
@@ -2604,7 +2616,7 @@ impl DisplayListBuilder {
       if self.deadline_reached_periodic(&mut deadline_counter, DEADLINE_STRIDE) {
         break;
       }
-      self.build_stacking_context(
+      has_backdrop_sensitive_descendants |= self.build_stacking_context(
         child,
         descendant_offset,
         false,
@@ -2637,13 +2649,15 @@ impl DisplayListBuilder {
           self.build_fragment(&fragment.fragment, descendant_offset, local_child_visibility);
           self.pop_clips(pushed);
         }
-        Layer6Item::ZeroContext(child) => self.build_stacking_context(
-          child,
-          descendant_offset,
-          false,
-          svg_filters,
-          local_child_visibility,
-        ),
+        Layer6Item::ZeroContext(child) => {
+          has_backdrop_sensitive_descendants |= self.build_stacking_context(
+            child,
+            descendant_offset,
+            false,
+            svg_filters,
+            local_child_visibility,
+          );
+        }
       }
     }
 
@@ -2651,7 +2665,7 @@ impl DisplayListBuilder {
       if self.deadline_reached_periodic(&mut deadline_counter, DEADLINE_STRIDE) {
         break;
       }
-      self.build_stacking_context(
+      has_backdrop_sensitive_descendants |= self.build_stacking_context(
         child,
         descendant_offset,
         false,
@@ -2673,7 +2687,13 @@ impl DisplayListBuilder {
       self.expand_stacking_context_bounds_from_items(stacking_push_index, context_bounds);
     }
     self.list.push(DisplayItem::PopStackingContext);
+    if let Some(DisplayItem::PushStackingContext(item)) =
+      self.list.items_mut().get_mut(stacking_push_index)
+    {
+      item.has_backdrop_sensitive_descendants = has_backdrop_sensitive_descendants;
+    }
     self.pop_clips(ancestor_clips_pushed);
+    has_backdrop_sensitive_descendants
   }
 
   fn expand_stacking_context_bounds_from_items(&mut self, push_index: usize, base_bounds: Rect) {

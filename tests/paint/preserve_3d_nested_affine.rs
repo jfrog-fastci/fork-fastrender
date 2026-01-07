@@ -20,6 +20,7 @@ fn stacking_context(
     creates_stacking_context: true,
     is_root: false,
     establishes_backdrop_root: false,
+    has_backdrop_sensitive_descendants: false,
     bounds,
     plane_rect,
     mix_blend_mode: BlendMode::Normal,

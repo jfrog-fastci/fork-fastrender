@@ -14,6 +14,7 @@ fn context(bounds: Rect, transform_style: TransformStyle) -> StackingContextItem
     creates_stacking_context: true,
     is_root: false,
     establishes_backdrop_root: false,
+    has_backdrop_sensitive_descendants: false,
     bounds,
     plane_rect: bounds,
     mix_blend_mode: BlendMode::Normal,

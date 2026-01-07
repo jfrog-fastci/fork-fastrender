@@ -8492,10 +8492,14 @@ impl DisplayListRenderer {
     // - `is_isolated` (Compositing & Blending): render the full scene into a transparent group
     //   surface before compositing it into the parent.
     // - `establishes_backdrop_root` (Filter Effects Level 2): scope descendant `backdrop-filter`
-    //   sampling by forcing a canvas layer boundary even when the preserve-3d context is
-    //   otherwise visually "no-op" (e.g. `will-change` triggers).
-    let push_root_layer = node.context.is_isolated || node.context.establishes_backdrop_root;
-    let root_is_backdrop_root = node.context.establishes_backdrop_root;
+    //   sampling by forcing a canvas layer boundary when the preserve-3d subtree actually contains
+    //   backdrop-sampling effects (so common triggers like `will-change` don't allocate extra
+    //   layers unnecessarily).
+    let root_backdrop_root_layer = !node.context.is_root
+      && node.context.establishes_backdrop_root
+      && node.context.has_backdrop_sensitive_descendants;
+    let push_root_layer = node.context.is_isolated || root_backdrop_root_layer;
+    let root_is_backdrop_root = root_backdrop_root_layer;
 
     let mut order = 0;
     let mut scene_items = collect_scene_items(&node, &parent_transform, true, &mut order, &[]);
@@ -9732,8 +9736,10 @@ impl DisplayListRenderer {
   ///   group"). This confines descendant `mix-blend-mode` blending.
   /// - [`StackingContextItem::establishes_backdrop_root`] is the Filter Effects Level 2 concept:
   ///   a *Backdrop Root* boundary that scopes descendant `backdrop-filter` sampling (Backdrop
-  ///   Root Image). Backdrop Root scoping is implemented via the canvas layer stack, so this flag
-  ///   can force a layer boundary even when the stacking context is otherwise visually "no-op".
+  ///   Root Image). Backdrop Root scoping is implemented via the canvas layer stack. To avoid
+  ///   unnecessary offscreen layers, we only force a layer boundary for backdrop roots when the
+  ///   stacking context subtree actually contains backdrop-sampling effects (see
+  ///   [`StackingContextItem::has_backdrop_sensitive_descendants`]).
   ///
   /// These flags describe compositing/sampling semantics; tile-parallel paint eligibility is
   /// determined separately (see [`Self::has_parallel_incompatible_effects`]).
@@ -9957,6 +9963,9 @@ impl DisplayListRenderer {
           || mask.is_some()
           || item.has_clip_path
           || !matches!(item.mix_blend_mode, BlendMode::Normal);
+        let establishes_backdrop_root_layer = !item.is_root
+          && item.establishes_backdrop_root
+          && item.has_backdrop_sensitive_descendants;
         let needs_layer = is_isolated
           || !matches!(
             item.mix_blend_mode,
@@ -9968,12 +9977,12 @@ impl DisplayListRenderer {
           || mask.is_some()
           || item.has_clip_path
           || projective_transform.is_some()
-          // Filter Effects Level 2 Backdrop Roots must isolate backdrop sampling for descendants
-          // (e.g. `backdrop-filter`). Some triggers (notably `will-change`) can establish a
-          // backdrop root without otherwise requiring an offscreen surface, so ensure we still
-          // allocate a layer boundary in those cases (but avoid forcing a root-sized layer for the
+          // Filter Effects Level 2 Backdrop Roots must isolate backdrop sampling for descendant
+          // `backdrop-filter` / `mix-blend-mode` effects. Some triggers (notably `will-change`)
+          // can establish a backdrop root without otherwise requiring an offscreen surface, so
+          // only force a layer boundary when a descendant would observe it (and never for the
           // document root).
-          || (!item.is_root && item.establishes_backdrop_root);
+          || establishes_backdrop_root_layer;
         let mut layer_bounds = needs_layer
           .then(|| {
             let bounds_transform = if projective_transform.is_some() {
@@ -14010,6 +14019,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: false,
+      has_backdrop_sensitive_descendants: false,
       bounds: rect,
       plane_rect: rect,
       mix_blend_mode: BlendMode::Normal,
@@ -14112,6 +14122,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: false,
+      has_backdrop_sensitive_descendants: false,
       bounds: Rect::from_xywh(0.0, 0.0, 80.0, 50.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 80.0, 50.0),
       mix_blend_mode: BlendMode::Normal,
@@ -14135,6 +14146,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: false,
+      has_backdrop_sensitive_descendants: false,
       bounds: tilted_rect,
       plane_rect: tilted_rect,
       mix_blend_mode: BlendMode::Normal,
@@ -14162,6 +14174,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: false,
+      has_backdrop_sensitive_descendants: false,
       bounds: front_rect,
       plane_rect: front_rect,
       mix_blend_mode: BlendMode::Normal,
@@ -14218,6 +14231,7 @@ mod tests {
         creates_stacking_context: true,
         is_root: false,
         establishes_backdrop_root: false,
+        has_backdrop_sensitive_descendants: !backdrop_filters.is_empty(),
         bounds,
         plane_rect: bounds,
         mix_blend_mode: BlendMode::Normal,
@@ -14240,6 +14254,7 @@ mod tests {
         creates_stacking_context: true,
         is_root: false,
         establishes_backdrop_root: false,
+        has_backdrop_sensitive_descendants: false,
         bounds,
         plane_rect: bounds,
         mix_blend_mode: BlendMode::Normal,
@@ -14272,6 +14287,7 @@ mod tests {
         creates_stacking_context: true,
         is_root: false,
         establishes_backdrop_root: !backdrop_filters.is_empty(),
+        has_backdrop_sensitive_descendants: !backdrop_filters.is_empty(),
         bounds,
         plane_rect: bounds,
         mix_blend_mode: BlendMode::Normal,
@@ -14329,6 +14345,7 @@ mod tests {
         creates_stacking_context: true,
         is_root: false,
         establishes_backdrop_root: outer_backdrop_root,
+        has_backdrop_sensitive_descendants: true,
         bounds,
         plane_rect: bounds,
         mix_blend_mode: BlendMode::Normal,
@@ -14350,6 +14367,7 @@ mod tests {
         creates_stacking_context: true,
         is_root: false,
         establishes_backdrop_root: true,
+        has_backdrop_sensitive_descendants: true,
         bounds,
         plane_rect: bounds,
         mix_blend_mode: BlendMode::Normal,
@@ -14412,6 +14430,7 @@ mod tests {
         creates_stacking_context: true,
         is_root: false,
         establishes_backdrop_root: outer_backdrop_root,
+        has_backdrop_sensitive_descendants: true,
         bounds,
         plane_rect: bounds,
         mix_blend_mode: BlendMode::Normal,
@@ -14433,6 +14452,7 @@ mod tests {
         creates_stacking_context: true,
         is_root: false,
         establishes_backdrop_root: true,
+        has_backdrop_sensitive_descendants: true,
         bounds: plane,
         plane_rect: plane,
         mix_blend_mode: BlendMode::Normal,
@@ -14492,6 +14512,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: false,
+      has_backdrop_sensitive_descendants: true,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -14513,6 +14534,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: true,
       bounds: plane,
       plane_rect: plane,
       mix_blend_mode: BlendMode::Normal,
@@ -14564,6 +14586,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: false,
+      has_backdrop_sensitive_descendants: true,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -14585,6 +14608,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: false,
+      has_backdrop_sensitive_descendants: true,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -14606,6 +14630,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: true,
       bounds: plane,
       plane_rect: plane,
       mix_blend_mode: BlendMode::Normal,
@@ -14662,6 +14687,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: true,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -14682,6 +14708,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: true,
       bounds: plane,
       plane_rect: plane,
       mix_blend_mode: BlendMode::Normal,
@@ -14733,6 +14760,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: true,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -14754,6 +14782,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: false,
+      has_backdrop_sensitive_descendants: true,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -14775,6 +14804,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: true,
       bounds: plane,
       plane_rect: plane,
       mix_blend_mode: BlendMode::Normal,
@@ -14824,6 +14854,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: false,
+      has_backdrop_sensitive_descendants: false,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -14868,6 +14899,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: false,
+      has_backdrop_sensitive_descendants: false,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -14890,6 +14922,7 @@ mod tests {
         creates_stacking_context: true,
         is_root: false,
         establishes_backdrop_root: false,
+        has_backdrop_sensitive_descendants: false,
         bounds,
         plane_rect: bounds,
         mix_blend_mode: BlendMode::Normal,
@@ -14963,6 +14996,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: false,
+      has_backdrop_sensitive_descendants: false,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -14997,6 +15031,7 @@ mod tests {
         creates_stacking_context: true,
         is_root: false,
         establishes_backdrop_root: false,
+        has_backdrop_sensitive_descendants: false,
         bounds: plane_rect,
         plane_rect,
         mix_blend_mode: BlendMode::Normal,
@@ -15691,6 +15726,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: true,
       bounds: Rect::from_xywh(10.0, 10.0, 20.0, 20.0),
       plane_rect: Rect::from_xywh(10.0, 10.0, 20.0, 20.0),
       mix_blend_mode: BlendMode::Normal,
@@ -15738,6 +15774,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: true,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -15787,6 +15824,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: false,
+      has_backdrop_sensitive_descendants: false,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -15808,6 +15846,7 @@ mod tests {
     if let Some(DisplayItem::PushStackingContext(ctx)) = filtered.items_mut().get_mut(1) {
       ctx.backdrop_filters = vec![ResolvedFilter::Invert(1.0)];
       ctx.establishes_backdrop_root = true;
+      ctx.has_backdrop_sensitive_descendants = true;
     }
 
     let baseline_pixmap =
@@ -15872,6 +15911,8 @@ mod tests {
       radii: BorderRadii::ZERO,
       mask: None,
       has_clip_path: false,
+      is_root: false,
+      has_backdrop_sensitive_descendants: false,
     }));
 
     // Child is translated towards the camera, which under perspective should scale up its plane.
@@ -15894,6 +15935,8 @@ mod tests {
       radii: BorderRadii::ZERO,
       mask: None,
       has_clip_path: false,
+      is_root: false,
+      has_backdrop_sensitive_descendants: false,
     }));
 
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -16201,6 +16244,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: true,
       bounds: Rect::from_xywh(10.0, 10.0, 80.0, 80.0),
       plane_rect: Rect::from_xywh(10.0, 10.0, 80.0, 80.0),
       mix_blend_mode: BlendMode::Normal,
@@ -16339,6 +16383,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: true,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Multiply,
@@ -16418,6 +16463,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: true,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Multiply,
@@ -17950,6 +17996,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: false,
       bounds: Rect::from_xywh(10.0, 10.0, 20.0, 10.0),
       plane_rect: Rect::from_xywh(10.0, 10.0, 20.0, 10.0),
       mix_blend_mode: BlendMode::Normal,
@@ -18040,6 +18087,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: false,
       bounds: Rect::from_xywh(1.0, 1.0, 8.0, 8.0),
       plane_rect: Rect::from_xywh(1.0, 1.0, 8.0, 8.0),
       mix_blend_mode: BlendMode::Normal,
@@ -18099,6 +18147,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: false,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -18151,6 +18200,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: false,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -18249,6 +18299,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: false,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -18321,6 +18372,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: true,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -18390,6 +18442,8 @@ mod tests {
       radii: BorderRadii::ZERO,
       mask: None,
       has_clip_path: false,
+      is_root: false,
+      has_backdrop_sensitive_descendants: true,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
       rect: Rect::from_xywh(4.0, 4.0, 12.0, 12.0),
@@ -18416,6 +18470,8 @@ mod tests {
       radii: BorderRadii::ZERO,
       mask: None,
       has_clip_path: false,
+      is_root: false,
+      has_backdrop_sensitive_descendants: true,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
       rect: Rect::from_xywh(10.0, 10.0, 12.0, 12.0),
@@ -18442,6 +18498,8 @@ mod tests {
       radii: BorderRadii::ZERO,
       mask: None,
       has_clip_path: false,
+      is_root: false,
+      has_backdrop_sensitive_descendants: true,
     }));
 
     for idx in 0..child_count {
@@ -18466,6 +18524,8 @@ mod tests {
         radii: BorderRadii::ZERO,
         mask: None,
         has_clip_path: false,
+        is_root: false,
+        has_backdrop_sensitive_descendants: true,
       }));
       // Keep the stacking context empty; this forces the pending backdrop to apply right before the
       // context is popped.
@@ -18544,6 +18604,7 @@ mod tests {
         creates_stacking_context: true,
         is_root: false,
         establishes_backdrop_root: true,
+        has_backdrop_sensitive_descendants: true,
         bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
@@ -18587,6 +18648,7 @@ mod tests {
         creates_stacking_context: true,
         is_root: false,
         establishes_backdrop_root: true,
+        has_backdrop_sensitive_descendants: true,
         bounds: Rect::from_xywh(0.0, 0.0, 6.0, 6.0),
         plane_rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
         mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
@@ -19028,6 +19090,7 @@ mod tests {
         creates_stacking_context: true,
         is_root: false,
         establishes_backdrop_root: false,
+        has_backdrop_sensitive_descendants: false,
         bounds: Rect::from_xywh(0.0, 0.0, 6.0, 6.0),
         plane_rect: Rect::from_xywh(0.0, 0.0, 6.0, 6.0),
         mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
@@ -19078,6 +19141,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: true,
       bounds: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 2.0, 2.0),
       mix_blend_mode: crate::paint::display_list::BlendMode::Normal,
@@ -19158,6 +19222,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: false,
       bounds: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
       mix_blend_mode: BlendMode::Normal,
@@ -19195,6 +19260,7 @@ mod tests {
         creates_stacking_context: true,
         is_root: false,
         establishes_backdrop_root: true,
+        has_backdrop_sensitive_descendants: true,
         bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         mix_blend_mode: crate::paint::display_list::BlendMode::Multiply,
@@ -19243,6 +19309,7 @@ mod tests {
         creates_stacking_context: true,
         is_root: false,
         establishes_backdrop_root: true,
+        has_backdrop_sensitive_descendants: true,
         bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         mix_blend_mode: crate::paint::display_list::BlendMode::Multiply,
@@ -19297,6 +19364,7 @@ mod tests {
         creates_stacking_context: true,
         is_root: false,
         establishes_backdrop_root: true,
+        has_backdrop_sensitive_descendants: true,
         bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         mix_blend_mode: crate::paint::display_list::BlendMode::Multiply,
@@ -19351,6 +19419,7 @@ mod tests {
         creates_stacking_context: true,
         is_root: false,
         establishes_backdrop_root: true,
+        has_backdrop_sensitive_descendants: true,
         bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
         mix_blend_mode: crate::paint::display_list::BlendMode::Hue,
@@ -19432,6 +19501,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: false,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -19559,6 +19629,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: false,
       bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
       mix_blend_mode: BlendMode::Normal,
@@ -19639,6 +19710,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: false,
       bounds: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
       plane_rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
       mix_blend_mode: BlendMode::Normal,
@@ -19706,6 +19778,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: false,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -20126,6 +20199,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: true,
+      has_backdrop_sensitive_descendants: false,
       bounds,
       plane_rect: bounds,
       mix_blend_mode: BlendMode::Normal,

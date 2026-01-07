@@ -528,6 +528,7 @@ fn parallel_backdrop_filter_with_mask_and_radii_matches_serial() {
     creates_stacking_context: true,
     is_root: false,
     establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: true,
     bounds,
     plane_rect: bounds,
     mix_blend_mode: BlendMode::Normal,

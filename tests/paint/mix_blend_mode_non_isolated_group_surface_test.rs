@@ -17,6 +17,7 @@ fn sc(bounds: Rect, mix_blend_mode: BlendMode, is_isolated: bool) -> StackingCon
     creates_stacking_context: true,
     is_root: false,
     establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: !matches!(mix_blend_mode, BlendMode::Normal),
     bounds,
     plane_rect: bounds,
     mix_blend_mode,

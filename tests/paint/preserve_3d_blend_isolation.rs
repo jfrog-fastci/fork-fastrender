@@ -16,6 +16,7 @@ fn stacking_context(bounds: Rect, transform_style: TransformStyle) -> StackingCo
     creates_stacking_context: true,
     is_root: false,
     establishes_backdrop_root: false,
+    has_backdrop_sensitive_descendants: false,
     bounds,
     plane_rect: bounds,
     mix_blend_mode: BlendMode::Normal,
@@ -51,6 +52,7 @@ fn preserve_3d_isolated_root_scopes_mix_blend_mode_backdrop() {
   let mut child = stacking_context(bounds, TransformStyle::Flat);
   child.mix_blend_mode = BlendMode::Difference;
   child.establishes_backdrop_root = true;
+  child.has_backdrop_sensitive_descendants = true;
   list.push(DisplayItem::PushStackingContext(child));
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: target,

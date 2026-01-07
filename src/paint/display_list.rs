@@ -2188,7 +2188,6 @@ pub struct StackingContextItem {
   pub is_root: bool,
 
   /// Whether this element establishes a Filter Effects Level 2 *Backdrop Root* for its descendants.
-  /// Whether this element establishes a Filter Effects Level 2 *Backdrop Root* for its descendants.
   ///
   /// This flag scopes backdrop sampling for descendant `backdrop-filter` effects (see the
   /// definition of the "Backdrop Root Image" in Filter Effects Level 2).
@@ -2198,12 +2197,21 @@ pub struct StackingContextItem {
   ///   see.
   /// - `is_isolated` is about *how the subtree is composited* (isolated group vs non-isolated).
   ///
-  /// In the renderer, this can force an offscreen layer boundary even when the stacking context
-  /// is otherwise visually "no-op", because Backdrop Root scoping is represented via the canvas
-  /// layer stack.
+  /// In the renderer, backdrop root scoping is represented via the canvas layer stack. This may
+  /// require forcing an offscreen layer boundary even when the stacking context is otherwise
+  /// visually "no-op" so that descendant backdrop-sampling effects can find the correct
+  /// backdrop-root boundary.
   ///
   /// Some stacking contexts (e.g. transforms) do **not** establish a backdrop root.
   pub establishes_backdrop_root: bool,
+
+  /// Whether this stacking context subtree contains any stacking context that requires backdrop
+  /// sampling (`backdrop-filter` or non-normal `mix-blend-mode`).
+  ///
+  /// This is used to avoid forcing extra offscreen layers for backdrop roots (e.g. those created
+  /// only by `will-change`) when there are no descendant effects that would observe the backdrop
+  /// root boundary.
+  pub has_backdrop_sensitive_descendants: bool,
 
   /// Bounds of the stacking context
   pub bounds: Rect,

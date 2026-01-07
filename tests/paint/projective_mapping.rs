@@ -32,6 +32,7 @@ fn renderer_falls_back_for_degenerate_projection() {
     creates_stacking_context: true,
     is_root: false,
     establishes_backdrop_root: false,
+    has_backdrop_sensitive_descendants: false,
     bounds: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
     mix_blend_mode: BlendMode::Normal,
