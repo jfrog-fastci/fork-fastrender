@@ -633,7 +633,7 @@ fn snapshot_replaced(replaced: &ReplacedType) -> ReplacedSnapshot {
     ReplacedType::Object { data } => ReplacedSnapshot::Object { data: data.clone() },
     ReplacedType::Math(_) => ReplacedSnapshot::Math,
     ReplacedType::FormControl(control) => ReplacedSnapshot::FormControl {
-      control: format!("{:?}", control.control),
+      control: control.control.snapshot_label(),
     },
   }
 }

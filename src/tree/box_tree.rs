@@ -189,6 +189,30 @@ pub enum FormControlKind {
   Unknown { label: Option<String> },
 }
 
+impl FormControlKind {
+  /// Returns a concise, stable label for debug snapshots.
+  ///
+  /// Snapshots should remain small and predictable even if control variants grow
+  /// to store large internal state (e.g. `<select>` option lists).
+  pub fn snapshot_label(&self) -> String {
+    match self {
+      // `<select>` may carry a full option/optgroup model for listbox painting.
+      // Snapshot output must avoid dumping the entire tree.
+      FormControlKind::Select { label, multiple } => {
+        // Without the `size` attribute / computed listbox model available, fall back to the HTML
+        // default: 1 for dropdowns, 4 for multi-select listboxes.
+        let size = if *multiple { 4 } else { 1 };
+        let mode = if *multiple { "listbox" } else { "dropdown" };
+        format!(
+          "Select{{mode={mode}, size={size}, selected={label:?}, options=?, optgroups=?}}"
+        )
+      }
+      // Other control kinds are currently small, so reuse the derived Debug output.
+      _ => format!("{self:?}"),
+    }
+  }
+}
+
 /// Specific text-like controls that share sizing and placeholder rendering.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TextControlKind {
