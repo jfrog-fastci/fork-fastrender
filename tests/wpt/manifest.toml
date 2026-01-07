@@ -1007,9 +1007,35 @@ width = 120
 height = 120
 
 [[tests]]
+id = "style/conditional/supports-container-nested-001"
+path = "style/conditional/supports-container-nested-001.html"
+reference = "style/conditional/supports-container-nested-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
 id = "style/conditional/container-inline-size-true-001"
 path = "style/conditional/container-inline-size-true-001.html"
 reference = "style/conditional/container-inline-size-true-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "style/conditional/container-supports-nested-001"
+path = "style/conditional/container-supports-nested-001.html"
+reference = "style/conditional/container-supports-nested-001-ref.html"
 test_type = "reftest"
 expected = "pass"
 timeout_ms = 12000
