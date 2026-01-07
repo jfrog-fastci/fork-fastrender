@@ -1,49 +1,38 @@
 use fastrender::image_loader::ImageCache;
-use fastrender::paint::display_list::DisplayList;
-use fastrender::paint::display_list_builder::DisplayListBuilder;
-use fastrender::paint::display_list_renderer::{DisplayListRenderer, PaintParallelism};
+use fastrender::paint::display_list_renderer::PaintParallelism;
+use fastrender::paint::painter::paint_tree_with_resources_scaled_offset;
 use fastrender::scroll::ScrollState;
-use fastrender::text::font_loader::FontContext;
-use fastrender::tree::fragment_tree::FragmentNode;
-use fastrender::{FastRender, FontConfig, Point, Rgba};
+use fastrender::{FastRender, Point, Rgba};
 
 fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
   let p = pixmap.pixel(x, y).unwrap();
   (p.red(), p.green(), p.blue(), p.alpha())
 }
 
-fn build_display_list(html: &str, width: u32, height: u32) -> (DisplayList, FontContext) {
-  let mut renderer = FastRender::builder()
-    .font_sources(FontConfig::bundled_only())
-    .build()
-    .expect("renderer");
-
+fn render(html: &str, width: u32, height: u32) -> tiny_skia::Pixmap {
+  let mut renderer = FastRender::new().expect("renderer");
   let dom = renderer.parse_html(html).expect("parsed");
-  let tree = renderer
+  let fragment_tree = renderer
     .layout_document(&dom, width, height)
     .expect("laid out");
+
   let font_ctx = renderer.font_context().clone();
   let image_cache = ImageCache::new();
-  let viewport = tree.viewport_size();
 
-  let build_for_root = |root: &FragmentNode| -> DisplayList {
-    DisplayListBuilder::with_image_cache(image_cache.clone())
-      .with_font_context(font_ctx.clone())
-      .with_svg_filter_defs(tree.svg_filter_defs.clone())
-      .with_scroll_state(ScrollState::default())
-      .with_device_pixel_ratio(1.0)
-      // Keep display-list building deterministic; these tests focus on renderer effects.
-      .with_parallelism(&PaintParallelism::disabled())
-      .with_viewport_size(viewport.width, viewport.height)
-      .build_with_stacking_tree_offset_checked(root, Point::ZERO)
-      .expect("display list")
-  };
-
-  let mut list = build_for_root(&tree.root);
-  for extra in &tree.additional_fragments {
-    list.append(build_for_root(extra));
-  }
-  (list, font_ctx)
+  paint_tree_with_resources_scaled_offset(
+    &fragment_tree,
+    width,
+    height,
+    Rgba::WHITE,
+    font_ctx,
+    image_cache,
+    1.0,
+    Point::ZERO,
+    // Keep painting deterministic; this test focuses on Backdrop Root boundaries.
+    PaintParallelism::disabled(),
+    &ScrollState::default(),
+  )
+  .expect("painted")
 }
 
 #[test]
@@ -64,14 +53,7 @@ fn backdrop_filter_does_not_sample_above_clip_path_backdrop_root() {
     <div id=cliproot><div id=overlay></div></div>
   "#;
 
-  let width = 60;
-  let height = 60;
-  let (list, font_ctx) = build_display_list(html, width, height);
-  let pixmap = DisplayListRenderer::new(width, height, Rgba::WHITE, font_ctx)
-    .expect("renderer")
-    .with_parallelism(PaintParallelism::disabled())
-    .render(&list)
-    .expect("render");
+  let pixmap = render(html, 60, 60);
 
   // Pixel inside the backdrop-filter element should remain the body background (red) because the
   // clip-path ancestor establishes a Backdrop Root.
@@ -79,4 +61,3 @@ fn backdrop_filter_does_not_sample_above_clip_path_backdrop_root() {
   // Pixel outside the backdrop-filter element should also remain the body background (red).
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
-
