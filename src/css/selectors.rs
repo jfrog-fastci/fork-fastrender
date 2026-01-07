@@ -1555,7 +1555,7 @@ mod tests {
   #[test]
   fn parses_vendor_form_control_pseudo_classes() {
     let mut input = ParserInput::new(
-      "input:-ms-input-placeholder, input:-moz-placeholder, input:-webkit-autofill, input:-moz-ui-invalid, input:-moz-focusring",
+      "input:-ms-input-placeholder, input:-moz-placeholder, input:-moz-placeholder-shown, input:-webkit-autofill, input:-moz-ui-invalid, input:-moz-focusring",
     );
     let mut parser = Parser::new(&mut input);
     assert!(SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok());
@@ -1564,7 +1564,7 @@ mod tests {
   #[test]
   fn vendor_form_control_pseudo_classes_do_not_invalidate_selector_lists() {
     let mut input = ParserInput::new(
-      "input:focus, input:-ms-input-placeholder, input:-moz-placeholder, input:-webkit-autofill, input:-moz-ui-invalid, input:-moz-focusring, input:disabled",
+      "input:focus, input:-ms-input-placeholder, input:-moz-placeholder, input:-moz-placeholder-shown, input:-webkit-autofill, input:-moz-ui-invalid, input:-moz-focusring, input:disabled",
     );
     let mut parser = Parser::new(&mut input);
     assert!(SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok());
