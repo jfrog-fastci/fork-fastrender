@@ -885,7 +885,7 @@ fn svg_filter_and_rounded_clip_match_serial_output_in_translated_tiles() {
 }
 
 #[test]
-fn mix_blend_mode_triggers_serial_fallback_without_isolation() {
+fn mix_blend_mode_allows_parallel_tiling_without_isolation() {
   let mut list = DisplayList::new();
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: Rect::from_xywh(0.0, 0.0, 96.0, 96.0),
@@ -942,12 +942,14 @@ fn mix_blend_mode_triggers_serial_fallback_without_isolation() {
       .expect("parallel paint")
   });
 
-  assert!(
-    !report.parallel_used,
-    "mix-blend-mode on non-isolated context should disable parallel painting (fallback={:?})",
-    report.fallback_reason
-  );
-  assert_eq!(serial.data(), report.pixmap.data());
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
+  assert_pixmap_eq(&serial, &report.pixmap);
 }
 
 #[test]
@@ -1020,8 +1022,7 @@ fn mix_blend_mode_allows_parallel_tiling_with_isolation() {
 
 #[test]
 fn html_mix_blend_mode_does_not_disable_parallel_paint() {
-  // HTML-produced mix-blend-mode stacking contexts should be marked as isolated by the display
-  // list builder, ensuring the parallel renderer does not fall back solely due to blending.
+  // HTML-produced mix-blend-mode content should not disable parallel tiling.
   let html = r#"
     <!doctype html>
     <style>
