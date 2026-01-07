@@ -393,7 +393,7 @@ input:not([type]) {
     cursor: text;
 }
 
-input[type="submit"], input[type="button"], button {
+input[type="submit"], input[type="button"], input[type="reset"], button {
     padding: 4px 10px;
     background-color: rgb(240, 240, 240);
     border: 1px solid #767676;
@@ -408,6 +408,7 @@ textarea {
 
 select {
     padding-right: 20px;
+    cursor: default;
 }
 
 select[multiple],
