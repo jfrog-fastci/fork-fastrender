@@ -723,29 +723,6 @@ pub enum FetchDestination {
   Other,
 }
 
-/// Referrer policy controlling how the `Referer` request header is constructed.
-///
-/// This mirrors the [`Referrer-Policy`](https://www.w3.org/TR/referrer-policy/) values that can be
-/// set by documents (via headers/meta) or individual elements.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ReferrerPolicy {
-  NoReferrer,
-  NoReferrerWhenDowngrade,
-  Origin,
-  OriginWhenCrossOrigin,
-  SameOrigin,
-  StrictOrigin,
-  StrictOriginWhenCrossOrigin,
-  UnsafeUrl,
-}
-
-impl Default for ReferrerPolicy {
-  fn default() -> Self {
-    // Chromium default.
-    Self::StrictOriginWhenCrossOrigin
-  }
-}
-
 /// Credentials mode for a fetch request (roughly aligned with the Fetch spec).
 ///
 /// This is primarily used to partition caches for requests that may carry cookies/auth headers.
@@ -870,6 +847,68 @@ pub(crate) fn http_browser_request_profile_for_url(url: &str) -> FetchDestinatio
   }
 }
 
+// ============================================================================
+// Referrer Policy
+// ============================================================================
+
+/// Referrer policy applied when generating the `Referer` request header.
+///
+/// This models the [Referrer Policy specification](https://www.w3.org/TR/referrer-policy/) token
+/// values. The [`ReferrerPolicy::EmptyString`] variant represents the empty-string state used by
+/// the spec (meaning "use the default policy").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ReferrerPolicy {
+  /// Empty-string / unspecified referrer policy ("use default").
+  EmptyString,
+  NoReferrer,
+  NoReferrerWhenDowngrade,
+  Origin,
+  OriginWhenCrossOrigin,
+  SameOrigin,
+  StrictOrigin,
+  StrictOriginWhenCrossOrigin,
+  UnsafeUrl,
+}
+
+impl ReferrerPolicy {
+  /// Chromium's default policy for requests without an explicit referrer policy.
+  pub const CHROMIUM_DEFAULT: ReferrerPolicy = ReferrerPolicy::StrictOriginWhenCrossOrigin;
+
+  /// Parse a referrer policy token (case-insensitive, trims whitespace).
+  ///
+  /// Returns `None` when the token is unrecognized.
+  pub fn parse(raw: &str) -> Option<Self> {
+    let token = raw.trim();
+    if token.is_empty() {
+      return Some(Self::EmptyString);
+    }
+    match token.to_ascii_lowercase().as_str() {
+      "no-referrer" => Some(Self::NoReferrer),
+      "no-referrer-when-downgrade" => Some(Self::NoReferrerWhenDowngrade),
+      "origin" => Some(Self::Origin),
+      "origin-when-cross-origin" => Some(Self::OriginWhenCrossOrigin),
+      "same-origin" => Some(Self::SameOrigin),
+      "strict-origin" => Some(Self::StrictOrigin),
+      "strict-origin-when-cross-origin" => Some(Self::StrictOriginWhenCrossOrigin),
+      "unsafe-url" => Some(Self::UnsafeUrl),
+      _ => None,
+    }
+  }
+
+  fn resolve(self, default: ReferrerPolicy) -> ReferrerPolicy {
+    match self {
+      ReferrerPolicy::EmptyString => default,
+      other => other,
+    }
+  }
+}
+
+impl Default for ReferrerPolicy {
+  fn default() -> Self {
+    Self::EmptyString
+  }
+}
+
 /// Contextual metadata associated with a resource fetch.
 ///
 /// This is primarily used by HTTP fetchers to populate browser-like request headers (e.g. `Accept`,
@@ -915,7 +954,7 @@ impl<'a> FetchRequest<'a> {
     self
   }
 
-  /// Override how the `Referer` header is constructed from the referrer URL.
+  /// Override the referrer policy used when generating the `Referer` header.
   pub fn with_referrer_policy(mut self, policy: ReferrerPolicy) -> Self {
     self.referrer_policy = policy;
     self
@@ -2984,6 +3023,114 @@ struct HttpCacheValidators<'a> {
   last_modified: Option<&'a str>,
 }
 
+fn http_referer_header_value(
+  raw_referrer: &str,
+  target_url: &str,
+  policy: ReferrerPolicy,
+) -> Option<String> {
+  let policy = policy.resolve(ReferrerPolicy::CHROMIUM_DEFAULT);
+  if policy == ReferrerPolicy::NoReferrer {
+    return None;
+  }
+
+  // We only synthesize `Referer` for network referrers. For `file://` fixtures and other
+  // opaque-origin schemes, browsers generally omit `Referer` while still sending `Origin: null`
+  // where required (e.g. CORS-mode fetches).
+  let parsed_referrer_url = Url::parse(raw_referrer).ok();
+  let (referrer_origin, full_referrer, origin_only_referrer) = if let Some(referrer_url) =
+    parsed_referrer_url.as_ref()
+  {
+    if !matches!(referrer_url.scheme(), "http" | "https") {
+      return None;
+    }
+    let mut sanitized = referrer_url.clone();
+    sanitized.set_fragment(None);
+    let full = sanitized.to_string();
+    let origin_only = http_browser_origin_and_referer_for_url(&sanitized)
+      .map(|(_, origin_only)| origin_only)
+      .or_else(|| Some(full.clone()));
+    (
+      DocumentOrigin::from_parsed_url(&sanitized),
+      Some(full),
+      origin_only,
+    )
+  } else {
+    let origin = http_browser_tolerant_origin_from_url(raw_referrer)?;
+    let full = raw_referrer
+      .split_once('#')
+      .map(|(before, _)| before.to_string())
+      .unwrap_or_else(|| raw_referrer.to_string());
+    let origin_only = http_browser_origin_and_referer_for_origin(&origin)
+      .map(|(_, origin_only)| origin_only)
+      .or_else(|| Some(full.clone()));
+    (origin, Some(full), origin_only)
+  };
+
+  let parsed_target_url = Url::parse(target_url).ok();
+  let target_origin = parsed_target_url
+    .as_ref()
+    .map(DocumentOrigin::from_parsed_url)
+    .or_else(|| http_browser_tolerant_origin_from_url(target_url));
+
+  let target_scheme = parsed_target_url
+    .as_ref()
+    .map(Url::scheme)
+    .or_else(|| target_origin.as_ref().map(|origin| origin.scheme()));
+  let downgrade = referrer_origin.scheme() == "https" && target_scheme == Some("http");
+
+  let same_origin = target_origin
+    .as_ref()
+    .map(|target_origin| referrer_origin.same_origin(target_origin))
+    .unwrap_or(false);
+
+  let origin_only_value = origin_only_referrer.or_else(|| full_referrer.clone());
+  let full_value = full_referrer;
+
+  match policy {
+    ReferrerPolicy::EmptyString => unreachable!("policy resolved above"),
+    ReferrerPolicy::NoReferrer => None,
+    ReferrerPolicy::NoReferrerWhenDowngrade => {
+      if downgrade {
+        None
+      } else {
+        full_value
+      }
+    }
+    ReferrerPolicy::Origin => origin_only_value,
+    ReferrerPolicy::OriginWhenCrossOrigin => {
+      if same_origin {
+        full_value
+      } else {
+        origin_only_value
+      }
+    }
+    ReferrerPolicy::SameOrigin => {
+      if same_origin {
+        full_value
+      } else {
+        None
+      }
+    }
+    ReferrerPolicy::StrictOrigin => {
+      if downgrade {
+        None
+      } else {
+        origin_only_value
+      }
+    }
+    ReferrerPolicy::StrictOriginWhenCrossOrigin => {
+      if same_origin {
+        full_value
+      } else if downgrade {
+        None
+      } else {
+        origin_only_value
+      }
+    }
+    ReferrerPolicy::UnsafeUrl => full_value,
+  }
+}
+
 fn build_http_header_pairs<'a>(
   url: &str,
   user_agent: &str,
@@ -3020,7 +3167,8 @@ fn build_http_header_pairs<'a>(
     // - For `Referer`, callers can provide a full referrer URL and an explicit `ReferrerPolicy`.
     //   We apply the policy further down (fragment stripping, origin-only referrers for
     //   cross-origin requests when applicable, and HTTPS→HTTP downgrade suppression for strict
-    //   policies).
+    //   policies). The empty-string policy state defaults to Chromium's
+    //   `strict-origin-when-cross-origin`.
     let sec_fetch_site = if referrer.is_some() {
       match (referrer_origin.as_ref(), target_origin.as_ref()) {
         (Some(ref_origin), Some(target_origin)) => {
@@ -3111,101 +3259,7 @@ fn build_http_header_pairs<'a>(
   if let Some(raw_referrer) = referrer {
     let raw_referrer = raw_referrer.trim();
     if !raw_referrer.is_empty() {
-      let target_scheme = parsed_target_url
-        .as_ref()
-        .map(Url::scheme)
-        .or_else(|| target_origin.as_ref().map(|origin| origin.scheme()));
-      let referrer_scheme = parsed_referrer_url
-        .as_ref()
-        .map(Url::scheme)
-        .or_else(|| referrer_origin.as_ref().map(|origin| origin.scheme()));
-      let is_downgrade = referrer_scheme == Some("https") && target_scheme == Some("http");
-
-      let same_origin = match (referrer_origin.as_ref(), target_origin.as_ref()) {
-        (Some(ref_origin), Some(target_origin)) => ref_origin.same_origin(target_origin),
-        _ => false,
-      };
-
-      let raw_referrer = raw_referrer
-        .split_once('#')
-        .map(|(before, _)| before)
-        .unwrap_or(raw_referrer);
-
-      let full_referrer = || -> Option<String> {
-        if let Some(referrer_url) = parsed_referrer_url.as_ref() {
-          let mut referrer_url = referrer_url.clone();
-          referrer_url.set_fragment(None);
-          Some(referrer_url.to_string())
-        } else if let Some(referrer_origin) = referrer_origin.as_ref() {
-          // Invalid referrer URL, but we can still safely emit an origin-only referer.
-          http_browser_origin_and_referer_for_origin(referrer_origin)
-            .map(|(_, origin_only)| origin_only)
-            .or_else(|| Some(raw_referrer.to_string()))
-        } else {
-          Some(raw_referrer.to_string())
-        }
-      };
-
-      let origin_referrer = || -> Option<String> {
-        if let Some(referrer_url) = parsed_referrer_url.as_ref() {
-          let mut referrer_url = referrer_url.clone();
-          referrer_url.set_fragment(None);
-          http_browser_origin_and_referer_for_url(&referrer_url)
-            .map(|(_, origin_only)| origin_only)
-            .or_else(|| Some(referrer_url.to_string()))
-        } else if let Some(referrer_origin) = referrer_origin.as_ref() {
-          http_browser_origin_and_referer_for_origin(referrer_origin)
-            .map(|(_, origin_only)| origin_only)
-            .or_else(|| Some(raw_referrer.to_string()))
-        } else {
-          Some(raw_referrer.to_string())
-        }
-      };
-
-      let value = match referrer_policy {
-        ReferrerPolicy::NoReferrer => None,
-        ReferrerPolicy::NoReferrerWhenDowngrade => {
-          if is_downgrade {
-            None
-          } else {
-            full_referrer()
-          }
-        }
-        ReferrerPolicy::Origin => origin_referrer(),
-        ReferrerPolicy::OriginWhenCrossOrigin => {
-          if same_origin {
-            full_referrer()
-          } else {
-            origin_referrer()
-          }
-        }
-        ReferrerPolicy::SameOrigin => {
-          if same_origin {
-            full_referrer()
-          } else {
-            None
-          }
-        }
-        ReferrerPolicy::StrictOrigin => {
-          if is_downgrade {
-            None
-          } else {
-            origin_referrer()
-          }
-        }
-        ReferrerPolicy::StrictOriginWhenCrossOrigin => {
-          if is_downgrade {
-            None
-          } else if same_origin {
-            full_referrer()
-          } else {
-            origin_referrer()
-          }
-        }
-        ReferrerPolicy::UnsafeUrl => full_referrer(),
-      };
-
-      if let Some(value) = value {
+      if let Some(value) = http_referer_header_value(raw_referrer, url, referrer_policy) {
         headers.push(("Referer".to_string(), value));
       }
     }
@@ -8900,6 +8954,84 @@ mod tests {
   }
 
   #[test]
+  fn referrer_policy_parse_trims_and_is_case_insensitive() {
+    assert_eq!(
+      ReferrerPolicy::parse(" strict-origin-when-cross-origin "),
+      Some(ReferrerPolicy::StrictOriginWhenCrossOrigin)
+    );
+    assert_eq!(
+      ReferrerPolicy::parse("UNSAFE-URL"),
+      Some(ReferrerPolicy::UnsafeUrl)
+    );
+    assert_eq!(ReferrerPolicy::parse(""), Some(ReferrerPolicy::EmptyString));
+    assert_eq!(ReferrerPolicy::parse("unknown-policy"), None);
+  }
+
+  #[test]
+  fn referrer_policy_matrix_generates_expected_referer_values() {
+    let referrer = "https://example.com/path/page.html?q=1#frag";
+    let same_origin = "https://example.com/img.png";
+    let cross_origin = "https://other.com/img.png";
+    let downgrade = "http://other.com/img.png";
+
+    let full = Some("https://example.com/path/page.html?q=1");
+    let origin_only = Some("https://example.com/");
+
+    let cases = [
+      (ReferrerPolicy::NoReferrer, None, None, None),
+      (ReferrerPolicy::NoReferrerWhenDowngrade, full, full, None),
+      (ReferrerPolicy::Origin, origin_only, origin_only, origin_only),
+      (ReferrerPolicy::OriginWhenCrossOrigin, full, origin_only, origin_only),
+      (ReferrerPolicy::SameOrigin, full, None, None),
+      (ReferrerPolicy::StrictOrigin, origin_only, origin_only, None),
+      (ReferrerPolicy::StrictOriginWhenCrossOrigin, full, origin_only, None),
+      (ReferrerPolicy::UnsafeUrl, full, full, full),
+      (ReferrerPolicy::EmptyString, full, origin_only, None),
+    ];
+
+    for (policy, expected_same, expected_cross, expected_downgrade) in cases {
+      assert_eq!(
+        http_referer_header_value(referrer, same_origin, policy).as_deref(),
+        expected_same,
+        "same-origin policy mismatch for {policy:?}"
+      );
+      assert_eq!(
+        http_referer_header_value(referrer, cross_origin, policy).as_deref(),
+        expected_cross,
+        "cross-origin policy mismatch for {policy:?}"
+      );
+      assert_eq!(
+        http_referer_header_value(referrer, downgrade, policy).as_deref(),
+        expected_downgrade,
+        "downgrade policy mismatch for {policy:?}"
+      );
+    }
+  }
+
+  #[test]
+  fn referrer_policy_omits_file_referrers() {
+    let referrer = "file:///tmp/page.html#frag";
+    let target = "https://example.com/img.png";
+    for policy in [
+      ReferrerPolicy::EmptyString,
+      ReferrerPolicy::NoReferrer,
+      ReferrerPolicy::NoReferrerWhenDowngrade,
+      ReferrerPolicy::Origin,
+      ReferrerPolicy::OriginWhenCrossOrigin,
+      ReferrerPolicy::SameOrigin,
+      ReferrerPolicy::StrictOrigin,
+      ReferrerPolicy::StrictOriginWhenCrossOrigin,
+      ReferrerPolicy::UnsafeUrl,
+    ] {
+      assert_eq!(
+        http_referer_header_value(referrer, target, policy),
+        None,
+        "expected no referer for file referrer under {policy:?}"
+      );
+    }
+  }
+
+  #[test]
   fn http_headers_referrer_policy_no_referrer_omits_header() {
     let headers = build_http_header_pairs(
       "https://www.example.com/img.png",
@@ -8911,6 +9043,22 @@ mod tests {
       Some("https://www.example.com/page"),
       ReferrerPolicy::NoReferrer,
     );
+    assert_eq!(header_value(&headers, "Referer"), None);
+  }
+
+  #[test]
+  fn http_headers_respect_referrer_policy_override() {
+    let headers = build_http_header_pairs(
+      "https://static.example.com/img.png",
+      DEFAULT_USER_AGENT,
+      DEFAULT_ACCEPT_LANGUAGE,
+      SUPPORTED_ACCEPT_ENCODING,
+      None,
+      FetchContextKind::Image,
+      Some("https://www.example.com/page"),
+      ReferrerPolicy::NoReferrer,
+    );
+    assert_eq!(header_value(&headers, "Sec-Fetch-Site"), Some("same-site"));
     assert_eq!(header_value(&headers, "Referer"), None);
   }
 
@@ -9017,7 +9165,7 @@ mod tests {
       None,
       FetchContextKind::Image.into(),
       Some("https://www.example.com/page"),
-      ReferrerPolicy::StrictOriginWhenCrossOrigin,
+      ReferrerPolicy::default(),
     );
     assert_eq!(header_value(&headers, "Sec-Fetch-Site"), Some("cross-site"));
     assert_eq!(header_value(&headers, "Referer"), None);
