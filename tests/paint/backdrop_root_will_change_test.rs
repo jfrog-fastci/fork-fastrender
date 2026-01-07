@@ -47,6 +47,34 @@ fn build_display_list(html: &str, width: u32, height: u32) -> (DisplayList, Font
   (list, font_ctx)
 }
 
+fn render_backdrop_invert_with_parent_will_change(value: &str) -> tiny_skia::Pixmap {
+  let html = format!(
+    r#"<!doctype html>
+      <style>
+        html, body {{ margin: 0; padding: 0; background: rgb(255 0 0); }}
+        #parent {{ position: absolute; inset: 0; will-change: {value}; }}
+        #child {{
+          position: absolute;
+          left: 0;
+          top: 0;
+          width: 40px;
+          height: 40px;
+          backdrop-filter: invert(1);
+          background: transparent;
+        }}
+      </style>
+      <div id="parent"><div id="child"></div></div>
+    "#
+  );
+
+  let (list, font_ctx) = build_display_list(&html, 64, 64);
+  DisplayListRenderer::new(64, 64, Rgba::WHITE, font_ctx)
+    .expect("renderer")
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("render")
+}
+
 #[test]
 fn will_change_filter_establishes_backdrop_root() {
   // Per Filter Effects Level 2, `will-change` hints for properties that would establish a
@@ -377,4 +405,31 @@ fn will_change_perspective_does_not_establish_backdrop_root() {
   // Red backdrop inverted to cyan.
   assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
+fn will_change_other_stacking_context_hints_do_not_establish_backdrop_root() {
+  // `will-change` can proactively create stacking contexts for performance (e.g. transforms),
+  // but only hints for Backdrop Root triggers should stop backdrop-filter sampling.
+  for value in [
+    "translate",
+    "rotate",
+    "scale",
+    "isolation",
+    "contain",
+    "scroll-position",
+    "contents",
+  ] {
+    let pixmap = render_backdrop_invert_with_parent_will_change(value);
+    assert_eq!(
+      pixel(&pixmap, 20, 20),
+      (0, 255, 255, 255),
+      "will-change: {value} must not establish a Backdrop Root"
+    );
+    assert_eq!(
+      pixel(&pixmap, 50, 50),
+      (255, 0, 0, 255),
+      "will-change: {value} must not establish a Backdrop Root"
+    );
+  }
 }
