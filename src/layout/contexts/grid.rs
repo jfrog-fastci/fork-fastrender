@@ -378,22 +378,25 @@ impl MeasureKey {
     Self::quantize(val).to_bits()
   }
 
-  fn clamp_width_for_constraints(val: f32, viewport: Size) -> f32 {
-    // Match `constraints_from_taffy`, which clamps all definite inline sizes to the viewport.
-    // Any wider definite probe will produce the same downstream layout result.
-    val.min(viewport.width)
+  fn sanitize_definite(val: f32) -> f32 {
+    if val.is_finite() {
+      val.max(0.0)
+    } else {
+      0.0
+    }
   }
 
   fn new(
     node: &BoxNode,
     known_dimensions: taffy::geometry::Size<Option<f32>>,
     available_space: taffy::geometry::Size<taffy::style::AvailableSpace>,
-    viewport: Size,
+    _viewport: Size,
     drop_available_height: bool,
   ) -> Self {
     fn avail_key(space: taffy::style::AvailableSpace) -> MeasureAvailKey {
       match space {
         taffy::style::AvailableSpace::Definite(v) => {
+          let v = MeasureKey::sanitize_definite(v);
           if v <= 1.0 {
             MeasureAvailKey::Indefinite
           } else {
@@ -405,24 +408,12 @@ impl MeasureKey {
       }
     }
 
-    fn avail_width_key(space: taffy::style::AvailableSpace, viewport: Size) -> MeasureAvailKey {
-      match space {
-        taffy::style::AvailableSpace::Definite(v) => {
-          if v <= 1.0 {
-            MeasureAvailKey::Indefinite
-          } else {
-            let clamped = MeasureKey::clamp_width_for_constraints(v, viewport);
-            MeasureAvailKey::Definite(MeasureKey::quantize_to_bits(clamped))
-          }
-        }
-        other => avail_key(other),
-      }
-    }
-
     let known_width = known_dimensions
       .width
-      .map(|w| Self::quantize_to_bits(Self::clamp_width_for_constraints(w, viewport)));
-    let known_height = known_dimensions.height.map(Self::quantize_to_bits);
+      .map(|w| Self::quantize_to_bits(Self::sanitize_definite(w)));
+    let known_height = known_dimensions
+      .height
+      .map(|h| Self::quantize_to_bits(Self::sanitize_definite(h)));
     let box_id = ensure_box_id(node);
     let override_fingerprint =
       crate::layout::style_override::style_override_fingerprint_for(box_id);
@@ -436,7 +427,7 @@ impl MeasureKey {
       available_width: if known_width.is_some() {
         MeasureAvailKey::Ignored
       } else {
-        avail_width_key(available_space.width, viewport)
+        avail_key(available_space.width)
       },
       available_height: if known_height.is_some() {
         MeasureAvailKey::Ignored
@@ -655,7 +646,7 @@ fn is_collapsible_whitespace_grid_item(node: &BoxNode) -> bool {
 }
 
 fn constraints_from_taffy(
-  viewport_size: crate::geometry::Size,
+  _viewport_size: crate::geometry::Size,
   mut known: taffy::geometry::Size<Option<f32>>,
   available: taffy::geometry::Size<taffy::style::AvailableSpace>,
   inline_percentage_base: Option<f32>,
@@ -684,26 +675,26 @@ fn constraints_from_taffy(
     }
   }
 
-  let clamp_def_width = |w: f32| w.min(viewport_size.width);
+  let sanitize_definite = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
   let width = match (known.width, available.width) {
-    (Some(w), _) => CrateAvailableSpace::Definite(clamp_def_width(w)),
+    (Some(w), _) => CrateAvailableSpace::Definite(sanitize_definite(w)),
     (_, taffy::style::AvailableSpace::Definite(w)) => {
       if w <= 1.0 {
         CrateAvailableSpace::Indefinite
       } else {
-        CrateAvailableSpace::Definite(clamp_def_width(w))
+        CrateAvailableSpace::Definite(sanitize_definite(w))
       }
     }
     (_, taffy::style::AvailableSpace::MinContent) => CrateAvailableSpace::MinContent,
     (_, taffy::style::AvailableSpace::MaxContent) => CrateAvailableSpace::MaxContent,
   };
   let height = match (known.height, available.height) {
-    (Some(h), _) => CrateAvailableSpace::Definite(h),
+    (Some(h), _) => CrateAvailableSpace::Definite(sanitize_definite(h)),
     (_, taffy::style::AvailableSpace::Definite(h)) => {
       if h <= 1.0 {
         CrateAvailableSpace::Indefinite
       } else {
-        CrateAvailableSpace::Definite(h)
+        CrateAvailableSpace::Definite(sanitize_definite(h))
       }
     }
     (_, taffy::style::AvailableSpace::MinContent) => CrateAvailableSpace::MinContent,
@@ -10777,7 +10768,28 @@ mod tests {
   }
 
   #[test]
-  fn measure_key_clamps_definite_widths_to_viewport() {
+  fn grid_constraints_from_taffy_does_not_clamp_definite_width_to_viewport() {
+    use taffy::style::AvailableSpace;
+
+    let viewport = Size::new(200.0, 200.0);
+    let known = taffy::geometry::Size {
+      width: Some(1000.0),
+      height: None,
+    };
+    let available = taffy::geometry::Size {
+      width: AvailableSpace::Definite(1000.0),
+      height: AvailableSpace::MaxContent,
+    };
+
+    let constraints = constraints_from_taffy(viewport, known, available, None);
+    assert_eq!(
+      constraints.available_width,
+      CrateAvailableSpace::Definite(1000.0)
+    );
+  }
+
+  #[test]
+  fn measure_key_does_not_clamp_definite_widths_to_viewport() {
     use taffy::style::AvailableSpace;
 
     let node = BoxNode::new_block(make_item_style(), FormattingContextType::Block, vec![]);
@@ -10802,9 +10814,9 @@ mod tests {
 
     let key_a = MeasureKey::new(&node, known_a, avail_a, viewport, false);
     let key_b = MeasureKey::new(&node, known_b, avail_b, viewport, false);
-    assert_eq!(
+    assert_ne!(
       key_a, key_b,
-      "definite widths larger than the viewport should clamp to the same cache key"
+      "definite widths larger than the viewport should remain distinct cache keys"
     );
   }
 
