@@ -15047,7 +15047,15 @@ fn parse_will_change_from_str(text: &str) -> Option<WillChange> {
       "auto" => return None,
       "scroll-position" => hints.push(WillChangeHint::ScrollPosition),
       "contents" => hints.push(WillChangeHint::Contents),
-      other => hints.push(WillChangeHint::Property(other.to_string())),
+      other => {
+        // Canonicalize vendor-prefixed property names so `will-change: -webkit-foo` behaves like
+        // `will-change: foo` when FastRender supports the unprefixed property.
+        //
+        // This mirrors how the parser handles vendor-prefixed properties in declaration names and
+        // avoids needing to list prefixed spellings in will-change trigger tables.
+        let canonical = crate::css::properties::vendor_prefixed_property_alias(other).unwrap_or(other);
+        hints.push(WillChangeHint::Property(canonical.to_string()))
+      }
     }
     parser.skip_whitespace();
     if parser.is_exhausted() {
