@@ -458,10 +458,13 @@ fn build_nodes<'a>(
 
       let role_description = compute_role_description(role.as_deref(), &node.node);
 
+      let native_disabled = element_ref.accessibility_disabled();
       let aria_disabled = parse_bool_attr(&node.node, "aria-disabled");
-      let disabled = aria_disabled.unwrap_or_else(|| element_ref.accessibility_disabled());
-      let required = parse_bool_attr(&node.node, "aria-required")
-        .unwrap_or_else(|| element_ref.accessibility_required());
+      let disabled = native_disabled || aria_disabled == Some(true);
+
+      let native_required = element_ref.accessibility_required();
+      let aria_required = parse_bool_attr(&node.node, "aria-required");
+      let required = native_required || aria_required == Some(true);
       let invalid = parse_invalid(&node.node, &element_ref);
       let checked = compute_checked(node, role.as_deref(), &element_ref);
       let selected = compute_selected(node, role.as_deref(), &element_ref);
@@ -1682,10 +1685,9 @@ fn compute_value(
   ctx: &BuildContext,
 ) -> Option<String> {
   match role {
-    Some("textbox") | Some("searchbox") | Some("combobox") | Some("listbox") => element_ref
-      .accessibility_value()
-      .filter(|v| !v.is_empty())
-      .map(|v| normalize_whitespace(&v)),
+    Some("textbox") | Some("searchbox") | Some("combobox") | Some("listbox") => control_value_text(node, ctx)
+      .map(|v| normalize_whitespace(&v))
+      .filter(|v| !v.is_empty()),
     Some("spinbutton") | Some("slider") => {
       if let Some(value) = aria_value_attr(&node.node) {
         return Some(value);
@@ -1784,6 +1786,27 @@ fn compute_checked(
   role: Option<&str>,
   element_ref: &ElementRef,
 ) -> Option<CheckState> {
+  let is_native_checkbox_or_radio = is_html_element(&node.node)
+    && node
+      .node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("input"))
+    && node
+      .node
+      .get_attribute_ref("type")
+      .is_some_and(|t| t.eq_ignore_ascii_case("checkbox") || t.eq_ignore_ascii_case("radio"));
+
+  if is_native_checkbox_or_radio && matches!(role, Some("checkbox") | Some("radio") | Some("switch"))
+  {
+    if element_ref.accessibility_indeterminate() {
+      return Some(CheckState::Mixed);
+    }
+    if element_ref.accessibility_checked() {
+      return Some(CheckState::True);
+    }
+    return Some(CheckState::False);
+  }
+
   if let Some(state) = parse_check_state(&node.node, "aria-checked") {
     return Some(state);
   }
@@ -1806,6 +1829,13 @@ fn compute_selected(
   role: Option<&str>,
   element_ref: &ElementRef,
 ) -> Option<bool> {
+  let is_native_option =
+    is_html_element(&node.node) && node.node.tag_name().is_some_and(|t| t.eq_ignore_ascii_case("option"));
+
+  if is_native_option {
+    return Some(element_ref.accessibility_selected());
+  }
+
   if let Some(selected) = parse_bool_attr(&node.node, "aria-selected") {
     return Some(selected);
   }
@@ -1864,11 +1894,9 @@ fn compute_modal(node: &DomNode) -> Option<bool> {
 }
 
 fn compute_readonly(node: &DomNode, _role: Option<&str>, element_ref: &ElementRef) -> bool {
-  if let Some(value) = parse_bool_attr(node, "aria-readonly") {
-    return value;
-  }
-
-  element_ref.accessibility_readonly()
+  let native_readonly = element_ref.accessibility_readonly();
+  let aria_readonly = parse_bool_attr(node, "aria-readonly");
+  native_readonly || aria_readonly == Some(true)
 }
 
 fn compute_expanded(node: &StyledNode, role: Option<&str>, ancestors: &[&DomNode]) -> Option<bool> {

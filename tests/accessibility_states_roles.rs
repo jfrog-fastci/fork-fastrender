@@ -84,6 +84,48 @@ fn aria_state_flags_cover_common_controls() {
 }
 
 #[test]
+fn aria_state_does_not_negate_native_semantics() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r##"
+    <html>
+      <body>
+        <button id="x" disabled aria-disabled="false">Disabled</button>
+        <input id="r" required aria-required="false" />
+        <input id="ro" readonly aria-readonly="false" />
+        <input id="c" type="checkbox" checked aria-checked="false" />
+        <select>
+          <option id="o" selected aria-selected="false">Option</option>
+        </select>
+        <div id="custom" role="checkbox" aria-checked="mixed" tabindex="0">Custom</div>
+      </body>
+    </html>
+  "##;
+
+  let dom = renderer.parse_html(html).expect("parse");
+  let tree = renderer
+    .accessibility_tree(&dom, 800, 600)
+    .expect("accessibility tree");
+
+  let disabled = find_by_id(&tree, "x").expect("disabled button");
+  assert!(disabled.states.disabled);
+
+  let required = find_by_id(&tree, "r").expect("required input");
+  assert!(required.states.required);
+
+  let readonly = find_by_id(&tree, "ro").expect("readonly input");
+  assert!(readonly.states.readonly);
+
+  let checkbox = find_by_id(&tree, "c").expect("checkbox input");
+  assert_eq!(checkbox.states.checked, Some(CheckState::True));
+
+  let option = find_by_id(&tree, "o").expect("option element");
+  assert_eq!(option.states.selected, Some(true));
+
+  let custom = find_by_id(&tree, "custom").expect("custom checkbox");
+  assert_eq!(custom.states.checked, Some(CheckState::Mixed));
+}
+
+#[test]
 fn role_inference_and_heading_levels() {
   let mut renderer = FastRender::new().expect("renderer");
   let html = r##"
