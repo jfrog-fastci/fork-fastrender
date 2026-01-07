@@ -27,10 +27,11 @@ FastRender treats native form controls as replaced elements so they participate 
 
 - Author `background`/`border`/`padding` styling applies normally (the element is still a normal CSS box; only the *inside* is painted by the form-control code).
 - Native chrome suppression is currently selective and implemented directly in the painters:
-  - Select caret (“▾”) is skipped when `control.appearance == Appearance::None` (`emit_form_control` / `paint_form_control`).
-  - Checkbox/radio marks are skipped when `control.appearance == Appearance::None` (`emit_form_control` / `paint_form_control`).
+  - Select caret (“▾”) is skipped when `control.appearance == Appearance::None` (gated inside `emit_form_control` / `paint_form_control`).
+  - Checkbox/radio marks are skipped when `control.appearance == Appearance::None` (early-return in `emit_form_control` / `paint_form_control`).
 - Current limitations:
-  - `appearance:none` does **not** yet disable all affordances (e.g. number/date glyphs and the range track/thumb are still painted today).
+  - `appearance:none` does **not** currently suppress range painting (`FormControlKind::Range` still draws a track + thumb in both painters).
+  - `appearance:none` does **not** yet disable all affordances (e.g. number/date glyphs are still painted today).
   - Vendor pseudo-elements like `::-webkit-slider-thumb`, `::-webkit-slider-runnable-track`, `::-moz-range-thumb`, etc. are not implemented yet, so fully custom range styling isn’t available.
 
 The offline page regression suite includes form-heavy fixtures under `tests/pages/fixtures/form_controls*`
@@ -42,6 +43,8 @@ UPDATE_PAGES_GOLDEN=1 \
   PAGES_FIXTURE_FILTER=form_controls,form_controls_appearance,form_controls_range_select,form_controls_showcase,form_controls_states,form_controls_custom_vs_default,form_controls_comparison_panel,form_controls_lab \
   cargo test pages_regression
 ```
+
+Note: `PAGES_FIXTURE_FILTER` expects a comma-separated list of **exact** fixture names (it is not a prefix/regex match).
 
 The reference fixture at `tests/ref/fixtures/form_controls` exercises common control types and
 states (including size/rows/cols hints, invalid and disabled colors, unknown types, date/time
