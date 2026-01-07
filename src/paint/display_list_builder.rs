@@ -1480,7 +1480,8 @@ impl DisplayListBuilder {
     let mut absolute_rects: Option<BackgroundRects> = None;
     let (overflow_clip, clip_rect) = if let Some(style) = style_opt {
       // Replaced elements clip their own contents to the content box (see `replaced_content_clip_item`),
-      // so avoid applying the generic padding-box overflow clip here.
+      // so avoid applying the generic padding-box overflow clip here. (Form controls compute their
+      // own overflow clip in the replaced paint path.)
       let is_replaced = matches!(&fragment.content, FragmentContent::Replaced { .. });
       let clip_x = !is_replaced && Self::overflow_axis_clips(style.overflow_x);
       let clip_y = !is_replaced && Self::overflow_axis_clips(style.overflow_y);
@@ -4413,13 +4414,27 @@ impl DisplayListBuilder {
       FragmentContent::Replaced { replaced_type, .. } => {
         if let ReplacedType::FormControl(control) = replaced_type {
           let style = fragment.style.as_deref();
-          let (content_rect, clip_radii) = self.replaced_content_rect_and_radii(rect, style);
-          let clip_contents =
-            Self::replaced_content_clip_item(style, content_rect, content_rect, clip_radii);
+          let clip_contents = style.and_then(|style| {
+            let clip_x = Self::overflow_axis_clips(style.overflow_x);
+            let clip_y = Self::overflow_axis_clips(style.overflow_y);
+            if !clip_x && !clip_y {
+              return None;
+            }
+            let rects = Self::background_rects(rect, style, self.viewport);
+            Self::overflow_clip_from_style_with_rects(
+              style,
+              &rects,
+              clip_x,
+              clip_y,
+              rect,
+              self.viewport,
+              self.build_breakdown.as_deref(),
+            )
+          });
           if let Some(clip) = clip_contents.as_ref() {
             self.list.push(DisplayItem::PushClip(clip.clone()));
           }
-          let painted = self.emit_form_control(control, fragment, content_rect);
+          let painted = self.emit_form_control(control, fragment, rect);
           if clip_contents.is_some() {
             self.list.push(DisplayItem::PopClip);
           }
