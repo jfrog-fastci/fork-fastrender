@@ -10265,7 +10265,11 @@ impl FastRender {
         .or_else(|| stored_alt.as_deref().filter(|s| !s.is_empty()));
       if let Some(size) = candidate_alt.and_then(|text| self.alt_intrinsic_size(style, text)) {
         replaced_box.intrinsic_size.get_or_insert(size);
-        if !explicit_no_ratio && size.height > 0.0 && replaced_box.aspect_ratio.is_none() {
+        if !explicit_no_ratio
+          && !replaced_box.no_intrinsic_ratio
+          && size.height > 0.0
+          && replaced_box.aspect_ratio.is_none()
+        {
           replaced_box.aspect_ratio = Some(size.width / size.height);
         }
       }
@@ -10810,7 +10814,11 @@ impl FastRender {
             .or_else(|| stored_alt.as_deref().filter(|s| !s.is_empty()));
           if let Some(size) = candidate_alt.and_then(|text| self.alt_intrinsic_size(style, text)) {
             replaced_box.intrinsic_size.get_or_insert(size);
-            if size.height > 0.0 && replaced_box.aspect_ratio.is_none() {
+            if !explicit_no_ratio
+              && !replaced_box.no_intrinsic_ratio
+              && size.height > 0.0
+              && replaced_box.aspect_ratio.is_none()
+            {
               replaced_box.aspect_ratio = Some(size.width / size.height);
             }
           }
