@@ -194,6 +194,14 @@ impl DisplayListOptimizer {
     check_active(RenderStage::Paint).map_err(Error::Render)?;
 
     let items = list.items();
+    // `mix-blend-mode` requires correct backdrop scoping across stacking-context boundaries.
+    // The optimizer sometimes removes visually-noop stacking contexts (e.g. `z-index: 0` or
+    // `transform: translateX(0)`). When those contexts contain a descendant stacking context with a
+    // non-normal `mix-blend-mode`, removing the boundary causes the descendant to incorrectly
+    // blend with content outside the intended scope. Track which stacking context pushes have
+    // blend-mode descendants and keep them (also forcing `is_isolated` on the preserved context so
+    // the renderer allocates an intermediate surface).
+    let blend_isolation_scopes = Self::compute_blend_isolation_scopes(items);
     let mut indices: Vec<usize> = (0..items.len()).collect();
     let mut scratch_indices: Vec<usize> = Vec::with_capacity(indices.len());
     let mut stats = OptimizationStats {
@@ -223,6 +231,7 @@ impl DisplayListOptimizer {
       self
         .remove_noop_indices_checked(
           &items,
+          &blend_isolation_scopes,
           &indices,
           &mut scratch_indices,
           &mut deadline_counter,
@@ -276,7 +285,7 @@ impl DisplayListOptimizer {
             if let Some(prev) = pending_fill.take() {
               out.push(DisplayItem::FillRect(prev));
             }
-            out.push(other.clone());
+            out.push(Self::clone_item_with_blend_isolation(other, idx, &blend_isolation_scopes));
           }
         }
       }
@@ -287,7 +296,11 @@ impl DisplayListOptimizer {
       for &idx in &indices {
         check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
           .map_err(Error::Render)?;
-        out.push(items[idx].clone());
+        out.push(Self::clone_item_with_blend_isolation(
+          &items[idx],
+          idx,
+          &blend_isolation_scopes,
+        ));
       }
     }
 
@@ -715,6 +728,7 @@ impl DisplayListOptimizer {
   fn remove_noop_indices_checked(
     &self,
     items: &[DisplayItem],
+    blend_isolation_scopes: &[bool],
     indices: &[usize],
     out: &mut Vec<usize>,
     counter: &mut usize,
@@ -797,7 +811,10 @@ impl DisplayListOptimizer {
           }
         }
         DisplayItem::PushStackingContext(sc) => {
-          let removed = Self::is_noop_stacking_context(sc);
+          let mut removed = Self::is_noop_stacking_context(sc);
+          if removed && blend_isolation_scopes.get(idx).copied().unwrap_or(false) {
+            removed = false;
+          }
           stacking_context_stack.push(removed);
           if removed {
             continue;
@@ -838,6 +855,75 @@ impl DisplayListOptimizer {
       && item.opacity >= 1.0 - f32::EPSILON
       && !item.is_isolated
       && item.radii.is_zero()
+  }
+
+  fn compute_blend_isolation_scopes(items: &[DisplayItem]) -> Vec<bool> {
+    #[derive(Clone, Copy)]
+    struct ScopeEntry {
+      push_index: usize,
+      contains_blend: bool,
+    }
+
+    let mut scopes = vec![false; items.len()];
+    let mut stack: Vec<ScopeEntry> = Vec::new();
+
+    for (index, item) in items.iter().enumerate() {
+      match item {
+        DisplayItem::PushStackingContext(sc) => {
+          stack.push(ScopeEntry {
+            push_index: index,
+            contains_blend: sc.mix_blend_mode != BlendMode::Normal,
+          });
+        }
+        DisplayItem::PopStackingContext => {
+          let Some(mut entry) = stack.pop() else {
+            continue;
+          };
+          if entry.contains_blend {
+            scopes[entry.push_index] = true;
+            if let Some(parent) = stack.last_mut() {
+              parent.contains_blend = true;
+            }
+          }
+        }
+        _ => {
+          // Non-stacking items do not affect blend scoping.
+        }
+      }
+    }
+
+    // Defensive: if the list is unbalanced, propagate any pending "contains_blend" state to the
+    // remaining open scopes so we still keep boundaries conservatively.
+    while let Some(entry) = stack.pop() {
+      if entry.contains_blend {
+        scopes[entry.push_index] = true;
+        if let Some(parent) = stack.last_mut() {
+          parent.contains_blend = true;
+        }
+      }
+    }
+
+    scopes
+  }
+
+  fn clone_item_with_blend_isolation(
+    item: &DisplayItem,
+    index: usize,
+    blend_isolation_scopes: &[bool],
+  ) -> DisplayItem {
+    match item {
+      DisplayItem::PushStackingContext(ctx) => {
+        let mut ctx = ctx.clone();
+        if ctx.mix_blend_mode == BlendMode::Normal
+          && !ctx.is_isolated
+          && blend_isolation_scopes.get(index).copied().unwrap_or(false)
+        {
+          ctx.is_isolated = true;
+        }
+        DisplayItem::PushStackingContext(ctx)
+      }
+      other => other.clone(),
+    }
   }
 
   /// Generate the missing pop operations needed to balance the provided item indices.
