@@ -193,6 +193,29 @@ fn abspos_static_position_respects_wrap_reverse_cross_axis_direction() {
 }
 
 #[test]
+fn abspos_static_position_respects_wrap_reverse_with_horizontal_cross_axis() {
+  // Same as above, but with a horizontal cross axis (`flex-direction: column`).
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_direction = FlexDirection::Column;
+  container_style.flex_wrap = FlexWrap::WrapReverse;
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (x, y) = layout_abspos_child(container_style, child_style);
+  assert!((x - 90.0).abs() < 0.1, "expected x≈90, got {}", x);
+  assert!((y - 0.0).abs() < 0.1, "expected y≈0, got {}", y);
+}
+
+#[test]
 fn abspos_static_position_respects_align_self_on_cross_axis() {
   // Flexbox § abspos-items: the cross-axis edges of the static-position rectangle are the flex
   // container's content edges, and `align-self` is used to align within that axis.
