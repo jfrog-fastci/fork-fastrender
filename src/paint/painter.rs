@@ -7568,32 +7568,26 @@ impl Painter {
             .unwrap_or("Select");
 
           let rect = inset_rect(content_rect, 2.0);
-          let arrow_space = if matches!(control.appearance, Appearance::None) {
-            0.0
-          } else {
-            14.0
-          };
           let mut select_style = style.clone();
           if control.invalid {
             select_style.color = accent;
           }
-          let text_rect = Rect::from_xywh(
-            rect.x(),
-            rect.y(),
-            (rect.width() - arrow_space).max(0.0),
-            rect.height(),
-          );
-          let _ = self.paint_alt_text(label, &select_style, text_rect, clip_mask);
+          let _ = self.paint_alt_text(label, &select_style, rect, clip_mask);
 
-          if arrow_space > 0.0 {
-            let mut arrow_style = select_style;
-            arrow_style.color = muted_accent;
+          if !matches!(control.appearance, Appearance::None) {
+            let arrow_space = 14.0_f32.min(padding_rect.width().max(0.0));
+            let arrow_left = (padding_rect.max_x() - arrow_space).max(content_rect.max_x());
             let arrow_rect = Rect::from_xywh(
-              rect.x() + rect.width() - arrow_space,
+              arrow_left,
               rect.y(),
-              arrow_space,
+              (padding_rect.max_x() - arrow_left).max(0.0),
               rect.height(),
             );
+            if arrow_rect.width() <= 0.0 {
+              return true;
+            }
+            let mut arrow_style = select_style;
+            arrow_style.color = muted_accent;
             let _ = self.paint_alt_text("▾", &arrow_style, arrow_rect, clip_mask);
           }
           true
