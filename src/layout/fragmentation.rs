@@ -115,6 +115,14 @@ struct BreakOpportunity {
   kind: BreakKind,
 }
 
+fn max_break_strength(a: BreakStrength, b: BreakStrength) -> BreakStrength {
+  match (a, b) {
+    (BreakStrength::Forced, _) | (_, BreakStrength::Forced) => BreakStrength::Forced,
+    (BreakStrength::Avoid, _) | (_, BreakStrength::Avoid) => BreakStrength::Avoid,
+    _ => BreakStrength::Auto,
+  }
+}
+
 #[derive(Debug, Clone)]
 struct LineContainer {
   id: usize,
@@ -1835,6 +1843,85 @@ fn collect_break_opportunities(
     });
   }
 
+  // When the fragment includes both grid track ranges and per-item placement metadata, break hints
+  // on grid items apply to the corresponding grid line boundaries (CSS Grid 2 §Fragmenting Grid
+  // Layout).
+  let mut grid_item_count = 0usize;
+  if matches!(style.display, Display::Grid | Display::InlineGrid) {
+    if let (Some(grid_tracks), Some(grid_items)) =
+      (node.grid_tracks.as_deref(), node.grid_fragmentation.as_deref())
+    {
+      let tracks = if axis.block_is_horizontal {
+        &grid_tracks.columns
+      } else {
+        &grid_tracks.rows
+      };
+      if !tracks.is_empty() && !grid_items.items.is_empty() {
+        let in_flow_count = grid_items.items.len().min(node.children.len());
+        grid_item_count = in_flow_count;
+
+        // One slot per grid line (track_count + 1). Index `i` corresponds to the boundary at line
+        // `i + 1` in the fragmentation axis.
+        let mut boundary_strengths = vec![BreakStrength::Auto; tracks.len() + 1];
+
+        for idx in 0..in_flow_count {
+          let child = &node.children[idx];
+          let child_style = child
+            .style
+            .as_ref()
+            .map(|s| s.as_ref())
+            .unwrap_or(default_style);
+          let placement = &grid_items.items[idx];
+          let (start_line, end_line) = if axis.block_is_horizontal {
+            (placement.column_start, placement.column_end)
+          } else {
+            (placement.row_start, placement.row_end)
+          };
+
+          let before_strength = combine_breaks(BreakBetween::Auto, child_style.break_before, context);
+          if !matches!(before_strength, BreakStrength::Auto) {
+            let boundary_idx = start_line.saturating_sub(1) as usize;
+            if let Some(slot) = boundary_strengths.get_mut(boundary_idx) {
+              *slot = max_break_strength(*slot, before_strength);
+            }
+          }
+
+          let after_strength = combine_breaks(child_style.break_after, BreakBetween::Auto, context);
+          if !matches!(after_strength, BreakStrength::Auto) {
+            let boundary_idx = end_line.saturating_sub(1) as usize;
+            if let Some(slot) = boundary_strengths.get_mut(boundary_idx) {
+              *slot = max_break_strength(*slot, after_strength);
+            }
+          }
+        }
+
+        for (boundary_idx, strength) in boundary_strengths.into_iter().enumerate() {
+          if matches!(strength, BreakStrength::Auto) {
+            continue;
+          }
+          let strength = apply_avoid_penalty(strength, inside_avoid > 0);
+          let pos = if boundary_idx == 0 {
+            abs_start
+          } else if boundary_idx == tracks.len() {
+            abs_end
+          } else if let Some((_, track_end)) = tracks.get(boundary_idx.saturating_sub(1)).copied() {
+            // The gutter belongs to the following band; align the boundary to the end edge of the
+            // preceding track so breaks never land after a `row-gap`/`column-gap`.
+            abs_start + axis.flow_offset(track_end, 0.0, node_block_size)
+          } else {
+            continue;
+          };
+
+          collection.opportunities.push(BreakOpportunity {
+            pos,
+            strength,
+            kind: BreakKind::BetweenSiblings,
+          });
+        }
+      }
+    }
+  }
+
   let mut line_positions: Vec<Option<(usize, f32)>> = vec![None; node.children.len()];
   let mut line_ends = Vec::new();
   for (idx, child) in node.children.iter().enumerate() {
@@ -1895,8 +1982,13 @@ fn collect_break_opportunities(
       });
     }
 
-    if idx == 0 && !matches!(child_style.break_before, BreakBetween::Auto) {
-      let mut strength = combine_breaks(BreakBetween::Auto, child_style.break_before, context);
+    let child_break_before = if idx < grid_item_count {
+      BreakBetween::Auto
+    } else {
+      child_style.break_before
+    };
+    if idx == 0 && !matches!(child_break_before, BreakBetween::Auto) {
+      let mut strength = combine_breaks(BreakBetween::Auto, child_break_before, context);
       strength = apply_avoid_penalty(strength, inside_avoid > 0);
       if strength == BreakStrength::Auto
         && matches!(child.content, FragmentContent::Block { box_id: None })
@@ -1921,7 +2013,17 @@ fn collect_break_opportunities(
       child_block_size,
     );
 
-    let mut strength = combine_breaks(child_style.break_after, next_style.break_before, context);
+    let child_break_after = if idx < grid_item_count {
+      BreakBetween::Auto
+    } else {
+      child_style.break_after
+    };
+    let next_break_before = if idx + 1 < grid_item_count {
+      BreakBetween::Auto
+    } else {
+      next_style.break_before
+    };
+    let mut strength = combine_breaks(child_break_after, next_break_before, context);
     strength = apply_avoid_penalty(strength, inside_avoid > 0);
     if strength == BreakStrength::Auto
       && matches!(child.content, FragmentContent::Block { box_id: None })

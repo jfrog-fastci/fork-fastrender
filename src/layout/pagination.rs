@@ -168,7 +168,6 @@ impl CachedLayout {
     };
 
     apply_grid_parallel_flow_forced_break_shifts(&mut root, axes, style_block_size);
-
     let mut spans = Vec::new();
     collect_page_name_spans(&root, 0.0, &mut spans);
     spans.sort_by(|a, b| {

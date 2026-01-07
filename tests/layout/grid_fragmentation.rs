@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use fastrender::style::display::{Display, FormattingContextType};
-use fastrender::style::types::{AlignItems, GridTrack};
+use fastrender::style::types::{AlignItems, BreakBetween, GridTrack};
 use fastrender::style::values::Length;
 use fastrender::{
   BoxNode, BoxTree, ComputedStyle, FragmentContent, FragmentNode, FragmentTree, LayoutConfig,
@@ -294,6 +294,154 @@ fn grid_pagination_does_not_split_row_gap_across_pages() {
   assert!(
     (offset.y - 10.0).abs() < EPSILON,
     "expected the full 10px row-gap to be preserved on page 2, got y={}",
+    offset.y
+  );
+}
+
+#[test]
+fn grid_pagination_forced_break_after_propagates_to_row_boundary() {
+  const EPSILON: f32 = 0.1;
+
+  let mut grid_style = ComputedStyle::default();
+  grid_style.display = Display::Grid;
+  grid_style.width = Some(Length::px(100.0));
+  grid_style.height = Some(Length::px(60.0));
+  grid_style.grid_template_rows = vec![
+    GridTrack::Length(Length::px(30.0)),
+    GridTrack::Length(Length::px(30.0)),
+  ];
+  grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(100.0))];
+  grid_style.align_items = AlignItems::Start;
+  let grid_style = Arc::new(grid_style);
+
+  let mut item_a_style = ComputedStyle::default();
+  item_a_style.display = Display::Block;
+  item_a_style.height = Some(Length::px(10.0));
+  item_a_style.grid_row_start = 1;
+  item_a_style.grid_row_end = 2;
+  item_a_style.break_after = BreakBetween::Page;
+  let item_a_style = Arc::new(item_a_style);
+
+  let mut item_b_style = ComputedStyle::default();
+  item_b_style.display = Display::Block;
+  item_b_style.height = Some(Length::px(10.0));
+  item_b_style.grid_row_start = 2;
+  item_b_style.grid_row_end = 3;
+  let item_b_style = Arc::new(item_b_style);
+
+  let item_a = BoxNode::new_block(item_a_style, FormattingContextType::Block, vec![]);
+  let item_b = BoxNode::new_block(item_b_style, FormattingContextType::Block, vec![]);
+
+  let grid = BoxNode::new_block(
+    grid_style,
+    FormattingContextType::Grid,
+    vec![item_a, item_b],
+  );
+  let root = BoxNode::new_block(
+    Arc::new(ComputedStyle::default()),
+    FormattingContextType::Block,
+    vec![grid],
+  );
+  let box_tree = BoxTree::new(root);
+  let item_b_id = box_tree.root.children[0].children[1].id;
+
+  // The page height is large enough to fit the entire grid, so pagination should only happen when
+  // the forced break is honoured at the row boundary.
+  let engine = LayoutEngine::new(LayoutConfig::for_pagination(Size::new(200.0, 100.0), 0.0));
+  let tree = engine.layout_tree(&box_tree).expect("layout");
+
+  assert_eq!(
+    tree.additional_fragments.len(),
+    1,
+    "expected forced break to create exactly two pages"
+  );
+  let first_page = &tree.root;
+  let second_page = &tree.additional_fragments[0];
+
+  assert!(
+    fragments_with_id(first_page, item_b_id).is_empty(),
+    "expected the second row to be pushed to the second page"
+  );
+  assert_eq!(
+    fragments_with_id(second_page, item_b_id).len(),
+    1,
+    "expected the second row to appear exactly once on the second page"
+  );
+
+  let offset =
+    first_fragment_offset_in_page(second_page, item_b_id).expect("expected row 2 item on page 2");
+  assert!(
+    offset.y.abs() < EPSILON,
+    "expected row 2 to start at the top of page 2; got y={}",
+    offset.y
+  );
+}
+
+#[test]
+fn grid_pagination_forced_break_after_preserves_row_gap_on_next_page() {
+  const EPSILON: f32 = 0.1;
+
+  let mut grid_style = ComputedStyle::default();
+  grid_style.display = Display::Grid;
+  grid_style.width = Some(Length::px(100.0));
+  grid_style.height = Some(Length::px(70.0));
+  grid_style.grid_template_rows = vec![
+    GridTrack::Length(Length::px(30.0)),
+    GridTrack::Length(Length::px(30.0)),
+  ];
+  grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(100.0))];
+  grid_style.grid_row_gap = Length::px(10.0);
+  grid_style.align_items = AlignItems::Start;
+  let grid_style = Arc::new(grid_style);
+
+  let mut item_a_style = ComputedStyle::default();
+  item_a_style.display = Display::Block;
+  item_a_style.height = Some(Length::px(10.0));
+  item_a_style.grid_row_start = 1;
+  item_a_style.grid_row_end = 2;
+  item_a_style.break_after = BreakBetween::Page;
+  let item_a_style = Arc::new(item_a_style);
+
+  let mut item_b_style = ComputedStyle::default();
+  item_b_style.display = Display::Block;
+  item_b_style.height = Some(Length::px(10.0));
+  item_b_style.grid_row_start = 2;
+  item_b_style.grid_row_end = 3;
+  let item_b_style = Arc::new(item_b_style);
+
+  let item_a = BoxNode::new_block(item_a_style, FormattingContextType::Block, vec![]);
+  let item_b = BoxNode::new_block(item_b_style, FormattingContextType::Block, vec![]);
+
+  let grid = BoxNode::new_block(
+    grid_style,
+    FormattingContextType::Grid,
+    vec![item_a, item_b],
+  );
+  let root = BoxNode::new_block(
+    Arc::new(ComputedStyle::default()),
+    FormattingContextType::Block,
+    vec![grid],
+  );
+  let box_tree = BoxTree::new(root);
+  let item_b_id = box_tree.root.children[0].children[1].id;
+
+  // The forced break should align to the end edge of the first track, not the start edge of the
+  // second one, so the full 10px gap is preserved at the top of the second page.
+  let engine = LayoutEngine::new(LayoutConfig::for_pagination(Size::new(200.0, 100.0), 0.0));
+  let tree = engine.layout_tree(&box_tree).expect("layout");
+
+  assert_eq!(
+    tree.additional_fragments.len(),
+    1,
+    "expected forced break to create exactly two pages"
+  );
+  let second_page = &tree.additional_fragments[0];
+
+  let offset =
+    first_fragment_offset_in_page(second_page, item_b_id).expect("expected row 2 item on page 2");
+  assert!(
+    (offset.y - 10.0).abs() < EPSILON,
+    "expected row 2 to begin after the full row-gap on page 2; got y={}",
     offset.y
   );
 }
