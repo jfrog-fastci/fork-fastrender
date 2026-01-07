@@ -1270,6 +1270,35 @@ fn transition_property_filters_supported_properties() {
 }
 
 #[test]
+fn transition_property_deduplicates_and_last_entry_wins() {
+  let html = r#"
+    <style>
+      @starting-style { #box { opacity: 0; transform: translateX(0px); } }
+      #box {
+        width: 100px; height: 100px;
+        opacity: 1;
+        transform: translateX(100px);
+        transition-property: opacity, all;
+        transition-duration: 1000ms, 2000ms;
+        transition-timing-function: linear;
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 300, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  // `opacity` appears twice (`opacity` + `all`), so the last entry should win. That means we should
+  // use the 2000ms duration (second duration), not the 1000ms duration.
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 1000.0, viewport);
+  assert!((fragment_opacity(&mid, box_id) - 0.5).abs() < 1e-3);
+  assert!((fragment_transform_x(&mid, box_id) - 50.0).abs() < 1e-3);
+}
+
+#[test]
 fn zero_duration_disables_transition() {
   let html = r#"
     <style>
