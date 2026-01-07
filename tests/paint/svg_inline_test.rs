@@ -198,6 +198,49 @@ fn inline_svg_renders_foreign_object_html() {
 }
 
 #[test]
+fn foreign_object_renders_nested_html_children() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>body{margin:0;background:white} svg{display:block}</style>
+      <svg width="16" height="12" viewBox="0 0 16 12">
+        <foreignObject x="0" y="0" width="10" height="12">
+          <div xmlns="http://www.w3.org/1999/xhtml" style="width:10px;height:12px;background: rgb(0, 0, 255);">
+            <div style="width:10px;height:12px;background: rgb(255, 0, 0);"></div>
+          </div>
+        </foreignObject>
+      </svg>
+      "#;
+
+      // Force the legacy painter backend for this test: the display-list backend currently falls
+      // back to placeholder SVG rendering for foreignObject content.
+      let toggles = fastrender::debug::runtime::RuntimeToggles::from_map(
+        std::collections::HashMap::from([(
+          "FASTR_PAINT_BACKEND".to_string(),
+          "legacy".to_string(),
+        )]),
+      );
+      let options = RenderOptions::new()
+        .with_viewport(20, 20)
+        .with_runtime_toggles(toggles);
+
+      let pixmap = renderer
+        .render_html_with_options(html, options)
+        .expect("render svg");
+      assert_eq!(
+        pixel(&pixmap, 5, 6),
+        [255, 0, 0, 255],
+        "nested foreignObject content should paint"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn foreign_object_html_percent_sizing_fills_viewport() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)

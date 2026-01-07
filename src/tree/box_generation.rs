@@ -788,6 +788,103 @@ fn serialize_dom_subtree(node: &crate::dom::DomNode) -> String {
   }
 }
 
+fn serialize_styled_dom_subtree_html(styled: &StyledNode, out: &mut String) {
+  #[derive(Clone, Copy)]
+  enum FrameState {
+    Enter,
+    Exit,
+  }
+
+  struct Frame<'a> {
+    node: &'a StyledNode,
+    state: FrameState,
+  }
+
+  let mut stack: Vec<Frame<'_>> = Vec::new();
+  stack.push(Frame {
+    node: styled,
+    state: FrameState::Enter,
+  });
+
+  while let Some(Frame { node, state }) = stack.pop() {
+    match state {
+      FrameState::Enter => match &node.node.node_type {
+        DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. } => {
+          for child in node.children.iter().rev() {
+            stack.push(Frame {
+              node: child,
+              state: FrameState::Enter,
+            });
+          }
+        }
+        DomNodeType::Slot { attributes, .. } => {
+          out.push_str("<slot");
+          for (name, value) in attributes {
+            out.push(' ');
+            out.push_str(name);
+            out.push('=');
+            out.push('"');
+            push_escaped_attr(out, value);
+            out.push('"');
+          }
+          out.push('>');
+
+          stack.push(Frame {
+            node,
+            state: FrameState::Exit,
+          });
+          for child in node.children.iter().rev() {
+            stack.push(Frame {
+              node: child,
+              state: FrameState::Enter,
+            });
+          }
+        }
+        DomNodeType::Element {
+          tag_name,
+          attributes,
+          ..
+        } => {
+          out.push('<');
+          out.push_str(tag_name);
+          for (name, value) in attributes {
+            out.push(' ');
+            out.push_str(name);
+            out.push('=');
+            out.push('"');
+            push_escaped_attr(out, value);
+            out.push('"');
+          }
+          out.push('>');
+
+          stack.push(Frame {
+            node,
+            state: FrameState::Exit,
+          });
+          for child in node.children.iter().rev() {
+            stack.push(Frame {
+              node: child,
+              state: FrameState::Enter,
+            });
+          }
+        }
+        DomNodeType::Text { content } => push_escaped_text(out, content),
+      },
+      FrameState::Exit => match &node.node.node_type {
+        DomNodeType::Slot { .. } => out.push_str("</slot>"),
+        DomNodeType::Element { tag_name, .. } => {
+          out.push_str("</");
+          out.push_str(tag_name);
+          out.push('>');
+        }
+        DomNodeType::Document { .. }
+        | DomNodeType::ShadowRoot { .. }
+        | DomNodeType::Text { .. } => {}
+      },
+    }
+  }
+}
+
 fn serialize_node_with_namespaces(
   styled: &StyledNode,
   inherited_xmlns: &[(String, String)],
@@ -1721,7 +1818,7 @@ fn serialize_svg_subtree(
 
     let mut html = String::new();
     for child in &styled.children {
-      html.push_str(&serialize_dom_subtree(&child.node));
+      serialize_styled_dom_subtree_html(child, &mut html);
     }
 
     let background = if styled.styles.background_color.a > 0.0 {
@@ -1855,12 +1952,12 @@ fn serialize_svg_subtree(
 
         let attrs: &[(String, String)] = owned_attrs.as_deref().unwrap_or(attributes);
 
-        let next_svg_viewport = if current_ns == SVG_NAMESPACE && tag_name.eq_ignore_ascii_case("svg")
-        {
-          resolve_svg_viewport_size(attrs, svg_viewport, is_root)
-        } else {
-          svg_viewport
-        };
+        let next_svg_viewport =
+          if current_ns == SVG_NAMESPACE && tag_name.eq_ignore_ascii_case("svg") {
+            resolve_svg_viewport_size(attrs, svg_viewport, is_root)
+          } else {
+            svg_viewport
+          };
 
         if tag_name.eq_ignore_ascii_case("foreignObject") {
           if serialize_foreign_object(
@@ -3285,7 +3382,9 @@ fn parse_select_size(node: &StyledNode, multiple: bool) -> u32 {
     .and_then(|value| value.trim().parse::<i32>().ok())
     .filter(|value| *value > 0)
     .map(|value| value as u32);
-  parsed.unwrap_or_else(|| if multiple { 4 } else { 1 }).max(1)
+  parsed
+    .unwrap_or_else(|| if multiple { 4 } else { 1 })
+    .max(1)
 }
 
 fn build_select_control(node: &StyledNode) -> SelectControl {
@@ -3339,7 +3438,11 @@ fn build_select_control(node: &StyledNode) -> SelectControl {
   let mut selected: Vec<usize> = Vec::new();
   if multiple {
     for &idx in option_item_indices.iter() {
-      if let SelectItem::Option { selected: is_selected, .. } = &items[idx] {
+      if let SelectItem::Option {
+        selected: is_selected,
+        ..
+      } = &items[idx]
+      {
         if *is_selected {
           selected.push(idx);
         }
@@ -3348,7 +3451,11 @@ fn build_select_control(node: &StyledNode) -> SelectControl {
   } else {
     let mut chosen: Option<usize> = None;
     for &idx in option_item_indices.iter() {
-      if let SelectItem::Option { selected: is_selected, .. } = &items[idx] {
+      if let SelectItem::Option {
+        selected: is_selected,
+        ..
+      } = &items[idx]
+      {
         if *is_selected {
           chosen = Some(idx);
         }
@@ -4777,8 +4884,9 @@ mod tests {
     };
     assert_eq!(select.size, 1);
 
-    let control =
-      first_select_control_from_html("<html><body><select size=\"5\"><option>One</option></select></body></html>");
+    let control = first_select_control_from_html(
+      "<html><body><select size=\"5\"><option>One</option></select></body></html>",
+    );
     let FormControlKind::Select(select) = &control.control else {
       panic!("expected select form control kind");
     };
