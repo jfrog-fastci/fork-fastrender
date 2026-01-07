@@ -5,7 +5,7 @@ use fastrender::style::types::{AlignItems, GridTrack};
 use fastrender::style::values::Length;
 use fastrender::{
   BoxNode, BoxTree, ComputedStyle, FragmentContent, FragmentNode, FragmentTree, LayoutConfig,
-  LayoutEngine, Size,
+  LayoutEngine, Point, Size,
 };
 
 fn fragments_with_id<'a>(fragment: &'a FragmentNode, id: usize) -> Vec<&'a FragmentNode> {
@@ -22,6 +22,25 @@ fn fragments_with_id<'a>(fragment: &'a FragmentNode, id: usize) -> Vec<&'a Fragm
     }
   }
   out
+}
+
+fn first_fragment_offset_in_page(fragment: &FragmentNode, id: usize) -> Option<Point> {
+  let root_offset = Point::new(-fragment.bounds.x(), -fragment.bounds.y());
+  let mut stack = vec![(fragment, root_offset)];
+
+  while let Some((node, offset)) = stack.pop() {
+    let node_offset = offset.translate(node.bounds.origin);
+    if let FragmentContent::Block { box_id: Some(b) } = node.content {
+      if b == id {
+        return Some(node_offset);
+      }
+    }
+    for child in node.children.iter() {
+      stack.push((child, node_offset));
+    }
+  }
+
+  None
 }
 
 fn paginated_pages<'a>(tree: &'a FragmentTree) -> Vec<&'a FragmentNode> {
@@ -196,4 +215,85 @@ fn grid_pagination_splits_spanning_item_on_row_boundaries() {
   assert!(last.slice_info.is_last);
   assert!((last.slice_info.slice_offset - 40.0).abs() < EPSILON);
   assert!((last.slice_info.original_block_size - 60.0).abs() < EPSILON);
+}
+
+#[test]
+fn grid_pagination_does_not_split_row_gap_across_pages() {
+  const EPSILON: f32 = 0.1;
+
+  let mut grid_style = ComputedStyle::default();
+  grid_style.display = Display::Grid;
+  grid_style.width = Some(Length::px(100.0));
+  grid_style.height = Some(Length::px(70.0));
+  grid_style.grid_template_rows = vec![
+    GridTrack::Length(Length::px(30.0)),
+    GridTrack::Length(Length::px(30.0)),
+  ];
+  grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(100.0))];
+  grid_style.grid_row_gap = Length::px(10.0);
+  grid_style.align_items = AlignItems::Start;
+  let grid_style = Arc::new(grid_style);
+
+  let mut item_a_style = ComputedStyle::default();
+  item_a_style.display = Display::Block;
+  item_a_style.height = Some(Length::px(10.0));
+  item_a_style.grid_row_start = 1;
+  item_a_style.grid_row_end = 2;
+  let item_a_style = Arc::new(item_a_style);
+
+  let mut item_b_style = ComputedStyle::default();
+  item_b_style.display = Display::Block;
+  item_b_style.height = Some(Length::px(10.0));
+  item_b_style.grid_row_start = 2;
+  item_b_style.grid_row_end = 3;
+  let item_b_style = Arc::new(item_b_style);
+
+  let item_a = BoxNode::new_block(item_a_style, FormattingContextType::Block, vec![]);
+  let item_b = BoxNode::new_block(item_b_style, FormattingContextType::Block, vec![]);
+
+  let grid = BoxNode::new_block(
+    grid_style,
+    FormattingContextType::Grid,
+    vec![item_a, item_b],
+  );
+
+  let root = BoxNode::new_block(
+    Arc::new(ComputedStyle::default()),
+    FormattingContextType::Block,
+    vec![grid],
+  );
+  let box_tree = BoxTree::new(root);
+
+  let item_b_id = box_tree.root.children[0].children[1].id;
+
+  // Use a page height that causes the first fragmentation boundary to land inside the 10px row-gap
+  // (30px track + 5px into the gutter). Breaks should snap to the gutter start so the full 10px
+  // gap is preserved on the next page.
+  let engine = LayoutEngine::new(LayoutConfig::for_pagination(Size::new(200.0, 35.0), 0.0));
+  let tree = engine.layout_tree(&box_tree).expect("layout");
+
+  assert!(
+    tree.additional_fragments.len() >= 1,
+    "grid container should span at least two pages"
+  );
+  let first_page = &tree.root;
+  let second_page = &tree.additional_fragments[0];
+
+  assert!(
+    fragments_with_id(first_page, item_b_id).is_empty(),
+    "expected the second row to appear only on the second page"
+  );
+  assert_eq!(
+    fragments_with_id(second_page, item_b_id).len(),
+    1,
+    "expected the second row to appear exactly once on the second page"
+  );
+
+  let offset = first_fragment_offset_in_page(second_page, item_b_id)
+    .expect("expected to find second-row fragment on page 2");
+  assert!(
+    (offset.y - 10.0).abs() < EPSILON,
+    "expected the full 10px row-gap to be preserved on page 2, got y={}",
+    offset.y
+  );
 }

@@ -2014,26 +2014,45 @@ fn collect_atomic_range_for_node(
       } else {
         &grid_tracks.rows
       };
-      for (track_start, track_end) in tracks.iter().copied() {
-        let size = track_end - track_start;
+      let mut push_grid_range = |physical_start: f32, physical_end: f32, filter_size: f32| {
+        let size = physical_end - physical_start;
         if size <= BREAK_EPSILON {
-          continue;
+          return;
         }
         if matches!(context, FragmentationContext::Page) {
           if let Some(fragmentainer_size) = fragmentainer_size {
-            if size > fragmentainer_size + BREAK_EPSILON {
-              continue;
+            if filter_size > fragmentainer_size + BREAK_EPSILON {
+              return;
             }
           }
         }
 
-        let flow_offset = axis.flow_offset(track_start, size, node_block_size);
+        let flow_offset = axis.flow_offset(physical_start, size, node_block_size);
         let start = abs_start + flow_offset;
         let end = start + size;
         if end <= start + BREAK_EPSILON {
-          continue;
+          return;
         }
         ranges.push(AtomicRange { start, end });
+      };
+
+      // Treat each grid track as indivisible. Additionally, treat the inter-track gutter preceding
+      // each track as part of the following track so pagination never splits a `row-gap`/`column-gap`
+      // across fragmentainers (and avoids producing a fragmentainer that contains only the gap).
+      let mut prev_end: Option<f32> = None;
+      for (track_start, track_end) in tracks.iter().copied() {
+        let track_size = track_end - track_start;
+        if track_size <= BREAK_EPSILON {
+          prev_end = Some(track_end);
+          continue;
+        }
+
+        let physical_start = match prev_end {
+          Some(prev_end) if track_start > prev_end + BREAK_EPSILON => prev_end,
+          _ => track_start,
+        };
+        push_grid_range(physical_start, track_end, track_size);
+        prev_end = Some(track_end);
       }
     }
   }
