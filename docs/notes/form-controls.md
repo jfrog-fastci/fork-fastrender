@@ -16,13 +16,14 @@ FastRender treats native form controls as replaced elements so they participate 
 
 ## Key code paths
 
+- Form control model: `src/tree/box_tree.rs::FormControl` (+ `FormControlKind`, `TextControlKind`)
 - Box generation: `src/tree/box_generation.rs::create_form_control_replaced`
 - Intrinsic sizing: `src/api.rs::resolve_intrinsic_for_replaced_for_media`
 - Vendor aliasing (`-webkit-appearance` → `appearance`): `src/style/properties.rs`
 - Painting:
   - Display list: `src/paint/display_list_builder.rs::emit_form_control`
   - Immediate painter: `src/paint/painter.rs::paint_form_control`
-- UA defaults: `src/user_agent.css` (embedded in the cascade; if Task 127 moves UA defaults into `ua_default_rules`, update this pointer)
+- UA defaults: `src/user_agent.css` (embedded via `src/style/cascade.rs`; if Task 127 moves UA defaults into `ua_default_rules`, update this pointer)
 
 ## What `appearance:none` enables today
 
