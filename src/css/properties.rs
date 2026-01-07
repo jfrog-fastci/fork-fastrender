@@ -124,6 +124,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "appearance",
   "-moz-appearance",
   "-webkit-appearance",
+  "-moz-appearance",
   "background",
   "background-attachment",
   "background-blend-mode",
