@@ -2677,6 +2677,30 @@ impl GridFormattingContext {
         width: self.convert_length_to_lp(&style.grid_column_gap, style),
         height: self.convert_length_to_lp(&style.grid_row_gap, style),
       };
+      taffy_style.subgrid_gap = taffy::geometry::Size {
+        width: if inline_is_horizontal_container {
+          self.convert_length_to_lp(&style.grid_column_gap, style)
+        } else {
+          self.convert_length_to_lp(&style.grid_row_gap, style)
+        },
+        height: if inline_is_horizontal_container {
+          self.convert_length_to_lp(&style.grid_row_gap, style)
+        } else {
+          self.convert_length_to_lp(&style.grid_column_gap, style)
+        },
+      };
+      taffy_style.subgrid_gap_is_normal = taffy::geometry::Size {
+        width: if inline_is_horizontal_container {
+          style.grid_column_gap_is_normal
+        } else {
+          style.grid_row_gap_is_normal
+        },
+        height: if inline_is_horizontal_container {
+          style.grid_row_gap_is_normal
+        } else {
+          style.grid_column_gap_is_normal
+        },
+      };
 
       // Alignment
       taffy_style.align_content =

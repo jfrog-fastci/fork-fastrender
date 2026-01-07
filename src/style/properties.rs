@@ -5461,7 +5461,9 @@ pub(crate) fn apply_property_from_source(
       styles.grid_auto_columns = source.grid_auto_columns.clone();
       styles.grid_auto_flow = source.grid_auto_flow;
       styles.grid_row_gap = source.grid_row_gap;
+      styles.grid_row_gap_is_normal = source.grid_row_gap_is_normal;
       styles.grid_column_gap = source.grid_column_gap;
+      styles.grid_column_gap_is_normal = source.grid_column_gap_is_normal;
       styles.grid_gap = source.grid_gap;
       styles.grid_column_line_names = source.grid_column_line_names.clone();
       styles.grid_row_line_names = source.grid_row_line_names.clone();
@@ -5475,6 +5477,23 @@ pub(crate) fn apply_property_from_source(
     "grid-auto-rows" => styles.grid_auto_rows = source.grid_auto_rows.clone(),
     "grid-auto-columns" => styles.grid_auto_columns = source.grid_auto_columns.clone(),
     "grid-auto-flow" => styles.grid_auto_flow = source.grid_auto_flow,
+    "grid-gap" | "gap" => {
+      styles.grid_gap = source.grid_gap;
+      styles.grid_row_gap = source.grid_row_gap;
+      styles.grid_row_gap_is_normal = source.grid_row_gap_is_normal;
+      styles.grid_column_gap = source.grid_column_gap;
+      styles.grid_column_gap_is_normal = source.grid_column_gap_is_normal;
+      styles.column_gap = source.column_gap;
+    }
+    "grid-row-gap" | "row-gap" => {
+      styles.grid_row_gap = source.grid_row_gap;
+      styles.grid_row_gap_is_normal = source.grid_row_gap_is_normal;
+    }
+    "grid-column-gap" => {
+      styles.grid_column_gap = source.grid_column_gap;
+      styles.grid_column_gap_is_normal = source.grid_column_gap_is_normal;
+      styles.column_gap = source.column_gap;
+    }
     "grid-column" => {
       styles.grid_column_start = source.grid_column_start;
       styles.grid_column_end = source.grid_column_end;
@@ -5502,6 +5521,7 @@ pub(crate) fn apply_property_from_source(
     "column-gap" => {
       styles.column_gap = source.column_gap;
       styles.grid_column_gap = source.grid_column_gap;
+      styles.grid_column_gap_is_normal = source.grid_column_gap_is_normal;
     }
     "column-rule-width" => styles.column_rule_width = source.column_rule_width,
     "column-rule-style" => styles.column_rule_style = source.column_rule_style,
@@ -9446,21 +9466,33 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "grid-gap" | "gap" => {
       if let Some((row, column)) = parse_gap_lengths(resolved_value) {
-        styles.grid_gap = row;
-        styles.grid_row_gap = row;
-        styles.grid_column_gap = column;
-        styles.column_gap = column;
+        styles.grid_gap = row.resolved_length();
+        styles.grid_row_gap = row.resolved_length();
+        styles.grid_row_gap_is_normal = row.is_normal();
+        styles.grid_column_gap = column.resolved_length();
+        styles.grid_column_gap_is_normal = column.is_normal();
+        styles.column_gap = if column.is_normal() {
+          Length::em(1.0)
+        } else {
+          column.resolved_length()
+        };
       }
     }
     "grid-row-gap" | "row-gap" => {
-      if let Some(len) = parse_single_gap_length(resolved_value) {
-        styles.grid_row_gap = len;
+      if let Some(value) = parse_single_gap_length(resolved_value) {
+        styles.grid_row_gap = value.resolved_length();
+        styles.grid_row_gap_is_normal = value.is_normal();
       }
     }
     "grid-column-gap" | "column-gap" => {
-      if let Some(len) = parse_single_gap_length(resolved_value) {
-        styles.grid_column_gap = len;
-        styles.column_gap = len;
+      if let Some(value) = parse_single_gap_length(resolved_value) {
+        styles.grid_column_gap = value.resolved_length();
+        styles.grid_column_gap_is_normal = value.is_normal();
+        styles.column_gap = if value.is_normal() {
+          Length::em(1.0)
+        } else {
+          value.resolved_length()
+        };
       }
     }
     "column-count" => match resolved_value {
@@ -12797,15 +12829,34 @@ fn extract_border_width_pair(value: &PropertyValue) -> Option<(Length, Length)> 
   }
 }
 
-fn parse_gap_token(token: &str) -> Option<Length> {
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum GapValue {
+  Normal,
+  Length(Length),
+}
+
+impl GapValue {
+  fn is_normal(self) -> bool {
+    matches!(self, GapValue::Normal)
+  }
+
+  fn resolved_length(self) -> Length {
+    match self {
+      GapValue::Normal => Length::px(0.0),
+      GapValue::Length(len) => len,
+    }
+  }
+}
+
+fn parse_gap_token(token: &str) -> Option<GapValue> {
   let t = token.trim();
   if t.is_empty() {
     return None;
   }
   if t.eq_ignore_ascii_case("normal") {
-    return Some(Length::px(0.0));
+    return Some(GapValue::Normal);
   }
-  parse_length(t)
+  parse_length(t).map(GapValue::Length)
 }
 
 fn length_from_value(value: &PropertyValue) -> Option<Length> {
@@ -12894,20 +12945,20 @@ fn parse_flex_shorthand(value: &PropertyValue) -> Option<(f32, f32, FlexBasis)> 
   None
 }
 
-fn extract_gap_component(value: &PropertyValue) -> Option<Length> {
+fn extract_gap_component(value: &PropertyValue) -> Option<GapValue> {
   match value {
-    PropertyValue::Length(len) => Some(*len),
-    PropertyValue::Percentage(p) => Some(Length::percent(*p)),
-    PropertyValue::Number(n) if *n == 0.0 => Some(Length::px(0.0)),
+    PropertyValue::Length(len) => Some(GapValue::Length(*len)),
+    PropertyValue::Percentage(p) => Some(GapValue::Length(Length::percent(*p))),
+    PropertyValue::Number(n) if *n == 0.0 => Some(GapValue::Length(Length::px(0.0))),
     PropertyValue::Keyword(kw) => parse_gap_token(kw),
     _ => None,
   }
 }
 
-fn parse_gap_lengths(value: &PropertyValue) -> Option<(Length, Length)> {
+fn parse_gap_lengths(value: &PropertyValue) -> Option<(GapValue, GapValue)> {
   match value {
     PropertyValue::Multiple(values) => {
-      let lengths: Vec<Length> = values.iter().filter_map(extract_gap_component).collect();
+      let lengths: Vec<GapValue> = values.iter().filter_map(extract_gap_component).collect();
       match lengths.as_slice() {
         [first] => Some((*first, *first)),
         [first, second, ..] => Some((*first, *second)),
@@ -12931,14 +12982,20 @@ fn parse_gap_lengths(value: &PropertyValue) -> Option<(Length, Length)> {
         _ => None,
       }
     }
-    PropertyValue::Length(len) => Some((*len, *len)),
-    PropertyValue::Percentage(p) => Some((Length::percent(*p), Length::percent(*p))),
-    PropertyValue::Number(n) if *n == 0.0 => Some((Length::px(0.0), Length::px(0.0))),
+    PropertyValue::Length(len) => Some((GapValue::Length(*len), GapValue::Length(*len))),
+    PropertyValue::Percentage(p) => Some((
+      GapValue::Length(Length::percent(*p)),
+      GapValue::Length(Length::percent(*p)),
+    )),
+    PropertyValue::Number(n) if *n == 0.0 => Some((
+      GapValue::Length(Length::px(0.0)),
+      GapValue::Length(Length::px(0.0)),
+    )),
     _ => None,
   }
 }
 
-fn parse_single_gap_length(value: &PropertyValue) -> Option<Length> {
+fn parse_single_gap_length(value: &PropertyValue) -> Option<GapValue> {
   parse_gap_lengths(value).map(|(first, _)| first)
 }
 
@@ -24141,7 +24198,9 @@ mod tests {
     let mut style = ComputedStyle {
       grid_gap: Length::px(5.0),
       grid_row_gap: Length::px(6.0),
+      grid_row_gap_is_normal: false,
       grid_column_gap: Length::px(7.0),
+      grid_column_gap_is_normal: false,
       ..ComputedStyle::default()
     };
 
@@ -24162,7 +24221,9 @@ mod tests {
 
     assert_eq!(style.grid_gap, Length::px(0.0));
     assert_eq!(style.grid_row_gap, Length::px(0.0));
+    assert!(!style.grid_row_gap_is_normal);
     assert_eq!(style.grid_column_gap, Length::px(0.0));
+    assert!(!style.grid_column_gap_is_normal);
     assert_eq!(style.column_gap, Length::px(0.0));
 
     let row_gap_value = parse_property_value("row-gap", "calc(0)").expect("row-gap calc(0)");
@@ -24180,6 +24241,7 @@ mod tests {
       16.0,
     );
     assert_eq!(style.grid_row_gap, Length::px(0.0));
+    assert!(!style.grid_row_gap_is_normal);
 
     let column_gap_value =
       parse_property_value("column-gap", "calc(0)").expect("column-gap calc(0)");
@@ -24197,7 +24259,53 @@ mod tests {
       16.0,
     );
     assert_eq!(style.grid_column_gap, Length::px(0.0));
+    assert!(!style.grid_column_gap_is_normal);
     assert_eq!(style.column_gap, Length::px(0.0));
+  }
+
+  #[test]
+  fn gap_normal_is_distinct_from_zero() {
+    let mut style = ComputedStyle::default();
+
+    let gap_zero = parse_property_value("gap", "0").expect("gap 0");
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "gap".into(),
+        value: gap_zero,
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+    assert_eq!(style.grid_row_gap, Length::px(0.0));
+    assert_eq!(style.grid_column_gap, Length::px(0.0));
+    assert!(!style.grid_row_gap_is_normal);
+    assert!(!style.grid_column_gap_is_normal);
+    assert_eq!(style.column_gap, Length::px(0.0));
+
+    let gap_normal = parse_property_value("gap", "normal").expect("gap normal");
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "gap".into(),
+        value: gap_normal,
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+    assert_eq!(style.grid_row_gap, Length::px(0.0));
+    assert_eq!(style.grid_column_gap, Length::px(0.0));
+    assert!(style.grid_row_gap_is_normal);
+    assert!(style.grid_column_gap_is_normal);
+    assert_eq!(style.column_gap, Length::em(1.0));
   }
 
   #[test]

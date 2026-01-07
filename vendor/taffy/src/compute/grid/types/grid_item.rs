@@ -54,6 +54,9 @@ pub(in super::super) struct GridItem {
   pub border: Rect<LengthPercentage>,
   /// The item's margin style
   pub margin: Rect<LengthPercentageAuto>,
+  /// Extra margin applied by subgrid algorithms (for example, the CSS Grid Level 2 "subgrid gaps"
+  /// half-difference adjustment).
+  pub extra_margin: Rect<f32>,
   /// The item's align_self property, or the parent's align_items property is not set
   pub align_self: AlignSelf,
   /// The item's justify_self property, or the parent's justify_items property is not set
@@ -128,6 +131,7 @@ impl GridItem {
       padding: style.padding(),
       border: style.border(),
       margin: style.margin(),
+      extra_margin: Rect::default(),
       align_self: style.align_self().unwrap_or(parent_align_items),
       justify_self: style.justify_self().unwrap_or(parent_justify_items),
       baseline: None,
@@ -403,7 +407,7 @@ impl GridItem {
     inner_node_width: Option<f32>,
     tree: &impl LayoutPartialTree,
   ) -> Size<f32> {
-    Rect {
+    (Rect {
       left: self
         .margin
         .left
@@ -422,8 +426,8 @@ impl GridItem {
         .margin
         .bottom
         .resolve_or_zero(inner_node_width, |val, basis| tree.calc(val, basis)),
-    }
-    .sum_axes()
+    } + self.extra_margin)
+      .sum_axes()
   }
 
   /// Compute the item's min content contribution from the provided parameters

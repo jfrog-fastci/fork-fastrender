@@ -331,6 +331,8 @@ fn collect_subgrid_virtual_items_recursive<
   container_item: &GridItem,
   parent_row_names: &[Vec<Ident>],
   parent_col_names: &[Vec<Ident>],
+  parent_gap: Size<f32>,
+  gap_percentage_basis: Size<Option<f32>>,
   parent_mapping: InBothAbsAxis<SubgridVirtualItemMapping>,
   depth: usize,
   out: &mut Vec<GridItem>,
@@ -509,6 +511,47 @@ fn collect_subgrid_virtual_items_recursive<
     |node| child_subgrid_auto_span(tree, node),
   );
 
+  let resolved_gap = container_style_ref
+    .gap
+    .resolve_or_zero(gap_percentage_basis, |val, basis| tree.calc(val, basis));
+  let container_gap = Size {
+    width: if subgrid_columns {
+      parent_gap.width
+    } else {
+      resolved_gap.width
+    },
+    height: if subgrid_rows {
+      parent_gap.height
+    } else {
+      resolved_gap.height
+    },
+  };
+
+  if subgrid_columns {
+    let desired_gap = if container_style_ref.subgrid_gap_is_normal.width {
+      parent_gap.width
+    } else {
+      container_style_ref
+        .subgrid_gap
+        .width
+        .resolve_or_zero(gap_percentage_basis.width, |val, basis| tree.calc(val, basis))
+    };
+    let half_diff = (desired_gap - parent_gap.width) / 2.0;
+    apply_subgrid_gap_difference_margin(&mut subgrid_items, AbstractAxis::Inline, half_diff, col_span);
+  }
+  if subgrid_rows {
+    let desired_gap = if container_style_ref.subgrid_gap_is_normal.height {
+      parent_gap.height
+    } else {
+      container_style_ref
+        .subgrid_gap
+        .height
+        .resolve_or_zero(gap_percentage_basis.height, |val, basis| tree.calc(val, basis))
+    };
+    let half_diff = (desired_gap - parent_gap.height) / 2.0;
+    apply_subgrid_gap_difference_margin(&mut subgrid_items, AbstractAxis::Block, half_diff, row_span);
+  }
+
   #[cfg(all(feature = "std", debug_assertions))]
   {
     if std::env::var("FASTR_DEBUG_SUBGRID").is_ok() {
@@ -555,6 +598,8 @@ fn collect_subgrid_virtual_items_recursive<
             &sub_item,
             &row_line_names,
             &col_line_names,
+            container_gap,
+            gap_percentage_basis,
             container_mapping,
             depth + 1,
             out,
@@ -571,6 +616,36 @@ fn collect_subgrid_virtual_items_recursive<
   }
 }
 
+fn apply_subgrid_gap_difference_margin(
+  items: &mut [GridItem],
+  axis: AbstractAxis,
+  half_diff: f32,
+  span: u16,
+) {
+  if half_diff == 0.0 || span == 0 {
+    return;
+  }
+  let span = span as i32;
+  for item in items.iter_mut() {
+    let placement = item.placement(axis);
+    let start = placement.start.0 as i32;
+    let end = placement.end.0 as i32;
+
+    if start > 0 {
+      match axis {
+        AbstractAxis::Inline => item.extra_margin.left += half_diff,
+        AbstractAxis::Block => item.extra_margin.top += half_diff,
+      }
+    }
+    if end < span {
+      match axis {
+        AbstractAxis::Inline => item.extra_margin.right += half_diff,
+        AbstractAxis::Block => item.extra_margin.bottom += half_diff,
+      }
+    }
+  }
+}
+
 fn collect_subgrid_virtual_items<
   Tree: LayoutGridContainer + LayoutPartialTree<CustomIdent = DefaultCheapStr>,
 >(
@@ -578,6 +653,8 @@ fn collect_subgrid_virtual_items<
   items: &[GridItem],
   parent_row_names: &[Vec<Ident>],
   parent_col_names: &[Vec<Ident>],
+  parent_style: &Style,
+  gap_percentage_basis: Size<Option<f32>>,
   final_col_counts: TrackCounts,
   final_row_counts: TrackCounts,
 ) -> Vec<GridItem> {
@@ -585,6 +662,10 @@ fn collect_subgrid_virtual_items<
   // Taffy inline axis as physical X (columns vector) and the Taffy block axis as physical Y (rows
   // vector), independent of `axes_swapped`.
   let mut virtuals = Vec::new();
+
+  let parent_gap = parent_style
+    .gap
+    .resolve_or_zero(gap_percentage_basis, |val, basis| tree.calc(val, basis));
 
   let root_mapping = InBothAbsAxis {
     horizontal: SubgridVirtualItemMapping {
@@ -611,6 +692,8 @@ fn collect_subgrid_virtual_items<
       item,
       parent_row_names,
       parent_col_names,
+      parent_gap,
+      gap_percentage_basis,
       root_mapping,
       0,
       &mut virtuals,
@@ -777,8 +860,9 @@ where
   } = inputs;
 
   let mut style_storage = tree.clone_grid_container_style(node);
-  if let Some(override_data) = lookup_subgrid_override(node) {
-    apply_subgrid_override(&mut style_storage, &override_data);
+  let subgrid_override = lookup_subgrid_override(node);
+  if let Some(override_data) = subgrid_override.as_ref() {
+    apply_subgrid_override(&mut style_storage, override_data);
   }
   let style: &Style<_> = &style_storage;
 
@@ -1005,16 +1089,63 @@ where
   let final_col_counts = *cell_occupancy_matrix.track_counts(AbsoluteAxis::Horizontal);
   let final_row_counts = *cell_occupancy_matrix.track_counts(AbsoluteAxis::Vertical);
 
-  let mut virtual_items =
-    collect_subgrid_virtual_items(
-      tree,
-      &items,
-      &parent_row_line_names,
-      &parent_col_line_names,
-      final_col_counts,
-      final_row_counts,
-    );
+  let gap_percentage_basis = Size {
+    width: available_grid_space.width.into_option(),
+    height: available_grid_space.height.into_option(),
+  };
+  let mut virtual_items = collect_subgrid_virtual_items(
+    tree,
+    &items,
+    &parent_row_line_names,
+    &parent_col_line_names,
+    style,
+    gap_percentage_basis,
+    final_col_counts,
+    final_row_counts,
+  );
   items.append(&mut virtual_items);
+
+  if let Some(override_data) = subgrid_override.as_ref() {
+    if let Some(cols) = &override_data.columns {
+      let desired_gap = if style.subgrid_gap_is_normal.width {
+        cols.gap
+      } else {
+        let axis_size = cols.track_sizes.iter().sum::<f32>()
+          + cols.gap * (cols.track_sizes.len().saturating_sub(1) as f32);
+        style
+          .subgrid_gap
+          .width
+          .resolve_or_zero(Some(axis_size), |val, basis| tree.calc(val, basis))
+      };
+      let half_diff = (desired_gap - cols.gap) / 2.0;
+      apply_subgrid_gap_difference_margin(
+        &mut items,
+        AbstractAxis::Inline,
+        half_diff,
+        cols.track_sizes.len().min(u16::MAX as usize) as u16,
+      );
+    }
+ 
+    if let Some(rows) = &override_data.rows {
+      let desired_gap = if style.subgrid_gap_is_normal.height {
+        rows.gap
+      } else {
+        let axis_size = rows.track_sizes.iter().sum::<f32>()
+          + rows.gap * (rows.track_sizes.len().saturating_sub(1) as f32);
+        style
+          .subgrid_gap
+          .height
+          .resolve_or_zero(Some(axis_size), |val, basis| tree.calc(val, basis))
+      };
+      let half_diff = (desired_gap - rows.gap) / 2.0;
+      apply_subgrid_gap_difference_margin(
+        &mut items,
+        AbstractAxis::Block,
+        half_diff,
+        rows.track_sizes.len().min(u16::MAX as usize) as u16,
+      );
+    }
+  }
 
   // 5. Initialize Tracks
   // Initialize (explicit and implicit) grid tracks (and gutters)
@@ -1417,6 +1548,7 @@ where
       grid_area,
       container_alignment_styles,
       item.baseline_shim,
+      item.extra_margin,
     );
     item.y_position = y_position;
     item.height = height;
@@ -1502,6 +1634,7 @@ where
         grid_area,
         container_alignment_styles,
         Point::ZERO,
+        Rect::default(),
       );
       #[cfg(feature = "content_size")]
       {

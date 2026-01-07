@@ -97,6 +97,15 @@ pub const fn zero<T: TaffyZero>() -> T {
   T::ZERO
 }
 
+/// Default value for [`Style::subgrid_gap_is_normal`](crate::Style::subgrid_gap_is_normal).
+#[cfg(feature = "grid")]
+pub const fn subgrid_gap_is_normal() -> Size<bool> {
+  Size {
+    width: true,
+    height: true,
+  }
+}
+
 /// Trait to abstract over zero values
 pub trait TaffyZero {
   /// The zero value for type implementing TaffyZero

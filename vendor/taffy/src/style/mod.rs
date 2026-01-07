@@ -477,6 +477,19 @@ pub struct Style<S: CheapCloneStr = DefaultCheapStr> {
   #[cfg(any(feature = "flexbox", feature = "grid"))]
   #[cfg_attr(feature = "serde", serde(default = "style_helpers::zero"))]
   pub gap: Size<LengthPercentage>,
+  /// The author-specified `row-gap`/`column-gap` values for this grid container.
+  ///
+  /// When a node is laid out as a subgrid, Taffy overrides [`Style::gap`] with the parent grid's
+  /// gutter size so that grid lines remain aligned. This field preserves the subgrid's own
+  /// specified gap so the CSS Grid Level 2 "subgrid gaps" algorithm can apply the half-difference
+  /// as an additional margin layer to the subgrid's items.
+  #[cfg(feature = "grid")]
+  #[cfg_attr(feature = "serde", serde(default = "style_helpers::zero"))]
+  pub subgrid_gap: Size<LengthPercentage>,
+  /// Whether the corresponding `row-gap`/`column-gap` was specified as `normal`.
+  #[cfg(feature = "grid")]
+  #[cfg_attr(feature = "serde", serde(default = "style_helpers::subgrid_gap_is_normal"))]
+  pub subgrid_gap_is_normal: Size<bool>,
 
   // Block container properties
   /// How items elements should aligned in the inline axis
@@ -585,6 +598,13 @@ impl<S: CheapCloneStr> Style<S> {
     aspect_ratio: None,
     #[cfg(any(feature = "flexbox", feature = "grid"))]
     gap: Size::zero(),
+    #[cfg(feature = "grid")]
+    subgrid_gap: Size::zero(),
+    #[cfg(feature = "grid")]
+    subgrid_gap_is_normal: Size {
+      width: true,
+      height: true,
+    },
     // Alignment
     #[cfg(any(feature = "flexbox", feature = "grid"))]
     align_items: None,
@@ -1250,6 +1270,13 @@ mod tests {
       padding: Rect::zero(),
       border: Rect::zero(),
       gap: Size::zero(),
+      #[cfg(feature = "grid")]
+      subgrid_gap: Size::zero(),
+      #[cfg(feature = "grid")]
+      subgrid_gap_is_normal: Size {
+        width: true,
+        height: true,
+      },
       #[cfg(feature = "block_layout")]
       text_align: Default::default(),
       #[cfg(feature = "flexbox")]
@@ -1368,12 +1395,12 @@ mod tests {
     assert_type_size::<GridTemplateComponent<String>>(56);
     assert_type_size::<GridPlacement<String>>(32);
     assert_type_size::<Line<GridPlacement<String>>>(64);
-    assert_type_size::<Style<String>>(584);
+    assert_type_size::<Style<String>>(608);
 
     // String-type dependent (Arc<str>)
     assert_type_size::<GridTemplateComponent<Arc<str>>>(56);
     assert_type_size::<GridPlacement<Arc<str>>>(24);
     assert_type_size::<Line<GridPlacement<Arc<str>>>>(48);
-    assert_type_size::<Style<Arc<str>>>(552);
+    assert_type_size::<Style<Arc<str>>>(576);
   }
 }

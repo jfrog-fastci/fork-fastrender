@@ -939,7 +939,9 @@ fn taffy_grid_container_style_fingerprint_uncached(style: &ComputedStyle) -> u64
   style.grid_row_line_names.hash(&mut h);
   hash_length(&style.grid_gap, &mut h);
   hash_length(&style.grid_row_gap, &mut h);
+  style.grid_row_gap_is_normal.hash(&mut h);
   hash_length(&style.grid_column_gap, &mut h);
+  style.grid_column_gap_is_normal.hash(&mut h);
   hash_enum_discriminant(&style.align_content, &mut h);
   hash_enum_discriminant(&style.justify_content, &mut h);
 

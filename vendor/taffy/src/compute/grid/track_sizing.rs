@@ -663,7 +663,12 @@ pub(super) fn resolve_item_baselines(
         ),
       };
 
-      let value = baseline.unwrap_or(fallback_size) + margin_start;
+      let extra_margin_start = match axis {
+        AbstractAxis::Inline => item.extra_margin.top,
+        AbstractAxis::Block => item.extra_margin.left,
+      };
+
+      let value = baseline.unwrap_or(fallback_size) + margin_start + extra_margin_start;
       if axis == AbstractAxis::Inline {
         // Record the vertical baseline for computing the grid container baseline.
         item.baseline = Some(value);

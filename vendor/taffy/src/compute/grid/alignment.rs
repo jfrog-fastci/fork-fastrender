@@ -78,6 +78,7 @@ pub(super) fn align_and_position_item(
   grid_area: Rect<f32>,
   container_alignment_styles: InBothAbsAxis<Option<AlignItems>>,
   baseline_shim: Point<f32>,
+  extra_margin: Rect<f32>,
 ) -> (Size<f32>, f32, f32) {
   let grid_area_size = Size {
     width: grid_area.right - grid_area.left,
@@ -172,16 +173,17 @@ pub(super) fn align_and_position_item(
     width: grid_area_size
       .width
       .maybe_sub(margin.left)
-      .maybe_sub(margin.right),
+      .maybe_sub(margin.right)
+      - extra_margin.left
+      - extra_margin.right
+      - baseline_shim.x,
     height: grid_area_size
       .height
       .maybe_sub(margin.top)
       .maybe_sub(margin.bottom)
+      - extra_margin.top
+      - extra_margin.bottom
       - baseline_shim.y,
-  };
-  let grid_area_minus_item_margins_size = Size {
-    width: grid_area_minus_item_margins_size.width - baseline_shim.x,
-    height: grid_area_minus_item_margins_size.height,
   };
 
   // If node is absolutely positioned and width is not set explicitly, then deduce it
@@ -276,6 +278,7 @@ pub(super) fn align_and_position_item(
     position,
     inset_horizontal,
     margin.horizontal_components(),
+    extra_margin.horizontal_components(),
     baseline_shim.x,
   );
   let (y, y_margin) = align_item_within_area(
@@ -288,6 +291,7 @@ pub(super) fn align_and_position_item(
     position,
     inset_vertical,
     margin.vertical_components(),
+    extra_margin.vertical_components(),
     baseline_shim.y,
   );
 
@@ -347,12 +351,13 @@ pub(super) fn align_item_within_area(
   position: Position,
   inset: Line<Option<f32>>,
   margin: Line<Option<f32>>,
+  extra_margin: Line<f32>,
   baseline_shim: f32,
 ) -> (f32, Line<f32>) {
   // Calculate grid area dimension in the axis
   let non_auto_margin = Line {
-    start: margin.start.unwrap_or(0.0) + baseline_shim,
-    end: margin.end.unwrap_or(0.0),
+    start: margin.start.unwrap_or(0.0) + extra_margin.start + baseline_shim,
+    end: margin.end.unwrap_or(0.0) + extra_margin.end,
   };
   let grid_area_size = f32_max(grid_area.end - grid_area.start, 0.0);
   let free_space = f32_max(grid_area_size - resolved_size - non_auto_margin.sum(), 0.0);
@@ -365,8 +370,8 @@ pub(super) fn align_item_within_area(
     0.0
   };
   let resolved_margin = Line {
-    start: margin.start.unwrap_or(auto_margin_size) + baseline_shim,
-    end: margin.end.unwrap_or(auto_margin_size),
+    start: margin.start.unwrap_or(auto_margin_size) + extra_margin.start + baseline_shim,
+    end: margin.end.unwrap_or(auto_margin_size) + extra_margin.end,
   };
 
   // Compute offset in the axis

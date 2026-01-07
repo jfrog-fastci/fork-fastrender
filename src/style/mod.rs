@@ -996,7 +996,17 @@ pub struct ComputedStyle {
   pub grid_row_line_names: Vec<Vec<String>>,          // Line names per row line (tracks+1)
   pub grid_gap: Length,
   pub grid_row_gap: Length,
+  /// Whether `row-gap` was specified as `normal`.
+  ///
+  /// `normal` is meaningful for subgrids (it means "match the parent grid's gap"), so we preserve
+  /// it separately from the resolved length (which may also be `0px`).
+  pub grid_row_gap_is_normal: bool,
   pub grid_column_gap: Length,
+  /// Whether `column-gap` was specified as `normal`.
+  ///
+  /// `normal` is meaningful for subgrids (it means "match the parent grid's gap"), so we preserve
+  /// it separately from the resolved length (which may also be `0px`).
+  pub grid_column_gap_is_normal: bool,
   pub grid_column_start: i32,
   pub grid_column_end: i32,
   pub grid_row_start: i32,
@@ -1392,7 +1402,9 @@ impl Default for ComputedStyle {
       grid_row_line_names: Vec::new(),
       grid_gap: Length::px(0.0),
       grid_row_gap: Length::px(0.0),
+      grid_row_gap_is_normal: true,
       grid_column_gap: Length::px(0.0),
+      grid_column_gap_is_normal: true,
       grid_column_start: 0,
       grid_column_end: 0,
       grid_row_start: 0,
