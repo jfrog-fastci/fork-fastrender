@@ -85,8 +85,10 @@ This work is tracked in the capability map under `alg.forms.appearance-none`.
 ## Regression coverage
 
 - Box-generation unit tests:
+  - `src/tree/box_generation.rs::appearance_none_form_controls_still_generate_replaced_boxes`
   - `src/tree/box_generation.rs::appearance_none_does_not_disable_form_control_replacement`
   - `src/tree/box_generation.rs::webkit_appearance_none_propagates_to_form_control`
+  - `src/tree/box_generation.rs::moz_appearance_none_propagates_to_form_control`
 - Offline page fixtures:
   - `tests/pages/fixtures/form_controls_appearance` includes `appearance:none` custom controls (including `::-webkit-slider-thumb` for ranges).
 
