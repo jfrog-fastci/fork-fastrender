@@ -3,7 +3,9 @@ use fastrender::paint::display_list::{BorderRadii, ClipItem, ClipShape, DisplayI
 use fastrender::paint::display_list_builder::DisplayListBuilder;
 use fastrender::style::types::{Appearance, BorderCornerRadius, Overflow};
 use fastrender::style::values::Length;
-use fastrender::tree::box_tree::{FormControl, FormControlKind, ReplacedType, SelectControl, SelectItem};
+use fastrender::tree::box_tree::{
+  FormControl, FormControlKind, ReplacedType, SelectControl, SelectItem,
+};
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use fastrender::ComputedStyle;
 use fastrender::Rgba;
