@@ -18,6 +18,7 @@ fn load_color_font(path: &str, family: &str) -> LoadedFont {
     style: FontStyle::Normal,
     stretch: FontStretch::Normal,
     face_metrics_overrides: Default::default(),
+    face_settings: Default::default(),
   }
 }
 

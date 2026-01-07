@@ -2363,6 +2363,7 @@ mod tests {
       data: Arc::new(font_bytes),
       index: 0,
       face_metrics_overrides: crate::text::font_db::FontFaceMetricsOverrides::default(),
+      face_settings: Default::default(),
       family: "Test COLRv1".to_string(),
       weight: FontWeight::NORMAL,
       style: FontStyle::Normal,

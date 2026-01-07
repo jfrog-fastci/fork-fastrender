@@ -552,6 +552,7 @@ fn bundled_fallback_chain_matches_pipeline_for_ascii() {
 
 #[test]
 fn fallback_chain_matches_pipeline_for_cjk_when_available() {
+  let _guard = super::text_diagnostics_guard();
   let db = Arc::new(FontDatabase::new());
   if db.is_empty() {
     return;
@@ -580,6 +581,7 @@ fn fallback_chain_matches_pipeline_for_cjk_when_available() {
 
 #[test]
 fn fallback_chain_matches_pipeline_for_emoji_when_available() {
+  let _guard = super::text_diagnostics_guard();
   let db = Arc::new(FontDatabase::new());
   if db.is_empty() {
     return;

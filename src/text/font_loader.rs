@@ -46,6 +46,7 @@ use crate::text::font_db::FontCacheConfig;
 use crate::text::font_db::FontConfig;
 use crate::text::font_db::FontDatabase;
 use crate::text::font_db::FontFaceMetricsOverrides;
+use crate::text::font_db::FontFaceShapingDescriptors;
 use crate::text::font_db::FontStretch;
 use crate::text::font_db::FontStyle;
 use crate::text::font_db::FontWeight;
@@ -1772,6 +1773,15 @@ impl FontContext {
         descent_override: face.descent_override,
         line_gap_override: face.line_gap_override,
       },
+      shaping_descriptors: FontFaceShapingDescriptors {
+        weight_range: Some(face.weight),
+        stretch_range: Some(face.stretch),
+        style: Some(face.style.clone()),
+        font_feature_settings: face.font_feature_settings.clone(),
+        font_variation_settings: face.font_variation_settings.clone(),
+        font_named_instance: face.font_named_instance.clone(),
+        font_language_override: face.font_language_override.clone(),
+      },
       style: face.style.clone(),
       display: face.display,
       weight: face.weight,
@@ -2441,6 +2451,7 @@ pub(crate) struct WebFontFace {
   data: Arc<Vec<u8>>,
   index: u32,
   metrics_overrides: FontFaceMetricsOverrides,
+  shaping_descriptors: FontFaceShapingDescriptors,
   style: FontFaceStyle,
   #[allow(dead_code)]
   display: FontDisplay,
@@ -2482,6 +2493,7 @@ impl WebFontFace {
       data: Arc::clone(&self.data),
       index: self.index,
       face_metrics_overrides: self.metrics_overrides,
+      face_settings: self.shaping_descriptors.clone(),
       family: family.to_string(),
       weight: FontWeight::new(weight),
       style,
@@ -3753,6 +3765,7 @@ mod tests {
         descent_override: Some(0.2539),
         line_gap_override: Some(0.0),
       },
+      face_settings: FontFaceShapingDescriptors::default(),
       family: "DejaVu Sans".to_string(),
       weight: FontWeight::NORMAL,
       style: FontStyle::Normal,
@@ -4142,6 +4155,7 @@ mod tests {
       data,
       index: 0,
       metrics_overrides: FontFaceMetricsOverrides::default(),
+      shaping_descriptors: Default::default(),
       style: FontFaceStyle::Normal,
       display: FontDisplay::Swap,
       weight: (400, 400),

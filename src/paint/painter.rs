@@ -906,6 +906,7 @@ impl Painter {
           crate::text::variations::collect_variations_for_face(
             face,
             style,
+            &font,
             used_font_size,
             &authored,
           )
@@ -948,6 +949,7 @@ impl Painter {
           crate::text::variations::collect_variations_for_face(
             face,
             style,
+            &font,
             used_font_size,
             &authored,
           )
@@ -8435,6 +8437,7 @@ impl Painter {
             crate::text::variations::collect_variations_for_face(
               face,
               style,
+              &font,
               used_font_size,
               &authored,
             )
@@ -14423,6 +14426,7 @@ mod tests {
       data: font_bytes.clone(),
       index: 0,
       face_metrics_overrides: crate::text::font_db::FontFaceMetricsOverrides::default(),
+      face_settings: Default::default(),
       family: "Roboto Flex".to_string(),
       weight: crate::text::font_db::FontWeight::NORMAL,
       style: crate::text::font_db::FontStyle::Normal,

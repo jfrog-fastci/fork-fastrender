@@ -360,6 +360,7 @@ fn same_font_face(a: &LoadedFont, b: &LoadedFont) -> bool {
   Arc::ptr_eq(&a.data, &b.data)
     && a.index == b.index
     && a.face_metrics_overrides == b.face_metrics_overrides
+    && a.face_settings == b.face_settings
     && a.weight == b.weight
     && a.style == b.style
     && a.stretch == b.stretch

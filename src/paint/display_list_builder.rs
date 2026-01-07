@@ -996,6 +996,7 @@ impl DisplayListBuilder {
           crate::text::variations::collect_variations_for_face(
             face,
             style,
+            &font,
             used_font_size,
             &authored,
           )
@@ -7118,6 +7119,7 @@ impl DisplayListBuilder {
             crate::text::variations::collect_variations_for_face(
               face,
               style,
+              &font,
               used_font_size,
               &authored,
             )
@@ -9084,6 +9086,7 @@ mod tests {
       data,
       index: 0,
       face_metrics_overrides: crate::text::font_db::FontFaceMetricsOverrides::default(),
+      face_settings: Default::default(),
       family: "DejaVu Sans Subset".to_string(),
       weight: crate::text::font_db::FontWeight::NORMAL,
       style: FontStyle::Normal,
@@ -12539,6 +12542,7 @@ mod tests {
       data,
       index: 0,
       face_metrics_overrides: crate::text::font_db::FontFaceMetricsOverrides::default(),
+      face_settings: Default::default(),
       family: "DejaVu Sans Subset".to_string(),
       weight: crate::text::font_db::FontWeight::NORMAL,
       style: FontStyle::Normal,

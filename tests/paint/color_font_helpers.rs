@@ -56,6 +56,7 @@ pub fn load_fixture_font(name: &str) -> LoadedFont {
     style: FontStyle::Normal,
     stretch: FontStretch::Normal,
     face_metrics_overrides: Default::default(),
+    face_settings: Default::default(),
   }
 }
 
@@ -77,6 +78,7 @@ pub fn load_test_font(name: &str) -> LoadedFont {
     style: FontStyle::Normal,
     stretch: FontStretch::Normal,
     face_metrics_overrides: Default::default(),
+    face_settings: Default::default(),
   }
 }
 

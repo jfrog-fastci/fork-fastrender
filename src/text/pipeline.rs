@@ -2460,6 +2460,51 @@ fn font_metric_ratio(font: &LoadedFont, metric: FontSizeAdjustMetric) -> Option<
   font.font_size_adjust_metric_ratio(metric)
 }
 
+fn resolve_opentype_language(style: &ComputedStyle, font: &LoadedFont) -> Option<HbLanguage> {
+  let tag = match &style.font_language_override {
+    FontLanguageOverride::Override(tag) => tag.as_str(),
+    FontLanguageOverride::Normal => font
+      .face_settings
+      .font_language_override
+      .as_deref()
+      .unwrap_or(style.language.as_ref()),
+  };
+  let tag = tag.trim();
+  (!tag.is_empty())
+    .then(|| HbLanguage::from_str(tag).ok())
+    .flatten()
+}
+
+fn merge_font_face_features(style_features: &Arc<[Feature]>, font: &LoadedFont) -> Arc<[Feature]> {
+  let Some(descriptor_features) = font.face_settings.font_feature_settings.as_deref() else {
+    return Arc::clone(style_features);
+  };
+
+  let mut merged: Vec<Feature> = Vec::new();
+
+  for setting in descriptor_features {
+    let tag = Tag::from_bytes(&setting.tag);
+    merged.retain(|f| f.tag != tag);
+    merged.push(Feature {
+      tag,
+      value: setting.value,
+      start: 0,
+      end: u32::MAX,
+    });
+  }
+
+  for feature in style_features.iter() {
+    merged.retain(|f| f.tag != feature.tag);
+    merged.push(feature.clone());
+  }
+
+  merged.into_boxed_slice().into()
+}
+
+fn font_aspect_ratio(font: &LoadedFont) -> Option<f32> {
+  font.metrics().ok().and_then(|m| m.aspect_ratio())
+}
+
 /// Returns the author-preferred aspect ratio for font-size-adjust, if any.
 pub fn preferred_font_aspect(style: &ComputedStyle, font_context: &FontContext) -> Option<f32> {
   match style.font_size_adjust {
@@ -2771,6 +2816,7 @@ fn same_font_face(a: &LoadedFont, b: &LoadedFont) -> bool {
   Arc::ptr_eq(&a.data, &b.data)
     && a.index == b.index
     && a.face_metrics_overrides == b.face_metrics_overrides
+    && a.face_settings == b.face_settings
     && a.weight == b.weight
     && a.style == b.style
     && a.stretch == b.stretch
@@ -2873,12 +2919,6 @@ fn assign_fonts_internal(
   let language = match &style.font_language_override {
     FontLanguageOverride::Normal => style.language.as_ref(),
     FontLanguageOverride::Override(tag) => tag.as_str(),
-  };
-  let hb_language = {
-    let tag = language.trim();
-    (!tag.is_empty())
-      .then(|| HbLanguage::from_str(tag).ok())
-      .flatten()
   };
   let language_signature = {
     let primary = language
@@ -3072,11 +3112,9 @@ fn assign_fonts_internal(
               synthetic_oblique,
               run_font_size,
               baseline_shift,
-              &hb_language,
               &features,
               &authored_variations,
               style,
-              font_context,
             );
             continue;
           }
@@ -3155,11 +3193,9 @@ fn assign_fonts_internal(
                 synthetic_oblique,
                 run_font_size,
                 baseline_shift,
-                &hb_language,
                 &features,
                 &authored_variations,
                 style,
-                font_context,
               );
               continue;
             }
@@ -3268,11 +3304,9 @@ fn assign_fonts_internal(
                 cur.synthetic_oblique,
                 cur.font_size,
                 cur.baseline_shift,
-                &hb_language,
                 &features,
                 &authored_variations,
                 style,
-                font_context,
               );
             }
 
@@ -3625,11 +3659,9 @@ fn assign_fonts_internal(
           cur.synthetic_oblique,
           cur.font_size,
           cur.baseline_shift,
-          &hb_language,
           &features,
           &authored_variations,
           style,
-          font_context,
         );
       }
 
@@ -3667,11 +3699,9 @@ fn assign_fonts_internal(
         cur.synthetic_oblique,
         cur.font_size,
         cur.baseline_shift,
-        &hb_language,
         &features,
         &authored_variations,
         style,
-        font_context,
       );
     }
   }
@@ -4838,17 +4868,18 @@ fn push_font_run(
   synthetic_oblique: f32,
   font_size: f32,
   baseline_shift: f32,
-  language: &Option<HbLanguage>,
-  features: &Arc<[Feature]>,
+  style_features: &Arc<[Feature]>,
   authored_variations: &[Variation],
   style: &ComputedStyle,
-  _font_context: &FontContext,
 ) {
   let segment_text = &run.text[start..end];
+  let language = resolve_opentype_language(style, font.as_ref());
+  let features = merge_font_face_features(style_features, font.as_ref());
   let variations = crate::text::face_cache::with_face(&font, |face| {
     crate::text::variations::collect_variations_for_face(
       face,
       style,
+      font.as_ref(),
       font_size,
       authored_variations,
     )
@@ -4877,8 +4908,8 @@ fn push_font_run(
     level: run.level,
     font_size,
     baseline_shift,
-    language: language.clone(),
-    features: Arc::clone(features),
+    language,
+    features,
     variations,
     palette_index,
     palette_overrides: Arc::clone(&palette_overrides),
@@ -6654,6 +6685,7 @@ mod tests {
         data: Arc::new(Vec::new()),
         index: 0,
         face_metrics_overrides: crate::text::font_db::FontFaceMetricsOverrides::default(),
+        face_settings: Default::default(),
         weight: DbFontWeight::NORMAL,
         style: DbFontStyle::Normal,
         stretch: DbFontStretch::Normal,
@@ -6951,6 +6983,7 @@ mod tests {
       data: Arc::clone(&data),
       index: 0,
       face_metrics_overrides: crate::text::font_db::FontFaceMetricsOverrides::default(),
+      face_settings: Default::default(),
       weight: DbFontWeight::NORMAL,
       style: DbFontStyle::Normal,
       stretch: DbFontStretch::Normal,
@@ -6963,6 +6996,7 @@ mod tests {
       data: Arc::clone(&data),
       index: 0,
       face_metrics_overrides: overrides,
+      face_settings: Default::default(),
       weight: DbFontWeight::NORMAL,
       style: DbFontStyle::Normal,
       stretch: DbFontStretch::Normal,
@@ -7096,7 +7130,8 @@ mod tests {
     // fallback resolver sees an emoji font early that can't render the cluster, and would otherwise
     // short-circuit before considering the bundled emoji font when tag characters are treated as
     // required for coverage.
-    let web_data = fs::read("tests/fixtures/fonts/NotoSans-subset.ttf").expect("read web font data");
+    let web_data =
+      fs::read("tests/fixtures/fonts/NotoSans-subset.ttf").expect("read web font data");
     let Some((_dir, web_url)) = temp_font_url(&web_data) else {
       return;
     };
@@ -7119,7 +7154,9 @@ mod tests {
     // for font coverage; otherwise the resolver can end up stuck on the "WebEmoji" font and lose
     // the base glyph.
     let text = "\u{1F600}\u{E0061}\u{E007F}";
-    let shaped = pipeline.shape(text, &style, &ctx).expect("shape tag cluster");
+    let shaped = pipeline
+      .shape(text, &style, &ctx)
+      .expect("shape tag cluster");
     assert_eq!(shaped.len(), 1, "expected a single run for tag cluster");
 
     let run = &shaped[0];
@@ -7134,7 +7171,8 @@ mod tests {
       run.font.family
     );
     assert!(
-      run.glyphs
+      run
+        .glyphs
         .iter()
         .any(|glyph| glyph.cluster == 0 && glyph.glyph_id != 0),
       "base emoji should not shape to .notdef"
@@ -7727,6 +7765,7 @@ mod tests {
           data: Arc::new(Vec::new()),
           index: 0,
           face_metrics_overrides: crate::text::font_db::FontFaceMetricsOverrides::default(),
+          face_settings: Default::default(),
           weight: DbFontWeight::NORMAL,
           style: DbFontStyle::Normal,
           stretch: DbFontStretch::Normal,
@@ -9893,6 +9932,7 @@ mod tests {
       data: Arc::new(Vec::new()),
       index: 0,
       face_metrics_overrides: crate::text::font_db::FontFaceMetricsOverrides::default(),
+      face_settings: Default::default(),
       family: name.into(),
       weight: DbFontWeight::NORMAL,
       style: DbFontStyle::Normal,

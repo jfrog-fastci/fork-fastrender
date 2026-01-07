@@ -4607,6 +4607,7 @@ impl InlineFormattingContext {
           crate::text::variations::collect_variations_for_face(
             face,
             style,
+            &font,
             used_font_size,
             &authored,
           )
@@ -10557,7 +10558,10 @@ impl InlineFormattingContext {
         child_style.left = None;
         layout_child.style = Arc::new(child_style);
 
-        let factory = if matches!(child.style.position, crate::style::position::Position::Fixed) {
+        let factory = if matches!(
+          child.style.position,
+          crate::style::position::Position::Fixed
+        ) {
           if child_cb == default_fixed_cb {
             &fixed_factory
           } else if let Some(id) = containing_block_id {

@@ -27,6 +27,7 @@ fn load_sweep_font() -> LoadedFont {
     style: FontStyle::Normal,
     stretch: FontStretch::Normal,
     face_metrics_overrides: Default::default(),
+    face_settings: Default::default(),
   }
 }
 

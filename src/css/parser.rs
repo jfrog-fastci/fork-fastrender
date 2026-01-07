@@ -58,6 +58,8 @@ use crate::render_control::{check_active, check_active_periodic};
 use crate::style::color::Color;
 use crate::style::counter_styles::{CounterStyleRule, CounterSystem, SpeakAs};
 use crate::style::media::{MediaContext, MediaContextFingerprint, MediaQuery, MediaQueryCache};
+use crate::style::types::FontFeatureSetting;
+use crate::style::types::FontVariationSetting;
 use crate::style::values::{CustomPropertySyntax, CustomPropertyValue};
 use crate::style::var_resolution::is_valid_custom_property_name;
 use cssparser::ParseError;
@@ -2292,6 +2294,51 @@ fn parse_font_face_descriptors<'i, 't>(
           face.line_gap_override = Some(multiplier);
         }
       }
+      "font-feature-settings" => {
+        if trimmed_value.eq_ignore_ascii_case("normal") {
+          face.font_feature_settings = None;
+        } else {
+          let mut input = ParserInput::new(trimmed_value);
+          let mut parser = Parser::new(&mut input);
+          if let Ok(settings) = parser.parse_comma_separated(parse_font_feature_setting) {
+            if !settings.is_empty() {
+              face.font_feature_settings = Some(settings.into());
+            }
+          }
+        }
+      }
+      "font-variation-settings" => {
+        if trimmed_value.eq_ignore_ascii_case("normal") {
+          face.font_variation_settings = None;
+        } else {
+          let mut input = ParserInput::new(trimmed_value);
+          let mut parser = Parser::new(&mut input);
+          if let Ok(settings) = parser.parse_comma_separated(parse_font_variation_setting) {
+            if !settings.is_empty() {
+              face.font_variation_settings = Some(settings.into());
+            }
+          }
+        }
+      }
+      "font-named-instance" => {
+        if trimmed_value.eq_ignore_ascii_case("auto") {
+          face.font_named_instance = None;
+        } else if let Some(name) = parse_font_face_string_or_ident(trimmed_value) {
+          if !name.trim().is_empty() {
+            face.font_named_instance = Some(name);
+          }
+        }
+      }
+      "font-language-override" => {
+        if trimmed_value.eq_ignore_ascii_case("normal") {
+          face.font_language_override = None;
+        } else if let Some(tag) = parse_font_face_string_or_ident(trimmed_value) {
+          let trimmed = tag.trim();
+          if (1..=4).contains(&trimmed.len()) && trimmed.is_ascii() {
+            face.font_language_override = Some(trimmed.to_string());
+          }
+        }
+      }
       _ => {}
     }
   }
@@ -3424,6 +3471,87 @@ fn parse_string_or_ident<'i, 't>(
     .expect_ident()
     .map(|s| s.to_string())
     .map_err(ParseError::from)
+}
+
+fn parse_font_face_string_or_ident(value: &str) -> Option<String> {
+  let mut input = ParserInput::new(value);
+  let mut parser = Parser::new(&mut input);
+  parser.skip_whitespace();
+  let token = parser.next_including_whitespace().ok()?;
+  let parsed = match token {
+    Token::QuotedString(s) | Token::Ident(s) => s.to_string(),
+    _ => return None,
+  };
+  parser.skip_whitespace();
+  if !parser.is_exhausted() {
+    return None;
+  }
+  Some(parsed)
+}
+
+fn parse_font_feature_setting<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<FontFeatureSetting, cssparser::ParseError<'i, ()>> {
+  parser.skip_whitespace();
+  let location = parser.current_source_location();
+
+  let tag_bytes: [u8; 4] = match parser.next()? {
+    Token::QuotedString(s) | Token::Ident(s)
+      if s.len() == 4 && s.as_bytes().iter().all(|b| b.is_ascii()) =>
+    {
+      s.as_bytes()
+        .try_into()
+        .map_err(|_| location.new_custom_error(()))?
+    }
+    _ => return Err(location.new_custom_error(())),
+  };
+
+  parser.skip_whitespace();
+  let value = if let Ok(num) = parser.try_parse(|p| p.expect_number()) {
+    num.max(0.0) as u32
+  } else if let Ok(ident) = parser.try_parse(|p| {
+    p.expect_ident()
+      .map(|ident| ident.as_ref().to_ascii_lowercase())
+  }) {
+    match ident.as_str() {
+      "on" => 1,
+      "off" => 0,
+      _ => return Err(location.new_custom_error(())),
+    }
+  } else {
+    1
+  };
+
+  Ok(FontFeatureSetting {
+    tag: tag_bytes,
+    value,
+  })
+}
+
+fn parse_font_variation_setting<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<FontVariationSetting, cssparser::ParseError<'i, ()>> {
+  parser.skip_whitespace();
+  let location = parser.current_source_location();
+
+  let tag_bytes: [u8; 4] = match parser.next()? {
+    Token::QuotedString(s) | Token::Ident(s)
+      if s.len() == 4 && s.as_bytes().iter().all(|b| b.is_ascii()) =>
+    {
+      s.as_bytes()
+        .try_into()
+        .map_err(|_| location.new_custom_error(()))?
+    }
+    _ => return Err(location.new_custom_error(())),
+  };
+
+  parser.skip_whitespace();
+  let value = parser.expect_number()?;
+
+  Ok(FontVariationSetting {
+    tag: tag_bytes,
+    value,
+  })
 }
 
 pub(crate) fn parse_angle_token(token: &str) -> Option<f32> {

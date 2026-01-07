@@ -1999,6 +1999,7 @@ mod tests {
       data: Arc::new(data),
       index: 0,
       face_metrics_overrides: FontFaceMetricsOverrides::default(),
+      face_settings: Default::default(),
       family: "ColrV1Test".into(),
       weight: FontWeight::NORMAL,
       style: FontStyle::Normal,

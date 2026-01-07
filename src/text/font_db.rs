@@ -32,10 +32,13 @@
 //! }
 //! ```
 
+use crate::css::types::FontFaceStyle as CssFontFaceStyle;
 use crate::error::FontError;
 use crate::error::Result;
+use crate::style::types::FontFeatureSetting;
 use crate::style::types::FontSizeAdjust;
 use crate::style::types::FontSizeAdjustMetric;
+use crate::style::types::FontVariationSetting;
 use crate::text::emoji;
 use crate::text::font_fallback::FontId;
 use fontdb::Database as FontDbDatabase;
@@ -778,6 +781,29 @@ impl FontFaceMetricsOverrides {
   }
 }
 
+/// Typography descriptors carried by an `@font-face` rule (CSS Fonts 4).
+///
+/// These settings apply to shaping for the specific face that was matched, and do not affect
+/// font selection.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FontFaceShapingDescriptors {
+  /// `font-weight` descriptor range (used to clamp font matching variations).
+  pub weight_range: Option<(u16, u16)>,
+  /// `font-stretch` descriptor range (used to clamp font matching variations).
+  pub stretch_range: Option<(f32, f32)>,
+  /// `font-style` descriptor (used to clamp oblique angles for font matching variations).
+  pub style: Option<CssFontFaceStyle>,
+
+  /// `font-feature-settings` descriptor (None represents `normal`).
+  pub font_feature_settings: Option<Arc<[FontFeatureSetting]>>,
+  /// `font-variation-settings` descriptor (None represents `normal`).
+  pub font_variation_settings: Option<Arc<[FontVariationSetting]>>,
+  /// `font-named-instance` descriptor (None represents `auto`).
+  pub font_named_instance: Option<String>,
+  /// `font-language-override` descriptor (None represents `normal`).
+  pub font_language_override: Option<String>,
+}
+
 /// A loaded font with cached data
 ///
 /// Contains the font binary data (shared via Arc) along with
@@ -807,6 +833,8 @@ pub struct LoadedFont {
   ///
   /// System font lookups use the default (no overrides).
   pub face_metrics_overrides: FontFaceMetricsOverrides,
+  /// Typography descriptors from the `@font-face` rule that supplied this font, if any.
+  pub face_settings: FontFaceShapingDescriptors,
   /// Font family name
   pub family: String,
   /// Font weight
@@ -1605,6 +1633,7 @@ impl FontDatabase {
       data,
       index: face_info.index,
       face_metrics_overrides: FontFaceMetricsOverrides::default(),
+      face_settings: FontFaceShapingDescriptors::default(),
       family: face_info
         .families
         .first()

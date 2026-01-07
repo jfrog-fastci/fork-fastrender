@@ -46,6 +46,8 @@ fn make_font(data: &[u8]) -> LoadedFont {
     id: None,
     data: Arc::new(clamped.to_vec()),
     index: 0,
+    face_metrics_overrides: Default::default(),
+    face_settings: Default::default(),
     family: "fuzz-font".to_string(),
     weight: FontWeight::NORMAL,
     style: FontStyle::Normal,

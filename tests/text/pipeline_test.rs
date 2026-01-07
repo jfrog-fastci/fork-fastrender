@@ -90,6 +90,7 @@ fn sideways_writing_mode_shapes_with_rotation() {
 
 #[test]
 fn vertical_mixed_orientation_splits_runs() {
+  let _guard = super::text_diagnostics_guard();
   let pipeline = ShapingPipeline::new();
   let font_ctx = FontContext::new();
   let mut style = ComputedStyle::default();
@@ -156,6 +157,7 @@ fn vertical_sideways_left_orientation_rotates_counter_clockwise() {
 
 #[test]
 fn vertical_shaping_uses_vertical_advances() {
+  let _guard = super::text_diagnostics_guard();
   let pipeline = ShapingPipeline::new();
   let font_ctx = FontContext::new();
 

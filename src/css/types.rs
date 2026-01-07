@@ -15,6 +15,8 @@ use crate::style::media::MediaContext;
 use crate::style::media::MediaQuery;
 use crate::style::media::MediaQueryCache;
 use crate::style::media::MediaType;
+use crate::style::types::FontFeatureSetting;
+use crate::style::types::FontVariationSetting;
 use crate::style::values::Length;
 use crate::style::values::{CustomPropertySyntax, CustomPropertyValue};
 use cssparser::Parser;
@@ -3122,6 +3124,26 @@ pub struct FontFaceRule {
   /// Stored as a multiplier of the face's used font size (e.g. `0%` => `0.0`). The `normal`
   /// keyword maps to `None`. The used font size includes any `size-adjust` scaling.
   pub line_gap_override: Option<f32>,
+
+  /// Per-face OpenType feature overrides (`font-feature-settings` descriptor).
+  ///
+  /// `None` represents the `normal` keyword.
+  pub font_feature_settings: Option<Arc<[FontFeatureSetting]>>,
+
+  /// Per-face OpenType variation overrides (`font-variation-settings` descriptor).
+  ///
+  /// `None` represents the `normal` keyword.
+  pub font_variation_settings: Option<Arc<[FontVariationSetting]>>,
+
+  /// Named instance to apply when shaping (`font-named-instance` descriptor).
+  ///
+  /// `None` represents the `auto` keyword.
+  pub font_named_instance: Option<String>,
+
+  /// Per-face OpenType language system override (`font-language-override` descriptor).
+  ///
+  /// `None` represents the `normal` keyword.
+  pub font_language_override: Option<String>,
 }
 
 impl Default for FontFaceRule {
@@ -3138,6 +3160,10 @@ impl Default for FontFaceRule {
       ascent_override: None,
       descent_override: None,
       line_gap_override: None,
+      font_feature_settings: None,
+      font_variation_settings: None,
+      font_named_instance: None,
+      font_language_override: None,
     }
   }
 }
@@ -3279,7 +3305,7 @@ pub enum FontDisplay {
 }
 
 /// Font style descriptor for @font-face.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FontFaceStyle {
   Normal,
   Italic,
