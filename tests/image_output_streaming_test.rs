@@ -229,3 +229,22 @@ fn jpeg_streaming_encode_avoids_full_frame_intermediate_allocations() {
     "expected JPEG streaming path to avoid full-frame RGB intermediate allocations; max allocation was {max} bytes"
   );
 }
+
+#[test]
+fn webp_encode_avoids_full_frame_intermediate_allocations() {
+  let _guard = lock_tests();
+  let width = 1024;
+  let height = 1024;
+  let mut pixmap = Pixmap::new(width, height).expect("pixmap");
+  pixmap.data_mut().fill(0);
+
+  reset_max_alloc();
+  let encoded = encode_image(&pixmap, OutputFormat::WebP(80)).expect("webp encode");
+  assert!(!encoded.is_empty());
+
+  let max = max_alloc();
+  assert!(
+    max < 2 * 1024 * 1024,
+    "expected WebP encoder to avoid allocating a full-frame RGBA buffer in Rust; max allocation was {max} bytes"
+  );
+}
