@@ -7441,7 +7441,7 @@ mod tests {
 
     match &marker_box.box_type {
       BoxType::Marker(marker) => match &marker.content {
-        MarkerContent::Text(t) => assert!(t.starts_with("▸")),
+        MarkerContent::Text(t) => assert_eq!(t.as_str(), "▸ "),
         MarkerContent::Image(_) => panic!("expected text marker from disclosure-closed"),
       },
       _ => panic!("expected marker box"),
@@ -7491,8 +7491,55 @@ mod tests {
 
     match &marker_box.box_type {
       BoxType::Marker(marker) => match &marker.content {
-        MarkerContent::Text(t) => assert!(t.starts_with("◂")),
+        MarkerContent::Text(t) => assert_eq!(t.as_str(), "◂ "),
         MarkerContent::Image(_) => panic!("expected text marker from disclosure-closed"),
+      },
+      _ => panic!("expected marker box"),
+    }
+  }
+
+  #[test]
+  fn disc_marker_has_space_suffix() {
+    let mut style = ComputedStyle::default();
+    style.display = Display::ListItem;
+    style.list_style_type = ListStyleType::Disc;
+    let style = Arc::new(style);
+    let styled = StyledNode {
+      node_id: 0,
+      node: dom::DomNode {
+        node_type: dom::DomNodeType::Element {
+          tag_name: "li".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      },
+      styles: style.clone(),
+      marker_styles: None,
+      starting_styles: StartingStyleSet::default(),
+      before_styles: None,
+      after_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      placeholder_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![],
+    };
+
+    let mut counters = CounterManager::new();
+    counters.enter_scope();
+    counters.apply_reset(&CounterSet::single("list-item", 1));
+
+    let marker_box = create_marker_box(&styled, &mut counters).expect("marker");
+    counters.leave_scope();
+
+    match &marker_box.box_type {
+      BoxType::Marker(marker) => match &marker.content {
+        MarkerContent::Text(t) => assert_eq!(t.as_str(), "• "),
+        MarkerContent::Image(_) => panic!("expected text marker from disc"),
       },
       _ => panic!("expected marker box"),
     }
