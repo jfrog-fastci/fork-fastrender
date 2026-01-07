@@ -497,7 +497,8 @@ fn resolve_container_query_length(
 
   // For container size queries, resolve font-relative lengths against the query container's
   // computed font metrics:
-  // - `em`/`ex`/`ch`/`lh` use the query container's own computed `font-size`.
+  // - `em`/`ex`/`ch` use the query container's computed `font-size`.
+  // - `lh` uses the query container's computed `line-height`.
   // - `rem` uses the root element's computed `font-size` (propagated via `root_font_size`).
   //
   // For other units, we mirror `MediaContext::resolve_length` behavior; in particular `vw`/`vh`
@@ -1636,13 +1637,121 @@ fn resolve_length_for_query(
   let (cqw, cqh, cqi, cqb) = style_query_container_unit_bases(container);
   length = length.resolve_container_query_units(cqw, cqh, cqi, cqb);
 
-  length.resolve_with_context(
-    None,
-    ctx.base_media.viewport_width,
-    ctx.base_media.viewport_height,
-    container.font_size,
-    container.styles.root_font_size,
-  )
+  let viewport_width = ctx.base_media.viewport_width;
+  let viewport_height = ctx.base_media.viewport_height;
+
+  let font_size = container
+    .font_size
+    .is_finite()
+    .then_some(container.font_size)
+    .filter(|v| *v >= 0.0)
+    .unwrap_or(16.0);
+  let root_font_size = container
+    .styles
+    .root_font_size
+    .is_finite()
+    .then_some(container.styles.root_font_size)
+    .filter(|v| *v >= 0.0)
+    .unwrap_or(font_size);
+  let line_height = match &container.styles.line_height {
+    crate::style::types::LineHeight::Normal => font_size * 1.2,
+    crate::style::types::LineHeight::Number(mult) => font_size * *mult,
+    crate::style::types::LineHeight::Percentage(pct) => font_size * (*pct / 100.0),
+    crate::style::types::LineHeight::Length(len) => len
+      .resolve_with_context(
+        Some(font_size),
+        viewport_width,
+        viewport_height,
+        font_size,
+        root_font_size,
+      )
+      .unwrap_or(font_size * 1.2),
+  };
+  let line_height = line_height
+    .is_finite()
+    .then_some(line_height)
+    .filter(|v| *v >= 0.0)
+    .unwrap_or(font_size * 1.2);
+
+  let vw = viewport_width.is_finite().then_some(viewport_width);
+  let vh = viewport_height.is_finite().then_some(viewport_height);
+
+  if let Some(calc) = length.calc {
+    // There is no meaningful percentage base for style query lengths.
+    if calc.has_percentage() {
+      return None;
+    }
+
+    let needs_viewport = calc.has_viewport_relative();
+    let vw = if needs_viewport { vw? } else { vw.unwrap_or(0.0) };
+    let vh = if needs_viewport { vh? } else { vh.unwrap_or(0.0) };
+
+    let mut total = 0.0;
+    for term in calc.terms() {
+      let resolved = match term.unit {
+        u if u.is_absolute() => Some(Length::new(term.value, u).to_px()),
+        u if u.is_viewport_relative() => Length::new(term.value, u).resolve_with_viewport(vw, vh),
+        LengthUnit::Em => Some(term.value * font_size),
+        LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_size * 0.5),
+        LengthUnit::Rem => Some(term.value * root_font_size),
+        LengthUnit::Lh => Some(term.value * line_height),
+        LengthUnit::Calc | LengthUnit::Percent => None,
+        _ => None,
+      }?;
+      total += resolved;
+    }
+
+    return Some(total);
+  }
+
+  match length.unit {
+    LengthUnit::Px => Some(length.value),
+    LengthUnit::Em => Some(length.value * font_size),
+    LengthUnit::Rem => Some(length.value * root_font_size),
+    LengthUnit::Vw => Some(length.value / 100.0 * vw?),
+    LengthUnit::Vh => Some(length.value / 100.0 * vh?),
+    LengthUnit::Vmin => {
+      let min_dimension = match (vw, vh) {
+        (Some(w), Some(h)) => w.min(h),
+        _ => return None,
+      };
+      Some(length.value / 100.0 * min_dimension)
+    }
+    LengthUnit::Vmax => {
+      let max_dimension = match (vw, vh) {
+        (Some(w), Some(h)) => w.max(h),
+        _ => return None,
+      };
+      Some(length.value / 100.0 * max_dimension)
+    }
+    LengthUnit::Dvw => Some(length.value / 100.0 * vw?),
+    LengthUnit::Dvh => Some(length.value / 100.0 * vh?),
+    LengthUnit::Dvmin => {
+      let min_dimension = match (vw, vh) {
+        (Some(w), Some(h)) => w.min(h),
+        _ => return None,
+      };
+      Some(length.value / 100.0 * min_dimension)
+    }
+    LengthUnit::Dvmax => {
+      let max_dimension = match (vw, vh) {
+        (Some(w), Some(h)) => w.max(h),
+        _ => return None,
+      };
+      Some(length.value / 100.0 * max_dimension)
+    }
+    LengthUnit::Pt => Some(length.value * 96.0 / 72.0),
+    LengthUnit::Cm => Some(length.value * 96.0 / 2.54),
+    LengthUnit::Mm => Some(length.value * 96.0 / 25.4),
+    LengthUnit::Q => Some(length.value * 96.0 / 101.6),
+    LengthUnit::In => Some(length.value * 96.0),
+    LengthUnit::Pc => Some(length.value * 16.0),
+    LengthUnit::Ex => Some(length.value * font_size * 0.5),
+    LengthUnit::Ch => Some(length.value * font_size * 0.5),
+    LengthUnit::Lh => Some(length.value * line_height),
+    LengthUnit::Percent | LengthUnit::Calc => None,
+    _ => None,
+  }
 }
 
 fn style_query_container_unit_bases(container: &ContainerQueryInfo) -> (f32, f32, f32, f32) {
