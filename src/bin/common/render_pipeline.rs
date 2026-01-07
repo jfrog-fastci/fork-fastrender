@@ -488,7 +488,7 @@ fn follow_client_redirects_state(
       ));
 
       match fetcher.fetch_with_request(
-        FetchRequest::document(&target).with_referrer_url(state.doc.base_hint.as_str()),
+        FetchRequest::document_no_user(&target).with_referrer_url(state.doc.base_hint.as_str()),
       ) {
         Ok(mut res) => {
           if is_error_status(res.status) {
@@ -740,7 +740,7 @@ mod tests {
     let requests = fetcher.requests.lock().unwrap();
     assert_eq!(requests.len(), 1, "expected exactly one follow-up fetch");
     let (url, destination, referrer) = &requests[0];
-    assert_eq!(destination, &FetchDestination::Document);
+    assert_eq!(destination, &FetchDestination::DocumentNoUser);
     assert_eq!(referrer.as_deref(), Some(base_hint));
     assert_eq!(url, "https://cdn.example/next");
   }

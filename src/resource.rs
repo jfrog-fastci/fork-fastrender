@@ -707,6 +707,12 @@ fn http_browser_schemeful_same_site_from_origins(
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FetchDestination {
   Document,
+  /// Top-level document navigation without user activation (e.g. `<meta http-equiv=refresh>` or
+  /// `window.location = ...`).
+  ///
+  /// Chromium omits `Sec-Fetch-User` for these requests, but otherwise uses the same headers as
+  /// user-activated document navigations.
+  DocumentNoUser,
   /// Subframe document navigation (e.g. `<iframe src=...>`).
   ///
   /// Uses the same `Accept` header as top-level documents, but Chromium sends `Sec-Fetch-Dest:
@@ -757,7 +763,7 @@ impl FetchCredentialsMode {
 impl FetchDestination {
   fn accept(self) -> &'static str {
     match self {
-      Self::Document | Self::Iframe => DEFAULT_ACCEPT,
+      Self::Document | Self::DocumentNoUser | Self::Iframe => DEFAULT_ACCEPT,
       Self::Style => BROWSER_ACCEPT_STYLESHEET,
       Self::Image | Self::ImageCors => BROWSER_ACCEPT_IMAGE,
       Self::Font | Self::Other => BROWSER_ACCEPT_ALL,
@@ -766,7 +772,7 @@ impl FetchDestination {
 
   fn sec_fetch_dest(self) -> &'static str {
     match self {
-      Self::Document => "document",
+      Self::Document | Self::DocumentNoUser => "document",
       Self::Iframe => "iframe",
       Self::Style => "style",
       Self::Image | Self::ImageCors => "image",
@@ -777,7 +783,7 @@ impl FetchDestination {
 
   fn sec_fetch_mode(self) -> &'static str {
     match self {
-      Self::Document | Self::Iframe => "navigate",
+      Self::Document | Self::DocumentNoUser | Self::Iframe => "navigate",
       Self::Font | Self::ImageCors => "cors",
       Self::Style | Self::Image | Self::Other => "no-cors",
     }
@@ -785,7 +791,7 @@ impl FetchDestination {
 
   fn sec_fetch_site(self) -> &'static str {
     match self {
-      Self::Document | Self::Iframe => "none",
+      Self::Document | Self::DocumentNoUser | Self::Iframe => "none",
       Self::Style | Self::Image | Self::ImageCors | Self::Font | Self::Other => "same-origin",
     }
   }
@@ -799,7 +805,7 @@ impl FetchDestination {
 
   fn upgrade_insecure_requests(self) -> Option<&'static str> {
     match self {
-      Self::Document | Self::Iframe => Some("1"),
+      Self::Document | Self::DocumentNoUser | Self::Iframe => Some("1"),
       _ => None,
     }
   }
@@ -1013,6 +1019,11 @@ impl<'a> FetchRequest<'a> {
   /// Create a document navigation request.
   pub fn document(url: &'a str) -> Self {
     Self::new(url, FetchDestination::Document)
+  }
+
+  /// Create a document navigation request without user activation.
+  pub fn document_no_user(url: &'a str) -> Self {
+    Self::new(url, FetchDestination::DocumentNoUser)
   }
 
   /// Create an image fetch request.
@@ -1419,7 +1430,10 @@ fn rewrite_url_host_with_www_prefix(
     return None;
   }
   let profile = destination.unwrap_or_else(|| http_browser_request_profile_for_url(url));
-  if !matches!(profile, FetchDestination::Document | FetchDestination::Iframe) {
+  if !matches!(
+    profile,
+    FetchDestination::Document | FetchDestination::DocumentNoUser | FetchDestination::Iframe
+  ) {
     return None;
   }
 
@@ -2722,6 +2736,7 @@ impl From<FetchDestination> for FetchContextKind {
   fn from(value: FetchDestination) -> Self {
     match value {
       FetchDestination::Document => Self::Document,
+      FetchDestination::DocumentNoUser => Self::Document,
       FetchDestination::Iframe => Self::Iframe,
       FetchDestination::Style => Self::Stylesheet,
       FetchDestination::Image => Self::Image,
@@ -3285,9 +3300,7 @@ fn build_http_header_pairs<'a>(
     //   We apply the policy further down (fragment stripping, origin-only referrers for
     //   cross-origin requests when applicable, and HTTPS→HTTP downgrade suppression for strict
     //   policies).
-    let sec_fetch_site = if profile == FetchDestination::Document {
-      profile.sec_fetch_site()
-    } else if let Some(client_origin) = client_origin {
+    let sec_fetch_site = if let Some(client_origin) = client_origin {
       match target_origin.as_ref() {
         Some(target_origin) => {
           if client_origin.same_origin(target_origin) {
@@ -14061,6 +14074,64 @@ mod tests {
     assert!(
       !req.contains("sec-fetch-user:"),
       "iframe navigations should not set Sec-Fetch-User, got: {req}"
+    );
+  }
+
+  #[test]
+  fn http_fetcher_sets_document_no_user_request_headers() {
+    let Some(listener) = try_bind_localhost("http_fetcher_sets_document_no_user_request_headers")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(String::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let request = read_http_request(&mut stream)
+        .unwrap()
+        .expect("expected HTTP request");
+      if let Ok(mut slot) = captured_req.lock() {
+        *slot = String::from_utf8_lossy(&request).to_string();
+      }
+
+      let body = b"doc";
+      let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(headers.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
+    let url = format!("http://{}/redirect.html", addr);
+    let referrer = format!("http://{}/origin.html", addr);
+    let res = fetcher
+      .fetch_with_request(FetchRequest::document_no_user(&url).with_referrer_url(&referrer))
+      .expect("fetch document redirect");
+    handle.join().unwrap();
+
+    assert_eq!(res.bytes, b"doc");
+    let req = captured.lock().unwrap().to_ascii_lowercase();
+    assert!(
+      req.contains("sec-fetch-dest: document"),
+      "expected Sec-Fetch-Dest document, got: {req}"
+    );
+    assert!(
+      req.contains("sec-fetch-mode: navigate"),
+      "expected Sec-Fetch-Mode navigate for document, got: {req}"
+    );
+    assert!(
+      req.contains("sec-fetch-site: same-origin"),
+      "expected Sec-Fetch-Site same-origin for document redirect, got: {req}"
+    );
+    assert!(
+      !req.contains("sec-fetch-user:"),
+      "non-user document navigations should not set Sec-Fetch-User, got: {req}"
     );
   }
 

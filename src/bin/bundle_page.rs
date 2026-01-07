@@ -1359,7 +1359,7 @@ fn fetch_document(
       eprintln!("Following meta refresh to: {target}");
       let referrer = doc.base_hint.clone();
       match fetcher.fetch_with_request(
-        FetchRequest::document(&target).with_referrer_url(&referrer),
+        FetchRequest::document_no_user(&target).with_referrer_url(&referrer),
       ) {
         Ok(res) => {
           resource = res;
@@ -1377,7 +1377,7 @@ fn fetch_document(
         eprintln!("Following JS redirect to: {target}");
         let referrer = doc.base_hint.clone();
         match fetcher.fetch_with_request(
-          FetchRequest::document(&target).with_referrer_url(&referrer),
+          FetchRequest::document_no_user(&target).with_referrer_url(&referrer),
         ) {
           Ok(res) => {
             resource = res;
@@ -1479,7 +1479,9 @@ fn placeholder_resource(
       Some("text/css".to_string()),
       Some(url.to_string()),
     ),
-    FetchDestination::Document | FetchDestination::Iframe => FetchedResource::with_final_url(
+    FetchDestination::Document
+    | FetchDestination::DocumentNoUser
+    | FetchDestination::Iframe => FetchedResource::with_final_url(
       b"<!doctype html><html></html>".to_vec(),
       Some("text/html; charset=utf-8".to_string()),
       Some(url.to_string()),
@@ -1841,7 +1843,9 @@ fn crawl_document(
 
     let policy_for_request = policy.for_origin(document_origin.clone());
     let allowed = match destination {
-      FetchDestination::Document | FetchDestination::Iframe => policy_for_request.allows_document(&url),
+      FetchDestination::Document
+      | FetchDestination::DocumentNoUser
+      | FetchDestination::Iframe => policy_for_request.allows_document(&url),
       _ => policy_for_request.allows(&url),
     };
     if let Err(err) = allowed {
@@ -1875,7 +1879,9 @@ fn crawl_document(
     };
 
     let allowed = match destination {
-      FetchDestination::Document | FetchDestination::Iframe => {
+      FetchDestination::Document
+      | FetchDestination::DocumentNoUser
+      | FetchDestination::Iframe => {
         policy_for_request.allows_document_with_final(&url, res.final_url.as_deref())
       }
       _ => policy_for_request.allows_with_final(&url, res.final_url.as_deref()),
@@ -1905,7 +1911,9 @@ fn crawl_document(
       FetchDestination::ImageCors => {
         ensure_http_success(&res, &url).and_then(|_| ensure_image_mime_sane(&res, &url))
       }
-      FetchDestination::Document | FetchDestination::Iframe => {
+      FetchDestination::Document
+      | FetchDestination::DocumentNoUser
+      | FetchDestination::Iframe => {
         ensure_http_success(&res, &url).and_then(|_| {
           if document_response_looks_like_html(&res, &url) {
             Ok(())
@@ -1970,7 +1978,9 @@ fn crawl_document(
           );
         }
       }
-      FetchDestination::Document | FetchDestination::Iframe => {
+      FetchDestination::Document
+      | FetchDestination::DocumentNoUser
+      | FetchDestination::Iframe => {
         // Iframes/objects/embeds are rendered as nested documents, so crawl their HTML for the
         // same kinds of subresources we discover in the root document (CSS links, inline `url()`,
         // and responsive image candidates aligned with the renderer).
