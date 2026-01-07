@@ -92,6 +92,7 @@ mod svg_filter_url_test;
 mod svg_foreign_object_css_limits_test;
 mod svg_inline_css_cdata_test;
 mod svg_inline_test;
+mod svg_mask_image_reference_test;
 mod text_cache_test;
 mod text_decoration_line_through_golden_test;
 mod text_decoration_skip_ink_offset_golden_test;

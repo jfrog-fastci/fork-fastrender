@@ -6924,7 +6924,8 @@ impl Painter {
         }
 
         let fill_rect = content_rect;
-        let radii = BorderRadii::uniform((fill_rect.height().min(fill_rect.width()) / 6.0).max(2.0));
+        let radii =
+          BorderRadii::uniform((fill_rect.height().min(fill_rect.width()) / 6.0).max(2.0));
         let device_rect = self.device_rect(fill_rect);
         let device_radii = self.device_radii(radii);
         let _ = fill_rounded_rect(
@@ -6937,9 +6938,10 @@ impl Painter {
           muted_accent,
         );
 
-        let luminance =
-          (0.299 * muted_accent.r as f32 + 0.587 * muted_accent.g as f32 + 0.114 * muted_accent.b as f32)
-            / 255.0;
+        let luminance = (0.299 * muted_accent.r as f32
+          + 0.587 * muted_accent.g as f32
+          + 0.114 * muted_accent.b as f32)
+          / 255.0;
         let mark_color = if luminance > 0.5 {
           Rgba::rgb(24, 24, 24)
         } else {
@@ -12832,6 +12834,7 @@ pub fn paint_tree_display_list_with_resources_scaled_offset_depth(
       DisplayListBuilder::with_image_cache(image_cache.clone())
         .with_font_context(font_ctx.clone())
         .with_svg_filter_defs(tree.svg_filter_defs.clone())
+        .with_svg_id_defs(tree.svg_id_defs.clone())
         .with_scroll_state(scroll_state.clone())
         .with_device_pixel_ratio(scale)
         .with_parallelism(&paint_parallelism)

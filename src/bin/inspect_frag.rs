@@ -417,6 +417,7 @@ fn run_dump_outputs(
     let mut filtered_tree = fastrender::FragmentTree::from_fragments(roots, viewport_size);
     filtered_tree.keyframes = fragment_tree.keyframes.clone();
     filtered_tree.svg_filter_defs = fragment_tree.svg_filter_defs.clone();
+    filtered_tree.svg_id_defs = fragment_tree.svg_id_defs.clone();
     filtered_tree.scroll_metadata = fragment_tree.scroll_metadata.clone();
     fragment_tree = filtered_tree;
 

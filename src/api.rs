@@ -97,7 +97,6 @@ use crate::layout::absolute_positioning::resolve_positioned_style;
 use crate::layout::contexts::inline::baseline::compute_line_height_with_metrics_viewport;
 use crate::layout::contexts::inline::line_builder::TextItem;
 use crate::layout::contexts::positioned::ContainingBlock;
-use crate::layout::utils::resolve_font_relative_length;
 use crate::layout::engine::enable_layout_parallel_debug_counters;
 use crate::layout::engine::layout_parallel_debug_counters;
 use crate::layout::engine::layout_parallelism_workload;
@@ -125,6 +124,7 @@ use crate::layout::profile::layout_profile_snapshot;
 use crate::layout::profile::log_layout_profile;
 use crate::layout::profile::reset_layout_profile;
 use crate::layout::profile::LayoutProfileSnapshot;
+use crate::layout::utils::resolve_font_relative_length;
 use crate::paint::display_list_builder::DisplayListBuilder;
 use crate::paint::display_list_renderer::PaintParallelism;
 use crate::paint::painter::paint_backend_from_env;
@@ -7503,6 +7503,7 @@ impl FastRender {
       eprintln!("timing:style_apply {:?}", start.elapsed());
     }
     let mut svg_filter_defs = crate::tree::box_generation::collect_svg_filter_defs(&styled_tree);
+    let mut svg_id_defs = crate::tree::box_generation::collect_svg_id_defs(&styled_tree);
 
     let fallback_page_size = viewport_size;
     let owned_page_rules = {
@@ -7984,6 +7985,7 @@ impl FastRender {
         )?;
         drop((container_scope, reuse_map));
         svg_filter_defs = crate::tree::box_generation::collect_svg_filter_defs(&new_styled_tree);
+        svg_id_defs = crate::tree::box_generation::collect_svg_id_defs(&new_styled_tree);
 
         if let Some(rec) = stats.as_deref_mut() {
           RenderStatsRecorder::add_ms(&mut rec.stats.timings.cascade_ms, container_cascade_timer);
@@ -8155,6 +8157,7 @@ impl FastRender {
     let stylesheet = prepared_cascade.into_stylesheet();
 
     let svg_filter_defs = (!svg_filter_defs.is_empty()).then(|| Arc::new(svg_filter_defs));
+    let svg_id_defs = (!svg_id_defs.is_empty()).then(|| Arc::new(svg_id_defs));
     if let Some(start) = layout_start {
       let now = Instant::now();
       eprintln!("timing:layout {:?}", now - start);
@@ -8228,6 +8231,10 @@ impl FastRender {
 
     if let Some(defs) = svg_filter_defs.clone() {
       fragment_tree.svg_filter_defs = Some(defs);
+    }
+
+    if let Some(defs) = svg_id_defs.clone() {
+      fragment_tree.svg_id_defs = Some(defs);
     }
 
     if has_starting_tree {
@@ -9845,8 +9852,11 @@ impl FastRender {
           // sizing (~20ch at 16px ~= 160px) and avoids wildly undersized controls when using
           // x-height as a proxy.
           let metrics_scaled = self.resolve_scaled_metrics(style);
-          let char_width =
-            resolve_font_relative_length(Length::new(1.0, LengthUnit::Ch), style, &self.font_context);
+          let char_width = resolve_font_relative_length(
+            Length::new(1.0, LengthUnit::Ch),
+            style,
+            &self.font_context,
+          );
           let line_height = compute_line_height_with_metrics_viewport(
             style,
             metrics_scaled.as_ref(),
@@ -11412,7 +11422,10 @@ fn styled_fingerprint_map(root: &StyledNode) -> HashMap<usize, u64> {
       out.insert(base | STYLE_KEY_MARKER, style_layout_fingerprint(marker));
     }
     if let Some(backdrop) = node.styles.backdrop.as_ref() {
-      out.insert(base | STYLE_KEY_BACKDROP, style_layout_fingerprint(backdrop));
+      out.insert(
+        base | STYLE_KEY_BACKDROP,
+        style_layout_fingerprint(backdrop),
+      );
     }
     for child in node.children.iter() {
       walk(child, out);
@@ -11503,19 +11516,19 @@ fn container_query_context_fingerprint(
         info.styles.background_color.b.hash(&mut hasher);
         info.styles.background_color.a.to_bits().hash(&mut hasher);
       }
-        for prop in style_query.custom_properties.iter() {
-          prop.hash(&mut hasher);
-          match info.styles.custom_properties.get(prop) {
-            Some(value) => value
-              .value
-              .trim()
-              .trim_end_matches(';')
-              .trim()
-              .hash(&mut hasher),
-            None => 0u8.hash(&mut hasher),
-          }
+      for prop in style_query.custom_properties.iter() {
+        prop.hash(&mut hasher);
+        match info.styles.custom_properties.get(prop) {
+          Some(value) => value
+            .value
+            .trim()
+            .trim_end_matches(';')
+            .trim()
+            .hash(&mut hasher),
+          None => 0u8.hash(&mut hasher),
         }
       }
+    }
   }
   hasher.finish()
 }
@@ -11808,8 +11821,12 @@ fn box_style_key(node: &BoxNode) -> Option<usize> {
   }
 
   match node.generated_pseudo {
-    Some(crate::tree::box_tree::GeneratedPseudoElement::Before) => return Some(base | STYLE_KEY_BEFORE),
-    Some(crate::tree::box_tree::GeneratedPseudoElement::After) => return Some(base | STYLE_KEY_AFTER),
+    Some(crate::tree::box_tree::GeneratedPseudoElement::Before) => {
+      return Some(base | STYLE_KEY_BEFORE)
+    }
+    Some(crate::tree::box_tree::GeneratedPseudoElement::After) => {
+      return Some(base | STYLE_KEY_AFTER)
+    }
     Some(crate::tree::box_tree::GeneratedPseudoElement::Backdrop) => {
       return Some(base | STYLE_KEY_BACKDROP);
     }
@@ -12310,7 +12327,10 @@ mod tests {
     let mut base = BoxNode::new_block(style, FormattingContextType::Block, vec![]);
     base.styled_node_id = Some(7);
 
-    assert_eq!(super::box_style_key(&base), Some(7 << super::STYLE_KEY_SHIFT));
+    assert_eq!(
+      super::box_style_key(&base),
+      Some(7 << super::STYLE_KEY_SHIFT)
+    );
 
     // DebugInfo must not influence the semantic style key.
     let mut with_debug = base.clone();
@@ -12380,7 +12400,10 @@ mod tests {
 
     let style_map = super::styled_style_map(&styled);
     assert!(
-      Arc::ptr_eq(style_map.get(&base_key).expect("base style entry"), &base_style),
+      Arc::ptr_eq(
+        style_map.get(&base_key).expect("base style entry"),
+        &base_style
+      ),
       "expected base style stored under base key"
     );
     assert!(

@@ -954,6 +954,71 @@ pub fn collect_svg_filter_defs(styled: &StyledNode) -> HashMap<String, String> {
   filters
 }
 
+/// Collect serialized SVG definitions that have an `id` attribute.
+///
+/// This is used to support `mask-image: url(#id)` (and similar fragment-only references) by
+/// materializing the referenced SVG `<mask>` plus any other defs it depends on (e.g. via
+/// `<use href="#...">`, gradient/pattern refs, etc.).
+///
+/// Currently we only collect ids that appear within `<defs>` blocks (plus `<mask>` elements
+/// anywhere in the SVG namespace). This mirrors common real-world authoring patterns while
+/// avoiding accidentally capturing full `<svg id="...">` subtrees, which would duplicate nested
+/// ids when re-embedded into generated mask SVGs.
+pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
+  fn walk(
+    styled: &StyledNode,
+    inherited_xmlns: &[(String, String)],
+    in_defs: bool,
+    defs: &mut HashMap<String, String>,
+  ) {
+    let mut owned_namespaces: Option<Vec<(String, String)>> = None;
+    let mut namespaces = inherited_xmlns;
+    let mut next_in_defs = in_defs;
+    if let crate::dom::DomNodeType::Element {
+      tag_name,
+      namespace,
+      attributes,
+    } = &styled.node.node_type
+    {
+      if attributes.iter().any(|(name, _)| name.starts_with("xmlns")) {
+        let mut updated = inherited_xmlns.to_vec();
+        for (name, value) in attributes.iter().filter(|(n, _)| n.starts_with("xmlns")) {
+          if !updated.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)) {
+            updated.push((name.clone(), value.clone()));
+          }
+        }
+        owned_namespaces = Some(updated);
+        namespaces = owned_namespaces.as_deref().unwrap_or(inherited_xmlns);
+      }
+
+      if namespace == SVG_NAMESPACE && tag_name.eq_ignore_ascii_case("defs") {
+        next_in_defs = true;
+      }
+
+      let eligible = namespace == SVG_NAMESPACE
+        && (next_in_defs || tag_name.eq_ignore_ascii_case("mask"))
+        && !tag_name.eq_ignore_ascii_case("defs");
+      if eligible {
+        if let Some(id) = styled.node.get_attribute_ref("id") {
+          if !id.is_empty() && !defs.contains_key(id) {
+            let mut serialized = String::new();
+            serialize_node_with_namespaces(styled, namespaces, &mut serialized);
+            defs.insert(id.to_string(), serialized);
+          }
+        }
+      }
+    }
+
+    for child in &styled.children {
+      walk(child, namespaces, next_in_defs, defs);
+    }
+  }
+
+  let mut defs = HashMap::new();
+  walk(styled, &[], false, &mut defs);
+  defs
+}
+
 fn format_css_color(color: crate::style::color::Rgba) -> String {
   format!(
     "rgba({},{},{},{:.3})",

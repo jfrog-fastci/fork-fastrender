@@ -192,6 +192,8 @@ pub struct DisplayListBuilder {
   decoded_image_cache: Arc<Mutex<DecodedImageCache>>,
   /// Serialized SVG filter definitions collected from the document DOM.
   svg_filter_defs: Option<Arc<HashMap<String, String>>>,
+  /// Serialized SVG defs (by id) collected from the document DOM.
+  svg_id_defs: Option<Arc<HashMap<String, String>>>,
   viewport: Option<(f32, f32)>,
   font_ctx: FontContext,
   shaper: ShapingPipeline,
@@ -1021,6 +1023,7 @@ impl DisplayListBuilder {
         DECODED_IMAGE_CACHE_MAX_BYTES,
       ))),
       svg_filter_defs: None,
+      svg_id_defs: None,
       viewport: None,
       font_ctx: FontContext::new(),
       shaper: ShapingPipeline::new(),
@@ -1060,6 +1063,7 @@ impl DisplayListBuilder {
         DECODED_IMAGE_CACHE_MAX_BYTES,
       ))),
       svg_filter_defs: None,
+      svg_id_defs: None,
       viewport: None,
       font_ctx: FontContext::new(),
       shaper: ShapingPipeline::new(),
@@ -1109,6 +1113,17 @@ impl DisplayListBuilder {
   /// Updates the SVG filter registry used for `url(#...)` filters.
   pub fn set_svg_filter_defs(&mut self, defs: Option<Arc<HashMap<String, String>>>) {
     self.svg_filter_defs = defs;
+  }
+
+  /// Sets serialized SVG id definitions to use when resolving fragment-only `url(#...)` mask images.
+  pub fn with_svg_id_defs(mut self, defs: Option<Arc<HashMap<String, String>>>) -> Self {
+    self.svg_id_defs = defs;
+    self
+  }
+
+  /// Updates the SVG id registry used for fragment-only `url(#...)` mask images.
+  pub fn set_svg_id_defs(&mut self, defs: Option<Arc<HashMap<String, String>>>) {
+    self.svg_id_defs = defs;
   }
 
   /// Sets the font context for shaping text into the display list.
@@ -1242,6 +1257,11 @@ impl DisplayListBuilder {
       .clone()
       .or_else(|| self.svg_filter_defs.clone());
     let mut svg_filters = SvgFilterResolver::new(defs, svg_roots, image_cache.as_ref());
+
+    self.svg_id_defs = tree
+      .svg_id_defs
+      .clone()
+      .or_else(|| self.svg_id_defs.clone());
 
     let stacking_tree_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
     let contexts = crate::paint::stacking::build_stacking_tree_from_tree_checked(tree)?;
@@ -1414,6 +1434,10 @@ impl DisplayListBuilder {
       .clone()
       .or_else(|| self.svg_filter_defs.clone());
     self.svg_filter_defs = defs;
+    self.svg_id_defs = tree
+      .svg_id_defs
+      .clone()
+      .or_else(|| self.svg_id_defs.clone());
     let stackings = crate::paint::stacking::build_stacking_tree_from_tree_checked(tree)
       .unwrap_or_else(|_| Vec::new());
     self.estimate_from_tree(tree);
@@ -2934,6 +2958,54 @@ impl DisplayListBuilder {
     })
   }
 
+  fn inline_svg_for_svg_mask(&self, mask_id: &str, bounds: Rect) -> Option<String> {
+    let defs = self.svg_id_defs.as_ref()?;
+    if !defs.contains_key(mask_id) {
+      return None;
+    }
+
+    let width = bounds.width().ceil().max(1.0) as u32;
+    let height = bounds.height().ceil().max(1.0) as u32;
+
+    let mut ids: Vec<&String> = defs.keys().collect();
+    ids.sort();
+
+    let mut out = String::new();
+    out.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"");
+    out.push_str(&width.to_string());
+    out.push_str("\" height=\"");
+    out.push_str(&height.to_string());
+    out.push_str("\" viewBox=\"0 0 ");
+    out.push_str(&width.to_string());
+    out.push(' ');
+    out.push_str(&height.to_string());
+    out.push_str("\"><defs>");
+    for id in ids {
+      if let Some(serialized) = defs.get(id) {
+        out.push_str(serialized);
+      }
+    }
+    out.push_str("</defs><rect width=\"100%\" height=\"100%\" fill=\"white\" mask=\"url(#");
+    out.push_str(mask_id);
+    out.push_str(")\"/></svg>");
+    Some(out)
+  }
+
+  fn decode_mask_image_url(
+    &self,
+    src: &str,
+    style: &ComputedStyle,
+    bounds: Rect,
+  ) -> Option<Arc<ImageData>> {
+    let trimmed = src.trim();
+    if let Some(id) = trimmed.strip_prefix('#') {
+      if let Some(svg) = self.inline_svg_for_svg_mask(id, bounds) {
+        return self.decode_image(&svg, Some(style), true, CrossOriginAttribute::None, false);
+      }
+    }
+    self.decode_image(src, Some(style), true, CrossOriginAttribute::None, false)
+  }
+
   fn resolve_mask(&self, style: &ComputedStyle, bounds: Rect) -> Option<ResolvedMask> {
     if !style.mask_layers.iter().any(|layer| layer.image.is_some()) {
       return None;
@@ -2959,9 +3031,7 @@ impl DisplayListBuilder {
           ResolvedMaskImage::Generated(Box::new(image.clone()))
         }
         BackgroundImage::Url(src) => {
-          let Some(image) =
-            self.decode_image(src, Some(style), true, CrossOriginAttribute::None, false)
-          else {
+          let Some(image) = self.decode_mask_image_url(src, style, bounds) else {
             continue;
           };
           ResolvedMaskImage::Raster((*image).clone())
@@ -4169,6 +4239,7 @@ impl DisplayListBuilder {
       image_cache: self.image_cache.clone(),
       decoded_image_cache: Arc::clone(&self.decoded_image_cache),
       svg_filter_defs: self.svg_filter_defs.clone(),
+      svg_id_defs: self.svg_id_defs.clone(),
       viewport: self.viewport,
       font_ctx: self.font_ctx.clone(),
       shaper: self.shaper.clone(),
@@ -7699,9 +7770,10 @@ impl DisplayListBuilder {
             radii,
           }));
 
-        let luminance =
-          (0.299 * muted_accent.r as f32 + 0.587 * muted_accent.g as f32 + 0.114 * muted_accent.b as f32)
-            / 255.0;
+        let luminance = (0.299 * muted_accent.r as f32
+          + 0.587 * muted_accent.g as f32
+          + 0.114 * muted_accent.b as f32)
+          / 255.0;
         let mark_color = if luminance > 0.5 {
           Rgba::rgb(24, 24, 24)
         } else {
@@ -7717,7 +7789,12 @@ impl DisplayListBuilder {
       FormControlKind::Range { value, min, max } => {
         let track_height = 4.0_f32.min(padding_rect.height());
         let track_y = padding_rect.y() + (padding_rect.height() - track_height) / 2.0;
-        let track_rect = Rect::from_xywh(padding_rect.x(), track_y, padding_rect.width(), track_height);
+        let track_rect = Rect::from_xywh(
+          padding_rect.x(),
+          track_y,
+          padding_rect.width(),
+          track_height,
+        );
         self
           .list
           .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
@@ -7746,7 +7823,8 @@ impl DisplayListBuilder {
           track_rect.height(),
         );
         if filled_rect.width() > 0.0 {
-          let radii = BorderRadii::uniform(track_height / 2.0).clamped(filled_rect.width(), filled_rect.height());
+          let radii = BorderRadii::uniform(track_height / 2.0)
+            .clamped(filled_rect.width(), filled_rect.height());
           self
             .list
             .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {

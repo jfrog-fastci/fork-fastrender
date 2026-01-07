@@ -1362,6 +1362,9 @@ pub struct FragmentTree {
   /// SVG filter definitions serialized from the DOM (document-level registry).
   pub svg_filter_defs: Option<Arc<HashMap<String, String>>>,
 
+  /// SVG defs elements (by id) serialized from the DOM (document-level registry).
+  pub svg_id_defs: Option<Arc<HashMap<String, String>>>,
+
   /// The viewport size (may differ from root fragment bounds)
   viewport: Option<Size>,
 
@@ -1376,6 +1379,7 @@ impl FragmentTree {
       root,
       additional_fragments: Vec::new(),
       svg_filter_defs: None,
+      svg_id_defs: None,
       viewport: None,
       keyframes: HashMap::new(),
       scroll_metadata: None,
@@ -1391,6 +1395,7 @@ impl FragmentTree {
       root,
       additional_fragments: Vec::new(),
       svg_filter_defs: None,
+      svg_id_defs: None,
       viewport: Some(viewport),
       keyframes: HashMap::new(),
       scroll_metadata: None,
@@ -1410,6 +1415,7 @@ impl FragmentTree {
       root,
       additional_fragments: roots,
       svg_filter_defs: None,
+      svg_id_defs: None,
       viewport: Some(viewport),
       keyframes: HashMap::new(),
       scroll_metadata: None,
