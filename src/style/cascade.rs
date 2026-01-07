@@ -1194,29 +1194,36 @@ fn eval_plain_style_feature(
   }
 
   let styles = container.styles.as_ref();
-  let resolved_value = if crate::style::var_resolution::contains_var(value) {
-    let raw = PropertyValue::Custom(value.to_string());
+  let raw_value = value;
+  let resolved_value = if crate::style::var_resolution::contains_var(raw_value) {
+    let raw = PropertyValue::Custom(raw_value.to_string());
     match crate::style::var_resolution::resolve_var_for_property(&raw, &styles.custom_properties, "")
     {
-      crate::style::var_resolution::VarResolutionResult::Resolved { css_text, value } => {
+      crate::style::var_resolution::VarResolutionResult::Resolved {
+        css_text,
+        value: resolved_prop,
+      } => {
         // `css_text` is empty on the fast path when no `var()` calls were present. Avoid treating an
         // actual empty resolution (`var(--x,)`) as "no substitution" by also checking whether the
         // resolver had to materialize a new value.
         let no_substitution = matches!(
-          (&value, css_text.as_ref()),
+          (&resolved_prop, css_text.as_ref()),
           (crate::style::var_resolution::ResolvedPropertyValue::Borrowed(_), "")
         );
         if no_substitution {
-          value.as_str()
+          Cow::Borrowed(raw_value)
         } else {
-          css_text.as_ref()
+          // `css_text` borrows from the var resolver inputs; materialize an owned copy so we don't
+          // accidentally return a reference to a temporary.
+          Cow::Owned(css_text.into_owned())
         }
       }
       _ => return false,
     }
   } else {
-    value
+    Cow::Borrowed(raw_value)
   };
+  let resolved_value = resolved_value.as_ref();
 
   if contains_cascade_dependent_keyword(resolved_value) {
     return false;
@@ -1521,16 +1528,19 @@ fn parse_numeric_value(raw: &str, container: &ContainerQueryInfo, ctx: &Containe
           (crate::style::var_resolution::ResolvedPropertyValue::Borrowed(_), "")
         );
         if no_substitution {
-          trimmed
+          Cow::Borrowed(trimmed)
         } else {
-          css_text.as_ref()
+          // `css_text` can borrow from resolver inputs (including the temporary `PropertyValue`
+          // above), so materialize an owned copy before returning it.
+          Cow::Owned(css_text.into_owned())
         }
       }
       _ => return None,
     }
   } else {
-    trimmed
+    Cow::Borrowed(trimmed)
   };
+  let resolved = resolved.as_ref();
 
   if resolved.is_empty() || contains_cascade_dependent_keyword(resolved) {
     return None;
