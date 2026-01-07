@@ -5024,17 +5024,19 @@ impl<'a> ElementRef<'a> {
   }
 
   fn select_value(&self) -> Option<String> {
-    let multiple = self.node.get_attribute_ref("multiple").is_some();
-    if multiple {
-      let mut values = Vec::new();
-      collect_selected_option_values(self.node, &mut values);
-      if values.is_empty() {
-        return None;
-      }
-      return Some(values.join(", "));
+    // Mirror `HTMLSelectElement.value`: the first selected option's value, or the empty string when
+    // no options are selected.
+    if self.node.get_attribute_ref("multiple").is_some() {
+      let value = first_selected_option(self.node)
+        .map(option_value_from_node)
+        .unwrap_or_default();
+      return Some(value);
     }
-    let selected = single_select_selected_option(self.node)?;
-    Some(option_value_from_node(selected))
+
+    let value = single_select_selected_option(self.node)
+      .map(option_value_from_node)
+      .unwrap_or_default();
+    Some(value)
   }
 
   fn parse_number(value: &str) -> Option<f64> {
@@ -5630,9 +5632,9 @@ fn option_value_from_node(node: &DomNode) -> String {
   strip_and_collapse_ascii_whitespace(&collect_descendant_text_content(node))
 }
 
-fn collect_selected_option_values(node: &DomNode, out: &mut Vec<String>) {
-  let mut stack: Vec<&DomNode> = Vec::new();
-  stack.push(node);
+fn first_selected_option<'a>(select: &'a DomNode) -> Option<&'a DomNode> {
+  let mut stack: Vec<&'a DomNode> = Vec::new();
+  stack.push(select);
 
   while let Some(node) = stack.pop() {
     if node_hidden_for_select(node) {
@@ -5644,13 +5646,15 @@ fn collect_selected_option_values(node: &DomNode, out: &mut Vec<String>) {
       .is_some_and(|tag| tag.eq_ignore_ascii_case("option"))
       && node.get_attribute_ref("selected").is_some()
     {
-      out.push(option_value_from_node(node));
+      return Some(node);
     }
 
     for child in node.children.iter().rev() {
       stack.push(child);
     }
   }
+
+  None
 }
 
 fn single_select_selected_option<'a>(select: &'a DomNode) -> Option<&'a DomNode> {
@@ -8210,9 +8214,9 @@ mod tests {
       children: vec![node],
     };
 
-    let mut values = Vec::new();
-    collect_selected_option_values(&select, &mut values);
-    assert_eq!(values, vec!["x".to_string()]);
+    let first_selected = first_selected_option(&select).expect("expected selected option");
+    assert_eq!(first_selected.tag_name().unwrap_or(""), "option");
+    assert_eq!(first_selected.get_attribute_ref("value"), Some("x"));
 
     let selected = single_select_selected_option(&select).expect("expected selected option");
     assert_eq!(selected.tag_name().unwrap_or(""), "option");
@@ -8239,6 +8243,111 @@ mod tests {
       vec![text("Foo "), element("script", vec![text("BAR")]), text(" Baz")],
     );
     assert_eq!(option_value_from_node(&option), "Foo Baz");
+  }
+
+  #[test]
+  fn select_value_multiple_returns_first_selected_option_value() {
+    let select = element_with_attrs(
+      "select",
+      vec![("multiple", "")],
+      vec![
+        element_with_attrs("option", vec![("selected", "")], vec![text("One")]),
+        element_with_attrs("option", vec![("selected", "")], vec![text("Two")]),
+      ],
+    );
+
+    let value = ElementRef::new(&select).control_value();
+    assert_eq!(value, Some("One".to_string()));
+  }
+
+  #[test]
+  fn select_value_multiple_returns_empty_string_when_no_options_selected() {
+    let select = element_with_attrs(
+      "select",
+      vec![("multiple", "")],
+      vec![element("option", vec![text("One")]), element("option", vec![text("Two")])],
+    );
+
+    let value = ElementRef::new(&select).control_value();
+    assert_eq!(value, Some(String::new()));
+  }
+
+  #[test]
+  fn required_multi_select_is_invalid_when_no_options_selected() {
+    let select = element_with_attrs(
+      "select",
+      vec![("multiple", ""), ("required", "")],
+      vec![element("option", vec![text("One")]), element("option", vec![text("Two")])],
+    );
+
+    assert!(!ElementRef::new(&select).is_valid_control());
+  }
+
+  #[test]
+  fn required_multi_select_is_invalid_when_only_disabled_options_selected() {
+    let select = element_with_attrs(
+      "select",
+      vec![("multiple", ""), ("required", "")],
+      vec![
+        element_with_attrs("option", vec![("selected", ""), ("disabled", "")], vec![text("One")]),
+        element("option", vec![text("Two")]),
+      ],
+    );
+
+    assert!(!ElementRef::new(&select).is_valid_control());
+  }
+
+  #[test]
+  fn required_multi_select_is_valid_when_an_enabled_option_is_selected() {
+    let select = element_with_attrs(
+      "select",
+      vec![("multiple", ""), ("required", "")],
+      vec![
+        element_with_attrs("option", vec![("selected", ""), ("disabled", "")], vec![text("One")]),
+        element_with_attrs("option", vec![("selected", "")], vec![text("Two")]),
+      ],
+    );
+
+    assert!(ElementRef::new(&select).is_valid_control());
+  }
+
+  #[test]
+  fn select_value_multiple_includes_disabled_selected_placeholder() {
+    let select = element_with_attrs(
+      "select",
+      vec![("multiple", "")],
+      vec![
+        element_with_attrs(
+          "option",
+          vec![("selected", ""), ("disabled", ""), ("value", "")],
+          vec![text("Choose...")],
+        ),
+        element_with_attrs("option", vec![("selected", ""), ("value", "two")], vec![text("Two")]),
+      ],
+    );
+
+    let value = ElementRef::new(&select).control_value();
+    assert_eq!(value, Some(String::new()));
+  }
+
+  #[test]
+  fn select_value_single_uses_last_selected_option_in_tree_order() {
+    let select = element_with_attrs(
+      "select",
+      vec![],
+      vec![
+        element_with_attrs("option", vec![("selected", "")], vec![text("One")]),
+        element_with_attrs("option", vec![("selected", "")], vec![text("Two")]),
+      ],
+    );
+
+    assert_eq!(ElementRef::new(&select).control_value(), Some("Two".to_string()));
+
+    let ancestors: [&DomNode; 1] = [&select];
+    let option_one_ref = ElementRef::with_ancestors(&select.children[0], &ancestors);
+    let option_two_ref = ElementRef::with_ancestors(&select.children[1], &ancestors);
+    assert!(!option_one_ref.is_checked());
+    assert!(option_two_ref.is_checked());
   }
 
   #[test]
