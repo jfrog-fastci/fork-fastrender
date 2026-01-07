@@ -148,13 +148,23 @@ fn container_type_rejects_none_and_style_keywords_and_container_shorthand_resets
       .base { container-type: inline-size; }
       .invalid-style { container-type: style; }
       .invalid-none { container-type: none; }
+      .commented-size { container-type: size/*comment*/; }
+      .escaped-size { container-type: s\69ze; }
       .reset { container: none; }
       .name-only { container: demo; }
+      .commented-reset { container: none/*comment*/; }
+      .commented-name-only { container: demo/*comment*/; }
+      .commented-name-and-type { container: demo /*comment*/ / inline-size; }
     </style>
     <div id="invalid-style" class="base invalid-style"></div>
     <div id="invalid-none" class="base invalid-none"></div>
+    <div id="commented-size" class="base commented-size"></div>
+    <div id="escaped-size" class="base escaped-size"></div>
     <div id="reset" class="base reset"></div>
     <div id="name-only" class="base name-only"></div>
+    <div id="commented-reset" class="base commented-reset"></div>
+    <div id="commented-name-only" class="base commented-name-only"></div>
+    <div id="commented-name-and-type" class="base commented-name-and-type"></div>
   "#;
 
   let styled = styled_tree_for(html);
@@ -165,6 +175,12 @@ fn container_type_rejects_none_and_style_keywords_and_container_shorthand_resets
   let invalid_none = find_by_id(&styled, "invalid-none").expect("invalid-none element");
   assert_eq!(invalid_none.styles.container_type, ContainerType::InlineSize);
 
+  let commented_size = find_by_id(&styled, "commented-size").expect("commented-size element");
+  assert_eq!(commented_size.styles.container_type, ContainerType::Size);
+
+  let escaped_size = find_by_id(&styled, "escaped-size").expect("escaped-size element");
+  assert_eq!(escaped_size.styles.container_type, ContainerType::Size);
+
   let reset = find_by_id(&styled, "reset").expect("reset element");
   assert_eq!(reset.styles.container_type, ContainerType::Normal);
   assert!(reset.styles.container_name.is_empty());
@@ -172,4 +188,24 @@ fn container_type_rejects_none_and_style_keywords_and_container_shorthand_resets
   let name_only = find_by_id(&styled, "name-only").expect("name-only element");
   assert_eq!(name_only.styles.container_type, ContainerType::Normal);
   assert_eq!(name_only.styles.container_name, vec!["demo".to_string()]);
+
+  let commented_reset = find_by_id(&styled, "commented-reset").expect("commented-reset element");
+  assert_eq!(commented_reset.styles.container_type, ContainerType::Normal);
+  assert!(commented_reset.styles.container_name.is_empty());
+
+  let commented_name_only =
+    find_by_id(&styled, "commented-name-only").expect("commented-name-only element");
+  assert_eq!(commented_name_only.styles.container_type, ContainerType::Normal);
+  assert_eq!(
+    commented_name_only.styles.container_name,
+    vec!["demo".to_string()]
+  );
+
+  let commented_name_and_type =
+    find_by_id(&styled, "commented-name-and-type").expect("commented-name-and-type element");
+  assert_eq!(commented_name_and_type.styles.container_type, ContainerType::InlineSize);
+  assert_eq!(
+    commented_name_and_type.styles.container_name,
+    vec!["demo".to_string()]
+  );
 }

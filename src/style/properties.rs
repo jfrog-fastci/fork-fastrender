@@ -13445,15 +13445,40 @@ fn parse_container_type_keyword(text: &str) -> Option<ContainerType> {
   }
 }
 
+fn parse_container_type_from_str(input: &str) -> Option<ContainerType> {
+  let trimmed = input.trim();
+  if trimmed.is_empty() {
+    return None;
+  }
+
+  let mut input = ParserInput::new(trimmed);
+  let mut parser = Parser::new(&mut input);
+  let mut container_type = None;
+
+  while let Ok(token) = parser.next_including_whitespace_and_comments() {
+    match token {
+      Token::WhiteSpace(_) | Token::Comment(_) => continue,
+      Token::Ident(ident) => {
+        if container_type.is_some() {
+          return None;
+        }
+        container_type = parse_container_type_keyword(ident.as_ref());
+        if container_type.is_none() {
+          return None;
+        }
+      }
+      _ => return None,
+    }
+  }
+
+  container_type
+}
+
 fn parse_container_type_value(value: &PropertyValue) -> Option<ContainerType> {
   let PropertyValue::Keyword(text) = value else {
     return None;
   };
-  let trimmed = text.trim();
-  if trimmed.is_empty() {
-    return None;
-  }
-  parse_container_type_keyword(trimmed)
+  parse_container_type_from_str(text)
 }
 
 fn parse_container_names_from_str(input: &str) -> Option<Vec<String>> {
@@ -13531,23 +13556,79 @@ fn parse_container_shorthand(
     return None;
   }
 
-  let mut parts = trimmed.splitn(2, '/');
-  let left = parts.next().unwrap_or("").trim();
-  let right = parts.next().map(|s| s.trim());
+  let mut input = ParserInput::new(trimmed);
+  let mut parser = Parser::new(&mut input);
+  let mut names = Vec::new();
+  let mut saw_none = false;
+  let mut saw_slash = false;
 
-  if left.is_empty() {
+  while let Ok(token) = parser.next_including_whitespace_and_comments() {
+    match token {
+      Token::WhiteSpace(_) | Token::Comment(_) => continue,
+      Token::Delim('/') => {
+        saw_slash = true;
+        break;
+      }
+      Token::Ident(ident) => {
+        let ident = ident.as_ref();
+        if ident.eq_ignore_ascii_case("none") {
+          if saw_none || !names.is_empty() {
+            return None;
+          }
+          saw_none = true;
+          continue;
+        }
+
+        if saw_none
+          || ident.eq_ignore_ascii_case("and")
+          || ident.eq_ignore_ascii_case("or")
+          || ident.eq_ignore_ascii_case("not")
+          || ident.eq_ignore_ascii_case("default")
+          || ident.eq_ignore_ascii_case("inherit")
+          || ident.eq_ignore_ascii_case("initial")
+          || ident.eq_ignore_ascii_case("unset")
+          || ident.eq_ignore_ascii_case("revert")
+          || ident.eq_ignore_ascii_case("revert-layer")
+        {
+          return None;
+        }
+
+        names.push(ident.to_string());
+      }
+      Token::Comma | Token::Delim(',') => return None,
+      _ => return None,
+    }
+  }
+
+  if !saw_none && names.is_empty() {
     // The shorthand requires a container-name component.
     return None;
   }
 
-  let names = parse_container_names_from_str(left)?;
-  let container_type = match right {
-    Some(part) if part.is_empty() => return None,
-    Some(part) => parse_container_type_keyword(part)?,
-    None => ContainerType::Normal,
-  };
+  let names = if saw_none { Vec::new() } else { names };
 
-  Some((names, container_type))
+  if !saw_slash {
+    return Some((names, ContainerType::Normal));
+  }
+
+  let mut container_type: Option<ContainerType> = None;
+  while let Ok(token) = parser.next_including_whitespace_and_comments() {
+    match token {
+      Token::WhiteSpace(_) | Token::Comment(_) => continue,
+      Token::Ident(ident) => {
+        if container_type.is_some() {
+          return None;
+        }
+        container_type = parse_container_type_keyword(ident.as_ref());
+        if container_type.is_none() {
+          return None;
+        }
+      }
+      _ => return None,
+    }
+  }
+
+  Some((names, container_type?))
 }
 
 fn parse_containment(value: &PropertyValue) -> Option<Containment> {
