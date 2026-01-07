@@ -177,6 +177,24 @@ fn font_variation_settings_descriptor_overrides_matching_axes() {
   );
 }
 
+#[test]
+fn font_variation_settings_descriptor_accepts_calc() {
+  let url = "https://example.test/testvar_calc.ttf";
+  let faces = parse_faces(&format!(
+    "@font-face {{ font-family: VarCalc; src: url(\"{url}\"); font-variation-settings: \"wght\" calc(400 + 200); }}"
+  ));
+  assert_eq!(faces.len(), 1);
+  assert!(
+    faces[0]
+      .font_variation_settings
+      .as_deref()
+      .is_some_and(|settings| settings
+        .iter()
+        .any(|setting| setting.tag == *b"wght" && (setting.value - 600.0).abs() < 0.001)),
+    "expected calc() to be evaluated for font-variation-settings descriptor"
+  );
+}
+
 fn read_u16_be(data: &[u8], offset: usize) -> Option<u16> {
   data
     .get(offset..offset + 2)
