@@ -207,4 +207,33 @@ mod tests {
   fn supports_light_dark_color_function() {
     assert!(supports_declaration("color", "light-dark(red,red)"));
   }
+
+  #[test]
+  fn supports_transition_behavior_accepts_known_keywords_and_rejects_invalid() {
+    assert!(supports_declaration("transition-behavior", "normal"));
+    assert!(supports_declaration("transition-behavior", "allow-discrete"));
+    assert!(supports_declaration(
+      "transition-behavior",
+      "normal, allow-discrete"
+    ));
+
+    assert!(!supports_declaration("transition-behavior", "bogus"));
+    assert!(!supports_declaration(
+      "transition-behavior",
+      "normal allow-discrete"
+    ));
+    assert!(!supports_declaration("transition-behavior", "normal,"));
+  }
+
+  #[test]
+  fn supports_timeline_scope_accepts_keywords_and_dashed_ident_list() {
+    assert!(supports_declaration("timeline-scope", "none"));
+    assert!(supports_declaration("timeline-scope", "all"));
+    assert!(supports_declaration("timeline-scope", "--scroller"));
+    assert!(supports_declaration("timeline-scope", "--a, --b"));
+
+    assert!(!supports_declaration("timeline-scope", "bogus"));
+    assert!(!supports_declaration("timeline-scope", "foo, --bar"));
+    assert!(!supports_declaration("timeline-scope", "--foo bar"));
+  }
 }

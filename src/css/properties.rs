@@ -44,6 +44,7 @@ pub(crate) fn is_raw_only_property(property: &str) -> bool {
     property,
     "scroll-timeline"
       | "view-timeline"
+      | "timeline-scope"
       | "animation-timeline"
       | "animation-range"
       | "animation-range-start"
@@ -72,6 +73,7 @@ pub(crate) fn is_raw_only_property(property: &str) -> bool {
       | "transition-duration"
       | "transition-delay"
       | "transition-timing-function"
+      | "transition-behavior"
       | "transition"
   )
 }
@@ -377,6 +379,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "scroll-snap-stop",
   "scroll-timeline",
   "view-timeline",
+  "timeline-scope",
   "scroll-padding",
   "scroll-padding-top",
   "scroll-padding-right",
@@ -460,6 +463,7 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "transform-style",
   "transform-origin",
   "transition",
+  "transition-behavior",
   "transition-delay",
   "transition-duration",
   "transition-property",
@@ -2032,6 +2036,78 @@ fn supports_animation_duration_value(raw_value: &str) -> bool {
   !times.is_empty()
 }
 
+fn supports_transition_behavior_value(raw_value: &str) -> bool {
+  let raw_value = raw_value.trim();
+  if raw_value.is_empty() {
+    return false;
+  }
+
+  let mut input = ParserInput::new(raw_value);
+  let mut parser = Parser::new(&mut input);
+  parser.skip_whitespace();
+  let behaviors = match parser.parse_comma_separated(|p| {
+    p.skip_whitespace();
+    let token = p.next()?;
+    match token {
+      Token::Ident(ident) => {
+        if ident.eq_ignore_ascii_case("normal") || ident.eq_ignore_ascii_case("allow-discrete") {
+          Ok(())
+        } else {
+          Err(p.new_custom_error::<(), ()>(()))
+        }
+      }
+      _ => Err(p.new_custom_error::<(), ()>(())),
+    }
+  }) {
+    Ok(items) => items,
+    Err(_) => return false,
+  };
+  parser.skip_whitespace();
+  if !parser.is_exhausted() {
+    return false;
+  }
+
+  !behaviors.is_empty()
+}
+
+fn supports_timeline_scope_value(raw_value: &str) -> bool {
+  let raw_value = raw_value.trim();
+  if raw_value.is_empty() {
+    return false;
+  }
+
+  if raw_value.eq_ignore_ascii_case("none") || raw_value.eq_ignore_ascii_case("all") {
+    return true;
+  }
+
+  let mut input = ParserInput::new(raw_value);
+  let mut parser = Parser::new(&mut input);
+  parser.skip_whitespace();
+  let scopes = match parser.parse_comma_separated(|p| {
+    p.skip_whitespace();
+    let token = p.next()?;
+    match token {
+      Token::Ident(ident) => {
+        if ident.as_ref().starts_with("--") {
+          Ok(())
+        } else {
+          Err(p.new_custom_error::<(), ()>(()))
+        }
+      }
+      _ => Err(p.new_custom_error::<(), ()>(())),
+    }
+  }) {
+    Ok(items) => items,
+    Err(_) => return false,
+  };
+  parser.skip_whitespace();
+  if !parser.is_exhausted() {
+    return false;
+  }
+
+  !scopes.is_empty()
+}
+
 fn supports_scroll_timeline_function<'i, 't>(
   input: &mut Parser<'i, 't>,
 ) -> Result<(), cssparser::ParseError<'i, ()>> {
@@ -2426,6 +2502,8 @@ pub(crate) fn supports_parsed_declaration_is_valid(
       return supports_animation_duration_value(raw_value)
     }
     "animation-timeline" => return supports_animation_timeline_value(raw_value),
+    "timeline-scope" => return supports_timeline_scope_value(raw_value),
+    "transition-behavior" => return supports_transition_behavior_value(raw_value),
     "direction" => return keyword_in_list(parsed, &["ltr", "rtl"]),
     "visibility" => return keyword_in_list(parsed, &["visible", "hidden", "collapse"]),
     "container-type" => {
@@ -3910,6 +3988,7 @@ fn parse_stop_angle(token: &str) -> Option<f32> {
 mod tests {
   use super::*;
   use crate::css::parser::parse_stylesheet;
+  use crate::css::types::CssRule;
   use crate::css::value_cache;
   use crate::style::color::Color;
   use crate::style::properties::supported_properties;
@@ -4635,6 +4714,42 @@ mod tests {
   fn page_properties_require_page_context() {
     assert!(parse_property_value("size", "A4").is_none());
     assert!(parse_property_value_in_context(DeclarationContext::Page, "size", "A4").is_some());
+  }
+
+  #[test]
+  fn parses_transition_behavior_and_timeline_scope_declarations() {
+    let sheet = parse_stylesheet(
+      ".a{transition-behavior: allow-discrete; timeline-scope: --scroller;}",
+    )
+    .expect("stylesheet");
+    let CssRule::Style(rule) = sheet.rules.first().expect("style rule") else {
+      panic!("expected style rule");
+    };
+
+    let mut saw_transition_behavior = false;
+    let mut saw_timeline_scope = false;
+    for decl in &rule.declarations {
+      match decl.property.as_str() {
+        "transition-behavior" => {
+          saw_transition_behavior = true;
+          assert!(matches!(
+            &decl.value,
+            PropertyValue::Keyword(kw) if kw == "allow-discrete"
+          ));
+        }
+        "timeline-scope" => {
+          saw_timeline_scope = true;
+          assert!(matches!(
+            &decl.value,
+            PropertyValue::Keyword(kw) if kw == "--scroller"
+          ));
+        }
+        _ => {}
+      }
+    }
+
+    assert!(saw_transition_behavior, "transition-behavior declaration dropped");
+    assert!(saw_timeline_scope, "timeline-scope declaration dropped");
   }
 
   #[test]
