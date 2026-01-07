@@ -14838,7 +14838,12 @@ fn parse_background_position(value: &PropertyValue) -> Option<BackgroundPosition
 
   let parts: Vec<Part> = match value {
     PropertyValue::Multiple(values) if !values.is_empty() => {
-      values.iter().filter_map(classify).collect()
+      let mut parts = Vec::with_capacity(values.len());
+      for value in values {
+        let part = classify(value)?;
+        parts.push(part);
+      }
+      parts
     }
     other => classify(other).into_iter().collect(),
   };
@@ -24792,6 +24797,111 @@ mod tests {
   }
 
   #[test]
+  fn background_shorthand_parses_two_token_position() {
+    let mut style = ComputedStyle::default();
+    let decl = Declaration {
+      property: "background".into(),
+      value: PropertyValue::Multiple(vec![
+        PropertyValue::Url("a".to_string()),
+        PropertyValue::Keyword("no-repeat".to_string()),
+        PropertyValue::Keyword("right".to_string()),
+        PropertyValue::Keyword("top".to_string()),
+      ]),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+
+    let BackgroundPosition::Position { x, y } = style.background_layers[0].position;
+    assert!((x.alignment - 1.0).abs() < 0.01);
+    assert!(x.offset.is_zero());
+    assert!((y.alignment - 0.0).abs() < 0.01);
+    assert!(y.offset.is_zero());
+  }
+
+  #[test]
+  fn background_shorthand_position_does_not_swallow_repeat() {
+    let mut style = ComputedStyle::default();
+    let decl = Declaration {
+      property: "background".into(),
+      value: PropertyValue::Multiple(vec![
+        PropertyValue::Url("a".to_string()),
+        PropertyValue::Keyword("right".to_string()),
+        PropertyValue::Keyword("no-repeat".to_string()),
+      ]),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+
+    assert_eq!(style.background_layers[0].repeat, BackgroundRepeat::no_repeat());
+    let BackgroundPosition::Position { x, y } = style.background_layers[0].position;
+    assert!((x.alignment - 1.0).abs() < 0.01);
+    assert!((y.alignment - 0.5).abs() < 0.01);
+  }
+
+  #[test]
+  fn background_shorthand_multi_layer_parses_two_token_positions() {
+    let mut style = ComputedStyle::default();
+    let decl = Declaration {
+      property: "background".into(),
+      value: PropertyValue::Multiple(vec![
+        PropertyValue::Url("a".to_string()),
+        PropertyValue::Keyword("no-repeat".to_string()),
+        PropertyValue::Keyword("right".to_string()),
+        PropertyValue::Keyword("top".to_string()),
+        PropertyValue::Keyword(",".to_string()),
+        PropertyValue::Url("b".to_string()),
+        PropertyValue::Keyword("no-repeat".to_string()),
+        PropertyValue::Keyword("left".to_string()),
+        PropertyValue::Keyword("bottom".to_string()),
+      ]),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+
+    assert_eq!(style.background_layers.len(), 2);
+
+    let BackgroundPosition::Position { x, y } = style.background_layers[0].position;
+    assert!((x.alignment - 1.0).abs() < 0.01);
+    assert!((y.alignment - 0.0).abs() < 0.01);
+
+    let BackgroundPosition::Position { x, y } = style.background_layers[1].position;
+    assert!((x.alignment - 0.0).abs() < 0.01);
+    assert!((y.alignment - 1.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn mask_shorthand_parses_two_token_position() {
+    let mut style = ComputedStyle::default();
+    let decl = Declaration {
+      property: "mask".into(),
+      value: PropertyValue::Multiple(vec![
+        PropertyValue::Url("a".to_string()),
+        PropertyValue::Keyword("no-repeat".to_string()),
+        PropertyValue::Keyword("right".to_string()),
+        PropertyValue::Keyword("top".to_string()),
+      ]),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+
+    let BackgroundPosition::Position { x, y } = style.mask_layers[0].position;
+    assert!((x.alignment - 1.0).abs() < 0.01);
+    assert!((y.alignment - 0.0).abs() < 0.01);
+  }
+
+  #[test]
   fn empty_background_image_url_treated_as_none() {
     let mut style = ComputedStyle::default();
     apply_declaration(
@@ -27983,9 +28093,20 @@ fn parse_mask_shorthand(tokens: &[PropertyValue]) -> Option<MaskShorthand> {
     }
 
     if shorthand.position.is_none() {
-      if let Some(pos) = parse_background_position(token) {
-        shorthand.position = Some(pos);
-        idx += 1;
+      let mut matched = false;
+      for n in (1..=4).rev() {
+        if idx + n > tokens.len() {
+          continue;
+        }
+        let candidate = PropertyValue::Multiple(tokens[idx..idx + n].to_vec());
+        if let Some(pos) = parse_background_position(&candidate) {
+          shorthand.position = Some(pos);
+          idx += n;
+          matched = true;
+          break;
+        }
+      }
+      if matched {
         continue;
       }
     }
@@ -28163,9 +28284,20 @@ fn parse_background_shorthand(
 
     // Position (if not already parsed via slash)
     if shorthand.position.is_none() {
-      if let Some(pos) = parse_background_position(token) {
-        shorthand.position = Some(pos);
-        idx += 1;
+      let mut matched = false;
+      for n in (1..=4).rev() {
+        if idx + n > tokens.len() {
+          continue;
+        }
+        let candidate = PropertyValue::Multiple(tokens[idx..idx + n].to_vec());
+        if let Some(pos) = parse_background_position(&candidate) {
+          shorthand.position = Some(pos);
+          idx += n;
+          matched = true;
+          break;
+        }
+      }
+      if matched {
         continue;
       }
     }
