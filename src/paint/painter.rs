@@ -7474,11 +7474,10 @@ impl Painter {
     clip_mask: Option<&Mask>,
     reject_placeholder: bool,
   ) -> bool {
-    if src.url.is_empty() {
+    let trimmed = src.url.trim_start();
+    if trimmed.is_empty() {
       return false;
     }
-
-    let trimmed = src.url.trim_start();
     let inline_svg = trimmed.starts_with('<');
     let resolved_src = if inline_svg {
       "inline-svg".to_string()
@@ -18023,6 +18022,32 @@ mod tests {
       (200, 200, 200, 255),
       "invalid iframe src should paint UA placeholder fill"
     );
+  }
+
+  #[test]
+  fn paint_image_from_src_ignores_whitespace_url() {
+    let mut painter = Painter::new(10, 10, Rgba::WHITE).expect("painter");
+    painter.fill_background();
+    let src = crate::tree::box_tree::SelectedImageSource {
+      url: "   ",
+      descriptor: None,
+      density: None,
+      from_picture: false,
+    };
+    assert!(
+      !painter.paint_image_from_src(
+        &src,
+        CrossOriginAttribute::None,
+        None,
+        0.0,
+        0.0,
+        10.0,
+        10.0,
+        None,
+      ),
+      "whitespace URL must not be treated as a paintable image source"
+    );
+    assert_eq!(color_at(&painter.pixmap, 5, 5), (255, 255, 255, 255));
   }
 
   fn fill_solid_rgba(pixmap: &mut Pixmap, rgba: (u8, u8, u8, u8)) {
