@@ -207,7 +207,10 @@ fn test_ref_diff_summary() {
   let pixmap2 = create_solid_pixmap(10, 10, 255, 0, 0, 255).unwrap();
 
   let diff = compare_images(&pixmap1, &pixmap2, &CompareConfig::strict());
-  assert_eq!(diff.summary(), "Images match");
+  assert_eq!(
+    diff.summary(),
+    "Images match (0.0000% different, perceptual distance 0.0000)"
+  );
 
   let pixmap3 = create_solid_pixmap(20, 20, 255, 0, 0, 255).unwrap();
   let diff2 = compare_images(&pixmap1, &pixmap3, &CompareConfig::strict());
@@ -221,11 +224,11 @@ fn test_ref_create_solid_pixmap() {
   assert_eq!(pixmap.width(), 5);
   assert_eq!(pixmap.height(), 5);
 
-  // Check first pixel (BGRA format)
+  // Check first pixel (premultiplied RGBA)
   let data = pixmap.data();
-  assert_eq!(data[0], 32); // B
+  assert_eq!(data[0], 128); // R
   assert_eq!(data[1], 64); // G
-  assert_eq!(data[2], 128); // R
+  assert_eq!(data[2], 32); // B
   assert_eq!(data[3], 255); // A
 }
 
