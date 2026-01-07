@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>@supports container-type unsupported value is false</title>
+<style>
+  body {
+    margin: 0;
+    background: white;
+  }
+  #box {
+    width: 120px;
+    height: 120px;
+    background: rgb(255, 0, 0);
+  }
+
+  /* `scroll-state` is a valid keyword in specs but not implemented here. */
+  @supports (container-type: scroll-state) {
+    #box {
+      background: rgb(0, 160, 0);
+    }
+  }
+</style>
+<div id="box"></div>
+

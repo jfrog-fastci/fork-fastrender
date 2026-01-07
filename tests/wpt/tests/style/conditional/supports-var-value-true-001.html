@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>@supports var() value is treated as supported</title>
+<style>
+  body {
+    margin: 0;
+    background: white;
+  }
+  #box {
+    width: 120px;
+    height: 120px;
+    background: rgb(255, 0, 0);
+  }
+
+  /* Values containing var() should make the condition true when the property is known. */
+  @supports (color: var(--x)) {
+    #box {
+      background: rgb(0, 160, 0);
+    }
+  }
+</style>
+<div id="box"></div>
+

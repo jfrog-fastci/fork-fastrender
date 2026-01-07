@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>@supports custom property condition is true</title>
+<style>
+  body {
+    margin: 0;
+    background: white;
+  }
+  #box {
+    width: 120px;
+    height: 120px;
+    background: rgb(255, 0, 0);
+  }
+
+  /* Custom properties accept any value in supports(). */
+  @supports (--custom-prop: 1) {
+    #box {
+      background: rgb(0, 160, 0);
+    }
+  }
+</style>
+<div id="box"></div>
+
