@@ -4,6 +4,7 @@
 //! for representing CSS rules, selectors, and values.
 
 pub mod encoding;
+pub(crate) mod ident;
 pub mod loader;
 pub mod parser;
 pub mod properties;

@@ -1050,8 +1050,15 @@ fn parse_container_name<'i, 't>(
   parser: &mut Parser<'i, 't>,
 ) -> std::result::Result<String, ParseError<'i, ()>> {
   parser.skip_whitespace();
-  let ident = parser.expect_ident_cloned()?;
-  let ident_ref = ident.as_ref();
+  let ident = if let Ok(generated) = parser.try_parse(|p| {
+    p.expect_function_matching("ident")?;
+    p.parse_nested_block(crate::css::ident::parse_ident_function_contents)
+  }) {
+    generated
+  } else {
+    parser.expect_ident_cloned()?.to_string()
+  };
+  let ident_ref = ident.as_str();
   if ident_ref.eq_ignore_ascii_case("none")
     || ident_ref.eq_ignore_ascii_case("and")
     || ident_ref.eq_ignore_ascii_case("or")
@@ -1065,7 +1072,7 @@ fn parse_container_name<'i, 't>(
   {
     return Err(parser.new_custom_error(()));
   }
-  Ok(ident.to_string())
+  Ok(ident)
 }
 
 fn parse_container_condition<'i, 't>(

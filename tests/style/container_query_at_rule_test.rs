@@ -213,6 +213,22 @@ fn named_container_selection() {
 }
 
 #[test]
+fn container_query_accepts_ident_function_container_name() {
+  let css = r#"
+    .target { display: block; }
+    @container ident(sidebar) (min-width: 400px) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let styled_named = cascade_with_container(css, 500.0, vec!["sidebar".into()]);
+  assert_eq!(
+    display(find_by_id(&styled_named, "t").expect("target")),
+    "inline"
+  );
+}
+
+#[test]
 fn container_query_list_uses_or_semantics() {
   let css = r#"
     .target { display: block; }

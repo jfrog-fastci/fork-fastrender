@@ -13943,6 +13943,27 @@ fn parse_container_names_from_str(input: &str) -> Option<Vec<String>> {
 
         names.push(ident.to_string());
       }
+      Token::Function(name) if name.as_ref().eq_ignore_ascii_case("ident") => {
+        let generated = parser
+          .parse_nested_block(crate::css::ident::parse_ident_function_contents)
+          .ok()?;
+        let ident = generated.as_str();
+        if saw_none
+          || ident.eq_ignore_ascii_case("none")
+          || ident.eq_ignore_ascii_case("and")
+          || ident.eq_ignore_ascii_case("or")
+          || ident.eq_ignore_ascii_case("not")
+          || ident.eq_ignore_ascii_case("default")
+          || ident.eq_ignore_ascii_case("inherit")
+          || ident.eq_ignore_ascii_case("initial")
+          || ident.eq_ignore_ascii_case("unset")
+          || ident.eq_ignore_ascii_case("revert")
+          || ident.eq_ignore_ascii_case("revert-layer")
+        {
+          return None;
+        }
+        names.push(generated);
+      }
       Token::Comma | Token::Delim(',') => return None,
       _ => return None,
     }
@@ -14012,6 +14033,27 @@ fn parse_container_shorthand(
         }
 
         names.push(ident.to_string());
+      }
+      Token::Function(name) if name.as_ref().eq_ignore_ascii_case("ident") => {
+        let generated = parser
+          .parse_nested_block(crate::css::ident::parse_ident_function_contents)
+          .ok()?;
+        let ident = generated.as_str();
+        if saw_none
+          || ident.eq_ignore_ascii_case("none")
+          || ident.eq_ignore_ascii_case("and")
+          || ident.eq_ignore_ascii_case("or")
+          || ident.eq_ignore_ascii_case("not")
+          || ident.eq_ignore_ascii_case("default")
+          || ident.eq_ignore_ascii_case("inherit")
+          || ident.eq_ignore_ascii_case("initial")
+          || ident.eq_ignore_ascii_case("unset")
+          || ident.eq_ignore_ascii_case("revert")
+          || ident.eq_ignore_ascii_case("revert-layer")
+        {
+          return None;
+        }
+        names.push(generated);
       }
       Token::Comma | Token::Delim(',') => return None,
       _ => return None,

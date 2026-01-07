@@ -125,6 +125,37 @@ fn container_name_rejects_strings() {
 }
 
 #[test]
+fn container_name_accepts_ident_function() {
+  let html = r#"
+    <style>
+      #target { container-name: ident(foo) ident("bar") ident(12); }
+    </style>
+    <div id="target"></div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(
+    target.styles.container_name,
+    vec!["foo".to_string(), "bar".to_string(), "12".to_string()]
+  );
+}
+
+#[test]
+fn container_name_ident_function_rejects_none_keyword() {
+  let html = r#"
+    <style>
+      #target { container-name: foo; container-name: ident(none); }
+    </style>
+    <div id="target"></div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(target.styles.container_name, vec!["foo".to_string()]);
+}
+
+#[test]
 fn container_name_none_accepts_comments_and_escapes() {
   let html = r#"
     <style>
