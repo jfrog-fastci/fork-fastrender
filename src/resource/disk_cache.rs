@@ -3459,9 +3459,9 @@ mod tests {
     runtime::with_thread_runtime_toggles(toggles, || {
       let tmp = tempfile::tempdir().unwrap();
       let req_a =
-        FetchRequest::new(&url, FetchDestination::Font).with_referrer("http://a.test/page");
+        FetchRequest::new(&url, FetchDestination::Font).with_referrer_url("http://a.test/page");
       let req_b =
-        FetchRequest::new(&url, FetchDestination::Font).with_referrer("http://b.test/page");
+        FetchRequest::new(&url, FetchDestination::Font).with_referrer_url("http://b.test/page");
 
       let disk = DiskCachingFetcher::new(HttpFetcher::new(), tmp.path());
       let first_a = disk.fetch_with_request(req_a).expect("fetch A");
