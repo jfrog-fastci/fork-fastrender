@@ -8190,6 +8190,9 @@ impl FlexFormattingContext {
       )?;
       style.size.width = Dimension::length(candidate.fragment.bounds.width().max(0.0));
       style.size.height = Dimension::length(candidate.fragment.bounds.height().max(0.0));
+      style.flex_grow = 0.0;
+      style.flex_shrink = 0.0;
+      style.flex_basis = Dimension::auto();
       let zero_auto_margin = |value: &mut LengthPercentageAuto| {
         if value.is_auto() {
           *value = LengthPercentageAuto::length(0.0);

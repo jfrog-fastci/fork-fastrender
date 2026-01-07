@@ -16,6 +16,7 @@ mod flex_basis_content;
 mod flex_abspos_static_position;
 mod flex_abspos_static_position_siblings;
 mod flex_abspos_static_position_margins;
+mod flex_abspos_static_position_flexing;
 mod flex_auto_min_size_aspect_ratio_transferred;
 mod flex_auto_min_size_overflow_clip;
 mod flex_auto_min_size_percent;
