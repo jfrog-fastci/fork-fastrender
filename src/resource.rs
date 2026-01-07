@@ -1872,6 +1872,12 @@ pub struct FetchedResource {
   pub bytes: Vec<u8>,
   /// Content-Type header value, if available (e.g., "image/png", "text/css")
   pub content_type: Option<String>,
+  /// Whether `X-Content-Type-Options: nosniff` was present on the response.
+  ///
+  /// Real browsers enforce stricter MIME checks for certain destinations (notably stylesheets)
+  /// when `nosniff` is set; we preserve the bit so offline replays (disk cache / bundles) can
+  /// apply the same behavior deterministically.
+  pub nosniff: bool,
   /// Content-Encoding header value, if available (e.g., "br", "gzip").
   ///
   /// Note: the bytes in [`FetchedResource::bytes`] are returned *after* any content encoding has
@@ -1912,6 +1918,7 @@ impl FetchedResource {
     Self {
       bytes,
       content_type,
+      nosniff: false,
       content_encoding: None,
       status: None,
       etag: None,
@@ -1933,6 +1940,7 @@ impl FetchedResource {
     Self {
       bytes,
       content_type,
+      nosniff: false,
       content_encoding: None,
       status: None,
       etag: None,
@@ -2302,6 +2310,30 @@ pub fn ensure_font_mime_sane(resource: &FetchedResource, requested_url: &str) ->
 pub fn ensure_stylesheet_mime_sane(resource: &FetchedResource, requested_url: &str) -> Result<()> {
   if !strict_mime_checks_enabled() || resource.status.is_none() {
     return Ok(());
+  }
+
+  if resource.nosniff {
+    match resource.content_type.as_deref() {
+      Some(content_type) => {
+        let mime = content_type_mime(content_type);
+        if !starts_with_ignore_ascii_case(mime, "text/css") {
+          return Err(response_resource_error(
+            resource,
+            requested_url,
+            format!(
+              "X-Content-Type-Options: nosniff blocked stylesheet with unexpected content-type {mime}"
+            ),
+          ));
+        }
+      }
+      None => {
+        return Err(response_resource_error(
+          resource,
+          requested_url,
+          "X-Content-Type-Options: nosniff blocked stylesheet with missing content-type",
+        ));
+      }
+    }
   }
 
   if let Some(content_type) = resource.content_type.as_deref() {
@@ -3642,6 +3674,7 @@ impl HttpFetcher {
           .get("content-type")
           .and_then(|h| h.to_str().ok())
           .map(|s| s.to_string());
+        let nosniff = header_has_nosniff(response.headers());
         let mut decode_stage = decode_stage_for_content_type(content_type.as_deref());
         let etag = response
           .headers()
@@ -3832,6 +3865,7 @@ impl HttpFetcher {
             if !encodings.is_empty() {
               resource.content_encoding = Some(encodings.join(", "));
             }
+            resource.nosniff = nosniff;
             resource.status = Some(status_code);
             resource.etag = etag;
             resource.last_modified = last_modified;
@@ -4118,6 +4152,7 @@ impl HttpFetcher {
           .get("content-type")
           .and_then(|h| h.to_str().ok())
           .map(|s| s.to_string());
+        let nosniff = header_has_nosniff(response.headers());
         let mut decode_stage = decode_stage_for_content_type(content_type.as_deref());
         let etag = response
           .headers()
@@ -4307,6 +4342,7 @@ impl HttpFetcher {
             if !encodings.is_empty() {
               resource.content_encoding = Some(encodings.join(", "));
             }
+            resource.nosniff = nosniff;
             resource.status = Some(status_code);
             resource.etag = etag;
             resource.last_modified = last_modified;
@@ -4599,6 +4635,7 @@ impl HttpFetcher {
           .get("content-type")
           .and_then(|h| h.to_str().ok())
           .map(|s| s.to_string());
+        let nosniff = header_has_nosniff(response.headers());
         let mut decode_stage = decode_stage_for_content_type(content_type.as_deref());
         let etag = response
           .headers()
@@ -4856,6 +4893,7 @@ impl HttpFetcher {
             if !encodings.is_empty() {
               resource.content_encoding = Some(encodings.join(", "));
             }
+            resource.nosniff = nosniff;
             resource.status = Some(status.as_u16());
             resource.etag = etag;
             resource.last_modified = last_modified;
@@ -5129,6 +5167,7 @@ impl HttpFetcher {
           .get("content-type")
           .and_then(|h| h.to_str().ok())
           .map(|s| s.to_string());
+        let nosniff = header_has_nosniff(response.headers());
         let mut decode_stage = decode_stage_for_content_type(content_type.as_deref());
         let etag = response
           .headers()
@@ -5411,6 +5450,7 @@ impl HttpFetcher {
             if !encodings.is_empty() {
               resource.content_encoding = Some(encodings.join(", "));
             }
+            resource.nosniff = nosniff;
             resource.status = Some(status.as_u16());
             resource.etag = etag;
             resource.last_modified = last_modified;
@@ -7686,6 +7726,16 @@ fn header_values_joined(headers: &HeaderMap, name: &str) -> Option<String> {
   }
 }
 
+fn header_has_nosniff(headers: &HeaderMap) -> bool {
+  headers
+    .get_all("x-content-type-options")
+    .iter()
+    .filter_map(|value| value.to_str().ok())
+    .flat_map(|value| value.split(','))
+    .map(str::trim)
+    .any(|value| value.eq_ignore_ascii_case("nosniff"))
+}
+
 fn parse_content_encodings(headers: &HeaderMap) -> Vec<String> {
   headers
     .get_all("content-encoding")
@@ -8309,6 +8359,113 @@ mod tests {
       err.to_string().contains("unexpected markup response body"),
       "unexpected error: {err}"
     );
+  }
+
+  #[test]
+  fn stylesheet_mime_sanity_respects_nosniff_and_rejects_non_css_content_type() {
+    let Some(listener) = try_bind_localhost(
+      "stylesheet_mime_sanity_respects_nosniff_and_rejects_non_css_content_type",
+    ) else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let handle = thread::spawn(move || {
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let _ = read_http_request(&mut stream);
+      let body = b"body { color: red; }";
+      let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nX-Content-Type-Options: nosniff\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(headers.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = HttpFetcher::new()
+      .with_timeout(Duration::from_secs(2))
+      .with_retry_policy(HttpRetryPolicy {
+        max_attempts: 1,
+        ..HttpRetryPolicy::default()
+      });
+    let deadline = None;
+    let started = Instant::now();
+    let url = format!("http://{addr}/style.css");
+    let res = fetcher
+      .fetch_http_with_accept_inner_ureq(
+        FetchContextKind::Stylesheet,
+        &url,
+        None,
+        None,
+        None,
+        &deadline,
+        started,
+        false,
+      )
+      .expect("fetch");
+    handle.join().unwrap();
+
+    assert!(res.nosniff, "expected nosniff header bit to be captured");
+    let err = ensure_stylesheet_mime_sane(&res, &url)
+      .expect_err("expected nosniff+text/plain stylesheet to be rejected");
+    assert!(
+      err.to_string().to_ascii_lowercase().contains("nosniff"),
+      "unexpected error: {err}"
+    );
+  }
+
+  #[test]
+  fn stylesheet_mime_sanity_allows_text_plain_without_nosniff() {
+    // Without `X-Content-Type-Options: nosniff`, FastRender intentionally preserves a looser
+    // heuristic to avoid breaking pages that serve stylesheets with a non-CSS MIME type.
+    let Some(listener) =
+      try_bind_localhost("stylesheet_mime_sanity_allows_text_plain_without_nosniff")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let handle = thread::spawn(move || {
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let _ = read_http_request(&mut stream);
+      let body = b"body { color: red; }";
+      let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(headers.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = HttpFetcher::new()
+      .with_timeout(Duration::from_secs(2))
+      .with_retry_policy(HttpRetryPolicy {
+        max_attempts: 1,
+        ..HttpRetryPolicy::default()
+      });
+    let deadline = None;
+    let started = Instant::now();
+    let url = format!("http://{addr}/style.css");
+    let res = fetcher
+      .fetch_http_with_accept_inner_ureq(
+        FetchContextKind::Stylesheet,
+        &url,
+        None,
+        None,
+        None,
+        &deadline,
+        started,
+        false,
+      )
+      .expect("fetch");
+    handle.join().unwrap();
+
+    assert!(!res.nosniff, "nosniff should default to false when header is absent");
+    ensure_stylesheet_mime_sane(&res, &url).expect("expected text/plain stylesheet to be allowed");
   }
 
   #[test]

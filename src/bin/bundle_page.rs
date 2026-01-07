@@ -1091,6 +1091,7 @@ fn build_manifest(
   let document = BundledDocument {
     path: document_path,
     content_type: document_resource.content_type.clone(),
+    nosniff: document_resource.nosniff,
     final_url: final_url.clone(),
     status: document_resource.status,
     etag: document_resource.etag.clone(),
@@ -1129,6 +1130,7 @@ fn build_manifest(
     let info = BundledResourceInfo {
       path: path.clone(),
       content_type: res.content_type.clone(),
+      nosniff: res.nosniff,
       status: res.status,
       final_url: Some(res.final_url.clone().unwrap_or_else(|| url.clone())),
       etag: res.etag.clone(),

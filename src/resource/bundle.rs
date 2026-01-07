@@ -76,6 +76,8 @@ pub struct BundleRenderConfig {
 pub struct BundledDocument {
   pub path: String,
   pub content_type: Option<String>,
+  #[serde(default, skip_serializing_if = "bool_is_false")]
+  pub nosniff: bool,
   pub final_url: String,
   pub status: Option<u16>,
   pub etag: Option<String>,
@@ -91,6 +93,8 @@ pub struct BundledDocument {
 pub struct BundledResourceInfo {
   pub path: String,
   pub content_type: Option<String>,
+  #[serde(default, skip_serializing_if = "bool_is_false")]
+  pub nosniff: bool,
   pub status: Option<u16>,
   pub final_url: Option<String>,
   pub etag: Option<String>,
@@ -130,6 +134,7 @@ impl BundledResource {
       self.info.content_type.clone(),
       self.info.final_url.clone(),
     );
+    res.nosniff = self.info.nosniff;
     res.status = self.info.status;
     res.etag = self.info.etag.clone();
     res.last_modified = self.info.last_modified.clone();
@@ -333,6 +338,7 @@ impl ResourceFetcher for BundledFetcher {
         doc_meta.content_type.clone(),
         Some(doc_meta.final_url.clone()),
       );
+      res.nosniff = doc_meta.nosniff;
       res.status = doc_meta.status;
       res.etag = doc_meta.etag.clone();
       res.last_modified = doc_meta.last_modified.clone();
@@ -413,6 +419,7 @@ mod tests {
       document: BundledDocument {
         path: "document.html".to_string(),
         content_type: Some("text/html".to_string()),
+        nosniff: false,
         final_url: "https://example.com/".to_string(),
         status: Some(200),
         etag: None,
@@ -465,6 +472,7 @@ mod tests {
       document: BundledDocument {
         path: "document.html".to_string(),
         content_type: Some("text/html".to_string()),
+        nosniff: false,
         final_url: "https://example.com/".to_string(),
         status: Some(200),
         etag: None,
@@ -488,6 +496,7 @@ mod tests {
         BundledResourceInfo {
           path: "style.css".to_string(),
           content_type: Some("text/css".to_string()),
+          nosniff: false,
           status: Some(200),
           final_url: Some("https://example.com/style.css".to_string()),
           etag: None,
@@ -617,6 +626,7 @@ mod tests {
       document: BundledDocument {
         path: "document.html".to_string(),
         content_type: Some("text/html".to_string()),
+        nosniff: false,
         final_url: "https://example.com/".to_string(),
         status: Some(200),
         etag: None,
@@ -641,6 +651,7 @@ mod tests {
           BundledResourceInfo {
             path: "font_raw.woff2".to_string(),
             content_type: Some("font/woff2".to_string()),
+            nosniff: false,
             status: Some(200),
             final_url: Some(url.to_string()),
             etag: None,
@@ -655,6 +666,7 @@ mod tests {
           BundledResourceInfo {
             path: "font_a.woff2".to_string(),
             content_type: Some("font/woff2".to_string()),
+            nosniff: false,
             status: Some(200),
             final_url: Some(url.to_string()),
             etag: None,
@@ -669,6 +681,7 @@ mod tests {
           BundledResourceInfo {
             path: "font_b.woff2".to_string(),
             content_type: Some("font/woff2".to_string()),
+            nosniff: false,
             status: Some(200),
             final_url: Some(url.to_string()),
             etag: None,
@@ -733,6 +746,7 @@ mod tests {
     let shared_info = |allow_origin: &str| BundledResourceInfo {
       path: "font.woff2".to_string(),
       content_type: Some("font/woff2".to_string()),
+      nosniff: false,
       status: Some(200),
       final_url: Some(url.to_string()),
       etag: None,
@@ -748,6 +762,7 @@ mod tests {
       document: BundledDocument {
         path: "document.html".to_string(),
         content_type: Some("text/html".to_string()),
+        nosniff: false,
         final_url: "https://example.com/".to_string(),
         status: Some(200),
         etag: None,

@@ -610,6 +610,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
         .get("content-type")
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
+      let nosniff = super::header_has_nosniff(&response.headers);
       let mut decode_stage = super::decode_stage_for_content_type(content_type.as_deref());
       let etag = response
         .headers
@@ -845,6 +846,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
       if !encodings.is_empty() {
         resource.content_encoding = Some(encodings.join(", "));
       }
+      resource.nosniff = nosniff;
       if !substitute_captcha_image {
         resource.status = Some(status_code);
       }

@@ -1164,6 +1164,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       meta.final_url.clone().or_else(|| Some(url.to_string())),
     );
     resource.content_encoding = meta.content_encoding.clone();
+    resource.nosniff = meta.nosniff;
     resource.status = meta.status;
     resource.etag = meta.etag.clone();
     resource.last_modified = meta.last_modified.clone();
@@ -1281,6 +1282,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       meta.final_url.clone().or_else(|| Some(url.to_string())),
     );
     resource.content_encoding = meta.content_encoding.clone();
+    resource.nosniff = meta.nosniff;
     resource.status = meta.status;
     resource.etag = meta.etag.clone();
     resource.last_modified = meta.last_modified.clone();
@@ -1466,6 +1468,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       url: url.to_string(),
       status: resource.status,
       content_type: resource.content_type.clone(),
+      nosniff: resource.nosniff,
       content_encoding: resource.content_encoding.clone(),
       etag: etag
         .map(|s| s.to_string())
@@ -1610,6 +1613,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       url: url.to_string(),
       status: error.status,
       content_type: error.content_type.clone(),
+      nosniff: false,
       content_encoding: None,
       etag: error.etag.clone(),
       last_modified: error.last_modified.clone(),
@@ -1832,6 +1836,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     );
     if let Some(source) = source {
       resource.status = source.status;
+      resource.nosniff = source.nosniff;
       resource.etag = source.etag.clone();
       resource.last_modified = source.last_modified.clone();
       resource.access_control_allow_origin = source.access_control_allow_origin.clone();
@@ -1900,6 +1905,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       url: canonical.clone(),
       status: resource.status,
       content_type: resource.content_type.clone(),
+      nosniff: resource.nosniff,
       content_encoding: resource.content_encoding.clone(),
       etag: resource.etag.clone(),
       last_modified: resource.last_modified.clone(),
@@ -2556,6 +2562,8 @@ pub(super) struct StoredMetadata {
   #[serde(default, skip_serializing_if = "Option::is_none")]
   status: Option<u16>,
   content_type: Option<String>,
+  #[serde(default, skip_serializing_if = "bool_is_false")]
+  nosniff: bool,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   content_encoding: Option<String>,
   etag: Option<String>,
@@ -3892,6 +3900,7 @@ mod tests {
       url: url.to_string(),
       status: None,
       content_type: Some("text/plain".to_string()),
+      nosniff: false,
       content_encoding: None,
       etag: None,
       last_modified: None,
@@ -3948,6 +3957,7 @@ mod tests {
       url: url.to_string(),
       status: None,
       content_type: Some("text/plain".to_string()),
+      nosniff: false,
       content_encoding: None,
       etag: None,
       last_modified: None,
@@ -5280,6 +5290,7 @@ mod tests {
       url: url.to_string(),
       status: None,
       content_type: Some("text/plain".to_string()),
+      nosniff: false,
       content_encoding: None,
       etag: None,
       last_modified: None,
@@ -5744,6 +5755,7 @@ mod tests {
           url: url.to_string(),
           status: Some(503),
           content_type: Some("text/plain".to_string()),
+          nosniff: false,
           content_encoding: None,
           etag: None,
           last_modified: None,
