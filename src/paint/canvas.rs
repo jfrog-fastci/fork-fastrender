@@ -154,8 +154,8 @@ impl Default for CanvasState {
 }
 
 #[derive(Debug)]
-struct LayerRecord {
-  pixmap: Pixmap,
+pub(crate) struct LayerRecord {
+  pub(crate) pixmap: Pixmap,
   saved_state_depth: usize,
   parent_opacity: f32,
   parent_blend_mode: SkiaBlendMode,
@@ -164,7 +164,20 @@ struct LayerRecord {
   parent_clip_mask: Option<Rc<Mask>>,
   opacity: f32,
   composite_blend: Option<SkiaBlendMode>,
-  origin: (i32, i32),
+  pub(crate) origin: (i32, i32),
+  pub(crate) is_backdrop_root: bool,
+}
+
+impl LayerRecord {
+  #[inline]
+  pub(crate) fn effective_opacity(&self) -> f32 {
+    (self.opacity * self.parent_opacity).clamp(0.0, 1.0)
+  }
+
+  #[inline]
+  pub(crate) fn effective_blend_mode(&self) -> SkiaBlendMode {
+    self.composite_blend.unwrap_or(self.parent_blend_mode)
+  }
 }
 
 // ============================================================================
@@ -383,6 +396,10 @@ impl Canvas {
     self.layer_stack.get(index).map(|layer| layer.origin)
   }
 
+  pub(crate) fn split_layer_stack_and_pixmap_mut(&mut self) -> (&[LayerRecord], &mut Pixmap) {
+    (&self.layer_stack, &mut self.pixmap)
+  }
+
   // ========================================================================
   // State Management
   // ========================================================================
@@ -442,7 +459,7 @@ impl Canvas {
 
   /// Pushes a new offscreen layer for grouped compositing (e.g., opacity).
   pub fn push_layer(&mut self, opacity: f32) -> Result<()> {
-    self.push_layer_with_blend(opacity, None)
+    self.push_layer_with_blend_and_backdrop_root(opacity, None, false)
   }
 
   /// Pushes a new offscreen layer with explicit bounds.
@@ -455,11 +472,29 @@ impl Canvas {
     blend: Option<SkiaBlendMode>,
     bounds: Rect,
   ) -> Result<()> {
+    self.push_layer_bounded_with_backdrop_root(opacity, blend, bounds, false)
+  }
+
+  pub(crate) fn push_layer_bounded_with_backdrop_root(
+    &mut self,
+    opacity: f32,
+    blend: Option<SkiaBlendMode>,
+    bounds: Rect,
+    is_backdrop_root: bool,
+  ) -> Result<()> {
     let (origin_x, origin_y, width, height) = match self.layer_bounds(bounds) {
       Some(b) => b,
       None => (0, 0, self.pixmap.width(), self.pixmap.height()),
     };
-    self.push_layer_internal(opacity, blend, origin_x, origin_y, width, height)
+    self.push_layer_internal(
+      opacity,
+      blend,
+      origin_x,
+      origin_y,
+      width,
+      height,
+      is_backdrop_root,
+    )
   }
 
   /// Pushes a new offscreen layer with an explicit composite blend mode.
@@ -468,6 +503,15 @@ impl Canvas {
     opacity: f32,
     blend: Option<SkiaBlendMode>,
   ) -> Result<()> {
+    self.push_layer_with_blend_and_backdrop_root(opacity, blend, false)
+  }
+
+  pub(crate) fn push_layer_with_blend_and_backdrop_root(
+    &mut self,
+    opacity: f32,
+    blend: Option<SkiaBlendMode>,
+    is_backdrop_root: bool,
+  ) -> Result<()> {
     self.push_layer_internal(
       opacity,
       blend,
@@ -475,6 +519,7 @@ impl Canvas {
       0,
       self.pixmap.width(),
       self.pixmap.height(),
+      is_backdrop_root,
     )
   }
 
@@ -486,6 +531,7 @@ impl Canvas {
     origin_y: i32,
     width: u32,
     height: u32,
+    is_backdrop_root: bool,
   ) -> Result<()> {
     let parent_width = self.pixmap.width();
     let parent_height = self.pixmap.height();
@@ -507,6 +553,7 @@ impl Canvas {
       opacity: opacity.clamp(0.0, 1.0),
       composite_blend: blend,
       origin: (origin_x, origin_y),
+      is_backdrop_root,
     };
     self.layer_stack.push(record);
     // Painting inside the layer should start from a neutral state.
@@ -647,6 +694,150 @@ impl Canvas {
         .pixmap
         .draw_pixmap(origin.0, origin.1, layer.as_ref(), &paint, transform, clip);
     }
+  }
+
+  /// Snapshots the Backdrop Root Image into a scratch pixmap region.
+  ///
+  /// The `layer_stack` slice must come from [`Canvas::split_layer_stack_and_pixmap_mut`], and the
+  /// region origin is interpreted in the *current layer's parent* coordinate space (i.e. the
+  /// coordinate space of `layer_stack.last().pixmap`).
+  ///
+  /// This helper is used to implement spec-correct `backdrop-filter` sampling: stacking-context
+  /// isolation layers (e.g. due to transforms/z-index) do not stop sampling, so we must flatten
+  /// the intermediate layer surfaces between the nearest Backdrop Root and the element's parent
+  /// into a temporary buffer.
+  pub(crate) fn fill_backdrop_root_region(
+    layer_stack: &[LayerRecord],
+    region: &mut Pixmap,
+    origin_in_parent: (i32, i32),
+  ) -> RenderResult<()> {
+    fn copy_pixmap_region_with_offset(
+      dst: &mut Pixmap,
+      src: &Pixmap,
+      src_x: i32,
+      src_y: i32,
+    ) -> RenderResult<()> {
+      let dst_w = dst.width() as i32;
+      let dst_h = dst.height() as i32;
+      if dst_w <= 0 || dst_h <= 0 {
+        return Ok(());
+      }
+      let dst_stride = dst_w as usize * 4;
+      let dst_data = dst.data_mut();
+      dst_data.fill(0);
+
+      let src_w = src.width() as i32;
+      let src_h = src.height() as i32;
+      if src_w <= 0 || src_h <= 0 {
+        return Ok(());
+      }
+
+      let x0 = src_x.max(0);
+      let y0 = src_y.max(0);
+      let x1 = (src_x + dst_w).min(src_w);
+      let y1 = (src_y + dst_h).min(src_h);
+      if x0 >= x1 || y0 >= y1 {
+        return Ok(());
+      }
+
+      let dst_off_x = (x0 - src_x) as usize;
+      let dst_off_y = (y0 - src_y) as usize;
+      let copy_w = (x1 - x0) as usize;
+      let copy_h = (y1 - y0) as usize;
+
+      let src_stride = src.width() as usize * 4;
+      let row_bytes = copy_w * 4;
+      let src_data = src.data();
+
+      let mut deadline_counter = 0usize;
+      for row in 0..copy_h {
+        check_active_periodic(&mut deadline_counter, 32, RenderStage::Paint)?;
+        let src_idx = (y0 as usize + row) * src_stride + x0 as usize * 4;
+        let dst_idx = (dst_off_y + row) * dst_stride + dst_off_x * 4;
+        dst_data[dst_idx..dst_idx + row_bytes]
+          .copy_from_slice(&src_data[src_idx..src_idx + row_bytes]);
+      }
+      Ok(())
+    }
+
+    let stack_len = layer_stack.len();
+    if stack_len == 0 {
+      region.data_mut().fill(0);
+      return Ok(());
+    }
+
+    // The parent pixmap is stored in the top record.
+    let parent_layer = stack_len - 1;
+
+    // Find the nearest ancestor backdrop root record, excluding the current layer record.
+    let mut root_layer = 0usize;
+    if parent_layer > 0 {
+      for idx in (0..parent_layer).rev() {
+        if layer_stack[idx].is_backdrop_root {
+          root_layer = idx + 1;
+          break;
+        }
+      }
+    }
+
+    // Fast path: sampling starts at the immediate parent surface.
+    if root_layer == parent_layer {
+      let src = &layer_stack[parent_layer].pixmap;
+      return copy_pixmap_region_with_offset(region, src, origin_in_parent.0, origin_in_parent.1);
+    }
+
+    // Pre-compute absolute origins (relative to the base pixmap) for every surface up to the
+    // parent. `layer_stack[i].origin` is the origin of surface `i + 1` relative to surface `i`.
+    let mut abs_origins: Vec<(i32, i32)> = Vec::with_capacity(parent_layer + 1);
+    abs_origins.push((0, 0)); // Base surface.
+    let mut acc_x = 0i32;
+    let mut acc_y = 0i32;
+    for layer in 1..=parent_layer {
+      let origin = layer_stack[layer - 1].origin;
+      acc_x = acc_x.saturating_add(origin.0);
+      acc_y = acc_y.saturating_add(origin.1);
+      abs_origins.push((acc_x, acc_y));
+    }
+
+    let parent_abs = abs_origins[parent_layer];
+    let root_abs = abs_origins[root_layer];
+    let start_src_x = origin_in_parent.0.saturating_add(parent_abs.0.saturating_sub(root_abs.0));
+    let start_src_y = origin_in_parent.1.saturating_add(parent_abs.1.saturating_sub(root_abs.1));
+
+    // Initialize the region from the root surface. Outside the root surface is transparent.
+    let root_surface = &layer_stack[root_layer].pixmap;
+    copy_pixmap_region_with_offset(region, root_surface, start_src_x, start_src_y)?;
+
+    // Composite intermediate layer surfaces onto the region in order.
+    let mut paint = PixmapPaint::default();
+    paint.quality = FilterQuality::Nearest;
+    let transform = Transform::identity();
+
+    for layer in (root_layer + 1)..=parent_layer {
+      // Layer `layer` is composited into its parent using the record at `layer - 1`.
+      let record = &layer_stack[layer - 1];
+      let opacity = record.effective_opacity();
+      if opacity <= 0.0 {
+        continue;
+      }
+      let blend = record.effective_blend_mode();
+
+      let abs = abs_origins[layer];
+      let dest_x = abs.0 - parent_abs.0 - origin_in_parent.0;
+      let dest_y = abs.1 - parent_abs.1 - origin_in_parent.1;
+
+      check_active(RenderStage::Paint)?;
+      paint.opacity = opacity;
+      paint.blend_mode = blend;
+      let src = layer_stack[layer].pixmap.as_ref();
+      if paint.blend_mode == SkiaBlendMode::Plus {
+        draw_pixmap_with_plus_blend(region, dest_x, dest_y, src, opacity, paint.quality, transform, None);
+      } else {
+        region.draw_pixmap(dest_x, dest_y, src, &paint, transform, None);
+      }
+    }
+
+    Ok(())
   }
 
   /// Returns the current blend mode.
