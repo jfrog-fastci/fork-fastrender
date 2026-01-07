@@ -762,6 +762,136 @@ fn column_group_visibility_collapse_removes_columns_from_layout_rtl() {
 }
 
 #[test]
+fn column_group_span_visibility_collapse_removes_columns_from_layout() {
+  ensure_rayon_threads();
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table { display: inline-table; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+          td { padding: 0; margin: 0; border: 0; font-size: 10px; line-height: 10px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col style="width: 30px" />
+          <colgroup span="2" style="visibility: collapse"></colgroup>
+          <col style="width: 50px" />
+          <tr>
+            <td>A</td>
+            <td>B</td>
+            <td>C</td>
+            <td>D</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  assert!(!cells.contains_key(&'B'), "collapsed column-group cell should not be laid out");
+  assert!(!cells.contains_key(&'C'), "collapsed column-group cell should not be laid out");
+
+  let a = cells.get(&'A').expect("cell A present");
+  let d = cells.get(&'D').expect("cell D present");
+
+  let gap = d.rect.x() - (a.rect.x() + a.rect.width());
+  assert!(
+    gap.abs() < 0.1,
+    "cells adjacent after collapsing column-group span (gap={gap})"
+  );
+  assert!(
+    (a.rect.width() - 30.0).abs() < 0.1,
+    "expected first source column width 30px (got {})",
+    a.rect.width()
+  );
+  assert!(
+    (d.rect.width() - 50.0).abs() < 0.1,
+    "collapsed column-group should not affect subsequent column width (got {})",
+    d.rect.width()
+  );
+}
+
+#[test]
+fn column_group_span_visibility_collapse_removes_columns_from_layout_rtl() {
+  ensure_rayon_threads();
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            display: inline-table;
+            border-collapse: separate;
+            border-spacing: 0;
+            table-layout: fixed;
+            direction: rtl;
+          }
+          td { padding: 0; margin: 0; border: 0; font-size: 10px; line-height: 10px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col style="width: 30px" />
+          <colgroup span="2" style="visibility: collapse"></colgroup>
+          <col style="width: 50px" />
+          <tr>
+            <td>A</td>
+            <td>B</td>
+            <td>C</td>
+            <td>D</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  assert!(!cells.contains_key(&'B'), "collapsed column-group cell should not be laid out");
+  assert!(!cells.contains_key(&'C'), "collapsed column-group cell should not be laid out");
+
+  let a = cells.get(&'A').expect("cell A present");
+  let d = cells.get(&'D').expect("cell D present");
+
+  assert!(
+    a.rect.x() > d.rect.x(),
+    "expected RTL order A (right) > D (left), got A.x={} D.x={}",
+    a.rect.x(),
+    d.rect.x()
+  );
+  let gap = a.rect.x() - (d.rect.x() + d.rect.width());
+  assert!(
+    gap.abs() < 0.1,
+    "cells adjacent after collapsing column-group span in RTL (gap={gap})"
+  );
+  assert!(
+    (a.rect.width() - 30.0).abs() < 0.1,
+    "expected first source column width 30px (got {})",
+    a.rect.width()
+  );
+  assert!(
+    (d.rect.width() - 50.0).abs() < 0.1,
+    "collapsed column-group should not affect subsequent column width (got {})",
+    d.rect.width()
+  );
+}
+
+#[test]
 fn column_visibility_collapse_removes_extra_border_spacing_gap() {
   ensure_rayon_threads();
   let html = r#"
