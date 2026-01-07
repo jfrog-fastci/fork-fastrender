@@ -9,7 +9,7 @@ use fastrender::style::types::{
   AnimationDirection, AnimationFillMode, AnimationIterationCount, AnimationPlayState,
   AnimationRange, AnimationTimeline, Overflow, RangeOffset, ScrollFunctionTimeline, ScrollTimeline,
   ScrollTimelineScroller, StepPosition, TimelineAxis, TransitionTimingFunction,
-  ViewFunctionTimeline,
+  ViewFunctionTimeline, ViewTimeline,
 };
 use fastrender::style::ComputedStyle;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
@@ -117,6 +117,76 @@ fn scroll_timeline_uses_element_scroll_offsets() {
   assert!(
     (opacity_for_scroll(&animated_style, &scroller_style, 50.0) - 0.5).abs() < 0.05,
     "opacity should reflect element scroll timeline progress"
+  );
+}
+
+#[test]
+fn named_timeline_scroll_beats_view_when_both_share_a_name() {
+  let animation_name = "fade";
+  let timeline_name = "--tl";
+  let scroller_id = 1usize;
+
+  let mut scroller_style = ComputedStyle::default();
+  scroller_style.scroll_timelines = vec![ScrollTimeline {
+    name: Some(timeline_name.to_string()),
+    axis: TimelineAxis::Block,
+    ..ScrollTimeline::default()
+  }];
+  scroller_style.view_timelines = vec![ViewTimeline {
+    name: Some(timeline_name.to_string()),
+    axis: TimelineAxis::Block,
+    ..ViewTimeline::default()
+  }];
+  let scroller_style = Arc::new(scroller_style);
+
+  let mut animated_style = ComputedStyle::default();
+  animated_style.animation_names = vec![animation_name.to_string()];
+  animated_style.animation_ranges = vec![AnimationRange::default()];
+  animated_style.animation_timelines = vec![AnimationTimeline::Named(timeline_name.to_string())];
+  animated_style.animation_timing_functions = vec![TransitionTimingFunction::Linear].into();
+  let animated_style = Arc::new(animated_style);
+
+  let animated = FragmentNode::new_with_style(
+    Rect::from_xywh(0.0, 0.0, 50.0, 20.0),
+    FragmentContent::Block { box_id: None },
+    vec![],
+    Arc::clone(&animated_style),
+  );
+
+  let mut scroller = FragmentNode::new_with_style(
+    Rect::from_xywh(0.0, 100.0, 50.0, 100.0),
+    FragmentContent::Block {
+      box_id: Some(scroller_id),
+    },
+    vec![animated],
+    scroller_style,
+  );
+  scroller.scroll_overflow = Rect::from_xywh(0.0, 0.0, 50.0, 200.0);
+
+  let root = FragmentNode::new(
+    Rect::from_xywh(0.0, 0.0, 50.0, 100.0),
+    FragmentContent::Block { box_id: None },
+    vec![scroller],
+  );
+  let mut tree = FragmentTree::with_viewport(root, Size::new(50.0, 100.0));
+  tree
+    .keyframes
+    .insert(animation_name.to_string(), fade_keyframes(animation_name));
+
+  let scroll_state = ScrollState::from_parts(
+    Point::ZERO,
+    HashMap::from([(scroller_id, Point::new(0.0, 50.0))]),
+  );
+  apply_scroll_driven_animations(&mut tree, &scroll_state);
+
+  let opacity = tree.root.children[0].children[0]
+    .style
+    .as_ref()
+    .expect("animated style present")
+    .opacity;
+  assert!(
+    (opacity - 0.5).abs() < 0.05,
+    "expected scroll timeline to win over view timeline with same name, got {opacity}"
   );
 }
 
