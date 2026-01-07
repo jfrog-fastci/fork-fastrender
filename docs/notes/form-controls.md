@@ -110,7 +110,7 @@ their goldens with:
 
 ```
 UPDATE_PAGES_GOLDEN=1 \
-  PAGES_FIXTURE_FILTER=form_controls,form_controls_appearance,form_controls_placeholder,form_controls_range_select,form_controls_showcase,form_controls_states,form_controls_custom_vs_default,form_controls_comparison_panel,form_controls_lab \
+  PAGES_FIXTURE_FILTER=form_controls,form_controls_appearance,form_controls_placeholder,form_controls_placeholder_pseudo,form_controls_range_select,form_controls_showcase,form_controls_states,form_controls_custom_vs_default,form_controls_comparison_panel,form_controls_lab \
   cargo test pages_regression
 ```
 
