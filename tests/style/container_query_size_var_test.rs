@@ -312,6 +312,9 @@ fn container_size_query_var_orientation_parses_and_matches() {
 
   let base_media = MediaContext::screen(800.0, 600.0);
   let mut containers = HashMap::new();
+  let mut style = (*make_container_style(Some("portrait"))).clone();
+  style.container_type = ContainerType::Size;
+  let style = Arc::new(style);
   containers.insert(
     container_id,
     ContainerQueryInfo {
@@ -322,7 +325,7 @@ fn container_size_query_var_orientation_parses_and_matches() {
       container_type: ContainerType::Size,
       names: Vec::new(),
       font_size: 16.0,
-      styles: make_container_style(Some("portrait")),
+      styles: Arc::clone(&style),
     },
   );
   let ctx = ContainerQueryContext {
@@ -362,6 +365,9 @@ fn container_size_query_var_aspect_ratio_parses_and_matches() {
 
   let base_media = MediaContext::screen(800.0, 600.0);
   let mut containers = HashMap::new();
+  let mut style = (*make_container_style(Some("4/3"))).clone();
+  style.container_type = ContainerType::Size;
+  let style = Arc::new(style);
   containers.insert(
     container_id,
     ContainerQueryInfo {
@@ -372,7 +378,7 @@ fn container_size_query_var_aspect_ratio_parses_and_matches() {
       container_type: ContainerType::Size,
       names: Vec::new(),
       font_size: 16.0,
-      styles: make_container_style(Some("4/3")),
+      styles: Arc::clone(&style),
     },
   );
   let ctx = ContainerQueryContext {

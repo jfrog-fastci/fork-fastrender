@@ -717,3 +717,26 @@ fn container_query_resolves_container_units_inside_calc_in_size_features() {
 
   assert_eq!(display(find_by_id(&styled, "t").expect("target")), "inline");
 }
+
+#[test]
+fn container_query_viewport_units_use_media_viewport() {
+  let css = r#"
+    .target { display: block; }
+    @container (min-width: 50vw) {
+      .target { display: inline; }
+    }
+  "#;
+
+  // Base media viewport width is 800px (see helper), so 50vw = 400px. The container width is only
+  // 300px, so the query should not match.
+  let styled = cascade_with_custom_container(
+    css,
+    300.0,
+    200.0,
+    WritingMode::HorizontalTb,
+    ContainerType::Size,
+    vec![],
+  );
+
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "block");
+}

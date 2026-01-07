@@ -465,19 +465,23 @@ fn part_container_query_uses_flat_tree_ancestors_when_host_is_slotted() {
   let media = MediaContext::screen(800.0, 600.0);
 
   let cascade = |inline_size: f32| {
+    let mut style = ComputedStyle::default();
+    style.container_type = ContainerType::InlineSize;
+    let style = Arc::new(style);
+    let block_size = 300.0;
     let ctx = ContainerQueryContext {
       base_media: media.clone(),
       containers: HashMap::from([(
         container_id,
         ContainerQueryInfo {
           width: inline_size,
-          height: 300.0,
+          height: block_size,
           inline_size,
-          block_size: 300.0,
+          block_size,
           container_type: ContainerType::InlineSize,
           names: Vec::new(),
-          font_size: 16.0,
-          styles: Arc::new(ComputedStyle::default()),
+          font_size: style.font_size,
+          styles: Arc::clone(&style),
         },
       )]),
     };

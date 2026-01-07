@@ -379,7 +379,12 @@ fn container_query_matches(
         return QueryResult::False;
       }
       let result = match size_query {
-        ContainerSizeQuery::Parsed(mq) => evaluate_container_size_query(mq, container),
+        ContainerSizeQuery::Parsed(mq) => evaluate_container_size_query(
+          mq,
+          container,
+          ctx.base_media.viewport_width,
+          ctx.base_media.viewport_height,
+        ),
         ContainerSizeQuery::UnresolvedVars { text, .. } => {
           let value = PropertyValue::Custom(text.clone());
           match crate::style::var_resolution::resolve_var_for_property(
@@ -395,7 +400,12 @@ fn container_query_matches(
               };
               match crate::style::media::MediaQuery::parse(resolved) {
                 Ok(parsed) if parsed.is_size_query() => {
-                  evaluate_container_size_query(&parsed, container)
+                  evaluate_container_size_query(
+                    &parsed,
+                    container,
+                    ctx.base_media.viewport_width,
+                    ctx.base_media.viewport_height,
+                  )
                 }
                 _ => QueryResult::Unknown,
               }
@@ -488,8 +498,8 @@ fn resolve_container_query_length(
   // - `em`/`ex`/`ch`/`lh` use the query container's own computed `font-size`.
   // - `rem` uses the root element's computed `font-size` (propagated via `root_font_size`).
   //
-  // This intentionally mirrors `MediaContext::resolve_length` behavior for other units so
-  // container queries keep the same semantics as the previous `MediaContext::evaluate` reuse.
+  // For other units, we mirror `MediaContext::resolve_length` behavior; in particular `vw`/`vh`
+  // are resolved against the document viewport size supplied by the caller.
   let font_size = font_size
     .is_finite()
     .then_some(font_size)
@@ -1106,15 +1116,12 @@ fn evaluate_container_size_feature(
 fn evaluate_container_size_query(
   mq: &crate::style::media::MediaQuery,
   container: &ContainerQueryInfo,
+  viewport_width: f32,
+  viewport_height: f32,
 ) -> QueryResult {
   // Container size queries reuse the media-query parser, but are evaluated against the query
-  // container's size + font metrics. Keep viewport units behaving consistently with the previous
-  // implementation by treating the query container's size as the "viewport" during resolution.
-  let viewport_width = container.inline_size;
-  let viewport_height = match container.container_type {
-    ContainerType::InlineSize => f32::NAN,
-    _ => container.block_size,
-  };
+  // container's size + font metrics. Viewport units (`vw`/`vh`/etc) resolve against the document
+  // viewport, so callers pass the base media viewport size through explicitly.
   let font_size = container.styles.font_size;
   let root_font_size = container.styles.root_font_size;
 
