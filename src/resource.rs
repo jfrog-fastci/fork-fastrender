@@ -6167,7 +6167,7 @@ fn parse_http_cache_policy(headers: &HeaderMap) -> Option<HttpCachePolicy> {
   }
 }
 
-fn vary_is_cacheable(vary: &str) -> bool {
+fn vary_is_cacheable(vary: &str, kind: FetchContextKind, origin_key: Option<&str>) -> bool {
   for part in vary.split(',') {
     let part = part.trim();
     if part.is_empty() {
@@ -6177,12 +6177,24 @@ fn vary_is_cacheable(vary: &str) -> bool {
       return false;
     }
     match part.to_ascii_lowercase().as_str() {
-      // Responses that declare `Vary: Origin` are safe because we already partition CORS-mode
-      // requests by origin key (and non-CORS requests omit the header).
-      "origin"
       // We always decode supported content-encodings, so the cached bytes are the decoded
       // representation.
-      | "accept-encoding" => {}
+      "accept-encoding" => {}
+      "origin" => {
+        // `Origin` is only safe to ignore when the cache key already accounts for it (CORS-mode
+        // partitioning) *or* when our request profile does not send an Origin header at all.
+        //
+        // When browser-like request headers are enabled, we send `Origin` for CORS-mode subresource
+        // requests (fonts and `<img crossorigin>`). If those requests are not partitioned, a
+        // response that declares `Vary: Origin` must not be cached because subsequent requests may
+        // carry different Origin values.
+        if origin_key.is_none()
+          && http_browser_headers_enabled()
+          && matches!(kind, FetchContextKind::Font | FetchContextKind::ImageCors)
+        {
+          return false;
+        }
+      }
       _ => return false,
     }
   }
@@ -7256,6 +7268,7 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
 
   fn build_cache_entry(
     &self,
+    key: &CacheKey,
     resource: &FetchedResource,
     stored_at: SystemTime,
   ) -> Option<CacheEntry> {
@@ -7271,7 +7284,7 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
 
     if !self.config.allow_unhandled_vary {
       if let Some(vary) = resource.vary.as_deref() {
-        if !vary_is_cacheable(vary) {
+        if !vary_is_cacheable(vary, key.kind, key.origin_key.as_deref()) {
           return None;
         }
       }
@@ -7390,7 +7403,9 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
     resource: FetchedResource,
   ) {
     let stored_at = SystemTime::now();
-    if let Some(entry) = self.build_cache_entry(&resource, stored_at) {
+    if let Some(entry) =
+      self.build_cache_entry(&CacheKey::new(kind, url.to_string()), &resource, stored_at)
+    {
       self.cache_entry(
         &CacheKey::new(kind, url.to_string()),
         entry,
@@ -7644,7 +7659,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
           }
         } else {
           let stored_at = SystemTime::now();
-          if let Some(entry) = self.build_cache_entry(&res, stored_at) {
+          if let Some(entry) = self.build_cache_entry(&key, &res, stored_at) {
             let _ = self.cache_entry(&key, entry, res.final_url.as_deref());
           } else if !self.config.allow_no_store
             && res
@@ -7850,7 +7865,7 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
             }
           } else {
             let stored_at = SystemTime::now();
-            if let Some(entry) = self.build_cache_entry(&res, stored_at) {
+            if let Some(entry) = self.build_cache_entry(&key, &res, stored_at) {
               let _ = self.cache_entry(&key, entry, res.final_url.as_deref());
             } else if !self.config.allow_no_store
               && res
@@ -8726,7 +8741,10 @@ mod tests {
       .expect("fetch");
     handle.join().unwrap();
 
-    assert!(!res.nosniff, "nosniff should default to false when header is absent");
+    assert!(
+      !res.nosniff,
+      "nosniff should default to false when header is absent"
+    );
     ensure_stylesheet_mime_sane(&res, &url).expect("expected text/plain stylesheet to be allowed");
   }
 
@@ -11008,6 +11026,211 @@ mod tests {
       "expected Vary: Origin response to be cached"
     );
     assert_eq!(first.bytes, second.bytes, "expected cached body to match");
+  }
+
+  #[test]
+  fn caching_fetcher_skips_vary_origin_without_origin_partitioning() {
+    if matches!(http_backend_mode(), HttpBackendMode::Curl) && !curl_backend::curl_available() {
+      eprintln!(
+        "skipping caching_fetcher_skips_vary_origin_without_origin_partitioning: curl backend selected but curl is unavailable"
+      );
+      return;
+    }
+
+    if !http_browser_headers_enabled() {
+      eprintln!(
+        "skipping caching_fetcher_skips_vary_origin_without_origin_partitioning: browser-like request headers are disabled"
+      );
+      return;
+    }
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "0".to_string(),
+    )])));
+
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let Some(listener) =
+        try_bind_localhost("caching_fetcher_skips_vary_origin_without_origin_partitioning")
+      else {
+        return;
+      };
+      let addr = listener.local_addr().unwrap();
+      listener.set_nonblocking(true).unwrap();
+
+      let request_count = Arc::new(AtomicUsize::new(0));
+      let seen = Arc::clone(&request_count);
+
+      let handle = thread::spawn(move || {
+        let start = Instant::now();
+        let mut last_request = None::<Instant>;
+        while start.elapsed() < Duration::from_secs(2) {
+          match listener.accept() {
+            Ok((mut stream, _)) => {
+              let n = seen.fetch_add(1, Ordering::SeqCst) + 1;
+              last_request = Some(Instant::now());
+
+              stream
+                .set_read_timeout(Some(Duration::from_millis(500)))
+                .unwrap();
+              let _ = read_http_request(&mut stream);
+
+              let body = n.to_string();
+              let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: font/woff2\r\nVary: Origin\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+              );
+              let _ = stream.write_all(headers.as_bytes());
+              let _ = stream.write_all(body.as_bytes());
+
+              if n >= 2 {
+                return;
+              }
+            }
+            Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
+              if let Some(last) = last_request {
+                if last.elapsed() > Duration::from_millis(500) {
+                  return;
+                }
+              }
+              thread::sleep(Duration::from_millis(5));
+            }
+            Err(err) => {
+              panic!("accept caching_fetcher_skips_vary_origin_without_origin_partitioning: {err}")
+            }
+          }
+        }
+      });
+
+      let fetcher = CachingFetcher::new(HttpFetcher::new().with_timeout(Duration::from_secs(2)));
+      let url = format!("http://{addr}/font.woff2");
+      let req_a =
+        FetchRequest::new(&url, FetchDestination::Font).with_referrer("http://a.test/page");
+      let req_b =
+        FetchRequest::new(&url, FetchDestination::Font).with_referrer("http://b.test/page");
+
+      let first = fetcher.fetch_with_request(req_a).expect("first fetch");
+      assert_eq!(first.vary.as_deref(), Some("Origin"));
+      let second = fetcher.fetch_with_request(req_b).expect("second fetch");
+      assert_eq!(second.vary.as_deref(), Some("Origin"));
+
+      handle.join().unwrap();
+
+      assert_eq!(
+        request_count.load(Ordering::SeqCst),
+        2,
+        "expected Vary: Origin response to bypass caching when requests are not origin-partitioned"
+      );
+      assert_ne!(
+        first.bytes, second.bytes,
+        "expected network body to differ across requests"
+      );
+    });
+  }
+
+  #[test]
+  fn caching_fetcher_partitions_vary_origin_when_origin_partitioned() {
+    if matches!(http_backend_mode(), HttpBackendMode::Curl) && !curl_backend::curl_available() {
+      eprintln!(
+        "skipping caching_fetcher_partitions_vary_origin_when_origin_partitioned: curl backend selected but curl is unavailable"
+      );
+      return;
+    }
+
+    if !http_browser_headers_enabled() {
+      eprintln!(
+        "skipping caching_fetcher_partitions_vary_origin_when_origin_partitioned: browser-like request headers are disabled"
+      );
+      return;
+    }
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "1".to_string(),
+    )])));
+
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let Some(listener) =
+        try_bind_localhost("caching_fetcher_partitions_vary_origin_when_origin_partitioned")
+      else {
+        return;
+      };
+      let addr = listener.local_addr().unwrap();
+      listener.set_nonblocking(true).unwrap();
+
+      let request_count = Arc::new(AtomicUsize::new(0));
+      let seen = Arc::clone(&request_count);
+
+      let handle = thread::spawn(move || {
+        let start = Instant::now();
+        let mut last_request = None::<Instant>;
+        while start.elapsed() < Duration::from_secs(2) {
+          match listener.accept() {
+            Ok((mut stream, _)) => {
+              let n = seen.fetch_add(1, Ordering::SeqCst) + 1;
+              last_request = Some(Instant::now());
+
+              stream
+                .set_read_timeout(Some(Duration::from_millis(500)))
+                .unwrap();
+              let _ = read_http_request(&mut stream);
+
+              let body = n.to_string();
+              let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: font/woff2\r\nVary: Origin\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+              );
+              let _ = stream.write_all(headers.as_bytes());
+              let _ = stream.write_all(body.as_bytes());
+
+              if n >= 2 {
+                return;
+              }
+            }
+            Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
+              if let Some(last) = last_request {
+                if last.elapsed() > Duration::from_millis(500) {
+                  return;
+                }
+              }
+              thread::sleep(Duration::from_millis(5));
+            }
+            Err(err) => {
+              panic!("accept caching_fetcher_partitions_vary_origin_when_origin_partitioned: {err}")
+            }
+          }
+        }
+      });
+
+      let fetcher = CachingFetcher::new(HttpFetcher::new().with_timeout(Duration::from_secs(2)));
+      let url = format!("http://{addr}/font.woff2");
+      let req_a =
+        FetchRequest::new(&url, FetchDestination::Font).with_referrer("http://a.test/page");
+      let req_b =
+        FetchRequest::new(&url, FetchDestination::Font).with_referrer("http://b.test/page");
+
+      let first_a = fetcher.fetch_with_request(req_a).expect("first A fetch");
+      assert_eq!(first_a.vary.as_deref(), Some("Origin"));
+
+      let second_a = fetcher.fetch_with_request(req_a).expect("second A fetch");
+      assert_eq!(second_a.vary.as_deref(), Some("Origin"));
+      assert_eq!(second_a.bytes, first_a.bytes, "expected A to hit cache");
+
+      let first_b = fetcher.fetch_with_request(req_b).expect("first B fetch");
+      assert_eq!(first_b.vary.as_deref(), Some("Origin"));
+
+      handle.join().unwrap();
+
+      assert_eq!(
+        request_count.load(Ordering::SeqCst),
+        2,
+        "expected Vary: Origin responses to be cached per-origin when origin partitioning is enabled"
+      );
+      assert_ne!(
+        first_a.bytes, first_b.bytes,
+        "expected distinct cached variants per origin"
+      );
+    });
   }
 
   #[test]

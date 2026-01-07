@@ -1469,7 +1469,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
 
     if !self.disk_config.allow_unhandled_vary {
       if let Some(vary) = resource.vary.as_deref() {
-        if !super::vary_is_cacheable(vary) {
+        if !super::vary_is_cacheable(vary, kind, origin_key) {
           return;
         }
       }
@@ -2293,7 +2293,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
             }
           } else {
             let stored_at = SystemTime::now();
-            if let Some(entry) = self.memory.build_cache_entry(&res, stored_at) {
+            if let Some(entry) = self.memory.build_cache_entry(&key, &res, stored_at) {
               let canonical = self
                 .memory
                 .cache_entry(&key, entry, res.final_url.as_deref());
