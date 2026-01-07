@@ -199,21 +199,12 @@ impl FormControlKind {
       // `<select>` may carry a full option/optgroup model for listbox painting.
       // Snapshot output must avoid dumping the entire tree.
       FormControlKind::Select(select) => {
-        let is_listbox = select.multiple || select.size > 1;
-        let mode = if is_listbox { "listbox" } else { "dropdown" };
-        let selected = if select.multiple {
-          format!("{} selected", select.selected.len())
+        let mode = if select.multiple || select.size > 1 {
+          "listbox"
         } else {
-          select
-            .selected
-            .first()
-            .and_then(|&idx| match select.items.get(idx) {
-              Some(SelectItem::Option { label, .. }) => Some(label.as_str()),
-              _ => None,
-            })
-            .unwrap_or("")
-            .to_string()
+          "dropdown"
         };
+
         let option_count = select
           .items
           .iter()
@@ -224,9 +215,35 @@ impl FormControlKind {
           .iter()
           .filter(|item| matches!(item, SelectItem::OptGroupLabel { .. }))
           .count();
+
+        let mut selected_option_count = 0usize;
+        let mut first_selected: Option<(&str, &str)> = None;
+        for idx in &select.selected {
+          let Some(item) = select.items.get(*idx) else {
+            continue;
+          };
+          let SelectItem::Option { label, value, .. } = item else {
+            continue;
+          };
+          selected_option_count += 1;
+          if first_selected.is_none() {
+            first_selected = Some((label.as_str(), value.as_str()));
+          }
+        }
+
+        let selected_summary = if selected_option_count == 0 {
+          "none".to_string()
+        } else if selected_option_count == 1 {
+          let (label, value) = first_selected.unwrap_or(("", ""));
+          let text = if label.trim().is_empty() { value } else { label };
+          format!("{text:?}")
+        } else {
+          format!("{selected_option_count} selected")
+        };
+
         format!(
-          "Select{{mode={mode}, size={}, selected={selected:?}, options={option_count}, optgroups={optgroup_count}}}",
-          select.size
+          "Select{{mode={mode}, multiple={}, size={}, selected={selected_summary}, options={option_count}, optgroups={optgroup_count}}}",
+          select.multiple, select.size
         )
       }
       // Other control kinds are currently small, so reuse the derived Debug output.

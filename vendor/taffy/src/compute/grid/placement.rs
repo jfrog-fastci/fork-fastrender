@@ -249,17 +249,27 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
       let subgrid_auto_span = get_child_subgrid_auto_span(node);
       let mut origin_zero_placement = origin_zero_placement;
       if let Some(span) = subgrid_auto_span.horizontal {
-        if matches!(origin_zero_placement.horizontal.start, OriginZeroGridPlacement::Auto)
-          && matches!(origin_zero_placement.horizontal.end, OriginZeroGridPlacement::Auto)
+        if matches!(
+          origin_zero_placement.horizontal.start,
+          OriginZeroGridPlacementWithNamedSpan::Auto
+        ) && matches!(
+          origin_zero_placement.horizontal.end,
+          OriginZeroGridPlacementWithNamedSpan::Auto
+        )
         {
-          origin_zero_placement.horizontal.end = OriginZeroGridPlacement::Span(span);
+          origin_zero_placement.horizontal.end = OriginZeroGridPlacementWithNamedSpan::Span(span);
         }
       }
       if let Some(span) = subgrid_auto_span.vertical {
-        if matches!(origin_zero_placement.vertical.start, OriginZeroGridPlacement::Auto)
-          && matches!(origin_zero_placement.vertical.end, OriginZeroGridPlacement::Auto)
+        if matches!(
+          origin_zero_placement.vertical.start,
+          OriginZeroGridPlacementWithNamedSpan::Auto
+        ) && matches!(
+          origin_zero_placement.vertical.end,
+          OriginZeroGridPlacementWithNamedSpan::Auto
+        )
         {
-          origin_zero_placement.vertical.end = OriginZeroGridPlacement::Span(span);
+          origin_zero_placement.vertical.end = OriginZeroGridPlacementWithNamedSpan::Span(span);
         }
       }
       (index, node, origin_zero_placement, style)
