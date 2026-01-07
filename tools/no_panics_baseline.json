@@ -18,24 +18,6 @@
     "count": 1
   },
   {
-    "path": "src/css/parser.rs",
-    "kind": "expect",
-    "line": ".expect(\"Parsed stylesheet cache capacity must be non-zero\"),",
-    "count": 1
-  },
-  {
-    "path": "src/css/parser.rs",
-    "kind": "unwrap",
-    "line": "Ok(conditions.pop().unwrap())",
-    "count": 7
-  },
-  {
-    "path": "src/css/parser.rs",
-    "kind": "unwrap",
-    "line": "combined.unwrap()",
-    "count": 1
-  },
-  {
     "path": "src/css/properties.rs",
     "kind": "expect",
     "line": "return Ok(values.pop().expect(\"length checked\"));",

@@ -179,7 +179,7 @@ fn parsed_stylesheet_cache() -> &'static Mutex<LruCache<ParsedStylesheetCacheKey
   PARSED_STYLESHEET_CACHE.get_or_init(|| {
     Mutex::new(LruCache::new(
       NonZeroUsize::new(PARSED_STYLESHEET_CACHE_CAPACITY)
-        .expect("Parsed stylesheet cache capacity must be non-zero"),
+        .unwrap_or(NonZeroUsize::MIN),
     ))
   })
 }
@@ -1086,7 +1086,7 @@ fn parse_container_disjunction<'i, 't>(
   }
 
   if conditions.len() == 1 {
-    Ok(conditions.pop().unwrap())
+    conditions.pop().ok_or_else(|| parser.new_custom_error(()))
   } else {
     Ok(ContainerQuery::Or(conditions))
   }
@@ -1107,7 +1107,7 @@ fn parse_container_conjunction<'i, 't>(
   }
 
   if conditions.len() == 1 {
-    Ok(conditions.pop().unwrap())
+    conditions.pop().ok_or_else(|| parser.new_custom_error(()))
   } else {
     Ok(ContainerQuery::And(conditions))
   }
@@ -1557,7 +1557,7 @@ fn parse_supports_disjunction<'i, 't>(
   }
 
   if conditions.len() == 1 {
-    Ok(conditions.pop().unwrap())
+    conditions.pop().ok_or_else(|| parser.new_custom_error(()))
   } else {
     Ok(SupportsCondition::Or(conditions))
   }
@@ -1585,7 +1585,7 @@ fn parse_supports_conjunction<'i, 't>(
   }
 
   if conditions.len() == 1 {
-    Ok(conditions.pop().unwrap())
+    conditions.pop().ok_or_else(|| parser.new_custom_error(()))
   } else {
     Ok(SupportsCondition::And(conditions))
   }
@@ -1746,7 +1746,7 @@ fn parse_supports_conjunction_tail<'i, 't>(
   }
 
   if conditions.len() == 1 {
-    Ok(conditions.pop().unwrap())
+    conditions.pop().ok_or_else(|| parser.new_custom_error(()))
   } else {
     Ok(SupportsCondition::And(conditions))
   }
@@ -1768,7 +1768,7 @@ fn parse_supports_bare_disjunction<'i, 't>(
   }
 
   if conditions.len() == 1 {
-    Ok(conditions.pop().unwrap())
+    conditions.pop().ok_or_else(|| parser.new_custom_error(()))
   } else {
     Ok(SupportsCondition::Or(conditions))
   }
@@ -1790,7 +1790,7 @@ fn parse_supports_bare_conjunction<'i, 't>(
   }
 
   if conditions.len() == 1 {
-    Ok(conditions.pop().unwrap())
+    conditions.pop().ok_or_else(|| parser.new_custom_error(()))
   } else {
     Ok(SupportsCondition::And(conditions))
   }
@@ -3889,8 +3889,7 @@ fn parse_style_rule<'i, 't>(
       }
     }
 
-    let combined = combine_nested_selectors(parent, selector_text);
-    if combined.is_none() {
+    let Some(combined) = combine_nested_selectors(parent, selector_text) else {
       if parser.expect_curly_bracket_block().is_ok() {
         let _ = parser.parse_nested_block(|nested| {
           Ok::<_, ParseError<'i, SelectorParseErrorKind<'i>>>(parse_rule_list_with_context(
@@ -3905,8 +3904,8 @@ fn parse_style_rule<'i, 't>(
         });
       }
       return Ok(None);
-    }
-    combined.unwrap()
+    };
+    combined
   } else {
     parser.parse_until_before(cssparser::Delimiter::CurlyBracketBlock, |parser| {
       SelectorList::parse(
