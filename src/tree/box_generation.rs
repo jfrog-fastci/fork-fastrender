@@ -5803,9 +5803,36 @@ mod tests {
   }
 
   #[test]
+  fn required_select_with_hidden_placeholder_option_is_valid() {
+    let control = first_select_control_from_html(
+      "<html><body><select required><option hidden value=\"\">Hidden</option><option value=\"a\">A</option></select></body></html>",
+    );
+    assert!(control.required);
+    assert!(!control.invalid);
+  }
+
+  #[test]
   fn required_multiple_select_without_selection_is_invalid() {
     let control = first_select_control_from_html(
       "<html><body><select multiple required><option>One</option><option>Two</option></select></body></html>",
+    );
+    assert!(control.required);
+    assert!(control.invalid);
+  }
+
+  #[test]
+  fn required_multiple_select_with_only_hidden_selected_is_invalid() {
+    let control = first_select_control_from_html(
+      "<html><body><select multiple required><option hidden selected value=\"a\">A</option></select></body></html>",
+    );
+    assert!(control.required);
+    assert!(control.invalid);
+  }
+
+  #[test]
+  fn required_multiple_select_with_selected_in_hidden_optgroup_is_invalid() {
+    let control = first_select_control_from_html(
+      "<html><body><select multiple required><optgroup hidden label=\"g\"><option selected value=\"a\">A</option></optgroup></select></body></html>",
     );
     assert!(control.required);
     assert!(control.invalid);

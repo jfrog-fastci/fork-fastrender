@@ -12144,6 +12144,47 @@ mod tests {
       "<select required> is valid when the first option is inside an <optgroup>, even if its value is empty"
     );
 
+    let hidden_placeholder_single = element_with_attrs(
+      "select",
+      vec![("required", "")],
+      vec![
+        element_with_attrs("option", vec![("hidden", ""), ("value", "")], vec![]),
+        element_with_attrs("option", vec![("value", "x")], vec![]),
+      ],
+    );
+    assert!(
+      ElementRef::new(&hidden_placeholder_single).accessibility_is_valid(),
+      "<select required> should ignore hidden options when determining placeholder label option"
+    );
+
+    let hidden_selected_multiple = element_with_attrs(
+      "select",
+      vec![("required", ""), ("multiple", "")],
+      vec![element_with_attrs(
+        "option",
+        vec![("hidden", ""), ("selected", ""), ("value", "x")],
+        vec![],
+      )],
+    );
+    assert!(
+      !ElementRef::new(&hidden_selected_multiple).accessibility_is_valid(),
+      "<select multiple required> is invalid when the only selected option is hidden"
+    );
+
+    let hidden_optgroup_selected_multiple = element_with_attrs(
+      "select",
+      vec![("required", ""), ("multiple", "")],
+      vec![element_with_attrs(
+        "optgroup",
+        vec![("hidden", ""), ("label", "g")],
+        vec![element_with_attrs("option", vec![("selected", ""), ("value", "x")], vec![])],
+      )],
+    );
+    assert!(
+      !ElementRef::new(&hidden_optgroup_selected_multiple).accessibility_is_valid(),
+      "<select multiple required> is invalid when the only selected option is in a hidden optgroup"
+    );
+
     let single_last_selected_wins = element_with_attrs(
       "select",
       vec![("required", "")],
