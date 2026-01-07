@@ -1592,93 +1592,56 @@ fn option_text(node: &StyledNode, ctx: &BuildContext) -> String {
   ctx.subtree_text(node, &mut visited, TextAlternativeMode::Visible)
 }
 
-fn selected_option_value(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
-  let explicit = find_selected_option_value(node, false, ctx);
-  if explicit.is_some() {
-    return explicit;
-  }
-
-  let multiple = node.node.get_attribute_ref("multiple").is_some();
-  if multiple {
-    return None;
-  }
-
-  first_enabled_option_value(node, false, ctx).or_else(|| first_option_value(node, ctx))
-}
-
-fn find_selected_option_value(
-  node: &StyledNode,
-  optgroup_disabled: bool,
-  ctx: &BuildContext,
-) -> Option<String> {
-  let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
-  let is_option = tag.as_deref() == Some("option");
-
-  let option_disabled = node.node.get_attribute_ref("disabled").is_some();
-  let next_optgroup_disabled =
-    optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
-
-  let mut selected = None;
-  if is_option && node.node.get_attribute_ref("selected").is_some() && !ctx.is_hidden(node) {
-    selected = Some(option_value(node, ctx));
-  }
-
-  for child in ctx.composed_children(node) {
-    if let Some(val) = find_selected_option_value(child, next_optgroup_disabled, ctx) {
-      selected = Some(val);
-    }
-  }
-  selected
-}
-
-fn first_enabled_option_value(
-  node: &StyledNode,
-  optgroup_disabled: bool,
-  ctx: &BuildContext,
-) -> Option<String> {
-  let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
-  let is_option = tag.as_deref() == Some("option");
-
-  let option_disabled = node.node.get_attribute_ref("disabled").is_some();
-  let next_optgroup_disabled =
-    optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
-
-  if is_option && !(option_disabled || optgroup_disabled) && !ctx.is_hidden(node) {
-    return Some(option_value(node, ctx));
-  }
-
-  for child in ctx.composed_children(node) {
-    if let Some(val) = first_enabled_option_value(child, next_optgroup_disabled, ctx) {
-      return Some(val);
-    }
-  }
-
-  None
-}
-
-fn first_option_value(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
-  let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
-  let is_option = tag.as_deref() == Some("option");
-
-  if is_option && !ctx.is_hidden(node) {
-    return Some(option_value(node, ctx));
-  }
-
-  for child in ctx.composed_children(node) {
-    if let Some(val) = first_option_value(child, ctx) {
-      return Some(val);
-    }
-  }
-
-  None
-}
-
 fn option_value(node: &StyledNode, ctx: &BuildContext) -> String {
   node
     .node
     .get_attribute_ref("value")
     .map(|v| v.to_string())
     .unwrap_or_else(|| option_text(node, ctx))
+}
+
+fn select_placeholder_label_option_node_id(
+  select: &StyledNode,
+  ctx: &BuildContext,
+) -> Option<usize> {
+  // https://html.spec.whatwg.org/#placeholder-label-option
+  if select.node.get_attribute_ref("required").is_none() {
+    return None;
+  }
+  if select.node.get_attribute_ref("multiple").is_some() {
+    return None;
+  }
+  if crate::dom::select_effective_size(&select.node) != 1 {
+    return None;
+  }
+
+  let mut stack: Vec<(&StyledNode, bool)> = Vec::new();
+  for child in ctx.composed_children(select).into_iter().rev() {
+    stack.push((child, true));
+  }
+
+  while let Some((node, parent_is_select)) = stack.pop() {
+    if ctx.is_hidden(node) {
+      continue;
+    }
+
+    if node
+      .node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("option"))
+    {
+      if parent_is_select && option_value(node, ctx).is_empty() {
+        return Some(node.node_id);
+      }
+      return None;
+    }
+
+    for child in ctx.composed_children(node).into_iter().rev() {
+      stack.push((child, false));
+    }
+  }
+
+  None
 }
 
 fn selected_option_node_id(node: &StyledNode, ctx: &BuildContext) -> Option<usize> {
@@ -2317,15 +2280,22 @@ fn compute_invalid(node: &StyledNode, element_ref: &ElementRef, ctx: &BuildConte
     .node
     .tag_name()
     .is_some_and(|tag| tag.eq_ignore_ascii_case("select"))
-    && node.node.get_attribute_ref("multiple").is_none()
   {
     if element_ref.accessibility_disabled() {
       return false;
     }
 
     if element_ref.accessibility_required() {
-      let value = selected_option_value(node, ctx).unwrap_or_default();
-      return value.trim().is_empty();
+      if node.node.get_attribute_ref("multiple").is_some() {
+        return find_selected_option_node_id(node, false, ctx).is_none();
+      }
+
+      let Some(selected_id) = selected_option_node_id(node, ctx) else {
+        return true;
+      };
+
+      return select_placeholder_label_option_node_id(node, ctx)
+        .is_some_and(|placeholder_id| placeholder_id == selected_id);
     }
 
     return false;

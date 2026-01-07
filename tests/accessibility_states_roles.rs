@@ -488,3 +488,49 @@ fn select_placeholder_disabled_selected_exposes_value_text() {
   let all_disabled = find_by_id(&tree, "all-disabled").expect("all-disabled select");
   assert_eq!(all_disabled.value.as_deref(), Some("A"));
 }
+
+#[test]
+fn select_required_empty_value_is_not_invalid_when_not_placeholder_label() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r##"
+    <html>
+      <body>
+        <select id="single" required>
+          <option value="x">X</option>
+          <option value="" selected>Empty</option>
+        </select>
+      </body>
+    </html>
+  "##;
+
+  let dom = renderer.parse_html(html).expect("parse");
+  let tree = renderer
+    .accessibility_tree(&dom, 800, 600)
+    .expect("accessibility tree");
+
+  let single = find_by_id(&tree, "single").expect("single select");
+  assert!(!single.states.invalid);
+}
+
+#[test]
+fn select_required_multi_select_empty_value_is_not_invalid() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r##"
+    <html>
+      <body>
+        <select id="multi" required multiple>
+          <option value="" selected>Empty</option>
+          <option value="x">X</option>
+        </select>
+      </body>
+    </html>
+  "##;
+
+  let dom = renderer.parse_html(html).expect("parse");
+  let tree = renderer
+    .accessibility_tree(&dom, 800, 600)
+    .expect("accessibility tree");
+
+  let multi = find_by_id(&tree, "multi").expect("multi select");
+  assert!(!multi.states.invalid);
+}
