@@ -5367,6 +5367,53 @@ mod tests {
   }
 
   #[test]
+  fn vendor_placeholder_pseudo_classes_are_normalized_to_placeholder_pseudo_element() {
+    let css = r#"
+      input:-ms-input-placeholder { opacity: 0 }
+      input:focus:-ms-input-placeholder { opacity: 0 }
+      input:-webkit-input-placeholder { color: red }
+    "#;
+    let sheet = parse_stylesheet(css).expect("parse stylesheet");
+    let selectors: Vec<String> = sheet
+      .rules
+      .iter()
+      .map(|rule| match rule {
+        CssRule::Style(rule) => rule.selectors.to_css_string(),
+        other => panic!("expected style rule, got {:?}", other),
+      })
+      .collect();
+    assert_eq!(
+      selectors,
+      vec![
+        "input::placeholder".to_string(),
+        "input:focus::placeholder".to_string(),
+        "input::placeholder".to_string(),
+      ]
+    );
+  }
+
+  #[test]
+  fn vendor_placeholder_selectors_do_not_invalidate_selector_lists_in_style_rules() {
+    let css = "input:-ms-input-placeholder, input::placeholder { color: red }";
+    let sheet = parse_stylesheet(css).expect("parse stylesheet");
+    assert_eq!(sheet.rules.len(), 1);
+    let CssRule::Style(rule) = &sheet.rules[0] else {
+      panic!("expected style rule");
+    };
+    assert_eq!(rule.selectors.slice().len(), 2);
+    let serialized: Vec<String> = rule
+      .selectors
+      .slice()
+      .iter()
+      .map(|selector| selector.to_css_string())
+      .collect();
+    assert_eq!(
+      serialized,
+      vec!["input::placeholder".to_string(), "input::placeholder".to_string()]
+    );
+  }
+
+  #[test]
   fn unknown_properties_do_not_produce_errors() {
     let css = ".foo { totally-unknown: whatever; }";
     let result = parse_stylesheet_with_errors(css).expect("parse stylesheet with errors");
