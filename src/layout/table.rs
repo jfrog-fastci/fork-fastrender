@@ -5145,12 +5145,17 @@ impl TableFormattingContext {
             LengthUnit::Percent if percent_base.is_some() => {
               let col = &mut constraints[cell.col];
               col.set_percentage(width.value);
-              if let Some(px) = specified_width {
-                col.min_width = col.min_width.max(px);
-                col.max_width = col.max_width.max(px);
-              } else {
-                col.min_width = col.min_width.max(min_w);
-                col.max_width = col.max_width.max(max_w);
+              // In fixed layout, preserve authored max-width caps coming from `<col>`/`<colgroup>`.
+              // If a cap exists, `ColumnDistributor` will clamp the percentage width against it.
+              if !(mode == DistributionMode::Fixed && col.has_max_cap && col.max_width.is_finite())
+              {
+                if let Some(px) = specified_width {
+                  col.min_width = col.min_width.max(px);
+                  col.max_width = col.max_width.max(px);
+                } else {
+                  col.min_width = col.min_width.max(min_w);
+                  col.max_width = col.max_width.max(max_w);
+                }
               }
               if has_max_cap {
                 col.has_max_cap = true;
@@ -5160,7 +5165,9 @@ impl TableFormattingContext {
             LengthUnit::Percent => {
               let col = &mut constraints[cell.col];
               col.min_width = col.min_width.max(min_w);
-              col.max_width = col.max_width.max(max_w);
+              if !(mode == DistributionMode::Fixed && col.has_max_cap && col.max_width.is_finite()) {
+                col.max_width = col.max_width.max(max_w);
+              }
             }
             _ => {
               let px = span_specified_width.unwrap_or_else(|| {
@@ -5181,8 +5188,10 @@ impl TableFormattingContext {
                 col.fixed_width = Some(col.fixed_width.unwrap_or(0.0).max(px));
                 col.is_flexible = false;
               }
-              col.min_width = col.min_width.max(px);
-              col.max_width = col.max_width.max(px);
+              if !(mode == DistributionMode::Fixed && col.has_max_cap && col.max_width.is_finite()) {
+                col.min_width = col.min_width.max(px);
+                col.max_width = col.max_width.max(px);
+              }
               if has_max_cap {
                 col.has_max_cap = true;
               }
@@ -5193,7 +5202,12 @@ impl TableFormattingContext {
 
         let col = &mut constraints[cell.col];
         col.min_width = col.min_width.max(min_w);
-        col.max_width = col.max_width.max(max_w);
+        if mode == DistributionMode::Fixed && col.has_max_cap && col.max_width.is_finite() {
+          // Preserve authored max caps from column elements.
+          col.max_width = col.max_width.max(col.min_width);
+        } else {
+          col.max_width = col.max_width.max(max_w);
+        }
         if has_max_cap {
           col.has_max_cap = true;
         }
