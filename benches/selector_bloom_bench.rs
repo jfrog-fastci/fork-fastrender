@@ -899,8 +899,19 @@ fn nested_has_selector_summary_benchmark(c: &mut Criterion) {
 }
 
 fn has_sibling_wide_list_benchmark(c: &mut Criterion) {
-  let sibling_count = 4096;
-  let leaves_per_sibling = 32;
+  bench_config();
+
+  // Bench safety: keep synthetic DOM size bounded by the global bench caps.
+  // This benchmark wants a *wide* sibling list, but should not exceed `FASTR_BENCH_MAX_DOM_NODES`
+  // by default.
+  let max_dom_nodes = common::bench_limits().max_dom_nodes.max(1);
+  let leaves_per_sibling = 32usize;
+  // Per sibling: 1 gate + 1 wrap + N leaf spans.
+  let per_sibling = leaves_per_sibling.saturating_add(2);
+  // Account for fixed boilerplate nodes (<html>/<body>/container/etc) plus some margin.
+  let overhead = 32usize;
+  let max_siblings = max_dom_nodes.saturating_sub(overhead) / per_sibling.max(1);
+  let sibling_count = 4096usize.min(max_siblings.max(1));
 
   let html = build_has_sibling_wide_list_html(sibling_count, leaves_per_sibling);
   let css = "body { margin: 0; }\n#anchor:has(~ .gate .missing) { padding-left: 1px; }\n";
