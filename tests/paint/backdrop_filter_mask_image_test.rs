@@ -30,6 +30,7 @@ fn build_display_list(html: &str, width: u32, height: u32) -> (DisplayList, Font
     DisplayListBuilder::with_image_cache(image_cache.clone())
       .with_font_context(font_ctx.clone())
       .with_svg_filter_defs(tree.svg_filter_defs.clone())
+      .with_svg_id_defs(tree.svg_id_defs.clone())
       .with_scroll_state(ScrollState::default())
       .with_device_pixel_ratio(1.0)
       // Keep display-list building deterministic; these tests focus on renderer effects.

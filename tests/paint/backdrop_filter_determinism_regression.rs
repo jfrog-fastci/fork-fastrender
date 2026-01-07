@@ -134,6 +134,7 @@ fn build_display_list(width: u32, height: u32) -> (DisplayList, FontContext) {
   let list = DisplayListBuilder::with_image_cache(image_cache)
     .with_font_context(font_ctx.clone())
     .with_svg_filter_defs(tree.svg_filter_defs.clone())
+    .with_svg_id_defs(tree.svg_id_defs.clone())
     .with_scroll_state(scroll_state)
     .with_device_pixel_ratio(1.0)
     // Keep display-list building deterministic; this test focuses on paint-time determinism.

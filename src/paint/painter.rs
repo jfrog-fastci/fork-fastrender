@@ -209,6 +209,8 @@ pub struct Painter {
   font_ctx: FontContext,
   /// Image cache for replaced content
   image_cache: ImageCache,
+  /// SVG defs elements (by id) serialized from the DOM (document-level registry).
+  svg_id_defs: Option<Arc<HashMap<String, String>>>,
   /// Cache of shaped runs keyed by style and text to avoid reshaping identical content during paint
   text_shape_cache: Arc<Mutex<HashMap<TextCacheKey, Vec<ShapedRun>>>>,
   /// Optional trace collector for Chrome trace output.
@@ -1354,6 +1356,7 @@ impl Painter {
       shaper: ShapingPipeline::new(),
       font_ctx,
       image_cache,
+      svg_id_defs: None,
       text_shape_cache: Arc::new(Mutex::new(HashMap::new())),
       trace: TraceHandle::disabled(),
       scroll_state: ScrollState::default(),
@@ -1472,6 +1475,7 @@ impl Painter {
     check_active(RenderStage::Paint).map_err(Error::Render)?;
     let trace = self.trace.clone();
     let _paint_span = trace.span("paint", "paint");
+    self.svg_id_defs = tree.svg_id_defs.clone();
 
     if dump_counts_enabled() {
       let (total, text, replaced, lines, inline) = fragment_tree_counts(tree);
@@ -2823,6 +2827,7 @@ impl Painter {
           shaper: ShapingPipeline::new(),
           font_ctx: self.font_ctx.clone(),
           image_cache: self.image_cache.clone(),
+          svg_id_defs: self.svg_id_defs.clone(),
           text_shape_cache: Arc::clone(&self.text_shape_cache),
           trace: self.trace.clone(),
           scroll_state: self.scroll_state.clone(),
@@ -2860,6 +2865,7 @@ impl Painter {
             shaper: ShapingPipeline::new(),
             font_ctx: self.font_ctx.clone(),
             image_cache: self.image_cache.clone(),
+            svg_id_defs: self.svg_id_defs.clone(),
             text_shape_cache: Arc::clone(&self.text_shape_cache),
             trace: self.trace.clone(),
             scroll_state: self.scroll_state.clone(),
@@ -3352,6 +3358,110 @@ impl Painter {
 
       let mut dummy = BackgroundLayer::default();
       dummy.size = layer.size;
+
+      let mut resolved_mode = layer.mode;
+      let mut img_w = 0.0f32;
+      let mut img_h = 0.0f32;
+      let mut tile_pixmap: Option<Arc<Pixmap>> = None;
+
+      enum MaskUrlTile {
+        SvgFragment {
+          id: String,
+          svg: String,
+          render_w: u32,
+          render_h: u32,
+        },
+        Image { resolved_src: String, image: Arc<crate::image_loader::CachedImage> },
+      }
+
+      let url_tile = match image {
+        BackgroundImage::Url(src) => {
+          let trimmed = src.trim();
+          if let Some(id) = trimmed.strip_prefix('#').filter(|id| !id.is_empty()) {
+            let Some(defs) = self.svg_id_defs.as_ref() else {
+              continue;
+            };
+            if !defs.contains_key(id) {
+              continue;
+            }
+
+            let render_w = css_bounds.width().ceil().max(1.0) as u32;
+            let render_h = css_bounds.height().ceil().max(1.0) as u32;
+            img_w = render_w as f32;
+            img_h = render_h as f32;
+
+            let mut ids: Vec<&String> = defs.keys().collect();
+            ids.sort();
+
+            let mut svg = String::new();
+            svg.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"");
+            svg.push_str(&render_w.to_string());
+            svg.push_str("\" height=\"");
+            svg.push_str(&render_h.to_string());
+            svg.push_str("\" viewBox=\"0 0 ");
+            svg.push_str(&render_w.to_string());
+            svg.push(' ');
+            svg.push_str(&render_h.to_string());
+            svg.push_str("\"><defs>");
+            for def_id in ids {
+              if let Some(serialized) = defs.get(def_id) {
+                svg.push_str(serialized);
+              }
+            }
+            svg.push_str("</defs><rect width=\"100%\" height=\"100%\" fill=\"white\" mask=\"url(#");
+            svg.push_str(id);
+            svg.push_str(")\"/></svg>");
+
+            // The synthesized SVG always produces a white image with mask coverage in the alpha
+            // channel, so interpret it as an alpha mask.
+            resolved_mode = MaskMode::Alpha;
+            Some(MaskUrlTile::SvgFragment {
+              id: id.to_string(),
+              svg,
+              render_w,
+              render_h,
+            })
+          } else {
+            let resolved_src = self.image_cache.resolve_url(src);
+            let image = match self.image_cache.load(&resolved_src) {
+              Ok(img) => img,
+              Err(_) => continue,
+            };
+            let orientation = style.image_orientation.resolve(image.orientation, true);
+            let Some((w, h)) = image.css_dimensions(
+              orientation,
+              &style.image_resolution,
+              self.scale,
+              None,
+            ) else {
+              continue;
+            };
+            img_w = w;
+            img_h = h;
+
+            resolved_mode = match layer.mode {
+              MaskMode::MatchSource => {
+                let trimmed = src.trim_start();
+                if trimmed.starts_with('<') {
+                  MaskMode::Alpha
+                } else if image.image.color().has_alpha() {
+                  MaskMode::Alpha
+                } else {
+                  MaskMode::Luminance
+                }
+              }
+              other => other,
+            };
+
+            Some(MaskUrlTile::Image {
+              resolved_src,
+              image: Arc::clone(&image),
+            })
+          }
+        }
+        _ => None,
+      };
+
       let (mut tile_w, mut tile_h) = compute_background_size(
         &dummy,
         style.font_size,
@@ -3359,8 +3469,8 @@ impl Painter {
         viewport,
         origin_rect_css.width(),
         origin_rect_css.height(),
-        0.0,
-        0.0,
+        img_w,
+        img_h,
       );
       if tile_w <= 0.0 || tile_h <= 0.0 {
         continue;
@@ -3382,7 +3492,11 @@ impl Painter {
           BackgroundSize::Explicit(BackgroundSizeComponent::Auto, BackgroundSizeComponent::Auto)
         )
       {
-        let aspect = 1.0;
+        let aspect = if img_w > 0.0 && img_h > 0.0 {
+          img_w / img_h
+        } else {
+          1.0
+        };
         if rounded_x {
           tile_h = tile_w / aspect;
         } else {
@@ -3422,24 +3536,79 @@ impl Painter {
 
       let pixmap_w = tile_w.ceil().max(1.0) as u32;
       let pixmap_h = tile_h.ceil().max(1.0) as u32;
-      let tile = match image {
+
+      match image {
         BackgroundImage::LinearGradient { .. }
         | BackgroundImage::RepeatingLinearGradient { .. }
         | BackgroundImage::RadialGradient { .. }
         | BackgroundImage::RepeatingRadialGradient { .. }
         | BackgroundImage::ConicGradient { .. }
         | BackgroundImage::RepeatingConicGradient { .. } => {
-          self.render_generated_image(image, style, pixmap_w, pixmap_h)
+          tile_pixmap = self
+            .render_generated_image(image, style, pixmap_w, pixmap_h)
+            .map(Arc::new);
         }
-        BackgroundImage::Url(_) | BackgroundImage::None => None,
-      };
-      let Some(tile) = tile else { continue };
+        BackgroundImage::Url(_) => match url_tile {
+          Some(MaskUrlTile::SvgFragment {
+            id,
+            svg,
+            render_w,
+            render_h,
+          }) => {
+            let cache_key = format!("svg-mask-fragment:{}", id);
+            tile_pixmap = match self.image_cache.render_svg_pixmap_at_size(
+              &svg,
+              render_w,
+              render_h,
+              &cache_key,
+              self.scale,
+            ) {
+              Ok(pixmap) => Some(pixmap),
+              Err(_) => None,
+            };
+          }
+          Some(MaskUrlTile::Image { resolved_src, image }) => {
+            let orientation = style.image_orientation.resolve(image.orientation, true);
+            if image.is_vector {
+              let Some(svg) = &image.svg_content else {
+                continue;
+              };
+              let (render_w, render_h) = image.oriented_dimensions(orientation);
+              if render_w == 0 || render_h == 0 {
+                continue;
+              }
+              tile_pixmap = match self.image_cache.render_svg_pixmap_at_size(
+                svg,
+                render_w,
+                render_h,
+                &resolved_src,
+                self.scale,
+              ) {
+                Ok(pixmap) => Some(pixmap),
+                Err(_) => None,
+              };
+            } else {
+              tile_pixmap = match self
+                .image_cache
+                .load_raster_pixmap(&resolved_src, orientation, true)
+              {
+                Ok(Some(pixmap)) => Some(pixmap),
+                _ => None,
+              };
+            }
+          }
+          None => {}
+        },
+        BackgroundImage::None => {}
+      }
+
+      let Some(tile) = tile_pixmap else { continue };
       let mut mask_tile = tile;
-      if matches!(layer.mode, MaskMode::Luminance) {
-        let Some(converted) = mask_tile_from_image(&mask_tile, layer.mode)? else {
+      if matches!(resolved_mode, MaskMode::Luminance) {
+        let Some(converted) = mask_tile_from_image(mask_tile.as_ref(), resolved_mode)? else {
           continue;
         };
-        mask_tile = converted;
+        mask_tile = Arc::new(converted);
       }
 
       let device_clip = self.device_rect(clip_rect_css);
@@ -3490,7 +3659,7 @@ impl Painter {
               check_active_periodic(&mut deadline_counter, 1, RenderStage::Paint)?;
               paint_mask_tile(
                 mask_pixmap,
-                &mask_tile,
+                mask_tile.as_ref(),
                 tx,
                 ty,
                 tile_w,
