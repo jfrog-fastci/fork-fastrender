@@ -14284,6 +14284,8 @@ mod tests {
         (
           1usize,
           ContainerQueryInfo {
+            width: 500.0,
+            height: 300.0,
             inline_size: 500.0,
             block_size: 300.0,
             container_type: ContainerType::Size,
@@ -14295,6 +14297,8 @@ mod tests {
         (
           2usize,
           ContainerQueryInfo {
+            width: 100.0,
+            height: 999.0,
             inline_size: 100.0,
             block_size: 999.0,
             container_type: ContainerType::InlineSize,
@@ -14366,6 +14370,8 @@ mod tests {
         ContainerQueryInfo {
           // For vertical writing modes, the query container's inline size maps to physical height
           // while its block size maps to physical width.
+          width: 300.0,
+          height: 100.0,
           inline_size: 100.0,
           block_size: 300.0,
           container_type: ContainerType::Size,

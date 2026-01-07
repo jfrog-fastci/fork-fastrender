@@ -16069,6 +16069,8 @@ mod tests {
       containers.insert(
         1usize,
         crate::style::cascade::ContainerQueryInfo {
+          width: 100.0,
+          height: 200.0,
           inline_size: 100.0,
           block_size: 200.0,
           container_type: crate::style::types::ContainerType::InlineSize,
