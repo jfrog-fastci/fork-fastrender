@@ -2497,11 +2497,11 @@ fn parse_has_popup(node: &DomNode) -> Option<String> {
   // `aria-haspopup` is an enumerated ARIA token attribute. Only allow known tokens; ignore invalid
   // values so they don't leak into serialized accessibility output.
   //
-  // In HTML, a minimized attribute like `<button aria-haspopup>` parses as an empty string. For
-  // backwards compatibility with the legacy boolean form of `aria-haspopup`, treat an empty value
-  // as `"true"`.
+  // In HTML, a minimized attribute like `<button aria-haspopup>` parses as an empty string. The
+  // ARIA processing rules treat invalid tokens (including the empty string) as if the attribute
+  // was absent.
   if trimmed.is_empty() {
-    return Some("true".to_string());
+    return None;
   }
 
   let token = trimmed.to_ascii_lowercase();

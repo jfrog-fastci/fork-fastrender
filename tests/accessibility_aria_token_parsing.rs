@@ -31,7 +31,7 @@ fn find_json_node<'a>(node: &'a Value, id: &str) -> Option<&'a Value> {
 }
 
 #[test]
-fn aria_has_popup_validates_tokens_and_handles_empty() {
+fn aria_has_popup_validates_tokens_and_ignores_empty() {
   let html = r##"
     <html>
       <body>
@@ -53,10 +53,9 @@ fn aria_has_popup_validates_tokens_and_handles_empty() {
 
   let empty = find_json_node(&tree, "empty").expect("empty button");
   let empty_states = empty.get("states").expect("states");
-  assert_eq!(
-    empty_states.get("has_popup").and_then(|v| v.as_str()),
-    Some("true"),
-    "minimized aria-haspopup should default to true"
+  assert!(
+    empty_states.get("has_popup").is_none(),
+    "empty/minimized aria-haspopup should be treated as not specified"
   );
 
   let menu = find_json_node(&tree, "menu").expect("menu button");
