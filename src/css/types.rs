@@ -5,7 +5,7 @@
 use super::selectors::FastRenderSelectorImpl;
 use super::selectors::PseudoClassParser;
 use super::supports;
-use crate::css::loader::resolve_href_with_base;
+use crate::css::loader::{resolve_href_with_base, FetchedStylesheet};
 use crate::error::{Error, RenderError, RenderStage};
 use crate::render_control::{check_active, check_active_periodic};
 use crate::style::color::Color;
@@ -424,6 +424,22 @@ pub struct PropertyRule {
 /// Implementations can fetch from network, filesystem, or an in-memory map.
 pub trait CssImportLoader {
   fn load(&self, url: &str) -> crate::error::Result<String>;
+
+  /// Load an `@import` stylesheet with information about the importing stylesheet.
+  ///
+  /// The default implementation calls [`Self::load`] and assumes no redirects. Loaders that
+  /// perform network fetches should override this to:
+  /// - send `importer_url` as the request referrer when available
+  /// - return the final URL after redirects so nested `@import` and `url(...)` bases match the
+  ///   stylesheet the server actually served.
+  fn load_with_importer(
+    &self,
+    url: &str,
+    importer_url: Option<&str>,
+  ) -> crate::error::Result<FetchedStylesheet> {
+    let _ = importer_url;
+    Ok(FetchedStylesheet::new(self.load(url)?, None))
+  }
 }
 
 impl StyleSheet {
@@ -734,6 +750,7 @@ impl StyleSheet {
     let mut state = ImportResolveState::default();
     state.cache.reserve(32);
     state.stack.reserve(16);
+    state.redirects.reserve(16);
     let mut deadline_counter = 0usize;
     resolve_rules_owned(
       self.rules,
@@ -3743,8 +3760,9 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
         } else {
           continue;
         };
+        let canonical_href = state.canonicalize_url(&resolved_href);
 
-        if state.stack.iter().any(|url| url == &resolved_href) {
+        if state.stack.iter().any(|url| url == &canonical_href) {
           // Cyclic imports behave like failed imports. When the @import carries a layer modifier,
           // we still need to declare the layer ordering at this point so later rules in the same
           // layer keep their cascade ordering stable.
@@ -3754,7 +3772,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
           continue;
         }
 
-        let resolved_children = if let Some(entry) = state.cache.get(&resolved_href) {
+        let resolved_children = if let Some(entry) = state.cache.get(&canonical_href) {
           match entry {
             CachedImport::Ok(rules) => {
               let mut cloned = Vec::with_capacity(rules.len());
@@ -3775,72 +3793,116 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
             continue;
           }
 
-          state.stack.push(resolved_href.clone());
+          state.stack.push(canonical_href.clone());
 
-          let resolved_children = match loader.load(&resolved_href) {
-            Ok(css_text) => {
-              let sheet = match crate::css::parser::parse_stylesheet_with_media_cached_by_url_shared(
-                &css_text,
-                &resolved_href,
-                media_ctx,
-                cache.as_deref_mut(),
-              ) {
-                Ok(sheet) => sheet,
-                Err(Error::Render(err)) => {
-                  state.stack.pop();
-                  return Err(err);
+          let resolved_children =
+            match loader.load_with_importer(&canonical_href, base_url) {
+              Ok(fetched) => {
+                let sheet_url = fetched
+                  .final_url
+                  .clone()
+                  .unwrap_or_else(|| canonical_href.clone());
+                if let Some(final_url) = fetched.final_url.as_deref() {
+                  state.record_redirect(&canonical_href, final_url);
                 }
-                Err(_) => {
-                  state.stack.pop();
-                  state
-                    .cache
-                    .insert(resolved_href.clone(), CachedImport::Failed);
-                  continue;
+                let canonical_sheet_url = state.canonicalize_url(&sheet_url);
+                if let Some(last) = state.stack.last_mut() {
+                  *last = canonical_sheet_url.clone();
                 }
-              };
+                if state
+                  .stack
+                  .iter()
+                  .take(state.stack.len().saturating_sub(1))
+                  .any(|url| url == &canonical_sheet_url)
+                {
+                  // Redirects can create cycles; treat them like any other failed import.
+                  state.stack.pop();
+                  None
+                } else {
+                  // A redirect may land on a stylesheet we've already fetched and cached.
+                  if let Some(entry) = state.cache.get(&canonical_sheet_url) {
+                    let out = match entry {
+                      CachedImport::Ok(rules) => {
+                        let mut cloned = Vec::with_capacity(rules.len());
+                        for rule in rules {
+                          check_active_periodic(
+                            deadline_counter,
+                            DEADLINE_STRIDE,
+                            RenderStage::Css,
+                          )?;
+                          cloned.push(rule.clone());
+                        }
+                        Some(cloned)
+                      }
+                      CachedImport::Failed => None,
+                    };
+                    state.stack.pop();
+                    out
+                  } else {
+                    let sheet = match crate::css::parser::parse_stylesheet_with_media_cached_by_url_shared(
+                      &fetched.css,
+                      &canonical_sheet_url,
+                      media_ctx,
+                      cache.as_deref_mut(),
+                    ) {
+                      Ok(sheet) => sheet,
+                      Err(Error::Render(err)) => {
+                        state.stack.pop();
+                        return Err(err);
+                      }
+                      Err(_) => {
+                        state.stack.pop();
+                        state
+                          .cache
+                          .insert(canonical_sheet_url.clone(), CachedImport::Failed);
+                        continue;
+                      }
+                    };
 
-              let resolved_children = if sheet.contains_imports() {
-                let mut resolved_children = Vec::new();
-                resolve_rules_owned(
-                  sheet.rules.clone(),
-                  loader,
-                  Some(&resolved_href),
-                  media_ctx,
-                  cache.as_deref_mut(),
-                  state,
-                  true,
-                  &mut resolved_children,
-                  deadline_counter,
-                )?;
-                resolved_children
-              } else {
-                sheet.rules.clone()
-              };
+                    let resolved_children = if sheet.contains_imports() {
+                      let mut resolved_children = Vec::new();
+                      resolve_rules_owned(
+                        sheet.rules.clone(),
+                        loader,
+                        Some(&canonical_sheet_url),
+                        media_ctx,
+                        cache.as_deref_mut(),
+                        state,
+                        true,
+                        &mut resolved_children,
+                        deadline_counter,
+                      )?;
+                      resolved_children
+                    } else {
+                      sheet.rules.clone()
+                    };
 
-              // Cache the fully-resolved rules so duplicate imports don't re-fetch or re-parse.
-              // Cloning is required because each @import occurrence contributes its own owned rule
-              // list to the output tree.
-              let mut cached_clone = Vec::with_capacity(resolved_children.len());
-              for rule in &resolved_children {
-                check_active_periodic(deadline_counter, DEADLINE_STRIDE, RenderStage::Css)?;
-                cached_clone.push(rule.clone());
+                    // Cache the fully-resolved rules so duplicate imports don't re-fetch or re-parse.
+                    // Cloning is required because each @import occurrence contributes its own owned rule
+                    // list to the output tree.
+                    let mut cached_clone = Vec::with_capacity(resolved_children.len());
+                    for rule in &resolved_children {
+                      check_active_periodic(deadline_counter, DEADLINE_STRIDE, RenderStage::Css)?;
+                      cached_clone.push(rule.clone());
+                    }
+                    state
+                      .cache
+                      .insert(canonical_sheet_url.clone(), CachedImport::Ok(cached_clone));
+
+                    state.stack.pop();
+                    Some(resolved_children)
+                  }
+                }
               }
-              state
-                .cache
-                .insert(resolved_href.clone(), CachedImport::Ok(cached_clone));
-
-              state.stack.pop();
-              Some(resolved_children)
-            }
-            Err(_) => {
-              // Per spec, failed imports are ignored.
-              state.stack.pop();
-              state
-                .cache
-                .insert(resolved_href.clone(), CachedImport::Failed);
-              None
-            }
-          };
+              Err(_) => {
+                // Per spec, failed imports are ignored.
+                state.stack.pop();
+                state
+                  .cache
+                  .insert(canonical_href.clone(), CachedImport::Failed);
+                None
+              }
+            };
 
           resolved_children
         };
@@ -3908,6 +3970,35 @@ enum CachedImport {
 struct ImportResolveState {
   stack: Vec<String>,
   cache: FxHashMap<String, CachedImport>,
+  redirects: FxHashMap<String, String>,
+}
+
+impl ImportResolveState {
+  /// Record that a stylesheet request resolved to a different final URL (e.g. after redirects).
+  fn record_redirect(&mut self, requested_url: &str, final_url: &str) {
+    if requested_url == final_url {
+      return;
+    }
+    self
+      .redirects
+      .insert(requested_url.to_string(), final_url.to_string());
+  }
+
+  fn canonicalize_url(&self, url: &str) -> String {
+    let mut current = url;
+    // Redirect chains for stylesheets are typically tiny, but guard against cycles in case a
+    // caller records inconsistent mappings.
+    for _ in 0..8 {
+      let Some(next) = self.redirects.get(current) else {
+        break;
+      };
+      if next == current {
+        break;
+      }
+      current = next;
+    }
+    current.to_string()
+  }
 }
 
 #[derive(Debug, Default, Clone)]

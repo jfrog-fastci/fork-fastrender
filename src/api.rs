@@ -11175,6 +11175,18 @@ impl CssImportFetcher {
 
 impl CssImportLoader for CssImportFetcher {
   fn load(&self, url: &str) -> Result<String> {
+    Ok(
+      self
+        .load_with_importer(url, self.base_url.as_deref())?
+        .css,
+    )
+  }
+
+  fn load_with_importer(
+    &self,
+    url: &str,
+    importer_url: Option<&str>,
+  ) -> Result<crate::css::loader::FetchedStylesheet> {
     // Resolve the URL first
     let resolved = self.resolve_url(url).ok_or_else(|| {
       Error::Io(io::Error::new(
@@ -11196,10 +11208,12 @@ impl CssImportLoader for CssImportFetcher {
     if let Some(counter) = self.stylesheet_fetch_counter.as_ref() {
       counter.fetch_add(1, Ordering::Relaxed);
     }
-    let referrer_url = self
-      .resource_context
-      .as_ref()
-      .and_then(|ctx| ctx.document_url.as_deref());
+    let referrer_url = importer_url.or_else(|| {
+      self
+        .resource_context
+        .as_ref()
+        .and_then(|ctx| ctx.document_url.as_deref())
+    });
     let referrer_policy = self
       .resource_context
       .as_ref()
@@ -11223,7 +11237,7 @@ impl CssImportLoader for CssImportFetcher {
       Ok(res) => res,
       Err(err) => {
         if should_suppress_stylesheet_network_error(&resolved, &err) {
-          return Ok(String::new());
+          return Ok(crate::css::loader::FetchedStylesheet::new(String::new(), None));
         }
         if let Some(ctx) = &self.resource_context {
           if let Some(diag) = &ctx.diagnostics {
@@ -11259,10 +11273,15 @@ impl CssImportLoader for CssImportFetcher {
 
     // Decode CSS bytes with charset handling
     let decoded = decode_css_bytes(&resource.bytes, resource.content_type.as_deref());
-    Ok(match absolutize_css_urls_cow(&decoded, &resolved)? {
+    let sheet_base = resource.final_url.clone().unwrap_or_else(|| resolved.clone());
+    let rewritten = match absolutize_css_urls_cow(&decoded, &sheet_base)? {
       std::borrow::Cow::Borrowed(_) => decoded,
       std::borrow::Cow::Owned(rewritten) => rewritten,
-    })
+    };
+    Ok(crate::css::loader::FetchedStylesheet::new(
+      rewritten,
+      resource.final_url.clone(),
+    ))
   }
 }
 
@@ -13811,6 +13830,66 @@ mod tests {
       }
       self.fetch(request.url)
     }
+  }
+
+  #[test]
+  fn css_imports_use_importing_stylesheet_as_referrer_and_final_url_as_base() {
+    let fetcher = Arc::new(
+      RecordingRequestFetcher::default()
+        .with_entry_with_final_url(
+          "https://example.com/import.css",
+          "@import \"nested.css\"; body { background-image: url(\"asset.png\"); }",
+          "text/css",
+          "https://cdn.example.com/dir/import.css",
+        )
+        .with_entry(
+          "https://cdn.example.com/dir/nested.css",
+          "body { color: red; }",
+          "text/css",
+        ),
+    );
+    let fetcher_for_loader: Arc<dyn ResourceFetcher> = fetcher.clone();
+    let ctx = ResourceContext {
+      document_url: Some("https://example.com/doc.html".to_string()),
+      referrer_policy: Default::default(),
+      policy: ResourceAccessPolicy::default(),
+      diagnostics: None,
+      iframe_depth_remaining: None,
+    };
+    let loader = CssImportFetcher::new(
+      Some("https://example.com/root.css".to_string()),
+      fetcher_for_loader,
+      Some(ctx),
+      None,
+    );
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+    let sheet = crate::css::parser::parse_stylesheet("@import \"import.css\";")
+      .expect("parse root stylesheet");
+    let resolved = sheet
+      .resolve_imports_owned_with_cache(
+        &loader,
+        Some("https://example.com/root.css"),
+        &media_ctx,
+        None,
+      )
+      .expect("resolve imports");
+    assert!(
+      !resolved.contains_imports(),
+      "resolved stylesheet should not contain remaining @import rules"
+    );
+
+    let requests = fetcher.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].url, "https://example.com/import.css");
+    assert_eq!(
+      requests[0].referrer_url.as_deref(),
+      Some("https://example.com/root.css")
+    );
+    assert_eq!(requests[1].url, "https://cdn.example.com/dir/nested.css");
+    assert_eq!(
+      requests[1].referrer_url.as_deref(),
+      Some("https://cdn.example.com/dir/import.css")
+    );
   }
 
   fn apply_styles_with_media_target_and_imports(
