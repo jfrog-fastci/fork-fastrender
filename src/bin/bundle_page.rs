@@ -528,6 +528,7 @@ impl RecordingFetcher {
           && a.access_control_allow_origin == b.access_control_allow_origin
           && a.timing_allow_origin == b.timing_allow_origin
           && a.access_control_allow_credentials == b.access_control_allow_credentials
+          && a.vary == b.vary
       };
 
       // Record per-request variants when:
@@ -1127,6 +1128,7 @@ fn build_manifest(
     last_modified: document_resource.last_modified.clone(),
     access_control_allow_origin: document_resource.access_control_allow_origin.clone(),
     timing_allow_origin: document_resource.timing_allow_origin.clone(),
+    vary: document_resource.vary.clone(),
   };
 
   let mut resources: Vec<ResourceEntry> = Vec::new();
@@ -1165,6 +1167,7 @@ fn build_manifest(
       last_modified: res.last_modified.clone(),
       access_control_allow_origin: res.access_control_allow_origin.clone(),
       timing_allow_origin: res.timing_allow_origin.clone(),
+      vary: res.vary.clone(),
       access_control_allow_credentials: res.access_control_allow_credentials,
     };
     manifest_resources.insert(url.clone(), info);

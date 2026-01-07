@@ -103,6 +103,8 @@ pub struct BundledDocument {
   pub access_control_allow_origin: Option<String>,
   #[serde(default)]
   pub timing_allow_origin: Option<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub vary: Option<String>,
 }
 
 /// Metadata describing a bundled resource.
@@ -120,6 +122,8 @@ pub struct BundledResourceInfo {
   pub access_control_allow_origin: Option<String>,
   #[serde(default)]
   pub timing_allow_origin: Option<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub vary: Option<String>,
   #[serde(default, skip_serializing_if = "bool_is_false")]
   pub access_control_allow_credentials: bool,
 }
@@ -157,6 +161,7 @@ impl BundledResource {
     res.last_modified = self.info.last_modified.clone();
     res.access_control_allow_origin = self.info.access_control_allow_origin.clone();
     res.timing_allow_origin = self.info.timing_allow_origin.clone();
+    res.vary = self.info.vary.clone();
     res.access_control_allow_credentials = self.info.access_control_allow_credentials;
     res
   }
@@ -361,6 +366,7 @@ impl ResourceFetcher for BundledFetcher {
       res.last_modified = doc_meta.last_modified.clone();
       res.access_control_allow_origin = doc_meta.access_control_allow_origin.clone();
       res.timing_allow_origin = doc_meta.timing_allow_origin.clone();
+      res.vary = doc_meta.vary.clone();
       return Ok(res);
     }
 
@@ -451,6 +457,7 @@ mod tests {
         last_modified: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
+        vary: None,
       },
       render: BundleRenderConfig {
         viewport: (1200, 800),
@@ -504,6 +511,7 @@ mod tests {
         last_modified: None,
         access_control_allow_origin: Some("*".to_string()),
         timing_allow_origin: Some("https://timing.example".to_string()),
+        vary: Some("Accept-Encoding".to_string()),
       },
       render: BundleRenderConfig {
         viewport: (1200, 800),
@@ -528,6 +536,7 @@ mod tests {
           last_modified: None,
           access_control_allow_origin: Some("https://example.com".to_string()),
           timing_allow_origin: Some("*".to_string()),
+          vary: Some("Origin".to_string()),
           access_control_allow_credentials: true,
         },
       )]),
@@ -547,6 +556,7 @@ mod tests {
       doc.timing_allow_origin.as_deref(),
       Some("https://timing.example")
     );
+    assert_eq!(doc.vary.as_deref(), Some("Accept-Encoding"));
 
     let css = fetcher
       .fetch("https://example.com/style.css")
@@ -556,6 +566,7 @@ mod tests {
       Some("https://example.com")
     );
     assert_eq!(css.timing_allow_origin.as_deref(), Some("*"));
+    assert_eq!(css.vary.as_deref(), Some("Origin"));
     assert!(css.access_control_allow_credentials);
   }
 
@@ -695,6 +706,7 @@ mod tests {
     let doc = fetcher.fetch("https://example.com/").expect("fetch doc");
     assert_eq!(doc.access_control_allow_origin, None);
     assert_eq!(doc.timing_allow_origin, None);
+    assert_eq!(doc.vary, None);
 
     let css = fetcher
       .fetch("https://example.com/style.css")
@@ -702,6 +714,7 @@ mod tests {
     assert_eq!(css.bytes, b"body{}");
     assert_eq!(css.access_control_allow_origin, None);
     assert_eq!(css.timing_allow_origin, None);
+    assert_eq!(css.vary, None);
     assert!(!css.access_control_allow_credentials);
   }
 
@@ -738,6 +751,7 @@ mod tests {
         last_modified: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
+        vary: None,
       },
       render: BundleRenderConfig {
         viewport: (1200, 800),
@@ -763,6 +777,7 @@ mod tests {
             last_modified: None,
             access_control_allow_origin: Some("https://a.test".to_string()),
             timing_allow_origin: None,
+            vary: None,
             access_control_allow_credentials: false,
           },
         ),
@@ -778,6 +793,7 @@ mod tests {
             last_modified: None,
             access_control_allow_origin: Some("https://a.test".to_string()),
             timing_allow_origin: None,
+            vary: None,
             access_control_allow_credentials: false,
           },
         ),
@@ -793,6 +809,7 @@ mod tests {
             last_modified: None,
             access_control_allow_origin: Some("https://b.test".to_string()),
             timing_allow_origin: None,
+            vary: None,
             access_control_allow_credentials: false,
           },
         ),
@@ -861,6 +878,7 @@ mod tests {
       last_modified: None,
       access_control_allow_origin: Some(allow_origin.to_string()),
       timing_allow_origin: None,
+      vary: None,
       access_control_allow_credentials: false,
     };
 
@@ -877,6 +895,7 @@ mod tests {
         last_modified: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
+        vary: None,
       },
       render: BundleRenderConfig {
         viewport: (1200, 800),
