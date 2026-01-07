@@ -1,0 +1,17 @@
+<html>
+  <body>
+    <span id="dup">Document dup label</span>
+    <div id="doc-refs-dup" aria-labelledby="dup"></div>
+    <div id="doc-refs-shadow" aria-labelledby="shadow-id"></div>
+
+    <x-host>
+      <template shadowroot="open">
+        <span id="shadow-id">Shadow-only label</span>
+        <span id="shadow-label">Shadow label</span>
+        <div id="shadow-refs-shadow" aria-labelledby="shadow-label"></div>
+        <span id="dup">Shadow dup label</span>
+        <div id="shadow-refs-dup" aria-labelledby="dup"></div>
+      </template>
+    </x-host>
+  </body>
+</html>

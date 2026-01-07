@@ -124,15 +124,26 @@ pub fn build_accessibility_tree(root: &StyledNode) -> AccessibilityNode {
   build_styled_lookup(root, &mut lookup);
   let mut hidden = HashMap::new();
   let mut aria_hidden = HashMap::new();
-  let mut ids = HashMap::new();
-  compute_hidden_and_ids(root, false, false, &mut hidden, &mut aria_hidden, &mut ids);
+  let mut node_scope = HashMap::new();
+  let mut ids_by_scope: HashMap<usize, HashMap<String, usize>> = HashMap::new();
+  compute_hidden_and_scoped_ids(
+    root,
+    false,
+    false,
+    root.node_id,
+    &mut hidden,
+    &mut aria_hidden,
+    &mut node_scope,
+    &mut ids_by_scope,
+  );
 
-  let labels = collect_labels(root, &aria_hidden, &ids, &lookup);
+  let labels = collect_labels(root, &hidden, &node_scope, &ids_by_scope, &lookup);
 
   let ctx = BuildContext {
     hidden,
     aria_hidden,
-    ids,
+    node_scope,
+    ids_by_scope,
     labels,
     lookup,
   };
@@ -205,7 +216,8 @@ fn composed_children<'a>(
 struct BuildContext<'a> {
   hidden: HashMap<usize, bool>,
   aria_hidden: HashMap<usize, bool>,
-  ids: HashMap<String, usize>,
+  node_scope: HashMap<usize, usize>,
+  ids_by_scope: HashMap<usize, HashMap<String, usize>>,
   labels: HashMap<usize, Vec<usize>>,
   lookup: HashMap<usize, &'a StyledNode>,
 }
@@ -229,6 +241,39 @@ impl<'a> BuildContext<'a> {
     *self.aria_hidden.get(&node.node_id).unwrap_or(&false)
   }
 
+  fn text_content(
+    &self,
+    node: &'a StyledNode,
+    visited: &mut HashSet<usize>,
+    mode: TextAlternativeMode,
+  ) -> String {
+    if !visited.insert(node.node_id) {
+      return String::new();
+    }
+
+    if self.is_hidden_for_mode(node, mode) {
+      return String::new();
+    }
+
+    match &node.node.node_type {
+      DomNodeType::Text { content } => normalize_whitespace(content),
+      DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. } => {
+        self.text_from_children(self.composed_children(node), visited, mode)
+      }
+      DomNodeType::Element { .. } | DomNodeType::Slot { .. } => {
+        if node
+          .node
+          .tag_name()
+          .is_some_and(|t| t.eq_ignore_ascii_case("script") || t.eq_ignore_ascii_case("style"))
+        {
+          return String::new();
+        }
+
+        self.text_from_children(self.composed_children(node), visited, mode)
+      }
+    }
+  }
+
   fn text_from_children(
     &self,
     children: Vec<&'a StyledNode>,
@@ -239,11 +284,13 @@ impl<'a> BuildContext<'a> {
     let mut suppress_space = false;
 
     for child in children {
-      if let DomNodeType::Element { ref tag_name, .. } = child.node.node_type {
-        if tag_name.eq_ignore_ascii_case("wbr") {
-          suppress_space = true;
-          continue;
-        }
+      if child
+        .node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("wbr"))
+      {
+        suppress_space = true;
+        continue;
       }
 
       if let Some(text) = self.text_alternative(child, visited, mode, None) {
@@ -270,8 +317,10 @@ impl<'a> BuildContext<'a> {
     }
   }
 
-  fn node_for_id(&self, id: &str) -> Option<&'a StyledNode> {
-    let node_id = self.ids.get(id)?;
+  fn node_for_id_scoped(&self, referrer_node_id: usize, id: &str) -> Option<&'a StyledNode> {
+    let scope_id = self.node_scope.get(&referrer_node_id)?;
+    let scoped_ids = self.ids_by_scope.get(scope_id)?;
+    let node_id = scoped_ids.get(id)?;
     self.lookup.get(node_id).copied()
   }
 
@@ -340,7 +389,7 @@ impl<'a> BuildContext<'a> {
 
         if let Some(labelledby) = node.node.get_attribute_ref("aria-labelledby") {
           let labelled =
-            referenced_text_attr(self, labelledby, visited, TextAlternativeMode::Referenced);
+            referenced_text_attr(self, node.node_id, labelledby, visited, TextAlternativeMode::Referenced);
           return Some(labelled);
         }
 
@@ -374,9 +423,21 @@ impl<'a> BuildContext<'a> {
           }
         }
 
-        let allows_content =
+        let mut allows_content =
           self.allows_name_from_content(node, role.as_deref(), allow_name_from_content)
             && allows_visible_text_name(tag.as_deref(), role.as_deref());
+        if allows_content
+          && tag
+            .as_deref()
+            .is_some_and(|t| t.eq_ignore_ascii_case("dialog"))
+          && node
+            .node
+            .get_attribute_ref("title")
+            .map(normalize_whitespace)
+            .is_some_and(|t| !t.is_empty())
+        {
+          allows_content = false;
+        }
         if allows_content {
           let text = self.subtree_text(node, visited, mode);
           if !text.is_empty() {
@@ -442,6 +503,14 @@ fn build_nodes<'a>(
       }
       styled_ancestors.pop();
       ancestors.pop();
+
+      if node
+        .node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("legend"))
+      {
+        return children;
+      }
 
       let element_ref = ElementRef::with_ancestors(&node.node, ancestors);
       let (mut role, presentational_role, role_from_attr) =
@@ -566,53 +635,109 @@ fn build_nodes<'a>(
   }
 }
 
-fn compute_hidden_and_ids(
+fn compute_hidden_and_scoped_ids(
   node: &StyledNode,
   ancestor_hidden: bool,
   ancestor_aria_hidden: bool,
+  scope_id: usize,
   hidden: &mut HashMap<usize, bool>,
   aria_hidden: &mut HashMap<usize, bool>,
-  ids: &mut HashMap<String, usize>,
+  node_scope: &mut HashMap<usize, usize>,
+  ids_by_scope: &mut HashMap<usize, HashMap<String, usize>>,
 ) {
   let is_hidden = ancestor_hidden || is_node_hidden(node);
   let is_aria_hidden = ancestor_aria_hidden || is_node_aria_hidden(node);
   hidden.insert(node.node_id, is_hidden);
   aria_hidden.insert(node.node_id, is_aria_hidden);
+  node_scope.insert(node.node_id, scope_id);
 
-  if let DomNodeType::Element { .. } = node.node.node_type {
+  if matches!(
+    node.node.node_type,
+    DomNodeType::Element { .. } | DomNodeType::Slot { .. }
+  ) {
     if let Some(id) = node.node.get_attribute_ref("id") {
-      ids.entry(id.to_string()).or_insert(node.node_id);
+      ids_by_scope
+        .entry(scope_id)
+        .or_default()
+        .entry(id.to_string())
+        .or_insert(node.node_id);
     }
   }
 
+  let template_boundary = node
+    .node
+    .tag_name()
+    .is_some_and(|tag| tag.eq_ignore_ascii_case("template"));
+
   for child in node.children.iter() {
-    compute_hidden_and_ids(child, is_hidden, is_aria_hidden, hidden, aria_hidden, ids);
+    let child_scope = match child.node.node_type {
+      DomNodeType::ShadowRoot { .. } => child.node_id,
+      _ if template_boundary => node.node_id,
+      _ => scope_id,
+    };
+
+    compute_hidden_and_scoped_ids(
+      child,
+      is_hidden,
+      is_aria_hidden,
+      child_scope,
+      hidden,
+      aria_hidden,
+      node_scope,
+      ids_by_scope,
+    );
   }
 }
 
 fn collect_labels(
   root: &StyledNode,
-  aria_hidden: &HashMap<usize, bool>,
-  ids: &HashMap<String, usize>,
+  hidden: &HashMap<usize, bool>,
+  node_scope: &HashMap<usize, usize>,
+  ids_by_scope: &HashMap<usize, HashMap<String, usize>>,
   lookup: &HashMap<usize, &StyledNode>,
 ) -> HashMap<usize, Vec<usize>> {
-  fn is_hidden(node: &StyledNode, aria_hidden: &HashMap<usize, bool>) -> bool {
-    *aria_hidden.get(&node.node_id).unwrap_or(&false)
+  fn is_hidden(node: &StyledNode, hidden: &HashMap<usize, bool>) -> bool {
+    *hidden.get(&node.node_id).unwrap_or(&false)
+  }
+
+  fn node_id_for_id_scoped(
+    node_scope: &HashMap<usize, usize>,
+    ids_by_scope: &HashMap<usize, HashMap<String, usize>>,
+    referrer_node_id: usize,
+    id: &str,
+  ) -> Option<usize> {
+    let scope_id = node_scope.get(&referrer_node_id)?;
+    let map = ids_by_scope.get(scope_id)?;
+    map.get(id).copied()
   }
 
   /// HTML label containment is defined in terms of the DOM tree, not the composed tree.
   fn first_labelable_dom_descendant<'a>(
     node: &'a StyledNode,
-    aria_hidden: &HashMap<usize, bool>,
+    hidden: &HashMap<usize, bool>,
   ) -> Option<&'a StyledNode> {
     for child in node.children.iter() {
-      if is_hidden(child, aria_hidden) {
+      if matches!(child.node.node_type, DomNodeType::ShadowRoot { .. }) {
         continue;
       }
+
+      if is_hidden(child, hidden) {
+        continue;
+      }
+
       if is_labelable(&child.node) {
         return Some(child);
       }
-      if let Some(found) = first_labelable_dom_descendant(child, aria_hidden) {
+
+      if child
+        .node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("template"))
+      {
+        continue;
+      }
+
+      if let Some(found) = first_labelable_dom_descendant(child, hidden) {
         return Some(found);
       }
     }
@@ -621,15 +746,12 @@ fn collect_labels(
 
   fn walk_dom(
     node: &StyledNode,
-    aria_hidden: &HashMap<usize, bool>,
-    ids: &HashMap<String, usize>,
+    hidden: &HashMap<usize, bool>,
+    node_scope: &HashMap<usize, usize>,
+    ids_by_scope: &HashMap<usize, HashMap<String, usize>>,
     lookup: &HashMap<usize, &StyledNode>,
     labels: &mut HashMap<usize, Vec<usize>>,
   ) {
-    if is_hidden(node, aria_hidden) {
-      return;
-    }
-
     let is_label = node
       .node
       .tag_name()
@@ -640,26 +762,36 @@ fn collect_labels(
       if let Some(for_attr) = node.node.get_attribute_ref("for") {
         let target_key = for_attr.trim();
         if !target_key.is_empty() {
-          if let Some(target_id) = ids.get(target_key) {
-            if let Some(target_node) = lookup.get(target_id) {
+          if let Some(target_id) =
+            node_id_for_id_scoped(node_scope, ids_by_scope, node.node_id, target_key)
+          {
+            if let Some(target_node) = lookup.get(&target_id) {
               if is_labelable(&target_node.node) {
-                labels.entry(*target_id).or_default().push(node.node_id);
+                labels.entry(target_id).or_default().push(node.node_id);
               }
             }
           }
         }
-      } else if let Some(target) = first_labelable_dom_descendant(node, aria_hidden) {
+      } else if let Some(target) = first_labelable_dom_descendant(node, hidden) {
         labels.entry(target.node_id).or_default().push(node.node_id);
       }
     }
 
+    if node
+      .node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("template"))
+    {
+      return;
+    }
+
     for child in node.children.iter() {
-      walk_dom(child, aria_hidden, ids, lookup, labels);
+      walk_dom(child, hidden, node_scope, ids_by_scope, lookup, labels);
     }
   }
 
   let mut labels: HashMap<usize, Vec<usize>> = HashMap::new();
-  walk_dom(root, aria_hidden, ids, lookup, &mut labels);
+  walk_dom(root, hidden, node_scope, ids_by_scope, lookup, &mut labels);
   labels
 }
 
@@ -1223,7 +1355,7 @@ fn allows_visible_text_name(tag: Option<&str>, role: Option<&str>) -> bool {
       let lower = t.to_ascii_lowercase();
       matches!(
         lower.as_str(),
-        "fieldset" | "figure" | "table" | "dialog" | "select"
+        "fieldset" | "figure" | "table" | "select"
       )
     })
     .unwrap_or(false);
@@ -1233,11 +1365,12 @@ fn allows_visible_text_name(tag: Option<&str>, role: Option<&str>) -> bool {
   }
 
   if let Some(role) = role {
-    if role.eq_ignore_ascii_case("dialog")
-      || role.eq_ignore_ascii_case("table")
+    if role.eq_ignore_ascii_case("table")
       || role.eq_ignore_ascii_case("figure")
       || role.eq_ignore_ascii_case("combobox")
       || role.eq_ignore_ascii_case("listbox")
+      || role.eq_ignore_ascii_case("dialog")
+      || role.eq_ignore_ascii_case("alertdialog")
     {
       return false;
     }
@@ -1698,13 +1831,14 @@ fn alt_applies(tag: Option<&str>, role: Option<&str>, node: &DomNode) -> bool {
 
 fn referenced_text_attr(
   ctx: &BuildContext,
+  referrer_node_id: usize,
   attr_value: &str,
   visited: &mut HashSet<usize>,
   mode: TextAlternativeMode,
 ) -> String {
   let mut parts = Vec::new();
   for id in attr_value.split_whitespace() {
-    if let Some(target) = ctx.node_for_id(id) {
+    if let Some(target) = ctx.node_for_id_scoped(referrer_node_id, id) {
       if let Some(text) = ctx.text_alternative(target, visited, mode, None) {
         if !text.is_empty() {
           parts.push(text);
@@ -1951,6 +2085,7 @@ fn compute_description(node: &StyledNode, ctx: &BuildContext) -> Option<String> 
   if let Some(desc_attr) = node.node.get_attribute_ref("aria-describedby") {
     let desc = referenced_text_attr(
       ctx,
+      node.node_id,
       desc_attr,
       &mut visited,
       TextAlternativeMode::Referenced,

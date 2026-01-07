@@ -1,0 +1,68 @@
+{
+  "present": {
+    "doc-refs-shadow": {
+      "role": "generic",
+      "name": "",
+      "description": null,
+      "value": null,
+      "level": null,
+      "html_tag": "div",
+      "states": {
+        "focusable": false,
+        "disabled": false,
+        "required": false,
+        "invalid": false,
+        "visited": false,
+        "readonly": false
+      }
+    },
+    "shadow-refs-shadow": {
+      "role": "generic",
+      "name": "Shadow label",
+      "description": null,
+      "value": null,
+      "level": null,
+      "html_tag": "div",
+      "states": {
+        "focusable": false,
+        "disabled": false,
+        "required": false,
+        "invalid": false,
+        "visited": false,
+        "readonly": false
+      }
+    },
+    "doc-refs-dup": {
+      "role": "generic",
+      "name": "Document dup label",
+      "description": null,
+      "value": null,
+      "level": null,
+      "html_tag": "div",
+      "states": {
+        "focusable": false,
+        "disabled": false,
+        "required": false,
+        "invalid": false,
+        "visited": false,
+        "readonly": false
+      }
+    },
+    "shadow-refs-dup": {
+      "role": "generic",
+      "name": "Shadow dup label",
+      "description": null,
+      "value": null,
+      "level": null,
+      "html_tag": "div",
+      "states": {
+        "focusable": false,
+        "disabled": false,
+        "required": false,
+        "invalid": false,
+        "visited": false,
+        "readonly": false
+      }
+    }
+  }
+}

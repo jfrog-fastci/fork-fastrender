@@ -777,16 +777,16 @@ fn accessibility_label_snapshot_json() {
 #[test]
 fn accessibility_label_dom_descendant_with_shadow_dom() {
   let html = r##"
-    <html>
-      <body>
-        <label>Label text
-          <div id="host">
-            <template shadowroot="open"><slot></slot></template>
-            <input id="slotted" type="text" />
-          </div>
-        </label>
-      </body>
-    </html>
+     <html>
+       <body>
+         <label>Label text
+           <div id="host">
+             <template shadowroot="open"><slot></slot></template>
+             <input id="slotted" type="text" />
+           </div>
+         </label>
+       </body>
+     </html>
   "##;
 
   let tree = render_accessibility_json(html);
@@ -799,10 +799,53 @@ fn accessibility_label_dom_descendant_with_shadow_dom() {
 }
 
 #[test]
-fn accessibility_table_snapshot_json() {
+fn accessibility_label_dom_descendant_does_not_cross_shadow_root() {
   let html = r##"
     <html>
       <body>
+        <label>Label text
+          <x-host>
+            <template shadowroot="open">
+              <input id="shadow-input" type="text" />
+            </template>
+          </x-host>
+        </label>
+      </body>
+    </html>
+  "##;
+
+  let tree = render_accessibility_json(html);
+  let shadow_input = find_json_node(&tree, "shadow-input").expect("shadow input");
+
+  assert_eq!(shadow_input.get("name").and_then(|v| v.as_str()), None);
+}
+
+#[test]
+fn accessibility_label_for_does_not_resolve_into_shadow_root() {
+  let html = r##"
+    <html>
+      <body>
+        <label for="shadow-input">Label text</label>
+        <x-host>
+          <template shadowroot="open">
+            <input id="shadow-input" type="text" />
+          </template>
+        </x-host>
+      </body>
+    </html>
+  "##;
+
+  let tree = render_accessibility_json(html);
+  let shadow_input = find_json_node(&tree, "shadow-input").expect("shadow input");
+
+  assert_eq!(shadow_input.get("name").and_then(|v| v.as_str()), None);
+}
+
+#[test]
+fn accessibility_table_snapshot_json() {
+  let html = r##"
+     <html>
+       <body>
         <table id="table">
           <caption id="caption">Summary</caption>
           <thead>
@@ -1320,6 +1363,7 @@ fn accessibility_fixture_snapshots() {
     "landmark_gating_section_form",
     "aria_states",
     "shadow_dom_slotting",
+    "shadow_scope_idrefs",
     "native_names",
     "img_alt_presentational",
     "summary_context",
