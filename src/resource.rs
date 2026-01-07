@@ -6216,6 +6216,9 @@ fn vary_is_cacheable(vary: &str, kind: FetchContextKind, origin_key: Option<&str
       // is already part of the cache key (`FetchContextKind`). When browser headers are disabled
       // we use a single default `Accept` value for all requests.
       "accept" => {}
+      // `Sec-Fetch-*` headers and `Upgrade-Insecure-Requests` are derived solely from the fetch
+      // destination, which is already part of the cache key (`FetchContextKind`).
+      "sec-fetch-dest" | "sec-fetch-mode" | "sec-fetch-user" | "upgrade-insecure-requests" => {}
       "origin" => {
         // `Origin` is only safe to ignore when the cache key already accounts for it (CORS-mode
         // partitioning) *or* when our request profile does not send an Origin header at all.
@@ -11176,6 +11179,80 @@ mod tests {
       request_count.load(Ordering::SeqCst),
       1,
       "expected Vary: Accept response to be cached"
+    );
+    assert_eq!(first.bytes, second.bytes, "expected cached body to match");
+  }
+
+  #[test]
+  fn caching_fetcher_allows_vary_sec_fetch_mode() {
+    if matches!(http_backend_mode(), HttpBackendMode::Curl) && !curl_backend::curl_available() {
+      eprintln!(
+        "skipping caching_fetcher_allows_vary_sec_fetch_mode: curl backend selected but curl is unavailable"
+      );
+      return;
+    }
+
+    let Some(listener) = try_bind_localhost("caching_fetcher_allows_vary_sec_fetch_mode") else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&request_count);
+
+    let handle = thread::spawn(move || {
+      let start = Instant::now();
+      let mut last_request = None::<Instant>;
+      while start.elapsed() < Duration::from_secs(2) {
+        match listener.accept() {
+          Ok((mut stream, _)) => {
+            let n = seen.fetch_add(1, Ordering::SeqCst) + 1;
+            last_request = Some(Instant::now());
+
+            stream
+              .set_read_timeout(Some(Duration::from_millis(500)))
+              .unwrap();
+            let _ = read_http_request(&mut stream);
+
+            let body = n.to_string();
+            let headers = format!(
+              "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nVary: Sec-Fetch-Mode\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+              body.len()
+            );
+            let _ = stream.write_all(headers.as_bytes());
+            let _ = stream.write_all(body.as_bytes());
+
+            if n >= 2 {
+              return;
+            }
+          }
+          Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
+            if let Some(last) = last_request {
+              if last.elapsed() > Duration::from_millis(500) {
+                return;
+              }
+            }
+            thread::sleep(Duration::from_millis(5));
+          }
+          Err(err) => panic!("accept caching_fetcher_allows_vary_sec_fetch_mode: {err}"),
+        }
+      }
+    });
+
+    let fetcher = CachingFetcher::new(HttpFetcher::new().with_timeout(Duration::from_secs(2)));
+    let url = format!("http://{addr}/vary_sec_fetch_mode.txt");
+    let first = fetcher.fetch(&url).expect("first fetch");
+    assert_eq!(first.vary.as_deref(), Some("Sec-Fetch-Mode"));
+    let second = fetcher.fetch(&url).expect("second fetch");
+    assert_eq!(second.vary.as_deref(), Some("Sec-Fetch-Mode"));
+
+    handle.join().unwrap();
+
+    assert_eq!(
+      request_count.load(Ordering::SeqCst),
+      1,
+      "expected Vary: Sec-Fetch-Mode response to be cached"
     );
     assert_eq!(first.bytes, second.bytes, "expected cached body to match");
   }

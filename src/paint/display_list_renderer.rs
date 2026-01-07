@@ -14362,12 +14362,9 @@ mod tests {
         .unwrap();
 
     let union = bounds.union(transform.transform_rect(bounds));
-    let Some(check_rect) = union.intersection(Rect::from_xywh(
-      0.0,
-      0.0,
-      viewport as f32,
-      viewport as f32,
-    )) else {
+    let Some(check_rect) =
+      union.intersection(Rect::from_xywh(0.0, 0.0, viewport as f32, viewport as f32))
+    else {
       panic!("expected projected bounds to intersect viewport");
     };
     let x0 = check_rect.min_x().floor().max(0.0) as u32;
@@ -14384,7 +14381,10 @@ mod tests {
         }
       }
     }
-    assert!(changed, "expected backdrop-filter to change at least one pixel");
+    assert!(
+      changed,
+      "expected backdrop-filter to change at least one pixel"
+    );
   }
 
   #[test]
