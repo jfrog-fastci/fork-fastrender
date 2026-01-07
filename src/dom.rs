@@ -55,6 +55,14 @@ pub const SVG_NAMESPACE: &str = "http://www.w3.org/2000/svg";
 pub const MATHML_NAMESPACE: &str = "http://www.w3.org/1998/Math/MathML";
 
 const RELATIVE_SELECTOR_DEADLINE_STRIDE: usize = 64;
+// Upper bound on how deep we track ancestor hashes in the counting bloom filter used while
+// evaluating `:has()` relative selectors.
+//
+// Beyond this depth the bloom filter becomes expensive to maintain and is likely to saturate (the
+// u8-backed counters cap at 0xff and can't be decremented once saturated), which reduces pruning
+// value. In those cases we disable ancestor bloom pruning entirely to avoid false negatives from
+// incomplete ancestry tracking.
+const RELATIVE_SELECTOR_ANCESTOR_BLOOM_MAX_DEPTH: usize = 240;
 const NTH_DEADLINE_STRIDE: usize = 64;
 const DOM_PARSE_READ_DEADLINE_STRIDE: usize = 1;
 const DOM_PARSE_NODE_DEADLINE_STRIDE: usize = 1024;
@@ -6382,7 +6390,8 @@ fn matches_has_relative(
     ctx.nest_for_scope(Some(anchor.opaque()), |ctx| {
       let mut ancestors = RelativeSelectorAncestorStack::new(anchor.all_ancestors);
       let mut deadline_counter = 0usize;
-      let use_ancestor_bloom = selector_bloom_enabled();
+      let mut use_ancestor_bloom = selector_bloom_enabled();
+      let mut ancestor_bloom_baseline = BloomFilter::new();
       let mut ancestor_bloom_filter = BloomFilter::new();
       let anchor_id = if anchor.node_id != 0 {
         anchor.node_id
@@ -6393,6 +6402,40 @@ fn matches_has_relative(
         .extra_data
         .selector_blooms
         .and_then(|store| store.summary_for_id(anchor_id));
+
+      if use_ancestor_bloom {
+        if anchor.all_ancestors.len() > RELATIVE_SELECTOR_ANCESTOR_BLOOM_MAX_DEPTH {
+          use_ancestor_bloom = false;
+        } else if let Some(cache) = ctx.extra_data.element_attr_cache {
+          for ancestor in anchor.all_ancestors {
+            if let Err(err) = check_active_periodic(
+              &mut deadline_counter,
+              RELATIVE_SELECTOR_DEADLINE_STRIDE,
+              RenderStage::Cascade,
+            ) {
+              ctx.extra_data.record_deadline_error(err);
+              return false;
+            }
+            cache.for_each_selector_bloom_hash(ancestor, |hash| {
+              ancestor_bloom_baseline.insert_hash(hash);
+            });
+          }
+        } else {
+          for ancestor in anchor.all_ancestors {
+            if let Err(err) = check_active_periodic(
+              &mut deadline_counter,
+              RELATIVE_SELECTOR_DEADLINE_STRIDE,
+              RenderStage::Cascade,
+            ) {
+              ctx.extra_data.record_deadline_error(err);
+              return false;
+            }
+            add_selector_bloom_hashes(ancestor, &mut |hash| {
+              ancestor_bloom_baseline.insert_hash(hash);
+            });
+          }
+        }
+      }
 
       for selector in selectors.iter() {
         record_has_eval();
@@ -6540,22 +6583,7 @@ fn matches_has_relative(
         }
 
         if use_ancestor_bloom {
-          // Seed the ancestor bloom filter with hashes for the anchor's outer ancestors. Nested
-          // selectors inside `:has()` (e.g. within `:is()`) can match ancestors outside the anchor
-          // subtree, so pruning must account for those ancestors to avoid false negatives.
-          if let Some(cache) = ctx.extra_data.element_attr_cache {
-            for ancestor in anchor.all_ancestors {
-              cache.for_each_selector_bloom_hash(ancestor, |hash| {
-                ancestor_bloom_filter.insert_hash(hash);
-              });
-            }
-          } else {
-            for ancestor in anchor.all_ancestors {
-              add_selector_bloom_hashes(ancestor, &mut |hash| {
-                ancestor_bloom_filter.insert_hash(hash);
-              });
-            }
-          }
+          ancestor_bloom_filter = ancestor_bloom_baseline.clone();
         }
 
         record_has_relative_eval();
@@ -6570,12 +6598,6 @@ fn matches_has_relative(
         );
         debug_assert_eq!(ancestors.len(), ancestors.baseline_len());
         ancestors.reset();
-        if use_ancestor_bloom {
-          // Reset the bloom filter after each match to avoid contamination between selectors.
-          // (The filter may not return to the all-zero state if counters saturate on deep trees.)
-          ancestor_bloom_filter = BloomFilter::new();
-        }
-        debug_assert!(!use_ancestor_bloom || ancestor_bloom_filter.is_zeroed());
 
         if ctx.extra_data.deadline_error.is_some() {
           return false;
@@ -6904,7 +6926,6 @@ fn match_relative_selector_subtree<'a>(
   // saturated to avoid false negatives. On extremely deep trees this can prevent the filter
   // from returning to the all-zero state, so cap ancestor bloom usage and fall back to full
   // selector matching beyond that depth.
-  const ANCESTOR_BLOOM_MAX_DEPTH: usize = 240;
 
   let ancestor_hashes = selector.ancestor_hashes_for_mode(context.quirks_mode());
   let element_attr_cache = context.extra_data.element_attr_cache;
@@ -6949,7 +6970,7 @@ fn match_relative_selector_subtree<'a>(
   }
 
   ancestors.push(node);
-  let root_bloomed = use_ancestor_bloom && ANCESTOR_BLOOM_MAX_DEPTH > 0;
+  let root_bloomed = use_ancestor_bloom && RELATIVE_SELECTOR_ANCESTOR_BLOOM_MAX_DEPTH > 0;
   push_bloom(node, bloom_filter, root_bloomed, element_attr_cache);
   let mut stack: Vec<Frame<'a>> = Vec::new();
   stack.push(Frame {
@@ -7011,7 +7032,7 @@ fn match_relative_selector_subtree<'a>(
       .with_slot_map(slot_map)
       .with_attr_cache(element_attr_cache);
 
-    let bloom_active = use_ancestor_bloom && stack.len() <= ANCESTOR_BLOOM_MAX_DEPTH;
+    let bloom_active = use_ancestor_bloom && stack.len() <= RELATIVE_SELECTOR_ANCESTOR_BLOOM_MAX_DEPTH;
     let may_match = !bloom_active || selector_may_match(ancestor_hashes, bloom_filter);
     if may_match && matches_selector(&selector.selector, 0, None, &child_ref, context) {
       if context.extra_data.deadline_error.is_some() {
@@ -7032,7 +7053,7 @@ fn match_relative_selector_subtree<'a>(
     }
 
     ancestors.push(child);
-    let child_bloomed = use_ancestor_bloom && stack.len() < ANCESTOR_BLOOM_MAX_DEPTH;
+    let child_bloomed = use_ancestor_bloom && stack.len() < RELATIVE_SELECTOR_ANCESTOR_BLOOM_MAX_DEPTH;
     push_bloom(child, bloom_filter, child_bloomed, element_attr_cache);
     stack.push(Frame {
       node: child,
