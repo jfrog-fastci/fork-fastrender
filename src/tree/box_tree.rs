@@ -198,13 +198,35 @@ impl FormControlKind {
     match self {
       // `<select>` may carry a full option/optgroup model for listbox painting.
       // Snapshot output must avoid dumping the entire tree.
-      FormControlKind::Select { label, multiple } => {
-        // Without the `size` attribute / computed listbox model available, fall back to the HTML
-        // default: 1 for dropdowns, 4 for multi-select listboxes.
-        let size = if *multiple { 4 } else { 1 };
-        let mode = if *multiple { "listbox" } else { "dropdown" };
+      FormControlKind::Select(select) => {
+        let is_listbox = select.multiple || select.size > 1;
+        let mode = if is_listbox { "listbox" } else { "dropdown" };
+        let selected = if select.multiple {
+          format!("{} selected", select.selected.len())
+        } else {
+          select
+            .selected
+            .first()
+            .and_then(|&idx| match select.items.get(idx) {
+              Some(SelectItem::Option { label, .. }) => Some(label.as_str()),
+              _ => None,
+            })
+            .unwrap_or("")
+            .to_string()
+        };
+        let option_count = select
+          .items
+          .iter()
+          .filter(|item| matches!(item, SelectItem::Option { .. }))
+          .count();
+        let optgroup_count = select
+          .items
+          .iter()
+          .filter(|item| matches!(item, SelectItem::OptGroupLabel { .. }))
+          .count();
         format!(
-          "Select{{mode={mode}, size={size}, selected={label:?}, options=?, optgroups=?}}"
+          "Select{{mode={mode}, size={}, selected={selected:?}, options={option_count}, optgroups={optgroup_count}}}",
+          select.size
         )
       }
       // Other control kinds are currently small, so reuse the derived Debug output.
