@@ -549,21 +549,18 @@ impl SizesList {
       if media_matches {
         if let Some(resolved) =
           resolve_sizes_length(entry.length, viewport, font_size, root_font_size)
+            .filter(|v| v.is_finite())
         {
-          let clamped = resolved.max(0.0);
-          if clamped.is_finite() {
-            return clamped;
-          }
+          return resolved.max(0.0);
         }
       }
     }
 
     if let Some(len) = last_entry {
-      if let Some(resolved) = resolve_sizes_length(len, viewport, font_size, root_font_size) {
-        let clamped = resolved.max(0.0);
-        if clamped.is_finite() {
-          return clamped;
-        }
+      if let Some(resolved) = resolve_sizes_length(len, viewport, font_size, root_font_size)
+        .filter(|v| v.is_finite())
+      {
+        return resolved.max(0.0);
       }
     }
 
@@ -1676,6 +1673,57 @@ mod tests {
     });
 
     assert_eq!(chosen, "300w");
+  }
+
+  #[test]
+  fn sizes_calc_expression_controls_width_descriptor_selection() {
+    use crate::style::values::CalcLength;
+
+    let calc = CalcLength::single(LengthUnit::Vw, 50.0)
+      .add_scaled(&CalcLength::single(LengthUnit::Px, 20.0), -1.0)
+      .expect("calc length fits term budget");
+
+    let img = ReplacedType::Image {
+      src: "fallback".to_string(),
+      alt: None,
+      srcset: vec![
+        SrcsetCandidate {
+          url: "200w".to_string(),
+          descriptor: SrcsetDescriptor::Width(200),
+        },
+        SrcsetCandidate {
+          url: "400w".to_string(),
+          descriptor: SrcsetDescriptor::Width(400),
+        },
+      ],
+      sizes: Some(SizesList {
+        entries: vec![SizesEntry {
+          media: None,
+          // Viewport=200px => calc(50vw - 20px) = 80px slot width.
+          length: Length::calc(calc),
+        }],
+      }),
+      picture_sources: Vec::new(),
+      crossorigin: CrossOriginAttribute::None,
+    };
+
+    let viewport = Size::new(200.0, 100.0);
+    let media_ctx =
+      MediaContext::screen(viewport.width, viewport.height).with_device_pixel_ratio(2.0);
+    let chosen = img.image_source_for_context(ImageSelectionContext {
+      device_pixel_ratio: 2.0,
+      slot_width: None,
+      viewport: Some(viewport),
+      media_context: Some(&media_ctx),
+      font_size: Some(16.0),
+      root_font_size: Some(16.0),
+      base_url: None,
+    });
+
+    assert_eq!(
+      chosen, "200w",
+      "calc() sizes should reduce slot width and keep the smaller width candidate"
+    );
   }
 
   #[test]
