@@ -52,8 +52,8 @@ fn absolute_child_inherits_flex_static_position() {
     .expect("absolute fragment present");
 
   assert!(
-    (abs_fragment.bounds.x() - 50.0).abs() < 0.1,
-    "static position should follow first flex item (got x = {})",
+    abs_fragment.bounds.x().abs() < 0.1,
+    "static position should be computed as-if the abspos child were the sole flex item (got x = {})",
     abs_fragment.bounds.x()
   );
 }

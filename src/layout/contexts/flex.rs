@@ -7983,7 +7983,7 @@ impl FlexFormattingContext {
     &self,
     box_node: &BoxNode,
     fragment: &FragmentNode,
-    in_flow_children: &[&BoxNode],
+    _in_flow_children: &[&BoxNode],
     positioned: &[PositionedCandidate],
     auto_unskipped: Option<&FxHashSet<*const BoxNode>>,
     padding_origin: Point,
@@ -7998,136 +7998,75 @@ impl FlexFormattingContext {
     let mut positions: FxHashMap<usize, Point> =
       FxHashMap::with_capacity_and_hasher(positioned.len(), Default::default());
 
-    let mut inflow_sizes: FxHashMap<usize, Size> =
-      FxHashMap::with_capacity_and_hasher(in_flow_children.len(), Default::default());
-    for (child_node, child_fragment) in in_flow_children.iter().zip(fragment.children.iter()) {
-      check_layout_deadline(&mut deadline_counter)?;
-      inflow_sizes.insert(ensure_box_id(child_node), child_fragment.bounds.size);
-    }
+    // CSS Flexbox § "Absolutely-Positioned Flex Children":
+    // The main-axis static position must be calculated as if the abspos child were the *sole*
+    // flex item. In particular it must not depend on siblings (in-flow or abspos), and abspos
+    // children must not respond to `order`.
+    //
+    // We approximate this by running a tiny flex layout per abspos child, containing only that
+    // child with its used border-box size fixed to the pre-laid-out fragment size.
+    let container_width = fragment.bounds.width().max(0.0);
+    let container_height = fragment.bounds.height().max(0.0);
 
-    let mut positioned_index: FxHashMap<usize, usize> =
-      FxHashMap::with_capacity_and_hasher(positioned.len(), Default::default());
-    for (idx, candidate) in positioned.iter().enumerate() {
-      check_layout_deadline(&mut deadline_counter)?;
-      positioned_index.insert(candidate.child_id, idx);
-    }
+    let mut root_style = self.computed_style_to_taffy(box_node, true, None, auto_unskipped_for_pass)?;
+    root_style.size.width = Dimension::length(container_width);
+    root_style.size.height = Dimension::length(container_height);
 
-    let mut taffy = crate::layout::taffy_integration::PooledTaffyTree::new();
-    let mut child_nodes = Vec::new();
-    let mut node_lookup: FxHashMap<usize, NodeId> =
-      FxHashMap::with_capacity_and_hasher(positioned.len(), Default::default());
-
-    let mut ordered_children: Vec<(i32, usize)> = Vec::new();
-    let mut ordered_children_need_sort = false;
-    let mut last_ordered_order: Option<i32> = None;
-    for (idx, child) in box_node.children.iter().enumerate() {
-      check_layout_deadline(&mut deadline_counter)?;
-      if child.style.running_position.is_some() {
-        continue;
-      }
-      if let Some(prev) = last_ordered_order {
-        if child.style.order < prev {
-          ordered_children_need_sort = true;
-        }
-      }
-      last_ordered_order = Some(child.style.order);
-      ordered_children.push((child.style.order, idx));
-    }
-    if ordered_children_need_sort {
-      if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
-        return Err(LayoutError::Timeout { elapsed });
-      }
-      ordered_children.sort_by(|(a_order, a_idx), (b_order, b_idx)| {
-        a_order.cmp(b_order).then_with(|| a_idx.cmp(b_idx))
-      });
-      if let Err(RenderError::Timeout { elapsed, .. }) = check_active(RenderStage::Layout) {
-        return Err(LayoutError::Timeout { elapsed });
-      }
-    }
-
-    for (_, child_idx) in ordered_children {
-      check_layout_deadline(&mut deadline_counter)?;
-      let child = &box_node.children[child_idx];
-      let child_id = ensure_box_id(child);
-      if let Some(&pos_idx) = positioned_index.get(&child_id) {
-        let candidate = &positioned[pos_idx];
-        let mut style = self.computed_style_to_taffy(
-          &candidate.layout_child,
-          false,
-          Some(&box_node.style),
-          auto_unskipped_for_pass,
-        )?;
-        style.size.width = Dimension::length(candidate.fragment.bounds.width().max(0.0));
-        style.size.height = Dimension::length(candidate.fragment.bounds.height().max(0.0));
-        let node = taffy.new_leaf(style).map_err(|e| {
-          LayoutError::MissingContext(format!("Failed to create Taffy leaf: {:?}", e))
-        })?;
-        node_lookup.insert(candidate.child_id, node);
-        child_nodes.push(node);
-      } else {
-        let size = inflow_sizes
-          .get(&child_id)
-          .cloned()
-          .unwrap_or(Size::new(0.0, 0.0));
-        let mut style = self.computed_style_to_taffy(
-          child,
-          false,
-          Some(&box_node.style),
-          auto_unskipped_for_pass,
-        )?;
-        style.size.width = Dimension::length(size.width.max(0.0));
-        style.size.height = Dimension::length(size.height.max(0.0));
-        let node = taffy.new_leaf(style).map_err(|e| {
-          LayoutError::MissingContext(format!("Failed to create Taffy leaf: {:?}", e))
-        })?;
-        child_nodes.push(node);
-      }
-    }
-
-    let mut root_style =
-      self.computed_style_to_taffy(box_node, true, None, auto_unskipped_for_pass)?;
-    root_style.size.width = Dimension::length(fragment.bounds.width());
-    root_style.size.height = Dimension::length(fragment.bounds.height());
-    let root = taffy
-      .new_with_children(root_style, &child_nodes)
-      .map_err(|e| LayoutError::MissingContext(format!("Failed to create Taffy root: {:?}", e)))?;
+    let available_space = taffy::geometry::Size {
+      width: AvailableSpace::Definite(container_width),
+      height: AvailableSpace::Definite(container_height),
+    };
 
     let cancel: Option<Arc<dyn Fn() -> bool + Send + Sync>> = active_deadline()
       .filter(|deadline| deadline.is_enabled())
       .map(|_| Arc::new(|| check_active(RenderStage::Layout).is_err()) as _);
-    taffy
-      .compute_layout_with_measure_and_cancel(
-        root,
-        taffy::geometry::Size {
-          width: AvailableSpace::Definite(fragment.bounds.width()),
-          height: AvailableSpace::Definite(fragment.bounds.height()),
-        },
-        |_, _, _, _, _| taffy::geometry::Size::ZERO,
-        cancel,
-        TAFFY_ABORT_CHECK_STRIDE,
-      )
-      .map_err(|e| match e {
-        taffy::TaffyError::LayoutAborted => match active_deadline() {
-          Some(deadline) => LayoutError::Timeout {
-            elapsed: deadline.elapsed(),
-          },
-          None => LayoutError::MissingContext("Taffy layout aborted".to_string()),
-        },
-        _ => LayoutError::MissingContext(format!("Taffy layout failed: {:?}", e)),
-      })?;
 
     for candidate in positioned {
       check_layout_deadline(&mut deadline_counter)?;
-      if let Some(node_id) = node_lookup.get(&candidate.child_id) {
-        if let Ok(layout) = taffy.layout(*node_id) {
-          positions.insert(
-            candidate.child_id,
-            Point::new(
-              layout.location.x - padding_origin.x,
-              layout.location.y - padding_origin.y,
-            ),
-          );
-        }
+
+      let mut taffy = crate::layout::taffy_integration::PooledTaffyTree::new();
+      let mut style = self.computed_style_to_taffy(
+        &candidate.layout_child,
+        false,
+        Some(&box_node.style),
+        auto_unskipped_for_pass,
+      )?;
+      style.size.width = Dimension::length(candidate.fragment.bounds.width().max(0.0));
+      style.size.height = Dimension::length(candidate.fragment.bounds.height().max(0.0));
+      let node = taffy.new_leaf(style).map_err(|e| {
+        LayoutError::MissingContext(format!("Failed to create Taffy leaf: {:?}", e))
+      })?;
+
+      let root = taffy
+        .new_with_children(root_style.clone(), &[node])
+        .map_err(|e| LayoutError::MissingContext(format!("Failed to create Taffy root: {:?}", e)))?;
+
+      taffy
+        .compute_layout_with_measure_and_cancel(
+          root,
+          available_space,
+          |_, _, _, _, _| taffy::geometry::Size::ZERO,
+          cancel.clone(),
+          TAFFY_ABORT_CHECK_STRIDE,
+        )
+        .map_err(|e| match e {
+          taffy::TaffyError::LayoutAborted => match active_deadline() {
+            Some(deadline) => LayoutError::Timeout {
+              elapsed: deadline.elapsed(),
+            },
+            None => LayoutError::MissingContext("Taffy layout aborted".to_string()),
+          },
+          _ => LayoutError::MissingContext(format!("Taffy layout failed: {:?}", e)),
+        })?;
+
+      if let Ok(layout) = taffy.layout(node) {
+        positions.insert(
+          candidate.child_id,
+          Point::new(
+            layout.location.x - padding_origin.x,
+            layout.location.y - padding_origin.y,
+          ),
+        );
       }
     }
 
