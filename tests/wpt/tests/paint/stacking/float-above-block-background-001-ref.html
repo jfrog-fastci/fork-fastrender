@@ -1,0 +1,41 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>floats paint above in-flow block backgrounds reference</title>
+<style>
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    background: white;
+  }
+
+  .root {
+    position: relative;
+    width: 200px;
+    height: 200px;
+    background: white;
+  }
+
+  .green {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 200px;
+    height: 200px;
+    background: rgb(0, 160, 0);
+  }
+
+  .red {
+    position: absolute;
+    top: 40px;
+    left: 40px;
+    width: 120px;
+    height: 120px;
+    background: rgb(220, 0, 0);
+  }
+</style>
+
+<div class="root">
+  <div class="green"></div>
+  <div class="red"></div>
+</div>
