@@ -23,6 +23,19 @@ pub fn parse_srcset(attr: &str) -> Vec<SrcsetCandidate> {
 /// This is primarily used by developer tooling (e.g. regex-based HTML asset
 /// discovery) to keep memory bounded when encountering pathological attributes.
 pub fn parse_srcset_with_limit(attr: &str, max_candidates: usize) -> Vec<SrcsetCandidate> {
+  fn strip_suffix_ignore_ascii_case<'a>(value: &'a str, suffix: &str) -> Option<&'a str> {
+    if value.len() < suffix.len() {
+      return None;
+    }
+    let start = value.len() - suffix.len();
+    if !value.is_char_boundary(start) {
+      return None;
+    }
+    value[start..]
+      .eq_ignore_ascii_case(suffix)
+      .then_some(&value[..start])
+  }
+
   fn is_data_url(bytes: &[u8], start: usize) -> bool {
     if start + 5 > bytes.len() {
       return false;
@@ -413,7 +426,7 @@ pub fn parse_srcset_with_limit(attr: &str, max_candidates: usize) -> Vec<SrcsetC
         continue;
       }
 
-      if let Some(raw) = d.strip_suffix("dppx") {
+      if let Some(raw) = strip_suffix_ignore_ascii_case(d, "dppx") {
         match raw.parse::<f32>() {
           Ok(val) if val.is_finite() && val > 0.0 => {
             if density.is_some() {
@@ -427,7 +440,7 @@ pub fn parse_srcset_with_limit(attr: &str, max_candidates: usize) -> Vec<SrcsetC
             break;
           }
         }
-      } else if let Some(raw) = d.strip_suffix('x') {
+      } else if let Some(raw) = strip_suffix_ignore_ascii_case(d, "x") {
         match raw.parse::<f32>() {
           Ok(val) if val.is_finite() && val > 0.0 => {
             if density.is_some() {
@@ -441,7 +454,7 @@ pub fn parse_srcset_with_limit(attr: &str, max_candidates: usize) -> Vec<SrcsetC
             break;
           }
         }
-      } else if let Some(raw) = d.strip_suffix('w') {
+      } else if let Some(raw) = strip_suffix_ignore_ascii_case(d, "w") {
         match raw.parse::<u32>() {
           Ok(val) if val > 0 => {
             if width.is_some() {
@@ -455,7 +468,7 @@ pub fn parse_srcset_with_limit(attr: &str, max_candidates: usize) -> Vec<SrcsetC
             break;
           }
         }
-      } else if let Some(raw) = d.strip_suffix('h') {
+      } else if let Some(raw) = strip_suffix_ignore_ascii_case(d, "h") {
         match raw.parse::<u32>() {
           Ok(val) if val > 0 => {
             if height.is_some() {
@@ -1010,6 +1023,26 @@ mod tests {
     assert!(matches!(parsed[0].descriptor, SrcsetDescriptor::Density(d) if d == 1.0));
     assert_eq!(parsed[1].url, "b.png");
     assert!(matches!(parsed[1].descriptor, SrcsetDescriptor::Density(d) if d == 2.0));
+  }
+
+  #[test]
+  fn parse_srcset_parses_uppercase_descriptor_suffixes() {
+    let parsed = parse_srcset("a.png 320W, b.png 100W 50H, c.png 1X, d.png 2DPPX");
+    assert_eq!(parsed.len(), 4);
+    assert_eq!(parsed[0].url, "a.png");
+    assert!(matches!(parsed[0].descriptor, SrcsetDescriptor::Width(320)));
+    assert_eq!(parsed[1].url, "b.png");
+    assert!(matches!(
+      parsed[1].descriptor,
+      SrcsetDescriptor::WidthHeight {
+        width: 100,
+        height: 50
+      }
+    ));
+    assert_eq!(parsed[2].url, "c.png");
+    assert!(matches!(parsed[2].descriptor, SrcsetDescriptor::Density(d) if d == 1.0));
+    assert_eq!(parsed[3].url, "d.png");
+    assert!(matches!(parsed[3].descriptor, SrcsetDescriptor::Density(d) if d == 2.0));
   }
 
   #[test]
