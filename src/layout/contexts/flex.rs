@@ -5055,6 +5055,11 @@ impl FlexFormattingContext {
       self.length_option_to_dimension_box_sizing(style.min_width.as_ref(), style, Axis::Horizontal);
     let min_height_dimension =
       self.length_option_to_dimension_box_sizing(style.min_height.as_ref(), style, Axis::Vertical);
+    let justify_content = match (style.justify_content, main_axis_positive_container) {
+      (JustifyContent::Start, false) => JustifyContent::End,
+      (JustifyContent::End, false) => JustifyContent::Start,
+      (value, _) => value,
+    };
 
     let mut taffy_style = taffy::style::Style {
       // Display mode - only root is Flex, children are Block (flex items)
@@ -5067,8 +5072,7 @@ impl FlexFormattingContext {
         block_positive_container,
       ),
       flex_wrap: self.flex_wrap_to_taffy(style.flex_wrap),
-      justify_content: self
-        .justify_content_to_taffy(style.justify_content, main_axis_positive_container),
+      justify_content: self.justify_content_to_taffy(justify_content),
       align_items: self.align_items_to_taffy(style.align_items, cross_positive_container),
       align_content: self.align_content_to_taffy(style.align_content, cross_positive_for_start_end),
       align_self: self.align_self_to_taffy(effective_align_self, align_self_axis_positive),
@@ -8764,23 +8768,10 @@ impl FlexFormattingContext {
   fn justify_content_to_taffy(
     &self,
     justify: JustifyContent,
-    axis_positive: bool,
   ) -> Option<taffy::style::JustifyContent> {
     Some(match justify {
-      JustifyContent::Start => {
-        if axis_positive {
-          taffy::style::JustifyContent::Start
-        } else {
-          taffy::style::JustifyContent::End
-        }
-      }
-      JustifyContent::End => {
-        if axis_positive {
-          taffy::style::JustifyContent::End
-        } else {
-          taffy::style::JustifyContent::Start
-        }
-      }
+      JustifyContent::Start => taffy::style::JustifyContent::Start,
+      JustifyContent::End => taffy::style::JustifyContent::End,
       JustifyContent::FlexStart => taffy::style::JustifyContent::FlexStart,
       JustifyContent::FlexEnd => taffy::style::JustifyContent::FlexEnd,
       JustifyContent::Center => taffy::style::JustifyContent::Center,
