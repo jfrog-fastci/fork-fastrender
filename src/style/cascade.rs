@@ -59,10 +59,13 @@ use crate::style::defaults::parse_dimension_attribute;
 use crate::style::display::Display;
 use crate::style::grid::finalize_grid_placement;
 use crate::style::media::ColorScheme;
+use crate::style::media::ComparisonOp;
 use crate::style::media::MediaContext;
 use crate::style::media::MediaFeature;
+use crate::style::media::MediaModifier;
 use crate::style::media::MediaQueryCache;
 use crate::style::media::RangeFeature;
+use crate::style::media::RangeValue;
 use crate::style::normalize_language_tag;
 use crate::style::position::Position;
 use crate::style::properties::apply_content_visibility_implied_containment;
@@ -342,14 +345,7 @@ fn container_query_matches(
         memo.query_eval.insert(key, false);
         return false;
       }
-      let mut media_ctx = ctx.base_media.clone();
-      media_ctx.viewport_width = container.inline_size;
-      media_ctx.viewport_height = match container.container_type {
-        ContainerType::InlineSize => f32::NAN,
-        _ => container.block_size,
-      };
-      media_ctx.base_font_size = container.font_size;
-      let result = media_ctx.evaluate(mq);
+      let result = evaluate_container_size_query(mq, container);
       memo.query_eval.insert(key, result);
       result
     }
@@ -382,6 +378,390 @@ fn container_query_matches(
       memo.query_eval.insert(key, result);
       result
     }
+  }
+}
+
+fn compare_with_op(op: ComparisonOp, actual: f32, target: f32) -> bool {
+  // Allow a small tolerance for equality to smooth out float noise.
+  let eps = 1e-6;
+  match op {
+    ComparisonOp::LessThan => actual < target - eps,
+    ComparisonOp::LessThanEqual => actual <= target + eps,
+    ComparisonOp::GreaterThan => actual > target + eps,
+    ComparisonOp::GreaterThanEqual => actual >= target - eps,
+    ComparisonOp::Equal => (actual - target).abs() <= eps,
+  }
+}
+
+fn resolve_container_query_length(
+  length: &Length,
+  inline_base: f32,
+  block_base: f32,
+  viewport_width: f32,
+  viewport_height: f32,
+  font_size: f32,
+  root_font_size: f32,
+) -> Option<f32> {
+  // For container size queries, resolve font-relative lengths against the query container's
+  // computed font metrics:
+  // - `em`/`ex`/`ch`/`lh` use the query container's own computed `font-size`.
+  // - `rem` uses the root element's computed `font-size` (propagated via `root_font_size`).
+  //
+  // This intentionally mirrors `MediaContext::resolve_length` behavior for other units so
+  // container queries keep the same semantics as the previous `MediaContext::evaluate` reuse.
+  let font_size = font_size
+    .is_finite()
+    .then_some(font_size)
+    .filter(|v| *v > 0.0)
+    .unwrap_or(16.0);
+  let root_font_size = root_font_size
+    .is_finite()
+    .then_some(root_font_size)
+    .filter(|v| *v > 0.0)
+    .unwrap_or(font_size);
+
+  let vw = viewport_width.is_finite().then_some(viewport_width);
+  let vh = viewport_height.is_finite().then_some(viewport_height);
+  let inline = inline_base.is_finite().then_some(inline_base);
+  let _block = block_base.is_finite().then_some(block_base);
+
+  if let Some(calc) = length.calc {
+    let percentage_base = if calc.has_percentage() { inline } else { Some(0.0) };
+    let needs_viewport = calc.has_viewport_relative();
+    let vw = if needs_viewport { vw? } else { vw.unwrap_or(0.0) };
+    let vh = if needs_viewport { vh? } else { vh.unwrap_or(0.0) };
+    return calc.resolve(percentage_base, vw, vh, font_size, root_font_size);
+  }
+
+  match length.unit {
+    LengthUnit::Px => Some(length.value),
+    LengthUnit::Em => Some(length.value * font_size),
+    LengthUnit::Rem => Some(length.value * root_font_size),
+    LengthUnit::Percent => Some(length.value / 100.0 * inline?),
+    LengthUnit::Vw => Some(length.value / 100.0 * vw?),
+    LengthUnit::Vh => Some(length.value / 100.0 * vh?),
+    LengthUnit::Vmin => {
+      let min_dimension = match (vw, vh) {
+        (Some(w), Some(h)) => w.min(h),
+        _ => return None,
+      };
+      Some(length.value / 100.0 * min_dimension)
+    }
+    LengthUnit::Vmax => {
+      let max_dimension = match (vw, vh) {
+        (Some(w), Some(h)) => w.max(h),
+        _ => return None,
+      };
+      Some(length.value / 100.0 * max_dimension)
+    }
+    LengthUnit::Dvw => Some(length.value / 100.0 * vw?),
+    LengthUnit::Dvh => Some(length.value / 100.0 * vh?),
+    LengthUnit::Dvmin => {
+      let min_dimension = match (vw, vh) {
+        (Some(w), Some(h)) => w.min(h),
+        _ => return None,
+      };
+      Some(length.value / 100.0 * min_dimension)
+    }
+    LengthUnit::Dvmax => {
+      let max_dimension = match (vw, vh) {
+        (Some(w), Some(h)) => w.max(h),
+        _ => return None,
+      };
+      Some(length.value / 100.0 * max_dimension)
+    }
+    LengthUnit::Pt => Some(length.value * 96.0 / 72.0),
+    LengthUnit::Cm => Some(length.value * 96.0 / 2.54),
+    LengthUnit::Mm => Some(length.value * 96.0 / 25.4),
+    LengthUnit::Q => Some(length.value * 96.0 / 101.6),
+    LengthUnit::In => Some(length.value * 96.0),
+    LengthUnit::Pc => Some(length.value * 16.0),
+    LengthUnit::Ex => Some(length.value * (font_size * 0.5)),
+    LengthUnit::Ch => Some(length.value * (font_size * 0.5)),
+    // Container queries lack access to computed `line-height`; treat `lh` as `normal` (1.2em).
+    LengthUnit::Lh => Some(length.value * (font_size * 1.2)),
+    LengthUnit::Cqw
+    | LengthUnit::Cqh
+    | LengthUnit::Cqi
+    | LengthUnit::Cqb
+    | LengthUnit::Cqmin
+    | LengthUnit::Cqmax => None,
+    LengthUnit::Calc => None,
+  }
+}
+
+fn evaluate_container_size_feature(
+  feature: &MediaFeature,
+  viewport_width: f32,
+  viewport_height: f32,
+  font_size: f32,
+  root_font_size: f32,
+) -> bool {
+  match feature {
+    // Width / inline-size features.
+    MediaFeature::Width(length) => resolve_container_query_length(
+      length,
+      viewport_width,
+      viewport_height,
+      viewport_width,
+      viewport_height,
+      font_size,
+      root_font_size,
+    )
+    .map(|target| (viewport_width - target).abs() < 0.5)
+    .unwrap_or(false),
+    MediaFeature::MinWidth(length) => resolve_container_query_length(
+      length,
+      viewport_width,
+      viewport_height,
+      viewport_width,
+      viewport_height,
+      font_size,
+      root_font_size,
+    )
+    .map(|target| viewport_width >= target)
+    .unwrap_or(false),
+    MediaFeature::MaxWidth(length) => resolve_container_query_length(
+      length,
+      viewport_width,
+      viewport_height,
+      viewport_width,
+      viewport_height,
+      font_size,
+      root_font_size,
+    )
+    .map(|target| viewport_width <= target)
+    .unwrap_or(false),
+    MediaFeature::InlineSize(length) => resolve_container_query_length(
+      length,
+      viewport_width,
+      viewport_height,
+      viewport_width,
+      viewport_height,
+      font_size,
+      root_font_size,
+    )
+    .map(|target| (viewport_width - target).abs() < 0.5)
+    .unwrap_or(false),
+    MediaFeature::MinInlineSize(length) => resolve_container_query_length(
+      length,
+      viewport_width,
+      viewport_height,
+      viewport_width,
+      viewport_height,
+      font_size,
+      root_font_size,
+    )
+    .map(|target| viewport_width >= target)
+    .unwrap_or(false),
+    MediaFeature::MaxInlineSize(length) => resolve_container_query_length(
+      length,
+      viewport_width,
+      viewport_height,
+      viewport_width,
+      viewport_height,
+      font_size,
+      root_font_size,
+    )
+    .map(|target| viewport_width <= target)
+    .unwrap_or(false),
+
+    // Height / block-size features.
+    MediaFeature::Height(length) => resolve_container_query_length(
+      length,
+      viewport_height,
+      viewport_width,
+      viewport_width,
+      viewport_height,
+      font_size,
+      root_font_size,
+    )
+    .map(|target| (viewport_height - target).abs() < 0.5)
+    .unwrap_or(false),
+    MediaFeature::MinHeight(length) => resolve_container_query_length(
+      length,
+      viewport_height,
+      viewport_width,
+      viewport_width,
+      viewport_height,
+      font_size,
+      root_font_size,
+    )
+    .map(|target| viewport_height >= target)
+    .unwrap_or(false),
+    MediaFeature::MaxHeight(length) => resolve_container_query_length(
+      length,
+      viewport_height,
+      viewport_width,
+      viewport_width,
+      viewport_height,
+      font_size,
+      root_font_size,
+    )
+    .map(|target| viewport_height <= target)
+    .unwrap_or(false),
+    MediaFeature::BlockSize(length) => resolve_container_query_length(
+      length,
+      viewport_height,
+      viewport_width,
+      viewport_width,
+      viewport_height,
+      font_size,
+      root_font_size,
+    )
+    .map(|target| (viewport_height - target).abs() < 0.5)
+    .unwrap_or(false),
+    MediaFeature::MinBlockSize(length) => resolve_container_query_length(
+      length,
+      viewport_height,
+      viewport_width,
+      viewport_width,
+      viewport_height,
+      font_size,
+      root_font_size,
+    )
+    .map(|target| viewport_height >= target)
+    .unwrap_or(false),
+    MediaFeature::MaxBlockSize(length) => resolve_container_query_length(
+      length,
+      viewport_height,
+      viewport_width,
+      viewport_width,
+      viewport_height,
+      font_size,
+      root_font_size,
+    )
+    .map(|target| viewport_height <= target)
+    .unwrap_or(false),
+
+    // Orientation.
+    MediaFeature::Orientation(orientation) => {
+      if !viewport_width.is_finite() || !viewport_height.is_finite() {
+        return false;
+      }
+      let is_portrait = viewport_height >= viewport_width;
+      match orientation {
+        crate::style::media::Orientation::Portrait => is_portrait,
+        crate::style::media::Orientation::Landscape => !is_portrait,
+      }
+    }
+
+    // Aspect ratio.
+    MediaFeature::AspectRatio { width, height } => {
+      let target_ratio = *width as f32 / *height as f32;
+      let actual_ratio = viewport_width / viewport_height;
+      (target_ratio - actual_ratio).abs() < 0.01
+    }
+    MediaFeature::MinAspectRatio { width, height } => {
+      let target_ratio = *width as f32 / *height as f32;
+      let actual_ratio = viewport_width / viewport_height;
+      actual_ratio >= target_ratio
+    }
+    MediaFeature::MaxAspectRatio { width, height } => {
+      let target_ratio = *width as f32 / *height as f32;
+      let actual_ratio = viewport_width / viewport_height;
+      actual_ratio <= target_ratio
+    }
+
+    // Range syntax.
+    MediaFeature::Range { feature, op, value } => match (feature, value) {
+      (RangeFeature::Width, RangeValue::Length(len)) => resolve_container_query_length(
+        len,
+        viewport_width,
+        viewport_height,
+        viewport_width,
+        viewport_height,
+        font_size,
+        root_font_size,
+      )
+      .map(|target| compare_with_op(*op, viewport_width, target))
+      .unwrap_or(false),
+      (RangeFeature::InlineSize, RangeValue::Length(len)) => resolve_container_query_length(
+        len,
+        viewport_width,
+        viewport_height,
+        viewport_width,
+        viewport_height,
+        font_size,
+        root_font_size,
+      )
+      .map(|target| compare_with_op(*op, viewport_width, target))
+      .unwrap_or(false),
+      (RangeFeature::BlockSize, RangeValue::Length(len)) => resolve_container_query_length(
+        len,
+        viewport_height,
+        viewport_width,
+        viewport_width,
+        viewport_height,
+        font_size,
+        root_font_size,
+      )
+      .map(|target| compare_with_op(*op, viewport_height, target))
+      .unwrap_or(false),
+      (RangeFeature::Height, RangeValue::Length(len)) => resolve_container_query_length(
+        len,
+        viewport_height,
+        viewport_width,
+        viewport_width,
+        viewport_height,
+        font_size,
+        root_font_size,
+      )
+      .map(|target| compare_with_op(*op, viewport_height, target))
+      .unwrap_or(false),
+      (RangeFeature::AspectRatio, RangeValue::AspectRatio(w, h)) => {
+        let target_ratio = *w as f32 / *h as f32;
+        let actual_ratio = viewport_width / viewport_height;
+        compare_with_op(*op, actual_ratio, target_ratio)
+      }
+      _ => false,
+    },
+
+    // Nested boolean conditions.
+    MediaFeature::Not(inner) => !evaluate_container_size_feature(
+      inner.as_ref(),
+      viewport_width,
+      viewport_height,
+      font_size,
+      root_font_size,
+    ),
+    MediaFeature::And(list) => list.iter().all(|f| {
+      evaluate_container_size_feature(f, viewport_width, viewport_height, font_size, root_font_size)
+    }),
+    MediaFeature::Or(list) => list.iter().any(|f| {
+      evaluate_container_size_feature(f, viewport_width, viewport_height, font_size, root_font_size)
+    }),
+
+    // Container size queries are validated at parse time, but keep a conservative fallback.
+    _ => false,
+  }
+}
+
+fn evaluate_container_size_query(mq: &crate::style::media::MediaQuery, container: &ContainerQueryInfo) -> bool {
+  // Container size queries reuse the media-query parser, but are evaluated against the query
+  // container's size + font metrics. Keep viewport units behaving consistently with the previous
+  // implementation by treating the query container's size as the "viewport" during resolution.
+  let viewport_width = container.inline_size;
+  let viewport_height = match container.container_type {
+    ContainerType::InlineSize => f32::NAN,
+    _ => container.block_size,
+  };
+  let font_size = container.styles.font_size;
+  let root_font_size = container.styles.root_font_size;
+
+  if mq.media_type.is_some() {
+    // Container Queries Level 1 forbids media types. Treat as non-matching, but preserve `not`
+    // behavior for completeness.
+    return matches!(mq.modifier, Some(MediaModifier::Not));
+  }
+
+  let features_match = mq.features.iter().all(|feature| {
+    evaluate_container_size_feature(feature, viewport_width, viewport_height, font_size, root_font_size)
+  });
+
+  match mq.modifier {
+    Some(MediaModifier::Not) => !features_match,
+    Some(MediaModifier::Only) | None => features_match,
   }
 }
 

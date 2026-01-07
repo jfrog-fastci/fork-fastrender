@@ -46,7 +46,12 @@ fn display(node: &StyledNode) -> String {
   node.styles.display.to_string()
 }
 
-fn cascade_with_container(css: &str, inline_size: f32, names: Vec<String>) -> StyledNode {
+fn cascade_with_container_styles(
+  css: &str,
+  inline_size: f32,
+  names: Vec<String>,
+  styles: Arc<ComputedStyle>,
+) -> StyledNode {
   let dom = dom::parse_html(HTML).unwrap();
   let ids = dom::enumerate_dom_ids(&dom);
   let container_node = find_dom_by_id(&dom, "c").expect("container node");
@@ -63,8 +68,8 @@ fn cascade_with_container(css: &str, inline_size: f32, names: Vec<String>) -> St
       block_size: 300.0,
       container_type: ContainerType::InlineSize,
       names,
-      font_size: 16.0,
-      styles: Arc::new(ComputedStyle::default()),
+      font_size: styles.font_size,
+      styles,
     },
   );
   let ctx = ContainerQueryContext {
@@ -84,6 +89,10 @@ fn cascade_with_container(css: &str, inline_size: f32, names: Vec<String>) -> St
     None,
     None,
   )
+}
+
+fn cascade_with_container(css: &str, inline_size: f32, names: Vec<String>) -> StyledNode {
+  cascade_with_container_styles(css, inline_size, names, Arc::new(ComputedStyle::default()))
 }
 
 #[test]
@@ -181,4 +190,21 @@ fn container_query_rejects_reserved_container_names() {
 
   let styled = cascade_with_container(css, 500.0, vec!["and".into()]);
   assert_eq!(display(find_by_id(&styled, "t").expect("target")), "block");
+}
+
+#[test]
+fn container_query_rem_uses_root_font_size() {
+  let css = r#"
+    @container (min-width: 12rem) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let mut style = ComputedStyle::default();
+  style.font_size = 20.0;
+  style.root_font_size = 10.0;
+
+  let styled = cascade_with_container_styles(css, 150.0, vec![], Arc::new(style));
+
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "inline");
 }
