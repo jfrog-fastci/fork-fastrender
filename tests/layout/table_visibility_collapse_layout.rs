@@ -224,7 +224,7 @@ fn column_visibility_collapse_removes_column_from_layout() {
     "cells adjacent after collapsing column (gap={gap})"
   );
   assert!(
-   (c.rect.width() - 50.0).abs() < 0.1,
+    (c.rect.width() - 50.0).abs() < 0.1,
     "collapsed column should not affect subsequent column width (got {})",
     c.rect.width()
   );
@@ -993,5 +993,223 @@ fn rowspan_over_collapsed_middle_row_keeps_later_rows_in_span() {
     (a.rect.height() - 28.0).abs() < 0.1,
     "rowspan should include later visible row but skip collapsed row (expected 28, got {})",
     a.rect.height()
+  );
+}
+
+#[test]
+fn row_group_visibility_collapse_removes_extra_border_spacing_gap() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table { display: inline-table; border-collapse: separate; border-spacing: 0 8px; table-layout: fixed; }
+          td { height: 10px; padding: 0; margin: 0; border: 0; font-size: 10px; line-height: 10px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <tbody><tr><td>A</td></tr></tbody>
+          <tbody style="visibility: collapse">
+            <tr><td>B</td></tr>
+            <tr><td>C</td></tr>
+          </tbody>
+          <tbody><tr><td>D</td></tr></tbody>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 200, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  assert!(
+    !cells.contains_key(&'B') && !cells.contains_key(&'C'),
+    "collapsed row-group cells should not be laid out"
+  );
+
+  let a = cells.get(&'A').expect("cell A present");
+  let d = cells.get(&'D').expect("cell D present");
+
+  let gap = d.rect.y() - (a.rect.y() + a.rect.height());
+  assert!(
+    (gap - 8.0).abs() < 0.1,
+    "border-spacing should be applied once between adjacent rows after collapsing row-group (gap={gap})"
+  );
+}
+
+#[test]
+fn column_group_visibility_collapse_removes_extra_border_spacing_gap() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table { display: inline-table; border-collapse: separate; border-spacing: 10px 0; table-layout: fixed; }
+          td { padding: 0; margin: 0; border: 0; font-size: 10px; line-height: 10px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col style="width: 30px" />
+          <colgroup style="visibility: collapse">
+            <col style="width: 40px" />
+            <col style="width: 40px" />
+          </colgroup>
+          <col style="width: 50px" />
+          <tr>
+            <td>A</td>
+            <td>B</td>
+            <td>C</td>
+            <td>D</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  assert!(
+    !cells.contains_key(&'B') && !cells.contains_key(&'C'),
+    "collapsed column-group cells should not be laid out"
+  );
+
+  let a = cells.get(&'A').expect("cell A present");
+  let d = cells.get(&'D').expect("cell D present");
+
+  let gap = d.rect.x() - (a.rect.x() + a.rect.width());
+  assert!(
+    (gap - 10.0).abs() < 0.1,
+    "border-spacing should be applied once between adjacent columns after collapsing column-group (gap={gap})"
+  );
+  assert!(
+    (d.rect.width() - 50.0).abs() < 0.1,
+    "collapsed column-group should not affect remaining column width (got {})",
+    d.rect.width()
+  );
+}
+
+#[test]
+fn column_visibility_collapse_removes_extra_border_spacing_gap_rtl() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            display: inline-table;
+            border-collapse: separate;
+            border-spacing: 10px 0;
+            table-layout: fixed;
+            direction: rtl;
+          }
+          td { padding: 0; margin: 0; border: 0; font-size: 10px; line-height: 10px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col style="width: 30px" />
+          <col style="width: 40px; visibility: collapse" />
+          <col style="width: 50px" />
+          <tr>
+            <td>A</td>
+            <td>B</td>
+            <td>C</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  assert!(!cells.contains_key(&'B'), "collapsed column cell should not be laid out");
+
+  let a = cells.get(&'A').expect("cell A present");
+  let c = cells.get(&'C').expect("cell C present");
+
+  assert!(
+    a.rect.x() > c.rect.x(),
+    "expected RTL order A (right) > C (left), got A.x={} C.x={}",
+    a.rect.x(),
+    c.rect.x()
+  );
+  let gap = a.rect.x() - (c.rect.x() + c.rect.width());
+  assert!(
+    (gap - 10.0).abs() < 0.1,
+    "border-spacing should be applied once between adjacent columns in RTL (gap={gap})"
+  );
+}
+
+#[test]
+fn column_span_attribute_with_visibility_collapse_removes_multiple_columns() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table { display: inline-table; border-collapse: separate; border-spacing: 10px 0; table-layout: fixed; }
+          td { padding: 0; margin: 0; border: 0; font-size: 10px; line-height: 10px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col style="width: 30px" />
+          <col span="2" style="width: 40px; visibility: collapse" />
+          <col style="width: 50px" />
+          <tr>
+            <td>A</td>
+            <td>B</td>
+            <td>C</td>
+            <td>D</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  assert!(
+    !cells.contains_key(&'B') && !cells.contains_key(&'C'),
+    "collapsed columns (via span) should not be laid out"
+  );
+
+  let a = cells.get(&'A').expect("cell A present");
+  let d = cells.get(&'D').expect("cell D present");
+
+  let gap = d.rect.x() - (a.rect.x() + a.rect.width());
+  assert!(
+    (gap - 10.0).abs() < 0.1,
+    "border-spacing should be applied once after collapsing multiple columns (gap={gap})"
+  );
+  assert!(
+    (d.rect.width() - 50.0).abs() < 0.1,
+    "collapsed columns should not affect remaining column width (got {})",
+    d.rect.width()
   );
 }
