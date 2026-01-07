@@ -337,6 +337,55 @@ fn select_value_includes_disabled_selected_placeholder() {
 }
 
 #[test]
+fn required_multi_select_invalid_state_uses_dom_validity() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r##"
+    <html>
+      <body>
+        <select id="only-disabled" multiple required>
+          <option id="only-disabled-placeholder" value="placeholder" disabled selected>
+            Placeholder
+          </option>
+          <option id="only-disabled-a" value="a">A</option>
+        </select>
+
+        <select id="with-enabled" multiple required>
+          <option id="with-enabled-placeholder" value="placeholder" disabled selected>
+            Placeholder
+          </option>
+          <option id="with-enabled-a" value="a" selected>A</option>
+        </select>
+      </body>
+    </html>
+  "##;
+
+  let dom = renderer.parse_html(html).expect("parse");
+  let tree = renderer
+    .accessibility_tree(&dom, 800, 600)
+    .expect("accessibility tree");
+
+  let only_disabled = find_by_id(&tree, "only-disabled").expect("only-disabled select");
+  assert!(only_disabled.states.required);
+  assert!(only_disabled.states.invalid);
+
+  let only_disabled_placeholder =
+    find_by_id(&tree, "only-disabled-placeholder").expect("only-disabled placeholder option");
+  assert_eq!(only_disabled_placeholder.states.selected, Some(true));
+  let only_disabled_a = find_by_id(&tree, "only-disabled-a").expect("only-disabled A option");
+  assert_eq!(only_disabled_a.states.selected, Some(false));
+
+  let with_enabled = find_by_id(&tree, "with-enabled").expect("with-enabled select");
+  assert!(with_enabled.states.required);
+  let with_enabled_placeholder =
+    find_by_id(&tree, "with-enabled-placeholder").expect("with-enabled placeholder option");
+  assert_eq!(with_enabled_placeholder.states.selected, Some(true));
+  let with_enabled_a = find_by_id(&tree, "with-enabled-a").expect("with-enabled A option");
+  assert_eq!(with_enabled_a.states.selected, Some(true));
+
+  assert!(!with_enabled.states.invalid);
+}
+
+#[test]
 fn select_last_selected_option_wins_for_single_select() {
   let mut renderer = FastRender::new().expect("renderer");
   let html = r##"

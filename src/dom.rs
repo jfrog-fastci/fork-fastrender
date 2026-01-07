@@ -5103,22 +5103,22 @@ impl<'a> ElementRef<'a> {
 
     let required = self.is_required();
 
-    if tag.eq_ignore_ascii_case("select") {
-      if !required {
-        return true;
-      }
-      let multiple = self.node.get_attribute_ref("multiple").is_some();
-      let size = select_display_size(self.node);
+      if tag.eq_ignore_ascii_case("select") {
+        if !required {
+          return true;
+        }
+        let multiple = self.node.get_attribute_ref("multiple").is_some();
+        let size = select_display_size(self.node);
 
-      // HTML constraint validation: for listbox/multiple selects, a required selection must include
-      // at least one option that is *not disabled*.
-      if multiple || size != 1 {
-        return select_has_non_disabled_selected_option(self.node);
-      }
+        // HTML constraint validation: for listbox/multiple selects, a required selection must include
+        // at least one option that is *not disabled*.
+        if multiple || size != 1 {
+          return select_has_non_disabled_selected_option(self.node);
+        }
 
-      // For size=1 single selects, required validity is instead determined by the placeholder label
-      // option algorithm.
-      let Some(selected) = single_select_selected_option(self.node) else {
+        // For size=1 single selects, required validity is instead determined by the placeholder label
+        // option algorithm.
+        let Some(selected) = single_select_selected_option(self.node) else {
         return false;
       };
 

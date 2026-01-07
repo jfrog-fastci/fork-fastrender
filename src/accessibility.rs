@@ -493,6 +493,12 @@ impl<'a> BuildContext<'a> {
   }
 }
 
+fn clone_dom_subtree(node: &StyledNode) -> DomNode {
+  let mut out = node.node.clone_shallow();
+  out.children = node.children.iter().map(clone_dom_subtree).collect();
+  out
+}
+
 fn build_nodes<'a>(
   node: &'a StyledNode,
   ctx: &BuildContext<'a>,
@@ -526,7 +532,18 @@ fn build_nodes<'a>(
       styled_ancestors.pop();
       ancestors.pop();
 
-      let element_ref = ElementRef::with_ancestors(&node.node, ancestors);
+      // `StyledNode.node` is a shallow copy of the DOM node; its `children` are intentionally empty.
+      //
+      // Most native accessibility state can be derived from element attributes alone, but `<select>`
+      // validity depends on its descendant `<option>` elements. Reconstruct a minimal DOM subtree
+      // for selects so `ElementRef` validity helpers can see option descendants.
+      let is_select = node
+        .node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("select"));
+      let select_dom_subtree = is_select.then(|| clone_dom_subtree(node));
+      let element_ref_node = select_dom_subtree.as_ref().unwrap_or(&node.node);
+      let element_ref = ElementRef::with_ancestors(element_ref_node, ancestors);
       let (mut role, presentational_role, role_from_attr) =
         compute_role(node, ancestors, styled_ancestors.last().copied());
 
@@ -573,7 +590,7 @@ fn build_nodes<'a>(
       let native_required = element_ref.accessibility_required();
       let aria_required = parse_bool_attr(&node.node, "aria-required");
       let required = native_required || aria_required == Some(true);
-      let invalid = parse_invalid(node, &element_ref, ctx);
+      let invalid = parse_invalid(node, &element_ref);
       let checked = compute_checked(node, role.as_deref(), &element_ref);
       let selected =
         compute_selected(node, role.as_deref(), &element_ref, styled_ancestors, ctx);
@@ -2269,38 +2286,13 @@ fn meter_value(node: &DomNode) -> Option<String> {
   Some(format_number(parsed))
 }
 
-fn compute_invalid(node: &StyledNode, element_ref: &ElementRef, ctx: &BuildContext) -> bool {
+fn compute_invalid(node: &StyledNode, element_ref: &ElementRef) -> bool {
   if let Some(value) = parse_aria_invalid(&node.node) {
     // ARIA should not negate native HTML semantics: allow authors to force the invalid state on,
     // but ignore explicit `false` so native constraint validation still surfaces.
     if value {
       return true;
     }
-  }
-
-  if node
-    .node
-    .tag_name()
-    .is_some_and(|tag| tag.eq_ignore_ascii_case("select"))
-  {
-    if element_ref.accessibility_disabled() {
-      return false;
-    }
-
-    if element_ref.accessibility_required() {
-      if node.node.get_attribute_ref("multiple").is_some() {
-        return find_selected_option_node_id(node, false, ctx).is_none();
-      }
-
-      let Some(selected_id) = selected_option_node_id(node, ctx) else {
-        return true;
-      };
-
-      return select_placeholder_label_option_node_id(node, ctx)
-        .is_some_and(|placeholder_id| placeholder_id == selected_id);
-    }
-
-    return false;
   }
 
   element_ref.accessibility_supports_validation() && !element_ref.accessibility_is_valid()
@@ -2526,8 +2518,8 @@ fn compute_focusable(node: &DomNode, role: Option<&str>, disabled: bool) -> bool
     .unwrap_or(false)
 }
 
-fn parse_invalid(node: &StyledNode, element_ref: &ElementRef, ctx: &BuildContext) -> bool {
-  compute_invalid(node, element_ref, ctx)
+fn parse_invalid(node: &StyledNode, element_ref: &ElementRef) -> bool {
+  compute_invalid(node, element_ref)
 }
 
 fn parse_expanded(node: &DomNode) -> Option<bool> {
