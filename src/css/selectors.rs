@@ -667,9 +667,7 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
     match name.to_ascii_lowercase().as_str() {
       // Real-world stylesheets (and some engines) still use single-colon forms for these
       // vendor pseudo-elements.
-      "placeholder" | "-webkit-input-placeholder" | "-moz-placeholder" | "-ms-input-placeholder" => {
-        true
-      }
+      "placeholder" | "-webkit-input-placeholder" => true,
       "-webkit-slider-thumb" | "-moz-range-thumb" | "-ms-thumb" => true,
       "-webkit-slider-runnable-track" | "-moz-range-track" | "-ms-track" => true,
       _ => false,
@@ -710,9 +708,9 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       "read-only" => Ok(PseudoClass::ReadOnly),
       "read-write" => Ok(PseudoClass::ReadWrite),
       "placeholder-shown" => Ok(PseudoClass::PlaceholderShown),
+      "-moz-placeholder" => Ok(PseudoClass::PlaceholderShown),
       "-moz-placeholder-shown" => Ok(PseudoClass::PlaceholderShown),
-      "-ms-input-placeholder" => Ok(PseudoClass::MsInputPlaceholder),
-      "-moz-placeholder" => Ok(PseudoClass::MozPlaceholder),
+      "-ms-input-placeholder" => Ok(PseudoClass::PlaceholderShown),
       "autofill" => Ok(PseudoClass::Autofill),
       "-webkit-autofill" => Ok(PseudoClass::Autofill),
       "-moz-ui-invalid" => Ok(PseudoClass::MozUiInvalid),
@@ -1462,6 +1460,35 @@ mod tests {
   }
 
   #[test]
+  fn parses_vendor_placeholder_pseudo_classes() {
+    for selector in [
+      ".form-floating > .form-control:not(:-moz-placeholder)",
+      ".form-floating > .form-control:not(:-ms-input-placeholder)",
+      ".x:-moz-placeholder-shown",
+    ] {
+      let mut input = ParserInput::new(selector);
+      let mut parser = Parser::new(&mut input);
+      assert!(
+        SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok(),
+        "selector should parse: {selector}"
+      );
+    }
+  }
+
+  #[test]
+  fn parses_selector_list_mixing_vendor_and_standard_placeholder_pseudos() {
+    let mut input = ParserInput::new(".a:not(:-moz-placeholder), .a:not(:placeholder-shown) {}");
+    let mut parser = Parser::new(&mut input);
+    assert!(
+      parser
+        .parse_until_before(cssparser::Delimiter::CurlyBracketBlock, |nested| {
+          SelectorList::parse(&PseudoClassParser, nested, ParseRelative::No)
+        })
+        .is_ok()
+    );
+  }
+
+  #[test]
   fn to_css_serializes_new_pseudo_classes() {
     assert_eq!(PseudoClass::FirstOfType.to_css_string(), ":first-of-type");
     assert_eq!(PseudoClass::LastOfType.to_css_string(), ":last-of-type");
@@ -1644,8 +1671,6 @@ mod tests {
     for selector_text in [
       "input:placeholder",
       "input:-webkit-input-placeholder",
-      "input:-moz-placeholder",
-      "input:-ms-input-placeholder",
     ] {
       let mut input = ParserInput::new(selector_text);
       let mut parser = Parser::new(&mut input);
