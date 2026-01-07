@@ -301,27 +301,35 @@ fn dedup_key(url: &str, base_url: Option<&str>) -> String {
   trimmed.to_string()
 }
 
+fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
+  value
+    .as_bytes()
+    .get(..prefix.len())
+    .map(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
+    .unwrap_or(false)
+}
+
+/// Returns true when an image URL candidate should be considered for selection/probing/painting.
+///
+/// This matches the filtering performed by [`push_unique`] so callers outside of this module can
+/// apply the same rules (e.g. intrinsic sizing probes).
+pub(crate) fn is_valid_image_source_url(url: &str) -> bool {
+  let trimmed = url.trim();
+  !(trimmed.is_empty()
+    || trimmed.starts_with('#')
+    || starts_with_ignore_ascii_case(trimmed, "javascript:")
+    || starts_with_ignore_ascii_case(trimmed, "vbscript:")
+    || starts_with_ignore_ascii_case(trimmed, "mailto:"))
+}
+
 fn push_unique<'a>(
   out: &mut Vec<SelectedImageSource<'a>>,
   seen: &mut HashSet<String>,
   candidate: SelectedImageSource<'a>,
   base_url: Option<&str>,
 ) {
-  fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
-    value
-      .as_bytes()
-      .get(..prefix.len())
-      .map(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
-      .unwrap_or(false)
-  }
-
   let trimmed = candidate.url.trim();
-  if trimmed.is_empty()
-    || trimmed.starts_with('#')
-    || starts_with_ignore_ascii_case(trimmed, "javascript:")
-    || starts_with_ignore_ascii_case(trimmed, "vbscript:")
-    || starts_with_ignore_ascii_case(trimmed, "mailto:")
-  {
+  if !is_valid_image_source_url(trimmed) {
     return;
   }
 

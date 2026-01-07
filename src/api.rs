@@ -258,6 +258,31 @@ struct ImageIntrinsicProbeOutcome {
   explicit_no_ratio: bool,
 }
 
+fn intrinsic_axis_is_known(value: f32) -> bool {
+  value.is_finite() && value > 0.0
+}
+
+fn aspect_ratio_is_usable(value: f32) -> bool {
+  value.is_finite() && value > 0.0
+}
+
+fn intrinsic_size_is_complete(size: Size) -> bool {
+  intrinsic_axis_is_known(size.width) && intrinsic_axis_is_known(size.height)
+}
+
+fn complete_intrinsic_size_with_ratio(size: Size, ratio: f32) -> Option<Size> {
+  if !aspect_ratio_is_usable(ratio) {
+    return None;
+  }
+  let width_known = intrinsic_axis_is_known(size.width);
+  let height_known = intrinsic_axis_is_known(size.height);
+  match (width_known, height_known) {
+    (true, false) => Some(Size::new(size.width, size.width / ratio)),
+    (false, true) => Some(Size::new(size.height * ratio, size.height)),
+    _ => None,
+  }
+}
+
 struct ImageProbePrefetchJoinHandle(Option<std::thread::JoinHandle<()>>);
 
 impl Drop for ImageProbePrefetchJoinHandle {
@@ -9715,7 +9740,10 @@ impl FastRender {
         let (authored_width, authored_height) =
           authored_intrinsic_axis_hints(replaced_box.intrinsic_size);
         let needs_ratio_probe = (authored_width.is_some() ^ authored_height.is_some())
-          && replaced_box.aspect_ratio.is_none();
+          && replaced_box
+            .aspect_ratio
+            .filter(|ratio| aspect_ratio_is_usable(*ratio))
+            .is_none();
         let needs_size_probe = replaced_box.intrinsic_size.is_none()
           || (authored_width.is_none() && authored_height.is_none());
         if !needs_ratio_probe && !needs_size_probe {
@@ -9976,10 +10004,24 @@ impl FastRender {
 
     let (authored_width, authored_height) =
       authored_intrinsic_axis_hints(replaced_box.intrinsic_size);
-    let needs_ratio_probe =
-      (authored_width.is_some() ^ authored_height.is_some()) && replaced_box.aspect_ratio.is_none();
+    let needs_ratio_probe = (authored_width.is_some() ^ authored_height.is_some())
+      && replaced_box
+        .aspect_ratio
+        .filter(|ratio| aspect_ratio_is_usable(*ratio))
+        .is_none();
     let needs_size_probe = replaced_box.intrinsic_size.is_none()
       || (authored_width.is_none() && authored_height.is_none());
+
+    // If a usable aspect ratio is already present, we can derive the missing intrinsic axis
+    // without probing the resource.
+    if let (Some(size), Some(ratio)) = (
+      replaced_box.intrinsic_size,
+      replaced_box.aspect_ratio.filter(|r| aspect_ratio_is_usable(*r)),
+    ) {
+      if let Some(completed) = complete_intrinsic_size_with_ratio(size, ratio) {
+        replaced_box.intrinsic_size = Some(completed);
+      }
+    }
 
     // Preserve existing early-return skips, but allow probing for an intrinsic ratio when only one
     // HTML dimension attribute was provided (box generation encodes that as `(w, 0)` / `(0, h)`).
@@ -10015,12 +10057,11 @@ impl FastRender {
       match selected.descriptor {
         Some(SrcsetDescriptor::WidthHeight { width, height }) => {
           let ratio = width as f32 / height as f32;
-          (ratio.is_finite() && ratio > 0.0).then_some(ratio)
+          aspect_ratio_is_usable(ratio).then_some(ratio)
         }
         _ => None,
       }
     };
-
     if style.width.is_some() && style.height.is_some() {
       return;
     }
@@ -10048,7 +10089,10 @@ impl FastRender {
           replaced_box.intrinsic_size = Some(size);
           have_resource_dimensions = true;
           if !explicit_no_ratio {
-            if let Some(ratio) = outcome.aspect_ratio {
+            if let Some(ratio) = outcome
+              .aspect_ratio
+              .filter(|ratio| aspect_ratio_is_usable(*ratio))
+            {
               replaced_box.aspect_ratio = replaced_box.aspect_ratio.or(Some(ratio));
             }
           }
@@ -10056,18 +10100,18 @@ impl FastRender {
       } else if needs_ratio_probe && !explicit_no_ratio {
         if let Some(ratio) = outcome
           .aspect_ratio
-          .filter(|ratio| ratio.is_finite() && *ratio > 0.0)
+          .filter(|ratio| aspect_ratio_is_usable(*ratio))
         {
           if let Some(width) = authored_width {
             let height = width / ratio;
-            if height.is_finite() && height > 0.0 {
+            if intrinsic_axis_is_known(height) {
               replaced_box.intrinsic_size = Some(Size::new(width, height));
               have_resource_dimensions = true;
               replaced_box.aspect_ratio = replaced_box.aspect_ratio.or(Some(ratio));
             }
           } else if let Some(height) = authored_height {
             let width = height * ratio;
-            if width.is_finite() && width > 0.0 {
+            if intrinsic_axis_is_known(width) {
               replaced_box.intrinsic_size = Some(Size::new(width, height));
               have_resource_dimensions = true;
               replaced_box.aspect_ratio = replaced_box.aspect_ratio.or(Some(ratio));
@@ -10085,6 +10129,14 @@ impl FastRender {
         replaced_box.intrinsic_size.get_or_insert(size);
         if size.height > 0.0 && replaced_box.aspect_ratio.is_none() {
           replaced_box.aspect_ratio = Some(size.width / size.height);
+        }
+      }
+    }
+
+    if let Some(ratio) = replaced_box.aspect_ratio.filter(|r| aspect_ratio_is_usable(*r)) {
+      if let Some(size) = replaced_box.intrinsic_size {
+        if let Some(completed) = complete_intrinsic_size_with_ratio(size, ratio) {
+          replaced_box.intrinsic_size = Some(completed);
         }
       }
     }
@@ -10421,18 +10473,24 @@ impl FastRender {
         srcset,
         picture_sources,
         crossorigin,
+        referrer_policy,
         ..
       } => {
         let crossorigin = *crossorigin;
+        let referrer_policy = *referrer_policy;
         if profile_enabled {
           REPLACED_INTRINSIC_PROFILE.with(|state| {
             state.borrow_mut().image_nodes += 1;
           });
         }
+
         let (authored_width, authored_height) =
           authored_intrinsic_axis_hints(replaced_box.intrinsic_size);
         let needs_ratio_probe = (authored_width.is_some() ^ authored_height.is_some())
-          && replaced_box.aspect_ratio.is_none();
+          && replaced_box
+            .aspect_ratio
+            .filter(|ratio| aspect_ratio_is_usable(*ratio))
+            .is_none();
         let needs_size_probe = replaced_box.intrinsic_size.is_none()
           || (authored_width.is_none() && authored_height.is_none());
 
@@ -10442,6 +10500,7 @@ impl FastRender {
         if !needs_ratio_probe && !needs_size_probe {
           return;
         }
+
         // If both width and height are specified (non-auto), intrinsic data is unused per
         // replaced element sizing. Avoid network fetches in that case to speed up heavy pages.
         if style.width.is_some() && style.height.is_some() {
@@ -10496,15 +10555,15 @@ impl FastRender {
           if let Some(selected) = selected {
             if let Some(SrcsetDescriptor::WidthHeight { width, height }) = selected.descriptor {
               let ratio = width as f32 / height as f32;
-              if ratio.is_finite() && ratio > 0.0 {
+              if aspect_ratio_is_usable(ratio) {
                 if let Some(width) = authored_width {
                   let height = width / ratio;
-                  if height.is_finite() && height > 0.0 {
+                  if intrinsic_axis_is_known(height) {
                     replaced_box.intrinsic_size = Some(Size::new(width, height));
                   }
                 } else if let Some(height) = authored_height {
                   let width = height * ratio;
-                  if width.is_finite() && width > 0.0 {
+                  if intrinsic_axis_is_known(width) {
                     replaced_box.intrinsic_size = Some(Size::new(width, height));
                   }
                 }
@@ -10520,7 +10579,7 @@ impl FastRender {
             let probe_start = profile_enabled.then(Instant::now);
             let probe_result = self
               .image_cache
-              .probe_with_crossorigin(selected.url, crossorigin);
+              .probe_with_crossorigin_and_referrer_policy(selected.url, crossorigin, referrer_policy);
             if let Some(start) = probe_start {
               let ms = start.elapsed().as_secs_f64() * 1000.0;
               REPLACED_INTRINSIC_PROFILE.with(|state| {
@@ -10534,6 +10593,7 @@ impl FastRender {
                 }
               });
             }
+
             if let Ok(image) = probe_result {
               let orientation = style.image_orientation.resolve(image.orientation, false);
               explicit_no_ratio = image.aspect_ratio_none;
@@ -10557,18 +10617,18 @@ impl FastRender {
               } else if needs_ratio_probe && !explicit_no_ratio {
                 if let Some(ratio) = image
                   .intrinsic_ratio(orientation)
-                  .filter(|ratio| ratio.is_finite() && *ratio > 0.0)
+                  .filter(|ratio| aspect_ratio_is_usable(*ratio))
                 {
                   if let Some(width) = authored_width {
                     let height = width / ratio;
-                    if height.is_finite() && height > 0.0 {
+                    if intrinsic_axis_is_known(height) {
                       replaced_box.intrinsic_size = Some(Size::new(width, height));
                       have_resource_dimensions = true;
                       replaced_box.aspect_ratio = replaced_box.aspect_ratio.or(Some(ratio));
                     }
                   } else if let Some(height) = authored_height {
                     let width = height * ratio;
-                    if width.is_finite() && width > 0.0 {
+                    if intrinsic_axis_is_known(width) {
                       replaced_box.intrinsic_size = Some(Size::new(width, height));
                       have_resource_dimensions = true;
                       replaced_box.aspect_ratio = replaced_box.aspect_ratio.or(Some(ratio));
@@ -10596,16 +10656,16 @@ impl FastRender {
           if let Some(selected) = selected {
             if let Some(SrcsetDescriptor::WidthHeight { width, height }) = selected.descriptor {
               let ratio = width as f32 / height as f32;
-              if ratio.is_finite() && ratio > 0.0 {
+              if aspect_ratio_is_usable(ratio) {
                 if needs_ratio_probe {
                   if let Some(width) = authored_width {
                     let height = width / ratio;
-                    if height.is_finite() && height > 0.0 {
+                    if intrinsic_axis_is_known(height) {
                       replaced_box.intrinsic_size = Some(Size::new(width, height));
                     }
                   } else if let Some(height) = authored_height {
                     let width = height * ratio;
-                    if width.is_finite() && width > 0.0 {
+                    if intrinsic_axis_is_known(width) {
                       replaced_box.intrinsic_size = Some(Size::new(width, height));
                     }
                   }
@@ -10775,7 +10835,8 @@ impl FastRender {
             // about:blank is a browser-provided empty document; avoid probing it as an image source
             // (which would fail offline and record spurious fetch errors).
             if !is_about_blank {
-              let inline_svg = src_trimmed.starts_with("<svg") || src_trimmed.starts_with("<?xml");
+              let inline_svg =
+                src_trimmed.starts_with("<svg") || src_trimmed.starts_with("<?xml");
               let meta = if inline_svg {
                 self.image_cache.probe_svg_content(src, "embed")
               } else {
@@ -16311,6 +16372,37 @@ mod tests {
   }
 
   #[test]
+  fn resolve_intrinsic_sizes_image_width_only_preserves_natural_ratio() {
+    let renderer = FastRender::new().expect("init renderer");
+    let style = Arc::new(ComputedStyle::default());
+    let svg = "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100'></svg>";
+
+    let mut node = BoxNode::new_replaced(
+      style,
+      ReplacedType::Image {
+        src: svg.to_string(),
+        alt: None,
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
+      },
+      Some(Size::new(120.0, 0.0)),
+      None,
+    );
+
+    renderer.resolve_replaced_intrinsic_sizes(&mut node, Size::new(800.0, 600.0));
+
+    let replaced = match &node.box_type {
+      BoxType::Replaced(replaced) => replaced,
+      other => panic!("expected replaced box, got {other:?}"),
+    };
+    assert_eq!(replaced.intrinsic_size, Some(Size::new(120.0, 60.0)));
+    assert_eq!(replaced.aspect_ratio, Some(2.0));
+  }
+
+  #[test]
   fn resolve_intrinsic_sizes_fragment_src_uses_alt_text() {
     #[derive(Clone)]
     struct PanicFetcher;
@@ -16329,7 +16421,7 @@ mod tests {
     let alt_text = "fallback alt";
 
     let mut node = BoxNode::new_replaced(
-      style.clone(),
+      style,
       ReplacedType::Image {
         src: "#".to_string(),
         alt: Some(alt_text.to_string()),
@@ -16344,9 +16436,10 @@ mod tests {
     );
 
     renderer.resolve_replaced_intrinsic_sizes(&mut node, Size::new(800.0, 600.0));
-    let replaced = match node.box_type {
-      BoxType::Replaced(ref r) => r,
-      _ => panic!("not replaced"),
+
+    let replaced = match &node.box_type {
+      BoxType::Replaced(replaced) => replaced,
+      other => panic!("expected replaced box, got {other:?}"),
     };
 
     let intrinsic = replaced.intrinsic_size.expect("alt intrinsic size");
@@ -16355,6 +16448,93 @@ mod tests {
       Size::new(1.0, 1.0),
       "fragment src must not resolve to placeholder intrinsic size"
     );
+  }
+
+  #[test]
+  fn resolve_intrinsic_sizes_invalid_src_does_not_suppress_alt_sizing() {
+    let mut renderer = FastRender::new().expect("init renderer");
+    // Ensure fragment-only references resolve to an `about:` URL so accidental probes manifest as
+    // placeholder 1×1 metadata instead of requiring network access.
+    renderer.set_base_url("about:blank");
+    let style = Arc::new(ComputedStyle::default());
+
+    let mut node = BoxNode::new_replaced(
+      style,
+      ReplacedType::Image {
+        src: "#".to_string(),
+        alt: Some("ALT".to_string()),
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
+      },
+      None,
+      None,
+    );
+
+    renderer.resolve_replaced_intrinsic_sizes(&mut node, Size::new(800.0, 600.0));
+    let replaced = match &node.box_type {
+      BoxType::Replaced(replaced) => replaced,
+      other => panic!("expected replaced box, got {other:?}"),
+    };
+    let intrinsic = replaced.intrinsic_size.expect("intrinsic size");
+    assert!(
+      intrinsic.width > 1.0 && intrinsic.height > 1.0,
+      "expected alt text sizing, got {intrinsic:?}"
+    );
+  }
+
+  #[test]
+  fn resolve_intrinsic_sizes_ignores_invalid_non_img_candidates() {
+    #[derive(Clone)]
+    struct PanicFetcher;
+
+    impl ResourceFetcher for PanicFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("intrinsic sizing should not probe invalid URLs");
+      }
+    }
+
+    let renderer = FastRender::builder()
+      .fetcher(Arc::new(PanicFetcher) as Arc<dyn ResourceFetcher>)
+      .build()
+      .expect("init renderer");
+    let style = Arc::new(ComputedStyle::default());
+
+    let mut root = BoxNode::new_anonymous_block(
+      style.clone(),
+      vec![
+        BoxNode::new_replaced(
+          style.clone(),
+          ReplacedType::Video {
+            src: String::new(),
+            poster: Some("#".into()),
+          },
+          None,
+          None,
+        ),
+        BoxNode::new_replaced(style.clone(), ReplacedType::Embed { src: "#".into() }, None, None),
+        BoxNode::new_replaced(
+          style.clone(),
+          ReplacedType::Object { data: "#".into() },
+          None,
+          None,
+        ),
+        BoxNode::new_replaced(
+          style,
+          ReplacedType::Iframe {
+            src: "#".into(),
+            srcdoc: None,
+            referrer_policy: None,
+          },
+          None,
+          None,
+        ),
+      ],
+    );
+
+    renderer.resolve_replaced_intrinsic_sizes(&mut root, Size::new(800.0, 600.0));
   }
 
   #[test]
