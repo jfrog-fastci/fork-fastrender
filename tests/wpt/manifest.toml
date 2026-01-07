@@ -1685,3 +1685,68 @@ dpr = 1.0
 [tests.viewport]
 width = 20
 height = 20
+
+[[tests]]
+id = "resources/html-relative-stylesheet-001"
+path = "resources/html-relative-stylesheet-001.html"
+reference = "resources/html-relative-stylesheet-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "resources/css-url-base-001"
+path = "resources/css-url-base-001.html"
+reference = "resources/css-url-base-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "resources/css-import-base-001"
+path = "resources/css-import-base-001.html"
+reference = "resources/css-import-base-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "resources/html-base-tag-stylesheet-001"
+path = "resources/html-base-tag-stylesheet-001.html"
+reference = "resources/html-base-tag-stylesheet-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "resources/reftest-reference-base-url-isolated-001"
+path = "resources/reftest-reference-base-url-isolated-001.html"
+reference = "resources/isolated-ref/reftest-reference-base-url-isolated-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
