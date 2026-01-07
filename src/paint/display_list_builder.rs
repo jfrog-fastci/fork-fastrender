@@ -4668,18 +4668,17 @@ impl DisplayListBuilder {
           let (content_rect, clip_radii) =
             self.replaced_content_rect_and_radii(rect, style_for_image);
           let (dest_x, dest_y, dest_w, dest_h) = {
-            let (fit, position, font_size, root_font_size) = if let Some(style) =
-              fragment.style.as_deref()
-            {
-              (
-                style.object_fit,
-                style.object_position,
-                style.font_size,
-                style.root_font_size,
-              )
-            } else {
-              (ObjectFit::Fill, default_object_position(), 16.0, 16.0)
-            };
+            let (fit, position, font_size, root_font_size) =
+              if let Some(style) = fragment.style.as_deref() {
+                (
+                  style.object_fit,
+                  style.object_position,
+                  style.font_size,
+                  style.root_font_size,
+                )
+              } else {
+                (ObjectFit::Fill, default_object_position(), 16.0, 16.0)
+              };
 
             compute_object_fit(
               fit,

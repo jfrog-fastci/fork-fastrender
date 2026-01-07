@@ -112,9 +112,18 @@ mod tests {
       y: PositionComponent::Keyword(PositionKeyword::Center),
     };
 
-    let (offset_x, offset_y, dest_w, dest_h) =
-      compute_object_fit(fit, position, 200.0, 100.0, 100.0, 100.0, 16.0, 16.0, None)
-        .expect("fit computed");
+    let (offset_x, offset_y, dest_w, dest_h) = compute_object_fit(
+      fit,
+      position,
+      200.0,
+      100.0,
+      100.0,
+      100.0,
+      16.0,
+      16.0,
+      None,
+    )
+    .expect("fit computed");
     assert_eq!(dest_h, 100.0);
     assert_eq!(dest_w, 100.0);
     assert!((offset_x - 50.0).abs() < 0.01);
@@ -198,11 +207,11 @@ mod tests {
   #[test]
   fn rem_lengths_use_root_font_size() {
     let position = ObjectPosition {
-      x: PositionComponent::Length(Length::rem(1.0)),
+      x: PositionComponent::Length(Length::rem(2.0)),
       y: PositionComponent::Keyword(PositionKeyword::Start),
     };
 
-    // free_x is 50 (100 - 50). 1rem at 20px root font size => 20px.
+    // free_x is 50 (100 - 50). 2rem at 20px root font size => 40px.
     let (offset_x, offset_y, _, _) = compute_object_fit(
       ObjectFit::None,
       position,
@@ -215,7 +224,7 @@ mod tests {
       None,
     )
     .expect("fit computed");
-    assert!((offset_x - 20.0).abs() < 0.01);
+    assert!((offset_x - 40.0).abs() < 0.01);
     assert!((offset_y - 0.0).abs() < 0.01);
   }
 

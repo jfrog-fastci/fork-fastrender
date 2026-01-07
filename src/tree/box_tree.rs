@@ -1884,6 +1884,50 @@ mod tests {
   }
 
   #[test]
+  fn sizes_rem_uses_root_font_size() {
+    let img = ReplacedType::Image {
+      src: "fallback".to_string(),
+      alt: None,
+      srcset: vec![
+        SrcsetCandidate {
+          url: "150w".to_string(),
+          descriptor: SrcsetDescriptor::Width(150),
+        },
+        SrcsetCandidate {
+          url: "250w".to_string(),
+          descriptor: SrcsetDescriptor::Width(250),
+        },
+      ],
+      sizes: Some(SizesList {
+        entries: vec![SizesEntry {
+          media: None,
+          length: Length::rem(10.0),
+        }],
+      }),
+      picture_sources: Vec::new(),
+      crossorigin: CrossOriginAttribute::None,
+    };
+
+    let viewport = Size::new(500.0, 300.0);
+    let media_ctx =
+      MediaContext::screen(viewport.width, viewport.height).with_device_pixel_ratio(1.0);
+    let chosen = img.image_source_for_context(ImageSelectionContext {
+      device_pixel_ratio: 1.0,
+      slot_width: None,
+      viewport: Some(viewport),
+      media_context: Some(&media_ctx),
+      font_size: Some(10.0),
+      root_font_size: Some(20.0),
+      base_url: None,
+    });
+
+    assert_eq!(
+      chosen, "250w",
+      "10rem should resolve against root font size (20px) => 200px slot width"
+    );
+  }
+
+  #[test]
   fn width_descriptors_default_to_viewport_when_no_sizes_and_no_slot() {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
