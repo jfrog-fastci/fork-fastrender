@@ -84,7 +84,7 @@ fn inline_svg_applies_document_css_and_current_color() {
 }
 
 #[test]
-fn inline_svg_respects_display_none_when_document_css_injection_disabled() {
+fn inline_svg_respects_display_none_when_document_css_injection_disabled_legacy_backend() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
     .spawn(|| {
@@ -109,7 +109,7 @@ fn inline_svg_respects_display_none_when_document_css_injection_disabled() {
 }
 
 #[test]
-fn inline_svg_respects_visibility_hidden_when_document_css_injection_disabled() {
+fn inline_svg_respects_visibility_hidden_when_document_css_injection_disabled_legacy_backend() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
     .spawn(|| {
@@ -134,7 +134,7 @@ fn inline_svg_respects_visibility_hidden_when_document_css_injection_disabled() 
 }
 
 #[test]
-fn inline_svg_respects_opacity_when_document_css_injection_disabled() {
+fn inline_svg_respects_opacity_when_document_css_injection_disabled_legacy_backend() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
     .spawn(|| {
