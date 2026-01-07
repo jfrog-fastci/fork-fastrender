@@ -4931,7 +4931,9 @@ impl FlexFormattingContext {
     // When flex containers wrap, Taffy's `WrapReverse` handling can be inconsistent. We instead
     // always run Taffy with `FlexWrap::Wrap` and mirror the fragment positions when the effective
     // cross-axis direction is reversed (either via `flex-wrap: wrap-reverse` or a negative
-    // cross-start edge in vertical/RTL writing modes). To keep `align-items`/`align-content`
+    // cross-start edge in vertical/RTL writing modes).
+    //
+    // To keep `flex-start`/`flex-end` (which resolve against the flex cross-start/cross-end edges)
     // consistent with this mirroring step, wrapped containers are converted assuming a positive
     // cross axis and rely on the mirror post-pass when needed.
     let cross_positive_container = if matches!(style.display, Display::Flex | Display::InlineFlex)
@@ -4941,6 +4943,13 @@ impl FlexFormattingContext {
     } else {
       cross_positive_container_base
     };
+    let mirror_cross_axis_container = matches!(style.display, Display::Flex | Display::InlineFlex)
+      && matches!(style.flex_wrap, FlexWrap::Wrap | FlexWrap::WrapReverse)
+      && (cross_positive_container_base == matches!(style.flex_wrap, FlexWrap::WrapReverse));
+    // `start`/`end` resolve against the physical start/end edges and must *not* mirror with the
+    // flex cross-start/cross-end edges. Pre-adjust the axis sense for start/end so that after the
+    // cross-axis mirror post-pass, they still resolve to the physical start/end edges.
+    let cross_positive_for_start_end = cross_positive_container_base ^ mirror_cross_axis_container;
 
     // Flex items align to the parent flex container's axes, not their own writing-mode/direction.
     let axis_source = containing_flex.unwrap_or(style);
@@ -5008,6 +5017,12 @@ impl FlexFormattingContext {
 
     let align_self_axis_positive = match effective_align_self {
       Some(AlignItems::SelfStart | AlignItems::SelfEnd) => cross_positive_self ^ mirror_cross_axis,
+      // `start`/`end` resolve against the flex container's physical axis and must *not* mirror with
+      // the flex line's cross-start/cross-end (e.g. `flex-wrap: wrap-reverse`). We run wrapping
+      // flex layout through Taffy with a forced-positive cross axis, then mirror the resulting
+      // positions to match the spec cross-start direction. Pre-adjust the axis sense for `start`
+      // and `end` so that after mirroring, they still resolve to the physical start/end edges.
+      Some(AlignItems::Start | AlignItems::End) => cross_positive_item_base ^ mirror_cross_axis,
       _ => cross_positive_item,
     };
     let justify_self_axis_positive = match effective_justify_self {
@@ -5055,7 +5070,7 @@ impl FlexFormattingContext {
       justify_content: self
         .justify_content_to_taffy(style.justify_content, main_axis_positive_container),
       align_items: self.align_items_to_taffy(style.align_items, cross_positive_container),
-      align_content: self.align_content_to_taffy(style.align_content, cross_positive_container),
+      align_content: self.align_content_to_taffy(style.align_content, cross_positive_for_start_end),
       align_self: self.align_self_to_taffy(effective_align_self, align_self_axis_positive),
       justify_self: self.align_self_to_taffy(effective_justify_self, justify_self_axis_positive),
       justify_items: self.align_items_to_taffy(style.justify_items, inline_positive_container),
