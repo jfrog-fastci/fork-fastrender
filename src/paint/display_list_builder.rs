@@ -2068,11 +2068,24 @@ impl DisplayListBuilder {
     has_mask: bool,
     has_clip_path: bool,
   ) -> bool {
+    // Backdrop Root triggers are based on property *presence*, not resolved effect lists.
+    //
+    // The filter/mask/clip-path resolvers may optimize away no-op effects like `blur(0px)` or
+    // `clip-path: inset(0)`. Per Filter Effects Level 2 those still establish Backdrop Roots for
+    // descendant `backdrop-filter` sampling and `mix-blend-mode` blending.
+    let style_has_filter = root_style.is_some_and(|style| !style.filter.is_empty());
+    let style_has_backdrop_filter = root_style.is_some_and(|style| !style.backdrop_filter.is_empty());
+    let style_has_mask_image = root_style
+      .is_some_and(|style| style.mask_layers.iter().any(|layer| layer.image.is_some()));
+
     is_root
+      || style_has_filter
       || !filters.is_empty()
       || has_opacity
+      || style_has_mask_image
       || has_mask
       || has_clip_path
+      || style_has_backdrop_filter
       || !backdrop_filters.is_empty()
       || mix_blend_mode != BlendMode::Normal
       || root_style.is_some_and(|style| style.will_change.establishes_backdrop_root())

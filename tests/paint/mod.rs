@@ -11,6 +11,7 @@ mod backdrop_filter_through_blend_isolation;
 mod backdrop_root_backdrop_filter_test;
 mod backdrop_root_clip_path_test;
 mod backdrop_root_filter_and_mask_test;
+mod backdrop_root_matrix_test;
 mod backdrop_root_nested_backdrop_filter_test;
 mod backdrop_root_non_trigger_stacking_contexts_test;
 mod backdrop_root_semantics_test;
