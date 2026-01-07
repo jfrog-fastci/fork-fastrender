@@ -715,6 +715,8 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       // Real-world stylesheets (and some engines) still use single-colon forms for these
       // vendor pseudo-elements.
       "selection" | "-moz-selection" => true,
+      // `::marker`-like vendor pseudo-elements.
+      "-moz-list-bullet" | "-moz-list-number" | "-webkit-details-marker" => true,
       "placeholder"
       | "-webkit-input-placeholder"
       | "-moz-placeholder"
@@ -2217,6 +2219,24 @@ mod tests {
         Some(&PseudoElement::SliderTrack),
         "{selector_text} should parse as slider track"
       );
+    }
+
+    for (selector_text, canonical) in [
+      ("summary:-webkit-details-marker", "summary::marker"),
+      ("li:-moz-list-bullet", "li::marker"),
+      ("li:-moz-list-number", "li::marker"),
+    ] {
+      let mut input = ParserInput::new(selector_text);
+      let mut parser = Parser::new(&mut input);
+      let list = SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No)
+        .expect("parse marker selector");
+      let selector = list.slice().first().expect("one selector");
+      assert_eq!(
+        selector.pseudo_element(),
+        Some(&PseudoElement::Marker),
+        "{selector_text} should parse as ::marker"
+      );
+      assert_eq!(selector.to_css_string(), canonical);
     }
   }
 
