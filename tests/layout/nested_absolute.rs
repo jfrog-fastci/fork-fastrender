@@ -139,6 +139,7 @@ fn replaced_absolute_with_both_insets_shrinks_to_intrinsic_in_block_layout() {
     ReplacedType::Image {
       src: String::new(),
       alt: None,
+      referrer_policy: None,
       srcset: Vec::<SrcsetCandidate>::new(),
       sizes: None,
       picture_sources: Vec::new(),
@@ -191,6 +192,7 @@ fn replaced_absolute_with_both_insets_shrinks_to_intrinsic_in_flex_layout() {
     ReplacedType::Image {
       src: String::new(),
       alt: None,
+      referrer_policy: None,
       srcset: Vec::<SrcsetCandidate>::new(),
       sizes: None,
       picture_sources: Vec::new(),
