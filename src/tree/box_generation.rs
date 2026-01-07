@@ -4258,14 +4258,14 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
         return Some(FormControl {
           control: FormControlKind::Unknown { label },
           appearance,
+          placeholder_style: None,
+          slider_thumb_style: None,
+          slider_track_style: None,
           disabled,
           focused,
           focus_visible,
           required,
           invalid,
-          placeholder_style: None,
-          slider_thumb_style: None,
-          slider_track_style: None,
         });
       };
 
@@ -4278,29 +4278,27 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
       }
     };
 
-    let placeholder_style = match &control {
-      FormControlKind::Text { .. } => styled.placeholder_styles.clone(),
-      _ => None,
-    };
-    let (slider_thumb_style, slider_track_style) = match &control {
+    let (placeholder_style, slider_thumb_style, slider_track_style) = match &control {
+      FormControlKind::Text { .. } => (styled.placeholder_styles.clone(), None, None),
       FormControlKind::Range { .. } => (
+        None,
         styled.slider_thumb_styles.clone(),
         styled.slider_track_styles.clone(),
       ),
-      _ => (None, None),
+      _ => (None, None, None),
     };
 
     Some(FormControl {
       control,
       appearance,
+      placeholder_style,
+      slider_thumb_style,
+      slider_track_style,
       disabled,
       focused,
       focus_visible,
       required,
       invalid,
-      placeholder_style,
-      slider_thumb_style,
-      slider_track_style,
     })
   } else if tag.eq_ignore_ascii_case("textarea") {
     let placeholder = styled
@@ -4324,28 +4322,28 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
           .and_then(|c| c.parse::<u32>().ok()),
       },
       appearance,
+      placeholder_style: styled.placeholder_styles.clone(),
+      slider_thumb_style: None,
+      slider_track_style: None,
       disabled,
       focused,
       focus_visible,
       required,
       invalid,
-      placeholder_style: styled.placeholder_styles.clone(),
-      slider_thumb_style: None,
-      slider_track_style: None,
     })
   } else if tag.eq_ignore_ascii_case("select") {
     let control = select_control.unwrap_or_else(|| build_select_control(styled));
     Some(FormControl {
       control: FormControlKind::Select(control),
       appearance,
+      placeholder_style: None,
+      slider_thumb_style: None,
+      slider_track_style: None,
       disabled,
       focused,
       focus_visible,
       required,
       invalid,
-      placeholder_style: None,
-      slider_thumb_style: None,
-      slider_track_style: None,
     })
   } else if tag.eq_ignore_ascii_case("button") {
     Some(FormControl {
@@ -4353,14 +4351,14 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
         label: button_label(styled),
       },
       appearance,
+      placeholder_style: None,
+      slider_thumb_style: None,
+      slider_track_style: None,
       disabled,
       focused,
       focus_visible,
       required,
       invalid,
-      placeholder_style: None,
-      slider_thumb_style: None,
-      slider_track_style: None,
     })
   } else {
     None

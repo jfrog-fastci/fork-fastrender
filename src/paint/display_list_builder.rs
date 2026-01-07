@@ -7911,7 +7911,7 @@ impl DisplayListBuilder {
       FormControlKind::Text {
         value,
         placeholder,
-        placeholder_style,
+        placeholder_style: _,
         kind,
         ..
       } => {
@@ -8123,7 +8123,7 @@ impl DisplayListBuilder {
       FormControlKind::TextArea {
         value,
         placeholder,
-        placeholder_style,
+        placeholder_style: _,
         ..
       } => {
         let base_color = if control.invalid { accent } else { style.color };
@@ -8593,6 +8593,7 @@ impl DisplayListBuilder {
             }
 
             if let Some(track_style) = track_style {
+              self.emit_box_shadows_from_style(track_rect, track_style, true);
               self.emit_border_from_style(track_rect, track_style);
             }
           }
@@ -8616,6 +8617,7 @@ impl DisplayListBuilder {
 
           self.emit_box_shadows_from_style(knob_rect, style_for_thumb, false);
           self.emit_background_from_style(knob_rect, style_for_thumb);
+          self.emit_box_shadows_from_style(knob_rect, style_for_thumb, true);
           self.emit_border_from_style(knob_rect, style_for_thumb);
         } else {
           let knob_radius = knob_width.min(knob_height) / 2.0;

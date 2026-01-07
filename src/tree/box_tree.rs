@@ -114,12 +114,18 @@ pub struct MarkerBox {
 }
 
 /// A form control description used by the painter when rendering native controls.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct FormControl {
   /// Specific control type and metadata
   pub control: FormControlKind,
   /// Resolved appearance value (Auto/None/Keyword)
   pub appearance: Appearance,
+  /// Computed style for the ::placeholder pseudo-element, when relevant.
+  pub placeholder_style: Option<Arc<ComputedStyle>>,
+  /// Computed style for the range thumb pseudo-element, when relevant.
+  pub slider_thumb_style: Option<Arc<ComputedStyle>>,
+  /// Computed style for the range track pseudo-element, when relevant.
+  pub slider_track_style: Option<Arc<ComputedStyle>>,
   /// Whether the control is disabled
   pub disabled: bool,
   /// Whether the control is focused (data-fastr-focus hint)
@@ -130,9 +136,18 @@ pub struct FormControl {
   pub required: bool,
   /// Whether the control currently fails HTML constraint validation
   pub invalid: bool,
-  pub placeholder_style: Option<Arc<ComputedStyle>>,
-  pub slider_thumb_style: Option<Arc<ComputedStyle>>,
-  pub slider_track_style: Option<Arc<ComputedStyle>>,
+}
+
+impl PartialEq for FormControl {
+  fn eq(&self, other: &Self) -> bool {
+    self.control == other.control
+      && self.appearance == other.appearance
+      && self.disabled == other.disabled
+      && self.focused == other.focused
+      && self.focus_visible == other.focus_visible
+      && self.required == other.required
+      && self.invalid == other.invalid
+  }
 }
 
 /// Specific form control kinds

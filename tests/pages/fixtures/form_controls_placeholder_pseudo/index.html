@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Form controls placeholder pseudo</title>
+    <link rel="stylesheet" href="../assets/styles/base.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="form-page">
+    <header class="masthead">
+      <span class="pill">Forms</span>
+      <h1>Placeholder pseudo-elements</h1>
+      <p class="muted">Covers ::placeholder plus vendor aliases and UA placeholder opacity.</p>
+    </header>
+
+    <section class="card form-grid">
+      <div class="field">
+        <label for="ph-standard">Standard ::placeholder</label>
+        <input id="ph-standard" class="control ph-standard" placeholder="Magenta placeholder" />
+      </div>
+
+      <div class="field">
+        <label for="ph-webkit">WebKit alias</label>
+        <input id="ph-webkit" class="control ph-webkit" placeholder="Blue placeholder" />
+      </div>
+
+      <div class="field">
+        <label for="ph-moz">Mozilla alias</label>
+        <input id="ph-moz" class="control ph-moz" placeholder="Green placeholder" />
+      </div>
+
+      <div class="field">
+        <label for="ph-ms">MS alias</label>
+        <input id="ph-ms" class="control ph-ms" placeholder="Orange placeholder" />
+      </div>
+
+      <div class="field">
+        <label for="ph-italic-only">Italic only (UA opacity)</label>
+        <input
+          id="ph-italic-only"
+          class="control ph-italic-only"
+          placeholder="Italic-only placeholder"
+        />
+      </div>
+
+      <div class="field">
+        <label for="ph-opacity-full">Opacity override (1.0)</label>
+        <textarea
+          id="ph-opacity-full"
+          class="control ph-opacity-full"
+          placeholder="Full opacity placeholder"
+        ></textarea>
+      </div>
+    </section>
+  </body>
+</html>
+

@@ -17596,14 +17596,14 @@ mod tests {
         kind: TextControlKind::Plain,
       },
       appearance: crate::style::types::Appearance::Auto,
+      placeholder_style: None,
+      slider_thumb_style: None,
+      slider_track_style: None,
       disabled: false,
       focused: false,
       focus_visible: false,
       required: false,
       invalid: false,
-      placeholder_style: None,
-      slider_thumb_style: None,
-      slider_track_style: None,
     };
     let mut node = BoxNode::new_replaced(
       Arc::clone(&style),

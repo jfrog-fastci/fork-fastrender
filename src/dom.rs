@@ -6268,6 +6268,33 @@ impl<'a> Element for ElementRef<'a> {
     _context: &mut selectors::matching::MatchingContext<Self::Impl>,
   ) -> bool {
     match pseudo {
+      PseudoElement::Placeholder => {
+        if !self.is_html_element() {
+          return false;
+        }
+
+        match self.node.tag_name() {
+          Some(tag) if tag.eq_ignore_ascii_case("textarea") => true,
+          Some(tag) if tag.eq_ignore_ascii_case("input") => {
+            supports_placeholder(self.node.get_attribute_ref("type"))
+          }
+          _ => false,
+        }
+      }
+      PseudoElement::SliderThumb | PseudoElement::SliderTrack => {
+        if !self.is_html_element() {
+          return false;
+        }
+
+        match self.node.tag_name() {
+          Some(tag) if tag.eq_ignore_ascii_case("input") => self
+            .node
+            .get_attribute_ref("type")
+            .unwrap_or("text")
+            .eq_ignore_ascii_case("range"),
+          _ => false,
+        }
+      }
       // These pseudo-elements are supported for all elements; filtering
       // based on box generation happens later in the pipeline.
       PseudoElement::Before
@@ -6276,20 +6303,8 @@ impl<'a> Element for ElementRef<'a> {
       | PseudoElement::FirstLetter
       | PseudoElement::Marker
       | PseudoElement::Backdrop => true,
-      PseudoElement::MozFocusInner => false,
-      PseudoElement::MozFocusOuter => false,
-      PseudoElement::Placeholder => self.is_placeholder_shown(),
+      PseudoElement::MozFocusInner | PseudoElement::MozFocusOuter => false,
       PseudoElement::Selection => false,
-      PseudoElement::SliderThumb | PseudoElement::SliderTrack => {
-        let Some(tag) = self.node.tag_name() else {
-          return false;
-        };
-        if !tag.eq_ignore_ascii_case("input") {
-          return false;
-        }
-        let input_type = self.node.get_attribute_ref("type").unwrap_or("text");
-        input_type.eq_ignore_ascii_case("range")
-      }
       PseudoElement::Slotted(_) => false,
       PseudoElement::Part(_) => true,
     }

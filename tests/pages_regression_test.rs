@@ -399,6 +399,11 @@ const PAGE_FIXTURES: &[PageFixture] = &[
     shots: DEFAULT_SHOTS,
   },
   PageFixture {
+    name: "form_controls_placeholder_pseudo",
+    html: "form_controls_placeholder_pseudo/index.html",
+    shots: DEFAULT_SHOTS,
+  },
+  PageFixture {
     name: "preserve_3d_scene",
     html: "preserve_3d_scene/index.html",
     shots: DEFAULT_SHOTS,

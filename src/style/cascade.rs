@@ -7518,7 +7518,9 @@ pub struct StyledNode {
   pub first_line_styles: Option<Arc<ComputedStyle>>,
   /// Styles for ::first-letter pseudo-element (text overrides only)
   pub first_letter_styles: Option<Arc<ComputedStyle>>,
+  /// Styles for range slider thumb pseudo-element (form controls only)
   pub slider_thumb_styles: Option<Arc<ComputedStyle>>,
+  /// Styles for range slider track pseudo-element (form controls only)
   pub slider_track_styles: Option<Arc<ComputedStyle>>,
   /// Slot this light DOM node is assigned to, if any.
   pub assigned_slot: Option<crate::dom::AssignedSlot>,
@@ -11053,7 +11055,6 @@ fn compute_form_control_pseudo_styles(
   if !node.is_element() {
     return (None, None, None);
   }
-
   let container_query_ancestor_ids =
     container_query_ancestor_ids_for(node_id, ancestor_ids, slot_assignment, dom_maps);
   let placeholder_styles = if placeholder_is_shown(node) {
@@ -11538,7 +11539,7 @@ fn apply_styles_internal_with_ancestors<'a>(
       before_styles,
       after_styles,
       marker_styles,
-      placeholder_styles,
+      _placeholder_styles,
       first_line_styles,
       first_letter_styles,
     ) = compute_pseudo_styles(
@@ -11564,7 +11565,6 @@ fn apply_styles_internal_with_ancestors<'a>(
         color_scheme_pref,
         false,
       );
-
     let (placeholder_styles, slider_thumb_styles, slider_track_styles) =
       compute_form_control_pseudo_styles(
         frame.node,

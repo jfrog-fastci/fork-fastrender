@@ -1,0 +1,66 @@
+.masthead {
+  margin-bottom: 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+label {
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.control {
+  width: 100%;
+  font: inherit;
+  padding: 10px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #fff;
+}
+
+input.control {
+  height: 42px;
+}
+
+textarea.control {
+  height: 72px;
+  resize: none;
+}
+
+.ph-standard::placeholder {
+  color: var(--accent-2);
+  font-style: italic;
+}
+
+.ph-webkit::-webkit-input-placeholder {
+  color: var(--accent);
+}
+
+.ph-moz::-moz-placeholder {
+  color: #16a34a;
+}
+
+.ph-ms::-ms-input-placeholder {
+  color: #ea580c;
+}
+
+.ph-italic-only::placeholder {
+  font-style: italic;
+}
+
+.ph-opacity-full::placeholder {
+  opacity: 1;
+  font-style: italic;
+}
+

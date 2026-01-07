@@ -534,11 +534,14 @@ pub enum PseudoElement {
   FirstLetter,
   Marker,
   Backdrop,
+  /// Placeholder text for form controls (input/textarea).
   Placeholder,
   Selection,
   MozFocusInner,
   MozFocusOuter,
+  /// Range slider thumb pseudo-element (vendor aliases mapped here).
   SliderThumb,
+  /// Range slider track pseudo-element (vendor aliases mapped here).
   SliderTrack,
   Slotted(Box<[Selector<FastRenderSelectorImpl>]>),
   Part(CssString),
@@ -604,6 +607,8 @@ impl ToCss for PseudoElement {
       PseudoElement::Selection => dest.write_str("::selection"),
       PseudoElement::MozFocusInner => dest.write_str("::-moz-focus-inner"),
       PseudoElement::MozFocusOuter => dest.write_str("::-moz-focus-outer"),
+      // There is no standards-track name for these pseudo-elements today; serialize to a canonical
+      // vendor spelling so debugging and tests remain stable.
       PseudoElement::SliderThumb => dest.write_str("::-webkit-slider-thumb"),
       PseudoElement::SliderTrack => dest.write_str("::-webkit-slider-runnable-track"),
       PseudoElement::Slotted(selectors) => {
@@ -1477,6 +1482,55 @@ mod tests {
         "{name} should map to slider track"
       );
     }
+  }
+
+  #[test]
+  fn parses_form_control_vendor_pseudo_elements() {
+    fn pseudo_for(selector: &str) -> PseudoElement {
+      let mut input = ParserInput::new(selector);
+      let mut parser = Parser::new(&mut input);
+      let list =
+        SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).expect("parse");
+      list
+        .slice()
+        .first()
+        .and_then(|sel| sel.pseudo_element().cloned())
+        .expect("pseudo element")
+    }
+
+    assert_eq!(pseudo_for("input::placeholder"), PseudoElement::Placeholder);
+    assert_eq!(
+      pseudo_for("input::-webkit-input-placeholder"),
+      PseudoElement::Placeholder
+    );
+    assert_eq!(
+      pseudo_for("input::-moz-placeholder"),
+      PseudoElement::Placeholder
+    );
+    assert_eq!(
+      pseudo_for("input::-ms-input-placeholder"),
+      PseudoElement::Placeholder
+    );
+
+    assert_eq!(
+      pseudo_for("input::-webkit-slider-thumb"),
+      PseudoElement::SliderThumb
+    );
+    assert_eq!(
+      pseudo_for("input::-moz-range-thumb"),
+      PseudoElement::SliderThumb
+    );
+    assert_eq!(pseudo_for("input::-ms-thumb"), PseudoElement::SliderThumb);
+
+    assert_eq!(
+      pseudo_for("input::-webkit-slider-runnable-track"),
+      PseudoElement::SliderTrack
+    );
+    assert_eq!(
+      pseudo_for("input::-moz-range-track"),
+      PseudoElement::SliderTrack
+    );
+    assert_eq!(pseudo_for("input::-ms-track"), PseudoElement::SliderTrack);
   }
 
   #[test]
