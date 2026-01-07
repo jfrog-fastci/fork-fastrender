@@ -1896,6 +1896,12 @@ pub struct FetchedResource {
   pub access_control_allow_origin: Option<String>,
   /// Timing-Allow-Origin response header value when fetched over HTTP(S).
   pub timing_allow_origin: Option<String>,
+  /// Raw `Vary` response header value when fetched over HTTP(S).
+  ///
+  /// When the header appears multiple times, values are joined with `", "` (after trimming).
+  ///
+  /// Stored for diagnostics and caching safety checks; see [`vary_is_cacheable`].
+  pub vary: Option<String>,
   /// Whether `Access-Control-Allow-Credentials: true` was present on the response.
   pub access_control_allow_credentials: bool,
   /// The final URL after redirects, when available
@@ -1925,6 +1931,7 @@ impl FetchedResource {
       last_modified: None,
       access_control_allow_origin: None,
       timing_allow_origin: None,
+      vary: None,
       access_control_allow_credentials: false,
       final_url: None,
       cache_policy: None,
@@ -1947,6 +1954,7 @@ impl FetchedResource {
       last_modified: None,
       access_control_allow_origin: None,
       timing_allow_origin: None,
+      vary: None,
       access_control_allow_credentials: false,
       final_url,
       cache_policy: None,
@@ -3689,6 +3697,7 @@ impl HttpFetcher {
         let (access_control_allow_origin, access_control_allow_credentials) =
           parse_cors_response_headers(response.headers());
         let timing_allow_origin = header_values_joined(response.headers(), "timing-allow-origin");
+        let vary = header_values_joined(response.headers(), "vary");
         let cache_policy = parse_http_cache_policy(response.headers());
         let final_url = response.get_uri().to_string();
         let allows_empty_body =
@@ -3871,6 +3880,7 @@ impl HttpFetcher {
             resource.last_modified = last_modified;
             resource.access_control_allow_origin = access_control_allow_origin;
             resource.timing_allow_origin = timing_allow_origin;
+            resource.vary = vary;
             resource.access_control_allow_credentials = access_control_allow_credentials;
             resource.cache_policy = cache_policy;
             render_control::check_active(decode_stage).map_err(Error::Render)?;
@@ -4167,6 +4177,7 @@ impl HttpFetcher {
         let (access_control_allow_origin, access_control_allow_credentials) =
           parse_cors_response_headers(response.headers());
         let timing_allow_origin = header_values_joined(response.headers(), "timing-allow-origin");
+        let vary = header_values_joined(response.headers(), "vary");
         let cache_policy = parse_http_cache_policy(response.headers());
         let final_url = response.url().to_string();
         let allows_empty_body =
@@ -4348,6 +4359,7 @@ impl HttpFetcher {
             resource.last_modified = last_modified;
             resource.access_control_allow_origin = access_control_allow_origin;
             resource.timing_allow_origin = timing_allow_origin;
+            resource.vary = vary;
             resource.access_control_allow_credentials = access_control_allow_credentials;
             resource.cache_policy = cache_policy;
             render_control::check_active(decode_stage).map_err(Error::Render)?;
@@ -4650,6 +4662,7 @@ impl HttpFetcher {
         let (access_control_allow_origin, access_control_allow_credentials) =
           parse_cors_response_headers(response.headers());
         let timing_allow_origin = header_values_joined(response.headers(), "timing-allow-origin");
+        let vary = header_values_joined(response.headers(), "vary");
         let cache_policy = parse_http_cache_policy(response.headers());
         let final_url = response.get_uri().to_string();
         let allows_empty_body =
@@ -4899,6 +4912,7 @@ impl HttpFetcher {
             resource.last_modified = last_modified;
             resource.access_control_allow_origin = access_control_allow_origin;
             resource.timing_allow_origin = timing_allow_origin;
+            resource.vary = vary;
             resource.access_control_allow_credentials = access_control_allow_credentials;
             resource.cache_policy = cache_policy;
             render_control::check_active(decode_stage).map_err(Error::Render)?;
@@ -5182,6 +5196,7 @@ impl HttpFetcher {
         let (access_control_allow_origin, access_control_allow_credentials) =
           parse_cors_response_headers(response.headers());
         let timing_allow_origin = header_values_joined(response.headers(), "timing-allow-origin");
+        let vary = header_values_joined(response.headers(), "vary");
         let cache_policy = parse_http_cache_policy(response.headers());
         let final_url = response.url().to_string();
         let allows_empty_body =
@@ -5456,6 +5471,7 @@ impl HttpFetcher {
             resource.last_modified = last_modified;
             resource.access_control_allow_origin = access_control_allow_origin;
             resource.timing_allow_origin = timing_allow_origin;
+            resource.vary = vary;
             resource.access_control_allow_credentials = access_control_allow_credentials;
             resource.cache_policy = cache_policy;
             render_control::check_active(decode_stage).map_err(Error::Render)?;
@@ -5944,6 +5960,28 @@ fn parse_http_cache_policy(headers: &HeaderMap) -> Option<HttpCachePolicy> {
   }
 }
 
+fn vary_is_cacheable(vary: &str) -> bool {
+  for part in vary.split(',') {
+    let part = part.trim();
+    if part.is_empty() {
+      continue;
+    }
+    if part == "*" {
+      return false;
+    }
+    match part.to_ascii_lowercase().as_str() {
+      // Responses that declare `Vary: Origin` are safe because we already partition CORS-mode
+      // requests by origin key (and non-CORS requests omit the header).
+      "origin"
+      // We always decode supported content-encodings, so the cached bytes are the decoded
+      // representation.
+      | "accept-encoding" => {}
+      _ => return false,
+    }
+  }
+  true
+}
+
 // ============================================================================
 // CachingFetcher - in-memory cache + single-flight
 // ============================================================================
@@ -5981,6 +6019,12 @@ pub struct CachingFetcherConfig {
   ///
   /// Defaults to `false` to remain spec-faithful unless explicitly enabled by tooling.
   pub allow_no_store: bool,
+  /// Whether to cache responses that include `Vary` header names that we do not explicitly
+  /// partition/normalize.
+  ///
+  /// When `false` (default), any response that includes `Vary: *` or a header name outside the
+  /// small allowlist in [`vary_is_cacheable`] is treated as uncacheable and will not be stored.
+  pub allow_unhandled_vary: bool,
   /// Policy controlling whether stale cached entries are served without revalidation when a
   /// render deadline is active.
   pub stale_policy: CacheStalePolicy,
@@ -5995,6 +6039,7 @@ impl Default for CachingFetcherConfig {
       honor_http_cache_headers: true,
       honor_http_cache_freshness: false,
       allow_no_store: false,
+      allow_unhandled_vary: false,
       stale_policy: CacheStalePolicy::Revalidate,
     }
   }
@@ -7015,6 +7060,14 @@ impl<F: ResourceFetcher> CachingFetcher<F> {
         .unwrap_or(false)
     {
       return None;
+    }
+
+    if !self.config.allow_unhandled_vary {
+      if let Some(vary) = resource.vary.as_deref() {
+        if !vary_is_cacheable(vary) {
+          return None;
+        }
+      }
     }
 
     let http_cache = resource
@@ -10512,6 +10565,158 @@ mod tests {
       "expected network fetch byte counter to include response bodies (got {})",
       stats.network_fetch_bytes
     );
+  }
+
+  #[test]
+  fn caching_fetcher_skips_unhandled_vary_responses() {
+    if matches!(http_backend_mode(), HttpBackendMode::Curl) && !curl_backend::curl_available() {
+      eprintln!(
+        "skipping caching_fetcher_skips_unhandled_vary_responses: curl backend selected but curl is unavailable"
+      );
+      return;
+    }
+
+    let Some(listener) = try_bind_localhost("caching_fetcher_skips_unhandled_vary_responses")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&request_count);
+
+    let handle = thread::spawn(move || {
+      let start = Instant::now();
+      let mut last_request = None::<Instant>;
+      while start.elapsed() < Duration::from_secs(2) {
+        match listener.accept() {
+          Ok((mut stream, _)) => {
+            let n = seen.fetch_add(1, Ordering::SeqCst) + 1;
+            last_request = Some(Instant::now());
+
+            stream
+              .set_read_timeout(Some(Duration::from_millis(500)))
+              .unwrap();
+            let _ = read_http_request(&mut stream);
+
+            let body = n.to_string();
+            let headers = format!(
+              "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nVary: Accept-Language\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+              body.len()
+            );
+            let _ = stream.write_all(headers.as_bytes());
+            let _ = stream.write_all(body.as_bytes());
+
+            if n >= 2 {
+              return;
+            }
+          }
+          Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
+            if let Some(last) = last_request {
+              if last.elapsed() > Duration::from_millis(500) {
+                return;
+              }
+            }
+            thread::sleep(Duration::from_millis(5));
+          }
+          Err(err) => panic!("accept caching_fetcher_skips_unhandled_vary_responses: {err}"),
+        }
+      }
+    });
+
+    let fetcher = CachingFetcher::new(HttpFetcher::new().with_timeout(Duration::from_secs(2)));
+    let url = format!("http://{addr}/vary.txt");
+    let first = fetcher.fetch(&url).expect("first fetch");
+    assert_eq!(first.vary.as_deref(), Some("Accept-Language"));
+    let second = fetcher.fetch(&url).expect("second fetch");
+    assert_eq!(second.vary.as_deref(), Some("Accept-Language"));
+
+    handle.join().unwrap();
+
+    assert_eq!(
+      request_count.load(Ordering::SeqCst),
+      2,
+      "expected unhandled Vary response to bypass caching"
+    );
+    assert_ne!(
+      first.bytes, second.bytes,
+      "expected network body to differ across requests"
+    );
+  }
+
+  #[test]
+  fn caching_fetcher_allows_vary_origin() {
+    if matches!(http_backend_mode(), HttpBackendMode::Curl) && !curl_backend::curl_available() {
+      eprintln!(
+        "skipping caching_fetcher_allows_vary_origin: curl backend selected but curl is unavailable"
+      );
+      return;
+    }
+
+    let Some(listener) = try_bind_localhost("caching_fetcher_allows_vary_origin") else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&request_count);
+
+    let handle = thread::spawn(move || {
+      let start = Instant::now();
+      let mut last_request = None::<Instant>;
+      while start.elapsed() < Duration::from_secs(2) {
+        match listener.accept() {
+          Ok((mut stream, _)) => {
+            let n = seen.fetch_add(1, Ordering::SeqCst) + 1;
+            last_request = Some(Instant::now());
+
+            stream
+              .set_read_timeout(Some(Duration::from_millis(500)))
+              .unwrap();
+            let _ = read_http_request(&mut stream);
+
+            let body = n.to_string();
+            let headers = format!(
+              "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nVary: Origin\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+              body.len()
+            );
+            let _ = stream.write_all(headers.as_bytes());
+            let _ = stream.write_all(body.as_bytes());
+
+            if n >= 2 {
+              return;
+            }
+          }
+          Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
+            if let Some(last) = last_request {
+              if last.elapsed() > Duration::from_millis(500) {
+                return;
+              }
+            }
+            thread::sleep(Duration::from_millis(5));
+          }
+          Err(err) => panic!("accept caching_fetcher_allows_vary_origin: {err}"),
+        }
+      }
+    });
+
+    let fetcher = CachingFetcher::new(HttpFetcher::new().with_timeout(Duration::from_secs(2)));
+    let url = format!("http://{addr}/vary_origin.txt");
+    let first = fetcher.fetch(&url).expect("first fetch");
+    assert_eq!(first.vary.as_deref(), Some("Origin"));
+    let second = fetcher.fetch(&url).expect("second fetch");
+    assert_eq!(second.vary.as_deref(), Some("Origin"));
+
+    handle.join().unwrap();
+
+    assert_eq!(
+      request_count.load(Ordering::SeqCst),
+      1,
+      "expected Vary: Origin response to be cached"
+    );
+    assert_eq!(first.bytes, second.bytes, "expected cached body to match");
   }
 
   #[test]

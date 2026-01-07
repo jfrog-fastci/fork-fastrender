@@ -626,6 +626,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
         super::parse_cors_response_headers(&response.headers);
       let timing_allow_origin =
         super::header_values_joined(&response.headers, "timing-allow-origin");
+      let vary = super::header_values_joined(&response.headers, "vary");
       let cache_policy = super::parse_http_cache_policy(&response.headers);
 
       let substitute_empty_image_body =
@@ -854,6 +855,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
       resource.last_modified = last_modified;
       resource.access_control_allow_origin = access_control_allow_origin;
       resource.timing_allow_origin = timing_allow_origin;
+      resource.vary = vary;
       resource.access_control_allow_credentials = access_control_allow_credentials;
       resource.cache_policy = cache_policy;
       render_control::check_active(decode_stage).map_err(Error::Render)?;

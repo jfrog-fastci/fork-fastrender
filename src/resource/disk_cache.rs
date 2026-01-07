@@ -62,6 +62,13 @@ pub struct DiskCacheConfig {
   /// layer: they will normally trigger a network refresh but can be served as a fallback (or
   /// immediately under render deadlines when configured to serve stale entries).
   pub allow_no_store: bool,
+  /// Whether to allow persisting responses with `Vary` header names that we do not explicitly
+  /// partition/normalize.
+  ///
+  /// When `false` (default), any response that includes `Vary: *` or a header name outside the
+  /// small allowlist in [`super::vary_is_cacheable`] is treated as uncacheable and will not be
+  /// persisted.
+  pub allow_unhandled_vary: bool,
   /// Whether to allow persisting disk cache entries while a render deadline with a timeout
   /// configured is active.
   ///
@@ -90,6 +97,7 @@ impl Default for DiskCacheConfig {
       max_age: Some(Duration::from_secs(60 * 60 * 24 * 7)), // 7 days
       lock_stale_after: DEFAULT_LOCK_STALE_AFTER,
       allow_no_store: false,
+      allow_unhandled_vary: false,
       writeback_under_deadline: false,
       namespace: None,
     }
@@ -502,6 +510,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     let index = DiskCacheIndex::new(cache_dir.clone());
     let mut memory_config = memory_config;
     memory_config.allow_no_store |= disk_config.allow_no_store;
+    memory_config.allow_unhandled_vary |= disk_config.allow_unhandled_vary;
     Self {
       memory: CachingFetcher::with_config(inner, memory_config),
       cache_dir,
@@ -1170,6 +1179,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     resource.last_modified = meta.last_modified.clone();
     resource.access_control_allow_origin = meta.access_control_allow_origin.clone();
     resource.timing_allow_origin = meta.timing_allow_origin.clone();
+    resource.vary = meta.vary.clone();
     resource.access_control_allow_credentials = meta.access_control_allow_credentials;
 
     let stored_time = secs_to_system_time(meta.stored_at).unwrap_or(SystemTime::now());
@@ -1288,6 +1298,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     resource.last_modified = meta.last_modified.clone();
     resource.access_control_allow_origin = meta.access_control_allow_origin.clone();
     resource.timing_allow_origin = meta.timing_allow_origin.clone();
+    resource.vary = meta.vary.clone();
     resource.access_control_allow_credentials = meta.access_control_allow_credentials;
     resource.cache_policy = meta.cache.as_ref().map(|c| c.to_policy()).or_else(|| {
       self.disk_config.max_age.map(|max_age| HttpCachePolicy {
@@ -1456,6 +1467,14 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       return;
     }
 
+    if !self.disk_config.allow_unhandled_vary {
+      if let Some(vary) = resource.vary.as_deref() {
+        if !super::vary_is_cacheable(vary) {
+          return;
+        }
+      }
+    }
+
     let meta_path = self.meta_path_for_data(&data_path);
     let data_tmp = tmp_path(&data_path);
     let meta_tmp = tmp_path(&meta_path);
@@ -1479,6 +1498,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       final_url: resource.final_url.clone().or_else(|| Some(url.to_string())),
       access_control_allow_origin: resource.access_control_allow_origin.clone(),
       timing_allow_origin: resource.timing_allow_origin.clone(),
+      vary: resource.vary.clone(),
       access_control_allow_credentials: resource.access_control_allow_credentials,
       stored_at,
       len: resource.bytes.len(),
@@ -1620,6 +1640,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       final_url: error.final_url.clone(),
       access_control_allow_origin: None,
       timing_allow_origin: None,
+      vary: None,
       access_control_allow_credentials: false,
       stored_at,
       len: 0,
@@ -1841,6 +1862,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       resource.last_modified = source.last_modified.clone();
       resource.access_control_allow_origin = source.access_control_allow_origin.clone();
       resource.timing_allow_origin = source.timing_allow_origin.clone();
+      resource.vary = source.vary.clone();
       resource.access_control_allow_credentials = source.access_control_allow_credentials;
       resource.final_url = source.final_url.clone();
       resource.cache_policy = source.cache_policy.clone();
@@ -1915,6 +1937,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       final_url: Some(canonical.clone()),
       access_control_allow_origin: resource.access_control_allow_origin.clone(),
       timing_allow_origin: resource.timing_allow_origin.clone(),
+      vary: resource.vary.clone(),
       access_control_allow_credentials: resource.access_control_allow_credentials,
       stored_at,
       len: resource.bytes.len(),
@@ -2573,6 +2596,8 @@ pub(super) struct StoredMetadata {
   access_control_allow_origin: Option<String>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   timing_allow_origin: Option<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  vary: Option<String>,
   #[serde(default, skip_serializing_if = "bool_is_false")]
   access_control_allow_credentials: bool,
   stored_at: u64,
@@ -2800,6 +2825,173 @@ mod tests {
       snapshot[0].referrer.as_deref(),
       Some("https://example.com/")
     );
+  }
+
+  #[test]
+  fn disk_caching_fetcher_skips_unhandled_vary_responses() {
+    if matches!(
+      super::super::http_backend_mode(),
+      super::super::HttpBackendMode::Curl
+    ) && !super::super::curl_backend::curl_available()
+    {
+      eprintln!(
+        "skipping disk_caching_fetcher_skips_unhandled_vary_responses: curl backend selected but curl is unavailable"
+      );
+      return;
+    }
+
+    let Some(listener) = try_bind_localhost("disk_caching_fetcher_skips_unhandled_vary_responses")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&request_count);
+
+    let handle = thread::spawn(move || {
+      let start = Instant::now();
+      let mut last_request = None::<Instant>;
+      while start.elapsed() < Duration::from_secs(2) {
+        match listener.accept() {
+          Ok((mut stream, _)) => {
+            let n = seen.fetch_add(1, Ordering::SeqCst) + 1;
+            last_request = Some(Instant::now());
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+
+            let body = n.to_string();
+            let response = format!(
+              "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nVary: Accept-Language\r\nConnection: close\r\n\r\n",
+              body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.write_all(body.as_bytes());
+
+            if n >= 2 {
+              return;
+            }
+          }
+          Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+            if let Some(last) = last_request {
+              if last.elapsed() > Duration::from_millis(500) {
+                return;
+              }
+            }
+            thread::sleep(Duration::from_millis(5));
+          }
+          Err(err) => panic!("accept disk_caching_fetcher_skips_unhandled_vary_responses: {err}"),
+        }
+      }
+    });
+
+    let tmp = tempfile::tempdir().unwrap();
+    let fetcher = DiskCachingFetcher::new(
+      HttpFetcher::new().with_timeout(Duration::from_secs(2)),
+      tmp.path(),
+    );
+    let url = format!("http://{addr}/vary.txt");
+
+    let first = fetcher.fetch(&url).expect("first fetch");
+    assert_eq!(first.vary.as_deref(), Some("Accept-Language"));
+    let second = fetcher.fetch(&url).expect("second fetch");
+    assert_eq!(second.vary.as_deref(), Some("Accept-Language"));
+
+    handle.join().unwrap();
+
+    assert_eq!(
+      request_count.load(Ordering::SeqCst),
+      2,
+      "expected unhandled Vary response to bypass disk caching"
+    );
+    assert_ne!(
+      first.bytes, second.bytes,
+      "expected network body to differ across requests"
+    );
+  }
+
+  #[test]
+  fn disk_caching_fetcher_persists_vary_origin() {
+    if matches!(
+      super::super::http_backend_mode(),
+      super::super::HttpBackendMode::Curl
+    ) && !super::super::curl_backend::curl_available()
+    {
+      eprintln!(
+        "skipping disk_caching_fetcher_persists_vary_origin: curl backend selected but curl is unavailable"
+      );
+      return;
+    }
+
+    let Some(listener) = try_bind_localhost("disk_caching_fetcher_persists_vary_origin") else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&request_count);
+
+    let handle = thread::spawn(move || {
+      let start = Instant::now();
+      let mut last_request = None::<Instant>;
+      while start.elapsed() < Duration::from_secs(2) {
+        match listener.accept() {
+          Ok((mut stream, _)) => {
+            let n = seen.fetch_add(1, Ordering::SeqCst) + 1;
+            last_request = Some(Instant::now());
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+
+            let body = n.to_string();
+            let response = format!(
+              "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nVary: Origin\r\nConnection: close\r\n\r\n",
+              body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.write_all(body.as_bytes());
+
+            if n >= 2 {
+              return;
+            }
+          }
+          Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+            if let Some(last) = last_request {
+              if last.elapsed() > Duration::from_millis(500) {
+                return;
+              }
+            }
+            thread::sleep(Duration::from_millis(5));
+          }
+          Err(err) => panic!("accept disk_caching_fetcher_persists_vary_origin: {err}"),
+        }
+      }
+    });
+
+    let tmp = tempfile::tempdir().unwrap();
+    let cache_dir = tmp.path();
+    let url = format!("http://{addr}/vary_origin.txt");
+
+    let disk = DiskCachingFetcher::new(
+      HttpFetcher::new().with_timeout(Duration::from_secs(2)),
+      cache_dir,
+    );
+    let first = disk.fetch(&url).expect("first fetch");
+    assert_eq!(first.vary.as_deref(), Some("Origin"));
+
+    let disk_again = DiskCachingFetcher::new(PanicFetcher, cache_dir);
+    let second = disk_again.fetch(&url).expect("disk fetch");
+    assert_eq!(second.vary.as_deref(), Some("Origin"));
+
+    handle.join().unwrap();
+
+    assert_eq!(
+      request_count.load(Ordering::SeqCst),
+      1,
+      "expected Vary: Origin response to be served from disk without network"
+    );
+    assert_eq!(second.bytes, first.bytes, "expected cached body to match");
   }
 
   fn spawn_cors_origin_echo_server(
@@ -3907,6 +4099,7 @@ mod tests {
       final_url: Some(url.to_string()),
       access_control_allow_origin: None,
       timing_allow_origin: None,
+      vary: None,
       access_control_allow_credentials: false,
       stored_at: now_seconds().saturating_sub(60),
       len: cached_bytes.len(),
@@ -3964,6 +4157,7 @@ mod tests {
       final_url: Some(url.to_string()),
       access_control_allow_origin: None,
       timing_allow_origin: None,
+      vary: None,
       access_control_allow_credentials: false,
       stored_at: now_seconds().saturating_sub(60),
       len: cached_bytes.len(),
@@ -5297,6 +5491,7 @@ mod tests {
       final_url: Some(url.to_string()),
       access_control_allow_origin: None,
       timing_allow_origin: None,
+      vary: None,
       access_control_allow_credentials: false,
       stored_at: now_seconds(),
       len: bytes.len(),
@@ -5761,6 +5956,7 @@ mod tests {
           last_modified: None,
           access_control_allow_origin: None,
           timing_allow_origin: None,
+          vary: None,
           access_control_allow_credentials: false,
           final_url: Some(url.to_string()),
           stored_at: 0,
