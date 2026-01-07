@@ -1824,7 +1824,7 @@ fn referenced_text_attr(
   let mut parts = Vec::new();
   for id in attr_value.split_whitespace() {
     if let Some(target) = ctx.node_for_id_scoped(referrer_node_id, id) {
-      if let Some(text) = ctx.text_alternative(target, visited, mode, None) {
+      if let Some(text) = ctx.text_alternative(target, visited, mode, Some(true)) {
         if !text.is_empty() {
           parts.push(text);
         }

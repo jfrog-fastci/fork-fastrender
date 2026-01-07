@@ -101,6 +101,7 @@ fn control_value_and_placeholder_fallbacks() {
 
   let placeholder = find_by_id(&tree, "placeholder").expect("placeholder");
   assert_eq!(placeholder.name.as_deref(), Some("Hint text"));
+  assert_eq!(placeholder.value.as_deref(), None);
 
   let chooser = find_by_id(&tree, "chooser").expect("select");
   assert_eq!(chooser.name, None);
