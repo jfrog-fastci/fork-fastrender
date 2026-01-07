@@ -215,7 +215,8 @@ pub(crate) fn build_tiny_skia_path_from_svg_path_data_unchecked(data: &str) -> O
   let mut counter = 0usize;
   match build_tiny_skia_path_from_svg_path_data(data, &mut counter, 0, RenderStage::Paint) {
     Ok(path) => path,
-    Err(err) => panic!("unexpected render error with deadline checks disabled: {err:?}"),
+    // Callers only care whether the data is syntactically valid; treat any error as "invalid".
+    Err(_) => None,
   }
 }
 

@@ -3104,7 +3104,7 @@ fn build_select_control(node: &StyledNode) -> SelectControl {
     }
 
     for &idx in option_item_indices.iter() {
-      if let SelectItem::Option { selected, .. } = items.get_mut(idx).unwrap() {
+      if let Some(SelectItem::Option { selected, .. }) = items.get_mut(idx) {
         *selected = Some(idx) == chosen;
       }
     }
@@ -3224,17 +3224,20 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
           .trim()
           .is_empty();
     } else if tag.eq_ignore_ascii_case("select") {
-      let control = select_control.as_ref().expect("select control computed");
-      invalid = if !required {
-        false
-      } else if control.multiple {
-        control.selected.is_empty()
+      if !required {
+        invalid = false;
+      } else if let Some(control) = select_control.as_ref() {
+        invalid = if control.multiple {
+          control.selected.is_empty()
+        } else {
+          select_selected_value(control)
+            .unwrap_or_default()
+            .trim()
+            .is_empty()
+        };
       } else {
-        select_selected_value(control)
-          .unwrap_or_default()
-          .trim()
-          .is_empty()
-      };
+        invalid = false;
+      }
     } else {
       invalid = !element_ref.accessibility_is_valid();
     }

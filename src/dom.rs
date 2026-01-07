@@ -6458,46 +6458,45 @@ fn matches_has_relative(
              break;
            }
  
-           if next_sibling.is_none() {
-             record_has_prune();
-             ctx.selector_caches.relative_selector.add(
-               anchor.opaque(),
-               selector,
-               RelativeSelectorCachedMatch::NotMatched,
-             );
-             continue;
-           }
- 
+            let Some(next_sibling) = next_sibling else {
+              record_has_prune();
+              ctx.selector_caches.relative_selector.add(
+                anchor.opaque(),
+                selector,
+                RelativeSelectorCachedMatch::NotMatched,
+              );
+              continue;
+            };
+  
             if selector.match_hint.is_next_sibling() {
               if let Some(store) = ctx.extra_data.selector_blooms {
-                let next = next_sibling.expect("checked for next sibling");
                 let sibling_id = ctx
                   .extra_data
-                  .node_id_for(next)
-                  .or_else(|| ctx.extra_data.slot_map.and_then(|map| map.node_id(next)));
+                  .node_id_for(next_sibling)
+                  .or_else(|| ctx.extra_data.slot_map.and_then(|map| map.node_id(next_sibling)));
                 if let Some(sibling_id) = sibling_id {
                   if let Some(summary) = store.summary_for_id(sibling_id) {
                     let should_prune = if matches!(quirks_mode, QuirksMode::Quirks) {
                       let hashes = relative_selector_bloom_hashes(selector, quirks_mode);
                       !hashes.is_empty() && hashes.iter().any(|hash| !summary.contains_hash(*hash))
-                   } else {
-                     let hashes = selector.bloom_hashes.hashes_for_mode(quirks_mode);
-                     !hashes.is_empty() && hashes.iter().any(|hash| !summary.contains_hash(*hash))
-                   };
-                   if should_prune {
-                     record_has_prune();
-                     ctx.selector_caches.relative_selector.add(
-                       anchor.opaque(),
-                       selector,
-                       RelativeSelectorCachedMatch::NotMatched,
-                     );
-                     continue;
-                   }
-                 }
-               }
-             }
-           }
-         }
+                    } else {
+                      let hashes = selector.bloom_hashes.hashes_for_mode(quirks_mode);
+                      !hashes.is_empty() && hashes.iter().any(|hash| !summary.contains_hash(*hash))
+                    };
+                    if should_prune {
+                      record_has_prune();
+                      ctx.selector_caches.relative_selector.add(
+                        anchor.opaque(),
+                        selector,
+                        RelativeSelectorCachedMatch::NotMatched,
+                      );
+                      continue;
+                    }
+                  }
+                }
+              }
+            }
+          }
  
          if selector_bloom_enabled()
            && ctx
