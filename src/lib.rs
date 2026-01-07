@@ -199,6 +199,7 @@ pub mod image_loader;
 pub mod image_output;
 pub mod pageset;
 pub mod resource;
+pub(crate) mod rayon_init;
 pub mod svg;
 pub(crate) mod svg_path;
 pub mod memory;

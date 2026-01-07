@@ -8211,10 +8211,14 @@ impl FastRender {
 
       let mut include_color = false;
       let mut include_background_color = false;
+      let mut include_display = false;
+      let mut include_font_size = false;
       for name in container_style_query_properties.iter() {
         match name.to_ascii_lowercase().as_str() {
           "color" => include_color = true,
           "background-color" => include_background_color = true,
+          "display" => include_display = true,
+          "font-size" => include_font_size = true,
           _ => {}
         }
       }
@@ -8222,6 +8226,8 @@ impl FastRender {
       let container_query_fingerprint = if custom_properties.is_empty()
         && !include_color
         && !include_background_color
+        && !include_display
+        && !include_font_size
       {
         None
       } else {
@@ -8229,6 +8235,8 @@ impl FastRender {
           custom_properties,
           include_color,
           include_background_color,
+          include_display,
+          include_font_size,
         })
       };
 
@@ -12135,6 +12143,8 @@ struct ContainerQueryFingerprintConfig {
   custom_properties: Vec<String>,
   include_color: bool,
   include_background_color: bool,
+  include_display: bool,
+  include_font_size: bool,
 }
 
 fn styled_layout_fingerprint_digest(root: &StyledNode) -> u64 {
@@ -12219,6 +12229,13 @@ fn container_query_context_fingerprint(
         info.styles.background_color.g.hash(&mut hasher);
         info.styles.background_color.b.hash(&mut hasher);
         info.styles.background_color.a.to_bits().hash(&mut hasher);
+      }
+      if config.include_display {
+        info.styles.display.hash(&mut hasher);
+      }
+      if config.include_font_size {
+        info.styles.font_size.to_bits().hash(&mut hasher);
+        info.styles.root_font_size.to_bits().hash(&mut hasher);
       }
       for prop in config.custom_properties.iter() {
         prop.hash(&mut hasher);

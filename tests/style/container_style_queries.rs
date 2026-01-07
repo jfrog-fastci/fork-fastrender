@@ -142,6 +142,158 @@ fn nested_containers_use_nearest_style_query_match() {
 }
 
 #[test]
+fn container_style_query_matches_computed_color() {
+  let html = r#"
+    <style>
+      .container { container-type: inline-size; color: rgb(255 0 0); }
+      .child { color: rgb(0 0 255); }
+      @container style(color: rgb(255 0 0)) {
+        .child { color: rgb(5 6 7); }
+      }
+    </style>
+    <div class="container">
+      <div id="target" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(target.styles.color, Rgba::rgb(5, 6, 7));
+}
+
+#[test]
+fn container_style_query_boolean_feature_matches_when_non_initial() {
+  let html = r#"
+    <style>
+      .container-inline { container-type: inline-size; display: inline; }
+      .container-block { container-type: inline-size; display: block; }
+      .child { color: rgb(0 0 255); }
+      @container style(display) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-inline">
+      <div id="inline" class="child">hello</div>
+    </div>
+    <div class="container-block">
+      <div id="block" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let inline = find_by_id(&styled, "inline").expect("inline element");
+  let block = find_by_id(&styled, "block").expect("block element");
+  assert_eq!(inline.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(block.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_matches() {
+  let html = r#"
+    <style>
+      .container-small { container-type: inline-size; font-size: 12px; }
+      .container-large { container-type: inline-size; font-size: 16px; }
+      .child { color: rgb(0 0 255); }
+      @container style(font-size > 12px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-small">
+      <div id="small" class="child">hello</div>
+    </div>
+    <div class="container-large">
+      <div id="large" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let small = find_by_id(&styled, "small").expect("small element");
+  let large = find_by_id(&styled, "large").expect("large element");
+  assert_eq!(small.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(large.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_boolean_custom_property_respects_property_initial_value() {
+  let html = r#"
+    <style>
+      @property --x {
+        syntax: "<length>";
+        inherits: false;
+        initial-value: 10px;
+      }
+      .container { container-type: inline-size; }
+      .container-set { container-type: inline-size; --x: 11px; }
+      .child { color: rgb(0 0 255); }
+      @container style(--x) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container">
+      <div id="initial" class="child">hello</div>
+    </div>
+    <div class="container-set">
+      <div id="set" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let initial = find_by_id(&styled, "initial").expect("initial element");
+  let set = find_by_id(&styled, "set").expect("set element");
+  assert_eq!(initial.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(set.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_supports_logical_operators() {
+  let html = r#"
+    <style>
+      .c1 { container-type: inline-size; --foo: bar; color: rgb(255 0 0); }
+      .c2 { container-type: inline-size; --foo: baz; color: rgb(0 0 0); }
+      .child { color: rgb(0 0 255); }
+
+      @container style((--foo: bar) and (color: rgb(255 0 0))) {
+        .and { color: rgb(1 2 3); }
+      }
+      @container style((--foo: bar) or (--foo: baz)) {
+        .or { color: rgb(4 5 6); }
+      }
+      @container style(not (--foo: bar)) {
+        .not { color: rgb(7 8 9); }
+      }
+    </style>
+    <div class="c1">
+      <div id="and1" class="child and">and</div>
+      <div id="or1" class="child or">or</div>
+      <div id="not1" class="child not">not</div>
+    </div>
+    <div class="c2">
+      <div id="and2" class="child and">and</div>
+      <div id="or2" class="child or">or</div>
+      <div id="not2" class="child not">not</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+
+  let and1 = find_by_id(&styled, "and1").expect("and1 element");
+  let and2 = find_by_id(&styled, "and2").expect("and2 element");
+  let or1 = find_by_id(&styled, "or1").expect("or1 element");
+  let or2 = find_by_id(&styled, "or2").expect("or2 element");
+  let not1 = find_by_id(&styled, "not1").expect("not1 element");
+  let not2 = find_by_id(&styled, "not2").expect("not2 element");
+
+  assert_eq!(and1.styles.color, Rgba::rgb(1, 2, 3));
+  assert_eq!(and2.styles.color, Rgba::rgb(0, 0, 255));
+
+  assert_eq!(or1.styles.color, Rgba::rgb(4, 5, 6));
+  assert_eq!(or2.styles.color, Rgba::rgb(4, 5, 6));
+
+  assert_eq!(not1.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(not2.styles.color, Rgba::rgb(7, 8, 9));
+}
+
+#[test]
 fn container_type_rejects_none_and_style_keywords_and_container_shorthand_resets_to_normal() {
   let html = r#"
     <style>

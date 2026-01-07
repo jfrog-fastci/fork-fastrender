@@ -1472,6 +1472,58 @@ fn collect_container_query_metadata(
   queries: &[ContainerQuery],
   out: &mut CollectedCssMetadata,
 ) {
+  fn collect_style_query(expr: &StyleQueryExpr, out: &mut CollectedCssMetadata) {
+    match expr {
+      StyleQueryExpr::Unknown => {}
+      StyleQueryExpr::Feature(feature) => match feature {
+        StyleQueryFeature::Plain { name, .. } | StyleQueryFeature::Boolean { name } => {
+          if name.starts_with("--") {
+            out
+              .container_style_query_custom_properties
+              .insert(name.clone());
+          } else {
+            out.container_style_query_properties.insert(name.clone());
+          }
+        }
+        StyleQueryFeature::Range(range) => {
+          let mut visit_value = |value: &StyleRangeValue| match value {
+            StyleRangeValue::Property(name) => {
+              out.container_style_query_properties.insert(name.clone());
+            }
+            StyleRangeValue::CustomProperty(name) => {
+              out
+                .container_style_query_custom_properties
+                .insert(name.clone());
+            }
+            StyleRangeValue::Value(_) => {}
+          };
+          match range {
+            StyleRange::Single { left, right, .. } => {
+              visit_value(left);
+              visit_value(right);
+            }
+            StyleRange::Double {
+              left,
+              middle,
+              right,
+              ..
+            } => {
+              visit_value(left);
+              visit_value(middle);
+              visit_value(right);
+            }
+          }
+        }
+      },
+      StyleQueryExpr::Not(inner) => collect_style_query(inner.as_ref(), out),
+      StyleQueryExpr::And(list) | StyleQueryExpr::Or(list) => {
+        for inner in list {
+          collect_style_query(inner, out);
+        }
+      }
+    }
+  }
+
   for query in queries {
     match query {
       ContainerQuery::Size(size_query) => {
@@ -1483,16 +1535,7 @@ fn collect_container_query_metadata(
       }
       ContainerQuery::Style(style_query) => {
         out.has_container_style_queries = true;
-        match style_query {
-          ContainerStyleQuery::CustomProperty { name, .. } => {
-            out
-              .container_style_query_custom_properties
-              .insert(name.clone());
-          }
-          ContainerStyleQuery::Property { name, .. } => {
-            out.container_style_query_properties.insert(name.clone());
-          }
-        }
+        collect_style_query(style_query, out);
       }
       ContainerQuery::Unknown(_) => {}
       ContainerQuery::Not(inner) => {
@@ -2916,7 +2959,7 @@ pub enum ContainerQuery {
   /// Container size feature queries (aka "size queries").
   Size(ContainerSizeQuery),
   /// Style queries inspecting computed styles of the query container.
-  Style(ContainerStyleQuery),
+  Style(StyleQueryExpr),
   /// Unknown or unsupported `<<query-in-parens>>` (e.g. `scroll-state(...)` or `<<general-enclosed>>`).
   ///
   /// Stored as a best-effort serialization of the original tokens for debugging.
@@ -2964,13 +3007,68 @@ impl ContainerSizeQuery {
   }
 }
 
-/// Style-query predicate inside a container query.
+/// Container style query expression inside `style(<style-query>)`.
 #[derive(Debug, Clone)]
-pub enum ContainerStyleQuery {
-  /// Custom property presence or equality check.
-  CustomProperty { name: String, value: Option<String> },
-  /// Equality check for a supported computed property.
-  Property { name: String, value: String },
+pub enum StyleQueryExpr {
+  /// Unknown/unsupported clause (e.g. `<<general-enclosed>>`). Evaluates to false.
+  Unknown,
+  /// A concrete style feature.
+  Feature(StyleQueryFeature),
+  /// Logical negation.
+  Not(Box<StyleQueryExpr>),
+  /// Logical conjunction.
+  And(Vec<StyleQueryExpr>),
+  /// Logical disjunction.
+  Or(Vec<StyleQueryExpr>),
+}
+
+/// A single style feature inside a style query.
+#[derive(Debug, Clone)]
+pub enum StyleQueryFeature {
+  /// `prop: value` (computed value equality).
+  Plain { name: String, value: String },
+  /// `prop` (computed value differs from initial).
+  Boolean { name: String },
+  /// `<value> <comparison> <value>` range comparisons.
+  Range(StyleRange),
+}
+
+/// A parsed `<<style-range>>` comparison.
+#[derive(Debug, Clone)]
+pub enum StyleRange {
+  /// `a < b`, `a <= b`, `a > b`, `a >= b`, or `a = b`.
+  Single {
+    left: StyleRangeValue,
+    op: StyleRangeOp,
+    right: StyleRangeValue,
+  },
+  /// `a < b < c` or `a > b > c` (strict comparisons only).
+  Double {
+    left: StyleRangeValue,
+    op: StyleRangeOp,
+    middle: StyleRangeValue,
+    right: StyleRangeValue,
+  },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StyleRangeOp {
+  Lt,
+  Le,
+  Gt,
+  Ge,
+  Eq,
+}
+
+/// Operand within a style range expression.
+#[derive(Debug, Clone)]
+pub enum StyleRangeValue {
+  /// References a computed property on the query container.
+  Property(String),
+  /// References a custom property on the query container (shorthand for `var(--foo)`).
+  CustomProperty(String),
+  /// A literal value (e.g. `12px`).
+  Value(String),
 }
 
 /// A @scope rule constraining descendant style rules.

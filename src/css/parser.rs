@@ -17,7 +17,6 @@ use super::types::ContainerCondition;
 use super::types::ContainerQuery;
 use super::types::ContainerRule;
 use super::types::ContainerSizeQuery;
-use super::types::ContainerStyleQuery;
 use super::types::CssParseError;
 use super::types::CssParseResult;
 use super::types::CssRule;
@@ -49,6 +48,11 @@ use super::types::ScopeRule;
 use super::types::StartingStyleRule;
 use super::types::StyleRule;
 use super::types::StyleSheet;
+use super::types::StyleQueryExpr;
+use super::types::StyleQueryFeature;
+use super::types::StyleRange;
+use super::types::StyleRangeOp;
+use super::types::StyleRangeValue;
 use super::types::SupportsCondition;
 use super::types::SupportsRule;
 use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
@@ -1203,14 +1207,20 @@ fn parse_container_query_in_parens<'i, 't>(
 
 fn parse_container_style_function<'i, 't>(
   parser: &mut Parser<'i, 't>,
-) -> std::result::Result<ContainerStyleQuery, ParseError<'i, ()>> {
+) -> std::result::Result<StyleQueryExpr, ParseError<'i, ()>> {
   parser.expect_function_matching("style")?;
-  let raw = parser.parse_nested_block(|nested| {
-    let start = nested.position();
+  parser.parse_nested_block(|nested| {
+    let state = nested.state();
+    if let Ok(expr) = nested.try_parse(parse_style_query) {
+      nested.skip_whitespace();
+      if nested.is_exhausted() {
+        return Ok(expr);
+      }
+    }
+    nested.reset(&state);
     consume_nested_tokens(nested)?;
-    Ok::<_, ParseError<'i, ()>>(nested.slice_from(start).trim().to_string())
-  })?;
-  parse_style_query_from_str(&raw).ok_or_else(|| parser.new_custom_error(()))
+    Ok(StyleQueryExpr::Unknown)
+  })
 }
 
 fn stringify_nested_tokens<'i, 't, E>(
@@ -1433,37 +1443,280 @@ fn normalize_style_query_value(value: &str) -> String {
   cleaned
 }
 
-fn parse_style_query_from_str(raw: &str) -> Option<ContainerStyleQuery> {
-  let trimmed = raw.trim();
-  if trimmed.is_empty() {
-    return None;
+fn parse_style_query<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<StyleQueryExpr, ParseError<'i, ()>> {
+  parser.skip_whitespace();
+
+  if parser.try_parse(|p| p.expect_ident_matching("not")).is_ok() {
+    parser.skip_whitespace();
+    let inner = parse_style_in_parens(parser)?;
+    return Ok(StyleQueryExpr::Not(Box::new(inner)));
   }
 
-  let mut parts = trimmed.splitn(2, ':');
-  let name = parts.next()?.trim();
-  if name.is_empty() {
-    return None;
-  }
-  let value = parts.next().map(normalize_style_query_value);
+  let state = parser.state();
+  if let Ok(first) = parser.try_parse(parse_style_in_parens) {
+    parser.skip_whitespace();
+    if parser.try_parse(|p| p.expect_ident_matching("and")).is_ok() {
+      parser.skip_whitespace();
+      let mut list = vec![first, parse_style_in_parens(parser)?];
+      loop {
+        parser.skip_whitespace();
+        if parser.try_parse(|p| p.expect_ident_matching("and")).is_ok() {
+          parser.skip_whitespace();
+          list.push(parse_style_in_parens(parser)?);
+        } else {
+          break;
+        }
+      }
+      return Ok(StyleQueryExpr::And(list));
+    }
 
+    if parser.try_parse(|p| p.expect_ident_matching("or")).is_ok() {
+      parser.skip_whitespace();
+      let mut list = vec![first, parse_style_in_parens(parser)?];
+      loop {
+        parser.skip_whitespace();
+        if parser.try_parse(|p| p.expect_ident_matching("or")).is_ok() {
+          parser.skip_whitespace();
+          list.push(parse_style_in_parens(parser)?);
+        } else {
+          break;
+        }
+      }
+      return Ok(StyleQueryExpr::Or(list));
+    }
+
+    return Ok(first);
+  }
+  parser.reset(&state);
+
+  let feature = parse_style_feature(parser)?;
+  Ok(StyleQueryExpr::Feature(feature))
+}
+
+fn parse_style_in_parens<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<StyleQueryExpr, ParseError<'i, ()>> {
+  parser.skip_whitespace();
+  match parser.next_including_whitespace()? {
+    Token::ParenthesisBlock => parser.parse_nested_block(|nested| {
+      let state = nested.state();
+      if let Ok(expr) = nested.try_parse(parse_style_query) {
+        nested.skip_whitespace();
+        if nested.is_exhausted() {
+          return Ok(expr);
+        }
+      }
+      nested.reset(&state);
+      consume_nested_tokens(nested)?;
+      Ok(StyleQueryExpr::Unknown)
+    }),
+    Token::Function(_) | Token::SquareBracketBlock | Token::CurlyBracketBlock => {
+      parser.parse_nested_block(consume_nested_tokens)?;
+      Ok(StyleQueryExpr::Unknown)
+    }
+    _ => Err(parser.new_custom_error(())),
+  }
+}
+
+fn normalize_style_feature_name(name: &str) -> String {
   if name.starts_with("--") {
-    let value = value
-      .map(|v| v.trim().to_string())
-      .filter(|v| !v.is_empty());
-    return Some(ContainerStyleQuery::CustomProperty {
-      name: name.to_string(),
-      value,
+    name.to_string()
+  } else {
+    name.to_ascii_lowercase()
+  }
+}
+
+fn parse_style_feature_name<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<String, ParseError<'i, ()>> {
+  parser.skip_whitespace();
+  match parser.next_including_whitespace()? {
+    Token::Ident(ident) => Ok(ident.to_string()),
+    _ => Err(parser.new_custom_error(())),
+  }
+}
+
+fn parse_style_feature<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<StyleQueryFeature, ParseError<'i, ()>> {
+  let state = parser.state();
+  if let Ok(raw_name) = parser.try_parse(parse_style_feature_name) {
+    let name = normalize_style_feature_name(&raw_name);
+    parser.skip_whitespace();
+
+    if parser.try_parse(|p| p.expect_colon()).is_ok() {
+      let start = parser.position();
+      consume_nested_tokens(parser)?;
+      let value = normalize_style_query_value(parser.slice_from(start));
+      let value = value.trim().to_string();
+      if value.is_empty() {
+        return Err(parser.new_custom_error(()));
+      }
+      return Ok(StyleQueryFeature::Plain { name, value });
+    }
+
+    if parser.is_exhausted() {
+      return Ok(StyleQueryFeature::Boolean { name });
+    }
+
+    parser.reset(&state);
+  }
+
+  let range = parse_style_range(parser)?;
+  Ok(StyleQueryFeature::Range(range))
+}
+
+fn parse_style_range_op<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<StyleRangeOp, ParseError<'i, ()>> {
+  parser.skip_whitespace();
+  match parser.next_including_whitespace()? {
+    Token::Delim('<') => {
+      parser.skip_whitespace();
+      let state = parser.state();
+      if matches!(parser.next_including_whitespace(), Ok(Token::Delim('='))) {
+        Ok(StyleRangeOp::Le)
+      } else {
+        parser.reset(&state);
+        Ok(StyleRangeOp::Lt)
+      }
+    }
+    Token::Delim('>') => {
+      parser.skip_whitespace();
+      let state = parser.state();
+      if matches!(parser.next_including_whitespace(), Ok(Token::Delim('='))) {
+        Ok(StyleRangeOp::Ge)
+      } else {
+        parser.reset(&state);
+        Ok(StyleRangeOp::Gt)
+      }
+    }
+    Token::Delim('=') => Ok(StyleRangeOp::Eq),
+    _ => Err(parser.new_custom_error(())),
+  }
+}
+
+fn parse_style_range_strict_op<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<StyleRangeOp, ParseError<'i, ()>> {
+  parser.skip_whitespace();
+  match parser.next_including_whitespace()? {
+    Token::Delim('<') => {
+      // Disallow `<=` in chained comparisons.
+      parser.skip_whitespace();
+      let state = parser.state();
+      if matches!(parser.next_including_whitespace(), Ok(Token::Delim('='))) {
+        parser.reset(&state);
+        return Err(parser.new_custom_error(()));
+      }
+      parser.reset(&state);
+      Ok(StyleRangeOp::Lt)
+    }
+    Token::Delim('>') => {
+      parser.skip_whitespace();
+      let state = parser.state();
+      if matches!(parser.next_including_whitespace(), Ok(Token::Delim('='))) {
+        parser.reset(&state);
+        return Err(parser.new_custom_error(()));
+      }
+      parser.reset(&state);
+      Ok(StyleRangeOp::Gt)
+    }
+    _ => Err(parser.new_custom_error(())),
+  }
+}
+
+fn style_range_value_from_text(text: &str) -> StyleRangeValue {
+  let trimmed = text.trim();
+  if is_valid_custom_property_name(trimmed) {
+    return StyleRangeValue::CustomProperty(trimmed.to_string());
+  }
+
+  let lowered = trimmed.to_ascii_lowercase();
+  let canonical = if known_style_property_set().contains(lowered.as_str()) {
+    Some(lowered.as_str())
+  } else if lowered.starts_with("-webkit-") {
+    vendor_prefixed_property_alias(lowered.as_str())
+  } else {
+    None
+  };
+
+  if let Some(name) = canonical {
+    StyleRangeValue::Property(name.to_string())
+  } else {
+    StyleRangeValue::Value(trimmed.to_string())
+  }
+}
+
+fn parse_style_range_value<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<StyleRangeValue, ParseError<'i, ()>> {
+  parser.skip_whitespace();
+  let start = parser.position();
+
+  while !parser.is_exhausted() {
+    let state = parser.state();
+    let token = parser.next_including_whitespace()?;
+    match token {
+      Token::Delim('<') | Token::Delim('>') | Token::Delim('=') => {
+        parser.reset(&state);
+        break;
+      }
+      Token::CurlyBracketBlock
+      | Token::ParenthesisBlock
+      | Token::SquareBracketBlock
+      | Token::Function(_) => {
+        parser.parse_nested_block(consume_nested_tokens)?;
+      }
+      _ => {}
+    }
+  }
+
+  let raw = parser.slice_from(start).trim();
+  if raw.is_empty() {
+    return Err(parser.new_custom_error(()));
+  }
+  Ok(style_range_value_from_text(raw))
+}
+
+fn parse_style_range<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<StyleRange, ParseError<'i, ()>> {
+  parser.skip_whitespace();
+  let left = parse_style_range_value(parser)?;
+  let op1 = parse_style_range_op(parser)?;
+  let middle = parse_style_range_value(parser)?;
+  parser.skip_whitespace();
+
+  if parser.is_exhausted() {
+    return Ok(StyleRange::Single {
+      left,
+      op: op1,
+      right: middle,
     });
   }
 
-  let value = value?;
-  if value.is_empty() {
-    return None;
+  if !matches!(op1, StyleRangeOp::Lt | StyleRangeOp::Gt) {
+    return Err(parser.new_custom_error(()));
   }
 
-  Some(ContainerStyleQuery::Property {
-    name: name.to_ascii_lowercase(),
-    value,
+  let op2 = parse_style_range_strict_op(parser)?;
+  if op2 != op1 {
+    return Err(parser.new_custom_error(()));
+  }
+  let right = parse_style_range_value(parser)?;
+  parser.skip_whitespace();
+  if !parser.is_exhausted() {
+    return Err(parser.new_custom_error(()));
+  }
+
+  Ok(StyleRange::Double {
+    left,
+    op: op1,
+    middle,
+    right,
   })
 }
 /// Parse an @starting-style rule which simply wraps a nested rule list.

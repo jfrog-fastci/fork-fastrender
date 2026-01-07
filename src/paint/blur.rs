@@ -308,6 +308,7 @@ fn blur_should_parallelize(width: usize, height: usize) -> bool {
 
 #[inline]
 fn blur_thread_budget() -> usize {
+  crate::rayon_init::ensure_global_rayon_pool();
   rayon::current_num_threads()
     .max(1)
     .min(crate::system::cpu_budget().max(1))

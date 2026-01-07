@@ -21,11 +21,15 @@ use crate::css::types::ContainerCondition;
 use crate::css::types::ContainerConditionGroup;
 use crate::css::types::ContainerQuery;
 use crate::css::types::ContainerSizeQuery;
-use crate::css::types::ContainerStyleQuery;
 use crate::css::types::CssImportLoader;
 use crate::css::types::CssString;
 use crate::css::types::Declaration;
 use crate::css::types::PropertyValue;
+use crate::css::types::StyleQueryExpr;
+use crate::css::types::StyleQueryFeature;
+use crate::css::types::StyleRange;
+use crate::css::types::StyleRangeOp;
+use crate::css::types::StyleRangeValue;
 use crate::css::types::ScopeContext;
 use crate::css::types::StyleRule;
 use crate::css::types::StyleSheet;
@@ -404,7 +408,7 @@ fn container_query_matches(
       result
     }
     ContainerQuery::Style(style_query) => {
-      let result = QueryResult::from_bool(matches_style_query(style_query, container.styles.as_ref()));
+      let result = eval_style_query(style_query, container, ctx);
       memo.query_eval.insert(key, result);
       result
     }
@@ -862,31 +866,494 @@ fn evaluate_container_size_query(mq: &crate::style::media::MediaQuery, container
   }
 }
 
-fn matches_style_query(query: &ContainerStyleQuery, styles: &ComputedStyle) -> bool {
+fn eval_style_query(
+  query: &StyleQueryExpr,
+  container: &ContainerQueryInfo,
+  ctx: &ContainerQueryContext,
+) -> QueryResult {
   match query {
-    ContainerStyleQuery::CustomProperty { name, value } => {
-      let Some(actual) = styles.custom_properties.get(name) else {
-        return false;
-      };
-      match value {
-        Some(expected) => normalize_query_value(&actual.value) == normalize_query_value(expected),
-        None => true,
+    StyleQueryExpr::Unknown => QueryResult::Unknown,
+    StyleQueryExpr::Feature(feature) => QueryResult::from_bool(eval_style_feature(feature, container, ctx)),
+    StyleQueryExpr::Not(inner) => eval_style_query(inner, container, ctx).not(),
+    StyleQueryExpr::And(list) => {
+      let mut result = QueryResult::True;
+      for inner in list {
+        match eval_style_query(inner, container, ctx) {
+          QueryResult::False => {
+            result = QueryResult::False;
+            break;
+          }
+          QueryResult::Unknown => result = QueryResult::Unknown,
+          QueryResult::True => {}
+        }
       }
+      result
     }
-    ContainerStyleQuery::Property { name, value } => match name.as_str() {
-      "color" => Color::parse(value)
-        .map(|color: Color| color.to_rgba(styles.color) == styles.color)
-        .unwrap_or(false),
-      "background-color" => Color::parse(value)
-        .map(|color: Color| color.to_rgba(styles.color) == styles.background_color)
-        .unwrap_or(false),
-      _ => false,
-    },
+    StyleQueryExpr::Or(list) => {
+      let mut result = QueryResult::False;
+      for inner in list {
+        match eval_style_query(inner, container, ctx) {
+          QueryResult::True => {
+            result = QueryResult::True;
+            break;
+          }
+          QueryResult::Unknown => result = QueryResult::Unknown,
+          QueryResult::False => {}
+        }
+      }
+      result
+    }
+  }
+}
+
+fn eval_style_feature(
+  feature: &StyleQueryFeature,
+  container: &ContainerQueryInfo,
+  ctx: &ContainerQueryContext,
+) -> bool {
+  match feature {
+    StyleQueryFeature::Plain { name, value } => eval_plain_style_feature(name, value, container, ctx),
+    StyleQueryFeature::Boolean { name } => eval_boolean_style_feature(name, container),
+    StyleQueryFeature::Range(range) => eval_style_range(range, container, ctx),
   }
 }
 
 fn normalize_query_value(value: &str) -> String {
   value.trim().trim_end_matches(';').trim().to_string()
+}
+
+fn contains_cascade_dependent_keyword(value: &str) -> bool {
+  // `revert` and `revert-layer` are invalid in style queries (spec: css-conditional-5 §style-container).
+  let mut input = cssparser::ParserInput::new(value);
+  let mut parser = cssparser::Parser::new(&mut input);
+  fn scan<'i, 't>(parser: &mut cssparser::Parser<'i, 't>) -> bool {
+    while let Ok(token) = parser.next_including_whitespace_and_comments() {
+      match token {
+        cssparser::Token::Ident(ident)
+          if ident.eq_ignore_ascii_case("revert")
+            || ident.eq_ignore_ascii_case("revert-layer") =>
+        {
+          return true;
+        }
+        cssparser::Token::Function(name) if name.eq_ignore_ascii_case("url") => {
+          // `url(...)` arguments are URL tokens; skip scanning inside.
+          let _ = parser.parse_nested_block(|_| Ok::<_, cssparser::ParseError<'i, ()>>(false));
+        }
+        cssparser::Token::Function(_)
+        | cssparser::Token::ParenthesisBlock
+        | cssparser::Token::SquareBracketBlock
+        | cssparser::Token::CurlyBracketBlock => {
+          if let Ok(found) =
+            parser.parse_nested_block(|nested| Ok::<_, cssparser::ParseError<'i, ()>>(scan(nested)))
+          {
+            if found {
+              return true;
+            }
+          }
+        }
+        _ => {}
+      }
+    }
+    false
+  }
+  scan(&mut parser)
+}
+
+fn eval_plain_style_feature(
+  name: &str,
+  value: &str,
+  container: &ContainerQueryInfo,
+  ctx: &ContainerQueryContext,
+) -> bool {
+  if contains_cascade_dependent_keyword(value) {
+    return false;
+  }
+
+  let styles = container.styles.as_ref();
+  if name.starts_with("--") {
+    let Some(actual) = styles.custom_properties.get(name) else {
+      return false;
+    };
+    let expected_norm = normalize_query_value(value);
+
+    // Prefer typed comparisons for registered properties when possible.
+    if let Some(rule) = styles.custom_property_registry.get(name) {
+      if let Some(expected_typed) = rule.syntax.parse_value(expected_norm.trim()) {
+        if let Some(actual_typed) = actual.typed.as_ref() {
+          return actual_typed == &expected_typed;
+        }
+      }
+    }
+
+    return normalize_query_value(&actual.value) == expected_norm;
+  }
+
+  match name {
+    "color" => Color::parse(value)
+      .map(|color: Color| color.to_rgba(styles.color) == styles.color)
+      .unwrap_or(false),
+    "background-color" => Color::parse(value)
+      .map(|color: Color| color.to_rgba(styles.color) == styles.background_color)
+      .unwrap_or(false),
+    "display" => Display::parse(value).map(|display| display == styles.display).unwrap_or(false),
+    "font-size" => {
+      let Some(expected) = crate::css::properties::parse_length(value) else {
+        return false;
+      };
+      // Resolve container query units relative to the query container itself.
+      let (cqw, cqh, cqi, cqb) = style_query_container_unit_bases(container);
+      let expected = expected.resolve_container_query_units(cqw, cqh, cqi, cqb);
+      let viewport = Size::new(ctx.base_media.viewport_width, ctx.base_media.viewport_height);
+      let expected_px = crate::style::properties::resolve_font_size_length(
+        expected,
+        styles.font_size,
+        styles.root_font_size,
+        viewport,
+      );
+      expected_px.is_some_and(|px| (px - styles.font_size).abs() < 1e-6)
+    }
+    _ => false,
+  }
+}
+
+fn eval_boolean_style_feature(name: &str, container: &ContainerQueryInfo) -> bool {
+  let styles = container.styles.as_ref();
+  if name.starts_with("--") {
+    let registry_entry = styles.custom_property_registry.get(name);
+    if let Some(rule) = registry_entry {
+      // Registered custom properties always have a well-defined initial value.
+      let initial = rule.initial_value.as_ref();
+      let actual = styles.custom_properties.get(name);
+
+      // Missing values behave like the initial value.
+      let actual_value = actual.or(initial);
+      match (actual_value, initial) {
+        (Some(actual), Some(initial)) => {
+          if let (Some(a), Some(b)) = (actual.typed.as_ref(), initial.typed.as_ref()) {
+            a != b
+          } else {
+            normalize_query_value(&actual.value) != normalize_query_value(&initial.value)
+          }
+        }
+        // No initial value recorded; treat as absent.
+        _ => false,
+      }
+    } else {
+      // Unregistered custom properties: initial is "unset"; boolean query is true iff present.
+      styles.custom_properties.contains_key(name)
+    }
+  } else {
+    // Boolean queries against supported CSS properties compare computed against initial values.
+    let initial = default_computed_style();
+    match name {
+      "display" => styles.display != initial.display,
+      "color" => styles.color != initial.color,
+      "background-color" => styles.background_color != initial.background_color,
+      "font-size" => (styles.font_size - initial.font_size).abs() > 1e-6,
+      _ => false,
+    }
+  }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum NumericType {
+  Number,
+  Percentage,
+  LengthPx,
+  AngleDeg,
+  TimeMs,
+  ResolutionDppx,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct NumericValue {
+  ty: NumericType,
+  value: f32,
+}
+
+fn coerce_zero_number_to_length(lhs: NumericValue, rhs: NumericValue) -> (NumericValue, NumericValue) {
+  match (lhs.ty, rhs.ty) {
+    (NumericType::Number, NumericType::LengthPx) if lhs.value == 0.0 => (
+      NumericValue {
+        ty: NumericType::LengthPx,
+        value: 0.0,
+      },
+      rhs,
+    ),
+    (NumericType::LengthPx, NumericType::Number) if rhs.value == 0.0 => (
+      lhs,
+      NumericValue {
+        ty: NumericType::LengthPx,
+        value: 0.0,
+      },
+    ),
+    _ => (lhs, rhs),
+  }
+}
+
+fn compare_numeric(op: StyleRangeOp, left: f32, right: f32) -> bool {
+  match op {
+    StyleRangeOp::Lt => left < right,
+    StyleRangeOp::Le => left <= right,
+    StyleRangeOp::Gt => left > right,
+    StyleRangeOp::Ge => left >= right,
+    StyleRangeOp::Eq => (left - right).abs() < 1e-6,
+  }
+}
+
+fn eval_style_range(range: &StyleRange, container: &ContainerQueryInfo, ctx: &ContainerQueryContext) -> bool {
+  match range {
+    StyleRange::Single { left, op, right } => {
+      let Some(lhs) = eval_style_range_value(left, container, ctx) else {
+        return false;
+      };
+      let Some(rhs) = eval_style_range_value(right, container, ctx) else {
+        return false;
+      };
+      let (lhs, rhs) = coerce_zero_number_to_length(lhs, rhs);
+      if lhs.ty != rhs.ty {
+        return false;
+      }
+      compare_numeric(*op, lhs.value, rhs.value)
+    }
+    StyleRange::Double {
+      left,
+      op,
+      middle,
+      right,
+    } => {
+      let Some(a) = eval_style_range_value(left, container, ctx) else {
+        return false;
+      };
+      let Some(b) = eval_style_range_value(middle, container, ctx) else {
+        return false;
+      };
+      let Some(c) = eval_style_range_value(right, container, ctx) else {
+        return false;
+      };
+
+      let (a, b) = coerce_zero_number_to_length(a, b);
+      let (b, c) = coerce_zero_number_to_length(b, c);
+      if a.ty != b.ty || b.ty != c.ty {
+        return false;
+      }
+      compare_numeric(*op, a.value, b.value) && compare_numeric(*op, b.value, c.value)
+    }
+  }
+}
+
+fn eval_style_range_value(
+  value: &StyleRangeValue,
+  container: &ContainerQueryInfo,
+  ctx: &ContainerQueryContext,
+) -> Option<NumericValue> {
+  let styles = container.styles.as_ref();
+  match value {
+    StyleRangeValue::Property(name) => match name.as_str() {
+      "font-size" => Some(NumericValue {
+        ty: NumericType::LengthPx,
+        value: styles.font_size,
+      }),
+      _ => None,
+    },
+    StyleRangeValue::CustomProperty(name) => {
+      let entry = styles.custom_properties.get(name)?;
+      if let Some(typed) = entry.typed.as_ref() {
+        use crate::style::values::CustomPropertyTypedValue;
+        return match typed {
+          CustomPropertyTypedValue::Length(len) => Some(NumericValue {
+            ty: NumericType::LengthPx,
+            value: resolve_length_for_query(len, container, ctx)?,
+          }),
+          CustomPropertyTypedValue::Number(n) => Some(NumericValue {
+            ty: NumericType::Number,
+            value: *n,
+          }),
+          CustomPropertyTypedValue::Percentage(p) => Some(NumericValue {
+            ty: NumericType::Percentage,
+            value: *p,
+          }),
+          CustomPropertyTypedValue::Angle(deg) => Some(NumericValue {
+            ty: NumericType::AngleDeg,
+            value: *deg,
+          }),
+          CustomPropertyTypedValue::Color(_) => None,
+        };
+      }
+      parse_numeric_value(&entry.value, container, ctx)
+    }
+    StyleRangeValue::Value(raw) => parse_numeric_value(raw, container, ctx),
+  }
+}
+
+fn resolve_length_for_query(
+  length: &Length,
+  container: &ContainerQueryInfo,
+  ctx: &ContainerQueryContext,
+) -> Option<f32> {
+  // Style-query values are computed with respect to the query container.
+  // Resolve container-query units relative to the query container itself.
+  let mut length = *length;
+  let (cqw, cqh, cqi, cqb) = style_query_container_unit_bases(container);
+  length = length.resolve_container_query_units(cqw, cqh, cqi, cqb);
+
+  length.resolve_with_context(
+    None,
+    ctx.base_media.viewport_width,
+    ctx.base_media.viewport_height,
+    container.font_size,
+    container.styles.root_font_size,
+  )
+}
+
+fn style_query_container_unit_bases(container: &ContainerQueryInfo) -> (f32, f32, f32, f32) {
+  let inline_horizontal = crate::style::inline_axis_is_horizontal(container.styles.writing_mode);
+  let supports_inline = matches!(
+    container.container_type,
+    ContainerType::Size | ContainerType::InlineSize
+  );
+  let supports_block = matches!(container.container_type, ContainerType::Size);
+
+  let clamp = |value: f32| if value.is_finite() { value.max(0.0) } else { 0.0 };
+
+  let cqi = if supports_inline { clamp(container.inline_size) } else { 0.0 };
+  let cqb = if supports_block { clamp(container.block_size) } else { 0.0 };
+
+  let cqw = match container.container_type {
+    ContainerType::Size => {
+      let width = if inline_horizontal {
+        container.inline_size
+      } else {
+        container.block_size
+      };
+      clamp(width)
+    }
+    ContainerType::InlineSize if inline_horizontal => clamp(container.inline_size),
+    _ => 0.0,
+  };
+
+  let cqh = match container.container_type {
+    ContainerType::Size => {
+      let height = if inline_horizontal {
+        container.block_size
+      } else {
+        container.inline_size
+      };
+      clamp(height)
+    }
+    ContainerType::InlineSize if !inline_horizontal => clamp(container.inline_size),
+    _ => 0.0,
+  };
+
+  (cqw, cqh, cqi, cqb)
+}
+
+fn parse_numeric_value(raw: &str, container: &ContainerQueryInfo, ctx: &ContainerQueryContext) -> Option<NumericValue> {
+  let trimmed = raw.trim();
+  if trimmed.is_empty() || contains_cascade_dependent_keyword(trimmed) {
+    return None;
+  }
+
+  // Try number first.
+  if let Ok(num) = trimmed.parse::<f32>() {
+    if num.is_finite() {
+      return Some(NumericValue {
+        ty: NumericType::Number,
+        value: num,
+      });
+    }
+  }
+
+  // Percentage.
+  if let Some(percent) = trimmed.strip_suffix('%') {
+    if let Ok(num) = percent.trim().parse::<f32>() {
+      if num.is_finite() {
+        return Some(NumericValue {
+          ty: NumericType::Percentage,
+          value: num,
+        });
+      }
+    }
+  }
+
+  // Length (including unitless zero).
+  if let Some(length) = crate::css::properties::parse_length(trimmed) {
+    if length.unit == LengthUnit::Percent {
+      return Some(NumericValue {
+        ty: NumericType::Percentage,
+        value: length.value,
+      });
+    }
+    let px = resolve_length_for_query(&length, container, ctx)?;
+    return Some(NumericValue {
+      ty: NumericType::LengthPx,
+      value: px,
+    });
+  }
+
+  // Angle.
+  {
+    let mut input = cssparser::ParserInput::new(trimmed);
+    let mut parser = cssparser::Parser::new(&mut input);
+    if let Ok(deg) = crate::css::properties::parse_angle_component(&mut parser) {
+      parser.skip_whitespace();
+      if parser.is_exhausted() && deg.is_finite() {
+        return Some(NumericValue {
+          ty: NumericType::AngleDeg,
+          value: deg,
+        });
+      }
+    }
+  }
+
+  // Time.
+  if let Some(ms) = crate::style::properties::parse_time_ms(trimmed) {
+    if ms.is_finite() {
+      return Some(NumericValue {
+        ty: NumericType::TimeMs,
+        value: ms,
+      });
+    }
+  }
+
+  // Resolution.
+  if let Some(dppx) = parse_resolution_dppx(trimmed) {
+    if dppx.is_finite() {
+      return Some(NumericValue {
+        ty: NumericType::ResolutionDppx,
+        value: dppx,
+      });
+    }
+  }
+
+  None
+}
+
+fn parse_resolution_dppx(raw: &str) -> Option<f32> {
+  let lower = raw.trim().to_ascii_lowercase();
+  if let Some(rest) = lower.strip_suffix("dppx") {
+    return rest.trim().parse::<f32>().ok().filter(|v| *v > 0.0);
+  }
+  if let Some(rest) = lower.strip_suffix("dpi") {
+    return rest
+      .trim()
+      .parse::<f32>()
+      .ok()
+      .filter(|v| *v > 0.0)
+      .map(|dpi| dpi / 96.0);
+  }
+  if let Some(rest) = lower.strip_suffix("dpcm") {
+    return rest
+      .trim()
+      .parse::<f32>()
+      .ok()
+      .filter(|v| *v > 0.0)
+      .map(|dpcm| (dpcm * 2.54) / 96.0);
+  }
+  if let Some(rest) = lower.strip_suffix('x') {
+    return rest.trim().parse::<f32>().ok().filter(|v| *v > 0.0);
+  }
+  None
 }
 
 // Container query evaluation memoization.
