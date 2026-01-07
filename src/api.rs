@@ -302,6 +302,70 @@ fn authored_intrinsic_axis_hints(intrinsic_size: Option<Size>) -> (Option<f32>, 
   (width, height)
 }
 
+fn url_looks_like_svg_resource(url: &str) -> bool {
+  let trimmed = url.trim();
+  if trimmed.is_empty() {
+    return false;
+  }
+
+  // Inline SVG markup and percent-encoded `<svg` strings should be treated as SVG resources.
+  if trimmed.starts_with('<')
+    || trimmed
+      .get(.."%3csvg".len())
+      .is_some_and(|prefix| prefix.eq_ignore_ascii_case("%3csvg"))
+  {
+    return true;
+  }
+
+  if trimmed
+    .get(.."data:image/svg+xml".len())
+    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:image/svg+xml"))
+  {
+    return true;
+  }
+
+  let base = trimmed
+    .split(|c: char| c == '?' || c == '#')
+    .next()
+    .unwrap_or(trimmed);
+  base
+    .get(base.len().saturating_sub(4)..)
+    .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".svg"))
+    || base
+      .get(base.len().saturating_sub(5)..)
+      .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".svgz"))
+}
+
+fn image_sources_might_be_svg(
+  src: &str,
+  srcset: &[crate::tree::box_tree::SrcsetCandidate],
+  picture_sources: &[crate::tree::box_tree::PictureSource],
+) -> bool {
+  if url_looks_like_svg_resource(src) {
+    return true;
+  }
+  for candidate in srcset {
+    if url_looks_like_svg_resource(&candidate.url) {
+      return true;
+    }
+  }
+  for source in picture_sources {
+    if source
+      .mime_type
+      .as_deref()
+      .is_some_and(|mime| mime.eq_ignore_ascii_case("image/svg+xml"))
+    {
+      return true;
+    }
+    for candidate in &source.srcset {
+      if url_looks_like_svg_resource(&candidate.url) {
+        return true;
+      }
+    }
+  }
+  false
+}
+
 /// Main entry point for the FastRender library
 ///
 /// `FastRender` provides a high-level API for rendering HTML/CSS to pixels.
@@ -9760,7 +9824,9 @@ impl FastRender {
             .is_none();
         let needs_size_probe = replaced_box.intrinsic_size.is_none()
           || (authored_width.is_none() && authored_height.is_none());
-        if !needs_ratio_probe && !needs_size_probe {
+        let needs_no_ratio_probe = !replaced_box.no_intrinsic_ratio
+          && image_sources_might_be_svg(src, srcset, picture_sources);
+        if !needs_ratio_probe && !needs_size_probe && !needs_no_ratio_probe {
           return;
         }
         if style.width.is_some() && style.height.is_some() {
@@ -10040,6 +10106,12 @@ impl FastRender {
     // Preserve existing early-return skips, but allow probing for an intrinsic ratio when only one
     // HTML dimension attribute was provided (box generation encodes that as `(w, 0)` / `(0, h)`).
     if !needs_ratio_probe && !needs_size_probe {
+      if let Some(outcome) = probe_results.get(&box_id) {
+        if outcome.explicit_no_ratio {
+          replaced_box.no_intrinsic_ratio = true;
+          replaced_box.aspect_ratio = None;
+        }
+      }
       return;
     }
 
@@ -10513,8 +10585,12 @@ impl FastRender {
 
         // If intrinsic dimensions are already complete (e.g., both width/height attributes), avoid
         // probing the image just to rederive them. This keeps box tree construction fast on
-        // image-heavy pages while still honoring provided intrinsic sizes/aspect ratios.
-        if !needs_ratio_probe && !needs_size_probe {
+        // image-heavy pages while still honoring provided intrinsic sizes/aspect ratios. SVG images
+        // are a notable exception because `preserveAspectRatio="none"` explicitly disables the
+        // intrinsic ratio even when width/height are present.
+        let needs_no_ratio_probe =
+          !replaced_box.no_intrinsic_ratio && image_sources_might_be_svg(src, srcset, picture_sources);
+        if !needs_ratio_probe && !needs_size_probe && !needs_no_ratio_probe {
           return;
         }
 
@@ -17422,6 +17498,42 @@ mod tests {
       replaced.no_intrinsic_ratio,
       "preserveAspectRatio='none' should mark the resource as having no intrinsic ratio"
     );
+  }
+
+  #[test]
+  fn resolve_intrinsic_sizes_img_preserve_aspect_ratio_none_clears_ratio() {
+    let renderer = FastRender::new().expect("init renderer");
+    let mut style = ComputedStyle::default();
+    style.width = Some(Length::px(100.0));
+    style.width_keyword = None;
+    style.height = None;
+    style.height_keyword = None;
+    let mut node = BoxNode::new_replaced(
+      Arc::new(style),
+      ReplacedType::Image {
+        src: r"<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100' viewBox='0 0 50 100' preserveAspectRatio='none'></svg>"
+          .to_string(),
+        alt: None,
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
+      },
+      // Simulate authored intrinsic dimensions (e.g., `<img width=200 height=100>`).
+      Some(Size::new(200.0, 100.0)),
+      Some(2.0),
+    );
+
+    renderer.resolve_replaced_intrinsic_sizes(&mut node, Size::new(800.0, 600.0));
+    let replaced = match node.box_type {
+      BoxType::Replaced(ref r) => r,
+      _ => panic!("not replaced"),
+    };
+
+    assert_eq!(replaced.intrinsic_size, Some(Size::new(200.0, 100.0)));
+    assert!(replaced.no_intrinsic_ratio);
+    assert_eq!(replaced.aspect_ratio, None);
   }
 
   #[test]
