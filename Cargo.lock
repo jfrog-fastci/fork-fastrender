@@ -946,7 +946,6 @@ dependencies = [
  "urlencoding",
  "usvg",
  "walkdir",
- "webp",
  "wuff",
 ]
 
@@ -3789,15 +3788,6 @@ dependencies = [
  "phf_codegen",
  "string_cache",
  "string_cache_codegen",
-]
-
-[[package]]
-name = "webp"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c071456adef4aca59bf6a583c46b90ff5eb0b4f758fc347cea81290288f37ce1"
-dependencies = [
- "libwebp-sys",
 ]
 
 [[package]]
