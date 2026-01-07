@@ -93,7 +93,7 @@ use crate::paint::display_list::TextEmphasis;
 use crate::paint::display_list::TextItem;
 use crate::paint::display_list::TextShadowItem;
 use crate::paint::display_list::Transform3D;
-use crate::paint::display_list_renderer::PaintParallelism;
+use crate::paint::display_list_renderer::{PaintParallelism, PaintParallelismMode};
 use crate::paint::filter_outset::filter_outset_with_bounds;
 use crate::paint::iframe::{render_iframe_src, render_iframe_srcdoc};
 use crate::paint::object_fit::compute_object_fit;
@@ -203,6 +203,7 @@ pub struct DisplayListBuilder {
   shaper: ShapingPipeline,
   device_pixel_ratio: f32,
   parallel_enabled: bool,
+  parallel_mode: PaintParallelismMode,
   parallel_min: usize,
   parallel_root_min: usize,
   parallel_min_explicit: bool,
@@ -910,6 +911,7 @@ impl DisplayListBuilder {
       shaper: ShapingPipeline::new(),
       device_pixel_ratio: 1.0,
       parallel_enabled,
+      parallel_mode: PaintParallelismMode::Auto,
       parallel_min,
       parallel_root_min,
       parallel_min_explicit,
@@ -950,6 +952,7 @@ impl DisplayListBuilder {
       shaper: ShapingPipeline::new(),
       device_pixel_ratio: 1.0,
       parallel_enabled,
+      parallel_mode: PaintParallelismMode::Auto,
       parallel_min,
       parallel_root_min,
       parallel_min_explicit,
@@ -1058,6 +1061,7 @@ impl DisplayListBuilder {
 
   /// Updates parallelism tuning in place.
   pub fn set_parallelism(&mut self, parallelism: &PaintParallelism) {
+    self.parallel_mode = parallelism.mode;
     if !self.parallel_min_explicit {
       self.parallel_min = parallelism.build_chunk_size.max(1);
     }
@@ -4008,11 +4012,17 @@ impl DisplayListBuilder {
     offset: Point,
     visibility: Visibility,
   ) {
-    if self.parallel_enabled {
+    let len = fragments.len();
+    let total = self.estimated_fragments.unwrap_or(len);
+    if self.parallel_enabled
+      && !matches!(self.parallel_mode, PaintParallelismMode::Disabled)
+      && len >= self.parallel_min
+      && total >= self.parallel_root_min
+    {
       let paint_pool = crate::paint::paint_thread_pool::paint_pool();
       let pool = paint_pool.pool;
       let threads = paint_pool.threads;
-      if let Some(plan) = self.plan_parallel(fragments.len(), threads) {
+      if let Some(plan) = self.plan_parallel(len, threads) {
         let start = self.parallel_stats.as_ref().map(|_| Instant::now());
         let deadline = active_deadline();
         let root_deadline = crate::render_control::root_deadline();
@@ -4084,11 +4094,17 @@ impl DisplayListBuilder {
     suppress_opacity: bool,
     visibility: Visibility,
   ) {
-    if self.parallel_enabled {
+    let len = fragments.len();
+    let total = self.estimated_fragments.unwrap_or(len);
+    if self.parallel_enabled
+      && !matches!(self.parallel_mode, PaintParallelismMode::Disabled)
+      && len >= self.parallel_min
+      && total >= self.parallel_root_min
+    {
       let paint_pool = crate::paint::paint_thread_pool::paint_pool();
       let pool = paint_pool.pool;
       let threads = paint_pool.threads;
-      if let Some(plan) = self.plan_parallel(fragments.len(), threads) {
+      if let Some(plan) = self.plan_parallel(len, threads) {
         let start = self.parallel_stats.as_ref().map(|_| Instant::now());
         let deadline = active_deadline();
         let root_deadline = crate::render_control::root_deadline();
@@ -4163,7 +4179,11 @@ impl DisplayListBuilder {
 
   fn plan_parallel(&self, len: usize, threads: usize) -> Option<ParallelPlan> {
     let threads = threads.max(1);
-    if !self.parallel_enabled || len < self.parallel_min || threads <= 1 {
+    if matches!(self.parallel_mode, PaintParallelismMode::Disabled)
+      || !self.parallel_enabled
+      || len < self.parallel_min
+      || threads <= 1
+    {
       return None;
     }
     let total = self.estimated_fragments.unwrap_or(len);
@@ -4215,6 +4235,7 @@ impl DisplayListBuilder {
       shaper: self.shaper.clone(),
       device_pixel_ratio: self.device_pixel_ratio,
       parallel_enabled: self.parallel_enabled,
+      parallel_mode: self.parallel_mode,
       parallel_min: self.parallel_min,
       parallel_root_min: self.parallel_root_min,
       parallel_min_explicit: self.parallel_min_explicit,
