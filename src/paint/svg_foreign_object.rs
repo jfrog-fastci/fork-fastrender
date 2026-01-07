@@ -109,7 +109,7 @@ fn render_foreign_object_data_url(
     return None;
   }
 
-  let html = build_foreign_object_document(info, shared_css);
+  let html = build_foreign_object_document(info, shared_css, width, height);
   let background = info.background.unwrap_or(Rgba::TRANSPARENT);
   let context = image_cache.resource_context();
   let policy = context
@@ -174,9 +174,14 @@ fn escape_style_end_tags(css: &str) -> String {
   String::from_utf8(out).unwrap_or_default()
 }
 
-fn build_foreign_object_document(info: &ForeignObjectInfo, shared_css: &str) -> String {
-  let mut html = String::from(
-    "<!DOCTYPE html><html style=\"margin:0;padding:0;width:100%;height:100%;\"><head><meta charset=\"utf-8\">",
+fn build_foreign_object_document(
+  info: &ForeignObjectInfo,
+  shared_css: &str,
+  width: u32,
+  height: u32,
+) -> String {
+  let mut html = format!(
+    "<!DOCTYPE html><html style=\"margin:0;padding:0;width:{width}px;height:{height}px;\"><head><meta charset=\"utf-8\">"
   );
   if !shared_css.trim().is_empty() {
     let sanitized_css = escape_style_end_tags(shared_css);
