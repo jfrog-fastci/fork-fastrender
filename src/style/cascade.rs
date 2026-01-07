@@ -12107,6 +12107,66 @@ mod tests {
   }
 
   #[test]
+  fn focus_vendor_placeholder_selectors_style_placeholder_without_affecting_control_opacity() {
+    // Historically, vendor placeholder selectors used a single-colon pseudo form. These must not be
+    // treated as aliases for `:placeholder-shown`, or declarations like `opacity: 0` would apply to
+    // the control itself (hiding the whole input) instead of the placeholder text.
+    let stylesheet = parse_stylesheet(
+      r#"
+        input:focus:-ms-input-placeholder { opacity: 0; }
+      "#,
+    )
+    .expect("parse stylesheet");
+
+    let focused_empty_input = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("placeholder".to_string(), "Search…".to_string()),
+          ("data-fastr-focus".to_string(), "true".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+    let styled_focused = apply_styles(&focused_empty_input, &stylesheet);
+    assert_eq!(
+      styled_focused.styles.opacity, 1.0,
+      "vendor placeholder selectors should not affect the input element opacity"
+    );
+    let placeholder_styles = styled_focused
+      .placeholder_styles
+      .as_deref()
+      .expect("expected ::placeholder pseudo styles");
+    assert_eq!(
+      placeholder_styles.opacity, 0.0,
+      "vendor placeholder selectors should target the placeholder pseudo-element"
+    );
+
+    let unfocused_empty_input = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("placeholder".to_string(), "Search…".to_string())],
+      },
+      children: vec![],
+    };
+    let styled_unfocused = apply_styles(&unfocused_empty_input, &stylesheet);
+    assert_eq!(
+      styled_unfocused.styles.opacity, 1.0,
+      "unfocused input should retain default opacity"
+    );
+    let unfocused_placeholder_styles = styled_unfocused
+      .placeholder_styles
+      .as_deref()
+      .expect("expected ::placeholder pseudo styles");
+    assert_eq!(
+      unfocused_placeholder_styles.opacity, 0.6,
+      "rule should not match without focus; UA placeholder defaults should apply"
+    );
+  }
+
+  #[test]
   fn overflow_axis_normalization_matches_chrome() {
     let stylesheet = StyleSheet::new();
 
