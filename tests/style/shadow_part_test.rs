@@ -65,11 +65,12 @@ fn part_selector_styles_shadow_content() {
 }
 
 #[test]
-fn part_selector_with_invalid_syntax_is_ignored() {
+fn part_selector_with_multiple_names_matches_intersection() {
   let html = r#"
     <x-host id="host">
       <template shadowroot="open">
-        <span id="label" part="label">Hello</span>
+        <span id="both" part="name badge">Hello</span>
+        <span id="name-only" part="name">Hello</span>
       </template>
     </x-host>
   "#;
@@ -91,11 +92,11 @@ fn part_selector_with_invalid_syntax_is_ignored() {
     None,
     None,
   );
-  let baseline_label = find_by_id(&baseline, "label").expect("shadow element");
-  let baseline_color = baseline_label.styles.color;
+  let baseline_name_only = find_by_id(&baseline, "name-only").expect("shadow element");
+  let baseline_name_only_color = baseline_name_only.styles.color;
 
-  let stylesheet = parse_stylesheet("x-host::part(name badge) { color: rgb(4, 5, 6); }")
-    .expect("stylesheet still parses with errors dropped");
+  let stylesheet =
+    parse_stylesheet("x-host::part(name badge) { color: rgb(4, 5, 6); }").expect("stylesheet");
   let style_set = StyleSet {
     document: stylesheet,
     shadows: HashMap::new(),
@@ -103,9 +104,12 @@ fn part_selector_with_invalid_syntax_is_ignored() {
   let styled = apply_style_set_with_media_target_and_imports(
     &dom, &style_set, &media, None, None, None, None, None, None,
   );
-  let label = find_by_id(&styled, "label").expect("shadow element");
+  let both = find_by_id(&styled, "both").expect("shadow element");
+  let name_only = find_by_id(&styled, "name-only").expect("shadow element");
 
-  assert_eq!(label.styles.color, baseline_color);
+  assert_eq!(both.styles.color, Rgba::rgb(4, 5, 6));
+  assert_eq!(name_only.styles.color, baseline_name_only_color);
+  assert_ne!(name_only.styles.color, Rgba::rgb(4, 5, 6));
 }
 
 #[test]

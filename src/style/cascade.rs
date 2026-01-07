@@ -3967,7 +3967,12 @@ fn hash_pseudo_element_for_dedup(state: &mut impl Hasher, pseudo: &PseudoElement
         hash_selector_for_dedup(state, selector);
       }
     }
-    PseudoElement::Part(name) => name.hash(state),
+    PseudoElement::Part(names) => {
+      names.len().hash(state);
+      for name in names.iter() {
+        name.hash(state);
+      }
+    }
     PseudoElement::Vendor(name) => name.hash(state),
     _ => {}
   }
@@ -6389,13 +6394,22 @@ impl<'a> RuleIndex<'a> {
       .filter(|pseudo| matches!(pseudo, PseudoElement::Part(_)))
       .collect();
     part_pseudo_keys.sort_unstable_by(|a, b| {
-      let PseudoElement::Part(a_name) = *a else {
+      let PseudoElement::Part(a_names) = *a else {
         unreachable!("build_part_index only sorts ::part pseudos")
       };
-      let PseudoElement::Part(b_name) = *b else {
+      let PseudoElement::Part(b_names) = *b else {
         unreachable!("build_part_index only sorts ::part pseudos")
       };
-      a_name.as_str().cmp(b_name.as_str())
+      let a_names: &[CssString] = a_names.as_ref();
+      let b_names: &[CssString] = b_names.as_ref();
+      let len = a_names.len().min(b_names.len());
+      for idx in 0..len {
+        let cmp = a_names[idx].as_str().cmp(b_names[idx].as_str());
+        if cmp != CmpOrdering::Equal {
+          return cmp;
+        }
+      }
+      a_names.len().cmp(&b_names.len())
     });
 
     for pseudo in part_pseudo_keys {
@@ -6406,8 +6420,10 @@ impl<'a> RuleIndex<'a> {
       self.part_pseudos.push(PartPseudoInfo {
         pseudo: pseudo.clone(),
       });
-      let key = selector_bucket_part(required.as_str());
-      self.part_lookup.entry(key).or_default().push(idx);
+      for name in required.iter() {
+        let key = selector_bucket_part(name.as_str());
+        self.part_lookup.entry(key).or_default().push(idx);
+      }
     }
   }
 
@@ -10082,10 +10098,13 @@ fn match_part_rules<'a>(
         for idx in candidates {
           let info = &rules.part_pseudos[idx];
           let required = match &info.pseudo {
-            PseudoElement::Part(name) => name.as_str(),
+            PseudoElement::Part(names) => names.as_ref(),
             _ => continue,
           };
-          if !name_set.contains(required) {
+          if !required
+            .iter()
+            .all(|name| name_set.contains(name.as_str()))
+          {
             continue;
           }
           // allow_shadow_host prevents document-scope ::part selectors from exposing :host context.
@@ -12846,7 +12865,10 @@ mod tests {
         .part_pseudos
         .iter()
         .map(|info| match &info.pseudo {
-          PseudoElement::Part(name) => name.as_str(),
+          PseudoElement::Part(names) => names
+            .first()
+            .expect("part pseudo should have at least one name")
+            .as_str(),
           other => panic!("unexpected part pseudo info: {other:?}"),
         })
         .collect();
@@ -12856,6 +12878,38 @@ mod tests {
       sorted.sort_unstable();
       assert_eq!(part_names, sorted);
     }
+  }
+
+  fn find_styled_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
+    if node.node.get_attribute_ref("id") == Some(id) {
+      return Some(node);
+    }
+    node
+      .children
+      .iter()
+      .find_map(|child| find_styled_by_id(child, id))
+  }
+
+  #[test]
+  fn part_selector_with_multiple_names_matches_intersection() {
+    let html = r#"
+      <x-host id="host">
+        <template shadowroot="open">
+          <span id="both" part="name badge">Hello</span>
+          <span id="name-only" part="name">Hello</span>
+        </template>
+      </x-host>
+    "#;
+
+    let dom = crate::dom::parse_html(html).expect("parsed html");
+    let stylesheet =
+      parse_stylesheet("x-host::part(name badge) { color: rgb(4, 5, 6); }").expect("stylesheet");
+    let styled = apply_styles(&dom, &stylesheet);
+
+    let both = find_styled_by_id(&styled, "both").expect("both part element");
+    let name_only = find_styled_by_id(&styled, "name-only").expect("name-only part element");
+    assert_eq!(both.styles.color, Rgba::rgb(4, 5, 6));
+    assert_ne!(name_only.styles.color, Rgba::rgb(4, 5, 6));
   }
 
   #[test]
