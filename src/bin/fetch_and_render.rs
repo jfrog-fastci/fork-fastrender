@@ -368,8 +368,7 @@ fn try_main(args: Args) -> Result<()> {
         base_url_override,
       );
       let _ = tx.send(res);
-    })
-    .expect("spawn render worker");
+    })?;
 
   if let Some(secs) = timeout_secs {
     match rx.recv_timeout(Duration::from_secs(secs)) {

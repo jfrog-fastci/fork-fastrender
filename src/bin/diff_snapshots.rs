@@ -872,8 +872,10 @@ fn diff_box_structure(
   let shared = before.children.len().min(after.children.len());
   for idx in 0..shared {
     path.push(idx);
-    let child_before = before.children.get(idx).unwrap();
-    let child_after = after.children.get(idx).unwrap();
+    let (Some(child_before), Some(child_after)) = (before.children.get(idx), after.children.get(idx))
+    else {
+      break;
+    };
     let raw_b = raw_child(raw_before, idx);
     let raw_a = raw_child(raw_after, idx);
     diff_box_structure(child_before, child_after, raw_b, raw_a, path, out);

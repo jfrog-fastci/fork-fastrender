@@ -5,6 +5,14 @@
 
 use fastrender::css::loader::resolve_href;
 use regex::Regex;
+use std::sync::OnceLock;
+
+fn regex_or_none(lock: &'static OnceLock<Result<Regex, regex::Error>>, pattern: &str) -> Option<&'static Regex> {
+  match lock.get_or_init(|| Regex::new(pattern)) {
+    Ok(re) => Some(re),
+    Err(_) => None,
+  }
+}
 
 /// Extract inline CSS-like text from an HTML string.
 ///
@@ -25,11 +33,22 @@ pub fn extract_inline_css_chunks(html: &str) -> Vec<String> {
 
   // Best-effort: this is not a full HTML parser, but is sufficient for capturing deterministic
   // offline bundles from the common authoring patterns.
-  let style_tag = Regex::new("(?is)<style[^>]*>(.*?)</style>").expect("style tag regex");
-  let style_attr_double =
-    Regex::new("(?is)\\bstyle\\s*=\\s*\"([^\"]*)\"").expect("style attr double regex");
-  let style_attr_single =
-    Regex::new("(?is)\\bstyle\\s*=\\s*'([^']*)'").expect("style attr single regex");
+  static STYLE_TAG: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+  static STYLE_ATTR_DOUBLE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+  static STYLE_ATTR_SINGLE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+
+  let Some(style_tag) = regex_or_none(&STYLE_TAG, "(?is)<style[^>]*>(.*?)</style>") else {
+    return Vec::new();
+  };
+  let Some(style_attr_double) =
+    regex_or_none(&STYLE_ATTR_DOUBLE, "(?is)\\bstyle\\s*=\\s*\"([^\"]*)\"")
+  else {
+    return Vec::new();
+  };
+  let Some(style_attr_single) = regex_or_none(&STYLE_ATTR_SINGLE, "(?is)\\bstyle\\s*=\\s*'([^']*)'")
+  else {
+    return Vec::new();
+  };
 
   let mut out = Vec::new();
   out.extend(capture_group(&style_tag, html));
@@ -50,12 +69,28 @@ pub fn discover_html_image_urls(html: &str, base_url: &str) -> Vec<String> {
   let html = fastrender::html::strip_template_contents(html);
   let html = html.as_ref();
 
-  let img_src = Regex::new("(?is)<img[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
-    .expect("img src regex");
-  let img_srcset = Regex::new("(?is)<img[^>]*\\ssrcset\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
-    .expect("img srcset regex");
-  let source_srcset = Regex::new("(?is)<source[^>]*\\ssrcset\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')")
-    .expect("source srcset regex");
+  static IMG_SRC: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+  static IMG_SRCSET: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+  static SOURCE_SRCSET: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+
+  let Some(img_src) = regex_or_none(
+    &IMG_SRC,
+    "(?is)<img[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
+  ) else {
+    return Vec::new();
+  };
+  let Some(img_srcset) = regex_or_none(
+    &IMG_SRCSET,
+    "(?is)<img[^>]*\\ssrcset\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')",
+  ) else {
+    return Vec::new();
+  };
+  let Some(source_srcset) = regex_or_none(
+    &SOURCE_SRCSET,
+    "(?is)<source[^>]*\\ssrcset\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')",
+  ) else {
+    return Vec::new();
+  };
 
   let mut urls = Vec::new();
   for caps in img_src.captures_iter(html) {

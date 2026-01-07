@@ -287,13 +287,20 @@ fn css_unescape(input: &str) -> String {
     }
 
     if next.is_ascii_hexdigit() {
-      let mut value: u32 = next.to_digit(16).unwrap();
+      let Some(mut value) = next.to_digit(16) else {
+        // `is_ascii_hexdigit` should guarantee this, but avoid panicking on unexpected inputs.
+        out.push(next);
+        continue;
+      };
       let mut digits = 1usize;
       while digits < 6 {
         match chars.peek().copied() {
           Some(c) if c.is_ascii_hexdigit() => {
             let _ = chars.next();
-            value = (value << 4) | c.to_digit(16).unwrap();
+            let Some(digit) = c.to_digit(16) else {
+              break;
+            };
+            value = (value << 4) | digit;
             digits += 1;
           }
           _ => break,
@@ -325,14 +332,21 @@ fn collect_css_content_strings(
 ) {
   // Best-effort extraction: find `content: ...` declarations, then scan quoted strings inside.
   // This keeps the feature lightweight while still catching common pseudo-element content usage.
-  static CONTENT_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-  static STRING_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+  static CONTENT_RE: std::sync::OnceLock<Result<Regex, regex::Error>> = std::sync::OnceLock::new();
+  static STRING_RE: std::sync::OnceLock<Result<Regex, regex::Error>> = std::sync::OnceLock::new();
 
-  let content_re = CONTENT_RE
-    .get_or_init(|| Regex::new(r"(?is)(?:^|[;{\s])content\s*:\s*([^;}]*)").expect("content regex"));
-  let string_re = STRING_RE.get_or_init(|| {
-    Regex::new(r#"(?s)"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'"#).expect("string regex")
-  });
+  let content_re = match CONTENT_RE
+    .get_or_init(|| Regex::new(r"(?is)(?:^|[;{\s])content\s*:\s*([^;}]*)"))
+  {
+    Ok(re) => re,
+    Err(_) => return,
+  };
+  let string_re = match STRING_RE
+    .get_or_init(|| Regex::new(r#"(?s)"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'"#))
+  {
+    Ok(re) => re,
+    Err(_) => return,
+  };
 
   // Guard against pathological inline styles (e.g., embedded data URIs).
   let css = if css.len() > 256 * 1024 {

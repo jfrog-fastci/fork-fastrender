@@ -1133,10 +1133,9 @@ fn build_manifest(
   let mut manifest_resources: BTreeMap<String, BundledResourceInfo> = BTreeMap::new();
   let mut content_paths: HashMap<(String, [u8; 32]), String> = HashMap::new();
   let mut resource_index: usize = 0;
-  let mut urls: Vec<String> = recorded.keys().cloned().collect();
-  urls.sort();
-  for url in urls.iter() {
-    let res = recorded.get(url).unwrap();
+  let mut recorded_entries: Vec<(String, FetchedResource)> = recorded.into_iter().collect();
+  recorded_entries.sort_by(|a, b| a.0.cmp(&b.0));
+  for (url, res) in recorded_entries.iter() {
     let ext = extension_for_resource(res, url);
     let mut hasher = Sha256::new();
     hasher.update(&res.bytes);

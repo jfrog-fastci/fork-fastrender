@@ -63,7 +63,14 @@ fn capabilities_json(disk_cache_feature: bool) -> String {
     disk_cache_feature,
     flags,
   };
-  serde_json::to_string(&caps).expect("serialize prefetch_assets capabilities")
+  // This should be infallible for a static `Serialize` struct; avoid panicking in CLI binaries.
+  serde_json::to_string(&caps).unwrap_or_else(|err| {
+    format!(
+      "{{\"name\":\"prefetch_assets\",\"disk_cache_feature\":{},\"error\":\"{}\"}}",
+      disk_cache_feature,
+      err.to_string().replace('\"', "\\\"")
+    )
+  })
 }
 
 fn print_capabilities(disk_cache_feature: bool) {
@@ -677,12 +684,14 @@ mod disk_cache_main {
     max_total: usize,
   ) {
     const MAX_IFRAMES_PER_PAGE: usize = 32;
-    static IFRAME_SRC: OnceLock<Regex> = OnceLock::new();
+    static IFRAME_SRC: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
 
-    let iframe_src = IFRAME_SRC.get_or_init(|| {
+    let iframe_src = match IFRAME_SRC.get_or_init(|| {
       Regex::new("(?is)<iframe[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
-        .expect("valid iframe src regex")
-    });
+    }) {
+      Ok(re) => re,
+      Err(_) => return,
+    };
 
     let mut inserted = 0usize;
     for caps in iframe_src.captures_iter(html) {
@@ -719,20 +728,26 @@ mod disk_cache_main {
     max_total: usize,
   ) {
     const MAX_ICONS_PER_PAGE: usize = 32;
-    static LINK_TAG: OnceLock<Regex> = OnceLock::new();
-    static ATTR_REL: OnceLock<Regex> = OnceLock::new();
-    static ATTR_HREF: OnceLock<Regex> = OnceLock::new();
+    static LINK_TAG: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+    static ATTR_REL: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+    static ATTR_HREF: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
 
-    let link_tag =
-      LINK_TAG.get_or_init(|| Regex::new("(?is)<link\\b[^>]*>").expect("valid link tag regex"));
-    let attr_rel = ATTR_REL.get_or_init(|| {
+    let link_tag = match LINK_TAG.get_or_init(|| Regex::new("(?is)<link\\b[^>]*>")) {
+      Ok(re) => re,
+      Err(_) => return,
+    };
+    let attr_rel = match ATTR_REL.get_or_init(|| {
       Regex::new("(?is)(?:^|\\s)rel\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
-        .expect("valid rel attr regex")
-    });
-    let attr_href = ATTR_HREF.get_or_init(|| {
+    }) {
+      Ok(re) => re,
+      Err(_) => return,
+    };
+    let attr_href = match ATTR_HREF.get_or_init(|| {
       Regex::new("(?is)(?:^|\\s)href\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
-        .expect("valid href attr regex")
-    });
+    }) {
+      Ok(re) => re,
+      Err(_) => return,
+    };
 
     let mut inserted = 0usize;
     for caps in link_tag.captures_iter(html) {
@@ -836,20 +851,26 @@ mod disk_cache_main {
     max_total: usize,
   ) {
     const MAX_VIDEO_POSTERS_PER_PAGE: usize = 32;
-    static VIDEO_TAG: OnceLock<Regex> = OnceLock::new();
-    static VIDEO_POSTER_ATTR: OnceLock<Regex> = OnceLock::new();
-    static VIDEO_GNT_GL_PS_ATTR: OnceLock<Regex> = OnceLock::new();
+    static VIDEO_TAG: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+    static VIDEO_POSTER_ATTR: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+    static VIDEO_GNT_GL_PS_ATTR: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
 
-    let video_tag_re =
-      VIDEO_TAG.get_or_init(|| Regex::new("(?is)<video\\b[^>]*>").expect("valid video tag regex"));
-    let video_poster_attr = VIDEO_POSTER_ATTR.get_or_init(|| {
+    let video_tag_re = match VIDEO_TAG.get_or_init(|| Regex::new("(?is)<video\\b[^>]*>")) {
+      Ok(re) => re,
+      Err(_) => return,
+    };
+    let video_poster_attr = match VIDEO_POSTER_ATTR.get_or_init(|| {
       Regex::new("(?is)\\sposter\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
-        .expect("valid video poster attribute regex")
-    });
-    let video_gnt_gl_ps_attr = VIDEO_GNT_GL_PS_ATTR.get_or_init(|| {
+    }) {
+      Ok(re) => re,
+      Err(_) => return,
+    };
+    let video_gnt_gl_ps_attr = match VIDEO_GNT_GL_PS_ATTR.get_or_init(|| {
       Regex::new("(?is)\\sgnt-gl-ps\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))")
-        .expect("valid video gnt-gl-ps attribute regex")
-    });
+    }) {
+      Ok(re) => re,
+      Err(_) => return,
+    };
 
     let mut inserted = 0usize;
     for tag_match in video_tag_re.find_iter(html) {
@@ -948,17 +969,19 @@ mod disk_cache_main {
     max_total: usize,
   ) {
     const MAX_EMBED_DOCS_PER_PAGE: usize = 32;
-    static EMBED_DOC: OnceLock<Regex> = OnceLock::new();
+    static EMBED_DOC: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
 
-    let embed_doc = EMBED_DOC.get_or_init(|| {
+    let embed_doc = match EMBED_DOC.get_or_init(|| {
       Regex::new(concat!(
         "(?is)",
         "<object[^>]*\\sdata\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
         "|",
         "<embed[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
       ))
-      .expect("valid embed document regex")
-    });
+    }) {
+      Ok(re) => re,
+      Err(_) => return,
+    };
 
     let mut inserted = 0usize;
     for caps in embed_doc.captures_iter(html) {
@@ -3453,10 +3476,13 @@ body { background-image: url(/bg.png); }
     );
     println!();
 
-    let pool = ThreadPoolBuilder::new()
-      .num_threads(args.jobs)
-      .build()
-      .expect("create thread pool");
+    let pool = match ThreadPoolBuilder::new().num_threads(args.jobs).build() {
+      Ok(pool) => pool,
+      Err(err) => {
+        eprintln!("Failed to create thread pool with {} job(s): {err}", args.jobs);
+        std::process::exit(2);
+      }
+    };
 
     let mut results: Vec<PageSummary> = pool.install(|| {
       selected

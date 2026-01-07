@@ -232,6 +232,11 @@ fn fetch_page(
 fn main() {
   let args = Args::parse();
 
+  if args.jobs == 0 {
+    eprintln!("jobs must be > 0");
+    std::process::exit(2);
+  }
+
   let (pageset_entries, collisions) = match build_pageset_entries(args.allow_collisions) {
     Ok(result) => result,
     Err(msg) => {
@@ -246,7 +251,10 @@ fn main() {
     .as_ref()
     .and_then(|pages| PagesetFilter::from_inputs(pages));
 
-  fs::create_dir_all(CACHE_HTML_DIR).expect("create cache dir");
+  if let Err(err) = fs::create_dir_all(CACHE_HTML_DIR) {
+    eprintln!("Failed to create cache dir {CACHE_HTML_DIR}: {err}");
+    std::process::exit(1);
+  }
 
   let selected = selected_pages(&pageset_entries, page_filter.as_ref(), args.shard);
   if selected.is_empty() {
@@ -305,8 +313,14 @@ fn main() {
 
   let pool = ThreadPoolBuilder::new()
     .num_threads(args.jobs)
-    .build()
-    .expect("create thread pool");
+    .build();
+  let pool = match pool {
+    Ok(pool) => pool,
+    Err(err) => {
+      eprintln!("Failed to create thread pool: {err}");
+      std::process::exit(1);
+    }
+  };
 
   pool.scope(|s| {
     for entry in &selected {

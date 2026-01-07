@@ -1145,7 +1145,7 @@ fn find_budget_failures(fixtures: &[FixtureSummary]) -> Vec<BudgetFailure> {
         .entries()
         .into_iter()
         .filter(|(_, value)| *value > 0.0)
-        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        .max_by(|a, b| a.1.total_cmp(&b.1));
 
       failures.push(BudgetFailure {
         fixture: fixture.name.clone(),
@@ -1397,7 +1397,7 @@ fn sorted_by_total_ok(fixtures: &[FixtureSummary]) -> Vec<FixtureSummary> {
     .filter(|fixture| fixture.status == FixtureStatus::Ok)
     .cloned()
     .collect();
-  sorted.sort_by(|a, b| b.total_ms.partial_cmp(&a.total_ms).unwrap());
+  sorted.sort_by(|a, b| b.total_ms.total_cmp(&a.total_ms));
   sorted
 }
 

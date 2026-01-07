@@ -23,7 +23,7 @@ use fastrender::{Error, LayoutParallelism, Result};
 use memchr::memchr;
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -288,6 +288,11 @@ pub struct CachedDocument {
   pub byte_len: usize,
 }
 
+/// Cached HTML documents are untrusted input; cap reads so a corrupt cache can't OOM the CLI.
+const MAX_CACHED_HTML_BYTES: u64 = 50 * 1024 * 1024; // 50MB
+/// Sidecar metadata blobs are expected to be tiny; cap reads defensively.
+const MAX_CACHED_HTML_META_BYTES: usize = 256 * 1024;
+
 /// Decode a fetched HTML resource using the provided base URL hint.
 pub fn decode_html_resource(resource: &FetchedResource, base_hint: &str) -> PreparedDocument {
   let html = decode_html_bytes(&resource.bytes, resource.content_type.as_deref());
@@ -296,6 +301,19 @@ pub fn decode_html_resource(resource: &FetchedResource, base_hint: &str) -> Prep
 
 /// Load cached HTML from disk, honoring optional sidecar metadata.
 pub fn read_cached_document(path: &Path) -> Result<CachedDocument> {
+  let meta = std::fs::metadata(path).map_err(Error::Io)?;
+  if meta.len() > MAX_CACHED_HTML_BYTES {
+    return Err(Error::Io(io::Error::new(
+      io::ErrorKind::InvalidData,
+      format!(
+        "cached HTML file too large ({} bytes, max {}) at {}",
+        meta.len(),
+        MAX_CACHED_HTML_BYTES,
+        path.display()
+      ),
+    )));
+  }
+
   let bytes = std::fs::read(path).map_err(Error::Io)?;
 
   let mut meta_path = path.to_path_buf();
@@ -304,7 +322,23 @@ pub fn read_cached_document(path: &Path) -> Result<CachedDocument> {
   } else {
     meta_path.set_extension("meta");
   }
-  let meta = std::fs::read_to_string(&meta_path).ok();
+  let meta = match std::fs::read(&meta_path) {
+    Ok(buf) => {
+      if buf.len() > MAX_CACHED_HTML_META_BYTES {
+        return Err(Error::Io(io::Error::new(
+          io::ErrorKind::InvalidData,
+          format!(
+            "cached HTML meta file too large ({} bytes, max {}) at {}",
+            buf.len(),
+            MAX_CACHED_HTML_META_BYTES,
+            meta_path.display()
+          ),
+        )));
+      }
+      Some(String::from_utf8_lossy(&buf).into_owned())
+    }
+    Err(_) => None,
+  };
   let parsed_meta = meta
     .as_deref()
     .map(parse_cached_html_meta)
@@ -564,7 +598,7 @@ pub fn follow_client_redirects_resource(
   resource.final_url.get_or_insert(base_hint.clone());
   let doc = decode_html_resource(&resource, &base_hint);
 
-  let FollowClientRedirectsState { resource, .. } = follow_client_redirects_state(
+  let FollowClientRedirectsState { doc, resource } = follow_client_redirects_state(
     fetcher,
     FollowClientRedirectsState {
       doc,
@@ -574,7 +608,19 @@ pub fn follow_client_redirects_resource(
     &mut log,
   );
 
-  resource.expect("keep_resource=true should preserve the last successful fetch")
+  match resource {
+    Some(res) => res,
+    None => {
+      // `keep_resource=true` should ensure we always have the last successful fetch here.
+      // Avoid panicking in CLI binaries; synthesize a minimal HTML resource so callers still
+      // proceed deterministically.
+      log("Warning: internal error: redirect following lost the HTML resource; using decoded document text");
+      let mut res =
+        FetchedResource::with_final_url(doc.html.into_bytes(), Some("text/html".to_string()), None);
+      res.final_url = Some(doc.base_hint);
+      res
+    }
+  }
 }
 
 #[cfg(test)]

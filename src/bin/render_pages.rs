@@ -696,7 +696,7 @@ fn build_render_shared(
   render_timeout_secs: Option<u64>,
   fetch_timeout_secs: Option<u64>,
   soft_timeout_ms: Option<u64>,
-) -> RenderShared {
+) -> io::Result<RenderShared> {
   // Create shared caching fetcher
   let http = build_http_fetcher(
     &args.user_agent,
@@ -779,9 +779,9 @@ fn build_render_shared(
       .with_fetcher(Arc::clone(&fetcher))
       .with_pool_size(pool_size),
   )
-  .expect("create render pool");
+  .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("create render pool: {err}")))?;
 
-  RenderShared {
+  Ok(RenderShared {
     render_pool,
     fetcher,
     base_options: options,
@@ -794,11 +794,11 @@ fn build_render_shared(
     viewport: args.viewport,
     user_agent: args.user_agent.clone(),
     timeout_secs: render_timeout_secs,
-  }
+  })
 }
 
 fn should_panic_for_test(stem: &str) -> bool {
-  // Test hook: panic within the render worker when the configured stem matches.
+  // Test hook: simulate a crash within the render worker when the configured stem matches.
   match std::env::var("FASTR_TEST_RENDER_PANIC_STEM") {
     Ok(value) => value
       .split(',')
@@ -848,10 +848,15 @@ fn render_panic_result(
 fn render_entry(shared: &RenderShared, entry: &CachedEntry) -> PageResult {
   let started = Instant::now();
   apply_test_render_delay(Some(&entry.stem));
+  if should_panic_for_test(&entry.stem) {
+    return render_panic_result(
+      shared,
+      entry,
+      started,
+      format!("simulated crash for {}", entry.stem),
+    );
+  }
   let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-    if should_panic_for_test(&entry.stem) {
-      panic!("FASTR_TEST_RENDER_PANIC_STEM triggered for {}", entry.stem);
-    }
     render_entry_inner(shared, entry)
   }));
   match result {
@@ -941,7 +946,7 @@ fn render_entry_inner(shared: &RenderShared, entry: &CachedEntry) -> PageResult 
           let result = std::panic::catch_unwind(AssertUnwindSafe(render_work));
           let _ = tx.send(result);
         })
-        .expect("spawn render worker");
+        .map_err(|err| Status::Crash(format!("spawn render worker: {err}")))?;
 
       if let Some(secs) = timeout_secs {
         match rx.recv_timeout(Duration::from_secs(secs)) {
@@ -1092,14 +1097,14 @@ fn run_in_process(
     Some(args.timeout),
     Some(args.timeout),
     soft_timeout_ms,
-  );
+  )?;
   let results: Mutex<Vec<PageResult>> = Mutex::new(Vec::new());
 
   // Use a thread pool with limited concurrency
   let thread_pool = rayon::ThreadPoolBuilder::new()
     .num_threads(args.jobs)
     .build()
-    .expect("create thread pool");
+    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("create thread pool: {e}")))?;
 
   thread_pool.scope(|s| {
     for entry in entries {
@@ -1108,12 +1113,19 @@ fn run_in_process(
       let results = &results;
       s.spawn(move |_| {
         let result = render_entry(&shared, &entry);
-        results.lock().unwrap().push(result);
+        let mut guard = match results.lock() {
+          Ok(guard) => guard,
+          Err(poisoned) => poisoned.into_inner(),
+        };
+        guard.push(result);
       });
     }
   });
 
-  let mut results = results.into_inner().unwrap();
+  let mut results = match results.into_inner() {
+    Ok(results) => results,
+    Err(poisoned) => poisoned.into_inner(),
+  };
   results.sort_by(|a, b| a.name.cmp(&b.name));
   Ok(results)
 }
@@ -1423,7 +1435,7 @@ fn worker_main(worker_args: WorkerArgs) -> io::Result<()> {
 
   let hard_timeout = Duration::from_secs(args.timeout);
   let soft_timeout_ms = compute_soft_timeout_ms(hard_timeout, args.soft_timeout_ms);
-  let shared = build_render_shared(&args, 1, None, Some(args.timeout), soft_timeout_ms);
+  let shared = build_render_shared(&args, 1, None, Some(args.timeout), soft_timeout_ms)?;
 
   fs::create_dir_all(&args.out_dir)?;
   let _ = fs::create_dir_all(&args.cache_dir);

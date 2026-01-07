@@ -251,6 +251,20 @@ enum ImportError {
   TomlSer(#[from] toml::ser::Error),
 }
 
+fn compile_regex(label: &str, pattern: &str) -> Result<Regex> {
+  Regex::new(pattern).map_err(|e| {
+    ImportError::Message(format!("internal error: failed to compile {label} regex: {e}"))
+  })
+}
+
+fn caps_full<'a>(caps: &'a regex::Captures<'a>) -> &'a str {
+  caps.get(0).map(|m| m.as_str()).unwrap_or("")
+}
+
+fn caps_named<'a>(caps: &'a regex::Captures<'a>, name: &str) -> Option<&'a str> {
+  caps.name(name).map(|m| m.as_str())
+}
+
 fn run_import(config: ImportConfig) -> Result<ImportSummary> {
   let tests = discover_tests(&config)?;
   let mut summary = ImportSummary::default();
@@ -472,37 +486,54 @@ fn rewrite_html(
     }
   }
 
-  let attr_regex = Regex::new(
+  let attr_regex = compile_regex(
+    "html attr quoted",
     "(?i)(?P<prefix>\\s(?:src|poster|data)\\s*=\\s*[\"'])(?P<url>[^\"'>]+)(?P<suffix>[\"'])",
-  )
-  .unwrap();
-  let url_regex =
-    Regex::new("(?i)(?P<prefix>url\\(\\s*[\"']?)(?P<url>[^\"')]+)(?P<suffix>[\"']?\\s*\\))")
-      .unwrap();
-  let import_regex =
-    Regex::new("(?i)(?P<prefix>@import\\s+['\"])(?P<url>[^\"']+)(?P<suffix>['\"])").unwrap();
-  let attr_unquoted_regex =
-    Regex::new("(?i)(?P<prefix>\\s(?:src|poster|data)\\s*=\\s*)(?P<url>[^\\s\"'>]+)").unwrap();
-  let svg_href_regex = Regex::new(
+  )?;
+  let url_regex = compile_regex(
+    "css url",
+    "(?i)(?P<prefix>url\\(\\s*[\"']?)(?P<url>[^\"')]+)(?P<suffix>[\"']?\\s*\\))",
+  )?;
+  let import_regex = compile_regex(
+    "css @import",
+    "(?i)(?P<prefix>@import\\s+['\"])(?P<url>[^\"']+)(?P<suffix>['\"])",
+  )?;
+  let attr_unquoted_regex = compile_regex(
+    "html attr unquoted",
+    "(?i)(?P<prefix>\\s(?:src|poster|data)\\s*=\\s*)(?P<url>[^\\s\"'>]+)",
+  )?;
+  let svg_href_regex = compile_regex(
+    "svg href quoted",
     "(?is)(?P<prefix><(?:image|use|feimage)\\b[^>]*?\\shref\\s*=\\s*[\"'])(?P<url>[^\"'>]+)(?P<suffix>[\"'])",
-  )
-  .unwrap();
-  let svg_href_unquoted_regex = Regex::new(
+  )?;
+  let svg_href_unquoted_regex = compile_regex(
+    "svg href unquoted",
     "(?is)(?P<prefix><(?:image|use|feimage)\\b[^>]*?\\shref\\s*=\\s*)(?P<url>[^\\s\"'>]+)",
-  )
-  .unwrap();
-  let srcset_double =
-    Regex::new("(?i)(?P<prefix>\\ssrcset\\s*=\\s*\")(?P<value>[^\"]*)(?P<suffix>\")").unwrap();
-  let srcset_single =
-    Regex::new("(?i)(?P<prefix>\\ssrcset\\s*=\\s*')(?P<value>[^']*)(?P<suffix>')").unwrap();
-  let srcset_unquoted =
-    Regex::new("(?i)(?P<prefix>\\ssrcset\\s*=\\s*)(?P<value>[^\\s\"'>]+)").unwrap();
-  let imagesrcset_double =
-    Regex::new("(?i)(?P<prefix>\\simagesrcset\\s*=\\s*\")(?P<value>[^\"]*)(?P<suffix>\")").unwrap();
-  let imagesrcset_single =
-    Regex::new("(?i)(?P<prefix>\\simagesrcset\\s*=\\s*')(?P<value>[^']*)(?P<suffix>')").unwrap();
-  let imagesrcset_unquoted =
-    Regex::new("(?i)(?P<prefix>\\simagesrcset\\s*=\\s*)(?P<value>[^\\s\"'>]+)").unwrap();
+  )?;
+  let srcset_double = compile_regex(
+    "srcset double quote",
+    "(?i)(?P<prefix>\\ssrcset\\s*=\\s*\")(?P<value>[^\"]*)(?P<suffix>\")",
+  )?;
+  let srcset_single = compile_regex(
+    "srcset single quote",
+    "(?i)(?P<prefix>\\ssrcset\\s*=\\s*')(?P<value>[^']*)(?P<suffix>')",
+  )?;
+  let srcset_unquoted = compile_regex(
+    "srcset unquoted",
+    "(?i)(?P<prefix>\\ssrcset\\s*=\\s*)(?P<value>[^\\s\"'>]+)",
+  )?;
+  let imagesrcset_double = compile_regex(
+    "imagesrcset double quote",
+    "(?i)(?P<prefix>\\simagesrcset\\s*=\\s*\")(?P<value>[^\"]*)(?P<suffix>\")",
+  )?;
+  let imagesrcset_single = compile_regex(
+    "imagesrcset single quote",
+    "(?i)(?P<prefix>\\simagesrcset\\s*=\\s*')(?P<value>[^']*)(?P<suffix>')",
+  )?;
+  let imagesrcset_unquoted = compile_regex(
+    "imagesrcset unquoted",
+    "(?i)(?P<prefix>\\simagesrcset\\s*=\\s*)(?P<value>[^\\s\"'>]+)",
+  )?;
 
   let mut rewritten = apply_rewrite(
     &attr_regex,
@@ -660,11 +691,14 @@ fn rewrite_css(
 
   let mut references = Vec::new();
   let mut seen = HashSet::new();
-  let url_regex =
-    Regex::new("(?i)(?P<prefix>url\\(\\s*[\"']?)(?P<url>[^\"')]+)(?P<suffix>[\"']?\\s*\\))")
-      .unwrap();
-  let import_regex =
-    Regex::new("(?i)(?P<prefix>@import\\s+['\"])(?P<url>[^\"']+)(?P<suffix>['\"])").unwrap();
+  let url_regex = compile_regex(
+    "css url",
+    "(?i)(?P<prefix>url\\(\\s*[\"']?)(?P<url>[^\"')]+)(?P<suffix>[\"']?\\s*\\))",
+  )?;
+  let import_regex = compile_regex(
+    "css @import",
+    "(?i)(?P<prefix>@import\\s+['\"])(?P<url>[^\"']+)(?P<suffix>['\"])",
+  )?;
 
   let mut rewritten = apply_rewrite(
     &url_regex,
@@ -700,19 +734,19 @@ fn apply_rewrite(
 ) -> Result<String> {
   let mut error: Option<ImportError> = None;
   let rewritten = regex
-    .replace_all(input, |caps: &regex::Captures<'_>| match rewrite_reference(
-      config,
-      src_dir,
-      dest_dir,
-      &caps["url"],
-      references,
-      seen,
-    ) {
-      Ok(Some(new_value)) => format!("{}{}{}", &caps["prefix"], new_value, &caps["suffix"]),
-      Ok(None) => caps[0].to_string(),
-      Err(err) => {
-        error = Some(err);
-        caps[0].to_string()
+    .replace_all(input, |caps: &regex::Captures<'_>| {
+      let Some(url) = caps_named(caps, "url") else {
+        return caps_full(caps).to_string();
+      };
+      let prefix = caps_named(caps, "prefix").unwrap_or("");
+      let suffix = caps_named(caps, "suffix").unwrap_or("");
+      match rewrite_reference(config, src_dir, dest_dir, url, references, seen) {
+        Ok(Some(new_value)) => format!("{prefix}{new_value}{suffix}"),
+        Ok(None) => caps_full(caps).to_string(),
+        Err(err) => {
+          error = Some(err);
+          caps_full(caps).to_string()
+        }
       }
     })
     .to_string();
@@ -735,19 +769,18 @@ fn apply_rewrite_no_suffix(
 ) -> Result<String> {
   let mut error: Option<ImportError> = None;
   let rewritten = regex
-    .replace_all(input, |caps: &regex::Captures<'_>| match rewrite_reference(
-      config,
-      src_dir,
-      dest_dir,
-      &caps["url"],
-      references,
-      seen,
-    ) {
-      Ok(Some(new_value)) => format!("{}{}", &caps["prefix"], new_value),
-      Ok(None) => caps[0].to_string(),
-      Err(err) => {
-        error = Some(err);
-        caps[0].to_string()
+    .replace_all(input, |caps: &regex::Captures<'_>| {
+      let Some(url) = caps_named(caps, "url") else {
+        return caps_full(caps).to_string();
+      };
+      let prefix = caps_named(caps, "prefix").unwrap_or("");
+      match rewrite_reference(config, src_dir, dest_dir, url, references, seen) {
+        Ok(Some(new_value)) => format!("{prefix}{new_value}"),
+        Ok(None) => caps_full(caps).to_string(),
+        Err(err) => {
+          error = Some(err);
+          caps_full(caps).to_string()
+        }
       }
     })
     .to_string();
@@ -767,22 +800,27 @@ fn apply_link_href_rewrite(
   references: &mut Vec<Reference>,
   seen: &mut HashSet<PathBuf>,
 ) -> Result<String> {
-  let link_tag = Regex::new("(?is)<link\\b[^>]*>").unwrap();
-  let rel_attr =
-    Regex::new("(?is)(?:^|\\s)rel\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))").unwrap();
-  let href_quoted =
-    Regex::new("(?is)(?P<prefix>(?:^|\\s)href\\s*=\\s*[\"'])(?P<url>[^\"'>]+)(?P<suffix>[\"'])")
-      .unwrap();
-  let href_unquoted =
-    Regex::new("(?is)(?P<prefix>(?:^|\\s)href\\s*=\\s*)(?P<url>[^\\s\"'>]+)").unwrap();
+  let link_tag = compile_regex("link tag", "(?is)<link\\b[^>]*>")?;
+  let rel_attr = compile_regex(
+    "link rel attribute",
+    "(?is)(?:^|\\s)rel\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
+  )?;
+  let href_quoted = compile_regex(
+    "link href quoted",
+    "(?is)(?P<prefix>(?:^|\\s)href\\s*=\\s*[\"'])(?P<url>[^\"'>]+)(?P<suffix>[\"'])",
+  )?;
+  let href_unquoted = compile_regex(
+    "link href unquoted",
+    "(?is)(?P<prefix>(?:^|\\s)href\\s*=\\s*)(?P<url>[^\\s\"'>]+)",
+  )?;
 
   let mut error: Option<ImportError> = None;
   let rewritten = link_tag
     .replace_all(input, |caps: &regex::Captures<'_>| {
       if error.is_some() {
-        return caps[0].to_string();
+        return caps_full(caps).to_string();
       }
-      let tag = &caps[0];
+      let tag = caps_full(caps);
 
       let Some(rel_caps) = rel_attr.captures(tag) else {
         return tag.to_string();
@@ -799,12 +837,17 @@ fn apply_link_href_rewrite(
 
       let mut out = href_quoted
         .replace_all(tag, |caps: &regex::Captures<'_>| {
-          match rewrite_reference(config, src_dir, dest_dir, &caps["url"], references, seen) {
-            Ok(Some(new_value)) => format!("{}{}{}", &caps["prefix"], new_value, &caps["suffix"]),
-            Ok(None) => caps[0].to_string(),
+          let Some(url) = caps_named(caps, "url") else {
+            return caps_full(caps).to_string();
+          };
+          let prefix = caps_named(caps, "prefix").unwrap_or("");
+          let suffix = caps_named(caps, "suffix").unwrap_or("");
+          match rewrite_reference(config, src_dir, dest_dir, url, references, seen) {
+            Ok(Some(new_value)) => format!("{prefix}{new_value}{suffix}"),
+            Ok(None) => caps_full(caps).to_string(),
             Err(err) => {
               error = Some(err);
-              caps[0].to_string()
+              caps_full(caps).to_string()
             }
           }
         })
@@ -812,12 +855,16 @@ fn apply_link_href_rewrite(
 
       out = href_unquoted
         .replace_all(&out, |caps: &regex::Captures<'_>| {
-          match rewrite_reference(config, src_dir, dest_dir, &caps["url"], references, seen) {
-            Ok(Some(new_value)) => format!("{}{}", &caps["prefix"], new_value),
-            Ok(None) => caps[0].to_string(),
+          let Some(url) = caps_named(caps, "url") else {
+            return caps_full(caps).to_string();
+          };
+          let prefix = caps_named(caps, "prefix").unwrap_or("");
+          match rewrite_reference(config, src_dir, dest_dir, url, references, seen) {
+            Ok(Some(new_value)) => format!("{prefix}{new_value}"),
+            Ok(None) => caps_full(caps).to_string(),
             Err(err) => {
               error = Some(err);
-              caps[0].to_string()
+              caps_full(caps).to_string()
             }
           }
         })
@@ -842,35 +889,44 @@ fn apply_xlink_href_rewrite(
   references: &mut Vec<Reference>,
   seen: &mut HashSet<PathBuf>,
 ) -> Result<String> {
-  let tag_with_xlink =
-    Regex::new("(?is)<(?P<tag>[a-z0-9:_-]+)\\b[^>]*\\sxlink:href\\b[^>]*>").unwrap();
-  let xlink_quoted = Regex::new(
+  let tag_with_xlink = compile_regex(
+    "tag with xlink:href",
+    "(?is)<(?P<tag>[a-z0-9:_-]+)\\b[^>]*\\sxlink:href\\b[^>]*>",
+  )?;
+  let xlink_quoted = compile_regex(
+    "xlink:href quoted",
     "(?is)(?P<prefix>(?:^|\\s)xlink:href\\s*=\\s*[\"'])(?P<url>[^\"'>]+)(?P<suffix>[\"'])",
-  )
-  .unwrap();
-  let xlink_unquoted =
-    Regex::new("(?is)(?P<prefix>(?:^|\\s)xlink:href\\s*=\\s*)(?P<url>[^\\s\"'>]+)").unwrap();
+  )?;
+  let xlink_unquoted = compile_regex(
+    "xlink:href unquoted",
+    "(?is)(?P<prefix>(?:^|\\s)xlink:href\\s*=\\s*)(?P<url>[^\\s\"'>]+)",
+  )?;
 
   let mut error: Option<ImportError> = None;
   let rewritten = tag_with_xlink
     .replace_all(input, |caps: &regex::Captures<'_>| {
       if error.is_some() {
-        return caps[0].to_string();
+        return caps_full(caps).to_string();
       }
       let tag_name = caps.name("tag").map(|m| m.as_str()).unwrap_or("");
-      let tag = &caps[0];
+      let tag = caps_full(caps);
       if tag_name.eq_ignore_ascii_case("a") {
         return tag.to_string();
       }
 
       let mut out = xlink_quoted
         .replace_all(tag, |caps: &regex::Captures<'_>| {
-          match rewrite_reference(config, src_dir, dest_dir, &caps["url"], references, seen) {
-            Ok(Some(new_value)) => format!("{}{}{}", &caps["prefix"], new_value, &caps["suffix"]),
-            Ok(None) => caps[0].to_string(),
+          let Some(url) = caps_named(caps, "url") else {
+            return caps_full(caps).to_string();
+          };
+          let prefix = caps_named(caps, "prefix").unwrap_or("");
+          let suffix = caps_named(caps, "suffix").unwrap_or("");
+          match rewrite_reference(config, src_dir, dest_dir, url, references, seen) {
+            Ok(Some(new_value)) => format!("{prefix}{new_value}{suffix}"),
+            Ok(None) => caps_full(caps).to_string(),
             Err(err) => {
               error = Some(err);
-              caps[0].to_string()
+              caps_full(caps).to_string()
             }
           }
         })
@@ -878,12 +934,16 @@ fn apply_xlink_href_rewrite(
 
       out = xlink_unquoted
         .replace_all(&out, |caps: &regex::Captures<'_>| {
-          match rewrite_reference(config, src_dir, dest_dir, &caps["url"], references, seen) {
-            Ok(Some(new_value)) => format!("{}{}", &caps["prefix"], new_value),
-            Ok(None) => caps[0].to_string(),
+          let Some(url) = caps_named(caps, "url") else {
+            return caps_full(caps).to_string();
+          };
+          let prefix = caps_named(caps, "prefix").unwrap_or("");
+          match rewrite_reference(config, src_dir, dest_dir, url, references, seen) {
+            Ok(Some(new_value)) => format!("{prefix}{new_value}"),
+            Ok(None) => caps_full(caps).to_string(),
             Err(err) => {
               error = Some(err);
-              caps[0].to_string()
+              caps_full(caps).to_string()
             }
           }
         })
@@ -914,10 +974,14 @@ fn apply_srcset_rewrite(
     .replace_all(input, |caps: &regex::Captures<'_>| {
       let raw = caps.name("value").map(|m| m.as_str()).unwrap_or("");
       match rewrite_srcset_value(config, src_dir, dest_dir, raw, references, seen) {
-        Ok(new_value) => format!("{}{}{}", &caps["prefix"], new_value, &caps["suffix"]),
+        Ok(new_value) => {
+          let prefix = caps_named(caps, "prefix").unwrap_or("");
+          let suffix = caps_named(caps, "suffix").unwrap_or("");
+          format!("{prefix}{new_value}{suffix}")
+        }
         Err(err) => {
           error = Some(err);
-          caps[0].to_string()
+          caps_full(caps).to_string()
         }
       }
     })
@@ -1174,7 +1238,7 @@ fn split_path_and_suffix(value: &str) -> (String, String) {
 }
 
 fn validate_offline(dest_path: &Path, content: &str) -> Result<()> {
-  let mut found = find_network_urls(content);
+  let mut found = find_network_urls(content)?;
   if found.is_empty() {
     return Ok(());
   }
@@ -1186,7 +1250,7 @@ fn validate_offline(dest_path: &Path, content: &str) -> Result<()> {
   ))
 }
 
-fn find_network_urls(content: &str) -> Vec<String> {
+fn find_network_urls(content: &str) -> Result<Vec<String>> {
   fn is_network_url(value: &str) -> bool {
     let trimmed = value.trim();
     trimmed
@@ -1209,20 +1273,46 @@ fn find_network_urls(content: &str) -> Vec<String> {
   // This avoids false positives for strings that look like network URLs but are not fetches,
   // such as SVG namespace URIs (`xmlns="http://www.w3.org/2000/svg"`) or text embedded inside
   // `data:` URLs.
-  let attr_regex =
-    Regex::new("(?i)\\s(?:src|poster|data)\\s*=\\s*[\"'](?P<url>[^\"'>]+)[\"']").unwrap();
-  let attr_unquoted_regex =
-    Regex::new("(?i)\\s(?:src|poster|data)\\s*=\\s*(?P<url>[^\\s\"'>]+)").unwrap();
-  let url_regex = Regex::new("(?i)url\\(\\s*[\"']?(?P<url>[^\"')]+)[\"']?\\s*\\)").unwrap();
-  let import_regex = Regex::new("(?i)@import\\s+[\"'](?P<url>[^\"']+)[\"']").unwrap();
-  let srcset_double = Regex::new("(?i)\\ssrcset\\s*=\\s*\"(?P<value>[^\"]*)\"").unwrap();
-  let srcset_single = Regex::new("(?i)\\ssrcset\\s*=\\s*'(?P<value>[^']*)'").unwrap();
-  let srcset_unquoted =
-    Regex::new("(?i)\\ssrcset\\s*=\\s*(?P<value>[^\\s\"'>]+)").unwrap();
-  let imagesrcset_double = Regex::new("(?i)\\simagesrcset\\s*=\\s*\"(?P<value>[^\"]*)\"").unwrap();
-  let imagesrcset_single = Regex::new("(?i)\\simagesrcset\\s*=\\s*'(?P<value>[^']*)'").unwrap();
-  let imagesrcset_unquoted =
-    Regex::new("(?i)\\simagesrcset\\s*=\\s*(?P<value>[^\\s\"'>]+)").unwrap();
+  let attr_regex = compile_regex(
+    "offline scan attr quoted",
+    "(?i)\\s(?:src|poster|data)\\s*=\\s*[\"'](?P<url>[^\"'>]+)[\"']",
+  )?;
+  let attr_unquoted_regex = compile_regex(
+    "offline scan attr unquoted",
+    "(?i)\\s(?:src|poster|data)\\s*=\\s*(?P<url>[^\\s\"'>]+)",
+  )?;
+  let url_regex = compile_regex(
+    "offline scan css url",
+    "(?i)url\\(\\s*[\"']?(?P<url>[^\"')]+)[\"']?\\s*\\)",
+  )?;
+  let import_regex = compile_regex(
+    "offline scan css @import",
+    "(?i)@import\\s+[\"'](?P<url>[^\"']+)[\"']",
+  )?;
+  let srcset_double = compile_regex(
+    "offline scan srcset double quote",
+    "(?i)\\ssrcset\\s*=\\s*\"(?P<value>[^\"]*)\"",
+  )?;
+  let srcset_single = compile_regex(
+    "offline scan srcset single quote",
+    "(?i)\\ssrcset\\s*=\\s*'(?P<value>[^']*)'",
+  )?;
+  let srcset_unquoted = compile_regex(
+    "offline scan srcset unquoted",
+    "(?i)\\ssrcset\\s*=\\s*(?P<value>[^\\s\"'>]+)",
+  )?;
+  let imagesrcset_double = compile_regex(
+    "offline scan imagesrcset double quote",
+    "(?i)\\simagesrcset\\s*=\\s*\"(?P<value>[^\"]*)\"",
+  )?;
+  let imagesrcset_single = compile_regex(
+    "offline scan imagesrcset single quote",
+    "(?i)\\simagesrcset\\s*=\\s*'(?P<value>[^']*)'",
+  )?;
+  let imagesrcset_unquoted = compile_regex(
+    "offline scan imagesrcset unquoted",
+    "(?i)\\simagesrcset\\s*=\\s*(?P<value>[^\\s\"'>]+)",
+  )?;
 
   let mut urls = Vec::new();
   for regex in [&attr_regex, &attr_unquoted_regex, &import_regex] {
@@ -1239,11 +1329,15 @@ fn find_network_urls(content: &str) -> Vec<String> {
   // `href` is only fetchable in a subset of contexts (notably `<link>`). Avoid flagging common
   // WPT metadata like `<link rel=help href="https://...">` by only validating the `href` value
   // when the `<link rel>` indicates a fetchable relation.
-  let link_tag = Regex::new("(?is)<link\\b[^>]*>").unwrap();
-  let rel_attr =
-    Regex::new("(?is)(?:^|\\s)rel\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))").unwrap();
-  let href_attr =
-    Regex::new("(?is)(?:^|\\s)href\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))").unwrap();
+  let link_tag = compile_regex("offline scan link tag", "(?is)<link\\b[^>]*>")?;
+  let rel_attr = compile_regex(
+    "offline scan link rel",
+    "(?is)(?:^|\\s)rel\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
+  )?;
+  let href_attr = compile_regex(
+    "offline scan link href",
+    "(?is)(?:^|\\s)href\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
+  )?;
 
   for m in link_tag.find_iter(content) {
     let tag = m.as_str();
@@ -1277,10 +1371,10 @@ fn find_network_urls(content: &str) -> Vec<String> {
   // SVG fetch contexts commonly use `href=` (SVG2) or `xlink:href=` (SVG1). We already scan
   // `href` would otherwise be missed when we avoid flagging non-fetchable HTML anchors and
   // metadata links.
-  let svg_href = Regex::new(
+  let svg_href = compile_regex(
+    "offline scan svg href",
     "(?is)<(?:image|use|feimage)\\b[^>]*\\shref\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
-  )
-  .unwrap();
+  )?;
   for caps in svg_href.captures_iter(content) {
     let raw = caps
       .get(1)
@@ -1295,7 +1389,10 @@ fn find_network_urls(content: &str) -> Vec<String> {
 
   // For `xlink:href`, ignore `<a xlink:href>` navigation links but treat all other tags as
   // potential resource references (e.g. `<image>`, gradients, patterns, filters).
-  let xlink_attr = Regex::new("(?is)<(?P<tag>[a-z0-9:_-]+)\\b[^>]*\\sxlink:href\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))").unwrap();
+  let xlink_attr = compile_regex(
+    "offline scan xlink attr",
+    "(?is)<(?P<tag>[a-z0-9:_-]+)\\b[^>]*\\sxlink:href\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
+  )?;
   for caps in xlink_attr.captures_iter(content) {
     let tag = caps.name("tag").map(|m| m.as_str()).unwrap_or("");
     if tag.eq_ignore_ascii_case("a") {
@@ -1363,7 +1460,7 @@ fn find_network_urls(content: &str) -> Vec<String> {
 
   urls.sort();
   urls.dedup();
-  urls
+  Ok(urls)
 }
 
 fn link_rel_requires_fetch(rel: &str) -> bool {
@@ -1380,7 +1477,7 @@ fn link_rel_requires_fetch(rel: &str) -> bool {
 }
 
 fn validate_strict_offline(dest_path: &Path, content: &str) -> Result<()> {
-  let mut found = find_network_urls_strict(content);
+  let mut found = find_network_urls_strict(content)?;
   if found.is_empty() {
     return Ok(());
   }
@@ -1391,8 +1488,8 @@ fn validate_strict_offline(dest_path: &Path, content: &str) -> Result<()> {
   ))
 }
 
-fn find_network_urls_strict(content: &str) -> Vec<String> {
-  fn data_url_spans(content: &str) -> Vec<std::ops::Range<usize>> {
+fn find_network_urls_strict(content: &str) -> Result<Vec<String>> {
+  fn data_url_spans(content: &str) -> Result<Vec<std::ops::Range<usize>>> {
     // Best-effort: treat any quoted string starting with `data:` as a data URL span, plus
     // common CSS `url(data:...)` forms. This avoids false positives from strict scanning when
     // the *payload* of a data URL contains `http://` (e.g. SVG namespaces).
@@ -1401,9 +1498,12 @@ fn find_network_urls_strict(content: &str) -> Vec<String> {
     // logic so strict mode can scan broadly without being tripped up by `data:` payloads.
     let mut spans = Vec::new();
 
-    let double_quoted = Regex::new(r#"(?is)"(?P<url>data:[^"]*)""#).unwrap();
-    let single_quoted = Regex::new(r#"(?is)'(?P<url>data:[^']*)'"#).unwrap();
-    let css_url_unquoted = Regex::new(r#"(?is)url\(\s*(?P<url>data:[^)]*)\)"#).unwrap();
+    let double_quoted =
+      compile_regex("data url span double quoted", r#"(?is)"(?P<url>data:[^"]*)""#)?;
+    let single_quoted =
+      compile_regex("data url span single quoted", r#"(?is)'(?P<url>data:[^']*)'"#)?;
+    let css_url_unquoted =
+      compile_regex("data url span css url()", r#"(?is)url\(\s*(?P<url>data:[^)]*)\)"#)?;
 
     for caps in double_quoted.captures_iter(content) {
       if let Some(m) = caps.name("url") {
@@ -1422,7 +1522,7 @@ fn find_network_urls_strict(content: &str) -> Vec<String> {
     }
 
     spans.sort_by_key(|span| span.start);
-    spans
+    Ok(spans)
   }
 
   fn is_within_data_url(data_spans: &[std::ops::Range<usize>], idx: usize) -> bool {
@@ -1433,10 +1533,14 @@ fn find_network_urls_strict(content: &str) -> Vec<String> {
   }
 
   let mut urls = Vec::new();
-  let http_re = Regex::new(r#"(?i)https?://[^\s"'<>)]{1,200}"#).unwrap();
-  let scheme_re = Regex::new(r#"(?i)//[^\s"'<>)]{1,200}"#).unwrap();
+  let http_re = compile_regex(
+    "strict offline http url",
+    r#"(?i)https?://[^\s"'<>)]{1,200}"#,
+  )?;
+  let scheme_re =
+    compile_regex("strict offline scheme url", r#"(?i)//[^\s"'<>)]{1,200}"#)?;
 
-  let data_spans = data_url_spans(content);
+  let data_spans = data_url_spans(content)?;
   let content_bytes = content.as_bytes();
 
   for m in http_re.find_iter(content) {
@@ -1460,7 +1564,7 @@ fn find_network_urls_strict(content: &str) -> Vec<String> {
 
   urls.sort();
   urls.dedup();
-  urls
+  Ok(urls)
 }
 
 fn copy_ini_sidecar(

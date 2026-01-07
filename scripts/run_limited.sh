@@ -24,8 +24,8 @@ Environment defaults (optional):
 
 Notes:
   - `--as` is the most reliable “hard memory ceiling” on Linux.
-  - If `prlimit` is missing, we fall back to `ulimit`. In that mode, size strings without a
-    suffix are interpreted as MiB. With `prlimit`, bare numbers are bytes.
+  - If `prlimit` is missing, we fall back to `ulimit`.
+  - Size strings without a suffix are interpreted as MiB.
 EOF
 }
 
@@ -60,41 +60,10 @@ to_kib() {
   return 1
 }
 
-# Convert human-friendly sizes to bytes for `prlimit`.
-#
-# Unlike `ulimit`, `prlimit` expects byte counts, and its CLI treats bare numbers as bytes.
-# Normalize suffix inputs (e.g. `12G`) to a byte count so callers can use a consistent size syntax
-# across both modes. (Some environments ship a buggy `prlimit` build that segfaults on suffix
-# parsing, so we always pass the computed byte count.)
 to_bytes() {
-  local raw="${1:-}"
-  raw="${raw//[[:space:]]/}"
-  raw="${raw,,}"
-
-  # Accept common suffixes: k, m, g, t (optionally with b/ib).
-  raw="${raw%ib}"
-  raw="${raw%b}"
-
-  if [[ "${raw}" =~ ^[0-9]+$ ]]; then
-    # In prlimit mode, bare numbers are bytes (matches prlimit CLI semantics).
-    echo "${raw}"
-    return 0
-  fi
-
-  if [[ "${raw}" =~ ^([0-9]+)([kmgt])$ ]]; then
-    local n="${BASH_REMATCH[1]}"
-    local unit="${BASH_REMATCH[2]}"
-    case "${unit}" in
-      k) echo $((n * 1024)) ;;
-      m) echo $((n * 1024 * 1024)) ;;
-      g) echo $((n * 1024 * 1024 * 1024)) ;;
-      t) echo $((n * 1024 * 1024 * 1024 * 1024)) ;;
-      *) return 1 ;;
-    esac
-    return 0
-  fi
-
-  return 1
+  local kib
+  kib="$(to_kib "${1}")" || return 1
+  echo $((kib * 1024))
 }
 
 # NOTE: Rust's toolchain shims (rustup) reserve a fairly large amount of virtual address space.
@@ -145,10 +114,31 @@ fi
 
 cmd=("$@")
 
-# Note: some environments ship a `prlimit` build that segfaults when setting `--as` (RLIMIT_AS).
-# Prefer `ulimit` for address-space limits, and only use `prlimit` when `--as` is disabled.
-if command -v prlimit >/dev/null 2>&1 && [[ -z "${AS}" || "${AS}" == "0" ]]; then
-  pl=(prlimit)
+any_limit=false
+if [[ -n "${AS}" && "${AS}" != "0" && "${AS}" != "unlimited" ]]; then any_limit=true; fi
+if [[ -n "${RSS}" && "${RSS}" != "0" ]]; then any_limit=true; fi
+if [[ -n "${STACK}" && "${STACK}" != "0" && "${STACK}" != "unlimited" ]]; then any_limit=true; fi
+if [[ -n "${CPU}" && "${CPU}" != "0" && "${CPU}" != "unlimited" ]]; then any_limit=true; fi
+
+if [[ "${any_limit}" == "false" ]]; then
+  exec "${cmd[@]}"
+fi
+
+if command -v prlimit >/dev/null 2>&1; then
+  # Apply limits to the current process (inherited by `exec`). We normalize size inputs to bytes
+  # because `prlimit` expects byte counts and some builds mis-handle suffix parsing.
+  pl=(prlimit --pid $$)
+  if [[ -n "${AS}" && "${AS}" != "0" ]]; then
+    if [[ "${AS}" == "unlimited" ]]; then
+      pl+=(--as=unlimited)
+    else
+      as_bytes="$(to_bytes "${AS}")" || {
+        echo "invalid --as size: ${AS}" >&2
+        exit 2
+      }
+      pl+=(--as="${as_bytes}")
+    fi
+  fi
   if [[ -n "${RSS}" && "${RSS}" != "0" ]]; then
     if [[ "${RSS}" == "unlimited" ]]; then
       pl+=(--rss=unlimited)
@@ -172,9 +162,20 @@ if command -v prlimit >/dev/null 2>&1 && [[ -z "${AS}" || "${AS}" == "0" ]]; the
     fi
   fi
   if [[ -n "${CPU}" && "${CPU}" != "0" ]]; then
-    pl+=(--cpu="${CPU}")
+    if [[ "${CPU}" == "unlimited" ]]; then
+      pl+=(--cpu=unlimited)
+    else
+      if ! [[ "${CPU}" =~ ^[0-9]+$ ]]; then
+        echo "invalid --cpu seconds: ${CPU}" >&2
+        exit 2
+      fi
+      pl+=(--cpu="${CPU}")
+    fi
   fi
-  exec "${pl[@]}" -- "${cmd[@]}"
+
+  if "${pl[@]}" >/dev/null 2>&1; then
+    exec "${cmd[@]}"
+  fi
 fi
 
 # Fallback: ulimit. (Not all resources are enforceable; RSS is typically ignored.)
@@ -201,11 +202,15 @@ if [[ -n "${STACK}" && "${STACK}" != "0" ]]; then
   fi
 fi
 if [[ -n "${CPU}" && "${CPU}" != "0" ]]; then
-  if ! [[ "${CPU}" =~ ^[0-9]+$ ]]; then
-    echo "invalid --cpu seconds: ${CPU}" >&2
-    exit 2
+  if [[ "${CPU}" == "unlimited" ]]; then
+    ulimit -t unlimited
+  else
+    if ! [[ "${CPU}" =~ ^[0-9]+$ ]]; then
+      echo "invalid --cpu seconds: ${CPU}" >&2
+      exit 2
+    fi
+    ulimit -t "${CPU}"
   fi
-  ulimit -t "${CPU}"
 fi
 
 exec "${cmd[@]}"

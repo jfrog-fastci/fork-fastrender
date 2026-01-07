@@ -80,3 +80,85 @@ fn worker_writes_dumps_for_failures() {
     "snapshot should not leak absolute paths"
   );
 }
+
+#[test]
+fn worker_dump_capture_panic_hook_does_not_crash_worker() {
+  let temp = tempdir().expect("create temp dir");
+  let cache_path = temp.path().join("page.html");
+  fs::write(
+    &cache_path,
+    "<!doctype html><html><body><div>slow</div></body></html>",
+  )
+  .expect("write cache html");
+  let progress_path = temp.path().join("progress.json");
+  let log_path = temp.path().join("worker.log");
+  let dump_dir = temp.path().join("dumps");
+
+  let output = Command::new(env!("CARGO_BIN_EXE_pageset_progress"))
+    .env("DISK_CACHE", "0")
+    .env("NO_DISK_CACHE", "1")
+    .env("FASTR_TEST_RENDER_DELAY_MS", "20")
+    .env("FASTR_TEST_RENDER_DELAY_STEM", "dump")
+    .env("FASTR_TEST_DUMP_PANIC", "1")
+    .env("FASTR_TEST_DUMP_PANIC_STEM", "dump")
+    .args([
+      "worker",
+      "--cache-path",
+      cache_path.to_str().unwrap(),
+      "--stem",
+      "dump",
+      "--progress-path",
+      progress_path.to_str().unwrap(),
+      "--log-path",
+      log_path.to_str().unwrap(),
+      "--viewport",
+      "800x600",
+      "--dpr",
+      "1.0",
+      "--user-agent",
+      "pageset-progress-test",
+      "--accept-language",
+      "en-US",
+      "--diagnostics",
+      "none",
+      "--soft-timeout-ms",
+      "1",
+      "--dump-failures",
+      "summary",
+      "--dump-dir",
+      dump_dir.to_str().unwrap(),
+      "--dump-timeout",
+      "5",
+      "--bundled-fonts",
+    ])
+    .output()
+    .expect("run pageset_progress worker with dump panic hook");
+
+  assert!(
+    output.status.success(),
+    "worker should exit successfully (stdout:\n{}\nstderr:\n{})",
+    String::from_utf8_lossy(&output.stdout),
+    String::from_utf8_lossy(&output.stderr)
+  );
+  let stderr = String::from_utf8_lossy(&output.stderr);
+  assert!(
+    !stderr.contains("panicked at"),
+    "did not expect panic output; got stderr:\n{stderr}"
+  );
+
+  let log_contents = fs::read_to_string(&log_path).expect("read worker log");
+  assert!(
+    log_contents.contains("Capturing summary dump"),
+    "expected worker to attempt dump capture; log:\n{log_contents}"
+  );
+  assert!(
+    log_contents.contains("Dump render panic: FASTR_TEST_DUMP_PANIC"),
+    "expected dump panic hook to be surfaced in log; log:\n{log_contents}"
+  );
+
+  let snapshot_path = dump_dir.join("dump").join("snapshot.json");
+  assert!(
+    !snapshot_path.exists(),
+    "did not expect snapshot output when dump capture is skipped due to simulated panic"
+  );
+}

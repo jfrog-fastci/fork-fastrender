@@ -92,6 +92,29 @@ const FETCH_TIMEOUT_SLACK_MS: u64 = 100;
 // Allow a small grace period after progress is written so the worker can flush logs/stage markers
 // and exit without being hard-killed at the exact render timeout boundary.
 const WORKER_POST_PROGRESS_GRACE: Duration = Duration::from_secs(1);
+// Treat committed progress artifacts as untrusted inputs; cap reads to avoid OOM on corrupt files.
+const MAX_PROGRESS_JSON_BYTES: u64 = 16 * 1024 * 1024;
+// Cached HTML metadata sidecars should be tiny; cap them to avoid pathological allocations.
+const MAX_CACHED_HTML_META_BYTES: u64 = 256 * 1024;
+// Stage heartbeat + timeline files should be tiny; cap reads to avoid pathological allocations.
+const MAX_STAGE_FILE_BYTES: u64 = 4096;
+const MAX_STAGE_TIMELINE_BYTES: u64 = 64 * 1024;
+
+fn read_to_string_capped(path: &Path, max_bytes: u64) -> io::Result<String> {
+  let len = fs::metadata(path)?.len();
+  if len > max_bytes {
+    return Err(io::Error::new(
+      io::ErrorKind::InvalidData,
+      format!(
+        "{} is too large ({} bytes > {} bytes)",
+        path.display(),
+        len,
+        max_bytes
+      ),
+    ));
+  }
+  fs::read_to_string(path)
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -1088,11 +1111,13 @@ fn legacy_auto_notes_from_previous(previous: &PageProgress) -> Option<String> {
 fn cached_html_status_from_auto_notes(note: &str) -> Option<u16> {
   // Prefer the structured `cached_html_status=403` format, but also accept the legacy
   // `cached HTML status: 403` output.
-  static RE: OnceLock<Regex> = OnceLock::new();
-  let re = RE.get_or_init(|| {
+  static RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+  let re = match RE.get_or_init(|| {
     Regex::new(r"(?:cached_html_status=|cached HTML status:\s*)(\d{3})")
-      .expect("cached html status regex compiles")
-  });
+  }) {
+    Ok(re) => re,
+    Err(_) => return None,
+  };
   re.captures(note)
     .and_then(|caps| caps.get(1))
     .and_then(|m| m.as_str().parse::<u16>().ok())
@@ -1212,13 +1237,17 @@ fn truncate_long_quoted_segments(note: &str, max_segment_chars: usize) -> String
   if !note.contains('"') {
     return note.to_string();
   }
-  static QUOTED_RE: OnceLock<Regex> = OnceLock::new();
-  let re =
-    QUOTED_RE.get_or_init(|| Regex::new(r#""([^"]*)""#).expect("quoted segment regex compiles"));
+  static QUOTED_RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+  let re = match QUOTED_RE.get_or_init(|| Regex::new(r#""([^"]*)""#)) {
+    Ok(re) => re,
+    Err(_) => return note.to_string(),
+  };
   re.replace_all(note, |caps: &regex::Captures| {
-    let segment = &caps[1];
+    let Some(segment) = caps.get(1).map(|m| m.as_str()) else {
+      return caps.get(0).map(|m| m.as_str()).unwrap_or("").to_string();
+    };
     if segment.chars().count() <= max_segment_chars {
-      caps[0].to_string()
+      caps.get(0).map(|m| m.as_str()).unwrap_or("").to_string()
     } else {
       let mut truncated: String = segment.chars().take(max_segment_chars).collect();
       truncated.push(PROGRESS_NOTE_ELLIPSIS);
@@ -1649,7 +1678,7 @@ impl PageProgress {
 }
 
 fn read_progress(path: &Path) -> Option<PageProgress> {
-  let raw = fs::read_to_string(path).ok()?;
+  let raw = read_to_string_capped(path, MAX_PROGRESS_JSON_BYTES).ok()?;
   serde_json::from_str::<PageProgress>(&raw).ok()
 }
 
@@ -1949,7 +1978,7 @@ fn cached_url_from_cache_meta(cache_path: &Path) -> Option<String> {
   } else {
     meta_path.set_extension("meta");
   }
-  let meta = fs::read_to_string(&meta_path).ok()?;
+  let meta = read_to_string_capped(&meta_path, MAX_CACHED_HTML_META_BYTES).ok()?;
   let parsed_meta = parse_cached_html_meta(&meta);
   parsed_meta.url
 }
@@ -2273,7 +2302,7 @@ fn migrate(args: MigrateArgs) -> io::Result<()> {
       .to_string();
     let cache_exists = args.html_dir.join(format!("{stem}.html")).exists();
 
-    let raw = fs::read_to_string(&path)?;
+    let raw = read_to_string_capped(&path, MAX_PROGRESS_JSON_BYTES)?;
     let json_value: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
       io::Error::new(
         io::ErrorKind::InvalidData,
@@ -3423,21 +3452,15 @@ fn write_pipeline_dumps(
   let fragment_tree = artifacts.fragment_tree.as_ref();
   let display_list = artifacts.display_list.as_ref();
 
-  let have_all = dom.is_some()
-    && styled.is_some()
-    && box_tree.is_some()
-    && fragment_tree.is_some()
-    && display_list.is_some();
+  let mut have_all = false;
   let mut wrote_any = false;
 
-  if have_all {
-    let snapshot = snapshot::snapshot_pipeline(
-      dom.expect("snapshot precondition"),
-      styled.expect("snapshot precondition"),
-      box_tree.expect("snapshot precondition"),
-      fragment_tree.expect("snapshot precondition"),
-      display_list.expect("snapshot precondition"),
-    );
+  if let (Some(dom), Some(styled), Some(box_tree), Some(fragment_tree), Some(display_list)) =
+    (dom, styled, box_tree, fragment_tree, display_list)
+  {
+    have_all = true;
+    let snapshot =
+      snapshot::snapshot_pipeline(dom, styled, box_tree, fragment_tree, display_list);
     write_json_file(&base_dir.join("snapshot.json"), &snapshot)?;
     wrote_any = true;
   } else {
@@ -3544,7 +3567,8 @@ fn capture_dump_for_page(
       None => true,
     };
     if should_panic {
-      panic!("FASTR_TEST_DUMP_PANIC");
+      log.push_str("Dump render panic: FASTR_TEST_DUMP_PANIC\n");
+      return;
     }
   }
   if let Some(delay) = std::env::var("FASTR_TEST_DUMP_DELAY_MS")
@@ -3825,12 +3849,13 @@ fn write_progress_with_sentinel(
 }
 
 fn read_stage_file(path: &Path) -> Option<StageHeartbeat> {
-  let raw = fs::read_to_string(path).ok()?;
+  let raw = read_to_string_capped(path, MAX_STAGE_FILE_BYTES).ok()?;
   StageHeartbeat::from_str(raw.trim())
 }
 
 fn read_stage_from_timeline(stage_path: &Path) -> Option<StageHeartbeat> {
-  let raw = fs::read_to_string(stage_timeline_path(stage_path)).ok()?;
+  let raw =
+    read_to_string_capped(&stage_timeline_path(stage_path), MAX_STAGE_TIMELINE_BYTES).ok()?;
   for line in raw.lines().rev() {
     let mut parts = line.split_whitespace();
     // Timeline lines are "ms stage". Be resilient to partial writes by skipping malformed lines
@@ -3859,7 +3884,8 @@ fn read_stage_heartbeat(path: &Path) -> Option<StageHeartbeat> {
 }
 
 fn stage_buckets_from_timeline(stage_path: &Path, total_ms: u64) -> Option<StageBuckets> {
-  let raw = fs::read_to_string(stage_timeline_path(stage_path)).ok()?;
+  let raw =
+    read_to_string_capped(&stage_timeline_path(stage_path), MAX_STAGE_TIMELINE_BYTES).ok()?;
   let mut entries: Vec<(u64, StageHeartbeat)> = Vec::new();
   for line in raw.lines() {
     let mut parts = line.split_whitespace();
@@ -4032,13 +4058,13 @@ fn flush_log(log: &str, path: &Option<PathBuf>) {
 }
 
 fn stderr_tail(stderr_path: &Path, max_bytes: usize, max_lines: usize) -> Option<String> {
-  let data = fs::read(stderr_path).ok()?;
-  let slice = if data.len() > max_bytes {
-    &data[data.len().saturating_sub(max_bytes)..]
-  } else {
-    data.as_slice()
-  };
-  let text = String::from_utf8_lossy(slice);
+  let mut file = File::open(stderr_path).ok()?;
+  let len = file.metadata().ok()?.len();
+  let start = len.saturating_sub(max_bytes as u64);
+  file.seek(SeekFrom::Start(start)).ok()?;
+  let mut buf = Vec::new();
+  file.read_to_end(&mut buf).ok()?;
+  let text = String::from_utf8_lossy(&buf);
   let mut lines: Vec<&str> = text.lines().rev().take(max_lines).collect();
   if lines.is_empty() {
     return None;
@@ -4123,7 +4149,7 @@ fn read_progress_dir(dir: &Path) -> io::Result<Vec<LoadedProgress>> {
 
   let mut progresses = Vec::new();
   for path in files {
-    let contents = fs::read_to_string(&path).map_err(|e| {
+    let contents = read_to_string_capped(&path, MAX_PROGRESS_JSON_BYTES).map_err(|e| {
       io::Error::new(
         e.kind(),
         format!("failed to read {}: {}", path.display(), e),
@@ -4176,7 +4202,7 @@ fn read_progress_dir_allow_empty(dir: &Path) -> io::Result<Vec<LoadedProgress>> 
 
   let mut progresses = Vec::new();
   for path in files {
-    let contents = fs::read_to_string(&path).map_err(|e| {
+    let contents = read_to_string_capped(&path, MAX_PROGRESS_JSON_BYTES).map_err(|e| {
       io::Error::new(
         e.kind(),
         format!("failed to read {}: {}", path.display(), e),
@@ -4239,7 +4265,7 @@ fn read_progress_dir_tolerant(dir: &Path) -> ProgressLoadOutcome {
   files.sort();
 
   for path in files {
-    let contents = match fs::read_to_string(&path) {
+    let contents = match read_to_string_capped(&path, MAX_PROGRESS_JSON_BYTES) {
       Ok(contents) => contents,
       Err(err) => {
         outcome
@@ -5462,10 +5488,9 @@ fn report(args: ReportArgs) -> io::Result<()> {
   } else {
     let mut stage_counts: BTreeMap<String, usize> = BTreeMap::new();
     for entry in &ok_with_failures {
-      let stage = entry
-        .progress
-        .failure_stage
-        .expect("failure_stage should be present for ok-with-failures pages");
+      let Some(stage) = entry.progress.failure_stage else {
+        continue;
+      };
       *stage_counts.entry(stage.as_str().to_string()).or_default() += 1;
     }
     for label in ["css", "layout", "paint"] {
@@ -5504,8 +5529,8 @@ fn report(args: ReportArgs) -> io::Result<()> {
         let failure_stage = entry
           .progress
           .failure_stage
-          .expect("failure_stage should be present for ok-with-failures pages")
-          .as_str();
+          .map(|stage| stage.as_str())
+          .unwrap_or("unknown");
         let fetch_errors = entry
           .progress
           .diagnostics
@@ -6396,7 +6421,9 @@ fn report(args: ReportArgs) -> io::Result<()> {
           network_sorted.len()
         );
         for (idx, (entry, ms)) in network_sorted.iter().take(net_top).enumerate() {
-          let stats = entry.stats.as_ref().expect("stats should be present");
+          let Some(stats) = entry.stats.as_ref() else {
+            continue;
+          };
           let bytes = stats.resources.network_fetch_bytes.unwrap_or(0) as u64;
           let fetches = stats.resources.network_fetches.unwrap_or(0);
           let total_ms = entry.progress.total_ms.unwrap_or(0.0);
@@ -6439,7 +6466,9 @@ fn report(args: ReportArgs) -> io::Result<()> {
           inflight_sorted.len()
         );
         for (idx, (entry, ms)) in inflight_sorted.iter().take(inflight_top).enumerate() {
-          let stats = entry.stats.as_ref().expect("stats should be present");
+          let Some(stats) = entry.stats.as_ref() else {
+            continue;
+          };
           let waits = stats.resources.fetch_inflight_waits.unwrap_or(0);
           let total_ms = entry.progress.total_ms.unwrap_or(0.0);
           let share = if total_ms > 0.0 {
@@ -6480,7 +6509,9 @@ fn report(args: ReportArgs) -> io::Result<()> {
           disk_sorted.len()
         );
         for (idx, (entry, ms)) in disk_sorted.iter().take(disk_top).enumerate() {
-          let stats = entry.stats.as_ref().expect("stats should be present");
+          let Some(stats) = entry.stats.as_ref() else {
+            continue;
+          };
           let hits = stats.resources.disk_cache_hits.unwrap_or(0);
           let misses = stats.resources.disk_cache_misses.unwrap_or(0);
           let bytes = stats.resources.disk_cache_bytes.unwrap_or(0) as u64;
@@ -6525,7 +6556,9 @@ fn report(args: ReportArgs) -> io::Result<()> {
           disk_lock_sorted.len()
         );
         for (idx, (entry, ms)) in disk_lock_sorted.iter().take(disk_lock_top).enumerate() {
-          let stats = entry.stats.as_ref().expect("stats should be present");
+          let Some(stats) = entry.stats.as_ref() else {
+            continue;
+          };
           let waits = stats.resources.disk_cache_lock_waits.unwrap_or(0);
           let disk_total_ms = stats.resources.disk_cache_ms.unwrap_or(0.0);
           let render_total_ms = entry.progress.total_ms.unwrap_or(0.0);
@@ -6675,14 +6708,12 @@ fn report(args: ReportArgs) -> io::Result<()> {
     accuracy_candidates.sort();
 
     for stem in accuracy_candidates {
-      let baseline_entry = baseline_by_stem
-        .get(stem)
-        .copied()
-        .expect("baseline entry should exist");
-      let current_entry = current_by_stem
-        .get(stem)
-        .copied()
-        .expect("current entry should exist");
+      let (Some(baseline_entry), Some(current_entry)) = (
+        baseline_by_stem.get(stem).copied(),
+        current_by_stem.get(stem).copied(),
+      ) else {
+        continue;
+      };
 
       if baseline_entry.progress.status != ProgressStatus::Ok
         || current_entry.progress.status != ProgressStatus::Ok
@@ -7035,13 +7066,17 @@ fn report(args: ReportArgs) -> io::Result<()> {
       if printed_any {
         eprintln!();
       }
-      let threshold_ms = args
-        .fail_on_slow_ok_ms
-        .expect("slow_ok gate should only run when threshold is set");
-      eprintln!(
-        "Failing due to {} ok page(s) exceeding {threshold_ms}ms:",
-        err.slow_ok.len()
-      );
+      if let Some(threshold_ms) = args.fail_on_slow_ok_ms {
+        eprintln!(
+          "Failing due to {} ok page(s) exceeding {threshold_ms}ms:",
+          err.slow_ok.len()
+        );
+      } else {
+        eprintln!(
+          "Failing due to {} ok page(s) exceeding slow-ok threshold:",
+          err.slow_ok.len()
+        );
+      }
       eprint_offending_slow_ok(&progresses, &err.slow_ok);
       printed_any = true;
     }
@@ -8445,7 +8480,10 @@ fn run(mut args: RunArgs) -> io::Result<()> {
   let mut items: Vec<WorkItem> = Vec::new();
 
   if args.selection.is_active() {
-    let selection_dir = args.selection.from_progress.as_ref().unwrap();
+    let Some(selection_dir) = args.selection.from_progress.as_ref() else {
+      eprintln!("Selection filters require --from-progress <dir>");
+      std::process::exit(2);
+    };
     let selection = args.selection.to_selection();
     let outcome = read_progress_dir_tolerant(selection_dir);
     for warning in &outcome.warnings {
@@ -8592,12 +8630,13 @@ fn run(mut args: RunArgs) -> io::Result<()> {
     filtered_paths = apply_shard_filter(filtered_paths, args.shard);
     if filtered_paths.is_empty() {
       if matched_count > 0 && args.shard.is_some() {
-        let (index, total) = args.shard.expect("shard present");
-        println!(
-          "Shard {}/{} selected no cached pages ({} matched before sharding). Nothing to do.",
-          index, total, matched_count
-        );
-        return Ok(());
+        if let Some((index, total)) = args.shard {
+          println!(
+            "Shard {}/{} selected no cached pages ({} matched before sharding). Nothing to do.",
+            index, total, matched_count
+          );
+          return Ok(());
+        }
       }
       if let Some(ref filter) = page_filter {
         let requested: Vec<&PagesetEntry> = pageset_entries
@@ -8706,10 +8745,10 @@ fn run(mut args: RunArgs) -> io::Result<()> {
   println!("{}", args.fonts.describe());
   println!("Progress dir: {}", args.progress_dir.display());
   if args.accuracy {
-    let baseline_dir = args
-      .baseline_dir
-      .as_ref()
-      .expect("baseline_dir should be resolved when accuracy is enabled");
+    let Some(baseline_dir) = args.baseline_dir.as_ref() else {
+      eprintln!("Accuracy enabled but baseline_dir is missing (this is a bug)");
+      std::process::exit(1);
+    };
     println!(
       "Accuracy: baseline_dir={} tolerance={} max_diff_percent={}",
       baseline_dir.display(),
@@ -8724,10 +8763,10 @@ fn run(mut args: RunArgs) -> io::Result<()> {
 
   if args.accuracy {
     if args.baseline == Some(AccuracyBaselineArg::Chrome) {
-      let baseline_dir = args
-        .baseline_dir
-        .as_ref()
-        .expect("baseline_dir should be resolved when accuracy is enabled");
+      let Some(baseline_dir) = args.baseline_dir.as_ref() else {
+        eprintln!("Accuracy enabled but baseline_dir is missing (this is a bug)");
+        std::process::exit(1);
+      };
       generate_missing_chrome_baselines(
         baseline_dir,
         &items,
@@ -11227,8 +11266,8 @@ mod tests {
 
     let log_contents = fs::read_to_string(&log_path).expect("page log");
     assert!(
-      log_contents.contains("Panic after progress was written"),
-      "expected panic to be recorded in the per-page log, got:\n{log_contents}"
+      log_contents.contains("Dump render panic: FASTR_TEST_DUMP_PANIC"),
+      "expected dump capture failure to be recorded in the per-page log, got:\n{log_contents}"
     );
   }
 

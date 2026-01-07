@@ -503,11 +503,14 @@ fn run(cli: Cli) -> io::Result<()> {
               determinism: None,
             },
           );
-          results.lock().unwrap().push(run);
+          lock_mutex(results).push(run);
         });
       }
     });
-    results = results_mutex.into_inner().unwrap();
+    results = match results_mutex.into_inner() {
+      Ok(results) => results,
+      Err(poisoned) => poisoned.into_inner(),
+    };
     results.sort_by(|a, b| a.stem.cmp(&b.stem));
   } else {
     // Render repeat 0 with full outputs (PNG/log/snapshot), then run additional repeats through the
@@ -571,7 +574,7 @@ fn run(cli: Cli) -> io::Result<()> {
               },
             );
             if write_outputs {
-              results.lock().unwrap().push(run.clone());
+              lock_mutex(results).push(run.clone());
             }
 
             if write_outputs {
@@ -583,7 +586,7 @@ fn run(cli: Cli) -> io::Result<()> {
             }
 
             if repeat_idx > 0 && !matches!(run.status, Status::Ok) {
-              repeat_failures.lock().unwrap().push(RepeatFailure {
+              lock_mutex(repeat_failures).push(RepeatFailure {
                 stem: run.stem.clone(),
                 repeat_idx,
                 status: run.status.clone(),
@@ -594,7 +597,10 @@ fn run(cli: Cli) -> io::Result<()> {
       });
     }
 
-    results = results_mutex.into_inner().unwrap();
+    results = match results_mutex.into_inner() {
+      Ok(results) => results,
+      Err(poisoned) => poisoned.into_inner(),
+    };
     results.sort_by(|a, b| a.stem.cmp(&b.stem));
     // Do not `try_unwrap` here: timeouts can leave the worker thread alive (and still holding an
     // `Arc` clone) even after the harness marks the fixture as timed out.
@@ -602,7 +608,10 @@ fn run(cli: Cli) -> io::Result<()> {
       let mut guard = lock_mutex(&determinism_mutex);
       std::mem::take(&mut *guard)
     };
-    repeat_failures = repeat_failures_mutex.into_inner().unwrap();
+    repeat_failures = match repeat_failures_mutex.into_inner() {
+      Ok(failures) => failures,
+      Err(poisoned) => poisoned.into_inner(),
+    };
     repeat_failures.sort_by(|a, b| {
       a.stem
         .cmp(&b.stem)
@@ -1026,10 +1035,27 @@ fn record_variant(
     }
   }
 
-  let baseline = state
-    .variants
-    .first()
-    .expect("fixture determinism baseline missing");
+  let Some(baseline) = state.variants.first() else {
+    // If we don't have a baseline variant yet (e.g. baseline run failed, or state was reset),
+    // treat this as the baseline so we can continue collecting deterministic diagnostics without
+    // crashing the whole run.
+    state.variants.push(VariantRecord {
+      hash_hi,
+      hash_lo,
+      width,
+      height,
+      count: 1,
+      diff_pixels_vs_baseline: None,
+      first_mismatch_vs_baseline: None,
+      first_mismatch_rgba_vs_baseline: None,
+      data: if save_variant_bytes {
+        Some(premultiplied.to_vec())
+      } else {
+        None
+      },
+    });
+    return;
+  };
 
   let mut diff_pixels = None;
   let mut first_mismatch = None;
@@ -1206,12 +1232,8 @@ fn render_fixture(
 "
     );
     let _ = writeln!(log, "Entrypoint: {}", entry.index_path.display());
-    let _ = writeln!(
-      log,
-      "Viewport: {}x{}",
-      shared.base_options.viewport.unwrap().0,
-      shared.base_options.viewport.unwrap().1
-    );
+    let viewport = shared.base_options.viewport.unwrap_or((0, 0));
+    let _ = writeln!(log, "Viewport: {}x{}", viewport.0, viewport.1);
     let _ = writeln!(
       log,
       "DPR: {}",
@@ -1449,25 +1471,27 @@ fn render_fixture(
 
   let (tx, rx) = channel();
   let worker_name = stem.clone();
-  thread::Builder::new()
+  let spawn_result = thread::Builder::new()
     .name(format!("render-fixtures-worker-{worker_name}"))
     .stack_size(CLI_RENDER_STACK_SIZE)
     .spawn(move || {
       let result = std::panic::catch_unwind(AssertUnwindSafe(render_work));
       let _ = tx.send(result);
-    })
-    .expect("spawn render worker");
+    });
 
-  let result = match rx.recv_timeout(shared.hard_timeout) {
-    Ok(Ok(outcome)) => outcome.map_err(|e| Status::Error(format_error_with_chain(&e, false))),
-    Ok(Err(panic)) => Err(Status::Crash(panic_to_string(panic))),
-    Err(RecvTimeoutError::Timeout) => Err(Status::Timeout(format!(
-      "render timed out after {:.2}s",
-      shared.hard_timeout.as_secs_f64()
-    ))),
-    Err(RecvTimeoutError::Disconnected) => {
-      Err(Status::Crash("render worker disconnected".to_string()))
-    }
+  let result = match spawn_result {
+    Ok(_handle) => match rx.recv_timeout(shared.hard_timeout) {
+      Ok(Ok(outcome)) => outcome.map_err(|e| Status::Error(format_error_with_chain(&e, false))),
+      Ok(Err(panic)) => Err(Status::Crash(panic_to_string(panic))),
+      Err(RecvTimeoutError::Timeout) => Err(Status::Timeout(format!(
+        "render timed out after {:.2}s",
+        shared.hard_timeout.as_secs_f64()
+      ))),
+      Err(RecvTimeoutError::Disconnected) => {
+        Err(Status::Crash("render worker disconnected".to_string()))
+      }
+    },
+    Err(err) => Err(Status::Crash(format!("spawn render worker: {err}"))),
   };
 
   let elapsed = page_start.elapsed();
