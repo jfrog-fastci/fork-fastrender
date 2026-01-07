@@ -1630,15 +1630,18 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
     }
   }
 
-  fn collect_referenced_svg_ids(styled: &StyledNode, in_svg: bool, out: &mut HashSet<String>) {
+  fn collect_referenced_svg_ids(styled: &StyledNode, in_svg_style: bool, out: &mut HashSet<String>) {
     match &styled.node.node_type {
       crate::dom::DomNodeType::Element {
+        tag_name,
         namespace,
         attributes,
-        ..
       } => {
-        let in_svg = namespace == SVG_NAMESPACE;
-        if in_svg {
+        let is_svg = namespace == SVG_NAMESPACE;
+        let is_style = is_svg && tag_name.eq_ignore_ascii_case("style");
+        let next_in_svg_style = in_svg_style || is_style;
+
+        if is_svg {
           for (name, value) in attributes {
             if is_href_attr(name) {
               let trimmed = value.trim();
@@ -1651,17 +1654,17 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
         }
 
         for child in &styled.children {
-          collect_referenced_svg_ids(child, in_svg, out);
+          collect_referenced_svg_ids(child, next_in_svg_style, out);
         }
       }
       crate::dom::DomNodeType::Text { content } => {
-        if in_svg {
+        if in_svg_style {
           extract_url_fragment_ids(content, out);
         }
       }
       _ => {
         for child in &styled.children {
-          collect_referenced_svg_ids(child, in_svg, out);
+          collect_referenced_svg_ids(child, in_svg_style, out);
         }
       }
     }
@@ -1692,7 +1695,7 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
       continue;
     };
     let mut refs = HashSet::new();
-    collect_referenced_svg_ids(entry.node, true, &mut refs);
+    collect_referenced_svg_ids(entry.node, false, &mut refs);
     for reference in refs {
       if !index.contains_key(&reference) {
         continue;

@@ -1,3 +1,4 @@
+use crate::dom::SVG_NAMESPACE;
 use roxmltree::Document;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -63,33 +64,50 @@ fn collect_svg_fragment_references(fragment: &str) -> HashSet<String> {
   };
 
   let mut refs = HashSet::new();
-  for node in doc.descendants() {
+  fn walk(node: roxmltree::Node, in_svg_style: bool, out: &mut HashSet<String>) {
     if node.is_element() {
-      for attr in node.attributes() {
-        let name = attr.name();
-        if name.eq_ignore_ascii_case("href")
-          || name
-            .rsplit_once(':')
-            .is_some_and(|(_, local)| local.eq_ignore_ascii_case("href"))
-        {
-          let trimmed = attr.value().trim();
-          if let Some(id) = trimmed.strip_prefix('#') {
-            if !id.is_empty() {
-              refs.insert(id.to_string());
+      let tag = node.tag_name();
+      let is_svg = tag.namespace() == Some(SVG_NAMESPACE);
+      let is_style = is_svg && tag.name().eq_ignore_ascii_case("style");
+      let next_in_svg_style = in_svg_style || is_style;
+
+      if is_svg {
+        for attr in node.attributes() {
+          let name = attr.name();
+          if name.eq_ignore_ascii_case("href")
+            || name
+              .rsplit_once(':')
+              .is_some_and(|(_, local)| local.eq_ignore_ascii_case("href"))
+          {
+            let trimmed = attr.value().trim();
+            if let Some(id) = trimmed.strip_prefix('#') {
+              if !id.is_empty() {
+                out.insert(id.to_string());
+              }
             }
           }
+          extract_url_fragment_ids(attr.value(), out);
         }
-        extract_url_fragment_ids(attr.value(), &mut refs);
       }
-      continue;
+
+      for child in node.children() {
+        walk(child, next_in_svg_style, out);
+      }
+      return;
     }
 
-    if node.is_text() {
+    if node.is_text() && in_svg_style {
       if let Some(text) = node.text() {
-        extract_url_fragment_ids(text, &mut refs);
+        extract_url_fragment_ids(text, out);
       }
     }
+
+    for child in node.children() {
+      walk(child, in_svg_style, out);
+    }
   }
+
+  walk(doc.root(), false, &mut refs);
 
   refs
 }
@@ -100,7 +118,10 @@ fn collect_svg_fragment_ids(fragment: &str) -> HashSet<String> {
   };
 
   let mut ids = HashSet::new();
-  for node in doc.descendants().filter(|node| node.is_element()) {
+  for node in doc
+    .descendants()
+    .filter(|node| node.is_element() && node.tag_name().namespace() == Some(SVG_NAMESPACE))
+  {
     for attr in node.attributes() {
       if attr.name().eq_ignore_ascii_case("id") && !attr.value().is_empty() {
         ids.insert(attr.value().to_string());
