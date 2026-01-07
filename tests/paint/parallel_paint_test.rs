@@ -2099,6 +2099,83 @@ fn mix_blend_mode_hue_matches_serial_output_under_tiling() {
 }
 
 #[test]
+fn mix_blend_mode_hue_with_transform_matches_serial_output_under_tiling() {
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 128.0, 128.0),
+    color: Rgba::from_rgba8(60, 140, 200, 255),
+  }));
+
+  // Rotate around the stacking context's center to ensure the transformed content straddles tiles.
+  let center_x = 64.0;
+  let center_y = 64.0;
+  let transform = Transform3D::translate(center_x, center_y, 0.0).multiply(
+    &Transform3D::rotate_z(0.35).multiply(&Transform3D::translate(-center_x, -center_y, 0.0)),
+  );
+
+  let bounds = Rect::from_xywh(32.0, 32.0, 64.0, 64.0);
+  let stacking = StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    establishes_backdrop_root: true,
+    bounds,
+    plane_rect: bounds,
+    mix_blend_mode: BlendMode::Hue,
+    opacity: 1.0,
+    is_isolated: false,
+    transform: Some(transform),
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::ZERO,
+    mask: None,
+    has_clip_path: false,
+  };
+  list.push(DisplayItem::PushStackingContext(stacking));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: bounds,
+    color: Rgba::from_rgba8(200, 40, 200, 255),
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let font_ctx = FontContext::new();
+  let serial = DisplayListRenderer::new(128, 128, Rgba::WHITE, font_ctx.clone())
+    .unwrap()
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("serial paint");
+
+  let parallelism = PaintParallelism {
+    tile_size: 32,
+    log_timing: false,
+    min_display_items: 1,
+    min_tiles: 1,
+    min_build_fragments: 1,
+    build_chunk_size: 1,
+    ..PaintParallelism::enabled()
+  };
+  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let report = pool.install(|| {
+    DisplayListRenderer::new(128, 128, Rgba::WHITE, font_ctx)
+      .unwrap()
+      .with_parallelism(parallelism)
+      .render_with_report(&list)
+      .expect("parallel paint")
+  });
+
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
+  assert_pixmap_eq(&serial, &report.pixmap);
+}
+
+#[test]
 fn html_mix_blend_mode_does_not_disable_parallel_paint() {
   // HTML-produced mix-blend-mode content should not disable parallel tiling.
   let html = r#"
