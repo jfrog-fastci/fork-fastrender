@@ -5,7 +5,9 @@ use fastrender::paint::display_list::{
   MaskReferenceRects, ResolvedFilter, ResolvedMask, ResolvedMaskImage, ResolvedMaskLayer,
   StackingContextItem, StrokeRectItem, StrokeRoundedRectItem, Transform3D, TransformItem,
 };
+use fastrender::paint::display_list_builder::DisplayListBuilder;
 use fastrender::paint::display_list_renderer::{DisplayListRenderer, PaintParallelism};
+use fastrender::scroll::ScrollState;
 use fastrender::render_control::{DeadlineGuard, RenderDeadline};
 use fastrender::style::types::{
   BackfaceVisibility, BackgroundPosition, BackgroundPositionComponent, BackgroundRepeat,
@@ -13,7 +15,8 @@ use fastrender::style::types::{
   MaskOrigin, TransformStyle,
 };
 use fastrender::text::font_loader::FontContext;
-use fastrender::{BorderRadii, Length, LengthUnit, Point, Rect, Rgba};
+use fastrender::{BorderRadii, FastRender, Length, LengthUnit, Point, Rect, Rgba};
+use fastrender::image_loader::ImageCache;
 use rayon::ThreadPoolBuilder;
 use std::sync::Arc;
 use std::time::Duration;
@@ -1011,6 +1014,80 @@ fn mix_blend_mode_allows_parallel_tiling_with_isolation() {
     );
   }
   assert_pixmap_eq(&serial, &report.pixmap);
+}
+
+#[test]
+fn html_mix_blend_mode_does_not_disable_parallel_paint() {
+  // HTML-produced mix-blend-mode stacking contexts should be marked as isolated by the display
+  // list builder, ensuring the parallel renderer does not fall back solely due to blending.
+  let html = r#"
+    <!doctype html>
+    <style>
+      body { margin: 0; background: rgb(240 240 240); }
+      .base { width: 96px; height: 96px; background: rgb(255 0 0); }
+      .blend {
+        width: 48px;
+        height: 48px;
+        background: rgb(0 0 255);
+        mix-blend-mode: multiply;
+        margin-top: -48px;
+      }
+    </style>
+    <div class="base"></div>
+    <div class="blend"></div>
+  "#;
+
+  let parallelism = PaintParallelism {
+    tile_size: 24,
+    log_timing: false,
+    min_display_items: 1,
+    min_tiles: 1,
+    min_build_fragments: 1,
+    build_chunk_size: 1,
+    ..PaintParallelism::enabled()
+  };
+
+  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let (serial, report) = pool.install(|| {
+    let mut renderer = FastRender::new().expect("renderer");
+    let dom = renderer.parse_html(html).expect("parsed");
+    let fragment_tree = renderer.layout_document(&dom, 96, 96).expect("laid out");
+    let font_ctx = renderer.font_context().clone();
+    let image_cache = ImageCache::new();
+    let display_list = DisplayListBuilder::with_image_cache(image_cache)
+      .with_font_context(font_ctx.clone())
+      .with_svg_filter_defs(fragment_tree.svg_filter_defs.clone())
+      .with_svg_id_defs(fragment_tree.svg_id_defs.clone())
+      .with_scroll_state(ScrollState::default())
+      .with_device_pixel_ratio(1.0)
+      .with_parallelism(&parallelism)
+      .with_viewport_size(96.0, 96.0)
+      .build_tree_with_stacking_checked(&fragment_tree)
+      .expect("display list");
+
+    let serial = DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx.clone())
+      .unwrap()
+      .with_parallelism(PaintParallelism::disabled())
+      .render(&display_list)
+      .expect("serial paint");
+
+    let report = DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
+      .unwrap()
+      .with_parallelism(parallelism)
+      .render_with_report(&display_list)
+      .expect("parallel paint");
+
+    (serial, report)
+  });
+
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
+  assert_eq!(serial.data(), report.pixmap.data());
 }
 
 #[test]
