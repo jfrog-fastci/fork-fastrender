@@ -54,6 +54,7 @@ mod shadow_dom_scoping_test;
 mod shadow_dom_container_query_slotted_test;
 mod shadow_dom_container_query_part_test;
 mod shadow_dom_slot_inheritance_test;
+mod shadow_host_has_test;
 mod shadow_host_cascade_order_test;
 mod shadow_host_selector_test;
 mod shadow_host_selectors_test;

@@ -1123,6 +1123,10 @@ pub(crate) fn compound_matches_featureless_host<Impl: SelectorImpl>(
     for component in iter {
         match component {
             Component::Scope | Component::ImplicitScope if scope_matches_featureless_host => {},
+            // Relative selectors insert an internal `RelativeSelectorAnchor` that must be able to
+            // match the (featureless) shadow host. This is required for selectors like
+            // `:host:has(.foo)` to work.
+            Component::RelativeSelectorAnchor => {},
             // :host only matches featureless elements.
             Component::Host(..) => {},
             Component::NonTSPseudoClass(ref pc) => match pc.matches_featureless_host() {

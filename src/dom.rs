@@ -6732,6 +6732,23 @@ fn in_shadow_tree(ancestors: &[&DomNode]) -> bool {
     .any(|node| matches!(node.node_type, DomNodeType::ShadowRoot { .. }))
 }
 
+fn shadow_root_child(node: &DomNode) -> Option<&DomNode> {
+  node
+    .traversal_children()
+    .iter()
+    .find(|child| matches!(child.node_type, DomNodeType::ShadowRoot { .. }))
+}
+
+fn has_relative_anchor_can_traverse_shadow_root(
+  anchor: &DomNode,
+  context: &MatchingContext<FastRenderSelectorImpl>,
+) -> bool {
+  context
+    .extra_data
+    .shadow_host
+    .is_some_and(|host| host == OpaqueElement::new(anchor))
+}
+
 fn for_each_assigned_slot_child<'a, F: FnMut(&'a DomNode)>(node: &'a DomNode, f: &mut F) {
   // Avoid recursion for degenerate trees (can be reached when traversing shadow roots that contain
   // nested slots).
@@ -6794,6 +6811,7 @@ fn match_relative_selector_descendants<'a>(
   if anchor.template_contents_are_inert() {
     return false;
   }
+  let traverse_shadow_root = has_relative_anchor_can_traverse_shadow_root(anchor, context);
   let ancestor_hashes = selector.ancestor_hashes_for_mode(context.quirks_mode());
   ancestors.with_pushed(anchor, |ancestors| {
     if use_ancestor_bloom {
@@ -6804,48 +6822,99 @@ fn match_relative_selector_descendants<'a>(
       }
     }
     let mut found = false;
-    for child in anchor
-      .traversal_children()
-      .iter()
-      .filter(|c| c.is_element())
-    {
-      if let Err(err) = check_active_periodic(
-        deadline_counter,
-        RELATIVE_SELECTOR_DEADLINE_STRIDE,
-        RenderStage::Cascade,
-      ) {
-        context.extra_data.record_deadline_error(err);
-        found = false;
-        break;
+    if traverse_shadow_root {
+      if let Some(shadow_root) = shadow_root_child(anchor) {
+        ancestors.with_pushed(shadow_root, |ancestors| {
+          for child in shadow_root
+            .traversal_children()
+            .iter()
+            .filter(|c| c.is_element())
+          {
+            if let Err(err) = check_active_periodic(
+              deadline_counter,
+              RELATIVE_SELECTOR_DEADLINE_STRIDE,
+              RenderStage::Cascade,
+            ) {
+              context.extra_data.record_deadline_error(err);
+              found = false;
+              break;
+            }
+            let child_ref = ElementRef::with_ancestors(child, ancestors.as_slice())
+              .with_node_id(context.extra_data.node_id_for(child).unwrap_or(0))
+              .with_slot_map(context.extra_data.slot_map)
+              .with_attr_cache(context.extra_data.element_attr_cache);
+            let mut matched =
+              if use_ancestor_bloom && !selector_may_match(ancestor_hashes, bloom_filter) {
+                false
+              } else {
+                matches_selector(&selector.selector, 0, None, &child_ref, context)
+              };
+            if context.extra_data.deadline_error.is_some() {
+              found = false;
+              break;
+            }
+            if !matched && selector.match_hint.is_subtree() {
+              matched = match_relative_selector_subtree(
+                selector,
+                child,
+                ancestors,
+                bloom_filter,
+                use_ancestor_bloom,
+                context,
+                deadline_counter,
+              );
+            }
+            if matched {
+              found = true;
+              break;
+            }
+          }
+        })
       }
-      let child_ref = ElementRef::with_ancestors(child, ancestors.as_slice())
-        .with_node_id(context.extra_data.node_id_for(child).unwrap_or(0))
-        .with_slot_map(context.extra_data.slot_map)
-        .with_attr_cache(context.extra_data.element_attr_cache);
-      let mut matched = if use_ancestor_bloom && !selector_may_match(ancestor_hashes, bloom_filter)
+    } else {
+      for child in anchor
+        .traversal_children()
+        .iter()
+        .filter(|c| c.is_element())
       {
-        false
-      } else {
-        matches_selector(&selector.selector, 0, None, &child_ref, context)
-      };
-      if context.extra_data.deadline_error.is_some() {
-        found = false;
-        break;
-      }
-      if !matched && selector.match_hint.is_subtree() {
-        matched = match_relative_selector_subtree(
-          selector,
-          child,
-          ancestors,
-          bloom_filter,
-          use_ancestor_bloom,
-          context,
+        if let Err(err) = check_active_periodic(
           deadline_counter,
-        );
-      }
-      if matched {
-        found = true;
-        break;
+          RELATIVE_SELECTOR_DEADLINE_STRIDE,
+          RenderStage::Cascade,
+        ) {
+          context.extra_data.record_deadline_error(err);
+          found = false;
+          break;
+        }
+        let child_ref = ElementRef::with_ancestors(child, ancestors.as_slice())
+          .with_node_id(context.extra_data.node_id_for(child).unwrap_or(0))
+          .with_slot_map(context.extra_data.slot_map)
+          .with_attr_cache(context.extra_data.element_attr_cache);
+        let mut matched =
+          if use_ancestor_bloom && !selector_may_match(ancestor_hashes, bloom_filter) {
+            false
+          } else {
+            matches_selector(&selector.selector, 0, None, &child_ref, context)
+          };
+        if context.extra_data.deadline_error.is_some() {
+          found = false;
+          break;
+        }
+        if !matched && selector.match_hint.is_subtree() {
+          matched = match_relative_selector_subtree(
+            selector,
+            child,
+            ancestors,
+            bloom_filter,
+            use_ancestor_bloom,
+            context,
+            deadline_counter,
+          );
+        }
+        if matched {
+          found = true;
+          break;
+        }
       }
     }
     if use_ancestor_bloom {
@@ -6868,6 +6937,12 @@ fn match_relative_selector_siblings<'a>(
   context: &mut MatchingContext<FastRenderSelectorImpl>,
   deadline_counter: &mut usize,
 ) -> bool {
+  if has_relative_anchor_can_traverse_shadow_root(anchor, context) {
+    // When matching in a shadow tree, the host replaces the shadow root node and becomes the root
+    // of the selector tree. Relative selectors starting with sibling combinators therefore cannot
+    // match anything when anchored on the shadow host.
+    return false;
+  }
   let ancestor_hashes = selector.ancestor_hashes_for_mode(context.quirks_mode());
   let quirks_mode = context.quirks_mode();
   let selector_blooms = context.extra_data.selector_blooms;
@@ -6991,6 +7066,11 @@ fn match_relative_selector_subtree<'a>(
   let ancestor_hashes = selector.ancestor_hashes_for_mode(context.quirks_mode());
   let element_attr_cache = context.extra_data.element_attr_cache;
   let slot_map = context.extra_data.slot_map;
+  let relative_anchor = context.relative_selector_anchor();
+  let has_shadow_root_anchor = matches!(
+    (context.extra_data.shadow_host, relative_anchor),
+    (Some(host), Some(anchor)) if host == anchor
+  );
 
   fn push_bloom(
     node: &DomNode,
@@ -6998,7 +7078,7 @@ fn match_relative_selector_subtree<'a>(
     use_ancestor_bloom: bool,
     element_attr_cache: Option<&ElementAttrCache>,
   ) {
-    if !use_ancestor_bloom {
+    if !use_ancestor_bloom || !node.is_element() {
       return;
     }
     if let Some(cache) = element_attr_cache {
@@ -7014,7 +7094,7 @@ fn match_relative_selector_subtree<'a>(
     use_ancestor_bloom: bool,
     element_attr_cache: Option<&ElementAttrCache>,
   ) {
-    if !use_ancestor_bloom {
+    if !use_ancestor_bloom || !node.is_element() {
       return;
     }
     if let Some(cache) = element_attr_cache {
@@ -7048,11 +7128,35 @@ fn match_relative_selector_subtree<'a>(
     };
 
     let children = frame.node.traversal_children();
-    while frame.next_child < children.len() && !children[frame.next_child].is_element() {
+    let mut child_is_shadow_root = false;
+    let mut next_child: Option<&DomNode> = None;
+    while frame.next_child < children.len() {
+      let candidate = &children[frame.next_child];
       frame.next_child += 1;
+
+      if candidate.is_element() {
+        if has_shadow_root_anchor
+          && relative_anchor.is_some_and(|anchor| anchor == OpaqueElement::new(frame.node))
+        {
+          // In a shadow-tree selector context, the host's light-DOM children are outside the
+          // selector tree and must not participate in :has() relative selector matching.
+          continue;
+        }
+        next_child = Some(candidate);
+        break;
+      }
+
+      if has_shadow_root_anchor
+        && relative_anchor.is_some_and(|anchor| anchor == OpaqueElement::new(frame.node))
+        && matches!(candidate.node_type, DomNodeType::ShadowRoot { .. })
+      {
+        child_is_shadow_root = true;
+        next_child = Some(candidate);
+        break;
+      }
     }
 
-    if frame.next_child >= children.len() {
+    let Some(child) = next_child else {
       let Some(finished) = stack.pop() else {
         // Invariant violation: `frame` came from `stack.last_mut()`, so `stack` must be non-empty.
         // Treat as non-match and reset any local traversal state so future selector evaluations
@@ -7073,10 +7177,7 @@ fn match_relative_selector_subtree<'a>(
       let popped = ancestors.pop();
       debug_assert!(popped.is_some());
       continue;
-    }
-
-    let child = &children[frame.next_child];
-    frame.next_child += 1;
+    };
 
     if let Err(err) = check_active_periodic(
       deadline_counter,
@@ -7088,20 +7189,27 @@ fn match_relative_selector_subtree<'a>(
       break;
     }
 
-    let child_ref = ElementRef::with_ancestors(child, ancestors.as_slice())
-      .with_node_id(context.extra_data.node_id_for(child).unwrap_or(0))
-      .with_slot_map(slot_map)
-      .with_attr_cache(element_attr_cache);
+    if !child_is_shadow_root {
+      let child_ref = ElementRef::with_ancestors(child, ancestors.as_slice())
+        .with_node_id(context.extra_data.node_id_for(child).unwrap_or(0))
+        .with_slot_map(slot_map)
+        .with_attr_cache(element_attr_cache);
 
-    let bloom_active = use_ancestor_bloom && stack.len() <= RELATIVE_SELECTOR_ANCESTOR_BLOOM_MAX_DEPTH;
-    let may_match = !bloom_active || selector_may_match(ancestor_hashes, bloom_filter);
-    if may_match && matches_selector(&selector.selector, 0, None, &child_ref, context) {
+      let bloom_active =
+        use_ancestor_bloom && stack.len() <= RELATIVE_SELECTOR_ANCESTOR_BLOOM_MAX_DEPTH;
+      let may_match = !bloom_active || selector_may_match(ancestor_hashes, bloom_filter);
+      if may_match && matches_selector(&selector.selector, 0, None, &child_ref, context) {
+        if context.extra_data.deadline_error.is_some() {
+          result = false;
+          break;
+        }
+        result = true;
+        break;
+      }
       if context.extra_data.deadline_error.is_some() {
         result = false;
         break;
       }
-      result = true;
-      break;
     }
     if context.extra_data.deadline_error.is_some() {
       result = false;
@@ -7114,7 +7222,9 @@ fn match_relative_selector_subtree<'a>(
     }
 
     ancestors.push(child);
-    let child_bloomed = use_ancestor_bloom && stack.len() < RELATIVE_SELECTOR_ANCESTOR_BLOOM_MAX_DEPTH;
+    let child_bloomed = use_ancestor_bloom
+      && child.is_element()
+      && stack.len() < RELATIVE_SELECTOR_ANCESTOR_BLOOM_MAX_DEPTH;
     push_bloom(child, bloom_filter, child_bloomed, element_attr_cache);
     stack.push(Frame {
       node: child,
