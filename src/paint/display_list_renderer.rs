@@ -18,7 +18,7 @@ use crate::paint::blur::{
   alpha_bounds, apply_gaussian_blur_cached, BlurCache, BlurCacheOps, SharedBlurCache,
 };
 use crate::paint::canvas::Canvas;
-use crate::paint::canvas::{apply_mask_with_offset, crop_mask};
+use crate::paint::canvas::{apply_mask_with_offset, crop_mask, draw_pixmap_with_plus_blend, LayerRecord};
 use crate::paint::depth_sort;
 use crate::paint::display_list::BlendMode;
 use crate::paint::display_list::BorderImageItem;
@@ -2755,6 +2755,14 @@ pub struct RenderReport {
   pub layer_allocations: u64,
   /// Total bytes allocated for offscreen layers during paint.
   pub layer_alloc_bytes: u64,
+  /// Backdrop stack composite pixmap allocations performed while preparing `backdrop-filter` roots.
+  pub backdrop_composite_allocations: u64,
+  /// Total bytes allocated for backdrop stack composites during paint.
+  pub backdrop_composite_bytes: u64,
+  /// Backdrop stack composite cache hits.
+  pub backdrop_composite_cache_hits: u64,
+  /// Backdrop stack composite cache misses.
+  pub backdrop_composite_cache_misses: u64,
   /// Number of parallel tasks spawned during rasterization.
   pub parallel_tasks: usize,
   /// Unique threads observed while painting.
@@ -2879,6 +2887,54 @@ impl LayerAllocationDiagnostics {
     LayerAllocationSnapshot {
       allocations: self.allocations.load(Ordering::Relaxed),
       bytes: self.bytes.load(Ordering::Relaxed),
+    }
+  }
+}
+
+#[derive(Default)]
+struct BackdropCompositeDiagnostics {
+  allocations: AtomicU64,
+  bytes: AtomicU64,
+  cache_hits: AtomicU64,
+  cache_misses: AtomicU64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct BackdropCompositeSnapshot {
+  allocations: u64,
+  bytes: u64,
+  cache_hits: u64,
+  cache_misses: u64,
+}
+
+impl BackdropCompositeDiagnostics {
+  #[inline]
+  fn record_allocation(&self, width: u32, height: u32) {
+    self.allocations.fetch_add(1, Ordering::Relaxed);
+    let bytes = u64::from(width)
+      .saturating_mul(u64::from(height))
+      .saturating_mul(4);
+    if bytes > 0 {
+      self.bytes.fetch_add(bytes, Ordering::Relaxed);
+    }
+  }
+
+  #[inline]
+  fn record_hit(&self) {
+    self.cache_hits.fetch_add(1, Ordering::Relaxed);
+  }
+
+  #[inline]
+  fn record_miss(&self) {
+    self.cache_misses.fetch_add(1, Ordering::Relaxed);
+  }
+
+  fn snapshot(&self) -> BackdropCompositeSnapshot {
+    BackdropCompositeSnapshot {
+      allocations: self.allocations.load(Ordering::Relaxed),
+      bytes: self.bytes.load(Ordering::Relaxed),
+      cache_hits: self.cache_hits.load(Ordering::Relaxed),
+      cache_misses: self.cache_misses.load(Ordering::Relaxed),
     }
   }
 }
@@ -3022,6 +3078,21 @@ impl Hash for ImageKey {
 const WARP_CACHE_CAPACITY: usize = 8;
 const CROPPED_IMAGE_CACHE_CAPACITY: usize = 128;
 const SCALED_IMAGE_CACHE_CAPACITY: usize = 256;
+const BACKDROP_COMPOSITE_CACHE_CAPACITY: usize = 8;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct BackdropCompositeCacheKey {
+  root_depth: usize,
+  parent_depth: usize,
+  width: u32,
+  height: u32,
+  origins_hash: u64,
+}
+
+struct BackdropCompositeCacheEntry {
+  pixmap: Pixmap,
+  mutation_fingerprint: u64,
+}
 pub struct DisplayListRenderer {
   canvas: Canvas,
   font_ctx: FontContext,
@@ -3050,6 +3121,7 @@ pub struct DisplayListRenderer {
   background_paint_diagnostics: Option<Arc<BackgroundPaintDiagnostics>>,
   clip_mask_diagnostics: Option<Arc<ClipMaskDiagnostics>>,
   layer_alloc_diagnostics: Option<Arc<LayerAllocationDiagnostics>>,
+  backdrop_composite_diagnostics: Option<Arc<BackdropCompositeDiagnostics>>,
   warp_cache: WarpCache,
   blur_cache: BlurCache,
   shared_blur_cache: Option<SharedBlurCache>,
@@ -3060,6 +3132,9 @@ pub struct DisplayListRenderer {
   gradient_stats: GradientStats,
   diagnostics_enabled: bool,
   trace_backdrop_stack: bool,
+  backdrop_composite_cache: LruCache<BackdropCompositeCacheKey, BackdropCompositeCacheEntry>,
+  backdrop_composite_cache_enabled: bool,
+  canvas_mutations: Vec<u64>,
 }
 
 #[derive(Debug)]
@@ -3241,6 +3316,7 @@ struct Preserve3dSceneRasterConfig {
   background_paint_diagnostics: Option<Arc<BackgroundPaintDiagnostics>>,
   clip_mask_diagnostics: Option<Arc<ClipMaskDiagnostics>>,
   layer_alloc_diagnostics: Option<Arc<LayerAllocationDiagnostics>>,
+  backdrop_composite_diagnostics: Option<Arc<BackdropCompositeDiagnostics>>,
 }
 
 impl Preserve3dSceneRasterConfig {
@@ -3318,6 +3394,7 @@ impl Preserve3dSceneRasterConfig {
     renderer.background_paint_diagnostics = self.background_paint_diagnostics.clone();
     renderer.clip_mask_diagnostics = self.clip_mask_diagnostics.clone();
     renderer.layer_alloc_diagnostics = self.layer_alloc_diagnostics.clone();
+    renderer.backdrop_composite_diagnostics = self.backdrop_composite_diagnostics.clone();
     let report = renderer.render_with_report(&list)?;
     Ok((Some(report.pixmap), report.gradient_stats))
   }
@@ -4063,6 +4140,8 @@ impl DisplayListRenderer {
       clip_mask_diagnostics: diagnostics_enabled.then(|| Arc::new(ClipMaskDiagnostics::default())),
       layer_alloc_diagnostics: diagnostics_enabled
         .then(|| Arc::new(LayerAllocationDiagnostics::default())),
+      backdrop_composite_diagnostics: diagnostics_enabled
+        .then(|| Arc::new(BackdropCompositeDiagnostics::default())),
       warp_cache: WarpCache::new(WARP_CACHE_CAPACITY),
       blur_cache: BlurCache::default(),
       shared_blur_cache: None,
@@ -4073,6 +4152,12 @@ impl DisplayListRenderer {
       gradient_stats: GradientStats::default(),
       diagnostics_enabled,
       trace_backdrop_stack: runtime_flag("FASTR_TRACE_BACKDROP_STACK"),
+      backdrop_composite_cache: LruCache::new(
+        NonZeroUsize::new(BACKDROP_COMPOSITE_CACHE_CAPACITY)
+          .unwrap_or_else(|| NonZeroUsize::new(1).expect("nonzero")),
+      ),
+      backdrop_composite_cache_enabled: true,
+      canvas_mutations: vec![0],
     })
   }
 
@@ -4088,6 +4173,117 @@ impl DisplayListRenderer {
     if let Some(diag) = self.layer_alloc_diagnostics.as_ref() {
       diag.record(width, height);
     }
+  }
+
+  #[inline]
+  fn record_backdrop_composite_allocation(&self, width: u32, height: u32) {
+    if let Some(diag) = self.backdrop_composite_diagnostics.as_ref() {
+      diag.record_allocation(width, height);
+    }
+  }
+
+  #[inline]
+  fn record_backdrop_composite_cache_hit(&self) {
+    if let Some(diag) = self.backdrop_composite_diagnostics.as_ref() {
+      diag.record_hit();
+    }
+  }
+
+  #[inline]
+  fn record_backdrop_composite_cache_miss(&self) {
+    if let Some(diag) = self.backdrop_composite_diagnostics.as_ref() {
+      diag.record_miss();
+    }
+  }
+
+  #[inline]
+  fn mark_current_pixmap_mutated(&mut self) {
+    debug_assert_eq!(
+      self.canvas_mutations.len(),
+      self.canvas.layer_stack_len().saturating_add(1),
+      "canvas mutation stack must track the canvas layer stack"
+    );
+    if let Some(counter) = self.canvas_mutations.last_mut() {
+      *counter = counter.wrapping_add(1);
+    }
+  }
+
+  #[inline]
+  fn push_layer_mutation_state(&mut self) {
+    self.canvas_mutations.push(0);
+  }
+
+  #[inline]
+  fn pop_layer_mutation_state(&mut self) {
+    let _ = self.canvas_mutations.pop();
+  }
+
+  #[inline]
+  fn push_layer_tracked(&mut self, opacity: f32, is_backdrop_root: bool) -> Result<()> {
+    self
+      .canvas
+      .push_layer_with_blend_and_backdrop_root(opacity, None, is_backdrop_root)?;
+    self.push_layer_mutation_state();
+    Ok(())
+  }
+
+  #[inline]
+  fn push_layer_with_blend_tracked(
+    &mut self,
+    opacity: f32,
+    blend: Option<SkiaBlendMode>,
+    is_backdrop_root: bool,
+  ) -> Result<()> {
+    self
+      .canvas
+      .push_layer_with_blend_and_backdrop_root(opacity, blend, is_backdrop_root)?;
+    self.push_layer_mutation_state();
+    Ok(())
+  }
+
+  #[inline]
+  fn push_layer_bounded_tracked(
+    &mut self,
+    opacity: f32,
+    blend: Option<SkiaBlendMode>,
+    bounds: Rect,
+    is_backdrop_root: bool,
+  ) -> Result<()> {
+    self
+      .canvas
+      .push_layer_bounded_with_backdrop_root(opacity, blend, bounds, is_backdrop_root)?;
+    self.push_layer_mutation_state();
+    Ok(())
+  }
+
+  #[inline]
+  fn pop_layer_tracked(&mut self) -> Result<()> {
+    self.canvas.pop_layer()?;
+    self.pop_layer_mutation_state();
+    // Compositing the popped layer mutates the restored parent pixmap.
+    self.mark_current_pixmap_mutated();
+    Ok(())
+  }
+
+  #[inline]
+  fn pop_layer_raw_tracked(
+    &mut self,
+  ) -> Result<(Pixmap, (i32, i32), f32, Option<SkiaBlendMode>)> {
+    let popped = self.canvas.pop_layer_raw()?;
+    self.pop_layer_mutation_state();
+    Ok(popped)
+  }
+
+  #[inline]
+  fn composite_layer_tracked(
+    &mut self,
+    layer: &Pixmap,
+    opacity: f32,
+    blend: Option<SkiaBlendMode>,
+    origin: (i32, i32),
+  ) {
+    self.canvas.composite_layer(layer, opacity, blend, origin);
+    self.mark_current_pixmap_mutated();
   }
 
   #[inline]
@@ -6679,14 +6875,18 @@ impl DisplayListRenderer {
     origin: (i32, i32),
     region: Option<&Rect>,
   ) -> Result<()> {
-    composite_manual_layer_pixmap(
+    let result = composite_manual_layer_pixmap(
       self.canvas.pixmap_mut(),
       layer,
       opacity,
       mode,
       origin,
       region,
-    )
+    );
+    if result.is_ok() {
+      self.mark_current_pixmap_mutated();
+    }
+    result
   }
 
   /// Consumes the renderer and returns the painted pixmap.
@@ -6748,6 +6948,11 @@ impl DisplayListRenderer {
           .as_ref()
           .map(|d| d.snapshot())
           .unwrap_or_default();
+        let backdrop_stats = self
+          .backdrop_composite_diagnostics
+          .as_ref()
+          .map(|d| d.snapshot())
+          .unwrap_or_default();
         let gradient_pixmap_stats = self.gradient_pixmap_cache.snapshot();
         return Ok(RenderReport {
           pixmap,
@@ -6768,6 +6973,10 @@ impl DisplayListRenderer {
           clip_mask_pixels: clip_stats.pixels,
           layer_allocations: layer_stats.allocations,
           layer_alloc_bytes: layer_stats.bytes,
+          backdrop_composite_allocations: backdrop_stats.allocations,
+          backdrop_composite_bytes: backdrop_stats.bytes,
+          backdrop_composite_cache_hits: backdrop_stats.cache_hits,
+          backdrop_composite_cache_misses: backdrop_stats.cache_misses,
           parallel_tasks: tasks,
           parallel_threads: threads_used,
           parallel_duration,
@@ -6801,6 +7010,11 @@ impl DisplayListRenderer {
       .as_ref()
       .map(|d| d.snapshot())
       .unwrap_or_default();
+    let backdrop_stats = self
+      .backdrop_composite_diagnostics
+      .as_ref()
+      .map(|d| d.snapshot())
+      .unwrap_or_default();
     let gradient_pixmap_stats = self.gradient_pixmap_cache.snapshot();
     Ok(RenderReport {
       pixmap: self.canvas.into_pixmap(),
@@ -6821,11 +7035,208 @@ impl DisplayListRenderer {
       clip_mask_pixels: clip_stats.pixels,
       layer_allocations: layer_stats.allocations,
       layer_alloc_bytes: layer_stats.bytes,
+      backdrop_composite_allocations: backdrop_stats.allocations,
+      backdrop_composite_bytes: backdrop_stats.bytes,
+      backdrop_composite_cache_hits: backdrop_stats.cache_hits,
+      backdrop_composite_cache_misses: backdrop_stats.cache_misses,
       parallel_tasks: 0,
       parallel_threads: 1,
       parallel_duration: Duration::ZERO,
       serial_duration,
     })
+  }
+
+  fn backdrop_composite_cache_key(
+    layer_stack: &[LayerRecord],
+    root_depth: usize,
+    parent_depth: usize,
+  ) -> Option<BackdropCompositeCacheKey> {
+    if root_depth >= parent_depth {
+      return None;
+    }
+    let parent = layer_stack.get(parent_depth).map(|record| &record.pixmap)?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for idx in root_depth..parent_depth {
+      let record = layer_stack.get(idx)?;
+      record.origin.hash(&mut hasher);
+      record.effective_opacity().to_bits().hash(&mut hasher);
+      std::mem::discriminant(&record.effective_blend_mode()).hash(&mut hasher);
+    }
+    Some(BackdropCompositeCacheKey {
+      root_depth,
+      parent_depth,
+      width: parent.width(),
+      height: parent.height(),
+      origins_hash: hasher.finish(),
+    })
+  }
+
+  fn backdrop_composite_mutation_fingerprint(&self, root_depth: usize, parent_depth: usize) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let upper = parent_depth.min(self.canvas_mutations.len().saturating_sub(1));
+    for counter in self.canvas_mutations[root_depth.min(upper)..=upper].iter() {
+      counter.hash(&mut hasher);
+    }
+    hasher.finish()
+  }
+
+  fn ensure_backdrop_composite_cached(
+    &mut self,
+    root_depth: usize,
+    parent_depth: usize,
+  ) -> RenderResult<Option<BackdropCompositeCacheKey>> {
+    if !self.backdrop_composite_cache_enabled || root_depth >= parent_depth {
+      return Ok(None);
+    }
+    let layer_stack = self.canvas.layer_stack();
+    let Some(target_key) = Self::backdrop_composite_cache_key(layer_stack, root_depth, parent_depth)
+    else {
+      return Ok(None);
+    };
+    let target_fingerprint = self.backdrop_composite_mutation_fingerprint(root_depth, parent_depth);
+
+    if self
+      .backdrop_composite_cache
+      .peek(&target_key)
+      .is_some_and(|entry| entry.mutation_fingerprint == target_fingerprint)
+    {
+      self.record_backdrop_composite_cache_hit();
+      return Ok(Some(target_key));
+    }
+    self.record_backdrop_composite_cache_miss();
+
+    // Find the deepest valid cached intermediate composite we can start from.
+    let mut start_depth = root_depth;
+    let mut start_key: Option<BackdropCompositeCacheKey> = None;
+    for depth in (root_depth..parent_depth).rev() {
+      let Some(key) = Self::backdrop_composite_cache_key(layer_stack, root_depth, depth) else {
+        continue;
+      };
+      let fingerprint = self.backdrop_composite_mutation_fingerprint(root_depth, depth);
+      if self
+        .backdrop_composite_cache
+        .peek(&key)
+        .is_some_and(|entry| entry.mutation_fingerprint == fingerprint)
+      {
+        start_depth = depth;
+        start_key = Some(key);
+        break;
+      }
+    }
+
+    let mut staged: Vec<(BackdropCompositeCacheKey, BackdropCompositeCacheEntry)> = Vec::new();
+
+    // Build missing composites. To avoid borrowing the cache mutably while we hold references to
+    // its pixmaps, we stage insertions and commit them after the compositing loop completes.
+    let build_result: RenderResult<bool> = (|| {
+      let start_src: &Pixmap = if let Some(key) = start_key.as_ref() {
+        let Some(entry) = self.backdrop_composite_cache.peek(key) else {
+          return Ok(false);
+        };
+        &entry.pixmap
+      } else {
+        let Some(record) = layer_stack.get(root_depth) else {
+          return Ok(false);
+        };
+        &record.pixmap
+      };
+
+      let mut current: Option<(BackdropCompositeCacheKey, u64, Pixmap)> = None;
+      for idx in start_depth.saturating_add(1)..=parent_depth {
+        let Some(layer_record) = layer_stack.get(idx) else {
+          return Ok(false);
+        };
+        let Some(parent_record) = layer_stack.get(idx.saturating_sub(1)) else {
+          return Ok(false);
+        };
+        let origin = parent_record.origin;
+        let opacity = parent_record.effective_opacity();
+        let blend_mode = parent_record.effective_blend_mode();
+        let Some(key) = Self::backdrop_composite_cache_key(layer_stack, root_depth, idx) else {
+          return Ok(false);
+        };
+        let fingerprint = self.backdrop_composite_mutation_fingerprint(root_depth, idx);
+
+        let layer_pixmap = &layer_record.pixmap;
+        let mut next = match new_pixmap(layer_pixmap.width(), layer_pixmap.height()) {
+          Some(p) => p,
+          None => return Ok(false),
+        };
+        self.record_backdrop_composite_allocation(next.width(), next.height());
+
+        {
+          let src = match current.as_ref() {
+            Some((_, _, pixmap)) => pixmap,
+            None => start_src,
+          };
+          copy_pixmap_region_with_offset(&mut next, src, origin.0, origin.1)?;
+        }
+        if opacity > 0.0 {
+          let mut paint = PixmapPaint::default();
+          paint.opacity = opacity;
+          paint.quality = tiny_skia::FilterQuality::Nearest;
+          paint.blend_mode = blend_mode;
+          if blend_mode == SkiaBlendMode::Plus {
+            draw_pixmap_with_plus_blend(
+              &mut next,
+              0,
+              0,
+              layer_pixmap.as_ref(),
+              opacity,
+              paint.quality,
+              Transform::identity(),
+              None,
+            );
+          } else {
+            next.draw_pixmap(0, 0, layer_pixmap.as_ref(), &paint, Transform::identity(), None);
+          }
+        }
+
+        if let Some((prev_key, prev_fingerprint, prev_pixmap)) = current.take() {
+          staged.push((
+            prev_key,
+            BackdropCompositeCacheEntry {
+              pixmap: prev_pixmap,
+              mutation_fingerprint: prev_fingerprint,
+            },
+          ));
+        }
+        current = Some((key, fingerprint, next));
+      }
+
+      if let Some((key, fingerprint, pixmap)) = current.take() {
+        staged.push((
+          key,
+          BackdropCompositeCacheEntry {
+            pixmap,
+            mutation_fingerprint: fingerprint,
+          },
+        ));
+      }
+      Ok(true)
+    })();
+
+    let built = match build_result {
+      Ok(built) => built,
+      Err(err) => return Err(err),
+    };
+    if !built {
+      return Ok(None);
+    }
+
+    for (key, entry) in staged {
+      self.backdrop_composite_cache.put(key, entry);
+    }
+
+    if self
+      .backdrop_composite_cache
+      .peek(&target_key)
+      .is_some_and(|entry| entry.mutation_fingerprint == target_fingerprint)
+    {
+      return Ok(Some(target_key));
+    }
+
+    Ok(None)
   }
 
   fn apply_pending_backdrop(&mut self, next_item: &DisplayItem) -> RenderResult<()> {
@@ -6847,14 +7258,12 @@ impl DisplayListRenderer {
     let world_to_dest = self.canvas.transform();
     let scale = self.scale;
 
-    let (layer_stack, dest_pixmap) = self.canvas.split_layer_stack_and_pixmap_mut();
-    let Some(parent_surface) = layer_stack.last().map(|record| &record.pixmap) else {
-      // Without an active layer, there's nowhere to write the filtered backdrop.
-      return Ok(());
-    };
-
-    if self.trace_backdrop_stack {
-      let parent_depth = layer_stack.len().saturating_sub(1);
+    let (root_depth, parent_depth) = {
+      let layer_stack = self.canvas.layer_stack();
+      let Some(parent_depth) = layer_stack.len().checked_sub(1) else {
+        // Without an active layer, there's nowhere to write the filtered backdrop.
+        return Ok(());
+      };
       let mut root_depth = 0usize;
       if parent_depth > 0 {
         for idx in (0..parent_depth).rev() {
@@ -6864,11 +7273,29 @@ impl DisplayListRenderer {
           }
         }
       }
+      (root_depth, parent_depth)
+    };
+
+    let cached_key = self.ensure_backdrop_composite_cached(root_depth, parent_depth)?;
+
+    let (layer_stack, dest_pixmap) = self.canvas.split_layer_stack_and_pixmap_mut();
+    let Some(parent_surface) = layer_stack.last().map(|record| &record.pixmap) else {
+      // Without an active layer, there's nowhere to write the filtered backdrop.
+      return Ok(());
+    };
+    let cached_backdrop = cached_key
+      .as_ref()
+      .and_then(|key| self.backdrop_composite_cache.peek(key))
+      .map(|entry| &entry.pixmap);
+    let composite_steps = parent_depth.saturating_sub(root_depth);
+    let backdrop_diag = self.backdrop_composite_diagnostics.clone();
+    if self.trace_backdrop_stack {
       eprintln!(
-        "backdrop_stack apply_backdrop_filter range={}..{} composite_allocated={}",
+        "backdrop_stack apply_backdrop_filter range={}..{} composite_steps={} cache_hit={}",
         root_depth,
         parent_depth,
-        root_depth != parent_depth
+        composite_steps,
+        cached_backdrop.is_some()
       );
     }
     let clip_origin = (0, 0);
@@ -6899,13 +7326,25 @@ impl DisplayListRenderer {
       Some(blur_cache),
       Some(backdrop_cache),
       |region, clamped_x, clamped_y| {
-        Canvas::fill_backdrop_root_region(
-          layer_stack,
-          region,
-          (clamped_x as i32, clamped_y as i32),
-        )
+        if let Some(backdrop) = cached_backdrop {
+          copy_pixmap_region_with_offset(region, backdrop, clamped_x as i32, clamped_y as i32)
+        } else {
+          if composite_steps > 0 {
+            if let Some(diag) = backdrop_diag.as_ref() {
+              for _ in 0..composite_steps {
+                diag.record_allocation(region.width(), region.height());
+              }
+            }
+          }
+          Canvas::fill_backdrop_root_region(
+            layer_stack,
+            region,
+            (clamped_x as i32, clamped_y as i32),
+          )
+        }
       },
     )?;
+    self.mark_current_pixmap_mutated();
     Ok(())
   }
 
@@ -7472,6 +7911,7 @@ impl DisplayListRenderer {
     let background_paint_diagnostics = self.background_paint_diagnostics.clone();
     let clip_mask_diagnostics = self.clip_mask_diagnostics.clone();
     let layer_alloc_diagnostics = self.layer_alloc_diagnostics.clone();
+    let backdrop_composite_diagnostics = self.backdrop_composite_diagnostics.clone();
 
     let deadline = active_deadline();
     let stage = active_stage();
@@ -7522,6 +7962,7 @@ impl DisplayListRenderer {
               renderer.background_paint_diagnostics = background_paint_diagnostics.clone();
               renderer.clip_mask_diagnostics = clip_mask_diagnostics.clone();
               renderer.layer_alloc_diagnostics = layer_alloc_diagnostics.clone();
+              renderer.backdrop_composite_diagnostics = backdrop_composite_diagnostics.clone();
               renderer.shared_image_pixmaps = Some(shared_image_pixmaps.clone());
               if work.render_x > 0 || work.render_y > 0 {
                 renderer
@@ -7620,6 +8061,7 @@ impl DisplayListRenderer {
       background_paint_diagnostics: self.background_paint_diagnostics.clone(),
       clip_mask_diagnostics: self.clip_mask_diagnostics.clone(),
       layer_alloc_diagnostics: self.layer_alloc_diagnostics.clone(),
+      backdrop_composite_diagnostics: self.backdrop_composite_diagnostics.clone(),
     }
   }
 
@@ -7820,9 +8262,13 @@ impl DisplayListRenderer {
       .transpose()?;
 
     if push_isolation_layer {
-      self.canvas.push_layer(1.0)?;
+      self.push_layer_tracked(1.0, false)?;
       self.record_layer_allocation(self.canvas.width(), self.canvas.height());
     }
+
+    // The preserve-3d scene compositor draws into the current pixmap directly (warps/composites
+    // planes), so treat the destination surface as mutated for backdrop-cache invalidation.
+    self.mark_current_pixmap_mutated();
 
     let paint_result = (|| -> Result<()> {
       let mut deadline_counter = 0usize;
@@ -7906,13 +8352,9 @@ impl DisplayListRenderer {
 
           let pushed_layer = if should_apply_backdrop {
             if let Some(bounds) = layer_bounds {
-              self
-                .canvas
-                .push_layer_bounded_with_backdrop_root(1.0, None, bounds, true)?;
+              self.push_layer_bounded_tracked(1.0, None, bounds, true)?;
             } else {
-              self
-                .canvas
-                .push_layer_with_blend_and_backdrop_root(1.0, None, true)?;
+              self.push_layer_tracked(1.0, true)?;
             }
             self.record_layer_allocation(self.canvas.width(), self.canvas.height());
             true
@@ -8079,9 +8521,9 @@ impl DisplayListRenderer {
           if pushed_layer {
             // If drawing failed, still pop the layer to restore the canvas state before returning.
             if draw_result.is_err() {
-              let _ = self.canvas.pop_layer_raw();
+              let _ = self.pop_layer_raw_tracked();
             } else {
-              self.canvas.pop_layer()?;
+              self.pop_layer_tracked()?;
             }
           }
           draw_result?;
@@ -8095,9 +8537,9 @@ impl DisplayListRenderer {
 
     if push_isolation_layer {
       if paint_result.is_err() {
-        let _ = self.canvas.pop_layer_raw();
+        let _ = self.pop_layer_raw_tracked();
       } else {
-        self.canvas.pop_layer()?;
+        self.pop_layer_tracked()?;
       }
     }
 
@@ -8965,6 +9407,32 @@ impl DisplayListRenderer {
     Ok(())
   }
 
+  #[inline]
+  fn display_item_mutates_current_pixmap(item: &DisplayItem) -> bool {
+    matches!(
+      item,
+      DisplayItem::FillRect(_)
+        | DisplayItem::StrokeRect(_)
+        | DisplayItem::Outline(_)
+        | DisplayItem::FillRoundedRect(_)
+        | DisplayItem::StrokeRoundedRect(_)
+        | DisplayItem::Text(_)
+        | DisplayItem::Image(_)
+        | DisplayItem::ImagePattern(_)
+        | DisplayItem::BoxShadow(_)
+        | DisplayItem::ListMarker(_)
+        | DisplayItem::LinearGradient(_)
+        | DisplayItem::LinearGradientPattern(_)
+        | DisplayItem::RadialGradient(_)
+        | DisplayItem::RadialGradientPattern(_)
+        | DisplayItem::ConicGradient(_)
+        | DisplayItem::ConicGradientPattern(_)
+        | DisplayItem::Border(_)
+        | DisplayItem::TableCollapsedBorders(_)
+         | DisplayItem::TextDecoration(_)
+     )
+   }
+ 
   /// Render a single display list item.
   ///
   /// ### Stacking-context compositing flags
@@ -9002,6 +9470,10 @@ impl DisplayListRenderer {
     }
 
     self.apply_pending_backdrop(item)?;
+
+    if Self::display_item_mutates_current_pixmap(item) {
+      self.mark_current_pixmap_mutated();
+    }
 
     match item {
       DisplayItem::FillRect(FillRectItem { rect, color }) => {
@@ -9251,42 +9723,16 @@ impl DisplayListRenderer {
         if needs_layer {
           if manual_blend.is_some() {
             if let Some(layer_rect) = bounded_rect {
-              self
-                .canvas
-                .push_layer_bounded_with_backdrop_root(
-                  opacity,
-                  None,
-                  layer_rect,
-                  item.establishes_backdrop_root,
-                )?;
+              self.push_layer_bounded_tracked(opacity, None, layer_rect, item.establishes_backdrop_root)?;
             } else {
-              self
-                .canvas
-                .push_layer_with_blend_and_backdrop_root(
-                  opacity,
-                  None,
-                  item.establishes_backdrop_root,
-                )?;
+              self.push_layer_tracked(opacity, item.establishes_backdrop_root)?;
             }
           } else {
             let blend = map_blend_mode(item.mix_blend_mode);
             if let Some(layer_rect) = bounded_rect {
-              self
-                .canvas
-                .push_layer_bounded_with_backdrop_root(
-                  opacity,
-                  Some(blend),
-                  layer_rect,
-                  item.establishes_backdrop_root,
-                )?;
+              self.push_layer_bounded_tracked(opacity, Some(blend), layer_rect, item.establishes_backdrop_root)?;
             } else {
-              self
-                .canvas
-                .push_layer_with_blend_and_backdrop_root(
-                  opacity,
-                  Some(blend),
-                  item.establishes_backdrop_root,
-                )?;
+              self.push_layer_with_blend_tracked(opacity, Some(blend), item.establishes_backdrop_root)?;
             }
           }
           self.record_layer_allocation(self.canvas.width(), self.canvas.height());
@@ -9395,7 +9841,7 @@ impl DisplayListRenderer {
           );
         }
         if record.needs_layer {
-          let (mut layer, origin, opacity, composite_blend) = self.canvas.pop_layer_raw()?;
+          let (mut layer, origin, opacity, composite_blend) = self.pop_layer_raw_tracked()?;
 
           let (out_l, out_t, out_r, out_b) =
             filter_outset_with_bounds(&record.filters, self.scale, Some(record.css_bounds))
@@ -9644,9 +10090,7 @@ impl DisplayListRenderer {
               }
               self.composite_manual_layer(&layer, opacity, mode, origin, effect_bounds.as_ref())?;
             } else {
-              self
-                .canvas
-                .composite_layer(&layer, opacity, composite_blend, origin);
+              self.composite_layer_tracked(&layer, opacity, composite_blend, origin);
             }
           } else if let Some(mode) = record.manual_blend {
             if let Some(mask) = self.canvas.clip_mask().cloned() {
@@ -9679,9 +10123,7 @@ impl DisplayListRenderer {
             }
             self.composite_manual_layer(&layer, opacity, mode, origin, effect_bounds.as_ref())?;
           } else {
-            self
-              .canvas
-              .composite_layer(&layer, opacity, composite_blend, origin);
+            self.composite_layer_tracked(&layer, opacity, composite_blend, origin);
           }
         } else {
           self.canvas.restore();
@@ -9690,13 +10132,11 @@ impl DisplayListRenderer {
       DisplayItem::PushClip(clip) => self.push_clip(clip)?,
       DisplayItem::PopClip => self.pop_clip(),
       DisplayItem::PushOpacity(OpacityItem { opacity }) => {
-        self
-          .canvas
-          .push_layer_with_blend_and_backdrop_root(*opacity, None, *opacity < 1.0 - f32::EPSILON)?;
+        self.push_layer_tracked(*opacity, *opacity < 1.0 - f32::EPSILON)?;
         self.record_layer_allocation(self.canvas.width(), self.canvas.height());
       }
       DisplayItem::PopOpacity => {
-        self.canvas.pop_layer()?;
+        self.pop_layer_tracked()?;
       }
       DisplayItem::PushTransform(transform) => {
         let parent = *self
@@ -9714,19 +10154,11 @@ impl DisplayListRenderer {
       DisplayItem::PushBlendMode(mode) => {
         let is_backdrop_root = !matches!(mode.mode, BlendMode::Normal);
         if is_manual_blend(mode.mode) {
-          self
-            .canvas
-            .push_layer_with_blend_and_backdrop_root(1.0, None, is_backdrop_root)?;
+          self.push_layer_tracked(1.0, is_backdrop_root)?;
           self.record_layer_allocation(self.canvas.width(), self.canvas.height());
           self.blend_stack.push(Some(mode.mode));
         } else {
-          self
-            .canvas
-            .push_layer_with_blend_and_backdrop_root(
-              1.0,
-              Some(map_blend_mode(mode.mode)),
-              is_backdrop_root,
-            )?;
+          self.push_layer_with_blend_tracked(1.0, Some(map_blend_mode(mode.mode)), is_backdrop_root)?;
           self.record_layer_allocation(self.canvas.width(), self.canvas.height());
           self.blend_stack.push(None);
         }
@@ -9734,11 +10166,11 @@ impl DisplayListRenderer {
       DisplayItem::PopBlendMode => {
         let blend_mode = self.blend_stack.pop().flatten();
         if let Some(mode) = blend_mode {
-          let (layer, origin, opacity, _) = self.canvas.pop_layer_raw()?;
+          let (layer, origin, opacity, _) = self.pop_layer_raw_tracked()?;
           let region = self.canvas.clip_bounds();
           self.composite_manual_layer(&layer, opacity, mode, origin, region.as_ref())?;
         } else {
-          self.canvas.pop_layer()?;
+          self.pop_layer_tracked()?;
         }
       }
     }
@@ -17002,6 +17434,174 @@ mod tests {
     );
   }
 
+  fn composite_cache_fixture(child_count: usize) -> DisplayList {
+    let mut list = DisplayList::new();
+    let canvas = Rect::from_xywh(0.0, 0.0, 64.0, 64.0);
+
+    // Ensure the backdrop-filter has something opaque to sample.
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: canvas,
+      color: Rgba::rgb(200, 40, 30),
+    }));
+
+    // Create a nested offscreen layer stack (A -> B -> C) so each child stacking context with
+    // `backdrop-filter` needs a multi-step composite of ancestor layers.
+    //
+    // The intermediate contexts force isolated-group surfaces (`is_isolated`) without
+    // establishing Backdrop Roots, so `backdrop-filter` must flatten across multiple ancestors,
+    // exercising the intermediate composite cache.
+    let ctx_a_bounds = canvas;
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      establishes_backdrop_root: false,
+      bounds: ctx_a_bounds,
+      plane_rect: ctx_a_bounds,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: true,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+      has_clip_path: false,
+    }));
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(4.0, 4.0, 12.0, 12.0),
+      color: Rgba::rgb(10, 200, 30),
+    }));
+
+    let ctx_b_bounds = Rect::from_xywh(8.0, 8.0, 48.0, 48.0);
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      establishes_backdrop_root: false,
+      bounds: ctx_b_bounds,
+      plane_rect: ctx_b_bounds,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: true,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+      has_clip_path: false,
+    }));
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(10.0, 10.0, 12.0, 12.0),
+      color: Rgba::rgb(20, 40, 220),
+    }));
+
+    let ctx_c_bounds = Rect::from_xywh(12.0, 12.0, 40.0, 40.0);
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      establishes_backdrop_root: false,
+      bounds: ctx_c_bounds,
+      plane_rect: ctx_c_bounds,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: true,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+      has_clip_path: false,
+    }));
+
+    for idx in 0..child_count {
+      let x = 14.0 + idx as f32 * 6.0;
+      let bounds = Rect::from_xywh(x, 20.0, 4.0, 4.0);
+      list.push(DisplayItem::PushStackingContext(StackingContextItem {
+        z_index: 0,
+        creates_stacking_context: true,
+        establishes_backdrop_root: true,
+        bounds,
+        plane_rect: bounds,
+        mix_blend_mode: BlendMode::Normal,
+        opacity: 1.0,
+        is_isolated: false,
+        transform: None,
+        child_perspective: None,
+        transform_style: TransformStyle::Flat,
+        backface_visibility: BackfaceVisibility::Visible,
+        filters: Vec::new(),
+        backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
+        radii: BorderRadii::ZERO,
+        mask: None,
+        has_clip_path: false,
+      }));
+      // Keep the stacking context empty; this forces the pending backdrop to apply right before the
+      // context is popped.
+      list.push(DisplayItem::PopStackingContext);
+    }
+
+    list.push(DisplayItem::PopStackingContext);
+    list.push(DisplayItem::PopStackingContext);
+    list.push(DisplayItem::PopStackingContext);
+    list
+  }
+
+  #[test]
+  fn backdrop_composite_cache_matches_uncached_output() {
+    const CHILD_COUNT: usize = 6;
+    let list = composite_cache_fixture(CHILD_COUNT);
+
+    let mut cached = DisplayListRenderer::new(64, 64, Rgba::WHITE, FontContext::new()).unwrap();
+    cached.set_parallelism(PaintParallelism::disabled());
+    let cached_pixmap = cached.render(&list).unwrap();
+
+    let mut uncached = DisplayListRenderer::new(64, 64, Rgba::WHITE, FontContext::new()).unwrap();
+    uncached.set_parallelism(PaintParallelism::disabled());
+    uncached.backdrop_composite_cache_enabled = false;
+    let uncached_pixmap = uncached.render(&list).unwrap();
+
+    assert_eq!(cached_pixmap.data(), uncached_pixmap.data());
+  }
+
+  #[test]
+  fn backdrop_composite_cache_reduces_allocations() {
+    crate::paint::painter::enable_paint_diagnostics();
+    struct DiagnosticsGuard;
+    impl Drop for DiagnosticsGuard {
+      fn drop(&mut self) {
+        let _ = crate::paint::painter::take_paint_diagnostics();
+      }
+    }
+    let _guard = DiagnosticsGuard;
+
+    const CHILD_COUNT: usize = 6;
+    let list = composite_cache_fixture(CHILD_COUNT);
+
+    let mut cached = DisplayListRenderer::new(64, 64, Rgba::WHITE, FontContext::new()).unwrap();
+    cached.set_parallelism(PaintParallelism::disabled());
+    let cached_report = cached.render_with_report(&list).unwrap();
+
+    let mut uncached = DisplayListRenderer::new(64, 64, Rgba::WHITE, FontContext::new()).unwrap();
+    uncached.set_parallelism(PaintParallelism::disabled());
+    uncached.backdrop_composite_cache_enabled = false;
+    let uncached_report = uncached.render_with_report(&list).unwrap();
+
+    assert!(
+      cached_report.backdrop_composite_allocations < uncached_report.backdrop_composite_allocations,
+      "expected backdrop composite cache to reduce allocations (cached={}, uncached={})",
+      cached_report.backdrop_composite_allocations,
+      uncached_report.backdrop_composite_allocations
+    );
+  }
+
   #[test]
   fn backdrop_filter_applies_to_background() {
     let renderer = DisplayListRenderer::new(4, 4, Rgba::WHITE, FontContext::new()).unwrap();
@@ -18285,8 +18885,7 @@ mod tests {
   fn render_mask_respects_bounded_layer_translation() {
     let mut renderer = DisplayListRenderer::new(100, 100, Rgba::WHITE, FontContext::new()).unwrap();
     renderer
-      .canvas
-      .push_layer_bounded(1.0, None, Rect::from_xywh(50.0, 60.0, 10.0, 10.0))
+      .push_layer_bounded_tracked(1.0, None, Rect::from_xywh(50.0, 60.0, 10.0, 10.0), false)
       .unwrap();
 
     let bounds = Rect::from_xywh(52.0, 63.0, 4.0, 4.0);
@@ -18339,11 +18938,11 @@ mod tests {
     // Create a bounded layer matching the stacking context bounds after the translation has been
     // applied (global 70..90 => local 10..30).
     renderer
-      .canvas
-      .push_layer_bounded(
+      .push_layer_bounded_tracked(
         1.0,
         Some(SkiaBlendMode::SourceOver),
         Rect::from_xywh(10.0, 10.0, 20.0, 20.0),
+        false,
       )
       .unwrap();
     renderer.canvas.draw_rect(
@@ -18351,7 +18950,7 @@ mod tests {
       Rgba::new(30, 160, 220, 1.0),
     );
 
-    let (mut layer, layer_origin, _opacity, _blend) = renderer.canvas.pop_layer_raw().unwrap();
+    let (mut layer, layer_origin, _opacity, _blend) = renderer.pop_layer_raw_tracked().unwrap();
     assert_eq!(layer_origin, (10, 10));
 
     let bounds = Rect::from_xywh(70.0, 70.0, 20.0, 20.0);
@@ -18402,8 +19001,7 @@ mod tests {
     );
 
     renderer
-      .canvas
-      .composite_layer(&layer, 1.0, Some(SkiaBlendMode::SourceOver), layer_origin);
+      .composite_layer_tracked(&layer, 1.0, Some(SkiaBlendMode::SourceOver), layer_origin);
     let pixmap = renderer.canvas.into_pixmap();
     assert_eq!(
       pixel(&pixmap, 10, 10),

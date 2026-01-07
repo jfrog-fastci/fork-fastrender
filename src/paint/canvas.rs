@@ -396,6 +396,10 @@ impl Canvas {
     self.layer_stack.len()
   }
 
+  pub(crate) fn layer_stack(&self) -> &[LayerRecord] {
+    &self.layer_stack
+  }
+
   pub(crate) fn layer_stack_pixmap(&self, index: usize) -> Option<&Pixmap> {
     self.layer_stack.get(index).map(|layer| &layer.pixmap)
   }
