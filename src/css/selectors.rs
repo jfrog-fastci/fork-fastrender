@@ -1508,5 +1508,36 @@ mod tests {
 
     let part = PseudoElement::Part(CssString::from("name"));
     assert_eq!(part.to_css_string(), "::part(name)");
+
+    assert_eq!(PseudoElement::Placeholder.to_css_string(), "::placeholder");
+    assert_eq!(PseudoElement::SliderThumb.to_css_string(), "::-webkit-slider-thumb");
+    assert_eq!(
+      PseudoElement::SliderTrack.to_css_string(),
+      "::-webkit-slider-runnable-track"
+    );
+  }
+
+  #[test]
+  fn parses_form_control_pseudo_element_selectors() {
+    let mut input = ParserInput::new("input::placeholder");
+    let mut parser = Parser::new(&mut input);
+    let list = SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No)
+      .expect("parse placeholder selector");
+    let selector = list.slice().first().expect("one selector");
+    assert_eq!(selector.pseudo_element(), Some(&PseudoElement::Placeholder));
+
+    let mut input = ParserInput::new(".range::-webkit-slider-thumb");
+    let mut parser = Parser::new(&mut input);
+    let list = SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No)
+      .expect("parse webkit slider thumb selector");
+    let selector = list.slice().first().expect("one selector");
+    assert_eq!(selector.pseudo_element(), Some(&PseudoElement::SliderThumb));
+
+    let mut input = ParserInput::new(".range::-moz-range-track");
+    let mut parser = Parser::new(&mut input);
+    let list = SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No)
+      .expect("parse moz range track selector");
+    let selector = list.slice().first().expect("one selector");
+    assert_eq!(selector.pseudo_element(), Some(&PseudoElement::SliderTrack));
   }
 }

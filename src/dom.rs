@@ -6067,19 +6067,7 @@ impl<'a> Element for ElementRef<'a> {
       | PseudoElement::FirstLetter
       | PseudoElement::Marker
       | PseudoElement::Backdrop => true,
-      PseudoElement::Placeholder => {
-        let Some(tag) = self.node.tag_name() else {
-          return false;
-        };
-        if tag.eq_ignore_ascii_case("textarea") {
-          return true;
-        }
-        if tag.eq_ignore_ascii_case("input") {
-          let input_type = self.node.get_attribute_ref("type");
-          return supports_placeholder(input_type);
-        }
-        false
-      }
+      PseudoElement::Placeholder => self.is_placeholder_shown(),
       PseudoElement::SliderThumb | PseudoElement::SliderTrack => {
         let Some(tag) = self.node.tag_name() else {
           return false;
@@ -10846,6 +10834,47 @@ mod tests {
     assert!(element_ref.match_pseudo_element(&PseudoElement::Before, &mut context));
     assert!(element_ref.match_pseudo_element(&PseudoElement::After, &mut context));
     assert!(element_ref.match_pseudo_element(&PseudoElement::Marker, &mut context));
+  }
+
+  #[test]
+  fn pseudo_element_matching_gates_form_controls() {
+    let mut caches = SelectorCaches::default();
+    let cache_epoch = next_selector_cache_epoch();
+    caches.set_epoch(cache_epoch);
+    let sibling_cache = SiblingListCache::new(cache_epoch);
+    let mut context = MatchingContext::new(
+      MatchingMode::ForStatelessPseudoElement,
+      None,
+      &mut caches,
+      QuirksMode::NoQuirks,
+      NeedsSelectorFlags::No,
+      MatchingForInvalidation::No,
+    );
+    context.extra_data = ShadowMatchData::for_document().with_sibling_cache(&sibling_cache);
+
+    let input_text = element_with_attrs("input", vec![("type", "text")], vec![]);
+    let input_text_ref = ElementRef::new(&input_text);
+    assert!(!input_text_ref.match_pseudo_element(&PseudoElement::SliderThumb, &mut context));
+
+    let input_range = element_with_attrs("input", vec![("type", "range")], vec![]);
+    let input_range_ref = ElementRef::new(&input_range);
+    assert!(input_range_ref.match_pseudo_element(&PseudoElement::SliderThumb, &mut context));
+
+    let placeholder_empty = element_with_attrs(
+      "input",
+      vec![("type", "text"), ("placeholder", "x"), ("value", "")],
+      vec![],
+    );
+    let placeholder_empty_ref = ElementRef::new(&placeholder_empty);
+    assert!(placeholder_empty_ref.match_pseudo_element(&PseudoElement::Placeholder, &mut context));
+
+    let placeholder_filled = element_with_attrs(
+      "input",
+      vec![("type", "text"), ("placeholder", "x"), ("value", "hello")],
+      vec![],
+    );
+    let placeholder_filled_ref = ElementRef::new(&placeholder_filled);
+    assert!(!placeholder_filled_ref.match_pseudo_element(&PseudoElement::Placeholder, &mut context));
   }
 
   #[test]
