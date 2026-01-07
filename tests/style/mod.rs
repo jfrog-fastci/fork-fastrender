@@ -6,6 +6,7 @@ mod border_image_properties_test;
 mod cascade_marker_test;
 mod cascade_perf_test;
 mod container_query_forward_compat_test;
+mod container_query_pseudo_element_test;
 mod container_query_units_inline_styles_test;
 mod container_style_queries;
 mod content_generation_test;

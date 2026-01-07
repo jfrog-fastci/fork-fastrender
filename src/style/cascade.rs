@@ -8342,6 +8342,7 @@ fn match_part_rules<'a>(
   ancestors: &[&DomNode],
   ancestor_bloom: Option<&selectors::bloom::BloomFilter>,
   ancestor_ids: &[usize],
+  container_ctx: Option<&ContainerQueryContext>,
   scopes: &'a RuleScopes<'a>,
   selector_caches: &mut SelectorCaches,
   scratch: &mut CascadeScratch,
@@ -8388,6 +8389,7 @@ fn match_part_rules<'a>(
     let host_idx = idx - 1;
     let host = ancestors[host_idx];
     let host_ancestors = &ancestors[..host_idx];
+    let host_ancestor_ids = ancestor_ids.get(..host_idx).unwrap_or(&[]);
 
     let host_id = ancestor_ids.get(host_idx).copied().unwrap_or(0);
     // `::part(...)` rules come from the tree scope *containing* the shadow host, not the host's own
@@ -8462,6 +8464,8 @@ fn match_part_rules<'a>(
             scratch,
             host_ancestors,
             ancestor_bloom,
+            host_ancestor_ids,
+            container_ctx,
             slot_map,
             dom_maps.selector_blooms(),
             Some(element_attr_cache),
@@ -8644,6 +8648,7 @@ fn collect_matching_rules<'a>(
     ancestors,
     ancestor_bloom,
     ancestor_ids,
+    container_ctx,
     scopes,
     selector_caches,
     scratch,
@@ -8665,7 +8670,9 @@ fn collect_pseudo_matching_rules<'a>(
   scratch: &mut CascadeScratch,
   ancestors: &[&DomNode],
   ancestor_bloom: Option<&selectors::bloom::BloomFilter>,
+  ancestor_ids: &[usize],
   node_id: usize,
+  container_ctx: Option<&ContainerQueryContext>,
   dom_maps: &DomMaps,
   sibling_cache: &SiblingListCache,
   element_attr_cache: &'a ElementAttrCache,
@@ -8692,6 +8699,8 @@ fn collect_pseudo_matching_rules<'a>(
     scratch,
     ancestors,
     ancestor_bloom,
+    ancestor_ids,
+    container_ctx,
     current_slot_map,
     dom_maps.selector_blooms(),
     Some(element_attr_cache),
@@ -8711,6 +8720,8 @@ fn collect_pseudo_matching_rules<'a>(
       scratch,
       ancestors,
       ancestor_bloom,
+      ancestor_ids,
+      container_ctx,
       base_slot_map,
       dom_maps.selector_blooms(),
       Some(element_attr_cache),
@@ -8733,6 +8744,8 @@ fn collect_pseudo_matching_rules<'a>(
           scratch,
           ancestors,
           ancestor_bloom,
+          ancestor_ids,
+          container_ctx,
           current_slot_map,
           dom_maps.selector_blooms(),
           Some(element_attr_cache),
@@ -8755,6 +8768,8 @@ fn collect_pseudo_matching_rules<'a>(
       scratch,
       ancestors,
       ancestor_bloom,
+      ancestor_ids,
+      container_ctx,
       slot_map_for_host(node_id),
       dom_maps.selector_blooms(),
       Some(element_attr_cache),
@@ -9356,6 +9371,8 @@ fn compute_pseudo_styles(
     scratch,
     ancestors,
     ancestor_bloom,
+    ancestor_ids,
+    container_ctx,
     node_id,
     dom_maps,
     sibling_cache,
@@ -21823,6 +21840,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       &mut scratch,
       &ancestors,
       None,
+      &[],
+      None,
       None,
       None,
       None,
@@ -23776,6 +23795,8 @@ fn find_pseudo_element_rules<'a>(
   scratch: &mut CascadeScratch,
   ancestors: &[&DomNode],
   ancestor_bloom: Option<&selectors::bloom::BloomFilter>,
+  ancestor_ids: &[usize],
+  container_ctx: Option<&ContainerQueryContext>,
   slot_map: Option<&SlotAssignmentMap<'a>>,
   selector_blooms: Option<&SelectorBloomStore>,
   element_attr_cache: Option<&'a ElementAttrCache>,
@@ -23871,6 +23892,7 @@ fn find_pseudo_element_rules<'a>(
 
   let mut scoped_rule_idx: Option<usize> = None;
   let mut scoped_match: Option<ScopeMatchResult> = None;
+  let mut scoped_container_match: Option<bool> = None;
 
   let mut match_candidate = |selector_idx: usize, matches: &mut Vec<MatchedRule<'a>>| -> bool {
     let indexed = &rules.pseudo_selectors[selector_idx];
@@ -23886,11 +23908,21 @@ fn find_pseudo_element_rules<'a>(
       }
     }
 
-    let scope_match = if scoped_rule_idx == Some(indexed.rule_idx) {
-      scoped_match
+    let (container_match, scope_match) = if scoped_rule_idx == Some(indexed.rule_idx) {
+      (scoped_container_match.unwrap_or(true), scoped_match)
     } else {
       let rule = &rules.rules[indexed.rule_idx];
-      let resolved = if rule.scopes.is_empty() {
+      let container_match = if rule.container_conditions.is_empty() {
+        true
+      } else {
+        match container_ctx {
+          Some(ctx) => ctx.matches(node_id, ancestor_ids, &rule.container_conditions),
+          None => false,
+        }
+      };
+      let resolved = if !container_match {
+        None
+      } else if rule.scopes.is_empty() {
         Some(ScopeMatchResult::Unscoped)
       } else {
         scratch
@@ -23906,9 +23938,14 @@ fn find_pseudo_element_rules<'a>(
           .map(ScopeMatchResult::Scoped)
       };
       scoped_rule_idx = Some(indexed.rule_idx);
+      scoped_container_match = Some(container_match);
       scoped_match = resolved;
-      resolved
+      (container_match, resolved)
     };
+
+    if !container_match {
+      return false;
+    }
 
     let Some(scope_match) = scope_match else {
       return false;
@@ -26389,7 +26426,9 @@ fn compute_pseudo_element_styles(
     scratch,
     ancestors,
     ancestor_bloom,
+    ancestor_ids,
     node_id,
+    container_ctx,
     dom_maps,
     sibling_cache,
     element_attr_cache,
@@ -26594,7 +26633,9 @@ fn compute_first_line_styles(
     scratch,
     ancestors,
     ancestor_bloom,
+    ancestor_ids,
     node_id,
+    container_ctx,
     dom_maps,
     sibling_cache,
     element_attr_cache,
@@ -26705,7 +26746,9 @@ fn compute_first_letter_styles(
     scratch,
     ancestors,
     ancestor_bloom,
+    ancestor_ids,
     node_id,
+    container_ctx,
     dom_maps,
     sibling_cache,
     element_attr_cache,
@@ -26786,6 +26829,8 @@ fn compute_marker_styles(
   scratch: &mut CascadeScratch,
   ancestors: &[&DomNode],
   ancestor_bloom: Option<&selectors::bloom::BloomFilter>,
+  ancestor_ids: &[usize],
+  container_ctx: Option<&ContainerQueryContext>,
   node_id: usize,
   dom_maps: &DomMaps,
   sibling_cache: &SiblingListCache,
@@ -26817,7 +26862,9 @@ fn compute_marker_styles(
       scratch,
       ancestors,
       ancestor_bloom,
+      ancestor_ids,
       node_id,
+      container_ctx,
       dom_maps,
       sibling_cache,
       element_attr_cache,
