@@ -3420,23 +3420,6 @@ impl FormattingContext for FlexFormattingContext {
     }
     flex_profile::record_convert_time(convert_timer);
 
-    if !disable_cache {
-      if let Some((cache_key, key)) = layout_cache_entry {
-        let size = fragment.bounds.size;
-        self.layout_fragments.insert(
-          cache_key,
-          key,
-          crate::layout::contexts::flex_cache::FlexCacheValue {
-            measured_size: size,
-            border_size: size,
-            fragment: std::sync::Arc::new(fragment.clone()),
-          },
-          MAX_LAYOUT_CACHE_PER_NODE,
-        );
-        flex_profile::record_layout_cache_store();
-      }
-    }
-
     // Phase 4: Position out-of-flow abs/fixed children against this flex container.
     if !positioned_children.is_empty() {
       let positioned_factory = base_factory.clone();
@@ -3886,6 +3869,23 @@ impl FormattingContext for FlexFormattingContext {
           Err(err @ LayoutError::Timeout { .. }) => return Err(err),
           Err(_) => {}
         }
+      }
+    }
+
+    if !disable_cache {
+      if let Some((cache_key, key)) = layout_cache_entry {
+        let size = fragment.bounds.size;
+        self.layout_fragments.insert(
+          cache_key,
+          key,
+          crate::layout::contexts::flex_cache::FlexCacheValue {
+            measured_size: size,
+            border_size: size,
+            fragment: std::sync::Arc::new(fragment.clone()),
+          },
+          MAX_LAYOUT_CACHE_PER_NODE,
+        );
+        flex_profile::record_layout_cache_store();
       }
     }
 
@@ -4804,12 +4804,6 @@ impl FlexFormattingContext {
     } else {
       inline_positive_container
     };
-    let main_positive_container = match style.flex_direction {
-      FlexDirection::Row => inline_positive_container,
-      FlexDirection::RowReverse => !inline_positive_container,
-      FlexDirection::Column => block_positive_container,
-      FlexDirection::ColumnReverse => !block_positive_container,
-    };
 
     // Flex items align to the parent flex container's axes, not their own writing-mode/direction.
     let axis_source = containing_flex.unwrap_or(style);
@@ -4862,8 +4856,7 @@ impl FlexFormattingContext {
         block_positive_container,
       ),
       flex_wrap: self.flex_wrap_to_taffy(style.flex_wrap),
-      justify_content: self
-        .justify_content_to_taffy(style.justify_content, main_positive_container),
+      justify_content: self.justify_content_to_taffy(style.justify_content),
       align_items: self.align_items_to_taffy(style.align_items, cross_positive_container),
       align_content: self.align_content_to_taffy(style.align_content, cross_positive_container),
       align_self: self.align_self_to_taffy(style.align_self, cross_positive_item),
@@ -8202,23 +8195,10 @@ impl FlexFormattingContext {
   fn justify_content_to_taffy(
     &self,
     justify: JustifyContent,
-    axis_positive: bool,
   ) -> Option<taffy::style::JustifyContent> {
     Some(match justify {
-      JustifyContent::FlexStart => {
-        if axis_positive {
-          taffy::style::JustifyContent::FlexStart
-        } else {
-          taffy::style::JustifyContent::FlexEnd
-        }
-      }
-      JustifyContent::FlexEnd => {
-        if axis_positive {
-          taffy::style::JustifyContent::FlexEnd
-        } else {
-          taffy::style::JustifyContent::FlexStart
-        }
-      }
+      JustifyContent::FlexStart => taffy::style::JustifyContent::FlexStart,
+      JustifyContent::FlexEnd => taffy::style::JustifyContent::FlexEnd,
       JustifyContent::Center => taffy::style::JustifyContent::Center,
       JustifyContent::SpaceBetween => taffy::style::JustifyContent::SpaceBetween,
       JustifyContent::SpaceAround => taffy::style::JustifyContent::SpaceAround,
