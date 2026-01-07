@@ -25,7 +25,7 @@ Environment defaults (optional):
 Notes:
   - `--as` is the most reliable “hard memory ceiling” on Linux.
   - If `prlimit` is missing, we fall back to `ulimit`. In that mode, size strings without a
-    suffix are interpreted as MiB.
+    suffix are interpreted as MiB. With `prlimit`, bare numbers are bytes.
 EOF
 }
 
@@ -70,8 +70,8 @@ to_bytes() {
   raw="${raw%b}"
 
   if [[ "${raw}" =~ ^[0-9]+$ ]]; then
-    # Fallback: treat as MiB (human-friendly; matches `to_kib`).
-    echo $((raw * 1024 * 1024))
+    # In prlimit mode, bare numbers are bytes (matches prlimit CLI semantics).
+    echo "${raw}"
     return 0
   fi
 
