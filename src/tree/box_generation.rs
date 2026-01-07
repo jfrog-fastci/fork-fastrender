@@ -2051,13 +2051,42 @@ fn generate_boxes_for_styled_into(
           }
         }
 
+        // Generate leading pseudo-elements in tree order before descending into children so their
+        // counter effects are visible to descendants.
+        //
+        // NOTE: `::marker` and `::before` are both before the element's DOM children. `::after` is
+        // generated in `FrameState::Finish` after children have been processed.
+        let marker_box = if styled.styles.display == Display::ListItem {
+          create_marker_box_with_counters(styled, counters)
+        } else {
+          None
+        };
+        let before_box = if let Some(before_styles) = &styled.before_styles {
+          let before_start = clone_starting_style(&styled.starting_styles.before);
+          create_pseudo_element_box_with_counters(
+            styled,
+            before_styles,
+            before_start,
+            "before",
+            counters,
+          )
+        } else {
+          None
+        };
+
         let composed_children = composed_children(styled, styled_lookup);
         let composed_len = composed_children.len();
         let frame = stack.last_mut().expect("frame exists");
         frame.composed_children = Some(composed_children);
-        frame.children = Vec::with_capacity(composed_len);
+        frame.children = Vec::with_capacity(composed_len + 3);
         frame.child_idx = 0;
         frame.pending_children.clear();
+        if let Some(marker_box) = marker_box {
+          frame.children.push(marker_box);
+        }
+        if let Some(before_box) = before_box {
+          frame.children.push(before_box);
+        }
         frame.state = FrameState::Children;
       }
       FrameState::Children => {
@@ -2129,44 +2158,17 @@ fn generate_boxes_for_styled_into(
         let styled = frame.styled;
         let mut children = frame.children;
 
-        // Generate ::before/::after/::marker in a single pass without repeated `insert(0, ...)`
-        // shifts.
-        let mut before_box: Option<BoxNode> = None;
-        let mut marker_box: Option<BoxNode> = None;
-        let mut after_box: Option<BoxNode> = None;
-
-        if let Some(before_styles) = &styled.before_styles {
-          let before_start = clone_starting_style(&styled.starting_styles.before);
-          before_box =
-            create_pseudo_element_box(styled, before_styles, before_start, "before", counters);
-        }
-
-        if styled.styles.display == Display::ListItem {
-          marker_box = create_marker_box(styled, counters);
-        }
-
         if let Some(after_styles) = &styled.after_styles {
           let after_start = clone_starting_style(&styled.starting_styles.after);
-          after_box =
-            create_pseudo_element_box(styled, after_styles, after_start, "after", counters);
-        }
-
-        if before_box.is_some() || marker_box.is_some() || after_box.is_some() {
-          let extra = usize::from(before_box.is_some())
-            + usize::from(marker_box.is_some())
-            + usize::from(after_box.is_some());
-          let mut combined = Vec::with_capacity(children.len() + extra);
-          if let Some(marker_box) = marker_box {
-            combined.push(marker_box);
+          if let Some(after_box) = create_pseudo_element_box_with_counters(
+            styled,
+            after_styles,
+            after_start,
+            "after",
+            counters,
+          ) {
+            children.push(after_box);
           }
-          if let Some(before_box) = before_box {
-            combined.push(before_box);
-          }
-          combined.append(&mut children);
-          if let Some(after_box) = after_box {
-            combined.push(after_box);
-          }
-          children = combined;
         }
 
         // display: contents contributes its children directly.
@@ -2253,6 +2255,46 @@ fn generate_boxes_for_styled_into(
   }
 
   Ok(())
+}
+
+fn apply_counter_properties_from_computed_style(style: &ComputedStyle, counters: &mut CounterManager) {
+  style.counters.apply_to(counters);
+}
+
+fn create_pseudo_element_box_with_counters(
+  styled: &StyledNode,
+  styles: &Arc<ComputedStyle>,
+  starting_style: Option<Arc<ComputedStyle>>,
+  pseudo_name: &str,
+  counters: &mut CounterManager,
+) -> Option<BoxNode> {
+  if styles.display == Display::None {
+    return None;
+  }
+  let content_value = effective_content_value(styles);
+  if matches!(content_value, ContentValue::None | ContentValue::Normal) {
+    return None;
+  }
+
+  counters.enter_scope();
+  apply_counter_properties_from_computed_style(styles.as_ref(), counters);
+  let out = create_pseudo_element_box(styled, styles, starting_style, pseudo_name, counters);
+  counters.leave_scope();
+  out
+}
+
+fn create_marker_box_with_counters(styled: &StyledNode, counters: &mut CounterManager) -> Option<BoxNode> {
+  if styled.styles.display != Display::ListItem {
+    return None;
+  }
+
+  counters.enter_scope();
+  if let Some(marker_style) = styled.marker_styles.as_ref() {
+    apply_counter_properties_from_computed_style(marker_style.as_ref(), counters);
+  }
+  let out = create_marker_box(styled, counters);
+  counters.leave_scope();
+  out
 }
 
 fn attach_debug_info(mut box_node: BoxNode, styled: &StyledNode) -> BoxNode {
@@ -3791,6 +3833,31 @@ mod tests {
     find_select(&box_tree.root).expect("expected select form control")
   }
 
+  fn collect_pseudo_text(
+    node: &BoxNode,
+    styled_node_id: usize,
+    pseudo: GeneratedPseudoElement,
+    out: &mut Vec<String>,
+  ) {
+    if node.styled_node_id == Some(styled_node_id)
+      && node.generated_pseudo == Some(pseudo)
+      && matches!(node.box_type, BoxType::Text(_))
+    {
+      if let BoxType::Text(text) = &node.box_type {
+        out.push(text.text.clone());
+      }
+    }
+    for child in node.children.iter() {
+      collect_pseudo_text(child, styled_node_id, pseudo, out);
+    }
+  }
+
+  fn pseudo_text(node: &BoxNode, styled_node_id: usize, pseudo: GeneratedPseudoElement) -> String {
+    let mut parts = Vec::new();
+    collect_pseudo_text(node, styled_node_id, pseudo, &mut parts);
+    parts.join("")
+  }
+
   #[test]
   fn img_intrinsic_size_tracks_single_dimension_attributes() {
     fn set_attr(node: &mut StyledNode, name: &str, value: &str) {
@@ -5305,6 +5372,321 @@ mod tests {
     } else {
       panic!("expected replaced child");
     }
+  }
+
+  #[test]
+  fn before_counter_increment_affects_descendant_generated_content() {
+    use crate::dom::DomNodeType;
+    use crate::style::content::ContentItem;
+    use crate::style::content::ContentValue;
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    root_style.counters.counter_reset = Some(CounterSet::single("section", 0));
+
+    let mut parent_before_style = ComputedStyle::default();
+    parent_before_style.content_value = ContentValue::Items(Vec::new());
+    parent_before_style.counters.counter_increment = Some(CounterSet::single("section", 1));
+
+    let mut child_before_style = ComputedStyle::default();
+    child_before_style.content_value = ContentValue::Items(vec![ContentItem::Counter {
+      name: "section".to_string(),
+      style: None,
+    }]);
+
+    let child = StyledNode {
+      node_id: 2,
+      node: dom::DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "span".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      },
+      styles: Arc::new(ComputedStyle::default()),
+      starting_styles: StartingStyleSet::default(),
+      before_styles: Some(Arc::new(child_before_style)),
+      after_styles: None,
+      marker_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![],
+    };
+
+    let parent = StyledNode {
+      node_id: 1,
+      node: dom::DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      },
+      styles: Arc::new(ComputedStyle::default()),
+      starting_styles: StartingStyleSet::default(),
+      before_styles: Some(Arc::new(parent_before_style)),
+      after_styles: None,
+      marker_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![child],
+    };
+
+    let root = StyledNode {
+      node_id: 0,
+      node: dom::DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      },
+      styles: Arc::new(root_style),
+      starting_styles: StartingStyleSet::default(),
+      before_styles: None,
+      after_styles: None,
+      marker_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![parent],
+    };
+
+    let tree = generate_box_tree(&root);
+    assert_eq!(
+      pseudo_text(&tree.root, 2, GeneratedPseudoElement::Before),
+      "1",
+      "descendant ::before should see counter increment from ancestor ::before"
+    );
+  }
+
+  #[test]
+  fn marker_counter_increment_affects_list_item_descendants() {
+    use crate::dom::DomNodeType;
+    use crate::style::content::ContentItem;
+    use crate::style::content::ContentValue;
+    use crate::style::types::ListStyleType;
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    root_style.counters.counter_reset = Some(CounterSet::single("section", 0));
+
+    let mut li_style = ComputedStyle::default();
+    li_style.display = Display::ListItem;
+    li_style.list_style_type = ListStyleType::Decimal;
+
+    let mut marker_style = ComputedStyle::default();
+    marker_style.display = Display::Inline;
+    marker_style.content_value = ContentValue::Items(vec![ContentItem::String("M".to_string())]);
+    marker_style.counters.counter_increment = Some(CounterSet::single("section", 1));
+
+    let mut child_before_style = ComputedStyle::default();
+    child_before_style.content_value = ContentValue::Items(vec![ContentItem::Counter {
+      name: "section".to_string(),
+      style: None,
+    }]);
+
+    let child = StyledNode {
+      node_id: 2,
+      node: dom::DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "span".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      },
+      styles: Arc::new(ComputedStyle::default()),
+      starting_styles: StartingStyleSet::default(),
+      before_styles: Some(Arc::new(child_before_style)),
+      after_styles: None,
+      marker_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![],
+    };
+
+    let li = StyledNode {
+      node_id: 1,
+      node: dom::DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "li".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      },
+      styles: Arc::new(li_style),
+      starting_styles: StartingStyleSet::default(),
+      before_styles: None,
+      after_styles: None,
+      marker_styles: Some(Arc::new(marker_style)),
+      first_line_styles: None,
+      first_letter_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![child],
+    };
+
+    let root = StyledNode {
+      node_id: 0,
+      node: dom::DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      },
+      styles: Arc::new(root_style),
+      starting_styles: StartingStyleSet::default(),
+      before_styles: None,
+      after_styles: None,
+      marker_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![li],
+    };
+
+    let tree = generate_box_tree(&root);
+    assert_eq!(
+      pseudo_text(&tree.root, 2, GeneratedPseudoElement::Before),
+      "1",
+      "list item descendant should see counter increment from ::marker"
+    );
+  }
+
+  #[test]
+  fn after_counter_increment_occurs_after_descendants() {
+    use crate::dom::DomNodeType;
+    use crate::style::content::ContentItem;
+    use crate::style::content::ContentValue;
+
+    let mut root_style = ComputedStyle::default();
+    root_style.display = Display::Block;
+    root_style.counters.counter_reset = Some(CounterSet::single("section", 0));
+
+    let mut child_before_style = ComputedStyle::default();
+    child_before_style.content_value = ContentValue::Items(vec![ContentItem::Counter {
+      name: "section".to_string(),
+      style: None,
+    }]);
+
+    let mk_counter_span = |node_id: usize| StyledNode {
+      node_id,
+      node: dom::DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "span".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      },
+      styles: Arc::new(ComputedStyle::default()),
+      starting_styles: StartingStyleSet::default(),
+      before_styles: Some(Arc::new(child_before_style.clone())),
+      after_styles: None,
+      marker_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![],
+    };
+
+    let mut after_style = ComputedStyle::default();
+    after_style.content_value = ContentValue::Items(Vec::new());
+    after_style.counters.counter_increment = Some(CounterSet::single("section", 1));
+
+    let target = StyledNode {
+      node_id: 1,
+      node: dom::DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      },
+      styles: Arc::new(ComputedStyle::default()),
+      starting_styles: StartingStyleSet::default(),
+      before_styles: None,
+      after_styles: Some(Arc::new(after_style)),
+      marker_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![mk_counter_span(2)],
+    };
+
+    let sibling = StyledNode {
+      node_id: 3,
+      node: dom::DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "p".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      },
+      styles: Arc::new(ComputedStyle::default()),
+      starting_styles: StartingStyleSet::default(),
+      before_styles: None,
+      after_styles: None,
+      marker_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![mk_counter_span(4)],
+    };
+
+    let root = StyledNode {
+      node_id: 0,
+      node: dom::DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      },
+      styles: Arc::new(root_style),
+      starting_styles: StartingStyleSet::default(),
+      before_styles: None,
+      after_styles: None,
+      marker_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![target, sibling],
+    };
+
+    let tree = generate_box_tree(&root);
+    assert_eq!(
+      pseudo_text(&tree.root, 2, GeneratedPseudoElement::Before),
+      "0",
+      "descendants should observe counter before ::after increments run"
+    );
+    assert_eq!(
+      pseudo_text(&tree.root, 4, GeneratedPseudoElement::Before),
+      "1",
+      "following siblings should observe counter after ::after increments run"
+    );
   }
 
   #[test]
