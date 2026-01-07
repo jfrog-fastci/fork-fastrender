@@ -1563,6 +1563,9 @@ fn crawl_document(
     credentials_mode: FetchCredentialsMode,
     referrer_url: &str,
     client_origin: Option<&DocumentOrigin>,
+    referrer_policy: ReferrerPolicy,
+    document_referrer_url: &str,
+    document_referrer_policy: ReferrerPolicy,
   ) {
     if url.is_empty() {
       return;
@@ -1589,6 +1592,9 @@ fn crawl_document(
       credentials_mode,
       referrer_url: referrer_url.to_string(),
       client_origin: origin,
+      referrer_policy,
+      document_referrer_url: document_referrer_url.to_string(),
+      document_referrer_policy,
     });
   }
 
@@ -1712,6 +1718,9 @@ fn crawl_document(
     credentials_mode: FetchCredentialsMode,
     referrer_url: String,
     client_origin: Option<DocumentOrigin>,
+    referrer_policy: ReferrerPolicy,
+    document_referrer_url: String,
+    document_referrer_policy: ReferrerPolicy,
   }
 
   let mut queue: VecDeque<CrawlQueueEntry> = VecDeque::new();
@@ -1733,6 +1742,7 @@ fn crawl_document(
   let mut fetch_errors: Vec<(String, String)> = Vec::new();
   let root_referrer = document.base_hint.as_str();
   let root_client_origin = origin_from_url(root_referrer);
+  let root_referrer_policy = document.referrer_policy;
 
   let css_links = fastrender::css::loader::extract_css_links_with_meta(
     &document.html,
@@ -1742,6 +1752,7 @@ fn crawl_document(
   .unwrap_or_default();
   let has_link_stylesheets = !css_links.is_empty();
   for css_link in css_links {
+    let effective_referrer_policy = css_link.referrer_policy.unwrap_or(root_referrer_policy);
     let (destination, credentials_mode) = match css_link.crossorigin {
       None => (FetchDestination::Style, FetchCredentialsMode::Include),
       Some(mode) => (
@@ -1758,6 +1769,9 @@ fn crawl_document(
       credentials_mode,
       root_referrer,
       root_client_origin.as_ref(),
+      effective_referrer_policy,
+      root_referrer,
+      root_referrer_policy,
     );
   }
 
@@ -1776,6 +1790,9 @@ fn crawl_document(
         FetchCredentialsMode::Include,
         root_referrer,
         root_client_origin.as_ref(),
+        root_referrer_policy,
+        root_referrer,
+        root_referrer_policy,
       );
     }
   }
@@ -1805,6 +1822,9 @@ fn crawl_document(
           credentials_mode,
           root_referrer,
           root_client_origin.as_ref(),
+          root_referrer_policy,
+          root_referrer,
+          root_referrer_policy,
         );
       }
     }
@@ -1830,6 +1850,9 @@ fn crawl_document(
         credentials_mode,
         root_referrer,
         root_client_origin.as_ref(),
+        root_referrer_policy,
+        root_referrer,
+        root_referrer_policy,
       );
     }
   } else {
@@ -1850,6 +1873,9 @@ fn crawl_document(
         credentials_mode,
         root_referrer,
         root_client_origin.as_ref(),
+        root_referrer_policy,
+        root_referrer,
+        root_referrer_policy,
       );
     }
   }
@@ -1877,6 +1903,9 @@ fn crawl_document(
         credentials_mode,
         root_referrer,
         root_client_origin.as_ref(),
+        root_referrer_policy,
+        root_referrer,
+        root_referrer_policy,
       );
     }
   }
@@ -1891,6 +1920,9 @@ fn crawl_document(
       FetchCredentialsMode::Include,
       root_referrer,
       root_client_origin.as_ref(),
+      root_referrer_policy,
+      root_referrer,
+      root_referrer_policy,
     );
   }
 
@@ -1906,6 +1938,9 @@ fn crawl_document(
       credentials_mode,
       referrer_url,
       client_origin,
+      referrer_policy,
+      document_referrer_url,
+      document_referrer_policy,
     } = entry;
     if seen_urls.len() > MAX_CRAWL_URLS {
       eprintln!(
@@ -1947,6 +1982,7 @@ fn crawl_document(
 
     let mut req = FetchRequest::new(&url, destination)
       .with_referrer_url(&referrer_url)
+      .with_referrer_policy(referrer_policy)
       .with_credentials_mode(credentials_mode);
     if let Some(origin) = client_origin.as_ref() {
       req = req.with_client_origin(origin);
@@ -2061,14 +2097,18 @@ fn crawl_document(
         let css_base = res.final_url.as_deref().unwrap_or(&url);
         let css = decode_css_bytes(&res.bytes, res.content_type.as_deref());
         for (dep, mut dep_destination) in discover_css_urls_with_destination(&css, css_base) {
-          let (dep_referrer_url, dep_credentials_mode) = if dep_destination == FetchDestination::Font {
-            (css_base, default_credentials_mode_for_destination(dep_destination))
+          let mut dep_credentials_mode = default_credentials_mode_for_destination(dep_destination);
+          let (dep_referrer_url, dep_referrer_policy) = if dep_destination == FetchDestination::Font
+          {
+            (css_base, document_referrer_policy)
           } else if dep_destination == FetchDestination::Style {
             // `@import` inherits the request mode/credentials settings of the importing stylesheet.
             dep_destination = destination;
-            (css_base, credentials_mode)
+            dep_credentials_mode = credentials_mode;
+            // `@import` requests use the importing stylesheet as the referrer while inheriting
+            // the stylesheet's referrer policy (which may be overridden by `<link referrerpolicy>`).
+            (css_base, referrer_policy)
           } else {
-            let mut dep_credentials_mode = default_credentials_mode_for_destination(dep_destination);
             if dep_destination == FetchDestination::Image {
               if let Some((preferred_dest, preferred_creds)) = preferred_image_requests.get(&dep) {
                 if *preferred_dest == FetchDestination::ImageCors {
@@ -2077,7 +2117,7 @@ fn crawl_document(
                 }
               }
             }
-            (referrer_url.as_str(), dep_credentials_mode)
+            (document_referrer_url.as_str(), document_referrer_policy)
           };
           enqueue_unique(
             &mut queue,
@@ -2088,6 +2128,9 @@ fn crawl_document(
             dep_credentials_mode,
             dep_referrer_url,
             client_origin.as_ref(),
+            dep_referrer_policy,
+            document_referrer_url.as_str(),
+            document_referrer_policy,
           );
         }
       }
@@ -2101,6 +2144,7 @@ fn crawl_document(
         let doc = decode_html_resource(&res, base_hint);
         let doc_referrer = doc.base_hint.as_str();
         let doc_origin = origin_from_url(doc_referrer);
+        let doc_referrer_policy = doc.referrer_policy;
 
         let css_links = fastrender::css::loader::extract_css_links_with_meta(
           &doc.html,
@@ -2110,6 +2154,7 @@ fn crawl_document(
         .unwrap_or_default();
         let has_link_stylesheets = !css_links.is_empty();
         for css_link in css_links {
+          let effective_referrer_policy = css_link.referrer_policy.unwrap_or(doc_referrer_policy);
           let (destination, credentials_mode) = match css_link.crossorigin {
             None => (FetchDestination::Style, FetchCredentialsMode::Include),
             Some(mode) => (
@@ -2126,6 +2171,9 @@ fn crawl_document(
             credentials_mode,
             doc_referrer,
             doc_origin.as_ref(),
+            effective_referrer_policy,
+            doc_referrer,
+            doc_referrer_policy,
           );
         }
 
@@ -2144,6 +2192,9 @@ fn crawl_document(
               FetchCredentialsMode::Include,
               doc_referrer,
               doc_origin.as_ref(),
+              doc_referrer_policy,
+              doc_referrer,
+              doc_referrer_policy,
             );
           }
         }
@@ -2169,6 +2220,9 @@ fn crawl_document(
                 credentials_mode,
                 doc_referrer,
                 doc_origin.as_ref(),
+                doc_referrer_policy,
+                doc_referrer,
+                doc_referrer_policy,
               );
             }
           }
@@ -2194,6 +2248,9 @@ fn crawl_document(
               credentials_mode,
               doc_referrer,
               doc_origin.as_ref(),
+              doc_referrer_policy,
+              doc_referrer,
+              doc_referrer_policy,
             );
           }
         } else {
@@ -2212,6 +2269,9 @@ fn crawl_document(
               credentials_mode,
               doc_referrer,
               doc_origin.as_ref(),
+              doc_referrer_policy,
+              doc_referrer,
+              doc_referrer_policy,
             );
           }
         }
@@ -2237,6 +2297,9 @@ fn crawl_document(
               credentials_mode,
               doc_referrer,
               doc_origin.as_ref(),
+              doc_referrer_policy,
+              doc_referrer,
+              doc_referrer_policy,
             );
           }
         }
@@ -2251,6 +2314,9 @@ fn crawl_document(
             FetchCredentialsMode::Include,
             doc_referrer,
             doc_origin.as_ref(),
+            doc_referrer_policy,
+            doc_referrer,
+            doc_referrer_policy,
           );
         }
       }
@@ -2553,6 +2619,193 @@ fn is_image_resource(res: &FetchedResource, url: &str) -> bool {
         && *dest == FetchDestination::Image
         && referrer.as_deref() == Some(base_hint.as_str())
     }));
+
+    Ok(())
+  }
+
+  #[test]
+  fn crawl_propagates_meta_referrer_policy_to_subresource_requests() -> Result<()> {
+    #[derive(Default)]
+    struct PolicyFetcher {
+      calls: Mutex<Vec<(String, FetchDestination, ReferrerPolicy)>>,
+    }
+
+    impl PolicyFetcher {
+      fn calls(&self) -> Vec<(String, FetchDestination, ReferrerPolicy)> {
+        self
+          .calls
+          .lock()
+          .map(|calls| calls.clone())
+          .unwrap_or_default()
+      }
+    }
+
+    impl ResourceFetcher for PolicyFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self
+          .calls
+          .lock()
+          .unwrap()
+          .push((req.url.to_string(), req.destination, req.referrer_policy));
+
+        match req.url {
+          "https://example.com/" => Ok(FetchedResource::with_final_url(
+            br#"<html><head><meta name="referrer" content="no-referrer"><link rel="stylesheet" href="/style.css"></head><body><img src="/img.png"></body></html>"#
+              .to_vec(),
+            Some("text/html".to_string()),
+            Some(req.url.to_string()),
+          )),
+          "https://example.com/style.css" => Ok(FetchedResource::with_final_url(
+            b"body { background: url('/bg.png'); }".to_vec(),
+            Some("text/css".to_string()),
+            Some(req.url.to_string()),
+          )),
+          "https://example.com/img.png" | "https://example.com/bg.png" => Ok(
+            FetchedResource::with_final_url(
+              vec![0u8, 1, 2, 3],
+              Some("image/png".to_string()),
+              Some(req.url.to_string()),
+            ),
+          ),
+          other => Err(fastrender::Error::Other(format!(
+            "unexpected fetch: {other}"
+          ))),
+        }
+      }
+    }
+
+    let inner = Arc::new(PolicyFetcher::default());
+    let recording = RecordingFetcher::new(inner.clone());
+    let (doc, _) = fetch_document(&recording, "https://example.com/")?;
+    assert_eq!(doc.referrer_policy, ReferrerPolicy::NoReferrer);
+
+    let render = BundleRenderConfig {
+      viewport: (1200, 800),
+      device_pixel_ratio: 1.0,
+      scroll_x: 0.0,
+      scroll_y: 0.0,
+      full_page: false,
+      same_origin_subresources: false,
+      allowed_subresource_origins: Vec::new(),
+      compat_profile: fastrender::compat::CompatProfile::default(),
+      dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
+    };
+
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+
+    let calls = inner.calls();
+    for (url, destination) in [
+      ("https://example.com/style.css", FetchDestination::Style),
+      ("https://example.com/img.png", FetchDestination::Image),
+      ("https://example.com/bg.png", FetchDestination::Image),
+    ] {
+      assert!(
+        calls.iter().any(|(u, dest, policy)| {
+          u == url && *dest == destination && *policy == ReferrerPolicy::NoReferrer
+        }),
+        "expected {url} to be fetched with referrer policy no-referrer"
+      );
+    }
+
+    Ok(())
+  }
+
+  #[test]
+  fn crawl_applies_link_referrerpolicy_only_to_stylesheet_fetches() -> Result<()> {
+    #[derive(Default)]
+    struct PolicyFetcher {
+      calls: Mutex<Vec<(String, FetchDestination, ReferrerPolicy)>>,
+    }
+
+    impl PolicyFetcher {
+      fn calls(&self) -> Vec<(String, FetchDestination, ReferrerPolicy)> {
+        self
+          .calls
+          .lock()
+          .map(|calls| calls.clone())
+          .unwrap_or_default()
+      }
+    }
+
+    impl ResourceFetcher for PolicyFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self
+          .calls
+          .lock()
+          .unwrap()
+          .push((req.url.to_string(), req.destination, req.referrer_policy));
+
+        match req.url {
+          "https://example.com/" => Ok(FetchedResource::with_final_url(
+            br#"<html><head><link rel="stylesheet" href="/style.css" referrerpolicy="no-referrer"></head><body><img src="/img.png"></body></html>"#
+              .to_vec(),
+            Some("text/html".to_string()),
+            Some(req.url.to_string()),
+          )),
+          "https://example.com/style.css" => Ok(FetchedResource::with_final_url(
+            b"body { background: url('/bg.png'); }".to_vec(),
+            Some("text/css".to_string()),
+            Some(req.url.to_string()),
+          )),
+          "https://example.com/img.png" | "https://example.com/bg.png" => Ok(
+            FetchedResource::with_final_url(
+              vec![0u8, 1, 2, 3],
+              Some("image/png".to_string()),
+              Some(req.url.to_string()),
+            ),
+          ),
+          other => Err(fastrender::Error::Other(format!(
+            "unexpected fetch: {other}"
+          ))),
+        }
+      }
+    }
+
+    let inner = Arc::new(PolicyFetcher::default());
+    let recording = RecordingFetcher::new(inner.clone());
+    let (doc, _) = fetch_document(&recording, "https://example.com/")?;
+    assert_eq!(doc.referrer_policy, ReferrerPolicy::default());
+
+    let render = BundleRenderConfig {
+      viewport: (1200, 800),
+      device_pixel_ratio: 1.0,
+      scroll_x: 0.0,
+      scroll_y: 0.0,
+      full_page: false,
+      same_origin_subresources: false,
+      allowed_subresource_origins: Vec::new(),
+      compat_profile: fastrender::compat::CompatProfile::default(),
+      dom_compat_mode: fastrender::dom::DomCompatibilityMode::default(),
+    };
+
+    crawl_document(&recording, &doc, &render, CrawlMode::Strict)?;
+
+    let calls = inner.calls();
+    assert!(
+      calls.iter().any(|(url, dest, policy)| {
+        url == "https://example.com/style.css"
+          && *dest == FetchDestination::Style
+          && *policy == ReferrerPolicy::NoReferrer
+      }),
+      "expected stylesheet fetch to honor link referrerpolicy"
+    );
+
+    for url in ["https://example.com/img.png", "https://example.com/bg.png"] {
+      assert!(
+        calls.iter().any(|(u, dest, policy)| {
+          u == url && *dest == FetchDestination::Image && *policy == ReferrerPolicy::default()
+        }),
+        "expected {url} to use the document referrer policy"
+      );
+    }
 
     Ok(())
   }

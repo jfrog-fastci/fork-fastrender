@@ -138,7 +138,7 @@ mod disk_cache_main {
   use clap::{ArgAction, Parser};
   use fastrender::css::encoding::decode_css_bytes;
   use fastrender::css::loader::{
-    absolutize_css_urls_cow, extract_css_links, extract_embedded_css_urls,
+    absolutize_css_urls_cow, extract_css_links_with_meta, extract_embedded_css_urls, FetchedStylesheet,
     link_rel_is_stylesheet_candidate, resolve_href, resolve_href_with_base,
   };
   use fastrender::css::parser::{
@@ -158,7 +158,7 @@ mod disk_cache_main {
     ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane,
     ensure_stylesheet_mime_sane, is_data_url, origin_from_url, CachingFetcherConfig,
     DiskCachingFetcher, DocumentOrigin, FetchCredentialsMode, FetchDestination, FetchRequest,
-    FetchedResource, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
+    FetchedResource, ReferrerPolicy, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
   };
   use fastrender::style::media::{MediaContext, MediaQuery, MediaQueryCache};
   use fastrender::tree::box_tree::CrossOriginAttribute;
@@ -1089,9 +1089,10 @@ mod disk_cache_main {
 
   struct PrefetchImportLoader<'a> {
     fetcher: &'a dyn ResourceFetcher,
-    referrer: &'a str,
+    document_referrer: &'a str,
     client_origin: Option<&'a DocumentOrigin>,
-    css_cache: RefCell<HashMap<String, String>>,
+    referrer_policy: ReferrerPolicy,
+    css_cache: RefCell<HashMap<String, FetchedStylesheet>>,
     summary: &'a RefCell<PageSummary>,
     all_asset_urls: &'a RefCell<BTreeSet<String>>,
     css_asset_urls: Option<&'a RefCell<BTreeSet<String>>>,
@@ -1101,8 +1102,9 @@ mod disk_cache_main {
   impl<'a> PrefetchImportLoader<'a> {
     fn new(
       fetcher: &'a dyn ResourceFetcher,
-      referrer: &'a str,
+      document_referrer: &'a str,
       client_origin: Option<&'a DocumentOrigin>,
+      referrer_policy: ReferrerPolicy,
       summary: &'a RefCell<PageSummary>,
       all_asset_urls: &'a RefCell<BTreeSet<String>>,
       css_asset_urls: Option<&'a RefCell<BTreeSet<String>>>,
@@ -1110,8 +1112,9 @@ mod disk_cache_main {
     ) -> Self {
       Self {
         fetcher,
-        referrer,
+        document_referrer,
         client_origin,
+        referrer_policy,
         css_cache: RefCell::new(HashMap::new()),
         summary,
         all_asset_urls,
@@ -1123,15 +1126,26 @@ mod disk_cache_main {
 
   impl CssImportLoader for PrefetchImportLoader<'_> {
     fn load(&self, url: &str) -> fastrender::Result<String> {
+      self.load_with_importer(url, None).map(|fetched| fetched.css)
+    }
+
+    fn load_with_importer(
+      &self,
+      url: &str,
+      importer_url: Option<&str>,
+    ) -> fastrender::Result<FetchedStylesheet> {
       if let Some(cached) = self.css_cache.borrow().get(url).cloned() {
         return Ok(cached);
       }
 
-      let mut request =
-        FetchRequest::new(url, FetchDestination::Style).with_referrer_url(self.referrer);
+      let referrer_url = importer_url.unwrap_or(self.document_referrer);
+      let mut request = FetchRequest::new(url, FetchDestination::Style)
+        .with_referrer_url(referrer_url)
+        .with_referrer_policy(self.referrer_policy);
       if let Some(origin) = self.client_origin {
         request = request.with_client_origin(origin);
       }
+
       match self.fetcher.fetch_with_request(request) {
         Ok(res) => {
           if let Err(err) =
@@ -1162,12 +1176,13 @@ mod disk_cache_main {
             }
           }
 
+          let fetched = FetchedStylesheet::new(rewritten, res.final_url.clone());
           self
             .css_cache
             .borrow_mut()
-            .insert(url.to_string(), rewritten.clone());
+            .insert(url.to_string(), fetched.clone());
 
-          Ok(rewritten)
+          Ok(fetched)
         }
         Err(err) => {
           self.summary.borrow_mut().failed_imports += 1;
@@ -1180,7 +1195,10 @@ mod disk_cache_main {
   #[derive(Debug, Clone)]
   enum StylesheetTask {
     Inline(String),
-    External(String),
+    External {
+      url: String,
+      referrer_policy: Option<ReferrerPolicy>,
+    },
   }
 
   fn stylesheet_type_is_css(type_attr: Option<&str>) -> bool {
@@ -1273,7 +1291,10 @@ mod disk_cache_main {
           return;
         };
         if seen_external.insert(stylesheet_url.clone()) {
-          tasks.push(StylesheetTask::External(stylesheet_url));
+          tasks.push(StylesheetTask::External {
+            url: stylesheet_url,
+            referrer_policy: link.referrer_policy,
+          });
         }
       }
     };
@@ -1426,6 +1447,7 @@ mod disk_cache_main {
     referrer_url: &str,
     css_base_url: &str,
     client_origin: Option<&DocumentOrigin>,
+    referrer_policy: ReferrerPolicy,
     sheet: &StyleSheet,
     media_ctx: &MediaContext,
     media_query_cache: &mut MediaQueryCache,
@@ -1449,6 +1471,7 @@ mod disk_cache_main {
 
         let mut request = FetchRequest::new(&resolved, FetchDestination::Font)
           .with_referrer_url(referrer_url)
+          .with_referrer_policy(referrer_policy)
           .with_credentials_mode(FetchCredentialsMode::Omit);
         if let Some(origin) = client_origin {
           request = request.with_client_origin(origin);
@@ -1476,6 +1499,7 @@ mod disk_cache_main {
     html: &str,
     base_hint: &str,
     base_url: &str,
+    referrer_policy: ReferrerPolicy,
     fetcher: &Arc<dyn ResourceFetcher>,
     media_ctx: &MediaContext,
     opts: PrefetchOptions,
@@ -1499,14 +1523,17 @@ mod disk_cache_main {
           // substrings.
           let mut out = Vec::new();
           let mut seen = HashSet::new();
-          if let Ok(urls) = extract_embedded_css_urls(html, base_url) {
-            for url in urls {
-              if seen.insert(url.clone()) {
-                out.push(StylesheetTask::External(url));
+            if let Ok(urls) = extract_embedded_css_urls(html, base_url) {
+              for url in urls {
+                if seen.insert(url.clone()) {
+                  out.push(StylesheetTask::External {
+                    url,
+                    referrer_policy: None,
+                  });
+                }
               }
             }
-          }
-          out
+            out
         } else {
           tasks
         }
@@ -1515,17 +1542,23 @@ mod disk_cache_main {
         // DOM parse failed; fall back to the string-based extraction used by older versions.
         let mut out = Vec::new();
         let mut seen = HashSet::new();
-        if let Ok(urls) = extract_css_links(html, base_url, media_ctx.media_type) {
-          for url in urls {
-            if seen.insert(url.clone()) {
-              out.push(StylesheetTask::External(url));
+        if let Ok(candidates) = extract_css_links_with_meta(html, base_url, media_ctx.media_type) {
+          for candidate in candidates {
+            if seen.insert(candidate.url.clone()) {
+              out.push(StylesheetTask::External {
+                url: candidate.url,
+                referrer_policy: candidate.referrer_policy,
+              });
             }
           }
         }
         if let Ok(urls) = extract_embedded_css_urls(html, base_url) {
           for url in urls {
             if seen.insert(url.clone()) {
-              out.push(StylesheetTask::External(url));
+              out.push(StylesheetTask::External {
+                url,
+                referrer_policy: None,
+              });
             }
           }
         }
@@ -1738,10 +1771,13 @@ mod disk_cache_main {
     if !tasks.is_empty() {
       // Process external stylesheets in sorted order for more reproducible network/cache behavior.
       tasks.sort_by(|a, b| match (a, b) {
-        (StylesheetTask::Inline(_), StylesheetTask::External(_)) => std::cmp::Ordering::Less,
-        (StylesheetTask::External(_), StylesheetTask::Inline(_)) => std::cmp::Ordering::Greater,
+        (StylesheetTask::Inline(_), StylesheetTask::External { .. }) => std::cmp::Ordering::Less,
+        (StylesheetTask::External { .. }, StylesheetTask::Inline(_)) => std::cmp::Ordering::Greater,
         (StylesheetTask::Inline(_), StylesheetTask::Inline(_)) => std::cmp::Ordering::Equal,
-        (StylesheetTask::External(a), StylesheetTask::External(b)) => a.cmp(b),
+        (
+          StylesheetTask::External { url: a, .. },
+          StylesheetTask::External { url: b, .. },
+        ) => a.cmp(b),
       });
 
       let css_asset_urls_ref = if opts.prefetch_css_url_assets {
@@ -1749,15 +1785,6 @@ mod disk_cache_main {
       } else {
         None
       };
-      let import_loader = PrefetchImportLoader::new(
-        fetcher.as_ref(),
-        base_hint,
-        document_origin.as_ref(),
-        &summary,
-        &all_asset_urls,
-        css_asset_urls_ref,
-        opts.max_discovered_assets_per_page,
-      );
       let mut seen_fonts: HashMap<String, bool> = HashMap::new();
 
       for task in tasks {
@@ -1789,6 +1816,16 @@ mod disk_cache_main {
             };
 
             let resolved = if sheet.contains_imports() {
+              let import_loader = PrefetchImportLoader::new(
+                fetcher.as_ref(),
+                base_hint,
+                document_origin.as_ref(),
+                referrer_policy,
+                &summary,
+                &all_asset_urls,
+                css_asset_urls_ref,
+                opts.max_discovered_assets_per_page,
+              );
               match sheet.resolve_imports_owned_with_cache(
                 &import_loader,
                 Some(base_url),
@@ -1812,6 +1849,7 @@ mod disk_cache_main {
                 base_hint,
                 base_url,
                 document_origin.as_ref(),
+                referrer_policy,
                 &resolved,
                 media_ctx,
                 &mut media_query_cache,
@@ -1820,82 +1858,101 @@ mod disk_cache_main {
               );
             }
           }
-          StylesheetTask::External(css_url) => match fetcher.fetch_with_request(
-            FetchRequest::new(css_url.as_str(), FetchDestination::Style).with_referrer_url(base_hint),
-          ) {
-            Ok(res) => {
-              if ensure_http_success(&res, &css_url)
-                .and_then(|()| ensure_stylesheet_mime_sane(&res, &css_url))
-                .is_err()
-              {
-                summary.borrow_mut().failed_css += 1;
-                continue;
-              }
-
-              summary.borrow_mut().fetched_css += 1;
-              let sheet_base = res.final_url.as_deref().unwrap_or(&css_url);
-              let mut css_text = decode_css_bytes(&res.bytes, res.content_type.as_deref());
-              if let Ok(std::borrow::Cow::Owned(rewritten)) =
-                absolutize_css_urls_cow(&css_text, sheet_base)
-              {
-                css_text = rewritten;
-              }
-
-              if opts.prefetch_css_url_assets {
-                let discovered = discover_css_urls(&css_text, sheet_base);
+          StylesheetTask::External {
+            url: css_url,
+            referrer_policy: link_referrer_policy,
+          } => {
+            let effective_referrer_policy = link_referrer_policy.unwrap_or(referrer_policy);
+            match fetcher.fetch_with_request(
+              FetchRequest::new(css_url.as_str(), FetchDestination::Style)
+                .with_referrer_url(base_hint)
+                .with_referrer_policy(effective_referrer_policy),
+            ) {
+              Ok(res) => {
+                if ensure_http_success(&res, &css_url)
+                  .and_then(|()| ensure_stylesheet_mime_sane(&res, &css_url))
+                  .is_err()
                 {
-                  let mut set = css_asset_urls.borrow_mut();
-                  for url in discovered {
-                    record_css_url_asset_candidate(
-                      &all_asset_urls,
-                      &mut set,
-                      &url,
-                      opts.max_discovered_assets_per_page,
-                      opts.max_discovered_assets_per_page,
-                    );
+                  summary.borrow_mut().failed_css += 1;
+                  continue;
+                }
+
+                summary.borrow_mut().fetched_css += 1;
+                let sheet_base = res.final_url.as_deref().unwrap_or(&css_url);
+                let mut css_text = decode_css_bytes(&res.bytes, res.content_type.as_deref());
+                if let Ok(std::borrow::Cow::Owned(rewritten)) =
+                  absolutize_css_urls_cow(&css_text, sheet_base)
+                {
+                  css_text = rewritten;
+                }
+
+                if opts.prefetch_css_url_assets {
+                  let discovered = discover_css_urls(&css_text, sheet_base);
+                  {
+                    let mut set = css_asset_urls.borrow_mut();
+                    for url in discovered {
+                      record_css_url_asset_candidate(
+                        &all_asset_urls,
+                        &mut set,
+                        &url,
+                        opts.max_discovered_assets_per_page,
+                        opts.max_discovered_assets_per_page,
+                      );
+                    }
                   }
                 }
-              }
 
-              let sheet: StyleSheet = match parse_stylesheet(&css_text) {
-                Ok(sheet) => sheet,
-                Err(_) => continue,
-              };
-
-              let resolved = if sheet.contains_imports() {
-                match sheet.resolve_imports_owned_with_cache(
-                  &import_loader,
-                  Some(sheet_base),
-                  media_ctx,
-                  Some(&mut media_query_cache),
-                ) {
+                let sheet: StyleSheet = match parse_stylesheet(&css_text) {
                   Ok(sheet) => sheet,
-                  Err(_) => match parse_stylesheet(&css_text) {
-                    Ok(sheet) => sheet,
-                    Err(_) => continue,
-                  },
-                }
-              } else {
-                sheet
-              };
+                  Err(_) => continue,
+                };
 
-              if opts.prefetch_fonts {
-                let mut summary = summary.borrow_mut();
-                prefetch_fonts_from_stylesheet(
-                  fetcher.as_ref(),
-                  sheet_base,
-                  sheet_base,
-                  document_origin.as_ref(),
-                  &resolved,
-                  media_ctx,
-                  &mut media_query_cache,
-                  &mut seen_fonts,
-                  &mut summary,
-                );
+                let resolved = if sheet.contains_imports() {
+                  let import_loader = PrefetchImportLoader::new(
+                    fetcher.as_ref(),
+                    base_hint,
+                    document_origin.as_ref(),
+                    effective_referrer_policy,
+                    &summary,
+                    &all_asset_urls,
+                    css_asset_urls_ref,
+                    opts.max_discovered_assets_per_page,
+                  );
+                  match sheet.resolve_imports_owned_with_cache(
+                    &import_loader,
+                    Some(sheet_base),
+                    media_ctx,
+                    Some(&mut media_query_cache),
+                  ) {
+                    Ok(sheet) => sheet,
+                    Err(_) => match parse_stylesheet(&css_text) {
+                      Ok(sheet) => sheet,
+                      Err(_) => continue,
+                    },
+                  }
+                } else {
+                  sheet
+                };
+
+                if opts.prefetch_fonts {
+                  let mut summary = summary.borrow_mut();
+                  prefetch_fonts_from_stylesheet(
+                    fetcher.as_ref(),
+                    sheet_base,
+                    sheet_base,
+                    document_origin.as_ref(),
+                    referrer_policy,
+                    &resolved,
+                    media_ctx,
+                    &mut media_query_cache,
+                    &mut seen_fonts,
+                    &mut summary,
+                  );
+                }
               }
+              Err(_) => summary.borrow_mut().failed_css += 1,
             }
-            Err(_) => summary.borrow_mut().failed_css += 1,
-          },
+          }
         }
       }
     }
@@ -1918,7 +1975,9 @@ mod disk_cache_main {
       let mut summary = summary.borrow_mut();
       for url in &image_urls {
         match fetcher.fetch_with_request(
-          FetchRequest::new(url.as_str(), FetchDestination::Image).with_referrer_url(base_hint),
+          FetchRequest::new(url.as_str(), FetchDestination::Image)
+            .with_referrer_url(base_hint)
+            .with_referrer_policy(referrer_policy),
         ) {
           Ok(res) => {
             if ensure_http_success(&res, url)
@@ -1946,7 +2005,9 @@ mod disk_cache_main {
       for (url, crossorigin) in &cors_image_urls {
         if !plain_fetched.contains(url) {
           match fetcher.fetch_with_request(
-            FetchRequest::new(url.as_str(), FetchDestination::Image).with_referrer_url(base_hint),
+            FetchRequest::new(url.as_str(), FetchDestination::Image)
+              .with_referrer_url(base_hint)
+              .with_referrer_policy(referrer_policy),
           ) {
             Ok(res) => {
               if ensure_http_success(&res, url)
@@ -1971,6 +2032,7 @@ mod disk_cache_main {
         match fetcher.fetch_with_request(
           FetchRequest::new(url.as_str(), FetchDestination::ImageCors)
             .with_referrer_url(base_hint)
+            .with_referrer_policy(referrer_policy)
             .with_credentials_mode(credentials_mode),
         ) {
           Ok(res) => {
@@ -1998,7 +2060,9 @@ mod disk_cache_main {
         let mut summary = summary.borrow_mut();
         for url in &document_urls {
           match fetcher.fetch_with_request(
-            FetchRequest::new(url.as_str(), fetch_destination).with_referrer_url(base_hint),
+            FetchRequest::new(url.as_str(), fetch_destination)
+              .with_referrer_url(base_hint)
+              .with_referrer_policy(referrer_policy),
           ) {
             Ok(res) => {
               let is_html = ensure_http_success(&res, url).is_ok()
@@ -2033,6 +2097,7 @@ mod disk_cache_main {
           &doc.html,
           &doc.base_hint,
           &doc.base_url,
+          doc.referrer_policy,
           fetcher,
           media_ctx,
           nested_opts,
@@ -2045,7 +2110,9 @@ mod disk_cache_main {
       let mut summary = summary.borrow_mut();
       for url in &css_asset_urls {
         match fetcher.fetch_with_request(
-          FetchRequest::new(url.as_str(), FetchDestination::Image).with_referrer_url(base_hint),
+          FetchRequest::new(url.as_str(), FetchDestination::Image)
+            .with_referrer_url(base_hint)
+            .with_referrer_policy(referrer_policy),
         ) {
           Ok(res) => {
             if ensure_http_success(&res, url)
@@ -2097,6 +2164,7 @@ mod disk_cache_main {
       &cached.document.html,
       &cached.document.base_hint,
       &cached.document.base_url,
+      cached.document.referrer_policy,
       fetcher,
       media_ctx,
       opts,
@@ -2222,7 +2290,7 @@ mod disk_cache_main {
 
       #[derive(Default)]
       struct RecordingFetcher {
-        calls: Mutex<Vec<(String, FetchDestination, Option<String>)>>,
+        calls: Mutex<Vec<(String, FetchDestination, Option<String>, ReferrerPolicy)>>,
       }
 
       impl ResourceFetcher for RecordingFetcher {
@@ -2235,6 +2303,7 @@ mod disk_cache_main {
             req.url.to_string(),
             req.destination,
             req.referrer_url.map(|r| r.to_string()),
+            req.referrer_policy,
           ));
           Ok(FetchedResource::with_final_url(
             b"<html></html>".to_vec(),
@@ -2271,6 +2340,7 @@ mod disk_cache_main {
         html,
         document_url,
         base_url,
+        ReferrerPolicy::NoReferrer,
         &fetcher,
         &media_ctx,
         opts,
@@ -2285,6 +2355,7 @@ mod disk_cache_main {
       assert_eq!(calls[0].0, "https://example.com/base/frame.html");
       assert_eq!(calls[0].1, FetchDestination::Iframe);
       assert_eq!(calls[0].2.as_deref(), Some(document_url));
+      assert_eq!(calls[0].3, ReferrerPolicy::NoReferrer);
     }
 
     #[test]
@@ -2358,6 +2429,7 @@ mod disk_cache_main {
         &html,
         document_url,
         base_url,
+        ReferrerPolicy::default(),
         &fetcher,
         &media_ctx,
         opts,
@@ -2443,6 +2515,7 @@ mod disk_cache_main {
         &html,
         document_url,
         base_url,
+        ReferrerPolicy::default(),
         &fetcher,
         &media_ctx,
         opts,
@@ -2515,6 +2588,7 @@ mod disk_cache_main {
         html,
         document_url,
         base_url,
+        ReferrerPolicy::default(),
         &fetcher,
         &media_ctx,
         opts,
@@ -2612,6 +2686,7 @@ mod disk_cache_main {
         html,
         DOCUMENT_URL,
         BASE_URL,
+        ReferrerPolicy::default(),
         &fetcher,
         &media_ctx,
         opts,
@@ -2688,6 +2763,7 @@ mod disk_cache_main {
         html,
         document_url,
         base_url,
+        ReferrerPolicy::default(),
         &fetcher,
         &media_ctx,
         opts,
@@ -2771,6 +2847,7 @@ body { background-image: url(/bg.png); }
         html,
         document_url,
         base_url,
+        ReferrerPolicy::default(),
         &fetcher,
         &media_ctx,
         opts,
@@ -2853,6 +2930,7 @@ body { background-image: url(/bg.png); }
         html,
         document_url,
         base_url,
+        ReferrerPolicy::default(),
         &fetcher,
         &media_ctx,
         opts,
@@ -2935,6 +3013,7 @@ body { background-image: url(/bg.png); }
         html,
         document_url,
         base_url,
+        ReferrerPolicy::default(),
         &fetcher,
         &media_ctx,
         opts,
@@ -3056,6 +3135,7 @@ body { background-image: url(/bg.png); }
         html,
         &document_url,
         &document_url,
+        ReferrerPolicy::default(),
         &fetcher,
         &media_ctx,
         opts,
@@ -3204,6 +3284,7 @@ body { background-image: url(/bg.png); }
         &cached.document.html,
         &cached.document.base_hint,
         &cached.document.base_url,
+        cached.document.referrer_policy,
         &fetcher,
         &media_ctx,
         opts,
@@ -3371,6 +3452,7 @@ body { background-image: url(/bg.png); }
         &cached.document.html,
         &cached.document.base_hint,
         &cached.document.base_url,
+        cached.document.referrer_policy,
         &fetcher,
         &media_ctx,
         opts,
