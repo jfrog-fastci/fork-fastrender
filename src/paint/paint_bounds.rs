@@ -128,7 +128,7 @@ pub(crate) fn resolve_length_for_paint(
     };
     len
       .resolve_with_font_size(px)
-      .unwrap_or(len.value * font_size)
+      .unwrap_or(len.value * px)
   } else {
     len.value
   };
@@ -267,4 +267,3 @@ fn inset_rect(rect: Rect, left: f32, top: f32, right: f32, bottom: f32) -> Rect 
   let new_h = (rect.height() - top - bottom).max(0.0);
   Rect::from_xywh(new_x, new_y, new_w, new_h)
 }
-

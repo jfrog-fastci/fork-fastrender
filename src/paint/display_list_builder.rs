@@ -9075,6 +9075,20 @@ mod tests {
   }
 
   #[test]
+  fn resolve_length_for_paint_resolves_rem_against_root_font_size() {
+    let len = Length::rem(1.0);
+    let resolved = DisplayListBuilder::resolve_length_for_paint(&len, 10.0, 20.0, 0.0, None);
+    assert!((resolved - 20.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn resolve_length_for_paint_does_not_fallback_to_element_font_size_for_rem() {
+    let len = Length::rem(1.0);
+    let resolved = DisplayListBuilder::resolve_length_for_paint(&len, 10.0, f32::NAN, 0.0, None);
+    assert_eq!(resolved, 0.0);
+  }
+
+  #[test]
   fn text_underline_offset_is_relative_to_baseline_for_auto_position() {
     let builder = DisplayListBuilder::new();
     let metrics = DecorationMetrics {
