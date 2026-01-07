@@ -13391,20 +13391,26 @@ fn parse_container_names_from_str(input: &str) -> Option<Vec<String>> {
   if trimmed.eq_ignore_ascii_case("none") {
     return Some(Vec::new());
   }
+  if trimmed.contains(',') {
+    return None;
+  }
 
   let mut names = Vec::new();
-  for part in trimmed.split(',') {
-    for name in part.split_whitespace() {
-      let candidate = name.trim();
-      if !candidate.is_empty() {
-        names.push(candidate.to_string());
-      }
+  for name in trimmed.split_ascii_whitespace() {
+    let candidate = name.trim();
+    if !candidate.is_empty() {
+      names.push(candidate.to_string());
     }
   }
 
   if names.is_empty() {
     None
-  } else if names.iter().any(|n| n.eq_ignore_ascii_case("none")) {
+  } else if names.iter().any(|n| {
+    n.eq_ignore_ascii_case("none")
+      || n.eq_ignore_ascii_case("and")
+      || n.eq_ignore_ascii_case("or")
+      || n.eq_ignore_ascii_case("not")
+  }) {
     None
   } else {
     Some(names)
