@@ -2,6 +2,11 @@
 
 FastRender treats native form controls as replaced elements so they participate in intrinsic sizing and paint their own UA appearance.
 
+## Specs (background)
+
+- HTML Living Standard: form controls (`<input>`, `<select>`, `<textarea>`, `<button>`)
+- CSS UI 4: `appearance` and the “fallback rendering model” for controls (`specs/csswg-drafts/css-ui-4/`)
+
 ## How it works
 
 - `<input>`, `<select>`, `<textarea>`, and `<button>` generate `ReplacedType::FormControl` boxes (except `<input type="hidden">`).
