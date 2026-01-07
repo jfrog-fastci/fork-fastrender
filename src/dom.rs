@@ -5901,6 +5901,14 @@ impl<'a> Element for ElementRef<'a> {
   ) -> bool {
     match pseudo {
       PseudoClass::Has(relative) => {
+        // Selectors Level 4 forbids nesting `:has()` within `:has()`.
+        //
+        // We reject nested `:has()` at parse time (see `PseudoClassParser`), but keep this as a
+        // defensive guard to avoid unbounded recursion if a selector is constructed
+        // programmatically.
+        if _context.relative_selector_anchor().is_some() {
+          return false;
+        }
         matches_has_relative(self, relative, _context)
       }
       PseudoClass::Host(selectors) => {
