@@ -1,0 +1,63 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>subgrid auto span from line names reference</title>
+<style>
+  body { margin: 0; }
+
+  .grid {
+    display: grid;
+    width: max-content;
+  }
+
+  .grid > div {
+    width: 100%;
+    height: 100%;
+  }
+
+  .cols {
+    grid-template-columns: 50px 70px 90px;
+    grid-template-rows: 20px 20px;
+    column-gap: 10px;
+    margin-bottom: 20px;
+  }
+
+  .subgrid-cols {
+    /* Expected behaviour: auto-placement treats this as `auto / span 2` in the column axis. */
+    grid-column: auto / span 2;
+    display: grid;
+    grid-template-columns: subgrid [a] [b] [c];
+    background: rgb(226, 232, 240);
+  }
+
+  .rows {
+    grid-auto-flow: column;
+    grid-template-columns: 80px 80px;
+    grid-template-rows: 30px 40px 50px;
+    row-gap: 7px;
+    column-gap: 5px;
+  }
+
+  .subgrid-rows {
+    /* Expected behaviour: auto-placement treats this as `auto / span 2` in the row axis. */
+    grid-row: auto / span 2;
+    display: grid;
+    grid-template-rows: subgrid [a] [b] [c];
+    background: rgb(226, 232, 240);
+  }
+
+  .a { background: rgb(59, 130, 246); }
+  .c { background: rgb(34, 197, 94); }
+</style>
+
+<div class="grid cols">
+  <div class="a"></div>
+  <div class="subgrid-cols"></div>
+  <div class="c"></div>
+</div>
+
+<div class="grid rows">
+  <div class="a"></div>
+  <div class="subgrid-rows"></div>
+  <div class="c"></div>
+</div>
+

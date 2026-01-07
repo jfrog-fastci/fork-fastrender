@@ -252,6 +252,31 @@ fn collect_child_subgrid_line_names(style: &Style, axis: AbstractAxis) -> Vec<Ve
   }
 }
 
+#[inline]
+fn subgrid_auto_span_from_line_name_list_len(line_name_list_len: usize) -> u16 {
+  let tracks = line_name_list_len.saturating_sub(1).max(1);
+  (tracks.min(u16::MAX as usize)) as u16
+}
+
+#[inline]
+fn child_subgrid_auto_span<
+  Tree: LayoutGridContainer + LayoutPartialTree<CustomIdent = DefaultCheapStr>,
+>(
+  tree: &Tree,
+  node: NodeId,
+) -> InBothAbsAxis<Option<u16>> {
+  let style = tree.get_grid_container_style(node);
+  let horizontal = style.is_column_subgrid().then(|| {
+    let len = style.subgrid_column_names().map(|names| names.len()).unwrap_or(0);
+    subgrid_auto_span_from_line_name_list_len(len)
+  });
+  let vertical = style.is_row_subgrid().then(|| {
+    let len = style.subgrid_row_names().map(|names| names.len()).unwrap_or(0);
+    subgrid_auto_span_from_line_name_list_len(len)
+  });
+  InBothAbsAxis { horizontal, vertical }
+}
+
 fn collect_subgrid_virtual_items<
   Tree: LayoutGridContainer + LayoutPartialTree<CustomIdent = DefaultCheapStr>,
 >(
@@ -388,6 +413,7 @@ fn collect_subgrid_virtual_items<
         horizontal: child_style_ref.is_column_subgrid(),
         vertical: child_style_ref.is_row_subgrid(),
       },
+      |node| child_subgrid_auto_span(tree, node),
     );
 
     #[cfg(all(feature = "std", debug_assertions))]
@@ -695,7 +721,7 @@ where
   let get_child_styles_iter = |node| {
     tree
       .child_ids(node)
-      .map(|child_node: NodeId| tree.get_grid_child_style(child_node))
+      .map(|child_node: NodeId| (child_node, tree.get_grid_child_style(child_node)))
   };
   let child_styles_iter = get_child_styles_iter(node);
 
@@ -755,7 +781,12 @@ where
   let disallow_implicit_rows = style.is_row_subgrid() && grid_template_row_count > 0;
 
   let (mut est_col_counts, mut est_row_counts) =
-    compute_grid_size_estimate(explicit_col_count, explicit_row_count, child_styles_iter);
+    compute_grid_size_estimate(
+      explicit_col_count,
+      explicit_row_count,
+      child_styles_iter,
+      |node| child_subgrid_auto_span(tree, node),
+    );
   // Subgrids do not create implicit tracks in the subgridded axis. Clamp the initial estimates so
   // auto-placement cannot preallocate (or later rely on) implicit tracks for those axes.
   //
@@ -799,6 +830,7 @@ where
       horizontal: disallow_implicit_columns,
       vertical: disallow_implicit_rows,
     },
+    |node| child_subgrid_auto_span(tree, node),
   );
 
   // Extract track counts from previous step (auto-placement can expand the number of tracks)

@@ -56,6 +56,7 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
   justify_items: AlignItems,
   named_line_resolver: &NamedLineResolver<<S as CoreStyle>::CustomIdent>,
   disallow_implicit_tracks: InBothAbsAxis<bool>,
+  get_child_subgrid_auto_span: impl Fn(NodeId) -> InBothAbsAxis<Option<u16>>,
 ) where
   S: GridItemStyle + 'a,
   ChildIter: Iterator<Item = (usize, NodeId, S)>,
@@ -94,6 +95,32 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
           .resolve_row_names(&style.grid_row())
           .map(|placement| placement.into_origin_zero_placement(explicit_row_count)),
       };
+
+      // CSS Grid 2: <https://drafts.csswg.org/css-grid-2/#grid-span>
+      //
+      // If a grid item is a subgrid container in an axis and its placement in that axis is fully
+      // automatic (both edges `auto` with no explicit span), then the default span is derived from
+      // the subgrid's `<line-name-list>` (line count - 1).
+      //
+      // FastRender stores the subgrid line-name lists on the *container* style, not on the grid
+      // item style exposed via the `GridItemStyle` trait. Query the container info from the tree
+      // via the supplied callback.
+      let subgrid_auto_span = get_child_subgrid_auto_span(node);
+      let mut origin_zero_placement = origin_zero_placement;
+      if let Some(span) = subgrid_auto_span.horizontal {
+        if matches!(origin_zero_placement.horizontal.start, OriginZeroGridPlacement::Auto)
+          && matches!(origin_zero_placement.horizontal.end, OriginZeroGridPlacement::Auto)
+        {
+          origin_zero_placement.horizontal.end = OriginZeroGridPlacement::Span(span);
+        }
+      }
+      if let Some(span) = subgrid_auto_span.vertical {
+        if matches!(origin_zero_placement.vertical.start, OriginZeroGridPlacement::Auto)
+          && matches!(origin_zero_placement.vertical.end, OriginZeroGridPlacement::Auto)
+        {
+          origin_zero_placement.vertical.end = OriginZeroGridPlacement::Span(span);
+        }
+      }
       (index, node, origin_zero_placement, style)
     }
   };
@@ -504,9 +531,18 @@ mod tests {
           .iter()
           .map(|(index, style, _)| (*index, NodeId::from(*index), style))
       };
-      let child_styles_iter = children.iter().map(|(_, style, _)| style);
-      let estimated_sizes =
-        compute_grid_size_estimate(explicit_col_count, explicit_row_count, child_styles_iter);
+      let child_styles_iter = children
+        .iter()
+        .map(|(index, style, _)| (NodeId::from(*index), style));
+      let estimated_sizes = compute_grid_size_estimate(
+        explicit_col_count,
+        explicit_row_count,
+        child_styles_iter,
+        |_| crate::geometry::InBothAbsAxis {
+          horizontal: None,
+          vertical: None,
+        },
+      );
       let mut items = Vec::new();
       let mut cell_occupancy_matrix =
         CellOccupancyMatrix::with_track_counts(estimated_sizes.0, estimated_sizes.1);
@@ -527,6 +563,10 @@ mod tests {
         crate::geometry::InBothAbsAxis {
           horizontal: false,
           vertical: false,
+        },
+        |_| crate::geometry::InBothAbsAxis {
+          horizontal: None,
+          vertical: None,
         },
       );
 
