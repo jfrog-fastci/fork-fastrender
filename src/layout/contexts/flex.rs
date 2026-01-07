@@ -2917,18 +2917,30 @@ impl FormattingContext for FlexFormattingContext {
     {
       let mut deadline_counter = 0usize;
 
-      // Taffy's `flex-wrap: wrap-reverse` handling reverses the cross-axis direction when placing
-      // flex lines. Our adapter maps flexbox into physical coordinates (taking writing-mode into
-      // account), but downstream fragment construction expects positions in the normal top-left
-      // coordinate system. Mirror the cross-axis positions inside the content box so wrapped lines
-      // stack in the correct (reversed) order.
-      if matches!(box_node.style.flex_wrap, FlexWrap::WrapReverse) {
+      // Flex line stacking depends on the *effective* cross-axis direction. In vertical writing
+      // modes (or RTL inline axes) the cross-start edge can be the physical right/bottom edges, and
+      // `flex-wrap: wrap-reverse` swaps cross-start/cross-end again.
+      //
+      // We run Taffy with `FlexWrap::Wrap` for both `wrap` and `wrap-reverse` (Taffy's
+      // `WrapReverse` is still incomplete for multi-line + `align-content`). Mirror the in-flow
+      // flex item positions along the cross axis whenever the effective cross axis points in the
+      // negative physical direction so line order and cross-axis alignment match CSS.
+      if matches!(box_node.style.flex_wrap, FlexWrap::Wrap | FlexWrap::WrapReverse) {
         let inline_is_horizontal = matches!(box_node.style.writing_mode, WritingMode::HorizontalTb);
         let block_is_horizontal = !inline_is_horizontal;
         let main_is_inline = matches!(
           box_node.style.flex_direction,
           FlexDirection::Row | FlexDirection::RowReverse
         );
+        let inline_positive = self.inline_axis_positive(&box_node.style);
+        let block_positive = self.block_axis_positive(&box_node.style);
+        let base_cross_positive = if main_is_inline {
+          block_positive
+        } else {
+          inline_positive
+        };
+        let wrap_reverse = matches!(box_node.style.flex_wrap, FlexWrap::WrapReverse);
+        let should_mirror_cross = base_cross_positive == wrap_reverse;
         let cross_is_horizontal = if main_is_inline {
           block_is_horizontal
         } else {
@@ -2940,7 +2952,7 @@ impl FormattingContext for FlexFormattingContext {
           fragment.bounds.height()
         };
 
-        if cross_size.is_finite() && cross_size > 0.0 {
+        if should_mirror_cross && cross_size.is_finite() && cross_size > 0.0 {
           let cb_width = fragment.bounds.width();
           let border_left = self.resolve_length_for_width(
             box_node.style.used_border_left_width(),
@@ -2984,6 +2996,14 @@ impl FormattingContext for FlexFormattingContext {
           if cross_inner_size.is_finite() && cross_inner_size > 0.0 {
             for child in fragment.children_mut() {
               check_layout_deadline(&mut deadline_counter)?;
+              let Some(style) = child.style.as_deref() else {
+                continue;
+              };
+              if style.running_position.is_some()
+                || matches!(style.position, Position::Absolute | Position::Fixed)
+              {
+                continue;
+              }
               let (cross_pos, child_cross) = if cross_is_horizontal {
                 (child.bounds.x(), child.bounds.width())
               } else {
@@ -4889,15 +4909,23 @@ impl FlexFormattingContext {
     } else {
       block_positive_container
     };
-    let cross_positive_container = if container_main_is_inline {
+    let cross_positive_container_base = if container_main_is_inline {
       block_positive_container
     } else {
       inline_positive_container
     };
-    let cross_positive_for_align_content = if matches!(style.flex_wrap, FlexWrap::WrapReverse) {
-      !cross_positive_container
+    // When flex containers wrap, Taffy's `WrapReverse` handling can be inconsistent. We instead
+    // always run Taffy with `FlexWrap::Wrap` and mirror the fragment positions when the effective
+    // cross-axis direction is reversed (either via `flex-wrap: wrap-reverse` or a negative
+    // cross-start edge in vertical/RTL writing modes). To keep `align-items`/`align-content`
+    // consistent with this mirroring step, wrapped containers are converted assuming a positive
+    // cross axis and rely on the mirror post-pass when needed.
+    let cross_positive_container = if matches!(style.display, Display::Flex | Display::InlineFlex)
+      && !matches!(style.flex_wrap, FlexWrap::NoWrap)
+    {
+      true
     } else {
-      cross_positive_container
+      cross_positive_container_base
     };
 
     // Flex items align to the parent flex container's axes, not their own writing-mode/direction.
@@ -4908,10 +4936,20 @@ impl FlexFormattingContext {
       axis_source.flex_direction,
       FlexDirection::Row | FlexDirection::RowReverse
     );
-    let cross_positive_item = if axis_main_is_inline {
+    let cross_positive_item_base = if axis_main_is_inline {
       block_positive_item
     } else {
       inline_positive_item
+    };
+    let mirror_cross_axis = matches!(axis_source.display, Display::Flex | Display::InlineFlex)
+      && matches!(axis_source.flex_wrap, FlexWrap::Wrap | FlexWrap::WrapReverse)
+      && (cross_positive_item_base == matches!(axis_source.flex_wrap, FlexWrap::WrapReverse));
+    let cross_positive_item = if matches!(axis_source.display, Display::Flex | Display::InlineFlex)
+      && !matches!(axis_source.flex_wrap, FlexWrap::NoWrap)
+    {
+      true
+    } else {
+      cross_positive_item_base
     };
 
     // `start`/`end` alignment keywords resolve against the flex container's axes, but
@@ -4955,7 +4993,7 @@ impl FlexFormattingContext {
     };
 
     let align_self_axis_positive = match effective_align_self {
-      Some(AlignItems::SelfStart | AlignItems::SelfEnd) => cross_positive_self,
+      Some(AlignItems::SelfStart | AlignItems::SelfEnd) => cross_positive_self ^ mirror_cross_axis,
       _ => cross_positive_item,
     };
     let justify_self_axis_positive = match effective_justify_self {
@@ -5003,8 +5041,7 @@ impl FlexFormattingContext {
       justify_content: self
         .justify_content_to_taffy(style.justify_content, main_axis_positive_container),
       align_items: self.align_items_to_taffy(style.align_items, cross_positive_container),
-      align_content: self
-        .align_content_to_taffy(style.align_content, cross_positive_for_align_content),
+      align_content: self.align_content_to_taffy(style.align_content, cross_positive_container),
       align_self: self.align_self_to_taffy(effective_align_self, align_self_axis_positive),
       justify_self: self.align_self_to_taffy(effective_justify_self, justify_self_axis_positive),
       justify_items: self.align_items_to_taffy(style.justify_items, inline_positive_container),

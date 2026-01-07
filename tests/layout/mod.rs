@@ -29,6 +29,7 @@ mod flex_justify_content_start_end;
 mod flex_positioned_relayout;
 mod flex_wrap_alignment;
 mod flex_wrap_reverse_cross_alignment;
+mod flex_wrap_writing_mode;
 mod float_shrink_to_min;
 mod form_control_baseline;
 mod fragmentation;
