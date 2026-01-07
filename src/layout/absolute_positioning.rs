@@ -2248,9 +2248,8 @@ pub(crate) fn resolve_positioned_style_with_anchors(
       .map_or(LengthOrAuto::Auto, LengthOrAuto::Length)
   };
 
-  let resolve_anchor_inset = |func: &crate::style::types::AnchorFunction,
-                               edge: InsetEdge|
-   -> Option<f32> {
+  let resolve_anchor_inset =
+    |func: &crate::style::types::AnchorFunction, edge: InsetEdge| -> Option<f32> {
     let anchor_name = func.name.as_deref().or_else(|| match &style.position_anchor {
       crate::style::types::PositionAnchor::Name(name) => Some(name.as_str()),
       _ => None,
@@ -2258,15 +2257,49 @@ pub(crate) fn resolve_positioned_style_with_anchors(
     let anchor_rect = anchors?.get(anchor_name)?;
     let cb_rect = containing_block.rect;
 
-    let axis_value = match (edge, func.side) {
-      (InsetEdge::Top, crate::style::types::AnchorSide::Top) => Some(anchor_rect.y()),
-      (InsetEdge::Top, crate::style::types::AnchorSide::Bottom) => Some(anchor_rect.max_y()),
-      (InsetEdge::Bottom, crate::style::types::AnchorSide::Top) => Some(anchor_rect.y()),
-      (InsetEdge::Bottom, crate::style::types::AnchorSide::Bottom) => Some(anchor_rect.max_y()),
-      (InsetEdge::Left, crate::style::types::AnchorSide::Left) => Some(anchor_rect.x()),
-      (InsetEdge::Left, crate::style::types::AnchorSide::Right) => Some(anchor_rect.max_x()),
-      (InsetEdge::Right, crate::style::types::AnchorSide::Left) => Some(anchor_rect.x()),
-      (InsetEdge::Right, crate::style::types::AnchorSide::Right) => Some(anchor_rect.max_x()),
+    let side = match func.side {
+      crate::style::types::AnchorSide::Inside => match edge {
+        InsetEdge::Top => crate::style::types::AnchorSide::Top,
+        InsetEdge::Right => crate::style::types::AnchorSide::Right,
+        InsetEdge::Bottom => crate::style::types::AnchorSide::Bottom,
+        InsetEdge::Left => crate::style::types::AnchorSide::Left,
+      },
+      crate::style::types::AnchorSide::Outside => match edge {
+        InsetEdge::Top => crate::style::types::AnchorSide::Bottom,
+        InsetEdge::Right => crate::style::types::AnchorSide::Left,
+        InsetEdge::Bottom => crate::style::types::AnchorSide::Top,
+        InsetEdge::Left => crate::style::types::AnchorSide::Right,
+      },
+      other => other,
+    };
+
+    let axis_value = match (edge, side) {
+      (InsetEdge::Top | InsetEdge::Bottom, crate::style::types::AnchorSide::Top) => {
+        Some(anchor_rect.y())
+      }
+      (InsetEdge::Top | InsetEdge::Bottom, crate::style::types::AnchorSide::Bottom) => {
+        Some(anchor_rect.max_y())
+      }
+      (InsetEdge::Left | InsetEdge::Right, crate::style::types::AnchorSide::Left) => {
+        Some(anchor_rect.x())
+      }
+      (InsetEdge::Left | InsetEdge::Right, crate::style::types::AnchorSide::Right) => {
+        Some(anchor_rect.max_x())
+      }
+      (InsetEdge::Top | InsetEdge::Bottom, crate::style::types::AnchorSide::Center) => {
+        Some(anchor_rect.y() + anchor_rect.height() / 2.0)
+      }
+      (InsetEdge::Left | InsetEdge::Right, crate::style::types::AnchorSide::Center) => {
+        Some(anchor_rect.x() + anchor_rect.width() / 2.0)
+      }
+      (
+        InsetEdge::Top | InsetEdge::Bottom,
+        crate::style::types::AnchorSide::Percent(pct),
+      ) => Some(anchor_rect.y() + anchor_rect.height() * (pct / 100.0)),
+      (
+        InsetEdge::Left | InsetEdge::Right,
+        crate::style::types::AnchorSide::Percent(pct),
+      ) => Some(anchor_rect.x() + anchor_rect.width() * (pct / 100.0)),
       _ => None,
     }?;
 

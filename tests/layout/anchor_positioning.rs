@@ -106,6 +106,123 @@ fn anchor_positioning_places_absolute_box_using_position_anchor() {
 }
 
 #[test]
+fn anchor_positioning_supports_inside_outside_center_and_percentage_sides() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(200.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  container_style.padding_left = Length::px(10.0);
+  container_style.padding_top = Length::px(5.0);
+  container_style.padding_right = Length::px(0.0);
+  container_style.padding_bottom = Length::px(0.0);
+  let container_style = Arc::new(container_style);
+
+  let anchor_id = 1usize;
+  let outside_overlay_id = 2usize;
+  let inside_overlay_id = 3usize;
+
+  let mut anchor_style = ComputedStyle::default();
+  anchor_style.display = Display::Block;
+  anchor_style.width = Some(Length::px(50.0));
+  anchor_style.height = Some(Length::px(20.0));
+  anchor_style.width_keyword = None;
+  anchor_style.height_keyword = None;
+  anchor_style.anchor_names = vec!["--a".to_string()];
+  let mut anchor = BoxNode::new_block(Arc::new(anchor_style), FormattingContextType::Block, vec![]);
+  anchor.id = anchor_id;
+
+  let mut outside_overlay_style = ComputedStyle::default();
+  outside_overlay_style.display = Display::Block;
+  outside_overlay_style.position = Position::Absolute;
+  outside_overlay_style.position_anchor = PositionAnchor::Name("--a".to_string());
+  // `outside` should resolve to the opposite side of the inset property.
+  outside_overlay_style.top = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Outside,
+    fallback: None,
+  });
+  // `50%` should resolve to the anchor box midpoint on the relevant axis.
+  outside_overlay_style.left = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Percent(50.0),
+    fallback: None,
+  });
+  outside_overlay_style.width = Some(Length::px(10.0));
+  outside_overlay_style.height = Some(Length::px(10.0));
+  outside_overlay_style.width_keyword = None;
+  outside_overlay_style.height_keyword = None;
+  let mut outside_overlay =
+    BoxNode::new_block(Arc::new(outside_overlay_style), FormattingContextType::Block, vec![]);
+  outside_overlay.id = outside_overlay_id;
+
+  let mut inside_overlay_style = ComputedStyle::default();
+  inside_overlay_style.display = Display::Block;
+  inside_overlay_style.position = Position::Absolute;
+  inside_overlay_style.position_anchor = PositionAnchor::Name("--a".to_string());
+  inside_overlay_style.top = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Inside,
+    fallback: None,
+  });
+  inside_overlay_style.left = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Center,
+    fallback: None,
+  });
+  inside_overlay_style.width = Some(Length::px(10.0));
+  inside_overlay_style.height = Some(Length::px(10.0));
+  inside_overlay_style.width_keyword = None;
+  inside_overlay_style.height_keyword = None;
+  let mut inside_overlay =
+    BoxNode::new_block(Arc::new(inside_overlay_style), FormattingContextType::Block, vec![]);
+  inside_overlay.id = inside_overlay_id;
+
+  let mut container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![anchor, outside_overlay, inside_overlay],
+  );
+  container.id = 104;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let anchor_fragment = find_fragment_by_box_id(&fragment, anchor_id).expect("anchor fragment");
+  let outside_overlay_fragment =
+    find_fragment_by_box_id(&fragment, outside_overlay_id).expect("outside overlay fragment");
+  let inside_overlay_fragment =
+    find_fragment_by_box_id(&fragment, inside_overlay_id).expect("inside overlay fragment");
+
+  let expected_x = anchor_fragment.bounds.x() + anchor_fragment.bounds.width() / 2.0;
+  assert!(
+    (outside_overlay_fragment.bounds.x() - expected_x).abs() < 0.1,
+    "percentage anchor side should resolve to the midpoint (got x={}, expected {})",
+    outside_overlay_fragment.bounds.x(),
+    expected_x
+  );
+  assert!(
+    (outside_overlay_fragment.bounds.y() - anchor_fragment.bounds.max_y()).abs() < 0.1,
+    "outside anchor side should resolve to the opposite edge (got y={})",
+    outside_overlay_fragment.bounds.y()
+  );
+  assert!(
+    (inside_overlay_fragment.bounds.x() - expected_x).abs() < 0.1,
+    "center anchor side should resolve to the midpoint (got x={}, expected {})",
+    inside_overlay_fragment.bounds.x(),
+    expected_x
+  );
+  assert!(
+    (inside_overlay_fragment.bounds.y() - anchor_fragment.bounds.y()).abs() < 0.1,
+    "inside anchor side should resolve to the same edge (got y={})",
+    inside_overlay_fragment.bounds.y()
+  );
+}
+
+#[test]
 fn anchor_positioning_uses_fallback_when_anchor_missing() {
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Block;

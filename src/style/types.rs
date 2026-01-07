@@ -3345,12 +3345,22 @@ impl Default for OverflowAnchor {
 /// Anchor side keywords supported by the `anchor()` inset function.
 ///
 /// Baseline support: only the physical sides used by common tooltip/popover patterns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AnchorSide {
+  /// `inside` resolves to the same side as the inset property the function appears in.
+  Inside,
+  /// `outside` resolves to the opposite side from the inset property the function appears in.
+  Outside,
   Top,
   Right,
   Bottom,
   Left,
+  /// `center` is equivalent to `50%`.
+  Center,
+  /// Percentage position between the two sides of the relevant axis (e.g. 0% = left/top).
+  ///
+  /// Stored as the numeric percentage value (e.g. `50.0` for `50%`).
+  Percent(f32),
 }
 
 /// Parsed `anchor()` function as used in inset properties (top/right/bottom/left, inset-*).

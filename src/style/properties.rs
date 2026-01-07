@@ -12240,11 +12240,28 @@ pub fn extract_length(value: &PropertyValue) -> Option<Length> {
 
 fn parse_anchor_side(token: &str) -> Option<AnchorSide> {
   match token {
+    t if t.eq_ignore_ascii_case("inside") => Some(AnchorSide::Inside),
+    t if t.eq_ignore_ascii_case("outside") => Some(AnchorSide::Outside),
     t if t.eq_ignore_ascii_case("top") => Some(AnchorSide::Top),
     t if t.eq_ignore_ascii_case("right") => Some(AnchorSide::Right),
     t if t.eq_ignore_ascii_case("bottom") => Some(AnchorSide::Bottom),
     t if t.eq_ignore_ascii_case("left") => Some(AnchorSide::Left),
-    _ => None,
+    t if t.eq_ignore_ascii_case("center") => Some(AnchorSide::Center),
+    t => {
+      let t = t.trim();
+      if let Some(raw) = t.strip_suffix('%') {
+        let raw = raw.trim();
+        if raw.is_empty() {
+          return None;
+        }
+        if let Ok(value) = raw.parse::<f32>() {
+          if value.is_finite() {
+            return Some(AnchorSide::Percent(value));
+          }
+        }
+      }
+      None
+    }
   }
 }
 

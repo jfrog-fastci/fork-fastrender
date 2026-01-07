@@ -134,6 +134,9 @@ fn hash_anchor_function(
     None => 0u8.hash(hasher),
   }
   hash_enum_discriminant(&func.side, hasher);
+  if let crate::style::types::AnchorSide::Percent(pct) = func.side {
+    f32_to_canonical_bits(pct).hash(hasher);
+  }
   hash_option_length(&func.fallback, hasher);
 }
 

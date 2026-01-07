@@ -548,17 +548,21 @@ fn format_inset_value(value: &crate::style::types::InsetValue) -> String {
     crate::style::types::InsetValue::Length(len) => format_length(len),
     crate::style::types::InsetValue::Anchor(anchor) => {
       let side = match anchor.side {
-        crate::style::types::AnchorSide::Top => "top",
-        crate::style::types::AnchorSide::Right => "right",
-        crate::style::types::AnchorSide::Bottom => "bottom",
-        crate::style::types::AnchorSide::Left => "left",
+        crate::style::types::AnchorSide::Inside => "inside".to_string(),
+        crate::style::types::AnchorSide::Outside => "outside".to_string(),
+        crate::style::types::AnchorSide::Top => "top".to_string(),
+        crate::style::types::AnchorSide::Right => "right".to_string(),
+        crate::style::types::AnchorSide::Bottom => "bottom".to_string(),
+        crate::style::types::AnchorSide::Left => "left".to_string(),
+        crate::style::types::AnchorSide::Center => "center".to_string(),
+        crate::style::types::AnchorSide::Percent(pct) => format!("{pct}%"),
       };
       let mut out = String::from("anchor(");
       if let Some(name) = &anchor.name {
         out.push_str(name);
         out.push(' ');
       }
-      out.push_str(side);
+      out.push_str(&side);
       if let Some(fallback) = anchor.fallback {
         out.push_str(", ");
         out.push_str(&format_length(&fallback));
