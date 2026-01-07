@@ -1999,6 +1999,61 @@ mod tests {
   }
 
   #[test]
+  fn image_source_selects_smaller_width_height_candidate_for_matching_slot() {
+    let img = ReplacedType::Image {
+      src: "fallback".to_string(),
+      alt: None,
+      srcset: vec![
+        SrcsetCandidate {
+          url: "100w".to_string(),
+          descriptor: SrcsetDescriptor::WidthHeight {
+            width: 100,
+            height: 50,
+          },
+        },
+        SrcsetCandidate {
+          url: "300w".to_string(),
+          descriptor: SrcsetDescriptor::WidthHeight {
+            width: 300,
+            height: 150,
+          },
+        },
+      ],
+      sizes: Some(SizesList {
+        entries: vec![SizesEntry {
+          media: None,
+          length: Length::px(100.0).into(),
+        }],
+      }),
+      picture_sources: Vec::new(),
+      crossorigin: CrossOriginAttribute::None,
+      referrer_policy: None,
+    };
+
+    let viewport = Size::new(800.0, 600.0);
+    let media_ctx =
+      MediaContext::screen(viewport.width, viewport.height).with_device_pixel_ratio(1.0);
+    let selected = img.selected_image_source_for_context(ImageSelectionContext {
+      device_pixel_ratio: 1.0,
+      slot_width: None,
+      viewport: Some(viewport),
+      media_context: Some(&media_ctx),
+      font_size: Some(16.0),
+      root_font_size: Some(16.0),
+      base_url: None,
+    });
+
+    assert_eq!(selected.url, "100w");
+    assert_eq!(
+      selected.descriptor,
+      Some(SrcsetDescriptor::WidthHeight {
+        width: 100,
+        height: 50,
+      })
+    );
+  }
+
+  #[test]
   fn sizes_min_function_controls_width_descriptor_selection() {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),

@@ -1071,6 +1071,12 @@ mod tests {
   }
 
   #[test]
+  fn parse_srcset_rejects_height_descriptors_without_width() {
+    let parsed = parse_srcset("a.png 50h");
+    assert!(parsed.is_empty());
+  }
+
+  #[test]
   fn parse_srcset_allows_commas_inside_urls() {
     let parsed = parse_srcset(
       "https://img.example/master/w_2560,c_limit/foo.jpg 1x,https://img.example/bar.jpg 2x",
