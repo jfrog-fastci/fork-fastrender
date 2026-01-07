@@ -493,7 +493,12 @@ impl BlockFormattingContext {
 
     let style = &child.style;
     let font_size = style.font_size; // Get font-size for resolving em units
-    let containing_height = constraints.height();
+    let inline_is_horizontal = inline_axis_is_horizontal(style.writing_mode);
+    let containing_height = if inline_is_horizontal {
+      constraints.height()
+    } else {
+      constraints.width()
+    };
 
     // Handle block-axis margins (resolve em/rem units with font-size)
     let block_sides = block_axis_sides(style);
@@ -561,14 +566,30 @@ impl BlockFormattingContext {
     let vertical_edges = border_top + padding_top + padding_bottom + border_bottom;
 
     // Create constraints for child layout
-    let height_auto = style.height.is_none() && style.height_keyword.is_none();
+    let block_length = if inline_is_horizontal { style.height } else { style.width };
+    let block_keyword = if inline_is_horizontal {
+      style.height_keyword
+    } else {
+      style.width_keyword
+    };
+    let min_block_keyword = if inline_is_horizontal {
+      style.min_height_keyword
+    } else {
+      style.min_width_keyword
+    };
+    let max_block_keyword = if inline_is_horizontal {
+      style.max_height_keyword
+    } else {
+      style.max_width_keyword
+    };
+    let height_auto = block_length.is_none() && block_keyword.is_none();
     let available_block_border_box = containing_height
       .map(|h| (h - margin_top - margin_bottom).max(0.0))
       .unwrap_or(f32::INFINITY);
 
-    let intrinsic_block_sizes = if style.height_keyword.is_some()
-      || style.min_height_keyword.is_some()
-      || style.max_height_keyword.is_some()
+    let intrinsic_block_sizes = if block_keyword.is_some()
+      || min_block_keyword.is_some()
+      || max_block_keyword.is_some()
     {
       let factory = self.child_factory_for_cb(*nearest_positioned_cb);
       let fc_type = child
@@ -626,9 +647,9 @@ impl BlockFormattingContext {
       None
     };
 
-    let mut specified_height = style.height.as_ref().and_then(|h| {
+    let mut specified_height = block_length.and_then(|h| {
       resolve_length_with_percentage_metrics(
-        *h,
+        h,
         containing_height,
         self.viewport_size,
         font_size,
@@ -639,7 +660,7 @@ impl BlockFormattingContext {
     });
     specified_height =
       specified_height.map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing));
-    if let Some(height_keyword) = style.height_keyword {
+    if let Some(height_keyword) = block_keyword {
       let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
       let used_border_box = match height_keyword {
         crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
@@ -672,7 +693,12 @@ impl BlockFormattingContext {
       specified_height = Some((used_border_box - vertical_edges).max(0.0));
     }
     if specified_height.is_none() && height_auto {
-      if let Some(used_border_box) = constraints.used_border_box_height {
+      let used_border_box = if inline_is_horizontal {
+        constraints.used_border_box_height
+      } else {
+        constraints.used_border_box_width
+      };
+      if let Some(used_border_box) = used_border_box {
         specified_height = Some((used_border_box - vertical_edges).max(0.0));
       }
     }
@@ -690,7 +716,11 @@ impl BlockFormattingContext {
       inline_sides,
       inline_positive,
     );
-    let width_auto = style.width.is_none() && style.width_keyword.is_none();
+    let width_auto = if inline_is_horizontal {
+      style.width.is_none() && style.width_keyword.is_none()
+    } else {
+      style.height.is_none() && style.height_keyword.is_none()
+    };
     let inline_edges_for_fit = computed_width.border_left
       + computed_width.padding_left
       + computed_width.padding_right
@@ -713,8 +743,18 @@ impl BlockFormattingContext {
     .max(0.0);
     let available_content_for_fit = (available_inline_border_box - inline_edges_for_fit).max(0.0);
     let mut intrinsic_content_sizes = None;
-    if style.width.is_none() && style.width_keyword.is_some() {
-      let keyword = style.width_keyword.unwrap();
+    let inline_length_is_none = if inline_is_horizontal {
+      style.width.is_none()
+    } else {
+      style.height.is_none()
+    };
+    let inline_keyword = if inline_is_horizontal {
+      style.width_keyword
+    } else {
+      style.height_keyword
+    };
+    if inline_length_is_none && inline_keyword.is_some() {
+      let keyword = inline_keyword.unwrap();
       let factory = self.child_factory_for_cb(*nearest_positioned_cb);
       let fc_type = child
         .formatting_context()
@@ -736,8 +776,13 @@ impl BlockFormattingContext {
         crate::style::types::BoxSizing::BorderBox => keyword_content + inline_edges_for_fit,
       };
       let mut width_style = (*style).as_ref().clone();
-      width_style.width = Some(Length::px(specified_width));
-      width_style.width_keyword = None;
+      if inline_is_horizontal {
+        width_style.width = Some(Length::px(specified_width));
+        width_style.width_keyword = None;
+      } else {
+        width_style.height = Some(Length::px(specified_width));
+        width_style.height_keyword = None;
+      }
       computed_width = compute_block_width(
         &width_style,
         containing_width,
@@ -778,7 +823,11 @@ impl BlockFormattingContext {
         specified_height,
       ) {
         if ratio > 0.0 {
-          computed_width.content_width = h * ratio;
+          computed_width.content_width = if inline_is_horizontal {
+            h * ratio
+          } else {
+            h / ratio
+          };
         }
       }
     }
@@ -793,32 +842,20 @@ impl BlockFormattingContext {
         + computed_width.padding_left
         + computed_width.padding_right
         + computed_width.border_right;
-      let margin_left = style
-        .margin_left
-        .as_ref()
-        .map(|l| {
-          resolve_length_for_width(
-            *l,
-            containing_width,
-            style,
-            &self.font_context,
-            self.viewport_size,
-          )
-        })
-        .unwrap_or(0.0);
-      let margin_right = style
-        .margin_right
-        .as_ref()
-        .map(|l| {
-          resolve_length_for_width(
-            *l,
-            containing_width,
-            style,
-            &self.font_context,
-            self.viewport_size,
-          )
-        })
-        .unwrap_or(0.0);
+      let margin_left = resolve_margin_side(
+        style,
+        inline_sides.0,
+        containing_width,
+        &self.font_context,
+        self.viewport_size,
+      );
+      let margin_right = resolve_margin_side(
+        style,
+        inline_sides.1,
+        containing_width,
+        &self.font_context,
+        self.viewport_size,
+      );
 
       let factory = self.child_factory_for_cbs(*nearest_positioned_cb, *nearest_fixed_cb);
       let fc_type = child
@@ -864,7 +901,12 @@ impl BlockFormattingContext {
       + computed_width.padding_left
       + computed_width.padding_right
       + computed_width.border_right;
-    let min_width = if let Some(keyword) = style.min_width_keyword {
+    let min_width_keyword = if inline_is_horizontal {
+      style.min_width_keyword
+    } else {
+      style.min_height_keyword
+    };
+    let min_width = if let Some(keyword) = min_width_keyword {
       if intrinsic_content_sizes.is_none() {
         let factory = self.child_factory_for_cb(*nearest_positioned_cb);
         let fc_type = child
@@ -884,8 +926,11 @@ impl BlockFormattingContext {
         horizontal_edges,
       )
     } else {
-      style
-        .min_width
+      (if inline_is_horizontal {
+        style.min_width
+      } else {
+        style.min_height
+      })
         .as_ref()
         .map(|l| {
           resolve_length_for_width(
@@ -900,7 +945,12 @@ impl BlockFormattingContext {
         .unwrap_or(0.0)
     };
 
-    let max_width = if let Some(keyword) = style.max_width_keyword {
+    let max_width_keyword = if inline_is_horizontal {
+      style.max_width_keyword
+    } else {
+      style.max_height_keyword
+    };
+    let max_width = if let Some(keyword) = max_width_keyword {
       if intrinsic_content_sizes.is_none() {
         let factory = self.child_factory_for_cb(*nearest_positioned_cb);
         let fc_type = child
@@ -920,8 +970,11 @@ impl BlockFormattingContext {
         horizontal_edges,
       )
     } else {
-      style
-        .max_width
+      (if inline_is_horizontal {
+        style.max_width
+      } else {
+        style.max_height
+      })
         .as_ref()
         .map(|l| {
           resolve_length_for_width(
@@ -942,8 +995,13 @@ impl BlockFormattingContext {
     };
     let mut clamped_content_width =
       crate::layout::utils::clamp_with_order(computed_width.content_width, min_width, max_width);
-    if clamped_content_width > self.viewport_size.width {
-      clamped_content_width = self.viewport_size.width;
+    let viewport_inline = if inline_is_horizontal {
+      self.viewport_size.width
+    } else {
+      self.viewport_size.height
+    };
+    if clamped_content_width > viewport_inline {
+      clamped_content_width = viewport_inline;
     }
     if clamped_content_width != computed_width.content_width {
       let (margin_left, margin_right) = recompute_margins_for_width(
@@ -963,7 +1021,12 @@ impl BlockFormattingContext {
     }
 
     if width_auto {
-      if let Some(used_border_box) = constraints.used_border_box_width {
+      let used_border_box = if inline_is_horizontal {
+        constraints.used_border_box_width
+      } else {
+        constraints.used_border_box_height
+      };
+      if let Some(used_border_box) = used_border_box {
         let horizontal_edges = computed_width.border_left
           + computed_width.padding_left
           + computed_width.padding_right
@@ -985,10 +1048,17 @@ impl BlockFormattingContext {
         computed_width.margin_right = margin_right;
       }
     }
-    let child_constraints = LayoutConstraints::new(
-      AvailableSpace::Definite(computed_width.content_width),
-      child_height_space,
-    );
+    let child_constraints = if inline_is_horizontal {
+      LayoutConstraints::new(
+        AvailableSpace::Definite(computed_width.content_width),
+        child_height_space,
+      )
+    } else {
+      LayoutConstraints::new(
+        child_height_space,
+        AvailableSpace::Definite(computed_width.content_width),
+      )
+    };
 
     // Check if this child establishes a different formatting context
     let fc_type = child.formatting_context();
@@ -1370,7 +1440,11 @@ impl BlockFormattingContext {
       | crate::style::types::AspectRatio::AutoRatio(ratio) = style.aspect_ratio
       {
         if ratio > 0.0 && computed_width.content_width.is_finite() {
-          let ratio_height = computed_width.content_width / ratio;
+          let ratio_height = if inline_is_horizontal {
+            computed_width.content_width / ratio
+          } else {
+            computed_width.content_width * ratio
+          };
           // Do not shrink below content-based height
           height = height.max(ratio_height);
         }
@@ -1378,7 +1452,12 @@ impl BlockFormattingContext {
     }
 
     // Apply min/max height constraints
-    let min_height = if let Some(keyword) = style.min_height_keyword {
+    let min_height_keyword = if inline_is_horizontal {
+      style.min_height_keyword
+    } else {
+      style.min_width_keyword
+    };
+    let min_height = if let Some(keyword) = min_height_keyword {
       let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
       let min_border = match keyword {
         crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
@@ -1410,8 +1489,11 @@ impl BlockFormattingContext {
       };
       (min_border - vertical_edges).max(0.0)
     } else {
-      style
-        .min_height
+      (if inline_is_horizontal {
+        style.min_height
+      } else {
+        style.min_width
+      })
         .as_ref()
         .and_then(|l| {
           resolve_length_with_percentage_metrics(
@@ -1427,7 +1509,12 @@ impl BlockFormattingContext {
         .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing))
         .unwrap_or(0.0)
     };
-    let max_height = if let Some(keyword) = style.max_height_keyword {
+    let max_height_keyword = if inline_is_horizontal {
+      style.max_height_keyword
+    } else {
+      style.max_width_keyword
+    };
+    let max_height = if let Some(keyword) = max_height_keyword {
       let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
       let max_border = match keyword {
         crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
@@ -1459,8 +1546,11 @@ impl BlockFormattingContext {
       };
       (max_border - vertical_edges).max(0.0)
     } else {
-      style
-        .max_height
+      (if inline_is_horizontal {
+        style.max_height
+      } else {
+        style.max_width
+      })
         .as_ref()
         .and_then(|l| {
           resolve_length_with_percentage_metrics(
@@ -2846,8 +2936,11 @@ impl BlockFormattingContext {
       // If the inline container would start below the current cursor because of pending
       // margins, advance to that baseline first.
       let inline_y = *current_y;
-      let inline_constraints =
-        LayoutConstraints::new(AvailableSpace::Definite(containing_width), available_height);
+      let inline_constraints = if inline_is_horizontal {
+        LayoutConstraints::new(AvailableSpace::Definite(containing_width), available_height)
+      } else {
+        LayoutConstraints::new(available_height, AvailableSpace::Definite(containing_width))
+      };
       let mut inline_fragment = match inline_fc.layout_with_floats(
         &inline_container,
         &inline_constraints,
@@ -4739,7 +4832,11 @@ impl FormattingContext for BlockFormattingContext {
                 style.max_width,
             );
     }
-    let containing_height = constraints.height();
+    let containing_height = if inline_is_horizontal {
+      constraints.height()
+    } else {
+      constraints.width()
+    };
     // For flex items, prefer the max-content contribution instead of filling the available
     // width when width is auto (CSS Flexbox §4.5: auto main size uses the max-content size).
     // This avoids the block constraint equation forcing auto margins/auto widths to span the
@@ -5143,7 +5240,23 @@ impl FormattingContext for BlockFormattingContext {
     }
     let vertical_edges = border_top + padding_top + padding_bottom + border_bottom;
 
-    let height_auto = style.height.is_none() && style.height_keyword.is_none();
+    let block_length = if inline_is_horizontal { style.height } else { style.width };
+    let block_keyword = if inline_is_horizontal {
+      style.height_keyword
+    } else {
+      style.width_keyword
+    };
+    let min_block_keyword = if inline_is_horizontal {
+      style.min_height_keyword
+    } else {
+      style.min_width_keyword
+    };
+    let max_block_keyword = if inline_is_horizontal {
+      style.max_height_keyword
+    } else {
+      style.max_width_keyword
+    };
+    let height_auto = block_length.is_none() && block_keyword.is_none();
     let margin_top = style
       .margin_top
       .as_ref()
@@ -5174,9 +5287,9 @@ impl FormattingContext for BlockFormattingContext {
       .map(|h| (h - margin_top - margin_bottom).max(0.0))
       .unwrap_or(f32::INFINITY);
 
-    let intrinsic_block_sizes = if style.height_keyword.is_some()
-      || style.min_height_keyword.is_some()
-      || style.max_height_keyword.is_some()
+    let intrinsic_block_sizes = if block_keyword.is_some()
+      || min_block_keyword.is_some()
+      || max_block_keyword.is_some()
     {
       let fc_type = box_node
         .formatting_context()
@@ -5233,12 +5346,10 @@ impl FormattingContext for BlockFormattingContext {
       None
     };
 
-    let mut resolved_height = style
-      .height
-      .as_ref()
+    let mut resolved_height = block_length
       .and_then(|h| {
         resolve_length_with_percentage_metrics(
-          *h,
+          h,
           containing_height,
           self.viewport_size,
           style.font_size,
@@ -5248,7 +5359,7 @@ impl FormattingContext for BlockFormattingContext {
         )
       })
       .map(|h| content_size_from_box_sizing(h, vertical_edges, style.box_sizing));
-    if let Some(height_keyword) = style.height_keyword {
+    if let Some(height_keyword) = block_keyword {
       let (intrinsic_min, intrinsic_max) = intrinsic_block_sizes.unwrap_or((0.0, 0.0));
       let used_border_box = match height_keyword {
         crate::style::types::IntrinsicSizeKeyword::MinContent => intrinsic_min,
@@ -5281,7 +5392,12 @@ impl FormattingContext for BlockFormattingContext {
       resolved_height = Some((used_border_box - vertical_edges).max(0.0));
     }
     if resolved_height.is_none() && height_auto {
-      if let Some(used_border_box) = constraints.used_border_box_height {
+      let used_border_box = if inline_is_horizontal {
+        constraints.used_border_box_height
+      } else {
+        constraints.used_border_box_width
+      };
+      if let Some(used_border_box) = used_border_box {
         resolved_height = Some((used_border_box - vertical_edges).max(0.0));
       }
     }
@@ -5289,10 +5405,17 @@ impl FormattingContext for BlockFormattingContext {
       .map(|h| AvailableSpace::Definite(h.max(0.0)))
       .unwrap_or(AvailableSpace::Indefinite);
 
-    let child_constraints = LayoutConstraints::new(
-      AvailableSpace::Definite(computed_width.content_width),
-      child_height_space,
-    );
+    let child_constraints = if inline_is_horizontal {
+      LayoutConstraints::new(
+        AvailableSpace::Definite(computed_width.content_width),
+        child_height_space,
+      )
+    } else {
+      LayoutConstraints::new(
+        child_height_space,
+        AvailableSpace::Definite(computed_width.content_width),
+      )
+    };
 
     let content_origin = Point::new(
       computed_width.border_left + computed_width.padding_left,

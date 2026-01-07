@@ -414,6 +414,123 @@ fn page_name_change_forces_page_boundary() {
 }
 
 #[test]
+fn nested_page_override_and_revert_forces_boundaries() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page chapter { size: 260px 200px; margin: 0; }
+          @page sub { size: 320px 200px; margin: 0; }
+          body { margin: 0; page: chapter; }
+          #sub { page: sub; }
+          .block { height: 40px; }
+        </style>
+      </head>
+      <body>
+        <div class="block">Preface</div>
+        <div id="sub" class="block">Sub</div>
+        <div class="block">After</div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(page_roots.len() >= 3);
+  assert!((page_roots[0].bounds.width() - 260.0).abs() < 0.1);
+  assert!((page_roots[1].bounds.width() - 320.0).abs() < 0.1);
+  assert!((page_roots[2].bounds.width() - 260.0).abs() < 0.1);
+
+  assert!(find_text(page_roots[0], "Preface").is_some());
+  assert!(find_text(page_roots[0], "Sub").is_none());
+  assert!(find_text(page_roots[0], "After").is_none());
+
+  assert!(find_text(page_roots[1], "Sub").is_some());
+  assert!(find_text(page_roots[1], "Preface").is_none());
+  assert!(find_text(page_roots[1], "After").is_none());
+
+  assert!(find_text(page_roots[2], "After").is_some());
+  assert!(find_text(page_roots[2], "Preface").is_none());
+  assert!(find_text(page_roots[2], "Sub").is_none());
+}
+
+#[test]
+fn page_start_value_propagates_from_first_child() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page foo { size: 240px 200px; margin: 0; }
+          @page bar { size: 320px 200px; margin: 0; }
+          body { margin: 0; page: foo; }
+          #bar { page: bar; height: 40px; }
+          .block { height: 40px; }
+        </style>
+      </head>
+      <body><div id="bar">Bar</div><div class="block">Foo</div></body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(page_roots.len() >= 2);
+  assert!((page_roots[0].bounds.width() - 320.0).abs() < 0.1);
+  assert!((page_roots[1].bounds.width() - 240.0).abs() < 0.1);
+
+  assert!(find_text(page_roots[0], "Bar").is_some());
+  assert!(find_text(page_roots[0], "Foo").is_none());
+
+  assert!(find_text(page_roots[1], "Foo").is_some());
+}
+
+#[test]
+fn named_page_boundaries_follow_fragmentation_axis_in_vertical_writing_mode() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          html { writing-mode: vertical-rl; }
+          @page { size: 200px 200px; margin: 0; }
+          @page chapter { size: 320px 200px; margin: 0; }
+          body { margin: 0; }
+          .block { width: 80px; height: 50px; }
+          #chapter { page: chapter; }
+        </style>
+      </head>
+      <body><div class="block">One</div><div id="chapter" class="block">Two</div></body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document_for_media(&dom, 400, 400, MediaType::Print).unwrap();
+  let page_roots = pages(&tree);
+
+  assert!(page_roots.len() >= 2);
+  assert!((page_roots[0].bounds.width() - 200.0).abs() < 0.1);
+  assert!((page_roots[1].bounds.width() - 320.0).abs() < 0.1);
+
+  assert!(
+    find_text(page_roots[0], "One").is_some(),
+    "page1 should contain \"One\"; got texts={:?}",
+    page_roots
+      .iter()
+      .take(4)
+      .map(|page| collected_text_compacted(page))
+      .collect::<Vec<_>>()
+  );
+  assert!(find_text(page_roots[0], "Two").is_none());
+
+  assert!(find_text(page_roots[1], "Two").is_some());
+}
+
+#[test]
 fn multicol_pagination_uses_physical_height() {
   let html = r#"
     <html>
@@ -1482,7 +1599,7 @@ fn page_stacking_can_be_disabled() {
   let dom = renderer.parse_html(html).unwrap();
   let options = LayoutDocumentOptions::new().with_page_stacking(PageStacking::Untranslated);
   let tree = renderer
-    .layout_document_with_options(&dom, 200, 200, options)
+    .layout_document_for_media_with_options(&dom, 200, 200, MediaType::Print, options, None)
     .unwrap();
   let page_roots = pages(&tree);
 
@@ -1595,7 +1712,7 @@ fn multicol_columns_continue_across_pages() {
   let dom = renderer.parse_html(html).unwrap();
   let options = LayoutDocumentOptions::new().with_page_stacking(PageStacking::Untranslated);
   let tree = renderer
-    .layout_document_with_options(&dom, 400, 400, options)
+    .layout_document_for_media_with_options(&dom, 400, 400, MediaType::Print, options, None)
     .unwrap();
   let page_roots = pages(&tree);
 

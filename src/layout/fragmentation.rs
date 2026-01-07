@@ -204,7 +204,7 @@ impl FragmentAxis {
     }
   }
 
-  fn flow_range(
+  pub(crate) fn flow_range(
     &self,
     parent_abs_flow_start: f32,
     parent_block_size: f32,

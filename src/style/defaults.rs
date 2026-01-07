@@ -37,7 +37,11 @@ pub fn get_default_styles_for_element(node: &DomNode) -> ComputedStyle {
 
   // Handle Document/shadow root node types - they act as containers only.
   if matches!(node.node_type, DomNodeType::Document { .. }) {
-    styles.display = Display::Block;
+    // The document node itself does not generate a CSS box; only the root element does.
+    // Treating it as `display: contents` prevents an extra anonymous wrapper box from
+    // interfering with writing-mode-aware layout and fragmentation (paged media, multi-column
+    // fragmentation, etc).
+    styles.display = Display::Contents;
     return styles;
   }
   if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) {

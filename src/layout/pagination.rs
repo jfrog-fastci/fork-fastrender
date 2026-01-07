@@ -17,7 +17,7 @@ use crate::layout::fragmentation::{
   apply_grid_parallel_flow_forced_break_shifts, clip_node, collect_atomic_ranges,
   collect_forced_boundaries_for_pagination, fragmentation_axis,
   normalize_atomic_ranges, normalize_fragment_margins, parallel_flow_content_extent,
-  propagate_fragment_metadata, AtomicRange, ForcedBoundary, FragmentationContext,
+  propagate_fragment_metadata, AtomicRange, ForcedBoundary, FragmentAxis, FragmentationContext,
 };
 use crate::layout::running_strings::{collect_string_set_events, StringSetEvent};
 use crate::style::content::{
@@ -148,7 +148,7 @@ struct CachedLayout {
   total_height: f32,
   forced_boundaries: Vec<ForcedBoundary>,
   atomic_ranges: Vec<AtomicRange>,
-  page_name_spans: Vec<PageNameSpan>,
+  page_name_transitions: Vec<PageNameTransition>,
 }
 
 impl CachedLayout {
@@ -168,20 +168,15 @@ impl CachedLayout {
     };
 
     apply_grid_parallel_flow_forced_break_shifts(&mut root, axes, style_block_size);
-    let mut spans = Vec::new();
-    collect_page_name_spans(&root, 0.0, &mut spans);
-    spans.sort_by(|a, b| {
-      a.start
-        .partial_cmp(&b.start)
-        .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    let page_name_transitions = collect_page_name_transitions(&root, &axis, fallback_page_name);
 
     let mut forced = collect_forced_boundaries_for_pagination(&root, 0.0);
     forced.extend(
-      page_name_boundaries(&spans, fallback_page_name)
-        .into_iter()
-        .map(|position| ForcedBoundary {
-          position,
+      page_name_transitions
+        .iter()
+        .skip(1)
+        .map(|transition| ForcedBoundary {
+          position: transition.position,
           page_side: None,
         }),
     );
@@ -216,7 +211,7 @@ impl CachedLayout {
       total_height,
       forced_boundaries: forced,
       atomic_ranges,
-      page_name_spans: spans,
+      page_name_transitions,
     }
   }
 }
@@ -314,7 +309,7 @@ pub fn paginate_fragment_tree(
     enable_layout_cache,
   )?;
   let base_total_height = base_layout.total_height.max(EPSILON);
-  let base_spans = base_layout.page_name_spans.clone();
+  let base_page_names = base_layout.page_name_transitions.clone();
   let base_forced = base_layout.forced_boundaries.clone();
   let base_root = base_layout.root.clone();
 
@@ -344,7 +339,7 @@ pub fn paginate_fragment_tree(
   loop {
     let start_in_base = consumed_base;
     let mut page_name =
-      page_name_for_position(&base_spans, start_in_base, initial_page_name.as_deref());
+      page_name_for_position(&base_page_names, start_in_base, fallback_page_name);
     let side = page_side_for_index(page_index);
     let required_side = required_page_side(&base_forced, start_in_base);
     let is_blank_page = required_side.map_or(false, |required| required != side);
@@ -396,7 +391,7 @@ pub fn paginate_fragment_tree(
     if !is_blank_page {
       let mut start = ((consumed_base / base_total_height) * total_height).min(total_height);
       let actual_page_name =
-        page_name_for_position(&layout.page_name_spans, start, initial_page_name.as_deref());
+        page_name_for_position(&layout.page_name_transitions, start, fallback_page_name);
       if actual_page_name != page_name {
         page_name = actual_page_name;
         page_style = resolve_page_style(
@@ -723,65 +718,211 @@ fn adjust_for_atomic_ranges(start: f32, mut end: f32, ranges: &[AtomicRange]) ->
 }
 
 #[derive(Debug, Clone)]
-struct PageNameSpan {
-  start: f32,
-  end: f32,
+struct PageNameTransition {
+  /// Flow position (in fragmentation-axis coordinates) where the page name becomes active.
+  position: f32,
+  /// The page name used from `position` onwards. An empty string represents the unnamed page type.
   name: String,
 }
 
-fn collect_page_name_spans(node: &FragmentNode, abs_start: f32, spans: &mut Vec<PageNameSpan>) {
-  let logical = node.logical_bounds();
-  let start = abs_start + logical.y();
-  let end = start + logical.height();
+#[derive(Debug, Clone)]
+struct PropagatedPageValues {
+  start: String,
+  end: String,
+}
 
-  if let Some(style) = node.style.as_ref() {
-    if let Some(name) = &style.page {
-      spans.push(PageNameSpan {
-        start,
-        end,
-        name: name.clone(),
-      });
-    }
+fn page_property_applies(node: &FragmentNode) -> bool {
+  if !matches!(node.content, FragmentContent::Block { .. }) {
+    return false;
   }
 
-  for child in node.children.iter() {
-    collect_page_name_spans(child, start, spans);
+  let Some(style) = node.style.as_deref() else {
+    // Anonymous block boxes participate in class-A break points even though they don't carry an
+    // authored `page` value.
+    return true;
+  };
+
+  style.position.is_in_flow() && style.display.is_block_level()
+}
+
+fn page_name_at_position<'a>(transitions: &'a [PageNameTransition], pos: f32) -> &'a str {
+  if transitions.is_empty() {
+    return "";
   }
+
+  let idx = transitions.partition_point(|t| t.position <= pos + EPSILON);
+  transitions
+    .get(idx.saturating_sub(1))
+    .map(|t| t.name.as_str())
+    .unwrap_or("")
 }
 
 fn page_name_for_position(
-  spans: &[PageNameSpan],
+  transitions: &[PageNameTransition],
   pos: f32,
   fallback: Option<&str>,
 ) -> Option<String> {
-  if let Some(span) = spans.iter().find(|s| pos < s.end && pos >= s.start) {
-    return Some(span.name.clone());
+  let name = page_name_at_position(transitions, pos);
+  if name.is_empty() {
+    fallback.map(|s| s.to_string())
+  } else {
+    Some(name.to_string())
   }
-
-  fallback.map(|s| s.to_string())
 }
 
-fn page_name_boundaries(spans: &[PageNameSpan], fallback: Option<&str>) -> Vec<f32> {
-  if spans.is_empty() {
-    return Vec::new();
-  }
+fn collect_page_name_transitions(
+  root: &FragmentNode,
+  axis: &FragmentAxis,
+  fallback: Option<&str>,
+) -> Vec<PageNameTransition> {
+  fn propagate(
+    node: &FragmentNode,
+    abs_start: f32,
+    inherited_used: &str,
+    transitions: &mut Vec<PageNameTransition>,
+    axis: &FragmentAxis,
+    parent_block_size: f32,
+    force_apply: bool,
+  ) -> Option<PropagatedPageValues> {
+    let applies = force_apply || page_property_applies(node);
+    let used = if applies {
+      node
+        .style
+        .as_deref()
+        .and_then(|style| style.page.clone())
+        .unwrap_or_else(|| inherited_used.to_string())
+    } else {
+      inherited_used.to_string()
+    };
+    let inherited_for_children = if applies { used.as_str() } else { inherited_used };
 
-  let mut points: Vec<f32> = spans.iter().flat_map(|s| [s.start, s.end]).collect();
-  points.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-  points.dedup_by(|a, b| (*a - *b).abs() < EPSILON);
+    let mut child_starts: Vec<f32> = Vec::with_capacity(node.children.len());
+    let mut child_ends: Vec<f32> = Vec::with_capacity(node.children.len());
+    let mut child_values: Vec<Option<PropagatedPageValues>> = Vec::with_capacity(node.children.len());
 
-  let mut boundaries = Vec::new();
-  for pos in points {
-    let before_pos = if pos > EPSILON { pos - EPSILON } else { 0.0 };
-    let after_pos = pos + EPSILON;
-    let before = page_name_for_position(spans, before_pos, fallback);
-    let after = page_name_for_position(spans, after_pos, fallback);
-    if before != after {
-      boundaries.push(pos);
+    for child in node.children.iter() {
+      let child_block_size = axis.block_size(&child.bounds);
+      let (child_abs_start, child_abs_end) = axis.flow_range(abs_start, parent_block_size, &child.bounds);
+      let values = propagate(
+        child,
+        child_abs_start,
+        inherited_for_children,
+        transitions,
+        axis,
+        child_block_size,
+        false,
+      );
+      child_starts.push(child_abs_start);
+      child_ends.push(child_abs_end);
+      child_values.push(values);
     }
+
+    for idx in 0..node.children.len().saturating_sub(1) {
+      let Some(prev) = child_values[idx].as_ref() else {
+        continue;
+      };
+      let Some(next) = child_values[idx + 1].as_ref() else {
+        continue;
+      };
+      if prev.end == next.start {
+        continue;
+      }
+
+      let mut boundary = child_ends[idx];
+      if let Some(meta) = node
+        .children
+        .get(idx)
+        .and_then(|child| child.block_metadata.as_ref())
+      {
+        let mut candidate = child_ends[idx] + meta.margin_bottom;
+        if candidate < child_ends[idx] {
+          candidate = child_ends[idx];
+        }
+        candidate = candidate.min(child_starts[idx + 1]);
+        boundary = candidate;
+      }
+
+      transitions.push(PageNameTransition {
+        position: boundary,
+        name: next.start.clone(),
+      });
+    }
+
+    if !applies {
+      return None;
+    }
+
+    let start = match child_values.first().and_then(|val| val.as_ref()) {
+      Some(values) => values.start.clone(),
+      None => used.clone(),
+    };
+    let end = match child_values.last().and_then(|val| val.as_ref()) {
+      Some(values) => values.end.clone(),
+      None => used.clone(),
+    };
+
+    Some(PropagatedPageValues { start, end })
   }
 
-  boundaries
+  let inherited = fallback.unwrap_or("");
+  let parent_block_size = axis.block_size(&root.bounds);
+  let mut transitions = Vec::new();
+  let root_values = propagate(
+    root,
+    0.0,
+    inherited,
+    &mut transitions,
+    axis,
+    parent_block_size,
+    true,
+  )
+  .unwrap_or_else(|| PropagatedPageValues {
+    start: inherited.to_string(),
+    end: inherited.to_string(),
+  });
+
+  transitions.push(PageNameTransition {
+    position: 0.0,
+    name: root_values.start,
+  });
+
+  transitions.sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap_or(Ordering::Equal));
+
+  let mut deduped: Vec<PageNameTransition> = Vec::new();
+  for transition in transitions {
+    if let Some(last) = deduped.last_mut() {
+      if (last.position - transition.position).abs() < EPSILON {
+        last.name = transition.name;
+        continue;
+      }
+      if last.name == transition.name {
+        continue;
+      }
+    }
+    deduped.push(transition);
+  }
+
+  if deduped.is_empty() {
+    deduped.push(PageNameTransition {
+      position: 0.0,
+      name: inherited.to_string(),
+    });
+  }
+
+  // Guarantee a `0.0` transition for callers that binary-search positions.
+  if (deduped[0].position - 0.0).abs() > EPSILON {
+    deduped.insert(
+      0,
+      PageNameTransition {
+        position: 0.0,
+        name: inherited.to_string(),
+      },
+    );
+  } else {
+    deduped[0].position = 0.0;
+  }
+
+  deduped
 }
 
 fn apply_page_stacking(
