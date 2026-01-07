@@ -1,5 +1,4 @@
 use fastrender::api::FastRender;
-use fastrender::style::color::Rgba;
 
 #[test]
 fn slotted_background_paints_through_shadow() {

@@ -401,7 +401,9 @@ fn test_clip_rect() {
   let mut canvas = Canvas::new(100, 100, Rgba::WHITE).unwrap();
 
   // Set clip to center region
-  canvas.set_clip(Rect::from_xywh(25.0, 25.0, 50.0, 50.0));
+  canvas
+    .set_clip(Rect::from_xywh(25.0, 25.0, 50.0, 50.0))
+    .unwrap();
 
   // Draw rectangle that extends beyond clip
   canvas.draw_rect(

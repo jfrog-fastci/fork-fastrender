@@ -115,7 +115,7 @@ fn respects_clip_mask_for_text() {
   let variations: Vec<DlFontVariation> = Vec::new();
 
   let mut canvas = Canvas::new(80, 50, Rgba::WHITE).expect("canvas");
-  canvas.set_clip(Rect::from_xywh(0.0, 0.0, 5.0, 50.0));
+  canvas.set_clip(Rect::from_xywh(0.0, 0.0, 5.0, 50.0)).unwrap();
   canvas
     .draw_text(
       Point::new(0.0, 30.0),

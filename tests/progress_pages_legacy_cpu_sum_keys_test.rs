@@ -7,7 +7,7 @@
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const LEGACY_KEYS: [&str; 5] = [
   "text_fallback_ms",
