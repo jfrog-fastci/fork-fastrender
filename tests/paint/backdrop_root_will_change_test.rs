@@ -483,3 +483,29 @@ fn will_change_unknown_property_does_not_establish_backdrop_root() {
   assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
+
+#[test]
+fn will_change_filter_is_case_insensitive() {
+  let pixmap = render_backdrop_invert_with_parent_will_change("FILTER");
+  // Backdrop sampling stops at the will-change backdrop root.
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
+fn will_change_multiple_hints_establishes_backdrop_root_if_any_hint_triggers() {
+  // Per the will-change spec, any hint that would establish a Backdrop Root must do so immediately.
+  let pixmap = render_backdrop_invert_with_parent_will_change("transform, filter");
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
+fn will_change_with_auto_mixed_in_is_invalid_and_ignored() {
+  // `auto` cannot appear in a comma-separated list; the whole declaration is invalid and should be
+  // ignored.
+  let pixmap = render_backdrop_invert_with_parent_will_change("auto, filter");
+  // Red backdrop inverted to cyan.
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
