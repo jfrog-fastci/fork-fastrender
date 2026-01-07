@@ -433,3 +433,21 @@ fn will_change_other_stacking_context_hints_do_not_establish_backdrop_root() {
     );
   }
 }
+
+#[test]
+fn will_change_auto_does_not_establish_backdrop_root() {
+  let pixmap = render_backdrop_invert_with_parent_will_change("auto");
+  // Red backdrop inverted to cyan.
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
+fn will_change_unknown_property_does_not_establish_backdrop_root() {
+  // Unknown properties should not become Backdrop Root triggers just because they are mentioned in
+  // `will-change`.
+  let pixmap = render_backdrop_invert_with_parent_will_change("background-color");
+  // Red backdrop inverted to cyan.
+  assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
