@@ -15933,7 +15933,6 @@ mod tests {
       radii: BorderRadii::ZERO,
       mask: None,
       has_clip_path: false,
-      is_root: false,
       has_backdrop_sensitive_descendants: false,
     }));
 
@@ -15957,7 +15956,6 @@ mod tests {
       radii: BorderRadii::ZERO,
       mask: None,
       has_clip_path: false,
-      is_root: false,
       has_backdrop_sensitive_descendants: false,
     }));
 
@@ -16024,7 +16022,9 @@ mod tests {
     let parent = StackingContextItem {
       z_index: 0,
       creates_stacking_context: true,
+      is_root: false,
       establishes_backdrop_root: false,
+      has_backdrop_sensitive_descendants: false,
       bounds: viewport,
       plane_rect: viewport,
       mix_blend_mode: BlendMode::Normal,
@@ -18571,7 +18571,6 @@ mod tests {
       radii: BorderRadii::ZERO,
       mask: None,
       has_clip_path: false,
-      is_root: false,
       has_backdrop_sensitive_descendants: true,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -18599,7 +18598,6 @@ mod tests {
       radii: BorderRadii::ZERO,
       mask: None,
       has_clip_path: false,
-      is_root: false,
       has_backdrop_sensitive_descendants: true,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -18627,7 +18625,6 @@ mod tests {
       radii: BorderRadii::ZERO,
       mask: None,
       has_clip_path: false,
-      is_root: false,
       has_backdrop_sensitive_descendants: true,
     }));
 
@@ -18653,7 +18650,6 @@ mod tests {
         radii: BorderRadii::ZERO,
         mask: None,
         has_clip_path: false,
-        is_root: false,
         has_backdrop_sensitive_descendants: true,
       }));
       // Keep the stacking context empty; this forces the pending backdrop to apply right before the

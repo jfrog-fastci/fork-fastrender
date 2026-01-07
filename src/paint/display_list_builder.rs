@@ -9588,7 +9588,9 @@ mod tests {
       BackgroundSizeComponent::Length(Length::new(10.0, LengthUnit::Vh)),
     );
 
-    let (w, h) = DisplayListBuilder::compute_background_size(&layer, 10.0, 10.0, None, 100.0, 100.0, 0.0, 0.0);
+    let (w, h) = DisplayListBuilder::compute_background_size(
+      &layer, 10.0, 10.0, None, 100.0, 100.0, 0.0, 0.0, false,
+    );
     assert_eq!(w, 0.0);
     assert_eq!(h, 0.0);
 
@@ -9601,6 +9603,7 @@ mod tests {
       100.0,
       0.0,
       0.0,
+      false,
     );
     assert!((w - 20.0).abs() < 1e-6);
     assert!((h - 10.0).abs() < 1e-6);

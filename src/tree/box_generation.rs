@@ -4535,7 +4535,20 @@ enum MediaElementKind {
 
 fn media_src_is_unusable(src: &str) -> bool {
   let trimmed = src.trim();
-  trimmed.is_empty() || trimmed == "#" || trimmed.eq_ignore_ascii_case("about:blank")
+  if trimmed.is_empty() || trimmed.starts_with('#') {
+    return true;
+  }
+  const ABOUT_BLANK: &str = "about:blank";
+  if trimmed
+    .get(..ABOUT_BLANK.len())
+    .is_some_and(|head| head.eq_ignore_ascii_case(ABOUT_BLANK))
+  {
+    return matches!(
+      trimmed.as_bytes().get(ABOUT_BLANK.len()),
+      None | Some(b'#') | Some(b'?')
+    );
+  }
+  false
 }
 
 fn media_src_from_source_children(styled: &StyledNode, kind: MediaElementKind) -> Option<String> {
@@ -4982,14 +4995,6 @@ mod tests {
     }
 
     find_select(&box_tree.root).expect("expected select form control")
-  }
-
-  fn select_selected_value(select: &crate::tree::box_tree::SelectControl) -> Option<String> {
-    let idx = select.selected.first().copied()?;
-    match select.items.get(idx)? {
-      crate::tree::box_tree::SelectItem::Option { value, .. } => Some(value.clone()),
-      _ => None,
-    }
   }
 
   fn collect_pseudo_text(
@@ -6712,6 +6717,25 @@ mod tests {
   }
 
   #[test]
+  fn video_src_fragment_only_falls_back_to_source_children() {
+    let html = "<html><body><video src=\"#t=10\"><source src=\"a.mp4\"></video></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    fn find_video_src(node: &BoxNode) -> Option<String> {
+      if let BoxType::Replaced(repl) = &node.box_type {
+        if let ReplacedType::Video { src, .. } = &repl.replaced_type {
+          return Some(src.clone());
+        }
+      }
+      node.children.iter().find_map(find_video_src)
+    }
+
+    assert_eq!(find_video_src(&box_tree.root).as_deref(), Some("a.mp4"));
+  }
+
+  #[test]
   fn audio_src_falls_back_to_source_children() {
     let html =
       "<html><body><audio controls><source src=\"a.mp3\"><source src=\"b.ogg\"></audio></body></html>";
@@ -6735,6 +6759,26 @@ mod tests {
   fn audio_src_placeholder_falls_back_to_source_children() {
     let html =
       "<html><body><audio controls src=\"about:blank\"><source src=\"a.mp3\"></audio></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    fn find_audio_src(node: &BoxNode) -> Option<String> {
+      if let BoxType::Replaced(repl) = &node.box_type {
+        if let ReplacedType::Audio { src } = &repl.replaced_type {
+          return Some(src.clone());
+        }
+      }
+      node.children.iter().find_map(find_audio_src)
+    }
+
+    assert_eq!(find_audio_src(&box_tree.root).as_deref(), Some("a.mp3"));
+  }
+
+  #[test]
+  fn audio_src_about_blank_fragment_falls_back_to_source_children() {
+    let html =
+      "<html><body><audio controls src=\"about:blank#foo\"><source src=\"a.mp3\"></audio></body></html>";
     let dom = crate::dom::parse_html(html).expect("parse");
     let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
     let box_tree = generate_box_tree(&styled);
@@ -6818,6 +6862,28 @@ mod tests {
     assert_eq!(
       find_video_src(&box_tree.root).as_deref(),
       Some("parent.mp4")
+    );
+  }
+
+  #[test]
+  fn video_src_with_media_fragment_wins_over_source_children() {
+    let html = "<html><body><video src=\"parent.mp4#t=10\"><source src=\"child.mp4\"></video></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    fn find_video_src(node: &BoxNode) -> Option<String> {
+      if let BoxType::Replaced(repl) = &node.box_type {
+        if let ReplacedType::Video { src, .. } = &repl.replaced_type {
+          return Some(src.clone());
+        }
+      }
+      node.children.iter().find_map(find_video_src)
+    }
+
+    assert_eq!(
+      find_video_src(&box_tree.root).as_deref(),
+      Some("parent.mp4#t=10")
     );
   }
 
@@ -10779,14 +10845,6 @@ mod tests {
       select.items.get(idx),
       Some(SelectItem::Option { label, .. }) if label == "chosen"
     )));
-  }
-
-  fn select_selected_value(control: &SelectControl) -> Option<String> {
-    let idx = control.selected.first().copied()?;
-    match control.items.get(idx)? {
-      SelectItem::Option { value, .. } => Some(value.clone()),
-      _ => None,
-    }
   }
 
   #[test]
