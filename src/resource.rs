@@ -2295,7 +2295,13 @@ fn cors_cache_partition_key(req: &FetchRequest<'_>) -> Option<String> {
   if req.destination.sec_fetch_mode() != "cors" {
     return None;
   }
-  cors_origin_key_for_request(req)
+  let origin = cors_origin_key_for_request(req)?;
+  // Partition by credentials inclusion to avoid mixing anonymous vs credentialed responses.
+  if cookies_allowed_for_request(req.credentials_mode, req.url, req.client_origin) {
+    Some(format!("{origin}|cred=include"))
+  } else {
+    Some(origin)
+  }
 }
 
 fn response_final_url(resource: &FetchedResource, requested_url: &str) -> String {
@@ -16432,6 +16438,200 @@ mod tests {
         calls.load(Ordering::SeqCst),
         4,
         "expected differing referrer origins to produce distinct cache entries for CORS-mode requests even when CORS enforcement is disabled"
+      );
+    });
+  }
+
+  #[test]
+  fn caching_fetcher_partitions_cors_mode_entries_by_client_origin_independent_of_referrer() {
+    #[derive(Clone)]
+    struct OriginEchoFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for OriginEchoFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected CachingFetcher to use fetch_with_request");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let origin = cors_origin_key_from_client_origin(req.client_origin).unwrap_or_default();
+        let mut res = FetchedResource::new(origin.into_bytes(), Some("text/plain".to_string()));
+        res.final_url = Some(req.url.to_string());
+        Ok(res)
+      }
+    }
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "0".to_string(),
+    )])));
+
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let calls = Arc::new(AtomicUsize::new(0));
+      let cache = CachingFetcher::new(OriginEchoFetcher {
+        calls: Arc::clone(&calls),
+      });
+
+      let url = "http://example.com/font.woff2";
+      let referrer = "http://referrer.test/style.css";
+      let origin_a = origin_from_url("http://a.test/page").expect("origin");
+      let origin_b = origin_from_url("http://b.test/page").expect("origin");
+      let req_a = FetchRequest::new(url, FetchDestination::Font)
+        .with_client_origin(&origin_a)
+        .with_referrer_url(referrer);
+      let req_b = FetchRequest::new(url, FetchDestination::Font)
+        .with_client_origin(&origin_b)
+        .with_referrer_url(referrer);
+
+      let first_a = cache.fetch_with_request(req_a).expect("fetch A");
+      assert_eq!(first_a.bytes, b"http://a.test");
+      let first_b = cache.fetch_with_request(req_b).expect("fetch B");
+      assert_eq!(first_b.bytes, b"http://b.test");
+
+      // Ensure fetching `B` doesn't overwrite `A` and vice versa.
+      let second_a = cache.fetch_with_request(req_a).expect("cache A");
+      assert_eq!(second_a.bytes, b"http://a.test");
+      let second_b = cache.fetch_with_request(req_b).expect("cache B");
+      assert_eq!(second_b.bytes, b"http://b.test");
+
+      assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "expected distinct client origins to produce distinct cache entries even when referrer URL is identical"
+      );
+    });
+  }
+
+  #[test]
+  fn caching_fetcher_does_not_partition_cors_mode_entries_when_partition_toggle_disabled() {
+    #[derive(Clone)]
+    struct OriginEchoFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for OriginEchoFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected CachingFetcher to use fetch_with_request");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let origin = cors_origin_key_from_client_origin(req.client_origin).unwrap_or_default();
+        let mut res = FetchedResource::new(origin.into_bytes(), Some("text/plain".to_string()));
+        res.final_url = Some(req.url.to_string());
+        Ok(res)
+      }
+    }
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([
+      ("FASTR_FETCH_ENFORCE_CORS".to_string(), "0".to_string()),
+      (
+        "FASTR_FETCH_PARTITION_CORS_CACHE".to_string(),
+        "0".to_string(),
+      ),
+    ])));
+
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let calls = Arc::new(AtomicUsize::new(0));
+      let cache = CachingFetcher::new(OriginEchoFetcher {
+        calls: Arc::clone(&calls),
+      });
+
+      let url = "http://example.com/font.woff2";
+      let referrer = "http://referrer.test/style.css";
+      let origin_a = origin_from_url("http://a.test/page").expect("origin");
+      let origin_b = origin_from_url("http://b.test/page").expect("origin");
+      let req_a = FetchRequest::new(url, FetchDestination::Font)
+        .with_client_origin(&origin_a)
+        .with_referrer_url(referrer);
+      let req_b = FetchRequest::new(url, FetchDestination::Font)
+        .with_client_origin(&origin_b)
+        .with_referrer_url(referrer);
+
+      let first_a = cache.fetch_with_request(req_a).expect("fetch A");
+      assert_eq!(first_a.bytes, b"http://a.test");
+      let first_b = cache.fetch_with_request(req_b).expect("fetch B");
+      assert_eq!(
+        first_b.bytes, b"http://a.test",
+        "expected partitioning to be disabled"
+      );
+
+      // Ensure fetching `B` doesn't overwrite `A` and vice versa.
+      let second_a = cache.fetch_with_request(req_a).expect("cache A");
+      assert_eq!(second_a.bytes, b"http://a.test");
+      let second_b = cache.fetch_with_request(req_b).expect("cache B");
+      assert_eq!(second_b.bytes, b"http://a.test");
+
+      assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "expected requests with differing client origins to share cache entries when partitioning is disabled"
+      );
+    });
+  }
+
+  #[test]
+  fn caching_fetcher_partitions_cors_mode_entries_by_credentials_mode() {
+    #[derive(Clone)]
+    struct CredsEchoFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for CredsEchoFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected CachingFetcher to use fetch_with_request");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let bytes = match req.credentials_mode {
+          FetchCredentialsMode::Omit => b"omit".to_vec(),
+          FetchCredentialsMode::SameOrigin => b"same-origin".to_vec(),
+          FetchCredentialsMode::Include => b"include".to_vec(),
+        };
+        let mut res = FetchedResource::new(bytes, Some("text/plain".to_string()));
+        res.final_url = Some(req.url.to_string());
+        Ok(res)
+      }
+    }
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "0".to_string(),
+    )])));
+
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let calls = Arc::new(AtomicUsize::new(0));
+      let cache = CachingFetcher::new(CredsEchoFetcher {
+        calls: Arc::clone(&calls),
+      });
+
+      let url = "http://example.com/font.woff2";
+      let origin = origin_from_url("http://a.test/page").expect("origin");
+      let referrer = "http://referrer.test/style.css";
+      let base_req = FetchRequest::new(url, FetchDestination::Font)
+        .with_client_origin(&origin)
+        .with_referrer_url(referrer);
+      let req_omit = base_req.with_credentials_mode(FetchCredentialsMode::Omit);
+      let req_include = base_req.with_credentials_mode(FetchCredentialsMode::Include);
+
+      let omit = cache.fetch_with_request(req_omit).expect("omit fetch");
+      assert_eq!(omit.bytes, b"omit");
+      let include = cache.fetch_with_request(req_include).expect("include fetch");
+      assert_eq!(include.bytes, b"include");
+
+      // Ensure cache hits are scoped to the credentials mode.
+      let omit2 = cache.fetch_with_request(req_omit).expect("omit cache");
+      assert_eq!(omit2.bytes, b"omit");
+      let include2 = cache.fetch_with_request(req_include).expect("include cache");
+      assert_eq!(include2.bytes, b"include");
+
+      assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "expected cache to be partitioned by credentials mode"
       );
     });
   }

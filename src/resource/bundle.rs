@@ -35,6 +35,42 @@ pub fn request_partitioned_resource_key(
   request_partitioned_resource_key_with_credentials(kind, url, origin, FetchCredentialsMode::Omit)
 }
 
+/// Synthetic manifest key used for request-partitioned resources keyed by the cache partition key.
+///
+/// This is the preferred encoding for new bundles because it matches the cache partitioning logic
+/// (client origin + credentials mode) used by [`CachingFetcher`] / [`DiskCachingFetcher`].
+pub fn request_partitioned_resource_key_v2(
+  kind: FetchContextKind,
+  url: &str,
+  partition_key: &str,
+) -> String {
+  let kind_tag = match kind {
+    FetchContextKind::Document => "document",
+    FetchContextKind::Iframe => "iframe",
+    FetchContextKind::Stylesheet => "stylesheet",
+    FetchContextKind::StylesheetCors => "stylesheet-cors",
+    FetchContextKind::Image => "image",
+    FetchContextKind::ImageCors => "image-cors",
+    FetchContextKind::Font => "font",
+    FetchContextKind::Other => "other",
+  };
+  format!("{url}@@fastr:bundle:req_v2@@kind={kind_tag}@@partition={partition_key}")
+}
+
+/// Compute the request-partitioned manifest key for a fetch request.
+///
+/// Returns `None` when the request is not in CORS mode or when CORS cache partitioning is
+/// disabled.
+pub fn request_partitioned_resource_key_for_request(req: &FetchRequest<'_>) -> Option<String> {
+  let kind: FetchContextKind = req.destination.into();
+  let partition_key = super::cors_cache_partition_key(req)?;
+  Some(request_partitioned_resource_key_v2(
+    kind,
+    req.url,
+    &partition_key,
+  ))
+}
+
 /// Like [`request_partitioned_resource_key`] but also partitions by request credentials mode.
 ///
 /// For compatibility, anonymous (`omit`) requests produce the same key as the legacy helper. Other
@@ -437,18 +473,27 @@ impl ResourceFetcher for BundledFetcher {
   }
 
   fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
-    if super::cors_cache_partition_key(&req).is_some() {
-      let kind: FetchContextKind = req.destination.into();
+    let kind: FetchContextKind = req.destination.into();
+    if let Some(partition_key) = super::cors_cache_partition_key(&req) {
+      let key = request_partitioned_resource_key_v2(kind, req.url, &partition_key);
+      if let Some(resource) = self.bundle.resource_for_url(&key) {
+        return Ok(resource.as_fetched());
+      }
+
+      // Backward compatibility: older bundles used the v1 origin-based key.
       let origin_from_referrer = req.referrer_url.and_then(origin_from_url);
       let origin_from_target = origin_from_url(req.url);
       let origin = req
         .client_origin
         .or(origin_from_referrer.as_ref())
         .or(origin_from_target.as_ref());
-
       if let Some(origin) = origin {
-        let key =
-          request_partitioned_resource_key_with_credentials(kind, req.url, origin, req.credentials_mode);
+        let key = request_partitioned_resource_key_with_credentials(
+          kind,
+          req.url,
+          origin,
+          req.credentials_mode,
+        );
         if let Some(resource) = self.bundle.resource_for_url(&key) {
           let res = resource.as_fetched();
           if let Some(vary) = res.vary.as_deref() {

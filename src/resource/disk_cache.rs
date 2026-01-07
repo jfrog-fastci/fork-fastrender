@@ -4002,6 +4002,146 @@ mod tests {
   }
 
   #[test]
+  fn disk_cache_partitions_cors_font_entries_by_client_origin_without_enforcement_by_default() {
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "0".to_string(),
+    )])));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      #[derive(Clone)]
+      struct ClientOriginSensitiveFetcher {
+        calls: Arc<AtomicUsize>,
+      }
+
+      impl ResourceFetcher for ClientOriginSensitiveFetcher {
+        fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+          panic!("expected DiskCachingFetcher to use fetch_with_request()");
+        }
+
+        fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+          self.calls.fetch_add(1, Ordering::SeqCst);
+          let origin = super::super::cors_origin_key_from_client_origin(req.client_origin)
+            .unwrap_or_else(|| "<missing>".to_string());
+          let mut res = FetchedResource::with_final_url(
+            origin.as_bytes().to_vec(),
+            Some("font/woff2".to_string()),
+            Some(req.url.to_string()),
+          );
+          res.status = Some(200);
+          Ok(res)
+        }
+      }
+
+      let calls = Arc::new(AtomicUsize::new(0));
+      let tmp = tempfile::tempdir().unwrap();
+      let url = "https://example.com/font.woff2";
+      let referrer = "http://referrer.test/page";
+      let origin_a = super::super::origin_from_url("http://a.test/page").expect("origin A");
+      let origin_b = super::super::origin_from_url("http://b.test/page").expect("origin B");
+      let req_a = FetchRequest::new(url, FetchDestination::Font)
+        .with_client_origin(&origin_a)
+        .with_referrer_url(referrer);
+      let req_b = FetchRequest::new(url, FetchDestination::Font)
+        .with_client_origin(&origin_b)
+        .with_referrer_url(referrer);
+
+      let disk = DiskCachingFetcher::new(
+        ClientOriginSensitiveFetcher {
+          calls: Arc::clone(&calls),
+        },
+        tmp.path(),
+      );
+      let first_a = disk.fetch_with_request(req_a).expect("fetch A");
+      assert_eq!(first_a.bytes, b"http://a.test");
+      let first_b = disk.fetch_with_request(req_b).expect("fetch B");
+      assert_eq!(first_b.bytes, b"http://b.test");
+      assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "expected separate fetches for distinct client origins"
+      );
+
+      drop(disk);
+
+      let disk_again = DiskCachingFetcher::new(PanicFetcher, tmp.path());
+      let second_a = disk_again.fetch_with_request(req_a).expect("disk A");
+      assert_eq!(second_a.bytes, b"http://a.test");
+      let second_b = disk_again.fetch_with_request(req_b).expect("disk B");
+      assert_eq!(second_b.bytes, b"http://b.test");
+    });
+  }
+
+  #[test]
+  fn disk_cache_partitions_cors_font_entries_by_credentials_mode() {
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_ENFORCE_CORS".to_string(),
+      "0".to_string(),
+    )])));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      #[derive(Clone)]
+      struct CredentialsSensitiveFetcher {
+        calls: Arc<AtomicUsize>,
+      }
+
+      impl ResourceFetcher for CredentialsSensitiveFetcher {
+        fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+          panic!("expected DiskCachingFetcher to use fetch_with_request()");
+        }
+
+        fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+          self.calls.fetch_add(1, Ordering::SeqCst);
+          let tag = match req.credentials_mode {
+            FetchCredentialsMode::Omit => "omit",
+            FetchCredentialsMode::SameOrigin => "same-origin",
+            FetchCredentialsMode::Include => "include",
+          };
+          let mut res = FetchedResource::with_final_url(
+            tag.as_bytes().to_vec(),
+            Some("font/woff2".to_string()),
+            Some(req.url.to_string()),
+          );
+          res.status = Some(200);
+          Ok(res)
+        }
+      }
+
+      let calls = Arc::new(AtomicUsize::new(0));
+      let tmp = tempfile::tempdir().unwrap();
+      let url = "https://example.com/font.woff2";
+      let referrer = "http://a.test/page";
+      let req_omit = FetchRequest::new(url, FetchDestination::Font).with_referrer_url(referrer);
+      let req_include = FetchRequest::new(url, FetchDestination::Font)
+        .with_referrer_url(referrer)
+        .with_credentials_mode(FetchCredentialsMode::Include);
+
+      let disk = DiskCachingFetcher::new(
+        CredentialsSensitiveFetcher {
+          calls: Arc::clone(&calls),
+        },
+        tmp.path(),
+      );
+
+      let first_omit = disk.fetch_with_request(req_omit).expect("fetch omit");
+      assert_eq!(first_omit.bytes, b"omit");
+      let first_include = disk.fetch_with_request(req_include).expect("fetch include");
+      assert_eq!(first_include.bytes, b"include");
+      assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "expected separate fetches for distinct credentials modes"
+      );
+
+      drop(disk);
+
+      let disk_again = DiskCachingFetcher::new(PanicFetcher, tmp.path());
+      let second_include = disk_again.fetch_with_request(req_include).expect("disk include");
+      assert_eq!(second_include.bytes, b"include");
+      let second_omit = disk_again.fetch_with_request(req_omit).expect("disk omit");
+      assert_eq!(second_omit.bytes, b"omit");
+    });
+  }
+
+  #[test]
   fn disk_cache_does_not_partition_cors_font_entries_when_partition_toggle_disabled() {
     let Some((url, captured, server)) = spawn_cors_origin_echo_font_server(
       "disk_cache_does_not_partition_cors_font_entries_when_partition_toggle_disabled",
