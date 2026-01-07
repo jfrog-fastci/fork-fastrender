@@ -18,7 +18,7 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
   - Unknown `<input type=...>` falls back to `Unknown` and uses placeholder/value/type text as the label.
   - Checkboxes/radios draw marks when checked/indeterminate; selects render either a collapsed dropdown (label + caret) or a listbox when `multiple`/`size` > 1; ranges draw a track + thumb; color inputs render a swatch plus a hex label.
 - Disabled, focus, focus-visible, required, and invalid states are derived from element attributes + `data-fastr-focus*` hints during box generation and influence native painting (tinted overlays, accent changes). The `data-fastr-focus-visible` hint implies focus for native painting so standalone focus-visible markers are captured.
-- Some vendor pseudo-element styles are captured during the cascade (currently `::placeholder`, `::-webkit-slider-thumb`, and `::-webkit-slider-runnable-track`) and passed into the painters via `FormControl::{placeholder_style, slider_thumb_style, slider_track_style}`.
+- Some form-control pseudo-element styles are captured during the cascade (placeholder + range slider thumb/track) and passed into the painters via `FormControl::{placeholder_style, slider_thumb_style, slider_track_style}`. Vendor spellings like `::-webkit-input-placeholder`, `::-moz-placeholder`, `:-ms-input-placeholder`, `::-moz-range-thumb`, and `::-moz-range-track` are accepted and normalized internally.
 - `appearance: none` affects **native painting** (suppresses some UA chrome) but does **not** currently change box generation: the element is still a `ReplacedType::FormControl` and keeps form-control intrinsic sizing. (Non-`none` keywords are preserved as `Appearance::Keyword(...)`, but painters currently only special-case `Appearance::None`.)
 - Vendor-prefixed `-webkit-appearance` and `-moz-appearance` are treated as aliases of `appearance` (for site compatibility), so either spelling can drive `Appearance::None` / keyword values through box generation and painting. (Task 94 tracks vendor-alias conformance; note: `@supports` intentionally does **not** treat `-moz-appearance` as supported.)
 
@@ -58,9 +58,7 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
 - Current limitations:
   - `appearance:none` does **not** turn the element into a normal container: the control is still a `ReplacedType::FormControl`, so its DOM children are not laid out (e.g. `<button><svg>…</svg>Label</button>` collapses to a plain text label).
   - `appearance:none` does **not** yet disable all affordances (e.g. number/date glyphs are still painted today; see `TextControlKind::{Number,Date}` handling in both painters).
-  - Only the WebKit range pseudo-elements are currently recognized:
-    - Supported: `::-webkit-slider-thumb`, `::-webkit-slider-runnable-track`
-    - Not yet implemented: Mozilla equivalents like `::-moz-range-thumb`, `::-moz-range-track`, etc.
+  - Range pseudo-element selectors are normalized internally (WebKit/Mozilla/MS spellings are accepted), but painters may still only consume a subset of the available style hooks.
 
 ## Intended direction (fallback rendering model)
 
