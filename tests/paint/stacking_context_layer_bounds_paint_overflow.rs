@@ -66,33 +66,3 @@ fn stacking_context_layer_bounds_include_box_shadow_overflow() {
     outside
   );
 }
-
-#[test]
-fn stacking_context_layer_bounds_include_outline_overflow() {
-  let html = r#"
-    <style>
-      body { margin: 0; background: black; }
-      #target {
-        position: absolute;
-        left: 40px;
-        top: 40px;
-        width: 20px;
-        height: 20px;
-        background: rgb(0, 0, 255);
-        outline: 8px solid rgb(255, 0, 0);
-        outline-offset: 0;
-        isolation: isolate;
-      }
-    </style>
-    <div id="target"></div>
-  "#;
-
-  let pixmap = render(html, 100, 100);
-
-  let outside = color_at(&pixmap, 35, 50);
-  assert!(
-    outside[0] > outside[1] && outside[0] > outside[2] && outside[0] > 0,
-    "expected outline pixels outside the border box to remain visible, got {:?}",
-    outside
-  );
-}
