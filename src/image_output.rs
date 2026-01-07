@@ -117,7 +117,9 @@ impl Write for FallibleVecWriter {
       ));
     }
 
-    self.buf.try_reserve(data.len()).map_err(|err| {
+    // Use `try_reserve_exact` to avoid `Vec`'s exponential growth strategy allocating far beyond
+    // the caller's requested size (which could defeat the `max_bytes` cap for large outputs).
+    self.buf.try_reserve_exact(data.len()).map_err(|err| {
       io::Error::new(
         io::ErrorKind::Other,
         format!("{}: output buffer allocation failed: {err}", self.context),
