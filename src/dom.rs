@@ -5107,15 +5107,27 @@ impl<'a> ElementRef<'a> {
       if !required {
         return true;
       }
-      if !select_has_any_selected_option(self.node) {
-        return false;
+      let multiple = self.node.get_attribute_ref("multiple").is_some();
+      let size = select_display_size(self.node);
+
+      // HTML constraint validation: for listbox/multiple selects, a required selection must include
+      // at least one option that is *not disabled*.
+      if multiple || size != 1 {
+        return select_has_non_disabled_selected_option(self.node);
       }
+
+      // For size=1 single selects, required validity is instead determined by the placeholder label
+      // option algorithm.
+      let Some(selected) = single_select_selected_option(self.node) else {
+        return false;
+      };
+
       if let Some(placeholder) = select_placeholder_label_option(self.node) {
-        let selected = single_select_selected_option(self.node);
-        if matches!(selected, Some(opt) if ptr::eq(opt, placeholder)) {
+        if ptr::eq(placeholder, selected) {
           return false;
         }
       }
+
       return true;
     }
 
@@ -5689,9 +5701,13 @@ fn first_selected_option<'a>(select: &'a DomNode) -> Option<&'a DomNode> {
 }
 
 fn single_select_selected_option<'a>(select: &'a DomNode) -> Option<&'a DomNode> {
-  let mut first_option = None;
-  let mut first_enabled_option = None;
-  let mut last_selected_option = None;
+  single_select_selected_option_and_disabled(select).map(|(node, _)| node)
+}
+
+fn single_select_selected_option_and_disabled<'a>(select: &'a DomNode) -> Option<(&'a DomNode, bool)> {
+  let mut first_option: Option<(&'a DomNode, bool)> = None;
+  let mut first_enabled_option: Option<(&'a DomNode, bool)> = None;
+  let mut last_selected_option: Option<(&'a DomNode, bool)> = None;
 
   let mut stack: Vec<(&'a DomNode, bool)> = Vec::new();
   stack.push((select, false));
@@ -5708,17 +5724,17 @@ fn single_select_selected_option<'a>(select: &'a DomNode) -> Option<&'a DomNode>
     let next_optgroup_disabled = optgroup_disabled || (is_optgroup && disabled_attr);
 
     if is_option {
+      let disabled = disabled_attr || optgroup_disabled;
       if first_option.is_none() {
-        first_option = Some(node);
+        first_option = Some((node, disabled));
       }
 
-      let disabled = disabled_attr || optgroup_disabled;
       if first_enabled_option.is_none() && !disabled {
-        first_enabled_option = Some(node);
+        first_enabled_option = Some((node, false));
       }
 
       if node.get_attribute_ref("selected").is_some() {
-        last_selected_option = Some(node);
+        last_selected_option = Some((node, disabled));
       }
     }
 
@@ -5785,12 +5801,38 @@ fn select_placeholder_label_option<'a>(select: &'a DomNode) -> Option<&'a DomNod
   None
 }
 
-fn select_has_any_selected_option(select: &DomNode) -> bool {
+fn select_has_non_disabled_selected_option(select: &DomNode) -> bool {
   if select.get_attribute_ref("multiple").is_none() {
-    return single_select_selected_option(select).is_some();
+    return single_select_selected_option_and_disabled(select).is_some_and(|(_, disabled)| !disabled);
   }
 
-  first_selected_option(select).is_some()
+  let mut stack: Vec<(&DomNode, bool)> = Vec::new();
+  stack.push((select, false));
+
+  while let Some((node, optgroup_disabled)) = stack.pop() {
+    if node_hidden_for_select(node) {
+      continue;
+    }
+    let tag = node.tag_name().unwrap_or("");
+    let is_option = tag.eq_ignore_ascii_case("option");
+    let is_optgroup = tag.eq_ignore_ascii_case("optgroup");
+
+    let disabled_attr = node.get_attribute_ref("disabled").is_some();
+    let next_optgroup_disabled = optgroup_disabled || (is_optgroup && disabled_attr);
+
+    if is_option && node.get_attribute_ref("selected").is_some() {
+      let option_disabled = disabled_attr || optgroup_disabled;
+      if !option_disabled {
+        return true;
+      }
+    }
+
+    for child in node.children.iter().rev() {
+      stack.push((child, next_optgroup_disabled));
+    }
+  }
+
+  false
 }
 
 pub(crate) fn parse_select_size_attribute(node: &DomNode) -> Option<u32> {
@@ -11838,7 +11880,7 @@ mod tests {
       &PseudoClass::Invalid
     ));
 
-    let valid_multiple_select_disabled_selected = DomNode {
+    let invalid_multiple_select_disabled_selected = DomNode {
       node_type: DomNodeType::Element {
         tag_name: "select".to_string(),
         namespace: HTML_NAMESPACE.to_string(),
@@ -11861,14 +11903,14 @@ mod tests {
       }],
     };
     assert!(matches(
-      &valid_multiple_select_disabled_selected,
-      &[],
-      &PseudoClass::Valid
-    ));
-    assert!(!matches(
-      &valid_multiple_select_disabled_selected,
+      &invalid_multiple_select_disabled_selected,
       &[],
       &PseudoClass::Invalid
+    ));
+    assert!(!matches(
+      &invalid_multiple_select_disabled_selected,
+      &[],
+      &PseudoClass::Valid
     ));
 
     let multiple_select_value = DomNode {
@@ -12050,8 +12092,8 @@ mod tests {
       )],
     );
     assert!(
-      ElementRef::new(&disabled_selected_multiple).accessibility_is_valid(),
-      "<select multiple required> is valid when the only selected option is disabled"
+      !ElementRef::new(&disabled_selected_multiple).accessibility_is_valid(),
+      "<select multiple required> is invalid when the only selected option is disabled"
     );
 
     let disabled_placeholder_single = element_with_attrs(

@@ -4209,8 +4209,11 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
       if !required {
         invalid = false;
       } else if let Some(control) = select_control.as_ref() {
-        invalid = if control.multiple {
-          control.selected.is_empty()
+        invalid = if control.multiple || control.size != 1 {
+          !control.selected.iter().any(|&idx| matches!(
+            control.items.get(idx),
+            Some(SelectItem::Option { disabled: false, .. })
+          ))
         } else {
           control.selected.is_empty()
             || select_placeholder_label_option_index(control, required)
@@ -5923,21 +5926,21 @@ mod tests {
   }
 
   #[test]
-  fn required_multiple_select_with_only_disabled_selected_is_valid() {
+  fn required_multiple_select_with_only_disabled_selected_is_invalid() {
     let control = first_select_control_from_html(
       "<html><body><select multiple required><option selected disabled value=\"a\">A</option></select></body></html>",
     );
     assert!(control.required);
-    assert!(!control.invalid);
+    assert!(control.invalid);
   }
 
   #[test]
-  fn required_multiple_select_with_selected_in_disabled_optgroup_is_valid() {
+  fn required_multiple_select_with_selected_in_disabled_optgroup_is_invalid() {
     let control = first_select_control_from_html(
       "<html><body><select multiple required><optgroup disabled label=\"g\"><option selected value=\"a\">A</option></optgroup></select></body></html>",
     );
     assert!(control.required);
-    assert!(!control.invalid);
+    assert!(control.invalid);
   }
 
   #[test]

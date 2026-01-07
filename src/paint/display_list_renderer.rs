@@ -9820,7 +9820,7 @@ impl DisplayListRenderer {
          | DisplayItem::TextDecoration(_)
      )
    }
- 
+
   /// Render a single display list item.
   ///
   /// ### Stacking-context compositing flags
