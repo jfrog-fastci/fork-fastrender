@@ -316,6 +316,81 @@ fn vertical_rl_writing_mode_space_evenly_respects_row_gap_between_lines() {
 }
 
 #[test]
+fn space_evenly_respects_padding_and_row_gap_between_lines() {
+  let fc = FlexFormattingContext::new();
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.flex_direction = FlexDirection::Row;
+  container_style.flex_wrap = FlexWrap::Wrap;
+  container_style.align_content = AlignContent::SpaceEvenly;
+  container_style.writing_mode = WritingMode::HorizontalTb;
+  container_style.width = Some(Length::px(60.0));
+  container_style.height = Some(Length::px(60.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  container_style.padding_top = Length::px(4.0);
+  container_style.padding_bottom = Length::px(6.0);
+  container_style.grid_row_gap = Length::px(5.0);
+  container_style.grid_column_gap = Length::px(0.0);
+
+  let mut item_style = ComputedStyle::default();
+  item_style.display = Display::Block;
+  item_style.writing_mode = WritingMode::HorizontalTb;
+  item_style.width = Some(Length::px(30.0));
+  item_style.height = Some(Length::px(10.0));
+  item_style.width_keyword = None;
+  item_style.height_keyword = None;
+  item_style.flex_shrink = 0.0;
+  let item_style = Arc::new(item_style);
+
+  let mut child1 = BoxNode::new_block(item_style.clone(), FormattingContextType::Block, vec![]);
+  child1.id = 1;
+  let mut child2 = BoxNode::new_block(item_style.clone(), FormattingContextType::Block, vec![]);
+  child2.id = 2;
+  let mut child3 = BoxNode::new_block(item_style, FormattingContextType::Block, vec![]);
+  child3.id = 3;
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child1, child2, child3],
+  );
+
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(60.0, 60.0))
+    .expect("layout succeeds");
+
+  // With the default `box-sizing: content-box`, `height: 60px` sets the content box height.
+  // Two flex lines (each 10px), plus a 5px row-gap => used cross size = 25px, free = 35px.
+  // align-content: space-evenly => first line offset = free/(lines+1) = 35/3 = 11.666.
+  // second line offset = 11.666 + 10 + 5 + 11.666 = 38.333 (from the content box start).
+  let epsilon = 0.6;
+  let content_start = 4.0;
+  let first_line_offset = 35.0 / 3.0;
+  let second_line_offset = first_line_offset + 10.0 + 5.0 + first_line_offset;
+
+  assert_approx(
+    find_block_child(&fragment, 1).bounds.y(),
+    content_start + first_line_offset,
+    epsilon,
+    "child1 y",
+  );
+  assert_approx(
+    find_block_child(&fragment, 2).bounds.y(),
+    content_start + first_line_offset,
+    epsilon,
+    "child2 y",
+  );
+  assert_approx(
+    find_block_child(&fragment, 3).bounds.y(),
+    content_start + second_line_offset,
+    epsilon,
+    "child3 y",
+  );
+}
+
+#[test]
 fn wrap_reverse_space_evenly_respects_row_gap_between_lines() {
   let fc = FlexFormattingContext::new();
 
