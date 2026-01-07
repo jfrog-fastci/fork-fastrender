@@ -354,13 +354,6 @@ fn container_query_matches(
       result
     }
     ContainerQuery::Style(style_query) => {
-      if !matches!(
-        container.container_type,
-        ContainerType::Size | ContainerType::InlineSize | ContainerType::Style
-      ) {
-        memo.query_eval.insert(key, false);
-        return false;
-      }
       let result = matches_style_query(style_query, container.styles.as_ref());
       memo.query_eval.insert(key, result);
       result
@@ -435,10 +428,9 @@ const CQ_SUPPORT_ALL: u8 = CQ_SUPPORT_SIZE | CQ_SUPPORT_INLINE_SIZE | CQ_SUPPORT
 
 fn cq_type_bit(container_type: ContainerType) -> u8 {
   match container_type {
+    ContainerType::Normal => CQ_SUPPORT_STYLE,
     ContainerType::Size => CQ_SUPPORT_SIZE,
     ContainerType::InlineSize => CQ_SUPPORT_INLINE_SIZE,
-    ContainerType::Style => CQ_SUPPORT_STYLE,
-    _ => 0,
   }
 }
 
@@ -13316,7 +13308,7 @@ mod tests {
       ContainerQueryInfo {
         inline_size: 800.0,
         block_size: 0.0,
-        container_type: ContainerType::Style,
+        container_type: ContainerType::Normal,
         names: Vec::new(),
         font_size: 16.0,
         styles: Arc::new(ComputedStyle::default()),

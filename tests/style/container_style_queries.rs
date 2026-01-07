@@ -2,6 +2,7 @@ use fastrender::api::FastRender;
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::color::Rgba;
 use fastrender::style::media::MediaType;
+use fastrender::style::types::ContainerType;
 
 fn styled_tree_for(html: &str) -> StyledNode {
   let mut renderer = FastRender::new().expect("renderer");
@@ -50,7 +51,7 @@ fn container_style_query_matches_custom_property() {
 }
 
 #[test]
-fn container_style_query_respects_container_type() {
+fn container_style_query_matches_without_explicit_container_type() {
   let html = r#"
     <style>
       .container { --foo: bar; }
@@ -66,7 +67,7 @@ fn container_style_query_respects_container_type() {
 
   let styled = styled_tree_for(html);
   let target = find_by_id(&styled, "target").expect("target element");
-  assert_eq!(target.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(target.styles.color, Rgba::rgb(255, 0, 0));
 }
 
 #[test]
@@ -138,4 +139,37 @@ fn nested_containers_use_nearest_style_query_match() {
   let styled = styled_tree_for(html);
   let target = find_by_id(&styled, "nested").expect("nested element");
   assert_eq!(target.styles.color, Rgba::rgb(255, 165, 0));
+}
+
+#[test]
+fn container_type_rejects_none_and_style_keywords_and_container_shorthand_resets_to_normal() {
+  let html = r#"
+    <style>
+      .base { container-type: inline-size; }
+      .invalid-style { container-type: style; }
+      .invalid-none { container-type: none; }
+      .reset { container: none; }
+      .name-only { container: demo; }
+    </style>
+    <div id="invalid-style" class="base invalid-style"></div>
+    <div id="invalid-none" class="base invalid-none"></div>
+    <div id="reset" class="base reset"></div>
+    <div id="name-only" class="base name-only"></div>
+  "#;
+
+  let styled = styled_tree_for(html);
+
+  let invalid_style = find_by_id(&styled, "invalid-style").expect("invalid-style element");
+  assert_eq!(invalid_style.styles.container_type, ContainerType::InlineSize);
+
+  let invalid_none = find_by_id(&styled, "invalid-none").expect("invalid-none element");
+  assert_eq!(invalid_none.styles.container_type, ContainerType::InlineSize);
+
+  let reset = find_by_id(&styled, "reset").expect("reset element");
+  assert_eq!(reset.styles.container_type, ContainerType::Normal);
+  assert!(reset.styles.container_name.is_empty());
+
+  let name_only = find_by_id(&styled, "name-only").expect("name-only element");
+  assert_eq!(name_only.styles.container_type, ContainerType::Normal);
+  assert_eq!(name_only.styles.container_name, vec!["demo".to_string()]);
 }

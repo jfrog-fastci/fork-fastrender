@@ -11659,9 +11659,7 @@ fn apply_declaration_with_base_internal_with_order(
     "container" => {
       if let Some((names, ty)) = parse_container_shorthand(resolved_value) {
         styles.container_name = names;
-        if let Some(ct) = ty {
-          styles.container_type = ct;
-        }
+        styles.container_type = ty;
       }
     }
     "contain" => {
@@ -13359,12 +13357,8 @@ fn property_value_to_string(value: &PropertyValue) -> Option<String> {
 }
 
 fn parse_container_type_keyword(text: &str) -> Option<ContainerType> {
-  if text.eq_ignore_ascii_case("none") {
-    Some(ContainerType::None)
-  } else if text.eq_ignore_ascii_case("normal") {
+  if text.eq_ignore_ascii_case("normal") {
     Some(ContainerType::Normal)
-  } else if text.eq_ignore_ascii_case("style") {
-    Some(ContainerType::Style)
   } else if text.eq_ignore_ascii_case("size") {
     Some(ContainerType::Size)
   } else if text.eq_ignore_ascii_case("inline-size") {
@@ -13424,42 +13418,30 @@ fn parse_container_names(value: &PropertyValue) -> Option<Vec<String>> {
 
 fn parse_container_shorthand(
   value: &PropertyValue,
-) -> Option<(Vec<String>, Option<ContainerType>)> {
+) -> Option<(Vec<String>, ContainerType)> {
   let text = property_value_to_string(value)?;
   let trimmed = text.trim();
   if trimmed.is_empty() {
     return None;
-  }
-  if trimmed.eq_ignore_ascii_case("none") {
-    return Some((Vec::new(), Some(ContainerType::None)));
   }
 
   let mut parts = trimmed.splitn(2, '/');
   let left = parts.next().unwrap_or("").trim();
   let right = parts.next().map(|s| s.trim());
 
-  let names = if left.is_empty() {
-    Vec::new()
-  } else {
-    parse_container_names_from_str(left)?
+  if left.is_empty() {
+    // The shorthand requires a container-name component.
+    return None;
+  }
+
+  let names = parse_container_names_from_str(left)?;
+  let container_type = match right {
+    Some(part) if part.is_empty() => return None,
+    Some(part) => parse_container_type_keyword(part)?,
+    None => ContainerType::Normal,
   };
-  let mut container_type = None;
 
-  if let Some(right_part) = right {
-    if !right_part.is_empty() {
-      container_type = parse_container_type_keyword(right_part);
-      container_type?;
-    }
-  } else if names.is_empty() && !left.is_empty() {
-    container_type = parse_container_type_keyword(left);
-    container_type?;
-  }
-
-  if names.is_empty() && container_type.is_none() {
-    None
-  } else {
-    Some((names, container_type))
-  }
+  Some((names, container_type))
 }
 
 fn parse_containment(value: &PropertyValue) -> Option<Containment> {

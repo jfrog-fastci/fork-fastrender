@@ -88,10 +88,7 @@ impl Default for WebkitBoxOrient {
 /// Container type for container queries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContainerType {
-  None,
   Normal,
-  /// Establishes a style container for style queries. Size features remain unavailable.
-  Style,
   Size,
   InlineSize,
 }

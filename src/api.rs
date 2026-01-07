@@ -7923,7 +7923,13 @@ impl FastRender {
       };
 
       let mut container_ctx =
-        build_container_query_context(&box_tree, &fragment_tree, &styled_tree, &media_ctx);
+        build_container_query_context(
+          &box_tree,
+          &fragment_tree,
+          &styled_tree,
+          &media_ctx,
+          has_container_style_queries,
+        );
       let mut layout_fingerprint = styled_layout_fingerprint_digest(&styled_tree);
       let mut iterations: u32 = 0;
       let mut converged = true;
@@ -8110,7 +8116,13 @@ impl FastRender {
         layout_fingerprint = next_layout_fingerprint;
 
         let next_container_ctx =
-          build_container_query_context(&box_tree, &fragment_tree, &styled_tree, &media_ctx);
+          build_container_query_context(
+            &box_tree,
+            &fragment_tree,
+            &styled_tree,
+            &media_ctx,
+            has_container_style_queries,
+          );
         let ctx_fp_after = container_query_context_fingerprint(
           &next_container_ctx,
           style_query_fingerprint.as_ref(),
@@ -11570,11 +11582,9 @@ fn styled_layout_fingerprint_digest(root: &StyledNode) -> u64 {
 
 fn container_type_fingerprint(container_type: ContainerType) -> u8 {
   match container_type {
-    ContainerType::None => 0,
-    ContainerType::Normal => 1,
-    ContainerType::Style => 2,
-    ContainerType::Size => 3,
-    ContainerType::InlineSize => 4,
+    ContainerType::Normal => 0,
+    ContainerType::Size => 1,
+    ContainerType::InlineSize => 2,
   }
 }
 
@@ -11767,9 +11777,7 @@ fn styled_style_summary(style: &ComputedStyle) -> String {
     _ => "other",
   };
   let ct = match style.container_type {
-    ContainerType::None => "none",
     ContainerType::Normal => "normal",
-    ContainerType::Style => "style",
     ContainerType::Size => "size",
     ContainerType::InlineSize => "inline-size",
   };
@@ -11969,6 +11977,7 @@ fn build_container_query_context(
   fragments: &FragmentTree,
   styled_tree: &StyledNode,
   media_ctx: &MediaContext,
+  include_style_containers: bool,
 ) -> ContainerQueryContext {
   let mut sizes: HashMap<usize, (f32, f32)> = HashMap::new();
   collect_fragment_sizes(&fragments.root, &mut sizes);
@@ -11987,6 +11996,26 @@ fn build_container_query_context(
   collect_main_styles(styled_tree, &mut styles);
 
   let mut containers: HashMap<usize, ContainerQueryInfo> = HashMap::new();
+
+  if include_style_containers {
+    // Style queries treat every element as a query container (including `container-type: normal`),
+    // so pre-register all styled nodes. Size queries will still only match against size/inline-size
+    // containers via container-type gating in `ContainerQueryContext::find_container_impl`.
+    for (styled_id, style) in &styles {
+      containers.insert(
+        *styled_id,
+        ContainerQueryInfo {
+          inline_size: 0.0,
+          block_size: 0.0,
+          container_type: style.container_type,
+          names: style.container_name.clone(),
+          font_size: style.font_size,
+          styles: Arc::clone(style),
+        },
+      );
+    }
+  }
+
   for (box_id, node) in boxes {
     let styled_id = match node.styled_node_id {
       Some(id) => id,
@@ -11994,7 +12023,7 @@ fn build_container_query_context(
     };
     let style = styles.get(&styled_id).unwrap_or(&node.style);
     match style.container_type {
-      ContainerType::Size | ContainerType::InlineSize | ContainerType::Style => {
+      ContainerType::Size | ContainerType::InlineSize => {
         if let Some((inline, block)) = sizes.get(&box_id) {
           let mut content_width = *inline;
           let mut content_height = *block;
@@ -12051,7 +12080,7 @@ fn build_container_query_context(
             });
         }
       }
-      ContainerType::None | ContainerType::Normal => {}
+      ContainerType::Normal => {}
     }
   }
 
@@ -14983,7 +15012,7 @@ mod tests {
     intrinsic_cache_clear();
     let fragments = renderer.layout_engine.layout_tree(&box_tree).unwrap();
 
-    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx);
+    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx, false);
     assert!(!cq_ctx.containers.is_empty(), "expected container context");
     let info = cq_ctx.containers.values().next().unwrap();
     eprintln!(
@@ -15073,7 +15102,7 @@ mod tests {
     intrinsic_cache_clear();
     let fragments = renderer.layout_engine.layout_tree(&box_tree).unwrap();
 
-    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx);
+    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx, false);
     assert!(
       !cq_ctx.containers.is_empty(),
       "expected named container context"
@@ -15139,7 +15168,7 @@ mod tests {
     intrinsic_cache_clear();
     let fragments = renderer.layout_engine.layout_tree(&box_tree).unwrap();
 
-    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx);
+    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx, false);
     let styled_with_containers = apply_styles_with_media_target_and_imports(
       &dom,
       &stylesheet,
@@ -15198,7 +15227,7 @@ mod tests {
     intrinsic_cache_clear();
     let fragments = renderer.layout_engine.layout_tree(&box_tree).unwrap();
 
-    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx);
+    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx, false);
     let styled_with_containers = apply_styles_with_media_target_and_imports(
       &dom,
       &stylesheet,
@@ -15257,7 +15286,7 @@ mod tests {
     intrinsic_cache_clear();
     let fragments = renderer.layout_engine.layout_tree(&box_tree).unwrap();
 
-    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx);
+    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx, false);
     let styled_with_containers = apply_styles_with_media_target_and_imports(
       &dom,
       &stylesheet,
@@ -15317,7 +15346,7 @@ mod tests {
     intrinsic_cache_clear();
     let fragments = renderer.layout_engine.layout_tree(&box_tree).unwrap();
 
-    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx);
+    let cq_ctx = build_container_query_context(&box_tree, &fragments, &styled, &media_ctx, false);
     let styled_with_containers = apply_styles_with_media_target_and_imports(
       &dom,
       &stylesheet,
