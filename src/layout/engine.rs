@@ -1017,11 +1017,19 @@ impl LayoutEngine {
     let parallelism = self.config.parallelism.resolve_for_workload(workload);
     let factory = self.factory.clone().with_parallelism(parallelism);
     factory.tune_taffy_template_cache_for_box_tree(workload.nodes);
-    let threads_for_pool = parallelism
-      .max_threads
-      .unwrap_or_else(default_layout_thread_budget)
-      .max(1);
-    let parallel_pool = if parallelism.is_active() && threads_for_pool > 1 {
+    // Only query Rayon thread counts when fan-out is actually active. `default_layout_thread_budget`
+    // consults `rayon::current_num_threads()`, which will initialize the global Rayon pool on first
+    // use. We want layout to remain usable (and tests to remain stable under `run_limited.sh`) even
+    // when parallel fan-out is disabled.
+    let threads_for_pool = if parallelism.is_active() {
+      parallelism
+        .max_threads
+        .unwrap_or_else(default_layout_thread_budget)
+        .max(1)
+    } else {
+      1
+    };
+    let parallel_pool = if threads_for_pool > 1 {
       if let Some(pool) = &self.parallel_pool {
         Some(pool.clone())
       } else {
