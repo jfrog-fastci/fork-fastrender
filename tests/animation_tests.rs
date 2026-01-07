@@ -358,6 +358,49 @@ fn view_timeline_progress_supports_entry_length_offsets() {
 }
 
 #[test]
+fn view_timeline_progress_allows_negative_inset() {
+  let range = AnimationRange {
+    start: RangeOffset::View(ViewTimelinePhase::Contain, Length::percent(0.0)),
+    end: RangeOffset::View(ViewTimelinePhase::Contain, Length::percent(0.0)),
+  };
+  let view_size = 100.0;
+  let target_start = 80.0;
+  let target_end = 130.0;
+  let scroll_offset = 0.0;
+
+  let timeline_no_inset = ViewTimeline::default();
+  let progress_no_inset = view_timeline_progress(
+    &timeline_no_inset,
+    target_start,
+    target_end,
+    view_size,
+    scroll_offset,
+    &range,
+  )
+  .unwrap();
+  assert!((progress_no_inset - 0.0).abs() < 1e-6);
+
+  let timeline_outset_end = ViewTimeline {
+    name: None,
+    axis: TimelineAxis::Block,
+    inset: Some(fastrender::style::types::ViewTimelineInset {
+      start: Some(Length::px(0.0)),
+      end: Some(Length::px(-50.0)),
+    }),
+  };
+  let progress_outset_end = view_timeline_progress(
+    &timeline_outset_end,
+    target_start,
+    target_end,
+    view_size,
+    scroll_offset,
+    &range,
+  )
+  .unwrap();
+  assert!((progress_outset_end - 1.0).abs() < 1e-6);
+}
+
+#[test]
 fn keyframes_sample_interpolates_opacity() {
   let sheet =
     parse_stylesheet("@keyframes fade { 0% { opacity: 0; } 100% { opacity: 1; } }").unwrap();

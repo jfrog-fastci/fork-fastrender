@@ -3319,16 +3319,16 @@ pub fn view_timeline_progress(
 
   let view_size = view_size.max(0.0);
   let inset = timeline.inset.unwrap_or_default();
+  let resolve_inset_value = |len: Length| -> Option<f32> {
+    let resolved = len
+      .resolve_against(view_size)
+      .unwrap_or_else(|| len.to_px());
+    resolved.is_finite().then_some(resolved)
+  };
   let inset_start_len = inset.start.unwrap_or(Length::px(0.0));
   let inset_end_len = inset.end.unwrap_or(Length::px(0.0));
-  let inset_start = inset_start_len
-    .resolve_against(view_size)
-    .unwrap_or_else(|| inset_start_len.to_px())
-    .clamp(0.0, view_size);
-  let inset_end = inset_end_len
-    .resolve_against(view_size)
-    .unwrap_or_else(|| inset_end_len.to_px())
-    .clamp(0.0, view_size);
+  let inset_start = resolve_inset_value(inset_start_len)?;
+  let inset_end = resolve_inset_value(inset_end_len)?;
 
   let entry_edge = target_start - view_size + inset_end;
   let contain_edge = target_end - view_size + inset_end;
