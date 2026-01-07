@@ -5144,6 +5144,12 @@ impl TableFormattingContext {
           match width.unit {
             LengthUnit::Percent if percent_base.is_some() => {
               let col = &mut constraints[cell.col];
+              if mode == DistributionMode::Fixed
+                && (col.fixed_width.is_some() || col.percentage.is_some())
+              {
+                // Column widths take precedence over first-row cell widths in fixed layout.
+                continue;
+              }
               col.set_percentage(width.value);
               // In fixed layout, preserve authored max-width caps coming from `<col>`/`<colgroup>`.
               // If a cap exists, `ColumnDistributor` will clamp the percentage width against it.
@@ -5164,6 +5170,12 @@ impl TableFormattingContext {
             }
             LengthUnit::Percent => {
               let col = &mut constraints[cell.col];
+              if mode == DistributionMode::Fixed
+                && (col.fixed_width.is_some() || col.percentage.is_some())
+              {
+                // Column widths take precedence over first-row cell widths in fixed layout.
+                continue;
+              }
               col.min_width = col.min_width.max(min_w);
               if !(mode == DistributionMode::Fixed && col.has_max_cap && col.max_width.is_finite()) {
                 col.max_width = col.max_width.max(max_w);
@@ -5215,7 +5227,21 @@ impl TableFormattingContext {
         let start = cell.col;
         let end = (cell.col + cell.colspan).min(constraints.len());
         if width_is_percent && percent_base.is_some() {
-          distribute_spanning_percentage(constraints, start, end, width_decl.unwrap().value);
+          if mode == DistributionMode::Fixed {
+            // Column widths (<col>/<colgroup>) take precedence. If any column in the span is
+            // already assigned a width, ignore the spanning cell's percentage width in fixed
+            // layout to avoid overriding those constraints.
+            let any_assigned = constraints
+              .iter()
+              .take(end)
+              .skip(start)
+              .any(|col| col.fixed_width.is_some() || col.percentage.is_some());
+            if !any_assigned {
+              distribute_spanning_percentage(constraints, start, end, width_decl.unwrap().value);
+            }
+          } else {
+            distribute_spanning_percentage(constraints, start, end, width_decl.unwrap().value);
+          }
         }
         let target_min = span_specified_width.unwrap_or(min_w);
         let target_max = span_specified_width.unwrap_or(max_w);
