@@ -8788,8 +8788,33 @@ fn exported_part_names(
   Some(exported)
 }
 
+fn flat_tree_ancestor_ids_for_container_query(
+  node_id: usize,
+  dom_maps: &DomMaps,
+  slot_assignment: &SlotAssignment,
+) -> Vec<usize> {
+  let mut ids: Vec<usize> = Vec::new();
+  let mut current = node_id;
+  while current > 0 {
+    let parent = slot_assignment
+      .node_to_slot
+      .get(&current)
+      .map(|slot| slot.slot_node_id)
+      .unwrap_or_else(|| *dom_maps.parent_map.get(current).unwrap_or(&0));
+    if parent == 0 {
+      break;
+    }
+    ids.push(parent);
+    current = parent;
+  }
+  ids.reverse();
+  ids
+}
+
 fn match_part_rules<'a>(
   node: &DomNode,
+  node_id: usize,
+  slot_assignment: &SlotAssignment,
   ancestors: &[&DomNode],
   ancestor_bloom: Option<&selectors::bloom::BloomFilter>,
   ancestor_ids: &[usize],
@@ -8824,6 +8849,14 @@ fn match_part_rules<'a>(
     return Vec::new();
   }
 
+  let query_ancestor_ids_storage = (!slot_assignment.node_to_slot.is_empty()
+    && (slot_assignment.node_to_slot.contains_key(&node_id)
+      || ancestor_ids
+        .iter()
+        .any(|id| slot_assignment.node_to_slot.contains_key(id))))
+  .then(|| flat_tree_ancestor_ids_for_container_query(node_id, dom_maps, slot_assignment));
+  let query_ancestor_ids = query_ancestor_ids_storage.as_deref().unwrap_or(ancestor_ids);
+
   let mut matched: Vec<MatchedRule<'a>> = Vec::new();
   let mut matched_by_order: HashMap<usize, usize> = HashMap::new();
 
@@ -8840,7 +8873,6 @@ fn match_part_rules<'a>(
     let host_idx = idx - 1;
     let host = ancestors[host_idx];
     let host_ancestors = &ancestors[..host_idx];
-    let host_ancestor_ids = ancestor_ids.get(..host_idx).unwrap_or(&[]);
 
     let host_id = ancestor_ids.get(host_idx).copied().unwrap_or(0);
     // `::part(...)` rules come from the tree scope *containing* the shadow host, not the host's own
@@ -8915,7 +8947,8 @@ fn match_part_rules<'a>(
             scratch,
             host_ancestors,
             ancestor_bloom,
-            host_ancestor_ids,
+            node_id,
+            query_ancestor_ids,
             container_ctx,
             slot_map,
             dom_maps.selector_blooms(),
@@ -9097,6 +9130,8 @@ fn collect_matching_rules<'a>(
 
   matches.extend(match_part_rules(
     node,
+    node_id,
+    slot_assignment,
     ancestors,
     ancestor_bloom,
     ancestor_ids,
@@ -9151,6 +9186,7 @@ fn collect_pseudo_matching_rules<'a>(
     scratch,
     ancestors,
     ancestor_bloom,
+    node_id,
     ancestor_ids,
     container_ctx,
     current_slot_map,
@@ -9173,6 +9209,7 @@ fn collect_pseudo_matching_rules<'a>(
       scratch,
       ancestors,
       ancestor_bloom,
+      node_id,
       ancestor_ids,
       container_ctx,
       base_slot_map,
@@ -9198,6 +9235,7 @@ fn collect_pseudo_matching_rules<'a>(
           scratch,
           ancestors,
           ancestor_bloom,
+          node_id,
           ancestor_ids,
           container_ctx,
           current_slot_map,
@@ -9223,6 +9261,7 @@ fn collect_pseudo_matching_rules<'a>(
       scratch,
       ancestors,
       ancestor_bloom,
+      node_id,
       ancestor_ids,
       container_ctx,
       slot_map_for_host(node_id),
@@ -23876,6 +23915,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       &mut scratch,
       &ancestors,
       None,
+      0,
       &[],
       None,
       None,
@@ -25847,7 +25887,8 @@ fn find_pseudo_element_rules<'a>(
   scratch: &mut CascadeScratch,
   ancestors: &[&DomNode],
   ancestor_bloom: Option<&selectors::bloom::BloomFilter>,
-  ancestor_ids: &[usize],
+  query_node_id: usize,
+  query_ancestor_ids: &[usize],
   container_ctx: Option<&ContainerQueryContext>,
   slot_map: Option<&SlotAssignmentMap<'a>>,
   selector_blooms: Option<&SelectorBloomStore>,
@@ -25973,8 +26014,8 @@ fn find_pseudo_element_rules<'a>(
       } else {
         match container_ctx {
           Some(ctx) => ctx.matches(
-            node_id,
-            ancestor_ids,
+            query_node_id,
+            query_ancestor_ids,
             &rule.container_conditions,
             include_self_container,
           ),

@@ -1,15 +1,18 @@
 use fastrender::css::parser::parse_stylesheet;
 use fastrender::css::types::StyleSheet;
-use fastrender::dom::parse_html;
+use fastrender::dom::{enumerate_dom_ids, parse_html, DomNode};
 use fastrender::style::cascade::{
   apply_style_set_with_media_target_and_imports, apply_styles_with_media_target_and_imports,
-  StyledNode,
+  ContainerQueryContext, ContainerQueryInfo, StyledNode,
 };
 use fastrender::style::media::MediaContext;
 use fastrender::style::style_set::StyleSet;
+use fastrender::style::types::ContainerType;
 use fastrender::style::values::Length;
+use fastrender::style::ComputedStyle;
 use fastrender::Rgba;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
   if node.node.get_attribute_ref("id") == Some(id) {
@@ -17,6 +20,18 @@ fn find_by_id<'a>(node: &'a StyledNode, id: &str) -> Option<&'a StyledNode> {
   }
   for child in node.children.iter() {
     if let Some(found) = find_by_id(child, id) {
+      return Some(found);
+    }
+  }
+  None
+}
+
+fn find_dom_by_id<'a>(node: &'a DomNode, id: &str) -> Option<&'a DomNode> {
+  if node.get_attribute_ref("id") == Some(id) {
+    return Some(node);
+  }
+  for child in node.children.iter() {
+    if let Some(found) = find_dom_by_id(child, id) {
       return Some(found);
     }
   }
@@ -336,4 +351,75 @@ fn document_host_part_selector_does_not_apply() {
     "document-scoped :host must not style parts inside a shadow tree"
   );
   assert_ne!(label.styles.color, Rgba::rgb(1, 2, 3));
+}
+
+#[test]
+fn part_container_query_is_evaluated_against_the_part_element() {
+  let html = r#"
+    <x-host id="host">
+      <template shadowroot="open">
+        <style>
+          #container { container-type: inline-size; }
+        </style>
+        <div id="container">
+          <span id="part" part="foo">Hello</span>
+        </div>
+      </template>
+    </x-host>
+  "#;
+
+  let dom = parse_html(html).expect("parsed html");
+  let ids = enumerate_dom_ids(&dom);
+  let container = find_dom_by_id(&dom, "container").expect("container element");
+  let container_id = *ids
+    .get(&(container as *const DomNode))
+    .expect("container node id");
+
+  let stylesheet = parse_stylesheet(
+    r#"
+      x-host::part(foo) { color: rgb(0, 0, 255); }
+      @container (min-width: 150px) {
+        x-host::part(foo) { color: rgb(255, 0, 0); }
+      }
+    "#,
+  )
+  .expect("stylesheet");
+  let media = MediaContext::screen(800.0, 600.0);
+
+  let cascade = |inline_size: f32| {
+    let ctx = ContainerQueryContext {
+      base_media: media.clone(),
+      containers: HashMap::from([(
+        container_id,
+        ContainerQueryInfo {
+          inline_size,
+          block_size: 300.0,
+          container_type: ContainerType::InlineSize,
+          names: Vec::new(),
+          font_size: 16.0,
+          styles: Arc::new(ComputedStyle::default()),
+        },
+      )]),
+    };
+
+    apply_styles_with_media_target_and_imports(
+      &dom,
+      &stylesheet,
+      &media,
+      None,
+      None,
+      None,
+      Some(&ctx),
+      None,
+      None,
+    )
+  };
+
+  let styled_small = cascade(100.0);
+  let part_small = find_by_id(&styled_small, "part").expect("part element");
+  assert_eq!(part_small.styles.color, Rgba::rgb(0, 0, 255));
+
+  let styled_large = cascade(200.0);
+  let part_large = find_by_id(&styled_large, "part").expect("part element");
+  assert_eq!(part_large.styles.color, Rgba::rgb(255, 0, 0));
 }
