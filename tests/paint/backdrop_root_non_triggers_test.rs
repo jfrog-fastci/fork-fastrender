@@ -135,6 +135,24 @@ fn will_change_transform_is_not_a_backdrop_root() {
 }
 
 #[test]
+fn will_change_translate_is_not_a_backdrop_root() {
+  let pixmap = render("will-change: translate;");
+  assert_child_inverts_body_bg(&pixmap);
+}
+
+#[test]
+fn will_change_rotate_is_not_a_backdrop_root() {
+  let pixmap = render("will-change: rotate;");
+  assert_child_inverts_body_bg(&pixmap);
+}
+
+#[test]
+fn will_change_scale_is_not_a_backdrop_root() {
+  let pixmap = render("will-change: scale;");
+  assert_child_inverts_body_bg(&pixmap);
+}
+
+#[test]
 fn perspective_is_not_a_backdrop_root() {
   let pixmap = render("perspective: 1000px;");
   assert_child_inverts_body_bg(&pixmap);
