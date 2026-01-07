@@ -205,6 +205,10 @@ impl TableStructureFixer {
   pub fn is_table_box(box_node: &BoxNode) -> bool {
     match &box_node.box_type {
       BoxType::Block(block) => matches!(block.formatting_context, FormattingContextType::Table),
+      BoxType::Inline(inline_box) => matches!(
+        inline_box.formatting_context,
+        Some(FormattingContextType::Table)
+      ),
       _ => false,
     }
   }
@@ -1026,6 +1030,16 @@ mod tests {
     BoxNode::new_block(default_style(), FormattingContextType::Table, children)
   }
 
+  fn inline_table_style() -> Arc<ComputedStyle> {
+    let mut style = ComputedStyle::default();
+    style.display = Display::InlineTable;
+    Arc::new(style)
+  }
+
+  fn inline_table_box(children: Vec<BoxNode>) -> BoxNode {
+    BoxNode::new_inline_block(inline_table_style(), FormattingContextType::Table, children)
+  }
+
   // Helper to create a row box with explicit display
   fn row_box(cells: Vec<BoxNode>) -> BoxNode {
     BoxNode {
@@ -1113,6 +1127,9 @@ mod tests {
     let table = table_box(vec![]);
     assert!(TableStructureFixer::is_table_box(&table));
 
+    let inline_table = inline_table_box(vec![]);
+    assert!(TableStructureFixer::is_table_box(&inline_table));
+
     let block = BoxNode::new_block(default_style(), FormattingContextType::Block, vec![]);
     assert!(!TableStructureFixer::is_table_box(&block));
   }
@@ -1185,6 +1202,39 @@ mod tests {
       &fixed.children[0].children[0]
     ));
     assert_eq!(fixed.children[0].children[0].children.len(), 2);
+  }
+
+  #[test]
+  fn test_inline_table_with_loose_cells_wrapped_in_row() {
+    let cell1 = cell_box(vec![]);
+    let cell2 = cell_box(vec![]);
+    let inline_table = inline_table_box(vec![cell1, cell2]);
+
+    let fixed = TableStructureFixer::fixup_table_internals(inline_table).unwrap();
+
+    assert!(
+      matches!(
+        &fixed.box_type,
+        BoxType::Inline(inline_box)
+          if matches!(
+            inline_box.formatting_context,
+            Some(FormattingContextType::Table)
+          )
+      ),
+      "expected inline-table root to stay inline-level and establish a table formatting context"
+    );
+    assert_eq!(fixed.style.display, Display::InlineTable);
+
+    assert_eq!(fixed.children.len(), 1);
+    let row_group = &fixed.children[0];
+    assert!(TableStructureFixer::is_table_row_group(row_group));
+    assert_eq!(row_group.children.len(), 1);
+    let row = &row_group.children[0];
+    assert!(TableStructureFixer::is_table_row(row));
+    assert_eq!(row.children.len(), 2);
+    assert!(row.children.iter().all(TableStructureFixer::is_table_cell));
+
+    assert!(TableStructureFixer::validate_table_structure(&fixed));
   }
 
   #[test]
@@ -1646,6 +1696,34 @@ mod tests {
     let inner = &fixed.children[0];
     assert!(TableStructureFixer::is_table_box(inner));
     // The cell should be wrapped in row and row-group
+    assert!(TableStructureFixer::is_table_row_group(&inner.children[0]));
+  }
+
+  #[test]
+  fn test_fixup_tree_with_nested_inline_tables() {
+    let inner_table = inline_table_box(vec![cell_box(vec![])]);
+    let outer = BoxNode::new_block(
+      default_style(),
+      FormattingContextType::Block,
+      vec![inner_table],
+    );
+
+    let fixed = TableStructureFixer::fixup_tree(outer).unwrap();
+
+    assert_eq!(fixed.children.len(), 1);
+    let inner = &fixed.children[0];
+    assert!(
+      matches!(
+        &inner.box_type,
+        BoxType::Inline(inline_box)
+          if matches!(
+            inline_box.formatting_context,
+            Some(FormattingContextType::Table)
+          )
+      ),
+      "expected fixup_tree traversal to treat inline-table as a table root"
+    );
+    assert!(TableStructureFixer::validate_table_structure(inner));
     assert!(TableStructureFixer::is_table_row_group(&inner.children[0]));
   }
 
