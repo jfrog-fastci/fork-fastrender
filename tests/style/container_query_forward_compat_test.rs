@@ -23,6 +23,7 @@ fn unknown_container_queries_do_not_drop_nested_keyframes() {
     })
     .expect("@container rule retained");
 
+  assert_eq!(container_rule.conditions.len(), 1);
   assert!(matches!(
     container_rule.conditions.first().and_then(|condition| condition.query.as_ref()),
     Some(ContainerQuery::Unknown(raw)) if raw.starts_with("scroll-state(")

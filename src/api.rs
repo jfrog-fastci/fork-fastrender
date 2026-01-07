@@ -7576,6 +7576,7 @@ impl FastRender {
       has_container_style_queries,
       container_style_query_custom_properties,
       container_style_query_properties,
+      container_size_query_custom_properties,
       has_starting_style_rules,
     } = style_set
       .collect_css_metadata_all_scopes_with_cache(&media_ctx, Some(&mut media_query_cache));
@@ -8101,27 +8102,34 @@ impl FastRender {
     let mut container_query_diag: Option<ContainerQueryDiagnostics> = None;
 
     if has_container_queries {
-      let style_query_fingerprint = if has_container_style_queries {
-        let mut custom_properties: Vec<String> = container_style_query_custom_properties
-          .into_iter()
-          .collect();
-        custom_properties.sort();
-        let mut include_color = false;
-        let mut include_background_color = false;
-        for name in container_style_query_properties.iter() {
-          match name.to_ascii_lowercase().as_str() {
-            "color" => include_color = true,
-            "background-color" => include_background_color = true,
-            _ => {}
-          }
+      let mut custom_properties: Vec<String> = container_style_query_custom_properties
+        .into_iter()
+        .chain(container_size_query_custom_properties.into_iter())
+        .collect();
+      custom_properties.sort();
+      custom_properties.dedup();
+
+      let mut include_color = false;
+      let mut include_background_color = false;
+      for name in container_style_query_properties.iter() {
+        match name.to_ascii_lowercase().as_str() {
+          "color" => include_color = true,
+          "background-color" => include_background_color = true,
+          _ => {}
         }
-        Some(ContainerStyleQueryFingerprintConfig {
+      }
+
+      let container_query_fingerprint = if custom_properties.is_empty()
+        && !include_color
+        && !include_background_color
+      {
+        None
+      } else {
+        Some(ContainerQueryFingerprintConfig {
           custom_properties,
           include_color,
           include_background_color,
         })
-      } else {
-        None
       };
 
       let mut container_ctx = build_container_query_context(
@@ -8147,7 +8155,7 @@ impl FastRender {
         }
 
         let ctx_fp_before =
-          container_query_context_fingerprint(&container_ctx, style_query_fingerprint.as_ref());
+          container_query_context_fingerprint(&container_ctx, container_query_fingerprint.as_ref());
 
         if log_container_pass {
           let total = container_ctx.containers.len();
@@ -8325,7 +8333,7 @@ impl FastRender {
         );
         let ctx_fp_after = container_query_context_fingerprint(
           &next_container_ctx,
-          style_query_fingerprint.as_ref(),
+          container_query_fingerprint.as_ref(),
         );
 
         iterations = iterations.saturating_add(1);
@@ -11790,7 +11798,7 @@ fn styled_fingerprint_map(root: &StyledNode) -> HashMap<usize, u64> {
 }
 
 #[derive(Debug, Clone, Default)]
-struct ContainerStyleQueryFingerprintConfig {
+struct ContainerQueryFingerprintConfig {
   custom_properties: Vec<String>,
   include_color: bool,
   include_background_color: bool,
@@ -11833,7 +11841,7 @@ fn container_type_fingerprint(container_type: ContainerType) -> u8 {
 
 fn container_query_context_fingerprint(
   ctx: &ContainerQueryContext,
-  style_query: Option<&ContainerStyleQueryFingerprintConfig>,
+  config: Option<&ContainerQueryFingerprintConfig>,
 ) -> u64 {
   let mut hasher = DefaultHasher::default();
   ctx.base_media.fingerprint().hash(&mut hasher);
@@ -11853,20 +11861,20 @@ fn container_query_context_fingerprint(
     for name in info.names.iter() {
       name.hash(&mut hasher);
     }
-    if let Some(style_query) = style_query {
-      if style_query.include_color {
+    if let Some(config) = config {
+      if config.include_color {
         info.styles.color.r.hash(&mut hasher);
         info.styles.color.g.hash(&mut hasher);
         info.styles.color.b.hash(&mut hasher);
         info.styles.color.a.to_bits().hash(&mut hasher);
       }
-      if style_query.include_background_color {
+      if config.include_background_color {
         info.styles.background_color.r.hash(&mut hasher);
         info.styles.background_color.g.hash(&mut hasher);
         info.styles.background_color.b.hash(&mut hasher);
         info.styles.background_color.a.to_bits().hash(&mut hasher);
       }
-      for prop in style_query.custom_properties.iter() {
+      for prop in config.custom_properties.iter() {
         prop.hash(&mut hasher);
         match info.styles.custom_properties.get(prop) {
           Some(value) => value
@@ -15297,7 +15305,9 @@ mod tests {
       &target_ancestors,
       &[vec![crate::css::types::ContainerCondition {
         name: None,
-        query: Some(crate::css::types::ContainerQuery::Size(cond.clone())),
+        query: Some(crate::css::types::ContainerQuery::Size(
+          crate::css::types::ContainerSizeQuery::Parsed(cond.clone()),
+        )),
       }]],
       false,
     );
@@ -15610,6 +15620,73 @@ mod tests {
     );
     let color = styled_color_by_id(&styled_with_containers, "target").expect("styled color");
     assert_eq!(color, Rgba::rgb(3, 3, 3));
+  }
+
+  #[test]
+  fn container_query_fingerprint_tracks_custom_props_used_by_size_query_vars() {
+    let stylesheet =
+      crate::css::parser::parse_stylesheet("@container (width > var(--query)) { .a { color: red; } }")
+        .expect("stylesheet parses");
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+    let metadata = stylesheet.collect_css_metadata_with_cache(&media_ctx, None);
+
+    assert!(
+      metadata
+        .container_size_query_custom_properties
+        .contains("--query"),
+      "metadata should track size-query var() custom property"
+    );
+
+    let mut custom_properties: Vec<String> = metadata
+      .container_style_query_custom_properties
+      .into_iter()
+      .chain(metadata.container_size_query_custom_properties.into_iter())
+      .collect();
+    custom_properties.sort();
+    custom_properties.dedup();
+    let cfg = ContainerQueryFingerprintConfig {
+      custom_properties,
+      include_color: false,
+      include_background_color: false,
+    };
+
+    fn ctx_with_query_value(media_ctx: &MediaContext, value: &str) -> ContainerQueryContext {
+      let mut style = ComputedStyle::default();
+      style.custom_properties.insert(
+        "--query".into(),
+        crate::style::values::CustomPropertyValue::new(value, None),
+      );
+      let mut containers = HashMap::new();
+      containers.insert(
+        1usize,
+        crate::style::cascade::ContainerQueryInfo {
+          inline_size: 100.0,
+          block_size: 200.0,
+          container_type: crate::style::types::ContainerType::InlineSize,
+          names: Vec::new(),
+          font_size: 16.0,
+          styles: Arc::new(style),
+        },
+      );
+      ContainerQueryContext {
+        base_media: media_ctx.clone(),
+        containers,
+      }
+    }
+
+    let ctx_a = ctx_with_query_value(&media_ctx, "10px");
+    let ctx_b = ctx_with_query_value(&media_ctx, "20px");
+    let fp_a = container_query_context_fingerprint(&ctx_a, Some(&cfg));
+    let fp_b = container_query_context_fingerprint(&ctx_b, Some(&cfg));
+    assert_ne!(fp_a, fp_b, "fingerprint should change when var() inputs change");
+
+    // Without a config, custom properties should not affect the fingerprint.
+    let fp_a_untracked = container_query_context_fingerprint(&ctx_a, None);
+    let fp_b_untracked = container_query_context_fingerprint(&ctx_b, None);
+    assert_eq!(
+      fp_a_untracked, fp_b_untracked,
+      "untracked custom properties should not affect the fingerprint"
+    );
   }
 
   #[test]

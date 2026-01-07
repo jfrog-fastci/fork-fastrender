@@ -342,6 +342,8 @@ pub struct CollectedCssMetadata {
   pub container_style_query_custom_properties: FxHashSet<String>,
   /// Names of computed properties referenced by style queries (deduplicated across all sheets).
   pub container_style_query_properties: FxHashSet<String>,
+  /// Names of custom properties referenced by `var()` inside container size queries.
+  pub container_size_query_custom_properties: FxHashSet<String>,
   pub has_starting_style_rules: bool,
 }
 
@@ -1357,8 +1359,8 @@ fn collect_css_metadata_recursive(
         out.has_container_rules = true;
         out.needs_container_pass = true;
         for condition in &container_rule.conditions {
-          if let Some(query) = &condition.query {
-            collect_container_style_query_metadata(std::slice::from_ref(query), out);
+          if let Some(query) = condition.query.as_ref() {
+            collect_container_query_metadata(std::slice::from_ref(query), out);
           }
         }
         collect_css_metadata_recursive(
@@ -1464,13 +1466,19 @@ fn collect_css_metadata_recursive(
   }
 }
 
-fn collect_container_style_query_metadata(
+fn collect_container_query_metadata(
   queries: &[ContainerQuery],
   out: &mut CollectedCssMetadata,
 ) {
   for query in queries {
     match query {
-      ContainerQuery::Size(_) => {}
+      ContainerQuery::Size(size_query) => {
+        if let Some(raw) = size_query.raw_text() {
+          for name in crate::style::var_resolution::extract_var_references(raw) {
+            out.container_size_query_custom_properties.insert(name);
+          }
+        }
+      }
       ContainerQuery::Style(style_query) => {
         out.has_container_style_queries = true;
         match style_query {
@@ -1486,10 +1494,10 @@ fn collect_container_style_query_metadata(
       }
       ContainerQuery::Unknown(_) => {}
       ContainerQuery::Not(inner) => {
-        collect_container_style_query_metadata(std::slice::from_ref(inner.as_ref()), out);
+        collect_container_query_metadata(std::slice::from_ref(inner.as_ref()), out);
       }
       ContainerQuery::And(list) | ContainerQuery::Or(list) => {
-        collect_container_style_query_metadata(list, out);
+        collect_container_query_metadata(list, out);
       }
     }
   }
@@ -2903,8 +2911,8 @@ pub struct ContainerRule {
 /// A parsed container query condition (size queries and/or style queries).
 #[derive(Debug, Clone)]
 pub enum ContainerQuery {
-  /// Container size feature queries parsed with the media-query parser.
-  Size(MediaQuery),
+  /// Container size feature queries (aka "size queries").
+  Size(ContainerSizeQuery),
   /// Style queries inspecting computed styles of the query container.
   Style(ContainerStyleQuery),
   /// Unknown or unsupported `<<query-in-parens>>` (e.g. `scroll-state(...)` or `<<general-enclosed>>`).
@@ -2917,6 +2925,41 @@ pub enum ContainerQuery {
   And(Vec<ContainerQuery>),
   /// Logical disjunction of multiple conditions.
   Or(Vec<ContainerQuery>),
+}
+
+/// Parsed container size query.
+///
+/// Container size queries use the Media Queries grammar but are allowed to contain `var()`
+/// references (CSS Conditional 5 / CSS Contain 3). Since `var()` depends on the *query container's*
+/// computed custom properties, the value cannot always be resolved at stylesheet parse time.
+#[derive(Debug, Clone)]
+pub enum ContainerSizeQuery {
+  /// Fully-parsed size query with concrete feature values (no unresolved `var()`).
+  Parsed(MediaQuery),
+  /// Size query containing unresolved `var()` references.
+  ///
+  /// `template` is the parsed query with all `var()` calls replaced by a placeholder length so
+  /// callers can validate/query metadata (e.g. container-type support masks) without knowing the
+  /// query container's computed custom properties.
+  UnresolvedVars { text: String, template: MediaQuery },
+}
+
+impl ContainerSizeQuery {
+  /// Returns a parsed query suitable for feature inspection (container-type gating, etc).
+  pub fn support_query(&self) -> &MediaQuery {
+    match self {
+      ContainerSizeQuery::Parsed(query) => query,
+      ContainerSizeQuery::UnresolvedVars { template, .. } => template,
+    }
+  }
+
+  /// Returns the raw query text containing unresolved `var()` calls, if any.
+  pub fn raw_text(&self) -> Option<&str> {
+    match self {
+      ContainerSizeQuery::Parsed(_) => None,
+      ContainerSizeQuery::UnresolvedVars { text, .. } => Some(text.as_str()),
+    }
+  }
 }
 
 /// Style-query predicate inside a container query.

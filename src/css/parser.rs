@@ -16,6 +16,7 @@ use super::selectors::PseudoClassParser;
 use super::types::ContainerCondition;
 use super::types::ContainerQuery;
 use super::types::ContainerRule;
+use super::types::ContainerSizeQuery;
 use super::types::ContainerStyleQuery;
 use super::types::CssParseError;
 use super::types::CssParseResult;
@@ -1151,11 +1152,27 @@ fn parse_container_query_in_parens<'i, 't>(
 
       let inner = stringify_nested_tokens(nested)?;
       let raw = format!("({inner})");
-      if let Ok(query) = MediaQuery::parse(&raw) {
-        if query.is_size_query() {
-          return Ok(ContainerQuery::Size(query));
+      match MediaQuery::parse(&raw) {
+        Ok(query) => {
+          if query.is_size_query() {
+            return Ok(ContainerQuery::Size(ContainerSizeQuery::Parsed(query)));
+          }
         }
-      }
+        Err(_) => {
+          if crate::style::var_resolution::contains_var(&raw) {
+            if let Some(placeholder_text) = replace_var_calls_with_length_placeholder(&raw, "0px") {
+              if let Ok(template) = MediaQuery::parse(&placeholder_text) {
+                if template.is_size_query() {
+                  return Ok(ContainerQuery::Size(ContainerSizeQuery::UnresolvedVars {
+                    text: raw,
+                    template,
+                  }));
+                }
+              }
+            }
+          }
+        }
+      };
 
       Ok(ContainerQuery::Unknown(raw))
     }),
@@ -1219,6 +1236,65 @@ fn stringify_nested_tokens<'i, 't, E>(
   Ok(parts.join(""))
 }
 
+fn stringify_nested_tokens_with_var_placeholder<'i, 't, E>(
+  parser: &mut Parser<'i, 't>,
+  placeholder: &str,
+) -> std::result::Result<String, ParseError<'i, E>> {
+  let mut parts = Vec::new();
+  while !parser.is_exhausted() {
+    if !css_deadline_allows_progress() {
+      break;
+    }
+    let token = parser.next_including_whitespace()?;
+    match token {
+      Token::WhiteSpace(ws) => parts.push((*ws).to_string()),
+      Token::Ident(id) => parts.push(id.to_string()),
+      Token::Number { value, .. } => parts.push(value.to_string()),
+      Token::Dimension { value, unit, .. } => parts.push(format!("{}{}", value, unit)),
+      Token::Colon => parts.push(":".to_string()),
+      Token::Delim(c) => parts.push(c.to_string()),
+      Token::Function(name) if name.eq_ignore_ascii_case("var") => {
+        // Consume the var() arguments but replace the token stream with a placeholder length.
+        parser.parse_nested_block(consume_nested_tokens)?;
+        parts.push(placeholder.to_string());
+      }
+      Token::Function(f) => {
+        let name = f.to_string();
+        let inner = parser.parse_nested_block(|nested| {
+          stringify_nested_tokens_with_var_placeholder(nested, placeholder)
+        })?;
+        parts.push(format!("{name}({inner})"));
+      }
+      Token::ParenthesisBlock => {
+        let inner = parser.parse_nested_block(|nested| {
+          stringify_nested_tokens_with_var_placeholder(nested, placeholder)
+        })?;
+        parts.push(format!("({inner})"));
+      }
+      Token::SquareBracketBlock => {
+        let inner = parser.parse_nested_block(|nested| {
+          stringify_nested_tokens_with_var_placeholder(nested, placeholder)
+        })?;
+        parts.push(format!("[{inner}]"));
+      }
+      Token::CurlyBracketBlock => {
+        let inner = parser.parse_nested_block(|nested| {
+          stringify_nested_tokens_with_var_placeholder(nested, placeholder)
+        })?;
+        parts.push(format!("{{{inner}}}"));
+      }
+      other => parts.push(other.to_css_string()),
+    }
+  }
+  Ok(parts.join(""))
+}
+
+fn replace_var_calls_with_length_placeholder(value: &str, placeholder: &str) -> Option<String> {
+  let mut input = ParserInput::new(value);
+  let mut parser = Parser::new(&mut input);
+  stringify_nested_tokens_with_var_placeholder::<()>(&mut parser, placeholder).ok()
+}
+
 fn normalize_style_query_value(value: &str) -> String {
   let mut cleaned = value.trim_end_matches(';').trim().to_string();
   if let Some(idx) = cleaned.rfind('!') {
@@ -1263,7 +1339,6 @@ fn parse_style_query_from_str(raw: &str) -> Option<ContainerStyleQuery> {
     value,
   })
 }
-
 /// Parse an @starting-style rule which simply wraps a nested rule list.
 fn parse_starting_style_rule<'i, 't>(
   parser: &mut Parser<'i, 't>,

@@ -20,6 +20,7 @@ use crate::css::types::CollectedRule;
 use crate::css::types::ContainerCondition;
 use crate::css::types::ContainerConditionGroup;
 use crate::css::types::ContainerQuery;
+use crate::css::types::ContainerSizeQuery;
 use crate::css::types::ContainerStyleQuery;
 use crate::css::types::CssImportLoader;
 use crate::css::types::CssString;
@@ -338,7 +339,7 @@ fn container_query_matches(
   }
 
   match query {
-    ContainerQuery::Size(mq) => {
+    ContainerQuery::Size(size_query) => {
       if !matches!(
         container.container_type,
         ContainerType::Size | ContainerType::InlineSize
@@ -346,7 +347,32 @@ fn container_query_matches(
         memo.query_eval.insert(key, false);
         return false;
       }
-      let result = evaluate_container_size_query(mq, container);
+      let result = match size_query {
+        ContainerSizeQuery::Parsed(mq) => evaluate_container_size_query(mq, container),
+        ContainerSizeQuery::UnresolvedVars { text, .. } => {
+          let value = PropertyValue::Custom(text.clone());
+          match crate::style::var_resolution::resolve_var_for_property(
+            &value,
+            &container.styles.custom_properties,
+            "",
+          ) {
+            crate::style::var_resolution::VarResolutionResult::Resolved { css_text, .. } => {
+              let resolved = if css_text.is_empty() {
+                text.as_str()
+              } else {
+                css_text.as_ref()
+              };
+              match crate::style::media::MediaQuery::parse(resolved) {
+                Ok(parsed) if parsed.is_size_query() => {
+                  evaluate_container_size_query(&parsed, container)
+                }
+                _ => false,
+              }
+            }
+            _ => false,
+          }
+        }
+      };
       memo.query_eval.insert(key, result);
       result
     }
@@ -815,7 +841,7 @@ fn cq_type_bit(container_type: ContainerType) -> u8 {
   }
 }
 
-fn cq_size_query_support_mask(mq: &crate::style::media::MediaQuery) -> u8 {
+fn cq_size_query_support_mask(query: &ContainerSizeQuery) -> u8 {
   fn feature_inline_only(feature: &MediaFeature) -> bool {
     match feature {
       MediaFeature::Width(_)
@@ -833,7 +859,7 @@ fn cq_size_query_support_mask(mq: &crate::style::media::MediaQuery) -> u8 {
     }
   }
 
-  let inline_only = mq.features.iter().all(feature_inline_only);
+  let inline_only = query.support_query().features.iter().all(feature_inline_only);
 
   if inline_only {
     CQ_SUPPORT_SIZE | CQ_SUPPORT_INLINE_SIZE
@@ -13891,9 +13917,9 @@ mod tests {
 
     let condition = ContainerCondition {
       name: None,
-      query: Some(ContainerQuery::Size(
+      query: Some(ContainerQuery::Size(ContainerSizeQuery::Parsed(
         MediaQuery::parse("(min-width: 500px)").expect("media query"),
-      )),
+      ))),
     };
     let ancestor_ids = vec![0, 1];
 
@@ -13949,9 +13975,9 @@ mod tests {
 
     let condition = ContainerCondition {
       name: Some("foo".to_string()),
-      query: Some(ContainerQuery::Size(
+      query: Some(ContainerQuery::Size(ContainerSizeQuery::Parsed(
         MediaQuery::parse("(min-width: 500px)").expect("media query"),
-      )),
+      ))),
     };
     let ancestor_ids = vec![0, 1, 2];
 
@@ -13995,9 +14021,9 @@ mod tests {
 
     let condition = ContainerCondition {
       name: None,
-      query: Some(ContainerQuery::Size(
+      query: Some(ContainerQuery::Size(ContainerSizeQuery::Parsed(
         MediaQuery::parse("(min-width: 500px)").expect("media query"),
-      )),
+      ))),
     };
     let ancestor_ids = vec![0, 1];
 
@@ -14041,9 +14067,9 @@ mod tests {
 
     let condition = ContainerCondition {
       name: None,
-      query: Some(ContainerQuery::Size(
+      query: Some(ContainerQuery::Size(ContainerSizeQuery::Parsed(
         MediaQuery::parse("(min-height: 700px)").expect("media query"),
-      )),
+      ))),
     };
     let ancestor_ids = vec![0, 1, 2];
 
