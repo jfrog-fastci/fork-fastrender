@@ -623,7 +623,7 @@ fn foreign_object_overflow_visible_allows_filter_effects_outside_bounds() {
 }
 
 #[test]
-fn inline_svg_respects_display_none_when_document_css_injection_disabled() {
+fn inline_svg_respects_display_none_when_document_css_injection_disabled_with_legacy_paint_backend() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
     .spawn(|| {
@@ -665,7 +665,7 @@ fn inline_svg_respects_display_none_when_document_css_injection_disabled() {
 }
 
 #[test]
-fn inline_svg_respects_visibility_hidden_when_document_css_injection_disabled() {
+fn inline_svg_respects_visibility_hidden_when_document_css_injection_disabled_with_legacy_paint_backend() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
     .spawn(|| {
@@ -707,7 +707,7 @@ fn inline_svg_respects_visibility_hidden_when_document_css_injection_disabled() 
 }
 
 #[test]
-fn inline_svg_respects_opacity_when_document_css_injection_disabled() {
+fn inline_svg_respects_opacity_when_document_css_injection_disabled_with_legacy_paint_backend() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
     .spawn(|| {

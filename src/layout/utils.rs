@@ -1500,6 +1500,7 @@ mod tests {
         src: "img".into(),
         alt: None,
         crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
         sizes: None,
         srcset: Vec::new(),
         picture_sources: Vec::new(),

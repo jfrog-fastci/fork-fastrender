@@ -19,6 +19,7 @@ fn loaded_font(data: &[u8], family: &str) -> LoadedFont {
     style: FontStyle::Normal,
     stretch: FontStretch::Normal,
     face_metrics_overrides: Default::default(),
+    face_settings: Default::default(),
   }
 }
 
@@ -153,4 +154,3 @@ fn font_size_adjust_ic_metrics_fallback_is_deterministic() {
     1.0
   );
 }
-
