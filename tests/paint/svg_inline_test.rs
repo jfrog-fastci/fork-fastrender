@@ -39,6 +39,24 @@ pub(super) fn serialized_inline_svg(html: &str, width: f32, height: f32) -> Opti
   find_svg(&box_tree.root)
 }
 
+fn render_html_with_svg_document_css_injection_disabled(
+  renderer: &mut FastRender,
+  html: &str,
+  width: u32,
+  height: u32,
+) -> Pixmap {
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_SVG_EMBED_DOCUMENT_CSS".to_string(),
+    "0".to_string(),
+  )]));
+  let options = RenderOptions::new()
+    .with_viewport(width, height)
+    .with_runtime_toggles(toggles);
+  renderer
+    .render_html_with_options(html, options)
+    .expect("render svg")
+}
+
 #[test]
 fn inline_svg_applies_document_css_and_current_color() {
   std::thread::Builder::new()
@@ -59,6 +77,81 @@ fn inline_svg_applies_document_css_and_current_color() {
 
       let pixmap = renderer.render_html(html, 30, 30).expect("render svg");
       assert_eq!(pixel(&pixmap, 10, 10), [0, 128, 0, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn inline_svg_respects_display_none_when_document_css_injection_disabled() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        rect { display: none; }
+      </style>
+      <svg width="20" height="20" viewBox="0 0 20 20">
+        <rect width="20" height="20" fill="rgb(255, 0, 0)" />
+      </svg>
+      "#;
+
+      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
+      assert_eq!(pixel(&pixmap, 10, 10), [255, 255, 255, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn inline_svg_respects_visibility_hidden_when_document_css_injection_disabled() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        rect { visibility: hidden; }
+      </style>
+      <svg width="20" height="20" viewBox="0 0 20 20">
+        <rect width="20" height="20" fill="rgb(255, 0, 0)" />
+      </svg>
+      "#;
+
+      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
+      assert_eq!(pixel(&pixmap, 10, 10), [255, 255, 255, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn inline_svg_respects_opacity_when_document_css_injection_disabled() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+        rect { opacity: 0; }
+      </style>
+      <svg width="20" height="20" viewBox="0 0 20 20">
+        <rect width="20" height="20" fill="rgb(255, 0, 0)" />
+      </svg>
+      "#;
+
+      let pixmap = render_html_with_svg_document_css_injection_disabled(&mut renderer, html, 30, 30);
+      assert_eq!(pixel(&pixmap, 10, 10), [255, 255, 255, 255]);
     })
     .unwrap()
     .join()
