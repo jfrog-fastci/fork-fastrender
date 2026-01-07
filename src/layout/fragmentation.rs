@@ -428,7 +428,14 @@ pub(crate) fn parallel_flow_content_extent(
 
     for child in node.children.iter() {
       let child_abs_start = axis.flow_range(abs_start, node_block_size, &child.bounds).0;
-      walk(child, child_abs_start, axis, axes, fragmentainer_size, extent);
+      walk(
+        child,
+        child_abs_start,
+        axis,
+        axes,
+        fragmentainer_size,
+        extent,
+      );
     }
   }
 
@@ -1064,63 +1071,6 @@ pub(crate) fn propagate_fragment_metadata(node: &mut FragmentNode, index: usize,
   }
 }
 
-fn clip_grid_item_parallel_for_page(
-  item: &FragmentNode,
-  axis: &FragmentAxis,
-  axes: FragmentAxes,
-  fragmentainer_size: f32,
-  page_index: usize,
-) -> Result<Option<FragmentNode>, LayoutError> {
-  if !(fragmentainer_size.is_finite() && fragmentainer_size > 0.0) {
-    return Ok(None);
-  }
-
-  // Treat the grid item subtree as its own flow starting at the origin.
-  let mut local = item.clone();
-  let origin = local.bounds.origin;
-  if origin.x != 0.0 || origin.y != 0.0 {
-    local.bounds = Rect::from_xywh(0.0, 0.0, local.bounds.width(), local.bounds.height());
-    if let Some(logical) = local.logical_override {
-      local.logical_override = Some(logical.translate(Point::new(-origin.x, -origin.y)));
-    }
-  }
-
-  let mut analyzer = FragmentationAnalyzer::new(
-    &local,
-    FragmentationContext::Page,
-    axes,
-    Some(fragmentainer_size),
-  );
-  let total_extent = analyzer.content_extent().max(fragmentainer_size);
-  let boundaries = analyzer.boundaries(fragmentainer_size, total_extent)?;
-  let fragment_count = boundaries.len().saturating_sub(1);
-  if fragment_count == 0 || page_index >= fragment_count {
-    return Ok(None);
-  }
-
-  let start = boundaries[page_index];
-  let end = boundaries[page_index + 1];
-  if end <= start + BREAK_EPSILON {
-    return Ok(None);
-  }
-
-  clip_node(
-    &local,
-    axis,
-    start,
-    end,
-    0.0,
-    start,
-    end,
-    axis.block_size(&local.bounds),
-    page_index,
-    fragment_count,
-    FragmentationContext::Page,
-    fragmentainer_size,
-    axes,
-  )
-}
-
 pub(crate) fn clip_node(
   node: &FragmentNode,
   axis: &FragmentAxis,
@@ -1153,13 +1103,9 @@ pub(crate) fn clip_node(
   let mut node_block_size = original_node_block_size;
   let (node_flow_start, mut node_flow_end) =
     axis.flow_range(parent_abs_flow_start, parent_block_size, &node.bounds);
-  if let Some(required) = grid_container_parallel_flow_required_block_size(
-    node,
-    axis,
-    axes,
-    fragmentainer_size,
-    context,
-  ) {
+  if let Some(required) =
+    grid_container_parallel_flow_required_block_size(node, axis, axes, fragmentainer_size, context)
+  {
     node_block_size = node_block_size.max(required);
     node_flow_end = node_flow_start + node_block_size;
   }
@@ -1305,32 +1251,7 @@ pub(crate) fn clip_node(
     return Ok(Some(cloned));
   }
 
-  let grid_items = if matches!(context, FragmentationContext::Page)
-    && matches!(style.display, Display::Grid | Display::InlineGrid)
-  {
-    node.grid_fragmentation.as_ref()
-  } else {
-    None
-  };
-
-  for (idx, child) in node.children.iter().enumerate() {
-    let parallel_item = grid_items
-      .and_then(|info| info.items.get(idx))
-      .is_some_and(|placement| grid_item_spans_single_track(placement, axis));
-    if parallel_item {
-      if let Some(mut item_fragment) = clip_grid_item_parallel_for_page(
-        child,
-        axis,
-        axes,
-        fragmentainer_size,
-        fragment_index,
-      )? {
-        item_fragment.translate_root_in_place(child.bounds.origin);
-        cloned.children_mut().push(item_fragment);
-      }
-      continue;
-    }
-
+  for child in node.children.iter() {
     if let Some(child_clipped) = clip_node(
       child,
       axis,
@@ -1767,14 +1688,6 @@ fn collect_break_opportunities(
     None
   };
 
-  let grid_items = if matches!(context, FragmentationContext::Page)
-    && matches!(style.display, Display::Grid | Display::InlineGrid)
-  {
-    node.grid_fragmentation.as_ref()
-  } else {
-    None
-  };
-
   for (idx, child) in node.children.iter().enumerate() {
     let child_block_size = axis.block_size(&child.bounds);
     let (child_abs_start, child_abs_end) =
@@ -1827,21 +1740,16 @@ fn collect_break_opportunities(
       });
     }
 
-    let skip_descendants = grid_items
-      .and_then(|info| info.items.get(idx))
-      .is_some_and(|placement| grid_item_spans_single_track(placement, axis));
-    if !skip_descendants {
-      collect_break_opportunities(
-        child,
-        child_abs_start,
-        collection,
-        inside_avoid,
-        inside_inline,
-        context,
-        axis,
-        child_block_size,
-      );
-    }
+    collect_break_opportunities(
+      child,
+      child_abs_start,
+      collection,
+      inside_avoid,
+      inside_inline,
+      context,
+      axis,
+      child_block_size,
+    );
 
     let mut strength = combine_breaks(child_style.break_after, next_style.break_before, context);
     strength = apply_avoid_penalty(strength, inside_avoid > 0);
@@ -2108,20 +2016,14 @@ pub(crate) fn collect_forced_boundaries_with_axes(
           });
         }
       }
-
-      let skip_descendants = grid_items
-        .and_then(|info| info.items.get(idx))
-        .is_some_and(|placement| grid_item_spans_single_track(placement, axis));
-      if !skip_descendants {
-        collect(
-          child,
-          child_abs_start,
-          forced,
-          default_style,
-          axis,
-          child_block_size,
-        );
-      }
+      collect(
+        child,
+        child_abs_start,
+        forced,
+        default_style,
+        axis,
+        child_block_size,
+      );
     }
   }
 
@@ -2330,27 +2232,8 @@ fn collect_atomic_ranges_with_axis(
   );
 
   let node_block_size = axis.block_size(&node.bounds);
-  let default_style = default_style();
-  let style = node
-    .style
-    .as_ref()
-    .map(|s| s.as_ref())
-    .unwrap_or(default_style);
-  let grid_items = if matches!(context, FragmentationContext::Page)
-    && matches!(style.display, Display::Grid | Display::InlineGrid)
-  {
-    node.grid_fragmentation.as_ref()
-  } else {
-    None
-  };
 
-  for (idx, child) in node.children.iter().enumerate() {
-    let skip_descendants = grid_items
-      .and_then(|info| info.items.get(idx))
-      .is_some_and(|placement| grid_item_spans_single_track(placement, axis));
-    if skip_descendants {
-      continue;
-    }
+  for child in node.children.iter() {
     let child_abs_start = axis.flow_range(abs_start, node_block_size, &child.bounds).0;
     collect_atomic_ranges_with_axis(
       child,
@@ -2583,10 +2466,7 @@ mod tests {
       columns: Vec::new(),
     }));
 
-    let root = FragmentNode::new_block(
-      Rect::from_xywh(0.0, 0.0, 100.0, 45.0),
-      vec![leading, grid],
-    );
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 45.0), vec![leading, grid]);
     let mut analyzer = FragmentationAnalyzer::new(
       &root,
       FragmentationContext::Page,
