@@ -9844,10 +9844,26 @@ impl DisplayListRenderer {
         }
 
         if self.trace_backdrop_stack && !matches!(record.mix_blend_mode, BlendMode::Normal) {
-          let parent_depth = canvas_layer_depth_before.saturating_sub(1);
+          let (root_depth, parent_depth) = {
+            // The mix-blend-mode backdrop is the Backdrop Root Image in the element's parent
+            // surface. Mirror `Canvas::fill_backdrop_root_region` so traces show the same
+            // root→parent scoping as `backdrop-filter`.
+            let (layer_stack, _) = self.canvas.split_layer_stack_and_pixmap_mut();
+            let parent_depth = layer_stack.len().saturating_sub(1);
+            let mut root_depth = 0usize;
+            if parent_depth > 0 {
+              for idx in (0..parent_depth).rev() {
+                if layer_stack[idx].is_backdrop_root {
+                  root_depth = idx + 1;
+                  break;
+                }
+              }
+            }
+            (root_depth, parent_depth)
+          };
           eprintln!(
             "backdrop_stack composite_mix_blend mode={:?} range={}..{} composite_allocated={}",
-            record.mix_blend_mode, parent_depth, parent_depth, false
+            record.mix_blend_mode, root_depth, parent_depth, false
           );
         }
         if record.needs_layer {
