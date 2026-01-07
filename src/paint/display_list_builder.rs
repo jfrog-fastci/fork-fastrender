@@ -3065,7 +3065,7 @@ impl DisplayListBuilder {
         MaskMode::MatchSource => match image {
           BackgroundImage::Url(src) => {
             let trimmed = src.trim_start();
-            if trimmed.starts_with('<') {
+            if trimmed.starts_with('<') || trimmed.starts_with('#') {
               // Inline SVG is rasterized to RGBA; treat it as alpha-masked.
               MaskMode::Alpha
             } else if let Some(image_cache) = self.image_cache.as_ref() {

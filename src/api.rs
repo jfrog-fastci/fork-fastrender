@@ -8453,7 +8453,6 @@ impl FastRender {
     if let Some(defs) = svg_filter_defs.clone() {
       fragment_tree.svg_filter_defs = Some(defs);
     }
-
     if let Some(defs) = svg_id_defs.clone() {
       fragment_tree.svg_id_defs = Some(defs);
     }

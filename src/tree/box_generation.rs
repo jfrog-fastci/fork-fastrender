@@ -901,6 +901,402 @@ pub fn serialize_styled_subtree_plain(styled: &StyledNode) -> String {
   out
 }
 
+fn merge_style_attribute(attrs: &mut Vec<(String, String)>, extra: &str) {
+  if extra.trim().is_empty() {
+    return;
+  }
+  if let Some((_, value)) = attrs
+    .iter_mut()
+    .find(|(name, _)| name.eq_ignore_ascii_case("style"))
+  {
+    if !value.trim_end().ends_with(';') && !value.trim().is_empty() {
+      value.push(';');
+    }
+    value.push_str(extra);
+  } else {
+    attrs.push(("style".to_string(), extra.to_string()));
+  }
+}
+
+fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>) -> Option<String> {
+  use crate::style::types::ColorOrNone;
+  use crate::style::types::FillRule;
+  use crate::style::types::LengthOrNumber;
+  use crate::style::types::StrokeDasharray;
+  use crate::style::types::StrokeLinecap;
+  use crate::style::types::StrokeLinejoin;
+  use std::fmt::Write as _;
+
+  let mut out = String::new();
+  let mut any = false;
+
+  let mut start_decl = |out: &mut String, any: &mut bool| {
+    if *any {
+      out.push_str("; ");
+    } else {
+      *any = true;
+    }
+  };
+
+  let mut push_color_or_none = |out: &mut String, value: ColorOrNone| match value {
+    ColorOrNone::None => out.push_str("none"),
+    ColorOrNone::Color(color) => {
+      let _ = write!(
+        out,
+        "rgba({},{},{},{:.3})",
+        color.r,
+        color.g,
+        color.b,
+        color.a.clamp(0.0, 1.0)
+      );
+    }
+  };
+
+  let mut push_length_or_number = |out: &mut String, value: LengthOrNumber| match value {
+    LengthOrNumber::Number(v) => {
+      let _ = write!(out, "{}", v);
+    }
+    LengthOrNumber::Length(len) => {
+      let _ = write!(out, "{}", len);
+    }
+  };
+
+  if let Some(fill) = style.svg_fill {
+    if parent.and_then(|p| p.svg_fill) != Some(fill) {
+      start_decl(&mut out, &mut any);
+      out.push_str("fill: ");
+      push_color_or_none(&mut out, fill);
+    }
+  }
+
+  if let Some(stroke) = style.svg_stroke {
+    if parent.and_then(|p| p.svg_stroke) != Some(stroke) {
+      start_decl(&mut out, &mut any);
+      out.push_str("stroke: ");
+      push_color_or_none(&mut out, stroke);
+    }
+  }
+
+  if let Some(width) = style.svg_stroke_width {
+    if parent.and_then(|p| p.svg_stroke_width) != Some(width) {
+      start_decl(&mut out, &mut any);
+      out.push_str("stroke-width: ");
+      push_length_or_number(&mut out, width);
+    }
+  }
+
+  if let Some(fill_rule) = style.svg_fill_rule {
+    if parent.and_then(|p| p.svg_fill_rule) != Some(fill_rule) {
+      start_decl(&mut out, &mut any);
+      out.push_str("fill-rule: ");
+      match fill_rule {
+        FillRule::NonZero => out.push_str("nonzero"),
+        FillRule::EvenOdd => out.push_str("evenodd"),
+      }
+    }
+  }
+
+  if let Some(clip_rule) = style.svg_clip_rule {
+    if parent.and_then(|p| p.svg_clip_rule) != Some(clip_rule) {
+      start_decl(&mut out, &mut any);
+      out.push_str("clip-rule: ");
+      match clip_rule {
+        FillRule::NonZero => out.push_str("nonzero"),
+        FillRule::EvenOdd => out.push_str("evenodd"),
+      }
+    }
+  }
+
+  if let Some(linecap) = style.svg_stroke_linecap {
+    if parent.and_then(|p| p.svg_stroke_linecap) != Some(linecap) {
+      start_decl(&mut out, &mut any);
+      out.push_str("stroke-linecap: ");
+      match linecap {
+        StrokeLinecap::Butt => out.push_str("butt"),
+        StrokeLinecap::Round => out.push_str("round"),
+        StrokeLinecap::Square => out.push_str("square"),
+      }
+    }
+  }
+
+  if let Some(linejoin) = style.svg_stroke_linejoin {
+    if parent.and_then(|p| p.svg_stroke_linejoin) != Some(linejoin) {
+      start_decl(&mut out, &mut any);
+      out.push_str("stroke-linejoin: ");
+      match linejoin {
+        StrokeLinejoin::Miter => out.push_str("miter"),
+        StrokeLinejoin::Round => out.push_str("round"),
+        StrokeLinejoin::Bevel => out.push_str("bevel"),
+      }
+    }
+  }
+
+  if let Some(limit) = style.svg_stroke_miterlimit {
+    if parent.and_then(|p| p.svg_stroke_miterlimit) != Some(limit) {
+      start_decl(&mut out, &mut any);
+      let _ = write!(&mut out, "stroke-miterlimit: {}", limit);
+    }
+  }
+
+  if let Some(dasharray) = style.svg_stroke_dasharray.as_ref() {
+    if !parent
+      .and_then(|p| p.svg_stroke_dasharray.as_ref())
+      .is_some_and(|parent_dash| parent_dash == dasharray)
+    {
+      start_decl(&mut out, &mut any);
+      out.push_str("stroke-dasharray: ");
+      match dasharray {
+        StrokeDasharray::None => out.push_str("none"),
+        StrokeDasharray::Values(values) => {
+          for (idx, value) in values.iter().enumerate() {
+            if idx != 0 {
+              out.push(' ');
+            }
+            push_length_or_number(&mut out, *value);
+          }
+        }
+      }
+    }
+  }
+
+  if let Some(dashoffset) = style.svg_stroke_dashoffset {
+    if parent.and_then(|p| p.svg_stroke_dashoffset) != Some(dashoffset) {
+      start_decl(&mut out, &mut any);
+      out.push_str("stroke-dashoffset: ");
+      push_length_or_number(&mut out, dashoffset);
+    }
+  }
+
+  if let Some(opacity) = style.svg_fill_opacity {
+    if parent.and_then(|p| p.svg_fill_opacity) != Some(opacity) {
+      start_decl(&mut out, &mut any);
+      let _ = write!(&mut out, "fill-opacity: {:.3}", opacity);
+    }
+  }
+
+  if let Some(opacity) = style.svg_stroke_opacity {
+    if parent.and_then(|p| p.svg_stroke_opacity) != Some(opacity) {
+      start_decl(&mut out, &mut any);
+      let _ = write!(&mut out, "stroke-opacity: {:.3}", opacity);
+    }
+  }
+
+  any.then_some(out)
+}
+
+fn serialize_svg_mask_subtree_with_namespaces(
+  styled: &StyledNode,
+  inherited_xmlns: &[(String, String)],
+  parent_ns: Option<&str>,
+  parent_svg_styles: Option<&ComputedStyle>,
+  is_root: bool,
+  out: &mut String,
+) {
+  match &styled.node.node_type {
+    crate::dom::DomNodeType::Document { .. } | crate::dom::DomNodeType::ShadowRoot { .. } => {
+      for child in &styled.children {
+        serialize_svg_mask_subtree_with_namespaces(
+          child,
+          inherited_xmlns,
+          parent_ns,
+          parent_svg_styles,
+          false,
+          out,
+        );
+      }
+    }
+    crate::dom::DomNodeType::Slot {
+      namespace,
+      attributes,
+      ..
+    } => {
+      let mut current_ns = namespace.as_str();
+      if is_root && current_ns.is_empty() {
+        current_ns = SVG_NAMESPACE;
+      } else if current_ns.is_empty() {
+        if let Some(parent_ns) = parent_ns {
+          current_ns = parent_ns;
+        }
+      }
+
+      let next_parent_svg_styles = if current_ns == SVG_NAMESPACE {
+        Some(&*styled.styles)
+      } else {
+        parent_svg_styles
+      };
+
+      let mut attrs = attributes.clone();
+      let mut namespaces: Vec<(String, String)> = inherited_xmlns.to_vec();
+      for (name, value) in &attrs {
+        if name.starts_with("xmlns")
+          && !namespaces.iter().any(|(n, _)| n.eq_ignore_ascii_case(name))
+        {
+          namespaces.push((name.clone(), value.clone()));
+        }
+      }
+      if !current_ns.is_empty()
+        && !attrs.iter().any(|(n, _)| n.eq_ignore_ascii_case("xmlns"))
+        && !namespaces.iter().any(|(n, _)| n.eq_ignore_ascii_case("xmlns"))
+      {
+        namespaces.push(("xmlns".to_string(), current_ns.to_string()));
+      }
+      for (name, value) in &namespaces {
+        if !attrs.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)) {
+          attrs.push((name.clone(), value.clone()));
+        }
+      }
+
+      out.push_str("<slot");
+      for (name, value) in &attrs {
+        out.push(' ');
+        out.push_str(name);
+        out.push('=');
+        out.push('"');
+        push_escaped_attr(out, value);
+        out.push('"');
+      }
+      out.push('>');
+      for child in &styled.children {
+        serialize_svg_mask_subtree_with_namespaces(
+          child,
+          &namespaces,
+          Some(current_ns),
+          next_parent_svg_styles,
+          false,
+          out,
+        );
+      }
+      out.push_str("</slot>");
+    }
+    crate::dom::DomNodeType::Text { content } => push_escaped_text(out, content),
+    crate::dom::DomNodeType::Element {
+      tag_name,
+      namespace,
+      attributes,
+    } => {
+      let mut current_ns = namespace.as_str();
+      if is_root && current_ns.is_empty() {
+        current_ns = SVG_NAMESPACE;
+      } else if current_ns.is_empty() {
+        if let Some(parent_ns) = parent_ns {
+          current_ns = parent_ns;
+        }
+      }
+
+      let next_parent_svg_styles = if current_ns == SVG_NAMESPACE {
+        Some(&*styled.styles)
+      } else {
+        parent_svg_styles
+      };
+
+      let mut attrs = attributes.clone();
+      let mut namespaces: Vec<(String, String)> = inherited_xmlns.to_vec();
+      for (name, value) in &attrs {
+        if name.starts_with("xmlns")
+          && !namespaces.iter().any(|(n, _)| n.eq_ignore_ascii_case(name))
+        {
+          namespaces.push((name.clone(), value.clone()));
+        }
+      }
+      if !current_ns.is_empty()
+        && !attrs.iter().any(|(n, _)| n.eq_ignore_ascii_case("xmlns"))
+        && !namespaces.iter().any(|(n, _)| n.eq_ignore_ascii_case("xmlns"))
+      {
+        namespaces.push(("xmlns".to_string(), current_ns.to_string()));
+      }
+      for (name, value) in &namespaces {
+        if !attrs.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)) {
+          attrs.push((name.clone(), value.clone()));
+        }
+      }
+
+      if current_ns == SVG_NAMESPACE {
+        if let Some(extra) = svg_presentation_style(&styled.styles, parent_svg_styles) {
+          merge_style_attribute(&mut attrs, &extra);
+        }
+      }
+
+      out.push('<');
+      out.push_str(tag_name);
+      for (name, value) in &attrs {
+        out.push(' ');
+        out.push_str(name);
+        out.push('=');
+        out.push('"');
+        push_escaped_attr(out, value);
+        out.push('"');
+      }
+      out.push('>');
+      for child in &styled.children {
+        serialize_svg_mask_subtree_with_namespaces(
+          child,
+          &namespaces,
+          Some(current_ns),
+          next_parent_svg_styles,
+          false,
+          out,
+        );
+      }
+      out.push_str("</");
+      out.push_str(tag_name);
+      out.push('>');
+    }
+  }
+}
+
+/// Collect all SVG `<mask>` definitions with an `id` attribute from a styled DOM tree.
+///
+/// The returned map contains serialized mask elements keyed by their id. Serialized masks inline
+/// computed SVG presentation properties (fill/stroke/etc.) so downstream rasterizers (resvg) do
+/// not need access to the full document CSS cascade.
+///
+/// Namespace declarations from ancestor elements are preserved to keep prefixed attributes valid.
+pub fn collect_svg_mask_defs(styled: &StyledNode) -> HashMap<String, String> {
+  fn walk(
+    styled: &StyledNode,
+    inherited_xmlns: &[(String, String)],
+    masks: &mut HashMap<String, String>,
+  ) {
+    let mut owned_namespaces: Option<Vec<(String, String)>> = None;
+    let mut namespaces = inherited_xmlns;
+    if let crate::dom::DomNodeType::Element {
+      tag_name,
+      attributes,
+      ..
+    } = &styled.node.node_type
+    {
+      if attributes.iter().any(|(name, _)| name.starts_with("xmlns")) {
+        let mut updated = inherited_xmlns.to_vec();
+        for (name, value) in attributes.iter().filter(|(n, _)| n.starts_with("xmlns")) {
+          if !updated.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)) {
+            updated.push((name.clone(), value.clone()));
+          }
+        }
+        owned_namespaces = Some(updated);
+        namespaces = owned_namespaces.as_deref().unwrap_or(inherited_xmlns);
+      }
+
+      if tag_name.eq_ignore_ascii_case("mask") {
+        if let Some(id) = styled.node.get_attribute_ref("id") {
+          if !id.is_empty() && !masks.contains_key(id) {
+            let mut serialized = String::new();
+            serialize_svg_mask_subtree_with_namespaces(styled, namespaces, None, None, true, &mut serialized);
+            masks.insert(id.to_string(), serialized);
+          }
+        }
+      }
+    }
+
+    for child in &styled.children {
+      walk(child, namespaces, masks);
+    }
+  }
+
+  let mut masks = HashMap::new();
+  walk(styled, &[], &mut masks);
+  masks
+}
+
 /// Collect all SVG `<filter>` definitions with an `id` attribute from a styled DOM tree.
 ///
 /// The returned map contains serialized filter elements keyed by their id.
@@ -999,7 +1395,20 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
         if let Some(id) = styled.node.get_attribute_ref("id") {
           if !id.is_empty() && !defs.contains_key(id) {
             let mut serialized = String::new();
-            serialize_node_with_namespaces(styled, namespaces, &mut serialized);
+            if tag_name.eq_ignore_ascii_case("mask") {
+              // Inline computed SVG presentation properties (fill/stroke/etc.) so fragment-only mask
+              // images (`mask-image: url(#id)`) preserve document CSS styling when rasterized.
+              serialize_svg_mask_subtree_with_namespaces(
+                styled,
+                namespaces,
+                None,
+                None,
+                true,
+                &mut serialized,
+              );
+            } else {
+              serialize_node_with_namespaces(styled, namespaces, &mut serialized);
+            }
             defs.insert(id.to_string(), serialized);
           }
         }
@@ -1064,23 +1473,6 @@ fn serialize_svg_subtree(
     .with(|cell| cell.borrow().is_some())
     .then(Instant::now);
 
-  fn merge_style_attribute(attrs: &mut Vec<(String, String)>, extra: &str) {
-    if extra.trim().is_empty() {
-      return;
-    }
-    if let Some((_, value)) = attrs
-      .iter_mut()
-      .find(|(name, _)| name.eq_ignore_ascii_case("style"))
-    {
-      if !value.trim_end().ends_with(';') && !value.trim().is_empty() {
-        value.push(';');
-      }
-      value.push_str(extra);
-    } else {
-      attrs.push(("style".to_string(), extra.to_string()));
-    }
-  }
-
   fn root_style(style: &ComputedStyle) -> String {
     use std::fmt::Write as _;
 
@@ -1128,175 +1520,6 @@ fn serialize_svg_subtree(
     }
 
     out
-  }
-
-  fn svg_presentation_style(
-    style: &ComputedStyle,
-    parent: Option<&ComputedStyle>,
-  ) -> Option<String> {
-    use crate::style::types::ColorOrNone;
-    use crate::style::types::FillRule;
-    use crate::style::types::LengthOrNumber;
-    use crate::style::types::StrokeDasharray;
-    use crate::style::types::StrokeLinecap;
-    use crate::style::types::StrokeLinejoin;
-    use std::fmt::Write as _;
-
-    let mut out = String::new();
-    let mut any = false;
-
-    let mut start_decl = |out: &mut String, any: &mut bool| {
-      if *any {
-        out.push_str("; ");
-      } else {
-        *any = true;
-      }
-    };
-
-    let mut push_color_or_none = |out: &mut String, value: ColorOrNone| match value {
-      ColorOrNone::None => out.push_str("none"),
-      ColorOrNone::Color(color) => {
-        let _ = write!(
-          out,
-          "rgba({},{},{},{:.3})",
-          color.r,
-          color.g,
-          color.b,
-          color.a.clamp(0.0, 1.0)
-        );
-      }
-    };
-
-    let mut push_length_or_number = |out: &mut String, value: LengthOrNumber| match value {
-      LengthOrNumber::Number(v) => {
-        let _ = write!(out, "{}", v);
-      }
-      LengthOrNumber::Length(len) => {
-        let _ = write!(out, "{}", len);
-      }
-    };
-
-    if let Some(fill) = style.svg_fill {
-      if parent.and_then(|p| p.svg_fill) != Some(fill) {
-        start_decl(&mut out, &mut any);
-        out.push_str("fill: ");
-        push_color_or_none(&mut out, fill);
-      }
-    }
-
-    if let Some(stroke) = style.svg_stroke {
-      if parent.and_then(|p| p.svg_stroke) != Some(stroke) {
-        start_decl(&mut out, &mut any);
-        out.push_str("stroke: ");
-        push_color_or_none(&mut out, stroke);
-      }
-    }
-
-    if let Some(width) = style.svg_stroke_width {
-      if parent.and_then(|p| p.svg_stroke_width) != Some(width) {
-        start_decl(&mut out, &mut any);
-        out.push_str("stroke-width: ");
-        push_length_or_number(&mut out, width);
-      }
-    }
-
-    if let Some(fill_rule) = style.svg_fill_rule {
-      if parent.and_then(|p| p.svg_fill_rule) != Some(fill_rule) {
-        start_decl(&mut out, &mut any);
-        out.push_str("fill-rule: ");
-        match fill_rule {
-          FillRule::NonZero => out.push_str("nonzero"),
-          FillRule::EvenOdd => out.push_str("evenodd"),
-        }
-      }
-    }
-
-    if let Some(clip_rule) = style.svg_clip_rule {
-      if parent.and_then(|p| p.svg_clip_rule) != Some(clip_rule) {
-        start_decl(&mut out, &mut any);
-        out.push_str("clip-rule: ");
-        match clip_rule {
-          FillRule::NonZero => out.push_str("nonzero"),
-          FillRule::EvenOdd => out.push_str("evenodd"),
-        }
-      }
-    }
-
-    if let Some(linecap) = style.svg_stroke_linecap {
-      if parent.and_then(|p| p.svg_stroke_linecap) != Some(linecap) {
-        start_decl(&mut out, &mut any);
-        out.push_str("stroke-linecap: ");
-        match linecap {
-          StrokeLinecap::Butt => out.push_str("butt"),
-          StrokeLinecap::Round => out.push_str("round"),
-          StrokeLinecap::Square => out.push_str("square"),
-        }
-      }
-    }
-
-    if let Some(linejoin) = style.svg_stroke_linejoin {
-      if parent.and_then(|p| p.svg_stroke_linejoin) != Some(linejoin) {
-        start_decl(&mut out, &mut any);
-        out.push_str("stroke-linejoin: ");
-        match linejoin {
-          StrokeLinejoin::Miter => out.push_str("miter"),
-          StrokeLinejoin::Round => out.push_str("round"),
-          StrokeLinejoin::Bevel => out.push_str("bevel"),
-        }
-      }
-    }
-
-    if let Some(limit) = style.svg_stroke_miterlimit {
-      if parent.and_then(|p| p.svg_stroke_miterlimit) != Some(limit) {
-        start_decl(&mut out, &mut any);
-        let _ = write!(&mut out, "stroke-miterlimit: {}", limit);
-      }
-    }
-
-    if let Some(dasharray) = style.svg_stroke_dasharray.as_ref() {
-      if !parent
-        .and_then(|p| p.svg_stroke_dasharray.as_ref())
-        .is_some_and(|parent_dash| parent_dash == dasharray)
-      {
-        start_decl(&mut out, &mut any);
-        out.push_str("stroke-dasharray: ");
-        match dasharray {
-          StrokeDasharray::None => out.push_str("none"),
-          StrokeDasharray::Values(values) => {
-            for (idx, value) in values.iter().enumerate() {
-              if idx != 0 {
-                out.push(' ');
-              }
-              push_length_or_number(&mut out, *value);
-            }
-          }
-        }
-      }
-    }
-
-    if let Some(dashoffset) = style.svg_stroke_dashoffset {
-      if parent.and_then(|p| p.svg_stroke_dashoffset) != Some(dashoffset) {
-        start_decl(&mut out, &mut any);
-        out.push_str("stroke-dashoffset: ");
-        push_length_or_number(&mut out, dashoffset);
-      }
-    }
-
-    if let Some(opacity) = style.svg_fill_opacity {
-      if parent.and_then(|p| p.svg_fill_opacity) != Some(opacity) {
-        start_decl(&mut out, &mut any);
-        let _ = write!(&mut out, "fill-opacity: {:.3}", opacity);
-      }
-    }
-
-    if let Some(opacity) = style.svg_stroke_opacity {
-      if parent.and_then(|p| p.svg_stroke_opacity) != Some(opacity) {
-        start_decl(&mut out, &mut any);
-        let _ = write!(&mut out, "stroke-opacity: {:.3}", opacity);
-      }
-    }
-
-    any.then_some(out)
   }
 
   let embed_document_css = svg_document_css_style_element.is_some();
