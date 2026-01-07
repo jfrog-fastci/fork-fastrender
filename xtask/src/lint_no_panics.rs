@@ -432,9 +432,253 @@ fn skip_attribute(bytes: &[u8], idx: usize) -> Option<usize> {
   attribute_range(bytes, idx).map(|(end_after, _, _)| end_after)
 }
 
+#[derive(Debug, Clone)]
+enum CfgExpr {
+  Test,
+  Var(String),
+  All(Vec<CfgExpr>),
+  Any(Vec<CfgExpr>),
+  Not(Box<CfgExpr>),
+}
+
+impl CfgExpr {
+  fn contains_test(&self) -> bool {
+    match self {
+      CfgExpr::Test => true,
+      CfgExpr::Var(_) => false,
+      CfgExpr::All(items) | CfgExpr::Any(items) => items.iter().any(|item| item.contains_test()),
+      CfgExpr::Not(inner) => inner.contains_test(),
+    }
+  }
+}
+
+struct CfgParser<'a> {
+  source: &'a str,
+  bytes: &'a [u8],
+  idx: usize,
+}
+
+impl<'a> CfgParser<'a> {
+  fn new(source: &'a str) -> Self {
+    Self {
+      source,
+      bytes: source.as_bytes(),
+      idx: 0,
+    }
+  }
+
+  fn is_eof(&self) -> bool {
+    self.idx >= self.bytes.len()
+  }
+
+  fn skip_ws(&mut self) {
+    while self.idx < self.bytes.len() && self.bytes[self.idx].is_ascii_whitespace() {
+      self.idx += 1;
+    }
+  }
+
+  fn consume_byte(&mut self, b: u8) -> bool {
+    self.skip_ws();
+    if self.bytes.get(self.idx) == Some(&b) {
+      self.idx += 1;
+      true
+    } else {
+      false
+    }
+  }
+
+  fn parse_ident(&mut self) -> Option<String> {
+    self.skip_ws();
+    let start = self.idx;
+    let first = *self.bytes.get(self.idx)?;
+    if !(first.is_ascii_alphabetic() || first == b'_') {
+      return None;
+    }
+    self.idx += 1;
+    while self.idx < self.bytes.len() && is_ident_continue(self.bytes[self.idx]) {
+      self.idx += 1;
+    }
+    Some(self.source[start..self.idx].to_string())
+  }
+
+  fn parse_value_token(&mut self) -> Option<String> {
+    self.skip_ws();
+    let start = self.idx;
+
+    if let Some((end_after, _prefix_len)) = skip_raw_string(self.bytes, self.idx) {
+      self.idx = end_after;
+      return Some(self.source[start..end_after].to_string());
+    }
+
+    if self.bytes.get(self.idx..self.idx + 2) == Some(b"b\"") {
+      let end = skip_string(self.bytes, self.idx, 2);
+      self.idx = end;
+      return Some(self.source[start..end].to_string());
+    }
+
+    if self.bytes.get(self.idx) == Some(&b'"') {
+      let end = skip_string(self.bytes, self.idx, 1);
+      self.idx = end;
+      return Some(self.source[start..end].to_string());
+    }
+
+    // Numeric literal (rare in cfg, but accepted in meta items).
+    if self.bytes.get(self.idx).is_some_and(|b| b.is_ascii_digit()) {
+      self.idx += 1;
+      while self.idx < self.bytes.len() && self.bytes[self.idx].is_ascii_digit() {
+        self.idx += 1;
+      }
+      return Some(self.source[start..self.idx].to_string());
+    }
+
+    self.parse_ident()
+  }
+
+  fn parse_cfg_expr(&mut self) -> Option<CfgExpr> {
+    let name = self.parse_ident()?;
+
+    // Key/value meta item: `feature = "foo"`.
+    if self.consume_byte(b'=') {
+      let value = self.parse_value_token()?;
+      return Some(CfgExpr::Var(format!("{name}={value}")));
+    }
+
+    // List meta item / operators: `all(...)`, `any(...)`, `not(...)`.
+    if self.consume_byte(b'(') {
+      let mut args = Vec::new();
+      self.skip_ws();
+      if self.consume_byte(b')') {
+        return Some(match name.as_str() {
+          "all" => CfgExpr::All(args),
+          "any" => CfgExpr::Any(args),
+          _ => CfgExpr::Var(format!("{name}()")),
+        });
+      }
+
+      loop {
+        let arg = self.parse_cfg_expr()?;
+        args.push(arg);
+        self.skip_ws();
+        if self.consume_byte(b',') {
+          if self.consume_byte(b')') {
+            break;
+          }
+          continue;
+        }
+        if self.consume_byte(b')') {
+          break;
+        }
+        return None;
+      }
+
+      return Some(match name.as_str() {
+        "all" => CfgExpr::All(args),
+        "any" => CfgExpr::Any(args),
+        "not" => CfgExpr::Not(Box::new(args.into_iter().next()?)),
+        _ => CfgExpr::Var(name),
+      });
+    }
+
+    if name == "test" {
+      return Some(CfgExpr::Test);
+    }
+    Some(CfgExpr::Var(name))
+  }
+
+  fn parse_cfg_attribute(&mut self) -> Option<CfgExpr> {
+    let name = self.parse_ident()?;
+    if name != "cfg" {
+      return None;
+    }
+    if !self.consume_byte(b'(') {
+      return None;
+    }
+    let expr = self.parse_cfg_expr()?;
+    self.skip_ws();
+    if !self.consume_byte(b')') {
+      return None;
+    }
+    self.skip_ws();
+    if !self.is_eof() {
+      return None;
+    }
+    Some(expr)
+  }
+}
+
+fn cfg_expr_is_satisfiable(expr: &CfgExpr, test_value: bool) -> bool {
+  use std::collections::hash_map::Entry;
+
+  fn collect(expr: &CfgExpr, vars: &mut HashMap<String, usize>) {
+    match expr {
+      CfgExpr::Test => {}
+      CfgExpr::Var(name) => {
+        let next_idx = vars.len();
+        if let Entry::Vacant(entry) = vars.entry(name.clone()) {
+          entry.insert(next_idx);
+        }
+      }
+      CfgExpr::All(items) | CfgExpr::Any(items) => {
+        for item in items {
+          collect(item, vars);
+        }
+      }
+      CfgExpr::Not(inner) => collect(inner, vars),
+    }
+  }
+
+  fn eval(
+    expr: &CfgExpr,
+    test_value: bool,
+    vars: &HashMap<String, usize>,
+    assignment: &[bool],
+  ) -> bool {
+    match expr {
+      CfgExpr::Test => test_value,
+      CfgExpr::Var(name) => assignment[*vars.get(name).unwrap_or(&0)],
+      CfgExpr::All(items) => items
+        .iter()
+        .all(|item| eval(item, test_value, vars, assignment)),
+      CfgExpr::Any(items) => items
+        .iter()
+        .any(|item| eval(item, test_value, vars, assignment)),
+      CfgExpr::Not(inner) => !eval(inner, test_value, vars, assignment),
+    }
+  }
+
+  let mut vars = HashMap::new();
+  collect(expr, &mut vars);
+  let var_count = vars.len();
+  // `cfg()` expressions should stay small; be conservative if something weird shows up.
+  if var_count > 16 {
+    return true;
+  }
+
+  let mut assignment = vec![false; var_count];
+  for mask in 0..(1usize << var_count) {
+    for (idx, slot) in assignment.iter_mut().enumerate() {
+      *slot = (mask >> idx) & 1 == 1;
+    }
+    if eval(expr, test_value, &vars, &assignment) {
+      return true;
+    }
+  }
+
+  false
+}
+
 fn attribute_is_cfg_test(attr: &str) -> bool {
-  let compact: String = attr.chars().filter(|c| !c.is_whitespace()).collect();
-  compact == "cfg(test)"
+  let mut parser = CfgParser::new(attr);
+  let Some(expr) = parser.parse_cfg_attribute() else {
+    return false;
+  };
+  if !expr.contains_test() {
+    return false;
+  }
+
+  // Treat `#[cfg(...)]` as test-only only when the cfg expression is unsatisfiable with
+  // `test=false`. This handles `cfg(all(test, ...))` while avoiding `cfg(any(test, feature = ...))`.
+  !cfg_expr_is_satisfiable(&expr, false)
 }
 
 fn starts_with_token(bytes: &[u8], idx: usize, token: &[u8]) -> bool {
@@ -909,5 +1153,46 @@ pub fn demo() {
     assert_eq!(normalize_baseline_path("src\\api.rs"), "src/api.rs");
     assert_eq!(normalize_baseline_path("./src/api.rs"), "src/api.rs");
     assert_eq!(normalize_baseline_path(".\\src\\api.rs"), "src/api.rs");
+  }
+
+  #[test]
+  fn ignores_cfg_all_test_blocks() {
+    let src = r#"
+pub fn demo() {
+  #[cfg(all(test, not(feature = "disk_cache")))]
+  {
+    let _ = Some(1).unwrap();
+    panic!("boom");
+  }
+}
+"#;
+
+    let violations = lint_source(Path::new("demo.rs"), src);
+    assert!(
+      violations.is_empty(),
+      "expected cfg(all(test, ...)) to be ignored: {violations:#?}"
+    );
+  }
+
+  #[test]
+  fn ignores_cfg_all_test_blocks_with_trailing_commas() {
+    let src = r#"
+pub fn demo() {
+  #[cfg(all(
+    test,
+    not(feature = "disk_cache"),
+  ))]
+  {
+    let _ = Some(1).unwrap();
+    panic!("boom");
+  }
+}
+"#;
+
+    let violations = lint_source(Path::new("demo.rs"), src);
+    assert!(
+      violations.is_empty(),
+      "expected trailing commas in cfg(all(test, ...)) to be ignored: {violations:#?}"
+    );
   }
 }
