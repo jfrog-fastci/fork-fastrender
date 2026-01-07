@@ -3631,6 +3631,68 @@ impl DisplayListRenderer {
     Some(layer_bounds)
   }
 
+  fn projective_backdrop_layer_bounds(
+    &self,
+    plane_css_bounds: Rect,
+    css_bounds: Rect,
+    parent_transform: Transform,
+    projective_transform: &Transform3D,
+    filters: &[ResolvedFilter],
+    backdrop_filters: &[ResolvedFilter],
+  ) -> Option<Rect> {
+    let quad = projective_transform.project_quad(plane_css_bounds)?;
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for p in quad {
+      min_x = min_x.min(p.x);
+      min_y = min_y.min(p.y);
+      max_x = max_x.max(p.x);
+      max_y = max_y.max(p.y);
+    }
+
+    let projected_css = Rect::from_xywh(min_x, min_y, max_x - min_x, max_y - min_y);
+    let projected_device = self.ds_rect(projected_css);
+    let mut layer_bounds = transform_rect(projected_device, &parent_transform);
+    let (f_l, f_t, f_r, f_b) =
+      filter_outset_with_bounds(filters, self.scale, Some(css_bounds)).as_tuple();
+    let (b_l, b_t, b_r, b_b) =
+      filter_outset_with_bounds(backdrop_filters, self.scale, Some(css_bounds)).as_tuple();
+    let expand_left = f_l.max(b_l);
+    let expand_top = f_t.max(b_t);
+    let expand_right = f_r.max(b_r);
+    let expand_bottom = f_b.max(b_b);
+    layer_bounds = Rect::from_xywh(
+      layer_bounds.x() - expand_left,
+      layer_bounds.y() - expand_top,
+      layer_bounds.width() + expand_left + expand_right,
+      layer_bounds.height() + expand_top + expand_bottom,
+    );
+
+    if let Some(clip) = self.canvas.clip_bounds() {
+      layer_bounds = match layer_bounds.intersection(clip) {
+        Some(r) => r,
+        None => return None,
+      };
+    }
+
+    layer_bounds = match layer_bounds.intersection(self.canvas.bounds()) {
+      Some(r) => r,
+      None => return None,
+    };
+
+    if layer_bounds.width() <= 0.0
+      || layer_bounds.height() <= 0.0
+      || !layer_bounds.x().is_finite()
+      || !layer_bounds.y().is_finite()
+    {
+      return None;
+    }
+
+    Some(layer_bounds)
+  }
+
   fn layer_space_bounds(&self, bounds: Rect, origin: (i32, i32), layer: &Pixmap) -> Option<Rect> {
     let translated = Rect::from_xywh(
       bounds.x() - origin.0 as f32,
@@ -8955,7 +9017,7 @@ impl DisplayListRenderer {
           || opacity < 1.0 - f32::EPSILON
           || mask.is_some()
           || projective_transform.is_some();
-        let layer_bounds = needs_layer
+        let mut layer_bounds = needs_layer
           .then(|| {
             let bounds_transform = if projective_transform.is_some() {
               parent_transform
@@ -8971,18 +9033,36 @@ impl DisplayListRenderer {
             )
           })
           .flatten();
+
+        let mut allocation_bounds = layer_bounds;
+        if needs_layer && has_backdrop {
+          if let Some(projective_transform) = projective_transform.as_ref() {
+            if let Some(projected_bounds) = self.projective_backdrop_layer_bounds(
+              plane_css_bounds,
+              css_bounds,
+              parent_transform,
+              projective_transform,
+              &scaled_filters,
+              &scaled_backdrop,
+            ) {
+              let merged = layer_bounds
+                .map(|existing| existing.union(projected_bounds))
+                .unwrap_or(projected_bounds);
+              allocation_bounds = Some(merged);
+              layer_bounds = Some(merged);
+            } else {
+              // If we fail to compute safe projective bounds, fall back to the previous unbounded
+              // allocation behavior rather than risking cropped warps.
+              allocation_bounds = None;
+            }
+          }
+        }
+
         let (bounded_rect, layer_origin) = if needs_layer {
-          let bounded_rect = if has_backdrop && projective_transform.is_some() {
-            // Backdrop filtering under projective warps isn't fully supported yet; keep the legacy
-            // unbounded layer behavior to avoid cropping the warped output.
-            None
-          } else {
-            layer_bounds
-          };
-          let origin = bounded_rect
+          let origin = allocation_bounds
             .map(|rect| (rect.min_x().floor() as i32, rect.min_y().floor() as i32))
             .unwrap_or((0, 0));
-          (bounded_rect, origin)
+          (allocation_bounds, origin)
         } else {
           (None, (0, 0))
         };
@@ -14084,6 +14164,128 @@ mod tests {
       20u64.saturating_mul(20).saturating_mul(4),
       "expected backdrop-filter stacking context to allocate a bounded layer"
     );
+  }
+
+  #[test]
+  fn backdrop_filter_projective_transform_uses_bounded_layer_allocation() {
+    let diag = Arc::new(LayerAllocationDiagnostics::default());
+    let mut renderer = DisplayListRenderer::new(100, 100, Rgba::WHITE, FontContext::new()).unwrap();
+    renderer.set_parallelism(PaintParallelism::disabled());
+    renderer.layer_alloc_diagnostics = Some(diag.clone());
+
+    let bounds = Rect::from_xywh(10.0, 10.0, 20.0, 20.0);
+    let center = bounds.center();
+    let rotate = Transform3D::translate(center.x, center.y, 0.0)
+      .multiply(&Transform3D::rotate_y(35_f32.to_radians()))
+      .multiply(&Transform3D::translate(-center.x, -center.y, 0.0));
+    let transform = Transform3D::perspective(200.0).multiply(&rotate);
+
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      bounds,
+      plane_rect: bounds,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: false,
+      transform: Some(transform),
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: vec![ResolvedFilter::Brightness(1.0)],
+      radii: BorderRadii::ZERO,
+      mask: None,
+    }));
+    list.push(DisplayItem::PopStackingContext);
+
+    renderer.render(&list).unwrap();
+    let snapshot = diag.snapshot();
+    assert_eq!(snapshot.allocations, 1);
+    let full_canvas_bytes = 100u64.saturating_mul(100).saturating_mul(4);
+    assert!(
+      snapshot.bytes > 0 && snapshot.bytes < full_canvas_bytes,
+      "expected bounded projective+backdrop allocation, got {} bytes for a {}-byte canvas",
+      snapshot.bytes,
+      full_canvas_bytes
+    );
+  }
+
+  #[test]
+  fn backdrop_filter_projective_transform_changes_pixels() {
+    let viewport = 64u32;
+    let bounds = Rect::from_xywh(10.0, 10.0, 20.0, 20.0);
+    let center = bounds.center();
+    let rotate = Transform3D::translate(center.x, center.y, 0.0)
+      .multiply(&Transform3D::rotate_y(20_f32.to_radians()))
+      .multiply(&Transform3D::translate(-center.x, -center.y, 0.0));
+    let transform = Transform3D::perspective(400.0).multiply(&rotate);
+
+    let mut base = DisplayList::new();
+    base.push(DisplayItem::FillRect(FillRectItem {
+      rect: Rect::from_xywh(0.0, 0.0, viewport as f32, viewport as f32),
+      color: Rgba::rgb(255, 0, 0),
+    }));
+    base.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      bounds,
+      plane_rect: bounds,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: false,
+      transform: Some(transform),
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+    }));
+    base.push(DisplayItem::PopStackingContext);
+
+    let mut filtered = base.clone();
+    if let Some(DisplayItem::PushStackingContext(ctx)) = filtered.items_mut().get_mut(1) {
+      ctx.backdrop_filters = vec![ResolvedFilter::Invert(1.0)];
+    }
+
+    let baseline_pixmap =
+      DisplayListRenderer::new(viewport, viewport, Rgba::WHITE, FontContext::new())
+        .unwrap()
+        .render(&base)
+        .unwrap();
+    let filtered_pixmap =
+      DisplayListRenderer::new(viewport, viewport, Rgba::WHITE, FontContext::new())
+        .unwrap()
+        .render(&filtered)
+        .unwrap();
+
+    let union = bounds.union(transform.transform_rect(bounds));
+    let Some(check_rect) = union.intersection(Rect::from_xywh(
+      0.0,
+      0.0,
+      viewport as f32,
+      viewport as f32,
+    )) else {
+      panic!("expected projected bounds to intersect viewport");
+    };
+    let x0 = check_rect.min_x().floor().max(0.0) as u32;
+    let y0 = check_rect.min_y().floor().max(0.0) as u32;
+    let x1 = check_rect.max_x().ceil().min(viewport as f32) as u32;
+    let y1 = check_rect.max_y().ceil().min(viewport as f32) as u32;
+
+    let mut changed = false;
+    'outer: for y in y0..y1 {
+      for x in x0..x1 {
+        if pixel(&baseline_pixmap, x, y) != pixel(&filtered_pixmap, x, y) {
+          changed = true;
+          break 'outer;
+        }
+      }
+    }
+    assert!(changed, "expected backdrop-filter to change at least one pixel");
   }
 
   #[test]
