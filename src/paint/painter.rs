@@ -2136,6 +2136,11 @@ impl Painter {
     let blend_mode = style_ref
       .map(|s| s.mix_blend_mode)
       .unwrap_or(MixBlendMode::Normal);
+    let has_blend_mode_children = !is_root_context
+      && local_commands.iter().any(|cmd| match cmd {
+        DisplayCommand::StackingContext { blend_mode, .. } => !matches!(blend_mode, MixBlendMode::Normal),
+        _ => false,
+      });
     let isolated = style_ref
       .map(|s| {
         matches!(s.isolation, crate::style::types::Isolation::Isolate)
@@ -2145,9 +2150,11 @@ impl Painter {
           //
           // Avoid overriding explicit `mix-blend-mode` compositing: when the stacking context root
           // itself is blending, we still need to composite with its blend mode.
-          || (matches!(blend_mode, MixBlendMode::Normal) && s.will_change.establishes_backdrop_root())
+          || (matches!(blend_mode, MixBlendMode::Normal)
+            && s.will_change.establishes_backdrop_root())
       })
-      .unwrap_or(false);
+      .unwrap_or(false)
+      || has_blend_mode_children;
     let filters = style_ref
       .map(|s| resolve_filters(&s.filter, s, viewport, &self.font_ctx, svg_filters))
       .unwrap_or_default();
@@ -3137,16 +3144,12 @@ impl Painter {
           }
         }
         let composite_start = profile_enabled.then(Instant::now);
-        let fallback_blend = if isolated {
-          SkiaBlendMode::SourceOver
-        } else {
-          map_blend_mode(blend_mode)
-        };
+        let fallback_blend = map_blend_mode(blend_mode);
         if let Some(affine) = affine_2d {
           let mut final_transform = self
             .device_transform(Some(transform2d_to_skia(affine)))
             .unwrap_or_else(Transform::identity);
-          if is_hsl_blend(blend_mode) && !isolated {
+          if is_hsl_blend(blend_mode) {
             if let Some(mut transformed) = new_pixmap(self.pixmap.width(), self.pixmap.height()) {
               if self.diagnostics_enabled {
                 record_layer_allocation(self.pixmap.width(), self.pixmap.height());
@@ -3207,7 +3210,7 @@ impl Painter {
         } else if let Some(homography) = Homography::from_quads(src_quad, dest_quad_device) {
           let dst_quad: [(f32, f32); 4] = dest_quad_device.map(|p| (p.x, p.y));
           let target_size = (self.pixmap.width(), self.pixmap.height());
-          if is_hsl_blend(blend_mode) && !isolated {
+          if is_hsl_blend(blend_mode) {
             if let Some(warped) =
               warp_pixmap(&layer_pixmap, &homography, &dst_quad, target_size, None)?
             {
