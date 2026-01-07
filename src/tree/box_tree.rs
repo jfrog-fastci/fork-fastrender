@@ -176,10 +176,10 @@ pub enum FormControlKind {
   Range {
     /// Current numeric value
     value: f32,
-    /// Minimum value (default 0)
-    min: Option<f32>,
-    /// Maximum value (default 100)
-    max: Option<f32>,
+    /// Minimum value (defaults to 0)
+    min: f32,
+    /// Maximum value (defaults to 100; clamped to `min` when `max < min`)
+    max: f32,
   },
   /// Color input (<input type=color>)
   Color {

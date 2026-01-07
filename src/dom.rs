@@ -4226,7 +4226,7 @@ fn format_number(mut value: f64) -> String {
   s
 }
 
-fn input_range_bounds(node: &DomNode) -> Option<(f64, f64)> {
+pub(crate) fn input_range_bounds(node: &DomNode) -> Option<(f64, f64)> {
   if !matches!(node.tag_name(), Some(tag) if tag.eq_ignore_ascii_case("input")) {
     return None;
   }
@@ -4251,7 +4251,7 @@ fn input_range_bounds(node: &DomNode) -> Option<(f64, f64)> {
   Some((min, clamped_max))
 }
 
-fn input_range_value(node: &DomNode) -> Option<f64> {
+pub(crate) fn input_range_value(node: &DomNode) -> Option<f64> {
   let (min, max) = input_range_bounds(node)?;
 
   let resolved = node
@@ -5078,35 +5078,26 @@ impl<'a> ElementRef<'a> {
     };
 
     let value = self.control_value().unwrap_or_default();
-
-    if self.is_required() && value.trim().is_empty() {
-      return false;
-    }
+    let required = self.is_required();
 
     if tag.eq_ignore_ascii_case("select") {
-      return true;
+      return !(required && value.is_empty());
     }
 
     if tag.eq_ignore_ascii_case("textarea") {
-      return true;
+      return !(required && value.is_empty());
     }
 
     if tag.eq_ignore_ascii_case("input") {
       let input_type = self.node.get_attribute_ref("type").unwrap_or("text");
 
-      if input_type.eq_ignore_ascii_case("text")
-        || input_type.eq_ignore_ascii_case("search")
-        || input_type.eq_ignore_ascii_case("url")
-        || input_type.eq_ignore_ascii_case("tel")
-        || input_type.eq_ignore_ascii_case("email")
-        || input_type.eq_ignore_ascii_case("password")
-      {
-        return true;
+      if supports_placeholder(Some(input_type)) && !input_type.eq_ignore_ascii_case("number") {
+        return !(required && value.is_empty());
       }
 
       if input_type.eq_ignore_ascii_case("number") || input_type.eq_ignore_ascii_case("range") {
         if value.trim().is_empty() {
-          return !self.is_required();
+          return !required;
         }
         if let Some(num) = Self::parse_number(&value) {
           return self.numeric_in_range(num).unwrap_or(true);
@@ -5115,13 +5106,13 @@ impl<'a> ElementRef<'a> {
       }
 
       if input_type.eq_ignore_ascii_case("checkbox") || input_type.eq_ignore_ascii_case("radio") {
-        if self.is_required() {
+        if required {
           return self.node.get_attribute_ref("checked").is_some();
         }
         return true;
       }
 
-      return true;
+      return !(required && value.trim().is_empty());
     }
 
     true
@@ -5433,7 +5424,7 @@ impl<'a> ElementRef<'a> {
 
 /// Compute the raw textarea value, normalizing newline conventions and removing the single leading
 /// newline that HTML ignores when contents start with a line break (common with formatted markup).
-fn textarea_value(node: &DomNode) -> String {
+pub(crate) fn textarea_value(node: &DomNode) -> String {
   let mut value = String::new();
   for child in node.children.iter() {
     if let DomNodeType::Text { content } = &child.node_type {
@@ -5441,8 +5432,25 @@ fn textarea_value(node: &DomNode) -> String {
     }
   }
 
+  normalize_textarea_value(value)
+}
+
+pub(crate) fn normalize_textarea_value(value: String) -> String {
+  let mut value = value;
   if value.contains('\r') {
-    value = value.replace("\r\n", "\n").replace('\r', "\n");
+    let mut normalized = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+      if ch == '\r' {
+        if matches!(chars.peek(), Some('\n')) {
+          chars.next();
+        }
+        normalized.push('\n');
+      } else {
+        normalized.push(ch);
+      }
+    }
+    value = normalized;
   }
   if value.starts_with('\n') {
     value.remove(0);
@@ -7114,6 +7122,104 @@ mod tests {
       },
       children: vec![],
     }
+  }
+
+  #[test]
+  fn textarea_value_normalizes_newlines() {
+    let textarea = element("textarea", vec![text("a\r\nb\rc")]);
+    assert_eq!(textarea_value(&textarea), "a\nb\nc");
+  }
+
+  #[test]
+  fn textarea_value_strips_single_leading_newline() {
+    let textarea = element("textarea", vec![text("\nhello")]);
+    assert_eq!(textarea_value(&textarea), "hello");
+  }
+
+  #[test]
+  fn textarea_value_does_not_trim_whitespace() {
+    let textarea = element("textarea", vec![text(" ")]);
+    assert_eq!(textarea_value(&textarea), " ");
+  }
+
+  #[test]
+  fn input_range_bounds_defaults_and_collapses_invalid_range() {
+    let default_bounds = element_with_attrs("input", vec![("type", "range")], vec![]);
+    assert_eq!(input_range_bounds(&default_bounds), Some((0.0, 100.0)));
+
+    let invalid = element_with_attrs(
+      "input",
+      vec![("type", "range"), ("min", "nope"), ("max", "nan")],
+      vec![],
+    );
+    assert_eq!(input_range_bounds(&invalid), Some((0.0, 100.0)));
+
+    let reversed = element_with_attrs(
+      "input",
+      vec![("type", "range"), ("min", "10"), ("max", "5")],
+      vec![],
+    );
+    assert_eq!(input_range_bounds(&reversed), Some((10.0, 10.0)));
+  }
+
+  #[test]
+  fn input_range_value_defaults_clamps_and_snaps() {
+    let default_midpoint = element_with_attrs(
+      "input",
+      vec![("type", "range"), ("min", "0"), ("max", "10")],
+      vec![],
+    );
+    assert_eq!(input_range_value(&default_midpoint), Some(5.0));
+
+    let invalid_value = element_with_attrs(
+      "input",
+      vec![("type", "range"), ("min", "0"), ("max", "10"), ("value", "oops")],
+      vec![],
+    );
+    assert_eq!(input_range_value(&invalid_value), Some(5.0));
+
+    let clamped = element_with_attrs(
+      "input",
+      vec![("type", "range"), ("min", "0"), ("max", "10"), ("value", "20")],
+      vec![],
+    );
+    assert_eq!(input_range_value(&clamped), Some(10.0));
+
+    let step_any = element_with_attrs(
+      "input",
+      vec![
+        ("type", "range"),
+        ("min", "0"),
+        ("max", "10"),
+        ("value", "3.3"),
+        ("step", "any"),
+      ],
+      vec![],
+    );
+    let got = input_range_value(&step_any).expect("step any value");
+    assert!((got - 3.3).abs() < 1e-9, "expected 3.3, got {got}");
+
+    let snapped = element_with_attrs(
+      "input",
+      vec![
+        ("type", "range"),
+        ("min", "0"),
+        ("max", "10"),
+        ("value", "10"),
+        ("step", "4"),
+      ],
+      vec![],
+    );
+    assert_eq!(input_range_value(&snapped), Some(8.0));
+  }
+
+  #[test]
+  fn required_whitespace_is_not_value_missing() {
+    let textarea = element_with_attrs("textarea", vec![("required", "")], vec![text(" ")]);
+    assert!(ElementRef::new(&textarea).accessibility_is_valid());
+
+    let input = element_with_attrs("input", vec![("required", ""), ("value", " ")], vec![]);
+    assert!(ElementRef::new(&input).accessibility_is_valid());
   }
 
   #[test]

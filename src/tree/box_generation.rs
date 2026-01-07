@@ -3511,12 +3511,6 @@ fn button_label(node: &StyledNode) -> String {
     .unwrap_or_else(|| "Button".to_string())
 }
 
-fn parse_f32_attr(node: &DomNode, name: &str) -> Option<f32> {
-  node
-    .get_attribute_ref(name)
-    .and_then(|v| v.trim().parse::<f32>().ok())
-}
-
 fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
   let tag = styled.node.tag_name()?;
   let appearance = styled.styles.appearance.clone();
@@ -3557,7 +3551,15 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
   }
   let textarea_value = tag
     .eq_ignore_ascii_case("textarea")
-    .then(|| collect_text_content(styled));
+    .then(|| {
+      let mut value = String::new();
+      for child in styled.children.iter() {
+        if let DomNodeType::Text { content } = &child.node.node_type {
+          value.push_str(content);
+        }
+      }
+      crate::dom::normalize_textarea_value(value)
+    });
   let mut select_control: Option<SelectControl> = None;
   if tag.eq_ignore_ascii_case("select") {
     select_control = Some(build_select_control(styled));
@@ -3571,7 +3573,6 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
         && textarea_value
           .as_deref()
           .unwrap_or_default()
-          .trim()
           .is_empty();
     } else if tag.eq_ignore_ascii_case("select") {
       if !required {
@@ -3582,7 +3583,6 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
         } else {
           select_selected_value(control)
             .unwrap_or_default()
-            .trim()
             .is_empty()
         };
       } else {
@@ -3628,10 +3628,13 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
         label: input_label(&styled.node, input_type),
       }
     } else if input_type.eq_ignore_ascii_case("range") {
+      let (min, max) = crate::dom::input_range_bounds(&styled.node).unwrap_or((0.0, 100.0));
+      let value =
+        crate::dom::input_range_value(&styled.node).unwrap_or_else(|| (min + max) / 2.0);
       FormControlKind::Range {
-        value: parse_f32_attr(&styled.node, "value").unwrap_or(50.0),
-        min: parse_f32_attr(&styled.node, "min"),
-        max: parse_f32_attr(&styled.node, "max"),
+        value: value as f32,
+        min: min as f32,
+        max: max as f32,
       }
     } else if input_type.eq_ignore_ascii_case("color") {
       let raw_value = styled
@@ -3755,7 +3758,7 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
       .map(|p| p.to_string());
     Some(FormControl {
       control: FormControlKind::TextArea {
-        value: textarea_value.unwrap_or_else(|| collect_text_content(styled)),
+        value: textarea_value.unwrap_or_default(),
         placeholder,
         rows: styled
           .node
@@ -5045,6 +5048,56 @@ mod tests {
         FormControlKind::TextArea { rows, cols, .. } if rows == &Some(4) && cols == &Some(10)
       )),
       "rows/cols should be captured on textarea for intrinsic sizing"
+    );
+  }
+
+  #[test]
+  fn form_control_values_use_html_sanitization_algorithms() {
+    let html = "<html><body>
+      <input type=\"range\" min=\"0\" max=\"10\" step=\"4\" value=\"10\">
+      <textarea>\nhello\r\nworld</textarea>
+      <textarea required> </textarea>
+    </body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    fn collect_controls(node: &BoxNode, out: &mut Vec<FormControl>) {
+      if let BoxType::Replaced(repl) = &node.box_type {
+        if let ReplacedType::FormControl(control) = &repl.replaced_type {
+          out.push(control.clone());
+        }
+      }
+      for child in node.children.iter() {
+        collect_controls(child, out);
+      }
+    }
+
+    let mut controls = Vec::new();
+    collect_controls(&box_tree.root, &mut controls);
+
+    assert!(
+      controls.iter().any(|c| matches!(
+        &c.control,
+        FormControlKind::Range { min, max, value } if min == &0.0 && max == &10.0 && value == &8.0
+      )),
+      "range input should snap value to step and clamp within bounds"
+    );
+
+    assert!(
+      controls.iter().any(|c| matches!(
+        &c.control,
+        FormControlKind::TextArea { value, .. } if value == "hello\nworld"
+      )),
+      "textarea values should normalize CRLF and strip the single leading newline"
+    );
+
+    assert!(
+      controls.iter().any(|c| matches!(
+        &c.control,
+        FormControlKind::TextArea { value, .. } if value == " "
+      ) && c.required && !c.invalid),
+      "whitespace-only textarea should not fail required validation"
     );
   }
 

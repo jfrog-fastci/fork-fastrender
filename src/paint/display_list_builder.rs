@@ -8087,8 +8087,8 @@ impl DisplayListBuilder {
         true
       }
       FormControlKind::Range { value, min, max } => {
-        let min_val = min.unwrap_or(0.0);
-        let max_val = max.unwrap_or(100.0);
+        let min_val = *min;
+        let max_val = *max;
         let span = (max_val - min_val).abs().max(0.0001);
         let clamped = ((*value - min_val) / span).clamp(0.0, 1.0);
         let appearance_none = matches!(control.appearance, Appearance::None);

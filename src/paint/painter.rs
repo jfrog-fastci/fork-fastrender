@@ -7119,8 +7119,8 @@ impl Painter {
         let radii = BorderRadii::uniform(track_height / 2.0);
         let track_color = Rgba::rgb(190, 190, 190);
 
-        let min_val = min.unwrap_or(0.0);
-        let max_val = max.unwrap_or(100.0);
+        let min_val = *min;
+        let max_val = *max;
         let span = (max_val - min_val).abs().max(0.0001);
         let clamped = ((*value - min_val) / span).clamp(0.0, 1.0);
         let abs_length_px = |len: Length| -> Option<f32> {
