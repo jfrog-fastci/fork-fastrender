@@ -719,6 +719,11 @@ pub enum FetchDestination {
   /// iframe` and omits `Sec-Fetch-User` (subframe navigations are not user-activated).
   Iframe,
   Style,
+  /// Stylesheet fetched in CORS mode (e.g. `<link rel=stylesheet crossorigin>`).
+  ///
+  /// `Sec-Fetch-Dest` remains `style`, but `Sec-Fetch-Mode` becomes `cors` and a browser-like
+  /// `Origin` header is sent when request headers are enabled.
+  StyleCors,
   Image,
   /// Image fetched in CORS mode (e.g. `<img crossorigin>`).
   ///
@@ -764,7 +769,7 @@ impl FetchDestination {
   fn accept(self) -> &'static str {
     match self {
       Self::Document | Self::DocumentNoUser | Self::Iframe => DEFAULT_ACCEPT,
-      Self::Style => BROWSER_ACCEPT_STYLESHEET,
+      Self::Style | Self::StyleCors => BROWSER_ACCEPT_STYLESHEET,
       Self::Image | Self::ImageCors => BROWSER_ACCEPT_IMAGE,
       Self::Font | Self::Other => BROWSER_ACCEPT_ALL,
     }
@@ -774,7 +779,7 @@ impl FetchDestination {
     match self {
       Self::Document | Self::DocumentNoUser => "document",
       Self::Iframe => "iframe",
-      Self::Style => "style",
+      Self::Style | Self::StyleCors => "style",
       Self::Image | Self::ImageCors => "image",
       Self::Font => "font",
       Self::Other => "empty",
@@ -784,7 +789,7 @@ impl FetchDestination {
   fn sec_fetch_mode(self) -> &'static str {
     match self {
       Self::Document | Self::DocumentNoUser | Self::Iframe => "navigate",
-      Self::Font | Self::ImageCors => "cors",
+      Self::Font | Self::ImageCors | Self::StyleCors => "cors",
       Self::Style | Self::Image | Self::Other => "no-cors",
     }
   }
@@ -792,7 +797,12 @@ impl FetchDestination {
   fn sec_fetch_site(self) -> &'static str {
     match self {
       Self::Document | Self::DocumentNoUser | Self::Iframe => "none",
-      Self::Style | Self::Image | Self::ImageCors | Self::Font | Self::Other => "same-origin",
+      Self::Style
+      | Self::StyleCors
+      | Self::Image
+      | Self::ImageCors
+      | Self::Font
+      | Self::Other => "same-origin",
     }
   }
 
@@ -812,7 +822,7 @@ impl FetchDestination {
 
   fn origin_and_referer(self, url: &Url) -> Option<(String, String)> {
     match self {
-      Self::Font | Self::ImageCors => http_browser_origin_and_referer_for_url(url),
+      Self::Font | Self::ImageCors | Self::StyleCors => http_browser_origin_and_referer_for_url(url),
       _ => None,
     }
   }
@@ -1213,7 +1223,7 @@ fn http_response_allows_empty_body(
   // but we still want to treat unexpected empty bodies as suspicious to catch truncation/corrupt
   // fetches. Only accept empty bodies for stylesheet requests when the server explicitly signals
   // an empty entity with `Content-Length: 0`.
-  kind == FetchContextKind::Stylesheet
+  matches!(kind, FetchContextKind::Stylesheet | FetchContextKind::StylesheetCors)
     && (200..300).contains(&status)
     && header_content_length_is_zero(headers)
 }
@@ -2685,6 +2695,8 @@ pub enum FetchContextKind {
   /// Subframe document navigation (e.g. `<iframe src=...>`).
   Iframe,
   Stylesheet,
+  /// Stylesheet fetched in CORS mode (e.g. `<link rel=stylesheet crossorigin>`).
+  StylesheetCors,
   Image,
   /// Image fetched in CORS mode (e.g. `<img crossorigin>`).
   ImageCors,
@@ -2702,6 +2714,7 @@ impl FetchContextKind {
       Self::Other => 4,
       Self::ImageCors => 5,
       Self::Iframe => 6,
+      Self::StylesheetCors => 7,
     }
   }
 
@@ -2710,6 +2723,7 @@ impl FetchContextKind {
       Self::Document => "document",
       Self::Iframe => "iframe",
       Self::Stylesheet => "stylesheet",
+      Self::StylesheetCors => "stylesheet-cors",
       Self::Image => "image",
       Self::ImageCors => "image-cors",
       Self::Font => "font",
@@ -2739,6 +2753,7 @@ impl From<FetchDestination> for FetchContextKind {
       FetchDestination::DocumentNoUser => Self::Document,
       FetchDestination::Iframe => Self::Iframe,
       FetchDestination::Style => Self::Stylesheet,
+      FetchDestination::StyleCors => Self::StylesheetCors,
       FetchDestination::Image => Self::Image,
       FetchDestination::ImageCors => Self::ImageCors,
       FetchDestination::Font => Self::Font,
@@ -2753,6 +2768,7 @@ impl From<FetchContextKind> for FetchDestination {
       FetchContextKind::Document => Self::Document,
       FetchContextKind::Iframe => Self::Iframe,
       FetchContextKind::Stylesheet => Self::Style,
+      FetchContextKind::StylesheetCors => Self::StyleCors,
       FetchContextKind::Image => Self::Image,
       FetchContextKind::ImageCors => Self::ImageCors,
       FetchContextKind::Font => Self::Font,
@@ -3389,9 +3405,10 @@ fn build_http_header_pairs<'a>(
             headers.push(("Referer".to_string(), referer));
           }
         }
-      } else if profile == FetchDestination::ImageCors {
-        // For CORS-mode image requests, always send an `Origin` header. When a client origin isn't
-        // available, fall back to using the target origin as a best-effort approximation.
+      } else if profile == FetchDestination::ImageCors || profile == FetchDestination::StyleCors {
+        // For CORS-mode image/stylesheet requests, always send an `Origin` header. When a client
+        // origin isn't available, fall back to using the target origin as a best-effort
+        // approximation.
         if let Some(parsed) = parsed_target_url.as_ref() {
           if let Some((origin, _)) = profile.origin_and_referer(parsed) {
             headers.push(("Origin".to_string(), origin));
@@ -6578,7 +6595,10 @@ fn vary_is_cacheable(vary: &str, kind: FetchContextKind, origin_key: Option<&str
         // carry different Origin values.
         if origin_key.is_none()
           && http_browser_headers_enabled()
-          && matches!(kind, FetchContextKind::Font | FetchContextKind::ImageCors)
+          && matches!(
+            kind,
+            FetchContextKind::Font | FetchContextKind::ImageCors | FetchContextKind::StylesheetCors
+          )
         {
           return false;
         }
@@ -7316,7 +7336,9 @@ fn render_stage_hint_for_context(kind: FetchContextKind, url: &str) -> RenderSta
   }
   match kind {
     FetchContextKind::Document | FetchContextKind::Iframe => RenderStage::DomParse,
-    FetchContextKind::Stylesheet | FetchContextKind::Font => RenderStage::Css,
+    FetchContextKind::Stylesheet | FetchContextKind::StylesheetCors | FetchContextKind::Font => {
+      RenderStage::Css
+    }
     FetchContextKind::Image | FetchContextKind::ImageCors => RenderStage::Paint,
     FetchContextKind::Other => render_stage_hint_from_url(url),
   }
@@ -12057,6 +12079,108 @@ mod tests {
   }
 
   #[test]
+  fn caching_fetcher_skips_vary_origin_without_origin_partitioning_for_stylesheet_cors() {
+    if matches!(http_backend_mode(), HttpBackendMode::Curl) && !curl_backend::curl_available() {
+      eprintln!(
+        "skipping caching_fetcher_skips_vary_origin_without_origin_partitioning_for_stylesheet_cors: curl backend selected but curl is unavailable"
+      );
+      return;
+    }
+
+    if !http_browser_headers_enabled() {
+      eprintln!(
+        "skipping caching_fetcher_skips_vary_origin_without_origin_partitioning_for_stylesheet_cors: browser-like request headers are disabled"
+      );
+      return;
+    }
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_PARTITION_CORS_CACHE".to_string(),
+      "0".to_string(),
+    )])));
+
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let Some(listener) = try_bind_localhost(
+        "caching_fetcher_skips_vary_origin_without_origin_partitioning_for_stylesheet_cors",
+      ) else {
+        return;
+      };
+      let addr = listener.local_addr().unwrap();
+      listener.set_nonblocking(true).unwrap();
+
+      let request_count = Arc::new(AtomicUsize::new(0));
+      let seen = Arc::clone(&request_count);
+
+      let handle = thread::spawn(move || {
+        let start = Instant::now();
+        let mut last_request = None::<Instant>;
+        while start.elapsed() < Duration::from_secs(2) {
+          match listener.accept() {
+            Ok((mut stream, _)) => {
+              let n = seen.fetch_add(1, Ordering::SeqCst) + 1;
+              last_request = Some(Instant::now());
+
+              stream
+                .set_read_timeout(Some(Duration::from_millis(500)))
+                .unwrap();
+              let _ = read_http_request(&mut stream);
+
+              let body = n.to_string();
+              let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nVary: Origin\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+              );
+              let _ = stream.write_all(headers.as_bytes());
+              let _ = stream.write_all(body.as_bytes());
+
+              if n >= 2 {
+                return;
+              }
+            }
+            Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
+              if let Some(last) = last_request {
+                if last.elapsed() > Duration::from_millis(500) {
+                  return;
+                }
+              }
+              thread::sleep(Duration::from_millis(5));
+            }
+            Err(err) => panic!(
+              "accept caching_fetcher_skips_vary_origin_without_origin_partitioning_for_stylesheet_cors: {err}"
+            ),
+          }
+        }
+      });
+
+      let fetcher = CachingFetcher::new(HttpFetcher::new().with_timeout(Duration::from_secs(2)));
+      let url = format!("http://{addr}/style.css");
+      let req_a = FetchRequest::new(&url, FetchDestination::StyleCors)
+        .with_referrer_url("http://a.test/page")
+        .with_credentials_mode(FetchCredentialsMode::SameOrigin);
+      let req_b = FetchRequest::new(&url, FetchDestination::StyleCors)
+        .with_referrer_url("http://b.test/page")
+        .with_credentials_mode(FetchCredentialsMode::SameOrigin);
+
+      let first = fetcher.fetch_with_request(req_a).expect("first fetch");
+      assert_eq!(first.vary.as_deref(), Some("origin"));
+      let second = fetcher.fetch_with_request(req_b).expect("second fetch");
+      assert_eq!(second.vary.as_deref(), Some("origin"));
+
+      handle.join().unwrap();
+
+      assert_eq!(
+        request_count.load(Ordering::SeqCst),
+        2,
+        "expected Vary: Origin response to bypass caching when requests are not origin-partitioned"
+      );
+      assert_ne!(
+        first.bytes, second.bytes,
+        "expected network body to differ across requests"
+      );
+    });
+  }
+
+  #[test]
   fn caching_fetcher_partitions_vary_origin_when_origin_partitioned() {
     if matches!(http_backend_mode(), HttpBackendMode::Curl) && !curl_backend::curl_available() {
       eprintln!(
@@ -12159,6 +12283,181 @@ mod tests {
         "expected distinct cached variants per origin"
       );
     });
+  }
+
+  #[test]
+  fn caching_fetcher_partitions_vary_origin_when_origin_partitioned_for_stylesheet_cors() {
+    if matches!(http_backend_mode(), HttpBackendMode::Curl) && !curl_backend::curl_available() {
+      eprintln!(
+        "skipping caching_fetcher_partitions_vary_origin_when_origin_partitioned_for_stylesheet_cors: curl backend selected but curl is unavailable"
+      );
+      return;
+    }
+
+    if !http_browser_headers_enabled() {
+      eprintln!(
+        "skipping caching_fetcher_partitions_vary_origin_when_origin_partitioned_for_stylesheet_cors: browser-like request headers are disabled"
+      );
+      return;
+    }
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_PARTITION_CORS_CACHE".to_string(),
+      "1".to_string(),
+    )])));
+
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let Some(listener) = try_bind_localhost(
+        "caching_fetcher_partitions_vary_origin_when_origin_partitioned_for_stylesheet_cors",
+      ) else {
+        return;
+      };
+      let addr = listener.local_addr().unwrap();
+      listener.set_nonblocking(true).unwrap();
+
+      let request_count = Arc::new(AtomicUsize::new(0));
+      let seen = Arc::clone(&request_count);
+
+      let handle = thread::spawn(move || {
+        let start = Instant::now();
+        let mut last_request = None::<Instant>;
+        while start.elapsed() < Duration::from_secs(2) {
+          match listener.accept() {
+            Ok((mut stream, _)) => {
+              let n = seen.fetch_add(1, Ordering::SeqCst) + 1;
+              last_request = Some(Instant::now());
+
+              stream
+                .set_read_timeout(Some(Duration::from_millis(500)))
+                .unwrap();
+              let _ = read_http_request(&mut stream);
+
+              let body = n.to_string();
+              let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nVary: Origin\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+              );
+              let _ = stream.write_all(headers.as_bytes());
+              let _ = stream.write_all(body.as_bytes());
+
+              if n >= 2 {
+                return;
+              }
+            }
+            Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
+              if let Some(last) = last_request {
+                if last.elapsed() > Duration::from_millis(500) {
+                  return;
+                }
+              }
+              thread::sleep(Duration::from_millis(5));
+            }
+            Err(err) => panic!(
+              "accept caching_fetcher_partitions_vary_origin_when_origin_partitioned_for_stylesheet_cors: {err}"
+            ),
+          }
+        }
+      });
+
+      let fetcher = CachingFetcher::new(HttpFetcher::new().with_timeout(Duration::from_secs(2)));
+      let url = format!("http://{addr}/style.css");
+      let req_a = FetchRequest::new(&url, FetchDestination::StyleCors)
+        .with_referrer_url("http://a.test/page")
+        .with_credentials_mode(FetchCredentialsMode::SameOrigin);
+      let req_b = FetchRequest::new(&url, FetchDestination::StyleCors)
+        .with_referrer_url("http://b.test/page")
+        .with_credentials_mode(FetchCredentialsMode::SameOrigin);
+
+      let first_a = fetcher.fetch_with_request(req_a).expect("first A fetch");
+      assert_eq!(first_a.vary.as_deref(), Some("origin"));
+
+      let second_a = fetcher.fetch_with_request(req_a).expect("second A fetch");
+      assert_eq!(second_a.vary.as_deref(), Some("origin"));
+      assert_eq!(second_a.bytes, first_a.bytes, "expected A to hit cache");
+
+      let first_b = fetcher.fetch_with_request(req_b).expect("first B fetch");
+      assert_eq!(first_b.vary.as_deref(), Some("origin"));
+
+      handle.join().unwrap();
+
+      assert_eq!(
+        request_count.load(Ordering::SeqCst),
+        2,
+        "expected Vary: Origin responses to be cached per-origin when origin partitioning is enabled"
+      );
+      assert_ne!(
+        first_a.bytes, first_b.bytes,
+        "expected distinct cached variants per origin"
+      );
+    });
+  }
+
+  #[test]
+  fn caching_fetcher_partitions_stylesheet_cors_by_credentials_mode() {
+    #[derive(Clone)]
+    struct CredentialSensitiveFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for CredentialSensitiveFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let body = match req.credentials_mode {
+          FetchCredentialsMode::Omit => b"omit".to_vec(),
+          FetchCredentialsMode::SameOrigin => b"same-origin".to_vec(),
+          FetchCredentialsMode::Include => b"include".to_vec(),
+        };
+        let mut res = FetchedResource::new(body, Some("text/css".to_string()));
+        res.final_url = Some(req.url.to_string());
+        Ok(res)
+      }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fetcher = CachingFetcher::new(CredentialSensitiveFetcher {
+      calls: Arc::clone(&calls),
+    });
+    let url = "https://example.com/style.css";
+    let same_origin_req = FetchRequest::new(url, FetchDestination::StyleCors)
+      .with_credentials_mode(FetchCredentialsMode::SameOrigin);
+    let include_req = FetchRequest::new(url, FetchDestination::StyleCors)
+      .with_credentials_mode(FetchCredentialsMode::Include);
+
+    let first_same = fetcher
+      .fetch_with_request(same_origin_req)
+      .expect("fetch same-origin credentials mode");
+    let second_same = fetcher
+      .fetch_with_request(same_origin_req)
+      .expect("fetch same-origin credentials mode (cached)");
+    assert_eq!(
+      first_same.bytes, second_same.bytes,
+      "expected same-origin credential mode response to hit cache"
+    );
+
+    let first_include = fetcher
+      .fetch_with_request(include_req)
+      .expect("fetch include credentials mode");
+    let second_include = fetcher
+      .fetch_with_request(include_req)
+      .expect("fetch include credentials mode (cached)");
+    assert_eq!(
+      first_include.bytes, second_include.bytes,
+      "expected include credential mode response to hit cache"
+    );
+
+    assert_ne!(
+      first_same.bytes, first_include.bytes,
+      "expected distinct cached entries for different credential modes"
+    );
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      2,
+      "expected one underlying fetch per credential mode"
+    );
   }
 
   #[test]
@@ -14019,6 +14318,78 @@ mod tests {
     assert!(
       req.contains("sec-fetch-site: same-origin"),
       "expected Sec-Fetch-Site same-origin for stylesheet, got: {req}"
+    );
+  }
+
+  #[test]
+  fn http_fetcher_sets_stylesheet_cors_request_headers() {
+    let Some(listener) = try_bind_localhost("http_fetcher_sets_stylesheet_cors_request_headers")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(String::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let request = read_http_request(&mut stream)
+        .unwrap()
+        .expect("expected HTTP request");
+      if let Ok(mut slot) = captured_req.lock() {
+        *slot = String::from_utf8_lossy(&request).to_string();
+      }
+
+      let body = b"body { color: red; }";
+      let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(headers.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
+    let url = format!("http://{addr}/style.css");
+    let referrer = "http://a.test/page.html";
+    let client_origin = origin_from_url(referrer).expect("origin");
+    let res = fetcher
+      .fetch_with_request(
+        FetchRequest::new(&url, FetchDestination::StyleCors)
+          .with_referrer_url(referrer)
+          .with_client_origin(&client_origin)
+          .with_credentials_mode(FetchCredentialsMode::SameOrigin),
+      )
+      .expect("fetch stylesheet cors");
+    handle.join().unwrap();
+
+    assert_eq!(res.bytes, b"body { color: red; }");
+    let req = captured.lock().unwrap().to_ascii_lowercase();
+    assert!(
+      req.contains(&format!("accept: {BROWSER_ACCEPT_STYLESHEET}").to_ascii_lowercase()),
+      "expected stylesheet accept header, got: {req}"
+    );
+    assert!(
+      req.contains("sec-fetch-dest: style"),
+      "expected Sec-Fetch-Dest style for stylesheet cors, got: {req}"
+    );
+    assert!(
+      req.contains("sec-fetch-mode: cors"),
+      "expected Sec-Fetch-Mode cors for stylesheet cors, got: {req}"
+    );
+    assert!(
+      req.contains("sec-fetch-site: cross-site"),
+      "expected Sec-Fetch-Site cross-site for stylesheet cors, got: {req}"
+    );
+    assert!(
+      req.contains("origin: http://a.test"),
+      "expected Origin header derived from client origin, got: {req}"
+    );
+    assert!(
+      req.contains("referer: http://a.test/"),
+      "expected Referer header derived from referrer policy, got: {req}"
     );
   }
 

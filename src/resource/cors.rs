@@ -4,7 +4,7 @@ use url::Url;
 use super::DocumentOrigin;
 use super::FetchedResource;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CorsMode {
   Anonymous,
   UseCredentials,

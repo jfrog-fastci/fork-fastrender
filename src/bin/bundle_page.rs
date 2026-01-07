@@ -27,7 +27,8 @@ use fastrender::resource::{
   ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane, ensure_stylesheet_mime_sane,
   offline_placeholder_png_bytes, offline_placeholder_woff2_bytes, origin_from_url, DocumentOrigin,
   FetchContextKind, FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource,
-  ReferrerPolicy, ResourceAccessPolicy, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
+  CorsMode, ReferrerPolicy, ResourceAccessPolicy, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE,
+  DEFAULT_USER_AGENT,
 };
 #[cfg(feature = "disk_cache")]
 use fastrender::resource::{
@@ -85,6 +86,13 @@ fn default_credentials_mode_for_destination(destination: FetchDestination) -> Fe
   match destination {
     FetchDestination::Font | FetchDestination::ImageCors => FetchCredentialsMode::Omit,
     _ => FetchCredentialsMode::Include,
+  }
+}
+
+fn credentials_mode_for_stylesheet_crossorigin(mode: CorsMode) -> FetchCredentialsMode {
+  match mode {
+    CorsMode::Anonymous => FetchCredentialsMode::SameOrigin,
+    CorsMode::UseCredentials => FetchCredentialsMode::Include,
   }
 }
 
@@ -640,7 +648,7 @@ impl ResourceFetcher for RecordingFetcher {
     if cors_cache_partitioning_enabled()
       && matches!(
         req.destination,
-        FetchDestination::Font | FetchDestination::ImageCors
+        FetchDestination::Font | FetchDestination::ImageCors | FetchDestination::StyleCors
       )
     {
       let key = RecordingRequestKey {
@@ -684,8 +692,8 @@ impl ResourceFetcher for RecordingFetcher {
       return Ok(result);
     }
 
-    let check_cors_poisoned_url_cache =
-      cors_cache_partitioning_enabled() && req.destination == FetchDestination::Image;
+    let check_cors_poisoned_url_cache = cors_cache_partitioning_enabled()
+      && matches!(req.destination, FetchDestination::Image | FetchDestination::Style);
     if let Ok(map) = self.recorded.lock() {
       if let Some(existing) = map.get(req.url) {
         if !check_cors_poisoned_url_cache {
@@ -1493,7 +1501,7 @@ fn placeholder_resource(
       res.access_control_allow_credentials = true;
       res
     }
-    FetchDestination::Style => FetchedResource::with_final_url(
+    FetchDestination::Style | FetchDestination::StyleCors => FetchedResource::with_final_url(
       b"/* missing */".to_vec(),
       Some("text/css".to_string()),
       Some(url.to_string()),
@@ -1734,21 +1742,28 @@ fn crawl_document(
   let root_referrer = document.base_hint.as_str();
   let root_client_origin = origin_from_url(root_referrer);
 
-  let css_links = fastrender::css::loader::extract_css_links(
+  let css_links = fastrender::css::loader::extract_css_links_with_meta(
     &document.html,
     &document.base_url,
     MediaType::Screen,
   )
   .unwrap_or_default();
   let has_link_stylesheets = !css_links.is_empty();
-  for css_url in css_links {
+  for css_link in css_links {
+    let (destination, credentials_mode) = match css_link.crossorigin {
+      None => (FetchDestination::Style, FetchCredentialsMode::Include),
+      Some(mode) => (
+        FetchDestination::StyleCors,
+        credentials_mode_for_stylesheet_crossorigin(mode),
+      ),
+    };
     enqueue_unique(
       &mut queue,
       &mut seen_urls,
       &mut queued,
-      css_url,
-      FetchDestination::Style,
-      FetchCredentialsMode::Include,
+      css_link.url,
+      destination,
+      credentials_mode,
       root_referrer,
       root_client_origin.as_ref(),
     );
@@ -1884,7 +1899,7 @@ fn crawl_document(
     let origin_key = if cors_cache_partitioning_enabled()
       && matches!(
         destination,
-        FetchDestination::Font | FetchDestination::ImageCors
+        FetchDestination::Font | FetchDestination::ImageCors | FetchDestination::StyleCors
       ) {
       client_origin
         .clone()
@@ -1957,7 +1972,7 @@ fn crawl_document(
     fetched_urls.insert(fetch_key);
 
     let validation = match destination {
-      FetchDestination::Style => {
+      FetchDestination::Style | FetchDestination::StyleCors => {
         ensure_http_success(&res, &url).and_then(|_| ensure_stylesheet_mime_sane(&res, &url))
       }
       FetchDestination::Font => {
@@ -2022,22 +2037,30 @@ fn crawl_document(
     }
 
     match destination {
-      FetchDestination::Style => {
+      FetchDestination::Style | FetchDestination::StyleCors => {
         let css_base = res.final_url.as_deref().unwrap_or(&url);
         let css = decode_css_bytes(&res.bytes, res.content_type.as_deref());
-        for (dep, destination) in discover_css_urls_with_destination(&css, css_base) {
-          let dep_referrer_url = if destination == FetchDestination::Font {
-            css_base
+        for (dep, mut dep_destination) in discover_css_urls_with_destination(&css, css_base) {
+          let (dep_referrer_url, dep_credentials_mode) = if dep_destination == FetchDestination::Font
+          {
+            (css_base, default_credentials_mode_for_destination(dep_destination))
+          } else if dep_destination == FetchDestination::Style {
+            // `@import` inherits the request mode/credentials settings of the importing stylesheet.
+            dep_destination = destination;
+            (css_base, credentials_mode)
           } else {
-            referrer_url.as_str()
+            (
+              referrer_url.as_str(),
+              default_credentials_mode_for_destination(dep_destination),
+            )
           };
           enqueue_unique(
             &mut queue,
             &mut seen_urls,
             &mut queued,
             dep,
-            destination,
-            default_credentials_mode_for_destination(destination),
+            dep_destination,
+            dep_credentials_mode,
             dep_referrer_url,
             client_origin.as_ref(),
           );
@@ -2054,18 +2077,28 @@ fn crawl_document(
         let doc_referrer = doc.base_hint.as_str();
         let doc_origin = origin_from_url(doc_referrer);
 
-        let css_links =
-          fastrender::css::loader::extract_css_links(&doc.html, &doc.base_url, MediaType::Screen)
-            .unwrap_or_default();
+        let css_links = fastrender::css::loader::extract_css_links_with_meta(
+          &doc.html,
+          &doc.base_url,
+          MediaType::Screen,
+        )
+        .unwrap_or_default();
         let has_link_stylesheets = !css_links.is_empty();
-        for css_url in css_links {
+        for css_link in css_links {
+          let (destination, credentials_mode) = match css_link.crossorigin {
+            None => (FetchDestination::Style, FetchCredentialsMode::Include),
+            Some(mode) => (
+              FetchDestination::StyleCors,
+              credentials_mode_for_stylesheet_crossorigin(mode),
+            ),
+          };
           enqueue_unique(
             &mut queue,
             &mut seen_urls,
             &mut queued,
-            css_url,
-            FetchDestination::Style,
-            FetchCredentialsMode::Include,
+            css_link.url,
+            destination,
+            credentials_mode,
             doc_referrer,
             doc_origin.as_ref(),
           );

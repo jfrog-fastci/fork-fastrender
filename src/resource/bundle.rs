@@ -20,7 +20,7 @@ pub const BUNDLE_VERSION: u32 = 1;
 
 /// Synthetic manifest key used for request-partitioned resources.
 ///
-/// This is primarily used for CORS-mode resources (`Font` / `ImageCors`) when
+/// This is primarily used for CORS-mode resources (`Font` / `ImageCors` / `StylesheetCors`) when
 /// CORS cache partitioning is enabled (`FASTR_FETCH_PARTITION_CORS_CACHE=1`, default). Some servers
 /// vary `Access-Control-Allow-Origin` by the initiating origin; bundles need to preserve the
 /// per-origin metadata so offline renders can replay the same behavior.
@@ -49,6 +49,7 @@ pub fn request_partitioned_resource_key_with_credentials(
     FetchContextKind::Document => "document",
     FetchContextKind::Iframe => "iframe",
     FetchContextKind::Stylesheet => "stylesheet",
+    FetchContextKind::StylesheetCors => "stylesheet-cors",
     FetchContextKind::Image => "image",
     FetchContextKind::ImageCors => "image-cors",
     FetchContextKind::Font => "font",

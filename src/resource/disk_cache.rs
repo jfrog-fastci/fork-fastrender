@@ -2581,7 +2581,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
           }
         } else {
           let sanity_check = match kind {
-            FetchContextKind::Stylesheet => {
+            FetchContextKind::Stylesheet | FetchContextKind::StylesheetCors => {
               ensure_http_success(&res, url).and_then(|_| ensure_stylesheet_mime_sane(&res, url))
             }
             FetchContextKind::Font => {

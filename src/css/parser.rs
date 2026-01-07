@@ -57,7 +57,7 @@ use super::types::SupportsCondition;
 use super::types::SupportsRule;
 use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
 use crate::error::{Error, RenderError, RenderStage, Result};
-use crate::resource::ReferrerPolicy;
+use crate::resource::{CorsMode, ReferrerPolicy};
 use crate::render_control::{check_active, check_active_periodic};
 use crate::style::color::Color;
 use crate::style::counter_styles::{CounterStyleRule, CounterSystem, SpeakAs};
@@ -4972,6 +4972,12 @@ pub struct StylesheetLink {
   pub href: String,
   /// Tokenized `rel` attribute, lowercased.
   pub rel: Vec<String>,
+  /// Parsed `crossorigin` attribute state.
+  ///
+  /// Missing => no CORS.
+  /// Empty/`anonymous`/unknown => `Some(Anonymous)`.
+  /// `use-credentials` => `Some(UseCredentials)`.
+  pub crossorigin: Option<CorsMode>,
   /// Optional `as` attribute value.
   pub as_attr: Option<String>,
   /// Optional parsed `referrerpolicy` attribute.
@@ -5071,7 +5077,7 @@ pub fn extract_css_sources(dom: &DomNode) -> Vec<ScopedStylesheetSource> {
               css.push_str(text);
             }
           }
- 
+
           sources.push(ScopedStylesheetSource {
             scope: frame.scope.clone(),
             source: StylesheetSource::Inline(InlineStyle {
@@ -5092,11 +5098,23 @@ pub fn extract_css_sources(dom: &DomNode) -> Vec<ScopedStylesheetSource> {
           let href_attr = frame.node.get_attribute("href");
           if let (Some(rel), Some(href)) = (rel_attr, href_attr) {
             let rel = tokenize_rel_list(&rel);
+            let crossorigin = match frame.node.get_attribute_ref("crossorigin") {
+              None => None,
+              Some(value) => {
+                let value = value.trim();
+                if value.eq_ignore_ascii_case("use-credentials") {
+                  Some(CorsMode::UseCredentials)
+                } else {
+                  Some(CorsMode::Anonymous)
+                }
+              }
+            };
             sources.push(ScopedStylesheetSource {
               scope: CssTreeScope::Document,
               source: StylesheetSource::External(StylesheetLink {
                 href,
                 rel,
+                crossorigin,
                 as_attr: frame.node.get_attribute("as"),
                 referrer_policy: frame
                   .node
@@ -5194,9 +5212,21 @@ pub fn extract_scoped_css_sources(dom: &DomNode) -> ScopedStylesheetSources {
         let href_attr = node.get_attribute("href");
         if let (Some(rel), Some(href)) = (rel_attr, href_attr) {
           let rel = tokenize_rel_list(&rel);
+          let crossorigin = match node.get_attribute_ref("crossorigin") {
+            None => None,
+            Some(value) => {
+              let value = value.trim();
+              if value.eq_ignore_ascii_case("use-credentials") {
+                Some(CorsMode::UseCredentials)
+              } else {
+                Some(CorsMode::Anonymous)
+              }
+            }
+          };
           bucket.push(StylesheetSource::External(StylesheetLink {
             href,
             rel,
+            crossorigin,
             as_attr: node.get_attribute("as"),
             referrer_policy: node
               .get_attribute_ref("referrerpolicy")

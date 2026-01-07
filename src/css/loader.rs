@@ -11,6 +11,7 @@ use crate::css::parser::{
 use crate::debug::runtime;
 use crate::dom::{DomNode, DomNodeType, HTML_NAMESPACE};
 use crate::error::{RenderError, RenderStage, Result};
+use crate::resource::CorsMode;
 use crate::render_control::{check_active, check_active_periodic, RenderDeadline};
 use crate::resource::ReferrerPolicy;
 use cssparser::{serialize_identifier, Parser, ParserInput, Token};
@@ -23,6 +24,7 @@ use url::Url;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CssLinkCandidate {
   pub url: String,
+  pub crossorigin: Option<CorsMode>,
   pub referrer_policy: Option<ReferrerPolicy>,
 }
 
@@ -2070,13 +2072,14 @@ pub fn extract_css_links_with_meta(
     let href = decode_html_entities(link.href.trim());
     if debug {
       eprintln!(
-        "[css] found <link>: href={href} rel={:?} media={:?}",
-        link.rel, link.media
+        "[css] found <link>: href={href} rel={:?} media={:?} crossorigin={:?}",
+        link.rel, link.media, link.crossorigin
       );
     }
     if let Some(full_url) = resolve_href(base_url, &href) {
       css_links.push(CssLinkCandidate {
         url: full_url,
+        crossorigin: link.crossorigin,
         referrer_policy: link.referrer_policy,
       });
     }
@@ -2097,19 +2100,6 @@ pub fn extract_css_links_with_meta(
   }
 
   Ok(dedupe_link_candidates_preserving_order(css_links))
-}
-
-fn extract_css_links_without_dom(
-  html: &str,
-  base_url: &str,
-  media_type: crate::style::media::MediaType,
-) -> std::result::Result<Vec<String>, RenderError> {
-  Ok(
-    extract_css_links_without_dom_with_meta(html, base_url, media_type)?
-      .into_iter()
-      .map(|candidate| candidate.url)
-      .collect(),
-  )
 }
 
 fn extract_css_links_without_dom_with_meta(
@@ -2167,10 +2157,10 @@ fn extract_css_links_without_dom_with_meta(
         is_stylesheet_link = true;
       }
 
-        if is_stylesheet_link {
-          if debug {
-            eprintln!("[css] found <link>: {}", link_tag);
-          }
+      if is_stylesheet_link {
+        if debug {
+          eprintln!("[css] found <link>: {}", link_tag);
+        }
         let mut allowed = true;
 
         if let Some(media) = attrs.get("media") {
@@ -2197,11 +2187,23 @@ fn extract_css_links_without_dom_with_meta(
           let href = normalize_scheme_slashes(href);
           if let Some(full_url) = resolve_href(base_url, &href) {
             if allowed {
+              let crossorigin = match attrs.get("crossorigin") {
+                None => None,
+                Some(value) => {
+                  let value = value.trim();
+                  if value.eq_ignore_ascii_case("use-credentials") {
+                    Some(CorsMode::UseCredentials)
+                  } else {
+                    Some(CorsMode::Anonymous)
+                  }
+                }
+              };
               let referrer_policy = attrs
                 .get("referrerpolicy")
                 .and_then(|value| ReferrerPolicy::from_attribute(value));
               css_urls.push(CssLinkCandidate {
                 url: full_url,
+                crossorigin,
                 referrer_policy,
               });
             }
@@ -2653,10 +2655,12 @@ pub fn dedupe_links_preserving_order(mut links: Vec<String>) -> Vec<String> {
   links
 }
 
-fn dedupe_link_candidates_preserving_order(mut links: Vec<CssLinkCandidate>) -> Vec<CssLinkCandidate> {
-  let mut seen: FxHashSet<String> = FxHashSet::default();
+fn dedupe_link_candidates_preserving_order(
+  mut links: Vec<CssLinkCandidate>,
+) -> Vec<CssLinkCandidate> {
+  let mut seen: FxHashSet<(String, Option<CorsMode>)> = FxHashSet::default();
   seen.reserve(links.len());
-  links.retain(|link| seen.insert(link.url.clone()));
+  links.retain(|link| seen.insert((link.url.clone(), link.crossorigin)));
   links
 }
 
@@ -3999,8 +4003,84 @@ mod tests {
       <link rel="stylesheet" href="/good.css">
     "#;
     let urls =
-      extract_css_links_without_dom(html, "https://example.com/", MediaType::Screen).unwrap();
+      extract_css_links_without_dom_with_meta(html, "https://example.com/", MediaType::Screen)
+        .unwrap()
+        .into_iter()
+        .map(|candidate| candidate.url)
+        .collect::<Vec<_>>();
     assert_eq!(urls, vec!["https://example.com/good.css".to_string()]);
+  }
+
+  #[test]
+  fn extract_css_links_with_meta_parses_crossorigin() {
+    let html = r#"
+      <link rel="stylesheet" crossorigin href="/anon.css">
+      <link rel="stylesheet" crossorigin="anonymous" href="/anon2.css">
+      <link rel="stylesheet" crossorigin="use-credentials" href="/cred.css">
+      <link rel="stylesheet" crossorigin="weird" href="/unknown.css">
+      <link rel="stylesheet" href="/nocors.css">
+    "#;
+
+    let requests = extract_css_links_with_meta(html, "https://example.com/", MediaType::Screen)
+      .unwrap();
+    assert_eq!(
+      requests,
+      vec![
+        CssLinkCandidate {
+          url: "https://example.com/anon.css".to_string(),
+          crossorigin: Some(CorsMode::Anonymous),
+          referrer_policy: None,
+        },
+        CssLinkCandidate {
+          url: "https://example.com/anon2.css".to_string(),
+          crossorigin: Some(CorsMode::Anonymous),
+          referrer_policy: None,
+        },
+        CssLinkCandidate {
+          url: "https://example.com/cred.css".to_string(),
+          crossorigin: Some(CorsMode::UseCredentials),
+          referrer_policy: None,
+        },
+        CssLinkCandidate {
+          url: "https://example.com/unknown.css".to_string(),
+          crossorigin: Some(CorsMode::Anonymous),
+          referrer_policy: None,
+        },
+        CssLinkCandidate {
+          url: "https://example.com/nocors.css".to_string(),
+          crossorigin: None,
+          referrer_policy: None,
+        },
+      ]
+    );
+  }
+
+  #[test]
+  fn extract_css_links_with_meta_dedupes_by_url_and_crossorigin() {
+    let html = r#"
+      <link rel="stylesheet" href="/a.css">
+      <link rel="stylesheet" href="/a.css">
+      <link rel="stylesheet" crossorigin href="/a.css">
+      <link rel="stylesheet" crossorigin href="/a.css">
+    "#;
+
+    let requests = extract_css_links_with_meta(html, "https://example.com/", MediaType::Screen)
+      .unwrap();
+    assert_eq!(
+      requests,
+      vec![
+        CssLinkCandidate {
+          url: "https://example.com/a.css".to_string(),
+          crossorigin: None,
+          referrer_policy: None,
+        },
+        CssLinkCandidate {
+          url: "https://example.com/a.css".to_string(),
+          crossorigin: Some(CorsMode::Anonymous),
+          referrer_policy: None,
+        },
+      ]
+    );
   }
 
   #[test]
