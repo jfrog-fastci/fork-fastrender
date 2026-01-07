@@ -444,23 +444,74 @@ pub fn parse_srcset_with_limit(attr: &str, max_candidates: usize) -> Vec<SrcsetC
 /// Returns `None` if no valid size entries are found.
 pub fn parse_sizes(attr: &str) -> Option<SizesList> {
   use crate::style::media::MediaQuery;
+  use crate::style::properties::split_top_level_commas;
 
   let mut entries = Vec::new();
-  for item in attr.split(',') {
+  for item in split_top_level_commas(attr) {
     let trimmed = item.trim();
     if trimmed.is_empty() {
       continue;
     }
-    let mut parts = trimmed.rsplitn(2, char::is_whitespace);
-    let length_part = parts.next().map(str::trim);
-    let media_part = parts.next().map(str::trim);
-    let length = match length_part.and_then(parse_sizes_length) {
+
+    // `sizes` values are `<media-condition>? <length>`, where the `<length>` can itself contain
+    // whitespace (e.g. `calc(100vw - 20px)`) and commas (e.g. `clamp(10px, 20vw, 30px)`).
+    //
+    // Split on the last *top-level* whitespace (outside any ()/[]/{}) so we don't tear apart
+    // calc/min/max/clamp expressions.
+    let mut depth = 0i32;
+    let mut bracket = 0i32;
+    let mut brace = 0i32;
+    let mut in_string: Option<char> = None;
+    let mut last_ws: Option<usize> = None;
+    let mut chars = trimmed.char_indices().peekable();
+    while let Some((idx, ch)) = chars.next() {
+      if let Some(quote) = in_string {
+        if ch == '\\' {
+          // Skip escaped character.
+          let _ = chars.next();
+          continue;
+        }
+        if ch == quote {
+          in_string = None;
+        }
+        continue;
+      }
+
+      if ch == '\\' {
+        // Skip escaped character.
+        let _ = chars.next();
+        continue;
+      }
+
+      match ch {
+        '(' => depth += 1,
+        ')' => depth = (depth - 1).max(0),
+        '[' => bracket += 1,
+        ']' => bracket = (bracket - 1).max(0),
+        '{' => brace += 1,
+        '}' => brace = (brace - 1).max(0),
+        '"' | '\'' => in_string = Some(ch),
+        ch if ch.is_ascii_whitespace() && depth == 0 && bracket == 0 && brace == 0 => {
+          last_ws = Some(idx);
+        }
+        _ => {}
+      }
+    }
+
+    let (media_part, length_part) = if let Some(idx) = last_ws {
+      let (head, tail) = trimmed.split_at(idx);
+      (head.trim(), tail.trim())
+    } else {
+      ("", trimmed)
+    };
+
+    let length = match parse_sizes_length(length_part) {
       Some(l) => l,
       None => continue,
     };
 
     let media = match media_part {
-      Some(cond) if !cond.is_empty() => MediaQuery::parse_list(cond).ok(),
+      cond if !cond.is_empty() => MediaQuery::parse_list(cond).ok(),
       _ => None,
     };
 
@@ -753,6 +804,25 @@ mod tests {
     let parsed = parse_sizes("50SVW, 100lvw").expect("sizes parsed");
     assert_eq!(parsed.entries.len(), 2);
     assert_eq!(parsed.entries[0].length, Length::new(50.0, LengthUnit::Vw));
+    assert_eq!(parsed.entries[1].length, Length::new(100.0, LengthUnit::Vw));
+  }
+
+  #[test]
+  fn parse_sizes_supports_calc_with_internal_whitespace() {
+    let parsed = parse_sizes("(max-width: 600px) calc(50vw - 20px), 100vw").expect("sizes parsed");
+    assert_eq!(parsed.entries.len(), 2);
+    assert!(parsed.entries[0].media.is_some());
+    assert_eq!(parsed.entries[0].length.unit, LengthUnit::Calc);
+    assert!(parsed.entries[0].length.calc.is_some());
+    assert_eq!(parsed.entries[1].length, Length::new(100.0, LengthUnit::Vw));
+  }
+
+  #[test]
+  fn parse_sizes_supports_clamp_with_internal_commas() {
+    let parsed = parse_sizes("clamp(10px, calc(50vw - 20px), 300px), 100vw").expect("sizes parsed");
+    assert_eq!(parsed.entries.len(), 2);
+    assert_eq!(parsed.entries[0].length.unit, LengthUnit::Calc);
+    assert!(parsed.entries[0].length.calc.is_some());
     assert_eq!(parsed.entries[1].length, Length::new(100.0, LengthUnit::Vw));
   }
 
