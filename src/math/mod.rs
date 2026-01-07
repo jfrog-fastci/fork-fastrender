@@ -16,6 +16,8 @@ use rustybuzz::ttf_parser;
 use std::sync::Arc;
 
 const SCRIPT_SCALE: f32 = 0.71;
+const MAX_SCRIPT_LEVEL: u8 = 8;
+const MIN_SCRIPT_FONT_SIZE_PX: f32 = 6.0;
 
 /// Math variant requested by MathML.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +99,13 @@ pub enum ColumnAlign {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperatorForm {
+  Prefix,
+  Infix,
+  Postfix,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MencloseNotation {
   Box,
   RoundedBox,
@@ -118,9 +127,20 @@ pub enum MathSize {
   Absolute(f32),
 }
 
+/// Represents a MathML Core `scriptlevel` override.
+///
+/// MathML Core allows both absolute (`scriptlevel="2"`) and relative
+/// (`scriptlevel="+1"`, `scriptlevel="-1"`) adjustments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MathScriptLevel {
+  Absolute(u8),
+  Relative(i32),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MathStyleOverrides {
   pub display_style: Option<bool>,
+  pub script_level: Option<MathScriptLevel>,
   pub math_size: Option<MathSize>,
   pub math_variant: Option<MathVariant>,
 }
@@ -150,7 +170,10 @@ pub struct MathTable {
 #[derive(Debug, Clone, PartialEq)]
 pub enum MathNode {
   Math {
-    display: bool,
+    /// Effective MathML `displaystyle` value for this subtree.
+    ///
+    /// For `<math>`, this defaults to `display="block"` unless `displaystyle` is set.
+    display_style: bool,
     children: Vec<MathNode>,
   },
   Row(Vec<MathNode>),
@@ -164,7 +187,14 @@ pub enum MathNode {
   },
   Operator {
     text: String,
-    stretchy: bool,
+    /// `<mo form="...">` override. If omitted, the form is inferred from row context.
+    form: Option<OperatorForm>,
+    /// `<mo stretchy="...">` override. If omitted, the operator dictionary default is used.
+    stretchy: Option<bool>,
+    /// `<mo lspace="...">` override.
+    lspace: Option<MathLengthOrKeyword>,
+    /// `<mo rspace="...">` override.
+    rspace: Option<MathLengthOrKeyword>,
     variant: Option<MathVariant>,
   },
   Text {
@@ -313,14 +343,14 @@ impl MathStyle {
   fn from_computed(style: &ComputedStyle) -> Self {
     Self {
       font_size: style.font_size,
-      display_style: style.display.is_block_level(),
+      display_style: false,
       default_variant: None,
       script_level: 0,
     }
   }
 
-  fn script_with_constants(&self, constants: Option<&MathConstants>) -> Self {
-    let scale = if self.script_level == 0 {
+  fn script_scale_down(constants: Option<&MathConstants>, current_level: u8) -> f32 {
+    if current_level == 0 {
       constants
         .and_then(|c| c.script_percent_scale_down)
         .unwrap_or(SCRIPT_SCALE)
@@ -328,17 +358,51 @@ impl MathStyle {
       constants
         .and_then(|c| c.script_script_percent_scale_down)
         .unwrap_or(SCRIPT_SCALE)
-    };
-    let mut size = self.font_size * scale;
-    if size < 6.0 {
-      size = 6.0;
     }
-    Self {
-      font_size: size,
-      display_style: false,
-      default_variant: self.default_variant,
-      script_level: self.script_level.saturating_add(1),
+  }
+
+  fn apply_script_delta(&self, delta: i32, constants: Option<&MathConstants>) -> Self {
+    let mut out = *self;
+    if delta > 0 {
+      for _ in 0..delta {
+        if out.script_level >= MAX_SCRIPT_LEVEL {
+          break;
+        }
+        let scale = Self::script_scale_down(constants, out.script_level);
+        out.font_size = (out.font_size * scale).max(MIN_SCRIPT_FONT_SIZE_PX);
+        out.script_level = out.script_level.saturating_add(1);
+      }
+    } else if delta < 0 {
+      for _ in 0..(-delta) {
+        if out.script_level == 0 {
+          break;
+        }
+        let prev_level = out.script_level.saturating_sub(1);
+        let scale_down = Self::script_scale_down(constants, prev_level);
+        if scale_down > 0.0 {
+          out.font_size = (out.font_size / scale_down).max(1.0);
+        }
+        out.script_level = prev_level;
+      }
     }
+    out
+  }
+
+  fn with_script_level(&self, target: u8, constants: Option<&MathConstants>) -> Self {
+    if target == self.script_level {
+      *self
+    } else if target > self.script_level {
+      self.apply_script_delta((target - self.script_level) as i32, constants)
+    } else {
+      self.apply_script_delta(-((self.script_level - target) as i32), constants)
+    }
+  }
+
+  fn script_with_constants(&self, constants: Option<&MathConstants>) -> Self {
+    let mut out = self.apply_script_delta(1, constants);
+    // Script layout always forces `displaystyle` off.
+    out.display_style = false;
+    out
   }
 }
 
@@ -473,6 +537,54 @@ fn parse_display_style(value: Option<&str>) -> Option<bool> {
   }
 }
 
+fn parse_script_level(value: Option<&str>) -> Option<MathScriptLevel> {
+  let raw = value?.trim();
+  if raw.is_empty() {
+    return None;
+  }
+  let (kind, digits) = match raw.as_bytes().first().copied() {
+    Some(b'+') => (Some('+'), &raw[1..]),
+    Some(b'-') => (Some('-'), &raw[1..]),
+    _ => (None, raw),
+  };
+  let parsed = digits.trim().parse::<i32>().ok()?;
+  match kind {
+    Some('+') => Some(MathScriptLevel::Relative(parsed)),
+    Some('-') => Some(MathScriptLevel::Relative(-parsed)),
+    None => Some(MathScriptLevel::Absolute(
+      parsed.clamp(0, MAX_SCRIPT_LEVEL as i32) as u8,
+    )),
+    _ => None,
+  }
+}
+
+fn parse_operator_form(value: Option<&str>) -> Option<OperatorForm> {
+  let raw = value?.trim();
+  if raw.is_empty() {
+    return None;
+  }
+  match raw.to_ascii_lowercase().as_str() {
+    "prefix" => Some(OperatorForm::Prefix),
+    "infix" => Some(OperatorForm::Infix),
+    "postfix" => Some(OperatorForm::Postfix),
+    _ => None,
+  }
+}
+
+fn parse_math_space(raw: Option<&str>) -> Option<MathLengthOrKeyword> {
+  let value = raw?.trim();
+  if value.is_empty() {
+    return None;
+  }
+  match value.to_ascii_lowercase().as_str() {
+    "thinmathspace" | "thin" => Some(MathLengthOrKeyword::Thin),
+    "mediummathspace" | "medium" => Some(MathLengthOrKeyword::Medium),
+    "thickmathspace" | "thick" => Some(MathLengthOrKeyword::Thick),
+    "0" => Some(MathLengthOrKeyword::Zero),
+    other => parse_math_length(Some(other)).map(MathLengthOrKeyword::Length),
+  }
+}
+
 fn parse_row_align_list(value: Option<&str>) -> Vec<RowAlign> {
   value
     .map(|v| {
@@ -541,6 +653,7 @@ fn parse_menclose_notation(value: Option<&str>) -> Vec<MencloseNotation> {
 fn parse_mstyle_overrides(node: &DomNode) -> MathStyleOverrides {
   MathStyleOverrides {
     display_style: parse_display_style(node.get_attribute_ref("displaystyle")),
+    script_level: parse_script_level(node.get_attribute_ref("scriptlevel")),
     math_size: node
       .get_attribute_ref("mathsize")
       .and_then(|v| parse_math_size(v)),
@@ -647,12 +760,18 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
           first_child.and_then(parse_mathml)
         }
         "math" if in_math_ns || namespace.is_empty() => {
-          let display = node
+          // MathML Core: `displaystyle` defaults to `true` for display math.
+          let display_attr_is_block = node
             .get_attribute_ref("display")
             .map(|v| v.eq_ignore_ascii_case("block"))
             .unwrap_or(false);
+          let display_style = parse_display_style(node.get_attribute_ref("displaystyle"))
+            .unwrap_or(display_attr_is_block);
           let children = parse_children(node);
-          Some(MathNode::Math { display, children })
+          Some(MathNode::Math {
+            display_style,
+            children,
+          })
         }
         "none" => None,
         "mrow" => Some(MathNode::Row(parse_children(node))),
@@ -665,13 +784,16 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
           variant: parse_mathvariant(node),
         }),
         "mo" => normalized_text(node, false).map(|text| {
-          let stretchy = node
-            .get_attribute_ref("stretchy")
-            .map(|v| !v.eq_ignore_ascii_case("false"))
-            .unwrap_or(true);
+          let stretchy = parse_display_style(node.get_attribute_ref("stretchy"));
+          let form = parse_operator_form(node.get_attribute_ref("form"));
+          let lspace = parse_math_space(node.get_attribute_ref("lspace"));
+          let rspace = parse_math_space(node.get_attribute_ref("rspace"));
           MathNode::Operator {
             text,
+            form,
             stretchy,
+            lspace,
+            rspace,
             variant: parse_mathvariant(node),
           }
         }),
@@ -842,7 +964,10 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
           let mut row = Vec::new();
           row.push(MathNode::Operator {
             text: open,
-            stretchy: true,
+            form: None,
+            stretchy: Some(true),
+            lspace: None,
+            rspace: None,
             variant: Some(MathVariant::Normal),
           });
           for (idx, child) in inner.into_iter().enumerate() {
@@ -854,7 +979,10 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
                 .unwrap_or(',');
               row.push(MathNode::Operator {
                 text: sep.to_string(),
-                stretchy: false,
+                form: None,
+                stretchy: Some(false),
+                lspace: None,
+                rspace: None,
                 variant: Some(MathVariant::Normal),
               });
             }
@@ -862,7 +990,10 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
           }
           row.push(MathNode::Operator {
             text: close,
-            stretchy: true,
+            form: None,
+            stretchy: Some(true),
+            lspace: None,
+            rspace: None,
             variant: Some(MathVariant::Normal),
           });
           Some(MathNode::Row(row))
@@ -948,6 +1079,40 @@ enum StretchOrientation {
   Horizontal { target: f32 },
 }
 
+#[derive(Debug, Clone, Copy)]
+struct OperatorProperties {
+  fence: bool,
+  separator: bool,
+  stretchy: bool,
+  large_op: bool,
+  movable_limits: bool,
+  lspace: MathLengthOrKeyword,
+  rspace: MathLengthOrKeyword,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OperatorLike<'a> {
+  text: &'a str,
+  form: Option<OperatorForm>,
+  stretchy: Option<bool>,
+  lspace: Option<MathLengthOrKeyword>,
+  rspace: Option<MathLengthOrKeyword>,
+}
+
+impl OperatorProperties {
+  fn empty() -> Self {
+    Self {
+      fence: false,
+      separator: false,
+      stretchy: false,
+      large_op: false,
+      movable_limits: false,
+      lspace: MathLengthOrKeyword::Zero,
+      rspace: MathLengthOrKeyword::Zero,
+    }
+  }
+}
+
 impl StretchOrientation {
   fn target(&self) -> f32 {
     match self {
@@ -1011,6 +1176,169 @@ impl MathLayoutContext {
 
   fn table_spacing(style: &MathStyle) -> (f32, f32) {
     (style.font_size * 0.5, style.font_size * 0.25)
+  }
+
+  fn is_open_fence(text: &str) -> bool {
+    matches!(text, "(" | "[" | "{" | "⟨" | "⌈" | "⌊")
+  }
+
+  fn is_close_fence(text: &str) -> bool {
+    matches!(text, ")" | "]" | "}" | "⟩" | "⌉" | "⌋")
+  }
+
+  fn is_always_postfix_operator(text: &str) -> bool {
+    matches!(text, "!" | "′" | "″" | "‴")
+  }
+
+  fn operator_default_properties(text: &str, form: OperatorForm) -> OperatorProperties {
+    match text {
+      // Fences/delimiters.
+      "(" | ")" | "[" | "]" | "{" | "}" | "⟨" | "⟩" | "⌈" | "⌉" | "⌊" | "⌋" => {
+        OperatorProperties {
+          fence: true,
+          separator: false,
+          stretchy: true,
+          large_op: false,
+          movable_limits: false,
+          lspace: MathLengthOrKeyword::Zero,
+          rspace: MathLengthOrKeyword::Zero,
+        }
+      }
+      // Separators / punctuation.
+      "," | ";" => OperatorProperties {
+        fence: false,
+        separator: true,
+        stretchy: false,
+        large_op: false,
+        movable_limits: false,
+        lspace: MathLengthOrKeyword::Zero,
+        rspace: MathLengthOrKeyword::Thin,
+      },
+      // Relation operators.
+      "=" | "≠" | "<" | ">" | "≤" | "≥" => OperatorProperties {
+        fence: false,
+        separator: false,
+        stretchy: false,
+        large_op: false,
+        movable_limits: false,
+        lspace: MathLengthOrKeyword::Thick,
+        rspace: MathLengthOrKeyword::Thick,
+      },
+      // Binary/unary operators.
+      "+" | "-" | "−" | "±" => {
+        let (lspace, rspace) = match form {
+          OperatorForm::Infix => (MathLengthOrKeyword::Medium, MathLengthOrKeyword::Medium),
+          _ => (MathLengthOrKeyword::Zero, MathLengthOrKeyword::Zero),
+        };
+        OperatorProperties {
+          fence: false,
+          separator: false,
+          stretchy: false,
+          large_op: false,
+          movable_limits: false,
+          lspace,
+          rspace,
+        }
+      }
+      "×" | "·" | "÷" => OperatorProperties {
+        fence: false,
+        separator: false,
+        stretchy: false,
+        large_op: false,
+        movable_limits: false,
+        lspace: MathLengthOrKeyword::Medium,
+        rspace: MathLengthOrKeyword::Medium,
+      },
+      // Large operators.
+      "∑" | "∏" => OperatorProperties {
+        fence: false,
+        separator: false,
+        stretchy: false,
+        large_op: true,
+        movable_limits: true,
+        lspace: MathLengthOrKeyword::Thin,
+        rspace: MathLengthOrKeyword::Thin,
+      },
+      // Fallback.
+      _ => OperatorProperties::empty(),
+    }
+  }
+
+  fn operator_like<'a>(node: &'a MathNode) -> Option<OperatorLike<'a>> {
+    match node {
+      MathNode::Operator {
+        text,
+        form,
+        stretchy,
+        lspace,
+        rspace,
+        ..
+      } => Some(OperatorLike {
+        text: text.as_str(),
+        form: *form,
+        stretchy: *stretchy,
+        lspace: *lspace,
+        rspace: *rspace,
+      }),
+      MathNode::Style { children, .. } if children.len() == 1 => Self::operator_like(&children[0]),
+      MathNode::Row(children) if children.len() == 1 => Self::operator_like(&children[0]),
+      _ => None,
+    }
+  }
+
+  fn is_form_ignorable(node: &MathNode) -> bool {
+    match node {
+      MathNode::Space { .. } => true,
+      MathNode::Text { text, .. } => text.trim().is_empty(),
+      _ => false,
+    }
+  }
+
+  fn inferred_operator_form(children: &[MathNode], index: usize) -> OperatorForm {
+    let Some(op) = Self::operator_like(&children[index]) else {
+      return OperatorForm::Infix;
+    };
+    if let Some(form) = op.form {
+      return form;
+    }
+    if Self::is_open_fence(op.text) {
+      return OperatorForm::Prefix;
+    }
+    if Self::is_close_fence(op.text) {
+      return OperatorForm::Postfix;
+    }
+    if Self::is_always_postfix_operator(op.text) {
+      return OperatorForm::Postfix;
+    }
+
+    let prev = (0..index)
+      .rev()
+      .find(|idx| !Self::is_form_ignorable(&children[*idx]));
+    let next = ((index + 1)..children.len()).find(|idx| !Self::is_form_ignorable(&children[*idx]));
+
+    if prev.is_none() {
+      return OperatorForm::Prefix;
+    }
+    if next.is_none() {
+      return OperatorForm::Postfix;
+    }
+
+    if let Some(prev_idx) = prev {
+      if let Some(prev_op) = Self::operator_like(&children[prev_idx]) {
+        if !Self::is_close_fence(prev_op.text) {
+          return OperatorForm::Prefix;
+        }
+      }
+    }
+    if let Some(next_idx) = next {
+      if let Some(next_op) = Self::operator_like(&children[next_idx]) {
+        if !Self::is_open_fence(next_op.text) {
+          return OperatorForm::Postfix;
+        }
+      }
+    }
+
+    OperatorForm::Infix
   }
 
   fn resolve_math_font(
@@ -1322,6 +1650,8 @@ impl MathLayoutContext {
     target_descent: f32,
     style: &MathStyle,
     base_style: &ComputedStyle,
+    apply_delimited_min_height: bool,
+    apply_display_operator_min_height: bool,
   ) -> Option<MathLayout> {
     let required_height = target_ascent + target_descent;
     let (runs, _base_metrics) = self.shape_text(text, base_style, style, variant);
@@ -1334,30 +1664,40 @@ impl MathLayoutContext {
     };
     let glyph_id = first_run.glyphs.first().map(|g| g.glyph_id as u16)?;
     let font = first_run.font.clone();
+    let target_height = if apply_delimited_min_height || apply_display_operator_min_height {
+      self
+        .font_ctx
+        .math_constants(&font, style.font_size)
+        .and_then(|c| {
+          let mut h = required_height;
+          if apply_delimited_min_height {
+            if let Some(min) = c.delimited_sub_formula_min_height {
+              h = h.max(min);
+            }
+          }
+          if apply_display_operator_min_height {
+            if let Some(min) = c.display_operator_min_height {
+              h = h.max(min);
+            }
+          }
+          Some(h)
+        })
+        .unwrap_or(required_height)
+    } else {
+      required_height
+    };
     if let Some((construction, min_overlap)) =
       self
         .font_ctx
         .math_glyph_construction(&font, glyph_id, true, style.font_size)
     {
-      let min_height = self
-        .font_ctx
-        .math_constants(&font, style.font_size)
-        .and_then(|c| {
-          let mut h = required_height;
-          if let Some(min) = c.delimited_sub_formula_min_height {
-            h = h.max(min);
-          }
-          if let Some(min) = c.display_operator_min_height {
-            h = h.max(min);
-          }
-          Some(h)
-        })
-        .unwrap_or(required_height);
       if let Some(layout) = self.build_glyph_construction(
         font.clone(),
         construction,
         min_overlap,
-        StretchOrientation::Vertical { target: min_height },
+        StretchOrientation::Vertical {
+          target: target_height,
+        },
         style.font_size,
       ) {
         return Some(self.align_stretch(layout, target_ascent, target_descent));
@@ -1365,7 +1705,7 @@ impl MathLayoutContext {
     }
     let current_height = metrics.ascent + metrics.descent;
     let factor = if current_height > 0.0 {
-      (required_height / current_height).clamp(1.0, 8.0)
+      (target_height / current_height).clamp(1.0, 8.0)
     } else {
       1.0
     };
@@ -1450,10 +1790,35 @@ impl MathLayoutContext {
     }
   }
 
-  fn apply_style_overrides(&self, style: &MathStyle, overrides: &MathStyleOverrides) -> MathStyle {
+  fn resolve_math_space(
+    &self,
+    space: MathLengthOrKeyword,
+    style: &MathStyle,
+    metrics: &ScaledMetrics,
+  ) -> f32 {
+    // MathML Core keywords match TeX mu spacings: 3/18, 4/18, 5/18 em.
+    // https://w3c.github.io/mathml-core/#dfn-thinmathspace
+    match space {
+      MathLengthOrKeyword::Thin => style.font_size * (3.0 / 18.0),
+      MathLengthOrKeyword::Medium => style.font_size * (4.0 / 18.0),
+      MathLengthOrKeyword::Thick => style.font_size * (5.0 / 18.0),
+      MathLengthOrKeyword::Zero => 0.0,
+      MathLengthOrKeyword::Length(len) => self.resolve_length(len, style, metrics),
+    }
+  }
+
+  fn apply_style_overrides(
+    &self,
+    style: &MathStyle,
+    overrides: &MathStyleOverrides,
+    base_style: &ComputedStyle,
+  ) -> MathStyle {
     let mut next = *style;
     if let Some(display) = overrides.display_style {
       next.display_style = display;
+    }
+    if let Some(variant) = overrides.math_variant {
+      next.default_variant = Some(variant);
     }
     if let Some(size) = overrides.math_size {
       next.font_size = match size {
@@ -1461,8 +1826,16 @@ impl MathLayoutContext {
         MathSize::Absolute(px) => px.max(1.0),
       };
     }
-    if let Some(variant) = overrides.math_variant {
-      next.default_variant = Some(variant);
+    if let Some(script_level) = overrides.script_level {
+      let target = match script_level {
+        MathScriptLevel::Absolute(level) => level.min(MAX_SCRIPT_LEVEL),
+        MathScriptLevel::Relative(delta) => {
+          let raw = next.script_level as i32 + delta;
+          raw.clamp(0, MAX_SCRIPT_LEVEL as i32) as u8
+        }
+      };
+      let constants = self.default_math_constants(&next, base_style, MathVariant::Normal);
+      next = next.with_script_level(target, constants.as_ref());
     }
     next
   }
@@ -1670,13 +2043,29 @@ impl MathLayoutContext {
     for child in children {
       layouts.push(self.layout_node(child, style, base_style));
     }
+    // Determine default operator properties. These drive both stretching and spacing.
+    let mut operator_props: Vec<Option<OperatorProperties>> = vec![None; children.len()];
+    for (idx, child) in children.iter().enumerate() {
+      let Some(op) = Self::operator_like(child) else {
+        continue;
+      };
+      let form = Self::inferred_operator_form(children, idx);
+      let mut props = Self::operator_default_properties(op.text, form);
+      props.stretchy = op.stretchy.unwrap_or(props.stretchy);
+      props.lspace = op.lspace.unwrap_or(props.lspace);
+      props.rspace = op.rspace.unwrap_or(props.rspace);
+      operator_props[idx] = Some(props);
+    }
+
     // Stretch operators after seeing surrounding content.
-    let stretchy_indices: Vec<usize> = children
+    let stretchy_indices: Vec<usize> = operator_props
       .iter()
       .enumerate()
-      .filter_map(|(idx, child)| match child {
-        MathNode::Operator { stretchy: true, .. } => Some(idx),
-        _ => None,
+      .filter_map(|(idx, props)| {
+        if !matches!(children.get(idx), Some(MathNode::Operator { .. })) {
+          return None;
+        }
+        props.filter(|props| props.stretchy).map(|_| idx)
       })
       .collect();
     if !stretchy_indices.is_empty() {
@@ -1710,6 +2099,9 @@ impl MathLayoutContext {
       }
 
       for idx in stretchy_indices {
+        let Some(props) = operator_props.get(idx).and_then(|p| *p) else {
+          continue;
+        };
         if let MathNode::Operator { text, variant, .. } = &children[idx] {
           let resolved_variant = self.resolve_variant(*variant, style, MathVariant::Normal);
           if let Some(layout) = self.stretch_operator_vertical(
@@ -1719,6 +2111,8 @@ impl MathLayoutContext {
             target_descent,
             style,
             base_style,
+            props.fence,
+            props.large_op && style.display_style,
           ) {
             layouts[idx] = layout;
           }
@@ -1738,11 +2132,22 @@ impl MathLayoutContext {
     let baseline = max_ascent;
     let mut x = 0.0;
     let mut fragments = Vec::new();
+    let metrics = self.base_font_metrics(base_style, style.font_size);
     let trailing_annotations = layouts
       .last()
       .map(|l| l.annotations.clone())
       .unwrap_or_default();
-    for layout in layouts {
+    for (idx, layout) in layouts.into_iter().enumerate() {
+      if idx > 0 {
+        let mut gap = 0.0;
+        if let Some(prev) = operator_props.get(idx - 1).and_then(|p| *p) {
+          gap += self.resolve_math_space(prev.rspace, style, &metrics);
+        }
+        if let Some(curr) = operator_props.get(idx).and_then(|p| *p) {
+          gap += self.resolve_math_space(curr.lspace, style, &metrics);
+        }
+        x += gap;
+      }
       let y = baseline - layout.baseline;
       for frag in layout.fragments {
         fragments.push(frag.translate(Point::new(x, y)));
@@ -1852,6 +2257,8 @@ impl MathLayoutContext {
           target_descent,
           style,
           base_style,
+          false,
+          false,
         )
         .unwrap_or_else(|| self.layout_glyphs(slash_text, base_style, style, MathVariant::Normal));
 
@@ -2045,6 +2452,7 @@ impl MathLayoutContext {
           c.superscript_shift_up
         }
       })
+      .filter(|v| *v > 0.0)
       .unwrap_or_else(|| {
         (base_metrics.ascent * 0.6)
           .max(x_height * 0.65)
@@ -2053,6 +2461,7 @@ impl MathLayoutContext {
     let sub_shift = constants
       .as_ref()
       .and_then(|c| c.subscript_shift_down)
+      .filter(|v| *v > 0.0)
       .unwrap_or_else(|| (base_metrics.descent * 0.8 + x_height * 0.2).max(style.font_size * 0.24));
     let min_gap = constants
       .as_ref()
@@ -2217,38 +2626,60 @@ impl MathLayoutContext {
     style: &MathStyle,
     base_style: &ComputedStyle,
   ) -> MathLayout {
+    if !style.display_style {
+      if let Some(op) = Self::operator_like(base) {
+        // MathML Core operator dictionary: large operators such as ∑ have movable limits in
+        // display style, but become scripts in inline style.
+        if Self::operator_default_properties(op.text, OperatorForm::Infix).movable_limits {
+          return self.layout_superscript(base, over, under, style, base_style);
+        }
+      }
+    }
+
     let base_layout = self.layout_node(base, style, base_style);
     let constants =
       self.math_constants_for_layout(&base_layout, style, base_style, MathVariant::Normal);
-    let script_style = if style.display_style {
-      *style
-    } else {
-      style.script_with_constants(constants.as_ref())
-    };
+    let script_style = style.script_with_constants(constants.as_ref());
     let stretch_target = base_layout.width + Self::rule_thickness(style);
     let under_layout = under.map(|n| match n {
       MathNode::Operator {
         text,
-        stretchy: true,
+        form,
+        stretchy,
         variant,
+        ..
       } => {
         let resolved = self.resolve_variant(*variant, &script_style, MathVariant::Normal);
-        self
-          .stretch_operator_horizontal(text, resolved, stretch_target, &script_style, base_style)
-          .unwrap_or_else(|| self.layout_node(n, &script_style, base_style))
+        let default =
+          Self::operator_default_properties(text, (*form).unwrap_or(OperatorForm::Infix));
+        if (*stretchy).unwrap_or(default.stretchy) {
+          self
+            .stretch_operator_horizontal(text, resolved, stretch_target, &script_style, base_style)
+            .unwrap_or_else(|| self.layout_node(n, &script_style, base_style))
+        } else {
+          self.layout_node(n, &script_style, base_style)
+        }
       }
       _ => self.layout_node(n, &script_style, base_style),
     });
     let over_layout = over.map(|n| match n {
       MathNode::Operator {
         text,
-        stretchy: true,
+        form,
+        stretchy,
         variant,
+        ..
       } => {
         let resolved = self.resolve_variant(*variant, &script_style, MathVariant::Normal);
-        self
-          .stretch_operator_horizontal(text, resolved, stretch_target, &script_style, base_style)
-          .unwrap_or_else(|| self.layout_node(n, &script_style, base_style))
+        let default =
+          Self::operator_default_properties(text, (*form).unwrap_or(OperatorForm::Infix));
+        if (*stretchy).unwrap_or(default.stretchy) {
+          self
+            .stretch_operator_horizontal(text, resolved, stretch_target, &script_style, base_style)
+            .unwrap_or_else(|| self.layout_node(n, &script_style, base_style))
+        } else {
+          self.layout_node(n, &script_style, base_style)
+        }
       }
       _ => self.layout_node(n, &script_style, base_style),
     });
@@ -2347,6 +2778,8 @@ impl MathLayoutContext {
         target_descent,
         style,
         base_style,
+        true,
+        false,
       )
       .unwrap_or_else(|| self.layout_glyphs("√", base_style, style, radical_variant));
     if (radical.height - target_height).abs() > style.font_size * 0.05 {
@@ -2872,9 +3305,12 @@ impl MathLayoutContext {
     base_style: &ComputedStyle,
   ) -> MathLayout {
     match node {
-      MathNode::Math { display, children } => {
+      MathNode::Math {
+        display_style,
+        children,
+      } => {
         let mut style = *style;
-        style.display_style = style.display_style || *display;
+        style.display_style = *display_style;
         self.layout_row(children, &style, base_style)
       }
       MathNode::Row(children) => self.layout_row(children, style, base_style),
@@ -2886,11 +3322,7 @@ impl MathLayoutContext {
         let resolved = self.resolve_variant(*variant, style, MathVariant::Normal);
         self.layout_glyphs(text, base_style, style, resolved)
       }
-      MathNode::Operator {
-        text,
-        stretchy: _,
-        variant,
-      } => {
+      MathNode::Operator { text, variant, .. } => {
         let resolved = self.resolve_variant(*variant, style, MathVariant::Normal);
         // Stretching handled during row aggregation by scaling font size heuristically.
         self.layout_glyphs(text, base_style, style, resolved)
@@ -2957,7 +3389,7 @@ impl MathLayoutContext {
         overrides,
         children,
       } => {
-        let next_style = self.apply_style_overrides(style, overrides);
+        let next_style = self.apply_style_overrides(style, overrides, base_style);
         self.layout_row(children, &next_style, base_style)
       }
       MathNode::Enclose { notation, child } => {

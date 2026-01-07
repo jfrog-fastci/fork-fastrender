@@ -1,5 +1,7 @@
 use crate::r#ref::compare::{compare_images, load_png_from_bytes, CompareConfig};
-use fastrender::math::{layout_mathml, ColumnAlign, MathFragment, MathNode, MathVariant};
+use fastrender::math::{
+  layout_mathml, ColumnAlign, MathFragment, MathLengthOrKeyword, MathNode, MathVariant,
+};
 use fastrender::paint::display_list::DisplayItem;
 use fastrender::paint::display_list_builder::DisplayListBuilder;
 use fastrender::text::font_db::FontConfig;
@@ -161,6 +163,45 @@ fn math_fractions_match_golden() {
 }
 
 #[test]
+fn math_operator_spacing_matches_golden() {
+  with_stack(|| {
+    let mut renderer = FastRender::new().expect("renderer");
+    let html = std::fs::read_to_string(fixture_path("math_operator_spacing"))
+      .expect("load math_operator_spacing");
+    let png = renderer
+      .render_to_png(&html, 520, 260)
+      .expect("render math operator spacing");
+    compare_golden("math_operator_spacing", &png, &CompareConfig::lenient());
+  });
+}
+
+#[test]
+fn math_scriptlevel_matches_golden() {
+  with_stack(|| {
+    let mut renderer = FastRender::new().expect("renderer");
+    let html =
+      std::fs::read_to_string(fixture_path("math_scriptlevel")).expect("load math_scriptlevel");
+    let png = renderer
+      .render_to_png(&html, 520, 260)
+      .expect("render math scriptlevel");
+    compare_golden("math_scriptlevel", &png, &CompareConfig::lenient());
+  });
+}
+
+#[test]
+fn math_displaystyle_limits_match_golden() {
+  with_stack(|| {
+    let mut renderer = FastRender::new().expect("renderer");
+    let html = std::fs::read_to_string(fixture_path("math_displaystyle_limits"))
+      .expect("load math_displaystyle_limits");
+    let png = renderer
+      .render_to_png(&html, 520, 300)
+      .expect("render math displaystyle limits");
+    compare_golden("math_displaystyle_limits", &png, &CompareConfig::lenient());
+  });
+}
+
+#[test]
 fn math_semantics_annotations_ignored_match_golden() {
   with_stack(|| {
     let mut renderer = FastRender::new().expect("renderer");
@@ -287,7 +328,9 @@ fn scripts_on_italic_identifiers_offset_and_raise() {
   );
   assert!(
     sup_origin.y < combined.baseline,
-    "superscript glyph origin should be above the main baseline"
+    "superscript glyph origin should be above the main baseline (origin.y={}, baseline={})",
+    sup_origin.y,
+    combined.baseline
   );
 }
 
@@ -381,20 +424,83 @@ fn munderover_stacks_limits() {
       math.layout.as_ref().expect("layout").as_ref().clone()
     };
 
-    let dom = renderer
+    let inline_dom = renderer
       .parse_html("<math><munderover><mo>&#8721;</mo><mi>i</mi><mi>n</mi></munderover></math>")
-      .expect("dom");
-    let fragments = renderer
-      .layout_document(&dom, 240, 240)
-      .expect("layout document");
-
-    let replaced = find_math_fragment(&fragments.root).expect("math fragment");
-    let ReplacedType::Math(math) = replaced else {
-      panic!("expected math replaced type");
+      .expect("inline dom");
+    let inline_layout = {
+      let fragments = renderer
+        .layout_document(&inline_dom, 240, 240)
+        .expect("layout inline");
+      let replaced = find_math_fragment(&fragments.root).expect("math fragment");
+      let ReplacedType::Math(math) = replaced else {
+        panic!("expected math replaced type");
+      };
+      math.layout.as_ref().expect("math layout").as_ref().clone()
     };
-    let layout = math.layout.as_ref().expect("math layout");
-    assert!(layout.height > base_layout.height);
-    assert!(layout.baseline > base_layout.baseline);
-    assert!(layout.fragments.len() >= 3);
+
+    let display_dom = renderer
+      .parse_html(
+        "<math display=\"block\"><munderover><mo>&#8721;</mo><mi>i</mi><mi>n</mi></munderover></math>",
+      )
+      .expect("display dom");
+    let display_layout = {
+      let fragments = renderer
+        .layout_document(&display_dom, 240, 240)
+        .expect("layout display");
+      let replaced = find_math_fragment(&fragments.root).expect("math fragment");
+      let ReplacedType::Math(math) = replaced else {
+        panic!("expected math replaced type");
+      };
+      math.layout.as_ref().expect("math layout").as_ref().clone()
+    };
+
+    // Inline style should use movable limits (scripts), increasing width.
+    assert!(inline_layout.width > base_layout.width);
+    // Display style should stack limits, increasing height versus inline.
+    assert!(display_layout.height > inline_layout.height);
+    assert!(display_layout.fragments.len() >= 3);
   });
+}
+
+#[test]
+fn operator_spacing_increases_layout_width() {
+  let ctx = math_font_context();
+  let mut style = fastrender::ComputedStyle::default();
+  style.font_size = 24.0;
+  style.font_family = vec!["STIX Two Math".to_string()].into();
+  let make_expr = |lspace: Option<MathLengthOrKeyword>, rspace: Option<MathLengthOrKeyword>| {
+    MathNode::Row(vec![
+      MathNode::Identifier {
+        text: "x".into(),
+        variant: Some(MathVariant::Italic),
+      },
+      MathNode::Operator {
+        text: "+".into(),
+        form: None,
+        stretchy: None,
+        lspace,
+        rspace,
+        variant: None,
+      },
+      MathNode::Identifier {
+        text: "y".into(),
+        variant: Some(MathVariant::Italic),
+      },
+    ])
+  };
+  let spaced = layout_mathml(&make_expr(None, None), &style, &ctx);
+  let tight = layout_mathml(
+    &make_expr(
+      Some(MathLengthOrKeyword::Zero),
+      Some(MathLengthOrKeyword::Zero),
+    ),
+    &style,
+    &ctx,
+  );
+  assert!(
+    spaced.width > tight.width + style.font_size * 0.2,
+    "default operator spacing should increase width: {} vs {}",
+    spaced.width,
+    tight.width
+  );
 }
