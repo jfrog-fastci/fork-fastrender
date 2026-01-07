@@ -193,8 +193,8 @@ fn will_change_clip_path_establishes_backdrop_root() {
 
 #[test]
 fn will_change_opacity_establishes_backdrop_root() {
-  // `opacity < 1` is a Backdrop Root trigger; `will-change: opacity` should establish the same
-  // boundary up-front.
+  // Per Filter Effects Level 2, `opacity < 1` establishes a Backdrop Root, so `will-change: opacity`
+  // must establish the boundary immediately even before the opacity value changes.
   let html = r#"<!doctype html>
     <style>
       html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
@@ -219,6 +219,8 @@ fn will_change_opacity_establishes_backdrop_root() {
     .render(&list)
     .expect("render");
 
+  // The child's backdrop-filter sees the empty backdrop-root image (transparent), producing a
+  // transparent result that lets the underlying page background show through unchanged.
   assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
@@ -257,8 +259,8 @@ fn will_change_backdrop_filter_establishes_backdrop_root() {
 
 #[test]
 fn will_change_mask_image_establishes_backdrop_root() {
-  // `mask-image` is a Backdrop Root trigger; `will-change` hints for it must establish the
-  // boundary proactively.
+  // `mask-image` is a Backdrop Root trigger; `will-change: mask-image` must establish the boundary
+  // proactively even before the element has a non-`none` mask-image applied.
   let html = r#"<!doctype html>
     <style>
       html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
@@ -283,6 +285,75 @@ fn will_change_mask_image_establishes_backdrop_root() {
     .render(&list)
     .expect("render");
 
+  // The child's backdrop-filter sees the empty backdrop-root image (transparent), producing a
+  // transparent result that lets the underlying page background show through unchanged.
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
+fn will_change_mask_establishes_backdrop_root() {
+  // `mask` is also a Backdrop Root trigger; `will-change: mask` should establish the same boundary.
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent { position: absolute; inset: 0; will-change: mask; }
+      #child {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 40px;
+        height: 40px;
+        backdrop-filter: invert(1);
+        background: transparent;
+      }
+    </style>
+    <div id="parent"><div id="child"></div></div>
+  "#;
+
+  let (list, font_ctx) = build_display_list(html, 64, 64);
+  let pixmap = DisplayListRenderer::new(64, 64, Rgba::WHITE, font_ctx)
+    .expect("renderer")
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("render");
+
+  // The child's backdrop-filter sees the empty backdrop-root image (transparent), producing a
+  // transparent result that lets the underlying page background show through unchanged.
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
+
+#[test]
+fn will_change_mask_border_establishes_backdrop_root() {
+  // `mask-border` is a Backdrop Root trigger; `will-change` hints for it must establish the
+  // boundary proactively.
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent { position: absolute; inset: 0; will-change: mask-border; }
+      #child {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 40px;
+        height: 40px;
+        backdrop-filter: invert(1);
+        background: transparent;
+      }
+    </style>
+    <div id="parent"><div id="child"></div></div>
+  "#;
+
+  let (list, font_ctx) = build_display_list(html, 64, 64);
+  let pixmap = DisplayListRenderer::new(64, 64, Rgba::WHITE, font_ctx)
+    .expect("renderer")
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("render");
+
+  // The child's backdrop-filter sees the empty backdrop-root image (transparent), producing a
+  // transparent result that lets the underlying page background show through unchanged.
   assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
