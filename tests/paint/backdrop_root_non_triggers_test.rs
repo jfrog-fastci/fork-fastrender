@@ -115,3 +115,15 @@ fn will_change_transform_is_not_a_backdrop_root() {
   let pixmap = render("will-change: transform;");
   assert_child_inverts_body_bg(&pixmap);
 }
+
+#[test]
+fn perspective_is_not_a_backdrop_root() {
+  let pixmap = render("perspective: 1000px;");
+  assert_child_inverts_body_bg(&pixmap);
+}
+
+#[test]
+fn will_change_perspective_is_not_a_backdrop_root() {
+  let pixmap = render("will-change: perspective;");
+  assert_child_inverts_body_bg(&pixmap);
+}
