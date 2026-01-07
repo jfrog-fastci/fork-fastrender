@@ -119,7 +119,7 @@ thread_local! {
   /// Scope this cache to the intrinsic/layout cache epoch so we do not retain stale pointers across
   /// renders.
   static FLEX_AUTO_MIN_CACHE_EPOCH: Cell<usize> = const { Cell::new(0) };
-  static FLEX_AUTO_MIN_CACHE: RefCell<FxHashMap<(usize, usize, bool, bool), Option<f32>>> =
+  static FLEX_AUTO_MIN_CACHE: RefCell<FxHashMap<(usize, usize, bool, bool, u32), Option<f32>>> =
     RefCell::new(FxHashMap::default());
 }
 
@@ -143,6 +143,7 @@ fn flex_auto_min_cache_lookup(
   style_ptr: usize,
   main_axis_is_horizontal: bool,
   skip_contents: bool,
+  percentage_base_key: u32,
 ) -> Option<Option<f32>> {
   if box_id == 0 {
     return None;
@@ -151,7 +152,13 @@ fn flex_auto_min_cache_lookup(
   FLEX_AUTO_MIN_CACHE.with(|cache| {
     cache
       .borrow()
-      .get(&(box_id, style_ptr, main_axis_is_horizontal, skip_contents))
+      .get(&(
+        box_id,
+        style_ptr,
+        main_axis_is_horizontal,
+        skip_contents,
+        percentage_base_key,
+      ))
       .cloned()
   })
 }
@@ -162,6 +169,7 @@ fn flex_auto_min_cache_store(
   style_ptr: usize,
   main_axis_is_horizontal: bool,
   skip_contents: bool,
+  percentage_base_key: u32,
   value: Option<f32>,
 ) {
   if box_id == 0 {
@@ -171,11 +179,26 @@ fn flex_auto_min_cache_store(
   FLEX_AUTO_MIN_CACHE.with(|cache| {
     let mut map = cache.borrow_mut();
     if map.len() >= FLEX_AUTO_MIN_CACHE_MAX_ENTRIES
-      && !map.contains_key(&(box_id, style_ptr, main_axis_is_horizontal, skip_contents))
+      && !map.contains_key(&(
+        box_id,
+        style_ptr,
+        main_axis_is_horizontal,
+        skip_contents,
+        percentage_base_key,
+      ))
     {
       map.clear();
     }
-    map.insert((box_id, style_ptr, main_axis_is_horizontal, skip_contents), value);
+    map.insert(
+      (
+        box_id,
+        style_ptr,
+        main_axis_is_horizontal,
+        skip_contents,
+        percentage_base_key,
+      ),
+      value,
+    );
   });
 }
 
@@ -1105,6 +1128,7 @@ impl FormattingContext for FlexFormattingContext {
             child,
             false,
             Some(style),
+            Some(&constraints),
             skip_contents,
             &mut resolved_style,
           )?;
@@ -2780,6 +2804,7 @@ impl FormattingContext for FlexFormattingContext {
           child,
           false,
           Some(style),
+          Some(&constraints),
           skip_contents,
           &mut resolved_style,
         )?;
@@ -4608,6 +4633,7 @@ impl FlexFormattingContext {
         child,
         false,
         Some(root_style),
+        Some(constraints),
         skip_contents,
         &mut resolved_style,
       )?;
@@ -4731,7 +4757,14 @@ impl FlexFormattingContext {
       &mut style,
     )?;
     let skip_contents = self.flex_item_should_skip_contents(box_node, auto_unskipped_for_pass);
-    self.apply_flex_auto_min_size(box_node, is_root, containing_flex, skip_contents, &mut style)?;
+    self.apply_flex_auto_min_size(
+      box_node,
+      is_root,
+      containing_flex,
+      None,
+      skip_contents,
+      &mut style,
+    )?;
     Ok(style)
   }
 
@@ -5552,6 +5585,7 @@ impl FlexFormattingContext {
     box_node: &BoxNode,
     is_root: bool,
     containing_flex: Option<&ComputedStyle>,
+    constraints: Option<&LayoutConstraints>,
     skip_contents: bool,
     taffy_style: &mut taffy::style::Style,
   ) -> Result<(), LayoutError> {
@@ -5588,7 +5622,31 @@ impl FlexFormattingContext {
       if taffy_style.min_size.width == Dimension::AUTO
         && matches!(style.overflow_x, CssOverflow::Visible)
       {
-        if let Some(cached) = flex_auto_min_cache_lookup(box_id, style_ptr, true, skip_contents) {
+        let specified_size_percentage_base = style
+          .width
+          .as_ref()
+          .filter(|len| len.has_percentage())
+          .and_then(|_| {
+            constraints.and_then(|constraints| {
+              match self.fit_content_available_for_axis(Axis::Horizontal, Some(container), constraints)
+              {
+                FitContentAvailable::Definite(v) if v.is_finite() => Some(v.max(0.0)),
+                _ => None,
+              }
+            })
+          });
+        let specified_size_percentage_base_key = specified_size_percentage_base
+          .filter(|v| v.is_finite())
+          .map(|v| v.to_bits())
+          .unwrap_or(0);
+
+        if let Some(cached) = flex_auto_min_cache_lookup(
+          box_id,
+          style_ptr,
+          true,
+          skip_contents,
+          specified_size_percentage_base_key,
+        ) {
           if let Some(min_candidate) = cached {
             if min_candidate.is_finite() && min_candidate > 0.0 {
               taffy_style.min_size.width = Dimension::length(min_candidate);
@@ -5597,7 +5655,15 @@ impl FlexFormattingContext {
           return Ok(());
         }
         let specified_size_suggestion = style.width.as_ref().and_then(|len| {
-          let px = self.resolve_length_px(len, style)?;
+          let px = resolve_length_with_percentage_metrics(
+            *len,
+            specified_size_percentage_base,
+            self.viewport_size,
+            style.font_size,
+            style.root_font_size,
+            Some(style),
+            Some(&self.font_context),
+          )?;
           if px <= 0.0 {
             return None;
           }
@@ -5632,6 +5698,7 @@ impl FlexFormattingContext {
             style_ptr,
             true,
             skip_contents,
+            specified_size_percentage_base_key,
             (min_candidate.is_finite() && min_candidate > 0.0).then_some(min_candidate),
           );
           return Ok(());
@@ -5684,19 +5751,50 @@ impl FlexFormattingContext {
               style_ptr,
               true,
               skip_contents,
+              specified_size_percentage_base_key,
               (min_candidate.is_finite() && min_candidate > 0.0).then_some(min_candidate),
             );
           }
           Err(err @ LayoutError::Timeout { .. }) => return Err(err),
           Err(_) => {
-            flex_auto_min_cache_store(box_id, style_ptr, true, skip_contents, None);
+            flex_auto_min_cache_store(
+              box_id,
+              style_ptr,
+              true,
+              skip_contents,
+              specified_size_percentage_base_key,
+              None,
+            );
           }
         }
       }
     } else if taffy_style.min_size.height == Dimension::AUTO
       && matches!(style.overflow_y, CssOverflow::Visible)
     {
-      if let Some(cached) = flex_auto_min_cache_lookup(box_id, style_ptr, false, skip_contents) {
+      let specified_size_percentage_base = style
+        .height
+        .as_ref()
+        .filter(|len| len.has_percentage())
+        .and_then(|_| {
+          constraints.and_then(|constraints| {
+            match self.fit_content_available_for_axis(Axis::Vertical, Some(container), constraints) {
+              FitContentAvailable::Definite(v) if v.is_finite() => Some(v.max(0.0)),
+              _ => None,
+            }
+          })
+        });
+      let specified_size_percentage_base_key = specified_size_percentage_base
+        .filter(|v| v.is_finite())
+        .map(|v| v.to_bits())
+        .unwrap_or(0);
+
+      if let Some(cached) = flex_auto_min_cache_lookup(
+        box_id,
+        style_ptr,
+        false,
+        skip_contents,
+        specified_size_percentage_base_key,
+      ) {
         if let Some(min_candidate) = cached {
           if min_candidate.is_finite() && min_candidate > 0.0 {
             taffy_style.min_size.height = Dimension::length(min_candidate);
@@ -5705,7 +5803,15 @@ impl FlexFormattingContext {
         return Ok(());
       }
       let specified_size_suggestion = style.height.as_ref().and_then(|len| {
-        let px = self.resolve_length_px(len, style)?;
+        let px = resolve_length_with_percentage_metrics(
+          *len,
+          specified_size_percentage_base,
+          self.viewport_size,
+          style.font_size,
+          style.root_font_size,
+          Some(style),
+          Some(&self.font_context),
+        )?;
         if px <= 0.0 {
           return None;
         }
@@ -5740,6 +5846,7 @@ impl FlexFormattingContext {
           style_ptr,
           false,
           skip_contents,
+          specified_size_percentage_base_key,
           (min_candidate.is_finite() && min_candidate > 0.0).then_some(min_candidate),
         );
         return Ok(());
@@ -5783,12 +5890,20 @@ impl FlexFormattingContext {
             style_ptr,
             false,
             skip_contents,
+            specified_size_percentage_base_key,
             (min_candidate.is_finite() && min_candidate > 0.0).then_some(min_candidate),
           );
         }
         Err(err @ LayoutError::Timeout { .. }) => return Err(err),
         Err(_) => {
-          flex_auto_min_cache_store(box_id, style_ptr, false, skip_contents, None);
+          flex_auto_min_cache_store(
+            box_id,
+            style_ptr,
+            false,
+            skip_contents,
+            specified_size_percentage_base_key,
+            None,
+          );
         }
       }
     }
