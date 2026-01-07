@@ -157,9 +157,11 @@ pub fn resolve_href_with_base(base: Option<&str>, href: &str) -> Option<String> 
 /// Best-effort unescaping for JavaScript-escaped URL strings embedded in HTML/JS.
 ///
 /// Handles `\uXXXX`/`\UXXXX` Unicode escapes (common for `\u0026` encoded ampersands)
-/// and simple backslash escaping of quotes or slashes. If the input contains no
-/// backslashes, it returns a borrowed slice to avoid allocations; otherwise it
-/// builds a new string with the escapes resolved.
+/// and `\xHH` byte escapes, plus simple backslash escaping of quotes or slashes.
+/// Surrogate pairs (`\uD83D\uDE00`) are recognized and combined.
+///
+/// If the input contains no backslashes, it returns a borrowed slice to avoid
+/// allocations; otherwise it builds a new string with the escapes resolved.
 ///
 /// # Examples
 ///
@@ -179,21 +181,72 @@ fn unescape_js_escapes(input: &str) -> Cow<'_, str> {
   let mut i = 0;
   while i < bytes.len() {
     if bytes[i] == b'\\' {
-      if i + 1 < bytes.len()
-        && (bytes[i + 1] == b'"' || bytes[i + 1] == b'\'' || bytes[i + 1] == b'/')
-      {
-        out.push(bytes[i + 1] as char);
-        i += 2;
-        continue;
-      }
-
-      if i + 5 < bytes.len() && (bytes[i + 1] == b'u' || bytes[i + 1] == b'U') {
-        if let Ok(code) = u16::from_str_radix(&input[i + 2..i + 6], 16) {
-          if let Some(ch) = char::from_u32(code as u32) {
-            out.push(ch);
-            i += 6;
+      if let Some(next) = bytes.get(i + 1) {
+        match next {
+          b'"' | b'\'' | b'/' => {
+            out.push(*next as char);
+            i += 2;
             continue;
           }
+          b'x' | b'X' => {
+            if i + 3 < bytes.len() {
+              if let Ok(code) = u8::from_str_radix(&input[i + 2..i + 4], 16) {
+                out.push(code as char);
+                i += 4;
+                continue;
+              }
+            }
+          }
+          b'u' | b'U' => {
+            // Modern JS escape: `\u{...}`
+            if bytes.get(i + 2) == Some(&b'{') {
+              if let Some(end) = bytes[i + 3..].iter().position(|b| *b == b'}') {
+                let end_idx = i + 3 + end;
+                let len = end_idx - (i + 3);
+                if (1..=6).contains(&len) {
+                  if let Ok(code) = u32::from_str_radix(&input[i + 3..end_idx], 16) {
+                    if let Some(ch) = char::from_u32(code) {
+                      out.push(ch);
+                      i = end_idx + 1;
+                      continue;
+                    }
+                  }
+                }
+              }
+            }
+
+            // Classic JS escape: `\uXXXX`
+            if i + 5 < bytes.len() {
+              if let Ok(code) = u16::from_str_radix(&input[i + 2..i + 6], 16) {
+                // Surrogate pair handling for non-BMP code points.
+                if (0xD800..=0xDBFF).contains(&code) && i + 11 < bytes.len() {
+                  if bytes.get(i + 6) == Some(&b'\\')
+                    && matches!(bytes.get(i + 7), Some(b'u' | b'U'))
+                  {
+                    if let Ok(low) = u16::from_str_radix(&input[i + 8..i + 12], 16) {
+                      if (0xDC00..=0xDFFF).contains(&low) {
+                        let high = (code - 0xD800) as u32;
+                        let low = (low - 0xDC00) as u32;
+                        let combined = 0x10000 + ((high << 10) | low);
+                        if let Some(ch) = char::from_u32(combined) {
+                          out.push(ch);
+                          i += 12;
+                          continue;
+                        }
+                      }
+                    }
+                  }
+                }
+
+                if let Some(ch) = char::from_u32(code as u32) {
+                  out.push(ch);
+                  i += 6;
+                  continue;
+                }
+              }
+            }
+          }
+          _ => {}
         }
       }
     }
@@ -4502,6 +4555,27 @@ mod tests {
     let input = r"foo\u0026bar\U0041baz"; // & and 'A'
     let unescaped = unescape_js_escapes(input);
     assert_eq!(unescaped, "foo&barAbaz");
+  }
+
+  #[test]
+  fn unescape_js_handles_hex_escapes() {
+    let input = r"foo\x26bar\x3Abaz"; // & and ':'
+    let unescaped = unescape_js_escapes(input);
+    assert_eq!(unescaped, "foo&bar:baz");
+  }
+
+  #[test]
+  fn unescape_js_handles_unicode_surrogate_pairs() {
+    let input = r"\uD83D\uDE0D"; // U+1F60D (😍)
+    let unescaped = unescape_js_escapes(input);
+    assert_eq!(unescaped, "\u{1F60D}");
+  }
+
+  #[test]
+  fn unescape_js_handles_unicode_braced_escape() {
+    let input = r"\u{1F60D}"; // U+1F60D (😍)
+    let unescaped = unescape_js_escapes(input);
+    assert_eq!(unescaped, "\u{1F60D}");
   }
 
   #[test]
