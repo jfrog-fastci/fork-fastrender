@@ -447,6 +447,15 @@ pub(crate) fn is_text_emphasis_mark_excluded(ch: char) -> bool {
   true
 }
 
+pub(crate) fn is_combining_mark(ch: char) -> bool {
+  use unicode_general_category::get_general_category;
+  use unicode_general_category::GeneralCategory;
+  matches!(
+    get_general_category(ch),
+    GeneralCategory::NonspacingMark | GeneralCategory::SpacingMark | GeneralCategory::EnclosingMark
+  )
+}
+
 /// Pending logical properties (margin/padding/border/sizing) to resolve after writing-mode is known.
 ///
 /// For side-based properties, the outer `Option` tracks whether the logical start/end side was
