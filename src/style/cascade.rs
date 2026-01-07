@@ -8955,7 +8955,6 @@ fn match_part_rules<'a>(
         .any(|id| slot_assignment.node_to_slot.contains_key(id))))
   .then(|| flat_tree_ancestor_ids_for_container_query(node_id, dom_maps, slot_assignment));
   let query_ancestor_ids = query_ancestor_ids_storage.as_deref().unwrap_or(ancestor_ids);
-
   let mut matched: Vec<MatchedRule<'a>> = Vec::new();
   let mut matched_by_order: HashMap<usize, usize> = HashMap::new();
 
@@ -10002,7 +10001,7 @@ fn compute_pseudo_styles(
     scratch,
     ancestors,
     ancestor_bloom,
-    ancestor_ids,
+    container_query_ancestor_ids.as_ref(),
     container_ctx,
     node_id,
     dom_maps,
@@ -10144,6 +10143,7 @@ fn compute_form_control_pseudo_styles(
   node_id: usize,
   container_ctx: Option<&ContainerQueryContext>,
   dom_maps: &DomMaps,
+  slot_assignment: &SlotAssignment,
   sibling_cache: &SiblingListCache,
   element_attr_cache: &ElementAttrCache,
   styles: &ComputedStyle,
@@ -10161,6 +10161,8 @@ fn compute_form_control_pseudo_styles(
     return (None, None, None);
   }
 
+  let container_query_ancestor_ids =
+    container_query_ancestor_ids_for(node_id, ancestor_ids, slot_assignment, dom_maps);
   let placeholder_styles = if placeholder_is_shown(node) {
     compute_pseudo_element_styles(
       node,
@@ -10170,7 +10172,7 @@ fn compute_form_control_pseudo_styles(
       scratch,
       ancestors,
       ancestor_bloom,
-      ancestor_ids,
+      container_query_ancestor_ids.as_ref(),
       node_id,
       container_ctx,
       dom_maps,
@@ -10200,7 +10202,7 @@ fn compute_form_control_pseudo_styles(
         scratch,
         ancestors,
         ancestor_bloom,
-        ancestor_ids,
+        container_query_ancestor_ids.as_ref(),
         node_id,
         container_ctx,
         dom_maps,
@@ -10224,7 +10226,7 @@ fn compute_form_control_pseudo_styles(
         scratch,
         ancestors,
         ancestor_bloom,
-        ancestor_ids,
+        container_query_ancestor_ids.as_ref(),
         node_id,
         container_ctx,
         dom_maps,
@@ -10677,6 +10679,7 @@ fn apply_styles_internal_with_ancestors<'a>(
         frame.node_id,
         container_ctx,
         dom_maps,
+        slot_assignment,
         sibling_cache,
         element_attr_cache,
         &base.styles,
