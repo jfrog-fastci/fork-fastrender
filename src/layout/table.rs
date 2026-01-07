@@ -6783,19 +6783,33 @@ impl FormattingContext for TableFormattingContext {
       .iter()
       .filter(|child| child.style.running_position.is_none())
     {
+      check_layout_deadline(&mut deadline_counter)?;
       match TableStructure::get_table_element_type(child) {
         TableElementType::Column => {
-          if let Some(visible) = source_col_to_visible.get(source_col_idx).and_then(|m| *m) {
-            column_styles[visible] = Some(child.style.clone());
+          let span = child.table_column_span();
+          for _ in 0..span {
+            check_layout_deadline(&mut deadline_counter)?;
+            if let Some(visible) = source_col_to_visible.get(source_col_idx).and_then(|m| *m) {
+              column_styles[visible] = Some(child.style.clone());
+            }
+            source_col_idx += 1;
           }
-          source_col_idx += 1;
         }
         TableElementType::ColumnGroup => {
           let mut first_visible = None;
           let mut last_visible = None;
-          if !child.children.is_empty() {
+          let has_columns = child.children.iter().any(|col_child| {
+            TableStructure::get_table_element_type(col_child) == TableElementType::Column
+          });
+          if has_columns {
             for col_child in &child.children {
-              if TableStructure::get_table_element_type(col_child) == TableElementType::Column {
+              check_layout_deadline(&mut deadline_counter)?;
+              if TableStructure::get_table_element_type(col_child) != TableElementType::Column {
+                continue;
+              }
+              let span = col_child.table_column_span();
+              for _ in 0..span {
+                check_layout_deadline(&mut deadline_counter)?;
                 if let Some(visible) = source_col_to_visible.get(source_col_idx).and_then(|m| *m) {
                   column_styles[visible] = Some(col_child.style.clone());
                   first_visible.get_or_insert(visible);
@@ -6805,12 +6819,15 @@ impl FormattingContext for TableFormattingContext {
               }
             }
           } else {
-            if let Some(visible) = source_col_to_visible.get(source_col_idx).and_then(|m| *m) {
-              column_styles[visible] = Some(child.style.clone());
-              first_visible.get_or_insert(visible);
-              last_visible = Some(visible);
+            let span = child.table_column_span();
+            for _ in 0..span {
+              check_layout_deadline(&mut deadline_counter)?;
+              if let Some(visible) = source_col_to_visible.get(source_col_idx).and_then(|m| *m) {
+                first_visible.get_or_insert(visible);
+                last_visible = Some(visible);
+              }
+              source_col_idx += 1;
             }
-            source_col_idx += 1;
           }
           if let (Some(start), Some(end)) = (first_visible, last_visible) {
             column_groups.push((start, end + 1, child.style.clone()));
