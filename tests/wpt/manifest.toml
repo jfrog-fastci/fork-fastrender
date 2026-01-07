@@ -47,7 +47,7 @@ id = "css/subgrid/subgrid-autorepeat-named-lines-001"
 path = "css/subgrid/subgrid-autorepeat-named-lines-001.html"
 reference = "css/subgrid/subgrid-autorepeat-named-lines-001-ref.html"
 test_type = "reftest"
-expected = "fail"
+expected = "pass"
 timeout_ms = 20000
 dpr = 1.0
 
@@ -86,7 +86,7 @@ id = "css/subgrid/subgrid-auto-span-001"
 path = "css/subgrid/subgrid-auto-span-001.html"
 reference = "css/subgrid/subgrid-auto-span-001-ref.html"
 test_type = "reftest"
-expected = "fail"
+expected = "pass"
 timeout_ms = 12000
 dpr = 1.0
 
@@ -223,7 +223,7 @@ id = "layout/grid-named-span-autoplacement-001"
 path = "layout/grid-named-span-autoplacement-001.html"
 reference = "layout/grid-named-span-autoplacement-001-ref.html"
 test_type = "reftest"
-expected = "fail"
+expected = "pass"
 timeout_ms = 12000
 dpr = 1.0
 
@@ -236,7 +236,7 @@ id = "layout/grid-named-span-autoplacement-002"
 path = "layout/grid-named-span-autoplacement-002.html"
 reference = "layout/grid-named-span-autoplacement-002-ref.html"
 test_type = "reftest"
-expected = "fail"
+expected = "pass"
 timeout_ms = 12000
 dpr = 1.0
 

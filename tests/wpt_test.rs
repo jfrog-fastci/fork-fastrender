@@ -18,10 +18,10 @@ fn ensure_bundled_fonts() {
   SET_BUNDLED_FONTS.call_once(|| {
     std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
     // FastRender uses Rayon for parallel layout/paint. Rayon defaults to the host CPU count,
-    // which can exceed CI sandbox thread budgets and panic during global pool init. If the caller
-    // hasn't pinned the pool size already, clamp it to a small deterministic default.
+    // which can exceed CI sandbox thread budgets and also makes pixel output nondeterministic.
+    // If the caller hasn't pinned the pool size already, clamp it to a deterministic default.
     if std::env::var("RAYON_NUM_THREADS").is_err() {
-      std::env::set_var("RAYON_NUM_THREADS", "4");
+      std::env::set_var("RAYON_NUM_THREADS", "1");
     }
   });
 }
@@ -52,14 +52,10 @@ fn wpt_local_suite_passes() {
       // fixtures (expected failures, disables, etc.). Keep the smoke-test suite focused on the
       // curated manifest entries so UPDATE_WPT_EXPECTED mode doesn't trip over those fixtures.
       config.discovery_mode = DiscoveryMode::ManifestOnly;
-      config.expected_dir = PathBuf::from("target/wpt-expected");
-      if std::env::var("UPDATE_WPT_EXPECTED").is_ok() {
-        config = config.update_expected();
-      } else {
-        // Default to generating expected images into a temp dir so new tests
-        // don't require checked-in PNGs to run locally.
-        config.update_expected = true;
-      }
+      config.expected_dir = std::env::var_os("WPT_EXPECTED_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("tests/wpt/expected"));
+      config.update_expected = std::env::var_os("UPDATE_WPT_EXPECTED").is_some();
 
       let mut runner = WptRunner::with_config(renderer, config);
 

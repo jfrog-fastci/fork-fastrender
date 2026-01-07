@@ -230,8 +230,7 @@ There is a self-contained WPT-style runner under `tests/wpt/` for local “rende
   - `.html.ini` files set expectations (`expected: FAIL`), `disabled` reasons, timeouts, viewport, and DPR.
   - `<link rel="match" | rel="mismatch">` inside HTML declares reftest references without touching the manifest.
   - The legacy `tests/wpt/manifest.toml` is still honored; set `HarnessConfig::with_discovery_mode(DiscoveryMode::MetadataOnly)` to ignore it when adding new offline WPT dumps.
-- The `wpt_local_suite_passes` smoke-test suite generates expected images under `target/wpt-expected/` by default so local runs don’t require checked-in PNGs. Reftests compare against the reference HTML and do not require a PNG.
-- The repo also contains `tests/wpt/expected/` for curated baselines; harness configurations that point `expected_dir` there can use it for stricter gating.
+- The `wpt_local_suite_passes` smoke-test suite is strict by default: visual tests compare against checked-in PNGs under `tests/wpt/expected/` and fail on diffs. Set `UPDATE_WPT_EXPECTED=1` (or run `cargo xtask update-goldens --suite wpt`) to regenerate/update those goldens. (Optional: `WPT_EXPECTED_DIR` overrides the baseline directory for local experimentation.)
 - Artifacts always land in `target/wpt-output/<id>/{actual,expected,diff}.png` with a filterable `report.html`.
 - Viewport/DPR are fixed per-test from metadata. CI can pin fonts for deterministic renders via `HarnessConfig::with_font_dir`/`WptRunnerBuilder::font_dir` (for example, point at `tests/fonts/`).
 - The runner supports parallel execution and per-test timeouts (see `HarnessConfig`).
