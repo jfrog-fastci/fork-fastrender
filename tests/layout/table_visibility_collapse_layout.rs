@@ -11,7 +11,10 @@ struct CellInfo {
 }
 
 fn find_table<'a>(node: &'a FragmentNode) -> Option<&'a FragmentNode> {
-  if matches!(node.style.as_ref().map(|s| s.display), Some(Display::Table)) {
+  if matches!(
+    node.style.as_ref().map(|s| s.display),
+    Some(Display::Table | Display::InlineTable)
+  ) {
     return Some(node);
   }
   node.children.iter().find_map(find_table)
@@ -51,7 +54,7 @@ fn column_visibility_collapse_removes_column_from_layout() {
       <head>
         <style>
           body { margin: 0; }
-          table { border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+          table { display: inline-table; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
           td { padding: 0; margin: 0; border: 0; font-size: 10px; line-height: 10px; }
         </style>
       </head>
@@ -102,7 +105,7 @@ fn row_visibility_collapse_removes_row_from_layout() {
       <head>
         <style>
           body { margin: 0; }
-          table { border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+          table { display: inline-table; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
           td { height: 10px; padding: 0; margin: 0; border: 0; font-size: 10px; line-height: 10px; }
         </style>
       </head>
@@ -143,7 +146,7 @@ fn rowspan_across_collapsed_row_is_shortened() {
       <head>
         <style>
           body { margin: 0; }
-          table { border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+          table { display: inline-table; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
           td { height: 10px; padding: 0; margin: 0; border: 0; font-size: 10px; line-height: 10px; }
         </style>
       </head>
@@ -190,3 +193,148 @@ fn rowspan_across_collapsed_row_is_shortened() {
   );
 }
 
+#[test]
+fn colspan_over_collapsed_column_is_shortened() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table { display: inline-table; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+          td { padding: 0; margin: 0; border: 0; font-size: 10px; line-height: 10px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col style="width: 30px" />
+          <col style="width: 40px; visibility: collapse" />
+          <col style="width: 50px" />
+          <tr>
+            <td colspan="2">A</td>
+            <td>C</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  let a = cells.get(&'A').expect("cell A present");
+  let c = cells.get(&'C').expect("cell C present");
+
+  assert!(
+    (a.rect.width() - 30.0).abs() < 0.1,
+    "colspan should not include collapsed column (got {})",
+    a.rect.width()
+  );
+  let gap = c.rect.x() - (a.rect.x() + a.rect.width());
+  assert!(
+    gap.abs() < 0.1,
+    "cells adjacent after collapsing column (gap={gap})"
+  );
+}
+
+#[test]
+fn row_group_visibility_collapse_removes_rows_from_layout() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table { display: inline-table; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+          td { height: 10px; padding: 0; margin: 0; border: 0; font-size: 10px; line-height: 10px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <tbody><tr><td>A</td></tr></tbody>
+          <tbody style="visibility: collapse"><tr><td>B</td></tr></tbody>
+          <tbody><tr><td>C</td></tr></tbody>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 200, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  assert!(
+    !cells.contains_key(&'B'),
+    "collapsed row-group cell should not be laid out"
+  );
+
+  let a = cells.get(&'A').expect("cell A present");
+  let c = cells.get(&'C').expect("cell C present");
+
+  let gap = c.rect.y() - (a.rect.y() + a.rect.height());
+  assert!(
+    gap.abs() < 0.1,
+    "rows adjacent after collapsing middle row-group (gap={gap})"
+  );
+}
+
+#[test]
+fn column_group_visibility_collapse_removes_columns_from_layout() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table { display: inline-table; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+          td { padding: 0; margin: 0; border: 0; font-size: 10px; line-height: 10px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col style="width: 30px" />
+          <colgroup style="visibility: collapse"><col style="width: 40px" /></colgroup>
+          <col style="width: 50px" />
+          <tr>
+            <td>A</td>
+            <td>B</td>
+            <td>C</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  assert!(
+    !cells.contains_key(&'B'),
+    "collapsed column-group cell should not be laid out"
+  );
+
+  let a = cells.get(&'A').expect("cell A present");
+  let c = cells.get(&'C').expect("cell C present");
+
+  let gap = c.rect.x() - (a.rect.x() + a.rect.width());
+  assert!(
+    gap.abs() < 0.1,
+    "cells adjacent after collapsing column-group (gap={gap})"
+  );
+  assert!(
+    (c.rect.width() - 50.0).abs() < 0.1,
+    "collapsed column-group should not affect subsequent column width (got {})",
+    c.rect.width()
+  );
+}
