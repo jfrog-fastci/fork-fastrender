@@ -458,3 +458,63 @@ fn timeline_scope_supports_var_resolution() {
 
   assert_eq!(pixel(&pixmap, 10, 10), (255, 0, 0, 255));
 }
+
+#[test]
+fn view_timeline_inset_auto_uses_scroll_padding() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let options = RenderOptions::new().with_viewport(100, 100);
+
+  let html = r#"
+    <style>
+      html, body { margin: 0; background: rgb(0, 0, 0); }
+      #scroller {
+        overflow-y: scroll;
+        height: 100px;
+        width: 100px;
+        scroll-padding-bottom: 100px;
+      }
+      .box {
+        width: 100px;
+        height: 50px;
+        background: rgb(255, 0, 0);
+        opacity: 0;
+        animation: fade auto linear;
+        animation-range: contain 0% contain 0%;
+      }
+      #auto {
+        view-timeline-name: --auto;
+        view-timeline-axis: block;
+        animation-timeline: --auto;
+      }
+      #explicit {
+        view-timeline-name: --explicit;
+        view-timeline-axis: block;
+        view-timeline-inset: 0px;
+        animation-timeline: --explicit;
+      }
+      @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+    </style>
+    <div id="scroller">
+      <div id="auto" class="box"></div>
+      <div id="explicit" class="box"></div>
+      <div style="height: 200px;"></div>
+    </div>
+  "#;
+
+  let prepared = renderer.prepare_html(html, options).expect("prepare");
+  let scroller_id = find_box_id_by_dom_id(&prepared.box_tree().root, "scroller").expect("box_id");
+  let scroll_state = ScrollState::from_parts(Point::ZERO, HashMap::from([(scroller_id, Point::ZERO)]));
+  let pixmap = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_scroll_state(scroll_state)
+        .with_background(Rgba::new(0, 0, 0, 1.0)),
+    )
+    .expect("paint");
+
+  // `view-timeline-inset: auto` should use the scroll container's scroll-padding (bottom inset),
+  // which shifts the `contain` phase start and keeps the animation inactive at scroll offset 0.
+  assert_eq!(pixel(&pixmap, 10, 10), (0, 0, 0, 255));
+  // The explicit 0px inset keeps the original behavior (animation applied at scroll offset 0).
+  assert_eq!(pixel(&pixmap, 10, 60), (255, 0, 0, 255));
+}

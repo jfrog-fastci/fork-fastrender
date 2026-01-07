@@ -1252,7 +1252,7 @@ fn parse_view_timeline_list(raw: &str) -> Vec<ViewTimeline> {
     let mut name: Option<String> = None;
     let mut name_specified_as_none = false;
     let mut axis = TimelineAxis::Block;
-    let mut inset_values: Vec<Length> = Vec::new();
+    let mut inset_values: Vec<Option<Length>> = Vec::new();
     for token in tokens {
       let lower = token.to_ascii_lowercase();
       if let Some(ax) = parse_timeline_axis(&lower) {
@@ -1260,11 +1260,12 @@ fn parse_view_timeline_list(raw: &str) -> Vec<ViewTimeline> {
         continue;
       }
       if inset_values.len() < 2 {
-        if let Some(len) = parse_length(&token) {
-          inset_values.push(len);
+        if token.eq_ignore_ascii_case("auto") {
+          inset_values.push(None);
           continue;
         }
-        if token.eq_ignore_ascii_case("auto") {
+        if let Some(len) = parse_length(&token) {
+          inset_values.push(Some(len));
           continue;
         }
       }
@@ -1303,13 +1304,14 @@ fn parse_view_timeline_inset_list(raw: &str) -> Vec<Option<ViewTimelineInset>> {
     if tokens.is_empty() {
       continue;
     }
-    let mut values = Vec::new();
+    let mut values: Vec<Option<Length>> = Vec::new();
     for token in tokens.into_iter().take(2) {
       if token.eq_ignore_ascii_case("auto") {
+        values.push(None);
         continue;
       }
       if let Some(len) = parse_length(&token) {
-        values.push(len);
+        values.push(Some(len));
       }
     }
     let inset = match values.len() {
@@ -1906,7 +1908,7 @@ fn parse_view_function_timeline<'i, 't>(
 ) -> Result<ViewFunctionTimeline, cssparser::ParseError<'i, ()>> {
   let mut scroller: Option<ScrollTimelineScroller> = None;
   let mut axis: Option<TimelineAxis> = None;
-  let mut inset_values: Vec<Length> = Vec::new();
+  let mut inset_values: Vec<Option<Length>> = Vec::new();
 
   while !input.is_exhausted() {
     input.skip_whitespace();
@@ -1947,13 +1949,13 @@ fn parse_view_function_timeline<'i, 't>(
 
     if inset_values.len() < 2 {
       if let Ok(len) = input.try_parse(parse_length_component) {
-        inset_values.push(len);
+        inset_values.push(Some(len));
         continue;
       }
-    }
-
-    if input.try_parse(|p| p.expect_ident_matching("auto")).is_ok() {
-      continue;
+      if input.try_parse(|p| p.expect_ident_matching("auto")).is_ok() {
+        inset_values.push(None);
+        continue;
+      }
     }
 
     return Err(input.new_custom_error(()));

@@ -1089,10 +1089,12 @@ impl Default for ScrollFunctionTimeline {
 /// Optional inset offsets for view timelines.
 ///
 /// The inset values are stored as length-percentage values.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// `None` represents the `auto` keyword (use the scroll container's `scroll-padding`).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ViewTimelineInset {
-  pub start: Length,
-  pub end: Length,
+  pub start: Option<Length>,
+  pub end: Option<Length>,
 }
 
 /// An anonymous view timeline produced by `view(...)` in `animation-timeline`.

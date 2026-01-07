@@ -3317,19 +3317,16 @@ pub fn view_timeline_progress(
   }
 
   let view_size = view_size.max(0.0);
-  let inset = timeline.inset.unwrap_or(ViewTimelineInset {
-    start: Length::px(0.0),
-    end: Length::px(0.0),
-  });
-  let inset_start = inset
-    .start
+  let inset = timeline.inset.unwrap_or_default();
+  let inset_start_len = inset.start.unwrap_or(Length::px(0.0));
+  let inset_end_len = inset.end.unwrap_or(Length::px(0.0));
+  let inset_start = inset_start_len
     .resolve_against(view_size)
-    .unwrap_or_else(|| inset.start.to_px())
+    .unwrap_or_else(|| inset_start_len.to_px())
     .clamp(0.0, view_size);
-  let inset_end = inset
-    .end
+  let inset_end = inset_end_len
     .resolve_against(view_size)
-    .unwrap_or_else(|| inset.end.to_px())
+    .unwrap_or_else(|| inset_end_len.to_px())
     .clamp(0.0, view_size);
 
   let entry_edge = target_start - view_size + inset_end;
@@ -4445,6 +4442,10 @@ struct ScrollContainerContext {
   content: Size,
   origin: Point,
   writing_mode: WritingMode,
+  scroll_padding_top: Length,
+  scroll_padding_right: Length,
+  scroll_padding_bottom: Length,
+  scroll_padding_left: Length,
 }
 
 fn is_scroll_container(node: &FragmentNode, scroll_state: &ScrollState) -> bool {
@@ -4476,6 +4477,10 @@ fn root_scroll_container_context(
     content: Size::new(root_content.width(), root_content.height()),
     origin: Point::ZERO,
     writing_mode,
+    scroll_padding_top: Length::px(0.0),
+    scroll_padding_right: Length::px(0.0),
+    scroll_padding_bottom: Length::px(0.0),
+    scroll_padding_left: Length::px(0.0),
   }
 }
 
@@ -4497,12 +4502,33 @@ fn scroll_container_context_for_node(
     .as_deref()
     .map(|s| s.writing_mode)
     .unwrap_or(WritingMode::HorizontalTb);
+  let (scroll_padding_top, scroll_padding_right, scroll_padding_bottom, scroll_padding_left) = node
+    .style
+    .as_deref()
+    .map(|s| {
+      (
+        s.scroll_padding_top,
+        s.scroll_padding_right,
+        s.scroll_padding_bottom,
+        s.scroll_padding_left,
+      )
+    })
+    .unwrap_or((
+      Length::px(0.0),
+      Length::px(0.0),
+      Length::px(0.0),
+      Length::px(0.0),
+    ));
   Some(ScrollContainerContext {
     scroll,
     viewport: Size::new(node.bounds.width(), node.bounds.height()),
     content: Size::new(node.scroll_overflow.width(), node.scroll_overflow.height()),
     origin,
     writing_mode,
+    scroll_padding_top,
+    scroll_padding_right,
+    scroll_padding_bottom,
+    scroll_padding_left,
   })
 }
 
@@ -4513,6 +4539,29 @@ fn timeline_scroll_context(
   root: ScrollContainerContext,
 ) -> ScrollContainerContext {
   scroll_container_context_for_node(node, origin, scroll_state).unwrap_or(root)
+}
+
+fn resolved_view_timeline_inset(
+  inset: Option<ViewTimelineInset>,
+  scroll_container: ScrollContainerContext,
+  horizontal: bool,
+) -> ViewTimelineInset {
+  let (auto_start, auto_end) = if horizontal {
+    (
+      scroll_container.scroll_padding_left,
+      scroll_container.scroll_padding_right,
+    )
+  } else {
+    (
+      scroll_container.scroll_padding_top,
+      scroll_container.scroll_padding_bottom,
+    )
+  };
+  let inset = inset.unwrap_or_default();
+  ViewTimelineInset {
+    start: Some(inset.start.unwrap_or(auto_start)),
+    end: Some(inset.end.unwrap_or(auto_end)),
+  }
 }
 
 #[derive(Default)]
@@ -4577,10 +4626,16 @@ fn named_timeline_states_for_export(
     } else {
       view_timeline_context.scroll.y
     };
+    let mut resolved_timeline = tl.clone();
+    resolved_timeline.inset = Some(resolved_view_timeline_inset(
+      tl.inset,
+      view_timeline_context,
+      horizontal,
+    ));
     map.insert(
       name.clone(),
       TimelineState::View {
-        timeline: tl.clone(),
+        timeline: resolved_timeline,
         target_start,
         target_end,
         view_size,
@@ -4943,7 +4998,11 @@ fn view_progress_for_function(
   let timeline = ViewTimeline {
     name: None,
     axis: func.axis,
-    inset: func.inset,
+    inset: Some(resolved_view_timeline_inset(
+      func.inset,
+      scroll_container,
+      horizontal,
+    )),
   };
 
   view_timeline_progress(
@@ -5015,11 +5074,17 @@ fn apply_animations_to_node_scoped(
         } else {
           view_timeline_context.scroll.y
         };
+        let mut resolved_timeline = tl.clone();
+        resolved_timeline.inset = Some(resolved_view_timeline_inset(
+          tl.inset,
+          view_timeline_context,
+          horizontal,
+        ));
         timeline_scope_push(
           scope,
           name.clone(),
           TimelineState::View {
-            timeline: tl.clone(),
+            timeline: resolved_timeline,
             target_start,
             target_end,
             view_size,

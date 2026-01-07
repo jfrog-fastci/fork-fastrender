@@ -135,8 +135,8 @@ fn view_timeline_longhands_combine() {
   assert_eq!(
     div.styles.view_timelines[0].inset,
     Some(fastrender::style::types::ViewTimelineInset {
-      start: Length::px(10.0),
-      end: Length::px(20.0),
+      start: Some(Length::px(10.0)),
+      end: Some(Length::px(20.0)),
     })
   );
 }
