@@ -342,6 +342,12 @@ impl selectors::parser::NonTSPseudoClass for PseudoClass {
         .map(|selector| selector.selector.specificity())
         .max()
         .unwrap_or(0),
+      // Per Selectors Level 4 §17 (Calculating a selector's specificity), these pseudo-classes add
+      // the specificity of the most specific selector in their `of <selector-list>` argument.
+      PseudoClass::NthChild(_, _, Some(selectors))
+      | PseudoClass::NthLastChild(_, _, Some(selectors)) => {
+        PSEUDO_CLASS_SPECIFICITY + argument_specificity(selectors)
+      }
       PseudoClass::Host(None) => PSEUDO_CLASS_SPECIFICITY,
       PseudoClass::Host(Some(selectors)) => {
         PSEUDO_CLASS_SPECIFICITY + argument_specificity(selectors)
