@@ -12,6 +12,7 @@ fn iframe_documents_ignore_same_origin_subresource_policy() {
   let ctx = ResourceContext {
     policy,
     document_url: None,
+    referrer_policy: Default::default(),
     diagnostics: None,
     iframe_depth_remaining: None,
   };
@@ -61,6 +62,7 @@ fn document_loads_still_apply_mixed_content_and_file_restrictions() {
       ..ResourceAccessPolicy::default()
     },
     document_url: None,
+    referrer_policy: Default::default(),
     diagnostics: None,
     iframe_depth_remaining: None,
   };
@@ -79,6 +81,7 @@ fn document_loads_still_apply_mixed_content_and_file_restrictions() {
       ..ResourceAccessPolicy::default()
     },
     document_url: None,
+    referrer_policy: Default::default(),
     diagnostics: None,
     iframe_depth_remaining: None,
   };

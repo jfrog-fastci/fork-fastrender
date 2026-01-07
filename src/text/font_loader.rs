@@ -235,14 +235,22 @@ struct ResourceFontFetcher {
 
 impl FontFetcher for ResourceFontFetcher {
   fn fetch(&self, url: &str) -> Result<FetchedResource> {
-    let referrer = self
+    let (referrer, referrer_policy) = self
       .resource_context
       .read()
       .ok()
-      .and_then(|ctx| ctx.as_ref().and_then(|ctx| ctx.document_url.clone()));
+      .and_then(|ctx| {
+        ctx
+          .as_ref()
+          .map(|ctx| (ctx.document_url.clone(), Some(ctx.referrer_policy)))
+      })
+      .unwrap_or((None, None));
     let mut request = FetchRequest::new(url, FetchDestination::Font);
     if let Some(referrer) = referrer.as_deref() {
       request = request.with_referrer(referrer);
+    }
+    if let Some(policy) = referrer_policy {
+      request = request.with_referrer_policy(policy);
     }
     self.fetcher.fetch_with_request(request)
   }

@@ -140,7 +140,7 @@ use crate::resource::CachingFetcherConfig;
 use crate::resource::{
   ensure_http_success, ensure_stylesheet_mime_sane, origin_from_url, CachingFetcher,
   DocumentOrigin, FetchDestination, FetchRequest, HttpFetcher, PolicyError, ResourceAccessPolicy,
-  ResourceFetcher, ResourcePolicy,
+  ReferrerPolicy, ResourceFetcher, ResourcePolicy,
 };
 use crate::scroll::ScrollState;
 use crate::style::cascade::apply_starting_style_set_with_media_target_and_imports_cached_with_deadline;
@@ -1473,6 +1473,7 @@ impl ResourceFetchError {
 #[derive(Clone, Default)]
 pub struct ResourceContext {
   pub document_url: Option<String>,
+  pub referrer_policy: ReferrerPolicy,
   pub policy: ResourceAccessPolicy,
   pub diagnostics: Option<SharedRenderDiagnostics>,
   pub iframe_depth_remaining: Option<usize>,
@@ -1590,6 +1591,7 @@ impl ResourceContext {
   pub fn for_origin(&self, origin: Option<DocumentOrigin>) -> Self {
     Self {
       document_url: self.document_url.clone(),
+      referrer_policy: self.referrer_policy,
       policy: self.policy.for_origin(origin),
       diagnostics: self.diagnostics.clone(),
       iframe_depth_remaining: self.iframe_depth_remaining,
@@ -4870,6 +4872,20 @@ impl FastRender {
       self.parse_html(html)?
     };
     self.update_base_url_from_dom(&dom);
+    if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(&dom)? {
+      let needs_update = self
+        .resource_context
+        .as_ref()
+        .is_some_and(|ctx| ctx.referrer_policy != policy);
+      if needs_update {
+        if let Some(mut ctx) = self.resource_context.clone() {
+          ctx.referrer_policy = policy;
+          // Propagate the updated policy to all caches/fetchers that hold a copy of the current
+          // resource context.
+          self.push_resource_context(Some(ctx));
+        }
+      }
+    }
     if let Some(rec) = stats.as_deref_mut() {
       RenderStatsRecorder::record_ms(&mut rec.stats.timings.dom_parse_ms, parse_timer);
       rec.stats.counts.dom_nodes = Some(count_dom_nodes_api_with_deadline(&dom)?);
@@ -6676,10 +6692,15 @@ impl FastRender {
             let referrer = resource_context
               .as_ref()
               .and_then(|ctx| ctx.document_url.as_deref());
+            let referrer_policy = resource_context
+              .as_ref()
+              .map(|ctx| ctx.referrer_policy)
+              .unwrap_or_default();
             let mut request = FetchRequest::new(url.as_str(), FetchDestination::Style);
             if let Some(referrer) = referrer {
               request = request.with_referrer(referrer);
             }
+            request = request.with_referrer_policy(referrer_policy);
             let resource = match fetcher.fetch_with_request(request) {
               Ok(resource) => resource,
               Err(err) => {
@@ -6992,10 +7013,16 @@ impl FastRender {
           if let Some(counter) = stylesheet_fetch_counter.as_ref() {
             counter.fetch_add(1, Ordering::Relaxed);
           }
+          let referrer_policy = self
+            .resource_context
+            .as_ref()
+            .map(|ctx| ctx.referrer_policy)
+            .unwrap_or_default();
           let mut request = FetchRequest::new(stylesheet_url.as_str(), FetchDestination::Style);
           if let Some(referrer) = self.document_url() {
             request = request.with_referrer(referrer);
           }
+          request = request.with_referrer_policy(referrer_policy);
           match fetcher.fetch_with_request(request) {
             Ok(resource) => {
               if let Some(ctx) = resource_context {
@@ -8860,6 +8887,7 @@ impl FastRender {
     let origin = document_url.and_then(origin_from_url);
     ResourceContext {
       document_url: document_url.map(|url| url.to_string()),
+      referrer_policy: ReferrerPolicy::default(),
       policy: self.resource_policy.for_origin(origin),
       diagnostics,
       iframe_depth_remaining: Some(self.max_iframe_depth),
@@ -9196,6 +9224,9 @@ impl FastRender {
     let mut combined_css = String::new();
     let mut import_state = InlineImportState::with_budget(budget);
     let document_referrer = resource_context.and_then(|ctx| ctx.document_url.as_deref());
+    let document_referrer_policy = resource_context
+      .map(|ctx| ctx.referrer_policy)
+      .unwrap_or_default();
 
     for css_url in css_links {
       let mut budget_diag = |url: &str, reason: &str| {
@@ -9221,6 +9252,7 @@ impl FastRender {
       if let Some(referrer) = document_referrer {
         request = request.with_referrer(referrer);
       }
+      request = request.with_referrer_policy(document_referrer_policy);
       let fetch_timer = stats.as_deref().and_then(|rec| rec.timer());
       match fetcher.fetch_with_request(request) {
         Ok(res) => {
@@ -9290,6 +9322,7 @@ impl FastRender {
               }
               let mut request = FetchRequest::new(u, FetchDestination::Style);
               request = request.with_referrer(import_ctx.importer_url);
+              request = request.with_referrer_policy(document_referrer_policy);
               match fetcher.fetch_with_request(request) {
                 Ok(res) => {
                   if let Some(resource_ctx) = resource_context {
@@ -10855,10 +10888,16 @@ impl CssImportLoader for CssImportFetcher {
       .resource_context
       .as_ref()
       .and_then(|ctx| ctx.document_url.as_deref());
+    let referrer_policy = self
+      .resource_context
+      .as_ref()
+      .map(|ctx| ctx.referrer_policy)
+      .unwrap_or_default();
     let mut request = FetchRequest::new(resolved.as_str(), FetchDestination::Style);
     if let Some(referrer) = referrer {
       request = request.with_referrer(referrer);
     }
+    request = request.with_referrer_policy(referrer_policy);
     let resource = match self.fetcher.fetch_with_request(request) {
       Ok(res) => res,
       Err(err) => {
@@ -12660,7 +12699,7 @@ mod tests {
   use crate::layout::engine::LayoutEngine;
   use crate::layout::formatting_context::intrinsic_cache_clear;
   use crate::render_control::RenderDeadline;
-  use crate::resource::{FetchDestination, FetchRequest, FetchedResource, ResourceFetcher};
+  use crate::resource::{FetchDestination, FetchRequest, FetchedResource, ReferrerPolicy, ResourceFetcher};
   use crate::style::cascade::apply_style_set_with_media_target_and_imports_cached;
   use crate::style::cascade::ContainerQueryContext;
   use crate::style::cascade::StyledNode;
@@ -13117,6 +13156,7 @@ mod tests {
     let sink = Arc::new(Mutex::new(RenderDiagnostics::default()));
     let ctx = ResourceContext {
       document_url: Some("https://example.com/".to_string()),
+      referrer_policy: Default::default(),
       policy: ResourceAccessPolicy::default(),
       diagnostics: Some(SharedRenderDiagnostics {
         inner: Arc::clone(&sink),
@@ -13151,6 +13191,7 @@ mod tests {
     let sink = Arc::new(Mutex::new(RenderDiagnostics::default()));
     let ctx = ResourceContext {
       document_url: Some("https://example.com/".to_string()),
+      referrer_policy: Default::default(),
       policy: ResourceAccessPolicy::default(),
       diagnostics: Some(SharedRenderDiagnostics {
         inner: Arc::clone(&sink),
@@ -13261,6 +13302,7 @@ mod tests {
     url: String,
     destination: FetchDestination,
     referrer: Option<String>,
+    referrer_policy: ReferrerPolicy,
   }
 
   impl RecordingRequestFetcher {
@@ -13304,6 +13346,7 @@ mod tests {
           url: request.url.to_string(),
           destination: request.destination,
           referrer: request.referrer.map(|r| r.to_string()),
+          referrer_policy: request.referrer_policy,
         });
       }
       self.fetch(request.url)
@@ -17197,10 +17240,53 @@ mod tests {
   }
 
   #[test]
+  fn meta_referrer_policy_applies_to_stylesheet_requests() {
+    let html = r#"<!doctype html><html><head>
+        <meta name="referrer" content="no-referrer">
+        <link rel="stylesheet" href="style.css">
+      </head><body><div id="target">hello</div></body></html>"#;
+    let document_url = "https://example.com/page.html";
+    let stylesheet_url = "https://example.com/style.css";
+
+    let fetcher = Arc::new(RecordingRequestFetcher::default().with_entry(
+      stylesheet_url,
+      "#target { color: rgb(1, 2, 3); }",
+      "text/css",
+    ));
+    let toggles = RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_LINK_CSS".to_string(),
+      "1".to_string(),
+    )]));
+    let config = FastRenderConfig::default().with_runtime_toggles(toggles);
+    let mut renderer = FastRender::with_config_and_fetcher(
+      config,
+      Some(fetcher.clone() as Arc<dyn ResourceFetcher>),
+    )
+    .unwrap();
+    renderer
+      .render_html_with_stylesheets(
+        html,
+        document_url,
+        RenderOptions::new().with_viewport(64, 64),
+      )
+      .unwrap();
+
+    let requests = fetcher.requests();
+    let stylesheet_request = requests
+      .iter()
+      .find(|request| request.destination == FetchDestination::Style)
+      .expect("stylesheet request");
+    assert_eq!(stylesheet_request.url, stylesheet_url);
+    assert_eq!(stylesheet_request.referrer.as_deref(), Some(document_url));
+    assert_eq!(stylesheet_request.referrer_policy, ReferrerPolicy::NoReferrer);
+  }
+
+  #[test]
   fn same_origin_subresources_blocks_subresources_but_allows_documents() {
     let document_origin = origin_from_url("https://example.com/").expect("document origin");
     let ctx = ResourceContext {
       document_url: Some("https://example.com/".to_string()),
+      referrer_policy: Default::default(),
       policy: ResourceAccessPolicy {
         document_origin: Some(document_origin),
         allow_file_from_http: false,

@@ -2353,6 +2353,11 @@ impl ImageCache {
       .resource_context
       .as_ref()
       .and_then(|ctx| ctx.document_url.as_deref());
+    let referrer_policy = self
+      .resource_context
+      .as_ref()
+      .map(|ctx| ctx.referrer_policy)
+      .unwrap_or_default();
     let mut request = FetchRequest::new(resolved_url, destination);
     if crossorigin == CrossOriginAttribute::UseCredentials {
       request = request.with_credentials_mode(crate::resource::FetchCredentialsMode::Include);
@@ -2360,6 +2365,7 @@ impl ImageCache {
     if let Some(referrer) = referrer {
       request = request.with_referrer(referrer);
     }
+    request = request.with_referrer_policy(referrer_policy);
 
     if let Some(cached) = self
       .fetcher
@@ -2403,6 +2409,7 @@ impl ImageCache {
       if let Some(referrer) = referrer {
         remove_request = remove_request.with_referrer(referrer);
       }
+      remove_request = remove_request.with_referrer_policy(referrer_policy);
       self
         .fetcher
         .remove_cache_artifact_with_request(remove_request, CacheArtifactKind::ImageProbeMetadata);
@@ -2623,6 +2630,11 @@ impl ImageCache {
       .resource_context
       .as_ref()
       .and_then(|ctx| ctx.document_url.as_deref());
+    let referrer_policy = self
+      .resource_context
+      .as_ref()
+      .map(|ctx| ctx.referrer_policy)
+      .unwrap_or_default();
     let mut request = FetchRequest::new(resolved_url, destination);
     if crossorigin == CrossOriginAttribute::UseCredentials {
       request = request.with_credentials_mode(crate::resource::FetchCredentialsMode::Include);
@@ -2630,6 +2642,7 @@ impl ImageCache {
     if let Some(referrer) = referrer {
       request = request.with_referrer(referrer);
     }
+    request = request.with_referrer_policy(referrer_policy);
     let resource = match self.fetcher.fetch_with_request(request) {
       Ok(res) => res,
       Err(err) => {
@@ -2808,6 +2821,11 @@ impl ImageCache {
       .resource_context
       .as_ref()
       .and_then(|ctx| ctx.document_url.as_deref());
+    let referrer_policy = self
+      .resource_context
+      .as_ref()
+      .map(|ctx| ctx.referrer_policy)
+      .unwrap_or_default();
     let mut request = FetchRequest::new(resolved_url, destination);
     if crossorigin == CrossOriginAttribute::UseCredentials {
       request = request.with_credentials_mode(crate::resource::FetchCredentialsMode::Include);
@@ -2815,6 +2833,7 @@ impl ImageCache {
     if let Some(referrer) = referrer {
       request = request.with_referrer(referrer);
     }
+    request = request.with_referrer_policy(referrer_policy);
 
     let check_resource_allowed = |resource: &FetchedResource| -> Result<()> {
       if let Some(ctx) = &self.resource_context {

@@ -624,10 +624,15 @@ pub(crate) fn render_iframe_src(
     .as_ref()
     .and_then(|ctx| ctx.document_url.as_deref())
     .or(base_url.as_deref());
+  let referrer_policy = context
+    .as_ref()
+    .map(|ctx| ctx.referrer_policy)
+    .unwrap_or_default();
   let mut request = FetchRequest::new(&resolved, FetchDestination::Iframe);
   if let Some(referrer) = referrer {
     request = request.with_referrer(referrer);
   }
+  request = request.with_referrer_policy(referrer_policy);
   let resource = match fetcher.fetch_with_request(request) {
     Ok(resource) => resource,
     Err(err) => {
@@ -979,6 +984,7 @@ mod tests {
     let mut image_cache = ImageCache::with_fetcher(fetcher.clone());
     image_cache.set_resource_context(Some(ResourceContext {
       document_url: Some("https://example.test/".to_string()),
+      referrer_policy: Default::default(),
       policy: ResourceAccessPolicy {
         document_origin: origin_from_url("https://example.test/"),
         same_origin_only: true,

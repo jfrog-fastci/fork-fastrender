@@ -1681,10 +1681,15 @@ pub fn load_svg_filter(url: &str, image_cache: &ImageCache) -> Option<Arc<SvgFil
     .as_ref()
     .and_then(|ctx| ctx.document_url.as_deref())
     .filter(|url| !url.trim().is_empty());
+  let referrer_policy = context
+    .as_ref()
+    .map(|ctx| ctx.referrer_policy)
+    .unwrap_or_default();
   let mut request = FetchRequest::image(&resource_url);
   if let Some(referrer) = referrer {
     request = request.with_referrer(referrer);
   }
+  request = request.with_referrer_policy(referrer_policy);
   let resource = match fetcher.fetch_with_request(request) {
     Ok(resource) => resource,
     Err(err) => {

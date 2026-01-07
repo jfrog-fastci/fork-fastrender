@@ -6,6 +6,7 @@ pub mod image_attrs;
 pub mod image_prefetch;
 pub mod images;
 pub mod meta_refresh;
+pub mod referrer_policy;
 pub mod viewport;
 
 use crate::css::loader::resolve_href;
