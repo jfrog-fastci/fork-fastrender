@@ -1255,7 +1255,7 @@ mod tests {
   }
 
   #[test]
-  fn parses_moz_placeholder_shown_alias() {
+  fn moz_placeholder_shown_alias_serializes_to_standard_form() {
     let list = parse_selector_list(".a:not(:-moz-placeholder-shown), .a:not(:placeholder-shown)");
     assert_eq!(list.slice().len(), 2);
 
