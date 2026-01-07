@@ -489,25 +489,13 @@ fn resolve_transform_length(
   percentage_base: f32,
   viewport: Option<(f32, f32)>,
 ) -> f32 {
-  let needs_viewport = len.unit.is_viewport_relative()
-    || len
-      .calc
-      .as_ref()
-      .map(|c| c.has_viewport_relative())
-      .unwrap_or(false);
-  let (vw, vh) = if let Some((w, h)) = viewport {
-    (w, h)
-  } else if needs_viewport {
-    // Preserve historical behaviour for callers that don't provide a viewport size: avoid trying
-    // to resolve viewport-relative lengths and let the fallback path handle them.
-    (f32::NAN, f32::NAN)
-  } else {
-    (0.0, 0.0)
-  };
-
-  len
-    .resolve_with_context(Some(percentage_base), vw, vh, font_size, root_font_size)
-    .unwrap_or(len.value)
+  crate::paint::paint_bounds::resolve_length_for_paint(
+    len,
+    font_size,
+    root_font_size,
+    percentage_base,
+    viewport,
+  )
 }
 
 #[cfg(test)]
@@ -642,6 +630,24 @@ mod tests {
       .expect("affine transform");
     assert!((matrix.e - 100.0).abs() < 1e-4);
     assert!((matrix.f - 25.0).abs() < 1e-4);
+  }
+
+  #[test]
+  fn viewport_relative_translate_requires_viewport() {
+    let mut style = ComputedStyle::default();
+    style.translate = TranslateValue::Values {
+      x: Length::new(50.0, LengthUnit::Vw),
+      y: Length::new(25.0, LengthUnit::Vh),
+      z: Length::px(0.0),
+    };
+
+    let bounds = Rect::from_xywh(0.0, 0.0, 100.0, 50.0);
+    let matrix = resolve_transform3d(&style, bounds, None)
+      .expect("translate")
+      .to_2d()
+      .expect("affine transform");
+    assert!(matrix.e.abs() < 1e-4);
+    assert!(matrix.f.abs() < 1e-4);
   }
 
   #[test]

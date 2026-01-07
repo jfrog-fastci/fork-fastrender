@@ -625,6 +625,17 @@ fn alpha_from_pixmap(pixmap: Pixmap, _origin: Point) -> AlphaBitmap {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::style::values::LengthUnit;
+
+  #[test]
+  fn shape_outside_resolve_length_for_paint_requires_viewport_for_vw() {
+    let len = Length::new(10.0, LengthUnit::Vw);
+    let resolved = resolve_length_for_paint(&len, 16.0, 16.0, 0.0, Some((200.0, 100.0)));
+    assert!((resolved - 20.0).abs() < 1e-6);
+
+    let unresolved = resolve_length_for_paint(&len, 16.0, 16.0, 0.0, None);
+    assert_eq!(unresolved, 0.0);
+  }
 
   #[test]
   fn shape_outside_image_is_padded_to_reference_box() {
@@ -1006,15 +1017,13 @@ fn resolve_length_for_paint(
   percentage_base: f32,
   viewport: Option<(f32, f32)>,
 ) -> f32 {
-  len
-    .resolve_with_context(
-      Some(percentage_base),
-      viewport.map(|v| v.0).unwrap_or(0.0),
-      viewport.map(|v| v.1).unwrap_or(0.0),
-      font_size,
-      root_font_size,
-    )
-    .unwrap_or(len.value)
+  crate::paint::paint_bounds::resolve_length_for_paint(
+    len,
+    font_size,
+    root_font_size,
+    percentage_base,
+    viewport,
+  )
 }
 
 fn radial_geometry(
