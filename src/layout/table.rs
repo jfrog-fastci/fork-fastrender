@@ -7275,6 +7275,15 @@ impl FormattingContext for TableFormattingContext {
     table_translated.bounds = table_translated
       .bounds
       .translate(Point::new(0.0, table_origin_y));
+    // CSS 2.1 §17.4: The table grid box (not the wrapper) is used when aligning an inline-table
+    // by baseline. When captions are present the wrapper fragment becomes the inline-level box, so
+    // propagate the translated table baseline into wrapper coordinates.
+    let wrapper_baseline = Some(
+      table_translated.bounds.y()
+        + table_translated
+          .baseline
+          .unwrap_or_else(|| table_translated.bounds.height()),
+    );
     offset_y += table_translated.bounds.height();
     wrapper_children.push(table_translated);
 
@@ -7310,6 +7319,7 @@ impl FormattingContext for TableFormattingContext {
       wrapper_children,
       Arc::new(wrapper_style),
     );
+    wrapper_fragment.baseline = wrapper_baseline;
 
     if !running_children.is_empty() {
       let snapshot_constraints = LayoutConstraints::new(
@@ -13898,6 +13908,147 @@ mod tests {
       (fragment.bounds.height() - (caption_frag.bounds.height() + table_frag.bounds.height()))
         .abs()
         < 0.2
+    );
+  }
+
+  #[test]
+  fn inline_table_wrapper_baseline_with_top_caption() {
+    let cell = BoxNode::new_block(
+      make_style(Display::TableCell),
+      FormattingContextType::Block,
+      vec![BoxNode::new_text(
+        make_style(Display::Inline),
+        "data".to_string(),
+      )],
+    );
+    let row = BoxNode::new_block(
+      make_style(Display::TableRow),
+      FormattingContextType::Block,
+      vec![cell],
+    );
+    let tbody = BoxNode::new_block(
+      make_style(Display::TableRowGroup),
+      FormattingContextType::Block,
+      vec![row],
+    );
+
+    let mut caption_style = ComputedStyle::default();
+    caption_style.display = Display::TableCaption;
+    caption_style.caption_side = CaptionSide::Top;
+    caption_style.height = Some(Length::px(40.0));
+    caption_style.height_keyword = None;
+    let caption = BoxNode::new_block(
+      Arc::new(caption_style),
+      FormattingContextType::Block,
+      vec![BoxNode::new_text(
+        make_style(Display::Inline),
+        "caption".to_string(),
+      )],
+    );
+
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::InlineTable;
+    let table = BoxNode::new_block(
+      Arc::new(table_style),
+      FormattingContextType::Table,
+      vec![caption, tbody],
+    );
+
+    let fc = TableFormattingContext::with_factory(FormattingContextFactory::new());
+    let fragment = fc
+      .layout(
+        &table,
+        &LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Indefinite),
+      )
+      .expect("layout");
+
+    assert_eq!(
+      fragment.children.len(),
+      2,
+      "wrapper should contain caption and table"
+    );
+    assert!(fragment.baseline.is_some(), "wrapper baseline should be set");
+
+    let table_frag = &fragment.children[1];
+    assert!(
+      table_frag.bounds.y() > 0.0,
+      "top caption should shift the table grid down"
+    );
+    let expected = table_frag.bounds.y() + table_frag.baseline.expect("table baseline");
+    assert!(
+      (fragment.baseline.unwrap() - expected).abs() < 0.01,
+      "wrapper baseline should match translated table baseline (wrapper={}, expected={})",
+      fragment.baseline.unwrap(),
+      expected
+    );
+  }
+
+  #[test]
+  fn inline_table_wrapper_baseline_with_bottom_caption() {
+    let cell = BoxNode::new_block(
+      make_style(Display::TableCell),
+      FormattingContextType::Block,
+      vec![BoxNode::new_text(
+        make_style(Display::Inline),
+        "data".to_string(),
+      )],
+    );
+    let row = BoxNode::new_block(
+      make_style(Display::TableRow),
+      FormattingContextType::Block,
+      vec![cell],
+    );
+    let tbody = BoxNode::new_block(
+      make_style(Display::TableRowGroup),
+      FormattingContextType::Block,
+      vec![row],
+    );
+
+    let mut caption_style = ComputedStyle::default();
+    caption_style.display = Display::TableCaption;
+    caption_style.caption_side = CaptionSide::Bottom;
+    caption_style.height = Some(Length::px(40.0));
+    caption_style.height_keyword = None;
+    let caption = BoxNode::new_block(
+      Arc::new(caption_style),
+      FormattingContextType::Block,
+      vec![BoxNode::new_text(
+        make_style(Display::Inline),
+        "caption".to_string(),
+      )],
+    );
+
+    let mut table_style = ComputedStyle::default();
+    table_style.display = Display::InlineTable;
+    let table = BoxNode::new_block(
+      Arc::new(table_style),
+      FormattingContextType::Table,
+      vec![caption, tbody],
+    );
+
+    let fc = TableFormattingContext::with_factory(FormattingContextFactory::new());
+    let fragment = fc
+      .layout(
+        &table,
+        &LayoutConstraints::new(AvailableSpace::Definite(200.0), AvailableSpace::Indefinite),
+      )
+      .expect("layout");
+
+    assert_eq!(
+      fragment.children.len(),
+      2,
+      "wrapper should contain table and caption"
+    );
+    assert!(fragment.baseline.is_some(), "wrapper baseline should be set");
+
+    let table_frag = &fragment.children[0];
+    assert!((table_frag.bounds.y() - 0.0).abs() < 1e-3);
+    let expected = table_frag.bounds.y() + table_frag.baseline.expect("table baseline");
+    assert!(
+      (fragment.baseline.unwrap() - expected).abs() < 0.01,
+      "wrapper baseline should match table baseline when table is unshifted (wrapper={}, expected={})",
+      fragment.baseline.unwrap(),
+      expected
     );
   }
 
