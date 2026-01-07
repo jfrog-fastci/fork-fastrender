@@ -7506,8 +7506,22 @@ impl DisplayListRenderer {
     let tile_cap = task_capacity
       .max(1)
       .min((tiles_x.saturating_mul(tiles_y)).max(1) as usize);
+    struct BlendScope {
+      manual: bool,
+      bounds: Option<Rect>,
+    }
+
     let mut image_tiles: Vec<u64> = Vec::with_capacity(tile_cap.min(8));
     let mut deadline_counter = 0usize;
+    // Track manual blend-mode groups introduced by `PushBlendMode`. In auto parallel mode we use
+    // these to estimate per-pixel compositor cost so large blend-mode layers don't stay serial.
+    let mut blend_stack: Vec<BlendScope> = Vec::new();
+    let union_bounds = |dst: &mut Option<Rect>, rect: Rect| {
+      *dst = Some(match *dst {
+        Some(prev) => prev.union(rect),
+        None => rect,
+      });
+    };
 
     let add_rect = |total: &mut u64, rect: Rect, weight: u64| -> Option<Rect> {
       if weight == 0 {
@@ -7529,7 +7543,35 @@ impl DisplayListRenderer {
     for item in items {
       check_active_periodic(&mut deadline_counter, DEADLINE_STRIDE, RenderStage::Paint)
         .map_err(Error::Render)?;
+      if !blend_stack.is_empty() && !item.is_stack_operation() {
+        if let Some(bounds) = item.bounds() {
+          if let Some(scope) = blend_stack.iter_mut().rev().find(|scope| scope.manual) {
+            union_bounds(&mut scope.bounds, bounds);
+          }
+        }
+      }
       match item {
+        DisplayItem::PushBlendMode(item) => {
+          blend_stack.push(BlendScope {
+            manual: is_manual_blend(item.mode),
+            bounds: None,
+          });
+        }
+        DisplayItem::PopBlendMode => {
+          let Some(scope) = blend_stack.pop() else {
+            continue;
+          };
+          if !scope.manual {
+            continue;
+          }
+          let Some(bounds) = scope.bounds else {
+            continue;
+          };
+          let _ = add_rect(&mut total, self.ds_rect(bounds), MANUAL_BLEND_WEIGHT);
+          if let Some(parent) = blend_stack.iter_mut().rev().find(|scope| scope.manual) {
+            union_bounds(&mut parent.bounds, bounds);
+          }
+        }
         DisplayItem::LinearGradient(item) => {
           let _ = add_rect(&mut total, self.ds_rect(item.rect), GRADIENT_WEIGHT);
         }
