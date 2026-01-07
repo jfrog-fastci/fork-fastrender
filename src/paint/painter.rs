@@ -98,6 +98,7 @@ use crate::style::types::BorderImageRepeat;
 use crate::style::types::BorderImageSource;
 use crate::style::types::BorderImageWidthValue;
 use crate::style::types::BorderStyle as CssBorderStyle;
+use crate::style::types::CaretColor;
 use crate::style::types::ClipComponent;
 use crate::style::types::FilterColor;
 use crate::style::types::FilterFunction;
@@ -6780,6 +6781,31 @@ impl Painter {
       );
     }
 
+    fn fill_rect_masked(pixmap: &mut Pixmap, rect: Rect, color: Rgba, clip_mask: Option<&Mask>) {
+      if color.a <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+      }
+      let Some(sk_rect) = SkiaRect::from_xywh(rect.x(), rect.y(), rect.width(), rect.height()) else {
+        return;
+      };
+      let path = PathBuilder::from_rect(sk_rect);
+      let mut paint = Paint::default();
+      paint.set_color(tiny_skia::Color::from_rgba8(
+        color.r,
+        color.g,
+        color.b,
+        color.alpha_u8(),
+      ));
+      paint.anti_alias = true;
+      pixmap.fill_path(
+        &path,
+        &paint,
+        tiny_skia::FillRule::Winding,
+        Transform::identity(),
+        clip_mask,
+      );
+    }
+
     let mut accent = Self::resolved_accent_color(style);
     if control.invalid {
       accent = Rgba {
@@ -6821,6 +6847,21 @@ impl Painter {
       fill_rounded_rect_masked(&mut self.pixmap, device_rect, radii, tint, clip_mask);
     }
 
+    let measure_shaped_advance = |painter: &mut Self, text: &str, style: &ComputedStyle| -> f32 {
+      let text = text.trim();
+      if text.is_empty() {
+        return 0.0;
+      }
+      let Ok(mut runs) = painter.shaper.shape(text, style, &painter.font_ctx) else {
+        return text.chars().count() as f32 * style.font_size * 0.6;
+      };
+      if runs.is_empty() {
+        return text.chars().count() as f32 * style.font_size * 0.6;
+      }
+      TextItem::apply_spacing_to_runs(&mut runs, text, style.letter_spacing, style.word_spacing);
+      runs.iter().map(|run| run.advance).sum()
+    };
+
     match &control.control {
       FormControlKind::Text {
         value,
@@ -6829,60 +6870,86 @@ impl Painter {
         ..
       } => {
         let value_trimmed = value.trim();
+        let value_is_empty = value_trimmed.is_empty();
         let base_color = if control.invalid { accent } else { style.color };
+        let placeholder_color = base_color.with_alpha(0.6);
+
         let mut generated: Option<String> = None;
+        let mut paint_text: Option<&str> = None;
+        let mut fallback_color = base_color;
         let mut is_placeholder = false;
-        let (text, fallback_color) = match kind {
+
+        match kind {
           TextControlKind::Password => {
-            if !value_trimmed.is_empty() {
+            if !value_is_empty {
               let mask_len = value_trimmed.chars().count().clamp(3, 50);
               generated = Some("•".repeat(mask_len));
-              (generated.as_deref().unwrap(), base_color)
+              paint_text = generated.as_deref();
+              fallback_color = base_color;
             } else if let Some(ph) = placeholder.as_deref() {
-              is_placeholder = true;
-              (ph.trim(), base_color.with_alpha(0.6))
-            } else {
-              return true;
+              let ph = ph.trim();
+              if !ph.is_empty() {
+                paint_text = Some(ph);
+                fallback_color = placeholder_color;
+                is_placeholder = true;
+              }
             }
           }
           TextControlKind::Number => {
-            if !value_trimmed.is_empty() {
-              (value_trimmed, base_color)
+            if !value_is_empty {
+              paint_text = Some(value_trimmed);
+              fallback_color = base_color;
             } else if let Some(ph) = placeholder.as_deref() {
-              is_placeholder = true;
-              (ph.trim(), base_color.with_alpha(0.6))
-            } else {
-              return true;
+              let ph = ph.trim();
+              if !ph.is_empty() {
+                paint_text = Some(ph);
+                fallback_color = placeholder_color;
+                is_placeholder = true;
+              }
             }
           }
           TextControlKind::Date => {
-            if !value_trimmed.is_empty() {
-              (value_trimmed, base_color)
+            if !value_is_empty {
+              paint_text = Some(value_trimmed);
+              fallback_color = base_color;
             } else if let Some(ph) = placeholder.as_deref() {
-              is_placeholder = true;
-              (ph.trim(), base_color.with_alpha(0.6))
+              let ph = ph.trim();
+              if !ph.is_empty() {
+                paint_text = Some(ph);
+                fallback_color = placeholder_color;
+                is_placeholder = true;
+              } else {
+                paint_text = Some("yyyy-mm-dd");
+                fallback_color = placeholder_color;
+                is_placeholder = true;
+              }
             } else {
+              paint_text = Some("yyyy-mm-dd");
+              fallback_color = placeholder_color;
               is_placeholder = true;
-              ("yyyy-mm-dd", base_color.with_alpha(0.6))
             }
           }
           TextControlKind::Plain => {
-            if !value_trimmed.is_empty() {
-              (value_trimmed, base_color)
+            if !value_is_empty {
+              paint_text = Some(value_trimmed);
+              fallback_color = base_color;
             } else if let Some(ph) = placeholder.as_deref() {
-              is_placeholder = true;
-              (ph.trim(), base_color.with_alpha(0.6))
-            } else {
-              return true;
+              let ph = ph.trim();
+              if !ph.is_empty() {
+                paint_text = Some(ph);
+                fallback_color = placeholder_color;
+                is_placeholder = true;
+              }
             }
           }
         };
 
-        let placeholder_style = is_placeholder.then(|| control.placeholder_style.as_deref()).flatten();
-        let mut text_style = if let Some(pseudo_style) = placeholder_style {
-          if pseudo_style.opacity <= f32::EPSILON {
-            return true;
-          }
+        let placeholder_style = if is_placeholder {
+          control.placeholder_style.as_deref()
+        } else {
+          None
+        };
+        let text_style = if let Some(pseudo_style) = placeholder_style {
           let mut style = pseudo_style.clone();
           let opacity = pseudo_style.opacity.clamp(0.0, 1.0);
           style.color = style.color.with_alpha((style.color.a * opacity).clamp(0.0, 1.0));
@@ -6907,7 +6974,11 @@ impl Painter {
             rect.height(),
           );
         }
-        let _ = self.paint_alt_text(text, &text_style, rect, clip_mask);
+        if text_style.color.a > f32::EPSILON {
+          if let Some(text) = paint_text {
+            let _ = self.paint_alt_text(text, &text_style, rect, clip_mask);
+          }
+        }
         if affordance_space > 0.0 {
           let mut affordance_style = style.clone();
           affordance_style.color = muted_accent;
@@ -6941,30 +7012,81 @@ impl Painter {
             _ => {}
           }
         }
+
+        if control.focused && !control.disabled {
+          let caret_color = match style.caret_color {
+            CaretColor::Color(c) => c,
+            CaretColor::Auto => style.color,
+          };
+          if !caret_color.is_transparent() {
+            let metrics_scaled = self.resolve_scaled_metrics(&text_style);
+            let line_height = compute_line_height_with_metrics_viewport(
+              &text_style,
+              metrics_scaled.as_ref(),
+              Some(Size::new(self.css_width, self.css_height)),
+            );
+            let ascent = metrics_scaled
+              .as_ref()
+              .map(|m| m.ascent)
+              .unwrap_or(text_style.font_size * 0.8);
+            let descent = metrics_scaled
+              .as_ref()
+              .map(|m| m.descent)
+              .unwrap_or(text_style.font_size * 0.2);
+            let half_leading = (line_height - (ascent + descent)) / 2.0;
+            let baseline_y = rect.y() + ascent + half_leading * 2.0;
+            let top = baseline_y - ascent;
+            let bottom = baseline_y + descent;
+
+            let caret_x = if value_is_empty {
+              rect.x()
+            } else {
+              let caret_text = match kind {
+                TextControlKind::Password => generated.as_deref().unwrap_or(value_trimmed),
+                _ => value_trimmed,
+              };
+              rect.x() + measure_shaped_advance(self, caret_text, &text_style)
+            };
+
+            let caret_rect = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
+            if let Some(clipped) = caret_rect.intersection(content_rect) {
+              if clipped.width() > 0.0 && clipped.height() > 0.0 {
+                let device_rect = self.device_rect(clipped);
+                fill_rect_masked(&mut self.pixmap, device_rect, caret_color, clip_mask);
+              }
+            }
+          }
+        }
         true
       }
       FormControlKind::TextArea {
         value, placeholder, ..
       } => {
         let base_color = if control.invalid { accent } else { style.color };
+        let placeholder_color = base_color.with_alpha(0.6);
 
         let value_trimmed = value.trim();
-        let mut is_placeholder = false;
-        let (text, fallback_color) = if !value_trimmed.is_empty() {
-          (value.as_str(), base_color)
-        } else if let Some(placeholder) = placeholder.as_deref().filter(|p| !p.is_empty()) {
-          is_placeholder = true;
-          (placeholder, base_color.with_alpha(0.6))
-        } else {
-          return true;
-        };
+        let value_is_empty = value_trimmed.is_empty();
+        let rect = inset_rect(content_rect, 2.0);
 
-        let mut rect = inset_rect(content_rect, 2.0);
-        let placeholder_style = is_placeholder.then(|| control.placeholder_style.as_deref()).flatten();
-        let mut text_style = if let Some(pseudo_style) = placeholder_style {
-          if pseudo_style.opacity <= f32::EPSILON {
-            return true;
-          }
+        let mut paint_text: Option<&str> = None;
+        let mut fallback_color = base_color;
+        let mut is_placeholder = false;
+        if !value_is_empty {
+          paint_text = Some(value.as_str());
+          fallback_color = base_color;
+        } else if let Some(placeholder) = placeholder.as_deref().filter(|p| !p.is_empty()) {
+          paint_text = Some(placeholder);
+          fallback_color = placeholder_color;
+          is_placeholder = true;
+        }
+
+        let placeholder_style = if is_placeholder {
+          control.placeholder_style.as_deref()
+        } else {
+          None
+        };
+        let text_style = if let Some(pseudo_style) = placeholder_style {
           let mut style = pseudo_style.clone();
           let opacity = pseudo_style.opacity.clamp(0.0, 1.0);
           style.color = style.color.with_alpha((style.color.a * opacity).clamp(0.0, 1.0));
@@ -6980,19 +7102,81 @@ impl Painter {
           metrics.as_ref(),
           Some(Size::new(self.css_width, self.css_height)),
         );
-        let mut y = rect.y();
-        for line in text.split('\n') {
-          if y > rect.y() + rect.height() {
-            break;
+        if text_style.color.a > f32::EPSILON {
+          if let Some(text) = paint_text {
+            let mut y = rect.y();
+            for line in text.split('\n') {
+              if y > rect.y() + rect.height() {
+                break;
+              }
+              let line_rect = Rect::from_xywh(
+                rect.x(),
+                y,
+                rect.width(),
+                (rect.height() - (y - rect.y())).max(0.0),
+              );
+              let _ = self.paint_alt_text(line.trim_end(), &text_style, line_rect, clip_mask);
+              y += line_height;
+            }
           }
-          let line_rect = Rect::from_xywh(
-            rect.x(),
-            y,
-            rect.width(),
-            (rect.height() - (y - rect.y())).max(0.0),
-          );
-          let _ = self.paint_alt_text(line.trim_end(), &text_style, line_rect, clip_mask);
-          y += line_height;
+        }
+
+        if control.focused && !control.disabled {
+          let caret_color = match style.caret_color {
+            CaretColor::Color(c) => c,
+            CaretColor::Auto => style.color,
+          };
+          if !caret_color.is_transparent() {
+            let ascent = metrics
+              .as_ref()
+              .map(|m| m.ascent)
+              .unwrap_or(text_style.font_size * 0.8);
+            let descent = metrics
+              .as_ref()
+              .map(|m| m.descent)
+              .unwrap_or(text_style.font_size * 0.2);
+            let half_leading = (line_height - (ascent + descent)) / 2.0;
+
+            let (caret_y, caret_line) = if value_is_empty {
+              (
+                rect.y(),
+                paint_text
+                  .and_then(|t| t.split('\n').next())
+                  .unwrap_or(""),
+              )
+            } else {
+              let mut y = rect.y();
+              let mut last_y = y;
+              let mut last_line = "";
+              for line in value.split('\n') {
+                if y > rect.y() + rect.height() {
+                  break;
+                }
+                last_y = y;
+                last_line = line;
+                y += line_height;
+              }
+              (last_y, last_line)
+            };
+
+            let caret_line_trimmed = caret_line.trim_end();
+            let caret_x = if value_is_empty || caret_line_trimmed.trim().is_empty() {
+              rect.x()
+            } else {
+              rect.x() + measure_shaped_advance(self, caret_line_trimmed, &text_style)
+            };
+
+            let baseline_y = caret_y + ascent + half_leading * 2.0;
+            let top = baseline_y - ascent;
+            let bottom = baseline_y + descent;
+            let caret_rect = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
+            if let Some(clipped) = caret_rect.intersection(content_rect) {
+              if clipped.width() > 0.0 && clipped.height() > 0.0 {
+                let device_rect = self.device_rect(clipped);
+                fill_rect_masked(&mut self.pixmap, device_rect, caret_color, clip_mask);
+              }
+            }
+          }
         }
         true
       }

@@ -131,6 +131,7 @@ use crate::style::types::BackgroundSizeComponent;
 use crate::style::types::BackgroundSizeKeyword;
 use crate::style::types::BorderImageSource;
 use crate::style::types::BoxDecorationBreak;
+use crate::style::types::CaretColor;
 use crate::style::types::ContentVisibility;
 use crate::style::types::ImageOrientation;
 use crate::style::types::ImageRendering;
@@ -7604,12 +7605,12 @@ impl DisplayListBuilder {
       )
     };
 
-    let mut emit_text_aligned = |builder: &mut Self,
-                                 text: &str,
-                                 style: &ComputedStyle,
-                                 rect: Rect,
-                                 center_x: bool,
-                                 center_y: bool|
+    let emit_text_aligned = |builder: &mut Self,
+      text: &str,
+      style: &ComputedStyle,
+      rect: Rect,
+      center_x: bool,
+      center_y: bool|
      -> bool {
       let text = text.trim();
       if text.is_empty() {
@@ -7669,6 +7670,38 @@ impl DisplayListBuilder {
       true
     };
 
+    let shape_text_runs =
+      |builder: &mut Self, text: &str, style: &ComputedStyle| -> Option<Vec<ShapedRun>> {
+        let text = text.trim();
+        if text.is_empty() {
+          return Some(Vec::new());
+        }
+        let shape_timer = builder.build_breakdown.as_ref().map(|_| Instant::now());
+        let shaped = builder.shaper.shape(text, style, &builder.font_ctx);
+        if let (Some(breakdown), Some(start)) = (builder.build_breakdown.as_ref(), shape_timer) {
+          breakdown.record_text_shape(start.elapsed());
+        }
+        let mut runs = shaped.ok()?;
+        InlineTextItem::apply_spacing_to_runs(
+          &mut runs,
+          text,
+          style.letter_spacing,
+          style.word_spacing,
+        );
+        Some(runs)
+      };
+
+    let measure_shaped_advance = |builder: &mut Self, text: &str, style: &ComputedStyle| -> f32 {
+      let text = text.trim();
+      if text.is_empty() {
+        return 0.0;
+      }
+      match shape_text_runs(builder, text, style) {
+        Some(runs) if !runs.is_empty() => runs.iter().map(|run| run.advance).sum(),
+        _ => text.chars().count() as f32 * style.font_size * 0.6,
+      }
+    };
+
     let highlight = if control.invalid {
       Some(muted_accent.with_alpha((muted_accent.a * 0.25).max(0.18)))
     } else if control.focus_visible {
@@ -7709,54 +7742,79 @@ impl DisplayListBuilder {
         ..
       } => {
         let value_trimmed = value.trim();
+        let value_is_empty = value_trimmed.is_empty();
         let base_color = if control.invalid { accent } else { style.color };
+        let placeholder_color = base_color.with_alpha(0.6);
+
         let mut generated: Option<String> = None;
+        let mut paint_text: Option<&str> = None;
+        let mut fallback_color = base_color;
         let mut is_placeholder = false;
-        let (text, fallback_color) = match kind {
+
+        match kind {
           TextControlKind::Password => {
-            if !value_trimmed.is_empty() {
+            if !value_is_empty {
               let mask_len = value_trimmed.chars().count().clamp(3, 50);
               generated = Some("•".repeat(mask_len));
-              (generated.as_deref().unwrap(), base_color)
+              paint_text = generated.as_deref();
+              fallback_color = base_color;
             } else if let Some(ph) = placeholder.as_deref() {
-              is_placeholder = true;
-              (ph.trim(), base_color.with_alpha(0.6))
-            } else {
-              return true;
+              let ph = ph.trim();
+              if !ph.is_empty() {
+                paint_text = Some(ph);
+                fallback_color = placeholder_color;
+                is_placeholder = true;
+              }
             }
           }
           TextControlKind::Number => {
-            if !value_trimmed.is_empty() {
-              (value_trimmed, base_color)
+            if !value_is_empty {
+              paint_text = Some(value_trimmed);
+              fallback_color = base_color;
             } else if let Some(ph) = placeholder.as_deref() {
-              is_placeholder = true;
-              (ph.trim(), base_color.with_alpha(0.6))
-            } else {
-              return true;
+              let ph = ph.trim();
+              if !ph.is_empty() {
+                paint_text = Some(ph);
+                fallback_color = placeholder_color;
+                is_placeholder = true;
+              }
             }
           }
           TextControlKind::Date => {
-            if !value_trimmed.is_empty() {
-              (value_trimmed, base_color)
+            if !value_is_empty {
+              paint_text = Some(value_trimmed);
+              fallback_color = base_color;
             } else if let Some(ph) = placeholder.as_deref() {
-              is_placeholder = true;
-              (ph.trim(), base_color.with_alpha(0.6))
+              let ph = ph.trim();
+              if !ph.is_empty() {
+                paint_text = Some(ph);
+                fallback_color = placeholder_color;
+                is_placeholder = true;
+              } else {
+                paint_text = Some("yyyy-mm-dd");
+                fallback_color = placeholder_color;
+                is_placeholder = true;
+              }
             } else {
+              paint_text = Some("yyyy-mm-dd");
+              fallback_color = placeholder_color;
               is_placeholder = true;
-              ("yyyy-mm-dd", base_color.with_alpha(0.6))
             }
           }
           TextControlKind::Plain => {
-            if !value_trimmed.is_empty() {
-              (value_trimmed, base_color)
+            if !value_is_empty {
+              paint_text = Some(value_trimmed);
+              fallback_color = base_color;
             } else if let Some(ph) = placeholder.as_deref() {
-              is_placeholder = true;
-              (ph.trim(), base_color.with_alpha(0.6))
-            } else {
-              return true;
+              let ph = ph.trim();
+              if !ph.is_empty() {
+                paint_text = Some(ph);
+                fallback_color = placeholder_color;
+                is_placeholder = true;
+              }
             }
           }
-        };
+        }
 
         let placeholder_style = if is_placeholder {
           control.placeholder_style.as_deref()
@@ -7775,6 +7833,7 @@ impl DisplayListBuilder {
           cloned.color = fallback_color;
           cloned
         };
+
         let mut text_rect = content_rect;
         let mut affordance_space = 0.0;
         match kind {
@@ -7801,7 +7860,9 @@ impl DisplayListBuilder {
         }
 
         if text_style.color.a > f32::EPSILON {
-          let _ = self.emit_text_with_style(text, Some(&text_style), text_rect);
+          if let Some(text) = paint_text {
+            let _ = self.emit_text_with_style(text, Some(&text_style), text_rect);
+          }
         }
         if let Some(affordance_rect) = affordance_rect {
           let mut affordance_style = style.clone();
@@ -7831,24 +7892,80 @@ impl DisplayListBuilder {
             _ => {}
           }
         }
+
+        if control.focused && !control.disabled {
+          let caret_color = match style.caret_color {
+            CaretColor::Color(c) => c,
+            CaretColor::Auto => style.color,
+          };
+          if !caret_color.is_transparent() {
+            let viewport = self.viewport.map(|(w, h)| Size::new(w, h));
+            let metrics_scaled = Self::resolve_scaled_metrics(&text_style, &self.font_ctx);
+            let line_height = compute_line_height_with_metrics_viewport(
+              &text_style,
+              metrics_scaled.as_ref(),
+              viewport,
+            );
+            let caret_x = if value_is_empty {
+              text_rect.x()
+            } else {
+              let caret_text = match kind {
+                TextControlKind::Password => generated.as_deref().unwrap_or(value_trimmed),
+                _ => value_trimmed,
+              };
+              text_rect.x() + measure_shaped_advance(self, caret_text, &text_style)
+            };
+
+            let mut sample_text = paint_text.unwrap_or("M");
+            if sample_text.trim().is_empty() {
+              sample_text = "M";
+            }
+            let runs = shape_text_runs(self, sample_text, &text_style).unwrap_or_default();
+            let metrics = InlineTextItem::metrics_from_runs(
+              &self.font_ctx,
+              &runs,
+              line_height,
+              text_style.font_size,
+            );
+            let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
+            let baseline_y = text_rect.y() + half_leading + metrics.baseline_offset;
+            let top = baseline_y - metrics.ascent;
+            let bottom = baseline_y + metrics.descent;
+            let caret_rect = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
+            if let Some(clipped) = caret_rect.intersection(content_rect) {
+              if clipped.width() > 0.0 && clipped.height() > 0.0 {
+                self.list.push(DisplayItem::FillRect(FillRectItem {
+                  rect: clipped,
+                  color: caret_color,
+                }));
+              }
+            }
+          }
+        }
         true
       }
       FormControlKind::TextArea {
         value, placeholder, ..
       } => {
         let base_color = if control.invalid { accent } else { style.color };
+        let placeholder_color = base_color.with_alpha(0.6);
 
         let value_trimmed = value.trim();
-        let mut is_placeholder = false;
-        let (text, fallback_color) = if !value_trimmed.is_empty() {
-          (value.as_str(), base_color)
-        } else if let Some(placeholder) = placeholder.as_deref().filter(|p| !p.is_empty()) {
-          is_placeholder = true;
-          (placeholder, base_color.with_alpha(0.6))
-        } else {
-          return true;
-        };
+        let value_is_empty = value_trimmed.is_empty();
         let rect = content_rect;
+
+        let mut paint_text: Option<&str> = None;
+        let mut fallback_color = base_color;
+        let mut is_placeholder = false;
+        if !value_is_empty {
+          paint_text = Some(value.as_str());
+          fallback_color = base_color;
+        } else if let Some(placeholder) = placeholder.as_deref().filter(|p| !p.is_empty()) {
+          paint_text = Some(placeholder);
+          fallback_color = placeholder_color;
+          is_placeholder = true;
+        }
+
         let placeholder_style = if is_placeholder {
           control.placeholder_style.as_deref()
         } else {
@@ -7871,18 +7988,82 @@ impl DisplayListBuilder {
           None,
           self.viewport.map(|(w, h)| Size::new(w, h)),
         );
-        if text_style.color.a <= f32::EPSILON {
-          return true;
+
+        if text_style.color.a > f32::EPSILON {
+          if let Some(text) = paint_text {
+            let mut y = rect.y();
+            for line in text.split('\n') {
+              if y > rect.y() + rect.height() {
+                break;
+              }
+              let line_rect = Rect::from_xywh(rect.x(), y, rect.width(), line_height);
+              let _ = self.emit_text_with_style(line.trim_end(), Some(&text_style), line_rect);
+              y += line_height;
+            }
+          }
         }
 
-        let mut y = rect.y();
-        for line in text.split('\n') {
-          if y > rect.y() + rect.height() {
-            break;
+        if control.focused && !control.disabled {
+          let caret_color = match style.caret_color {
+            CaretColor::Color(c) => c,
+            CaretColor::Auto => style.color,
+          };
+          if !caret_color.is_transparent() {
+            let (caret_y, caret_line) = if value_is_empty {
+              (
+                rect.y(),
+                paint_text
+                  .and_then(|t| t.split('\n').next())
+                  .unwrap_or(""),
+              )
+            } else {
+              let mut y = rect.y();
+              let mut last_y = y;
+              let mut last_line = "";
+              for line in value.split('\n') {
+                if y > rect.y() + rect.height() {
+                  break;
+                }
+                last_y = y;
+                last_line = line;
+                y += line_height;
+              }
+              (last_y, last_line)
+            };
+
+            let caret_line_trimmed = caret_line.trim_end();
+            let caret_x = if value_is_empty || caret_line_trimmed.is_empty() {
+              rect.x()
+            } else {
+              rect.x() + measure_shaped_advance(self, caret_line_trimmed, &text_style)
+            };
+
+            let sample_text = if caret_line_trimmed.trim().is_empty() {
+              "M"
+            } else {
+              caret_line_trimmed
+            };
+            let runs = shape_text_runs(self, sample_text, &text_style).unwrap_or_default();
+            let metrics = InlineTextItem::metrics_from_runs(
+              &self.font_ctx,
+              &runs,
+              line_height,
+              text_style.font_size,
+            );
+            let half_leading = (metrics.line_height - (metrics.ascent + metrics.descent)) / 2.0;
+            let baseline_y = caret_y + half_leading + metrics.baseline_offset;
+            let top = baseline_y - metrics.ascent;
+            let bottom = baseline_y + metrics.descent;
+            let caret_rect = Rect::from_xywh(caret_x, top, 1.0, (bottom - top).max(0.0));
+            if let Some(clipped) = caret_rect.intersection(rect) {
+              if clipped.width() > 0.0 && clipped.height() > 0.0 {
+                self.list.push(DisplayItem::FillRect(FillRectItem {
+                  rect: clipped,
+                  color: caret_color,
+                }));
+              }
+            }
           }
-          let line_rect = Rect::from_xywh(rect.x(), y, rect.width(), line_height);
-          let _ = self.emit_text_with_style(line.trim_end(), Some(&text_style), line_rect);
-          y += line_height;
         }
         true
       }
