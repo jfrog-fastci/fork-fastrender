@@ -1339,6 +1339,11 @@ fn eval_plain_style_feature(
     "display" => Display::parse(resolved_value)
       .map(|display| display == styles.display)
       .unwrap_or(false),
+    "opacity" => resolved_value
+      .parse::<f32>()
+      .ok()
+      .filter(|v| v.is_finite())
+      .is_some_and(|v| (v.clamp(0.0, 1.0) - styles.opacity).abs() < 1e-6),
     "font-size" => {
       let Some(expected) = crate::css::properties::parse_length(resolved_value) else {
         return false;
@@ -1392,6 +1397,7 @@ fn eval_boolean_style_feature(name: &str, container: &ContainerQueryInfo) -> boo
       "display" => styles.display != initial.display,
       "color" => styles.color != initial.color,
       "background-color" => styles.background_color != initial.background_color,
+      "opacity" => (styles.opacity - initial.opacity).abs() > 1e-6,
       "font-size" => (styles.font_size - initial.font_size).abs() > 1e-6,
       _ => false,
     }
@@ -1496,6 +1502,10 @@ fn eval_style_range_value(
       "font-size" => Some(NumericValue {
         ty: NumericType::LengthPx,
         value: styles.font_size,
+      }),
+      "opacity" => Some(NumericValue {
+        ty: NumericType::Number,
+        value: styles.opacity,
       }),
       _ => None,
     },
