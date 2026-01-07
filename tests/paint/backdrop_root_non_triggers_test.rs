@@ -223,3 +223,15 @@ fn container_type_size_is_not_a_backdrop_root() {
   let pixmap = render("container-type: size;");
   assert_child_inverts_body_bg(&pixmap);
 }
+
+#[test]
+fn border_radius_is_not_a_backdrop_root() {
+  let pixmap = render("border-radius: 8px;");
+  assert_child_inverts_body_bg(&pixmap);
+}
+
+#[test]
+fn overflow_scroll_is_not_a_backdrop_root() {
+  let pixmap = render("overflow: scroll;");
+  assert_child_inverts_body_bg(&pixmap);
+}
