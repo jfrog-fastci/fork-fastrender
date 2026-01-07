@@ -7474,9 +7474,47 @@ impl FastRender {
     dom: &DomNode,
     options: RenderOptions,
   ) -> Result<AccessibilityNode> {
-    let deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
-    let _deadline_guard = DeadlineGuard::install(Some(&deadline));
-    self.accessibility_tree_with_options_for_dom(dom, options)
+    let toggles = self.resolve_runtime_toggles(&options);
+    let _toggles_guard = RuntimeTogglesSwap::new(&mut self.runtime_toggles, toggles.clone());
+    runtime::with_runtime_toggles(toggles, || {
+      let deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+      let _deadline_guard = DeadlineGuard::install(Some(&deadline));
+
+      let shared_diagnostics = self
+        .diagnostics
+        .as_ref()
+        .map(|diag| SharedRenderDiagnostics {
+          inner: Arc::clone(diag),
+        });
+      let context = Some(self.build_resource_context(
+        self.document_url(),
+        shared_diagnostics,
+        ReferrerPolicy::default(),
+      ));
+      let (prev_self, prev_image, prev_layout_image, prev_font) =
+        self.push_resource_context(context);
+
+      if let Some(policy) =
+        crate::html::referrer_policy::extract_referrer_policy_with_deadline(dom)?
+      {
+        let needs_update = self
+          .resource_context
+          .as_ref()
+          .is_some_and(|ctx| ctx.referrer_policy != policy);
+        if needs_update {
+          if let Some(mut ctx) = self.resource_context.clone() {
+            ctx.referrer_policy = policy;
+            // Propagate the updated policy to all caches/fetchers that hold a copy of the current
+            // resource context.
+            self.push_resource_context(Some(ctx));
+          }
+        }
+      }
+
+      let result = self.accessibility_tree_with_options_for_dom(dom, options);
+      self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
+      result
+    })
   }
 
   /// Computes the accessibility tree for an HTML string using render options.
@@ -7485,17 +7523,54 @@ impl FastRender {
     html: &str,
     options: RenderOptions,
   ) -> Result<AccessibilityNode> {
-    let deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
-    let _deadline_guard = DeadlineGuard::install(Some(&deadline));
+    let toggles = self.resolve_runtime_toggles(&options);
+    let _toggles_guard = RuntimeTogglesSwap::new(&mut self.runtime_toggles, toggles.clone());
+    runtime::with_runtime_toggles(toggles, || {
+      let deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
+      let _deadline_guard = DeadlineGuard::install(Some(&deadline));
 
-    let base_hint = self.base_url.clone().unwrap_or_default();
-    self.set_document_url(base_hint.clone());
-    if !base_hint.trim().is_empty() {
-      self.set_base_url(base_hint);
-    }
-    let dom = self.parse_html(html)?;
-    self.update_base_url_from_dom(&dom);
-    self.accessibility_tree_with_options_for_dom(&dom, options)
+      let base_hint = self.base_url.clone().unwrap_or_default();
+      self.set_document_url(base_hint.clone());
+      if !base_hint.trim().is_empty() {
+        self.set_base_url(base_hint);
+      }
+      let dom = self.parse_html(html)?;
+      self.update_base_url_from_dom(&dom);
+
+      let shared_diagnostics = self
+        .diagnostics
+        .as_ref()
+        .map(|diag| SharedRenderDiagnostics {
+          inner: Arc::clone(diag),
+        });
+      let context = Some(self.build_resource_context(
+        self.document_url(),
+        shared_diagnostics,
+        ReferrerPolicy::default(),
+      ));
+      let (prev_self, prev_image, prev_layout_image, prev_font) =
+        self.push_resource_context(context);
+      if let Some(policy) =
+        crate::html::referrer_policy::extract_referrer_policy_with_deadline(&dom)?
+      {
+        let needs_update = self
+          .resource_context
+          .as_ref()
+          .is_some_and(|ctx| ctx.referrer_policy != policy);
+        if needs_update {
+          if let Some(mut ctx) = self.resource_context.clone() {
+            ctx.referrer_policy = policy;
+            // Propagate the updated policy to all caches/fetchers that hold a copy of the current
+            // resource context.
+            self.push_resource_context(Some(ctx));
+          }
+        }
+      }
+
+      let result = self.accessibility_tree_with_options_for_dom(&dom, options);
+      self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
+      result
+    })
   }
 
   fn accessibility_tree_with_options_for_dom(
@@ -8984,7 +9059,33 @@ impl FastRender {
     }
 
     let trace = TraceHandle::disabled();
-    let artifacts = self.layout_document_for_media_with_artifacts(
+    let shared_diagnostics = self
+      .diagnostics
+      .as_ref()
+      .map(|diag| SharedRenderDiagnostics {
+        inner: Arc::clone(diag),
+      });
+    let context = Some(self.build_resource_context(
+      self.document_url(),
+      shared_diagnostics,
+      ReferrerPolicy::default(),
+    ));
+    let (prev_self, prev_image, prev_layout_image, prev_font) = self.push_resource_context(context);
+    if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(dom)? {
+      let needs_update = self
+        .resource_context
+        .as_ref()
+        .is_some_and(|ctx| ctx.referrer_policy != policy);
+      if needs_update {
+        if let Some(mut ctx) = self.resource_context.clone() {
+          ctx.referrer_policy = policy;
+          // Propagate the updated policy to all caches/fetchers that hold a copy of the current
+          // resource context.
+          self.push_resource_context(Some(ctx));
+        }
+      }
+    }
+    let artifacts_result = self.layout_document_for_media_with_artifacts(
       dom,
       width,
       height,
@@ -8996,7 +9097,9 @@ impl FastRender {
       &trace,
       self.layout_parallelism,
       None,
-    )?;
+    );
+    self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
+    let artifacts = artifacts_result?;
 
     crate::debug::inspect::inspect(
       &artifacts.dom,
@@ -9041,20 +9144,55 @@ impl FastRender {
       let (target_width, target_height) =
         self.resolve_canvas_size(fragment_tree, width, height, fit_canvas);
 
-      paint_tree_with_resources_scaled_offset_backend_with_iframe_depth(
-        fragment_tree,
-        target_width,
-        target_height,
-        self.background_color,
-        self.font_context.clone(),
-        self.image_cache.clone(),
-        self.device_pixel_ratio,
-        Point::ZERO,
-        self.paint_parallelism,
-        &ScrollState::default(),
-        paint_backend_from_env(),
-        self.max_iframe_depth,
-      )
+      let shared_diagnostics = self
+        .diagnostics
+        .as_ref()
+        .map(|diag| SharedRenderDiagnostics {
+          inner: Arc::clone(diag),
+        });
+      let context = self.build_resource_context(
+        self.document_url(),
+        shared_diagnostics,
+        ReferrerPolicy::default(),
+      );
+      let mut image_cache = self.image_cache.clone();
+      image_cache.set_resource_context(Some(context));
+
+      let scroll_state = ScrollState::default();
+      let backend = paint_backend_from_env();
+      if backend == PaintBackend::Legacy {
+        record_stage(StageHeartbeat::PaintBuild);
+      }
+      match backend {
+        PaintBackend::Legacy => paint_tree_with_resources_scaled_offset_with_trace(
+          fragment_tree,
+          target_width,
+          target_height,
+          self.background_color,
+          self.font_context.clone(),
+          image_cache,
+          self.device_pixel_ratio,
+          Point::ZERO,
+          self.paint_parallelism,
+          &scroll_state,
+          self.max_iframe_depth,
+          TraceHandle::disabled(),
+        ),
+        PaintBackend::DisplayList => paint_tree_display_list_with_resources_scaled_offset_depth_with_trace(
+          fragment_tree,
+          target_width,
+          target_height,
+          self.background_color,
+          self.font_context.clone(),
+          image_cache,
+          self.device_pixel_ratio,
+          Point::ZERO,
+          self.paint_parallelism,
+          &scroll_state,
+          self.max_iframe_depth,
+          TraceHandle::disabled(),
+        ),
+      }
     })
   }
 
@@ -9067,20 +9205,59 @@ impl FastRender {
     offset: Point,
   ) -> Result<Pixmap> {
     runtime::with_runtime_toggles(Arc::clone(&self.runtime_toggles), || {
-      let trace = TraceHandle::disabled();
       let fit_canvas = self.fit_canvas_to_content || Self::fit_canvas_env_enabled();
       let (target_width, target_height) =
         self.resolve_canvas_size(fragment_tree, width, height, fit_canvas);
       let scroll_state = ScrollState::default();
-      self.paint_with_offset_traced(
-        fragment_tree,
-        target_width,
-        target_height,
-        offset,
-        self.paint_parallelism,
-        &scroll_state,
-        &trace,
-      )
+
+      let shared_diagnostics = self
+        .diagnostics
+        .as_ref()
+        .map(|diag| SharedRenderDiagnostics {
+          inner: Arc::clone(diag),
+        });
+      let context = self.build_resource_context(
+        self.document_url(),
+        shared_diagnostics,
+        ReferrerPolicy::default(),
+      );
+      let mut image_cache = self.image_cache.clone();
+      image_cache.set_resource_context(Some(context));
+
+      let backend = paint_backend_from_env();
+      if backend == PaintBackend::Legacy {
+        record_stage(StageHeartbeat::PaintBuild);
+      }
+      match backend {
+        PaintBackend::Legacy => paint_tree_with_resources_scaled_offset_with_trace(
+          fragment_tree,
+          target_width,
+          target_height,
+          self.background_color,
+          self.font_context.clone(),
+          image_cache,
+          self.device_pixel_ratio,
+          offset,
+          self.paint_parallelism,
+          &scroll_state,
+          self.max_iframe_depth,
+          TraceHandle::disabled(),
+        ),
+        PaintBackend::DisplayList => paint_tree_display_list_with_resources_scaled_offset_depth_with_trace(
+          fragment_tree,
+          target_width,
+          target_height,
+          self.background_color,
+          self.font_context.clone(),
+          image_cache,
+          self.device_pixel_ratio,
+          offset,
+          self.paint_parallelism,
+          &scroll_state,
+          self.max_iframe_depth,
+          TraceHandle::disabled(),
+        ),
+      }
     })
   }
 

@@ -568,6 +568,86 @@ mod test_public_api {
   }
 
   #[test]
+  fn test_accessibility_tree_html_respects_resource_policy_for_stylesheets() {
+    #[derive(Clone, Default)]
+    struct PanicFetcher;
+
+    impl ResourceFetcher for PanicFetcher {
+      fn fetch(&self, url: &str) -> fastrender::Result<FetchedResource> {
+        panic!("unexpected fetch for {url}");
+      }
+    }
+
+    let html = r#"
+        <html>
+            <head>
+                <link rel="stylesheet" href="https://example.com/blocked.css">
+            </head>
+            <body>
+                <div>OK</div>
+            </body>
+        </html>
+    "#;
+
+    let fetcher = Arc::new(PanicFetcher) as Arc<dyn ResourceFetcher>;
+    let config = deterministic_config()
+      .with_base_url("https://origin.test/page.html")
+      .with_same_origin_subresources(true);
+    let mut renderer = FastRender::with_config_and_fetcher(config, Some(fetcher))
+      .expect("create deterministic renderer with panic fetcher");
+
+    let tree = renderer
+      .accessibility_tree_html(html, RenderOptions::new().with_viewport(32, 32))
+      .expect("accessibility tree");
+    assert_eq!(tree.role, "document");
+  }
+
+  #[test]
+  fn test_paint_respects_resource_policy_for_images() {
+    #[derive(Clone, Default)]
+    struct PanicFetcher;
+
+    impl ResourceFetcher for PanicFetcher {
+      fn fetch(&self, url: &str) -> fastrender::Result<FetchedResource> {
+        panic!("unexpected fetch for {url}");
+      }
+    }
+
+    let html = r#"
+        <!doctype html>
+        <html>
+            <head>
+                <style>
+                    img {
+                        width: 10px;
+                        height: 10px;
+                        aspect-ratio: 1 / 1;
+                    }
+                </style>
+            </head>
+            <body>
+                <img src="https://example.com/blocked.png">
+            </body>
+        </html>
+    "#;
+
+    let fetcher = Arc::new(PanicFetcher) as Arc<dyn ResourceFetcher>;
+    let config = deterministic_config()
+      .with_base_url("https://origin.test/page.html")
+      .with_same_origin_subresources(true);
+    let mut renderer = FastRender::with_config_and_fetcher(config, Some(fetcher))
+      .expect("create deterministic renderer with panic fetcher");
+
+    let dom = renderer.parse_html(html).expect("parse html");
+    let fragment_tree = renderer
+      .layout_document(&dom, 32, 32)
+      .expect("layout document");
+    let pixmap = renderer.paint(&fragment_tree, 32, 32).expect("paint");
+    assert_eq!(pixmap.width(), 32);
+    assert_eq!(pixmap.height(), 32);
+  }
+
+  #[test]
   fn test_render_fetched_html_respects_runtime_toggle_overrides() {
     let mut renderer = deterministic_renderer();
     let html = r#"

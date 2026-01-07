@@ -1,4 +1,6 @@
-use fastrender::{FastRender, InspectQuery};
+use fastrender::{FastRender, FastRenderConfig, InspectQuery, ResourceFetcher};
+use fastrender::resource::FetchedResource;
+use std::sync::Arc;
 
 #[test]
 fn inspect_reports_style_and_layout_for_selector() {
@@ -97,6 +99,54 @@ fn inspect_selector_respects_document_quirks_mode() {
         standards_results.is_empty(),
         "standards mode should keep class matching case-sensitive"
       );
+    })
+    .expect("spawn test thread")
+    .join()
+    .expect("join test thread");
+}
+
+#[test]
+fn inspect_respects_resource_policy_for_stylesheets() {
+  #[derive(Clone, Default)]
+  struct PanicFetcher;
+
+  impl ResourceFetcher for PanicFetcher {
+    fn fetch(&self, url: &str) -> fastrender::Result<FetchedResource> {
+      panic!("unexpected fetch for {url}");
+    }
+  }
+
+  std::thread::Builder::new()
+    .stack_size(8 * 1024 * 1024)
+    .spawn(|| {
+      let fetcher = Arc::new(PanicFetcher) as Arc<dyn ResourceFetcher>;
+      let config = FastRenderConfig::new()
+        .with_base_url("https://origin.test/page.html")
+        .with_same_origin_subresources(true);
+      let mut renderer =
+        FastRender::with_config_and_fetcher(config, Some(fetcher)).expect("renderer");
+
+      let html = r#"
+        <!doctype html>
+        <html>
+          <head>
+            <link rel="stylesheet" href="https://example.com/blocked.css">
+          </head>
+          <body>
+            <div id="target">Inspect</div>
+          </body>
+        </html>
+      "#;
+      let dom = renderer.parse_html(html).expect("parse");
+      let results = renderer
+        .inspect(
+          &dom,
+          100,
+          100,
+          InspectQuery::Selector("#target".to_string()),
+        )
+        .expect("inspect");
+      assert_eq!(results.len(), 1);
     })
     .expect("spawn test thread")
     .join()
