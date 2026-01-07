@@ -109,7 +109,7 @@ fn control_value_and_placeholder_fallbacks() {
 }
 
 #[test]
-fn aria_describedby_respects_visibility() {
+fn aria_describedby_includes_hidden_references() {
   let html = r#"
     <html>
       <body>
@@ -127,7 +127,7 @@ fn aria_describedby_respects_visibility() {
   assert_eq!(described.name.as_deref(), Some("Action"));
   assert_eq!(
     described.description.as_deref(),
-    Some("Helpful extra detail")
+    Some("Helpful Hidden text extra detail")
   );
 }
 

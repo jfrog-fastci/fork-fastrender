@@ -1,0 +1,25 @@
+<html>
+  <body>
+    <div
+      id="polite"
+      aria-label="Polite live region"
+      aria-live=" polite "
+      aria-atomic="true"
+    >
+      Polite content
+    </div>
+
+    <div id="invalid" aria-label="Invalid live region" aria-live="loud">
+      Invalid content
+    </div>
+
+    <div
+      id="relevant"
+      aria-label="Relevant live region"
+      aria-live="polite"
+      aria-relevant=" additions   TEXT "
+    >
+      Relevant content
+    </div>
+  </body>
+</html>

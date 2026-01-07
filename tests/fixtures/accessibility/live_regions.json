@@ -1,12 +1,30 @@
 {
   "present": {
-    "shipping": {
-      "role": "group",
-      "name": "Shipping",
+    "polite": {
+      "role": "generic",
+      "name": "Polite live region",
       "description": null,
       "value": null,
       "level": null,
-      "html_tag": "fieldset",
+      "html_tag": "div",
+      "states": {
+        "focusable": false,
+        "disabled": false,
+        "required": false,
+        "invalid": false,
+        "visited": false,
+        "readonly": false,
+        "live": "polite",
+        "atomic": true
+      }
+    },
+    "invalid": {
+      "role": "generic",
+      "name": "Invalid live region",
+      "description": null,
+      "value": null,
+      "level": null,
+      "html_tag": "div",
       "states": {
         "focusable": false,
         "disabled": false,
@@ -16,56 +34,23 @@
         "readonly": false
       }
     },
-    "figure": {
-      "role": "figure",
-      "name": "Figure caption",
+    "relevant": {
+      "role": "generic",
+      "name": "Relevant live region",
       "description": null,
       "value": null,
       "level": null,
-      "html_tag": "figure",
+      "html_tag": "div",
       "states": {
         "focusable": false,
         "disabled": false,
         "required": false,
         "invalid": false,
         "visited": false,
-        "readonly": false
-      }
-    },
-    "data": {
-      "role": "table",
-      "name": "Visible caption",
-      "description": null,
-      "value": null,
-      "level": null,
-      "html_tag": "table",
-      "states": {
-        "focusable": false,
-        "disabled": false,
-        "required": false,
-        "invalid": false,
-        "visited": false,
-        "readonly": false
-      }
-    },
-    "dialog": {
-      "role": "dialog",
-      "name": "Dialog title",
-      "description": null,
-      "value": null,
-      "level": null,
-      "html_tag": "dialog",
-      "states": {
-        "focusable": false,
-        "disabled": false,
-        "required": false,
-        "invalid": false,
-        "visited": false,
-        "readonly": false
+        "readonly": false,
+        "live": "polite",
+        "relevant": "additions text"
       }
     }
-  },
-  "absent": [
-    "table-caption"
-  ]
+  }
 }
