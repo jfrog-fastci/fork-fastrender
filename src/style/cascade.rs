@@ -1195,7 +1195,7 @@ fn eval_plain_style_feature(
 
   let styles = container.styles.as_ref();
   let raw_value = value;
-  let resolved_value = if crate::style::var_resolution::contains_var(raw_value) {
+  let resolved_value: Cow<'_, str> = if crate::style::var_resolution::contains_var(raw_value) {
     let raw = PropertyValue::Custom(raw_value.to_string());
     match crate::style::var_resolution::resolve_var_for_property(&raw, &styles.custom_properties, "")
     {
@@ -1531,9 +1531,9 @@ fn parse_numeric_value(
         value: resolved,
       } => {
         let no_substitution = matches!(
-          (&resolved, css_text.as_ref()),
-          (crate::style::var_resolution::ResolvedPropertyValue::Borrowed(_), "")
-        );
+          resolved,
+          crate::style::var_resolution::ResolvedPropertyValue::Borrowed(_)
+        ) && css_text.is_empty();
         if no_substitution {
           Cow::Borrowed(trimmed)
         } else {
@@ -15182,10 +15182,10 @@ mod tests {
       containers: HashMap::from([(
         1usize,
         ContainerQueryInfo {
-          width: 300.0,
-          height: 100.0,
           // For vertical writing modes, the query container's inline size maps to physical height
           // while its block size maps to physical width.
+          width: 300.0,
+          height: 100.0,
           inline_size: 100.0,
           block_size: 300.0,
           container_type: ContainerType::Size,
