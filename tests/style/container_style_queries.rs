@@ -217,6 +217,46 @@ fn container_style_query_resolves_var_in_position_value() {
 }
 
 #[test]
+fn container_style_query_matches_overflow() {
+  let html = r#"
+    <style>
+      .container { container-type: inline-size; overflow: hidden; }
+      .child { color: rgb(0 0 255); }
+      @container style(overflow: hidden) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container">
+      <div id="target" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(target.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_resolves_var_in_overflow_value() {
+  let html = r#"
+    <style>
+      .container { container-type: inline-size; overflow: hidden; --ov: hidden; }
+      .child { color: rgb(0 0 255); }
+      @container style(overflow: var(--ov)) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container">
+      <div id="target" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(target.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_resolves_var_fallback_in_property_value() {
   let html = r#"
     <style>
@@ -449,6 +489,32 @@ fn container_style_query_boolean_position_matches_when_non_initial() {
   let relative = find_by_id(&styled, "relative").expect("relative element");
   assert_eq!(default.styles.color, Rgba::rgb(0, 0, 255));
   assert_eq!(relative.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_boolean_overflow_matches_when_non_initial() {
+  let html = r#"
+    <style>
+      .container-default { container-type: inline-size; }
+      .container-hidden { container-type: inline-size; overflow: hidden; }
+      .child { color: rgb(0 0 255); }
+      @container style(overflow) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-default">
+      <div id="default" class="child">hello</div>
+    </div>
+    <div class="container-hidden">
+      <div id="hidden" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let default = find_by_id(&styled, "default").expect("default element");
+  let hidden = find_by_id(&styled, "hidden").expect("hidden element");
+  assert_eq!(default.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(hidden.styles.color, Rgba::rgb(255, 0, 0));
 }
 
 #[test]

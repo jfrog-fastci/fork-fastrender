@@ -87,6 +87,7 @@ use crate::style::types::ColorSchemeEntry;
 use crate::style::types::ColorSchemePreference;
 use crate::style::types::ContainerType;
 use crate::style::types::OutlineColor;
+use crate::style::types::Overflow;
 use crate::style::types::PointerEvents;
 use crate::style::types::WritingMode;
 use crate::style::values::Length;
@@ -1337,6 +1338,22 @@ fn contains_cascade_dependent_keyword(value: &str) -> bool {
   scan(&mut parser)
 }
 
+fn parse_overflow_keyword(value: &str) -> Option<Overflow> {
+  if value.eq_ignore_ascii_case("visible") {
+    Some(Overflow::Visible)
+  } else if value.eq_ignore_ascii_case("hidden") {
+    Some(Overflow::Hidden)
+  } else if value.eq_ignore_ascii_case("scroll") {
+    Some(Overflow::Scroll)
+  } else if value.eq_ignore_ascii_case("auto") {
+    Some(Overflow::Auto)
+  } else if value.eq_ignore_ascii_case("clip") {
+    Some(Overflow::Clip)
+  } else {
+    None
+  }
+}
+
 fn eval_plain_style_feature(
   name: &str,
   value: &str,
@@ -1413,6 +1430,31 @@ fn eval_plain_style_feature(
     "position" => Position::parse(resolved_value)
       .map(|pos| pos == styles.position)
       .unwrap_or(false),
+    "overflow-x" => parse_overflow_keyword(resolved_value)
+      .is_some_and(|overflow| overflow == styles.overflow_x),
+    "overflow-y" => parse_overflow_keyword(resolved_value)
+      .is_some_and(|overflow| overflow == styles.overflow_y),
+    "overflow" => {
+      let parts: Vec<&str> = resolved_value.split_whitespace().collect();
+      match parts.as_slice() {
+        [value] => {
+          let Some(overflow) = parse_overflow_keyword(value) else {
+            return false;
+          };
+          overflow == styles.overflow_x && overflow == styles.overflow_y
+        }
+        [x, y] => {
+          let Some(overflow_x) = parse_overflow_keyword(x) else {
+            return false;
+          };
+          let Some(overflow_y) = parse_overflow_keyword(y) else {
+            return false;
+          };
+          overflow_x == styles.overflow_x && overflow_y == styles.overflow_y
+        }
+        _ => false,
+      }
+    }
     "z-index" => {
       if resolved_value.eq_ignore_ascii_case("auto") {
         styles.z_index.is_none()
@@ -1483,6 +1525,9 @@ fn eval_boolean_style_feature(name: &str, container: &ContainerQueryInfo) -> boo
       "color" => styles.color != initial.color,
       "background-color" => styles.background_color != initial.background_color,
       "position" => styles.position != initial.position,
+      "overflow-x" => styles.overflow_x != initial.overflow_x,
+      "overflow-y" => styles.overflow_y != initial.overflow_y,
+      "overflow" => styles.overflow_x != initial.overflow_x || styles.overflow_y != initial.overflow_y,
       "z-index" => styles.z_index != initial.z_index,
       "opacity" => (styles.opacity - initial.opacity).abs() > 1e-6,
       "font-size" => (styles.font_size - initial.font_size).abs() > 1e-6,
