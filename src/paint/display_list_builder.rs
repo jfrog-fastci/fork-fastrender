@@ -2116,9 +2116,18 @@ impl DisplayListBuilder {
     let mix_blend_mode = root_style
       .map(|s| Self::convert_blend_mode(s.mix_blend_mode))
       .unwrap_or(BlendMode::Normal);
+    let has_blend_mode_children = !is_root
+      && children.iter().any(|child| {
+        child
+          .fragments
+          .first()
+          .and_then(|fragment| fragment.style.as_deref())
+          .is_some_and(|style| !matches!(style.mix_blend_mode, MixBlendMode::Normal))
+      });
     let is_isolated = root_style
       .map(|s| matches!(s.isolation, Isolation::Isolate) || !s.backdrop_filter.is_empty())
-      .unwrap_or(false);
+      .unwrap_or(false)
+      || has_blend_mode_children;
     let (filters, backdrop_filters, radii) = root_style
       .map(|style| {
         let breakdown = self.build_breakdown.as_deref();
