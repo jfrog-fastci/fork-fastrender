@@ -11126,9 +11126,12 @@ mod tests {
     );
 
     // Range slider pseudo elements: ensure UA provides deterministic sizing/border defaults so
-    // partial author overrides (e.g. just changing background-color) don't make the control vanish.
+    // partial author overrides (e.g. only tweaking size/radius) don't make the control vanish.
     let author_css = r#"
-      input[type="range"]::-webkit-slider-runnable-track { background-color: rgb(10, 20, 30); }
+      input[type="range"]::-webkit-slider-runnable-track { height: 6px; }
+      input[type="range"]::-moz-range-track { height: 7px; }
+      input[type="range"]::-webkit-slider-thumb { width: 17px; }
+      input[type="range"]::-moz-range-thumb { width: 18px; }
     "#;
     let stylesheet = parse_stylesheet(author_css).expect("parse stylesheet");
     let range_dom = DomNode {
@@ -11146,13 +11149,13 @@ mod tests {
       .expect("expected slider track pseudo styles");
     assert_eq!(
       track.height,
-      Some(Length::px(4.0)),
-      "UA should provide a stable default track height"
+      Some(Length::px(7.0)),
+      "author height should override UA (and vendor pseudo aliases should match)"
     );
     assert_eq!(
       track.background_color,
-      Rgba::rgb(10, 20, 30),
-      "author background-color should override UA, but other defaults should remain"
+      Rgba::rgb(190, 190, 190),
+      "UA should provide a stable default track background color when author only overrides height"
     );
     assert_eq!(track.border_top_width, Length::px(0.0));
     assert_eq!(track.border_top_style, BorderStyle::None);
@@ -11163,7 +11166,11 @@ mod tests {
       .slider_thumb_styles
       .as_deref()
       .expect("expected slider thumb pseudo styles");
-    assert_eq!(thumb.width, Some(Length::px(16.0)));
+    assert_eq!(
+      thumb.width,
+      Some(Length::px(18.0)),
+      "author width should override UA (and vendor pseudo aliases should match)"
+    );
     assert_eq!(thumb.height, Some(Length::px(16.0)));
     assert_eq!(thumb.background_color, Rgba::WHITE);
     assert_eq!(thumb.border_top_width, Length::px(1.0));
