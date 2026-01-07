@@ -16,6 +16,7 @@ use fastrender::text::pipeline::atomic_shaping_clusters;
 use fastrender::text::pipeline::itemize_text;
 use fastrender::text::pipeline::BidiAnalysis;
 use fastrender::text::pipeline::Direction;
+use fastrender::text::pipeline::ExplicitBidiContext;
 use fastrender::text::pipeline::ItemizedRun;
 use fastrender::text::pipeline::RunRotation;
 use fastrender::text::pipeline::Script;
@@ -23,6 +24,7 @@ use fastrender::text::pipeline::ShapingPipeline;
 use fastrender::ComputedStyle;
 use fastrender::FontConfig;
 use fastrender::FontContext;
+use unicode_bidi::Level;
 
 /// Helper macro to skip test if font shaping fails due to missing fonts
 macro_rules! require_fonts {
@@ -653,6 +655,37 @@ fn test_bidi_analysis_direction_at() {
 
   // First character 'H' should be LTR
   assert!(bidi.direction_at(0).is_ltr());
+}
+
+#[test]
+fn bidi_plaintext_preserves_explicit_context_embedding_level() {
+  let mut style = ComputedStyle::default();
+  style.unicode_bidi = UnicodeBidi::Plaintext;
+
+  let bidi = BidiAnalysis::analyze_with_base(
+    "123",
+    &style,
+    Direction::RightToLeft,
+    Some(ExplicitBidiContext {
+      level: Level::new(3).unwrap(),
+      override_all: false,
+    }),
+  );
+
+  assert_eq!(bidi.base_level().number(), 3);
+  assert!(bidi.base_direction().is_rtl());
+}
+
+#[test]
+fn bidi_plaintext_without_explicit_context_uses_first_strong_base_direction() {
+  let mut style = ComputedStyle::default();
+  style.unicode_bidi = UnicodeBidi::Plaintext;
+
+  let latin = BidiAnalysis::analyze_with_base("abc", &style, Direction::RightToLeft, None);
+  assert!(latin.base_direction().is_ltr());
+
+  let hebrew = BidiAnalysis::analyze_with_base("אבג", &style, Direction::LeftToRight, None);
+  assert!(hebrew.base_direction().is_rtl());
 }
 
 // ============================================================================

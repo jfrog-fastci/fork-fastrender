@@ -1510,6 +1510,7 @@ impl BidiAnalysis {
       Direction::LeftToRight => Level::ltr(),
       Direction::RightToLeft => Level::rtl(),
     };
+    let has_explicit_context = explicit.is_some();
     let override_all = if let Some(ctx) = explicit {
       base_level = ctx.level;
       ctx.override_all
@@ -1530,6 +1531,11 @@ impl BidiAnalysis {
 
     // Run Unicode bidi algorithm
     let base_override = match style.unicode_bidi {
+      // unicode-bidi: plaintext normally resolves the paragraph base direction from the first
+      // strong character in the shaped slice (UAX#9). When layout provides an explicit bidi
+      // context, preserve its embedding depth so sub-range shaping cannot "flip" by re-running
+      // first-strong resolution on a slice that starts with neutrals.
+      crate::style::types::UnicodeBidi::Plaintext if has_explicit_context => Some(base_level),
       crate::style::types::UnicodeBidi::Plaintext => None,
       _ => Some(base_level),
     };
