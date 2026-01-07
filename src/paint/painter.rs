@@ -10148,13 +10148,12 @@ impl Painter {
 
         match style.text_emphasis_style {
           crate::style::types::TextEmphasisStyle::Mark { fill, shape } => {
-            let shape = shape.unwrap_or_else(|| {
-              if inline_vertical {
-                crate::style::types::TextEmphasisShape::Sesame
-              } else {
-                crate::style::types::TextEmphasisShape::Circle
-              }
-            });
+            let default_shape = if crate::style::is_vertical_typographic_mode(style.writing_mode) {
+              crate::style::types::TextEmphasisShape::Sesame
+            } else {
+              crate::style::types::TextEmphasisShape::Circle
+            };
+            let shape = shape.unwrap_or(default_shape);
             self.draw_emphasis_mark(
               mark_center_x,
               mark_center_y,

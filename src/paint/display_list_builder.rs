@@ -7513,8 +7513,23 @@ impl DisplayListBuilder {
       None
     };
 
+    let emphasis_style = match &style.text_emphasis_style {
+      TextEmphasisStyle::Mark { fill, shape: None } => {
+        let default_shape = if crate::style::is_vertical_typographic_mode(style.writing_mode) {
+          crate::style::types::TextEmphasisShape::Sesame
+        } else {
+          crate::style::types::TextEmphasisShape::Circle
+        };
+        TextEmphasisStyle::Mark {
+          fill: *fill,
+          shape: Some(default_shape),
+        }
+      }
+      other => other.clone(),
+    };
+
     Some(TextEmphasis {
-      style: style.text_emphasis_style.clone(),
+      style: emphasis_style,
       color: mark_color,
       position: resolved_position,
       size: mark_size,
@@ -9287,6 +9302,40 @@ mod tests {
       &style,
     );
     assert!((center - (baseline + thickness * 0.5 + 10.0)).abs() < 0.01);
+  }
+
+  #[test]
+  fn text_emphasis_fill_only_defaults_shape_in_sideways_writing_mode() {
+    let builder = DisplayListBuilder::new();
+    let font = test_font();
+    let cached_face = face_cache::get_ttf_face(font.as_ref()).expect("parse test font");
+    let face = cached_face.face();
+    let ch = ['W', 'O', 'F', '2']
+      .iter()
+      .copied()
+      .find(|ch| face.glyph_index(*ch).is_some())
+      .expect("expected test font to contain at least one ASCII glyph");
+    let run = shaped_run_for_char(Arc::clone(&font), ch, 16.0);
+
+    let mut style = ComputedStyle::default();
+    style.font_size = 16.0;
+    style.writing_mode = crate::style::types::WritingMode::SidewaysRl;
+    style.text_emphasis_style = TextEmphasisStyle::Mark {
+      fill: crate::style::types::TextEmphasisFill::Open,
+      shape: None,
+    };
+
+    let emphasis = builder
+      .build_emphasis(&run, &style, 0.0, 0.0, true, TextEmphasisOffset::default())
+      .expect("emphasis");
+
+    assert!(matches!(
+      emphasis.style,
+      TextEmphasisStyle::Mark {
+        fill: crate::style::types::TextEmphasisFill::Open,
+        shape: Some(crate::style::types::TextEmphasisShape::Circle)
+      }
+    ));
   }
 
   #[test]
