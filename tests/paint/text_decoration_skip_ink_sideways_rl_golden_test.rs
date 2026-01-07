@@ -24,39 +24,46 @@ fn render_fixture() -> Vec<u8> {
 
 #[test]
 fn text_decoration_skip_ink_sideways_rl_matches_golden() {
-  let compare_config =
-    compare_config_from_env(CompareEnvVars::fixtures()).expect("compare configuration");
-  let rendered = render_fixture();
-  let golden_path = Path::new(GOLDEN_PATH);
-  let diff_dir = PathBuf::from(DIFF_DIR);
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let compare_config =
+        compare_config_from_env(CompareEnvVars::fixtures()).expect("compare configuration");
+      let rendered = render_fixture();
+      let golden_path = Path::new(GOLDEN_PATH);
+      let diff_dir = PathBuf::from(DIFF_DIR);
 
-  if std::env::var("UPDATE_GOLDEN").is_ok() {
-    fs::write(golden_path, &rendered).expect("write golden");
-    return;
-  }
+      if std::env::var("UPDATE_GOLDEN").is_ok() {
+        fs::write(golden_path, &rendered).expect("write golden");
+        return;
+      }
 
-  let golden = fs::read(golden_path).unwrap_or_else(|e| {
-    panic!(
-      "Missing golden {} ({}): {}",
-      golden_path
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy(),
-      golden_path.display(),
-      e
-    )
-  });
+      let golden = fs::read(golden_path).unwrap_or_else(|e| {
+        panic!(
+          "Missing golden {} ({}): {}",
+          golden_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy(),
+          golden_path.display(),
+          e
+        )
+      });
 
-  compare_pngs(
-    golden_path
-      .file_name()
-      .unwrap_or_default()
-      .to_string_lossy()
-      .as_ref(),
-    &rendered,
-    &golden,
-    &compare_config,
-    &diff_dir,
-  )
-  .unwrap_or_else(|e| panic!("{}", e));
+      compare_pngs(
+        golden_path
+          .file_name()
+          .unwrap_or_default()
+          .to_string_lossy()
+          .as_ref(),
+        &rendered,
+        &golden,
+        &compare_config,
+        &diff_dir,
+      )
+      .unwrap_or_else(|e| panic!("{}", e));
+    })
+    .unwrap()
+    .join()
+    .unwrap();
 }
