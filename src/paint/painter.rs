@@ -13979,7 +13979,10 @@ mod tests {
   fn foreign_object_image_tag_preserves_opacity_attribute_when_computed_is_default() {
     let foreign = ForeignObjectInfo {
       placeholder: String::new(),
-      attributes: vec![("opacity".to_string(), "0.9".to_string())],
+      attributes: vec![
+        ("opacity".to_string(), "0.9".to_string()),
+        ("id".to_string(), "foo".to_string()),
+      ],
       x: 0.0,
       y: 0.0,
       width: 1.0,
@@ -13998,7 +14001,11 @@ mod tests {
       0,
     );
     assert_eq!(output.match_indices("opacity=").count(), 1);
-    assert!(output.contains("opacity=\"0.9\""));
+    assert!(
+      output.contains("opacity=\"0.9\""),
+      "expected output to forward the original opacity attribute, got {output:?}"
+    );
+    assert!(output.contains("id=\"foo\""));
   }
 
   #[test]

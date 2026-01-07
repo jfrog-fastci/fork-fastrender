@@ -198,6 +198,42 @@ fn inline_svg_renders_foreign_object_html() {
 }
 
 #[test]
+fn inline_svg_applies_foreign_object_opacity_presentation_attribute() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>
+        body { margin: 0; background: white; }
+        svg { display: block; }
+      </style>
+      <svg width="16" height="12" viewBox="0 0 16 12">
+        <foreignObject x="0" y="0" width="10" height="12" opacity="0.5">
+          <div xmlns="http://www.w3.org/1999/xhtml" style="width:10px;height:12px;background: rgb(255, 0, 0);"></div>
+        </foreignObject>
+      </svg>
+      "#;
+
+      let pixmap = renderer.render_html(html, 20, 20).expect("render svg");
+      let sample = pixel(&pixmap, 5, 6);
+      assert_ne!(
+        sample,
+        [255, 0, 0, 255],
+        "opacity should blend foreignObject content with the page background"
+      );
+      assert_ne!(sample, [255, 255, 255, 255], "foreignObject content should remain visible");
+      assert!(
+        sample[0] > 200 && sample[1] > 80 && sample[2] > 80,
+        "expected blended pink-ish pixel, got {sample:?}"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn foreign_object_renders_nested_html_children() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)

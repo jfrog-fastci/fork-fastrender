@@ -135,6 +135,7 @@ fn inline_text_like_form_controls_use_text_baseline() {
           value: "option".to_string(),
           selected: true,
           disabled: false,
+          in_optgroup: false,
         }],
         selected: vec![0],
       }),
