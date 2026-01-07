@@ -65,6 +65,7 @@ pub(crate) fn foreign_object_image_tag(info: &ForeignObjectInfo, data_url: &str,
   }
 
   let mut clip_path: Option<&str> = None;
+  let mut has_filter = !info.style.filter.is_empty();
   for (name, value) in &info.attributes {
     if name.eq_ignore_ascii_case("x")
       || name.eq_ignore_ascii_case("y")
@@ -77,6 +78,11 @@ pub(crate) fn foreign_object_image_tag(info: &ForeignObjectInfo, data_url: &str,
     if name.eq_ignore_ascii_case("clip-path") {
       clip_path = Some(value.as_str());
       continue;
+    }
+    if name.eq_ignore_ascii_case("filter") {
+      has_filter = true;
+    } else if name.eq_ignore_ascii_case("style") {
+      has_filter |= value.to_ascii_lowercase().contains("filter");
     }
     parts.push(format!("{}=\"{}\"", name, escape_attr_value(value)));
   }
@@ -95,13 +101,30 @@ pub(crate) fn foreign_object_image_tag(info: &ForeignObjectInfo, data_url: &str,
     .map(|value| format!(" clip-path=\"{}\"", escape_attr_value(value)))
     .unwrap_or_default();
   let clip_id = format!("fastr-fo-{}", idx);
+  let mut clip_x = info.x;
+  let mut clip_y = info.y;
+  let mut clip_width = info.width;
+  let mut clip_height = info.height;
+
+  if has_filter {
+    if info.overflow_x == Overflow::Visible {
+      let margin = info.width;
+      clip_x = info.x - margin;
+      clip_width = info.width + margin * 2.0;
+    }
+    if info.overflow_y == Overflow::Visible {
+      let margin = info.height;
+      clip_y = info.y - margin;
+      clip_height = info.height + margin * 2.0;
+    }
+  }
   let clip = format!(
     "<clipPath id=\"{}\"><rect x=\"{:.6}\" y=\"{:.6}\" width=\"{:.6}\" height=\"{:.6}\"/></clipPath>",
     clip_id,
-    info.x,
-    info.y,
-    info.width,
-    info.height
+    clip_x,
+    clip_y,
+    clip_width,
+    clip_height
   );
 
   format!(

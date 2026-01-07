@@ -714,6 +714,90 @@ fn foreign_object_overflow_visible_allows_filter_effects_outside_bounds() {
 }
 
 #[test]
+fn foreign_object_overflow_x_visible_y_clip_allows_horizontal_filter_bleed() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+          <style>body{margin:0;background:white} svg{display:block}</style>
+          <svg width="40" height="40" viewBox="0 0 40 40">
+            <defs>
+              <filter id="blur" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="4"/>
+            </filter>
+          </defs>
+          <foreignObject x="10" y="10" width="20" height="20" style="overflow-x:visible; overflow-y:clip" filter="url(#blur)">
+             <div xmlns="http://www.w3.org/1999/xhtml" style="width:20px;height:20px;background: rgb(255,0,0);"></div>
+          </foreignObject>
+        </svg>
+           "#;
+
+      let toggles = fastrender::debug::runtime::RuntimeToggles::from_map(std::collections::HashMap::from([(
+        "FASTR_PAINT_BACKEND".to_string(),
+        "display_list".to_string(),
+      )]));
+      let options = RenderOptions::new()
+        .with_viewport(40, 40)
+        .with_runtime_toggles(toggles);
+      let pixmap = renderer
+        .render_html_with_options(html, options)
+        .expect("render svg");
+
+      assert_ne!(pixel(&pixmap, 20, 20), [255, 255, 255, 255]);
+      // Horizontal overflow is visible, so the blur should show just outside the x-bounds.
+      assert_ne!(pixel(&pixmap, 8, 20), [255, 255, 255, 255]);
+      // Vertical overflow is clipped, so the blur should be cut off outside the y-bounds.
+      assert_eq!(pixel(&pixmap, 20, 8), [255, 255, 255, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn foreign_object_overflow_x_clip_y_visible_allows_vertical_filter_bleed() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+          <style>body{margin:0;background:white} svg{display:block}</style>
+          <svg width="40" height="40" viewBox="0 0 40 40">
+            <defs>
+              <filter id="blur" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="4"/>
+            </filter>
+          </defs>
+          <foreignObject x="10" y="10" width="20" height="20" style="overflow-x:clip; overflow-y:visible" filter="url(#blur)">
+             <div xmlns="http://www.w3.org/1999/xhtml" style="width:20px;height:20px;background: rgb(255,0,0);"></div>
+          </foreignObject>
+        </svg>
+           "#;
+
+      let toggles = fastrender::debug::runtime::RuntimeToggles::from_map(std::collections::HashMap::from([(
+        "FASTR_PAINT_BACKEND".to_string(),
+        "display_list".to_string(),
+      )]));
+      let options = RenderOptions::new()
+        .with_viewport(40, 40)
+        .with_runtime_toggles(toggles);
+      let pixmap = renderer
+        .render_html_with_options(html, options)
+        .expect("render svg");
+
+      assert_ne!(pixel(&pixmap, 20, 20), [255, 255, 255, 255]);
+      // Horizontal overflow is clipped, so the blur should be cut off outside the x-bounds.
+      assert_eq!(pixel(&pixmap, 8, 20), [255, 255, 255, 255]);
+      // Vertical overflow is visible, so the blur should show just outside the y-bounds.
+      assert_ne!(pixel(&pixmap, 20, 8), [255, 255, 255, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn inline_svg_respects_display_none_when_document_css_injection_disabled_with_legacy_paint_backend() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)

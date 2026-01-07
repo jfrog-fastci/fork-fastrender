@@ -14405,6 +14405,56 @@ mod tests {
     assert_eq!(image_tag.match_indices("clip-path=").count(), 1);
   }
 
+  #[test]
+  fn foreign_object_image_tag_extends_clip_rect_for_visible_x_with_filter() {
+    let foreign = ForeignObjectInfo {
+      placeholder: String::new(),
+      attributes: vec![("filter".to_string(), "url(#blur)".to_string())],
+      x: 0.0,
+      y: 0.0,
+      width: 1.0,
+      height: 1.0,
+      opacity: 1.0,
+      background: None,
+      html: String::new(),
+      style: Arc::new(ComputedStyle::default()),
+      overflow_x: Overflow::Visible,
+      overflow_y: Overflow::Clip,
+    };
+
+    let output =
+      crate::paint::svg_foreign_object::foreign_object_image_tag(&foreign, "data:image/png;base64,abc", 0);
+    assert!(
+      output.contains("<rect x=\"-1.000000\" y=\"0.000000\" width=\"3.000000\" height=\"1.000000\""),
+      "expected clip rect to extend in x for visible overflow, got {output:?}"
+    );
+  }
+
+  #[test]
+  fn foreign_object_image_tag_extends_clip_rect_for_visible_y_with_filter() {
+    let foreign = ForeignObjectInfo {
+      placeholder: String::new(),
+      attributes: vec![("filter".to_string(), "url(#blur)".to_string())],
+      x: 0.0,
+      y: 0.0,
+      width: 1.0,
+      height: 1.0,
+      opacity: 1.0,
+      background: None,
+      html: String::new(),
+      style: Arc::new(ComputedStyle::default()),
+      overflow_x: Overflow::Clip,
+      overflow_y: Overflow::Visible,
+    };
+
+    let output =
+      crate::paint::svg_foreign_object::foreign_object_image_tag(&foreign, "data:image/png;base64,abc", 0);
+    assert!(
+      output.contains("<rect x=\"0.000000\" y=\"-1.000000\" width=\"1.000000\" height=\"3.000000\""),
+      "expected clip rect to extend in y for visible overflow, got {output:?}"
+    );
+  }
+
   fn make_empty_tree() -> FragmentTree {
     let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), vec![]);
     FragmentTree::new(root)
