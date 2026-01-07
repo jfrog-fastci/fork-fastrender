@@ -37,7 +37,9 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
 - Painting:
   - Display list: `src/paint/display_list_builder.rs::emit_form_control`
   - Immediate painter: `src/paint/painter.rs::paint_form_control`
-- UA defaults: `src/user_agent.css` (embedded via `src/style/cascade.rs`; if Task 127 moves UA defaults into `ua_default_rules`, update this pointer)
+- UA defaults:
+  - Baseline UA stylesheet: `src/user_agent.css` (loaded in `src/style/cascade.rs`)
+  - Additional dynamic UA defaults (e.g. link state overrides): `src/style/cascade.rs::ua_default_rules`
 
 ## What `appearance:none` enables today
 
