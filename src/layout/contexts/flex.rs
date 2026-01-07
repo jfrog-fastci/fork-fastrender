@@ -5777,11 +5777,10 @@ impl FlexFormattingContext {
           .unwrap_or(FormattingContextType::Block);
         let item_fc = self.factory.get(item_fc_type);
 
-        // `compute_intrinsic_inline_size` for block formatting contexts respects authored widths.
-        // For flexbox auto minimum sizing we want the *content size suggestion* instead, which
-        // ignores the preferred size (CSS Flexbox §4.5). When a definite preferred size exists,
-        // the content-based minimum is the smaller of the preferred size suggestion and the
-        // content size suggestion.
+        // Intrinsic sizing respects authored preferred sizes. For flexbox auto minimum sizing we
+        // want the *content size suggestion* instead, which ignores the preferred size (CSS
+        // Flexbox §4.5). When a definite preferred size exists, the content-based minimum is the
+        // smaller of the preferred size suggestion and the content size suggestion.
         let needs_override = style.width.is_some() || style.width_keyword.is_some();
         let intrinsic_result = if needs_override {
           let mut override_style: ComputedStyle = (*box_node.style).clone();
@@ -5791,7 +5790,14 @@ impl FlexFormattingContext {
             crate::layout::style_override::with_style_override(
               box_node.id,
               Arc::new(override_style),
-              || item_fc.compute_intrinsic_inline_size(box_node, IntrinsicSizingMode::MinContent),
+              || {
+                crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_size(
+                  item_fc.as_ref(),
+                  box_node,
+                  PhysicalAxis::X,
+                  IntrinsicSizingMode::MinContent,
+                )
+              },
             )
           } else {
             // Tests and other ad-hoc callers sometimes build `BoxNode` trees without assigning
@@ -5799,10 +5805,20 @@ impl FlexFormattingContext {
             // old cloning approach when ids are not initialized to avoid collisions.
             let mut cloned = box_node.clone();
             cloned.style = Arc::new(override_style);
-            item_fc.compute_intrinsic_inline_size(&cloned, IntrinsicSizingMode::MinContent)
+            crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_size(
+              item_fc.as_ref(),
+              &cloned,
+              PhysicalAxis::X,
+              IntrinsicSizingMode::MinContent,
+            )
           }
         } else {
-          item_fc.compute_intrinsic_inline_size(box_node, IntrinsicSizingMode::MinContent)
+          crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_size(
+            item_fc.as_ref(),
+            box_node,
+            PhysicalAxis::X,
+            IntrinsicSizingMode::MinContent,
+          )
         };
 
         match intrinsic_result {
@@ -5947,15 +5963,32 @@ impl FlexFormattingContext {
           crate::layout::style_override::with_style_override(
             box_node.id,
             Arc::new(override_style),
-            || item_fc.compute_intrinsic_block_size(box_node, IntrinsicSizingMode::MinContent),
+            || {
+              crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_size(
+                item_fc.as_ref(),
+                box_node,
+                PhysicalAxis::Y,
+                IntrinsicSizingMode::MinContent,
+              )
+            },
           )
         } else {
           let mut cloned = box_node.clone();
           cloned.style = Arc::new(override_style);
-          item_fc.compute_intrinsic_block_size(&cloned, IntrinsicSizingMode::MinContent)
+          crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_size(
+            item_fc.as_ref(),
+            &cloned,
+            PhysicalAxis::Y,
+            IntrinsicSizingMode::MinContent,
+          )
         }
       } else {
-        item_fc.compute_intrinsic_block_size(box_node, IntrinsicSizingMode::MinContent)
+        crate::layout::intrinsic_sizing_keywords::physical_axis_intrinsic_border_box_size(
+          item_fc.as_ref(),
+          box_node,
+          PhysicalAxis::Y,
+          IntrinsicSizingMode::MinContent,
+        )
       };
 
       match intrinsic_result {

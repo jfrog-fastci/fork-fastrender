@@ -1,13 +1,16 @@
 use fastrender::layout::constraints::AvailableSpace;
 use fastrender::layout::constraints::LayoutConstraints;
+use fastrender::layout::contexts::block::BlockFormattingContext;
 use fastrender::layout::contexts::flex::FlexFormattingContext;
 use fastrender::layout::formatting_context::FormattingContext;
 use fastrender::layout::formatting_context::IntrinsicSizingMode;
 use fastrender::style::display::Display;
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::types::BoxSizing;
+use fastrender::style::types::FlexBasis;
 use fastrender::style::types::FlexDirection;
 use fastrender::style::types::Overflow;
+use fastrender::style::types::WritingMode;
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
@@ -209,4 +212,82 @@ fn flex_item_auto_min_size_column_uses_block_min_content() {
         "auto min-size should use min-content block-size in column axis; expected >= {min_content_block}, got {}",
         child.bounds.height()
     );
+}
+
+#[test]
+fn flex_item_auto_min_size_orthogonal_writing_mode_uses_physical_main_axis() {
+  // Row axis -> physical width. For an orthogonal writing-mode item, the min-content inline and
+  // block sizes map to different physical axes. The flex auto min-size probe must use the
+  // intrinsic size that corresponds to the physical main axis (width), not always the logical
+  // inline axis.
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.writing_mode = WritingMode::VerticalRl;
+  child_style.overflow_x = Overflow::Visible;
+  child_style.overflow_y = Overflow::Visible;
+  child_style.flex_basis = FlexBasis::Length(Length::px(0.0));
+
+  let text = BoxNode::new_text(
+    Arc::new(ComputedStyle::default()),
+    "ThisIsAnExtremelyLongUnbreakableWordForAutoMinSizeTesting".repeat(4),
+  );
+  let child_box = BoxNode::new_block(
+    Arc::new(child_style),
+    FormattingContextType::Block,
+    vec![text],
+  );
+  let child_for_intrinsic = child_box.clone();
+
+  let block_fc = BlockFormattingContext::new();
+  let min_inline = block_fc
+    .compute_intrinsic_inline_size(&child_for_intrinsic, IntrinsicSizingMode::MinContent)
+    .expect("min-content inline size");
+  let min_block = block_fc
+    .compute_intrinsic_block_size(&child_for_intrinsic, IntrinsicSizingMode::MinContent)
+    .expect("min-content block size");
+
+  assert!(
+    min_block.is_finite() && min_block > 0.0,
+    "expected a positive min-content block size, got {min_block:?}"
+  );
+  assert!(
+    min_inline > min_block * 2.0,
+    "expected orthogonal writing-mode min-inline ({min_inline}) to be much larger than min-block ({min_block})"
+  );
+
+  // Pick a non-trivial container width. Very small widths can trip flex's runaway-value
+  // sanitization (clamping child bounds to the container). Use a width derived from the much
+  // larger orthogonal min-inline size so the clamp does not hide the bug this test is asserting.
+  let container_width = (min_inline / 10.0).max(min_block + 10.0).max(20.0);
+  let mut container_style = style_with_display(Display::Flex);
+  container_style.width = Some(Length::px(container_width));
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child_box],
+  );
+
+  let flex_fc = FlexFormattingContext::new();
+  let fragment = flex_fc
+    .layout(
+      &container,
+      &LayoutConstraints::new(
+        AvailableSpace::Definite(container_width),
+        AvailableSpace::Indefinite,
+      ),
+    )
+    .expect("layout should succeed");
+
+  let child_fragment = fragment.children.first().expect("child fragment");
+  let width = child_fragment.bounds.width();
+  let height = child_fragment.bounds.height();
+  assert!(
+    (width - min_block).abs() < 0.5,
+    "expected flex auto min-width to use physical min-content width (≈ min-block). got width={width}, height={height}, min_block={min_block}"
+  );
+  assert!(
+    width < min_inline * 0.5,
+    "expected flex width ({width}) to be far smaller than the logical min-inline size ({min_inline})"
+  );
 }
