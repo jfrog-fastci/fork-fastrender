@@ -4031,12 +4031,30 @@ fn build_select_control(node: &StyledNode) -> SelectControl {
   }
 }
 
-fn select_selected_value(control: &SelectControl) -> Option<String> {
-  let idx = control.selected.first().copied()?;
-  match control.items.get(idx)? {
-    SelectItem::Option { value, .. } => Some(value.clone()),
-    _ => None,
+fn select_placeholder_label_option_index(control: &SelectControl, required: bool) -> Option<usize> {
+  if !required || control.multiple || control.size != 1 {
+    return None;
   }
+
+  // HTML: the placeholder label option exists when the first option in tree order has an empty
+  // value attribute and is a direct child of `<select>` (i.e. not under `<optgroup>`).
+  for (idx, item) in control.items.iter().enumerate() {
+    match item {
+      SelectItem::OptGroupLabel { .. } => continue,
+      SelectItem::Option {
+        value,
+        in_optgroup,
+        ..
+      } => {
+        if !*in_optgroup && value.is_empty() {
+          return Some(idx);
+        }
+        return None;
+      }
+    }
+  }
+
+  None
 }
 
 fn input_label(node: &DomNode, input_type: &str) -> String {
@@ -4126,18 +4144,11 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
         invalid = false;
       } else if let Some(control) = select_control.as_ref() {
         invalid = if control.multiple {
-          !control.items.iter().any(|item| matches!(
-            item,
-            SelectItem::Option {
-              selected: true,
-              disabled: false,
-              ..
-            }
-          ))
+          control.selected.is_empty()
         } else {
-          select_selected_value(control)
-            .unwrap_or_default()
-            .is_empty()
+          control.selected.is_empty()
+            || select_placeholder_label_option_index(control, required)
+              .is_some_and(|idx| control.selected.as_slice() == [idx])
         };
       } else {
         invalid = false;
@@ -5723,27 +5734,45 @@ mod tests {
   }
 
   #[test]
-  fn required_multiple_select_with_only_disabled_selected_is_invalid() {
+  fn required_multiple_select_with_only_disabled_selected_is_valid() {
     let control = first_select_control_from_html(
       "<html><body><select multiple required><option selected disabled value=\"a\">A</option></select></body></html>",
     );
     assert!(control.required);
-    assert!(control.invalid);
+    assert!(!control.invalid);
   }
 
   #[test]
-  fn required_multiple_select_with_selected_in_disabled_optgroup_is_invalid() {
+  fn required_multiple_select_with_selected_in_disabled_optgroup_is_valid() {
     let control = first_select_control_from_html(
       "<html><body><select multiple required><optgroup disabled label=\"g\"><option selected value=\"a\">A</option></optgroup></select></body></html>",
     );
     assert!(control.required);
-    assert!(control.invalid);
+    assert!(!control.invalid);
   }
 
   #[test]
   fn required_multiple_select_with_selected_empty_value_is_valid() {
     let control = first_select_control_from_html(
       "<html><body><select multiple required><option selected value=\"\">A</option><option disabled selected value=\"b\">B</option></select></body></html>",
+    );
+    assert!(control.required);
+    assert!(!control.invalid);
+  }
+
+  #[test]
+  fn required_select_with_selected_empty_value_not_placeholder_is_valid() {
+    let control = first_select_control_from_html(
+      "<html><body><select required><option value=\"a\">A</option><option selected value=\"\">Empty</option></select></body></html>",
+    );
+    assert!(control.required);
+    assert!(!control.invalid);
+  }
+
+  #[test]
+  fn required_select_with_size_gt_1_selected_empty_value_is_valid() {
+    let control = first_select_control_from_html(
+      "<html><body><select required size=\"2\"><option selected value=\"\">Empty</option><option value=\"a\">A</option></select></body></html>",
     );
     assert!(control.required);
     assert!(!control.invalid);
