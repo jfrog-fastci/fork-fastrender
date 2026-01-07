@@ -86,6 +86,51 @@ fn mask_image_url_fragment_preserves_styles_for_defs_referenced_via_use() {
   assert_eq!(pixel(&pixmap, 40, 10), [255, 0, 0, 255]);
 }
 
+#[test]
+fn mask_image_url_fragment_inlines_svg_opacity_from_css() {
+  let html = r#"
+    <style>
+      html, body { margin: 0; padding: 0; background: black; }
+      svg { position: absolute; width: 0; height: 0; }
+      .semi { opacity: 0.5; fill: white; }
+      #box {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 20px;
+        height: 20px;
+        background: rgb(255, 0, 0);
+        mask-image: url(#m);
+        mask-mode: alpha;
+        mask-size: 100% 100%;
+        mask-repeat: no-repeat;
+        mask-position: 0 0;
+      }
+    </style>
+    <svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" aria-hidden="true">
+      <defs>
+        <mask id="m" maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse" x="0" y="0" width="20" height="20">
+          <rect class="semi" width="20" height="20"></rect>
+        </mask>
+      </defs>
+    </svg>
+    <div id="box"></div>
+  "#;
+
+  let mut renderer = FastRender::new().expect("renderer");
+  let pixmap = renderer.render_html(html, 30, 30).expect("render");
+
+  assert_eq!(pixel(&pixmap, 25, 10), [0, 0, 0, 255], "background pixel");
+  let masked = pixel(&pixmap, 10, 10);
+  assert_eq!(masked[1], 0, "masked green");
+  assert_eq!(masked[2], 0, "masked blue");
+  assert_eq!(masked[3], 255, "masked alpha");
+  assert!(
+    (120..=136).contains(&masked[0]),
+    "expected ~50% red over black background, got {masked:?}"
+  );
+}
+
 mod paint {
   // Keep the bulk of SVG mask reference coverage in the deterministic display-list paint pipeline.
   include!("paint/svg_mask_image_reference_test.rs");

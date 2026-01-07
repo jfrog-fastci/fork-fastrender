@@ -1180,6 +1180,11 @@ fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>)
     }
   }
 
+  if style.opacity != 1.0 {
+    start_decl(&mut out, &mut any);
+    let _ = write!(&mut out, "opacity: {:.3}", style.opacity.clamp(0.0, 1.0));
+  }
+
   any.then_some(out)
 }
 
