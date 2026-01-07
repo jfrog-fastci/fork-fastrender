@@ -1766,6 +1766,83 @@ fn color_hsv_mix_blend_mode_allows_parallel_tiling_without_isolation() {
 }
 
 #[test]
+fn hue_hsv_mix_blend_mode_allows_parallel_tiling_without_isolation() {
+  // `hue-hsv` is implemented via the manual mix-blend-mode compositor (HSV conversion path).
+  // Ensure it remains tile-friendly and produces byte-identical results when tiled.
+  let mut list = DisplayList::new();
+  // Use a backdrop with different saturations/values so the blend result depends on per-pixel
+  // destination sampling (HueHsv uses destination saturation+value).
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 48.0, 96.0),
+    color: Rgba::from_rgba8(255, 0, 0, 255),
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(48.0, 0.0, 48.0, 96.0),
+    color: Rgba::from_rgba8(128, 128, 128, 255),
+  }));
+  let stacking = StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    establishes_backdrop_root: true,
+    bounds: Rect::from_xywh(0.0, 0.0, 80.0, 80.0),
+    plane_rect: Rect::from_xywh(0.0, 0.0, 80.0, 80.0),
+    mix_blend_mode: BlendMode::HueHsv,
+    opacity: 0.75,
+    is_isolated: false,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::ZERO,
+    mask: None,
+    has_clip_path: false,
+  };
+  list.push(DisplayItem::PushStackingContext(stacking));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(8.0, 8.0, 56.0, 56.0),
+    // Hue source color; destination saturation/value are sampled from the backdrop.
+    color: Rgba::from_rgba8(0, 255, 0, 255),
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let font_ctx = FontContext::new();
+  let serial = DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx.clone())
+    .unwrap()
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("serial paint");
+
+  let parallelism = PaintParallelism {
+    tile_size: 24,
+    log_timing: false,
+    min_display_items: 1,
+    min_tiles: 1,
+    min_build_fragments: 1,
+    build_chunk_size: 1,
+    ..PaintParallelism::enabled()
+  };
+  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let report = pool.install(|| {
+    DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
+      .unwrap()
+      .with_parallelism(parallelism)
+      .render_with_report(&list)
+      .expect("parallel paint")
+  });
+
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
+  assert_pixmap_eq(&serial, &report.pixmap);
+}
+
+#[test]
 fn luminosity_hsv_mix_blend_mode_allows_parallel_tiling_without_isolation() {
   // `luminosity-hsv` is implemented via the manual mix-blend-mode compositor (HSV conversion
   // path). Ensure it remains tile-friendly and produces byte-identical results when tiled.
