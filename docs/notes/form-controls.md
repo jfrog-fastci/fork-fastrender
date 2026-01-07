@@ -34,6 +34,8 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
   - `-moz-appearance` (and other vendor prefixes) canonicalized during CSS parsing when possible:
     - `src/css/parser.rs::lookup_known_property`
     - `src/css/properties.rs::vendor_prefixed_property_alias`
+  - `@supports` handling for vendor properties (intentionally conservative to avoid inverting feature queries):
+    - `src/css/supports.rs::supports_declaration` (tests: `tests/css_supports_vendor_properties.rs`)
 - Painting:
   - Display list: `src/paint/display_list_builder.rs::emit_form_control`
   - Immediate painter: `src/paint/painter.rs::paint_form_control`
