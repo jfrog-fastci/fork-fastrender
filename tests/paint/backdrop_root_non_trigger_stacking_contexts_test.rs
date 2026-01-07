@@ -1,3 +1,6 @@
+// Future-guard regressions for Backdrop Root sampling across stacking contexts that are explicitly
+// *not* Backdrop Root triggers in filter-effects-2.
+
 use fastrender::image_loader::ImageCache;
 use fastrender::paint::display_list_renderer::PaintParallelism;
 use fastrender::paint::painter::paint_tree_with_resources_scaled_offset;
@@ -22,6 +25,7 @@ fn render(html: &str, width: u32, height: u32) -> tiny_skia::Pixmap {
     image_cache,
     1.0,
     Point::ZERO,
+    // Keep painting deterministic; these tests focus on backdrop sampling boundaries.
     PaintParallelism::disabled(),
     &ScrollState::default(),
   )
@@ -46,6 +50,7 @@ fn backdrop_filter_crosses_z_index_stacking_context() {
 
   let pixmap = render(html, 64, 64);
   assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
 
 #[test]
@@ -61,6 +66,7 @@ fn backdrop_filter_crosses_fixed_position_stacking_context() {
 
   let pixmap = render(html, 64, 64);
   assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
 
 #[test]
@@ -81,5 +87,5 @@ fn backdrop_filter_crosses_sticky_position_stacking_context() {
 
   let pixmap = render(html, 64, 64);
   assert_eq!(pixel(&pixmap, 20, 20), (0, 255, 255, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
-
