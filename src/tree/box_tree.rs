@@ -2117,7 +2117,7 @@ mod tests {
       sizes: Some(SizesList {
         entries: vec![SizesEntry {
           media: None,
-          length: Length::rem(10.0),
+          length: Length::rem(10.0).into(),
         }],
       }),
       picture_sources: Vec::new(),
