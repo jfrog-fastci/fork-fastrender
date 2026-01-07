@@ -20,7 +20,7 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
 - Disabled, focus, focus-visible, required, and invalid states are derived from element attributes + `data-fastr-focus*` hints during box generation and influence native painting (tinted overlays, accent changes). The `data-fastr-focus-visible` hint implies focus for native painting so standalone focus-visible markers are captured.
 - Some form-control pseudo-element styles are captured during the cascade (placeholder + range slider thumb/track) and passed into the painters via `FormControl::{placeholder_style, slider_thumb_style, slider_track_style}`. Vendor spellings like `::-webkit-input-placeholder`, `::-moz-placeholder`, `:-ms-input-placeholder`, `::-moz-range-thumb`, `::-moz-range-track`, `::-ms-thumb`, and `::-ms-track` are accepted and normalized internally.
 - `appearance: none` affects **native painting** (suppresses some UA chrome) but does **not** currently change box generation: the element is still a `ReplacedType::FormControl` and keeps form-control intrinsic sizing. (Non-`none` keywords are preserved as `Appearance::Keyword(...)`, but painters currently only special-case `Appearance::None`.)
-- Vendor-prefixed `-webkit-appearance` and `-moz-appearance` are treated as aliases of `appearance` (for site compatibility), so either spelling can drive `Appearance::None` / keyword values through box generation and painting. (Task 94 tracks vendor-alias conformance; note: `@supports` intentionally does **not** treat `-moz-appearance` as supported.)
+- Vendor-prefixed `-webkit-appearance` and other vendor-prefixed spellings (`-moz-appearance`, `-ms-appearance`, `-o-appearance`) are treated as aliases of `appearance` (for site compatibility), so those spellings can drive `Appearance::None` / keyword values through box generation and painting. (Task 94 tracks vendor-alias conformance; note: `@supports` intentionally only reports support for a small allowlist like `-webkit-appearance` to avoid inverting feature queries.)
 
 ## Key code paths
 
@@ -45,7 +45,7 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
 
 ## What `appearance:none` enables today
 
-- Author `background`/`border`/`padding` styling applies normally (the element is still a normal CSS box; only the *inside* is painted by the form-control code). This applies whether you set `appearance:none`, `-webkit-appearance:none`, or `-moz-appearance:none`.
+- Author `background`/`border`/`padding` styling applies normally (the element is still a normal CSS box; only the *inside* is painted by the form-control code). This applies whether you set `appearance:none` or common vendor spellings like `-webkit-appearance:none` / `-moz-appearance:none` / `-ms-appearance:none`.
 - Native chrome suppression is currently selective and implemented directly in the painters:
   - Select caret (“▾”) is skipped when `control.appearance == Appearance::None`:
     - `src/paint/display_list_builder.rs::emit_form_control` (`FormControlKind::Select`)
