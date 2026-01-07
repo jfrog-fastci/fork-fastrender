@@ -380,6 +380,60 @@ fn generate_has_pruning_stress_styles(missing_selectors: usize) -> String {
   css
 }
 
+fn build_nested_has_html(
+  a_count: usize,
+  b_count: usize,
+  b_depth: usize,
+  b_fan_out: usize,
+  c_variants: usize,
+) -> String {
+  fn build_subtree(html: &mut String, depth: usize, max_depth: usize, fan_out: usize) {
+    if depth >= max_depth {
+      return;
+    }
+    html.push_str("<div class=\"d\">");
+    for _ in 0..fan_out {
+      build_subtree(html, depth + 1, max_depth, fan_out);
+    }
+    html.push_str("</div>");
+  }
+
+  let mut html = String::from("<!doctype html><html><head></head><body>");
+  let mut c_classes = String::new();
+  for idx in 0..c_variants {
+    let _ = write!(c_classes, "c{idx} ");
+  }
+  if !c_classes.is_empty() {
+    c_classes.pop();
+  }
+
+  for a in 0..a_count {
+    let _ = write!(html, "<div class=\"a\" id=\"a{a}\">");
+    for b in 0..b_count {
+      let _ = write!(html, "<div class=\"b\" data-b=\"{b}\">");
+      build_subtree(&mut html, 0, b_depth, b_fan_out);
+      html.push_str("</div>");
+    }
+    let _ = write!(html, "<div class=\"{c_classes}\"></div>");
+    html.push_str("</div>");
+  }
+
+  html.push_str("</body></html>");
+  html
+}
+
+fn generate_nested_has_styles(c_variants: usize) -> String {
+  let mut css = String::from("body { margin: 0; }\n");
+  for idx in 0..c_variants {
+    let _ = write!(
+      css,
+      ".a:has(.b:has(.c{idx})) {{ padding-left: {}px; }}\n",
+      (idx % 5) + 1
+    );
+  }
+  css
+}
+
 fn build_nested_shadow_dom(
   depth: usize,
   selector_chain_len: usize,
@@ -750,6 +804,56 @@ fn has_selector_summary_bits_benchmark(c: &mut Criterion) {
   set_selector_bloom_enabled(true);
 }
 
+fn nested_has_selector_summary_benchmark(c: &mut Criterion) {
+  let a_count = 8;
+  let b_count = 16;
+  let b_depth = 4;
+  let b_fan_out = 2;
+  let c_variants = 32;
+
+  let html = build_nested_has_html(a_count, b_count, b_depth, b_fan_out, c_variants);
+  let css = generate_nested_has_styles(c_variants);
+
+  let dom = parse_html(&html).expect("parse html");
+  let stylesheet = parse_stylesheet(&css).expect("parse stylesheet");
+  let media = MediaContext::screen(1280.0, 720.0);
+
+  let printed = AtomicBool::new(false);
+  let mut group = c.benchmark_group("nested_has_selector_summary");
+  group.bench_function("nested_has_apply_styles", |b| {
+    b.iter_custom(|iters| {
+      set_selector_bloom_enabled(true);
+      reset_has_counters();
+
+      let start = Instant::now();
+      for _ in 0..iters {
+        let styled = apply_styles_with_media(black_box(&dom), black_box(&stylesheet), &media);
+        black_box(styled);
+      }
+      let duration = start.elapsed();
+
+      let counters = capture_has_counters();
+      black_box(counters);
+
+      if !printed.swap(true, Ordering::Relaxed) {
+        let iters = iters.max(1);
+        let per_call_prunes = counters.prunes / iters;
+        let per_call_summary_prunes = counters.summary_prunes() / iters;
+        let per_call_filter_prunes = counters.filter_prunes / iters;
+        let per_call_evaluated = counters.evaluated / iters;
+        eprintln!(
+          "nested_has (iters={iters}): per-call prunes={per_call_prunes} summary_prunes={per_call_summary_prunes} filter_prunes={per_call_filter_prunes} relative_evals={per_call_evaluated}"
+        );
+      }
+
+      duration
+    });
+  });
+  group.finish();
+
+  set_selector_bloom_enabled(true);
+}
+
 fn selector_bloom_lookup_benchmark(c: &mut Criterion) {
   // Focused micro-benchmark: compare per-element bloom summary lookups using the dense
   // node-id indexed store vs a legacy pointer-keyed HashMap.
@@ -891,6 +995,7 @@ criterion_group!(
   has_selector_summary_benchmark,
   selector_bloom_summary_bits_build_benchmark,
   has_selector_summary_bits_benchmark,
+  nested_has_selector_summary_benchmark,
   selector_bloom_lookup_benchmark,
   bloom_hash_insert_benchmark
 );

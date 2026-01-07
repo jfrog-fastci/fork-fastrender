@@ -5837,9 +5837,6 @@ impl<'a> Element for ElementRef<'a> {
   ) -> bool {
     match pseudo {
       PseudoClass::Has(relative) => {
-        if _context.relative_selector_anchor().is_some() {
-          return false;
-        }
         matches_has_relative(self, relative, _context)
       }
       PseudoClass::Host(selectors) => {
@@ -6356,10 +6353,15 @@ fn matches_has_relative(
       let mut deadline_counter = 0usize;
       let use_ancestor_bloom = selector_bloom_enabled();
       let mut ancestor_bloom_filter = BloomFilter::new();
+      let anchor_id = if anchor.node_id != 0 {
+        anchor.node_id
+      } else {
+        ctx.extra_data.node_id_for(anchor.node).unwrap_or(0)
+      };
       let anchor_summary = ctx
         .extra_data
         .selector_blooms
-        .and_then(|store| store.summary_for_id(anchor.node_id));
+        .and_then(|store| store.summary_for_id(anchor_id));
 
       for selector in selectors.iter() {
         record_has_eval();
@@ -6598,6 +6600,7 @@ fn match_relative_selector_descendants<'a>(
         break;
       }
       let child_ref = ElementRef::with_ancestors(child, ancestors.as_slice())
+        .with_node_id(context.extra_data.node_id_for(child).unwrap_or(0))
         .with_slot_map(context.extra_data.slot_map)
         .with_attr_cache(context.extra_data.element_attr_cache);
       let mut matched = if use_ancestor_bloom && !selector_may_match(ancestor_hashes, bloom_filter)
@@ -6678,6 +6681,7 @@ fn match_relative_selector_siblings<'a>(
     }
 
     let sibling_ref = ElementRef::with_ancestors(sibling, ancestors.as_slice())
+      .with_node_id(context.extra_data.node_id_for(sibling).unwrap_or(0))
       .with_slot_map(context.extra_data.slot_map)
       .with_attr_cache(context.extra_data.element_attr_cache);
     let matched = if selector.match_hint.is_subtree() {
@@ -6835,6 +6839,7 @@ fn match_relative_selector_subtree<'a>(
     }
 
     let child_ref = ElementRef::with_ancestors(child, ancestors.as_slice())
+      .with_node_id(context.extra_data.node_id_for(child).unwrap_or(0))
       .with_slot_map(slot_map)
       .with_attr_cache(element_attr_cache);
 
@@ -7884,6 +7889,63 @@ mod tests {
     let counters = capture_has_counters();
     assert_eq!(counters.prunes, 0);
     assert_eq!(counters.evaluated, 1);
+  }
+
+  #[test]
+  fn nested_has_uses_bloom_summary_pruning() {
+    reset_has_counters();
+    set_selector_bloom_enabled(true);
+    let dom = element_with_attrs(
+      "div",
+      vec![("class", "a")],
+      vec![
+        element_with_attrs("div", vec![("class", "b")], vec![]),
+        element_with_attrs("div", vec![("class", "c")], vec![]),
+      ],
+    );
+    let id_map = enumerate_dom_ids(&dom);
+    let bloom_store = build_selector_bloom_store(&dom, &id_map).expect("selector bloom store");
+
+    let mut caches = SelectorCaches::default();
+    caches.set_epoch(next_selector_cache_epoch());
+    let mut context = MatchingContext::new(
+      MatchingMode::Normal,
+      None,
+      &mut caches,
+      QuirksMode::NoQuirks,
+      NeedsSelectorFlags::No,
+      MatchingForInvalidation::No,
+    );
+    context.extra_data = ShadowMatchData::for_document()
+      .with_selector_blooms(Some(&bloom_store))
+      .with_node_to_id(Some(&id_map));
+
+    let selector = parse_selector(".a:has(.b:has(.c))");
+    let anchor_id = *id_map
+      .get(&(&dom as *const DomNode))
+      .expect("anchor node id");
+    let anchor = ElementRef::with_ancestors(&dom, &[]).with_node_id(anchor_id);
+
+    assert!(
+      !matches_selector(&selector, 0, None, &anchor, &mut context),
+      "expected selector to fail because .b subtree does not contain .c"
+    );
+
+    let counters = capture_has_counters();
+    assert_eq!(counters.evals, 2, "expected nested :has() to be evaluated");
+    assert_eq!(
+      counters.summary_prunes(),
+      1,
+      "expected inner :has() to prune via bloom summary"
+    );
+    assert_eq!(
+      counters.filter_prunes, 0,
+      "expected nested pruning to use the precomputed bloom summary, not the per-anchor filter"
+    );
+    assert_eq!(
+      counters.evaluated, 1,
+      "expected only the outer :has() to run a relative selector evaluation"
+    );
   }
 
   #[test]

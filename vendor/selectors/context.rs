@@ -502,13 +502,10 @@ where
     where
         F: FnOnce(&mut Self) -> R,
     {
-        debug_assert!(
-            self.current_relative_selector_anchor.is_none(),
-            "Nesting should've been rejected at parse time"
-        );
+        let original_anchor = self.current_relative_selector_anchor;
         self.current_relative_selector_anchor = Some(anchor);
         let result = self.nest(f);
-        self.current_relative_selector_anchor = None;
+        self.current_relative_selector_anchor = original_anchor;
         result
     }
 

@@ -53,6 +53,7 @@ pub struct ShadowMatchData<'a> {
   pub deadline_error: Option<RenderError>,
   /// Precomputed selector bloom summaries for fast :has() pruning.
   pub selector_blooms: Option<&'a SelectorBloomStore>,
+  pub node_to_id: Option<&'a HashMap<*const DomNode, usize>>,
   /// Cached sibling positions for structural pseudo-classes.
   pub sibling_cache: Option<&'a SiblingListCache>,
   /// Per-pass cache for expensive element attribute lookups during selector matching.
@@ -90,6 +91,17 @@ impl<'a> ShadowMatchData<'a> {
   pub fn with_selector_blooms(mut self, selector_blooms: Option<&'a SelectorBloomStore>) -> Self {
     self.selector_blooms = selector_blooms;
     self
+  }
+
+  pub fn with_node_to_id(mut self, node_to_id: Option<&'a HashMap<*const DomNode, usize>>) -> Self {
+    self.node_to_id = node_to_id;
+    self
+  }
+
+  pub fn node_id_for(&self, node: &DomNode) -> Option<usize> {
+    self
+      .node_to_id
+      .and_then(|map| map.get(&(node as *const DomNode)).copied())
   }
 
   pub fn with_sibling_cache(mut self, sibling_cache: &'a SiblingListCache) -> Self {
