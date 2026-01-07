@@ -14,10 +14,11 @@ mod test_public_api {
   use fastrender::dom::DomCompatibilityMode;
   use fastrender::resource::FetchedResource;
   use fastrender::{
-    FontConfig, LayoutParallelism, PaintParallelism, RenderOptions, ResourceKind, ResourcePolicy,
-    Rgba,
+    FontConfig, LayoutParallelism, PaintParallelism, RenderOptions, ResourceFetcher, ResourceKind,
+    ResourcePolicy, Rgba,
   };
   use std::collections::HashMap;
+  use std::sync::Arc;
 
   fn deterministic_toggles() -> RuntimeToggles {
     let mut toggles = HashMap::new();
@@ -490,6 +491,43 @@ mod test_public_api {
       "expected policy-blocked error, got: {:?}",
       entry.message
     );
+  }
+
+  #[test]
+  fn test_prepare_html_respects_resource_policy_for_stylesheets() {
+    #[derive(Clone, Default)]
+    struct PanicFetcher;
+
+    impl ResourceFetcher for PanicFetcher {
+      fn fetch(&self, url: &str) -> fastrender::Result<FetchedResource> {
+        panic!("unexpected fetch for {url}");
+      }
+    }
+
+    let html = r#"
+        <html>
+            <head>
+                <link rel="stylesheet" href="https://example.com/blocked.css">
+            </head>
+            <body>
+                <div>OK</div>
+            </body>
+        </html>
+    "#;
+
+    let fetcher = Arc::new(PanicFetcher) as Arc<dyn ResourceFetcher>;
+    let config = deterministic_config()
+      .with_base_url("https://origin.test/page.html")
+      .with_same_origin_subresources(true);
+    let mut renderer = FastRender::with_config_and_fetcher(config, Some(fetcher))
+      .expect("create deterministic renderer with panic fetcher");
+
+    let prepared = renderer
+      .prepare_html(html, RenderOptions::new().with_viewport(32, 32))
+      .expect("prepare");
+    let pixmap = prepared.paint(0.0, 0.0, None, None).expect("paint");
+    assert_eq!(pixmap.width(), 32);
+    assert_eq!(pixmap.height(), 32);
   }
 
   #[test]

@@ -5614,7 +5614,18 @@ impl FastRender {
       let trace_handle = trace.handle();
       let _root_span = trace_handle.span("prepare", "pipeline");
 
+      let shared_diagnostics = self
+        .diagnostics
+        .as_ref()
+        .map(|diag| SharedRenderDiagnostics {
+          inner: Arc::clone(diag),
+        });
+      let context =
+        Some(self.build_resource_context(self.document_url(), shared_diagnostics, ReferrerPolicy::default()));
+      let (prev_self, prev_image, prev_layout_image, prev_font) = self.push_resource_context(context);
+
       let result = self.prepare_html_internal_inner(html, options, trace_handle);
+      self.pop_resource_context(prev_self, prev_image, prev_layout_image, prev_font);
       drop(_root_span);
       trace.finalize(result)
     })
@@ -5646,6 +5657,20 @@ impl FastRender {
       self.parse_html(html)?
     };
     self.update_base_url_from_dom(&dom);
+    if let Some(policy) = crate::html::referrer_policy::extract_referrer_policy_with_deadline(&dom)? {
+      let needs_update = self
+        .resource_context
+        .as_ref()
+        .is_some_and(|ctx| ctx.referrer_policy != policy);
+      if needs_update {
+        if let Some(mut ctx) = self.resource_context.clone() {
+          ctx.referrer_policy = policy;
+          // Propagate the updated policy to all caches/fetchers that hold a copy of the current
+          // resource context.
+          self.push_resource_context(Some(ctx));
+        }
+      }
+    }
 
     if let Some(start) = stage_start.as_mut() {
       let now = Instant::now();
@@ -9124,10 +9149,14 @@ impl FastRender {
     referrer_policy: ReferrerPolicy,
   ) -> ResourceContext {
     let origin = document_url.and_then(origin_from_url);
+    let policy = match origin {
+      Some(origin) => self.resource_policy.for_origin(Some(origin)),
+      None => self.resource_policy.clone(),
+    };
     ResourceContext {
       document_url: document_url.map(|url| url.to_string()),
       referrer_policy,
-      policy: self.resource_policy.for_origin(origin),
+      policy,
       diagnostics,
       iframe_depth_remaining: Some(self.max_iframe_depth),
     }
