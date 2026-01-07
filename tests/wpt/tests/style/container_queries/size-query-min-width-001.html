@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>container query size: min-width</title>
+<style>
+html, body {
+  margin: 0;
+  background: #fff;
+}
+.container {
+  container-type: inline-size;
+  width: 200px;
+  height: 50px;
+}
+.target {
+  width: 200px;
+  height: 50px;
+  background: #00f;
+}
+@container (min-width: 150px) {
+  .target { background: #0f0; }
+}
+</style>
+<div class="container">
+  <div class="target"></div>
+</div>
