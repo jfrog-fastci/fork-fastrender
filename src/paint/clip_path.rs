@@ -1,3 +1,4 @@
+use crate::error::{RenderError, RenderStage};
 use crate::geometry::Point;
 use crate::geometry::Rect;
 use crate::paint::display_list::BorderRadii;
@@ -230,20 +231,27 @@ pub(crate) fn resolve_clip_path(
   bounds: Rect,
   viewport: (f32, f32),
   font_ctx: &FontContext,
-) -> Option<ResolvedClipPath> {
+) -> Result<Option<ResolvedClipPath>, RenderError> {
   match &style.clip_path {
-    ClipPath::None => None,
+    ClipPath::None => Ok(None),
     ClipPath::Box(reference) => {
       let boxes = reference_boxes(style, bounds, viewport, font_ctx);
       let rect = select_reference_box(boxes, *reference);
       let radii = resolve_reference_box_radii(style, &boxes, *reference, viewport, font_ctx);
-      Some(ResolvedClipPath::Inset { rect, radii })
+      Ok(Some(ResolvedClipPath::Inset { rect, radii }))
     }
     ClipPath::BasicShape(shape, reference_override) => {
       let boxes = reference_boxes(style, bounds, viewport, font_ctx);
       let reference = reference_override.unwrap_or(ReferenceBox::BorderBox);
       let reference_rect = select_reference_box(boxes, reference);
-      resolve_basic_shape(shape, reference_rect, style, viewport, font_ctx)
+      resolve_basic_shape(
+        shape,
+        reference_rect,
+        style,
+        viewport,
+        font_ctx,
+        RenderStage::Paint,
+      )
     }
   }
 }
@@ -254,7 +262,8 @@ pub(crate) fn resolve_basic_shape(
   style: &ComputedStyle,
   viewport: (f32, f32),
   font_ctx: &FontContext,
-) -> Option<ResolvedClipPath> {
+  stage: RenderStage,
+) -> Result<Option<ResolvedClipPath>, RenderError> {
   match shape {
     BasicShape::Inset {
       top,
@@ -277,19 +286,19 @@ pub(crate) fn resolve_basic_shape(
         .map(|r| resolve_clip_radii(&r, style, rect, viewport, font_ctx))
         .unwrap_or(BorderRadii::ZERO)
         .clamped(rect.width(), rect.height());
-      Some(ResolvedClipPath::Inset { rect, radii })
+      Ok(Some(ResolvedClipPath::Inset { rect, radii }))
     }
     BasicShape::Circle { radius, position } => {
       let center = resolve_position(position, reference, style, viewport, font_ctx);
       let resolved_radius =
         resolve_circle_radius(radius, center, reference, style, viewport, font_ctx);
       if resolved_radius <= 0.0 {
-        return None;
+        return Ok(None);
       }
-      Some(ResolvedClipPath::Circle {
+      Ok(Some(ResolvedClipPath::Circle {
         center,
         radius: resolved_radius,
-      })
+      }))
     }
     BasicShape::Ellipse {
       radius_x,
@@ -302,17 +311,17 @@ pub(crate) fn resolve_basic_shape(
         radius_y, false, center, reference, style, viewport, font_ctx,
       );
       if rx <= 0.0 || ry <= 0.0 {
-        return None;
+        return Ok(None);
       }
-      Some(ResolvedClipPath::Ellipse {
+      Ok(Some(ResolvedClipPath::Ellipse {
         center,
         radius_x: rx,
         radius_y: ry,
-      })
+      }))
     }
     BasicShape::Polygon { fill, points } => {
       if points.len() < 3 {
-        return None;
+        return Ok(None);
       }
       let resolved: Vec<Point> = points
         .iter()
@@ -327,22 +336,29 @@ pub(crate) fn resolve_basic_shape(
         FillRule::EvenOdd => SkFillRule::EvenOdd,
         FillRule::NonZero => SkFillRule::Winding,
       };
-      Some(ResolvedClipPath::Polygon {
+      Ok(Some(ResolvedClipPath::Polygon {
         points: resolved,
         fill_rule,
-      })
+      }))
     }
     BasicShape::Path { fill, data } => {
       let fill_rule = match fill {
         FillRule::EvenOdd => SkFillRule::EvenOdd,
         FillRule::NonZero => SkFillRule::Winding,
       };
-      let path = crate::svg_path::build_tiny_skia_path_from_svg_path_data_unchecked(data.as_ref())?;
-      let translated = path.transform(Transform::from_translate(reference.x(), reference.y()))?;
-      Some(ResolvedClipPath::Path {
+      let path =
+        crate::svg_path::build_tiny_skia_path_from_svg_path_data_checked(data.as_ref(), stage)?;
+      let Some(path) = path else {
+        return Ok(None);
+      };
+      let Some(translated) = path.transform(Transform::from_translate(reference.x(), reference.y()))
+      else {
+        return Ok(None);
+      };
+      Ok(Some(ResolvedClipPath::Path {
         path: translated,
         fill_rule,
-      })
+      }))
     }
   }
 }
@@ -786,6 +802,7 @@ mod tests {
     let bounds = Rect::from_xywh(0.0, 0.0, 50.0, 40.0);
     let viewport = (100.0, 100.0);
     let clip = resolve_clip_path(&style, bounds, viewport, &FontContext::new())
+      .expect("expected clip-path resolution to succeed")
       .expect("expected clip-path to resolve");
 
     let radii = match clip {
@@ -815,6 +832,7 @@ mod tests {
     let bounds = Rect::from_xywh(0.0, 0.0, 40.0, 40.0);
     let viewport = (100.0, 100.0);
     let clip = resolve_clip_path(&style, bounds, viewport, &FontContext::new())
+      .expect("expected clip-path resolution to succeed")
       .expect("expected clip-path to resolve");
 
     let radii = match clip {
@@ -843,6 +861,7 @@ mod tests {
     let bounds = Rect::from_xywh(0.0, 0.0, 80.0, 60.0);
     let viewport = (100.0, 100.0);
     let clip = resolve_clip_path(&style, bounds, viewport, &FontContext::new())
+      .expect("expected clip-path resolution to succeed")
       .expect("expected clip-path to resolve");
 
     let radii = match clip {

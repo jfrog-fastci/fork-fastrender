@@ -1488,7 +1488,8 @@ impl Painter {
       Some(&self.image_cache),
     );
     for root in svg_filter_roots {
-      self.collect_stacking_context(
+      self
+        .collect_stacking_context(
         root,
         offset,
         None,
@@ -1496,7 +1497,8 @@ impl Painter {
         root_paint,
         &mut items,
         &mut svg_filter_resolver,
-      );
+      )
+        .map_err(Error::Render)?;
     }
     drop(_display_list_span);
     check_active(RenderStage::Paint).map_err(Error::Render)?;
@@ -1756,10 +1758,8 @@ impl Painter {
     root_paint: RootPaintOptions,
     items: &mut Vec<DisplayCommand>,
     svg_filters: &mut SvgFilterResolver,
-  ) {
-    if check_active(RenderStage::Paint).is_err() {
-      return;
-    }
+  ) -> RenderResult<()> {
+    check_active(RenderStage::Paint)?;
     let debug_fragments = dump_fragments_enabled();
     let is_root_fragment = is_root_context && parent_style.is_none();
     let root_background = if is_root_fragment && root_paint.use_root_background {
@@ -1772,7 +1772,7 @@ impl Painter {
         style.visibility,
         crate::style::computed::Visibility::Visible
       ) {
-        return;
+        return Ok(());
       }
     }
 
@@ -1790,7 +1790,7 @@ impl Painter {
       {
         if let Some(transform) = resolve_transform3d(style, abs_bounds, Some(viewport)) {
           if backface_is_hidden(&transform) {
-            return;
+            return Ok(());
           }
         }
       }
@@ -1885,7 +1885,7 @@ impl Painter {
           root_paint,
           &mut local_commands,
           svg_filters,
-        );
+        )?;
       }
 
       for idx in blocks_and_floats {
@@ -1897,7 +1897,7 @@ impl Painter {
           root_paint,
           &mut local_commands,
           svg_filters,
-        );
+        )?;
       }
       for idx in inlines {
         self.collect_stacking_context(
@@ -1908,7 +1908,7 @@ impl Painter {
           root_paint,
           &mut local_commands,
           svg_filters,
-        );
+        )?;
       }
       for idx in positioned_auto {
         self.collect_stacking_context(
@@ -1919,7 +1919,7 @@ impl Painter {
           root_paint,
           &mut local_commands,
           svg_filters,
-        );
+        )?;
       }
 
       zero_contexts.sort_by(|(z1, i1), (z2, i2)| z1.cmp(z2).then_with(|| i1.cmp(i2)));
@@ -1932,7 +1932,7 @@ impl Painter {
           root_paint,
           &mut local_commands,
           svg_filters,
-        );
+        )?;
       }
 
       positive_contexts.sort_by(|(z1, i1), (z2, i2)| z1.cmp(z2).then_with(|| i1.cmp(i2)));
@@ -1945,11 +1945,11 @@ impl Painter {
           root_paint,
           &mut local_commands,
           svg_filters,
-        );
+        )?;
       }
 
       items.extend(local_commands);
-      return;
+      return Ok(());
     }
 
     // Stacking context: paint own background/border first
@@ -2006,7 +2006,7 @@ impl Painter {
         root_paint,
         &mut local_commands,
         svg_filters,
-      );
+      )?;
     }
 
     // In-flow/non-positioned content for this context
@@ -2020,7 +2020,7 @@ impl Painter {
         root_paint,
         &mut local_commands,
         svg_filters,
-      );
+      )?;
     }
     for idx in inlines {
       self.collect_stacking_context(
@@ -2031,7 +2031,7 @@ impl Painter {
         root_paint,
         &mut local_commands,
         svg_filters,
-      );
+      )?;
     }
     for idx in positioned_auto {
       self.collect_stacking_context(
@@ -2042,7 +2042,7 @@ impl Painter {
         root_paint,
         &mut local_commands,
         svg_filters,
-      );
+      )?;
     }
 
     zero_contexts.sort_by(|(z1, i1), (z2, i2)| z1.cmp(z2).then_with(|| i1.cmp(i2)));
@@ -2055,7 +2055,7 @@ impl Painter {
         root_paint,
         &mut local_commands,
         svg_filters,
-      );
+      )?;
     }
 
     positive_contexts.sort_by(|(z1, i1), (z2, i2)| z1.cmp(z2).then_with(|| i1.cmp(i2)));
@@ -2068,7 +2068,7 @@ impl Painter {
         root_paint,
         &mut local_commands,
         svg_filters,
-      );
+      )?;
     }
 
     // Wrap the stacking context if it applies an effect (opacity/transform); otherwise flatten
@@ -2199,14 +2199,15 @@ impl Painter {
         (None, None) => None,
       }
     });
-    let clip_path = style_ref.and_then(|style| {
-      resolve_clip_path(
+    let clip_path = match style_ref {
+      Some(style) => resolve_clip_path(
         style,
         abs_bounds,
         (self.css_width, self.css_height),
         &self.font_ctx,
-      )
-    });
+      )?,
+      None => None,
+    };
     let mask = fragment
       .style
       .clone()
@@ -2241,6 +2242,7 @@ impl Painter {
     } else {
       items.extend(local_commands);
     }
+    Ok(())
   }
 
   /// Enqueue background and border commands for a fragment (no children).
@@ -13816,7 +13818,8 @@ mod tests {
       },
       &mut commands,
       &mut svg_filters,
-    );
+    )
+    .expect("stacking context collection should succeed");
 
     // Background commands occur in paint order; filter child backgrounds to check ordering.
     let xs: Vec<f32> = commands

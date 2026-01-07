@@ -3234,7 +3234,7 @@ impl BlockFormattingContext {
           self.viewport_size,
           &self.font_context,
           factory.image_cache(),
-        );
+        )?;
         float_ctx.add_float_with_shape(
           side,
           fx,

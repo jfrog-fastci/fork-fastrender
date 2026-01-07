@@ -5,9 +5,11 @@
 //! `shape-margin` and support basic shapes as well as simple image/gradient
 //! masks.
 
+use crate::error::{RenderError, RenderStage};
 use crate::css::types::{ColorStop, RadialGradientShape, RadialGradientSize};
 use crate::geometry::{Point, Rect, Size};
 use crate::image_loader::ImageCache;
+use crate::layout::formatting_context::LayoutError;
 use crate::paint::clip_path::{resolve_basic_shape, ResolvedClipPath};
 use crate::paint::pixmap::{new_pixmap, reserve_buffer};
 use crate::style::color::Rgba;
@@ -97,7 +99,7 @@ pub fn build_float_shape(
   viewport: Size,
   font_ctx: &FontContext,
   image_cache: &ImageCache,
-) -> Option<FloatShape> {
+) -> Result<Option<FloatShape>, LayoutError> {
   let shape_margin = resolve_shape_margin_px(style.shape_margin, style, viewport);
   let reference_boxes = compute_reference_boxes(
     style,
@@ -109,10 +111,10 @@ pub fn build_float_shape(
   );
 
   match &style.shape_outside {
-    ShapeOutside::None => None,
+    ShapeOutside::None => Ok(None),
     ShapeOutside::Box(reference) => {
       let rect = select_reference_box(reference_boxes, *reference);
-      Some(expand_spans(rect_span(rect), shape_margin))
+      Ok(Some(expand_spans(rect_span(rect), shape_margin)))
     }
     ShapeOutside::BasicShape(basic, reference_override) => {
       let reference = reference_override.unwrap_or(ReferenceBox::MarginBox);
@@ -123,14 +125,26 @@ pub fn build_float_shape(
         style,
         (viewport.width, viewport.height),
         font_ctx,
-      )?;
-      let (mask, origin) = rasterize_clip_shape(&resolved)?;
+        RenderStage::Layout,
+      )
+      .map_err(|err| match err {
+        RenderError::Timeout { elapsed, .. } => LayoutError::Timeout { elapsed },
+        other => LayoutError::MissingContext(other.to_string()),
+      })?;
+      let Some(resolved) = resolved else {
+        return Ok(None);
+      };
+      let Some((mask, origin)) = rasterize_clip_shape(&resolved) else {
+        return Ok(None);
+      };
       let base = spans_from_mask(&mask, origin, 0.0);
-      Some(expand_spans(base, shape_margin))
+      Ok(Some(expand_spans(base, shape_margin)))
     }
     ShapeOutside::Image(image) => {
       let reference_rect = reference_boxes.margin;
-      let bitmap = image_mask(image, reference_rect, style, viewport, image_cache)?;
+      let Some(bitmap) = image_mask(image, reference_rect, style, viewport, image_cache) else {
+        return Ok(None);
+      };
       let base = spans_from_alpha_pixels(
         bitmap.width,
         bitmap.height,
@@ -138,7 +152,7 @@ pub fn build_float_shape(
         Point::new(reference_rect.x(), reference_rect.y()),
         style.shape_image_threshold,
       );
-      Some(expand_spans(base, shape_margin))
+      Ok(Some(expand_spans(base, shape_margin)))
     }
   }
 }
@@ -635,6 +649,7 @@ mod tests {
       &font_ctx,
       &image_cache,
     )
+    .expect("expected shape-outside image resolution to succeed")
     .expect("expected shape-outside image to produce a float shape");
 
     assert_eq!(shape.top(), 0.0);

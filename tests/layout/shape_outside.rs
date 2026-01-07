@@ -97,6 +97,7 @@ fn circle_shape_shortens_line_space() {
     &FontContext::new(),
     &ImageCache::new(),
   )
+  .expect("circle shape resolution")
   .expect("circle shape");
 
   let mut ctx = FloatContext::new(200.0);
@@ -140,6 +141,7 @@ fn right_float_uses_shape_contour() {
     &FontContext::new(),
     &ImageCache::new(),
   )
+  .expect("circle shape resolution")
   .expect("circle shape");
 
   let mut ctx = FloatContext::new(200.0);
@@ -185,6 +187,7 @@ fn image_shape_respects_threshold() {
     &FontContext::new(),
     &ImageCache::new(),
   )
+  .expect("gradient shape resolution")
   .expect("gradient shape");
 
   let mut ctx = FloatContext::new(200.0);
@@ -218,7 +221,8 @@ fn none_falls_back_to_margin_box() {
     Size::new(200.0, 200.0),
     &FontContext::new(),
     &ImageCache::new(),
-  );
+  )
+  .expect("shape-outside resolution");
 
   let mut ctx = FloatContext::new(200.0);
   ctx.add_float_with_shape(
@@ -248,6 +252,7 @@ fn text_lines_follow_circle_shape() {
     &FontContext::new(),
     &ImageCache::new(),
   )
+  .expect("circle shape resolution")
   .expect("circle shape");
 
   let mut float_ctx = FloatContext::new(200.0);
@@ -306,6 +311,7 @@ fn right_float_ellipse_shortens_line_width() {
     &FontContext::new(),
     &ImageCache::new(),
   )
+  .expect("ellipse shape resolution")
   .expect("ellipse shape");
 
   let mut float_ctx = FloatContext::new(200.0);
@@ -362,6 +368,7 @@ fn polygon_shape_wraps_rtl_text() {
     &FontContext::new(),
     &ImageCache::new(),
   )
+  .expect("polygon shape resolution")
   .expect("polygon shape");
 
   let mut float_ctx = FloatContext::new(220.0);
@@ -409,6 +416,7 @@ fn image_shape_threshold_wraps_text() {
     &FontContext::new(),
     &ImageCache::new(),
   )
+  .expect("image shape resolution")
   .expect("image shape");
 
   let mut float_ctx = FloatContext::new(200.0);
@@ -441,7 +449,8 @@ fn shape_none_wraps_to_box_bounds() {
     Size::new(200.0, 200.0),
     &FontContext::new(),
     &ImageCache::new(),
-  );
+  )
+  .expect("shape-outside resolution");
 
   let mut float_ctx = FloatContext::new(180.0);
   float_ctx.add_float_with_shape(

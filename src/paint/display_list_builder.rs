@@ -2213,8 +2213,16 @@ impl DisplayListBuilder {
     } else {
       None
     };
-    let clip_path = root_style
-      .and_then(|style| resolve_clip_path(style, root_border_bounds, viewport, &self.font_ctx));
+    let clip_path = match root_style {
+      Some(style) => match resolve_clip_path(style, root_border_bounds, viewport, &self.font_ctx) {
+        Ok(clip_path) => clip_path,
+        Err(err) => {
+          self.error = Some(err);
+          return;
+        }
+      },
+      None => None,
+    };
     if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), clip_path_timer) {
       breakdown.record_clip_path(start.elapsed());
     }
@@ -9823,6 +9831,53 @@ mod tests {
       has_paint_between(items, push_clip, pop_clip),
       "expected paint between clip operations inside stacking context"
     );
+  }
+
+  #[test]
+  fn clip_path_path_parsing_aborts_on_cancel_callback() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_cb = Arc::clone(&calls);
+    let cancel = Arc::new(move || calls_cb.fetch_add(1, Ordering::SeqCst) >= 10);
+    let deadline = RenderDeadline::new(None, Some(cancel));
+
+    let mut data = String::from("M0 0");
+    for _ in 0..10_000 {
+      data.push_str(" L1 1");
+    }
+
+    let mut style = ComputedStyle::default();
+    style.background_color = Rgba::RED;
+    style.clip_path = ClipPath::BasicShape(
+      Box::new(BasicShape::Path {
+        fill: crate::style::types::FillRule::NonZero,
+        data: Arc::from(data),
+      }),
+      None,
+    );
+
+    let fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 32.0, 32.0),
+      vec![],
+      Arc::new(style),
+    );
+
+    let result = with_deadline(Some(&deadline), || {
+      DisplayListBuilder::new().build_with_stacking_tree_checked(&fragment)
+    });
+
+    assert!(
+      matches!(
+        result,
+        Err(Error::Render(RenderError::Timeout {
+          stage: RenderStage::Paint,
+          ..
+        }))
+      ),
+      "expected timeout, got {result:?}"
+    );
+    assert!(calls.load(Ordering::SeqCst) >= 11);
   }
 
   #[test]

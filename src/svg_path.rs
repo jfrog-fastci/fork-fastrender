@@ -3,6 +3,8 @@ use crate::render_control::check_active_periodic;
 use tiny_skia::Path;
 use tiny_skia::PathBuilder;
 
+const SVG_PATH_DEADLINE_STRIDE: usize = 256;
+
 /// Parse SVG path data into a [`tiny_skia::Path`].
 ///
 /// This is shared by:
@@ -195,12 +197,26 @@ pub(crate) fn build_tiny_skia_path_from_svg_path_data(
 }
 
 /// Variant of [`build_tiny_skia_path_from_svg_path_data`] for call sites that don't have (or don't
-/// want) deadline accounting.
+/// want) deadline accounting, but still need deadline checks to be effective.
+pub(crate) fn build_tiny_skia_path_from_svg_path_data_checked(
+  data: &str,
+  stage: RenderStage,
+) -> std::result::Result<Option<Path>, RenderError> {
+  let mut counter = 0usize;
+  build_tiny_skia_path_from_svg_path_data(data, &mut counter, SVG_PATH_DEADLINE_STRIDE, stage)
+}
+
+/// Variant of [`build_tiny_skia_path_from_svg_path_data`] for call sites that only care about
+/// syntax validity.
+///
+/// Deadline checks are disabled. This function must not be used from renderer hot paths where
+/// `RenderOptions::timeout` must remain effective.
 pub(crate) fn build_tiny_skia_path_from_svg_path_data_unchecked(data: &str) -> Option<Path> {
   let mut counter = 0usize;
-  build_tiny_skia_path_from_svg_path_data(data, &mut counter, 0, RenderStage::Paint)
-    .ok()
-    .flatten()
+  match build_tiny_skia_path_from_svg_path_data(data, &mut counter, 0, RenderStage::Paint) {
+    Ok(path) => path,
+    Err(err) => panic!("unexpected render error with deadline checks disabled: {err:?}"),
+  }
 }
 
 fn arc_to_cubic_beziers(
@@ -337,4 +353,40 @@ fn arc_to_cubic_beziers(
   }
 
   true
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::render_control::{with_deadline, RenderDeadline};
+  use std::sync::atomic::{AtomicUsize, Ordering};
+  use std::sync::Arc;
+
+  #[test]
+  fn svg_path_parser_respects_cancel_callback() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_cb = Arc::clone(&calls);
+    let cancel = Arc::new(move || calls_cb.fetch_add(1, Ordering::SeqCst) >= 1);
+    let deadline = RenderDeadline::new(None, Some(cancel));
+
+    let mut data = String::from("M0 0");
+    for _ in 0..2048 {
+      data.push_str(" L1 1");
+    }
+
+    let result = with_deadline(Some(&deadline), || {
+      build_tiny_skia_path_from_svg_path_data_checked(&data, RenderStage::Paint)
+    });
+    assert!(
+      matches!(
+        result,
+        Err(RenderError::Timeout {
+          stage: RenderStage::Paint,
+          ..
+        })
+      ),
+      "expected timeout, got {result:?}"
+    );
+    assert!(calls.load(Ordering::SeqCst) >= 2);
+  }
 }
