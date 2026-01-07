@@ -64,6 +64,7 @@ use crate::text::pipeline::ShapingPipeline;
 use crate::tree::box_tree::ReplacedType;
 use crate::tree::fragment_tree::FragmentContent;
 use crate::tree::fragment_tree::FragmentNode;
+use crate::tree::fragment_tree::TextEmphasisOffset;
 use rustc_hash::FxHashMap;
 use rustc_hash::FxHasher;
 use smallvec::SmallVec;
@@ -505,6 +506,9 @@ pub struct TextItem {
   pub is_marker: bool,
   /// Additional paint offset applied at fragment creation (used for outside markers)
   pub paint_offset: f32,
+
+  /// Extra offset for emphasis mark placement.
+  pub emphasis_offset: TextEmphasisOffset,
   /// Cumulative advances at cluster boundaries (text order)
   cluster_advances: Vec<ClusterBoundary>,
   /// Range of the original source text represented by this item.
@@ -651,6 +655,7 @@ impl TextItem {
       explicit_bidi: None,
       is_marker: false,
       paint_offset: 0.0,
+      emphasis_offset: TextEmphasisOffset::default(),
       cluster_advances,
       source_range,
       source_id,
@@ -1023,6 +1028,7 @@ impl TextItem {
     before_item.explicit_bidi = self.explicit_bidi;
     before_item.source_id = self.source_id;
     before_item.source_range = self.source_range.start..self.source_range.start + split_offset;
+    before_item.emphasis_offset = self.emphasis_offset;
 
     let mut after_item = TextItem::new(
       after_runs,
@@ -1056,6 +1062,7 @@ impl TextItem {
     after_item.explicit_bidi = self.explicit_bidi;
     after_item.source_id = self.source_id;
     after_item.source_range = self.source_range.start + split_offset..self.source_range.end;
+    after_item.emphasis_offset = self.emphasis_offset;
 
     if before_item.advance <= 0.0 || after_item.advance <= 0.0 {
       let before_runs = reshape_cache.shape(self, 0..split_offset, shaper, font_context)?;
@@ -1090,6 +1097,7 @@ impl TextItem {
       before_item.explicit_bidi = self.explicit_bidi;
       before_item.source_id = self.source_id;
       before_item.source_range = self.source_range.start..self.source_range.start + split_offset;
+      before_item.emphasis_offset = self.emphasis_offset;
 
       after_item = TextItem::new(
         after_runs,
@@ -1123,6 +1131,7 @@ impl TextItem {
       after_item.explicit_bidi = self.explicit_bidi;
       after_item.source_id = self.source_id;
       after_item.source_range = self.source_range.start + split_offset..self.source_range.end;
+      after_item.emphasis_offset = self.emphasis_offset;
     }
 
     if self.is_marker {
@@ -4253,6 +4262,7 @@ fn slice_text_item(
       explicit_bidi: bidi_context,
       is_marker: item.is_marker,
       paint_offset: item.paint_offset,
+      emphasis_offset: item.emphasis_offset,
       cluster_advances,
       source_range: item.source_range.start + range.start..item.source_range.start + range.end,
       source_id: item.source_id,
@@ -4772,6 +4782,7 @@ mod tests {
       explicit_bidi: None,
       is_marker: false,
       paint_offset: 0.0,
+      emphasis_offset: TextEmphasisOffset::default(),
       cluster_advances,
       source_range: 0..text.len(),
       source_id: TextItem::hash_text(text),

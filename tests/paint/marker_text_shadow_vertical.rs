@@ -31,6 +31,7 @@ fn marker_text_shadow_in_vertical_writing() {
       baseline_offset: 10.0,
       shaped: None,
       is_marker: true,
+      emphasis_offset: Default::default(),
     },
     vec![],
     style,

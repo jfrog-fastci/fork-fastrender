@@ -32,6 +32,7 @@ fn marker_shadow_respects_opacity() {
       baseline_offset: 10.0,
       shaped: None,
       is_marker: true,
+      emphasis_offset: Default::default(),
     },
     vec![],
     style,

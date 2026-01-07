@@ -180,6 +180,7 @@ fn list_marker_builder_preserves_run_metadata() {
       baseline_offset: 50.0,
       shaped: Some(Arc::new(vec![run.clone()])),
       is_marker: true,
+      emphasis_offset: Default::default(),
     },
     Vec::new(),
     style,

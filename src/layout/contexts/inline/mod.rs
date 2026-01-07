@@ -84,7 +84,6 @@ use crate::style::types::RubyMerge;
 use crate::style::types::TabSize;
 use crate::style::types::TextAlign;
 use crate::style::types::TextCombineUpright;
-use crate::style::types::TextEmphasisPosition;
 use crate::style::types::TextJustify;
 use crate::style::types::TextTransform;
 use crate::style::types::TextWrap;
@@ -2976,16 +2975,6 @@ impl InlineFormattingContext {
         }
       }
 
-      if let Some(prefer) = if top_line.is_some() && bottom_line.is_none() {
-        Some(TextEmphasisPosition::Under)
-      } else if bottom_line.is_some() && top_line.is_none() {
-        Some(TextEmphasisPosition::Over)
-      } else {
-        None
-      } {
-        self.adjust_emphasis_for_ruby(&mut base_items, Some(prefer));
-      }
-
       let mut top_spacing: Option<RubyLineSpacing> = None;
       let mut bottom_spacing: Option<RubyLineSpacing> = None;
 
@@ -3019,6 +3008,7 @@ impl InlineFormattingContext {
       let top_height = top_metrics.map(|m| m.height).unwrap_or(0.0);
       let bottom_height = bottom_metrics.map(|m| m.height).unwrap_or(0.0);
       let base_height = base_metrics.height;
+      self.apply_emphasis_offset_for_ruby(&mut base_items, top_height, bottom_height);
       let baseline_offset = top_height + base_metrics.baseline_offset;
       let segment_height = top_height + base_height + bottom_height;
       let descent = (segment_height - baseline_offset).max(0.0);
@@ -3212,14 +3202,10 @@ impl InlineFormattingContext {
     parts
   }
 
-  fn adjust_emphasis_for_ruby(
-    &self,
-    items: &mut [InlineItem],
-    prefer: Option<TextEmphasisPosition>,
-  ) {
-    let Some(target) = prefer else {
+  fn apply_emphasis_offset_for_ruby(&self, items: &mut [InlineItem], ruby_over: f32, ruby_under: f32) {
+    if ruby_over.abs() <= f32::EPSILON && ruby_under.abs() <= f32::EPSILON {
       return;
-    };
+    }
 
     for item in items {
       match item {
@@ -3227,41 +3213,33 @@ impl InlineFormattingContext {
           if t.style.text_emphasis_style.is_none() {
             continue;
           }
-          let resolved = match t.style.text_emphasis_position {
-            TextEmphasisPosition::Auto => TextEmphasisPosition::Over,
-            other => other,
-          };
-          let resolved_is_over = matches!(
-            resolved,
-            TextEmphasisPosition::Over | TextEmphasisPosition::OverLeft | TextEmphasisPosition::OverRight
-          );
-          let target_is_over = matches!(
-            target,
-            TextEmphasisPosition::Over | TextEmphasisPosition::OverLeft | TextEmphasisPosition::OverRight
-          );
-
-          if resolved_is_over != target_is_over {
-            if let Some(extra) = TextItem::text_emphasis_extra_extent(&t.style) {
-              if resolved_is_over {
-                t.metrics.baseline_offset = (t.metrics.baseline_offset - extra).max(0.0);
-              } else {
-                t.metrics.baseline_offset += extra;
-              }
-            }
+          // `text-emphasis-position` is honored as authored; when ruby text is present on the same
+          // side as emphasis marks, the marks should be placed *outside* the ruby annotation stack
+          // rather than flipping to the opposite side.
+          //
+          // The display list positions marks relative to the glyph's ascent/descent from the
+          // baseline. To move the marks outside ruby, shift them by:
+          // - the ruby annotation line height on that side, plus
+          // - any extra "leading" in the base line box between the glyph edge and the line box edge.
+          //
+          // This yields a final mark position that matches the usual offset from the glyph edge,
+          // but anchored to the outer edge of the ruby annotation stack.
+          if ruby_over.abs() > f32::EPSILON {
+            let leading_above = (t.metrics.baseline_offset - t.metrics.ascent).max(0.0);
+            t.emphasis_offset.over += ruby_over + leading_above;
           }
-
-          if resolved != target {
-            let mut style = (*t.style).clone();
-            style.text_emphasis_position = target;
-            t.style = Arc::new(style);
+          if ruby_under.abs() > f32::EPSILON {
+            let leading_below =
+              (t.metrics.height - t.metrics.baseline_offset - t.metrics.descent).max(0.0);
+            t.emphasis_offset.under += ruby_under + leading_below;
           }
         }
         InlineItem::InlineBox(b) => {
-          self.adjust_emphasis_for_ruby(&mut b.children, prefer);
+          self.apply_emphasis_offset_for_ruby(&mut b.children, ruby_over, ruby_under);
         }
         InlineItem::Ruby(r) => {
           for seg in &mut r.segments {
-            self.adjust_emphasis_for_ruby(&mut seg.base_items, prefer);
+            self.apply_emphasis_offset_for_ruby(&mut seg.base_items, ruby_over, ruby_under);
           }
         }
         _ => {}
@@ -5685,6 +5663,7 @@ impl InlineFormattingContext {
               baseline_offset: text_item.metrics.baseline_offset,
               shaped: Some(Arc::from(text_item.runs.clone())),
               is_marker: text_item.is_marker,
+              emphasis_offset: text_item.emphasis_offset,
             },
             vec![],
             text_item.style.clone(),
@@ -5704,6 +5683,7 @@ impl InlineFormattingContext {
               baseline_offset: text_item.metrics.baseline_offset,
               shaped: Some(Arc::from(text_item.runs.clone())),
               is_marker: text_item.is_marker,
+              emphasis_offset: text_item.emphasis_offset,
             },
             vec![],
             text_item.style.clone(),
@@ -6006,6 +5986,7 @@ impl InlineFormattingContext {
             baseline_offset: text_item.metrics.baseline_offset,
             shaped: Some(Arc::from(text_item.runs.clone())),
             is_marker: text_item.is_marker,
+            emphasis_offset: text_item.emphasis_offset,
           },
           vec![],
           text_item.style.clone(),
@@ -6063,8 +6044,9 @@ impl InlineFormattingContext {
         let mut children = Vec::new();
 
         for segment in &ruby_item.segments {
-          let segment_x = origin_x + ruby_item.start_edge + segment.offset_x;
-          let segment_y = origin_y + ruby_item.content_offset_y + segment.offset_y;
+          // Child fragments are positioned relative to the ruby container's border box.
+          let segment_x = ruby_item.start_edge + segment.offset_x;
+          let segment_y = ruby_item.content_offset_y + segment.offset_y;
 
           if let Some(items) = &segment.annotation_top {
             let spacing = segment.top_spacing.unwrap_or(
@@ -6073,10 +6055,10 @@ impl InlineFormattingContext {
                 gap: 0.0,
               },
             );
-            let mut cx = segment_x + segment.top_x + spacing.leading;
+            let mut cx = spacing.leading;
             let mut line_children = Vec::new();
             for (idx, child) in items.iter().enumerate() {
-              let fragment = self.create_item_fragment(child, cx, segment_y);
+              let fragment = self.create_item_fragment(child, cx, 0.0);
               cx += child.width();
               if spacing.gap > 0.0 && idx + 1 < items.len() {
                 cx += spacing.gap;
@@ -6104,9 +6086,9 @@ impl InlineFormattingContext {
 
           let base_y = segment_y + segment.top_height;
           let mut base_children = Vec::new();
-          let mut cx = segment_x + segment.base_x;
+          let mut cx = 0.0;
           for child in &segment.base_items {
-            let fragment = self.create_item_fragment(child, cx, base_y);
+            let fragment = self.create_item_fragment(child, cx, 0.0);
             cx += child.width();
             base_children.push(fragment);
           }
@@ -6134,9 +6116,9 @@ impl InlineFormattingContext {
                 gap: 0.0,
               },
             );
-            let mut cx = segment_x + segment.bottom_x + spacing.leading;
+            let mut cx = spacing.leading;
             for (idx, child) in items.iter().enumerate() {
-              let fragment = self.create_item_fragment(child, cx, bottom_y);
+              let fragment = self.create_item_fragment(child, cx, 0.0);
               cx += child.width();
               if spacing.gap > 0.0 && idx + 1 < items.len() {
                 cx += spacing.gap;

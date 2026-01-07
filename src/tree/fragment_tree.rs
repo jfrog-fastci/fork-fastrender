@@ -255,6 +255,17 @@ impl FromIterator<FragmentNode> for FragmentChildren {
   }
 }
 
+/// Extra offset to apply to text emphasis marks.
+///
+/// Offsets are expressed in CSS pixels along the block axis (perpendicular to the inline text
+/// direction). The `over` field applies when marks are placed on the "over" side of the text, while
+/// `under` applies for the "under" side.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TextEmphasisOffset {
+  pub over: f32,
+  pub under: f32,
+}
+
 /// Content type of a fragment
 ///
 /// Fragments can contain different types of content, each requiring
@@ -306,6 +317,10 @@ pub enum FragmentContent {
 
     /// True when this fragment represents a list marker (::marker)
     is_marker: bool,
+
+    /// Extra offset to apply to text emphasis marks (e.g. when ruby annotations occupy the same
+    /// side as the emphasis marks).
+    emphasis_offset: TextEmphasisOffset,
   },
 
   /// Line box containing inline and text fragments
@@ -905,6 +920,7 @@ impl FragmentNode {
         baseline_offset,
         shaped: None,
         is_marker: false,
+        emphasis_offset: TextEmphasisOffset::default(),
       },
       vec![],
     )
@@ -925,6 +941,7 @@ impl FragmentNode {
         baseline_offset,
         shaped: None,
         is_marker: false,
+        emphasis_offset: TextEmphasisOffset::default(),
       },
       vec![],
       style,
@@ -947,6 +964,7 @@ impl FragmentNode {
         baseline_offset,
         shaped: Some(shaped.into()),
         is_marker: false,
+        emphasis_offset: TextEmphasisOffset::default(),
       },
       vec![],
       style,
@@ -1989,6 +2007,7 @@ mod tests {
       baseline_offset: 0.0,
       shaped: None,
       is_marker: false,
+      emphasis_offset: Default::default(),
     };
     assert!(text.is_text());
     assert_eq!(text.text(), Some("test"));

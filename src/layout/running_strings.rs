@@ -248,6 +248,7 @@ mod tests {
         baseline_offset: 0.0,
         shaped: None,
         is_marker: false,
+        emphasis_offset: Default::default(),
       },
       vec![],
     );

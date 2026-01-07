@@ -554,6 +554,7 @@ fn display_list_preserves_font_palette_overrides_for_list_markers() {
       baseline_offset: baseline,
       shaped: Some(Arc::new(vec![run.clone()])),
       is_marker: true,
+      emphasis_offset: Default::default(),
     },
     vec![],
     style,

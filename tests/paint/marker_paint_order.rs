@@ -24,6 +24,7 @@ fn marker_paints_after_background() {
       baseline_offset: 16.0,
       shaped: None,
       is_marker: true,
+      emphasis_offset: Default::default(),
     },
     vec![],
     style,

@@ -31,6 +31,7 @@ fn marker_shadow_respects_rtl_position() {
       baseline_offset: 10.0,
       shaped: None,
       is_marker: true,
+      emphasis_offset: Default::default(),
     },
     vec![],
     style,

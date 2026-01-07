@@ -170,6 +170,7 @@ use crate::tree::box_tree::TextControlKind;
 use crate::tree::fragment_tree::FragmentContent;
 use crate::tree::fragment_tree::FragmentNode;
 use crate::tree::fragment_tree::FragmentTree;
+use crate::tree::fragment_tree::TextEmphasisOffset;
 use lru::LruCache;
 use rayon::prelude::*;
 use std::collections::hash_map::DefaultHasher;
@@ -4239,6 +4240,7 @@ impl DisplayListBuilder {
         baseline_offset,
         shaped,
         is_marker,
+        emphasis_offset,
         ..
       } => {
         if text.is_empty() {
@@ -4299,6 +4301,7 @@ impl DisplayListBuilder {
                 baseline_inline,
                 &shadows,
                 style_opt,
+                *emphasis_offset,
               );
             } else {
               self.emit_shaped_runs_vertical(
@@ -4308,6 +4311,7 @@ impl DisplayListBuilder {
                 baseline_inline,
                 &shadows,
                 style_opt,
+                *emphasis_offset,
               );
             }
           } else if *is_marker {
@@ -4319,6 +4323,7 @@ impl DisplayListBuilder {
               &shadows,
               style_opt,
               inline_vertical,
+              *emphasis_offset,
             );
           } else {
             self.emit_shaped_runs(
@@ -4329,6 +4334,7 @@ impl DisplayListBuilder {
               &shadows,
               style_opt,
               inline_vertical,
+              *emphasis_offset,
             );
           }
         } else {
@@ -4487,6 +4493,7 @@ impl DisplayListBuilder {
                   &shadows,
                   Some(style_ref),
                   false,
+                  TextEmphasisOffset::default(),
                 );
               }
               MathFragment::Rule(r) => {
@@ -6333,6 +6340,7 @@ impl DisplayListBuilder {
     shadows: &[TextShadowItem],
     style: Option<&ComputedStyle>,
     inline_vertical: bool,
+    emphasis_offset: TextEmphasisOffset,
   ) {
     let mut pen_x = start_x;
     let mut counter = 0usize;
@@ -6343,8 +6351,9 @@ impl DisplayListBuilder {
       let origin_x = pen_x;
       let (glyphs, cached_bounds) = self.glyphs_from_run(run, origin_x, baseline_y);
       let font_id = self.font_id_from_run(run);
-      let emphasis =
-        style.and_then(|s| self.build_emphasis(run, s, origin_x, baseline_y, inline_vertical));
+      let emphasis = style.and_then(|s| {
+        self.build_emphasis(run, s, origin_x, baseline_y, inline_vertical, emphasis_offset)
+      });
       let variations: Vec<FontVariation> = run
         .variations
         .iter()
@@ -6438,6 +6447,7 @@ impl DisplayListBuilder {
     inline_start: f32,
     shadows: &[TextShadowItem],
     style: Option<&ComputedStyle>,
+    emphasis_offset: TextEmphasisOffset,
   ) {
     let mut pen_inline = inline_start;
     let mut counter = 0usize;
@@ -6449,8 +6459,9 @@ impl DisplayListBuilder {
       let (glyphs, cached_bounds) =
         self.glyphs_from_run_vertical(run, block_baseline, run_origin_inline);
       let font_id = self.font_id_from_run(run);
-      let emphasis =
-        style.and_then(|s| self.build_emphasis(run, s, block_baseline, run_origin_inline, true));
+      let emphasis = style.and_then(|s| {
+        self.build_emphasis(run, s, block_baseline, run_origin_inline, true, emphasis_offset)
+      });
       let variations: Vec<FontVariation> = run
         .variations
         .iter()
@@ -6546,6 +6557,7 @@ impl DisplayListBuilder {
     shadows: &[TextShadowItem],
     style: Option<&ComputedStyle>,
     inline_vertical: bool,
+    emphasis_offset: TextEmphasisOffset,
   ) {
     let mut pen_x = start_x;
     let mut counter = 0usize;
@@ -6556,8 +6568,9 @@ impl DisplayListBuilder {
       let origin_x = pen_x;
       let (glyphs, cached_bounds) = self.glyphs_from_run(run, origin_x, baseline_y);
       let font_id = self.font_id_from_run(run);
-      let emphasis =
-        style.and_then(|s| self.build_emphasis(run, s, origin_x, baseline_y, inline_vertical));
+      let emphasis = style.and_then(|s| {
+        self.build_emphasis(run, s, origin_x, baseline_y, inline_vertical, emphasis_offset)
+      });
       let variations: Vec<FontVariation> = run
         .variations
         .iter()
@@ -6599,6 +6612,7 @@ impl DisplayListBuilder {
     inline_start: f32,
     shadows: &[TextShadowItem],
     style: Option<&ComputedStyle>,
+    emphasis_offset: TextEmphasisOffset,
   ) {
     let mut pen_inline = inline_start;
     let mut counter = 0usize;
@@ -6610,8 +6624,9 @@ impl DisplayListBuilder {
       let (glyphs, cached_bounds) =
         self.glyphs_from_run_vertical(run, block_baseline, run_origin_inline);
       let font_id = self.font_id_from_run(run);
-      let emphasis =
-        style.and_then(|s| self.build_emphasis(run, s, block_baseline, run_origin_inline, true));
+      let emphasis = style.and_then(|s| {
+        self.build_emphasis(run, s, block_baseline, run_origin_inline, true, emphasis_offset)
+      });
       let variations: Vec<FontVariation> = run
         .variations
         .iter()
@@ -7217,6 +7232,7 @@ impl DisplayListBuilder {
     inline_origin: f32,
     block_baseline: f32,
     inline_vertical: bool,
+    emphasis_offset: TextEmphasisOffset,
   ) -> Option<TextEmphasis> {
     if style.text_emphasis_style.is_none() {
       return None;
@@ -7234,7 +7250,7 @@ impl DisplayListBuilder {
       TextEmphasisPosition::Auto => TextEmphasisPosition::Over,
       other => other,
     };
-    let block_center = if inline_vertical {
+    let mut block_center = if inline_vertical {
       let offset = gap + mark_size * 0.5;
       match resolved_position {
         TextEmphasisPosition::Over
@@ -7256,6 +7272,26 @@ impl DisplayListBuilder {
         TextEmphasisPosition::Auto => block_baseline - ascent - gap - mark_size * 0.5,
       }
     };
+
+    match resolved_position {
+      TextEmphasisPosition::Over | TextEmphasisPosition::OverLeft | TextEmphasisPosition::OverRight => {
+        if inline_vertical {
+          block_center += emphasis_offset.over;
+        } else {
+          block_center -= emphasis_offset.over;
+        }
+      }
+      TextEmphasisPosition::Under
+      | TextEmphasisPosition::UnderLeft
+      | TextEmphasisPosition::UnderRight => {
+        if inline_vertical {
+          block_center -= emphasis_offset.under;
+        } else {
+          block_center += emphasis_offset.under;
+        }
+      }
+      TextEmphasisPosition::Auto => {}
+    }
 
     let mut marks = Vec::new();
     let mut seen_clusters = HashSet::new();
@@ -7582,6 +7618,7 @@ impl DisplayListBuilder {
         &shadows,
         Some(style),
         false,
+        TextEmphasisOffset::default(),
       );
       true
     };
@@ -8477,6 +8514,7 @@ impl DisplayListBuilder {
       &shadows,
       Some(style),
       false,
+      TextEmphasisOffset::default(),
     );
     true
   }

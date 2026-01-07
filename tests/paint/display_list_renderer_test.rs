@@ -1770,6 +1770,7 @@ fn marker_text_shadow_is_rendered_in_display_list() {
     baseline_offset: 16.0,
     shaped: None,
     is_marker: true,
+    emphasis_offset: Default::default(),
   };
   marker.style = Some(style);
 

@@ -28,6 +28,7 @@ fn marker_underline_paints_with_text() {
       baseline_offset: 10.0,
       shaped: None,
       is_marker: true,
+      emphasis_offset: Default::default(),
     },
     vec![],
     style,
