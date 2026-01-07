@@ -14001,6 +14001,67 @@ mod tests {
     assert!(output.contains("opacity=\"0.9\""));
   }
 
+  #[test]
+  fn foreign_object_image_tag_preserves_clip_path_attribute_when_overflow_visible() {
+    let foreign = ForeignObjectInfo {
+      placeholder: String::new(),
+      attributes: vec![
+        ("clip-path".to_string(), "url(#foo)".to_string()),
+        ("id".to_string(), "bar".to_string()),
+      ],
+      x: 0.0,
+      y: 0.0,
+      width: 1.0,
+      height: 1.0,
+      opacity: 1.0,
+      background: None,
+      html: String::new(),
+      style: Arc::new(ComputedStyle::default()),
+      overflow_x: Overflow::Visible,
+      overflow_y: Overflow::Visible,
+    };
+
+    let output =
+      crate::paint::svg_foreign_object::foreign_object_image_tag(&foreign, "data:image/png;base64,abc", 0);
+    assert!(!output.contains("<g"), "visible overflow should not introduce wrapper groups");
+    assert_eq!(output.match_indices("clip-path=").count(), 1);
+    assert!(output.contains("clip-path=\"url(#foo)\""));
+  }
+
+  #[test]
+  fn foreign_object_image_tag_applies_clip_path_attribute_on_wrapper_group_when_overflow_clips() {
+    let foreign = ForeignObjectInfo {
+      placeholder: String::new(),
+      attributes: vec![
+        ("clip-path".to_string(), "url(#foo)".to_string()),
+        ("id".to_string(), "bar".to_string()),
+      ],
+      x: 0.0,
+      y: 0.0,
+      width: 1.0,
+      height: 1.0,
+      opacity: 1.0,
+      background: None,
+      html: String::new(),
+      style: Arc::new(ComputedStyle::default()),
+      overflow_x: Overflow::Hidden,
+      overflow_y: Overflow::Hidden,
+    };
+
+    let output =
+      crate::paint::svg_foreign_object::foreign_object_image_tag(&foreign, "data:image/png;base64,abc", 0);
+    assert!(output.contains("<g clip-path=\"url(#foo)\">"));
+    assert!(output.contains("<image clip-path=\"url(#fastr-fo-0)\""));
+    assert_eq!(output.match_indices("url(#foo)").count(), 1);
+    assert_eq!(output.match_indices("clip-path=").count(), 2);
+    let image_tag = output
+      .split("<image")
+      .nth(1)
+      .and_then(|rest| rest.split('>').next())
+      .expect("image tag present");
+    assert_eq!(image_tag.match_indices("clip-path=").count(), 1);
+  }
+
   fn make_empty_tree() -> FragmentTree {
     let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 100.0, 100.0), vec![]);
     FragmentTree::new(root)

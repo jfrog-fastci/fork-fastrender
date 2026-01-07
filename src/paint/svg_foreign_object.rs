@@ -60,6 +60,7 @@ pub(crate) fn foreign_object_image_tag(info: &ForeignObjectInfo, data_url: &str,
     parts.push(format!("opacity=\"{:.3}\"", info.opacity.clamp(0.0, 1.0)));
   }
 
+  let mut clip_path: Option<&str> = None;
   for (name, value) in &info.attributes {
     if name.eq_ignore_ascii_case("x")
       || name.eq_ignore_ascii_case("y")
@@ -69,6 +70,10 @@ pub(crate) fn foreign_object_image_tag(info: &ForeignObjectInfo, data_url: &str,
     {
       continue;
     }
+    if name.eq_ignore_ascii_case("clip-path") {
+      clip_path = Some(value.as_str());
+      continue;
+    }
     parts.push(format!("{}=\"{}\"", name, escape_attr_value(value)));
   }
 
@@ -76,9 +81,15 @@ pub(crate) fn foreign_object_image_tag(info: &ForeignObjectInfo, data_url: &str,
   parts.push(format!("href=\"{}\"", escape_attr_value(data_url)));
 
   if info.overflow_x == Overflow::Visible && info.overflow_y == Overflow::Visible {
+    if let Some(value) = clip_path {
+      parts.push(format!("clip-path=\"{}\"", escape_attr_value(value)));
+    }
     return format!("<image {attrs}/>", attrs = parts.join(" "));
   }
 
+  let group_clip_path = clip_path
+    .map(|value| format!(" clip-path=\"{}\"", escape_attr_value(value)))
+    .unwrap_or_default();
   let clip_id = format!("fastr-fo-{}", idx);
   let clip = format!(
     "<clipPath id=\"{}\"><rect x=\"{:.6}\" y=\"{:.6}\" width=\"{:.6}\" height=\"{:.6}\"/></clipPath>",
@@ -90,9 +101,10 @@ pub(crate) fn foreign_object_image_tag(info: &ForeignObjectInfo, data_url: &str,
   );
 
   format!(
-    "<g>{clip}<image clip-path=\"url(#{clip_id})\" {attrs}/></g>",
+    "<g{group_clip_path}>{clip}<image clip-path=\"url(#{clip_id})\" {attrs}/></g>",
     clip = clip,
     clip_id = clip_id,
+    group_clip_path = group_clip_path,
     attrs = parts.join(" ")
   )
 }
