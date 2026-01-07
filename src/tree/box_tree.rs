@@ -129,6 +129,9 @@ pub struct FormControl {
   pub required: bool,
   /// Whether the control currently fails HTML constraint validation
   pub invalid: bool,
+  pub placeholder_style: Option<Arc<ComputedStyle>>,
+  pub slider_thumb_style: Option<Arc<ComputedStyle>>,
+  pub slider_track_style: Option<Arc<ComputedStyle>>,
 }
 
 /// Specific form control kinds

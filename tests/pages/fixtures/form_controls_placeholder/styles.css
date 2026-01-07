@@ -1,0 +1,43 @@
+.placeholder-grid {
+  width: 420px;
+  display: grid;
+  gap: 12px;
+}
+
+label {
+  font-weight: 600;
+}
+
+input,
+textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 16px;
+  background: #ffffff;
+}
+
+textarea {
+  min-height: 80px;
+  resize: none;
+}
+
+.a::placeholder {
+  color: rgb(220, 38, 38);
+  opacity: 1;
+}
+
+.b::-webkit-input-placeholder {
+  color: rgb(22, 163, 74);
+}
+
+.c::-moz-placeholder {
+  color: rgb(234, 179, 8);
+  opacity: 1;
+}
+
+.d::-ms-input-placeholder {
+  color: rgb(37, 99, 235);
+  opacity: 1;
+}

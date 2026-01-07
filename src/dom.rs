@@ -6067,6 +6067,29 @@ impl<'a> Element for ElementRef<'a> {
       | PseudoElement::FirstLetter
       | PseudoElement::Marker
       | PseudoElement::Backdrop => true,
+      PseudoElement::Placeholder => {
+        let Some(tag) = self.node.tag_name() else {
+          return false;
+        };
+        if tag.eq_ignore_ascii_case("textarea") {
+          return true;
+        }
+        if tag.eq_ignore_ascii_case("input") {
+          let input_type = self.node.get_attribute_ref("type");
+          return supports_placeholder(input_type);
+        }
+        false
+      }
+      PseudoElement::SliderThumb | PseudoElement::SliderTrack => {
+        let Some(tag) = self.node.tag_name() else {
+          return false;
+        };
+        if !tag.eq_ignore_ascii_case("input") {
+          return false;
+        }
+        let input_type = self.node.get_attribute_ref("type").unwrap_or("text");
+        input_type.eq_ignore_ascii_case("range")
+      }
       PseudoElement::Slotted(_) => false,
       PseudoElement::Part(_) => true,
     }

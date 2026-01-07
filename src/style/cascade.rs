@@ -6548,6 +6548,9 @@ pub struct StyledNode {
   pub first_line_styles: Option<Arc<ComputedStyle>>,
   /// Styles for ::first-letter pseudo-element (text overrides only)
   pub first_letter_styles: Option<Arc<ComputedStyle>>,
+  pub placeholder_styles: Option<Arc<ComputedStyle>>,
+  pub slider_thumb_styles: Option<Arc<ComputedStyle>>,
+  pub slider_track_styles: Option<Arc<ComputedStyle>>,
   /// Slot this light DOM node is assigned to, if any.
   pub assigned_slot: Option<crate::dom::AssignedSlot>,
   /// Slotted light DOM node ids assigned to this <slot> element.
@@ -6568,6 +6571,9 @@ impl Clone for StyledNode {
         marker_styles: node.marker_styles.clone(),
         first_line_styles: node.first_line_styles.clone(),
         first_letter_styles: node.first_letter_styles.clone(),
+        placeholder_styles: node.placeholder_styles.clone(),
+        slider_thumb_styles: node.slider_thumb_styles.clone(),
+        slider_track_styles: node.slider_track_styles.clone(),
         assigned_slot: node.assigned_slot.clone(),
         slotted_node_ids: node.slotted_node_ids.clone(),
         children: Vec::with_capacity(node.children.len()),
@@ -9829,6 +9835,132 @@ fn compute_pseudo_styles(
 }
 
 #[inline(never)]
+fn compute_form_control_pseudo_styles(
+  node: &DomNode,
+  rule_scopes: &RuleScopes<'_>,
+  scope_host: Option<usize>,
+  selector_caches: &mut SelectorCaches,
+  scratch: &mut CascadeScratch,
+  ancestors: &[&DomNode],
+  ancestor_bloom: Option<&selectors::bloom::BloomFilter>,
+  ancestor_ids: &[usize],
+  node_id: usize,
+  container_ctx: Option<&ContainerQueryContext>,
+  dom_maps: &DomMaps,
+  sibling_cache: &SiblingListCache,
+  element_attr_cache: &ElementAttrCache,
+  styles: &ComputedStyle,
+  ua_styles: &ComputedStyle,
+  root_font_size: f32,
+  ua_root_font_size: f32,
+  viewport: Size,
+  color_scheme_pref: ColorScheme,
+) -> (
+  Option<Arc<ComputedStyle>>,
+  Option<Arc<ComputedStyle>>,
+  Option<Arc<ComputedStyle>>,
+) {
+  if !node.is_element() {
+    return (None, None, None);
+  }
+
+  let Some(tag) = node.tag_name() else {
+    return (None, None, None);
+  };
+
+  let placeholder_styles = if tag.eq_ignore_ascii_case("input") || tag.eq_ignore_ascii_case("textarea")
+  {
+    compute_pseudo_element_styles(
+      node,
+      rule_scopes,
+      scope_host,
+      selector_caches,
+      scratch,
+      ancestors,
+      ancestor_bloom,
+      ancestor_ids,
+      node_id,
+      container_ctx,
+      dom_maps,
+      sibling_cache,
+      element_attr_cache,
+      styles,
+      ua_styles,
+      root_font_size,
+      ua_root_font_size,
+      viewport,
+      color_scheme_pref,
+      &PseudoElement::Placeholder,
+      false,
+    )
+    .map(Arc::new)
+  } else {
+    None
+  };
+
+  let (slider_thumb_styles, slider_track_styles) = if tag.eq_ignore_ascii_case("input")
+    && node
+      .get_attribute_ref("type")
+      .is_some_and(|t| t.eq_ignore_ascii_case("range"))
+  {
+    (
+      compute_pseudo_element_styles(
+        node,
+        rule_scopes,
+        scope_host,
+        selector_caches,
+        scratch,
+        ancestors,
+        ancestor_bloom,
+        ancestor_ids,
+        node_id,
+        container_ctx,
+        dom_maps,
+        sibling_cache,
+        element_attr_cache,
+        styles,
+        ua_styles,
+        root_font_size,
+        ua_root_font_size,
+        viewport,
+        color_scheme_pref,
+        &PseudoElement::SliderThumb,
+        false,
+      )
+      .map(Arc::new),
+      compute_pseudo_element_styles(
+        node,
+        rule_scopes,
+        scope_host,
+        selector_caches,
+        scratch,
+        ancestors,
+        ancestor_bloom,
+        ancestor_ids,
+        node_id,
+        container_ctx,
+        dom_maps,
+        sibling_cache,
+        element_attr_cache,
+        styles,
+        ua_styles,
+        root_font_size,
+        ua_root_font_size,
+        viewport,
+        color_scheme_pref,
+        &PseudoElement::SliderTrack,
+        false,
+      )
+      .map(Arc::new),
+    )
+  } else {
+    (None, None)
+  };
+
+  (placeholder_styles, slider_thumb_styles, slider_track_styles)
+}
+
+#[inline(never)]
 fn try_reuse_styled_subtree(
   node_id: usize,
   node_counter: &mut usize,
@@ -10243,6 +10375,29 @@ fn apply_styles_internal_with_ancestors<'a>(
         false,
       );
 
+    let (placeholder_styles, slider_thumb_styles, slider_track_styles) =
+      compute_form_control_pseudo_styles(
+        frame.node,
+        rule_scopes,
+        frame.scope_host,
+        selector_caches,
+        scratch,
+        ancestors.as_slice(),
+        ancestor_bloom_enabled.then_some(&*ancestor_bloom_filter),
+        ancestor_ids.as_slice(),
+        frame.node_id,
+        container_ctx,
+        dom_maps,
+        sibling_cache,
+        element_attr_cache,
+        &base.styles,
+        &base.ua_styles,
+        base.current_root_font_size,
+        base.current_ua_root_font_size,
+        viewport,
+        color_scheme_pref,
+      );
+
     let mut starting_styles = StartingStyleSet::default();
     if let Some(mut start) = frame.starting_base {
       let (before, after, marker, first_line, first_letter) = compute_pseudo_styles(
@@ -10311,6 +10466,9 @@ fn apply_styles_internal_with_ancestors<'a>(
       marker_styles,
       first_line_styles,
       first_letter_styles,
+      placeholder_styles,
+      slider_thumb_styles,
+      slider_track_styles,
       assigned_slot: slot_assignment.node_to_slot.get(&node_id).cloned(),
       slotted_node_ids: slot_assignment
         .slot_to_nodes
@@ -12354,6 +12512,9 @@ mod tests {
       marker_styles: None,
       first_line_styles: None,
       first_letter_styles: None,
+      placeholder_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
       assigned_slot: None,
       slotted_node_ids: Vec::new(),
       children: Vec::new(),
@@ -12370,6 +12531,9 @@ mod tests {
         marker_styles: None,
         first_line_styles: None,
         first_letter_styles: None,
+        placeholder_styles: None,
+        slider_thumb_styles: None,
+        slider_track_styles: None,
         assigned_slot: None,
         slotted_node_ids: Vec::new(),
         children: vec![target],
@@ -12435,6 +12599,9 @@ mod tests {
       marker_styles: None,
       first_line_styles: None,
       first_letter_styles: None,
+      placeholder_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
       assigned_slot: None,
       slotted_node_ids: Vec::new(),
       children: Vec::new(),
@@ -12453,6 +12620,9 @@ mod tests {
       marker_styles: None,
       first_line_styles: None,
       first_letter_styles: None,
+      placeholder_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
       assigned_slot: None,
       slotted_node_ids: Vec::new(),
       children: Vec::new(),
@@ -28268,6 +28438,9 @@ fn compute_pseudo_element_styles(
         styles.right = Some(Length::px(0.0));
         styles.bottom = Some(Length::px(0.0));
         styles.left = Some(Length::px(0.0));
+      }
+      PseudoElement::SliderThumb | PseudoElement::SliderTrack => {
+        styles.display = Display::Block;
       }
       _ => {
         styles.display = Display::Inline;

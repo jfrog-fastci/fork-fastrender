@@ -7651,16 +7651,17 @@ impl DisplayListBuilder {
       } => {
         let value_trimmed = value.trim();
         let base_color = if control.invalid { accent } else { style.color };
-        let placeholder_color = base_color.with_alpha(0.6);
         let mut generated: Option<String> = None;
-        let (text, color) = match kind {
+        let mut is_placeholder = false;
+        let (text, fallback_color) = match kind {
           TextControlKind::Password => {
             if !value_trimmed.is_empty() {
               let mask_len = value_trimmed.chars().count().clamp(3, 50);
               generated = Some("•".repeat(mask_len));
               (generated.as_deref().unwrap(), base_color)
             } else if let Some(ph) = placeholder.as_deref() {
-              (ph.trim(), placeholder_color)
+              is_placeholder = true;
+              (ph.trim(), base_color.with_alpha(0.6))
             } else {
               return true;
             }
@@ -7669,7 +7670,8 @@ impl DisplayListBuilder {
             if !value_trimmed.is_empty() {
               (value_trimmed, base_color)
             } else if let Some(ph) = placeholder.as_deref() {
-              (ph.trim(), placeholder_color)
+              is_placeholder = true;
+              (ph.trim(), base_color.with_alpha(0.6))
             } else {
               return true;
             }
@@ -7678,24 +7680,34 @@ impl DisplayListBuilder {
             if !value_trimmed.is_empty() {
               (value_trimmed, base_color)
             } else if let Some(ph) = placeholder.as_deref() {
-              (ph.trim(), placeholder_color)
+              is_placeholder = true;
+              (ph.trim(), base_color.with_alpha(0.6))
             } else {
-              ("yyyy-mm-dd", placeholder_color)
+              is_placeholder = true;
+              ("yyyy-mm-dd", base_color.with_alpha(0.6))
             }
           }
           TextControlKind::Plain => {
             if !value_trimmed.is_empty() {
               (value_trimmed, base_color)
             } else if let Some(ph) = placeholder.as_deref() {
-              (ph.trim(), placeholder_color)
+              is_placeholder = true;
+              (ph.trim(), base_color.with_alpha(0.6))
             } else {
               return true;
             }
           }
         };
 
-        let mut text_style = style.clone();
-        text_style.color = color;
+        let placeholder_style = is_placeholder.then(|| control.placeholder_style.as_deref()).flatten();
+        let mut fallback_style;
+        let style_for_text = if let Some(pseudo_style) = placeholder_style {
+          pseudo_style
+        } else {
+          fallback_style = style.clone();
+          fallback_style.color = fallback_color;
+          &fallback_style
+        };
         let mut text_rect = content_rect;
         let mut affordance_space = 0.0;
         match kind {
@@ -7721,7 +7733,22 @@ impl DisplayListBuilder {
           );
         }
 
-        let _ = self.emit_text_with_style(text, Some(&text_style), text_rect);
+        if let Some(pseudo_style) = placeholder_style {
+          let opacity = pseudo_style.opacity.clamp(0.0, 1.0);
+          let pushed = opacity < 1.0 - f32::EPSILON;
+          if opacity <= f32::EPSILON {
+            return true;
+          }
+          if pushed {
+            self.push_opacity(opacity);
+          }
+          let _ = self.emit_text_with_style(text, Some(style_for_text), text_rect);
+          if pushed {
+            self.pop_opacity();
+          }
+        } else {
+          let _ = self.emit_text_with_style(text, Some(style_for_text), text_rect);
+        }
         if let Some(affordance_rect) = affordance_rect {
           let mut affordance_style = style.clone();
           affordance_style.color = muted_accent;
@@ -7756,32 +7783,55 @@ impl DisplayListBuilder {
         value, placeholder, ..
       } => {
         let base_color = if control.invalid { accent } else { style.color };
-        let placeholder_color = base_color.with_alpha(0.6);
 
         let value_trimmed = value.trim();
-        let (text, color) = if !value_trimmed.is_empty() {
+        let mut is_placeholder = false;
+        let (text, fallback_color) = if !value_trimmed.is_empty() {
           (value.as_str(), base_color)
         } else if let Some(placeholder) = placeholder.as_deref().filter(|p| !p.is_empty()) {
-          (placeholder, placeholder_color)
+          is_placeholder = true;
+          (placeholder, base_color.with_alpha(0.6))
         } else {
           return true;
         };
         let rect = content_rect;
-        let mut text_style = style.clone();
-        text_style.color = color;
+        let placeholder_style = is_placeholder.then(|| control.placeholder_style.as_deref()).flatten();
+        let mut fallback_style;
+        let style_for_text = if let Some(pseudo_style) = placeholder_style {
+          pseudo_style
+        } else {
+          fallback_style = style.clone();
+          fallback_style.color = fallback_color;
+          &fallback_style
+        };
         let line_height = compute_line_height_with_metrics_viewport(
-          &text_style,
+          style_for_text,
           None,
           self.viewport.map(|(w, h)| Size::new(w, h)),
         );
+        let opacity = placeholder_style.map(|style| style.opacity.clamp(0.0, 1.0));
+        let pushed = opacity.is_some_and(|o| o < 1.0 - f32::EPSILON);
+        if opacity.is_some_and(|o| o <= f32::EPSILON) {
+          return true;
+        }
+        if let Some(opacity) = opacity {
+          if pushed {
+            self.push_opacity(opacity);
+          }
+        }
+
         let mut y = rect.y();
         for line in text.split('\n') {
           if y > rect.y() + rect.height() {
             break;
           }
           let line_rect = Rect::from_xywh(rect.x(), y, rect.width(), line_height);
-          let _ = self.emit_text_with_style(line.trim_end(), Some(&text_style), line_rect);
+          let _ = self.emit_text_with_style(line.trim_end(), Some(style_for_text), line_rect);
           y += line_height;
+        }
+
+        if pushed {
+          self.pop_opacity();
         }
         true
       }
@@ -8026,67 +8076,208 @@ impl DisplayListBuilder {
         true
       }
       FormControlKind::Range { value, min, max } => {
-        let track_height = 4.0_f32.min(padding_rect.height());
-        let track_y = padding_rect.y() + (padding_rect.height() - track_height) / 2.0;
-        let track_rect = Rect::from_xywh(
-          padding_rect.x(),
-          track_y,
-          padding_rect.width(),
-          track_height,
-        );
-        self
-          .list
-          .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
-            rect: track_rect,
-            color: Rgba::rgb(190, 190, 190),
-            radii: BorderRadii::uniform(track_height / 2.0),
-          }));
-
         let min_val = min.unwrap_or(0.0);
         let max_val = max.unwrap_or(100.0);
         let span = (max_val - min_val).abs().max(0.0001);
         let clamped = ((*value - min_val) / span).clamp(0.0, 1.0);
-        let knob_radius = (padding_rect.height().min(16.0)) / 2.0;
-        let knob_center_x =
-          padding_rect.x() + knob_radius + clamped * (padding_rect.width() - 2.0 * knob_radius);
-        let knob_rect = Rect::from_xywh(
-          knob_center_x - knob_radius,
-          padding_rect.y() + (padding_rect.height() - knob_radius * 2.0) / 2.0,
-          knob_radius * 2.0,
-          knob_radius * 2.0,
-        );
-        let filled_rect = Rect::from_xywh(
-          track_rect.x(),
-          track_rect.y(),
-          (knob_center_x - track_rect.x()).max(0.0),
-          track_rect.height(),
-        );
-        if filled_rect.width() > 0.0 {
-          let radii = BorderRadii::uniform(track_height / 2.0)
-            .clamped(filled_rect.width(), filled_rect.height());
+        let appearance_none = matches!(control.appearance, Appearance::None);
+
+        let abs_length_px = |len: Length| -> Option<f32> {
+          let px = if let Some(calc) = len.calc {
+            calc.absolute_sum()?
+          } else if len.unit.is_absolute() {
+            len.to_px()
+          } else {
+            return None;
+          };
+          (px.is_finite() && px > 0.0).then_some(px)
+        };
+
+        if !appearance_none {
+          let track_height = 4.0_f32.min(padding_rect.height());
+          let track_y = padding_rect.y() + (padding_rect.height() - track_height) / 2.0;
+          let track_rect =
+            Rect::from_xywh(padding_rect.x(), track_y, padding_rect.width(), track_height);
           self
             .list
             .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
-              rect: filled_rect,
-              color: muted_accent,
-              radii,
+              rect: track_rect,
+              color: Rgba::rgb(190, 190, 190),
+              radii: BorderRadii::uniform(track_height / 2.0),
+            }));
+
+          let knob_radius = (padding_rect.height().min(16.0)) / 2.0;
+          let knob_center_x =
+            padding_rect.x() + knob_radius + clamped * (padding_rect.width() - 2.0 * knob_radius);
+          let knob_rect = Rect::from_xywh(
+            knob_center_x - knob_radius,
+            padding_rect.y() + (padding_rect.height() - knob_radius * 2.0) / 2.0,
+            knob_radius * 2.0,
+            knob_radius * 2.0,
+          );
+          let filled_rect = Rect::from_xywh(
+            track_rect.x(),
+            track_rect.y(),
+            (knob_center_x - track_rect.x()).max(0.0),
+            track_rect.height(),
+          );
+          if filled_rect.width() > 0.0 {
+            let radii = BorderRadii::uniform(track_height / 2.0)
+              .clamped(filled_rect.width(), filled_rect.height());
+            self
+              .list
+              .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
+                rect: filled_rect,
+                color: muted_accent,
+                radii,
+              }));
+          }
+          self
+            .list
+            .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
+              rect: knob_rect,
+              color: Rgba::rgb(255, 255, 255),
+              radii: BorderRadii::uniform(knob_radius),
+            }));
+          self
+            .list
+            .push(DisplayItem::StrokeRoundedRect(StrokeRoundedRectItem {
+              rect: knob_rect,
+              color: Rgba::rgb(130, 130, 130),
+              width: 1.0,
+              radii: BorderRadii::uniform(knob_radius),
+            }));
+          return true;
+        }
+
+        let default_knob_diameter = padding_rect.height().min(16.0);
+        let (knob_width, knob_height) = if let Some(thumb_style) = control.slider_thumb_style.as_deref() {
+          (
+            thumb_style
+              .width
+              .and_then(abs_length_px)
+              .unwrap_or(default_knob_diameter),
+            thumb_style
+              .height
+              .and_then(abs_length_px)
+              .unwrap_or(default_knob_diameter),
+          )
+        } else {
+          (default_knob_diameter, default_knob_diameter)
+        };
+
+        if let Some(track_style) = control.slider_track_style.as_deref() {
+          let host_has_background_images = style.background_layers.iter().any(|l| l.image.is_some());
+          let host_background_empty = style.background_color.is_transparent() && !host_has_background_images;
+          let host_border_visible = if !matches!(style.border_image.source, BorderImageSource::None) {
+            true
+          } else {
+            let widths = (
+              Self::resolve_length_for_paint(
+                &style.used_border_top_width(),
+                style.font_size,
+                style.root_font_size,
+                rects.border.width(),
+                self.viewport,
+              ),
+              Self::resolve_length_for_paint(
+                &style.used_border_right_width(),
+                style.font_size,
+                style.root_font_size,
+                rects.border.width(),
+                self.viewport,
+              ),
+              Self::resolve_length_for_paint(
+                &style.used_border_bottom_width(),
+                style.font_size,
+                style.root_font_size,
+                rects.border.width(),
+                self.viewport,
+              ),
+              Self::resolve_length_for_paint(
+                &style.used_border_left_width(),
+                style.font_size,
+                style.root_font_size,
+                rects.border.width(),
+                self.viewport,
+              ),
+            );
+            let sides = (
+              BorderSide {
+                width: widths.0,
+                style: style.border_top_style,
+                color: style.border_top_color,
+              },
+              BorderSide {
+                width: widths.1,
+                style: style.border_right_style,
+                color: style.border_right_color,
+              },
+              BorderSide {
+                width: widths.2,
+                style: style.border_bottom_style,
+                color: style.border_bottom_color,
+              },
+              BorderSide {
+                width: widths.3,
+                style: style.border_left_style,
+                color: style.border_left_color,
+              },
+            );
+            Self::border_side_visible(&sides.0)
+              || Self::border_side_visible(&sides.1)
+              || Self::border_side_visible(&sides.2)
+              || Self::border_side_visible(&sides.3)
+          };
+
+          if host_background_empty && !host_border_visible {
+            let track_height = track_style
+              .height
+              .and_then(abs_length_px)
+              .unwrap_or_else(|| 4.0_f32.min(padding_rect.height()));
+            if track_height > 0.0 {
+              let track_y = padding_rect.y() + (padding_rect.height() - track_height) / 2.0;
+              let track_rect =
+                Rect::from_xywh(padding_rect.x(), track_y, padding_rect.width(), track_height);
+              self.emit_box_shadows_from_style(track_rect, track_style, false);
+              self.emit_background_from_style(track_rect, track_style);
+              self.emit_border_from_style(track_rect, track_style);
+            }
+          }
+        }
+
+        let knob_travel = (padding_rect.width() - knob_width).max(0.0);
+        let knob_center_x = padding_rect.x() + knob_width / 2.0 + clamped * knob_travel;
+        let knob_center_y = padding_rect.y() + padding_rect.height() / 2.0;
+        let knob_rect = Rect::from_xywh(
+          knob_center_x - knob_width / 2.0,
+          knob_center_y - knob_height / 2.0,
+          knob_width,
+          knob_height,
+        );
+
+        if let Some(thumb_style) = control.slider_thumb_style.as_deref() {
+          self.emit_box_shadows_from_style(knob_rect, thumb_style, false);
+          self.emit_background_from_style(knob_rect, thumb_style);
+          self.emit_border_from_style(knob_rect, thumb_style);
+        } else {
+          let knob_radius = (knob_width.min(knob_height)) / 2.0;
+          self
+            .list
+            .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
+              rect: knob_rect,
+              color: Rgba::rgb(255, 255, 255),
+              radii: BorderRadii::uniform(knob_radius),
+            }));
+          self
+            .list
+            .push(DisplayItem::StrokeRoundedRect(StrokeRoundedRectItem {
+              rect: knob_rect,
+              color: Rgba::rgb(130, 130, 130),
+              width: 1.0,
+              radii: BorderRadii::uniform(knob_radius),
             }));
         }
-        self
-          .list
-          .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
-            rect: knob_rect,
-            color: Rgba::rgb(255, 255, 255),
-            radii: BorderRadii::uniform(knob_radius),
-          }));
-        self
-          .list
-          .push(DisplayItem::StrokeRoundedRect(StrokeRoundedRectItem {
-            rect: knob_rect,
-            color: Rgba::rgb(130, 130, 130),
-            width: 1.0,
-            radii: BorderRadii::uniform(knob_radius),
-          }));
         true
       }
       FormControlKind::Color { value, raw } => {

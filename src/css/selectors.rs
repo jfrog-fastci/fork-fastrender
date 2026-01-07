@@ -495,6 +495,9 @@ pub enum PseudoElement {
   FirstLetter,
   Marker,
   Backdrop,
+  Placeholder,
+  SliderThumb,
+  SliderTrack,
   Slotted(Box<[Selector<FastRenderSelectorImpl>]>),
   Part(CssString),
 }
@@ -555,6 +558,9 @@ impl ToCss for PseudoElement {
       PseudoElement::FirstLetter => dest.write_str("::first-letter"),
       PseudoElement::Marker => dest.write_str("::marker"),
       PseudoElement::Backdrop => dest.write_str("::backdrop"),
+      PseudoElement::Placeholder => dest.write_str("::placeholder"),
+      PseudoElement::SliderThumb => dest.write_str("::-webkit-slider-thumb"),
+      PseudoElement::SliderTrack => dest.write_str("::-webkit-slider-runnable-track"),
       PseudoElement::Slotted(selectors) => {
         dest.write_str("::slotted(")?;
         for (i, selector) in selectors.iter().enumerate() {
@@ -778,6 +784,14 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       "first-letter" => Ok(PseudoElement::FirstLetter),
       "marker" => Ok(PseudoElement::Marker),
       "backdrop" => Ok(PseudoElement::Backdrop),
+      "placeholder"
+      | "-webkit-input-placeholder"
+      | "-moz-placeholder"
+      | "-ms-input-placeholder" => Ok(PseudoElement::Placeholder),
+      "-webkit-slider-thumb" | "-moz-range-thumb" | "-ms-thumb" => Ok(PseudoElement::SliderThumb),
+      "-webkit-slider-runnable-track" | "-moz-range-track" | "-ms-track" => {
+        Ok(PseudoElement::SliderTrack)
+      }
       _ => Err(ParseError {
         kind: cssparser::ParseErrorKind::Custom(
           SelectorParseErrorKind::UnsupportedPseudoClassOrElement(name),
@@ -1191,6 +1205,64 @@ mod tests {
         .expect("marker pseudo"),
       PseudoElement::Marker
     );
+    assert_eq!(
+      parser
+        .parse_pseudo_element(loc, cssparser::CowRcStr::from("PlAcEhOlDeR"))
+        .expect("placeholder pseudo"),
+      PseudoElement::Placeholder
+    );
+    assert_eq!(
+      parser
+        .parse_pseudo_element(loc, cssparser::CowRcStr::from("-WebKit-SLIDER-THUMB"))
+        .expect("slider thumb pseudo"),
+      PseudoElement::SliderThumb
+    );
+    assert_eq!(
+      parser
+        .parse_pseudo_element(loc, cssparser::CowRcStr::from("-MOZ-RANGE-TRACK"))
+        .expect("slider track pseudo"),
+      PseudoElement::SliderTrack
+    );
+  }
+
+  #[test]
+  fn parses_vendor_pseudo_element_aliases() {
+    let parser = PseudoClassParser;
+    let loc = SourceLocation { line: 0, column: 0 };
+    for name in [
+      "placeholder",
+      "-webkit-input-placeholder",
+      "-moz-placeholder",
+      "-ms-input-placeholder",
+    ] {
+      assert_eq!(
+        parser
+          .parse_pseudo_element(loc, cssparser::CowRcStr::from(name))
+          .unwrap(),
+        PseudoElement::Placeholder,
+        "{name} should map to ::placeholder"
+      );
+    }
+
+    for name in ["-webkit-slider-thumb", "-moz-range-thumb", "-ms-thumb"] {
+      assert_eq!(
+        parser
+          .parse_pseudo_element(loc, cssparser::CowRcStr::from(name))
+          .unwrap(),
+        PseudoElement::SliderThumb,
+        "{name} should map to slider thumb"
+      );
+    }
+
+    for name in ["-webkit-slider-runnable-track", "-moz-range-track", "-ms-track"] {
+      assert_eq!(
+        parser
+          .parse_pseudo_element(loc, cssparser::CowRcStr::from(name))
+          .unwrap(),
+        PseudoElement::SliderTrack,
+        "{name} should map to slider track"
+      );
+    }
   }
 
   #[test]

@@ -6736,16 +6736,17 @@ impl Painter {
       } => {
         let value_trimmed = value.trim();
         let base_color = if control.invalid { accent } else { style.color };
-        let placeholder_color = base_color.with_alpha(0.6);
         let mut generated: Option<String> = None;
-        let (text, color) = match kind {
+        let mut is_placeholder = false;
+        let (text, fallback_color) = match kind {
           TextControlKind::Password => {
             if !value_trimmed.is_empty() {
               let mask_len = value_trimmed.chars().count().clamp(3, 50);
               generated = Some("•".repeat(mask_len));
               (generated.as_deref().unwrap(), base_color)
             } else if let Some(ph) = placeholder.as_deref() {
-              (ph.trim(), placeholder_color)
+              is_placeholder = true;
+              (ph.trim(), base_color.with_alpha(0.6))
             } else {
               return true;
             }
@@ -6754,7 +6755,8 @@ impl Painter {
             if !value_trimmed.is_empty() {
               (value_trimmed, base_color)
             } else if let Some(ph) = placeholder.as_deref() {
-              (ph.trim(), placeholder_color)
+              is_placeholder = true;
+              (ph.trim(), base_color.with_alpha(0.6))
             } else {
               return true;
             }
@@ -6763,24 +6765,39 @@ impl Painter {
             if !value_trimmed.is_empty() {
               (value_trimmed, base_color)
             } else if let Some(ph) = placeholder.as_deref() {
-              (ph.trim(), placeholder_color)
+              is_placeholder = true;
+              (ph.trim(), base_color.with_alpha(0.6))
             } else {
-              ("yyyy-mm-dd", placeholder_color)
+              is_placeholder = true;
+              ("yyyy-mm-dd", base_color.with_alpha(0.6))
             }
           }
           TextControlKind::Plain => {
             if !value_trimmed.is_empty() {
               (value_trimmed, base_color)
             } else if let Some(ph) = placeholder.as_deref() {
-              (ph.trim(), placeholder_color)
+              is_placeholder = true;
+              (ph.trim(), base_color.with_alpha(0.6))
             } else {
               return true;
             }
           }
         };
 
-        let mut text_style = style.clone();
-        text_style.color = color;
+        let placeholder_style = is_placeholder.then(|| control.placeholder_style.as_deref()).flatten();
+        let mut text_style = if let Some(pseudo_style) = placeholder_style {
+          if pseudo_style.opacity <= f32::EPSILON {
+            return true;
+          }
+          let mut style = pseudo_style.clone();
+          let opacity = pseudo_style.opacity.clamp(0.0, 1.0);
+          style.color = style.color.with_alpha((style.color.a * opacity).clamp(0.0, 1.0));
+          style
+        } else {
+          let mut style = style.clone();
+          style.color = fallback_color;
+          style
+        };
         let mut rect = inset_rect(content_rect, 2.0);
         let mut affordance_space = 0.0;
         match kind {
@@ -6836,21 +6853,34 @@ impl Painter {
         value, placeholder, ..
       } => {
         let base_color = if control.invalid { accent } else { style.color };
-        let placeholder_color = base_color.with_alpha(0.6);
 
         let value_trimmed = value.trim();
-        let (text, color) = if !value_trimmed.is_empty() {
+        let mut is_placeholder = false;
+        let (text, fallback_color) = if !value_trimmed.is_empty() {
           (value.as_str(), base_color)
         } else if let Some(placeholder) = placeholder.as_deref().filter(|p| !p.is_empty()) {
-          (placeholder, placeholder_color)
+          is_placeholder = true;
+          (placeholder, base_color.with_alpha(0.6))
         } else {
           return true;
         };
 
         let mut rect = inset_rect(content_rect, 2.0);
-        let mut text_style = style.clone();
-        text_style.color = color;
-        let metrics = self.resolve_scaled_metrics(style);
+        let placeholder_style = is_placeholder.then(|| control.placeholder_style.as_deref()).flatten();
+        let mut text_style = if let Some(pseudo_style) = placeholder_style {
+          if pseudo_style.opacity <= f32::EPSILON {
+            return true;
+          }
+          let mut style = pseudo_style.clone();
+          let opacity = pseudo_style.opacity.clamp(0.0, 1.0);
+          style.color = style.color.with_alpha((style.color.a * opacity).clamp(0.0, 1.0));
+          style
+        } else {
+          let mut style = style.clone();
+          style.color = fallback_color;
+          style
+        };
+        let metrics = self.resolve_scaled_metrics(&text_style);
         let line_height = compute_line_height_with_metrics_viewport(
           &text_style,
           metrics.as_ref(),
@@ -7172,80 +7202,203 @@ impl Painter {
         true
       }
       FormControlKind::Range { value, min, max } => {
+        let appearance_none = matches!(control.appearance, Appearance::None);
         let track_height = 4.0_f32.min(content_rect.height());
         let track_y = content_rect.y() + (content_rect.height() - track_height) / 2.0;
         let radii = BorderRadii::uniform(track_height / 2.0);
         let track_color = Rgba::rgb(190, 190, 190);
-        let device_track_rect = self.device_rect(Rect::from_xywh(
-          content_rect.x(),
-          track_y,
-          content_rect.width(),
-          track_height,
-        ));
-        let device_radii = self.device_radii(radii);
-        fill_rounded_rect_masked(
-          &mut self.pixmap,
-          device_track_rect,
-          device_radii,
-          track_color,
-          clip_mask,
-        );
 
         let min_val = min.unwrap_or(0.0);
         let max_val = max.unwrap_or(100.0);
         let span = (max_val - min_val).abs().max(0.0001);
         let clamped = ((*value - min_val) / span).clamp(0.0, 1.0);
-        let knob_radius = (content_rect.height().min(16.0)) / 2.0;
-        let knob_center_x =
-          content_rect.x() + knob_radius + clamped * (content_rect.width() - 2.0 * knob_radius);
-        let knob_center_y = content_rect.y() + content_rect.height() / 2.0;
+        let abs_length_px = |len: Length| -> Option<f32> {
+          let px = if let Some(calc) = len.calc {
+            calc.absolute_sum()?
+          } else if len.unit.is_absolute() {
+            len.to_px()
+          } else {
+            return None;
+          };
+          (px.is_finite() && px > 0.0).then_some(px)
+        };
 
-        let fill_rect = Rect::from_xywh(
-          content_rect.x(),
-          track_y,
-          (knob_center_x - content_rect.x()).max(0.0),
-          track_height,
-        );
-        if fill_rect.width() > 0.0 {
-          let radii = radii.clamped(fill_rect.width(), fill_rect.height());
-          let device_fill_rect = self.device_rect(fill_rect);
+        if !appearance_none {
+          let device_track_rect = self.device_rect(Rect::from_xywh(
+            content_rect.x(),
+            track_y,
+            content_rect.width(),
+            track_height,
+          ));
           let device_radii = self.device_radii(radii);
-          let _ = fill_rounded_rect(
+          fill_rounded_rect_masked(
             &mut self.pixmap,
-            device_fill_rect.x(),
-            device_fill_rect.y(),
-            device_fill_rect.width(),
-            device_fill_rect.height(),
-            &device_radii,
-            muted_accent,
-          );
-        }
-
-        let knob_center_x = self.device_x(knob_center_x);
-        let knob_center_y = self.device_y(knob_center_y);
-        let knob_radius = self.device_length(knob_radius);
-        if let Some(path) = PathBuilder::from_circle(knob_center_x, knob_center_y, knob_radius) {
-          let mut paint = Paint::default();
-          paint.set_color_rgba8(255, 255, 255, 255);
-          paint.anti_alias = true;
-          self.pixmap.fill_path(
-            &path,
-            &paint,
-            tiny_skia::FillRule::Winding,
-            Transform::identity(),
+            device_track_rect,
+            device_radii,
+            track_color,
             clip_mask,
           );
 
-          let mut stroke_paint = Paint::default();
-          stroke_paint.set_color_rgba8(130, 130, 130, 255);
-          stroke_paint.anti_alias = true;
-          let stroke = tiny_skia::Stroke {
-            width: 1.0 * self.scale,
-            ..Default::default()
+          let knob_radius = (content_rect.height().min(16.0)) / 2.0;
+          let knob_center_x =
+            content_rect.x() + knob_radius + clamped * (content_rect.width() - 2.0 * knob_radius);
+          let knob_center_y = content_rect.y() + content_rect.height() / 2.0;
+
+          let fill_rect = Rect::from_xywh(
+            content_rect.x(),
+            track_y,
+            (knob_center_x - content_rect.x()).max(0.0),
+            track_height,
+          );
+          if fill_rect.width() > 0.0 {
+            let radii = radii.clamped(fill_rect.width(), fill_rect.height());
+            let device_fill_rect = self.device_rect(fill_rect);
+            let device_radii = self.device_radii(radii);
+            let _ = fill_rounded_rect(
+              &mut self.pixmap,
+              device_fill_rect.x(),
+              device_fill_rect.y(),
+              device_fill_rect.width(),
+              device_fill_rect.height(),
+              &device_radii,
+              muted_accent,
+            );
+          }
+
+          let knob_center_x = self.device_x(knob_center_x);
+          let knob_center_y = self.device_y(knob_center_y);
+          let knob_radius = self.device_length(knob_radius);
+          if let Some(path) = PathBuilder::from_circle(knob_center_x, knob_center_y, knob_radius) {
+            let mut paint = Paint::default();
+            paint.set_color_rgba8(255, 255, 255, 255);
+            paint.anti_alias = true;
+            self.pixmap.fill_path(
+              &path,
+              &paint,
+              tiny_skia::FillRule::Winding,
+              Transform::identity(),
+              clip_mask,
+            );
+
+            let mut stroke_paint = Paint::default();
+            stroke_paint.set_color_rgba8(130, 130, 130, 255);
+            stroke_paint.anti_alias = true;
+            let stroke = tiny_skia::Stroke {
+              width: 1.0 * self.scale,
+              ..Default::default()
+            };
+            self
+              .pixmap
+              .stroke_path(&path, &stroke_paint, &stroke, Transform::identity(), None);
+          }
+          return true;
+        }
+
+        let default_knob_diameter = content_rect.height().min(16.0);
+        let (knob_width, knob_height) =
+          if let Some(thumb_style) = control.slider_thumb_style.as_deref() {
+            (
+              thumb_style
+                .width
+                .and_then(abs_length_px)
+                .unwrap_or(default_knob_diameter),
+              thumb_style
+                .height
+                .and_then(abs_length_px)
+                .unwrap_or(default_knob_diameter),
+            )
+          } else {
+            (default_knob_diameter, default_knob_diameter)
           };
-          self
-            .pixmap
-            .stroke_path(&path, &stroke_paint, &stroke, Transform::identity(), None);
+
+        let knob_travel = (content_rect.width() - knob_width).max(0.0);
+        let knob_center_x = content_rect.x() + knob_width / 2.0 + clamped * knob_travel;
+        let knob_center_y = content_rect.y() + content_rect.height() / 2.0;
+        let knob_rect = Rect::from_xywh(
+          knob_center_x - knob_width / 2.0,
+          knob_center_y - knob_height / 2.0,
+          knob_width,
+          knob_height,
+        );
+
+        if let Some(thumb_style) = control.slider_thumb_style.as_deref() {
+          let device_knob_rect = self.device_rect(knob_rect);
+          let radii = self.device_radii(resolve_border_radii(Some(thumb_style), knob_rect));
+          fill_rounded_rect_masked(
+            &mut self.pixmap,
+            device_knob_rect,
+            radii,
+            thumb_style.background_color,
+            clip_mask,
+          );
+
+          let border_width = resolve_length_for_paint(
+            &thumb_style.used_border_top_width(),
+            thumb_style.font_size,
+            thumb_style.root_font_size,
+            knob_rect.width().max(0.0),
+            (self.css_width, self.css_height),
+          )
+          .max(0.0);
+          let border_style = thumb_style.border_top_style;
+          let border_color = thumb_style.border_top_color;
+          if border_width > 0.0
+            && !matches!(border_style, crate::style::types::BorderStyle::None | crate::style::types::BorderStyle::Hidden)
+            && !border_color.is_transparent()
+          {
+            let Some(path) = crate::paint::rasterize::build_rounded_rect_path(
+              device_knob_rect.x(),
+              device_knob_rect.y(),
+              device_knob_rect.width(),
+              device_knob_rect.height(),
+              &radii,
+            ) else {
+              return true;
+            };
+            let mut paint = Paint::default();
+            paint.set_color(tiny_skia::Color::from_rgba8(
+              border_color.r,
+              border_color.g,
+              border_color.b,
+              border_color.alpha_u8(),
+            ));
+            paint.anti_alias = true;
+            let stroke = tiny_skia::Stroke {
+              width: border_width * self.scale,
+              ..Default::default()
+            };
+            self
+              .pixmap
+              .stroke_path(&path, &paint, &stroke, Transform::identity(), clip_mask);
+          }
+        } else {
+          let knob_radius = (knob_width.min(knob_height)) / 2.0;
+          let knob_center_x = self.device_x(knob_center_x);
+          let knob_center_y = self.device_y(knob_center_y);
+          let knob_radius = self.device_length(knob_radius);
+          if let Some(path) = PathBuilder::from_circle(knob_center_x, knob_center_y, knob_radius) {
+            let mut paint = Paint::default();
+            paint.set_color_rgba8(255, 255, 255, 255);
+            paint.anti_alias = true;
+            self.pixmap.fill_path(
+              &path,
+              &paint,
+              tiny_skia::FillRule::Winding,
+              Transform::identity(),
+              clip_mask,
+            );
+
+            let mut stroke_paint = Paint::default();
+            stroke_paint.set_color_rgba8(130, 130, 130, 255);
+            stroke_paint.anti_alias = true;
+            let stroke = tiny_skia::Stroke {
+              width: 1.0 * self.scale,
+              ..Default::default()
+            };
+            self
+              .pixmap
+              .stroke_path(&path, &stroke_paint, &stroke, Transform::identity(), None);
+          }
         }
         true
       }

@@ -12578,6 +12578,9 @@ mod tests {
       marker_styles: None,
       first_line_styles: None,
       first_letter_styles: None,
+      placeholder_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
       assigned_slot: None,
       slotted_node_ids: Vec::new(),
       children: Vec::new(),
@@ -16051,6 +16054,9 @@ mod tests {
       focus_visible: false,
       required: false,
       invalid: false,
+      placeholder_style: None,
+      slider_thumb_style: None,
+      slider_track_style: None,
     };
     let mut node = BoxNode::new_replaced(
       Arc::clone(&style),
