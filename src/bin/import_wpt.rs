@@ -1995,8 +1995,16 @@ mod tests {
     assert!(!imported.contains("web-platform.test"));
     assert!(!imported.contains("http://"));
     assert!(!imported.contains("https://"));
+    assert!(!imported.contains("srcset=\""));
+    assert!(!imported.contains("srcset='"));
     assert!(!imported.contains("srcset=/resources/"));
-    assert!(imported.contains("resources/green.png"));
+    let srcset_attr =
+      Regex::new("(?i)\\ssrcset\\s*=\\s*(?P<value>[^\\s\"'>]+)").unwrap();
+    let srcset_caps = srcset_attr.captures(&imported).expect("srcset attribute");
+    let srcset_value = srcset_caps.name("value").unwrap().as_str();
+    assert!(!srcset_value.starts_with('/'));
+    assert!(srcset_value.contains("resources/green.png"));
+    assert!(srcset_value.contains(','));
     assert!(out_dir.path().join("out/resources/green.png").exists());
   }
 
@@ -2388,7 +2396,18 @@ mod tests {
     assert!(!imported.contains("web-platform.test"));
     assert!(!imported.contains("http://"));
     assert!(!imported.contains("https://"));
-    assert!(imported.contains("imagesrcset="));
+    assert!(!imported.contains("imagesrcset=\""));
+    assert!(!imported.contains("imagesrcset='"));
+    assert!(!imported.contains("imagesrcset=/resources/"));
+    let imagesrcset_attr =
+      Regex::new("(?i)\\simagesrcset\\s*=\\s*(?P<value>[^\\s\"'>]+)").unwrap();
+    let imagesrcset_caps = imagesrcset_attr
+      .captures(&imported)
+      .expect("imagesrcset attribute");
+    let imagesrcset_value = imagesrcset_caps.name("value").unwrap().as_str();
+    assert!(!imagesrcset_value.starts_with('/'));
+    assert!(imagesrcset_value.contains("resources/green.png"));
+    assert!(imagesrcset_value.contains(','));
     assert!(out_dir.path().join("out/resources/green.png").exists());
   }
 
