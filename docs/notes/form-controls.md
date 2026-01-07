@@ -77,7 +77,7 @@ their goldens with:
 ```
 UPDATE_PAGES_GOLDEN=1 \
   PAGES_FIXTURE_FILTER=form_controls,form_controls_appearance,form_controls_range_select,form_controls_showcase,form_controls_states,form_controls_custom_vs_default,form_controls_comparison_panel,form_controls_lab \
-  scripts/run_limited.sh --as 12G --cpu 120 -- cargo test -j 1 pages_regression
+  cargo test pages_regression
 ```
 
 Note: `PAGES_FIXTURE_FILTER` expects a comma-separated list of **exact** fixture names (it is not a prefix/regex match).
@@ -90,5 +90,5 @@ variants, and focus-visible highlights). Regenerate the reference golden with:
 
 ```
 UPDATE_GOLDEN=1 \
-  scripts/run_limited.sh --as 12G --cpu 120 -- cargo test -j 1 form_controls_reference_image_matches_golden
+  cargo test form_controls_reference_image_matches_golden
 ```
