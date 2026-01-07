@@ -7,7 +7,9 @@ use fastrender::css::types::FontFaceRule;
 use fastrender::error::{Error, FontError};
 use fastrender::resource::FetchedResource;
 use fastrender::style::media::MediaContext;
-use fastrender::style::types::{FontLanguageOverride, FontVariationSetting, FontWeight};
+use fastrender::style::types::{
+  FontFeatureSetting, FontLanguageOverride, FontOpticalSizing, FontVariationSetting, FontWeight,
+};
 use fastrender::text::font_db::FontDatabase;
 use fastrender::text::font_loader::{FontContext, FontFetcher};
 use fastrender::text::pipeline::{ShapedRun, ShapingPipeline};
@@ -196,6 +198,16 @@ fn escape_css_string(value: &str) -> String {
   value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+fn axis_values(font: &[u8], tag: [u8; 4]) -> Option<(f32, f32, f32)> {
+  let face = ttf_parser::Face::parse(font, 0).ok()?;
+  let tag = Tag::from_bytes(&tag);
+  let axis = face
+    .variation_axes()
+    .into_iter()
+    .find(|axis| axis.tag == tag)?;
+  Some((axis.min_value, axis.def_value, axis.max_value))
+}
+
 fn first_named_instance_with_wght(font: &[u8]) -> Option<(String, f32)> {
   let face = ttf_parser::Face::parse(font, 0).ok()?;
   let axes: Vec<_> = face.variation_axes().into_iter().collect();
@@ -321,5 +333,182 @@ fn font_language_override_descriptor_is_per_face_and_overridden_by_style() {
     run_style.language,
     Some(expected_trk),
     "expected style font-language-override to override descriptor"
+  );
+}
+
+#[test]
+fn font_feature_settings_style_overrides_descriptor() {
+  let url = "https://example.test/emoji.ttf";
+  let fetcher: Arc<dyn FontFetcher> = Arc::new(FixtureFetcher::new(vec![(url, EMOJI_FONT)]));
+  let ctx = context_with_fetcher(fetcher);
+
+  let faces = parse_faces(&format!(
+    "@font-face {{ font-family: EmojiDefault; src: url(\"{url}\"); }}\n@font-face {{ font-family: EmojiNoCcmp; src: url(\"{url}\"); font-feature-settings: \"ccmp\" 0; }}"
+  ));
+  assert_eq!(faces.len(), 2);
+  ctx.load_web_fonts(&faces, None, None)
+    .expect("load emoji faces");
+
+  let mut style = ComputedStyle::default();
+  style.font_family = vec!["EmojiDefault".to_string()].into();
+  let run_default = shape_single_run("🇺🇸", &style, &ctx);
+
+  style.font_family = vec!["EmojiNoCcmp".to_string()].into();
+  let run_disabled = shape_single_run("🇺🇸", &style, &ctx);
+
+  style.font_feature_settings = vec![FontFeatureSetting {
+    tag: *b"ccmp",
+    value: 1,
+  }]
+  .into();
+  let run_overridden = shape_single_run("🇺🇸", &style, &ctx);
+
+  assert!(
+    run_overridden.glyph_count() < run_disabled.glyph_count(),
+    "expected style font-feature-settings to override descriptor (disabled={}, overridden={})",
+    run_disabled.glyph_count(),
+    run_overridden.glyph_count()
+  );
+  assert_eq!(
+    run_overridden.glyph_count(),
+    run_default.glyph_count(),
+    "expected style override to match default shaping"
+  );
+}
+
+#[test]
+fn font_variation_settings_descriptor_overrides_named_instance_axes() {
+  let (font_bytes, instance_name, instance_wght) =
+    [INTER_VAR_FONT, TEST_VAR_FONT, AMSTELVAR_ALPHA_FONT]
+      .into_iter()
+      .find_map(|bytes| {
+        first_named_instance_with_wght(bytes).map(|(name, wght)| (bytes, name, wght))
+      })
+      .expect("fixture variable font should provide a named instance with wght axis");
+  let escaped_instance = escape_css_string(&instance_name);
+
+  let (min_wght, def_wght, max_wght) =
+    axis_values(font_bytes, *b"wght").expect("fixture font should expose wght axis bounds");
+  let mut override_wght = max_wght;
+  if (override_wght - instance_wght).abs() < 0.001 {
+    override_wght = min_wght;
+  }
+  if (override_wght - instance_wght).abs() < 0.001 {
+    override_wght = def_wght;
+  }
+  assert!(
+    (override_wght - instance_wght).abs() >= 0.001,
+    "expected override weight to differ from instance (instance={instance_wght}, override={override_wght})"
+  );
+
+  let url = "https://example.test/named_override.ttf";
+  let fetcher: Arc<dyn FontFetcher> = Arc::new(FixtureFetcher::new(vec![(url, font_bytes)]));
+  let ctx = context_with_fetcher(fetcher);
+
+  let faces = parse_faces(&format!(
+    "@font-face {{ font-family: NamedOverride; src: url(\"{url}\"); font-weight: 100 900; font-named-instance: \"{escaped_instance}\"; font-variation-settings: \"wght\" {override_wght}; }}"
+  ));
+  assert_eq!(faces.len(), 1);
+  assert_eq!(
+    faces[0].font_named_instance.as_deref(),
+    Some(instance_name.as_str())
+  );
+  assert!(
+    faces[0]
+      .font_variation_settings
+      .as_deref()
+      .is_some_and(|settings| settings.iter().any(|setting| {
+        setting.tag == *b"wght" && (setting.value - override_wght).abs() < 0.001
+      })),
+    "expected descriptor to parse wght={override_wght}"
+  );
+  ctx
+    .load_web_fonts(&faces, None, None)
+    .expect("load named instance face with variation override");
+
+  let mut style = ComputedStyle::default();
+  style.font_family = vec!["NamedOverride".to_string()].into();
+  style.font_weight = FontWeight::Number(100);
+  let run = shape_single_run("A", &style, &ctx);
+
+  let actual = variation_value(&run, *b"wght").unwrap_or_default();
+  assert!(
+    (actual - override_wght).abs() < 0.001,
+    "expected font-variation-settings descriptor to override named instance wght={instance_wght} with {override_wght}, got {actual}"
+  );
+}
+
+#[test]
+fn font_optical_sizing_auto_overrides_font_face_opsz_descriptor() {
+  let url = "https://example.test/opsz.ttf";
+  let fetcher: Arc<dyn FontFetcher> = Arc::new(FixtureFetcher::new(vec![(url, AMSTELVAR_ALPHA_FONT)]));
+  let ctx = context_with_fetcher(fetcher);
+
+  let (min_opsz, def_opsz, max_opsz) =
+    axis_values(AMSTELVAR_ALPHA_FONT, *b"opsz").expect("fixture font should expose opsz axis");
+  let descriptor_opsz = min_opsz;
+
+  let mut font_size = (min_opsz + max_opsz) * 0.5;
+  if (font_size - descriptor_opsz).abs() < 1.0 {
+    font_size = (descriptor_opsz + 1.0).min(max_opsz);
+  }
+  if (font_size - descriptor_opsz).abs() < 0.001 {
+    font_size = def_opsz;
+  }
+  assert!(
+    (font_size - descriptor_opsz).abs() >= 0.001,
+    "expected chosen font size to differ from descriptor opsz (descriptor={descriptor_opsz}, font_size={font_size})"
+  );
+
+  let faces = parse_faces(&format!(
+    "@font-face {{ font-family: OpszFace; src: url(\"{url}\"); font-variation-settings: \"opsz\" {descriptor_opsz}; }}"
+  ));
+  assert_eq!(faces.len(), 1);
+  ctx.load_web_fonts(&faces, None, None)
+    .expect("load opsz face");
+
+  let mut style = ComputedStyle::default();
+  style.font_family = vec!["OpszFace".to_string()].into();
+  style.font_size = font_size;
+
+  style.font_optical_sizing = FontOpticalSizing::Auto;
+  let run_auto = shape_single_run("A", &style, &ctx);
+  let actual_auto = variation_value(&run_auto, *b"opsz").unwrap_or_default();
+  assert!(
+    (actual_auto - font_size).abs() < 0.001,
+    "expected font-optical-sizing:auto to override descriptor opsz={descriptor_opsz} with font size {font_size}, got {actual_auto}"
+  );
+
+  style.font_optical_sizing = FontOpticalSizing::None;
+  let run_none = shape_single_run("A", &style, &ctx);
+  let actual_none = variation_value(&run_none, *b"opsz").unwrap_or_default();
+  assert!(
+    (actual_none - descriptor_opsz).abs() < 0.001,
+    "expected font-optical-sizing:none to preserve descriptor opsz={descriptor_opsz}, got {actual_none}"
+  );
+
+  let mut override_opsz = max_opsz;
+  if (override_opsz - font_size).abs() < 0.001 {
+    override_opsz = min_opsz;
+  }
+  if (override_opsz - font_size).abs() < 0.001 {
+    override_opsz = def_opsz;
+  }
+  assert!(
+    (override_opsz - font_size).abs() >= 0.001,
+    "expected authored opsz to differ from font size (font_size={font_size}, authored={override_opsz})"
+  );
+
+  style.font_optical_sizing = FontOpticalSizing::Auto;
+  style.font_variation_settings = vec![FontVariationSetting {
+    tag: *b"opsz",
+    value: override_opsz,
+  }]
+  .into();
+  let run_authored = shape_single_run("A", &style, &ctx);
+  let actual_authored = variation_value(&run_authored, *b"opsz").unwrap_or_default();
+  assert!(
+    (actual_authored - override_opsz).abs() < 0.001,
+    "expected style font-variation-settings to override font-optical-sizing:auto opsz={font_size} with {override_opsz}, got {actual_authored}"
   );
 }
