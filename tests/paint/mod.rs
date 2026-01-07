@@ -61,6 +61,7 @@ mod marker_text_shadow_vertical;
 mod marker_underline_order;
 mod mask_parallel_translation_golden;
 mod math_render;
+mod mix_blend_mode_backdrop_root_test;
 mod mix_blend_mode_isolation_test;
 mod mix_blend_mode_non_isolated_group_surface_test;
 mod multi_root_display_list;

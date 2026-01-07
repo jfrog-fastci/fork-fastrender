@@ -236,6 +236,10 @@ fn backdrop_root_matrix_mix_blend_mode_isolation() {
     Case {
       name: "mix-blend-mode (ancestor) (non-isolated)",
       root_style: "mix-blend-mode: multiply;",
+      // `mix-blend-mode` is a Backdrop Root trigger for `backdrop-filter` sampling (filter-effects-2),
+      // but it does *not* isolate descendant `mix-blend-mode` blending. Descendants still blend with
+      // the already-painted backdrop unless `isolation: isolate` (compositing-1) or another
+      // isolating trigger applies.
       expect_black: true,
     },
   ];

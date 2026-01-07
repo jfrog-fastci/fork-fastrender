@@ -3379,6 +3379,7 @@ pub struct DisplayListRenderer {
   glyph_cache: Arc<Mutex<GlyphCache>>,
   stacking_layers: Vec<StackingRecord>,
   blend_stack: Vec<BlendMode>,
+  opacity_stack: Vec<OpacityRecord>,
   scale: f32,
   transform_stack: Vec<Transform3D>,
   perspective_stack: Vec<Transform3D>,
@@ -3420,6 +3421,7 @@ pub struct DisplayListRenderer {
 struct StackingRecord {
   establishes_backdrop_root: bool,
   needs_layer: bool,
+  canvas_layer_depth: usize,
   is_isolated: bool,
   mix_blend_mode: BlendMode,
   init_from_backdrop: bool,
@@ -3448,6 +3450,13 @@ struct StackingRecord {
   clip: Option<TransformedClipRect>,
   culled: bool,
   pending_backdrop: Option<PendingBackdrop>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct OpacityRecord {
+  canvas_layer_depth: usize,
+  init_from_backdrop: bool,
+  is_backdrop_root: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -4530,6 +4539,7 @@ impl DisplayListRenderer {
       glyph_cache,
       stacking_layers: Vec::new(),
       blend_stack: Vec::new(),
+      opacity_stack: Vec::new(),
       scale,
       transform_stack: vec![Transform3D::identity()],
       perspective_stack: vec![Transform3D::identity()],
@@ -10402,19 +10412,6 @@ impl DisplayListRenderer {
   /// - Filter Effects Level 2: Backdrop Root (<https://drafts.fxtf.org/filter-effects-2/#BackdropRoot>)
   /// - CSS Compositing and Blending: isolated groups (<https://www.w3.org/TR/compositing-1/#isolatedgroups>)
   fn maybe_init_non_isolated_group_backdrop(&mut self, item: &DisplayItem) -> Result<()> {
-    // Non-isolated stacking contexts (`isolation: auto`) need descendant `mix-blend-mode`
-    // compositing to see the already-painted backdrop. We do *not* initialize the group surface
-    // from backdrop eagerly, because doing so forces an uncompositing step later (to avoid
-    // double-counting the backdrop) that can change results for blend modes on opaque backdrops.
-    //
-    // Instead, initialize lazily: only when a descendant blend operation actually needs to sample
-    // backdrop pixels outside the group.
-    let Some(record) = self.stacking_layers.last() else {
-      return Ok(());
-    };
-    if !record.needs_layer || record.is_isolated || record.init_from_backdrop {
-      return Ok(());
-    }
     let needs_backdrop = match item {
       DisplayItem::PushStackingContext(sc) => !matches!(sc.mix_blend_mode, BlendMode::Normal),
       DisplayItem::PushBlendMode(item) => !matches!(item.mode, BlendMode::Normal),
@@ -10424,40 +10421,79 @@ impl DisplayListRenderer {
       return Ok(());
     }
 
-    // Only initialize when the stacking context's offscreen layer is the active canvas layer. If
-    // nested (non-stacking-context) layers are active, we can't currently inject backdrop pixels
-    // into the ancestor surface without mutating stored canvas layers.
-    let layer_origin = record.layer_origin;
-    let Some(active_origin) = self.canvas.layer_stack().last().map(|layer| layer.origin) else {
-      return Ok(());
-    };
-    if active_origin != layer_origin {
+    // Non-isolated stacking contexts (`isolation: auto`) need descendant blend operations to see
+    // the already-painted backdrop. We do *not* initialize the group surface from backdrop eagerly
+    // because doing so forces an uncompositing step later (to avoid double-counting the backdrop)
+    // that can change results for blend modes on opaque backdrops.
+    //
+    // Instead, initialize lazily: only when a descendant blend operation actually needs to sample
+    // backdrop pixels outside the group, and only when the group's offscreen surface is currently
+    // the active canvas layer.
+    let init_stacking_backdrop = self.stacking_layers.last().is_some_and(|record| {
+      record.needs_layer
+        && !record.is_isolated
+        && !(record.establishes_backdrop_root && matches!(record.mix_blend_mode, BlendMode::Normal))
+        && !record.init_from_backdrop
+        && self.canvas.layer_stack_len() == record.canvas_layer_depth
+    });
+
+    if init_stacking_backdrop {
+      let Some(active_origin) = self.canvas.layer_stack().last().map(|layer| layer.origin) else {
+        return Ok(());
+      };
+      let Some((backdrop, pixmap)) = self.canvas.split_backdrop_and_pixmap_mut() else {
+        return Ok(());
+      };
+      let mut paint = PixmapPaint::default();
+      paint.opacity = 1.0;
+      paint.blend_mode = SkiaBlendMode::DestinationOver;
+      pixmap.draw_pixmap(
+        -active_origin.0,
+        -active_origin.1,
+        backdrop.as_ref(),
+        &paint,
+        Transform::identity(),
+        None,
+      );
+      self.canvas.mark_current_layer_initialized_from_backdrop();
+      self.mark_current_pixmap_mutated();
+      if let Some(record) = self.stacking_layers.last_mut() {
+        record.init_from_backdrop = true;
+      }
       return Ok(());
     }
 
-    let Some((backdrop, pixmap)) = self.canvas.split_backdrop_and_pixmap_mut() else {
-      return Ok(());
-    };
-    let mut paint = PixmapPaint::default();
-    paint.opacity = 1.0;
-    paint.blend_mode = SkiaBlendMode::DestinationOver;
-    pixmap.draw_pixmap(
-      -active_origin.0,
-      -active_origin.1,
-      backdrop.as_ref(),
-      &paint,
-      Transform::identity(),
-      None,
-    );
-    // Keep Backdrop Root scoping correct for any descendant `backdrop-filter` sampling. The layer
-    // may now contain copied backdrop pixels, but those should not become visible through the
-    // Backdrop Root Image.
-    self
-      .canvas
-      .mark_current_layer_initialized_from_backdrop();
-    self.mark_current_pixmap_mutated();
-    if let Some(record) = self.stacking_layers.last_mut() {
-      if record.layer_origin == layer_origin {
+    // Some non-stacking-context layers (notably `PushOpacity`) are also non-isolated compositing
+    // groups. When a descendant blend operation needs to sample backdrop pixels outside the group,
+    // initialize the active opacity layer from its parent surface so subsequent blend operations
+    // see the correct backdrop.
+    let init_opacity_backdrop = self.opacity_stack.last().is_some_and(|record| {
+      !record.is_backdrop_root
+        && !record.init_from_backdrop
+        && self.canvas.layer_stack_len() == record.canvas_layer_depth
+    });
+
+    if init_opacity_backdrop {
+      let Some(active_origin) = self.canvas.layer_stack().last().map(|layer| layer.origin) else {
+        return Ok(());
+      };
+      let Some((backdrop, pixmap)) = self.canvas.split_backdrop_and_pixmap_mut() else {
+        return Ok(());
+      };
+      let mut paint = PixmapPaint::default();
+      paint.opacity = 1.0;
+      paint.blend_mode = SkiaBlendMode::DestinationOver;
+      pixmap.draw_pixmap(
+        -active_origin.0,
+        -active_origin.1,
+        backdrop.as_ref(),
+        &paint,
+        Transform::identity(),
+        None,
+      );
+      self.canvas.mark_current_layer_initialized_from_backdrop();
+      self.mark_current_pixmap_mutated();
+      if let Some(record) = self.opacity_stack.last_mut() {
         record.init_from_backdrop = true;
       }
     }
@@ -10907,6 +10943,7 @@ impl DisplayListRenderer {
         self.stacking_layers.push(StackingRecord {
           establishes_backdrop_root: is_backdrop_root,
           needs_layer,
+          canvas_layer_depth: self.canvas.layer_stack_len(),
           is_isolated,
           mix_blend_mode: item.mix_blend_mode,
           init_from_backdrop,
@@ -10964,6 +11001,7 @@ impl DisplayListRenderer {
           .unwrap_or_else(|| StackingRecord {
             establishes_backdrop_root: false,
             needs_layer: false,
+            canvas_layer_depth: 0,
             is_isolated: false,
             mix_blend_mode: BlendMode::Normal,
             init_from_backdrop: false,
@@ -11353,6 +11391,11 @@ impl DisplayListRenderer {
           self.push_layer_tracked(*opacity, is_backdrop_root)?;
         }
         self.record_layer_allocation(self.canvas.width(), self.canvas.height());
+        self.opacity_stack.push(OpacityRecord {
+          canvas_layer_depth: self.canvas.layer_stack_len(),
+          init_from_backdrop: false,
+          is_backdrop_root,
+        });
         if self.trace_backdrop_stack {
           let depth_after = self.canvas.layer_stack_len();
           eprintln!(
@@ -11377,7 +11420,19 @@ impl DisplayListRenderer {
         } else {
           (0, false)
         };
-        self.pop_layer_tracked()?;
+        let opacity_record = self.opacity_stack.pop().unwrap_or_default();
+        if opacity_record.init_from_backdrop {
+          let (mut layer, origin, opacity, composite_blend) = self.pop_layer_raw_tracked()?;
+          crate::paint::canvas::uncomposite_layer_source_over_backdrop(
+            &mut layer,
+            self.canvas.pixmap(),
+            origin,
+          )
+          .map_err(Error::Render)?;
+          self.composite_layer_tracked(&layer, opacity, composite_blend, origin);
+        } else {
+          self.pop_layer_tracked()?;
+        }
         if self.trace_backdrop_stack {
           let depth_after = self.canvas.layer_stack_len();
           eprintln!(
