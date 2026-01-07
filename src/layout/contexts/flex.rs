@@ -5827,7 +5827,7 @@ impl FlexFormattingContext {
     // *main* axis (driven by the containing flex container), not the item's own flex-direction.
     // Taffy treats `auto` as zero, so compute the content-based minimum size to prevent
     // shrink-to-zero flex items. Flexbox specifies that scroll containers use a 0 automatic
-    // minimum, so only apply this when overflow is `visible`.
+    // minimum, so only apply this when overflow is non-scrollable (`visible` or `clip`).
     let container_inline_is_horizontal =
       matches!(container.writing_mode, WritingMode::HorizontalTb);
     let container_main_is_inline = matches!(
@@ -5846,7 +5846,7 @@ impl FlexFormattingContext {
 
     if container_main_is_horizontal {
       if taffy_style.min_size.width == Dimension::AUTO
-        && matches!(style.overflow_x, CssOverflow::Visible)
+        && matches!(style.overflow_x, CssOverflow::Visible | CssOverflow::Clip)
       {
         if let Some(cached) = flex_auto_min_cache_lookup(box_id, style_ptr, true, skip_contents) {
           if let Some(min_candidate) = cached {
@@ -5856,8 +5856,34 @@ impl FlexFormattingContext {
           }
           return Ok(());
         }
+        let container_content_width_base = container.width.as_ref().and_then(|len| {
+          // Percentages on the flex item resolve against the flex container's inner size.
+          // Only treat the container inline size as definite when it resolves without percentages
+          // (so we don't accidentally resolve a percentage against an unknown base).
+          if len.has_percentage() {
+            return None;
+          }
+          let mut content = self.resolve_length_for_width(*len, self.viewport_size.width, container);
+          if !content.is_finite() {
+            return None;
+          }
+          if container.box_sizing == BoxSizing::BorderBox {
+            content = (content - self.horizontal_edges_px(container)?).max(0.0);
+          }
+          Some(content.max(0.0))
+        });
         let specified_size_suggestion = style.width.as_ref().and_then(|len| {
-          let px = self.resolve_length_px(len, style)?;
+          let px = if len.has_percentage() {
+            let base = container_content_width_base?;
+            Some(self.resolve_length_for_width(*len, base, style))
+          } else {
+            self.resolve_length_px(len, style).or_else(|| {
+              // Handle calc()/font-relative/etc lengths that don't require a percentage base.
+              (!len.has_percentage()).then(|| {
+                self.resolve_length_for_width(*len, self.viewport_size.width, style)
+              })
+            })
+          }?;
           if px <= 0.0 {
             return None;
           }
@@ -6028,7 +6054,7 @@ impl FlexFormattingContext {
         }
       }
     } else if taffy_style.min_size.height == Dimension::AUTO
-      && matches!(style.overflow_y, CssOverflow::Visible)
+      && matches!(style.overflow_y, CssOverflow::Visible | CssOverflow::Clip)
     {
       if let Some(cached) = flex_auto_min_cache_lookup(box_id, style_ptr, false, skip_contents) {
         if let Some(min_candidate) = cached {
@@ -6038,8 +6064,30 @@ impl FlexFormattingContext {
         }
         return Ok(());
       }
+      let container_content_height_base = container.height.as_ref().and_then(|len| {
+        if len.has_percentage() {
+          return None;
+        }
+        let mut content = self.resolve_length_for_width(*len, self.viewport_size.height, container);
+        if !content.is_finite() {
+          return None;
+        }
+        if container.box_sizing == BoxSizing::BorderBox {
+          content = (content - self.vertical_edges_px(container)?).max(0.0);
+        }
+        Some(content.max(0.0))
+      });
       let specified_size_suggestion = style.height.as_ref().and_then(|len| {
-        let px = self.resolve_length_px(len, style)?;
+        let px = if len.has_percentage() {
+          let base = container_content_height_base?;
+          Some(self.resolve_length_for_width(*len, base, style))
+        } else {
+          self.resolve_length_px(len, style).or_else(|| {
+            (!len.has_percentage()).then(|| {
+              self.resolve_length_for_width(*len, self.viewport_size.height, style)
+            })
+          })
+        }?;
         if px <= 0.0 {
           return None;
         }
@@ -6704,10 +6752,29 @@ impl FlexFormattingContext {
         .formatting_context()
         .unwrap_or(FormattingContextType::Block);
       let size_eps = 0.01;
-      let used_border_box_width =
-        (raw_layout_width.is_finite() && raw_layout_width > size_eps).then_some(raw_layout_width);
-      let used_border_box_height = (raw_layout_height.is_finite() && raw_layout_height > size_eps)
-        .then_some(raw_layout_height);
+      let basis_is_content = matches!(
+        child_box.style.flex_basis,
+        crate::style::types::FlexBasis::Content
+      );
+      // Preserve the main-axis used size even when it's 0: `flex-basis: content` can legitimately
+      // resolve to a 0 main size (empty content), and the child formatting context must see that
+      // used size rather than falling back to the authored preferred main-size.
+      let used_border_box_width = if main_axis_is_horizontal {
+        (raw_layout_width.is_finite()
+          && raw_layout_width >= 0.0
+          && (raw_layout_width > size_eps || basis_is_content))
+          .then_some(raw_layout_width)
+      } else {
+        (raw_layout_width.is_finite() && raw_layout_width > size_eps).then_some(raw_layout_width)
+      };
+      let used_border_box_height = if main_axis_is_horizontal {
+        (raw_layout_height.is_finite() && raw_layout_height > size_eps).then_some(raw_layout_height)
+      } else {
+        (raw_layout_height.is_finite()
+          && raw_layout_height >= 0.0
+          && (raw_layout_height > size_eps || basis_is_content))
+          .then_some(raw_layout_height)
+      };
 
       let supports_used_border_box = matches!(
         fc_type,
@@ -6837,11 +6904,43 @@ impl FlexFormattingContext {
         let child_factory = factory.clone().with_viewport_scroll(child_scroll);
         let fc = child_factory.get(work.fc_type);
         let layout_node: &BoxNode = work.layout_child_storage.as_ref().unwrap_or(work.child_box);
+        let basis_content_override = work.layout_child_storage.is_none()
+          && matches!(
+            work.child_box.style.flex_basis,
+            crate::style::types::FlexBasis::Content
+          );
+        let override_style = basis_content_override.then(|| {
+          let mut override_style: ComputedStyle = (*work.child_box.style).clone();
+          if main_axis_is_horizontal {
+            override_style.width = None;
+            override_style.width_keyword = None;
+          } else {
+            override_style.height = None;
+            override_style.height_keyword = None;
+          }
+          Arc::new(override_style)
+        });
+        let layout_with_override =
+          |constraints: &LayoutConstraints| -> Result<FragmentNode, LayoutError> {
+            if let Some(style) = override_style.clone() {
+              if work.child_box.id != 0 {
+                crate::layout::style_override::with_style_override(work.child_box.id, style, || {
+                  fc.layout(layout_node, constraints)
+                })
+              } else {
+                let mut cloned = layout_node.clone();
+                cloned.style = style;
+                fc.layout(&cloned, constraints)
+              }
+            } else {
+              fc.layout(layout_node, constraints)
+            }
+          };
         let node_timer = flex_profile::node_timer();
         let selector_for_profile = node_timer
           .as_ref()
           .and_then(|_| work.child_box.debug_info.as_ref().map(|d| d.to_selector()));
-        let child_fragment = fc.layout(layout_node, &work.constraints)?;
+        let child_fragment = layout_with_override(&work.constraints)?;
         flex_profile::record_node_layout(
           work.child_box.id,
           selector_for_profile.as_deref(),
@@ -6924,7 +7023,7 @@ impl FlexFormattingContext {
           } else {
             mc_constraints
           };
-          match fc.layout(layout_node, &mc_constraints) {
+          match layout_with_override(&mc_constraints) {
             Ok(mc_fragment) => {
               flex_profile::record_node_layout(work.child_box.id, mc_selector.as_deref(), mc_timer);
               let mc_fragment = mc_fragment;
