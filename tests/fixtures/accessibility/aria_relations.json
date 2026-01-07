@@ -1,0 +1,100 @@
+{
+  "present": {
+    "controller": {
+      "role": "button",
+      "name": "Controller",
+      "description": null,
+      "value": null,
+      "level": null,
+      "html_tag": "button",
+      "states": {
+        "focusable": true,
+        "disabled": false,
+        "required": false,
+        "invalid": false,
+        "visited": false,
+        "readonly": false
+      },
+      "relations": {
+        "controls": ["panel", "list"]
+      }
+    },
+    "combo-valid": {
+      "role": "combobox",
+      "name": "Combo",
+      "description": null,
+      "value": null,
+      "level": null,
+      "html_tag": "div",
+      "states": {
+        "focusable": true,
+        "disabled": false,
+        "required": false,
+        "invalid": false,
+        "visited": false,
+        "readonly": false
+      },
+      "relations": {
+        "controls": ["list"],
+        "active_descendant": "opt2"
+      }
+    },
+    "combo-invalid": {
+      "role": "combobox",
+      "name": "Combo invalid",
+      "description": null,
+      "value": null,
+      "level": null,
+      "html_tag": "div",
+      "states": {
+        "focusable": true,
+        "disabled": false,
+        "required": false,
+        "invalid": false,
+        "visited": false,
+        "readonly": false
+      },
+      "relations": {
+        "controls": ["list"]
+      }
+    },
+    "owner": {
+      "role": "listbox",
+      "name": "Owner",
+      "description": null,
+      "value": null,
+      "level": null,
+      "html_tag": "div",
+      "states": {
+        "focusable": true,
+        "disabled": false,
+        "required": false,
+        "invalid": false,
+        "visited": false,
+        "readonly": false
+      },
+      "relations": {
+        "owns": ["owned"]
+      }
+    },
+    "shadow-controller": {
+      "role": "button",
+      "name": "Shadow Controller",
+      "description": null,
+      "value": null,
+      "level": null,
+      "html_tag": "button",
+      "states": {
+        "focusable": true,
+        "disabled": false,
+        "required": false,
+        "invalid": false,
+        "visited": false,
+        "readonly": false
+      },
+      "relations": {
+        "controls": ["shadow-target"]
+      }
+    }
+  }
+}

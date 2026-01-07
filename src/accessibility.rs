@@ -96,6 +96,17 @@ impl Default for AccessibilityState {
   }
 }
 
+/// Common ARIA relationships exported for downstream tooling.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AccessibilityRelations {
+  #[serde(skip_serializing_if = "Vec::is_empty")]
+  pub controls: Vec<String>,
+  #[serde(skip_serializing_if = "Vec::is_empty")]
+  pub owns: Vec<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub active_descendant: Option<String>,
+}
+
 /// A node in the exported accessibility tree.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AccessibilityNode {
@@ -114,6 +125,8 @@ pub struct AccessibilityNode {
   pub html_tag: Option<String>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub id: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub relations: Option<AccessibilityRelations>,
   pub states: AccessibilityState,
   pub children: Vec<AccessibilityNode>,
 }
@@ -169,6 +182,7 @@ pub fn build_accessibility_tree(root: &StyledNode) -> AccessibilityNode {
     level: None,
     html_tag: Some("document".to_string()),
     id: None,
+    relations: None,
     states: AccessibilityState::default(),
     children,
   }
@@ -618,6 +632,7 @@ fn build_nodes<'a>(
         .get_attribute_ref("id")
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
+      let relations = compute_relations(node, ctx);
 
       vec![AccessibilityNode {
         role,
@@ -628,6 +643,7 @@ fn build_nodes<'a>(
         level,
         html_tag,
         id,
+        relations,
         states,
         children,
       }]
@@ -655,7 +671,11 @@ fn compute_hidden_and_scoped_ids(
     node.node.node_type,
     DomNodeType::Element { .. } | DomNodeType::Slot { .. }
   ) {
-    if let Some(id) = node.node.get_attribute_ref("id") {
+    if let Some(id) = node
+      .node
+      .get_attribute_ref("id")
+      .filter(|value| !value.is_empty())
+    {
       ids_by_scope
         .entry(scope_id)
         .or_default()
@@ -2095,6 +2115,72 @@ fn compute_description(node: &StyledNode, ctx: &BuildContext) -> Option<String> 
     None
   } else {
     Some(normalize_whitespace(&parts.join(" ")))
+  }
+}
+
+fn resolve_idref_list(ctx: &BuildContext, origin: &StyledNode, attr_value: &str) -> Vec<String> {
+  let mut out = Vec::new();
+  for token in attr_value.split_whitespace() {
+    if let Some(target) = ctx.node_for_id_scoped(origin.node_id, token) {
+      if let Some(id) = target
+        .node
+        .get_attribute_ref("id")
+        .filter(|value| !value.is_empty())
+      {
+        out.push(id.to_string());
+      }
+    }
+  }
+  out
+}
+
+fn resolve_idref(ctx: &BuildContext, origin: &StyledNode, attr_value: &str) -> Option<String> {
+  let trimmed = attr_value.trim();
+  if trimmed.is_empty() {
+    return None;
+  }
+
+  // `aria-activedescendant` is an IDREF, not a list; ignore whitespace-separated lists.
+  let mut tokens = trimmed.split_whitespace();
+  let token = tokens.next()?;
+  if tokens.next().is_some() {
+    return None;
+  }
+
+  let target = ctx.node_for_id_scoped(origin.node_id, token)?;
+  target
+    .node
+    .get_attribute_ref("id")
+    .filter(|value| !value.is_empty())
+    .map(|value| value.to_string())
+}
+
+fn compute_relations(node: &StyledNode, ctx: &BuildContext) -> Option<AccessibilityRelations> {
+  let controls = node
+    .node
+    .get_attribute_ref("aria-controls")
+    .map(|value| resolve_idref_list(ctx, node, value))
+    .unwrap_or_default();
+
+  let owns = node
+    .node
+    .get_attribute_ref("aria-owns")
+    .map(|value| resolve_idref_list(ctx, node, value))
+    .unwrap_or_default();
+
+  let active_descendant = node
+    .node
+    .get_attribute_ref("aria-activedescendant")
+    .and_then(|value| resolve_idref(ctx, node, value));
+
+  if controls.is_empty() && owns.is_empty() && active_descendant.is_none() {
+    None
+  } else {
+    Some(AccessibilityRelations {
+      controls,
+      owns,
+      active_descendant,
+    })
   }
 }
 

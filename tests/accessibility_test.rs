@@ -124,6 +124,9 @@ fn snapshot_subset(root: &Value, ids: &[&str]) -> Value {
         "states".into(),
         node.get("states").cloned().unwrap_or_else(|| json!({})),
       );
+      if let Some(relations) = node.get("relations") {
+        entry.insert("relations".into(), relations.clone());
+      }
       out.insert((*id).to_string(), Value::Object(entry));
     }
   }
@@ -1363,6 +1366,7 @@ fn accessibility_fixture_snapshots() {
     "form_role_gating",
     "landmark_gating_section_form",
     "aria_states",
+    "aria_relations",
     "shadow_dom_slotting",
     "shadow_scope_idrefs",
     "native_names",

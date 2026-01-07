@@ -1,0 +1,49 @@
+<html>
+  <body>
+    <div id="panel">Panel</div>
+
+    <div id="list" role="listbox">
+      <div id="opt1" role="option">One</div>
+      <div id="opt2" role="option">Two</div>
+    </div>
+
+    <button id="controller" aria-controls="panel missing list shadow-target">Controller</button>
+
+    <div
+      id="combo-valid"
+      role="combobox"
+      tabindex="0"
+      aria-label="Combo"
+      aria-controls="list"
+      aria-activedescendant="opt2"
+    ></div>
+    <div
+      id="combo-invalid"
+      role="combobox"
+      tabindex="0"
+      aria-label="Combo invalid"
+      aria-controls="list"
+      aria-activedescendant="shadow-target"
+    ></div>
+
+    <div
+      id="owner"
+      role="listbox"
+      tabindex="0"
+      aria-label="Owner"
+      aria-owns="owned missing shadow-target"
+    ></div>
+    <div id="owned" role="option">Owned option</div>
+
+    <x-host id="host">
+      <template shadowroot="open">
+        <div>
+          <div id="shadow-target">Shadow target</div>
+          <button id="shadow-controller" aria-controls="shadow-target panel missing">
+            Shadow Controller
+          </button>
+        </div>
+      </template>
+    </x-host>
+  </body>
+</html>
