@@ -2230,7 +2230,11 @@ fn meter_value(node: &DomNode) -> Option<String> {
 
 fn compute_invalid(node: &StyledNode, element_ref: &ElementRef, ctx: &BuildContext) -> bool {
   if let Some(value) = parse_aria_invalid(&node.node) {
-    return value;
+    // ARIA should not negate native HTML semantics: allow authors to force the invalid state on,
+    // but ignore explicit `false` so native constraint validation still surfaces.
+    if value {
+      return true;
+    }
   }
 
   if node
