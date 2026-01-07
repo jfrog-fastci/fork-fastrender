@@ -12,7 +12,8 @@
         "disabled": false,
         "required": false,
         "invalid": false,
-        "visited": false
+        "visited": false,
+        "readonly": false
       }
     },
     "figure": {
@@ -27,7 +28,8 @@
         "disabled": false,
         "required": false,
         "invalid": false,
-        "visited": false
+        "visited": false,
+        "readonly": false
       }
     },
     "data": {
@@ -42,7 +44,8 @@
         "disabled": false,
         "required": false,
         "invalid": false,
-        "visited": false
+        "visited": false,
+        "readonly": false
       }
     },
     "dialog": {
@@ -57,7 +60,8 @@
         "disabled": false,
         "required": false,
         "invalid": false,
-        "visited": false
+        "visited": false,
+        "readonly": false
       }
     }
   },

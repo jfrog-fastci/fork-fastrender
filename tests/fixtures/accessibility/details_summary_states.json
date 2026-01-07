@@ -13,6 +13,7 @@
         "required": false,
         "invalid": false,
         "visited": false,
+        "readonly": false,
         "expanded": true
       }
     },
@@ -29,6 +30,7 @@
         "required": false,
         "invalid": false,
         "visited": false,
+        "readonly": false,
         "expanded": false
       }
     },
@@ -45,6 +47,7 @@
         "required": false,
         "invalid": false,
         "visited": false,
+        "readonly": false,
         "expanded": false
       }
     },
@@ -61,11 +64,12 @@
         "required": false,
         "invalid": false,
         "visited": false,
+        "readonly": false,
         "expanded": true
       }
     },
     "parent-override": {
-      "role": "generic",
+      "role": "group",
       "name": "Parent override",
       "description": null,
       "value": null,
@@ -77,6 +81,7 @@
         "required": false,
         "invalid": false,
         "visited": false,
+        "readonly": false,
         "expanded": false
       }
     },
@@ -93,6 +98,7 @@
         "required": false,
         "invalid": false,
         "visited": false,
+        "readonly": false,
         "expanded": false
       }
     },
@@ -109,6 +115,7 @@
         "required": false,
         "invalid": false,
         "visited": false,
+        "readonly": false,
         "expanded": true
       }
     }

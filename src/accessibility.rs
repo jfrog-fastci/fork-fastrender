@@ -237,21 +237,74 @@ impl<'a> BuildContext<'a> {
         }
       }
 
-      if let Some(text) = self.text_alternative(child, visited, mode, None) {
-        if text.is_empty() {
-          continue;
-        }
-
-        if !out.is_empty() && !suppress_space {
-          out.push(' ');
-        }
-
-        suppress_space = false;
-        out.push_str(&text);
+      let text = self.visible_text(child, visited, mode);
+      if text.is_empty() {
+        continue;
       }
+
+      if !out.is_empty() && !suppress_space {
+        out.push(' ');
+      }
+
+      suppress_space = false;
+      out.push_str(&text);
     }
 
     normalize_whitespace(&out)
+  }
+
+  fn visible_text(
+    &self,
+    node: &'a StyledNode,
+    visited: &mut HashSet<usize>,
+    mode: TextAlternativeMode,
+  ) -> String {
+    if !visited.insert(node.node_id) {
+      return String::new();
+    }
+
+    if self.is_hidden_for_mode(node, mode) {
+      return String::new();
+    }
+
+    match &node.node.node_type {
+      DomNodeType::Text { content } => normalize_whitespace(content),
+      DomNodeType::Document { .. } | DomNodeType::ShadowRoot { .. } => {
+        self.text_from_children(self.composed_children(node), visited, mode)
+      }
+      DomNodeType::Element { .. } | DomNodeType::Slot { .. } => {
+        let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
+
+        // Script/style never contribute to text derived from visible content.
+        if tag
+          .as_deref()
+          .is_some_and(|t| t == "script" || t == "style")
+        {
+          return String::new();
+        }
+
+        // When deriving text from visible content we ignore ARIA naming attributes; these are not
+        // rendered text and should not leak into ancestor name-from-content fallbacks. We do,
+        // however, keep textual alternatives such as `alt` for images.
+        let (role, _, _) = compute_role(node, &[], None);
+
+        // Form controls do not contribute their internal value/options as visible text.
+        if !role_allows_name_from_content(role.as_deref(), tag.as_deref()) {
+          return String::new();
+        }
+
+        if let Some(alt) = node.node.get_attribute_ref("alt") {
+          if alt_applies(tag.as_deref(), role.as_deref(), &node.node) {
+            let norm = normalize_whitespace(alt);
+            if !norm.is_empty() {
+              return norm;
+            }
+          }
+        }
+
+        self.text_from_children(self.composed_children(node), visited, mode)
+      }
+    }
   }
 
   fn is_hidden_for_mode(&self, node: &StyledNode, mode: TextAlternativeMode) -> bool {
@@ -379,7 +432,9 @@ impl<'a> BuildContext<'a> {
         if let Some(alt) = node.node.get_attribute_ref("alt") {
           if alt_applies(tag.as_deref(), role.as_deref(), &node.node) {
             let norm = normalize_whitespace(alt);
-            return Some(norm);
+            if !norm.is_empty() {
+              return Some(norm);
+            }
           }
         }
 
@@ -436,6 +491,22 @@ fn build_nodes<'a>(
       let element_ref = ElementRef::with_ancestors(&node.node, ancestors);
       let (mut role, presentational_role, role_from_attr) =
         compute_role(node, ancestors, styled_ancestors.last().copied());
+
+      // `<legend>` content is used to compute the accessible name for its owning `<fieldset>`; do
+      // not expose it as a separate node unless the author explicitly assigns an ARIA role.
+      if !role_from_attr
+        && node
+          .node
+          .tag_name()
+          .is_some_and(|t| t.eq_ignore_ascii_case("legend"))
+        && ancestors
+          .last()
+          .and_then(|parent| parent.tag_name())
+          .is_some_and(|t| t.eq_ignore_ascii_case("fieldset"))
+      {
+        return children;
+      }
+
       let mut name = compute_name(node, ctx, !presentational_role);
       let mut description = compute_description(node, ctx);
       let decorative_image = is_decorative_img(node, ctx);
@@ -446,14 +517,13 @@ fn build_nodes<'a>(
         description = None;
       }
 
-      // Regions should expose only when labelled.
-      if !role_from_attr {
-        if role.as_deref() == Some("region") && name.is_none() {
-          role = None;
-        }
-        if role.as_deref() == Some("form") && name.is_none() {
-          role = None;
-        }
+      // HTML-AAM: `section` and `form` only expose implicit landmark roles when they have an
+      // author-provided accessible name (not a name derived from their content).
+      if !role_from_attr
+        && matches!(role.as_deref(), Some("region") | Some("form"))
+        && !has_accessible_name_attr(&node.node)
+      {
+        role = None;
       }
 
       let role_description = compute_role_description(role.as_deref(), &node.node);
@@ -907,15 +977,7 @@ fn should_honor_presentational(node: &DomNode) -> bool {
   if has_global_aria_attributes(node) {
     return false;
   }
-
-  let aria_disabled = parse_bool_attr(node, "aria-disabled").unwrap_or(false);
-  let disabled = aria_disabled
-    || node
-      .get_attribute_ref("disabled")
-      .map(|v| !v.trim().is_empty())
-      .unwrap_or(false);
-
-  !compute_focusable(node, None, disabled)
+  true
 }
 
 fn compute_role(
@@ -1144,12 +1206,14 @@ fn compute_name(
   allow_name_from_content: bool,
 ) -> Option<String> {
   let mut visited = HashSet::new();
-  ctx.text_alternative(
-    node,
-    &mut visited,
-    TextAlternativeMode::Visible,
-    Some(allow_name_from_content),
-  )
+  ctx
+    .text_alternative(
+      node,
+      &mut visited,
+      TextAlternativeMode::Visible,
+      Some(allow_name_from_content),
+    )
+    .filter(|name| !name.is_empty())
 }
 
 fn native_name_from_html<'a>(
@@ -1263,17 +1327,48 @@ fn control_value_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
 }
 
 fn selected_option_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
+  let multiple = node.node.get_attribute_ref("multiple").is_some();
+  if multiple {
+    let mut selected = Vec::new();
+    collect_selected_option_text(node, false, ctx, &mut selected);
+    if selected.is_empty() {
+      return None;
+    }
+    return Some(selected.join(", "));
+  }
+
   let explicit = find_selected_option_text(node, false, ctx);
   if explicit.is_some() {
     return explicit;
   }
 
-  let multiple = node.node.get_attribute_ref("multiple").is_some();
-  if multiple {
-    return None;
+  first_enabled_option_text(node, false, ctx).or_else(|| first_option_text(node, ctx))
+}
+
+fn collect_selected_option_text(
+  node: &StyledNode,
+  optgroup_disabled: bool,
+  ctx: &BuildContext,
+  out: &mut Vec<String>,
+) {
+  let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
+  let is_option = tag.as_deref() == Some("option");
+
+  let option_disabled = node.node.get_attribute_ref("disabled").is_some();
+  let next_optgroup_disabled =
+    optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
+
+  if is_option
+    && node.node.get_attribute_ref("selected").is_some()
+    && !(option_disabled || optgroup_disabled)
+    && !ctx.is_hidden(node)
+  {
+    out.push(option_text(node, ctx));
   }
 
-  first_enabled_option_text(node, false, ctx).or_else(|| first_option_text(node, ctx))
+  for child in ctx.composed_children(node) {
+    collect_selected_option_text(child, next_optgroup_disabled, ctx, out);
+  }
 }
 
 fn find_selected_option_text(
@@ -1617,7 +1712,7 @@ fn label_association_name(
   for label_id in label_ids {
     if let Some(label_node) = ctx.node_by_id(*label_id) {
       if let Some(text) =
-        ctx.text_alternative(label_node, visited, TextAlternativeMode::Referenced, None)
+        ctx.text_alternative(label_node, visited, TextAlternativeMode::Visible, None)
       {
         if !text.is_empty() {
           parts.push(text);
@@ -1766,11 +1861,6 @@ fn fallback_name_for_role(
   ctx: &BuildContext,
 ) -> Option<String> {
   match role {
-    Some("textbox") | Some("searchbox") | Some("combobox") | Some("listbox") => {
-      control_value_text(node, ctx)
-        .map(|v| normalize_whitespace(&v))
-        .filter(|v| !v.is_empty())
-    }
     Some("option") => {
       let mut visited = HashSet::new();
       let text = ctx.subtree_text(node, &mut visited, TextAlternativeMode::Visible);
@@ -1870,9 +1960,11 @@ fn compute_value(
   ctx: &BuildContext,
 ) -> Option<String> {
   match role {
-    Some("textbox") | Some("searchbox") | Some("combobox") | Some("listbox") => control_value_text(node, ctx)
-      .map(|v| normalize_whitespace(&v))
-      .filter(|v| !v.is_empty()),
+    Some("textbox") | Some("searchbox") | Some("combobox") | Some("listbox") => {
+      control_value_text(node, ctx)
+        .map(|v| normalize_whitespace(&v))
+        .filter(|v| !v.is_empty())
+    }
     Some("spinbutton") | Some("slider") => {
       if let Some(value) = aria_value_attr(&node.node) {
         return Some(value);

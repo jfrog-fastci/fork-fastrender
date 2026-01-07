@@ -19,7 +19,7 @@
     },
     "aria-modal-false": {
       "role": "dialog",
-      "name": "Non-modal dialog",
+      "name": null,
       "description": null,
       "value": null,
       "level": null,
@@ -36,7 +36,7 @@
     },
     "readonly-input": {
       "role": "textbox",
-      "name": "Locked",
+      "name": null,
       "description": null,
       "value": "Locked",
       "level": null,
@@ -53,7 +53,7 @@
     },
     "aria-override": {
       "role": "textbox",
-      "name": "Editable text",
+      "name": null,
       "description": null,
       "value": "Editable text",
       "level": null,
@@ -64,7 +64,7 @@
         "required": false,
         "invalid": false,
         "visited": false,
-        "readonly": false,
+        "readonly": true,
         "multiline": true
       }
     }

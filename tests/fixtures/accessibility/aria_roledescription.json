@@ -13,7 +13,8 @@
         "disabled": false,
         "required": false,
         "invalid": false,
-        "visited": false
+        "visited": false,
+        "readonly": false
       }
     },
     "implicit": {
@@ -29,7 +30,8 @@
         "disabled": false,
         "required": false,
         "invalid": false,
-        "visited": false
+        "visited": false,
+        "readonly": false
       }
     },
     "empty": {
@@ -44,7 +46,8 @@
         "disabled": false,
         "required": false,
         "invalid": false,
-        "visited": false
+        "visited": false,
+        "readonly": false
       }
     },
     "norole": {
@@ -59,7 +62,8 @@
         "disabled": false,
         "required": false,
         "invalid": false,
-        "visited": false
+        "visited": false,
+        "readonly": false
       }
     }
   }

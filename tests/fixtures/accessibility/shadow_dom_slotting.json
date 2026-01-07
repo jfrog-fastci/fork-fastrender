@@ -12,7 +12,8 @@
         "disabled": false,
         "required": false,
         "invalid": false,
-        "visited": false
+        "visited": false,
+        "readonly": false
       }
     },
     "shadow": {
@@ -27,7 +28,8 @@
         "disabled": false,
         "required": false,
         "invalid": false,
-        "visited": false
+        "visited": false,
+        "readonly": false
       }
     },
     "slot-s": {
@@ -42,7 +44,8 @@
         "disabled": false,
         "required": false,
         "invalid": false,
-        "visited": false
+        "visited": false,
+        "readonly": false
       }
     },
     "light": {
@@ -57,7 +60,8 @@
         "disabled": false,
         "required": false,
         "invalid": false,
-        "visited": false
+        "visited": false,
+        "readonly": false
       }
     }
   },

@@ -13,6 +13,7 @@
         "required": false,
         "invalid": false,
         "visited": false,
+        "readonly": false,
         "busy": true
       }
     },
@@ -28,7 +29,8 @@
         "disabled": false,
         "required": false,
         "invalid": false,
-        "visited": false
+        "visited": false,
+        "readonly": false
       }
     },
     "current-page": {
@@ -44,6 +46,7 @@
         "required": false,
         "invalid": false,
         "visited": false,
+        "readonly": false,
         "current": "page"
       }
     },
@@ -60,6 +63,7 @@
         "required": false,
         "invalid": false,
         "visited": false,
+        "readonly": false,
         "current": "step"
       }
     },
@@ -76,6 +80,7 @@
         "required": false,
         "invalid": false,
         "visited": false,
+        "readonly": false,
         "current": "location"
       }
     },
@@ -92,6 +97,7 @@
         "required": false,
         "invalid": false,
         "visited": false,
+        "readonly": false,
         "current": "date"
       }
     },
@@ -108,6 +114,7 @@
         "required": false,
         "invalid": false,
         "visited": false,
+        "readonly": false,
         "current": "time"
       }
     },
@@ -124,6 +131,7 @@
         "required": false,
         "invalid": false,
         "visited": false,
+        "readonly": false,
         "current": "true"
       }
     },
@@ -139,7 +147,8 @@
         "disabled": false,
         "required": false,
         "invalid": false,
-        "visited": false
+        "visited": false,
+        "readonly": false
       }
     },
     "current-invalid": {
@@ -154,7 +163,8 @@
         "disabled": false,
         "required": false,
         "invalid": false,
-        "visited": false
+        "visited": false,
+        "readonly": false
       }
     },
     "current-empty": {
@@ -169,7 +179,8 @@
         "disabled": false,
         "required": false,
         "invalid": false,
-        "visited": false
+        "visited": false,
+        "readonly": false
       }
     }
   }

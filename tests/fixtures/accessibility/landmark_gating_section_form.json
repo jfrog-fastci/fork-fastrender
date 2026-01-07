@@ -1,12 +1,12 @@
 {
   "present": {
-    "logo": {
-      "role": "img",
-      "name": "Logo",
+    "s": {
+      "role": "generic",
+      "name": "Section text",
       "description": null,
       "value": null,
       "level": null,
-      "html_tag": "img",
+      "html_tag": "section",
       "states": {
         "focusable": false,
         "disabled": false,
@@ -16,13 +16,13 @@
         "readonly": false
       }
     },
-    "aria-named": {
-      "role": "img",
-      "name": "Meaningful",
+    "s2": {
+      "role": "region",
+      "name": "Named",
       "description": null,
       "value": null,
       "level": null,
-      "html_tag": "img",
+      "html_tag": "section",
       "states": {
         "focusable": false,
         "disabled": false,
@@ -32,13 +32,13 @@
         "readonly": false
       }
     },
-    "titled": {
-      "role": "img",
-      "name": "Tooltip title",
+    "f": {
+      "role": "generic",
+      "name": "Text",
       "description": null,
       "value": null,
       "level": null,
-      "html_tag": "img",
+      "html_tag": "form",
       "states": {
         "focusable": false,
         "disabled": false,
@@ -48,13 +48,30 @@
         "readonly": false
       }
     },
-    "missing": {
-      "role": "img",
+    "i": {
+      "role": "textbox",
       "name": null,
       "description": null,
       "value": null,
       "level": null,
-      "html_tag": "img",
+      "html_tag": "input",
+      "states": {
+        "focusable": true,
+        "disabled": false,
+        "required": false,
+        "invalid": false,
+        "visited": false,
+        "readonly": false,
+        "multiline": false
+      }
+    },
+    "f2": {
+      "role": "form",
+      "name": "Named form",
+      "description": null,
+      "value": null,
+      "level": null,
+      "html_tag": "form",
       "states": {
         "focusable": false,
         "disabled": false,
@@ -64,25 +81,23 @@
         "readonly": false
       }
     },
-    "role-img": {
-      "role": "img",
+    "i2": {
+      "role": "textbox",
       "name": null,
       "description": null,
       "value": null,
       "level": null,
-      "html_tag": "img",
+      "html_tag": "input",
       "states": {
-        "focusable": false,
+        "focusable": true,
         "disabled": false,
         "required": false,
         "invalid": false,
         "visited": false,
-        "readonly": false
+        "readonly": false,
+        "multiline": false
       }
     }
-  },
-  "absent": [
-    "decor",
-    "role-presentation"
-  ]
+  }
 }
+

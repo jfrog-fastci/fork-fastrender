@@ -1280,7 +1280,8 @@ fn accessibility_form_controls_do_not_use_content_name_fallback() {
           "required": false,
           "invalid": false,
           "visited": false,
-          "readonly": false
+          "readonly": false,
+          "multiline": false
         }
       },
       "button": {
@@ -1316,6 +1317,7 @@ fn accessibility_fixture_snapshots() {
     "modal_and_readonly",
     "header_footer_landmarks",
     "form_role_gating",
+    "landmark_gating_section_form",
     "aria_states",
     "shadow_dom_slotting",
     "native_names",
