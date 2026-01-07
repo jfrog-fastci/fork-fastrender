@@ -6978,6 +6978,7 @@ fn apply_declaration_with_base_internal_with_order(
   let needs_css_text = matches!(
     property,
     "scroll-timeline"
+      | "timeline-scope"
       | "view-timeline"
       | "animation-timeline"
       | "animation-range"
