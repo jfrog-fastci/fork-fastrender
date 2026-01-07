@@ -237,6 +237,67 @@ fn clearance_breaks_margin_collapse() {
 }
 
 #[test]
+fn float_does_not_break_sibling_margin_collapse() {
+  let a = block_with_height_and_margins(10.0, 0.0, 10.0);
+
+  let mut float_style = block_style_with_height(Some(10.0));
+  float_style.width = Some(Length::px(10.0));
+  float_style.width_keyword = None;
+  float_style.float = Float::Left;
+  let float_box = BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+
+  let b = block_with_height_and_margins(10.0, 20.0, 0.0);
+
+  let root = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![a, float_box, b],
+  );
+  let tree = BoxTree::new(root);
+  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  let a_fragment = &fragment.children[0];
+  let b_fragment = &fragment.children[2];
+
+  assert_approx(
+    b_fragment.bounds.y() - a_fragment.bounds.max_y(),
+    20.0,
+    "expected float to not interrupt sibling margin collapsing (max(10,20)=20)",
+  );
+}
+
+#[test]
+fn trailing_margins_do_not_extend_past_floats() {
+  let mut float_style = block_style_with_height(Some(100.0));
+  float_style.width = Some(Length::px(10.0));
+  float_style.width_keyword = None;
+  float_style.float = Float::Left;
+  let float_box = BoxNode::new_block(Arc::new(float_style), FormattingContextType::Block, vec![]);
+
+  let block = block_with_height_and_margins(10.0, 0.0, 20.0);
+
+  let root = BoxNode::new_block(
+    Arc::new(block_style_with_height(None)),
+    FormattingContextType::Block,
+    vec![float_box, block],
+  );
+  let tree = BoxTree::new(root);
+  let constraints = LayoutConstraints::new(AvailableSpace::Definite(100.0), AvailableSpace::Indefinite);
+  let fragment = BlockFormattingContext::new()
+    .layout(&tree.root, &constraints)
+    .expect("layout");
+
+  assert_approx(
+    fragment.bounds.height(),
+    100.0,
+    "expected trailing margin to not extend past the float's bottom edge",
+  );
+}
+
+#[test]
 fn float_establishes_bfc_for_margin_collapse() {
   let mut inner_style = block_style_with_height(Some(10.0));
   inner_style.margin_top = Some(Length::px(20.0));

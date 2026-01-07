@@ -2005,7 +2005,10 @@ impl BlockFormattingContext {
       ) > 0.0;
 
     if !allow_collapse_last || parent_has_bottom_separation {
-      content_height += trailing_margin.max(0.0);
+      // Trailing margins extend the BFC height only relative to the in-flow cursor. If floats (or
+      // overlapping negative margins) already extend `content_height` past the in-flow end, don't
+      // double-count the margin after the float bottom.
+      content_height = content_height.max(current_y + trailing_margin.max(0.0));
     }
 
     Some(Ok((fragments, content_height, Vec::new())))
@@ -2404,6 +2407,11 @@ impl BlockFormattingContext {
     let dump_cell_child_y = toggles.truthy("FASTR_DUMP_CELL_CHILD_Y");
     let mut fragments = Vec::new();
     let mut current_y: f32 = 0.0;
+    // Floats are positioned using the margin-edge cursor, but must not consume the pending
+    // collapsed margin chain between in-flow siblings (CSS 2.1 §8.3.1). Keep a separate cursor
+    // for float placement so floats can be laid out at the correct Y without advancing the
+    // in-flow stacking position.
+    let mut float_cursor_y: f32 = 0.0;
     let mut content_height: f32 = 0.0;
     let mut margin_ctx = MarginCollapseContext::new();
     let mut inline_buffer: Vec<BoxNode> = Vec::new();
@@ -3188,15 +3196,17 @@ impl BlockFormattingContext {
           &mut deadline_counter,
         )?;
 
-        // Apply any pending collapsed margin before placing the float. Floats are out of flow, so
-        // they should not disable parent/first-child margin collapsing when they appear before the
-        // first in-flow block in this BFC.
-        let pending_margin = margin_ctx.consume_pending_without_marking_content();
-        current_y += pending_margin;
+        // Floats are out-of-flow: their own margins never collapse, but they also must not break
+        // the sibling margin collapsing chain between in-flow blocks. Position floats relative to
+        // the current in-flow cursor plus the pending collapsed margin without consuming it.
+        let pending_margin = margin_ctx.pending_margin();
+        let float_base_y_local = current_y + pending_margin;
+        float_cursor_y = float_cursor_y.max(float_base_y_local);
 
-        // Honor clearance against existing floats
-        current_y =
-          float_ctx.compute_clearance(float_base_y + current_y, child.style.clear) - float_base_y;
+        // Honor clearance against existing floats for this float's placement only.
+        float_cursor_y = float_ctx
+          .compute_clearance(float_base_y + float_cursor_y, child.style.clear)
+          - float_base_y;
 
         let percentage_base = containing_width;
         let margin_left = child
@@ -3264,7 +3274,8 @@ impl BlockFormattingContext {
         let intrinsic_max =
           rebase_intrinsic_border_box_size(preferred_content, edges_base0, horizontal_edges);
 
-        let (_, float_available_width) = float_ctx.available_width_at_y(float_base_y + current_y);
+        let (_, float_available_width) =
+          float_ctx.available_width_at_y(float_base_y + float_cursor_y);
         let available = (float_available_width - margin_left - margin_right).max(0.0);
 
         let specified_width = child
@@ -3437,7 +3448,7 @@ impl BlockFormattingContext {
           side,
           margin_left + box_width + margin_right,
           float_height,
-          float_base_y + current_y,
+          float_base_y + float_cursor_y,
         );
 
         fragment.bounds = Rect::from_xywh(
@@ -3646,7 +3657,9 @@ impl BlockFormattingContext {
       ) > 0.0;
 
     if !allow_collapse_last || parent_has_bottom_separation {
-      content_height += trailing_margin.max(0.0);
+      // Trailing margins apply after the last in-flow cursor; avoid over-counting when earlier
+      // siblings extend the maximum height (e.g. due to overlaps/negative margins).
+      content_height = content_height.max(current_y + trailing_margin.max(0.0));
     }
 
     // Float boxes extend the formatting context height for BFC roots.
