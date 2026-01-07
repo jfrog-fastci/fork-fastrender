@@ -1254,7 +1254,6 @@ fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>)
   use crate::style::types::StrokeDasharray;
   use crate::style::types::StrokeLinecap;
   use crate::style::types::StrokeLinejoin;
-  use crate::style::display::Display;
   use std::fmt::Write as _;
 
   let mut out = String::new();
@@ -1410,6 +1409,24 @@ fn svg_presentation_style(style: &ComputedStyle, parent: Option<&ComputedStyle>)
       let _ = write!(&mut out, "stroke-opacity: {:.3}", opacity);
     }
   }
+
+  any.then_some(out)
+}
+
+fn svg_paint_style(style: &ComputedStyle, parent: Option<&ComputedStyle>) -> Option<String> {
+  use crate::style::display::Display;
+  use std::fmt::Write as _;
+
+  let mut out = String::new();
+  let mut any = false;
+
+  let mut start_decl = |out: &mut String, any: &mut bool| {
+    if *any {
+      out.push_str("; ");
+    } else {
+      *any = true;
+    }
+  };
 
   if style.display == Display::None {
     start_decl(&mut out, &mut any);
@@ -1582,6 +1599,9 @@ fn serialize_svg_mask_subtree_with_namespaces(
 
       if current_ns == SVG_NAMESPACE {
         if let Some(extra) = svg_presentation_style(&styled.styles, parent_svg_styles) {
+          merge_style_attribute(&mut attrs, &extra);
+        }
+        if let Some(extra) = svg_paint_style(&styled.styles, parent_svg_styles) {
           merge_style_attribute(&mut attrs, &extra);
         }
       }
@@ -2056,6 +2076,10 @@ fn serialize_svg_subtree(
       FontStyle::Normal => {}
     }
 
+    if style.opacity.is_finite() && style.opacity != 1.0 {
+      out.push_str("; opacity: 1 !important");
+    }
+
     out
   }
 
@@ -2397,6 +2421,12 @@ fn serialize_svg_subtree(
           if let Some(extra) = svg_presentation_style(&styled.styles, parent_svg_styles) {
             let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
             merge_style_attribute(attrs_mut, &extra);
+          }
+          if !is_root {
+            if let Some(extra) = svg_paint_style(&styled.styles, parent_svg_styles) {
+              let attrs_mut = owned_attrs.get_or_insert_with(|| attributes.clone());
+              merge_style_attribute(attrs_mut, &extra);
+            }
           }
         }
 

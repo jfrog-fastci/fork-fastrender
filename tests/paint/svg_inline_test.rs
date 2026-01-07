@@ -159,6 +159,33 @@ fn inline_svg_respects_opacity_when_document_css_injection_disabled_display_list
 }
 
 #[test]
+fn inline_svg_root_opacity_is_not_double_applied() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>body{margin:0;background:white} svg{display:block;opacity:0.5}</style>
+      <svg width="10" height="10" viewBox="0 0 10 10">
+        <rect width="10" height="10" fill="rgb(255,0,0)"/>
+      </svg>
+      "#;
+
+      let pixmap = renderer.render_html(html, 20, 20).expect("render svg");
+      let sample = pixel(&pixmap, 5, 5);
+      assert_eq!(sample[0], 255, "expected red channel to stay max, got {sample:?}");
+      assert_eq!(sample[3], 255, "expected opaque output pixel, got {sample:?}");
+      assert!(
+        (120..=140).contains(&sample[1]) && (120..=140).contains(&sample[2]),
+        "expected opacity 0.5 to blend once (g/b ~128), got {sample:?}"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn inline_svg_does_not_record_spurious_fetch_errors() {
   std::thread::Builder::new()
     .stack_size(64 * 1024 * 1024)
