@@ -445,3 +445,112 @@ fn grid_pagination_forced_break_after_preserves_row_gap_on_next_page() {
     offset.y
   );
 }
+
+#[test]
+fn grid_pagination_forced_break_inside_single_track_item_does_not_force_siblings() {
+  let mut grid_style = ComputedStyle::default();
+  grid_style.display = Display::Grid;
+  grid_style.width = Some(Length::px(200.0));
+  grid_style.grid_template_columns = vec![
+    GridTrack::Length(Length::px(100.0)),
+    GridTrack::Length(Length::px(100.0)),
+  ];
+  grid_style.grid_template_rows = vec![GridTrack::Length(Length::px(160.0))];
+  grid_style.align_items = AlignItems::End;
+  let grid_style = Arc::new(grid_style);
+
+  let mut item_a_style = ComputedStyle::default();
+  item_a_style.display = Display::Block;
+  item_a_style.grid_column_start = 1;
+  item_a_style.grid_column_end = 2;
+  item_a_style.grid_row_start = 1;
+  item_a_style.grid_row_end = 2;
+  let item_a_style = Arc::new(item_a_style);
+
+  let mut a1_style = ComputedStyle::default();
+  a1_style.display = Display::Block;
+  a1_style.height = Some(Length::px(80.0));
+  let a1_style = Arc::new(a1_style);
+
+  let mut a2_style = ComputedStyle::default();
+  a2_style.display = Display::Block;
+  a2_style.height = Some(Length::px(80.0));
+  a2_style.break_before = BreakBetween::Page;
+  let a2_style = Arc::new(a2_style);
+
+  let a1 = BoxNode::new_block(a1_style, FormattingContextType::Block, vec![]);
+  let a2 = BoxNode::new_block(a2_style, FormattingContextType::Block, vec![]);
+  let item_a = BoxNode::new_block(item_a_style, FormattingContextType::Block, vec![a1, a2]);
+
+  let mut item_b_style = ComputedStyle::default();
+  item_b_style.display = Display::Block;
+  item_b_style.height = Some(Length::px(20.0));
+  item_b_style.grid_column_start = 2;
+  item_b_style.grid_column_end = 3;
+  item_b_style.grid_row_start = 1;
+  item_b_style.grid_row_end = 2;
+  let item_b_style = Arc::new(item_b_style);
+  let item_b = BoxNode::new_block(item_b_style, FormattingContextType::Block, vec![]);
+
+  let grid = BoxNode::new_block(
+    grid_style,
+    FormattingContextType::Grid,
+    vec![item_a, item_b],
+  );
+  let root = BoxNode::new_block(
+    Arc::new(ComputedStyle::default()),
+    FormattingContextType::Block,
+    vec![grid],
+  );
+  let box_tree = BoxTree::new(root);
+
+  let item_a_box = &box_tree.root.children[0].children[0];
+  let a1_id = item_a_box.children[0].id;
+  let a2_id = item_a_box.children[1].id;
+  let b_id = box_tree.root.children[0].children[1].id;
+
+  let engine = LayoutEngine::new(LayoutConfig::for_pagination(Size::new(200.0, 200.0), 0.0));
+  let tree = engine.layout_tree(&box_tree).expect("layout");
+
+  assert_eq!(
+    tree.additional_fragments.len(),
+    1,
+    "expected forced break to create exactly two pages"
+  );
+  let first_page = &tree.root;
+  let second_page = &tree.additional_fragments[0];
+
+  assert_eq!(
+    fragments_with_id(first_page, a1_id).len(),
+    1,
+    "expected first block to live on the first page"
+  );
+  assert!(
+    fragments_with_id(first_page, a2_id).is_empty(),
+    "expected forced break inside the first grid item to move its continuation to the next page"
+  );
+  assert_eq!(
+    fragments_with_id(first_page, b_id).len(),
+    1,
+    "expected sibling grid item to remain on the first page"
+  );
+
+  assert_eq!(
+    fragments_with_id(second_page, a2_id).len(),
+    1,
+    "expected continuation content on the second page"
+  );
+  assert!(
+    fragments_with_id(second_page, b_id).is_empty(),
+    "expected sibling grid item to not be forced onto the second page"
+  );
+
+  let pages = paginated_pages(&tree);
+  for id in [a1_id, a2_id, b_id] {
+    let count: usize = pages
+      .iter()
+      .map(|page| fragments_with_id(page, id).len())
+      .sum();
+    assert_eq!(count, 1, "expected box id {id} to appear exactly once total");
+  }
+}

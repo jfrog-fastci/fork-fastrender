@@ -1158,8 +1158,18 @@ pub fn fragment_tree(
   } else {
     FragmentationContext::Page
   };
+
+  // Model forced breaks inside single-track grid items (parallel fragmentation flow) as inserting
+  // blank space up to the next fragmentainer boundary (CSS Grid 2 §Fragmenting Grid Layout). This
+  // ensures the continuation content appears on later pages without forcing sibling grid items onto
+  // the next page.
+  let mut root = root.clone();
+  if matches!(context, FragmentationContext::Page) {
+    apply_grid_parallel_flow_forced_break_shifts(&mut root, axes, options.fragmentainer_size);
+  }
+
   let mut analyzer = FragmentationAnalyzer::new(
-    root,
+    &root,
     context,
     axes,
     if matches!(context, FragmentationContext::Page) {
@@ -1189,7 +1199,7 @@ pub fn fragment_tree(
     }
 
     if let Some(mut clipped) = clip_node(
-      root,
+      &root,
       &axis,
       start,
       end,
