@@ -30578,7 +30578,77 @@ fn parse_variation_setting<'i, 't>(
   };
 
   parser.skip_whitespace();
-  let value = parser.expect_number()?;
+  let value = match parser.next()? {
+    Token::Number { value, .. } => *value,
+    Token::Function(name) if name.as_ref().eq_ignore_ascii_case("calc") => {
+      fn parse_calc_number_sum<'i, 't>(
+        input: &mut Parser<'i, 't>,
+      ) -> Result<f32, cssparser::ParseError<'i, ()>> {
+        let mut left = parse_calc_number_product(input)?;
+        loop {
+          let sign = match input.try_parse(|p| match p.next()? {
+            Token::Delim('+') => Ok(1.0),
+            Token::Delim('-') => Ok(-1.0),
+            _ => Err(p.new_custom_error::<(), ()>(())),
+          }) {
+            Ok(sign) => sign,
+            Err(_) => break,
+          };
+          let right = parse_calc_number_product(input)?;
+          left += right * sign;
+        }
+        Ok(left)
+      }
+
+      fn parse_calc_number_product<'i, 't>(
+        input: &mut Parser<'i, 't>,
+      ) -> Result<f32, cssparser::ParseError<'i, ()>> {
+        let mut left = parse_calc_number_factor(input)?;
+        loop {
+          let op = match input.try_parse(|p| match p.next()? {
+            Token::Delim('*') => Ok('*'),
+            Token::Delim('/') => Ok('/'),
+            _ => Err(p.new_custom_error::<(), ()>(())),
+          }) {
+            Ok(op) => op,
+            Err(_) => break,
+          };
+          let right = parse_calc_number_factor(input)?;
+          match op {
+            '*' => left *= right,
+            '/' => {
+              if right == 0.0 {
+                return Err(input.new_custom_error(()));
+              }
+              left /= right;
+            }
+            _ => {}
+          }
+        }
+        Ok(left)
+      }
+
+      fn parse_calc_number_factor<'i, 't>(
+        input: &mut Parser<'i, 't>,
+      ) -> Result<f32, cssparser::ParseError<'i, ()>> {
+        let location = input.current_source_location();
+        let token = input.next()?;
+        match token {
+          Token::Number { value, .. } => Ok(*value),
+          Token::Function(name) if name.as_ref().eq_ignore_ascii_case("calc") => {
+            input.parse_nested_block(parse_calc_number_sum)
+          }
+          Token::ParenthesisBlock => input.parse_nested_block(parse_calc_number_sum),
+          Token::Delim('+') => parse_calc_number_factor(input),
+          Token::Delim('-') => parse_calc_number_factor(input).map(|v| -v),
+          _ => Err(location.new_custom_error(())),
+        }
+      }
+
+      parser.parse_nested_block(parse_calc_number_sum)?
+    }
+    _ => return Err(location.new_custom_error(())),
+  };
 
   Ok(FontVariationSetting {
     tag: tag_bytes,

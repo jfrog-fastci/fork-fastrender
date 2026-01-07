@@ -25,6 +25,7 @@ mod custom_property_wide_keywords_test;
 mod defaults_test;
 mod extract_print;
 mod flex_property_test;
+mod font_variation_settings_calc_test;
 mod forgiving_selector_list_test;
 mod grid_property_test;
 mod has_selector_quirks_bloom_test;
