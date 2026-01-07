@@ -6134,6 +6134,7 @@ impl<'a> Element for ElementRef<'a> {
       | PseudoElement::FirstLetter
       | PseudoElement::Marker
       | PseudoElement::Backdrop => true,
+      PseudoElement::MozFocusInner => false,
       PseudoElement::Placeholder => self.is_placeholder_shown(),
       PseudoElement::SliderThumb | PseudoElement::SliderTrack => {
         let Some(tag) = self.node.tag_name() else {

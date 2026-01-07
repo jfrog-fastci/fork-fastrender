@@ -531,6 +531,7 @@ pub enum PseudoElement {
   Marker,
   Backdrop,
   Placeholder,
+  MozFocusInner,
   SliderThumb,
   SliderTrack,
   Slotted(Box<[Selector<FastRenderSelectorImpl>]>),
@@ -594,6 +595,7 @@ impl ToCss for PseudoElement {
       PseudoElement::Marker => dest.write_str("::marker"),
       PseudoElement::Backdrop => dest.write_str("::backdrop"),
       PseudoElement::Placeholder => dest.write_str("::placeholder"),
+      PseudoElement::MozFocusInner => dest.write_str("::-moz-focus-inner"),
       PseudoElement::SliderThumb => dest.write_str("::-webkit-slider-thumb"),
       PseudoElement::SliderTrack => dest.write_str("::-webkit-slider-runnable-track"),
       PseudoElement::Slotted(selectors) => {
@@ -673,6 +675,7 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       | "-webkit-input-placeholder"
       | "-moz-placeholder"
       | "-ms-input-placeholder" => true,
+      "-moz-focus-inner" => true,
       "-webkit-slider-thumb" | "-moz-range-thumb" | "-ms-thumb" => true,
       "-webkit-slider-runnable-track" | "-moz-range-track" | "-ms-track" => true,
       _ => false,
@@ -886,6 +889,7 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       | "-webkit-input-placeholder"
       | "-moz-placeholder"
       | "-ms-input-placeholder" => Ok(PseudoElement::Placeholder),
+      "-moz-focus-inner" => Ok(PseudoElement::MozFocusInner),
       "-webkit-slider-thumb" | "-moz-range-thumb" | "-ms-thumb" => Ok(PseudoElement::SliderThumb),
       "-webkit-slider-runnable-track" | "-moz-range-track" | "-ms-track" => Ok(PseudoElement::SliderTrack),
       _ => Err(ParseError {
@@ -1409,6 +1413,13 @@ mod tests {
       );
     }
 
+    assert_eq!(
+      parser
+        .parse_pseudo_element(loc, cssparser::CowRcStr::from("-moz-focus-inner"))
+        .unwrap(),
+      PseudoElement::MozFocusInner
+    );
+
     for name in ["-webkit-slider-thumb", "-moz-range-thumb", "-ms-thumb"] {
       assert_eq!(
         parser
@@ -1614,6 +1625,23 @@ mod tests {
     let mut input = ParserInput::new("button::part(name)");
     let mut parser = Parser::new(&mut input);
     assert!(SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok());
+  }
+
+  #[test]
+  fn parses_moz_focus_inner_pseudo_element_selectors() {
+    for selector_text in [
+      "button::-moz-focus-inner",
+      "input::-moz-focus-inner",
+      "button::-moz-focus-inner, input::-moz-focus-inner",
+      "button:-moz-focus-inner, input:-moz-focus-inner",
+    ] {
+      let mut input = ParserInput::new(selector_text);
+      let mut parser = Parser::new(&mut input);
+      assert!(
+        SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok(),
+        "{selector_text} should parse"
+      );
+    }
   }
 
   #[test]
