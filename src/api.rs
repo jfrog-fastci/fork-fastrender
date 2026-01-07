@@ -4469,6 +4469,7 @@ impl FastRender {
     config: FastRenderConfig,
     fetcher: Option<Arc<dyn ResourceFetcher>>,
   ) -> Result<Self> {
+    crate::rayon_global::ensure_global_pool().map_err(Error::Other)?;
     let font_config = config.font_config.clone();
     let fetcher = resolve_fetcher(&config, fetcher);
     let font_context =
