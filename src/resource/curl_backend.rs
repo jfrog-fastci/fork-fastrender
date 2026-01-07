@@ -374,6 +374,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
   accept_encoding: Option<&str>,
   validators: Option<super::HttpCacheValidators<'a>>,
   referrer: Option<&str>,
+  referrer_policy: super::ReferrerPolicy,
   deadline: &Option<render_control::RenderDeadline>,
   started: Instant,
 ) -> Result<super::FetchedResource> {
@@ -454,6 +455,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
         validators,
         kind,
         referrer,
+        referrer_policy,
       );
 
       let network_timer = super::start_network_fetch_diagnostics();
@@ -657,6 +659,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
             Some("identity"),
             validators,
             referrer,
+            referrer_policy,
             deadline,
             started,
           );
@@ -928,6 +931,7 @@ mod tests {
       None,
       super::super::FetchContextKind::Other,
       None,
+      super::super::ReferrerPolicy::default(),
     );
     let args = build_curl_args(
       "https://example.com/",
