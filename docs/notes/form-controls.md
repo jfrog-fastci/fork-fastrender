@@ -73,9 +73,9 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
 - Current limitations:
   - `appearance:none` does **not** turn the element into a normal container: the control is still a `ReplacedType::FormControl`, so its DOM children are not laid out (e.g. `<button><svg>…</svg>Label</button>` collapses to a plain text label).
   - `appearance:none` does **not** yet disable all affordances (e.g. `<input type=color>` still paints a swatch + hex label; `FormControlKind::Color` does not currently special-case `Appearance::None`).
-  - Range pseudo-element selectors are normalized internally (WebKit/Mozilla/MS spellings are accepted), but painters still only consume a subset of the style hooks:
-    - `slider_thumb_style` is used by the immediate painter only in `appearance:none` mode.
-    - `slider_track_style` is currently used by the display-list renderer only when `appearance != none` (the immediate painter ignores it).
+- Range pseudo-element selectors are normalized internally (WebKit/Mozilla/MS spellings are accepted), but painters still only consume a subset of the style hooks:
+  - `slider_thumb_style` is used by both painters to style the thumb (including in `appearance:none` mode for custom sliders).
+  - `slider_track_style` is used by both painters when `appearance != none` (the UA track/fill path); it is still not used for `appearance:none` painting (the element’s own background/border acts as the track).
 
 ## Intended direction (fallback rendering model)
 
