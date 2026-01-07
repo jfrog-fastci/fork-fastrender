@@ -7684,7 +7684,10 @@ impl FlexFormattingContext {
       }
     }
 
-    if !children.is_empty() {
+    // Only apply the non-increasing main-axis fallback for single-line (nowrap) flex containers.
+    // Wrapped flex containers intentionally reset their main-axis cursor at line breaks; treating
+    // that as an error destroys Taffy's line placement (including `align-content` offsets).
+    if !children.is_empty() && matches!(box_node.style.flex_wrap, FlexWrap::NoWrap) {
       if main_axis_is_horizontal {
         let mut non_increasing = false;
         let mut last_x = children[0].bounds.x();
@@ -7742,7 +7745,11 @@ impl FlexFormattingContext {
         .fold(f32::INFINITY, f32::min);
       if max_child_x > rect.width() + 0.5 || min_child_x < -0.5 {
         let avail = rect.width();
-        let start_y = children.iter().map(|c| c.bounds.y()).fold(0.0, f32::min);
+        let start_y = children
+          .iter()
+          .map(|c| c.bounds.y())
+          .fold(f32::INFINITY, f32::min);
+        let start_y = if start_y.is_finite() { start_y } else { 0.0 };
         let mut cursor_x = 0.0;
         let mut cursor_y = start_y;
         let mut row_height: f32 = 0.0;
