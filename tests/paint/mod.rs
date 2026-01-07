@@ -69,6 +69,7 @@ mod responsive_width_srcset_golden;
 mod scene_tree_test;
 mod shadow_dom_slotted_paint;
 mod stacking_test;
+mod stacking_context_descendant_shadow_bounds;
 mod svg_context_paint_font;
 mod svg_filter_background_image;
 mod svg_filter_color_interpolation;
