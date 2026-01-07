@@ -8480,6 +8480,13 @@ impl FlexFormattingContext {
       self.computed_style_to_taffy(box_node, true, None, auto_unskipped_for_pass)?;
     root_style.size.width = Dimension::length(container_width);
     root_style.size.height = Dimension::length(container_height);
+    // Flexbox §abspos-items defines the cross-axis edges of the static-position rectangle as the
+    // flex container's content edges. That intentionally ignores `align-content` (which would
+    // otherwise shift the flex line(s) within the container in a wrapping flex container).
+    //
+    // Force the flex line to fill the cross size so `align-self`/`align-items` compute against the
+    // content box edges regardless of the container's authored `align-content`.
+    root_style.align_content = Some(taffy::style::AlignContent::Stretch);
 
     let available_space = taffy::geometry::Size {
       width: AvailableSpace::Definite(container_width),

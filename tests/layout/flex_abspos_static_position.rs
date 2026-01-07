@@ -5,7 +5,8 @@ use fastrender::style::display::Display;
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::position::Position;
 use fastrender::style::types::{
-  AlignItems, BorderStyle, BoxSizing, Direction, FlexDirection, FlexWrap, JustifyContent, WritingMode,
+  AlignContent, AlignItems, BorderStyle, BoxSizing, Direction, FlexDirection, FlexWrap, JustifyContent,
+  WritingMode,
 };
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
@@ -212,6 +213,33 @@ fn abspos_static_position_respects_wrap_reverse_with_horizontal_cross_axis() {
 
   let (x, y) = layout_abspos_child(container_style, child_style);
   assert!((x - 90.0).abs() < 0.1, "expected x≈90, got {}", x);
+  assert!((y - 0.0).abs() < 0.1, "expected y≈0, got {}", y);
+}
+
+#[test]
+fn abspos_static_position_ignores_align_content() {
+  // Flexbox §abspos-items: the cross-axis edges of the static-position rectangle are the flex
+  // container's content edges (and thus ignore `align-content`).
+  //
+  // If `align-content` were applied to the sole flex line, `align-content:center` in a wrapping
+  // container would center the line (and therefore the abspos child) at y≈45. The spec says the
+  // abspos child should instead align against the content box edges (y≈0 for `align-items:flex-start`).
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.flex_wrap = FlexWrap::Wrap;
+  container_style.align_content = AlignContent::Center;
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (_, y) = layout_abspos_child(container_style, child_style);
   assert!((y - 0.0).abs() < 0.1, "expected y≈0, got {}", y);
 }
 
