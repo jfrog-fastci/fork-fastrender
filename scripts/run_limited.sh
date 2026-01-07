@@ -124,6 +124,37 @@ if [[ "${any_limit}" == "false" ]]; then
   exec "${cmd[@]}"
 fi
 
+# Rustup's shim binaries (`cargo`, `rustc`, ...) can reserve a large amount of virtual address
+# space. When RLIMIT_AS is set, they may fail before delegating to the real toolchain binary.
+# Resolve `cargo` to the actual toolchain executable before applying limits so callers can use
+# `scripts/run_limited.sh --as ... -- cargo ...` reliably.
+if [[ -n "${AS}" && "${AS}" != "0" && "${AS}" != "unlimited" ]] \
+  && [[ "${cmd[0]}" == "cargo" ]] \
+  && command -v rustup >/dev/null 2>&1
+then
+  cargo_shim="$(command -v cargo || true)"
+  if [[ -n "${cargo_shim}" ]]; then
+    cargo_target="${cargo_shim}"
+    if [[ -L "${cargo_shim}" ]]; then
+      cargo_target="$(readlink "${cargo_shim}" 2>/dev/null || echo "${cargo_shim}")"
+    fi
+
+    if [[ "${cargo_target}" == "rustup" || "${cargo_target}" == */rustup ]]; then
+      toolchain=""
+      if [[ ${#cmd[@]} -gt 1 && "${cmd[1]}" == +* ]]; then
+        toolchain="${cmd[1]#+}"
+        cmd=("${cmd[0]}" "${cmd[@]:2}")
+      fi
+
+      if [[ -n "${toolchain}" ]]; then
+        cmd[0]="$(rustup which --toolchain "${toolchain}" cargo)"
+      else
+        cmd[0]="$(rustup which cargo)"
+      fi
+    fi
+  fi
+fi
+
 if command -v prlimit >/dev/null 2>&1; then
   # Apply limits to the current process (inherited by `exec`). We normalize size inputs to bytes
   # because `prlimit` expects byte counts and some builds mis-handle suffix parsing.
