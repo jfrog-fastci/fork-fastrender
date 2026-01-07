@@ -12230,16 +12230,27 @@ mod tests {
     let mut select = BoxNode::new_replaced(
       Arc::new(replaced_style),
       ReplacedType::FormControl(box_tree::FormControl {
-        control: box_tree::FormControlKind::Select {
-          label: "Option".to_string(),
+        control: box_tree::FormControlKind::Select(box_tree::SelectControl {
           multiple: true,
-        },
+          size: 1,
+          items: vec![box_tree::SelectItem::Option {
+            label: "Option".to_string(),
+            value: "Option".to_string(),
+            selected: true,
+            disabled: false,
+            in_optgroup: false,
+          }],
+          selected: vec![0],
+        }),
         appearance: crate::style::types::Appearance::Auto,
         disabled: false,
         focused: false,
         focus_visible: false,
         required: false,
         invalid: false,
+        placeholder_style: None,
+        slider_thumb_style: None,
+        slider_track_style: None,
       }),
       Some(Size::new(120.0, 40.0)),
       None,
