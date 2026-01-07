@@ -10190,6 +10190,24 @@ impl FastRender {
             }
           }
         }
+      } else if needs_ratio_probe && explicit_no_ratio {
+        // When the resource explicitly has no intrinsic ratio (e.g. an SVG with
+        // `preserveAspectRatio="none"`), we cannot complete the missing intrinsic axis using a
+        // ratio. If the probe returned full intrinsic dimensions, use the missing axis value from
+        // the resource while preserving any authored dimension attribute.
+        if let Some(size) = outcome.intrinsic_size {
+          if let Some(width) = authored_width {
+            if intrinsic_axis_is_known(size.height) {
+              replaced_box.intrinsic_size = Some(Size::new(width, size.height));
+              have_resource_dimensions = true;
+            }
+          } else if let Some(height) = authored_height {
+            if intrinsic_axis_is_known(size.width) {
+              replaced_box.intrinsic_size = Some(Size::new(size.width, height));
+              have_resource_dimensions = true;
+            }
+          }
+        }
       } else if needs_ratio_probe && !explicit_no_ratio {
         if let Some(ratio) = outcome
           .aspect_ratio
@@ -10713,6 +10731,25 @@ impl FastRender {
                       .or_else(|| if h > 0.0 { Some(w / h) } else { None });
                   }
                   have_resource_dimensions = true;
+                }
+              } else if needs_ratio_probe && explicit_no_ratio {
+                if let Some((w, h)) = image.css_dimensions(
+                  orientation,
+                  &style.image_resolution,
+                  self.device_pixel_ratio,
+                  selected.density,
+                ) {
+                  if let Some(width) = authored_width {
+                    if intrinsic_axis_is_known(h) {
+                      replaced_box.intrinsic_size = Some(Size::new(width, h));
+                      have_resource_dimensions = true;
+                    }
+                  } else if let Some(height) = authored_height {
+                    if intrinsic_axis_is_known(w) {
+                      replaced_box.intrinsic_size = Some(Size::new(w, height));
+                      have_resource_dimensions = true;
+                    }
+                  }
                 }
               } else if needs_ratio_probe && !explicit_no_ratio {
                 if let Some(ratio) = image
@@ -17541,6 +17578,46 @@ mod tests {
     };
 
     assert_eq!(replaced.intrinsic_size, Some(Size::new(200.0, 100.0)));
+    assert!(replaced.no_intrinsic_ratio);
+    assert_eq!(replaced.aspect_ratio, None);
+  }
+
+  #[test]
+  fn resolve_intrinsic_sizes_img_preserve_aspect_ratio_none_completes_missing_intrinsic_axis() {
+    let renderer = FastRender::new().expect("init renderer");
+    let mut style = ComputedStyle::default();
+    style.width = Some(Length::px(100.0));
+    style.width_keyword = None;
+    style.height = None;
+    style.height_keyword = None;
+    let mut node = BoxNode::new_replaced(
+      Arc::new(style),
+      ReplacedType::Image {
+        src: r"<svg xmlns='http://www.w3.org/2000/svg' width='200' height='100' viewBox='0 0 50 100' preserveAspectRatio='none'></svg>"
+          .to_string(),
+        alt: None,
+        sizes: None,
+        srcset: Vec::new(),
+        picture_sources: Vec::new(),
+        crossorigin: CrossOriginAttribute::None,
+        referrer_policy: None,
+      },
+      // Simulate a single HTML dimension attribute (e.g., `<img width=200>`).
+      Some(Size::new(200.0, 0.0)),
+      None,
+    );
+
+    renderer.resolve_replaced_intrinsic_sizes(&mut node, Size::new(800.0, 600.0));
+    let replaced = match node.box_type {
+      BoxType::Replaced(ref r) => r,
+      _ => panic!("not replaced"),
+    };
+
+    assert_eq!(
+      replaced.intrinsic_size,
+      Some(Size::new(200.0, 100.0)),
+      "expected probe to supply missing intrinsic height even when intrinsic ratio is none"
+    );
     assert!(replaced.no_intrinsic_ratio);
     assert_eq!(replaced.aspect_ratio, None);
   }
