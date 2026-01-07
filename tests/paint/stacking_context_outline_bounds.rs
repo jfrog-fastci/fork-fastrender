@@ -1,6 +1,8 @@
-use fastrender::FastRender;
+use fastrender::debug::runtime::RuntimeToggles;
+use fastrender::{FastRender, FastRenderConfig};
 use rayon::ThreadPoolBuilder;
 use resvg::tiny_skia::Pixmap;
+use std::collections::HashMap;
 use std::sync::Once;
 
 static INIT_RAYON: Once = Once::new();
@@ -38,7 +40,12 @@ fn stacking_context_layer_bounds_do_not_clip_outline() {
   <div id="box"></div>
   "#;
 
-  let mut renderer = FastRender::new().expect("renderer");
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "display_list".to_string(),
+  )]));
+  let config = FastRenderConfig::new().with_runtime_toggles(toggles);
+  let mut renderer = FastRender::with_config(config).expect("renderer");
   let pixmap = renderer.render_html(html, 120, 120).expect("render");
 
   let outline_px = color_at(&pixmap, 30, 50);
