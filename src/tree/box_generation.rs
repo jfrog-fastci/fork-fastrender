@@ -5149,6 +5149,27 @@ mod tests {
   }
 
   #[test]
+  fn moz_appearance_none_propagates_to_form_control() {
+    let html =
+      "<html><body><input id=\"plain\" style=\"-moz-appearance: none; border: 0\"></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    fn find_form_control<'a>(node: &'a BoxNode) -> Option<&'a FormControl> {
+      if let BoxType::Replaced(repl) = &node.box_type {
+        if let ReplacedType::FormControl(control) = &repl.replaced_type {
+          return Some(control);
+        }
+      }
+      node.children.iter().find_map(find_form_control)
+    }
+
+    let control = find_form_control(&box_tree.root).expect("expected form control");
+    assert!(matches!(control.appearance, Appearance::None));
+  }
+
+  #[test]
   fn replaced_media_defaults_to_300_by_150() {
     let style = default_style();
 
