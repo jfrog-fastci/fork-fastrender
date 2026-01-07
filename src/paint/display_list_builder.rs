@@ -2811,56 +2811,39 @@ impl DisplayListBuilder {
     viewport: Option<(f32, f32)>,
   ) -> Option<ClipItem> {
     let clip = style.clip.as_ref()?;
-    let viewport = viewport.unwrap_or_else(|| (bounds.width(), bounds.height()));
-    let width = bounds.width();
-    let height = bounds.height();
-    let resolve = |component: &crate::style::types::ClipComponent, base: f32| -> f32 {
-      match component {
-        crate::style::types::ClipComponent::Auto => base,
-        crate::style::types::ClipComponent::Length(len) => len
-          .resolve_with_context(
-            Some(base),
-            viewport.0,
-            viewport.1,
-            style.font_size,
-            style.root_font_size,
-          )
-          .unwrap_or_else(|| len.to_px()),
+    let width = bounds.width().max(0.0);
+    let height = bounds.height().max(0.0);
+    // CSS 2.1 `clip`: rect() components are offsets from the element's border box.
+    // Convert to absolute coordinates by adding the element's origin.
+    let left_offset = match &clip.left {
+      crate::style::types::ClipComponent::Auto => 0.0,
+      crate::style::types::ClipComponent::Length(len) => {
+        Self::resolve_length_for_paint(len, style.font_size, style.root_font_size, width, viewport)
+      }
+    };
+    let top_offset = match &clip.top {
+      crate::style::types::ClipComponent::Auto => 0.0,
+      crate::style::types::ClipComponent::Length(len) => {
+        Self::resolve_length_for_paint(len, style.font_size, style.root_font_size, height, viewport)
+      }
+    };
+    let right_offset = match &clip.right {
+      crate::style::types::ClipComponent::Auto => width,
+      crate::style::types::ClipComponent::Length(len) => {
+        Self::resolve_length_for_paint(len, style.font_size, style.root_font_size, width, viewport)
+      }
+    };
+    let bottom_offset = match &clip.bottom {
+      crate::style::types::ClipComponent::Auto => height,
+      crate::style::types::ClipComponent::Length(len) => {
+        Self::resolve_length_for_paint(len, style.font_size, style.root_font_size, height, viewport)
       }
     };
 
-    let left = match &clip.left {
-      crate::style::types::ClipComponent::Auto => bounds.x(),
-      crate::style::types::ClipComponent::Length(len) => {
-        bounds.x()
-          + len
-            .resolve_with_context(
-              Some(width),
-              viewport.0,
-              viewport.1,
-              style.font_size,
-              style.root_font_size,
-            )
-            .unwrap_or_else(|| len.to_px())
-      }
-    };
-    let top = match &clip.top {
-      crate::style::types::ClipComponent::Auto => bounds.y(),
-      crate::style::types::ClipComponent::Length(len) => {
-        bounds.y()
-          + len
-            .resolve_with_context(
-              Some(height),
-              viewport.0,
-              viewport.1,
-              style.font_size,
-              style.root_font_size,
-            )
-            .unwrap_or_else(|| len.to_px())
-      }
-    };
-    let right = resolve(&clip.right, bounds.x() + width);
-    let bottom = resolve(&clip.bottom, bounds.y() + height);
+    let left = bounds.x() + left_offset;
+    let top = bounds.y() + top_offset;
+    let right = bounds.x() + right_offset;
+    let bottom = bounds.y() + bottom_offset;
 
     let rect = Rect::from_xywh(left, top, right - left, bottom - top);
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
@@ -3878,17 +3861,14 @@ impl DisplayListBuilder {
           match component {
             BackgroundSizeComponent::Auto => None,
             BackgroundSizeComponent::Length(len) => {
-              let (vw, vh) = viewport.unwrap_or((area_w, area_h));
-              len
-                .resolve_with_context(Some(area), vw, vh, font_size, root_font_size)
-                .or_else(|| {
-                  if len.unit.is_absolute() {
-                    Some(len.to_px())
-                  } else {
-                    None
-                  }
-                })
-                .map(|v| v.max(0.0))
+              Some(Self::resolve_length_for_paint(
+                &len,
+                font_size,
+                root_font_size,
+                area,
+                viewport,
+              ))
+              .map(|v| v.max(0.0))
             }
           }
         };
@@ -9438,6 +9418,104 @@ mod tests {
     let len = Length::new(10.0, LengthUnit::Vw);
     let resolved = DisplayListBuilder::resolve_length_for_paint(&len, 10.0, 10.0, 0.0, None);
     assert_eq!(resolved, 0.0);
+  }
+
+  #[test]
+  fn clip_rect_from_style_offsets_are_relative_to_bounds_origin() {
+    let mut style = ComputedStyle::default();
+    style.clip = Some(ClipRect {
+      top: ClipComponent::Length(Length::px(10.0)),
+      right: ClipComponent::Length(Length::px(60.0)),
+      bottom: ClipComponent::Length(Length::px(70.0)),
+      left: ClipComponent::Length(Length::px(20.0)),
+    });
+
+    let bounds = Rect::from_xywh(50.0, 40.0, 100.0, 80.0);
+    let clip = DisplayListBuilder::clip_rect_from_style(&style, bounds, None).expect("clip rect");
+    let rect = match clip.shape {
+      ClipShape::Rect { rect, .. } => rect,
+      other => panic!("expected rect clip, got {other:?}"),
+    };
+
+    assert!((rect.x() - 70.0).abs() < 1e-6);
+    assert!((rect.y() - 50.0).abs() < 1e-6);
+    assert!((rect.width() - 40.0).abs() < 1e-6);
+    assert!((rect.height() - 60.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn clip_rect_from_style_resolves_rem_against_root_font_size() {
+    let mut style = ComputedStyle::default();
+    style.font_size = 10.0;
+    style.root_font_size = 20.0;
+    style.clip = Some(ClipRect {
+      top: ClipComponent::Length(Length::px(0.0)),
+      right: ClipComponent::Auto,
+      bottom: ClipComponent::Auto,
+      left: ClipComponent::Length(Length::rem(1.0)),
+    });
+
+    let bounds = Rect::from_xywh(0.0, 0.0, 100.0, 80.0);
+    let clip = DisplayListBuilder::clip_rect_from_style(&style, bounds, None).expect("clip rect");
+    let rect = match clip.shape {
+      ClipShape::Rect { rect, .. } => rect,
+      other => panic!("expected rect clip, got {other:?}"),
+    };
+
+    assert!((rect.x() - 20.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn clip_rect_from_style_viewport_units_require_viewport() {
+    let mut style = ComputedStyle::default();
+    style.clip = Some(ClipRect {
+      top: ClipComponent::Length(Length::px(0.0)),
+      right: ClipComponent::Auto,
+      bottom: ClipComponent::Auto,
+      left: ClipComponent::Length(Length::new(10.0, LengthUnit::Vw)),
+    });
+
+    let bounds = Rect::from_xywh(0.0, 0.0, 200.0, 100.0);
+    let clip = DisplayListBuilder::clip_rect_from_style(&style, bounds, None).expect("clip rect");
+    let rect = match clip.shape {
+      ClipShape::Rect { rect, .. } => rect,
+      other => panic!("expected rect clip, got {other:?}"),
+    };
+    assert!((rect.x() - 0.0).abs() < 1e-6);
+
+    let clip =
+      DisplayListBuilder::clip_rect_from_style(&style, bounds, Some((200.0, 100.0))).expect("clip");
+    let rect = match clip.shape {
+      ClipShape::Rect { rect, .. } => rect,
+      other => panic!("expected rect clip, got {other:?}"),
+    };
+    assert!((rect.x() - 20.0).abs() < 1e-6);
+  }
+
+  #[test]
+  fn background_size_viewport_units_require_viewport() {
+    let mut layer = BackgroundLayer::default();
+    layer.size = BackgroundSize::Explicit(
+      BackgroundSizeComponent::Length(Length::new(10.0, LengthUnit::Vw)),
+      BackgroundSizeComponent::Length(Length::new(10.0, LengthUnit::Vh)),
+    );
+
+    let (w, h) = DisplayListBuilder::compute_background_size(&layer, 10.0, 10.0, None, 100.0, 100.0, 0.0, 0.0);
+    assert_eq!(w, 0.0);
+    assert_eq!(h, 0.0);
+
+    let (w, h) = DisplayListBuilder::compute_background_size(
+      &layer,
+      10.0,
+      10.0,
+      Some((200.0, 100.0)),
+      100.0,
+      100.0,
+      0.0,
+      0.0,
+    );
+    assert!((w - 20.0).abs() < 1e-6);
+    assert!((h - 10.0).abs() < 1e-6);
   }
 
   #[test]
