@@ -560,6 +560,86 @@ mod tests {
   }
 
   #[test]
+  fn bundled_fetcher_roundtrips_nosniff_stylesheet_metadata() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      tmp.path().join("document.html"),
+      "<!doctype html><html></html>",
+    )
+    .expect("write doc");
+    std::fs::write(tmp.path().join("style.css"), "body{}").expect("write css");
+
+    let css_url = "https://example.com/style.css";
+    let manifest = BundleManifest {
+      version: BUNDLE_VERSION,
+      original_url: "https://example.com/".to_string(),
+      document: BundledDocument {
+        path: "document.html".to_string(),
+        content_type: Some("text/html".to_string()),
+        nosniff: false,
+        final_url: "https://example.com/".to_string(),
+        status: Some(200),
+        etag: None,
+        last_modified: None,
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+      },
+      render: BundleRenderConfig {
+        viewport: (1200, 800),
+        device_pixel_ratio: 1.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+        full_page: false,
+        same_origin_subresources: false,
+        allowed_subresource_origins: Vec::new(),
+        compat_profile: CompatProfile::default(),
+        dom_compat_mode: DomCompatibilityMode::default(),
+      },
+      resources: BTreeMap::from([(
+        css_url.to_string(),
+        BundledResourceInfo {
+          path: "style.css".to_string(),
+          content_type: Some("text/plain".to_string()),
+          nosniff: true,
+          status: Some(200),
+          final_url: Some(css_url.to_string()),
+          etag: None,
+          last_modified: None,
+          access_control_allow_origin: None,
+          timing_allow_origin: None,
+          access_control_allow_credentials: false,
+        },
+      )]),
+    };
+
+    std::fs::write(
+      tmp.path().join(BUNDLE_MANIFEST),
+      serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+
+    let bundle = Bundle::load(tmp.path()).expect("load bundle");
+    let fetcher = BundledFetcher::new(bundle);
+
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_STRICT_MIME".to_string(),
+      "1".to_string(),
+    )])));
+
+    with_thread_runtime_toggles(toggles, || {
+      let css = fetcher.fetch(css_url).expect("fetch css");
+      assert!(css.nosniff);
+
+      let err = crate::resource::ensure_stylesheet_mime_sane(&css, css_url)
+        .expect_err("expected nosniff stylesheet MIME enforcement");
+      assert!(
+        err.to_string().contains("unexpected content-type"),
+        "unexpected error: {err}"
+      );
+    });
+  }
+
+  #[test]
   fn bundle_loads_v1_manifest_without_cors_fields() {
     let tmp = tempfile::tempdir().expect("tempdir");
     std::fs::write(

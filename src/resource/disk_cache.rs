@@ -3195,6 +3195,69 @@ mod tests {
     assert_ne!(first.bytes, second.bytes);
   }
 
+  #[test]
+  fn disk_cache_roundtrips_nosniff_stylesheet_metadata() {
+    let tmp = tempfile::tempdir().unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let url = "https://example.com/style.css";
+
+    #[derive(Clone)]
+    struct NosniffStylesheetFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for NosniffStylesheetFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let mut resource = FetchedResource::new(b"body{}".to_vec(), Some("text/plain".to_string()));
+        resource.status = Some(200);
+        resource.final_url = Some(url.to_string());
+        resource.nosniff = true;
+        Ok(resource)
+      }
+    }
+
+    let disk = DiskCachingFetcher::new(
+      NosniffStylesheetFetcher {
+        calls: Arc::clone(&calls),
+      },
+      tmp.path(),
+    );
+
+    let strict_off = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_STRICT_MIME".to_string(),
+      "0".to_string(),
+    )])));
+    runtime::with_thread_runtime_toggles(strict_off, || {
+      let res = disk
+        .fetch_with_request(FetchRequest::new(url, FetchDestination::Style))
+        .expect("initial fetch");
+      assert!(res.nosniff);
+    });
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    drop(disk);
+
+    let disk_again = DiskCachingFetcher::new(PanicFetcher, tmp.path());
+
+    let strict_on = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_STRICT_MIME".to_string(),
+      "1".to_string(),
+    )])));
+    runtime::with_thread_runtime_toggles(strict_on, || {
+      let res = disk_again
+        .fetch_with_request(FetchRequest::new(url, FetchDestination::Style))
+        .expect("disk hit");
+      assert!(res.nosniff);
+      let err = ensure_stylesheet_mime_sane(&res, url)
+        .expect_err("expected nosniff stylesheet MIME enforcement");
+      assert!(
+        err.to_string().contains("unexpected content-type"),
+        "unexpected error: {err}"
+      );
+    });
+  }
+
   fn spawn_cors_origin_echo_server(
     context: &str,
     expected_requests: usize,

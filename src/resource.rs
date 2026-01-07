@@ -2452,26 +2452,27 @@ pub fn ensure_stylesheet_mime_sane(resource: &FetchedResource, requested_url: &s
   }
 
   if resource.nosniff {
-    match resource.content_type.as_deref() {
-      Some(content_type) => {
-        let mime = content_type_mime(content_type);
-        if !starts_with_ignore_ascii_case(mime, "text/css") {
-          return Err(response_resource_error(
-            resource,
-            requested_url,
-            format!(
-              "X-Content-Type-Options: nosniff blocked stylesheet with unexpected content-type {mime}"
-            ),
-          ));
-        }
-      }
-      None => {
-        return Err(response_resource_error(
+    let content_type = resource
+      .content_type
+      .as_deref()
+      .map(str::trim)
+      .filter(|ct| !ct.is_empty())
+      .ok_or_else(|| {
+        response_resource_error(
           resource,
           requested_url,
           "X-Content-Type-Options: nosniff blocked stylesheet with missing content-type",
-        ));
-      }
+        )
+      })?;
+    let mime = content_type_mime(content_type);
+    if !mime.eq_ignore_ascii_case("text/css") {
+      return Err(response_resource_error(
+        resource,
+        requested_url,
+        format!(
+          "X-Content-Type-Options: nosniff blocked stylesheet with unexpected content-type {mime}"
+        ),
+      ));
     }
   }
 
@@ -8103,13 +8104,9 @@ fn header_values_joined(headers: &HeaderMap, name: &str) -> Option<String> {
 }
 
 fn header_has_nosniff(headers: &HeaderMap) -> bool {
-  headers
-    .get_all("x-content-type-options")
-    .iter()
-    .filter_map(|value| value.to_str().ok())
-    .flat_map(|value| value.split(','))
-    .map(str::trim)
-    .any(|value| value.eq_ignore_ascii_case("nosniff"))
+  header_values_joined(headers, "x-content-type-options")
+    .map(|value| value.to_ascii_lowercase().contains("nosniff"))
+    .unwrap_or(false)
 }
 
 fn parse_content_encodings(headers: &HeaderMap) -> Vec<String> {
@@ -8722,6 +8719,25 @@ mod tests {
   }
 
   #[test]
+  fn header_has_nosniff_detection_is_case_insensitive() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+      "X-Content-Type-Options",
+      http::HeaderValue::from_static("NoSnIfF"),
+    );
+    assert!(header_has_nosniff(&headers));
+
+    // Be permissive: treat values that *contain* `nosniff` as enabling the flag (matches how we
+    // interpret real-world servers that include extra tokens).
+    let mut headers = HeaderMap::new();
+    headers.insert(
+      "X-Content-Type-Options",
+      http::HeaderValue::from_static("foo NoSnIfF bar"),
+    );
+    assert!(header_has_nosniff(&headers));
+  }
+
+  #[test]
   fn stylesheet_mime_sanity_rejects_markup_bodies_for_css_urls() {
     let mut resource = FetchedResource::new(
       b"<!DOCTYPE html><html><title>blocked</title></html>".to_vec(),
@@ -8849,6 +8865,43 @@ mod tests {
       "nosniff should default to false when header is absent"
     );
     ensure_stylesheet_mime_sane(&res, &url).expect("expected text/plain stylesheet to be allowed");
+  }
+
+  #[test]
+  fn stylesheet_mime_sanity_rejects_non_css_content_type_when_nosniff_is_present() {
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_STRICT_MIME".to_string(),
+      "1".to_string(),
+    )])));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let mut resource =
+        FetchedResource::new(b"body{}".to_vec(), Some("text/plain".to_string()));
+      resource.status = Some(200);
+      resource.nosniff = true;
+      let url = "https://example.com/style.css";
+      let err = ensure_stylesheet_mime_sane(&resource, url)
+        .expect_err("expected non-css content-type to be rejected under nosniff");
+      assert!(
+        err.to_string().contains("unexpected content-type"),
+        "unexpected error: {err}"
+      );
+    });
+  }
+
+  #[test]
+  fn stylesheet_mime_sanity_allows_non_css_content_type_without_nosniff() {
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_STRICT_MIME".to_string(),
+      "1".to_string(),
+    )])));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let mut resource =
+        FetchedResource::new(b"body{}".to_vec(), Some("text/plain".to_string()));
+      resource.status = Some(200);
+      let url = "https://example.com/style.css";
+      ensure_stylesheet_mime_sane(&resource, url)
+        .expect("expected permissive content-type handling without nosniff");
+    });
   }
 
   #[test]
