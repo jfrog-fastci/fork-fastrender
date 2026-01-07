@@ -1,9 +1,9 @@
 use fastrender::geometry::Rect;
-use fastrender::paint::display_list::{ClipItem, ClipShape, DisplayItem};
+use fastrender::paint::display_list::{BorderRadii, ClipItem, ClipShape, DisplayItem};
 use fastrender::paint::display_list_builder::DisplayListBuilder;
-use fastrender::style::types::{Appearance, Overflow};
+use fastrender::style::types::{Appearance, BorderCornerRadius, Overflow};
 use fastrender::style::values::Length;
-use fastrender::tree::box_tree::{FormControl, FormControlKind, ReplacedType};
+use fastrender::tree::box_tree::{FormControl, FormControlKind, ReplacedType, SelectControl, SelectItem};
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 use fastrender::ComputedStyle;
 use std::sync::Arc;
@@ -17,19 +17,37 @@ fn form_control_overflow_clip_uses_padding_box_not_content_box() {
   style.padding_right = Length::px(5.0);
   style.padding_bottom = Length::px(5.0);
   style.padding_left = Length::px(5.0);
+  let radius = BorderCornerRadius::uniform(Length::px(5.0));
+  style.border_top_left_radius = radius;
+  style.border_top_right_radius = radius;
+  style.border_bottom_right_radius = radius;
+  style.border_bottom_left_radius = radius;
   let style = Arc::new(style);
 
-  let form_control = FormControl {
-    control: FormControlKind::Select {
+  let select = SelectControl {
+    multiple: false,
+    size: 1,
+    items: vec![SelectItem::Option {
       label: "Label".to_string(),
-      multiple: false,
-    },
+      value: "value".to_string(),
+      selected: true,
+      disabled: false,
+      in_optgroup: false,
+    }],
+    selected: vec![0],
+  };
+
+  let form_control = FormControl {
+    control: FormControlKind::Select(select),
     appearance: Appearance::Auto,
     disabled: false,
     focused: false,
     focus_visible: false,
     required: false,
     invalid: false,
+    placeholder_style: None,
+    slider_thumb_style: None,
+    slider_track_style: None,
   };
 
   let border_rect = Rect::from_xywh(0.0, 0.0, 50.0, 20.0);
@@ -53,11 +71,12 @@ fn form_control_overflow_clip_uses_padding_box_not_content_box() {
 
   match &items[clip_start] {
     DisplayItem::PushClip(ClipItem {
-      shape: ClipShape::Rect { rect, .. },
+      shape: ClipShape::Rect { rect, radii },
     }) => {
       // Overflow clipping for form controls should use the padding box. With border widths set to
       // zero, this should match the border box (and in particular should not be inset by padding).
       assert_eq!(*rect, border_rect);
+      assert_eq!(*radii, Some(BorderRadii::uniform(5.0)));
     }
     other => panic!("expected PushClip, got {:?}", other),
   }
@@ -67,4 +86,3 @@ fn form_control_overflow_clip_uses_padding_box_not_content_box() {
     "select control should emit text items for its label/arrow"
   );
 }
-
