@@ -107,6 +107,47 @@ fn assert_rtl_colspan_mapping(cells: &HashMap<char, Rect>) {
   );
 }
 
+fn assert_rtl_rowspan_mapping(cells: &HashMap<char, Rect>) {
+  let a = cells.get(&'A').expect("cell A present");
+  let b = cells.get(&'B').expect("cell B present");
+  let c = cells.get(&'C').expect("cell C present");
+  let d = cells.get(&'D').expect("cell D present");
+  let e = cells.get(&'E').expect("cell E present");
+
+  assert!(
+    a.x() > b.x() && b.x() > c.x(),
+    "expected RTL visual order A (right) > B > C (left), got A.x={:.2} B.x={:.2} C.x={:.2}",
+    a.x(),
+    b.x(),
+    c.x()
+  );
+  assert!(
+    a.x() > d.x() && d.x() > e.x(),
+    "expected RTL visual order A (right) > D > E (left), got A.x={:.2} D.x={:.2} E.x={:.2}",
+    a.x(),
+    d.x(),
+    e.x()
+  );
+  assert!(
+    (b.x() - d.x()).abs() < 0.1,
+    "expected B and D to share the same column x, got B.x={:.2} D.x={:.2}",
+    b.x(),
+    d.x()
+  );
+  assert!(
+    (c.x() - e.x()).abs() < 0.1,
+    "expected C and E to share the same column x, got C.x={:.2} E.x={:.2}",
+    c.x(),
+    e.x()
+  );
+
+  assert!((a.width() - 40.0).abs() < 0.1, "expected A width 40px");
+  assert!((b.width() - 60.0).abs() < 0.1, "expected B width 60px");
+  assert!((c.width() - 50.0).abs() < 0.1, "expected C width 50px");
+  assert!((d.width() - 60.0).abs() < 0.1, "expected D width 60px");
+  assert!((e.width() - 50.0).abs() < 0.1, "expected E width 50px");
+}
+
 #[test]
 fn table_direction_rtl_column_order_separate_model() {
   let html = r#"
@@ -253,4 +294,80 @@ fn table_direction_rtl_colspan_collapsed_model() {
 
   let cells = layout_table_cells(html);
   assert_rtl_colspan_mapping(&cells);
+}
+
+#[test]
+fn table_direction_rtl_rowspan_separate_model() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            width: 150px;
+            table-layout: fixed;
+            border-collapse: separate;
+            border-spacing: 0;
+            direction: rtl;
+            padding: 0;
+            border: 0;
+          }
+          col.col1 { width: 40px; }
+          col.col2 { width: 60px; }
+          col.col3 { width: 50px; }
+          td { padding: 0; margin: 0; border: 0; font-size: 12px; line-height: 12px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col class="col1" />
+          <col class="col2" />
+          <col class="col3" />
+          <tr><td rowspan="2">A</td><td>B</td><td>C</td></tr>
+          <tr><td>D</td><td>E</td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let cells = layout_table_cells(html);
+  assert_rtl_rowspan_mapping(&cells);
+}
+
+#[test]
+fn table_direction_rtl_rowspan_collapsed_model() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            width: 150px;
+            table-layout: fixed;
+            border-collapse: collapse;
+            border-spacing: 0;
+            direction: rtl;
+            padding: 0;
+            border: 0;
+          }
+          col.col1 { width: 40px; }
+          col.col2 { width: 60px; }
+          col.col3 { width: 50px; }
+          td { padding: 0; margin: 0; border: 0; font-size: 12px; line-height: 12px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col class="col1" />
+          <col class="col2" />
+          <col class="col3" />
+          <tr><td rowspan="2">A</td><td>B</td><td>C</td></tr>
+          <tr><td>D</td><td>E</td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let cells = layout_table_cells(html);
+  assert_rtl_rowspan_mapping(&cells);
 }
