@@ -6068,11 +6068,12 @@ impl Painter {
     }
 
     let viewport = (self.css_width, self.css_height);
-    let (content_rect, rects) = if let Some(style) = style {
+    let (content_rect, padding_rect, rects) = if let Some(style) = style {
       let rects = background_rects(x, y, width, height, style, Some(viewport));
-      (rects.content, Some(rects))
+      (rects.content, rects.padding, Some(rects))
     } else {
-      (Rect::from_xywh(x, y, width, height), None)
+      let rect = Rect::from_xywh(x, y, width, height);
+      (rect, rect, None)
     };
     if content_rect.width() <= 0.0 || content_rect.height() <= 0.0 {
       return;
@@ -6139,7 +6140,7 @@ impl Painter {
     match replaced_type {
       ReplacedType::FormControl(control) => {
         if let Some(style) = style {
-          if self.paint_form_control(control, style, content_rect, clip_mask, box_id) {
+          if self.paint_form_control(control, style, content_rect, padding_rect, clip_mask, box_id) {
             return;
           }
         }
@@ -6796,6 +6797,7 @@ impl Painter {
     control: &FormControl,
     style: &ComputedStyle,
     content_rect: Rect,
+    padding_rect: Rect,
     clip_mask: Option<&Mask>,
     box_id: Option<usize>,
   ) -> bool {
@@ -7549,15 +7551,14 @@ impl Painter {
         true
       }
       FormControlKind::Range { value, min, max } => {
-        let appearance_none = matches!(control.appearance, Appearance::None);
-        let track_style = control.slider_track_style.as_deref();
-        let thumb_style = control.slider_thumb_style.as_deref();
-        let viewport = (self.css_width, self.css_height);
-
         let min_val = *min;
         let max_val = *max;
         let span = (max_val - min_val).abs().max(0.0001);
         let clamped = ((*value - min_val) / span).clamp(0.0, 1.0);
+        let appearance_none = matches!(control.appearance, Appearance::None);
+        let track_style = control.slider_track_style.as_deref();
+        let thumb_style = control.slider_thumb_style.as_deref();
+        let viewport = (self.css_width, self.css_height);
 
         let resolve_px = |style: &ComputedStyle, len: Length, percentage_base: f32| -> f32 {
           resolve_length_for_paint(
@@ -7569,22 +7570,22 @@ impl Painter {
           )
         };
 
-        let default_knob_diameter = content_rect.height().min(16.0);
+        let default_knob_diameter = padding_rect.height().min(16.0);
         let knob_width = thumb_style
-          .and_then(|style| style.width.map(|len| resolve_px(style, len, content_rect.width())))
+          .and_then(|style| style.width.map(|len| resolve_px(style, len, padding_rect.width())))
           .filter(|px| px.is_finite() && *px > 0.0)
           .unwrap_or(default_knob_diameter);
         let knob_height = thumb_style
-          .and_then(|style| style.height.map(|len| resolve_px(style, len, content_rect.height())))
+          .and_then(|style| style.height.map(|len| resolve_px(style, len, padding_rect.height())))
           .filter(|px| px.is_finite() && *px > 0.0)
           .unwrap_or(default_knob_diameter);
 
-        let knob_travel = (content_rect.width() - knob_width).max(0.0);
-        let knob_center_x = content_rect.x() + knob_width / 2.0 + clamped * knob_travel;
-        let mut knob_center_y = content_rect.y() + content_rect.height() / 2.0;
+        let knob_travel = (padding_rect.width() - knob_width).max(0.0);
+        let knob_center_x = padding_rect.x() + knob_width / 2.0 + clamped * knob_travel;
+        let mut knob_center_y = padding_rect.y() + padding_rect.height() / 2.0;
         if let Some(thumb_style) = thumb_style {
           if let Some(margin_top) = thumb_style.margin_top {
-            knob_center_y += resolve_px(thumb_style, margin_top, content_rect.height());
+            knob_center_y += resolve_px(thumb_style, margin_top, padding_rect.height());
           }
         }
         let knob_rect = Rect::from_xywh(
@@ -7595,16 +7596,15 @@ impl Painter {
         );
 
         if !appearance_none {
-          let default_track_height = 4.0_f32.min(content_rect.height());
           let track_height = track_style
-            .and_then(|style| style.height.map(|len| resolve_px(style, len, content_rect.height())))
+            .and_then(|style| style.height.map(|len| resolve_px(style, len, padding_rect.height())))
             .filter(|px| px.is_finite() && *px > 0.0)
-            .unwrap_or(default_track_height);
+            .unwrap_or_else(|| 4.0_f32.min(padding_rect.height()));
 
           if track_height > 0.0 {
-            let track_y = content_rect.y() + (content_rect.height() - track_height) / 2.0;
+            let track_y = padding_rect.y() + (padding_rect.height() - track_height) / 2.0;
             let track_rect =
-              Rect::from_xywh(content_rect.x(), track_y, content_rect.width(), track_height);
+              Rect::from_xywh(padding_rect.x(), track_y, padding_rect.width(), track_height);
 
             if let Some(track_style) = track_style {
               let device_track_rect = self.device_rect(track_rect);
@@ -7628,16 +7628,16 @@ impl Painter {
               );
             }
 
-            let fill_rect = Rect::from_xywh(
+            let filled_rect = Rect::from_xywh(
               track_rect.x(),
               track_rect.y(),
               (knob_center_x - track_rect.x()).max(0.0),
               track_rect.height(),
             );
-            if fill_rect.width() > 0.0 {
+            if filled_rect.width() > 0.0 {
               let radii = BorderRadii::uniform(track_height / 2.0)
-                .clamped(fill_rect.width(), fill_rect.height());
-              let device_fill_rect = self.device_rect(fill_rect);
+                .clamped(filled_rect.width(), filled_rect.height());
+              let device_fill_rect = self.device_rect(filled_rect);
               let device_radii = self.device_radii(radii);
               fill_rounded_rect_masked(
                 &mut self.pixmap,
@@ -7729,7 +7729,6 @@ impl Painter {
             )
             && !border_color.is_transparent()
           {
-            let border_clip = if appearance_none { clip_mask } else { None };
             let Some(path) = crate::paint::rasterize::build_rounded_rect_path(
               device_knob_rect.x(),
               device_knob_rect.y(),
@@ -7753,7 +7752,7 @@ impl Painter {
             };
             self
               .pixmap
-              .stroke_path(&path, &paint, &stroke, Transform::identity(), border_clip);
+              .stroke_path(&path, &paint, &stroke, Transform::identity(), clip_mask);
           }
         } else {
           let knob_radius = (knob_width.min(knob_height)) / 2.0;
@@ -7781,7 +7780,7 @@ impl Painter {
             };
             self
               .pixmap
-              .stroke_path(&path, &stroke_paint, &stroke, Transform::identity(), None);
+              .stroke_path(&path, &stroke_paint, &stroke, Transform::identity(), clip_mask);
           }
         }
         true
