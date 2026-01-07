@@ -661,13 +661,12 @@ impl ToCss for PseudoElement {
 pub struct PseudoClassParser;
 
 // Selectors Level 4:
-// - `:has()` cannot be nested; `:has()` is not valid within `:has()`.
 // - Pseudo-elements are not valid selectors within `:has()`, unless explicitly defined as
 //   `:has-allowed pseudo-elements` (none are defined by Selectors 4).
 //
-// We implement these as parse-time restrictions by tracking when we're parsing inside a `:has()`
-// argument and rejecting nested `:has()` / pseudo-elements at the point they're encountered. This
-// ensures invalid sub-selectors can still be dropped by forgiving list parsers like `:is()` / `:where()`.
+// We implement this as a parse-time restriction by tracking when we're parsing inside a `:has()`
+// argument and rejecting pseudo-elements at the point they're encountered. This ensures invalid
+// sub-selectors can still be dropped by forgiving list parsers like `:is()` / `:where()`.
 thread_local! {
   static IN_HAS_ARGUMENT: Cell<u32> = const { Cell::new(0) };
 }
@@ -829,9 +828,6 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
         Ok(PseudoClass::HostContext(selectors))
       }
       "has" => {
-        if parsing_has_argument() {
-          return Err(parser.new_custom_error(SelectorParseErrorKind::InvalidState));
-        }
         let _scope = HasArgumentScope::enter();
         let list = SelectorList::parse(
           &PseudoClassParser,
@@ -1615,7 +1611,10 @@ mod tests {
     //
     // Attribute selector names are case-insensitive in HTML, and the DOM stores attribute names
     // lowercased (via html5ever). Match the bloom-pruning behavior by hashing the lowercase form.
-    let mut expected_no_quirks = vec![hash("span"), hash("foo"), hash("bar"), hash("data-thing")];
+    // Only include hashes from the selector's rightmost compound selector to avoid
+    // false-negative pruning when relative selectors can match ancestors outside the
+    // :has() anchor's subtree (e.g. via `:is()` breakouts).
+    let mut expected_no_quirks = vec![hash("bar"), hash("data-thing")];
     expected_no_quirks.sort_unstable();
     let mut actual_no_quirks = selector
       .bloom_hashes
@@ -1624,7 +1623,7 @@ mod tests {
     actual_no_quirks.sort_unstable();
     assert_eq!(actual_no_quirks, expected_no_quirks);
 
-    let mut expected_quirks = vec![hash("span"), hash("data-thing")];
+    let mut expected_quirks = vec![hash("data-thing")];
     expected_quirks.sort_unstable();
     let mut actual_quirks = selector
       .bloom_hashes
