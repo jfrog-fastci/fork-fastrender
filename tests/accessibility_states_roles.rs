@@ -87,6 +87,56 @@ fn aria_state_flags_cover_common_controls() {
 }
 
 #[test]
+fn native_single_select_last_selected_wins() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r##"
+    <html>
+      <body>
+        <select id="single">
+          <option id="single-opt1" selected>One</option>
+          <option id="single-opt2" selected>Two</option>
+        </select>
+      </body>
+    </html>
+  "##;
+
+  let dom = renderer.parse_html(html).expect("parse");
+  let tree = renderer
+    .accessibility_tree(&dom, 800, 600)
+    .expect("accessibility tree");
+
+  let first = find_by_id(&tree, "single-opt1").expect("single option one");
+  let second = find_by_id(&tree, "single-opt2").expect("single option two");
+  assert_eq!(first.states.selected, Some(false));
+  assert_eq!(second.states.selected, Some(true));
+}
+
+#[test]
+fn native_single_select_all_disabled_defaults_to_first() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r##"
+    <html>
+      <body>
+        <select id="all-disabled">
+          <option id="disabled-opt1" disabled>One</option>
+          <option id="disabled-opt2" disabled>Two</option>
+        </select>
+      </body>
+    </html>
+  "##;
+
+  let dom = renderer.parse_html(html).expect("parse");
+  let tree = renderer
+    .accessibility_tree(&dom, 800, 600)
+    .expect("accessibility tree");
+
+  let first = find_by_id(&tree, "disabled-opt1").expect("disabled option one");
+  let second = find_by_id(&tree, "disabled-opt2").expect("disabled option two");
+  assert_eq!(first.states.selected, Some(true));
+  assert_eq!(second.states.selected, Some(false));
+}
+
+#[test]
 fn aria_state_does_not_negate_native_semantics() {
   let mut renderer = FastRender::new().expect("renderer");
   let html = r##"

@@ -1235,7 +1235,7 @@ fn accessibility_multi_select_value() {
   assert_eq!(select.get("role").and_then(|v| v.as_str()), Some("listbox"));
   assert_eq!(
     select.get("value").and_then(|v| v.as_str()),
-    Some("One, Two")
+    Some("One")
   );
 }
 

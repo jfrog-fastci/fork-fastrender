@@ -1421,16 +1421,30 @@ fn textarea_value_text(node: &StyledNode, ctx: &BuildContext) -> String {
 fn select_value_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
   let multiple = node.node.get_attribute_ref("multiple").is_some();
   if multiple {
-    let mut values = Vec::new();
-    collect_selected_option_texts(node, false, ctx, &mut values);
-    if values.is_empty() {
-      None
-    } else {
-      Some(values.join(", "))
-    }
+    first_selected_option_text(node, ctx)
   } else {
     selected_option_text(node, ctx)
   }
+}
+
+fn first_selected_option_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
+  if ctx.is_hidden(node) {
+    return None;
+  }
+  let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
+  let is_option = tag.as_deref() == Some("option");
+
+  if is_option && node.node.get_attribute_ref("selected").is_some() {
+    return Some(option_label_text(node, ctx));
+  }
+
+  for child in ctx.composed_children(node) {
+    if let Some(val) = first_selected_option_text(child, ctx) {
+      return Some(val);
+    }
+  }
+
+  None
 }
 
 fn selected_option_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
@@ -1497,31 +1511,6 @@ fn find_selected_option_text(
     }
   }
   selected
-}
-
-fn collect_selected_option_texts(
-  node: &StyledNode,
-  optgroup_disabled: bool,
-  ctx: &BuildContext,
-  out: &mut Vec<String>,
-) {
-  let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
-  let is_option = tag.as_deref() == Some("option");
-  let is_optgroup = tag.as_deref() == Some("optgroup");
-
-  let option_disabled = node.node.get_attribute_ref("disabled").is_some();
-  let next_optgroup_disabled = optgroup_disabled || (is_optgroup && option_disabled);
-
-  if is_option && node.node.get_attribute_ref("selected").is_some() && !ctx.is_hidden(node) {
-    let text = option_text(node, ctx);
-    if !text.is_empty() {
-      out.push(text);
-    }
-  }
-
-  for child in ctx.composed_children(node) {
-    collect_selected_option_texts(child, next_optgroup_disabled, ctx, out);
-  }
 }
 
 fn first_enabled_option_text(
