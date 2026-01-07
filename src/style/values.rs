@@ -93,10 +93,10 @@ pub enum LengthUnit {
   /// Dynamic viewport maximum (dvmax)
   Dvmax,
 
-  /// Container query width (cqw) - 1% of the query container's inline size
+  /// Container query width (cqw) - 1% of the query container's width
   Cqw,
 
-  /// Container query height (cqh) - 1% of the query container's block size
+  /// Container query height (cqh) - 1% of the query container's height
   Cqh,
 
   /// Container query inline size (cqi) - 1% of the query container's inline size
@@ -351,46 +351,47 @@ impl CalcLength {
 
   pub fn resolve_container_query_units(
     &self,
-    inline_size: f32,
-    size_container_inline: f32,
-    size_container_block: f32,
+    cqw_base: f32,
+    cqh_base: f32,
+    cqi_base: f32,
+    cqb_base: f32,
   ) -> Self {
-    let inline_size = inline_size.max(0.0);
-    let size_container_inline = size_container_inline.max(0.0);
-    let size_container_block = size_container_block.max(0.0);
-    let inline_size = if inline_size.is_finite() {
-      inline_size
-    } else {
-      0.0
-    };
-    let size_container_inline = if size_container_inline.is_finite() {
-      size_container_inline
-    } else {
-      0.0
-    };
-    let size_container_block = if size_container_block.is_finite() {
-      size_container_block
-    } else {
-      0.0
-    };
+    let cqw_base = cqw_base.max(0.0);
+    let cqh_base = cqh_base.max(0.0);
+    let cqi_base = cqi_base.max(0.0);
+    let cqb_base = cqb_base.max(0.0);
+    let cqw_base = if cqw_base.is_finite() { cqw_base } else { 0.0 };
+    let cqh_base = if cqh_base.is_finite() { cqh_base } else { 0.0 };
+    let cqi_base = if cqi_base.is_finite() { cqi_base } else { 0.0 };
+    let cqb_base = if cqb_base.is_finite() { cqb_base } else { 0.0 };
+    let cqmin_base = cqi_base.min(cqb_base);
+    let cqmax_base = cqi_base.max(cqb_base);
 
     let mut out = Self::empty();
     for term in self.terms() {
       match term.unit {
-        LengthUnit::Cqw | LengthUnit::Cqi => {
-          let px = (term.value / 100.0) * inline_size;
+        LengthUnit::Cqw => {
+          let px = (term.value / 100.0) * cqw_base;
           let _ = out.push(LengthUnit::Px, px);
         }
-        LengthUnit::Cqh | LengthUnit::Cqb => {
-          let px = (term.value / 100.0) * size_container_block;
+        LengthUnit::Cqh => {
+          let px = (term.value / 100.0) * cqh_base;
+          let _ = out.push(LengthUnit::Px, px);
+        }
+        LengthUnit::Cqi => {
+          let px = (term.value / 100.0) * cqi_base;
+          let _ = out.push(LengthUnit::Px, px);
+        }
+        LengthUnit::Cqb => {
+          let px = (term.value / 100.0) * cqb_base;
           let _ = out.push(LengthUnit::Px, px);
         }
         LengthUnit::Cqmin => {
-          let px = (term.value / 100.0) * size_container_inline.min(size_container_block);
+          let px = (term.value / 100.0) * cqmin_base;
           let _ = out.push(LengthUnit::Px, px);
         }
         LengthUnit::Cqmax => {
-          let px = (term.value / 100.0) * size_container_inline.max(size_container_block);
+          let px = (term.value / 100.0) * cqmax_base;
           let _ = out.push(LengthUnit::Px, px);
         }
         _ => {
@@ -1056,16 +1057,13 @@ impl Length {
 
   pub fn resolve_container_query_units(
     self,
-    inline_size: f32,
-    size_container_inline: f32,
-    size_container_block: f32,
+    cqw_base: f32,
+    cqh_base: f32,
+    cqi_base: f32,
+    cqb_base: f32,
   ) -> Self {
     if let Some(calc) = self.calc {
-      let resolved = calc.resolve_container_query_units(
-        inline_size,
-        size_container_inline,
-        size_container_block,
-      );
+      let resolved = calc.resolve_container_query_units(cqw_base, cqh_base, cqi_base, cqb_base);
       if resolved.is_zero() {
         return Length::px(0.0);
       }
@@ -1075,49 +1073,36 @@ impl Length {
       return Length::calc(resolved);
     }
 
+    let cqw_base = if cqw_base.is_finite() && cqw_base > 0.0 {
+      cqw_base
+    } else {
+      0.0
+    };
+    let cqh_base = if cqh_base.is_finite() && cqh_base > 0.0 {
+      cqh_base
+    } else {
+      0.0
+    };
+    let cqi_base = if cqi_base.is_finite() && cqi_base > 0.0 {
+      cqi_base
+    } else {
+      0.0
+    };
+    let cqb_base = if cqb_base.is_finite() && cqb_base > 0.0 {
+      cqb_base
+    } else {
+      0.0
+    };
+    let cqmin_base = cqi_base.min(cqb_base);
+    let cqmax_base = cqi_base.max(cqb_base);
+
     match self.unit {
-      LengthUnit::Cqw | LengthUnit::Cqi => {
-        let inline_size = if inline_size.is_finite() && inline_size > 0.0 {
-          inline_size
-        } else {
-          0.0
-        };
-        Length::px((self.value / 100.0) * inline_size)
-      }
-      LengthUnit::Cqh | LengthUnit::Cqb => {
-        let block_size = if size_container_block.is_finite() && size_container_block > 0.0 {
-          size_container_block
-        } else {
-          0.0
-        };
-        Length::px((self.value / 100.0) * block_size)
-      }
-      LengthUnit::Cqmin => {
-        let inline = if size_container_inline.is_finite() && size_container_inline > 0.0 {
-          size_container_inline
-        } else {
-          0.0
-        };
-        let block = if size_container_block.is_finite() && size_container_block > 0.0 {
-          size_container_block
-        } else {
-          0.0
-        };
-        Length::px((self.value / 100.0) * inline.min(block))
-      }
-      LengthUnit::Cqmax => {
-        let inline = if size_container_inline.is_finite() && size_container_inline > 0.0 {
-          size_container_inline
-        } else {
-          0.0
-        };
-        let block = if size_container_block.is_finite() && size_container_block > 0.0 {
-          size_container_block
-        } else {
-          0.0
-        };
-        Length::px((self.value / 100.0) * inline.max(block))
-      }
+      LengthUnit::Cqw => Length::px((self.value / 100.0) * cqw_base),
+      LengthUnit::Cqh => Length::px((self.value / 100.0) * cqh_base),
+      LengthUnit::Cqi => Length::px((self.value / 100.0) * cqi_base),
+      LengthUnit::Cqb => Length::px((self.value / 100.0) * cqb_base),
+      LengthUnit::Cqmin => Length::px((self.value / 100.0) * cqmin_base),
+      LengthUnit::Cqmax => Length::px((self.value / 100.0) * cqmax_base),
       _ => self,
     }
   }

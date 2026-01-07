@@ -8869,8 +8869,14 @@ fn compute_base_styles<'a>(
     resolve_line_height_length(&mut styles, viewport);
     resolve_absolute_lengths(&mut ua_styles, current_ua_root_font_size, viewport);
     resolve_absolute_lengths(&mut styles, current_root_font_size, viewport);
-    resolve_container_query_lengths(&mut ua_styles, node_id, ancestor_ids, container_ctx);
-    resolve_container_query_lengths(&mut styles, node_id, ancestor_ids, container_ctx);
+    resolve_container_query_lengths(
+      &mut ua_styles,
+      node_id,
+      ancestor_ids,
+      container_ctx,
+      viewport,
+    );
+    resolve_container_query_lengths(&mut styles, node_id, ancestor_ids, container_ctx, viewport);
     return Ok(NodeBaseStyles {
       styles,
       ua_styles,
@@ -8966,7 +8972,13 @@ fn compute_base_styles<'a>(
   ua_styles.root_font_size = current_ua_root_font_size;
   resolve_line_height_length(&mut ua_styles, viewport);
   resolve_absolute_lengths(&mut ua_styles, current_ua_root_font_size, viewport);
-  resolve_container_query_lengths(&mut ua_styles, node_id, ancestor_ids, container_ctx);
+  resolve_container_query_lengths(
+    &mut ua_styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    viewport,
+  );
   let ua_default_color = ua_styles.color;
   let ua_default_background = ua_styles.background_color;
 
@@ -9044,7 +9056,7 @@ fn compute_base_styles<'a>(
   styles.root_font_size = current_root_font_size;
   resolve_line_height_length(&mut styles, viewport);
   resolve_absolute_lengths(&mut styles, current_root_font_size, viewport);
-  resolve_container_query_lengths(&mut styles, node_id, ancestor_ids, container_ctx);
+  resolve_container_query_lengths(&mut styles, node_id, ancestor_ids, container_ctx, viewport);
 
   let selected_scheme = select_color_scheme(&styles.color_scheme, color_scheme_pref);
   styles.used_dark_color_scheme = matches!(selected_scheme, Some(ColorSchemeEntry::Dark));
@@ -12067,7 +12079,7 @@ mod tests {
     )
     .expect("first cascade");
     let inner_first = find_styled_node_by_id(&first, "inner").expect("find inner");
-    assert_eq!(inner_first.styles.width, Some(Length::px(0.0)));
+    assert_eq!(inner_first.styles.width, Some(Length::px(400.0)));
 
     let container_ctx = ContainerQueryContext {
       base_media: media_ctx.clone(),
@@ -12100,6 +12112,206 @@ mod tests {
     .expect("second cascade");
     let inner_second = find_styled_node_by_id(&second, "inner").expect("find inner");
     assert_eq!(inner_second.styles.width, Some(Length::px(200.0)));
+  }
+
+  #[test]
+  fn container_query_units_fallback_to_viewport_when_no_query_container_exists() {
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("id".to_string(), "target".to_string())],
+      },
+      children: vec![],
+    };
+
+    let stylesheet = parse_stylesheet("#target { width: 10cqw; }").expect("parse stylesheet");
+    let style_set = StyleSet::from_document(stylesheet);
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+
+    let container_ctx = ContainerQueryContext {
+      base_media: media_ctx.clone(),
+      containers: HashMap::new(),
+    };
+
+    let styled = apply_style_set_with_media_target_and_imports_cached_with_deadline(
+      &dom,
+      &style_set,
+      &media_ctx,
+      None,
+      None,
+      None,
+      Some(&container_ctx),
+      None,
+      None,
+      None,
+      None,
+    )
+    .expect("cascade");
+
+    let target = find_styled_node_by_id(&styled, "target").expect("target");
+    assert_eq!(target.styles.width, Some(Length::px(80.0)));
+  }
+
+  #[test]
+  fn cqmin_cqmax_use_cqi_and_cqb_even_when_from_different_query_containers() {
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("id".to_string(), "size".to_string())],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![("id".to_string(), "inline".to_string())],
+        },
+        children: vec![DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "div".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![("id".to_string(), "target".to_string())],
+          },
+          children: vec![],
+        }],
+      }],
+    };
+
+    let stylesheet = parse_stylesheet(
+      r#"
+        #size { container-type: size; }
+        #inline { container-type: inline-size; }
+        #target { width: 1cqmin; height: 1cqmax; }
+      "#,
+    )
+    .expect("parse stylesheet");
+    let style_set = StyleSet::from_document(stylesheet);
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+
+    let mut size_style = ComputedStyle::default();
+    size_style.container_type = ContainerType::Size;
+    let size_style = Arc::new(size_style);
+    let mut inline_style = ComputedStyle::default();
+    inline_style.container_type = ContainerType::InlineSize;
+    let inline_style = Arc::new(inline_style);
+
+    let container_ctx = ContainerQueryContext {
+      base_media: media_ctx.clone(),
+      containers: HashMap::from([
+        (
+          1usize,
+          ContainerQueryInfo {
+            inline_size: 500.0,
+            block_size: 300.0,
+            container_type: ContainerType::Size,
+            names: Vec::new(),
+            font_size: 16.0,
+            styles: Arc::clone(&size_style),
+          },
+        ),
+        (
+          2usize,
+          ContainerQueryInfo {
+            inline_size: 100.0,
+            block_size: 999.0,
+            container_type: ContainerType::InlineSize,
+            names: Vec::new(),
+            font_size: 16.0,
+            styles: Arc::clone(&inline_style),
+          },
+        ),
+      ]),
+    };
+
+    let styled = apply_style_set_with_media_target_and_imports_cached_with_deadline(
+      &dom,
+      &style_set,
+      &media_ctx,
+      None,
+      None,
+      None,
+      Some(&container_ctx),
+      None,
+      None,
+      None,
+      None,
+    )
+    .expect("cascade");
+
+    let target = find_styled_node_by_id(&styled, "target").expect("target");
+    assert_eq!(target.styles.width, Some(Length::px(1.0)));
+    assert_eq!(target.styles.height, Some(Length::px(3.0)));
+  }
+
+  #[test]
+  fn container_query_units_distinguish_physical_and_logical_axes_in_vertical_writing_mode() {
+    let dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("id".to_string(), "container".to_string())],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![("id".to_string(), "inner".to_string())],
+        },
+        children: vec![],
+      }],
+    };
+
+    let stylesheet = parse_stylesheet(
+      r#"
+        #container { container-type: size; writing-mode: vertical-rl; }
+        #inner { width: 10cqw; height: 10cqi; }
+      "#,
+    )
+    .expect("parse stylesheet");
+    let style_set = StyleSet::from_document(stylesheet);
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+
+    let mut container_style = ComputedStyle::default();
+    container_style.container_type = ContainerType::Size;
+    container_style.writing_mode = WritingMode::VerticalRl;
+    let container_style = Arc::new(container_style);
+
+    let container_ctx = ContainerQueryContext {
+      base_media: media_ctx.clone(),
+      containers: HashMap::from([(
+        1usize,
+        ContainerQueryInfo {
+          // For vertical writing modes, the query container's inline size maps to physical height
+          // while its block size maps to physical width.
+          inline_size: 100.0,
+          block_size: 300.0,
+          container_type: ContainerType::Size,
+          names: Vec::new(),
+          font_size: 16.0,
+          styles: Arc::clone(&container_style),
+        },
+      )]),
+    };
+
+    let styled = apply_style_set_with_media_target_and_imports_cached_with_deadline(
+      &dom,
+      &style_set,
+      &media_ctx,
+      None,
+      None,
+      None,
+      Some(&container_ctx),
+      None,
+      None,
+      None,
+      None,
+    )
+    .expect("cascade");
+
+    let inner = find_styled_node_by_id(&styled, "inner").expect("inner");
+    assert_eq!(inner.styles.width, Some(Length::px(30.0)));
+    assert_eq!(inner.styles.height, Some(Length::px(10.0)));
   }
 
   #[test]
@@ -25099,6 +25311,137 @@ pub(crate) fn resolve_absolute_lengths(
   // Percentage radii remain relative and are handled during paint/layout.
 }
 
+#[derive(Clone, Copy)]
+struct ContainerQueryUnitBases {
+  cqw: f32,
+  cqh: f32,
+  cqi: f32,
+  cqb: f32,
+}
+
+fn container_query_unit_bases(
+  styles: &ComputedStyle,
+  node_id: usize,
+  ancestor_ids: &[usize],
+  container_ctx: Option<&ContainerQueryContext>,
+  viewport: Size,
+) -> ContainerQueryUnitBases {
+  let viewport_width = if viewport.width.is_finite() {
+    viewport.width.max(0.0)
+  } else {
+    0.0
+  };
+  let viewport_height = if viewport.height.is_finite() {
+    viewport.height.max(0.0)
+  } else {
+    0.0
+  };
+
+  let (viewport_inline, viewport_block) =
+    if crate::style::inline_axis_is_horizontal(styles.writing_mode) {
+      (viewport_width, viewport_height)
+    } else {
+      (viewport_height, viewport_width)
+    };
+
+  let mut bases = ContainerQueryUnitBases {
+    cqw: viewport_width,
+    cqh: viewport_height,
+    cqi: viewport_inline,
+    cqb: viewport_block,
+  };
+
+  let Some(ctx) = container_ctx else {
+    return bases;
+  };
+
+  let mut found_cqw = false;
+  let mut found_cqh = false;
+  let mut found_cqi = false;
+  let mut found_cqb = false;
+
+  for candidate_id in std::iter::once(node_id).chain(ancestor_ids.iter().rev().copied()) {
+    let Some(info) = ctx.containers.get(&candidate_id) else {
+      continue;
+    };
+
+    let supports_inline = matches!(
+      info.container_type,
+      ContainerType::Size | ContainerType::InlineSize
+    );
+    let supports_block = matches!(info.container_type, ContainerType::Size);
+
+    let container_inline_horizontal =
+      crate::style::inline_axis_is_horizontal(info.styles.writing_mode);
+
+    if !found_cqi && supports_inline {
+      bases.cqi = if info.inline_size.is_finite() {
+        info.inline_size.max(0.0)
+      } else {
+        0.0
+      };
+      found_cqi = true;
+    }
+
+    if !found_cqb && supports_block {
+      bases.cqb = if info.block_size.is_finite() {
+        info.block_size.max(0.0)
+      } else {
+        0.0
+      };
+      found_cqb = true;
+    }
+
+    if !found_cqw {
+      let eligible = match info.container_type {
+        ContainerType::Size => true,
+        ContainerType::InlineSize => container_inline_horizontal,
+        _ => false,
+      };
+      if eligible {
+        let width = if container_inline_horizontal {
+          info.inline_size
+        } else {
+          info.block_size
+        };
+        bases.cqw = if width.is_finite() {
+          width.max(0.0)
+        } else {
+          0.0
+        };
+        found_cqw = true;
+      }
+    }
+
+    if !found_cqh {
+      let eligible = match info.container_type {
+        ContainerType::Size => true,
+        ContainerType::InlineSize => !container_inline_horizontal,
+        _ => false,
+      };
+      if eligible {
+        let height = if container_inline_horizontal {
+          info.block_size
+        } else {
+          info.inline_size
+        };
+        bases.cqh = if height.is_finite() {
+          height.max(0.0)
+        } else {
+          0.0
+        };
+        found_cqh = true;
+      }
+    }
+
+    if found_cqw && found_cqh && found_cqi && found_cqb {
+      break;
+    }
+  }
+
+  bases
+}
+
 fn resolve_container_query_font_size(
   styles: &mut ComputedStyle,
   node_id: usize,
@@ -25111,26 +25454,9 @@ fn resolve_container_query_font_size(
   let Some(pending) = styles.font_size_pending.take() else {
     return;
   };
-  let Some(ctx) = container_ctx else {
-    return;
-  };
 
-  let inline_size = ctx
-    .find_container_impl(
-      node_id,
-      ancestor_ids,
-      None,
-      CQ_SUPPORT_SIZE | CQ_SUPPORT_INLINE_SIZE,
-    )
-    .map(|(_, info)| info.inline_size)
-    .unwrap_or(0.0);
-  let (size_container_inline, size_container_block) = ctx
-    .find_container_impl(node_id, ancestor_ids, None, CQ_SUPPORT_SIZE)
-    .map(|(_, info)| (info.inline_size, info.block_size))
-    .unwrap_or((0.0, 0.0));
-
-  let resolved =
-    pending.resolve_container_query_units(inline_size, size_container_inline, size_container_block);
+  let bases = container_query_unit_bases(styles, node_id, ancestor_ids, container_ctx, viewport);
+  let resolved = pending.resolve_container_query_units(bases.cqw, bases.cqh, bases.cqi, bases.cqb);
   if let Some(size) = crate::style::properties::resolve_font_size_length(
     resolved,
     parent_font_size,
@@ -25146,6 +25472,7 @@ fn resolve_container_query_lengths(
   node_id: usize,
   ancestor_ids: &[usize],
   container_ctx: Option<&ContainerQueryContext>,
+  viewport: Size,
 ) {
   use crate::css::types::RadialGradientSize;
   use crate::css::types::Transform;
@@ -25178,29 +25505,10 @@ fn resolve_container_query_lengths(
   use crate::style::types::TextUnderlineOffset;
   use crate::style::types::VerticalAlign;
 
-  let (inline_size, size_container_inline, size_container_block) = if let Some(ctx) = container_ctx
-  {
-    let inline_size = ctx
-      .find_container_impl(
-        node_id,
-        ancestor_ids,
-        None,
-        CQ_SUPPORT_SIZE | CQ_SUPPORT_INLINE_SIZE,
-      )
-      .map(|(_, info)| info.inline_size)
-      .unwrap_or(0.0);
-    let (size_container_inline, size_container_block) = ctx
-      .find_container_impl(node_id, ancestor_ids, None, CQ_SUPPORT_SIZE)
-      .map(|(_, info)| (info.inline_size, info.block_size))
-      .unwrap_or((0.0, 0.0));
-    (inline_size, size_container_inline, size_container_block)
-  } else {
-    (0.0, 0.0, 0.0)
-  };
+  let bases = container_query_unit_bases(styles, node_id, ancestor_ids, container_ctx, viewport);
 
   let mut resolve_len = |len: &mut Length| {
-    *len =
-      len.resolve_container_query_units(inline_size, size_container_inline, size_container_block);
+    *len = len.resolve_container_query_units(bases.cqw, bases.cqh, bases.cqi, bases.cqb);
   };
 
   fn resolve_opt_len(len: &mut Option<Length>, resolve_len: &mut impl FnMut(&mut Length)) {
@@ -26491,7 +26799,13 @@ fn compute_pseudo_element_styles(
   ua_styles.root_font_size = ua_root_font_size;
   resolve_line_height_length(&mut ua_styles, viewport);
   resolve_absolute_lengths(&mut ua_styles, ua_root_font_size, viewport);
-  resolve_container_query_lengths(&mut ua_styles, node_id, ancestor_ids, container_ctx);
+  resolve_container_query_lengths(
+    &mut ua_styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    viewport,
+  );
 
   // Start with default inline styles (pseudo-elements default to display: inline)
   let mut styles = ComputedStyle::default();
@@ -26521,7 +26835,7 @@ fn compute_pseudo_element_styles(
   styles.root_font_size = root_font_size;
   resolve_line_height_length(&mut styles, viewport);
   resolve_absolute_lengths(&mut styles, root_font_size, viewport);
-  resolve_container_query_lengths(&mut styles, node_id, ancestor_ids, container_ctx);
+  resolve_container_query_lengths(&mut styles, node_id, ancestor_ids, container_ctx, viewport);
 
   match pseudo {
     PseudoElement::Before | PseudoElement::After => {
@@ -26677,7 +26991,13 @@ fn compute_first_line_styles(
   ua_styles.root_font_size = ua_root_font_size;
   resolve_line_height_length(&mut ua_styles, viewport);
   resolve_absolute_lengths(&mut ua_styles, ua_root_font_size, viewport);
-  resolve_container_query_lengths(&mut ua_styles, node_id, ancestor_ids, container_ctx);
+  resolve_container_query_lengths(
+    &mut ua_styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    viewport,
+  );
 
   let mut styles = base_styles.clone();
   styles.display = Display::Inline;
@@ -26701,7 +27021,7 @@ fn compute_first_line_styles(
   styles.root_font_size = root_font_size;
   resolve_line_height_length(&mut styles, viewport);
   resolve_absolute_lengths(&mut styles, root_font_size, viewport);
-  resolve_container_query_lengths(&mut styles, node_id, ancestor_ids, container_ctx);
+  resolve_container_query_lengths(&mut styles, node_id, ancestor_ids, container_ctx, viewport);
 
   Some((styles, ua_styles))
 }
@@ -26791,7 +27111,13 @@ fn compute_first_letter_styles(
   ua_styles.root_font_size = ua_root_font_size;
   resolve_line_height_length(&mut ua_styles, viewport);
   resolve_absolute_lengths(&mut ua_styles, ua_root_font_size, viewport);
-  resolve_container_query_lengths(&mut ua_styles, node_id, ancestor_ids, container_ctx);
+  resolve_container_query_lengths(
+    &mut ua_styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    viewport,
+  );
 
   let mut styles = base_styles.clone();
   styles.display = Display::Inline;
@@ -26815,7 +27141,7 @@ fn compute_first_letter_styles(
   styles.root_font_size = root_font_size;
   resolve_line_height_length(&mut styles, viewport);
   resolve_absolute_lengths(&mut styles, root_font_size, viewport);
-  resolve_container_query_lengths(&mut styles, node_id, ancestor_ids, container_ctx);
+  resolve_container_query_lengths(&mut styles, node_id, ancestor_ids, container_ctx, viewport);
   styles.display = Display::Inline;
 
   Some(styles)
