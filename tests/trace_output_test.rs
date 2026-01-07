@@ -1,4 +1,6 @@
-use fastrender::{FastRender, RenderOptions};
+use fastrender::debug::runtime::RuntimeToggles;
+use fastrender::{FastRender, FastRenderConfig, RenderOptions};
+use std::collections::HashMap;
 
 #[test]
 fn trace_file_includes_pipeline_events() {
@@ -8,10 +10,17 @@ fn trace_file_includes_pipeline_events() {
     .name("trace_file_includes_pipeline_events".to_string())
     .stack_size(STACK_SIZE)
     .spawn(|| {
-      let dir = tempfile::tempdir().expect("tempdir");
-      let trace_path = dir.path().join("trace.json");
+       let dir = tempfile::tempdir().expect("tempdir");
+       let trace_path = dir.path().join("trace.json");
 
-      let mut renderer = FastRender::new().expect("renderer");
+      // Force the display-list paint backend so trace output coverage doesn't depend on ambient
+      // environment variables (and so regressions in the display-list pipeline are caught).
+      let toggles = RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_PAINT_BACKEND".to_string(),
+        "display_list".to_string(),
+      )]));
+      let config = FastRenderConfig::default().with_runtime_toggles(toggles);
+      let mut renderer = FastRender::with_config(config).expect("renderer");
       let options = RenderOptions::new()
         .with_viewport(64, 64)
         .with_trace_output(trace_path.clone());

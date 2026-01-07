@@ -13604,6 +13604,38 @@ pub fn paint_tree_display_list_with_resources_scaled_offset_depth(
   scroll_state: &ScrollState,
   max_iframe_depth: usize,
 ) -> Result<Pixmap> {
+  paint_tree_display_list_with_resources_scaled_offset_depth_with_trace(
+    tree,
+    width,
+    height,
+    background,
+    font_ctx,
+    image_cache,
+    scale,
+    offset,
+    paint_parallelism,
+    scroll_state,
+    max_iframe_depth,
+    TraceHandle::disabled(),
+  )
+}
+
+pub(crate) fn paint_tree_display_list_with_resources_scaled_offset_depth_with_trace(
+  tree: &FragmentTree,
+  width: u32,
+  height: u32,
+  background: Rgba,
+  font_ctx: FontContext,
+  image_cache: ImageCache,
+  scale: f32,
+  offset: Point,
+  paint_parallelism: PaintParallelism,
+  scroll_state: &ScrollState,
+  max_iframe_depth: usize,
+  trace: TraceHandle,
+) -> Result<Pixmap> {
+  let _paint_span = trace.span("paint", "paint");
+  let _display_list_span = trace.span("display_list_build", "paint");
   record_stage(StageHeartbeat::PaintBuild);
   check_active(RenderStage::Paint).map_err(Error::Render)?;
   let diagnostics_enabled = paint_diagnostics_enabled();
@@ -13688,6 +13720,8 @@ pub fn paint_tree_display_list_with_resources_scaled_offset_depth(
     });
   }
 
+  drop(_display_list_span);
+  let _optimize_span = trace.span("display_list_optimize", "paint");
   let optimizer = DisplayListOptimizer::new();
   let viewport_rect = Rect::from_xywh(0.0, 0.0, viewport.width, viewport.height);
   let optimize_start = diagnostics_enabled.then(Instant::now);
@@ -13742,6 +13776,8 @@ pub fn paint_tree_display_list_with_resources_scaled_offset_depth(
     });
   }
 
+  drop(_optimize_span);
+  let _raster_span = trace.span("rasterize", "paint");
   let mut renderer = DisplayListRenderer::new_scaled(width, height, background, font_ctx, scale)?;
   renderer.set_parallelism(paint_parallelism);
   record_stage(StageHeartbeat::PaintRasterize);
