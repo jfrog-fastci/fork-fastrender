@@ -9,10 +9,20 @@ use fastrender::Pixmap;
 use image::GenericImageView;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 struct MaxAllocRecorder;
 
 static MAX_ALLOC: AtomicUsize = AtomicUsize::new(0);
+
+// These tests use a global allocator to track peak allocation size. The Rust test harness runs
+// tests in parallel by default, so guard each test with a mutex to keep allocations deterministic
+// and prevent racy `MAX_ALLOC` resets.
+static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_tests() -> MutexGuard<'static, ()> {
+  TEST_LOCK.lock().unwrap_or_else(|err| err.into_inner())
+}
 
 #[global_allocator]
 static GLOBAL_ALLOC: MaxAllocRecorder = MaxAllocRecorder;
@@ -76,6 +86,7 @@ fn decode_rgba(bytes: &[u8]) -> image::RgbaImage {
 
 #[test]
 fn png_round_trip_1x1_unpremultiplies_exactly() {
+  let _guard = lock_tests();
   let mut pixmap = Pixmap::new(1, 1).expect("pixmap");
   // Premultiplied: r = a = 10 => unpremultiply should clamp to 255.
   pixmap.data_mut().copy_from_slice(&[10, 0, 0, 10]);
@@ -88,6 +99,7 @@ fn png_round_trip_1x1_unpremultiplies_exactly() {
 
 #[test]
 fn png_round_trip_2x2_unpremultiplies_exactly() {
+  let _guard = lock_tests();
   let mut pixmap = Pixmap::new(2, 2).expect("pixmap");
   // Row-major premultiplied RGBA pixels.
   pixmap.data_mut().copy_from_slice(&[
@@ -112,6 +124,7 @@ fn png_round_trip_2x2_unpremultiplies_exactly() {
 
 #[test]
 fn jpeg_round_trip_1x1_unpremultiplies_before_dropping_alpha() {
+  let _guard = lock_tests();
   let mut pixmap = Pixmap::new(1, 1).expect("pixmap");
   pixmap.data_mut().copy_from_slice(&[10, 0, 0, 10]);
 
@@ -127,6 +140,7 @@ fn jpeg_round_trip_1x1_unpremultiplies_before_dropping_alpha() {
 
 #[test]
 fn jpeg_round_trip_2x2_basic_dimensions_and_pixels() {
+  let _guard = lock_tests();
   let mut pixmap = Pixmap::new(2, 2).expect("pixmap");
   // Solid premultiplied pixel to keep JPEG subsampling deterministic.
   pixmap
@@ -144,6 +158,7 @@ fn jpeg_round_trip_2x2_basic_dimensions_and_pixels() {
 
 #[test]
 fn webp_round_trip_1x1_unpremultiplies_and_preserves_alpha() {
+  let _guard = lock_tests();
   let mut pixmap = Pixmap::new(1, 1).expect("pixmap");
   pixmap.data_mut().copy_from_slice(&[10, 0, 0, 10]);
 
@@ -157,6 +172,7 @@ fn webp_round_trip_1x1_unpremultiplies_and_preserves_alpha() {
 
 #[test]
 fn webp_round_trip_2x2_basic_dimensions_and_pixels() {
+  let _guard = lock_tests();
   let mut pixmap = Pixmap::new(2, 2).expect("pixmap");
   pixmap
     .data_mut()
@@ -172,6 +188,7 @@ fn webp_round_trip_2x2_basic_dimensions_and_pixels() {
 
 #[test]
 fn png_streaming_encode_avoids_full_frame_intermediate_allocations() {
+  let _guard = lock_tests();
   let width = 1024;
   let height = 1024;
   let mut pixmap = Pixmap::new(width, height).expect("pixmap");
@@ -196,6 +213,7 @@ fn png_streaming_encode_avoids_full_frame_intermediate_allocations() {
 
 #[test]
 fn jpeg_streaming_encode_avoids_full_frame_intermediate_allocations() {
+  let _guard = lock_tests();
   let width = 1024;
   let height = 1024;
   let mut pixmap = Pixmap::new(width, height).expect("pixmap");
