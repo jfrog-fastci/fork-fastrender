@@ -374,7 +374,8 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
   url: &str,
   accept_encoding: Option<&str>,
   validators: Option<super::HttpCacheValidators<'a>>,
-  referrer: Option<&str>,
+  client_origin: Option<&super::DocumentOrigin>,
+  referrer_url: Option<&str>,
   referrer_policy: super::ReferrerPolicy,
   deadline: &Option<render_control::RenderDeadline>,
   started: Instant,
@@ -455,7 +456,8 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
         accept_encoding_value,
         validators,
         destination,
-        referrer,
+        client_origin,
+        referrer_url,
         referrer_policy,
       );
 
@@ -660,7 +662,8 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
             url,
             Some("identity"),
             validators,
-            referrer,
+            client_origin,
+            referrer_url,
             referrer_policy,
             deadline,
             started,
@@ -932,6 +935,7 @@ mod tests {
       "gzip, deflate, br",
       None,
       super::super::FetchContextKind::Other.into(),
+      None,
       None,
       super::super::ReferrerPolicy::default(),
     );

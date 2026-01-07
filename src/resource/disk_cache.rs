@@ -2878,7 +2878,7 @@ mod tests {
   #[derive(Clone, Debug)]
   struct RecordedRequestCall {
     destination: FetchDestination,
-    referrer: Option<String>,
+    referrer_url: Option<String>,
   }
 
   #[derive(Clone)]
@@ -2894,7 +2894,7 @@ mod tests {
     fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
       self.calls.lock().unwrap().push(RecordedRequestCall {
         destination: req.destination,
-        referrer: req.referrer.map(|s| s.to_string()),
+        referrer_url: req.referrer_url.map(|s| s.to_string()),
       });
       Ok(FetchedResource::new(
         b"ok".to_vec(),
@@ -2915,7 +2915,8 @@ mod tests {
     );
 
     let url = "https://example.com/style.css";
-    let req = FetchRequest::new(url, FetchDestination::Style).with_referrer("https://example.com/");
+    let req =
+      FetchRequest::new(url, FetchDestination::Style).with_referrer_url("https://example.com/");
     let res = disk.fetch_with_request(req).expect("fetch");
     assert_eq!(res.bytes, b"ok");
 
@@ -2923,7 +2924,7 @@ mod tests {
     assert_eq!(snapshot.len(), 1);
     assert_eq!(snapshot[0].destination, FetchDestination::Style);
     assert_eq!(
-      snapshot[0].referrer.as_deref(),
+      snapshot[0].referrer_url.as_deref(),
       Some("https://example.com/")
     );
   }
@@ -3371,9 +3372,9 @@ mod tests {
     runtime::with_thread_runtime_toggles(toggles, || {
       let tmp = tempfile::tempdir().unwrap();
       let req_a =
-        FetchRequest::new(&url, FetchDestination::Font).with_referrer("http://a.test/page");
+        FetchRequest::new(&url, FetchDestination::Font).with_referrer_url("http://a.test/page");
       let req_b =
-        FetchRequest::new(&url, FetchDestination::Font).with_referrer("http://b.test/page");
+        FetchRequest::new(&url, FetchDestination::Font).with_referrer_url("http://b.test/page");
 
       let disk = DiskCachingFetcher::new(HttpFetcher::new(), tmp.path());
       let first_a = disk.fetch_with_request(req_a).expect("fetch A");
@@ -3415,9 +3416,9 @@ mod tests {
     runtime::with_thread_runtime_toggles(toggles, || {
       let tmp = tempfile::tempdir().unwrap();
       let req_a =
-        FetchRequest::new(&url, FetchDestination::Font).with_referrer("http://a.test/page");
+        FetchRequest::new(&url, FetchDestination::Font).with_referrer_url("http://a.test/page");
       let req_b =
-        FetchRequest::new(&url, FetchDestination::Font).with_referrer("http://b.test/page");
+        FetchRequest::new(&url, FetchDestination::Font).with_referrer_url("http://b.test/page");
 
       let disk = DiskCachingFetcher::new(HttpFetcher::new(), tmp.path());
       let first_a = disk.fetch_with_request(req_a).expect("fetch A");
@@ -3499,9 +3500,9 @@ mod tests {
     runtime::with_thread_runtime_toggles(toggles, || {
       let tmp = tempfile::tempdir().unwrap();
       let req_a =
-        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer("http://a.test/page");
+        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer_url("http://a.test/page");
       let req_b =
-        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer("http://b.test/page");
+        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer_url("http://b.test/page");
 
       let disk = DiskCachingFetcher::new(HttpFetcher::new(), tmp.path());
       let first_a = disk.fetch_with_request(req_a).expect("fetch A");
@@ -3535,9 +3536,9 @@ mod tests {
       let disk = DiskCachingFetcher::new(PanicFetcher, tmp.path());
       let url = "https://example.com/image.png";
       let req_a =
-        FetchRequest::new(url, FetchDestination::ImageCors).with_referrer("http://a.test/page");
+        FetchRequest::new(url, FetchDestination::ImageCors).with_referrer_url("http://a.test/page");
       let req_b =
-        FetchRequest::new(url, FetchDestination::ImageCors).with_referrer("http://b.test/page");
+        FetchRequest::new(url, FetchDestination::ImageCors).with_referrer_url("http://b.test/page");
 
       let mut source_a = FetchedResource::new(
         Vec::new(),
@@ -3602,9 +3603,9 @@ mod tests {
     runtime::with_thread_runtime_toggles(toggles, || {
       let tmp = tempfile::tempdir().unwrap();
       let req_a =
-        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer("http://a.test/page");
+        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer_url("http://a.test/page");
       let req_b =
-        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer("http://b.test/page");
+        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer_url("http://b.test/page");
 
       let disk = DiskCachingFetcher::new(HttpFetcher::new(), tmp.path());
       let first_a = disk.fetch_with_request(req_a).expect("fetch A");

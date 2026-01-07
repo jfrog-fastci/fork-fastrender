@@ -1168,7 +1168,7 @@ mod tests {
       fn fetch_with_request(&self, req: FetchRequest<'_>) -> fastrender::Result<FetchedResource> {
         self.calls.lock().unwrap().push((
           req.url.to_string(),
-          req.referrer.map(|referrer| referrer.to_string()),
+          req.referrer_url.map(|referrer| referrer.to_string()),
         ));
         Ok(FetchedResource::with_final_url(
           b"<html></html>".to_vec(),

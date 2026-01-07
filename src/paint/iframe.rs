@@ -625,7 +625,7 @@ pub(crate) fn render_iframe_src(
   let mut owner_guard = IframeInFlightOwnerGuard::new(key, flight);
 
   let base_url = image_cache.base_url();
-  let referrer = context
+  let referrer_url = context
     .as_ref()
     .and_then(|ctx| ctx.document_url.as_deref())
     .or(base_url.as_deref());
@@ -634,9 +634,17 @@ pub(crate) fn render_iframe_src(
     .map(|ctx| ctx.referrer_policy)
     .unwrap_or_default();
   let request_referrer_policy = referrer_policy.unwrap_or(doc_referrer_policy);
+  let origin_fallback = referrer_url.and_then(origin_from_url);
+  let client_origin = context
+    .as_ref()
+    .and_then(|ctx| ctx.policy.document_origin.as_ref())
+    .or(origin_fallback.as_ref());
   let mut request = FetchRequest::new(&resolved, FetchDestination::Iframe);
-  if let Some(referrer) = referrer {
-    request = request.with_referrer(referrer);
+  if let Some(origin) = client_origin {
+    request = request.with_client_origin(origin);
+  }
+  if let Some(referrer_url) = referrer_url {
+    request = request.with_referrer_url(referrer_url);
   }
   request = request.with_referrer_policy(request_referrer_policy);
   let resource = match fetcher.fetch_with_request(request) {

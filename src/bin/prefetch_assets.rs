@@ -1125,7 +1125,7 @@ mod disk_cache_main {
       }
 
       match self.fetcher.fetch_with_request(
-        FetchRequest::new(url, FetchDestination::Style).with_referrer(self.referrer),
+        FetchRequest::new(url, FetchDestination::Style).with_referrer_url(self.referrer),
       ) {
         Ok(res) => {
           if let Err(err) =
@@ -1441,7 +1441,7 @@ mod disk_cache_main {
         }
 
         let success = match fetcher.fetch_with_request(
-          FetchRequest::new(&resolved, FetchDestination::Font).with_referrer(referrer),
+          FetchRequest::new(&resolved, FetchDestination::Font).with_referrer_url(referrer),
         ) {
           Ok(res) => ensure_http_success(&res, &resolved)
             .and_then(|()| ensure_font_mime_sane(&res, &resolved))
@@ -1807,7 +1807,7 @@ mod disk_cache_main {
             }
           }
           StylesheetTask::External(css_url) => match fetcher.fetch_with_request(
-            FetchRequest::new(css_url.as_str(), FetchDestination::Style).with_referrer(base_hint),
+            FetchRequest::new(css_url.as_str(), FetchDestination::Style).with_referrer_url(base_hint),
           ) {
             Ok(res) => {
               if ensure_http_success(&res, &css_url)
@@ -1903,7 +1903,7 @@ mod disk_cache_main {
       let mut summary = summary.borrow_mut();
       for url in &image_urls {
         match fetcher.fetch_with_request(
-          FetchRequest::new(url.as_str(), FetchDestination::Image).with_referrer(base_hint),
+          FetchRequest::new(url.as_str(), FetchDestination::Image).with_referrer_url(base_hint),
         ) {
           Ok(res) => {
             if ensure_http_success(&res, url)
@@ -1931,7 +1931,7 @@ mod disk_cache_main {
       for (url, crossorigin) in &cors_image_urls {
         if !plain_fetched.contains(url) {
           match fetcher.fetch_with_request(
-            FetchRequest::new(url.as_str(), FetchDestination::Image).with_referrer(base_hint),
+            FetchRequest::new(url.as_str(), FetchDestination::Image).with_referrer_url(base_hint),
           ) {
             Ok(res) => {
               if ensure_http_success(&res, url)
@@ -1949,7 +1949,7 @@ mod disk_cache_main {
         }
 
         match fetcher.fetch_with_request(
-          FetchRequest::new(url.as_str(), FetchDestination::ImageCors).with_referrer(base_hint),
+          FetchRequest::new(url.as_str(), FetchDestination::ImageCors).with_referrer_url(base_hint),
         ) {
           Ok(res) => {
             if ensure_http_success(&res, url)
@@ -1976,7 +1976,7 @@ mod disk_cache_main {
         let mut summary = summary.borrow_mut();
         for url in &document_urls {
           match fetcher.fetch_with_request(
-            FetchRequest::new(url.as_str(), fetch_destination).with_referrer(base_hint),
+            FetchRequest::new(url.as_str(), fetch_destination).with_referrer_url(base_hint),
           ) {
             Ok(res) => {
               let is_html = ensure_http_success(&res, url).is_ok()
@@ -2023,7 +2023,7 @@ mod disk_cache_main {
       let mut summary = summary.borrow_mut();
       for url in &css_asset_urls {
         match fetcher.fetch_with_request(
-          FetchRequest::new(url.as_str(), FetchDestination::Image).with_referrer(base_hint),
+          FetchRequest::new(url.as_str(), FetchDestination::Image).with_referrer_url(base_hint),
         ) {
           Ok(res) => {
             if ensure_http_success(&res, url)
@@ -2212,7 +2212,7 @@ mod disk_cache_main {
           self.calls.lock().unwrap().push((
             req.url.to_string(),
             req.destination,
-            req.referrer.map(|r| r.to_string()),
+            req.referrer_url.map(|r| r.to_string()),
           ));
           Ok(FetchedResource::with_final_url(
             b"<html></html>".to_vec(),

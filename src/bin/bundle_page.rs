@@ -441,8 +441,11 @@ impl ResourceFetcher for CacheKindMismatchFallbackFetcher {
 
           for dest in retries {
             let mut retry = FetchRequest::new(req.url, *dest);
-            if let Some(referrer) = req.referrer {
-              retry = retry.with_referrer(referrer);
+            if let Some(origin) = req.client_origin {
+              retry = retry.with_client_origin(origin);
+            }
+            if let Some(referrer) = req.referrer_url {
+              retry = retry.with_referrer_url(referrer);
             }
             if let Ok(res) = self.inner.fetch_with_request(retry) {
               return Ok(res);
@@ -636,8 +639,9 @@ impl ResourceFetcher for RecordingFetcher {
         kind: req.destination.into(),
         url: url.clone(),
         origin: req
-          .referrer
-          .and_then(origin_from_url)
+          .client_origin
+          .cloned()
+          .or_else(|| req.referrer_url.and_then(origin_from_url))
           .or_else(|| origin_from_url(req.url)),
         credentials_mode: req.credentials_mode,
       };
@@ -1346,7 +1350,9 @@ fn fetch_document(
     if let Some(target) = resolve_href(&doc.base_url, &refresh) {
       eprintln!("Following meta refresh to: {target}");
       let referrer = doc.base_hint.clone();
-      match fetcher.fetch_with_request(FetchRequest::document(&target).with_referrer(&referrer)) {
+      match fetcher.fetch_with_request(
+        FetchRequest::document(&target).with_referrer_url(&referrer),
+      ) {
         Ok(res) => {
           resource = res;
           base_hint = resource.final_url.as_deref().unwrap_or(&target).to_string();
@@ -1362,7 +1368,9 @@ fn fetch_document(
       if let Some(target) = resolve_href(&doc.base_url, &js_redirect) {
         eprintln!("Following JS redirect to: {target}");
         let referrer = doc.base_hint.clone();
-        match fetcher.fetch_with_request(FetchRequest::document(&target).with_referrer(&referrer)) {
+        match fetcher.fetch_with_request(
+          FetchRequest::document(&target).with_referrer_url(&referrer),
+        ) {
           Ok(res) => {
             resource = res;
             base_hint = resource.final_url.as_deref().unwrap_or(&target).to_string();
@@ -1828,7 +1836,7 @@ fn crawl_document(
       continue;
     }
 
-    let req = FetchRequest::new(&url, destination).with_referrer(&referrer);
+    let req = FetchRequest::new(&url, destination).with_referrer_url(&referrer);
     let res = match fetcher.fetch_with_request(req) {
       Ok(res) => res,
       Err(err) => {
@@ -2281,7 +2289,7 @@ mod tests {
       self.calls.lock().unwrap().push((
         req.url.to_string(),
         req.destination,
-        req.referrer.map(|r| r.to_string()),
+        req.referrer_url.map(|r| r.to_string()),
       ));
 
       match req.url {
@@ -2374,7 +2382,7 @@ mod tests {
       self.calls.fetch_add(1, Ordering::SeqCst);
 
       let origin = req
-        .referrer
+        .referrer_url
         .and_then(|referrer| url::Url::parse(referrer).ok())
         .and_then(|parsed| {
           parsed
@@ -2404,8 +2412,10 @@ mod tests {
         (FetchDestination::Font, "https://example.com/font.woff2"),
         (FetchDestination::ImageCors, "https://example.com/img.png"),
       ] {
-        let req_a = FetchRequest::new(url, destination).with_referrer("https://a.test/page.html");
-        let req_b = FetchRequest::new(url, destination).with_referrer("https://b.test/page.html");
+        let req_a =
+          FetchRequest::new(url, destination).with_referrer_url("https://a.test/page.html");
+        let req_b =
+          FetchRequest::new(url, destination).with_referrer_url("https://b.test/page.html");
 
         let a = recording.fetch_with_request(req_a).expect("origin A fetch");
         let b = recording.fetch_with_request(req_b).expect("origin B fetch");
@@ -2450,8 +2460,10 @@ mod tests {
         (FetchDestination::Font, "https://example.com/font.woff2"),
         (FetchDestination::ImageCors, "https://example.com/img.png"),
       ] {
-        let req_a = FetchRequest::new(url, destination).with_referrer("https://a.test/page.html");
-        let req_b = FetchRequest::new(url, destination).with_referrer("https://b.test/page.html");
+        let req_a =
+          FetchRequest::new(url, destination).with_referrer_url("https://a.test/page.html");
+        let req_b =
+          FetchRequest::new(url, destination).with_referrer_url("https://b.test/page.html");
 
         let a = recording.fetch_with_request(req_a).expect("origin A fetch");
         let b = recording.fetch_with_request(req_b).expect("origin B fetch");
@@ -2526,11 +2538,13 @@ mod tests {
       let url = "https://cdn.test/img.png";
       let referrer = "https://a.test/page.html";
       let _ = recording
-        .fetch_with_request(FetchRequest::new(url, FetchDestination::Image).with_referrer(referrer))
+        .fetch_with_request(
+          FetchRequest::new(url, FetchDestination::Image).with_referrer_url(referrer),
+        )
         .expect("no-cors image fetch");
       let _ = recording
         .fetch_with_request(
-          FetchRequest::new(url, FetchDestination::ImageCors).with_referrer(referrer),
+          FetchRequest::new(url, FetchDestination::ImageCors).with_referrer_url(referrer),
         )
         .expect("cors image fetch");
 
@@ -2623,13 +2637,15 @@ mod tests {
 
       let cors = recording
         .fetch_with_request(
-          FetchRequest::new(url, FetchDestination::ImageCors).with_referrer(referrer),
+          FetchRequest::new(url, FetchDestination::ImageCors).with_referrer_url(referrer),
         )
         .expect("cors fetch");
       assert_eq!(cors.bytes, b"cors");
 
       let no_cors = recording
-        .fetch_with_request(FetchRequest::new(url, FetchDestination::Image).with_referrer(referrer))
+        .fetch_with_request(
+          FetchRequest::new(url, FetchDestination::Image).with_referrer_url(referrer),
+        )
         .expect("no-cors fetch");
       assert_eq!(no_cors.bytes, b"no-cors");
 
@@ -2675,7 +2691,7 @@ mod tests {
         self.calls.lock().unwrap().push((
           req.url.to_string(),
           req.destination,
-          req.referrer.map(|r| r.to_string()),
+          req.referrer_url.map(|r| r.to_string()),
         ));
 
         const ROOT: &str = "http://root.test/page.html";
@@ -2702,7 +2718,7 @@ mod tests {
           )),
           FONT => {
             let origin = req
-              .referrer
+              .referrer_url
               .and_then(|referrer| url::Url::parse(referrer).ok())
               .and_then(|parsed| {
                 parsed
@@ -2896,7 +2912,7 @@ mod tests {
         self.calls.lock().unwrap().push((
           req.url.to_string(),
           req.destination,
-          req.referrer.map(|r| r.to_string()),
+          req.referrer_url.map(|r| r.to_string()),
         ));
 
         match req.url {
@@ -2979,7 +2995,7 @@ mod tests {
         self.calls.lock().unwrap().push((
           req.url.to_string(),
           req.destination,
-          req.referrer.map(|r| r.to_string()),
+          req.referrer_url.map(|r| r.to_string()),
         ));
 
         match req.url {
@@ -3062,7 +3078,7 @@ mod tests {
         self.calls.lock().unwrap().push((
           req.url.to_string(),
           req.destination,
-          req.referrer.map(|r| r.to_string()),
+          req.referrer_url.map(|r| r.to_string()),
         ));
 
         match req.url {
@@ -3145,7 +3161,7 @@ mod tests {
         self.calls.lock().unwrap().push((
           req.url.to_string(),
           req.destination,
-          req.referrer.map(|r| r.to_string()),
+          req.referrer_url.map(|r| r.to_string()),
         ));
 
         match req.url {
@@ -3385,7 +3401,7 @@ mod tests {
         self.calls.lock().unwrap().push((
           req.url.to_string(),
           req.destination,
-          req.referrer.map(|r| r.to_string()),
+          req.referrer_url.map(|r| r.to_string()),
         ));
 
         match req.url {
@@ -3521,7 +3537,7 @@ mod tests {
         self.calls.lock().unwrap().push((
           req.url.to_string(),
           req.destination,
-          req.referrer.map(|r| r.to_string()),
+          req.referrer_url.map(|r| r.to_string()),
         ));
 
         match req.url {
@@ -3605,7 +3621,7 @@ mod tests {
         self.calls.lock().unwrap().push((
           req.url.to_string(),
           req.destination,
-          req.referrer.map(|r| r.to_string()),
+          req.referrer_url.map(|r| r.to_string()),
         ));
 
         match req.url {
@@ -3704,7 +3720,7 @@ mod tests {
         self.calls.lock().unwrap().push((
           req.url.to_string(),
           req.destination,
-          req.referrer.map(|r| r.to_string()),
+          req.referrer_url.map(|r| r.to_string()),
         ));
 
         match req.url {
@@ -3799,7 +3815,7 @@ mod tests {
         self.calls.lock().unwrap().push((
           req.url.to_string(),
           req.destination,
-          req.referrer.map(|r| r.to_string()),
+          req.referrer_url.map(|r| r.to_string()),
         ));
 
         match req.url {
@@ -3871,7 +3887,7 @@ mod tests {
         self.calls.lock().unwrap().push((
           req.url.to_string(),
           req.destination,
-          req.referrer.map(|r| r.to_string()),
+          req.referrer_url.map(|r| r.to_string()),
         ));
 
         match req.url {
@@ -3942,7 +3958,7 @@ mod tests {
         self.calls.lock().unwrap().push((
           req.url.to_string(),
           req.destination,
-          req.referrer.map(|r| r.to_string()),
+          req.referrer_url.map(|r| r.to_string()),
         ));
 
         match req.url {

@@ -8,7 +8,7 @@ use crate::paint::blur::{pixel_fingerprint, PixelFingerprintHasher};
 use crate::paint::painter::with_paint_diagnostics;
 use crate::paint::pixmap::new_pixmap;
 use crate::render_control::{active_deadline, check_active, with_deadline};
-use crate::resource::{ensure_http_success, FetchRequest};
+use crate::resource::{ensure_http_success, origin_from_url, FetchRequest};
 use crate::style::color;
 use crate::tree::box_tree::ReplacedType;
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode};
@@ -1677,7 +1677,7 @@ pub fn load_svg_filter(url: &str, image_cache: &ImageCache) -> Option<Arc<SvgFil
   }
 
   let fetcher = image_cache.fetcher();
-  let referrer = context
+  let referrer_url = context
     .as_ref()
     .and_then(|ctx| ctx.document_url.as_deref())
     .filter(|url| !url.trim().is_empty());
@@ -1685,9 +1685,17 @@ pub fn load_svg_filter(url: &str, image_cache: &ImageCache) -> Option<Arc<SvgFil
     .as_ref()
     .map(|ctx| ctx.referrer_policy)
     .unwrap_or_default();
+  let origin_fallback = referrer_url.and_then(origin_from_url);
+  let client_origin = context
+    .as_ref()
+    .and_then(|ctx| ctx.policy.document_origin.as_ref())
+    .or(origin_fallback.as_ref());
   let mut request = FetchRequest::image(&resource_url);
-  if let Some(referrer) = referrer {
-    request = request.with_referrer(referrer);
+  if let Some(origin) = client_origin {
+    request = request.with_client_origin(origin);
+  }
+  if let Some(referrer_url) = referrer_url {
+    request = request.with_referrer_url(referrer_url);
   }
   request = request.with_referrer_policy(referrer_policy);
   let resource = match fetcher.fetch_with_request(request) {
@@ -6445,7 +6453,7 @@ mod tests {
     ) -> crate::error::Result<FetchedResource> {
       let url = request.url.to_string();
       let destination = request.destination;
-      let referrer = request.referrer.map(|s| s.to_string());
+      let referrer = request.referrer_url.map(|s| s.to_string());
       *self.request.lock().unwrap() = Some((url, destination, referrer));
 
       // Intentionally omit a `<filter>` definition so `load_svg_filter` does not populate the
@@ -9572,7 +9580,7 @@ mod filter_cache_tests {
         *guard = Some((
           req.url.to_string(),
           req.destination,
-          req.referrer.map(|v| v.to_string()),
+          req.referrer_url.map(|v| v.to_string()),
         ));
       }
       Ok(FetchedResource::new(

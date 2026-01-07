@@ -394,24 +394,22 @@ impl ResourceFetcher for BundledFetcher {
   fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
     if super::cors_cache_partition_key(&req).is_some() {
       let kind: FetchContextKind = req.destination.into();
+      let origin_from_referrer = req.referrer_url.and_then(origin_from_url);
+      let origin_from_target = origin_from_url(req.url);
       let origin = req
-        .referrer
-        .and_then(origin_from_url)
-        .or_else(|| origin_from_url(req.url));
+        .client_origin
+        .or(origin_from_referrer.as_ref())
+        .or(origin_from_target.as_ref());
 
       if let Some(origin) = origin {
-        let key = request_partitioned_resource_key_with_credentials(
-          kind,
-          req.url,
-          &origin,
-          req.credentials_mode,
-        );
+        let key =
+          request_partitioned_resource_key_with_credentials(kind, req.url, origin, req.credentials_mode);
         if let Some(resource) = self.bundle.resource_for_url(&key) {
           return Ok(resource.as_fetched());
         }
 
         if req.credentials_mode == FetchCredentialsMode::Include {
-          let key = request_partitioned_resource_key(kind, req.url, &origin);
+          let key = request_partitioned_resource_key(kind, req.url, origin);
           if let Some(resource) = self.bundle.resource_for_url(&key) {
             return Ok(resource.as_fetched());
           }
@@ -838,14 +836,16 @@ mod tests {
     with_thread_runtime_toggles(toggles, || {
       let a = fetcher
         .fetch_with_request(
-          FetchRequest::new(url, FetchDestination::Font).with_referrer("https://a.test/page.html"),
+          FetchRequest::new(url, FetchDestination::Font)
+            .with_referrer_url("https://a.test/page.html"),
         )
         .expect("fetch origin A");
       assert_eq!(a.bytes, b"a");
 
       let b = fetcher
         .fetch_with_request(
-          FetchRequest::new(url, FetchDestination::Font).with_referrer("https://b.test/page.html"),
+          FetchRequest::new(url, FetchDestination::Font)
+            .with_referrer_url("https://b.test/page.html"),
         )
         .expect("fetch origin B");
       assert_eq!(b.bytes, b"b");
@@ -937,7 +937,8 @@ mod tests {
     with_thread_runtime_toggles(toggles, || {
       let a = fetcher
         .fetch_with_request(
-          FetchRequest::new(url, FetchDestination::Font).with_referrer("https://a.test/page.html"),
+          FetchRequest::new(url, FetchDestination::Font)
+            .with_referrer_url("https://a.test/page.html"),
         )
         .expect("fetch origin A");
       assert_eq!(a.bytes, b"ok");
@@ -948,7 +949,8 @@ mod tests {
 
       let b = fetcher
         .fetch_with_request(
-          FetchRequest::new(url, FetchDestination::Font).with_referrer("https://b.test/page.html"),
+          FetchRequest::new(url, FetchDestination::Font)
+            .with_referrer_url("https://b.test/page.html"),
         )
         .expect("fetch origin B");
       assert_eq!(b.bytes, b"ok");

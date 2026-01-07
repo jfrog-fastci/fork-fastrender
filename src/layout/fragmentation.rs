@@ -2460,7 +2460,6 @@ mod tests {
     grid.grid_tracks = Some(Arc::new(GridTrackRanges {
       rows: vec![(0.0, 30.0)],
       columns: Vec::new(),
-      item_placements: Vec::new(),
     }));
 
     let root = FragmentNode::new_block(

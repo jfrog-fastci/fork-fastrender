@@ -488,7 +488,7 @@ fn follow_client_redirects_state(
       ));
 
       match fetcher.fetch_with_request(
-        FetchRequest::document(&target).with_referrer(state.doc.base_hint.as_str()),
+        FetchRequest::document(&target).with_referrer_url(state.doc.base_hint.as_str()),
       ) {
         Ok(mut res) => {
           if is_error_status(res.status) {
@@ -680,7 +680,7 @@ mod tests {
       self.requests.lock().unwrap().push((
         req.url.to_string(),
         req.destination,
-        req.referrer.map(|r| r.to_string()),
+        req.referrer_url.map(|r| r.to_string()),
       ));
 
       let mut res = FetchedResource::new(

@@ -6733,18 +6733,25 @@ impl FastRender {
             if let Some(counter) = stylesheet_fetch_counter.as_ref() {
               counter.fetch_add(1, Ordering::Relaxed);
             }
-            let referrer = resource_context
+            let referrer_url = resource_context
               .as_ref()
               .and_then(|ctx| ctx.document_url.as_deref());
             let doc_referrer_policy = resource_context
               .as_ref()
               .map(|ctx| ctx.referrer_policy)
               .unwrap_or_default();
-            let request_referrer_policy =
-              link_referrer_policy.unwrap_or(doc_referrer_policy);
+            let request_referrer_policy = link_referrer_policy.unwrap_or(doc_referrer_policy);
+            let origin_fallback = referrer_url.and_then(origin_from_url);
+            let client_origin = resource_context
+              .as_ref()
+              .and_then(|ctx| ctx.policy.document_origin.as_ref())
+              .or(origin_fallback.as_ref());
             let mut request = FetchRequest::new(url.as_str(), FetchDestination::Style);
-            if let Some(referrer) = referrer {
-              request = request.with_referrer(referrer);
+            if let Some(origin) = client_origin {
+              request = request.with_client_origin(origin);
+            }
+            if let Some(referrer_url) = referrer_url {
+              request = request.with_referrer_url(referrer_url);
             }
             request = request.with_referrer_policy(request_referrer_policy);
             let resource = match fetcher.fetch_with_request(request) {
@@ -7060,6 +7067,11 @@ impl FastRender {
           if let Some(counter) = stylesheet_fetch_counter.as_ref() {
             counter.fetch_add(1, Ordering::Relaxed);
           }
+          let referrer_url = self.document_url();
+          let origin_fallback = referrer_url.and_then(origin_from_url);
+          let client_origin = resource_context
+            .and_then(|ctx| ctx.policy.document_origin.as_ref())
+            .or(origin_fallback.as_ref());
           let doc_referrer_policy = self
             .resource_context
             .as_ref()
@@ -7067,8 +7079,11 @@ impl FastRender {
             .unwrap_or_default();
           let request_referrer_policy = link.referrer_policy.unwrap_or(doc_referrer_policy);
           let mut request = FetchRequest::new(stylesheet_url.as_str(), FetchDestination::Style);
-          if let Some(referrer) = self.document_url() {
-            request = request.with_referrer(referrer);
+          if let Some(origin) = client_origin {
+            request = request.with_client_origin(origin);
+          }
+          if let Some(referrer_url) = referrer_url {
+            request = request.with_referrer_url(referrer_url);
           }
           request = request.with_referrer_policy(request_referrer_policy);
           match fetcher.fetch_with_request(request) {
@@ -9274,10 +9289,14 @@ impl FastRender {
 
     let mut combined_css = String::new();
     let mut import_state = InlineImportState::with_budget(budget);
-    let document_referrer = resource_context.and_then(|ctx| ctx.document_url.as_deref());
+    let document_referrer_url = resource_context.and_then(|ctx| ctx.document_url.as_deref());
     let document_referrer_policy = resource_context
       .map(|ctx| ctx.referrer_policy)
       .unwrap_or_default();
+    let origin_fallback = document_referrer_url.and_then(origin_from_url);
+    let client_origin = resource_context
+      .and_then(|ctx| ctx.policy.document_origin.as_ref())
+      .or(origin_fallback.as_ref());
 
     for candidate in css_links {
       let css_url = candidate.url;
@@ -9300,8 +9319,11 @@ impl FastRender {
         rec.record_fetch(ResourceKind::Stylesheet);
       }
       let mut request = FetchRequest::new(css_url.as_str(), FetchDestination::Style);
-      if let Some(referrer) = document_referrer {
-        request = request.with_referrer(referrer);
+      if let Some(origin) = client_origin {
+        request = request.with_client_origin(origin);
+      }
+      if let Some(referrer_url) = document_referrer_url {
+        request = request.with_referrer_url(referrer_url);
       }
       request = request.with_referrer_policy(effective_referrer_policy);
       let fetch_timer = stats.as_deref().and_then(|rec| rec.timer());
@@ -9366,19 +9388,22 @@ impl FastRender {
               if let Some(resource_ctx) = resource_context {
                 if let Err(err) = resource_ctx.policy.allows(u) {
                   diagnostics.record_message(ResourceKind::Stylesheet, u, &err.reason);
-                  return Err(Error::Resource(ResourceError::new(
-                    u.to_string(),
-                    err.reason,
-                  )));
-                }
+                return Err(Error::Resource(ResourceError::new(
+                  u.to_string(),
+                  err.reason,
+                )));
               }
-               let mut request = FetchRequest::new(u, FetchDestination::Style);
-               request = request.with_referrer(import_ctx.importer_url);
+            }
+              let mut request = FetchRequest::new(u, FetchDestination::Style);
+              if let Some(origin) = client_origin {
+                request = request.with_client_origin(origin);
+              }
+              request = request.with_referrer_url(import_ctx.importer_url);
               request = request.with_referrer_policy(effective_referrer_policy);
-               match fetcher.fetch_with_request(request) {
-                 Ok(res) => {
-                   if let Some(resource_ctx) = resource_context {
-                     if let Err(err) = resource_ctx.check_allowed_with_final(
+              match fetcher.fetch_with_request(request) {
+                Ok(res) => {
+                  if let Some(resource_ctx) = resource_context {
+                    if let Err(err) = resource_ctx.check_allowed_with_final(
                       ResourceKind::Stylesheet,
                       u,
                       res.final_url.as_deref(),
@@ -11074,7 +11099,7 @@ impl CssImportLoader for CssImportFetcher {
     if let Some(counter) = self.stylesheet_fetch_counter.as_ref() {
       counter.fetch_add(1, Ordering::Relaxed);
     }
-    let referrer = self
+    let referrer_url = self
       .resource_context
       .as_ref()
       .and_then(|ctx| ctx.document_url.as_deref());
@@ -11083,9 +11108,18 @@ impl CssImportLoader for CssImportFetcher {
       .as_ref()
       .map(|ctx| ctx.referrer_policy)
       .unwrap_or_default();
+    let origin_fallback = referrer_url.and_then(origin_from_url);
+    let client_origin = self
+      .resource_context
+      .as_ref()
+      .and_then(|ctx| ctx.policy.document_origin.as_ref())
+      .or(origin_fallback.as_ref());
     let mut request = FetchRequest::new(resolved.as_str(), FetchDestination::Style);
-    if let Some(referrer) = referrer {
-      request = request.with_referrer(referrer);
+    if let Some(origin) = client_origin {
+      request = request.with_client_origin(origin);
+    }
+    if let Some(referrer_url) = referrer_url {
+      request = request.with_referrer_url(referrer_url);
     }
     request = request.with_referrer_policy(referrer_policy);
     let resource = match self.fetcher.fetch_with_request(request) {
@@ -13513,7 +13547,7 @@ mod tests {
   struct RecordedFetchRequest {
     url: String,
     destination: FetchDestination,
-    referrer: Option<String>,
+    referrer_url: Option<String>,
     referrer_policy: ReferrerPolicy,
   }
 
@@ -13583,7 +13617,7 @@ mod tests {
         guard.push(RecordedFetchRequest {
           url: request.url.to_string(),
           destination: request.destination,
-          referrer: request.referrer.map(|r| r.to_string()),
+          referrer_url: request.referrer_url.map(|r| r.to_string()),
           referrer_policy: request.referrer_policy,
         });
       }
@@ -17517,7 +17551,10 @@ mod tests {
       .find(|request| request.destination == FetchDestination::Style)
       .expect("stylesheet request");
     assert_eq!(stylesheet_request.url, stylesheet_url);
-    assert_eq!(stylesheet_request.referrer.as_deref(), Some(document_url));
+    assert_eq!(
+      stylesheet_request.referrer_url.as_deref(),
+      Some(document_url)
+    );
 
     let blocked_fetcher = Arc::new(RecordingRequestFetcher::default().with_entry(
       stylesheet_url,
@@ -17585,7 +17622,7 @@ mod tests {
       .find(|request| request.destination == FetchDestination::Style)
       .expect("stylesheet request");
     assert_eq!(stylesheet_request.url, stylesheet_url);
-    assert_eq!(stylesheet_request.referrer.as_deref(), Some(document_url));
+    assert_eq!(stylesheet_request.referrer_url.as_deref(), Some(document_url));
     assert_eq!(stylesheet_request.referrer_policy, ReferrerPolicy::NoReferrer);
   }
 
@@ -17669,7 +17706,10 @@ mod tests {
       .find(|request| request.destination == FetchDestination::Style)
       .expect("stylesheet request");
     assert_eq!(stylesheet_request.url, stylesheet_url);
-    assert_eq!(stylesheet_request.referrer.as_deref(), Some(document_url));
+    assert_eq!(
+      stylesheet_request.referrer_url.as_deref(),
+      Some(document_url)
+    );
   }
 
   #[test]
@@ -17711,7 +17751,10 @@ mod tests {
       .find(|request| request.destination == FetchDestination::Style)
       .expect("stylesheet request");
     assert_eq!(stylesheet_request.url, stylesheet_url);
-    assert_eq!(stylesheet_request.referrer.as_deref(), Some(document_url));
+    assert_eq!(
+      stylesheet_request.referrer_url.as_deref(),
+      Some(document_url)
+    );
   }
 
   #[test]
@@ -17754,7 +17797,10 @@ mod tests {
       .find(|request| request.destination == FetchDestination::Style)
       .expect("stylesheet request");
     assert_eq!(stylesheet_request.url, stylesheet_url);
-    assert_eq!(stylesheet_request.referrer.as_deref(), Some(document_url));
+    assert_eq!(
+      stylesheet_request.referrer_url.as_deref(),
+      Some(document_url)
+    );
   }
 
   #[test]
@@ -17796,7 +17842,10 @@ mod tests {
       .find(|request| request.destination == FetchDestination::Style)
       .expect("stylesheet request");
     assert_eq!(stylesheet_request.url, stylesheet_url);
-    assert_eq!(stylesheet_request.referrer.as_deref(), Some(document_url));
+    assert_eq!(
+      stylesheet_request.referrer_url.as_deref(),
+      Some(document_url)
+    );
   }
 
   #[test]
@@ -17838,7 +17887,10 @@ mod tests {
       .find(|request| request.destination == FetchDestination::Style)
       .expect("stylesheet request");
     assert_eq!(stylesheet_request.url, stylesheet_url);
-    assert_eq!(stylesheet_request.referrer.as_deref(), Some(document_url));
+    assert_eq!(
+      stylesheet_request.referrer_url.as_deref(),
+      Some(document_url)
+    );
   }
 
   #[test]
@@ -17880,7 +17932,10 @@ mod tests {
       .find(|request| request.destination == FetchDestination::Style)
       .expect("stylesheet request");
     assert_eq!(stylesheet_request.url, stylesheet_url);
-    assert_eq!(stylesheet_request.referrer.as_deref(), Some(document_url));
+    assert_eq!(
+      stylesheet_request.referrer_url.as_deref(),
+      Some(document_url)
+    );
   }
 
   #[test]
@@ -17932,7 +17987,10 @@ mod tests {
       .find(|request| request.destination == FetchDestination::Style)
       .expect("stylesheet request");
     assert_eq!(stylesheet_request.url, file_stylesheet_url);
-    assert_eq!(stylesheet_request.referrer.as_deref(), Some(document_url));
+    assert_eq!(
+      stylesheet_request.referrer_url.as_deref(),
+      Some(document_url)
+    );
   }
 
   #[test]
@@ -17977,7 +18035,10 @@ mod tests {
       .find(|request| request.destination == FetchDestination::Style)
       .expect("stylesheet request");
     assert_eq!(stylesheet_request.url, stylesheet_url);
-    assert_eq!(stylesheet_request.referrer.as_deref(), Some(document_url));
+    assert_eq!(
+      stylesheet_request.referrer_url.as_deref(),
+      Some(document_url)
+    );
   }
 
   #[test]
@@ -18432,7 +18493,7 @@ mod tests {
       .find(|req| req.url == "https://cdn.example.com/assets/child.css")
       .expect("child.css request");
     assert_eq!(
-      child_req.referrer.as_deref(),
+      child_req.referrer_url.as_deref(),
       Some("https://cdn.example.com/assets/main.css"),
       "expected @import to use importing stylesheet as referrer"
     );
@@ -18442,7 +18503,7 @@ mod tests {
       .find(|req| req.url == "https://cdn.example.com/v2/grand.css")
       .expect("grand.css request");
     assert_eq!(
-      grand_req.referrer.as_deref(),
+      grand_req.referrer_url.as_deref(),
       Some("https://cdn.example.com/v2/child.css"),
       "expected nested @import to use immediate parent stylesheet as referrer"
     );

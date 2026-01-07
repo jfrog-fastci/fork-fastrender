@@ -950,7 +950,16 @@ impl Default for ReferrerPolicy {
 pub struct FetchRequest<'a> {
   pub url: &'a str,
   pub destination: FetchDestination,
-  pub referrer: Option<&'a str>,
+  /// URL used to populate the HTTP `Referer` header.
+  ///
+  /// This is not necessarily the origin of the initiating document; for example, CORS-mode CSS
+  /// resources (notably web fonts) use the stylesheet URL as the referrer even when the document
+  /// origin differs.
+  pub referrer_url: Option<&'a str>,
+  /// Origin of the client/environment settings object that initiated the fetch.
+  ///
+  /// This is used for CORS-mode request headers (`Origin`) and `Sec-Fetch-Site` classification.
+  pub client_origin: Option<&'a DocumentOrigin>,
   pub referrer_policy: ReferrerPolicy,
   pub credentials_mode: FetchCredentialsMode,
 }
@@ -961,7 +970,8 @@ impl<'a> FetchRequest<'a> {
     Self {
       url,
       destination,
-      referrer: None,
+      referrer_url: None,
+      client_origin: None,
       referrer_policy: ReferrerPolicy::default(),
       credentials_mode: if destination.sec_fetch_mode() == "cors" {
         FetchCredentialsMode::Omit
@@ -981,9 +991,15 @@ impl<'a> FetchRequest<'a> {
     Self::new(url, FetchDestination::Image)
   }
 
-  /// Attach a document referrer URL.
-  pub fn with_referrer(mut self, referrer: &'a str) -> Self {
-    self.referrer = Some(referrer);
+  /// Attach a referrer URL used to construct the HTTP `Referer` header.
+  pub fn with_referrer_url(mut self, referrer_url: &'a str) -> Self {
+    self.referrer_url = Some(referrer_url);
+    self
+  }
+
+  /// Attach the initiating client origin used for CORS-mode headers and `Sec-Fetch-Site`.
+  pub fn with_client_origin(mut self, client_origin: &'a DocumentOrigin) -> Self {
+    self.client_origin = Some(client_origin);
     self
   }
 
@@ -2141,8 +2157,17 @@ fn cors_cache_partitioning_enabled() -> bool {
   runtime::runtime_toggles().truthy_with_default("FASTR_FETCH_PARTITION_CORS_CACHE", true)
 }
 
-fn cors_origin_key_from_referrer(referrer: Option<&str>) -> Option<String> {
-  let referrer = referrer?;
+fn cors_origin_key_from_client_origin(client_origin: Option<&DocumentOrigin>) -> Option<String> {
+  let client_origin = client_origin?;
+  if client_origin.is_http_like() {
+    http_browser_origin_and_referer_for_origin(client_origin).map(|(origin, _)| origin)
+  } else {
+    Some("null".to_string())
+  }
+}
+
+fn cors_origin_key_from_referrer_url(referrer_url: Option<&str>) -> Option<String> {
+  let referrer = referrer_url?;
   match Url::parse(referrer) {
     Ok(parsed) => match parsed.scheme() {
       "http" | "https" => {
@@ -2157,12 +2182,15 @@ fn cors_origin_key_from_referrer(referrer: Option<&str>) -> Option<String> {
 }
 
 fn cors_origin_key_for_request(req: &FetchRequest<'_>) -> Option<String> {
-  if let Some(origin) = cors_origin_key_from_referrer(req.referrer) {
+  if let Some(origin) = cors_origin_key_from_client_origin(req.client_origin) {
+    return Some(origin);
+  }
+  if let Some(origin) = cors_origin_key_from_referrer_url(req.referrer_url) {
     return Some(origin);
   }
   // When a referrer was supplied but we could not derive a browser-style origin (invalid URL, etc),
   // match header generation behavior: no `Origin` header is emitted.
-  if req.referrer.is_some() {
+  if req.referrer_url.is_some() {
     return None;
   }
 
@@ -2783,7 +2811,9 @@ pub trait ResourceFetcher: Send + Sync {
     max_bytes: usize,
   ) -> Result<FetchedResource> {
     let kind: FetchContextKind = req.destination.into();
-    if req.referrer.is_some() && req.destination.sec_fetch_mode() == "cors" {
+    if req.destination.sec_fetch_mode() == "cors"
+      && (req.referrer_url.is_some() || req.client_origin.is_some())
+    {
       if max_bytes == 0 {
         let mut res = self.fetch_with_request(req)?;
         res.bytes.clear();
@@ -3172,11 +3202,12 @@ fn build_http_header_pairs<'a>(
   accept_encoding: &str,
   validators: Option<HttpCacheValidators<'a>>,
   destination: FetchDestination,
-  referrer: Option<&str>,
+  client_origin: Option<&DocumentOrigin>,
+  referrer_url: Option<&str>,
   referrer_policy: ReferrerPolicy,
 ) -> Vec<(String, String)> {
   let parsed_target_url = Url::parse(url).ok();
-  let parsed_referrer_url = referrer.and_then(|referrer| Url::parse(referrer).ok());
+  let parsed_referrer_url = referrer_url.and_then(|referrer| Url::parse(referrer).ok());
   let target_origin = parsed_target_url
     .as_ref()
     .map(DocumentOrigin::from_parsed_url)
@@ -3184,7 +3215,7 @@ fn build_http_header_pairs<'a>(
   let referrer_origin = parsed_referrer_url
     .as_ref()
     .map(DocumentOrigin::from_parsed_url)
-    .or_else(|| referrer.and_then(http_browser_tolerant_origin_from_url));
+    .or_else(|| referrer_url.and_then(http_browser_tolerant_origin_from_url));
 
   let mut headers = vec![
     ("User-Agent".to_string(), user_agent.to_string()),
@@ -3201,9 +3232,25 @@ fn build_http_header_pairs<'a>(
     // - For `Referer`, callers can provide a full referrer URL and an explicit `ReferrerPolicy`.
     //   We apply the policy further down (fragment stripping, origin-only referrers for
     //   cross-origin requests when applicable, and HTTPS→HTTP downgrade suppression for strict
-    //   policies). The empty-string policy state defaults to Chromium's
-    //   `strict-origin-when-cross-origin`.
-    let sec_fetch_site = if referrer.is_some() {
+    //   policies).
+    let sec_fetch_site = if profile == FetchDestination::Document {
+      profile.sec_fetch_site()
+    } else if let Some(client_origin) = client_origin {
+      match target_origin.as_ref() {
+        Some(target_origin) => {
+          if client_origin.same_origin(target_origin) {
+            "same-origin"
+          } else if http_browser_schemeful_same_site_from_origins(client_origin, target_origin) {
+            "same-site"
+          } else {
+            "cross-site"
+          }
+        }
+        // If we have a client origin but cannot derive the target origin (invalid URL), treat the
+        // request as cross-site to avoid incorrectly labelling cross-origin requests as same-origin.
+        None => "cross-site",
+      }
+    } else if referrer_url.is_some() {
       match (referrer_origin.as_ref(), target_origin.as_ref()) {
         (Some(ref_origin), Some(target_origin)) => {
           if ref_origin.same_origin(target_origin) {
@@ -3238,11 +3285,16 @@ fn build_http_header_pairs<'a>(
     if let Some(value) = profile.upgrade_insecure_requests() {
       headers.push(("Upgrade-Insecure-Requests".to_string(), value.to_string()));
     }
-    if matches!(
-      profile,
-      FetchDestination::Font | FetchDestination::ImageCors
-    ) {
-      if referrer.is_some() {
+    if profile.sec_fetch_mode() == "cors" {
+      if let Some(client_origin) = client_origin {
+        if client_origin.is_http_like() {
+          if let Some((origin, _)) = http_browser_origin_and_referer_for_origin(client_origin) {
+            headers.push(("Origin".to_string(), origin));
+          }
+        } else {
+          headers.push(("Origin".to_string(), "null".to_string()));
+        }
+      } else if referrer_url.is_some() {
         if let Some(referrer_url) = parsed_referrer_url.as_ref() {
           match referrer_url.scheme() {
             "http" | "https" => {
@@ -3273,7 +3325,7 @@ fn build_http_header_pairs<'a>(
           }
         }
       } else if profile == FetchDestination::ImageCors {
-        // For CORS-mode image requests, always send an `Origin` header. When a referrer isn't
+        // For CORS-mode image requests, always send an `Origin` header. When a client origin isn't
         // available, fall back to using the target origin as a best-effort approximation.
         if let Some(parsed) = parsed_target_url.as_ref() {
           if let Some((origin, _)) = profile.origin_and_referer(parsed) {
@@ -3290,7 +3342,7 @@ fn build_http_header_pairs<'a>(
     headers.push(("Accept".to_string(), DEFAULT_ACCEPT.to_string()));
   }
 
-  if let Some(raw_referrer) = referrer {
+  if let Some(raw_referrer) = referrer_url {
     let raw_referrer = raw_referrer.trim();
     if !raw_referrer.is_empty() {
       if let Some(value) = http_referer_header_value(raw_referrer, url, referrer_policy) {
@@ -3471,6 +3523,7 @@ impl HttpFetcher {
       None,
       None,
       None,
+      None,
       ReferrerPolicy::default(),
     )
   }
@@ -3481,7 +3534,8 @@ impl HttpFetcher {
     destination: FetchDestination,
     url: &str,
     max_bytes: usize,
-    referrer: Option<&str>,
+    client_origin: Option<&DocumentOrigin>,
+    referrer_url: Option<&str>,
     referrer_policy: ReferrerPolicy,
   ) -> Result<FetchedResource> {
     let deadline = render_control::root_deadline();
@@ -3492,7 +3546,8 @@ impl HttpFetcher {
         destination,
         url,
         max_bytes,
-        referrer,
+        client_origin,
+        referrer_url,
         referrer_policy,
         &deadline,
         started,
@@ -3507,7 +3562,8 @@ impl HttpFetcher {
     url: &str,
     accept_encoding: Option<&str>,
     validators: Option<HttpCacheValidators<'_>>,
-    referrer: Option<&str>,
+    client_origin: Option<&DocumentOrigin>,
+    referrer_url: Option<&str>,
     referrer_policy: ReferrerPolicy,
   ) -> Result<FetchedResource> {
     let deadline = render_control::root_deadline();
@@ -3519,7 +3575,8 @@ impl HttpFetcher {
         url,
         accept_encoding,
         validators,
-        referrer,
+        client_origin,
+        referrer_url,
         referrer_policy,
         &deadline,
         started,
@@ -3534,7 +3591,8 @@ impl HttpFetcher {
     url: &str,
     accept_encoding: Option<&str>,
     validators: Option<HttpCacheValidators<'a>>,
-    referrer: Option<&str>,
+    client_origin: Option<&DocumentOrigin>,
+    referrer_url: Option<&str>,
     referrer_policy: ReferrerPolicy,
     deadline: &Option<render_control::RenderDeadline>,
     started: Instant,
@@ -3556,7 +3614,8 @@ impl HttpFetcher {
           effective_url.as_ref(),
           accept_encoding,
           validators,
-          referrer,
+          client_origin,
+          referrer_url,
           referrer_policy,
           deadline,
           started,
@@ -3567,7 +3626,8 @@ impl HttpFetcher {
           effective_url.as_ref(),
           accept_encoding,
           validators,
-          referrer,
+          client_origin,
+          referrer_url,
           referrer_policy,
           deadline,
           started,
@@ -3579,7 +3639,8 @@ impl HttpFetcher {
           effective_url.as_ref(),
           accept_encoding,
           validators,
-          referrer,
+          client_origin,
+          referrer_url,
           referrer_policy,
           deadline,
           started,
@@ -3598,7 +3659,8 @@ impl HttpFetcher {
               effective_url.as_ref(),
               accept_encoding,
               validators,
-              referrer,
+              client_origin,
+              referrer_url,
               referrer_policy,
               deadline,
               started,
@@ -3611,7 +3673,8 @@ impl HttpFetcher {
               effective_url.as_ref(),
               accept_encoding,
               validators,
-              referrer,
+              client_origin,
+              referrer_url,
               referrer_policy,
               deadline,
               started,
@@ -3630,7 +3693,8 @@ impl HttpFetcher {
                   effective_url.as_ref(),
                   accept_encoding,
                   validators,
-                  referrer,
+                  client_origin,
+                  referrer_url,
                   referrer_policy,
                   deadline,
                   started,
@@ -3698,7 +3762,8 @@ impl HttpFetcher {
     destination: FetchDestination,
     url: &str,
     max_bytes: usize,
-    referrer: Option<&str>,
+    client_origin: Option<&DocumentOrigin>,
+    referrer_url: Option<&str>,
     referrer_policy: ReferrerPolicy,
     deadline: &Option<render_control::RenderDeadline>,
     started: Instant,
@@ -3716,7 +3781,8 @@ impl HttpFetcher {
         destination,
         effective_url,
         max_bytes,
-        referrer,
+        client_origin,
+        referrer_url,
         referrer_policy,
         deadline,
         started,
@@ -3726,7 +3792,8 @@ impl HttpFetcher {
         destination,
         effective_url,
         max_bytes,
-        referrer,
+        client_origin,
+        referrer_url,
         referrer_policy,
         deadline,
         started,
@@ -3741,7 +3808,8 @@ impl HttpFetcher {
             destination,
             effective_url,
             max_bytes,
-            referrer,
+            client_origin,
+            referrer_url,
             referrer_policy,
             deadline,
             started,
@@ -3752,7 +3820,8 @@ impl HttpFetcher {
             destination,
             effective_url,
             max_bytes,
-            referrer,
+            client_origin,
+            referrer_url,
             referrer_policy,
             deadline,
             started,
@@ -3768,7 +3837,8 @@ impl HttpFetcher {
     destination: FetchDestination,
     url: &str,
     max_bytes: usize,
-    referrer: Option<&str>,
+    client_origin: Option<&DocumentOrigin>,
+    referrer_url: Option<&str>,
     referrer_policy: ReferrerPolicy,
     deadline: &Option<render_control::RenderDeadline>,
     started: Instant,
@@ -3833,7 +3903,8 @@ impl HttpFetcher {
           "identity",
           None,
           destination,
-          referrer,
+          client_origin,
+          referrer_url,
           referrer_policy,
         );
         headers.push((
@@ -4258,7 +4329,8 @@ impl HttpFetcher {
     destination: FetchDestination,
     url: &str,
     max_bytes: usize,
-    referrer: Option<&str>,
+    client_origin: Option<&DocumentOrigin>,
+    referrer_url: Option<&str>,
     referrer_policy: ReferrerPolicy,
     deadline: &Option<render_control::RenderDeadline>,
     started: Instant,
@@ -4320,7 +4392,8 @@ impl HttpFetcher {
           "identity",
           None,
           destination,
-          referrer,
+          client_origin,
+          referrer_url,
           referrer_policy,
         );
         headers.push((
@@ -4741,7 +4814,8 @@ impl HttpFetcher {
     url: &str,
     accept_encoding: Option<&str>,
     validators: Option<HttpCacheValidators<'a>>,
-    referrer: Option<&str>,
+    client_origin: Option<&DocumentOrigin>,
+    referrer_url: Option<&str>,
     referrer_policy: ReferrerPolicy,
     deadline: &Option<render_control::RenderDeadline>,
     started: Instant,
@@ -4820,7 +4894,8 @@ impl HttpFetcher {
           accept_encoding_value,
           validators,
           destination,
-          referrer,
+          client_origin,
+          referrer_url,
           referrer_policy,
         );
         let mut request = agent.get(&current);
@@ -4990,7 +5065,8 @@ impl HttpFetcher {
                     url,
                     Some("identity"),
                     validators,
-                    referrer,
+                    client_origin,
+                    referrer_url,
                     referrer_policy,
                     deadline,
                     started,
@@ -5299,7 +5375,8 @@ impl HttpFetcher {
     url: &str,
     accept_encoding: Option<&str>,
     validators: Option<HttpCacheValidators<'a>>,
-    referrer: Option<&str>,
+    client_origin: Option<&DocumentOrigin>,
+    referrer_url: Option<&str>,
     referrer_policy: ReferrerPolicy,
     deadline: &Option<render_control::RenderDeadline>,
     started: Instant,
@@ -5365,7 +5442,8 @@ impl HttpFetcher {
           accept_encoding_value,
           validators,
           destination,
-          referrer,
+          client_origin,
+          referrer_url,
           referrer_policy,
         );
         let mut request = client.get(&current);
@@ -5566,7 +5644,8 @@ impl HttpFetcher {
                     url,
                     Some("identity"),
                     validators,
-                    referrer,
+                    client_origin,
+                    referrer_url,
                     referrer_policy,
                     deadline,
                     started,
@@ -6097,7 +6176,8 @@ impl ResourceFetcher for HttpFetcher {
           req.url,
           None,
           None,
-          req.referrer,
+          req.client_origin,
+          req.referrer_url,
           req.referrer_policy,
         )
       }
@@ -6127,7 +6207,8 @@ impl ResourceFetcher for HttpFetcher {
           etag,
           last_modified,
         }),
-        req.referrer,
+        req.client_origin,
+        req.referrer_url,
         req.referrer_policy,
       ),
       ResourceScheme::Relative => self.fetch_file(kind, &format!("file://{}", req.url)),
@@ -6163,6 +6244,7 @@ impl ResourceFetcher for HttpFetcher {
           url,
           max_bytes,
           None,
+          None,
           ReferrerPolicy::default(),
         )
       }
@@ -6196,7 +6278,8 @@ impl ResourceFetcher for HttpFetcher {
           req.destination,
           req.url,
           max_bytes,
-          req.referrer,
+          req.client_origin,
+          req.referrer_url,
           req.referrer_policy,
         )
       }
@@ -6235,6 +6318,7 @@ impl ResourceFetcher for HttpFetcher {
           etag,
           last_modified,
         }),
+        None,
         None,
         ReferrerPolicy::default(),
       ),
@@ -8826,6 +8910,7 @@ mod tests {
         None,
         None,
         None,
+        None,
         ReferrerPolicy::default(),
         &deadline,
         started,
@@ -8882,6 +8967,7 @@ mod tests {
         FetchContextKind::Stylesheet,
         FetchContextKind::Stylesheet.into(),
         &url,
+        None,
         None,
         None,
         None,
@@ -9022,7 +9108,7 @@ mod tests {
   #[test]
   fn http_headers_iframe_navigation_profile_sets_iframe_dest_and_omits_user() {
     let req = FetchRequest::new("https://www.example.com/frame", FetchDestination::Iframe)
-      .with_referrer("https://www.example.com/page");
+      .with_referrer_url("https://www.example.com/page");
     let headers = build_http_header_pairs(
       req.url,
       DEFAULT_USER_AGENT,
@@ -9030,7 +9116,8 @@ mod tests {
       SUPPORTED_ACCEPT_ENCODING,
       None,
       req.destination,
-      req.referrer,
+      req.client_origin,
+      req.referrer_url,
       req.referrer_policy,
     );
     assert_eq!(header_value(&headers, "Sec-Fetch-Dest"), Some("iframe"));
@@ -9126,6 +9213,7 @@ mod tests {
       SUPPORTED_ACCEPT_ENCODING,
       None,
       FetchContextKind::Image.into(),
+      None,
       Some("https://www.example.com/page"),
       ReferrerPolicy::NoReferrer,
     );
@@ -9141,6 +9229,7 @@ mod tests {
       SUPPORTED_ACCEPT_ENCODING,
       None,
       FetchContextKind::Image.into(),
+      None,
       Some("https://www.example.com/page"),
       ReferrerPolicy::NoReferrer,
     );
@@ -9157,6 +9246,7 @@ mod tests {
       SUPPORTED_ACCEPT_ENCODING,
       None,
       FetchContextKind::Image.into(),
+      None,
       Some("https://www.example.com/page?a=b#frag"),
       ReferrerPolicy::Origin,
     );
@@ -9175,6 +9265,7 @@ mod tests {
       SUPPORTED_ACCEPT_ENCODING,
       None,
       FetchContextKind::Image.into(),
+      None,
       Some("https://www.example.com/page"),
       ReferrerPolicy::SameOrigin,
     );
@@ -9190,6 +9281,7 @@ mod tests {
       SUPPORTED_ACCEPT_ENCODING,
       None,
       FetchContextKind::Image.into(),
+      None,
       Some("https://www.example.com/page?a=b#frag"),
       ReferrerPolicy::default(),
     );
@@ -9204,6 +9296,47 @@ mod tests {
   }
 
   #[test]
+  fn http_headers_font_request_splits_client_origin_and_referrer_url() {
+    let client_origin = origin_from_url("http://client.example.com/").expect("client origin");
+    let headers = build_http_header_pairs(
+      "http://static.example.com/asset.woff2",
+      DEFAULT_USER_AGENT,
+      DEFAULT_ACCEPT_LANGUAGE,
+      SUPPORTED_ACCEPT_ENCODING,
+      None,
+      FetchContextKind::Font.into(),
+      Some(&client_origin),
+      Some("http://ref.other.com/style.css"),
+      ReferrerPolicy::default(),
+    );
+
+    assert_eq!(
+      header_value(&headers, "Origin"),
+      Some("http://client.example.com")
+    );
+    assert_eq!(header_value(&headers, "Referer"), Some("http://ref.other.com/"));
+    assert_eq!(header_value(&headers, "Sec-Fetch-Site"), Some("same-site"));
+  }
+
+  #[test]
+  fn http_headers_font_request_with_file_client_origin_sends_null_origin() {
+    let client_origin = origin_from_url("file:///tmp/doc.html").expect("file origin");
+    let headers = build_http_header_pairs(
+      "https://example.com/asset.woff2",
+      DEFAULT_USER_AGENT,
+      DEFAULT_ACCEPT_LANGUAGE,
+      SUPPORTED_ACCEPT_ENCODING,
+      None,
+      FetchContextKind::Font.into(),
+      Some(&client_origin),
+      None,
+      ReferrerPolicy::default(),
+    );
+
+    assert_eq!(header_value(&headers, "Origin"), Some("null"));
+  }
+
+  #[test]
   fn http_headers_same_site_cross_origin_referrer_is_origin_only() {
     let headers = build_http_header_pairs(
       "https://static.example.com/img.png",
@@ -9212,6 +9345,7 @@ mod tests {
       SUPPORTED_ACCEPT_ENCODING,
       None,
       FetchContextKind::Image.into(),
+      None,
       Some("https://www.example.com/page"),
       ReferrerPolicy::default(),
     );
@@ -9231,6 +9365,7 @@ mod tests {
       SUPPORTED_ACCEPT_ENCODING,
       None,
       FetchContextKind::Image.into(),
+      None,
       Some("https://www.example.com/page"),
       ReferrerPolicy::default(),
     );
@@ -9250,6 +9385,7 @@ mod tests {
       SUPPORTED_ACCEPT_ENCODING,
       None,
       FetchContextKind::Image.into(),
+      None,
       Some("https://www.example.com/page"),
       ReferrerPolicy::default(),
     );
@@ -9266,6 +9402,7 @@ mod tests {
       SUPPORTED_ACCEPT_ENCODING,
       None,
       FetchContextKind::Stylesheet.into(),
+      None,
       Some("https://developer.apple.com"),
       ReferrerPolicy::default(),
     );
@@ -9285,6 +9422,7 @@ mod tests {
       SUPPORTED_ACCEPT_ENCODING,
       None,
       FetchContextKind::Image.into(),
+      None,
       Some("https://www.example.com/page"),
       ReferrerPolicy::default(),
     );
@@ -9304,6 +9442,7 @@ mod tests {
       SUPPORTED_ACCEPT_ENCODING,
       None,
       FetchContextKind::Stylesheet.into(),
+      None,
       Some("https://developer.apple.com#frag"),
       ReferrerPolicy::default(),
     );
@@ -9413,6 +9552,7 @@ mod tests {
         None,
         None,
         None,
+        None,
         ReferrerPolicy::default(),
         &deadline,
         started,
@@ -9459,6 +9599,7 @@ mod tests {
         FetchContextKind::Other,
         FetchContextKind::Other.into(),
         &url,
+        None,
         None,
         None,
         None,
@@ -9519,6 +9660,7 @@ mod tests {
         FetchContextKind::Other,
         FetchContextKind::Other.into(),
         &url,
+        None,
         None,
         None,
         None,
@@ -9627,6 +9769,7 @@ mod tests {
         None,
         None,
         None,
+        None,
         ReferrerPolicy::default(),
         &deadline,
         started,
@@ -9668,6 +9811,7 @@ mod tests {
         FetchContextKind::Stylesheet,
         FetchContextKind::Stylesheet.into(),
         &url,
+        None,
         None,
         None,
         None,
@@ -9722,6 +9866,7 @@ mod tests {
         None,
         None,
         None,
+        None,
         ReferrerPolicy::default(),
         &deadline,
         started,
@@ -9772,6 +9917,7 @@ mod tests {
           None,
           None,
           None,
+          None,
           ReferrerPolicy::default(),
           &deadline,
           Instant::now(),
@@ -9810,6 +9956,7 @@ mod tests {
           &url,
           8,
           None,
+          None,
           ReferrerPolicy::default(),
           &deadline,
           Instant::now(),
@@ -9845,6 +9992,7 @@ mod tests {
           FetchContextKind::Image,
           FetchContextKind::Image.into(),
           &url,
+          None,
           None,
           None,
           None,
@@ -9885,6 +10033,7 @@ mod tests {
           FetchContextKind::Image.into(),
           &url,
           8,
+          None,
           None,
           ReferrerPolicy::default(),
           &deadline,
@@ -9943,6 +10092,7 @@ mod tests {
           None,
           None,
           None,
+          None,
           ReferrerPolicy::default(),
           &deadline,
           Instant::now(),
@@ -9982,6 +10132,7 @@ mod tests {
           &url,
           8,
           None,
+          None,
           ReferrerPolicy::default(),
           &deadline,
           Instant::now(),
@@ -10018,6 +10169,7 @@ mod tests {
           FetchContextKind::Image,
           FetchContextKind::Image.into(),
           &url,
+          None,
           None,
           None,
           None,
@@ -10059,6 +10211,7 @@ mod tests {
           FetchContextKind::Image.into(),
           &url,
           8,
+          None,
           None,
           ReferrerPolicy::default(),
           &deadline,
@@ -10117,6 +10270,7 @@ mod tests {
           None,
           None,
           None,
+          None,
           ReferrerPolicy::default(),
           &deadline,
           Instant::now(),
@@ -10153,6 +10307,7 @@ mod tests {
           &url,
           8,
           None,
+          None,
           ReferrerPolicy::default(),
           &deadline,
           Instant::now(),
@@ -10186,6 +10341,7 @@ mod tests {
           FetchContextKind::Image,
           FetchContextKind::Image.into(),
           &url,
+          None,
           None,
           None,
           None,
@@ -10224,6 +10380,7 @@ mod tests {
           FetchContextKind::Image.into(),
           &url,
           8,
+          None,
           None,
           ReferrerPolicy::default(),
           &deadline,
@@ -10322,6 +10479,7 @@ mod tests {
           None,
           None,
           None,
+          None,
           ReferrerPolicy::default(),
           &deadline,
           Instant::now(),
@@ -10398,6 +10556,7 @@ mod tests {
           FetchContextKind::Image,
           FetchContextKind::Image.into(),
           &url,
+          None,
           None,
           None,
           None,
@@ -10513,6 +10672,7 @@ mod tests {
         None,
         None,
         None,
+        None,
         ReferrerPolicy::default(),
         &deadline,
         Instant::now(),
@@ -10598,6 +10758,7 @@ mod tests {
         None,
         None,
         None,
+        None,
         ReferrerPolicy::default(),
         &deadline,
         Instant::now(),
@@ -10641,6 +10802,7 @@ mod tests {
         FetchContextKind::Font,
         FetchContextKind::Font.into(),
         &url,
+        None,
         None,
         None,
         None,
@@ -10690,6 +10852,7 @@ mod tests {
         FetchContextKind::Font,
         FetchContextKind::Font.into(),
         &url,
+        None,
         None,
         None,
         None,
@@ -10747,6 +10910,7 @@ mod tests {
         None,
         None,
         None,
+        None,
         ReferrerPolicy::default(),
         &deadline,
         Instant::now(),
@@ -10769,6 +10933,7 @@ mod tests {
         FetchContextKind::Font,
         FetchContextKind::Font.into(),
         &url,
+        None,
         None,
         None,
         None,
@@ -10827,6 +10992,7 @@ mod tests {
         None,
         None,
         None,
+        None,
         ReferrerPolicy::default(),
         &deadline,
         started,
@@ -10877,6 +11043,7 @@ mod tests {
         None,
         None,
         None,
+        None,
         ReferrerPolicy::default(),
         &deadline,
         started,
@@ -10918,6 +11085,7 @@ mod tests {
         FetchContextKind::Stylesheet,
         FetchContextKind::Stylesheet.into(),
         &url,
+        None,
         None,
         None,
         None,
@@ -11568,9 +11736,9 @@ mod tests {
       let fetcher = CachingFetcher::new(HttpFetcher::new().with_timeout(Duration::from_secs(2)));
       let url = format!("http://{addr}/font.woff2");
       let req_a =
-        FetchRequest::new(&url, FetchDestination::Font).with_referrer("http://a.test/page");
+        FetchRequest::new(&url, FetchDestination::Font).with_referrer_url("http://a.test/page");
       let req_b =
-        FetchRequest::new(&url, FetchDestination::Font).with_referrer("http://b.test/page");
+        FetchRequest::new(&url, FetchDestination::Font).with_referrer_url("http://b.test/page");
 
       let first = fetcher.fetch_with_request(req_a).expect("first fetch");
       assert_eq!(first.vary.as_deref(), Some("Origin"));
@@ -11668,9 +11836,9 @@ mod tests {
       let fetcher = CachingFetcher::new(HttpFetcher::new().with_timeout(Duration::from_secs(2)));
       let url = format!("http://{addr}/font.woff2");
       let req_a =
-        FetchRequest::new(&url, FetchDestination::Font).with_referrer("http://a.test/page");
+        FetchRequest::new(&url, FetchDestination::Font).with_referrer_url("http://a.test/page");
       let req_b =
-        FetchRequest::new(&url, FetchDestination::Font).with_referrer("http://b.test/page");
+        FetchRequest::new(&url, FetchDestination::Font).with_referrer_url("http://b.test/page");
 
       let first_a = fetcher.fetch_with_request(req_a).expect("first A fetch");
       assert_eq!(first_a.vary.as_deref(), Some("Origin"));
@@ -12905,7 +13073,9 @@ mod tests {
     let url = format!("http://{}/asset.woff2", addr);
     let referrer = "file:///fixture.html";
     let res = fetcher
-      .fetch_with_request(FetchRequest::new(&url, FetchDestination::Font).with_referrer(referrer))
+      .fetch_with_request(
+        FetchRequest::new(&url, FetchDestination::Font).with_referrer_url(referrer),
+      )
       .expect("fetch font");
     handle.join().unwrap();
 
@@ -12951,7 +13121,7 @@ mod tests {
     let referrer = format!("http://{}/doc.html", addr);
     let res = fetcher
       .fetch_with_request(
-        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer(&referrer),
+        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer_url(&referrer),
       )
       .expect("fetch image cors");
     handle.join().unwrap();
@@ -13022,7 +13192,7 @@ mod tests {
     let referrer = "file:///fixture.html";
     let res = fetcher
       .fetch_with_request(
-        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer(referrer),
+        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer_url(referrer),
       )
       .expect("fetch image cors");
     handle.join().unwrap();
@@ -13072,7 +13242,7 @@ mod tests {
     let referrer = "http://a.test/page";
     let res = fetcher
       .fetch_partial_with_request(
-        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer(referrer),
+        FetchRequest::new(&url, FetchDestination::ImageCors).with_referrer_url(referrer),
         2,
       )
       .expect("fetch image cors prefix");
@@ -13187,7 +13357,9 @@ mod tests {
     let url = format!("http://{}/frame.html", addr);
     let referrer = format!("http://{}/outer.html", addr);
     let res = fetcher
-      .fetch_with_request(FetchRequest::new(&url, FetchDestination::Iframe).with_referrer(&referrer))
+      .fetch_with_request(
+        FetchRequest::new(&url, FetchDestination::Iframe).with_referrer_url(&referrer),
+      )
       .expect("fetch iframe");
     handle.join().unwrap();
 
@@ -14833,7 +15005,7 @@ mod tests {
   #[derive(Clone, Debug)]
   struct RecordedFetchRequestCall {
     destination: FetchDestination,
-    referrer: Option<String>,
+    referrer_url: Option<String>,
   }
 
   #[derive(Clone)]
@@ -14849,7 +15021,7 @@ mod tests {
     fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
       self.calls.lock().unwrap().push(RecordedFetchRequestCall {
         destination: req.destination,
-        referrer: req.referrer.map(|s| s.to_string()),
+        referrer_url: req.referrer_url.map(|s| s.to_string()),
       });
       Ok(FetchedResource::new(
         b"ok".to_vec(),
@@ -14867,19 +15039,23 @@ mod tests {
     let cache = CachingFetcher::new(inner);
 
     let url = "http://example.com/asset.css";
-    let req = FetchRequest::new(url, FetchDestination::Style).with_referrer("http://example.com/");
+    let req =
+      FetchRequest::new(url, FetchDestination::Style).with_referrer_url("http://example.com/");
     let res = cache.fetch_with_request(req).expect("fetch");
     assert_eq!(res.bytes, b"ok");
 
     let snapshot = calls.lock().unwrap().clone();
     assert_eq!(snapshot.len(), 1);
     assert_eq!(snapshot[0].destination, FetchDestination::Style);
-    assert_eq!(snapshot[0].referrer.as_deref(), Some("http://example.com/"));
+    assert_eq!(
+      snapshot[0].referrer_url.as_deref(),
+      Some("http://example.com/")
+    );
 
     // Cache key ignores referrer: a subsequent request with the same destination but a different
     // referrer should still hit the cache and avoid a second network call.
     let req2 =
-      FetchRequest::new(url, FetchDestination::Style).with_referrer("http://other.example/");
+      FetchRequest::new(url, FetchDestination::Style).with_referrer_url("http://other.example/");
     let res = cache.fetch_with_request(req2).expect("cached fetch");
     assert_eq!(res.bytes, b"ok");
     assert_eq!(
@@ -14892,14 +15068,14 @@ mod tests {
     // fetched separately so differing header profiles (e.g. Accept/Sec-Fetch-*) can't poison each
     // other.
     let req3 =
-      FetchRequest::new(url, FetchDestination::Image).with_referrer("http://other.example/");
+      FetchRequest::new(url, FetchDestination::Image).with_referrer_url("http://other.example/");
     let res = cache.fetch_with_request(req3).expect("second fetch");
     assert_eq!(res.bytes, b"ok");
     let snapshot = calls.lock().unwrap().clone();
     assert_eq!(snapshot.len(), 2);
     assert_eq!(snapshot[1].destination, FetchDestination::Image);
     assert_eq!(
-      snapshot[1].referrer.as_deref(),
+      snapshot[1].referrer_url.as_deref(),
       Some("http://other.example/")
     );
   }
@@ -14918,7 +15094,7 @@ mod tests {
 
       fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        let origin = cors_origin_key_from_referrer(req.referrer).unwrap_or_default();
+        let origin = cors_origin_key_from_client_origin(req.client_origin).unwrap_or_default();
         let mut res = FetchedResource::new(origin.into_bytes(), Some("text/plain".to_string()));
         res.final_url = Some(req.url.to_string());
         Ok(res)
@@ -14940,8 +15116,14 @@ mod tests {
         (FetchDestination::Font, "http://example.com/font.woff2"),
         (FetchDestination::ImageCors, "http://example.com/image.png"),
       ] {
-        let req_a = FetchRequest::new(url, destination).with_referrer("http://a.test/page");
-        let req_b = FetchRequest::new(url, destination).with_referrer("http://b.test/page");
+        let origin_a = origin_from_url("http://a.test/page").expect("origin");
+        let origin_b = origin_from_url("http://b.test/page").expect("origin");
+        let req_a = FetchRequest::new(url, destination)
+          .with_client_origin(&origin_a)
+          .with_referrer_url("http://a.test/page");
+        let req_b = FetchRequest::new(url, destination)
+          .with_client_origin(&origin_b)
+          .with_referrer_url("http://b.test/page");
 
         let first_a = cache.fetch_with_request(req_a).expect("fetch A");
         assert_eq!(first_a.bytes, b"http://a.test");
@@ -14978,7 +15160,7 @@ mod tests {
 
       fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
         self.full_calls.fetch_add(1, Ordering::SeqCst);
-        let origin = cors_origin_key_from_referrer(req.referrer).unwrap_or_default();
+        let origin = cors_origin_key_from_client_origin(req.client_origin).unwrap_or_default();
         let mut res = FetchedResource::new(
           format!("full:{origin}").into_bytes(),
           Some("text/plain".to_string()),
@@ -14993,7 +15175,7 @@ mod tests {
         max_bytes: usize,
       ) -> Result<FetchedResource> {
         self.partial_calls.fetch_add(1, Ordering::SeqCst);
-        let origin = cors_origin_key_from_referrer(req.referrer).unwrap_or_default();
+        let origin = cors_origin_key_from_client_origin(req.client_origin).unwrap_or_default();
         let mut bytes = format!("partial:{origin}").into_bytes();
         bytes.truncate(max_bytes);
         let mut res = FetchedResource::new(bytes, Some("text/plain".to_string()));
@@ -15016,10 +15198,14 @@ mod tests {
       });
 
       let url = "http://example.com/image.png";
-      let req_a =
-        FetchRequest::new(url, FetchDestination::ImageCors).with_referrer("http://a.test/page");
-      let req_b =
-        FetchRequest::new(url, FetchDestination::ImageCors).with_referrer("http://b.test/page");
+      let origin_a = origin_from_url("http://a.test/page").expect("origin");
+      let origin_b = origin_from_url("http://b.test/page").expect("origin");
+      let req_a = FetchRequest::new(url, FetchDestination::ImageCors)
+        .with_client_origin(&origin_a)
+        .with_referrer_url("http://a.test/page");
+      let req_b = FetchRequest::new(url, FetchDestination::ImageCors)
+        .with_client_origin(&origin_b)
+        .with_referrer_url("http://b.test/page");
 
       // Seed a full response for origin A.
       let full_a = cache.fetch_with_request(req_a).expect("fetch A");
@@ -15072,7 +15258,7 @@ mod tests {
 
       fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        let origin = cors_origin_key_from_referrer(req.referrer).unwrap_or_default();
+        let origin = cors_origin_key_from_client_origin(req.client_origin).unwrap_or_default();
         let mut res = FetchedResource::new(origin.into_bytes(), Some("text/plain".to_string()));
         res.final_url = Some(req.url.to_string());
         Ok(res)
@@ -15094,8 +15280,14 @@ mod tests {
         (FetchDestination::Font, "http://example.com/font.woff2"),
         (FetchDestination::ImageCors, "http://example.com/image.png"),
       ] {
-        let req_a = FetchRequest::new(url, destination).with_referrer("http://a.test/page");
-        let req_b = FetchRequest::new(url, destination).with_referrer("http://b.test/page");
+        let origin_a = origin_from_url("http://a.test/page").expect("origin");
+        let origin_b = origin_from_url("http://b.test/page").expect("origin");
+        let req_a = FetchRequest::new(url, destination)
+          .with_client_origin(&origin_a)
+          .with_referrer_url("http://a.test/page");
+        let req_b = FetchRequest::new(url, destination)
+          .with_client_origin(&origin_b)
+          .with_referrer_url("http://b.test/page");
 
         let first_a = cache.fetch_with_request(req_a).expect("fetch A");
         assert_eq!(first_a.bytes, b"http://a.test");
@@ -15120,7 +15312,7 @@ mod tests {
   #[derive(Clone, Debug)]
   struct RecordedValidationCall {
     destination: FetchDestination,
-    referrer: Option<String>,
+    referrer_url: Option<String>,
     etag: Option<String>,
     last_modified: Option<String>,
   }
@@ -15170,7 +15362,7 @@ mod tests {
       );
       self.calls.lock().unwrap().push(RecordedValidationCall {
         destination: req.destination,
-        referrer: req.referrer.map(|s| s.to_string()),
+        referrer_url: req.referrer_url.map(|s| s.to_string()),
         etag: etag.map(|s| s.to_string()),
         last_modified: last_modified.map(|s| s.to_string()),
       });
@@ -15190,7 +15382,8 @@ mod tests {
     let cache = CachingFetcher::new(inner);
 
     let url = "http://example.com/resource";
-    let req = FetchRequest::new(url, FetchDestination::Style).with_referrer("http://example.com/");
+    let req =
+      FetchRequest::new(url, FetchDestination::Style).with_referrer_url("http://example.com/");
 
     let first = cache.fetch_with_request(req).expect("initial fetch");
     assert_eq!(first.bytes, b"cached");
@@ -15201,7 +15394,10 @@ mod tests {
     let snapshot = calls.lock().unwrap().clone();
     assert_eq!(snapshot.len(), 1);
     assert_eq!(snapshot[0].destination, FetchDestination::Style);
-    assert_eq!(snapshot[0].referrer.as_deref(), Some("http://example.com/"));
+    assert_eq!(
+      snapshot[0].referrer_url.as_deref(),
+      Some("http://example.com/")
+    );
     assert_eq!(snapshot[0].etag.as_deref(), Some("etag1"));
     assert_eq!(snapshot[0].last_modified.as_deref(), Some("lm1"));
   }

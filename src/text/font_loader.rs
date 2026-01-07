@@ -216,13 +216,13 @@ pub struct WebFontLoadReport {
 
 /// Abstraction over font byte fetching so tests can simulate slow/failed loads.
 pub trait FontFetcher: Send + Sync {
-  fn fetch(&self, url: &str) -> Result<FetchedResource>;
+  fn fetch(&self, url: &str, referrer_url: Option<&str>) -> Result<FetchedResource>;
 }
 
 struct DefaultFontFetcher;
 
 impl FontFetcher for DefaultFontFetcher {
-  fn fetch(&self, url: &str) -> Result<FetchedResource> {
+  fn fetch(&self, url: &str, _referrer_url: Option<&str>) -> Result<FetchedResource> {
     fetch_font_bytes(url).map(|(bytes, content_type)| {
       FetchedResource::with_final_url(bytes, content_type, Some(url.to_string()))
     })
@@ -235,20 +235,30 @@ struct ResourceFontFetcher {
 }
 
 impl FontFetcher for ResourceFontFetcher {
-  fn fetch(&self, url: &str) -> Result<FetchedResource> {
-    let (referrer, referrer_policy) = self
+  fn fetch(&self, url: &str, referrer_url: Option<&str>) -> Result<FetchedResource> {
+    let (document_url, document_origin, referrer_policy) = self
       .resource_context
       .read()
       .ok()
       .and_then(|ctx| {
-        ctx
-          .as_ref()
-          .map(|ctx| (ctx.document_url.clone(), Some(ctx.referrer_policy)))
+        ctx.as_ref().map(|ctx| {
+          (
+            ctx.document_url.clone(),
+            ctx.policy.document_origin.clone(),
+            Some(ctx.referrer_policy),
+          )
+        })
       })
-      .unwrap_or((None, None));
+      .unwrap_or((None, None, None));
+    let document_origin =
+      document_origin.or_else(|| document_url.as_deref().and_then(origin_from_url));
+
     let mut request = FetchRequest::new(url, FetchDestination::Font);
-    if let Some(referrer) = referrer.as_deref() {
-      request = request.with_referrer(referrer);
+    if let Some(origin) = document_origin.as_ref() {
+      request = request.with_client_origin(origin);
+    }
+    if let Some(referrer_url) = referrer_url.or(document_url.as_deref()) {
+      request = request.with_referrer_url(referrer_url);
     }
     if let Some(policy) = referrer_policy {
       request = request.with_referrer_policy(policy);
@@ -1550,7 +1560,7 @@ impl FontContext {
           }
           let resolved = resolve_font_url(&src.url, base_url);
           last_source = Some(resolved.clone());
-          match self.load_remote_face(family, &resolved, face, order, start) {
+          match self.load_remote_face(family, &resolved, face, order, start, base_url) {
             Ok(LoadOutcome::Loaded) => {
               return FontLoadEvent::loaded(family, last_source.clone(), face.display)
             }
@@ -1621,6 +1631,7 @@ impl FontContext {
     face: &FontFaceRule,
     order: usize,
     start: Instant,
+    base_url: Option<&str>,
   ) -> Result<LoadOutcome> {
     if let Some(ctx) = &self.resource_context {
       if let Err(err) = ctx.check_allowed(ResourceKind::Font, resolved_url) {
@@ -1632,7 +1643,7 @@ impl FontContext {
         return Err(blocked);
       }
     }
-    let resource = match self.fetcher.fetch(resolved_url) {
+    let resource = match self.fetcher.fetch(resolved_url, base_url) {
       Ok(result) => result,
       Err(err) => {
         self.record_font_error(resolved_url, &err);
@@ -3505,7 +3516,7 @@ mod tests {
   }
 
   impl FontFetcher for StubFetcher {
-    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+    fn fetch(&self, url: &str, _referrer_url: Option<&str>) -> Result<FetchedResource> {
       if self.delay > Duration::ZERO {
         thread::sleep(self.delay);
       }
@@ -3546,7 +3557,7 @@ mod tests {
   }
 
   impl FontFetcher for RecordingFetcher {
-    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+    fn fetch(&self, url: &str, _referrer_url: Option<&str>) -> Result<FetchedResource> {
       if let Ok(mut calls) = self.calls.lock() {
         calls.push(url.to_string());
       }
@@ -3582,7 +3593,7 @@ mod tests {
   }
 
   impl FontFetcher for DelayedRecordingFetcher {
-    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+    fn fetch(&self, url: &str, _referrer_url: Option<&str>) -> Result<FetchedResource> {
       let (data, delay) = self.responses.get(url).cloned().ok_or_else(|| {
         Error::Font(crate::error::FontError::LoadFailed {
           family: url.to_string(),
@@ -3606,7 +3617,7 @@ mod tests {
   }
 
   impl FontFetcher for CorsStubFetcher {
-    fn fetch(&self, url: &str) -> Result<FetchedResource> {
+    fn fetch(&self, url: &str, _referrer_url: Option<&str>) -> Result<FetchedResource> {
       let mut res = FetchedResource::with_final_url(
         self.data.clone(),
         Some("font/ttf".to_string()),
@@ -3652,7 +3663,7 @@ mod tests {
       let ctx = make_context(None, "https://example.com/");
       assert!(
         matches!(
-          ctx.load_remote_face("CorsFont", font_url, &face, 0, Instant::now()),
+          ctx.load_remote_face("CorsFont", font_url, &face, 0, Instant::now(), None),
           Ok(LoadOutcome::Loaded)
         ),
         "expected cross-origin font to load when CORS enforcement is disabled"
@@ -3666,7 +3677,7 @@ mod tests {
 
       let ctx = make_context(None, "https://example.com/");
       let err = ctx
-        .load_remote_face("CorsFont", font_url, &face, 0, Instant::now())
+        .load_remote_face("CorsFont", font_url, &face, 0, Instant::now(), None)
         .expect_err("expected missing ACAO to block cross-origin font");
       match err {
         Error::Font(FontError::LoadFailed { reason, .. }) => assert_eq!(
@@ -3679,7 +3690,7 @@ mod tests {
       let ctx = make_context(Some("*"), "https://example.com/");
       assert!(
         matches!(
-          ctx.load_remote_face("CorsFont", font_url, &face, 0, Instant::now()),
+          ctx.load_remote_face("CorsFont", font_url, &face, 0, Instant::now(), None),
           Ok(LoadOutcome::Loaded)
         ),
         "expected ACAO=* to allow anonymous cross-origin font loads"
@@ -3688,7 +3699,7 @@ mod tests {
       let ctx = make_context(Some("https://example.com"), "https://example.com/");
       assert!(
         matches!(
-          ctx.load_remote_face("CorsFont", font_url, &face, 0, Instant::now()),
+          ctx.load_remote_face("CorsFont", font_url, &face, 0, Instant::now(), None),
           Ok(LoadOutcome::Loaded)
         ),
         "expected matching ACAO to allow cross-origin font loads"
@@ -3702,7 +3713,7 @@ mod tests {
 
       let ctx = make_context(Some("https://evil.com"), "https://example.com/");
       let err = ctx
-        .load_remote_face("CorsFont", font_url, &face, 0, Instant::now())
+        .load_remote_face("CorsFont", font_url, &face, 0, Instant::now(), None)
         .expect_err("expected mismatched ACAO to block cross-origin font");
       match err {
         Error::Font(FontError::LoadFailed { reason, .. }) => assert_eq!(reason, expected_reason),
@@ -3718,13 +3729,65 @@ mod tests {
             "https://example.com/font.ttf",
             &face,
             0,
-            Instant::now()
+            Instant::now(),
+            None
           ),
           Ok(LoadOutcome::Loaded)
         ),
         "expected same-origin font to load even without ACAO"
       );
     }
+  }
+
+  #[test]
+  fn resource_font_fetcher_sets_client_origin_and_referrer_url() {
+    #[derive(Default)]
+    struct RecordingResourceFetcher {
+      request: Mutex<Option<(Option<crate::resource::DocumentOrigin>, Option<String>)>>,
+    }
+
+    impl ResourceFetcher for RecordingResourceFetcher {
+      fn fetch(&self, _url: &str) -> Result<FetchedResource> {
+        panic!("expected ResourceFetcher::fetch_with_request");
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        let client_origin = req.client_origin.cloned();
+        let referrer_url = req.referrer_url.map(|s| s.to_string());
+        *self.request.lock().unwrap() = Some((client_origin, referrer_url));
+        Ok(FetchedResource::new(
+          b"font".to_vec(),
+          Some("font/woff2".to_string()),
+        ))
+      }
+    }
+
+    let document_url = "https://doc.example.com/page.html";
+    let stylesheet_base_url = "https://style.other.com/style.css";
+    let expected_origin = crate::resource::origin_from_url(document_url).expect("document origin");
+
+    let mut ctx = ResourceContext::default();
+    ctx.document_url = Some(document_url.to_string());
+    ctx.policy.document_origin = Some(expected_origin.clone());
+
+    let recorder = Arc::new(RecordingResourceFetcher::default());
+    let font_fetcher = ResourceFontFetcher {
+      fetcher: recorder.clone() as Arc<dyn ResourceFetcher>,
+      resource_context: Arc::new(RwLock::new(Some(ctx))),
+    };
+
+    font_fetcher
+      .fetch("https://cdn.example.com/font.woff2", Some(stylesheet_base_url))
+      .expect("fetch");
+
+    let (client_origin, referrer_url) = recorder
+      .request
+      .lock()
+      .unwrap()
+      .clone()
+      .expect("recorded request");
+    assert_eq!(client_origin, Some(expected_origin));
+    assert_eq!(referrer_url.as_deref(), Some(stylesheet_base_url));
   }
 
   #[test]
@@ -3916,7 +3979,7 @@ mod tests {
     }
 
     impl FontFetcher for BlockingFetcher {
-      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      fn fetch(&self, url: &str, _referrer_url: Option<&str>) -> Result<FetchedResource> {
         if url == self.url {
           let _ = self.started.send(());
           self.release.wait();
@@ -4025,7 +4088,7 @@ mod tests {
     }
 
     impl FontFetcher for BlockingFetcher {
-      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      fn fetch(&self, url: &str, _referrer_url: Option<&str>) -> Result<FetchedResource> {
         if url == self.url {
           let _ = self.started.send(());
           self.release.wait();
@@ -4342,7 +4405,7 @@ mod tests {
     struct MetaFetcher;
 
     impl FontFetcher for MetaFetcher {
-      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+      fn fetch(&self, url: &str, _referrer_url: Option<&str>) -> Result<FetchedResource> {
         let mut resource = FetchedResource::with_final_url(
           b"wOF2".to_vec(),
           Some("font/woff2".to_string()),
@@ -4371,6 +4434,7 @@ mod tests {
         &face,
         0,
         Instant::now(),
+        None,
       )
       .expect_err("expected decode to fail");
 

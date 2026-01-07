@@ -19,7 +19,7 @@ use crate::resource::ReferrerPolicy;
 use crate::resource::FetchedResource;
 use crate::resource::HttpFetcher;
 use crate::resource::ResourceFetcher;
-use crate::resource::{ensure_http_success, ensure_image_mime_sane};
+use crate::resource::{ensure_http_success, ensure_image_mime_sane, origin_from_url};
 use crate::style::color::Rgba;
 use crate::style::types::ImageResolution;
 use crate::style::types::OrientationTransform;
@@ -2391,7 +2391,7 @@ impl ImageCache {
       FetchContextKind::ImageCors => FetchDestination::ImageCors,
       _ => FetchDestination::Image,
     };
-    let referrer = self
+    let referrer_url = self
       .resource_context
       .as_ref()
       .and_then(|ctx| ctx.document_url.as_deref());
@@ -2401,12 +2401,21 @@ impl ImageCache {
       .map(|ctx| ctx.referrer_policy)
       .unwrap_or_default();
     let request_referrer_policy = referrer_policy.unwrap_or(doc_referrer_policy);
+    let origin_fallback = referrer_url.and_then(origin_from_url);
+    let client_origin = self
+      .resource_context
+      .as_ref()
+      .and_then(|ctx| ctx.policy.document_origin.as_ref())
+      .or(origin_fallback.as_ref());
     let mut request = FetchRequest::new(resolved_url, destination);
     if crossorigin == CrossOriginAttribute::UseCredentials {
       request = request.with_credentials_mode(crate::resource::FetchCredentialsMode::Include);
     }
-    if let Some(referrer) = referrer {
-      request = request.with_referrer(referrer);
+    if let Some(origin) = client_origin {
+      request = request.with_client_origin(origin);
+    }
+    if let Some(referrer_url) = referrer_url {
+      request = request.with_referrer_url(referrer_url);
     }
     request = request.with_referrer_policy(request_referrer_policy);
 
@@ -2449,8 +2458,11 @@ impl ImageCache {
         remove_request =
           remove_request.with_credentials_mode(crate::resource::FetchCredentialsMode::Include);
       }
-      if let Some(referrer) = referrer {
-        remove_request = remove_request.with_referrer(referrer);
+      if let Some(origin) = client_origin {
+        remove_request = remove_request.with_client_origin(origin);
+      }
+      if let Some(referrer_url) = referrer_url {
+        remove_request = remove_request.with_referrer_url(referrer_url);
       }
       remove_request = remove_request.with_referrer_policy(request_referrer_policy);
       self
@@ -2671,7 +2683,7 @@ impl ImageCache {
     let total_start = profile_enabled.then(Instant::now);
     let fetch_start = profile_enabled.then(Instant::now);
 
-    let referrer = self
+    let referrer_url = self
       .resource_context
       .as_ref()
       .and_then(|ctx| ctx.document_url.as_deref());
@@ -2681,12 +2693,21 @@ impl ImageCache {
       .map(|ctx| ctx.referrer_policy)
       .unwrap_or_default();
     let request_referrer_policy = referrer_policy.unwrap_or(doc_referrer_policy);
+    let origin_fallback = referrer_url.and_then(origin_from_url);
+    let client_origin = self
+      .resource_context
+      .as_ref()
+      .and_then(|ctx| ctx.policy.document_origin.as_ref())
+      .or(origin_fallback.as_ref());
     let mut request = FetchRequest::new(resolved_url, destination);
     if crossorigin == CrossOriginAttribute::UseCredentials {
       request = request.with_credentials_mode(crate::resource::FetchCredentialsMode::Include);
     }
-    if let Some(referrer) = referrer {
-      request = request.with_referrer(referrer);
+    if let Some(origin) = client_origin {
+      request = request.with_client_origin(origin);
+    }
+    if let Some(referrer_url) = referrer_url {
+      request = request.with_referrer_url(referrer_url);
     }
     request = request.with_referrer_policy(request_referrer_policy);
     let resource = match self.fetcher.fetch_with_request(request) {
@@ -2864,7 +2885,7 @@ impl ImageCache {
     let profile_enabled = threshold_ms.is_some();
     let total_start = profile_enabled.then(Instant::now);
     let fetch_start = profile_enabled.then(Instant::now);
-    let referrer = self
+    let referrer_url = self
       .resource_context
       .as_ref()
       .and_then(|ctx| ctx.document_url.as_deref());
@@ -2874,12 +2895,21 @@ impl ImageCache {
       .map(|ctx| ctx.referrer_policy)
       .unwrap_or_default();
     let request_referrer_policy = referrer_policy.unwrap_or(doc_referrer_policy);
+    let origin_fallback = referrer_url.and_then(origin_from_url);
+    let client_origin = self
+      .resource_context
+      .as_ref()
+      .and_then(|ctx| ctx.policy.document_origin.as_ref())
+      .or(origin_fallback.as_ref());
     let mut request = FetchRequest::new(resolved_url, destination);
     if crossorigin == CrossOriginAttribute::UseCredentials {
       request = request.with_credentials_mode(crate::resource::FetchCredentialsMode::Include);
     }
-    if let Some(referrer) = referrer {
-      request = request.with_referrer(referrer);
+    if let Some(origin) = client_origin {
+      request = request.with_client_origin(origin);
+    }
+    if let Some(referrer_url) = referrer_url {
+      request = request.with_referrer_url(referrer_url);
     }
     request = request.with_referrer_policy(request_referrer_policy);
 
@@ -4904,7 +4934,7 @@ mod tests {
   }
 
   #[test]
-  fn probe_metadata_artifacts_are_partitioned_by_referrer_origin_for_cors_images() {
+  fn probe_metadata_artifacts_are_partitioned_by_client_origin_for_cors_images() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Clone, Debug)]
@@ -4923,25 +4953,26 @@ mod tests {
     }
 
     impl ArtifactFetcher {
-      fn origin_key_from_referrer(referrer: Option<&str>) -> Option<String> {
-        let referrer = referrer?;
-        let parsed = Url::parse(referrer).ok()?;
-        if !matches!(parsed.scheme(), "http" | "https") {
+      fn origin_key_from_client_origin(
+        origin: Option<&crate::resource::DocumentOrigin>,
+      ) -> Option<String> {
+        let origin = origin?;
+        if !origin.is_http_like() {
           return Some("null".to_string());
         }
-        let host = parsed.host_str()?;
-        let mut origin = format!("{}://{}", parsed.scheme(), host);
-        if let Some(port) = parsed.port() {
-          let default_port = match parsed.scheme() {
+        let host = origin.host()?;
+        let mut origin_str = format!("{}://{}", origin.scheme(), host);
+        if let Some(port) = origin.port() {
+          let default_port = match origin.scheme() {
             "http" => 80,
             "https" => 443,
             _ => port,
           };
           if port != default_port {
-            origin.push_str(&format!(":{port}"));
+            origin_str.push_str(&format!(":{port}"));
           }
         }
-        Some(origin)
+        Some(origin_str)
       }
     }
 
@@ -4965,8 +4996,8 @@ mod tests {
           FetchDestination::ImageCors,
           "expected probe to use ImageCors destination"
         );
-        let origin = Self::origin_key_from_referrer(req.referrer)
-          .expect("expected referrer to be provided for CORS-mode image probe");
+        let origin = Self::origin_key_from_client_origin(req.client_origin)
+          .expect("expected client origin to be provided for CORS-mode image probe");
         let mut bytes = (*self.png).clone();
         if bytes.len() > max_bytes {
           bytes.truncate(max_bytes);
@@ -5015,7 +5046,7 @@ mod tests {
         assert_eq!(artifact, CacheArtifactKind::ImageProbeMetadata);
         let key = (
           req.url.to_string(),
-          Self::origin_key_from_referrer(req.referrer),
+          Self::origin_key_from_client_origin(req.client_origin),
         );
         let stored = self
           .artifacts
@@ -5041,7 +5072,7 @@ mod tests {
         assert_eq!(artifact, CacheArtifactKind::ImageProbeMetadata);
         let key = (
           req.url.to_string(),
-          Self::origin_key_from_referrer(req.referrer),
+          Self::origin_key_from_client_origin(req.client_origin),
         );
         let stored = StoredArtifact {
           bytes: bytes.to_vec(),
@@ -5068,7 +5099,7 @@ mod tests {
         assert_eq!(artifact, CacheArtifactKind::ImageProbeMetadata);
         let key = (
           req.url.to_string(),
-          Self::origin_key_from_referrer(req.referrer),
+          Self::origin_key_from_client_origin(req.client_origin),
         );
         self
           .artifacts
