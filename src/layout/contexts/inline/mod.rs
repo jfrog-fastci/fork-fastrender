@@ -4305,7 +4305,7 @@ impl InlineFormattingContext {
         &control.control,
         FormControlKind::Text { .. }
           | FormControlKind::TextArea { .. }
-          | FormControlKind::Select { .. }
+          | FormControlKind::Select(_)
           | FormControlKind::Button { .. }
           | FormControlKind::Unknown { label: Some(_) }
       );
