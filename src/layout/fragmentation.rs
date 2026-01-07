@@ -332,6 +332,176 @@ fn grid_item_parallel_flow_required_block_size(
   (item_block_size + shift).max(item_block_size)
 }
 
+#[derive(Debug, Clone)]
+struct ParallelFlowShiftMap {
+  /// Sorted list of (break_position, cumulative_shift_after_break).
+  ///
+  /// Positions are expressed in the *original* flow coordinate system.
+  breaks: Vec<(f32, f32)>,
+}
+
+impl ParallelFlowShiftMap {
+  fn for_forced_breaks(mut positions: Vec<f32>, fragmentainer_size: f32) -> Option<Self> {
+    if !(fragmentainer_size.is_finite() && fragmentainer_size > 0.0) {
+      return None;
+    }
+    if positions.is_empty() {
+      return None;
+    }
+
+    positions.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    positions.dedup_by(|a, b| (*a - *b).abs() < BREAK_EPSILON);
+
+    let mut shift = 0.0f32;
+    let mut breaks = Vec::new();
+    for pos in positions {
+      let effective = pos + shift;
+      let remainder = effective.rem_euclid(fragmentainer_size);
+      // If the forced break already aligns to a fragmentainer boundary, no extra space is needed.
+      let advance = (fragmentainer_size - remainder).rem_euclid(fragmentainer_size);
+      if advance <= BREAK_EPSILON {
+        continue;
+      }
+      shift += advance;
+      breaks.push((pos, shift));
+    }
+    if breaks.is_empty() {
+      return None;
+    }
+    Some(Self { breaks })
+  }
+
+  fn shift_for(&self, pos: f32) -> f32 {
+    if self.breaks.is_empty() {
+      return 0.0;
+    }
+    let idx = self
+      .breaks
+      .partition_point(|(break_pos, _)| *break_pos <= pos + BREAK_EPSILON);
+    if idx == 0 {
+      0.0
+    } else {
+      self.breaks[idx - 1].1
+    }
+  }
+}
+
+fn apply_parallel_flow_shifts_to_descendants(
+  node: &mut FragmentNode,
+  abs_start: f32,
+  parent_shift: f32,
+  axis: &FragmentAxis,
+  shifts: &ParallelFlowShiftMap,
+) {
+  let node_block_size = axis.block_size(&node.bounds);
+  for child in node.children_mut().iter_mut() {
+    let child_abs_start = axis.flow_range(abs_start, node_block_size, &child.bounds).0;
+    let child_shift = shifts.shift_for(child_abs_start);
+    let delta = child_shift - parent_shift;
+    if delta.abs() > BREAK_EPSILON {
+      translate_fragment_in_parent_space(child, axis.block_translation(delta));
+    }
+    apply_parallel_flow_shifts_to_descendants(
+      child,
+      child_abs_start,
+      child_shift,
+      axis,
+      shifts,
+    );
+  }
+}
+
+pub(crate) fn apply_grid_parallel_flow_forced_break_shifts(
+  root: &mut FragmentNode,
+  axes: FragmentAxes,
+  fragmentainer_size: f32,
+) {
+  if !(fragmentainer_size.is_finite() && fragmentainer_size > 0.0) {
+    return;
+  }
+
+  let axis = axis_from_fragment_axes(axes);
+  let default_style = default_style();
+
+  fn walk(
+    node: &mut FragmentNode,
+    abs_start: f32,
+    axis: &FragmentAxis,
+    axes: FragmentAxes,
+    fragmentainer_size: f32,
+    default_style: &ComputedStyle,
+  ) {
+    let style = node
+      .style
+      .as_ref()
+      .map(|s| s.as_ref())
+      .unwrap_or(default_style);
+    let node_block_size = axis.block_size(&node.bounds);
+
+    if matches!(style.display, Display::Grid | Display::InlineGrid) {
+      if let Some(grid_info) = node.grid_fragmentation.clone() {
+        let in_flow_count = grid_info.items.len().min(node.children.len());
+        for idx in 0..in_flow_count {
+          let placement = &grid_info.items[idx];
+          if !grid_item_spans_single_track(placement, axis) {
+            continue;
+          }
+          let Some(child) = node.children_mut().get_mut(idx) else {
+            continue;
+          };
+
+          let child_block_size = axis.block_size(&child.bounds);
+          if child_block_size <= BREAK_EPSILON {
+            continue;
+          }
+
+          // Discover forced breaks inside this grid item and model them as inserting blank space up
+          // to the next fragmentainer boundary (CSS Grid 2 §Fragmenting Grid Layout).
+          let mut boundaries = collect_forced_boundaries_with_axes(child, 0.0, axes);
+          if boundaries.is_empty() {
+            continue;
+          }
+          let mut positions: Vec<f32> = boundaries.drain(..).map(|b| b.position).collect();
+          positions.retain(|p| *p > BREAK_EPSILON && *p < child_block_size - BREAK_EPSILON);
+          let Some(shifts) = ParallelFlowShiftMap::for_forced_breaks(positions, fragmentainer_size)
+          else {
+            continue;
+          };
+
+          apply_parallel_flow_shifts_to_descendants(
+            child,
+            0.0,
+            0.0,
+            axis,
+            &shifts,
+          );
+        }
+      }
+    }
+
+    for child in node.children_mut().iter_mut() {
+      let child_abs_start = axis.flow_range(abs_start, node_block_size, &child.bounds).0;
+      walk(
+        child,
+        child_abs_start,
+        axis,
+        axes,
+        fragmentainer_size,
+        default_style,
+      );
+    }
+  }
+
+  walk(
+    root,
+    0.0,
+    &axis,
+    axes,
+    fragmentainer_size,
+    default_style,
+  );
+}
+
 fn grid_container_parallel_flow_required_block_size(
   node: &FragmentNode,
   axis: &FragmentAxis,
@@ -1812,10 +1982,26 @@ pub(crate) fn collect_forced_boundaries(
   collect_forced_boundaries_with_axes(node, abs_start, axes_from_root(node))
 }
 
+pub(crate) fn collect_forced_boundaries_for_pagination(
+  node: &FragmentNode,
+  abs_start: f32,
+) -> Vec<ForcedBoundary> {
+  collect_forced_boundaries_with_axes_internal(node, abs_start, axes_from_root(node), true)
+}
+
 pub(crate) fn collect_forced_boundaries_with_axes(
   node: &FragmentNode,
   abs_start: f32,
   axes: FragmentAxes,
+) -> Vec<ForcedBoundary> {
+  collect_forced_boundaries_with_axes_internal(node, abs_start, axes, false)
+}
+
+fn collect_forced_boundaries_with_axes_internal(
+  node: &FragmentNode,
+  abs_start: f32,
+  axes: FragmentAxes,
+  suppress_parallel_grid_item_descendants: bool,
 ) -> Vec<ForcedBoundary> {
   fn is_forced_page_break(between: BreakBetween) -> bool {
     matches!(
@@ -1864,6 +2050,7 @@ pub(crate) fn collect_forced_boundaries_with_axes(
     default_style: &ComputedStyle,
     axis: &FragmentAxis,
     parent_block_size: f32,
+    suppress_parallel_grid_item_descendants: bool,
   ) {
     let node_style = node
       .style
@@ -1875,6 +2062,10 @@ pub(crate) fn collect_forced_boundaries_with_axes(
     } else {
       None
     };
+    let in_flow_grid_item_count = grid_items
+      .as_ref()
+      .map(|grid_items| grid_items.items.len().min(node.children.len()))
+      .unwrap_or(0);
 
     let mut grid_item_count = 0usize;
     if matches!(node_style.display, Display::Grid | Display::InlineGrid) {
@@ -2016,14 +2207,23 @@ pub(crate) fn collect_forced_boundaries_with_axes(
           });
         }
       }
-      collect(
-        child,
-        child_abs_start,
-        forced,
-        default_style,
-        axis,
-        child_block_size,
-      );
+      let skip_parallel_flow_descendants = suppress_parallel_grid_item_descendants
+        && idx < in_flow_grid_item_count
+        && grid_items
+          .and_then(|grid_items| grid_items.items.get(idx))
+          .map(|placement| grid_item_spans_single_track(placement, axis))
+          .unwrap_or(false);
+      if !skip_parallel_flow_descendants {
+        collect(
+          child,
+          child_abs_start,
+          forced,
+          default_style,
+          axis,
+          child_block_size,
+          suppress_parallel_grid_item_descendants,
+        );
+      }
     }
   }
 
@@ -2037,6 +2237,7 @@ pub(crate) fn collect_forced_boundaries_with_axes(
     default_style,
     &axis,
     axis.block_size(&node.bounds),
+    suppress_parallel_grid_item_descendants,
   );
   boundaries
 }

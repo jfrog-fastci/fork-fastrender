@@ -14,7 +14,8 @@ use crate::layout::formatting_context::{
   layout_style_fingerprint, set_fragmentainer_block_size_hint, LayoutError,
 };
 use crate::layout::fragmentation::{
-  clip_node, collect_atomic_ranges, collect_forced_boundaries, fragmentation_axis,
+  apply_grid_parallel_flow_forced_break_shifts, clip_node, collect_atomic_ranges,
+  collect_forced_boundaries_for_pagination, fragmentation_axis,
   normalize_atomic_ranges, normalize_fragment_margins, parallel_flow_content_extent,
   propagate_fragment_metadata, AtomicRange, ForcedBoundary, FragmentationContext,
 };
@@ -152,7 +153,7 @@ struct CachedLayout {
 
 impl CachedLayout {
   fn from_root(
-    root: FragmentNode,
+    mut root: FragmentNode,
     style: &ResolvedPageStyle,
     fallback_page_name: Option<&str>,
   ) -> Self {
@@ -165,6 +166,9 @@ impl CachedLayout {
     } else {
       style.content_size.height
     };
+
+    apply_grid_parallel_flow_forced_break_shifts(&mut root, axes, style_block_size);
+
     let mut spans = Vec::new();
     collect_page_name_spans(&root, 0.0, &mut spans);
     spans.sort_by(|a, b| {
@@ -173,7 +177,7 @@ impl CachedLayout {
         .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    let mut forced = collect_forced_boundaries(&root, 0.0);
+    let mut forced = collect_forced_boundaries_for_pagination(&root, 0.0);
     forced.extend(
       page_name_boundaries(&spans, fallback_page_name)
         .into_iter()
