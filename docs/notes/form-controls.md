@@ -1,21 +1,42 @@
 # Form control rendering
 
-FastRender treats native form controls as replaced elements so they participate in intrinsic sizing and paint their own UA appearance:
+FastRender treats native form controls as replaced elements so they participate in intrinsic sizing and paint their own UA appearance.
 
-- `<input>`, `<select>`, `<textarea>`, and `<button>` generate `ReplacedType::FormControl` boxes unless `appearance: none` is set.
-- Intrinsic widths respect HTML defaults (20 columns for text inputs/textarea unless overridden by `size`/`cols`/`rows`) and scale with the current font size, so number/date fields line up with plain text inputs when unstyled.
-- Text-like inputs cover `text/search/url/tel/email` plus password masking, number inputs (with spinner affordance), and date-like inputs (`date`/`datetime-local`/`month`/`week`/`time`) with a simple drop-down glyph and default format placeholders. Unknown types fall back to an `Unknown` control and use placeholder/value text as the label.
-- Color inputs render a swatch filled with the current value and a hex label, keeping the raw value visible and marking enabled controls invalid when parsing fails.
-- Checked and indeterminate checkboxes/radios draw glyphs inside the control; selects render a text value plus a caret; ranges draw a track + thumb.
-- Disabled, focus, focus-visible, required, and invalid states come from normal selector matching (`disabled`, `required`, constraint validity, `data-fastr-focus*` hints) and are reflected in the native painting (tinted overlays, accent changes). The `data-fastr-focus-visible` hint implies focus for native painting so standalone focus-visible markers are captured.
-- Setting `appearance: none` skips the native replacement and leaves the element as a normal box for author styling.
+## How it works
+
+- `<input>`, `<select>`, `<textarea>`, and `<button>` generate `ReplacedType::FormControl` boxes (except `<input type="hidden">`).
+- Intrinsic sizing for form controls is handled in the replaced-element intrinsic sizing code and respects HTML defaults (e.g. ~`20ch` text inputs / `cols`+`rows` for `<textarea>`). It scales with the current font metrics so controls line up with surrounding text by default.
+- The painters draw a simplified UA-like control surface (value/placeholder text + a small set of affordances) inside the element’s content box.
+- `appearance: none` affects **native painting** (suppresses some UA chrome) but does **not** currently change box generation: the element is still a `ReplacedType::FormControl` and keeps form-control intrinsic sizing.
+- `-webkit-appearance` is intended to be treated as an alias of `appearance` once Task 94 lands (today it is only recognized for `@supports` feature queries).
+
+## Key code paths
+
+- Box generation: `src/tree/box_generation.rs::create_form_control_replaced`
+- Intrinsic sizing: `src/api.rs::resolve_intrinsic_for_replaced_for_media`
+- Painting:
+  - Display list: `src/paint/display_list_builder.rs::emit_form_control`
+  - Immediate painter: `src/paint/painter.rs::paint_form_control`
+- UA defaults: `src/user_agent.css` (embedded in the cascade; if Task 127 moves UA defaults into `ua_default_rules`, update this pointer)
+
+## What `appearance:none` enables today
+
+- Author `background`/`border`/`padding` styling applies normally (the element is still a normal CSS box; only the *inside* is painted by the form-control code).
+- Native chrome suppression is currently selective and implemented directly in the painters:
+  - Select caret (“▾”) is skipped when `control.appearance == Appearance::None` (`emit_form_control` / `paint_form_control`).
+  - Checkbox/radio marks are skipped when `control.appearance == Appearance::None` (`emit_form_control` / `paint_form_control`).
+- Current limitations:
+  - `appearance:none` does **not** yet disable all affordances (e.g. number/date glyphs and the range track/thumb are still painted today).
+  - Vendor pseudo-elements like `::-webkit-slider-thumb`, `::-webkit-slider-runnable-track`, `::-moz-range-thumb`, etc. are not implemented yet, so fully custom range styling isn’t available.
 
 The pageset regression suite includes form-heavy fixtures under `tests/pages/fixtures/form_controls*`
 so we can catch large visual diffs caused by missing UA form control styling/painting. Regenerate
 their goldens with:
 
 ```
-UPDATE_PAGES_GOLDEN=1 PAGES_FIXTURE_FILTER=form_controls cargo test pages_regression_suite
+UPDATE_PAGES_GOLDEN=1 \
+  PAGES_FIXTURE_FILTER=form_controls,form_controls_appearance,form_controls_range_select,form_controls_showcase,form_controls_states,form_controls_custom_vs_default,form_controls_comparison_panel,form_controls_lab \
+  cargo test pages_regression
 ```
 
 The reference fixture at `tests/ref/fixtures/form_controls` exercises common control types and
