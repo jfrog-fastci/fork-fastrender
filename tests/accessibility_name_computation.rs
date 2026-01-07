@@ -96,16 +96,38 @@ fn control_value_and_placeholder_fallbacks() {
   let tree = render_accessibility_tree(html);
 
   let value = find_by_id(&tree, "value-fallback").expect("value fallback");
-  assert_eq!(value.name.as_deref(), Some("Typed value"));
+  assert_eq!(value.name, None);
+  assert_eq!(value.value.as_deref(), Some("Typed value"));
 
   let placeholder = find_by_id(&tree, "placeholder").expect("placeholder");
   assert_eq!(placeholder.name.as_deref(), Some("Hint text"));
 
   let chooser = find_by_id(&tree, "chooser").expect("select");
-  assert_eq!(chooser.name.as_deref(), Some("Two"));
+  assert_eq!(chooser.name, None);
+  assert_eq!(chooser.value.as_deref(), Some("Two"));
 
   let area = find_by_id(&tree, "area").expect("textarea");
-  assert_eq!(area.name.as_deref(), Some("Area text"));
+  assert_eq!(area.name, None);
+  assert_eq!(area.value.as_deref(), Some("Area text"));
+}
+
+#[test]
+fn select_selected_option_is_value_not_name() {
+  let html = r#"
+    <html>
+      <body>
+        <select id="chooser">
+          <option>One</option>
+          <option selected>Two</option>
+        </select>
+      </body>
+    </html>
+  "#;
+
+  let tree = render_accessibility_tree(html);
+  let chooser = find_by_id(&tree, "chooser").expect("select");
+  assert_eq!(chooser.name, None);
+  assert_eq!(chooser.value.as_deref(), Some("Two"));
 }
 
 #[test]

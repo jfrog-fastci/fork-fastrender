@@ -592,11 +592,11 @@ fn accessibility_name_from_content_blocked_for_form_controls() {
   let tree = render_accessibility_json(html);
 
   let select = find_json_node(&tree, "s").expect("select node present");
-  assert_eq!(select.get("name").and_then(|v| v.as_str()), Some("B"));
+  assert_eq!(select.get("name").and_then(|v| v.as_str()), None);
   assert_eq!(select.get("value").and_then(|v| v.as_str()), Some("B"));
 
   let input = find_json_node(&tree, "text").expect("text input present");
-  assert_eq!(input.get("name").and_then(|v| v.as_str()), Some("alice"));
+  assert_eq!(input.get("name").and_then(|v| v.as_str()), None);
   assert_eq!(input.get("value").and_then(|v| v.as_str()), Some("alice"));
 
   let button = find_json_node(&tree, "btn").expect("button present");
@@ -1240,7 +1240,7 @@ fn accessibility_multi_select_value() {
 }
 
 #[test]
-fn accessibility_text_value_used_as_name() {
+fn accessibility_text_value_not_used_as_name() {
   let mut renderer = FastRender::new().expect("renderer");
   let html = r##"
     <html>
@@ -1257,7 +1257,7 @@ fn accessibility_text_value_used_as_name() {
 
   let textbox = find_by_id(&tree, "username").expect("textbox node");
   assert_eq!(textbox.role, "textbox");
-  assert_eq!(textbox.name.as_deref(), Some("alice"));
+  assert_eq!(textbox.name, None);
   assert_eq!(textbox.value.as_deref(), Some("alice"));
 }
 
@@ -1296,7 +1296,7 @@ fn accessibility_form_controls_do_not_use_content_name_fallback() {
     json!({
       "select": {
         "role": "combobox",
-        "name": "B",
+        "name": null,
         "description": null,
         "value": "B",
         "level": null,
@@ -1312,7 +1312,7 @@ fn accessibility_form_controls_do_not_use_content_name_fallback() {
       },
       "text": {
         "role": "textbox",
-        "name": "alice",
+        "name": null,
         "description": null,
         "value": "alice",
         "level": null,

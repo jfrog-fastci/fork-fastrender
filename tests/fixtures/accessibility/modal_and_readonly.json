@@ -36,7 +36,7 @@
     },
     "readonly-input": {
       "role": "textbox",
-      "name": "Locked",
+      "name": null,
       "description": null,
       "value": "Locked",
       "level": null,
@@ -53,7 +53,7 @@
     },
     "aria-override": {
       "role": "textbox",
-      "name": "Editable text",
+      "name": null,
       "description": null,
       "value": "Editable text",
       "level": null,

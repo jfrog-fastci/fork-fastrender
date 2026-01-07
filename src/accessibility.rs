@@ -388,8 +388,13 @@ impl<'a> BuildContext<'a> {
         }
 
         if let Some(labelledby) = node.node.get_attribute_ref("aria-labelledby") {
-          let labelled =
-            referenced_text_attr(self, node.node_id, labelledby, visited, TextAlternativeMode::Referenced);
+          let labelled = referenced_text_attr(
+            self,
+            node.node_id,
+            labelledby,
+            visited,
+            TextAlternativeMode::Referenced,
+          );
           return Some(labelled);
         }
 
@@ -1399,9 +1404,7 @@ fn control_value_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
           .unwrap_or_default(),
       )
     }
-    "textarea" => {
-      Some(textarea_value_text(node, ctx))
-    }
+    "textarea" => Some(textarea_value_text(node, ctx)),
     "select" => select_value_text(node, ctx),
     _ => None,
   }
@@ -1517,10 +1520,10 @@ fn collect_selected_option_texts(
 ) {
   let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
   let is_option = tag.as_deref() == Some("option");
+  let is_optgroup = tag.as_deref() == Some("optgroup");
 
   let option_disabled = node.node.get_attribute_ref("disabled").is_some();
-  let next_optgroup_disabled =
-    optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
+  let next_optgroup_disabled = optgroup_disabled || (is_optgroup && option_disabled);
 
   if is_option && node.node.get_attribute_ref("selected").is_some() && !ctx.is_hidden(node) {
     let text = option_text(node, ctx);
@@ -2030,11 +2033,6 @@ fn fallback_name_for_role(
   ctx: &BuildContext,
 ) -> Option<String> {
   match role {
-    Some("textbox") | Some("searchbox") | Some("combobox") | Some("listbox") => {
-      control_value_text(node, ctx)
-        .map(|v| normalize_whitespace(&v))
-        .filter(|v| !v.is_empty())
-    }
     Some("option") => {
       if let Some(label) = node.node.get_attribute_ref("label") {
         if label.is_empty() {

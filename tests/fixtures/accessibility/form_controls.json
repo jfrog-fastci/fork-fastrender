@@ -35,7 +35,7 @@
     },
     "combo": {
       "role": "combobox",
-      "name": "B",
+      "name": null,
       "description": null,
       "value": "B",
       "level": null,
