@@ -416,6 +416,44 @@ fn container_query_calc_em_uses_container_font_size() {
 }
 
 #[test]
+fn container_query_em_respects_zero_font_size() {
+  let css = r#"
+    .target { display: block; }
+    @container (min-width: 1em) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let mut style = ComputedStyle::default();
+  style.font_size = 0.0;
+  style.root_font_size = 10.0;
+
+  let styled = cascade_with_container_styles(css, 10.0, vec![], Arc::new(style));
+
+  // 1em resolves to 0px when the query container's computed font size is 0px, so the query matches.
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "inline");
+}
+
+#[test]
+fn container_query_rem_respects_zero_root_font_size() {
+  let css = r#"
+    .target { display: block; }
+    @container (min-width: 1rem) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let mut style = ComputedStyle::default();
+  style.font_size = 20.0;
+  style.root_font_size = 0.0;
+
+  let styled = cascade_with_container_styles(css, 10.0, vec![], Arc::new(style));
+
+  // 1rem resolves to 0px when the root element's computed font size is 0px, so the query matches.
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "inline");
+}
+
+#[test]
 fn container_query_comma_conditions_select_independent_containers() {
   let html = r#"
     <div id="outer">

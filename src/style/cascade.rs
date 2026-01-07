@@ -482,12 +482,12 @@ fn resolve_container_query_length(
   let font_size = font_size
     .is_finite()
     .then_some(font_size)
-    .filter(|v| *v > 0.0)
+    .filter(|v| *v >= 0.0)
     .unwrap_or(16.0);
   let root_font_size = root_font_size
     .is_finite()
     .then_some(root_font_size)
-    .filter(|v| *v > 0.0)
+    .filter(|v| *v >= 0.0)
     .unwrap_or(font_size);
 
   let vw = viewport_width.is_finite().then_some(viewport_width);
