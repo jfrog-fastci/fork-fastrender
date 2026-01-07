@@ -169,3 +169,17 @@ fn container_name_rejects_default_keyword() {
   let target = find_by_id(&styled, "target").expect("target element");
   assert!(target.styles.container_name.is_empty());
 }
+
+#[test]
+fn container_name_rejects_multiple_none_tokens() {
+  let html = r#"
+    <style>
+      #target { container-name: foo; container-name: none none; }
+    </style>
+    <div id="target"></div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(target.styles.container_name, vec!["foo".to_string()]);
+}

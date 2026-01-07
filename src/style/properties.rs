@@ -13420,7 +13420,7 @@ fn parse_container_names_from_str(input: &str) -> Option<Vec<String>> {
       Token::Ident(ident) => {
         let ident = ident.as_ref();
         if ident.eq_ignore_ascii_case("none") {
-          if !names.is_empty() {
+          if saw_none || !names.is_empty() {
             return None;
           }
           saw_none = true;
