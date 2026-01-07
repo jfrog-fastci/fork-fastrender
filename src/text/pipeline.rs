@@ -1876,11 +1876,22 @@ pub fn itemize_text(text: &str, bidi: &BidiAnalysis) -> Vec<ItemizedRun> {
     }
 
     let char_script = Script::detect(ch);
-    let char_direction = bidi.direction_at(idx);
+    let level = bidi.level_at(idx);
+    let char_direction = Direction::from_level(level);
     let char_level = if split_by_level {
-      bidi.level_at(idx).number()
+      level.number()
     } else {
-      bidi.base_level().number()
+      // When we skip splitting by explicit levels (because the bidi analysis reports no visual
+      // reordering is needed), keep a stable level to avoid churn. However, explicit embedding
+      // contexts can set an RTL base even for slices that contain only LTR characters; in that case
+      // using the base level would produce an odd level for an LTR run. Fall back to the resolved
+      // character level so the run level always matches its direction parity.
+      let base_level = bidi.base_level();
+      if Direction::from_level(base_level) == char_direction {
+        base_level.number()
+      } else {
+        level.number()
+      }
     };
 
     // Resolve neutral scripts based on context
@@ -7769,6 +7780,24 @@ mod tests {
     let run = &shaped[0];
     assert_eq!(run.direction, Direction::RightToLeft);
     assert_eq!(run.level % 2, 1, "bidi level should reflect RTL base");
+  }
+
+  #[test]
+  fn itemize_text_keeps_level_parity_consistent_without_reordering() {
+    let style = ComputedStyle::default();
+    let text = "ABC";
+
+    // Force an RTL paragraph base but shape text that is entirely LTR. The Unicode bidi algorithm
+    // assigns an even embedding level (typically 2) to the LTR letters. Even though no visual
+    // reordering is required, itemization must keep the run level parity consistent with the run
+    // direction so downstream layout code can rely on it.
+    let bidi = BidiAnalysis::analyze_with_base(text, &style, Direction::RightToLeft, None);
+    assert!(!bidi.needs_reordering());
+
+    let runs = itemize_text(text, &bidi);
+    assert_eq!(runs.len(), 1);
+    assert!(runs[0].direction.is_ltr());
+    assert_eq!(runs[0].level, 2);
   }
 
   #[test]
