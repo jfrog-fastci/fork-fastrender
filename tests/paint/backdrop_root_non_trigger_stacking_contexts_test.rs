@@ -1,6 +1,7 @@
 // Future-guard regressions for Backdrop Root sampling across stacking contexts that are explicitly
 // *not* Backdrop Root triggers in filter-effects-2.
 
+use fastrender::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
 use fastrender::image_loader::ImageCache;
 use fastrender::paint::display_list::DisplayItem;
 use fastrender::paint::display_list::StackingContextItem;
@@ -10,6 +11,8 @@ use fastrender::paint::painter::paint_tree_with_resources_scaled_offset;
 use fastrender::paint::stacking::{build_stacking_tree_from_fragment_tree, StackingContextReason};
 use fastrender::scroll::ScrollState;
 use fastrender::{FastRender, Point, Rgba};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 fn collect_stacking_context_reasons(
   context: &fastrender::paint::stacking::StackingContext,
@@ -41,47 +44,56 @@ fn render(
   width: u32,
   height: u32,
 ) -> (tiny_skia::Pixmap, Vec<StackingContextReason>, Vec<StackingContextItem>) {
-  let mut renderer = FastRender::new().expect("renderer");
-  let dom = renderer.parse_html(html).expect("parsed");
-  let fragment_tree = renderer
-    .layout_document(&dom, width, height)
-    .expect("laid out");
+  // Force the display-list paint backend so this future guard catches issues introduced by
+  // stacking-context compositing layers (the known risk surface for backdrop-filter sampling).
+  let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "display_list".to_string(),
+  )])));
 
-  let stacking = build_stacking_tree_from_fragment_tree(&fragment_tree.root);
-  let mut stacking_reasons = Vec::new();
-  collect_stacking_context_reasons(&stacking, &mut stacking_reasons);
+  with_thread_runtime_toggles(toggles, || {
+    let mut renderer = FastRender::new().expect("renderer");
+    let dom = renderer.parse_html(html).expect("parsed");
+    let fragment_tree = renderer
+      .layout_document(&dom, width, height)
+      .expect("laid out");
 
-  let display_list = DisplayListBuilder::new()
-    .with_parallelism(&PaintParallelism::disabled())
-    .build_tree_with_stacking_checked(&fragment_tree)
-    .expect("display list");
-  let display_list_stacking_contexts = display_list
-    .items()
-    .iter()
-    .filter_map(|item| match item {
-      DisplayItem::PushStackingContext(ctx) => Some(ctx.clone()),
-      _ => None,
-    })
-    .collect();
+    let stacking = build_stacking_tree_from_fragment_tree(&fragment_tree.root);
+    let mut stacking_reasons = Vec::new();
+    collect_stacking_context_reasons(&stacking, &mut stacking_reasons);
 
-  let font_ctx = renderer.font_context().clone();
-  let image_cache = ImageCache::new();
-  let pixmap = paint_tree_with_resources_scaled_offset(
-    &fragment_tree,
-    width,
-    height,
-    Rgba::WHITE,
-    font_ctx,
-    image_cache,
-    1.0,
-    Point::ZERO,
-    // Keep painting deterministic; these tests focus on backdrop sampling boundaries.
-    PaintParallelism::disabled(),
-    &ScrollState::default(),
-  )
-  .expect("painted");
+    let display_list = DisplayListBuilder::new()
+      .with_parallelism(&PaintParallelism::disabled())
+      .build_tree_with_stacking_checked(&fragment_tree)
+      .expect("display list");
+    let display_list_stacking_contexts = display_list
+      .items()
+      .iter()
+      .filter_map(|item| match item {
+        DisplayItem::PushStackingContext(ctx) => Some(ctx.clone()),
+        _ => None,
+      })
+      .collect();
 
-  (pixmap, stacking_reasons, display_list_stacking_contexts)
+    let font_ctx = renderer.font_context().clone();
+    let image_cache = ImageCache::new();
+    let pixmap = paint_tree_with_resources_scaled_offset(
+      &fragment_tree,
+      width,
+      height,
+      Rgba::WHITE,
+      font_ctx,
+      image_cache,
+      1.0,
+      Point::ZERO,
+      // Keep painting deterministic; these tests focus on backdrop sampling boundaries.
+      PaintParallelism::disabled(),
+      &ScrollState::default(),
+    )
+    .expect("painted");
+
+    (pixmap, stacking_reasons, display_list_stacking_contexts)
+  })
 }
 
 fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
