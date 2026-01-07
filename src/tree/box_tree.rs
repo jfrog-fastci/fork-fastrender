@@ -2132,13 +2132,13 @@ mod tests {
           descriptor: SrcsetDescriptor::Width(250),
         },
       ],
-      sizes: Some(SizesList {
-        entries: vec![SizesEntry {
-          media: None,
-          length: Length::rem(10.0).into(),
-        }],
-      }),
-      picture_sources: Vec::new(),
+        sizes: Some(SizesList {
+          entries: vec![SizesEntry {
+            media: None,
+            length: Length::rem(10.0).into(),
+          }],
+        }),
+        picture_sources: Vec::new(),
       crossorigin: CrossOriginAttribute::None,
     };
 

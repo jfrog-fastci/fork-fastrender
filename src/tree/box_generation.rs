@@ -4843,6 +4843,103 @@ mod tests {
   }
 
   #[test]
+  fn range_form_controls_capture_slider_track_pseudo_styles() {
+    use crate::css::parser::parse_stylesheet;
+    use crate::style::color::Rgba;
+    use crate::style::values::Length;
+
+    let html = "<html><body><input class=\"range\" type=\"range\" value=\"50\"></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let stylesheet = parse_stylesheet(
+      ".range::-webkit-slider-runnable-track { height: 6px; background-color: rgb(1, 2, 3); }",
+    )
+    .expect("parse css");
+    let styled = crate::style::cascade::apply_styles(&dom, &stylesheet);
+    let box_tree = generate_box_tree(&styled);
+
+    fn find_range_control<'a>(node: &'a BoxNode) -> Option<&'a FormControl> {
+      if let BoxType::Replaced(repl) = &node.box_type {
+        if let ReplacedType::FormControl(control) = &repl.replaced_type {
+          if matches!(control.control, FormControlKind::Range { .. }) {
+            return Some(control);
+          }
+        }
+      }
+      node.children.iter().find_map(find_range_control)
+    }
+
+    let control = find_range_control(&box_tree.root).expect("range control");
+    let track_style = control
+      .slider_track_style
+      .as_ref()
+      .expect("track pseudo styles should be captured");
+    assert_eq!(track_style.height, Some(Length::px(6.0)));
+    assert_eq!(track_style.background_color, Rgba::new(1, 2, 3, 1.0));
+  }
+
+  #[test]
+  fn text_inputs_capture_placeholder_pseudo_styles() {
+    use crate::css::parser::parse_stylesheet;
+    use crate::style::color::Rgba;
+
+    let html = "<html><body><input placeholder=\"hello\"></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let stylesheet =
+      parse_stylesheet("input::placeholder { color: rgb(11, 22, 33); }").expect("parse css");
+    let styled = crate::style::cascade::apply_styles(&dom, &stylesheet);
+    let box_tree = generate_box_tree(&styled);
+
+    fn find_text_control<'a>(node: &'a BoxNode) -> Option<&'a FormControl> {
+      if let BoxType::Replaced(repl) = &node.box_type {
+        if let ReplacedType::FormControl(control) = &repl.replaced_type {
+          if matches!(control.control, FormControlKind::Text { .. }) {
+            return Some(control);
+          }
+        }
+      }
+      node.children.iter().find_map(find_text_control)
+    }
+
+    let control = find_text_control(&box_tree.root).expect("text input control");
+    let placeholder_style = control
+      .placeholder_style
+      .as_ref()
+      .expect("placeholder pseudo styles should be captured");
+    assert_eq!(placeholder_style.color, Rgba::new(11, 22, 33, 1.0));
+  }
+
+  #[test]
+  fn textareas_capture_placeholder_pseudo_styles() {
+    use crate::css::parser::parse_stylesheet;
+    use crate::style::color::Rgba;
+
+    let html = "<html><body><textarea placeholder=\"hello\"></textarea></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let stylesheet =
+      parse_stylesheet("textarea::placeholder { color: rgb(44, 55, 66); }").expect("parse css");
+    let styled = crate::style::cascade::apply_styles(&dom, &stylesheet);
+    let box_tree = generate_box_tree(&styled);
+
+    fn find_textarea_control<'a>(node: &'a BoxNode) -> Option<&'a FormControl> {
+      if let BoxType::Replaced(repl) = &node.box_type {
+        if let ReplacedType::FormControl(control) = &repl.replaced_type {
+          if matches!(control.control, FormControlKind::TextArea { .. }) {
+            return Some(control);
+          }
+        }
+      }
+      node.children.iter().find_map(find_textarea_control)
+    }
+
+    let control = find_textarea_control(&box_tree.root).expect("textarea control");
+    let placeholder_style = control
+      .placeholder_style
+      .as_ref()
+      .expect("placeholder pseudo styles should be captured");
+    assert_eq!(placeholder_style.color, Rgba::new(44, 55, 66, 1.0));
+  }
+
+  #[test]
   fn select_single_last_selected_wins() {
     let control = first_select_control_from_html(
       "<html><body><select><option selected>One</option><option selected>Two</option></select></body></html>",
