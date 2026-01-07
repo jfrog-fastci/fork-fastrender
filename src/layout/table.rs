@@ -5379,6 +5379,50 @@ impl FormattingContext for TableFormattingContext {
       _ => None,
     };
 
+    // CSS 2.1 §17.5.2: captions participate in table width calculation through CAPMIN (caption
+    // minimum width), not via max-content sizing. CAPMIN is the maximum of the captions’ minimum
+    // outer widths when formatted as block boxes.
+    let mut caption_capmin: f32 = 0.0;
+    if !captions.is_empty() {
+      let resolve_margin_no_pct = |margin: Option<&Length>, style: &ComputedStyle| -> f32 {
+        margin
+          .and_then(|len| {
+            len.resolve_with_context(
+              Some(0.0),
+              self.viewport_size.width,
+              self.viewport_size.height,
+              style.font_size,
+              style.root_font_size,
+            )
+          })
+          .unwrap_or(0.0)
+      };
+      for caption in captions.iter().copied() {
+        let fc_type = caption
+          .formatting_context()
+          .unwrap_or(crate::style::display::FormattingContextType::Block);
+        let res = match fc_type {
+          FormattingContextType::Table => {
+            let fc = self.factory.create(fc_type);
+            fc.compute_intrinsic_inline_size(caption, IntrinsicSizingMode::MinContent)
+          }
+          _ => self.factory.with_fc(fc_type, |fc| {
+            fc.compute_intrinsic_inline_size(caption, IntrinsicSizingMode::MinContent)
+          }),
+        };
+        let min_border_box = match res {
+          Ok(value) => value,
+          Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+          Err(_) => 0.0,
+        };
+        let margin_left = resolve_margin_no_pct(caption.style.margin_left.as_ref(), &caption.style);
+        let margin_right =
+          resolve_margin_no_pct(caption.style.margin_right.as_ref(), &caption.style);
+        caption_capmin = caption_capmin.max(min_border_box + margin_left + margin_right);
+      }
+      caption_capmin = caption_capmin.max(0.0);
+    }
+
     // Honor explicit table width if present.
     let font_size = table_root_style.font_size;
     let mut intrinsic_sizes_for_keywords: Option<(f32, f32)> = None;
@@ -5476,10 +5520,13 @@ impl FormattingContext for TableFormattingContext {
     let used_border_box_width = constraints
       .used_border_box_width
       .filter(|w| w.is_finite() && *w >= 0.0);
-    let table_width = used_border_box_width
-      .or(specified_width)
-      .or(containing_width)
-      .map(|w| clamp_to_min_max(w, min_width, max_width));
+    let table_width = if let Some(w) = used_border_box_width {
+      Some(clamp_to_min_max(w, min_width, max_width))
+    } else {
+      specified_width
+        .or(containing_width)
+        .map(|w| clamp_to_min_max(w.max(caption_capmin), min_width, max_width))
+    };
     let percent_base_width = table_width;
     // Table padding and borders (ignored for box sizing under collapsed model per CSS 2.1),
     // but we still track outer borders for percentage-height resolution.
@@ -6118,6 +6165,12 @@ impl FormattingContext for TableFormattingContext {
       } else {
         available_content = 0.0;
       }
+    }
+    // CSS 2.1 §17.5.2: CAPMIN participates in the used table width. Translate CAPMIN (a border-edge
+    // width) into a content width by subtracting table edges and spacing before distribution.
+    if caption_capmin > 0.0 {
+      let capmin_content = (caption_capmin - spacing - edge_consumption).max(0.0);
+      available_content = available_content.max(capmin_content);
     }
     // Honor min/max width constraints even when the table width is auto: expand or clamp the content
     // box before column distribution so columns and fragment bounds agree with the final border box.
@@ -15788,13 +15841,13 @@ mod tests {
       .layout(&table, &LayoutConstraints::definite(400.0, 400.0))
       .expect("table layout");
 
-    // Wrapper should expand to at least the caption width.
+    // CSS 2.1 §17.5.2 CAPMIN: the used table/grid width is at least the caption minimum width,
+    // so the wrapper (which follows the grid width) expands accordingly.
     assert!(
       fragment.bounds.width() >= 219.0,
       "wrapper should be wide enough for the caption (got {:.2})",
       fragment.bounds.width()
     );
-    // Table box stays at its authored width (not inflated by the caption).
     let table_child = fragment.children.iter().find(|child| {
       child
         .style
@@ -15804,9 +15857,10 @@ mod tests {
     });
     let table_child = table_child.expect("table child");
     assert!(
-      (table_child.bounds.width() - 100.0).abs() < 0.1,
-      "table box width should stay at 100px (got {:.2})",
-      table_child.bounds.width()
+      (table_child.bounds.width() - fragment.bounds.width()).abs() < 0.1,
+      "table grid width should match wrapper width (grid={:.2}, wrapper={:.2})",
+      table_child.bounds.width(),
+      fragment.bounds.width()
     );
   }
 
