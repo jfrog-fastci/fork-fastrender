@@ -1026,7 +1026,11 @@ impl RenderOptions {
 
   /// Provide a sampling timestamp for animations/transitions in milliseconds since load.
   pub fn with_animation_time(mut self, time_ms: f32) -> Self {
-    self.animation_time = Some(time_ms.max(0.0));
+    self.animation_time = Some(if time_ms.is_finite() {
+      time_ms.max(0.0)
+    } else {
+      0.0
+    });
     self
   }
 
@@ -1833,7 +1837,11 @@ impl PreparedPaintOptions {
 
   /// Sets the animation timestamp used for sampling time-based animations.
   pub fn with_animation_time(mut self, time_ms: f32) -> Self {
-    self.animation_time = Some(time_ms.max(0.0));
+    self.animation_time = Some(if time_ms.is_finite() {
+      time_ms.max(0.0)
+    } else {
+      0.0
+    });
     self
   }
 }
@@ -4338,7 +4346,11 @@ impl LayoutDocumentOptions {
 
   /// Provide an animation/transition sampling timestamp in milliseconds.
   pub fn with_animation_time(mut self, time_ms: f32) -> Self {
-    self.animation_time = Some(time_ms.max(0.0));
+    self.animation_time = Some(if time_ms.is_finite() {
+      time_ms.max(0.0)
+    } else {
+      0.0
+    });
     self
   }
 }
