@@ -15,6 +15,7 @@ fn sc(bounds: Rect, mix_blend_mode: BlendMode, is_isolated: bool) -> StackingCon
   StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds,
     plane_rect: bounds,
@@ -121,4 +122,3 @@ fn nested_non_isolated_blend_groups_propagate_backdrop() {
 
   assert_eq!(pixel(&pixmap, 18, 18), (0, 255, 255, 255));
 }
-
