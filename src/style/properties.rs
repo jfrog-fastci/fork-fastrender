@@ -16305,8 +16305,13 @@ fn parse_text_decoration_thickness(
       Some(TextDecorationThickness::FromFont)
     }
     PropertyValue::Keyword(_) => None,
-    PropertyValue::Length(l) => Some(TextDecorationThickness::Length(*l)),
-    PropertyValue::Percentage(p) => Some(TextDecorationThickness::Length(Length::percent(*p))),
+    // `text-decoration-thickness` accepts `<length-percentage>` with a non-negative range.
+    PropertyValue::Length(l) if l.value >= 0.0 => Some(TextDecorationThickness::Length(*l)),
+    // CSS `<length-percentage>` allows unitless `0` as a `<length>`.
+    PropertyValue::Number(n) if *n == 0.0 => Some(TextDecorationThickness::Length(Length::px(0.0))),
+    PropertyValue::Percentage(p) if *p >= 0.0 => {
+      Some(TextDecorationThickness::Length(Length::percent(*p)))
+    }
     _ => None,
   }
 }
@@ -23827,6 +23832,19 @@ mod tests {
     assert!(matches!(
       style.text_decoration.thickness,
       TextDecorationThickness::FromFont
+    ));
+
+    let decl = Declaration {
+      property: "text-decoration-thickness".into(),
+      value: PropertyValue::Number(0.0),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert!(matches!(
+      style.text_decoration.thickness,
+      TextDecorationThickness::Length(l) if l.is_zero()
     ));
 
     let decl = Declaration {
