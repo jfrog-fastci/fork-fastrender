@@ -19,16 +19,18 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
   - Checkboxes/radios draw marks when checked/indeterminate; selects render a text value plus a caret; ranges draw a track + thumb; color inputs render a swatch plus a hex label.
 - Disabled, focus, focus-visible, required, and invalid states are derived from element attributes + `data-fastr-focus*` hints during box generation and influence native painting (tinted overlays, accent changes). The `data-fastr-focus-visible` hint implies focus for native painting so standalone focus-visible markers are captured.
 - `appearance: none` affects **native painting** (suppresses some UA chrome) but does **not** currently change box generation: the element is still a `ReplacedType::FormControl` and keeps form-control intrinsic sizing. (Non-`none` keywords are preserved as `Appearance::Keyword(...)`, but painters currently only special-case `Appearance::None`.)
-- Vendor-prefixed `-webkit-appearance` and `-moz-appearance` are treated as aliases of `appearance` (for site compatibility), so either spelling can drive `Appearance::None` / keyword values through box generation and painting.
+- Vendor-prefixed `-webkit-appearance` and `-moz-appearance` are treated as aliases of `appearance` (for site compatibility), so either spelling can drive `Appearance::None` / keyword values through box generation and painting. (Note: `@supports` intentionally does **not** treat `-moz-appearance` as supported.)
 
 ## Key code paths
 
 - Form control model: `src/tree/box_tree.rs::FormControl` (+ `FormControlKind`, `TextControlKind`)
 - Box generation: `src/tree/box_generation.rs::create_form_control_replaced`
 - Intrinsic sizing: `src/api.rs::resolve_intrinsic_for_replaced_for_media`
-- Vendor aliasing (`-webkit-appearance` / `-moz-appearance` → `appearance`):
-  - CSS parsing: `src/css/properties.rs::vendor_prefixed_property_alias`
-  - Cascade application: `src/style/properties.rs`
+- Vendor aliasing:
+  - `-webkit-appearance` → `appearance` during style application: `src/style/properties.rs`
+  - `-moz-appearance` (and other vendor prefixes) canonicalized during CSS parsing when possible:
+    - `src/css/parser.rs::lookup_known_property`
+    - `src/css/properties.rs::vendor_prefixed_property_alias`
 - Painting:
   - Display list: `src/paint/display_list_builder.rs::emit_form_control`
   - Immediate painter: `src/paint/painter.rs::paint_form_control`
