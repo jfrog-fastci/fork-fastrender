@@ -157,6 +157,85 @@ impl CounterStyleRegistry {
     self.format_by_name(&style.as_css_name(), value, &mut visited)
   }
 
+  /// Format a list marker string for `list-style-type: <counter-style>`.
+  ///
+  /// Per CSS Lists 3 + CSS Counter Styles 3, list markers use the counter representation
+  /// combined with the counter-style's prefix/suffix, while `counter()` / `counters()`
+  /// output must remain prefix/suffix-free.
+  pub fn format_marker_string<S: Into<CounterStyleName>>(&self, value: i32, style: S) -> String {
+    let style = style.into();
+    let (prefix, suffix) = self.marker_affixes(style.clone());
+    let repr = self.format_value(value, style);
+    let mut out = String::with_capacity(prefix.len() + repr.len() + suffix.len());
+    out.push_str(&prefix);
+    out.push_str(&repr);
+    out.push_str(&suffix);
+    out
+  }
+
+  /// Resolve the marker prefix/suffix for the given counter style.
+  pub fn marker_affixes<S: Into<CounterStyleName>>(&self, style: S) -> (String, String) {
+    const DEFAULT_PREFIX: &str = "";
+    const DEFAULT_SUFFIX: &str = ". ";
+
+    fn builtin_suffix(style: CounterStyle) -> &'static str {
+      match style {
+        CounterStyle::Disc
+        | CounterStyle::Circle
+        | CounterStyle::Square
+        | CounterStyle::DisclosureOpen
+        | CounterStyle::DisclosureClosed => " ",
+        CounterStyle::None => "",
+        _ => ". ",
+      }
+    }
+
+    fn builtin_affixes(style: CounterStyle) -> (String, String) {
+      (String::new(), builtin_suffix(style).to_string())
+    }
+
+    let style = style.into();
+    let mut visited = HashSet::new();
+
+    fn resolve_by_name(
+      registry: &CounterStyleRegistry,
+      name: &str,
+      visited: &mut HashSet<String>,
+    ) -> (String, String) {
+      let key = name.to_ascii_lowercase();
+      if !visited.insert(key.clone()) {
+        return builtin_affixes(CounterStyle::Decimal);
+      }
+
+      if let Some(def) = registry.styles.get(&key) {
+        match def {
+          CounterStyleDefinition::Builtin(builtin) => return builtin_affixes(*builtin),
+          CounterStyleDefinition::Custom(rule) => {
+            let (base_prefix, base_suffix) = if let Some(CounterSystem::Extends(parent)) =
+              rule.system.as_ref()
+            {
+              resolve_by_name(registry, parent, visited)
+            } else {
+              (DEFAULT_PREFIX.to_string(), DEFAULT_SUFFIX.to_string())
+            };
+
+            let prefix = rule.prefix.clone().unwrap_or(base_prefix);
+            let suffix = rule.suffix.clone().unwrap_or(base_suffix);
+            return (prefix, suffix);
+          }
+        }
+      }
+
+      if let Some(builtin) = CounterStyle::parse(&key) {
+        return builtin_affixes(builtin);
+      }
+
+      builtin_affixes(CounterStyle::Decimal)
+    }
+
+    resolve_by_name(self, &style.as_css_name(), &mut visited)
+  }
+
   fn format_by_name(&self, name: &str, value: i32, visited: &mut HashSet<String>) -> String {
     let key = name.to_ascii_lowercase();
     if !visited.insert(key.clone()) {

@@ -3406,7 +3406,7 @@ fn apply_counter_properties_from_style(styled: &StyledNode, counters: &mut Count
         start.unwrap_or(1)
       }
     } else {
-      0
+      1
     };
     let default_value = start_value.saturating_sub(step);
     let default_reset = CounterSet::single("list-item", default_value);
@@ -7365,7 +7365,7 @@ mod tests {
 
     match &marker_box.box_type {
       BoxType::Marker(marker) => match &marker.content {
-        MarkerContent::Text(t) => assert_eq!(t.as_str(), "★ "),
+        MarkerContent::Text(t) => assert_eq!(t.as_str(), "★"),
         MarkerContent::Image(_) => panic!("expected text marker from string list-style-type"),
       },
       _ => panic!("expected marker box"),
@@ -7521,11 +7521,196 @@ mod tests {
 
     match &marker_box.box_type {
       BoxType::Marker(marker) => match &marker.content {
-        MarkerContent::Text(t) => assert_eq!(t.as_str(), "◇ "),
+        MarkerContent::Text(t) => assert_eq!(t.as_str(), "◇. "),
         MarkerContent::Image(_) => panic!("expected text marker"),
       },
       _ => panic!("expected marker box"),
     }
+  }
+
+  #[test]
+  fn decimal_marker_has_dot_suffix() {
+    let mut style = ComputedStyle::default();
+    style.list_style_type = ListStyleType::Decimal;
+    style.display = Display::ListItem;
+    let style = Arc::new(style);
+
+    let styled = StyledNode {
+      node_id: 0,
+      node: dom::DomNode {
+        node_type: dom::DomNodeType::Element {
+          tag_name: "li".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      },
+      styles: style.clone(),
+      marker_styles: None,
+      starting_styles: StartingStyleSet::default(),
+      before_styles: None,
+      after_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      placeholder_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![],
+    };
+
+    let mut counters = CounterManager::new();
+    counters.enter_scope();
+    counters.apply_reset(&CounterSet::single("list-item", 1));
+
+    let marker_box = create_marker_box(&styled, &mut counters).expect("marker");
+    counters.leave_scope();
+
+    match &marker_box.box_type {
+      BoxType::Marker(marker) => match &marker.content {
+        MarkerContent::Text(t) => assert_eq!(t.as_str(), "1. "),
+        MarkerContent::Image(_) => panic!("expected text marker"),
+      },
+      _ => panic!("expected marker box"),
+    }
+  }
+
+  #[test]
+  fn custom_counter_style_prefix_suffix_descriptors_are_used_for_marker() {
+    let mut registry = CounterStyleRegistry::with_builtins();
+    let mut rule = CounterStyleRule::new("custom-mark");
+    rule.system = Some(CounterSystem::Cyclic);
+    rule.symbols = Some(vec!["◇".into()]);
+    rule.prefix = Some("(".to_string());
+    rule.suffix = Some(") ".to_string());
+    registry.register(rule);
+    let registry = Arc::new(registry);
+
+    let mut style = ComputedStyle::default();
+    style.counter_styles = registry.clone();
+    style.list_style_type = ListStyleType::Custom("custom-mark".to_string());
+    style.display = Display::ListItem;
+    let style = Arc::new(style);
+
+    let styled = StyledNode {
+      node_id: 0,
+      node: dom::DomNode {
+        node_type: dom::DomNodeType::Element {
+          tag_name: "li".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      },
+      styles: style.clone(),
+      marker_styles: Some(style.clone()),
+      starting_styles: StartingStyleSet::default(),
+      before_styles: None,
+      after_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      placeholder_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![],
+    };
+
+    let mut counters = CounterManager::new_with_styles(registry);
+    counters.enter_scope();
+    counters.apply_reset(&CounterSet::single("list-item", 1));
+
+    let marker_box = create_marker_box(&styled, &mut counters).expect("marker");
+    counters.leave_scope();
+
+    match &marker_box.box_type {
+      BoxType::Marker(marker) => match &marker.content {
+        MarkerContent::Text(t) => assert_eq!(t.as_str(), "(◇) "),
+        MarkerContent::Image(_) => panic!("expected text marker"),
+      },
+      _ => panic!("expected marker box"),
+    }
+  }
+
+  #[test]
+  fn unordered_list_decimal_starts_at_one() {
+    let mut ul_style = ComputedStyle::default();
+    ul_style.display = Display::Block;
+    let ul_style = Arc::new(ul_style);
+
+    let mut li_style = ComputedStyle::default();
+    li_style.display = Display::ListItem;
+    li_style.list_style_type = ListStyleType::Decimal;
+    let li_style = Arc::new(li_style);
+
+    let mk_li = |node_id: usize| StyledNode {
+      node_id,
+      node: dom::DomNode {
+        node_type: dom::DomNodeType::Element {
+          tag_name: "li".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      },
+      styles: li_style.clone(),
+      starting_styles: StartingStyleSet::default(),
+      before_styles: None,
+      after_styles: None,
+      marker_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      placeholder_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![],
+    };
+
+    let ul = StyledNode {
+      node_id: 0,
+      node: dom::DomNode {
+        node_type: dom::DomNodeType::Element {
+          tag_name: "ul".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![],
+        },
+        children: vec![],
+      },
+      styles: ul_style,
+      starting_styles: StartingStyleSet::default(),
+      before_styles: None,
+      after_styles: None,
+      marker_styles: None,
+      first_line_styles: None,
+      first_letter_styles: None,
+      placeholder_styles: None,
+      slider_thumb_styles: None,
+      slider_track_styles: None,
+      assigned_slot: None,
+      slotted_node_ids: Vec::new(),
+      children: vec![mk_li(1), mk_li(2), mk_li(3)],
+    };
+
+    let tree = generate_box_tree(&ul);
+
+    fn collect_marker_numbers(node: &BoxNode, out: &mut Vec<i32>) {
+      if let BoxType::Marker(marker) = &node.box_type {
+        if let MarkerContent::Text(text) = &marker.content {
+          out.push(marker_leading_decimal(text));
+        }
+      }
+      for child in node.children.iter() {
+        collect_marker_numbers(child, out);
+      }
+    }
+
+    let mut markers = Vec::new();
+    collect_marker_numbers(&tree.root, &mut markers);
+    assert_eq!(markers, vec![1, 2, 3]);
   }
 
   #[test]
@@ -9452,25 +9637,29 @@ mod tests {
 }
 
 fn list_marker_text(marker_style: &ComputedStyle, counters: &CounterManager) -> String {
-  let list_style = marker_style.list_style_type.clone();
-  let core = match list_style {
-    ListStyleType::None => return String::new(),
-    ListStyleType::Disc => counters.format("list-item", CounterStyle::Disc),
-    ListStyleType::Circle => counters.format("list-item", CounterStyle::Circle),
-    ListStyleType::Square => counters.format("list-item", CounterStyle::Square),
-    ListStyleType::Decimal => counters.format("list-item", CounterStyle::Decimal),
+  let value = counters.get_or_zero("list-item");
+  let registry = marker_style.counter_styles.as_ref();
+  match marker_style.list_style_type.clone() {
+    ListStyleType::None => String::new(),
+    ListStyleType::String(text) => text,
+    ListStyleType::Disc => registry.format_marker_string(value, CounterStyle::Disc),
+    ListStyleType::Circle => registry.format_marker_string(value, CounterStyle::Circle),
+    ListStyleType::Square => registry.format_marker_string(value, CounterStyle::Square),
+    ListStyleType::Decimal => registry.format_marker_string(value, CounterStyle::Decimal),
     ListStyleType::DecimalLeadingZero => {
-      counters.format("list-item", CounterStyle::DecimalLeadingZero)
+      registry.format_marker_string(value, CounterStyle::DecimalLeadingZero)
     }
-    ListStyleType::LowerRoman => counters.format("list-item", CounterStyle::LowerRoman),
-    ListStyleType::UpperRoman => counters.format("list-item", CounterStyle::UpperRoman),
-    ListStyleType::LowerAlpha => counters.format("list-item", CounterStyle::LowerAlpha),
-    ListStyleType::UpperAlpha => counters.format("list-item", CounterStyle::UpperAlpha),
-    ListStyleType::Armenian => counters.format("list-item", CounterStyle::Armenian),
-    ListStyleType::LowerArmenian => counters.format("list-item", CounterStyle::LowerArmenian),
-    ListStyleType::Georgian => counters.format("list-item", CounterStyle::Georgian),
-    ListStyleType::LowerGreek => counters.format("list-item", CounterStyle::LowerGreek),
-    ListStyleType::DisclosureOpen => counters.format("list-item", CounterStyle::DisclosureOpen),
+    ListStyleType::LowerRoman => registry.format_marker_string(value, CounterStyle::LowerRoman),
+    ListStyleType::UpperRoman => registry.format_marker_string(value, CounterStyle::UpperRoman),
+    ListStyleType::LowerAlpha => registry.format_marker_string(value, CounterStyle::LowerAlpha),
+    ListStyleType::UpperAlpha => registry.format_marker_string(value, CounterStyle::UpperAlpha),
+    ListStyleType::Armenian => registry.format_marker_string(value, CounterStyle::Armenian),
+    ListStyleType::LowerArmenian => {
+      registry.format_marker_string(value, CounterStyle::LowerArmenian)
+    }
+    ListStyleType::Georgian => registry.format_marker_string(value, CounterStyle::Georgian),
+    ListStyleType::LowerGreek => registry.format_marker_string(value, CounterStyle::LowerGreek),
+    ListStyleType::DisclosureOpen => registry.format_marker_string(value, CounterStyle::DisclosureOpen),
     ListStyleType::DisclosureClosed => {
       let symbol = match marker_style.writing_mode {
         WritingMode::HorizontalTb => match marker_style.direction {
@@ -9479,15 +9668,15 @@ fn list_marker_text(marker_style: &ComputedStyle, counters: &CounterManager) -> 
         },
         _ => "▸",
       };
-      symbol.to_string()
+      let (prefix, suffix) = registry.marker_affixes(CounterStyle::DisclosureClosed);
+      let mut out = String::with_capacity(prefix.len() + symbol.len() + suffix.len());
+      out.push_str(&prefix);
+      out.push_str(symbol);
+      out.push_str(&suffix);
+      out
     }
-    ListStyleType::String(text) => text,
-    ListStyleType::Custom(name) => counters.format("list-item", CounterStyleName::Custom(name)),
-  };
-
-  if core.is_empty() {
-    core
-  } else {
-    format!("{} ", core)
+    ListStyleType::Custom(name) => {
+      registry.format_marker_string(value, CounterStyleName::Custom(name))
+    }
   }
 }
