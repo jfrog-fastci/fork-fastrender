@@ -2914,7 +2914,6 @@ pub enum TextDecorationThickness {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TextUnderlineOffset {
   Auto,
-  FromFont,
   Length(Length),
 }
 

@@ -8206,6 +8206,7 @@ impl Painter {
         strike_thickness,
         ascent,
         descent,
+        has_font_underline_metrics: true,
       })
     } else {
       // Fallback heuristic metrics when we cannot obtain font metrics.
@@ -8223,35 +8224,137 @@ impl Painter {
         strike_thickness: underline_thickness,
         ascent,
         descent,
+        has_font_underline_metrics: false,
       })
     }
   }
 
-  #[allow(dead_code)]
-  fn resolve_underline_offset(&self, style: &ComputedStyle) -> f32 {
-    self.resolve_underline_offset_value(style.text_underline_offset, style)
-  }
-
-  fn resolve_underline_offset_value(
+  fn resolve_underline_offset_length(
     &self,
     offset: crate::style::types::TextUnderlineOffset,
     style: &ComputedStyle,
-  ) -> f32 {
-    let resolved = match offset {
-      crate::style::types::TextUnderlineOffset::Auto => 0.0,
-      crate::style::types::TextUnderlineOffset::FromFont => 0.0,
+  ) -> Option<f32> {
+    match offset {
+      crate::style::types::TextUnderlineOffset::Auto => None,
       crate::style::types::TextUnderlineOffset::Length(l) => {
-        if l.unit == LengthUnit::Percent {
+        let resolved = if l.unit == LengthUnit::Percent {
           l.resolve_against(style.font_size).unwrap_or(0.0)
         } else if l.unit.is_viewport_relative() {
           l.resolve_with_viewport(self.css_width, self.css_height)
             .unwrap_or_else(|| l.to_px())
         } else {
           resolve_font_relative_length(l, style, &self.font_ctx)
+        };
+        Some(resolved * self.scale)
+      }
+    }
+  }
+
+  fn underline_auto_offset_value(
+    &self,
+    metrics: &DecorationMetrics,
+    position: crate::style::types::TextUnderlinePosition,
+    inline_vertical: bool,
+  ) -> f32 {
+    // `text-underline-offset: auto` is UA-defined. We preserve existing underline placement
+    // behavior by defaulting to the font-provided underline position (or clamping to the
+    // text-under edge for `text-underline-position: under`). The CSS Text Decoration Level 4 spec
+    // requires this offset to be zero when `text-underline-position: from-font` and font metrics
+    // are available.
+    match position {
+      crate::style::types::TextUnderlinePosition::FromFont if metrics.has_font_underline_metrics => 0.0,
+      crate::style::types::TextUnderlinePosition::Under
+      | crate::style::types::TextUnderlinePosition::UnderLeft
+      | crate::style::types::TextUnderlinePosition::UnderRight => {
+        (-metrics.descent - metrics.underline_pos).max(0.0)
+      }
+      crate::style::types::TextUnderlinePosition::Left if inline_vertical => {
+        (-metrics.descent - metrics.underline_pos).max(0.0)
+      }
+      crate::style::types::TextUnderlinePosition::Right if inline_vertical => 0.0,
+      _ => -metrics.underline_pos,
+    }
+  }
+
+  fn underline_center(
+    &self,
+    metrics: &DecorationMetrics,
+    position: crate::style::types::TextUnderlinePosition,
+    offset: crate::style::types::TextUnderlineOffset,
+    thickness: f32,
+    baseline: f32,
+    inline_vertical: bool,
+    style: &ComputedStyle,
+  ) -> f32 {
+    // In horizontal typographic modes, `left` and `right` behave as `auto`. In vertical
+    // typographic modes, `under left` / `under right` collapse to `left` / `right` since `under`
+    // applies only to horizontal positioning. (See CSS Text Decoration Level 4 §7.4.)
+    let position = if inline_vertical {
+      match position {
+        crate::style::types::TextUnderlinePosition::UnderLeft => {
+          crate::style::types::TextUnderlinePosition::Left
+        }
+        crate::style::types::TextUnderlinePosition::UnderRight => {
+          crate::style::types::TextUnderlinePosition::Right
+        }
+        _ => position,
+      }
+    } else {
+      match position {
+        crate::style::types::TextUnderlinePosition::Left
+        | crate::style::types::TextUnderlinePosition::Right => crate::style::types::TextUnderlinePosition::Auto,
+        _ => position,
+      }
+    };
+
+    let over_positioned =
+      inline_vertical && matches!(position, crate::style::types::TextUnderlinePosition::Right);
+    let dir = if over_positioned { 1.0 } else { -1.0 };
+    let zero_pos = match position {
+      crate::style::types::TextUnderlinePosition::Auto => 0.0,
+      crate::style::types::TextUnderlinePosition::FromFont => {
+        if metrics.has_font_underline_metrics {
+          metrics.underline_pos
+        } else {
+          0.0
+        }
+      }
+      crate::style::types::TextUnderlinePosition::Under
+      | crate::style::types::TextUnderlinePosition::UnderLeft
+      | crate::style::types::TextUnderlinePosition::UnderRight
+      | crate::style::types::TextUnderlinePosition::Left => -metrics.descent,
+      crate::style::types::TextUnderlinePosition::Right => {
+        if inline_vertical {
+          metrics.ascent
+        } else {
+          0.0
         }
       }
     };
-    resolved * self.scale
+
+    let used_offset = self
+      .resolve_underline_offset_length(offset, style)
+      .unwrap_or_else(|| self.underline_auto_offset_value(metrics, position, inline_vertical));
+    let center_pos = zero_pos + dir * (used_offset + thickness * 0.5);
+
+    if inline_vertical {
+      let underline_side = resolve_underline_side(style.writing_mode, position);
+      let over_side = if over_positioned {
+        underline_side
+      } else {
+        match underline_side {
+          UnderlineSide::Left => UnderlineSide::Right,
+          UnderlineSide::Right => UnderlineSide::Left,
+        }
+      };
+      let mapping = match over_side {
+        UnderlineSide::Right => 1.0,
+        UnderlineSide::Left => -1.0,
+      };
+      baseline + mapping * center_pos
+    } else {
+      baseline - center_pos
+    }
   }
 
   fn resolve_decoration_thickness_value(
@@ -8273,31 +8376,6 @@ impl Painter {
         }
       }
     }
-  }
-
-  fn underline_position(
-    &self,
-    metrics: &DecorationMetrics,
-    position: crate::style::types::TextUnderlinePosition,
-    offset: f32,
-    thickness: f32,
-  ) -> f32 {
-    // OpenType `underlinePosition` is specified as the distance from the baseline to the top of
-    // the underline stroke. Convert it to our decoration-center coordinate by subtracting half
-    // the used stroke thickness.
-    let font_center = metrics.underline_pos - thickness * 0.5;
-    let under_base = -metrics.descent - thickness * 0.5;
-    let base = match position {
-      crate::style::types::TextUnderlinePosition::Auto
-      | crate::style::types::TextUnderlinePosition::FromFont => font_center,
-      crate::style::types::TextUnderlinePosition::Under
-      | crate::style::types::TextUnderlinePosition::UnderLeft
-      | crate::style::types::TextUnderlinePosition::UnderRight => font_center.min(under_base),
-      crate::style::types::TextUnderlinePosition::Left
-      | crate::style::types::TextUnderlinePosition::Right => font_center,
-    };
-
-    metrics.underline_position_with_offset(base, offset)
   }
 
   fn render_generated_image(
@@ -9218,27 +9296,21 @@ impl Painter {
         }
       };
 
-      let underline_offset = self.resolve_underline_offset_value(deco.underline_offset, style);
       if deco
         .decoration
         .lines
         .contains(TextDecorationLine::UNDERLINE)
       {
         let thickness = used_thickness.unwrap_or(metrics.underline_thickness);
-        let adjusted_pos = self.underline_position(
+        let center = self.underline_center(
           &metrics,
           deco.underline_position,
-          underline_offset,
+          deco.underline_offset,
           thickness,
+          block_baseline,
+          inline_vertical,
+          style,
         );
-        let center = if inline_vertical {
-          match resolve_underline_side(style.writing_mode, deco.underline_position) {
-            UnderlineSide::Right => block_baseline - adjusted_pos,
-            UnderlineSide::Left => block_baseline + adjusted_pos,
-          }
-        } else {
-          block_baseline - adjusted_pos
-        };
         if matches!(
           deco.skip_ink,
           crate::style::types::TextDecorationSkipInk::Auto
@@ -9730,14 +9802,10 @@ struct DecorationMetrics {
   strike_thickness: f32,
   ascent: f32,
   descent: f32,
+  has_font_underline_metrics: bool,
 }
 
 impl DecorationMetrics {
-  fn underline_position_with_offset(&self, base: f32, offset: f32) -> f32 {
-    let direction = if base >= 0.0 { 1.0 } else { -1.0 };
-    base + offset * direction
-  }
-
   fn scaled(self, scale: f32) -> Self {
     Self {
       underline_pos: self.underline_pos * scale,
@@ -9746,6 +9814,7 @@ impl DecorationMetrics {
       strike_thickness: self.strike_thickness * scale,
       ascent: self.ascent * scale,
       descent: self.descent * scale,
+      has_font_underline_metrics: self.has_font_underline_metrics,
     }
   }
 }
@@ -14980,29 +15049,36 @@ mod tests {
     let metrics = painter
       .decoration_metrics(Some(&runs), &style)
       .expect("metrics");
-    let baseline = 20.0;
-    let thickness = match style.text_decoration.thickness {
-      crate::style::types::TextDecorationThickness::Length(l) => l.to_px(),
-      _ => metrics.underline_thickness,
-    };
-    let base_center = baseline
-      - painter.underline_position(&metrics, style.text_underline_position, 0.0, thickness);
+    let metrics = metrics.scaled(painter.scale);
+    let baseline = 20.0 * painter.scale;
+    let thickness = metrics.underline_thickness;
+    let base_center = painter.underline_center(
+      &metrics,
+      style.text_underline_position,
+      crate::style::types::TextUnderlineOffset::Length(Length::px(0.0)),
+      thickness,
+      baseline,
+      false,
+      &style,
+    );
 
     style.text_underline_offset = crate::style::types::TextUnderlineOffset::Length(Length::px(4.0));
-    let shifted_center = baseline
-      - painter.underline_position(
-        &metrics,
-        style.text_underline_position,
-        painter.resolve_underline_offset(&style),
-        thickness,
-      );
+    let shifted_center = painter.underline_center(
+      &metrics,
+      style.text_underline_position,
+      style.text_underline_offset,
+      thickness,
+      baseline,
+      false,
+      &style,
+    );
 
     assert!(
       shifted_center > base_center,
       "positive offset should move underline further from the baseline"
     );
     assert!(
-      (shifted_center - base_center - 4.0).abs() < 0.5,
+      (shifted_center - base_center - 4.0 * painter.scale).abs() < 0.01,
       "underline offset should roughly follow the authored length"
     );
   }
@@ -15022,17 +15098,30 @@ mod tests {
     let metrics = painter
       .decoration_metrics(Some(&runs), &style)
       .expect("metrics");
-    let thickness = match style.text_decoration.thickness {
-      crate::style::types::TextDecorationThickness::Length(l) => l.to_px(),
-      _ => metrics.underline_thickness,
-    };
-    let baseline = 20.0;
+    let metrics = metrics.scaled(painter.scale);
+    let thickness = metrics.underline_thickness;
+    let baseline = 20.0 * painter.scale;
+    let offset = crate::style::types::TextUnderlineOffset::Length(Length::px(0.0));
 
-    let auto_center = baseline
-      - painter.underline_position(&metrics, style.text_underline_position, 0.0, thickness);
+    let auto_center = painter.underline_center(
+      &metrics,
+      style.text_underline_position,
+      offset,
+      thickness,
+      baseline,
+      false,
+      &style,
+    );
     style.text_underline_position = crate::style::types::TextUnderlinePosition::Under;
-    let under_center = baseline
-      - painter.underline_position(&metrics, style.text_underline_position, 0.0, thickness);
+    let under_center = painter.underline_center(
+      &metrics,
+      style.text_underline_position,
+      offset,
+      thickness,
+      baseline,
+      false,
+      &style,
+    );
 
     assert!(
       under_center > auto_center,
@@ -15093,26 +15182,31 @@ mod tests {
     let metrics = painter
       .decoration_metrics(Some(&runs), &style)
       .expect("metrics");
-    let thickness = match style.text_decoration.thickness {
-      crate::style::types::TextDecorationThickness::Length(l) => l.to_px(),
-      _ => metrics.underline_thickness,
-    };
-    let baseline = 24.0;
-
-    let base_center = baseline
-      - painter.underline_position(&metrics, style.text_underline_position, 0.0, thickness);
+    let metrics = metrics.scaled(painter.scale);
+    let thickness = metrics.underline_thickness;
+    let baseline = 24.0 * painter.scale;
+    let base_center = painter.underline_center(
+      &metrics,
+      style.text_underline_position,
+      crate::style::types::TextUnderlineOffset::Length(Length::px(0.0)),
+      thickness,
+      baseline,
+      false,
+      &style,
+    );
 
     let mut ex_style = style;
     ex_style.text_underline_offset =
       crate::style::types::TextUnderlineOffset::Length(Length::ex(1.0));
-    let offset = painter.resolve_underline_offset_value(ex_style.text_underline_offset, &ex_style);
-    let ex_center = baseline
-      - painter.underline_position(
-        &metrics,
-        ex_style.text_underline_position,
-        offset,
-        thickness,
-      );
+    let ex_center = painter.underline_center(
+      &metrics,
+      ex_style.text_underline_position,
+      ex_style.text_underline_offset,
+      thickness,
+      baseline,
+      false,
+      &ex_style,
+    );
 
     assert!(
       ex_center > base_center,

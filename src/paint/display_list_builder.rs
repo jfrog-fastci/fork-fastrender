@@ -6715,7 +6715,6 @@ impl DisplayListBuilder {
       let used_thickness =
         self.resolve_text_decoration_thickness_override(deco.decoration.thickness, style);
 
-      let underline_offset = self.resolve_underline_offset_value(deco.underline_offset, style);
       let mut paint = DecorationPaint {
         style: deco.decoration.style,
         color: decoration_color,
@@ -6730,20 +6729,15 @@ impl DisplayListBuilder {
         .contains(TextDecorationLine::UNDERLINE)
       {
         let thickness = used_thickness.unwrap_or(metrics.underline_thickness);
-        let pos = self.underline_position(
+        let center = self.underline_center(
           &metrics,
           deco.underline_position,
-          underline_offset,
+          deco.underline_offset,
           thickness,
+          block_baseline,
+          inline_vertical,
+          style,
         );
-        let center = if inline_vertical {
-          match resolve_underline_side(style.writing_mode, deco.underline_position) {
-            UnderlineSide::Right => block_baseline - pos,
-            UnderlineSide::Left => block_baseline + pos,
-          }
-        } else {
-          block_baseline - pos
-        };
         let segments = if matches!(
           deco.skip_ink,
           TextDecorationSkipInk::Auto | TextDecorationSkipInk::All
@@ -6864,16 +6858,15 @@ impl DisplayListBuilder {
     }
   }
 
-  fn resolve_underline_offset_value(
+  fn resolve_underline_offset_length(
     &self,
     offset: TextUnderlineOffset,
     style: &ComputedStyle,
-  ) -> f32 {
+  ) -> Option<f32> {
     match offset {
-      TextUnderlineOffset::Auto => 0.0,
-      TextUnderlineOffset::FromFont => 0.0,
+      TextUnderlineOffset::Auto => None,
       TextUnderlineOffset::Length(l) => {
-        if l.unit == LengthUnit::Percent {
+        Some(if l.unit == LengthUnit::Percent {
           l.resolve_against(style.font_size).unwrap_or(0.0)
         } else if l.unit.is_font_relative() {
           resolve_font_relative_length(l, style, &self.font_ctx)
@@ -6886,32 +6879,109 @@ impl DisplayListBuilder {
           l.to_px()
         } else {
           l.value * style.font_size
-        }
+        })
       }
     }
   }
 
-  fn underline_position(
+  fn underline_auto_offset_value(
     &self,
     metrics: &DecorationMetrics,
     position: TextUnderlinePosition,
-    offset: f32,
-    thickness: f32,
+    inline_vertical: bool,
   ) -> f32 {
-    // OpenType `underlinePosition` is specified as the distance from the baseline to the *top* of
-    // the underline stroke. Convert it to our decoration-center coordinate by subtracting half
-    // the used stroke thickness.
-    let font_center = metrics.underline_pos - thickness * 0.5;
-    let under_base = -metrics.descent - thickness * 0.5;
-    let base = match position {
-      TextUnderlinePosition::Auto | TextUnderlinePosition::FromFont => font_center,
+    // `text-underline-offset: auto` is UA-defined. We preserve existing underline placement
+    // behavior by defaulting to the font-provided underline position (or clamping to the
+    // text-under edge for `text-underline-position: under`). The CSS Text Decoration Level 4 spec
+    // requires this offset to be zero when `text-underline-position: from-font` and font metrics
+    // are available.
+    match position {
+      TextUnderlinePosition::FromFont if metrics.has_font_underline_metrics => 0.0,
       TextUnderlinePosition::Under
       | TextUnderlinePosition::UnderLeft
-      | TextUnderlinePosition::UnderRight => font_center.min(under_base),
-      TextUnderlinePosition::Left | TextUnderlinePosition::Right => font_center,
+      | TextUnderlinePosition::UnderRight => (-metrics.descent - metrics.underline_pos).max(0.0),
+      TextUnderlinePosition::Left if inline_vertical => (-metrics.descent - metrics.underline_pos).max(0.0),
+      TextUnderlinePosition::Right if inline_vertical => 0.0,
+      _ => -metrics.underline_pos,
+    }
+  }
+
+  fn underline_center(
+    &self,
+    metrics: &DecorationMetrics,
+    position: TextUnderlinePosition,
+    offset: TextUnderlineOffset,
+    thickness: f32,
+    baseline: f32,
+    inline_vertical: bool,
+    style: &ComputedStyle,
+  ) -> f32 {
+    // In horizontal typographic modes, `left` and `right` behave as `auto`. In vertical
+    // typographic modes, `under left` / `under right` collapse to `left` / `right` since `under`
+    // applies only to horizontal positioning. (See CSS Text Decoration Level 4 §7.4.)
+    let position = if inline_vertical {
+      match position {
+        TextUnderlinePosition::UnderLeft => TextUnderlinePosition::Left,
+        TextUnderlinePosition::UnderRight => TextUnderlinePosition::Right,
+        _ => position,
+      }
+    } else {
+      match position {
+        TextUnderlinePosition::Left | TextUnderlinePosition::Right => TextUnderlinePosition::Auto,
+        _ => position,
+      }
     };
 
-    metrics.underline_position_with_offset(base, offset)
+    let over_positioned = inline_vertical && matches!(position, TextUnderlinePosition::Right);
+    let dir = if over_positioned { 1.0 } else { -1.0 };
+    let zero_pos = match position {
+      TextUnderlinePosition::Auto => 0.0,
+      TextUnderlinePosition::FromFont => {
+        if metrics.has_font_underline_metrics {
+          metrics.underline_pos
+        } else {
+          0.0
+        }
+      }
+      TextUnderlinePosition::Under
+      | TextUnderlinePosition::UnderLeft
+      | TextUnderlinePosition::UnderRight
+      | TextUnderlinePosition::Left => -metrics.descent,
+      TextUnderlinePosition::Right => {
+        if inline_vertical {
+          metrics.ascent
+        } else {
+          0.0
+        }
+      }
+    };
+
+    let used_offset = self
+      .resolve_underline_offset_length(offset, style)
+      .unwrap_or_else(|| self.underline_auto_offset_value(metrics, position, inline_vertical));
+    // The spec defines `text-underline-offset` relative to a zero position determined by
+    // `text-underline-position`, with the underline stroke aligned to the outside of that
+    // position (extending thickness in the positive direction only).
+    let center_pos = zero_pos + dir * (used_offset + thickness * 0.5);
+
+    if inline_vertical {
+      let underline_side = resolve_underline_side(style.writing_mode, position);
+      let over_side = if over_positioned {
+        underline_side
+      } else {
+        match underline_side {
+          UnderlineSide::Left => UnderlineSide::Right,
+          UnderlineSide::Right => UnderlineSide::Left,
+        }
+      };
+      let mapping = match over_side {
+        UnderlineSide::Right => 1.0,
+        UnderlineSide::Left => -1.0,
+      };
+      baseline + mapping * center_pos
+    } else {
+      baseline - center_pos
+    }
   }
 
   fn decoration_metrics(
@@ -7012,6 +7082,7 @@ impl DisplayListBuilder {
         strike_thickness,
         ascent,
         descent,
+        has_font_underline_metrics: true,
       })
     } else {
       // Fallback heuristic metrics when we cannot obtain font metrics.
@@ -7029,6 +7100,7 @@ impl DisplayListBuilder {
         strike_thickness: underline_thickness,
         ascent,
         descent,
+        has_font_underline_metrics: false,
       })
     }
   }
@@ -8547,13 +8619,7 @@ struct DecorationMetrics {
   strike_thickness: f32,
   ascent: f32,
   descent: f32,
-}
-
-impl DecorationMetrics {
-  fn underline_position_with_offset(&self, base: f32, offset: f32) -> f32 {
-    let direction = if base >= 0.0 { 1.0 } else { -1.0 };
-    base + offset * direction
-  }
+  has_font_underline_metrics: bool,
 }
 
 fn collect_underline_exclusions(
@@ -8683,6 +8749,8 @@ mod tests {
   use crate::style::types::Overflow;
   use crate::style::types::TextDecorationLine;
   use crate::style::types::TextDecorationThickness;
+  use crate::style::types::TextUnderlineOffset;
+  use crate::style::types::TextUnderlinePosition;
   use crate::style::types::TransformBox;
   use crate::style::types::TransformStyle;
   use crate::style::values::CalcLength;
@@ -8711,6 +8779,46 @@ mod tests {
 
   fn create_text_fragment(x: f32, y: f32, width: f32, height: f32, text: &str) -> FragmentNode {
     FragmentNode::new_text(Rect::from_xywh(x, y, width, height), text.to_string(), 12.0)
+  }
+
+  #[test]
+  fn text_underline_offset_is_relative_to_baseline_for_auto_position() {
+    let builder = DisplayListBuilder::new();
+    let metrics = DecorationMetrics {
+      underline_pos: 0.0,
+      underline_thickness: 1.0,
+      strike_pos: 0.0,
+      strike_thickness: 1.0,
+      ascent: 0.0,
+      descent: 0.0,
+      has_font_underline_metrics: false,
+    };
+
+    let style = ComputedStyle::default();
+    let baseline = 12.0;
+    let thickness = 10.0;
+
+    let center = builder.underline_center(
+      &metrics,
+      TextUnderlinePosition::Auto,
+      TextUnderlineOffset::Length(Length::px(0.0)),
+      thickness,
+      baseline,
+      false,
+      &style,
+    );
+    assert!((center - (baseline + thickness * 0.5)).abs() < 0.01);
+
+    let center = builder.underline_center(
+      &metrics,
+      TextUnderlinePosition::Auto,
+      TextUnderlineOffset::Length(Length::px(10.0)),
+      thickness,
+      baseline,
+      false,
+      &style,
+    );
+    assert!((center - (baseline + thickness * 0.5 + 10.0)).abs() < 0.01);
   }
 
   #[test]

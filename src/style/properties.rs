@@ -15848,9 +15848,6 @@ fn parse_text_underline_offset(value: &PropertyValue) -> Option<TextUnderlineOff
     PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("auto") => {
       Some(TextUnderlineOffset::Auto)
     }
-    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("from-font") => {
-      Some(TextUnderlineOffset::FromFont)
-    }
     PropertyValue::Length(l) => Some(TextUnderlineOffset::Length(*l)),
     PropertyValue::Percentage(p) => Some(TextUnderlineOffset::Length(Length::percent(*p))),
     _ => None,
@@ -16877,6 +16874,7 @@ mod tests {
   use crate::style::types::TextDecorationLine;
   use crate::style::types::TextDecorationStyle;
   use crate::style::types::TextDecorationThickness;
+  use crate::style::types::TextUnderlineOffset;
   use crate::style::types::TextEmphasisFill;
   use crate::style::types::TextEmphasisPosition;
   use crate::style::types::TextEmphasisShape;
@@ -16908,6 +16906,39 @@ mod tests {
     let out = extract_margin_values(&calc_len).expect("calc(0) should be accepted");
     assert_eq!(out.len(), 1);
     assert!(out[0].unwrap().is_zero());
+  }
+
+  #[test]
+  fn text_underline_offset_rejects_from_font_keyword() {
+    let parent = ComputedStyle::default();
+    let decls = parse_declarations("text-underline-offset: from-font;");
+    assert_eq!(decls.len(), 1);
+    let mut styles = ComputedStyle::default();
+    apply_declaration(&mut styles, &decls[0], &parent, 16.0, 16.0);
+    assert_eq!(styles.text_underline_offset, TextUnderlineOffset::Auto);
+  }
+
+  #[test]
+  fn text_underline_offset_parses_length_and_percentage() {
+    let parent = ComputedStyle::default();
+
+    let decls = parse_declarations("text-underline-offset: 0.2em;");
+    assert_eq!(decls.len(), 1);
+    let mut styles = ComputedStyle::default();
+    apply_declaration(&mut styles, &decls[0], &parent, 16.0, 16.0);
+    assert_eq!(
+      styles.text_underline_offset,
+      TextUnderlineOffset::Length(Length::em(0.2))
+    );
+
+    let decls = parse_declarations("text-underline-offset: 25%;");
+    assert_eq!(decls.len(), 1);
+    let mut styles = ComputedStyle::default();
+    apply_declaration(&mut styles, &decls[0], &parent, 16.0, 16.0);
+    assert_eq!(
+      styles.text_underline_offset,
+      TextUnderlineOffset::Length(Length::percent(25.0))
+    );
   }
 
   #[test]
