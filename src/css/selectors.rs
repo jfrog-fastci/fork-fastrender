@@ -1571,7 +1571,7 @@ mod tests {
   }
 
   #[test]
-  fn parses_moz_placeholder_shown_alias() {
+  fn parses_moz_placeholder_shown_alias_in_various_selector_contexts() {
     for selector_text in [
       "input:-moz-placeholder-shown",
       "input:not(:-moz-placeholder-shown)",
