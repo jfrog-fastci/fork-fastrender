@@ -362,6 +362,7 @@ impl InlineFormattingContext {
     line_height: f32,
   ) -> crate::layout::contexts::inline::baseline::VerticalAlign {
     use crate::layout::contexts::inline::baseline::VerticalAlign as Align;
+    use crate::style::values::LengthUnit;
     use crate::style::types::VerticalAlign as StyleAlign;
 
     match align {
@@ -374,24 +375,71 @@ impl InlineFormattingContext {
       StyleAlign::Top => Align::Top,
       StyleAlign::Bottom => Align::Bottom,
       StyleAlign::Length(len) => {
-        let px = if len.unit == crate::style::values::LengthUnit::Calc {
+        let resolve_calc_with_line_height = |calc: &crate::style::values::CalcLength| -> Option<f32> {
+          if !line_height.is_finite()
+            || !self.viewport_size.width.is_finite()
+            || !self.viewport_size.height.is_finite()
+            || !font_size.is_finite()
+            || !root_font_size.is_finite()
+          {
+            return None;
+          }
+
+          let mut total = 0.0;
+          for term in calc.terms() {
+            if !term.value.is_finite() {
+              return None;
+            }
+            let resolved = match term.unit {
+              LengthUnit::Percent => Some((term.value / 100.0) * line_height),
+              u if u.is_absolute() => Some(crate::style::values::Length::new(term.value, u).to_px()),
+              u if u.is_viewport_relative() => crate::style::values::Length::new(term.value, u)
+                .resolve_with_viewport(self.viewport_size.width, self.viewport_size.height),
+              LengthUnit::Em => Some(term.value * font_size),
+              LengthUnit::Ex | LengthUnit::Ch => Some(term.value * font_size * 0.5),
+              LengthUnit::Rem => Some(term.value * root_font_size),
+              LengthUnit::Lh => Some(term.value * line_height),
+              _ => None,
+            }?;
+            total += resolved;
+          }
+
+          Some(total)
+        };
+
+        let px = if len.unit == LengthUnit::Calc {
+          // `Length::resolve_with_context` cannot resolve `lh` terms inside `calc()` accurately,
+          // because `CalcLength::resolve` lacks access to computed line-height. Inline layout has
+          // that information, so resolve those calc expressions here.
           len
-            .resolve_with_context(
-              Some(line_height),
-              self.viewport_size.width,
-              self.viewport_size.height,
-              font_size,
-              root_font_size,
-            )
+            .calc
+            .as_ref()
+            .and_then(|calc| {
+              calc
+                .terms()
+                .iter()
+                .any(|t| t.unit == LengthUnit::Lh)
+                .then(|| resolve_calc_with_line_height(calc))
+                .flatten()
+            })
+            .or_else(|| {
+              len.resolve_with_context(
+                Some(line_height),
+                self.viewport_size.width,
+                self.viewport_size.height,
+                font_size,
+                root_font_size,
+              )
+            })
             .unwrap_or(len.value)
-        } else if len.unit == crate::style::values::LengthUnit::Lh {
+        } else if len.unit == LengthUnit::Lh {
           if line_height.is_finite() {
             len.value * line_height
           } else {
             0.0
           }
         } else if len.unit.is_font_relative() {
-          let base = if len.unit == crate::style::values::LengthUnit::Rem {
+          let base = if len.unit == LengthUnit::Rem {
             root_font_size
           } else {
             font_size
@@ -13557,6 +13605,25 @@ mod tests {
       10.0,
       20.0,
       12.0,
+    );
+    assert!(matches!(
+      align,
+      crate::layout::contexts::inline::baseline::VerticalAlign::Length(v) if (v - 60.0).abs() < 1e-3
+    ));
+  }
+
+  #[test]
+  fn vertical_align_length_resolves_calc_with_lh_unit() {
+    let ctx = InlineFormattingContext::with_font_context_and_viewport(
+      FontContext::new(),
+      Size::new(500.0, 400.0),
+    );
+    let calc = CalcLength::single(LengthUnit::Lh, 2.0);
+    let align = ctx.convert_vertical_align(
+      crate::style::types::VerticalAlign::Length(Length::calc(calc)),
+      10.0,
+      20.0,
+      30.0,
     );
     assert!(matches!(
       align,
