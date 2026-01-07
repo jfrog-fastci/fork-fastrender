@@ -1,7 +1,7 @@
 use fastrender::api::{FastRender, FastRenderConfig, RenderOptions};
 use fastrender::resource::{HttpFetcher, ResourceFetcher};
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -241,6 +241,51 @@ fn iframe_referrerpolicy_overrides_document_referrer_policy() {
     "expected iframe navigation request, got: {captured:?}"
   );
   for req in frame_requests {
+    assert_eq!(req.referer.as_deref(), Some(expected_origin.as_str()));
+  }
+}
+
+#[test]
+fn iframe_src_referrerpolicy_applies_to_iframe_subresource_requests() {
+  let Some(server) = TestServer::start(
+    "iframe_src_referrerpolicy_applies_to_iframe_subresource_requests",
+    |path| match path {
+      "/frame.html" => Some((
+        b"<!doctype html><html><body><img src='/img.png' width='1' height='1'></body></html>"
+          .to_vec(),
+        "text/html",
+      )),
+      "/img.png" => Some((tiny_png(), "image/png")),
+      _ => None,
+    },
+  ) else {
+    return;
+  };
+
+  let html = r#"<!doctype html>
+    <html><head>
+      <meta name="referrer" content="no-referrer">
+    </head><body style="margin:0">
+      <iframe src="/frame.html" referrerpolicy="origin" style="width:10px; height:10px; border:0"></iframe>
+    </body></html>"#;
+  let document_url = server.url("index.html");
+
+  let fetcher: Arc<dyn ResourceFetcher> =
+    Arc::new(HttpFetcher::new().with_timeout(Duration::from_secs(2)));
+  let mut renderer =
+    FastRender::with_config_and_fetcher(FastRenderConfig::default(), Some(fetcher)).unwrap();
+  renderer
+    .render_html_with_stylesheets(html, &document_url, RenderOptions::new().with_viewport(32, 32))
+    .unwrap();
+
+  let expected_origin = server.origin();
+  let captured = server.shutdown_and_join();
+  let img_requests: Vec<_> = captured.iter().filter(|r| r.path == "/img.png").collect();
+  assert!(
+    !img_requests.is_empty(),
+    "expected at least one request for /img.png, got: {captured:?}"
+  );
+  for req in img_requests {
     assert_eq!(req.referer.as_deref(), Some(expected_origin.as_str()));
   }
 }

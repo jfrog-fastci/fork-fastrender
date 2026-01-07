@@ -748,6 +748,10 @@ pub(crate) fn render_iframe_src(
       .as_deref()
       .map(|u| u.to_string())
       .or_else(|| Some(resolved.clone()));
+    // HTML documents inherit the referrer policy used for their navigation request unless
+    // overridden by the `Referrer-Policy` response header or a `<meta name="referrer">` inside the
+    // document. Ensure per-iframe `referrerpolicy` overrides apply to subsequent subresource loads.
+    nested.referrer_policy = request_referrer_policy;
     if let Some(policy) = response_referrer_policy {
       nested.referrer_policy = policy;
     }
