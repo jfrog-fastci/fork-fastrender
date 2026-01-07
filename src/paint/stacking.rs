@@ -479,25 +479,31 @@ impl StackingContext {
       }
       Some(Rect::from_xywh(min_x, min_y, width, height))
     };
-    let apply_self_transform = |context: &StackingContext, rect: Rect| -> Rect {
-      let Some(root_fragment) = context.fragments.first() else {
-        return rect;
-      };
-      let Some(style) = root_fragment.style.as_deref() else {
-        return rect;
-      };
+    let resolve_self_transform = |context: &StackingContext| -> Option<Transform3D> {
+      let root_fragment = context.fragments.first()?;
+      let style = root_fragment.style.as_deref()?;
       if !style.has_transform() {
-        return rect;
+        return None;
       }
-      let transform_bounds = Rect::new(
-        context.offset_from_parent_context,
-        root_fragment.bounds.size,
-      );
-      let transforms =
-        crate::paint::transform_resolver::resolve_transforms(style, transform_bounds, viewport);
-      let Some(transform) = transforms.self_transform.as_ref() else {
-        return rect;
-      };
+      let transform_bounds =
+        Rect::new(context.offset_from_parent_context, root_fragment.bounds.size);
+      crate::paint::transform_resolver::resolve_transforms(style, transform_bounds, viewport)
+        .self_transform
+    };
+    let resolve_child_perspective = || -> Option<Transform3D> {
+      let root_fragment = self.fragments.first()?;
+      let style = root_fragment.style.as_deref()?;
+      if style.perspective.is_none() {
+        return None;
+      }
+      // Perspective is applied to this context's children in the stacking context's local
+      // coordinate space (i.e. relative to the root fragment at (0,0)).
+      let transform_bounds = Rect::new(Point::ZERO, root_fragment.bounds.size);
+      crate::paint::transform_resolver::resolve_transforms(style, transform_bounds, viewport)
+        .child_perspective
+    };
+    let child_perspective = resolve_child_perspective();
+    let map_with_transform = |rect: Rect, transform: &Transform3D| -> Rect {
       match map_rect_with_transform(rect, transform) {
         Some(mapped) => rect.union(mapped),
         None => rect,
@@ -578,7 +584,23 @@ impl StackingContext {
 
     // Union child stacking context bounds
     for child in &self.children {
-      accumulate(translate(apply_self_transform(child, child.bounds)), &mut bounds);
+      let mut rect = child.bounds;
+      let child_transform = resolve_self_transform(child);
+      match (child_perspective.as_ref(), child_transform.as_ref()) {
+        (None, None) => {}
+        (Some(perspective), None) => {
+          rect = map_with_transform(rect, perspective);
+        }
+        (None, Some(self_transform)) => {
+          rect = map_with_transform(rect, self_transform);
+        }
+        (Some(perspective), Some(self_transform)) => {
+          let combined = perspective.multiply(self_transform);
+          rect = map_with_transform(rect, &combined);
+        }
+      }
+
+      accumulate(translate(rect), &mut bounds);
     }
 
     self.bounds = bounds.unwrap_or_else(|| {
@@ -1880,10 +1902,13 @@ impl StackingContext {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::css::types::Transform;
   use crate::geometry::Point;
   use crate::geometry::Rect;
+  use crate::style::types::TransformOrigin;
   use crate::style::types::WillChange;
   use crate::style::types::WillChangeHint;
+  use crate::style::values::Length;
   use std::sync::Arc;
 
   // Helper function to create a simple fragment
@@ -2576,6 +2601,41 @@ mod tests {
     parent.compute_bounds(None);
 
     assert_eq!(parent.bounds, Rect::from_xywh(50.0, 50.0, 110.0, 20.0));
+  }
+
+  #[test]
+  fn test_compute_bounds_applies_parent_perspective_to_children() {
+    let mut parent_style = ComputedStyle::default();
+    parent_style.perspective = Some(Length::px(100.0));
+    parent_style.perspective_origin = TransformOrigin {
+      x: Length::px(0.0),
+      y: Length::px(0.0),
+      z: Length::px(0.0),
+    };
+    let parent_fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 20.0),
+      vec![],
+      Arc::new(parent_style),
+    );
+
+    let mut child_style = ComputedStyle::default();
+    child_style.transform = vec![Transform::TranslateZ(Length::px(50.0))];
+    let child_fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 100.0, 20.0),
+      vec![],
+      Arc::new(child_style),
+    );
+
+    let mut parent = StackingContext::new(0);
+    parent.fragments.push(parent_fragment);
+
+    let mut child = StackingContext::new(0);
+    child.fragments.push(child_fragment);
+
+    parent.children.push(child);
+    parent.compute_bounds(None);
+
+    assert_eq!(parent.bounds, Rect::from_xywh(0.0, 0.0, 200.0, 40.0));
   }
 
   // Layer classification tests
