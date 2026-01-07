@@ -1858,6 +1858,9 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
       | "quotes"
       | "size"
       | "text-combine-upright"
+      | "text-emphasis"
+      | "text-emphasis-style"
+      | "text-emphasis-position"
       | "contain-intrinsic-size"
       | "contain-intrinsic-width"
       | "contain-intrinsic-height"
@@ -4125,6 +4128,28 @@ mod tests {
       matches!(list[1], PropertyValue::Length(len) if (len.value - 25.0).abs() < 0.01 && len.unit.is_percentage())
         || matches!(list[1], PropertyValue::Percentage(p) if (p - 25.0).abs() < 0.01)
     );
+  }
+
+  #[test]
+  fn parses_text_emphasis_space_separated_values_into_multiple() {
+    let parsed = parse_property_value("text-emphasis", "circle red");
+    let PropertyValue::Multiple(list) = parsed.expect("parsed") else {
+      panic!("expected Multiple");
+    };
+    assert_eq!(list.len(), 2);
+    assert!(matches!(list[0], PropertyValue::Keyword(ref k) if k == "circle"));
+    assert!(matches!(list[1], PropertyValue::Color(Color::Rgba(rgba)) if rgba == Rgba::RED));
+  }
+
+  #[test]
+  fn text_emphasis_tokenization_preserves_string_token() {
+    let parsed = parse_property_value("text-emphasis", r#""x" red"#);
+    let PropertyValue::Multiple(list) = parsed.expect("parsed") else {
+      panic!("expected Multiple");
+    };
+    assert_eq!(list.len(), 2);
+    assert!(matches!(list[0], PropertyValue::String(ref s) if s == "x"));
+    assert!(matches!(list[1], PropertyValue::Color(Color::Rgba(rgba)) if rgba == Rgba::RED));
   }
 
   #[test]

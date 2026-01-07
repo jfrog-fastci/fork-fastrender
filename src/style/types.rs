@@ -3068,7 +3068,7 @@ pub enum TextEmphasisStyle {
   None,
   Mark {
     fill: TextEmphasisFill,
-    shape: TextEmphasisShape,
+    shape: Option<TextEmphasisShape>,
   },
   String(String),
 }

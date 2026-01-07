@@ -10147,6 +10147,13 @@ impl Painter {
 
         match style.text_emphasis_style {
           crate::style::types::TextEmphasisStyle::Mark { fill, shape } => {
+            let shape = shape.unwrap_or_else(|| {
+              if inline_vertical {
+                crate::style::types::TextEmphasisShape::Sesame
+              } else {
+                crate::style::types::TextEmphasisShape::Circle
+              }
+            });
             self.draw_emphasis_mark(
               mark_center_x,
               mark_center_y,
@@ -15991,7 +15998,7 @@ mod tests {
     style.font_size = 24.0;
     style.text_emphasis_style = crate::style::types::TextEmphasisStyle::Mark {
       fill: crate::style::types::TextEmphasisFill::Filled,
-      shape: crate::style::types::TextEmphasisShape::Circle,
+      shape: Some(crate::style::types::TextEmphasisShape::Circle),
     };
     style.text_emphasis_color = Some(Rgba::from_rgba8(255, 0, 0, 255));
     let style = Arc::new(style);

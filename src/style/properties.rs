@@ -16969,48 +16969,110 @@ fn parse_text_underline_position(value: &PropertyValue) -> Option<TextUnderlineP
 }
 
 fn parse_text_emphasis_style(value: &PropertyValue) -> Option<TextEmphasisStyle> {
-  fn parse_keywords(values: &[&str]) -> Option<TextEmphasisStyle> {
-    let mut fill = TextEmphasisFill::Filled;
+  fn parse_keyword_tokens(tokens: &[String]) -> Option<TextEmphasisStyle> {
+    if tokens.is_empty() {
+      return None;
+    }
+
+    if tokens.iter().any(|t| t == "none") {
+      return (tokens.len() == 1).then_some(TextEmphasisStyle::None);
+    }
+
+    let mut fill: Option<TextEmphasisFill> = None;
     let mut shape: Option<TextEmphasisShape> = None;
 
-    for kw in values {
-      match *kw {
-        "filled" => fill = TextEmphasisFill::Filled,
-        "open" => fill = TextEmphasisFill::Open,
-        "dot" => shape = Some(TextEmphasisShape::Dot),
-        "circle" => shape = Some(TextEmphasisShape::Circle),
-        "double-circle" => shape = Some(TextEmphasisShape::DoubleCircle),
-        "triangle" => shape = Some(TextEmphasisShape::Triangle),
-        "sesame" => shape = Some(TextEmphasisShape::Sesame),
-        "none" => return Some(TextEmphasisStyle::None),
+    for token in tokens {
+      match token.as_str() {
+        "filled" => {
+          if fill.replace(TextEmphasisFill::Filled).is_some() {
+            return None;
+          }
+        }
+        "open" => {
+          if fill.replace(TextEmphasisFill::Open).is_some() {
+            return None;
+          }
+        }
+        "dot" => {
+          if shape.replace(TextEmphasisShape::Dot).is_some() {
+            return None;
+          }
+        }
+        "circle" => {
+          if shape.replace(TextEmphasisShape::Circle).is_some() {
+            return None;
+          }
+        }
+        "double-circle" => {
+          if shape.replace(TextEmphasisShape::DoubleCircle).is_some() {
+            return None;
+          }
+        }
+        "triangle" => {
+          if shape.replace(TextEmphasisShape::Triangle).is_some() {
+            return None;
+          }
+        }
+        "sesame" => {
+          if shape.replace(TextEmphasisShape::Sesame).is_some() {
+            return None;
+          }
+        }
         _ => return None,
       }
     }
 
-    shape.map(|s| TextEmphasisStyle::Mark { fill, shape: s })
+    // `text-emphasis-style` uses `||`:
+    // - If fill is omitted, it defaults to `filled`.
+    // - If shape is omitted but a fill keyword is present, the default shape depends on typographic
+    //   mode (circle for horizontal, sesame for vertical). We defer that decision to paint/layout
+    //   by representing the "fill-only" case with `shape: None`.
+    let fill_specified = fill.is_some();
+    let fill = fill.unwrap_or(TextEmphasisFill::Filled);
+    let shape = if shape.is_some() || fill_specified {
+      shape
+    } else {
+      // Unreachable (the token list is non-empty and contains only fill/shape keywords), but keep
+      // this defensive in case the parsing loop is extended.
+      None
+    };
+
+    Some(TextEmphasisStyle::Mark { fill, shape })
   }
 
   match value {
+    PropertyValue::String(s) if !s.is_empty() => Some(TextEmphasisStyle::String(s.clone())),
     PropertyValue::Keyword(kw) => {
-      let parts: Vec<&str> = kw.split_whitespace().collect();
-      parse_keywords(&parts)
+      let tokens: Vec<String> = kw
+        .split_whitespace()
+        .map(|s| s.to_ascii_lowercase())
+        .collect();
+      parse_keyword_tokens(&tokens)
     }
     PropertyValue::Multiple(values) => {
-      let mut parts = Vec::new();
+      let mut tokens: Vec<String> = Vec::new();
+      let mut string: Option<String> = None;
       for v in values {
         match v {
           PropertyValue::Keyword(kw) => {
-            parts.extend(kw.split_whitespace());
+            tokens.extend(kw.split_whitespace().map(|s| s.to_ascii_lowercase()));
           }
           PropertyValue::String(s) if !s.is_empty() => {
-            return Some(TextEmphasisStyle::String(s.clone()));
+            if string.is_some() {
+              return None;
+            }
+            string = Some(s.clone());
           }
           _ => return None,
         }
       }
-      parse_keywords(&parts)
+
+      if let Some(string) = string {
+        return tokens.is_empty().then_some(TextEmphasisStyle::String(string));
+      }
+
+      parse_keyword_tokens(&tokens)
     }
-    PropertyValue::String(s) if !s.is_empty() => Some(TextEmphasisStyle::String(s.clone())),
     _ => None,
   }
 }
@@ -17113,31 +17175,46 @@ fn parse_text_emphasis_shorthand(
   current_color: Rgba,
   is_dark_color_scheme: bool,
 ) -> Option<(Option<TextEmphasisStyle>, Option<Option<Rgba>>)> {
-  let values: Vec<&PropertyValue> = match value {
-    PropertyValue::Multiple(vals) => vals.iter().collect(),
-    other => vec![other],
+  let tokens: Vec<PropertyValue> = match value {
+    PropertyValue::Multiple(vals) => vals.clone(),
+    PropertyValue::Keyword(kw) => kw
+      .split_whitespace()
+      .map(|s| PropertyValue::Keyword(s.to_string()))
+      .collect(),
+    other => vec![other.clone()],
   };
 
-  if values.is_empty() {
+  if tokens.is_empty() {
     return None;
   }
 
-  let mut style: Option<TextEmphasisStyle> = None;
   let mut color: Option<Option<Rgba>> = None;
+  let mut style_tokens: Vec<PropertyValue> = Vec::new();
 
-  for v in values {
-    if color.is_none() {
-      if let Some(c) = parse_text_emphasis_color(v, current_color, is_dark_color_scheme) {
-        color = Some(c);
-        continue;
+  for token in tokens {
+    if let Some(parsed) = parse_text_emphasis_color(&token, current_color, is_dark_color_scheme) {
+      if color.is_some() {
+        return None;
       }
+      color = Some(parsed);
+      continue;
     }
-    if style.is_none() {
-      if let Some(s) = parse_text_emphasis_style(v) {
-        style = Some(s);
-        continue;
-      }
-    }
+    style_tokens.push(token);
+  }
+
+  let style = if style_tokens.is_empty() {
+    None
+  } else {
+    let style_value = if style_tokens.len() == 1 {
+      style_tokens.remove(0)
+    } else {
+      PropertyValue::Multiple(style_tokens)
+    };
+    Some(parse_text_emphasis_style(&style_value)?)
+  };
+
+  if style.is_none() && color.is_none() {
+    return None;
   }
 
   Some((style, color))
@@ -25094,7 +25171,7 @@ mod tests {
       style.text_emphasis_style,
       TextEmphasisStyle::Mark {
         fill: TextEmphasisFill::Open,
-        shape: TextEmphasisShape::Sesame
+        shape: Some(TextEmphasisShape::Sesame)
       }
     ));
 
@@ -25139,10 +25216,90 @@ mod tests {
       style.text_emphasis_style,
       TextEmphasisStyle::Mark {
         fill: TextEmphasisFill::Filled,
-        shape: TextEmphasisShape::Circle
+        shape: Some(TextEmphasisShape::Circle)
       }
     ));
     assert_eq!(style.text_emphasis_color, Some(Rgba::BLUE));
+  }
+
+  #[test]
+  fn parses_text_emphasis_style_fill_only_keyword() {
+    let mut style = ComputedStyle::default();
+    let decl = Declaration {
+      property: "text-emphasis-style".into(),
+      value: PropertyValue::Keyword("open".to_string()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert!(matches!(
+      style.text_emphasis_style,
+      TextEmphasisStyle::Mark {
+        fill: TextEmphasisFill::Open,
+        shape: None
+      }
+    ));
+  }
+
+  #[test]
+  fn text_emphasis_shorthand_rejects_unknown_tokens() {
+    let mut style = ComputedStyle::default();
+    style.text_emphasis_style = TextEmphasisStyle::Mark {
+      fill: TextEmphasisFill::Filled,
+      shape: Some(TextEmphasisShape::Dot),
+    };
+    style.text_emphasis_color = Some(Rgba::RED);
+
+    let before_style = style.text_emphasis_style.clone();
+    let before_color = style.text_emphasis_color;
+
+    let decl = Declaration {
+      property: "text-emphasis".into(),
+      value: PropertyValue::Keyword("nonsense".to_string()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+
+    assert_eq!(
+      style.text_emphasis_style, before_style,
+      "invalid shorthand must be ignored"
+    );
+    assert_eq!(
+      style.text_emphasis_color, before_color,
+      "invalid shorthand must be ignored"
+    );
+  }
+
+  #[test]
+  fn text_emphasis_shorthand_rejects_duplicate_colors() {
+    let mut style = ComputedStyle::default();
+    style.text_emphasis_style = TextEmphasisStyle::Mark {
+      fill: TextEmphasisFill::Filled,
+      shape: Some(TextEmphasisShape::Dot),
+    };
+    style.text_emphasis_color = Some(Rgba::GREEN);
+
+    let before_style = style.text_emphasis_style.clone();
+    let before_color = style.text_emphasis_color;
+
+    let decl = Declaration {
+      property: "text-emphasis".into(),
+      value: PropertyValue::Multiple(vec![
+        PropertyValue::Keyword("circle".to_string()),
+        PropertyValue::Color(Color::Rgba(Rgba::RED)),
+        PropertyValue::Color(Color::Rgba(Rgba::BLUE)),
+      ]),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+
+    assert_eq!(style.text_emphasis_style, before_style);
+    assert_eq!(style.text_emphasis_color, before_color);
   }
 
   #[test]

@@ -24086,7 +24086,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       child_styles.text_emphasis_style,
       crate::style::types::TextEmphasisStyle::Mark {
         fill: crate::style::types::TextEmphasisFill::Open,
-        shape: crate::style::types::TextEmphasisShape::Dot
+        shape: Some(crate::style::types::TextEmphasisShape::Dot)
       }
     ));
     assert_eq!(child_styles.text_emphasis_color, Some(Rgba::RED));
@@ -25321,7 +25321,7 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
       marker.text_emphasis_style,
       crate::style::types::TextEmphasisStyle::Mark {
         fill: crate::style::types::TextEmphasisFill::Open,
-        shape: crate::style::types::TextEmphasisShape::Dot
+        shape: Some(crate::style::types::TextEmphasisShape::Dot)
       },
       "text-emphasis-style should apply to ::marker"
     );

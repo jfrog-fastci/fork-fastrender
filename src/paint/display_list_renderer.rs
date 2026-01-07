@@ -10388,12 +10388,23 @@ impl DisplayListRenderer {
     let transform = self.canvas.transform();
     let clip = self.canvas.clip_mask().cloned();
 
+    let (fill, shape) = match &emphasis.style {
+      TextEmphasisStyle::Mark { fill, shape } => {
+        let shape = shape.unwrap_or_else(|| {
+          if inline_vertical {
+            TextEmphasisShape::Sesame
+          } else {
+            TextEmphasisShape::Circle
+          }
+        });
+        (*fill, shape)
+      }
+      _ => return Ok(()),
+    };
+
     for mark in &emphasis.marks {
-      match emphasis.style {
-        TextEmphasisStyle::Mark {
-          fill,
-          shape: TextEmphasisShape::Dot,
-        } => {
+      match shape {
+        TextEmphasisShape::Dot => {
           let radius = emphasis.size * 0.5;
           if let Some(path) =
             tiny_skia::PathBuilder::from_circle(mark.center.x, mark.center.y, radius)
@@ -10422,10 +10433,7 @@ impl DisplayListRenderer {
             }
           }
         }
-        TextEmphasisStyle::Mark {
-          fill,
-          shape: TextEmphasisShape::Circle,
-        } => {
+        TextEmphasisShape::Circle => {
           let radius = emphasis.size * 0.5;
           if let Some(path) =
             tiny_skia::PathBuilder::from_circle(mark.center.x, mark.center.y, radius)
@@ -10454,10 +10462,7 @@ impl DisplayListRenderer {
             }
           }
         }
-        TextEmphasisStyle::Mark {
-          fill: _,
-          shape: TextEmphasisShape::DoubleCircle,
-        } => {
+        TextEmphasisShape::DoubleCircle => {
           let mut stroke = tiny_skia::Stroke::default();
           stroke.width = (emphasis.size * 0.14).max(0.5);
           let radii = [emphasis.size * 0.5, emphasis.size * 0.33];
@@ -10475,10 +10480,7 @@ impl DisplayListRenderer {
             }
           }
         }
-        TextEmphasisStyle::Mark {
-          fill,
-          shape: TextEmphasisShape::Triangle,
-        } => {
+        TextEmphasisShape::Triangle => {
           let half = emphasis.size * 0.5;
           let height = emphasis.size * 0.9;
           let direction = matches!(
@@ -10543,10 +10545,7 @@ impl DisplayListRenderer {
             }
           }
         }
-        TextEmphasisStyle::Mark {
-          fill: _,
-          shape: TextEmphasisShape::Sesame,
-        } => {
+        TextEmphasisShape::Sesame => {
           let len = emphasis.size * 0.75;
           let angle = 20.0_f32.to_radians();
           let dx = (angle.cos() * len * 0.5, angle.sin() * len * 0.5);
@@ -10568,7 +10567,6 @@ impl DisplayListRenderer {
               .stroke_path(&path, &paint, &stroke, transform, clip.as_ref());
           }
         }
-        _ => {}
       }
     }
 
@@ -17358,7 +17356,7 @@ mod tests {
       emphasis: Some(TextEmphasis {
         style: TextEmphasisStyle::Mark {
           fill: TextEmphasisFill::Filled,
-          shape: TextEmphasisShape::Circle,
+          shape: Some(TextEmphasisShape::Circle),
         },
         color: Rgba::from_rgba8(255, 0, 0, 255),
         position: TextEmphasisPosition::Over,
