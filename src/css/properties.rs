@@ -113,6 +113,8 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "aspect-ratio",
   "backdrop-filter",
   "appearance",
+  "-webkit-appearance",
+  "-moz-appearance",
   "background",
   "background-attachment",
   "background-blend-mode",
