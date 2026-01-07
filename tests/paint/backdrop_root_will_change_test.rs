@@ -158,3 +158,35 @@ fn will_change_mix_blend_mode_establishes_backdrop_root() {
   assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
+
+#[test]
+fn will_change_clip_path_establishes_backdrop_root() {
+  // `clip-path` is a Backdrop Root trigger; `will-change` hints for it must do so immediately,
+  // even before the element has a non-`none` clip-path applied.
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: rgb(255 0 0); }
+      #parent { position: absolute; inset: 0; will-change: clip-path; }
+      #child {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 40px;
+        height: 40px;
+        backdrop-filter: invert(1);
+        background: transparent;
+      }
+    </style>
+    <div id="parent"><div id="child"></div></div>
+  "#;
+
+  let (list, font_ctx) = build_display_list(html, 64, 64);
+  let pixmap = DisplayListRenderer::new(64, 64, Rgba::WHITE, font_ctx)
+    .expect("renderer")
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("render");
+
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
