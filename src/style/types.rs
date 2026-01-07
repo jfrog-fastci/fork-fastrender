@@ -1794,6 +1794,7 @@ impl WillChangeHint {
           | "opacity"
           | "filter"
           | "backdrop-filter"
+          | "-webkit-backdrop-filter"
           | "perspective"
           | "clip-path"
           | "mask"
@@ -1820,6 +1821,7 @@ impl WillChangeHint {
           | "mask-border"
           | "clip-path"
           | "backdrop-filter"
+          | "-webkit-backdrop-filter"
           | "mix-blend-mode"
       ),
     }
