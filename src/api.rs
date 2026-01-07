@@ -6217,20 +6217,23 @@ impl FastRender {
     }
 
     fn find_head(node: &DomNode, in_foreign_namespace: bool) -> Option<&DomNode> {
-      if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) {
-        return None;
-      }
-      if node.is_template_element() {
-        return None;
-      }
-      let next_in_foreign_namespace = in_foreign_namespace
-        || matches!(
-          node.namespace(),
-          Some(ns) if !(ns.is_empty() || ns == crate::dom::HTML_NAMESPACE)
-        );
-      if let Some(tag) = node.tag_name() {
+      let mut stack: Vec<(&DomNode, bool)> = vec![(node, in_foreign_namespace)];
+      while let Some((node, in_foreign_namespace)) = stack.pop() {
+        if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) {
+          continue;
+        }
+        if node.is_template_element() {
+          continue;
+        }
+        let next_in_foreign_namespace = in_foreign_namespace
+          || matches!(
+            node.namespace(),
+            Some(ns) if !(ns.is_empty() || ns == crate::dom::HTML_NAMESPACE)
+          );
         if !in_foreign_namespace
-          && tag.eq_ignore_ascii_case("head")
+          && node
+            .tag_name()
+            .is_some_and(|tag| tag.eq_ignore_ascii_case("head"))
           && matches!(
             node.namespace(),
             Some(ns) if ns.is_empty() || ns == crate::dom::HTML_NAMESPACE
@@ -6238,10 +6241,9 @@ impl FastRender {
         {
           return Some(node);
         }
-      }
-      for child in node.traversal_children() {
-        if let Some(found) = find_head(child, next_in_foreign_namespace) {
-          return Some(found);
+
+        for child in node.traversal_children().iter().rev() {
+          stack.push((child, next_in_foreign_namespace));
         }
       }
       None
@@ -6252,48 +6254,49 @@ impl FastRender {
       in_foreign_namespace: bool,
       prev_sibling_foreign: bool,
     ) -> Option<String> {
-      if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) {
-        return None;
-      }
-      if node.is_template_element() {
-        return None;
-      }
-      let next_in_foreign_namespace = in_foreign_namespace
-        || matches!(
-          node.namespace(),
-          Some(ns) if !(ns.is_empty() || ns == crate::dom::HTML_NAMESPACE)
-        );
-      if node
-        .tag_name()
-        .is_some_and(|tag| tag.eq_ignore_ascii_case("link"))
-        && !prev_sibling_foreign
-        && !in_foreign_namespace
-        && matches!(
-          node.namespace(),
-          Some(ns) if ns.is_empty() || ns == crate::dom::HTML_NAMESPACE
-        )
-      {
-        if let Some(rel) = node.get_attribute_ref("rel") {
-          if rel
-            .split_whitespace()
-            .any(|token| token.eq_ignore_ascii_case("canonical"))
-          {
-            if let Some(href) = node.get_attribute_ref("href") {
-              let trimmed = href.trim();
-              if !trimmed.is_empty() {
-                return Some(trimmed.to_string());
+      let mut stack: Vec<(&DomNode, bool, bool)> = vec![(node, in_foreign_namespace, prev_sibling_foreign)];
+      while let Some((node, in_foreign_namespace, prev_sibling_foreign)) = stack.pop() {
+        if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) {
+          continue;
+        }
+        if node.is_template_element() {
+          continue;
+        }
+        let next_in_foreign_namespace = in_foreign_namespace
+          || matches!(
+            node.namespace(),
+            Some(ns) if !(ns.is_empty() || ns == crate::dom::HTML_NAMESPACE)
+          );
+        if node
+          .tag_name()
+          .is_some_and(|tag| tag.eq_ignore_ascii_case("link"))
+          && !prev_sibling_foreign
+          && !in_foreign_namespace
+          && matches!(
+            node.namespace(),
+            Some(ns) if ns.is_empty() || ns == crate::dom::HTML_NAMESPACE
+          )
+        {
+          if let Some(rel) = node.get_attribute_ref("rel") {
+            if rel
+              .split_whitespace()
+              .any(|token| token.eq_ignore_ascii_case("canonical"))
+            {
+              if let Some(href) = node.get_attribute_ref("href") {
+                let trimmed = href.trim();
+                if !trimmed.is_empty() {
+                  return Some(trimmed.to_string());
+                }
               }
             }
           }
         }
-      }
-      let children = node.traversal_children();
-      for (idx, child) in children.iter().enumerate() {
-        let prev_foreign = idx > 0 && node_is_foreign_element(&children[idx - 1]);
-        if let Some(found) =
-          find_first_canonical_href(child, next_in_foreign_namespace, prev_foreign)
-        {
-          return Some(found);
+
+        let children = node.traversal_children();
+        for idx in (0..children.len()).rev() {
+          let child = &children[idx];
+          let prev_foreign = idx > 0 && node_is_foreign_element(&children[idx - 1]);
+          stack.push((child, next_in_foreign_namespace, prev_foreign));
         }
       }
       None
@@ -6304,44 +6307,47 @@ impl FastRender {
       in_foreign_namespace: bool,
       prev_sibling_foreign: bool,
     ) -> Option<String> {
-      if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) {
-        return None;
-      }
-      if node.is_template_element() {
-        return None;
-      }
-      let next_in_foreign_namespace = in_foreign_namespace
-        || matches!(
-          node.namespace(),
-          Some(ns) if !(ns.is_empty() || ns == crate::dom::HTML_NAMESPACE)
-        );
-      if node
-        .tag_name()
-        .is_some_and(|tag| tag.eq_ignore_ascii_case("meta"))
-        && !prev_sibling_foreign
-        && !in_foreign_namespace
-        && matches!(
-          node.namespace(),
-          Some(ns) if ns.is_empty() || ns == crate::dom::HTML_NAMESPACE
-        )
-      {
+      let mut stack: Vec<(&DomNode, bool, bool)> = vec![(node, in_foreign_namespace, prev_sibling_foreign)];
+      while let Some((node, in_foreign_namespace, prev_sibling_foreign)) = stack.pop() {
+        if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) {
+          continue;
+        }
+        if node.is_template_element() {
+          continue;
+        }
+        let next_in_foreign_namespace = in_foreign_namespace
+          || matches!(
+            node.namespace(),
+            Some(ns) if !(ns.is_empty() || ns == crate::dom::HTML_NAMESPACE)
+          );
         if node
-          .get_attribute_ref("property")
-          .is_some_and(|prop| prop.eq_ignore_ascii_case("og:url"))
+          .tag_name()
+          .is_some_and(|tag| tag.eq_ignore_ascii_case("meta"))
+          && !prev_sibling_foreign
+          && !in_foreign_namespace
+          && matches!(
+            node.namespace(),
+            Some(ns) if ns.is_empty() || ns == crate::dom::HTML_NAMESPACE
+          )
         {
-          if let Some(content) = node.get_attribute_ref("content") {
-            let trimmed = content.trim();
-            if !trimmed.is_empty() {
-              return Some(trimmed.to_string());
+          if node
+            .get_attribute_ref("property")
+            .is_some_and(|prop| prop.eq_ignore_ascii_case("og:url"))
+          {
+            if let Some(content) = node.get_attribute_ref("content") {
+              let trimmed = content.trim();
+              if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+              }
             }
           }
         }
-      }
-      let children = node.traversal_children();
-      for (idx, child) in children.iter().enumerate() {
-        let prev_foreign = idx > 0 && node_is_foreign_element(&children[idx - 1]);
-        if let Some(found) = find_first_og_url(child, next_in_foreign_namespace, prev_foreign) {
-          return Some(found);
+
+        let children = node.traversal_children();
+        for idx in (0..children.len()).rev() {
+          let child = &children[idx];
+          let prev_foreign = idx > 0 && node_is_foreign_element(&children[idx - 1]);
+          stack.push((child, next_in_foreign_namespace, prev_foreign));
         }
       }
       None

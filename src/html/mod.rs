@@ -239,43 +239,49 @@ pub fn strip_template_contents(html: &str) -> Cow<'_, str> {
 /// Returns `None` when no `<base>` is present or the element is missing an
 /// `href` attribute.
 pub fn find_base_href(dom: &DomNode) -> Option<String> {
-  fn find_head(node: &DomNode) -> Option<&DomNode> {
-    if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) {
-      return None;
-    }
-    if node.is_template_element() {
-      return None;
-    }
-    if let Some(tag) = node.tag_name() {
-      if tag.eq_ignore_ascii_case("head")
+  fn find_head(root: &DomNode) -> Option<&DomNode> {
+    let mut stack: Vec<&DomNode> = vec![root];
+    while let Some(node) = stack.pop() {
+      if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) {
+        continue;
+      }
+      if node.is_template_element() {
+        continue;
+      }
+      if node
+        .tag_name()
+        .is_some_and(|tag| tag.eq_ignore_ascii_case("head"))
         && matches!(node.namespace(), Some(ns) if ns.is_empty() || ns == HTML_NAMESPACE)
       {
         return Some(node);
       }
-    }
-    for child in node.traversal_children() {
-      if let Some(head) = find_head(child) {
-        return Some(head);
+
+      for child in node.traversal_children().iter().rev() {
+        stack.push(child);
       }
     }
     None
   }
 
-  fn find_base(node: &DomNode, in_foreign_namespace: bool) -> Option<String> {
-    if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) {
-      return None;
-    }
-    if node.is_template_element() {
-      return None;
-    }
-    let next_in_foreign_namespace = in_foreign_namespace
-      || matches!(
-        node.namespace(),
-        Some(ns) if !(ns.is_empty() || ns == HTML_NAMESPACE)
-      );
-    if let Some(tag) = node.tag_name() {
+  fn find_base(root: &DomNode) -> Option<String> {
+    let mut stack: Vec<(&DomNode, bool)> = vec![(root, false)];
+    while let Some((node, in_foreign_namespace)) = stack.pop() {
+      if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) {
+        continue;
+      }
+      if node.is_template_element() {
+        continue;
+      }
+      let next_in_foreign_namespace = in_foreign_namespace
+        || matches!(
+          node.namespace(),
+          Some(ns) if !(ns.is_empty() || ns == HTML_NAMESPACE)
+        );
+
       if !in_foreign_namespace
-        && tag.eq_ignore_ascii_case("base")
+        && node
+          .tag_name()
+          .is_some_and(|tag| tag.eq_ignore_ascii_case("base"))
         && matches!(node.namespace(), Some(ns) if ns.is_empty() || ns == HTML_NAMESPACE)
       {
         if let Some(href) = node.get_attribute_ref("href") {
@@ -285,20 +291,16 @@ pub fn find_base_href(dom: &DomNode) -> Option<String> {
           }
         }
       }
-    }
-    for child in node.traversal_children() {
-      if let Some(found) = find_base(child, next_in_foreign_namespace) {
-        return Some(found);
+
+      for child in node.traversal_children().iter().rev() {
+        stack.push((child, next_in_foreign_namespace));
       }
     }
     None
   }
 
   let head = find_head(dom)?;
-  if let Some(from_head) = find_base(head, false) {
-    return Some(from_head);
-  }
-  find_base(dom, false)
+  find_base(head).or_else(|| find_base(dom))
 }
 
 /// Compute the document base URL given the parsed DOM and an optional
@@ -438,6 +440,8 @@ pub(crate) fn find_tag_case_insensitive_outside_templates(
 mod tests {
   use super::{document_base_url, find_base_href};
   use crate::dom::parse_html;
+  use crate::dom::{DomNode, DomNodeType};
+  use selectors::context::QuirksMode;
 
   #[test]
   fn finds_first_base_href_in_head_document_order() {
@@ -577,5 +581,48 @@ mod tests {
       document_base_url(&dom, None),
       Some("https://cdn.example.com/static/".to_string())
     );
+  }
+
+  #[test]
+  fn find_base_href_deep_dom_does_not_overflow_stack() {
+    const DEPTH: usize = 20_000;
+
+    let base = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "base".to_string(),
+        namespace: String::new(),
+        attributes: vec![("href".to_string(), "https://example.com/".to_string())],
+      },
+      children: Vec::new(),
+    };
+    let head = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "head".to_string(),
+        namespace: String::new(),
+        attributes: Vec::new(),
+      },
+      children: vec![base],
+    };
+
+    let mut node = head;
+    for _ in 0..DEPTH {
+      node = DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: String::new(),
+          attributes: Vec::new(),
+        },
+        children: vec![node],
+      };
+    }
+
+    let dom = DomNode {
+      node_type: DomNodeType::Document {
+        quirks_mode: QuirksMode::NoQuirks,
+      },
+      children: vec![node],
+    };
+
+    assert_eq!(find_base_href(&dom), Some("https://example.com/".to_string()));
   }
 }

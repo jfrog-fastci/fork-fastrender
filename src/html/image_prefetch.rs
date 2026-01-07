@@ -475,35 +475,34 @@ pub fn discover_image_prefetch_urls(
   let mut image_elements = 0usize;
   let mut limited = false;
 
-  fn walk(
-    node: &DomNode,
-    ctx: ImageSelectionContext<'_>,
-    limits: ImagePrefetchLimits,
-    image_elements: &mut usize,
-    limited: &mut bool,
-    seen_urls: &mut HashSet<String>,
-    urls: &mut Vec<String>,
-  ) -> bool {
-    if limits.max_image_elements == 0 || limits.max_urls_per_element == 0 {
-      return false;
-    }
-    if *image_elements >= limits.max_image_elements {
-      *limited = true;
-      return false;
+  if limits.max_image_elements == 0 || limits.max_urls_per_element == 0 {
+    return ImagePrefetchDiscovery {
+      image_elements,
+      urls,
+      limited,
+    };
+  }
+
+  let mut stack: Vec<&DomNode> = vec![dom];
+  while let Some(node) = stack.pop() {
+    if image_elements >= limits.max_image_elements {
+      limited = true;
+      break;
     }
 
     if node.template_contents_are_inert() {
-      return true;
+      continue;
     }
 
+    let mut descend = true;
     if let Some(tag) = node.tag_name() {
       if tag.eq_ignore_ascii_case("picture") {
         if let Some((picture_sources, img)) = picture_sources_and_fallback_img(node) {
-          if *image_elements >= limits.max_image_elements {
-            *limited = true;
-            return false;
+          if image_elements >= limits.max_image_elements {
+            limited = true;
+            break;
           }
-          *image_elements += 1;
+          image_elements += 1;
 
           let img_src = get_img_src_attr(img).unwrap_or("");
           let img_srcset = get_img_srcset_attr(img)
@@ -518,26 +517,28 @@ pub fn discover_image_prefetch_urls(
             &img_srcset,
             img_sizes.as_ref(),
             limits,
-            seen_urls,
-            urls,
+            &mut seen_urls,
+            &mut urls,
           );
-          if *image_elements >= limits.max_image_elements {
-            *limited = true;
-            return false;
+          if image_elements >= limits.max_image_elements {
+            limited = true;
+            break;
           }
-          return true;
+
+          // `<picture>` sources/img children are consumed by `picture_sources_and_fallback_img`.
+          descend = false;
         }
       } else if tag.eq_ignore_ascii_case("img") {
-        if *image_elements >= limits.max_image_elements {
-          *limited = true;
-          return false;
+        if image_elements >= limits.max_image_elements {
+          limited = true;
+          break;
         }
         let img_src = get_img_src_attr(node).unwrap_or("");
         let has_src = !img_src.trim().is_empty();
         let img_srcset_attr = get_img_srcset_attr(node);
         let has_srcset = img_srcset_attr.is_some();
         if has_src || has_srcset {
-          *image_elements += 1;
+          image_elements += 1;
 
           let img_srcset = img_srcset_attr.map(parse_srcset).unwrap_or_default();
           let img_sizes = get_sizes_attr(node).and_then(parse_sizes);
@@ -549,12 +550,12 @@ pub fn discover_image_prefetch_urls(
             &img_srcset,
             img_sizes.as_ref(),
             limits,
-            seen_urls,
-            urls,
+            &mut seen_urls,
+            &mut urls,
           );
-          if *image_elements >= limits.max_image_elements {
-            *limited = true;
-            return false;
+          if image_elements >= limits.max_image_elements {
+            limited = true;
+            break;
           }
         }
       } else if tag.eq_ignore_ascii_case("video") {
@@ -567,15 +568,15 @@ pub fn discover_image_prefetch_urls(
               .filter(|value| !value.trim().is_empty())
           });
         if let Some(poster) = poster {
-          if *image_elements >= limits.max_image_elements {
-            *limited = true;
-            return false;
+          if image_elements >= limits.max_image_elements {
+            limited = true;
+            break;
           }
-          *image_elements += 1;
-          push_unique_url(ctx, seen_urls, urls, poster);
-          if *image_elements >= limits.max_image_elements {
-            *limited = true;
-            return false;
+          image_elements += 1;
+          push_unique_url(ctx, &mut seen_urls, &mut urls, poster);
+          if image_elements >= limits.max_image_elements {
+            limited = true;
+            break;
           }
         }
       } else if tag.eq_ignore_ascii_case("link") {
@@ -598,37 +599,35 @@ pub fn discover_image_prefetch_urls(
               None => true,
             };
             if !media_matches {
-              return true;
-            }
-
-            if link_rel_is_preload_image(&rel_tokens, as_attr) {
+              descend = false;
+            } else if link_rel_is_preload_image(&rel_tokens, as_attr) {
               let parsed_srcset = node
                 .get_attribute_ref("imagesrcset")
                 .map(parse_srcset)
                 .unwrap_or_default();
               let parsed_sizes = node.get_attribute_ref("imagesizes").and_then(parse_sizes);
               if href.is_empty() && parsed_srcset.is_empty() {
-                return true;
-              }
-
-              if *image_elements >= limits.max_image_elements {
-                *limited = true;
-                return false;
-              }
-              *image_elements += 1;
-              push_prefetch_selection(
-                ctx,
-                &[],
-                href,
-                &parsed_srcset,
-                parsed_sizes.as_ref(),
-                limits,
-                seen_urls,
-                urls,
-              );
-              if *image_elements >= limits.max_image_elements {
-                *limited = true;
-                return false;
+                descend = false;
+              } else {
+                if image_elements >= limits.max_image_elements {
+                  limited = true;
+                  break;
+                }
+                image_elements += 1;
+                push_prefetch_selection(
+                  ctx,
+                  &[],
+                  href,
+                  &parsed_srcset,
+                  parsed_sizes.as_ref(),
+                  limits,
+                  &mut seen_urls,
+                  &mut urls,
+                );
+                if image_elements >= limits.max_image_elements {
+                  limited = true;
+                  break;
+                }
               }
             }
           }
@@ -636,23 +635,14 @@ pub fn discover_image_prefetch_urls(
       }
     }
 
-    for child in node.traversal_children() {
-      if !walk(child, ctx, limits, image_elements, limited, seen_urls, urls) {
-        return false;
-      }
+    if !descend {
+      continue;
     }
-    true
-  }
 
-  walk(
-    dom,
-    ctx,
-    limits,
-    &mut image_elements,
-    &mut limited,
-    &mut seen_urls,
-    &mut urls,
-  );
+    for child in node.traversal_children().iter().rev() {
+      stack.push(child);
+    }
+  }
 
   ImagePrefetchDiscovery {
     image_elements,
@@ -676,35 +666,34 @@ pub fn discover_image_prefetch_requests(
   let mut image_elements = 0usize;
   let mut limited = false;
 
-  fn walk(
-    node: &DomNode,
-    ctx: ImageSelectionContext<'_>,
-    limits: ImagePrefetchLimits,
-    image_elements: &mut usize,
-    limited: &mut bool,
-    seen_requests: &mut HashSet<(String, CrossOriginAttribute)>,
-    requests: &mut Vec<ImagePrefetchRequest>,
-  ) -> bool {
-    if limits.max_image_elements == 0 || limits.max_urls_per_element == 0 {
-      return false;
-    }
-    if *image_elements >= limits.max_image_elements {
-      *limited = true;
-      return false;
+  if limits.max_image_elements == 0 || limits.max_urls_per_element == 0 {
+    return ImagePrefetchRequestDiscovery {
+      image_elements,
+      requests,
+      limited,
+    };
+  }
+
+  let mut stack: Vec<&DomNode> = vec![dom];
+  while let Some(node) = stack.pop() {
+    if image_elements >= limits.max_image_elements {
+      limited = true;
+      break;
     }
 
     if node.template_contents_are_inert() {
-      return true;
+      continue;
     }
 
+    let mut descend = true;
     if let Some(tag) = node.tag_name() {
       if tag.eq_ignore_ascii_case("picture") {
         if let Some((picture_sources, img)) = picture_sources_and_fallback_img(node) {
-          if *image_elements >= limits.max_image_elements {
-            *limited = true;
-            return false;
+          if image_elements >= limits.max_image_elements {
+            limited = true;
+            break;
           }
-          *image_elements += 1;
+          image_elements += 1;
 
           let crossorigin = parse_crossorigin_attr(img);
           let img_src = get_img_src_attr(img).unwrap_or("");
@@ -721,26 +710,27 @@ pub fn discover_image_prefetch_requests(
             &img_srcset,
             img_sizes.as_ref(),
             limits,
-            seen_requests,
-            requests,
+            &mut seen_requests,
+            &mut requests,
           );
-          if *image_elements >= limits.max_image_elements {
-            *limited = true;
-            return false;
+          if image_elements >= limits.max_image_elements {
+            limited = true;
+            break;
           }
-          return true;
+
+          descend = false;
         }
       } else if tag.eq_ignore_ascii_case("img") {
-        if *image_elements >= limits.max_image_elements {
-          *limited = true;
-          return false;
+        if image_elements >= limits.max_image_elements {
+          limited = true;
+          break;
         }
         let img_src = get_img_src_attr(node).unwrap_or("");
         let has_src = !img_src.trim().is_empty();
         let img_srcset_attr = get_img_srcset_attr(node);
         let has_srcset = img_srcset_attr.is_some();
         if has_src || has_srcset {
-          *image_elements += 1;
+          image_elements += 1;
 
           let crossorigin = parse_crossorigin_attr(node);
           let img_srcset = img_srcset_attr.map(parse_srcset).unwrap_or_default();
@@ -754,12 +744,12 @@ pub fn discover_image_prefetch_requests(
             &img_srcset,
             img_sizes.as_ref(),
             limits,
-            seen_requests,
-            requests,
+            &mut seen_requests,
+            &mut requests,
           );
-          if *image_elements >= limits.max_image_elements {
-            *limited = true;
-            return false;
+          if image_elements >= limits.max_image_elements {
+            limited = true;
+            break;
           }
         }
       } else if tag.eq_ignore_ascii_case("video") {
@@ -772,21 +762,21 @@ pub fn discover_image_prefetch_requests(
               .filter(|value| !value.trim().is_empty())
           });
         if let Some(poster) = poster {
-          if *image_elements >= limits.max_image_elements {
-            *limited = true;
-            return false;
+          if image_elements >= limits.max_image_elements {
+            limited = true;
+            break;
           }
-          *image_elements += 1;
+          image_elements += 1;
           push_unique_request(
             ctx,
             CrossOriginAttribute::None,
-            seen_requests,
-            requests,
+            &mut seen_requests,
+            &mut requests,
             poster,
           );
-          if *image_elements >= limits.max_image_elements {
-            *limited = true;
-            return false;
+          if image_elements >= limits.max_image_elements {
+            limited = true;
+            break;
           }
         }
       } else if tag.eq_ignore_ascii_case("link") {
@@ -809,39 +799,37 @@ pub fn discover_image_prefetch_requests(
               None => true,
             };
             if !media_matches {
-              return true;
-            }
-
-            if link_rel_is_preload_image(&rel_tokens, as_attr) {
+              descend = false;
+            } else if link_rel_is_preload_image(&rel_tokens, as_attr) {
               let parsed_srcset = node
                 .get_attribute_ref("imagesrcset")
                 .map(parse_srcset)
                 .unwrap_or_default();
               let parsed_sizes = node.get_attribute_ref("imagesizes").and_then(parse_sizes);
               if href.is_empty() && parsed_srcset.is_empty() {
-                return true;
-              }
-
-              if *image_elements >= limits.max_image_elements {
-                *limited = true;
-                return false;
-              }
-              *image_elements += 1;
-              let crossorigin = parse_crossorigin_attr(node);
-              push_prefetch_selection_with_crossorigin(
-                ctx,
-                crossorigin,
-                &[],
-                href,
-                &parsed_srcset,
-                parsed_sizes.as_ref(),
-                limits,
-                seen_requests,
-                requests,
-              );
-              if *image_elements >= limits.max_image_elements {
-                *limited = true;
-                return false;
+                descend = false;
+              } else {
+                if image_elements >= limits.max_image_elements {
+                  limited = true;
+                  break;
+                }
+                image_elements += 1;
+                let crossorigin = parse_crossorigin_attr(node);
+                push_prefetch_selection_with_crossorigin(
+                  ctx,
+                  crossorigin,
+                  &[],
+                  href,
+                  &parsed_srcset,
+                  parsed_sizes.as_ref(),
+                  limits,
+                  &mut seen_requests,
+                  &mut requests,
+                );
+                if image_elements >= limits.max_image_elements {
+                  limited = true;
+                  break;
+                }
               }
             }
           }
@@ -849,31 +837,14 @@ pub fn discover_image_prefetch_requests(
       }
     }
 
-    for child in node.traversal_children() {
-      if !walk(
-        child,
-        ctx,
-        limits,
-        image_elements,
-        limited,
-        seen_requests,
-        requests,
-      ) {
-        return false;
-      }
+    if !descend {
+      continue;
     }
-    true
-  }
 
-  walk(
-    dom,
-    ctx,
-    limits,
-    &mut image_elements,
-    &mut limited,
-    &mut seen_requests,
-    &mut requests,
-  );
+    for child in node.traversal_children().iter().rev() {
+      stack.push(child);
+    }
+  }
 
   ImagePrefetchRequestDiscovery {
     image_elements,
@@ -887,11 +858,12 @@ mod tests {
   use super::{
     discover_image_prefetch_requests, discover_image_prefetch_urls, ImagePrefetchLimits,
   };
-  use crate::dom::parse_html;
+  use crate::dom::{parse_html, DomNode, DomNodeType};
   use crate::geometry::Size;
   use crate::html::images::ImageSelectionContext;
   use crate::style::media::MediaContext;
   use crate::tree::box_tree::CrossOriginAttribute;
+  use selectors::context::QuirksMode;
 
   fn media_ctx_for(viewport: (f32, f32), dpr: f32) -> MediaContext {
     MediaContext::screen(viewport.0, viewport.1)
@@ -913,6 +885,45 @@ mod tests {
       font_size: None,
       base_url: Some(base_url),
     }
+  }
+
+  #[test]
+  fn discover_image_prefetch_urls_deep_dom_does_not_overflow_stack() {
+    const DEPTH: usize = 20_000;
+
+    let mut node = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "div".to_string(),
+        namespace: String::new(),
+        attributes: Vec::new(),
+      },
+      children: Vec::new(),
+    };
+
+    for _ in 0..DEPTH {
+      node = DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "div".to_string(),
+          namespace: String::new(),
+          attributes: Vec::new(),
+        },
+        children: vec![node],
+      };
+    }
+
+    let dom = DomNode {
+      node_type: DomNodeType::Document {
+        quirks_mode: QuirksMode::NoQuirks,
+      },
+      children: vec![node],
+    };
+
+    let media_ctx = media_ctx_for((800.0, 600.0), 1.0);
+    let ctx = ctx_for((800.0, 600.0), 1.0, &media_ctx, "https://example.com/");
+    let out = discover_image_prefetch_urls(&dom, ctx, ImagePrefetchLimits::default());
+    assert_eq!(out.image_elements, 0);
+    assert!(out.urls.is_empty());
+    assert!(!out.limited);
   }
 
   #[test]
