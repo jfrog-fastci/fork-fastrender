@@ -799,6 +799,9 @@ pub fn parse_subgrid_line_names(input: &str) -> Option<Vec<Vec<String>>> {
 
   while !parser.is_eof() {
     parser.skip_whitespace();
+    if parser.is_eof() {
+      break;
+    }
     if let Some(names) = parser.consume_bracketed_names() {
       line_names.push(names);
       continue;
@@ -810,8 +813,8 @@ pub fn parse_subgrid_line_names(input: &str) -> Option<Vec<Vec<String>>> {
       continue;
     }
 
-    // Unknown token; stop parsing.
-    break;
+    // Unknown token; invalid `subgrid` track list.
+    return None;
   }
 
   if !saw_subgrid {

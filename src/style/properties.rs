@@ -8770,6 +8770,14 @@ fn apply_declaration_with_base_internal_with_order(
     // Grid
     "grid-template-columns" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        if kw.eq_ignore_ascii_case("none") {
+          styles.grid_template_columns.clear();
+          styles.grid_column_line_names = vec![Vec::new()];
+          styles.grid_column_names.clear();
+          styles.grid_column_subgrid = false;
+          styles.subgrid_column_line_names.clear();
+          return;
+        }
         if let Some(line_names) = parse_subgrid_line_names(kw) {
           styles.grid_column_subgrid = true;
           styles.subgrid_column_line_names = line_names.clone();
@@ -8779,6 +8787,10 @@ fn apply_declaration_with_base_internal_with_order(
           return;
         }
         let (tracks, named_lines, line_names) = parse_grid_tracks_with_names(kw);
+        if tracks.is_empty() {
+          // Invalid track list; ignore the declaration.
+          return;
+        }
         styles.grid_template_columns = tracks;
         styles.grid_column_names = named_lines;
         styles.grid_column_line_names = line_names;
@@ -8788,6 +8800,14 @@ fn apply_declaration_with_base_internal_with_order(
     }
     "grid-template-rows" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
+        if kw.eq_ignore_ascii_case("none") {
+          styles.grid_template_rows.clear();
+          styles.grid_row_line_names = vec![Vec::new()];
+          styles.grid_row_names.clear();
+          styles.grid_row_subgrid = false;
+          styles.subgrid_row_line_names.clear();
+          return;
+        }
         if let Some(line_names) = parse_subgrid_line_names(kw) {
           styles.grid_row_subgrid = true;
           styles.subgrid_row_line_names = line_names.clone();
@@ -8797,6 +8817,10 @@ fn apply_declaration_with_base_internal_with_order(
           return;
         }
         let (tracks, named_lines, line_names) = parse_grid_tracks_with_names(kw);
+        if tracks.is_empty() {
+          // Invalid track list; ignore the declaration.
+          return;
+        }
         styles.grid_template_rows = tracks;
         styles.grid_row_names = named_lines;
         styles.grid_row_line_names = line_names;
