@@ -209,3 +209,44 @@ fn container_type_rejects_none_and_style_keywords_and_container_shorthand_resets
     vec!["demo".to_string()]
   );
 }
+
+#[test]
+fn container_global_keywords_apply_to_container_type_and_shorthand() {
+  let html = r#"
+    <style>
+      #parent { container-type: inline-size; container-name: demo; }
+      #type-inherit { container-type: inherit; }
+      #type-initial { container-type: inline-size; container-type: initial; }
+      #shorthand-inherit { container: inherit; }
+      #shorthand-initial { container: initial; }
+    </style>
+    <div id="parent">
+      <div id="type-inherit"></div>
+      <div id="type-initial"></div>
+      <div id="shorthand-inherit"></div>
+      <div id="shorthand-initial"></div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+
+  let type_inherit = find_by_id(&styled, "type-inherit").expect("type-inherit element");
+  assert_eq!(type_inherit.styles.container_type, ContainerType::InlineSize);
+  assert!(type_inherit.styles.container_name.is_empty());
+
+  let type_initial = find_by_id(&styled, "type-initial").expect("type-initial element");
+  assert_eq!(type_initial.styles.container_type, ContainerType::Normal);
+
+  let shorthand_inherit =
+    find_by_id(&styled, "shorthand-inherit").expect("shorthand-inherit element");
+  assert_eq!(shorthand_inherit.styles.container_type, ContainerType::InlineSize);
+  assert_eq!(
+    shorthand_inherit.styles.container_name,
+    vec!["demo".to_string()]
+  );
+
+  let shorthand_initial =
+    find_by_id(&styled, "shorthand-initial").expect("shorthand-initial element");
+  assert_eq!(shorthand_initial.styles.container_type, ContainerType::Normal);
+  assert!(shorthand_initial.styles.container_name.is_empty());
+}

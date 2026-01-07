@@ -3895,6 +3895,12 @@ fn apply_property_from_source(
     "resize" => styles.resize = source.resize,
     "box-sizing" => styles.box_sizing = source.box_sizing,
     "box-decoration-break" => styles.box_decoration_break = source.box_decoration_break,
+    "container-type" => styles.container_type = source.container_type,
+    "container-name" => styles.container_name = source.container_name.clone(),
+    "container" => {
+      styles.container_type = source.container_type;
+      styles.container_name = source.container_name.clone();
+    }
     "top" => set_inset_side(styles, crate::style::PhysicalSide::Top, source.top, order),
     "right" => set_inset_side(
       styles,
@@ -13486,12 +13492,7 @@ fn parse_container_type_keyword(text: &str) -> Option<ContainerType> {
 }
 
 fn parse_container_type_from_str(input: &str) -> Option<ContainerType> {
-  let trimmed = input.trim();
-  if trimmed.is_empty() {
-    return None;
-  }
-
-  let mut input = ParserInput::new(trimmed);
+  let mut input = ParserInput::new(input);
   let mut parser = Parser::new(&mut input);
   let mut container_type = None;
 
@@ -13522,11 +13523,7 @@ fn parse_container_type_value(value: &PropertyValue) -> Option<ContainerType> {
 }
 
 fn parse_container_names_from_str(input: &str) -> Option<Vec<String>> {
-  let trimmed = input.trim();
-  if trimmed.is_empty() {
-    return None;
-  }
-  let mut input = ParserInput::new(trimmed);
+  let mut input = ParserInput::new(input);
   let mut parser = Parser::new(&mut input);
   let mut names = Vec::new();
   let mut saw_none = false;
@@ -13591,12 +13588,7 @@ fn parse_container_shorthand(
   let PropertyValue::Keyword(text) = value else {
     return None;
   };
-  let trimmed = text.trim();
-  if trimmed.is_empty() {
-    return None;
-  }
-
-  let mut input = ParserInput::new(trimmed);
+  let mut input = ParserInput::new(text);
   let mut parser = Parser::new(&mut input);
   let mut names = Vec::new();
   let mut saw_none = false;

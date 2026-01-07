@@ -183,3 +183,37 @@ fn container_name_rejects_multiple_none_tokens() {
   let target = find_by_id(&styled, "target").expect("target element");
   assert_eq!(target.styles.container_name, vec!["foo".to_string()]);
 }
+
+#[test]
+fn container_name_inherit_keyword_inherits_from_parent() {
+  let html = r#"
+    <style>
+      #parent { container-name: Foo bar; }
+      #target { container-name: inherit; }
+    </style>
+    <div id="parent">
+      <div id="target"></div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(
+    target.styles.container_name,
+    vec!["Foo".to_string(), "bar".to_string()]
+  );
+}
+
+#[test]
+fn container_name_initial_keyword_resets_to_none() {
+  let html = r#"
+    <style>
+      #target { container-name: foo; container-name: initial; }
+    </style>
+    <div id="target"></div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert!(target.styles.container_name.is_empty());
+}
