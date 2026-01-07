@@ -126,6 +126,40 @@ fn svg_preserve_aspect_ratio_none_keeps_auto_height_from_intrinsic_height() {
 }
 
 #[test]
+fn img_svg_preserve_aspect_ratio_none_object_fit_contain_fills_box() {
+  with_large_stack(|| {
+    let html = r#"
+        <!doctype html>
+        <style>
+          html, body { margin: 0; padding: 0; background: rgb(0 0 0); }
+          img {
+            display: block;
+            width: 100px;
+            height: 100px;
+            object-fit: contain;
+            background: rgb(0 255 0);
+          }
+        </style>
+        <img src='<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100" preserveAspectRatio="none"><rect width="200" height="100" fill="rgb(255 0 0)"/></svg>'>
+    "#;
+
+    let mut renderer = FastRender::new().unwrap();
+    let png_bytes = renderer.render_to_png(html, 200, 200).unwrap();
+    let image = image::load_from_memory(&png_bytes).unwrap().to_rgba8();
+
+    // The SVG has no intrinsic ratio (`preserveAspectRatio="none"`), so `object-fit: contain`
+    // should behave like `fill`. If we incorrectly preserve a 2:1 ratio, y=80 would show the
+    // green element background (letterboxing).
+    let pixel = image.get_pixel(10, 80);
+    assert!(
+      pixel[0] > 200 && pixel[1] < 50 && pixel[2] < 50,
+      "expected svg red content at y=80; got rgba={:?}",
+      pixel.0
+    );
+  });
+}
+
+#[test]
 fn test_text_rendering() {
   with_large_stack(|| {
     let html = r#"

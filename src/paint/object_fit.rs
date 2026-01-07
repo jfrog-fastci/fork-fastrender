@@ -47,6 +47,7 @@ pub fn compute_object_fit(
   box_height: f32,
   image_width: f32,
   image_height: f32,
+  has_intrinsic_ratio: bool,
   font_size: f32,
   root_font_size: f32,
   viewport: Option<(f32, f32)>,
@@ -61,20 +62,32 @@ pub fn compute_object_fit(
   let scale = match fit {
     ObjectFit::Fill => (scale_x, scale_y),
     ObjectFit::Contain => {
-      let s = scale_x.min(scale_y);
-      (s, s)
+      if has_intrinsic_ratio {
+        let s = scale_x.min(scale_y);
+        (s, s)
+      } else {
+        (scale_x, scale_y)
+      }
     }
     ObjectFit::Cover => {
-      let s = scale_x.max(scale_y);
-      (s, s)
+      if has_intrinsic_ratio {
+        let s = scale_x.max(scale_y);
+        (s, s)
+      } else {
+        (scale_x, scale_y)
+      }
     }
     ObjectFit::None => (1.0, 1.0),
     ObjectFit::ScaleDown => {
       if image_width <= box_width && image_height <= box_height {
         (1.0, 1.0)
       } else {
-        let s = scale_x.min(scale_y);
-        (s, s)
+        if has_intrinsic_ratio {
+          let s = scale_x.min(scale_y);
+          (s, s)
+        } else {
+          (scale_x, scale_y)
+        }
       }
     }
   };
@@ -112,6 +125,7 @@ mod tests {
       100.0,
       100.0,
       100.0,
+      true,
       16.0,
       16.0,
       None,
@@ -137,6 +151,7 @@ mod tests {
       100.0,
       200.0,
       50.0,
+      true,
       16.0,
       16.0,
       None,
@@ -163,6 +178,7 @@ mod tests {
       60.0,
       60.0,
       60.0,
+      true,
       16.0,
       16.0,
       None,
@@ -188,6 +204,7 @@ mod tests {
       50.0,
       50.0,
       50.0,
+      true,
       20.0,
       30.0,
       None,
@@ -212,6 +229,7 @@ mod tests {
       50.0,
       50.0,
       50.0,
+      true,
       10.0,
       20.0,
       None,
@@ -239,6 +257,7 @@ mod tests {
       50.0,
       50.0,
       50.0,
+      true,
       10.0,
       20.0,
       None,
@@ -263,6 +282,7 @@ mod tests {
       50.0,
       50.0,
       50.0,
+      true,
       16.0,
       16.0,
       Some((200.0, 100.0)),
@@ -286,6 +306,7 @@ mod tests {
       50.0,
       50.0,
       50.0,
+      true,
       16.0,
       16.0,
       None,
@@ -313,6 +334,7 @@ mod tests {
       50.0,
       20.0,
       20.0,
+      true,
       16.0,
       16.0,
       None,
@@ -334,6 +356,7 @@ mod tests {
       50.0,
       50.0,
       50.0,
+      true,
       16.0,
       16.0,
       Some((200.0, 100.0)),
@@ -359,6 +382,7 @@ mod tests {
       50.0,
       50.0,
       50.0,
+      true,
       16.0,
       16.0,
       None,
@@ -366,5 +390,31 @@ mod tests {
     .expect("fit computed");
     // free_x = 50 (box 100 - dest_w 50). right 10px => 50 - 10.
     assert!((offset_x - 40.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn contain_without_intrinsic_ratio_fills_box() {
+    let position = ObjectPosition {
+      x: PositionComponent::Keyword(PositionKeyword::Center),
+      y: PositionComponent::Keyword(PositionKeyword::Center),
+    };
+
+    let (offset_x, offset_y, dest_w, dest_h) = compute_object_fit(
+      ObjectFit::Contain,
+      position,
+      200.0,
+      100.0,
+      100.0,
+      100.0,
+      false,
+      16.0,
+      16.0,
+      None,
+    )
+    .expect("fit computed");
+    assert_eq!(dest_w, 200.0);
+    assert_eq!(dest_h, 100.0);
+    assert!((offset_x - 0.0).abs() < 0.01);
+    assert!((offset_y - 0.0).abs() < 0.01);
   }
 }

@@ -1087,6 +1087,10 @@ pub struct ImageData {
   /// Natural image height in CSS px after applying image-resolution/orientation
   pub css_height: f32,
 
+  /// True when the source image has an intrinsic aspect ratio that should be preserved for
+  /// aspect-ratio-dependent sizing (e.g. `object-fit: contain`).
+  pub has_intrinsic_ratio: bool,
+
   /// Whether `pixels` are already premultiplied by alpha.
   pub premultiplied: bool,
 
@@ -1115,6 +1119,7 @@ impl ImageData {
       height,
       css_width,
       css_height,
+      has_intrinsic_ratio: true,
       premultiplied: false,
       pixels: Arc::new(pixels),
     }
@@ -1143,6 +1148,7 @@ impl ImageData {
       height,
       css_width,
       css_height,
+      has_intrinsic_ratio: true,
       premultiplied: true,
       pixels: Arc::new(pixels),
     }

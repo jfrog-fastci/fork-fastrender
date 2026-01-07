@@ -10774,6 +10774,14 @@ mod tests {
     )));
   }
 
+  fn select_selected_value(control: &SelectControl) -> Option<String> {
+    let idx = control.selected.first().copied()?;
+    match control.items.get(idx)? {
+      SelectItem::Option { value, .. } => Some(value.clone()),
+      _ => None,
+    }
+  }
+
   #[test]
   fn select_fallback_selects_first_option_when_all_disabled() {
     fn set_attr(node: &mut StyledNode, name: &str, value: &str) {

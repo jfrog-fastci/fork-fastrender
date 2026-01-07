@@ -3830,10 +3830,11 @@ impl DisplayListBuilder {
     area_h: f32,
     img_w: f32,
     img_h: f32,
+    has_intrinsic_ratio: bool,
   ) -> (f32, f32) {
     let natural_w = if img_w > 0.0 { Some(img_w) } else { None };
     let natural_h = if img_h > 0.0 { Some(img_h) } else { None };
-    let ratio = if img_w > 0.0 && img_h > 0.0 {
+    let ratio = if has_intrinsic_ratio && img_w > 0.0 && img_h > 0.0 {
       Some(img_w / img_h)
     } else {
       None
@@ -3841,17 +3842,25 @@ impl DisplayListBuilder {
 
     match layer.size {
       BackgroundSize::Keyword(BackgroundSizeKeyword::Cover) => {
-        if let (Some(w), Some(h)) = (natural_w, natural_h) {
-          let scale = (area_w / w).max(area_h / h);
-          (w * scale, h * scale)
+        if has_intrinsic_ratio {
+          if let (Some(w), Some(h)) = (natural_w, natural_h) {
+            let scale = (area_w / w).max(area_h / h);
+            (w * scale, h * scale)
+          } else {
+            (area_w.max(0.0), area_h.max(0.0))
+          }
         } else {
           (area_w.max(0.0), area_h.max(0.0))
         }
       }
       BackgroundSize::Keyword(BackgroundSizeKeyword::Contain) => {
-        if let (Some(w), Some(h)) = (natural_w, natural_h) {
-          let scale = (area_w / w).min(area_h / h);
-          (w * scale, h * scale)
+        if has_intrinsic_ratio {
+          if let (Some(w), Some(h)) = (natural_w, natural_h) {
+            let scale = (area_w / w).min(area_h / h);
+            (w * scale, h * scale)
+          } else {
+            (area_w.max(0.0), area_h.max(0.0))
+          }
         } else {
           (area_w.max(0.0), area_h.max(0.0))
         }
@@ -4817,6 +4826,7 @@ impl DisplayListBuilder {
               content_rect.height(),
               image.css_width,
               image.css_height,
+              image.has_intrinsic_ratio,
               font_size,
               root_font_size,
               self.viewport,
@@ -5460,6 +5470,7 @@ impl DisplayListBuilder {
         size_area_h,
         img_w,
         img_h,
+        false,
       );
       if !tile_w.is_finite() || !tile_h.is_finite() || tile_w <= 0.0 || tile_h <= 0.0 {
         return None;
@@ -6063,6 +6074,7 @@ impl DisplayListBuilder {
               origin_rect.height(),
               img_w,
               img_h,
+              image.has_intrinsic_ratio,
             );
 
             let mut rounded_x = false;
@@ -6084,11 +6096,13 @@ impl DisplayListBuilder {
                 )
               )
             {
-              let aspect = if img_h != 0.0 { img_w / img_h } else { 1.0 };
-              if rounded_x {
-                tile_h = tile_w / aspect;
-              } else {
-                tile_w = tile_h * aspect;
+              if image.has_intrinsic_ratio {
+                let aspect = if img_h != 0.0 { img_w / img_h } else { 1.0 };
+                if rounded_x {
+                  tile_h = tile_w / aspect;
+                } else {
+                  tile_w = tile_h * aspect;
+                }
               }
             }
 
@@ -8926,6 +8940,7 @@ impl DisplayListBuilder {
       .unwrap_or_else(default_object_position);
     let font_size = style.map(|s| s.font_size).unwrap_or(16.0);
     let root_font_size = style.map(|s| s.root_font_size).unwrap_or(font_size);
+    let has_intrinsic_ratio = meta.intrinsic_ratio(orientation).is_some();
 
     let (content_rect, clip_radii) = self.replaced_content_rect_and_radii(rect, style);
     let (dest_x, dest_y, dest_w, dest_h) = match compute_object_fit(
@@ -8935,6 +8950,7 @@ impl DisplayListBuilder {
       content_rect.height(),
       img_w_css,
       img_h_css,
+      has_intrinsic_ratio,
       font_size,
       root_font_size,
       self.viewport,
@@ -9145,6 +9161,7 @@ impl DisplayListBuilder {
     let orientation = style
       .map(|s| s.image_orientation.resolve(image.orientation, decorative))
       .unwrap_or_else(|| ImageOrientation::default().resolve(image.orientation, decorative));
+    let has_intrinsic_ratio = image.intrinsic_ratio(orientation).is_some();
     let used_resolution =
       image_resolution.used_resolution(None, image.resolution, self.device_pixel_ratio);
     let key = ImageKey::new(
@@ -9190,7 +9207,9 @@ impl DisplayListBuilder {
       }
       return None;
     }
-    let image_data = Arc::new(ImageData::new(w, h, css_w, css_h, rgba.into_raw()));
+    let mut image_data = ImageData::new(w, h, css_w, css_h, rgba.into_raw());
+    image_data.has_intrinsic_ratio = has_intrinsic_ratio;
+    let image_data = Arc::new(image_data);
 
     let mut decoded_cache = self
       .decoded_image_cache
