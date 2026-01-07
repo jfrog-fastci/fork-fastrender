@@ -83,6 +83,10 @@ Rules:
 - Never run `cargo …` directly; always wrap it.
 - Never run unscoped `cargo test` (it builds/links lots of test binaries). Only run the narrow target you need.
 - Always limit cargo parallelism during builds/tests: use `-j 1` (or `CARGO_BUILD_JOBS=1`) to reduce RAM spikes.
+- When running tests, prefer limiting the Rust test harness and rayon parallelism too (helps on high-core CI/agent
+  hosts and avoids thread explosion under OS caps):
+  - Pass `-- --test-threads=1` (or set `RUST_TEST_THREADS=1`) for heavy test modules.
+  - Set `RAYON_NUM_THREADS=1` (or another small number) when the code under test uses rayon.
 
 Examples:
 
