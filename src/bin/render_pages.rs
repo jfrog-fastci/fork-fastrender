@@ -9,7 +9,7 @@ mod common;
 use clap::{ArgAction, Args as ClapArgs, Parser, Subcommand, ValueEnum};
 use common::args::{
   cpu_budget, default_jobs, parse_bool_preference, parse_color_scheme, parse_contrast, parse_shard,
-  parse_viewport, CompatArgs, DiskCacheArgs, LayoutParallelArgs, ResourceAccessArgs,
+  parse_viewport, CompatArgs, DiskCacheArgs, LayoutParallelArgs, MemoryGuardArgs, ResourceAccessArgs,
 };
 use common::render_pipeline::{
   append_timeout_stderr_note, apply_test_render_delay, apply_worker_common_args,
@@ -81,6 +81,27 @@ fn maybe_set_worker_rayon_threads(cmd: &mut Command, threads: usize) {
   cmd.env(WORKER_RAYON_THREADS_ENV, threads.to_string());
 }
 
+fn apply_mem_limit(args: &MemoryGuardArgs) -> io::Result<()> {
+  if args.mem_limit_mb == 0 {
+    return Ok(());
+  }
+  match fastrender::process_limits::apply_address_space_limit_mb(args.mem_limit_mb) {
+    Ok(fastrender::process_limits::AddressSpaceLimitStatus::Applied) => Ok(()),
+    Ok(fastrender::process_limits::AddressSpaceLimitStatus::Unsupported) => {
+      eprintln!(
+        "warning: --mem-limit-mb is only supported on Linux; ignoring (requested {} MiB)",
+        args.mem_limit_mb
+      );
+      Ok(())
+    }
+    Ok(fastrender::process_limits::AddressSpaceLimitStatus::Disabled) => Ok(()),
+    Err(err) => Err(io::Error::new(
+      io::ErrorKind::Other,
+      format!("failed to apply --mem-limit-mb {}: {err}", args.mem_limit_mb),
+    )),
+  }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum DumpMode {
   None,
@@ -132,6 +153,9 @@ struct Args {
   /// Cooperative timeout handed to the renderer in milliseconds (0 disables)
   #[arg(long)]
   soft_timeout_ms: Option<u64>,
+
+  #[command(flatten)]
+  memory: MemoryGuardArgs,
 
   /// Run renders in-process instead of separate worker processes
   #[arg(long)]
@@ -364,6 +388,7 @@ fn main() {
 }
 
 fn run(args: Args) -> io::Result<()> {
+  apply_mem_limit(&args.memory)?;
   if args.jobs == 0 {
     eprintln!("jobs must be > 0");
     std::process::exit(2);
@@ -726,6 +751,21 @@ fn build_render_shared(
     compat_profile: args.compat.compat_profile(),
     dom_compat_mode: args.compat.dom_compat_mode(),
   });
+
+  if args.memory.stage_mem_budget_mb > 0 {
+    let Some(bytes) = args.memory.stage_mem_budget_mb.checked_mul(1024 * 1024) else {
+      eprintln!(
+        "--stage-mem-budget-mb is too large: {} MiB",
+        args.memory.stage_mem_budget_mb
+      );
+      std::process::exit(2);
+    };
+    options.stage_mem_budget_bytes = Some(bytes);
+  }
+
+  if args.diagnostics_json || args.dump_intermediate != DumpMode::None {
+    options.diagnostics_level = fastrender::DiagnosticsLevel::Basic;
+  }
 
   if let Some(ms) = soft_timeout_ms {
     if ms > 0 {
@@ -1100,6 +1140,7 @@ fn spawn_worker(
     &WorkerCommonArgs {
       timeout: args.timeout,
       soft_timeout_ms,
+      memory: &args.memory,
       viewport: args.viewport,
       dpr: args.dpr,
       scroll: Some((args.scroll_x, args.scroll_y)),
@@ -1373,6 +1414,7 @@ fn run_workers(
 
 fn worker_main(worker_args: WorkerArgs) -> io::Result<()> {
   let args = worker_args.args;
+  apply_mem_limit(&args.memory)?;
   let entry = CachedEntry {
     path: worker_args.cache_path,
     stem: worker_args.stem,

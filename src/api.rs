@@ -821,6 +821,12 @@ pub struct RenderOptions {
   pub fit_canvas_to_content: Option<bool>,
   /// Optional hard timeout for the render.
   pub timeout: Option<Duration>,
+  /// Optional best-effort per-stage RSS budget in bytes.
+  ///
+  /// When set, the renderer samples RSS at stage boundaries (DomParse/Css/Cascade/BoxTree/Layout/Paint)
+  /// and aborts the render with [`RenderError::StageMemoryBudgetExceeded`] when the observed RSS
+  /// exceeds this budget.
+  pub stage_mem_budget_bytes: Option<u64>,
   /// Optional cooperative cancellation callback.
   pub cancel_callback: Option<Arc<CancelCallback>>,
   /// Optional path to write a Chrome trace of this render.
@@ -849,6 +855,7 @@ impl Default for RenderOptions {
       allow_partial: false,
       fit_canvas_to_content: None,
       timeout: None,
+      stage_mem_budget_bytes: None,
       cancel_callback: None,
       trace_output: None,
       runtime_toggles: None,
@@ -874,6 +881,7 @@ impl std::fmt::Debug for RenderOptions {
       .field("allow_partial", &self.allow_partial)
       .field("fit_canvas_to_content", &self.fit_canvas_to_content)
       .field("timeout", &self.timeout)
+      .field("stage_mem_budget_bytes", &self.stage_mem_budget_bytes)
       .field(
         "cancel_callback",
         &self.cancel_callback.as_ref().map(|_| "<callback>"),
@@ -975,6 +983,15 @@ impl RenderOptions {
   /// Set a timeout for the entire render pipeline.
   pub fn with_timeout(mut self, timeout: Option<Duration>) -> Self {
     self.timeout = timeout;
+    self
+  }
+
+  /// Set a best-effort per-stage RSS budget for the render pipeline.
+  ///
+  /// Pass `None` to disable. When set, renders will abort with
+  /// [`RenderError::StageMemoryBudgetExceeded`] if the sampled RSS exceeds the configured budget.
+  pub fn with_stage_mem_budget_bytes(mut self, budget_bytes: Option<u64>) -> Self {
+    self.stage_mem_budget_bytes = budget_bytes;
     self
   }
 
@@ -2018,6 +2035,53 @@ pub struct RenderStageTimings {
   pub encode_ms: Option<f64>,
 }
 
+/// RSS samples captured at stage boundaries.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct RenderStageMemorySample {
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub rss_start_bytes: Option<u64>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub rss_end_bytes: Option<u64>,
+}
+
+/// Stage-level memory diagnostics captured during a render.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct RenderStageMemory {
+  #[serde(default)]
+  pub dom_parse: RenderStageMemorySample,
+  #[serde(default)]
+  pub css: RenderStageMemorySample,
+  #[serde(default)]
+  pub cascade: RenderStageMemorySample,
+  #[serde(default)]
+  pub box_tree: RenderStageMemorySample,
+  #[serde(default)]
+  pub layout: RenderStageMemorySample,
+  #[serde(default)]
+  pub paint: RenderStageMemorySample,
+}
+
+impl RenderStageMemory {
+  fn sample_mut(&mut self, stage: RenderStage) -> &mut RenderStageMemorySample {
+    match stage {
+      RenderStage::DomParse => &mut self.dom_parse,
+      RenderStage::Css => &mut self.css,
+      RenderStage::Cascade => &mut self.cascade,
+      RenderStage::BoxTree => &mut self.box_tree,
+      RenderStage::Layout => &mut self.layout,
+      RenderStage::Paint => &mut self.paint,
+    }
+  }
+
+  fn record_start(&mut self, stage: RenderStage, rss_bytes: Option<u64>) {
+    self.sample_mut(stage).rss_start_bytes = rss_bytes;
+  }
+
+  fn record_end(&mut self, stage: RenderStage, rss_bytes: Option<u64>) {
+    self.sample_mut(stage).rss_end_bytes = rss_bytes;
+  }
+}
+
 /// Per-render statistics about the font fallback cache descriptor keyspace.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct TextFallbackDescriptorStats {
@@ -2372,6 +2436,8 @@ pub struct ResourceDiagnostics {
 pub struct RenderStats {
   #[serde(default)]
   pub timings: RenderStageTimings,
+  #[serde(default)]
+  pub memory: RenderStageMemory,
   #[serde(default)]
   pub counts: RenderCounts,
   #[serde(default)]
@@ -3535,6 +3601,27 @@ fn check_deadline(deadline: Option<&RenderDeadline>, stage: RenderStage) -> Resu
   Ok(())
 }
 
+fn check_stage_mem_budget(
+  stage: RenderStage,
+  rss_bytes: Option<u64>,
+  budget_bytes: Option<u64>,
+) -> Result<()> {
+  let Some(budget_bytes) = budget_bytes else {
+    return Ok(());
+  };
+  let Some(rss_bytes) = rss_bytes else {
+    return Ok(());
+  };
+  if rss_bytes > budget_bytes {
+    return Err(Error::Render(RenderError::StageMemoryBudgetExceeded {
+      stage,
+      rss_bytes,
+      budget_bytes,
+    }));
+  }
+  Ok(())
+}
+
 #[cfg(test)]
 mod viewport_resolution_tests {
   use super::*;
@@ -4685,6 +4772,7 @@ impl FastRender {
       fit_canvas_to_content,
       options.capture_accessibility,
       deadline,
+      options.stage_mem_budget_bytes,
       artifacts,
       stats,
       paint_parallelism,
@@ -4744,6 +4832,7 @@ impl FastRender {
     fit_canvas_to_content: bool,
     capture_accessibility: bool,
     deadline: Option<&RenderDeadline>,
+    stage_mem_budget_bytes: Option<u64>,
     mut artifacts: Option<&mut RenderArtifacts>,
     mut stats: Option<&mut RenderStatsRecorder>,
     paint_parallelism: PaintParallelism,
@@ -4763,9 +4852,18 @@ impl FastRender {
     let timings_enabled = toggles.truthy("FASTR_RENDER_TIMINGS");
     let mut stage_start = timings_enabled.then(Instant::now);
     let overall_start = stage_start.clone();
+    let memory_sampling_enabled = stats.is_some() || stage_mem_budget_bytes.is_some();
 
     // Parse HTML to DOM
     record_stage(StageHeartbeat::DomParse);
+    let dom_parse_rss_start =
+      memory_sampling_enabled.then(crate::memory::current_rss_bytes).flatten();
+    if let Some(rec) = stats.as_deref_mut() {
+      rec
+        .stats
+        .memory
+        .record_start(RenderStage::DomParse, dom_parse_rss_start);
+    }
     let parse_timer = stats.as_deref().and_then(|rec| rec.timer());
     let dom = {
       let _span = trace.span("dom_parse", "parse");
@@ -4817,6 +4915,15 @@ impl FastRender {
       self.device_pixel_ratio = resolved_viewport.device_pixel_ratio;
       self.pending_device_size = Some(resolved_viewport.visual_viewport);
       let needs_top_layer_state = needs_top_layer_state(&dom)?;
+      let dom_parse_rss_end =
+        memory_sampling_enabled.then(crate::memory::current_rss_bytes).flatten();
+      if let Some(rec) = stats.as_deref_mut() {
+        rec
+          .stats
+          .memory
+          .record_end(RenderStage::DomParse, dom_parse_rss_end);
+      }
+      check_stage_mem_budget(RenderStage::DomParse, dom_parse_rss_end, stage_mem_budget_bytes)?;
       let layout_artifacts = self.layout_document_for_media_with_artifacts_owned(
         dom,
         needs_top_layer_state,
@@ -4829,6 +4936,7 @@ impl FastRender {
         },
         Point::new(scroll_x, scroll_y),
         deadline,
+        stage_mem_budget_bytes,
         trace,
         layout_parallelism,
         stats.as_deref_mut(),
@@ -5145,6 +5253,15 @@ impl FastRender {
 
       // Paint to pixmap
       let offset = Point::new(-scroll.x, -scroll.y);
+      let paint_rss_start =
+        memory_sampling_enabled.then(crate::memory::current_rss_bytes).flatten();
+      if let Some(rec) = stats.as_deref_mut() {
+        rec
+          .stats
+          .memory
+          .record_start(RenderStage::Paint, paint_rss_start);
+      }
+      check_stage_mem_budget(RenderStage::Paint, paint_rss_start, stage_mem_budget_bytes)?;
       let pixmap = self.paint_with_offset_traced(
         &fragment_tree,
         target_width,
@@ -5154,6 +5271,14 @@ impl FastRender {
         &scroll_state,
         trace,
       )?;
+      let paint_rss_end = memory_sampling_enabled.then(crate::memory::current_rss_bytes).flatten();
+      if let Some(rec) = stats.as_deref_mut() {
+        rec
+          .stats
+          .memory
+          .record_end(RenderStage::Paint, paint_rss_end);
+      }
+      check_stage_mem_budget(RenderStage::Paint, paint_rss_end, stage_mem_budget_bytes)?;
       if let Some(rec) = stats.as_deref_mut() {
         if let Some(diag) = crate::paint::painter::take_paint_diagnostics() {
           rec.stats.timings.paint_build_ms = Some(diag.build_ms);
@@ -5370,6 +5495,7 @@ impl FastRender {
         },
         Point::new(options.scroll_x, options.scroll_y),
         Some(&deadline),
+        options.stage_mem_budget_bytes,
         &trace,
         layout_parallelism,
         None,
@@ -7257,6 +7383,7 @@ impl FastRender {
       LayoutDocumentOptions::default(),
       Point::ZERO,
       deadline.as_ref(),
+      None,
       &trace,
       self.layout_parallelism,
       None,
@@ -7295,6 +7422,7 @@ impl FastRender {
       options,
       Point::ZERO,
       deadline,
+      None,
       &trace,
       self.layout_parallelism,
       None,
@@ -7311,6 +7439,7 @@ impl FastRender {
     options: LayoutDocumentOptions,
     viewport_scroll: Point,
     deadline: Option<&RenderDeadline>,
+    stage_mem_budget_bytes: Option<u64>,
     trace: &TraceHandle,
     layout_parallelism: LayoutParallelism,
     mut stats: Option<&mut RenderStatsRecorder>,
@@ -7338,6 +7467,7 @@ impl FastRender {
         options,
         viewport_scroll,
         deadline,
+        stage_mem_budget_bytes,
         trace,
         layout_parallelism,
         stats,
@@ -7356,6 +7486,7 @@ impl FastRender {
     options: LayoutDocumentOptions,
     viewport_scroll: Point,
     deadline: Option<&RenderDeadline>,
+    stage_mem_budget_bytes: Option<u64>,
     trace: &TraceHandle,
     layout_parallelism: LayoutParallelism,
     mut stats: Option<&mut RenderStatsRecorder>,
@@ -7370,6 +7501,7 @@ impl FastRender {
     }
     let timings_enabled = toggles.truthy("FASTR_RENDER_TIMINGS");
     let overall_start = timings_enabled.then(Instant::now);
+    let memory_sampling_enabled = stats.is_some() || stage_mem_budget_bytes.is_some();
 
     if needs_top_layer_state {
       let top_layer_timer = stats.as_deref().and_then(|rec| rec.timer());
@@ -7398,6 +7530,10 @@ impl FastRender {
     // CSS fetching/parsing happens before cascade; keep the stage heartbeat in sync so
     // render runners can attribute stalls/timeouts correctly.
     record_stage(StageHeartbeat::CssInline);
+    let css_rss_start = memory_sampling_enabled.then(crate::memory::current_rss_bytes).flatten();
+    if let Some(rec) = stats.as_deref_mut() {
+      rec.stats.memory.record_start(RenderStage::Css, css_rss_start);
+    }
     let css_inlining_timer = stats.as_deref().and_then(|rec| rec.timer());
     let css_parse_start = timings_enabled.then(Instant::now);
     let mut media_query_cache = MediaQueryCache::default();
@@ -7496,6 +7632,16 @@ impl FastRender {
     if let Some(start) = style_load_start {
       eprintln!("timing:style_prepare {:?}", start.elapsed());
     }
+
+    let cascade_rss_start = memory_sampling_enabled.then(crate::memory::current_rss_bytes).flatten();
+    if let Some(rec) = stats.as_deref_mut() {
+      rec.stats.memory.record_end(RenderStage::Css, cascade_rss_start);
+      rec
+        .stats
+        .memory
+        .record_start(RenderStage::Cascade, cascade_rss_start);
+    }
+    check_stage_mem_budget(RenderStage::Css, cascade_rss_start, stage_mem_budget_bytes)?;
 
     let cascade_timer = stats.as_deref().and_then(|rec| rec.timer());
     let style_apply_start = timings_enabled.then(Instant::now);
@@ -7635,6 +7781,19 @@ impl FastRender {
       eprintln!("timing:cascade {:?}", now - *start);
       *start = now;
     }
+
+    let box_tree_rss_start = memory_sampling_enabled.then(crate::memory::current_rss_bytes).flatten();
+    if let Some(rec) = stats.as_deref_mut() {
+      rec
+        .stats
+        .memory
+        .record_end(RenderStage::Cascade, box_tree_rss_start);
+      rec
+        .stats
+        .memory
+        .record_start(RenderStage::BoxTree, box_tree_rss_start);
+    }
+    check_stage_mem_budget(RenderStage::Cascade, box_tree_rss_start, stage_mem_budget_bytes)?;
 
     // Generate box tree
     let box_tree_timer = stats.as_deref().and_then(|rec| rec.timer());
@@ -7897,6 +8056,18 @@ impl FastRender {
     }
 
     let mut layout_start = stage_start;
+    let layout_rss_start = memory_sampling_enabled.then(crate::memory::current_rss_bytes).flatten();
+    if let Some(rec) = stats.as_deref_mut() {
+      rec
+        .stats
+        .memory
+        .record_end(RenderStage::BoxTree, layout_rss_start);
+      rec
+        .stats
+        .memory
+        .record_start(RenderStage::Layout, layout_rss_start);
+    }
+    check_stage_mem_budget(RenderStage::BoxTree, layout_rss_start, stage_mem_budget_bytes)?;
 
     // Perform initial layout
     record_stage(StageHeartbeat::Layout);
@@ -8370,6 +8541,12 @@ impl FastRender {
       }
     }
 
+    let layout_rss_end = memory_sampling_enabled.then(crate::memory::current_rss_bytes).flatten();
+    if let Some(rec) = stats.as_deref_mut() {
+      rec.stats.memory.record_end(RenderStage::Layout, layout_rss_end);
+    }
+    check_stage_mem_budget(RenderStage::Layout, layout_rss_end, stage_mem_budget_bytes)?;
+
     Ok(LayoutArtifacts {
       dom: dom_with_state,
       stylesheet,
@@ -8405,6 +8582,7 @@ impl FastRender {
       MediaType::Screen,
       LayoutDocumentOptions::default(),
       Point::ZERO,
+      None,
       None,
       &trace,
       self.layout_parallelism,
@@ -10180,6 +10358,7 @@ impl FastRender {
               viewport: Some(viewport),
               media_context: None,
               font_size: Some(style.font_size),
+              root_font_size: Some(style.root_font_size),
               base_url: self.base_url.as_deref(),
             },
           );
@@ -10299,6 +10478,7 @@ impl FastRender {
               viewport: Some(viewport),
               media_context: None,
               font_size: Some(style.font_size),
+              root_font_size: Some(style.root_font_size),
               base_url: self.base_url.as_deref(),
             },
           );
@@ -12450,6 +12630,7 @@ pub(crate) fn render_html_with_shared_resources(
       deadline.as_ref(),
       None,
       None,
+      None,
       renderer.paint_parallelism,
       renderer.layout_parallelism,
       &trace,
@@ -13312,6 +13493,7 @@ mod tests {
         LayoutDocumentOptions::default(),
         Point::ZERO,
         None,
+        None,
         &trace,
         LayoutParallelism::default(),
         Some(&mut stats),
@@ -13349,6 +13531,7 @@ mod tests {
         MediaType::Screen,
         LayoutDocumentOptions::default(),
         Point::ZERO,
+        None,
         None,
         &trace,
         LayoutParallelism::default(),

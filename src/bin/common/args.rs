@@ -424,6 +424,22 @@ impl DiskCacheArgs {
   }
 }
 
+#[derive(Debug, Clone, Args, Default)]
+pub struct MemoryGuardArgs {
+  /// Hard process address-space limit in MiB (Linux only; 0 disables)
+  ///
+  /// This is enforced via `setrlimit(RLIMIT_AS, ...)` as early as possible in CLI startup.
+  #[arg(long, value_name = "MB", default_value_t = 0)]
+  pub mem_limit_mb: u64,
+
+  /// Best-effort per-stage RSS budget in MiB (0 disables)
+  ///
+  /// When enabled, RSS is sampled at stage boundaries and the render aborts with a structured
+  /// error if the observed RSS exceeds this value.
+  #[arg(long, value_name = "MB", default_value_t = 0)]
+  pub stage_mem_budget_mb: u64,
+}
+
 #[derive(Debug, Clone, Args)]
 pub struct TimeoutArgs {
   /// Timeout in seconds (0 = no timeout)

@@ -16,8 +16,8 @@ mod stage_buckets;
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use common::args::{
   cpu_budget, default_jobs, parse_shard, CompatArgs, CompatProfileArg, DiskCacheArgs, DomCompatArg,
-  LayoutParallelArgs, LayoutParallelModeArg, ResourceAccessArgs, DEFAULT_DISK_CACHE_MAX_AGE_SECS,
-  DEFAULT_DISK_CACHE_MAX_BYTES,
+  LayoutParallelArgs, LayoutParallelModeArg, MemoryGuardArgs, ResourceAccessArgs,
+  DEFAULT_DISK_CACHE_MAX_AGE_SECS, DEFAULT_DISK_CACHE_MAX_BYTES,
 };
 use common::render_pipeline::{
   build_http_fetcher, build_render_configs, follow_client_redirects_with_deadline,
@@ -347,6 +347,9 @@ struct RunArgs {
   /// When unset, defaults to (timeout - 250ms) to allow a graceful timeout before the hard kill.
   #[arg(long)]
   soft_timeout_ms: Option<u64>,
+
+  #[command(flatten)]
+  memory: MemoryGuardArgs,
 
   /// Viewport size as WxH (e.g., 1200x800)
   #[arg(long, value_parser = parse_viewport, default_value = "1200x800")]
@@ -763,6 +766,9 @@ struct WorkerArgs {
   /// Cooperative timeout handed to the renderer in milliseconds (0 disables)
   #[arg(long)]
   soft_timeout_ms: Option<u64>,
+
+  #[command(flatten)]
+  memory: MemoryGuardArgs,
 
   /// Write a Chrome trace of the render to this path
   #[arg(long)]
@@ -2902,6 +2908,18 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
   } = build_render_configs(&render_surface);
 
   options.diagnostics_level = args.diagnostics.to_level();
+  if args.memory.stage_mem_budget_mb > 0 {
+    let Some(bytes) = args.memory.stage_mem_budget_mb.checked_mul(1024 * 1024) else {
+      return Err(io::Error::new(
+        io::ErrorKind::Other,
+        format!(
+          "--stage-mem-budget-mb is too large: {} MiB",
+          args.memory.stage_mem_budget_mb
+        ),
+      ));
+    };
+    options.stage_mem_budget_bytes = Some(bytes);
+  }
   if let Some(ms) = args.soft_timeout_ms {
     if ms > 0 {
       options.timeout = Some(Duration::from_millis(ms));
@@ -7657,6 +7675,16 @@ fn push_worker_args(
     .arg(&args.user_agent)
     .arg("--accept-language")
     .arg(&args.accept_language);
+  if args.memory.mem_limit_mb > 0 {
+    cmd
+      .arg("--mem-limit-mb")
+      .arg(args.memory.mem_limit_mb.to_string());
+  }
+  if args.memory.stage_mem_budget_mb > 0 {
+    cmd
+      .arg("--stage-mem-budget-mb")
+      .arg(args.memory.stage_mem_budget_mb.to_string());
+  }
   cmd.arg("--cache-dir").arg(&args.cache_dir);
   push_disk_cache_args(cmd, &args.disk_cache);
   cmd
@@ -8270,6 +8298,24 @@ fn merge_cascade_stats_into_progress(progress: &mut PageProgress, rerun_stats: &
 
 fn run(mut args: RunArgs) -> io::Result<()> {
   ensure_disk_cache_feature_available();
+  if args.memory.mem_limit_mb > 0 {
+    match fastrender::process_limits::apply_address_space_limit_mb(args.memory.mem_limit_mb) {
+      Ok(fastrender::process_limits::AddressSpaceLimitStatus::Applied) => {}
+      Ok(fastrender::process_limits::AddressSpaceLimitStatus::Unsupported) => {
+        eprintln!(
+          "warning: --mem-limit-mb is only supported on Linux; ignoring (requested {} MiB)",
+          args.memory.mem_limit_mb
+        );
+      }
+      Ok(fastrender::process_limits::AddressSpaceLimitStatus::Disabled) => {}
+      Err(err) => {
+        return Err(io::Error::new(
+          io::ErrorKind::Other,
+          format!("failed to apply --mem-limit-mb {}: {err}", args.memory.mem_limit_mb),
+        ));
+      }
+    }
+  }
   if args.jobs == 0 {
     eprintln!("jobs must be > 0");
     std::process::exit(2);
@@ -8914,6 +8960,24 @@ fn run(mut args: RunArgs) -> io::Result<()> {
 
 fn worker(args: WorkerArgs) -> io::Result<()> {
   ensure_disk_cache_feature_available();
+  if args.memory.mem_limit_mb > 0 {
+    match fastrender::process_limits::apply_address_space_limit_mb(args.memory.mem_limit_mb) {
+      Ok(fastrender::process_limits::AddressSpaceLimitStatus::Applied) => {}
+      Ok(fastrender::process_limits::AddressSpaceLimitStatus::Unsupported) => {
+        eprintln!(
+          "warning: --mem-limit-mb is only supported on Linux; ignoring (requested {} MiB)",
+          args.memory.mem_limit_mb
+        );
+      }
+      Ok(fastrender::process_limits::AddressSpaceLimitStatus::Disabled) => {}
+      Err(err) => {
+        return Err(io::Error::new(
+          io::ErrorKind::Other,
+          format!("failed to apply --mem-limit-mb {}: {err}", args.memory.mem_limit_mb),
+        ));
+      }
+    }
+  }
   if args.cache_path.as_os_str().is_empty() {
     return Ok(());
   }
@@ -9495,6 +9559,7 @@ mod tests {
       jobs: 1,
       timeout: 1,
       soft_timeout_ms: None,
+      memory: MemoryGuardArgs::default(),
       viewport: (120, 80),
       dpr: 1.0,
       user_agent: DEFAULT_USER_AGENT.to_string(),

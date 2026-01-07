@@ -13,7 +13,7 @@ mod common;
 use clap::{ArgAction, Parser};
 use common::args::{
   AllowPartialArgs, BaseUrlArgs, CompatArgs, DiskCacheArgs, LayoutParallelArgs, MediaArgs,
-  OutputFormatArgs, ResourceAccessArgs, TimeoutArgs, ViewportArgs,
+  MemoryGuardArgs, OutputFormatArgs, ResourceAccessArgs, TimeoutArgs, ViewportArgs,
 };
 use common::media_prefs::MediaPreferences;
 use common::render_pipeline::{
@@ -73,6 +73,9 @@ struct Args {
 
   #[command(flatten)]
   timeout: TimeoutArgs,
+
+  #[command(flatten)]
+  memory: MemoryGuardArgs,
 
   #[command(flatten)]
   surface: ViewportArgs,
@@ -185,6 +188,25 @@ fn render_page(
 }
 
 fn try_main(args: Args) -> Result<()> {
+  if args.memory.mem_limit_mb > 0 {
+    match fastrender::process_limits::apply_address_space_limit_mb(args.memory.mem_limit_mb) {
+      Ok(fastrender::process_limits::AddressSpaceLimitStatus::Applied) => {}
+      Ok(fastrender::process_limits::AddressSpaceLimitStatus::Unsupported) => {
+        eprintln!(
+          "warning: --mem-limit-mb is only supported on Linux; ignoring (requested {} MiB)",
+          args.memory.mem_limit_mb
+        );
+      }
+      Ok(fastrender::process_limits::AddressSpaceLimitStatus::Disabled) => {}
+      Err(err) => {
+        return Err(fastrender::Error::Other(format!(
+          "failed to apply --mem-limit-mb {}: {err}",
+          args.memory.mem_limit_mb
+        )));
+      }
+    }
+  }
+
   let media_prefs = MediaPreferences::from(&args.media.prefs);
   media_prefs.apply_env();
   if args.full_page {
@@ -250,7 +272,10 @@ fn try_main(args: Args) -> Result<()> {
     std::fs::create_dir_all(&args.cache_dir)?;
   }
 
-  let RenderConfigBundle { config, options } = build_render_configs(&RenderSurface {
+  let RenderConfigBundle {
+    config,
+    mut options,
+  } = build_render_configs(&RenderSurface {
     viewport: (width, height),
     scroll_x,
     scroll_y,
@@ -270,6 +295,19 @@ fn try_main(args: Args) -> Result<()> {
     compat_profile: args.compat.compat_profile(),
     dom_compat_mode: args.compat.dom_compat_mode(),
   });
+  if args.memory.stage_mem_budget_mb > 0 {
+    let bytes = args
+      .memory
+      .stage_mem_budget_mb
+      .checked_mul(1024 * 1024)
+      .ok_or_else(|| {
+        fastrender::Error::Other(format!(
+          "--stage-mem-budget-mb is too large: {} MiB",
+          args.memory.stage_mem_budget_mb
+        ))
+      })?;
+    options.stage_mem_budget_bytes = Some(bytes);
+  }
 
   let http = build_http_fetcher(
     &args.user_agent,

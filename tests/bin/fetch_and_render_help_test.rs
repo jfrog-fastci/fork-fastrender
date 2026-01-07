@@ -30,4 +30,14 @@ fn help_mentions_default_output_and_dirs() {
     "help should mention --cache-dir; got:\n{}",
     help
   );
+  assert!(
+    help.contains("--mem-limit-mb"),
+    "help should mention --mem-limit-mb; got:\n{}",
+    help
+  );
+  assert!(
+    help.contains("--stage-mem-budget-mb"),
+    "help should mention --stage-mem-budget-mb; got:\n{}",
+    help
+  );
 }

@@ -19,6 +19,9 @@ scripts/run_limited.sh --as 12G --cpu 60 -- \
   cargo bench --bench selector_bloom_bench
 ```
 
+If `cargo` itself fails early with an `out of memory` message, bump `--as` (the Rust toolchain can
+reserve a surprisingly large amount of virtual address space even when RSS is low).
+
 You can also set defaults via environment variables:
 
 ```bash
@@ -30,6 +33,7 @@ LIMIT_AS=12G LIMIT_CPU=60 scripts/run_limited.sh -- cargo run --release --bin pa
 If `prlimit` is available (usually via `util-linux`), it can cap address-space and CPU:
 
 ```bash
+# Note: `prlimit` expects raw byte counts; size suffixes (e.g. 12G) are not universally supported.
 prlimit --as=$((12 * 1024 * 1024 * 1024)) --rss=$((12 * 1024 * 1024 * 1024)) --cpu=30 -- \
   cargo run --release --bin pageset_progress -- run --timeout 5
 ```
@@ -71,11 +75,38 @@ OS caps are blunt: they stop the process, but don’t tell us *why*. For FastRen
 - **Cooperative per-stage deadlines** (so timeouts are attributed to a stage)
 - **Bounded caches** (LRU with explicit byte/item caps)
 
+### Available guardrails
+
+The render-driving CLIs (`pageset_progress`, `render_pages`, `fetch_and_render`) support:
+
+- `--mem-limit-mb <N>`: **hard process memory ceiling** in MiB (`0` disables).
+  - Linux: enforced via `setrlimit(RLIMIT_AS, …)` early in startup (including worker subcommands).
+  - Non-Linux: the flag is accepted but ignored with a warning.
+- `--stage-mem-budget-mb <N>`: **best-effort per-stage RSS budget** in MiB (`0` disables).
+  - RSS is sampled at the start/end of each pipeline stage (DomParse/Css/Cascade/BoxTree/Layout/Paint).
+  - When the sampled RSS exceeds the configured budget, the render aborts with a structured
+    `RenderError::StageMemoryBudgetExceeded { stage, rss_bytes, budget_bytes }`.
+
+Examples:
+
+```bash
+# 8 GiB hard ceiling via RLIMIT_AS, abort render stages that grow beyond 2 GiB RSS
+cargo run --release --bin pageset_progress -- run \
+  --mem-limit-mb 8192 \
+  --stage-mem-budget-mb 2048
+```
+
+### Diagnostics
+
+When diagnostics/stats output is enabled (e.g. `pageset_progress --diagnostics basic` or
+`render_pages --diagnostics-json`), JSON diagnostics include per-stage RSS samples:
+
+- `diagnostics.stats.memory.dom_parse.rss_start_bytes`
+- `diagnostics.stats.memory.dom_parse.rss_end_bytes`
+- …and the same fields for `css`, `cascade`, `box_tree`, `layout`, `paint`.
+
 ### What to implement next (repo plan)
 
-- **Add a `--mem-limit-mb` flag** to the render CLIs (at least `pageset_progress`, `render_pages`, `fetch_and_render`).
-  - Implementation: call `setrlimit(RLIMIT_AS, …)` at process start (Linux).
-  - This enforces a hard ceiling even when the command is invoked through other tooling.
 - **Add per-stage “allocation budget” counters** for known hotspots (images, CSS parse, display list build).
   - Goal: fail with a diagnostic like “paint rasterize exceeded 512MB budget” instead of OOM.
 - **Make every unbounded cache bounded** (items and/or bytes) with explicit configuration knobs.

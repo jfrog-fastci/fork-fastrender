@@ -29,6 +29,35 @@ fn render_pages_writes_diagnostics_json() {
   let contents = fs::read_to_string(diag_path).expect("read diagnostics");
   let json: Value = serde_json::from_str(&contents).expect("parse diagnostics JSON");
   assert_eq!(json["status"], "ok");
+  assert!(
+    json["diagnostics"]["stats"]["memory"].is_object(),
+    "expected diagnostics.stats.memory object; got:\n{}",
+    json
+  );
+
+  let memory = &json["diagnostics"]["stats"]["memory"];
+  for stage in ["dom_parse", "css", "cascade", "box_tree", "layout", "paint"] {
+    assert!(
+      memory.get(stage).is_some(),
+      "expected stage {} to be present in diagnostics.stats.memory",
+      stage
+    );
+  }
+
+  #[cfg(target_os = "linux")]
+  {
+    let dom_parse = &memory["dom_parse"];
+    assert!(
+      dom_parse.get("rss_start_bytes").and_then(Value::as_u64).is_some(),
+      "expected dom_parse.rss_start_bytes to be present on Linux; got:\n{}",
+      dom_parse
+    );
+    assert!(
+      dom_parse.get("rss_end_bytes").and_then(Value::as_u64).is_some(),
+      "expected dom_parse.rss_end_bytes to be present on Linux; got:\n{}",
+      dom_parse
+    );
+  }
 }
 
 #[test]

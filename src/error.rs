@@ -539,6 +539,16 @@ pub enum RenderError {
     stage: RenderStage,
     elapsed: Duration,
   },
+
+  /// Rendering aborted because a best-effort per-stage RSS budget was exceeded.
+  #[error(
+    "Rendering exceeded the configured memory budget during {stage}: rss={rss_bytes} bytes budget={budget_bytes} bytes"
+  )]
+  StageMemoryBudgetExceeded {
+    stage: RenderStage,
+    rss_bytes: u64,
+    budget_bytes: u64,
+  },
 }
 
 #[cfg(test)]

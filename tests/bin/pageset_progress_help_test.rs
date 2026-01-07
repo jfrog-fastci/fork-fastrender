@@ -6,13 +6,13 @@ use tempfile::tempdir;
 
 #[test]
 fn pageset_progress_help_exits_success() {
-  let status = Command::new(env!("CARGO_BIN_EXE_pageset_progress"))
+  let output = Command::new(env!("CARGO_BIN_EXE_pageset_progress"))
     .env("DISK_CACHE", "0")
     .env("NO_DISK_CACHE", "1")
     .arg("--help")
-    .status()
+    .output()
     .expect("run pageset_progress --help");
-  assert!(status.success(), "expected success for --help");
+  assert!(output.status.success(), "expected success for --help");
 }
 
 #[test]
@@ -68,6 +68,35 @@ fn pageset_progress_run_help_mentions_font_flags() {
   assert!(
     stdout.contains("--font-dir <DIR>"),
     "run help should mention --font-dir <DIR>"
+  );
+  assert!(
+    stdout.contains("--mem-limit-mb"),
+    "run help should mention --mem-limit-mb"
+  );
+  assert!(
+    stdout.contains("--stage-mem-budget-mb"),
+    "run help should mention --stage-mem-budget-mb"
+  );
+}
+
+#[test]
+fn pageset_progress_worker_help_mentions_memory_guardrails() {
+  let output = Command::new(env!("CARGO_BIN_EXE_pageset_progress"))
+    .env("DISK_CACHE", "0")
+    .env("NO_DISK_CACHE", "1")
+    .args(["worker", "--help"])
+    .output()
+    .expect("run pageset_progress worker --help");
+  assert!(output.status.success(), "expected success for worker --help");
+
+  let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+  assert!(
+    stdout.contains("--mem-limit-mb"),
+    "worker help should mention --mem-limit-mb"
+  );
+  assert!(
+    stdout.contains("--stage-mem-budget-mb"),
+    "worker help should mention --stage-mem-budget-mb"
   );
 }
 

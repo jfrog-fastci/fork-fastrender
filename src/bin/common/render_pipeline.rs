@@ -1,6 +1,8 @@
 //! Shared helpers for CLI render binaries.
 
-use super::args::{CompatArgs, LayoutParallelArgs, LayoutParallelModeArg, ResourceAccessArgs};
+use super::args::{
+  CompatArgs, LayoutParallelArgs, LayoutParallelModeArg, MemoryGuardArgs, ResourceAccessArgs,
+};
 use fastrender::api::{
   FastRender, FastRenderConfig, RenderArtifactRequest, RenderDiagnostics, RenderOptions,
   RenderReport, RenderResult, ResourceKind,
@@ -936,6 +938,7 @@ pub fn configure_worker_stdio(cmd: &mut Command, stderr_path: &Path) -> std::io:
 pub struct WorkerCommonArgs<'a> {
   pub timeout: u64,
   pub soft_timeout_ms: Option<u64>,
+  pub memory: &'a MemoryGuardArgs,
   pub viewport: (u32, u32),
   pub dpr: f32,
   pub scroll: Option<(f32, f32)>,
@@ -961,6 +964,17 @@ pub fn apply_worker_common_args(cmd: &mut Command, args: &WorkerCommonArgs<'_>) 
     .arg(args.user_agent)
     .arg("--accept-language")
     .arg(args.accept_language);
+
+  if args.memory.mem_limit_mb > 0 {
+    cmd
+      .arg("--mem-limit-mb")
+      .arg(args.memory.mem_limit_mb.to_string());
+  }
+  if args.memory.stage_mem_budget_mb > 0 {
+    cmd
+      .arg("--stage-mem-budget-mb")
+      .arg(args.memory.stage_mem_budget_mb.to_string());
+  }
 
   if let Some((scroll_x, scroll_y)) = args.scroll {
     cmd

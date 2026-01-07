@@ -201,6 +201,8 @@ pub mod pageset;
 pub mod resource;
 pub mod svg;
 pub(crate) mod svg_path;
+pub mod memory;
+pub mod process_limits;
 pub mod system;
 
 // ============================================================================
