@@ -850,6 +850,85 @@ fn transition_behavior_blocks_border_style_by_default() {
 }
 
 #[test]
+fn transition_behavior_list_repeats_last_value_for_discrete_properties() {
+  let html = r#"
+    <style>
+      @starting-style { #box { border-style: solid; visibility: visible; } }
+      #box {
+        width: 100px;
+        height: 100px;
+        border-width: 4px;
+        border-color: rgb(0, 0, 0);
+        border-style: dashed;
+        visibility: hidden;
+        transition-property: border-style, visibility;
+        transition-duration: 1000ms;
+        transition-timing-function: linear;
+        transition-behavior: allow-discrete;
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut early = fragment_tree.clone();
+  let viewport = early.viewport_size();
+  animation::apply_transitions(&mut early, 400.0, viewport);
+  assert_eq!(fragment_border_top_style(&early, box_id), BorderStyle::Solid);
+  assert_eq!(fragment_visibility(&early, box_id), Visibility::Visible);
+
+  let mut late = fragment_tree.clone();
+  let viewport = late.viewport_size();
+  animation::apply_transitions(&mut late, 600.0, viewport);
+  assert_eq!(fragment_border_top_style(&late, box_id), BorderStyle::Dashed);
+  assert_eq!(fragment_visibility(&late, box_id), Visibility::Visible);
+
+  let mut end = fragment_tree.clone();
+  let viewport = end.viewport_size();
+  animation::apply_transitions(&mut end, 1000.0, viewport);
+  assert_eq!(fragment_visibility(&end, box_id), Visibility::Hidden);
+}
+
+#[test]
+fn transition_behavior_list_respects_per_property_indexing() {
+  let html = r#"
+    <style>
+      @starting-style { #box { border-style: solid; visibility: visible; } }
+      #box {
+        width: 100px;
+        height: 100px;
+        border-width: 4px;
+        border-color: rgb(0, 0, 0);
+        border-style: dashed;
+        visibility: hidden;
+        transition-property: border-style, visibility;
+        transition-duration: 1000ms;
+        transition-timing-function: linear;
+        transition-behavior: allow-discrete, normal;
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut start = fragment_tree.clone();
+  let viewport = start.viewport_size();
+  animation::apply_transitions(&mut start, 0.0, viewport);
+  assert_eq!(fragment_border_top_style(&start, box_id), BorderStyle::Solid);
+  assert_eq!(fragment_visibility(&start, box_id), Visibility::Hidden);
+
+  let mut late = fragment_tree.clone();
+  let viewport = late.viewport_size();
+  animation::apply_transitions(&mut late, 600.0, viewport);
+  assert_eq!(fragment_border_top_style(&late, box_id), BorderStyle::Dashed);
+  assert_eq!(fragment_visibility(&late, box_id), Visibility::Hidden);
+}
+
+#[test]
 fn transition_behavior_blocks_untyped_custom_properties_by_default() {
   let html = r#"
     <style>
