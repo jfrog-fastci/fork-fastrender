@@ -512,3 +512,85 @@ fn font_optical_sizing_auto_overrides_font_face_opsz_descriptor() {
     "expected style font-variation-settings to override font-optical-sizing:auto opsz={font_size} with {override_opsz}, got {actual_authored}"
   );
 }
+
+#[test]
+fn font_named_instance_matching_is_case_insensitive() {
+  let (font_bytes, instance_name, instance_wght) =
+    [INTER_VAR_FONT, TEST_VAR_FONT, AMSTELVAR_ALPHA_FONT]
+      .into_iter()
+      .find_map(|bytes| {
+        first_named_instance_with_wght(bytes).map(|(name, wght)| (bytes, name, wght))
+      })
+      .expect("fixture variable font should provide a named instance with wght axis");
+
+  let mismatched_case = if instance_name.chars().any(|ch| ch.is_ascii_lowercase()) {
+    instance_name.to_ascii_uppercase()
+  } else {
+    instance_name.to_ascii_lowercase()
+  };
+  assert_ne!(
+    mismatched_case, instance_name,
+    "expected mismatched-case instance name to differ from fixture name"
+  );
+  let escaped_instance = escape_css_string(&mismatched_case);
+
+  let url = "https://example.test/named_case.ttf";
+  let fetcher: Arc<dyn FontFetcher> = Arc::new(FixtureFetcher::new(vec![(url, font_bytes)]));
+  let ctx = context_with_fetcher(fetcher);
+
+  let faces = parse_faces(&format!(
+    "@font-face {{ font-family: NamedCase; src: url(\"{url}\"); font-weight: 100 900; font-named-instance: \"{escaped_instance}\"; }}"
+  ));
+  assert_eq!(faces.len(), 1);
+  ctx
+    .load_web_fonts(&faces, None, None)
+    .expect("load named instance face");
+
+  let mut style = ComputedStyle::default();
+  style.font_family = vec!["NamedCase".to_string()].into();
+  style.font_weight = FontWeight::Number(100);
+  let run = shape_single_run("A", &style, &ctx);
+  let actual = variation_value(&run, *b"wght").unwrap_or_default();
+  assert!(
+    (actual - instance_wght).abs() < 0.001,
+    "expected case-insensitive named instance to set wght={instance_wght}, got {actual} (instance={instance_name}, css={mismatched_case})"
+  );
+}
+
+#[test]
+fn font_language_override_descriptor_trims_and_ignores_invalid_values() {
+  let url = "https://example.test/lang2.ttf";
+  let fetcher: Arc<dyn FontFetcher> = Arc::new(FixtureFetcher::new(vec![(url, TEST_VAR_FONT)]));
+  let ctx = context_with_fetcher(fetcher);
+
+  let faces = parse_faces(&format!(
+    "@font-face {{ font-family: LangTrimmed; src: url(\"{url}\"); font-language-override: \" SRB \"; }}\n@font-face {{ font-family: LangInvalid; src: url(\"{url}\"); font-language-override: \"TOOLONG\"; }}"
+  ));
+  assert_eq!(faces.len(), 2);
+  assert_eq!(faces[0].font_language_override.as_deref(), Some("SRB"));
+  assert!(
+    faces[1].font_language_override.is_none(),
+    "expected invalid font-language-override descriptor to be ignored"
+  );
+
+  ctx.load_web_fonts(&faces, None, None)
+    .expect("load language faces");
+
+  let expected_srb = HbLanguage::from_str("SRB").expect("valid hb language");
+  let expected_trk = HbLanguage::from_str("TRK").expect("valid hb language");
+
+  let mut style = ComputedStyle::default();
+  style.language = "TRK".into();
+
+  style.font_family = vec!["LangTrimmed".to_string()].into();
+  let run_trimmed = shape_single_run("A", &style, &ctx);
+  assert_eq!(run_trimmed.language, Some(expected_srb));
+
+  style.font_family = vec!["LangInvalid".to_string()].into();
+  let run_invalid = shape_single_run("A", &style, &ctx);
+  assert_eq!(
+    run_invalid.language,
+    Some(expected_trk),
+    "expected invalid descriptor to fall back to style language"
+  );
+}
