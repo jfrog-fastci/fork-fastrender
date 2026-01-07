@@ -85,6 +85,28 @@ fn assert_rtl_column_order(cells: &HashMap<char, Rect>) {
   );
 }
 
+fn assert_rtl_colspan_mapping(cells: &HashMap<char, Rect>) {
+  let a = cells.get(&'A').expect("cell A present");
+  let c = cells.get(&'C').expect("cell C present");
+
+  assert!(
+    a.x() > c.x(),
+    "expected RTL colspan cell A to be to the right of C, got A.x={:.2} C.x={:.2}",
+    a.x(),
+    c.x()
+  );
+  assert!(
+    (a.width() - 100.0).abs() < 0.1,
+    "expected A width 100px (40px+60px), got {:.2}",
+    a.width()
+  );
+  assert!(
+    (c.width() - 50.0).abs() < 0.1,
+    "expected C width 50px, got {:.2}",
+    c.width()
+  );
+}
+
 #[test]
 fn table_direction_rtl_column_order_separate_model() {
   let html = r#"
@@ -159,3 +181,76 @@ fn table_direction_rtl_column_order_collapsed_model() {
   assert_rtl_column_order(&cells);
 }
 
+#[test]
+fn table_direction_rtl_colspan_separate_model() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            width: 150px;
+            table-layout: fixed;
+            border-collapse: separate;
+            border-spacing: 0;
+            direction: rtl;
+            padding: 0;
+            border: 0;
+          }
+          col.col1 { width: 40px; }
+          col.col2 { width: 60px; }
+          col.col3 { width: 50px; }
+          td { padding: 0; margin: 0; border: 0; font-size: 12px; line-height: 12px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col class="col1" />
+          <col class="col2" />
+          <col class="col3" />
+          <tr><td colspan="2">A</td><td>C</td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let cells = layout_table_cells(html);
+  assert_rtl_colspan_mapping(&cells);
+}
+
+#[test]
+fn table_direction_rtl_colspan_collapsed_model() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            width: 150px;
+            table-layout: fixed;
+            border-collapse: collapse;
+            border-spacing: 0;
+            direction: rtl;
+            padding: 0;
+            border: 0;
+          }
+          col.col1 { width: 40px; }
+          col.col2 { width: 60px; }
+          col.col3 { width: 50px; }
+          td { padding: 0; margin: 0; border: 0; font-size: 12px; line-height: 12px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col class="col1" />
+          <col class="col2" />
+          <col class="col3" />
+          <tr><td colspan="2">A</td><td>C</td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let cells = layout_table_cells(html);
+  assert_rtl_colspan_mapping(&cells);
+}
