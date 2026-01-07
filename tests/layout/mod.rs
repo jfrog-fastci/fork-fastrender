@@ -73,6 +73,7 @@ mod table_caption_layout;
 mod table_collapsed_borders;
 mod table_collapsed_border_conflict_resolution;
 mod table_colgroup_span_background;
+mod table_column_span_backgrounds;
 mod table_columns_test;
 mod table_direction_rtl;
 mod table_empty_cells;

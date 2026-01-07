@@ -6913,7 +6913,12 @@ impl FormattingContext for TableFormattingContext {
     };
 
     // Column group and column backgrounds precede row backgrounds/cells.
+    //
+    // `<col>` and `<colgroup>` can each map to multiple source columns via the HTML `span`
+    // attribute. Track the "source" column index separately from the visible column index so
+    // `visibility: collapse` filtering doesn't desync the traversal.
     let mut column_styles: Vec<Option<Arc<ComputedStyle>>> = vec![None; structure.column_count];
+    let mut column_spans: Vec<(usize, usize, Arc<ComputedStyle>)> = Vec::new();
     let mut column_groups: Vec<(usize, usize, Arc<ComputedStyle>)> = Vec::new();
     let mut source_col_idx = 0usize;
     for child in table_box
@@ -6925,47 +6930,73 @@ impl FormattingContext for TableFormattingContext {
       match TableStructure::get_table_element_type(child) {
         TableElementType::Column => {
           let span = child.table_column_span();
-          for _ in 0..span {
+          let mut first_visible = None;
+          let mut last_visible = None;
+          for offset in 0..span {
             check_layout_deadline(&mut deadline_counter)?;
-            if let Some(visible) = source_col_to_visible.get(source_col_idx).and_then(|m| *m) {
+            if let Some(visible) =
+              source_col_to_visible
+                .get(source_col_idx + offset)
+                .and_then(|m| *m)
+            {
               column_styles[visible] = Some(child.style.clone());
+              first_visible.get_or_insert(visible);
+              last_visible = Some(visible);
             }
-            source_col_idx += 1;
           }
+          if let (Some(start), Some(end)) = (first_visible, last_visible) {
+            column_spans.push((start, end + 1, child.style.clone()));
+          }
+          source_col_idx += span;
         }
         TableElementType::ColumnGroup => {
           let mut first_visible = None;
           let mut last_visible = None;
-          let has_columns = child.children.iter().any(|col_child| {
+          let has_col_children = child.children.iter().any(|col_child| {
             TableStructure::get_table_element_type(col_child) == TableElementType::Column
           });
-          if has_columns {
+          if has_col_children {
             for col_child in &child.children {
               check_layout_deadline(&mut deadline_counter)?;
               if TableStructure::get_table_element_type(col_child) != TableElementType::Column {
                 continue;
               }
               let span = col_child.table_column_span();
-              for _ in 0..span {
+              let mut col_first_visible = None;
+              let mut col_last_visible = None;
+              for offset in 0..span {
                 check_layout_deadline(&mut deadline_counter)?;
-                if let Some(visible) = source_col_to_visible.get(source_col_idx).and_then(|m| *m) {
+                if let Some(visible) =
+                  source_col_to_visible
+                    .get(source_col_idx + offset)
+                    .and_then(|m| *m)
+                {
                   column_styles[visible] = Some(col_child.style.clone());
                   first_visible.get_or_insert(visible);
                   last_visible = Some(visible);
+                  col_first_visible.get_or_insert(visible);
+                  col_last_visible = Some(visible);
                 }
-                source_col_idx += 1;
               }
+              if let (Some(start), Some(end)) = (col_first_visible, col_last_visible) {
+                column_spans.push((start, end + 1, col_child.style.clone()));
+              }
+              source_col_idx += span;
             }
           } else {
             let span = child.table_column_span();
-            for _ in 0..span {
+            for offset in 0..span {
               check_layout_deadline(&mut deadline_counter)?;
-              if let Some(visible) = source_col_to_visible.get(source_col_idx).and_then(|m| *m) {
+              if let Some(visible) =
+                source_col_to_visible
+                  .get(source_col_idx + offset)
+                  .and_then(|m| *m)
+              {
                 first_visible.get_or_insert(visible);
                 last_visible = Some(visible);
               }
-              source_col_idx += 1;
             }
+            source_col_idx += span;
           }
           if let (Some(start), Some(end)) = (first_visible, last_visible) {
             column_groups.push((start, end + 1, child.style.clone()));
@@ -7034,16 +7065,14 @@ impl FormattingContext for TableFormattingContext {
         end,
       );
     }
-    for (idx, style) in column_styles.into_iter().enumerate() {
-      if let Some(style) = style {
-        push_column_span_fragment(
-          &mut fragments,
-          &mut stripped_border_cache,
-          style,
-          idx,
-          idx + 1,
-        );
-      }
+    for (start, end, style) in column_spans {
+      push_column_span_fragment(
+        &mut fragments,
+        &mut stripped_border_cache,
+        style,
+        start,
+        end,
+      );
     }
 
     // Paint order backgrounds before cells.
