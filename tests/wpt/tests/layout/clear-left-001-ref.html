@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>clear:left reference</title>
+<style>
+  body {
+    margin: 0;
+  }
+
+  .box {
+    position: absolute;
+  }
+
+  .float {
+    left: 0;
+    top: 0;
+    width: 60px;
+    height: 60px;
+    background: #00f;
+  }
+
+  .clear {
+    left: 0;
+    top: 60px;
+    width: 60px;
+    height: 60px;
+    background: #0f0;
+  }
+</style>
+<div class="box float"></div>
+<div class="box clear"></div>
+

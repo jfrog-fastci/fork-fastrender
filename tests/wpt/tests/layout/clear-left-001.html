@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>clear:left positions block below preceding left float</title>
+<style>
+  body {
+    margin: 0;
+    font-size: 0;
+  }
+
+  .float {
+    float: left;
+    width: 60px;
+    height: 60px;
+    background: #00f;
+  }
+
+  .clear {
+    clear: left;
+    width: 60px;
+    height: 60px;
+    background: #0f0;
+  }
+</style>
+<div class="float"></div>
+<div class="clear"></div>
+

@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Inline-block participates in inline formatting around floats</title>
+<style>
+  body {
+    margin: 0;
+    font-size: 0;
+  }
+
+  .float {
+    float: left;
+    width: 60px;
+    height: 60px;
+    background: #00f;
+  }
+
+  .ib {
+    display: inline-block;
+    width: 60px;
+    height: 60px;
+    background: #0f0;
+    vertical-align: top;
+  }
+</style>
+<div class="float"></div><div class="ib"></div>
+

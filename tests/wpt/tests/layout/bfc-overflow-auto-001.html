@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>BFC (overflow:auto) blocks float intrusion</title>
+<style>
+  body {
+    margin: 0;
+    font-size: 0;
+  }
+
+  .float {
+    float: left;
+    width: 60px;
+    height: 60px;
+    background: #00f;
+  }
+
+  .bfc {
+    overflow: auto;
+    width: 120px;
+    height: 60px;
+    background: #0f0;
+  }
+</style>
+<div class="float"></div>
+<div class="bfc"></div>
+

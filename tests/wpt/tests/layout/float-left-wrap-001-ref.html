@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Float left wraps following inline content reference</title>
+<style>
+  body {
+    margin: 0;
+  }
+
+  .box {
+    position: absolute;
+  }
+
+  .float {
+    left: 0;
+    top: 0;
+    width: 60px;
+    height: 60px;
+    background: #00f;
+  }
+
+  .a {
+    left: 60px;
+    top: 0;
+    width: 60px;
+    height: 60px;
+    background: #0f0;
+  }
+
+  .b {
+    left: 0;
+    top: 60px;
+    width: 120px;
+    height: 60px;
+    background: #0f0;
+  }
+</style>
+<div class="box float"></div>
+<div class="box a"></div>
+<div class="box b"></div>
+

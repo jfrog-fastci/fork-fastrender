@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Float right wraps following inline content</title>
+<style>
+  body {
+    margin: 0;
+    font-size: 0;
+  }
+
+  .float {
+    float: right;
+    width: 60px;
+    height: 60px;
+    background: #00f;
+  }
+
+  .piece {
+    display: inline-block;
+    background: #0f0;
+    vertical-align: top;
+  }
+
+  .piece.a {
+    width: 60px;
+    height: 60px;
+  }
+
+  .piece.b {
+    width: 120px;
+    height: 60px;
+  }
+</style>
+<div class="float"></div>
+<div>
+  <span class="piece a"></span><span class="piece b"></span>
+</div>
+

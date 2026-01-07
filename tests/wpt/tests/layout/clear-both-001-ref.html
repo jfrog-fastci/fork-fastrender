@@ -1,0 +1,40 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>clear:both reference</title>
+<style>
+  body {
+    margin: 0;
+  }
+
+  .box {
+    position: absolute;
+  }
+
+  .left {
+    left: 0;
+    top: 0;
+    width: 60px;
+    height: 60px;
+    background: #00f;
+  }
+
+  .right {
+    left: 60px;
+    top: 0;
+    width: 60px;
+    height: 80px;
+    background: #0f0;
+  }
+
+  .clear {
+    left: 0;
+    top: 80px;
+    width: 120px;
+    height: 40px;
+    background: #f00;
+  }
+</style>
+<div class="box left"></div>
+<div class="box right"></div>
+<div class="box clear"></div>
+

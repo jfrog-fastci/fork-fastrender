@@ -362,6 +362,110 @@ width = 200
 height = 160
 
 [[tests]]
+id = "layout/float-left-wrap-001"
+path = "layout/float-left-wrap-001.html"
+reference = "layout/float-left-wrap-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "layout/float-right-wrap-001"
+path = "layout/float-right-wrap-001.html"
+reference = "layout/float-right-wrap-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "layout/clear-left-001"
+path = "layout/clear-left-001.html"
+reference = "layout/clear-left-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "layout/clear-both-001"
+path = "layout/clear-both-001.html"
+reference = "layout/clear-both-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "layout/bfc-overflow-auto-001"
+path = "layout/bfc-overflow-auto-001.html"
+reference = "layout/bfc-overflow-auto-001-ref.html"
+test_type = "reftest"
+expected = "fail"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "layout/nested-floats-001"
+path = "layout/nested-floats-001.html"
+reference = "layout/nested-floats-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 160
+height = 100
+
+[[tests]]
+id = "layout/float-shrink-to-fit-001"
+path = "layout/float-shrink-to-fit-001.html"
+reference = "layout/float-shrink-to-fit-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 140
+height = 40
+
+[[tests]]
+id = "layout/float-inline-block-001"
+path = "layout/float-inline-block-001.html"
+reference = "layout/float-inline-block-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 60
+
+[[tests]]
 id = "paint/border-radius-001"
 path = "paint/border-radius-001.html"
 test_type = "visual"
