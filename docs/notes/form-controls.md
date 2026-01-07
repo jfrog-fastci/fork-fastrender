@@ -49,16 +49,23 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
   - Checkbox/radio marks are skipped when `control.appearance == Appearance::None`:
     - `src/paint/display_list_builder.rs::emit_form_control` (`FormControlKind::Checkbox`)
     - `src/paint/painter.rs::paint_form_control` (`FormControlKind::Checkbox`)
-  - Range controls switch to “custom range” painting when `control.appearance == Appearance::None`:
-    - Default UA track/thumb painting is suppressed.
-    - The display-list painter can use styles captured from `::-webkit-slider-thumb` and
-      `::-webkit-slider-runnable-track` (see the `FormControlKind::Range` branch).
-    - The immediate painter currently uses `slider_thumb_style` only (no track style yet).
+  - Range controls treat `appearance:none` as “custom range” mode:
+    - UA track/fill painting is skipped when `control.appearance == Appearance::None`, so the
+      element’s own `background`/`border` becomes the “track”.
+    - The thumb is still painted; in `Appearance::None` mode it can be styled via
+      `slider_thumb_style` (captured from `::-webkit-slider-thumb` / `::-moz-range-thumb` /
+      `::-ms-thumb`).
+    - `slider_track_style` is captured (e.g. `::-webkit-slider-runnable-track`) but is not yet used
+      for `appearance:none` painting.
+    - See `src/paint/display_list_builder.rs::emit_form_control` and
+      `src/paint/painter.rs::paint_form_control` (`FormControlKind::Range`).
 - Task 80 tracks further broadening of the suppressed affordance set for `appearance:none` (beyond the current select/checkbox/range hooks).
 - Current limitations:
   - `appearance:none` does **not** turn the element into a normal container: the control is still a `ReplacedType::FormControl`, so its DOM children are not laid out (e.g. `<button><svg>…</svg>Label</button>` collapses to a plain text label).
   - `appearance:none` does **not** yet disable all affordances (e.g. number/date glyphs are still painted today; see `TextControlKind::{Number,Date}` handling in both painters).
-  - Range pseudo-element selectors are normalized internally (WebKit/Mozilla/MS spellings are accepted), but painters may still only consume a subset of the available style hooks.
+  - Range pseudo-element selectors are normalized internally (WebKit/Mozilla/MS spellings are accepted), but painters still only consume a subset of the style hooks:
+    - `slider_thumb_style` is used by the immediate painter only in `appearance:none` mode.
+    - `slider_track_style` is currently used by the display-list renderer only when `appearance != none` (the immediate painter ignores it).
 
 ## Intended direction (fallback rendering model)
 
@@ -85,7 +92,7 @@ their goldens with:
 
 ```
 UPDATE_PAGES_GOLDEN=1 \
-  PAGES_FIXTURE_FILTER=form_controls,form_controls_appearance,form_controls_range_select,form_controls_showcase,form_controls_states,form_controls_custom_vs_default,form_controls_comparison_panel,form_controls_lab \
+  PAGES_FIXTURE_FILTER=form_controls,form_controls_appearance,form_controls_placeholder,form_controls_range_select,form_controls_showcase,form_controls_states,form_controls_custom_vs_default,form_controls_comparison_panel,form_controls_lab \
   cargo test pages_regression
 ```
 
