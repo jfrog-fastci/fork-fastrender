@@ -2179,8 +2179,12 @@ fn mix_blend_mode_hue_matches_serial_output_under_tiling() {
 fn mix_blend_mode_hue_with_transform_matches_serial_output_under_tiling() {
   let mut list = DisplayList::new();
   list.push(DisplayItem::FillRect(FillRectItem {
-    rect: Rect::from_xywh(0.0, 0.0, 128.0, 128.0),
+    rect: Rect::from_xywh(0.0, 0.0, 64.0, 128.0),
     color: Rgba::from_rgba8(60, 140, 200, 255),
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(64.0, 0.0, 64.0, 128.0),
+    color: Rgba::from_rgba8(200, 140, 60, 255),
   }));
 
   // Rotate around the stacking context's center to ensure the transformed content straddles tiles.
@@ -2198,7 +2202,7 @@ fn mix_blend_mode_hue_with_transform_matches_serial_output_under_tiling() {
     bounds,
     plane_rect: bounds,
     mix_blend_mode: BlendMode::Hue,
-    opacity: 1.0,
+    opacity: 0.75,
     is_isolated: false,
     transform: Some(transform),
     child_perspective: None,
