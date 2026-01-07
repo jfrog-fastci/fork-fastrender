@@ -695,6 +695,136 @@ width = 240
 height = 220
 
 [[tests]]
+id = "style/conditional/supports-true-001"
+path = "style/conditional/supports-true-001.html"
+reference = "style/conditional/supports-true-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "style/conditional/supports-false-001"
+path = "style/conditional/supports-false-001.html"
+reference = "style/conditional/supports-false-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "style/conditional/supports-not-001"
+path = "style/conditional/supports-not-001.html"
+reference = "style/conditional/supports-not-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "style/conditional/supports-and-001"
+path = "style/conditional/supports-and-001.html"
+reference = "style/conditional/supports-and-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "style/conditional/supports-unknown-prop-001"
+path = "style/conditional/supports-unknown-prop-001.html"
+reference = "style/conditional/supports-unknown-prop-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "style/conditional/supports-nested-media-001"
+path = "style/conditional/supports-nested-media-001.html"
+reference = "style/conditional/supports-nested-media-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "style/conditional/container-inline-size-true-001"
+path = "style/conditional/container-inline-size-true-001.html"
+reference = "style/conditional/container-inline-size-true-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "style/conditional/container-inline-size-false-001"
+path = "style/conditional/container-inline-size-false-001.html"
+reference = "style/conditional/container-inline-size-false-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "style/conditional/container-inline-size-max-001"
+path = "style/conditional/container-inline-size-max-001.html"
+reference = "style/conditional/container-inline-size-max-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
+id = "style/conditional/container-name-selection-001"
+path = "style/conditional/container-name-selection-001.html"
+reference = "style/conditional/container-name-selection-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
 id = "style/scope-basic-001"
 path = "style/scope-basic-001.html"
 test_type = "visual"

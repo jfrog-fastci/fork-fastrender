@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>@supports false branch does not apply</title>
+<style>
+  body {
+    margin: 0;
+    background: white;
+  }
+  #box {
+    width: 120px;
+    height: 120px;
+    background: rgb(255, 0, 0);
+  }
+
+  /* Invalid value for a known property should make the condition false. */
+  @supports (display: nonsense) {
+    #box {
+      background: rgb(0, 160, 0);
+    }
+  }
+</style>
+<div id="box"></div>
+
