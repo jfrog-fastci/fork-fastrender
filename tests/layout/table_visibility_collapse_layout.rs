@@ -1341,6 +1341,7 @@ fn column_group_visibility_collapse_removes_extra_border_spacing_gap() {
 
 #[test]
 fn column_group_visibility_collapse_removes_extra_border_spacing_gap_rtl() {
+  ensure_rayon_threads();
   let html = r#"
     <html>
       <head>

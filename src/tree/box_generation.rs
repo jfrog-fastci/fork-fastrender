@@ -4908,7 +4908,6 @@ mod tests {
       _ => None,
     }
   }
-
   fn generate_box_tree(styled: &StyledNode) -> BoxTree {
     generate_box_tree_result(styled).expect("box generation failed")
   }
