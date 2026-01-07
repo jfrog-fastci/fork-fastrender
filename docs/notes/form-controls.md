@@ -6,7 +6,7 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
 
 ## Specs (background)
 
-- HTML Living Standard: form controls (`<input>`, `<select>`, `<textarea>`, `<button>`)
+- HTML Living Standard: form controls (`<input>`, `<select>`, `<textarea>`, `<button>`) (`specs/whatwg-html/source`)
 - CSS UI 4: `appearance` and the “fallback rendering model” for controls (`specs/csswg-drafts/css-ui-4/`)
 
 ## How it works
