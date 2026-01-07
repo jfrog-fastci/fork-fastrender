@@ -16092,7 +16092,7 @@ mod tests {
     let mut painter = Painter::new(100, 30, Rgba::WHITE).expect("painter");
     painter.fill_background();
     let content_rect = Rect::from_xywh(0.0, 0.0, 100.0, 30.0);
-    painter.paint_form_control(&control, &style, content_rect, None, None);
+    painter.paint_form_control(&control, &style, content_rect, content_rect, None, None);
 
     let pixmap = painter.pixmap;
     let thumb_px = color_at(&pixmap, 50, 15);
