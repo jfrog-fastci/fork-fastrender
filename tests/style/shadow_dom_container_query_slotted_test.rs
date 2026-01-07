@@ -53,3 +53,35 @@ fn container_query_in_shadow_root_selects_query_container_via_flat_tree_ancestor
   let target = find_by_id(&styled, "slotted").expect("slotted span");
   assert_eq!(target.styles.color, Rgba::rgb(255, 0, 0));
 }
+
+#[test]
+fn container_query_in_nested_shadow_root_selects_query_container_via_flat_tree_ancestors() {
+  let html = r#"
+    <div id=host>
+      <template shadowroot=open>
+        <style>
+          #container { width: 200px; container-type: inline-size; }
+        </style>
+        <div id=container>
+          <slot></slot>
+        </div>
+      </template>
+
+      <x-inner id=inner>
+        <template shadowroot=open>
+          <style>
+            #shadowed { color: rgb(0 128 0); }
+            @container (min-width: 150px) {
+              #shadowed { color: rgb(255 0 0); }
+            }
+          </style>
+          <span id=shadowed>Shadow</span>
+        </template>
+      </x-inner>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let shadowed = find_by_id(&styled, "shadowed").expect("inner shadow span");
+  assert_eq!(shadowed.styles.color, Rgba::rgb(255, 0, 0));
+}

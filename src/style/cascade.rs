@@ -7577,18 +7577,26 @@ fn container_query_ancestor_ids_for<'a>(
   slot_assignment: &SlotAssignment,
   dom_maps: &DomMaps,
 ) -> Cow<'a, [usize]> {
-  let Some(info) = slot_assignment.node_to_slot.get(&node_id) else {
+  if slot_assignment.node_to_slot.is_empty() {
     return Cow::Borrowed(ancestor_ids);
-  };
-  let slot_id = info.slot_node_id;
-  if slot_id == 0 {
+  }
+
+  let has_slotted_ancestor = slot_assignment.node_to_slot.contains_key(&node_id)
+    || ancestor_ids
+      .iter()
+      .any(|id| slot_assignment.node_to_slot.contains_key(id));
+  if !has_slotted_ancestor {
     return Cow::Borrowed(ancestor_ids);
   }
 
   let mut ids: Vec<usize> = Vec::new();
-  let mut current = slot_id;
+  let mut current = node_id;
   while current > 0 {
-    let parent = *dom_maps.parent_map.get(current).unwrap_or(&0);
+    let parent = slot_assignment
+      .node_to_slot
+      .get(&current)
+      .map(|slot| slot.slot_node_id)
+      .unwrap_or_else(|| *dom_maps.parent_map.get(current).unwrap_or(&0));
     if parent == 0 {
       break;
     }
@@ -7596,7 +7604,6 @@ fn container_query_ancestor_ids_for<'a>(
     current = parent;
   }
   ids.reverse();
-  ids.push(slot_id);
   Cow::Owned(ids)
 }
 
@@ -9646,29 +9653,6 @@ fn exported_part_names(
   Some(exported)
 }
 
-fn flat_tree_ancestor_ids_for_container_query(
-  node_id: usize,
-  dom_maps: &DomMaps,
-  slot_assignment: &SlotAssignment,
-) -> Vec<usize> {
-  let mut ids: Vec<usize> = Vec::new();
-  let mut current = node_id;
-  while current > 0 {
-    let parent = slot_assignment
-      .node_to_slot
-      .get(&current)
-      .map(|slot| slot.slot_node_id)
-      .unwrap_or_else(|| *dom_maps.parent_map.get(current).unwrap_or(&0));
-    if parent == 0 {
-      break;
-    }
-    ids.push(parent);
-    current = parent;
-  }
-  ids.reverse();
-  ids
-}
-
 fn match_part_rules<'a>(
   node: &DomNode,
   node_id: usize,
@@ -9707,13 +9691,11 @@ fn match_part_rules<'a>(
     return Vec::new();
   }
 
-  let query_ancestor_ids_storage = (!slot_assignment.node_to_slot.is_empty()
-    && (slot_assignment.node_to_slot.contains_key(&node_id)
-      || ancestor_ids
-        .iter()
-        .any(|id| slot_assignment.node_to_slot.contains_key(id))))
-  .then(|| flat_tree_ancestor_ids_for_container_query(node_id, dom_maps, slot_assignment));
-  let query_ancestor_ids = query_ancestor_ids_storage.as_deref().unwrap_or(ancestor_ids);
+  let query_ancestor_ids = if container_ctx.is_some() {
+    container_query_ancestor_ids_for(node_id, ancestor_ids, slot_assignment, dom_maps)
+  } else {
+    Cow::Borrowed(ancestor_ids)
+  };
   let mut matched: Vec<MatchedRule<'a>> = Vec::new();
   let mut matched_by_order: HashMap<usize, usize> = HashMap::new();
 
@@ -9805,7 +9787,7 @@ fn match_part_rules<'a>(
             host_ancestors,
             ancestor_bloom,
             node_id,
-            query_ancestor_ids,
+            query_ancestor_ids.as_ref(),
             container_ctx,
             slot_map,
             dom_maps.selector_blooms(),
@@ -10176,8 +10158,11 @@ fn compute_base_styles<'a>(
   element_attr_cache: &ElementAttrCache,
   include_starting_style: bool,
 ) -> Result<NodeBaseStyles, RenderError> {
-  let container_query_ancestor_ids =
-    container_query_ancestor_ids_for(node_id, ancestor_ids, slot_assignment, dom_maps);
+  let container_query_ancestor_ids = if container_ctx.is_some() {
+    container_query_ancestor_ids_for(node_id, ancestor_ids, slot_assignment, dom_maps)
+  } else {
+    Cow::Borrowed(ancestor_ids)
+  };
   if !node.is_element() {
     let mut ua_styles = get_default_styles_for_element(node);
     inherit_styles(&mut ua_styles, parent_ua_styles);
@@ -10585,8 +10570,11 @@ fn compute_pseudo_styles(
     return (None, None, None, None, None);
   }
 
-  let container_query_ancestor_ids =
-    container_query_ancestor_ids_for(node_id, ancestor_ids, slot_assignment, dom_maps);
+  let container_query_ancestor_ids = if container_ctx.is_some() {
+    container_query_ancestor_ids_for(node_id, ancestor_ids, slot_assignment, dom_maps)
+  } else {
+    Cow::Borrowed(ancestor_ids)
+  };
   let mut backdrop_styles = None;
   if styles.top_layer.is_some()
     && (styles.top_layer.map(|k| k.is_modal()).unwrap_or(false)
@@ -26304,8 +26292,11 @@ fn find_matching_rules<'a>(
   }
   let assigned_slot = slot_assignment.node_to_slot.get(&node_id);
   let current_shadow = dom_maps.containing_shadow_root(node_id);
-  let container_query_ancestor_ids =
-    container_query_ancestor_ids_for(node_id, ancestor_ids, slot_assignment, dom_maps);
+  let container_query_ancestor_ids = if container_ctx.is_some() {
+    container_query_ancestor_ids_for(node_id, ancestor_ids, slot_assignment, dom_maps)
+  } else {
+    Cow::Borrowed(ancestor_ids)
+  };
   let node_tree_scope_prefix = dom_maps.tree_scope_prefix(node_id);
   let profiling = cascade_profile_enabled();
   let start = profiling.then(|| Instant::now());
