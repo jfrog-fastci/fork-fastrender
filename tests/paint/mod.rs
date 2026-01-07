@@ -72,6 +72,7 @@ mod parallel_paint_test;
 mod picture_source_selection;
 mod preserve3d_scene;
 mod preserve_3d_blend_isolation;
+mod preserve_3d_backdrop_root_scope;
 mod preserve_3d_clip_scope;
 mod preserve_3d_clipping;
 mod preserve_3d_depth_sort;
