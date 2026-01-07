@@ -4365,9 +4365,13 @@ fn media_src_from_source_children(styled: &StyledNode, kind: MediaElementKind) -
 }
 
 fn effective_media_src(styled: &StyledNode, kind: MediaElementKind) -> String {
-  let src = styled.node.get_attribute("src").unwrap_or_default();
-  if !media_src_is_unusable(&src) {
-    return src;
+  let src = styled
+    .node
+    .get_attribute_ref("src")
+    .map(str::trim)
+    .unwrap_or("");
+  if !media_src_is_unusable(src) {
+    return src.to_string();
   }
 
   media_src_from_source_children(styled, kind).unwrap_or_default()
@@ -4386,7 +4390,12 @@ fn create_replaced_box_from_styled(
 
   // Determine replaced type
   let replaced_type = if tag.eq_ignore_ascii_case("img") {
-    let src = styled.node.get_attribute("src").unwrap_or_default();
+    let src = styled
+      .node
+      .get_attribute_ref("src")
+      .map(str::trim)
+      .unwrap_or("")
+      .to_string();
     let alt = styled
       .node
       .get_attribute_ref("alt")
@@ -4428,12 +4437,14 @@ fn create_replaced_box_from_styled(
     let mut poster = styled
       .node
       .get_attribute_ref("poster")
+      .map(str::trim)
       .filter(|s| !s.is_empty())
       .map(|s| s.to_string());
     if poster.is_none() && site_compat {
       poster = styled
         .node
         .get_attribute_ref("gnt-gl-ps")
+        .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
     }
@@ -4492,7 +4503,12 @@ fn create_replaced_box_from_styled(
       .to_string();
     ReplacedType::Object { data }
   } else {
-    let src = styled.node.get_attribute("src").unwrap_or_default();
+    let src = styled
+      .node
+      .get_attribute_ref("src")
+      .map(str::trim)
+      .unwrap_or("")
+      .to_string();
     let alt = styled
       .node
       .get_attribute_ref("alt")
@@ -4675,6 +4691,24 @@ mod tests {
       }
     }
     node.children.iter().find_map(first_object_data)
+  }
+
+  fn first_image_src(node: &BoxNode) -> Option<String> {
+    if let BoxType::Replaced(repl) = &node.box_type {
+      if let ReplacedType::Image { src, .. } = &repl.replaced_type {
+        return Some(src.clone());
+      }
+    }
+    node.children.iter().find_map(first_image_src)
+  }
+
+  fn first_video_src_and_poster(node: &BoxNode) -> Option<(String, Option<String>)> {
+    if let BoxType::Replaced(repl) = &node.box_type {
+      if let ReplacedType::Video { src, poster } = &repl.replaced_type {
+        return Some((src.clone(), poster.clone()));
+      }
+    }
+    node.children.iter().find_map(first_video_src_and_poster)
   }
 
   fn collect_text(node: &BoxNode, out: &mut Vec<String>) {
@@ -5185,6 +5219,38 @@ mod tests {
       first_object_data(&box_tree.root).as_deref(),
       Some("img.png"),
       "replaced object data should be whitespace-trimmed"
+    );
+  }
+
+  #[test]
+  fn img_replaced_src_is_trimmed() {
+    let html = "<html><body><img src=\"  img.png  \"></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    assert_eq!(
+      first_image_src(&box_tree.root).as_deref(),
+      Some("img.png"),
+      "img src should be whitespace-trimmed"
+    );
+  }
+
+  #[test]
+  fn video_src_and_poster_are_trimmed() {
+    let html =
+      "<html><body><video src=\"  v.mp4  \" poster=\"  poster.png  \"></video></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    let (src, poster) =
+      first_video_src_and_poster(&box_tree.root).expect("expected a replaced video");
+    assert_eq!(src, "v.mp4", "video src should be whitespace-trimmed");
+    assert_eq!(
+      poster.as_deref(),
+      Some("poster.png"),
+      "video poster should be whitespace-trimmed"
     );
   }
 
