@@ -13442,6 +13442,26 @@ fn parse_object_position(value: &PropertyValue) -> Option<ObjectPosition> {
             _ => {}
           }
         }
+        (Part::Keyword(AxisKind::Vertical, kw), Part::Offset(off)) => {
+          y = Some(AxisPos {
+            align: kw,
+            offset: None,
+          });
+          x = Some(AxisPos {
+            align: PK::Start,
+            offset: Some(off),
+          });
+        }
+        (Part::Offset(off), Part::Keyword(AxisKind::Horizontal, kw)) => {
+          x = Some(AxisPos {
+            align: kw,
+            offset: None,
+          });
+          y = Some(AxisPos {
+            align: PK::Start,
+            offset: Some(off),
+          });
+        }
         _ => {
           x = single_axis(a, AxisKind::Horizontal);
           y = single_axis(b, AxisKind::Vertical);
@@ -23628,6 +23648,47 @@ mod tests {
       style.object_position.y,
       PositionComponent::Keyword(PositionKeyword::Center)
     );
+  }
+
+  #[test]
+  fn parses_object_position_two_value_vertical_keyword_length_swaps_axes() {
+    let mut style = ComputedStyle::default();
+    let decl = Declaration {
+      property: "object-position".into(),
+      value: parse_property_value("object-position", "top 10px").expect("object-position parsed"),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert_eq!(
+      style.object_position.x,
+      PositionComponent::Length(Length::px(10.0))
+    );
+    assert_eq!(
+      style.object_position.y,
+      PositionComponent::Keyword(PositionKeyword::Start)
+    );
+  }
+
+  #[test]
+  fn parses_object_position_two_value_length_horizontal_keyword_swaps_axes() {
+    let mut style = ComputedStyle::default();
+    let decl = Declaration {
+      property: "object-position".into(),
+      value: parse_property_value("object-position", "25% left").expect("object-position parsed"),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert_eq!(
+      style.object_position.x,
+      PositionComponent::Keyword(PositionKeyword::Start)
+    );
+    assert_eq!(style.object_position.y, PositionComponent::Percentage(0.25));
   }
 
   #[test]
