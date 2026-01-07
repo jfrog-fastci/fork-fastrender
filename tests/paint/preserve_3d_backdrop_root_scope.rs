@@ -73,6 +73,7 @@ fn preserve_3d_backdrop_filter_respects_backdrop_root_scope() {
   filtered_plane.has_backdrop_sensitive_descendants = true;
   filtered_plane.is_isolated = true;
   filtered_plane.establishes_backdrop_root = true;
+  filtered_plane.has_backdrop_sensitive_descendants = true;
   list.push(DisplayItem::PushStackingContext(filtered_plane));
   list.push(DisplayItem::PopStackingContext);
 
