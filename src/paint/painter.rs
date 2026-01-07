@@ -6079,8 +6079,12 @@ impl Painter {
     }
 
     // Replaced elements default to `overflow: clip` in the UA stylesheet, so their content needs
-    // to be clipped to the content box (and its inner border radius). The display-list backend
-    // handles this via explicit clip items; mirror that behavior in the legacy painter.
+    // to be clipped. Most replaced content is clipped to the content box (and its inner border
+    // radius). Form controls are special-cased to clip to the padding box so UA affordances (e.g.
+    // `<select>` arrows) that live in the padding area are not clipped away.
+    //
+    // The display-list backend handles this via explicit clip items; mirror that behavior in the
+    // legacy painter.
     let mut clip_mask_guard: Option<BackgroundClipMaskGuard> = None;
     let mut clip_mask: Option<&Mask> = None;
     if let (Some(style), Some(rects)) = (style, rects.as_ref()) {
@@ -6093,14 +6097,23 @@ impl Painter {
         Overflow::Hidden | Overflow::Scroll | Overflow::Auto | Overflow::Clip
       ) || style.containment.paint;
       if clip_x || clip_y {
+        let clip_box = if matches!(replaced_type, ReplacedType::FormControl(_)) {
+          crate::style::types::BackgroundBox::PaddingBox
+        } else {
+          crate::style::types::BackgroundBox::ContentBox
+        };
+        let clip_bounds = match clip_box {
+          crate::style::types::BackgroundBox::PaddingBox => rects.padding,
+          _ => content_rect,
+        };
         let canvas_w = self.pixmap.width();
         let canvas_h = self.pixmap.height();
-        let mut clip_rect = self.device_rect(content_rect);
+        let mut clip_rect = self.device_rect(clip_bounds);
         let clip_radii = if clip_x && clip_y {
           resolve_clip_radii(
             style,
             rects,
-            crate::style::types::BackgroundBox::ContentBox,
+            clip_box,
             Some(viewport),
           )
         } else {

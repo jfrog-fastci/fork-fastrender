@@ -19,7 +19,7 @@ fn count_red(pixmap: &Pixmap, x0: u32, y0: u32, x1: u32, y1: u32) -> usize {
 }
 
 #[test]
-fn legacy_form_control_text_is_clipped_to_content_box() {
+fn legacy_form_control_text_is_clipped_to_padding_box() {
   let toggles = RuntimeToggles::from_map(HashMap::from([(
     "FASTR_PAINT_BACKEND".to_string(),
     "legacy".to_string(),
@@ -46,10 +46,18 @@ fn legacy_form_control_text_is_clipped_to_content_box() {
     "expected form control text to paint inside content box"
   );
 
-  // Right padding box: x=[40..50). Text should be clipped to the content box, leaving padding green.
+  // Right padding box: x=[40..50). Overflow clipping should use the padding box, so text can paint
+  // into the padding region (but should still be clipped before the border box).
   let padding_red = count_red(&pixmap, 41, 21, 49, 59);
+  assert!(
+    padding_red > 0,
+    "expected form control text to be able to paint into padding box (red pixels in padding={padding_red})"
+  );
+
+  // Right border: x=[50..60). Text must not leak into the border box.
+  let border_red = count_red(&pixmap, 51, 21, 59, 59);
   assert_eq!(
-    padding_red, 0,
-    "expected form control text overflow to be clipped (red pixels in padding={padding_red})"
+    border_red, 0,
+    "expected form control text overflow to be clipped to the padding box (red pixels in border={border_red})"
   );
 }
