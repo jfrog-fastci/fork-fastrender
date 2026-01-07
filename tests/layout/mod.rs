@@ -58,6 +58,7 @@ mod subgrid_auto_span;
 mod subgrid_autorepeat_named_lines;
 mod table_anonymous_inheritance;
 mod table_cell_placement;
+mod table_caption_layout;
 mod table_collapsed_borders;
 mod table_collapsed_border_conflict_resolution;
 mod table_colgroup_span_background;

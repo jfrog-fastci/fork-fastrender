@@ -36,6 +36,7 @@ use crate::layout::absolute_positioning::AbsoluteLayout;
 use crate::layout::absolute_positioning::AbsoluteLayoutInput;
 use crate::layout::constraints::AvailableSpace;
 use crate::layout::constraints::LayoutConstraints;
+use crate::layout::contexts::block::margin_collapse::MarginCollapseContext;
 use crate::layout::contexts::block::BlockFormattingContext;
 use crate::layout::contexts::factory::FormattingContextFactory;
 use crate::layout::contexts::positioned::ContainingBlock;
@@ -5350,40 +5351,6 @@ impl FormattingContext for TableFormattingContext {
       _ => None,
     };
 
-    // Captions impose a minimum width on the table: CSS 2.1 §17.4 requires the table box to be
-    // at least as wide as its caption. Resolve authored widths first; otherwise fall back to the
-    // caption's intrinsic max-content width.
-    let mut caption_pref_width: f32 = 0.0;
-    for caption in captions.iter().copied().filter(|c| {
-      !matches!(
-        c.style.position,
-        crate::style::position::Position::Absolute | crate::style::position::Position::Fixed
-      )
-    }) {
-      let width = if let Some(width) = caption.style.width.as_ref() {
-        resolve_length_against(width, caption.style.font_size, containing_width).unwrap_or(0.0)
-      } else {
-        let fc_type = caption
-          .formatting_context()
-          .unwrap_or(FormattingContextType::Block);
-        let res = match fc_type {
-          FormattingContextType::Table => {
-            let fc = self.factory.create(fc_type);
-            fc.compute_intrinsic_inline_size(caption, IntrinsicSizingMode::MaxContent)
-          }
-          _ => self.factory.with_fc(fc_type, |fc| {
-            fc.compute_intrinsic_inline_size(caption, IntrinsicSizingMode::MaxContent)
-          }),
-        };
-        match res {
-          Ok(value) => value,
-          Err(err @ LayoutError::Timeout { .. }) => return Err(err),
-          Err(_) => 0.0,
-        }
-      };
-      caption_pref_width = caption_pref_width.max(width);
-    }
-
     // Honor explicit table width if present.
     let font_size = table_root_style.font_size;
     let mut intrinsic_sizes_for_keywords: Option<(f32, f32)> = None;
@@ -5462,11 +5429,8 @@ impl FormattingContext for TableFormattingContext {
         resolved_max_width
       };
 
-    let mut min_width = resolved_min_width;
+    let min_width = resolved_min_width;
     let max_width = resolved_max_width;
-    if caption_pref_width > 0.0 && specified_width.is_none() {
-      min_width = Some(min_width.unwrap_or(0.0).max(caption_pref_width));
-    }
 
     // Table width for sizing; percentages on columns use a definite table width when available.
     //
@@ -7428,9 +7392,8 @@ impl FormattingContext for TableFormattingContext {
       return Ok(fragment);
     }
 
-    // Table wrapper width must accommodate both the table box and any captions (CSS 2.1 §17.4).
-    let mut wrapper_width = table_bounds.width().max(caption_pref_width);
-    wrapper_width = clamp_to_min_max(wrapper_width, min_width, max_width);
+    // CSS 2.1 §17.4: the table wrapper width is the border-edge width of the table grid box.
+    let wrapper_width = table_bounds.width().max(0.0);
 
     // Only the table box itself should render backgrounds/borders. Element-level visual
     // effects (opacity/filters/transforms) apply to the wrapper that contains captions.
@@ -7452,9 +7415,23 @@ impl FormattingContext for TableFormattingContext {
 
     // Layout captions relative to the table's width.
     let mut wrapper_children = Vec::new();
-    let mut offset_y = 0.0;
+    let mut offset_y = 0.0f32;
+    let mut margin_ctx = MarginCollapseContext::new();
+    let resolve_caption_margin = |margin: Option<&Length>, style: &ComputedStyle| -> f32 {
+      margin
+        .and_then(|len| {
+          len.resolve_with_context(
+            Some(wrapper_width),
+            self.viewport_size.width,
+            self.viewport_size.height,
+            style.font_size,
+            style.root_font_size,
+          )
+        })
+        .unwrap_or(0.0)
+    };
 
-    let layout_caption = |caption: &BoxNode, y: f32| -> Result<(FragmentNode, f32), LayoutError> {
+    let layout_caption = |caption: &BoxNode| -> Result<FragmentNode, LayoutError> {
       let fc_type = caption
         .formatting_context()
         .unwrap_or(crate::style::display::FormattingContextType::Block);
@@ -7462,7 +7439,7 @@ impl FormattingContext for TableFormattingContext {
         AvailableSpace::Definite(wrapper_width),
         constraints.available_height,
       );
-      let mut frag = match fc_type {
+      let frag = match fc_type {
         FormattingContextType::Table => {
           let fc = self.factory.create(fc_type);
           fc.layout(caption, &caption_constraints)
@@ -7471,26 +7448,53 @@ impl FormattingContext for TableFormattingContext {
           .factory
           .with_fc(fc_type, |fc| fc.layout(caption, &caption_constraints)),
       }?;
-      frag.bounds = Rect::from_xywh(0.0, 0.0, wrapper_width, frag.bounds.height());
-      let height = frag.bounds.height();
-      frag.bounds = frag.bounds.translate(Point::new(0.0, y));
-      Ok((frag, height))
+      Ok(frag)
     };
 
     let mut caption_offsets: std::collections::HashMap<usize, f32> =
       std::collections::HashMap::new();
+
+    fn place_block(
+      mut frag: FragmentNode,
+      margin_top: f32,
+      margin_bottom: f32,
+      margin_ctx: &mut MarginCollapseContext,
+      offset_y: &mut f32,
+      wrapper_children: &mut Vec<FragmentNode>,
+    ) -> f32 {
+      margin_ctx.push_margin(margin_top);
+      *offset_y += margin_ctx.resolve();
+      let y = *offset_y;
+      frag.bounds = frag.bounds.translate(Point::new(0.0, y));
+      *offset_y += frag.bounds.height();
+      margin_ctx.push_margin(margin_bottom);
+      wrapper_children.push(frag);
+      y
+    }
+
     for caption in captions
       .iter()
       .copied()
       .filter(|c| matches!(c.style.caption_side, CaptionSide::Top))
     {
-      let y = offset_y;
-      let (frag, h) = layout_caption(caption, y)?;
-      offset_y += h;
+      let margin_top = resolve_caption_margin(caption.style.margin_top.as_ref(), &caption.style);
+      let margin_bottom =
+        resolve_caption_margin(caption.style.margin_bottom.as_ref(), &caption.style);
+      let frag = layout_caption(caption)?;
+      let y = place_block(
+        frag,
+        margin_top,
+        margin_bottom,
+        &mut margin_ctx,
+        &mut offset_y,
+        &mut wrapper_children,
+      );
       caption_offsets.insert(caption.id, y);
-      wrapper_children.push(frag);
     }
 
+    // The table grid box is a block-level child of the wrapper with no margins.
+    margin_ctx.push_margin(0.0);
+    offset_y += margin_ctx.resolve();
     let table_origin_y = offset_y;
     let mut table_translated = table_fragment;
     table_translated.bounds = table_translated
@@ -7506,6 +7510,7 @@ impl FormattingContext for TableFormattingContext {
           .unwrap_or_else(|| table_translated.bounds.height()),
     );
     offset_y += table_translated.bounds.height();
+    margin_ctx.push_margin(0.0);
     wrapper_children.push(table_translated);
 
     for caption in captions
@@ -7513,11 +7518,24 @@ impl FormattingContext for TableFormattingContext {
       .copied()
       .filter(|c| matches!(c.style.caption_side, CaptionSide::Bottom))
     {
-      let y = offset_y;
-      let (frag, h) = layout_caption(caption, y)?;
-      offset_y += h;
+      let margin_top = resolve_caption_margin(caption.style.margin_top.as_ref(), &caption.style);
+      let margin_bottom =
+        resolve_caption_margin(caption.style.margin_bottom.as_ref(), &caption.style);
+      let frag = layout_caption(caption)?;
+      let y = place_block(
+        frag,
+        margin_top,
+        margin_bottom,
+        &mut margin_ctx,
+        &mut offset_y,
+        &mut wrapper_children,
+      );
       caption_offsets.insert(caption.id, y);
-      wrapper_children.push(frag);
+    }
+
+    let trailing_margin = margin_ctx.pending_margin();
+    if trailing_margin > 0.0 {
+      offset_y += trailing_margin;
     }
 
     let mut wrapper_style = table_root_style.clone();
