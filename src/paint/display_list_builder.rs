@@ -10633,6 +10633,52 @@ mod tests {
   }
 
   #[test]
+  fn stacking_context_bounds_include_descendant_box_shadow_paint_overflow() {
+    let mut outer_style = ComputedStyle::default();
+    outer_style.display = Display::Block;
+    outer_style.isolation = crate::style::types::Isolation::Isolate;
+
+    let mut inner_style = ComputedStyle::default();
+    inner_style.display = Display::Block;
+    inner_style.box_shadow = vec![crate::css::types::BoxShadow {
+      offset_x: Length::px(0.0),
+      offset_y: Length::px(0.0),
+      blur_radius: Length::px(0.0),
+      spread_radius: Length::px(10.0),
+      color: Rgba::RED,
+      inset: false,
+    }];
+
+    let inner = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
+      vec![],
+      Arc::new(inner_style),
+    );
+    let mid = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 20.0, 20.0), vec![inner]);
+    let outer = FragmentNode::new_block_styled(
+      Rect::from_xywh(40.0, 40.0, 20.0, 20.0),
+      vec![mid],
+      Arc::new(outer_style),
+    );
+    let root = FragmentNode::new_block(Rect::from_xywh(0.0, 0.0, 200.0, 200.0), vec![outer]);
+
+    let list = DisplayListBuilder::new()
+      .with_viewport_size(200.0, 200.0)
+      .build_with_stacking_tree(&root);
+    let items = list.items();
+
+    let sc_bounds = items.iter().find_map(|item| match item {
+      DisplayItem::PushStackingContext(sc) if sc.is_isolated => Some(sc.bounds),
+      _ => None,
+    });
+    assert_eq!(
+      sc_bounds,
+      Some(Rect::from_xywh(30.0, 30.0, 40.0, 40.0)),
+      "stacking context bounds should include descendant box-shadow paint overflow"
+    );
+  }
+
+  #[test]
   fn stacking_context_bounds_include_outline_paint_overflow() {
     let mut style = ComputedStyle::default();
     style.display = Display::Block;

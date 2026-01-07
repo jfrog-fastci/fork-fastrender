@@ -507,47 +507,73 @@ impl StackingContext {
     // Union fragment paint bounds from all layers in the parent stacking context's coordinate
     // space.
     //
-    // We start from each fragment's border box in this stacking context's local coordinate space,
-    // expand by paint effects (outline/shadows), and union the scrollable overflow (which includes
-    // descendants). This keeps stacking-context culling and bounded layer allocation conservative.
-    let mut include_fragment = |frag: &FragmentNode, is_root_fragment: bool| {
-      let border_rect = if is_root_fragment {
-        Rect::new(Point::ZERO, frag.bounds.size)
-      } else {
-        frag.bounds
-      };
-
+    // The stacking tree only stores the top-level fragments for each paint layer; many descendants
+    // (e.g. wrappers that don't create stacking contexts) are painted via fragment-tree recursion.
+    // We must therefore traverse those descendant fragments here, otherwise paint-only effects like
+    // box-shadow/outline can be clipped when a stacking context is rendered into a bounded layer
+    // surface.
+    let mut include_fragment = |frag: &FragmentNode, origin: Point| {
+      let border_rect = Rect::new(origin, frag.bounds.size);
       let mut fragment_bounds = paint_bounds::fragment_paint_bounds(
         frag,
         border_rect,
         frag.style.as_deref(),
         viewport,
       );
-
-      let overflow = if is_root_fragment {
-        frag.scroll_overflow
-      } else {
-        frag.scroll_overflow.translate(frag.bounds.origin)
-      };
-      fragment_bounds = fragment_bounds.union(overflow);
-
+      fragment_bounds = fragment_bounds.union(frag.scroll_overflow.translate(origin));
       accumulate(translate(fragment_bounds), &mut bounds);
     };
 
-    for (idx, frag) in self.fragments.iter().enumerate() {
-      include_fragment(frag, idx == 0);
+    let mut stack: Vec<(&FragmentNode, Point, bool)> = Vec::new();
+    for (idx, fragment) in self.fragments.iter().enumerate() {
+      let origin = if idx == 0 {
+        Point::ZERO
+      } else {
+        fragment.bounds.origin
+      };
+      // Root fragments are painted without descending into children (layered paint handles them),
+      // so treat them as shallow for bounds collection too.
+      stack.push((fragment, origin, false));
     }
-    for frag in &self.layer3_blocks {
-      include_fragment(frag, false);
+    for fragment in &self.layer3_blocks {
+      stack.push((fragment, fragment.bounds.origin, true));
     }
-    for frag in &self.layer4_floats {
-      include_fragment(frag, false);
+    for fragment in &self.layer4_floats {
+      stack.push((fragment, fragment.bounds.origin, true));
     }
-    for frag in &self.layer5_inlines {
-      include_fragment(frag, false);
+    for fragment in &self.layer5_inlines {
+      stack.push((fragment, fragment.bounds.origin, true));
     }
-    for frag in &self.layer6_positioned {
-      include_fragment(&frag.fragment, false);
+    for fragment in &self.layer6_positioned {
+      stack.push((&fragment.fragment, fragment.fragment.bounds.origin, true));
+    }
+
+    while let Some((fragment, origin, recurse_children)) = stack.pop() {
+      include_fragment(fragment, origin);
+
+      if !recurse_children {
+        continue;
+      }
+
+      let parent_style = fragment.style.as_deref();
+      for child in fragment.children.iter() {
+        if let Some(child_style) = child.style.as_deref() {
+          if creates_stacking_context(child_style, parent_style, false) {
+            continue;
+          }
+          if !matches!(child_style.position, Position::Static)
+            && !creates_stacking_context(child_style, None, false)
+          {
+            continue;
+          }
+        }
+
+        let child_origin = Point::new(
+          origin.x + child.bounds.origin.x,
+          origin.y + child.bounds.origin.y,
+        );
+        stack.push((child, child_origin, true));
+      }
     }
 
     // Union child stacking context bounds
