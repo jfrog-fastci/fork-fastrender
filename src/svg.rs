@@ -301,7 +301,13 @@ pub(crate) fn map_svg_aspect_ratio(
 
 /// Extracts the root viewBox if present.
 pub(crate) fn svg_root_view_box(svg_content: &str) -> Option<SvgViewBox> {
-  let doc = Document::parse(svg_content).ok()?;
+  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    Document::parse(svg_content)
+  })) {
+    Ok(Ok(doc)) => doc,
+    Ok(Err(_)) => return None,
+    Err(_) => return None,
+  };
   let root = doc.root_element();
   if !root.tag_name().name().eq_ignore_ascii_case("svg") {
     return None;
@@ -316,7 +322,13 @@ pub(crate) fn svg_view_box_root_transform(
   dest_width: f32,
   dest_height: f32,
 ) -> Option<Transform> {
-  let doc = Document::parse(svg_content).ok()?;
+  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    Document::parse(svg_content)
+  })) {
+    Ok(Ok(doc)) => doc,
+    Ok(Err(_)) => return None,
+    Err(_) => return None,
+  };
   let root = doc.root_element();
   if !root.tag_name().name().eq_ignore_ascii_case("svg") {
     return None;
@@ -328,4 +340,22 @@ pub(crate) fn svg_view_box_root_transform(
   let dest = map_svg_aspect_ratio(view_box, preserve, dest_width, dest_height);
 
   Some(dest.pre_concat(source.invert().unwrap_or_else(Transform::identity)))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{svg_root_view_box, svg_view_box_root_transform};
+
+  #[test]
+  fn svg_helpers_do_not_panic_on_invalid_markup() {
+    let invalid = "<svg><";
+
+    let view_box = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| svg_root_view_box(invalid)));
+    assert!(view_box.is_ok());
+
+    let transform = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      svg_view_box_root_transform(invalid, 1.0, 1.0, 1.0, 1.0)
+    }));
+    assert!(transform.is_ok());
+  }
 }

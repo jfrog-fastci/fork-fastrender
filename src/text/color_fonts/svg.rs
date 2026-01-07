@@ -78,7 +78,13 @@ pub(super) fn parse_svg_glyph(
 
   let mut options = resvg::usvg::Options::default();
   options.resources_dir = None;
-  let tree = resvg::usvg::Tree::from_str(markup, &options).ok()?;
+  let tree = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    resvg::usvg::Tree::from_str(markup, &options)
+  })) {
+    Ok(Ok(tree)) => tree,
+    Ok(Err(_)) => return None,
+    Err(_) => return None,
+  };
   let size = tree.size();
   let source_width = size.width() as f32;
   let source_height = size.height() as f32;
@@ -154,7 +160,13 @@ pub(super) fn rasterize_parsed_svg(
   );
   let transform = concat_transforms(glyph_transform, parsed.root_transform);
 
-  resvg::render(&parsed.tree, transform, &mut pixmap.as_mut());
+  if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    resvg::render(&parsed.tree, transform, &mut pixmap.as_mut());
+  }))
+  .is_err()
+  {
+    return None;
+  }
 
   let top = -max_y * scale;
   if !top.is_finite() {
@@ -178,7 +190,13 @@ fn rasterize_svg_with_metrics(
   let mut options = resvg::usvg::Options::default();
   options.resources_dir = None;
 
-  let tree = resvg::usvg::Tree::from_str(svg_with_color, &options).ok()?;
+  let tree = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    resvg::usvg::Tree::from_str(svg_with_color, &options)
+  })) {
+    Ok(Ok(tree)) => tree,
+    Ok(Err(_)) => return None,
+    Err(_) => return None,
+  };
   let size = tree.size();
   let source_width = size.width() as f32;
   let source_height = size.height() as f32;
@@ -240,7 +258,13 @@ fn rasterize_svg_with_metrics(
   );
   let transform = concat_transforms(glyph_transform, view_box_transform);
 
-  resvg::render(&tree, transform, &mut pixmap.as_mut());
+  if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+  }))
+  .is_err()
+  {
+    return None;
+  }
 
   let top = -max_y * scale;
   if !top.is_finite() {
@@ -264,7 +288,12 @@ fn sanitize_svg_glyph(svg_bytes: &[u8]) -> Option<&str> {
   }
 
   let svg_str = std::str::from_utf8(svg_bytes).ok()?;
-  let doc = Document::parse(svg_str).ok()?;
+  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Document::parse(svg_str)))
+  {
+    Ok(Ok(doc)) => doc,
+    Ok(Err(_)) => return None,
+    Err(_) => return None,
+  };
   let mut element_count = 0usize;
 
   for node in doc.descendants().filter(|n| n.is_element()) {
@@ -375,7 +404,11 @@ fn starts_with_case_insensitive(value: &str, prefix: &str) -> bool {
 }
 
 fn preprocess_svg_markup(svg: &str, text_color: Rgba) -> Option<String> {
-  let doc = Document::parse(svg).ok()?;
+  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Document::parse(svg))) {
+    Ok(Ok(doc)) => doc,
+    Ok(Err(_)) => return None,
+    Err(_) => return None,
+  };
   let root = doc.root_element();
   let color_css = format_css_color(text_color);
 
@@ -521,12 +554,28 @@ fn concat_transforms(a: Transform, b: Transform) -> Transform {
 #[cfg(test)]
 mod tests {
   use super::super::limits::GlyphRasterLimits;
-  use super::rasterize_svg_with_metrics;
+  use super::{preprocess_svg_markup, rasterize_svg_with_metrics, sanitize_svg_glyph_for_tests};
+  use crate::style::color::Rgba;
 
   #[test]
   fn svg_glyph_rasterization_respects_limits() {
     let svg = r#"<svg width="10000" height="10000" viewBox="0 0 10000 10000"></svg>"#;
     let limits = GlyphRasterLimits::new(1024, 1024_u64 * 1024_u64);
     assert!(rasterize_svg_with_metrics(svg, 1, 50.0, 1.0, &limits).is_none());
+  }
+
+  #[test]
+  fn svg_glyph_helpers_reject_invalid_markup_without_panicking() {
+    let invalid = b"<svg><";
+    let sanitized = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      sanitize_svg_glyph_for_tests(invalid)
+    }));
+    assert!(sanitized.is_ok(), "sanitize_svg_glyph panicked");
+    assert!(sanitized.unwrap().is_none());
+
+    let preprocess = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      preprocess_svg_markup("<svg><", Rgba::rgb(1, 2, 3))
+    }));
+    assert!(preprocess.is_ok(), "preprocess_svg_markup panicked");
   }
 }
