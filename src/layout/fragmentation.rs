@@ -1810,6 +1810,26 @@ pub(crate) fn collect_forced_boundaries_with_axes(
     }
   }
 
+  #[derive(Clone, Copy, Default)]
+  struct BoundaryRequirement {
+    forced: bool,
+    side: Option<PageSide>,
+  }
+
+  fn merge_boundary_side(current: &mut Option<PageSide>, incoming: Option<PageSide>) {
+    match (*current, incoming) {
+      (None, side) => *current = side,
+      (side, None) => *current = side,
+      (Some(a), Some(b)) if a == b => *current = Some(a),
+      (Some(_), Some(_)) => *current = None,
+    }
+  }
+
+  fn record_boundary(requirement: &mut BoundaryRequirement, side: Option<PageSide>) {
+    requirement.forced = true;
+    merge_boundary_side(&mut requirement.side, side);
+  }
+
   fn collect(
     node: &FragmentNode,
     abs_start: f32,
@@ -1824,10 +1844,96 @@ pub(crate) fn collect_forced_boundaries_with_axes(
       .map(|s| s.as_ref())
       .unwrap_or(default_style);
     let grid_items = if matches!(node_style.display, Display::Grid | Display::InlineGrid) {
-      node.grid_fragmentation.as_ref()
+      node.grid_fragmentation.as_deref()
     } else {
       None
     };
+
+    let mut grid_item_count = 0usize;
+    if matches!(node_style.display, Display::Grid | Display::InlineGrid) {
+      if let (Some(grid_tracks), Some(grid_items)) = (node.grid_tracks.as_deref(), grid_items) {
+        let tracks = if axis.block_is_horizontal {
+          &grid_tracks.columns
+        } else {
+          &grid_tracks.rows
+        };
+        if !tracks.is_empty() && !grid_items.items.is_empty() {
+          let in_flow_count = grid_items.items.len().min(node.children.len());
+          // One slot per grid line (track_count + 1). Index `i` corresponds to the boundary at line
+          // `i + 1`.
+          let mut boundary_reqs = vec![BoundaryRequirement::default(); tracks.len() + 1];
+
+          for idx in 0..in_flow_count {
+            let child = &node.children[idx];
+            let child_style = child
+              .style
+              .as_ref()
+              .map(|s| s.as_ref())
+              .unwrap_or(default_style);
+            let placement = &grid_items.items[idx];
+            let (start_line, end_line) = if axis.block_is_horizontal {
+              (placement.column_start, placement.column_end)
+            } else {
+              (placement.row_start, placement.row_end)
+            };
+
+            if is_forced_page_break(child_style.break_before) {
+              let boundary_idx = start_line.saturating_sub(1) as usize;
+              if let Some(req) = boundary_reqs.get_mut(boundary_idx) {
+                record_boundary(req, break_side_hint(child_style.break_before));
+              }
+            }
+
+            if is_forced_page_break(child_style.break_after) {
+              let boundary_idx = end_line.saturating_sub(1) as usize;
+              if let Some(req) = boundary_reqs.get_mut(boundary_idx) {
+                record_boundary(req, break_side_hint(child_style.break_after));
+              }
+            }
+          }
+
+          if boundary_reqs.iter().any(|req| req.forced) {
+            // Precompute flow-start offsets for each track. Index `i` is the boundary at grid line
+            // `i + 1` (i.e. before the track that starts at that line).
+            let mut track_flow_starts = Vec::with_capacity(tracks.len());
+            for (track_start, track_end) in tracks.iter().copied() {
+              let size = track_end - track_start;
+              track_flow_starts.push(abs_start + axis.flow_offset(track_start, size, parent_block_size));
+            }
+
+            if boundary_reqs[0].forced {
+              forced.push(ForcedBoundary {
+                position: abs_start,
+                page_side: boundary_reqs[0].side,
+              });
+            }
+            for idx in 1..tracks.len() {
+              let req = boundary_reqs[idx];
+              if !req.forced {
+                continue;
+              }
+              if let Some(&position) = track_flow_starts.get(idx) {
+                forced.push(ForcedBoundary {
+                  position,
+                  page_side: req.side,
+                });
+              }
+            }
+            let end_req = boundary_reqs[tracks.len()];
+            if end_req.forced {
+              forced.push(ForcedBoundary {
+                position: abs_start + parent_block_size,
+                page_side: end_req.side,
+              });
+            }
+
+            // Grid items are the first in-flow children; remember how many so we can avoid emitting
+            // forced boundaries at their own fragment ends below.
+            grid_item_count = in_flow_count;
+          }
+        }
+      }
+    }
 
     for (idx, child) in node.children.iter().enumerate() {
       let child_block_size = axis.block_size(&child.bounds);
@@ -1846,34 +1952,40 @@ pub(crate) fn collect_forced_boundaries_with_axes(
         .unwrap_or(default_style);
 
       if idx == 0 && is_forced_page_break(child_style.break_before) {
-        forced.push(ForcedBoundary {
-          position: child_abs_start,
-          page_side: break_side_hint(child_style.break_before),
-        });
+        if idx >= grid_item_count {
+          forced.push(ForcedBoundary {
+            position: child_abs_start,
+            page_side: break_side_hint(child_style.break_before),
+          });
+        }
       }
 
-      if is_forced_page_break(child_style.break_after)
-        || is_forced_page_break(next_style.break_before)
-      {
-        let mut boundary = child_abs_end;
-        if let Some(meta) = child.block_metadata.as_ref() {
-          let mut candidate = child_abs_end + meta.margin_bottom;
-          if candidate < child_abs_end {
-            candidate = child_abs_end;
+      let break_after = is_forced_page_break(child_style.break_after);
+      let break_before = is_forced_page_break(next_style.break_before);
+      if break_after || break_before {
+        let break_from_grid =
+          (break_after && idx < grid_item_count) || (break_before && idx + 1 < grid_item_count);
+        if !break_from_grid {
+          let mut boundary = child_abs_end;
+          if let Some(meta) = child.block_metadata.as_ref() {
+            let mut candidate = child_abs_end + meta.margin_bottom;
+            if candidate < child_abs_end {
+              candidate = child_abs_end;
+            }
+            if let Some(next_child) = node.children.get(idx + 1) {
+              let next_start = axis
+                .flow_range(abs_start, parent_block_size, &next_child.bounds)
+                .0;
+              candidate = candidate.min(next_start);
+            }
+            boundary = candidate;
           }
-          if let Some(next_child) = node.children.get(idx + 1) {
-            let next_start = axis
-              .flow_range(abs_start, parent_block_size, &next_child.bounds)
-              .0;
-            candidate = candidate.min(next_start);
-          }
-          boundary = candidate;
+          forced.push(ForcedBoundary {
+            position: boundary,
+            page_side: break_side_hint(next_style.break_before)
+              .or(break_side_hint(child_style.break_after)),
+          });
         }
-        forced.push(ForcedBoundary {
-          position: boundary,
-          page_side: break_side_hint(next_style.break_before)
-            .or(break_side_hint(child_style.break_after)),
-        });
       }
 
       let skip_descendants = grid_items
@@ -2348,6 +2460,7 @@ mod tests {
     grid.grid_tracks = Some(Arc::new(GridTrackRanges {
       rows: vec![(0.0, 30.0)],
       columns: Vec::new(),
+      item_placements: Vec::new(),
     }));
 
     let root = FragmentNode::new_block(
