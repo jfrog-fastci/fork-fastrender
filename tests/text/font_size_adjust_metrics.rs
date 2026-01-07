@@ -14,12 +14,12 @@ fn loaded_font(data: &[u8], family: &str) -> LoadedFont {
     id: None,
     data: Arc::new(data.to_vec()),
     index: 0,
+    face_metrics_overrides: Default::default(),
+    face_settings: Default::default(),
     family: family.to_string(),
     weight: FontWeight::NORMAL,
     style: FontStyle::Normal,
     stretch: FontStretch::Normal,
-    face_metrics_overrides: Default::default(),
-    face_settings: Default::default(),
   }
 }
 
