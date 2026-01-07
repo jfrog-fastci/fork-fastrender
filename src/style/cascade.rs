@@ -378,7 +378,7 @@ fn container_query_matches(
         memo.query_eval.insert(key, QueryResult::False);
         return QueryResult::False;
       }
-      let result = QueryResult::from_bool(match size_query {
+      let result = match size_query {
         ContainerSizeQuery::Parsed(mq) => evaluate_container_size_query(mq, container),
         ContainerSizeQuery::UnresolvedVars { text, .. } => {
           let value = PropertyValue::Custom(text.clone());
@@ -397,13 +397,13 @@ fn container_query_matches(
                 Ok(parsed) if parsed.is_size_query() => {
                   evaluate_container_size_query(&parsed, container)
                 }
-                _ => false,
+                _ => QueryResult::Unknown,
               }
             }
-            _ => false,
+            _ => QueryResult::Unknown,
           }
         }
-      });
+      };
       memo.query_eval.insert(key, result);
       result
     }
@@ -571,260 +571,471 @@ fn evaluate_container_size_feature(
   viewport_height: f32,
   font_size: f32,
   root_font_size: f32,
-) -> bool {
+) -> QueryResult {
   match feature {
     // Physical width / height.
-    MediaFeature::Width(length) => resolve_container_query_length(
-      length,
-      container.width,
-      container.height,
-      viewport_width,
-      viewport_height,
-      font_size,
-      root_font_size,
-    )
-    .map(|target| (container.width - target).abs() < 0.5)
-    .unwrap_or(false),
-    MediaFeature::MinWidth(length) => resolve_container_query_length(
-      length,
-      container.width,
-      container.height,
-      viewport_width,
-      viewport_height,
-      font_size,
-      root_font_size,
-    )
-    .map(|target| container.width >= target)
-    .unwrap_or(false),
-    MediaFeature::MaxWidth(length) => resolve_container_query_length(
-      length,
-      container.width,
-      container.height,
-      viewport_width,
-      viewport_height,
-      font_size,
-      root_font_size,
-    )
-    .map(|target| container.width <= target)
-    .unwrap_or(false),
+    MediaFeature::Width(length) => {
+      let actual = container.width;
+      if !actual.is_finite() {
+        return QueryResult::Unknown;
+      }
+      let Some(target) = resolve_container_query_length(
+        length,
+        container.width,
+        container.height,
+        viewport_width,
+        viewport_height,
+        font_size,
+        root_font_size,
+      ) else {
+        return QueryResult::Unknown;
+      };
+      if !target.is_finite() {
+        return QueryResult::Unknown;
+      }
+      QueryResult::from_bool((actual - target).abs() < 0.5)
+    }
+    MediaFeature::MinWidth(length) => {
+      let actual = container.width;
+      if !actual.is_finite() {
+        return QueryResult::Unknown;
+      }
+      let Some(target) = resolve_container_query_length(
+        length,
+        container.width,
+        container.height,
+        viewport_width,
+        viewport_height,
+        font_size,
+        root_font_size,
+      ) else {
+        return QueryResult::Unknown;
+      };
+      if !target.is_finite() {
+        return QueryResult::Unknown;
+      }
+      QueryResult::from_bool(actual >= target)
+    }
+    MediaFeature::MaxWidth(length) => {
+      let actual = container.width;
+      if !actual.is_finite() {
+        return QueryResult::Unknown;
+      }
+      let Some(target) = resolve_container_query_length(
+        length,
+        container.width,
+        container.height,
+        viewport_width,
+        viewport_height,
+        font_size,
+        root_font_size,
+      ) else {
+        return QueryResult::Unknown;
+      };
+      if !target.is_finite() {
+        return QueryResult::Unknown;
+      }
+      QueryResult::from_bool(actual <= target)
+    }
 
-    MediaFeature::Height(length) => resolve_container_query_length(
-      length,
-      container.height,
-      container.width,
-      viewport_width,
-      viewport_height,
-      font_size,
-      root_font_size,
-    )
-    .map(|target| (container.height - target).abs() < 0.5)
-    .unwrap_or(false),
-    MediaFeature::MinHeight(length) => resolve_container_query_length(
-      length,
-      container.height,
-      container.width,
-      viewport_width,
-      viewport_height,
-      font_size,
-      root_font_size,
-    )
-    .map(|target| container.height >= target)
-    .unwrap_or(false),
-    MediaFeature::MaxHeight(length) => resolve_container_query_length(
-      length,
-      container.height,
-      container.width,
-      viewport_width,
-      viewport_height,
-      font_size,
-      root_font_size,
-    )
-    .map(|target| container.height <= target)
-    .unwrap_or(false),
+    MediaFeature::Height(length) => {
+      let actual = container.height;
+      if !actual.is_finite() {
+        return QueryResult::Unknown;
+      }
+      let Some(target) = resolve_container_query_length(
+        length,
+        container.height,
+        container.width,
+        viewport_width,
+        viewport_height,
+        font_size,
+        root_font_size,
+      ) else {
+        return QueryResult::Unknown;
+      };
+      if !target.is_finite() {
+        return QueryResult::Unknown;
+      }
+      QueryResult::from_bool((actual - target).abs() < 0.5)
+    }
+    MediaFeature::MinHeight(length) => {
+      let actual = container.height;
+      if !actual.is_finite() {
+        return QueryResult::Unknown;
+      }
+      let Some(target) = resolve_container_query_length(
+        length,
+        container.height,
+        container.width,
+        viewport_width,
+        viewport_height,
+        font_size,
+        root_font_size,
+      ) else {
+        return QueryResult::Unknown;
+      };
+      if !target.is_finite() {
+        return QueryResult::Unknown;
+      }
+      QueryResult::from_bool(actual >= target)
+    }
+    MediaFeature::MaxHeight(length) => {
+      let actual = container.height;
+      if !actual.is_finite() {
+        return QueryResult::Unknown;
+      }
+      let Some(target) = resolve_container_query_length(
+        length,
+        container.height,
+        container.width,
+        viewport_width,
+        viewport_height,
+        font_size,
+        root_font_size,
+      ) else {
+        return QueryResult::Unknown;
+      };
+      if !target.is_finite() {
+        return QueryResult::Unknown;
+      }
+      QueryResult::from_bool(actual <= target)
+    }
 
     // Logical inline size / block size.
-    MediaFeature::InlineSize(length) => resolve_container_query_length(
-      length,
-      container.inline_size,
-      container.block_size,
-      viewport_width,
-      viewport_height,
-      font_size,
-      root_font_size,
-    )
-    .map(|target| (container.inline_size - target).abs() < 0.5)
-    .unwrap_or(false),
-    MediaFeature::MinInlineSize(length) => resolve_container_query_length(
-      length,
-      container.inline_size,
-      container.block_size,
-      viewport_width,
-      viewport_height,
-      font_size,
-      root_font_size,
-    )
-    .map(|target| container.inline_size >= target)
-    .unwrap_or(false),
-    MediaFeature::MaxInlineSize(length) => resolve_container_query_length(
-      length,
-      container.inline_size,
-      container.block_size,
-      viewport_width,
-      viewport_height,
-      font_size,
-      root_font_size,
-    )
-    .map(|target| container.inline_size <= target)
-    .unwrap_or(false),
-    MediaFeature::BlockSize(length) => resolve_container_query_length(
-      length,
-      container.block_size,
-      container.inline_size,
-      viewport_width,
-      viewport_height,
-      font_size,
-      root_font_size,
-    )
-    .map(|target| (container.block_size - target).abs() < 0.5)
-    .unwrap_or(false),
-    MediaFeature::MinBlockSize(length) => resolve_container_query_length(
-      length,
-      container.block_size,
-      container.inline_size,
-      viewport_width,
-      viewport_height,
-      font_size,
-      root_font_size,
-    )
-    .map(|target| container.block_size >= target)
-    .unwrap_or(false),
-    MediaFeature::MaxBlockSize(length) => resolve_container_query_length(
-      length,
-      container.block_size,
-      container.inline_size,
-      viewport_width,
-      viewport_height,
-      font_size,
-      root_font_size,
-    )
-    .map(|target| container.block_size <= target)
-    .unwrap_or(false),
+    MediaFeature::InlineSize(length) => {
+      let actual = container.inline_size;
+      if !actual.is_finite() {
+        return QueryResult::Unknown;
+      }
+      let Some(target) = resolve_container_query_length(
+        length,
+        container.inline_size,
+        container.block_size,
+        viewport_width,
+        viewport_height,
+        font_size,
+        root_font_size,
+      ) else {
+        return QueryResult::Unknown;
+      };
+      if !target.is_finite() {
+        return QueryResult::Unknown;
+      }
+      QueryResult::from_bool((actual - target).abs() < 0.5)
+    }
+    MediaFeature::MinInlineSize(length) => {
+      let actual = container.inline_size;
+      if !actual.is_finite() {
+        return QueryResult::Unknown;
+      }
+      let Some(target) = resolve_container_query_length(
+        length,
+        container.inline_size,
+        container.block_size,
+        viewport_width,
+        viewport_height,
+        font_size,
+        root_font_size,
+      ) else {
+        return QueryResult::Unknown;
+      };
+      if !target.is_finite() {
+        return QueryResult::Unknown;
+      }
+      QueryResult::from_bool(actual >= target)
+    }
+    MediaFeature::MaxInlineSize(length) => {
+      let actual = container.inline_size;
+      if !actual.is_finite() {
+        return QueryResult::Unknown;
+      }
+      let Some(target) = resolve_container_query_length(
+        length,
+        container.inline_size,
+        container.block_size,
+        viewport_width,
+        viewport_height,
+        font_size,
+        root_font_size,
+      ) else {
+        return QueryResult::Unknown;
+      };
+      if !target.is_finite() {
+        return QueryResult::Unknown;
+      }
+      QueryResult::from_bool(actual <= target)
+    }
+
+    MediaFeature::BlockSize(length) => {
+      let actual = container.block_size;
+      if !actual.is_finite() {
+        return QueryResult::Unknown;
+      }
+      let Some(target) = resolve_container_query_length(
+        length,
+        container.block_size,
+        container.inline_size,
+        viewport_width,
+        viewport_height,
+        font_size,
+        root_font_size,
+      ) else {
+        return QueryResult::Unknown;
+      };
+      if !target.is_finite() {
+        return QueryResult::Unknown;
+      }
+      QueryResult::from_bool((actual - target).abs() < 0.5)
+    }
+    MediaFeature::MinBlockSize(length) => {
+      let actual = container.block_size;
+      if !actual.is_finite() {
+        return QueryResult::Unknown;
+      }
+      let Some(target) = resolve_container_query_length(
+        length,
+        container.block_size,
+        container.inline_size,
+        viewport_width,
+        viewport_height,
+        font_size,
+        root_font_size,
+      ) else {
+        return QueryResult::Unknown;
+      };
+      if !target.is_finite() {
+        return QueryResult::Unknown;
+      }
+      QueryResult::from_bool(actual >= target)
+    }
+    MediaFeature::MaxBlockSize(length) => {
+      let actual = container.block_size;
+      if !actual.is_finite() {
+        return QueryResult::Unknown;
+      }
+      let Some(target) = resolve_container_query_length(
+        length,
+        container.block_size,
+        container.inline_size,
+        viewport_width,
+        viewport_height,
+        font_size,
+        root_font_size,
+      ) else {
+        return QueryResult::Unknown;
+      };
+      if !target.is_finite() {
+        return QueryResult::Unknown;
+      }
+      QueryResult::from_bool(actual <= target)
+    }
 
     MediaFeature::Orientation(orientation) => {
       if !container.width.is_finite() || !container.height.is_finite() {
-        return false;
+        return QueryResult::Unknown;
       }
       let is_portrait = container.height >= container.width;
-      match orientation {
+      QueryResult::from_bool(match orientation {
         crate::style::media::Orientation::Portrait => is_portrait,
         crate::style::media::Orientation::Landscape => !is_portrait,
-      }
+      })
     }
 
     MediaFeature::AspectRatio { width, height } => {
-      if !container.width.is_finite() || !container.height.is_finite() || container.height == 0.0 {
-        return false;
+      if !container.width.is_finite() || !container.height.is_finite() {
+        return QueryResult::Unknown;
       }
       let target_ratio = *width as f32 / *height as f32;
       let actual_ratio = container.width / container.height;
-      (target_ratio - actual_ratio).abs() < 0.01
+      if target_ratio.is_finite() && actual_ratio.is_finite() {
+        QueryResult::from_bool((target_ratio - actual_ratio).abs() < 0.01)
+      } else {
+        QueryResult::Unknown
+      }
     }
     MediaFeature::MinAspectRatio { width, height } => {
-      if !container.width.is_finite() || !container.height.is_finite() || container.height == 0.0 {
-        return false;
+      if !container.width.is_finite() || !container.height.is_finite() {
+        return QueryResult::Unknown;
       }
       let target_ratio = *width as f32 / *height as f32;
       let actual_ratio = container.width / container.height;
-      actual_ratio >= target_ratio
+      if target_ratio.is_finite() && actual_ratio.is_finite() {
+        QueryResult::from_bool(actual_ratio >= target_ratio)
+      } else {
+        QueryResult::Unknown
+      }
     }
     MediaFeature::MaxAspectRatio { width, height } => {
-      if !container.width.is_finite() || !container.height.is_finite() || container.height == 0.0 {
-        return false;
+      if !container.width.is_finite() || !container.height.is_finite() {
+        return QueryResult::Unknown;
       }
       let target_ratio = *width as f32 / *height as f32;
       let actual_ratio = container.width / container.height;
-      actual_ratio <= target_ratio
+      if target_ratio.is_finite() && actual_ratio.is_finite() {
+        QueryResult::from_bool(actual_ratio <= target_ratio)
+      } else {
+        QueryResult::Unknown
+      }
     }
 
     // Range syntax.
     MediaFeature::Range { feature, op, value } => match (feature, value) {
-      (RangeFeature::Width, RangeValue::Length(len)) => resolve_container_query_length(
-        len,
-        container.width,
-        container.height,
-        viewport_width,
-        viewport_height,
-        font_size,
-        root_font_size,
-      )
-      .map(|target| compare_with_op(*op, container.width, target))
-      .unwrap_or(false),
-      (RangeFeature::Height, RangeValue::Length(len)) => resolve_container_query_length(
-        len,
-        container.height,
-        container.width,
-        viewport_width,
-        viewport_height,
-        font_size,
-        root_font_size,
-      )
-      .map(|target| compare_with_op(*op, container.height, target))
-      .unwrap_or(false),
-      (RangeFeature::InlineSize, RangeValue::Length(len)) => resolve_container_query_length(
-        len,
-        container.inline_size,
-        container.block_size,
-        viewport_width,
-        viewport_height,
-        font_size,
-        root_font_size,
-      )
-      .map(|target| compare_with_op(*op, container.inline_size, target))
-      .unwrap_or(false),
-      (RangeFeature::BlockSize, RangeValue::Length(len)) => resolve_container_query_length(
-        len,
-        container.block_size,
-        container.inline_size,
-        viewport_width,
-        viewport_height,
-        font_size,
-        root_font_size,
-      )
-      .map(|target| compare_with_op(*op, container.block_size, target))
-      .unwrap_or(false),
+      (RangeFeature::Width, RangeValue::Length(len)) => {
+        let actual = container.width;
+        if !actual.is_finite() {
+          return QueryResult::Unknown;
+        }
+        let Some(target) = resolve_container_query_length(
+          len,
+          container.width,
+          container.height,
+          viewport_width,
+          viewport_height,
+          font_size,
+          root_font_size,
+        ) else {
+          return QueryResult::Unknown;
+        };
+        if !target.is_finite() {
+          return QueryResult::Unknown;
+        }
+        QueryResult::from_bool(compare_with_op(*op, actual, target))
+      }
+      (RangeFeature::Height, RangeValue::Length(len)) => {
+        let actual = container.height;
+        if !actual.is_finite() {
+          return QueryResult::Unknown;
+        }
+        let Some(target) = resolve_container_query_length(
+          len,
+          container.height,
+          container.width,
+          viewport_width,
+          viewport_height,
+          font_size,
+          root_font_size,
+        ) else {
+          return QueryResult::Unknown;
+        };
+        if !target.is_finite() {
+          return QueryResult::Unknown;
+        }
+        QueryResult::from_bool(compare_with_op(*op, actual, target))
+      }
+      (RangeFeature::InlineSize, RangeValue::Length(len)) => {
+        let actual = container.inline_size;
+        if !actual.is_finite() {
+          return QueryResult::Unknown;
+        }
+        let Some(target) = resolve_container_query_length(
+          len,
+          container.inline_size,
+          container.block_size,
+          viewport_width,
+          viewport_height,
+          font_size,
+          root_font_size,
+        ) else {
+          return QueryResult::Unknown;
+        };
+        if !target.is_finite() {
+          return QueryResult::Unknown;
+        }
+        QueryResult::from_bool(compare_with_op(*op, actual, target))
+      }
+      (RangeFeature::BlockSize, RangeValue::Length(len)) => {
+        let actual = container.block_size;
+        if !actual.is_finite() {
+          return QueryResult::Unknown;
+        }
+        let Some(target) = resolve_container_query_length(
+          len,
+          container.block_size,
+          container.inline_size,
+          viewport_width,
+          viewport_height,
+          font_size,
+          root_font_size,
+        ) else {
+          return QueryResult::Unknown;
+        };
+        if !target.is_finite() {
+          return QueryResult::Unknown;
+        }
+        QueryResult::from_bool(compare_with_op(*op, actual, target))
+      }
       (RangeFeature::AspectRatio, RangeValue::AspectRatio(w, h)) => {
-        if !container.width.is_finite() || !container.height.is_finite() || container.height == 0.0 {
-          return false;
+        if !container.width.is_finite() || !container.height.is_finite() {
+          return QueryResult::Unknown;
         }
         let target_ratio = *w as f32 / *h as f32;
         let actual_ratio = container.width / container.height;
-        compare_with_op(*op, actual_ratio, target_ratio)
+        if target_ratio.is_finite() && actual_ratio.is_finite() {
+          QueryResult::from_bool(compare_with_op(*op, actual_ratio, target_ratio))
+        } else {
+          QueryResult::Unknown
+        }
       }
-      _ => false,
+      _ => QueryResult::Unknown,
     },
 
     // Nested boolean conditions.
-    MediaFeature::Not(inner) => !evaluate_container_size_feature(
+    MediaFeature::Not(inner) => evaluate_container_size_feature(
       inner.as_ref(),
       container,
       viewport_width,
       viewport_height,
       font_size,
       root_font_size,
-    ),
-    MediaFeature::And(list) => list.iter().all(|f| {
-      evaluate_container_size_feature(f, container, viewport_width, viewport_height, font_size, root_font_size)
-    }),
-    MediaFeature::Or(list) => list.iter().any(|f| {
-      evaluate_container_size_feature(f, container, viewport_width, viewport_height, font_size, root_font_size)
-    }),
+    )
+    .not(),
+    MediaFeature::And(list) => {
+      let mut result = QueryResult::True;
+      for inner in list {
+        match evaluate_container_size_feature(
+          inner,
+          container,
+          viewport_width,
+          viewport_height,
+          font_size,
+          root_font_size,
+        ) {
+          QueryResult::False => return QueryResult::False,
+          QueryResult::Unknown => result = QueryResult::Unknown,
+          QueryResult::True => {}
+        }
+      }
+      result
+    }
+    MediaFeature::Or(list) => {
+      let mut result = QueryResult::False;
+      for inner in list {
+        match evaluate_container_size_feature(
+          inner,
+          container,
+          viewport_width,
+          viewport_height,
+          font_size,
+          root_font_size,
+        ) {
+          QueryResult::True => return QueryResult::True,
+          QueryResult::Unknown => result = QueryResult::Unknown,
+          QueryResult::False => {}
+        }
+      }
+      result
+    }
 
     // Container size queries are validated at parse time, but keep a conservative fallback.
-    _ => false,
+    _ => QueryResult::Unknown,
   }
 }
 
-fn evaluate_container_size_query(mq: &crate::style::media::MediaQuery, container: &ContainerQueryInfo) -> bool {
+fn evaluate_container_size_query(
+  mq: &crate::style::media::MediaQuery,
+  container: &ContainerQueryInfo,
+) -> QueryResult {
   // Container size queries reuse the media-query parser, but are evaluated against the query
   // container's size + font metrics. Keep viewport units behaving consistently with the previous
   // implementation by treating the query container's size as the "viewport" during resolution.
@@ -839,30 +1050,43 @@ fn evaluate_container_size_query(mq: &crate::style::media::MediaQuery, container
   if mq.media_type.is_some() {
     // Container Queries Level 1 forbids media types. Treat as non-matching, but preserve `not`
     // behavior for completeness.
-    return matches!(mq.modifier, Some(MediaModifier::Not));
+    let base = QueryResult::False;
+    return match mq.modifier {
+      Some(MediaModifier::Not) => base.not(),
+      Some(MediaModifier::Only) | None => base,
+    };
   }
 
   if matches!(container.container_type, ContainerType::InlineSize) {
-    let inline_axis_is_horizontal = crate::style::inline_axis_is_horizontal(container.styles.writing_mode);
+    let inline_axis_is_horizontal =
+      crate::style::inline_axis_is_horizontal(container.styles.writing_mode);
     if !cq_media_query_inline_only(mq, inline_axis_is_horizontal) {
-      return false;
+      return QueryResult::Unknown;
     }
   }
 
-  let features_match = mq.features.iter().all(|feature| {
-    evaluate_container_size_feature(
+  let mut result = QueryResult::True;
+  for feature in &mq.features {
+    match evaluate_container_size_feature(
       feature,
       container,
       viewport_width,
       viewport_height,
       font_size,
       root_font_size,
-    )
-  });
+    ) {
+      QueryResult::False => {
+        result = QueryResult::False;
+        break;
+      }
+      QueryResult::Unknown => result = QueryResult::Unknown,
+      QueryResult::True => {}
+    }
+  }
 
   match mq.modifier {
-    Some(MediaModifier::Not) => !features_match,
-    Some(MediaModifier::Only) | None => features_match,
+    Some(MediaModifier::Not) => result.not(),
+    Some(MediaModifier::Only) | None => result,
   }
 }
 

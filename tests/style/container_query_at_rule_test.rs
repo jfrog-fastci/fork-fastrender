@@ -568,11 +568,11 @@ fn container_query_comma_conditions_allow_distinct_names() {
 #[test]
 fn container_query_name_only_condition_matches_when_container_exists() {
   let css = r#"
-    .target { display: block; }
-    @container sidebar {
-      .target { display: inline; }
-    }
-  "#;
+     .target { display: block; }
+     @container sidebar {
+       .target { display: inline; }
+     }
+   "#;
 
   let styled = cascade_with_container(css, 500.0, vec!["sidebar".into()]);
   assert_eq!(display(find_by_id(&styled, "t").expect("target")), "inline");
@@ -621,4 +621,57 @@ fn container_query_orientation_and_aspect_ratio_use_physical_axes() {
   );
 
   assert_eq!(display(find_by_id(&styled, "t").expect("target")), "inline");
+}
+
+#[test]
+fn not_container_query_with_invalid_var_length_does_not_match() {
+  let css = r#"
+    .target { display: block; }
+    @container not (min-width: var(--bad)) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let mut style = ComputedStyle::default();
+  style.custom_properties.insert(
+    Arc::from("--bad"),
+    CustomPropertyValue::new("foo", None),
+  );
+
+  let styled = cascade_with_container_styles(css, 500.0, vec![], Arc::new(style));
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "block");
+}
+
+#[test]
+fn not_container_query_with_unknown_block_size_does_not_match() {
+  let css = r#"
+    .target { display: block; }
+    @container not (min-height: 1px) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let mut style = ComputedStyle::default();
+  style.container_type = ContainerType::Size;
+  let styles = Arc::new(style);
+
+  let styled = cascade_with_containers(
+    HTML,
+    css,
+    vec![(
+      "c",
+      ContainerQueryInfo {
+        width: 500.0,
+        height: f32::NAN,
+        inline_size: 500.0,
+        block_size: f32::NAN,
+        container_type: ContainerType::Size,
+        names: Vec::new(),
+        font_size: styles.font_size,
+        styles,
+      },
+    )],
+  );
+
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "block");
 }
