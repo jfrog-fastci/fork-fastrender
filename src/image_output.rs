@@ -119,14 +119,31 @@ impl Write for FallibleVecWriter {
       ));
     }
 
-    // Use `try_reserve_exact` to avoid `Vec`'s exponential growth strategy allocating far beyond
-    // the caller's requested size (which could defeat the `max_bytes` cap for large outputs).
-    self.buf.try_reserve_exact(data.len()).map_err(|err| {
-      io::Error::new(
-        io::ErrorKind::Other,
-        format!("{}: output buffer allocation failed: {err}", self.context),
-      )
-    })?;
+    // Grow our backing buffer with a bounded exponential strategy:
+    // - avoids the pathological case where the upstream encoder writes 1 byte at a time (e.g.
+    //   `image`'s JPEG bitstream writer), which would otherwise force O(n) reallocations
+    // - never requests more than `max_bytes` total length.
+    if new_len > self.buf.capacity() {
+      let mut target_cap = self.buf.capacity().max(1);
+      while target_cap < new_len {
+        target_cap = target_cap.saturating_mul(2);
+      }
+      target_cap = target_cap.min(self.max_bytes);
+      if target_cap < new_len {
+        return Err(io::Error::new(
+          io::ErrorKind::Other,
+          format!(
+            "{}: output exceeded {} bytes (attempted {})",
+            self.context, self.max_bytes, new_len
+          ),
+        ));
+      }
+      let additional = target_cap.saturating_sub(self.buf.len());
+      self
+        .buf
+        .try_reserve_exact(additional)
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("{}: output buffer allocation failed: {err}", self.context)))?;
+    }
     self.buf.extend_from_slice(data);
     Ok(data.len())
   }
