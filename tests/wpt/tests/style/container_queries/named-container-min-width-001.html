@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>container query name: match outer container by name</title>
+<style>
+html, body {
+  margin: 0;
+  background: #fff;
+}
+.outer {
+  container-type: inline-size;
+  container-name: outer;
+  width: 200px;
+  height: 50px;
+}
+.inner {
+  container-type: inline-size;
+  width: 100px;
+  height: 50px;
+}
+.target {
+  width: 100px;
+  height: 50px;
+  background: #00f;
+}
+@container outer (min-width: 150px) {
+  .target { background: #0f0; }
+}
+</style>
+<div class="outer">
+  <div class="inner">
+    <div class="target"></div>
+  </div>
+</div>

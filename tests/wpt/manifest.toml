@@ -316,6 +316,32 @@ width = 220
 height = 80
 
 [[tests]]
+id = "style/container_queries/named-container-min-width-001"
+path = "style/container_queries/named-container-min-width-001.html"
+reference = "style/container_queries/named-container-min-width-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 220
+height = 80
+
+[[tests]]
+id = "style/container_queries/inline-size-ignores-min-height-001"
+path = "style/container_queries/inline-size-ignores-min-height-001.html"
+reference = "style/container_queries/inline-size-ignores-min-height-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 220
+height = 220
+
+[[tests]]
 id = "text/letter-spacing-001"
 path = "text/letter-spacing-001.html"
 test_type = "visual"

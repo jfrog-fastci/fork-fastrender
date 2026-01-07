@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>container query size: inline-size container ignores height queries</title>
+<style>
+html, body {
+  margin: 0;
+  background: #fff;
+}
+.container {
+  container-type: inline-size;
+  width: 200px;
+  height: 200px;
+}
+.target {
+  width: 200px;
+  height: 200px;
+  background: #00f;
+}
+@container (min-height: 1px) {
+  .target { background: #0f0; }
+}
+</style>
+<div class="container">
+  <div class="target"></div>
+</div>
