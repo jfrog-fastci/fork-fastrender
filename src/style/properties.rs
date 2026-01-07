@@ -12022,7 +12022,6 @@ pub fn extract_length(value: &PropertyValue) -> Option<Length> {
 
 pub fn extract_length_pair(value: &PropertyValue) -> Option<(Length, Length)> {
   match value {
-    PropertyValue::Length(len) => Some((*len, *len)),
     PropertyValue::Multiple(values) => {
       let lengths: Vec<Length> = values.iter().filter_map(extract_length).collect();
       match lengths.len() {
@@ -12031,7 +12030,7 @@ pub fn extract_length_pair(value: &PropertyValue) -> Option<(Length, Length)> {
         _ => None,
       }
     }
-    _ => None,
+    _ => extract_length(value).map(|len| (len, len)),
   }
 }
 
