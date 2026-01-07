@@ -64,7 +64,12 @@ pub struct Violation {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct BaselineKey {
-  path: PathBuf,
+  /// Repository-relative path using `/` separators.
+  ///
+  /// We intentionally avoid `PathBuf` here because the baseline file is committed with `/`
+  /// separators, but Windows `PathBuf` values (and `walkdir`) typically use `\`. Path equality is
+  /// lexical, so normalizing to a stable string keeps the baseline portable across platforms.
+  path: String,
   kind: ViolationKind,
   line: String,
 }
@@ -94,7 +99,7 @@ pub fn run_lint_no_panics(repo_root: &Path, args: LintNoPanicsArgs) -> Result<()
 
   for violation in violations {
     let key = BaselineKey {
-      path: violation.path.clone(),
+      path: normalize_repo_rel_path(&violation.path),
       kind: violation.kind,
       line: violation.line_text.trim().to_string(),
     };
@@ -177,7 +182,7 @@ fn load_baseline(repo_root: &Path) -> Result<HashMap<BaselineKey, usize>> {
   let mut out = HashMap::new();
   for entry in entries {
     let key = BaselineKey {
-      path: PathBuf::from(entry.path),
+      path: normalize_baseline_path(&entry.path),
       kind: entry.kind,
       line: entry.line,
     };
@@ -190,7 +195,7 @@ fn write_baseline(repo_root: &Path, violations: &[Violation]) -> Result<()> {
   let mut counts: HashMap<BaselineKey, usize> = HashMap::new();
   for violation in violations {
     let key = BaselineKey {
-      path: violation.path.clone(),
+      path: normalize_repo_rel_path(&violation.path),
       kind: violation.kind,
       line: violation.line_text.trim().to_string(),
     };
@@ -200,7 +205,7 @@ fn write_baseline(repo_root: &Path, violations: &[Violation]) -> Result<()> {
   let mut entries: Vec<BaselineEntry> = counts
     .into_iter()
     .map(|(key, count)| BaselineEntry {
-      path: key.path.to_string_lossy().to_string(),
+      path: key.path,
       kind: key.kind,
       line: key.line,
       count,
@@ -221,6 +226,25 @@ fn write_baseline(repo_root: &Path, violations: &[Violation]) -> Result<()> {
   let json = serde_json::to_string_pretty(&entries).context("serialize baseline JSON")?;
   fs::write(&path, format!("{json}\n")).with_context(|| format!("write baseline {}", path.display()))?;
   Ok(())
+}
+
+fn normalize_baseline_path(path: &str) -> String {
+  // Keep the committed baseline portable across platforms by ensuring forward slashes.
+  path
+    .trim_start_matches("./")
+    .trim_start_matches(".\\")
+    .replace('\\', "/")
+}
+
+fn normalize_repo_rel_path(path: &Path) -> String {
+  let mut out = String::new();
+  for part in path.iter() {
+    if !out.is_empty() {
+      out.push('/');
+    }
+    out.push_str(&part.to_string_lossy());
+  }
+  out
 }
 
 fn is_ident_continue(b: u8) -> bool {
@@ -878,5 +902,12 @@ pub fn demo() {
 
     let violations = lint_source(Path::new("demo.rs"), src);
     assert!(violations.is_empty(), "expected allow markers to suppress: {violations:#?}");
+  }
+
+  #[test]
+  fn normalizes_baseline_paths_with_backslashes() {
+    assert_eq!(normalize_baseline_path("src\\api.rs"), "src/api.rs");
+    assert_eq!(normalize_baseline_path("./src/api.rs"), "src/api.rs");
+    assert_eq!(normalize_baseline_path(".\\src\\api.rs"), "src/api.rs");
   }
 }
