@@ -3141,6 +3141,25 @@ impl InlineFormattingContext {
             TextEmphasisPosition::Auto => TextEmphasisPosition::Over,
             other => other,
           };
+          let resolved_is_over = matches!(
+            resolved,
+            TextEmphasisPosition::Over | TextEmphasisPosition::OverLeft | TextEmphasisPosition::OverRight
+          );
+          let target_is_over = matches!(
+            target,
+            TextEmphasisPosition::Over | TextEmphasisPosition::OverLeft | TextEmphasisPosition::OverRight
+          );
+
+          if resolved_is_over != target_is_over {
+            if let Some(extra) = TextItem::text_emphasis_extra_extent(&t.style) {
+              if resolved_is_over {
+                t.metrics.baseline_offset = (t.metrics.baseline_offset - extra).max(0.0);
+              } else {
+                t.metrics.baseline_offset += extra;
+              }
+            }
+          }
+
           if resolved != target {
             let mut style = (*t.style).clone();
             style.text_emphasis_position = target;
@@ -3548,12 +3567,13 @@ impl InlineFormattingContext {
       style.word_spacing,
     );
 
-    let metrics = TextItem::metrics_from_runs(
+    let mut metrics = TextItem::metrics_from_runs(
       &self.font_context,
       &shaped_runs,
       line_height,
       style.font_size,
     );
+    TextItem::apply_text_emphasis_metrics(&mut metrics, style);
 
     // Find break opportunities and filter based on white-space handling
     let base_breaks = find_break_opportunities(&hyphen_free);

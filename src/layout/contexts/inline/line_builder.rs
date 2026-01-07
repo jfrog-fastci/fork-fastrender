@@ -45,6 +45,7 @@ use crate::style::display::Display;
 use crate::style::types::Direction;
 use crate::style::types::ListStylePosition;
 use crate::style::types::OverflowWrap;
+use crate::style::types::TextEmphasisPosition;
 use crate::style::types::TextWrap;
 use crate::style::types::UnicodeBidi;
 use crate::style::types::WhiteSpace;
@@ -656,6 +657,40 @@ impl TextItem {
     }
   }
 
+  pub(crate) fn text_emphasis_extra_extent(style: &ComputedStyle) -> Option<f32> {
+    if style.text_emphasis_style.is_none() {
+      return None;
+    }
+
+    let mark_size = (style.font_size * 0.5).max(1.0);
+    let gap = mark_size * 0.3;
+    Some(gap + mark_size)
+  }
+
+  pub(crate) fn apply_text_emphasis_metrics(metrics: &mut BaselineMetrics, style: &ComputedStyle) {
+    let Some(extra) = Self::text_emphasis_extra_extent(style) else {
+      return;
+    };
+
+    let position = match style.text_emphasis_position {
+      TextEmphasisPosition::Auto => TextEmphasisPosition::Over,
+      other => other,
+    };
+
+    match position {
+      TextEmphasisPosition::Over | TextEmphasisPosition::OverLeft | TextEmphasisPosition::OverRight => {
+        metrics.baseline_offset += extra;
+        metrics.height += extra;
+      }
+      TextEmphasisPosition::Under
+      | TextEmphasisPosition::UnderLeft
+      | TextEmphasisPosition::UnderRight => {
+        metrics.height += extra;
+      }
+      TextEmphasisPosition::Auto => {}
+    }
+  }
+
   /// Byte offsets for each grapheme cluster boundary within the item.
   pub fn cluster_byte_offsets(&self) -> Vec<usize> {
     if self.text.is_empty() {
@@ -935,10 +970,12 @@ impl TextItem {
     };
 
     let line_height = self.metrics.line_height;
-    let before_metrics =
+    let mut before_metrics =
       TextItem::metrics_from_runs(font_context, &before_runs, line_height, self.font_size);
-    let after_metrics =
+    TextItem::apply_text_emphasis_metrics(&mut before_metrics, &self.style);
+    let mut after_metrics =
       TextItem::metrics_from_runs(font_context, &after_runs, line_height, self.font_size);
+    TextItem::apply_text_emphasis_metrics(&mut after_metrics, &self.style);
 
     let mut before_item = TextItem::new(
       before_runs,
@@ -1003,10 +1040,12 @@ impl TextItem {
     if before_item.advance <= 0.0 || after_item.advance <= 0.0 {
       let before_runs = reshape_cache.shape(self, 0..split_offset, shaper, font_context)?;
       let after_runs = reshape_cache.shape(self, split_offset..text_len, shaper, font_context)?;
-      let before_metrics =
+      let mut before_metrics =
         TextItem::metrics_from_runs(font_context, &before_runs, line_height, self.font_size);
-      let after_metrics =
+      TextItem::apply_text_emphasis_metrics(&mut before_metrics, &self.style);
+      let mut after_metrics =
         TextItem::metrics_from_runs(font_context, &after_runs, line_height, self.font_size);
+      TextItem::apply_text_emphasis_metrics(&mut after_metrics, &self.style);
       before_item = TextItem::new(
         before_runs,
         before_text_owned.unwrap_or_else(|| before_text.to_string()),
@@ -4242,12 +4281,13 @@ fn slice_text_item(
     item.style.word_spacing,
   );
 
-  let metrics = TextItem::metrics_from_runs(
+  let mut metrics = TextItem::metrics_from_runs(
     font_context,
     &runs,
     item.metrics.line_height,
     item.font_size,
   );
+  TextItem::apply_text_emphasis_metrics(&mut metrics, &item.style);
   let breaks = item
     .break_opportunities
     .iter()
