@@ -88,14 +88,14 @@ Examples:
 
 ```bash
 # Compile-check (no linking, lowest risk):
-scripts/run_limited.sh --as 8G --cpu 120 -- cargo check -j 1 --quiet
+scripts/run_limited.sh --as 12G --cpu 120 -- cargo check -j 1 --quiet
 
 # Build (linking can be RAM-heavy):
-scripts/run_limited.sh --as 8G --cpu 120 -- cargo build -j 1 --release
+scripts/run_limited.sh --as 12G --cpu 120 -- cargo build -j 1 --release
 
 # Tests: always scope; never run `cargo test` with no target:
-scripts/run_limited.sh --as 8G --cpu 120 -- cargo test -j 1 --quiet --lib
-scripts/run_limited.sh --as 8G --cpu 120 -- cargo test -j 1 --quiet --test wpt_test -- --exact wpt_local_suite_passes
+scripts/run_limited.sh --as 12G --cpu 120 -- cargo test -j 1 --quiet --lib
+scripts/run_limited.sh --as 12G --cpu 120 -- cargo test -j 1 --quiet --test wpt_test -- --exact wpt_local_suite_passes
 ```
 
 ## Non-negotiables (keep us from shipping junk)

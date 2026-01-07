@@ -15,14 +15,14 @@ This doc describes a two-layer strategy:
 Use the repo helper which prefers `prlimit` and falls back to `ulimit`:
 
 ```bash
-scripts/run_limited.sh --as 8G --cpu 60 -- \
+scripts/run_limited.sh --as 12G --cpu 60 -- \
   cargo bench --bench selector_bloom_bench
 ```
 
 You can also set defaults via environment variables:
 
 ```bash
-LIMIT_AS=8G LIMIT_CPU=60 scripts/run_limited.sh -- cargo run --release --bin pageset_progress -- run --timeout 5
+LIMIT_AS=12G LIMIT_CPU=60 scripts/run_limited.sh -- cargo run --release --bin pageset_progress -- run --timeout 5
 ```
 
 ### A. `prlimit` (best general-purpose tool)
@@ -30,7 +30,7 @@ LIMIT_AS=8G LIMIT_CPU=60 scripts/run_limited.sh -- cargo run --release --bin pag
 If `prlimit` is available (usually via `util-linux`), it can cap address-space and CPU:
 
 ```bash
-prlimit --as=8G --rss=8G --cpu=30 -- \
+prlimit --as=$((12 * 1024 * 1024 * 1024)) --rss=$((12 * 1024 * 1024 * 1024)) --cpu=30 -- \
   cargo run --release --bin pageset_progress -- run --timeout 5
 ```
 
@@ -38,13 +38,15 @@ Notes:
 - `--as` (virtual address space) is the most reliable “hard memory ceiling”.
 - `--rss` is not reliably enforced on all kernels; treat it as advisory.
 - Cap `cargo` itself if you are running “cargo run”; `cargo` spawns child processes and inherits limits.
+  - Some `prlimit` builds do not accept human suffixes reliably (e.g. `--as=12G`). Prefer raw byte
+    counts or use `scripts/run_limited.sh`, which converts suffixes to bytes automatically.
 
 ### B. `ulimit` (portable shell-level fallback)
 
 In bash/zsh you can cap virtual memory and stack:
 
 ```bash
-ulimit -v $((8 * 1024 * 1024))   # KiB
+ulimit -v $((12 * 1024 * 1024))  # KiB
 ulimit -s $((64 * 1024))         # KiB
 ```
 
@@ -55,7 +57,7 @@ Then run your command in the same shell.
 If systemd is available:
 
 ```bash
-systemd-run --user -p MemoryMax=8G -p CPUQuota=200% -- \
+systemd-run --user -p MemoryMax=12G -p CPUQuota=200% -- \
   cargo run --release --bin pageset_progress -- run --timeout 5
 ```
 
@@ -85,4 +87,3 @@ OS caps are blunt: they stop the process, but don’t tell us *why*. For FastRen
 - For pageset runs, set an OS memory cap by default (cgroups or prlimit).
 - When a cap is hit, treat it as a **bug**: either an algorithmic explosion or an unbounded cache.
 - The “correct fix” is almost always: reduce asymptotic work, add early exits, and bound caches—**not** “skip rendering”.
-

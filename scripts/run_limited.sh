@@ -6,7 +6,7 @@ set -euo pipefail
 # Prefer `prlimit` when available (hard limits). Fall back to `ulimit` otherwise.
 #
 # Examples:
-#   scripts/run_limited.sh --as 8G --cpu 60 -- cargo bench --bench selector_bloom_bench
+#   scripts/run_limited.sh --as 12G --cpu 60 -- cargo bench --bench selector_bloom_bench
 #   LIMIT_AS=12G scripts/run_limited.sh -- cargo run --release --bin pageset_progress -- run --timeout 5
 
 usage() {
@@ -14,7 +14,7 @@ usage() {
 usage: scripts/run_limited.sh [--as <size>] [--rss <size>] [--stack <size>] [--cpu <secs>] -- <command...>
 
 Limits:
-  --as <size>     Address-space (virtual memory) limit. Example: 8G, 4096M.
+  --as <size>     Address-space (virtual memory) limit. Example: 12G, 4096M.
   --rss <size>    Resident set size limit (advisory on many kernels).
   --stack <size>  Stack size limit.
   --cpu <secs>    CPU time limit (seconds).
@@ -60,7 +60,41 @@ to_kib() {
   return 1
 }
 
-AS="${LIMIT_AS:-8G}"
+to_bytes() {
+  local raw="${1:-}"
+  raw="${raw//[[:space:]]/}"
+  raw="${raw,,}"
+
+  # Accept common suffixes: k, m, g, t (optionally with b/ib).
+  raw="${raw%ib}"
+  raw="${raw%b}"
+
+  if [[ "${raw}" =~ ^[0-9]+$ ]]; then
+    # Fallback: treat as MiB (human-friendly; matches `to_kib`).
+    echo $((raw * 1024 * 1024))
+    return 0
+  fi
+
+  if [[ "${raw}" =~ ^([0-9]+)([kmgt])$ ]]; then
+    local n="${BASH_REMATCH[1]}"
+    local unit="${BASH_REMATCH[2]}"
+    case "${unit}" in
+      k) echo $((n * 1024)) ;;
+      m) echo $((n * 1024 * 1024)) ;;
+      g) echo $((n * 1024 * 1024 * 1024)) ;;
+      t) echo $((n * 1024 * 1024 * 1024 * 1024)) ;;
+      *) return 1 ;;
+    esac
+    return 0
+  fi
+
+  return 1
+}
+
+# NOTE: Rust's toolchain shims (rustup) reserve a fairly large amount of virtual address space.
+# A too-low RLIMIT_AS can prevent even `cargo --version` from starting. Keep the default high
+# enough to allow basic commands, but still bounded to protect multi-agent hosts.
+AS="${LIMIT_AS:-12G}"
 RSS="${LIMIT_RSS:-}"
 STACK="${LIMIT_STACK:-}"
 CPU="${LIMIT_CPU:-}"
@@ -108,13 +142,37 @@ cmd=("$@")
 if command -v prlimit >/dev/null 2>&1; then
   pl=(prlimit)
   if [[ -n "${AS}" && "${AS}" != "0" ]]; then
-    pl+=(--as="${AS}")
+    if [[ "${AS}" == "unlimited" ]]; then
+      pl+=(--as=unlimited)
+    else
+      as_bytes="$(to_bytes "${AS}")" || {
+        echo "invalid --as size: ${AS}" >&2
+        exit 2
+      }
+      pl+=(--as="${as_bytes}")
+    fi
   fi
   if [[ -n "${RSS}" && "${RSS}" != "0" ]]; then
-    pl+=(--rss="${RSS}")
+    if [[ "${RSS}" == "unlimited" ]]; then
+      pl+=(--rss=unlimited)
+    else
+      rss_bytes="$(to_bytes "${RSS}")" || {
+        echo "invalid --rss size: ${RSS}" >&2
+        exit 2
+      }
+      pl+=(--rss="${rss_bytes}")
+    fi
   fi
   if [[ -n "${STACK}" && "${STACK}" != "0" ]]; then
-    pl+=(--stack="${STACK}")
+    if [[ "${STACK}" == "unlimited" ]]; then
+      pl+=(--stack=unlimited)
+    else
+      stack_bytes="$(to_bytes "${STACK}")" || {
+        echo "invalid --stack size: ${STACK}" >&2
+        exit 2
+      }
+      pl+=(--stack="${stack_bytes}")
+    fi
   fi
   if [[ -n "${CPU}" && "${CPU}" != "0" ]]; then
     pl+=(--cpu="${CPU}")
@@ -146,4 +204,3 @@ if [[ -n "${CPU}" && "${CPU}" != "0" ]]; then
 fi
 
 exec "${cmd[@]}"
-
