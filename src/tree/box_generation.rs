@@ -68,6 +68,8 @@ use crate::tree::debug::DebugInfo;
 use crate::tree::table_fixup::TableStructureFixer;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -1486,30 +1488,115 @@ pub fn collect_svg_filter_defs(styled: &StyledNode) -> HashMap<String, String> {
   filters
 }
 
-/// Collect serialized SVG definitions that have an `id` attribute.
+/// Collect serialized SVG id definitions required by fragment-only CSS masks.
 ///
-/// This is used to support `mask-image: url(#id)` (and similar fragment-only references) by
-/// materializing the referenced SVG `<mask>` plus any other defs it depends on (e.g. via
-/// `<use href="#...">`, gradient/pattern refs, etc.).
+/// This powers `mask-image: url(#id)` by serializing the referenced SVG `<mask>` element (and any
+/// other defs it references via `href="#..."`, `url(#...)`, etc.).
 ///
-/// Currently we only collect ids that appear within `<defs>` blocks (plus `<mask>` elements
-/// anywhere in the SVG namespace). This mirrors common real-world authoring patterns while
-/// avoiding accidentally capturing full `<svg id="...">` subtrees, which would duplicate nested
-/// ids when re-embedded into generated mask SVGs.
+/// We inline computed SVG presentation properties (fill/stroke/opacity/etc.) during serialization
+/// so downstream rasterizers (resvg) do not need access to the full document CSS cascade.
+///
+/// Namespace declarations from ancestor elements are preserved to keep prefixed attributes valid.
 pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
-  fn walk(
-    styled: &StyledNode,
+  use crate::style::types::BackgroundImage;
+
+  fn extract_url_fragment_ids(value: &str, out: &mut HashSet<String>) {
+    let bytes = value.as_bytes();
+    let mut idx = 0usize;
+    while idx + 4 <= bytes.len() {
+      let b = bytes[idx];
+      if (b == b'u' || b == b'U')
+        && (bytes[idx + 1] == b'r' || bytes[idx + 1] == b'R')
+        && (bytes[idx + 2] == b'l' || bytes[idx + 2] == b'L')
+        && bytes[idx + 3] == b'('
+      {
+        idx += 4;
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+          idx += 1;
+        }
+
+        let mut quote: Option<u8> = None;
+        if idx < bytes.len() && (bytes[idx] == b'\'' || bytes[idx] == b'"') {
+          quote = Some(bytes[idx]);
+          idx += 1;
+          while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+          }
+        }
+
+        if idx < bytes.len() && bytes[idx] == b'#' {
+          idx += 1;
+          let start = idx;
+          while idx < bytes.len() {
+            let ch = bytes[idx];
+            if ch == b')' || ch.is_ascii_whitespace() {
+              break;
+            }
+            if quote.is_some_and(|q| q == ch) {
+              break;
+            }
+            idx += 1;
+          }
+          if start < idx {
+            out.insert(value[start..idx].to_string());
+          }
+        }
+
+        while idx < bytes.len() && bytes[idx] != b')' {
+          idx += 1;
+        }
+        if idx < bytes.len() {
+          idx += 1;
+        }
+      } else {
+        idx += 1;
+      }
+    }
+  }
+
+  fn is_href_attr(name: &str) -> bool {
+    if name.eq_ignore_ascii_case("href") {
+      return true;
+    }
+    name
+      .rsplit_once(':')
+      .is_some_and(|(_, local)| local.eq_ignore_ascii_case("href"))
+  }
+
+  fn collect_requested_mask_ids(styled: &StyledNode, out: &mut HashSet<String>) {
+    for layer in styled.styles.mask_layers.iter() {
+      let Some(image) = layer.image.as_ref() else {
+        continue;
+      };
+      let BackgroundImage::Url(src) = image else {
+        continue;
+      };
+      if let Some(id) = src.trim().strip_prefix('#').filter(|id| !id.is_empty()) {
+        out.insert(id.to_string());
+      }
+    }
+    for child in &styled.children {
+      collect_requested_mask_ids(child, out);
+    }
+  }
+
+  struct IndexedNode<'a> {
+    node: &'a StyledNode,
+    namespaces: Vec<(String, String)>,
+  }
+
+  fn build_svg_id_index<'a>(
+    styled: &'a StyledNode,
     inherited_xmlns: &[(String, String)],
-    in_defs: bool,
-    defs: &mut HashMap<String, String>,
+    out: &mut HashMap<String, IndexedNode<'a>>,
   ) {
     let mut owned_namespaces: Option<Vec<(String, String)>> = None;
     let mut namespaces = inherited_xmlns;
-    let mut next_in_defs = in_defs;
+
     if let crate::dom::DomNodeType::Element {
-      tag_name,
       namespace,
       attributes,
+      ..
     } = &styled.node.node_type
     {
       if attributes.iter().any(|(name, _)| name.starts_with("xmlns")) {
@@ -1523,42 +1610,104 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
         namespaces = owned_namespaces.as_deref().unwrap_or(inherited_xmlns);
       }
 
-      if namespace == SVG_NAMESPACE && tag_name.eq_ignore_ascii_case("defs") {
-        next_in_defs = true;
-      }
-
-      let eligible = namespace == SVG_NAMESPACE
-        && (next_in_defs || tag_name.eq_ignore_ascii_case("mask"))
-        && !tag_name.eq_ignore_ascii_case("defs");
-      if eligible {
-        if let Some(id) = styled.node.get_attribute_ref("id") {
-          if !id.is_empty() && !defs.contains_key(id) {
-            let mut serialized = String::new();
-            // Inline computed SVG presentation properties (fill/stroke/etc.) so fragment-only mask
-            // images (`mask-image: url(#id)`) preserve document CSS styling when rasterized. We do
-            // this for all collected defs (not just `<mask>`), because masks may reference other
-            // defs via `<use href="#...">`, gradients, patterns, etc.
-            serialize_svg_mask_subtree_with_namespaces(
-              styled,
-              namespaces,
-              None,
-              None,
-              true,
-              &mut serialized,
+      if namespace == SVG_NAMESPACE {
+        if let Some(id) = styled.node.get_attribute_ref("id").filter(|id| !id.is_empty()) {
+          if !out.contains_key(id) {
+            out.insert(
+              id.to_string(),
+              IndexedNode {
+                node: styled,
+                namespaces: namespaces.to_vec(),
+              },
             );
-            defs.insert(id.to_string(), serialized);
           }
         }
       }
     }
 
     for child in &styled.children {
-      walk(child, namespaces, next_in_defs, defs);
+      build_svg_id_index(child, namespaces, out);
+    }
+  }
+
+  fn collect_referenced_svg_ids(styled: &StyledNode, out: &mut HashSet<String>) {
+    if let crate::dom::DomNodeType::Element {
+      namespace,
+      attributes,
+      ..
+    } = &styled.node.node_type
+    {
+      if namespace == SVG_NAMESPACE {
+        for (name, value) in attributes {
+          if is_href_attr(name) {
+            let trimmed = value.trim();
+            if let Some(id) = trimmed.strip_prefix('#').filter(|id| !id.is_empty()) {
+              out.insert(id.to_string());
+            }
+          }
+          extract_url_fragment_ids(value, out);
+        }
+      }
+    }
+
+    for child in &styled.children {
+      collect_referenced_svg_ids(child, out);
+    }
+  }
+
+  let mut requested = HashSet::new();
+  collect_requested_mask_ids(styled, &mut requested);
+  if requested.is_empty() {
+    return HashMap::new();
+  }
+
+  let mut index: HashMap<String, IndexedNode<'_>> = HashMap::new();
+  build_svg_id_index(styled, &[], &mut index);
+  if index.is_empty() {
+    return HashMap::new();
+  }
+
+  let mut required: HashSet<String> = HashSet::new();
+  let mut queue: VecDeque<String> = VecDeque::new();
+  for id in requested {
+    if index.contains_key(&id) && required.insert(id.clone()) {
+      queue.push_back(id);
+    }
+  }
+
+  while let Some(id) = queue.pop_front() {
+    let Some(entry) = index.get(&id) else {
+      continue;
+    };
+    let mut refs = HashSet::new();
+    collect_referenced_svg_ids(entry.node, &mut refs);
+    for reference in refs {
+      if !index.contains_key(&reference) {
+        continue;
+      }
+      if required.insert(reference.clone()) {
+        queue.push_back(reference);
+      }
     }
   }
 
   let mut defs = HashMap::new();
-  walk(styled, &[], false, &mut defs);
+  for id in required {
+    let Some(entry) = index.get(&id) else {
+      continue;
+    };
+    let mut serialized = String::new();
+    serialize_svg_mask_subtree_with_namespaces(
+      entry.node,
+      &entry.namespaces,
+      None,
+      None,
+      true,
+      &mut serialized,
+    );
+    defs.insert(id, serialized);
+  }
+
   defs
 }
 

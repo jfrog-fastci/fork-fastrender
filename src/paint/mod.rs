@@ -115,6 +115,7 @@ pub mod scene_tree;
 pub mod scratch;
 pub mod stacking;
 pub mod svg_filter;
+pub(crate) mod svg_mask_image;
 pub(crate) mod svg_foreign_object;
 mod text_decoration;
 pub(crate) mod text_decoration_skip_ink;

@@ -3043,35 +3043,9 @@ impl DisplayListBuilder {
 
   fn inline_svg_for_svg_mask(&self, mask_id: &str, bounds: Rect) -> Option<String> {
     let defs = self.svg_id_defs.as_ref()?;
-    if !defs.contains_key(mask_id) {
-      return None;
-    }
-
     let width = bounds.width().ceil().max(1.0) as u32;
     let height = bounds.height().ceil().max(1.0) as u32;
-
-    let mut ids: Vec<&String> = defs.keys().collect();
-    ids.sort();
-
-    let mut out = String::new();
-    out.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"");
-    out.push_str(&width.to_string());
-    out.push_str("\" height=\"");
-    out.push_str(&height.to_string());
-    out.push_str("\" viewBox=\"0 0 ");
-    out.push_str(&width.to_string());
-    out.push(' ');
-    out.push_str(&height.to_string());
-    out.push_str("\"><defs>");
-    for id in ids {
-      if let Some(serialized) = defs.get(id) {
-        out.push_str(serialized);
-      }
-    }
-    out.push_str("</defs><rect width=\"100%\" height=\"100%\" fill=\"white\" mask=\"url(#");
-    out.push_str(mask_id);
-    out.push_str(")\"/></svg>");
-    Some(out)
+    crate::paint::svg_mask_image::inline_svg_for_mask_id(defs, mask_id, width, height)
   }
 
   fn decode_mask_image_url(

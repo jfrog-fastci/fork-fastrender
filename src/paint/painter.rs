@@ -3407,28 +3407,11 @@ impl Painter {
             let render_h = css_bounds.height().ceil().max(1.0) as u32;
             img_w = render_w as f32;
             img_h = render_h as f32;
-
-            let mut ids: Vec<&String> = defs.keys().collect();
-            ids.sort();
-
-            let mut svg = String::new();
-            svg.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"");
-            svg.push_str(&render_w.to_string());
-            svg.push_str("\" height=\"");
-            svg.push_str(&render_h.to_string());
-            svg.push_str("\" viewBox=\"0 0 ");
-            svg.push_str(&render_w.to_string());
-            svg.push(' ');
-            svg.push_str(&render_h.to_string());
-            svg.push_str("\"><defs>");
-            for def_id in ids {
-              if let Some(serialized) = defs.get(def_id) {
-                svg.push_str(serialized);
-              }
-            }
-            svg.push_str("</defs><rect width=\"100%\" height=\"100%\" fill=\"white\" mask=\"url(#");
-            svg.push_str(id);
-            svg.push_str(")\"/></svg>");
+            let Some(svg) =
+              crate::paint::svg_mask_image::inline_svg_for_mask_id(defs, id, render_w, render_h)
+            else {
+              continue;
+            };
 
             // The synthesized SVG always produces a white image with mask coverage in the alpha
             // channel, so interpret it as an alpha mask.
