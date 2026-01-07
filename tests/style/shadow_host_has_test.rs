@@ -108,3 +108,38 @@ fn document_has_does_not_pierce_shadow_tree() {
     "block"
   );
 }
+
+#[test]
+fn host_has_does_not_match_slotted_light_dom() {
+  let html = r#"
+    <div id="host">
+      <template shadowroot="open">
+        <style>
+          :host { display: block; }
+          :host:has(.slotted) { display: inline; }
+        </style>
+        <slot></slot>
+      </template>
+      <span class="slotted">Light</span>
+    </div>
+  "#;
+  let dom = dom::parse_html(html).expect("parse html");
+  let scoped_sources = extract_scoped_css_sources(&dom);
+  let mut shadows = std::collections::HashMap::new();
+  for (host, sources) in scoped_sources.shadows {
+    shadows.insert(host, stylesheet_from_sources(&sources));
+  }
+  let style_set = StyleSet {
+    document: stylesheet_from_sources(&scoped_sources.document),
+    shadows,
+  };
+  let media = MediaContext::screen(800.0, 600.0);
+  let styled = apply_style_set_with_media_target_and_imports(
+    &dom, &style_set, &media, None, None, None, None, None, None,
+  );
+
+  assert_eq!(
+    display(find_styled_by_id(&styled, "host").expect("host")),
+    "block"
+  );
+}
