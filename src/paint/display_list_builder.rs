@@ -2672,6 +2672,12 @@ impl DisplayListBuilder {
     if !matches!(style.clip_path, crate::style::types::ClipPath::None) {
       return true;
     }
+    if style.clip.is_some() {
+      return true;
+    }
+    if Self::overflow_axis_clips(style.overflow_x) || Self::overflow_axis_clips(style.overflow_y) {
+      return true;
+    }
     if style.mask_layers.iter().any(|layer| layer.image.is_some()) {
       return true;
     }
@@ -2679,6 +2685,9 @@ impl DisplayListBuilder {
       return true;
     }
     if matches!(style.isolation, Isolation::Isolate) {
+      return true;
+    }
+    if style.containment.isolates_paint() {
       return true;
     }
     false
@@ -8413,7 +8422,10 @@ mod tests {
   use crate::style::types::BackgroundSize;
   use crate::style::types::BackgroundSizeComponent;
   use crate::style::types::BasicShape;
+  use crate::style::types::ClipComponent;
   use crate::style::types::ClipPath;
+  use crate::style::types::ClipRect;
+  use crate::style::types::Containment;
   use crate::style::types::ImageOrientation;
   use crate::style::types::ImageRendering;
   use crate::style::types::MixBlendMode;
@@ -8425,6 +8437,7 @@ mod tests {
   use crate::style::types::TextDecorationLine;
   use crate::style::types::TextDecorationThickness;
   use crate::style::types::TransformBox;
+  use crate::style::types::TransformStyle;
   use crate::style::values::CalcLength;
   use crate::style::values::Length;
   use crate::style::values::LengthUnit;
@@ -9161,6 +9174,73 @@ mod tests {
       }
       other => panic!("expected raster mask image, got {other:?}"),
     }
+  }
+
+  fn root_transform_style(list: &DisplayList) -> TransformStyle {
+    list
+      .items()
+      .iter()
+      .find_map(|item| match item {
+        DisplayItem::PushStackingContext(ctx) => Some(ctx.transform_style),
+        _ => None,
+      })
+      .expect("expected a root stacking context")
+  }
+
+  #[test]
+  fn overflow_hidden_flattens_preserve_3d() {
+    let mut style = ComputedStyle::default();
+    style.transform = vec![Transform::Translate(Length::px(1.0), Length::px(2.0))];
+    style.transform_style = TransformStyle::Preserve3d;
+    style.overflow_x = Overflow::Hidden;
+
+    let fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      vec![],
+      Arc::new(style),
+    );
+    let list = DisplayListBuilder::new().build_with_stacking_tree(&fragment);
+
+    assert_eq!(root_transform_style(&list), TransformStyle::Flat);
+  }
+
+  #[test]
+  fn contain_paint_flattens_preserve_3d() {
+    let mut style = ComputedStyle::default();
+    style.transform = vec![Transform::Translate(Length::px(1.0), Length::px(2.0))];
+    style.transform_style = TransformStyle::Preserve3d;
+    style.containment = Containment::with_flags(false, false, false, false, true);
+
+    let fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      vec![],
+      Arc::new(style),
+    );
+    let list = DisplayListBuilder::new().build_with_stacking_tree(&fragment);
+
+    assert_eq!(root_transform_style(&list), TransformStyle::Flat);
+  }
+
+  #[test]
+  fn clip_rect_flattens_preserve_3d() {
+    let mut style = ComputedStyle::default();
+    style.transform = vec![Transform::Translate(Length::px(1.0), Length::px(2.0))];
+    style.transform_style = TransformStyle::Preserve3d;
+    style.clip = Some(ClipRect {
+      top: ClipComponent::Auto,
+      right: ClipComponent::Auto,
+      bottom: ClipComponent::Auto,
+      left: ClipComponent::Auto,
+    });
+
+    let fragment = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
+      vec![],
+      Arc::new(style),
+    );
+    let list = DisplayListBuilder::new().build_with_stacking_tree(&fragment);
+
+    assert_eq!(root_transform_style(&list), TransformStyle::Flat);
   }
 
   #[test]
