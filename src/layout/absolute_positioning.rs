@@ -461,8 +461,8 @@ impl AbsoluteLayout {
     };
 
     let available_for_shrink = cb_width
-      - left.unwrap_or(0.0)
-      - right.unwrap_or(0.0)
+      - resolved_left.unwrap_or(0.0)
+      - resolved_right.unwrap_or(0.0)
       - margin_left
       - margin_right
       - total_horizontal_spacing;
@@ -697,9 +697,20 @@ impl AbsoluteLayout {
         .unwrap_or(HeightValue::Auto),
     };
 
+    // For overconstrained blocks (top + height + bottom specified), CSS 2.1 §10.6.4 treats the
+    // trailing inset (bottom) as auto (ignored) unless auto margins are present to resolve the
+    // constraint equation. This also affects the "available space" used by intrinsic sizing
+    // keywords like `fit-content`.
+    let insets_overconstrained = top.is_some()
+      && !matches!(height_value, HeightValue::Auto)
+      && bottom.is_some()
+      && !margin_top_auto
+      && !margin_bottom_auto;
+    let bottom_for_sizing = if insets_overconstrained { None } else { bottom };
+
     let available_for_shrink = cb_height
       - top.unwrap_or(0.0)
-      - bottom.unwrap_or(0.0)
+      - bottom_for_sizing.unwrap_or(0.0)
       - margin_top
       - margin_bottom
       - total_vertical_spacing;
