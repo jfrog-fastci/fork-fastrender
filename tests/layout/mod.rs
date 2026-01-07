@@ -24,6 +24,7 @@ mod flex_auto_min_size_overflow_clip;
 mod flex_auto_min_size_percent;
 mod flex_box_sizing_test;
 mod flex_constraints_viewport_clamp;
+mod flex_justify_content_reverse;
 mod flex_intrinsic_sizing_keywords;
 mod flex_justify_content_start_end;
 mod flex_positioned_relayout;
