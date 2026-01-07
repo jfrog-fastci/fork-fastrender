@@ -106,11 +106,31 @@ impl<'a> StyledFragmentRef<'a> {
   }
 }
 
+/// A clipping scope inherited from non-stacking ancestors.
+///
+/// Some properties (e.g. `overflow: hidden` or `clip`) establish clipping for descendants without
+/// creating a stacking context. When stacking contexts are promoted to their nearest ancestor
+/// stacking context, we still need to apply those clips during painting.
+#[derive(Debug, Clone)]
+pub struct ClipChainLink {
+  /// The ancestor fragment's border box in the coordinate space of the containing stacking
+  /// context.
+  pub rect: Rect,
+  /// The ancestor fragment's `scroll_overflow` in the fragment's local coordinate space.
+  pub scroll_overflow: Rect,
+  /// The ancestor fragment's computed style (needed to resolve border radii and clip geometry).
+  pub style: Arc<ComputedStyle>,
+  /// Whether the fragment represents a replaced element (replaced elements clip their own
+  /// contents separately).
+  pub is_replaced: bool,
+}
+
 /// A fragment paired with its preorder position in the fragment tree.
 #[derive(Debug, Clone)]
 pub struct OrderedFragment {
   pub fragment: FragmentNode,
   pub tree_order: usize,
+  pub clip_chain: Vec<ClipChainLink>,
 }
 
 impl OrderedFragment {
@@ -118,6 +138,19 @@ impl OrderedFragment {
     Self {
       fragment,
       tree_order,
+      clip_chain: Vec::new(),
+    }
+  }
+
+  pub fn new_with_clip_chain(
+    fragment: FragmentNode,
+    tree_order: usize,
+    clip_chain: Vec<ClipChainLink>,
+  ) -> Self {
+    Self {
+      fragment,
+      tree_order,
+      clip_chain,
     }
   }
 }
@@ -245,6 +278,10 @@ pub struct StackingContext {
   /// Why this stacking context was created (for debugging)
   pub reason: StackingContextReason,
 
+  /// Clip scopes from non-stacking ancestors between the parent stacking context and this
+  /// stacking context.
+  pub clip_chain: Vec<ClipChainLink>,
+
   /// Tree order index for stable sorting
   pub tree_order: usize,
 }
@@ -263,6 +300,7 @@ impl StackingContext {
       offset_from_parent_context: Point::ZERO,
       bounds: Rect::from_xywh(0.0, 0.0, 0.0, 0.0),
       reason: StackingContextReason::Root,
+      clip_chain: Vec::new(),
       tree_order: 0,
     }
   }
@@ -280,6 +318,7 @@ impl StackingContext {
       offset_from_parent_context: Point::ZERO,
       bounds: Rect::from_xywh(0.0, 0.0, 0.0, 0.0),
       reason,
+      clip_chain: Vec::new(),
       tree_order,
     }
   }
@@ -655,22 +694,6 @@ pub fn creates_stacking_context(
     return true;
   }
 
-  // 7. Overflow hidden/scroll/auto with visible overflow on the other axis
-  // This creates a stacking context in some browsers
-  // For simplicity, we create stacking context for any non-visible overflow
-  if matches!(
-    style.overflow_x,
-    Overflow::Hidden | Overflow::Scroll | Overflow::Auto | Overflow::Clip
-  ) || matches!(
-    style.overflow_y,
-    Overflow::Hidden | Overflow::Scroll | Overflow::Auto | Overflow::Clip
-  ) {
-    // Only if positioned, this creates a stacking context
-    if is_positioned(style) {
-      return true;
-    }
-  }
-
   // 14/15. Flex/Grid items with z-index
   // If parent is flex/grid container and this element has z-index != 0
   if let Some(parent) = parent_style {
@@ -781,18 +804,6 @@ pub fn get_stacking_context_reason(
     return Some(StackingContextReason::Containment);
   }
 
-  if is_positioned(style)
-    && (matches!(
-      style.overflow_x,
-      Overflow::Hidden | Overflow::Scroll | Overflow::Auto | Overflow::Clip
-    ) || matches!(
-      style.overflow_y,
-      Overflow::Hidden | Overflow::Scroll | Overflow::Auto | Overflow::Clip
-    ))
-  {
-    return Some(StackingContextReason::OverflowClip);
-  }
-
   if let Some(parent) = parent_style {
     let parent_is_flex = matches!(parent.display, Display::Flex | Display::InlineFlex);
     let parent_is_grid = matches!(parent.display, Display::Grid | Display::InlineGrid);
@@ -845,6 +856,34 @@ fn is_inline_level(style: &ComputedStyle, fragment: &FragmentNode) -> bool {
   );
 
   is_inline_display || is_inline_content
+}
+
+fn overflow_axis_clips(overflow: Overflow) -> bool {
+  matches!(
+    overflow,
+    Overflow::Hidden | Overflow::Scroll | Overflow::Auto | Overflow::Clip
+  )
+}
+
+fn clip_chain_link_for_fragment(
+  fragment: &FragmentNode,
+  style: &Arc<ComputedStyle>,
+  offset_from_parent_context: Point,
+) -> Option<ClipChainLink> {
+  let is_replaced = matches!(fragment.content, FragmentContent::Replaced { .. });
+  let clips_overflow =
+    !is_replaced && (overflow_axis_clips(style.overflow_x) || overflow_axis_clips(style.overflow_y));
+  let clips_rect = style.clip.is_some();
+  if !(clips_overflow || clips_rect) {
+    return None;
+  }
+
+  Some(ClipChainLink {
+    rect: Rect::new(offset_from_parent_context, fragment.bounds.size),
+    scroll_overflow: fragment.scroll_overflow,
+    style: style.clone(),
+    is_replaced,
+  })
 }
 
 /// Builds a stacking context tree from a fragment tree
@@ -1076,13 +1115,15 @@ where
   F: Fn(&FragmentNode) -> Option<Arc<ComputedStyle>> + Clone,
 {
   let root_style = get_style(root);
+  let mut clip_stack = Vec::new();
   let mut context = build_stacking_tree_with_styles_internal(
     root,
-    root_style.as_ref().map(|s| s.as_ref()),
+    root_style,
     None,
     true,
     tree_order_counter,
     root.bounds.origin,
+    &mut clip_stack,
     get_style,
   );
 
@@ -1102,13 +1143,15 @@ where
   F: Fn(&FragmentNode) -> Option<Arc<ComputedStyle>> + Clone,
 {
   let root_style = get_style(root);
+  let mut clip_stack = Vec::new();
   let mut context = build_stacking_tree_with_styles_internal_checked(
     root,
-    root_style.as_ref().map(|s| s.as_ref()),
+    root_style,
     None,
     true,
     tree_order_counter,
     root.bounds.origin,
+    &mut clip_stack,
     get_style,
     deadline_counter,
   )?;
@@ -1185,11 +1228,12 @@ pub fn build_stacking_tree_from_tree_checked(tree: &FragmentTree) -> Result<Vec<
 
 fn build_stacking_tree_with_styles_internal_checked<F>(
   fragment: &FragmentNode,
-  style: Option<&ComputedStyle>,
+  style: Option<Arc<ComputedStyle>>,
   parent_style: Option<&ComputedStyle>,
   is_root: bool,
   tree_order: &mut usize,
   offset_from_parent_context: Point,
+  clip_stack: &mut Vec<ClipChainLink>,
   get_style: &F,
   deadline_counter: &mut usize,
 ) -> Result<StackingContext>
@@ -1202,7 +1246,7 @@ where
   let current_order = *tree_order;
   *tree_order += 1;
 
-  let creates_context = if let Some(s) = style {
+  let creates_context = if let Some(s) = style.as_deref() {
     creates_stacking_context(s, parent_style, is_root)
   } else {
     is_root
@@ -1210,6 +1254,7 @@ where
 
   if creates_context {
     let z_index = style
+      .as_deref()
       .map(|s| {
         if s.top_layer.is_some() {
           i32::MAX
@@ -1219,14 +1264,17 @@ where
       })
       .unwrap_or(0);
     let reason = style
+      .as_deref()
       .and_then(|s| get_stacking_context_reason(s, parent_style, is_root))
       .unwrap_or(StackingContextReason::Root);
 
     let mut context = StackingContext::with_reason(z_index, reason, current_order);
+    context.clip_chain = clip_stack.clone();
     context.offset_from_parent_context = offset_from_parent_context;
     context.fragments.push(fragment.clone());
 
     let base_offset = Point::ZERO;
+    let mut child_clip_stack = Vec::new();
     for child in fragment.children.iter() {
       let child_style = get_style(child);
       let child_offset = Point::new(
@@ -1235,11 +1283,12 @@ where
       );
       let mut child_context = build_stacking_tree_with_styles_internal_checked(
         child,
-        child_style.as_ref().map(|s| s.as_ref()),
-        style,
+        child_style.clone(),
+        style.as_deref(),
         false,
         tree_order,
         child_offset,
+        &mut child_clip_stack,
         get_style,
         deadline_counter,
       )?;
@@ -1274,7 +1323,7 @@ where
     context.tree_order = current_order;
     context.offset_from_parent_context = offset_from_parent_context;
 
-    if let Some(s) = style {
+    if let Some(s) = style.as_deref() {
       if is_positioned(s) && !creates_stacking_context(s, None, false) {
         let mut translated = fragment.clone();
         translated.translate_root_in_place(Point::new(
@@ -1283,7 +1332,11 @@ where
         ));
         context
           .layer6_positioned
-          .push(OrderedFragment::new(translated, current_order));
+          .push(OrderedFragment::new_with_clip_chain(
+            translated,
+            current_order,
+            clip_stack.clone(),
+          ));
       } else {
         context.add_fragment_to_layer(fragment.clone(), Some(s), current_order);
       }
@@ -1300,6 +1353,14 @@ where
       }
     }
 
+    let clip_pushed = style
+      .as_ref()
+      .and_then(|style| clip_chain_link_for_fragment(fragment, style, offset_from_parent_context))
+      .map(|link| {
+        clip_stack.push(link);
+      })
+      .is_some();
+
     let base_offset = offset_from_parent_context;
     for child in fragment.children.iter() {
       let child_style = get_style(child);
@@ -1309,11 +1370,12 @@ where
       );
       let mut child_context = build_stacking_tree_with_styles_internal_checked(
         child,
-        child_style.as_ref().map(|s| s.as_ref()),
-        style,
+        child_style.clone(),
+        style.as_deref(),
         false,
         tree_order,
         child_offset,
+        clip_stack,
         get_style,
         deadline_counter,
       )?;
@@ -1342,6 +1404,10 @@ where
       }
     }
 
+    if clip_pushed {
+      clip_stack.pop();
+    }
+
     Ok(context)
   }
 }
@@ -1349,11 +1415,12 @@ where
 /// Internal recursive function to build stacking context tree with styles
 fn build_stacking_tree_with_styles_internal<F>(
   fragment: &FragmentNode,
-  style: Option<&ComputedStyle>,
+  style: Option<Arc<ComputedStyle>>,
   parent_style: Option<&ComputedStyle>,
   is_root: bool,
   tree_order: &mut usize,
   offset_from_parent_context: Point,
+  clip_stack: &mut Vec<ClipChainLink>,
   get_style: &F,
 ) -> StackingContext
 where
@@ -1362,7 +1429,7 @@ where
   let current_order = *tree_order;
   *tree_order += 1;
 
-  let creates_context = if let Some(s) = style {
+  let creates_context = if let Some(s) = style.as_deref() {
     creates_stacking_context(s, parent_style, is_root)
   } else {
     is_root
@@ -1370,6 +1437,7 @@ where
 
   if creates_context {
     let z_index = style
+      .as_deref()
       .map(|s| {
         if s.top_layer.is_some() {
           i32::MAX
@@ -1379,14 +1447,17 @@ where
       })
       .unwrap_or(0);
     let reason = style
+      .as_deref()
       .and_then(|s| get_stacking_context_reason(s, parent_style, is_root))
       .unwrap_or(StackingContextReason::Root);
 
     let mut context = StackingContext::with_reason(z_index, reason, current_order);
+    context.clip_chain = clip_stack.clone();
     context.offset_from_parent_context = offset_from_parent_context;
     context.fragments.push(fragment.clone());
 
     let base_offset = Point::ZERO;
+    let mut child_clip_stack = Vec::new();
     for child in fragment.children.iter() {
       let child_style = get_style(child);
       let child_offset = Point::new(
@@ -1395,11 +1466,12 @@ where
       );
       let mut child_context = build_stacking_tree_with_styles_internal(
         child,
-        child_style.as_ref().map(|s| s.as_ref()),
-        style,
+        child_style.clone(),
+        style.as_deref(),
         false,
         tree_order,
         child_offset,
+        &mut child_clip_stack,
         get_style,
       );
 
@@ -1433,7 +1505,7 @@ where
     context.tree_order = current_order;
     context.offset_from_parent_context = offset_from_parent_context;
 
-    if let Some(s) = style {
+    if let Some(s) = style.as_deref() {
       if is_positioned(s) && !creates_stacking_context(s, None, false) {
         let mut translated = fragment.clone();
         translated.translate_root_in_place(Point::new(
@@ -1442,7 +1514,11 @@ where
         ));
         context
           .layer6_positioned
-          .push(OrderedFragment::new(translated, current_order));
+          .push(OrderedFragment::new_with_clip_chain(
+            translated,
+            current_order,
+            clip_stack.clone(),
+          ));
       } else {
         context.add_fragment_to_layer(fragment.clone(), Some(s), current_order);
       }
@@ -1459,6 +1535,14 @@ where
       }
     }
 
+    let clip_pushed = style
+      .as_ref()
+      .and_then(|style| clip_chain_link_for_fragment(fragment, style, offset_from_parent_context))
+      .map(|link| {
+        clip_stack.push(link);
+      })
+      .is_some();
+
     let base_offset = offset_from_parent_context;
     for child in fragment.children.iter() {
       let child_style = get_style(child);
@@ -1468,11 +1552,12 @@ where
       );
       let mut child_context = build_stacking_tree_with_styles_internal(
         child,
-        child_style.as_ref().map(|s| s.as_ref()),
-        style,
+        child_style.clone(),
+        style.as_deref(),
         false,
         tree_order,
         child_offset,
+        clip_stack,
         get_style,
       );
 
@@ -1498,6 +1583,10 @@ where
           );
         }
       }
+    }
+
+    if clip_pushed {
+      clip_stack.pop();
     }
 
     context
@@ -1798,6 +1887,17 @@ mod tests {
     style.position = Position::Relative;
     style.z_index = Some(0); // explicit zero still creates stacking context
     assert!(creates_stacking_context(&style, None, false));
+  }
+
+  #[test]
+  fn test_positioned_overflow_hidden_does_not_create_stacking_context() {
+    let mut style = ComputedStyle::default();
+    style.position = Position::Relative;
+    style.overflow_x = Overflow::Hidden;
+    style.overflow_y = Overflow::Hidden;
+    style.z_index = None;
+    assert!(!creates_stacking_context(&style, None, false));
+    assert_eq!(get_stacking_context_reason(&style, None, false), None);
   }
 
   #[test]

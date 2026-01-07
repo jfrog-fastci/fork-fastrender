@@ -630,32 +630,26 @@ fn test_total_fragment_count() {
   assert_eq!(parent.total_fragment_count(), 3);
 }
 
-// Test: Positioned with overflow creates stacking context
+// Test: Positioned with overflow does NOT create a stacking context (spec-correct)
 
 #[test]
-fn test_positioned_overflow_creates_stacking_context() {
+fn test_positioned_overflow_does_not_create_stacking_context() {
   let mut style = ComputedStyle::default();
   style.position = Position::Relative;
   style.overflow_x = Overflow::Hidden;
 
-  assert!(creates_stacking_context(&style, None, false));
-  assert_eq!(
-    get_stacking_context_reason(&style, None, false),
-    Some(StackingContextReason::OverflowClip)
-  );
+  assert!(!creates_stacking_context(&style, None, false));
+  assert_eq!(get_stacking_context_reason(&style, None, false), None);
 }
 
 #[test]
-fn test_positioned_overflow_clip_creates_stacking_context() {
+fn test_positioned_overflow_clip_does_not_create_stacking_context() {
   let mut style = ComputedStyle::default();
   style.position = Position::Relative;
   style.overflow_y = Overflow::Clip;
 
-  assert!(creates_stacking_context(&style, None, false));
-  assert_eq!(
-    get_stacking_context_reason(&style, None, false),
-    Some(StackingContextReason::OverflowClip)
-  );
+  assert!(!creates_stacking_context(&style, None, false));
+  assert_eq!(get_stacking_context_reason(&style, None, false), None);
 }
 
 // Test: Multiple stacking context triggers (opacity takes precedence order)

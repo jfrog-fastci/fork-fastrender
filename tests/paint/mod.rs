@@ -51,6 +51,7 @@ mod multi_root_display_list;
 mod offscreen_culling_stress;
 mod optimize_test;
 mod overflow_clip_test;
+mod overflow_hidden_does_not_create_stacking_context;
 mod paged_media_margin_boxes;
 mod parallel_paint_test;
 mod picture_source_selection;

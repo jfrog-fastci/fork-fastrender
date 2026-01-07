@@ -103,6 +103,7 @@ use crate::paint::painter::{
   PaintDiagnosticsThreadGuard,
 };
 use crate::paint::stacking::Layer6Item;
+use crate::paint::stacking::ClipChainLink;
 use crate::paint::stacking::StackingContext;
 use crate::paint::svg_filter::SvgFilterResolver;
 use crate::paint::text_decoration::{resolve_underline_side, UnderlineSide};
@@ -2012,6 +2013,49 @@ impl DisplayListBuilder {
     }
   }
 
+  fn push_clip_chain(&mut self, chain: &[ClipChainLink], offset: Point) -> usize {
+    if chain.is_empty() {
+      return 0;
+    }
+
+    let mut pushed = 0usize;
+    for link in chain {
+      let rect = link.rect.translate(offset);
+      let style = link.style.as_ref();
+      let clip_x = !link.is_replaced && Self::overflow_axis_clips(style.overflow_x);
+      let clip_y = !link.is_replaced && Self::overflow_axis_clips(style.overflow_y);
+      if clip_x || clip_y {
+        let overflow_bounds = rect.union(link.scroll_overflow.translate(rect.origin));
+        let rects = Self::background_rects(rect, style, self.viewport);
+        if let Some(clip) = Self::overflow_clip_from_style_with_rects(
+          style,
+          &rects,
+          clip_x,
+          clip_y,
+          overflow_bounds,
+          self.viewport,
+          self.build_breakdown.as_deref(),
+        ) {
+          self.list.push(DisplayItem::PushClip(clip));
+          pushed += 1;
+        }
+      }
+
+      if let Some(clip) = Self::clip_rect_from_style(style, rect, self.viewport) {
+        self.list.push(DisplayItem::PushClip(clip));
+        pushed += 1;
+      }
+    }
+
+    pushed
+  }
+
+  fn pop_clips(&mut self, count: usize) {
+    for _ in 0..count {
+      self.list.push(DisplayItem::PopClip);
+    }
+  }
+
   fn build_stacking_context(
     &mut self,
     context: &StackingContext,
@@ -2338,6 +2382,7 @@ impl DisplayListBuilder {
       || !backdrop_filters.is_empty()
       || mix_blend_mode != BlendMode::Normal
       || root_style.is_some_and(|style| style.will_change.establishes_backdrop_root());
+    let ancestor_clips_pushed = self.push_clip_chain(&context.clip_chain, offset);
 
     if is_root && !has_effects {
       if let Some(root_background) = root_background.as_ref() {
@@ -2350,6 +2395,7 @@ impl DisplayListBuilder {
           has_opacity,
           local_child_visibility,
         );
+        self.pop_clips(ancestor_clips_pushed);
         return;
       }
       let mut deadline_counter = 0usize;
@@ -2392,11 +2438,11 @@ impl DisplayListBuilder {
           break;
         }
         match item {
-          Layer6Item::Positioned(fragment) => self.build_fragment(
-            &fragment.fragment,
-            descendant_offset,
-            local_child_visibility,
-          ),
+          Layer6Item::Positioned(fragment) => {
+            let pushed = self.push_clip_chain(&fragment.clip_chain, descendant_offset);
+            self.build_fragment(&fragment.fragment, descendant_offset, local_child_visibility);
+            self.pop_clips(pushed);
+          }
           Layer6Item::ZeroContext(child) => self.build_stacking_context(
             child,
             descendant_offset,
@@ -2419,6 +2465,7 @@ impl DisplayListBuilder {
           local_child_visibility,
         );
       }
+      self.pop_clips(ancestor_clips_pushed);
       return;
     }
 
@@ -2472,6 +2519,7 @@ impl DisplayListBuilder {
         self.list.push(DisplayItem::PopClip);
       }
       self.list.push(DisplayItem::PopStackingContext);
+      self.pop_clips(ancestor_clips_pushed);
       return;
     }
 
@@ -2520,11 +2568,11 @@ impl DisplayListBuilder {
         break;
       }
       match item {
-        Layer6Item::Positioned(fragment) => self.build_fragment(
-          &fragment.fragment,
-          descendant_offset,
-          local_child_visibility,
-        ),
+        Layer6Item::Positioned(fragment) => {
+          let pushed = self.push_clip_chain(&fragment.clip_chain, descendant_offset);
+          self.build_fragment(&fragment.fragment, descendant_offset, local_child_visibility);
+          self.pop_clips(pushed);
+        }
         Layer6Item::ZeroContext(child) => self.build_stacking_context(
           child,
           descendant_offset,
@@ -2558,6 +2606,7 @@ impl DisplayListBuilder {
       self.list.push(DisplayItem::PopClip);
     }
     self.list.push(DisplayItem::PopStackingContext);
+    self.pop_clips(ancestor_clips_pushed);
   }
 
   fn overflow_clip_from_style(
