@@ -3841,24 +3841,33 @@ fn sticky_delta_axis(
 
 fn clamp_delta_to_containing_block(
   delta: Point,
-  margin_box: Rect,
-  containing_block: Rect,
+  margin_box_screen: Rect,
+  containing_block_screen: Rect,
+  clamp_x: bool,
+  clamp_y: bool,
 ) -> Point {
-  let min_dx = (containing_block.min_x() - margin_box.min_x()).min(0.0);
-  let max_dx = (containing_block.max_x() - margin_box.max_x()).max(0.0);
-  let min_dy = (containing_block.min_y() - margin_box.min_y()).min(0.0);
-  let max_dy = (containing_block.max_y() - margin_box.max_y()).max(0.0);
+  let mut dx = delta.x;
+  let mut dy = delta.y;
 
-  let dx = if min_dx <= max_dx {
-    delta.x.clamp(min_dx, max_dx)
-  } else {
-    0.0
-  };
-  let dy = if min_dy <= max_dy {
-    delta.y.clamp(min_dy, max_dy)
-  } else {
-    0.0
-  };
+  if clamp_x {
+    let min_dx = containing_block_screen.min_x() - margin_box_screen.min_x();
+    let max_dx = containing_block_screen.max_x() - margin_box_screen.max_x();
+    dx = if min_dx <= max_dx {
+      dx.clamp(min_dx, max_dx)
+    } else {
+      0.0
+    };
+  }
+
+  if clamp_y {
+    let min_dy = containing_block_screen.min_y() - margin_box_screen.min_y();
+    let max_dy = containing_block_screen.max_y() - margin_box_screen.max_y();
+    dy = if min_dy <= max_dy {
+      dy.clamp(min_dy, max_dy)
+    } else {
+      0.0
+    };
+  }
 
   Point::new(dx, dy)
 }
@@ -3867,6 +3876,8 @@ fn apply_sticky_offsets_with_context(
   font_context: &FontContext,
   fragment: &mut FragmentNode,
   parent_rect: Rect,
+  parent_content_rect: Rect,
+  parent_screen_offset: Point,
   context: StickyTraversalContext,
   scroll_state: &ScrollState,
   viewport: Size,
@@ -3882,20 +3893,28 @@ fn apply_sticky_offsets_with_context(
     fragment.bounds.height(),
   );
 
-  if let Some(style) = fragment.style.as_ref() {
-    if style.position.is_sticky() {
-      let inline_base = Some(parent_rect.width());
-      let block_base = if parent_rect.height() > 0.0 {
-        Some(parent_rect.height())
-      } else {
-        None
-      };
-      let containing_block =
-        ContainingBlock::with_viewport_and_bases(parent_rect, viewport, inline_base, block_base);
-      let positioned = resolve_positioned_style(style, &containing_block, viewport, font_context);
+  let positioned = fragment.style.as_ref().map(|style| {
+    let inline_base = Some(parent_content_rect.width());
+    let block_base = if parent_content_rect.height() > 0.0 {
+      Some(parent_content_rect.height())
+    } else {
+      None
+    };
+    let containing_block = ContainingBlock::with_viewport_and_bases(
+      parent_content_rect,
+      viewport,
+      inline_base,
+      block_base,
+    );
+    let positioned = resolve_positioned_style(style, &containing_block, viewport, font_context);
+    (positioned, containing_block)
+  });
+
+  if let Some((positioned, containing_block)) = positioned.as_ref() {
+    if positioned.position.is_sticky() {
       let constraints = crate::layout::contexts::positioned::StickyConstraints::from_style(
-        &positioned,
-        &containing_block,
+        positioned,
+        containing_block,
         font_context,
       );
 
@@ -3944,7 +3963,17 @@ fn apply_sticky_offsets_with_context(
           ),
         );
 
-        delta = clamp_delta_to_containing_block(delta, margin_box, parent_rect);
+        let containing_rect_screen = parent_content_rect.translate(Point::new(
+          -parent_screen_offset.x,
+          -parent_screen_offset.y,
+        ));
+        delta = clamp_delta_to_containing_block(
+          delta,
+          margin_box_screen,
+          containing_rect_screen,
+          constraints.left.is_some() || constraints.right.is_some(),
+          constraints.top.is_some() || constraints.bottom.is_some(),
+        );
         if delta.x.abs() > f32::EPSILON || delta.y.abs() > f32::EPSILON {
           fragment.bounds = fragment.bounds.translate(delta);
           if let Some(logical) = fragment.logical_override {
@@ -3955,6 +3984,25 @@ fn apply_sticky_offsets_with_context(
       }
     }
   }
+
+  let (padding_rect, content_rect) = positioned
+    .as_ref()
+    .map_or((abs_rect, abs_rect), |(positioned, _)| {
+      let padding_rect = Rect::from_xywh(
+        abs_rect.x() + positioned.border_width.left,
+        abs_rect.y() + positioned.border_width.top,
+        (abs_rect.width() - positioned.border_width.left - positioned.border_width.right)
+          .max(0.0),
+        (abs_rect.height() - positioned.border_width.top - positioned.border_width.bottom).max(0.0),
+      );
+      let content_rect = Rect::from_xywh(
+        padding_rect.x() + positioned.padding.left,
+        padding_rect.y() + positioned.padding.top,
+        (padding_rect.width() - positioned.padding.left - positioned.padding.right).max(0.0),
+        (padding_rect.height() - positioned.padding.top - positioned.padding.bottom).max(0.0),
+      );
+      (padding_rect, content_rect)
+    });
 
   let self_scroll = fragment
     .box_id()
@@ -3976,21 +4024,6 @@ fn apply_sticky_offsets_with_context(
     let is_scrollport_y =
       establishes_scrollport && overflow_establishes_sticky_scrollport(style.overflow_y);
     if is_scrollport_x || is_scrollport_y {
-      let inline_base = Some(parent_rect.width());
-      let block_base = if parent_rect.height() > 0.0 {
-        Some(parent_rect.height())
-      } else {
-        None
-      };
-      let containing_block =
-        ContainingBlock::with_viewport_and_bases(parent_rect, viewport, inline_base, block_base);
-      let positioned = resolve_positioned_style(style, &containing_block, viewport, font_context);
-      let padding_rect = Rect::from_xywh(
-        abs_rect.x() + positioned.border_width.left,
-        abs_rect.y() + positioned.border_width.top,
-        (abs_rect.width() - positioned.border_width.left - positioned.border_width.right).max(0.0),
-        (abs_rect.height() - positioned.border_width.top - positioned.border_width.bottom).max(0.0),
-      );
       let scrollport = StickyScrollport {
         rect: padding_rect,
         screen_offset: context.cumulative_scroll,
@@ -4010,6 +4043,8 @@ fn apply_sticky_offsets_with_context(
       font_context,
       child,
       abs_rect,
+      content_rect,
+      context.cumulative_scroll,
       child_context,
       scroll_state,
       viewport,
@@ -4039,6 +4074,8 @@ fn apply_sticky_offsets_to_root(
     font_context,
     fragment,
     viewport_rect,
+    viewport_rect,
+    Point::ZERO,
     context,
     scroll_state,
     viewport,

@@ -58,6 +58,7 @@ mod shadow_dom;
 mod shape_outside;
 mod sideways_lr_regressions;
 mod sticky_nested;
+mod sticky_padding;
 mod subgrid;
 mod subgrid_auto_span;
 mod subgrid_autorepeat_named_lines;
