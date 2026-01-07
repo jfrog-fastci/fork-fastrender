@@ -18403,6 +18403,78 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
   }
 
   #[test]
+  fn ua_important_outranks_author_important() {
+    let layer_order: Arc<[u32]> = Arc::from([u32::MAX].as_slice());
+    let parent = ComputedStyle::default();
+    let viewport = Size::new(800.0, 600.0);
+    let mut styles = ComputedStyle::default();
+
+    apply_cascaded_declarations(
+      &mut styles,
+      vec![
+        MatchedRule {
+          origin: StyleOrigin::UserAgent,
+          specificity: 0,
+          order: 0,
+          layer_order: layer_order.clone(),
+          declarations: Cow::Owned(parse_declarations("color: rgb(1, 2, 3) !important;")),
+          starting_style: false,
+        },
+        MatchedRule {
+          origin: StyleOrigin::Author,
+          specificity: 0,
+          order: 0,
+          layer_order,
+          declarations: Cow::Owned(parse_declarations("color: rgb(4, 5, 6) !important;")),
+          starting_style: false,
+        },
+      ],
+      None,
+      None,
+      &parent,
+      parent.font_size,
+      16.0,
+      viewport,
+      ColorScheme::NoPreference,
+      default_computed_style(),
+      |_| true,
+    );
+
+    assert_eq!(styles.color, Rgba::rgb(1, 2, 3));
+  }
+
+  #[test]
+  fn ua_important_outranks_inline_important() {
+    let layer_order: Arc<[u32]> = Arc::from([u32::MAX].as_slice());
+    let parent = ComputedStyle::default();
+    let viewport = Size::new(800.0, 600.0);
+    let mut styles = ComputedStyle::default();
+
+    apply_cascaded_declarations(
+      &mut styles,
+      vec![MatchedRule {
+        origin: StyleOrigin::UserAgent,
+        specificity: 0,
+        order: 0,
+        layer_order: layer_order.clone(),
+        declarations: Cow::Owned(parse_declarations("color: rgb(1, 2, 3) !important;")),
+        starting_style: false,
+      }],
+      Some(Cow::Owned(parse_declarations("color: rgb(4, 5, 6) !important;"))),
+      Some(layer_order),
+      &parent,
+      parent.font_size,
+      16.0,
+      viewport,
+      ColorScheme::NoPreference,
+      default_computed_style(),
+      |_| true,
+    );
+
+    assert_eq!(styles.color, Rgba::rgb(1, 2, 3));
+  }
+
+  #[test]
   fn cascaded_declarations_preserve_origin_and_inline_precedence() {
     let layer_order: Arc<[u32]> = Arc::from([u32::MAX].as_slice());
     let rules = vec![
@@ -25926,9 +25998,15 @@ fn apply_cascaded_declarations<'a, F>(
 
   // Sort rules in normal cascade order (origin.rank + layer order + specificity + rule order).
   //
-  // Important declarations reverse layer order, but within a given layer the ordering by
-  // specificity and rule order remains the same. This lets us derive the important rule order by
-  // reversing the layer-order groups within each origin rank, avoiding a second sort.
+  // Important declarations:
+  // - reverse origin precedence (UA important beats author important), and
+  // - reverse cascade-layer order within an origin stratum,
+  // while still preserving the normal within-layer ordering by specificity and source order.
+  //
+  // We can derive the important rule order by:
+  // 1) iterating origin-rank groups in reverse, and
+  // 2) reversing the layer-order groups within each origin rank,
+  // avoiding a second full sort.
   let mut rule_order: Vec<usize> = (0..matched_rules.len()).collect();
   if rule_order.len() > 1 {
     rule_order.sort_unstable_by(|&a_idx, &b_idx| {
@@ -25950,6 +26028,7 @@ fn apply_cascaded_declarations<'a, F>(
 
   let important_rule_order: Vec<usize> = if need_important_order {
     let mut out = Vec::with_capacity(rule_order.len());
+    let mut origin_ranges: Vec<(usize, usize)> = Vec::new();
     let mut i = 0usize;
     while i < rule_order.len() {
       let origin_rank = matched_rules[rule_order[i]].origin.rank();
@@ -25958,7 +26037,11 @@ fn apply_cascaded_declarations<'a, F>(
       while i < rule_order.len() && matched_rules[rule_order[i]].origin.rank() == origin_rank {
         i += 1;
       }
-      let origin_slice = &rule_order[origin_start..i];
+      origin_ranges.push((origin_start, i));
+    }
+
+    for (origin_start, origin_end) in origin_ranges.into_iter().rev() {
+      let origin_slice = &rule_order[origin_start..origin_end];
       let mut end = origin_slice.len();
       while end > 0 {
         let mut start = end - 1;
