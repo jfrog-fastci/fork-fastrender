@@ -10241,14 +10241,52 @@ fn apply_declaration_with_base_internal_with_order(
 
       // Reset to initial values per shorthand rules.
       let mut decoration = TextDecoration::default();
-      styles.text_decoration_line_specified = true;
+
+      let mut lines = TextDecorationLine::NONE;
+      let mut saw_line = false;
+      let mut saw_none = false;
+
+      let mut apply_line_keyword =
+        |token: &str, lines: &mut TextDecorationLine, saw_none: &mut bool| -> Option<()> {
+          match token {
+            "none" => {
+              if *saw_none || !lines.is_empty() {
+                return None;
+              }
+              *saw_none = true;
+            }
+            "underline" => {
+              if *saw_none {
+                return None;
+              }
+              lines.insert(TextDecorationLine::UNDERLINE);
+            }
+            "overline" => {
+              if *saw_none {
+                return None;
+              }
+              lines.insert(TextDecorationLine::OVERLINE);
+            }
+            "line-through" => {
+              if *saw_none {
+                return None;
+              }
+              lines.insert(TextDecorationLine::LINE_THROUGH);
+            }
+            // Accepted-but-ignored keywords (cannot be represented in our bitflags today).
+            "blink" | "spelling-error" | "grammar-error" => {
+              if *saw_none {
+                return None;
+              }
+            }
+            _ => return None,
+          }
+          Some(())
+        };
+
       for token in tokens {
-        if let Some(lines) = parse_text_decoration_line(&token) {
-          decoration.lines = lines;
-          continue;
-        }
-        if let Some(style) = parse_text_decoration_style(&token) {
-          decoration.style = style;
+        if let Some(style_val) = parse_text_decoration_style(&token) {
+          decoration.style = style_val;
           continue;
         }
         if let Some(color) = parse_text_decoration_color(&token, styles.color, is_dark_color_scheme)
@@ -10260,9 +10298,41 @@ fn apply_declaration_with_base_internal_with_order(
           parse_text_decoration_thickness(&token, parent_font_size, root_font_size)
         {
           decoration.thickness = thick;
+          continue;
+        }
+
+        match token {
+          PropertyValue::Keyword(kw) => {
+            let parts: Vec<_> = kw
+              .split_whitespace()
+              .map(|s| s.to_ascii_lowercase())
+              .collect();
+            if parts.is_empty() {
+              return;
+            }
+            for part in parts {
+              if apply_line_keyword(&part, &mut lines, &mut saw_none).is_none() {
+                return;
+              }
+              saw_line = true;
+            }
+          }
+          // Any other token is invalid for the shorthand.
+          _ => return,
         }
       }
 
+      decoration.lines = if saw_line {
+        if saw_none {
+          TextDecorationLine::NONE
+        } else {
+          lines
+        }
+      } else {
+        TextDecorationLine::NONE
+      };
+
+      styles.text_decoration_line_specified = true;
       styles.text_decoration = decoration;
     }
     "list-style-type" => {
@@ -16314,37 +16384,48 @@ fn length_unit_from_str(unit: &str) -> Option<LengthUnit> {
 }
 
 fn parse_text_decoration_line(value: &PropertyValue) -> Option<TextDecorationLine> {
-  let components: Vec<&PropertyValue> = match value {
-    PropertyValue::Multiple(values) if !values.is_empty() => values.iter().collect(),
-    _ => vec![value],
+  let mut tokens: Vec<String> = match value {
+    PropertyValue::Keyword(kw) => kw
+      .split_whitespace()
+      .map(|s| s.to_ascii_lowercase())
+      .collect(),
+    PropertyValue::Multiple(values) if !values.is_empty() => {
+      let mut out = Vec::new();
+      for v in values {
+        let PropertyValue::Keyword(kw) = v else {
+          return None;
+        };
+        out.extend(kw.split_whitespace().map(|s| s.to_ascii_lowercase()));
+      }
+      out
+    }
+    _ => return None,
   };
 
-  let mut lines = TextDecorationLine::NONE;
-  let mut saw_none = false;
+  if tokens.is_empty() {
+    return None;
+  }
 
-  for comp in components {
-    if let PropertyValue::Keyword(kw) = comp {
-      if kw.eq_ignore_ascii_case("none") {
-        saw_none = true;
-        lines = TextDecorationLine::NONE;
-        break;
-      } else if kw.eq_ignore_ascii_case("underline") {
-        lines.insert(TextDecorationLine::UNDERLINE);
-      } else if kw.eq_ignore_ascii_case("overline") {
-        lines.insert(TextDecorationLine::OVERLINE);
-      } else if kw.eq_ignore_ascii_case("line-through") {
-        lines.insert(TextDecorationLine::LINE_THROUGH);
-      }
+  // CSS Text Decoration Level 3:
+  // - `none` cannot be combined with other keywords.
+  // - Legacy keywords such as `blink` are accepted but have no effect in FastRender.
+  if tokens.iter().any(|t| t == "none") {
+    return (tokens.len() == 1).then_some(TextDecorationLine::NONE);
+  }
+
+  let mut lines = TextDecorationLine::NONE;
+  for token in tokens.drain(..) {
+    match token.as_str() {
+      "underline" => lines.insert(TextDecorationLine::UNDERLINE),
+      "overline" => lines.insert(TextDecorationLine::OVERLINE),
+      "line-through" => lines.insert(TextDecorationLine::LINE_THROUGH),
+      // Accepted-but-ignored keywords (cannot be represented in our bitflags today).
+      "blink" | "spelling-error" | "grammar-error" => {}
+      _ => return None,
     }
   }
 
-  if saw_none {
-    Some(TextDecorationLine::NONE)
-  } else if lines.is_empty() {
-    None
-  } else {
-    Some(lines)
-  }
+  Some(lines)
 }
 
 fn parse_text_decoration_style(value: &PropertyValue) -> Option<TextDecorationStyle> {
@@ -24349,6 +24430,88 @@ mod tests {
   }
 
   #[test]
+  fn text_decoration_line_splits_whitespace_separated_keywords() {
+    let mut style = ComputedStyle::default();
+
+    let decl = Declaration {
+      property: "text-decoration-line".into(),
+      value: PropertyValue::Keyword("underline overline".to_string()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+
+    assert!(
+      style
+        .text_decoration
+        .lines
+        .contains(TextDecorationLine::UNDERLINE)
+    );
+    assert!(style.text_decoration.lines.contains(TextDecorationLine::OVERLINE));
+    assert!(style.text_decoration_line_specified);
+  }
+
+  #[test]
+  fn text_decoration_line_rejects_invalid_combinations() {
+    let mut style = ComputedStyle::default();
+
+    // `none` cannot be combined with other keywords.
+    let decl = Declaration {
+      property: "text-decoration-line".into(),
+      value: PropertyValue::Keyword("none underline".to_string()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert!(style.text_decoration.lines.is_empty());
+    assert!(
+      !style.text_decoration_line_specified,
+      "invalid declarations should be ignored without mutating the specified flag"
+    );
+
+    // Reject mixing non-keyword tokens into the value list.
+    let decl = Declaration {
+      property: "text-decoration-line".into(),
+      value: PropertyValue::Multiple(vec![
+        PropertyValue::Keyword("underline".to_string()),
+        PropertyValue::Length(Length::px(1.0)),
+      ]),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+    assert!(style.text_decoration.lines.is_empty());
+    assert!(
+      !style.text_decoration_line_specified,
+      "invalid declarations should be ignored without mutating the specified flag"
+    );
+  }
+
+  #[test]
+  fn text_decoration_line_accepts_legacy_keywords_and_clears_lines() {
+    let mut style = ComputedStyle::default();
+    style.text_decoration.lines = TextDecorationLine::UNDERLINE;
+
+    let decl = Declaration {
+      property: "text-decoration-line".into(),
+      value: PropertyValue::Keyword("blink".to_string()),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+
+    assert!(
+      style.text_decoration.lines.is_empty(),
+      "legacy keywords are accepted but have no representable line flags"
+    );
+    assert!(style.text_decoration_line_specified);
+  }
+
+  #[test]
   fn parses_text_emphasis_properties() {
     let mut style = ComputedStyle::default();
 
@@ -24679,6 +24842,58 @@ mod tests {
         style.text_decoration.thickness,
         TextDecorationThickness::Length(l) if (l.to_px() - 3.2).abs() < 0.01
     ));
+  }
+
+  #[test]
+  fn text_decoration_shorthand_unions_line_keywords() {
+    let mut style = ComputedStyle::default();
+
+    let decl = Declaration {
+      property: "text-decoration".into(),
+      value: PropertyValue::Multiple(vec![
+        PropertyValue::Keyword("underline".to_string()),
+        PropertyValue::Keyword("overline".to_string()),
+      ]),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+
+    assert!(style.text_decoration.lines.contains(TextDecorationLine::UNDERLINE));
+    assert!(style.text_decoration.lines.contains(TextDecorationLine::OVERLINE));
+    assert!(style.text_decoration_line_specified);
+  }
+
+  #[test]
+  fn text_decoration_shorthand_rejects_unknown_keywords() {
+    let mut style = ComputedStyle::default();
+    style.text_decoration.lines = TextDecorationLine::LINE_THROUGH;
+    style.text_decoration.style = TextDecorationStyle::Double;
+    style.text_decoration.color = Some(Rgba::BLUE);
+    style.text_decoration.thickness = TextDecorationThickness::Length(Length::px(2.0));
+    style.text_decoration_line_specified = true;
+
+    let before_decoration = style.text_decoration;
+    let before_specified = style.text_decoration_line_specified;
+
+    let decl = Declaration {
+      property: "text-decoration".into(),
+      value: PropertyValue::Multiple(vec![
+        PropertyValue::Keyword("underline".to_string()),
+        PropertyValue::Keyword("bogus".to_string()),
+      ]),
+      contains_var: false,
+      raw_value: String::new(),
+      important: false,
+    };
+    apply_declaration(&mut style, &decl, &ComputedStyle::default(), 16.0, 16.0);
+
+    assert_eq!(
+      style.text_decoration, before_decoration,
+      "invalid shorthand should be ignored without resetting the computed value"
+    );
+    assert_eq!(style.text_decoration_line_specified, before_specified);
   }
 
   #[test]
