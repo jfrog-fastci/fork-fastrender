@@ -11225,6 +11225,76 @@ mod tests {
   }
 
   #[test]
+  fn vendor_placeholder_pseudo_classes_match_placeholder_shown() {
+    // Older vendor placeholder selectors (notably `:-ms-input-placeholder` and `:-moz-placeholder`)
+    // are still common on the web. Treat them as aliases for the placeholder-shown state so their
+    // declarations can influence our computed placeholder pseudo styles via inheritance.
+    let stylesheet = parse_stylesheet(
+      r#"
+        input:-ms-input-placeholder { color: rgb(10, 20, 30); }
+        textarea:-moz-placeholder { color: rgb(40, 50, 60); }
+      "#,
+    )
+    .expect("parse stylesheet");
+    let input_dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("placeholder".to_string(), "Search…".to_string())],
+      },
+      children: vec![],
+    };
+    let styled_input = apply_styles(&input_dom, &stylesheet);
+    let placeholder_styles = styled_input
+      .placeholder_styles
+      .as_deref()
+      .expect("expected ::placeholder pseudo styles");
+    assert_eq!(placeholder_styles.color, Rgba::rgb(10, 20, 30));
+    assert_eq!(
+      placeholder_styles.opacity, 0.6,
+      "UA placeholder defaults should still apply when author uses vendor pseudo classes"
+    );
+
+    let filled_input_dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("placeholder".to_string(), "Search…".to_string()),
+          ("value".to_string(), "filled".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+    let styled_filled_input = apply_styles(&filled_input_dom, &stylesheet);
+    assert_eq!(
+      styled_filled_input.styles.color,
+      Rgba::BLACK,
+      "vendor placeholder pseudo classes should not match once a value is present"
+    );
+    assert!(
+      styled_filled_input.placeholder_styles.is_none(),
+      "placeholder pseudo styles should not be generated when placeholder is not shown"
+    );
+
+    let textarea_dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "textarea".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("placeholder".to_string(), "Type…".to_string())],
+      },
+      children: vec![],
+    };
+    let styled_textarea = apply_styles(&textarea_dom, &stylesheet);
+    let textarea_placeholder_styles = styled_textarea
+      .placeholder_styles
+      .as_deref()
+      .expect("expected textarea ::placeholder pseudo styles");
+    assert_eq!(textarea_placeholder_styles.color, Rgba::rgb(40, 50, 60));
+    assert_eq!(textarea_placeholder_styles.opacity, 0.6);
+  }
+
+  #[test]
   fn overflow_axis_normalization_matches_chrome() {
     let stylesheet = StyleSheet::new();
 

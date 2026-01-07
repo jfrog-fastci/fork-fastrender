@@ -6113,11 +6113,10 @@ impl<'a> Element for ElementRef<'a> {
       }
       PseudoClass::ReadOnly => !self.is_read_write(),
       PseudoClass::ReadWrite => self.is_read_write(),
-      PseudoClass::PlaceholderShown => self.is_placeholder_shown(),
-      PseudoClass::MsInputPlaceholder
-      | PseudoClass::MozPlaceholder
-      | PseudoClass::MozUiInvalid
-      | PseudoClass::MozFocusring => false,
+      PseudoClass::PlaceholderShown
+      | PseudoClass::MsInputPlaceholder
+      | PseudoClass::MozPlaceholder => self.is_placeholder_shown(),
+      PseudoClass::MozUiInvalid | PseudoClass::MozFocusring => false,
       PseudoClass::Autofill => false,
       // Interactive pseudo-classes (not supported in static rendering)
       PseudoClass::Hover => self.hover_flag(),
