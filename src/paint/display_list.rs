@@ -2182,6 +2182,14 @@ pub struct StackingContextItem {
 
   /// Optional mask applied to this stacking context
   pub mask: Option<ResolvedMask>,
+
+  /// Whether the stacking context root has a non-`none` `clip-path`.
+  ///
+  /// This is tracked separately from generic clip display items because `clip-path` acts as a
+  /// Filter Effects Level 2 Backdrop Root trigger. Descendant `backdrop-filter` effects must not
+  /// sample content painted above this element, even when the clip-path does not change the
+  /// visible region (e.g. `inset(0)`).
+  pub has_clip_path: bool,
 }
 
 /// Resolved filter functions (after length resolution).

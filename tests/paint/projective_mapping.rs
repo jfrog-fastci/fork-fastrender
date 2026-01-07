@@ -44,6 +44,7 @@ fn renderer_falls_back_for_degenerate_projection() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: Rect::from_xywh(2.0, 2.0, 8.0, 8.0),

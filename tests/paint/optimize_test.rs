@@ -107,6 +107,7 @@ fn stacking_context(bounds: Rect, child_perspective: Option<Transform3D>) -> Sta
     backdrop_filters: vec![],
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   }
 }
 
@@ -1124,6 +1125,7 @@ fn test_stacking_context_preserved() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   }));
   list.push(make_fill_rect(0.0, 0.0, 100.0, 100.0, Rgba::RED));
   list.push(DisplayItem::PopStackingContext);
@@ -1160,6 +1162,7 @@ fn stacking_context_filters_expand_cull_bounds() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   }));
   list.push(make_fill_rect(-10.0, 0.0, 5.0, 5.0, Rgba::RED));
   list.push(DisplayItem::PopStackingContext);
@@ -1197,6 +1200,7 @@ fn offscreen_filtered_stacking_context_is_culled() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   }));
   list.push(make_fill_rect(500.0, 500.0, 10.0, 10.0, Rgba::RED));
   list.push(DisplayItem::PopStackingContext);
@@ -1238,6 +1242,7 @@ fn deep_filtered_stack_still_matches_baseline_after_culling() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(translated_context.clone()));
 

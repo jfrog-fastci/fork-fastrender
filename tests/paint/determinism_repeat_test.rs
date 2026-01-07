@@ -176,6 +176,7 @@ fn filter_backdrop_mask_clip_scene(width: u32, height: u32) -> DisplayList {
     backdrop_filters: vec![ResolvedFilter::Blur(4.0), ResolvedFilter::Saturate(1.6)],
     radii: BorderRadii::uniform(12.0),
     mask: None,
+    has_clip_path: false,
   }));
 
   // Masked layer under the backdrop-filter effect.
@@ -197,6 +198,7 @@ fn filter_backdrop_mask_clip_scene(width: u32, height: u32) -> DisplayList {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::uniform(10.0),
     mask: Some(patterned_mask(masked_bounds)),
+    has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: masked_bounds,
@@ -228,6 +230,7 @@ fn filter_backdrop_mask_clip_scene(width: u32, height: u32) -> DisplayList {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::uniform(8.0),
     mask: None,
+    has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: shadow_bounds,
@@ -280,6 +283,7 @@ fn preserve_3d_backdrop_scene(width: u32, height: u32) -> DisplayList {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   }));
 
   let far_plane = Rect::from_xywh(18.0, 24.0, 132.0, 132.0);
@@ -300,6 +304,7 @@ fn preserve_3d_backdrop_scene(width: u32, height: u32) -> DisplayList {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: far_plane,
@@ -326,6 +331,7 @@ fn preserve_3d_backdrop_scene(width: u32, height: u32) -> DisplayList {
     backdrop_filters: vec![ResolvedFilter::Blur(3.0), ResolvedFilter::Saturate(1.4)],
     radii: BorderRadii::uniform(12.0),
     mask: None,
+    has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: mid_plane,
@@ -351,6 +357,7 @@ fn preserve_3d_backdrop_scene(width: u32, height: u32) -> DisplayList {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: near_plane,

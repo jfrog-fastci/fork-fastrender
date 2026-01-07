@@ -27,6 +27,7 @@ fn preserve_3d_list(bounds: Rect) -> DisplayList {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   }));
 
   for (z, color) in [(0, Rgba::RED), (1, Rgba::GREEN)] {
@@ -47,6 +48,7 @@ fn preserve_3d_list(bounds: Rect) -> DisplayList {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
 
     for _ in 0..160 {

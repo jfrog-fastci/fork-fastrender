@@ -25,6 +25,7 @@ fn stacking_context(bounds: Rect, transform_style: TransformStyle) -> StackingCo
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   }
 }
 

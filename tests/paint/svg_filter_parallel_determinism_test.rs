@@ -119,6 +119,7 @@ fn build_display_list(filter: Arc<fastrender::paint::svg_filter::SvgFilter>) -> 
         backdrop_filters: Vec::new(),
         radii: Default::default(),
         mask: None,
+        has_clip_path: false,
       }));
 
       // A simple 2×2 checker pattern inside the stacking context.
@@ -193,6 +194,7 @@ fn build_seam_display_list(filter: Arc<fastrender::paint::svg_filter::SvgFilter>
     backdrop_filters: Vec::new(),
     radii: Default::default(),
     mask: None,
+    has_clip_path: false,
   }));
 
   // Solid content spanning the tile boundary.

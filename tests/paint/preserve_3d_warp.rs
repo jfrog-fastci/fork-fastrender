@@ -39,6 +39,7 @@ fn perspective_plane_projects_with_warp() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   }));
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 1,
@@ -57,6 +58,7 @@ fn perspective_plane_projects_with_warp() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: plane,
@@ -160,6 +162,7 @@ fn perspective_plane_projects_with_warp_at_2x_scale() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   }));
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 1,
@@ -178,6 +181,7 @@ fn perspective_plane_projects_with_warp_at_2x_scale() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: plane,

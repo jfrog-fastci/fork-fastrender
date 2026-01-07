@@ -9022,6 +9022,7 @@ impl DisplayListRenderer {
           || has_backdrop
           || opacity < 1.0 - f32::EPSILON
           || mask.is_some()
+          || item.has_clip_path
           || projective_transform.is_some();
         let mut layer_bounds = needs_layer
           .then(|| {
@@ -13014,6 +13015,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
       rect,
@@ -13114,6 +13116,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
 
     // Tilted plane is emitted first in DOM order but should win at the overlap point when
@@ -13135,6 +13138,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
       rect: tilted_rect,
@@ -13160,6 +13164,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
       rect: front_rect,
@@ -13214,6 +13219,7 @@ mod tests {
         backdrop_filters: Vec::new(),
         radii: BorderRadii::ZERO,
         mask: None,
+        has_clip_path: false,
       }));
 
       // Back plane paints a hard black/white edge at x=25.
@@ -13234,6 +13240,7 @@ mod tests {
         backdrop_filters: Vec::new(),
         radii: BorderRadii::ZERO,
         mask: None,
+        has_clip_path: false,
       }));
       list.push(DisplayItem::FillRect(FillRectItem {
         rect: left,
@@ -13264,6 +13271,7 @@ mod tests {
         backdrop_filters,
         radii: BorderRadii::ZERO,
         mask: None,
+        has_clip_path: false,
       }));
       list.push(DisplayItem::PopStackingContext);
 
@@ -13315,6 +13323,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
       rect: plane,
@@ -13357,6 +13366,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
 
     for (order, color) in [(0, Rgba::RED), (1, Rgba::GREEN)] {
@@ -13377,6 +13387,7 @@ mod tests {
         backdrop_filters: Vec::new(),
         radii: BorderRadii::ZERO,
         mask: None,
+        has_clip_path: false,
       }));
       for _ in 0..160 {
         list.push(DisplayItem::FillRect(FillRectItem {
@@ -13448,6 +13459,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
 
     for (idx, color) in [
@@ -13480,6 +13492,7 @@ mod tests {
         backdrop_filters: Vec::new(),
         radii: BorderRadii::ZERO,
         mask: None,
+        has_clip_path: false,
       }));
       list.push(DisplayItem::FillRect(FillRectItem {
         rect: plane_rect,
@@ -14172,6 +14185,7 @@ mod tests {
       backdrop_filters: vec![ResolvedFilter::Brightness(1.0)],
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
     list.push(DisplayItem::PopStackingContext);
 
@@ -14597,6 +14611,7 @@ mod tests {
       backdrop_filters: vec![ResolvedFilter::Brightness(1.25)],
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
     list.push(DisplayItem::PushClip(ClipItem {
       shape: ClipShape::Rect {
@@ -14733,6 +14748,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
       rect: bounds,
@@ -14801,6 +14817,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
       rect: bounds,
@@ -16323,6 +16340,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
       rect: Rect::from_xywh(10.0, 10.0, 20.0, 10.0),
@@ -16408,6 +16426,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
       rect: Rect::from_xywh(1.0, 1.0, 8.0, 8.0),
@@ -16462,6 +16481,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
       rect: bounds,
@@ -16512,6 +16532,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
       rect: bounds,
@@ -16608,6 +16629,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
       rect: bounds,
@@ -16678,6 +16700,7 @@ mod tests {
       backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
     list.push(DisplayItem::PopStackingContext);
 
@@ -16727,6 +16750,7 @@ mod tests {
         backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
         radii: BorderRadii::ZERO,
         mask: None,
+        has_clip_path: false,
       },
     ));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -16768,6 +16792,7 @@ mod tests {
         backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
         radii: BorderRadii::ZERO,
         mask: None,
+        has_clip_path: false,
       },
     ));
     list.push(DisplayItem::PopStackingContext);
@@ -17127,6 +17152,7 @@ mod tests {
         backdrop_filters: Vec::new(),
         radii: BorderRadii::ZERO,
         mask: None,
+        has_clip_path: false,
       },
     ));
     list.push(DisplayItem::PushClip(ClipItem {
@@ -17175,6 +17201,7 @@ mod tests {
       backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
     list.push(DisplayItem::PopStackingContext);
 
@@ -17253,6 +17280,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
       rect: Rect::from_xywh(0.0, 0.0, 10.0, 10.0),
@@ -17288,6 +17316,7 @@ mod tests {
         backdrop_filters: Vec::new(),
         radii: BorderRadii::ZERO,
         mask: None,
+        has_clip_path: false,
       },
     ));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -17334,6 +17363,7 @@ mod tests {
         backdrop_filters: Vec::new(),
         radii: BorderRadii::ZERO,
         mask: None,
+        has_clip_path: false,
       },
     ));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -17386,6 +17416,7 @@ mod tests {
         backdrop_filters: Vec::new(),
         radii: BorderRadii::ZERO,
         mask: None,
+        has_clip_path: false,
       },
     ));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -17438,6 +17469,7 @@ mod tests {
         backdrop_filters: Vec::new(),
         radii: BorderRadii::ZERO,
         mask: None,
+        has_clip_path: false,
       },
     ));
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -17517,6 +17549,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: Some(mask),
+      has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
       rect: Rect::from_xywh(0.0, 0.0, 6.0, 6.0),
@@ -17642,6 +17675,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: Some(mask),
+      has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
       rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
@@ -17720,6 +17754,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: Some(mask),
+      has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
       rect: Rect::from_xywh(0.0, 0.0, 4.0, 4.0),
@@ -17785,6 +17820,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: Some(mask),
+      has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
       rect: bounds,
@@ -18205,6 +18241,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: Some(mask),
+      has_clip_path: false,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
       rect: bounds,

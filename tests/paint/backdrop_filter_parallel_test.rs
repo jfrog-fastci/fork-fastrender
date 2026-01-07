@@ -544,6 +544,7 @@ fn parallel_backdrop_filter_with_mask_and_radii_matches_serial() {
       BorderRadius::uniform(6.0),
     ),
     mask: Some(patterned_mask(bounds)),
+    has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(sc));
   // Add content so both the mask and border radii clipping paths are exercised, while the

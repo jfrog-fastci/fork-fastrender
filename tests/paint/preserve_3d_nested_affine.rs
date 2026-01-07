@@ -32,6 +32,7 @@ fn stacking_context(
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   }
 }
 

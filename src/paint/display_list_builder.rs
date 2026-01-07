@@ -2441,6 +2441,7 @@ impl DisplayListBuilder {
         backdrop_filters,
         radii,
         mask,
+        has_clip_path: clip_path.is_some(),
       }));
 
     let mut pushed_clips = 0;

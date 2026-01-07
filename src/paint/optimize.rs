@@ -1321,6 +1321,7 @@ mod tests {
         backdrop_filters: Vec::new(),
         radii: BorderRadii::ZERO,
         mask: None,
+        has_clip_path: false,
       }),
       make_fill_rect(0.0, 0.0, 5.0, 5.0, Rgba::RED),
     ];
@@ -1560,6 +1561,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
     list.push(make_fill_rect(108.0, 10.0, 2.0, 2.0, Rgba::RED));
     list.push(DisplayItem::PopStackingContext);
@@ -1598,6 +1600,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
       z_index: 0,
@@ -1616,6 +1619,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
     list.push(make_fill_rect(500.0, 0.0, 50.0, 50.0, Rgba::GREEN));
     list.push(DisplayItem::PopStackingContext);
@@ -1668,6 +1672,7 @@ mod tests {
       backdrop_filters: vec![],
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     };
 
     list.push(DisplayItem::PushStackingContext(stacking_context));
@@ -1703,6 +1708,7 @@ mod tests {
       backdrop_filters: vec![],
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     };
 
     list.push(DisplayItem::PushStackingContext(stacking_context));
@@ -1831,6 +1837,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: Some(mask),
+      has_clip_path: false,
     }));
     list.push(DisplayItem::PopStackingContext);
 
@@ -1928,6 +1935,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
 
     list.push(DisplayItem::PushStackingContext(StackingContextItem {
@@ -1947,6 +1955,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
 
     list.push(make_fill_rect(150.0, 10.0, 20.0, 20.0, Rgba::RED));
@@ -2009,6 +2018,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
 
     let child_transform = Some(Transform3D::rotate_y(FRAC_PI_3));
@@ -2030,6 +2040,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
     list.push(make_fill_rect(300.0, 0.0, 50.0, 50.0, Rgba::RED));
     list.push(DisplayItem::PopStackingContext);
@@ -2051,6 +2062,7 @@ mod tests {
       backdrop_filters: Vec::new(),
       radii: BorderRadii::ZERO,
       mask: None,
+      has_clip_path: false,
     }));
     list.push(make_fill_rect(3000.0, 0.0, 50.0, 50.0, Rgba::BLUE));
     list.push(DisplayItem::PopStackingContext);

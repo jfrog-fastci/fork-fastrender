@@ -136,6 +136,7 @@ fn preserve3d_disable_warp_env_forces_affine_approximation() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   }));
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 1,
@@ -154,6 +155,7 @@ fn preserve3d_disable_warp_env_forces_affine_approximation() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: plane,

@@ -316,6 +316,7 @@ fn mask_parallel_paint_matches_serial_output() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: Some(mask),
+    has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
   list.push(DisplayItem::FillRect(FillRectItem {
@@ -437,6 +438,7 @@ fn viewport_unit_masks_match_serial_output() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: Some(mask),
+    has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
   list.push(DisplayItem::FillRect(FillRectItem {
@@ -577,6 +579,7 @@ fn clip_transform_and_stacking_context_match_serial_output() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::uniform(2.0),
     mask: None,
+    has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
   list.push(DisplayItem::FillRect(FillRectItem {
@@ -652,6 +655,7 @@ fn stacking_context_mask_matches_serial_output() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: Some(patterned_mask(masked_bounds)),
+    has_clip_path: false,
   }));
   // Fill the masked bounds with a solid color so the mask alpha pattern is visible.
   list.push(DisplayItem::FillRect(FillRectItem {
@@ -733,6 +737,7 @@ fn stacking_context_isolated_layer_matches_serial_output() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: bounds,
@@ -833,6 +838,7 @@ fn svg_filter_and_rounded_clip_match_serial_output_in_translated_tiles() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::uniform(10.0),
     mask: None,
+    has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: Rect::from_xywh(150.0, 150.0, 40.0, 40.0),
@@ -899,6 +905,7 @@ fn mix_blend_mode_triggers_serial_fallback_without_isolation() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
   list.push(DisplayItem::FillRect(FillRectItem {
@@ -1133,6 +1140,7 @@ fn mask_layers_survive_tiling() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: Some(mask),
+    has_clip_path: false,
   };
 
   list.push(DisplayItem::PushStackingContext(stacking));
@@ -1238,6 +1246,7 @@ fn mask_viewport_units_match_serial_output() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: Some(mask),
+    has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: bounds,
@@ -1306,6 +1315,7 @@ fn stacking_context_filter_radii_match_serial_output_under_tiling() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::uniform(6.0),
     mask: None,
+    has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
   list.push(DisplayItem::FillRect(FillRectItem {
@@ -1453,6 +1463,7 @@ fn backdrop_filters_survive_tiling() {
     backdrop_filters: vec![ResolvedFilter::Blur(6.0)],
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(stacking));
   list.push(DisplayItem::PopStackingContext);
@@ -1525,6 +1536,7 @@ fn preserve_3d_stacking_contexts_trigger_serial_fallback() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(root));
 
@@ -1546,6 +1558,7 @@ fn preserve_3d_stacking_contexts_trigger_serial_fallback() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: None,
+    has_clip_path: false,
   };
   list.push(DisplayItem::PushStackingContext(plane));
   list.push(DisplayItem::FillRect(FillRectItem {
@@ -1692,6 +1705,7 @@ fn mask_composite_respects_deadline() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: Some(mask),
+    has_clip_path: false,
   }));
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: bounds,
@@ -1880,6 +1894,7 @@ fn parallel_paint_masked_element_matches_serial_off_origin_tiles() {
     backdrop_filters: Vec::new(),
     radii: BorderRadii::ZERO,
     mask: Some(mask),
+    has_clip_path: false,
   };
 
   list.push(DisplayItem::PushStackingContext(stacking));
