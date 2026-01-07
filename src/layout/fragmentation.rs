@@ -19,7 +19,7 @@ use crate::style::page::PageSide;
 use crate::style::types::{BreakBetween, BreakInside, Direction, WritingMode};
 use crate::style::{block_axis_is_horizontal, block_axis_positive, ComputedStyle};
 use crate::tree::fragment_tree::{
-  FragmentChildren, FragmentContent, FragmentNode, FragmentSliceInfo,
+  FragmentChildren, FragmentContent, FragmentNode, FragmentSliceInfo, GridItemFragmentationData,
 };
 
 /// The fragmentation context determines how break hints are interpreted.
@@ -365,7 +365,7 @@ fn grid_container_parallel_flow_required_block_size(
     if idx >= node.children.len() {
       break;
     }
-    if placement.row_end.saturating_sub(placement.row_start) != 1 {
+    if !grid_item_spans_single_track(placement, axis) {
       continue;
     }
 
@@ -464,6 +464,17 @@ const BREAK_EPSILON: f32 = 0.01;
 const LINE_FALLBACK_EPSILON: f32 = 1.0;
 const SIBLING_LIMIT_FALLBACK_MAX: f32 = 50.0;
 const SIBLING_LIMIT_FALLBACK_RATIO: f32 = 0.15;
+
+fn grid_item_spans_single_track(placement: &GridItemFragmentationData, axis: &FragmentAxis) -> bool {
+  if axis.block_is_horizontal {
+    placement
+      .column_end
+      .saturating_sub(placement.column_start)
+      == 1
+  } else {
+    placement.row_end.saturating_sub(placement.row_start) == 1
+  }
+}
 
 impl FragmentationAnalyzer {
   pub fn new(
@@ -1305,7 +1316,7 @@ pub(crate) fn clip_node(
   for (idx, child) in node.children.iter().enumerate() {
     let parallel_item = grid_items
       .and_then(|info| info.items.get(idx))
-      .is_some_and(|placement| placement.row_end.saturating_sub(placement.row_start) == 1);
+      .is_some_and(|placement| grid_item_spans_single_track(placement, axis));
     if parallel_item {
       if let Some(mut item_fragment) = clip_grid_item_parallel_for_page(
         child,
@@ -1818,7 +1829,7 @@ fn collect_break_opportunities(
 
     let skip_descendants = grid_items
       .and_then(|info| info.items.get(idx))
-      .is_some_and(|placement| placement.row_end.saturating_sub(placement.row_start) == 1);
+      .is_some_and(|placement| grid_item_spans_single_track(placement, axis));
     if !skip_descendants {
       collect_break_opportunities(
         child,
@@ -2100,7 +2111,7 @@ pub(crate) fn collect_forced_boundaries_with_axes(
 
       let skip_descendants = grid_items
         .and_then(|info| info.items.get(idx))
-        .is_some_and(|placement| placement.row_end.saturating_sub(placement.row_start) == 1);
+        .is_some_and(|placement| grid_item_spans_single_track(placement, axis));
       if !skip_descendants {
         collect(
           child,
@@ -2336,7 +2347,7 @@ fn collect_atomic_ranges_with_axis(
   for (idx, child) in node.children.iter().enumerate() {
     let skip_descendants = grid_items
       .and_then(|info| info.items.get(idx))
-      .is_some_and(|placement| placement.row_end.saturating_sub(placement.row_start) == 1);
+      .is_some_and(|placement| grid_item_spans_single_track(placement, axis));
     if skip_descendants {
       continue;
     }
