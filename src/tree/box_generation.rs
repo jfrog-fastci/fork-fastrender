@@ -1235,7 +1235,9 @@ fn serialize_svg_mask_subtree_with_namespaces(
       }
       if !current_ns.is_empty()
         && !attrs.iter().any(|(n, _)| n.eq_ignore_ascii_case("xmlns"))
-        && !namespaces.iter().any(|(n, _)| n.eq_ignore_ascii_case("xmlns"))
+        && !namespaces
+          .iter()
+          .any(|(n, _)| n.eq_ignore_ascii_case("xmlns"))
       {
         namespaces.push(("xmlns".to_string(), current_ns.to_string()));
       }
@@ -1299,7 +1301,9 @@ fn serialize_svg_mask_subtree_with_namespaces(
       }
       if !current_ns.is_empty()
         && !attrs.iter().any(|(n, _)| n.eq_ignore_ascii_case("xmlns"))
-        && !namespaces.iter().any(|(n, _)| n.eq_ignore_ascii_case("xmlns"))
+        && !namespaces
+          .iter()
+          .any(|(n, _)| n.eq_ignore_ascii_case("xmlns"))
       {
         namespaces.push(("xmlns".to_string(), current_ns.to_string()));
       }
@@ -1379,7 +1383,14 @@ pub fn collect_svg_mask_defs(styled: &StyledNode) -> HashMap<String, String> {
         if let Some(id) = styled.node.get_attribute_ref("id") {
           if !id.is_empty() && !masks.contains_key(id) {
             let mut serialized = String::new();
-            serialize_svg_mask_subtree_with_namespaces(styled, namespaces, None, None, true, &mut serialized);
+            serialize_svg_mask_subtree_with_namespaces(
+              styled,
+              namespaces,
+              None,
+              None,
+              true,
+              &mut serialized,
+            );
             masks.insert(id.to_string(), serialized);
           }
         }
@@ -2340,8 +2351,7 @@ fn generate_boxes_for_styled_into(
             // resource is provided (missing/empty `data` or an explicitly unsupported `type`).
             // In that case we should not generate a replaced box, allowing the children to render
             // normally.
-            if !tag.eq_ignore_ascii_case("object")
-              || object_has_renderable_external_content(styled)
+            if !tag.eq_ignore_ascii_case("object") || object_has_renderable_external_content(styled)
             {
               counters.leave_scope();
               stack.pop();
@@ -3228,12 +3238,8 @@ fn apply_counter_properties_from_style(styled: &StyledNode, counters: &mut Count
       css_increment,
       Some(increment) if increment.items.len() == 1 && increment.items[0].name == "list-item" && increment.items[0].value == 1
   );
-  let increment_mentions_list_item = css_increment.is_some_and(|increment| {
-    increment
-      .items
-      .iter()
-      .any(|item| item.name == "list-item")
-  });
+  let increment_mentions_list_item = css_increment
+    .is_some_and(|increment| increment.items.iter().any(|item| item.name == "list-item"));
 
   let list_item_step = counters.list_item_increment();
   if let Some(increment) = css_increment {
@@ -3553,17 +3559,15 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
     focused = false;
     focus_visible = false;
   }
-  let textarea_value = tag
-    .eq_ignore_ascii_case("textarea")
-    .then(|| {
-      let mut value = String::new();
-      for child in styled.children.iter() {
-        if let DomNodeType::Text { content } = &child.node.node_type {
-          value.push_str(content);
-        }
+  let textarea_value = tag.eq_ignore_ascii_case("textarea").then(|| {
+    let mut value = String::new();
+    for child in styled.children.iter() {
+      if let DomNodeType::Text { content } = &child.node.node_type {
+        value.push_str(content);
       }
-      crate::dom::normalize_textarea_value(value)
-    });
+    }
+    crate::dom::normalize_textarea_value(value)
+  });
   let mut select_control: Option<SelectControl> = None;
   if tag.eq_ignore_ascii_case("select") {
     select_control = Some(build_select_control(styled));
@@ -3573,11 +3577,7 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
   let mut invalid = element_ref.accessibility_supports_validation() && !disabled;
   if invalid {
     if tag.eq_ignore_ascii_case("textarea") {
-      invalid = required
-        && textarea_value
-          .as_deref()
-          .unwrap_or_default()
-          .is_empty();
+      invalid = required && textarea_value.as_deref().unwrap_or_default().is_empty();
     } else if tag.eq_ignore_ascii_case("select") {
       if !required {
         invalid = false;
@@ -3633,8 +3633,7 @@ fn create_form_control_replaced(styled: &StyledNode) -> Option<FormControl> {
       }
     } else if input_type.eq_ignore_ascii_case("range") {
       let (min, max) = crate::dom::input_range_bounds(&styled.node).unwrap_or((0.0, 100.0));
-      let value =
-        crate::dom::input_range_value(&styled.node).unwrap_or_else(|| (min + max) / 2.0);
+      let value = crate::dom::input_range_value(&styled.node).unwrap_or_else(|| (min + max) / 2.0);
       FormControlKind::Range {
         value: value as f32,
         min: min as f32,
@@ -4264,9 +4263,7 @@ mod tests {
         break;
       }
       saw_digit = true;
-      value = value
-        .saturating_mul(10)
-        .saturating_add((b - b'0') as i32);
+      value = value.saturating_mul(10).saturating_add((b - b'0') as i32);
       bytes.next();
     }
 
@@ -5228,7 +5225,8 @@ mod tests {
       controls.iter().any(|c| matches!(
         &c.control,
         FormControlKind::TextArea { value, .. } if value == " "
-      ) && c.required && !c.invalid),
+      ) && c.required
+        && !c.invalid),
       "whitespace-only textarea should not fail required validation"
     );
   }
@@ -5809,8 +5807,8 @@ mod tests {
       children: vec![],
     };
 
-    let marker_box =
-      create_marker_box(&styled, &mut CounterManager::default()).expect("marker should be generated");
+    let marker_box = create_marker_box(&styled, &mut CounterManager::default())
+      .expect("marker should be generated");
     let style = marker_box.style.as_ref();
     assert!(style
       .text_decoration
@@ -5874,8 +5872,8 @@ mod tests {
       children: vec![],
     };
 
-    let marker_box =
-      create_marker_box(&styled, &mut CounterManager::default()).expect("marker should be generated");
+    let marker_box = create_marker_box(&styled, &mut CounterManager::default())
+      .expect("marker should be generated");
     assert!(matches!(marker_box.box_type, BoxType::Marker(_)));
     assert_eq!(
       marker_box.style.text_transform,
@@ -6027,7 +6025,11 @@ mod tests {
       .iter()
       .find(|child| child.generated_pseudo == Some(GeneratedPseudoElement::Before))
       .expect("expected ::before box");
-    before.children.iter().filter_map(|child| child.text()).collect()
+    before
+      .children
+      .iter()
+      .filter_map(|child| child.text())
+      .collect()
   }
 
   #[test]
@@ -6037,7 +6039,8 @@ mod tests {
     container_style.counters.counter_reset = Some(CounterSet::single("x", 0));
 
     let mut container_before_style = ComputedStyle::default();
-    container_before_style.content_value = ContentValue::Items(vec![ContentItem::String(String::new())]);
+    container_before_style.content_value =
+      ContentValue::Items(vec![ContentItem::String(String::new())]);
     container_before_style.counters.counter_increment = Some(CounterSet::single("x", 1));
 
     let mut span_before_style = ComputedStyle::default();
@@ -6074,7 +6077,8 @@ mod tests {
     root_style.counters.counter_reset = Some(CounterSet::single("x", 0));
 
     let mut container_after_style = ComputedStyle::default();
-    container_after_style.content_value = ContentValue::Items(vec![ContentItem::String(String::new())]);
+    container_after_style.content_value =
+      ContentValue::Items(vec![ContentItem::String(String::new())]);
     container_after_style.counters.counter_increment = Some(CounterSet::single("x", 1));
 
     let mut before_counter_style = ComputedStyle::default();
@@ -7621,7 +7625,11 @@ mod tests {
     };
 
     let tree = generate_box_tree(&ol);
-    assert_eq!(tree.root.children.len(), 2, "hidden list items should not generate boxes");
+    assert_eq!(
+      tree.root.children.len(),
+      2,
+      "hidden list items should not generate boxes"
+    );
 
     let markers: Vec<i32> = tree
       .root
@@ -7843,7 +7851,11 @@ mod tests {
     };
 
     let tree = generate_box_tree(&ol);
-    assert_eq!(tree.root.children.len(), 2, "hidden list items should not generate boxes");
+    assert_eq!(
+      tree.root.children.len(),
+      2,
+      "hidden list items should not generate boxes"
+    );
 
     let markers: Vec<i32> = tree
       .root
@@ -8966,8 +8978,9 @@ mod tests {
     pseudo_style.content_value = ContentValue::Items(vec![ContentItem::String(String::new())]);
     let pseudo_style = Arc::new(pseudo_style);
 
-    let pseudo_box = create_pseudo_element_box(&styled, &pseudo_style, None, "before", &mut counters)
-      .expect("empty string content should still generate the pseudo-element box");
+    let pseudo_box =
+      create_pseudo_element_box(&styled, &pseudo_style, None, "before", &mut counters)
+        .expect("empty string content should still generate the pseudo-element box");
     assert!(
       pseudo_box.children.is_empty(),
       "empty string content shouldn't implicitly create placeholder text children"

@@ -6142,8 +6142,18 @@ impl FlexFormattingContext {
       box_node.style.flex_direction,
       crate::style::types::FlexDirection::Row | crate::style::types::FlexDirection::RowReverse
     );
+    // `flex-direction: row` follows the inline axis; `column` follows the block axis. In vertical
+    // writing modes the inline axis is vertical, so many heuristics must use the *physical* main
+    // axis orientation instead of assuming "row == x-axis".
+    let inline_is_horizontal = matches!(box_node.style.writing_mode, WritingMode::HorizontalTb);
+    let block_is_horizontal = !inline_is_horizontal;
+    let main_axis_is_horizontal = if main_axis_is_row {
+      inline_is_horizontal
+    } else {
+      block_is_horizontal
+    };
     let allow_overflow_fallback = !matches!(box_node.style.flex_wrap, FlexWrap::NoWrap)
-      && if main_axis_is_row {
+      && if main_axis_is_horizontal {
         matches!(box_node.style.overflow_x, CssOverflow::Visible)
       } else {
         matches!(box_node.style.overflow_y, CssOverflow::Visible)
@@ -7141,7 +7151,7 @@ impl FlexFormattingContext {
     let log_overflow_ids = toggles
       .usize_list("FASTR_LOG_FLEX_OVERFLOW_IDS")
       .unwrap_or_default();
-    if main_axis_is_row {
+    if main_axis_is_horizontal {
       // Re-run manual row placement when Taffy positions items beyond the container width.
       // Even when overflow is expected (wide items), their starting position should remain
       // at the row origin rather than drifting far to the right.
@@ -7446,7 +7456,7 @@ impl FlexFormattingContext {
     }
 
     if !children.is_empty() {
-      if main_axis_is_row {
+      if main_axis_is_horizontal {
         let mut non_increasing = false;
         let mut last_x = children[0].bounds.x();
         for child in children.iter().skip(1) {
@@ -7488,7 +7498,7 @@ impl FlexFormattingContext {
     // If a wrapping row still overflows the container (e.g., items sized to 100% that Taffy
     // keeps on the same line), reflow the children into sequential rows within the container
     // width. This mirrors flex-wrap behaviour when items exceed the line length.
-    if main_axis_is_row
+    if main_axis_is_horizontal
       && !matches!(box_node.style.flex_wrap, FlexWrap::NoWrap)
       && rect.width().is_finite()
       && rect.width() > 0.0
@@ -7533,7 +7543,7 @@ impl FlexFormattingContext {
     // come from the total span, not an initial offset. If all children are entirely
     // to the right of the container, translate them back so the first child starts
     // at the container origin.
-    if main_axis_is_row
+    if main_axis_is_horizontal
       && matches!(box_node.style.flex_wrap, FlexWrap::NoWrap)
       && !children.is_empty()
     {
@@ -7554,7 +7564,7 @@ impl FlexFormattingContext {
     // Guard against pathological horizontal drift: if every child in a row sits far beyond
     // the container (multiple widths away), translate them back so the leftmost child starts
     // at the origin while preserving relative spacing.
-    if main_axis_is_row && !children.is_empty() {
+    if main_axis_is_horizontal && !children.is_empty() {
       let min_x = children
         .iter()
         .map(|c| c.bounds.x())
