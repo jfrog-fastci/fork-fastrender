@@ -928,6 +928,24 @@ impl ReferrerPolicy {
     }
   }
 
+  /// Parse a comma/whitespace separated referrer policy token list.
+  ///
+  /// This is used by both `<meta name="referrer">` and the `Referrer-Policy` response header.
+  /// When multiple recognized tokens are present, the last one wins.
+  pub fn parse_value_list(value: &str) -> Option<Self> {
+    let mut policy = None;
+    for raw_token in value.split(|c: char| c == ',' || c.is_whitespace()) {
+      let Some(parsed) = Self::parse(raw_token) else {
+        continue;
+      };
+      if parsed == Self::EmptyString {
+        continue;
+      }
+      policy = Some(parsed);
+    }
+    policy
+  }
+
   fn resolve(self, default: ReferrerPolicy) -> ReferrerPolicy {
     match self {
       ReferrerPolicy::EmptyString => default,
@@ -2050,6 +2068,11 @@ pub struct FetchedResource {
   ///
   /// Stored for diagnostics and caching safety checks; see [`vary_is_cacheable`].
   pub vary: Option<String>,
+  /// Parsed referrer policy from the `Referrer-Policy` response header, when present.
+  ///
+  /// This is primarily relevant for HTML documents: the renderer uses it as the initial
+  /// [`crate::api::ResourceContext::referrer_policy`] until overridden by `<meta name="referrer">`.
+  pub response_referrer_policy: Option<ReferrerPolicy>,
   /// Whether `Access-Control-Allow-Credentials: true` was present on the response.
   pub access_control_allow_credentials: bool,
   /// The final URL after redirects, when available
@@ -2080,6 +2103,7 @@ impl FetchedResource {
       access_control_allow_origin: None,
       timing_allow_origin: None,
       vary: None,
+      response_referrer_policy: None,
       access_control_allow_credentials: false,
       final_url: None,
       cache_policy: None,
@@ -2103,6 +2127,7 @@ impl FetchedResource {
       access_control_allow_origin: None,
       timing_allow_origin: None,
       vary: None,
+      response_referrer_policy: None,
       access_control_allow_credentials: false,
       final_url,
       cache_policy: None,
@@ -4057,6 +4082,9 @@ impl HttpFetcher {
           parse_cors_response_headers(response.headers());
         let timing_allow_origin = header_values_joined(response.headers(), "timing-allow-origin");
         let vary = header_values_joined(response.headers(), "vary");
+        let response_referrer_policy = header_values_joined(response.headers(), "referrer-policy")
+          .as_deref()
+          .and_then(ReferrerPolicy::parse_value_list);
         let cache_policy = parse_http_cache_policy(response.headers());
         let final_url = response.get_uri().to_string();
         let allows_empty_body =
@@ -4240,6 +4268,7 @@ impl HttpFetcher {
             resource.access_control_allow_origin = access_control_allow_origin;
             resource.timing_allow_origin = timing_allow_origin;
             resource.vary = vary;
+            resource.response_referrer_policy = response_referrer_policy;
             resource.access_control_allow_credentials = access_control_allow_credentials;
             resource.cache_policy = cache_policy;
             render_control::check_active(decode_stage).map_err(Error::Render)?;
@@ -4542,6 +4571,9 @@ impl HttpFetcher {
           parse_cors_response_headers(response.headers());
         let timing_allow_origin = header_values_joined(response.headers(), "timing-allow-origin");
         let vary = header_values_joined(response.headers(), "vary");
+        let response_referrer_policy = header_values_joined(response.headers(), "referrer-policy")
+          .as_deref()
+          .and_then(ReferrerPolicy::parse_value_list);
         let cache_policy = parse_http_cache_policy(response.headers());
         let final_url = response.url().to_string();
         let allows_empty_body =
@@ -4724,6 +4756,7 @@ impl HttpFetcher {
             resource.access_control_allow_origin = access_control_allow_origin;
             resource.timing_allow_origin = timing_allow_origin;
             resource.vary = vary;
+            resource.response_referrer_policy = response_referrer_policy;
             resource.access_control_allow_credentials = access_control_allow_credentials;
             resource.cache_policy = cache_policy;
             render_control::check_active(decode_stage).map_err(Error::Render)?;
@@ -5032,6 +5065,9 @@ impl HttpFetcher {
           parse_cors_response_headers(response.headers());
         let timing_allow_origin = header_values_joined(response.headers(), "timing-allow-origin");
         let vary = header_values_joined(response.headers(), "vary");
+        let response_referrer_policy = header_values_joined(response.headers(), "referrer-policy")
+          .as_deref()
+          .and_then(ReferrerPolicy::parse_value_list);
         let cache_policy = parse_http_cache_policy(response.headers());
         let final_url = response.get_uri().to_string();
         let allows_empty_body =
@@ -5285,6 +5321,7 @@ impl HttpFetcher {
             resource.access_control_allow_origin = access_control_allow_origin;
             resource.timing_allow_origin = timing_allow_origin;
             resource.vary = vary;
+            resource.response_referrer_policy = response_referrer_policy;
             resource.access_control_allow_credentials = access_control_allow_credentials;
             resource.cache_policy = cache_policy;
             render_control::check_active(decode_stage).map_err(Error::Render)?;
@@ -5574,6 +5611,9 @@ impl HttpFetcher {
           parse_cors_response_headers(response.headers());
         let timing_allow_origin = header_values_joined(response.headers(), "timing-allow-origin");
         let vary = header_values_joined(response.headers(), "vary");
+        let response_referrer_policy = header_values_joined(response.headers(), "referrer-policy")
+          .as_deref()
+          .and_then(ReferrerPolicy::parse_value_list);
         let cache_policy = parse_http_cache_policy(response.headers());
         let final_url = response.url().to_string();
         let allows_empty_body =
@@ -5852,6 +5892,7 @@ impl HttpFetcher {
             resource.access_control_allow_origin = access_control_allow_origin;
             resource.timing_allow_origin = timing_allow_origin;
             resource.vary = vary;
+            resource.response_referrer_policy = response_referrer_policy;
             resource.access_control_allow_credentials = access_control_allow_credentials;
             resource.cache_policy = cache_policy;
             render_control::check_active(decode_stage).map_err(Error::Render)?;
@@ -9138,6 +9179,19 @@ mod tests {
     );
     assert_eq!(ReferrerPolicy::parse(""), Some(ReferrerPolicy::EmptyString));
     assert_eq!(ReferrerPolicy::parse("unknown-policy"), None);
+  }
+
+  #[test]
+  fn referrer_policy_parse_value_list_last_token_wins() {
+    assert_eq!(
+      ReferrerPolicy::parse_value_list("unknown, origin, no-referrer"),
+      Some(ReferrerPolicy::NoReferrer)
+    );
+    assert_eq!(
+      ReferrerPolicy::parse_value_list("origin no-referrer"),
+      Some(ReferrerPolicy::NoReferrer)
+    );
+    assert_eq!(ReferrerPolicy::parse_value_list(""), None);
   }
 
   #[test]

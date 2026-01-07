@@ -24,17 +24,7 @@ const REFERRER_POLICY_DEADLINE_STRIDE: usize = 1024;
 ///
 /// Returns `None` when no recognized policy tokens are present.
 pub fn parse_referrer_policy_value(value: &str) -> Option<ReferrerPolicy> {
-  let mut policy = None;
-  for raw_token in value.split(|c: char| c == ',' || c.is_whitespace()) {
-    let Some(parsed) = ReferrerPolicy::parse(raw_token) else {
-      continue;
-    };
-    if parsed == ReferrerPolicy::EmptyString {
-      continue;
-    }
-    policy = Some(parsed);
-  }
-  policy
+  ReferrerPolicy::parse_value_list(value)
 }
 
 /// Extracts the effective document referrer policy from `<meta name="referrer">`.

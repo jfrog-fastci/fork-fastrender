@@ -4763,6 +4763,7 @@ impl FastRender {
         artifacts,
         Some(&deadline),
         stats,
+        ReferrerPolicy::default(),
         trace_handle,
       );
       drop(_root_span);
@@ -4777,6 +4778,7 @@ impl FastRender {
     artifacts: Option<&mut RenderArtifacts>,
     deadline: Option<&RenderDeadline>,
     stats: Option<&mut RenderStatsRecorder>,
+    initial_referrer_policy: ReferrerPolicy,
     trace: &TraceHandle,
   ) -> Result<RenderOutputs> {
     let (width, height) = options
@@ -4798,7 +4800,11 @@ impl FastRender {
       .map(|diag| SharedRenderDiagnostics {
         inner: Arc::clone(diag),
       });
-    let context = Some(self.build_resource_context(self.document_url(), shared_diagnostics));
+    let context = Some(self.build_resource_context(
+      self.document_url(),
+      shared_diagnostics,
+      initial_referrer_policy,
+    ));
     let (prev_self, prev_image, prev_layout_image, prev_font) = self.push_resource_context(context);
     let result = self.render_html_internal(
       html,
@@ -6073,12 +6079,14 @@ impl FastRender {
     self.set_base_url(base_url.clone());
     let deadline = RenderDeadline::new(options.timeout, options.cancel_callback.clone());
     let mut captured = RenderArtifacts::new(artifacts);
+    let initial_referrer_policy = resource.response_referrer_policy.unwrap_or_default();
     let outputs = self.render_html_with_options_internal_with_deadline(
       &html,
       options,
       Some(&mut captured),
       Some(&deadline),
       stats.as_deref_mut(),
+      initial_referrer_policy,
       trace,
     );
     if !had_sink {
@@ -6201,6 +6209,7 @@ impl FastRender {
           Some(&mut captured),
           Some(&deadline),
           stats_recorder.as_mut(),
+          ReferrerPolicy::default(),
           trace_handle,
         )?;
         let diagnostics = diagnostics
@@ -8946,11 +8955,12 @@ impl FastRender {
     &self,
     document_url: Option<&str>,
     diagnostics: Option<SharedRenderDiagnostics>,
+    referrer_policy: ReferrerPolicy,
   ) -> ResourceContext {
     let origin = document_url.and_then(origin_from_url);
     ResourceContext {
       document_url: document_url.map(|url| url.to_string()),
-      referrer_policy: ReferrerPolicy::default(),
+      referrer_policy,
       policy: self.resource_policy.for_origin(origin),
       diagnostics,
       iframe_depth_remaining: Some(self.max_iframe_depth),
@@ -13170,7 +13180,11 @@ mod tests {
       "expected cached formatting contexts to be rebuilt after diagnostics sink update"
     );
 
-    let context = Some(renderer.build_resource_context(Some("https://example.com/"), None));
+    let context = Some(renderer.build_resource_context(
+      Some("https://example.com/"),
+      None,
+      ReferrerPolicy::default(),
+    ));
     let (prev_self, prev_image, prev_layout_image, prev_font) =
       renderer.push_resource_context(context);
     assert!(
@@ -17624,6 +17638,105 @@ mod tests {
     assert_eq!(stylesheet_request.url, stylesheet_url);
     assert_eq!(stylesheet_request.referrer_url.as_deref(), Some(document_url));
     assert_eq!(stylesheet_request.referrer_policy, ReferrerPolicy::NoReferrer);
+  }
+
+  #[test]
+  fn response_referrer_policy_header_applies_to_stylesheet_requests() {
+    let html = r#"<!doctype html><html><head>
+        <link rel="stylesheet" href="style.css">
+      </head><body><div id="target">hello</div></body></html>"#;
+    let document_url = "https://example.com/page.html";
+    let stylesheet_url = "https://example.com/style.css";
+
+    let fetcher = Arc::new(RecordingRequestFetcher::default().with_entry(
+      stylesheet_url,
+      "#target { color: rgb(1, 2, 3); }",
+      "text/css",
+    ));
+    let toggles = RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_LINK_CSS".to_string(),
+      "1".to_string(),
+    )]));
+    let config = FastRenderConfig::default().with_runtime_toggles(toggles);
+    let mut renderer = FastRender::with_config_and_fetcher(
+      config,
+      Some(fetcher.clone() as Arc<dyn ResourceFetcher>),
+    )
+    .unwrap();
+
+    let mut resource = FetchedResource::with_final_url(
+      html.as_bytes().to_vec(),
+      Some("text/html".to_string()),
+      Some(document_url.to_string()),
+    );
+    resource.response_referrer_policy = Some(ReferrerPolicy::NoReferrer);
+
+    renderer
+      .render_fetched_html_with_options(
+        &resource,
+        Some(document_url),
+        RenderOptions::new().with_viewport(64, 64),
+      )
+      .unwrap();
+
+    let requests = fetcher.requests();
+    let stylesheet_request = requests
+      .iter()
+      .find(|request| request.destination == FetchDestination::Style)
+      .expect("stylesheet request");
+    assert_eq!(stylesheet_request.url, stylesheet_url);
+    assert_eq!(stylesheet_request.referrer.as_deref(), Some(document_url));
+    assert_eq!(stylesheet_request.referrer_policy, ReferrerPolicy::NoReferrer);
+  }
+
+  #[test]
+  fn meta_referrer_policy_overrides_response_header() {
+    let html = r#"<!doctype html><html><head>
+        <meta name="referrer" content="origin">
+        <link rel="stylesheet" href="style.css">
+      </head><body><div id="target">hello</div></body></html>"#;
+    let document_url = "https://example.com/page.html";
+    let stylesheet_url = "https://example.com/style.css";
+
+    let fetcher = Arc::new(RecordingRequestFetcher::default().with_entry(
+      stylesheet_url,
+      "#target { color: rgb(1, 2, 3); }",
+      "text/css",
+    ));
+    let toggles = RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_FETCH_LINK_CSS".to_string(),
+      "1".to_string(),
+    )]));
+    let config = FastRenderConfig::default().with_runtime_toggles(toggles);
+    let mut renderer = FastRender::with_config_and_fetcher(
+      config,
+      Some(fetcher.clone() as Arc<dyn ResourceFetcher>),
+    )
+    .unwrap();
+
+    let mut resource = FetchedResource::with_final_url(
+      html.as_bytes().to_vec(),
+      Some("text/html".to_string()),
+      Some(document_url.to_string()),
+    );
+    resource.response_referrer_policy = Some(ReferrerPolicy::NoReferrer);
+
+    renderer
+      .render_fetched_html_with_options(
+        &resource,
+        Some(document_url),
+        RenderOptions::new().with_viewport(64, 64),
+      )
+      .unwrap();
+
+    let requests = fetcher.requests();
+    let stylesheet_request = requests
+      .iter()
+      .find(|request| request.destination == FetchDestination::Style)
+      .expect("stylesheet request");
+    assert_eq!(stylesheet_request.url, stylesheet_url);
+    assert_eq!(stylesheet_request.referrer.as_deref(), Some(document_url));
+    assert_eq!(stylesheet_request.referrer_policy, ReferrerPolicy::Origin);
   }
 
   #[test]
