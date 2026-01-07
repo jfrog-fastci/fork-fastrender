@@ -269,6 +269,32 @@ fn abspos_static_position_ignores_align_content() {
 }
 
 #[test]
+fn abspos_static_position_accounts_for_cross_axis_margins() {
+  // The abspos static-position rectangle aligns the child's *margin box* on the main axis and uses
+  // `align-items`/`align-self` to align on the cross axis. This means cross-axis margins affect the
+  // border box position.
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.align_items = AlignItems::Center;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+  child_style.margin_top = Some(Length::px(20.0));
+  child_style.margin_bottom = Some(Length::px(0.0));
+
+  let (_, y) = layout_abspos_child(container_style, child_style);
+  // Margin box height = 20(top) + 10 + 0(bottom) = 30; centered in 100 → margin edge at 35.
+  // Border box y = margin edge + margin-top = 35 + 20 = 55.
+  assert!((y - 55.0).abs() < 0.1, "expected y≈55, got {}", y);
+}
+
+#[test]
 fn abspos_static_position_respects_align_self_on_cross_axis() {
   // Flexbox § abspos-items: the cross-axis edges of the static-position rectangle are the flex
   // container's content edges, and `align-self` is used to align within that axis.
