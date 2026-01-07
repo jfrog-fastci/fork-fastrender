@@ -46,7 +46,6 @@ use crate::layout::contexts::table::column_distribution::ColumnDistributor;
 use crate::layout::contexts::table::column_distribution::DistributionMode;
 use crate::layout::engine::{
   default_layout_thread_budget, layout_thread_pool_for_threads, LayoutParallelism,
-  LayoutParallelismMode,
 };
 use crate::layout::formatting_context::intrinsic_cache_epoch;
 use crate::layout::formatting_context::layout_cache_lookup;
@@ -66,6 +65,7 @@ use crate::style::types::BoxSizing;
 use crate::style::types::CaptionSide;
 use crate::style::types::Direction;
 use crate::style::types::EmptyCells;
+use crate::style::types::FontStyle;
 use crate::style::types::IntrinsicSizeKeyword;
 use crate::style::types::TableLayout;
 use crate::style::types::VerticalAlign;
@@ -89,8 +89,10 @@ use rayon::prelude::*;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use rustc_hash::FxHasher;
 
 fn check_layout_deadline(counter: &mut usize) -> Result<(), LayoutError> {
   if let Err(RenderError::Timeout { elapsed, .. }) =
@@ -1302,8 +1304,61 @@ struct StyleOverrideKey {
   flags: StyleOverrideFlags,
 }
 
+#[inline]
+fn f32_to_canonical_bits(value: f32) -> u32 {
+  if value == 0.0 {
+    0.0f32.to_bits()
+  } else {
+    value.to_bits()
+  }
+}
+
+fn style_bucket_hash(style: &ComputedStyle) -> u64 {
+  // `ComputedStyle` is large and does not implement `Hash`. For table style override caching we only
+  // need a cheap bucketing key; collisions are resolved by falling back to full `ComputedStyle`
+  // equality checks when interning base styles.
+  let mut h = FxHasher::default();
+  std::mem::discriminant(&style.display).hash(&mut h);
+  std::mem::discriminant(&style.position).hash(&mut h);
+  std::mem::discriminant(&style.float).hash(&mut h);
+  std::mem::discriminant(&style.clear).hash(&mut h);
+  std::mem::discriminant(&style.box_sizing).hash(&mut h);
+  std::mem::discriminant(&style.writing_mode).hash(&mut h);
+  std::mem::discriminant(&style.direction).hash(&mut h);
+  std::mem::discriminant(&style.white_space).hash(&mut h);
+  f32_to_canonical_bits(style.font_size).hash(&mut h);
+  f32_to_canonical_bits(style.root_font_size).hash(&mut h);
+  style.font_family.as_ref().hash(&mut h);
+  style.font_weight.to_u16().hash(&mut h);
+  match style.font_style {
+    FontStyle::Normal => 0u8.hash(&mut h),
+    FontStyle::Italic => 1u8.hash(&mut h),
+    FontStyle::Oblique(angle) => {
+      2u8.hash(&mut h);
+      match angle {
+        Some(deg) => {
+          1u8.hash(&mut h);
+          f32_to_canonical_bits(deg).hash(&mut h);
+        }
+        None => 0u8.hash(&mut h),
+      }
+    }
+  }
+  h.finish()
+}
+
 struct StyleOverrideCache {
   cache: HashMap<StyleOverrideKey, Arc<ComputedStyle>>,
+  /// Maps each encountered `Arc<ComputedStyle>` pointer to a canonical base pointer.
+  ///
+  /// FastRender currently produces many structurally-identical `ComputedStyle` allocations (for
+  /// example, a large table where every `<td>` shares the same declarations). Keying style overrides
+  /// purely by pointer identity would then allocate/cloned a full `ComputedStyle` per cell even
+  /// when the effective override output is identical.
+  ///
+  /// By interning equal `ComputedStyle` values to a canonical pointer during precompute, we can
+  /// share derived override styles across the table and avoid quadratic memory/time blow-ups.
+  canonical_base_ptrs: HashMap<usize, usize>,
   expect_precomputed: bool,
   #[cfg(debug_assertions)]
   profile: StyleOverrideCacheProfile,
@@ -1374,6 +1429,7 @@ impl StyleOverrideCache {
   fn empty(_context: &'static str, _table_id: usize) -> Self {
     Self {
       cache: HashMap::new(),
+      canonical_base_ptrs: HashMap::new(),
       expect_precomputed: false,
       #[cfg(debug_assertions)]
       profile: StyleOverrideCacheProfile::new(_context, _table_id),
@@ -1424,6 +1480,12 @@ impl StyleOverrideCache {
     }
 
     let mut cache: HashMap<StyleOverrideKey, Arc<ComputedStyle>> = HashMap::new();
+    let mut canonical_base_ptrs: HashMap<usize, usize> = HashMap::new();
+
+    // Group style pointers by a cheap value hash, then confirm equality via `ComputedStyle`'s
+    // `PartialEq` implementation. This guarantees correctness even if the hash is coarse, while
+    // still keeping the per-style bucket small on typical tables.
+    let mut canonical_buckets: HashMap<u64, Vec<Arc<ComputedStyle>>> = HashMap::new();
 
     let mut layout_flags = StyleOverrideFlags::LAYOUT_CLEAR_WIDTHS_AND_MARGINS;
     if include_layout && structure.border_collapse == BorderCollapse::Collapse {
@@ -1439,12 +1501,26 @@ impl StyleOverrideCache {
       };
       let base = &cell_box.style;
       let base_ptr = Arc::as_ptr(base) as usize;
+      let canonical_ptr = {
+        let bucket_hash = style_bucket_hash(base.as_ref());
+        let bucket = canonical_buckets.entry(bucket_hash).or_default();
+        if let Some(existing) = bucket.iter().find(|candidate| candidate.as_ref() == base.as_ref()) {
+          Arc::as_ptr(existing) as usize
+        } else {
+          bucket.push(base.clone());
+          base_ptr
+        }
+      };
+      canonical_base_ptrs.insert(base_ptr, canonical_ptr);
 
       let mut insert_override = |flags: StyleOverrideFlags| {
         if flags.is_empty() {
           return;
         }
-        let key = StyleOverrideKey { base_ptr, flags };
+        let key = StyleOverrideKey {
+          base_ptr: canonical_ptr,
+          flags,
+        };
         cache
           .entry(key)
           .or_insert_with(|| Arc::new(apply_style_overrides(base, flags)));
@@ -1468,6 +1544,7 @@ impl StyleOverrideCache {
 
     Self {
       cache,
+      canonical_base_ptrs,
       expect_precomputed: true,
       #[cfg(debug_assertions)]
       profile: StyleOverrideCacheProfile::new(context, table_id),
@@ -1479,8 +1556,14 @@ impl StyleOverrideCache {
       debug_assert_eq!(flags, StyleOverrideFlags::NONE);
       return base.clone();
     }
+    let base_ptr = Arc::as_ptr(base) as usize;
+    let canonical_ptr = self
+      .canonical_base_ptrs
+      .get(&base_ptr)
+      .copied()
+      .unwrap_or(base_ptr);
     let key = StyleOverrideKey {
-      base_ptr: Arc::as_ptr(base) as usize,
+      base_ptr: canonical_ptr,
       flags,
     };
     if let Some(hit) = self.cache.get(&key) {
@@ -2340,6 +2423,13 @@ impl TableStructure {
       return;
     }
 
+    // HTML table cell placement is source-order driven: cells are assigned to the first available
+    // column at or after the current insertion point. This means once a cell is placed, later
+    // cells in the same row must never “backfill” earlier holes (e.g. when a larger colspan had to
+    // skip over a gap created by a rowspan). Resetting the scan to column 0 for every cell can
+    // produce out-of-order column assignments and quadratic scanning behavior for large tables.
+    let mut col_cursor = 0usize;
+
     for (cell_idx, cell_child) in row.children.iter().enumerate() {
       if matches!(
         Self::get_table_element_type(cell_child),
@@ -2351,8 +2441,7 @@ impl TableStructure {
         let rowspan = cell_child.table_rowspan();
 
         // Find the first free block of columns that can fit the span in linear time. Start each
-        // search from the left edge so later cells can fill holes left by earlier rowspans.
-        let mut col_cursor = 0usize;
+        // search from the current insertion point so cell placement remains source-order stable.
         let mut run_len = 0usize;
         let start_col = loop {
           if col_cursor >= occupied.len() {
@@ -2395,6 +2484,9 @@ impl TableStructure {
             *slot = (*slot).max(span_rows);
           }
         }
+
+        // Move the insertion point past this cell so later cells cannot backfill earlier gaps.
+        col_cursor = col_end;
       }
     }
   }
@@ -4818,25 +4910,49 @@ impl TableFormattingContext {
       .formatting_context()
       .unwrap_or(FormattingContextType::Block);
 
-    // Measure intrinsic content widths without the cell's own padding/borders; we'll add them once below.
-    let mut stripped_cell = cell_box.clone();
-    stripped_cell.style =
+    // Measure intrinsic content widths without the cell's own padding/borders; we'll add them once
+    // below. Use a thread-local style override (when possible) to avoid cloning the entire cell
+    // subtree just to swap the root style pointer.
+    let stripped_style =
       style_overrides.derive(&cell_box.style, StyleOverrideFlags::STRIP_PADDING_BORDERS);
 
     let measure_with_fc = |fc: &dyn FormattingContext| -> Result<(f32, f32), LayoutError> {
-      let min =
-        match fc.compute_intrinsic_inline_size(&stripped_cell, IntrinsicSizingMode::MinContent) {
+      // `style_override` is keyed by `BoxNode` id. Box trees created through normal rendering have
+      // unique ids, but unit tests sometimes construct ad-hoc nodes with id=0. Fall back to cloning
+      // in that case to avoid applying the override to unrelated nodes that also use id=0.
+      if cell_box.id() == 0 {
+        let mut stripped_cell = cell_box.clone();
+        stripped_cell.style = stripped_style.clone();
+        let min = match fc.compute_intrinsic_inline_size(&stripped_cell, IntrinsicSizingMode::MinContent) {
           Ok(value) => value,
           Err(err @ LayoutError::Timeout { .. }) => return Err(err),
           Err(_) => 0.0,
         };
-      let max =
-        match fc.compute_intrinsic_inline_size(&stripped_cell, IntrinsicSizingMode::MaxContent) {
+        let max = match fc.compute_intrinsic_inline_size(&stripped_cell, IntrinsicSizingMode::MaxContent) {
           Ok(value) => value,
           Err(err @ LayoutError::Timeout { .. }) => return Err(err),
           Err(_) => min,
         };
-      Ok((min, max))
+        return Ok((min, max));
+      }
+
+      crate::layout::style_override::with_style_override(
+        cell_box.id(),
+        stripped_style.clone(),
+        || {
+          let min = match fc.compute_intrinsic_inline_size(cell_box, IntrinsicSizingMode::MinContent) {
+            Ok(value) => value,
+            Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+            Err(_) => 0.0,
+          };
+          let max = match fc.compute_intrinsic_inline_size(cell_box, IntrinsicSizingMode::MaxContent) {
+            Ok(value) => value,
+            Err(err @ LayoutError::Timeout { .. }) => return Err(err),
+            Err(_) => min,
+          };
+          Ok((min, max))
+        },
+      )
     };
     let (mut min, mut max) = match fc_type {
       FormattingContextType::Block => measure_with_fc(cell_bfc)?,
@@ -4887,14 +5003,17 @@ impl TableFormattingContext {
     let mut deadline_counter = 0usize;
     let source_rows = collect_source_rows(table_box);
     let cell_bfc = &self.cell_bfc;
-    let max_threads = match self.parallelism.mode {
-      LayoutParallelismMode::Disabled => 1,
-      _ => self
-        .parallelism
-        .max_threads
-        .unwrap_or_else(default_layout_thread_budget)
-        .max(1),
-    };
+    // Column sizing and cell layout can dominate runtime on large tables. Allow these phases to
+    // borrow the process thread budget even when subtree fan-out is disabled so a single huge
+    // table doesn't become a wall-clock bottleneck.
+    //
+    // Callers that need strictly single-threaded layout can still force this to 1 by setting
+    // `LayoutParallelism::with_max_threads(Some(1))` (or `RAYON_NUM_THREADS=1` for the global pool).
+    let max_threads = self
+      .parallelism
+      .max_threads
+      .unwrap_or_else(default_layout_thread_budget)
+      .max(1);
     let measure_cells_in_parallel = self.parallelism.should_parallelize(structure.cells.len())
       || (structure.cells.len() > 256 && max_threads > 1);
     let measurements: Vec<Option<(f32, f32)>> = if matches!(mode, DistributionMode::Auto) {
@@ -5362,7 +5481,6 @@ impl TableFormattingContext {
     let hide_empty = border_collapse == BorderCollapse::Separate
       && cell_box.style.empty_cells == EmptyCells::Hide
       && cell_is_visually_empty(cell_box);
-    let mut cloned = cell_box.clone();
     let mut flags = StyleOverrideFlags::LAYOUT_CLEAR_WIDTHS_AND_MARGINS;
     if hide_empty {
       flags |= StyleOverrideFlags::HIDE_EMPTY_RESET_BG_AND_TRANSPARENT_BORDERS;
@@ -5370,10 +5488,18 @@ impl TableFormattingContext {
     if matches!(border_collapse, BorderCollapse::Collapse) {
       flags |= StyleOverrideFlags::COLLAPSE_ZERO_BORDERS;
     }
-    cloned.style = style_overrides.derive(&cell_box.style, flags);
 
     let constraints = LayoutConstraints::definite_width(cell_width.max(0.0));
-    cell_bfc.layout(&cloned, &constraints)
+    let override_style = style_overrides.derive(&cell_box.style, flags);
+    if cell_box.id() == 0 {
+      let mut cloned = cell_box.clone();
+      cloned.style = override_style;
+      return cell_bfc.layout(&cloned, &constraints);
+    }
+
+    crate::layout::style_override::with_style_override(cell_box.id(), override_style, || {
+      cell_bfc.layout(cell_box, &constraints)
+    })
   }
 
   fn collect_row_group_constraints(
@@ -6587,14 +6713,11 @@ impl FormattingContext for TableFormattingContext {
       }
     };
 
-    let max_threads = match self.parallelism.mode {
-      LayoutParallelismMode::Disabled => 1,
-      _ => self
-        .parallelism
-        .max_threads
-        .unwrap_or_else(default_layout_thread_budget)
-        .max(1),
-    };
+    let max_threads = self
+      .parallelism
+      .max_threads
+      .unwrap_or_else(default_layout_thread_budget)
+      .max(1);
     let should_parallelize_cells = !dump
       && (self.parallelism.should_parallelize(structure.cells.len())
         || (structure.cells.len() > 256 && max_threads > 1));

@@ -1392,9 +1392,9 @@ fn eval_plain_style_feature(
   }
 
   let styles = container.styles.as_ref();
-  // We only need the string form for query evaluation, but `resolve_var_for_property` can return
-  // borrowed slices (e.g. from a fallback within the original declaration). Keep the original
-  // PropertyValue alive so any borrowed `Cow` remains valid.
+  // We only need the string form for query evaluation, but `resolve_var_for_property` returns a
+  // `Cow<'a, str>` tied to the lifetime of the input `PropertyValue` (including fallbacks). Keep
+  // the original `PropertyValue` alive so any borrowed `Cow` remains valid.
   let query_value_storage = crate::style::var_resolution::contains_var(value)
     .then(|| PropertyValue::Custom(value.to_string()));
   let resolved_value: Cow<'_, str> = if let Some(query_value) = query_value_storage.as_ref() {
@@ -1403,10 +1403,7 @@ fn eval_plain_style_feature(
       &styles.custom_properties,
       "",
     ) {
-      crate::style::var_resolution::VarResolutionResult::Resolved {
-        css_text,
-        value: resolved,
-      } => {
+      crate::style::var_resolution::VarResolutionResult::Resolved { css_text, value: resolved } => {
         // `css_text` is empty on the fast path when no `var()` calls were present. Avoid treating an
         // actual empty resolution (`var(--x,)`) as "no substitution" by also checking whether the
         // resolver had to materialize a new value.
@@ -1894,10 +1891,7 @@ fn parse_numeric_value(
       &container.styles.custom_properties,
       "",
     ) {
-      crate::style::var_resolution::VarResolutionResult::Resolved {
-        css_text,
-        value: resolved,
-      } => {
+      crate::style::var_resolution::VarResolutionResult::Resolved { css_text, value: resolved } => {
         let no_substitution =
           matches!(resolved, crate::style::var_resolution::ResolvedPropertyValue::Borrowed(_))
             && css_text.is_empty();
@@ -15903,10 +15897,10 @@ mod tests {
       containers: HashMap::from([(
         1usize,
         ContainerQueryInfo {
-          width: 300.0,
-          height: 100.0,
           // For vertical writing modes, the query container's inline size maps to physical height
           // while its block size maps to physical width.
+          width: 300.0,
+          height: 100.0,
           inline_size: 100.0,
           block_size: 300.0,
           container_type: ContainerType::Size,
