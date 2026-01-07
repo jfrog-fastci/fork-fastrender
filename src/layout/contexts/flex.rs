@@ -7011,8 +7011,10 @@ impl FlexFormattingContext {
         }
 
         let mut max_content: Option<(FragmentNode, Size)> = None;
-        if (main_axis_is_row && work.layout_width <= eps)
-          || (!main_axis_is_row && work.layout_height <= eps)
+        let needs_max_content_fallback = (main_axis_is_row && work.layout_width <= eps)
+          || (!main_axis_is_row && work.layout_height <= eps);
+        if needs_max_content_fallback
+          && !matches!(work.child_box.style.flex_basis, crate::style::types::FlexBasis::Content)
         {
           let mc_constraints = if main_axis_is_row {
             LayoutConstraints::new(
@@ -7194,22 +7196,30 @@ impl FlexFormattingContext {
             Self::fragment_subtree_size(template.fragment(), &mut deadline_counter)?;
           let mut resolved_width = layout_width;
           let mut resolved_height = layout_height;
-          if resolved_width <= eps && intrinsic_size.width > eps {
+          let allow_width_fallback =
+            !(matches!(child_box.style.flex_basis, FlexBasis::Content)
+              && main_axis_is_horizontal
+              && resolved_width <= eps);
+          let allow_height_fallback =
+            !(matches!(child_box.style.flex_basis, FlexBasis::Content)
+              && !main_axis_is_horizontal
+              && resolved_height <= eps);
+          if allow_width_fallback && resolved_width <= eps && intrinsic_size.width > eps {
             resolved_width = intrinsic_size.width;
           }
-          if resolved_height <= eps && intrinsic_size.height > eps {
+          if allow_height_fallback && resolved_height <= eps && intrinsic_size.height > eps {
             resolved_height = intrinsic_size.height;
           }
-          if resolved_width <= eps {
+          if allow_width_fallback && resolved_width <= eps {
             resolved_width = stored_size.width.max(resolved_width);
           }
-          if resolved_height <= eps {
+          if allow_height_fallback && resolved_height <= eps {
             resolved_height = stored_size.height.max(resolved_height);
           }
-          if resolved_width <= eps {
+          if allow_width_fallback && resolved_width <= eps {
             resolved_width = target_width;
           }
-          if resolved_height <= eps {
+          if allow_height_fallback && resolved_height <= eps {
             resolved_height = target_height;
           }
           let mut origin_x = child_loc_x;
@@ -7406,10 +7416,18 @@ impl FlexFormattingContext {
             // Position the child using the Taffy-computed coordinates (relative to parent).
             let mut resolved_width = layout_width;
             let mut resolved_height = layout_height;
-            if resolved_width <= eps && intrinsic_size.width > eps {
+            let allow_width_fallback =
+              !(matches!(child_box.style.flex_basis, FlexBasis::Content)
+                && main_axis_is_horizontal
+                && resolved_width <= eps);
+            let allow_height_fallback =
+              !(matches!(child_box.style.flex_basis, FlexBasis::Content)
+                && !main_axis_is_horizontal
+                && resolved_height <= eps);
+            if allow_width_fallback && resolved_width <= eps && intrinsic_size.width > eps {
               resolved_width = intrinsic_size.width;
             }
-            if resolved_height <= eps && intrinsic_size.height > eps {
+            if allow_height_fallback && resolved_height <= eps && intrinsic_size.height > eps {
               resolved_height = intrinsic_size.height;
             }
             let mut origin_x = child_loc_x;

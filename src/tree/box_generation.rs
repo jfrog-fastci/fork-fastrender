@@ -4984,6 +4984,14 @@ mod tests {
     find_select(&box_tree.root).expect("expected select form control")
   }
 
+  fn select_selected_value(select: &SelectControl) -> Option<&str> {
+    let idx = select.selected.first().copied()?;
+    match select.items.get(idx)? {
+      SelectItem::Option { value, .. } => Some(value.as_str()),
+      _ => None,
+    }
+  }
+
   fn collect_pseudo_text(
     node: &BoxNode,
     styled_node_id: usize,
@@ -10881,6 +10889,7 @@ mod tests {
     assert_eq!(value, "a");
     assert!(*selected);
     assert!(*disabled);
+    assert_eq!(select_selected_value(select), Some("a"));
   }
 
   #[test]
@@ -10956,6 +10965,7 @@ mod tests {
     assert_eq!(value, "");
     assert!(*selected);
     assert!(*disabled);
+    assert_eq!(select_selected_value(select), Some(""));
   }
 
   #[test]
