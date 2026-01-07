@@ -529,15 +529,19 @@ pub fn compute_replaced_size(
       crate::tree::box_tree::ReplacedType::FormControl(_)
     );
 
-  let natural_ratio = replaced.aspect_ratio.or_else(|| {
-    if !allow_intrinsic_ratio_from_size {
-      return None;
-    }
-    match (intrinsic_w, intrinsic_h) {
-      (Some(w), Some(h)) if h > 0.0 => Some(w / h),
-      _ => None,
-    }
-  });
+  let natural_ratio = if replaced.no_intrinsic_ratio {
+    None
+  } else {
+    replaced.aspect_ratio.or_else(|| {
+      if !allow_intrinsic_ratio_from_size {
+        return None;
+      }
+      match (intrinsic_w, intrinsic_h) {
+        (Some(w), Some(h)) if h > 0.0 => Some(w / h),
+        _ => None,
+      }
+    })
+  };
 
   let intrinsic_ratio = if uses_auto {
     natural_ratio.or(specified_ratio)
@@ -1506,7 +1510,7 @@ mod tests {
         picture_sources: Vec::new(),
       },
       intrinsic_size: Some(Size::new(200.0, 100.0)),
-      aspect_ratio: None,
+      aspect_ratio: Some(2.0),
       no_intrinsic_ratio: true,
     };
 

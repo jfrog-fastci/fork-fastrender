@@ -10085,6 +10085,9 @@ impl FastRender {
     if let Some(outcome) = probe_results.get(&box_id) {
       explicit_no_ratio = outcome.explicit_no_ratio;
       replaced_box.no_intrinsic_ratio = outcome.explicit_no_ratio;
+      if explicit_no_ratio {
+        replaced_box.aspect_ratio = None;
+      }
       if needs_size_probe {
         if let Some(size) = outcome.intrinsic_size {
           replaced_box.intrinsic_size = Some(size);
@@ -10128,7 +10131,7 @@ impl FastRender {
         .or_else(|| stored_alt.as_deref().filter(|s| !s.is_empty()));
       if let Some(size) = candidate_alt.and_then(|text| self.alt_intrinsic_size(style, text)) {
         replaced_box.intrinsic_size.get_or_insert(size);
-        if size.height > 0.0 && replaced_box.aspect_ratio.is_none() {
+        if !explicit_no_ratio && size.height > 0.0 && replaced_box.aspect_ratio.is_none() {
           replaced_box.aspect_ratio = Some(size.width / size.height);
         }
       }
@@ -10143,7 +10146,7 @@ impl FastRender {
     }
 
     // If only intrinsic size is present, ensure aspect ratio is recorded.
-    if replaced_box.aspect_ratio.is_none() && !explicit_no_ratio {
+    if replaced_box.aspect_ratio.is_none() && !explicit_no_ratio && !replaced_box.no_intrinsic_ratio {
       if let Some(size) = replaced_box.intrinsic_size {
         if size.height > 0.0 {
           replaced_box.aspect_ratio = Some(size.width / size.height);
@@ -10153,7 +10156,7 @@ impl FastRender {
 
     // If probing failed (or returned no intrinsic dimensions), fall back to a width+height srcset
     // descriptor as an intrinsic ratio hint.
-    if replaced_box.aspect_ratio.is_none() && !explicit_no_ratio {
+    if replaced_box.aspect_ratio.is_none() && !explicit_no_ratio && !replaced_box.no_intrinsic_ratio {
       if let Some(ratio) = srcset_ratio_hint() {
         if needs_ratio_probe {
           if let Some(width) = authored_width {
@@ -10599,6 +10602,9 @@ impl FastRender {
               let orientation = style.image_orientation.resolve(image.orientation, false);
               explicit_no_ratio = image.aspect_ratio_none;
               replaced_box.no_intrinsic_ratio = explicit_no_ratio;
+              if explicit_no_ratio {
+                replaced_box.aspect_ratio = None;
+              }
               if needs_size_probe {
                 if let Some((w, h)) = image.css_dimensions(
                   orientation,
@@ -10653,7 +10659,7 @@ impl FastRender {
           }
         }
 
-        if replaced_box.aspect_ratio.is_none() && !explicit_no_ratio {
+        if replaced_box.aspect_ratio.is_none() && !explicit_no_ratio && !replaced_box.no_intrinsic_ratio {
           if let Some(selected) = selected {
             if let Some(SrcsetDescriptor::WidthHeight { width, height }) = selected.descriptor {
               let ratio = width as f32 / height as f32;
@@ -10715,6 +10721,9 @@ impl FastRender {
               let orientation = style.image_orientation.resolve(meta.orientation, false);
               explicit_no_ratio = meta.aspect_ratio_none;
               replaced_box.no_intrinsic_ratio = explicit_no_ratio;
+              if explicit_no_ratio {
+                replaced_box.aspect_ratio = None;
+              }
               if let Some((w, h)) = meta.css_dimensions(
                 orientation,
                 &style.image_resolution,
@@ -10724,7 +10733,7 @@ impl FastRender {
                 if needs_intrinsic {
                   replaced_box.intrinsic_size = Some(Size::new(w, h));
                 }
-                if needs_ratio && !explicit_no_ratio {
+                if needs_ratio && !explicit_no_ratio && !replaced_box.no_intrinsic_ratio {
                   replaced_box.aspect_ratio = meta.intrinsic_ratio(orientation).or_else(|| {
                     if h > 0.0 {
                       Some(w / h)
@@ -10770,6 +10779,9 @@ impl FastRender {
             let orientation = style.image_orientation.resolve(meta.orientation, false);
             explicit_no_ratio = meta.aspect_ratio_none;
             replaced_box.no_intrinsic_ratio = explicit_no_ratio;
+            if explicit_no_ratio {
+              replaced_box.aspect_ratio = None;
+            }
             if let Some((w, h)) = meta.css_dimensions(
               orientation,
               &style.image_resolution,
@@ -10779,7 +10791,7 @@ impl FastRender {
               if needs_intrinsic {
                 replaced_box.intrinsic_size = Some(Size::new(w, h));
               }
-              if needs_ratio && !explicit_no_ratio {
+              if needs_ratio && !explicit_no_ratio && !replaced_box.no_intrinsic_ratio {
                 replaced_box.aspect_ratio = meta.intrinsic_ratio(orientation).or_else(|| {
                   if h > 0.0 {
                     Some(w / h)
@@ -10847,6 +10859,9 @@ impl FastRender {
                 let orientation = style.image_orientation.resolve(meta.orientation, false);
                 explicit_no_ratio = meta.aspect_ratio_none;
                 replaced_box.no_intrinsic_ratio = explicit_no_ratio;
+                if explicit_no_ratio {
+                  replaced_box.aspect_ratio = None;
+                }
                 if let Some((w, h)) = meta.css_dimensions(
                   orientation,
                   &style.image_resolution,
@@ -10856,7 +10871,7 @@ impl FastRender {
                   if needs_intrinsic {
                     replaced_box.intrinsic_size = Some(Size::new(w, h));
                   }
-                  if needs_ratio && !explicit_no_ratio {
+                  if needs_ratio && !explicit_no_ratio && !replaced_box.no_intrinsic_ratio {
                     replaced_box.aspect_ratio = meta.intrinsic_ratio(orientation).or_else(|| {
                       if h > 0.0 {
                         Some(w / h)
@@ -10875,7 +10890,7 @@ impl FastRender {
     }
 
     // If only intrinsic size is present, ensure aspect ratio is recorded
-    if replaced_box.aspect_ratio.is_none() && !explicit_no_ratio {
+    if replaced_box.aspect_ratio.is_none() && !explicit_no_ratio && !replaced_box.no_intrinsic_ratio {
       if let Some(size) = replaced_box.intrinsic_size {
         if size.height > 0.0 {
           replaced_box.aspect_ratio = Some(size.width / size.height);
