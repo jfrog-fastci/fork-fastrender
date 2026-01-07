@@ -263,6 +263,76 @@ fn parallel_paint_matches_serial_output() {
 }
 
 #[test]
+fn manual_blend_mode_triggers_parallel_paint_in_auto_mode() {
+  // `PaintParallelismMode::Auto` relies on heuristics to decide whether tiling is worth the
+  // overhead. Manual blend modes (HSL/HSV/OKLCH conversions + plus-darker) are per-pixel and can
+  // dominate runtime; ensure they are treated as expensive enough to enable tiling.
+  let mut list = DisplayList::new();
+  let viewport = Rect::from_xywh(0.0, 0.0, 512.0, 512.0);
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: viewport,
+    color: Rgba::from_rgba8(200, 0, 0, 255),
+  }));
+  list.push(DisplayItem::PushStackingContext(StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    establishes_backdrop_root: true,
+    bounds: viewport,
+    plane_rect: viewport,
+    mix_blend_mode: BlendMode::Hue,
+    opacity: 1.0,
+    is_isolated: false,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::ZERO,
+    mask: None,
+    has_clip_path: false,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: viewport,
+    color: Rgba::from_rgba8(0, 255, 0, 255),
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let font_ctx = FontContext::new();
+  let serial = DisplayListRenderer::new(512, 512, Rgba::WHITE, font_ctx.clone())
+    .unwrap()
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("serial paint");
+
+  let parallelism = PaintParallelism {
+    tile_size: 128,
+    log_timing: false,
+    // Avoid the min_display_items * tile_estimate shortcut so this test specifically exercises
+    // the expensive-pixel heuristics.
+    min_display_items: 10_000,
+    ..PaintParallelism::auto()
+  };
+  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let report = pool.install(|| {
+    DisplayListRenderer::new(512, 512, Rgba::WHITE, font_ctx)
+      .unwrap()
+      .with_parallelism(parallelism)
+      .render_with_report(&list)
+      .expect("auto paint")
+  });
+
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
+  assert_pixmap_eq(&serial, &report.pixmap);
+}
+
+#[test]
 fn mask_parallel_paint_matches_serial_output() {
   let mut list = DisplayList::new();
   list.push(DisplayItem::FillRect(FillRectItem {

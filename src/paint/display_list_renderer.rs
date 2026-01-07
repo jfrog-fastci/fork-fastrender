@@ -7490,6 +7490,7 @@ impl DisplayListRenderer {
   ) -> Result<(u64, u64, usize)> {
     const GRADIENT_WEIGHT: u64 = 4;
     const IMAGE_LINEAR_WEIGHT: u64 = 2;
+    const MANUAL_BLEND_WEIGHT: u64 = 4;
 
     let viewport = Rect::from_xywh(
       0.0,
@@ -7626,6 +7627,15 @@ impl DisplayListRenderer {
           total = total.saturating_add(tmp_pixels.saturating_mul(blur_weight));
         }
         DisplayItem::PushStackingContext(sc) => {
+          if is_manual_blend(sc.mix_blend_mode) {
+            // Manual blend modes (HSL/HSV/OKLCH conversions + plus-darker) are implemented with
+            // per-pixel color space conversions and compositing. Treat them similarly to
+            // gradients/filters so `PaintParallelismMode::Auto` doesn't keep large blend-mode pages
+            // serial.
+            let bounds = self.ds_rect(sc.bounds);
+            let _ = add_rect(&mut total, bounds, MANUAL_BLEND_WEIGHT);
+          }
+
           if sc.filters.is_empty() && sc.backdrop_filters.is_empty() {
             continue;
           }
