@@ -10277,7 +10277,9 @@ impl Painter {
     // Precompute mark painter for string emphasis.
     let mut string_mark: Option<(Vec<tiny_skia::Path>, f32, f32)> = None;
     if let crate::style::types::TextEmphasisStyle::String(ref s) = style.text_emphasis_style {
-      if !s.is_empty() {
+      use unicode_segmentation::UnicodeSegmentation;
+      let mark_str = s.graphemes(true).next().unwrap_or("");
+      if !mark_str.is_empty() {
         let mut mark_style = style.clone();
         mark_style.font_size = style.font_size * 0.5;
         mark_style.font_variant_east_asian.ruby = true;
@@ -10286,7 +10288,7 @@ impl Painter {
           // regardless of the element's authored `text-orientation`.
           mark_style.text_orientation = crate::style::types::TextOrientation::Upright;
         }
-        let Ok(mark_runs) = self.shaper.shape(s, &mark_style, &self.font_ctx) else {
+        let Ok(mark_runs) = self.shaper.shape(mark_str, &mark_style, &self.font_ctx) else {
           return;
         };
         let mark_width: f32 = mark_runs.iter().map(|r| r.advance * self.scale).sum();

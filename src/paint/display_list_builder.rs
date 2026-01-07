@@ -7543,7 +7543,9 @@ impl DisplayListBuilder {
     }
 
     let text = if let TextEmphasisStyle::String(ref s) = style.text_emphasis_style {
-      if s.is_empty() {
+      use unicode_segmentation::UnicodeSegmentation;
+      let mark_str = s.graphemes(true).next().unwrap_or("");
+      if mark_str.is_empty() {
         None
       } else {
         let mut mark_style = style.clone();
@@ -7556,7 +7558,7 @@ impl DisplayListBuilder {
           mark_style.text_orientation = crate::style::types::TextOrientation::Upright;
         }
         let shape_timer = self.build_breakdown.as_ref().map(|_| Instant::now());
-        let shaped = self.shaper.shape(s, &mark_style, &self.font_ctx);
+        let shaped = self.shaper.shape(mark_str, &mark_style, &self.font_ctx);
         if let (Some(breakdown), Some(start)) = (self.build_breakdown.as_ref(), shape_timer) {
           breakdown.record_text_shape(start.elapsed());
         }
