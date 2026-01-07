@@ -240,6 +240,21 @@ fn invert_transform(ts: Transform) -> Option<Transform> {
   Some(Transform::from_row(sx, ky, kx, sy, tx, ty))
 }
 
+#[inline]
+fn backdrop_root_range(layer_stack: &[LayerRecord]) -> (usize, usize) {
+  let parent_depth = layer_stack.len().saturating_sub(1);
+  let mut root_depth = 0usize;
+  if parent_depth > 0 {
+    for idx in (0..parent_depth).rev() {
+      if layer_stack[idx].is_backdrop_root {
+        root_depth = idx + 1;
+        break;
+      }
+    }
+  }
+  (root_depth, parent_depth)
+}
+
 fn transform_requires_transformed_clip(transform: Transform, radii: BorderRadii) -> bool {
   let eps = 1e-6;
   if !(transform.sx.is_finite()
@@ -3248,7 +3263,7 @@ pub struct DisplayListRenderer {
   color_renderer: ColorFontRenderer,
   glyph_cache: Arc<Mutex<GlyphCache>>,
   stacking_layers: Vec<StackingRecord>,
-  blend_stack: Vec<Option<BlendMode>>,
+  blend_stack: Vec<BlendMode>,
   scale: f32,
   transform_stack: Vec<Transform3D>,
   perspective_stack: Vec<Transform3D>,
@@ -7437,23 +7452,12 @@ impl DisplayListRenderer {
     let world_to_dest = self.canvas.transform();
     let scale = self.scale;
 
-    let (root_depth, parent_depth) = {
-      let layer_stack = self.canvas.layer_stack();
-      let Some(parent_depth) = layer_stack.len().checked_sub(1) else {
-        // Without an active layer, there's nowhere to write the filtered backdrop.
-        return Ok(());
-      };
-      let mut root_depth = 0usize;
-      if parent_depth > 0 {
-        for idx in (0..parent_depth).rev() {
-          if layer_stack[idx].is_backdrop_root {
-            root_depth = idx + 1;
-            break;
-          }
-        }
-      }
-      (root_depth, parent_depth)
-    };
+    let layer_stack = self.canvas.layer_stack();
+    if layer_stack.is_empty() {
+      // Without an active layer, there's nowhere to write the filtered backdrop.
+      return Ok(());
+    }
+    let (root_depth, parent_depth) = backdrop_root_range(layer_stack);
 
     let cached_key = self.ensure_backdrop_composite_cached(root_depth, parent_depth)?;
 
@@ -8659,6 +8663,16 @@ impl DisplayListRenderer {
                   // Without an active layer, there's nowhere to write the filtered backdrop.
                   return Ok(());
                 };
+                if renderer.trace_backdrop_stack {
+                  let (root_depth, parent_depth) = backdrop_root_range(layer_stack);
+                  eprintln!(
+                    "backdrop_stack apply_backdrop_filter preserve3d range={}..{} composite_steps={} cache_hit={}",
+                    root_depth,
+                    parent_depth,
+                    parent_depth.saturating_sub(root_depth),
+                    false
+                  );
+                }
                 let scale = renderer.scale;
                 let blur_cache: &mut (dyn BlurCacheOps + 'static) =
                   match renderer.shared_blur_cache.as_mut() {
@@ -10151,23 +10165,10 @@ impl DisplayListRenderer {
         }
 
         if self.trace_backdrop_stack && !matches!(record.mix_blend_mode, BlendMode::Normal) {
-          let (root_depth, parent_depth) = {
-            // The mix-blend-mode backdrop is the Backdrop Root Image in the element's parent
-            // surface. Mirror `Canvas::fill_backdrop_root_region` so traces show the same
-            // root→parent scoping as `backdrop-filter`.
-            let (layer_stack, _) = self.canvas.split_layer_stack_and_pixmap_mut();
-            let parent_depth = layer_stack.len().saturating_sub(1);
-            let mut root_depth = 0usize;
-            if parent_depth > 0 {
-              for idx in (0..parent_depth).rev() {
-                if layer_stack[idx].is_backdrop_root {
-                  root_depth = idx + 1;
-                  break;
-                }
-              }
-            }
-            (root_depth, parent_depth)
-          };
+          // The mix-blend-mode backdrop is the Backdrop Root Image in the element's parent surface.
+          // Mirror `Canvas::fill_backdrop_root_region` so traces show the same root→parent scoping
+          // as `backdrop-filter`.
+          let (root_depth, parent_depth) = backdrop_root_range(self.canvas.layer_stack());
           eprintln!(
             "backdrop_stack composite_mix_blend mode={:?} range={}..{} composite_allocated={}",
             record.mix_blend_mode, root_depth, parent_depth, false
@@ -10488,25 +10489,56 @@ impl DisplayListRenderer {
         self.canvas.restore();
       }
       DisplayItem::PushBlendMode(mode) => {
+        let canvas_layer_depth_before = self.trace_backdrop_stack.then(|| self.canvas.layer_stack_len());
         let is_backdrop_root = !matches!(mode.mode, BlendMode::Normal);
         if is_manual_blend(mode.mode) {
           self.push_layer_tracked(1.0, is_backdrop_root)?;
           self.record_layer_allocation(self.canvas.width(), self.canvas.height());
-          self.blend_stack.push(Some(mode.mode));
         } else {
           self.push_layer_with_blend_tracked(1.0, Some(map_blend_mode(mode.mode)), is_backdrop_root)?;
           self.record_layer_allocation(self.canvas.width(), self.canvas.height());
-          self.blend_stack.push(None);
+        }
+        self.blend_stack.push(mode.mode);
+
+        if self.trace_backdrop_stack {
+          let depth_after = self.canvas.layer_stack_len();
+          eprintln!(
+            "backdrop_stack push_blend_mode mode={:?} backdrop_root={} canvas_layers={} -> {}",
+            mode.mode,
+            is_backdrop_root,
+            canvas_layer_depth_before.unwrap_or(depth_after),
+            depth_after
+          );
         }
       }
       DisplayItem::PopBlendMode => {
-        let blend_mode = self.blend_stack.pop().flatten();
-        if let Some(mode) = blend_mode {
+        let mode = self.blend_stack.pop().unwrap_or_default();
+        let trace_range = self.trace_backdrop_stack.then(|| {
+          let layer_stack = self.canvas.layer_stack();
+          let (root_depth, parent_depth) = backdrop_root_range(layer_stack);
+          let depth_before = layer_stack.len();
+          (root_depth, parent_depth, depth_before)
+        });
+
+        if is_manual_blend(mode) {
           let (layer, origin, opacity, _) = self.pop_layer_raw_tracked()?;
           let region = self.canvas.clip_bounds();
           self.composite_manual_layer(&layer, opacity, mode, origin, region.as_ref())?;
         } else {
           self.pop_layer_tracked()?;
+        }
+
+        if let Some((root_depth, parent_depth, depth_before)) = trace_range {
+          let depth_after = self.canvas.layer_stack_len();
+          eprintln!(
+            "backdrop_stack pop_blend_mode mode={:?} range={}..{} canvas_layers={} -> {} composite_allocated={}",
+            mode,
+            root_depth,
+            parent_depth,
+            depth_before,
+            depth_after,
+            false
+          );
         }
       }
     }
