@@ -13183,6 +13183,10 @@ pub(crate) fn render_html_with_shared_resources(
   resource_context: Option<ResourceContext>,
   max_iframe_depth: usize,
 ) -> Result<Pixmap> {
+  // Nested rendering (e.g. SVG `<foreignObject>` or iframes) can execute paint/layout work that
+  // uses Rayon. Ensure the global pool is initialised with our conservative defaults so we don't
+  // trip Rayon init panics in constrained environments.
+  crate::rayon_global::ensure_global_pool().map_err(Error::Other)?;
   let deadline = crate::render_control::active_deadline();
 
   let resource_context = resource_context.map(|mut ctx| {
