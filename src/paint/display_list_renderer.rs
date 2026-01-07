@@ -8427,10 +8427,15 @@ impl DisplayListRenderer {
       return Ok(end_idx);
     }
 
-    // Preserve-3d scenes still respect isolated-group semantics: when `is_isolated` is set we
-    // render the entire 3D scene into a transparent group surface before compositing it into the
-    // parent.
-    let push_isolation_layer = node.context.is_isolated;
+    // Preserve-3d scenes still respect stacking-context compositing/sampling boundaries:
+    //
+    // - `is_isolated` (Compositing & Blending): render the full scene into a transparent group
+    //   surface before compositing it into the parent.
+    // - `establishes_backdrop_root` (Filter Effects Level 2): scope descendant `backdrop-filter`
+    //   sampling by forcing a canvas layer boundary even when the preserve-3d context is
+    //   otherwise visually "no-op" (e.g. `will-change` triggers).
+    let push_root_layer = node.context.is_isolated || node.context.establishes_backdrop_root;
+    let root_is_backdrop_root = node.context.establishes_backdrop_root;
 
     let mut order = 0;
     let mut scene_items = collect_scene_items(&node, &parent_transform, true, &mut order, &[]);
@@ -8473,8 +8478,8 @@ impl DisplayListRenderer {
       })
       .transpose()?;
 
-    if push_isolation_layer {
-      self.push_layer_tracked(1.0, false)?;
+    if push_root_layer {
+      self.push_layer_tracked(1.0, root_is_backdrop_root)?;
       self.record_layer_allocation(self.canvas.width(), self.canvas.height());
     }
 
@@ -8747,7 +8752,7 @@ impl DisplayListRenderer {
       Ok(())
     })();
 
-    if push_isolation_layer {
+    if push_root_layer {
       if paint_result.is_err() {
         let _ = self.pop_layer_raw_tracked();
       } else {
@@ -14283,6 +14288,87 @@ mod tests {
       pixel(&scoped, 8, 8),
       (255, 0, 0, 255),
       "expected establishes_backdrop_root to scope backdrop-filter sampling (preventing sampling from the red base)"
+    );
+  }
+
+  #[test]
+  fn preserve_3d_backdrop_filter_scopes_to_explicit_backdrop_root_layers() {
+    let width = 50u32;
+    let height = 20u32;
+    let bounds = Rect::from_xywh(0.0, 0.0, width as f32, height as f32);
+    let plane = Rect::from_xywh(10.0, 0.0, 25.0, height as f32);
+
+    let render = |outer_backdrop_root: bool| -> Pixmap {
+      let mut list = DisplayList::new();
+      list.push(DisplayItem::FillRect(FillRectItem {
+        rect: bounds,
+        color: Rgba::rgb(255, 0, 0),
+      }));
+
+      // Preserve-3d roots are rendered via a dedicated scene compositor. Ensure Backdrop Root
+      // scoping still applies when the preserve-3d context establishes a Backdrop Root boundary
+      // (e.g. due to `will-change` triggers).
+      list.push(DisplayItem::PushStackingContext(StackingContextItem {
+        z_index: 0,
+        creates_stacking_context: true,
+        establishes_backdrop_root: outer_backdrop_root,
+        bounds,
+        plane_rect: bounds,
+        mix_blend_mode: BlendMode::Normal,
+        opacity: 1.0,
+        is_isolated: false,
+        transform: None,
+        child_perspective: None,
+        transform_style: TransformStyle::Preserve3d,
+        backface_visibility: BackfaceVisibility::Visible,
+        filters: Vec::new(),
+        backdrop_filters: Vec::new(),
+        radii: BorderRadii::ZERO,
+        mask: None,
+        has_clip_path: false,
+      }));
+
+      list.push(DisplayItem::PushStackingContext(StackingContextItem {
+        z_index: 0,
+        creates_stacking_context: true,
+        establishes_backdrop_root: true,
+        bounds: plane,
+        plane_rect: plane,
+        mix_blend_mode: BlendMode::Normal,
+        opacity: 1.0,
+        is_isolated: true,
+        transform: Some(Transform3D::translate(0.0, 0.0, 10.0)),
+        child_perspective: None,
+        transform_style: TransformStyle::Flat,
+        backface_visibility: BackfaceVisibility::Visible,
+        filters: Vec::new(),
+        backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
+        radii: BorderRadii::ZERO,
+        mask: None,
+        has_clip_path: false,
+      }));
+      list.push(DisplayItem::PopStackingContext);
+
+      list.push(DisplayItem::PopStackingContext);
+
+      DisplayListRenderer::new(width, height, Rgba::WHITE, FontContext::new())
+        .unwrap()
+        .render(&list)
+        .unwrap()
+    };
+
+    let baseline = render(false);
+    let scoped = render(true);
+
+    assert_eq!(
+      pixel(&baseline, 20, 10),
+      (0, 255, 255, 255),
+      "expected preserve-3d backdrop-filter to sample the red backdrop when no backdrop root is present"
+    );
+    assert_eq!(
+      pixel(&scoped, 20, 10),
+      (255, 0, 0, 255),
+      "expected preserve-3d Backdrop Root boundaries to scope backdrop-filter sampling"
     );
   }
 
