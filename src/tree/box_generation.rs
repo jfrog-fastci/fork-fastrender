@@ -3532,7 +3532,7 @@ fn normalize_select_label_text(input: &str) -> String {
 
 fn option_label_from_node(node: &StyledNode) -> String {
   if let Some(label) = node.node.get_attribute_ref("label") {
-    return label.to_string();
+    return normalize_select_label_text(label);
   }
 
   let text = collect_text_content(node);
@@ -3543,8 +3543,7 @@ fn optgroup_label_from_node(node: &StyledNode) -> String {
   node
     .node
     .get_attribute_ref("label")
-    .filter(|l| !l.is_empty())
-    .map(|l| l.to_string())
+    .map(normalize_select_label_text)
     .unwrap_or_default()
 }
 
@@ -5379,6 +5378,20 @@ mod tests {
     assert!(matches!(
       select.items.first(),
       Some(SelectItem::Option { label, .. }) if label == "Foo Bar Baz"
+    ));
+  }
+
+  #[test]
+  fn select_option_label_attribute_is_normalized_like_text() {
+    let control = first_select_control_from_html(
+      "<html><body><select><option label=\"  Foo\n  Bar\tBaz \">Text</option></select></body></html>",
+    );
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select form control kind");
+    };
+    assert!(matches!(
+      select.items.first(),
+      Some(SelectItem::Option { label, value, .. }) if label == "Foo Bar Baz" && value == "Text"
     ));
   }
 
