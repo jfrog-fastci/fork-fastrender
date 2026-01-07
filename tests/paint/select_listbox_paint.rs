@@ -59,6 +59,27 @@ fn select_listbox_emits_rows_and_selection_highlight() {
     text_origins
   );
 
+  let text_xs: Vec<f32> = list
+    .items()
+    .iter()
+    .filter_map(|item| match item {
+      DisplayItem::Text(text) => Some(text.origin.x),
+      _ => None,
+    })
+    .collect();
+  let min_x = text_xs
+    .iter()
+    .copied()
+    .fold(f32::INFINITY, |a, b| a.min(b));
+  let max_x = text_xs
+    .iter()
+    .copied()
+    .fold(f32::NEG_INFINITY, |a, b| a.max(b));
+  assert!(
+    (max_x - min_x) >= 6.0,
+    "expected options inside optgroups to be indented (x range [{min_x}, {max_x}])"
+  );
+
   let has_selection_highlight = list.items().iter().any(|item| match item {
     DisplayItem::FillRect(fill) => fill.color.a > 0.0 && fill.color.a < 1.0,
     DisplayItem::FillRoundedRect(fill) => fill.color.a > 0.0 && fill.color.a < 1.0,
