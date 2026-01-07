@@ -665,7 +665,7 @@ fn repeating_value<T: Copy>(values: &[T], index: usize) -> Option<T> {
   if values.is_empty() {
     None
   } else {
-    Some(*values.get(index).unwrap_or_else(|| values.last().unwrap()))
+    Some(*values.get(index).unwrap_or(&values[values.len() - 1]))
   }
 }
 

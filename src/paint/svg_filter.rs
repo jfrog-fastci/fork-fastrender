@@ -2188,8 +2188,8 @@ fn unwrap_url_function(value: &str, open_paren_idx: usize) -> Option<&str> {
 fn strip_matching_quotes(value: &str) -> &str {
   let bytes = value.as_bytes();
   if bytes.len() >= 2 {
-    let first = bytes.first().copied().unwrap();
-    let last = bytes.last().copied().unwrap();
+    let first = bytes[0];
+    let last = bytes[bytes.len() - 1];
     if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
       return &value[1..value.len() - 1];
     }
@@ -5658,7 +5658,9 @@ fn sample_premultiplied(pixmap: &Pixmap, x: f32, y: f32) -> [f32; 4] {
       if sx < 0 || sy < 0 || sx >= width || sy >= height {
         continue;
       }
-      let px = pixmap.pixel(sx as u32, sy as u32).unwrap();
+      let px = pixmap
+        .pixel(sx as u32, sy as u32)
+        .unwrap_or(PremultipliedColorU8::TRANSPARENT);
       accum[0] += px.red() as f32 / 255.0 * weight;
       accum[1] += px.green() as f32 / 255.0 * weight;
       accum[2] += px.blue() as f32 / 255.0 * weight;
@@ -5696,7 +5698,9 @@ fn sample_premultiplied_edge_duplicate(pixmap: &Pixmap, x: f32, y: f32) -> [f32;
       if weight <= 0.0 {
         continue;
       }
-      let px = pixmap.pixel(sx as u32, sy as u32).unwrap();
+      let px = pixmap
+        .pixel(sx as u32, sy as u32)
+        .unwrap_or(PremultipliedColorU8::TRANSPARENT);
       accum[0] += px.red() as f32 / 255.0 * weight;
       accum[1] += px.green() as f32 / 255.0 * weight;
       accum[2] += px.blue() as f32 / 255.0 * weight;

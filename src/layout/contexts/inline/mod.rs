@@ -4780,7 +4780,7 @@ impl InlineFormattingContext {
 
         if forward {
           // Include following punctuation directly attached to the letter.
-          let mut trailing_end = candidate_end.unwrap();
+          let mut trailing_end = idx + cluster.len();
           let pos = graphemes
             .iter()
             .position(|(g_idx, _)| *g_idx == idx)

@@ -420,9 +420,10 @@ impl GlyphCache {
       if let Some((key, generation)) = self.usage_queue.pop_front() {
         if let Some(entry) = self.glyphs.get(&key) {
           if entry.last_used == generation {
-            let removed = self.glyphs.remove(&key).unwrap();
-            self.current_bytes = self.current_bytes.saturating_sub(removed.estimated_size);
-            self.evictions += 1;
+            if let Some(removed) = self.glyphs.remove(&key) {
+              self.current_bytes = self.current_bytes.saturating_sub(removed.estimated_size);
+              self.evictions += 1;
+            }
           }
         }
       } else {

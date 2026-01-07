@@ -921,7 +921,11 @@ impl ContentContext {
     if entry.is_empty() {
       entry.push(value);
     } else {
-      *entry.last_mut().unwrap() = value;
+      if let Some(last) = entry.last_mut() {
+        *last = value;
+      } else {
+        entry.push(value);
+      }
     }
   }
 
@@ -1053,7 +1057,11 @@ impl ContentContext {
     if entry.is_empty() {
       entry.push(value);
     } else {
-      *entry.last_mut().unwrap() = value;
+      if let Some(last) = entry.last_mut() {
+        *last = value;
+      } else {
+        entry.push(value);
+      }
     }
   }
 

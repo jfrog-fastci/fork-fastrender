@@ -250,7 +250,7 @@ fn polygon_intersection(subject: &[Vec2], clip: &[Vec2]) -> Vec<Vec2> {
       break;
     }
 
-    let mut s = *input.last().unwrap();
+    let mut s = input[input.len() - 1];
     for &e in &input {
       if is_inside(e, cp1, cp2, is_ccw) {
         if !is_inside(s, cp1, cp2, is_ccw) {
@@ -354,17 +354,19 @@ fn stable_topological_sort(
   }
 
   let mut remaining_count = n;
-  while remaining_count > 0 {
+  'sort: while remaining_count > 0 {
     let current = if let Some(Reverse((_, idx))) = queue.pop() {
       if !remaining[idx] {
         continue;
       }
       idx
     } else {
-      let fallback = (0..n)
+      let Some(fallback) = (0..n)
         .filter(|i| remaining[*i])
         .min_by_key(|i| (items[*i].paint_order, *i))
-        .unwrap();
+      else {
+        break 'sort;
+      };
       fallback
     };
 

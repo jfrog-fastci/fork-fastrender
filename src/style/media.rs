@@ -3032,7 +3032,7 @@ impl<'a> MediaQueryParser<'a> {
       }
     }
     if parts.len() == 1 {
-      Ok(parts.pop().unwrap())
+      parts.pop().ok_or(MediaParseError::EmptyQuery)
     } else {
       Ok(MediaFeature::Or(parts))
     }
@@ -3050,7 +3050,7 @@ impl<'a> MediaQueryParser<'a> {
       }
     }
     if parts.len() == 1 {
-      Ok(parts.pop().unwrap())
+      parts.pop().ok_or(MediaParseError::EmptyQuery)
     } else {
       Ok(MediaFeature::And(parts))
     }

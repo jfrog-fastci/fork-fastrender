@@ -412,7 +412,7 @@ impl PixelFingerprintHasher {
 
     let mut chunks = bytes.chunks_exact(8);
     for chunk in &mut chunks {
-      self.write_word(u64::from_le_bytes(chunk.try_into().unwrap()));
+      self.write_word(u64::from_le_bytes(chunk.try_into().unwrap_or([0u8; 8])));
     }
 
     let rem = chunks.remainder();
@@ -2401,7 +2401,9 @@ fn tile_blur(
       if needs_new {
         self.tile = Some(new_pixmap_with_context(width, height, "tile blur tile")?);
       }
-      Ok(self.tile.as_mut().expect("tile allocated"))
+      self.tile.as_mut().ok_or_else(|| RenderError::InvalidParameters {
+        message: "tile blur tile scratch missing after allocation".to_string(),
+      })
     }
   }
 

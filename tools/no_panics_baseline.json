@@ -126,24 +126,6 @@
     "count": 1
   },
   {
-    "path": "src/layout/contexts/inline/mod.rs",
-    "kind": "unwrap",
-    "line": "let mut trailing_end = candidate_end.unwrap();",
-    "count": 1
-  },
-  {
-    "path": "src/layout/float_shape.rs",
-    "kind": "unwrap",
-    "line": "if pos >= stops.last().unwrap().0 && !repeating {",
-    "count": 1
-  },
-  {
-    "path": "src/layout/float_shape.rs",
-    "kind": "unwrap",
-    "line": "return stops.last().unwrap().1;",
-    "count": 1
-  },
-  {
     "path": "src/layout/pagination.rs",
     "kind": "expect",
     "line": "Ok(cache.get(&key).expect(\"layout cache just populated\"))",
@@ -192,39 +174,9 @@
     "count": 2
   },
   {
-    "path": "src/math/mod.rs",
-    "kind": "unwrap",
-    "line": "Some(*values.get(index).unwrap_or_else(|| values.last().unwrap()))",
-    "count": 1
-  },
-  {
-    "path": "src/paint/blur.rs",
-    "kind": "expect",
-    "line": "Ok(self.tile.as_mut().expect(\"tile allocated\"))",
-    "count": 1
-  },
-  {
-    "path": "src/paint/blur.rs",
-    "kind": "unwrap",
-    "line": "self.write_word(u64::from_le_bytes(chunk.try_into().unwrap()));",
-    "count": 1
-  },
-  {
     "path": "src/paint/canvas.rs",
     "kind": "unwrap",
     "line": ".unwrap_or_else(|| tiny_skia::Rect::from_xywh(0.0, 0.0, 0.0, 0.0).unwrap());",
-    "count": 1
-  },
-  {
-    "path": "src/paint/depth_sort.rs",
-    "kind": "unwrap",
-    "line": ".unwrap();",
-    "count": 1
-  },
-  {
-    "path": "src/paint/depth_sort.rs",
-    "kind": "unwrap",
-    "line": "let mut s = *input.last().unwrap();",
     "count": 1
   },
   {
@@ -345,30 +297,6 @@
     "path": "src/paint/projective_warp.rs",
     "kind": "unwrap",
     "line": "let cap = NonZeroUsize::new(capacity).unwrap_or_else(|| NonZeroUsize::new(1).unwrap());",
-    "count": 1
-  },
-  {
-    "path": "src/paint/svg_filter.rs",
-    "kind": "unwrap",
-    "line": "let first = bytes.first().copied().unwrap();",
-    "count": 1
-  },
-  {
-    "path": "src/paint/svg_filter.rs",
-    "kind": "unwrap",
-    "line": "let last = bytes.last().copied().unwrap();",
-    "count": 1
-  },
-  {
-    "path": "src/paint/svg_filter.rs",
-    "kind": "unwrap",
-    "line": "let px = pixmap.pixel(sx as u32, sy as u32).unwrap();",
-    "count": 2
-  },
-  {
-    "path": "src/paint/text_rasterize.rs",
-    "kind": "unwrap",
-    "line": "let removed = self.glyphs.remove(&key).unwrap();",
     "count": 1
   },
   {
@@ -528,12 +456,6 @@
     "count": 3
   },
   {
-    "path": "src/style/content.rs",
-    "kind": "unwrap",
-    "line": "*entry.last_mut().unwrap() = value;",
-    "count": 2
-  },
-  {
     "path": "src/style/grid.rs",
     "kind": "unwrap",
     "line": "let (flow_parsed, remainder) = parse_auto_flow_tokens(right.unwrap());",
@@ -555,12 +477,6 @@
     "path": "src/style/grid.rs",
     "kind": "unwrap",
     "line": "line_names.last_mut().unwrap().extend(first.iter().cloned());",
-    "count": 2
-  },
-  {
-    "path": "src/style/media.rs",
-    "kind": "unwrap",
-    "line": "Ok(parts.pop().unwrap())",
     "count": 2
   },
   {

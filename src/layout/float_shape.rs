@@ -1169,8 +1169,11 @@ fn sample_conic_stops(stops: &[(f32, Rgba)], t: f32, repeating: bool, period: f3
   if pos <= stops[0].0 {
     return stops[0].1;
   }
-  if pos >= stops.last().unwrap().0 && !repeating {
-    return stops.last().unwrap().1;
+  let Some(&(last_pos, last_color)) = stops.last() else {
+    return Rgba::TRANSPARENT;
+  };
+  if pos >= last_pos && !repeating {
+    return last_color;
   }
   for window in stops.windows(2) {
     let (p0, c0) = window[0];
