@@ -1644,7 +1644,8 @@ impl FontContext {
         return Err(blocked);
       }
     }
-    let resource = match self.fetcher.fetch(resolved_url, base_url) {
+    let referrer_url = face.source_stylesheet_url.as_deref().or(base_url);
+    let resource = match self.fetcher.fetch(resolved_url, referrer_url) {
       Ok(result) => result,
       Err(err) => {
         self.record_font_error(resolved_url, &err);

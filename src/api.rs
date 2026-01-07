@@ -6840,9 +6840,13 @@ impl FastRender {
         let _deadline_guard = DeadlineGuard::install(deadline.as_ref());
         let mut local_media_cache = MediaQueryCache::default();
 
-        match self {
+          match self {
           StylesheetTask::Inline { css } => {
-            let sheet = parse_stylesheet_with_media(&css, media_ctx, Some(&mut local_media_cache))?;
+            let mut sheet =
+              parse_stylesheet_with_media(&css, media_ctx, Some(&mut local_media_cache))?;
+            if let Some(base_url) = document_base_url.as_deref() {
+              sheet.set_font_face_source_stylesheet_url(base_url);
+            }
             let resolved = if sheet.contains_imports() {
               let loader = CssImportFetcher::new(
                 document_base_url.clone(),
@@ -6937,6 +6941,8 @@ impl FastRender {
               media_ctx,
               Some(&mut local_media_cache),
             )?;
+            let mut sheet = sheet;
+            sheet.set_font_face_source_stylesheet_url(&sheet_base);
             let resolved = if sheet.contains_imports() {
               let loader = CssImportFetcher::new(
                 Some(sheet_base.clone()),

@@ -448,6 +448,15 @@ impl StyleSheet {
     Self { rules: Vec::new() }
   }
 
+  /// Annotate `@font-face` rules in this stylesheet with the stylesheet base URL.
+  ///
+  /// The renderer uses this provenance when fetching CORS-mode style resources (e.g. web fonts):
+  /// the HTTP `Referer` header is derived from the stylesheet URL, while the request `Origin`
+  /// remains the document origin.
+  pub(crate) fn set_font_face_source_stylesheet_url(&mut self, stylesheet_url: &str) {
+    set_font_face_source_stylesheet_url_in_rules(&mut self.rules, stylesheet_url);
+  }
+
   /// Returns true when this stylesheet (including nested conditional blocks) contains at least one
   /// `@import` rule.
   ///
@@ -1214,6 +1223,36 @@ fn collect_font_faces_recursive(
       }
     }
   }
+}
+
+fn set_font_face_source_stylesheet_url_in_rules(rules: &mut [CssRule], stylesheet_url: &str) {
+  let stylesheet_url = stylesheet_url.to_string();
+  fn visit_rules(rules: &mut [CssRule], stylesheet_url: &String) {
+    for rule in rules {
+      match rule {
+        CssRule::FontFace(face) => {
+          if face.source_stylesheet_url.is_none() {
+            face.source_stylesheet_url = Some(stylesheet_url.clone());
+          }
+        }
+        CssRule::Style(rule) => visit_rules(&mut rule.nested_rules, stylesheet_url),
+        CssRule::Media(rule) => visit_rules(&mut rule.rules, stylesheet_url),
+        CssRule::Container(rule) => visit_rules(&mut rule.rules, stylesheet_url),
+        CssRule::Supports(rule) => visit_rules(&mut rule.rules, stylesheet_url),
+        CssRule::Layer(rule) => visit_rules(&mut rule.rules, stylesheet_url),
+        CssRule::StartingStyle(rule) => visit_rules(&mut rule.rules, stylesheet_url),
+        CssRule::Scope(rule) => visit_rules(&mut rule.rules, stylesheet_url),
+        CssRule::Page(_)
+        | CssRule::CounterStyle(_)
+        | CssRule::FontPaletteValues(_)
+        | CssRule::Property(_)
+        | CssRule::Import(_)
+        | CssRule::Keyframes(_) => {}
+      }
+    }
+  }
+
+  visit_rules(rules, &stylesheet_url);
 }
 
 fn collect_css_metadata_recursive(
@@ -3222,6 +3261,12 @@ pub struct LayerRule {
 /// A @font-face rule with parsed descriptors.
 #[derive(Debug, Clone)]
 pub struct FontFaceRule {
+  /// Base URL of the stylesheet that declared this `@font-face` rule.
+  ///
+  /// This is used as the referrer URL source when fetching CORS-mode subresources from CSS (e.g.
+  /// web fonts). The initiator origin for CORS remains the document origin; this field only tracks
+  /// the stylesheet provenance.
+  pub source_stylesheet_url: Option<String>,
   /// The family name exposed to CSS.
   pub family: Option<String>,
   /// Ordered font sources from the `src` descriptor.
@@ -3280,6 +3325,7 @@ pub struct FontFaceRule {
 impl Default for FontFaceRule {
   fn default() -> Self {
     Self {
+      source_stylesheet_url: None,
       family: None,
       sources: Vec::new(),
       style: FontFaceStyle::Normal,
@@ -3875,10 +3921,13 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
                       }
                     };
 
+                    let mut rules = sheet.rules.clone();
+                    set_font_face_source_stylesheet_url_in_rules(&mut rules, &canonical_sheet_url);
+
                     let resolved_children = if sheet.contains_imports() {
                       let mut resolved_children = Vec::new();
                       resolve_rules_owned(
-                        sheet.rules.clone(),
+                        rules,
                         loader,
                         Some(&canonical_sheet_url),
                         media_ctx,
@@ -3890,7 +3939,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
                       )?;
                       resolved_children
                     } else {
-                      sheet.rules.clone()
+                      rules
                     };
 
                     // Cache the fully-resolved rules so duplicate imports don't re-fetch or re-parse.

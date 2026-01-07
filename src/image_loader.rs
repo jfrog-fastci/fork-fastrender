@@ -2939,7 +2939,10 @@ impl ImageCache {
     const RAW_RESOURCE_CACHE_LIMIT_BYTES: usize = 5 * 1024 * 1024;
 
     for (idx, limit) in [probe_limit, retry_limit].into_iter().enumerate() {
-      let resource = match self.fetcher.fetch_partial_with_request(request, limit) {
+      let resource = match self
+        .fetcher
+        .fetch_partial_with_request(request.clone(), limit)
+      {
         Ok(res) => res,
         Err(err) => {
           if is_empty_body_error_for_image(&err) {
@@ -3051,7 +3054,7 @@ impl ImageCache {
       record_probe_partial_fallback_full();
     }
 
-    let resource = match self.fetcher.fetch_with_request(request) {
+    let resource = match self.fetcher.fetch_with_request(request.clone()) {
       Ok(res) => res,
       Err(err) => {
         if is_empty_body_error_for_image(&err) {
