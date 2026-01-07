@@ -7336,19 +7336,43 @@ impl DisplayListBuilder {
       TextEmphasisPosition::Auto => TextEmphasisPosition::Over,
       other => other,
     };
-    let mut block_center = if inline_vertical {
+    let block_center = if inline_vertical {
       let offset = gap + mark_size * 0.5;
-      match resolved_position {
-        TextEmphasisPosition::Over
-        | TextEmphasisPosition::OverLeft
-        | TextEmphasisPosition::OverRight => block_baseline + offset,
-        TextEmphasisPosition::Under
-        | TextEmphasisPosition::UnderLeft
-        | TextEmphasisPosition::UnderRight => block_baseline - offset,
-        TextEmphasisPosition::Auto => block_baseline + offset,
+      if crate::style::is_vertical_typographic_mode(style.writing_mode) {
+        // In vertical typographic modes, emphasis placement is controlled by `right`/`left`.
+        // The `over`/`under` component is only meaningful in horizontal typographic modes.
+        let mark_on_left = matches!(
+          resolved_position,
+          TextEmphasisPosition::OverLeft | TextEmphasisPosition::UnderLeft
+        );
+        if mark_on_left {
+          block_baseline - offset - emphasis_offset.under
+        } else {
+          block_baseline + offset + emphasis_offset.over
+        }
+      } else {
+        let mut center = match resolved_position {
+          TextEmphasisPosition::Over
+          | TextEmphasisPosition::OverLeft
+          | TextEmphasisPosition::OverRight => block_baseline + offset,
+          TextEmphasisPosition::Under
+          | TextEmphasisPosition::UnderLeft
+          | TextEmphasisPosition::UnderRight => block_baseline - offset,
+          TextEmphasisPosition::Auto => block_baseline + offset,
+        };
+        match resolved_position {
+          TextEmphasisPosition::Over
+          | TextEmphasisPosition::OverLeft
+          | TextEmphasisPosition::OverRight => center += emphasis_offset.over,
+          TextEmphasisPosition::Under
+          | TextEmphasisPosition::UnderLeft
+          | TextEmphasisPosition::UnderRight => center -= emphasis_offset.under,
+          TextEmphasisPosition::Auto => {}
+        }
+        center
       }
     } else {
-      match resolved_position {
+      let mut center = match resolved_position {
         TextEmphasisPosition::Over
         | TextEmphasisPosition::OverLeft
         | TextEmphasisPosition::OverRight => block_baseline - ascent - gap - mark_size * 0.5,
@@ -7356,28 +7380,18 @@ impl DisplayListBuilder {
         | TextEmphasisPosition::UnderLeft
         | TextEmphasisPosition::UnderRight => block_baseline + descent + gap + mark_size * 0.5,
         TextEmphasisPosition::Auto => block_baseline - ascent - gap - mark_size * 0.5,
+      };
+      match resolved_position {
+        TextEmphasisPosition::Over
+        | TextEmphasisPosition::OverLeft
+        | TextEmphasisPosition::OverRight => center -= emphasis_offset.over,
+        TextEmphasisPosition::Under
+        | TextEmphasisPosition::UnderLeft
+        | TextEmphasisPosition::UnderRight => center += emphasis_offset.under,
+        TextEmphasisPosition::Auto => {}
       }
+      center
     };
-
-    match resolved_position {
-      TextEmphasisPosition::Over | TextEmphasisPosition::OverLeft | TextEmphasisPosition::OverRight => {
-        if inline_vertical {
-          block_center += emphasis_offset.over;
-        } else {
-          block_center -= emphasis_offset.over;
-        }
-      }
-      TextEmphasisPosition::Under
-      | TextEmphasisPosition::UnderLeft
-      | TextEmphasisPosition::UnderRight => {
-        if inline_vertical {
-          block_center -= emphasis_offset.under;
-        } else {
-          block_center += emphasis_offset.under;
-        }
-      }
-      TextEmphasisPosition::Auto => {}
-    }
 
     let mut marks = Vec::new();
     let mut seen_clusters = HashSet::new();

@@ -10003,14 +10003,28 @@ impl Painter {
 
     let block_center = if inline_vertical {
       let offset = gap + mark_size * 0.5;
-      match resolved_position {
-        crate::style::types::TextEmphasisPosition::Over
-        | crate::style::types::TextEmphasisPosition::OverLeft
-        | crate::style::types::TextEmphasisPosition::OverRight => block_baseline + offset,
-        crate::style::types::TextEmphasisPosition::Under
-        | crate::style::types::TextEmphasisPosition::UnderLeft
-        | crate::style::types::TextEmphasisPosition::UnderRight => block_baseline - offset,
-        crate::style::types::TextEmphasisPosition::Auto => block_baseline + offset,
+      if crate::style::is_vertical_typographic_mode(style.writing_mode) {
+        // In vertical typographic modes, emphasis placement is controlled by `right`/`left`.
+        let mark_on_left = matches!(
+          resolved_position,
+          crate::style::types::TextEmphasisPosition::OverLeft
+            | crate::style::types::TextEmphasisPosition::UnderLeft
+        );
+        if mark_on_left {
+          block_baseline - offset
+        } else {
+          block_baseline + offset
+        }
+      } else {
+        match resolved_position {
+          crate::style::types::TextEmphasisPosition::Over
+          | crate::style::types::TextEmphasisPosition::OverLeft
+          | crate::style::types::TextEmphasisPosition::OverRight => block_baseline + offset,
+          crate::style::types::TextEmphasisPosition::Under
+          | crate::style::types::TextEmphasisPosition::UnderLeft
+          | crate::style::types::TextEmphasisPosition::UnderRight => block_baseline - offset,
+          crate::style::types::TextEmphasisPosition::Auto => block_baseline + offset,
+        }
       }
     } else {
       match resolved_position {
