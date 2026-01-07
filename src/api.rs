@@ -12551,19 +12551,38 @@ fn build_container_scope(styled: &StyledNode, ctx: &ContainerQueryContext) -> Ha
   fn mark(
     node: &StyledNode,
     containers: &HashMap<usize, ContainerQueryInfo>,
+    styled_lookup: &HashMap<usize, *const StyledNode>,
     in_container_subtree: bool,
     scope: &mut HashSet<usize>,
   ) -> bool {
     let is_container = containers.contains_key(&node.node_id);
     let mut subtree_has_container = is_container;
+    let child_in_container_subtree = in_container_subtree || is_container;
     for child in node.children.iter() {
       if mark(
         child,
         containers,
-        in_container_subtree || is_container,
+        styled_lookup,
+        child_in_container_subtree,
         scope,
       ) {
         subtree_has_container = true;
+      }
+    }
+
+    if child_in_container_subtree && !node.slotted_node_ids.is_empty() {
+      for slotted_id in node.slotted_node_ids.iter() {
+        let Some(ptr) = styled_lookup.get(slotted_id).copied() else {
+          continue;
+        };
+        if ptr.is_null() {
+          continue;
+        }
+        // Safety: pointers come from `styled` and remain valid for the duration of this traversal.
+        let slotted = unsafe { &*ptr };
+        if mark(slotted, containers, styled_lookup, child_in_container_subtree, scope) {
+          subtree_has_container = true;
+        }
       }
     }
 
@@ -12578,8 +12597,10 @@ fn build_container_scope(styled: &StyledNode, ctx: &ContainerQueryContext) -> Ha
     subtree_has_container
   }
 
+  let mut styled_lookup: HashMap<usize, *const StyledNode> = HashMap::new();
+  build_styled_lookup(styled, &mut styled_lookup);
   let mut scope = HashSet::new();
-  mark(styled, &ctx.containers, false, &mut scope);
+  mark(styled, &ctx.containers, &styled_lookup, false, &mut scope);
   scope
 }
 

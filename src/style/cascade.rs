@@ -6721,6 +6721,35 @@ fn count_styled_nodes(node: &StyledNode) -> usize {
   count
 }
 
+fn container_query_ancestor_ids_for<'a>(
+  node_id: usize,
+  ancestor_ids: &'a [usize],
+  slot_assignment: &SlotAssignment,
+  dom_maps: &DomMaps,
+) -> Cow<'a, [usize]> {
+  let Some(info) = slot_assignment.node_to_slot.get(&node_id) else {
+    return Cow::Borrowed(ancestor_ids);
+  };
+  let slot_id = info.slot_node_id;
+  if slot_id == 0 {
+    return Cow::Borrowed(ancestor_ids);
+  }
+
+  let mut ids: Vec<usize> = Vec::new();
+  let mut current = slot_id;
+  while current > 0 {
+    let parent = *dom_maps.parent_map.get(current).unwrap_or(&0);
+    if parent == 0 {
+      break;
+    }
+    ids.push(parent);
+    current = parent;
+  }
+  ids.reverse();
+  ids.push(slot_id);
+  Cow::Owned(ids)
+}
+
 /// Captured container size and metadata for container query evaluation.
 #[derive(Debug, Clone)]
 pub struct ContainerQueryInfo {
@@ -9251,6 +9280,8 @@ fn compute_base_styles<'a>(
   element_attr_cache: &ElementAttrCache,
   include_starting_style: bool,
 ) -> Result<NodeBaseStyles, RenderError> {
+  let container_query_ancestor_ids =
+    container_query_ancestor_ids_for(node_id, ancestor_ids, slot_assignment, dom_maps);
   if !node.is_element() {
     let mut ua_styles = get_default_styles_for_element(node);
     inherit_styles(&mut ua_styles, parent_ua_styles);
@@ -9263,7 +9294,7 @@ fn compute_base_styles<'a>(
     resolve_container_query_font_size(
       &mut ua_styles,
       node_id,
-      ancestor_ids,
+      container_query_ancestor_ids.as_ref(),
       container_ctx,
       parent_ua_styles.font_size,
       ua_root_font_size,
@@ -9273,7 +9304,7 @@ fn compute_base_styles<'a>(
     resolve_container_query_font_size(
       &mut styles,
       node_id,
-      ancestor_ids,
+      container_query_ancestor_ids.as_ref(),
       container_ctx,
       parent_styles.font_size,
       root_font_size,
@@ -9301,7 +9332,7 @@ fn compute_base_styles<'a>(
     resolve_container_query_lengths(
       &mut ua_styles,
       node_id,
-      ancestor_ids,
+      container_query_ancestor_ids.as_ref(),
       container_ctx,
       viewport,
       false,
@@ -9309,7 +9340,7 @@ fn compute_base_styles<'a>(
     resolve_container_query_lengths(
       &mut styles,
       node_id,
-      ancestor_ids,
+      container_query_ancestor_ids.as_ref(),
       container_ctx,
       viewport,
       false,
@@ -9394,7 +9425,7 @@ fn compute_base_styles<'a>(
   resolve_container_query_font_size(
     &mut ua_styles,
     node_id,
-    ancestor_ids,
+    container_query_ancestor_ids.as_ref(),
     container_ctx,
     parent_ua_styles.font_size,
     ua_root_font_size,
@@ -9413,7 +9444,7 @@ fn compute_base_styles<'a>(
   resolve_container_query_lengths(
     &mut ua_styles,
     node_id,
-    ancestor_ids,
+    container_query_ancestor_ids.as_ref(),
     container_ctx,
     viewport,
     false,
@@ -9479,7 +9510,7 @@ fn compute_base_styles<'a>(
   resolve_container_query_font_size(
     &mut styles,
     node_id,
-    ancestor_ids,
+    container_query_ancestor_ids.as_ref(),
     container_ctx,
     parent_styles.font_size,
     root_font_size,
@@ -9499,7 +9530,7 @@ fn compute_base_styles<'a>(
   resolve_container_query_lengths(
     &mut styles,
     node_id,
-    ancestor_ids,
+    container_query_ancestor_ids.as_ref(),
     container_ctx,
     viewport,
     false,
@@ -9636,6 +9667,7 @@ fn compute_pseudo_styles(
   node_id: usize,
   container_ctx: Option<&ContainerQueryContext>,
   dom_maps: &DomMaps,
+  slot_assignment: &SlotAssignment,
   sibling_cache: &SiblingListCache,
   element_attr_cache: &ElementAttrCache,
   styles: &mut ComputedStyle,
@@ -9657,6 +9689,8 @@ fn compute_pseudo_styles(
     return (None, None, None, None, None);
   }
 
+  let container_query_ancestor_ids =
+    container_query_ancestor_ids_for(node_id, ancestor_ids, slot_assignment, dom_maps);
   let mut backdrop_styles = None;
   if styles.top_layer.is_some()
     && (styles.top_layer.map(|k| k.is_modal()).unwrap_or(false)
@@ -9676,7 +9710,7 @@ fn compute_pseudo_styles(
       scratch,
       ancestors,
       ancestor_bloom,
-      ancestor_ids,
+      container_query_ancestor_ids.as_ref(),
       node_id,
       container_ctx,
       dom_maps,
@@ -9711,7 +9745,7 @@ fn compute_pseudo_styles(
     scratch,
     ancestors,
     ancestor_bloom,
-    ancestor_ids,
+    container_query_ancestor_ids.as_ref(),
     container_ctx,
     node_id,
     dom_maps,
@@ -9739,7 +9773,7 @@ fn compute_pseudo_styles(
     scratch,
     ancestors,
     ancestor_bloom,
-    ancestor_ids,
+    container_query_ancestor_ids.as_ref(),
     container_ctx,
     node_id,
     dom_maps,
@@ -9769,7 +9803,7 @@ fn compute_pseudo_styles(
       scratch,
       ancestors,
       ancestor_bloom,
-      ancestor_ids,
+      container_query_ancestor_ids.as_ref(),
       node_id,
       container_ctx,
       dom_maps,
@@ -9803,7 +9837,7 @@ fn compute_pseudo_styles(
       scratch,
       ancestors,
       ancestor_bloom,
-      ancestor_ids,
+      container_query_ancestor_ids.as_ref(),
       node_id,
       container_ctx,
       dom_maps,
@@ -10390,6 +10424,7 @@ fn apply_styles_internal_with_ancestors<'a>(
         frame.node_id,
         container_ctx,
         dom_maps,
+        slot_assignment,
         sibling_cache,
         element_attr_cache,
         &mut base.styles,
@@ -10438,6 +10473,7 @@ fn apply_styles_internal_with_ancestors<'a>(
         frame.node_id,
         container_ctx,
         dom_maps,
+        slot_assignment,
         sibling_cache,
         element_attr_cache,
         &mut start.styles,
@@ -24994,6 +25030,8 @@ fn find_matching_rules<'a>(
   }
   let assigned_slot = slot_assignment.node_to_slot.get(&node_id);
   let current_shadow = dom_maps.containing_shadow_root(node_id);
+  let container_query_ancestor_ids =
+    container_query_ancestor_ids_for(node_id, ancestor_ids, slot_assignment, dom_maps);
   let node_tree_scope_prefix = dom_maps.tree_scope_prefix(node_id);
   let profiling = cascade_profile_enabled();
   let start = profiling.then(|| Instant::now());
@@ -25143,7 +25181,13 @@ fn find_matching_rules<'a>(
 
       if !rule.container_conditions.is_empty() {
         match container_ctx {
-          Some(ctx) if ctx.matches(node_id, ancestor_ids, &rule.container_conditions, false) => {}
+          Some(ctx)
+            if ctx.matches(
+              node_id,
+              container_query_ancestor_ids.as_ref(),
+              &rule.container_conditions,
+              false,
+            ) => {}
           _ => {
             idx = end;
             continue;
@@ -25405,7 +25449,13 @@ fn find_matching_rules<'a>(
 
       if !rule.container_conditions.is_empty() {
         match container_ctx {
-          Some(ctx) if ctx.matches(node_id, ancestor_ids, &rule.container_conditions, false) => {}
+          Some(ctx)
+            if ctx.matches(
+              node_id,
+              container_query_ancestor_ids.as_ref(),
+              &rule.container_conditions,
+              false,
+            ) => {}
           _ => {
             idx = end;
             continue;
