@@ -1630,28 +1630,40 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
     }
   }
 
-  fn collect_referenced_svg_ids(styled: &StyledNode, out: &mut HashSet<String>) {
-    if let crate::dom::DomNodeType::Element {
-      namespace,
-      attributes,
-      ..
-    } = &styled.node.node_type
-    {
-      if namespace == SVG_NAMESPACE {
-        for (name, value) in attributes {
-          if is_href_attr(name) {
-            let trimmed = value.trim();
-            if let Some(id) = trimmed.strip_prefix('#').filter(|id| !id.is_empty()) {
-              out.insert(id.to_string());
+  fn collect_referenced_svg_ids(styled: &StyledNode, in_svg: bool, out: &mut HashSet<String>) {
+    match &styled.node.node_type {
+      crate::dom::DomNodeType::Element {
+        namespace,
+        attributes,
+        ..
+      } => {
+        let in_svg = namespace == SVG_NAMESPACE;
+        if in_svg {
+          for (name, value) in attributes {
+            if is_href_attr(name) {
+              let trimmed = value.trim();
+              if let Some(id) = trimmed.strip_prefix('#').filter(|id| !id.is_empty()) {
+                out.insert(id.to_string());
+              }
             }
+            extract_url_fragment_ids(value, out);
           }
-          extract_url_fragment_ids(value, out);
+        }
+
+        for child in &styled.children {
+          collect_referenced_svg_ids(child, in_svg, out);
         }
       }
-    }
-
-    for child in &styled.children {
-      collect_referenced_svg_ids(child, out);
+      crate::dom::DomNodeType::Text { content } => {
+        if in_svg {
+          extract_url_fragment_ids(content, out);
+        }
+      }
+      _ => {
+        for child in &styled.children {
+          collect_referenced_svg_ids(child, in_svg, out);
+        }
+      }
     }
   }
 
@@ -1680,7 +1692,7 @@ pub fn collect_svg_id_defs(styled: &StyledNode) -> HashMap<String, String> {
       continue;
     };
     let mut refs = HashSet::new();
-    collect_referenced_svg_ids(entry.node, &mut refs);
+    collect_referenced_svg_ids(entry.node, true, &mut refs);
     for reference in refs {
       if !index.contains_key(&reference) {
         continue;
