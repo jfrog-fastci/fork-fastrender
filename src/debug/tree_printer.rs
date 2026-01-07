@@ -375,6 +375,7 @@ impl EnhancedTreePrinter {
       FragmentContent::Line { .. } => "Line",
       FragmentContent::Replaced { .. } => "Replaced",
       FragmentContent::RunningAnchor { .. } => "RunningAnchor",
+      FragmentContent::FootnoteAnchor { .. } => "FootnoteAnchor",
     };
 
     format!(
@@ -753,6 +754,7 @@ impl TreeJsonExporter {
       }
       FragmentContent::Line { .. } => {}
       FragmentContent::RunningAnchor { .. } => {}
+      FragmentContent::FootnoteAnchor { .. } => {}
     }
 
     if let FragmentContent::Text { text, .. } = &fragment.content {
@@ -1089,6 +1091,7 @@ fn fragment_kind(fragment: &FragmentNode) -> String {
     FragmentContent::Line { .. } => "line".into(),
     FragmentContent::Replaced { .. } => "replaced".into(),
     FragmentContent::RunningAnchor { .. } => "running-anchor".into(),
+    FragmentContent::FootnoteAnchor { .. } => "footnote-anchor".into(),
   }
 }
 

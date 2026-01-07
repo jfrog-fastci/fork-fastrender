@@ -186,6 +186,7 @@ fn filter_box_subtree(node: &BoxNode, allowed_styled_ids: &HashSet<usize>) -> Op
     starting_style: node.starting_style.clone(),
     box_type: node.box_type.clone(),
     children,
+    footnote_body: node.footnote_body.clone(),
     id: node.id,
     debug_info: node.debug_info.clone(),
     styled_node_id: node.styled_node_id,
@@ -237,6 +238,7 @@ fn draw_fragment_overlays(
       FragmentContent::Text { .. } => Color::from_rgba8(0, 128, 255, 160),
       FragmentContent::Replaced { .. } => Color::from_rgba8(200, 0, 200, 160),
       FragmentContent::RunningAnchor { .. } => Color::from_rgba8(0, 200, 200, 160),
+      FragmentContent::FootnoteAnchor { .. } => Color::from_rgba8(0, 0, 0, 160),
     }
   }
 
@@ -1009,7 +1011,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
       FragmentContent::Block { .. } => block_count += 1,
       FragmentContent::Line { .. } => line_count += 1,
       FragmentContent::Replaced { .. } => replaced_count += 1,
-      FragmentContent::Inline { .. } | FragmentContent::RunningAnchor { .. } => {}
+      FragmentContent::Inline { .. }
+      | FragmentContent::RunningAnchor { .. }
+      | FragmentContent::FootnoteAnchor { .. } => {}
     }
 
     if let Some(box_id) = fragment_box_id(frag) {
@@ -1606,6 +1610,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 FragmentContent::Text { text, .. } => format!("text {:?}", text.chars().take(30).collect::<String>()),
                 FragmentContent::Replaced { .. } => "replaced".to_string(),
                 FragmentContent::RunningAnchor { .. } => "running-anchor".to_string(),
+                FragmentContent::FootnoteAnchor { .. } => "footnote-anchor".to_string(),
             };
             if let Some(style) = frag.style.as_deref() {
                 info.push_str(&format!(
@@ -2005,6 +2010,7 @@ fn print_fragment_tree(node: &FragmentNode, indent: usize, max_lines: usize) {
       FragmentContent::Text { text, .. } => format!("text {:?}", text),
       FragmentContent::Replaced { box_id, .. } => format!("replaced box_id={:?}", box_id),
       FragmentContent::RunningAnchor { name, .. } => format!("running-anchor name={name}"),
+      FragmentContent::FootnoteAnchor { .. } => "footnote-anchor".into(),
     }
   }
 
@@ -2120,6 +2126,7 @@ fn find_fragment_path(
     FragmentContent::Block { .. } => "block".to_string(),
     FragmentContent::Replaced { .. } => "replaced".to_string(),
     FragmentContent::RunningAnchor { .. } => "running-anchor".to_string(),
+    FragmentContent::FootnoteAnchor { .. } => "footnote-anchor".to_string(),
   };
   if let Some(style) = node.style.as_deref() {
     label.push_str(&format!(
@@ -2242,6 +2249,7 @@ fn find_max_x_fragment(
       FragmentContent::Text { .. } => "text",
       FragmentContent::Replaced { .. } => "replaced",
       FragmentContent::RunningAnchor { .. } => "running-anchor",
+      FragmentContent::FootnoteAnchor { .. } => "footnote-anchor",
     };
     let mut entry = format!(
       "{} @ ({:.1},{:.1},{:.1},{:.1})",
@@ -2614,6 +2622,7 @@ fn find_us_fragment(
     FragmentContent::Block { .. } => "block".to_string(),
     FragmentContent::Replaced { .. } => "replaced".to_string(),
     FragmentContent::RunningAnchor { .. } => "running-anchor".to_string(),
+    FragmentContent::FootnoteAnchor { .. } => "footnote-anchor".to_string(),
   };
   let extra = style.map(|s| {
     format!(
@@ -2744,6 +2753,7 @@ fn label_fragment(
     }
     FragmentContent::Replaced { .. } => "replaced".to_string(),
     FragmentContent::RunningAnchor { .. } => "running-anchor".to_string(),
+    FragmentContent::FootnoteAnchor { .. } => "footnote-anchor".to_string(),
   };
   label.push_str(&format!(
     " @ ({:.1},{:.1},{:.1},{:.1})",
@@ -2800,7 +2810,7 @@ fn fragment_box_id(fragment: &FragmentNode) -> Option<usize> {
     | FragmentContent::Inline { box_id, .. }
     | FragmentContent::Text { box_id, .. }
     | FragmentContent::Replaced { box_id, .. } => *box_id,
-    FragmentContent::RunningAnchor { .. } => None,
+    FragmentContent::RunningAnchor { .. } | FragmentContent::FootnoteAnchor { .. } => None,
     FragmentContent::Line { .. } => None,
   }
 }

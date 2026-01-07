@@ -19,7 +19,9 @@ fn fragment_box_id(content: &FragmentContent) -> Option<usize> {
     | FragmentContent::Inline { box_id, .. }
     | FragmentContent::Replaced { box_id, .. }
     | FragmentContent::Text { box_id, .. } => *box_id,
-    FragmentContent::Line { .. } | FragmentContent::RunningAnchor { .. } => None,
+    FragmentContent::Line { .. }
+    | FragmentContent::RunningAnchor { .. }
+    | FragmentContent::FootnoteAnchor { .. } => None,
   }
 }
 

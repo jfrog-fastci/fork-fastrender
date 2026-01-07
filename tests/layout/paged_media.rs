@@ -2307,3 +2307,129 @@ fn vertical_writing_forced_break_respected() {
   let second_content = page_roots[1].children.first().expect("second page content");
   assert!(find_text(second_content, "Forced").is_some());
 }
+
+#[test]
+fn footnote_float_generates_call_and_page_footnote_area() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 100px; margin: 0; }
+          body { margin: 0; font-size: 10px; line-height: 10px; }
+          p { margin: 0; }
+          .note { float: footnote; }
+          .page2 { break-before: page; }
+        </style>
+      </head>
+      <body>
+        <p>Main<span class="note">Footnote body</span></p>
+        <p class="page2">Page2</p>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 100, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+  assert!(page_roots.len() >= 2);
+
+  let page1 = page_roots[0];
+  assert_eq!(
+    page1.children.len(),
+    2,
+    "page with footnote should have content + footnote area"
+  );
+  let content = page1.children.first().expect("page content");
+  let footnote_area = page1.children.get(1).expect("footnote area");
+
+  assert!(find_text(content, "Main").is_some());
+  assert!(
+    find_text(content, "Footnote body").is_none(),
+    "footnote body should be removed from main flow"
+  );
+  assert!(
+    find_text(content, "1").is_some(),
+    "footnote call marker should be inserted at call site"
+  );
+
+  assert!(find_text(footnote_area, "Footnote body").is_some());
+  assert!(
+    find_text(footnote_area, "1").is_some(),
+    "footnote marker should be present in footnote area"
+  );
+
+  let page2 = page_roots[1];
+  assert_eq!(
+    page2.children.len(),
+    1,
+    "pages without footnotes should not include a footnote area"
+  );
+  assert!(find_text(page2, "Page2").is_some());
+}
+
+#[test]
+fn footnote_overflow_defers_later_calls_to_next_page() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 200px 100px; margin: 0; }
+          body { margin: 0; font-size: 10px; line-height: 10px; }
+          p { margin: 0; }
+          .note1 { float: footnote; display: inline-block; height: 10px; }
+          .note2 { float: footnote; display: inline-block; height: 80px; }
+        </style>
+      </head>
+      <body>
+        <p>Alpha<span class="note1">Footnote one</span></p>
+        <p>Beta<span class="note2">Footnote two</span></p>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer
+    .layout_document_for_media(&dom, 200, 100, MediaType::Print)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(
+    page_roots.len(),
+    2,
+    "expected the second footnote to be deferred onto a new page"
+  );
+
+  let page1 = page_roots[0];
+  assert_eq!(page1.children.len(), 2);
+  let content1 = page1.children.first().expect("page 1 content");
+  let footnote_area1 = page1.children.get(1).expect("page 1 footnote area");
+
+  assert!(find_text(content1, "Alpha").is_some());
+  assert!(find_text(content1, "Beta").is_none());
+  assert!(find_text(content1, "1").is_some());
+  assert!(find_text(content1, "2").is_none());
+
+  assert!(find_text(footnote_area1, "Footnote one").is_some());
+  assert!(find_text(footnote_area1, "Footnote two").is_none());
+  assert!(find_text(footnote_area1, "1").is_some());
+  assert!(find_text(footnote_area1, "2").is_none());
+
+  let page2 = page_roots[1];
+  assert_eq!(page2.children.len(), 2);
+  let content2 = page2.children.first().expect("page 2 content");
+  let footnote_area2 = page2.children.get(1).expect("page 2 footnote area");
+
+  assert!(find_text(content2, "Beta").is_some());
+  assert!(find_text(content2, "Alpha").is_none());
+  assert!(find_text(content2, "2").is_some());
+  assert!(find_text(content2, "1").is_none());
+
+  assert!(find_text(footnote_area2, "Footnote two").is_some());
+  assert!(find_text(footnote_area2, "Footnote one").is_none());
+  assert!(find_text(footnote_area2, "2").is_some());
+  assert!(find_text(footnote_area2, "1").is_none());
+}

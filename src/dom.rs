@@ -6304,7 +6304,9 @@ impl<'a> Element for ElementRef<'a> {
       | PseudoElement::FirstLine
       | PseudoElement::FirstLetter
       | PseudoElement::Marker
-      | PseudoElement::Backdrop => true,
+      | PseudoElement::Backdrop
+      | PseudoElement::FootnoteCall
+      | PseudoElement::FootnoteMarker => true,
       PseudoElement::MozFocusInner | PseudoElement::MozFocusOuter => false,
       PseudoElement::Selection => false,
       PseudoElement::Slotted(_) => false,

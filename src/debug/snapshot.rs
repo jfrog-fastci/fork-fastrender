@@ -746,6 +746,7 @@ fn snapshot_fragment_content(content: &FragmentContent) -> FragmentContentSnapsh
       replaced: snapshot_replaced(replaced_type),
     },
     FragmentContent::RunningAnchor { .. } => FragmentContentSnapshot::Block { box_id: None },
+    FragmentContent::FootnoteAnchor { .. } => FragmentContentSnapshot::Block { box_id: None },
   }
 }
 

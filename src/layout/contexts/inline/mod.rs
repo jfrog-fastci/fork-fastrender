@@ -130,6 +130,7 @@ use line_builder::ReplacedItem;
 use line_builder::RubyItem;
 use line_builder::RubyLineSpacing;
 use line_builder::RubySegmentLayout;
+use line_builder::FootnoteInfo;
 use line_builder::RunningInfo;
 use line_builder::StaticPositionAnchor;
 use line_builder::TabItem;
@@ -483,6 +484,17 @@ impl InlineFormattingContext {
     )
   }
 
+  fn create_footnote_anchor(&self, child: &BoxNode, footnote: FootnoteInfo) -> InlineItem {
+    InlineItem::StaticPositionAnchor(
+      StaticPositionAnchor::new(
+        ensure_box_id(child),
+        child.style.direction,
+        child.style.unicode_bidi,
+      )
+      .with_footnote(footnote),
+    )
+  }
+
   fn snapshot_running_fragment(
     &self,
     child: &BoxNode,
@@ -517,6 +529,35 @@ impl InlineFormattingContext {
       name: running_name.to_string(),
       snapshot: snapshot_fragment,
       style: child.style.clone(),
+    })
+  }
+
+  fn snapshot_footnote_fragment(
+    &self,
+    body: &BoxNode,
+    available_width: f32,
+  ) -> Result<FootnoteInfo, LayoutError> {
+    let snapshot_node = body.clone();
+    let inline_size = if available_width.is_finite() {
+      available_width.max(0.0)
+    } else {
+      self.viewport_size.width
+    };
+    let fc_type = snapshot_node.formatting_context().unwrap_or_else(|| {
+      if snapshot_node.is_block_level() {
+        FormattingContextType::Block
+      } else {
+        FormattingContextType::Inline
+      }
+    });
+    let fc = self.factory.get(fc_type);
+    let snapshot_constraints = LayoutConstraints::new(
+      AvailableSpace::Definite(inline_size),
+      AvailableSpace::Indefinite,
+    );
+    let snapshot_fragment = fc.layout(&snapshot_node, &snapshot_constraints)?;
+    Ok(FootnoteInfo {
+      snapshot: snapshot_fragment,
     })
   }
 
@@ -622,6 +663,34 @@ impl InlineFormattingContext {
         current_items.push(InlineItem::HardBreak);
         continue;
       }
+
+      let mut footnote_info = if let Some(body) = child.footnote_body.as_deref() {
+        Some(self.snapshot_footnote_fragment(body, available_width)?)
+      } else {
+        None
+      };
+      if crate::debug::runtime::runtime_toggles().truthy("FASTR_LOG_FOOTNOTES") {
+        if child
+          .debug_info
+          .as_ref()
+          .and_then(|d| d.tag_name.as_deref())
+          .is_some_and(|name| name.contains("footnote-call"))
+        {
+          eprintln!(
+            "[footnotes] saw call box_id={} has_body={}",
+            child.id,
+            child.footnote_body.is_some()
+          );
+        }
+      }
+      let mut maybe_push_footnote_anchor =
+        |current_items: &mut Vec<InlineItem>, whitespace: &mut CollapsibleWhitespaceState| {
+          if let Some(footnote) = footnote_info.take() {
+            let anchor = self.create_footnote_anchor(child, footnote);
+            current_items.push(anchor);
+            whitespace.note_ignorable();
+          }
+        };
 
       if let Some(running_name) = child.style.running_position.as_ref() {
         self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
@@ -789,6 +858,7 @@ impl InlineFormattingContext {
             )?;
             current_items.push(item);
             whitespace.note_content();
+            maybe_push_footnote_anchor(&mut current_items, &mut whitespace);
             continue;
           }
           if float {
@@ -811,6 +881,7 @@ impl InlineFormattingContext {
             };
             current_items.push(InlineItem::Floating(floating));
             whitespace.note_ignorable();
+            maybe_push_footnote_anchor(&mut current_items, &mut whitespace);
             continue;
           }
           if formatting_context.is_some() {
@@ -820,6 +891,7 @@ impl InlineFormattingContext {
             let item = self.layout_inline_block(child, available_width, available_height)?;
             current_items.push(InlineItem::InlineBlock(item));
             whitespace.note_content();
+            maybe_push_footnote_anchor(&mut current_items, &mut whitespace);
             continue;
           }
 
@@ -996,6 +1068,10 @@ impl InlineFormattingContext {
             && (padding_bottom + border_bottom) == 0.0
             && !establishes_abs_cb
           {
+            // Empty inline boxes are normally skipped, but footnote calls still need a zero-sized
+            // anchor so pagination can place the footnote body even when `::footnote-call` has
+            // `content: none`.
+            maybe_push_footnote_anchor(&mut current_items, &mut whitespace);
             continue;
           }
           let metrics = compute_inline_box_metrics(
@@ -1039,6 +1115,7 @@ impl InlineFormattingContext {
           } else {
             whitespace.note_ignorable();
           }
+          maybe_push_footnote_anchor(&mut current_items, &mut whitespace);
         }
         BoxType::Anonymous(anon) if matches!(anon.anonymous_type, AnonymousType::Inline) => {
           let mut pending_space = self.take_pending_collapsible_space_item(&mut whitespace)?;
@@ -1304,6 +1381,7 @@ impl InlineFormattingContext {
           } else {
             whitespace.note_ignorable();
           }
+          maybe_push_footnote_anchor(&mut current_items, &mut whitespace);
         }
         BoxType::Replaced(replaced_box) => {
           self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
@@ -1330,6 +1408,7 @@ impl InlineFormattingContext {
             current_items.push(InlineItem::Replaced(item));
             whitespace.note_content();
           }
+          maybe_push_footnote_anchor(&mut current_items, &mut whitespace);
         }
         _ => {
           if is_inline_level || float {
@@ -2622,10 +2701,12 @@ impl InlineFormattingContext {
   ) -> Result<Vec<InlineItem>, LayoutError> {
     let container = BoxNode {
       style,
+      starting_style: None,
       box_type: BoxType::Inline(InlineBox {
         formatting_context: None,
       }),
       children: nodes.to_vec(),
+      footnote_body: None,
       id: 0,
       generated_pseudo: None,
       debug_info: None,
@@ -2634,7 +2715,6 @@ impl InlineFormattingContext {
       table_column_span: None,
       first_line_style: None,
       first_letter_style: None,
-      starting_style: None,
     };
     let mut whitespace = CollapsibleWhitespaceState::default();
     self.collect_inline_items_internal(
@@ -5352,7 +5432,7 @@ impl InlineFormattingContext {
       }
 
       if let InlineItem::StaticPositionAnchor(anchor) = &positioned.item {
-        if anchor.running.is_none() {
+        if anchor.running.is_none() && anchor.footnote.is_none() {
           if let Some(map) = anchor_positions.as_deref_mut() {
             let inline_origin = line.left_offset + inline_pos;
             let anchor_point = if inline_vertical {
@@ -5962,6 +6042,13 @@ impl InlineFormattingContext {
           );
           fragment.style = Some(running.style.clone());
           fragment
+        } else if let Some(footnote) = anchor.footnote.as_ref() {
+          let bounds = if inline_vertical {
+            Rect::from_xywh(block_pos, inline_pos, 0.0, 0.01)
+          } else {
+            Rect::from_xywh(inline_pos, block_pos, 0.0, 0.01)
+          };
+          FragmentNode::new_footnote_anchor(bounds, footnote.snapshot.clone())
         } else {
           FragmentNode::new_inline(Rect::from_xywh(inline_pos, block_pos, 0.0, 0.0), 0, vec![])
         }
@@ -8962,7 +9049,7 @@ impl InlineFormattingContext {
     let side = match float_node.style.float {
       crate::style::float::Float::Left => crate::layout::float_context::FloatSide::Left,
       crate::style::float::Float::Right => crate::layout::float_context::FloatSide::Right,
-      crate::style::float::Float::None => unreachable!(),
+      crate::style::float::Float::None | crate::style::float::Float::Footnote => unreachable!(),
     };
 
     let cleared_y = float_ctx.compute_clearance(min_y, float_node.style.clear);
@@ -10726,7 +10813,9 @@ impl InlineFormattingContext {
           FragmentContent::Inline { box_id: id, .. } => *id = Some(box_id),
           FragmentContent::Text { box_id: id, .. } => *id = Some(box_id),
           FragmentContent::Replaced { box_id: id, .. } => *id = Some(box_id),
-          FragmentContent::Line { .. } | FragmentContent::RunningAnchor { .. } => {}
+          FragmentContent::Line { .. }
+          | FragmentContent::RunningAnchor { .. }
+          | FragmentContent::FootnoteAnchor { .. } => {}
         }
         Ok(child_fragment)
       };

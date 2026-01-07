@@ -1380,8 +1380,11 @@ impl DisplayListBuilder {
         break;
       }
       count += 1;
-      if let FragmentContent::RunningAnchor { snapshot, .. } = &fragment.content {
-        stack.push(snapshot);
+      match &fragment.content {
+        FragmentContent::RunningAnchor { snapshot, .. } | FragmentContent::FootnoteAnchor { snapshot } => {
+          stack.push(snapshot);
+        }
+        _ => {}
       }
       for child in fragment.children.iter() {
         stack.push(child);
@@ -1435,7 +1438,10 @@ impl DisplayListBuilder {
       return;
     }
 
-    if matches!(fragment.content, FragmentContent::RunningAnchor { .. }) {
+    if matches!(
+      fragment.content,
+      FragmentContent::RunningAnchor { .. } | FragmentContent::FootnoteAnchor { .. }
+    ) {
       return;
     }
 
@@ -1809,7 +1815,10 @@ impl DisplayListBuilder {
       return;
     }
 
-    if matches!(fragment.content, FragmentContent::RunningAnchor { .. }) {
+    if matches!(
+      fragment.content,
+      FragmentContent::RunningAnchor { .. } | FragmentContent::FootnoteAnchor { .. }
+    ) {
       return;
     }
 
@@ -4900,7 +4909,7 @@ impl DisplayListBuilder {
       FragmentContent::Inline { box_id, .. } => *box_id,
       FragmentContent::Text { box_id, .. } => *box_id,
       FragmentContent::Replaced { box_id, .. } => *box_id,
-      FragmentContent::RunningAnchor { .. } => None,
+      FragmentContent::RunningAnchor { .. } | FragmentContent::FootnoteAnchor { .. } => None,
       FragmentContent::Line { .. } => None,
     }
   }
@@ -4984,7 +4993,10 @@ impl DisplayListBuilder {
       return;
     }
 
-    if matches!(fragment.content, FragmentContent::RunningAnchor { .. }) {
+    if matches!(
+      fragment.content,
+      FragmentContent::RunningAnchor { .. } | FragmentContent::FootnoteAnchor { .. }
+    ) {
       return;
     }
 

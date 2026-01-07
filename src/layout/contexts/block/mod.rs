@@ -420,6 +420,40 @@ impl BlockFormattingContext {
     }
   }
 
+  fn maybe_attach_footnote_anchor(
+    &self,
+    child: &BoxNode,
+    containing_width: f32,
+    nearest_positioned_cb: &ContainingBlock,
+    nearest_fixed_cb: &ContainingBlock,
+    fragment: &mut FragmentNode,
+  ) -> Result<(), LayoutError> {
+    let Some(body) = child.footnote_body.as_deref() else {
+      return Ok(());
+    };
+
+    let snapshot_node = body.clone();
+    let factory = self.child_factory_for_cbs(*nearest_positioned_cb, *nearest_fixed_cb);
+    let fc_type = snapshot_node.formatting_context().unwrap_or_else(|| {
+      if snapshot_node.is_block_level() {
+        FormattingContextType::Block
+      } else {
+        FormattingContextType::Inline
+      }
+    });
+    let fc = factory.get(fc_type);
+    let snapshot_constraints = LayoutConstraints::new(
+      AvailableSpace::Definite(containing_width.max(0.0)),
+      AvailableSpace::Indefinite,
+    );
+    let snapshot_fragment = fc.layout(&snapshot_node, &snapshot_constraints)?;
+    let anchor_bounds = Rect::from_xywh(0.0, 0.0, 0.0, 0.01);
+    let mut anchor = FragmentNode::new_footnote_anchor(anchor_bounds, snapshot_fragment);
+    anchor.style = Some(child.style.clone());
+    fragment.children_mut().push(anchor);
+    Ok(())
+  }
+
   /// Lays out a single block-level child and returns its fragment
   #[allow(clippy::cognitive_complexity)]
   fn layout_block_child(
@@ -439,14 +473,22 @@ impl BlockFormattingContext {
     let dump_child_y = toggles.truthy("FASTR_DUMP_CELL_CHILD_Y");
     let log_wide_flex = toggles.truthy("FASTR_LOG_WIDE_FLEX");
     if let BoxType::Replaced(replaced_box) = &child.box_type {
-      return self.layout_replaced_child(
+      let mut fragment = self.layout_replaced_child(
         child,
         replaced_box,
         containing_width,
         constraints,
         box_y,
         nearest_positioned_cb,
-      );
+      )?;
+      self.maybe_attach_footnote_anchor(
+        child,
+        containing_width,
+        nearest_positioned_cb,
+        nearest_fixed_cb,
+        &mut fragment,
+      )?;
+      return Ok(fragment);
     }
 
     let style = &child.style;
@@ -1244,6 +1286,13 @@ impl BlockFormattingContext {
             margin_bottom,
             ..BlockFragmentMetadata::default()
           });
+          self.maybe_attach_footnote_anchor(
+            child,
+            containing_width,
+            nearest_positioned_cb,
+            nearest_fixed_cb,
+            &mut fragment,
+          )?;
 
           return Ok(fragment);
         }
@@ -1843,6 +1892,14 @@ impl BlockFormattingContext {
       };
       remembered_size_cache_store(child, remembered);
     }
+
+    self.maybe_attach_footnote_anchor(
+      child,
+      containing_width,
+      nearest_positioned_cb,
+      nearest_fixed_cb,
+      &mut fragment,
+    )?;
 
     Ok(fragment)
   }
@@ -3456,7 +3513,7 @@ impl BlockFormattingContext {
         let side = match child.style.float {
           Float::Left => FloatSide::Left,
           Float::Right => FloatSide::Right,
-          Float::None => unreachable!(),
+          Float::None | Float::Footnote => unreachable!(),
         };
 
         let (fx, fy) = float_ctx.compute_float_position(
@@ -3774,6 +3831,7 @@ impl BlockFormattingContext {
       starting_style: parent.starting_style.clone(),
       box_type: parent.box_type.clone(),
       children,
+      footnote_body: parent.footnote_body.clone(),
       id: parent.id,
       generated_pseudo: parent.generated_pseudo,
       debug_info: parent.debug_info.clone(),

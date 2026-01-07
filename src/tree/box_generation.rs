@@ -30,6 +30,7 @@ use crate::style::counters::CounterSet;
 use crate::style::defaults::parse_color_attribute;
 use crate::style::display::Display;
 use crate::style::display::FormattingContextType;
+use crate::style::float::Float;
 use crate::style::media::MediaQuery;
 use crate::style::types::Direction;
 use crate::style::types::FontStyle;
@@ -2676,6 +2677,7 @@ fn generate_boxes_for_styled_into(
     styled: &'a StyledNode,
     state: FrameState,
     entered_counter_scope: bool,
+    in_footnote: bool,
     composed_children: Option<ComposedChildren<'a>>,
     child_idx: usize,
     pending_children: Vec<&'a StyledNode>,
@@ -2683,11 +2685,12 @@ fn generate_boxes_for_styled_into(
   }
 
   impl<'a> Frame<'a> {
-    fn new(styled: &'a StyledNode) -> Self {
+    fn new(styled: &'a StyledNode, in_footnote: bool) -> Self {
       Self {
         styled,
         state: FrameState::Enter,
         entered_counter_scope: false,
+        in_footnote,
         composed_children: None,
         child_idx: 0,
         pending_children: Vec::new(),
@@ -2698,7 +2701,7 @@ fn generate_boxes_for_styled_into(
 
   let site_compat = options.site_compat_hacks_enabled();
   let mut stack: Vec<Frame<'_>> = Vec::new();
-  stack.push(Frame::new(styled));
+  stack.push(Frame::new(styled, false));
 
   while let Some(state) = stack.last().map(|frame| frame.state) {
     match state {
@@ -2765,8 +2768,9 @@ fn generate_boxes_for_styled_into(
           }
         }
 
+        let in_footnote = stack.last().expect("frame exists").in_footnote;
         counters.enter_scope();
-        apply_counter_properties_from_style(styled, counters);
+        apply_counter_properties_from_style(styled, counters, in_footnote);
         stack
           .last_mut()
           .expect("frame exists")
@@ -2994,12 +2998,15 @@ fn generate_boxes_for_styled_into(
         }
 
         if let Some(child) = next_child {
-          stack.push(Frame::new(child));
+          let parent = stack.last().expect("frame exists");
+          let child_in_footnote = parent.in_footnote || parent.styled.styles.float == Float::Footnote;
+          stack.push(Frame::new(child, child_in_footnote));
         }
       }
       FrameState::Finish => {
         let frame = stack.pop().expect("frame exists");
         debug_assert!(frame.entered_counter_scope);
+        let in_footnote = frame.in_footnote;
         let styled = frame.styled;
         let mut children = frame.children;
         if let Some(after_styles) = &styled.after_styles {
@@ -3076,6 +3083,69 @@ fn generate_boxes_for_styled_into(
         box_node.starting_style = clone_starting_style(&styled.starting_styles.base);
         box_node.first_line_style = styled.first_line_styles.as_ref().map(Arc::clone);
         box_node.first_letter_style = styled.first_letter_styles.as_ref().map(Arc::clone);
+
+        if styled.styles.float == Float::Footnote && !in_footnote {
+          let mut body_box = box_node;
+          // The footnote body is laid out in the per-page footnote area; it should not itself be a
+          // footnote float.
+          if body_box.style.float == Float::Footnote {
+            let mut body_style = body_box.style.as_ref().clone();
+            body_style.float = Float::None;
+            body_box.style = Arc::new(body_style);
+          }
+
+          if let Some(marker_styles) = &styled.footnote_marker_styles {
+            let marker_start = clone_starting_style(&styled.starting_styles.footnote_marker);
+            if let Some(marker_box) = create_pseudo_element_box(
+              styled,
+              marker_styles,
+              marker_start,
+              "footnote-marker",
+              counters,
+            ) {
+              let mut combined = Vec::with_capacity(body_box.children.len() + 1);
+              combined.push(marker_box);
+              combined.append(&mut body_box.children);
+              body_box.children = combined;
+            }
+          }
+
+          let body_box = attach_debug_info(body_box, styled);
+
+          let call_start = clone_starting_style(&styled.starting_styles.footnote_call);
+          let mut call_box = styled
+            .footnote_call_styles
+            .as_ref()
+            .and_then(|styles| {
+              create_pseudo_element_box(
+                styled,
+                styles,
+                call_start.clone(),
+                "footnote-call",
+                counters,
+              )
+            })
+            .unwrap_or_else(|| {
+              // If the call pseudo has `content: normal/none`, still insert a zero-width anchor so
+              // the footnote can be placed deterministically.
+              let mut anchor_style = styled.styles.as_ref().clone();
+              anchor_style.float = Float::None;
+              anchor_style.display = Display::Inline;
+              let mut node = BoxNode::new_inline(Arc::new(anchor_style), Vec::new());
+              node.starting_style = call_start.clone();
+              node.styled_node_id = Some(styled.node_id);
+              node
+            });
+          call_box.footnote_body = Some(Box::new(body_box));
+
+          counters.leave_scope();
+          if let Some(parent) = stack.last_mut() {
+            parent.children.push(call_box);
+          } else {
+            out.push(call_box);
+          }
+          continue;
+        }
 
         counters.leave_scope();
         let box_node = attach_debug_info(box_node, styled);
@@ -3663,7 +3733,11 @@ fn effective_content_value(style: &ComputedStyle) -> ContentValue {
   }
 }
 
-fn apply_counter_properties_from_style(styled: &StyledNode, counters: &mut CounterManager) {
+fn apply_counter_properties_from_style(
+  styled: &StyledNode,
+  counters: &mut CounterManager,
+  in_footnote: bool,
+) {
   if styled.node.text_content().is_some() {
     return;
   }
@@ -3787,6 +3861,10 @@ fn apply_counter_properties_from_style(styled: &StyledNode, counters: &mut Count
     }
   } else if is_list_item {
     counters.apply_increment(&CounterSet::single("list-item", list_item_step));
+  }
+
+  if !in_footnote && styled.styles.display != Display::None && styled.styles.float == Float::Footnote {
+    counters.apply_increment(&CounterSet::single("footnote", 1));
   }
 }
 
@@ -4750,6 +4828,7 @@ fn create_replaced_box_from_styled(
     style,
     starting_style: None,
     children: vec![],
+    footnote_body: None,
     id: 0,
     debug_info: None,
     styled_node_id: None,

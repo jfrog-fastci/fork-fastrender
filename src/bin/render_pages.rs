@@ -1849,6 +1849,7 @@ fn serialize_fragment_node(node: &FragmentNode) -> SerializableFragmentNode {
     FragmentContent::Line { .. } => ("line".to_string(), None),
     FragmentContent::Replaced { .. } => ("replaced".to_string(), None),
     FragmentContent::RunningAnchor { .. } => ("running-anchor".to_string(), None),
+    FragmentContent::FootnoteAnchor { .. } => ("footnote-anchor".to_string(), None),
   };
   let style = node
     .style

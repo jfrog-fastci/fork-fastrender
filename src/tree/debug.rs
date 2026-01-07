@@ -422,6 +422,7 @@ impl TreePrinter {
       FragmentContent::Line { .. } => "Line",
       FragmentContent::Replaced { .. } => "Replaced",
       FragmentContent::RunningAnchor { .. } => "RunningAnchor",
+      FragmentContent::FootnoteAnchor { .. } => "FootnoteAnchor",
     };
 
     output.push_str(prefix);

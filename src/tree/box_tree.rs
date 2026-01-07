@@ -1005,6 +1005,12 @@ pub struct BoxNode {
   /// Child boxes in document order
   pub children: Vec<BoxNode>,
 
+  /// Footnote body box tree for `float: footnote` call markers.
+  ///
+  /// When present, this `BoxNode` represents a `::footnote-call` pseudo-element inserted in the
+  /// main flow, while the stored subtree is laid out separately in the per-page footnote area.
+  pub footnote_body: Option<Box<BoxNode>>,
+
   /// Unique identifier for caching and debugging
   pub id: usize,
 
@@ -1053,12 +1059,18 @@ impl Drop for BoxNode {
     // Dropping a deeply-nested `BoxNode` tree via Rust's default recursive drop can overflow the
     // stack (e.g. degenerate 100k-depth trees). Drain children iteratively so each node is dropped
     // with an empty `children` vec.
-    if self.children.is_empty() {
+    if self.children.is_empty() && self.footnote_body.is_none() {
       return;
     }
 
     let mut stack: Vec<BoxNode> = std::mem::take(&mut self.children);
+    if let Some(body) = self.footnote_body.take() {
+      stack.push(*body);
+    }
     while let Some(mut node) = stack.pop() {
+      if let Some(body) = node.footnote_body.take() {
+        stack.push(*body);
+      }
       stack.append(&mut node.children);
       // `node` is dropped here with an empty `children` vec, so this `Drop` implementation becomes
       // a cheap no-op for all non-root nodes in the iterative drain.
@@ -1097,6 +1109,7 @@ impl BoxNode {
         formatting_context: fc,
       }),
       children,
+      footnote_body: None,
       id: 0,
       debug_info: None,
       styled_node_id: None,
@@ -1117,6 +1130,7 @@ impl BoxNode {
         formatting_context: None,
       }),
       children,
+      footnote_body: None,
       id: 0,
       debug_info: None,
       styled_node_id: None,
@@ -1135,6 +1149,7 @@ impl BoxNode {
       starting_style: None,
       box_type: BoxType::LineBreak(LineBreakBox),
       children: Vec::new(),
+      footnote_body: None,
       id: 0,
       debug_info: None,
       styled_node_id: None,
@@ -1159,6 +1174,7 @@ impl BoxNode {
         formatting_context: Some(fc),
       }),
       children,
+      footnote_body: None,
       id: 0,
       debug_info: None,
       styled_node_id: None,
@@ -1177,6 +1193,7 @@ impl BoxNode {
       starting_style: None,
       box_type: BoxType::Text(TextBox { text }),
       children: Vec::new(),
+      footnote_body: None,
       id: 0,
       debug_info: None,
       styled_node_id: None,
@@ -1195,6 +1212,7 @@ impl BoxNode {
       starting_style: None,
       box_type: BoxType::Marker(MarkerBox { content }),
       children: Vec::new(),
+      footnote_body: None,
       id: 0,
       debug_info: None,
       styled_node_id: None,
@@ -1223,6 +1241,7 @@ impl BoxNode {
         no_intrinsic_ratio: false,
       }),
       children: Vec::new(),
+      footnote_body: None,
       id: 0,
       debug_info: None,
       styled_node_id: None,
@@ -1243,6 +1262,7 @@ impl BoxNode {
         anonymous_type: AnonymousType::Block,
       }),
       children,
+      footnote_body: None,
       id: 0,
       debug_info: None,
       styled_node_id: None,
@@ -1263,6 +1283,7 @@ impl BoxNode {
         anonymous_type: AnonymousType::Inline,
       }),
       children,
+      footnote_body: None,
       id: 0,
       debug_info: None,
       styled_node_id: None,
@@ -1486,6 +1507,9 @@ fn assign_box_ids(root: &mut BoxNode, next_id: &mut usize) {
       *next_id += 1;
       // Preserve the previous recursive pre-order traversal by visiting children
       // from left-to-right.
+      if let Some(body) = node.footnote_body.as_deref_mut() {
+        stack.push(body as *mut _);
+      }
       for child in node.children.iter_mut().rev() {
         stack.push(child as *mut _);
       }
@@ -1506,6 +1530,11 @@ impl BoxTree {
   pub fn count_boxes(&self) -> usize {
     fn count_recursive(node: &BoxNode) -> usize {
       1 + node.children.iter().map(count_recursive).sum::<usize>()
+        + node
+          .footnote_body
+          .as_deref()
+          .map(count_recursive)
+          .unwrap_or(0)
     }
     count_recursive(&self.root)
   }
@@ -1514,7 +1543,13 @@ impl BoxTree {
   pub fn count_text_boxes(&self) -> usize {
     fn count_recursive(node: &BoxNode) -> usize {
       let self_count = usize::from(node.is_text());
-      self_count + node.children.iter().map(count_recursive).sum::<usize>()
+      self_count
+        + node.children.iter().map(count_recursive).sum::<usize>()
+        + node
+          .footnote_body
+          .as_deref()
+          .map(count_recursive)
+          .unwrap_or(0)
     }
     count_recursive(&self.root)
   }

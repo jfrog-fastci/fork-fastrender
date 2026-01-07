@@ -352,6 +352,14 @@ pub enum FragmentContent {
     /// Snapshot of the laid-out running element subtree.
     snapshot: Arc<FragmentNode>,
   },
+
+  /// Anchor for `float: footnote` call sites.
+  ///
+  /// Captures the rendered subtree of the footnote body without affecting in-flow layout.
+  FootnoteAnchor {
+    /// Snapshot of the laid-out footnote body subtree.
+    snapshot: Arc<FragmentNode>,
+  },
 }
 
 // ReplacedType is imported from box_tree to avoid duplication
@@ -890,7 +898,9 @@ impl FragmentNode {
       FragmentContent::Inline { box_id, .. } => *box_id,
       FragmentContent::Text { box_id, .. } => *box_id,
       FragmentContent::Replaced { box_id, .. } => *box_id,
-      FragmentContent::Line { .. } | FragmentContent::RunningAnchor { .. } => None,
+      FragmentContent::Line { .. }
+      | FragmentContent::RunningAnchor { .. }
+      | FragmentContent::FootnoteAnchor { .. } => None,
     }
   }
 
@@ -994,6 +1004,17 @@ impl FragmentNode {
       bounds,
       FragmentContent::RunningAnchor {
         name: Arc::from(name),
+        snapshot: Arc::new(snapshot),
+      },
+      vec![],
+    )
+  }
+
+  /// Creates a new footnote anchor fragment with a captured snapshot.
+  pub fn new_footnote_anchor(bounds: Rect, snapshot: FragmentNode) -> Self {
+    Self::new(
+      bounds,
+      FragmentContent::FootnoteAnchor {
         snapshot: Arc::new(snapshot),
       },
       vec![],
@@ -1123,8 +1144,12 @@ impl FragmentNode {
       self.logical_override = Some(logical.translate(offset));
     }
     self.starting_style = None;
-    if let FragmentContent::RunningAnchor { snapshot, .. } = &mut self.content {
-      Arc::make_mut(snapshot).translate_root_in_place(offset);
+    match &mut self.content {
+      FragmentContent::RunningAnchor { snapshot, .. }
+      | FragmentContent::FootnoteAnchor { snapshot } => {
+        Arc::make_mut(snapshot).translate_root_in_place(offset);
+      }
+      _ => {}
     }
   }
 
@@ -1138,6 +1163,9 @@ impl FragmentNode {
     let content = match &self.content {
       FragmentContent::RunningAnchor { name, snapshot } => FragmentContent::RunningAnchor {
         name: name.clone(),
+        snapshot: Arc::new(snapshot.translate_subtree_absolute(offset)),
+      },
+      FragmentContent::FootnoteAnchor { snapshot } => FragmentContent::FootnoteAnchor {
         snapshot: Arc::new(snapshot.translate_subtree_absolute(offset)),
       },
       other => other.clone(),
@@ -1323,6 +1351,9 @@ impl FragmentNode {
         name: name.clone(),
         snapshot: Arc::new(snapshot.deep_clone()),
       },
+      FragmentContent::FootnoteAnchor { snapshot } => FragmentContent::FootnoteAnchor {
+        snapshot: Arc::new(snapshot.deep_clone()),
+      },
       other => other.clone(),
     };
 
@@ -1352,6 +1383,7 @@ impl FragmentNode {
   pub fn node_count(&self) -> usize {
     let anchor_count = match &self.content {
       FragmentContent::RunningAnchor { snapshot, .. } => snapshot.node_count(),
+      FragmentContent::FootnoteAnchor { snapshot } => snapshot.node_count(),
       _ => 0,
     };
     1 + anchor_count
@@ -1563,6 +1595,9 @@ impl FragmentTree {
       for child in node.children.iter() {
         collect(child, out);
       }
+      if let Some(body) = node.footnote_body.as_deref() {
+        collect(body, out);
+      }
     }
     collect(&box_tree.root, &mut map);
     if map.is_empty() {
@@ -1577,8 +1612,12 @@ impl FragmentTree {
           }
         }
       }
-      if let FragmentContent::RunningAnchor { snapshot, .. } = &mut fragment.content {
-        apply(Arc::make_mut(snapshot), map);
+      match &mut fragment.content {
+        FragmentContent::RunningAnchor { snapshot, .. }
+        | FragmentContent::FootnoteAnchor { snapshot } => {
+          apply(Arc::make_mut(snapshot), map);
+        }
+        _ => {}
       }
       for child in fragment.children_mut() {
         apply(child, map);

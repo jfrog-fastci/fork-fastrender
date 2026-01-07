@@ -56,7 +56,9 @@ fn layout_with_align_content(align_content: AlignContent) -> (f32, f32) {
       | FragmentContent::Inline { box_id, .. }
       | FragmentContent::Replaced { box_id, .. }
       | FragmentContent::Text { box_id, .. } => *box_id,
-      FragmentContent::Line { .. } | FragmentContent::RunningAnchor { .. } => None,
+      FragmentContent::Line { .. }
+      | FragmentContent::RunningAnchor { .. }
+      | FragmentContent::FootnoteAnchor { .. } => None,
     };
     debug_children.push((
       id,

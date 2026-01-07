@@ -590,3 +590,17 @@ hr {
     color: gray;
     border: 1px inset currentColor;
 }
+
+/* ==========================================================================
+   Paged media footnotes (CSS GCPM)
+   ========================================================================== */
+
+::footnote-call {
+    content: counter(footnote);
+    vertical-align: super;
+    font-size: 0.75em;
+}
+
+::footnote-marker {
+    content: counter(footnote);
+}

@@ -338,6 +338,7 @@ fn fragment_box_id(fragment: &FragmentNode) -> Option<usize> {
     | FragmentContent::Replaced { box_id, .. } => *box_id,
     FragmentContent::Line { .. } => None,
     FragmentContent::RunningAnchor { .. } => None,
+    FragmentContent::FootnoteAnchor { .. } => None,
   }
 }
 
@@ -504,6 +505,7 @@ fn fragment_snapshot(
     FragmentContent::Line { .. } => ("line".to_string(), None, None),
     FragmentContent::Replaced { box_id, .. } => ("replaced".to_string(), *box_id, None),
     FragmentContent::RunningAnchor { .. } => ("running-anchor".to_string(), None, None),
+    FragmentContent::FootnoteAnchor { .. } => ("footnote-anchor".to_string(), None, None),
   };
 
   FragmentSnapshot {

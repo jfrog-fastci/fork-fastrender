@@ -361,12 +361,18 @@ impl CounterManager {
 
   /// Creates a manager using the provided counter style registry.
   pub fn new_with_styles(counter_styles: Arc<CounterStyleRegistry>) -> Self {
-    Self {
+    let mut manager = Self {
       // Start with a root scope for implicit counters
       scopes: vec![CounterScope::new()],
       list_item_increments: vec![1],
       counter_styles,
+    };
+    // CSS GCPM defines a predefined `footnote` counter. Model that by instantiating the counter in
+    // the root scope so `float: footnote` increments persist across sibling elements.
+    if let Some(root) = manager.scopes.first_mut() {
+      root.counters.insert("footnote".to_string(), 0);
     }
+    manager
   }
 
   /// Enters a new scope (when entering an element)
@@ -694,6 +700,9 @@ impl CounterManager {
     self.scopes.push(CounterScope::new());
     self.list_item_increments.clear();
     self.list_item_increments.push(1);
+    if let Some(root) = self.scopes.first_mut() {
+      root.counters.insert("footnote".to_string(), 0);
+    }
   }
 
   /// Returns the default increment applied to `list-item` when no explicit counter-increment is authored.

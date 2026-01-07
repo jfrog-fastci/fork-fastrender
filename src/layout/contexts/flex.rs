@@ -3777,7 +3777,9 @@ impl FormattingContext for FlexFormattingContext {
           | FragmentContent::Inline { box_id, .. }
           | FragmentContent::Text { box_id, .. }
           | FragmentContent::Replaced { box_id, .. } => *box_id = Some(candidate.child_id),
-          FragmentContent::Line { .. } | FragmentContent::RunningAnchor { .. } => {}
+          FragmentContent::Line { .. }
+          | FragmentContent::RunningAnchor { .. }
+          | FragmentContent::FootnoteAnchor { .. } => {}
         }
         fragment.children_mut().push(child_fragment);
       }
@@ -3803,7 +3805,9 @@ impl FormattingContext for FlexFormattingContext {
           | FragmentContent::Inline { box_id, .. }
           | FragmentContent::Text { box_id, .. }
           | FragmentContent::Replaced { box_id, .. } => *box_id,
-          FragmentContent::Line { .. } | FragmentContent::RunningAnchor { .. } => None,
+          FragmentContent::Line { .. }
+          | FragmentContent::RunningAnchor { .. }
+          | FragmentContent::FootnoteAnchor { .. } => None,
         }) else {
           continue;
         };
@@ -7622,6 +7626,7 @@ impl FlexFormattingContext {
             | FragmentContent::Replaced { box_id, .. } => *box_id,
             FragmentContent::RunningAnchor { .. } => None,
             FragmentContent::Line { .. } => None,
+            FragmentContent::FootnoteAnchor { .. } => None,
           } {
             frag_box_ids.push((idx, box_id));
           }

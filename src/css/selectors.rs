@@ -541,6 +541,8 @@ pub enum PseudoElement {
   FirstLine,
   FirstLetter,
   Marker,
+  FootnoteCall,
+  FootnoteMarker,
   Backdrop,
   /// Placeholder text for form controls (input/textarea).
   Placeholder,
@@ -613,6 +615,8 @@ impl ToCss for PseudoElement {
       PseudoElement::FirstLine => dest.write_str("::first-line"),
       PseudoElement::FirstLetter => dest.write_str("::first-letter"),
       PseudoElement::Marker => dest.write_str("::marker"),
+      PseudoElement::FootnoteCall => dest.write_str("::footnote-call"),
+      PseudoElement::FootnoteMarker => dest.write_str("::footnote-marker"),
       PseudoElement::Backdrop => dest.write_str("::backdrop"),
       PseudoElement::Placeholder => dest.write_str("::placeholder"),
       PseudoElement::Selection => dest.write_str("::selection"),
@@ -928,6 +932,8 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       "first-line" => Ok(PseudoElement::FirstLine),
       "first-letter" => Ok(PseudoElement::FirstLetter),
       "marker" | "-moz-list-bullet" | "-moz-list-number" => Ok(PseudoElement::Marker),
+      "footnote-call" => Ok(PseudoElement::FootnoteCall),
+      "footnote-marker" => Ok(PseudoElement::FootnoteMarker),
       "backdrop" | "-webkit-backdrop" | "-ms-backdrop" => Ok(PseudoElement::Backdrop),
       "selection" | "-moz-selection" => Ok(PseudoElement::Selection),
       // `::placeholder` has widely used vendor aliases; accept them and canonicalize to the
@@ -1444,6 +1450,18 @@ mod tests {
         .parse_pseudo_element(loc, cssparser::CowRcStr::from("-MOZ-RANGE-TRACK"))
         .expect("slider track pseudo"),
       PseudoElement::SliderTrack
+    );
+    assert_eq!(
+      parser
+        .parse_pseudo_element(loc, cssparser::CowRcStr::from("FOOTNOTE-CALL"))
+        .expect("footnote-call pseudo"),
+      PseudoElement::FootnoteCall
+    );
+    assert_eq!(
+      parser
+        .parse_pseudo_element(loc, cssparser::CowRcStr::from("footnote-marker"))
+        .expect("footnote-marker pseudo"),
+      PseudoElement::FootnoteMarker
     );
   }
 

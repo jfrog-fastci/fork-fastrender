@@ -8423,7 +8423,9 @@ impl FormattingContext for GridFormattingContext {
           | FragmentContent::Inline { box_id, .. }
           | FragmentContent::Text { box_id, .. }
           | FragmentContent::Replaced { box_id, .. } => *box_id = Some(child_box_id),
-          FragmentContent::Line { .. } | FragmentContent::RunningAnchor { .. } => {}
+          FragmentContent::Line { .. }
+          | FragmentContent::RunningAnchor { .. }
+          | FragmentContent::FootnoteAnchor { .. } => {}
         }
         fragment.children_mut().push(child_fragment);
       }
@@ -8440,7 +8442,9 @@ impl FormattingContext for GridFormattingContext {
           | FragmentContent::Inline { box_id, .. }
           | FragmentContent::Text { box_id, .. }
           | FragmentContent::Replaced { box_id, .. } => *box_id,
-          FragmentContent::Line { .. } | FragmentContent::RunningAnchor { .. } => None,
+          FragmentContent::Line { .. }
+          | FragmentContent::RunningAnchor { .. }
+          | FragmentContent::FootnoteAnchor { .. } => None,
         }) else {
           continue;
         };

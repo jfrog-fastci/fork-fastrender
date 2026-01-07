@@ -331,6 +331,7 @@ impl AnonymousBoxCreator {
         let fragment = AnonymousBoxCreator::clone_inline_fragment(
           &self.node.style,
           self.node.starting_style.clone(),
+          self.node.footnote_body.clone(),
           &self.node.box_type,
           self.node.debug_info.as_ref(),
           self.node.styled_node_id,
@@ -449,6 +450,7 @@ impl AnonymousBoxCreator {
   fn clone_inline_fragment(
     style: &Arc<ComputedStyle>,
     starting_style: Option<Arc<ComputedStyle>>,
+    footnote_body: Option<Box<BoxNode>>,
     box_type: &BoxType,
     debug_info: Option<&DebugInfo>,
     styled_node_id: Option<usize>,
@@ -463,6 +465,7 @@ impl AnonymousBoxCreator {
           formatting_context: inline.formatting_context,
         }),
         children,
+        footnote_body: footnote_body.clone(),
         id: 0,
         debug_info: debug_info.cloned(),
         styled_node_id,
@@ -477,6 +480,7 @@ impl AnonymousBoxCreator {
         starting_style: starting_style.clone(),
         box_type: BoxType::Anonymous(anon.clone()),
         children,
+        footnote_body: footnote_body.clone(),
         id: 0,
         debug_info: debug_info.cloned(),
         styled_node_id,
@@ -492,6 +496,7 @@ impl AnonymousBoxCreator {
         node.styled_node_id = styled_node_id;
         node.generated_pseudo = generated_pseudo;
         node.starting_style = starting_style;
+        node.footnote_body = footnote_body;
         node
       }
     };
@@ -695,6 +700,7 @@ impl AnonymousBoxCreator {
       starting_style: node.starting_style.take(),
       box_type: std::mem::replace(&mut node.box_type, wrapper_box_type),
       children: std::mem::take(&mut node.children),
+      footnote_body: node.footnote_body.take(),
       id: std::mem::replace(&mut node.id, 0),
       debug_info: node.debug_info.take(),
       styled_node_id: node.styled_node_id.take(),
@@ -734,6 +740,7 @@ impl AnonymousBoxCreator {
         anonymous_type: AnonymousType::Block,
       }),
       children,
+      footnote_body: None,
       id: 0,
       debug_info: None,
       styled_node_id: None,
@@ -767,6 +774,7 @@ impl AnonymousBoxCreator {
         anonymous_type: AnonymousType::Inline,
       }),
       children,
+      footnote_body: None,
       id: 0,
       debug_info: None,
       styled_node_id: None,
@@ -789,6 +797,7 @@ impl AnonymousBoxCreator {
         anonymous_type: AnonymousType::TableRow,
       }),
       children,
+      footnote_body: None,
       id: 0,
       debug_info: None,
       styled_node_id: None,
@@ -811,6 +820,7 @@ impl AnonymousBoxCreator {
         anonymous_type: AnonymousType::TableCell,
       }),
       children,
+      footnote_body: None,
       id: 0,
       debug_info: None,
       styled_node_id: None,

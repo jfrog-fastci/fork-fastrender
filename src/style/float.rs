@@ -55,6 +55,14 @@ pub enum Float {
   /// Corresponds to `float: right`
   /// Content flows on the left side of the float.
   Right,
+
+  /// Box is a page footnote.
+  ///
+  /// Corresponds to `float: footnote` from the CSS GCPM footnote model.
+  /// Unlike `left`/`right`, footnote floats are not laid out in the float
+  /// formatting context; they are removed from the normal flow and placed in a
+  /// per-page footnote area during pagination.
+  Footnote,
 }
 
 impl Float {
@@ -67,10 +75,11 @@ impl Float {
   ///
   /// assert!(Float::Left.is_floating());
   /// assert!(Float::Right.is_floating());
+  /// assert!(!Float::Footnote.is_floating());
   /// assert!(!Float::None.is_floating());
   /// ```
   pub fn is_floating(self) -> bool {
-    !matches!(self, Float::None)
+    matches!(self, Float::Left | Float::Right)
   }
 
   /// Parse a float value from a CSS string
@@ -82,6 +91,7 @@ impl Float {
   ///
   /// assert_eq!(Float::parse("left").unwrap(), Float::Left);
   /// assert_eq!(Float::parse("right").unwrap(), Float::Right);
+  /// assert_eq!(Float::parse("footnote").unwrap(), Float::Footnote);
   /// assert_eq!(Float::parse("none").unwrap(), Float::None);
   /// assert!(Float::parse("invalid").is_err());
   /// ```
@@ -91,6 +101,7 @@ impl Float {
       "none" => Ok(Float::None),
       "left" => Ok(Float::Left),
       "right" => Ok(Float::Right),
+      "footnote" => Ok(Float::Footnote),
       _ => Err(FloatParseError::InvalidValue(s.to_string())),
     }
   }
@@ -102,6 +113,7 @@ impl fmt::Display for Float {
       Float::None => write!(f, "none"),
       Float::Left => write!(f, "left"),
       Float::Right => write!(f, "right"),
+      Float::Footnote => write!(f, "footnote"),
     }
   }
 }
@@ -289,9 +301,15 @@ mod tests {
   }
 
   #[test]
+  fn test_parse_float_footnote() {
+    assert_eq!(Float::parse("footnote").unwrap(), Float::Footnote);
+  }
+
+  #[test]
   fn test_parse_float_case_insensitive() {
     assert_eq!(Float::parse("LEFT").unwrap(), Float::Left);
     assert_eq!(Float::parse("Right").unwrap(), Float::Right);
+    assert_eq!(Float::parse("FOOTNOTE").unwrap(), Float::Footnote);
     assert_eq!(Float::parse("NONE").unwrap(), Float::None);
   }
 
@@ -312,6 +330,7 @@ mod tests {
   fn test_float_is_floating() {
     assert!(Float::Left.is_floating());
     assert!(Float::Right.is_floating());
+    assert!(!Float::Footnote.is_floating());
     assert!(!Float::None.is_floating());
   }
 
@@ -320,6 +339,7 @@ mod tests {
     assert_eq!(format!("{}", Float::None), "none");
     assert_eq!(format!("{}", Float::Left), "left");
     assert_eq!(format!("{}", Float::Right), "right");
+    assert_eq!(format!("{}", Float::Footnote), "footnote");
   }
 
   #[test]
@@ -329,7 +349,7 @@ mod tests {
 
   #[test]
   fn test_float_roundtrip() {
-    for float in [Float::None, Float::Left, Float::Right] {
+    for float in [Float::None, Float::Left, Float::Right, Float::Footnote] {
       let string = format!("{}", float);
       let parsed = Float::parse(&string).unwrap();
       assert_eq!(parsed, float);

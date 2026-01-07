@@ -424,6 +424,7 @@ pub struct StaticPositionAnchor {
   pub direction: Direction,
   pub unicode_bidi: UnicodeBidi,
   pub running: Option<RunningInfo>,
+  pub footnote: Option<FootnoteInfo>,
 }
 
 impl StaticPositionAnchor {
@@ -433,6 +434,7 @@ impl StaticPositionAnchor {
       direction,
       unicode_bidi,
       running: None,
+      footnote: None,
     }
   }
 
@@ -444,6 +446,11 @@ impl StaticPositionAnchor {
     self.running = Some(running);
     self
   }
+
+  pub fn with_footnote(mut self, footnote: FootnoteInfo) -> Self {
+    self.footnote = Some(footnote);
+    self
+  }
 }
 
 #[derive(Debug, Clone)]
@@ -451,6 +458,11 @@ pub struct RunningInfo {
   pub name: String,
   pub snapshot: FragmentNode,
   pub style: Arc<ComputedStyle>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FootnoteInfo {
+  pub snapshot: FragmentNode,
 }
 
 fn allows_soft_wrap(style: &ComputedStyle) -> bool {

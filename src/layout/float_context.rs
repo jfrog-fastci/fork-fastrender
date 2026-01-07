@@ -70,7 +70,7 @@ impl From<Float> for Option<FloatSide> {
     match float {
       Float::Left => Some(FloatSide::Left),
       Float::Right => Some(FloatSide::Right),
-      Float::None => None,
+      Float::None | Float::Footnote => None,
     }
   }
 }

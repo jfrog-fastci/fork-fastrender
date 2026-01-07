@@ -63,6 +63,7 @@ use crate::style::defaults::get_default_styles_for_element;
 use crate::style::defaults::parse_color_attribute;
 use crate::style::defaults::parse_dimension_attribute;
 use crate::style::display::Display;
+use crate::style::float::Float;
 use crate::style::grid::finalize_grid_placement;
 use crate::style::media::ColorScheme;
 use crate::style::media::ComparisonOp;
@@ -7547,6 +7548,8 @@ pub struct StartingStyleSet {
   pub placeholder: Option<Arc<ComputedStyle>>,
   pub first_line: Option<Arc<ComputedStyle>>,
   pub first_letter: Option<Arc<ComputedStyle>>,
+  pub footnote_call: Option<Arc<ComputedStyle>>,
+  pub footnote_marker: Option<Arc<ComputedStyle>>,
 }
 
 #[derive(Clone)]
@@ -7606,6 +7609,10 @@ pub struct StyledNode {
   pub marker_styles: Option<Arc<ComputedStyle>>,
   /// Styles for ::placeholder pseudo-element (form controls only)
   pub placeholder_styles: Option<Arc<ComputedStyle>>,
+  /// Styles for ::footnote-call pseudo-element (GCPM footnotes)
+  pub footnote_call_styles: Option<Arc<ComputedStyle>>,
+  /// Styles for ::footnote-marker pseudo-element (GCPM footnotes)
+  pub footnote_marker_styles: Option<Arc<ComputedStyle>>,
   /// Styles for ::first-line pseudo-element (text overrides only)
   pub first_line_styles: Option<Arc<ComputedStyle>>,
   /// Styles for ::first-letter pseudo-element (text overrides only)
@@ -7633,6 +7640,8 @@ impl Clone for StyledNode {
         after_styles: node.after_styles.clone(),
         marker_styles: node.marker_styles.clone(),
         placeholder_styles: node.placeholder_styles.clone(),
+        footnote_call_styles: node.footnote_call_styles.clone(),
+        footnote_marker_styles: node.footnote_marker_styles.clone(),
         first_line_styles: node.first_line_styles.clone(),
         first_letter_styles: node.first_letter_styles.clone(),
         slider_thumb_styles: node.slider_thumb_styles.clone(),
@@ -7719,6 +7728,8 @@ pub fn attach_starting_styles(target: &mut StyledNode, starting: &StyledNode) {
     target.starting_styles.placeholder = starting.starting_styles.placeholder.clone();
     target.starting_styles.first_line = starting.starting_styles.first_line.clone();
     target.starting_styles.first_letter = starting.starting_styles.first_letter.clone();
+    target.starting_styles.footnote_call = starting.starting_styles.footnote_call.clone();
+    target.starting_styles.footnote_marker = starting.starting_styles.footnote_marker.clone();
 
     let child_count = target.children.len().min(starting.children.len());
     let children_ptr = target.children.as_mut_ptr();
@@ -10763,10 +10774,12 @@ fn compute_pseudo_styles(
   Option<Arc<ComputedStyle>>,
   Option<Arc<ComputedStyle>>,
   Option<Arc<ComputedStyle>>,
+  Option<Arc<ComputedStyle>>,
+  Option<Arc<ComputedStyle>>,
 ) {
   if !node.is_element() {
     styles.backdrop = None;
-    return (None, None, None, None, None, None);
+    return (None, None, None, None, None, None, None, None);
   }
 
   let container_query_ancestor_ids = if container_ctx.is_some() {
@@ -11002,6 +11015,63 @@ fn compute_pseudo_styles(
       )
     })
     .map(Arc::new);
+
+  // GCPM footnotes: only compute ::footnote-call/::footnote-marker styles when the element is a
+  // footnote float. The UA stylesheet supplies default `content:` for these pseudos, so without
+  // gating we'd treat every element as having footnote pseudos.
+  let (footnote_call_styles, footnote_marker_styles) = if styles.float == Float::Footnote {
+    let call = compute_pseudo_element_styles(
+      node,
+      rule_scopes,
+      scope_host,
+      selector_caches,
+      scratch,
+      ancestors,
+      ancestor_bloom,
+      ancestor_ids,
+      node_id,
+      container_ctx,
+      dom_maps,
+      sibling_cache,
+      element_attr_cache,
+      styles,
+      ua_styles,
+      root_font_size,
+      ua_root_font_size,
+      viewport,
+      color_scheme_pref,
+      &PseudoElement::FootnoteCall,
+      include_starting_style,
+    )
+    .map(Arc::new);
+    let marker = compute_pseudo_element_styles(
+      node,
+      rule_scopes,
+      scope_host,
+      selector_caches,
+      scratch,
+      ancestors,
+      ancestor_bloom,
+      ancestor_ids,
+      node_id,
+      container_ctx,
+      dom_maps,
+      sibling_cache,
+      element_attr_cache,
+      styles,
+      ua_styles,
+      root_font_size,
+      ua_root_font_size,
+      viewport,
+      color_scheme_pref,
+      &PseudoElement::FootnoteMarker,
+      include_starting_style,
+    )
+    .map(Arc::new);
+    (call, marker)
+  } else {
+    (None, None)
+  };
   if let (true, Some(start)) = (prof, pseudo_start) {
     record_pseudo_time(start.elapsed());
   }
@@ -11015,6 +11085,8 @@ fn compute_pseudo_styles(
     placeholder_styles,
     first_line_styles,
     first_letter_styles,
+    footnote_call_styles,
+    footnote_marker_styles,
   )
 }
 
@@ -11634,6 +11706,8 @@ fn apply_styles_internal_with_ancestors<'a>(
       _placeholder_styles,
       first_line_styles,
       first_letter_styles,
+      footnote_call_styles,
+      footnote_marker_styles,
     ) = compute_pseudo_styles(
         frame.node,
         rule_scopes,
@@ -11683,7 +11757,16 @@ fn apply_styles_internal_with_ancestors<'a>(
 
     let mut starting_styles = StartingStyleSet::default();
     if let Some(mut start) = frame.starting_base {
-      let (before, after, marker, placeholder, first_line, first_letter) = compute_pseudo_styles(
+      let (
+        before,
+        after,
+        marker,
+        placeholder,
+        first_line,
+        first_letter,
+        footnote_call,
+        footnote_marker,
+      ) = compute_pseudo_styles(
         frame.node,
         rule_scopes,
         frame.scope_host,
@@ -11714,6 +11797,8 @@ fn apply_styles_internal_with_ancestors<'a>(
         placeholder,
         first_line,
         first_letter,
+        footnote_call,
+        footnote_marker,
       };
     }
 
@@ -11750,6 +11835,8 @@ fn apply_styles_internal_with_ancestors<'a>(
       after_styles,
       marker_styles,
       placeholder_styles,
+      footnote_call_styles,
+      footnote_marker_styles,
       first_line_styles,
       first_letter_styles,
       slider_thumb_styles,
@@ -14148,6 +14235,8 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      footnote_call_styles: None,
+      footnote_marker_styles: None,
       first_line_styles: None,
       first_letter_styles: None,
       slider_thumb_styles: None,
@@ -14167,6 +14256,8 @@ mod tests {
         after_styles: None,
         marker_styles: None,
         placeholder_styles: None,
+        footnote_call_styles: None,
+        footnote_marker_styles: None,
         first_line_styles: None,
         first_letter_styles: None,
         slider_thumb_styles: None,
@@ -14235,6 +14326,8 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      footnote_call_styles: None,
+      footnote_marker_styles: None,
       first_line_styles: None,
       first_letter_styles: None,
       slider_thumb_styles: None,
@@ -14256,6 +14349,8 @@ mod tests {
       after_styles: None,
       marker_styles: None,
       placeholder_styles: None,
+      footnote_call_styles: None,
+      footnote_marker_styles: None,
       first_line_styles: None,
       first_letter_styles: None,
       slider_thumb_styles: None,
