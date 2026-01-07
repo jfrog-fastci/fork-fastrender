@@ -1822,6 +1822,82 @@ mod tests {
   }
 
   #[test]
+  fn noop_stacking_context_with_blend_descendant_is_preserved_and_isolated() {
+    // The no-op removal pass should keep visually-noop stacking contexts that scope descendant
+    // mix-blend-mode, and it should force the preserved boundary to be isolated so paint
+    // compositing semantics remain correct.
+    let mut list = DisplayList::new();
+    list.push(make_fill_rect(0.0, 0.0, 64.0, 64.0, Rgba::WHITE));
+
+    let outer_bounds = Rect::from_xywh(0.0, 0.0, 64.0, 64.0);
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      establishes_backdrop_root: false,
+      bounds: outer_bounds,
+      plane_rect: outer_bounds,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: false,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+      has_clip_path: false,
+    }));
+
+    let inner_bounds = Rect::from_xywh(8.0, 8.0, 32.0, 32.0);
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      establishes_backdrop_root: true,
+      bounds: inner_bounds,
+      plane_rect: inner_bounds,
+      mix_blend_mode: BlendMode::Multiply,
+      opacity: 1.0,
+      is_isolated: false,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+      has_clip_path: false,
+    }));
+    list.push(make_fill_rect(8.0, 8.0, 32.0, 32.0, Rgba::RED));
+    list.push(DisplayItem::PopStackingContext);
+    list.push(DisplayItem::PopStackingContext);
+
+    let viewport = Rect::from_xywh(0.0, 0.0, 64.0, 64.0);
+    let (optimized, stats) = optimize_with_stats(list, viewport);
+
+    assert_eq!(
+      stats.noop_removed, 0,
+      "blend-descendant scoping boundary should not be removed as a no-op"
+    );
+    assert!(
+      optimized
+        .items()
+        .iter()
+        .any(|item| matches!(
+          item,
+          DisplayItem::PushStackingContext(sc)
+            if sc.mix_blend_mode == BlendMode::Normal
+              && sc.bounds == outer_bounds
+              && sc.is_isolated
+        )),
+      "expected no-op outer stacking context to remain and be forced isolated"
+    );
+    assert_balanced(optimized.items());
+  }
+
+  #[test]
   fn test_fill_merging_horizontal() {
     let mut list = DisplayList::new();
     list.push(make_fill_rect(0.0, 0.0, 50.0, 100.0, Rgba::RED));
