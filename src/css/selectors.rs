@@ -710,6 +710,7 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       "read-only" => Ok(PseudoClass::ReadOnly),
       "read-write" => Ok(PseudoClass::ReadWrite),
       "placeholder-shown" => Ok(PseudoClass::PlaceholderShown),
+      "-moz-placeholder-shown" => Ok(PseudoClass::PlaceholderShown),
       "-ms-input-placeholder" => Ok(PseudoClass::MsInputPlaceholder),
       "-moz-placeholder" => Ok(PseudoClass::MozPlaceholder),
       "autofill" => Ok(PseudoClass::Autofill),
@@ -1246,6 +1247,22 @@ mod tests {
     assert_eq!(
       PseudoClass::NthChild(0, 1, Some(of_list)).specificity(),
       pseudo_class_weight + max_arg_spec
+    );
+  }
+
+  #[test]
+  fn parses_moz_placeholder_shown_alias() {
+    let list = parse_selector_list(".a:not(:-moz-placeholder-shown), .a:not(:placeholder-shown)");
+    assert_eq!(list.slice().len(), 2);
+
+    // The vendor pseudo-class should behave like a pure alias and serialize to the standard form.
+    let selectors: Vec<String> = list.slice().iter().map(|sel| sel.to_css_string()).collect();
+    assert_eq!(
+      selectors,
+      vec![
+        ".a:not(:placeholder-shown)".to_string(),
+        ".a:not(:placeholder-shown)".to_string()
+      ]
     );
   }
 
