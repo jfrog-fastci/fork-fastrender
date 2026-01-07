@@ -9054,7 +9054,7 @@ mod tests {
       DEFAULT_ACCEPT_LANGUAGE,
       SUPPORTED_ACCEPT_ENCODING,
       None,
-      FetchContextKind::Image,
+      FetchContextKind::Image.into(),
       Some("https://www.example.com/page"),
       ReferrerPolicy::NoReferrer,
     );
