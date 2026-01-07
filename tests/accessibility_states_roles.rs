@@ -95,6 +95,8 @@ fn aria_state_does_not_negate_native_semantics() {
         <button id="x" disabled aria-disabled="false">Disabled</button>
         <input id="r" required aria-required="false" />
         <input id="inv" required aria-invalid="false" />
+        <textarea id="ta" aria-label="Multiline" aria-multiline="false"></textarea>
+        <input id="ml" type="text" aria-label="Single line" aria-multiline="true" />
         <input id="ro" readonly aria-readonly="false" />
         <input id="c" type="checkbox" checked aria-checked="false" />
         <select>
@@ -118,6 +120,12 @@ fn aria_state_does_not_negate_native_semantics() {
 
   let invalid = find_by_id(&tree, "inv").expect("invalid input");
   assert!(invalid.states.invalid);
+
+  let textarea = find_by_id(&tree, "ta").expect("textarea");
+  assert_eq!(textarea.states.multiline, Some(true));
+
+  let input = find_by_id(&tree, "ml").expect("input");
+  assert_eq!(input.states.multiline, Some(false));
 
   let readonly = find_by_id(&tree, "ro").expect("readonly input");
   assert!(readonly.states.readonly);

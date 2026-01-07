@@ -2354,15 +2354,13 @@ fn compute_multiline(node: &StyledNode, role: Option<&str>) -> Option<bool> {
     return None;
   }
 
-  if let Some(multiline) = parse_aria_multiline(&node.node) {
-    return Some(multiline);
-  }
-
   let tag = node.node.tag_name().map(|t| t.to_ascii_lowercase());
   match tag.as_deref() {
     Some("textarea") => Some(true),
     Some("input") => Some(false),
-    _ => None,
+    // Allow authors to specify multiline state for custom textboxes, but don't let ARIA negate
+    // native textbox semantics for `<input>`/`<textarea>`.
+    _ => parse_aria_multiline(&node.node),
   }
 }
 
