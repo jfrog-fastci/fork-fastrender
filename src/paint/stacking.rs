@@ -2600,6 +2600,68 @@ mod tests {
   }
 
   #[test]
+  fn test_compute_bounds_includes_positioned_descendant_paint_overflow() {
+    // Positioned descendants that do *not* create their own stacking context are painted via
+    // layer 6, so we must not rely on normal recursion from their non-positioned ancestors. This
+    // regression ensures `compute_bounds` includes paint overflow from descendants under those
+    // positioned fragments as well.
+    let mut sc = StackingContext::new(0);
+    sc.offset_from_parent_context = Point::new(40.0, 40.0);
+
+    sc.fragments.push(FragmentNode::new_block_styled(
+      Rect::from_xywh(40.0, 40.0, 20.0, 20.0),
+      vec![],
+      Arc::new(ComputedStyle::default()),
+    ));
+
+    let mut shadow_style = ComputedStyle::default();
+    shadow_style.box_shadow = vec![crate::css::types::BoxShadow {
+      offset_x: crate::style::values::Length::px(0.0),
+      offset_y: crate::style::values::Length::px(0.0),
+      blur_radius: crate::style::values::Length::px(0.0),
+      spread_radius: crate::style::values::Length::px(10.0),
+      color: crate::style::color::Rgba::RED,
+      inset: false,
+    }];
+    let shadow_style = Arc::new(shadow_style);
+
+    let mut positioned_style = ComputedStyle::default();
+    positioned_style.position = Position::Relative;
+    let positioned_style = Arc::new(positioned_style);
+
+    let inner = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
+      vec![],
+      shadow_style,
+    );
+    let positioned = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
+      vec![inner],
+      positioned_style,
+    );
+
+    // Non-positioned wrapper at (5,5) with a positioned child. In the real stacking tree builder,
+    // the positioned child would be translated and stored in `layer6_positioned`.
+    let wrapper_origin = Point::new(5.0, 5.0);
+    let wrapper = FragmentNode::new_block_styled(
+      Rect::new(wrapper_origin, positioned.bounds.size),
+      vec![positioned.clone()],
+      Arc::new(ComputedStyle::default()),
+    );
+    sc.layer3_blocks.push(wrapper);
+
+    let mut translated = positioned.clone();
+    translated.translate_root_in_place(wrapper_origin);
+    sc
+      .layer6_positioned
+      .push(OrderedFragment::new(translated, 0));
+
+    sc.compute_bounds(None);
+
+    assert_eq!(sc.bounds, Rect::from_xywh(35.0, 35.0, 40.0, 40.0));
+  }
+
+  #[test]
   fn test_compute_bounds_includes_children() {
     let mut parent = StackingContext::new(0);
     let mut child = StackingContext::new(0);

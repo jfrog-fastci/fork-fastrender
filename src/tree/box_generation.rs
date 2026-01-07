@@ -4905,6 +4905,14 @@ mod tests {
     generate_box_tree_with_anonymous_fixup_result(styled).expect("anonymous box generation failed")
   }
 
+  fn select_selected_value(select: &SelectControl) -> Option<&str> {
+    let idx = select.selected.first().copied()?;
+    match select.items.get(idx) {
+      Some(SelectItem::Option { value, .. }) => Some(value.as_str()),
+      _ => None,
+    }
+  }
+
   fn count_object_replacements(node: &BoxNode) -> usize {
     let mut count = 0;
     if let BoxType::Replaced(repl) = &node.box_type {
