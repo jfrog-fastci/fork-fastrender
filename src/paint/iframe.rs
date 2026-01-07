@@ -518,8 +518,23 @@ pub(crate) fn render_iframe_src(
   device_pixel_ratio: f32,
   max_iframe_depth: usize,
 ) -> Option<Arc<ImageData>> {
+  fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
+    value
+      .as_bytes()
+      .get(..prefix.len())
+      .map(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
+      .unwrap_or(false)
+  }
+
   let src = src.trim();
   if src.is_empty() {
+    return None;
+  }
+  if src.starts_with('#')
+    || starts_with_ignore_ascii_case(src, "javascript:")
+    || starts_with_ignore_ascii_case(src, "vbscript:")
+    || starts_with_ignore_ascii_case(src, "mailto:")
+  {
     return None;
   }
   let width = content_rect.width().ceil() as u32;
@@ -1311,6 +1326,49 @@ mod diagnostics_tests {
     assert!(
       diag.fetch_errors.is_empty(),
       "expected no diagnostics for whitespace src, got {diag:?}"
+    );
+  }
+
+  #[test]
+  fn iframe_fragment_only_src_does_not_fetch() {
+    let diagnostics = SharedRenderDiagnostics::new();
+    let fetcher = Arc::new(MockFetcher::new(|url| panic!("unexpected fetch: {url}")));
+    let cache = test_image_cache(fetcher, diagnostics.clone());
+    let rect = Rect::new(Point::ZERO, Size::new(10.0, 10.0));
+
+    let result = render_iframe_src("#", None, rect, None, &cache, &test_font_context(), 1.0, 1);
+    assert!(result.is_none());
+
+    let diag = diagnostics.into_inner();
+    assert!(
+      diag.fetch_errors.is_empty(),
+      "expected no diagnostics for fragment-only src, got {diag:?}"
+    );
+  }
+
+  #[test]
+  fn iframe_javascript_src_does_not_fetch() {
+    let diagnostics = SharedRenderDiagnostics::new();
+    let fetcher = Arc::new(MockFetcher::new(|url| panic!("unexpected fetch: {url}")));
+    let cache = test_image_cache(fetcher, diagnostics.clone());
+    let rect = Rect::new(Point::ZERO, Size::new(10.0, 10.0));
+
+    let result = render_iframe_src(
+      "javascript:alert(1)",
+      None,
+      rect,
+      None,
+      &cache,
+      &test_font_context(),
+      1.0,
+      1,
+    );
+    assert!(result.is_none());
+
+    let diag = diagnostics.into_inner();
+    assert!(
+      diag.fetch_errors.is_empty(),
+      "expected no diagnostics for javascript: src, got {diag:?}"
     );
   }
 
