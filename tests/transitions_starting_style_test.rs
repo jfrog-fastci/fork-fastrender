@@ -9,6 +9,7 @@ use fastrender::style::types::{
   BackgroundPosition, BackgroundSize, BackgroundSizeComponent, BasicShape, BorderStyle,
   ClipComponent, ClipPath, ClipRect, FillRule, FilterFunction,
 };
+use fastrender::style::values::CustomPropertyTypedValue;
 use fastrender::tree::box_tree::{BoxNode, BoxTree};
 use fastrender::tree::fragment_tree::{FragmentNode, FragmentTree};
 use r#ref::image_compare::{compare_config_from_env, compare_pngs, CompareEnvVars};
@@ -282,6 +283,43 @@ fn transitions_interpolate_registered_custom_properties_over_time() {
   let viewport = end.viewport_size();
   animation::apply_transitions(&mut end, 1000.0, viewport);
   assert!((fragment_opacity(&end, box_id) - 1.0).abs() < 1e-3);
+}
+
+#[test]
+fn transitions_interpolate_registered_custom_properties_with_transition_all() {
+  let html = r#"
+    <style>
+      @property --x {
+        syntax: "<number>";
+        inherits: false;
+        initial-value: 0;
+      }
+
+      @starting-style { #box { --x: 0; } }
+      #box {
+        width: 100px;
+        height: 100px;
+        --x: 1;
+        transition: all 1000ms linear;
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut mid = fragment_tree.clone();
+  let viewport = mid.viewport_size();
+  animation::apply_transitions(&mut mid, 500.0, viewport);
+
+  let frag = find_fragment(&mid.root, box_id).expect("fragment present");
+  let style = frag.style.as_ref().expect("style present");
+  let value = style.custom_properties.get("--x").expect("custom property present");
+  match value.typed.as_ref() {
+    Some(CustomPropertyTypedValue::Number(v)) => assert!((v - 0.5).abs() < 1e-3, "v={v}"),
+    other => panic!("expected typed number, got {other:?}"),
+  }
 }
 
 #[test]

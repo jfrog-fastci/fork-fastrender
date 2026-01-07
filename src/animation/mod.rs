@@ -69,7 +69,6 @@ use crate::style::var_resolution::{resolve_var_for_property, VarResolutionResult
 use crate::style::ComputedStyle;
 use crate::tree::fragment_tree::{FragmentContent, FragmentNode, FragmentTree};
 use rustc_hash::FxHashSet;
-use std::borrow::Cow;
 use std::mem::discriminant;
 use std::sync::{Arc, OnceLock};
 
@@ -5361,26 +5360,72 @@ fn transition_value_for_custom_property(
 
 fn transition_pairs<'a>(
   properties: &'a [TransitionProperty],
-) -> Option<Vec<(Cow<'a, str>, usize)>> {
-  if properties
-    .iter()
-    .any(|p| matches!(p, TransitionProperty::None))
-  {
-    return None;
+  start_style: &'a ComputedStyle,
+  style: &'a ComputedStyle,
+) -> Option<Vec<(&'a str, usize)>> {
+  let mut has_all = false;
+  for prop in properties {
+    match prop {
+      TransitionProperty::None => return None,
+      TransitionProperty::All => has_all = true,
+      TransitionProperty::Name(_) => {}
+    }
   }
-  let mut pairs = Vec::new();
+
+  // When `transition-property` contains `all`, we need to include custom properties in addition to
+  // the built-in interpolated properties. Custom property iteration order is not stable, so sort
+  // the candidate list to keep transition sampling deterministic.
+  let mut all_custom_properties: Vec<&'a str> = Vec::new();
+  if has_all {
+    all_custom_properties = start_style
+      .custom_properties
+      .iter()
+      .filter_map(|(name, _)| {
+        let name = name.as_ref();
+        if style.custom_properties.contains_key(name) {
+          Some(name)
+        } else {
+          None
+        }
+      })
+      .collect();
+    all_custom_properties.sort_unstable();
+  }
+
+  // Deduplicate by property name so the last entry in `transition-property` wins, including the
+  // duration/delay/timing-function indexed by that entry. This also avoids wasted interpolation
+  // work when `all` and explicit names overlap.
+  let mut order = 0usize;
+  let mut map: HashMap<&'a str, (usize, usize)> = HashMap::new();
   for (idx, prop) in properties.iter().enumerate() {
+    let mut insert = |name: &'a str| {
+      map.insert(name, (idx, order));
+      order = order.saturating_add(1);
+    };
+
     match prop {
       TransitionProperty::All => {
         for name in interpolated_transition_names() {
-          pairs.push((Cow::Borrowed(name), idx));
+          insert(name);
+        }
+        for name in &all_custom_properties {
+          insert(name);
         }
       }
-      TransitionProperty::Name(name) => pairs.push((Cow::Owned(name.clone()), idx)),
+      TransitionProperty::Name(name) => insert(name.as_str()),
       TransitionProperty::None => {}
     }
   }
-  Some(pairs)
+
+  let mut ordered: Vec<(&'a str, usize, usize)> =
+    map.into_iter().map(|(name, (idx, order))| (name, idx, order)).collect();
+  ordered.sort_by_key(|(_, _, order)| *order);
+  Some(
+    ordered
+      .into_iter()
+      .map(|(name, idx, _)| (name, idx))
+      .collect(),
+  )
 }
 
 fn apply_transitions_to_fragment(
@@ -5407,7 +5452,8 @@ fn apply_transitions_to_fragment(
     return;
   };
   if let Some(start_arc) = fragment.starting_style.clone() {
-    if let Some(pairs) = transition_pairs(&style_arc.transition_properties) {
+    if let Some(pairs) = transition_pairs(&style_arc.transition_properties, &start_arc, &style_arc)
+    {
       let ctx = AnimationResolveContext::new(
         viewport,
         Size::new(fragment.bounds.width(), fragment.bounds.height()),
@@ -5415,7 +5461,7 @@ fn apply_transitions_to_fragment(
       let mut updates: HashMap<String, AnimatedValue> = HashMap::new();
       let mut custom_updates: Vec<(Arc<str>, CustomPropertyValue)> = Vec::new();
       for (name, idx) in pairs {
-        let name_str = name.as_ref();
+        let name_str = name;
         if name_str.starts_with("--") {
           let value = transition_value_for_custom_property(
             name_str,
