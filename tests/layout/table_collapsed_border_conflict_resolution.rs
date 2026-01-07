@@ -117,8 +117,14 @@ fn collapsed_border_conflict_color_tie_break_respects_direction() {
   assert_eq!(
     ltr_segment.color,
     Rgba::RED,
-    "expected LTR to prefer the left cell border color"
+    "expected LTR to prefer the left-side cell border color"
   );
+  assert!(
+    (ltr_segment.width - 2.0).abs() < 0.01,
+    "expected 2px border, got {:?}",
+    ltr_segment
+  );
+  assert_eq!(ltr_segment.style, BorderStyle::Solid);
 
   let rtl = table_borders_from_html(&html("rtl"));
   let rtl_segment = rtl
@@ -127,8 +133,14 @@ fn collapsed_border_conflict_color_tie_break_respects_direction() {
   assert_eq!(
     rtl_segment.color,
     Rgba::BLUE,
-    "expected RTL to prefer the right cell border color"
+    "expected RTL to prefer the right-side cell border color"
   );
+  assert!(
+    (rtl_segment.width - 2.0).abs() < 0.01,
+    "expected 2px border, got {:?}",
+    rtl_segment
+  );
+  assert_eq!(rtl_segment.style, BorderStyle::Solid);
 }
 
 #[test]
