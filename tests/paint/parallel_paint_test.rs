@@ -1,9 +1,10 @@
 use fastrender::error::{Error, RenderError, RenderStage};
 use fastrender::paint::clip_path::ResolvedClipPath;
 use fastrender::paint::display_list::{
-  BlendMode, BoxShadowItem, ClipItem, ClipShape, DisplayItem, DisplayList, FillRectItem, ImageData,
-  MaskReferenceRects, ResolvedFilter, ResolvedMask, ResolvedMaskImage, ResolvedMaskLayer,
-  StackingContextItem, StrokeRectItem, StrokeRoundedRectItem, Transform3D, TransformItem,
+  BlendMode, BlendModeItem, BoxShadowItem, ClipItem, ClipShape, DisplayItem, DisplayList,
+  FillRectItem, ImageData, MaskReferenceRects, ResolvedFilter, ResolvedMask, ResolvedMaskImage,
+  ResolvedMaskLayer, StackingContextItem, StrokeRectItem, StrokeRoundedRectItem, Transform3D,
+  TransformItem,
 };
 use fastrender::paint::display_list_builder::DisplayListBuilder;
 use fastrender::paint::display_list_renderer::{DisplayListRenderer, PaintParallelism};
@@ -1126,6 +1127,59 @@ fn plus_darker_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     color: Rgba::from_rgba8(40, 200, 80, 255),
   }));
   list.push(DisplayItem::PopStackingContext);
+
+  let font_ctx = FontContext::new();
+  let serial = DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx.clone())
+    .unwrap()
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("serial paint");
+
+  let parallelism = PaintParallelism {
+    tile_size: 24,
+    log_timing: false,
+    min_display_items: 1,
+    min_tiles: 1,
+    min_build_fragments: 1,
+    build_chunk_size: 1,
+    ..PaintParallelism::enabled()
+  };
+  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let report = pool.install(|| {
+    DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
+      .unwrap()
+      .with_parallelism(parallelism)
+      .render_with_report(&list)
+      .expect("parallel paint")
+  });
+
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
+  assert_pixmap_eq(&serial, &report.pixmap);
+}
+
+#[test]
+fn hue_hsv_blend_mode_allows_parallel_tiling() {
+  // `hue-hsv` is implemented via the manual blend-mode compositor (HSV conversion path). Ensure it
+  // remains tile-friendly and produces byte-identical results when tiled.
+  let mut list = DisplayList::new();
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 96.0, 96.0),
+    color: Rgba::from_rgba8(255, 255, 0, 255),
+  }));
+  list.push(DisplayItem::PushBlendMode(BlendModeItem {
+    mode: BlendMode::HueHsv,
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(8.0, 8.0, 56.0, 56.0),
+    color: Rgba::from_rgba8(0, 0, 255, 255),
+  }));
+  list.push(DisplayItem::PopBlendMode);
 
   let font_ctx = FontContext::new();
   let serial = DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx.clone())
