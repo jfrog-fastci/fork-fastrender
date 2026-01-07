@@ -663,6 +663,19 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
     true
   }
 
+  fn is_pseudo_element_with_single_colon(&self, name: &str) -> bool {
+    match name.to_ascii_lowercase().as_str() {
+      // Real-world stylesheets (and some engines) still use single-colon forms for these
+      // vendor pseudo-elements.
+      "placeholder" | "-webkit-input-placeholder" | "-moz-placeholder" | "-ms-input-placeholder" => {
+        true
+      }
+      "-webkit-slider-thumb" | "-moz-range-thumb" | "-ms-thumb" => true,
+      "-webkit-slider-runnable-track" | "-moz-range-track" | "-ms-track" => true,
+      _ => false,
+    }
+  }
+
   fn parse_non_ts_pseudo_class(
     &self,
     _location: cssparser::SourceLocation,
@@ -1577,5 +1590,60 @@ mod tests {
       .expect("parse moz range track selector");
     let selector = list.slice().first().expect("one selector");
     assert_eq!(selector.pseudo_element(), Some(&PseudoElement::SliderTrack));
+  }
+
+  #[test]
+  fn parses_single_colon_form_control_pseudo_element_selectors() {
+    for selector_text in [
+      "input:placeholder",
+      "input:-webkit-input-placeholder",
+      "input:-moz-placeholder",
+      "input:-ms-input-placeholder",
+    ] {
+      let mut input = ParserInput::new(selector_text);
+      let mut parser = Parser::new(&mut input);
+      let list = SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No)
+        .expect("parse placeholder selector");
+      let selector = list.slice().first().expect("one selector");
+      assert_eq!(
+        selector.pseudo_element(),
+        Some(&PseudoElement::Placeholder),
+        "{selector_text} should parse as ::placeholder"
+      );
+    }
+
+    for selector_text in [
+      ".range:-webkit-slider-thumb",
+      ".range:-moz-range-thumb",
+      ".range:-ms-thumb",
+    ] {
+      let mut input = ParserInput::new(selector_text);
+      let mut parser = Parser::new(&mut input);
+      let list = SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No)
+        .expect("parse slider thumb selector");
+      let selector = list.slice().first().expect("one selector");
+      assert_eq!(
+        selector.pseudo_element(),
+        Some(&PseudoElement::SliderThumb),
+        "{selector_text} should parse as slider thumb"
+      );
+    }
+
+    for selector_text in [
+      ".range:-webkit-slider-runnable-track",
+      ".range:-moz-range-track",
+      ".range:-ms-track",
+    ] {
+      let mut input = ParserInput::new(selector_text);
+      let mut parser = Parser::new(&mut input);
+      let list = SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No)
+        .expect("parse slider track selector");
+      let selector = list.slice().first().expect("one selector");
+      assert_eq!(
+        selector.pseudo_element(),
+        Some(&PseudoElement::SliderTrack),
+        "{selector_text} should parse as slider track"
+      );
+    }
   }
 }

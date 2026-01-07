@@ -379,6 +379,19 @@ pub trait Parser<'i> {
         )
     }
 
+    /// Whether the given identifier should be treated as a pseudo-element even
+    /// when written with the legacy single-colon syntax (e.g.
+    /// `:-ms-input-placeholder`).
+    ///
+    /// The Selectors spec only allows `:before`, `:after`, `:first-line`, and
+    /// `:first-letter` to be written with a single colon, but browsers accept
+    /// some additional vendor/legacy pseudo-elements for compatibility.
+    ///
+    /// The default implementation is conservative and returns false.
+    fn is_pseudo_element_with_single_colon(&self, _name: &str) -> bool {
+        false
+    }
+
     fn parse_functional_pseudo_element<'t>(
         &self,
         name: CowRcStr<'i>,
@@ -3819,7 +3832,9 @@ where
                     return Err(input.new_custom_error(e));
                 },
             };
-            let is_pseudo_element = !is_single_colon || is_css2_pseudo_element(&name);
+            let is_pseudo_element = !is_single_colon
+                || is_css2_pseudo_element(&name)
+                || parser.is_pseudo_element_with_single_colon(&name);
             if is_pseudo_element {
                 // Pseudos after pseudo elements are not allowed in some cases:
                 // - Some states will disallow pseudos, such as the interiors of
