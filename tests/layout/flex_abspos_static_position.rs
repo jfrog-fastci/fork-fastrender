@@ -4,7 +4,7 @@ use fastrender::layout::formatting_context::FormattingContext;
 use fastrender::style::display::Display;
 use fastrender::style::display::FormattingContextType;
 use fastrender::style::position::Position;
-use fastrender::style::types::{AlignItems, FlexDirection, JustifyContent};
+use fastrender::style::types::{AlignItems, Direction, FlexDirection, JustifyContent, WritingMode};
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
 use fastrender::tree::box_tree::BoxNode;
@@ -123,4 +123,46 @@ fn abspos_static_position_respects_row_reverse_main_start() {
 
   let (x, _) = layout_abspos_child(container_style, child_style);
   assert!((x - 90.0).abs() < 0.1, "expected x≈90, got {}", x);
+}
+
+#[test]
+fn abspos_static_position_respects_rtl_main_start() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.direction = Direction::Rtl;
+  container_style.justify_content = JustifyContent::FlexStart;
+  container_style.align_items = AlignItems::FlexStart;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (x, _) = layout_abspos_child(container_style, child_style);
+  assert!((x - 90.0).abs() < 0.1, "expected x≈90, got {}", x);
+}
+
+#[test]
+fn abspos_static_position_respects_vertical_writing_mode_axes() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(100.0));
+  container_style.writing_mode = WritingMode::VerticalRl;
+  container_style.flex_direction = FlexDirection::Row;
+  container_style.justify_content = JustifyContent::FlexEnd;
+  container_style.align_items = AlignItems::Start;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.position = Position::Absolute;
+  child_style.width = Some(Length::px(10.0));
+  child_style.height = Some(Length::px(10.0));
+
+  let (x, y) = layout_abspos_child(container_style, child_style);
+  assert!((x - 90.0).abs() < 0.1, "expected x≈90, got {}", x);
+  assert!((y - 90.0).abs() < 0.1, "expected y≈90, got {}", y);
 }
