@@ -4446,6 +4446,38 @@ fn hash_flex_basis(basis: &crate::style::types::FlexBasis, hasher: &mut Fingerpr
   }
 }
 
+fn hash_aspect_ratio(value: &crate::style::types::AspectRatio, hasher: &mut FingerprintHasher) {
+  match value {
+    crate::style::types::AspectRatio::Auto => 0u8.hash(hasher),
+    crate::style::types::AspectRatio::Ratio(ratio) => {
+      1u8.hash(hasher);
+      f32_to_canonical_bits(*ratio).hash(hasher);
+    }
+    crate::style::types::AspectRatio::AutoRatio(ratio) => {
+      2u8.hash(hasher);
+      f32_to_canonical_bits(*ratio).hash(hasher);
+    }
+  }
+}
+
+fn hash_line_height(value: &crate::style::types::LineHeight, hasher: &mut FingerprintHasher) {
+  match value {
+    crate::style::types::LineHeight::Normal => 0u8.hash(hasher),
+    crate::style::types::LineHeight::Number(n) => {
+      1u8.hash(hasher);
+      f32_to_canonical_bits(*n).hash(hasher);
+    }
+    crate::style::types::LineHeight::Length(len) => {
+      2u8.hash(hasher);
+      hash_length(len, hasher);
+    }
+    crate::style::types::LineHeight::Percentage(p) => {
+      3u8.hash(hasher);
+      f32_to_canonical_bits(*p).hash(hasher);
+    }
+  }
+}
+
 fn flex_style_fingerprint(style: &ComputedStyle) -> u64 {
   let mut h = FingerprintHasher::default();
   hash_enum_discriminant(&style.display, &mut h);
@@ -4500,11 +4532,11 @@ fn flex_style_fingerprint(style: &ComputedStyle) -> u64 {
   f32_to_canonical_bits(style.flex_grow).hash(&mut h);
   f32_to_canonical_bits(style.flex_shrink).hash(&mut h);
   hash_flex_basis(&style.flex_basis, &mut h);
-  hash_enum_discriminant(&style.aspect_ratio, &mut h);
+  hash_aspect_ratio(&style.aspect_ratio, &mut h);
   // Intrinsic/text sizing influences: include font size/line height basics.
   f32_to_canonical_bits(style.font_size).hash(&mut h);
   f32_to_canonical_bits(style.root_font_size).hash(&mut h);
-  hash_enum_discriminant(&style.line_height, &mut h);
+  hash_line_height(&style.line_height, &mut h);
   h.finish()
 }
 
@@ -8721,6 +8753,7 @@ mod tests {
   use crate::style::types::ContainIntrinsicSizeAxis;
   use crate::style::types::ContentVisibility;
   use crate::style::types::FlexWrap;
+  use crate::style::types::LineHeight;
   use crate::style::types::Overflow;
   use crate::style::types::ScrollbarWidth;
   use crate::style::values::Length;
@@ -10416,6 +10449,64 @@ mod tests {
       &mut node_map,
     );
     assert!(matches!(result, Err(LayoutError::Timeout { .. })));
+  }
+
+  #[test]
+  fn flex_style_fingerprint_accounts_for_aspect_ratio_values() {
+    let mut base = ComputedStyle::default();
+    base.display = Display::Flex;
+
+    let mut ratio_a = base.clone();
+    ratio_a.aspect_ratio = AspectRatio::Ratio(2.0);
+    let mut ratio_b = base.clone();
+    ratio_b.aspect_ratio = AspectRatio::Ratio(3.0);
+    assert_ne!(
+      flex_style_fingerprint(&ratio_a),
+      flex_style_fingerprint(&ratio_b),
+      "aspect-ratio numeric value should affect flex style fingerprint"
+    );
+
+    let mut auto_ratio_a = base.clone();
+    auto_ratio_a.aspect_ratio = AspectRatio::AutoRatio(2.0);
+    let mut auto_ratio_b = base.clone();
+    auto_ratio_b.aspect_ratio = AspectRatio::AutoRatio(3.0);
+    assert_ne!(
+      flex_style_fingerprint(&auto_ratio_a),
+      flex_style_fingerprint(&auto_ratio_b),
+      "auto <ratio> numeric value should affect flex style fingerprint"
+    );
+
+    assert_ne!(
+      flex_style_fingerprint(&ratio_a),
+      flex_style_fingerprint(&auto_ratio_a),
+      "auto <ratio> must be distinguishable from a pure ratio in the style fingerprint"
+    );
+  }
+
+  #[test]
+  fn flex_style_fingerprint_accounts_for_line_height_values() {
+    let mut base = ComputedStyle::default();
+    base.display = Display::Flex;
+
+    let mut lh_a = base.clone();
+    lh_a.line_height = LineHeight::Number(1.0);
+    let mut lh_b = base.clone();
+    lh_b.line_height = LineHeight::Number(2.0);
+    assert_ne!(
+      flex_style_fingerprint(&lh_a),
+      flex_style_fingerprint(&lh_b),
+      "line-height numeric value should affect flex style fingerprint"
+    );
+
+    let mut lh_neg_zero = base.clone();
+    lh_neg_zero.line_height = LineHeight::Number(-0.0);
+    let mut lh_pos_zero = base;
+    lh_pos_zero.line_height = LineHeight::Number(0.0);
+    assert_eq!(
+      flex_style_fingerprint(&lh_neg_zero),
+      flex_style_fingerprint(&lh_pos_zero),
+      "line-height should canonicalize -0.0 in the flex style fingerprint"
+    );
   }
 
   #[test]
