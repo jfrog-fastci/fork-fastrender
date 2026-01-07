@@ -4977,6 +4977,68 @@ impl TableFormattingContext {
       Vec::new()
     };
 
+    // Fixed layout sizing precedence (CSS 2.1 §17.5.2.1):
+    // 1) `<col>`/`<colgroup>` widths
+    // 2) First-row cell widths
+    // 3) Remaining columns share the remaining space
+    //
+    // Apply column element widths first so that first-row cell widths don't override them.
+    if matches!(mode, DistributionMode::Fixed) {
+      // Apply specified widths from column info (<col>/<colgroup>)
+      for (i, col_info) in structure.columns.iter().enumerate() {
+        check_layout_deadline(&mut deadline_counter)?;
+        let Some(constraint) = constraints.get_mut(i) else {
+          continue;
+        };
+        let font_size = if col_info.font_size > 0.0 {
+          col_info.font_size
+        } else {
+          table_box.style.font_size
+        };
+        if let Some(specified) = col_info.specified_width {
+          match specified {
+            SpecifiedWidth::Fixed(px) => {
+              constraint.fixed_width = Some(px.max(constraint.min_width));
+              constraint.is_flexible = false;
+              constraint.min_width = constraint.min_width.max(px);
+              constraint.max_width = constraint.max_width.max(px);
+            }
+            SpecifiedWidth::Percent(pct) if percent_base.is_some() => {
+              let base = percent_base.unwrap();
+              let px = (pct / 100.0) * base;
+              constraint.set_percentage(pct);
+              constraint.min_width = constraint.min_width.max(px);
+              constraint.max_width = constraint.max_width.max(px);
+            }
+            SpecifiedWidth::Percent(_) => {}
+            SpecifiedWidth::Auto => {}
+          }
+        }
+        if let Some(min_len) = col_info
+          .author_min_width
+          .as_ref()
+          .and_then(|len| resolve_length_against(len, font_size, table_box.style.root_font_size, percent_base))
+        {
+          constraint.min_width = constraint.min_width.max(min_len);
+          constraint.max_width = constraint.max_width.max(constraint.min_width);
+        }
+        if let Some(max_len) = col_info
+          .author_max_width
+          .as_ref()
+          .and_then(|len| resolve_length_against(len, font_size, table_box.style.root_font_size, percent_base))
+        {
+          let cap = max_len.max(constraint.min_width);
+          constraint.max_width = if constraint.max_width.is_finite() {
+            constraint.max_width.min(cap)
+          } else {
+            cap
+          };
+          constraint.max_width = constraint.max_width.max(constraint.min_width);
+          constraint.has_max_cap = true;
+        }
+      }
+    }
+
     for (idx, cell) in structure.cells.iter().enumerate() {
       check_layout_deadline(&mut deadline_counter)?;
       if matches!(mode, DistributionMode::Fixed) && cell.row > 0 {
@@ -5109,6 +5171,16 @@ impl TableFormattingContext {
                 )
               });
               let col = &mut constraints[cell.col];
+              if mode == DistributionMode::Fixed
+                && (col.fixed_width.is_some() || col.percentage.is_some())
+              {
+                // Column widths take precedence over first-row cell widths in fixed layout.
+                continue;
+              }
+              if mode == DistributionMode::Fixed {
+                col.fixed_width = Some(col.fixed_width.unwrap_or(0.0).max(px));
+                col.is_flexible = false;
+              }
               col.min_width = col.min_width.max(px);
               col.max_width = col.max_width.max(px);
               if has_max_cap {
@@ -5142,57 +5214,59 @@ impl TableFormattingContext {
       }
     }
 
-    // Apply specified widths from column info (<col>/<colgroup>)
-    for (i, col_info) in structure.columns.iter().enumerate() {
-      check_layout_deadline(&mut deadline_counter)?;
-      let Some(constraint) = constraints.get_mut(i) else {
-        continue;
-      };
-      let font_size = if col_info.font_size > 0.0 {
-        col_info.font_size
-      } else {
-        table_box.style.font_size
-      };
-      if let Some(specified) = col_info.specified_width {
-        match specified {
-          SpecifiedWidth::Fixed(px) => {
-            constraint.fixed_width = Some(px.max(constraint.min_width));
-            constraint.is_flexible = false;
-            constraint.min_width = constraint.min_width.max(px);
-            constraint.max_width = constraint.max_width.max(px);
-          }
-          SpecifiedWidth::Percent(pct) if percent_base.is_some() => {
-            let base = percent_base.unwrap();
-            let px = (pct / 100.0) * base;
-            constraint.set_percentage(pct);
-            constraint.min_width = constraint.min_width.max(px);
-            constraint.max_width = constraint.max_width.max(px);
-          }
-          SpecifiedWidth::Percent(_) => {}
-          SpecifiedWidth::Auto => {}
-        }
-      }
-      if let Some(min_len) = col_info
-        .author_min_width
-        .as_ref()
-        .and_then(|len| resolve_length_against(len, font_size, table_box.style.root_font_size, percent_base))
-      {
-        constraint.min_width = constraint.min_width.max(min_len);
-        constraint.max_width = constraint.max_width.max(constraint.min_width);
-      }
-      if let Some(max_len) = col_info
-        .author_max_width
-        .as_ref()
-        .and_then(|len| resolve_length_against(len, font_size, table_box.style.root_font_size, percent_base))
-      {
-        let cap = max_len.max(constraint.min_width);
-        constraint.max_width = if constraint.max_width.is_finite() {
-          constraint.max_width.min(cap)
-        } else {
-          cap
+    if matches!(mode, DistributionMode::Auto) {
+      // Apply specified widths from column info (<col>/<colgroup>)
+      for (i, col_info) in structure.columns.iter().enumerate() {
+        check_layout_deadline(&mut deadline_counter)?;
+        let Some(constraint) = constraints.get_mut(i) else {
+          continue;
         };
-        constraint.max_width = constraint.max_width.max(constraint.min_width);
-        constraint.has_max_cap = true;
+        let font_size = if col_info.font_size > 0.0 {
+          col_info.font_size
+        } else {
+          table_box.style.font_size
+        };
+        if let Some(specified) = col_info.specified_width {
+          match specified {
+            SpecifiedWidth::Fixed(px) => {
+              constraint.fixed_width = Some(px.max(constraint.min_width));
+              constraint.is_flexible = false;
+              constraint.min_width = constraint.min_width.max(px);
+              constraint.max_width = constraint.max_width.max(px);
+            }
+            SpecifiedWidth::Percent(pct) if percent_base.is_some() => {
+              let base = percent_base.unwrap();
+              let px = (pct / 100.0) * base;
+              constraint.set_percentage(pct);
+              constraint.min_width = constraint.min_width.max(px);
+              constraint.max_width = constraint.max_width.max(px);
+            }
+            SpecifiedWidth::Percent(_) => {}
+            SpecifiedWidth::Auto => {}
+          }
+        }
+        if let Some(min_len) = col_info
+          .author_min_width
+          .as_ref()
+          .and_then(|len| resolve_length_against(len, font_size, table_box.style.root_font_size, percent_base))
+        {
+          constraint.min_width = constraint.min_width.max(min_len);
+          constraint.max_width = constraint.max_width.max(constraint.min_width);
+        }
+        if let Some(max_len) = col_info
+          .author_max_width
+          .as_ref()
+          .and_then(|len| resolve_length_against(len, font_size, table_box.style.root_font_size, percent_base))
+        {
+          let cap = max_len.max(constraint.min_width);
+          constraint.max_width = if constraint.max_width.is_finite() {
+            constraint.max_width.min(cap)
+          } else {
+            cap
+          };
+          constraint.max_width = constraint.max_width.max(constraint.min_width);
+          constraint.has_max_cap = true;
+        }
       }
     }
     Ok(())
