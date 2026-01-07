@@ -12426,13 +12426,13 @@ mod tests {
       .layout(&table, &LayoutConstraints::definite(100.0, 200.0))
       .expect("table layout");
 
-    // Total spacing = 2 rows * 10 = 20, so rows share the remaining 100 -> 50 each.
+    // Total spacing = (2 + 1) gaps * 10 = 30, so rows share the remaining 90 -> 45 each.
     assert!((fragment.bounds.height() - 120.0).abs() < 0.1);
     let mut tops = Vec::new();
     collect_table_cell_tops(&fragment, &mut tops);
     tops.sort_by(|a, b| a.partial_cmp(b).unwrap());
     assert_eq!(tops.len(), 2);
-    assert!((tops[1] - tops[0] - 60.0).abs() < 0.1); // 50 height + 10 spacing
+    assert!((tops[1] - tops[0] - 55.0).abs() < 0.1); // 45 height + 10 spacing
   }
 
   #[test]

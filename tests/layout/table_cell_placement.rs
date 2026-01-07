@@ -66,7 +66,7 @@ fn table_cell_offsets_and_spans_use_cached_metrics() {
           col.col2 { width: 60px; }
           col.col3 { width: 50px; }
           td { padding: 0; margin: 0; border: 0; font-size: 12px; line-height: 12px; vertical-align: baseline; }
-       </style>
+        </style>
       </head>
       <body>
         <table>

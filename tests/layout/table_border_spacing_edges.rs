@@ -1,6 +1,9 @@
+use std::collections::HashMap;
+
 use fastrender::api::FastRender;
+use fastrender::geometry::Rect;
 use fastrender::style::display::Display;
-use fastrender::tree::fragment_tree::FragmentNode;
+use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
 
 fn find_table<'a>(node: &'a FragmentNode) -> Option<&'a FragmentNode> {
   if matches!(node.style.as_ref().map(|s| s.display), Some(Display::Table)) {
@@ -9,14 +12,34 @@ fn find_table<'a>(node: &'a FragmentNode) -> Option<&'a FragmentNode> {
   node.children.iter().find_map(find_table)
 }
 
-fn find_first_cell<'a>(node: &'a FragmentNode) -> Option<&'a FragmentNode> {
+fn collect_text(node: &FragmentNode, out: &mut String) {
+  if let FragmentContent::Text { text, .. } = &node.content {
+    out.push_str(text);
+  }
+  for child in node.children.iter() {
+    collect_text(child, out);
+  }
+}
+
+fn collect_cells(node: &FragmentNode, origin: (f32, f32), cells: &mut HashMap<char, Rect>) {
+  let pos = (origin.0 + node.bounds.x(), origin.1 + node.bounds.y());
   if matches!(
     node.style.as_ref().map(|s| s.display),
     Some(Display::TableCell)
   ) {
-    return Some(node);
+    let mut text = String::new();
+    collect_text(node, &mut text);
+    let label = text
+      .trim()
+      .chars()
+      .find(|c| c.is_ascii_alphabetic())
+      .unwrap();
+    let rect = Rect::from_xywh(pos.0, pos.1, node.bounds.width(), node.bounds.height());
+    cells.insert(label, rect);
   }
-  node.children.iter().find_map(find_first_cell)
+  for child in node.children.iter() {
+    collect_cells(child, pos, cells);
+  }
 }
 
 #[test]
@@ -27,11 +50,11 @@ fn separate_border_spacing_uses_full_edges() {
         <style>
           body { margin: 0; }
           table { border-collapse: separate; border-spacing: 10px 6px; padding: 0; border: 0; }
-          td { width: 40px; height: 10px; padding: 0; border: 0; }
+          td { width: 40px; height: 10px; padding: 0; margin: 0; border: 0; }
         </style>
       </head>
       <body>
-        <table><tr><td></td></tr></table>
+        <table><tr><td>A</td></tr></table>
       </body>
     </html>
   "#;
@@ -43,17 +66,21 @@ fn separate_border_spacing_uses_full_edges() {
   let tree = renderer.layout_document(&dom, 60, 200).unwrap();
 
   let table = find_table(&tree.root).expect("table fragment");
-  let cell = find_first_cell(table).expect("table cell fragment");
+  let mut cells = HashMap::new();
+  for child in table.children.iter() {
+    collect_cells(child, (0.0, 0.0), &mut cells);
+  }
+  let cell = cells.get(&'A').expect("table cell fragment");
 
   assert!(
-    (cell.bounds.x() - 10.0).abs() < 0.1,
+    (cell.x() - 10.0).abs() < 0.1,
     "expected edge cell to start after full horizontal border-spacing (got x={})",
-    cell.bounds.x()
+    cell.x()
   );
   assert!(
-    (cell.bounds.y() - 6.0).abs() < 0.1,
+    (cell.y() - 6.0).abs() < 0.1,
     "expected edge cell to start after full vertical border-spacing (got y={})",
-    cell.bounds.y()
+    cell.y()
   );
 
   assert!(
@@ -62,13 +89,70 @@ fn separate_border_spacing_uses_full_edges() {
     table.bounds.width()
   );
   assert!(
-    (cell.bounds.width() - 40.0).abs() < 0.1,
+    (cell.width() - 40.0).abs() < 0.1,
     "expected cell width to exclude edge border-spacing (got {})",
-    cell.bounds.width()
+    cell.width()
   );
   assert!(
     (table.bounds.height() - 22.0).abs() < 0.1,
     "expected table height to include top+bottom border-spacing (got {})",
     table.bounds.height()
+  );
+}
+
+#[test]
+fn border_spacing_applies_at_table_edges_in_separated_model() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            border-collapse: separate;
+            border-spacing: 10px 6px;
+            width: 200px;
+            table-layout: fixed;
+            border: 0;
+            padding: 0;
+          }
+          td { padding: 0; margin: 0; border: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <tr><td>A</td><td>B</td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  for child in table.children.iter() {
+    collect_cells(child, (0.0, 0.0), &mut cells);
+  }
+
+  let a = cells.get(&'A').expect("A cell");
+  let b = cells.get(&'B').expect("B cell");
+
+  assert!(
+    (a.x() - 10.0).abs() < 0.1,
+    "first cell should start after horizontal border-spacing (expected ~10, got {})",
+    a.x()
+  );
+  assert!(
+    (a.y() - 6.0).abs() < 0.1,
+    "first row should start after vertical border-spacing (expected ~6, got {})",
+    a.y()
+  );
+
+  let spacing_x = b.x() - (a.x() + a.width());
+  assert!(
+    (spacing_x - 10.0).abs() < 0.1,
+    "spacing between cells should match border-spacing (expected ~10, got {spacing_x})"
   );
 }
