@@ -4,6 +4,7 @@ use fastrender::style::display::Display;
 use fastrender::style::types::AlignContent;
 use fastrender::style::types::FlexDirection;
 use fastrender::style::types::FlexWrap;
+use fastrender::style::types::WritingMode;
 use fastrender::style::values::Length;
 use fastrender::BoxNode;
 use fastrender::ComputedStyle;
@@ -34,16 +35,20 @@ fn find_block_child<'a>(fragment: &'a FragmentNode, box_id: usize) -> &'a Fragme
 
 fn build_multiline_container(
   align_content: AlignContent,
+  writing_mode: WritingMode,
   container_width: f32,
   container_height: f32,
   row_gap: f32,
   column_gap: f32,
+  item_width: f32,
+  item_height: f32,
 ) -> BoxNode {
   let mut container_style = ComputedStyle::default();
   container_style.display = Display::Flex;
   container_style.flex_direction = FlexDirection::Row;
   container_style.flex_wrap = FlexWrap::Wrap;
   container_style.align_content = align_content;
+  container_style.writing_mode = writing_mode;
   container_style.width = Some(Length::px(container_width));
   container_style.height = Some(Length::px(container_height));
   container_style.width_keyword = None;
@@ -53,8 +58,12 @@ fn build_multiline_container(
 
   let mut item_style = ComputedStyle::default();
   item_style.display = Display::Block;
-  item_style.width = Some(Length::px(30.0));
-  item_style.height = Some(Length::px(10.0));
+  // In real CSS, writing-mode is inherited. The test harness constructs computed styles manually,
+  // so set the child writing-mode explicitly to avoid accidental cross-writing-mode alignment
+  // behaviour masking gap/align-content regressions.
+  item_style.writing_mode = writing_mode;
+  item_style.width = Some(Length::px(item_width));
+  item_style.height = Some(Length::px(item_height));
   item_style.width_keyword = None;
   item_style.height_keyword = None;
   item_style.flex_shrink = 0.0;
@@ -78,8 +87,16 @@ fn build_multiline_container(
 fn align_content_space_evenly_respects_row_gap_between_lines() {
   let fc = FlexFormattingContext::new();
 
-  let container =
-    build_multiline_container(AlignContent::SpaceEvenly, 60.0, 50.0, 5.0, 0.0);
+  let container = build_multiline_container(
+    AlignContent::SpaceEvenly,
+    WritingMode::HorizontalTb,
+    60.0,
+    50.0,
+    5.0,
+    0.0,
+    30.0,
+    10.0,
+  );
   let fragment = fc
     .layout(&container, &LayoutConstraints::definite(60.0, 50.0))
     .expect("layout succeeds");
@@ -101,8 +118,16 @@ fn align_content_space_evenly_respects_row_gap_between_lines() {
 fn align_content_space_around_respects_row_gap_between_lines() {
   let fc = FlexFormattingContext::new();
 
-  let container =
-    build_multiline_container(AlignContent::SpaceAround, 60.0, 50.0, 5.0, 0.0);
+  let container = build_multiline_container(
+    AlignContent::SpaceAround,
+    WritingMode::HorizontalTb,
+    60.0,
+    50.0,
+    5.0,
+    0.0,
+    30.0,
+    10.0,
+  );
   let fragment = fc
     .layout(&container, &LayoutConstraints::definite(60.0, 50.0))
     .expect("layout succeeds");
@@ -128,8 +153,16 @@ fn column_gap_affects_main_axis_spacing_not_cross_axis_offsets() {
 
   // Make the column-gap big enough to observe in x positions, while keeping the items on the
   // same line (30 + 15 + 30 = 75).
-  let container =
-    build_multiline_container(AlignContent::SpaceEvenly, 75.0, 50.0, 0.0, 15.0);
+  let container = build_multiline_container(
+    AlignContent::SpaceEvenly,
+    WritingMode::HorizontalTb,
+    75.0,
+    50.0,
+    0.0,
+    15.0,
+    30.0,
+    10.0,
+  );
   let fragment = fc
     .layout(&container, &LayoutConstraints::definite(75.0, 50.0))
     .expect("layout succeeds");
@@ -155,3 +188,76 @@ fn column_gap_affects_main_axis_spacing_not_cross_axis_offsets() {
   assert_approx(child3.bounds.x(), 0.0, 1e-3, "child3 x");
 }
 
+#[test]
+fn vertical_writing_mode_space_evenly_respects_row_gap_between_lines() {
+  let fc = FlexFormattingContext::new();
+
+  // In vertical writing-mode, `flex-direction: row` maps the main axis to the physical Y axis.
+  // Wrapping therefore creates new *columns* along the physical X axis (the block axis).
+  let container = build_multiline_container(
+    AlignContent::SpaceEvenly,
+    WritingMode::VerticalLr,
+    50.0,
+    60.0,
+    5.0,
+    0.0,
+    10.0,
+    30.0,
+  );
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(50.0, 60.0))
+    .expect("layout succeeds");
+
+  // Container: 50px wide
+  // Two flex lines (each 10px), plus a 5px row-gap => used cross size = 25px, free = 25px.
+  // align-content: space-evenly => first line offset = free/(lines+1) = 25/3 = 8.333.
+  // second line offset = 8.333 + 10 + 5 + 8.333 = 31.666.
+  let epsilon = 0.6;
+  let first_line_x = 25.0 / 3.0;
+  let second_line_x = first_line_x + 10.0 + 5.0 + first_line_x;
+
+  assert_approx(find_block_child(&fragment, 1).bounds.x(), first_line_x, epsilon, "child1 x");
+  assert_approx(find_block_child(&fragment, 2).bounds.x(), first_line_x, epsilon, "child2 x");
+  assert_approx(find_block_child(&fragment, 3).bounds.x(), second_line_x, epsilon, "child3 x");
+}
+
+#[test]
+fn vertical_writing_mode_column_gap_affects_main_axis_spacing() {
+  let fc = FlexFormattingContext::new();
+
+  // `column-gap` follows the inline axis. In vertical writing-mode, the inline axis is physical Y.
+  // Ensure it spaces items within a column without affecting the cross-axis (X) line offsets.
+  let container = build_multiline_container(
+    AlignContent::SpaceEvenly,
+    WritingMode::VerticalLr,
+    50.0,
+    75.0,
+    0.0,
+    15.0,
+    10.0,
+    30.0,
+  );
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(50.0, 75.0))
+    .expect("layout succeeds");
+
+  // With row-gap=0, used cross size is 20px and free space is 30px. For space-evenly:
+  // first line x = free/(lines+1) = 30/3 = 10px.
+  // second line x = 10 + 10 + 0 + 10 = 30px.
+  let epsilon = 0.6;
+  let first_line_x = 30.0 / 3.0;
+  let second_line_x = first_line_x + 10.0 + first_line_x;
+
+  let child1 = find_block_child(&fragment, 1);
+  let child2 = find_block_child(&fragment, 2);
+  let child3 = find_block_child(&fragment, 3);
+
+  assert_approx(child1.bounds.x(), first_line_x, epsilon, "child1 x");
+  assert_approx(child2.bounds.x(), first_line_x, epsilon, "child2 x");
+  assert_approx(child3.bounds.x(), second_line_x, epsilon, "child3 x");
+
+  // Column gap is on the main axis for a row-direction flex container in vertical writing mode.
+  assert_approx(child1.bounds.y(), 0.0, 1e-3, "child1 y");
+  assert_approx(child2.bounds.y(), 45.0, 1e-3, "child2 y");
+  assert_approx(child3.bounds.y(), 0.0, 1e-3, "child3 y");
+}
