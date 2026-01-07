@@ -45,7 +45,6 @@ pub(crate) fn is_raw_only_property(property: &str) -> bool {
     "scroll-timeline"
       | "timeline-scope"
       | "view-timeline"
-      | "timeline-scope"
       | "animation-timeline"
       | "animation-range"
       | "animation-range-start"
