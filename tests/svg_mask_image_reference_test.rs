@@ -85,3 +85,8 @@ fn mask_image_url_fragment_preserves_styles_for_defs_referenced_via_use() {
   assert_eq!(pixel(&pixmap, 10, 10), [255, 255, 255, 255]);
   assert_eq!(pixel(&pixmap, 40, 10), [255, 0, 0, 255]);
 }
+
+mod paint {
+  // Keep the bulk of SVG mask reference coverage in the deterministic display-list paint pipeline.
+  include!("paint/svg_mask_image_reference_test.rs");
+}

@@ -3076,7 +3076,12 @@ impl DisplayListBuilder {
         MaskMode::MatchSource => match image {
           BackgroundImage::Url(src) => {
             let trimmed = src.trim_start();
-            if trimmed.starts_with('<') || trimmed.starts_with('#') {
+            if trimmed.starts_with('#') {
+              // Fragment-only URLs are resolved via `svg_id_defs` (see `decode_mask_image_url`).
+              // They do not correspond to fetchable external images, so skip probing the network
+              // when selecting the mask mode.
+              MaskMode::Alpha
+            } else if trimmed.starts_with('<') {
               // Inline SVG is rasterized to RGBA; treat it as alpha-masked.
               MaskMode::Alpha
             } else if let Some(image_cache) = self.image_cache.as_ref() {
