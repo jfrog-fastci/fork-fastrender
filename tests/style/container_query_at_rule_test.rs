@@ -675,3 +675,45 @@ fn not_container_query_with_unknown_block_size_does_not_match() {
 
   assert_eq!(display(find_by_id(&styled, "t").expect("target")), "block");
 }
+
+#[test]
+fn container_query_resolves_container_units_in_size_features() {
+  let css = r#"
+    .target { display: block; }
+    @container (min-width: 50cqw) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let styled = cascade_with_custom_container(
+    css,
+    200.0,
+    100.0,
+    WritingMode::HorizontalTb,
+    ContainerType::Size,
+    vec![],
+  );
+
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "inline");
+}
+
+#[test]
+fn container_query_resolves_container_units_inside_calc_in_size_features() {
+  let css = r#"
+    .target { display: block; }
+    @container (min-width: calc(50cqw + 1px)) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let styled = cascade_with_custom_container(
+    css,
+    200.0,
+    100.0,
+    WritingMode::HorizontalTb,
+    ContainerType::Size,
+    vec![],
+  );
+
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "inline");
+}

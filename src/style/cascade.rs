@@ -475,7 +475,14 @@ fn resolve_container_query_length(
   viewport_height: f32,
   font_size: f32,
   root_font_size: f32,
+  cqw_base: f32,
+  cqh_base: f32,
+  cqi_base: f32,
+  cqb_base: f32,
 ) -> Option<f32> {
+  let mut length = *length;
+  length = length.resolve_container_query_units(cqw_base, cqh_base, cqi_base, cqb_base);
+
   // For container size queries, resolve font-relative lengths against the query container's
   // computed font metrics:
   // - `em`/`ex`/`ch`/`lh` use the query container's own computed `font-size`.
@@ -554,13 +561,8 @@ fn resolve_container_query_length(
     LengthUnit::Ch => Some(length.value * (font_size * 0.5)),
     // Container queries lack access to computed `line-height`; treat `lh` as `normal` (1.2em).
     LengthUnit::Lh => Some(length.value * (font_size * 1.2)),
-    LengthUnit::Cqw
-    | LengthUnit::Cqh
-    | LengthUnit::Cqi
-    | LengthUnit::Cqb
-    | LengthUnit::Cqmin
-    | LengthUnit::Cqmax => None,
     LengthUnit::Calc => None,
+    _ => None,
   }
 }
 
@@ -572,6 +574,11 @@ fn evaluate_container_size_feature(
   font_size: f32,
   root_font_size: f32,
 ) -> QueryResult {
+  let cqw_base = container.width;
+  let cqh_base = container.height;
+  let cqi_base = container.inline_size;
+  let cqb_base = container.block_size;
+
   match feature {
     // Physical width / height.
     MediaFeature::Width(length) => {
@@ -587,6 +594,10 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        cqw_base,
+        cqh_base,
+        cqi_base,
+        cqb_base,
       ) else {
         return QueryResult::Unknown;
       };
@@ -608,6 +619,10 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        cqw_base,
+        cqh_base,
+        cqi_base,
+        cqb_base,
       ) else {
         return QueryResult::Unknown;
       };
@@ -629,6 +644,10 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        cqw_base,
+        cqh_base,
+        cqi_base,
+        cqb_base,
       ) else {
         return QueryResult::Unknown;
       };
@@ -651,6 +670,10 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        cqw_base,
+        cqh_base,
+        cqi_base,
+        cqb_base,
       ) else {
         return QueryResult::Unknown;
       };
@@ -672,6 +695,10 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        cqw_base,
+        cqh_base,
+        cqi_base,
+        cqb_base,
       ) else {
         return QueryResult::Unknown;
       };
@@ -693,6 +720,10 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        cqw_base,
+        cqh_base,
+        cqi_base,
+        cqb_base,
       ) else {
         return QueryResult::Unknown;
       };
@@ -716,6 +747,10 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        cqw_base,
+        cqh_base,
+        cqi_base,
+        cqb_base,
       ) else {
         return QueryResult::Unknown;
       };
@@ -737,6 +772,10 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        cqw_base,
+        cqh_base,
+        cqi_base,
+        cqb_base,
       ) else {
         return QueryResult::Unknown;
       };
@@ -758,6 +797,10 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        cqw_base,
+        cqh_base,
+        cqi_base,
+        cqb_base,
       ) else {
         return QueryResult::Unknown;
       };
@@ -780,6 +823,10 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        cqw_base,
+        cqh_base,
+        cqi_base,
+        cqb_base,
       ) else {
         return QueryResult::Unknown;
       };
@@ -801,6 +848,10 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        cqw_base,
+        cqh_base,
+        cqi_base,
+        cqb_base,
       ) else {
         return QueryResult::Unknown;
       };
@@ -822,6 +873,10 @@ fn evaluate_container_size_feature(
         viewport_height,
         font_size,
         root_font_size,
+        cqw_base,
+        cqh_base,
+        cqi_base,
+        cqb_base,
       ) else {
         return QueryResult::Unknown;
       };
@@ -894,6 +949,10 @@ fn evaluate_container_size_feature(
           viewport_height,
           font_size,
           root_font_size,
+          cqw_base,
+          cqh_base,
+          cqi_base,
+          cqb_base,
         ) else {
           return QueryResult::Unknown;
         };
@@ -915,6 +974,10 @@ fn evaluate_container_size_feature(
           viewport_height,
           font_size,
           root_font_size,
+          cqw_base,
+          cqh_base,
+          cqi_base,
+          cqb_base,
         ) else {
           return QueryResult::Unknown;
         };
@@ -936,6 +999,10 @@ fn evaluate_container_size_feature(
           viewport_height,
           font_size,
           root_font_size,
+          cqw_base,
+          cqh_base,
+          cqi_base,
+          cqb_base,
         ) else {
           return QueryResult::Unknown;
         };
@@ -957,6 +1024,10 @@ fn evaluate_container_size_feature(
           viewport_height,
           font_size,
           root_font_size,
+          cqw_base,
+          cqh_base,
+          cqi_base,
+          cqb_base,
         ) else {
           return QueryResult::Unknown;
         };
