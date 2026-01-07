@@ -637,11 +637,11 @@ fn prefetch_assets_warms_disk_cache_with_html_images_iframes_and_embeds() {
     (&poster, FetchDestination::Image),
     (&favicon, FetchDestination::Image),
     (&manifest, FetchDestination::Image),
-    (&iframe_doc, FetchDestination::Document),
+    (&iframe_doc, FetchDestination::Iframe),
     (&iframe_css, FetchDestination::Style),
     (&iframe_img, FetchDestination::Image),
-    (&object_doc, FetchDestination::Document),
-    (&embed_doc, FetchDestination::Document),
+    (&object_doc, FetchDestination::Iframe),
+    (&embed_doc, FetchDestination::Iframe),
   ] {
     assert!(
       offline
@@ -755,25 +755,25 @@ fn prefetch_assets_does_not_fetch_embeds_without_prefetch_embeds() {
 
   assert!(
     offline
-      .fetch_with_request(FetchRequest::new(&iframe_doc, FetchDestination::Document))
+      .fetch_with_request(FetchRequest::new(&iframe_doc, FetchDestination::Iframe))
       .is_ok(),
     "iframe should be cached"
   );
   assert!(
     offline
-      .fetch_with_request(FetchRequest::new(&object, FetchDestination::Document))
+      .fetch_with_request(FetchRequest::new(&object, FetchDestination::Iframe))
       .is_err(),
     "object should not be cached without --prefetch-embeds"
   );
   assert!(
     offline
-      .fetch_with_request(FetchRequest::new(&embed, FetchDestination::Document))
+      .fetch_with_request(FetchRequest::new(&embed, FetchDestination::Iframe))
       .is_err(),
     "embed should not be cached without --prefetch-embeds"
   );
   assert!(
     offline
-      .fetch_with_request(FetchRequest::new(&media, FetchDestination::Document))
+      .fetch_with_request(FetchRequest::new(&media, FetchDestination::Other))
       .is_err(),
     "media source should not be cached without --prefetch-embeds"
   );
@@ -880,7 +880,7 @@ fn prefetch_assets_honors_base_href_for_html_discovery() {
 
   assert!(
     offline
-      .fetch_with_request(FetchRequest::new(&iframe_doc, FetchDestination::Document))
+      .fetch_with_request(FetchRequest::new(&iframe_doc, FetchDestination::Iframe))
       .is_ok(),
     "iframe should be cached"
   );
@@ -1266,7 +1266,7 @@ fn prefetch_assets_warms_disk_cache_with_iframes_embeds_icons_and_video_posters(
 
   assert!(
     offline
-      .fetch_with_request(FetchRequest::new(&iframe, FetchDestination::Document))
+      .fetch_with_request(FetchRequest::new(&iframe, FetchDestination::Iframe))
       .is_ok(),
     "iframe document should be cached"
   );
@@ -1284,13 +1284,13 @@ fn prefetch_assets_warms_disk_cache_with_iframes_embeds_icons_and_video_posters(
   );
   assert!(
     offline
-      .fetch_with_request(FetchRequest::new(&embed, FetchDestination::Document))
+      .fetch_with_request(FetchRequest::new(&embed, FetchDestination::Iframe))
       .is_ok(),
     "embed src should be cached"
   );
   assert!(
     offline
-      .fetch_with_request(FetchRequest::new(&object, FetchDestination::Document))
+      .fetch_with_request(FetchRequest::new(&object, FetchDestination::Iframe))
       .is_ok(),
     "object data should be cached"
   );
