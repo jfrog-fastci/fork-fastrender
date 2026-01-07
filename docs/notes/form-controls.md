@@ -12,12 +12,13 @@ FastRender treats native form controls as replaced elements so they participate 
   - Checkboxes/radios draw marks when checked/indeterminate; selects render a text value plus a caret; ranges draw a track + thumb; color inputs render a swatch plus a hex label.
 - Disabled, focus, focus-visible, required, and invalid states are derived from element attributes + `data-fastr-focus*` hints during box generation and influence native painting (tinted overlays, accent changes). The `data-fastr-focus-visible` hint implies focus for native painting so standalone focus-visible markers are captured.
 - `appearance: none` affects **native painting** (suppresses some UA chrome) but does **not** currently change box generation: the element is still a `ReplacedType::FormControl` and keeps form-control intrinsic sizing. (Non-`none` keywords are preserved as `Appearance::Keyword(...)`, but painters currently only special-case `Appearance::None`.)
-- `-webkit-appearance` is parsed/accepted today (so it can participate in `@supports`), but it does not currently affect computed styles; only the unprefixed `appearance` property is applied. Task 94 intends to treat `-webkit-appearance` as an alias of `appearance`.
+- `-webkit-appearance` is treated as an alias of `appearance` (mapped during style application), so either spelling can drive `Appearance::None` / keyword values through box generation and painting. Task 94 may further consolidate vendor aliasing behavior.
 
 ## Key code paths
 
 - Box generation: `src/tree/box_generation.rs::create_form_control_replaced`
 - Intrinsic sizing: `src/api.rs::resolve_intrinsic_for_replaced_for_media`
+- Vendor aliasing (`-webkit-appearance` → `appearance`): `src/style/properties.rs`
 - Painting:
   - Display list: `src/paint/display_list_builder.rs::emit_form_control`
   - Immediate painter: `src/paint/painter.rs::paint_form_control`
@@ -25,7 +26,7 @@ FastRender treats native form controls as replaced elements so they participate 
 
 ## What `appearance:none` enables today
 
-- Author `background`/`border`/`padding` styling applies normally (the element is still a normal CSS box; only the *inside* is painted by the form-control code).
+- Author `background`/`border`/`padding` styling applies normally (the element is still a normal CSS box; only the *inside* is painted by the form-control code). This applies whether you set `appearance:none` or `-webkit-appearance:none`.
 - Native chrome suppression is currently selective and implemented directly in the painters:
   - Select caret (“▾”) is skipped when `control.appearance == Appearance::None` (gated inside `emit_form_control` / `paint_form_control`).
   - Checkbox/radio marks are skipped when `control.appearance == Appearance::None` (early-return in `emit_form_control` / `paint_form_control`).
