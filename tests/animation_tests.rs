@@ -971,6 +971,52 @@ fn clip_path_mismatches_fall_back_to_discrete() {
 }
 
 #[test]
+fn clip_path_polygons_interpolate_when_compatible() {
+  let sheet = parse_stylesheet(
+    "@keyframes mask {\
+      from { clip-path: polygon(0% 0%, 100% 0%, 100% 100%, 0% 100%); }\
+      to { clip-path: polygon(0% 0%, 50% 0%, 50% 50%, 0% 50%); }\
+    }",
+  )
+  .unwrap();
+  let keyframes = sheet.collect_keyframes(&MediaContext::screen(800.0, 600.0));
+  let rule = &keyframes[0];
+
+  let sampled = sample_keyframes(
+    rule,
+    0.25,
+    &ComputedStyle::default(),
+    Size::new(400.0, 300.0),
+    Size::new(100.0, 100.0),
+  );
+  match sampled.get("clip-path") {
+    Some(AnimatedValue::ClipPath(path)) => match path {
+      fastrender::style::types::ClipPath::BasicShape(shape, reference) => {
+        assert_eq!(*reference, None);
+        match shape.as_ref() {
+          BasicShape::Polygon { fill, points } => {
+            assert_eq!(*fill, fastrender::style::types::FillRule::NonZero);
+            assert_eq!(points.len(), 4);
+            let eps = 1e-3;
+            assert!((points[0].0.to_px() - 0.0).abs() < eps);
+            assert!((points[0].1.to_px() - 0.0).abs() < eps);
+            assert!((points[1].0.to_px() - 87.5).abs() < eps);
+            assert!((points[1].1.to_px() - 0.0).abs() < eps);
+            assert!((points[2].0.to_px() - 87.5).abs() < eps);
+            assert!((points[2].1.to_px() - 87.5).abs() < eps);
+            assert!((points[3].0.to_px() - 0.0).abs() < eps);
+            assert!((points[3].1.to_px() - 87.5).abs() < eps);
+          }
+          other => panic!("expected polygon clip-path, got {other:?}"),
+        }
+      }
+      other => panic!("unexpected clip-path {other:?}"),
+    },
+    other => panic!("unexpected clip-path value {other:?}"),
+  }
+}
+
+#[test]
 fn inline_axis_uses_writing_mode_direction() {
   let timeline = ScrollTimeline {
     axis: TimelineAxis::Inline,
