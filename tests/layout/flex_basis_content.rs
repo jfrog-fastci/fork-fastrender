@@ -1,5 +1,6 @@
 use fastrender::layout::constraints::AvailableSpace;
 use fastrender::layout::constraints::LayoutConstraints;
+use fastrender::layout::contexts::block::BlockFormattingContext;
 use fastrender::layout::contexts::flex::FlexFormattingContext;
 use fastrender::layout::formatting_context::FormattingContext;
 use fastrender::style::display::Display;
@@ -148,5 +149,75 @@ fn flex_basis_content_ignores_preferred_main_size_in_column_flex() {
     child_b_fragment.bounds.y(),
     0.0,
     "child B should be positioned at the container start",
+  );
+}
+
+#[test]
+fn flex_basis_content_uses_max_content_size_for_base_size() {
+  let text = "lorem ipsum dolor sit amet";
+
+  let block_fc = BlockFormattingContext::new();
+  let measure = BoxNode::new_block(
+    Arc::new(ComputedStyle::default()),
+    FormattingContextType::Block,
+    vec![BoxNode::new_text(
+      Arc::new(ComputedStyle::default()),
+      text.to_string(),
+    )],
+  );
+  let (min_content, max_content) = block_fc
+    .compute_intrinsic_inline_sizes(&measure)
+    .expect("intrinsic inline sizes");
+  assert!(
+    max_content > min_content + 1.0,
+    "expected max-content ({max_content:.2}) to exceed min-content ({min_content:.2})"
+  );
+
+  // Ensure the flex container is wide enough that the item doesn't shrink.
+  let container_width = max_content + 50.0;
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.width = Some(Length::px(container_width));
+
+  let mut item_style = ComputedStyle::default();
+  item_style.display = Display::Block;
+  // This preferred main-size should be ignored because flex-basis is `content`.
+  item_style.width = Some(Length::px(10.0));
+  item_style.flex_grow = 0.0;
+  item_style.flex_shrink = 0.0;
+  item_style.flex_basis = FlexBasis::Content;
+
+  let mut item = BoxNode::new_block(
+    Arc::new(item_style),
+    FormattingContextType::Block,
+    vec![BoxNode::new_text(
+      Arc::new(ComputedStyle::default()),
+      text.to_string(),
+    )],
+  );
+  item.id = 20;
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![item],
+  );
+
+  let fc = FlexFormattingContext::new();
+  let fragment = fc
+    .layout(
+      &container,
+      &LayoutConstraints::new(
+        AvailableSpace::Definite(container_width),
+        AvailableSpace::Indefinite,
+      ),
+    )
+    .expect("layout succeeds");
+
+  let item_fragment = find_first_fragment_with_id(&fragment, 20).expect("item fragment");
+  assert_approx(
+    item_fragment.bounds.width(),
+    max_content,
+    "item should size to its max-content width when flex-basis is content",
   );
 }
