@@ -1024,6 +1024,82 @@ fn hue_mix_blend_mode_allows_parallel_tiling_without_isolation() {
 }
 
 #[test]
+fn saturation_mix_blend_mode_allows_parallel_tiling_without_isolation() {
+  // `saturation` is implemented via the manual mix-blend-mode compositor (HSL conversion path).
+  // Ensure it remains tile-friendly (no serial fallback) and produces byte-identical results.
+  let mut list = DisplayList::new();
+  // Use a non-uniform backdrop so the blend result depends on per-pixel destination samples.
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 48.0, 96.0),
+    color: Rgba::from_rgba8(200, 160, 160, 255),
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(48.0, 0.0, 48.0, 96.0),
+    color: Rgba::from_rgba8(160, 160, 200, 255),
+  }));
+  let stacking = StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    establishes_backdrop_root: true,
+    bounds: Rect::from_xywh(0.0, 0.0, 80.0, 80.0),
+    plane_rect: Rect::from_xywh(0.0, 0.0, 80.0, 80.0),
+    mix_blend_mode: BlendMode::Saturation,
+    opacity: 0.75,
+    is_isolated: false,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::ZERO,
+    mask: None,
+    has_clip_path: false,
+  };
+  list.push(DisplayItem::PushStackingContext(stacking));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(8.0, 8.0, 56.0, 56.0),
+    // Fully saturated color so only the destination hue/luminance should affect the blend result.
+    color: Rgba::from_rgba8(0, 255, 0, 255),
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let font_ctx = FontContext::new();
+  let serial = DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx.clone())
+    .unwrap()
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("serial paint");
+
+  let parallelism = PaintParallelism {
+    tile_size: 24,
+    log_timing: false,
+    min_display_items: 1,
+    min_tiles: 1,
+    min_build_fragments: 1,
+    build_chunk_size: 1,
+    ..PaintParallelism::enabled()
+  };
+  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let report = pool.install(|| {
+    DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
+      .unwrap()
+      .with_parallelism(parallelism)
+      .render_with_report(&list)
+      .expect("parallel paint")
+  });
+
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
+  assert_pixmap_eq(&serial, &report.pixmap);
+}
+
+#[test]
 fn color_oklch_mix_blend_mode_allows_parallel_tiling_without_isolation() {
   // `color(oklch)` is implemented via the manual mix-blend-mode compositor (OKLCH conversion
   // path). Ensure it remains tile-friendly and produces byte-identical results when tiled.
@@ -1094,6 +1170,82 @@ fn color_oklch_mix_blend_mode_allows_parallel_tiling_without_isolation() {
 }
 
 #[test]
+fn luminosity_oklch_mix_blend_mode_allows_parallel_tiling_without_isolation() {
+  // `luminosity(oklch)` is implemented via the manual mix-blend-mode compositor (OKLCH conversion
+  // path). Ensure it remains tile-friendly and produces byte-identical results when tiled.
+  let mut list = DisplayList::new();
+  // Use a multi-hue backdrop so the blend result depends on per-pixel destination samples.
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 48.0, 96.0),
+    color: Rgba::from_rgba8(30, 120, 220, 255),
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(48.0, 0.0, 48.0, 96.0),
+    color: Rgba::from_rgba8(220, 120, 30, 255),
+  }));
+  let stacking = StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    establishes_backdrop_root: true,
+    bounds: Rect::from_xywh(0.0, 0.0, 80.0, 80.0),
+    plane_rect: Rect::from_xywh(0.0, 0.0, 80.0, 80.0),
+    mix_blend_mode: BlendMode::LuminosityOklch,
+    opacity: 0.7,
+    is_isolated: false,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::ZERO,
+    mask: None,
+    has_clip_path: false,
+  };
+  list.push(DisplayItem::PushStackingContext(stacking));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(8.0, 8.0, 56.0, 56.0),
+    // Light source color so only its OKLCH lightness should be carried through.
+    color: Rgba::from_rgba8(230, 230, 230, 255),
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let font_ctx = FontContext::new();
+  let serial = DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx.clone())
+    .unwrap()
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("serial paint");
+
+  let parallelism = PaintParallelism {
+    tile_size: 24,
+    log_timing: false,
+    min_display_items: 1,
+    min_tiles: 1,
+    min_build_fragments: 1,
+    build_chunk_size: 1,
+    ..PaintParallelism::enabled()
+  };
+  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let report = pool.install(|| {
+    DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
+      .unwrap()
+      .with_parallelism(parallelism)
+      .render_with_report(&list)
+      .expect("parallel paint")
+  });
+
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
+  assert_pixmap_eq(&serial, &report.pixmap);
+}
+
+#[test]
 fn plus_darker_mix_blend_mode_allows_parallel_tiling_without_isolation() {
   // `plus-darker` uses a bespoke manual compositor path (not expressible via tiny-skia). Ensure it
   // remains tile-friendly and produces byte-identical results when tiled.
@@ -1125,6 +1277,82 @@ fn plus_darker_mix_blend_mode_allows_parallel_tiling_without_isolation() {
   list.push(DisplayItem::FillRect(FillRectItem {
     rect: Rect::from_xywh(8.0, 8.0, 40.0, 40.0),
     color: Rgba::from_rgba8(40, 200, 80, 255),
+  }));
+  list.push(DisplayItem::PopStackingContext);
+
+  let font_ctx = FontContext::new();
+  let serial = DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx.clone())
+    .unwrap()
+    .with_parallelism(PaintParallelism::disabled())
+    .render(&list)
+    .expect("serial paint");
+
+  let parallelism = PaintParallelism {
+    tile_size: 24,
+    log_timing: false,
+    min_display_items: 1,
+    min_tiles: 1,
+    min_build_fragments: 1,
+    build_chunk_size: 1,
+    ..PaintParallelism::enabled()
+  };
+  let pool = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+  let report = pool.install(|| {
+    DisplayListRenderer::new(96, 96, Rgba::WHITE, font_ctx)
+      .unwrap()
+      .with_parallelism(parallelism)
+      .render_with_report(&list)
+      .expect("parallel paint")
+  });
+
+  if cpu_budget_allows_parallel_paint() {
+    assert!(
+      report.parallel_used,
+      "expected tiling to be used (fallback={:?})",
+      report.fallback_reason
+    );
+  }
+  assert_pixmap_eq(&serial, &report.pixmap);
+}
+
+#[test]
+fn luminosity_hsv_mix_blend_mode_allows_parallel_tiling_without_isolation() {
+  // `luminosity-hsv` is implemented via the manual mix-blend-mode compositor (HSV conversion
+  // path). Ensure it remains tile-friendly and produces byte-identical results when tiled.
+  let mut list = DisplayList::new();
+  // Use a non-uniform backdrop so the blend result depends on per-pixel destination samples.
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 0.0, 96.0, 48.0),
+    color: Rgba::from_rgba8(30, 200, 120, 255),
+  }));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(0.0, 48.0, 96.0, 48.0),
+    color: Rgba::from_rgba8(200, 120, 30, 255),
+  }));
+  let stacking = StackingContextItem {
+    z_index: 0,
+    creates_stacking_context: true,
+    establishes_backdrop_root: true,
+    bounds: Rect::from_xywh(0.0, 0.0, 80.0, 80.0),
+    plane_rect: Rect::from_xywh(0.0, 0.0, 80.0, 80.0),
+    mix_blend_mode: BlendMode::LuminosityHsv,
+    opacity: 0.8,
+    is_isolated: false,
+    transform: None,
+    child_perspective: None,
+    transform_style: TransformStyle::Flat,
+    backface_visibility: BackfaceVisibility::Visible,
+    filters: Vec::new(),
+    backdrop_filters: Vec::new(),
+    radii: BorderRadii::ZERO,
+    mask: None,
+    has_clip_path: false,
+  };
+  list.push(DisplayItem::PushStackingContext(stacking));
+  list.push(DisplayItem::FillRect(FillRectItem {
+    rect: Rect::from_xywh(8.0, 8.0, 56.0, 56.0),
+    // Use a gray source so only its HSV "value" component influences the blend.
+    color: Rgba::from_rgba8(40, 40, 40, 255),
   }));
   list.push(DisplayItem::PopStackingContext);
 
