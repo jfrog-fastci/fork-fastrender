@@ -2,6 +2,23 @@ use fastrender::api::FastRender;
 use fastrender::style::color::Rgba;
 use fastrender::style::display::Display;
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
+use std::thread;
+
+fn with_large_stack<F, R>(f: F) -> R
+where
+  F: FnOnce() -> R + Send + 'static,
+  R: Send + 'static,
+{
+  const STACK_SIZE: usize = 8 * 1024 * 1024;
+  let handle = thread::Builder::new()
+    .stack_size(STACK_SIZE)
+    .spawn(f)
+    .expect("failed to spawn test thread");
+  match handle.join() {
+    Ok(result) => result,
+    Err(payload) => std::panic::resume_unwind(payload),
+  }
+}
 
 fn count_table_cells(node: &FragmentNode) -> usize {
   let mut count = 0;
@@ -346,58 +363,60 @@ fn float_descendant_counts_as_cell_content_for_empty_cells() {
 
 #[test]
 fn absolutely_positioned_descendant_does_not_count_as_cell_content_for_empty_cells() {
-  let html = r#"
-    <html>
-      <head>
-        <style>
-          table { border-collapse: separate; empty-cells: hide; border-spacing: 0; }
-          td { background: rgb(200, 20, 30); border: 2px solid black; padding: 0; }
-          span.abspos { position: absolute; }
-        </style>
-      </head>
-      <body>
-        <table>
-          <tr><td><span class="abspos">abs</span></td><td>filled</td></tr>
-        </table>
-      </body>
-    </html>
-  "#;
+  with_large_stack(|| {
+    let html = r#"
+      <html>
+        <head>
+          <style>
+            table { border-collapse: separate; empty-cells: hide; border-spacing: 0; }
+            td { background: rgb(200, 20, 30); border: 2px solid black; padding: 0; }
+            span.abspos { position: absolute; }
+          </style>
+        </head>
+        <body>
+          <table>
+            <tr><td><span class="abspos">abs</span></td><td>filled</td></tr>
+          </table>
+        </body>
+      </html>
+    "#;
 
-  let mut renderer = FastRender::new().unwrap();
-  let dom = renderer.parse_html(html).unwrap();
-  let tree = renderer.layout_document(&dom, 200, 200).unwrap();
+    let mut renderer = FastRender::new().unwrap();
+    let dom = renderer.parse_html(html).unwrap();
+    let tree = renderer.layout_document(&dom, 200, 200).unwrap();
 
-  let cells = cell_fragments(&tree);
-  assert_eq!(cells.len(), 2, "expected 2 table-cell fragments");
+    let cells = cell_fragments(&tree);
+    assert_eq!(cells.len(), 2, "expected 2 table-cell fragments");
 
-  let suppressed = cells
-    .iter()
-    .filter(|cell| {
-      cell
-        .style
-        .as_ref()
-        .map(|s| s.background_color.is_transparent())
-        .unwrap_or(false)
-    })
-    .count();
-  assert_eq!(
-    suppressed, 1,
-    "expected the absolute-positioned descendant to be ignored when determining cell emptiness"
-  );
+    let suppressed = cells
+      .iter()
+      .filter(|cell| {
+        cell
+          .style
+          .as_ref()
+          .map(|s| s.background_color.is_transparent())
+          .unwrap_or(false)
+      })
+      .count();
+    assert_eq!(
+      suppressed, 1,
+      "expected the absolute-positioned descendant to be ignored when determining cell emptiness"
+    );
 
-  let filled = find_cell_fragment_with_text(&tree.root, "filled")
-    .or_else(|| {
-      tree
-        .additional_fragments
-        .iter()
-        .find_map(|fragment| find_cell_fragment_with_text(fragment, "filled"))
-    })
-    .expect("filled cell fragment");
-  let filled_style = filled.style.as_ref().expect("cell style");
-  assert!(
-    !filled_style.background_color.is_transparent(),
-    "filled cell should not be suppressed"
-  );
+    let filled = find_cell_fragment_with_text(&tree.root, "filled")
+      .or_else(|| {
+        tree
+          .additional_fragments
+          .iter()
+          .find_map(|fragment| find_cell_fragment_with_text(fragment, "filled"))
+      })
+      .expect("filled cell fragment");
+    let filled_style = filled.style.as_ref().expect("cell style");
+    assert!(
+      !filled_style.background_color.is_transparent(),
+      "filled cell should not be suppressed"
+    );
+  });
 }
 
 #[test]
