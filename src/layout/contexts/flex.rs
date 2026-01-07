@@ -4174,6 +4174,14 @@ fn measure_cache_key_and_snap(
   taffy::geometry::Size<Option<f32>>,
   taffy::geometry::Size<AvailableSpace>,
 ) {
+  fn sanitize_definite(val: f32) -> f32 {
+    if val.is_finite() {
+      val.max(0.0)
+    } else {
+      0.0
+    }
+  }
+
   fn quantize(val: f32) -> f32 {
     // Quantize measure keys to merge near-duplicate probes without visibly affecting layout.
     // Use progressively coarser steps as sizes grow to curb key cardinality on large pages
@@ -4207,19 +4215,10 @@ fn measure_cache_key_and_snap(
     }
   }
 
-  fn clamp_width_for_constraints(w: f32, viewport: Size) -> f32 {
-    // Match `constraints_from_taffy`, which clamps all definite inline sizes to the viewport.
-    // This means any `AvailableSpace::Definite(w)` above the viewport will produce the same
-    // downstream layout result, so we can safely coalesce cache keys for those probes.
-    w.min(viewport.width.max(0.0))
-  }
-
-  fn normalize_available_width(space: AvailableSpace, viewport: Size) -> AvailableSpace {
+  fn normalize_available_width(space: AvailableSpace) -> AvailableSpace {
     match space {
       AvailableSpace::Definite(w) if w <= 1.0 => AvailableSpace::MaxContent,
-      AvailableSpace::Definite(w) => {
-        AvailableSpace::Definite(quantize(clamp_width_for_constraints(w, viewport)))
-      }
+      AvailableSpace::Definite(w) => AvailableSpace::Definite(quantize(sanitize_definite(w))),
       other => other,
     }
   }
@@ -4227,21 +4226,22 @@ fn measure_cache_key_and_snap(
   fn normalize_available_height(space: AvailableSpace) -> AvailableSpace {
     match space {
       AvailableSpace::Definite(h) if h <= 1.0 => AvailableSpace::MaxContent,
-      AvailableSpace::Definite(h) => AvailableSpace::Definite(quantize(h)),
+      AvailableSpace::Definite(h) => AvailableSpace::Definite(quantize(sanitize_definite(h))),
       other => other,
     }
   }
 
   let mut snapped_known = known.clone();
+  if let Some(w) = snapped_known.width {
+    snapped_known.width = Some(sanitize_definite(w));
+  }
+  if let Some(h) = snapped_known.height {
+    snapped_known.height = Some(sanitize_definite(h));
+  }
   let mut snapped_avail = taffy::geometry::Size {
-    width: normalize_available_width(avail.width, viewport),
+    width: normalize_available_width(avail.width),
     height: normalize_available_height(avail.height),
   };
-  if let Some(w) = snapped_known.width {
-    if w > 1.0 {
-      snapped_known.width = Some(clamp_width_for_constraints(w, viewport));
-    }
-  }
   if let Some(w) = snapped_known.width {
     if w <= 1.0 && matches!(snapped_avail.width, AvailableSpace::MaxContent) {
       snapped_known.width = None;
@@ -7903,26 +7903,26 @@ impl FlexFormattingContext {
       }
     }
 
-    let clamp_def_width = |w: f32| w.min(self.viewport_size.width);
+    let sanitize_definite = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
     let width = match (known.width, available.width) {
-      (Some(w), _) => CrateAvailableSpace::Definite(clamp_def_width(w)),
+      (Some(w), _) => CrateAvailableSpace::Definite(sanitize_definite(w)),
       (_, AvailableSpace::Definite(w)) => {
         if w <= 1.0 {
           CrateAvailableSpace::Indefinite
         } else {
-          CrateAvailableSpace::Definite(clamp_def_width(w))
+          CrateAvailableSpace::Definite(sanitize_definite(w))
         }
       }
       (_, AvailableSpace::MinContent) => CrateAvailableSpace::MinContent,
       (_, AvailableSpace::MaxContent) => CrateAvailableSpace::MaxContent,
     };
     let height = match (known.height, available.height) {
-      (Some(h), _) => CrateAvailableSpace::Definite(h),
+      (Some(h), _) => CrateAvailableSpace::Definite(sanitize_definite(h)),
       (_, AvailableSpace::Definite(h)) => {
         if h <= 1.0 {
           CrateAvailableSpace::Indefinite
         } else {
-          CrateAvailableSpace::Definite(h)
+          CrateAvailableSpace::Definite(sanitize_definite(h))
         }
       }
       (_, AvailableSpace::MinContent) => CrateAvailableSpace::MinContent,
@@ -11000,7 +11000,7 @@ mod tests {
   }
 
   #[test]
-  fn measure_cache_clamps_definite_widths_at_viewport() {
+  fn measure_cache_does_not_clamp_definite_widths_to_viewport() {
     use crate::geometry::Size as GeoSize;
     use taffy::style::AvailableSpace;
 
@@ -11010,7 +11010,7 @@ mod tests {
       height: None,
     };
 
-    let key_viewport = super::measure_cache_key(
+    let (key_viewport, _snapped_known, snapped_avail_viewport) = super::measure_cache_key_and_snap(
       &known,
       &taffy::geometry::Size {
         width: AvailableSpace::Definite(1200.0),
@@ -11020,9 +11020,7 @@ mod tests {
       false,
     );
 
-    // Any available width larger than the viewport is clamped by `constraints_from_taffy`, so it
-    // should also share the same cache key.
-    let key_wider = super::measure_cache_key(
+    let (key_wider, _snapped_known, snapped_avail_wider) = super::measure_cache_key_and_snap(
       &known,
       &taffy::geometry::Size {
         width: AvailableSpace::Definite(1700.0),
@@ -11031,10 +11029,14 @@ mod tests {
       viewport,
       false,
     );
-    assert_eq!(key_viewport, key_wider);
+    assert_ne!(key_viewport, key_wider);
+    assert_eq!(snapped_avail_viewport.width, AvailableSpace::Definite(1200.0));
+    match snapped_avail_wider.width {
+      AvailableSpace::Definite(w) => assert!(w > viewport.width),
+      other => panic!("expected definite available width, got {other:?}"),
+    }
 
-    // Known dimensions should receive the same clamping treatment.
-    let key_known_wider = super::measure_cache_key(
+    let (key_known_wider, snapped_known_wider, _snapped_avail) = super::measure_cache_key_and_snap(
       &taffy::geometry::Size {
         width: Some(1700.0),
         height: None,
@@ -11046,7 +11048,8 @@ mod tests {
       viewport,
       false,
     );
-    let key_known_viewport = super::measure_cache_key(
+    let (key_known_viewport, snapped_known_viewport, _snapped_avail) =
+      super::measure_cache_key_and_snap(
       &taffy::geometry::Size {
         width: Some(1200.0),
         height: None,
@@ -11058,7 +11061,9 @@ mod tests {
       viewport,
       false,
     );
-    assert_eq!(key_known_wider, key_known_viewport);
+    assert_ne!(key_known_wider, key_known_viewport);
+    assert!(snapped_known_wider.width.unwrap() > viewport.width);
+    assert!(snapped_known_viewport.width.unwrap() <= viewport.width);
   }
 
   #[test]
@@ -11090,10 +11095,10 @@ mod tests {
       keys.insert(key);
     }
 
-    assert_eq!(
-      keys.len(),
-      1,
-      "expected jittery widths above the viewport to coalesce into a single cache key"
+    assert!(
+      keys.len() <= 32,
+      "expected jittery widths above the viewport to be coalesced, got {} unique keys",
+      keys.len()
     );
   }
 
