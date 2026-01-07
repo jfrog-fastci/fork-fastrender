@@ -27,7 +27,7 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
 - Form control model: `src/tree/box_tree.rs::FormControl` (+ `FormControlKind`, `TextControlKind`)
 - Box generation: `src/tree/box_generation.rs::create_form_control_replaced`
 - Intrinsic sizing: `src/api.rs::resolve_intrinsic_for_replaced_for_media`
-- Form-control pseudo-element styles (`::placeholder`, `::-webkit-slider-thumb`, `::-webkit-slider-runnable-track`): `src/style/cascade.rs::compute_form_control_pseudo_styles`
+- Form-control pseudo-element styles (`::placeholder` and range slider thumb/track pseudo-elements): `src/style/cascade.rs::compute_form_control_pseudo_styles`
   - Pseudo-element parsing/matching: `src/css/selectors.rs::PseudoElement::{Placeholder, SliderThumb, SliderTrack}`
 - Vendor aliasing:
   - `-webkit-appearance` → `appearance` during style application: `src/style/properties.rs`
@@ -59,8 +59,8 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
     - The thumb is still painted; in `Appearance::None` mode it can be styled via
       `slider_thumb_style` (captured from `::-webkit-slider-thumb` and vendor/legacy aliases like
       `::-moz-range-thumb`/`:-moz-range-thumb`/`::-ms-thumb`).
-    - `slider_track_style` is captured (e.g. `::-webkit-slider-runnable-track`) but is not yet used
-      for `appearance:none` painting.
+    - `slider_track_style` is captured (e.g. `::-webkit-slider-runnable-track`, `::-moz-range-track`,
+      `:-ms-track`) but is not yet used for `appearance:none` painting.
     - See `src/paint/display_list_builder.rs::emit_form_control` and
       `src/paint/painter.rs::paint_form_control` (`FormControlKind::Range`).
 - Task 80 tracks further broadening of the suppressed affordance set for `appearance:none` (beyond the current select/checkbox/range hooks).
@@ -90,7 +90,7 @@ This work is tracked in the capability map under `alg.forms.appearance-none`.
   - `src/tree/box_generation.rs::webkit_appearance_none_propagates_to_form_control`
   - `src/tree/box_generation.rs::moz_appearance_none_propagates_to_form_control`
 - Offline page fixtures:
-  - `tests/pages/fixtures/form_controls_appearance` includes `appearance:none` custom controls (including `::-webkit-slider-thumb` for ranges).
+  - `tests/pages/fixtures/form_controls_appearance` includes `appearance:none` custom controls (including vendor slider pseudos like `::-webkit-slider-thumb` / `::-moz-range-thumb`).
 
 The offline page regression suite includes form-heavy fixtures under `tests/pages/fixtures/form_controls*`
 so we can catch large visual diffs caused by missing UA form control styling/painting. Regenerate
