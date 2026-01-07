@@ -292,12 +292,6 @@ fn foreign_object_body_style(info: &ForeignObjectInfo) -> String {
     overflow_keyword(info.overflow_y)
   );
 
-  if let Some(bg) = info.background {
-    style.push_str("background:");
-    style.push_str(&format_css_color(bg));
-    style.push(';');
-  }
-
   style.push_str("color:");
   style.push_str(&format_css_color(info.style.color));
   style.push(';');
@@ -434,6 +428,13 @@ mod tests {
     let decoded = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
       .expect("decode png")
       .to_rgba8();
-    assert_eq!(decoded.get_pixel(0, 0).0, [255, 0, 0, 128]);
+    let px = decoded.get_pixel(0, 0).0;
+    assert_eq!(px[1], 0);
+    assert_eq!(px[2], 0);
+    assert_eq!(px[3], 128);
+    assert!(
+      px[0] >= 254,
+      "expected nearly full red channel after unpremultiplication, got {px:?}"
+    );
   }
 }
