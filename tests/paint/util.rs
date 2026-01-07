@@ -33,10 +33,6 @@ pub fn create_stacking_context_bounds_renderer() -> FastRender {
   FastRender::with_config(config).expect("renderer")
 }
 
-pub fn create_layer_bounds_renderer() -> FastRender {
-  create_stacking_context_bounds_renderer()
-}
-
 /// Compute the bounding box of pixels matching the predicate.
 pub fn bounding_box_for_color<F>(pixmap: &Pixmap, predicate: F) -> Option<(u32, u32, u32, u32)>
 where
