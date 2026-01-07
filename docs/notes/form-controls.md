@@ -19,7 +19,7 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
   - Checkboxes/radios draw marks when checked/indeterminate; selects render a text value plus a caret; ranges draw a track + thumb; color inputs render a swatch plus a hex label.
 - Disabled, focus, focus-visible, required, and invalid states are derived from element attributes + `data-fastr-focus*` hints during box generation and influence native painting (tinted overlays, accent changes). The `data-fastr-focus-visible` hint implies focus for native painting so standalone focus-visible markers are captured.
 - `appearance: none` affects **native painting** (suppresses some UA chrome) but does **not** currently change box generation: the element is still a `ReplacedType::FormControl` and keeps form-control intrinsic sizing. (Non-`none` keywords are preserved as `Appearance::Keyword(...)`, but painters currently only special-case `Appearance::None`.)
-- Vendor-prefixed `-webkit-appearance` and `-moz-appearance` are treated as aliases of `appearance` (for site compatibility), so either spelling can drive `Appearance::None` / keyword values through box generation and painting. (Note: `@supports` intentionally does **not** treat `-moz-appearance` as supported.)
+- Vendor-prefixed `-webkit-appearance` and `-moz-appearance` are treated as aliases of `appearance` (for site compatibility), so either spelling can drive `Appearance::None` / keyword values through box generation and painting. (Task 94 tracks vendor-alias conformance; note: `@supports` intentionally does **not** treat `-moz-appearance` as supported.)
 
 ## Key code paths
 
@@ -46,7 +46,7 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
   - Checkbox/radio marks are skipped when `control.appearance == Appearance::None`:
     - `src/paint/display_list_builder.rs::emit_form_control` (`FormControlKind::Checkbox`)
     - `src/paint/painter.rs::paint_form_control` (`FormControlKind::Checkbox`)
-- Task 80 will broaden the set of suppressed native affordances when `appearance:none` is set (for example, allowing more fully custom-styled controls without UA chrome).
+- Task 80 is expected to broaden the set of suppressed native affordances when `appearance:none` is set (for example, allowing more fully custom-styled controls without UA chrome).
 - Current limitations:
   - `appearance:none` does **not** turn the element into a normal container: the control is still a `ReplacedType::FormControl`, so its DOM children are not laid out (e.g. `<button><svg>…</svg>Label</button>` collapses to a plain text label).
   - `appearance:none` does **not** currently suppress range painting (`FormControlKind::Range` still draws a track + thumb in both painters; see `emit_form_control` / `paint_form_control` range branches).
