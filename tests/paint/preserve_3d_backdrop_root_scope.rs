@@ -103,3 +103,50 @@ fn preserve_3d_backdrop_filter_respects_backdrop_root_scope() {
     "expected backdrop-filter to stop at the clip-path backdrop root (transparent backdrop), letting the page background show through"
   );
 }
+
+#[test]
+fn preserve_3d_root_backdrop_root_includes_canvas_background() {
+  let bounds = Rect::from_xywh(0.0, 0.0, 10.0, 10.0);
+
+  let mut list = DisplayList::new();
+
+  // Preserve-3d paint root. Document roots establish a Backdrop Root boundary, but that boundary is
+  // represented by the base canvas surface (i.e. we must not force an extra full-size transparent
+  // offscreen layer just to mark it). If we did, a descendant `backdrop-filter` would incorrectly
+  // sample an empty backdrop instead of the canvas background.
+  let mut root = context(bounds, TransformStyle::Preserve3d);
+  root.is_root = true;
+  root.establishes_backdrop_root = true;
+  root.has_backdrop_sensitive_descendants = true;
+  list.push(DisplayItem::PushStackingContext(root));
+
+  let mut filtered_plane = context(bounds, TransformStyle::Flat);
+  filtered_plane.transform = Some(Transform3D::translate(0.0, 0.0, 10.0));
+  filtered_plane.backdrop_filters = vec![ResolvedFilter::Invert(1.0)];
+  filtered_plane.has_backdrop_sensitive_descendants = true;
+  filtered_plane.is_isolated = true;
+  filtered_plane.establishes_backdrop_root = true;
+  list.push(DisplayItem::PushStackingContext(filtered_plane));
+  list.push(DisplayItem::PopStackingContext);
+
+  list.push(DisplayItem::PopStackingContext);
+
+  let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PRESERVE3D_DISABLE_SCENE".to_string(),
+    "0".to_string(),
+  )])));
+
+  let pixmap = with_thread_runtime_toggles(toggles, || {
+    DisplayListRenderer::new(10, 10, Rgba::RED, FontContext::new())
+      .unwrap()
+      .render(&list)
+      .unwrap()
+  });
+
+  let px = pixmap.pixel(5, 5).expect("pixel in-bounds");
+  assert_eq!(
+    (px.red(), px.green(), px.blue(), px.alpha()),
+    (0, 255, 255, 255),
+    "expected invert backdrop-filter to sample the canvas background (red → cyan) even when the preserve-3d root establishes the document Backdrop Root"
+  );
+}
