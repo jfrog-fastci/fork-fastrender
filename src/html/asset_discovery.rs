@@ -6,6 +6,7 @@
 
 use crate::css::loader::resolve_href;
 use crate::html::image_attrs;
+use crate::html::images;
 use memchr::memchr;
 use std::collections::HashSet;
 use std::ops::ControlFlow;
@@ -376,15 +377,42 @@ pub fn discover_html_asset_urls_with_srcset_limit(
         }
       } else if name.eq_ignore_ascii_case(b"object") {
         let mut data: Option<&str> = None;
+        let mut type_attr: Option<&str> = None;
         for_each_attribute(tag, |attr, value| {
           if attr.eq_ignore_ascii_case("data") {
             data = Some(value);
-            return ControlFlow::Break(());
+          } else if attr.eq_ignore_ascii_case("type") {
+            type_attr = Some(value);
           }
           ControlFlow::Continue(())
         });
         if let Some(raw) = data {
-          push_document(&mut out, &mut seen_documents, raw);
+          let normalized_type = type_attr
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .and_then(|t| {
+              let normalized = t
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase();
+              (!normalized.is_empty()).then_some(normalized)
+            });
+          match normalized_type.as_deref() {
+            None => push_document(&mut out, &mut seen_documents, raw),
+            Some(mime) if images::is_supported_image_mime(mime) => {
+              push_image(&mut out, &mut seen_images, raw);
+            }
+            Some(mime)
+              if matches!(mime, "text/html" | "application/xhtml+xml" | "application/html")
+                || mime.contains("+html") =>
+            {
+              push_document(&mut out, &mut seen_documents, raw);
+            }
+            // Explicitly unsupported MIME types fall back to nested content; do not prefetch.
+            Some(_) => {}
+          }
         }
       } else if name.eq_ignore_ascii_case(b"embed") {
         let mut src: Option<&str> = None;
@@ -533,6 +561,22 @@ mod tests {
       .map(str::to_string)
       .collect::<Vec<_>>()
     );
+  }
+
+  #[test]
+  fn discovers_object_images_when_type_is_image() {
+    let html = r#"<object data="/img.png" type="image/png"></object>"#;
+    let out = discover_html_asset_urls(html, "https://example.com/base/");
+    assert_eq!(out.images, vec!["https://example.com/img.png".to_string()]);
+    assert!(out.documents.is_empty());
+  }
+
+  #[test]
+  fn skips_object_when_type_is_unsupported() {
+    let html = r#"<object data="/file.pdf" type="application/pdf"></object>"#;
+    let out = discover_html_asset_urls(html, "https://example.com/base/");
+    assert!(out.images.is_empty());
+    assert!(out.documents.is_empty());
   }
 
   #[test]
