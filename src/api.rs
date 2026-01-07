@@ -12349,12 +12349,40 @@ fn container_query_context_fingerprint(
       for prop in config.custom_properties.iter() {
         prop.hash(&mut hasher);
         match info.styles.custom_properties.get(prop) {
-          Some(value) => value
-            .value
-            .trim()
-            .trim_end_matches(';')
-            .trim()
-            .hash(&mut hasher),
+          Some(value) => {
+            let raw = value.value.trim().trim_end_matches(';').trim();
+
+            if crate::style::var_resolution::contains_var(raw) {
+              let value = crate::css::types::PropertyValue::Custom(raw.to_string());
+              match crate::style::var_resolution::resolve_var_for_property(
+                &value,
+                &info.styles.custom_properties,
+                "",
+              ) {
+                crate::style::var_resolution::VarResolutionResult::Resolved { css_text, value } => {
+                  let no_substitution = matches!(
+                    (&value, css_text.as_ref()),
+                    (crate::style::var_resolution::ResolvedPropertyValue::Borrowed(_), "")
+                  );
+                  let resolved = if no_substitution { raw } else { css_text.as_ref() };
+                  resolved.trim().trim_end_matches(';').trim().hash(&mut hasher);
+                }
+                crate::style::var_resolution::VarResolutionResult::InvalidSyntax(resolved) => {
+                  "var_invalid_syntax".hash(&mut hasher);
+                  resolved.trim().trim_end_matches(';').trim().hash(&mut hasher);
+                }
+                crate::style::var_resolution::VarResolutionResult::NotFound(name) => {
+                  "var_not_found".hash(&mut hasher);
+                  name.hash(&mut hasher);
+                }
+                crate::style::var_resolution::VarResolutionResult::RecursionLimitExceeded => {
+                  "var_recursion_limit".hash(&mut hasher);
+                }
+              }
+            } else {
+              raw.hash(&mut hasher);
+            }
+          }
           None => 0u8.hash(&mut hasher),
         }
       }
@@ -16362,6 +16390,76 @@ mod tests {
     assert_ne!(
       fp_a, fp_b,
       "fingerprint should change when var() dependencies change"
+    );
+  }
+
+  #[test]
+  fn container_query_fingerprint_tracks_transitive_custom_props_used_by_size_query_vars() {
+    let stylesheet =
+      crate::css::parser::parse_stylesheet("@container (width > var(--x)) { .a { color: red; } }")
+        .expect("stylesheet parses");
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+    let metadata = stylesheet.collect_css_metadata_with_cache(&media_ctx, None);
+
+    assert!(
+      metadata
+        .container_size_query_custom_properties
+        .contains("--x"),
+      "metadata should track direct size-query var() custom property"
+    );
+
+    let mut custom_properties: Vec<String> = metadata
+      .container_style_query_custom_properties
+      .into_iter()
+      .chain(metadata.container_size_query_custom_properties.into_iter())
+      .collect();
+    custom_properties.sort();
+    custom_properties.dedup();
+    let cfg = ContainerQueryFingerprintConfig {
+      custom_properties,
+      include_color: false,
+      include_background_color: false,
+      include_display: false,
+      include_font_size: false,
+    };
+
+    fn ctx_with_transitive_values(media_ctx: &MediaContext, y: &str) -> ContainerQueryContext {
+      let mut style = ComputedStyle::default();
+      style.custom_properties.insert(
+        "--x".into(),
+        crate::style::values::CustomPropertyValue::new("var(--y)", None),
+      );
+      style.custom_properties.insert(
+        "--y".into(),
+        crate::style::values::CustomPropertyValue::new(y, None),
+      );
+      let mut containers = HashMap::new();
+      containers.insert(
+        1usize,
+        crate::style::cascade::ContainerQueryInfo {
+          width: 100.0,
+          height: 200.0,
+          inline_size: 100.0,
+          block_size: 200.0,
+          container_type: crate::style::types::ContainerType::InlineSize,
+          names: Vec::new(),
+          font_size: 16.0,
+          styles: Arc::new(style),
+        },
+      );
+      ContainerQueryContext {
+        base_media: media_ctx.clone(),
+        containers,
+      }
+    }
+
+    let ctx_a = ctx_with_transitive_values(&media_ctx, "10px");
+    let ctx_b = ctx_with_transitive_values(&media_ctx, "20px");
+    let fp_a = container_query_context_fingerprint(&ctx_a, Some(&cfg));
+    let fp_b = container_query_context_fingerprint(&ctx_b, Some(&cfg));
+    assert_ne!(
+      fp_a, fp_b,
+      "fingerprint should change when transitive var() dependencies change"
     );
   }
 
