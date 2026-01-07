@@ -7,7 +7,7 @@ use fastrender::image_output::{encode_image, OutputFormat};
 use fastrender::style::cascade::StyledNode;
 use fastrender::style::types::{
   BackgroundPosition, BackgroundSize, BackgroundSizeComponent, BasicShape, BorderStyle,
-  ClipComponent, ClipPath, ClipRect, FillRule, FilterFunction,
+  ClipComponent, ClipPath, ClipRect, FillRule, FilterFunction, OutlineStyle,
 };
 use fastrender::style::values::CustomPropertyTypedValue;
 use fastrender::tree::box_tree::{BoxNode, BoxTree};
@@ -188,6 +188,12 @@ fn fragment_outline_width(tree: &FragmentTree, box_id: usize) -> f32 {
   style.outline_width.to_px()
 }
 
+fn fragment_outline_style(tree: &FragmentTree, box_id: usize) -> OutlineStyle {
+  let frag = find_fragment(&tree.root, box_id).expect("fragment present");
+  let style = frag.style.as_ref().expect("style present");
+  style.outline_style
+}
+
 fn fragment_box_shadows(tree: &FragmentTree, box_id: usize) -> Vec<BoxShadow> {
   let frag = find_fragment(&tree.root, box_id).expect("fragment present");
   frag
@@ -354,6 +360,49 @@ fn transitions_interpolate_box_shadow_over_time() {
 }
 
 #[test]
+fn transition_behavior_gates_value_pair_discrete_box_shadow_inset_mismatch() {
+  let html = r#"
+    <style>
+      @starting-style { #box { box-shadow: inset 0 0 0 0 rgb(255, 0, 0); } }
+      #box { width: 100px; height: 100px; box-shadow: 10px 0 0 0 rgb(255, 0, 0); transition: box-shadow 1000ms linear; }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut sampled = fragment_tree.clone();
+  let viewport = sampled.viewport_size();
+  animation::apply_transitions(&mut sampled, 400.0, viewport);
+  let shadows = fragment_box_shadows(&sampled, box_id);
+  assert_eq!(shadows.len(), 1);
+  let shadow = &shadows[0];
+  assert!(!shadow.inset, "expected after-change box-shadow");
+  assert!((shadow.offset_x.to_px() - 10.0).abs() < 1e-3);
+
+  let html_allow = r#"
+    <style>
+      @starting-style { #box { box-shadow: inset 0 0 0 0 rgb(255, 0, 0); } }
+      #box { width: 100px; height: 100px; box-shadow: 10px 0 0 0 rgb(255, 0, 0); transition: box-shadow 1000ms linear allow-discrete; }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html_allow, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut sampled = fragment_tree.clone();
+  let viewport = sampled.viewport_size();
+  animation::apply_transitions(&mut sampled, 400.0, viewport);
+  let shadows = fragment_box_shadows(&sampled, box_id);
+  assert_eq!(shadows.len(), 1);
+  let shadow = &shadows[0];
+  assert!(shadow.inset, "expected discrete transition to preserve inset shadow");
+  assert!((shadow.offset_x.to_px() - 0.0).abs() < 1e-3);
+}
+
+#[test]
 fn transitions_interpolate_text_shadow_over_time() {
   let html = r#"
     <style>
@@ -458,12 +507,102 @@ fn transitions_interpolate_outline_shorthand_over_time() {
 }
 
 #[test]
-fn transitions_interpolate_border_shorthand_over_time() {
+fn transitions_interpolate_outline_shorthand_style_is_not_animated_without_allow_discrete() {
+  let html = r#"
+    <style>
+      @starting-style { #box { outline: 0px solid rgb(255, 0, 0); } }
+      #box { width: 100px; height: 100px; outline: 10px dashed rgb(0, 0, 255); transition: outline 1000ms linear; }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut start = fragment_tree.clone();
+  let viewport = start.viewport_size();
+  animation::apply_transitions(&mut start, 0.0, viewport);
+  assert!((fragment_outline_width(&start, box_id) - 0.0).abs() < 1e-3);
+  assert_eq!(fragment_outline_style(&start, box_id), OutlineStyle::Dashed);
+  let (color, invert) = fragment_outline_color(&start, box_id);
+  assert!(!invert);
+  assert_eq!(color, fastrender::Rgba::new(255, 0, 0, 1.0));
+
+  let mut early = fragment_tree.clone();
+  let viewport = early.viewport_size();
+  animation::apply_transitions(&mut early, 400.0, viewport);
+  assert!((fragment_outline_width(&early, box_id) - 4.0).abs() < 1e-3);
+  assert_eq!(fragment_outline_style(&early, box_id), OutlineStyle::Dashed);
+  let (color, invert) = fragment_outline_color(&early, box_id);
+  assert!(!invert);
+  assert_eq!(color, fastrender::Rgba::new(153, 0, 102, 1.0));
+}
+
+#[test]
+fn transitions_interpolate_outline_shorthand_style_flips_with_allow_discrete() {
+  let html = r#"
+    <style>
+      @starting-style { #box { outline: 0px solid rgb(255, 0, 0); } }
+      #box { width: 100px; height: 100px; outline: 10px dashed rgb(0, 0, 255); transition: outline 1000ms linear; transition-behavior: allow-discrete; }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut early = fragment_tree.clone();
+  let viewport = early.viewport_size();
+  animation::apply_transitions(&mut early, 400.0, viewport);
+  assert_eq!(fragment_outline_style(&early, box_id), OutlineStyle::Solid);
+
+  let mut late = fragment_tree.clone();
+  let viewport = late.viewport_size();
+  animation::apply_transitions(&mut late, 600.0, viewport);
+  assert_eq!(fragment_outline_style(&late, box_id), OutlineStyle::Dashed);
+}
+
+#[test]
+fn transitions_interpolate_border_shorthand_over_time_without_allow_discrete() {
   let html = r#"
     <style>
       @starting-style { #box { border: 0px solid rgb(255, 0, 0); } }
       #box { width: 100px; height: 100px; border: 10px dashed rgb(0, 0, 255); transition: border 1000ms linear; }
       #box { transition-behavior: allow-discrete; }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut start = fragment_tree.clone();
+  let viewport = start.viewport_size();
+  animation::apply_transitions(&mut start, 0.0, viewport);
+  assert!((fragment_border_top_width(&start, box_id) - 0.0).abs() < 1e-3);
+  assert_eq!(fragment_border_top_style(&start, box_id), BorderStyle::Dashed);
+  assert_eq!(
+    fragment_border_top_color(&start, box_id),
+    fastrender::Rgba::new(255, 0, 0, 1.0)
+  );
+
+  let mut early = fragment_tree.clone();
+  let viewport = early.viewport_size();
+  animation::apply_transitions(&mut early, 400.0, viewport);
+  assert!((fragment_border_top_width(&early, box_id) - 4.0).abs() < 1e-3);
+  assert_eq!(fragment_border_top_style(&early, box_id), BorderStyle::Dashed);
+  assert_eq!(
+    fragment_border_top_color(&early, box_id),
+    fastrender::Rgba::new(153, 0, 102, 1.0)
+  );
+}
+
+#[test]
+fn transitions_interpolate_border_shorthand_over_time_with_allow_discrete() {
+  let html = r#"
+    <style>
+      @starting-style { #box { border: 0px solid rgb(255, 0, 0); } }
+      #box { width: 100px; height: 100px; border: 10px dashed rgb(0, 0, 255); transition: border 1000ms linear; transition-behavior: allow-discrete; }
     </style>
     <div id="box"></div>
   "#;
@@ -512,7 +651,7 @@ fn transitions_interpolate_border_shorthand_over_time() {
 }
 
 #[test]
-fn transitions_interpolate_border_style_over_time() {
+fn transitions_do_not_start_border_style_transition_without_allow_discrete() {
   let html = r#"
     <style>
       @starting-style { #box { border-style: solid; } }
@@ -531,27 +670,47 @@ fn transitions_interpolate_border_style_over_time() {
   let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
   let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
 
+  let mut start = fragment_tree.clone();
+  let viewport = start.viewport_size();
+  animation::apply_transitions(&mut start, 0.0, viewport);
+  assert_eq!(fragment_border_top_style(&start, box_id), BorderStyle::Dashed);
+  assert!((fragment_border_top_width(&start, box_id) - 4.0).abs() < 1e-3);
+  assert_eq!(
+    fragment_border_top_color(&start, box_id),
+    fastrender::Rgba::new(0, 0, 0, 1.0)
+  );
+}
+
+#[test]
+fn transitions_interpolate_border_style_over_time_with_allow_discrete() {
+  let html = r#"
+    <style>
+      @starting-style { #box { border-style: solid; } }
+      #box {
+        width: 100px;
+        height: 100px;
+        border-width: 4px;
+        border-color: rgb(0, 0, 0);
+        border-style: dashed;
+        transition: border-style 1000ms linear;
+        transition-behavior: allow-discrete;
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
   let mut early = fragment_tree.clone();
   let viewport = early.viewport_size();
   animation::apply_transitions(&mut early, 400.0, viewport);
-  assert_eq!(
-    fragment_border_top_style(&early, box_id),
-    BorderStyle::Solid
-  );
-  assert!((fragment_border_top_width(&early, box_id) - 4.0).abs() < 1e-3);
-  assert_eq!(
-    fragment_border_top_color(&early, box_id),
-    fastrender::Rgba::new(0, 0, 0, 1.0)
-  );
+  assert_eq!(fragment_border_top_style(&early, box_id), BorderStyle::Solid);
 
   let mut late = fragment_tree.clone();
   let viewport = late.viewport_size();
   animation::apply_transitions(&mut late, 600.0, viewport);
-  assert_eq!(
-    fragment_border_top_style(&late, box_id),
-    BorderStyle::Dashed
-  );
-  assert!((fragment_border_top_width(&late, box_id) - 4.0).abs() < 1e-3);
+  assert_eq!(fragment_border_top_style(&late, box_id), BorderStyle::Dashed);
 }
 
 #[test]

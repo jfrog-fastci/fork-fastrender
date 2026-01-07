@@ -1477,7 +1477,7 @@ fn interpolate_rotate_value(a: &AnimatedValue, b: &AnimatedValue, t: f32) -> Opt
         angle: lerp(*angle, 0.0, t),
       }))
     }
-    _ => Some(AnimatedValue::Rotate(if t < 0.5 { *ra } else { *rb })),
+    _ => None,
   }
 }
 
@@ -2267,7 +2267,10 @@ fn interpolate_border_style_value(
   let (AnimatedValue::BorderStyle(sa), AnimatedValue::BorderStyle(sb)) = (a, b) else {
     return None;
   };
-  Some(AnimatedValue::BorderStyle(if t < 0.5 { *sa } else { *sb }))
+  let _ = t;
+  let _ = sa;
+  let _ = sb;
+  None
 }
 
 fn apply_border_style(style: &mut ComputedStyle, value: &AnimatedValue) {
@@ -2463,7 +2466,10 @@ fn interpolate_outline_style_value(
 ) -> Option<AnimatedValue> {
   match (a, b) {
     (AnimatedValue::OutlineStyle(sa), AnimatedValue::OutlineStyle(sb)) => {
-      Some(AnimatedValue::OutlineStyle(if t < 0.5 { *sa } else { *sb }))
+      let _ = t;
+      let _ = sa;
+      let _ = sb;
+      None
     }
     _ => None,
   }
@@ -5597,7 +5603,7 @@ fn transition_value_for_property(
   let Some(to_val) = (interpolator.extract)(style, ctx) else {
     return None;
   };
-
+ 
   let value = if allow_discrete {
     (interpolator.interpolate)(&from_val, &to_val, progress).or_else(|| {
       if progress >= 0.5 {
