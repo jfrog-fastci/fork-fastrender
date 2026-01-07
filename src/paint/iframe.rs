@@ -733,6 +733,7 @@ pub(crate) fn render_iframe_src(
   let mut cache = image_cache.clone();
   cache.set_base_url(final_url.clone());
   let nested_origin = origin_from_url(&final_url);
+  let response_referrer_policy = resource.response_referrer_policy;
   let nested_context = context.as_ref().map(|ctx| {
     let mut nested = ctx
       .for_origin(nested_origin)
@@ -742,6 +743,9 @@ pub(crate) fn render_iframe_src(
       .as_deref()
       .map(|u| u.to_string())
       .or_else(|| Some(resolved.clone()));
+    if let Some(policy) = response_referrer_policy {
+      nested.referrer_policy = policy;
+    }
     nested
   });
   let policy_for_render = nested_context
@@ -777,7 +781,7 @@ pub(crate) fn render_iframe_src(
 mod tests {
   use super::*;
   use crate::error::Error;
-  use crate::resource::FetchedResource;
+  use crate::resource::{FetchRequest, FetchedResource};
   use crate::resource::ResourceFetcher;
   use std::io;
   use std::sync::atomic::{AtomicUsize, Ordering};
@@ -857,6 +861,69 @@ mod tests {
         io::ErrorKind::NotFound,
         format!("unexpected fetch: {url}"),
       )))
+    }
+  }
+
+  #[derive(Clone)]
+  struct ReferrerPolicyHeaderIframeFetcher {
+    iframe_url: String,
+    css_url: String,
+    observed_css_policy: Arc<StdMutex<Option<ReferrerPolicy>>>,
+  }
+
+  impl ReferrerPolicyHeaderIframeFetcher {
+    fn new(
+      iframe_url: &str,
+      css_url: &str,
+      observed_css_policy: Arc<StdMutex<Option<ReferrerPolicy>>>,
+    ) -> Self {
+      Self {
+        iframe_url: iframe_url.to_string(),
+        css_url: css_url.to_string(),
+        observed_css_policy,
+      }
+    }
+  }
+
+  impl ResourceFetcher for ReferrerPolicyHeaderIframeFetcher {
+    fn fetch(&self, url: &str) -> crate::error::Result<FetchedResource> {
+      Err(Error::Io(io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("unexpected fetch: {url}"),
+      )))
+    }
+
+    fn fetch_with_request(&self, req: FetchRequest<'_>) -> crate::error::Result<FetchedResource> {
+      match req.destination {
+        FetchDestination::Iframe => {
+          assert_eq!(req.url, self.iframe_url);
+          let html = r#"
+            <link rel="stylesheet" href="style.css">
+            <div data-fastr-test="iframe-referrer-policy-header-113"></div>
+          "#;
+          let mut res = FetchedResource::with_final_url(
+            html.as_bytes().to_vec(),
+            Some("text/html; charset=utf-8".to_string()),
+            Some(self.iframe_url.clone()),
+          );
+          res.response_referrer_policy = Some(ReferrerPolicy::NoReferrer);
+          Ok(res)
+        }
+        FetchDestination::Style => {
+          assert_eq!(req.url, self.css_url);
+          if let Ok(mut guard) = self.observed_css_policy.lock() {
+            *guard = Some(req.referrer_policy);
+          }
+          Ok(FetchedResource::new(
+            b"html, body { margin: 0; padding: 0; }".to_vec(),
+            Some("text/css; charset=utf-8".to_string()),
+          ))
+        }
+        other => Err(Error::Io(io::Error::new(
+          io::ErrorKind::NotFound,
+          format!("unexpected fetch destination {other:?} for url {}", req.url),
+        ))),
+      }
     }
   }
 
@@ -1068,6 +1135,39 @@ mod tests {
         .iter()
         .any(|u| u == "https://example.com/original/style-redirect-113.css"),
       "stylesheet should resolve relative to the final URL, not the requested URL; got {urls:?}"
+    );
+  }
+
+  #[test]
+  fn iframe_referrer_policy_response_header_applies_to_subresources() {
+    let font_ctx = FontContext::new();
+    let iframe_url = "https://example.com/iframe-referrer-policy-header-113.html";
+    let css_url = "https://example.com/style.css";
+    let observed = Arc::new(StdMutex::new(None));
+    let fetcher = Arc::new(ReferrerPolicyHeaderIframeFetcher::new(
+      iframe_url,
+      css_url,
+      Arc::clone(&observed),
+    ));
+
+    let mut image_cache = ImageCache::with_fetcher(fetcher);
+    image_cache.set_resource_context(Some(ResourceContext {
+      document_url: Some("https://parent.test/".to_string()),
+      referrer_policy: ReferrerPolicy::default(),
+      policy: ResourceAccessPolicy::default(),
+      diagnostics: None,
+      iframe_depth_remaining: None,
+    }));
+
+    let rect = Rect::from_xywh(0.0, 0.0, 16.0, 16.0);
+    render_iframe_src(iframe_url, None, rect, None, &image_cache, &font_ctx, 1.0, 3)
+      .expect("iframe render should succeed");
+
+    let seen = observed.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(
+      *seen,
+      Some(ReferrerPolicy::NoReferrer),
+      "expected iframe subresource requests to inherit Referrer-Policy response header"
     );
   }
 
