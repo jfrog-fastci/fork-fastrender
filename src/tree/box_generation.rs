@@ -4795,7 +4795,39 @@ mod tests {
   #[test]
   fn select_ignores_display_none_options() {
     let control = first_select_control_from_html(
-      "<html><body><select><option selected style=\"display:none\">One</option><option>Two</option></select></body></html>",
+      "<html><body><select size=\"4\"><option selected style=\"display:none\">One</option><option>Two</option></select></body></html>",
+    );
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select form control kind");
+    };
+
+    assert_eq!(select.items.len(), 1);
+    assert!(select.selected.first().copied().is_some_and(|idx| matches!(
+      select.items.get(idx),
+      Some(SelectItem::Option { label, .. }) if label == "Two"
+    )));
+  }
+
+  #[test]
+  fn select_ignores_hidden_attribute_options() {
+    let control = first_select_control_from_html(
+      "<html><body><select size=\"4\"><option hidden>One</option><option>Two</option></select></body></html>",
+    );
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select form control kind");
+    };
+
+    assert_eq!(select.items.len(), 1);
+    assert!(select.selected.first().copied().is_some_and(|idx| matches!(
+      select.items.get(idx),
+      Some(SelectItem::Option { label, .. }) if label == "Two"
+    )));
+  }
+
+  #[test]
+  fn select_ignores_hidden_optgroup_and_descendants() {
+    let control = first_select_control_from_html(
+      "<html><body><select size=\"4\"><optgroup hidden label=\"g\"><option>One</option></optgroup><option>Two</option></select></body></html>",
     );
     let FormControlKind::Select(select) = &control.control else {
       panic!("expected select form control kind");

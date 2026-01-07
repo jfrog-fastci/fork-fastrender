@@ -4870,6 +4870,15 @@ impl<'a> ElementRef<'a> {
   }
 
   fn is_option_selected(&self) -> bool {
+    if node_hidden_for_select(self.node)
+      || self
+        .all_ancestors
+        .iter()
+        .rev()
+        .any(|ancestor| node_hidden_for_select(ancestor))
+    {
+      return false;
+    }
     let explicitly_selected = self.node.get_attribute_ref("selected").is_some();
     if explicitly_selected {
       return true;
@@ -5529,11 +5538,51 @@ fn supports_placeholder(input_type: Option<&str>) -> bool {
   true
 }
 
+fn inline_style_display_is_none(node: &DomNode) -> Option<bool> {
+  let style_attr = node.get_attribute_ref("style")?;
+  for decl in style_attr.split(';') {
+    let Some((name, value)) = decl.split_once(':') else {
+      continue;
+    };
+    if !name.trim().eq_ignore_ascii_case("display") {
+      continue;
+    }
+    let token = value
+      .trim()
+      .split(|c: char| c.is_ascii_whitespace() || c == '!' || c == ';')
+      .next()
+      .unwrap_or("");
+    if token.is_empty() {
+      return None;
+    }
+    return Some(token.eq_ignore_ascii_case("none"));
+  }
+  None
+}
+
+fn node_hidden_for_select(node: &DomNode) -> bool {
+  // The CSS cascade is not available at selector-matching time, but `<option hidden>`
+  // / `<optgroup hidden>` should still not participate in selection heuristics.
+  //
+  // Honor inline `style="display: ..."` when present so author overrides of `[hidden]`
+  // stay consistent with the computed `display` used by the rendering pipeline.
+  if let Some(is_none) = inline_style_display_is_none(node) {
+    return is_none;
+  }
+  let DomNodeType::Element { attributes, .. } = &node.node_type else {
+    return false;
+  };
+  node_is_hidden(attributes)
+}
+
 fn select_has_explicit_selection(select: &DomNode) -> bool {
   let mut stack: Vec<&DomNode> = Vec::new();
   stack.push(select);
 
   while let Some(node) = stack.pop() {
+    if node_hidden_for_select(node) {
+      continue;
+    }
     if let Some(tag) = node.tag_name() {
       if tag.eq_ignore_ascii_case("option") && node.get_attribute_ref("selected").is_some() {
         return true;
@@ -5573,6 +5622,9 @@ fn collect_selected_option_values(node: &DomNode, optgroup_disabled: bool, out: 
   stack.push((node, optgroup_disabled));
 
   while let Some((node, optgroup_disabled)) = stack.pop() {
+    if node_hidden_for_select(node) {
+      continue;
+    }
     let tag = node.tag_name().unwrap_or("");
     let is_option = tag.eq_ignore_ascii_case("option");
     let is_optgroup = tag.eq_ignore_ascii_case("optgroup");
@@ -5598,6 +5650,9 @@ fn find_selected_option_value(node: &DomNode, optgroup_disabled: bool) -> Option
   stack.push((node, optgroup_disabled));
 
   while let Some((node, optgroup_disabled)) = stack.pop() {
+    if node_hidden_for_select(node) {
+      continue;
+    }
     let tag = node.tag_name().unwrap_or("");
     let is_option = tag.eq_ignore_ascii_case("option");
     let is_optgroup = tag.eq_ignore_ascii_case("optgroup");
@@ -5625,6 +5680,9 @@ fn first_enabled_option<'a>(node: &'a DomNode, optgroup_disabled: bool) -> Optio
   stack.push((node, optgroup_disabled));
 
   while let Some((node, optgroup_disabled)) = stack.pop() {
+    if node_hidden_for_select(node) {
+      continue;
+    }
     let tag = node.tag_name().unwrap_or("");
     let is_option = tag.eq_ignore_ascii_case("option");
     let is_optgroup = tag.eq_ignore_ascii_case("optgroup");
@@ -10343,6 +10401,84 @@ mod tests {
     let ancestors: Vec<&DomNode> = vec![&select_multiple_selected];
     let selected_option = &select_multiple_selected.children[0];
     assert!(matches(selected_option, &ancestors, &PseudoClass::Checked));
+
+    let select_hidden_selected = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "select".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "option".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![
+              ("hidden".to_string(), "hidden".to_string()),
+              ("selected".to_string(), "selected".to_string()),
+            ],
+          },
+          children: vec![],
+        },
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "option".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![],
+          },
+          children: vec![],
+        },
+      ],
+    };
+    let ancestors: Vec<&DomNode> = vec![&select_hidden_selected];
+    let hidden_option = &select_hidden_selected.children[0];
+    let visible_option = &select_hidden_selected.children[1];
+    assert!(!matches(hidden_option, &ancestors, &PseudoClass::Checked));
+    assert!(matches(visible_option, &ancestors, &PseudoClass::Checked));
+
+    let select_hidden_optgroup = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "select".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![],
+      },
+      children: vec![
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "optgroup".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![("hidden".to_string(), "hidden".to_string())],
+          },
+          children: vec![DomNode {
+            node_type: DomNodeType::Element {
+              tag_name: "option".to_string(),
+              namespace: HTML_NAMESPACE.to_string(),
+              attributes: vec![],
+            },
+            children: vec![],
+          }],
+        },
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "option".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![],
+          },
+          children: vec![],
+        },
+      ],
+    };
+    let optgroup = &select_hidden_optgroup.children[0];
+    let hidden_optgroup_option = &optgroup.children[0];
+    let visible_option = &select_hidden_optgroup.children[1];
+    let ancestors: Vec<&DomNode> = vec![&select_hidden_optgroup, optgroup];
+    assert!(!matches(
+      hidden_optgroup_option,
+      &ancestors,
+      &PseudoClass::Checked
+    ));
+    let ancestors: Vec<&DomNode> = vec![&select_hidden_optgroup];
+    assert!(matches(visible_option, &ancestors, &PseudoClass::Checked));
   }
 
   #[test]
