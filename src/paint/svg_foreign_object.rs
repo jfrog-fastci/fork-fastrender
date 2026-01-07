@@ -74,6 +74,10 @@ pub(crate) fn foreign_object_image_tag(info: &ForeignObjectInfo, data_url: &str,
   parts.push("preserveAspectRatio=\"none\"".to_string());
   parts.push(format!("href=\"{}\"", escape_attr_value(data_url)));
 
+  if info.overflow_x == Overflow::Visible && info.overflow_y == Overflow::Visible {
+    return format!("<image {attrs}/>", attrs = parts.join(" "));
+  }
+
   let clip_id = format!("fastr-fo-{}", idx);
   let clip = format!(
     "<clipPath id=\"{}\"><rect x=\"{:.6}\" y=\"{:.6}\" width=\"{:.6}\" height=\"{:.6}\"/></clipPath>",
@@ -191,11 +195,19 @@ fn build_foreign_object_document(info: &ForeignObjectInfo, shared_css: &str) -> 
 fn foreign_object_body_style(info: &ForeignObjectInfo) -> String {
   let mut style =
     String::from("margin:0;padding:0;width:100%;height:100%;display:block;box-sizing:border-box;");
-  let overflow = match (info.overflow_x, info.overflow_y) {
-    (Overflow::Visible, Overflow::Visible) => "visible",
-    _ => "hidden",
+  let overflow_keyword = |overflow: Overflow| match overflow {
+    Overflow::Visible => "visible",
+    Overflow::Hidden => "hidden",
+    Overflow::Scroll => "scroll",
+    Overflow::Auto => "auto",
+    Overflow::Clip => "clip",
   };
-  let _ = write!(&mut style, "overflow:{};", overflow);
+  let _ = write!(
+    &mut style,
+    "overflow-x:{};overflow-y:{};",
+    overflow_keyword(info.overflow_x),
+    overflow_keyword(info.overflow_y)
+  );
 
   if let Some(bg) = info.background {
     style.push_str("background:");

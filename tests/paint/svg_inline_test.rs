@@ -390,6 +390,47 @@ fn foreign_object_accepts_percentage_units_for_dimensions() {
 }
 
 #[test]
+fn foreign_object_overflow_hidden_clips_filter_effects() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+         <style>body{margin:0;background:white} svg{display:block}</style>
+         <svg width="40" height="40" viewBox="0 0 40 40">
+           <defs>
+              <filter id="blur" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="4"/>
+            </filter>
+          </defs>
+          <foreignObject x="10" y="10" width="20" height="20" style="overflow:hidden" filter="url(#blur)">
+             <div xmlns="http://www.w3.org/1999/xhtml" style="width:20px;height:20px;background: rgb(255,0,0);"></div>
+          </foreignObject>
+        </svg>
+          "#;
+
+      let toggles = fastrender::debug::runtime::RuntimeToggles::from_map(std::collections::HashMap::from([(
+        "FASTR_PAINT_BACKEND".to_string(),
+        "legacy".to_string(),
+      )]));
+      let options = RenderOptions::new()
+        .with_viewport(40, 40)
+        .with_runtime_toggles(toggles);
+      let pixmap = renderer
+        .render_html_with_options(html, options)
+        .expect("render svg");
+      // ForeignObject contents should be visible inside the bounds.
+      assert_ne!(pixel(&pixmap, 20, 20), [255, 255, 255, 255]);
+      // Filter output that spills outside the foreignObject should be clipped when overflow is
+      // hidden.
+      assert_eq!(pixel(&pixmap, 8, 20), [255, 255, 255, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn foreign_object_percentage_units_do_not_emit_unresolved_placeholder() {
   let html = r#"
   <svg width="16" height="12" viewBox="0 0 16 12">
@@ -410,4 +451,44 @@ fn foreign_object_percentage_units_do_not_emit_unresolved_placeholder() {
       .contains("FASTRENDER_FOREIGN_OBJECT_UNRESOLVED"),
     "percentage dimensions should avoid unresolved placeholder comments"
   );
+}
+
+#[test]
+fn foreign_object_overflow_visible_allows_filter_effects_outside_bounds() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+         <style>body{margin:0;background:white} svg{display:block}</style>
+         <svg width="40" height="40" viewBox="0 0 40 40">
+           <defs>
+             <filter id="blur" x="-50%" y="-50%" width="200%" height="200%">
+               <feGaussianBlur stdDeviation="4"/>
+           </filter>
+         </defs>
+         <foreignObject x="10" y="10" width="20" height="20" style="overflow:visible" filter="url(#blur)">
+            <div xmlns="http://www.w3.org/1999/xhtml" style="width:20px;height:20px;background: rgb(255,0,0);"></div>
+         </foreignObject>
+       </svg>
+         "#;
+
+      let toggles = fastrender::debug::runtime::RuntimeToggles::from_map(std::collections::HashMap::from([(
+        "FASTR_PAINT_BACKEND".to_string(),
+        "legacy".to_string(),
+      )]));
+      let options = RenderOptions::new()
+        .with_viewport(40, 40)
+        .with_runtime_toggles(toggles);
+      let pixmap = renderer
+        .render_html_with_options(html, options)
+        .expect("render svg");
+      // ForeignObject contents should be visible inside the bounds.
+      assert_ne!(pixel(&pixmap, 20, 20), [255, 255, 255, 255]);
+      // Without overflow clipping, the blur filter should be visible just outside the bounds.
+      assert_ne!(pixel(&pixmap, 8, 20), [255, 255, 255, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
 }
