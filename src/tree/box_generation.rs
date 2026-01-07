@@ -4691,9 +4691,18 @@ fn create_replaced_box_from_styled(
       )
     }
     _ => {
-      let intrinsic_width = width_attr.and_then(|w| w.parse::<f32>().ok());
+      let intrinsic_width = width_attr
+        .and_then(|w| w.parse::<f32>().ok())
+        // HTML width/height content attributes are non-negative integers, but we treat 0 and
+        // non-finite values as "missing" so they don't get recorded as an intrinsic size and
+        // suppress later intrinsic sizing fallbacks (e.g. alt-text sizing when the image cannot be
+        // loaded). (This also matches our internal convention where an intrinsic axis is only
+        // considered known when it is a finite, positive number.)
+        .filter(|w| w.is_finite() && *w > 0.0);
 
-      let intrinsic_height = height_attr.and_then(|h| h.parse::<f32>().ok());
+      let intrinsic_height = height_attr
+        .and_then(|h| h.parse::<f32>().ok())
+        .filter(|h| h.is_finite() && *h > 0.0);
 
       let intrinsic_size = match (intrinsic_width, intrinsic_height) {
         (Some(w), Some(h)) => Some(Size::new(w, h)),
@@ -4984,6 +4993,62 @@ mod tests {
       }
       other => panic!("expected replaced box, got {other:?}"),
     }
+  }
+
+  #[test]
+  fn img_intrinsic_size_ignores_invalid_dimension_attributes() {
+    fn set_attr(node: &mut StyledNode, name: &str, value: &str) {
+      match &mut node.node.node_type {
+        DomNodeType::Element { attributes, .. } => {
+          attributes.push((name.to_string(), value.to_string()));
+        }
+        _ => panic!("expected element node"),
+      }
+    }
+
+    let mut zero = styled_element("img");
+    zero.node_id = 1;
+    set_attr(&mut zero, "src", "test.png");
+    set_attr(&mut zero, "width", "0");
+
+    let mut nan = styled_element("img");
+    nan.node_id = 2;
+    set_attr(&mut nan, "src", "test.png");
+    set_attr(&mut nan, "width", "NaN");
+
+    let mut negative = styled_element("img");
+    negative.node_id = 3;
+    set_attr(&mut negative, "src", "test.png");
+    set_attr(&mut negative, "width", "-10");
+    set_attr(&mut negative, "height", "-20");
+
+    let mut negative_width_only = styled_element("img");
+    negative_width_only.node_id = 4;
+    set_attr(&mut negative_width_only, "src", "test.png");
+    set_attr(&mut negative_width_only, "width", "-10");
+    set_attr(&mut negative_width_only, "height", "80");
+
+    let mut root = styled_element("div");
+    root.children = vec![zero, nan, negative, negative_width_only];
+
+    let tree = generate_box_tree(&root);
+    assert_eq!(tree.root.children.len(), 4);
+
+    for idx in 0..3 {
+      let node = &tree.root.children[idx];
+      let BoxType::Replaced(replaced) = &node.box_type else {
+        panic!("expected replaced box, got {:?}", node.box_type);
+      };
+      assert_eq!(replaced.intrinsic_size, None, "unexpected intrinsic size for img {idx}");
+      assert_eq!(replaced.aspect_ratio, None, "unexpected aspect ratio for img {idx}");
+    }
+
+    let node = &tree.root.children[3];
+    let BoxType::Replaced(replaced) = &node.box_type else {
+      panic!("expected replaced box, got {:?}", node.box_type);
+    };
+    assert_eq!(replaced.intrinsic_size, Some(Size::new(0.0, 80.0)));
+    assert_eq!(replaced.aspect_ratio, None);
   }
 
   #[test]
