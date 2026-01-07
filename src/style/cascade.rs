@@ -10971,7 +10971,7 @@ mod tests {
   use crate::style::types::WillChange;
   use crate::style::types::WillChangeHint;
   use crate::style::types::WritingMode;
-  use crate::style::values::{CustomPropertyTypedValue, Length};
+  use crate::style::values::{CustomPropertyTypedValue, Length, LengthUnit};
   use crate::style::ComputedStyle;
   use crate::style::CursorKeyword;
   use crate::style::OutlineStyle;
@@ -11101,6 +11101,76 @@ mod tests {
     };
     let styled_hidden_input = apply_styles(&hidden_input_dom, &stylesheet);
     assert_eq!(styled_hidden_input.styles.display, Display::None);
+  }
+
+  #[test]
+  fn ua_form_control_pseudo_element_defaults_are_stable() {
+    // Placeholder pseudo element defaults: browsers apply reduced opacity so placeholder text
+    // is visible but distinct from user input.
+    let placeholder_dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("placeholder".to_string(), "Search…".to_string())],
+      },
+      children: vec![],
+    };
+    let styled_placeholder = apply_styles(&placeholder_dom, &StyleSheet::new());
+    let placeholder_styles = styled_placeholder
+      .placeholder_styles
+      .as_deref()
+      .expect("expected ::placeholder pseudo styles");
+    assert_eq!(
+      placeholder_styles.opacity, 0.6,
+      "UA should provide a stable default placeholder opacity"
+    );
+
+    // Range slider pseudo elements: ensure UA provides deterministic sizing/border defaults so
+    // partial author overrides (e.g. just changing background-color) don't make the control vanish.
+    let author_css = r#"
+      input[type="range"]::-webkit-slider-runnable-track { background-color: rgb(10, 20, 30); }
+    "#;
+    let stylesheet = parse_stylesheet(author_css).expect("parse stylesheet");
+    let range_dom = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("type".to_string(), "range".to_string())],
+      },
+      children: vec![],
+    };
+    let styled_range = apply_styles(&range_dom, &stylesheet);
+    let track = styled_range
+      .slider_track_styles
+      .as_deref()
+      .expect("expected slider track pseudo styles");
+    assert_eq!(
+      track.height,
+      Some(Length::px(4.0)),
+      "UA should provide a stable default track height"
+    );
+    assert_eq!(
+      track.background_color,
+      Rgba::rgb(10, 20, 30),
+      "author background-color should override UA, but other defaults should remain"
+    );
+    assert_eq!(track.border_top_width, Length::px(0.0));
+    assert_eq!(track.border_top_style, BorderStyle::None);
+    assert_eq!(track.border_top_left_radius.x, Length::px(2.0));
+    assert_eq!(track.border_top_left_radius.y, Length::px(2.0));
+
+    let thumb = styled_range
+      .slider_thumb_styles
+      .as_deref()
+      .expect("expected slider thumb pseudo styles");
+    assert_eq!(thumb.width, Some(Length::px(16.0)));
+    assert_eq!(thumb.height, Some(Length::px(16.0)));
+    assert_eq!(thumb.background_color, Rgba::WHITE);
+    assert_eq!(thumb.border_top_width, Length::px(1.0));
+    assert_eq!(thumb.border_top_style, BorderStyle::Solid);
+    assert_eq!(thumb.border_top_color, Rgba::rgb(130, 130, 130));
+    assert_eq!(thumb.border_top_left_radius.x.unit, LengthUnit::Percent);
+    assert_eq!(thumb.border_top_left_radius.x.value, 50.0);
   }
 
   #[test]
