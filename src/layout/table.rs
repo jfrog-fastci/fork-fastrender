@@ -2629,12 +2629,30 @@ fn compute_collapsed_borders(
     direction: Direction,
     orientation: Option<bool>,
   ) -> bool {
-    if a.style == BorderStyle::Hidden {
-      if b.style != BorderStyle::Hidden {
-        return true;
-      }
-    } else if b.style == BorderStyle::Hidden {
-      return false;
+    // CSS 2.1 §17.6.2.1 border conflict resolution.
+    //
+    // Rule 1: `hidden` suppresses all other borders at that edge.
+    // Rule 2: `none` is lowest priority.
+    // Rule 3: widest border wins; styles break ties.
+    // Rule 4: if only color differs, prefer origin; then left/right (LTR/RTL) and top.
+
+    match (a.style, b.style) {
+      (BorderStyle::Hidden, BorderStyle::Hidden) => {}
+      (BorderStyle::Hidden, _) => return true,
+      (_, BorderStyle::Hidden) => return false,
+      _ => {}
+    }
+
+    match (a.style, b.style) {
+      (BorderStyle::None, BorderStyle::None) => {}
+      (BorderStyle::None, _) => return false,
+      (_, BorderStyle::None) => return true,
+      _ => {}
+    }
+
+    let width_epsilon = 1e-6f32;
+    if (a.width - b.width).abs() > width_epsilon {
+      return a.width > b.width;
     }
 
     let a_style = style_rank(a.style);
@@ -2643,33 +2661,45 @@ fn compute_collapsed_borders(
       return a_style > b_style;
     }
 
-    let width_epsilon = 1e-6f32;
-    if (a.width - b.width).abs() > width_epsilon {
-      return a.width > b.width;
-    }
-
     let a_origin = origin_priority(a.origin);
     let b_origin = origin_priority(b.origin);
     if a_origin != b_origin {
       return a_origin > b_origin;
     }
 
-    if let Some(is_vertical) = orientation {
-      if is_vertical {
-        match direction {
-          Direction::Rtl => {
-            if a.col != b.col {
-              return a.col > b.col;
-            }
-          }
-          Direction::Ltr => {
-            if a.col != b.col {
-              return a.col < b.col;
-            }
-          }
+    let compare_cols = || match direction {
+      Direction::Rtl => a.col > b.col,
+      Direction::Ltr => a.col < b.col,
+    };
+    let compare_rows = || a.row < b.row;
+
+    match orientation {
+      Some(true) => {
+        // Vertical segment: the primary axis is left/right.
+        if a.col != b.col {
+          return compare_cols();
         }
-      } else if a.row != b.row {
-        return a.row < b.row;
+        if a.row != b.row {
+          return compare_rows();
+        }
+      }
+      Some(false) => {
+        // Horizontal segment: the primary axis is top/bottom.
+        if a.row != b.row {
+          return compare_rows();
+        }
+        if a.col != b.col {
+          return compare_cols();
+        }
+      }
+      None => {
+        // Corner join: apply both left/right and top tie-breakers.
+        if a.col != b.col {
+          return compare_cols();
+        }
+        if a.row != b.row {
+          return compare_rows();
+        }
       }
     }
 
@@ -2810,31 +2840,33 @@ fn compute_collapsed_borders(
         source_row_idx += 1;
       }
       TableElementType::Column => {
-        if let Some(visible) = source_col_to_visible.get(source_col_idx).and_then(|m| *m) {
-          column_styles[visible] = Some((child.style.clone(), source_counter));
-          source_counter += 1;
+        let span = child.table_column_span();
+        for _ in 0..span {
+          check_layout_deadline(&mut deadline_counter)?;
+          if let Some(visible) = source_col_to_visible.get(source_col_idx).and_then(|m| *m) {
+            column_styles[visible] = Some((child.style.clone(), source_counter));
+            source_counter += 1;
+          }
+          source_col_idx += 1;
         }
-        source_col_idx += 1;
       }
       TableElementType::ColumnGroup => {
         let group_order = source_counter;
         source_counter += 1;
         let mut first_visible = None;
         let mut last_visible = None;
-        if child.children.is_empty() {
-          if let Some(visible) = source_col_to_visible.get(source_col_idx).and_then(|m| *m) {
-            column_styles[visible] = column_styles[visible]
-              .take()
-              .or_else(|| Some((child.style.clone(), source_counter)));
-            source_counter += 1;
-            first_visible.get_or_insert(visible);
-            last_visible = Some(visible);
-          }
-          source_col_idx += 1;
-        } else {
+        let has_columns = child.children.iter().any(|group_child| {
+          TableStructure::get_table_element_type(group_child) == TableElementType::Column
+        });
+        if has_columns {
           for group_child in &child.children {
             check_layout_deadline(&mut deadline_counter)?;
-            if TableStructure::get_table_element_type(group_child) == TableElementType::Column {
+            if TableStructure::get_table_element_type(group_child) != TableElementType::Column {
+              continue;
+            }
+            let span = group_child.table_column_span();
+            for _ in 0..span {
+              check_layout_deadline(&mut deadline_counter)?;
               if let Some(visible) = source_col_to_visible.get(source_col_idx).and_then(|m| *m) {
                 column_styles[visible] = Some((group_child.style.clone(), source_counter));
                 source_counter += 1;
@@ -2843,6 +2875,16 @@ fn compute_collapsed_borders(
               }
               source_col_idx += 1;
             }
+          }
+        } else {
+          let span = child.table_column_span();
+          for _ in 0..span {
+            check_layout_deadline(&mut deadline_counter)?;
+            if let Some(visible) = source_col_to_visible.get(source_col_idx).and_then(|m| *m) {
+              first_visible.get_or_insert(visible);
+              last_visible = Some(visible);
+            }
+            source_col_idx += 1;
           }
         }
         if let (Some(start), Some(end)) = (first_visible, last_visible) {
