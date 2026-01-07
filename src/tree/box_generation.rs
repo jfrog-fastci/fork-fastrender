@@ -346,12 +346,8 @@ fn collect_box_generation_prepass<'a>(
         children_svg_count_allowed = false;
       } else if let Some(tag) = node.node.tag_name() {
         if is_replaced_element(tag) && node.styles.display != Display::Contents {
-          let is_object_with_fallback = tag.eq_ignore_ascii_case("object")
-            && node
-              .node
-              .get_attribute_ref("data")
-              .map(|d| d.is_empty())
-              .unwrap_or(true);
+          let is_object_with_fallback =
+            tag.eq_ignore_ascii_case("object") && !object_has_renderable_external_content(node);
           if !is_object_with_fallback {
             if tag.eq_ignore_ascii_case("svg") {
               out.svg_document_css.replaced_svg_count += 1;
@@ -2020,13 +2016,12 @@ fn generate_boxes_for_styled_into(
           }
 
           if is_replaced_element(tag) && styled.styles.display != Display::Contents {
-            // The <object> element falls back to its nested content when no data URI is provided.
-            // In that case we should not generate a replaced box, allowing the children to render normally.
+            // The <object> element falls back to its nested content when no usable external
+            // resource is provided (missing/empty `data` or an explicitly unsupported `type`).
+            // In that case we should not generate a replaced box, allowing the children to render
+            // normally.
             if !tag.eq_ignore_ascii_case("object")
-              || styled
-                .node
-                .get_attribute_ref("data")
-                .is_some_and(|d| !d.is_empty())
+              || object_has_renderable_external_content(styled)
             {
               counters.leave_scope();
               stack.pop();
@@ -3409,6 +3404,43 @@ pub fn is_replaced_element(tag: &str) -> bool {
     || tag.eq_ignore_ascii_case("math")
 }
 
+fn object_has_renderable_external_content(styled: &StyledNode) -> bool {
+  let Some(tag) = styled.node.tag_name() else {
+    return false;
+  };
+  if !tag.eq_ignore_ascii_case("object") {
+    return false;
+  }
+
+  if !styled
+    .node
+    .get_attribute_ref("data")
+    .is_some_and(|data| !data.is_empty())
+  {
+    return false;
+  }
+
+  let Some(type_attr) = styled.node.get_attribute_ref("type") else {
+    return true;
+  };
+  let type_trimmed = type_attr.trim();
+  if type_trimmed.is_empty() {
+    return true;
+  }
+
+  let normalized_type = type_trimmed
+    .split(';')
+    .next()
+    .unwrap_or("")
+    .trim()
+    .to_ascii_lowercase();
+  if normalized_type.is_empty() {
+    return true;
+  }
+
+  crate::html::images::is_supported_image_mime(&normalized_type)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MediaElementKind {
   Video,
@@ -3716,6 +3748,28 @@ mod tests {
 
   fn generate_box_tree_with_anonymous_fixup(styled: &StyledNode) -> BoxTree {
     generate_box_tree_with_anonymous_fixup_result(styled).expect("anonymous box generation failed")
+  }
+
+  fn count_object_replacements(node: &BoxNode) -> usize {
+    let mut count = 0;
+    if let BoxType::Replaced(repl) = &node.box_type {
+      if matches!(repl.replaced_type, ReplacedType::Object { .. }) {
+        count += 1;
+      }
+    }
+    for child in node.children.iter() {
+      count += count_object_replacements(child);
+    }
+    count
+  }
+
+  fn collect_text(node: &BoxNode, out: &mut Vec<String>) {
+    if let BoxType::Text(text) = &node.box_type {
+      out.push(text.text.clone());
+    }
+    for child in node.children.iter() {
+      collect_text(child, out);
+    }
   }
 
   fn first_select_control_from_html(html: &str) -> FormControl {
@@ -4065,28 +4119,6 @@ mod tests {
     let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
     let box_tree = generate_box_tree(&styled);
 
-    fn count_object_replacements(node: &BoxNode) -> usize {
-      let mut count = 0;
-      if let BoxType::Replaced(repl) = &node.box_type {
-        if matches!(repl.replaced_type, ReplacedType::Object { .. }) {
-          count += 1;
-        }
-      }
-      for child in node.children.iter() {
-        count += count_object_replacements(child);
-      }
-      count
-    }
-
-    fn collect_text(node: &BoxNode, out: &mut Vec<String>) {
-      if let BoxType::Text(text) = &node.box_type {
-        out.push(text.text.clone());
-      }
-      for child in node.children.iter() {
-        collect_text(child, out);
-      }
-    }
-
     assert_eq!(
       count_object_replacements(&box_tree.root),
       0,
@@ -4098,6 +4130,42 @@ mod tests {
     assert!(
       texts.iter().any(|t| t.contains("hi")),
       "fallback text from object children should be present"
+    );
+  }
+
+  #[test]
+  fn object_with_unsupported_type_renders_children() {
+    let html =
+      "<html><body><object data=\"file.pdf\" type=\"application/pdf\"><p>fallback</p></object></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    assert_eq!(
+      count_object_replacements(&box_tree.root),
+      0,
+      "object with unsupported type should render fallback content"
+    );
+
+    let mut texts = Vec::new();
+    collect_text(&box_tree.root, &mut texts);
+    assert!(
+      texts.iter().any(|t| t.contains("fallback")),
+      "fallback text should be present"
+    );
+  }
+
+  #[test]
+  fn object_with_supported_image_type_still_replaced() {
+    let html = "<html><body><object data=\"img.png\" type=\"image/png\"></object></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    assert_eq!(
+      count_object_replacements(&box_tree.root),
+      1,
+      "object with supported image type should render as replaced content"
     );
   }
 
