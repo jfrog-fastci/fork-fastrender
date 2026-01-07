@@ -10322,6 +10322,14 @@ mod tests {
   }
 
   #[test]
+  fn overflow_shorthand_two_values_sets_axes() {
+    let stylesheet = StyleSheet::new();
+    let styled = apply_styles(&element_with_style("overflow: scroll hidden;"), &stylesheet);
+    assert_eq!(styled.styles.overflow_x, Overflow::Scroll);
+    assert_eq!(styled.styles.overflow_y, Overflow::Hidden);
+  }
+
+  #[test]
   fn candidate_set_reset_allows_reuse_of_indices() {
     let mut set = CandidateSet::new(2);
     assert!(set.insert(1));

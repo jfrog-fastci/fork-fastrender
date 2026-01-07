@@ -7244,17 +7244,42 @@ fn apply_declaration_with_base_internal_with_order(
       }
     }
     "overflow" => {
-      if let PropertyValue::Keyword(kw) = resolved_value {
-        let overflow = match kw.as_str() {
+      let parse_overflow_keyword = |kw: &str| -> Option<Overflow> {
+        Some(match kw {
           "visible" => Overflow::Visible,
           "hidden" => Overflow::Hidden,
           "scroll" => Overflow::Scroll,
           "auto" => Overflow::Auto,
           "clip" => Overflow::Clip,
-          _ => styles.overflow_x,
-        };
-        styles.overflow_x = overflow;
-        styles.overflow_y = overflow;
+          _ => return None,
+        })
+      };
+
+      match resolved_value {
+        PropertyValue::Keyword(kw) => {
+          if let Some(overflow) = parse_overflow_keyword(kw) {
+            styles.overflow_x = overflow;
+            styles.overflow_y = overflow;
+          }
+        }
+        PropertyValue::Multiple(values) => match values.as_slice() {
+          [PropertyValue::Keyword(x)] => {
+            if let Some(overflow) = parse_overflow_keyword(x) {
+              styles.overflow_x = overflow;
+              styles.overflow_y = overflow;
+            }
+          }
+          [PropertyValue::Keyword(x), PropertyValue::Keyword(y)] => {
+            if let (Some(overflow_x), Some(overflow_y)) =
+              (parse_overflow_keyword(x), parse_overflow_keyword(y))
+            {
+              styles.overflow_x = overflow_x;
+              styles.overflow_y = overflow_y;
+            }
+          }
+          _ => {}
+        },
+        _ => {}
       }
     }
     "overflow-x" => {
@@ -22927,6 +22952,30 @@ mod tests {
 
     assert_eq!(style.overflow_x, Overflow::Clip);
     assert_eq!(style.overflow_y, Overflow::Clip);
+  }
+
+  #[test]
+  fn overflow_two_values_sets_axes_independently() {
+    let mut style = ComputedStyle::default();
+    apply_declaration(
+      &mut style,
+      &Declaration {
+        property: "overflow".into(),
+        value: PropertyValue::Multiple(vec![
+          PropertyValue::Keyword("scroll".to_string()),
+          PropertyValue::Keyword("hidden".to_string()),
+        ]),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+
+    assert_eq!(style.overflow_x, Overflow::Scroll);
+    assert_eq!(style.overflow_y, Overflow::Hidden);
   }
 
   #[test]
