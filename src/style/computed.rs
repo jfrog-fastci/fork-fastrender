@@ -47,6 +47,7 @@ use crate::style::types::ScrollSnapType;
 use crate::style::types::ScrollbarColor;
 use crate::style::types::ScrollbarGutter;
 use crate::style::types::ScrollbarWidth;
+use crate::style::types::WritingMode;
 use crate::style::types::TextAlignLast;
 use crate::style::types::TextIndent;
 use crate::style::types::TextJustify;
@@ -378,6 +379,11 @@ pub struct PositionedStyle {
   /// Initial: normal (1.2)
   /// Note: Can be length, number, or percentage
   pub line_height: LineHeight,
+  /// Writing mode (inherited)
+  ///
+  /// CSS: `writing-mode`
+  /// Initial: horizontal-tb
+  pub writing_mode: WritingMode,
   /// Base text direction (inherited)
   ///
   /// CSS: `direction`
@@ -637,6 +643,7 @@ impl Default for PositionedStyle {
       aspect_ratio: super::types::AspectRatio::Auto,
       font_size_adjust: FontSizeAdjust::None,
       line_height: LineHeight::Normal,
+      writing_mode: WritingMode::HorizontalTb,
       direction: Direction::Ltr,
       text_align: TextAlign::Start,
       text_align_last: TextAlignLast::Auto,

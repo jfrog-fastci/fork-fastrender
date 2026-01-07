@@ -49,6 +49,7 @@ use crate::layout::utils::resolve_offset_for_positioned;
 use crate::style::computed::PositionedStyle;
 use crate::style::position::Position;
 use crate::style::types::Direction;
+use crate::style::{block_axis_is_horizontal, block_axis_positive, inline_axis_positive};
 use crate::text::font_loader::FontContext;
 use crate::tree::fragment_tree::FragmentNode;
 
@@ -349,7 +350,29 @@ impl PositionedLayout {
     style: &PositionedStyle,
     containing_block: &ContainingBlock,
   ) -> Point {
-    compute_relative_offset(style, containing_block, &self.font_context)
+    let physical = compute_relative_offset(style, containing_block, &self.font_context);
+    if block_axis_is_horizontal(style.writing_mode) {
+      // Block-axis horizontal writing modes are laid out in logical coordinates where:
+      // - x is the inline axis (physical y)
+      // - y is the block axis (physical x)
+      // Convert the physical offset into that logical coordinate system so the subsequent
+      // axis conversion step preserves physical movement.
+      let inline_positive = inline_axis_positive(style.writing_mode, style.direction);
+      let block_positive = block_axis_positive(style.writing_mode);
+      let logical_dx = if inline_positive {
+        physical.y
+      } else {
+        -physical.y
+      };
+      let logical_dy = if block_positive {
+        physical.x
+      } else {
+        -physical.x
+      };
+      Point::new(logical_dx, logical_dy)
+    } else {
+      physical
+    }
   }
 
   /// Computes the position and size for an absolutely positioned element.

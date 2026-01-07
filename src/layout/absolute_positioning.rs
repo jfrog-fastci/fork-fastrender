@@ -2238,6 +2238,7 @@ pub fn resolve_positioned_style(
   };
   resolved.font_stretch = style.font_stretch;
   resolved.font_size_adjust = style.font_size_adjust;
+  resolved.writing_mode = style.writing_mode;
   resolved.direction = style.direction;
 
   let cb_width = containing_block.width();

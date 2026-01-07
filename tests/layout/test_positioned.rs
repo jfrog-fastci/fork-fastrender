@@ -23,6 +23,7 @@ use fastrender::style::types::Direction;
 use fastrender::style::types::FontSizeAdjust;
 use fastrender::style::types::FontSizeAdjustMetric;
 use fastrender::style::types::IntrinsicSizeKeyword;
+use fastrender::style::types::WritingMode;
 use fastrender::text::font_loader::FontContext;
 use fastrender::BoxNode;
 use fastrender::ComputedStyle;
@@ -618,6 +619,54 @@ fn test_relative_position_top_left_positive() {
 
   assert_eq!(result.bounds.x(), 50.0);
   assert_eq!(result.bounds.y(), 25.0);
+}
+
+#[test]
+fn relative_position_vertical_rl_offsets_apply_to_physical_axes() {
+  let mut root_style = ComputedStyle::default();
+  root_style.display = Display::Block;
+  root_style.writing_mode = WritingMode::VerticalRl;
+  // In vertical writing modes, `width` maps to the inline axis (physical height) in the block
+  // formatting context, while `height` maps to the block axis (physical width).
+  root_style.width = Some(Length::px(100.0));
+  root_style.height = Some(Length::px(200.0));
+  let root_style = Arc::new(root_style);
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.writing_mode = WritingMode::VerticalRl;
+  child_style.position = Position::Relative;
+  child_style.left = Some(Length::percent(10.0)); // 10% of 200px width = 20px
+  child_style.top = Some(Length::percent(30.0)); // 30% of 100px height = 30px
+  child_style.width = Some(Length::px(20.0));
+  child_style.height = Some(Length::px(20.0));
+  // For `vertical-rl`, the block-start side is physical right; inset from the right edge so the
+  // `left` offset stays within the viewport.
+  child_style.margin_right = Some(Length::px(50.0));
+  let child_style = Arc::new(child_style);
+
+  let mut child = BoxNode::new_block(child_style, FormattingContextType::Block, vec![]);
+  child.id = 1;
+
+  let mut root = BoxNode::new_block(root_style, FormattingContextType::Block, vec![child]);
+  root.id = 2;
+
+  let fc = BlockFormattingContext::new();
+  let fragment = fc
+    .layout(&root, &LayoutConstraints::definite(200.0, 100.0))
+    .expect("layout succeeds");
+
+  let child_fragment = find_fragment_by_box_id(&fragment, 1).expect("child fragment present");
+  assert!(
+    (child_fragment.bounds.x() - 150.0).abs() < 0.5,
+    "left offset should move along physical x (got {:.2})",
+    child_fragment.bounds.x()
+  );
+  assert!(
+    (child_fragment.bounds.y() - 30.0).abs() < 0.5,
+    "top offset should move along physical y (got {:.2})",
+    child_fragment.bounds.y()
+  );
 }
 
 #[test]
