@@ -1,4 +1,6 @@
-use fastrender::FastRender;
+use fastrender::debug::runtime::RuntimeToggles;
+use fastrender::{FastRender, FastRenderConfig};
+use std::collections::HashMap;
 use tiny_skia::Pixmap;
 
 const VIEWPORT_WIDTH: u32 = 200;
@@ -77,7 +79,12 @@ fn stacking_context_bounded_layer_includes_text_shadow_overflow() {
   let baseline_html = fixture(false);
   let isolated_html = fixture(true);
 
-  let mut renderer = FastRender::new().expect("renderer");
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "display_list".to_string(),
+  )]));
+  let config = FastRenderConfig::new().with_runtime_toggles(toggles);
+  let mut renderer = FastRender::with_config(config).expect("renderer");
   let baseline = renderer
     .render_html(&baseline_html, VIEWPORT_WIDTH, VIEWPORT_HEIGHT)
     .expect("baseline render");
@@ -102,4 +109,3 @@ fn stacking_context_bounded_layer_includes_text_shadow_overflow() {
     &isolated,
   );
 }
-
