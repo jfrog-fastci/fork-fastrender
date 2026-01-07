@@ -393,7 +393,12 @@ pub fn diff_png_with_alpha(
 
   let diff = image_compare::compare_png(rendered, expected, &config)?;
   if diff.dimensions_match {
-    let diff_png = diff.diff_png()?.unwrap_or_default();
+    let diff_png = diff.diff_png()?.ok_or_else(|| {
+      Error::Render(RenderError::EncodeFailed {
+        format: "PNG".to_string(),
+        reason: "diff image was not generated".to_string(),
+      })
+    })?;
 
     let metrics = DiffMetrics {
       pixel_diff: diff.statistics.different_pixels,
