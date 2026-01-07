@@ -5101,15 +5101,25 @@ impl<'a> ElementRef<'a> {
       return false;
     };
 
+    let required = self.is_required();
+
     if tag.eq_ignore_ascii_case("select") {
-      if self.is_required() && select_required_value_missing(self.node) {
+      if !required {
+        return true;
+      }
+      if !select_has_any_selected_option(self.node) {
         return false;
+      }
+      if let Some(placeholder) = select_placeholder_label_option(self.node) {
+        let selected = single_select_selected_option(self.node);
+        if matches!(selected, Some(opt) if ptr::eq(opt, placeholder)) {
+          return false;
+        }
       }
       return true;
     }
 
     let value = self.control_value().unwrap_or_default();
-    let required = self.is_required();
     if tag.eq_ignore_ascii_case("textarea") {
       return !(required && value.is_empty());
     }
@@ -5720,41 +5730,65 @@ fn single_select_selected_option<'a>(select: &'a DomNode) -> Option<&'a DomNode>
     .or(first_option)
 }
 
-fn select_required_value_missing(select: &DomNode) -> bool {
-  if select.get_attribute_ref("multiple").is_some() {
-    let mut stack: Vec<(&DomNode, bool)> = Vec::new();
-    stack.push((select, false));
+fn select_display_size(select: &DomNode) -> u32 {
+  let size = select
+    .get_attribute_ref("size")
+    .and_then(|value| value.trim().parse::<u32>().ok())
+    .filter(|value| *value > 0);
 
-    while let Some((node, optgroup_disabled)) = stack.pop() {
-      if node_hidden_for_select(node) {
-        continue;
-      }
-      let tag = node.tag_name().unwrap_or("");
-      let is_option = tag.eq_ignore_ascii_case("option");
-      let is_optgroup = tag.eq_ignore_ascii_case("optgroup");
-
-      let disabled_attr = node.get_attribute_ref("disabled").is_some();
-      let next_optgroup_disabled = optgroup_disabled || (is_optgroup && disabled_attr);
-
-      if is_option && node.get_attribute_ref("selected").is_some() {
-        let option_disabled = disabled_attr || optgroup_disabled;
-        if !option_disabled {
-          return false;
-        }
-      }
-
-      for child in node.children.iter().rev() {
-        stack.push((child, next_optgroup_disabled));
-      }
+  size.unwrap_or_else(|| {
+    if select.get_attribute_ref("multiple").is_some() {
+      4
+    } else {
+      1
     }
+  })
+}
 
-    return true;
+fn select_placeholder_label_option<'a>(select: &'a DomNode) -> Option<&'a DomNode> {
+  if select.get_attribute_ref("required").is_none() {
+    return None;
+  }
+  if select.get_attribute_ref("multiple").is_some() {
+    return None;
+  }
+  if select_display_size(select) != 1 {
+    return None;
   }
 
-  single_select_selected_option(select)
-    .map(option_value_from_node)
-    .unwrap_or_default()
-    .is_empty()
+  let mut stack: Vec<(&'a DomNode, Option<&'a DomNode>)> = Vec::new();
+  stack.push((select, None));
+
+  while let Some((node, parent)) = stack.pop() {
+    if node_hidden_for_select(node) {
+      continue;
+    }
+
+    if node
+      .tag_name()
+      .is_some_and(|tag| tag.eq_ignore_ascii_case("option"))
+    {
+      let value = option_value_from_node(node);
+      if value.is_empty() && matches!(parent, Some(parent) if ptr::eq(parent, select)) {
+        return Some(node);
+      }
+      return None;
+    }
+
+    for child in node.children.iter().rev() {
+      stack.push((child, Some(node)));
+    }
+  }
+
+  None
+}
+
+fn select_has_any_selected_option(select: &DomNode) -> bool {
+  if select.get_attribute_ref("multiple").is_none() {
+    return single_select_selected_option(select).is_some();
+  }
+
+  first_selected_option(select).is_some()
 }
 
 impl<'a> Element for ElementRef<'a> {
@@ -11511,6 +11545,213 @@ mod tests {
     };
     assert!(matches(&valid_multiple_select, &[], &PseudoClass::Valid));
     assert!(!matches(&valid_multiple_select, &[], &PseudoClass::Invalid));
+
+    let valid_multiple_select_empty_value = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "select".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("required".to_string(), "true".to_string()),
+          ("multiple".to_string(), "multiple".to_string()),
+        ],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "option".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![
+            ("selected".to_string(), "selected".to_string()),
+            ("value".to_string(), String::new()),
+          ],
+        },
+        children: vec![],
+      }],
+    };
+    assert!(matches(
+      &valid_multiple_select_empty_value,
+      &[],
+      &PseudoClass::Valid
+    ));
+    assert!(!matches(
+      &valid_multiple_select_empty_value,
+      &[],
+      &PseudoClass::Invalid
+    ));
+
+    let valid_multiple_select_disabled_selected = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "select".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("required".to_string(), "true".to_string()),
+          ("multiple".to_string(), "multiple".to_string()),
+        ],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "option".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![
+            ("disabled".to_string(), "disabled".to_string()),
+            ("selected".to_string(), "selected".to_string()),
+            ("value".to_string(), "a".to_string()),
+          ],
+        },
+        children: vec![],
+      }],
+    };
+    assert!(matches(
+      &valid_multiple_select_disabled_selected,
+      &[],
+      &PseudoClass::Valid
+    ));
+    assert!(!matches(
+      &valid_multiple_select_disabled_selected,
+      &[],
+      &PseudoClass::Invalid
+    ));
+
+    let multiple_select_value = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "select".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("multiple".to_string(), "multiple".to_string())],
+      },
+      children: vec![
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "option".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![
+              ("selected".to_string(), "selected".to_string()),
+              ("value".to_string(), "a".to_string()),
+            ],
+          },
+          children: vec![],
+        },
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "option".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![
+              ("selected".to_string(), "selected".to_string()),
+              ("value".to_string(), "b".to_string()),
+            ],
+          },
+          children: vec![],
+        },
+      ],
+    };
+    assert_eq!(
+      ElementRef::new(&multiple_select_value)
+        .control_value()
+        .expect("expected select value"),
+      "a"
+    );
+
+    let valid_required_single_select_empty_value = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "select".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("required".to_string(), "true".to_string())],
+      },
+      children: vec![
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "option".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![("value".to_string(), "a".to_string())],
+          },
+          children: vec![],
+        },
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "option".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![
+              ("selected".to_string(), "selected".to_string()),
+              ("value".to_string(), String::new()),
+            ],
+          },
+          children: vec![],
+        },
+      ],
+    };
+    assert!(matches(
+      &valid_required_single_select_empty_value,
+      &[],
+      &PseudoClass::Valid
+    ));
+    assert!(!matches(
+      &valid_required_single_select_empty_value,
+      &[],
+      &PseudoClass::Invalid
+    ));
+
+    let required_single_select_placeholder = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "select".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("required".to_string(), "true".to_string())],
+      },
+      children: vec![
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "option".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![("value".to_string(), String::new())],
+          },
+          children: vec![],
+        },
+        DomNode {
+          node_type: DomNodeType::Element {
+            tag_name: "option".to_string(),
+            namespace: HTML_NAMESPACE.to_string(),
+            attributes: vec![("value".to_string(), "a".to_string())],
+          },
+          children: vec![],
+        },
+      ],
+    };
+    assert!(matches(
+      &required_single_select_placeholder,
+      &[],
+      &PseudoClass::Invalid
+    ));
+    assert!(!matches(
+      &required_single_select_placeholder,
+      &[],
+      &PseudoClass::Valid
+    ));
+
+    let valid_required_size_select_empty_value = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "select".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("required".to_string(), "true".to_string()),
+          ("size".to_string(), "2".to_string()),
+        ],
+      },
+      children: vec![DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: "option".to_string(),
+          namespace: HTML_NAMESPACE.to_string(),
+          attributes: vec![("value".to_string(), String::new())],
+        },
+        children: vec![],
+      }],
+    };
+    assert!(matches(
+      &valid_required_size_select_empty_value,
+      &[],
+      &PseudoClass::Valid
+    ));
+    assert!(!matches(
+      &valid_required_size_select_empty_value,
+      &[],
+      &PseudoClass::Invalid
+    ));
   }
 
   #[test]
@@ -11536,10 +11777,10 @@ mod tests {
     );
     assert!(
       ElementRef::new(&present_multiple_empty_value).accessibility_is_valid(),
-      "<select multiple required> is valid when any enabled option is selected, even if its value is empty"
+      "<select multiple required> is valid when any option is selected, even if its value is empty"
     );
 
-    let disabled_placeholder_multiple = element_with_attrs(
+    let disabled_selected_multiple = element_with_attrs(
       "select",
       vec![("required", ""), ("multiple", "")],
       vec![element_with_attrs(
@@ -11549,8 +11790,8 @@ mod tests {
       )],
     );
     assert!(
-      !ElementRef::new(&disabled_placeholder_multiple).accessibility_is_valid(),
-      "<select multiple required> with only a disabled selected option is invalid"
+      ElementRef::new(&disabled_selected_multiple).accessibility_is_valid(),
+      "<select multiple required> is valid when the only selected option is disabled"
     );
 
     let disabled_placeholder_single = element_with_attrs(
@@ -11567,7 +11808,7 @@ mod tests {
     );
     assert!(
       !ElementRef::new(&disabled_placeholder_single).accessibility_is_valid(),
-      "<select required> is invalid when the effective selected option has an empty value"
+      "<select required> is invalid when the placeholder label option is the only selected option"
     );
 
     let single_last_selected_wins = element_with_attrs(
