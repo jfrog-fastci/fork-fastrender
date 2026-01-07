@@ -20,19 +20,20 @@ fn element(tag_name: &str) -> DomNode {
 
 #[test]
 fn replaced_element_max_width_100_can_be_toggled() {
-  let img = element("img");
-  let video = element("video");
+  let replaced_elements = [
+    "img", "video", "audio", "canvas", "svg", "iframe", "embed", "object",
+  ];
 
   let _guard_off = set_runtime_toggles(Arc::new(RuntimeToggles::from_map(HashMap::from([(
     ENV_COMPAT_REPLACED_MAX_WIDTH_100.to_string(),
     "0".to_string(),
   )]))));
 
-  let img_styles = get_default_styles_for_element(&img);
-  assert_eq!(img_styles.max_width, None);
-
-  let video_styles = get_default_styles_for_element(&video);
-  assert_eq!(video_styles.max_width, None);
+  for tag in replaced_elements {
+    let node = element(tag);
+    let styles = get_default_styles_for_element(&node);
+    assert_eq!(styles.max_width, None, "expected no max-width for <{tag}>");
+  }
 
   drop(_guard_off);
 
@@ -41,9 +42,13 @@ fn replaced_element_max_width_100_can_be_toggled() {
     "1".to_string(),
   )]))));
 
-  let img_styles = get_default_styles_for_element(&img);
-  assert_eq!(img_styles.max_width, Some(Length::percent(100.0)));
-
-  let video_styles = get_default_styles_for_element(&video);
-  assert_eq!(video_styles.max_width, Some(Length::percent(100.0)));
+  for tag in replaced_elements {
+    let node = element(tag);
+    let styles = get_default_styles_for_element(&node);
+    assert_eq!(
+      styles.max_width,
+      Some(Length::percent(100.0)),
+      "expected max-width: 100% for <{tag}>"
+    );
+  }
 }

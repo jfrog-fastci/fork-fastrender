@@ -149,7 +149,7 @@ pub fn get_default_styles_for_element(node: &DomNode) -> ComputedStyle {
         // Italic text - using Oblique since we may not have true italics
         styles.font_style = crate::style::FontStyle::Oblique(None);
       }
-      "img" | "video" | "audio" | "canvas" | "svg" | "iframe" => {
+      "img" | "video" | "audio" | "canvas" | "svg" | "iframe" | "embed" | "object" => {
         // Compatibility default (non-standard): `max-width: 100%` on replaced elements.
         //
         // This is *not* a standard UA default, but many "responsive" pages rely on author CSS that
