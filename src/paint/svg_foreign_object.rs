@@ -1,0 +1,299 @@
+//! SVG `<foreignObject>` rendering helpers.
+//!
+//! Resvg cannot render HTML inside `<foreignObject>`. FastRender serializes SVG subtrees with
+//! placeholder markers and captures the subtree HTML + computed styles separately. During paint we
+//! render each captured HTML fragment via the normal HTML pipeline and inject the resulting pixels
+//! back into the SVG as `<image href="data:image/png;base64,…">`.
+
+use crate::api::render_html_with_shared_resources;
+use crate::image_loader::ImageCache;
+use crate::style::color::Rgba;
+use crate::style::types::{Direction, FontStyle as CssFontStyle, Overflow, WritingMode};
+use crate::text::font_loader::FontContext;
+use crate::tree::box_tree::ForeignObjectInfo;
+use base64::Engine;
+use image::codecs::png::PngEncoder;
+use image::ColorType;
+use image::ImageEncoder;
+use std::fmt::Write as _;
+use std::sync::Arc;
+use tiny_skia::Pixmap;
+
+pub(crate) fn inline_svg_with_foreign_objects(
+  svg: &str,
+  foreign_objects: &[ForeignObjectInfo],
+  shared_css: &str,
+  font_ctx: &FontContext,
+  image_cache: &ImageCache,
+  max_iframe_depth: usize,
+) -> Option<String> {
+  let mut svg = svg.to_string();
+  for (idx, foreign) in foreign_objects.iter().enumerate() {
+    let data_url =
+      render_foreign_object_data_url(foreign, shared_css, font_ctx, image_cache, max_iframe_depth)?;
+    let replacement = foreign_object_image_tag(foreign, &data_url, idx);
+    let placeholder = if foreign.placeholder.is_empty() {
+      format!("<!--FASTRENDER_FOREIGN_OBJECT_{}-->", idx)
+    } else {
+      foreign.placeholder.clone()
+    };
+
+    if let Some(pos) = svg.find(&placeholder) {
+      let end = pos + placeholder.len();
+      svg.replace_range(pos..end, &replacement);
+    } else {
+      svg.push_str(&replacement);
+    }
+  }
+
+  Some(svg)
+}
+
+pub(crate) fn foreign_object_image_tag(info: &ForeignObjectInfo, data_url: &str, idx: usize) -> String {
+  let mut parts: Vec<String> = Vec::new();
+  parts.push(format!("x=\"{:.6}\"", info.x));
+  parts.push(format!("y=\"{:.6}\"", info.y));
+  parts.push(format!("width=\"{:.6}\"", info.width));
+  parts.push(format!("height=\"{:.6}\"", info.height));
+  if info.opacity < 1.0 {
+    parts.push(format!("opacity=\"{:.3}\"", info.opacity.clamp(0.0, 1.0)));
+  }
+
+  for (name, value) in &info.attributes {
+    if name.eq_ignore_ascii_case("x")
+      || name.eq_ignore_ascii_case("y")
+      || name.eq_ignore_ascii_case("width")
+      || name.eq_ignore_ascii_case("height")
+      || name.eq_ignore_ascii_case("opacity")
+    {
+      continue;
+    }
+    parts.push(format!("{}=\"{}\"", name, escape_attr_value(value)));
+  }
+
+  parts.push("preserveAspectRatio=\"none\"".to_string());
+  parts.push(format!("href=\"{}\"", escape_attr_value(data_url)));
+
+  let clip_id = format!("fastr-fo-{}", idx);
+  let clip = format!(
+    "<clipPath id=\"{}\"><rect x=\"{:.6}\" y=\"{:.6}\" width=\"{:.6}\" height=\"{:.6}\"/></clipPath>",
+    clip_id,
+    info.x,
+    info.y,
+    info.width,
+    info.height
+  );
+
+  format!(
+    "<g>{clip}<image clip-path=\"url(#{clip_id})\" {attrs}/></g>",
+    clip = clip,
+    clip_id = clip_id,
+    attrs = parts.join(" ")
+  )
+}
+
+fn render_foreign_object_data_url(
+  info: &ForeignObjectInfo,
+  shared_css: &str,
+  font_ctx: &FontContext,
+  image_cache: &ImageCache,
+  max_iframe_depth: usize,
+) -> Option<String> {
+  let width = info.width.max(1.0).round() as u32;
+  let height = info.height.max(1.0).round() as u32;
+  if width == 0 || height == 0 {
+    return None;
+  }
+
+  let html = build_foreign_object_document(info, shared_css);
+  let background = info.background.unwrap_or(Rgba::TRANSPARENT);
+  let context = image_cache.resource_context();
+  let policy = context
+    .as_ref()
+    .map(|c| c.policy.clone())
+    .unwrap_or_default();
+  let pixmap = render_html_with_shared_resources(
+    &html,
+    width,
+    height,
+    background,
+    font_ctx,
+    image_cache,
+    Arc::clone(image_cache.fetcher()),
+    image_cache.base_url(),
+    1.0,
+    policy,
+    context,
+    max_iframe_depth,
+  )
+  .ok()?;
+
+  pixmap_to_data_url(pixmap)
+}
+
+fn escape_style_end_tags(css: &str) -> String {
+  const STYLE: [u8; 5] = [b's', b't', b'y', b'l', b'e'];
+  let bytes = css.as_bytes();
+
+  let has_sequence = bytes.windows(7).any(|window| {
+    window[0] == b'<'
+      && window[1] == b'/'
+      && window[2..]
+        .iter()
+        .zip(STYLE.iter())
+        .all(|(b, expected)| b.to_ascii_lowercase() == *expected)
+  });
+
+  if !has_sequence {
+    return css.to_string();
+  }
+
+  let mut out = Vec::with_capacity(bytes.len());
+  let mut idx = 0;
+  while idx < bytes.len() {
+    if idx + 7 <= bytes.len() && bytes[idx] == b'<' && bytes[idx + 1] == b'/' {
+      if STYLE
+        .iter()
+        .enumerate()
+        .all(|(offset, expected)| bytes[idx + 2 + offset].to_ascii_lowercase() == *expected)
+      {
+        out.extend_from_slice(b"<\\/style");
+        idx += 7;
+        continue;
+      }
+    }
+
+    out.push(bytes[idx]);
+    idx += 1;
+  }
+
+  String::from_utf8(out).unwrap_or_default()
+}
+
+fn build_foreign_object_document(info: &ForeignObjectInfo, shared_css: &str) -> String {
+  let mut html = String::from(
+    "<!DOCTYPE html><html style=\"margin:0;padding:0;width:100%;height:100%;\"><head><meta charset=\"utf-8\">",
+  );
+  if !shared_css.trim().is_empty() {
+    let sanitized_css = escape_style_end_tags(shared_css);
+    html.push_str("<style>");
+    html.push_str(&sanitized_css);
+    html.push_str("</style>");
+  }
+  html.push_str("</head><body style=\"");
+  html.push_str(&foreign_object_body_style(info));
+  html.push_str("\">");
+  html.push_str(&info.html);
+  html.push_str("</body></html>");
+  html
+}
+
+fn foreign_object_body_style(info: &ForeignObjectInfo) -> String {
+  let mut style =
+    String::from("margin:0;padding:0;width:100%;height:100%;display:block;box-sizing:border-box;");
+  let overflow = match (info.overflow_x, info.overflow_y) {
+    (Overflow::Visible, Overflow::Visible) => "visible",
+    _ => "hidden",
+  };
+  let _ = write!(&mut style, "overflow:{};", overflow);
+
+  if let Some(bg) = info.background {
+    style.push_str("background:");
+    style.push_str(&format_css_color(bg));
+    style.push(';');
+  }
+
+  style.push_str("color:");
+  style.push_str(&format_css_color(info.style.color));
+  style.push(';');
+
+  if !info.style.font_family.is_empty() {
+    let families: Vec<String> = info
+      .style
+      .font_family
+      .iter()
+      .map(|f| {
+        if f.contains(' ') && !(f.starts_with('"') && f.ends_with('"')) {
+          format!("\"{}\"", f)
+        } else {
+          f.clone()
+        }
+      })
+      .collect();
+    style.push_str("font-family:");
+    style.push_str(&families.join(", "));
+    style.push(';');
+  }
+
+  let _ = write!(
+    &mut style,
+    "font-size:{:.2}px;font-weight:{};",
+    info.style.font_size,
+    info.style.font_weight.to_u16()
+  );
+
+  match info.style.font_style {
+    CssFontStyle::Italic => style.push_str("font-style: italic;"),
+    CssFontStyle::Oblique(Some(angle)) => {
+      let _ = write!(&mut style, "font-style: oblique {}deg;", angle);
+    }
+    CssFontStyle::Oblique(None) => style.push_str("font-style: oblique;"),
+    CssFontStyle::Normal => {}
+  }
+
+  if info.style.direction == Direction::Rtl {
+    style.push_str("direction: rtl;");
+  }
+
+  if info.style.writing_mode != WritingMode::HorizontalTb {
+    style.push_str("writing-mode:");
+    style.push_str(writing_mode_keyword(info.style.writing_mode));
+    style.push(';');
+  }
+
+  style
+}
+
+fn writing_mode_keyword(mode: WritingMode) -> &'static str {
+  match mode {
+    WritingMode::HorizontalTb => "horizontal-tb",
+    WritingMode::VerticalRl => "vertical-rl",
+    WritingMode::VerticalLr => "vertical-lr",
+    WritingMode::SidewaysRl => "sideways-rl",
+    WritingMode::SidewaysLr => "sideways-lr",
+  }
+}
+
+fn format_css_color(color: Rgba) -> String {
+  format!(
+    "rgba({},{},{},{:.3})",
+    color.r,
+    color.g,
+    color.b,
+    color.a.clamp(0.0, 1.0)
+  )
+}
+
+fn escape_attr_value(value: &str) -> String {
+  value
+    .replace('&', "&amp;")
+    .replace('<', "&lt;")
+    .replace('"', "&quot;")
+    .replace('\'', "&apos;")
+}
+
+fn pixmap_to_data_url(pixmap: Pixmap) -> Option<String> {
+  let width = pixmap.width();
+  let height = pixmap.height();
+  let data = pixmap.take();
+  let image = image::RgbaImage::from_raw(width, height, data)?;
+  let mut buf = Vec::new();
+  PngEncoder::new(&mut buf)
+    .write_image(image.as_raw(), width, height, ColorType::Rgba8.into())
+    .ok()?;
+
+  Some(format!(
+    "data:image/png;base64,{}",
+    base64::engine::general_purpose::STANDARD.encode(buf)
+  ))
+}

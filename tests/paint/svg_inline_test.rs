@@ -1,11 +1,13 @@
 use fastrender::css::parser::extract_css;
+use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::dom;
 use fastrender::style::cascade::apply_styles_with_media;
 use fastrender::style::media::MediaContext;
 use fastrender::tree::box_generation::generate_box_tree;
 use fastrender::tree::box_tree::{BoxNode, BoxType, ReplacedType, SvgContent};
-use fastrender::{DiagnosticsLevel, FastRender, RenderOptions};
+use fastrender::{DiagnosticsLevel, FastRender, FastRenderConfig, RenderOptions};
 use resvg::tiny_skia::Pixmap;
+use std::collections::HashMap;
 
 pub(super) fn pixel(pixmap: &Pixmap, x: u32, y: u32) -> [u8; 4] {
   let idx = (y as usize * pixmap.width() as usize + x as usize) * 4;
@@ -212,6 +214,40 @@ fn foreign_object_html_percent_sizing_fills_viewport() {
 
       let pixmap = renderer.render_html(html, 20, 20).expect("render svg");
       assert_eq!(pixel(&pixmap, 5, 6), [0, 0, 255, 255]);
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn display_list_backend_renders_foreign_object_html_not_placeholder() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let toggles = RuntimeToggles::from_map(HashMap::from([(
+        "FASTR_PAINT_BACKEND".to_string(),
+        "display_list".to_string(),
+      )]));
+      let config = FastRenderConfig::new().with_runtime_toggles(toggles);
+
+      let mut renderer = FastRender::with_config(config).expect("renderer");
+      let html = r#"
+      <style>body{margin:0;background:white} svg{display:block}</style>
+      <svg width="16" height="16" viewBox="0 0 16 16">
+        <foreignObject x="0" y="0" width="16" height="16">
+          <div xmlns="http://www.w3.org/1999/xhtml" style="width:16px;height:16px;border:4px solid rgb(255,0,0);"></div>
+        </foreignObject>
+      </svg>
+      "#;
+
+      let pixmap = renderer.render_html(html, 20, 20).expect("render svg");
+      assert_eq!(
+        pixel(&pixmap, 1, 1),
+        [255, 0, 0, 255],
+        "foreignObject border should paint red (sample={:?})",
+        pixel(&pixmap, 0, 0)
+      );
     })
     .unwrap()
     .join()
