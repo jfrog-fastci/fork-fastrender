@@ -882,7 +882,7 @@ fn svg_filter_and_rounded_clip_match_serial_output_in_translated_tiles() {
       report.fallback_reason
     );
   }
-  assert_eq!(serial.data(), report.pixmap.data());
+  assert_pixmap_eq(&serial, &report.pixmap);
 }
 
 #[test]
@@ -2724,7 +2724,7 @@ fn stacking_context_filter_radii_match_serial_output_under_tiling() {
       report.fallback_reason
     );
   }
-  assert_eq!(serial.data(), report.pixmap.data());
+  assert_pixmap_eq(&serial, &report.pixmap);
 }
 
 #[test]
@@ -3143,7 +3143,7 @@ fn auto_parallelizes_expensive_gradients() {
     assert!(report.parallel_used, "expected AUTO to enable tiling");
     assert!(report.parallel_threads > 1, "expected multiple threads");
   }
-  assert_eq!(serial.data(), report.pixmap.data());
+  assert_pixmap_eq(&serial, &report.pixmap);
 }
 
 #[test]
@@ -3203,7 +3203,7 @@ fn huge_effect_halo_triggers_serial_fallback() {
       report.fallback_reason
     );
   }
-  assert_eq!(serial.data(), report.pixmap.data());
+  assert_pixmap_eq(&serial, &report.pixmap);
 }
 
 #[test]
@@ -3304,7 +3304,7 @@ fn parallel_paint_masked_element_matches_serial_off_origin_tiles() {
       report.fallback_reason
     );
   }
-  assert_eq!(serial.data(), report.pixmap.data());
+  assert_pixmap_eq(&serial, &report.pixmap);
 }
 
 #[test]
