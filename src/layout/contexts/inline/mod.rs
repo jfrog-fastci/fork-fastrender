@@ -4821,6 +4821,9 @@ impl InlineFormattingContext {
     merged.word_spacing = first_line.word_spacing;
     merged.text_transform = first_line.text_transform;
     merged.text_decoration = first_line.text_decoration.clone();
+    merged.text_decoration_skip_self = first_line.text_decoration_skip_self;
+    merged.text_decoration_skip_box = first_line.text_decoration_skip_box;
+    merged.text_decoration_skip_spaces = first_line.text_decoration_skip_spaces;
     merged.text_decoration_skip_ink = first_line.text_decoration_skip_ink;
     merged.text_underline_offset = first_line.text_underline_offset;
     merged.text_underline_position = first_line.text_underline_position;

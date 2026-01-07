@@ -9,6 +9,8 @@
 
   body {
     margin: 0;
+    /* Prevent top margin collapse so absolutely positioned guide stays at y=0. */
+    padding-top: 1px;
     background: white;
   }
 
@@ -22,7 +24,7 @@
   }
 
   .sample {
-    margin-top: 40px;
+    margin-top: 39px;
     margin-left: 80px;
     font-family: "DejaVu Sans Subset";
     font-size: 56px;

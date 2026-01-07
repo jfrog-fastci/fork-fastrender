@@ -75,6 +75,7 @@ mod svg_tag_selector_indexing_test;
 mod tab_size_test;
 mod text_combine_upright_case_insensitive_test;
 mod text_combine_upright_invalid_test;
+mod text_decoration_skip_test;
 mod text_decoration_skip_ink_test;
 mod text_orientation_case_insensitive_test;
 mod text_orientation_inheritance_top_test;

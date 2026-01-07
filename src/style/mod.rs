@@ -175,7 +175,10 @@ use types::TextAlign;
 use types::TextAlignLast;
 use types::TextCombineUpright;
 use types::TextDecoration;
+use types::TextDecorationSkipBox;
 use types::TextDecorationSkipInk;
+use types::TextDecorationSkipSelf;
+use types::TextDecorationSkipSpaces;
 use types::TextEmphasisPosition;
 use types::TextEmphasisSkip;
 use types::TextEmphasisStyle;
@@ -1053,6 +1056,9 @@ pub struct ComputedStyle {
   pub text_decoration_line_specified: bool,
   /// Propagated decorations from ancestors and this element.
   pub applied_text_decorations: Vec<types::ResolvedTextDecoration>,
+  pub text_decoration_skip_self: TextDecorationSkipSelf,
+  pub text_decoration_skip_box: TextDecorationSkipBox,
+  pub text_decoration_skip_spaces: TextDecorationSkipSpaces,
   pub text_decoration_skip_ink: TextDecorationSkipInk,
   pub text_underline_offset: TextUnderlineOffset,
   pub text_underline_position: TextUnderlinePosition,
@@ -1439,6 +1445,9 @@ impl Default for ComputedStyle {
       text_decoration: TextDecoration::default(),
       text_decoration_line_specified: false,
       applied_text_decorations: Vec::new(),
+      text_decoration_skip_self: TextDecorationSkipSelf::default(),
+      text_decoration_skip_box: TextDecorationSkipBox::default(),
+      text_decoration_skip_spaces: TextDecorationSkipSpaces::default(),
       text_decoration_skip_ink: TextDecorationSkipInk::Auto,
       text_underline_offset: TextUnderlineOffset::default(),
       text_underline_position: TextUnderlinePosition::default(),

@@ -115,6 +115,7 @@ use crate::render_control::{
 use crate::scroll::ScrollState;
 use crate::style::block_axis_is_horizontal;
 use crate::style::block_axis_positive;
+use crate::style::inline_axis_positive;
 use crate::style::color::Rgba;
 use crate::style::position::Position;
 use crate::style::types::AccentColor;
@@ -180,6 +181,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
+use unicode_general_category::{get_general_category, GeneralCategory};
 
 const DECODED_IMAGE_CACHE_MAX_ENTRIES: usize = 256;
 const DECODED_IMAGE_CACHE_MAX_BYTES: usize = 128 * 1024 * 1024;
@@ -219,7 +221,24 @@ pub struct DisplayListBuilder {
   scroll_state: ScrollState,
   max_iframe_depth: usize,
   skip_stacking_context_children: bool,
+  line_decoration_ctx: Option<LineDecorationContext>,
   error: Option<RenderError>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LineDecorationContext {
+  inline_vertical: bool,
+  block_baseline: f32,
+  line_inline_start: f32,
+  line_inline_end: f32,
+  skip_inline_start: f32,
+  skip_inline_end: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpacerEdge {
+  Start,
+  End,
 }
 
 #[derive(Clone, Copy)]
@@ -889,6 +908,332 @@ impl DisplayListBuilder {
       .unwrap_or(Point::ZERO)
   }
 
+  fn line_decoration_clip_range(&self, inline_start: f32, inline_len: f32) -> Option<(f32, f32)> {
+    let ctx = self.line_decoration_ctx?;
+    if inline_len <= 0.0 {
+      return None;
+    }
+    let clip_start = ctx.line_inline_start + ctx.skip_inline_start;
+    let clip_end = ctx.line_inline_end - ctx.skip_inline_end;
+    if !clip_start.is_finite() || !clip_end.is_finite() {
+      return None;
+    }
+
+    let frag_end = inline_start + inline_len;
+    let start = clip_start.max(inline_start);
+    let end = clip_end.min(frag_end);
+    if end <= start + f32::EPSILON {
+      return Some((0.0, 0.0));
+    }
+    let rel_start = (start - inline_start).clamp(0.0, inline_len);
+    let rel_end = (end - inline_start).clamp(0.0, inline_len);
+    if rel_start <= 0.001 && (inline_len - rel_end) <= 0.001 {
+      None
+    } else {
+      Some((rel_start, rel_end))
+    }
+  }
+
+  fn build_line_decoration_context(
+    &mut self,
+    line: &FragmentNode,
+    child_offset: Point,
+    baseline: f32,
+  ) -> LineDecorationContext {
+    let style_hint = Self::line_style_hint(line);
+    let inline_vertical = style_hint.is_some_and(|style| {
+      matches!(
+        style.writing_mode,
+        crate::style::types::WritingMode::VerticalRl
+          | crate::style::types::WritingMode::VerticalLr
+          | crate::style::types::WritingMode::SidewaysRl
+          | crate::style::types::WritingMode::SidewaysLr
+      )
+    });
+    let block_baseline = if inline_vertical {
+      child_offset.x + baseline
+    } else {
+      child_offset.y + baseline
+    };
+
+    let mut line_inline_start = f32::INFINITY;
+    let mut line_inline_end = f32::NEG_INFINITY;
+    for child in line.children.iter() {
+      let rect = Rect::new(child_offset.translate(child.bounds.origin), child.bounds.size);
+      let (start, end) = if inline_vertical {
+        (rect.y(), rect.y() + rect.height())
+      } else {
+        (rect.x(), rect.x() + rect.width())
+      };
+      if end > start {
+        line_inline_start = line_inline_start.min(start);
+        line_inline_end = line_inline_end.max(end);
+      }
+    }
+    if !line_inline_start.is_finite() || !line_inline_end.is_finite() || line_inline_end < line_inline_start {
+      line_inline_start = if inline_vertical { child_offset.y } else { child_offset.x };
+      let fallback_len = if inline_vertical {
+        line.bounds.height()
+      } else {
+        line.bounds.width()
+      };
+      line_inline_end = line_inline_start + fallback_len.max(0.0);
+    }
+
+    let mut skip_inline_start = 0.0;
+    let mut skip_inline_end = 0.0;
+    if let Some(style) = style_hint {
+      let inline_forward = inline_axis_positive(style.writing_mode, style.direction);
+      #[derive(Clone, Copy)]
+      struct TextLeaf<'a> {
+        fragment: &'a FragmentNode,
+        inline_start: f32,
+        inline_end: f32,
+      }
+
+      fn visit<'a>(
+        fragment: &'a FragmentNode,
+        offset: Point,
+        inline_vertical: bool,
+        best_min: &mut Option<TextLeaf<'a>>,
+        best_max: &mut Option<TextLeaf<'a>>,
+      ) {
+        let rect = Rect::new(offset.translate(fragment.bounds.origin), fragment.bounds.size);
+        let (inline_start, inline_end) = if inline_vertical {
+          (rect.y(), rect.y() + rect.height())
+        } else {
+          (rect.x(), rect.x() + rect.width())
+        };
+
+        match fragment.content {
+          FragmentContent::Text { .. } => {
+            if let Some(existing) = best_min.as_ref() {
+              if inline_start < existing.inline_start {
+                *best_min = Some(TextLeaf {
+                  fragment,
+                  inline_start,
+                  inline_end,
+                });
+              }
+            } else {
+              *best_min = Some(TextLeaf {
+                fragment,
+                inline_start,
+                inline_end,
+              });
+            }
+
+            if let Some(existing) = best_max.as_ref() {
+              if inline_end > existing.inline_end {
+                *best_max = Some(TextLeaf {
+                  fragment,
+                  inline_start,
+                  inline_end,
+                });
+              }
+            } else {
+              *best_max = Some(TextLeaf {
+                fragment,
+                inline_start,
+                inline_end,
+              });
+            }
+            return;
+          }
+          FragmentContent::Replaced { .. }
+          | FragmentContent::Line { .. }
+          | FragmentContent::RunningAnchor { .. } => return,
+          _ => {}
+        }
+
+        if fragment.style.as_deref().is_some_and(|style| {
+          style.display.is_inline_level() && style.display.establishes_formatting_context()
+        }) {
+          return;
+        }
+
+        for child in fragment.children.iter() {
+          visit(child, rect.origin, inline_vertical, best_min, best_max);
+        }
+      }
+
+      let mut min_text: Option<TextLeaf<'_>> = None;
+      let mut max_text: Option<TextLeaf<'_>> = None;
+      for child in line.children.iter() {
+        visit(child, child_offset, inline_vertical, &mut min_text, &mut max_text);
+      }
+
+      // If styles vary within the line, match the spec intent by using the skip-spaces value at
+      // the logical line start/end rather than relying on an arbitrary style hint.
+      let physical_start_spaces = min_text
+        .as_ref()
+        .and_then(|leaf| leaf.fragment.style.as_deref())
+        .map(|style| style.text_decoration_skip_spaces);
+      let physical_end_spaces = max_text
+        .as_ref()
+        .and_then(|leaf| leaf.fragment.style.as_deref())
+        .map(|style| style.text_decoration_skip_spaces);
+      let start_skip_spaces = if inline_forward {
+        physical_start_spaces.unwrap_or(style.text_decoration_skip_spaces)
+      } else {
+        physical_end_spaces.unwrap_or(style.text_decoration_skip_spaces)
+      };
+      let end_skip_spaces = if inline_forward {
+        physical_end_spaces.unwrap_or(style.text_decoration_skip_spaces)
+      } else {
+        physical_start_spaces.unwrap_or(style.text_decoration_skip_spaces)
+      };
+      let skip_start = start_skip_spaces.skips_start();
+      let skip_end = end_skip_spaces.skips_end();
+
+      if (skip_start || skip_end) && line_inline_end > line_inline_start {
+
+        let eps = 0.01;
+        let leading = min_text
+          .filter(|leaf| (leaf.inline_start - line_inline_start).abs() <= eps)
+          .map(|leaf| self.text_fragment_spacer_advance(leaf.fragment, SpacerEdge::Start, inline_vertical))
+          .unwrap_or(0.0);
+        let trailing = max_text
+          .filter(|leaf| (leaf.inline_end - line_inline_end).abs() <= eps)
+          .map(|leaf| self.text_fragment_spacer_advance(leaf.fragment, SpacerEdge::End, inline_vertical))
+          .unwrap_or(0.0);
+
+        if skip_start {
+          if inline_forward {
+            skip_inline_start = leading;
+          } else {
+            skip_inline_end = trailing;
+          }
+        }
+        if skip_end {
+          if inline_forward {
+            skip_inline_end = trailing;
+          } else {
+            skip_inline_start = leading;
+          }
+        }
+
+        let max_span = (line_inline_end - line_inline_start).max(0.0);
+        skip_inline_start = if skip_inline_start.is_finite() {
+          skip_inline_start.clamp(0.0, max_span)
+        } else {
+          0.0
+        };
+        skip_inline_end = if skip_inline_end.is_finite() {
+          skip_inline_end.clamp(0.0, max_span)
+        } else {
+          0.0
+        };
+      }
+    }
+
+    LineDecorationContext {
+      inline_vertical,
+      block_baseline,
+      line_inline_start,
+      line_inline_end,
+      skip_inline_start,
+      skip_inline_end,
+    }
+  }
+
+  fn line_style_hint(fragment: &FragmentNode) -> Option<&ComputedStyle> {
+    if let Some(style) = fragment.style.as_deref() {
+      return Some(style);
+    }
+    for child in fragment.children.iter() {
+      if let Some(style) = Self::line_style_hint(child) {
+        return Some(style);
+      }
+    }
+    None
+  }
+
+  fn text_fragment_spacer_advance(
+    &mut self,
+    fragment: &FragmentNode,
+    edge: SpacerEdge,
+    inline_vertical: bool,
+  ) -> f32 {
+    let (text, shaped) = match &fragment.content {
+      FragmentContent::Text { text, shaped, .. } => (text.as_ref(), shaped.as_deref()),
+      _ => return 0.0,
+    };
+    let Some(style) = fragment.style.as_deref() else {
+      return 0.0;
+    };
+
+    if let Some(runs) = shaped {
+      return Self::spacer_advance_in_runs(runs, edge, inline_vertical);
+    }
+
+    let Ok(mut runs) = self.shaper.shape(text, style, &self.font_ctx) else {
+      return 0.0;
+    };
+    InlineTextItem::apply_spacing_to_runs(&mut runs, text, style.letter_spacing, style.word_spacing);
+    Self::spacer_advance_in_runs(&runs, edge, inline_vertical)
+  }
+
+  fn spacer_advance_in_runs(runs: &[ShapedRun], edge: SpacerEdge, inline_vertical: bool) -> f32 {
+    let mut advance = 0.0;
+    match edge {
+      SpacerEdge::Start => {
+        for run in runs {
+          for glyph in &run.glyphs {
+            let idx = glyph.cluster as usize;
+            let Some(ch) = run.text.get(idx..).and_then(|s| s.chars().next()) else {
+              return advance;
+            };
+            if !Self::is_spacer_char(ch) {
+              return advance;
+            }
+            advance += if inline_vertical {
+              if glyph.y_advance.abs() > f32::EPSILON {
+                glyph.y_advance
+              } else {
+                glyph.x_advance
+              }
+            } else {
+              glyph.x_advance
+            };
+          }
+        }
+      }
+      SpacerEdge::End => {
+        for run in runs.iter().rev() {
+          for glyph in run.glyphs.iter().rev() {
+            let idx = glyph.cluster as usize;
+            let Some(ch) = run.text.get(idx..).and_then(|s| s.chars().next()) else {
+              return advance;
+            };
+            if !Self::is_spacer_char(ch) {
+              return advance;
+            }
+            advance += if inline_vertical {
+              if glyph.y_advance.abs() > f32::EPSILON {
+                glyph.y_advance
+              } else {
+                glyph.x_advance
+              }
+            } else {
+              glyph.x_advance
+            };
+          }
+        }
+      }
+    }
+
+    if advance.is_finite() {
+      advance.max(0.0)
+    } else {
+      0.0
+    }
+  }
+
+  fn is_spacer_char(ch: char) -> bool {
+    ch != '\u{202F}' && matches!(get_general_category(ch), GeneralCategory::SpaceSeparator)
+  }
+
   /// Creates a new display list builder
   pub fn new() -> Self {
     let (parallel_enabled, parallel_min, parallel_min_explicit) = parallel_config_from_env();
@@ -926,6 +1271,7 @@ impl DisplayListBuilder {
       scroll_state: ScrollState::default(),
       max_iframe_depth: DEFAULT_MAX_IFRAME_DEPTH,
       skip_stacking_context_children: false,
+      line_decoration_ctx: None,
       error: None,
     }
   }
@@ -967,6 +1313,7 @@ impl DisplayListBuilder {
       scroll_state: ScrollState::default(),
       max_iframe_depth: DEFAULT_MAX_IFRAME_DEPTH,
       skip_stacking_context_children: false,
+      line_decoration_ctx: None,
       error: None,
     }
   }
@@ -1691,6 +2038,19 @@ impl DisplayListBuilder {
           absolute_rect.origin.x - element_scroll.x,
           absolute_rect.origin.y - element_scroll.y,
         );
+        let prev_line_decoration_ctx = self.line_decoration_ctx;
+        if let FragmentContent::Line { baseline } = &fragment.content {
+          self.line_decoration_ctx =
+            Some(self.build_line_decoration_context(fragment, child_offset, *baseline));
+        } else if self.line_decoration_ctx.is_some()
+          && style_opt.is_some_and(|style| {
+            style.display.is_inline_level() && style.display.establishes_formatting_context()
+          })
+        {
+          // Decorations inside atomic inlines (inline-block/inline-table/etc) should be resolved
+          // against the atomic inline's own line boxes, not the ancestor line that positioned it.
+          self.line_decoration_ctx = None;
+        }
         let before_children = self.list.len();
         let mut blocks = Vec::new();
         let mut floats = Vec::new();
@@ -1752,6 +2112,7 @@ impl DisplayListBuilder {
           self.build_fragment_internal(child, child_offset, true, false, child_visibility);
         }
         children_painted = self.list.len() != before_children;
+        self.line_decoration_ctx = prev_line_decoration_ctx;
       }
 
       if let Some(table_borders) = fragment.table_borders.as_ref() {
@@ -1896,6 +2257,17 @@ impl DisplayListBuilder {
         absolute_rect.origin.x - element_scroll.x,
         absolute_rect.origin.y - element_scroll.y,
       );
+      let prev_line_decoration_ctx = self.line_decoration_ctx;
+      if let FragmentContent::Line { baseline } = &fragment.content {
+        self.line_decoration_ctx =
+          Some(self.build_line_decoration_context(fragment, child_offset, *baseline));
+      } else if self.line_decoration_ctx.is_some()
+        && style_opt.is_some_and(|style| {
+          style.display.is_inline_level() && style.display.establishes_formatting_context()
+        })
+      {
+        self.line_decoration_ctx = None;
+      }
       let before_children = self.list.len();
       let mut blocks = Vec::new();
       let mut floats = Vec::new();
@@ -1944,6 +2316,7 @@ impl DisplayListBuilder {
         self.build_fragment_with_clips(child, child_offset, clips, visibility);
       }
       children_painted = self.list.len() != before_children;
+      self.line_decoration_ctx = prev_line_decoration_ctx;
 
       if let Some(table_borders) = fragment.table_borders.as_ref() {
         let origin = absolute_rect.origin;
@@ -4410,6 +4783,7 @@ impl DisplayListBuilder {
       scroll_state: self.scroll_state.clone(),
       max_iframe_depth: self.max_iframe_depth,
       skip_stacking_context_children: self.skip_stacking_context_children,
+      line_decoration_ctx: self.line_decoration_ctx,
       error: self.error.clone(),
     }
   }
@@ -4587,7 +4961,11 @@ impl DisplayListBuilder {
           } else {
             (rect.x(), rect.width())
           };
-          let decoration_baseline = baseline_block;
+          let decoration_baseline = self
+            .line_decoration_ctx
+            .map(|ctx| ctx.block_baseline)
+            .unwrap_or(baseline_block);
+          let clip = self.line_decoration_clip_range(inline_start, inline_len);
           self.emit_text_decorations(
             style,
             runs_ref,
@@ -4595,296 +4973,184 @@ impl DisplayListBuilder {
             inline_len,
             decoration_baseline,
             inline_vertical,
+            clip,
           );
         }
       }
 
       FragmentContent::Replaced { replaced_type, .. } => {
-        if let ReplacedType::FormControl(control) = replaced_type {
-          let style = fragment.style.as_deref();
-          let clip_contents = style.and_then(|style| {
-            let clip_x = Self::overflow_axis_clips(style.overflow_x);
-            let clip_y = Self::overflow_axis_clips(style.overflow_y);
-            if !clip_x && !clip_y {
-              return None;
-            }
-            let overflow_bounds = rect.union(fragment.scroll_overflow.translate(rect.origin));
-            let rects = Self::background_rects(rect, style, self.viewport);
-            // Form controls can paint UI affordances (e.g. dropdown arrows) into the padding box.
-            // Clip to the padding box (not the content box) so `overflow: clip` doesn't cut them
-            // off.
-            Self::overflow_clip_from_style_with_rects(
-              style,
-              &rects,
-              clip_x,
-              clip_y,
-              overflow_bounds,
-              self.viewport,
-              self.build_breakdown.as_deref(),
-            )
-          });
-          if let Some(clip) = clip_contents.as_ref() {
-            self.list.push(DisplayItem::PushClip(clip.clone()));
-          }
-          // `emit_form_control` expects the border box and computes the padding/content
-          // boxes internally. Passing an already-inset rect causes double insets.
-          let painted = self.emit_form_control(control, fragment, rect);
-          if clip_contents.is_some() {
-            self.list.push(DisplayItem::PopClip);
-          }
-          if painted {
-            return;
-          }
-        }
+        let style_for_image = fragment.style.as_deref();
 
-        if let ReplacedType::Math(math) = replaced_type {
-          let fallback_style = ComputedStyle::default();
-          let style = fragment.style.as_deref();
-          let style_ref = style.unwrap_or(&fallback_style);
-          let (content_rect, clip_radii) = self.replaced_content_rect_and_radii(rect, style);
-          let clip_contents =
-            Self::replaced_content_clip_item(style, content_rect, content_rect, clip_radii);
-          if let Some(clip) = clip_contents.as_ref() {
-            self.list.push(DisplayItem::PushClip(clip.clone()));
+        'paint: {
+          if let ReplacedType::FormControl(control) = replaced_type {
+            let clip_contents = style_for_image.and_then(|style| {
+              let clip_x = Self::overflow_axis_clips(style.overflow_x);
+              let clip_y = Self::overflow_axis_clips(style.overflow_y);
+              if !clip_x && !clip_y {
+                return None;
+              }
+              let overflow_bounds = rect.union(fragment.scroll_overflow.translate(rect.origin));
+              let rects = Self::background_rects(rect, style, self.viewport);
+              // Form controls can paint UI affordances (e.g. dropdown arrows) into the padding box.
+              // Clip to the padding box (not the content box) so `overflow: clip` doesn't cut them
+              // off.
+              Self::overflow_clip_from_style_with_rects(
+                style,
+                &rects,
+                clip_x,
+                clip_y,
+                overflow_bounds,
+                self.viewport,
+                self.build_breakdown.as_deref(),
+              )
+            });
+            if let Some(clip) = clip_contents.as_ref() {
+              self.list.push(DisplayItem::PushClip(clip.clone()));
+            }
+            // `emit_form_control` expects the border box and computes the padding/content
+            // boxes internally. Passing an already-inset rect causes double insets.
+            let painted = self.emit_form_control(control, fragment, rect);
+            if clip_contents.is_some() {
+              self.list.push(DisplayItem::PopClip);
+            }
+            if painted {
+              break 'paint;
+            }
           }
-          let layout_owned = math
-            .layout
-            .as_ref()
-            .map(|l| l.as_ref().clone())
-            .unwrap_or_else(|| layout_mathml(&math.root, style_ref, &self.font_ctx));
-          let current = style_ref.color;
-          let color = style_ref.webkit_text_fill_color.to_rgba(current);
-          let shadows = Self::text_shadows_from_style(Some(style_ref), self.viewport);
-          let layout_w = layout_owned.width.max(0.01);
-          let layout_h = layout_owned.height.max(0.01);
-          let scale_x = if layout_w > 0.0 {
-            content_rect.width() / layout_w
-          } else {
-            1.0
-          };
-          let scale_y = if layout_h > 0.0 {
-            content_rect.height() / layout_h
-          } else {
-            1.0
-          };
-          for frag in layout_owned.fragments {
-            match frag {
-              MathFragment::Glyph { origin, run } => {
-                let scaled_run = Self::scale_run(&run, scale_x, scale_y);
-                let baseline_y = content_rect.y() + origin.y * scale_y;
-                let start_x = content_rect.x() + origin.x * scale_x;
-                self.emit_shaped_runs(
-                  &[scaled_run],
-                  color,
-                  baseline_y,
-                  start_x,
-                  &shadows,
-                  Some(style_ref),
-                  false,
-                  TextEmphasisOffset::default(),
-                );
-              }
-              MathFragment::Rule(r) => {
-                let scaled_rect = Rect::from_xywh(
-                  content_rect.x() + r.x() * scale_x,
-                  content_rect.y() + r.y() * scale_y,
-                  r.width() * scale_x,
-                  r.height() * scale_y,
-                );
-                self.list.push(DisplayItem::FillRect(FillRectItem {
-                  rect: scaled_rect,
-                  color,
-                }));
-              }
-              MathFragment::StrokeRect {
-                rect: stroke_rect,
-                radius,
-                width,
-              } => {
-                let scaled_rect = Rect::from_xywh(
-                  content_rect.x() + stroke_rect.x() * scale_x,
-                  content_rect.y() + stroke_rect.y() * scale_y,
-                  stroke_rect.width() * scale_x,
-                  stroke_rect.height() * scale_y,
-                );
-                let uniform = ((scale_x + scale_y) * 0.5).max(0.0);
-                let stroke_width = width * uniform;
-                let scaled_radius = radius * uniform;
-                if scaled_radius > 0.0 {
-                  self
-                    .list
-                    .push(DisplayItem::StrokeRoundedRect(StrokeRoundedRectItem {
+
+          if let ReplacedType::Math(math) = replaced_type {
+            let fallback_style = ComputedStyle::default();
+            let style_ref = style_for_image.unwrap_or(&fallback_style);
+            let (content_rect, clip_radii) =
+              self.replaced_content_rect_and_radii(rect, style_for_image);
+            let clip_contents =
+              Self::replaced_content_clip_item(style_for_image, content_rect, content_rect, clip_radii);
+            if let Some(clip) = clip_contents.as_ref() {
+              self.list.push(DisplayItem::PushClip(clip.clone()));
+            }
+            let layout_owned = math
+              .layout
+              .as_ref()
+              .map(|l| l.as_ref().clone())
+              .unwrap_or_else(|| layout_mathml(&math.root, style_ref, &self.font_ctx));
+            let current = style_ref.color;
+            let color = style_ref.webkit_text_fill_color.to_rgba(current);
+            let shadows = Self::text_shadows_from_style(Some(style_ref), self.viewport);
+            let layout_w = layout_owned.width.max(0.01);
+            let layout_h = layout_owned.height.max(0.01);
+            let scale_x = if layout_w > 0.0 {
+              content_rect.width() / layout_w
+            } else {
+              1.0
+            };
+            let scale_y = if layout_h > 0.0 {
+              content_rect.height() / layout_h
+            } else {
+              1.0
+            };
+            for frag in layout_owned.fragments {
+              match frag {
+                MathFragment::Glyph { origin, run } => {
+                  let scaled_run = Self::scale_run(&run, scale_x, scale_y);
+                  let baseline_y = content_rect.y() + origin.y * scale_y;
+                  let start_x = content_rect.x() + origin.x * scale_x;
+                  self.emit_shaped_runs(
+                    &[scaled_run],
+                    color,
+                    baseline_y,
+                    start_x,
+                    &shadows,
+                    Some(style_ref),
+                    false,
+                    TextEmphasisOffset::default(),
+                  );
+                }
+                MathFragment::Rule(r) => {
+                  let scaled_rect = Rect::from_xywh(
+                    content_rect.x() + r.x() * scale_x,
+                    content_rect.y() + r.y() * scale_y,
+                    r.width() * scale_x,
+                    r.height() * scale_y,
+                  );
+                  self.list.push(DisplayItem::FillRect(FillRectItem {
+                    rect: scaled_rect,
+                    color,
+                  }));
+                }
+                MathFragment::StrokeRect {
+                  rect: stroke_rect,
+                  radius,
+                  width,
+                } => {
+                  let scaled_rect = Rect::from_xywh(
+                    content_rect.x() + stroke_rect.x() * scale_x,
+                    content_rect.y() + stroke_rect.y() * scale_y,
+                    stroke_rect.width() * scale_x,
+                    stroke_rect.height() * scale_y,
+                  );
+                  let uniform = ((scale_x + scale_y) * 0.5).max(0.0);
+                  let stroke_width = width * uniform;
+                  let scaled_radius = radius * uniform;
+                  if scaled_radius > 0.0 {
+                    self
+                      .list
+                      .push(DisplayItem::StrokeRoundedRect(StrokeRoundedRectItem {
+                        rect: scaled_rect,
+                        color,
+                        width: stroke_width,
+                        radii: BorderRadii::uniform(scaled_radius),
+                      }));
+                  } else {
+                    self.list.push(DisplayItem::StrokeRect(StrokeRectItem {
                       rect: scaled_rect,
                       color,
                       width: stroke_width,
-                      radii: BorderRadii::uniform(scaled_radius),
+                      blend_mode: BlendMode::Normal,
                     }));
-                } else {
-                  self.list.push(DisplayItem::StrokeRect(StrokeRectItem {
-                    rect: scaled_rect,
-                    color,
-                    width: stroke_width,
-                    blend_mode: BlendMode::Normal,
-                  }));
+                  }
                 }
               }
             }
-          }
-          if clip_contents.is_some() {
-            self.list.push(DisplayItem::PopClip);
-          }
-          return;
-        }
-
-        let style_for_image = fragment.style.as_deref();
-
-        if let ReplacedType::Svg { content } = replaced_type {
-          if self.emit_inline_svg(content, rect, style_for_image) {
-            return;
-          }
-        }
-
-        if let ReplacedType::Iframe {
-          src,
-          srcdoc,
-          referrer_policy,
-        } = replaced_type
-        {
-          if let Some(cache) = self.image_cache.as_ref() {
-            let (content_rect, _) = self.replaced_content_rect_and_radii(rect, style_for_image);
-            if let Some(image) = srcdoc.as_deref().and_then(|html| {
-              render_iframe_srcdoc(
-                html,
-                Some(src.as_str()),
-                *referrer_policy,
-                content_rect,
-                style_for_image,
-                cache,
-                &self.font_ctx,
-                self.device_pixel_ratio,
-                self.max_iframe_depth,
-              )
-            }) {
-              self.emit_iframe_image(image, rect, style_for_image);
-              return;
+            if clip_contents.is_some() {
+              self.list.push(DisplayItem::PopClip);
             }
+            break 'paint;
+          }
 
-            if let Some(image) = render_iframe_src(
-              src,
-              *referrer_policy,
-              content_rect,
-              style_for_image,
-              cache,
-              &self.font_ctx,
-              self.device_pixel_ratio,
-              self.max_iframe_depth,
-            ) {
-              self.emit_iframe_image(image, rect, style_for_image);
-              return;
+          if let ReplacedType::Svg { content } = replaced_type {
+            if self.emit_inline_svg(content, rect, style_for_image) {
+              break 'paint;
             }
           }
-        }
 
-        let media_ctx = self.viewport.map(|(w, h)| {
-          crate::style::media::MediaContext::screen(w, h)
-            .with_device_pixel_ratio(self.device_pixel_ratio)
-            .with_env_overrides()
-        });
-        let cache_base = self.image_cache.as_ref().and_then(|cache| cache.base_url());
-        let (slot_rect, _) = self.replaced_content_rect_and_radii(rect, style_for_image);
-        let sources =
-          replaced_type.image_sources_with_fallback(crate::tree::box_tree::ImageSelectionContext {
-            device_pixel_ratio: self.device_pixel_ratio,
-            slot_width: Some(slot_rect.width()),
-            viewport: self.viewport.map(|(w, h)| crate::geometry::Size::new(w, h)),
-            media_context: media_ctx.as_ref(),
-            font_size: fragment.style.as_deref().map(|s| s.font_size),
-            root_font_size: fragment.style.as_deref().map(|s| s.root_font_size),
-            base_url: cache_base.as_deref(),
-          });
-
-        let crossorigin = match replaced_type {
-          ReplacedType::Image { crossorigin, .. } => *crossorigin,
-          _ => CrossOriginAttribute::None,
-        };
-        let referrer_policy = match replaced_type {
-          ReplacedType::Image { referrer_policy, .. } => *referrer_policy,
-          _ => None,
-        };
-        let reject_placeholder = matches!(
-          replaced_type,
-          ReplacedType::Embed { .. } | ReplacedType::Object { .. }
-        );
-        if let Some(image) = sources.iter().find_map(|s| {
-          self.decode_image(
-            s.url,
-            style_for_image,
-            false,
-            crossorigin,
+          if let ReplacedType::Iframe {
+            src,
+            srcdoc,
             referrer_policy,
-            reject_placeholder,
-          )
-        }) {
-          let (content_rect, clip_radii) =
-            self.replaced_content_rect_and_radii(rect, style_for_image);
-          let (dest_x, dest_y, dest_w, dest_h) = {
-            let (fit, position, font_size, root_font_size) =
-              if let Some(style) = fragment.style.as_deref() {
-                (
-                  style.object_fit,
-                  style.object_position,
-                  style.font_size,
-                  style.root_font_size,
+          } = replaced_type
+          {
+            if let Some(cache) = self.image_cache.as_ref() {
+              let (content_rect, _) = self.replaced_content_rect_and_radii(rect, style_for_image);
+              if let Some(image) = srcdoc.as_deref().and_then(|html| {
+                render_iframe_srcdoc(
+                  html,
+                  Some(src.as_str()),
+                  *referrer_policy,
+                  content_rect,
+                  style_for_image,
+                  cache,
+                  &self.font_ctx,
+                  self.device_pixel_ratio,
+                  self.max_iframe_depth,
                 )
-              } else {
-                (ObjectFit::Fill, default_object_position(), 16.0, 16.0)
-              };
+              }) {
+                self.emit_iframe_image(image, rect, style_for_image);
+                break 'paint;
+              }
 
-            compute_object_fit(
-              fit,
-              position,
-              content_rect.width(),
-              content_rect.height(),
-              image.css_width,
-              image.css_height,
-              image.has_intrinsic_ratio,
-              font_size,
-              root_font_size,
-              self.viewport,
-            )
-            .unwrap_or_else(|| (0.0, 0.0, content_rect.width(), content_rect.height()))
-          };
-
-          let dest_rect = Rect::from_xywh(
-            content_rect.x() + dest_x,
-            content_rect.y() + dest_y,
-            dest_w,
-            dest_h,
-          );
-          let clip_contents =
-            Self::replaced_content_clip_item(style_for_image, content_rect, dest_rect, clip_radii);
-          if let Some(clip) = clip_contents.as_ref() {
-            self.list.push(DisplayItem::PushClip(clip.clone()));
-          }
-          self.list.push(DisplayItem::Image(ImageItem {
-            dest_rect,
-            image,
-            filter_quality: Self::image_filter_quality(fragment.style.as_deref()),
-            src_rect: None,
-          }));
-          if clip_contents.is_some() {
-            self.list.push(DisplayItem::PopClip);
-          }
-          return;
-        }
-
-        if reject_placeholder {
-          if let Some(cache) = self.image_cache.as_ref() {
-            let (content_rect, _) = self.replaced_content_rect_and_radii(rect, style_for_image);
-            if let Some(candidate) = sources.first() {
               if let Some(image) = render_iframe_src(
-                candidate.url,
-                referrer_policy,
+                src,
+                *referrer_policy,
                 content_rect,
                 style_for_image,
                 cache,
@@ -4893,22 +5159,176 @@ impl DisplayListBuilder {
                 self.max_iframe_depth,
               ) {
                 self.emit_iframe_image(image, rect, style_for_image);
-                return;
+                break 'paint;
               }
             }
           }
-        }
 
-        if let ReplacedType::Image { alt: Some(alt), .. } = replaced_type {
-          if self.emit_alt_text(alt, fragment, rect) {
-            return;
+          let media_ctx = self.viewport.map(|(w, h)| {
+            crate::style::media::MediaContext::screen(w, h)
+              .with_device_pixel_ratio(self.device_pixel_ratio)
+              .with_env_overrides()
+          });
+          let cache_base = self.image_cache.as_ref().and_then(|cache| cache.base_url());
+          let (slot_rect, _) = self.replaced_content_rect_and_radii(rect, style_for_image);
+          let sources =
+            replaced_type.image_sources_with_fallback(crate::tree::box_tree::ImageSelectionContext {
+              device_pixel_ratio: self.device_pixel_ratio,
+              slot_width: Some(slot_rect.width()),
+              viewport: self.viewport.map(|(w, h)| crate::geometry::Size::new(w, h)),
+              media_context: media_ctx.as_ref(),
+              font_size: fragment.style.as_deref().map(|s| s.font_size),
+              root_font_size: fragment.style.as_deref().map(|s| s.root_font_size),
+              base_url: cache_base.as_deref(),
+            });
+
+          let crossorigin = match replaced_type {
+            ReplacedType::Image { crossorigin, .. } => *crossorigin,
+            _ => CrossOriginAttribute::None,
+          };
+          let referrer_policy = match replaced_type {
+            ReplacedType::Image { referrer_policy, .. } => *referrer_policy,
+            _ => None,
+          };
+          let reject_placeholder = matches!(
+            replaced_type,
+            ReplacedType::Embed { .. } | ReplacedType::Object { .. }
+          );
+          if let Some(image) = sources.iter().find_map(|s| {
+            self.decode_image(
+              s.url,
+              style_for_image,
+              false,
+              crossorigin,
+              referrer_policy,
+              reject_placeholder,
+            )
+          }) {
+            let (content_rect, clip_radii) =
+              self.replaced_content_rect_and_radii(rect, style_for_image);
+            let (dest_x, dest_y, dest_w, dest_h) = {
+              let (fit, position, font_size, root_font_size) =
+                if let Some(style) = fragment.style.as_deref() {
+                  (
+                    style.object_fit,
+                    style.object_position,
+                    style.font_size,
+                    style.root_font_size,
+                  )
+                } else {
+                  (ObjectFit::Fill, default_object_position(), 16.0, 16.0)
+                };
+
+              compute_object_fit(
+                fit,
+                position,
+                content_rect.width(),
+                content_rect.height(),
+                image.css_width,
+                image.css_height,
+                image.has_intrinsic_ratio,
+                font_size,
+                root_font_size,
+                self.viewport,
+              )
+              .unwrap_or_else(|| (0.0, 0.0, content_rect.width(), content_rect.height()))
+            };
+
+            let dest_rect = Rect::from_xywh(
+              content_rect.x() + dest_x,
+              content_rect.y() + dest_y,
+              dest_w,
+              dest_h,
+            );
+            let clip_contents =
+              Self::replaced_content_clip_item(style_for_image, content_rect, dest_rect, clip_radii);
+            if let Some(clip) = clip_contents.as_ref() {
+              self.list.push(DisplayItem::PushClip(clip.clone()));
+            }
+            self.list.push(DisplayItem::Image(ImageItem {
+              dest_rect,
+              image,
+              filter_quality: Self::image_filter_quality(fragment.style.as_deref()),
+              src_rect: None,
+            }));
+            if clip_contents.is_some() {
+              self.list.push(DisplayItem::PopClip);
+            }
+            break 'paint;
           }
+
+          if reject_placeholder {
+            if let Some(cache) = self.image_cache.as_ref() {
+              let (content_rect, _) = self.replaced_content_rect_and_radii(rect, style_for_image);
+              if let Some(candidate) = sources.first() {
+                if let Some(image) = render_iframe_src(
+                  candidate.url,
+                  referrer_policy,
+                  content_rect,
+                  style_for_image,
+                  cache,
+                  &self.font_ctx,
+                  self.device_pixel_ratio,
+                  self.max_iframe_depth,
+                ) {
+                  self.emit_iframe_image(image, rect, style_for_image);
+                  break 'paint;
+                }
+              }
+            }
+          }
+
+          if let ReplacedType::Image { alt: Some(alt), .. } = replaced_type {
+            if self.emit_alt_text(alt, fragment, rect) {
+              break 'paint;
+            }
+          }
+
+          self.emit_replaced_placeholder(replaced_type, fragment, rect);
         }
 
-        self.emit_replaced_placeholder(replaced_type, fragment, rect);
+        if let (Some(style), Some(ctx)) = (style_for_image, self.line_decoration_ctx) {
+          let (inline_start, inline_len) = if ctx.inline_vertical {
+            (rect.y(), rect.height())
+          } else {
+            (rect.x(), rect.width())
+          };
+          let clip = self.line_decoration_clip_range(inline_start, inline_len);
+          self.emit_text_decorations(
+            style,
+            None,
+            inline_start,
+            inline_len,
+            ctx.block_baseline,
+            ctx.inline_vertical,
+            clip,
+          );
+        }
       }
 
-      // Block, Inline, Line, other replaced types - no direct content
+      FragmentContent::Block { .. } | FragmentContent::Inline { .. } => {
+        if let (Some(style), Some(ctx)) = (fragment.style.as_deref(), self.line_decoration_ctx) {
+          if style.display.is_inline_level() && style.display.establishes_formatting_context() {
+            let (inline_start, inline_len) = if ctx.inline_vertical {
+              (rect.y(), rect.height())
+            } else {
+              (rect.x(), rect.width())
+            };
+            let clip = self.line_decoration_clip_range(inline_start, inline_len);
+            self.emit_text_decorations(
+              style,
+              None,
+              inline_start,
+              inline_len,
+              ctx.block_baseline,
+              ctx.inline_vertical,
+              clip,
+            );
+          }
+        }
+      }
+
+      // Line, RunningAnchor, and others - no direct content
       _ => {}
     }
   }
@@ -6877,9 +7297,21 @@ impl DisplayListBuilder {
     inline_len: f32,
     block_baseline: f32,
     inline_vertical: bool,
+    clip: Option<(f32, f32)>,
   ) {
     if inline_len <= 0.0 {
       return;
+    }
+    let clip = clip.map(|(start, end)| {
+      (
+        start.max(0.0).min(inline_len),
+        end.max(0.0).min(inline_len),
+      )
+    });
+    if let Some((start, end)) = clip {
+      if end <= start + f32::EPSILON {
+        return;
+      }
     }
 
     let decorations = if !style.applied_text_decorations.is_empty() {
@@ -6897,6 +7329,28 @@ impl DisplayListBuilder {
     if decorations.is_empty() {
       return;
     }
+
+    let clip_segments = |segments: Option<Vec<(f32, f32)>>| -> Option<Vec<(f32, f32)>> {
+      let Some((clip_start, clip_end)) = clip else {
+        return segments;
+      };
+      if clip_start <= 0.001 && (inline_len - clip_end) <= 0.001 {
+        return segments;
+      }
+      match segments {
+        Some(existing) => Some(
+          existing
+            .into_iter()
+            .filter_map(|(start, end)| {
+              let start = start.max(clip_start);
+              let end = end.min(clip_end);
+              (end > start).then_some((start, end))
+            })
+            .collect(),
+        ),
+        None => Some(vec![(clip_start, clip_end)]),
+      }
+    };
 
     let Some(metrics) = self.decoration_metrics(runs, style) else {
       return;
@@ -6956,6 +7410,7 @@ impl DisplayListBuilder {
         } else {
           None
         };
+        let segments = clip_segments(segments);
         paint.underline = Some(DecorationStroke {
           center,
           thickness,
@@ -6971,7 +7426,7 @@ impl DisplayListBuilder {
         paint.overline = Some(DecorationStroke {
           center,
           thickness,
-          segments: None,
+          segments: clip_segments(None),
         });
         let half_extent = Self::stroke_half_extent(deco.decoration.style, thickness);
         min_block = min_block.min(center - half_extent);
@@ -6987,7 +7442,7 @@ impl DisplayListBuilder {
         paint.line_through = Some(DecorationStroke {
           center,
           thickness,
-          segments: None,
+          segments: clip_segments(None),
         });
         let half_extent = Self::stroke_half_extent(deco.decoration.style, thickness);
         min_block = min_block.min(center - half_extent);

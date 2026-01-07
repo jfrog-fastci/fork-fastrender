@@ -4,6 +4,8 @@
   <style>
     body {
       margin: 0;
+      /* Prevent top margin collapse so absolutely positioned guide stays at y=0. */
+      padding-top: 1px;
       background: white;
     }
 
@@ -17,7 +19,7 @@
     }
 
     .sample {
-      margin-top: 64px;
+      margin-top: 63px;
       margin-left: 80px;
       font-family: "Noto Sans Arabic", sans-serif;
       font-size: 72px;

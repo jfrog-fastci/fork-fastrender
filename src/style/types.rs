@@ -2967,17 +2967,22 @@ impl Default for TextDecoration {
 pub struct TextDecorationLine(pub u8);
 
 impl TextDecorationLine {
+  pub const ALL: Self = Self(0b111);
   pub const LINE_THROUGH: Self = Self(1 << 2);
   pub const NONE: Self = Self(0);
   pub const OVERLINE: Self = Self(1 << 1);
   pub const UNDERLINE: Self = Self(1 << 0);
 
   pub const fn contains(self, other: Self) -> bool {
-    self.0 & other.0 != 0
+    self.0 & other.0 == other.0
   }
 
   pub fn insert(&mut self, other: Self) {
     self.0 |= other.0;
+  }
+
+  pub fn remove(&mut self, other: Self) {
+    self.0 &= !other.0;
   }
 
   pub const fn is_empty(self) -> bool {
@@ -3001,6 +3006,69 @@ pub enum TextDecorationSkipInk {
   Auto,
   None,
   All,
+}
+
+/// Controls whether ancestor text decorations should skip this element.
+///
+/// CSS: `text-decoration-skip-self`
+/// Reference: CSS Text Decoration Module Level 4
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextDecorationSkipSelf {
+  Auto,
+  NoSkip,
+  Skip(TextDecorationLine),
+}
+
+impl Default for TextDecorationSkipSelf {
+  fn default() -> Self {
+    Self::Auto
+  }
+}
+
+/// Controls whether ancestor text decorations should skip the element's box edges.
+///
+/// CSS: `text-decoration-skip-box`
+/// Reference: CSS Text Decoration Module Level 4
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextDecorationSkipBox {
+  None,
+  All,
+}
+
+impl Default for TextDecorationSkipBox {
+  fn default() -> Self {
+    Self::None
+  }
+}
+
+/// Controls whether text decorations should skip spaces at line edges.
+///
+/// CSS: `text-decoration-skip-spaces`
+/// Reference: CSS Text Decoration Module Level 4
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextDecorationSkipSpaces {
+  None,
+  All,
+  Start,
+  End,
+  StartEnd,
+}
+
+impl Default for TextDecorationSkipSpaces {
+  fn default() -> Self {
+    // Initial value per spec.
+    Self::StartEnd
+  }
+}
+
+impl TextDecorationSkipSpaces {
+  pub fn skips_start(self) -> bool {
+    matches!(self, Self::All | Self::Start | Self::StartEnd)
+  }
+
+  pub fn skips_end(self) -> bool {
+    matches!(self, Self::All | Self::End | Self::StartEnd)
+  }
 }
 
 /// Resolved text-decoration to apply after propagation.

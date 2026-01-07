@@ -1777,10 +1777,31 @@ impl FontContext {
   ) {
     self.declare_web_family(&family);
     let generation = self.bump_generation();
-    let has_math = ttf_parser::Face::parse(&data, index)
-      .ok()
-      .and_then(|f| f.tables().math)
-      .is_some();
+
+    let parsed_face = ttf_parser::Face::parse(&data, index).ok();
+    let has_math = parsed_face.as_ref().and_then(|f| f.tables().math).is_some();
+
+    // Web-compat: if `@font-face` omits `font-weight`, CSS defaults the descriptor to `normal`,
+    // meaning a 400..400 range. In practice, authors frequently omit the descriptor for variable
+    // fonts and still expect `font-weight` to drive the `wght` axis. When the font is variable and
+    // exposes a `wght` axis, derive the supported weight range from the axis min/max instead.
+    let mut weight = face.weight;
+    if face.weight == (400, 400) {
+      if let Some(parsed_face) = parsed_face.as_ref() {
+        let wght_tag = Tag::from_bytes(b"wght");
+        if let Some(axis) = parsed_face
+          .variation_axes()
+          .into_iter()
+          .find(|axis| axis.tag == wght_tag)
+        {
+          let min = axis.min_value.floor().clamp(1.0, 1000.0).round() as u16;
+          let max = axis.max_value.ceil().clamp(1.0, 1000.0).round() as u16;
+          if min <= max {
+            weight = (min, max);
+          }
+        }
+      }
+    }
     let push_face = WebFontFace {
       family,
       data,
@@ -1792,7 +1813,7 @@ impl FontContext {
         line_gap_override: face.line_gap_override,
       },
       shaping_descriptors: FontFaceShapingDescriptors {
-        weight_range: Some(face.weight),
+        weight_range: Some(weight),
         stretch_range: Some(face.stretch),
         style: Some(face.style.clone()),
         font_feature_settings: face.font_feature_settings.clone(),
@@ -1802,7 +1823,7 @@ impl FontContext {
       },
       style: face.style.clone(),
       display: face.display,
-      weight: face.weight,
+      weight,
       stretch: face.stretch,
       order,
       ranges: if face.unicode_ranges.is_empty() {

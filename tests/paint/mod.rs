@@ -125,6 +125,7 @@ mod svg_inline_test;
 mod svg_mask_image_reference_test;
 mod text_cache_test;
 mod text_decoration_line_through_golden_test;
+mod text_decoration_skip_display_list_test;
 mod text_decoration_skip_ink_offset_golden_test;
 mod text_decoration_skip_ink_rtl_golden_test;
 mod text_decoration_skip_ink_sideways_rl_golden_test;

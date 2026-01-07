@@ -444,7 +444,11 @@ const KNOWN_STYLE_PROPERTIES: &[&str] = &[
   "text-decoration",
   "text-decoration-color",
   "text-decoration-line",
+  "text-decoration-skip",
+  "text-decoration-skip-box",
   "text-decoration-skip-ink",
+  "text-decoration-skip-self",
+  "text-decoration-skip-spaces",
   "text-decoration-style",
   "text-decoration-thickness",
   "text-emphasis",
@@ -1878,6 +1882,8 @@ fn parse_known_property_value(property: &str, value_str: &str) -> Option<Propert
       | "text-emphasis-style"
       | "text-emphasis-position"
       | "text-emphasis-skip"
+      | "text-decoration-skip-self"
+      | "text-decoration-skip-spaces"
       | "contain-intrinsic-size"
       | "contain-intrinsic-width"
       | "contain-intrinsic-height"

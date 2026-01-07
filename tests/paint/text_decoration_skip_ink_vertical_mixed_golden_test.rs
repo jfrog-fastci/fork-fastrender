@@ -9,17 +9,28 @@ const GOLDEN_PATH: &str = "tests/fixtures/golden/text_decoration_skip_ink_vertic
 const DIFF_DIR: &str = "target/text_decoration_skip_ink_vertical_mixed_diffs";
 const VIEWPORT: (u32, u32) = (440, 560);
 
-fn render_fixture() -> Vec<u8> {
-  // Make the output deterministic across machines (matches CI defaults).
-  std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
+fn run_with_large_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+  std::thread::Builder::new()
+    .stack_size(8 * 1024 * 1024)
+    .spawn(f)
+    .expect("spawn thread")
+    .join()
+    .expect("join thread")
+}
 
-  let html = fs::read_to_string(HTML_PATH).expect("read html fixture");
-  let mut renderer = FastRender::new().expect("renderer");
-  let options = RenderOptions::new().with_viewport(VIEWPORT.0, VIEWPORT.1);
-  let pixmap = renderer
-    .render_html_with_options(&html, options)
-    .expect("render html");
-  encode_image(&pixmap, OutputFormat::Png).expect("encode png")
+fn render_fixture() -> Vec<u8> {
+  run_with_large_stack(|| {
+    // Make the output deterministic across machines (matches CI defaults).
+    std::env::set_var("FASTR_USE_BUNDLED_FONTS", "1");
+
+    let html = fs::read_to_string(HTML_PATH).expect("read html fixture");
+    let mut renderer = FastRender::new().expect("renderer");
+    let options = RenderOptions::new().with_viewport(VIEWPORT.0, VIEWPORT.1);
+    let pixmap = renderer
+      .render_html_with_options(&html, options)
+      .expect("render html");
+    encode_image(&pixmap, OutputFormat::Png).expect("encode png")
+  })
 }
 
 #[test]

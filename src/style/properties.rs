@@ -3952,7 +3952,9 @@ fn is_inherited_property(name: &str) -> bool {
       | "text-wrap"
       | "text-rendering"
       | "text-indent"
+      | "text-decoration-skip-box"
       | "text-decoration-skip-ink"
+      | "text-decoration-skip-spaces"
       | "text-shadow"
       | "text-underline-offset"
       | "text-underline-position"
@@ -5651,6 +5653,17 @@ pub(crate) fn apply_property_from_source(
     "text-decoration-color" => styles.text_decoration.color = source.text_decoration.color,
     "text-decoration-thickness" => {
       styles.text_decoration.thickness = source.text_decoration.thickness.clone()
+    }
+    "text-decoration-skip" => {
+      styles.text_decoration_skip_self = source.text_decoration_skip_self;
+      styles.text_decoration_skip_box = source.text_decoration_skip_box;
+      styles.text_decoration_skip_spaces = source.text_decoration_skip_spaces;
+      styles.text_decoration_skip_ink = source.text_decoration_skip_ink;
+    }
+    "text-decoration-skip-self" => styles.text_decoration_skip_self = source.text_decoration_skip_self,
+    "text-decoration-skip-box" => styles.text_decoration_skip_box = source.text_decoration_skip_box,
+    "text-decoration-skip-spaces" => {
+      styles.text_decoration_skip_spaces = source.text_decoration_skip_spaces
     }
     "text-decoration-skip-ink" => styles.text_decoration_skip_ink = source.text_decoration_skip_ink,
     "text-underline-offset" => styles.text_underline_offset = source.text_underline_offset,
@@ -10412,6 +10425,29 @@ fn apply_declaration_with_base_internal_with_order(
         parse_text_decoration_thickness(resolved_value, parent_font_size, root_font_size)
       {
         styles.text_decoration.thickness = thick;
+      }
+    }
+    "text-decoration-skip" => {
+      if let Some(skip) = parse_text_decoration_skip(resolved_value) {
+        styles.text_decoration_skip_self = skip.self_;
+        styles.text_decoration_skip_box = skip.box_;
+        styles.text_decoration_skip_spaces = skip.spaces;
+        styles.text_decoration_skip_ink = skip.ink;
+      }
+    }
+    "text-decoration-skip-self" => {
+      if let Some(skip) = parse_text_decoration_skip_self(resolved_value) {
+        styles.text_decoration_skip_self = skip;
+      }
+    }
+    "text-decoration-skip-box" => {
+      if let Some(skip) = parse_text_decoration_skip_box(resolved_value) {
+        styles.text_decoration_skip_box = skip;
+      }
+    }
+    "text-decoration-skip-spaces" => {
+      if let Some(skip) = parse_text_decoration_skip_spaces(resolved_value) {
+        styles.text_decoration_skip_spaces = skip;
       }
     }
     "text-decoration-skip-ink" => {
@@ -17602,6 +17638,136 @@ fn parse_text_decoration_thickness(
       Some(TextDecorationThickness::Length(Length::percent(*p)))
     }
     _ => None,
+  }
+}
+
+struct ParsedTextDecorationSkip {
+  self_: TextDecorationSkipSelf,
+  box_: TextDecorationSkipBox,
+  spaces: TextDecorationSkipSpaces,
+  ink: TextDecorationSkipInk,
+}
+
+fn parse_text_decoration_skip(value: &PropertyValue) -> Option<ParsedTextDecorationSkip> {
+  match value {
+    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("none") => Some(ParsedTextDecorationSkip {
+      self_: TextDecorationSkipSelf::NoSkip,
+      box_: TextDecorationSkipBox::None,
+      spaces: TextDecorationSkipSpaces::None,
+      ink: TextDecorationSkipInk::None,
+    }),
+    // Web-compat: `-webkit-text-decoration-skip: objects` is common on real-world stylesheets.
+    // Map it to the initial behavior ("auto") so the declaration is accepted and enables the
+    // default atomic-inline skipping behavior.
+    PropertyValue::Keyword(kw)
+      if kw.eq_ignore_ascii_case("auto") || kw.eq_ignore_ascii_case("objects") =>
+    {
+      Some(ParsedTextDecorationSkip {
+        self_: TextDecorationSkipSelf::Auto,
+        box_: TextDecorationSkipBox::None,
+        spaces: TextDecorationSkipSpaces::StartEnd,
+        ink: TextDecorationSkipInk::Auto,
+      })
+    }
+    _ => None,
+  }
+}
+
+fn parse_text_decoration_skip_self(value: &PropertyValue) -> Option<TextDecorationSkipSelf> {
+  let components: Vec<&PropertyValue> = match value {
+    PropertyValue::Multiple(values) if !values.is_empty() => values.iter().collect(),
+    other => vec![other],
+  };
+
+  if components.is_empty() {
+    return None;
+  }
+
+  // Single-keyword values.
+  if components.len() == 1 {
+    if let PropertyValue::Keyword(kw) = components[0] {
+      if kw.eq_ignore_ascii_case("auto") {
+        return Some(TextDecorationSkipSelf::Auto);
+      }
+      if kw.eq_ignore_ascii_case("no-skip") {
+        return Some(TextDecorationSkipSelf::NoSkip);
+      }
+      if kw.eq_ignore_ascii_case("skip-all") {
+        return Some(TextDecorationSkipSelf::Skip(TextDecorationLine::ALL));
+      }
+    }
+  }
+
+  let mut lines = TextDecorationLine::NONE;
+  for comp in components {
+    let PropertyValue::Keyword(kw) = comp else {
+      return None;
+    };
+    if kw.eq_ignore_ascii_case("skip-underline") {
+      lines.insert(TextDecorationLine::UNDERLINE);
+      continue;
+    }
+    if kw.eq_ignore_ascii_case("skip-overline") {
+      lines.insert(TextDecorationLine::OVERLINE);
+      continue;
+    }
+    if kw.eq_ignore_ascii_case("skip-line-through") {
+      lines.insert(TextDecorationLine::LINE_THROUGH);
+      continue;
+    }
+    return None;
+  }
+
+  if lines.is_empty() {
+    None
+  } else {
+    Some(TextDecorationSkipSelf::Skip(lines))
+  }
+}
+
+fn parse_text_decoration_skip_box(value: &PropertyValue) -> Option<TextDecorationSkipBox> {
+  match value {
+    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("none") => Some(TextDecorationSkipBox::None),
+    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("all") => Some(TextDecorationSkipBox::All),
+    _ => None,
+  }
+}
+
+fn parse_text_decoration_skip_spaces(value: &PropertyValue) -> Option<TextDecorationSkipSpaces> {
+  match value {
+    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("none") => Some(TextDecorationSkipSpaces::None),
+    PropertyValue::Keyword(kw) if kw.eq_ignore_ascii_case("all") => Some(TextDecorationSkipSpaces::All),
+    _ => {
+      let components: Vec<&PropertyValue> = match value {
+        PropertyValue::Multiple(values) if !values.is_empty() => values.iter().collect(),
+        other => vec![other],
+      };
+      if components.is_empty() {
+        return None;
+      }
+
+      let mut start = false;
+      let mut end = false;
+      for comp in components {
+        let PropertyValue::Keyword(kw) = comp else {
+          return None;
+        };
+        if kw.eq_ignore_ascii_case("start") {
+          start = true;
+        } else if kw.eq_ignore_ascii_case("end") {
+          end = true;
+        } else {
+          return None;
+        }
+      }
+
+      match (start, end) {
+        (true, true) => Some(TextDecorationSkipSpaces::StartEnd),
+        (true, false) => Some(TextDecorationSkipSpaces::Start),
+        (false, true) => Some(TextDecorationSkipSpaces::End),
+        (false, false) => None,
+      }
+    }
   }
 }
 

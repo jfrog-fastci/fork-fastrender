@@ -11093,26 +11093,62 @@ impl DisplayListRenderer {
         }
       }
       if let Some(overline) = &deco.overline {
-        render_line(
-          pixmap,
-          &paint,
-          deco.style,
-          inline_start,
-          inline_len,
-          overline.center,
-          overline.thickness,
-        );
+        if let Some(segments) = &overline.segments {
+          for (start, end) in segments {
+            let len = end - start;
+            if len <= 0.0 {
+              continue;
+            }
+            render_line(
+              pixmap,
+              &paint,
+              deco.style,
+              item.line_start + *start,
+              len,
+              overline.center,
+              overline.thickness,
+            );
+          }
+        } else {
+          render_line(
+            pixmap,
+            &paint,
+            deco.style,
+            inline_start,
+            inline_len,
+            overline.center,
+            overline.thickness,
+          );
+        }
       }
       if let Some(strike) = &deco.line_through {
-        render_line(
-          pixmap,
-          &paint,
-          deco.style,
-          inline_start,
-          inline_len,
-          strike.center,
-          strike.thickness,
-        );
+        if let Some(segments) = &strike.segments {
+          for (start, end) in segments {
+            let len = end - start;
+            if len <= 0.0 {
+              continue;
+            }
+            render_line(
+              pixmap,
+              &paint,
+              deco.style,
+              item.line_start + *start,
+              len,
+              strike.center,
+              strike.thickness,
+            );
+          }
+        } else {
+          render_line(
+            pixmap,
+            &paint,
+            deco.style,
+            inline_start,
+            inline_len,
+            strike.center,
+            strike.thickness,
+          );
+        }
       }
     }
 
