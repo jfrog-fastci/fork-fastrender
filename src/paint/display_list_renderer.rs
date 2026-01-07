@@ -9894,17 +9894,21 @@ impl DisplayListRenderer {
         let mut local_skia_transform: Option<Transform> = None;
         let mut combined_transform = parent_transform;
         let mut applied_perspective = false;
+        let mut perspective_residual: Option<Transform3D> = None;
         if projective_transform.is_none()
           && (item.transform.is_some()
             || (!self.projective_warp_enabled && warp_candidate_is_projective))
         {
+          let mut uses_warp_candidate = false;
           let transform_for_canvas = if !self.projective_warp_enabled && warp_candidate_is_projective
           {
+            uses_warp_candidate = true;
             &warp_candidate
           } else if !parent_perspective.is_identity() && item.transform.is_some() {
             // Even when the combined transform is affine on the z=0 plane (e.g. `perspective` +
             // `translateZ`), we must apply the ancestor perspective to get the correct projected
             // scale/translation for this stacking context.
+            uses_warp_candidate = true;
             &warp_candidate
           } else {
             &local_transform
@@ -9914,12 +9918,30 @@ impl DisplayListRenderer {
             local_skia_transform = Some(t);
             combined_transform = combined_transform.post_concat(t);
             applied_perspective = !self.projective_warp_enabled && warp_candidate_is_projective;
+
+            if uses_warp_candidate && !warp_candidate_is_projective && !parent_perspective.is_identity()
+            {
+              // We applied an affine projection of the ancestor perspective to the canvas. Carry
+              // forward the remaining 3D components so descendants compose transforms correctly.
+              //
+              // Without this, nested 3D transforms would apply the pending perspective *again*
+              // without accounting for the affine portion already baked into the canvas.
+              let affine = warp_candidate
+                .to_2d()
+                .unwrap_or_else(|| warp_candidate.approximate_2d_with_validity().0);
+              if let Some(inv) = affine.inverse() {
+                let residual = Transform3D::from_2d(&inv).multiply(&warp_candidate);
+                perspective_residual = Some(residual);
+              }
+            }
           }
         }
 
         self.transform_stack.push(child_base_transform);
         let perspective_base = if projective_transform.is_some() || applied_perspective {
           Transform3D::identity()
+        } else if let Some(residual) = perspective_residual {
+          residual
         } else {
           parent_perspective
         };
@@ -15963,6 +15985,113 @@ mod tests {
       pixel(&pixmap, 25, 25),
       (255, 0, 0, 255),
       "expected scaled rect to cover a pixel in the projected area"
+    );
+  }
+
+  fn non_background_bounds(
+    pixmap: &Pixmap,
+    background: (u8, u8, u8, u8),
+  ) -> Option<(u32, u32, u32, u32)> {
+    let mut min_x = u32::MAX;
+    let mut min_y = u32::MAX;
+    let mut max_x = 0u32;
+    let mut max_y = 0u32;
+    let mut any = false;
+    for y in 0..pixmap.height() {
+      for x in 0..pixmap.width() {
+        if pixel(pixmap, x, y) != background {
+          any = true;
+          min_x = min_x.min(x);
+          min_y = min_y.min(y);
+          max_x = max_x.max(x);
+          max_y = max_y.max(y);
+        }
+      }
+    }
+    any.then_some((min_x, min_y, max_x, max_y))
+  }
+
+  #[test]
+  fn perspective_translate_z_composes_with_nested_projective_transforms() {
+    let size = 128u32;
+    let viewport = Rect::from_xywh(0.0, 0.0, size as f32, size as f32);
+    let perspective = Transform3D::perspective(100.0);
+    let translate_z = Transform3D::translate(0.0, 0.0, 50.0);
+    let rotate_y = Transform3D::rotate_y(30_f32.to_radians());
+
+    let rect = Rect::from_xywh(40.0, 40.0, 20.0, 20.0);
+
+    let parent = StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      establishes_backdrop_root: false,
+      bounds: viewport,
+      plane_rect: viewport,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: false,
+      transform: None,
+      child_perspective: Some(perspective),
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+      has_clip_path: false,
+    };
+
+    let mut nested = DisplayList::new();
+    nested.push(DisplayItem::PushStackingContext(parent.clone()));
+    nested.push(DisplayItem::PushStackingContext(StackingContextItem {
+      transform: Some(translate_z),
+      child_perspective: None,
+      ..parent.clone()
+    }));
+    nested.push(DisplayItem::PushStackingContext(StackingContextItem {
+      transform: Some(rotate_y),
+      child_perspective: None,
+      ..parent.clone()
+    }));
+    nested.push(DisplayItem::FillRect(FillRectItem {
+      rect,
+      color: Rgba::RED,
+    }));
+    nested.push(DisplayItem::PopStackingContext);
+    nested.push(DisplayItem::PopStackingContext);
+    nested.push(DisplayItem::PopStackingContext);
+
+    let mut combined = DisplayList::new();
+    combined.push(DisplayItem::PushStackingContext(parent.clone()));
+    combined.push(DisplayItem::PushStackingContext(StackingContextItem {
+      transform: Some(translate_z.multiply(&rotate_y)),
+      child_perspective: None,
+      ..parent.clone()
+    }));
+    combined.push(DisplayItem::FillRect(FillRectItem {
+      rect,
+      color: Rgba::RED,
+    }));
+    combined.push(DisplayItem::PopStackingContext);
+    combined.push(DisplayItem::PopStackingContext);
+
+    let render = |list: &DisplayList| {
+      DisplayListRenderer::new(size, size, Rgba::WHITE, FontContext::new())
+        .unwrap()
+        .render(list)
+        .unwrap()
+    };
+
+    let nested_pixmap = render(&nested);
+    let combined_pixmap = render(&combined);
+    let bg = (255, 255, 255, 255);
+    let nested_bounds = non_background_bounds(&nested_pixmap, bg).expect("nested draws pixels");
+    let combined_bounds = non_background_bounds(&combined_pixmap, bg).expect("combined draws pixels");
+
+    assert_eq!(
+      nested_bounds,
+      combined_bounds,
+      "expected nested stacking-context composition to match combined transform composition"
     );
   }
 

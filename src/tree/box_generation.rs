@@ -4985,6 +4985,14 @@ mod tests {
     find_select(&box_tree.root).expect("expected select form control")
   }
 
+  fn select_selected_value(select: &crate::tree::box_tree::SelectControl) -> Option<String> {
+    let idx = select.selected.first().copied()?;
+    match select.items.get(idx)? {
+      crate::tree::box_tree::SelectItem::Option { value, .. } => Some(value.clone()),
+      _ => None,
+    }
+  }
+
   fn collect_pseudo_text(
     node: &BoxNode,
     styled_node_id: usize,
