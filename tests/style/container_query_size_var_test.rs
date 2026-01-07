@@ -415,6 +415,8 @@ fn container_size_query_var_mixed_feature_placeholders_parse_and_match() {
   containers.insert(
     container_id,
     ContainerQueryInfo {
+      width: 200.0,
+      height: 300.0,
       inline_size: 200.0,
       block_size: 300.0,
       container_type: ContainerType::Size,

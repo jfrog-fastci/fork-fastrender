@@ -2582,12 +2582,8 @@ mod tests {
 
       let snapshot = recording.snapshot();
       let origin = origin_from_url(referrer).expect("origin");
-      let partitioned = request_partitioned_resource_key(
-        FetchContextKind::ImageCors,
-        url,
-        &origin,
-        FetchCredentialsMode::Include,
-      );
+      let partitioned =
+        request_partitioned_resource_key(FetchContextKind::ImageCors, url, &origin);
 
       assert!(
         snapshot.contains_key(url),
@@ -2684,12 +2680,8 @@ mod tests {
 
       let snapshot = recording.snapshot();
       let origin = origin_from_url(referrer).expect("origin");
-      let partitioned = request_partitioned_resource_key(
-        FetchContextKind::ImageCors,
-        url,
-        &origin,
-        FetchCredentialsMode::Include,
-      );
+      let partitioned =
+        request_partitioned_resource_key(FetchContextKind::ImageCors, url, &origin);
 
       assert_eq!(snapshot.get(url).expect("url entry").bytes, b"no-cors");
       assert_eq!(
@@ -2823,18 +2815,8 @@ mod tests {
       let origin_a = origin_from_url("http://a.test/frame.html").expect("origin A");
       let origin_b = origin_from_url("http://b.test/frame.html").expect("origin B");
       let font_url = "http://cdn.test/font.woff2";
-      let key_a = request_partitioned_resource_key(
-        FetchContextKind::Font,
-        font_url,
-        &origin_a,
-        FetchCredentialsMode::Include,
-      );
-      let key_b = request_partitioned_resource_key(
-        FetchContextKind::Font,
-        font_url,
-        &origin_b,
-        FetchCredentialsMode::Include,
-      );
+      let key_a = request_partitioned_resource_key(FetchContextKind::Font, font_url, &origin_a);
+      let key_b = request_partitioned_resource_key(FetchContextKind::Font, font_url, &origin_b);
 
       assert!(
         snapshot.contains_key(font_url),
@@ -2870,18 +2852,8 @@ mod tests {
     let font_url = "http://cdn.test/font.woff2";
     let origin_a = origin_from_url("http://a.test/frame.html").expect("origin A");
     let origin_b = origin_from_url("http://b.test/frame.html").expect("origin B");
-    let key_a = request_partitioned_resource_key(
-      FetchContextKind::Font,
-      font_url,
-      &origin_a,
-      FetchCredentialsMode::Include,
-    );
-    let key_b = request_partitioned_resource_key(
-      FetchContextKind::Font,
-      font_url,
-      &origin_b,
-      FetchCredentialsMode::Include,
-    );
+    let key_a = request_partitioned_resource_key(FetchContextKind::Font, font_url, &origin_a);
+    let key_b = request_partitioned_resource_key(FetchContextKind::Font, font_url, &origin_b);
 
     let mut res_a = FetchedResource::with_final_url(
       b"ok".to_vec(),

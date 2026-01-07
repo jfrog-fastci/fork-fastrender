@@ -3,6 +3,7 @@ use fastrender::layout::contexts::grid::GridFormattingContext;
 use fastrender::layout::engine::LayoutParallelism;
 use fastrender::style::display::Display;
 use fastrender::style::position::Position;
+use fastrender::style::types::InsetValue;
 use fastrender::style::values::Length;
 use fastrender::style::ComputedStyle;
 use fastrender::text::font_loader::FontContext;
@@ -128,8 +129,8 @@ fn build_flex_row(children: usize) -> BoxTree {
   // Add a positioned overlay to exercise absolute positioning paths.
   let mut abs_style = (*shared_item_style).clone();
   abs_style.position = Position::Absolute;
-  abs_style.top = Some(Length::px(6.0));
-  abs_style.left = Some(Length::px(10.0));
+  abs_style.top = InsetValue::Length(Length::px(6.0));
+  abs_style.left = InsetValue::Length(Length::px(10.0));
   let abs_style = Arc::new(abs_style);
   let abs_text = BoxNode::new_text(abs_style.clone(), "overlay".to_string());
   items.push(BoxNode::new_block(
