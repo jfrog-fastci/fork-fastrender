@@ -3060,6 +3060,10 @@ impl DisplayListBuilder {
       if let Some(svg) = self.inline_svg_for_svg_mask(id, bounds) {
         return self.decode_image(&svg, Some(style), true, CrossOriginAttribute::None, None, false);
       }
+      // Fragment-only URLs (`url(#id)`) refer to in-document SVG resources. If we cannot resolve
+      // the id via `svg_id_defs`, treat the mask image as missing instead of attempting an
+      // external fetch.
+      return None;
     }
     self.decode_image(src, Some(style), true, CrossOriginAttribute::None, None, false)
   }

@@ -300,3 +300,40 @@ fn svg_mask_image_does_not_trigger_fetch_errors() {
   );
 }
 
+#[test]
+fn svg_mask_image_missing_id_does_not_trigger_fetch_errors() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; background: white; }
+      #box {
+        width: 20px;
+        height: 20px;
+        background: rgb(255 0 0);
+        mask-image: url(#missing);
+        mask-repeat: no-repeat;
+        mask-size: 100% 100%;
+        mask-position: 0 0;
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+
+  let mut renderer = FastRender::builder()
+    .font_sources(FontConfig::bundled_only())
+    .build()
+    .expect("renderer");
+
+  let options = RenderOptions::new()
+    .with_viewport(20, 20)
+    .with_diagnostics_level(DiagnosticsLevel::Basic);
+  let result = renderer
+    .render_html_with_diagnostics(html, options)
+    .expect("render");
+
+  assert!(
+    result.diagnostics.fetch_errors.is_empty(),
+    "expected mask-image:url(#missing) to stay local, got fetch errors: {:?}",
+    result.diagnostics.fetch_errors
+  );
+  assert_eq!(pixel(&result.pixmap, 10, 10), (255, 0, 0, 255));
+}
