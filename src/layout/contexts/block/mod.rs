@@ -1494,6 +1494,7 @@ impl BlockFormattingContext {
       );
       let mut anchor_index = crate::layout::anchor_positioning::AnchorIndex::from_fragments(
         child_fragments.as_slice(),
+        self.viewport_size,
       );
       // Allow descendants to anchor against the containing block element itself.
       anchor_index.insert_names(
@@ -5666,6 +5667,7 @@ impl FormattingContext for BlockFormattingContext {
       );
       let mut anchor_index = crate::layout::anchor_positioning::AnchorIndex::from_fragments(
         child_fragments.as_slice(),
+        self.viewport_size,
       );
       // Allow descendants to anchor against the containing block element itself.
       anchor_index.insert_names(

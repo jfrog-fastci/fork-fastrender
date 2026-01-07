@@ -10431,8 +10431,10 @@ impl InlineFormattingContext {
 
     // Position out-of-flow abs/fixed children against the containing block.
     if !positioned_children.is_empty() {
-      let mut anchor_index =
-        crate::layout::anchor_positioning::AnchorIndex::from_fragments(merged_children.as_slice());
+      let mut anchor_index = crate::layout::anchor_positioning::AnchorIndex::from_fragments(
+        merged_children.as_slice(),
+        self.viewport_size,
+      );
       anchor_index.insert_names(
         &style.anchor_names,
         crate::layout::anchor_positioning::AnchorBox {

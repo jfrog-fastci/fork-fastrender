@@ -5734,7 +5734,10 @@ impl FormattingContext for TableFormattingContext {
         return Ok(());
       }
       let mut anchor_index =
-        crate::layout::anchor_positioning::AnchorIndex::from_fragments(fragment.children_ref());
+        crate::layout::anchor_positioning::AnchorIndex::from_fragments(
+          fragment.children_ref(),
+          self.viewport_size,
+        );
       if let Some(style) = fragment.style.as_ref() {
         anchor_index.insert_names(
           &style.anchor_names,

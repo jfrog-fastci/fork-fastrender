@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use fastrender::css::types::Transform;
 use fastrender::layout::constraints::LayoutConstraints;
 use fastrender::layout::contexts::block::BlockFormattingContext;
 use fastrender::layout::formatting_context::FormattingContext;
@@ -219,6 +220,82 @@ fn anchor_positioning_supports_inside_outside_center_and_percentage_sides() {
     (inside_overlay_fragment.bounds.y() - anchor_fragment.bounds.y()).abs() < 0.1,
     "inside anchor side should resolve to the same edge (got y={})",
     inside_overlay_fragment.bounds.y()
+  );
+}
+
+#[test]
+fn anchor_positioning_uses_transformed_anchor_box() {
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Block;
+  container_style.position = Position::Relative;
+  container_style.width = Some(Length::px(200.0));
+  container_style.height = Some(Length::px(200.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+  container_style.padding_left = Length::px(10.0);
+  container_style.padding_top = Length::px(5.0);
+  container_style.padding_right = Length::px(0.0);
+  container_style.padding_bottom = Length::px(0.0);
+  let container_style = Arc::new(container_style);
+
+  let anchor_id = 1usize;
+  let overlay_id = 2usize;
+
+  let mut anchor_style = ComputedStyle::default();
+  anchor_style.display = Display::Block;
+  anchor_style.width = Some(Length::px(50.0));
+  anchor_style.height = Some(Length::px(20.0));
+  anchor_style.width_keyword = None;
+  anchor_style.height_keyword = None;
+  anchor_style.anchor_names = vec!["--a".to_string()];
+  anchor_style.transform = vec![Transform::TranslateX(Length::px(30.0))];
+  let mut anchor = BoxNode::new_block(Arc::new(anchor_style), FormattingContextType::Block, vec![]);
+  anchor.id = anchor_id;
+
+  let mut overlay_style = ComputedStyle::default();
+  overlay_style.display = Display::Block;
+  overlay_style.position = Position::Absolute;
+  overlay_style.position_anchor = PositionAnchor::Name("--a".to_string());
+  overlay_style.top = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Bottom,
+    fallback: None,
+  });
+  overlay_style.left = InsetValue::Anchor(AnchorFunction {
+    name: None,
+    side: AnchorSide::Left,
+    fallback: None,
+  });
+  overlay_style.width = Some(Length::px(10.0));
+  overlay_style.height = Some(Length::px(10.0));
+  overlay_style.width_keyword = None;
+  overlay_style.height_keyword = None;
+  let mut overlay = BoxNode::new_block(Arc::new(overlay_style), FormattingContextType::Block, vec![]);
+  overlay.id = overlay_id;
+
+  let mut container = BoxNode::new_block(
+    container_style,
+    FormattingContextType::Block,
+    vec![anchor, overlay],
+  );
+  container.id = 106;
+
+  let fc = BlockFormattingContext::new();
+  let constraints = LayoutConstraints::definite(200.0, 200.0);
+  let fragment = fc.layout(&container, &constraints).expect("layout");
+
+  let anchor_fragment = find_fragment_by_box_id(&fragment, anchor_id).expect("anchor fragment");
+  let overlay_fragment = find_fragment_by_box_id(&fragment, overlay_id).expect("overlay fragment");
+
+  assert!(
+    (overlay_fragment.bounds.x() - (anchor_fragment.bounds.x() + 30.0)).abs() < 0.1,
+    "anchor() should use the transformed anchor box (got x={}, expected {})",
+    overlay_fragment.bounds.x(),
+    anchor_fragment.bounds.x() + 30.0
+  );
+  assert!(
+    (overlay_fragment.bounds.y() - anchor_fragment.bounds.max_y()).abs() < 0.1,
+    "transform should not affect the block axis in this test"
   );
 }
 

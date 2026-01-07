@@ -3516,7 +3516,7 @@ impl FormattingContext for FlexFormattingContext {
         block_base,
       );
       let mut anchor_index =
-        crate::layout::anchor_positioning::AnchorIndex::from_fragments(fragment.children_ref());
+        crate::layout::anchor_positioning::AnchorIndex::from_fragments(fragment.children_ref(), self.viewport_size);
       anchor_index.insert_names(
         &box_node.style.anchor_names,
         crate::layout::anchor_positioning::AnchorBox {

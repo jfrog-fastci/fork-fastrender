@@ -16,6 +16,7 @@
 
 use crate::geometry::Point;
 use crate::geometry::Rect;
+use crate::geometry::Size;
 use crate::style::types::Direction;
 use crate::style::types::WritingMode;
 use crate::tree::fragment_tree::FragmentNode;
@@ -41,9 +42,9 @@ impl AnchorIndex {
     }
   }
 
-  pub(crate) fn from_fragments(fragments: &[FragmentNode]) -> Self {
+  pub(crate) fn from_fragments(fragments: &[FragmentNode], viewport: Size) -> Self {
     let mut index = Self::new();
-    index.collect_from_fragments(fragments, Point::ZERO);
+    index.collect_from_fragments(fragments, Point::ZERO, viewport);
     index
   }
 
@@ -61,16 +62,26 @@ impl AnchorIndex {
     }
   }
 
-  fn collect_from_fragments(&mut self, fragments: &[FragmentNode], parent_origin: Point) {
+  fn collect_from_fragments(&mut self, fragments: &[FragmentNode], parent_origin: Point, viewport: Size) {
     for fragment in fragments {
-      self.collect_from_fragment(fragment, parent_origin);
+      self.collect_from_fragment(fragment, parent_origin, viewport);
     }
   }
 
-  fn collect_from_fragment(&mut self, fragment: &FragmentNode, parent_origin: Point) {
+  fn collect_from_fragment(&mut self, fragment: &FragmentNode, parent_origin: Point, viewport: Size) {
     let abs_bounds = fragment.bounds.translate(parent_origin);
 
     if let Some(style) = fragment.style.as_ref() {
+      let abs_bounds = if style.has_transform() {
+        crate::paint::transform_resolver::resolve_transform3d(
+          style,
+          abs_bounds,
+          Some((viewport.width, viewport.height)),
+        )
+        .map_or(abs_bounds, |transform| transform.transform_rect(abs_bounds))
+      } else {
+        abs_bounds
+      };
       self.insert_names(
         &style.anchor_names,
         AnchorBox {
@@ -82,6 +93,6 @@ impl AnchorIndex {
     }
 
     let child_origin = parent_origin.translate(fragment.bounds.origin);
-    self.collect_from_fragments(fragment.children.as_ref(), child_origin);
+    self.collect_from_fragments(fragment.children.as_ref(), child_origin, viewport);
   }
 }
