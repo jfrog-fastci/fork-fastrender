@@ -343,12 +343,12 @@ fn foreign_object_renders_nested_html_children() {
       </svg>
       "#;
 
-      // Force the legacy painter backend for this test: the display-list backend currently falls
-      // back to placeholder SVG rendering for foreignObject content.
+      // Explicitly exercise the display-list paint backend (the default) to ensure nested
+      // foreignObject HTML is rendered rather than falling back to placeholder SVG output.
       let toggles = fastrender::debug::runtime::RuntimeToggles::from_map(
         std::collections::HashMap::from([(
           "FASTR_PAINT_BACKEND".to_string(),
-          "legacy".to_string(),
+          "display_list".to_string(),
         )]),
       );
       let options = RenderOptions::new()
@@ -540,7 +540,7 @@ fn foreign_object_overflow_hidden_clips_filter_effects() {
 
       let toggles = fastrender::debug::runtime::RuntimeToggles::from_map(std::collections::HashMap::from([(
         "FASTR_PAINT_BACKEND".to_string(),
-        "legacy".to_string(),
+        "display_list".to_string(),
       )]));
       let options = RenderOptions::new()
         .with_viewport(40, 40)
@@ -600,11 +600,11 @@ fn foreign_object_overflow_visible_allows_filter_effects_outside_bounds() {
             <div xmlns="http://www.w3.org/1999/xhtml" style="width:20px;height:20px;background: rgb(255,0,0);"></div>
          </foreignObject>
        </svg>
-         "#;
+          "#;
 
       let toggles = fastrender::debug::runtime::RuntimeToggles::from_map(std::collections::HashMap::from([(
         "FASTR_PAINT_BACKEND".to_string(),
-        "legacy".to_string(),
+        "display_list".to_string(),
       )]));
       let options = RenderOptions::new()
         .with_viewport(40, 40)
