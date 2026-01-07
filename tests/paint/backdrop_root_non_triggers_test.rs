@@ -118,3 +118,9 @@ fn fixed_positioning_is_not_a_backdrop_root() {
   let pixmap = render("position: fixed; top: 0; left: 0;");
   assert_child_inverts_body_bg(&pixmap);
 }
+
+#[test]
+fn sticky_positioning_is_not_a_backdrop_root() {
+  let pixmap = render("position: sticky; top: 0; left: 0;");
+  assert_child_inverts_body_bg(&pixmap);
+}
