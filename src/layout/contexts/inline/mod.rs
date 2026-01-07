@@ -5479,54 +5479,18 @@ impl InlineFormattingContext {
       if style.position.is_relative() {
         let positioned_style =
           resolve_positioned_style(style, relative_cb, self.viewport_size, &self.font_context);
-        let viewport = relative_cb.viewport_size();
-        let inline_base = relative_cb.inline_percentage_base();
-        let block_base = relative_cb.block_percentage_base();
-        let mut offset_x = 0.0;
-        let mut offset_y = 0.0;
-
-        if let Some(top) = crate::layout::utils::resolve_offset_for_positioned(
-          &positioned_style.top,
-          block_base,
-          viewport,
+        let offset = crate::layout::contexts::positioned::compute_relative_offset(
           &positioned_style,
+          relative_cb,
           &self.font_context,
-        ) {
-          offset_y = top;
-        } else if let Some(bottom) = crate::layout::utils::resolve_offset_for_positioned(
-          &positioned_style.bottom,
-          block_base,
-          viewport,
-          &positioned_style,
-          &self.font_context,
-        ) {
-          offset_y = -bottom;
-        }
-
-        if let Some(left) = crate::layout::utils::resolve_offset_for_positioned(
-          &positioned_style.left,
-          inline_base,
-          viewport,
-          &positioned_style,
-          &self.font_context,
-        ) {
-          offset_x = left;
-        } else if let Some(right) = crate::layout::utils::resolve_offset_for_positioned(
-          &positioned_style.right,
-          inline_base,
-          viewport,
-          &positioned_style,
-          &self.font_context,
-        ) {
-          offset_x = -right;
-        }
+        );
 
         if inline_vertical {
-          block_pos += offset_x;
-          inline_pos += offset_y;
+          block_pos += offset.x;
+          inline_pos += offset.y;
         } else {
-          inline_pos += offset_x;
-          block_pos += offset_y;
+          inline_pos += offset.x;
+          block_pos += offset.y;
         }
       }
     }

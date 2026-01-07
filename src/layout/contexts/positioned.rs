@@ -48,6 +48,7 @@ use crate::layout::formatting_context::LayoutError;
 use crate::layout::utils::resolve_offset_for_positioned;
 use crate::style::computed::PositionedStyle;
 use crate::style::position::Position;
+use crate::style::types::Direction;
 use crate::text::font_loader::FontContext;
 use crate::tree::fragment_tree::FragmentNode;
 
@@ -289,7 +290,8 @@ impl PositionedLayout {
   /// # Offset Resolution
   ///
   /// - If both `top` and `bottom` are specified, `top` wins (for horizontal writing modes)
-  /// - If both `left` and `right` are specified, `left` wins (for LTR)
+  /// - If both `left` and `right` are specified, the used value depends on `direction`
+  ///   (LTR uses `left`, RTL uses `right`)
   /// - `auto` values resolve to `0`
   ///
   /// # Arguments
@@ -341,53 +343,13 @@ impl PositionedLayout {
   ///
   /// CSS 2.1 Section 9.3.2:
   /// - If both `top` and `bottom` are specified, `top` wins
-  /// - If both `left` and `right` are specified, `left` wins (LTR)
+  /// - If both `left` and `right` are specified, `left` wins for LTR and `right` wins for RTL
   fn compute_relative_offset(
     &self,
     style: &PositionedStyle,
     containing_block: &ContainingBlock,
   ) -> Point {
-    let mut offset_x = 0.0;
-    let mut offset_y = 0.0;
-    let viewport = containing_block.viewport_size();
-    let inline_base = containing_block.inline_percentage_base();
-    let block_base = containing_block.block_percentage_base();
-
-    // Vertical offset: top takes precedence over bottom
-    if let Some(top) =
-      resolve_offset_for_positioned(&style.top, block_base, viewport, style, &self.font_context)
-    {
-      offset_y = top;
-    } else if let Some(bottom) = resolve_offset_for_positioned(
-      &style.bottom,
-      block_base,
-      viewport,
-      style,
-      &self.font_context,
-    ) {
-      offset_y = -bottom;
-    }
-
-    // Horizontal offset: left takes precedence over right (LTR)
-    if let Some(left) = resolve_offset_for_positioned(
-      &style.left,
-      inline_base,
-      viewport,
-      style,
-      &self.font_context,
-    ) {
-      offset_x = left;
-    } else if let Some(right) = resolve_offset_for_positioned(
-      &style.right,
-      inline_base,
-      viewport,
-      style,
-      &self.font_context,
-    ) {
-      offset_x = -right;
-    }
-
-    Point::new(offset_x, offset_y)
+    compute_relative_offset(style, containing_block, &self.font_context)
   }
 
   /// Computes the position and size for an absolutely positioned element.
@@ -525,6 +487,51 @@ impl PositionedLayout {
   pub fn creates_stacking_context(&self, style: &PositionedStyle) -> bool {
     style.creates_stacking_context()
   }
+}
+
+/// Computes the physical offset for `position: relative` using CSS 2.1 rules.
+///
+/// This helper is shared by block and inline layout to keep relative positioning
+/// behavior consistent across formatting contexts.
+pub(crate) fn compute_relative_offset(
+  style: &PositionedStyle,
+  containing_block: &ContainingBlock,
+  font_context: &FontContext,
+) -> Point {
+  let viewport = containing_block.viewport_size();
+  let inline_base = containing_block.inline_percentage_base();
+  let block_base = containing_block.block_percentage_base();
+
+  // Vertical offset: `top` takes precedence over `bottom`.
+  let offset_y = if let Some(top) =
+    resolve_offset_for_positioned(&style.top, block_base, viewport, style, font_context)
+  {
+    top
+  } else if let Some(bottom) =
+    resolve_offset_for_positioned(&style.bottom, block_base, viewport, style, font_context)
+  {
+    -bottom
+  } else {
+    0.0
+  };
+
+  let left = resolve_offset_for_positioned(&style.left, inline_base, viewport, style, font_context);
+  let right =
+    resolve_offset_for_positioned(&style.right, inline_base, viewport, style, font_context);
+
+  // Horizontal offset: when both `left` and `right` are specified, the used value
+  // depends on `direction` (CSS 2.1 §9.3.2).
+  let offset_x = match (left, right) {
+    (Some(left), None) => left,
+    (None, Some(right)) => -right,
+    (Some(left), Some(right)) => match style.direction {
+      Direction::Ltr => left,
+      Direction::Rtl => -right,
+    },
+    (None, None) => 0.0,
+  };
+
+  Point::new(offset_x, offset_y)
 }
 
 #[cfg(test)]

@@ -19,6 +19,7 @@ use fastrender::layout::contexts::inline::InlineFormattingContext;
 use fastrender::paint::stacking::build_stacking_tree_from_fragment_tree;
 use fastrender::paint::stacking::StackingContextReason;
 use fastrender::style::display::FormattingContextType;
+use fastrender::style::types::Direction;
 use fastrender::style::types::FontSizeAdjust;
 use fastrender::style::types::IntrinsicSizeKeyword;
 use fastrender::text::font_loader::FontContext;
@@ -672,6 +673,25 @@ fn test_relative_position_left_wins_over_right() {
     .unwrap();
 
   assert_eq!(result.bounds.x(), 15.0); // Uses left, not right
+}
+
+#[test]
+fn test_relative_position_rtl_prefers_right_over_left() {
+  let layout = PositionedLayout::new();
+  let fragment = create_fragment(100.0, 0.0, 100.0, 100.0);
+
+  let mut style = default_style();
+  style.position = Position::Relative;
+  style.direction = Direction::Rtl;
+  style.left = LengthOrAuto::px(10.0);
+  style.right = LengthOrAuto::px(30.0); // Should win in RTL.
+
+  let cb = create_containing_block(800.0, 600.0);
+  let result = layout
+    .apply_relative_positioning(&fragment, &style, &cb)
+    .unwrap();
+
+  assert_eq!(result.bounds.x(), 70.0); // 100 - 30
 }
 
 #[test]
