@@ -28,6 +28,7 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
 - Box generation: `src/tree/box_generation.rs::create_form_control_replaced`
 - Intrinsic sizing: `src/api.rs::resolve_intrinsic_for_replaced_for_media`
 - Form-control pseudo-element styles (`::placeholder`, `::-webkit-slider-thumb`, `::-webkit-slider-runnable-track`): `src/style/cascade.rs::compute_form_control_pseudo_styles`
+  - Pseudo-element parsing/matching: `src/css/selectors.rs::PseudoElement::{Placeholder, SliderThumb, SliderTrack}`
 - Vendor aliasing:
   - `-webkit-appearance` → `appearance` during style application: `src/style/properties.rs`
   - `-moz-appearance` (and other vendor prefixes) canonicalized during CSS parsing when possible:
