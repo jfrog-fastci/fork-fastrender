@@ -1534,6 +1534,22 @@ mod tests {
   }
 
   #[test]
+  fn parses_moz_placeholder_shown_alias() {
+    for selector_text in [
+      "input:-moz-placeholder-shown",
+      "input:not(:-moz-placeholder-shown)",
+      "input:focus, input:-moz-placeholder-shown, input:disabled",
+    ] {
+      let mut input = ParserInput::new(selector_text);
+      let mut parser = Parser::new(&mut input);
+      assert!(
+        SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok(),
+        "{selector_text} should parse"
+      );
+    }
+  }
+
+  #[test]
   fn parses_shadow_pseudo_elements() {
     let mut input = ParserInput::new("div::slotted(.a)");
     let mut parser = Parser::new(&mut input);
