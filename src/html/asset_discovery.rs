@@ -268,14 +268,16 @@ pub fn discover_html_asset_urls_with_srcset_limit(
       .get(tag_start + 1)
       .is_some_and(|b| *b == b'!' || *b == b'?')
     {
-      i = super::find_tag_end(bytes, tag_start);
+      let Some(end) = super::find_tag_end(bytes, tag_start) else {
+        break;
+      };
+      i = end;
       continue;
     }
 
-    let tag_end = super::find_tag_end(bytes, tag_start);
-    if tag_end == bytes.len() {
+    let Some(tag_end) = super::find_tag_end(bytes, tag_start) else {
       break;
-    }
+    };
 
     let Some((is_end, name_start, name_end)) = super::parse_tag_name_range(bytes, tag_start, tag_end)
     else {

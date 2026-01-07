@@ -19,7 +19,7 @@ fn is_tag_name_char(b: u8) -> bool {
   b.is_ascii_alphanumeric() || b == b'-' || b == b':'
 }
 
-fn find_tag_end(bytes: &[u8], start: usize) -> usize {
+fn find_tag_end(bytes: &[u8], start: usize) -> Option<usize> {
   let mut quote: Option<u8> = None;
   let mut i = start + 1;
   while i < bytes.len() {
@@ -34,13 +34,13 @@ fn find_tag_end(bytes: &[u8], start: usize) -> usize {
         if b == b'"' || b == b'\'' {
           quote = Some(b);
         } else if b == b'>' {
-          return i + 1;
+          return Some(i + 1);
         }
       }
     }
     i += 1;
   }
-  bytes.len()
+  None
 }
 
 fn parse_tag_name_range(bytes: &[u8], start: usize, end: usize) -> Option<(bool, usize, usize)> {
@@ -102,7 +102,7 @@ fn find_raw_text_element_end(bytes: &[u8], start: usize, tag: &'static [u8]) -> 
           .map(|b| is_tag_name_char(*b))
           .unwrap_or(false)
       {
-        return find_tag_end(bytes, pos);
+        return find_tag_end(bytes, pos).unwrap_or(bytes.len());
       }
     }
     idx = pos + 1;
@@ -153,14 +153,16 @@ pub fn strip_template_contents(html: &str) -> Cow<'_, str> {
       .get(tag_start + 1)
       .is_some_and(|b| *b == b'!' || *b == b'?')
     {
-      i = find_tag_end(bytes, tag_start);
+      let Some(end) = find_tag_end(bytes, tag_start) else {
+        break;
+      };
+      i = end;
       continue;
     }
 
-    let tag_end = find_tag_end(bytes, tag_start);
-    if tag_end == bytes.len() {
+    let Some(tag_end) = find_tag_end(bytes, tag_start) else {
       break;
-    }
+    };
 
     let Some((is_end, name_start, name_end)) = parse_tag_name_range(bytes, tag_start, tag_end)
     else {
@@ -370,14 +372,16 @@ pub(crate) fn find_tag_case_insensitive_outside_templates(
       .get(tag_start + 1)
       .is_some_and(|b| *b == b'!' || *b == b'?')
     {
-      i = find_tag_end(bytes, tag_start);
+      let Some(end) = find_tag_end(bytes, tag_start) else {
+        break;
+      };
+      i = end;
       continue;
     }
 
-    let tag_end = find_tag_end(bytes, tag_start);
-    if tag_end == bytes.len() {
+    let Some(tag_end) = find_tag_end(bytes, tag_start) else {
       break;
-    }
+    };
 
     let Some((is_end, name_start, name_end)) = parse_tag_name_range(bytes, tag_start, tag_end)
     else {

@@ -163,14 +163,16 @@ pub fn extract_meta_refresh_url(html: &str) -> Option<String> {
       .get(tag_start + 1)
       .is_some_and(|b| *b == b'!' || *b == b'?')
     {
-      i = super::find_tag_end(bytes, tag_start);
+      let Some(end) = super::find_tag_end(bytes, tag_start) else {
+        break;
+      };
+      i = end;
       continue;
     }
 
-    let tag_end = super::find_tag_end(bytes, tag_start);
-    if tag_end == bytes.len() {
+    let Some(tag_end) = super::find_tag_end(bytes, tag_start) else {
       break;
-    }
+    };
 
     let Some((is_end, name_start, name_end)) =
       super::parse_tag_name_range(bytes, tag_start, tag_end)
@@ -282,7 +284,7 @@ fn find_raw_text_element_closing_tag(
           .map(|b| super::is_tag_name_char(*b))
           .unwrap_or(false)
       {
-        let end = super::find_tag_end(bytes, pos);
+        let end = super::find_tag_end(bytes, pos)?;
         return Some((pos, end));
       }
     }
@@ -583,14 +585,16 @@ pub fn extract_js_location_redirect(html: &str) -> Option<String> {
       .get(tag_start + 1)
       .is_some_and(|b| *b == b'!' || *b == b'?')
     {
-      i = super::find_tag_end(bytes, tag_start);
+      let Some(end) = super::find_tag_end(bytes, tag_start) else {
+        break;
+      };
+      i = end;
       continue;
     }
 
-    let tag_end = super::find_tag_end(bytes, tag_start);
-    if tag_end == bytes.len() {
+    let Some(tag_end) = super::find_tag_end(bytes, tag_start) else {
       break;
-    }
+    };
 
     let Some((is_end, name_start, name_end)) =
       super::parse_tag_name_range(bytes, tag_start, tag_end)
