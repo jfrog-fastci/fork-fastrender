@@ -449,7 +449,7 @@ fn sanitize_filename(input: &str) -> String {
 
 /// Default User-Agent string used by HTTP fetchers
 pub const DEFAULT_USER_AGENT: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36 fastrender/0.1";
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
 
 /// Default Accept-Language header value
 pub const DEFAULT_ACCEPT_LANGUAGE: &str = "en-US,en;q=0.9";
@@ -12147,7 +12147,7 @@ mod tests {
   fn test_http_fetcher_defaults() {
     let fetcher = HttpFetcher::new();
     assert_eq!(fetcher.policy.request_timeout, Duration::from_secs(30));
-    assert!(fetcher.user_agent.contains("fastrender"));
+    assert_eq!(fetcher.user_agent, DEFAULT_USER_AGENT);
   }
 
   #[test]
