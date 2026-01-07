@@ -370,6 +370,7 @@ fn lock_cookie_jar(fetcher: &HttpFetcher) -> MutexGuard<'_, CookieJarState> {
 pub(super) fn fetch_http_with_accept_inner<'a>(
   fetcher: &HttpFetcher,
   kind: super::FetchContextKind,
+  destination: super::FetchDestination,
   url: &str,
   accept_encoding: Option<&str>,
   validators: Option<super::HttpCacheValidators<'a>>,
@@ -453,7 +454,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
         &fetcher.accept_language,
         accept_encoding_value,
         validators,
-        kind,
+        destination,
         referrer,
         referrer_policy,
       );
@@ -655,6 +656,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
           return fetch_http_with_accept_inner(
             fetcher,
             kind,
+            destination,
             url,
             Some("identity"),
             validators,
@@ -929,7 +931,7 @@ mod tests {
       DEFAULT_ACCEPT_LANGUAGE,
       "gzip, deflate, br",
       None,
-      super::super::FetchContextKind::Other,
+      super::super::FetchContextKind::Other.into(),
       None,
       super::super::ReferrerPolicy::default(),
     );

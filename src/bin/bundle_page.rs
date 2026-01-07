@@ -1780,7 +1780,7 @@ fn crawl_document(
       &mut seen_urls,
       &mut queued,
       url,
-      FetchDestination::Document,
+      FetchDestination::Iframe,
       root_referrer,
     );
   }
@@ -1817,9 +1817,7 @@ fn crawl_document(
 
     let policy_for_request = policy.for_origin(document_origin.clone());
     let allowed = match destination {
-      FetchDestination::Document | FetchDestination::Iframe => {
-        policy_for_request.allows_document(&url)
-      }
+      FetchDestination::Document | FetchDestination::Iframe => policy_for_request.allows_document(&url),
       _ => policy_for_request.allows(&url),
     };
     if let Err(err) = allowed {
@@ -1878,8 +1876,8 @@ fn crawl_document(
       FetchDestination::ImageCors => {
         ensure_http_success(&res, &url).and_then(|_| ensure_image_mime_sane(&res, &url))
       }
-      FetchDestination::Document | FetchDestination::Iframe => ensure_http_success(&res, &url)
-        .and_then(|_| {
+      FetchDestination::Document | FetchDestination::Iframe => {
+        ensure_http_success(&res, &url).and_then(|_| {
           if document_response_looks_like_html(&res, &url) {
             Ok(())
           } else {
@@ -1893,7 +1891,8 @@ fn crawl_document(
               "unexpected content-type {content_type} (status {status}, final_url {final_url})"
             )))
           }
-        }),
+        })
+      }
       FetchDestination::Other => Ok(()),
     };
     if let Err(err) = validation {
@@ -2043,7 +2042,7 @@ fn crawl_document(
             &mut seen_urls,
             &mut queued,
             url,
-            FetchDestination::Document,
+            FetchDestination::Iframe,
             doc.base_hint.as_str(),
           );
         }
@@ -3657,7 +3656,7 @@ mod tests {
     let calls = inner.calls();
     assert!(calls.iter().any(|(url, dest, referrer)| {
       url == "https://frame.test/frame.html"
-        && *dest == FetchDestination::Document
+        && *dest == FetchDestination::Iframe
         && referrer.as_deref() == Some("https://root.test/")
     }));
 
@@ -3759,7 +3758,7 @@ mod tests {
     );
     assert!(calls.iter().any(|(url, dest, referrer)| {
       url == "https://frame.test/frame.html"
-        && *dest == FetchDestination::Document
+        && *dest == FetchDestination::Iframe
         && referrer.as_deref() == Some("https://root.test/")
     }));
     assert!(calls.iter().any(|(url, dest, referrer)| {

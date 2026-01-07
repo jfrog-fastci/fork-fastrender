@@ -709,8 +709,8 @@ pub enum FetchDestination {
   Document,
   /// Subframe document navigation (e.g. `<iframe src=...>`).
   ///
-  /// Uses the same `Accept` header as top-level documents, but sends `Sec-Fetch-Dest: iframe`
-  /// without `Sec-Fetch-User` (subframe navigations are not user-activated).
+  /// Uses the same `Accept` header as top-level documents, but Chromium sends `Sec-Fetch-Dest:
+  /// iframe` and omits `Sec-Fetch-User` (subframe navigations are not user-activated).
   Iframe,
   Style,
   Image,
@@ -811,7 +811,7 @@ impl FetchDestination {
 
   fn upgrade_insecure_requests(self) -> Option<&'static str> {
     match self {
-      Self::Document => Some("1"),
+      Self::Document | Self::Iframe => Some("1"),
       _ => None,
     }
   }
@@ -1280,10 +1280,7 @@ fn rewrite_url_host_with_www_prefix(
     return None;
   }
   let profile = destination.unwrap_or_else(|| http_browser_request_profile_for_url(url));
-  if !matches!(
-    profile,
-    FetchDestination::Document | FetchDestination::Iframe
-  ) {
+  if !matches!(profile, FetchDestination::Document | FetchDestination::Iframe) {
     return None;
   }
 
@@ -2993,7 +2990,7 @@ fn build_http_header_pairs<'a>(
   accept_language: &str,
   accept_encoding: &str,
   validators: Option<HttpCacheValidators<'a>>,
-  kind: FetchContextKind,
+  destination: FetchDestination,
   referrer: Option<&str>,
   referrer_policy: ReferrerPolicy,
 ) -> Vec<(String, String)> {
@@ -3015,7 +3012,7 @@ fn build_http_header_pairs<'a>(
   ];
 
   if http_browser_headers_enabled() {
-    let profile: FetchDestination = kind.into();
+    let profile = destination;
     // When `FASTR_HTTP_BROWSER_HEADERS` is enabled we approximate Chromium's request headers.
     //
     // - `Sec-Fetch-Site` uses schemeful same-site (scheme + registrable domain), so sibling
@@ -3376,15 +3373,24 @@ impl HttpFetcher {
       .min(self.policy.request_timeout);
     Ok(Some(budget))
   }
-
+ 
   /// Fetch from an HTTP/HTTPS URL
   fn fetch_http(&self, kind: FetchContextKind, url: &str) -> Result<FetchedResource> {
-    self.fetch_http_with_context(kind, url, None, None, None, ReferrerPolicy::default())
+    self.fetch_http_with_context(
+      kind,
+      kind.into(),
+      url,
+      None,
+      None,
+      None,
+      ReferrerPolicy::default(),
+    )
   }
 
   fn fetch_http_partial(
     &self,
     kind: FetchContextKind,
+    destination: FetchDestination,
     url: &str,
     max_bytes: usize,
     referrer: Option<&str>,
@@ -3395,6 +3401,7 @@ impl HttpFetcher {
     render_control::with_deadline(deadline.as_ref(), || {
       self.fetch_http_partial_inner(
         kind,
+        destination,
         url,
         max_bytes,
         referrer,
@@ -3408,6 +3415,7 @@ impl HttpFetcher {
   fn fetch_http_with_context(
     &self,
     kind: FetchContextKind,
+    destination: FetchDestination,
     url: &str,
     accept_encoding: Option<&str>,
     validators: Option<HttpCacheValidators<'_>>,
@@ -3419,6 +3427,7 @@ impl HttpFetcher {
     render_control::with_deadline(deadline.as_ref(), || {
       self.fetch_http_with_context_inner(
         kind,
+        destination,
         url,
         accept_encoding,
         validators,
@@ -3433,6 +3442,7 @@ impl HttpFetcher {
   fn fetch_http_with_context_inner<'a>(
     &self,
     kind: FetchContextKind,
+    destination: FetchDestination,
     url: &str,
     accept_encoding: Option<&str>,
     validators: Option<HttpCacheValidators<'a>>,
@@ -3454,6 +3464,7 @@ impl HttpFetcher {
         HttpBackendMode::Curl => curl_backend::fetch_http_with_accept_inner(
           self,
           kind,
+          destination,
           effective_url.as_ref(),
           accept_encoding,
           validators,
@@ -3464,6 +3475,7 @@ impl HttpFetcher {
         ),
         HttpBackendMode::Ureq => self.fetch_http_with_accept_inner_ureq(
           kind,
+          destination,
           effective_url.as_ref(),
           accept_encoding,
           validators,
@@ -3475,6 +3487,7 @@ impl HttpFetcher {
         ),
         HttpBackendMode::Reqwest => self.fetch_http_with_accept_inner_reqwest(
           kind,
+          destination,
           effective_url.as_ref(),
           accept_encoding,
           validators,
@@ -3493,6 +3506,7 @@ impl HttpFetcher {
           let result = if prefer_reqwest {
             self.fetch_http_with_accept_inner_reqwest(
               kind,
+              destination,
               effective_url.as_ref(),
               accept_encoding,
               validators,
@@ -3505,6 +3519,7 @@ impl HttpFetcher {
           } else {
             self.fetch_http_with_accept_inner_ureq(
               kind,
+              destination,
               effective_url.as_ref(),
               accept_encoding,
               validators,
@@ -3523,6 +3538,7 @@ impl HttpFetcher {
                 match curl_backend::fetch_http_with_accept_inner(
                   self,
                   kind,
+                  destination,
                   effective_url.as_ref(),
                   accept_encoding,
                   validators,
@@ -3570,7 +3586,7 @@ impl HttpFetcher {
           let fallback_url = if error_looks_like_dns_failure(&err) {
             http_www_fallback_url(effective_url.as_ref())
           } else if http_www_fallback_enabled() && is_timeout_or_no_response_error(&err) {
-            rewrite_url_host_with_www_prefix(effective_url.as_ref(), Some(kind.into()))
+            rewrite_url_host_with_www_prefix(effective_url.as_ref(), Some(destination))
           } else {
             None
           };
@@ -3591,6 +3607,7 @@ impl HttpFetcher {
   fn fetch_http_partial_inner(
     &self,
     kind: FetchContextKind,
+    destination: FetchDestination,
     url: &str,
     max_bytes: usize,
     referrer: Option<&str>,
@@ -3608,6 +3625,7 @@ impl HttpFetcher {
     match http_backend_mode() {
       HttpBackendMode::Ureq => self.fetch_http_partial_inner_ureq(
         kind,
+        destination,
         effective_url,
         max_bytes,
         referrer,
@@ -3617,6 +3635,7 @@ impl HttpFetcher {
       ),
       HttpBackendMode::Reqwest => self.fetch_http_partial_inner_reqwest(
         kind,
+        destination,
         effective_url,
         max_bytes,
         referrer,
@@ -3631,6 +3650,7 @@ impl HttpFetcher {
         if prefer_reqwest {
           self.fetch_http_partial_inner_reqwest(
             kind,
+            destination,
             effective_url,
             max_bytes,
             referrer,
@@ -3641,6 +3661,7 @@ impl HttpFetcher {
         } else {
           self.fetch_http_partial_inner_ureq(
             kind,
+            destination,
             effective_url,
             max_bytes,
             referrer,
@@ -3656,6 +3677,7 @@ impl HttpFetcher {
   fn fetch_http_partial_inner_ureq(
     &self,
     kind: FetchContextKind,
+    destination: FetchDestination,
     url: &str,
     max_bytes: usize,
     referrer: Option<&str>,
@@ -3722,7 +3744,7 @@ impl HttpFetcher {
           // identity encoding so that `Range` applies directly to the image bytes we want to probe.
           "identity",
           None,
-          kind,
+          destination,
           referrer,
           referrer_policy,
         );
@@ -4145,6 +4167,7 @@ impl HttpFetcher {
   fn fetch_http_partial_inner_reqwest(
     &self,
     kind: FetchContextKind,
+    destination: FetchDestination,
     url: &str,
     max_bytes: usize,
     referrer: Option<&str>,
@@ -4208,7 +4231,7 @@ impl HttpFetcher {
           &self.accept_language,
           "identity",
           None,
-          kind,
+          destination,
           referrer,
           referrer_policy,
         );
@@ -4626,6 +4649,7 @@ impl HttpFetcher {
   fn fetch_http_with_accept_inner_ureq<'a>(
     &self,
     kind: FetchContextKind,
+    destination: FetchDestination,
     url: &str,
     accept_encoding: Option<&str>,
     validators: Option<HttpCacheValidators<'a>>,
@@ -4707,7 +4731,7 @@ impl HttpFetcher {
           &self.accept_language,
           accept_encoding_value,
           validators,
-          kind,
+          destination,
           referrer,
           referrer_policy,
         );
@@ -4874,6 +4898,7 @@ impl HttpFetcher {
                   finish_network_fetch_diagnostics(network_timer.take());
                   return self.fetch_http_with_accept_inner_ureq(
                     kind,
+                    destination,
                     url,
                     Some("identity"),
                     validators,
@@ -5182,6 +5207,7 @@ impl HttpFetcher {
   fn fetch_http_with_accept_inner_reqwest<'a>(
     &self,
     kind: FetchContextKind,
+    destination: FetchDestination,
     url: &str,
     accept_encoding: Option<&str>,
     validators: Option<HttpCacheValidators<'a>>,
@@ -5250,7 +5276,7 @@ impl HttpFetcher {
           &self.accept_language,
           accept_encoding_value,
           validators,
-          kind,
+          destination,
           referrer,
           referrer_policy,
         );
@@ -5448,6 +5474,7 @@ impl HttpFetcher {
                   finish_network_fetch_diagnostics(network_timer.take());
                   return self.fetch_http_with_accept_inner_reqwest(
                     kind,
+                    destination,
                     url,
                     Some("identity"),
                     validators,
@@ -5976,7 +6003,15 @@ impl ResourceFetcher for HttpFetcher {
       ResourceScheme::Data => self.fetch_data(kind, req.url),
       ResourceScheme::File => self.fetch_file(kind, req.url),
       ResourceScheme::Http | ResourceScheme::Https => {
-        self.fetch_http_with_context(kind, req.url, None, None, req.referrer, req.referrer_policy)
+        self.fetch_http_with_context(
+          kind,
+          req.destination,
+          req.url,
+          None,
+          None,
+          req.referrer,
+          req.referrer_policy,
+        )
       }
       ResourceScheme::Relative => self.fetch_file(kind, &format!("file://{}", req.url)),
       ResourceScheme::Other => Err(policy_error("unsupported URL scheme")),
@@ -5997,6 +6032,7 @@ impl ResourceFetcher for HttpFetcher {
       ResourceScheme::File => self.fetch_file(kind, req.url),
       ResourceScheme::Http | ResourceScheme::Https => self.fetch_http_with_context(
         kind,
+        req.destination,
         req.url,
         None,
         Some(HttpCacheValidators {
@@ -6033,7 +6069,14 @@ impl ResourceFetcher for HttpFetcher {
       ResourceScheme::Data => self.fetch_data_prefix(kind, url, max_bytes),
       ResourceScheme::File => self.fetch_file_prefix(kind, url, max_bytes),
       ResourceScheme::Http | ResourceScheme::Https => {
-        self.fetch_http_partial(kind, url, max_bytes, None, ReferrerPolicy::default())
+        self.fetch_http_partial(
+          kind,
+          kind.into(),
+          url,
+          max_bytes,
+          None,
+          ReferrerPolicy::default(),
+        )
       }
       ResourceScheme::Relative => {
         self.fetch_file_prefix(kind, &format!("file://{}", url), max_bytes)
@@ -6060,7 +6103,14 @@ impl ResourceFetcher for HttpFetcher {
       ResourceScheme::Data => self.fetch_data_prefix(kind, req.url, max_bytes),
       ResourceScheme::File => self.fetch_file_prefix(kind, req.url, max_bytes),
       ResourceScheme::Http | ResourceScheme::Https => {
-        self.fetch_http_partial(kind, req.url, max_bytes, req.referrer, req.referrer_policy)
+        self.fetch_http_partial(
+          kind,
+          req.destination,
+          req.url,
+          max_bytes,
+          req.referrer,
+          req.referrer_policy,
+        )
       }
       ResourceScheme::Relative => {
         self.fetch_file_prefix(kind, &format!("file://{}", req.url), max_bytes)
@@ -6090,6 +6140,7 @@ impl ResourceFetcher for HttpFetcher {
     match self.policy.ensure_url_allowed(url)? {
       ResourceScheme::Http | ResourceScheme::Https => self.fetch_http_with_context(
         kind,
+        kind.into(),
         url,
         None,
         Some(HttpCacheValidators {
@@ -8664,6 +8715,7 @@ mod tests {
     let res = fetcher
       .fetch_http_with_accept_inner_ureq(
         FetchContextKind::Stylesheet,
+        FetchContextKind::Stylesheet.into(),
         &url,
         None,
         None,
@@ -8722,6 +8774,7 @@ mod tests {
     let res = fetcher
       .fetch_http_with_accept_inner_ureq(
         FetchContextKind::Stylesheet,
+        FetchContextKind::Stylesheet.into(),
         &url,
         None,
         None,
@@ -8833,14 +8886,14 @@ mod tests {
       DEFAULT_ACCEPT_LANGUAGE,
       SUPPORTED_ACCEPT_ENCODING,
       None,
-      req.destination.into(),
+      req.destination,
       req.referrer,
       req.referrer_policy,
     );
     assert_eq!(header_value(&headers, "Sec-Fetch-Dest"), Some("iframe"));
     assert_eq!(header_value(&headers, "Sec-Fetch-Mode"), Some("navigate"));
     assert_eq!(header_value(&headers, "Sec-Fetch-User"), None);
-    assert_eq!(header_value(&headers, "Upgrade-Insecure-Requests"), None);
+    assert_eq!(header_value(&headers, "Upgrade-Insecure-Requests"), Some("1"));
   }
 
   #[test]
@@ -8851,7 +8904,7 @@ mod tests {
       DEFAULT_ACCEPT_LANGUAGE,
       SUPPORTED_ACCEPT_ENCODING,
       None,
-      FetchContextKind::Image,
+      FetchContextKind::Image.into(),
       Some("https://www.example.com/page"),
       ReferrerPolicy::NoReferrer,
     );
@@ -8866,7 +8919,7 @@ mod tests {
       DEFAULT_ACCEPT_LANGUAGE,
       SUPPORTED_ACCEPT_ENCODING,
       None,
-      FetchContextKind::Image,
+      FetchContextKind::Image.into(),
       Some("https://www.example.com/page?a=b#frag"),
       ReferrerPolicy::Origin,
     );
@@ -8884,7 +8937,7 @@ mod tests {
       DEFAULT_ACCEPT_LANGUAGE,
       SUPPORTED_ACCEPT_ENCODING,
       None,
-      FetchContextKind::Image,
+      FetchContextKind::Image.into(),
       Some("https://www.example.com/page"),
       ReferrerPolicy::SameOrigin,
     );
@@ -8899,7 +8952,7 @@ mod tests {
       DEFAULT_ACCEPT_LANGUAGE,
       SUPPORTED_ACCEPT_ENCODING,
       None,
-      FetchContextKind::Image,
+      FetchContextKind::Image.into(),
       Some("https://www.example.com/page?a=b#frag"),
       ReferrerPolicy::default(),
     );
@@ -8921,7 +8974,7 @@ mod tests {
       DEFAULT_ACCEPT_LANGUAGE,
       SUPPORTED_ACCEPT_ENCODING,
       None,
-      FetchContextKind::Image,
+      FetchContextKind::Image.into(),
       Some("https://www.example.com/page"),
       ReferrerPolicy::default(),
     );
@@ -8940,7 +8993,7 @@ mod tests {
       DEFAULT_ACCEPT_LANGUAGE,
       SUPPORTED_ACCEPT_ENCODING,
       None,
-      FetchContextKind::Image,
+      FetchContextKind::Image.into(),
       Some("https://www.example.com/page"),
       ReferrerPolicy::default(),
     );
@@ -8959,7 +9012,7 @@ mod tests {
       DEFAULT_ACCEPT_LANGUAGE,
       SUPPORTED_ACCEPT_ENCODING,
       None,
-      FetchContextKind::Image,
+      FetchContextKind::Image.into(),
       Some("https://www.example.com/page"),
       ReferrerPolicy::StrictOriginWhenCrossOrigin,
     );
@@ -8975,7 +9028,7 @@ mod tests {
       DEFAULT_ACCEPT_LANGUAGE,
       SUPPORTED_ACCEPT_ENCODING,
       None,
-      FetchContextKind::Stylesheet,
+      FetchContextKind::Stylesheet.into(),
       Some("https://developer.apple.com"),
       ReferrerPolicy::default(),
     );
@@ -8994,7 +9047,7 @@ mod tests {
       DEFAULT_ACCEPT_LANGUAGE,
       SUPPORTED_ACCEPT_ENCODING,
       None,
-      FetchContextKind::Image,
+      FetchContextKind::Image.into(),
       Some("https://www.example.com/page"),
       ReferrerPolicy::default(),
     );
@@ -9013,7 +9066,7 @@ mod tests {
       DEFAULT_ACCEPT_LANGUAGE,
       SUPPORTED_ACCEPT_ENCODING,
       None,
-      FetchContextKind::Stylesheet,
+      FetchContextKind::Stylesheet.into(),
       Some("https://developer.apple.com#frag"),
       ReferrerPolicy::default(),
     );
@@ -9118,6 +9171,7 @@ mod tests {
     let err = fetcher
       .fetch_http_with_accept_inner_reqwest(
         FetchContextKind::Other,
+        FetchContextKind::Other.into(),
         &url,
         None,
         None,
@@ -9166,6 +9220,7 @@ mod tests {
     let res = fetcher
       .fetch_http_with_accept_inner_ureq(
         FetchContextKind::Other,
+        FetchContextKind::Other.into(),
         &url,
         None,
         None,
@@ -9225,6 +9280,7 @@ mod tests {
     let res = fetcher
       .fetch_http_with_accept_inner_reqwest(
         FetchContextKind::Other,
+        FetchContextKind::Other.into(),
         &url,
         None,
         None,
@@ -9329,6 +9385,7 @@ mod tests {
     let err = fetcher
       .fetch_http_with_accept_inner_ureq(
         FetchContextKind::Other,
+        FetchContextKind::Other.into(),
         &url,
         None,
         None,
@@ -9372,6 +9429,7 @@ mod tests {
     let res = fetcher
       .fetch_http_with_accept_inner_ureq(
         FetchContextKind::Stylesheet,
+        FetchContextKind::Stylesheet.into(),
         &url,
         None,
         None,
@@ -9422,6 +9480,7 @@ mod tests {
     let err = fetcher
       .fetch_http_with_accept_inner_ureq(
         FetchContextKind::Stylesheet,
+        FetchContextKind::Stylesheet.into(),
         &url,
         None,
         None,
@@ -9471,6 +9530,7 @@ mod tests {
       let res = fetcher
         .fetch_http_with_accept_inner_ureq(
           FetchContextKind::Image,
+          FetchContextKind::Image.into(),
           &url,
           None,
           None,
@@ -9509,6 +9569,7 @@ mod tests {
       let res = fetcher
         .fetch_http_partial_inner_ureq(
           FetchContextKind::Image,
+          FetchContextKind::Image.into(),
           &url,
           8,
           None,
@@ -9545,6 +9606,7 @@ mod tests {
       let res = fetcher
         .fetch_http_with_accept_inner_reqwest(
           FetchContextKind::Image,
+          FetchContextKind::Image.into(),
           &url,
           None,
           None,
@@ -9583,6 +9645,7 @@ mod tests {
       let res = fetcher
         .fetch_http_partial_inner_reqwest(
           FetchContextKind::Image,
+          FetchContextKind::Image.into(),
           &url,
           8,
           None,
@@ -9638,6 +9701,7 @@ mod tests {
       let res = fetcher
         .fetch_http_with_accept_inner_ureq(
           FetchContextKind::Image,
+          FetchContextKind::Image.into(),
           &url,
           None,
           None,
@@ -9677,6 +9741,7 @@ mod tests {
       let res = fetcher
         .fetch_http_partial_inner_ureq(
           FetchContextKind::Image,
+          FetchContextKind::Image.into(),
           &url,
           8,
           None,
@@ -9714,6 +9779,7 @@ mod tests {
       let res = fetcher
         .fetch_http_with_accept_inner_reqwest(
           FetchContextKind::Image,
+          FetchContextKind::Image.into(),
           &url,
           None,
           None,
@@ -9753,6 +9819,7 @@ mod tests {
       let res = fetcher
         .fetch_http_partial_inner_reqwest(
           FetchContextKind::Image,
+          FetchContextKind::Image.into(),
           &url,
           8,
           None,
@@ -9808,6 +9875,7 @@ mod tests {
       let res = fetcher
         .fetch_http_with_accept_inner_ureq(
           FetchContextKind::Image,
+          FetchContextKind::Image.into(),
           &url,
           None,
           None,
@@ -9844,6 +9912,7 @@ mod tests {
       let res = fetcher
         .fetch_http_partial_inner_ureq(
           FetchContextKind::Image,
+          FetchContextKind::Image.into(),
           &url,
           8,
           None,
@@ -9878,6 +9947,7 @@ mod tests {
       let res = fetcher
         .fetch_http_with_accept_inner_reqwest(
           FetchContextKind::Image,
+          FetchContextKind::Image.into(),
           &url,
           None,
           None,
@@ -9914,6 +9984,7 @@ mod tests {
       let res = fetcher
         .fetch_http_partial_inner_reqwest(
           FetchContextKind::Image,
+          FetchContextKind::Image.into(),
           &url,
           8,
           None,
@@ -10009,6 +10080,7 @@ mod tests {
       let res = fetcher
         .fetch_http_with_accept_inner_ureq(
           FetchContextKind::Image,
+          FetchContextKind::Image.into(),
           &url,
           None,
           None,
@@ -10087,6 +10159,7 @@ mod tests {
       let res = fetcher
         .fetch_http_with_accept_inner_reqwest(
           FetchContextKind::Image,
+          FetchContextKind::Image.into(),
           &url,
           None,
           None,
@@ -10198,6 +10271,7 @@ mod tests {
       let url = format!("http://{addr}/photo.jpg");
       let res = fetcher.fetch_http_with_accept_inner_ureq(
         FetchContextKind::Image,
+        FetchContextKind::Image.into(),
         &url,
         None,
         None,
@@ -10282,6 +10356,7 @@ mod tests {
       let url = format!("http://{addr}/photo.jpg");
       let res = fetcher.fetch_http_with_accept_inner_reqwest(
         FetchContextKind::Image,
+        FetchContextKind::Image.into(),
         &url,
         None,
         None,
@@ -10327,6 +10402,7 @@ mod tests {
     let res = fetcher
       .fetch_http_with_accept_inner_ureq(
         FetchContextKind::Font,
+        FetchContextKind::Font.into(),
         &url,
         None,
         None,
@@ -10375,6 +10451,7 @@ mod tests {
     let res = fetcher
       .fetch_http_with_accept_inner_reqwest(
         FetchContextKind::Font,
+        FetchContextKind::Font.into(),
         &url,
         None,
         None,
@@ -10428,6 +10505,7 @@ mod tests {
     let res_ureq = fetcher
       .fetch_http_with_accept_inner_ureq(
         FetchContextKind::Font,
+        FetchContextKind::Font.into(),
         &url,
         None,
         None,
@@ -10452,6 +10530,7 @@ mod tests {
     let res_reqwest = fetcher
       .fetch_http_with_accept_inner_reqwest(
         FetchContextKind::Font,
+        FetchContextKind::Font.into(),
         &url,
         None,
         None,
@@ -10506,6 +10585,7 @@ mod tests {
     let res = fetcher
       .fetch_http_with_accept_inner_ureq(
         FetchContextKind::Image,
+        FetchContextKind::Image.into(),
         &url,
         None,
         None,
@@ -10555,6 +10635,7 @@ mod tests {
     let err = fetcher
       .fetch_http_with_accept_inner_ureq(
         FetchContextKind::Image,
+        FetchContextKind::Image.into(),
         &url,
         None,
         None,
@@ -10598,6 +10679,7 @@ mod tests {
     let res = fetcher
       .fetch_http_with_accept_inner_reqwest(
         FetchContextKind::Stylesheet,
+        FetchContextKind::Stylesheet.into(),
         &url,
         None,
         None,
@@ -12758,6 +12840,59 @@ mod tests {
     assert!(
       req.contains("sec-fetch-site: same-origin"),
       "expected Sec-Fetch-Site same-origin for stylesheet, got: {req}"
+    );
+  }
+
+  #[test]
+  fn http_fetcher_sets_iframe_request_headers() {
+    let Some(listener) = try_bind_localhost("http_fetcher_sets_iframe_request_headers") else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let captured = Arc::new(Mutex::new(String::new()));
+    let captured_req = Arc::clone(&captured);
+    let handle = thread::spawn(move || {
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let request = read_http_request(&mut stream)
+        .unwrap()
+        .expect("expected HTTP request");
+      if let Ok(mut slot) = captured_req.lock() {
+        *slot = String::from_utf8_lossy(&request).to_string();
+      }
+
+      let body = b"iframe";
+      let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(headers.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
+    let url = format!("http://{}/frame.html", addr);
+    let referrer = format!("http://{}/outer.html", addr);
+    let res = fetcher
+      .fetch_with_request(FetchRequest::new(&url, FetchDestination::Iframe).with_referrer(&referrer))
+      .expect("fetch iframe");
+    handle.join().unwrap();
+
+    assert_eq!(res.bytes, b"iframe");
+    let req = captured.lock().unwrap().to_ascii_lowercase();
+    assert!(
+      req.contains("sec-fetch-dest: iframe"),
+      "expected Sec-Fetch-Dest iframe, got: {req}"
+    );
+    assert!(
+      req.contains("sec-fetch-mode: navigate"),
+      "expected Sec-Fetch-Mode navigate for iframe, got: {req}"
+    );
+    assert!(
+      !req.contains("sec-fetch-user:"),
+      "iframe navigations should not set Sec-Fetch-User, got: {req}"
     );
   }
 
