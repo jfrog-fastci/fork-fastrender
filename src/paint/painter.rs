@@ -6812,6 +6812,125 @@ impl Painter {
       return true;
     }
 
+    // Native form controls should clip their internal painting to the content box by default
+    // (without requiring authors to set `overflow: clip`). This keeps long values from painting
+    // into the padding area, matching browser native controls.
+    let incoming_clip_mask = clip_mask;
+    let mut content_clip_guard = BackgroundClipMaskGuard::take();
+    let canvas_w = self.pixmap.width();
+    let canvas_h = self.pixmap.height();
+    let viewport = (self.css_width, self.css_height);
+    let base = content_rect.width().max(0.0);
+    let font_size = style.font_size;
+    let border_left = resolve_length_for_paint(
+      &style.used_border_left_width(),
+      font_size,
+      style.root_font_size,
+      base,
+      viewport,
+    );
+    let border_right = resolve_length_for_paint(
+      &style.used_border_right_width(),
+      font_size,
+      style.root_font_size,
+      base,
+      viewport,
+    );
+    let border_top = resolve_length_for_paint(
+      &style.used_border_top_width(),
+      font_size,
+      style.root_font_size,
+      base,
+      viewport,
+    );
+    let border_bottom = resolve_length_for_paint(
+      &style.used_border_bottom_width(),
+      font_size,
+      style.root_font_size,
+      base,
+      viewport,
+    );
+    let padding_left = resolve_length_for_paint(
+      &style.padding_left,
+      font_size,
+      style.root_font_size,
+      base,
+      viewport,
+    );
+    let padding_right = resolve_length_for_paint(
+      &style.padding_right,
+      font_size,
+      style.root_font_size,
+      base,
+      viewport,
+    );
+    let padding_top = resolve_length_for_paint(
+      &style.padding_top,
+      font_size,
+      style.root_font_size,
+      base,
+      viewport,
+    );
+    let padding_bottom = resolve_length_for_paint(
+      &style.padding_bottom,
+      font_size,
+      style.root_font_size,
+      base,
+      viewport,
+    );
+    let border_rect = Rect::from_xywh(
+      content_rect.x() - border_left - padding_left,
+      content_rect.y() - border_top - padding_top,
+      content_rect.width() + border_left + border_right + padding_left + padding_right,
+      content_rect.height() + border_top + border_bottom + padding_top + padding_bottom,
+    );
+    let rects = background_rects(
+      border_rect.x(),
+      border_rect.y(),
+      border_rect.width(),
+      border_rect.height(),
+      style,
+      Some(viewport),
+    );
+    let content_radii = resolve_clip_radii(
+      style,
+      &rects,
+      crate::style::types::BackgroundBox::ContentBox,
+      Some(viewport),
+    );
+    let content_clip_rect = self.device_rect(content_rect);
+    let content_clip_radii = self.device_radii(content_radii);
+    let content_clip_mask = content_clip_guard.mask(
+      content_clip_rect,
+      content_clip_radii,
+      canvas_w,
+      canvas_h,
+    );
+    let clip_mask = match (incoming_clip_mask, content_clip_mask) {
+      (None, Some(mask)) => Some(mask),
+      (Some(existing), Some(_mask)) => {
+        if let Some(dest) = content_clip_guard.scratch.mask.as_mut() {
+          if dest.width() == existing.width() && dest.height() == existing.height() {
+            let dest_data = dest.data_mut();
+            let src_data = existing.data();
+            for (d, s) in dest_data.iter_mut().zip(src_data.iter()) {
+              *d = div_255((*d as u16) * (*s as u16)) as u8;
+            }
+            // The mask is now dependent on the incoming clip as well; prevent stale reuse.
+            content_clip_guard.scratch.last_rect = None;
+            content_clip_guard.scratch.last_radii = None;
+            content_clip_guard.scratch.mask.as_ref()
+          } else {
+            Some(existing)
+          }
+        } else {
+          Some(existing)
+        }
+      }
+      (Some(existing), None) => Some(existing),
+      (None, None) => None,
+    };
+
     fn fill_rounded_rect_masked(
       pixmap: &mut Pixmap,
       rect: Rect,
@@ -6915,7 +7034,6 @@ impl Painter {
     }
 
     let measure_shaped_advance = |painter: &mut Self, text: &str, style: &ComputedStyle| -> f32 {
-      let text = text.trim();
       if text.is_empty() {
         return 0.0;
       }
@@ -6937,8 +7055,7 @@ impl Painter {
         kind,
         ..
       } => {
-        let value_trimmed = value.trim();
-        let value_is_empty = value_trimmed.is_empty();
+        let value_is_empty = value.is_empty();
         let base_color = if control.invalid { accent } else { style.color };
         let placeholder_color = base_color.with_alpha(0.6);
 
@@ -6950,12 +7067,11 @@ impl Painter {
         match kind {
           TextControlKind::Password => {
             if !value_is_empty {
-              let mask_len = value_trimmed.chars().count().clamp(3, 50);
+              let mask_len = value.chars().count().clamp(3, 50);
               generated = Some("•".repeat(mask_len));
               paint_text = generated.as_deref();
               fallback_color = base_color;
             } else if let Some(ph) = placeholder.as_deref() {
-              let ph = ph.trim();
               if !ph.is_empty() {
                 paint_text = Some(ph);
                 fallback_color = placeholder_color;
@@ -6965,10 +7081,9 @@ impl Painter {
           }
           TextControlKind::Number => {
             if !value_is_empty {
-              paint_text = Some(value_trimmed);
+              paint_text = Some(value.as_str());
               fallback_color = base_color;
             } else if let Some(ph) = placeholder.as_deref() {
-              let ph = ph.trim();
               if !ph.is_empty() {
                 paint_text = Some(ph);
                 fallback_color = placeholder_color;
@@ -6978,10 +7093,9 @@ impl Painter {
           }
           TextControlKind::Date => {
             if !value_is_empty {
-              paint_text = Some(value_trimmed);
+              paint_text = Some(value.as_str());
               fallback_color = base_color;
             } else if let Some(ph) = placeholder.as_deref() {
-              let ph = ph.trim();
               if !ph.is_empty() {
                 paint_text = Some(ph);
                 fallback_color = placeholder_color;
@@ -6999,10 +7113,9 @@ impl Painter {
           }
           TextControlKind::Plain => {
             if !value_is_empty {
-              paint_text = Some(value_trimmed);
+              paint_text = Some(value.as_str());
               fallback_color = base_color;
             } else if let Some(ph) = placeholder.as_deref() {
-              let ph = ph.trim();
               if !ph.is_empty() {
                 paint_text = Some(ph);
                 fallback_color = placeholder_color;
@@ -7114,8 +7227,8 @@ impl Painter {
               rect.x()
             } else {
               let caret_text = match kind {
-                TextControlKind::Password => generated.as_deref().unwrap_or(value_trimmed),
-                _ => value_trimmed,
+                TextControlKind::Password => generated.as_deref().unwrap_or(value.as_str()),
+                _ => value.as_str(),
               };
               rect.x() + measure_shaped_advance(self, caret_text, &text_style)
             };
@@ -7140,8 +7253,7 @@ impl Painter {
         let base_color = if control.invalid { accent } else { style.color };
         let placeholder_color = base_color.with_alpha(0.6);
 
-        let value_trimmed = value.trim();
-        let value_is_empty = value_trimmed.is_empty();
+        let value_is_empty = value.is_empty();
         let rect = inset_rect(content_rect, 2.0);
 
         let mut paint_text: Option<&str> = None;
@@ -7192,7 +7304,7 @@ impl Painter {
                 rect.width(),
                 (rect.height() - (y - rect.y())).max(0.0),
               );
-              let _ = self.paint_alt_text(line.trim_end(), &text_style, line_rect, clip_mask);
+              let _ = self.paint_alt_text(line, &text_style, line_rect, clip_mask);
               y += line_height;
             }
           }
@@ -7236,11 +7348,10 @@ impl Painter {
               (last_y, last_line)
             };
 
-            let caret_line_trimmed = caret_line.trim_end();
-            let caret_x = if value_is_empty || caret_line_trimmed.trim().is_empty() {
+            let caret_x = if value_is_empty || caret_line.is_empty() {
               rect.x()
             } else {
-              rect.x() + measure_shaped_advance(self, caret_line_trimmed, &text_style)
+              rect.x() + measure_shaped_advance(self, caret_line, &text_style)
             };
 
             let baseline_y = caret_y + ascent + half_leading * 2.0;
@@ -7467,7 +7578,7 @@ impl Painter {
         }
       }
       FormControlKind::Button { label } => {
-        if label.trim().is_empty() {
+        if label.is_empty() {
           return true;
         }
 
@@ -7873,6 +7984,11 @@ impl Painter {
         true
       }
       FormControlKind::Color { value, raw } => {
+        if matches!(control.appearance, Appearance::None) {
+          // `appearance: none` leaves the author-provided background/border visible; suppress the
+          // native swatch/label painting.
+          return true;
+        }
         let rect = inset_rect(content_rect, 2.0);
         let radii = BorderRadii::uniform((rect.height().min(rect.width()) / 5.0).max(2.0));
         let device_rect = self.device_rect(rect);
@@ -8684,10 +8800,10 @@ impl Painter {
     rect: Rect,
     clip_mask: Option<&Mask>,
   ) -> bool {
-    let text = alt.trim();
-    if text.is_empty() {
+    if alt.is_empty() {
       return false;
     }
+    let text = alt;
 
     let mut runs = match self.shaper.shape(text, style, &self.font_ctx) {
       Ok(runs) => runs,
@@ -8721,10 +8837,10 @@ impl Painter {
   }
 
   fn measure_alt_text(&self, alt: &str, style: &ComputedStyle) -> Option<Size> {
-    let text = alt.trim();
-    if text.is_empty() {
+    if alt.is_empty() {
       return None;
     }
+    let text = alt;
     let mut runs = self.shaper.shape(text, style, &self.font_ctx).ok()?;
     TextItem::apply_spacing_to_runs(&mut runs, text, style.letter_spacing, style.word_spacing);
     let metrics_scaled = Self::resolve_scaled_metrics_static(style, &self.font_ctx);

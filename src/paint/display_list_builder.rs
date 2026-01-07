@@ -7752,6 +7752,27 @@ impl DisplayListBuilder {
     if padding_rect.width() <= 0.0 || padding_rect.height() <= 0.0 {
       return true;
     }
+    let content_clip = (content_rect.width() > 0.0 && content_rect.height() > 0.0).then(|| {
+      let radii = if Self::border_radius_is_zero(style) {
+        None
+      } else {
+        let radii = Self::resolve_clip_radii(
+          style,
+          &rects,
+          BackgroundBox::ContentBox,
+          self.viewport,
+          self.build_breakdown.as_deref(),
+        )
+        .clamped(content_rect.width(), content_rect.height());
+        (!radii.is_zero()).then_some(radii)
+      };
+      ClipItem {
+        shape: ClipShape::Rect {
+          rect: content_rect,
+          radii,
+        },
+      }
+    });
 
     let mut accent = Self::resolved_accent_color(style);
     if control.invalid {
@@ -7784,7 +7805,6 @@ impl DisplayListBuilder {
       center_x: bool,
       center_y: bool|
      -> bool {
-      let text = text.trim();
       if text.is_empty() {
         return false;
       }
@@ -7865,7 +7885,6 @@ impl DisplayListBuilder {
       };
 
     let measure_shaped_advance = |builder: &mut Self, text: &str, style: &ComputedStyle| -> f32 {
-      let text = text.trim();
       if text.is_empty() {
         return 0.0;
       }
@@ -7915,8 +7934,7 @@ impl DisplayListBuilder {
         kind,
         ..
       } => {
-        let value_trimmed = value.trim();
-        let value_is_empty = value_trimmed.is_empty();
+        let value_is_empty = value.is_empty();
         let base_color = if control.invalid { accent } else { style.color };
         let placeholder_color = base_color.with_alpha(0.6);
 
@@ -7928,12 +7946,11 @@ impl DisplayListBuilder {
         match kind {
           TextControlKind::Password => {
             if !value_is_empty {
-              let mask_len = value_trimmed.chars().count().clamp(3, 50);
+              let mask_len = value.chars().count().clamp(3, 50);
               generated = Some("•".repeat(mask_len));
               paint_text = generated.as_deref();
               fallback_color = base_color;
             } else if let Some(ph) = placeholder.as_deref() {
-              let ph = ph.trim();
               if !ph.is_empty() {
                 paint_text = Some(ph);
                 fallback_color = placeholder_color;
@@ -7943,10 +7960,9 @@ impl DisplayListBuilder {
           }
           TextControlKind::Number => {
             if !value_is_empty {
-              paint_text = Some(value_trimmed);
+              paint_text = Some(value.as_str());
               fallback_color = base_color;
             } else if let Some(ph) = placeholder.as_deref() {
-              let ph = ph.trim();
               if !ph.is_empty() {
                 paint_text = Some(ph);
                 fallback_color = placeholder_color;
@@ -7956,10 +7972,9 @@ impl DisplayListBuilder {
           }
           TextControlKind::Date => {
             if !value_is_empty {
-              paint_text = Some(value_trimmed);
+              paint_text = Some(value.as_str());
               fallback_color = base_color;
             } else if let Some(ph) = placeholder.as_deref() {
-              let ph = ph.trim();
               if !ph.is_empty() {
                 paint_text = Some(ph);
                 fallback_color = placeholder_color;
@@ -7977,10 +7992,9 @@ impl DisplayListBuilder {
           }
           TextControlKind::Plain => {
             if !value_is_empty {
-              paint_text = Some(value_trimmed);
+              paint_text = Some(value.as_str());
               fallback_color = base_color;
             } else if let Some(ph) = placeholder.as_deref() {
-              let ph = ph.trim();
               if !ph.is_empty() {
                 paint_text = Some(ph);
                 fallback_color = placeholder_color;
@@ -8037,7 +8051,13 @@ impl DisplayListBuilder {
 
         if text_style.color.a > f32::EPSILON {
           if let Some(text) = paint_text {
+            if let Some(clip) = content_clip.as_ref() {
+              self.list.push(DisplayItem::PushClip(clip.clone()));
+            }
             let _ = self.emit_text_with_style(text, Some(&text_style), text_rect);
+            if content_clip.is_some() {
+              self.list.push(DisplayItem::PopClip);
+            }
           }
         }
         if let Some(affordance_rect) = affordance_rect {
@@ -8086,8 +8106,8 @@ impl DisplayListBuilder {
               text_rect.x()
             } else {
               let caret_text = match kind {
-                TextControlKind::Password => generated.as_deref().unwrap_or(value_trimmed),
-                _ => value_trimmed,
+                TextControlKind::Password => generated.as_deref().unwrap_or(value.as_str()),
+                _ => value.as_str(),
               };
               text_rect.x() + measure_shaped_advance(self, caret_text, &text_style)
             };
@@ -8129,8 +8149,7 @@ impl DisplayListBuilder {
         let base_color = if control.invalid { accent } else { style.color };
         let placeholder_color = base_color.with_alpha(0.6);
 
-        let value_trimmed = value.trim();
-        let value_is_empty = value_trimmed.is_empty();
+        let value_is_empty = value.is_empty();
         let rect = content_rect;
 
         let mut paint_text: Option<&str> = None;
@@ -8170,13 +8189,19 @@ impl DisplayListBuilder {
         if text_style.color.a > f32::EPSILON {
           if let Some(text) = paint_text {
             let mut y = rect.y();
+            if let Some(clip) = content_clip.as_ref() {
+              self.list.push(DisplayItem::PushClip(clip.clone()));
+            }
             for line in text.split('\n') {
               if y > rect.y() + rect.height() {
                 break;
               }
               let line_rect = Rect::from_xywh(rect.x(), y, rect.width(), line_height);
-              let _ = self.emit_text_with_style(line.trim_end(), Some(&text_style), line_rect);
+              let _ = self.emit_text_with_style(line, Some(&text_style), line_rect);
               y += line_height;
+            }
+            if content_clip.is_some() {
+              self.list.push(DisplayItem::PopClip);
             }
           }
         }
@@ -8209,17 +8234,16 @@ impl DisplayListBuilder {
               (last_y, last_line)
             };
 
-            let caret_line_trimmed = caret_line.trim_end();
-            let caret_x = if value_is_empty || caret_line_trimmed.is_empty() {
+            let caret_x = if value_is_empty || caret_line.is_empty() {
               rect.x()
             } else {
-              rect.x() + measure_shaped_advance(self, caret_line_trimmed, &text_style)
+              rect.x() + measure_shaped_advance(self, caret_line, &text_style)
             };
 
-            let sample_text = if caret_line_trimmed.trim().is_empty() {
+            let sample_text = if caret_line.trim().is_empty() {
               "M"
             } else {
-              caret_line_trimmed
+              caret_line
             };
             let runs = shape_text_runs(self, sample_text, &text_style).unwrap_or_default();
             let metrics = InlineTextItem::metrics_from_runs(
@@ -8398,7 +8422,13 @@ impl DisplayListBuilder {
           if control.invalid {
             select_style.color = accent;
           }
+          if let Some(clip) = content_clip.as_ref() {
+            self.list.push(DisplayItem::PushClip(clip.clone()));
+          }
           let _ = self.emit_text_with_style(label, Some(&select_style), content_rect);
+          if content_clip.is_some() {
+            self.list.push(DisplayItem::PopClip);
+          }
 
           if !matches!(control.appearance, Appearance::None) {
             let arrow_space = 14.0_f32.min(padding_rect.width().max(0.0));
@@ -8420,7 +8450,7 @@ impl DisplayListBuilder {
         }
       }
       FormControlKind::Button { label } => {
-        if label.trim().is_empty() {
+        if label.is_empty() {
           return true;
         }
         let rect = content_rect;
@@ -8428,7 +8458,13 @@ impl DisplayListBuilder {
         if control.invalid {
           button_style.color = accent;
         }
+        if let Some(clip) = content_clip.as_ref() {
+          self.list.push(DisplayItem::PushClip(clip.clone()));
+        }
         let _ = emit_text_aligned(self, label, &button_style, rect, true, true);
+        if content_clip.is_some() {
+          self.list.push(DisplayItem::PopClip);
+        }
         true
       }
       FormControlKind::Checkbox {
@@ -8640,6 +8676,11 @@ impl DisplayListBuilder {
         true
       }
       FormControlKind::Color { value, raw } => {
+        if matches!(control.appearance, Appearance::None) {
+          // `appearance: none` leaves the author-provided background/border visible; suppress the
+          // native swatch/label painting.
+          return true;
+        }
         let rect = inset_rect(padding_rect, 2.0);
         self
           .list
@@ -8680,7 +8721,13 @@ impl DisplayListBuilder {
           if control.invalid {
             unknown_style.color = accent;
           }
+          if let Some(clip) = content_clip.as_ref() {
+            self.list.push(DisplayItem::PushClip(clip.clone()));
+          }
           let _ = self.emit_text_with_style(text, Some(&unknown_style), rect);
+          if content_clip.is_some() {
+            self.list.push(DisplayItem::PopClip);
+          }
         }
         true
       }
@@ -8709,7 +8756,6 @@ impl DisplayListBuilder {
     style: Option<&ComputedStyle>,
     rect: Rect,
   ) -> bool {
-    let text = text.trim();
     if text.is_empty() {
       return false;
     }

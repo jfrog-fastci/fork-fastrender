@@ -11072,10 +11072,10 @@ impl FastRender {
 
   /// Computes an intrinsic size for alt text when replaced content cannot be loaded.
   fn alt_intrinsic_size(&self, style: &ComputedStyle, alt: &str) -> Option<Size> {
-    let text = alt.trim();
-    if text.is_empty() {
+    if alt.is_empty() {
       return None;
     }
+    let text = alt;
 
     let mut runs = self
       .shaping_pipeline

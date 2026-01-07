@@ -19,7 +19,7 @@ fn count_red(pixmap: &Pixmap, x0: u32, y0: u32, x1: u32, y1: u32) -> usize {
 }
 
 #[test]
-fn display_list_form_control_text_is_clipped_to_padding_box() {
+fn display_list_form_control_text_is_clipped_to_content_box() {
   let toggles = RuntimeToggles::from_map(HashMap::from([(
     "FASTR_PAINT_BACKEND".to_string(),
     "display_list".to_string(),
@@ -30,7 +30,7 @@ fn display_list_form_control_text_is_clipped_to_padding_box() {
   let html = format!(
     "<!doctype html>\
      <style>html,body{{margin:0;background:rgb(0,0,0);}}</style>\
-     <input value=\"{value}\" style=\"display:block;margin:0;width:20px;height:40px;box-sizing:content-box;border:10px solid rgb(0,0,255);padding:10px;background:rgb(0,150,0);color:rgb(255,0,0);font-size:40px;line-height:1;overflow:clip;\">",
+     <input value=\"{value}\" style=\"display:block;margin:0;width:20px;height:40px;box-sizing:content-box;border:10px solid rgb(0,0,255);padding:10px;background:rgb(0,150,0);color:rgb(255,0,0);font-size:40px;line-height:1;\">",
     value = value
   );
 
@@ -46,12 +46,12 @@ fn display_list_form_control_text_is_clipped_to_padding_box() {
     "expected form control text to paint inside content box"
   );
 
-  // Right padding box: x=[40..50). Overflow clipping should use the padding box, so text can paint
-  // into the padding region (but should still be clipped before the border box).
+  // Right padding region: x=[40..50). Native control content should be clipped to the content box
+  // by default, so text must not paint into padding.
   let padding_red = count_red(&pixmap, 41, 21, 49, 59);
-  assert!(
-    padding_red > 0,
-    "expected form control text to be able to paint into padding box (red pixels in padding={padding_red})"
+  assert_eq!(
+    padding_red, 0,
+    "expected form control text overflow to be clipped to the content box (red pixels in padding={padding_red})"
   );
 
   // Right border: x=[50..60). Text must not leak into the border box.
