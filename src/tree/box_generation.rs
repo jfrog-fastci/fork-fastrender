@@ -34,8 +34,11 @@ use crate::style::types::ListStyleType;
 use crate::style::types::TextTransform;
 use crate::style::types::WhiteSpace;
 use crate::style::ComputedStyle;
+use crate::svg::parse_svg_length;
 use crate::svg::parse_svg_length_px;
+use crate::svg::parse_svg_view_box;
 use crate::svg::svg_intrinsic_dimensions_from_attributes;
+use crate::svg::SvgLength;
 use crate::tree::anonymous::AnonymousBoxCreator;
 use crate::tree::box_tree::BoxNode;
 use crate::tree::box_tree::BoxTree;
@@ -733,10 +736,6 @@ fn picture_sources_for(styled: &StyledNode) -> Option<(usize, Vec<PictureSource>
   fallback_img.map(|img| (img.node_id, sources))
 }
 
-fn parse_svg_number(value: &str) -> Option<f32> {
-  parse_svg_length_px(value)
-}
-
 #[allow(dead_code)]
 fn serialize_dom_subtree(node: &crate::dom::DomNode) -> String {
   match &node.node_type {
@@ -1306,9 +1305,73 @@ fn serialize_svg_subtree(
 
   let embed_document_css = svg_document_css_style_element.is_some();
 
+  #[derive(Clone, Copy, Debug)]
+  struct SvgViewportSize {
+    width: f32,
+    height: f32,
+  }
+
+  fn svg_attr<'a>(attrs: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    attrs
+      .iter()
+      .find(|(attr, _)| attr.eq_ignore_ascii_case(name))
+      .map(|(_, value)| value.as_str())
+  }
+
+  fn resolve_svg_length_axis(length: SvgLength, axis_size: Option<f32>) -> Option<f32> {
+    let value = match length {
+      SvgLength::Px(px) => px,
+      SvgLength::Percentage(pct) => axis_size? * (pct / 100.0),
+    };
+    value.is_finite().then_some(value)
+  }
+
+  fn resolve_svg_attr_length(value: &str, axis_size: Option<f32>) -> Option<f32> {
+    parse_svg_length(value).and_then(|len| resolve_svg_length_axis(len, axis_size))
+  }
+
+  fn resolve_svg_viewport_size(
+    attrs: &[(String, String)],
+    parent: Option<SvgViewportSize>,
+    is_root: bool,
+  ) -> Option<SvgViewportSize> {
+    if let Some(view_box) = svg_attr(attrs, "viewBox").and_then(parse_svg_view_box) {
+      return Some(SvgViewportSize {
+        width: view_box.width,
+        height: view_box.height,
+      });
+    }
+
+    if is_root {
+      let width = svg_attr(attrs, "width")
+        .and_then(parse_svg_length_px)
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .unwrap_or(300.0);
+      let height = svg_attr(attrs, "height")
+        .and_then(parse_svg_length_px)
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .unwrap_or(150.0);
+      return Some(SvgViewportSize { width, height });
+    }
+
+    let parent = parent?;
+
+    let width = svg_attr(attrs, "width")
+      .and_then(|v| resolve_svg_attr_length(v, Some(parent.width)))
+      .filter(|v| v.is_finite() && *v >= 0.0)
+      .unwrap_or(parent.width);
+    let height = svg_attr(attrs, "height")
+      .and_then(|v| resolve_svg_attr_length(v, Some(parent.height)))
+      .filter(|v| v.is_finite() && *v >= 0.0)
+      .unwrap_or(parent.height);
+
+    Some(SvgViewportSize { width, height })
+  }
+
   fn serialize_foreign_object_placeholder(
     styled: &StyledNode,
     attrs: &[(String, String)],
+    viewport: Option<SvgViewportSize>,
     out: &mut String,
   ) -> bool {
     let mut x = 0.0f32;
@@ -1317,10 +1380,10 @@ fn serialize_svg_subtree(
     let mut height: Option<f32> = None;
     for (name, value) in attrs {
       match name.as_str() {
-        "x" => x = parse_svg_number(value).unwrap_or(0.0),
-        "y" => y = parse_svg_number(value).unwrap_or(0.0),
-        "width" => width = parse_svg_number(value),
-        "height" => height = parse_svg_number(value),
+        "x" => x = resolve_svg_attr_length(value, viewport.map(|v| v.width)).unwrap_or(0.0),
+        "y" => y = resolve_svg_attr_length(value, viewport.map(|v| v.height)).unwrap_or(0.0),
+        "width" => width = resolve_svg_attr_length(value, viewport.map(|v| v.width)),
+        "height" => height = resolve_svg_attr_length(value, viewport.map(|v| v.height)),
         _ => {}
       }
     }
@@ -1392,6 +1455,7 @@ fn serialize_svg_subtree(
   fn serialize_foreign_object(
     styled: &StyledNode,
     attrs: &[(String, String)],
+    viewport: Option<SvgViewportSize>,
     _document_css: &str,
     out: &mut String,
     fallback_out: &mut Option<String>,
@@ -1408,10 +1472,10 @@ fn serialize_svg_subtree(
     let mut height: Option<f32> = None;
     for (name, value) in attrs {
       match name.as_str() {
-        "x" => x = parse_svg_number(value).unwrap_or(0.0),
-        "y" => y = parse_svg_number(value).unwrap_or(0.0),
-        "width" => width = parse_svg_number(value),
-        "height" => height = parse_svg_number(value),
+        "x" => x = resolve_svg_attr_length(value, viewport.map(|v| v.width)).unwrap_or(0.0),
+        "y" => y = resolve_svg_attr_length(value, viewport.map(|v| v.height)).unwrap_or(0.0),
+        "width" => width = resolve_svg_attr_length(value, viewport.map(|v| v.width)),
+        "height" => height = resolve_svg_attr_length(value, viewport.map(|v| v.height)),
         _ => {}
       }
     }
@@ -1419,8 +1483,8 @@ fn serialize_svg_subtree(
     let (width, height) = match (width, height) {
       (Some(w), Some(h)) if w > 0.0 && h > 0.0 => (w, h),
       _ => {
-        let placeholder = serialize_foreign_object_placeholder(styled, attrs, out);
-        let _ = serialize_foreign_object_placeholder(styled, attrs, fallback_out);
+        let placeholder = serialize_foreign_object_placeholder(styled, attrs, viewport, out);
+        let _ = serialize_foreign_object_placeholder(styled, attrs, viewport, fallback_out);
         if placeholder {
           return true;
         }
@@ -1432,7 +1496,7 @@ fn serialize_svg_subtree(
 
     let placeholder = format!("<!--FASTRENDER_FOREIGN_OBJECT_{}-->", foreign_objects.len());
     out.push_str(&placeholder);
-    if !serialize_foreign_object_placeholder(styled, attrs, fallback_out) {
+    if !serialize_foreign_object_placeholder(styled, attrs, viewport, fallback_out) {
       fallback_out.push_str(&placeholder);
     }
 
@@ -1470,6 +1534,7 @@ fn serialize_svg_subtree(
     document_css: &str,
     parent_ns: Option<&str>,
     parent_svg_styles: Option<&ComputedStyle>,
+    svg_viewport: Option<SvgViewportSize>,
     is_root: bool,
     out: &mut String,
     fallback_out: &mut Option<String>,
@@ -1485,6 +1550,7 @@ fn serialize_svg_subtree(
             document_css,
             parent_ns,
             parent_svg_styles,
+            svg_viewport,
             false,
             out,
             fallback_out,
@@ -1501,6 +1567,7 @@ fn serialize_svg_subtree(
             document_css,
             parent_ns,
             parent_svg_styles,
+            svg_viewport,
             false,
             out,
             fallback_out,
@@ -1569,10 +1636,18 @@ fn serialize_svg_subtree(
 
         let attrs: &[(String, String)] = owned_attrs.as_deref().unwrap_or(attributes);
 
+        let next_svg_viewport = if current_ns == SVG_NAMESPACE && tag_name.eq_ignore_ascii_case("svg")
+        {
+          resolve_svg_viewport_size(attrs, svg_viewport, is_root)
+        } else {
+          svg_viewport
+        };
+
         if tag_name.eq_ignore_ascii_case("foreignObject") {
           if serialize_foreign_object(
             styled,
             attrs,
+            svg_viewport,
             document_css,
             out,
             fallback_out,
@@ -1633,6 +1708,7 @@ fn serialize_svg_subtree(
             document_css,
             Some(current_ns),
             next_parent_svg_styles,
+            next_svg_viewport,
             false,
             out,
             fallback_out,
@@ -1665,6 +1741,7 @@ fn serialize_svg_subtree(
   serialize_node(
     styled,
     document_css,
+    None,
     None,
     None,
     true,

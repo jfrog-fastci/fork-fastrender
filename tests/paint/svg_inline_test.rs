@@ -282,3 +282,53 @@ fn foreign_object_accepts_absolute_units_for_dimensions() {
     "converted dimensions should avoid unresolved placeholder"
   );
 }
+
+#[test]
+fn foreign_object_accepts_percentage_units_for_dimensions() {
+  std::thread::Builder::new()
+    .stack_size(64 * 1024 * 1024)
+    .spawn(|| {
+      let mut renderer = FastRender::new().expect("renderer");
+      let html = r#"
+      <style>body{margin:0;background:white} svg{display:block}</style>
+      <svg width="16" height="12" viewBox="0 0 16 12">
+        <foreignObject x="0" y="0" width="100%" height="100%">
+          <div xmlns="http://www.w3.org/1999/xhtml" style="width:100%;height:100%;background: rgb(0, 0, 255);"></div>
+        </foreignObject>
+      </svg>
+      "#;
+
+      let pixmap = renderer.render_html(html, 20, 20).expect("render svg");
+      assert_eq!(
+        pixel(&pixmap, 8, 6),
+        [0, 0, 255, 255],
+        "foreignObject should resolve percentage sizing"
+      );
+    })
+    .unwrap()
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn foreign_object_percentage_units_do_not_emit_unresolved_placeholder() {
+  let html = r#"
+  <svg width="16" height="12" viewBox="0 0 16 12">
+    <foreignObject x="0" y="0" width="100%" height="100%">
+      <div xmlns="http://www.w3.org/1999/xhtml" style="width:100%;height:100%;background: rgb(0, 0, 255);"></div>
+    </foreignObject>
+  </svg>
+  "#;
+
+  let serialized = serialized_inline_svg(html, 20.0, 20.0).expect("serialize svg");
+  assert!(
+    serialized.svg.contains("FASTRENDER_FOREIGN_OBJECT_0"),
+    "percentage dimensions should resolve to a valid foreignObject"
+  );
+  assert!(
+    !serialized
+      .svg
+      .contains("FASTRENDER_FOREIGN_OBJECT_UNRESOLVED"),
+    "percentage dimensions should avoid unresolved placeholder comments"
+  );
+}
