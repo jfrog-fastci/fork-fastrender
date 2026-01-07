@@ -10815,6 +10815,891 @@ mod tests {
     }
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // RuleIndex candidate-selection soundness harness
+  // ---------------------------------------------------------------------------------------------
+
+  /// Deterministic PRNG for the "RuleIndex vs naive full-scan" selector harness.
+  ///
+  /// We avoid pulling in external RNG deps for tests; this is a small SplitMix64 variant.
+  #[derive(Clone)]
+  struct HarnessRng {
+    state: u64,
+  }
+
+  impl HarnessRng {
+    fn new(seed: u64) -> Self {
+      // Avoid the all-zero state degeneracy by mixing in a constant.
+      Self {
+        state: seed ^ 0x9e3779b97f4a7c15,
+      }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+      // splitmix64
+      self.state = self.state.wrapping_add(0x9e3779b97f4a7c15);
+      let mut z = self.state;
+      z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+      z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+      z ^ (z >> 31)
+    }
+
+    fn gen_usize(&mut self, upper: usize) -> usize {
+      if upper <= 1 {
+        return 0;
+      }
+      (self.next_u64() as usize) % upper
+    }
+
+    fn gen_range_inclusive(&mut self, min: usize, max: usize) -> usize {
+      if max <= min {
+        return min;
+      }
+      min + self.gen_usize(max - min + 1)
+    }
+
+    fn gen_bool_ratio(&mut self, numerator: u32, denominator: u32) -> bool {
+      if numerator == 0 {
+        return false;
+      }
+      if numerator >= denominator {
+        return true;
+      }
+      (self.next_u64() % denominator as u64) < numerator as u64
+    }
+
+    fn choose<'a, T>(&mut self, values: &'a [T]) -> &'a T {
+      debug_assert!(!values.is_empty());
+      &values[self.gen_usize(values.len())]
+    }
+  }
+
+  const HARNESS_TAGS_HTML: &[&str] = &["div", "span", "p", "a", "ul", "li", "section", "article"];
+  const HARNESS_TAGS_SVG: &[&str] = &["svg", "circle", "path"];
+  const HARNESS_CLASSES: &[&str] = &["a", "b", "c", "d", "e", "foo", "bar", "baz"];
+  const HARNESS_ATTRS: &[&str] = &["data-a", "data-b", "data-c", "title"];
+  const HARNESS_VALUES: &[&str] = &["x", "y", "z", "v0", "v1", "1", "true"];
+
+  fn harness_gen_dom(seed: u64) -> DomNode {
+    fn gen_element(rng: &mut HarnessRng, depth: usize, remaining: &mut usize) -> DomNode {
+      let tag = if rng.gen_bool_ratio(1, 6) {
+        rng.choose(HARNESS_TAGS_SVG)
+      } else {
+        rng.choose(HARNESS_TAGS_HTML)
+      };
+      let namespace = if HARNESS_TAGS_SVG.contains(tag) {
+        SVG_NAMESPACE.to_string()
+      } else if rng.gen_bool_ratio(1, 5) {
+        String::new()
+      } else {
+        HTML_NAMESPACE.to_string()
+      };
+
+      let mut attributes: Vec<(String, String)> = Vec::new();
+
+      if rng.gen_bool_ratio(1, 3) {
+        // Some ids are reused across the tree intentionally; that's valid HTML and tests id-key
+        // extraction + quirks handling.
+        let id = format!("id{}", rng.gen_usize(6));
+        attributes.push(("id".to_string(), id));
+      }
+
+      if rng.gen_bool_ratio(2, 3) {
+        let class_count = rng.gen_range_inclusive(1, 3);
+        let mut chosen: Vec<&str> = Vec::new();
+        while chosen.len() < class_count {
+          let cls = rng.choose(HARNESS_CLASSES);
+          if !chosen.contains(cls) {
+            chosen.push(cls);
+          }
+        }
+        attributes.push(("class".to_string(), chosen.join(" ")));
+      }
+
+      let extra_attr_count = rng.gen_range_inclusive(0, 2);
+      for _ in 0..extra_attr_count {
+        let name = rng.choose(HARNESS_ATTRS).to_string();
+        if attributes.iter().any(|(k, _)| k == &name) {
+          continue;
+        }
+        let value = rng.choose(HARNESS_VALUES).to_string();
+        attributes.push((name, value));
+      }
+
+      // Keep trees shallow and small so the test stays fast.
+      let max_depth = 4;
+      let mut children: Vec<DomNode> = Vec::new();
+      if depth < max_depth && *remaining > 0 {
+        let child_count = rng.gen_range_inclusive(0, 3).min(*remaining);
+        for _ in 0..child_count {
+          if *remaining == 0 {
+            break;
+          }
+          *remaining = remaining.saturating_sub(1);
+          children.push(gen_element(rng, depth + 1, remaining));
+        }
+      }
+
+      DomNode {
+        node_type: DomNodeType::Element {
+          tag_name: tag.to_string(),
+          namespace,
+          attributes,
+        },
+        children,
+      }
+    }
+
+    let mut rng = HarnessRng::new(seed);
+    let mut remaining_elements = rng.gen_range_inclusive(8, 24);
+    // Root element counts as one.
+    remaining_elements = remaining_elements.saturating_sub(1);
+    let root_el = gen_element(&mut rng, 0, &mut remaining_elements);
+    DomNode {
+      node_type: DomNodeType::Document {
+        quirks_mode: QuirksMode::NoQuirks,
+      },
+      children: vec![root_el],
+    }
+  }
+
+  fn harness_serialize_dom(dom: &DomNode, id_map: &HashMap<*const DomNode, usize>) -> String {
+    fn write_node(
+      node: &DomNode,
+      id_map: &HashMap<*const DomNode, usize>,
+      indent: usize,
+      out: &mut String,
+    ) {
+      use std::fmt::Write as _;
+
+      let id = id_map.get(&(node as *const DomNode)).copied().unwrap_or(0);
+      let _ = write!(out, "{:indent$}#{id} ", "", indent = indent);
+      match &node.node_type {
+        DomNodeType::Document { .. } => {
+          out.push_str("Document\n");
+        }
+        DomNodeType::Element {
+          tag_name,
+          namespace,
+          attributes,
+        } => {
+          let mut attrs = attributes.clone();
+          attrs.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+          let _ = write!(out, "<{tag_name} ns=\"{namespace}\"");
+          for (k, v) in attrs {
+            let _ = write!(out, " {k}=\"{v}\"");
+          }
+          out.push_str(">\n");
+        }
+        DomNodeType::Text { content } => {
+          let _ = write!(out, "Text({:?})\n", content);
+        }
+        DomNodeType::ShadowRoot { .. } => {
+          out.push_str("ShadowRoot\n");
+        }
+        DomNodeType::Slot { .. } => {
+          out.push_str("<slot>\n");
+        }
+      }
+
+      for child in node.children.iter() {
+        write_node(child, id_map, indent + 2, out);
+      }
+    }
+
+    let mut out = String::new();
+    write_node(dom, id_map, 0, &mut out);
+    out
+  }
+
+  fn harness_collect_element_ids(dom_maps: &DomMaps) -> Vec<usize> {
+    let mut ids: Vec<usize> = Vec::new();
+    for node_id in 1..dom_maps.id_to_node.len() {
+      let ptr = dom_maps.id_to_node[node_id];
+      if ptr.is_null() {
+        continue;
+      }
+      // Safety: pointers are sourced from the DOM tree, which is immutable during the harness.
+      let node = unsafe { &*ptr };
+      if node.is_element() {
+        ids.push(node_id);
+      }
+    }
+    ids
+  }
+
+  #[derive(Clone)]
+  enum HarnessOfSelector {
+    Universal,
+    Tag(String),
+    Class(String),
+    AttrExists(String),
+    AttrEquals(String, String),
+    Id(String),
+  }
+
+  impl HarnessOfSelector {
+    fn to_css(&self) -> String {
+      match self {
+        Self::Universal => "*".to_string(),
+        Self::Tag(tag) => tag.clone(),
+        Self::Class(cls) => format!(".{cls}"),
+        Self::AttrExists(name) => format!("[{name}]"),
+        Self::AttrEquals(name, value) => format!("[{name}=\"{value}\"]"),
+        Self::Id(id) => format!("#{id}"),
+      }
+    }
+
+    fn matches_node(&self, node: &DomNode) -> bool {
+      match self {
+        Self::Universal => node.is_element(),
+        Self::Tag(tag) => node.tag_name().is_some_and(|t| t.eq_ignore_ascii_case(tag)),
+        Self::Class(cls) => node
+          .get_attribute_ref("class")
+          .is_some_and(|c| c.split_ascii_whitespace().any(|v| v == cls)),
+        Self::AttrExists(name) => node.get_attribute_ref(name).is_some(),
+        Self::AttrEquals(name, value) => node.get_attribute_ref(name).is_some_and(|v| v == value),
+        Self::Id(id) => node.get_attribute_ref("id").is_some_and(|v| v == id),
+      }
+    }
+  }
+
+  fn harness_nth_child_of_pseudo(
+    rng: &mut HarnessRng,
+    dom_maps: &DomMaps,
+    node_id: usize,
+  ) -> Option<String> {
+    let parent_id = *dom_maps.parent_map.get(node_id).unwrap_or(&0);
+    if parent_id == 0 {
+      return None;
+    }
+    let parent_ptr = *dom_maps.id_to_node.get(parent_id)?;
+    if parent_ptr.is_null() {
+      return None;
+    }
+    let parent = unsafe { &*parent_ptr };
+    if !parent.is_element() {
+      return None;
+    }
+
+    let node_ptr = *dom_maps.id_to_node.get(node_id)?;
+    if node_ptr.is_null() {
+      return None;
+    }
+    let node = unsafe { &*node_ptr };
+
+    let classes: Vec<&str> = node
+      .get_attribute_ref("class")
+      .map(|c| c.split_ascii_whitespace().collect())
+      .unwrap_or_default();
+    let attrs: Vec<(&str, &str)> = node
+      .attributes_iter()
+      .filter(|(k, _)| *k != "id" && *k != "class")
+      .collect();
+
+    let mut candidates: Vec<HarnessOfSelector> = vec![HarnessOfSelector::Universal];
+    if let Some(tag) = node.tag_name() {
+      candidates.push(HarnessOfSelector::Tag(tag.to_string()));
+    }
+    if let Some(id) = node.get_attribute_ref("id") {
+      candidates.push(HarnessOfSelector::Id(id.to_string()));
+    }
+    if let Some(cls) = classes.first() {
+      candidates.push(HarnessOfSelector::Class((*cls).to_string()));
+    }
+    if let Some((name, value)) = attrs.first() {
+      candidates.push(HarnessOfSelector::AttrExists((*name).to_string()));
+      candidates.push(HarnessOfSelector::AttrEquals((*name).to_string(), (*value).to_string()));
+    }
+
+    let of_selector = rng.choose(candidates.as_slice()).clone();
+
+    // Find the 1-based index of `node` among element siblings that match `of_selector`.
+    let mut position = 0usize;
+    let mut total = 0usize;
+    for child in parent.children.iter() {
+      if !child.is_element() {
+        continue;
+      }
+      if !of_selector.matches_node(child) {
+        continue;
+      }
+      total += 1;
+      let child_id = dom_maps.id_map.get(&(child as *const DomNode)).copied().unwrap_or(0);
+      if child_id == node_id {
+        position = total;
+      }
+    }
+    if position == 0 {
+      return None;
+    }
+
+    let of_css = of_selector.to_css();
+    let use_last = rng.gen_bool_ratio(1, 2);
+    let nth = if use_last {
+      total.saturating_sub(position).saturating_add(1)
+    } else {
+      position
+    };
+
+    Some(format!(
+      ":{}({nth} of {of_css})",
+      if use_last { "nth-last-child" } else { "nth-child" }
+    ))
+  }
+
+  fn harness_has_pseudo(
+    rng: &mut HarnessRng,
+    dom_maps: &DomMaps,
+    node_id: usize,
+  ) -> Option<String> {
+    let node_ptr = *dom_maps.id_to_node.get(node_id)?;
+    if node_ptr.is_null() {
+      return None;
+    }
+    let node = unsafe { &*node_ptr };
+
+    // Collect descendant elements.
+    let mut descendants: Vec<&DomNode> = Vec::new();
+    let mut stack: Vec<&DomNode> = node.children.iter().collect();
+    while let Some(current) = stack.pop() {
+      if current.is_element() {
+        descendants.push(current);
+      }
+      for child in current.children.iter() {
+        stack.push(child);
+      }
+    }
+    if descendants.is_empty() {
+      return None;
+    }
+    let desc = *rng.choose(descendants.as_slice());
+
+    let mut patterns: Vec<String> = Vec::new();
+    if let Some(cls_attr) = desc.get_attribute_ref("class") {
+      if let Some(cls) = cls_attr.split_ascii_whitespace().next() {
+        patterns.push(format!(".{cls}"));
+      }
+    }
+    if let Some(tag) = desc.tag_name() {
+      patterns.push(tag.to_string());
+    }
+    if let Some((name, value)) = desc
+      .attributes_iter()
+      .filter(|(k, _)| *k != "id" && *k != "class")
+      .next()
+    {
+      if rng.gen_bool_ratio(1, 2) {
+        patterns.push(format!("[{name}]"));
+      } else {
+        patterns.push(format!("[{name}=\"{value}\"]"));
+      }
+    }
+    let pattern = patterns.get(rng.gen_usize(patterns.len()))?.clone();
+
+    // If the descendant is a direct child, sometimes generate a `> pattern` relative selector.
+    let descendant_is_direct_child = node
+      .children
+      .iter()
+      .any(|child| std::ptr::eq(child, desc));
+    let relative = if descendant_is_direct_child && rng.gen_bool_ratio(1, 2) {
+      format!("> {pattern}")
+    } else {
+      pattern
+    };
+
+    Some(format!(":has({relative})"))
+  }
+
+  fn harness_selector_list_item_matching_node(rng: &mut HarnessRng, node: &DomNode) -> String {
+    let mut options: Vec<String> = Vec::new();
+    if let Some(id) = node.get_attribute_ref("id") {
+      options.push(format!("#{id}"));
+    }
+    if let Some(cls) = node
+      .get_attribute_ref("class")
+      .and_then(|c| c.split_ascii_whitespace().next())
+    {
+      options.push(format!(".{cls}"));
+    }
+    if let Some(tag) = node.tag_name() {
+      options.push(tag.to_string());
+    }
+    if let Some((name, value)) = node
+      .attributes_iter()
+      .filter(|(k, _)| *k != "id" && *k != "class")
+      .next()
+    {
+      if rng.gen_bool_ratio(1, 2) {
+        options.push(format!("[{name}]"));
+      } else {
+        options.push(format!("[{name}=\"{value}\"]"));
+      }
+    }
+    if options.is_empty() {
+      "*".to_string()
+    } else {
+      options.remove(rng.gen_usize(options.len()))
+    }
+  }
+
+  fn harness_selector_list_item_nonmatching_node(rng: &mut HarnessRng, node: &DomNode) -> String {
+    // Prefer a class selector that is guaranteed not to match.
+    let present: Vec<&str> = node
+      .get_attribute_ref("class")
+      .map(|c| c.split_ascii_whitespace().collect())
+      .unwrap_or_default();
+    for cls in HARNESS_CLASSES {
+      if !present.contains(cls) {
+        return format!(".{cls}");
+      }
+    }
+
+    // Fallback: attribute that likely doesn't exist.
+    let name = rng.choose(HARNESS_ATTRS);
+    if node.get_attribute_ref(name).is_none() {
+      return format!("[{name}]");
+    }
+
+    // Last resort: impossible id.
+    "#__never__".to_string()
+  }
+
+  fn harness_compound_selector_matching_node(
+    rng: &mut HarnessRng,
+    dom_maps: &DomMaps,
+    node_id: usize,
+  ) -> String {
+    let node_ptr = dom_maps.id_to_node[node_id];
+    debug_assert!(!node_ptr.is_null());
+    let node = unsafe { &*node_ptr };
+    debug_assert!(node.is_element());
+
+    let mut selector = String::new();
+
+    // Sometimes include an explicit type selector.
+    if rng.gen_bool_ratio(3, 4) {
+      if rng.gen_bool_ratio(3, 4) {
+        let tag = node.tag_name().unwrap_or("div");
+        if node.namespace().is_some_and(str::is_empty) && rng.gen_bool_ratio(1, 4) {
+          selector.push('|');
+          selector.push_str(tag);
+        } else if node.namespace() == Some(SVG_NAMESPACE) && rng.gen_bool_ratio(1, 4) {
+          selector.push_str("*|");
+          selector.push_str(tag);
+        } else {
+          selector.push_str(tag);
+        }
+      } else {
+        selector.push('*');
+      }
+    }
+
+    if let Some(id) = node.get_attribute_ref("id") {
+      if rng.gen_bool_ratio(1, 2) {
+        selector.push('#');
+        selector.push_str(id);
+      }
+    }
+
+    if let Some(class_attr) = node.get_attribute_ref("class") {
+      let mut classes: Vec<&str> = class_attr.split_ascii_whitespace().collect();
+      if !classes.is_empty() && rng.gen_bool_ratio(2, 3) {
+        let want = if classes.len() >= 2 && rng.gen_bool_ratio(1, 2) {
+          2
+        } else {
+          1
+        };
+        // Deterministically pick up to `want` classes.
+        for _ in 0..want {
+          let idx = rng.gen_usize(classes.len());
+          let cls = classes.swap_remove(idx);
+          selector.push('.');
+          selector.push_str(cls);
+          if classes.is_empty() {
+            break;
+          }
+        }
+      }
+    }
+
+    let attrs: Vec<(&str, &str)> = node
+      .attributes_iter()
+      .filter(|(k, _)| *k != "id" && *k != "class")
+      .collect();
+    if !attrs.is_empty() && rng.gen_bool_ratio(1, 3) {
+      let (name, value) = attrs[rng.gen_usize(attrs.len())];
+      if rng.gen_bool_ratio(1, 2) {
+        selector.push_str(&format!("[{name}]"));
+      } else {
+        selector.push_str(&format!("[{name}=\"{value}\"]"));
+      }
+    }
+
+    // Add nested selector-list pseudos to exercise key extraction through :is/:where/:not.
+    if rng.gen_bool_ratio(1, 5) {
+      let is_where = rng.gen_bool_ratio(1, 2);
+      let first = harness_selector_list_item_matching_node(rng, node);
+      let second = if rng.gen_bool_ratio(1, 2) {
+        harness_selector_list_item_nonmatching_node(rng, node)
+      } else {
+        // Nest :not() inside :is() / :where() to exercise nesting.
+        let inner = harness_selector_list_item_nonmatching_node(rng, node);
+        format!(":not({inner})")
+      };
+      selector.push_str(&format!(
+        ":{}({first}, {second})",
+        if is_where { "where" } else { "is" }
+      ));
+    }
+
+    if rng.gen_bool_ratio(1, 5) {
+      // Sometimes nest :is() inside :not() for coverage.
+      if rng.gen_bool_ratio(1, 4) {
+        let a = harness_selector_list_item_nonmatching_node(rng, node);
+        let b = harness_selector_list_item_nonmatching_node(rng, node);
+        selector.push_str(&format!(":not(:is({a}, {b}))"));
+      } else {
+        let first = harness_selector_list_item_nonmatching_node(rng, node);
+        selector.push_str(&format!(":not({first})"));
+      }
+    }
+
+    if rng.gen_bool_ratio(1, 8) {
+      if let Some(pseudo) = harness_nth_child_of_pseudo(rng, dom_maps, node_id) {
+        selector.push_str(&pseudo);
+      }
+    }
+
+    if rng.gen_bool_ratio(1, 12) {
+      if let Some(pseudo) = harness_has_pseudo(rng, dom_maps, node_id) {
+        selector.push_str(&pseudo);
+      }
+    }
+
+    if selector.is_empty() {
+      selector.push('*');
+    }
+
+    selector
+  }
+
+  fn harness_prev_sibling_element_id(
+    dom_maps: &DomMaps,
+    parent_id: usize,
+    node_id: usize,
+  ) -> Option<usize> {
+    let parent_ptr = dom_maps.id_to_node.get(parent_id).copied()?;
+    if parent_ptr.is_null() {
+      return None;
+    }
+    let parent = unsafe { &*parent_ptr };
+    let mut prev: Option<usize> = None;
+    for child in parent.children.iter() {
+      if !child.is_element() {
+        continue;
+      }
+      let child_id = dom_maps.id_map.get(&(child as *const DomNode)).copied().unwrap_or(0);
+      if child_id == node_id {
+        return prev;
+      }
+      prev = Some(child_id);
+    }
+    None
+  }
+
+  fn harness_selector_matching_node(
+    rng: &mut HarnessRng,
+    dom_maps: &DomMaps,
+    node_id: usize,
+  ) -> String {
+    let subject = harness_compound_selector_matching_node(rng, dom_maps, node_id);
+    if !rng.gen_bool_ratio(1, 2) {
+      return subject;
+    }
+
+    let ancestors = dom_maps.ancestors_for(node_id);
+    let element_ancestor_ids: Vec<usize> = ancestors
+      .iter()
+      .filter(|a| a.is_element())
+      .filter_map(|a| dom_maps.id_map.get(&(*a as *const DomNode)).copied())
+      .collect();
+    let parent_id = *dom_maps.parent_map.get(node_id).unwrap_or(&0);
+    let parent_is_element = parent_id != 0
+      && dom_maps
+        .id_to_node
+        .get(parent_id)
+        .copied()
+        .filter(|ptr| !ptr.is_null())
+        .is_some_and(|ptr| unsafe { (&*ptr).is_element() });
+
+    let mut options: Vec<&str> = Vec::new();
+    if parent_is_element {
+      options.push("child");
+    }
+    if !element_ancestor_ids.is_empty() {
+      options.push("descendant");
+    }
+    if parent_is_element
+      && harness_prev_sibling_element_id(dom_maps, parent_id, node_id).is_some()
+    {
+      options.push("adjacent");
+      options.push("sibling");
+    }
+    if options.is_empty() {
+      return subject;
+    }
+
+    match *rng.choose(options.as_slice()) {
+      "child" => {
+        let left = harness_compound_selector_matching_node(rng, dom_maps, parent_id);
+        format!("{left} > {subject}")
+      }
+      "descendant" => {
+        let left_id = element_ancestor_ids[rng.gen_usize(element_ancestor_ids.len())];
+        let left = harness_compound_selector_matching_node(rng, dom_maps, left_id);
+        format!("{left} {subject}")
+      }
+      "adjacent" => {
+        let Some(left_id) = harness_prev_sibling_element_id(dom_maps, parent_id, node_id) else {
+          return subject;
+        };
+        let left = harness_compound_selector_matching_node(rng, dom_maps, left_id);
+        format!("{left} + {subject}")
+      }
+      "sibling" => {
+        let Some(left_id) = harness_prev_sibling_element_id(dom_maps, parent_id, node_id) else {
+          return subject;
+        };
+        let left = harness_compound_selector_matching_node(rng, dom_maps, left_id);
+        format!("{left} ~ {subject}")
+      }
+      _ => subject,
+    }
+  }
+
+  fn harness_gen_stylesheet_css(seed: u64, dom_maps: &DomMaps, element_ids: &[usize]) -> String {
+    let mut rng = HarnessRng::new(seed ^ 0xa5a5a5a5a5a5a5a5);
+    let rule_count = rng.gen_range_inclusive(12, 32);
+    let mut css = String::new();
+    for _ in 0..rule_count {
+      let target_id = *rng.choose(element_ids);
+      let selector = harness_selector_matching_node(&mut rng, dom_maps, target_id);
+      if rng.gen_bool_ratio(1, 8) {
+        let other_id = *rng.choose(element_ids);
+        let other = harness_selector_matching_node(&mut rng, dom_maps, other_id);
+        css.push_str(&format!("{selector}, {other} {{ color: red; }}\n"));
+      } else {
+        css.push_str(&format!("{selector} {{ color: red; }}\n"));
+      }
+    }
+    css
+  }
+
+  fn harness_naive_matches_for_node<'a>(
+    node: &DomNode,
+    node_id: usize,
+    ancestors: &'a [&'a DomNode],
+    rules: &RuleIndex<'_>,
+    caches: &mut SelectorCaches,
+    sibling_cache: &'a SiblingListCache,
+    dom_maps: &'a DomMaps,
+    quirks_mode: QuirksMode,
+  ) -> std::collections::BTreeSet<usize> {
+    use std::collections::BTreeSet;
+
+    let element_ref = build_element_ref_chain(node, node_id, ancestors, None, None);
+    let mut ctx = MatchingContext::new_for_visited(
+      MatchingMode::Normal,
+      None,
+      caches,
+      VisitedHandlingMode::AllLinksVisitedAndUnvisited,
+      IncludeStartingStyle::No,
+      quirks_mode,
+      selectors::matching::NeedsSelectorFlags::No,
+      selectors::matching::MatchingForInvalidation::No,
+    );
+    ctx.extra_data = ShadowMatchData {
+      shadow_host: None,
+      slot_map: None,
+      part_export_map: None,
+      deadline_error: None,
+      selector_blooms: dom_maps.selector_blooms(),
+      sibling_cache: Some(sibling_cache),
+      element_attr_cache: None,
+    };
+
+    let mut matched = BTreeSet::new();
+    for rule in rules.rules.iter() {
+      for selector in rule.rule.selectors.slice().iter() {
+        // find_matching_rules only targets the element itself (no pseudos here).
+        if selector.pseudo_element().is_some() {
+          continue;
+        }
+        if matches_selector(selector, 0, None, &element_ref, &mut ctx) {
+          matched.insert(rule.order);
+          break;
+        }
+      }
+    }
+    matched
+  }
+
+  #[test]
+  fn rule_index_matches_are_superset_of_naive_full_scan() {
+    crate::dom::set_selector_bloom_enabled(true);
+
+    const SEED_COUNT: u64 = 100;
+    for seed in 0..SEED_COUNT {
+      let dom = harness_gen_dom(seed);
+      let id_map = enumerate_dom_ids(&dom);
+      let mut dom_maps = DomMaps::new(&dom, id_map);
+
+      let element_ids = harness_collect_element_ids(&dom_maps);
+      if element_ids.is_empty() {
+        continue;
+      }
+
+      let css = harness_gen_stylesheet_css(seed, &dom_maps, &element_ids);
+      let stylesheet = parse_stylesheet(&css).unwrap_or_else(|err| {
+        panic!("seed={seed} stylesheet parse failed: {err:?}\ncss:\n{css}");
+      });
+      let media_ctx = MediaContext::default();
+      let collected = stylesheet.collect_style_rules(&media_ctx);
+      let rules: Vec<CascadeRule<'_>> = collected
+        .iter()
+        .enumerate()
+        .map(|(order, rule)| CascadeRule {
+          origin: StyleOrigin::Author,
+          order,
+          rule: rule.rule,
+          layer_order: layer_order_with_tree_scope(rule.layer_order.as_ref(), DOCUMENT_TREE_SCOPE_PREFIX),
+          container_conditions: rule.container_conditions.clone(),
+          scopes: rule.scopes.clone(),
+          scope_signature: ScopeSignature::compute(&rule.scopes),
+          scope: RuleScope::Document,
+          starting_style: rule.starting_style,
+        })
+        .collect();
+      let index = RuleIndex::new(rules, QuirksMode::NoQuirks);
+
+      // Build selector bloom summaries when :has pruning is in play.
+      if index.has_has_requirements {
+        dom_maps.ensure_selector_blooms(&dom);
+      }
+
+      let mut caches = SelectorCaches::default();
+      let cache_epoch = next_selector_cache_epoch();
+      caches.set_epoch(cache_epoch);
+      let sibling_cache = SiblingListCache::new(cache_epoch);
+      let mut scratch = CascadeScratch::new(
+        index.rules.len().max(1),
+        rule_index_candidate_count(&index).max(1),
+        rule_index_part_count(&index),
+      );
+      let slot_assignment = SlotAssignment::default();
+
+      for &node_id in element_ids.iter() {
+        let ptr = dom_maps.id_to_node[node_id];
+        if ptr.is_null() {
+          continue;
+        }
+        let node = unsafe { &*ptr };
+        if !node.is_element() {
+          continue;
+        }
+        let ancestors_vec = dom_maps.ancestors_for(node_id);
+        let ancestor_ids: Vec<usize> = ancestors_vec
+          .iter()
+          .filter_map(|a| dom_maps.id_map.get(&(*a as *const DomNode)).copied())
+          .collect();
+
+        let naive = harness_naive_matches_for_node(
+          node,
+          node_id,
+          ancestors_vec.as_slice(),
+          &index,
+          &mut caches,
+          &sibling_cache,
+          &dom_maps,
+          QuirksMode::NoQuirks,
+        );
+
+        let indexed = find_matching_rules(
+          node,
+          &index,
+          &mut caches,
+          &mut scratch,
+          ancestors_vec.as_slice(),
+          None,
+          ancestor_ids.as_slice(),
+          node_id,
+          None,
+          &dom_maps,
+          &slot_assignment,
+          None,
+          None,
+          &sibling_cache,
+          false,
+          QuirksMode::NoQuirks,
+        )
+        .unwrap_or_else(|err| {
+          panic!("seed={seed} find_matching_rules error for node_id={node_id}: {err:?}\ncss:\n{css}");
+        });
+        let indexed: std::collections::BTreeSet<usize> =
+          indexed.iter().map(|m| m.order).collect();
+
+        if !indexed.is_superset(&naive) {
+          use std::fmt::Write as _;
+
+          let missed: Vec<usize> = naive.difference(&indexed).copied().collect();
+          let mut missed_rules = String::new();
+          for order in missed.iter().copied() {
+            let selectors: Vec<String> = index.rules[order]
+              .rule
+              .selectors
+              .slice()
+              .iter()
+              .map(|sel| sel.to_css_string())
+              .collect();
+            let _ = writeln!(
+              missed_rules,
+              "- order={order} selectors={}",
+              selectors.join(", ")
+            );
+          }
+
+          let dom_dump = harness_serialize_dom(&dom, &dom_maps.id_map);
+          let node_dump = {
+            let mut s = String::new();
+            let tag = node.tag_name().unwrap_or("<non-element>");
+            let ns = node.namespace().unwrap_or("");
+            let _ = write!(s, "<{tag} ns=\"{ns}\"");
+            if let Some(id) = node.get_attribute_ref("id") {
+              let _ = write!(s, " id=\"{id}\"");
+            }
+            if let Some(cls) = node.get_attribute_ref("class") {
+              let _ = write!(s, " class=\"{cls}\"");
+            }
+            for (k, v) in node
+              .attributes_iter()
+              .filter(|(k, _)| *k != "id" && *k != "class")
+            {
+              let _ = write!(s, " {k}=\"{v}\"");
+            }
+            s.push('>');
+            s
+          };
+
+          panic!(
+            "RuleIndex missed selector matches (indexed must be a superset of naive)\nseed={seed}\nnode_id={node_id} node={node_dump}\n\nmissed_rules:\n{missed_rules}\nnaive={:?}\nindexed={:?}\n\ncss:\n{css}\n\ndom:\n{dom_dump}",
+            naive, indexed
+          );
+        }
+      }
+    }
+  }
+
   fn assert_styled_trees_equal(a: &StyledNode, b: &StyledNode) {
     assert_eq!(a.node_id, b.node_id);
     assert_eq!(a.styles, b.styles, "styles differ at node_id={}", a.node_id);
