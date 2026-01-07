@@ -719,6 +719,52 @@ fn container_query_resolves_container_units_inside_calc_in_size_features() {
 }
 
 #[test]
+fn container_query_inline_size_container_resolves_cqb_to_zero() {
+  let css = r#"
+    .target { display: block; }
+    @container (min-width: 100cqb) {
+      .target { display: inline; }
+    }
+  "#;
+
+  // `cqb` depends on the query container's block size, which is not available for inline-size
+  // containers; it resolves to 0, so the query matches.
+  let styled = cascade_with_custom_container(
+    css,
+    80.0,
+    200.0,
+    WritingMode::HorizontalTb,
+    ContainerType::InlineSize,
+    vec![],
+  );
+
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "inline");
+}
+
+#[test]
+fn container_query_inline_size_vertical_writing_mode_resolves_cqw_to_zero() {
+  let css = r#"
+    .target { display: block; }
+    @container (min-height: 100cqw) {
+      .target { display: inline; }
+    }
+  "#;
+
+  // In vertical writing modes, physical `width` maps to the block axis. Inline-size containers
+  // only provide inline-axis sizes, so `cqw` resolves to 0 here and the query matches.
+  let styled = cascade_with_custom_container(
+    css,
+    200.0,
+    80.0,
+    WritingMode::VerticalRl,
+    ContainerType::InlineSize,
+    vec![],
+  );
+
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "inline");
+}
+
+#[test]
 fn container_query_viewport_units_use_media_viewport() {
   let css = r#"
     .target { display: block; }

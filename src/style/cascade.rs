@@ -610,10 +610,37 @@ fn evaluate_container_size_feature(
   root_font_size: f32,
   line_height: f32,
 ) -> QueryResult {
-  let cqw_base = container.width;
-  let cqh_base = container.height;
-  let cqi_base = container.inline_size;
-  let cqb_base = container.block_size;
+  let inline_horizontal = crate::style::inline_axis_is_horizontal(container.styles.writing_mode);
+  let supports_inline = matches!(
+    container.container_type,
+    ContainerType::Size | ContainerType::InlineSize
+  );
+  let supports_block = matches!(container.container_type, ContainerType::Size);
+
+  let clamp = |value: f32| if value.is_finite() { value.max(0.0) } else { 0.0 };
+
+  let cqi_base = if supports_inline {
+    clamp(container.inline_size)
+  } else {
+    0.0
+  };
+  let cqb_base = if supports_block {
+    clamp(container.block_size)
+  } else {
+    0.0
+  };
+
+  let cqw_base = match container.container_type {
+    ContainerType::Size => clamp(container.width),
+    ContainerType::InlineSize if inline_horizontal => clamp(container.width),
+    _ => 0.0,
+  };
+
+  let cqh_base = match container.container_type {
+    ContainerType::Size => clamp(container.height),
+    ContainerType::InlineSize if !inline_horizontal => clamp(container.height),
+    _ => 0.0,
+  };
 
   match feature {
     // Physical width / height.
