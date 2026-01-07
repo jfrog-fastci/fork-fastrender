@@ -255,8 +255,7 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
         ) && matches!(
           origin_zero_placement.horizontal.end,
           OriginZeroGridPlacementWithNamedSpan::Auto
-        )
-        {
+        ) {
           origin_zero_placement.horizontal.end = OriginZeroGridPlacementWithNamedSpan::Span(span);
         }
       }
@@ -267,8 +266,7 @@ pub(super) fn place_grid_items<'a, S, ChildIter>(
         ) && matches!(
           origin_zero_placement.vertical.end,
           OriginZeroGridPlacementWithNamedSpan::Auto
-        )
-        {
+        ) {
           origin_zero_placement.vertical.end = OriginZeroGridPlacementWithNamedSpan::Span(span);
         }
       }
