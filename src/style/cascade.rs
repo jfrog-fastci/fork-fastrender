@@ -7445,6 +7445,7 @@ pub struct StartingStyleSet {
   pub before: Option<Arc<ComputedStyle>>,
   pub after: Option<Arc<ComputedStyle>>,
   pub marker: Option<Arc<ComputedStyle>>,
+  pub placeholder: Option<Arc<ComputedStyle>>,
   pub first_line: Option<Arc<ComputedStyle>>,
   pub first_letter: Option<Arc<ComputedStyle>>,
 }
@@ -7504,11 +7505,12 @@ pub struct StyledNode {
   pub after_styles: Option<Arc<ComputedStyle>>,
   /// Styles for ::marker pseudo-element (list items only)
   pub marker_styles: Option<Arc<ComputedStyle>>,
+  /// Styles for ::placeholder pseudo-element (form controls only)
+  pub placeholder_styles: Option<Arc<ComputedStyle>>,
   /// Styles for ::first-line pseudo-element (text overrides only)
   pub first_line_styles: Option<Arc<ComputedStyle>>,
   /// Styles for ::first-letter pseudo-element (text overrides only)
   pub first_letter_styles: Option<Arc<ComputedStyle>>,
-  pub placeholder_styles: Option<Arc<ComputedStyle>>,
   pub slider_thumb_styles: Option<Arc<ComputedStyle>>,
   pub slider_track_styles: Option<Arc<ComputedStyle>>,
   /// Slot this light DOM node is assigned to, if any.
@@ -7529,9 +7531,9 @@ impl Clone for StyledNode {
         before_styles: node.before_styles.clone(),
         after_styles: node.after_styles.clone(),
         marker_styles: node.marker_styles.clone(),
+        placeholder_styles: node.placeholder_styles.clone(),
         first_line_styles: node.first_line_styles.clone(),
         first_letter_styles: node.first_letter_styles.clone(),
-        placeholder_styles: node.placeholder_styles.clone(),
         slider_thumb_styles: node.slider_thumb_styles.clone(),
         slider_track_styles: node.slider_track_styles.clone(),
         assigned_slot: node.assigned_slot.clone(),
@@ -7613,6 +7615,7 @@ pub fn attach_starting_styles(target: &mut StyledNode, starting: &StyledNode) {
     target.starting_styles.before = starting.starting_styles.before.clone();
     target.starting_styles.after = starting.starting_styles.after.clone();
     target.starting_styles.marker = starting.starting_styles.marker.clone();
+    target.starting_styles.placeholder = starting.starting_styles.placeholder.clone();
     target.starting_styles.first_line = starting.starting_styles.first_line.clone();
     target.starting_styles.first_letter = starting.starting_styles.first_letter.clone();
 
@@ -10648,10 +10651,11 @@ fn compute_pseudo_styles(
   Option<Arc<ComputedStyle>>,
   Option<Arc<ComputedStyle>>,
   Option<Arc<ComputedStyle>>,
+  Option<Arc<ComputedStyle>>,
 ) {
   if !node.is_element() {
     styles.backdrop = None;
-    return (None, None, None, None, None);
+    return (None, None, None, None, None, None);
   }
 
   let container_query_ancestor_ids = if container_ctx.is_some() {
@@ -10847,6 +10851,46 @@ fn compute_pseudo_styles(
     include_starting_style,
   )
   .map(Arc::new);
+
+  let placeholder_styles = node
+    .tag_name()
+    .and_then(|tag| {
+      if tag.eq_ignore_ascii_case("textarea") {
+        Some(())
+      } else if tag.eq_ignore_ascii_case("input")
+        && crate::dom::supports_placeholder(node.get_attribute_ref("type"))
+      {
+        Some(())
+      } else {
+        None
+      }
+    })
+    .and_then(|_| {
+      compute_pseudo_element_styles(
+        node,
+        rule_scopes,
+        scope_host,
+        selector_caches,
+        scratch,
+        ancestors,
+        ancestor_bloom,
+        ancestor_ids,
+        node_id,
+        container_ctx,
+        dom_maps,
+        sibling_cache,
+        element_attr_cache,
+        styles,
+        ua_styles,
+        root_font_size,
+        ua_root_font_size,
+        viewport,
+        color_scheme_pref,
+        &PseudoElement::Placeholder,
+        include_starting_style,
+      )
+    })
+    .map(Arc::new);
   if let (true, Some(start)) = (prof, pseudo_start) {
     record_pseudo_time(start.elapsed());
   }
@@ -10857,6 +10901,7 @@ fn compute_pseudo_styles(
     before_styles,
     after_styles,
     marker_styles,
+    placeholder_styles,
     first_line_styles,
     first_letter_styles,
   )
@@ -11472,8 +11517,14 @@ fn apply_styles_internal_with_ancestors<'a>(
 
     let mut base = frame.base;
     let node_id = frame.node_id;
-    let (before_styles, after_styles, marker_styles, first_line_styles, first_letter_styles) =
-      compute_pseudo_styles(
+    let (
+      before_styles,
+      after_styles,
+      marker_styles,
+      placeholder_styles,
+      first_line_styles,
+      first_letter_styles,
+    ) = compute_pseudo_styles(
         frame.node,
         rule_scopes,
         frame.scope_host,
@@ -11523,7 +11574,7 @@ fn apply_styles_internal_with_ancestors<'a>(
 
     let mut starting_styles = StartingStyleSet::default();
     if let Some(mut start) = frame.starting_base {
-      let (before, after, marker, first_line, first_letter) = compute_pseudo_styles(
+      let (before, after, marker, placeholder, first_line, first_letter) = compute_pseudo_styles(
         frame.node,
         rule_scopes,
         frame.scope_host,
@@ -11551,6 +11602,7 @@ fn apply_styles_internal_with_ancestors<'a>(
         before,
         after,
         marker,
+        placeholder,
         first_line,
         first_letter,
       };
@@ -11588,9 +11640,9 @@ fn apply_styles_internal_with_ancestors<'a>(
       before_styles,
       after_styles,
       marker_styles,
+      placeholder_styles,
       first_line_styles,
       first_letter_styles,
-      placeholder_styles,
       slider_thumb_styles,
       slider_track_styles,
       assigned_slot: slot_assignment.node_to_slot.get(&node_id).cloned(),
@@ -13753,6 +13805,12 @@ mod tests {
       a.node_id
     );
     assert_eq!(
+      a.starting_styles.placeholder.as_deref(),
+      b.starting_styles.placeholder.as_deref(),
+      "starting ::placeholder differs at node_id={}",
+      a.node_id
+    );
+    assert_eq!(
       a.starting_styles.first_line.as_deref(),
       b.starting_styles.first_line.as_deref(),
       "starting ::first-line differs at node_id={}",
@@ -13780,6 +13838,12 @@ mod tests {
       a.marker_styles.as_deref(),
       b.marker_styles.as_deref(),
       "::marker differs at node_id={}",
+      a.node_id
+    );
+    assert_eq!(
+      a.placeholder_styles.as_deref(),
+      b.placeholder_styles.as_deref(),
+      "::placeholder differs at node_id={}",
       a.node_id
     );
     assert_eq!(
@@ -13893,9 +13957,9 @@ mod tests {
       before_styles: None,
       after_styles: None,
       marker_styles: None,
+      placeholder_styles: None,
       first_line_styles: None,
       first_letter_styles: None,
-      placeholder_styles: None,
       slider_thumb_styles: None,
       slider_track_styles: None,
       assigned_slot: None,
@@ -13912,9 +13976,9 @@ mod tests {
         before_styles: None,
         after_styles: None,
         marker_styles: None,
+        placeholder_styles: None,
         first_line_styles: None,
         first_letter_styles: None,
-        placeholder_styles: None,
         slider_thumb_styles: None,
         slider_track_styles: None,
         assigned_slot: None,
@@ -13980,9 +14044,9 @@ mod tests {
       before_styles: None,
       after_styles: None,
       marker_styles: None,
+      placeholder_styles: None,
       first_line_styles: None,
       first_letter_styles: None,
-      placeholder_styles: None,
       slider_thumb_styles: None,
       slider_track_styles: None,
       assigned_slot: None,
@@ -14001,9 +14065,9 @@ mod tests {
       before_styles: None,
       after_styles: None,
       marker_styles: None,
+      placeholder_styles: None,
       first_line_styles: None,
       first_letter_styles: None,
-      placeholder_styles: None,
       slider_thumb_styles: None,
       slider_track_styles: None,
       assigned_slot: None,
@@ -29981,8 +30045,9 @@ fn compute_pseudo_element_styles(
     .collect();
 
   let apply_initial_pseudo_styles = |styles: &mut ComputedStyle| {
-    // ::before/::after default to inline. ::backdrop is special-cased to match the UA defaults:
-    // it is a full-viewport fixed-position box.
+    // Pseudo-elements default to inline. ::backdrop is special-cased to match the UA defaults: it
+    // is a full-viewport fixed-position box. For `::placeholder`, default to a faded opacity so
+    // authors can opt into full-opacity placeholder text with `opacity: 1` (common on the web).
     match pseudo {
       PseudoElement::Backdrop => {
         styles.display = Display::Block;
@@ -29994,6 +30059,10 @@ fn compute_pseudo_element_styles(
       }
       PseudoElement::SliderThumb | PseudoElement::SliderTrack => {
         styles.display = Display::Block;
+      }
+      PseudoElement::Placeholder => {
+        styles.display = Display::Inline;
+        styles.opacity = 0.6;
       }
       _ => {
         styles.display = Display::Inline;

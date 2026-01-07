@@ -13381,9 +13381,9 @@ mod tests {
       before_styles: None,
       after_styles: None,
       marker_styles: None,
+      placeholder_styles: None,
       first_line_styles: None,
       first_letter_styles: None,
-      placeholder_styles: None,
       slider_thumb_styles: None,
       slider_track_styles: None,
       assigned_slot: None,
@@ -17427,6 +17427,7 @@ mod tests {
       control: FormControlKind::Text {
         value: String::new(),
         placeholder: None,
+        placeholder_style: None,
         size_attr: None,
         kind: TextControlKind::Plain,
       },

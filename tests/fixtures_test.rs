@@ -225,6 +225,7 @@ fn test_all_fixture_files_exist() {
     "form_controls",
     "form_controls_appearance_none",
     "form_controls_textarea_placeholder",
+    "form_controls_placeholder_vendor_alias",
     // Top layer
     "top_layer_dialog_popover",
     // Text
@@ -512,6 +513,12 @@ fn test_fixture_form_controls_textarea_placeholder() {
     .expect("form_controls_textarea_placeholder fixture should render");
 }
 
+#[test]
+fn test_fixture_form_controls_placeholder_vendor_alias() {
+  test_fixture("form_controls_placeholder_vendor_alias")
+    .expect("form_controls_placeholder_vendor_alias fixture should render");
+}
+
 //
 // Top layer Tests
 //
@@ -717,6 +724,7 @@ pub fn list_fixtures() -> Vec<&'static str> {
     "form_controls",
     "form_controls_appearance_none",
     "form_controls_textarea_placeholder",
+    "form_controls_placeholder_vendor_alias",
     // Top layer
     "top_layer_dialog_popover",
     // Text
@@ -868,6 +876,11 @@ pub fn fixture_descriptions() -> Vec<(&'static str, &'static str, &'static str)>
       "form_controls_textarea_placeholder",
       "Forms",
       "Textarea placeholder rendering when empty",
+    ),
+    (
+      "form_controls_placeholder_vendor_alias",
+      "Forms",
+      "Vendor placeholder pseudo-elements should alias to ::placeholder in selector lists",
     ),
     (
       "text_complex_scripts",

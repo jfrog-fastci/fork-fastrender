@@ -144,6 +144,8 @@ pub enum FormControlKind {
     value: String,
     /// Placeholder text to render when value is empty
     placeholder: Option<String>,
+    /// Computed styles for the `::placeholder` pseudo-element, if any.
+    placeholder_style: Option<Arc<ComputedStyle>>,
     /// Optional size attribute hint for intrinsic width
     size_attr: Option<u32>,
     /// What kind of text control to render
@@ -155,6 +157,8 @@ pub enum FormControlKind {
     value: String,
     /// Placeholder text to render when value is empty
     placeholder: Option<String>,
+    /// Computed styles for the `::placeholder` pseudo-element, if any.
+    placeholder_style: Option<Arc<ComputedStyle>>,
     /// Optional rows hint (default 2)
     rows: Option<u32>,
     /// Optional cols hint (default 20)

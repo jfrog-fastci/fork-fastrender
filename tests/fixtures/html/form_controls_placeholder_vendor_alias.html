@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Form Controls Placeholder Vendor Alias Fixture</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      background: #ffffff;
+      font: 16px/1.4 "Segoe UI", Arial, sans-serif;
+      color: #111111;
+    }
+
+    .panel {
+      width: 420px;
+      border: 1px solid #111111;
+      padding: 16px;
+      background: #f3f4f6;
+    }
+
+    .label {
+      margin: 0 0 6px;
+      font-weight: 600;
+    }
+
+    input,
+    textarea {
+      display: block;
+      width: 100%;
+      box-sizing: border-box;
+      padding: 10px;
+      border: 1px solid #111111;
+      font: inherit;
+      color: #111111;
+      background: #ffffff;
+    }
+
+    textarea {
+      height: 78px;
+      resize: none;
+    }
+
+    .spacer {
+      height: 16px;
+    }
+
+    /* Key regression: vendor placeholder pseudo-elements must parse as aliases to ::placeholder so
+       selector lists containing them do not drop the entire rule. */
+    input::-webkit-input-placeholder,
+    input::-moz-placeholder,
+    input::placeholder {
+      color: rgb(180, 0, 0);
+      opacity: 1;
+    }
+
+    textarea::-webkit-input-placeholder,
+    textarea::-moz-placeholder,
+    textarea::placeholder {
+      color: rgb(0, 60, 180);
+      opacity: 1;
+    }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <p class="label">Input placeholder (should be red)</p>
+    <input placeholder="Input placeholder text">
+
+    <div class="spacer"></div>
+
+    <p class="label">Textarea placeholder (should be blue)</p>
+    <textarea placeholder="Textarea placeholder text"></textarea>
+  </div>
+</body>
+</html>
+

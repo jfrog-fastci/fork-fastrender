@@ -6928,6 +6928,7 @@ impl Painter {
       FormControlKind::Text {
         value,
         placeholder,
+        placeholder_style,
         kind,
         ..
       } => {
@@ -7004,7 +7005,7 @@ impl Painter {
               }
             }
           }
-        };
+        }
 
         let placeholder_style = if is_placeholder {
           control.placeholder_style.as_deref()
@@ -7124,7 +7125,10 @@ impl Painter {
         true
       }
       FormControlKind::TextArea {
-        value, placeholder, ..
+        value,
+        placeholder,
+        placeholder_style,
+        ..
       } => {
         let base_color = if control.invalid { accent } else { style.color };
         let placeholder_color = base_color.with_alpha(0.6);

@@ -5487,7 +5487,7 @@ fn lang_matches(range: &str, lang: &str) -> bool {
   prefix.eq_ignore_ascii_case(range.as_bytes()) && lang.as_bytes().get(range.len()) == Some(&b'-')
 }
 
-fn supports_placeholder(input_type: Option<&str>) -> bool {
+pub(crate) fn supports_placeholder(input_type: Option<&str>) -> bool {
   let Some(t) = input_type else {
     return true;
   };

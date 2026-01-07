@@ -890,6 +890,8 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       "first-letter" => Ok(PseudoElement::FirstLetter),
       "marker" => Ok(PseudoElement::Marker),
       "backdrop" => Ok(PseudoElement::Backdrop),
+      // `::placeholder` has widely used vendor aliases; accept them and canonicalize to the
+      // standard name so selector lists containing vendor variants do not invalidate the rule.
       "placeholder"
       | "-webkit-input-placeholder"
       | "-moz-placeholder"
@@ -1811,5 +1813,33 @@ mod tests {
         "{selector_text} should parse"
       );
     }
+  }
+
+  #[test]
+  fn parses_placeholder_pseudo_element_aliases() {
+    let list = parse_selector_list("input::-webkit-input-placeholder");
+    let selector = list.slice().first().expect("one selector");
+    assert_eq!(selector.pseudo_element(), Some(&PseudoElement::Placeholder));
+    assert_eq!(selector.to_css_string(), "input::placeholder");
+
+    let list = parse_selector_list("input::-moz-placeholder");
+    let selector = list.slice().first().expect("one selector");
+    assert_eq!(selector.pseudo_element(), Some(&PseudoElement::Placeholder));
+    assert_eq!(selector.to_css_string(), "input::placeholder");
+  }
+
+  #[test]
+  fn parses_placeholder_pseudo_element_selector_list_with_vendor_variants() {
+    let list = parse_selector_list(
+      "input::-webkit-input-placeholder, input::-moz-placeholder, input::placeholder",
+    );
+    assert_eq!(list.len(), 3);
+    for selector in list.slice() {
+      assert_eq!(selector.pseudo_element(), Some(&PseudoElement::Placeholder));
+    }
+    assert_eq!(
+      list.to_css_string(),
+      "input::placeholder, input::placeholder, input::placeholder"
+    );
   }
 }
