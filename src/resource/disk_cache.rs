@@ -13,6 +13,7 @@ use super::FetchContextKind;
 use super::FetchRequest;
 use super::FetchedResource;
 use super::HttpCachePolicy;
+use super::ReferrerPolicy;
 use super::ResourceFetcher;
 use super::ResourcePolicy;
 use super::MAX_ALIAS_HOPS;
@@ -1271,6 +1272,10 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     resource.etag = meta.etag.clone();
     resource.last_modified = meta.last_modified.clone();
     resource.vary = meta.vary.clone();
+    resource.response_referrer_policy = meta
+      .response_referrer_policy
+      .as_deref()
+      .and_then(ReferrerPolicy::parse_value_list);
     resource.access_control_allow_origin = meta.access_control_allow_origin.clone();
     resource.timing_allow_origin = meta.timing_allow_origin.clone();
     resource.access_control_allow_credentials = meta.access_control_allow_credentials;
@@ -1390,6 +1395,10 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
     resource.etag = meta.etag.clone();
     resource.last_modified = meta.last_modified.clone();
     resource.vary = meta.vary.clone();
+    resource.response_referrer_policy = meta
+      .response_referrer_policy
+      .as_deref()
+      .and_then(ReferrerPolicy::parse_value_list);
     resource.access_control_allow_origin = meta.access_control_allow_origin.clone();
     resource.timing_allow_origin = meta.timing_allow_origin.clone();
     resource.access_control_allow_credentials = meta.access_control_allow_credentials;
@@ -1607,6 +1616,9 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       last_modified: last_modified
         .map(|s| s.to_string())
         .or_else(|| resource.last_modified.clone()),
+      response_referrer_policy: resource
+        .response_referrer_policy
+        .map(|policy| policy.as_str().to_string()),
       final_url: resource.final_url.clone().or_else(|| Some(url.to_string())),
       vary: resource.vary.clone(),
       access_control_allow_origin: resource.access_control_allow_origin.clone(),
@@ -1750,6 +1762,7 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       content_encoding: None,
       etag: error.etag.clone(),
       last_modified: error.last_modified.clone(),
+      response_referrer_policy: None,
       final_url: error.final_url.clone(),
       vary: None,
       access_control_allow_origin: None,
@@ -2116,6 +2129,9 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       content_encoding: resource.content_encoding.clone(),
       etag: resource.etag.clone(),
       last_modified: resource.last_modified.clone(),
+      response_referrer_policy: resource
+        .response_referrer_policy
+        .map(|policy| policy.as_str().to_string()),
       // The artifact entry is keyed by the canonical URL (after redirects). Store the canonical
       // URL here as well so callers consuming the cached artifact can still enforce final-URL
       // policies without hitting the network.
@@ -2981,6 +2997,8 @@ pub(super) struct StoredMetadata {
   content_encoding: Option<String>,
   etag: Option<String>,
   last_modified: Option<String>,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  response_referrer_policy: Option<String>,
   final_url: Option<String>,
   #[serde(default, skip_serializing_if = "Option::is_none")]
   access_control_allow_origin: Option<String>,
@@ -3642,10 +3660,11 @@ mod tests {
       content_encoding: None,
       etag: None,
       last_modified: None,
+      response_referrer_policy: None,
       final_url: Some(url.to_string()),
-      vary: Some("x-foo".to_string()),
       access_control_allow_origin: None,
       timing_allow_origin: None,
+      vary: Some("x-foo".to_string()),
       access_control_allow_credentials: false,
       stored_at: now_seconds(),
       len: 6,
@@ -3759,6 +3778,46 @@ mod tests {
       1,
       "expected Vary: Origin to be cacheable when origin partitioning is enabled"
     );
+  }
+
+  #[test]
+  fn disk_cache_roundtrips_referrer_policy_header() {
+    let tmp = tempfile::tempdir().unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let url = "https://example.com/doc.html";
+
+    #[derive(Clone)]
+    struct ReferrerPolicyFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for ReferrerPolicyFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let mut resource = FetchedResource::new(b"ok".to_vec(), Some("text/html".to_string()));
+        resource.status = Some(200);
+        resource.final_url = Some(url.to_string());
+        resource.response_referrer_policy = Some(ReferrerPolicy::Origin);
+        Ok(resource)
+      }
+    }
+
+    let disk = DiskCachingFetcher::new(
+      ReferrerPolicyFetcher {
+        calls: Arc::clone(&calls),
+      },
+      tmp.path(),
+    );
+
+    let first = disk.fetch(url).expect("initial fetch");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(first.response_referrer_policy, Some(ReferrerPolicy::Origin));
+
+    drop(disk);
+
+    let disk_again = DiskCachingFetcher::new(PanicFetcher, tmp.path());
+    let second = disk_again.fetch(url).expect("disk hit");
+    assert_eq!(second.response_referrer_policy, Some(ReferrerPolicy::Origin));
   }
 
   fn spawn_cors_origin_echo_server(
@@ -4911,6 +4970,7 @@ mod tests {
       content_encoding: None,
       etag: None,
       last_modified: None,
+      response_referrer_policy: None,
       final_url: Some(url.to_string()),
       vary: None,
       access_control_allow_origin: None,
@@ -4969,6 +5029,7 @@ mod tests {
       content_encoding: None,
       etag: None,
       last_modified: None,
+      response_referrer_policy: None,
       final_url: Some(url.to_string()),
       vary: None,
       access_control_allow_origin: None,
@@ -6303,6 +6364,7 @@ mod tests {
       content_encoding: None,
       etag: None,
       last_modified: None,
+      response_referrer_policy: None,
       final_url: Some(url.to_string()),
       vary: None,
       access_control_allow_origin: None,
@@ -6769,6 +6831,7 @@ mod tests {
           content_encoding: None,
           etag: None,
           last_modified: None,
+          response_referrer_policy: None,
           access_control_allow_origin: None,
           timing_allow_origin: None,
           vary: None,

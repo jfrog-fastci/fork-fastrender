@@ -27,7 +27,7 @@ use fastrender::resource::{
   ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane, ensure_stylesheet_mime_sane,
   offline_placeholder_png_bytes, offline_placeholder_woff2_bytes, origin_from_url, DocumentOrigin,
   FetchContextKind, FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource,
-  ResourceAccessPolicy, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
+  ReferrerPolicy, ResourceAccessPolicy, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
 };
 #[cfg(feature = "disk_cache")]
 use fastrender::resource::{
@@ -1098,8 +1098,14 @@ fn render_bundle(args: RenderArgs) -> Result<()> {
   doc_resource.status = doc_meta.status;
   doc_resource.etag = doc_meta.etag.clone();
   doc_resource.last_modified = doc_meta.last_modified.clone();
+  doc_resource.nosniff = doc_meta.nosniff;
   doc_resource.access_control_allow_origin = doc_meta.access_control_allow_origin.clone();
   doc_resource.timing_allow_origin = doc_meta.timing_allow_origin.clone();
+  doc_resource.vary = doc_meta.vary.clone();
+  doc_resource.response_referrer_policy = doc_meta
+    .response_referrer_policy
+    .as_deref()
+    .and_then(ReferrerPolicy::parse_value_list);
   let prepared = decode_html_resource(&doc_resource, &base_hint);
   let result = render_document(&mut renderer, prepared, &options)?;
   let png = encode_image(&result.pixmap, OutputFormat::Png)?;
@@ -1138,9 +1144,12 @@ fn build_manifest(
     status: document_resource.status,
     etag: document_resource.etag.clone(),
     last_modified: document_resource.last_modified.clone(),
-    vary: document_resource.vary.clone(),
+    response_referrer_policy: document_resource
+      .response_referrer_policy
+      .map(|policy| policy.as_str().to_string()),
     access_control_allow_origin: document_resource.access_control_allow_origin.clone(),
     timing_allow_origin: document_resource.timing_allow_origin.clone(),
+    vary: document_resource.vary.clone(),
   };
 
   let mut resources: Vec<ResourceEntry> = Vec::new();
@@ -1177,9 +1186,12 @@ fn build_manifest(
       final_url: Some(res.final_url.clone().unwrap_or_else(|| url.clone())),
       etag: res.etag.clone(),
       last_modified: res.last_modified.clone(),
-      vary: res.vary.clone(),
+      response_referrer_policy: res
+        .response_referrer_policy
+        .map(|policy| policy.as_str().to_string()),
       access_control_allow_origin: res.access_control_allow_origin.clone(),
       timing_allow_origin: res.timing_allow_origin.clone(),
+      vary: res.vary.clone(),
       access_control_allow_credentials: res.access_control_allow_credentials,
     };
     manifest_resources.insert(url.clone(), info);

@@ -3,7 +3,7 @@ use crate::dom::DomCompatibilityMode;
 use crate::error::{Error, Result};
 use crate::resource::{
   origin_from_url, DocumentOrigin, FetchContextKind, FetchCredentialsMode, FetchRequest,
-  FetchedResource, ResourceFetcher,
+  FetchedResource, ReferrerPolicy, ResourceFetcher,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -101,6 +101,9 @@ pub struct BundledDocument {
   pub status: Option<u16>,
   pub etag: Option<String>,
   pub last_modified: Option<String>,
+  /// Stored `Referrer-Policy` response header value, when present.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub response_referrer_policy: Option<String>,
   #[serde(default)]
   pub access_control_allow_origin: Option<String>,
   #[serde(default)]
@@ -120,6 +123,9 @@ pub struct BundledResourceInfo {
   pub final_url: Option<String>,
   pub etag: Option<String>,
   pub last_modified: Option<String>,
+  /// Stored `Referrer-Policy` response header value, when present.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub response_referrer_policy: Option<String>,
   #[serde(default)]
   pub access_control_allow_origin: Option<String>,
   #[serde(default)]
@@ -164,6 +170,11 @@ impl BundledResource {
     res.vary = self.info.vary.clone();
     res.access_control_allow_origin = self.info.access_control_allow_origin.clone();
     res.timing_allow_origin = self.info.timing_allow_origin.clone();
+    res.response_referrer_policy = self
+      .info
+      .response_referrer_policy
+      .as_deref()
+      .and_then(ReferrerPolicy::parse_value_list);
     res.access_control_allow_credentials = self.info.access_control_allow_credentials;
     res
   }
@@ -373,6 +384,10 @@ impl ResourceFetcher for BundledFetcher {
       res.vary = doc_meta.vary.clone();
       res.access_control_allow_origin = doc_meta.access_control_allow_origin.clone();
       res.timing_allow_origin = doc_meta.timing_allow_origin.clone();
+      res.response_referrer_policy = doc_meta
+        .response_referrer_policy
+        .as_deref()
+        .and_then(ReferrerPolicy::parse_value_list);
       if let Some(vary) = res.vary.as_deref() {
         if super::vary_contains_star(vary)
           || (!super::allow_unhandled_vary_env()
@@ -506,9 +521,10 @@ mod tests {
         status: Some(200),
         etag: None,
         last_modified: None,
-        vary: None,
+        response_referrer_policy: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
+        vary: None,
       },
       render: BundleRenderConfig {
         viewport: (1200, 800),
@@ -560,6 +576,7 @@ mod tests {
         status: Some(200),
         etag: None,
         last_modified: None,
+        response_referrer_policy: None,
         access_control_allow_origin: Some("*".to_string()),
         timing_allow_origin: Some("https://timing.example".to_string()),
         vary: Some("accept-encoding".to_string()),
@@ -585,6 +602,7 @@ mod tests {
           final_url: Some("https://example.com/style.css".to_string()),
           etag: None,
           last_modified: None,
+          response_referrer_policy: None,
           access_control_allow_origin: Some("https://example.com".to_string()),
           timing_allow_origin: Some("*".to_string()),
           vary: Some("origin".to_string()),
@@ -622,6 +640,79 @@ mod tests {
   }
 
   #[test]
+  fn bundled_fetcher_roundtrips_referrer_policy_header() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+      tmp.path().join("document.html"),
+      "<!doctype html><html></html>",
+    )
+    .expect("write doc");
+    std::fs::write(tmp.path().join("style.css"), "body{}").expect("write css");
+
+    let manifest = BundleManifest {
+      version: BUNDLE_VERSION,
+      original_url: "https://example.com/".to_string(),
+      document: BundledDocument {
+        path: "document.html".to_string(),
+        content_type: Some("text/html".to_string()),
+        nosniff: false,
+        final_url: "https://example.com/".to_string(),
+        status: Some(200),
+        etag: None,
+        last_modified: None,
+        response_referrer_policy: Some("origin".to_string()),
+        access_control_allow_origin: None,
+        timing_allow_origin: None,
+        vary: None,
+      },
+      render: BundleRenderConfig {
+        viewport: (1200, 800),
+        device_pixel_ratio: 1.0,
+        scroll_x: 0.0,
+        scroll_y: 0.0,
+        full_page: false,
+        same_origin_subresources: false,
+        allowed_subresource_origins: Vec::new(),
+        compat_profile: CompatProfile::default(),
+        dom_compat_mode: DomCompatibilityMode::default(),
+      },
+      resources: BTreeMap::from([(
+        "https://example.com/style.css".to_string(),
+        BundledResourceInfo {
+          path: "style.css".to_string(),
+          content_type: Some("text/css".to_string()),
+          nosniff: false,
+          status: Some(200),
+          final_url: Some("https://example.com/style.css".to_string()),
+          etag: None,
+          last_modified: None,
+          response_referrer_policy: Some("no-referrer".to_string()),
+          access_control_allow_origin: None,
+          timing_allow_origin: None,
+          vary: None,
+          access_control_allow_credentials: false,
+        },
+      )]),
+    };
+    std::fs::write(
+      tmp.path().join(BUNDLE_MANIFEST),
+      serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write manifest");
+
+    let bundle = Bundle::load(tmp.path()).expect("load bundle");
+    let fetcher = BundledFetcher::new(bundle);
+
+    let doc = fetcher.fetch("https://example.com/").expect("fetch doc");
+    assert_eq!(doc.response_referrer_policy, Some(ReferrerPolicy::Origin));
+
+    let css = fetcher
+      .fetch("https://example.com/style.css")
+      .expect("fetch css");
+    assert_eq!(css.response_referrer_policy, Some(ReferrerPolicy::NoReferrer));
+  }
+
+  #[test]
   fn bundled_fetcher_roundtrips_nosniff_stylesheet_metadata() {
     let tmp = tempfile::tempdir().expect("tempdir");
     std::fs::write(
@@ -643,6 +734,7 @@ mod tests {
         status: Some(200),
         etag: None,
         last_modified: None,
+        response_referrer_policy: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
         vary: None,
@@ -668,9 +760,10 @@ mod tests {
           final_url: Some(css_url.to_string()),
           etag: None,
           last_modified: None,
-          vary: None,
+          response_referrer_policy: None,
           access_control_allow_origin: None,
           timing_allow_origin: None,
+          vary: None,
           access_control_allow_credentials: false,
         },
       )]),
@@ -812,9 +905,10 @@ mod tests {
         status: Some(200),
         etag: None,
         last_modified: None,
-        vary: None,
+        response_referrer_policy: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
+        vary: None,
       },
       render: BundleRenderConfig {
         viewport: (1200, 800),
@@ -838,9 +932,10 @@ mod tests {
             final_url: Some(url.to_string()),
             etag: None,
             last_modified: None,
-            vary: None,
+            response_referrer_policy: None,
             access_control_allow_origin: Some("https://a.test".to_string()),
             timing_allow_origin: None,
+            vary: None,
             access_control_allow_credentials: false,
           },
         ),
@@ -854,9 +949,10 @@ mod tests {
             final_url: Some(url.to_string()),
             etag: None,
             last_modified: None,
-            vary: None,
+            response_referrer_policy: None,
             access_control_allow_origin: Some("https://a.test".to_string()),
             timing_allow_origin: None,
+            vary: None,
             access_control_allow_credentials: false,
           },
         ),
@@ -870,9 +966,10 @@ mod tests {
             final_url: Some(url.to_string()),
             etag: None,
             last_modified: None,
-            vary: None,
+            response_referrer_policy: None,
             access_control_allow_origin: Some("https://b.test".to_string()),
             timing_allow_origin: None,
+            vary: None,
             access_control_allow_credentials: false,
           },
         ),
@@ -953,9 +1050,10 @@ mod tests {
       final_url: Some(url.to_string()),
       etag: None,
       last_modified: None,
-      vary: None,
+      response_referrer_policy: None,
       access_control_allow_origin: Some(allow_origin.to_string()),
       timing_allow_origin: None,
+      vary: None,
       access_control_allow_credentials: false,
     };
 
@@ -970,9 +1068,10 @@ mod tests {
         status: Some(200),
         etag: None,
         last_modified: None,
-        vary: None,
+        response_referrer_policy: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
+        vary: None,
       },
       render: BundleRenderConfig {
         viewport: (1200, 800),
@@ -1060,9 +1159,10 @@ mod tests {
         status: Some(200),
         etag: None,
         last_modified: None,
-        vary: None,
+        response_referrer_policy: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
+        vary: None,
       },
       render: BundleRenderConfig {
         viewport: (1200, 800),
@@ -1085,9 +1185,10 @@ mod tests {
           final_url: Some(url.to_string()),
           etag: None,
           last_modified: None,
-          vary: Some("x-foo".to_string()),
+          response_referrer_policy: None,
           access_control_allow_origin: None,
           timing_allow_origin: None,
+          vary: Some("x-foo".to_string()),
           access_control_allow_credentials: false,
         },
       )]),
@@ -1134,9 +1235,10 @@ mod tests {
       final_url: Some(url.to_string()),
       etag: None,
       last_modified: None,
-      vary: Some("origin".to_string()),
+      response_referrer_policy: None,
       access_control_allow_origin: Some("https://a.test".to_string()),
       timing_allow_origin: None,
+      vary: Some("origin".to_string()),
       access_control_allow_credentials: false,
     };
 
@@ -1151,9 +1253,10 @@ mod tests {
         status: Some(200),
         etag: None,
         last_modified: None,
-        vary: None,
+        response_referrer_policy: None,
         access_control_allow_origin: None,
         timing_allow_origin: None,
+        vary: None,
       },
       render: BundleRenderConfig {
         viewport: (1200, 800),
