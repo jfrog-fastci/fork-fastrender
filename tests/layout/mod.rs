@@ -14,6 +14,7 @@ mod flex_alignment_order_test;
 mod flex_auto_min_size_overflow_clip;
 mod flex_auto_min_size_percent;
 mod flex_box_sizing_test;
+mod flex_constraints_viewport_clamp;
 mod flex_intrinsic_sizing_keywords;
 mod flex_positioned_relayout;
 mod flex_wrap_reverse_cross_alignment;

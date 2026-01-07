@@ -3373,23 +3373,6 @@ impl FormattingContext for FlexFormattingContext {
     }
     flex_profile::record_convert_time(convert_timer);
 
-    if !disable_cache {
-      if let Some((cache_key, key)) = layout_cache_entry {
-        let size = fragment.bounds.size;
-        self.layout_fragments.insert(
-          cache_key,
-          key,
-          crate::layout::contexts::flex_cache::FlexCacheValue {
-            measured_size: size,
-            border_size: size,
-            fragment: std::sync::Arc::new(fragment.clone()),
-          },
-          MAX_LAYOUT_CACHE_PER_NODE,
-        );
-        flex_profile::record_layout_cache_store();
-      }
-    }
-
     // Phase 4: Position out-of-flow abs/fixed children against this flex container.
     if !positioned_children.is_empty() {
       let positioned_factory = base_factory.clone();
@@ -3839,6 +3822,25 @@ impl FormattingContext for FlexFormattingContext {
           Err(err @ LayoutError::Timeout { .. }) => return Err(err),
           Err(_) => {}
         }
+      }
+    }
+
+    // Store the fully positioned fragment (including out-of-flow children). Otherwise, cache hits
+    // could return a fragment that is missing absolutely/fixed positioned descendants.
+    if !disable_cache {
+      if let Some((cache_key, key)) = layout_cache_entry {
+        let size = fragment.bounds.size;
+        self.layout_fragments.insert(
+          cache_key,
+          key,
+          crate::layout::contexts::flex_cache::FlexCacheValue {
+            measured_size: size,
+            border_size: size,
+            fragment: std::sync::Arc::new(fragment.clone()),
+          },
+          MAX_LAYOUT_CACHE_PER_NODE,
+        );
+        flex_profile::record_layout_cache_store();
       }
     }
 
@@ -7717,26 +7719,28 @@ impl FlexFormattingContext {
       }
     }
 
-    let clamp_def_width = |w: f32| w.min(self.viewport_size.width);
+    // Definite sizes from Taffy can legitimately exceed the viewport (e.g. horizontal scroll).
+    // Only sanitize obviously invalid numeric values here; do not clamp to the viewport.
+    let sanitize_definite = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
     let width = match (known.width, available.width) {
-      (Some(w), _) => CrateAvailableSpace::Definite(clamp_def_width(w)),
+      (Some(w), _) => CrateAvailableSpace::Definite(sanitize_definite(w)),
       (_, AvailableSpace::Definite(w)) => {
         if w <= 1.0 {
           CrateAvailableSpace::Indefinite
         } else {
-          CrateAvailableSpace::Definite(clamp_def_width(w))
+          CrateAvailableSpace::Definite(sanitize_definite(w))
         }
       }
       (_, AvailableSpace::MinContent) => CrateAvailableSpace::MinContent,
       (_, AvailableSpace::MaxContent) => CrateAvailableSpace::MaxContent,
     };
     let height = match (known.height, available.height) {
-      (Some(h), _) => CrateAvailableSpace::Definite(h),
+      (Some(h), _) => CrateAvailableSpace::Definite(sanitize_definite(h)),
       (_, AvailableSpace::Definite(h)) => {
         if h <= 1.0 {
           CrateAvailableSpace::Indefinite
         } else {
-          CrateAvailableSpace::Definite(h)
+          CrateAvailableSpace::Definite(sanitize_definite(h))
         }
       }
       (_, AvailableSpace::MinContent) => CrateAvailableSpace::MinContent,
