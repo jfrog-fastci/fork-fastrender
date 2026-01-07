@@ -44,7 +44,7 @@ struct CorsFetcher {
 }
 
 impl FontFetcher for CorsFetcher {
-  fn fetch(&self, url: &str) -> fastrender::Result<FetchedResource> {
+  fn fetch(&self, url: &str, _referrer_url: Option<&str>) -> fastrender::Result<FetchedResource> {
     let mut res = FetchedResource::with_final_url(
       self.data.clone(),
       Some("font/ttf".to_string()),

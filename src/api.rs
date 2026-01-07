@@ -17685,7 +17685,7 @@ mod tests {
       .find(|request| request.destination == FetchDestination::Style)
       .expect("stylesheet request");
     assert_eq!(stylesheet_request.url, stylesheet_url);
-    assert_eq!(stylesheet_request.referrer.as_deref(), Some(document_url));
+    assert_eq!(stylesheet_request.referrer_url.as_deref(), Some(document_url));
     assert_eq!(stylesheet_request.referrer_policy, ReferrerPolicy::NoReferrer);
   }
 
@@ -17735,7 +17735,7 @@ mod tests {
       .find(|request| request.destination == FetchDestination::Style)
       .expect("stylesheet request");
     assert_eq!(stylesheet_request.url, stylesheet_url);
-    assert_eq!(stylesheet_request.referrer.as_deref(), Some(document_url));
+    assert_eq!(stylesheet_request.referrer_url.as_deref(), Some(document_url));
     assert_eq!(stylesheet_request.referrer_policy, ReferrerPolicy::Origin);
   }
 

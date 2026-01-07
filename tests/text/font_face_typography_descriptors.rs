@@ -37,7 +37,7 @@ impl FixtureFetcher {
 }
 
 impl FontFetcher for FixtureFetcher {
-  fn fetch(&self, url: &str) -> fastrender::Result<FetchedResource> {
+  fn fetch(&self, url: &str, _referrer_url: Option<&str>) -> fastrender::Result<FetchedResource> {
     let data = self.responses.get(url).cloned().ok_or_else(|| {
       Error::Font(FontError::LoadFailed {
         family: url.to_string(),

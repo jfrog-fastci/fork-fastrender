@@ -65,7 +65,7 @@ impl ResourceFetcher for RecordingFetcher {
       .push(RecordedRequest {
         url: req.url.to_string(),
         destination: req.destination,
-        referrer: req.referrer.map(|r| r.to_string()),
+        referrer: req.referrer_url.map(|r| r.to_string()),
       });
     self.fetch(req.url)
   }
@@ -179,4 +179,3 @@ fn css_imports_use_stylesheet_final_url_for_base_and_referrer() {
     "expected b.css to resolve against final_url, got requests: {requests:?}"
   );
 }
-

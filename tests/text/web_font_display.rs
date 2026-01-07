@@ -37,7 +37,7 @@ struct DelayedFetcher {
 }
 
 impl FontFetcher for DelayedFetcher {
-  fn fetch(&self, url: &str) -> fastrender::Result<FetchedResource> {
+  fn fetch(&self, url: &str, _referrer_url: Option<&str>) -> fastrender::Result<FetchedResource> {
     if self.delay > Duration::ZERO {
       std::thread::sleep(self.delay);
     }
@@ -69,7 +69,7 @@ impl RecordingFetcher {
 }
 
 impl FontFetcher for RecordingFetcher {
-  fn fetch(&self, url: &str) -> fastrender::Result<FetchedResource> {
+  fn fetch(&self, url: &str, _referrer_url: Option<&str>) -> fastrender::Result<FetchedResource> {
     if let Ok(mut calls) = self.calls.lock() {
       calls.push(url.to_string());
     }

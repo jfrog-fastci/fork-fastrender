@@ -56,7 +56,7 @@ impl ResourceFetcher for RecordingRequestFetcher {
       .push(RecordedRequest {
         url: req.url.to_string(),
         destination: req.destination,
-        referrer: req.referrer.map(|r| r.to_string()),
+        referrer: req.referrer_url.map(|r| r.to_string()),
       });
     self.fetch(req.url)
   }

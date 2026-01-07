@@ -166,8 +166,8 @@ fn in_memory_cache_partitions_cors_mode_by_request_origin_when_enforced() {
     let fetcher = CachingFetcher::new(HttpFetcher::new());
 
     for destination in [FetchDestination::Font, FetchDestination::ImageCors] {
-      let req_a = FetchRequest::new(&url, destination).with_referrer("http://a.test/");
-      let req_b = FetchRequest::new(&url, destination).with_referrer("http://b.test/");
+      let req_a = FetchRequest::new(&url, destination).with_referrer_url("http://a.test/");
+      let req_b = FetchRequest::new(&url, destination).with_referrer_url("http://b.test/");
 
       let a = fetcher.fetch_with_request(req_a).expect("origin A fetch");
       let b = fetcher.fetch_with_request(req_b).expect("origin B fetch");
@@ -208,8 +208,8 @@ fn in_memory_cache_does_not_partition_cors_mode_by_origin_when_not_enforced() {
     let fetcher = CachingFetcher::new(HttpFetcher::new());
 
     for destination in [FetchDestination::Font, FetchDestination::ImageCors] {
-      let req_a = FetchRequest::new(&url, destination).with_referrer("http://a.test/");
-      let req_b = FetchRequest::new(&url, destination).with_referrer("http://b.test/");
+      let req_a = FetchRequest::new(&url, destination).with_referrer_url("http://a.test/");
+      let req_b = FetchRequest::new(&url, destination).with_referrer_url("http://b.test/");
 
       let a = fetcher.fetch_with_request(req_a).expect("origin A fetch");
       let b = fetcher.fetch_with_request(req_b).expect("origin B fetch");
@@ -255,7 +255,7 @@ fn disk_cache_partitions_cors_mode_by_request_origin_when_enforced() {
     let disk_b = DiskCachingFetcher::new(HttpFetcher::new(), tmp.path());
 
     for destination in [FetchDestination::Font, FetchDestination::ImageCors] {
-      let req_a = FetchRequest::new(&url, destination).with_referrer("http://a.test/");
+      let req_a = FetchRequest::new(&url, destination).with_referrer_url("http://a.test/");
       let first = disk_a.fetch_with_request(req_a).expect("origin A fetch");
       assert_eq!(first.bytes, b"ok");
       assert_eq!(
@@ -265,7 +265,7 @@ fn disk_cache_partitions_cors_mode_by_request_origin_when_enforced() {
 
       // Second fetcher instance ensures the second request consults disk (not the in-memory
       // cache).
-      let req_b = FetchRequest::new(&url, destination).with_referrer("http://b.test/");
+      let req_b = FetchRequest::new(&url, destination).with_referrer_url("http://b.test/");
       let second = disk_b.fetch_with_request(req_b).expect("origin B fetch");
       assert_eq!(second.bytes, b"ok");
       assert_eq!(
@@ -302,7 +302,7 @@ fn disk_cache_does_not_partition_cors_mode_by_origin_when_not_enforced() {
     let disk_b = DiskCachingFetcher::new(HttpFetcher::new(), tmp.path());
 
     for destination in [FetchDestination::Font, FetchDestination::ImageCors] {
-      let req_a = FetchRequest::new(&url, destination).with_referrer("http://a.test/");
+      let req_a = FetchRequest::new(&url, destination).with_referrer_url("http://a.test/");
       let first = disk_a.fetch_with_request(req_a).expect("origin A fetch");
       assert_eq!(first.bytes, b"ok");
       assert_eq!(
@@ -310,7 +310,7 @@ fn disk_cache_does_not_partition_cors_mode_by_origin_when_not_enforced() {
         Some("http://a.test")
       );
 
-      let req_b = FetchRequest::new(&url, destination).with_referrer("http://b.test/");
+      let req_b = FetchRequest::new(&url, destination).with_referrer_url("http://b.test/");
       let second = disk_b.fetch_with_request(req_b).expect("origin B fetch");
       assert_eq!(second.bytes, b"ok");
       // Without enforcement, we keep legacy cache key behavior (no origin partitioning) so the

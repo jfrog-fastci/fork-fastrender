@@ -16,7 +16,7 @@ struct FixtureFontFetcher {
 }
 
 impl FontFetcher for FixtureFontFetcher {
-  fn fetch(&self, url: &str) -> fastrender::Result<FetchedResource> {
+  fn fetch(&self, url: &str, _referrer_url: Option<&str>) -> fastrender::Result<FetchedResource> {
     Ok(FetchedResource::with_final_url(
       self.font.clone(),
       Some("font/ttf".to_string()),
