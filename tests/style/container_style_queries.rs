@@ -177,6 +177,46 @@ fn container_style_query_resolves_var_in_z_index_value() {
 }
 
 #[test]
+fn container_style_query_matches_position() {
+  let html = r#"
+    <style>
+      .container { container-type: inline-size; position: relative; }
+      .child { color: rgb(0 0 255); }
+      @container style(position: relative) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container">
+      <div id="target" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(target.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_resolves_var_in_position_value() {
+  let html = r#"
+    <style>
+      .container { container-type: inline-size; position: relative; --pos: relative; }
+      .child { color: rgb(0 0 255); }
+      @container style(position: var(--pos)) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container">
+      <div id="target" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(target.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_resolves_var_fallback_in_property_value() {
   let html = r#"
     <style>
@@ -383,6 +423,32 @@ fn container_style_query_boolean_z_index_matches_when_non_initial() {
   let raised = find_by_id(&styled, "raised").expect("raised element");
   assert_eq!(default.styles.color, Rgba::rgb(0, 0, 255));
   assert_eq!(raised.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_boolean_position_matches_when_non_initial() {
+  let html = r#"
+    <style>
+      .container-default { container-type: inline-size; }
+      .container-relative { container-type: inline-size; position: relative; }
+      .child { color: rgb(0 0 255); }
+      @container style(position) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container-default">
+      <div id="default" class="child">hello</div>
+    </div>
+    <div class="container-relative">
+      <div id="relative" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let default = find_by_id(&styled, "default").expect("default element");
+  let relative = find_by_id(&styled, "relative").expect("relative element");
+  assert_eq!(default.styles.color, Rgba::rgb(0, 0, 255));
+  assert_eq!(relative.styles.color, Rgba::rgb(255, 0, 0));
 }
 
 #[test]

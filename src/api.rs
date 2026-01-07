@@ -8390,12 +8390,14 @@ impl FastRender {
       let mut include_display = false;
       let mut include_opacity = false;
       let mut include_z_index = false;
+      let mut include_position = false;
       let mut include_font_size = false;
       for name in container_style_query_properties.iter() {
         match name.to_ascii_lowercase().as_str() {
           "color" => include_color = true,
           "background-color" => include_background_color = true,
           "display" => include_display = true,
+          "position" => include_position = true,
           "opacity" => include_opacity = true,
           "z-index" => include_z_index = true,
           "font-size" => include_font_size = true,
@@ -8407,6 +8409,7 @@ impl FastRender {
         && !include_color
         && !include_background_color
         && !include_display
+        && !include_position
         && !include_opacity
         && !include_z_index
         && !include_font_size
@@ -8418,6 +8421,7 @@ impl FastRender {
           include_color,
           include_background_color,
           include_display,
+          include_position,
           include_opacity,
           include_z_index,
           include_font_size,
@@ -12467,6 +12471,7 @@ struct ContainerQueryFingerprintConfig {
   include_color: bool,
   include_background_color: bool,
   include_display: bool,
+  include_position: bool,
   include_opacity: bool,
   include_z_index: bool,
   include_font_size: bool,
@@ -12557,6 +12562,9 @@ fn container_query_context_fingerprint(
       }
       if config.include_display {
         info.styles.display.hash(&mut hasher);
+      }
+      if config.include_position {
+        info.styles.position.hash(&mut hasher);
       }
       if config.include_opacity {
         info.styles.opacity.to_bits().hash(&mut hasher);
@@ -16511,6 +16519,7 @@ mod tests {
       include_color: false,
       include_background_color: false,
       include_display: false,
+      include_position: false,
       include_opacity: false,
       include_z_index: false,
       include_font_size: false,
@@ -16591,6 +16600,7 @@ mod tests {
       include_color: false,
       include_background_color: false,
       include_display: false,
+      include_position: false,
       include_opacity: false,
       include_z_index: false,
       include_font_size: false,
@@ -16662,6 +16672,7 @@ mod tests {
       include_color: false,
       include_background_color: false,
       include_display: false,
+      include_position: false,
       include_opacity: true,
       include_z_index: false,
       include_font_size: false,
@@ -16734,6 +16745,7 @@ mod tests {
       include_color: false,
       include_background_color: false,
       include_display: false,
+      include_position: false,
       include_opacity: false,
       include_z_index: true,
       include_font_size: false,
@@ -16781,6 +16793,82 @@ mod tests {
   }
 
   #[test]
+  fn container_query_fingerprint_tracks_position_used_by_style_queries() {
+    let stylesheet = crate::css::parser::parse_stylesheet(
+      "@container style(position: relative) { .a { color: red; } }",
+    )
+    .expect("stylesheet parses");
+    let media_ctx = MediaContext::screen(800.0, 600.0);
+    let metadata = stylesheet.collect_css_metadata_with_cache(&media_ctx, None);
+
+    assert!(
+      metadata.container_style_query_properties.contains("position"),
+      "metadata should track style-query property"
+    );
+
+    let mut custom_properties: Vec<String> = metadata
+      .container_style_query_custom_properties
+      .into_iter()
+      .chain(metadata.container_size_query_custom_properties.into_iter())
+      .collect();
+    custom_properties.sort();
+    custom_properties.dedup();
+    let cfg = ContainerQueryFingerprintConfig {
+      custom_properties,
+      include_color: false,
+      include_background_color: false,
+      include_display: false,
+      include_position: true,
+      include_opacity: false,
+      include_z_index: false,
+      include_font_size: false,
+    };
+
+    fn ctx_with_position(
+      media_ctx: &MediaContext,
+      position: crate::style::position::Position,
+    ) -> ContainerQueryContext {
+      let mut style = ComputedStyle::default();
+      style.position = position;
+      let mut containers = HashMap::new();
+      containers.insert(
+        1usize,
+        crate::style::cascade::ContainerQueryInfo {
+          width: 100.0,
+          height: 200.0,
+          inline_size: 100.0,
+          block_size: 200.0,
+          container_type: crate::style::types::ContainerType::InlineSize,
+          names: Vec::new(),
+          font_size: 16.0,
+          styles: Arc::new(style),
+        },
+      );
+      ContainerQueryContext {
+        base_media: media_ctx.clone(),
+        containers,
+      }
+    }
+
+    let ctx_a = ctx_with_position(&media_ctx, crate::style::position::Position::Static);
+    let ctx_b = ctx_with_position(&media_ctx, crate::style::position::Position::Relative);
+    let fp_a = container_query_context_fingerprint(&ctx_a, Some(&cfg));
+    let fp_b = container_query_context_fingerprint(&ctx_b, Some(&cfg));
+    assert_ne!(
+      fp_a, fp_b,
+      "fingerprint should change when tracked style-query properties change"
+    );
+
+    // Without a config, style-query properties should not affect the fingerprint.
+    let fp_a_untracked = container_query_context_fingerprint(&ctx_a, None);
+    let fp_b_untracked = container_query_context_fingerprint(&ctx_b, None);
+    assert_eq!(
+      fp_a_untracked, fp_b_untracked,
+      "untracked style-query properties should not affect the fingerprint"
+    );
+  }
+
+  #[test]
   fn container_query_fingerprint_tracks_raw_custom_props_used_by_style_query_subjects() {
     // Style queries against unregistered custom properties compare the authored token stream (with
     // no var() substitution). Ensure the fingerprint captures changes in that raw token stream even
@@ -16811,6 +16899,7 @@ mod tests {
       include_color: false,
       include_background_color: false,
       include_display: false,
+      include_position: false,
       include_opacity: false,
       include_z_index: false,
       include_font_size: false,
@@ -16883,6 +16972,7 @@ mod tests {
       include_color: false,
       include_background_color: false,
       include_display: false,
+      include_position: false,
       include_opacity: false,
       include_z_index: false,
       include_font_size: false,

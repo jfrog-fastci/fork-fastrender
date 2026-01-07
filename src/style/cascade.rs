@@ -1410,6 +1410,9 @@ fn eval_plain_style_feature(
     "display" => Display::parse(resolved_value)
       .map(|display| display == styles.display)
       .unwrap_or(false),
+    "position" => Position::parse(resolved_value)
+      .map(|pos| pos == styles.position)
+      .unwrap_or(false),
     "z-index" => {
       if resolved_value.eq_ignore_ascii_case("auto") {
         styles.z_index.is_none()
@@ -1479,6 +1482,7 @@ fn eval_boolean_style_feature(name: &str, container: &ContainerQueryInfo) -> boo
       "display" => styles.display != initial.display,
       "color" => styles.color != initial.color,
       "background-color" => styles.background_color != initial.background_color,
+      "position" => styles.position != initial.position,
       "z-index" => styles.z_index != initial.z_index,
       "opacity" => (styles.opacity - initial.opacity).abs() > 1e-6,
       "font-size" => (styles.font_size - initial.font_size).abs() > 1e-6,
