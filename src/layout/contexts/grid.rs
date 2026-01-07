@@ -86,7 +86,9 @@ use crate::style::types::WritingMode;
 use crate::style::values::Length;
 use crate::style::ComputedStyle;
 use crate::tree::box_tree::BoxNode;
-use crate::tree::fragment_tree::{FragmentContent, FragmentNode, GridTrackRanges};
+use crate::tree::fragment_tree::{
+  FragmentContent, FragmentNode, GridFragmentationInfo, GridItemFragmentationData, GridTrackRanges,
+};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
 use std::cell::{Cell, RefCell};
@@ -3635,6 +3637,22 @@ impl GridFormattingContext {
         )
         .map(Arc::new);
       }
+
+      if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(root_id) {
+        if info.items.len() == in_flow_children.len() {
+          let mut items = Vec::with_capacity(info.items.len());
+          for (idx, placement) in info.items.iter().enumerate() {
+            items.push(GridItemFragmentationData {
+              box_id: in_flow_children[idx].id,
+              row_start: placement.row_start,
+              row_end: placement.row_end,
+              column_start: placement.column_start,
+              column_end: placement.column_end,
+            });
+          }
+          fragment.grid_fragmentation = Some(Arc::new(GridFragmentationInfo { items }));
+        }
+      }
     }
 
     Some(Ok(fragment))
@@ -3750,6 +3768,28 @@ impl GridFormattingContext {
               has_in_flow_children,
             )
             .map(Arc::new);
+          }
+
+          if let DetailedLayoutInfo::Grid(info) = taffy.detailed_layout_info(node_id) {
+            if info.items.len() == children.len() {
+              let mut items = Vec::with_capacity(info.items.len());
+              for (idx, placement) in info.items.iter().enumerate() {
+                let Some(&child_ptr) = taffy.get_node_context(children[idx]) else {
+                  break;
+                };
+                let child_node = unsafe { &*child_ptr };
+                items.push(GridItemFragmentationData {
+                  box_id: child_node.id,
+                  row_start: placement.row_start,
+                  row_end: placement.row_end,
+                  column_start: placement.column_start,
+                  column_end: placement.column_end,
+                });
+              }
+              if items.len() == children.len() {
+                fragment.grid_fragmentation = Some(Arc::new(GridFragmentationInfo { items }));
+              }
+            }
           }
         }
         if let Some(positioned) = positioned_children.get(&node_id) {

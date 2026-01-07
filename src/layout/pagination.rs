@@ -15,8 +15,8 @@ use crate::layout::formatting_context::{
 };
 use crate::layout::fragmentation::{
   clip_node, collect_atomic_ranges, collect_forced_boundaries, fragmentation_axis,
-  normalize_atomic_ranges, normalize_fragment_margins, propagate_fragment_metadata, AtomicRange,
-  ForcedBoundary, FragmentationContext,
+  normalize_atomic_ranges, normalize_fragment_margins, parallel_flow_content_extent,
+  propagate_fragment_metadata, AtomicRange, ForcedBoundary, FragmentationContext,
 };
 use crate::layout::running_strings::{collect_string_set_events, StringSetEvent};
 use crate::style::content::{
@@ -157,6 +157,9 @@ impl CachedLayout {
     fallback_page_name: Option<&str>,
   ) -> Self {
     let axis = fragmentation_axis(&root);
+    let default_style = ComputedStyle::default();
+    let root_style = root.style.as_deref().unwrap_or(&default_style);
+    let axes = FragmentAxes::from_writing_mode_and_direction(root_style.writing_mode, root_style.direction);
     let style_block_size = if axis.block_is_horizontal {
       style.content_size.width
     } else {
@@ -189,7 +192,8 @@ impl CachedLayout {
     );
     normalize_atomic_ranges(&mut atomic_ranges);
 
-    let content_height = axis.block_size(&root.logical_bounding_box());
+    let content_height =
+      parallel_flow_content_extent(&root, axes, Some(style_block_size), FragmentationContext::Page);
     let total_height = if content_height > EPSILON {
       content_height
     } else {
@@ -457,6 +461,12 @@ pub fn paginate_fragment_tree(
         page_index,
         0,
         FragmentationContext::Page,
+        page_block,
+        {
+          let default_style = ComputedStyle::default();
+          let root_style = layout.root.style.as_deref().unwrap_or(&default_style);
+          FragmentAxes::from_writing_mode_and_direction(root_style.writing_mode, root_style.direction)
+        },
       )?;
       if let Some(mut content) = clipped {
         strip_fixed_fragments(&mut content);

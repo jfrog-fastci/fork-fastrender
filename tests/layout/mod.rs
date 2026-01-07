@@ -32,6 +32,7 @@ mod grid_percent_gap;
 mod grid_percent_rows_indefinite_height;
 mod grid_percent_tracks_definite;
 mod grid_percent_tracks_indefinite_shrinkwrap;
+mod grid_parallel_flow_fragmentation;
 mod grid_writing_mode_in_block;
 mod inline_float_min_width;
 mod inline_shaping_fallback;

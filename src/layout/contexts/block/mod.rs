@@ -3979,6 +3979,8 @@ impl BlockFormattingContext {
         index,
         fragment_count,
         FragmentationContext::Column,
+        column_height,
+        axes,
       )? {
         normalize_fragment_margins(&mut clipped, index == 0, index + 1 >= fragment_count, &axis);
         // `clip_node` preserves existing logical overrides from the unclipped flow tree.

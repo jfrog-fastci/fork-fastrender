@@ -544,6 +544,29 @@ pub struct BlockFragmentMetadata {
   pub clipped_bottom: bool,
 }
 
+/// Grid placement metadata used to support spec-correct fragmentation behaviour.
+///
+/// When a grid container fragments across pages, grid items in the same row form
+/// parallel fragmentation flows (CSS Break 4 §Parallel Fragmentation Flows). We
+/// record per-item placement so the fragmentation phase can decide when it is
+/// safe to treat a grid item as an independent flow (e.g. items that do not span
+/// multiple rows in the fragmentation axis).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GridItemFragmentationData {
+  pub box_id: usize,
+  pub row_start: u16,
+  pub row_end: u16,
+  pub column_start: u16,
+  pub column_end: u16,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GridFragmentationInfo {
+  /// In-flow grid item placements, in the same order as the grid container
+  /// fragment's in-flow children.
+  pub items: Vec<GridItemFragmentationData>,
+}
+
 /// A single fragment in the fragment tree
 ///
 /// Represents a laid-out box with a definite position and size.
@@ -639,6 +662,9 @@ pub struct FragmentNode {
 
   /// Fragmentation metadata for nested fragmentainers (e.g., multi-column containers).
   pub fragmentation: Option<FragmentationInfo>,
+
+  /// Grid-specific metadata used during fragmentation.
+  pub grid_fragmentation: Option<Arc<GridFragmentationInfo>>,
 }
 
 impl Clone for FragmentNode {
@@ -662,6 +688,7 @@ impl Clone for FragmentNode {
       slice_info: self.slice_info,
       scroll_overflow: self.scroll_overflow,
       fragmentation: self.fragmentation.clone(),
+      grid_fragmentation: self.grid_fragmentation.clone(),
     }
   }
 }
@@ -726,6 +753,7 @@ impl FragmentNode {
       slice_info: FragmentSliceInfo::single(bounds.height()),
       scroll_overflow,
       fragmentation: None,
+      grid_fragmentation: None,
     }
   }
 
@@ -756,6 +784,7 @@ impl FragmentNode {
       slice_info: FragmentSliceInfo::single(bounds.height()),
       scroll_overflow,
       fragmentation: None,
+      grid_fragmentation: None,
     }
   }
 
@@ -1118,6 +1147,7 @@ impl FragmentNode {
       slice_info: self.slice_info,
       scroll_overflow: self.scroll_overflow,
       fragmentation: self.fragmentation.clone(),
+      grid_fragmentation: self.grid_fragmentation.clone(),
     }
   }
 
@@ -1254,6 +1284,7 @@ impl FragmentNode {
       slice_info: self.slice_info,
       scroll_overflow: self.scroll_overflow,
       fragmentation: self.fragmentation.clone(),
+      grid_fragmentation: self.grid_fragmentation.clone(),
     }
   }
 
@@ -1295,6 +1326,7 @@ impl FragmentNode {
       slice_info: self.slice_info,
       scroll_overflow: self.scroll_overflow,
       fragmentation: self.fragmentation.clone(),
+      grid_fragmentation: self.grid_fragmentation.clone(),
     }
   }
 
