@@ -6,8 +6,12 @@ FastRender treats native form controls as replaced elements so they participate 
 
 - `<input>`, `<select>`, `<textarea>`, and `<button>` generate `ReplacedType::FormControl` boxes (except `<input type="hidden">`).
 - Intrinsic sizing for form controls is handled in the replaced-element intrinsic sizing code and respects HTML defaults (e.g. ~`20ch` text inputs / `cols`+`rows` for `<textarea>`). It scales with the current font metrics so controls line up with surrounding text by default.
-- The painters draw a simplified UA-like control surface (value/placeholder text + a small set of affordances) inside the element’s content box.
-- `appearance: none` affects **native painting** (suppresses some UA chrome) but does **not** currently change box generation: the element is still a `ReplacedType::FormControl` and keeps form-control intrinsic sizing.
+- Control kinds:
+  - Text-like inputs cover `text/search/url/tel/email` (plus empty/missing `type`), password masking, `number` inputs (spinner affordance), and date-like inputs (`date`/`datetime-local`/`month`/`week`/`time`) with simple glyphs and default format placeholders.
+  - Unknown `<input type=...>` falls back to `Unknown` and uses placeholder/value/type text as the label.
+  - Checkboxes/radios draw marks when checked/indeterminate; selects render a text value plus a caret; ranges draw a track + thumb; color inputs render a swatch plus a hex label.
+- Disabled, focus, focus-visible, required, and invalid states are derived from element attributes + `data-fastr-focus*` hints during box generation and influence native painting (tinted overlays, accent changes). The `data-fastr-focus-visible` hint implies focus for native painting so standalone focus-visible markers are captured.
+- `appearance: none` affects **native painting** (suppresses some UA chrome) but does **not** currently change box generation: the element is still a `ReplacedType::FormControl` and keeps form-control intrinsic sizing. (Non-`none` keywords are preserved as `Appearance::Keyword(...)`, but painters currently only special-case `Appearance::None`.)
 - `-webkit-appearance` is parsed/accepted today (so it can participate in `@supports`), but it does not currently affect computed styles; only the unprefixed `appearance` property is applied. Task 94 intends to treat `-webkit-appearance` as an alias of `appearance`.
 
 ## Key code paths
