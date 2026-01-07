@@ -3975,6 +3975,31 @@ impl FastRender {
   }
 }
 
+fn animation_time_ms_to_duration(animation_time: Option<f32>) -> Option<Duration> {
+  let time_ms = animation_time?;
+  // The public API accepts `f32` milliseconds. Guard against non-finite input to avoid panics and
+  // preserve existing "clamp to 0" defensive behaviour.
+  if !time_ms.is_finite() {
+    return Some(Duration::ZERO);
+  }
+  let time_ms = time_ms.max(0.0) as f64;
+
+  // Convert through nanoseconds so sub-millisecond timestamps are preserved (e.g. 0.5ms) without
+  // relying on `Duration::{from_secs_f32,from_secs_f64}`, which panic on NaN/inf/out-of-range.
+  let max_nanos = Duration::MAX.as_nanos();
+  let nanos = (time_ms * 1_000_000.0).round();
+  if !nanos.is_finite() {
+    return Some(Duration::ZERO);
+  }
+  let mut nanos = nanos as u128;
+  if nanos > max_nanos {
+    nanos = max_nanos;
+  }
+  let secs = (nanos / 1_000_000_000) as u64;
+  let subsec_nanos = (nanos % 1_000_000_000) as u32;
+  Some(Duration::new(secs, subsec_nanos))
+}
+
 fn paint_fragment_tree_with_state(
   mut fragment_tree: FragmentTree,
   mut scroll_state: ScrollState,
@@ -4018,7 +4043,7 @@ fn paint_fragment_tree_with_state(
   if let Some(time_ms) = animation_time {
     animation::apply_transitions(&mut fragment_tree, time_ms, viewport_size);
   }
-  let animation_duration = animation_time.map(|ms| Duration::from_millis(ms.max(0.0) as u64));
+  let animation_duration = animation_time_ms_to_duration(animation_time);
   animation::apply_animations(&mut fragment_tree, &scroll_state, animation_duration);
 
   let viewport_width_px = viewport_size.width.max(1.0).ceil() as u32;
@@ -5086,7 +5111,7 @@ impl FastRender {
       if let Some(time_ms) = animation_time {
         animation::apply_transitions(&mut fragment_tree, time_ms, viewport_size);
       }
-      let animation_duration = animation_time.map(|ms| Duration::from_millis(ms.max(0.0) as u64));
+      let animation_duration = animation_time_ms_to_duration(animation_time);
       animation::apply_animations(&mut fragment_tree, &scroll_state, animation_duration);
 
       let viewport_width_px = viewport_size.width.max(1.0).ceil() as u32;
@@ -6116,9 +6141,7 @@ impl FastRender {
       if let Some(time_ms) = options.animation_time {
         animation::apply_transitions(&mut intermediates.fragment_tree, time_ms, viewport_size);
       }
-      let animation_duration = options
-        .animation_time
-        .map(|ms| Duration::from_millis(ms.max(0.0) as u64));
+      let animation_duration = animation_time_ms_to_duration(options.animation_time);
       animation::apply_animations(
         &mut intermediates.fragment_tree,
         &scroll_state,
