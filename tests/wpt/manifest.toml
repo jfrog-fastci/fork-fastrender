@@ -1413,6 +1413,20 @@ width = 20
 height = 20
 
 [[tests]]
+id = "harness/manifest-mismatch-001"
+path = "harness/manifest-mismatch-001.html"
+reference = "harness/manifest-mismatch-001-ref.html"
+reftest = "mismatch"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 40
+height = 40
+
+[[tests]]
 id = "svg/filters/displacement-map-map-subregion-clamp-001"
 path = "svg/filters/displacement-map-map-subregion-clamp-001.html"
 reference = "svg/filters/displacement-map-map-subregion-clamp-001-ref.html"
