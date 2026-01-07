@@ -10,6 +10,7 @@ use common::render_pipeline::{
   build_http_fetcher, build_render_configs, build_renderer_with_fetcher, decode_html_resource,
   render_document, RenderConfigBundle, RenderSurface,
 };
+use fastrender::debug::runtime;
 use fastrender::css::encoding::decode_css_bytes;
 use fastrender::css::loader::resolve_href;
 use fastrender::dom::{parse_html_with_options, DomParseOptions};
@@ -19,15 +20,14 @@ use fastrender::html::images::ImageSelectionContext;
 use fastrender::html::meta_refresh::{extract_js_location_redirect, extract_meta_refresh_url};
 use fastrender::image_output::encode_image;
 use fastrender::resource::bundle::{
-  request_partitioned_resource_key, Bundle, BundleManifest, BundleRenderConfig, BundledDocument,
-  BundledFetcher, BundledResourceInfo, BUNDLE_MANIFEST, BUNDLE_VERSION,
+  request_partitioned_resource_key_with_credentials, Bundle, BundleManifest, BundleRenderConfig,
+  BundledDocument, BundledFetcher, BundledResourceInfo, BUNDLE_MANIFEST, BUNDLE_VERSION,
 };
 use fastrender::resource::{
-  cors_enforcement_enabled, ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane,
-  ensure_stylesheet_mime_sane, offline_placeholder_png_bytes, offline_placeholder_woff2_bytes,
-  origin_from_url, DocumentOrigin, FetchContextKind, FetchDestination, FetchRequest,
-  FetchedResource, ResourceAccessPolicy, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE,
-  DEFAULT_USER_AGENT,
+  ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane, ensure_stylesheet_mime_sane,
+  offline_placeholder_png_bytes, offline_placeholder_woff2_bytes, origin_from_url, DocumentOrigin,
+  FetchContextKind, FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource,
+  ResourceAccessPolicy, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
 };
 #[cfg(feature = "disk_cache")]
 use fastrender::resource::{
@@ -58,6 +58,23 @@ fn is_about_url(url: &str) -> bool {
     .get(..6)
     .map(|prefix| prefix.eq_ignore_ascii_case("about:"))
     .unwrap_or(false)
+}
+
+fn http_browser_headers_enabled() -> bool {
+  std::env::var("FASTR_HTTP_BROWSER_HEADERS")
+    .ok()
+    .map(|raw| {
+      !matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "0" | "false" | "no" | "off"
+      )
+    })
+    .unwrap_or(true)
+}
+
+fn cors_cache_partitioning_enabled() -> bool {
+  runtime::runtime_toggles().truthy_with_default("FASTR_FETCH_PARTITION_CORS_CACHE", true)
+    && http_browser_headers_enabled()
 }
 
 fn should_skip_crawl_url(url: &str) -> bool {
@@ -277,6 +294,7 @@ struct RecordingRequestKey {
   kind: FetchContextKind,
   url: String,
   origin: Option<DocumentOrigin>,
+  credentials_mode: FetchCredentialsMode,
 }
 
 #[cfg(feature = "disk_cache")]
@@ -467,7 +485,7 @@ impl RecordingFetcher {
       .map(|map| map.clone())
       .unwrap_or_default();
 
-    if !cors_enforcement_enabled() {
+    if !cors_cache_partitioning_enabled() {
       return snapshot;
     }
 
@@ -481,19 +499,19 @@ impl RecordingFetcher {
       return snapshot;
     }
 
-    let mut origins_by_resource: HashMap<
+    let mut variants_by_resource: HashMap<
       (FetchContextKind, String),
-      HashSet<Option<DocumentOrigin>>,
+      HashSet<(Option<DocumentOrigin>, FetchCredentialsMode)>,
     > = HashMap::new();
     for (key, _) in &by_request {
-      origins_by_resource
+      variants_by_resource
         .entry((key.kind, key.url.clone()))
         .or_default()
-        .insert(key.origin.clone());
+        .insert((key.origin.clone(), key.credentials_mode));
     }
 
     for (key, resource) in by_request {
-      let Some(origins) = origins_by_resource.get(&(key.kind, key.url.clone())) else {
+      let Some(variants) = variants_by_resource.get(&(key.kind, key.url.clone())) else {
         continue;
       };
       let Some(origin) = key.origin.as_ref() else {
@@ -512,16 +530,16 @@ impl RecordingFetcher {
           && a.access_control_allow_credentials == b.access_control_allow_credentials
       };
 
-      // Record per-origin variants when:
-      // - a single URL was fetched in CORS mode under multiple initiating origins (so the bundle
-      //   must preserve varying CORS metadata), OR
+      // Record per-request variants when:
+      // - a single URL was fetched in CORS mode under multiple initiating origins or credentials
+      //   modes (so the bundle must preserve varying CORS metadata), OR
       // - the legacy URL-only entry does not match the CORS-mode fetch (e.g. the URL was first
       //   fetched in `no-cors` mode, which omits the Origin header and can cause missing
       //   `Access-Control-Allow-Origin` on the response).
       //
       // This keeps bundles small in the common case while ensuring offline replay has the data
       // required for CORS enforcement.
-      let should_partition = origins.len() > 1
+      let should_partition = variants.len() > 1
         || snapshot
           .get(&key.url)
           .map(|existing| !same_for_replay(existing, &resource))
@@ -530,13 +548,23 @@ impl RecordingFetcher {
         continue;
       }
 
-      let manifest_key = request_partitioned_resource_key(key.kind, &key.url, origin);
+      let manifest_key = request_partitioned_resource_key_with_credentials(
+        key.kind,
+        &key.url,
+        origin,
+        key.credentials_mode,
+      );
       snapshot
         .entry(manifest_key)
         .or_insert_with(|| resource.clone());
       if let Some(final_url) = resource.final_url.as_deref() {
         if final_url != key.url.as_str() {
-          let manifest_key = request_partitioned_resource_key(key.kind, final_url, origin);
+          let manifest_key = request_partitioned_resource_key_with_credentials(
+            key.kind,
+            final_url,
+            origin,
+            key.credentials_mode,
+          );
           snapshot
             .entry(manifest_key)
             .or_insert_with(|| resource.clone());
@@ -597,7 +625,7 @@ impl ResourceFetcher for RecordingFetcher {
   fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
     let url = req.url.to_string();
 
-    if cors_enforcement_enabled()
+    if cors_cache_partitioning_enabled()
       && matches!(
         req.destination,
         FetchDestination::Font | FetchDestination::ImageCors
@@ -610,6 +638,7 @@ impl ResourceFetcher for RecordingFetcher {
           .referrer
           .and_then(origin_from_url)
           .or_else(|| origin_from_url(req.url)),
+        credentials_mode: req.credentials_mode,
       };
 
       if let Ok(map) = self.recorded_by_request.lock() {
@@ -643,7 +672,7 @@ impl ResourceFetcher for RecordingFetcher {
     }
 
     let check_cors_poisoned_url_cache =
-      cors_enforcement_enabled() && req.destination == FetchDestination::Image;
+      cors_cache_partitioning_enabled() && req.destination == FetchDestination::Image;
     if let Ok(map) = self.recorded.lock() {
       if let Some(existing) = map.get(req.url) {
         if !check_cors_poisoned_url_cache {
@@ -1773,7 +1802,7 @@ fn crawl_document(
 
     let kind: FetchContextKind = destination.into();
     let document_origin = origin_from_url(&referrer);
-    let origin_key = if cors_enforcement_enabled()
+    let origin_key = if cors_cache_partitioning_enabled()
       && matches!(
         destination,
         FetchDestination::Font | FetchDestination::ImageCors
@@ -2222,6 +2251,7 @@ fn is_image_resource(res: &FetchedResource, url: &str) -> bool {
 mod tests {
   use super::*;
   use fastrender::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
+  use fastrender::resource::bundle::request_partitioned_resource_key;
   use std::collections::HashMap;
   use std::sync::atomic::{AtomicUsize, Ordering};
   use std::sync::Mutex;
@@ -2404,7 +2434,8 @@ mod tests {
   }
 
   #[test]
-  fn recording_fetcher_does_not_partition_cors_mode_requests_without_enforcement() -> Result<()> {
+  fn recording_fetcher_partitions_cors_mode_requests_by_origin_without_enforcement_by_default(
+  ) -> Result<()> {
     let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
       "FASTR_FETCH_ENFORCE_CORS".to_string(),
       "0".to_string(),
@@ -2433,15 +2464,15 @@ mod tests {
         );
         assert_eq!(
           b.access_control_allow_origin.as_deref(),
-          Some("https://a.test"),
-          "expected RecordingFetcher to reuse the cached CORS-mode response when CORS enforcement is disabled"
+          Some("https://b.test"),
+          "unexpected ACAO for origin B"
         );
       }
 
       assert_eq!(
         inner.calls(),
-        2,
-        "expected RecordingFetcher to cache by URL when CORS enforcement is disabled"
+        4,
+        "expected RecordingFetcher to fetch separately per (destination, origin) even when CORS enforcement is disabled"
       );
     });
 

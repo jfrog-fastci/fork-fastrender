@@ -2,8 +2,8 @@ use crate::compat::CompatProfile;
 use crate::dom::DomCompatibilityMode;
 use crate::error::{Error, Result};
 use crate::resource::{
-  cors_enforcement_enabled, origin_from_url, DocumentOrigin, FetchContextKind, FetchDestination,
-  FetchRequest, FetchedResource, ResourceFetcher,
+  origin_from_url, DocumentOrigin, FetchContextKind, FetchCredentialsMode, FetchRequest,
+  FetchedResource, ResourceFetcher,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -21,9 +21,9 @@ pub const BUNDLE_VERSION: u32 = 1;
 /// Synthetic manifest key used for request-partitioned resources.
 ///
 /// This is primarily used for CORS-mode resources (`Font` / `ImageCors`) when
-/// `FASTR_FETCH_ENFORCE_CORS=1`. Some servers vary `Access-Control-Allow-Origin` by the initiating
-/// origin; bundles need to preserve the per-origin metadata so offline renders can replay the same
-/// behavior.
+/// CORS cache partitioning is enabled (`FASTR_FETCH_PARTITION_CORS_CACHE=1`, default). Some servers
+/// vary `Access-Control-Allow-Origin` by the initiating origin; bundles need to preserve the
+/// per-origin metadata so offline renders can replay the same behavior.
 ///
 /// The returned key is **not** a real URL. It is only used as a stable lookup key inside
 /// `bundle.json`.
@@ -31,6 +31,19 @@ pub fn request_partitioned_resource_key(
   kind: FetchContextKind,
   url: &str,
   origin: &DocumentOrigin,
+) -> String {
+  request_partitioned_resource_key_with_credentials(kind, url, origin, FetchCredentialsMode::Omit)
+}
+
+/// Like [`request_partitioned_resource_key`] but also partitions by request credentials mode.
+///
+/// For compatibility, anonymous (`omit`) requests produce the same key as the legacy helper; only
+/// credentialed (`include`) requests append a `creds=include` tag.
+pub fn request_partitioned_resource_key_with_credentials(
+  kind: FetchContextKind,
+  url: &str,
+  origin: &DocumentOrigin,
+  credentials_mode: FetchCredentialsMode,
 ) -> String {
   let kind_tag = match kind {
     FetchContextKind::Document => "document",
@@ -41,7 +54,11 @@ pub fn request_partitioned_resource_key(
     FetchContextKind::Font => "font",
     FetchContextKind::Other => "other",
   };
-  format!("{url}@@fastr:bundle:req_v1@@kind={kind_tag}@@origin={origin}")
+  let mut key = format!("{url}@@fastr:bundle:req_v1@@kind={kind_tag}@@origin={origin}");
+  if credentials_mode == FetchCredentialsMode::Include {
+    key.push_str("@@creds=include");
+  }
+  key
 }
 
 fn bool_is_false(value: &bool) -> bool {
@@ -369,12 +386,7 @@ impl ResourceFetcher for BundledFetcher {
   }
 
   fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
-    if cors_enforcement_enabled()
-      && matches!(
-        req.destination,
-        FetchDestination::Font | FetchDestination::ImageCors
-      )
-    {
+    if super::cors_cache_partition_key(&req).is_some() {
       let kind: FetchContextKind = req.destination.into();
       let origin = req
         .referrer
@@ -382,9 +394,21 @@ impl ResourceFetcher for BundledFetcher {
         .or_else(|| origin_from_url(req.url));
 
       if let Some(origin) = origin {
-        let key = request_partitioned_resource_key(kind, req.url, &origin);
+        let key = request_partitioned_resource_key_with_credentials(
+          kind,
+          req.url,
+          &origin,
+          req.credentials_mode,
+        );
         if let Some(resource) = self.bundle.resource_for_url(&key) {
           return Ok(resource.as_fetched());
+        }
+
+        if req.credentials_mode == FetchCredentialsMode::Include {
+          let key = request_partitioned_resource_key(kind, req.url, &origin);
+          if let Some(resource) = self.bundle.resource_for_url(&key) {
+            return Ok(resource.as_fetched());
+          }
         }
       }
     }
@@ -406,6 +430,7 @@ impl ResourceFetcher for BundledFetcher {
 mod tests {
   use super::*;
   use crate::debug::runtime::{with_thread_runtime_toggles, RuntimeToggles};
+  use crate::resource::FetchDestination;
 
   #[test]
   fn bundled_fetcher_decodes_data_urls_without_manifest_entries() {
@@ -703,10 +728,13 @@ mod tests {
     let bundle = Bundle::load(tmp.path()).expect("load bundle");
     let fetcher = BundledFetcher::new(bundle);
 
-    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
-      "FASTR_FETCH_ENFORCE_CORS".to_string(),
-      "1".to_string(),
-    )])));
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([
+      ("FASTR_FETCH_ENFORCE_CORS".to_string(), "0".to_string()),
+      (
+        "FASTR_FETCH_PARTITION_CORS_CACHE".to_string(),
+        "1".to_string(),
+      ),
+    ])));
 
     with_thread_runtime_toggles(toggles, || {
       let a = fetcher
@@ -797,10 +825,13 @@ mod tests {
     let bundle = Bundle::load(tmp.path()).expect("load bundle");
     let fetcher = BundledFetcher::new(bundle);
 
-    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([(
-      "FASTR_FETCH_ENFORCE_CORS".to_string(),
-      "1".to_string(),
-    )])));
+    let toggles = Arc::new(RuntimeToggles::from_map(HashMap::from([
+      ("FASTR_FETCH_ENFORCE_CORS".to_string(), "0".to_string()),
+      (
+        "FASTR_FETCH_PARTITION_CORS_CACHE".to_string(),
+        "1".to_string(),
+      ),
+    ])));
 
     with_thread_runtime_toggles(toggles, || {
       let a = fetcher

@@ -3136,10 +3136,10 @@ mod tests {
   }
 
   #[test]
-  fn disk_cache_does_not_partition_cors_font_entries_without_enforcement() {
+  fn disk_cache_partitions_cors_font_entries_by_origin_without_enforcement_by_default() {
     let Some((url, captured, server)) = spawn_cors_origin_echo_font_server(
-      "disk_cache_does_not_partition_cors_font_entries_without_enforcement",
-      1,
+      "disk_cache_partitions_cors_font_entries_by_origin_without_enforcement_by_default",
+      2,
     ) else {
       return;
     };
@@ -3159,7 +3159,54 @@ mod tests {
       let first_a = disk.fetch_with_request(req_a).expect("fetch A");
       assert_eq!(first_a.bytes, b"http://a.test");
       let first_b = disk.fetch_with_request(req_b).expect("fetch B");
-      assert_eq!(first_b.bytes, b"http://a.test");
+      assert_eq!(first_b.bytes, b"http://b.test");
+
+      drop(disk);
+
+      let disk_again = DiskCachingFetcher::new(HttpFetcher::new(), tmp.path());
+      let second_a = disk_again.fetch_with_request(req_a).expect("disk A");
+      assert_eq!(second_a.bytes, b"http://a.test");
+      let second_b = disk_again.fetch_with_request(req_b).expect("disk B");
+      assert_eq!(second_b.bytes, b"http://b.test");
+    });
+
+    server.join().unwrap();
+    let captured = captured.lock().unwrap().clone();
+    assert_eq!(captured, ["http://a.test", "http://b.test"]);
+  }
+
+  #[test]
+  fn disk_cache_does_not_partition_cors_font_entries_when_partition_toggle_disabled() {
+    let Some((url, captured, server)) = spawn_cors_origin_echo_font_server(
+      "disk_cache_does_not_partition_cors_font_entries_when_partition_toggle_disabled",
+      1,
+    ) else {
+      return;
+    };
+
+    let toggles = Arc::new(runtime::RuntimeToggles::from_map(HashMap::from([
+      ("FASTR_FETCH_ENFORCE_CORS".to_string(), "0".to_string()),
+      (
+        "FASTR_FETCH_PARTITION_CORS_CACHE".to_string(),
+        "0".to_string(),
+      ),
+    ])));
+    runtime::with_thread_runtime_toggles(toggles, || {
+      let tmp = tempfile::tempdir().unwrap();
+      let req_a =
+        FetchRequest::new(&url, FetchDestination::Font).with_referrer("http://a.test/page");
+      let req_b =
+        FetchRequest::new(&url, FetchDestination::Font).with_referrer("http://b.test/page");
+
+      let disk = DiskCachingFetcher::new(HttpFetcher::new(), tmp.path());
+      let first_a = disk.fetch_with_request(req_a).expect("fetch A");
+      assert_eq!(first_a.bytes, b"http://a.test");
+      let first_b = disk.fetch_with_request(req_b).expect("fetch B");
+      assert_eq!(
+        first_b.bytes,
+        b"http://a.test",
+        "expected request-partitioning to be disabled"
+      );
 
       drop(disk);
 
@@ -3277,10 +3324,10 @@ mod tests {
   }
 
   #[test]
-  fn disk_cache_does_not_partition_cors_image_cors_entries_without_enforcement() {
+  fn disk_cache_partitions_cors_image_cors_entries_by_origin_without_enforcement_by_default() {
     let Some((url, captured, server)) = spawn_cors_origin_echo_image_cors_server(
-      "disk_cache_does_not_partition_cors_image_cors_entries_without_enforcement",
-      1,
+      "disk_cache_partitions_cors_image_cors_entries_by_origin_without_enforcement_by_default",
+      2,
     ) else {
       return;
     };
@@ -3300,18 +3347,20 @@ mod tests {
       let first_a = disk.fetch_with_request(req_a).expect("fetch A");
       assert_eq!(first_a.bytes, b"http://a.test");
       let first_b = disk.fetch_with_request(req_b).expect("fetch B");
-      assert_eq!(first_b.bytes, b"http://a.test");
+      assert_eq!(first_b.bytes, b"http://b.test");
 
       drop(disk);
 
       let disk_again = DiskCachingFetcher::new(HttpFetcher::new(), tmp.path());
+      let second_a = disk_again.fetch_with_request(req_a).expect("disk A");
+      assert_eq!(second_a.bytes, b"http://a.test");
       let second_b = disk_again.fetch_with_request(req_b).expect("disk B");
-      assert_eq!(second_b.bytes, b"http://a.test");
+      assert_eq!(second_b.bytes, b"http://b.test");
     });
 
     server.join().unwrap();
     let captured = captured.lock().unwrap().clone();
-    assert_eq!(captured, ["http://a.test"]);
+    assert_eq!(captured, ["http://a.test", "http://b.test"]);
   }
 
   #[test]

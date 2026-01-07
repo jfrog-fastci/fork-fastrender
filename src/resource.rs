@@ -746,6 +746,26 @@ impl Default for ReferrerPolicy {
   }
 }
 
+/// Credentials mode for a fetch request (roughly aligned with the Fetch spec).
+///
+/// This is primarily used to partition caches for requests that may carry cookies/auth headers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FetchCredentialsMode {
+  /// Do not include credentials (anonymous).
+  Omit,
+  /// Include credentials (cookies/auth).
+  Include,
+}
+
+impl FetchCredentialsMode {
+  fn as_cache_tag(self) -> &'static str {
+    match self {
+      Self::Omit => "omit",
+      Self::Include => "include",
+    }
+  }
+}
+
 impl FetchDestination {
   fn accept(self) -> &'static str {
     match self {
@@ -860,6 +880,7 @@ pub struct FetchRequest<'a> {
   pub destination: FetchDestination,
   pub referrer: Option<&'a str>,
   pub referrer_policy: ReferrerPolicy,
+  pub credentials_mode: FetchCredentialsMode,
 }
 
 impl<'a> FetchRequest<'a> {
@@ -870,6 +891,11 @@ impl<'a> FetchRequest<'a> {
       destination,
       referrer: None,
       referrer_policy: ReferrerPolicy::default(),
+      credentials_mode: if destination.sec_fetch_mode() == "cors" {
+        FetchCredentialsMode::Omit
+      } else {
+        FetchCredentialsMode::Include
+      },
     }
   }
 
@@ -892,6 +918,12 @@ impl<'a> FetchRequest<'a> {
   /// Override how the `Referer` header is constructed from the referrer URL.
   pub fn with_referrer_policy(mut self, policy: ReferrerPolicy) -> Self {
     self.referrer_policy = policy;
+    self
+  }
+
+  /// Override the credentials mode for this request.
+  pub fn with_credentials_mode(mut self, mode: FetchCredentialsMode) -> Self {
+    self.credentials_mode = mode;
     self
   }
 }
@@ -2036,6 +2068,10 @@ pub fn strict_mime_checks_enabled() -> bool {
   runtime::runtime_toggles().truthy_with_default("FASTR_FETCH_STRICT_MIME", true)
 }
 
+fn cors_cache_partitioning_enabled() -> bool {
+  runtime::runtime_toggles().truthy_with_default("FASTR_FETCH_PARTITION_CORS_CACHE", true)
+}
+
 fn cors_origin_key_from_referrer(referrer: Option<&str>) -> Option<String> {
   let referrer = referrer?;
   match Url::parse(referrer) {
@@ -2051,14 +2087,42 @@ fn cors_origin_key_from_referrer(referrer: Option<&str>) -> Option<String> {
   }
 }
 
+fn cors_origin_key_for_request(req: &FetchRequest<'_>) -> Option<String> {
+  if let Some(origin) = cors_origin_key_from_referrer(req.referrer) {
+    return Some(origin);
+  }
+  // When a referrer was supplied but we could not derive a browser-style origin (invalid URL, etc),
+  // match header generation behavior: no `Origin` header is emitted.
+  if req.referrer.is_some() {
+    return None;
+  }
+
+  match Url::parse(req.url) {
+    Ok(parsed) => http_browser_origin_and_referer_for_url(&parsed).map(|(origin, _)| origin),
+    Err(_) => http_browser_tolerant_origin_from_url(req.url).and_then(|origin| {
+      http_browser_origin_and_referer_for_origin(&origin).map(|(origin, _)| origin)
+    }),
+  }
+}
+
 fn cors_cache_partition_key(req: &FetchRequest<'_>) -> Option<String> {
-  if !cors_enforcement_enabled() {
+  if !cors_cache_partitioning_enabled() {
+    return None;
+  }
+  if !http_browser_headers_enabled() {
     return None;
   }
   if req.destination.sec_fetch_mode() != "cors" {
     return None;
   }
-  cors_origin_key_from_referrer(req.referrer)
+  let origin = cors_origin_key_for_request(req)?;
+  if req.credentials_mode == FetchCredentialsMode::Omit {
+    return Some(origin);
+  }
+  Some(format!(
+    "{origin}@@fastr:creds={}",
+    req.credentials_mode.as_cache_tag()
+  ))
 }
 
 fn response_final_url(resource: &FetchedResource, requested_url: &str) -> String {
@@ -14256,7 +14320,7 @@ mod tests {
   }
 
   #[test]
-  fn caching_fetcher_does_not_partition_cors_mode_entries_without_enforcement() {
+  fn caching_fetcher_partitions_cors_mode_entries_by_origin_without_enforcement_by_default() {
     #[derive(Clone)]
     struct OriginEchoFetcher {
       calls: Arc<AtomicUsize>,
@@ -14296,16 +14360,20 @@ mod tests {
 
         let first_a = cache.fetch_with_request(req_a).expect("fetch A");
         assert_eq!(first_a.bytes, b"http://a.test");
-        // Without enforcement, we keep legacy cache key behavior (no origin partitioning), so `B`
-        // reuses the cached entry from `A`.
         let first_b = cache.fetch_with_request(req_b).expect("fetch B");
-        assert_eq!(first_b.bytes, b"http://a.test");
+        assert_eq!(first_b.bytes, b"http://b.test");
+
+        // Ensure fetching `B` doesn't overwrite `A` and vice versa.
+        let second_a = cache.fetch_with_request(req_a).expect("cache A");
+        assert_eq!(second_a.bytes, b"http://a.test");
+        let second_b = cache.fetch_with_request(req_b).expect("cache B");
+        assert_eq!(second_b.bytes, b"http://b.test");
       }
 
       assert_eq!(
         calls.load(Ordering::SeqCst),
-        2,
-        "expected referrer origin to be ignored for CORS-mode cache keys when CORS enforcement is disabled"
+        4,
+        "expected differing referrer origins to produce distinct cache entries for CORS-mode requests even when CORS enforcement is disabled"
       );
     });
   }

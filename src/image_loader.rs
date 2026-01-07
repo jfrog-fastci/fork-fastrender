@@ -2330,6 +2330,9 @@ impl ImageCache {
       .as_ref()
       .and_then(|ctx| ctx.document_url.as_deref());
     let mut request = FetchRequest::new(resolved_url, destination);
+    if crossorigin == CrossOriginAttribute::UseCredentials {
+      request = request.with_credentials_mode(crate::resource::FetchCredentialsMode::Include);
+    }
     if let Some(referrer) = referrer {
       request = request.with_referrer(referrer);
     }
@@ -2369,6 +2372,10 @@ impl ImageCache {
       // Corrupt or incompatible cache entry; evict so we don't repeatedly reparse it.
       let artifact_url = cached.final_url.as_deref().unwrap_or(resolved_url);
       let mut remove_request = FetchRequest::new(artifact_url, destination);
+      if crossorigin == CrossOriginAttribute::UseCredentials {
+        remove_request =
+          remove_request.with_credentials_mode(crate::resource::FetchCredentialsMode::Include);
+      }
       if let Some(referrer) = referrer {
         remove_request = remove_request.with_referrer(referrer);
       }
@@ -2591,6 +2598,9 @@ impl ImageCache {
       .as_ref()
       .and_then(|ctx| ctx.document_url.as_deref());
     let mut request = FetchRequest::new(resolved_url, destination);
+    if crossorigin == CrossOriginAttribute::UseCredentials {
+      request = request.with_credentials_mode(crate::resource::FetchCredentialsMode::Include);
+    }
     if let Some(referrer) = referrer {
       request = request.with_referrer(referrer);
     }
@@ -2773,6 +2783,9 @@ impl ImageCache {
       .as_ref()
       .and_then(|ctx| ctx.document_url.as_deref());
     let mut request = FetchRequest::new(resolved_url, destination);
+    if crossorigin == CrossOriginAttribute::UseCredentials {
+      request = request.with_credentials_mode(crate::resource::FetchCredentialsMode::Include);
+    }
     if let Some(referrer) = referrer {
       request = request.with_referrer(referrer);
     }
