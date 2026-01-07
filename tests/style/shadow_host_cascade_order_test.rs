@@ -180,6 +180,27 @@ fn shadow_host_rules_respect_layer_order() {
 }
 
 #[test]
+fn shadow_host_important_rules_respect_layer_order() {
+  // For !important declarations, earlier layers win. The explicit @layer statement puts `theme`
+  // before `base`, so `theme` should win even though its rule appears first in source order.
+  let html = r#"
+    <x-host id="host">
+      <template shadowroot="open">
+        <style>
+          @layer theme, base;
+          @layer theme { :host { color: rgb(4, 5, 6) !important; } }
+          @layer base { :host { color: rgb(1, 2, 3) !important; } }
+        </style>
+      </template>
+    </x-host>
+  "#;
+
+  let styled = apply_scoped_styles(html);
+  let host = find_by_id(&styled, "host").expect("styled host");
+  assert_eq!(host.styles.color, Rgba::rgb(4, 5, 6));
+}
+
+#[test]
 fn document_rules_outrank_shadow_host_context_rules() {
   let html = r#"
     <style>
