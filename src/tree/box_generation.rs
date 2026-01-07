@@ -4880,6 +4880,17 @@ mod tests {
     find_select(&box_tree.root).expect("expected select form control")
   }
 
+  fn select_selected_value(select: &SelectControl) -> Option<String> {
+    select
+      .selected
+      .first()
+      .copied()
+      .and_then(|idx| match select.items.get(idx) {
+        Some(SelectItem::Option { value, .. }) => Some(value.clone()),
+        _ => None,
+      })
+  }
+
   fn collect_pseudo_text(
     node: &BoxNode,
     styled_node_id: usize,

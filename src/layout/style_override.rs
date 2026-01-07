@@ -180,6 +180,24 @@ fn hash_sizing_property(
   hash_option_intrinsic_size_keyword(keyword, hasher);
 }
 
+fn hash_line_height(value: &crate::style::types::LineHeight, hasher: &mut FxHasher) {
+  match value {
+    crate::style::types::LineHeight::Normal => 0u8.hash(hasher),
+    crate::style::types::LineHeight::Number(n) => {
+      1u8.hash(hasher);
+      f32_to_canonical_bits(*n).hash(hasher);
+    }
+    crate::style::types::LineHeight::Length(len) => {
+      2u8.hash(hasher);
+      hash_length(len, hasher);
+    }
+    crate::style::types::LineHeight::Percentage(p) => {
+      3u8.hash(hasher);
+      f32_to_canonical_bits(*p).hash(hasher);
+    }
+  }
+}
+
 fn style_override_fingerprint(style: &ComputedStyle) -> u64 {
   let mut h = FxHasher::default();
   hash_enum_discriminant(&style.display, &mut h);
@@ -214,7 +232,7 @@ fn style_override_fingerprint(style: &ComputedStyle) -> u64 {
   hash_enum_discriminant(&style.overflow_x, &mut h);
   hash_enum_discriminant(&style.overflow_y, &mut h);
   hash_enum_discriminant(&style.scrollbar_width, &mut h);
-  hash_enum_discriminant(&style.line_height, &mut h);
+  hash_line_height(&style.line_height, &mut h);
   f32_to_canonical_bits(style.font_size).hash(&mut h);
   f32_to_canonical_bits(style.root_font_size).hash(&mut h);
   h.finish()
@@ -244,6 +262,7 @@ pub(crate) fn style_override_fingerprint_for(node_id: usize) -> Option<u64> {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::style::types::LineHeight;
 
   #[test]
   fn style_override_fingerprint_includes_intrinsic_size_keywords() {
@@ -313,6 +332,31 @@ mod tests {
     assert_ne!(
       style_override_fingerprint(&fit_content_a),
       style_override_fingerprint(&fit_content_b)
+    );
+  }
+
+  #[test]
+  fn style_override_fingerprint_accounts_for_line_height_values() {
+    let base = ComputedStyle::default();
+
+    let mut lh_a = base.clone();
+    lh_a.line_height = LineHeight::Number(1.0);
+    let mut lh_b = base.clone();
+    lh_b.line_height = LineHeight::Number(2.0);
+    assert_ne!(
+      style_override_fingerprint(&lh_a),
+      style_override_fingerprint(&lh_b),
+      "line-height numeric value should affect style override fingerprint"
+    );
+
+    let mut lh_neg_zero = base.clone();
+    lh_neg_zero.line_height = LineHeight::Number(-0.0);
+    let mut lh_pos_zero = base;
+    lh_pos_zero.line_height = LineHeight::Number(0.0);
+    assert_eq!(
+      style_override_fingerprint(&lh_neg_zero),
+      style_override_fingerprint(&lh_pos_zero),
+      "line-height should canonicalize -0.0 in the style override fingerprint"
     );
   }
 
