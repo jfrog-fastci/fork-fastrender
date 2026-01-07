@@ -61,6 +61,8 @@ fn cascade_with_optional_container(css: &str, inline_size: f32, use_container_ct
     containers.insert(
       container_id,
       ContainerQueryInfo {
+        width: inline_size,
+        height: 300.0,
         inline_size,
         block_size: 300.0,
         container_type: ContainerType::InlineSize,

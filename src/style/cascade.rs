@@ -65,6 +65,7 @@ use crate::style::media::ComparisonOp;
 use crate::style::media::MediaContext;
 use crate::style::media::MediaFeature;
 use crate::style::media::MediaModifier;
+use crate::style::media::MediaQuery;
 use crate::style::media::MediaQueryCache;
 use crate::style::media::RangeFeature;
 use crate::style::media::RangeValue;
@@ -82,6 +83,7 @@ use crate::style::types::ColorSchemePreference;
 use crate::style::types::ContainerType;
 use crate::style::types::OutlineColor;
 use crate::style::types::PointerEvents;
+use crate::style::types::WritingMode;
 use crate::style::values::Length;
 use crate::style::values::LengthUnit;
 use crate::style::ComputedStyle;
@@ -560,174 +562,183 @@ fn resolve_container_query_length(
 
 fn evaluate_container_size_feature(
   feature: &MediaFeature,
+  container: &ContainerQueryInfo,
   viewport_width: f32,
   viewport_height: f32,
   font_size: f32,
   root_font_size: f32,
 ) -> bool {
   match feature {
-    // Width / inline-size features.
+    // Physical width / height.
     MediaFeature::Width(length) => resolve_container_query_length(
       length,
-      viewport_width,
-      viewport_height,
+      container.width,
+      container.height,
       viewport_width,
       viewport_height,
       font_size,
       root_font_size,
     )
-    .map(|target| (viewport_width - target).abs() < 0.5)
+    .map(|target| (container.width - target).abs() < 0.5)
     .unwrap_or(false),
     MediaFeature::MinWidth(length) => resolve_container_query_length(
       length,
-      viewport_width,
-      viewport_height,
+      container.width,
+      container.height,
       viewport_width,
       viewport_height,
       font_size,
       root_font_size,
     )
-    .map(|target| viewport_width >= target)
+    .map(|target| container.width >= target)
     .unwrap_or(false),
     MediaFeature::MaxWidth(length) => resolve_container_query_length(
       length,
-      viewport_width,
-      viewport_height,
-      viewport_width,
-      viewport_height,
-      font_size,
-      root_font_size,
-    )
-    .map(|target| viewport_width <= target)
-    .unwrap_or(false),
-    MediaFeature::InlineSize(length) => resolve_container_query_length(
-      length,
-      viewport_width,
-      viewport_height,
+      container.width,
+      container.height,
       viewport_width,
       viewport_height,
       font_size,
       root_font_size,
     )
-    .map(|target| (viewport_width - target).abs() < 0.5)
-    .unwrap_or(false),
-    MediaFeature::MinInlineSize(length) => resolve_container_query_length(
-      length,
-      viewport_width,
-      viewport_height,
-      viewport_width,
-      viewport_height,
-      font_size,
-      root_font_size,
-    )
-    .map(|target| viewport_width >= target)
-    .unwrap_or(false),
-    MediaFeature::MaxInlineSize(length) => resolve_container_query_length(
-      length,
-      viewport_width,
-      viewport_height,
-      viewport_width,
-      viewport_height,
-      font_size,
-      root_font_size,
-    )
-    .map(|target| viewport_width <= target)
+    .map(|target| container.width <= target)
     .unwrap_or(false),
 
-    // Height / block-size features.
     MediaFeature::Height(length) => resolve_container_query_length(
       length,
-      viewport_height,
-      viewport_width,
+      container.height,
+      container.width,
       viewport_width,
       viewport_height,
       font_size,
       root_font_size,
     )
-    .map(|target| (viewport_height - target).abs() < 0.5)
+    .map(|target| (container.height - target).abs() < 0.5)
     .unwrap_or(false),
     MediaFeature::MinHeight(length) => resolve_container_query_length(
       length,
-      viewport_height,
-      viewport_width,
+      container.height,
+      container.width,
       viewport_width,
       viewport_height,
       font_size,
       root_font_size,
     )
-    .map(|target| viewport_height >= target)
+    .map(|target| container.height >= target)
     .unwrap_or(false),
     MediaFeature::MaxHeight(length) => resolve_container_query_length(
       length,
-      viewport_height,
-      viewport_width,
+      container.height,
+      container.width,
       viewport_width,
       viewport_height,
       font_size,
       root_font_size,
     )
-    .map(|target| viewport_height <= target)
+    .map(|target| container.height <= target)
+    .unwrap_or(false),
+
+    // Logical inline size / block size.
+    MediaFeature::InlineSize(length) => resolve_container_query_length(
+      length,
+      container.inline_size,
+      container.block_size,
+      viewport_width,
+      viewport_height,
+      font_size,
+      root_font_size,
+    )
+    .map(|target| (container.inline_size - target).abs() < 0.5)
+    .unwrap_or(false),
+    MediaFeature::MinInlineSize(length) => resolve_container_query_length(
+      length,
+      container.inline_size,
+      container.block_size,
+      viewport_width,
+      viewport_height,
+      font_size,
+      root_font_size,
+    )
+    .map(|target| container.inline_size >= target)
+    .unwrap_or(false),
+    MediaFeature::MaxInlineSize(length) => resolve_container_query_length(
+      length,
+      container.inline_size,
+      container.block_size,
+      viewport_width,
+      viewport_height,
+      font_size,
+      root_font_size,
+    )
+    .map(|target| container.inline_size <= target)
     .unwrap_or(false),
     MediaFeature::BlockSize(length) => resolve_container_query_length(
       length,
-      viewport_height,
-      viewport_width,
+      container.block_size,
+      container.inline_size,
       viewport_width,
       viewport_height,
       font_size,
       root_font_size,
     )
-    .map(|target| (viewport_height - target).abs() < 0.5)
+    .map(|target| (container.block_size - target).abs() < 0.5)
     .unwrap_or(false),
     MediaFeature::MinBlockSize(length) => resolve_container_query_length(
       length,
-      viewport_height,
-      viewport_width,
+      container.block_size,
+      container.inline_size,
       viewport_width,
       viewport_height,
       font_size,
       root_font_size,
     )
-    .map(|target| viewport_height >= target)
+    .map(|target| container.block_size >= target)
     .unwrap_or(false),
     MediaFeature::MaxBlockSize(length) => resolve_container_query_length(
       length,
-      viewport_height,
-      viewport_width,
+      container.block_size,
+      container.inline_size,
       viewport_width,
       viewport_height,
       font_size,
       root_font_size,
     )
-    .map(|target| viewport_height <= target)
+    .map(|target| container.block_size <= target)
     .unwrap_or(false),
 
-    // Orientation.
     MediaFeature::Orientation(orientation) => {
-      if !viewport_width.is_finite() || !viewport_height.is_finite() {
+      if !container.width.is_finite() || !container.height.is_finite() {
         return false;
       }
-      let is_portrait = viewport_height >= viewport_width;
+      let is_portrait = container.height >= container.width;
       match orientation {
         crate::style::media::Orientation::Portrait => is_portrait,
         crate::style::media::Orientation::Landscape => !is_portrait,
       }
     }
 
-    // Aspect ratio.
     MediaFeature::AspectRatio { width, height } => {
+      if !container.width.is_finite() || !container.height.is_finite() || container.height == 0.0 {
+        return false;
+      }
       let target_ratio = *width as f32 / *height as f32;
-      let actual_ratio = viewport_width / viewport_height;
+      let actual_ratio = container.width / container.height;
       (target_ratio - actual_ratio).abs() < 0.01
     }
     MediaFeature::MinAspectRatio { width, height } => {
+      if !container.width.is_finite() || !container.height.is_finite() || container.height == 0.0 {
+        return false;
+      }
       let target_ratio = *width as f32 / *height as f32;
-      let actual_ratio = viewport_width / viewport_height;
+      let actual_ratio = container.width / container.height;
       actual_ratio >= target_ratio
     }
     MediaFeature::MaxAspectRatio { width, height } => {
+      if !container.width.is_finite() || !container.height.is_finite() || container.height == 0.0 {
+        return false;
+      }
       let target_ratio = *width as f32 / *height as f32;
-      let actual_ratio = viewport_width / viewport_height;
+      let actual_ratio = container.width / container.height;
       actual_ratio <= target_ratio
     }
 
@@ -735,51 +746,54 @@ fn evaluate_container_size_feature(
     MediaFeature::Range { feature, op, value } => match (feature, value) {
       (RangeFeature::Width, RangeValue::Length(len)) => resolve_container_query_length(
         len,
-        viewport_width,
-        viewport_height,
-        viewport_width,
-        viewport_height,
-        font_size,
-        root_font_size,
-      )
-      .map(|target| compare_with_op(*op, viewport_width, target))
-      .unwrap_or(false),
-      (RangeFeature::InlineSize, RangeValue::Length(len)) => resolve_container_query_length(
-        len,
-        viewport_width,
-        viewport_height,
+        container.width,
+        container.height,
         viewport_width,
         viewport_height,
         font_size,
         root_font_size,
       )
-      .map(|target| compare_with_op(*op, viewport_width, target))
-      .unwrap_or(false),
-      (RangeFeature::BlockSize, RangeValue::Length(len)) => resolve_container_query_length(
-        len,
-        viewport_height,
-        viewport_width,
-        viewport_width,
-        viewport_height,
-        font_size,
-        root_font_size,
-      )
-      .map(|target| compare_with_op(*op, viewport_height, target))
+      .map(|target| compare_with_op(*op, container.width, target))
       .unwrap_or(false),
       (RangeFeature::Height, RangeValue::Length(len)) => resolve_container_query_length(
         len,
-        viewport_height,
-        viewport_width,
+        container.height,
+        container.width,
         viewport_width,
         viewport_height,
         font_size,
         root_font_size,
       )
-      .map(|target| compare_with_op(*op, viewport_height, target))
+      .map(|target| compare_with_op(*op, container.height, target))
+      .unwrap_or(false),
+      (RangeFeature::InlineSize, RangeValue::Length(len)) => resolve_container_query_length(
+        len,
+        container.inline_size,
+        container.block_size,
+        viewport_width,
+        viewport_height,
+        font_size,
+        root_font_size,
+      )
+      .map(|target| compare_with_op(*op, container.inline_size, target))
+      .unwrap_or(false),
+      (RangeFeature::BlockSize, RangeValue::Length(len)) => resolve_container_query_length(
+        len,
+        container.block_size,
+        container.inline_size,
+        viewport_width,
+        viewport_height,
+        font_size,
+        root_font_size,
+      )
+      .map(|target| compare_with_op(*op, container.block_size, target))
       .unwrap_or(false),
       (RangeFeature::AspectRatio, RangeValue::AspectRatio(w, h)) => {
+        if !container.width.is_finite() || !container.height.is_finite() || container.height == 0.0 {
+          return false;
+        }
         let target_ratio = *w as f32 / *h as f32;
-        let actual_ratio = viewport_width / viewport_height;
+        let actual_ratio = container.width / container.height;
         compare_with_op(*op, actual_ratio, target_ratio)
       }
       _ => false,
@@ -788,16 +802,17 @@ fn evaluate_container_size_feature(
     // Nested boolean conditions.
     MediaFeature::Not(inner) => !evaluate_container_size_feature(
       inner.as_ref(),
+      container,
       viewport_width,
       viewport_height,
       font_size,
       root_font_size,
     ),
     MediaFeature::And(list) => list.iter().all(|f| {
-      evaluate_container_size_feature(f, viewport_width, viewport_height, font_size, root_font_size)
+      evaluate_container_size_feature(f, container, viewport_width, viewport_height, font_size, root_font_size)
     }),
     MediaFeature::Or(list) => list.iter().any(|f| {
-      evaluate_container_size_feature(f, viewport_width, viewport_height, font_size, root_font_size)
+      evaluate_container_size_feature(f, container, viewport_width, viewport_height, font_size, root_font_size)
     }),
 
     // Container size queries are validated at parse time, but keep a conservative fallback.
@@ -823,8 +838,22 @@ fn evaluate_container_size_query(mq: &crate::style::media::MediaQuery, container
     return matches!(mq.modifier, Some(MediaModifier::Not));
   }
 
+  if matches!(container.container_type, ContainerType::InlineSize) {
+    let inline_axis_is_horizontal = crate::style::inline_axis_is_horizontal(container.styles.writing_mode);
+    if !cq_media_query_inline_only(mq, inline_axis_is_horizontal) {
+      return false;
+    }
+  }
+
   let features_match = mq.features.iter().all(|feature| {
-    evaluate_container_size_feature(feature, viewport_width, viewport_height, font_size, root_font_size)
+    evaluate_container_size_feature(
+      feature,
+      container,
+      viewport_width,
+      viewport_height,
+      font_size,
+      root_font_size,
+    )
   });
 
   match mq.modifier {
@@ -870,43 +899,61 @@ fn normalize_query_value(value: &str) -> String {
 //
 // The cache is thread-local and cleared at the start of each cascade pass.
 const CQ_SUPPORT_SIZE: u8 = 1 << 0;
-const CQ_SUPPORT_INLINE_SIZE: u8 = 1 << 1;
-const CQ_SUPPORT_STYLE: u8 = 1 << 2;
+const CQ_SUPPORT_INLINE_SIZE_HORIZ: u8 = 1 << 1;
+const CQ_SUPPORT_INLINE_SIZE_VERT: u8 = 1 << 2;
+const CQ_SUPPORT_INLINE_SIZE: u8 = CQ_SUPPORT_INLINE_SIZE_HORIZ | CQ_SUPPORT_INLINE_SIZE_VERT;
+const CQ_SUPPORT_STYLE: u8 = 1 << 3;
 const CQ_SUPPORT_ALL: u8 = CQ_SUPPORT_SIZE | CQ_SUPPORT_INLINE_SIZE | CQ_SUPPORT_STYLE;
 
-fn cq_type_bit(container_type: ContainerType) -> u8 {
-  match container_type {
+fn cq_type_bit(container: &ContainerQueryInfo) -> u8 {
+  match container.container_type {
     ContainerType::Normal => CQ_SUPPORT_STYLE,
     ContainerType::Size => CQ_SUPPORT_SIZE,
-    ContainerType::InlineSize => CQ_SUPPORT_INLINE_SIZE,
+    ContainerType::InlineSize => {
+      if container.styles.writing_mode == WritingMode::HorizontalTb {
+        CQ_SUPPORT_INLINE_SIZE_HORIZ
+      } else {
+        CQ_SUPPORT_INLINE_SIZE_VERT
+      }
+    }
   }
 }
 
-fn cq_size_query_support_mask(query: &ContainerSizeQuery) -> u8 {
-  fn feature_inline_only(feature: &MediaFeature) -> bool {
-    match feature {
-      MediaFeature::Width(_)
-      | MediaFeature::MinWidth(_)
-      | MediaFeature::MaxWidth(_)
-      | MediaFeature::InlineSize(_)
-      | MediaFeature::MinInlineSize(_)
-      | MediaFeature::MaxInlineSize(_) => true,
-      MediaFeature::Range { feature, .. } => {
-        matches!(feature, RangeFeature::Width | RangeFeature::InlineSize)
-      }
-      MediaFeature::Not(inner) => feature_inline_only(inner),
-      MediaFeature::And(list) | MediaFeature::Or(list) => list.iter().all(feature_inline_only),
+fn cq_media_feature_inline_only(feature: &MediaFeature, inline_axis_is_horizontal: bool) -> bool {
+  match feature {
+    MediaFeature::InlineSize(_) | MediaFeature::MinInlineSize(_) | MediaFeature::MaxInlineSize(_) => true,
+    MediaFeature::Width(_) | MediaFeature::MinWidth(_) | MediaFeature::MaxWidth(_) => inline_axis_is_horizontal,
+    MediaFeature::Height(_) | MediaFeature::MinHeight(_) | MediaFeature::MaxHeight(_) => !inline_axis_is_horizontal,
+    MediaFeature::Range { feature, .. } => match feature {
+      RangeFeature::InlineSize => true,
+      RangeFeature::Width => inline_axis_is_horizontal,
+      RangeFeature::Height => !inline_axis_is_horizontal,
       _ => false,
-    }
+    },
+    MediaFeature::Not(inner) => cq_media_feature_inline_only(inner, inline_axis_is_horizontal),
+    MediaFeature::And(list) | MediaFeature::Or(list) => list
+      .iter()
+      .all(|inner| cq_media_feature_inline_only(inner, inline_axis_is_horizontal)),
+    _ => false,
   }
+}
 
-  let inline_only = query.support_query().features.iter().all(feature_inline_only);
+fn cq_media_query_inline_only(mq: &MediaQuery, inline_axis_is_horizontal: bool) -> bool {
+  mq.features
+    .iter()
+    .all(|feature| cq_media_feature_inline_only(feature, inline_axis_is_horizontal))
+}
 
-  if inline_only {
-    CQ_SUPPORT_SIZE | CQ_SUPPORT_INLINE_SIZE
-  } else {
-    CQ_SUPPORT_SIZE
+fn cq_size_query_support_mask(query: &ContainerSizeQuery) -> u8 {
+  let mq = query.support_query();
+  let mut mask = CQ_SUPPORT_SIZE;
+  if cq_media_query_inline_only(mq, true) {
+    mask |= CQ_SUPPORT_INLINE_SIZE_HORIZ;
   }
+  if cq_media_query_inline_only(mq, false) {
+    mask |= CQ_SUPPORT_INLINE_SIZE_VERT;
+  }
+  mask
 }
 
 fn cq_query_support_mask(query: &ContainerQuery) -> u8 {
@@ -6797,7 +6844,15 @@ fn container_query_ancestor_ids_for<'a>(
 /// Captured container size and metadata for container query evaluation.
 #[derive(Debug, Clone)]
 pub struct ContainerQueryInfo {
+  /// Physical width of the query container's content box.
+  pub width: f32,
+  /// Physical height of the query container's content box.
+  pub height: f32,
+  /// Logical inline size of the query container's content box (derived from `width`/`height`
+  /// and the query container's writing mode).
   pub inline_size: f32,
+  /// Logical block size of the query container's content box (derived from `width`/`height`
+  /// and the query container's writing mode).
   pub block_size: f32,
   pub container_type: ContainerType,
   pub names: Vec<String>,
@@ -6990,7 +7045,7 @@ impl ContainerQueryContext {
         continue;
       };
 
-      if (support_mask & cq_type_bit(info.container_type)) == 0 {
+      if (support_mask & cq_type_bit(info)) == 0 {
         continue;
       }
 
@@ -13102,6 +13157,8 @@ mod tests {
       containers: HashMap::from([(
         1usize,
         ContainerQueryInfo {
+          width: 600.0,
+          height: 400.0,
           inline_size: 600.0,
           block_size: 400.0,
           container_type: ContainerType::InlineSize,
@@ -13225,6 +13282,8 @@ mod tests {
       containers: HashMap::from([(
         container_first.node_id,
         ContainerQueryInfo {
+          width: 600.0,
+          height: 400.0,
           inline_size: 600.0,
           block_size: 400.0,
           container_type: ContainerType::Size,
@@ -13297,6 +13356,8 @@ mod tests {
       containers: HashMap::from([(
         container_first.node_id,
         ContainerQueryInfo {
+          width: 600.0,
+          height: 400.0,
           inline_size: 600.0,
           block_size: 400.0,
           container_type: ContainerType::Size,
@@ -13425,6 +13486,8 @@ mod tests {
       containers: HashMap::from([(
         first.node_id,
         ContainerQueryInfo {
+          width: 600.0,
+          height: 400.0,
           inline_size: 600.0,
           block_size: 400.0,
           container_type: ContainerType::InlineSize,
@@ -13545,6 +13608,8 @@ mod tests {
       containers: HashMap::from([(
         first.node_id,
         ContainerQueryInfo {
+          width: 600.0,
+          height: 400.0,
           inline_size: 600.0,
           block_size: 400.0,
           container_type: ContainerType::InlineSize,
@@ -13712,6 +13777,8 @@ mod tests {
       containers: HashMap::from([(
         first.node_id,
         ContainerQueryInfo {
+          width: 600.0,
+          height: 400.0,
           inline_size: 600.0,
           block_size: 400.0,
           container_type: ContainerType::InlineSize,
@@ -13801,6 +13868,8 @@ mod tests {
       containers: HashMap::from([(
         1usize,
         ContainerQueryInfo {
+          width: 600.0,
+          height: 400.0,
           inline_size: 600.0,
           block_size: 400.0,
           container_type: ContainerType::InlineSize,
@@ -13870,6 +13939,8 @@ mod tests {
       containers: HashMap::from([(
         1usize,
         ContainerQueryInfo {
+          width: inline_size,
+          height: 400.0,
           inline_size,
           block_size: 400.0,
           container_type: ContainerType::InlineSize,
@@ -13971,6 +14042,8 @@ mod tests {
       containers: HashMap::from([(
         1usize,
         ContainerQueryInfo {
+          width: 600.0,
+          height: 400.0,
           inline_size: 600.0,
           block_size: 400.0,
           container_type: ContainerType::InlineSize,
@@ -14057,6 +14130,8 @@ mod tests {
       containers: HashMap::from([(
         1usize,
         ContainerQueryInfo {
+          width: 400.0,
+          height: 300.0,
           inline_size: 400.0,
           block_size: 300.0,
           container_type: ContainerType::InlineSize,
@@ -14292,6 +14367,8 @@ mod tests {
     containers.insert(
       1,
       ContainerQueryInfo {
+        width: 400.0,
+        height: 0.0,
         inline_size: 400.0,
         block_size: 0.0,
         container_type: ContainerType::Size,
@@ -14303,6 +14380,8 @@ mod tests {
     containers.insert(
       2,
       ContainerQueryInfo {
+        width: 600.0,
+        height: 0.0,
         inline_size: 600.0,
         block_size: 0.0,
         container_type: ContainerType::Size,
@@ -14350,6 +14429,8 @@ mod tests {
     containers.insert(
       1,
       ContainerQueryInfo {
+        width: 400.0,
+        height: 0.0,
         inline_size: 400.0,
         block_size: 0.0,
         container_type: ContainerType::Size,
@@ -14361,6 +14442,8 @@ mod tests {
     containers.insert(
       2,
       ContainerQueryInfo {
+        width: 600.0,
+        height: 0.0,
         inline_size: 600.0,
         block_size: 0.0,
         container_type: ContainerType::Size,
@@ -14396,6 +14479,8 @@ mod tests {
     containers.insert(
       1,
       ContainerQueryInfo {
+        width: 600.0,
+        height: 0.0,
         inline_size: 600.0,
         block_size: 0.0,
         container_type: ContainerType::Size,
@@ -14407,6 +14492,8 @@ mod tests {
     containers.insert(
       2,
       ContainerQueryInfo {
+        width: 800.0,
+        height: 0.0,
         inline_size: 800.0,
         block_size: 0.0,
         container_type: ContainerType::Normal,
@@ -14442,6 +14529,8 @@ mod tests {
     containers.insert(
       1,
       ContainerQueryInfo {
+        width: 600.0,
+        height: 800.0,
         inline_size: 600.0,
         block_size: 800.0,
         container_type: ContainerType::Size,
@@ -14453,6 +14542,8 @@ mod tests {
     containers.insert(
       2,
       ContainerQueryInfo {
+        width: 600.0,
+        height: 0.0,
         inline_size: 600.0,
         block_size: 0.0,
         container_type: ContainerType::InlineSize,
@@ -24548,6 +24639,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     containers.insert(
       1,
       ContainerQueryInfo {
+        width: 100.0,
+        height: 100.0,
         inline_size: 100.0,
         block_size: 100.0,
         container_type: ContainerType::Size,
@@ -24625,6 +24718,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     containers.insert(
       1,
       ContainerQueryInfo {
+        width: 300.0,
+        height: 300.0,
         inline_size: 300.0,
         block_size: 300.0,
         container_type: ContainerType::Size,
@@ -24636,6 +24731,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     containers.insert(
       2,
       ContainerQueryInfo {
+        width: 300.0,
+        height: 100.0,
         inline_size: 300.0,
         block_size: 100.0,
         container_type: ContainerType::InlineSize,
@@ -24717,6 +24814,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     containers.insert(
       1,
       ContainerQueryInfo {
+        width: 300.0,
+        height: 300.0,
         inline_size: 300.0,
         block_size: 300.0,
         container_type: ContainerType::Size,
@@ -24728,6 +24827,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     containers.insert(
       2,
       ContainerQueryInfo {
+        width: 300.0,
+        height: 100.0,
         inline_size: 300.0,
         block_size: 100.0,
         container_type: ContainerType::InlineSize,
@@ -24809,6 +24910,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     containers.insert(
       1,
       ContainerQueryInfo {
+        width: 300.0,
+        height: 300.0,
         inline_size: 300.0,
         block_size: 300.0,
         container_type: ContainerType::Size,
@@ -24820,6 +24923,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     containers.insert(
       2,
       ContainerQueryInfo {
+        width: 300.0,
+        height: 100.0,
         inline_size: 300.0,
         block_size: 100.0,
         container_type: ContainerType::InlineSize,
@@ -24894,6 +24999,8 @@ slot[name=\"s\"]::slotted(.assigned) { color: rgb(4, 5, 6); }"
     containers.insert(
       1,
       ContainerQueryInfo {
+        width: 300.0,
+        height: 100.0,
         inline_size: 300.0,
         block_size: 100.0,
         container_type: ContainerType::InlineSize,

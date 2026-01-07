@@ -4,7 +4,7 @@ use fastrender::style::cascade::{
   apply_styles_with_media_target_and_imports, ContainerQueryContext, ContainerQueryInfo, StyledNode,
 };
 use fastrender::style::media::MediaContext;
-use fastrender::style::types::ContainerType;
+use fastrender::style::types::{ContainerType, WritingMode};
 use fastrender::style::values::CustomPropertyValue;
 use fastrender::style::ComputedStyle;
 use std::collections::HashMap;
@@ -62,11 +62,26 @@ fn cascade_with_container_styles(
 
   let base_media = MediaContext::screen(800.0, 600.0);
   let mut containers = HashMap::new();
+
+  // Ensure the container metadata matches the computed style used by container selection logic.
+  let mut style = (*styles).clone();
+  style.container_type = ContainerType::InlineSize;
+  let writing_mode = style.writing_mode;
+  let styles = Arc::new(style);
+
+  let block_size = 300.0;
+  let (width, height) = match writing_mode {
+    WritingMode::HorizontalTb => (inline_size, block_size),
+    _ => (block_size, inline_size),
+  };
+
   containers.insert(
     container_id,
     ContainerQueryInfo {
+      width,
+      height,
       inline_size,
-      block_size: 300.0,
+      block_size,
       container_type: ContainerType::InlineSize,
       names,
       font_size: styles.font_size,
@@ -94,6 +109,63 @@ fn cascade_with_container_styles(
 
 fn cascade_with_container(css: &str, inline_size: f32, names: Vec<String>) -> StyledNode {
   cascade_with_container_styles(css, inline_size, names, Arc::new(ComputedStyle::default()))
+}
+
+fn cascade_with_custom_container(
+  css: &str,
+  width: f32,
+  height: f32,
+  writing_mode: WritingMode,
+  container_type: ContainerType,
+  names: Vec<String>,
+) -> StyledNode {
+  let dom = dom::parse_html(HTML).unwrap();
+  let ids = dom::enumerate_dom_ids(&dom);
+  let container_node = find_dom_by_id(&dom, "c").expect("container node");
+  let container_id = *ids
+    .get(&(container_node as *const DomNode))
+    .expect("id for container");
+
+  let base_media = MediaContext::screen(800.0, 600.0);
+  let mut containers = HashMap::new();
+  let (inline_size, block_size) = match writing_mode {
+    WritingMode::HorizontalTb => (width, height),
+    _ => (height, width),
+  };
+  let mut style = ComputedStyle::default();
+  style.container_type = container_type;
+  style.writing_mode = writing_mode;
+  let styles = Arc::new(style);
+  containers.insert(
+    container_id,
+    ContainerQueryInfo {
+      width,
+      height,
+      inline_size,
+      block_size,
+      container_type,
+      names,
+      font_size: styles.font_size,
+      styles,
+    },
+  );
+  let ctx = ContainerQueryContext {
+    base_media: base_media.clone(),
+    containers,
+  };
+  let stylesheet = parse_stylesheet(css).unwrap();
+
+  apply_styles_with_media_target_and_imports(
+    &dom,
+    &stylesheet,
+    &base_media,
+    None,
+    None,
+    None,
+    Some(&ctx),
+    None,
+    None,
+  )
 }
 
 fn cascade_with_containers(
@@ -374,6 +446,8 @@ fn container_query_comma_conditions_select_independent_containers() {
       (
         "outer",
         ContainerQueryInfo {
+          width: 500.0,
+          height: 300.0,
           inline_size: 500.0,
           block_size: 300.0,
           container_type: ContainerType::InlineSize,
@@ -385,6 +459,8 @@ fn container_query_comma_conditions_select_independent_containers() {
       (
         "inner",
         ContainerQueryInfo {
+          width: 0.0,
+          height: 0.0,
           inline_size: 0.0,
           block_size: 0.0,
           container_type: ContainerType::Normal,
@@ -422,6 +498,8 @@ fn container_query_comma_conditions_allow_distinct_names() {
       (
         "foo",
         ContainerQueryInfo {
+          width: 300.0,
+          height: 300.0,
           inline_size: 300.0,
           block_size: 300.0,
           container_type: ContainerType::InlineSize,
@@ -433,6 +511,8 @@ fn container_query_comma_conditions_allow_distinct_names() {
       (
         "bar",
         ContainerQueryInfo {
+          width: 250.0,
+          height: 300.0,
           inline_size: 250.0,
           block_size: 300.0,
           container_type: ContainerType::InlineSize,
@@ -457,5 +537,50 @@ fn container_query_name_only_condition_matches_when_container_exists() {
   "#;
 
   let styled = cascade_with_container(css, 500.0, vec!["sidebar".into()]);
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "inline");
+}
+
+#[test]
+fn container_query_distinguishes_width_and_inline_size_in_vertical_writing_mode() {
+  let css = r#"
+    .target { display: block; }
+    @container (min-width: 150px) {
+      .target { display: inline; }
+    }
+    @container (min-inline-size: 150px) {
+      .target { display: flex; }
+    }
+  "#;
+
+  let styled = cascade_with_custom_container(
+    css,
+    200.0,
+    100.0,
+    WritingMode::VerticalRl,
+    ContainerType::Size,
+    vec![],
+  );
+
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "inline");
+}
+
+#[test]
+fn container_query_orientation_and_aspect_ratio_use_physical_axes() {
+  let css = r#"
+    .target { display: block; }
+    @container (orientation: landscape) and (min-aspect-ratio: 3/2) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let styled = cascade_with_custom_container(
+    css,
+    200.0,
+    100.0,
+    WritingMode::VerticalRl,
+    ContainerType::Size,
+    vec![],
+  );
+
   assert_eq!(display(find_by_id(&styled, "t").expect("target")), "inline");
 }

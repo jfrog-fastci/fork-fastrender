@@ -392,6 +392,8 @@ fn part_container_query_is_evaluated_against_the_part_element() {
       containers: HashMap::from([(
         container_id,
         ContainerQueryInfo {
+          width: inline_size,
+          height: 300.0,
           inline_size,
           block_size: 300.0,
           container_type: ContainerType::InlineSize,

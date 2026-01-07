@@ -79,6 +79,8 @@ fn container_size_query_var_resolves_per_container() {
   containers.insert(
     c1_id,
     ContainerQueryInfo {
+      width: 200.0,
+      height: 300.0,
       inline_size: 200.0,
       block_size: 300.0,
       container_type: ContainerType::InlineSize,
@@ -90,6 +92,8 @@ fn container_size_query_var_resolves_per_container() {
   containers.insert(
     c2_id,
     ContainerQueryInfo {
+      width: 200.0,
+      height: 300.0,
       inline_size: 200.0,
       block_size: 300.0,
       container_type: ContainerType::InlineSize,
@@ -139,6 +143,8 @@ fn container_size_query_var_fallback_used_when_missing() {
   containers.insert(
     container_id,
     ContainerQueryInfo {
+      width: 200.0,
+      height: 300.0,
       inline_size: 200.0,
       block_size: 300.0,
       container_type: ContainerType::InlineSize,
@@ -187,6 +193,8 @@ fn container_size_query_var_missing_without_fallback_is_false() {
   containers.insert(
     container_id,
     ContainerQueryInfo {
+      width: 200.0,
+      height: 300.0,
       inline_size: 200.0,
       block_size: 300.0,
       container_type: ContainerType::InlineSize,
@@ -245,6 +253,8 @@ fn container_size_query_var_rem_uses_root_font_size() {
   containers.insert(
     container_id,
     ContainerQueryInfo {
+      width: 150.0,
+      height: 300.0,
       inline_size: 150.0,
       block_size: 300.0,
       container_type: ContainerType::InlineSize,

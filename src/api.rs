@@ -12114,6 +12114,16 @@ fn container_type_fingerprint(container_type: ContainerType) -> u8 {
   }
 }
 
+fn writing_mode_fingerprint(writing_mode: WritingMode) -> u8 {
+  match writing_mode {
+    WritingMode::HorizontalTb => 0,
+    WritingMode::VerticalRl => 1,
+    WritingMode::VerticalLr => 2,
+    WritingMode::SidewaysRl => 3,
+    WritingMode::SidewaysLr => 4,
+  }
+}
+
 fn container_query_context_fingerprint(
   ctx: &ContainerQueryContext,
   config: Option<&ContainerQueryFingerprintConfig>,
@@ -12129,6 +12139,9 @@ fn container_query_context_fingerprint(
     };
     id.hash(&mut hasher);
     container_type_fingerprint(info.container_type).hash(&mut hasher);
+    writing_mode_fingerprint(info.styles.writing_mode).hash(&mut hasher);
+    info.width.to_bits().hash(&mut hasher);
+    info.height.to_bits().hash(&mut hasher);
     info.inline_size.to_bits().hash(&mut hasher);
     info.block_size.to_bits().hash(&mut hasher);
     info.font_size.to_bits().hash(&mut hasher);
@@ -12531,6 +12544,8 @@ fn build_container_query_context(
       containers.insert(
         *styled_id,
         ContainerQueryInfo {
+          width: 0.0,
+          height: 0.0,
           inline_size: 0.0,
           block_size: 0.0,
           container_type: style.container_type,
@@ -12550,9 +12565,9 @@ fn build_container_query_context(
     let style = styles.get(&styled_id).unwrap_or(&node.style);
     match style.container_type {
       ContainerType::Size | ContainerType::InlineSize => {
-        if let Some((inline, block)) = sizes.get(&box_id) {
-          let mut content_width = *inline;
-          let mut content_height = *block;
+        if let Some((width, height)) = sizes.get(&box_id) {
+          let mut content_width = *width;
+          let mut content_height = *height;
 
           let hp = style.padding_left.to_px()
             + style.padding_right.to_px()
@@ -12576,19 +12591,23 @@ fn build_container_query_context(
           };
           if runtime::runtime_toggles().truthy("FASTR_LOG_CONTAINER_QUERY") {
             eprintln!(
-                             "[cq] box_id={} styled_id={} type={:?} inline={:.2} block={:.2} content_inline={:.2} content_block={:.2}",
-                            box_id,
-                            styled_id,
-                            style.container_type,
-                            inline,
-                            block,
-                            content_inline,
-                            content_block
-                        );
+              "[cq] box_id={} styled_id={} type={:?} width={:.2} height={:.2} content_width={:.2} content_height={:.2} content_inline={:.2} content_block={:.2}",
+              box_id,
+              styled_id,
+              style.container_type,
+              width,
+              height,
+              content_width,
+              content_height,
+              content_inline,
+              content_block
+            );
           }
           containers
             .entry(styled_id)
             .and_modify(|entry| {
+              entry.width = entry.width.max(content_width);
+              entry.height = entry.height.max(content_height);
               entry.inline_size = entry.inline_size.max(content_inline);
               entry.block_size = entry.block_size.max(content_block);
               entry.font_size = entry.font_size.max(style.font_size);
@@ -12597,6 +12616,8 @@ fn build_container_query_context(
               entry.styles = Arc::clone(style);
             })
             .or_insert_with(|| ContainerQueryInfo {
+              width: content_width,
+              height: content_height,
               inline_size: content_inline,
               block_size: content_block,
               container_type: style.container_type,

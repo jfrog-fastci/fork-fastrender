@@ -68,6 +68,8 @@ fn cascade_with_container_inline_size(inline_size: f32) -> StyledNode {
   let containers = HashMap::from([(
     container_id,
     ContainerQueryInfo {
+      width: inline_size,
+      height: 300.0,
       inline_size,
       block_size: 300.0,
       container_type: ContainerType::InlineSize,
@@ -116,6 +118,8 @@ fn cascade_marker_with_container_inline_size(inline_size: f32) -> StyledNode {
   let containers = HashMap::from([(
     container_id,
     ContainerQueryInfo {
+      width: inline_size,
+      height: 300.0,
       inline_size,
       block_size: 300.0,
       container_type: ContainerType::InlineSize,
@@ -164,6 +168,8 @@ fn cascade_first_line_with_container_inline_size(inline_size: f32) -> StyledNode
   let containers = HashMap::from([(
     container_id,
     ContainerQueryInfo {
+      width: inline_size,
+      height: 300.0,
       inline_size,
       block_size: 300.0,
       container_type: ContainerType::InlineSize,

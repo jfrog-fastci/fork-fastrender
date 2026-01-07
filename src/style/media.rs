@@ -301,7 +301,7 @@ pub enum MediaFeature {
   MinWidth(Length),
   /// Maximum viewport width: `(max-width: 1024px)`
   MaxWidth(Length),
-  /// Exact inline size (alias of width for container queries): `(inline-size: 500px)`
+  /// Exact inline size: `(inline-size: 500px)`
   InlineSize(Length),
   /// Minimum inline size: `(min-inline-size: 500px)`
   MinInlineSize(Length),
@@ -315,7 +315,7 @@ pub enum MediaFeature {
   MinHeight(Length),
   /// Maximum viewport height: `(max-height: 900px)`
   MaxHeight(Length),
-  /// Exact block size (alias of height for container queries): `(block-size: 400px)`
+  /// Exact block size: `(block-size: 400px)`
   BlockSize(Length),
   /// Minimum block size: `(min-block-size: 400px)`
   MinBlockSize(Length),
@@ -881,7 +881,7 @@ impl MediaFeature {
         Ok(MediaFeature::MaxWidth(length))
       }
 
-      // Inline-size features (aliases of width for container queries)
+      // Inline-size features
       "inline-size" => {
         let length = Self::parse_length_value(name.as_ref(), value)?;
         Ok(MediaFeature::InlineSize(length))
@@ -909,7 +909,7 @@ impl MediaFeature {
         Ok(MediaFeature::MaxHeight(length))
       }
 
-      // Block-size features (aliases of height for container queries)
+      // Block-size features
       "block-size" => {
         let length = Self::parse_length_value(name.as_ref(), value)?;
         Ok(MediaFeature::BlockSize(length))
@@ -2550,7 +2550,7 @@ impl MediaContext {
         .map(|target| self.viewport_width <= target)
         .unwrap_or(false),
 
-      // Inline-size (alias of width for container queries)
+      // Inline-size
       MediaFeature::InlineSize(length) => self
         .resolve_length(length, self.viewport_width, self.viewport_height)
         .map(|target| (self.viewport_width - target).abs() < 0.5)
@@ -2578,7 +2578,7 @@ impl MediaContext {
         .map(|target| self.viewport_height <= target)
         .unwrap_or(false),
 
-      // Block-size (alias of height for container queries)
+      // Block-size
       MediaFeature::BlockSize(length) => self
         .resolve_length(length, self.viewport_height, self.viewport_width)
         .map(|target| (self.viewport_height - target).abs() < 0.5)
@@ -2788,7 +2788,7 @@ impl MediaContext {
     }
   }
 
-  fn resolve_length(&self, length: &Length, inline_base: f32, block_base: f32) -> Option<f32> {
+  pub(crate) fn resolve_length(&self, length: &Length, inline_base: f32, block_base: f32) -> Option<f32> {
     // For media/container queries, resolve lengths to pixels using the
     // context viewport and base font size (em/rem derived from the query context).
     use crate::style::values::LengthUnit;
