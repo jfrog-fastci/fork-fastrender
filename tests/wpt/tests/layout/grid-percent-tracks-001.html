@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>grid percent tracks resolve</title>
+<style>
+  body { margin: 0; }
+  .grid {
+    display: grid;
+    width: 200px;
+    height: 100px;
+    grid-template-columns: 25% 75%;
+    grid-template-rows: 50% 50%;
+  }
+  .cell { width: 100%; height: 100%; }
+  .a { background: #ef4444; }
+  .b { background: #22c55e; }
+  .c { background: #3b82f6; }
+  .d { background: #111827; }
+</style>
+<div class="grid">
+  <div class="cell a"></div>
+  <div class="cell b"></div>
+  <div class="cell c"></div>
+  <div class="cell d"></div>
+</div>
+

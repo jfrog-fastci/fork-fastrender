@@ -705,6 +705,8 @@ where
       .height
       .map(|space| space - content_box_inset.vertical_axis_sum()),
   };
+  let width_was_indefinite = inner_node_size.width.is_none();
+  let height_was_indefinite = inner_node_size.height.is_none();
 
   debug_log!("parent_size", dbg:parent_size);
   debug_log!("outer_node_size", dbg:outer_node_size);
@@ -990,39 +992,19 @@ where
     return LayoutOutput::from_outer_size(container_border_box);
   }
 
-  // 7. Resolve percentage track base sizes
-  // In the case of an indefinitely sized container these resolve to zero during the "Initialise Tracks" step
-  // and therefore need to be re-resolved here based on the content-sized content box of the container
-  if !available_grid_space.width.is_definite() {
-    for column in &mut columns {
-      let min: Option<f32> = column
-        .min_track_sizing_function
-        .resolved_percentage_size(container_content_box.width, |val, basis| {
-          tree.calc(val, basis)
-        });
-      let max: Option<f32> = column
-        .max_track_sizing_function
-        .resolved_percentage_size(container_content_box.width, |val, basis| {
-          tree.calc(val, basis)
-        });
-      column.base_size = column.base_size.maybe_clamp(min, max);
-    }
+  // Now that the grid container's used size is known, use it as the percentage basis for reruns.
+  //
+  // Percent track sizing functions behave like `auto` when the container size is indefinite. When
+  // that first-pass sizing results in a definite container size (e.g. via intrinsic sizing
+  // keywords, shrink-to-fit, min/max clamping, or subgrid overrides), we rerun track sizing so
+  // percentages resolve against the final container size.
+  if width_was_indefinite {
+    inner_node_size.width = Some(container_content_box.width);
   }
-  if !available_grid_space.height.is_definite() {
-    for row in &mut rows {
-      let min: Option<f32> = row
-        .min_track_sizing_function
-        .resolved_percentage_size(container_content_box.height, |val, basis| {
-          tree.calc(val, basis)
-        });
-      let max: Option<f32> = row
-        .max_track_sizing_function
-        .resolved_percentage_size(container_content_box.height, |val, basis| {
-          tree.calc(val, basis)
-        });
-      row.base_size = row.base_size.maybe_clamp(min, max);
-    }
+  if height_was_indefinite {
+    inner_node_size.height = Some(container_content_box.height);
   }
+  let available_grid_space_for_rerun = available_grid_space.maybe_set(inner_node_size);
 
   // Column sizing must be re-run (once) if:
   //   - The grid container's width was initially indefinite and there are any columns with percentage track sizing functions
@@ -1031,8 +1013,7 @@ where
   let mut rerun_column_sizing;
 
   let has_percentage_column = columns.iter().any(|track| track.uses_percentage());
-  let parent_width_indefinite = !available_space.width.is_definite();
-  rerun_column_sizing = parent_width_indefinite && has_percentage_column;
+  rerun_column_sizing = width_was_indefinite && has_percentage_column;
 
   if !rerun_column_sizing {
     let min_content_contribution_changed = items
@@ -1082,7 +1063,7 @@ where
       max_size.get(AbstractAxis::Inline),
       justify_content,
       align_content,
-      available_grid_space,
+      available_grid_space_for_rerun,
       inner_node_size,
       &mut columns,
       &mut rows,
@@ -1107,74 +1088,79 @@ where
       record_rows,
       record_columns,
     );
+  }
 
-    // Row sizing must be re-run (once) if:
-    //   - The grid container's height was initially indefinite and there are any rows with percentage track sizing functions
-    //   - Any grid item crossing an intrinsically sized track's min content contribution height has changed
-    // TODO: Only rerun sizing for tracks that actually require it rather than for all tracks if any need it.
-    let mut rerun_row_sizing;
+  // Row sizing must be re-run (once) if:
+  //   - The grid container's height was initially indefinite and there are any row tracks with percentage sizing
+  //   - The grid container's width was initially indefinite and there are any row gaps with percentage sizing
+  //   - Any grid item crossing an intrinsically sized track's min content contribution height has changed
+  // TODO: Only rerun sizing for tracks that actually require it rather than for all tracks if any need it.
+  let mut rerun_row_sizing;
 
-    let has_percentage_row = rows.iter().any(|track| track.uses_percentage());
-    let parent_height_indefinite = !available_space.height.is_definite();
-    rerun_row_sizing = parent_height_indefinite && has_percentage_row;
+  let has_percentage_row_track = rows
+    .iter()
+    .any(|track| track.kind == GridTrackKind::Track && track.uses_percentage());
+  let has_percentage_row_gap = rows
+    .iter()
+    .any(|track| track.kind == GridTrackKind::Gutter && track.uses_percentage());
+  rerun_row_sizing = (height_was_indefinite && has_percentage_row_track)
+    || (width_was_indefinite && has_percentage_row_gap);
 
-    if !rerun_row_sizing {
-      let min_content_contribution_changed = items
-        .iter_mut()
-        .filter(|item| item.crosses_intrinsic_row)
-        .any(|item| {
-          let available_space = item.available_space(
-            AbstractAxis::Block,
-            &columns,
-            inner_node_size.width,
-            |track: &GridTrack, _| Some(track.base_size),
-          );
-          let new_min_content_contribution = item.min_content_contribution(
-            AbstractAxis::Block,
-            tree,
-            available_space,
-            inner_node_size,
-          );
+  if !rerun_row_sizing {
+    let min_content_contribution_changed = items
+      .iter_mut()
+      .filter(|item| item.crosses_intrinsic_row)
+      .any(|item| {
+        let available_space = item.available_space(
+          AbstractAxis::Block,
+          &columns,
+          inner_node_size.width,
+          |track: &GridTrack, _| Some(track.base_size),
+        );
+        let new_min_content_contribution = item.min_content_contribution(
+          AbstractAxis::Block,
+          tree,
+          available_space,
+          inner_node_size,
+        );
 
-          let has_changed =
-            Some(new_min_content_contribution) != item.min_content_contribution_cache.height;
+        let has_changed =
+          Some(new_min_content_contribution) != item.min_content_contribution_cache.height;
 
-          item.available_space_cache = Some(available_space);
-          item.min_content_contribution_cache.height = Some(new_min_content_contribution);
-          item.max_content_contribution_cache.height = None;
-          item.minimum_contribution_cache.height = None;
-
-          has_changed
-        });
-      rerun_row_sizing = min_content_contribution_changed;
-    } else {
-      items.iter_mut().for_each(|item| {
-        // Clear intrisic height caches
-        item.available_space_cache = None;
-        item.min_content_contribution_cache.height = None;
+        item.available_space_cache = Some(available_space);
+        item.min_content_contribution_cache.height = Some(new_min_content_contribution);
         item.max_content_contribution_cache.height = None;
         item.minimum_contribution_cache.height = None;
-      });
-    }
 
-    if rerun_row_sizing {
-      // Re-run track sizing algorithm for Block axis
-      track_sizing_algorithm(
-        tree,
-        AbstractAxis::Block,
-        min_size.get(AbstractAxis::Block),
-        max_size.get(AbstractAxis::Block),
-        align_content,
-        justify_content,
-        available_grid_space,
-        inner_node_size,
-        &mut rows,
-        &mut columns,
-        &mut items,
-        |track: &GridTrack, _, _| Some(track.base_size),
-        false, // TODO: Support baseline alignment in the vertical axis
-      );
-    }
+        has_changed
+      });
+    rerun_row_sizing = min_content_contribution_changed;
+  } else {
+    items.iter_mut().for_each(|item| {
+      // Clear intrinsic height caches
+      item.available_space_cache = None;
+      item.min_content_contribution_cache.height = None;
+      item.max_content_contribution_cache.height = None;
+      item.minimum_contribution_cache.height = None;
+    });
+  }
+
+  if rerun_row_sizing {
+    track_sizing_algorithm(
+      tree,
+      AbstractAxis::Block,
+      min_size.get(AbstractAxis::Block),
+      max_size.get(AbstractAxis::Block),
+      align_content,
+      justify_content,
+      available_grid_space_for_rerun,
+      inner_node_size,
+      &mut rows,
+      &mut columns,
+      &mut items,
+      |track: &GridTrack, _, _| Some(track.base_size),
+      false, // TODO: Support baseline alignment in the vertical axis
+    );
   }
 
   // Capture subgrid overrides now that track sizes are resolved and drop virtual contributions
