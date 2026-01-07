@@ -1176,7 +1176,7 @@ fn parse_container_query_in_parens<'i, 't>(
         }
         Err(_) => {
           if crate::style::var_resolution::contains_var(&raw) {
-            if let Some(placeholder_text) = replace_var_calls_with_length_placeholder(&raw, "0px") {
+            if let Some(placeholder_text) = replace_var_calls_with_size_query_placeholder(&raw) {
               if let Ok(template) = MediaQuery::parse(&placeholder_text) {
                 if template.is_size_query() {
                   return Ok(ContainerQuery::Size(ContainerSizeQuery::UnresolvedVars {
@@ -1270,7 +1270,7 @@ fn stringify_nested_tokens_with_var_placeholder<'i, 't, E>(
       Token::Colon => parts.push(":".to_string()),
       Token::Delim(c) => parts.push(c.to_string()),
       Token::Function(name) if name.eq_ignore_ascii_case("var") => {
-        // Consume the var() arguments but replace the token stream with a placeholder length.
+        // Consume the var() arguments but replace the token stream with a placeholder value.
         parser.parse_nested_block(consume_nested_tokens)?;
         parts.push(placeholder.to_string());
       }
@@ -1305,10 +1305,121 @@ fn stringify_nested_tokens_with_var_placeholder<'i, 't, E>(
   Ok(parts.join(""))
 }
 
-fn replace_var_calls_with_length_placeholder(value: &str, placeholder: &str) -> Option<String> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SizeQueryVarPlaceholder {
+  Length,
+  AspectRatio,
+  Orientation,
+}
+
+impl SizeQueryVarPlaceholder {
+  fn as_str(self) -> &'static str {
+    match self {
+      SizeQueryVarPlaceholder::Length => "0px",
+      SizeQueryVarPlaceholder::AspectRatio => "1/1",
+      SizeQueryVarPlaceholder::Orientation => "portrait",
+    }
+  }
+}
+
+fn detect_size_query_var_placeholder_in_block<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> Option<SizeQueryVarPlaceholder> {
+  while !parser.is_exhausted() {
+    if !css_deadline_allows_progress() {
+      break;
+    }
+
+    let Ok(token) = parser.next_including_whitespace() else {
+      break;
+    };
+
+    match token {
+      Token::Ident(id) => {
+        let name = id.as_ref();
+        if name.eq_ignore_ascii_case("orientation") {
+          return Some(SizeQueryVarPlaceholder::Orientation);
+        }
+        if name.eq_ignore_ascii_case("aspect-ratio")
+          || name.eq_ignore_ascii_case("min-aspect-ratio")
+          || name.eq_ignore_ascii_case("max-aspect-ratio")
+        {
+          return Some(SizeQueryVarPlaceholder::AspectRatio);
+        }
+        if name.eq_ignore_ascii_case("width")
+          || name.eq_ignore_ascii_case("min-width")
+          || name.eq_ignore_ascii_case("max-width")
+          || name.eq_ignore_ascii_case("inline-size")
+          || name.eq_ignore_ascii_case("min-inline-size")
+          || name.eq_ignore_ascii_case("max-inline-size")
+          || name.eq_ignore_ascii_case("height")
+          || name.eq_ignore_ascii_case("min-height")
+          || name.eq_ignore_ascii_case("max-height")
+          || name.eq_ignore_ascii_case("block-size")
+          || name.eq_ignore_ascii_case("min-block-size")
+          || name.eq_ignore_ascii_case("max-block-size")
+        {
+          return Some(SizeQueryVarPlaceholder::Length);
+        }
+      }
+      Token::Function(_)
+      | Token::ParenthesisBlock
+      | Token::SquareBracketBlock
+      | Token::CurlyBracketBlock => {
+        let _: std::result::Result<(), ParseError<'i, ()>> =
+          parser.parse_nested_block(consume_nested_tokens);
+      }
+      _ => {}
+    }
+  }
+
+  None
+}
+
+fn detect_size_query_var_placeholder(value: &str) -> SizeQueryVarPlaceholder {
+  let mut input = ParserInput::new(value);
+  let mut parser = Parser::new(&mut input);
+
+  while !parser.is_exhausted() {
+    if !css_deadline_allows_progress() {
+      break;
+    }
+    let Ok(token) = parser.next_including_whitespace() else {
+      break;
+    };
+
+    match token {
+      Token::ParenthesisBlock => {
+        let found = parser
+          .parse_nested_block(|nested| {
+            Ok::<_, ParseError<'_, ()>>(detect_size_query_var_placeholder_in_block(nested))
+          })
+          .ok()
+          .flatten();
+        if let Some(found) = found {
+          return found;
+        }
+      }
+      Token::Function(_) | Token::SquareBracketBlock | Token::CurlyBracketBlock => {
+        let _: std::result::Result<(), ParseError<'_, ()>> =
+          parser.parse_nested_block(consume_nested_tokens);
+      }
+      _ => {}
+    }
+  }
+
+  SizeQueryVarPlaceholder::Length
+}
+
+fn replace_var_calls_with_placeholder(value: &str, placeholder: &str) -> Option<String> {
   let mut input = ParserInput::new(value);
   let mut parser = Parser::new(&mut input);
   stringify_nested_tokens_with_var_placeholder::<()>(&mut parser, placeholder).ok()
+}
+
+fn replace_var_calls_with_size_query_placeholder(value: &str) -> Option<String> {
+  let placeholder = detect_size_query_var_placeholder(value).as_str();
+  replace_var_calls_with_placeholder(value, placeholder)
 }
 
 fn normalize_style_query_value(value: &str) -> String {

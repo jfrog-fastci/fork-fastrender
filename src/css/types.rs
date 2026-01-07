@@ -2940,9 +2940,9 @@ pub enum ContainerSizeQuery {
   Parsed(MediaQuery),
   /// Size query containing unresolved `var()` references.
   ///
-  /// `template` is the parsed query with all `var()` calls replaced by a placeholder length so
-  /// callers can validate/query metadata (e.g. container-type support masks) without knowing the
-  /// query container's computed custom properties.
+  /// `template` is the parsed query with all `var()` calls replaced by placeholder values (e.g.
+  /// `0px`, `1/1`, `portrait`) so callers can validate/query metadata (e.g. container-type support
+  /// masks) without knowing the query container's computed custom properties.
   UnresolvedVars { text: String, template: MediaQuery },
 }
 
