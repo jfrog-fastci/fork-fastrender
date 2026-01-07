@@ -1142,39 +1142,6 @@ fn parse_scroll_timeline_scroller(token: &str) -> Option<ScrollTimelineScroller>
   }
 }
 
-fn parse_timeline_scope(raw: &str) -> Option<TimelineScopeProperty> {
-  let trimmed = raw.trim();
-  if trimmed.is_empty() {
-    return None;
-  }
-  if trimmed.eq_ignore_ascii_case("none") {
-    return Some(TimelineScopeProperty::None);
-  }
-  if trimmed.eq_ignore_ascii_case("all") {
-    return Some(TimelineScopeProperty::All);
-  }
-
-  let mut names = Vec::new();
-  for part in split_top_level_commas(trimmed) {
-    let name = part.trim();
-    if name.is_empty() {
-      continue;
-    }
-    // `timeline-scope` uses `<dashed-ident>`, but the engine is generally lenient
-    // about timeline names (e.g. it accepts non-dashed identifiers for `scroll-timeline`).
-    if name.eq_ignore_ascii_case("none") || name.eq_ignore_ascii_case("all") {
-      return None;
-    }
-    names.push(name.to_string());
-  }
-
-  if names.is_empty() {
-    None
-  } else {
-    Some(TimelineScopeProperty::Names(names))
-  }
-}
-
 fn parse_timeline_offset_token(token: &str) -> Option<TimelineOffset> {
   if token.eq_ignore_ascii_case("auto") {
     return Some(TimelineOffset::Auto);
@@ -1273,6 +1240,62 @@ fn parse_view_timeline_list(raw: &str) -> Vec<ViewTimeline> {
     timelines.push(ViewTimeline { name, axis, inset });
   }
   timelines
+}
+
+fn parse_timeline_scope(raw: &str) -> Option<TimelineScopeProperty> {
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return None;
+  }
+
+  let mut input = ParserInput::new(trimmed);
+  let mut parser = Parser::new(&mut input);
+  parser.skip_whitespace();
+  let idents = parser
+    .parse_comma_separated(|p| {
+      p.skip_whitespace();
+      let token = p.next()?;
+      let ident = match token {
+        Token::Ident(ident) => ident.to_string(),
+        _ => return Err(p.new_custom_error::<(), ()>(())),
+      };
+      p.skip_whitespace();
+      Ok(ident)
+    })
+    .ok()?;
+  parser.skip_whitespace();
+  if !parser.is_exhausted() {
+    return None;
+  }
+  if idents.is_empty() {
+    return None;
+  }
+
+  if idents.len() == 1 {
+    let ident = &idents[0];
+    if ident.eq_ignore_ascii_case("none") {
+      return Some(TimelineScopeProperty::None);
+    }
+    if ident.eq_ignore_ascii_case("all") {
+      return Some(TimelineScopeProperty::All);
+    }
+  }
+
+  let mut names: Vec<String> = Vec::with_capacity(idents.len());
+  for ident in idents {
+    if ident.eq_ignore_ascii_case("none") || ident.eq_ignore_ascii_case("all") {
+      return None;
+    }
+    if !ident.starts_with("--") {
+      return None;
+    }
+    names.push(ident);
+  }
+  if names.is_empty() {
+    None
+  } else {
+    Some(TimelineScopeProperty::Names(names))
+  }
 }
 
 pub(crate) fn parse_animation_timeline_list(raw: &str) -> Option<Vec<AnimationTimeline>> {
@@ -5367,6 +5390,7 @@ fn apply_property_from_source(
     "scroll-snap-stop" => styles.scroll_snap_stop = source.scroll_snap_stop,
     "scroll-timeline" => styles.scroll_timelines = source.scroll_timelines.clone(),
     "view-timeline" => styles.view_timelines = source.view_timelines.clone(),
+    "timeline-scope" => styles.timeline_scope = source.timeline_scope.clone(),
     "animation-timeline" => styles.animation_timelines = source.animation_timelines.clone(),
     "animation-range" => styles.animation_ranges = source.animation_ranges.clone(),
     "animation-range-start" => {

@@ -616,12 +616,12 @@ pub struct ComputedStyle {
   pub backdrop: Option<Arc<ComputedStyle>>,
   pub scrollbar_width: ScrollbarWidth,
   pub scrollbar_color: ScrollbarColor,
-  /// Scroll/view timeline scoping rules (CSS `timeline-scope`).
-  pub timeline_scope: TimelineScopeProperty,
   /// Scroll timeline definitions declared on this element.
   pub scroll_timelines: Vec<ScrollTimeline>,
   /// View timeline definitions declared on this element.
   pub view_timelines: Vec<ViewTimeline>,
+  /// Scroll/view timeline scoping rules (CSS `timeline-scope`).
+  pub timeline_scope: TimelineScopeProperty,
   /// Timelines bound to animations on this element.
   pub animation_timelines: Vec<AnimationTimeline>,
   /// Ranges for animations along their timelines.
@@ -1054,9 +1054,9 @@ impl Default for ComputedStyle {
       backdrop: None,
       scrollbar_width: ScrollbarWidth::Auto,
       scrollbar_color: ScrollbarColor::Auto,
-      timeline_scope: TimelineScopeProperty::None,
       scroll_timelines: Vec::new(),
       view_timelines: Vec::new(),
+      timeline_scope: TimelineScopeProperty::None,
       animation_timelines: Vec::new(),
       animation_ranges: Vec::new(),
       animation_names: Vec::new(),
