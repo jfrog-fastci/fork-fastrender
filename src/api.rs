@@ -63,9 +63,9 @@ use crate::compat::CompatProfile;
 use crate::css::encoding::{decode_css_bytes, decode_css_bytes_cow};
 use crate::css::loader::{
   absolutize_css_urls_cow, extract_css_links, extract_embedded_css_urls_with_meta,
-  inject_css_into_html, inline_imports_with_diagnostics, link_rel_is_stylesheet_candidate,
-  resolve_href, resolve_href_with_base, should_scan_embedded_css_urls, InlineImportState,
-  StylesheetInlineBudget,
+  inject_css_into_html, inline_imports_with_request_with_diagnostics, link_rel_is_stylesheet_candidate,
+  resolve_href, resolve_href_with_base, should_scan_embedded_css_urls, ImportFetchContext,
+  InlineImportState, StylesheetInlineBudget,
 };
 use crate::css::parser::{
   extract_css_sources, extract_scoped_css_sources, parse_stylesheet_with_media, CssTreeScope,
@@ -9057,6 +9057,10 @@ impl FastRender {
               continue;
             }
           }
+          let sheet_base_url = res.final_url.as_deref().unwrap_or(css_url.as_str());
+          if sheet_base_url != css_url.as_str() {
+            import_state.register_stylesheet_alias(sheet_base_url);
+          }
           if let Err(err) = ensure_http_success(&res, &css_url)
             .and_then(|()| ensure_stylesheet_mime_sane(&res, &css_url))
           {
@@ -9072,7 +9076,7 @@ impl FastRender {
             );
           }
           let absolutize_timer = stats.as_deref().and_then(|rec| rec.timer());
-          let css_text = match absolutize_css_urls_cow(decoded.as_ref(), &css_url)? {
+          let css_text = match absolutize_css_urls_cow(decoded.as_ref(), sheet_base_url)? {
             std::borrow::Cow::Borrowed(_) => decoded,
             std::borrow::Cow::Owned(rewritten) => std::borrow::Cow::Owned(rewritten),
           };
@@ -9085,12 +9089,13 @@ impl FastRender {
           let mut import_diags: Vec<(String, String)> = Vec::new();
           let import_timer = stats.as_deref().and_then(|rec| rec.timer());
           let inlined = {
-            let mut import_fetch = |u: &str| -> Result<String> {
+            let mut import_fetch = |import_ctx: ImportFetchContext<'_>| -> Result<String> {
+              let u = import_ctx.url;
               if let Some(rec) = stats.as_deref_mut() {
                 rec.record_fetch(ResourceKind::Stylesheet);
               }
-              if let Some(ctx) = resource_context {
-                if let Err(err) = ctx.policy.allows(u) {
+              if let Some(resource_ctx) = resource_context {
+                if let Err(err) = resource_ctx.policy.allows(u) {
                   diagnostics.record_message(ResourceKind::Stylesheet, u, &err.reason);
                   return Err(Error::Resource(ResourceError::new(
                     u.to_string(),
@@ -9099,13 +9104,11 @@ impl FastRender {
                 }
               }
               let mut request = FetchRequest::new(u, FetchDestination::Style);
-              if let Some(referrer) = document_referrer {
-                request = request.with_referrer(referrer);
-              }
+              request = request.with_referrer(import_ctx.importer_url);
               match fetcher.fetch_with_request(request) {
                 Ok(res) => {
-                  if let Some(ctx) = resource_context {
-                    if let Err(err) = ctx.check_allowed_with_final(
+                  if let Some(resource_ctx) = resource_context {
+                    if let Err(err) = resource_ctx.check_allowed_with_final(
                       ResourceKind::Stylesheet,
                       u,
                       res.final_url.as_deref(),
@@ -9140,9 +9143,9 @@ impl FastRender {
               import_diags.push((url.to_string(), reason.to_string()));
             };
 
-            inline_imports_with_diagnostics(
+            inline_imports_with_request_with_diagnostics(
               css_text.as_ref(),
-              &css_url,
+              sheet_base_url,
               &mut import_fetch,
               &mut import_state,
               &mut import_diag,

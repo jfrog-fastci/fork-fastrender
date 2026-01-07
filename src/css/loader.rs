@@ -963,6 +963,13 @@ impl InlineImportState {
     let _ = self.try_register_stylesheet_with_budget(&url, &mut discard);
   }
 
+  pub fn register_stylesheet_alias(&mut self, url: &str) {
+    if self.seen.contains(url) {
+      return;
+    }
+    self.seen.insert(url.to_string());
+  }
+
   pub fn try_register_stylesheet_with_budget<D>(&mut self, url: &str, diagnostics: &mut D) -> bool
   where
     D: FnMut(&str, &str),
@@ -993,6 +1000,57 @@ impl Default for InlineImportState {
   }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ImportFetchContext<'a> {
+  pub url: &'a str,
+  pub importer_url: &'a str,
+}
+
+pub fn inline_imports_with_request<F>(
+  css: &str,
+  base_url: &str,
+  fetch: &mut F,
+  state: &mut InlineImportState,
+  deadline: Option<&RenderDeadline>,
+) -> std::result::Result<String, RenderError>
+where
+  F: FnMut(ImportFetchContext<'_>) -> Result<String>,
+{
+  inline_imports_with_request_with_diagnostics(
+    css,
+    base_url,
+    fetch,
+    state,
+    &mut |_url, _reason| {},
+    deadline,
+  )
+}
+
+pub fn inline_imports_with_request_with_diagnostics<F, D>(
+  css: &str,
+  base_url: &str,
+  fetch: &mut F,
+  state: &mut InlineImportState,
+  diagnostics: &mut D,
+  deadline: Option<&RenderDeadline>,
+) -> std::result::Result<String, RenderError>
+where
+  F: FnMut(ImportFetchContext<'_>) -> Result<String>,
+  D: FnMut(&str, &str),
+{
+  if !state.try_register_stylesheet_with_budget(base_url, diagnostics) {
+    return Ok(String::new());
+  }
+  if state.budget.remaining_bytes() == 0 {
+    diagnostics(base_url, "stylesheet byte budget exhausted");
+    return Ok(String::new());
+  }
+  state.stack.push(base_url.to_string());
+  let result = inline_imports_inner(css, base_url, fetch, state, diagnostics, deadline);
+  state.stack.pop();
+  result
+}
+
 /// Inline `@import` rules by fetching their targets recursively.
 ///
 /// All fetched stylesheets have their `url(...)` references rewritten against the
@@ -1008,14 +1066,8 @@ pub fn inline_imports<F>(
 where
   F: FnMut(&str) -> Result<String>,
 {
-  inline_imports_with_diagnostics(
-    css,
-    base_url,
-    fetch,
-    state,
-    &mut |_url, _reason| {},
-    deadline,
-  )
+  let mut adapter = |ctx: ImportFetchContext<'_>| fetch(ctx.url);
+  inline_imports_with_request(css, base_url, &mut adapter, state, deadline)
 }
 
 /// Inline `@import` rules with diagnostics about cycles and cutoffs.
@@ -1033,17 +1085,8 @@ where
   F: FnMut(&str) -> Result<String>,
   D: FnMut(&str, &str),
 {
-  if !state.try_register_stylesheet_with_budget(base_url, diagnostics) {
-    return Ok(String::new());
-  }
-  if state.budget.remaining_bytes() == 0 {
-    diagnostics(base_url, "stylesheet byte budget exhausted");
-    return Ok(String::new());
-  }
-  state.stack.push(base_url.to_string());
-  let result = inline_imports_inner(css, base_url, fetch, state, diagnostics, deadline);
-  state.stack.pop();
-  result
+  let mut adapter = |ctx: ImportFetchContext<'_>| fetch(ctx.url);
+  inline_imports_with_request_with_diagnostics(css, base_url, &mut adapter, state, diagnostics, deadline)
 }
 
 fn inline_imports_inner<F, D>(
@@ -1055,7 +1098,7 @@ fn inline_imports_inner<F, D>(
   deadline: Option<&RenderDeadline>,
 ) -> std::result::Result<String, RenderError>
 where
-  F: FnMut(&str) -> Result<String>,
+  F: FnMut(ImportFetchContext<'_>) -> Result<String>,
   D: FnMut(&str, &str),
 {
   fn push_with_budget<D>(
@@ -1404,13 +1447,16 @@ where
                   budget_exhausted = true;
                 } else if let Some(cached) = state.cache.get(&resolved) {
                   inlined = Some(cached);
-                } else if let Ok(fetched) = fetch(&resolved) {
+                } else if let Ok(fetched) = fetch(ImportFetchContext {
+                  url: &resolved,
+                  importer_url: base_url,
+                }) {
                   let rewritten = absolutize_css_urls_cow(&fetched, &resolved)?;
                   let rewritten_str = rewritten.as_ref();
                   if rewritten_str.len() > state.budget.remaining_bytes() {
                     diagnostics(&resolved, "stylesheet byte budget exhausted");
                   } else {
-                    let nested = inline_imports_with_diagnostics(
+                    let nested = inline_imports_with_request_with_diagnostics(
                       rewritten_str,
                       &resolved,
                       fetch,
