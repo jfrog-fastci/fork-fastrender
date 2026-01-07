@@ -288,6 +288,7 @@ pub enum PseudoClass {
   Focus,
   FocusWithin,
   FocusVisible,
+  Fullscreen,
   Disabled,
   Enabled,
   Required,
@@ -310,6 +311,8 @@ pub enum PseudoClass {
   Default,
   Link,
   Visited,
+  /// Any vendor-specific pseudo-class we don't model, kept to avoid selector-list invalidation.
+  Vendor(CssString),
 }
 
 impl fmt::Debug for PseudoClass {
@@ -495,6 +498,7 @@ impl ToCss for PseudoClass {
       PseudoClass::Focus => dest.write_str(":focus"),
       PseudoClass::FocusWithin => dest.write_str(":focus-within"),
       PseudoClass::FocusVisible => dest.write_str(":focus-visible"),
+      PseudoClass::Fullscreen => dest.write_str(":fullscreen"),
       PseudoClass::Disabled => dest.write_str(":disabled"),
       PseudoClass::Enabled => dest.write_str(":enabled"),
       PseudoClass::Required => dest.write_str(":required"),
@@ -517,6 +521,10 @@ impl ToCss for PseudoClass {
       PseudoClass::Checked => dest.write_str(":checked"),
       PseudoClass::Link => dest.write_str(":link"),
       PseudoClass::Visited => dest.write_str(":visited"),
+      PseudoClass::Vendor(name) => {
+        dest.write_str(":")?;
+        name.to_css(dest)
+      }
     }
   }
 }
@@ -543,6 +551,8 @@ pub enum PseudoElement {
   SliderThumb,
   /// Range slider track pseudo-element (vendor aliases mapped here).
   SliderTrack,
+  /// Any vendor-specific pseudo-element we don't model, kept to avoid selector-list invalidation.
+  Vendor(CssString),
   Slotted(Box<[Selector<FastRenderSelectorImpl>]>),
   Part(CssString),
 }
@@ -573,6 +583,7 @@ impl std::hash::Hash for PseudoElement {
         }
       }
       PseudoElement::Part(name) => name.hash(state),
+      PseudoElement::Vendor(name) => name.hash(state),
       _ => {}
     }
   }
@@ -611,6 +622,10 @@ impl ToCss for PseudoElement {
       // vendor spelling so debugging and tests remain stable.
       PseudoElement::SliderThumb => dest.write_str("::-webkit-slider-thumb"),
       PseudoElement::SliderTrack => dest.write_str("::-webkit-slider-runnable-track"),
+      PseudoElement::Vendor(name) => {
+        dest.write_str("::")?;
+        name.to_css(dest)
+      }
       PseudoElement::Slotted(selectors) => {
         dest.write_str("::slotted(")?;
         for (i, selector) in selectors.iter().enumerate() {
@@ -718,6 +733,10 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       "focus" => Ok(PseudoClass::Focus),
       "focus-within" => Ok(PseudoClass::FocusWithin),
       "focus-visible" => Ok(PseudoClass::FocusVisible),
+      "fullscreen" => Ok(PseudoClass::Fullscreen),
+      "-webkit-full-screen" => Ok(PseudoClass::Fullscreen),
+      "-moz-full-screen" => Ok(PseudoClass::Fullscreen),
+      "-ms-fullscreen" => Ok(PseudoClass::Fullscreen),
       "disabled" => Ok(PseudoClass::Disabled),
       "enabled" => Ok(PseudoClass::Enabled),
       "required" => Ok(PseudoClass::Required),
@@ -730,6 +749,8 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       "default" => Ok(PseudoClass::Default),
       "read-only" => Ok(PseudoClass::ReadOnly),
       "read-write" => Ok(PseudoClass::ReadWrite),
+      "-moz-read-only" => Ok(PseudoClass::ReadOnly),
+      "-moz-read-write" => Ok(PseudoClass::ReadWrite),
       "placeholder-shown" => Ok(PseudoClass::PlaceholderShown),
       "-webkit-input-placeholder" => Ok(PseudoClass::WebkitInputPlaceholder),
       "-ms-input-placeholder" => Ok(PseudoClass::MsInputPlaceholder),
@@ -747,6 +768,9 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       "target" => Ok(PseudoClass::Target),
       "target-within" => Ok(PseudoClass::TargetWithin),
       "scope" => Ok(PseudoClass::Scope),
+      s if s.starts_with("-moz-") || s.starts_with("-webkit-") || s.starts_with("-ms-") => {
+        Ok(PseudoClass::Vendor(CssString::from(s)))
+      }
       _ => Err(ParseError {
         kind: cssparser::ParseErrorKind::Custom(
           SelectorParseErrorKind::UnsupportedPseudoClassOrElement(name),
@@ -903,8 +927,8 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       "after" => Ok(PseudoElement::After),
       "first-line" => Ok(PseudoElement::FirstLine),
       "first-letter" => Ok(PseudoElement::FirstLetter),
-      "marker" => Ok(PseudoElement::Marker),
-      "backdrop" => Ok(PseudoElement::Backdrop),
+      "marker" | "-moz-list-bullet" | "-moz-list-number" => Ok(PseudoElement::Marker),
+      "backdrop" | "-webkit-backdrop" | "-ms-backdrop" => Ok(PseudoElement::Backdrop),
       "selection" | "-moz-selection" => Ok(PseudoElement::Selection),
       // `::placeholder` has widely used vendor aliases; accept them and canonicalize to the
       // standard name so selector lists containing vendor variants do not invalidate the rule.
@@ -916,6 +940,9 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       "-moz-focus-outer" => Ok(PseudoElement::MozFocusOuter),
       "-webkit-slider-thumb" | "-moz-range-thumb" | "-ms-thumb" => Ok(PseudoElement::SliderThumb),
       "-webkit-slider-runnable-track" | "-moz-range-track" | "-ms-track" => Ok(PseudoElement::SliderTrack),
+      s if s.starts_with("-webkit-") || s.starts_with("-moz-") || s.starts_with("-ms-") => {
+        Ok(PseudoElement::Vendor(CssString::from(s)))
+      }
       _ => Err(ParseError {
         kind: cssparser::ParseErrorKind::Custom(
           SelectorParseErrorKind::UnsupportedPseudoClassOrElement(name),
@@ -1434,6 +1461,16 @@ mod tests {
       );
     }
 
+    for name in ["backdrop", "-webkit-backdrop", "-ms-backdrop"] {
+      assert_eq!(
+        parser
+          .parse_pseudo_element(loc, cssparser::CowRcStr::from(name))
+          .unwrap(),
+        PseudoElement::Backdrop,
+        "{name} should map to ::backdrop"
+      );
+    }
+
     for name in [
       "placeholder",
       "-webkit-input-placeholder",
@@ -1482,6 +1519,13 @@ mod tests {
         "{name} should map to slider track"
       );
     }
+
+    assert_eq!(
+      parser
+        .parse_pseudo_element(loc, cssparser::CowRcStr::from("-webkit-search-cancel-button"))
+        .unwrap(),
+      PseudoElement::Vendor(CssString::from("-webkit-search-cancel-button"))
+    );
   }
 
   #[test]
@@ -1535,7 +1579,7 @@ mod tests {
 
   #[test]
   fn relative_selector_bloom_hashes_are_precomputed() {
-    let mut input = ParserInput::new("span.foo #bar[data-Thing]");
+    let mut input = ParserInput::new("span.foo#bar[data-Thing]");
     let mut parser = Parser::new(&mut input);
     let list =
       SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::ForHas).expect("parse");
@@ -1654,6 +1698,7 @@ mod tests {
     assert_eq!(PseudoClass::Default.to_css_string(), ":default");
     assert_eq!(PseudoClass::FocusWithin.to_css_string(), ":focus-within");
     assert_eq!(PseudoClass::FocusVisible.to_css_string(), ":focus-visible");
+    assert_eq!(PseudoClass::Fullscreen.to_css_string(), ":fullscreen");
     assert_eq!(PseudoClass::ReadOnly.to_css_string(), ":read-only");
     assert_eq!(PseudoClass::ReadWrite.to_css_string(), ":read-write");
     assert_eq!(
@@ -1672,6 +1717,10 @@ mod tests {
     assert_eq!(PseudoClass::Autofill.to_css_string(), ":autofill");
     assert_eq!(PseudoClass::MozUiInvalid.to_css_string(), ":-moz-ui-invalid");
     assert_eq!(PseudoClass::MozFocusring.to_css_string(), ":-moz-focusring");
+    assert_eq!(
+      PseudoClass::Vendor(CssString::from("-moz-broken")).to_css_string(),
+      ":-moz-broken"
+    );
   }
 
   #[test]
@@ -1706,6 +1755,55 @@ mod tests {
         "{selector_text} should parse"
       );
     }
+  }
+
+  #[test]
+  fn parses_fullscreen_pseudo_class_aliases() {
+    for selector_text in [
+      "video:fullscreen",
+      "video:-webkit-full-screen",
+      "video:-moz-full-screen",
+      "video:-ms-fullscreen",
+      "video:fullscreen, video:-webkit-full-screen, video",
+    ] {
+      let mut input = ParserInput::new(selector_text);
+      let mut parser = Parser::new(&mut input);
+      assert!(
+        SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok(),
+        "{selector_text} should parse"
+      );
+    }
+
+    // Vendor spellings should behave like aliases and serialize to the standard form.
+    let list = parse_selector_list("video:-webkit-full-screen, video:fullscreen");
+    let selectors: Vec<String> = list.slice().iter().map(|sel| sel.to_css_string()).collect();
+    assert_eq!(
+      selectors,
+      vec!["video:fullscreen".to_string(), "video:fullscreen".to_string()]
+    );
+  }
+
+  #[test]
+  fn parses_unknown_vendor_pseudo_classes() {
+    for selector_text in [
+      "a:-moz-broken",
+      "a:-webkit-nonexistent-pseudo",
+      "a:-ms-nonexistent-pseudo",
+      "a, a:-moz-broken",
+    ] {
+      let mut input = ParserInput::new(selector_text);
+      let mut parser = Parser::new(&mut input);
+      assert!(
+        SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok(),
+        "{selector_text} should parse"
+      );
+    }
+
+    let list = parse_selector_list("a:-webkit-nonexistent-pseudo, a:-moz-broken");
+    assert_eq!(
+      list.to_css_string(),
+      "a:-webkit-nonexistent-pseudo, a:-moz-broken"
+    );
   }
 
   #[test]
@@ -1780,6 +1878,43 @@ mod tests {
   }
 
   #[test]
+  fn parses_unknown_vendor_pseudo_element_selectors() {
+    for selector_text in [
+      "input::-webkit-inner-spin-button",
+      "input::-webkit-search-cancel-button",
+      "input::-ms-clear",
+      "progress::-moz-progress-bar",
+      "dialog::-webkit-backdrop, dialog::backdrop",
+    ] {
+      let mut input = ParserInput::new(selector_text);
+      let mut parser = Parser::new(&mut input);
+      assert!(
+        SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok(),
+        "{selector_text} should parse"
+      );
+    }
+
+    let list = parse_selector_list("input::-webkit-search-cancel-button");
+    let selector = list.slice().first().expect("one selector");
+    assert_eq!(
+      selector.pseudo_element(),
+      Some(&PseudoElement::Vendor(CssString::from("-webkit-search-cancel-button")))
+    );
+    assert_eq!(
+      selector.to_css_string(),
+      "input::-webkit-search-cancel-button"
+    );
+
+    // `::-webkit-backdrop` should behave like an alias and serialize to the standard form.
+    let list = parse_selector_list("dialog::-webkit-backdrop, dialog::backdrop");
+    let selectors: Vec<String> = list.slice().iter().map(|sel| sel.to_css_string()).collect();
+    assert_eq!(
+      selectors,
+      vec!["dialog::backdrop".to_string(), "dialog::backdrop".to_string()]
+    );
+  }
+
+  #[test]
   fn parses_placeholder_pseudo_elements() {
     let mut input = ParserInput::new("input::-ms-input-placeholder, input::placeholder");
     let mut parser = Parser::new(&mut input);
@@ -1846,6 +1981,10 @@ mod tests {
       "::-webkit-slider-runnable-track"
     );
     assert_eq!(PseudoElement::MozFocusOuter.to_css_string(), "::-moz-focus-outer");
+    assert_eq!(
+      PseudoElement::Vendor(CssString::from("-webkit-search-cancel-button")).to_css_string(),
+      "::-webkit-search-cancel-button"
+    );
   }
 
   #[test]

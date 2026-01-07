@@ -3838,6 +3838,7 @@ fn hash_pseudo_element_for_dedup(state: &mut impl Hasher, pseudo: &PseudoElement
       }
     }
     PseudoElement::Part(name) => name.hash(state),
+    PseudoElement::Vendor(name) => name.hash(state),
     _ => {}
   }
 }
@@ -3881,6 +3882,7 @@ fn hash_pseudo_class_for_dedup(state: &mut impl Hasher, pseudo: &PseudoClass) {
       }
     }
     PseudoClass::Dir(dir) => hash_text_direction_for_dedup(state, *dir),
+    PseudoClass::Vendor(name) => name.hash(state),
     _ => {}
   }
 }

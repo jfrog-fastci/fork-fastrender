@@ -6255,10 +6255,12 @@ impl<'a> Element for ElementRef<'a> {
       PseudoClass::Focus => self.focus_flag(),
       PseudoClass::FocusWithin => self.subtree_contains_focus(_context.extra_data.slot_map),
       PseudoClass::FocusVisible => self.focus_visible_flag(),
+      PseudoClass::Fullscreen => false,
       PseudoClass::Active => self.active_flag(),
       PseudoClass::Checked => self.is_checked(),
       PseudoClass::Link => self.is_link() && !self.visited_flag(),
       PseudoClass::Visited => self.is_link() && self.visited_flag(),
+      PseudoClass::Vendor(_) => false,
     }
   }
 
@@ -6307,6 +6309,7 @@ impl<'a> Element for ElementRef<'a> {
       PseudoElement::Selection => false,
       PseudoElement::Slotted(_) => false,
       PseudoElement::Part(_) => true,
+      PseudoElement::Vendor(_) => false,
     }
   }
 
