@@ -223,3 +223,68 @@ fn vertical_writing_mode_grid_item_forced_break_after_propagates_to_row_boundary
     blue_pos.0
   );
 }
+
+#[test]
+fn grid_item_forced_break_after_right_inserts_blank_page() {
+  // `break-after: right` should force the *next* page to be a right page. Since pagination starts
+  // on a right page, the immediate following page would normally be left; the pager should insert
+  // a blank left page so the content starts on a right page.
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 100px 100px; margin: 0; }
+          body { margin: 0; }
+          .grid {
+            display: grid;
+            grid-template-rows: 30px 30px;
+            grid-template-columns: 1fr;
+            align-items: start;
+          }
+          .row1 {
+            height: 10px;
+            break-after: right;
+            background: rgb(255, 0, 0);
+          }
+          .row2 {
+            height: 10px;
+            background: rgb(0, 0, 255);
+          }
+        </style>
+      </head>
+      <body>
+        <div class="grid">
+          <div class="row1"></div>
+          <div class="row2"></div>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let options = LayoutDocumentOptions::new().with_page_stacking(PageStacking::Untranslated);
+  let tree = renderer
+    .layout_document_for_media_with_options(&dom, 200, 200, MediaType::Print, options, None)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(
+    page_roots.len(),
+    3,
+    "expected a blank page to be inserted to satisfy break-after:right",
+  );
+
+  let red = Rgba::rgb(255, 0, 0);
+  let blue = Rgba::rgb(0, 0, 255);
+
+  assert!(find_fragment_by_background(page_roots[0], (0.0, 0.0), red).is_some());
+  assert!(find_fragment_by_background(page_roots[0], (0.0, 0.0), blue).is_none());
+
+  // Page 2 should be blank.
+  assert!(find_fragment_by_background(page_roots[1], (0.0, 0.0), red).is_none());
+  assert!(find_fragment_by_background(page_roots[1], (0.0, 0.0), blue).is_none());
+
+  // Page 3 should contain the second row.
+  assert!(find_fragment_by_background(page_roots[2], (0.0, 0.0), blue).is_some());
+}
