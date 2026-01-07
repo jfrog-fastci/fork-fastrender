@@ -27,6 +27,7 @@ use crate::layout::formatting_context::intrinsic_cache_use_epoch;
 use crate::layout::formatting_context::layout_cache_entry_limit_for_box_tree;
 use crate::layout::formatting_context::layout_cache_stats;
 use crate::layout::formatting_context::layout_cache_use_epoch;
+use crate::layout::formatting_context::set_fragmentainer_block_size_hint;
 use crate::layout::formatting_context::IntrinsicSizingMode;
 use crate::layout::formatting_context::LayoutError;
 use crate::layout::fragmentation;
@@ -929,6 +930,7 @@ impl LayoutEngine {
     // Create root constraints from initial containing block, preferring explicit
     // fragmentainer size when pagination is enabled.
     let icb = &self.config.initial_containing_block;
+    let mut fragmentainer_block_hint: Option<f32> = None;
     let (constraint_width, constraint_height) = if let Some(options) = &self.config.fragmentation {
       let root_style = &box_tree.root.style;
       let wm = root_style.writing_mode;
@@ -960,6 +962,7 @@ impl LayoutEngine {
       } else {
         icb.height
       };
+      fragmentainer_block_hint = Some(fragmentainer_block);
 
       if block_is_horizontal {
         available_width = fragmentainer_block;
@@ -972,6 +975,8 @@ impl LayoutEngine {
       (icb.width, icb.height)
     };
     let constraints = LayoutConstraints::definite(constraint_width, constraint_height);
+    let _fragmentainer_hint_guard =
+      fragmentainer_block_hint.map(|hint| set_fragmentainer_block_size_hint(Some(hint)));
 
     // Layout the root box
     let root_fragment =

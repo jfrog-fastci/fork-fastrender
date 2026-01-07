@@ -37,6 +37,7 @@ use crate::layout::constraints::LayoutConstraints;
 use crate::layout::contexts::factory::FormattingContextFactory;
 use crate::layout::contexts::flex_cache::ShardedFlexCache;
 use crate::layout::engine::LayoutParallelism;
+use crate::layout::formatting_context::fragmentainer_block_size_hint;
 use crate::layout::formatting_context::intrinsic_block_cache_lookup;
 use crate::layout::formatting_context::intrinsic_block_cache_store;
 #[cfg(not(test))]
@@ -617,12 +618,18 @@ fn is_collapsible_whitespace_grid_item(node: &BoxNode) -> bool {
 
   fn subtree_is_whitespace_only(node: &BoxNode) -> bool {
     match &node.box_type {
-      crate::tree::box_tree::BoxType::Text(text) => is_collapsible_ascii_whitespace_only(&text.text),
+      crate::tree::box_tree::BoxType::Text(text) => {
+        is_collapsible_ascii_whitespace_only(&text.text)
+      }
       crate::tree::box_tree::BoxType::Marker(marker) => match &marker.content {
-        crate::tree::box_tree::MarkerContent::Text(text) => is_collapsible_ascii_whitespace_only(text),
+        crate::tree::box_tree::MarkerContent::Text(text) => {
+          is_collapsible_ascii_whitespace_only(text)
+        }
         crate::tree::box_tree::MarkerContent::Image(_) => false,
       },
-      crate::tree::box_tree::BoxType::Anonymous(_) => node.children.iter().all(subtree_is_whitespace_only),
+      crate::tree::box_tree::BoxType::Anonymous(_) => {
+        node.children.iter().all(subtree_is_whitespace_only)
+      }
       _ => false,
     }
   }
@@ -630,7 +637,9 @@ fn is_collapsible_whitespace_grid_item(node: &BoxNode) -> bool {
   match &node.box_type {
     crate::tree::box_tree::BoxType::Text(text) => is_collapsible_ascii_whitespace_only(&text.text),
     crate::tree::box_tree::BoxType::Marker(marker) => match &marker.content {
-      crate::tree::box_tree::MarkerContent::Text(text) => is_collapsible_ascii_whitespace_only(text),
+      crate::tree::box_tree::MarkerContent::Text(text) => {
+        is_collapsible_ascii_whitespace_only(text)
+      }
       crate::tree::box_tree::MarkerContent::Image(_) => false,
     },
     crate::tree::box_tree::BoxType::Anonymous(anon)
@@ -745,6 +754,52 @@ pub struct GridFormattingContext {
 }
 
 impl GridFormattingContext {
+  fn grid_item_continuation_available_block_size(
+    &self,
+    bounds: Rect,
+    constraints: &LayoutConstraints,
+    containing_grid_axis: Option<GridAxisStyle>,
+  ) -> Option<f32> {
+    let axis_style = containing_grid_axis?;
+    if !axis_style.inline_is_horizontal() || !axis_style.block_positive() {
+      return None;
+    }
+
+    // Only attempt continuation adjustments when we're in an actual fragmentation context.
+    // Without a fragmentainer hint, the grid item is simply overflowing its containing block,
+    // not flowing into a continuation fragment.
+    let fragmentainer_block_size =
+      fragmentainer_block_size_hint().filter(|size| size.is_finite() && *size > 0.0)?;
+    let first_fragment_block_size = match constraints.available_height {
+      CrateAvailableSpace::Definite(h) if h.is_finite() && h > 0.0 => {
+        h.min(fragmentainer_block_size)
+      }
+      _ => fragmentainer_block_size,
+    };
+
+    let block_start = bounds.y();
+    if !block_start.is_finite() {
+      return None;
+    }
+
+    // Only adjust in continuation fragments. This is a best-effort heuristic based on the
+    // box's flow position relative to the fragmentainer size.
+    //
+    // https://www.w3.org/TR/css-grid-2/#fragmentation
+    const EPSILON: f32 = 0.01;
+    if block_start + EPSILON < first_fragment_block_size {
+      return None;
+    }
+
+    let relative = (block_start - first_fragment_block_size).max(0.0);
+    let fragment_index =
+      1usize.saturating_add((relative / fragmentainer_block_size).floor() as usize);
+    let consumed = first_fragment_block_size
+      + (fragment_index.saturating_sub(1) as f32) * fragmentainer_block_size;
+    let remaining = (fragmentainer_block_size - consumed).max(0.0);
+    Some(remaining)
+  }
+
   fn is_simple_grid(
     &self,
     style: &ComputedStyle,
@@ -978,10 +1033,9 @@ impl GridFormattingContext {
     match keyword {
       IntrinsicSizeKeyword::MinContent => min,
       IntrinsicSizeKeyword::MaxContent => max,
-      IntrinsicSizeKeyword::FillAvailable => available
-        .filter(|v| v.is_finite())
-        .unwrap_or(max)
-        .max(0.0),
+      IntrinsicSizeKeyword::FillAvailable => {
+        available.filter(|v| v.is_finite()).unwrap_or(max).max(0.0)
+      }
       IntrinsicSizeKeyword::FitContent { limit } => {
         let preferred = limit
           .and_then(|limit| self.resolve_length_px_with_base(limit, available, style))
@@ -3347,6 +3401,8 @@ impl GridFormattingContext {
     let mut child_bounds: Vec<Rect> = Vec::with_capacity(child_ids.len());
     let mut reused_fragments: Vec<Option<FragmentNode>> = vec![None; child_ids.len()];
     let mut child_skipped: Vec<bool> = vec![false; child_ids.len()];
+    let root_axis_style = GridAxisStyle::from_style(box_node.style.as_ref());
+    let mut child_continuation_available: Vec<Option<f32>> = vec![None; child_ids.len()];
     for (idx, child_id) in child_ids.iter().copied().enumerate() {
       if let Err(err) = check_layout_deadline(&mut deadline_counter) {
         return Some(Err(err));
@@ -3367,6 +3423,11 @@ impl GridFormattingContext {
         layout.size.height,
       );
       child_bounds.push(bounds);
+      child_continuation_available[idx] = self.grid_item_continuation_available_block_size(
+        bounds,
+        constraints,
+        Some(root_axis_style),
+      );
       let child = in_flow_children[idx];
       let skip_contents = match child.style.content_visibility {
         crate::style::types::ContentVisibility::Hidden => true,
@@ -3388,6 +3449,11 @@ impl GridFormattingContext {
           vec![],
           child.style.clone(),
         ));
+        continue;
+      }
+      if child_continuation_available[idx].is_some() {
+        // Continuation fragments need to re-run layout under a reduced fragmentainer size; skip any
+        // cached subtree captured during Taffy measurement.
         continue;
       }
       if let Some(keys) = measured_node_keys.get(&child_id) {
@@ -3433,6 +3499,7 @@ impl GridFormattingContext {
 
           let child = in_flow_children[idx];
           let bounds = child_bounds[idx];
+          let continuation_available = child_continuation_available[idx];
           let fc_type = child
             .formatting_context()
             .unwrap_or(FormattingContextType::Block);
@@ -3441,9 +3508,10 @@ impl GridFormattingContext {
           let child_factory = (*factory).clone().with_viewport_scroll(child_scroll);
           let fc = child_factory.get(fc_type);
 
+          let available_height = continuation_available.unwrap_or(bounds.height());
           let child_constraints = LayoutConstraints::new(
             CrateAvailableSpace::Definite(bounds.width()),
-            CrateAvailableSpace::Definite(bounds.height()),
+            CrateAvailableSpace::Definite(available_height),
           )
           .with_inline_percentage_base(
             constraints
@@ -3459,19 +3527,37 @@ impl GridFormattingContext {
               | FormattingContextType::Inline
           );
 
+          let force_height = continuation_available
+            .map(|available| available + 0.01 >= bounds.height())
+            .unwrap_or(true);
+
           let mut laid_out = if supports_used_border_box {
-            let child_constraints = child_constraints
-              .with_used_border_box_size(Some(bounds.width()), Some(bounds.height()));
-            fc.layout(child, &child_constraints)?
+            let child_constraints = child_constraints.with_used_border_box_size(
+              Some(bounds.width()),
+              force_height.then_some(bounds.height()),
+            );
+            if continuation_available.is_some() {
+              crate::layout::style_override::with_style_override(
+                child.id,
+                child.style.clone(),
+                || fc.layout(child, &child_constraints),
+              )?
+            } else {
+              fc.layout(child, &child_constraints)?
+            }
           } else if matches!(
             fc_type,
             FormattingContextType::Flex | FormattingContextType::Grid
           ) {
             let mut layout_style = (*child.style).clone();
             layout_style.width = Some(Length::px(bounds.width()));
-            layout_style.height = Some(Length::px(bounds.height()));
+            if force_height {
+              layout_style.height = Some(Length::px(bounds.height()));
+            }
             layout_style.width_keyword = None;
-            layout_style.height_keyword = None;
+            if force_height {
+              layout_style.height_keyword = None;
+            }
             crate::layout::style_override::with_style_override(
               child.id,
               Arc::new(layout_style),
@@ -3480,9 +3566,13 @@ impl GridFormattingContext {
           } else {
             let mut layout_style = (*child.style).clone();
             layout_style.width = Some(Length::px(bounds.width()));
-            layout_style.height = Some(Length::px(bounds.height()));
+            if force_height {
+              layout_style.height = Some(Length::px(bounds.height()));
+            }
             layout_style.width_keyword = None;
-            layout_style.height_keyword = None;
+            if force_height {
+              layout_style.height_keyword = None;
+            }
             let layout_style = Arc::new(layout_style);
             if child.id != 0 {
               crate::layout::style_override::with_style_override(child.id, layout_style, || {
@@ -3815,27 +3905,41 @@ impl GridFormattingContext {
         ));
       }
 
-      if let Some(keys) = measured_node_keys.get(&node_id) {
-        if let Some(mut reused) = Self::take_matching_measured_fragment(
-          measured_fragments,
-          keys,
-          bounds.width(),
-          bounds.height(),
-        ) {
-          fragment_clone_profile::record_fragment_reuse_without_clone(CloneSite::GridMeasureReuse);
-          let delta = Point::new(
-            bounds.x() - reused.bounds.x(),
-            bounds.y() - reused.bounds.y(),
-          );
-          translate_fragment_tree(&mut reused, delta, deadline_counter)?;
-          let percentage_base = constraints
-            .inline_percentage_base
-            .filter(|base| base.is_finite())
-            .unwrap_or(bounds.width());
-          let content_size =
-            self.content_box_size(&reused, box_node.style.as_ref(), percentage_base);
-          remembered_size_cache_store(box_node, content_size);
-          return Ok(reused);
+      let continuation_available = (taffy.parent(node_id) == Some(root_id))
+        .then(|| {
+          self.grid_item_continuation_available_block_size(
+            bounds,
+            constraints,
+            containing_grid_axis,
+          )
+        })
+        .flatten();
+
+      if continuation_available.is_none() {
+        if let Some(keys) = measured_node_keys.get(&node_id) {
+          if let Some(mut reused) = Self::take_matching_measured_fragment(
+            measured_fragments,
+            keys,
+            bounds.width(),
+            bounds.height(),
+          ) {
+            fragment_clone_profile::record_fragment_reuse_without_clone(
+              CloneSite::GridMeasureReuse,
+            );
+            let delta = Point::new(
+              bounds.x() - reused.bounds.x(),
+              bounds.y() - reused.bounds.y(),
+            );
+            translate_fragment_tree(&mut reused, delta, deadline_counter)?;
+            let percentage_base = constraints
+              .inline_percentage_base
+              .filter(|base| base.is_finite())
+              .unwrap_or(bounds.width());
+            let content_size =
+              self.content_box_size(&reused, box_node.style.as_ref(), percentage_base);
+            remembered_size_cache_store(box_node, content_size);
+            return Ok(reused);
+          }
         }
       }
 
@@ -3844,9 +3948,10 @@ impl GridFormattingContext {
       let child_factory = self.factory.clone().with_viewport_scroll(child_scroll);
       let fc = child_factory.get(fc_type);
 
+      let available_height = continuation_available.unwrap_or(bounds.height());
       let child_constraints = LayoutConstraints::new(
         CrateAvailableSpace::Definite(bounds.width()),
-        CrateAvailableSpace::Definite(bounds.height()),
+        CrateAvailableSpace::Definite(available_height),
       )
       .with_inline_percentage_base(
         constraints
@@ -3854,6 +3959,9 @@ impl GridFormattingContext {
           .or_else(|| Some(bounds.width())),
       );
 
+      let force_height = continuation_available
+        .map(|available| available + 0.01 >= bounds.height())
+        .unwrap_or(true);
       let supports_used_border_box = matches!(
         fc_type,
         FormattingContextType::Block
@@ -3863,18 +3971,36 @@ impl GridFormattingContext {
       );
 
       let mut laid_out = if supports_used_border_box {
-        let child_constraints =
-          child_constraints.with_used_border_box_size(Some(bounds.width()), Some(bounds.height()));
-        fc.layout(box_node, &child_constraints)?
+        let child_constraints = child_constraints.with_used_border_box_size(
+          Some(bounds.width()),
+          force_height.then_some(bounds.height()),
+        );
+        if continuation_available.is_some() {
+          // Grid intrinsic sizing keywords are resolved against the initial fragmentainer size when
+          // building the Taffy tree. When the grid container continues after a break, re-layout
+          // the item using its original style so keywords like `fill-available` can be resolved
+          // against the reduced available block size.
+          crate::layout::style_override::with_style_override(
+            box_node.id,
+            box_node.style.clone(),
+            || fc.layout(box_node, &child_constraints),
+          )?
+        } else {
+          fc.layout(box_node, &child_constraints)?
+        }
       } else if matches!(
         fc_type,
         FormattingContextType::Flex | FormattingContextType::Grid
       ) {
         let mut layout_style = (*box_node.style).clone();
         layout_style.width = Some(Length::px(bounds.width()));
-        layout_style.height = Some(Length::px(bounds.height()));
+        if force_height {
+          layout_style.height = Some(Length::px(bounds.height()));
+        }
         layout_style.width_keyword = None;
-        layout_style.height_keyword = None;
+        if force_height {
+          layout_style.height_keyword = None;
+        }
         crate::layout::style_override::with_style_override(
           box_node.id,
           Arc::new(layout_style),
@@ -3883,9 +4009,13 @@ impl GridFormattingContext {
       } else {
         let mut layout_style = (*box_node.style).clone();
         layout_style.width = Some(Length::px(bounds.width()));
-        layout_style.height = Some(Length::px(bounds.height()));
+        if force_height {
+          layout_style.height = Some(Length::px(bounds.height()));
+        }
         layout_style.width_keyword = None;
-        layout_style.height_keyword = None;
+        if force_height {
+          layout_style.height_keyword = None;
+        }
         let layout_style = Arc::new(layout_style);
         if box_node.id != 0 {
           crate::layout::style_override::with_style_override(box_node.id, layout_style, || {

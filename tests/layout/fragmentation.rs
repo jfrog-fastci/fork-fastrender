@@ -6,7 +6,9 @@ use fastrender::layout::fragmentation::{
 };
 use fastrender::style::display::{Display, FormattingContextType};
 use fastrender::style::position::Position;
-use fastrender::style::types::{BreakBetween, BreakInside, InsetValue, WritingMode};
+use fastrender::style::types::{
+  BreakBetween, BreakInside, GridTrack, InsetValue, IntrinsicSizeKeyword, WritingMode,
+};
 use fastrender::style::values::Length;
 use fastrender::tree::box_tree::BoxNode;
 use fastrender::{
@@ -617,6 +619,75 @@ fn layout_engine_pagination_splits_pages() {
   assert!(fragments.root.fragment_count >= 3);
   assert!((fragments.additional_fragments[0].bounds.y() - 70.0).abs() < 0.1);
   assert!((fragments.additional_fragments[1].bounds.y() - 140.0).abs() < 0.1);
+}
+
+#[test]
+fn grid_continuation_reduces_available_block_size_for_items() {
+  let mut grid_style = ComputedStyle::default();
+  grid_style.display = Display::Grid;
+  grid_style.width = Some(Length::px(100.0));
+  grid_style.height = Some(Length::px(200.0));
+  grid_style.grid_template_columns = vec![GridTrack::Length(Length::px(100.0))];
+  grid_style.grid_template_rows = vec![
+    GridTrack::Length(Length::px(100.0)),
+    GridTrack::Length(Length::px(100.0)),
+  ];
+
+  let item1 = BoxNode::new_block(
+    Arc::new(ComputedStyle::default()),
+    FormattingContextType::Block,
+    vec![],
+  );
+
+  let mut item2_style = ComputedStyle::default();
+  item2_style.min_height_keyword = Some(IntrinsicSizeKeyword::FillAvailable);
+  let inner_style = Arc::new({
+    let mut style = ComputedStyle::default();
+    style.height = Some(Length::px(10.0));
+    style
+  });
+  let inner = BoxNode::new_block(inner_style, FormattingContextType::Block, vec![]);
+  let item2 = BoxNode::new_block(
+    Arc::new(item2_style),
+    FormattingContextType::Block,
+    vec![inner],
+  );
+
+  let root_box = BoxNode::new_block(
+    Arc::new(grid_style),
+    FormattingContextType::Grid,
+    vec![item1, item2],
+  );
+  let box_tree = BoxTree::new(root_box);
+  let item2_id = box_tree.root.children.get(1).expect("second grid item").id;
+
+  let engine = LayoutEngine::new(LayoutConfig::for_pagination(Size::new(100.0, 100.0), 0.0));
+  let fragments = engine.layout_tree(&box_tree).expect("layout");
+
+  // Sanity-check the unfragmented flow positions so the continuation heuristic has stable inputs.
+  let unfragmented_engine = LayoutEngine::new(LayoutConfig::for_viewport(Size::new(100.0, 100.0)));
+  let unfragmented = unfragmented_engine.layout_tree(&box_tree).expect("layout");
+  let unfragmented_item2 = fragments_with_id(&unfragmented.root, item2_id);
+  assert_eq!(unfragmented_item2.len(), 1);
+  assert!(
+    (unfragmented_item2[0].bounds.y() - 100.0).abs() < 0.1,
+    "expected grid item 2 to start in the second row (got y={})",
+    unfragmented_item2[0].bounds.y()
+  );
+
+  assert_eq!(
+    fragments.additional_fragments.len(),
+    1,
+    "grid should paginate across two pages"
+  );
+  let second_page = &fragments.additional_fragments[0];
+  let item2_fragments = fragments_with_id(second_page, item2_id);
+  assert_eq!(item2_fragments.len(), 1);
+  let item2_height = item2_fragments[0].bounds.height();
+  assert!(
+    (item2_height - 10.0).abs() < 0.1,
+    "expected continuation grid item to shrink under reduced available space (got {item2_height})"
+  );
 }
 
 #[test]
