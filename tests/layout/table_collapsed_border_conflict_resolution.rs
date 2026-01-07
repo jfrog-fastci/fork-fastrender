@@ -150,13 +150,13 @@ fn collapsed_border_resolution_honors_colgroup_span() {
       <head>
         <style>
           table { border-collapse: collapse; border: none; }
-          colgroup { border-right: 3px solid red; }
+          #cg { border-right: 3px solid red; }
           td { border: none; width: 10px; height: 10px; padding: 0; margin: 0; }
         </style>
       </head>
       <body>
         <table>
-          <colgroup span="2"></colgroup>
+          <colgroup id="cg" span="2"></colgroup>
           <tr><td></td><td></td></tr>
         </table>
       </body>
@@ -183,13 +183,14 @@ fn collapsed_border_resolution_honors_colgroup_span_in_rtl() {
       <head>
         <style>
           table { border-collapse: collapse; border: none; direction: rtl; }
-          colgroup { border-right: 3px solid red; }
+          #cg { border-right: 3px solid red; }
+          col { border: none; }
           td { border: none; width: 10px; height: 10px; padding: 0; margin: 0; }
         </style>
       </head>
       <body>
         <table>
-          <colgroup span="2"></colgroup>
+          <colgroup id="cg" span="2"></colgroup>
           <col>
           <tr><td></td><td></td><td></td></tr>
         </table>
@@ -198,20 +199,63 @@ fn collapsed_border_resolution_honors_colgroup_span_in_rtl() {
   "#;
 
   let borders = table_borders_from_html(html);
+  let line0 = borders.vertical_line_width(0);
+  let line1 = borders.vertical_line_width(1);
+  let line2 = borders.vertical_line_width(2);
+  let line3 = borders.vertical_line_width(3);
   assert!(
-    (borders.vertical_line_width(3) - 3.0).abs() < 0.01,
-    "expected the colgroup right border to land on the table's outer edge in RTL, got {}",
-    borders.vertical_line_width(3)
+    (line3 - 3.0).abs() < 0.01,
+    "expected the colgroup right border to land on the table's outer edge in RTL, got {line3} (vertical lines: [{line0}, {line1}, {line2}, {line3}])",
   );
   assert!(
-    borders.vertical_line_width(2) < 0.01,
-    "expected the internal divider between colgroup columns to remain borderless, got {}",
-    borders.vertical_line_width(2)
+    line2 < 0.01,
+    "expected the internal divider between colgroup columns to remain borderless, got {line2} (vertical lines: [{line0}, {line1}, {line2}, {line3}])",
   );
   assert!(
-    borders.vertical_line_width(1) < 0.01,
-    "expected the divider between the colgroup and remaining column to remain borderless, got {}",
-    borders.vertical_line_width(1)
+    line1 < 0.01,
+    "expected the divider between the colgroup and remaining column to remain borderless, got {line1} (vertical lines: [{line0}, {line1}, {line2}, {line3}])",
+  );
+}
+
+#[test]
+fn collapsed_border_resolution_honors_colgroup_with_col_children_in_rtl() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          table { border-collapse: collapse; border: none; direction: rtl; }
+          #cg { border-right: 3px solid red; }
+          td { border: none; width: 10px; height: 10px; padding: 0; margin: 0; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <colgroup id="cg">
+            <col span="2">
+          </colgroup>
+          <col>
+          <tr><td></td><td></td><td></td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let borders = table_borders_from_html(html);
+  let line0 = borders.vertical_line_width(0);
+  let line1 = borders.vertical_line_width(1);
+  let line2 = borders.vertical_line_width(2);
+  let line3 = borders.vertical_line_width(3);
+  assert!(
+    (line3 - 3.0).abs() < 0.01,
+    "expected the colgroup right border to land on the table's outer edge in RTL, got {line3} (vertical lines: [{line0}, {line1}, {line2}, {line3}])",
+  );
+  assert!(
+    line2 < 0.01,
+    "expected the internal divider between colgroup columns to remain borderless, got {line2} (vertical lines: [{line0}, {line1}, {line2}, {line3}])",
+  );
+  assert!(
+    line1 < 0.01,
+    "expected the divider between the colgroup and remaining column to remain borderless, got {line1} (vertical lines: [{line0}, {line1}, {line2}, {line3}])",
   );
 }
 
