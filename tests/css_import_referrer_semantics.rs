@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 struct RecordedRequest {
   url: String,
   destination: FetchDestination,
-  referrer: Option<String>,
+  referrer_url: Option<String>,
 }
 
 #[derive(Default)]
@@ -65,7 +65,7 @@ impl ResourceFetcher for RecordingFetcher {
       .push(RecordedRequest {
         url: req.url.to_string(),
         destination: req.destination,
-        referrer: req.referrer_url.map(|r| r.to_string()),
+        referrer_url: req.referrer_url.map(|r| r.to_string()),
       });
     self.fetch(req.url)
   }
@@ -118,13 +118,13 @@ fn css_import_referrer_is_importing_stylesheet_url() {
     .iter()
     .find(|r| r.url == a_url && r.destination == FetchDestination::Style)
     .expect("request for a.css");
-  assert_eq!(a_request.referrer.as_deref(), Some(document_url));
+  assert_eq!(a_request.referrer_url.as_deref(), Some(document_url));
 
   let b_request = requests
     .iter()
     .find(|r| r.url == b_url && r.destination == FetchDestination::Style)
     .expect("request for b.css");
-  assert_eq!(b_request.referrer.as_deref(), Some(a_url));
+  assert_eq!(b_request.referrer_url.as_deref(), Some(a_url));
 }
 
 #[test]
@@ -167,13 +167,13 @@ fn css_imports_use_stylesheet_final_url_for_base_and_referrer() {
     .iter()
     .find(|r| r.url == a_url && r.destination == FetchDestination::Style)
     .expect("request for a.css");
-  assert_eq!(a_request.referrer.as_deref(), Some(document_url));
+  assert_eq!(a_request.referrer_url.as_deref(), Some(document_url));
 
   let b_request = requests
     .iter()
     .find(|r| r.url == b_expected && r.destination == FetchDestination::Style)
     .expect("request for b.css");
-  assert_eq!(b_request.referrer.as_deref(), Some(a_final_url));
+  assert_eq!(b_request.referrer_url.as_deref(), Some(a_final_url));
   assert!(
     requests.iter().all(|r| r.url != b_wrong),
     "expected b.css to resolve against final_url, got requests: {requests:?}"
