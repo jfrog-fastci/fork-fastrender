@@ -74,6 +74,30 @@ fn find_rule_fragment_with_color<'a>(
   None
 }
 
+fn count_rule_fragments(fragment: &FragmentNode, color: Rgba) -> usize {
+  fn walk(fragment: &FragmentNode, color: Rgba, count: &mut usize) {
+    let is_rule = matches!(fragment.content, FragmentContent::Block { box_id: None })
+      && fragment.style.as_ref().is_some_and(|s| {
+        (s.border_left_color == color
+          && s.border_left_width.to_px() > 0.0
+          && !matches!(s.border_left_style, BorderStyle::None | BorderStyle::Hidden))
+          || (s.border_top_color == color
+            && s.border_top_width.to_px() > 0.0
+            && !matches!(s.border_top_style, BorderStyle::None | BorderStyle::Hidden))
+      });
+    if is_rule {
+      *count += 1;
+    }
+    for child in fragment.children.iter() {
+      walk(child, color, count);
+    }
+  }
+
+  let mut count = 0;
+  walk(fragment, color, &mut count);
+  count
+}
+
 fn fragments_with_id<'a>(fragment: &'a FragmentNode, id: usize) -> Vec<&'a FragmentNode> {
   fn walk<'a>(fragment: &'a FragmentNode, id: usize, out: &mut Vec<&'a FragmentNode>) {
     if let FragmentContent::Block { box_id: Some(b) } = fragment.content {
@@ -283,6 +307,7 @@ fn column_fill_auto_uses_definite_height() {
 
   let child_style = |height: f32| -> Arc<ComputedStyle> {
     let mut style = ComputedStyle::default();
+    style.writing_mode = WritingMode::VerticalRl;
     style.height = Some(Length::px(height));
     style.break_inside = BreakInside::AvoidColumn;
     Arc::new(style)
@@ -349,6 +374,125 @@ fn column_fill_auto_uses_definite_height() {
   assert!(
     fourth_frag.bounds.x() >= stride * 3.0 - 0.5,
     "additional overflow columns should continue in the inline direction"
+  );
+}
+
+#[test]
+fn column_fill_auto_balances_segment_before_spanner() {
+  let mut parent_style = ComputedStyle::default();
+  parent_style.width = Some(Length::px(400.0));
+  parent_style.height = Some(Length::px(100.0));
+  parent_style.column_count = Some(2);
+  parent_style.column_gap = Length::px(20.0);
+  parent_style.column_fill = ColumnFill::Auto;
+  let parent_style = Arc::new(parent_style);
+
+  let child_style = |height: f32| -> Arc<ComputedStyle> {
+    let mut style = ComputedStyle::default();
+    style.writing_mode = WritingMode::VerticalRl;
+    style.height = Some(Length::px(height));
+    Arc::new(style)
+  };
+
+  let mut first = BoxNode::new_block(child_style(80.0), FormattingContextType::Block, vec![]);
+  first.id = 1;
+  let mut second = BoxNode::new_block(child_style(20.0), FormattingContextType::Block, vec![]);
+  second.id = 2;
+
+  let mut span_style = ComputedStyle::default();
+  span_style.height = Some(Length::px(10.0));
+  span_style.column_span = ColumnSpan::All;
+  let mut span = BoxNode::new_block(Arc::new(span_style), FormattingContextType::Block, vec![]);
+  span.id = 3;
+
+  let mut parent = BoxNode::new_block(
+    parent_style,
+    FormattingContextType::Block,
+    vec![first.clone(), second.clone(), span.clone()],
+  );
+  parent.id = 10;
+
+  let fc = BlockFormattingContext::new();
+  let fragment = fc
+    .layout(&parent, &LayoutConstraints::definite(400.0, 100.0))
+    .expect("layout");
+
+  let span_frag = find_fragment(&fragment, span.id).expect("span fragment");
+  assert!(
+    (span_frag.bounds.y() - 80.0).abs() < 0.5,
+    "spanner should start after a balanced segment (got y={})",
+    span_frag.bounds.y()
+  );
+}
+
+#[test]
+fn column_rule_not_drawn_next_to_empty_columns() {
+  let mut parent_style = ComputedStyle::default();
+  parent_style.width = Some(Length::px(300.0));
+  parent_style.height = Some(Length::px(100.0));
+  parent_style.column_count = Some(3);
+  parent_style.column_gap = Length::px(20.0);
+  parent_style.column_fill = ColumnFill::Auto;
+  parent_style.column_rule_style = BorderStyle::Solid;
+  parent_style.column_rule_width = Length::px(6.0);
+  let rule_color = Rgba::new(255, 0, 0, 1.0);
+  parent_style.column_rule_color = Some(rule_color);
+  let parent_style = Arc::new(parent_style);
+
+  let mut child_style = ComputedStyle::default();
+  child_style.height = Some(Length::px(20.0));
+  child_style.break_after = BreakBetween::Column;
+  let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+
+  let root = BoxNode::new_block(parent_style, FormattingContextType::Block, vec![child]);
+
+  let fc = BlockFormattingContext::new();
+  let fragment = fc
+    .layout(&root, &LayoutConstraints::definite(300.0, 100.0))
+    .expect("layout");
+
+  assert_eq!(
+    count_rule_fragments(&fragment, rule_color),
+    0,
+    "column rules should only be drawn between columns that both have content"
+  );
+}
+
+#[test]
+fn column_rules_only_between_adjacent_non_empty_columns() {
+  let mut parent_style = ComputedStyle::default();
+  parent_style.width = Some(Length::px(300.0));
+  parent_style.height = Some(Length::px(100.0));
+  parent_style.column_count = Some(3);
+  parent_style.column_gap = Length::px(20.0);
+  parent_style.column_fill = ColumnFill::Auto;
+  parent_style.column_rule_style = BorderStyle::Solid;
+  parent_style.column_rule_width = Length::px(6.0);
+  let rule_color = Rgba::new(0, 0, 255, 1.0);
+  parent_style.column_rule_color = Some(rule_color);
+  let parent_style = Arc::new(parent_style);
+
+  let child_style = |height: f32| -> Arc<ComputedStyle> {
+    let mut style = ComputedStyle::default();
+    style.height = Some(Length::px(height));
+    style.break_after = BreakBetween::Column;
+    Arc::new(style)
+  };
+
+  let first = BoxNode::new_block(child_style(40.0), FormattingContextType::Block, vec![]);
+  let second = BoxNode::new_block(child_style(40.0), FormattingContextType::Block, vec![]);
+
+  let root = BoxNode::new_block(parent_style, FormattingContextType::Block, vec![first, second]);
+
+  let fc = BlockFormattingContext::new();
+  let fragment = fc
+    .layout(&root, &LayoutConstraints::definite(300.0, 100.0))
+    .expect("layout");
+
+  assert_eq!(
+    count_rule_fragments(&fragment, rule_color),
+    1,
+    "expected exactly one rule between the two populated columns"
   );
 }
 
@@ -473,14 +617,27 @@ fn column_rule_uses_top_border_in_vertical_writing_mode() {
   parent_style.writing_mode = WritingMode::VerticalRl;
   let parent_style = Arc::new(parent_style);
 
-  let child_style = |height: f32| -> Arc<ComputedStyle> {
+  let child_style = |height: f32, break_after: BreakBetween| -> Arc<ComputedStyle> {
     let mut style = ComputedStyle::default();
+    style.writing_mode = WritingMode::VerticalRl;
     style.height = Some(Length::px(height));
+    style.break_after = break_after;
     Arc::new(style)
   };
 
-  let first = BoxNode::new_block(child_style(60.0), FormattingContextType::Block, vec![]);
-  let second = BoxNode::new_block(child_style(60.0), FormattingContextType::Block, vec![]);
+  let mut first = BoxNode::new_block(
+    child_style(60.0, BreakBetween::Column),
+    FormattingContextType::Block,
+    vec![],
+  );
+  first.id = 1;
+  let mut second = BoxNode::new_block(
+    child_style(60.0, BreakBetween::Auto),
+    FormattingContextType::Block,
+    vec![],
+  );
+  second.id = 2;
+  let (first_id, second_id) = (first.id, second.id);
 
   let root = BoxNode::new_block(
     parent_style,
@@ -492,6 +649,25 @@ fn column_rule_uses_top_border_in_vertical_writing_mode() {
   let fragment = fc
     .layout(&root, &LayoutConstraints::definite(200.0, 200.0))
     .expect("layout");
+
+  let first_frag = find_fragment(&fragment, first_id).expect("first fragment");
+  let second_frag = find_fragment(&fragment, second_id).expect("second fragment");
+  assert_eq!(
+    first_frag.fragment_count, 2,
+    "expected both fragments to be in a 2-column flow: {first_frag:?}"
+  );
+  assert_eq!(
+    second_frag.fragment_count, 2,
+    "expected both fragments to be in a 2-column flow: {second_frag:?}"
+  );
+  assert_ne!(
+    first_frag.fragment_index, second_frag.fragment_index,
+    "expected content to be distributed across columns (first idx={} bounds={:?}; second idx={} bounds={:?})",
+    first_frag.fragment_index,
+    first_frag.logical_override.unwrap_or(first_frag.bounds),
+    second_frag.fragment_index,
+    second_frag.logical_override.unwrap_or(second_frag.bounds)
+  );
 
   let rule_frag =
     find_rule_fragment_with_color(&fragment, rule_color).expect("column rule fragment");

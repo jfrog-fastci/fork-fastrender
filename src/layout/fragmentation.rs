@@ -625,6 +625,7 @@ pub(crate) fn parallel_flow_content_extent(
 pub struct FragmentationAnalyzer {
   _axis: FragmentAxis,
   _context: FragmentationContext,
+  enforce_fragmentainer_size: bool,
   opportunities: Vec<BreakOpportunity>,
   line_containers: Vec<LineContainer>,
   line_starts: Vec<usize>,
@@ -669,6 +670,7 @@ impl FragmentationAnalyzer {
     fragmentainer_size_hint: Option<f32>,
   ) -> Self {
     let axis = axis_from_fragment_axes(axes);
+    let enforce_fragmentainer_size = fragmentainer_size_hint.is_some();
     let mut collection = BreakCollection::default();
     collect_break_opportunities(
       root,
@@ -714,6 +716,7 @@ impl FragmentationAnalyzer {
       atomic,
       content_extent,
       deadline_counter: 0,
+      enforce_fragmentainer_size,
     }
   }
 
@@ -995,6 +998,21 @@ impl FragmentationAnalyzer {
       return clamped;
     }
 
+    if matches!(self._context, FragmentationContext::Column) && !self.enforce_fragmentainer_size {
+      // Multi-column layout prefers moving content to the next available break opportunity rather
+      // than slicing it at an arbitrary fragmentainer limit (e.g. splitting a block box when the
+      // next legal break is just after the limit). Only do this when the caller did not request a
+      // hard fragmentainer size.
+      if let Some(next) = self.opportunities[window_end..]
+        .iter()
+        .find(|o| o.pos > limit + BREAK_EPSILON && !pos_is_inside_atomic(o.pos, &self.atomic))
+      {
+        let clamped = next.pos.min(total_extent);
+        self.advance_line_starts(clamped);
+        return clamped;
+      }
+    }
+
     let mut fallback = limit;
     if let Some(near_line) = self.near_line_boundary(start, limit, window.clone()) {
       fallback = near_line;
@@ -1172,11 +1190,7 @@ pub fn fragment_tree(
     &root,
     context,
     axes,
-    if matches!(context, FragmentationContext::Page) {
-      Some(options.fragmentainer_size)
-    } else {
-      None
-    },
+    Some(options.fragmentainer_size),
   );
 
   let total_extent = analyzer.content_extent().max(options.fragmentainer_size);
@@ -1383,8 +1397,11 @@ pub(crate) fn clip_node(
   let mut cloned = clone_without_children(node);
   const CLIP_EPSILON: f32 = 0.01;
   if let Some(meta) = cloned.block_metadata.as_mut() {
-    meta.clipped_top = node_flow_start < fragment_start + CLIP_EPSILON;
-    meta.clipped_bottom = node_flow_end > fragment_end - CLIP_EPSILON;
+    // Only mark as clipped when the fragmentainer boundary actually slices through the fragment.
+    // Treat near-equal comparisons as un-clipped so margins can be normalized at exact boundaries
+    // (e.g. when a column boundary lands precisely on a sibling boundary).
+    meta.clipped_top = node_flow_start + CLIP_EPSILON < fragment_start;
+    meta.clipped_bottom = node_flow_end > fragment_end + CLIP_EPSILON;
   }
   cloned.bounds = axis.update_block_components(node.bounds, new_block_start, new_block_size);
   cloned.fragment_index = fragment_index;
