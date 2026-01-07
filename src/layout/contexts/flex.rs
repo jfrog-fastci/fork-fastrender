@@ -3712,6 +3712,13 @@ impl FormattingContext for FlexFormattingContext {
         }
         child_fragment.bounds = Rect::new(border_origin, border_size);
         child_fragment.style = Some(candidate.original_style.clone());
+        match &mut child_fragment.content {
+          FragmentContent::Block { box_id }
+          | FragmentContent::Inline { box_id, .. }
+          | FragmentContent::Text { box_id, .. }
+          | FragmentContent::Replaced { box_id, .. } => *box_id = Some(candidate.child_id),
+          FragmentContent::Line { .. } | FragmentContent::RunningAnchor { .. } => {}
+        }
         fragment.children_mut().push(child_fragment);
       }
     }

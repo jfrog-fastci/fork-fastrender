@@ -8275,6 +8275,14 @@ impl FormattingContext for GridFormattingContext {
         }
         child_fragment.bounds = crate::geometry::Rect::new(border_origin, border_size);
         child_fragment.style = Some(child.style.clone());
+        let child_box_id = ensure_box_id(child);
+        match &mut child_fragment.content {
+          FragmentContent::Block { box_id }
+          | FragmentContent::Inline { box_id, .. }
+          | FragmentContent::Text { box_id, .. }
+          | FragmentContent::Replaced { box_id, .. } => *box_id = Some(child_box_id),
+          FragmentContent::Line { .. } | FragmentContent::RunningAnchor { .. } => {}
+        }
         fragment.children_mut().push(child_fragment);
       }
     }
