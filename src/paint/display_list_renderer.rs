@@ -9919,6 +9919,7 @@ impl DisplayListRenderer {
       }
       DisplayItem::PushStackingContext(item) => {
         let canvas_layer_depth_before = self.canvas.layer_stack_len();
+        let stacking_depth_before = self.stacking_layers.len();
         let parent_child_transform = *self
           .transform_stack
           .last()
@@ -10266,13 +10267,19 @@ impl DisplayListRenderer {
         if self.trace_backdrop_stack {
           let depth_after = self.canvas.layer_stack_len();
           eprintln!(
-            "backdrop_stack push_sc backdrop_root={} needs_layer={} canvas_layers={} -> {}",
-            is_backdrop_root, needs_layer, canvas_layer_depth_before, depth_after
+            "backdrop_stack push_sc backdrop_root={} needs_layer={} canvas_layers={} -> {} stacking_depth={} -> {}",
+            is_backdrop_root,
+            needs_layer,
+            canvas_layer_depth_before,
+            depth_after,
+            stacking_depth_before,
+            stacking_depth_before + 1
           );
         }
       }
       DisplayItem::PopStackingContext => {
         let canvas_layer_depth_before = self.canvas.layer_stack_len();
+        let stacking_depth_before = self.stacking_layers.len();
         let record = self
           .stacking_layers
           .pop()
@@ -10309,8 +10316,13 @@ impl DisplayListRenderer {
         if self.trace_backdrop_stack {
           let depth_after = canvas_layer_depth_before.saturating_sub(record.needs_layer as usize);
           eprintln!(
-            "backdrop_stack pop_sc backdrop_root={} needs_layer={} canvas_layers={} -> {}",
-            record.establishes_backdrop_root, record.needs_layer, canvas_layer_depth_before, depth_after
+            "backdrop_stack pop_sc backdrop_root={} needs_layer={} canvas_layers={} -> {} stacking_depth={} -> {}",
+            record.establishes_backdrop_root,
+            record.needs_layer,
+            canvas_layer_depth_before,
+            depth_after,
+            stacking_depth_before,
+            stacking_depth_before.saturating_sub(1)
           );
         }
 
