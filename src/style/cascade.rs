@@ -1509,13 +1509,17 @@ fn style_query_container_unit_bases(container: &ContainerQueryInfo) -> (f32, f32
   (cqw, cqh, cqi, cqb)
 }
 
-fn parse_numeric_value(raw: &str, container: &ContainerQueryInfo, ctx: &ContainerQueryContext) -> Option<NumericValue> {
+fn parse_numeric_value(
+  raw: &str,
+  container: &ContainerQueryInfo,
+  ctx: &ContainerQueryContext,
+) -> Option<NumericValue> {
   let trimmed = raw.trim();
   if trimmed.is_empty() || contains_cascade_dependent_keyword(trimmed) {
     return None;
   }
 
-  let resolved = if crate::style::var_resolution::contains_var(trimmed) {
+  let resolved: Cow<'_, str> = if crate::style::var_resolution::contains_var(trimmed) {
     let value = PropertyValue::Custom(trimmed.to_string());
     match crate::style::var_resolution::resolve_var_for_property(
       &value,

@@ -4862,11 +4862,28 @@ impl FlexFormattingContext {
     };
     let cross_positive_self = self_axis_positive(container_cross_axis);
     let inline_positive_self = self_axis_positive(container_axes.inline_axis());
-    let align_self_axis_positive = match style.align_self {
+
+    // `align-items` and `justify-items` define the used value for `align-self/justify-self:auto`.
+    // Encode that into per-item `align_self/justify_self` so `self-start/self-end` can resolve per
+    // item (Taffy's container-level `align_items` cannot express that).
+    let effective_align_self = if is_root {
+      style.align_self
+    } else {
+      style.align_self.or_else(|| containing_flex.map(|flex| flex.align_items))
+    };
+    let effective_justify_self = if is_root {
+      style.justify_self
+    } else {
+      style
+        .justify_self
+        .or_else(|| containing_flex.map(|flex| flex.justify_items))
+    };
+
+    let align_self_axis_positive = match effective_align_self {
       Some(AlignItems::SelfStart | AlignItems::SelfEnd) => cross_positive_self,
       _ => cross_positive_item,
     };
-    let justify_self_axis_positive = match style.justify_self {
+    let justify_self_axis_positive = match effective_justify_self {
       Some(AlignItems::SelfStart | AlignItems::SelfEnd) => inline_positive_self,
       _ => inline_positive_item,
     };
@@ -4911,8 +4928,8 @@ impl FlexFormattingContext {
       justify_content: self.justify_content_to_taffy(style.justify_content),
       align_items: self.align_items_to_taffy(style.align_items, cross_positive_container),
       align_content: self.align_content_to_taffy(style.align_content, cross_positive_container),
-      align_self: self.align_self_to_taffy(style.align_self, align_self_axis_positive),
-      justify_self: self.align_self_to_taffy(style.justify_self, justify_self_axis_positive),
+      align_self: self.align_self_to_taffy(effective_align_self, align_self_axis_positive),
+      justify_self: self.align_self_to_taffy(effective_justify_self, justify_self_axis_positive),
       justify_items: self.align_items_to_taffy(style.justify_items, inline_positive_container),
 
       // Gap

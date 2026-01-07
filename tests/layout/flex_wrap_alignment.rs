@@ -230,3 +230,38 @@ fn flex_item_self_start_uses_item_direction() {
     fragment.children[0].bounds.x()
   );
 }
+
+#[test]
+fn flex_align_items_self_start_uses_item_direction() {
+  let fc = FlexFormattingContext::new();
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.flex_direction = FlexDirection::Column;
+  container_style.align_items = AlignItems::SelfStart;
+  container_style.direction = Direction::Ltr;
+  container_style.width = Some(Length::px(100.0));
+  container_style.height = Some(Length::px(30.0));
+  container_style.width_keyword = None;
+  container_style.height_keyword = None;
+
+  let mut child_style = (*fixed_block(10.0, 10.0)).clone();
+  child_style.direction = Direction::Rtl;
+  let child = BoxNode::new_block(Arc::new(child_style), FormattingContextType::Block, vec![]);
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child],
+  );
+
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(100.0, 30.0))
+    .expect("layout succeeds");
+
+  assert!(
+    (fragment.children[0].bounds.x() - 90.0).abs() < 1e-3,
+    "align-items:self-start should resolve against the item's direction (x=90), got {:.2}",
+    fragment.children[0].bounds.x()
+  );
+}
