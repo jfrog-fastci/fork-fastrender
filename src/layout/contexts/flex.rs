@@ -6841,7 +6841,15 @@ impl FlexFormattingContext {
           selector_for_profile.as_deref(),
           node_timer,
         );
-        let intrinsic_size = Self::fragment_subtree_size(&child_fragment, deadline_counter)?;
+        let uses_content_base_size = matches!(work.child_box.style.flex_basis, FlexBasis::Content)
+          && ((main_axis_is_row && work.layout_width <= eps)
+            || (!main_axis_is_row && work.layout_height <= eps));
+        let intrinsic_size = if uses_content_base_size {
+          Self::fragment_descendant_span(&child_fragment, deadline_counter)?
+            .unwrap_or(Size::ZERO)
+        } else {
+          Self::fragment_subtree_size(&child_fragment, deadline_counter)?
+        };
 
         if !trace_flex_text_ids().is_empty() && trace_flex_text_ids().contains(&work.child_box.id) {
           let mut text_count = 0;
@@ -6914,7 +6922,11 @@ impl FlexFormattingContext {
             Ok(mc_fragment) => {
               flex_profile::record_node_layout(work.child_box.id, mc_selector.as_deref(), mc_timer);
               let mc_fragment = mc_fragment;
-              let mut mc_size = Self::fragment_subtree_size(&mc_fragment, deadline_counter)?;
+              let mut mc_size = if uses_content_base_size {
+                Self::fragment_descendant_span(&mc_fragment, deadline_counter)?.unwrap_or(Size::ZERO)
+              } else {
+                Self::fragment_subtree_size(&mc_fragment, deadline_counter)?
+              };
               if rect.width().is_finite() && rect.width() > 0.0 {
                 mc_size.width = mc_size.width.min(rect.width());
               }
