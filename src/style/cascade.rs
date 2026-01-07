@@ -79,6 +79,7 @@ use crate::style::position::Position;
 use crate::style::properties::apply_content_visibility_implied_containment;
 use crate::style::properties::apply_declaration_with_base;
 use crate::style::properties::apply_declaration_with_base_and_custom_properties;
+use crate::style::properties::apply_property_from_source;
 use crate::style::properties::resolve_pending_logical_properties;
 use crate::style::properties::with_image_set_dpr;
 use crate::style::style_set::StyleSet;
@@ -1319,7 +1320,7 @@ fn eval_style_feature(
 ) -> bool {
   match feature {
     StyleQueryFeature::Plain { name, value } => eval_plain_style_feature(name, value, container, ctx),
-    StyleQueryFeature::Boolean { name } => eval_boolean_style_feature(name, container),
+    StyleQueryFeature::Boolean { name } => eval_boolean_style_feature(name, container, ctx),
     StyleQueryFeature::Range(range) => eval_style_range(range, container, ctx),
   }
 }
@@ -1424,103 +1425,104 @@ fn eval_plain_style_feature(
   }
 
   if name.starts_with("--") {
-    let Some(actual) = styles.custom_properties.get(name) else {
+    // Custom property subjects compare token streams (unregistered) or typed values (registered).
+    // Variable references in the query value have already been resolved above.
+    let expected_resolved = normalize_query_value(resolved_value);
+
+    let registry_entry = styles.custom_property_registry.get(name);
+    let actual = if let Some(rule) = registry_entry {
+      styles
+        .custom_properties
+        .get(name)
+        .or(rule.initial_value.as_ref())
+    } else {
+      styles.custom_properties.get(name)
+    };
+    let Some(actual) = actual else {
       return false;
     };
-    let expected_norm = normalize_query_value(resolved_value);
 
     // Prefer typed comparisons for registered properties when possible.
-    if let Some(rule) = styles.custom_property_registry.get(name) {
-      if let Some(expected_typed) = rule.syntax.parse_value(expected_norm.trim()) {
+    if let Some(rule) = registry_entry {
+      if let Some(expected_typed) = rule.syntax.parse_value(expected_resolved.trim()) {
         if let Some(actual_typed) = actual.typed.as_ref() {
           return actual_typed == &expected_typed;
         }
       }
     }
 
-    return normalize_query_value(&actual.value) == expected_norm;
+    return normalize_query_value(&actual.value) == expected_resolved;
   }
 
-  match name {
-    "color" => Color::parse(resolved_value)
-      .map(|color: Color| color.to_rgba(styles.color) == styles.color)
-      .unwrap_or(false),
-    "background-color" => Color::parse(resolved_value)
-      .map(|color: Color| color.to_rgba(styles.color) == styles.background_color)
-      .unwrap_or(false),
-    "display" => Display::parse(resolved_value)
-      .map(|display| display == styles.display)
-      .unwrap_or(false),
-    "position" => Position::parse(resolved_value)
-      .map(|pos| pos == styles.position)
-      .unwrap_or(false),
-    "overflow-x" => parse_overflow_keyword(resolved_value)
-      .is_some_and(|overflow| overflow == styles.overflow_x),
-    "overflow-y" => parse_overflow_keyword(resolved_value)
-      .is_some_and(|overflow| overflow == styles.overflow_y),
-    "overflow" => {
-      let parts: Vec<&str> = resolved_value.split_whitespace().collect();
-      match parts.as_slice() {
-        [value] => {
-          let Some(overflow) = parse_overflow_keyword(value) else {
-            return false;
-          };
-          overflow == styles.overflow_x && overflow == styles.overflow_y
-        }
-        [x, y] => {
-          let Some(overflow_x) = parse_overflow_keyword(x) else {
-            return false;
-          };
-          let Some(overflow_y) = parse_overflow_keyword(y) else {
-            return false;
-          };
-          overflow_x == styles.overflow_x && overflow_y == styles.overflow_y
-        }
-        _ => false,
-      }
+  let value = normalize_query_value(resolved_value);
+  let decls = parse_declarations(&format!("{name}: {value};"));
+  let decl = match decls.as_slice() {
+    [decl] => decl,
+    _ => return false,
+  };
+
+  let viewport = Size::new(ctx.base_media.viewport_width, ctx.base_media.viewport_height);
+  let color_scheme_pref = ctx
+    .base_media
+    .prefers_color_scheme
+    .unwrap_or(ColorScheme::NoPreference);
+  let selected_scheme = select_color_scheme(&styles.color_scheme, color_scheme_pref);
+  let is_dark_color_scheme = matches!(selected_scheme, Some(ColorSchemeEntry::Dark));
+
+  let mut expected = styles.clone();
+  apply_declaration_with_base(
+    &mut expected,
+    decl,
+    styles,
+    default_computed_style(),
+    None,
+    styles.font_size,
+    styles.root_font_size,
+    viewport,
+    is_dark_color_scheme,
+  );
+
+  if let Some(pending) = expected.font_size_pending.take() {
+    let (cqw, cqh, cqi, cqb) = style_query_container_unit_bases(container);
+    let resolved = pending.resolve_container_query_units(cqw, cqh, cqi, cqb);
+    if let Some(size) = crate::style::properties::resolve_font_size_length(
+      resolved,
+      styles.font_size,
+      styles.root_font_size,
+      viewport,
+    ) {
+      expected.font_size = size;
     }
-    "z-index" => {
-      if resolved_value.eq_ignore_ascii_case("auto") {
-        styles.z_index.is_none()
-      } else {
-        resolved_value
-          .parse::<f32>()
-          .ok()
-          .filter(|v| v.is_finite())
-          .is_some_and(|v| styles.z_index == Some(v as i32))
-      }
-    }
-    "opacity" => resolved_value
-      .trim()
-      .parse::<f32>()
-      .ok()
-      .filter(|v| v.is_finite())
-      .is_some_and(|v| (v.clamp(0.0, 1.0) - styles.opacity).abs() < 1e-6),
-    "font-size" => {
-      let Some(expected) = crate::css::properties::parse_length(resolved_value) else {
-        return false;
-      };
-      // Resolve container query units relative to the query container itself.
-      let (cqw, cqh, cqi, cqb) = style_query_container_unit_bases(container);
-      let expected = expected.resolve_container_query_units(cqw, cqh, cqi, cqb);
-      let viewport = Size::new(ctx.base_media.viewport_width, ctx.base_media.viewport_height);
-      let expected_px = crate::style::properties::resolve_font_size_length(
-        expected,
-        styles.font_size,
-        styles.root_font_size,
-        viewport,
-      );
-      expected_px.is_some_and(|px| (px - styles.font_size).abs() < 1e-6)
-    }
-    _ => false,
   }
+
+  resolve_pending_logical_properties(&mut expected);
+  normalize_overflow_axes(&mut expected);
+  apply_content_visibility_implied_containment(&mut expected);
+  resolve_line_height_length(&mut expected, viewport);
+  let expected_root_font_size = expected.root_font_size;
+  resolve_absolute_lengths(&mut expected, expected_root_font_size, viewport);
+  resolve_style_query_container_query_lengths(&mut expected, container, ctx);
+
+  let mut actual_snapshot = default_computed_style().clone();
+  let mut expected_snapshot = default_computed_style().clone();
+  if !apply_property_from_source(&mut actual_snapshot, styles, name, 0) {
+    return false;
+  }
+  if !apply_property_from_source(&mut expected_snapshot, &expected, name, 0) {
+    return false;
+  }
+  actual_snapshot == expected_snapshot
 }
 
-fn eval_boolean_style_feature(name: &str, container: &ContainerQueryInfo) -> bool {
+fn eval_boolean_style_feature(
+  name: &str,
+  container: &ContainerQueryInfo,
+  ctx: &ContainerQueryContext,
+) -> bool {
   let styles = container.styles.as_ref();
   if name.starts_with("--") {
     let registry_entry = styles.custom_property_registry.get(name);
-    if let Some(rule) = registry_entry {
+    return if let Some(rule) = registry_entry {
       // Registered custom properties always have a well-defined initial value.
       let initial = rule.initial_value.as_ref();
       let actual = styles.custom_properties.get(name);
@@ -1541,24 +1543,66 @@ fn eval_boolean_style_feature(name: &str, container: &ContainerQueryInfo) -> boo
     } else {
       // Unregistered custom properties: initial is "unset"; boolean query is true iff present.
       styles.custom_properties.contains_key(name)
-    }
-  } else {
-    // Boolean queries against supported CSS properties compare computed against initial values.
-    let initial = default_computed_style();
-    match name {
-      "display" => styles.display != initial.display,
-      "color" => styles.color != initial.color,
-      "background-color" => styles.background_color != initial.background_color,
-      "position" => styles.position != initial.position,
-      "overflow-x" => styles.overflow_x != initial.overflow_x,
-      "overflow-y" => styles.overflow_y != initial.overflow_y,
-      "overflow" => styles.overflow_x != initial.overflow_x || styles.overflow_y != initial.overflow_y,
-      "z-index" => styles.z_index != initial.z_index,
-      "opacity" => (styles.opacity - initial.opacity).abs() > 1e-6,
-      "font-size" => (styles.font_size - initial.font_size).abs() > 1e-6,
-      _ => false,
+    };
+  }
+
+  let decls = parse_declarations(&format!("{name}: initial;"));
+  let decl = match decls.as_slice() {
+    [decl] => decl,
+    _ => return false,
+  };
+
+  let viewport = Size::new(ctx.base_media.viewport_width, ctx.base_media.viewport_height);
+  let color_scheme_pref = ctx
+    .base_media
+    .prefers_color_scheme
+    .unwrap_or(ColorScheme::NoPreference);
+  let selected_scheme = select_color_scheme(&styles.color_scheme, color_scheme_pref);
+  let is_dark_color_scheme = matches!(selected_scheme, Some(ColorSchemeEntry::Dark));
+
+  let mut initial_style = styles.clone();
+  apply_declaration_with_base(
+    &mut initial_style,
+    decl,
+    styles,
+    default_computed_style(),
+    None,
+    styles.font_size,
+    styles.root_font_size,
+    viewport,
+    is_dark_color_scheme,
+  );
+
+  if let Some(pending) = initial_style.font_size_pending.take() {
+    let (cqw, cqh, cqi, cqb) = style_query_container_unit_bases(container);
+    let resolved = pending.resolve_container_query_units(cqw, cqh, cqi, cqb);
+    if let Some(size) = crate::style::properties::resolve_font_size_length(
+      resolved,
+      styles.font_size,
+      styles.root_font_size,
+      viewport,
+    ) {
+      initial_style.font_size = size;
     }
   }
+
+  resolve_pending_logical_properties(&mut initial_style);
+  normalize_overflow_axes(&mut initial_style);
+  apply_content_visibility_implied_containment(&mut initial_style);
+  resolve_line_height_length(&mut initial_style, viewport);
+  let initial_root_font_size = initial_style.root_font_size;
+  resolve_absolute_lengths(&mut initial_style, initial_root_font_size, viewport);
+  resolve_style_query_container_query_lengths(&mut initial_style, container, ctx);
+
+  let mut actual_snapshot = default_computed_style().clone();
+  let mut initial_snapshot = default_computed_style().clone();
+  if !apply_property_from_source(&mut actual_snapshot, styles, name, 0) {
+    return false;
+  }
+  if !apply_property_from_source(&mut initial_snapshot, &initial_style, name, 0) {
+    return false;
+  }
+  actual_snapshot != initial_snapshot
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1868,6 +1912,43 @@ fn style_query_container_unit_bases(container: &ContainerQueryInfo) -> (f32, f32
   };
 
   (cqw, cqh, cqi, cqb)
+}
+
+fn resolve_style_query_container_query_lengths(
+  styles: &mut ComputedStyle,
+  container: &ContainerQueryInfo,
+  ctx: &ContainerQueryContext,
+) {
+  let mut containers = HashMap::with_capacity(1);
+  containers.insert(
+    0usize,
+    ContainerQueryInfo {
+      width: container.width,
+      height: container.height,
+      inline_size: container.inline_size,
+      block_size: container.block_size,
+      container_type: container.container_type,
+      names: Vec::new(),
+      font_size: container.font_size,
+      styles: Arc::clone(&container.styles),
+    },
+  );
+  let dummy_ctx = ContainerQueryContext {
+    base_media: ctx.base_media.clone(),
+    containers,
+  };
+
+  // Resolve `cqw`/`cqh`/`cqi`/`cqb` units relative to the query container itself. This mirrors the
+  // main cascade path where container query units are resolved after layout, but style() queries
+  // require resolving against the query container snapshot immediately.
+  resolve_container_query_lengths(
+    styles,
+    0,
+    &[],
+    Some(&dummy_ctx),
+    Size::new(0.0, 0.0),
+    true,
+  );
 }
 
 fn parse_numeric_value(

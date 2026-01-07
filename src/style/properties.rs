@@ -4061,7 +4061,7 @@ fn radius_for_corner(style: &ComputedStyle, corner: PhysicalCorner) -> BorderCor
   }
 }
 
-fn apply_property_from_source(
+pub(crate) fn apply_property_from_source(
   styles: &mut ComputedStyle,
   source: &ComputedStyle,
   property: &str,

@@ -756,6 +756,37 @@ fn container_style_query_supports_logical_operators() {
 }
 
 #[test]
+fn container_style_query_tracks_non_color_properties_across_container_pass_iterations() {
+  let html = r#"
+     <style>
+       .outer { container-type: inline-size; width: 300px; }
+       .inner { container-type: inline-size; width: 200px; }
+       .child { color: rgb(0 0 255); }
+
+       /* Set a layout-affecting property on the inner container based on the outer container. */
+       @container (min-width: 0px) {
+         .inner { margin-left: 10px; }
+      }
+
+      /* Style queries evaluate against the nearest container; this depends on the inner
+         container's computed margin-left, which must be fed back into a second container pass. */
+      @container style(margin-left: 10px) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="outer">
+      <div class="inner">
+        <div id="target" class="child">hello</div>
+      </div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(target.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_type_rejects_none_and_style_keywords_and_container_shorthand_resets_to_normal() {
   let html = r#"
     <style>

@@ -8572,6 +8572,7 @@ impl FastRender {
       let mut include_position = false;
       let mut include_overflow = false;
       let mut include_font_size = false;
+      let mut properties: Vec<String> = Vec::new();
       for name in container_style_query_properties.iter() {
         match name.to_ascii_lowercase().as_str() {
           "color" => include_color = true,
@@ -8582,9 +8583,11 @@ impl FastRender {
           "opacity" => include_opacity = true,
           "z-index" => include_z_index = true,
           "font-size" => include_font_size = true,
-          _ => {}
+          _ => properties.push(name.clone()),
         }
       }
+      properties.sort();
+      properties.dedup();
 
       let container_query_fingerprint = if custom_properties.is_empty()
         && !include_color
@@ -8595,6 +8598,7 @@ impl FastRender {
         && !include_opacity
         && !include_z_index
         && !include_font_size
+        && properties.is_empty()
       {
         None
       } else {
@@ -8608,6 +8612,7 @@ impl FastRender {
           include_opacity,
           include_z_index,
           include_font_size,
+          properties,
         })
       };
 
@@ -12845,6 +12850,13 @@ struct ContainerQueryFingerprintConfig {
   include_opacity: bool,
   include_z_index: bool,
   include_font_size: bool,
+  properties: Vec<String>,
+}
+
+static CONTAINER_QUERY_FINGERPRINT_DEFAULT_STYLE: OnceLock<ComputedStyle> = OnceLock::new();
+
+fn container_query_fingerprint_default_style() -> &'static ComputedStyle {
+  CONTAINER_QUERY_FINGERPRINT_DEFAULT_STYLE.get_or_init(ComputedStyle::default)
 }
 
 fn styled_layout_fingerprint_digest(root: &StyledNode) -> u64 {
@@ -13004,6 +13016,34 @@ fn container_query_context_fingerprint(
             }
           }
           None => 0u8.hash(&mut hasher),
+        }
+      }
+      if !config.properties.is_empty() {
+        use std::fmt;
+        use std::fmt::Write;
+
+        struct HasherWrite<'a, H: Hasher>(&'a mut H);
+
+        impl<'a, H: Hasher> fmt::Write for HasherWrite<'a, H> {
+          fn write_str(&mut self, s: &str) -> fmt::Result {
+            self.0.write(s.as_bytes());
+            Ok(())
+          }
+        }
+
+        for prop in config.properties.iter() {
+          prop.hash(&mut hasher);
+          let mut snapshot = container_query_fingerprint_default_style().clone();
+          if crate::style::properties::apply_property_from_source(
+            &mut snapshot,
+            info.styles.as_ref(),
+            prop,
+            0,
+          ) {
+            let _ = write!(HasherWrite(&mut hasher), "{:?}", snapshot);
+          } else {
+            0u8.hash(&mut hasher);
+          }
         }
       }
     }
@@ -16914,6 +16954,7 @@ pub(crate) fn render_html_with_shared_resources(
       include_opacity: false,
       include_z_index: false,
       include_font_size: false,
+      properties: Vec::new(),
     };
 
     fn ctx_with_query_value(media_ctx: &MediaContext, value: &str) -> ContainerQueryContext {
@@ -16996,6 +17037,7 @@ pub(crate) fn render_html_with_shared_resources(
       include_opacity: false,
       include_z_index: false,
       include_font_size: false,
+      properties: Vec::new(),
     };
 
     fn ctx_with_values(media_ctx: &MediaContext, foo: &str, bar: &str) -> ContainerQueryContext {
@@ -17069,6 +17111,7 @@ pub(crate) fn render_html_with_shared_resources(
       include_opacity: true,
       include_z_index: false,
       include_font_size: false,
+      properties: Vec::new(),
     };
 
     fn ctx_with_opacity(media_ctx: &MediaContext, opacity: f32) -> ContainerQueryContext {
@@ -17143,6 +17186,7 @@ pub(crate) fn render_html_with_shared_resources(
       include_opacity: false,
       include_z_index: true,
       include_font_size: false,
+      properties: Vec::new(),
     };
 
     fn ctx_with_z_index(media_ctx: &MediaContext, z_index: Option<i32>) -> ContainerQueryContext {
@@ -17217,6 +17261,7 @@ pub(crate) fn render_html_with_shared_resources(
       include_opacity: false,
       include_z_index: false,
       include_font_size: false,
+      properties: Vec::new(),
     };
 
     fn ctx_with_position(
@@ -17294,6 +17339,7 @@ pub(crate) fn render_html_with_shared_resources(
       include_opacity: false,
       include_z_index: false,
       include_font_size: false,
+      properties: Vec::new(),
     };
 
     fn ctx_with_overflow(
@@ -17386,6 +17432,7 @@ pub(crate) fn render_html_with_shared_resources(
       include_opacity: false,
       include_z_index: false,
       include_font_size: false,
+      properties: Vec::new(),
     };
 
     fn ctx_with_values(media_ctx: &MediaContext, foo: &str, y: &str) -> ContainerQueryContext {
@@ -17460,6 +17507,7 @@ pub(crate) fn render_html_with_shared_resources(
       include_opacity: false,
       include_z_index: false,
       include_font_size: false,
+      properties: Vec::new(),
     };
 
     fn ctx_with_transitive_values(media_ctx: &MediaContext, y: &str) -> ContainerQueryContext {
