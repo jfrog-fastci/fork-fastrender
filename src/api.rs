@@ -6848,11 +6848,16 @@ impl FastRender {
               sheet.set_font_face_source_stylesheet_url(base_url);
             }
             let resolved = if sheet.contains_imports() {
+              let referrer_policy = resource_context
+                .as_ref()
+                .map(|ctx| ctx.referrer_policy)
+                .unwrap_or_default();
               let loader = CssImportFetcher::new(
                 document_base_url.clone(),
                 Arc::clone(fetcher),
                 resource_context.clone(),
                 stylesheet_fetch_counter.clone(),
+                referrer_policy,
               );
               sheet.resolve_imports_owned_with_cache(
                 &loader,
@@ -6949,6 +6954,7 @@ impl FastRender {
                 Arc::clone(fetcher),
                 resource_context.clone(),
                 stylesheet_fetch_counter.clone(),
+                request_referrer_policy,
               );
               sheet.resolve_imports_owned_with_cache(
                 &loader,
@@ -7121,6 +7127,9 @@ impl FastRender {
     let sources = extract_css_sources(dom);
     let fetcher = Arc::clone(&self.fetcher);
     let resource_context = self.resource_context.as_ref();
+    let document_referrer_policy = resource_context
+      .map(|ctx| ctx.referrer_policy)
+      .unwrap_or_default();
     let preload_stylesheets_enabled = self
       .runtime_toggles
       .truthy_with_default("FASTR_FETCH_PRELOAD_STYLESHEETS", true);
@@ -7136,6 +7145,7 @@ impl FastRender {
       Arc::clone(&fetcher),
       self.resource_context.clone(),
       stylesheet_fetch_counter.clone(),
+      document_referrer_policy,
     );
 
     for scoped in sources {
@@ -7213,12 +7223,8 @@ impl FastRender {
           let client_origin = resource_context
             .and_then(|ctx| ctx.policy.document_origin.as_ref())
             .or(origin_fallback.as_ref());
-          let doc_referrer_policy = self
-            .resource_context
-            .as_ref()
-            .map(|ctx| ctx.referrer_policy)
-            .unwrap_or_default();
-          let request_referrer_policy = link.referrer_policy.unwrap_or(doc_referrer_policy);
+          let request_referrer_policy =
+            link.referrer_policy.unwrap_or(document_referrer_policy);
           let mut request = FetchRequest::new(stylesheet_url.as_str(), FetchDestination::Style);
           if let Some(origin) = client_origin {
             request = request.with_client_origin(origin);
@@ -7269,6 +7275,7 @@ impl FastRender {
                   Arc::clone(&fetcher),
                   resource_context.cloned(),
                   stylesheet_fetch_counter.clone(),
+                  request_referrer_policy,
                 );
                 let resolved = sheet.resolve_imports_owned_with_cache(
                   &loader,
@@ -11322,6 +11329,10 @@ struct CssImportFetcher {
   fetcher: Arc<dyn ResourceFetcher>,
   resource_context: Option<ResourceContext>,
   stylesheet_fetch_counter: Option<Arc<AtomicUsize>>,
+  /// Referrer policy to apply to any `@import` requests initiated by this stylesheet load.
+  ///
+  /// For linked stylesheets this should incorporate any per-element `referrerpolicy` override.
+  referrer_policy: ReferrerPolicy,
 }
 
 impl CssImportFetcher {
@@ -11330,12 +11341,14 @@ impl CssImportFetcher {
     fetcher: Arc<dyn ResourceFetcher>,
     resource_context: Option<ResourceContext>,
     stylesheet_fetch_counter: Option<Arc<AtomicUsize>>,
+    referrer_policy: ReferrerPolicy,
   ) -> Self {
     Self {
       base_url,
       fetcher,
       resource_context,
       stylesheet_fetch_counter,
+      referrer_policy,
     }
   }
 
@@ -11385,11 +11398,7 @@ impl CssImportLoader for CssImportFetcher {
         .as_ref()
         .and_then(|ctx| ctx.document_url.as_deref())
     });
-    let referrer_policy = self
-      .resource_context
-      .as_ref()
-      .map(|ctx| ctx.referrer_policy)
-      .unwrap_or_default();
+    let referrer_policy = self.referrer_policy;
     let origin_fallback = referrer_url.and_then(origin_from_url);
     let client_origin = self
       .resource_context
@@ -13837,6 +13846,7 @@ mod tests {
       Arc::new(DnsFailureFetcher),
       Some(ctx),
       None,
+      ReferrerPolicy::default(),
     );
 
     let css = loader
@@ -13872,6 +13882,7 @@ mod tests {
       Arc::new(Http404Fetcher),
       Some(ctx),
       None,
+      ReferrerPolicy::default(),
     );
 
     let result = loader.load("https://example.com/missing.css");
@@ -14077,6 +14088,7 @@ mod tests {
       fetcher_for_loader,
       Some(ctx),
       None,
+      ReferrerPolicy::default(),
     );
     let media_ctx = MediaContext::screen(800.0, 600.0);
     let sheet = crate::css::parser::parse_stylesheet("@import \"import.css\";")
