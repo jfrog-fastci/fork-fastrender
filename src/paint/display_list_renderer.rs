@@ -9927,6 +9927,8 @@ impl DisplayListRenderer {
           transform_rect(bounds, &combined_transform)
         };
 
+        // Tracks whether this stacking context should be treated as a Backdrop Root for sampling
+        // the Backdrop Root Image (Filter Effects Level 2).
         let is_backdrop_root = item.establishes_backdrop_root
           || !scaled_filters.is_empty()
           || has_backdrop
