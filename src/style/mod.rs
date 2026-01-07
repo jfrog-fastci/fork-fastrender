@@ -408,9 +408,11 @@ pub(crate) fn is_text_emphasis_mark_excluded(ch: char) -> bool {
   }
 
   // CSS Text Decoration 4: punctuation marks do not receive emphasis marks unless they NFKD
-  // normalize to one of these symbols. We do not currently implement full NFKD normalization
-  // here; instead we allow the symbols explicitly listed by the spec.
-  !matches!(
+  // normalize to one of these symbols.
+  //
+  // We don't implement full NFKD normalization here, but we do handle the most common
+  // compatibility mapping in real pages (fullwidth ASCII punctuation).
+  let allowlisted = matches!(
     ch,
     '#'
       | '%'
@@ -427,7 +429,22 @@ pub(crate) fn is_text_emphasis_mark_excluded(ch: char) -> bool {
       | '⁋'
       | '⁓'
       | '〽'
-  )
+  );
+
+  if allowlisted {
+    return false;
+  }
+
+  let code = ch as u32;
+  if (0xFF01..=0xFF5E).contains(&code) {
+    if let Some(mapped) = char::from_u32(code - 0xFEE0) {
+      if matches!(mapped, '#' | '%' | '&' | '@') {
+        return false;
+      }
+    }
+  }
+
+  true
 }
 
 /// Pending logical properties (margin/padding/border/sizing) to resolve after writing-mode is known.

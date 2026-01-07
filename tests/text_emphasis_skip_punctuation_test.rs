@@ -72,3 +72,22 @@ fn text_emphasis_keeps_allowed_hash_symbol() {
   );
 }
 
+#[test]
+fn text_emphasis_keeps_fullwidth_allowed_hash_symbol() {
+  // Fullwidth punctuation should behave like its ASCII equivalent under NFKD normalization.
+  // U+FF03 FULLWIDTH NUMBER SIGN maps to '#'.
+  let html = r#"
+    <html>
+      <body style="margin:0">
+        <div style="font-size:40px; line-height:1; text-emphasis-style: dot; text-emphasis-position: over;">
+          A＃A
+        </div>
+      </body>
+    </html>
+  "#;
+  assert_eq!(
+    emphasis_mark_count(html),
+    3,
+    "expected emphasis marks for fullwidth '#', matching the spec allowlist"
+  );
+}
