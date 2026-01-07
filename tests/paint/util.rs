@@ -1,26 +1,11 @@
 use fastrender::debug::runtime::RuntimeToggles;
 use fastrender::paint::display_list_renderer::PaintParallelism;
 use fastrender::{FastRender, FastRenderConfig, FontConfig, LayoutParallelism};
-use rayon::ThreadPoolBuilder;
 use std::collections::HashMap;
-use std::sync::Once;
 use tiny_skia::Pixmap;
 
-fn ensure_conservative_rayon_global_pool() {
-  static INIT: Once = Once::new();
-  INIT.call_once(|| {
-    // In CI/container environments the default Rayon thread count (host CPU count) can be high
-    // enough to fail global pool initialization (EAGAIN). Clamp the pool for stability under
-    // `scripts/run_limited.sh`.
-    if !std::env::var_os("RAYON_NUM_THREADS").is_some_and(|value| !value.is_empty()) {
-      std::env::set_var("RAYON_NUM_THREADS", "2");
-    }
-    let _ = ThreadPoolBuilder::new().num_threads(2).build_global();
-  });
-}
-
 pub fn create_stacking_context_bounds_renderer() -> FastRender {
-  ensure_conservative_rayon_global_pool();
+  crate::rayon_test_util::init_rayon_for_tests(2);
   let toggles = RuntimeToggles::from_map(HashMap::from([(
     "FASTR_PAINT_BACKEND".to_string(),
     "display_list".to_string(),

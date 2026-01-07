@@ -6,21 +6,6 @@ use fastrender::scroll::ScrollState;
 use fastrender::text::font_loader::FontContext;
 use fastrender::tree::fragment_tree::FragmentNode;
 use fastrender::{FastRender, FontConfig, Point, Rgba};
-use std::sync::Once;
-
-static INIT_RAYON: Once = Once::new();
-
-fn init_rayon_global_pool() {
-  // This test binary runs in environments where `nproc` can be very large (e.g. CI machines), but
-  // the per-process thread limit is much smaller. Rayon will try to spawn one worker per CPU the
-  // first time it's used, which can fail with EAGAIN ("Resource temporarily unavailable").
-  //
-  // Force a tiny global pool so the rest of the renderer can safely use Rayon internally without
-  // the test harness needing to pass `--test-threads=1` or env vars.
-  INIT_RAYON.call_once(|| {
-    let _ = rayon::ThreadPoolBuilder::new().num_threads(1).build_global();
-  });
-}
 
 fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
   let p = pixmap.pixel(x, y).unwrap();
@@ -28,7 +13,7 @@ fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
 }
 
 fn build_display_list(html: &str, width: u32, height: u32) -> (DisplayList, FontContext) {
-  init_rayon_global_pool();
+  crate::rayon_test_util::init_rayon_for_tests(1);
 
   let mut renderer = FastRender::builder()
     .font_sources(FontConfig::bundled_only())

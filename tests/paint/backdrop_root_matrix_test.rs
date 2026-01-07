@@ -3,27 +3,14 @@ use fastrender::paint::display_list_renderer::PaintParallelism;
 use fastrender::paint::painter::paint_tree_with_resources_scaled_offset;
 use fastrender::scroll::ScrollState;
 use fastrender::{FastRender, Point, Rgba};
-use std::sync::Once;
 
 fn ensure_small_rayon_thread_pool() {
-  // Rayon defaults to the host CPU count, which can exceed sandbox thread budgets and panic during
-  // global pool initialization. Most of these tests are serial anyway (PaintParallelism is
-  // disabled), so clamp the global pool to a small deterministic size unless the caller opted into
-  // something else.
-  static INIT: Once = Once::new();
-  INIT.call_once(|| {
-    if std::env::var("RAYON_NUM_THREADS").is_err() {
-      std::env::set_var("RAYON_NUM_THREADS", "4");
-    }
-    let threads = std::env::var("RAYON_NUM_THREADS")
-      .ok()
-      .and_then(|v| v.parse::<usize>().ok())
-      .unwrap_or(4)
-      .max(1);
-    let _ = rayon::ThreadPoolBuilder::new()
-      .num_threads(threads)
-      .build_global();
-  });
+  let threads = std::env::var("RAYON_NUM_THREADS")
+    .ok()
+    .and_then(|v| v.parse::<usize>().ok())
+    .unwrap_or(4)
+    .max(1);
+  crate::rayon_test_util::init_rayon_for_tests(threads);
 }
 
 fn render(html: &str, width: u32, height: u32) -> tiny_skia::Pixmap {

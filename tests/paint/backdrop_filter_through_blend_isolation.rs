@@ -3,22 +3,9 @@ use fastrender::paint::display_list_renderer::PaintParallelism;
 use fastrender::paint::painter::paint_tree_with_resources_scaled_offset;
 use fastrender::scroll::ScrollState;
 use fastrender::{FastRender, Point, Rgba};
-use std::sync::Once;
-
-fn init_rayon() {
-  static INIT: Once = Once::new();
-  INIT.call_once(|| {
-    // Under the tight `RLIMIT_AS` used by `scripts/run_limited.sh`, Rayon's default global pool can
-    // fail to spawn (it tries to match the host CPU count). Force a tiny pool so painter internals
-    // that rely on Rayon helpers (e.g. `rayon::current_num_threads`) are reliable when running
-    // isolated test filters.
-    // Ignore `GlobalPoolAlreadyInitialized`; another test may have already configured Rayon.
-    let _ = rayon::ThreadPoolBuilder::new().num_threads(1).build_global();
-  });
-}
 
 fn render(html: &str, width: u32, height: u32) -> tiny_skia::Pixmap {
-  init_rayon();
+  crate::rayon_test_util::init_rayon_for_tests(1);
 
   let mut renderer = FastRender::new().expect("renderer");
   let dom = renderer.parse_html(html).expect("parsed");

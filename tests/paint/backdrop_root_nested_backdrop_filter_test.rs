@@ -6,27 +6,14 @@ use fastrender::scroll::ScrollState;
 use fastrender::text::font_loader::FontContext;
 use fastrender::tree::fragment_tree::FragmentNode;
 use fastrender::{FastRender, FastRenderConfig, FontConfig, LayoutParallelism, Point, Rgba};
-use rayon::ThreadPoolBuilder;
-use std::sync::Once;
 
 fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
   let p = pixmap.pixel(x, y).unwrap();
   (p.red(), p.green(), p.blue(), p.alpha())
 }
 
-fn init_rayon_global_pool() {
-  static INIT: Once = Once::new();
-  INIT.call_once(|| {
-    // Rayon will lazily initialize a global thread pool the first time it's used. In constrained
-    // environments (e.g. CI containers) the default thread count can exceed the OS/thread quota,
-    // causing initialization to fail and panic. Pre-initialize a conservative single-thread pool
-    // so FastRender's internal rayon usage stays reliable for this regression.
-    let _ = ThreadPoolBuilder::new().num_threads(1).build_global();
-  });
-}
-
 fn build_display_list(html: &str, width: u32, height: u32) -> (DisplayList, FontContext) {
-  init_rayon_global_pool();
+  crate::rayon_test_util::init_rayon_for_tests(1);
 
   let mut config = FastRenderConfig::new();
   config.font_config = FontConfig::bundled_only();

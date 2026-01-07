@@ -7,20 +7,9 @@ use base64::Engine;
 use image::codecs::png::PngEncoder;
 use image::ColorType;
 use image::ImageEncoder;
-use std::sync::Once;
 
-fn init_rayon() {
-  static INIT: Once = Once::new();
-  INIT.call_once(|| {
-    // Under the tight `RLIMIT_AS` used by `scripts/run_limited.sh`, Rayon can fail to spawn its
-    // default thread pool (it typically tries to match the host's CPU count). Keep tests
-    // deterministic and lightweight by forcing a small global pool.
-    rayon::ThreadPoolBuilder::new()
-      .num_threads(1)
-      .build_global()
-      .expect("init global rayon pool");
-  });
-}
+#[path = "paint/rayon_test_util.rs"]
+mod rayon_test_util;
 
 fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
   let p = pixmap.pixel(x, y).unwrap();
@@ -28,7 +17,7 @@ fn pixel(pixmap: &tiny_skia::Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
 }
 
 fn render(html: &str, backend: PaintBackend) -> tiny_skia::Pixmap {
-  init_rayon();
+  crate::rayon_test_util::init_rayon_for_tests(1);
 
   let viewport_w = 20;
   let viewport_h = 20;

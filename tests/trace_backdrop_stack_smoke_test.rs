@@ -10,6 +10,9 @@ use fastrender::{FastRender, FontConfig, Point, Rgba};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+#[path = "paint/rayon_test_util.rs"]
+mod rayon_test_util;
+
 fn build_display_list(html: &str, width: u32, height: u32) -> (DisplayList, FontContext) {
   let mut renderer = FastRender::builder()
     .font_sources(FontConfig::bundled_only())
@@ -51,12 +54,7 @@ fn trace_backdrop_stack_smoke() {
   ])));
 
   runtime::with_runtime_toggles(toggles, || {
-    // Rayon initializes its global thread pool lazily. In constrained CI environments spawning the
-    // default thread count can fail, causing a panic before we ever reach the renderer. Build a
-    // small pool upfront so later `rayon::current_num_threads()` calls succeed.
-    let _ = rayon::ThreadPoolBuilder::new()
-      .num_threads(1)
-      .build_global();
+    crate::rayon_test_util::init_rayon_for_tests(1);
 
     let html = r#"<!doctype html>
       <style>
