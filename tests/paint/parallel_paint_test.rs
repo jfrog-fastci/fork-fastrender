@@ -1798,6 +1798,7 @@ fn plus_lighter_mix_blend_mode_allows_parallel_tiling_without_isolation() {
     creates_stacking_context: true,
     is_root: false,
     establishes_backdrop_root: true,
+    has_backdrop_sensitive_descendants: true,
     bounds: Rect::from_xywh(0.0, 0.0, 80.0, 80.0),
     plane_rect: Rect::from_xywh(0.0, 0.0, 80.0, 80.0),
     mix_blend_mode: BlendMode::PlusLighter,

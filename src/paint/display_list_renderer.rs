@@ -15946,6 +15946,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: false,
+      has_backdrop_sensitive_descendants: false,
       bounds: viewport,
       plane_rect: viewport,
       mix_blend_mode: BlendMode::Normal,
@@ -15960,7 +15961,6 @@ mod tests {
       radii: BorderRadii::ZERO,
       mask: None,
       has_clip_path: false,
-      has_backdrop_sensitive_descendants: false,
     }));
 
     // Child is translated towards the camera, which under perspective should scale up its plane.
@@ -15969,6 +15969,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: false,
+      has_backdrop_sensitive_descendants: false,
       bounds: viewport,
       plane_rect: viewport,
       mix_blend_mode: BlendMode::Normal,
@@ -15983,7 +15984,6 @@ mod tests {
       radii: BorderRadii::ZERO,
       mask: None,
       has_clip_path: false,
-      has_backdrop_sensitive_descendants: false,
     }));
 
     list.push(DisplayItem::FillRect(FillRectItem {
@@ -18584,6 +18584,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: false,
+      has_backdrop_sensitive_descendants: true,
       bounds: ctx_a_bounds,
       plane_rect: ctx_a_bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -18598,7 +18599,6 @@ mod tests {
       radii: BorderRadii::ZERO,
       mask: None,
       has_clip_path: false,
-      has_backdrop_sensitive_descendants: true,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
       rect: Rect::from_xywh(4.0, 4.0, 12.0, 12.0),
@@ -18611,6 +18611,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: false,
+      has_backdrop_sensitive_descendants: true,
       bounds: ctx_b_bounds,
       plane_rect: ctx_b_bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -18625,7 +18626,6 @@ mod tests {
       radii: BorderRadii::ZERO,
       mask: None,
       has_clip_path: false,
-      has_backdrop_sensitive_descendants: true,
     }));
     list.push(DisplayItem::FillRect(FillRectItem {
       rect: Rect::from_xywh(10.0, 10.0, 12.0, 12.0),
@@ -18638,6 +18638,7 @@ mod tests {
       creates_stacking_context: true,
       is_root: false,
       establishes_backdrop_root: false,
+      has_backdrop_sensitive_descendants: true,
       bounds: ctx_c_bounds,
       plane_rect: ctx_c_bounds,
       mix_blend_mode: BlendMode::Normal,
@@ -18652,7 +18653,6 @@ mod tests {
       radii: BorderRadii::ZERO,
       mask: None,
       has_clip_path: false,
-      has_backdrop_sensitive_descendants: true,
     }));
 
     for idx in 0..child_count {
@@ -18663,6 +18663,7 @@ mod tests {
         creates_stacking_context: true,
         is_root: false,
         establishes_backdrop_root: true,
+        has_backdrop_sensitive_descendants: true,
         bounds,
         plane_rect: bounds,
         mix_blend_mode: BlendMode::Normal,
@@ -18677,7 +18678,6 @@ mod tests {
         radii: BorderRadii::ZERO,
         mask: None,
         has_clip_path: false,
-        has_backdrop_sensitive_descendants: true,
       }));
       // Keep the stacking context empty; this forces the pending backdrop to apply right before the
       // context is popped.

@@ -17,6 +17,7 @@ fn context(bounds: Rect, transform_style: TransformStyle) -> StackingContextItem
     creates_stacking_context: true,
     is_root: false,
     establishes_backdrop_root: false,
+    has_backdrop_sensitive_descendants: false,
     bounds,
     plane_rect: bounds,
     mix_blend_mode: BlendMode::Normal,
@@ -55,6 +56,7 @@ fn preserve_3d_backdrop_filter_respects_backdrop_root_scope() {
   // this transparency.
   let mut preserve_root = context(bounds, TransformStyle::Preserve3d);
   preserve_root.establishes_backdrop_root = true;
+  preserve_root.has_backdrop_sensitive_descendants = true;
   preserve_root.has_clip_path = true;
   list.push(DisplayItem::PushStackingContext(preserve_root));
   list.push(DisplayItem::FillRect(FillRectItem {
@@ -67,6 +69,7 @@ fn preserve_3d_backdrop_filter_respects_backdrop_root_scope() {
   let mut filtered_plane = context(bounds, TransformStyle::Flat);
   filtered_plane.transform = Some(Transform3D::translate(0.0, 0.0, 10.0));
   filtered_plane.backdrop_filters = vec![ResolvedFilter::Invert(1.0)];
+  filtered_plane.has_backdrop_sensitive_descendants = true;
   filtered_plane.is_isolated = true;
   filtered_plane.establishes_backdrop_root = true;
   list.push(DisplayItem::PushStackingContext(filtered_plane));

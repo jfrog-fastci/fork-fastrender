@@ -8009,7 +8009,7 @@ impl DisplayListBuilder {
       FormControlKind::Text {
         value,
         placeholder,
-        placeholder_style: _,
+        placeholder_style,
         kind,
         ..
       } => {
@@ -8083,12 +8083,12 @@ impl DisplayListBuilder {
           }
         }
 
-        let placeholder_style = if is_placeholder {
-          control.placeholder_style.as_deref()
+        let placeholder_pseudo_style = if is_placeholder {
+          placeholder_style.as_deref()
         } else {
           None
         };
-        let text_style = if let Some(pseudo_style) = placeholder_style {
+        let text_style = if let Some(pseudo_style) = placeholder_pseudo_style {
           let mut cloned = (*pseudo_style).clone();
           let opacity = cloned.opacity.clamp(0.0, 1.0);
           let alpha = (cloned.color.a * opacity).clamp(0.0, 1.0);
@@ -8222,7 +8222,7 @@ impl DisplayListBuilder {
       FormControlKind::TextArea {
         value,
         placeholder,
-        placeholder_style: _,
+        placeholder_style,
         ..
       } => {
         let base_color = if control.invalid { accent } else { style.color };
@@ -8243,12 +8243,12 @@ impl DisplayListBuilder {
           is_placeholder = true;
         }
 
-        let placeholder_style = if is_placeholder {
-          control.placeholder_style.as_deref()
+        let placeholder_pseudo_style = if is_placeholder {
+          placeholder_style.as_deref()
         } else {
           None
         };
-        let text_style = if let Some(pseudo_style) = placeholder_style {
+        let text_style = if let Some(pseudo_style) = placeholder_pseudo_style {
           let mut cloned = (*pseudo_style).clone();
           let opacity = cloned.opacity.clamp(0.0, 1.0);
           let alpha = (cloned.color.a * opacity).clamp(0.0, 1.0);

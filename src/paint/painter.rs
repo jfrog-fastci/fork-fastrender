@@ -7085,7 +7085,7 @@ impl Painter {
       FormControlKind::Text {
         value,
         placeholder,
-        placeholder_style: _,
+        placeholder_style,
         kind,
         ..
       } => {
@@ -7159,12 +7159,12 @@ impl Painter {
           }
         }
 
-        let placeholder_style = if is_placeholder {
-          control.placeholder_style.as_deref()
+        let placeholder_pseudo_style = if is_placeholder {
+          placeholder_style.as_deref()
         } else {
           None
         };
-        let text_style = if let Some(pseudo_style) = placeholder_style {
+        let text_style = if let Some(pseudo_style) = placeholder_pseudo_style {
           let mut style = pseudo_style.clone();
           let opacity = pseudo_style.opacity.clamp(0.0, 1.0);
           style.color = style
@@ -7281,7 +7281,7 @@ impl Painter {
       FormControlKind::TextArea {
         value,
         placeholder,
-        placeholder_style: _,
+        placeholder_style,
         ..
       } => {
         let base_color = if control.invalid { accent } else { style.color };
@@ -7302,12 +7302,12 @@ impl Painter {
           is_placeholder = true;
         }
 
-        let placeholder_style = if is_placeholder {
-          control.placeholder_style.as_deref()
+        let placeholder_pseudo_style = if is_placeholder {
+          placeholder_style.as_deref()
         } else {
           None
         };
-        let text_style = if let Some(pseudo_style) = placeholder_style {
+        let text_style = if let Some(pseudo_style) = placeholder_pseudo_style {
           let mut style = pseudo_style.clone();
           let opacity = pseudo_style.opacity.clamp(0.0, 1.0);
           style.color = style
