@@ -399,6 +399,7 @@ fn non_manual_blend_mode_triggers_parallel_paint_in_auto_mode() {
   list.push(DisplayItem::PushStackingContext(StackingContextItem {
     z_index: 0,
     creates_stacking_context: true,
+    is_root: false,
     establishes_backdrop_root: true,
     bounds: viewport,
     plane_rect: viewport,
