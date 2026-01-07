@@ -17,8 +17,8 @@ use common::args::{
 };
 use common::media_prefs::MediaPreferences;
 use common::render_pipeline::{
-  build_http_fetcher, build_render_configs, decode_html_resource, follow_client_redirects,
-  format_error_with_chain, log_diagnostics, read_cached_document, render_document,
+  build_http_fetcher, build_render_configs, follow_client_redirects_resource,
+  format_error_with_chain, log_diagnostics, read_cached_document, render_fetched_document,
   RenderConfigBundle, RenderSurface, CLI_RENDER_STACK_SIZE,
 };
 use fastrender::api::{FastRenderPool, FastRenderPoolConfig};
@@ -162,21 +162,31 @@ fn render_page(
   let RenderConfigBundle { options, .. } = bundle;
   let mut log = |line: &str| println!("{line}");
 
-  let prepared = if url.starts_with("file://") {
+  let (resource, requested_url) = if url.starts_with("file://") {
     let path = url.strip_prefix("file://").unwrap_or(url);
     let cached = read_cached_document(Path::new(path))?;
-    follow_client_redirects(fetcher.as_ref(), cached.document, &mut log)
+    (cached.resource, cached.document.base_hint)
   } else {
     println!("Fetching HTML from: {url}");
     let resource = fetcher.fetch_with_request(FetchRequest::document(url))?;
-    let base_hint = resource.final_url.as_deref().unwrap_or(url).to_string();
-    let doc = decode_html_resource(&resource, &base_hint);
-    follow_client_redirects(fetcher.as_ref(), doc, &mut log)
+    (resource, url.to_string())
   };
-  let prepared = prepared.with_base_override(base_url_override.as_deref());
 
-  let render_result =
-    render_pool.with_renderer(|renderer| render_document(renderer, prepared, &options))?;
+  let mut resource =
+    follow_client_redirects_resource(fetcher.as_ref(), resource, &requested_url, &mut log);
+
+  let mut base_hint = resource
+    .final_url
+    .clone()
+    .unwrap_or_else(|| requested_url.clone());
+  if let Some(base_url) = base_url_override.as_deref() {
+    base_hint = base_url.to_string();
+    resource.final_url = Some(base_hint.clone());
+  }
+
+  let render_result = render_pool.with_renderer(|renderer| {
+    render_fetched_document(renderer, &resource, Some(&base_hint), &options)
+  })?;
   log_diagnostics(&render_result.diagnostics, &mut log);
 
   let image_data = encode_image(&render_result.pixmap, output_format)?;

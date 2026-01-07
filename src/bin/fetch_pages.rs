@@ -13,7 +13,7 @@ use fastrender::pageset::{
 use fastrender::resource::DEFAULT_ACCEPT_LANGUAGE;
 use fastrender::resource::DEFAULT_USER_AGENT;
 use fastrender::resource::{
-  parse_cached_html_meta, FetchRequest, FetchedResource, ResourceFetcher,
+  parse_cached_html_meta, FetchRequest, FetchedResource, ReferrerPolicy, ResourceFetcher,
 };
 use rayon::ThreadPoolBuilder;
 use std::fmt::Write;
@@ -122,6 +122,7 @@ fn write_cached_html(
   content_type: Option<&str>,
   source_url: Option<&str>,
   status: Option<u16>,
+  response_referrer_policy: Option<ReferrerPolicy>,
 ) -> std::io::Result<()> {
   if let Some(parent) = cache_path.parent() {
     std::fs::create_dir_all(parent)?;
@@ -134,6 +135,12 @@ fn write_cached_html(
   if let Some(ct) = content_type {
     if !ct.is_empty() {
       let _ = writeln!(meta, "content-type: {}", ct);
+    }
+  }
+  if let Some(policy) = response_referrer_policy {
+    let value = policy.as_str();
+    if !value.is_empty() {
+      let _ = writeln!(meta, "referrer-policy: {}", value);
     }
   }
   if let Some(status) = status {
@@ -385,6 +392,7 @@ fn main() {
               res.content_type.as_deref(),
               Some(canonical_url),
               res.status,
+              res.response_referrer_policy,
             )
             .is_ok()
             {
@@ -658,6 +666,7 @@ mod tests {
       Some("text/html; charset=utf-8"),
       Some("https://example.com/page"),
       Some(200),
+      Some(ReferrerPolicy::NoReferrer),
     )
     .expect("write ok");
 
@@ -667,6 +676,7 @@ mod tests {
     let meta_path = cache_path.with_extension("html.meta");
     let meta = std::fs::read_to_string(meta_path).expect("meta read");
     assert!(meta.contains("content-type: text/html; charset=utf-8"));
+    assert!(meta.contains("referrer-policy: no-referrer"));
     assert!(meta.contains("url: https://example.com/page"));
     assert!(meta.contains("status: 200"));
   }
@@ -682,7 +692,7 @@ mod tests {
     std::fs::write(&cache_path, "stale").unwrap();
     std::fs::write(&meta_path, "old").unwrap();
 
-    write_cached_html(&cache_path, b"hello", None, None, None).expect("write ok");
+    write_cached_html(&cache_path, b"hello", None, None, None, None).expect("write ok");
 
     let html = std::fs::read_to_string(&cache_path).expect("html read");
     assert_eq!(html, "hello");
@@ -748,6 +758,7 @@ mod tests {
       res.content_type.as_deref(),
       res.final_url.as_deref(),
       res.status,
+      res.response_referrer_policy,
     )
     .expect("write cached");
 

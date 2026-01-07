@@ -2359,6 +2359,87 @@ mod disk_cache_main {
     }
 
     #[test]
+    fn meta_referrer_policy_overrides_initial_policy_for_iframe_prefetch() {
+      use std::sync::Mutex;
+
+      #[derive(Default)]
+      struct RecordingFetcher {
+        policies: Mutex<Vec<ReferrerPolicy>>,
+      }
+
+      impl ResourceFetcher for RecordingFetcher {
+        fn fetch(&self, _url: &str) -> fastrender::Result<FetchedResource> {
+          panic!("iframe prefetch should use fetch_with_request");
+        }
+
+        fn fetch_with_request(&self, req: FetchRequest<'_>) -> fastrender::Result<FetchedResource> {
+          self.policies.lock().unwrap().push(req.referrer_policy);
+          Ok(FetchedResource::with_final_url(
+            b"<html></html>".to_vec(),
+            Some("text/html".to_string()),
+            Some(req.url.to_string()),
+          ))
+        }
+      }
+
+      let html = r#"<!doctype html>
+<html>
+  <head>
+    <meta name="referrer" content="no-referrer">
+    <base href="https://example.com/base/">
+  </head>
+  <body>
+    <iframe src="frame.html"></iframe>
+  </body>
+</html>"#;
+      let document_url = "https://example.com/page";
+      let media_ctx = MediaContext::screen(800.0, 600.0);
+      let opts = PrefetchOptions {
+        prefetch_fonts: false,
+        prefetch_images: false,
+        prefetch_icons: false,
+        prefetch_video_posters: false,
+        prefetch_iframes: true,
+        prefetch_embeds: false,
+        prefetch_css_url_assets: false,
+        max_discovered_assets_per_page: 2000,
+        image_limits: ImagePrefetchLimits {
+          max_image_elements: 150,
+          max_urls_per_element: 2,
+        },
+      };
+
+      let mut resource = FetchedResource::with_final_url(
+        html.as_bytes().to_vec(),
+        Some("text/html".to_string()),
+        Some(document_url.to_string()),
+      );
+      resource.response_referrer_policy = Some(ReferrerPolicy::Origin);
+      let doc = decode_html_resource(&resource, document_url);
+
+      let fetcher_impl = Arc::new(RecordingFetcher::default());
+      let fetcher: Arc<dyn ResourceFetcher> = fetcher_impl.clone();
+      let summary = prefetch_assets_for_html(
+        "test",
+        document_url,
+        html,
+        &doc.base_hint,
+        &doc.base_url,
+        doc.referrer_policy,
+        &fetcher,
+        &media_ctx,
+        opts,
+      );
+
+      assert_eq!(summary.discovered_documents, 1);
+      assert_eq!(summary.fetched_documents, 1);
+
+      let policies = fetcher_impl.policies.lock().unwrap();
+      assert_eq!(policies.len(), 1);
+      assert_eq!(policies[0], ReferrerPolicy::NoReferrer);
+    }
+
+    #[test]
     fn poster_is_still_fetched_when_image_cap_is_exceeded() {
       use fastrender::resource::FetchContextKind;
       use std::sync::Mutex;

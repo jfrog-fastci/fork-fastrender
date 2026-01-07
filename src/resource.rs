@@ -2145,6 +2145,8 @@ pub struct CachedHtmlMetadata {
   pub content_type: Option<String>,
   pub url: Option<String>,
   pub status: Option<u16>,
+  /// Parsed referrer policy from the `Referrer-Policy` response header, when available.
+  pub response_referrer_policy: Option<ReferrerPolicy>,
 }
 
 impl FetchedResource {
@@ -2662,6 +2664,9 @@ pub fn parse_cached_html_meta(meta: &str) -> CachedHtmlMetadata {
     let value = parts.next().map(|s| s.trim());
     match (key.as_deref(), value) {
       (Some("content-type"), Some(v)) if !v.is_empty() => parsed.content_type = Some(v.to_string()),
+      (Some("referrer-policy"), Some(v)) if !v.is_empty() => {
+        parsed.response_referrer_policy = ReferrerPolicy::parse_value_list(v)
+      }
       (Some("url"), Some(v)) if !v.is_empty() => parsed.url = Some(v.to_string()),
       (Some("status"), Some(v)) => {
         if let Ok(code) = v.parse::<u16>() {
@@ -2673,6 +2678,7 @@ pub fn parse_cached_html_meta(meta: &str) -> CachedHtmlMetadata {
   }
 
   if parsed.content_type.is_none()
+    && parsed.response_referrer_policy.is_none()
     && parsed.url.is_none()
     && parsed.status.is_none()
     && !trimmed.contains('\n')
@@ -13576,6 +13582,7 @@ mod tests {
     );
     assert_eq!(meta.url, None);
     assert_eq!(meta.status, None);
+    assert_eq!(meta.response_referrer_policy, None);
   }
 
   #[test]
@@ -13585,6 +13592,7 @@ mod tests {
     assert_eq!(parsed.content_type.as_deref(), Some("text/html"));
     assert_eq!(parsed.url.as_deref(), Some("https://example.com/page"));
     assert_eq!(parsed.status, None);
+    assert_eq!(parsed.response_referrer_policy, None);
   }
 
   #[test]
@@ -13594,6 +13602,17 @@ mod tests {
     assert_eq!(parsed.content_type.as_deref(), Some("text/html"));
     assert_eq!(parsed.url.as_deref(), Some("https://example.com/page"));
     assert_eq!(parsed.status, Some(302));
+    assert_eq!(parsed.response_referrer_policy, None);
+  }
+
+  #[test]
+  fn parse_cached_meta_reads_referrer_policy() {
+    let meta =
+      "content-type: text/html\nreferrer-policy: no-referrer\nurl: https://example.com/page\n";
+    let parsed = parse_cached_html_meta(meta);
+    assert_eq!(parsed.content_type.as_deref(), Some("text/html"));
+    assert_eq!(parsed.url.as_deref(), Some("https://example.com/page"));
+    assert_eq!(parsed.response_referrer_policy, Some(ReferrerPolicy::NoReferrer));
   }
 
   #[test]

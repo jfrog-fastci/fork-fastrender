@@ -14,9 +14,10 @@ use common::args::{
 use common::render_pipeline::{
   append_timeout_stderr_note, apply_test_render_delay, apply_worker_common_args,
   build_http_fetcher, build_render_configs, compute_soft_timeout_ms, configure_worker_stdio,
-  follow_client_redirects, format_error_with_chain, format_exit_status, log_diagnostics,
-  read_cached_document, render_document_with_artifacts, summarize_exit_status, ExitStatusSummary,
-  RenderConfigBundle, RenderSurface, WorkerCommonArgs, CLI_RENDER_STACK_SIZE,
+  decode_html_resource, follow_client_redirects_resource, format_error_with_chain,
+  format_exit_status, log_diagnostics, read_cached_document, render_fetched_document_with_artifacts,
+  summarize_exit_status, ExitStatusSummary, RenderConfigBundle, RenderSurface, WorkerCommonArgs,
+  CLI_RENDER_STACK_SIZE,
 };
 use fastrender::api::{FastRenderPool, FastRenderPoolConfig};
 use fastrender::debug::runtime::RuntimeToggles;
@@ -900,25 +901,35 @@ fn render_entry_inner(shared: &RenderShared, entry: &CachedEntry) -> PageResult 
   };
 
   let _ = writeln!(log, "HTML bytes: {}", cached.byte_len);
-  if let Some(ct) = &cached.content_type {
+  if let Some(ct) = &cached.resource.content_type {
     let _ = writeln!(log, "Content-Type: {}", ct);
   }
   let _ = writeln!(log, "Viewport: {}x{}", shared.viewport.0, shared.viewport.1);
   let _ = writeln!(log, "Scroll-X: {}px", shared.base_options.scroll_x);
   let _ = writeln!(log, "Scroll-Y: {}px", shared.base_options.scroll_y);
 
-  let mut doc = cached.document;
-  let _ = writeln!(log, "Resource base: {}", doc.base_url);
+  let _ = writeln!(log, "Resource base: {}", cached.document.base_url);
 
-  doc = follow_client_redirects(shared.fetcher.as_ref(), doc, |line| {
-    let _ = writeln!(log, "{line}");
-  });
-
+  let requested_url = cached.document.base_hint.clone();
+  let resource = follow_client_redirects_resource(
+    shared.fetcher.as_ref(),
+    cached.resource,
+    &requested_url,
+    |line| {
+      let _ = writeln!(log, "{line}");
+    },
+  );
+  let base_hint = resource
+    .final_url
+    .clone()
+    .unwrap_or_else(|| requested_url.clone());
+  let doc = decode_html_resource(&resource, &base_hint);
   let _ = writeln!(log, "Final resource base: {}", doc.base_url);
 
   let worker_name = name.clone();
   let render_opts = shared.base_options.clone();
-  let doc_for_render = doc.clone();
+  let resource_for_render = resource;
+  let base_hint_for_render = base_hint;
   let render_request = shared.artifact_request;
 
   let run_render = {
@@ -928,7 +939,13 @@ fn render_entry_inner(shared: &RenderShared, entry: &CachedEntry) -> PageResult 
     move || -> Result<RenderOutcome, Status> {
       let render_work = move || -> Result<RenderOutcome, fastrender::Error> {
         let report = render_pool.with_renderer(|renderer| {
-          render_document_with_artifacts(renderer, doc_for_render, &render_opts, render_request)
+          render_fetched_document_with_artifacts(
+            renderer,
+            &resource_for_render,
+            Some(&base_hint_for_render),
+            &render_opts,
+            render_request,
+          )
         })?;
         let png = encode_image(&report.pixmap, OutputFormat::Png)?;
         Ok(RenderOutcome {

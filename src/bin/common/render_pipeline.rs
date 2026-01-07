@@ -295,9 +295,8 @@ impl PreparedDocument {
 /// Cached HTML content loaded from disk.
 #[derive(Debug, Clone)]
 pub struct CachedDocument {
+  pub resource: FetchedResource,
   pub document: PreparedDocument,
-  pub content_type: Option<String>,
-  pub status: Option<u16>,
   pub byte_len: usize,
 }
 
@@ -365,13 +364,19 @@ pub fn read_cached_document(path: &Path) -> Result<CachedDocument> {
     .url
     .clone()
     .unwrap_or_else(|| format!("file://{}", path.display()));
-  let html = decode_html_bytes(&bytes, parsed_meta.content_type.as_deref());
+  let mut resource = FetchedResource::with_final_url(
+    bytes,
+    parsed_meta.content_type.clone(),
+    Some(base_hint.clone()),
+  );
+  resource.status = parsed_meta.status;
+  resource.response_referrer_policy = parsed_meta.response_referrer_policy;
+  let html = decode_html_bytes(&resource.bytes, resource.content_type.as_deref());
 
   Ok(CachedDocument {
+    byte_len: resource.bytes.len(),
     document: PreparedDocument::new(html, base_hint),
-    content_type: parsed_meta.content_type,
-    status: parsed_meta.status,
-    byte_len: bytes.len(),
+    resource,
   })
 }
 
@@ -597,6 +602,23 @@ pub fn follow_client_redirects_with_deadline(
   let deadline = RenderDeadline::new(Some(timeout), None);
   with_deadline(Some(&deadline), || {
     follow_client_redirects(fetcher, doc, log)
+  })
+}
+
+/// Follow client-side redirects for a fetched HTML resource under a cooperative timeout.
+pub fn follow_client_redirects_resource_with_deadline(
+  fetcher: &dyn ResourceFetcher,
+  resource: FetchedResource,
+  requested_url: &str,
+  timeout: Option<Duration>,
+  log: impl FnMut(&str),
+) -> FetchedResource {
+  let Some(timeout) = timeout.filter(|t| !t.is_zero()) else {
+    return follow_client_redirects_resource(fetcher, resource, requested_url, log);
+  };
+  let deadline = RenderDeadline::new(Some(timeout), None);
+  with_deadline(Some(&deadline), || {
+    follow_client_redirects_resource(fetcher, resource, requested_url, log)
   })
 }
 
@@ -842,6 +864,16 @@ pub fn render_document(
   renderer.render_html_with_stylesheets(&doc.html, &doc.base_hint, options.clone())
 }
 
+/// Render an already-fetched HTML resource using the standard stylesheet loading pipeline.
+pub fn render_fetched_document(
+  renderer: &mut FastRender,
+  resource: &FetchedResource,
+  base_hint: Option<&str>,
+  options: &RenderOptions,
+) -> Result<RenderResult> {
+  renderer.render_fetched_html_with_options(resource, base_hint, options.clone())
+}
+
 /// Render a prepared document while capturing intermediate artifacts.
 pub fn render_document_with_artifacts(
   renderer: &mut FastRender,
@@ -855,6 +887,17 @@ pub fn render_document_with_artifacts(
     options.clone(),
     artifacts,
   )
+}
+
+/// Render an already-fetched HTML resource while capturing intermediate artifacts.
+pub fn render_fetched_document_with_artifacts(
+  renderer: &mut FastRender,
+  resource: &FetchedResource,
+  base_hint: Option<&str>,
+  options: &RenderOptions,
+  artifacts: RenderArtifactRequest,
+) -> Result<RenderReport> {
+  renderer.render_fetched_html_with_options_report(resource, base_hint, options.clone(), artifacts)
 }
 
 /// Log render diagnostics in a consistent human-readable format.

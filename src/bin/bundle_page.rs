@@ -8,7 +8,7 @@ use common::args::CompatArgs;
 use common::asset_discovery::extract_inline_css_chunks;
 use common::render_pipeline::{
   build_http_fetcher, build_render_configs, build_renderer_with_fetcher, decode_html_resource,
-  render_document, RenderConfigBundle, RenderSurface,
+  render_fetched_document, RenderConfigBundle, RenderSurface,
 };
 use fastrender::debug::runtime;
 use fastrender::css::encoding::decode_css_bytes;
@@ -852,7 +852,7 @@ fn fetch_bundle(args: FetchArgs) -> Result<()> {
   let mut renderer = build_renderer_with_fetcher(config, fetcher)?;
 
   // Render once to ensure all subresources are fetched and cached.
-  let _ = render_document(&mut renderer, prepared, &options)?;
+  let _ = render_fetched_document(&mut renderer, &document_resource, Some(&args.url), &options)?;
 
   let recorded = recording.snapshot();
   let (manifest, resources, document_bytes) =
@@ -950,6 +950,7 @@ fn cache_bundle_disk_cache(args: CacheArgs) -> Result<()> {
     Some(base_hint.clone()),
   );
   document_resource.status = parsed_meta.status;
+  document_resource.response_referrer_policy = parsed_meta.response_referrer_policy;
 
   let prepared = decode_html_resource(&document_resource, &base_hint);
 
@@ -1101,8 +1102,7 @@ fn render_bundle(args: RenderArgs) -> Result<()> {
     .response_referrer_policy
     .as_deref()
     .and_then(ReferrerPolicy::parse_value_list);
-  let prepared = decode_html_resource(&doc_resource, &base_hint);
-  let result = render_document(&mut renderer, prepared, &options)?;
+  let result = render_fetched_document(&mut renderer, &doc_resource, Some(&base_hint), &options)?;
   let png = encode_image(&result.pixmap, OutputFormat::Png)?;
 
   let out_path = PathBuf::from(&args.out);

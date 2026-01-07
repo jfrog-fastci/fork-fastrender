@@ -20,10 +20,10 @@ use common::args::{
   DEFAULT_DISK_CACHE_MAX_AGE_SECS, DEFAULT_DISK_CACHE_MAX_BYTES,
 };
 use common::render_pipeline::{
-  build_http_fetcher, build_render_configs, follow_client_redirects_with_deadline,
-  format_error_with_chain, log_layout_parallelism, read_cached_document, render_document,
-  render_document_with_artifacts, PreparedDocument, RenderConfigBundle, RenderSurface,
-  CLI_RENDER_STACK_SIZE,
+  build_http_fetcher, build_render_configs, decode_html_resource,
+  follow_client_redirects_resource_with_deadline, format_error_with_chain, log_layout_parallelism,
+  read_cached_document, render_fetched_document, render_fetched_document_with_artifacts,
+  RenderConfigBundle, RenderSurface, CLI_RENDER_STACK_SIZE,
 };
 use fastrender::api::{
   CascadeDiagnostics, DiagnosticsLevel, LayoutDiagnostics, PaintDiagnostics, RenderArtifactRequest,
@@ -2764,11 +2764,11 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
     url = parsed.to_string();
   }
 
-  let cached_html_status = cached.status.filter(|status| *status >= 400);
+  let cached_html_status = cached.resource.status.filter(|status| *status >= 400);
   let cached_html_status_note = cached_html_status.map(|code| format!("cached_html_status={code}"));
 
   if cached_html_status.is_some() && args.fail_on_cached_http_error_status {
-    let status = cached.status;
+    let status = cached.resource.status;
     let mut progress = PageProgress::new(url.clone());
     progress.config = Some(progress_config.clone());
     progress.status = ProgressStatus::Error;
@@ -2827,7 +2827,7 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
   log.push_str(&format!("Compat profile: {compat_profile}\n"));
   log.push_str(&format!("DOM compat: {dom_compat}\n"));
   log.push_str(&format!("{}\n", args.fonts.describe()));
-  if let Some(ct) = &cached.content_type {
+  if let Some(ct) = &cached.resource.content_type {
     log.push_str(&format!("Content-Type: {ct}\n"));
   }
   log.push_str(&format!("HTML bytes: {}\n", cached.byte_len));
@@ -2990,22 +2990,33 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
 
   let mut doc = cached.document;
   log.push_str(&format!("Resource base: {}\n", doc.base_url));
+  let requested_url = doc.base_hint.clone();
   record_stage(StageHeartbeat::FollowRedirects);
   let redirect_budget = options
     .timeout
     .and_then(|soft| Duration::from_secs(args.timeout).checked_sub(soft));
-  doc = follow_client_redirects_with_deadline(fetcher.as_ref(), doc, redirect_budget, |line| {
-    log.push_str(line);
-    log.push('\n');
-  });
+  let resource = follow_client_redirects_resource_with_deadline(
+    fetcher.as_ref(),
+    cached.resource,
+    &requested_url,
+    redirect_budget,
+    |line| {
+      log.push_str(line);
+      log.push('\n');
+    },
+  );
+  let base_hint = resource
+    .final_url
+    .clone()
+    .unwrap_or_else(|| requested_url.clone());
+  doc = decode_html_resource(&resource, &base_hint);
   log.push_str(&format!("Final resource base: {}\n", doc.base_url));
-  let dump_doc = doc.clone();
 
   record_stage(StageHeartbeat::CssInline);
   log.push_str("Stage: render\n");
   flush_log(&log, &args.log_path);
   let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-    render_document(&mut renderer, doc, &options)
+    render_fetched_document(&mut renderer, &resource, Some(&base_hint), &options)
   }));
 
   let timeline_elapsed_ms = heartbeat.elapsed_ms();
@@ -3253,7 +3264,7 @@ fn render_worker(args: WorkerArgs) -> io::Result<()> {
       &args,
       &render_surface,
       &fetcher,
-      &dump_doc,
+      &resource,
       dump_soft_timeout_ms,
       &mut log,
     );
@@ -3554,7 +3565,7 @@ fn capture_dump_for_page(
   args: &WorkerArgs,
   render_surface: &RenderSurface,
   fetcher: &std::sync::Arc<dyn ResourceFetcher>,
-  doc: &PreparedDocument,
+  resource: &fastrender::resource::FetchedResource,
   dump_soft_timeout_ms: Option<u64>,
   log: &mut String,
 ) {
@@ -3611,7 +3622,13 @@ fn capture_dump_for_page(
   };
 
   let dump_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-    render_document_with_artifacts(&mut renderer, doc.clone(), &options, level.to_request())
+    render_fetched_document_with_artifacts(
+      &mut renderer,
+      resource,
+      resource.final_url.as_deref(),
+      &options,
+      level.to_request(),
+    )
   }));
 
   match dump_result {
