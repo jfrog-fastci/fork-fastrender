@@ -198,3 +198,35 @@ fn mix_blend_mode_triggers_backdrop_root() {
   assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
   assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
 }
+
+#[test]
+fn clip_path_triggers_backdrop_root() {
+  let html = r#"<!doctype html>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #bg { position: absolute; inset: 0; background: rgb(255 0 0); }
+      #parent {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 40px;
+        height: 40px;
+        clip-path: inset(0);
+      }
+      #overlay {
+        width: 40px;
+        height: 40px;
+        backdrop-filter: invert(1);
+      }
+    </style>
+    <div id="bg"></div>
+    <div id="parent"><div id="overlay"></div></div>
+  "#;
+
+  let pixmap = render(html, 64, 64);
+
+  // `clip-path` establishes a Backdrop Root even when the clip is a no-op. The parent has no
+  // backdrop of its own, so the overlay's backdrop-filter must not sample and invert `#bg`.
+  assert_eq!(pixel(&pixmap, 20, 20), (255, 0, 0, 255));
+  assert_eq!(pixel(&pixmap, 50, 50), (255, 0, 0, 255));
+}
