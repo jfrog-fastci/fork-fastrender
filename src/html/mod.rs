@@ -195,19 +195,23 @@ pub fn strip_template_contents(html: &str) -> Cow<'_, str> {
 
     if name.eq_ignore_ascii_case(b"template") {
       if is_end {
-        if template_depth > 0 {
-          template_depth -= 1;
-          if template_depth == 0 {
-            let buf = out
-              .as_mut()
-              .expect("closing template without output buffer");
+          if template_depth > 0 {
+            template_depth -= 1;
+            if template_depth == 0 {
+            let Some(buf) = out.as_mut() else {
+              // Defensive: `template_depth` should only be non-zero after observing an opening
+              // `<template>` tag, which initializes the output buffer. If the internal bookkeeping
+              // becomes inconsistent (e.g., due to malformed input + bugs), do not panic; fall back
+              // to returning the original HTML unchanged.
+              return Cow::Borrowed(html);
+            };
             buf.push_str(&html[tag_start..tag_end]);
             copy_from = tag_end;
+            }
           }
-        }
-      } else if template_depth == 0 {
-        let buf = out.get_or_insert_with(|| String::with_capacity(html.len()));
-        buf.push_str(&html[copy_from..tag_start]);
+        } else if template_depth == 0 {
+          let buf = out.get_or_insert_with(|| String::with_capacity(html.len()));
+          buf.push_str(&html[copy_from..tag_start]);
         buf.push_str(&html[tag_start..tag_end]);
         copy_from = tag_end;
         template_depth = 1;
