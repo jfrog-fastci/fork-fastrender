@@ -36,11 +36,15 @@ pub fn render_bitmap_glyph(
     if let Err(err) = limits.validate(width, height) {
       log_glyph_limit("bitmap", glyph_id.0 as u32, &err);
     } else if let Some(pixmap) = decode_bitmap_pixmap(&raster) {
-      let image = Arc::new(pixmap);
-      let left = raster.x as f32;
-      let top = -(raster.y as f32);
+      if let Err(err) = limits.validate(pixmap.width(), pixmap.height()) {
+        log_glyph_limit("bitmap", glyph_id.0 as u32, &err);
+      } else {
+        let image = Arc::new(pixmap);
+        let left = raster.x as f32;
+        let top = -(raster.y as f32);
 
-      return Some(ColorGlyphRaster { image, left, top });
+        return Some(ColorGlyphRaster { image, left, top });
+      }
     }
   }
 
@@ -348,9 +352,13 @@ fn is_jpeg_start_of_frame(marker: u8) -> bool {
 }
 
 fn decode_image_with_format(data: &[u8], format: Option<ImageFormat>) -> Option<Pixmap> {
-  let image = match format {
-    Some(fmt) => image::load_from_memory_with_format(data, fmt).ok()?,
-    None => image::load_from_memory(data).ok()?,
+  let image = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match format {
+    Some(fmt) => image::load_from_memory_with_format(data, fmt).ok(),
+    None => image::load_from_memory(data).ok(),
+  })) {
+    Ok(Some(image)) => image,
+    Ok(None) => return None,
+    Err(_) => return None,
   };
   let rgba = image.to_rgba8();
   let (width, height) = rgba.dimensions();
@@ -398,7 +406,8 @@ fn read_tag(data: &[u8], offset: usize) -> Option<[u8; 4]> {
 #[cfg(test)]
 mod tests {
   use super::{
-    parse_jpeg_dimensions, parse_png_dimensions, preflight_sbix_image, MAX_SBIX_GLYPH_BYTES,
+    decode_image_with_format, parse_jpeg_dimensions, parse_png_dimensions, preflight_sbix_image,
+    ImageFormat, MAX_SBIX_GLYPH_BYTES,
   };
 
   fn minimal_png(width: u32, height: u32) -> Vec<u8> {
@@ -463,5 +472,21 @@ mod tests {
     let mut data = minimal_png(1, 1);
     data.resize(MAX_SBIX_GLYPH_BYTES + 1, 0);
     assert!(preflight_sbix_image(b"png ", &data).is_none());
+  }
+
+  #[test]
+  fn decode_image_with_format_truncated_headers_do_not_panic() {
+    let cases: &[(&str, &[u8], Option<ImageFormat>)] = &[
+      ("png_format", b"\x89PNG\r\n\x1a\n", Some(ImageFormat::Png)),
+      ("jpeg_format", b"\xff\xd8\xff", Some(ImageFormat::Jpeg)),
+      ("png_guess", b"\x89PNG\r\n\x1a\n", None),
+      ("jpeg_guess", b"\xff\xd8\xff", None),
+    ];
+
+    for (name, data, format) in cases {
+      let result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode_image_with_format(data, *format)));
+      assert!(result.is_ok(), "decode_image_with_format panicked for {name}");
+    }
   }
 }
