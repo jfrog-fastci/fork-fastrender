@@ -8461,7 +8461,16 @@ impl DisplayListBuilder {
           knob_height,
         );
 
-        if !appearance_none {
+        // Default range styling draws a track + accent fill; `appearance: none` should avoid
+        // injecting UA-specific fills, but author track pseudo-element styling is still expected
+        // to paint.
+        let should_paint_track = if appearance_none {
+          track_style.is_some()
+        } else {
+          true
+        };
+
+        if should_paint_track {
           let track_height = track_style
             .and_then(|style| style.height.map(|len| resolve_px(style, len, padding_rect.height())))
             .filter(|px| px.is_finite() && *px > 0.0)
@@ -8484,22 +8493,24 @@ impl DisplayListBuilder {
                 }));
             }
 
-            let filled_rect = Rect::from_xywh(
-              track_rect.x(),
-              track_rect.y(),
-              (knob_center_x - track_rect.x()).max(0.0),
-              track_rect.height(),
-            );
-            if filled_rect.width() > 0.0 {
-              let radii = BorderRadii::uniform(track_height / 2.0)
-                .clamped(filled_rect.width(), filled_rect.height());
-              self
-                .list
-                .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
-                  rect: filled_rect,
-                  color: muted_accent,
-                  radii,
-                }));
+            if !appearance_none {
+              let filled_rect = Rect::from_xywh(
+                track_rect.x(),
+                track_rect.y(),
+                (knob_center_x - track_rect.x()).max(0.0),
+                track_rect.height(),
+              );
+              if filled_rect.width() > 0.0 {
+                let radii = BorderRadii::uniform(track_height / 2.0)
+                  .clamped(filled_rect.width(), filled_rect.height());
+                self
+                  .list
+                  .push(DisplayItem::FillRoundedRect(FillRoundedRectItem {
+                    rect: filled_rect,
+                    color: muted_accent,
+                    radii,
+                  }));
+              }
             }
 
             if let Some(track_style) = track_style {
