@@ -7,6 +7,8 @@
 use crate::tree::box_tree::{SizesEntry, SizesList, SrcsetCandidate, SrcsetDescriptor};
 use cssparser::{Parser, ParserInput, Token};
 
+const MAX_SRCSET_COMMA_CONTEXT_BYTES: usize = 256;
+
 /// Parse an HTML `srcset` attribute into candidate URLs with descriptors.
 ///
 /// This is a small, allocation-minimal parser intended to match the renderer's
@@ -53,8 +55,9 @@ pub fn parse_srcset_with_limit(attr: &str, max_candidates: usize) -> Vec<SrcsetC
     // transform params (`w_2560,c_limit`) that are followed by another path segment or transform.
 
     // Find the transform param before the comma (from the last `/`, `?`, or `#`).
-    let mut segment_start = url_start;
-    for i in (url_start..comma_idx).rev() {
+    let scan_start = url_start.max(comma_idx.saturating_sub(MAX_SRCSET_COMMA_CONTEXT_BYTES));
+    let mut segment_start = scan_start;
+    for i in (scan_start..comma_idx).rev() {
       match bytes[i] {
         b'/' | b'?' | b'#' => {
           segment_start = i + 1;
@@ -115,17 +118,18 @@ pub fn parse_srcset_with_limit(attr: &str, max_candidates: usize) -> Vec<SrcsetC
     //
     // Like the CDN transform case above, these commas are invalid per spec but common in
     // production `srcset` values, so we treat them as part of the URL.
-    let query_start = bytes[url_start..comma_idx]
+    let scan_start = url_start.max(comma_idx.saturating_sub(MAX_SRCSET_COMMA_CONTEXT_BYTES));
+    let query_start = bytes[scan_start..comma_idx]
       .iter()
       .rposition(|&b| b == b'?')
-      .map(|pos| url_start + pos);
+      .map(|pos| scan_start + pos);
     let Some(query_start) = query_start else {
       return false;
     };
 
     // Find the start of the current query parameter (after the last '&' following '?').
     let mut param_start = query_start + 1;
-    for i in (query_start + 1..comma_idx).rev() {
+    for i in (param_start..comma_idx).rev() {
       if bytes[i] == b'&' {
         param_start = i + 1;
         break;
@@ -193,8 +197,9 @@ pub fn parse_srcset_with_limit(attr: &str, max_candidates: usize) -> Vec<SrcsetC
     // `_CR` marker in the current path segment.
 
     // Find the current path segment start (after the last `/`, `?`, or `#`).
-    let mut segment_start = url_start;
-    for i in (url_start..comma_idx).rev() {
+    let scan_start = url_start.max(comma_idx.saturating_sub(MAX_SRCSET_COMMA_CONTEXT_BYTES));
+    let mut segment_start = scan_start;
+    for i in (scan_start..comma_idx).rev() {
       match bytes[i] {
         b'/' | b'?' | b'#' => {
           segment_start = i + 1;

@@ -6,9 +6,9 @@
 
 use crate::css::loader::resolve_href;
 use crate::html::image_attrs;
-use regex::Regex;
+use memchr::memchr;
 use std::collections::HashSet;
-use std::sync::OnceLock;
+use std::ops::ControlFlow;
 
 /// URLs discovered from an HTML document that are likely to be fetched during paint.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -26,21 +26,127 @@ const MAX_SRCSET_CANDIDATES: usize = 16;
 const MAX_DISCOVERED_IMAGES: usize = 4096;
 const MAX_DISCOVERED_DOCUMENTS: usize = 1024;
 
-fn regex(pattern: &'static str, desc: &'static str) -> Regex {
-  Regex::new(pattern).unwrap_or_else(|err| panic!("invalid {desc} regex: {err}"))
-}
-
-fn capture_first<'t>(caps: &regex::Captures<'t>, groups: &[usize]) -> Option<&'t str> {
-  groups
-    .iter()
-    .find_map(|idx| caps.get(*idx).map(|m| m.as_str()))
-}
-
 fn parse_srcset_urls(srcset: &str, max_candidates: usize) -> Vec<String> {
   image_attrs::parse_srcset_with_limit(srcset, max_candidates)
     .into_iter()
     .map(|candidate| candidate.url)
     .collect()
+}
+
+const MAX_HTML_SCAN_BYTES: usize = 4 * 1024 * 1024;
+const MAX_ATTRIBUTES_PER_TAG: usize = 128;
+
+fn asset_scan_html(html: &str) -> &str {
+  if html.len() <= MAX_HTML_SCAN_BYTES {
+    return html;
+  }
+  let mut end = MAX_HTML_SCAN_BYTES.min(html.len());
+  while end > 0 && !html.is_char_boundary(end) {
+    end -= 1;
+  }
+  &html[..end]
+}
+
+fn for_each_attribute<'a>(
+  tag: &'a str,
+  mut visit: impl FnMut(&'a str, &'a str) -> ControlFlow<()>,
+) {
+  let bytes = tag.as_bytes();
+  let mut i = 0usize;
+  let mut attrs_seen = 0usize;
+
+  // Skip the opening `<` + tag name.
+  if bytes.get(i) == Some(&b'<') {
+    i += 1;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+      i += 1;
+    }
+    while i < bytes.len() && bytes[i] != b'>' && !bytes[i].is_ascii_whitespace() {
+      i += 1;
+    }
+  }
+
+  while i < bytes.len() {
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+      i += 1;
+    }
+    if i >= bytes.len() || bytes[i] == b'>' {
+      break;
+    }
+    // Ignore self-closing markers.
+    if bytes[i] == b'/' {
+      i += 1;
+      continue;
+    }
+
+    let name_start = i;
+    while i < bytes.len()
+      && !bytes[i].is_ascii_whitespace()
+      && bytes[i] != b'='
+      && bytes[i] != b'>'
+    {
+      i += 1;
+    }
+    let name_end = i;
+    if name_end == name_start {
+      i = i.saturating_add(1);
+      continue;
+    }
+    let name = &tag[name_start..name_end];
+
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+      i += 1;
+    }
+
+    let mut value = "";
+    if i < bytes.len() && bytes[i] == b'=' {
+      i += 1;
+      while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+      }
+
+      if i + 1 < bytes.len()
+        && bytes[i] == b'\\'
+        && (bytes[i + 1] == b'"' || bytes[i + 1] == b'\'')
+      {
+        let quote = bytes[i + 1];
+        i += 2;
+        let start = i;
+        while i < bytes.len() && bytes[i] != quote {
+          i += 1;
+        }
+        value = &tag[start..i];
+        if i < bytes.len() {
+          i += 1;
+        }
+      } else if i < bytes.len() && (bytes[i] == b'"' || bytes[i] == b'\'') {
+        let quote = bytes[i];
+        i += 1;
+        let start = i;
+        while i < bytes.len() && bytes[i] != quote {
+          i += 1;
+        }
+        value = &tag[start..i];
+        if i < bytes.len() {
+          i += 1;
+        }
+      } else {
+        let start = i;
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'>' {
+          i += 1;
+        }
+        value = &tag[start..i];
+      }
+    }
+
+    attrs_seen += 1;
+    if let ControlFlow::Break(()) = visit(name, value) {
+      break;
+    }
+    if attrs_seen >= MAX_ATTRIBUTES_PER_TAG {
+      break;
+    }
+  }
 }
 
 fn link_rel_is_image_asset(rel_value: &str, as_value: Option<&str>) -> bool {
@@ -96,95 +202,15 @@ pub fn discover_html_asset_urls_with_srcset_limit(
   base_url: &str,
   max_srcset_candidates: usize,
 ) -> HtmlAssetUrls {
-  let html = super::strip_template_contents(html);
-  let html = html.as_ref();
+  let html = asset_scan_html(html);
+  let bytes = html.as_bytes();
   let max_srcset_candidates = max_srcset_candidates.min(MAX_SRCSET_CANDIDATES);
-  static IMG_SRC: OnceLock<Regex> = OnceLock::new();
-  static IMG_SRCSET: OnceLock<Regex> = OnceLock::new();
-  static SOURCE_SRCSET: OnceLock<Regex> = OnceLock::new();
-  static VIDEO_POSTER: OnceLock<Regex> = OnceLock::new();
-  static IFRAME_SRC: OnceLock<Regex> = OnceLock::new();
-  static OBJECT_DATA: OnceLock<Regex> = OnceLock::new();
-  static EMBED_SRC: OnceLock<Regex> = OnceLock::new();
-  static LINK_TAG: OnceLock<Regex> = OnceLock::new();
-  static ATTR_REL: OnceLock<Regex> = OnceLock::new();
-  static ATTR_HREF: OnceLock<Regex> = OnceLock::new();
-  static ATTR_AS: OnceLock<Regex> = OnceLock::new();
-  static ATTR_IMAGESRCSET: OnceLock<Regex> = OnceLock::new();
-
-  let img_src = IMG_SRC.get_or_init(|| {
-    regex(
-      "(?is)<img[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
-      "img src",
-    )
-  });
-  let img_srcset = IMG_SRCSET.get_or_init(|| {
-    regex(
-      "(?is)<img[^>]*\\ssrcset\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')",
-      "img srcset",
-    )
-  });
-  let source_srcset = SOURCE_SRCSET.get_or_init(|| {
-    regex(
-      "(?is)<source[^>]*\\ssrcset\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')",
-      "source srcset",
-    )
-  });
-  let video_poster = VIDEO_POSTER.get_or_init(|| {
-    regex(
-      "(?is)<video[^>]*\\sposter\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
-      "video poster",
-    )
-  });
-  let iframe_src = IFRAME_SRC.get_or_init(|| {
-    regex(
-      "(?is)<iframe[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
-      "iframe src",
-    )
-  });
-  let object_data = OBJECT_DATA.get_or_init(|| {
-    regex(
-      "(?is)<object[^>]*\\sdata\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
-      "object data",
-    )
-  });
-  let embed_src = EMBED_SRC.get_or_init(|| {
-    regex(
-      "(?is)<embed[^>]*\\ssrc\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
-      "embed src",
-    )
-  });
-  let link_tag = LINK_TAG.get_or_init(|| regex("(?is)<link\\b[^>]*>", "link tag"));
-  let attr_rel = ATTR_REL.get_or_init(|| {
-    regex(
-      "(?is)(?:^|\\s)rel\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
-      "rel attr",
-    )
-  });
-  let attr_href = ATTR_HREF.get_or_init(|| {
-    regex(
-      "(?is)(?:^|\\s)href\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
-      "href attr",
-    )
-  });
-  let attr_as = ATTR_AS.get_or_init(|| {
-    regex(
-      "(?is)(?:^|\\s)as\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
-      "as attr",
-    )
-  });
-  let attr_imagesrcset = ATTR_IMAGESRCSET.get_or_init(|| {
-    regex(
-      "(?is)(?:^|\\s)imagesrcset\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')",
-      "imagesrcset attr",
-    )
-  });
 
   let mut out = HtmlAssetUrls::default();
   let mut seen_images: HashSet<String> = HashSet::new();
   let mut seen_documents: HashSet<String> = HashSet::new();
 
-  let mut push_image = |raw: &str| {
+  let mut push_image = |out: &mut HtmlAssetUrls, seen_images: &mut HashSet<String>, raw: &str| {
     if out.images.len() >= MAX_DISCOVERED_IMAGES {
       return;
     }
@@ -194,7 +220,8 @@ pub fn discover_html_asset_urls_with_srcset_limit(
       }
     }
   };
-  let mut push_document = |raw: &str| {
+  let mut push_document =
+    |out: &mut HtmlAssetUrls, seen_documents: &mut HashSet<String>, raw: &str| {
     if out.documents.len() >= MAX_DISCOVERED_DOCUMENTS {
       return;
     }
@@ -205,90 +232,214 @@ pub fn discover_html_asset_urls_with_srcset_limit(
     }
   };
 
-  for caps in img_src.captures_iter(html) {
-    if let Some(raw) = capture_first(&caps, &[1, 2, 3]) {
-      push_image(raw);
-    }
-  }
+  let mut template_depth: usize = 0;
+  let mut i: usize = 0;
 
-  for caps in img_srcset.captures_iter(html) {
-    let Some(raw_srcset) = capture_first(&caps, &[1, 2]) else {
+  while let Some(rel) = memchr(b'<', &bytes[i..]) {
+    if out.images.len() >= MAX_DISCOVERED_IMAGES && out.documents.len() >= MAX_DISCOVERED_DOCUMENTS {
+      break;
+    }
+
+    let tag_start = i + rel;
+
+    if bytes
+      .get(tag_start..tag_start + 4)
+      .is_some_and(|head| head == b"<!--")
+    {
+      let end = super::find_bytes(bytes, tag_start + 4, b"-->")
+        .map(|pos| pos + 3)
+        .unwrap_or(bytes.len());
+      i = end;
+      continue;
+    }
+
+    if bytes
+      .get(tag_start..tag_start + 9)
+      .is_some_and(|head| head.eq_ignore_ascii_case(b"<![cdata["))
+    {
+      let end = super::find_bytes(bytes, tag_start + 9, b"]]>")
+        .map(|pos| pos + 3)
+        .unwrap_or(bytes.len());
+      i = end;
+      continue;
+    }
+
+    if bytes
+      .get(tag_start + 1)
+      .is_some_and(|b| *b == b'!' || *b == b'?')
+    {
+      i = super::find_tag_end(bytes, tag_start);
+      continue;
+    }
+
+    let tag_end = super::find_tag_end(bytes, tag_start);
+    if tag_end == bytes.len() {
+      break;
+    }
+
+    let Some((is_end, name_start, name_end)) = super::parse_tag_name_range(bytes, tag_start, tag_end)
+    else {
+      i = tag_start + 1;
       continue;
     };
-    for candidate in parse_srcset_urls(raw_srcset, max_srcset_candidates) {
-      push_image(&candidate);
-    }
-  }
+    let name = &bytes[name_start..name_end];
 
-  for caps in source_srcset.captures_iter(html) {
-    let Some(raw_srcset) = capture_first(&caps, &[1, 2]) else {
-      continue;
+    let raw_text_tag: Option<&'static [u8]> = if !is_end && name.eq_ignore_ascii_case(b"script") {
+      Some(b"script")
+    } else if !is_end && name.eq_ignore_ascii_case(b"style") {
+      Some(b"style")
+    } else if !is_end && name.eq_ignore_ascii_case(b"textarea") {
+      Some(b"textarea")
+    } else if !is_end && name.eq_ignore_ascii_case(b"title") {
+      Some(b"title")
+    } else if !is_end && name.eq_ignore_ascii_case(b"xmp") {
+      Some(b"xmp")
+    } else {
+      None
     };
-    for candidate in parse_srcset_urls(raw_srcset, max_srcset_candidates) {
-      push_image(&candidate);
-    }
-  }
 
-  for caps in video_poster.captures_iter(html) {
-    if let Some(raw) = capture_first(&caps, &[1, 2, 3]) {
-      push_image(raw);
+    if !is_end && name.eq_ignore_ascii_case(b"plaintext") {
+      break;
     }
-  }
 
-  for caps in iframe_src.captures_iter(html) {
-    if let Some(raw) = capture_first(&caps, &[1, 2, 3]) {
-      push_document(raw);
+    if name.eq_ignore_ascii_case(b"template") {
+      if is_end {
+        if template_depth > 0 {
+          template_depth -= 1;
+        }
+      } else {
+        template_depth += 1;
+      }
     }
-  }
 
-  for caps in object_data.captures_iter(html) {
-    if let Some(raw) = capture_first(&caps, &[1, 2, 3]) {
-      push_document(raw);
-    }
-  }
+    if template_depth == 0 && !is_end {
+      let tag = &html[tag_start..tag_end];
+      if name.eq_ignore_ascii_case(b"img") {
+        let mut src: Option<&str> = None;
+        let mut srcset: Option<&str> = None;
+        for_each_attribute(tag, |attr, value| {
+          if attr.eq_ignore_ascii_case("src") {
+            src = Some(value);
+          } else if attr.eq_ignore_ascii_case("srcset") {
+            srcset = Some(value);
+          }
+          ControlFlow::Continue(())
+        });
 
-  for caps in embed_src.captures_iter(html) {
-    if let Some(raw) = capture_first(&caps, &[1, 2, 3]) {
-      push_document(raw);
-    }
-  }
+        if let Some(raw) = src {
+          push_image(&mut out, &mut seen_images, raw);
+        }
+        if let Some(raw_srcset) = srcset {
+          for candidate in parse_srcset_urls(raw_srcset, max_srcset_candidates) {
+            push_image(&mut out, &mut seen_images, &candidate);
+          }
+        }
+      } else if name.eq_ignore_ascii_case(b"source") {
+        let mut srcset: Option<&str> = None;
+        for_each_attribute(tag, |attr, value| {
+          if attr.eq_ignore_ascii_case("srcset") {
+            srcset = Some(value);
+            return ControlFlow::Break(());
+          }
+          ControlFlow::Continue(())
+        });
+        if let Some(raw_srcset) = srcset {
+          for candidate in parse_srcset_urls(raw_srcset, max_srcset_candidates) {
+            push_image(&mut out, &mut seen_images, &candidate);
+          }
+        }
+      } else if name.eq_ignore_ascii_case(b"video") {
+        let mut poster: Option<&str> = None;
+        for_each_attribute(tag, |attr, value| {
+          if attr.eq_ignore_ascii_case("poster") {
+            poster = Some(value);
+            return ControlFlow::Break(());
+          }
+          ControlFlow::Continue(())
+        });
+        if let Some(raw) = poster {
+          push_image(&mut out, &mut seen_images, raw);
+        }
+      } else if name.eq_ignore_ascii_case(b"iframe") {
+        let mut src: Option<&str> = None;
+        for_each_attribute(tag, |attr, value| {
+          if attr.eq_ignore_ascii_case("src") {
+            src = Some(value);
+            return ControlFlow::Break(());
+          }
+          ControlFlow::Continue(())
+        });
+        if let Some(raw) = src {
+          push_document(&mut out, &mut seen_documents, raw);
+        }
+      } else if name.eq_ignore_ascii_case(b"object") {
+        let mut data: Option<&str> = None;
+        for_each_attribute(tag, |attr, value| {
+          if attr.eq_ignore_ascii_case("data") {
+            data = Some(value);
+            return ControlFlow::Break(());
+          }
+          ControlFlow::Continue(())
+        });
+        if let Some(raw) = data {
+          push_document(&mut out, &mut seen_documents, raw);
+        }
+      } else if name.eq_ignore_ascii_case(b"embed") {
+        let mut src: Option<&str> = None;
+        for_each_attribute(tag, |attr, value| {
+          if attr.eq_ignore_ascii_case("src") {
+            src = Some(value);
+            return ControlFlow::Break(());
+          }
+          ControlFlow::Continue(())
+        });
+        if let Some(raw) = src {
+          push_document(&mut out, &mut seen_documents, raw);
+        }
+      } else if name.eq_ignore_ascii_case(b"link") {
+        let mut rel: Option<&str> = None;
+        let mut href: Option<&str> = None;
+        let mut as_value: Option<&str> = None;
+        let mut imagesrcset: Option<&str> = None;
+        for_each_attribute(tag, |attr, value| {
+          if attr.eq_ignore_ascii_case("rel") {
+            rel = Some(value);
+          } else if attr.eq_ignore_ascii_case("href") {
+            href = Some(value);
+          } else if attr.eq_ignore_ascii_case("as") {
+            as_value = Some(value);
+          } else if attr.eq_ignore_ascii_case("imagesrcset") {
+            imagesrcset = Some(value);
+          }
+          ControlFlow::Continue(())
+        });
 
-  for caps in link_tag.captures_iter(html) {
-    let tag = caps.get(0).map(|m| m.as_str()).unwrap_or("");
-    if tag.is_empty() {
-      continue;
-    }
-    let rel = attr_rel
-      .captures(tag)
-      .and_then(|c| capture_first(&c, &[1, 2, 3]))
-      .unwrap_or("");
-    let as_value = attr_as
-      .captures(tag)
-      .and_then(|c| capture_first(&c, &[1, 2, 3]));
-    if rel.is_empty() || !link_rel_is_image_asset(rel, as_value) {
-      continue;
-    }
-    let href = attr_href
-      .captures(tag)
-      .and_then(|c| capture_first(&c, &[1, 2, 3]))
-      .unwrap_or("");
-    if !href.is_empty() {
-      push_image(href);
-    }
-    // Support responsive preloads: `<link rel=preload as=image imagesrcset=... imagesizes=...>`.
-    // Unlike the DOM-based prefetching path, this regex-based discovery is intentionally liberal
-    // and includes all srcset candidates.
-    if link_rel_is_preload_image(rel, as_value) {
-      let imagesrcset = attr_imagesrcset
-        .captures(tag)
-        .and_then(|c| capture_first(&c, &[1, 2]))
-        .unwrap_or("");
-      if !imagesrcset.is_empty() {
-        for candidate in parse_srcset_urls(imagesrcset, MAX_SRCSET_CANDIDATES) {
-          push_image(&candidate);
+        let rel = rel.unwrap_or("");
+        if !rel.is_empty() && link_rel_is_image_asset(rel, as_value) {
+          if let Some(href) = href {
+            if !href.is_empty() {
+              push_image(&mut out, &mut seen_images, href);
+            }
+          }
+          if link_rel_is_preload_image(rel, as_value) {
+            if let Some(imagesrcset) = imagesrcset {
+              if !imagesrcset.is_empty() {
+                for candidate in parse_srcset_urls(imagesrcset, MAX_SRCSET_CANDIDATES) {
+                  push_image(&mut out, &mut seen_images, &candidate);
+                }
+              }
+            }
+          }
         }
       }
     }
+
+    if let Some(tag) = raw_text_tag {
+      i = super::find_raw_text_element_end(bytes, tag_end, tag);
+      continue;
+    }
+
+    i = tag_end;
   }
 
   out
@@ -472,6 +623,25 @@ mod tests {
     assert_eq!(
       out.documents,
       vec!["https://example.com/base/live.html".to_string()]
+    );
+  }
+
+  #[test]
+  fn ignores_assets_inside_rawtext_elements() {
+    let html = r#"
+      <script>var s = '<img src="bad.png"><iframe src="bad.html"></iframe>';</script>
+      <style>/* <img src="also-bad.png"> */</style>
+      <img src="good.png">
+      <iframe src="good.html"></iframe>
+    "#;
+    let out = discover_html_asset_urls(html, "https://example.com/base/");
+    assert_eq!(
+      out.images,
+      vec!["https://example.com/base/good.png".to_string()]
+    );
+    assert_eq!(
+      out.documents,
+      vec!["https://example.com/base/good.html".to_string()]
     );
   }
 

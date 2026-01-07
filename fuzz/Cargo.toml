@@ -73,3 +73,10 @@ path = "fuzz_targets/render_pipeline.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "html_scanners"
+path = "fuzz_targets/html_scanners.rs"
+test = false
+doc = false
+bench = false

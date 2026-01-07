@@ -5,69 +5,296 @@
 
 use memchr::memchr;
 use memchr::memchr2;
+use std::ops::ControlFlow;
+
+const MAX_META_REFRESH_SCAN_BYTES: usize = 256 * 1024;
+const MAX_JS_REDIRECT_SCAN_BYTES: usize = 256 * 1024;
+const MAX_REFRESH_CONTENT_LEN: usize = 8 * 1024;
+const MAX_ATTRIBUTES_PER_TAG: usize = 128;
+
+fn scan_html_prefix(html: &str, max_bytes: usize) -> &str {
+  if html.len() <= max_bytes {
+    return html;
+  }
+  let mut end = max_bytes.min(html.len());
+  while end > 0 && !html.is_char_boundary(end) {
+    end -= 1;
+  }
+  &html[..end]
+}
+
+fn for_each_attribute<'a>(
+  tag: &'a str,
+  mut visit: impl FnMut(&'a str, &'a str) -> ControlFlow<()>,
+) {
+  let bytes = tag.as_bytes();
+  let mut i = 0usize;
+  let mut attrs_seen = 0usize;
+
+  // Skip opening `<` + tag name.
+  if bytes.get(i) == Some(&b'<') {
+    i += 1;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+      i += 1;
+    }
+    while i < bytes.len() && bytes[i] != b'>' && !bytes[i].is_ascii_whitespace() {
+      i += 1;
+    }
+  }
+
+  while i < bytes.len() {
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+      i += 1;
+    }
+    if i >= bytes.len() || bytes[i] == b'>' {
+      break;
+    }
+    // Ignore self-closing markers.
+    if bytes[i] == b'/' {
+      i += 1;
+      continue;
+    }
+
+    let name_start = i;
+    while i < bytes.len()
+      && !bytes[i].is_ascii_whitespace()
+      && bytes[i] != b'='
+      && bytes[i] != b'>'
+    {
+      i += 1;
+    }
+    let name_end = i;
+    if name_end == name_start {
+      i = i.saturating_add(1);
+      continue;
+    }
+    let name = &tag[name_start..name_end];
+
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+      i += 1;
+    }
+
+    let mut value = "";
+    if i < bytes.len() && bytes[i] == b'=' {
+      i += 1;
+      while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+      }
+
+      if i + 1 < bytes.len()
+        && bytes[i] == b'\\'
+        && (bytes[i + 1] == b'"' || bytes[i + 1] == b'\'')
+      {
+        let quote = bytes[i + 1];
+        i += 2;
+        let start = i;
+        while i < bytes.len() && bytes[i] != quote {
+          i += 1;
+        }
+        value = &tag[start..i];
+        if i < bytes.len() {
+          i += 1;
+        }
+      } else if i < bytes.len() && (bytes[i] == b'"' || bytes[i] == b'\'') {
+        let quote = bytes[i];
+        i += 1;
+        let start = i;
+        while i < bytes.len() && bytes[i] != quote {
+          i += 1;
+        }
+        value = &tag[start..i];
+        if i < bytes.len() {
+          i += 1;
+        }
+      } else {
+        let start = i;
+        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'>' {
+          i += 1;
+        }
+        value = &tag[start..i];
+      }
+    }
+
+    attrs_seen += 1;
+    if let ControlFlow::Break(()) = visit(name, value) {
+      break;
+    }
+    if attrs_seen >= MAX_ATTRIBUTES_PER_TAG {
+      break;
+    }
+  }
+}
 
 /// Parses the first `<meta http-equiv="refresh">` URL in the provided HTML.
 ///
 /// Returns `Some(url)` when a refresh URL is found, otherwise `None`.
 pub fn extract_meta_refresh_url(html: &str) -> Option<String> {
-  let stripped = super::strip_template_contents(html);
-  let html = stripped.as_ref();
+  let html = scan_html_prefix(html, MAX_META_REFRESH_SCAN_BYTES);
   let bytes = html.as_bytes();
-  let mut idx = 0usize;
-  while idx < bytes.len() {
-    let Some(pos) = memchr(b'<', &bytes[idx..]) else {
-      break;
-    };
-    let start = idx + pos;
-    if start + 5 > bytes.len() || !bytes[start..start + 5].eq_ignore_ascii_case(b"<meta") {
-      idx = start + 1;
+  let mut template_depth: usize = 0;
+  let mut i: usize = 0;
+
+  while let Some(rel) = memchr(b'<', &bytes[i..]) {
+    let tag_start = i + rel;
+
+    if bytes
+      .get(tag_start..tag_start + 4)
+      .is_some_and(|head| head == b"<!--")
+    {
+      let end = super::find_bytes(bytes, tag_start + 4, b"-->")
+        .map(|pos| pos + 3)
+        .unwrap_or(bytes.len());
+      i = end;
       continue;
     }
 
-    let end = bytes[start..]
-      .iter()
-      .position(|b| *b == b'>')
-      .map(|e| start + e + 1)
-      .unwrap_or(bytes.len());
-    let tag = &html[start..end];
-    let attrs = parse_attributes(tag);
-    let mut http_equiv: Option<String> = None;
-    let mut content: Option<String> = None;
-    for (name, value) in attrs {
-      let normalized = normalize_attr_value(&value);
-      if name.eq_ignore_ascii_case("http-equiv") {
-        http_equiv = Some(normalized);
-      } else if name.eq_ignore_ascii_case("content") {
-        content = Some(normalized);
+    if bytes
+      .get(tag_start..tag_start + 9)
+      .is_some_and(|head| head.eq_ignore_ascii_case(b"<![cdata["))
+    {
+      let end = super::find_bytes(bytes, tag_start + 9, b"]]>")
+        .map(|pos| pos + 3)
+        .unwrap_or(bytes.len());
+      i = end;
+      continue;
+    }
+
+    if bytes
+      .get(tag_start + 1)
+      .is_some_and(|b| *b == b'!' || *b == b'?')
+    {
+      i = super::find_tag_end(bytes, tag_start);
+      continue;
+    }
+
+    let tag_end = super::find_tag_end(bytes, tag_start);
+    if tag_end == bytes.len() {
+      break;
+    }
+
+    let Some((is_end, name_start, name_end)) =
+      super::parse_tag_name_range(bytes, tag_start, tag_end)
+    else {
+      i = tag_start + 1;
+      continue;
+    };
+
+    let name = &bytes[name_start..name_end];
+
+    let raw_text_tag: Option<&'static [u8]> = if !is_end && name.eq_ignore_ascii_case(b"script") {
+      Some(b"script")
+    } else if !is_end && name.eq_ignore_ascii_case(b"style") {
+      Some(b"style")
+    } else if !is_end && name.eq_ignore_ascii_case(b"textarea") {
+      Some(b"textarea")
+    } else if !is_end && name.eq_ignore_ascii_case(b"title") {
+      Some(b"title")
+    } else if !is_end && name.eq_ignore_ascii_case(b"xmp") {
+      Some(b"xmp")
+    } else {
+      None
+    };
+
+    if !is_end && name.eq_ignore_ascii_case(b"plaintext") {
+      break;
+    }
+
+    if name.eq_ignore_ascii_case(b"template") {
+      if is_end {
+        if template_depth > 0 {
+          template_depth -= 1;
+        }
+      } else {
+        template_depth += 1;
       }
     }
 
-    if http_equiv
-      .as_ref()
-      .map(|v| v.eq_ignore_ascii_case("refresh"))
-      .unwrap_or(false)
-    {
-      if let Some(content) = content {
-        if let Some(url) = parse_refresh_content(&content) {
-          return Some(url);
+    if template_depth == 0 && !is_end && name.eq_ignore_ascii_case(b"meta") {
+      let tag = &html[tag_start..tag_end];
+      let mut http_equiv: Option<String> = None;
+      let mut content: Option<String> = None;
+
+      for_each_attribute(tag, |attr, mut value| {
+        if !attr.eq_ignore_ascii_case("http-equiv") && !attr.eq_ignore_ascii_case("content") {
+          return ControlFlow::Continue(());
+        }
+
+        if value.len() > MAX_REFRESH_CONTENT_LEN {
+          let mut end = MAX_REFRESH_CONTENT_LEN.min(value.len());
+          while end > 0 && !value.is_char_boundary(end) {
+            end -= 1;
+          }
+          value = &value[..end];
+        }
+
+        let normalized = normalize_attr_value(value);
+        if attr.eq_ignore_ascii_case("http-equiv") {
+          http_equiv = Some(normalized);
+        } else if attr.eq_ignore_ascii_case("content") {
+          content = Some(normalized);
+        }
+
+        if http_equiv.is_some() && content.is_some() {
+          ControlFlow::Break(())
+        } else {
+          ControlFlow::Continue(())
+        }
+      });
+
+      if http_equiv
+        .as_ref()
+        .is_some_and(|value| value.eq_ignore_ascii_case("refresh"))
+      {
+        if let Some(content) = content {
+          if let Some(url) = parse_refresh_content(&content) {
+            return Some(url);
+          }
         }
       }
     }
 
-    idx = end.max(start + 1);
+    if let Some(tag) = raw_text_tag {
+      i = super::find_raw_text_element_end(bytes, tag_end, tag);
+      continue;
+    }
+
+    i = tag_end;
   }
 
   None
 }
 
-/// Extracts a literal URL from simple JavaScript redirects such as
-/// `window.location.href = "https://example.com"` or `location.replace('/next')`.
-pub fn extract_js_location_redirect(html: &str) -> Option<String> {
+fn find_raw_text_element_closing_tag(
+  bytes: &[u8],
+  start: usize,
+  tag: &'static [u8],
+) -> Option<(usize, usize)> {
+  let mut idx = start;
+  while let Some(rel) = memchr(b'<', &bytes[idx..]) {
+    let pos = idx + rel;
+    if bytes.get(pos + 1) == Some(&b'/') {
+      let name_start = pos + 2;
+      let name_end = name_start + tag.len();
+      if name_end <= bytes.len()
+        && bytes[name_start..name_end].eq_ignore_ascii_case(tag)
+        && !bytes
+          .get(name_end)
+          .map(|b| super::is_tag_name_char(*b))
+          .unwrap_or(false)
+      {
+        let end = super::find_tag_end(bytes, pos);
+        return Some((pos, end));
+      }
+    }
+    idx = pos + 1;
+  }
+  None
+}
+
+fn extract_js_location_redirect_from_source(source: &str) -> Option<String> {
   const MAX_REDIRECT_LEN: usize = 2048;
 
-  let stripped = super::strip_template_contents(html);
-  let html = stripped.as_ref();
-  let decoded = decode_refresh_entities(html);
+  let decoded = decode_refresh_entities(source);
   let bytes = decoded.as_bytes();
 
   fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
@@ -314,6 +541,134 @@ pub fn extract_js_location_redirect(html: &str) -> Option<String> {
         return Some(url);
       }
     }
+  }
+
+  None
+}
+
+/// Extracts a literal URL from simple JavaScript redirects such as
+/// `window.location.href = "https://example.com"` or `location.replace('/next')`.
+pub fn extract_js_location_redirect(html: &str) -> Option<String> {
+  let html = scan_html_prefix(html, MAX_JS_REDIRECT_SCAN_BYTES);
+  let bytes = html.as_bytes();
+  let mut template_depth: usize = 0;
+  let mut i: usize = 0;
+
+  while let Some(rel) = memchr(b'<', &bytes[i..]) {
+    let tag_start = i + rel;
+
+    if bytes
+      .get(tag_start..tag_start + 4)
+      .is_some_and(|head| head == b"<!--")
+    {
+      let end = super::find_bytes(bytes, tag_start + 4, b"-->")
+        .map(|pos| pos + 3)
+        .unwrap_or(bytes.len());
+      i = end;
+      continue;
+    }
+
+    if bytes
+      .get(tag_start..tag_start + 9)
+      .is_some_and(|head| head.eq_ignore_ascii_case(b"<![cdata["))
+    {
+      let end = super::find_bytes(bytes, tag_start + 9, b"]]>")
+        .map(|pos| pos + 3)
+        .unwrap_or(bytes.len());
+      i = end;
+      continue;
+    }
+
+    if bytes
+      .get(tag_start + 1)
+      .is_some_and(|b| *b == b'!' || *b == b'?')
+    {
+      i = super::find_tag_end(bytes, tag_start);
+      continue;
+    }
+
+    let tag_end = super::find_tag_end(bytes, tag_start);
+    if tag_end == bytes.len() {
+      break;
+    }
+
+    let Some((is_end, name_start, name_end)) =
+      super::parse_tag_name_range(bytes, tag_start, tag_end)
+    else {
+      i = tag_start + 1;
+      continue;
+    };
+
+    let name = &bytes[name_start..name_end];
+
+    let raw_text_tag: Option<&'static [u8]> = if !is_end && name.eq_ignore_ascii_case(b"script") {
+      Some(b"script")
+    } else if !is_end && name.eq_ignore_ascii_case(b"style") {
+      Some(b"style")
+    } else if !is_end && name.eq_ignore_ascii_case(b"textarea") {
+      Some(b"textarea")
+    } else if !is_end && name.eq_ignore_ascii_case(b"title") {
+      Some(b"title")
+    } else if !is_end && name.eq_ignore_ascii_case(b"xmp") {
+      Some(b"xmp")
+    } else {
+      None
+    };
+
+    if !is_end && name.eq_ignore_ascii_case(b"plaintext") {
+      break;
+    }
+
+    if name.eq_ignore_ascii_case(b"template") {
+      if is_end {
+        if template_depth > 0 {
+          template_depth -= 1;
+        }
+      } else {
+        template_depth += 1;
+      }
+    }
+
+    if template_depth == 0 && !is_end {
+      if name.eq_ignore_ascii_case(b"script") {
+        let Some((close_start, close_end)) =
+          find_raw_text_element_closing_tag(bytes, tag_end, b"script")
+        else {
+          let script = &html[tag_end..];
+          return extract_js_location_redirect_from_source(script);
+        };
+        let script = &html[tag_end..close_start];
+        if let Some(url) = extract_js_location_redirect_from_source(script) {
+          return Some(url);
+        }
+        i = close_end;
+        continue;
+      }
+
+      if name.eq_ignore_ascii_case(b"body") || name.eq_ignore_ascii_case(b"html") {
+        let tag = &html[tag_start..tag_end];
+        let mut onload: Option<&str> = None;
+        for_each_attribute(tag, |attr, value| {
+          if attr.eq_ignore_ascii_case("onload") {
+            onload = Some(value);
+            return ControlFlow::Break(());
+          }
+          ControlFlow::Continue(())
+        });
+        if let Some(code) = onload {
+          if let Some(url) = extract_js_location_redirect_from_source(code) {
+            return Some(url);
+          }
+        }
+      }
+    }
+
+    if let Some(tag) = raw_text_tag {
+      i = super::find_raw_text_element_end(bytes, tag_end, tag);
+      continue;
+    }
+
+    i = tag_end;
   }
 
   None
@@ -626,89 +981,6 @@ fn slice_until_unquoted_semicolon(s: &str, start: usize) -> &str {
   &s[start..]
 }
 
-fn parse_attributes(tag: &str) -> Vec<(String, String)> {
-  let mut attrs = Vec::new();
-  let mut i = 0usize;
-  let bytes = tag.as_bytes();
-
-  // Skip leading "<meta" or any leading whitespace
-  while i < bytes.len() {
-    let b = bytes[i];
-    if b == b'<' {
-      while i < bytes.len() && bytes[i] != b'>' && !bytes[i].is_ascii_whitespace() {
-        i += 1;
-      }
-      break;
-    }
-    if !b.is_ascii_whitespace() {
-      break;
-    }
-    i += 1;
-  }
-
-  while i < bytes.len() {
-    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-      i += 1;
-    }
-    if i >= bytes.len() || bytes[i] == b'>' {
-      break;
-    }
-
-    let name_start = i;
-    while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'=' && bytes[i] != b'>'
-    {
-      i += 1;
-    }
-    let name = tag[name_start..i].trim();
-
-    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-      i += 1;
-    }
-
-    let mut value = String::new();
-    if i < bytes.len() && bytes[i] == b'=' {
-      i += 1;
-      while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-        i += 1;
-      }
-      if i + 1 < bytes.len() && bytes[i] == b'\\' && (bytes[i + 1] == b'"' || bytes[i + 1] == b'\'')
-      {
-        let quote = bytes[i + 1];
-        i += 2;
-        let start = i;
-        while i < bytes.len() && bytes[i] != quote {
-          i += 1;
-        }
-        value = tag[start..i.min(bytes.len())].to_string();
-        if i < bytes.len() {
-          i += 1;
-        }
-      } else if i < bytes.len() && (bytes[i] == b'"' || bytes[i] == b'\'') {
-        let quote = bytes[i];
-        i += 1;
-        let start = i;
-        while i < bytes.len() && bytes[i] != quote {
-          i += 1;
-        }
-        value = tag[start..i.min(bytes.len())].to_string();
-        if i < bytes.len() {
-          i += 1;
-        }
-      } else {
-        let start = i;
-        while i < bytes.len() && !bytes[i].is_ascii_whitespace() && bytes[i] != b'>' {
-          i += 1;
-        }
-        value = tag[start..i].to_string();
-      }
-    }
-
-    attrs.push((name.to_string(), value));
-  }
-
-  attrs
-}
-
 #[cfg(test)]
 mod tests {
   use super::extract_js_location_redirect;
@@ -819,6 +1091,15 @@ mod tests {
   fn ignores_meta_refresh_inside_template() {
     let html = r#"
       <template><meta http-equiv="refresh" content="0; url=/bad"></template>
+      <meta http-equiv="refresh" content="0; url=/good">
+    "#;
+    assert_eq!(extract_meta_refresh_url(html), Some("/good".to_string()));
+  }
+
+  #[test]
+  fn ignores_meta_refresh_inside_scripts() {
+    let html = r#"
+      <script>var s = '<meta http-equiv="refresh" content="0; url=/bad">';</script>
       <meta http-equiv="refresh" content="0; url=/good">
     "#;
     assert_eq!(extract_meta_refresh_url(html), Some("/good".to_string()));
@@ -946,6 +1227,15 @@ mod tests {
     assert_eq!(
       extract_js_location_redirect(html),
       Some("/encoded/path with".to_string())
+    );
+  }
+
+  #[test]
+  fn extracts_js_location_from_body_onload() {
+    let html = r#"<body onload="location.href='/from-onload'"></body>"#;
+    assert_eq!(
+      extract_js_location_redirect(html),
+      Some("/from-onload".to_string())
     );
   }
 
