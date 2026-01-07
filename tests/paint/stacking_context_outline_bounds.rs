@@ -1,36 +1,5 @@
-use fastrender::debug::runtime::RuntimeToggles;
-use fastrender::paint::display_list_renderer::PaintParallelism;
-use fastrender::{FastRender, FastRenderConfig, FontConfig, LayoutParallelism};
-use rayon::ThreadPoolBuilder;
-use resvg::tiny_skia::Pixmap;
-use std::collections::HashMap;
-use std::sync::Once;
-
-static INIT_RAYON: Once = Once::new();
-
-fn ensure_rayon_global_pool() {
-  INIT_RAYON.call_once(|| {
-    // Rayon defaults to spawning one worker per CPU; in constrained environments this can fail
-    // global pool initialization (EAGAIN). Pre-initialize a conservative pool so paint tests are
-    // stable under `scripts/run_limited.sh`.
-    std::env::set_var("RAYON_NUM_THREADS", "2");
-    let _ = ThreadPoolBuilder::new().num_threads(2).build_global();
-  });
-}
-
-fn create_renderer() -> FastRender {
-  ensure_rayon_global_pool();
-  let toggles = RuntimeToggles::from_map(HashMap::from([(
-    "FASTR_PAINT_BACKEND".to_string(),
-    "display_list".to_string(),
-  )]));
-  let config = FastRenderConfig::new()
-    .with_runtime_toggles(toggles)
-    .with_font_sources(FontConfig::bundled_only())
-    .with_layout_parallelism(LayoutParallelism::disabled())
-    .with_paint_parallelism(PaintParallelism::disabled());
-  FastRender::with_config(config).expect("renderer")
-}
+use super::util::create_stacking_context_bounds_renderer;
+use tiny_skia::Pixmap;
 
 fn color_at(pixmap: &Pixmap, x: u32, y: u32) -> [u8; 4] {
   let pixel = pixmap.pixel(x, y).expect("pixel");
@@ -39,7 +8,7 @@ fn color_at(pixmap: &Pixmap, x: u32, y: u32) -> [u8; 4] {
 
 #[test]
 fn stacking_context_layer_bounds_do_not_clip_outline() {
-  let mut renderer = create_renderer();
+  let mut renderer = create_stacking_context_bounds_renderer();
 
   let html = r#"
   <style>
