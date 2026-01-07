@@ -4152,6 +4152,16 @@ fn animation_time_ms_to_duration(animation_time: Option<f32>) -> Option<Duration
   Some(Duration::new(secs, subsec_nanos))
 }
 
+fn sanitize_animation_time_ms(animation_time: Option<f32>) -> Option<f32> {
+  animation_time.map(|ms| {
+    if ms.is_finite() {
+      ms.max(0.0)
+    } else {
+      0.0
+    }
+  })
+}
+
 fn paint_fragment_tree_with_state(
   mut fragment_tree: FragmentTree,
   mut scroll_state: ScrollState,
@@ -4192,6 +4202,7 @@ fn paint_fragment_tree_with_state(
     );
   }
 
+  let animation_time = sanitize_animation_time_ms(animation_time);
   if let Some(time_ms) = animation_time {
     animation::apply_transitions(&mut fragment_tree, time_ms, viewport_size);
   }
@@ -5302,6 +5313,7 @@ impl FastRender {
       // sticky-adjusted geometry.
       self.apply_sticky_offsets_to_tree_with_scroll_state(&mut fragment_tree, &scroll_state);
 
+      let animation_time = sanitize_animation_time_ms(animation_time);
       if let Some(time_ms) = animation_time {
         animation::apply_transitions(&mut fragment_tree, time_ms, viewport_size);
       }
@@ -6353,10 +6365,11 @@ impl FastRender {
         &scroll_state,
       );
 
-      if let Some(time_ms) = options.animation_time {
+      let animation_time = sanitize_animation_time_ms(options.animation_time);
+      if let Some(time_ms) = animation_time {
         animation::apply_transitions(&mut intermediates.fragment_tree, time_ms, viewport_size);
       }
-      let animation_duration = animation_time_ms_to_duration(options.animation_time);
+      let animation_duration = animation_time_ms_to_duration(animation_time);
       animation::apply_animations(
         &mut intermediates.fragment_tree,
         &scroll_state,

@@ -50,6 +50,25 @@ fn animation_time_preserves_sub_millisecond_precision() {
     .expect("paint at 0ms");
   assert_eq!(pixel(&pixmap_start, 5, 5), (0, 0, 0, 255));
 
+  // Non-finite timestamps should not panic and should behave like 0ms.
+  let pixmap_nan = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(bg)
+        .with_animation_time(f32::NAN),
+    )
+    .expect("paint at NaN ms");
+  assert_eq!(pixel(&pixmap_nan, 5, 5), (0, 0, 0, 255));
+
+  let pixmap_inf = prepared
+    .paint_with_options(
+      PreparedPaintOptions::new()
+        .with_background(bg)
+        .with_animation_time(f32::INFINITY),
+    )
+    .expect("paint at inf ms");
+  assert_eq!(pixel(&pixmap_inf, 5, 5), (0, 0, 0, 255));
+
   let pixmap_half = prepared
     .paint_with_options(
       PreparedPaintOptions::new()
