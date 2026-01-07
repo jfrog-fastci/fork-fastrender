@@ -1,6 +1,7 @@
 use crate::error::Error;
 use crate::error::RenderError;
 use crate::error::Result;
+use crate::fallible_vec_writer::FallibleVecWriter;
 use crate::image_compare::{self, CompareConfig};
 use crate::paint::pixmap::reserve_buffer;
 use crate::paint::pixmap::MAX_PIXMAP_BYTES;
@@ -9,7 +10,6 @@ use image::Rgba;
 use image::RgbaImage;
 use image::Rgb;
 use std::ffi::c_void;
-use std::io;
 use std::io::Write;
 use tiny_skia::Pixmap;
 
@@ -73,83 +73,6 @@ fn unpremultiply_rgba_row(src: &[u8], dst: &mut [u8]) {
     out_px[1] = g;
     out_px[2] = b;
     out_px[3] = in_px[3];
-  }
-}
-
-/// A growable in-memory writer that fails gracefully when allocations fail.
-///
-/// The default `impl Write for Vec<u8>` uses infallible allocation and will abort the process on
-/// OOM. Encoding large images can push the process close to memory limits, so prefer `try_reserve`
-/// and surface allocation failures as I/O errors that we can map to `RenderError::EncodeFailed`.
-struct FallibleVecWriter {
-  buf: Vec<u8>,
-  max_bytes: usize,
-  context: &'static str,
-}
-
-impl FallibleVecWriter {
-  fn new(max_bytes: usize, context: &'static str) -> Self {
-    Self {
-      buf: Vec::new(),
-      max_bytes,
-      context,
-    }
-  }
-
-  fn into_inner(self) -> Vec<u8> {
-    self.buf
-  }
-}
-
-impl Write for FallibleVecWriter {
-  fn write(&mut self, data: &[u8]) -> io::Result<usize> {
-    let new_len = self
-      .buf
-      .len()
-      .checked_add(data.len())
-      .ok_or_else(|| io::Error::new(io::ErrorKind::Other, format!("{}: output length overflow", self.context)))?;
-
-    if new_len > self.max_bytes {
-      return Err(io::Error::new(
-        io::ErrorKind::Other,
-        format!(
-          "{}: output exceeded {} bytes (attempted {})",
-          self.context, self.max_bytes, new_len
-        ),
-      ));
-    }
-
-    // Grow our backing buffer with a bounded exponential strategy:
-    // - avoids the pathological case where the upstream encoder writes 1 byte at a time (e.g.
-    //   `image`'s JPEG bitstream writer), which would otherwise force O(n) reallocations
-    // - never requests more than `max_bytes` total length.
-    if new_len > self.buf.capacity() {
-      let mut target_cap = self.buf.capacity().max(1);
-      while target_cap < new_len {
-        target_cap = target_cap.saturating_mul(2);
-      }
-      target_cap = target_cap.min(self.max_bytes);
-      if target_cap < new_len {
-        return Err(io::Error::new(
-          io::ErrorKind::Other,
-          format!(
-            "{}: output exceeded {} bytes (attempted {})",
-            self.context, self.max_bytes, new_len
-          ),
-        ));
-      }
-      let additional = target_cap.saturating_sub(self.buf.len());
-      self
-        .buf
-        .try_reserve_exact(additional)
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, format!("{}: output buffer allocation failed: {err}", self.context)))?;
-    }
-    self.buf.extend_from_slice(data);
-    Ok(data.len())
-  }
-
-  fn flush(&mut self) -> io::Result<()> {
-    Ok(())
   }
 }
 

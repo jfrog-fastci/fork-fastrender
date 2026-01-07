@@ -1,6 +1,8 @@
 use crate::error::{Error, RenderError};
+use crate::fallible_vec_writer::FallibleVecWriter;
+use crate::paint::pixmap::MAX_PIXMAP_BYTES;
 use image::{ImageFormat, Rgba, RgbaImage};
-use std::io::Cursor;
+use std::io::Write;
 
 /// Configuration for comparing two images.
 #[derive(Debug, Clone)]
@@ -199,16 +201,7 @@ impl ImageDiff {
   /// Encodes the diff image (if present) to PNG bytes.
   pub fn diff_png(&self) -> Result<Option<Vec<u8>>, Error> {
     if let Some(ref diff) = self.diff_image {
-      let mut buffer = Vec::new();
-      diff
-        .write_to(&mut Cursor::new(&mut buffer), ImageFormat::Png)
-        .map_err(|e| {
-          Error::Render(RenderError::EncodeFailed {
-            format: "PNG".to_string(),
-            reason: e.to_string(),
-          })
-        })?;
-      Ok(Some(buffer))
+      encode_png(diff).map(Some)
     } else {
       Ok(None)
     }
@@ -409,16 +402,74 @@ pub fn decode_png(data: &[u8]) -> Result<RgbaImage, Error> {
 
 /// Encode an RGBA image to PNG bytes.
 pub fn encode_png(image: &RgbaImage) -> Result<Vec<u8>, Error> {
-  let mut buffer = Vec::new();
-  image
-    .write_to(&mut Cursor::new(&mut buffer), ImageFormat::Png)
-    .map_err(|e| {
+  let width = image.width();
+  let height = image.height();
+
+  if width == 0 || height == 0 {
+    return Err(Error::Render(RenderError::InvalidParameters {
+      message: format!("encode_png: image size is zero ({width}x{height})"),
+    }));
+  }
+
+  let row_len = (width as usize).checked_mul(4).ok_or_else(|| {
+    Error::Render(RenderError::InvalidParameters {
+      message: format!("encode_png: row byte size overflow (width={width})"),
+    })
+  })?;
+
+  let expected_len = row_len.checked_mul(height as usize).ok_or_else(|| {
+    Error::Render(RenderError::InvalidParameters {
+      message: format!("encode_png: image byte size overflow ({width}x{height})"),
+    })
+  })?;
+
+  let pixels = image.as_raw();
+  if pixels.len() != expected_len {
+    return Err(Error::Render(RenderError::InvalidParameters {
+      message: format!(
+        "encode_png: image data length mismatch (expected {expected_len} bytes, got {})",
+        pixels.len()
+      ),
+    }));
+  }
+
+  let mut buffer = FallibleVecWriter::new(MAX_PIXMAP_BYTES as usize, "encode_png: PNG output");
+  {
+    let mut encoder = png::Encoder::new(&mut buffer, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+
+    let mut writer = encoder.write_header().map_err(|e| {
       Error::Render(RenderError::EncodeFailed {
         format: "PNG".to_string(),
         reason: e.to_string(),
       })
     })?;
-  Ok(buffer)
+    let mut stream = writer.stream_writer().map_err(|e| {
+      Error::Render(RenderError::EncodeFailed {
+        format: "PNG".to_string(),
+        reason: e.to_string(),
+      })
+    })?;
+
+    for row in pixels.chunks_exact(row_len) {
+      stream.write_all(row).map_err(|e| {
+        Error::Render(RenderError::EncodeFailed {
+          format: "PNG".to_string(),
+          reason: e.to_string(),
+        })
+      })?;
+    }
+
+    stream.finish().map_err(|e| {
+      Error::Render(RenderError::EncodeFailed {
+        format: "PNG".to_string(),
+        reason: e.to_string(),
+      })
+    })?;
+  }
+
+  Ok(buffer.into_inner())
 }
 
 fn compute_ssim(actual: &[f64], expected: &[f64]) -> f64 {
