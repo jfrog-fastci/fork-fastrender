@@ -238,7 +238,11 @@ impl FormControlKind {
           "none".to_string()
         } else if selected_option_count == 1 {
           let (label, value) = first_selected.unwrap_or(("", ""));
-          let text = if label.trim().is_empty() { value } else { label };
+          let text = if label.trim().is_empty() {
+            value
+          } else {
+            label
+          };
           format!("{text:?}")
         } else {
           format!("{selected_option_count} selected")
@@ -294,7 +298,10 @@ impl fmt::Debug for SelectControl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SelectItem {
-  OptGroupLabel { label: String, disabled: bool },
+  OptGroupLabel {
+    label: String,
+    disabled: bool,
+  },
   Option {
     label: String,
     value: String,

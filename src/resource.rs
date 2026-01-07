@@ -5976,14 +5976,7 @@ impl ResourceFetcher for HttpFetcher {
       ResourceScheme::Data => self.fetch_data(kind, req.url),
       ResourceScheme::File => self.fetch_file(kind, req.url),
       ResourceScheme::Http | ResourceScheme::Https => {
-        self.fetch_http_with_context(
-          kind,
-          req.url,
-          None,
-          None,
-          req.referrer,
-          req.referrer_policy,
-        )
+        self.fetch_http_with_context(kind, req.url, None, None, req.referrer, req.referrer_policy)
       }
       ResourceScheme::Relative => self.fetch_file(kind, &format!("file://{}", req.url)),
       ResourceScheme::Other => Err(policy_error("unsupported URL scheme")),
@@ -6040,13 +6033,7 @@ impl ResourceFetcher for HttpFetcher {
       ResourceScheme::Data => self.fetch_data_prefix(kind, url, max_bytes),
       ResourceScheme::File => self.fetch_file_prefix(kind, url, max_bytes),
       ResourceScheme::Http | ResourceScheme::Https => {
-        self.fetch_http_partial(
-          kind,
-          url,
-          max_bytes,
-          None,
-          ReferrerPolicy::default(),
-        )
+        self.fetch_http_partial(kind, url, max_bytes, None, ReferrerPolicy::default())
       }
       ResourceScheme::Relative => {
         self.fetch_file_prefix(kind, &format!("file://{}", url), max_bytes)
@@ -6073,13 +6060,7 @@ impl ResourceFetcher for HttpFetcher {
       ResourceScheme::Data => self.fetch_data_prefix(kind, req.url, max_bytes),
       ResourceScheme::File => self.fetch_file_prefix(kind, req.url, max_bytes),
       ResourceScheme::Http | ResourceScheme::Https => {
-        self.fetch_http_partial(
-          kind,
-          req.url,
-          max_bytes,
-          req.referrer,
-          req.referrer_policy,
-        )
+        self.fetch_http_partial(kind, req.url, max_bytes, req.referrer, req.referrer_policy)
       }
       ResourceScheme::Relative => {
         self.fetch_file_prefix(kind, &format!("file://{}", req.url), max_bytes)
@@ -7635,24 +7616,32 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
             // repeatedly hammering blocked endpoints during warm-cache runs while still allowing
             // non-deadline fetches to attempt a refresh.
             if self.config.allow_no_store && res.status.is_some_and(|code| code >= 400) {
-              let stored_at = SystemTime::now();
-              let _ = self.cache_entry(
-                &key,
-                CacheEntry {
-                  value: CacheValue::Resource(res.clone()),
-                  etag: res.etag.clone(),
-                  last_modified: res.last_modified.clone(),
-                  http_cache: Some(CachedHttpMetadata {
-                    stored_at,
-                    max_age: None,
-                    expires: None,
-                    no_cache: false,
-                    no_store: true,
-                    must_revalidate: false,
-                  }),
-                },
-                res.final_url.as_deref(),
-              );
+              let should_cache = self.config.allow_unhandled_vary
+                || res
+                  .vary
+                  .as_deref()
+                  .map(|vary| vary_is_cacheable(vary, key.kind, key.origin_key.as_deref()))
+                  .unwrap_or(true);
+              if should_cache {
+                let stored_at = SystemTime::now();
+                let _ = self.cache_entry(
+                  &key,
+                  CacheEntry {
+                    value: CacheValue::Resource(res.clone()),
+                    etag: res.etag.clone(),
+                    last_modified: res.last_modified.clone(),
+                    http_cache: Some(CachedHttpMetadata {
+                      stored_at,
+                      max_age: None,
+                      expires: None,
+                      no_cache: false,
+                      no_store: true,
+                      must_revalidate: false,
+                    }),
+                  },
+                  res.final_url.as_deref(),
+                );
+              }
             }
             record_cache_miss();
             (Ok(res), false)
@@ -8877,7 +8866,10 @@ mod tests {
       Some("https://www.example.com/page?a=b#frag"),
       ReferrerPolicy::Origin,
     );
-    assert_eq!(header_value(&headers, "Referer"), Some("https://www.example.com/"));
+    assert_eq!(
+      header_value(&headers, "Referer"),
+      Some("https://www.example.com/")
+    );
   }
 
   #[test]

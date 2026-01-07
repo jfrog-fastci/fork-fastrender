@@ -63,9 +63,9 @@ use crate::compat::CompatProfile;
 use crate::css::encoding::{decode_css_bytes, decode_css_bytes_cow};
 use crate::css::loader::{
   absolutize_css_urls_cow, extract_css_links, extract_embedded_css_urls_with_meta,
-  inject_css_into_html, inline_imports_with_request_with_diagnostics, link_rel_is_stylesheet_candidate,
-  resolve_href, resolve_href_with_base, should_scan_embedded_css_urls, ImportFetchContext,
-  InlineImportState, StylesheetInlineBudget,
+  inject_css_into_html, inline_imports_with_request_with_diagnostics,
+  link_rel_is_stylesheet_candidate, resolve_href, resolve_href_with_base,
+  should_scan_embedded_css_urls, ImportFetchContext, InlineImportState, StylesheetInlineBudget,
 };
 use crate::css::parser::{
   extract_css_sources, extract_scoped_css_sources, parse_stylesheet_with_media, CssTreeScope,
@@ -6403,7 +6403,8 @@ impl FastRender {
       in_foreign_namespace: bool,
       prev_sibling_foreign: bool,
     ) -> Option<String> {
-      let mut stack: Vec<(&DomNode, bool, bool)> = vec![(node, in_foreign_namespace, prev_sibling_foreign)];
+      let mut stack: Vec<(&DomNode, bool, bool)> =
+        vec![(node, in_foreign_namespace, prev_sibling_foreign)];
       while let Some((node, in_foreign_namespace, prev_sibling_foreign)) = stack.pop() {
         if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) {
           continue;
@@ -6456,7 +6457,8 @@ impl FastRender {
       in_foreign_namespace: bool,
       prev_sibling_foreign: bool,
     ) -> Option<String> {
-      let mut stack: Vec<(&DomNode, bool, bool)> = vec![(node, in_foreign_namespace, prev_sibling_foreign)];
+      let mut stack: Vec<(&DomNode, bool, bool)> =
+        vec![(node, in_foreign_namespace, prev_sibling_foreign)];
       while let Some((node, in_foreign_namespace, prev_sibling_foreign)) = stack.pop() {
         if matches!(node.node_type, DomNodeType::ShadowRoot { .. }) {
           continue;
@@ -8122,14 +8124,13 @@ impl FastRender {
         None
       };
 
-      let mut container_ctx =
-        build_container_query_context(
-          &box_tree,
-          &fragment_tree,
-          &styled_tree,
-          &media_ctx,
-          has_container_style_queries,
-        );
+      let mut container_ctx = build_container_query_context(
+        &box_tree,
+        &fragment_tree,
+        &styled_tree,
+        &media_ctx,
+        has_container_style_queries,
+      );
       let mut layout_fingerprint = styled_layout_fingerprint_digest(&styled_tree);
       let mut iterations: u32 = 0;
       let mut converged = true;
@@ -8315,14 +8316,13 @@ impl FastRender {
 
         layout_fingerprint = next_layout_fingerprint;
 
-        let next_container_ctx =
-          build_container_query_context(
-            &box_tree,
-            &fragment_tree,
-            &styled_tree,
-            &media_ctx,
-            has_container_style_queries,
-          );
+        let next_container_ctx = build_container_query_context(
+          &box_tree,
+          &fragment_tree,
+          &styled_tree,
+          &media_ctx,
+          has_container_style_queries,
+        );
         let ctx_fp_after = container_query_context_fingerprint(
           &next_container_ctx,
           style_query_fingerprint.as_ref(),
@@ -9574,8 +9574,8 @@ impl FastRender {
           authored_intrinsic_axis_hints(replaced_box.intrinsic_size);
         let needs_ratio_probe = (authored_width.is_some() ^ authored_height.is_some())
           && replaced_box.aspect_ratio.is_none();
-        let needs_size_probe =
-          replaced_box.intrinsic_size.is_none() || (authored_width.is_none() && authored_height.is_none());
+        let needs_size_probe = replaced_box.intrinsic_size.is_none()
+          || (authored_width.is_none() && authored_height.is_none());
         if !needs_ratio_probe && !needs_size_probe {
           return;
         }
@@ -9816,10 +9816,10 @@ impl FastRender {
 
     let (authored_width, authored_height) =
       authored_intrinsic_axis_hints(replaced_box.intrinsic_size);
-    let needs_ratio_probe = (authored_width.is_some() ^ authored_height.is_some())
-      && replaced_box.aspect_ratio.is_none();
-    let needs_size_probe =
-      replaced_box.intrinsic_size.is_none() || (authored_width.is_none() && authored_height.is_none());
+    let needs_ratio_probe =
+      (authored_width.is_some() ^ authored_height.is_some()) && replaced_box.aspect_ratio.is_none();
+    let needs_size_probe = replaced_box.intrinsic_size.is_none()
+      || (authored_width.is_none() && authored_height.is_none());
 
     // Preserve existing early-return skips, but allow probing for an intrinsic ratio when only one
     // HTML dimension attribute was provided (box generation encodes that as `(w, 0)` / `(0, h)`).
@@ -9858,8 +9858,9 @@ impl FastRender {
           }
         }
       } else if needs_ratio_probe && !explicit_no_ratio {
-        if let Some(ratio) =
-          outcome.aspect_ratio.filter(|ratio| ratio.is_finite() && *ratio > 0.0)
+        if let Some(ratio) = outcome
+          .aspect_ratio
+          .filter(|ratio| ratio.is_finite() && *ratio > 0.0)
         {
           if let Some(width) = authored_width {
             let height = width / ratio;
@@ -10210,8 +10211,8 @@ impl FastRender {
           authored_intrinsic_axis_hints(replaced_box.intrinsic_size);
         let needs_ratio_probe = (authored_width.is_some() ^ authored_height.is_some())
           && replaced_box.aspect_ratio.is_none();
-        let needs_size_probe =
-          replaced_box.intrinsic_size.is_none() || (authored_width.is_none() && authored_height.is_none());
+        let needs_size_probe = replaced_box.intrinsic_size.is_none()
+          || (authored_width.is_none() && authored_height.is_none());
 
         // If intrinsic dimensions are already complete (e.g., both width/height attributes), avoid
         // probing the image just to rederive them. This keeps box tree construction fast on
@@ -10305,8 +10306,9 @@ impl FastRender {
                   have_resource_dimensions = true;
                 }
               } else if needs_ratio_probe && !explicit_no_ratio {
-                if let Some(ratio) =
-                  image.intrinsic_ratio(orientation).filter(|ratio| ratio.is_finite() && *ratio > 0.0)
+                if let Some(ratio) = image
+                  .intrinsic_ratio(orientation)
+                  .filter(|ratio| ratio.is_finite() && *ratio > 0.0)
                 {
                   if let Some(width) = authored_width {
                     let height = width / ratio;
@@ -15762,7 +15764,11 @@ mod tests {
           stretch,
         )
         .or_else(|| renderer.font_context().get_sans_serif())
-        .and_then(|font| renderer.font_context().get_scaled_metrics(&font, style.font_size))
+        .and_then(|font| {
+          renderer
+            .font_context()
+            .get_scaled_metrics(&font, style.font_size)
+        })
     };
     let viewport = Size::new(
       renderer.default_width as f32,

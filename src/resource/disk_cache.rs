@@ -924,6 +924,20 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
 
       match self.try_read_snapshot(&key, &current, &data_path, &meta_path) {
         SnapshotRead::Hit(snapshot) => {
+          if !self.disk_config.allow_unhandled_vary {
+            if let super::CacheValue::Resource(res) = &snapshot.value {
+              if let Some(vary) = res.vary.as_deref() {
+                if !super::vary_is_cacheable(vary, kind, origin_key) {
+                  self.remove_entry_files_best_effort_if_unlocked(&key, &data_path, &meta_path);
+                  self.remove_alias_for(kind, url, origin_key);
+                  super::record_disk_cache_miss();
+                  super::finish_disk_cache_diagnostics(disk_timer.take());
+                  return Ok(None);
+                }
+              }
+            }
+          }
+
           let payload_bytes = match &snapshot.value {
             super::CacheValue::Resource(res) => res.bytes.len(),
             super::CacheValue::Error(_) => 0,
@@ -946,6 +960,22 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
             if unlocked {
               match self.try_read_snapshot(&key, &current, &data_path, &meta_path) {
                 SnapshotRead::Hit(snapshot) => {
+                  if !self.disk_config.allow_unhandled_vary {
+                    if let super::CacheValue::Resource(res) = &snapshot.value {
+                      if let Some(vary) = res.vary.as_deref() {
+                        if !super::vary_is_cacheable(vary, kind, origin_key) {
+                          self.remove_entry_files_best_effort_if_unlocked(
+                            &key, &data_path, &meta_path,
+                          );
+                          self.remove_alias_for(kind, url, origin_key);
+                          super::record_disk_cache_miss();
+                          super::finish_disk_cache_diagnostics(disk_timer.take());
+                          return Ok(None);
+                        }
+                      }
+                    }
+                  }
+
                   let payload_bytes = match &snapshot.value {
                     super::CacheValue::Resource(res) => res.bytes.len(),
                     super::CacheValue::Error(_) => 0,
@@ -1008,6 +1038,18 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
 
       match self.try_read_resource_prefix(&key, &current, &data_path, &meta_path, max_bytes) {
         SnapshotPrefixRead::Hit(resource) => {
+          if !self.disk_config.allow_unhandled_vary {
+            if let Some(vary) = resource.vary.as_deref() {
+              if !super::vary_is_cacheable(vary, kind, origin_key) {
+                self.remove_entry_files_best_effort_if_unlocked(&key, &data_path, &meta_path);
+                self.remove_alias_for(kind, url, origin_key);
+                super::record_disk_cache_miss();
+                super::finish_disk_cache_diagnostics(disk_timer.take());
+                return Ok(None);
+              }
+            }
+          }
+
           super::record_disk_cache_hit();
           super::record_disk_cache_bytes(resource.bytes.len());
           super::finish_disk_cache_diagnostics(disk_timer.take());
@@ -1033,6 +1075,19 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
               match self.try_read_resource_prefix(&key, &current, &data_path, &meta_path, max_bytes)
               {
                 SnapshotPrefixRead::Hit(resource) => {
+                  if !self.disk_config.allow_unhandled_vary {
+                    if let Some(vary) = resource.vary.as_deref() {
+                      if !super::vary_is_cacheable(vary, kind, origin_key) {
+                        self
+                          .remove_entry_files_best_effort_if_unlocked(&key, &data_path, &meta_path);
+                        self.remove_alias_for(kind, url, origin_key);
+                        super::record_disk_cache_miss();
+                        super::finish_disk_cache_diagnostics(disk_timer.take());
+                        return Ok(None);
+                      }
+                    }
+                  }
+
                   super::record_disk_cache_hit();
                   super::record_disk_cache_bytes(resource.bytes.len());
                   super::finish_disk_cache_diagnostics(disk_timer.take());
@@ -1777,6 +1832,20 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
 
       match self.try_read_snapshot(&key, &current, &data_path, &meta_path) {
         SnapshotRead::Hit(snapshot) => {
+          if !self.disk_config.allow_unhandled_vary {
+            if let super::CacheValue::Resource(res) = &snapshot.value {
+              if let Some(vary) = res.vary.as_deref() {
+                if !super::vary_is_cacheable(vary, kind, origin_key) {
+                  self.remove_entry_files_best_effort_if_unlocked(&key, &data_path, &meta_path);
+                  self.remove_alias_for(kind, url, origin_key);
+                  super::record_disk_cache_miss();
+                  super::finish_disk_cache_diagnostics(disk_timer.take());
+                  return Ok(None);
+                }
+              }
+            }
+          }
+
           super::record_disk_cache_hit();
           super::record_disk_cache_bytes(snapshot.value.size());
           super::finish_disk_cache_diagnostics(disk_timer.take());
@@ -1795,6 +1864,22 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
             if unlocked {
               match self.try_read_snapshot(&key, &current, &data_path, &meta_path) {
                 SnapshotRead::Hit(snapshot) => {
+                  if !self.disk_config.allow_unhandled_vary {
+                    if let super::CacheValue::Resource(res) = &snapshot.value {
+                      if let Some(vary) = res.vary.as_deref() {
+                        if !super::vary_is_cacheable(vary, kind, origin_key) {
+                          self.remove_entry_files_best_effort_if_unlocked(
+                            &key, &data_path, &meta_path,
+                          );
+                          self.remove_alias_for(kind, url, origin_key);
+                          super::record_disk_cache_miss();
+                          super::finish_disk_cache_diagnostics(disk_timer.take());
+                          return Ok(None);
+                        }
+                      }
+                    }
+                  }
+
                   super::record_disk_cache_hit();
                   super::record_disk_cache_bytes(snapshot.value.size());
                   super::finish_disk_cache_diagnostics(disk_timer.take());
@@ -1913,6 +1998,14 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
       let meta_path = self.meta_path_for_data(&data_path);
       let _ = self.remove_entry(&canonical_key, &data_path, &meta_path);
       return;
+    }
+
+    if !self.disk_config.allow_unhandled_vary {
+      if let Some(vary) = resource.vary.as_deref() {
+        if !super::vary_is_cacheable(vary, kind, origin_key) {
+          return;
+        }
+      }
     }
 
     let meta_path = self.meta_path_for_data(&data_path);
@@ -2225,33 +2318,41 @@ impl<F: ResourceFetcher> DiskCachingFetcher<F> {
             // always-stale entries. This prevents warm-cache renders from repeatedly hammering
             // blocked endpoints while still allowing non-deadline fetches to attempt a refresh.
             if self.memory.config.allow_no_store && res.status.is_some_and(|code| code >= 400) {
-              let stored_at = SystemTime::now();
-              let canonical = self.memory.cache_entry(
-                &key,
-                super::CacheEntry {
-                  value: super::CacheValue::Resource(res.clone()),
-                  etag: res.etag.clone(),
-                  last_modified: res.last_modified.clone(),
-                  http_cache: Some(CachedHttpMetadata {
-                    stored_at,
-                    max_age: None,
-                    expires: None,
-                    no_cache: false,
-                    no_store: true,
-                    must_revalidate: false,
-                  }),
-                },
-                res.final_url.as_deref(),
-              );
-              if let Some(snapshot) = self.memory.cached_entry(&canonical) {
-                self.persist_snapshot(
-                  kind,
-                  &canonical.url,
-                  &snapshot,
-                  canonical.origin_key.as_deref(),
+              let should_cache = self.memory.config.allow_unhandled_vary
+                || res
+                  .vary
+                  .as_deref()
+                  .map(|vary| super::vary_is_cacheable(vary, kind, key.origin_key.as_deref()))
+                  .unwrap_or(true);
+              if should_cache {
+                let stored_at = SystemTime::now();
+                let canonical = self.memory.cache_entry(
+                  &key,
+                  super::CacheEntry {
+                    value: super::CacheValue::Resource(res.clone()),
+                    etag: res.etag.clone(),
+                    last_modified: res.last_modified.clone(),
+                    http_cache: Some(CachedHttpMetadata {
+                      stored_at,
+                      max_age: None,
+                      expires: None,
+                      no_cache: false,
+                      no_store: true,
+                      must_revalidate: false,
+                    }),
+                  },
+                  res.final_url.as_deref(),
                 );
-                if canonical.url != url {
-                  self.persist_alias(kind, url, &canonical.url, canonical.origin_key.as_deref());
+                if let Some(snapshot) = self.memory.cached_entry(&canonical) {
+                  self.persist_snapshot(
+                    kind,
+                    &canonical.url,
+                    &snapshot,
+                    canonical.origin_key.as_deref(),
+                  );
+                  if canonical.url != url {
+                    self.persist_alias(kind, url, &canonical.url, canonical.origin_key.as_deref());
+                  }
                 }
               }
             }
@@ -2994,6 +3095,106 @@ mod tests {
     assert_eq!(second.bytes, first.bytes, "expected cached body to match");
   }
 
+  #[test]
+  fn disk_cache_rejects_existing_unhandled_vary_entries() {
+    if matches!(
+      super::super::http_backend_mode(),
+      super::super::HttpBackendMode::Curl
+    ) && !super::super::curl_backend::curl_available()
+    {
+      eprintln!(
+        "skipping disk_cache_rejects_existing_unhandled_vary_entries: curl backend selected but curl is unavailable"
+      );
+      return;
+    }
+
+    let Some(listener) = try_bind_localhost("disk_cache_rejects_existing_unhandled_vary_entries")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    listener.set_nonblocking(true).unwrap();
+
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&request_count);
+
+    let handle = thread::spawn(move || {
+      let start = Instant::now();
+      let mut last_request = None::<Instant>;
+      while start.elapsed() < Duration::from_secs(2) {
+        match listener.accept() {
+          Ok((mut stream, _)) => {
+            let n = seen.fetch_add(1, Ordering::SeqCst) + 1;
+            last_request = Some(Instant::now());
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+
+            let body = n.to_string();
+            let response = format!(
+              "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nVary: Accept-Language\r\nConnection: close\r\n\r\n",
+              body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.write_all(body.as_bytes());
+
+            if n >= 2 {
+              return;
+            }
+          }
+          Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+            if let Some(last) = last_request {
+              if last.elapsed() > Duration::from_millis(500) {
+                return;
+              }
+            }
+            thread::sleep(Duration::from_millis(5));
+          }
+          Err(err) => panic!("accept disk_cache_rejects_existing_unhandled_vary_entries: {err}"),
+        }
+      }
+    });
+
+    let tmp = tempfile::tempdir().unwrap();
+    let cache_dir = tmp.path();
+    let url = format!("http://{addr}/vary.txt");
+
+    let allow_config = DiskCacheConfig {
+      allow_unhandled_vary: true,
+      ..DiskCacheConfig::default()
+    };
+    let memory_config = CachingFetcherConfig {
+      honor_http_cache_freshness: true,
+      ..CachingFetcherConfig::default()
+    };
+
+    let allow_fetcher = DiskCachingFetcher::with_configs(
+      HttpFetcher::new().with_timeout(Duration::from_secs(2)),
+      cache_dir,
+      memory_config,
+      allow_config,
+    );
+    let first = allow_fetcher.fetch(&url).expect("first fetch");
+    assert_eq!(first.vary.as_deref(), Some("Accept-Language"));
+
+    // A subsequent fetcher instance (with the default strict Vary policy) must not reuse the
+    // persisted entry even though it exists on disk.
+    let strict_fetcher = DiskCachingFetcher::new(
+      HttpFetcher::new().with_timeout(Duration::from_secs(2)),
+      cache_dir,
+    );
+    let second = strict_fetcher.fetch(&url).expect("second fetch");
+    assert_eq!(second.vary.as_deref(), Some("Accept-Language"));
+
+    handle.join().unwrap();
+
+    assert_eq!(
+      request_count.load(Ordering::SeqCst),
+      2,
+      "expected unhandled Vary entry persisted under allow_unhandled_vary to be ignored once the strict policy is applied"
+    );
+    assert_ne!(first.bytes, second.bytes);
+  }
+
   fn spawn_cors_origin_echo_server(
     context: &str,
     expected_requests: usize,
@@ -3203,8 +3404,7 @@ mod tests {
       assert_eq!(first_a.bytes, b"http://a.test");
       let first_b = disk.fetch_with_request(req_b).expect("fetch B");
       assert_eq!(
-        first_b.bytes,
-        b"http://a.test",
+        first_b.bytes, b"http://a.test",
         "expected request-partitioning to be disabled"
       );
 
