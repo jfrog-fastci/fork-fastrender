@@ -2154,7 +2154,9 @@ fn compute_level(node: &DomNode, role: Option<&str>) -> Option<u32> {
 
   if let Some(attr) = node.get_attribute_ref("aria-level") {
     if let Ok(level) = attr.trim().parse::<u32>() {
-      return Some(level);
+      if level > 0 {
+        return Some(level);
+      }
     }
   }
 

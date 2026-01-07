@@ -216,6 +216,7 @@ fn role_inference_and_heading_levels() {
         </select>
         <div id="custom-option" role="option" aria-selected="true" tabindex="0">Custom option</div>
         <div id="aria-heading" role="heading" aria-level="4">Aria heading</div>
+        <div id="aria-heading-zero" role="heading" aria-level="0">Bad heading</div>
         <nav id="nav">Nav area</nav>
         <aside id="aside" aria-label="Sidebar">Sidebar</aside>
         <main id="page-main">Main area</main>
@@ -281,6 +282,10 @@ fn role_inference_and_heading_levels() {
   let aria_heading = find_by_id(&tree, "aria-heading").expect("aria heading");
   assert_eq!(aria_heading.role, "heading");
   assert_eq!(aria_heading.level, Some(4));
+
+  let aria_heading_zero = find_by_id(&tree, "aria-heading-zero").expect("aria heading 0");
+  assert_eq!(aria_heading_zero.role, "heading");
+  assert_eq!(aria_heading_zero.level, Some(2));
 
   let nav = find_by_id(&tree, "nav").expect("nav");
   assert_eq!(nav.role, "navigation");
