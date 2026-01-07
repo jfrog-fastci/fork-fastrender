@@ -14,6 +14,7 @@ mod first_line_first_letter_integration_test;
 mod flex_alignment_order_test;
 mod flex_align_content_gaps;
 mod flex_align_content_multiline;
+mod flex_align_items_flex_start_axis_polarity;
 mod flex_basis_content;
 mod flex_abspos_static_position;
 mod flex_abspos_static_position_siblings;
