@@ -5778,7 +5778,10 @@ impl FlexFormattingContext {
           Some(value.max(0.0))
         });
         let transferred_size_suggestion = match style.aspect_ratio {
-          AspectRatio::Ratio(ratio) if ratio > 0.0 && ratio.is_finite() => style.height.as_ref().and_then(|len| {
+          AspectRatio::Ratio(ratio) | AspectRatio::AutoRatio(ratio)
+            if ratio > 0.0 && ratio.is_finite() =>
+          {
+            style.height.as_ref().and_then(|len| {
             let cross_px = self.resolve_length_px(len, style)?;
             if !cross_px.is_finite() {
               return None;
@@ -5796,7 +5799,8 @@ impl FlexFormattingContext {
             } else {
               None
             }
-          }),
+            })
+          }
           _ => None,
         };
         let max_main_size = style.max_width.as_ref().and_then(|len| {
@@ -5956,7 +5960,10 @@ impl FlexFormattingContext {
         Some(value.max(0.0))
       });
       let transferred_size_suggestion = match style.aspect_ratio {
-        AspectRatio::Ratio(ratio) if ratio > 0.0 && ratio.is_finite() => style.width.as_ref().and_then(|len| {
+        AspectRatio::Ratio(ratio) | AspectRatio::AutoRatio(ratio)
+          if ratio > 0.0 && ratio.is_finite() =>
+        {
+          style.width.as_ref().and_then(|len| {
           let cross_px = self.resolve_length_px(len, style)?;
           if !cross_px.is_finite() {
             return None;
@@ -5974,7 +5981,8 @@ impl FlexFormattingContext {
           } else {
             None
           }
-        }),
+          })
+        }
         _ => None,
       };
       let max_main_size = style.max_height.as_ref().and_then(|len| {
