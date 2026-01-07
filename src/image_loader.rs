@@ -12,6 +12,7 @@ use crate::render_control::{self, check_active, check_active_periodic};
 use crate::resource::CacheArtifactKind;
 use crate::resource::CachingFetcher;
 use crate::resource::CachingFetcherConfig;
+use crate::resource::FetchCredentialsMode;
 use crate::resource::FetchContextKind;
 use crate::resource::FetchDestination;
 use crate::resource::FetchRequest;
@@ -63,6 +64,14 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tiny_skia::{FilterQuality, IntSize, Pixmap};
 use url::Url;
+
+fn fetch_credentials_mode_for_crossorigin(crossorigin: CrossOriginAttribute) -> FetchCredentialsMode {
+  match crossorigin {
+    CrossOriginAttribute::None => FetchCredentialsMode::Include,
+    CrossOriginAttribute::Anonymous => FetchCredentialsMode::Omit,
+    CrossOriginAttribute::UseCredentials => FetchCredentialsMode::Include,
+  }
+}
 
 fn unescape_js_escapes(input: &str) -> Cow<'_, str> {
   if !input.contains('\\') {
@@ -2391,6 +2400,7 @@ impl ImageCache {
       FetchContextKind::ImageCors => FetchDestination::ImageCors,
       _ => FetchDestination::Image,
     };
+    let credentials_mode = fetch_credentials_mode_for_crossorigin(crossorigin);
     let referrer_url = self
       .resource_context
       .as_ref()
@@ -2407,10 +2417,8 @@ impl ImageCache {
       .as_ref()
       .and_then(|ctx| ctx.policy.document_origin.as_ref())
       .or(origin_fallback.as_ref());
-    let mut request = FetchRequest::new(resolved_url, destination);
-    if crossorigin == CrossOriginAttribute::UseCredentials {
-      request = request.with_credentials_mode(crate::resource::FetchCredentialsMode::Include);
-    }
+    let mut request =
+      FetchRequest::new(resolved_url, destination).with_credentials_mode(credentials_mode);
     if let Some(origin) = client_origin {
       request = request.with_client_origin(origin);
     }
@@ -2453,11 +2461,8 @@ impl ImageCache {
 
       // Corrupt or incompatible cache entry; evict so we don't repeatedly reparse it.
       let artifact_url = cached.final_url.as_deref().unwrap_or(resolved_url);
-      let mut remove_request = FetchRequest::new(artifact_url, destination);
-      if crossorigin == CrossOriginAttribute::UseCredentials {
-        remove_request =
-          remove_request.with_credentials_mode(crate::resource::FetchCredentialsMode::Include);
-      }
+      let mut remove_request =
+        FetchRequest::new(artifact_url, destination).with_credentials_mode(credentials_mode);
       if let Some(origin) = client_origin {
         remove_request = remove_request.with_client_origin(origin);
       }
@@ -2693,16 +2698,15 @@ impl ImageCache {
       .map(|ctx| ctx.referrer_policy)
       .unwrap_or_default();
     let request_referrer_policy = referrer_policy.unwrap_or(doc_referrer_policy);
+    let credentials_mode = fetch_credentials_mode_for_crossorigin(crossorigin);
     let origin_fallback = referrer_url.and_then(origin_from_url);
     let client_origin = self
       .resource_context
       .as_ref()
       .and_then(|ctx| ctx.policy.document_origin.as_ref())
       .or(origin_fallback.as_ref());
-    let mut request = FetchRequest::new(resolved_url, destination);
-    if crossorigin == CrossOriginAttribute::UseCredentials {
-      request = request.with_credentials_mode(crate::resource::FetchCredentialsMode::Include);
-    }
+    let mut request =
+      FetchRequest::new(resolved_url, destination).with_credentials_mode(credentials_mode);
     if let Some(origin) = client_origin {
       request = request.with_client_origin(origin);
     }
@@ -2895,16 +2899,15 @@ impl ImageCache {
       .map(|ctx| ctx.referrer_policy)
       .unwrap_or_default();
     let request_referrer_policy = referrer_policy.unwrap_or(doc_referrer_policy);
+    let credentials_mode = fetch_credentials_mode_for_crossorigin(crossorigin);
     let origin_fallback = referrer_url.and_then(origin_from_url);
     let client_origin = self
       .resource_context
       .as_ref()
       .and_then(|ctx| ctx.policy.document_origin.as_ref())
       .or(origin_fallback.as_ref());
-    let mut request = FetchRequest::new(resolved_url, destination);
-    if crossorigin == CrossOriginAttribute::UseCredentials {
-      request = request.with_credentials_mode(crate::resource::FetchCredentialsMode::Include);
-    }
+    let mut request =
+      FetchRequest::new(resolved_url, destination).with_credentials_mode(credentials_mode);
     if let Some(origin) = client_origin {
       request = request.with_client_origin(origin);
     }

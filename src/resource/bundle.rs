@@ -37,8 +37,8 @@ pub fn request_partitioned_resource_key(
 
 /// Like [`request_partitioned_resource_key`] but also partitions by request credentials mode.
 ///
-/// For compatibility, anonymous (`omit`) requests produce the same key as the legacy helper; only
-/// credentialed (`include`) requests append a `creds=include` tag.
+/// For compatibility, anonymous (`omit`) requests produce the same key as the legacy helper. Other
+/// credential modes append a `creds=...` tag.
 pub fn request_partitioned_resource_key_with_credentials(
   kind: FetchContextKind,
   url: &str,
@@ -55,8 +55,10 @@ pub fn request_partitioned_resource_key_with_credentials(
     FetchContextKind::Other => "other",
   };
   let mut key = format!("{url}@@fastr:bundle:req_v1@@kind={kind_tag}@@origin={origin}");
-  if credentials_mode == FetchCredentialsMode::Include {
-    key.push_str("@@creds=include");
+  match credentials_mode {
+    FetchCredentialsMode::Omit => {}
+    FetchCredentialsMode::SameOrigin => key.push_str("@@creds=same-origin"),
+    FetchCredentialsMode::Include => key.push_str("@@creds=include"),
   }
   key
 }
@@ -408,7 +410,7 @@ impl ResourceFetcher for BundledFetcher {
           return Ok(resource.as_fetched());
         }
 
-        if req.credentials_mode == FetchCredentialsMode::Include {
+        if req.credentials_mode != FetchCredentialsMode::Omit {
           let key = request_partitioned_resource_key(kind, req.url, origin);
           if let Some(resource) = self.bundle.resource_for_url(&key) {
             return Ok(resource.as_fetched());
@@ -731,8 +733,18 @@ mod tests {
     let origin_a = origin_from_url("https://a.test/page.html").expect("origin A");
     let origin_b = origin_from_url("https://b.test/page.html").expect("origin B");
 
-    let key_a = request_partitioned_resource_key(FetchContextKind::Font, url, &origin_a);
-    let key_b = request_partitioned_resource_key(FetchContextKind::Font, url, &origin_b);
+    let key_a = request_partitioned_resource_key_with_credentials(
+      FetchContextKind::Font,
+      url,
+      &origin_a,
+      FetchCredentialsMode::Include,
+    );
+    let key_b = request_partitioned_resource_key_with_credentials(
+      FetchContextKind::Font,
+      url,
+      &origin_b,
+      FetchCredentialsMode::Include,
+    );
 
     std::fs::write(tmp.path().join("font_raw.woff2"), b"raw").expect("write raw font");
     std::fs::write(tmp.path().join("font_a.woff2"), b"a").expect("write font a");
@@ -837,7 +849,8 @@ mod tests {
       let a = fetcher
         .fetch_with_request(
           FetchRequest::new(url, FetchDestination::Font)
-            .with_referrer_url("https://a.test/page.html"),
+            .with_referrer_url("https://a.test/page.html")
+            .with_credentials_mode(FetchCredentialsMode::Include),
         )
         .expect("fetch origin A");
       assert_eq!(a.bytes, b"a");
@@ -845,7 +858,8 @@ mod tests {
       let b = fetcher
         .fetch_with_request(
           FetchRequest::new(url, FetchDestination::Font)
-            .with_referrer_url("https://b.test/page.html"),
+            .with_referrer_url("https://b.test/page.html")
+            .with_credentials_mode(FetchCredentialsMode::Include),
         )
         .expect("fetch origin B");
       assert_eq!(b.bytes, b"b");
@@ -865,8 +879,18 @@ mod tests {
     let origin_a = origin_from_url("https://a.test/page.html").expect("origin A");
     let origin_b = origin_from_url("https://b.test/page.html").expect("origin B");
 
-    let key_a = request_partitioned_resource_key(FetchContextKind::Font, url, &origin_a);
-    let key_b = request_partitioned_resource_key(FetchContextKind::Font, url, &origin_b);
+    let key_a = request_partitioned_resource_key_with_credentials(
+      FetchContextKind::Font,
+      url,
+      &origin_a,
+      FetchCredentialsMode::Include,
+    );
+    let key_b = request_partitioned_resource_key_with_credentials(
+      FetchContextKind::Font,
+      url,
+      &origin_b,
+      FetchCredentialsMode::Include,
+    );
 
     std::fs::write(tmp.path().join("font.woff2"), b"ok").expect("write font");
 
@@ -938,7 +962,8 @@ mod tests {
       let a = fetcher
         .fetch_with_request(
           FetchRequest::new(url, FetchDestination::Font)
-            .with_referrer_url("https://a.test/page.html"),
+            .with_referrer_url("https://a.test/page.html")
+            .with_credentials_mode(FetchCredentialsMode::Include),
         )
         .expect("fetch origin A");
       assert_eq!(a.bytes, b"ok");
@@ -950,7 +975,8 @@ mod tests {
       let b = fetcher
         .fetch_with_request(
           FetchRequest::new(url, FetchDestination::Font)
-            .with_referrer_url("https://b.test/page.html"),
+            .with_referrer_url("https://b.test/page.html")
+            .with_credentials_mode(FetchCredentialsMode::Include),
         )
         .expect("fetch origin B");
       assert_eq!(b.bytes, b"ok");

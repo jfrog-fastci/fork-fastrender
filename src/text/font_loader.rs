@@ -38,8 +38,8 @@ use crate::error::Result;
 use crate::render_control;
 use crate::resource::{
   cors_enforcement_enabled, ensure_font_mime_sane, ensure_http_success, origin_from_url,
-  validate_cors_allow_origin, CorsMode, FetchDestination, FetchRequest, FetchedResource,
-  HttpFetcher, HttpRetryPolicy, ResourceFetcher,
+  validate_cors_allow_origin, CorsMode, FetchCredentialsMode, FetchDestination, FetchRequest,
+  FetchedResource, HttpFetcher, HttpRetryPolicy, ResourceFetcher,
 };
 use crate::text::face_cache;
 use crate::text::font_db::FontCacheConfig;
@@ -253,7 +253,8 @@ impl FontFetcher for ResourceFontFetcher {
     let document_origin =
       document_origin.or_else(|| document_url.as_deref().and_then(origin_from_url));
 
-    let mut request = FetchRequest::new(url, FetchDestination::Font);
+    let mut request =
+      FetchRequest::new(url, FetchDestination::Font).with_credentials_mode(FetchCredentialsMode::Omit);
     if let Some(origin) = document_origin.as_ref() {
       request = request.with_client_origin(origin);
     }

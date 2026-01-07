@@ -32,7 +32,7 @@ use httpdate::parse_http_date;
 use lru::LruCache;
 use publicsuffix::{List, Psl};
 use reqwest::blocking as reqwest_blocking;
-use reqwest::cookie::Jar as ReqwestCookieJar;
+use reqwest::cookie::{CookieStore, Jar as ReqwestCookieJar};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -730,14 +730,25 @@ pub enum FetchDestination {
 pub enum FetchCredentialsMode {
   /// Do not include credentials (anonymous).
   Omit,
+  /// Include credentials only for same-origin requests.
+  SameOrigin,
   /// Include credentials (cookies/auth).
   Include,
 }
 
 impl FetchCredentialsMode {
+  const fn cache_id(self) -> u8 {
+    match self {
+      Self::Omit => 0,
+      Self::SameOrigin => 1,
+      Self::Include => 2,
+    }
+  }
+
   fn as_cache_tag(self) -> &'static str {
     match self {
       Self::Omit => "omit",
+      Self::SameOrigin => "same-origin",
       Self::Include => "include",
     }
   }
@@ -1031,6 +1042,28 @@ impl<'a> FetchRequest<'a> {
   pub fn with_credentials_mode(mut self, mode: FetchCredentialsMode) -> Self {
     self.credentials_mode = mode;
     self
+  }
+}
+
+fn cookies_allowed_for_request(
+  credentials_mode: FetchCredentialsMode,
+  url: &str,
+  client_origin: Option<&DocumentOrigin>,
+) -> bool {
+  match credentials_mode {
+    FetchCredentialsMode::Include => true,
+    FetchCredentialsMode::Omit => false,
+    FetchCredentialsMode::SameOrigin => {
+      let Some(client_origin) = client_origin else {
+        return false;
+      };
+      let request_origin =
+        origin_from_url(url).or_else(|| http_browser_tolerant_origin_from_url(url));
+      match request_origin {
+        Some(request_origin) => client_origin.same_origin(&request_origin),
+        None => false,
+      }
+    }
   }
 }
 
@@ -2237,14 +2270,7 @@ fn cors_cache_partition_key(req: &FetchRequest<'_>) -> Option<String> {
   if req.destination.sec_fetch_mode() != "cors" {
     return None;
   }
-  let origin = cors_origin_key_for_request(req)?;
-  if req.credentials_mode == FetchCredentialsMode::Omit {
-    return Some(origin);
-  }
-  Some(format!(
-    "{origin}@@fastr:creds={}",
-    req.credentials_mode.as_cache_tag()
-  ))
+  cors_origin_key_for_request(req)
 }
 
 fn response_final_url(resource: &FetchedResource, requested_url: &str) -> String {
@@ -3102,8 +3128,8 @@ pub struct HttpFetcher {
   policy: ResourcePolicy,
   agent: Arc<ureq::Agent>,
   reqwest_client: Arc<reqwest_blocking::Client>,
+  cookie_jar: Arc<ReqwestCookieJar>,
   retry_policy: HttpRetryPolicy,
-  curl_cookie_jar: Arc<Mutex<curl_backend::CookieJarState>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -3409,14 +3435,30 @@ impl HttpFetcher {
     Arc::new(config.into())
   }
 
-  fn build_reqwest_client(cookie_jar: &Arc<ReqwestCookieJar>) -> Arc<reqwest_blocking::Client> {
+  fn build_reqwest_client() -> Arc<reqwest_blocking::Client> {
     Arc::new(
       reqwest_blocking::Client::builder()
-        .cookie_provider(Arc::clone(cookie_jar))
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("failed to build reqwest HTTP client"),
     )
+  }
+
+  fn cookie_header_value(&self, url: &str) -> Option<String> {
+    let parsed = Url::parse(url).ok()?;
+    let header = self.cookie_jar.cookies(&parsed)?;
+    header.to_str().ok().map(|value| value.to_string())
+  }
+
+  fn store_cookies_from_headers(&self, url: &str, headers: &HeaderMap) {
+    let Ok(parsed) = Url::parse(url) else {
+      return;
+    };
+    for value in headers.get_all("set-cookie") {
+      if let Ok(raw) = value.to_str() {
+        self.cookie_jar.add_cookie_str(raw, &parsed);
+      }
+    }
   }
 
   fn rebuild_agent(&mut self) {
@@ -3541,15 +3583,18 @@ impl HttpFetcher {
  
   /// Fetch from an HTTP/HTTPS URL
   fn fetch_http(&self, kind: FetchContextKind, url: &str) -> Result<FetchedResource> {
+    let destination: FetchDestination = kind.into();
+    let default_credentials = FetchRequest::new(url, destination).credentials_mode;
     self.fetch_http_with_context(
       kind,
-      kind.into(),
+      destination,
       url,
       None,
       None,
       None,
       None,
       ReferrerPolicy::default(),
+      default_credentials,
     )
   }
 
@@ -3562,6 +3607,7 @@ impl HttpFetcher {
     client_origin: Option<&DocumentOrigin>,
     referrer_url: Option<&str>,
     referrer_policy: ReferrerPolicy,
+    credentials_mode: FetchCredentialsMode,
   ) -> Result<FetchedResource> {
     let deadline = render_control::root_deadline();
     let started = Instant::now();
@@ -3574,6 +3620,7 @@ impl HttpFetcher {
         client_origin,
         referrer_url,
         referrer_policy,
+        credentials_mode,
         &deadline,
         started,
       )
@@ -3590,6 +3637,7 @@ impl HttpFetcher {
     client_origin: Option<&DocumentOrigin>,
     referrer_url: Option<&str>,
     referrer_policy: ReferrerPolicy,
+    credentials_mode: FetchCredentialsMode,
   ) -> Result<FetchedResource> {
     let deadline = render_control::root_deadline();
     let started = Instant::now();
@@ -3603,6 +3651,7 @@ impl HttpFetcher {
         client_origin,
         referrer_url,
         referrer_policy,
+        credentials_mode,
         &deadline,
         started,
       )
@@ -3619,6 +3668,7 @@ impl HttpFetcher {
     client_origin: Option<&DocumentOrigin>,
     referrer_url: Option<&str>,
     referrer_policy: ReferrerPolicy,
+    credentials_mode: FetchCredentialsMode,
     deadline: &Option<render_control::RenderDeadline>,
     started: Instant,
   ) -> Result<FetchedResource> {
@@ -3642,6 +3692,7 @@ impl HttpFetcher {
           client_origin,
           referrer_url,
           referrer_policy,
+          credentials_mode,
           deadline,
           started,
         ),
@@ -3654,6 +3705,7 @@ impl HttpFetcher {
           client_origin,
           referrer_url,
           referrer_policy,
+          credentials_mode,
           deadline,
           started,
           false,
@@ -3667,6 +3719,7 @@ impl HttpFetcher {
           client_origin,
           referrer_url,
           referrer_policy,
+          credentials_mode,
           deadline,
           started,
           false,
@@ -3687,6 +3740,7 @@ impl HttpFetcher {
               client_origin,
               referrer_url,
               referrer_policy,
+              credentials_mode,
               deadline,
               started,
               curl_available,
@@ -3701,6 +3755,7 @@ impl HttpFetcher {
               client_origin,
               referrer_url,
               referrer_policy,
+              credentials_mode,
               deadline,
               started,
               curl_available,
@@ -3721,6 +3776,7 @@ impl HttpFetcher {
                   client_origin,
                   referrer_url,
                   referrer_policy,
+                  credentials_mode,
                   deadline,
                   started,
                 ) {
@@ -3790,6 +3846,7 @@ impl HttpFetcher {
     client_origin: Option<&DocumentOrigin>,
     referrer_url: Option<&str>,
     referrer_policy: ReferrerPolicy,
+    credentials_mode: FetchCredentialsMode,
     deadline: &Option<render_control::RenderDeadline>,
     started: Instant,
   ) -> Result<FetchedResource> {
@@ -3809,6 +3866,7 @@ impl HttpFetcher {
         client_origin,
         referrer_url,
         referrer_policy,
+        credentials_mode,
         deadline,
         started,
       ),
@@ -3820,6 +3878,7 @@ impl HttpFetcher {
         client_origin,
         referrer_url,
         referrer_policy,
+        credentials_mode,
         deadline,
         started,
       ),
@@ -3836,6 +3895,7 @@ impl HttpFetcher {
             client_origin,
             referrer_url,
             referrer_policy,
+            credentials_mode,
             deadline,
             started,
           )
@@ -3848,6 +3908,7 @@ impl HttpFetcher {
             client_origin,
             referrer_url,
             referrer_policy,
+            credentials_mode,
             deadline,
             started,
           )
@@ -3865,6 +3926,7 @@ impl HttpFetcher {
     client_origin: Option<&DocumentOrigin>,
     referrer_url: Option<&str>,
     referrer_policy: ReferrerPolicy,
+    credentials_mode: FetchCredentialsMode,
     deadline: &Option<render_control::RenderDeadline>,
     started: Instant,
   ) -> Result<FetchedResource> {
@@ -3932,6 +3994,11 @@ impl HttpFetcher {
           referrer_url,
           referrer_policy,
         );
+        if cookies_allowed_for_request(credentials_mode, &current, client_origin) {
+          if let Some(value) = self.cookie_header_value(&current) {
+            headers.push(("Cookie".to_string(), value));
+          }
+        }
         headers.push((
           "Range".to_string(),
           format!("bytes=0-{}", read_limit.saturating_sub(1)),
@@ -4017,6 +4084,10 @@ impl HttpFetcher {
             return Err(Error::Resource(err));
           }
         };
+
+        if cookies_allowed_for_request(credentials_mode, &current, client_origin) {
+          self.store_cookies_from_headers(&current, response.headers());
+        }
 
         let status = response.status();
         if (300..400).contains(&status.as_u16()) {
@@ -4361,6 +4432,7 @@ impl HttpFetcher {
     client_origin: Option<&DocumentOrigin>,
     referrer_url: Option<&str>,
     referrer_policy: ReferrerPolicy,
+    credentials_mode: FetchCredentialsMode,
     deadline: &Option<render_control::RenderDeadline>,
     started: Instant,
   ) -> Result<FetchedResource> {
@@ -4425,6 +4497,11 @@ impl HttpFetcher {
           referrer_url,
           referrer_policy,
         );
+        if cookies_allowed_for_request(credentials_mode, &current, client_origin) {
+          if let Some(value) = self.cookie_header_value(&current) {
+            headers.push(("Cookie".to_string(), value));
+          }
+        }
         headers.push((
           "Range".to_string(),
           format!("bytes=0-{}", read_limit.saturating_sub(1)),
@@ -4506,6 +4583,10 @@ impl HttpFetcher {
             return Err(Error::Resource(err));
           }
         };
+
+        if cookies_allowed_for_request(credentials_mode, &current, client_origin) {
+          self.store_cookies_from_headers(&current, response.headers());
+        }
 
         let status = response.status();
         if (300..400).contains(&status.as_u16()) {
@@ -4850,6 +4931,7 @@ impl HttpFetcher {
     client_origin: Option<&DocumentOrigin>,
     referrer_url: Option<&str>,
     referrer_policy: ReferrerPolicy,
+    credentials_mode: FetchCredentialsMode,
     deadline: &Option<render_control::RenderDeadline>,
     started: Instant,
     auto_fallback: bool,
@@ -4920,7 +5002,7 @@ impl HttpFetcher {
         }
 
         let accept_encoding_value = accept_encoding.unwrap_or(SUPPORTED_ACCEPT_ENCODING);
-        let headers = build_http_header_pairs(
+        let mut headers = build_http_header_pairs(
           &current,
           &self.user_agent,
           &self.accept_language,
@@ -4931,6 +5013,11 @@ impl HttpFetcher {
           referrer_url,
           referrer_policy,
         );
+        if cookies_allowed_for_request(credentials_mode, &current, client_origin) {
+          if let Some(value) = self.cookie_header_value(&current) {
+            headers.push(("Cookie".to_string(), value));
+          }
+        }
         let mut request = agent.get(&current);
         for (name, value) in &headers {
           request = request.header(name, value);
@@ -5014,6 +5101,10 @@ impl HttpFetcher {
             return Err(Error::Resource(err));
           }
         };
+
+        if cookies_allowed_for_request(credentials_mode, &current, client_origin) {
+          self.store_cookies_from_headers(&current, response.headers());
+        }
 
         let status = response.status();
         if (300..400).contains(&status.as_u16()) {
@@ -5104,6 +5195,7 @@ impl HttpFetcher {
                     client_origin,
                     referrer_url,
                     referrer_policy,
+                    credentials_mode,
                     deadline,
                     started,
                     auto_fallback,
@@ -5415,6 +5507,7 @@ impl HttpFetcher {
     client_origin: Option<&DocumentOrigin>,
     referrer_url: Option<&str>,
     referrer_policy: ReferrerPolicy,
+    credentials_mode: FetchCredentialsMode,
     deadline: &Option<render_control::RenderDeadline>,
     started: Instant,
     auto_fallback: bool,
@@ -5472,7 +5565,7 @@ impl HttpFetcher {
         }
 
         let accept_encoding_value = accept_encoding.unwrap_or(SUPPORTED_ACCEPT_ENCODING);
-        let headers = build_http_header_pairs(
+        let mut headers = build_http_header_pairs(
           &current,
           &self.user_agent,
           &self.accept_language,
@@ -5483,6 +5576,11 @@ impl HttpFetcher {
           referrer_url,
           referrer_policy,
         );
+        if cookies_allowed_for_request(credentials_mode, &current, client_origin) {
+          if let Some(value) = self.cookie_header_value(&current) {
+            headers.push(("Cookie".to_string(), value));
+          }
+        }
         let mut request = client.get(&current);
         for (name, value) in &headers {
           request = request.header(name, value);
@@ -5560,6 +5658,10 @@ impl HttpFetcher {
             return Err(Error::Resource(err));
           }
         };
+
+        if cookies_allowed_for_request(credentials_mode, &current, client_origin) {
+          self.store_cookies_from_headers(&current, response.headers());
+        }
 
         let status = response.status();
         if (300..400).contains(&status.as_u16()) {
@@ -5687,6 +5789,7 @@ impl HttpFetcher {
                     client_origin,
                     referrer_url,
                     referrer_policy,
+                    credentials_mode,
                     deadline,
                     started,
                     auto_fallback,
@@ -6173,15 +6276,15 @@ impl Default for HttpFetcher {
   fn default() -> Self {
     let policy = ResourcePolicy::default();
     let cookie_jar = Arc::new(ReqwestCookieJar::default());
-    let reqwest_client = Self::build_reqwest_client(&cookie_jar);
+    let reqwest_client = Self::build_reqwest_client();
     Self {
       user_agent: DEFAULT_USER_AGENT.to_string(),
       accept_language: DEFAULT_ACCEPT_LANGUAGE.to_string(),
       agent: Self::build_agent(&policy),
       reqwest_client,
+      cookie_jar,
       policy,
       retry_policy: HttpRetryPolicy::default(),
-      curl_cookie_jar: Arc::new(Mutex::new(curl_backend::CookieJarState::default())),
     }
   }
 }
@@ -6220,6 +6323,7 @@ impl ResourceFetcher for HttpFetcher {
           req.client_origin,
           req.referrer_url,
           req.referrer_policy,
+          req.credentials_mode,
         )
       }
       ResourceScheme::Relative => self.fetch_file(kind, &format!("file://{}", req.url)),
@@ -6251,6 +6355,7 @@ impl ResourceFetcher for HttpFetcher {
         req.client_origin,
         req.referrer_url,
         req.referrer_policy,
+        req.credentials_mode,
       ),
       ResourceScheme::Relative => self.fetch_file(kind, &format!("file://{}", req.url)),
       ResourceScheme::Other => Err(policy_error("unsupported URL scheme")),
@@ -6279,14 +6384,17 @@ impl ResourceFetcher for HttpFetcher {
       ResourceScheme::Data => self.fetch_data_prefix(kind, url, max_bytes),
       ResourceScheme::File => self.fetch_file_prefix(kind, url, max_bytes),
       ResourceScheme::Http | ResourceScheme::Https => {
+        let destination: FetchDestination = kind.into();
+        let default_credentials = FetchRequest::new(url, destination).credentials_mode;
         self.fetch_http_partial(
           kind,
-          kind.into(),
+          destination,
           url,
           max_bytes,
           None,
           None,
           ReferrerPolicy::default(),
+          default_credentials,
         )
       }
       ResourceScheme::Relative => {
@@ -6322,6 +6430,7 @@ impl ResourceFetcher for HttpFetcher {
           req.client_origin,
           req.referrer_url,
           req.referrer_policy,
+          req.credentials_mode,
         )
       }
       ResourceScheme::Relative => {
@@ -6350,19 +6459,24 @@ impl ResourceFetcher for HttpFetcher {
     render_control::check_active(render_stage_hint_for_context(kind, url))
       .map_err(Error::Render)?;
     match self.policy.ensure_url_allowed(url)? {
-      ResourceScheme::Http | ResourceScheme::Https => self.fetch_http_with_context(
-        kind,
-        kind.into(),
-        url,
-        None,
-        Some(HttpCacheValidators {
-          etag,
-          last_modified,
-        }),
-        None,
-        None,
-        ReferrerPolicy::default(),
-      ),
+      ResourceScheme::Http | ResourceScheme::Https => {
+        let destination: FetchDestination = kind.into();
+        let default_credentials = FetchRequest::new(url, destination).credentials_mode;
+        self.fetch_http_with_context(
+          kind,
+          destination,
+          url,
+          None,
+          Some(HttpCacheValidators {
+            etag,
+            last_modified,
+          }),
+          None,
+          None,
+          ReferrerPolicy::default(),
+          default_credentials,
+        )
+      }
       _ => self.fetch_with_context(kind, url),
     }
   }
@@ -7022,14 +7136,18 @@ struct CacheKey {
   kind: FetchContextKind,
   url: String,
   origin_key: Option<String>,
+  credentials_mode: FetchCredentialsMode,
 }
 
 impl CacheKey {
   fn new(kind: FetchContextKind, url: impl Into<String>) -> Self {
+    let url = url.into();
+    let credentials_mode = FetchRequest::new(&url, kind.into()).credentials_mode;
     Self {
       kind,
-      url: url.into(),
+      url,
       origin_key: None,
+      credentials_mode,
     }
   }
 
@@ -7037,11 +7155,13 @@ impl CacheKey {
     kind: FetchContextKind,
     url: impl Into<String>,
     origin_key: Option<String>,
+    credentials_mode: FetchCredentialsMode,
   ) -> Self {
     Self {
       kind,
       url: url.into(),
       origin_key,
+      credentials_mode,
     }
   }
 
@@ -7050,6 +7170,7 @@ impl CacheKey {
       kind: self.kind,
       url: url.into(),
       origin_key: self.origin_key.clone(),
+      credentials_mode: self.credentials_mode,
     }
   }
 }
@@ -7985,7 +8106,12 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
       policy.ensure_url_allowed(url)?;
     }
 
-    let key = CacheKey::new_with_origin(kind, url.to_string(), cors_cache_partition_key(&req));
+    let key = CacheKey::new_with_origin(
+      kind,
+      url.to_string(),
+      cors_cache_partition_key(&req),
+      req.credentials_mode,
+    );
     let cached = self.cached_entry(&key);
     let plan = self.plan_cache_use(url, cached.clone(), None);
     if let CacheAction::UseCached = plan.action {
@@ -8226,7 +8352,12 @@ impl<F: ResourceFetcher> ResourceFetcher for CachingFetcher<F> {
       policy.ensure_url_allowed(url)?;
     }
 
-    let key = CacheKey::new_with_origin(kind, url.to_string(), cors_cache_partition_key(&req));
+    let key = CacheKey::new_with_origin(
+      kind,
+      url.to_string(),
+      cors_cache_partition_key(&req),
+      req.credentials_mode,
+    );
     if let Some(snapshot) = self.cached_entry(&key) {
       if let CacheValue::Resource(mut res) = snapshot.value {
         if res.bytes.len() > max_bytes {
@@ -8953,6 +9084,7 @@ mod tests {
         None,
         None,
         ReferrerPolicy::default(),
+        FetchCredentialsMode::Include,
         &deadline,
         started,
         false,
@@ -9013,6 +9145,7 @@ mod tests {
         None,
         None,
         ReferrerPolicy::default(),
+        FetchCredentialsMode::Include,
         &deadline,
         started,
         false,
@@ -9608,6 +9741,7 @@ mod tests {
         None,
         None,
         ReferrerPolicy::default(),
+        FetchCredentialsMode::Include,
         &deadline,
         started,
         true,
@@ -9658,6 +9792,7 @@ mod tests {
         None,
         None,
         ReferrerPolicy::default(),
+        FetchCredentialsMode::Include,
         &deadline,
         started,
         false,
@@ -9719,6 +9854,7 @@ mod tests {
         None,
         None,
         ReferrerPolicy::default(),
+        FetchCredentialsMode::Include,
         &deadline,
         started,
         false,
@@ -9825,6 +9961,7 @@ mod tests {
         None,
         None,
         ReferrerPolicy::default(),
+        FetchCredentialsMode::Include,
         &deadline,
         started,
         false,
@@ -9870,6 +10007,7 @@ mod tests {
         None,
         None,
         ReferrerPolicy::default(),
+        FetchCredentialsMode::Include,
         &deadline,
         started,
         false,
@@ -9922,6 +10060,7 @@ mod tests {
         None,
         None,
         ReferrerPolicy::default(),
+        FetchCredentialsMode::Include,
         &deadline,
         started,
         false,
@@ -9973,6 +10112,7 @@ mod tests {
           None,
           None,
           ReferrerPolicy::default(),
+          FetchCredentialsMode::Include,
           &deadline,
           Instant::now(),
           false,
@@ -10012,6 +10152,7 @@ mod tests {
           None,
           None,
           ReferrerPolicy::default(),
+          FetchCredentialsMode::Include,
           &deadline,
           Instant::now(),
         )
@@ -10051,6 +10192,7 @@ mod tests {
           None,
           None,
           ReferrerPolicy::default(),
+          FetchCredentialsMode::Include,
           &deadline,
           Instant::now(),
           false,
@@ -10090,6 +10232,7 @@ mod tests {
           None,
           None,
           ReferrerPolicy::default(),
+          FetchCredentialsMode::Include,
           &deadline,
           Instant::now(),
         )
@@ -10148,6 +10291,7 @@ mod tests {
           None,
           None,
           ReferrerPolicy::default(),
+          FetchCredentialsMode::Include,
           &deadline,
           Instant::now(),
           false,
@@ -10188,6 +10332,7 @@ mod tests {
           None,
           None,
           ReferrerPolicy::default(),
+          FetchCredentialsMode::Include,
           &deadline,
           Instant::now(),
         )
@@ -10228,6 +10373,7 @@ mod tests {
           None,
           None,
           ReferrerPolicy::default(),
+          FetchCredentialsMode::Include,
           &deadline,
           Instant::now(),
           false,
@@ -10268,6 +10414,7 @@ mod tests {
           None,
           None,
           ReferrerPolicy::default(),
+          FetchCredentialsMode::Include,
           &deadline,
           Instant::now(),
         )
@@ -10326,6 +10473,7 @@ mod tests {
           None,
           None,
           ReferrerPolicy::default(),
+          FetchCredentialsMode::Include,
           &deadline,
           Instant::now(),
           false,
@@ -10363,6 +10511,7 @@ mod tests {
           None,
           None,
           ReferrerPolicy::default(),
+          FetchCredentialsMode::Include,
           &deadline,
           Instant::now(),
         )
@@ -10400,6 +10549,7 @@ mod tests {
           None,
           None,
           ReferrerPolicy::default(),
+          FetchCredentialsMode::Include,
           &deadline,
           Instant::now(),
           false,
@@ -10437,6 +10587,7 @@ mod tests {
           None,
           None,
           ReferrerPolicy::default(),
+          FetchCredentialsMode::Include,
           &deadline,
           Instant::now(),
         )
@@ -10535,6 +10686,7 @@ mod tests {
           None,
           None,
           ReferrerPolicy::default(),
+          FetchCredentialsMode::Include,
           &deadline,
           Instant::now(),
           false,
@@ -10615,6 +10767,7 @@ mod tests {
           None,
           None,
           ReferrerPolicy::default(),
+          FetchCredentialsMode::Include,
           &deadline,
           Instant::now(),
           false,
@@ -10728,6 +10881,7 @@ mod tests {
         None,
         None,
         ReferrerPolicy::default(),
+        FetchCredentialsMode::Include,
         &deadline,
         Instant::now(),
         false,
@@ -10814,6 +10968,7 @@ mod tests {
         None,
         None,
         ReferrerPolicy::default(),
+        FetchCredentialsMode::Include,
         &deadline,
         Instant::now(),
         false,
@@ -10861,6 +11016,7 @@ mod tests {
         None,
         None,
         ReferrerPolicy::default(),
+        FetchCredentialsMode::Include,
         &deadline,
         started,
         false,
@@ -10911,6 +11067,7 @@ mod tests {
         None,
         None,
         ReferrerPolicy::default(),
+        FetchCredentialsMode::Include,
         &deadline,
         started,
         false,
@@ -10966,6 +11123,7 @@ mod tests {
         None,
         None,
         ReferrerPolicy::default(),
+        FetchCredentialsMode::Include,
         &deadline,
         Instant::now(),
         false,
@@ -10992,6 +11150,7 @@ mod tests {
         None,
         None,
         ReferrerPolicy::default(),
+        FetchCredentialsMode::Include,
         &deadline,
         Instant::now(),
         false,
@@ -11048,6 +11207,7 @@ mod tests {
         None,
         None,
         ReferrerPolicy::default(),
+        FetchCredentialsMode::Include,
         &deadline,
         started,
         false,
@@ -11099,6 +11259,7 @@ mod tests {
         None,
         None,
         ReferrerPolicy::default(),
+        FetchCredentialsMode::Include,
         &deadline,
         started,
         false,
@@ -11144,6 +11305,7 @@ mod tests {
         None,
         None,
         ReferrerPolicy::default(),
+        FetchCredentialsMode::Include,
         &deadline,
         started,
         false,
@@ -12085,6 +12247,71 @@ mod tests {
     );
   }
 
+  #[test]
+  fn caching_fetcher_partitions_by_credentials_mode() {
+    #[derive(Clone)]
+    struct ModeFetcher {
+      calls: Arc<AtomicUsize>,
+    }
+
+    impl ResourceFetcher for ModeFetcher {
+      fn fetch(&self, url: &str) -> Result<FetchedResource> {
+        self.fetch_with_request(FetchRequest::new(url, FetchDestination::Other))
+      }
+
+      fn fetch_with_request(&self, req: FetchRequest<'_>) -> Result<FetchedResource> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let body: &[u8] = match req.credentials_mode {
+          FetchCredentialsMode::Omit => b"omit",
+          FetchCredentialsMode::SameOrigin => b"same-origin",
+          FetchCredentialsMode::Include => b"include",
+        };
+        Ok(FetchedResource::new(
+          body.to_vec(),
+          Some("text/plain".to_string()),
+        ))
+      }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fetcher = CachingFetcher::new(ModeFetcher {
+      calls: Arc::clone(&calls),
+    });
+
+    let url = "https://example.com/asset";
+    let include_req = FetchRequest::new(url, FetchDestination::Other)
+      .with_credentials_mode(FetchCredentialsMode::Include);
+    let omit_req =
+      FetchRequest::new(url, FetchDestination::Other).with_credentials_mode(FetchCredentialsMode::Omit);
+
+    let include = fetcher
+      .fetch_with_request(include_req)
+      .expect("include fetch");
+    assert_eq!(include.bytes, b"include");
+
+    let omit = fetcher.fetch_with_request(omit_req).expect("omit fetch");
+    assert_eq!(omit.bytes, b"omit");
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      2,
+      "expected separate cache entries for include vs omit"
+    );
+
+    let include_again = fetcher
+      .fetch_with_request(include_req)
+      .expect("include cached fetch");
+    assert_eq!(include_again.bytes, b"include");
+    let omit_again = fetcher
+      .fetch_with_request(omit_req)
+      .expect("omit cached fetch");
+    assert_eq!(omit_again.bytes, b"omit");
+    assert_eq!(
+      calls.load(Ordering::SeqCst),
+      2,
+      "expected cached results to avoid additional inner fetches"
+    );
+  }
+
   #[cfg(feature = "disk_cache")]
   #[test]
   fn resource_cache_diagnostics_record_disk_cache_hits() {
@@ -12926,6 +13153,203 @@ mod tests {
     let url = format!("http://{}/start", addr);
     let res = fetcher.fetch(&url).expect("fetch should follow redirect");
     assert_eq!(res.bytes, b"ok");
+    handle.join().unwrap();
+  }
+
+  #[test]
+  fn http_fetcher_shares_cookie_jar_across_backends() {
+    let Some(listener) =
+      try_bind_localhost("http_fetcher_shares_cookie_jar_across_backends")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let handle = thread::spawn(move || {
+      // First request sets a cookie.
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let _ = read_http_request(&mut stream).unwrap();
+      let body = b"first";
+      let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nSet-Cookie: a=b; Path=/\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(headers.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+      drop(stream);
+
+      // Second request must send the cookie, even when switching to the reqwest backend.
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let request = read_http_request(&mut stream)
+        .unwrap()
+        .expect("expected second request");
+      let req = String::from_utf8_lossy(&request).to_ascii_lowercase();
+      assert!(
+        req.contains("cookie: a=b"),
+        "expected cookie header when switching backends, got:\n{req}"
+      );
+
+      let body = b"second";
+      let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(headers.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
+    let deadline: Option<render_control::RenderDeadline> = None;
+    let validators: Option<HttpCacheValidators<'_>> = None;
+
+    let url = format!("http://{}/set", addr);
+    let first = fetcher
+      .fetch_http_with_accept_inner_ureq(
+        FetchContextKind::Other,
+        FetchDestination::Other,
+        &url,
+        None,
+        validators,
+        None,
+        None,
+        ReferrerPolicy::default(),
+        FetchCredentialsMode::Include,
+        &deadline,
+        Instant::now(),
+        false,
+      )
+      .expect("ureq fetch should succeed");
+    assert_eq!(first.bytes, b"first");
+
+    let url = format!("http://{}/check", addr);
+    let second = fetcher
+      .fetch_http_with_accept_inner_reqwest(
+        FetchContextKind::Other,
+        FetchDestination::Other,
+        &url,
+        None,
+        validators,
+        None,
+        None,
+        ReferrerPolicy::default(),
+        FetchCredentialsMode::Include,
+        &deadline,
+        Instant::now(),
+        false,
+      )
+      .expect("reqwest fetch should succeed");
+    assert_eq!(second.bytes, b"second");
+    handle.join().unwrap();
+  }
+
+  #[test]
+  fn http_fetcher_credentials_mode_omit_disables_cookie_send_and_store() {
+    let Some(listener) =
+      try_bind_localhost("http_fetcher_credentials_mode_omit_disables_cookie_send_and_store")
+    else {
+      return;
+    };
+    let addr = listener.local_addr().unwrap();
+    let handle = thread::spawn(move || {
+      // First request sets a cookie.
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let _ = read_http_request(&mut stream).unwrap();
+      let body = b"first";
+      let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nSet-Cookie: a=b; Path=/\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(headers.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+      drop(stream);
+
+      // Second request must not send cookies and must not store the new cookie.
+      let (mut stream, _) = listener.accept().unwrap();
+      stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+      let request = read_http_request(&mut stream)
+        .unwrap()
+        .expect("expected second request");
+      let req = String::from_utf8_lossy(&request).to_ascii_lowercase();
+      assert!(
+        !req.contains("cookie:"),
+        "expected omit mode to suppress cookies, got:\n{req}"
+      );
+
+      let body = b"second";
+      let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nSet-Cookie: c=d; Path=/\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+      );
+      stream.write_all(headers.as_bytes()).unwrap();
+      stream.write_all(body).unwrap();
+    });
+
+    let fetcher = HttpFetcher::new().with_timeout(Duration::from_secs(2));
+    let deadline: Option<render_control::RenderDeadline> = None;
+    let validators: Option<HttpCacheValidators<'_>> = None;
+
+    let url = format!("http://{}/set", addr);
+    let first = fetcher
+      .fetch_http_with_accept_inner_ureq(
+        FetchContextKind::Other,
+        FetchDestination::Other,
+        &url,
+        None,
+        validators,
+        None,
+        None,
+        ReferrerPolicy::default(),
+        FetchCredentialsMode::Include,
+        &deadline,
+        Instant::now(),
+        false,
+      )
+      .expect("seed cookie fetch");
+    assert_eq!(first.bytes, b"first");
+    assert_eq!(
+      fetcher.cookie_header_value(&url).as_deref(),
+      Some("a=b"),
+      "expected initial cookie to be stored"
+    );
+
+    let url = format!("http://{}/omit", addr);
+    let second = fetcher
+      .fetch_http_with_accept_inner_ureq(
+        FetchContextKind::Other,
+        FetchDestination::Other,
+        &url,
+        None,
+        validators,
+        None,
+        None,
+        ReferrerPolicy::default(),
+        FetchCredentialsMode::Omit,
+        &deadline,
+        Instant::now(),
+        false,
+      )
+      .expect("omit fetch");
+    assert_eq!(second.bytes, b"second");
+
+    let cookies = fetcher.cookie_header_value(&url).unwrap_or_default();
+    assert!(
+      cookies.contains("a=b"),
+      "expected prior cookie to remain available, got: {cookies:?}"
+    );
+    assert!(
+      !cookies.contains("c=d"),
+      "expected omit mode to ignore Set-Cookie, got: {cookies:?}"
+    );
     handle.join().unwrap();
   }
 

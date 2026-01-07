@@ -6,7 +6,8 @@
 //!
 //! Notes:
 //! - This module is intentionally dependency-light (no libcurl bindings).
-//! - A per-`HttpFetcher` cookie jar is maintained as a temp file and shared across clones.
+//! - Cookies are handled by the parent [`HttpFetcher`] via a shared in-memory jar; this backend
+//!   only receives an explicit `Cookie` header and forwards `Set-Cookie` responses back to the jar.
 //! - Redirects are handled in Rust (not `--location`) so [`ResourcePolicy`] checks apply to every
 //!   hop, matching the primary backend semantics.
 #![allow(clippy::too_many_lines)]
@@ -16,13 +17,10 @@ use crate::error::{Error, RenderError, ResourceError, Result};
 use crate::render_control;
 use http::HeaderMap;
 use std::io::{self, BufRead, BufReader, Read};
-use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
-use std::sync::MutexGuard;
 use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
-use tempfile::{Builder, TempPath};
 use url::Url;
 
 pub(super) fn curl_available() -> bool {
@@ -36,27 +34,6 @@ pub(super) fn curl_available() -> bool {
       .map(|status| status.success())
       .unwrap_or(false)
   })
-}
-
-#[derive(Debug, Default)]
-pub(super) struct CookieJarState {
-  jar: Option<TempPath>,
-}
-
-impl CookieJarState {
-  fn ensure_path(&mut self) -> io::Result<&Path> {
-    if self.jar.is_none() {
-      let file = Builder::new().prefix("fastr-curl-cookies").tempfile()?;
-      self.jar = Some(file.into_temp_path());
-    }
-    Ok(
-      self
-        .jar
-        .as_ref()
-        .expect("jar should be initialized")
-        .as_ref(),
-    )
-  }
 }
 
 #[derive(Debug)]
@@ -133,7 +110,6 @@ fn sanitize_header_value(value: &str) -> String {
 
 pub(super) fn build_curl_args(
   url: &str,
-  cookie_jar: &Path,
   timeout: Option<Duration>,
   headers: &[(String, String)],
   force_http1: bool,
@@ -148,10 +124,6 @@ pub(super) fn build_curl_args(
   if force_http1 {
     args.push("--http1.1".to_string());
   }
-  args.push("-b".to_string());
-  args.push(cookie_jar.display().to_string());
-  args.push("-c".to_string());
-  args.push(cookie_jar.display().to_string());
   if let Some(timeout) = timeout.filter(|t| !t.is_zero()) {
     args.push("--max-time".to_string());
     args.push(format!("{:.3}", timeout.as_secs_f64()));
@@ -244,13 +216,12 @@ fn read_curl_headers<R: BufRead>(reader: &mut R) -> io::Result<(String, u16, Hea
 
 fn run_curl(
   url: &str,
-  cookie_jar: &Path,
   timeout: Option<Duration>,
   headers: &[(String, String)],
   body_limit: usize,
   force_http1: bool,
 ) -> std::result::Result<CurlResponse, CurlError> {
-  let args = build_curl_args(url, cookie_jar, timeout, headers, force_http1);
+  let args = build_curl_args(url, timeout, headers, force_http1);
   let mut command = Command::new("curl");
   command.args(&args);
   command.stdout(Stdio::piped());
@@ -360,13 +331,6 @@ fn run_curl(
   })
 }
 
-fn lock_cookie_jar(fetcher: &HttpFetcher) -> MutexGuard<'_, CookieJarState> {
-  fetcher
-    .curl_cookie_jar
-    .lock()
-    .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 pub(super) fn fetch_http_with_accept_inner<'a>(
   fetcher: &HttpFetcher,
   kind: super::FetchContextKind,
@@ -377,6 +341,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
   client_origin: Option<&super::DocumentOrigin>,
   referrer_url: Option<&str>,
   referrer_policy: super::ReferrerPolicy,
+  credentials_mode: super::FetchCredentialsMode,
   deadline: &Option<render_control::RenderDeadline>,
   started: Instant,
 ) -> Result<super::FetchedResource> {
@@ -410,16 +375,6 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
     )
   };
 
-  let cookie_path = {
-    let mut jar_guard = lock_cookie_jar(fetcher);
-    jar_guard
-      .ensure_path()
-      .map_err(|e| {
-        Error::Resource(ResourceError::new(url.to_string(), e.to_string()).with_source(e))
-      })?
-      .to_path_buf()
-  };
-
   let mut force_http1 = false;
 
   'redirects: for _ in 0..fetcher.policy.max_redirects {
@@ -449,7 +404,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
       }
 
       let accept_encoding_value = accept_encoding.unwrap_or(super::SUPPORTED_ACCEPT_ENCODING);
-      let headers = super::build_http_header_pairs(
+      let mut headers = super::build_http_header_pairs(
         &current,
         &fetcher.user_agent,
         &fetcher.accept_language,
@@ -460,19 +415,20 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
         referrer_url,
         referrer_policy,
       );
+      if super::cookies_allowed_for_request(credentials_mode, &current, client_origin) {
+        if let Some(value) = fetcher.cookie_header_value(&current) {
+          headers.push(("Cookie".to_string(), value));
+        }
+      }
 
       let network_timer = super::start_network_fetch_diagnostics();
-      let response = {
-        let _jar_guard = lock_cookie_jar(fetcher);
-        run_curl(
-          &current,
-          &cookie_path,
-          (!effective_timeout.is_zero()).then_some(effective_timeout),
-          &headers,
-          allowed_limit,
-          force_http1,
-        )
-      };
+      let response = run_curl(
+        &current,
+        (!effective_timeout.is_zero()).then_some(effective_timeout),
+        &headers,
+        allowed_limit,
+        force_http1,
+      );
       super::finish_network_fetch_diagnostics(network_timer);
 
       let response = match response {
@@ -583,6 +539,10 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
         }
       };
 
+      if super::cookies_allowed_for_request(credentials_mode, &current, client_origin) {
+        fetcher.store_cookies_from_headers(&current, &response.headers);
+      }
+
       let status_code = response.status;
       if (300..400).contains(&status_code) {
         if let Some(loc) = response
@@ -668,6 +628,7 @@ pub(super) fn fetch_http_with_accept_inner<'a>(
             client_origin,
             referrer_url,
             referrer_policy,
+            credentials_mode,
             deadline,
             started,
           );
@@ -892,7 +853,6 @@ mod tests {
   use super::*;
   use crate::resource::DEFAULT_ACCEPT_LANGUAGE;
   use crate::resource::DEFAULT_USER_AGENT;
-  use std::path::PathBuf;
 
   #[test]
   fn header_parsing_skips_provisional_blocks() {
@@ -931,7 +891,6 @@ mod tests {
 
   #[test]
   fn build_args_are_separate_and_include_headers() {
-    let cookie = PathBuf::from("/tmp/cookies.txt");
     let headers = super::super::build_http_header_pairs(
       "https://example.com/",
       DEFAULT_USER_AGENT,
@@ -943,13 +902,7 @@ mod tests {
       None,
       super::super::ReferrerPolicy::default(),
     );
-    let args = build_curl_args(
-      "https://example.com/",
-      &cookie,
-      Some(Duration::from_secs(3)),
-      &headers,
-      false,
-    );
+    let args = build_curl_args("https://example.com/", Some(Duration::from_secs(3)), &headers, false);
     assert!(args.contains(&"--silent".to_string()));
     assert!(args.contains(&"--show-error".to_string()));
     assert!(args.contains(&"--dump-header".to_string()));
@@ -962,9 +915,8 @@ mod tests {
 
   #[test]
   fn build_args_sanitizes_header_values() {
-    let cookie = PathBuf::from("/tmp/cookies.txt");
     let headers = vec![("X-Test".to_string(), "a\r\nb\0c".to_string())];
-    let args = build_curl_args("https://example.com/", &cookie, None, &headers, false);
+    let args = build_curl_args("https://example.com/", None, &headers, false);
     let header_value = args
       .iter()
       .skip_while(|v| *v != "--header")
@@ -982,9 +934,8 @@ mod tests {
 
   #[test]
   fn build_args_can_force_http1() {
-    let cookie = PathBuf::from("/tmp/cookies.txt");
     let headers = vec![("User-Agent".to_string(), DEFAULT_USER_AGENT.to_string())];
-    let args = build_curl_args("https://example.com/", &cookie, None, &headers, true);
+    let args = build_curl_args("https://example.com/", None, &headers, true);
     assert!(args.contains(&"--http1.1".to_string()));
   }
 }

@@ -553,7 +553,6 @@ dependencies = [
  "cookie",
  "document-features",
  "idna",
- "indexmap",
  "log",
  "publicsuffix",
  "serde",
@@ -3571,13 +3570,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d39cb1dbab692d82a977c0392ffac19e188bd9186a9f32806f0aaa859d75585a"
 dependencies = [
  "base64",
- "cookie_store",
  "log",
  "percent-encoding",
  "rustls",
  "rustls-pki-types",
  "ureq-proto",
- "url",
  "utf-8",
  "webpki-roots",
 ]

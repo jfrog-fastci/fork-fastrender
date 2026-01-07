@@ -157,8 +157,8 @@ mod disk_cache_main {
   use fastrender::resource::{
     ensure_font_mime_sane, ensure_http_success, ensure_image_mime_sane,
     ensure_stylesheet_mime_sane, is_data_url, CachingFetcherConfig, DiskCachingFetcher,
-    FetchDestination, FetchRequest, FetchedResource, ResourceFetcher, DEFAULT_ACCEPT_LANGUAGE,
-    DEFAULT_USER_AGENT,
+    FetchCredentialsMode, FetchDestination, FetchRequest, FetchedResource, ResourceFetcher,
+    DEFAULT_ACCEPT_LANGUAGE, DEFAULT_USER_AGENT,
   };
   use fastrender::style::media::{MediaContext, MediaQuery, MediaQueryCache};
   use fastrender::tree::box_tree::CrossOriginAttribute;
@@ -1441,7 +1441,9 @@ mod disk_cache_main {
         }
 
         let success = match fetcher.fetch_with_request(
-          FetchRequest::new(&resolved, FetchDestination::Font).with_referrer_url(referrer),
+          FetchRequest::new(&resolved, FetchDestination::Font)
+            .with_referrer_url(referrer)
+            .with_credentials_mode(FetchCredentialsMode::Omit),
         ) {
           Ok(res) => ensure_http_success(&res, &resolved)
             .and_then(|()| ensure_font_mime_sane(&res, &resolved))
@@ -1948,8 +1950,15 @@ mod disk_cache_main {
           }
         }
 
+        let credentials_mode = match crossorigin {
+          CrossOriginAttribute::None => FetchCredentialsMode::Include,
+          CrossOriginAttribute::Anonymous => FetchCredentialsMode::Omit,
+          CrossOriginAttribute::UseCredentials => FetchCredentialsMode::Include,
+        };
         match fetcher.fetch_with_request(
-          FetchRequest::new(url.as_str(), FetchDestination::ImageCors).with_referrer_url(base_hint),
+          FetchRequest::new(url.as_str(), FetchDestination::ImageCors)
+            .with_referrer_url(base_hint)
+            .with_credentials_mode(credentials_mode),
         ) {
           Ok(res) => {
             if ensure_http_success(&res, url)

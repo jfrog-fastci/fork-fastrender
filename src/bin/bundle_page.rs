@@ -81,6 +81,13 @@ fn should_skip_crawl_url(url: &str) -> bool {
   is_data_url(url) || is_about_url(url)
 }
 
+fn default_credentials_mode_for_destination(destination: FetchDestination) -> FetchCredentialsMode {
+  match destination {
+    FetchDestination::Font | FetchDestination::ImageCors => FetchCredentialsMode::Omit,
+    _ => FetchCredentialsMode::Include,
+  }
+}
+
 #[derive(Parser, Debug)]
 #[command(
   name = "bundle_page",
@@ -447,6 +454,7 @@ impl ResourceFetcher for CacheKindMismatchFallbackFetcher {
             if let Some(referrer) = req.referrer_url {
               retry = retry.with_referrer_url(referrer);
             }
+            retry = retry.with_credentials_mode(req.credentials_mode);
             if let Ok(res) = self.inner.fetch_with_request(retry) {
               return Ok(res);
             }
@@ -1531,11 +1539,12 @@ fn crawl_document(
   }
 
   fn enqueue_unique(
-    queue: &mut VecDeque<(String, FetchDestination, String)>,
+    queue: &mut VecDeque<(String, FetchDestination, FetchCredentialsMode, String)>,
     seen_urls: &mut HashSet<String>,
-    queued: &mut HashMap<(String, Option<DocumentOrigin>), FetchDestination>,
+    queued: &mut HashSet<(String, Option<DocumentOrigin>, FetchDestination, FetchCredentialsMode)>,
     url: String,
     destination: FetchDestination,
+    credentials_mode: FetchCredentialsMode,
     referrer: &str,
   ) {
     if url.is_empty() {
@@ -1550,12 +1559,12 @@ fn crawl_document(
     // another).
     seen_urls.insert(url.clone());
     let origin = origin_from_url(referrer);
-    let key = (url.clone(), origin.clone());
-    if queued.contains_key(&key) {
+    let key = (url.clone(), origin.clone(), destination, credentials_mode);
+    if queued.contains(&key) {
       return;
     }
-    queued.insert(key, destination);
-    queue.push_back((url, destination, referrer.to_string()));
+    queued.insert(key);
+    queue.push_back((url, destination, credentials_mode, referrer.to_string()));
   }
 
   fn document_response_looks_like_html(res: &FetchedResource, requested_url: &str) -> bool {
@@ -1579,7 +1588,7 @@ fn crawl_document(
     html: &str,
     base_url: &str,
     render: &BundleRenderConfig,
-  ) -> Result<Vec<(String, FetchDestination)>> {
+  ) -> Result<Vec<(String, FetchDestination, FetchCredentialsMode)>> {
     let dom = parse_html_with_options(
       html,
       DomParseOptions {
@@ -1600,32 +1609,25 @@ fn crawl_document(
       base_url: Some(base_url),
     };
     let discovery = discover_image_prefetch_requests(&dom, ctx, ImagePrefetchLimits::default());
-    let mut out: Vec<(String, FetchDestination)> = Vec::new();
-    let mut indexes: HashMap<String, usize> = HashMap::new();
+    let mut out: Vec<(String, FetchDestination, FetchCredentialsMode)> = Vec::new();
+    let mut seen: HashSet<(String, FetchContextKind, FetchCredentialsMode)> = HashSet::new();
     for req in discovery.requests {
       if should_skip_crawl_url(&req.url) {
         continue;
       }
 
-      let destination = match req.crossorigin {
-        CrossOriginAttribute::None => FetchDestination::Image,
-        _ => FetchDestination::ImageCors,
+      let (destination, credentials_mode) = match req.crossorigin {
+        CrossOriginAttribute::None => (FetchDestination::Image, FetchCredentialsMode::Include),
+        CrossOriginAttribute::Anonymous => {
+          (FetchDestination::ImageCors, FetchCredentialsMode::Omit)
+        }
+        CrossOriginAttribute::UseCredentials => (FetchDestination::ImageCors, FetchCredentialsMode::Include),
       };
-      match indexes.get(&req.url).copied() {
-        Some(idx) => {
-          // Prefer capturing ImageCors when any responsive candidate for a URL is marked
-          // crossorigin so offline bundles include the CORS-mode response headers.
-          if destination == FetchDestination::ImageCors
-            && matches!(out[idx].1, FetchDestination::Image)
-          {
-            out[idx].1 = FetchDestination::ImageCors;
-          }
-        }
-        None => {
-          indexes.insert(req.url.clone(), out.len());
-          out.push((req.url, destination));
-        }
+      let kind: FetchContextKind = destination.into();
+      if !seen.insert((req.url.clone(), kind, credentials_mode)) {
+        continue;
       }
+      out.push((req.url, destination, credentials_mode));
     }
 
     Ok(out)
@@ -1674,15 +1676,17 @@ fn crawl_document(
     allowed_origins,
   };
 
-  let mut queue: VecDeque<(String, FetchDestination, String)> = VecDeque::new();
+  let mut queue: VecDeque<(String, FetchDestination, FetchCredentialsMode, String)> =
+    VecDeque::new();
   // Cap recursion based on distinct URLs discovered, not on per-document referrer contexts.
   let mut seen_urls: HashSet<String> = HashSet::new();
-  let mut queued: HashMap<(String, Option<DocumentOrigin>), FetchDestination> = HashMap::new();
+  let mut queued: HashSet<(String, Option<DocumentOrigin>, FetchDestination, FetchCredentialsMode)> =
+    HashSet::new();
   // Track fetched resources using the same partitioning semantics as the renderer caches: kind is
   // always part of the key, and for CORS-mode requests under CORS enforcement we also include the
   // initiating origin so we don't accidentally drop per-origin metadata (notably
   // Access-Control-Allow-Origin).
-  let mut fetched_urls: HashSet<(FetchContextKind, String, Option<DocumentOrigin>)> =
+  let mut fetched_urls: HashSet<(FetchContextKind, String, Option<DocumentOrigin>, FetchCredentialsMode)> =
     HashSet::new();
   let mut fetch_errors: Vec<(String, String)> = Vec::new();
   let root_referrer = document.base_hint.as_str();
@@ -1701,6 +1705,7 @@ fn crawl_document(
       &mut queued,
       css_url,
       FetchDestination::Style,
+      FetchCredentialsMode::Include,
       root_referrer,
     );
   }
@@ -1717,6 +1722,7 @@ fn crawl_document(
         &mut queued,
         css_url,
         FetchDestination::Style,
+        FetchCredentialsMode::Include,
         root_referrer,
       );
     }
@@ -1732,13 +1738,14 @@ fn crawl_document(
     // metadata. Prefer renderer-aligned discovery when possible, but fall back to regex results
     // so malformed HTML still yields assets.
     if let Ok(requests) = discover_html_images(&document.html, &document.base_url, render) {
-      for (url, destination) in requests {
+      for (url, destination, credentials_mode) in requests {
         enqueue_unique(
           &mut queue,
           &mut seen_urls,
           &mut queued,
           url,
           destination,
+          credentials_mode,
           root_referrer,
         );
       }
@@ -1754,17 +1761,21 @@ fn crawl_document(
         &mut queued,
         url,
         FetchDestination::Image,
+        FetchCredentialsMode::Include,
         root_referrer,
       );
     }
   } else {
-    for (url, destination) in discover_html_images(&document.html, &document.base_url, render)? {
+    for (url, destination, credentials_mode) in
+      discover_html_images(&document.html, &document.base_url, render)?
+    {
       enqueue_unique(
         &mut queue,
         &mut seen_urls,
         &mut queued,
         url,
         destination,
+        credentials_mode,
         root_referrer,
       );
     }
@@ -1780,6 +1791,7 @@ fn crawl_document(
         &mut queued,
         url,
         destination,
+        default_credentials_mode_for_destination(destination),
         root_referrer,
       );
     }
@@ -1792,6 +1804,7 @@ fn crawl_document(
       &mut queued,
       url,
       FetchDestination::Iframe,
+      FetchCredentialsMode::Include,
       root_referrer,
     );
   }
@@ -1801,7 +1814,7 @@ fn crawl_document(
   // deterministic fixture. The HTML/CSS rewrite step will still produce local references for these
   // URLs, but the stored bytes are replaced with a deterministic 1x1 PNG placeholder.
   const MAX_CRAWL_IMAGE_BYTES: usize = 1_000_000;
-  while let Some((url, destination, referrer)) = queue.pop_front() {
+  while let Some((url, destination, credentials_mode, referrer)) = queue.pop_front() {
     if seen_urls.len() > MAX_CRAWL_URLS {
       eprintln!(
         "Warning: crawl URL limit exceeded ({}); skipping remaining discoveries",
@@ -1821,7 +1834,7 @@ fn crawl_document(
     } else {
       None
     };
-    let fetch_key = (kind, url.clone(), origin_key.clone());
+    let fetch_key = (kind, url.clone(), origin_key.clone(), credentials_mode);
     if fetched_urls.contains(&fetch_key) {
       continue;
     }
@@ -1836,7 +1849,12 @@ fn crawl_document(
       continue;
     }
 
-    let req = FetchRequest::new(&url, destination).with_referrer_url(&referrer);
+    let mut req = FetchRequest::new(&url, destination)
+      .with_referrer_url(&referrer)
+      .with_credentials_mode(credentials_mode);
+    if let Some(origin) = document_origin.as_ref() {
+      req = req.with_client_origin(origin);
+    }
     let res = match fetcher.fetch_with_request(req) {
       Ok(res) => res,
       Err(err) => {
@@ -1947,6 +1965,7 @@ fn crawl_document(
             &mut queued,
             dep,
             destination,
+            default_credentials_mode_for_destination(destination),
             &referrer,
           );
         }
@@ -1969,6 +1988,7 @@ fn crawl_document(
             &mut queued,
             css_url,
             FetchDestination::Style,
+            FetchCredentialsMode::Include,
             doc.base_hint.as_str(),
           );
         }
@@ -1985,6 +2005,7 @@ fn crawl_document(
               &mut queued,
               css_url,
               FetchDestination::Style,
+              FetchCredentialsMode::Include,
               doc.base_hint.as_str(),
             );
           }
@@ -1996,13 +2017,14 @@ fn crawl_document(
         } = fastrender::html::asset_discovery::discover_html_asset_urls(&doc.html, &doc.base_url);
         if matches!(mode, CrawlMode::BestEffort) {
           if let Ok(requests) = discover_html_images(&doc.html, &doc.base_url, render) {
-            for (url, destination) in requests {
+            for (url, destination, credentials_mode) in requests {
               enqueue_unique(
                 &mut queue,
                 &mut seen_urls,
                 &mut queued,
                 url,
                 destination,
+                credentials_mode,
                 doc.base_hint.as_str(),
               );
             }
@@ -2018,17 +2040,19 @@ fn crawl_document(
               &mut queued,
               url,
               FetchDestination::Image,
+              FetchCredentialsMode::Include,
               doc.base_hint.as_str(),
             );
           }
         } else {
-          for (url, destination) in discover_html_images(&doc.html, &doc.base_url, render)? {
+          for (url, destination, credentials_mode) in discover_html_images(&doc.html, &doc.base_url, render)? {
             enqueue_unique(
               &mut queue,
               &mut seen_urls,
               &mut queued,
               url,
               destination,
+              credentials_mode,
               doc.base_hint.as_str(),
             );
           }
@@ -2042,6 +2066,7 @@ fn crawl_document(
               &mut queued,
               url,
               destination,
+              default_credentials_mode_for_destination(destination),
               doc.base_hint.as_str(),
             );
           }
@@ -2054,6 +2079,7 @@ fn crawl_document(
             &mut queued,
             url,
             FetchDestination::Iframe,
+            FetchCredentialsMode::Include,
             doc.base_hint.as_str(),
           );
         }
@@ -2556,7 +2582,12 @@ mod tests {
 
       let snapshot = recording.snapshot();
       let origin = origin_from_url(referrer).expect("origin");
-      let partitioned = request_partitioned_resource_key(FetchContextKind::ImageCors, url, &origin);
+      let partitioned = request_partitioned_resource_key(
+        FetchContextKind::ImageCors,
+        url,
+        &origin,
+        FetchCredentialsMode::Include,
+      );
 
       assert!(
         snapshot.contains_key(url),
@@ -2653,7 +2684,12 @@ mod tests {
 
       let snapshot = recording.snapshot();
       let origin = origin_from_url(referrer).expect("origin");
-      let partitioned = request_partitioned_resource_key(FetchContextKind::ImageCors, url, &origin);
+      let partitioned = request_partitioned_resource_key(
+        FetchContextKind::ImageCors,
+        url,
+        &origin,
+        FetchCredentialsMode::Include,
+      );
 
       assert_eq!(snapshot.get(url).expect("url entry").bytes, b"no-cors");
       assert_eq!(
@@ -2787,8 +2823,18 @@ mod tests {
       let origin_a = origin_from_url("http://a.test/frame.html").expect("origin A");
       let origin_b = origin_from_url("http://b.test/frame.html").expect("origin B");
       let font_url = "http://cdn.test/font.woff2";
-      let key_a = request_partitioned_resource_key(FetchContextKind::Font, font_url, &origin_a);
-      let key_b = request_partitioned_resource_key(FetchContextKind::Font, font_url, &origin_b);
+      let key_a = request_partitioned_resource_key(
+        FetchContextKind::Font,
+        font_url,
+        &origin_a,
+        FetchCredentialsMode::Include,
+      );
+      let key_b = request_partitioned_resource_key(
+        FetchContextKind::Font,
+        font_url,
+        &origin_b,
+        FetchCredentialsMode::Include,
+      );
 
       assert!(
         snapshot.contains_key(font_url),
@@ -2824,8 +2870,18 @@ mod tests {
     let font_url = "http://cdn.test/font.woff2";
     let origin_a = origin_from_url("http://a.test/frame.html").expect("origin A");
     let origin_b = origin_from_url("http://b.test/frame.html").expect("origin B");
-    let key_a = request_partitioned_resource_key(FetchContextKind::Font, font_url, &origin_a);
-    let key_b = request_partitioned_resource_key(FetchContextKind::Font, font_url, &origin_b);
+    let key_a = request_partitioned_resource_key(
+      FetchContextKind::Font,
+      font_url,
+      &origin_a,
+      FetchCredentialsMode::Include,
+    );
+    let key_b = request_partitioned_resource_key(
+      FetchContextKind::Font,
+      font_url,
+      &origin_b,
+      FetchCredentialsMode::Include,
+    );
 
     let mut res_a = FetchedResource::with_final_url(
       b"ok".to_vec(),
