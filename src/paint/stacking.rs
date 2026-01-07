@@ -2555,6 +2555,51 @@ mod tests {
   }
 
   #[test]
+  fn test_compute_bounds_includes_descendant_paint_overflow() {
+    // Regression coverage for descendant paint overflow (e.g. box-shadows) that is painted via
+    // normal fragment recursion. These descendants are not stored as top-level entries in the
+    // stacking context layer lists, so `compute_bounds` must recurse to find them.
+    let mut sc = StackingContext::new(0);
+    sc.offset_from_parent_context = Point::new(40.0, 40.0);
+
+    sc.fragments.push(FragmentNode::new_block_styled(
+      Rect::from_xywh(40.0, 40.0, 20.0, 20.0),
+      vec![],
+      Arc::new(ComputedStyle::default()),
+    ));
+
+    let mut shadow_style = ComputedStyle::default();
+    shadow_style.box_shadow = vec![crate::css::types::BoxShadow {
+      offset_x: crate::style::values::Length::px(0.0),
+      offset_y: crate::style::values::Length::px(0.0),
+      blur_radius: crate::style::values::Length::px(0.0),
+      spread_radius: crate::style::values::Length::px(10.0),
+      color: crate::style::color::Rgba::RED,
+      inset: false,
+    }];
+    let shadow_style = Arc::new(shadow_style);
+
+    // A non-stacking wrapper with a grandchild shadow.
+    let inner = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
+      vec![],
+      shadow_style,
+    );
+    let wrapper = FragmentNode::new_block_styled(
+      Rect::from_xywh(0.0, 0.0, 20.0, 20.0),
+      vec![inner],
+      Arc::new(ComputedStyle::default()),
+    );
+    sc.layer3_blocks.push(wrapper);
+
+    sc.compute_bounds(None);
+
+    // Inner box-shadow spreads 10px in all directions, so bounds should cover 30..70 in both axes
+    // after applying the stacking context offset.
+    assert_eq!(sc.bounds, Rect::from_xywh(30.0, 30.0, 40.0, 40.0));
+  }
+
+  #[test]
   fn test_compute_bounds_includes_children() {
     let mut parent = StackingContext::new(0);
     let mut child = StackingContext::new(0);
