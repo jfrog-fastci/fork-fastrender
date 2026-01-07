@@ -56,6 +56,7 @@ mod table_collapsed_borders;
 mod table_collapsed_border_conflict_resolution;
 mod table_colgroup_span_background;
 mod table_columns_test;
+mod table_direction_rtl;
 mod table_empty_cells;
 mod table_fixup_box_generation;
 mod table_fixup_integration;

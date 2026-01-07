@@ -1694,6 +1694,7 @@ impl TableStructure {
     let mut structure = TableStructure::new();
     let mut percent_sensitive =
       Self::style_has_percent_sensitive_column_constraints(&table_box.style);
+    let direction = table_box.style.direction;
 
     // Extract border model and spacing from style (UA stylesheet can override)
     structure.border_collapse = table_box.style.border_collapse;
@@ -2083,11 +2084,26 @@ impl TableStructure {
       cell.row = new_row;
       cell.rowspan = *rowspan;
       cell.colspan = *colspan;
+      if matches!(direction, Direction::Rtl) && structure.column_count > 0 {
+        debug_assert!(
+          col.saturating_add(*colspan) <= structure.column_count,
+          "table cell placement overflow: start={} span={} columns={}",
+          col,
+          colspan,
+          structure.column_count
+        );
+        cell.col = structure
+          .column_count
+          .saturating_sub(col.saturating_add(*colspan));
+      } else {
+        cell.col = *col;
+      }
       cell.box_index = *box_idx;
 
       // Mark grid cells
       for r in new_row..(new_row + *rowspan).min(structure.row_count) {
-        for c in *col..(*col + *colspan).min(structure.column_count) {
+        let start_col = cell.col;
+        for c in start_col..(start_col + *colspan).min(structure.column_count) {
           if structure.grid[r][c].is_none() {
             structure.grid[r][c] = Some(idx);
           }
@@ -2098,6 +2114,16 @@ impl TableStructure {
     }
 
     structure.percent_sensitive = percent_sensitive;
+
+    if matches!(direction, Direction::Rtl) && structure.column_count > 0 {
+      // CSS 2.1 §17.4 rule 3/5: the first column in source order is placed on the right when
+      // `direction: rtl` applies to the table. We build columns/cells in source order, then
+      // mirror into physical left-to-right column indices.
+      structure.columns.reverse();
+      for (idx, col) in structure.columns.iter_mut().enumerate() {
+        col.index = idx;
+      }
+    }
 
     structure.apply_visibility_collapse(explicit_columns)
   }
@@ -7136,12 +7162,20 @@ impl FormattingContext for TableFormattingContext {
       }
     }
     if cfg!(debug_assertions) {
+      let direction = table_root_style.direction;
       for bucket in &cells_by_row {
         let mut last_col = None;
         for &idx in bucket {
           let col = laid_out_cells[idx].cell.col;
           if let Some(prev) = last_col {
-            debug_assert!(prev <= col, "cells in a row should appear in column order");
+            match direction {
+              Direction::Ltr => {
+                debug_assert!(prev <= col, "cells in a row should appear in column order");
+              }
+              Direction::Rtl => {
+                debug_assert!(prev >= col, "cells in a row should appear in column order");
+              }
+            }
           }
           last_col = Some(col);
         }
