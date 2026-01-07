@@ -1265,34 +1265,38 @@ fn eval_plain_style_feature(
   }
 
   let styles = container.styles.as_ref();
-  let raw_value = value;
-  let resolved_value: Cow<'_, str> = if crate::style::var_resolution::contains_var(raw_value) {
-    let raw = PropertyValue::Custom(raw_value.to_string());
-    match crate::style::var_resolution::resolve_var_for_property(&raw, &styles.custom_properties, "")
-    {
+  // We only need the string form for query evaluation, but `resolve_var_for_property` can return
+  // borrowed slices (e.g. from a fallback within the original declaration). Keep the original
+  // PropertyValue alive so any borrowed `Cow` remains valid.
+  let query_value_storage = crate::style::var_resolution::contains_var(value)
+    .then(|| PropertyValue::Custom(value.to_string()));
+  let resolved_value: Cow<'_, str> = if let Some(query_value) = query_value_storage.as_ref() {
+    match crate::style::var_resolution::resolve_var_for_property(
+      query_value,
+      &styles.custom_properties,
+      "",
+    ) {
       crate::style::var_resolution::VarResolutionResult::Resolved {
         css_text,
-        value: resolved_prop,
+        value: resolved,
       } => {
         // `css_text` is empty on the fast path when no `var()` calls were present. Avoid treating an
         // actual empty resolution (`var(--x,)`) as "no substitution" by also checking whether the
         // resolver had to materialize a new value.
         let no_substitution = matches!(
-          (&resolved_prop, css_text.as_ref()),
-          (crate::style::var_resolution::ResolvedPropertyValue::Borrowed(_), "")
-        );
+          resolved,
+          crate::style::var_resolution::ResolvedPropertyValue::Borrowed(_)
+        ) && css_text.is_empty();
         if no_substitution {
-          Cow::Borrowed(raw_value)
+          Cow::Borrowed(value)
         } else {
-          // `css_text` borrows from the var resolver inputs; materialize an owned copy so we don't
-          // accidentally return a reference to a temporary.
-          Cow::Owned(css_text.into_owned())
+          css_text
         }
       }
       _ => return false,
     }
   } else {
-    Cow::Borrowed(raw_value)
+    Cow::Borrowed(value)
   };
   let resolved_value = resolved_value.as_ref();
 
@@ -1590,10 +1594,14 @@ fn parse_numeric_value(
     return None;
   }
 
-  let resolved: Cow<'_, str> = if crate::style::var_resolution::contains_var(trimmed) {
-    let value = PropertyValue::Custom(trimmed.to_string());
+  // Like `eval_plain_style_feature`, keep the original query value alive so `Cow` results that
+  // borrow from the declaration text (e.g. fallbacks) are valid while we parse the resolved
+  // numeric token.
+  let query_value_storage = crate::style::var_resolution::contains_var(trimmed)
+    .then(|| PropertyValue::Custom(trimmed.to_string()));
+  let resolved: Cow<'_, str> = if let Some(query_value) = query_value_storage.as_ref() {
     match crate::style::var_resolution::resolve_var_for_property(
-      &value,
+      query_value,
       &container.styles.custom_properties,
       "",
     ) {
@@ -1608,9 +1616,7 @@ fn parse_numeric_value(
         if no_substitution {
           Cow::Borrowed(trimmed)
         } else {
-          // `css_text` can borrow from resolver inputs (including the temporary `PropertyValue`
-          // above), so materialize an owned copy before returning it.
-          Cow::Owned(css_text.into_owned())
+          css_text
         }
       }
       _ => return None,

@@ -97,6 +97,26 @@ fn container_style_query_resolves_var_in_property_value() {
 }
 
 #[test]
+fn container_style_query_resolves_var_fallback_in_property_value() {
+  let html = r#"
+    <style>
+      .container { container-type: inline-size; color: rgb(255 0 0); }
+      .child { color: rgb(0 0 255); }
+      @container style(color: var(--missing, rgb(255 0 0))) {
+        .child { color: rgb(1 2 3); }
+      }
+    </style>
+    <div class="container">
+      <div id="target" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(target.styles.color, Rgba::rgb(1, 2, 3));
+}
+
+#[test]
 fn container_style_query_matches_without_explicit_container_type() {
   let html = r#"
     <style>
@@ -266,6 +286,26 @@ fn container_style_query_range_feature_resolves_var_value() {
       .container { container-type: inline-size; font-size: 16px; --min: 12px; }
       .child { color: rgb(0 0 255); }
       @container style(font-size > var(--min)) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container">
+      <div id="target" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(target.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
+fn container_style_query_range_feature_resolves_var_fallback_value() {
+  let html = r#"
+    <style>
+      .container { container-type: inline-size; font-size: 16px; }
+      .child { color: rgb(0 0 255); }
+      @container style(font-size > var(--missing, 12px)) {
         .child { color: rgb(255 0 0); }
       }
     </style>
