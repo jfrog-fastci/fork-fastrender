@@ -495,10 +495,14 @@ fn rewrite_html(
     Regex::new("(?i)(?P<prefix>\\ssrcset\\s*=\\s*\")(?P<value>[^\"]*)(?P<suffix>\")").unwrap();
   let srcset_single =
     Regex::new("(?i)(?P<prefix>\\ssrcset\\s*=\\s*')(?P<value>[^']*)(?P<suffix>')").unwrap();
+  let srcset_unquoted =
+    Regex::new("(?i)(?P<prefix>\\ssrcset\\s*=\\s*)(?P<value>[^\\s\"'>]+)").unwrap();
   let imagesrcset_double =
     Regex::new("(?i)(?P<prefix>\\simagesrcset\\s*=\\s*\")(?P<value>[^\"]*)(?P<suffix>\")").unwrap();
   let imagesrcset_single =
     Regex::new("(?i)(?P<prefix>\\simagesrcset\\s*=\\s*')(?P<value>[^']*)(?P<suffix>')").unwrap();
+  let imagesrcset_unquoted =
+    Regex::new("(?i)(?P<prefix>\\simagesrcset\\s*=\\s*)(?P<value>[^\\s\"'>]+)").unwrap();
 
   let mut rewritten = apply_rewrite(
     &attr_regex,
@@ -601,6 +605,26 @@ fn rewrite_html(
 
   rewritten = apply_srcset_rewrite(
     &imagesrcset_single,
+    &rewritten,
+    config,
+    src_dir,
+    dest_dir,
+    &mut references,
+    &mut seen,
+  )?;
+
+  rewritten = apply_srcset_rewrite_no_suffix(
+    &srcset_unquoted,
+    &rewritten,
+    config,
+    src_dir,
+    dest_dir,
+    &mut references,
+    &mut seen,
+  )?;
+
+  rewritten = apply_srcset_rewrite_no_suffix(
+    &imagesrcset_unquoted,
     &rewritten,
     config,
     src_dir,
@@ -906,6 +930,36 @@ fn apply_srcset_rewrite(
   Ok(rewritten)
 }
 
+fn apply_srcset_rewrite_no_suffix(
+  regex: &Regex,
+  input: &str,
+  config: &ImportConfig,
+  src_dir: &Path,
+  dest_dir: &Path,
+  references: &mut Vec<Reference>,
+  seen: &mut HashSet<PathBuf>,
+) -> Result<String> {
+  let mut error: Option<ImportError> = None;
+  let rewritten = regex
+    .replace_all(input, |caps: &regex::Captures<'_>| {
+      let raw = caps.name("value").map(|m| m.as_str()).unwrap_or("");
+      match rewrite_srcset_value(config, src_dir, dest_dir, raw, references, seen) {
+        Ok(new_value) => format!("{}{}", &caps["prefix"], new_value),
+        Err(err) => {
+          error = Some(err);
+          caps[0].to_string()
+        }
+      }
+    })
+    .to_string();
+
+  if let Some(err) = error {
+    return Err(err);
+  }
+
+  Ok(rewritten)
+}
+
 fn rewrite_srcset_value(
   config: &ImportConfig,
   src_dir: &Path,
@@ -920,6 +974,7 @@ fn rewrite_srcset_value(
     return Ok(value.to_string());
   }
 
+  let has_whitespace = value.as_bytes().iter().any(|b| b.is_ascii_whitespace());
   let mut out = Vec::with_capacity(candidates.len());
   for candidate in candidates {
     let rewritten_url =
@@ -927,10 +982,18 @@ fn rewrite_srcset_value(
         Some(new_value) => new_value,
         None => candidate.url,
       };
-    out.push(format!("{} {}", rewritten_url, candidate.descriptor));
+    if has_whitespace {
+      out.push(format!("{} {}", rewritten_url, candidate.descriptor));
+    } else {
+      out.push(rewritten_url);
+    }
   }
 
-  Ok(out.join(", "))
+  Ok(if has_whitespace {
+    out.join(", ")
+  } else {
+    out.join(",")
+  })
 }
 
 fn rewrite_reference(
@@ -1154,8 +1217,12 @@ fn find_network_urls(content: &str) -> Vec<String> {
   let import_regex = Regex::new("(?i)@import\\s+[\"'](?P<url>[^\"']+)[\"']").unwrap();
   let srcset_double = Regex::new("(?i)\\ssrcset\\s*=\\s*\"(?P<value>[^\"]*)\"").unwrap();
   let srcset_single = Regex::new("(?i)\\ssrcset\\s*=\\s*'(?P<value>[^']*)'").unwrap();
+  let srcset_unquoted =
+    Regex::new("(?i)\\ssrcset\\s*=\\s*(?P<value>[^\\s\"'>]+)").unwrap();
   let imagesrcset_double = Regex::new("(?i)\\simagesrcset\\s*=\\s*\"(?P<value>[^\"]*)\"").unwrap();
   let imagesrcset_single = Regex::new("(?i)\\simagesrcset\\s*=\\s*'(?P<value>[^']*)'").unwrap();
+  let imagesrcset_unquoted =
+    Regex::new("(?i)\\simagesrcset\\s*=\\s*(?P<value>[^\\s\"'>]+)").unwrap();
 
   let mut urls = Vec::new();
   for regex in [&attr_regex, &attr_unquoted_regex, &import_regex] {
@@ -1277,8 +1344,10 @@ fn find_network_urls(content: &str) -> Vec<String> {
   for regex in [
     &srcset_double,
     &srcset_single,
+    &srcset_unquoted,
     &imagesrcset_double,
     &imagesrcset_single,
+    &imagesrcset_unquoted,
   ] {
     for caps in regex.captures_iter(content) {
       let Some(raw_srcset) = caps.name("value").map(|m| m.as_str()) else {
@@ -1778,6 +1847,32 @@ mod tests {
   }
 
   #[test]
+  fn rewrites_unquoted_srcset_urls() {
+    let out_dir = TempDir::new().unwrap();
+    let config = ImportConfig {
+      wpt_root: fixture_root(),
+      suites: vec!["css/simple/srcset-unquoted.html".to_string()],
+      out_dir: out_dir.path().join("out"),
+      manifest_path: None,
+      dry_run: false,
+      overwrite: false,
+      strict_offline: false,
+      allow_network: false,
+    };
+
+    run_import(config).unwrap();
+
+    let imported =
+      fs::read_to_string(out_dir.path().join("out/css/simple/srcset-unquoted.html")).unwrap();
+    assert!(!imported.contains("web-platform.test"));
+    assert!(!imported.contains("http://"));
+    assert!(!imported.contains("https://"));
+    assert!(!imported.contains("srcset=/resources/"));
+    assert!(imported.contains("resources/green.png"));
+    assert!(out_dir.path().join("out/resources/green.png").exists());
+  }
+
+  #[test]
   fn css_namespace_urls_do_not_trigger_offline_validation() {
     let out_dir = TempDir::new().unwrap();
     let config = ImportConfig {
@@ -1893,6 +1988,32 @@ mod tests {
     match err {
       ImportError::NetworkUrlsRemaining(path, urls) => {
         assert!(path.to_string_lossy().contains("srcset-external.html"));
+        assert!(urls.contains("example.com"));
+      }
+      other => panic!("unexpected error: {other:?}"),
+    }
+  }
+
+  #[test]
+  fn offline_validation_rejects_network_urls_in_unquoted_srcset() {
+    let out_dir = TempDir::new().unwrap();
+    let config = ImportConfig {
+      wpt_root: fixture_root(),
+      suites: vec!["html/network/srcset-unquoted-external.html".to_string()],
+      out_dir: out_dir.path().join("out"),
+      manifest_path: None,
+      dry_run: false,
+      overwrite: false,
+      strict_offline: false,
+      allow_network: false,
+    };
+
+    let err = run_import(config).unwrap_err();
+    match err {
+      ImportError::NetworkUrlsRemaining(path, urls) => {
+        assert!(path
+          .to_string_lossy()
+          .contains("srcset-unquoted-external.html"));
         assert!(urls.contains("example.com"));
       }
       other => panic!("unexpected error: {other:?}"),
@@ -2111,6 +2232,58 @@ mod tests {
     match err {
       ImportError::NetworkUrlsRemaining(path, urls) => {
         assert!(path.to_string_lossy().contains("imagesrcset-external.html"));
+        assert!(urls.contains("example.com"));
+      }
+      other => panic!("unexpected error: {other:?}"),
+    }
+  }
+
+  #[test]
+  fn rewrites_unquoted_imagesrcset_urls() {
+    let out_dir = TempDir::new().unwrap();
+    let config = ImportConfig {
+      wpt_root: fixture_root(),
+      suites: vec!["html/network/imagesrcset-unquoted.html".to_string()],
+      out_dir: out_dir.path().join("out"),
+      manifest_path: None,
+      dry_run: false,
+      overwrite: false,
+      strict_offline: false,
+      allow_network: false,
+    };
+
+    run_import(config).expect("import should succeed");
+
+    let imported =
+      fs::read_to_string(out_dir.path().join("out/html/network/imagesrcset-unquoted.html"))
+        .unwrap();
+    assert!(!imported.contains("web-platform.test"));
+    assert!(!imported.contains("http://"));
+    assert!(!imported.contains("https://"));
+    assert!(imported.contains("imagesrcset="));
+    assert!(out_dir.path().join("out/resources/green.png").exists());
+  }
+
+  #[test]
+  fn offline_validation_rejects_network_urls_in_unquoted_imagesrcset() {
+    let out_dir = TempDir::new().unwrap();
+    let config = ImportConfig {
+      wpt_root: fixture_root(),
+      suites: vec!["html/network/imagesrcset-unquoted-external.html".to_string()],
+      out_dir: out_dir.path().join("out"),
+      manifest_path: None,
+      dry_run: false,
+      overwrite: false,
+      strict_offline: false,
+      allow_network: false,
+    };
+
+    let err = run_import(config).unwrap_err();
+    match err {
+      ImportError::NetworkUrlsRemaining(path, urls) => {
+        assert!(path
+          .to_string_lossy()
+          .contains("imagesrcset-unquoted-external.html"));
         assert!(urls.contains("example.com"));
       }
       other => panic!("unexpected error: {other:?}"),
