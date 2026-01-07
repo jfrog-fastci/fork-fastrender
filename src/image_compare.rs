@@ -1,7 +1,9 @@
 use crate::error::{Error, RenderError};
 use crate::fallible_vec_writer::FallibleVecWriter;
+use crate::paint::pixmap::reserve_buffer;
 use crate::paint::pixmap::MAX_PIXMAP_BYTES;
-use image::{ImageFormat, Rgba, RgbaImage};
+use image::{Rgba, RgbaImage};
+use std::io::Cursor;
 use std::io::Write;
 
 /// Configuration for comparing two images.
@@ -388,13 +390,200 @@ pub fn compare_png(
 
 /// Decode PNG bytes into an RGBA image.
 pub fn decode_png(data: &[u8]) -> Result<RgbaImage, Error> {
-  image::load_from_memory_with_format(data, ImageFormat::Png)
-    .map(|img| img.to_rgba8())
-    .map_err(|e| {
-      Error::Render(RenderError::InvalidParameters {
-        message: format!("Failed to decode PNG: {e}"),
-      })
+  let mut decoder = png::Decoder::new(Cursor::new(data));
+  decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+
+  let mut reader = decoder.read_info().map_err(|e| {
+    Error::Render(RenderError::InvalidParameters {
+      message: format!("Failed to decode PNG: {e}"),
     })
+  })?;
+
+  let info = reader.info();
+  let width = info.width;
+  let height = info.height;
+  if width == 0 || height == 0 {
+    return Err(Error::Render(RenderError::InvalidParameters {
+      message: format!("Failed to decode PNG: image size is zero ({width}x{height})"),
+    }));
+  }
+
+  let rgba_bytes = u64::from(width)
+    .checked_mul(u64::from(height))
+    .and_then(|px| px.checked_mul(4))
+    .ok_or_else(|| {
+      Error::Render(RenderError::InvalidParameters {
+        message: format!("Failed to decode PNG: dimensions overflow ({width}x{height})"),
+      })
+    })?;
+
+  if rgba_bytes > MAX_PIXMAP_BYTES {
+    return Err(Error::Render(RenderError::InvalidParameters {
+      message: format!(
+        "Failed to decode PNG: decoded image {}x{} is {} bytes (limit {})",
+        width, height, rgba_bytes, MAX_PIXMAP_BYTES
+      ),
+    }));
+  }
+
+  let out_size = reader.output_buffer_size().ok_or_else(|| {
+    Error::Render(RenderError::InvalidParameters {
+      message: "Failed to decode PNG: output buffer size not available".to_string(),
+    })
+  })?;
+  let out_size_u64 = u64::try_from(out_size).map_err(|_| {
+    Error::Render(RenderError::InvalidParameters {
+      message: "Failed to decode PNG: output buffer size does not fit in u64".to_string(),
+    })
+  })?;
+
+  let mut buf = reserve_buffer(out_size_u64, "decode_png: output buffer").map_err(Error::Render)?;
+  buf.resize(out_size, 0);
+
+  let frame = reader.next_frame(&mut buf).map_err(|e| {
+    Error::Render(RenderError::InvalidParameters {
+      message: format!("Failed to decode PNG: {e}"),
+    })
+  })?;
+  buf.truncate(frame.buffer_size());
+
+  let rgba_len = usize::try_from(rgba_bytes).map_err(|_| {
+    Error::Render(RenderError::InvalidParameters {
+      message: format!("Failed to decode PNG: decoded byte size does not fit in usize ({width}x{height})"),
+    })
+  })?;
+
+  match (frame.color_type, frame.bit_depth) {
+    (png::ColorType::Rgba, png::BitDepth::Eight) => {
+      if buf.len() != rgba_len {
+        return Err(Error::Render(RenderError::InvalidParameters {
+          message: format!(
+            "Failed to decode PNG: RGBA output length mismatch (expected {rgba_len} bytes, got {})",
+            buf.len()
+          ),
+        }));
+      }
+      RgbaImage::from_raw(width, height, buf).ok_or_else(|| {
+        Error::Render(RenderError::InvalidParameters {
+          message: "Failed to decode PNG: invalid RGBA buffer".to_string(),
+        })
+      })
+    }
+    (png::ColorType::Rgb, png::BitDepth::Eight) => {
+      let rgb_len = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|px| px.checked_mul(3))
+        .ok_or_else(|| {
+          Error::Render(RenderError::InvalidParameters {
+            message: "Failed to decode PNG: RGB byte size overflow".to_string(),
+          })
+        })?;
+      let rgb_len = usize::try_from(rgb_len).map_err(|_| {
+        Error::Render(RenderError::InvalidParameters {
+          message: "Failed to decode PNG: RGB byte size does not fit in usize".to_string(),
+        })
+      })?;
+      if buf.len() != rgb_len {
+        return Err(Error::Render(RenderError::InvalidParameters {
+          message: format!(
+            "Failed to decode PNG: RGB output length mismatch (expected {rgb_len} bytes, got {})",
+            buf.len()
+          ),
+        }));
+      }
+
+      let mut out = reserve_buffer(rgba_bytes, "decode_png: RGBA buffer").map_err(Error::Render)?;
+      out.resize(rgba_len, 0);
+      for (in_px, out_px) in buf.chunks_exact(3).zip(out.chunks_exact_mut(4)) {
+        out_px[0] = in_px[0];
+        out_px[1] = in_px[1];
+        out_px[2] = in_px[2];
+        out_px[3] = 255;
+      }
+      RgbaImage::from_raw(width, height, out).ok_or_else(|| {
+        Error::Render(RenderError::InvalidParameters {
+          message: "Failed to decode PNG: invalid RGB->RGBA buffer".to_string(),
+        })
+      })
+    }
+    (png::ColorType::Grayscale, png::BitDepth::Eight) => {
+      let gray_len = u64::from(width)
+        .checked_mul(u64::from(height))
+        .ok_or_else(|| {
+          Error::Render(RenderError::InvalidParameters {
+            message: "Failed to decode PNG: grayscale byte size overflow".to_string(),
+          })
+        })?;
+      let gray_len = usize::try_from(gray_len).map_err(|_| {
+        Error::Render(RenderError::InvalidParameters {
+          message: "Failed to decode PNG: grayscale byte size does not fit in usize".to_string(),
+        })
+      })?;
+      if buf.len() != gray_len {
+        return Err(Error::Render(RenderError::InvalidParameters {
+          message: format!(
+            "Failed to decode PNG: grayscale output length mismatch (expected {gray_len} bytes, got {})",
+            buf.len()
+          ),
+        }));
+      }
+
+      let mut out = reserve_buffer(rgba_bytes, "decode_png: RGBA buffer").map_err(Error::Render)?;
+      out.resize(rgba_len, 0);
+      for (gray, out_px) in buf.iter().zip(out.chunks_exact_mut(4)) {
+        out_px[0] = *gray;
+        out_px[1] = *gray;
+        out_px[2] = *gray;
+        out_px[3] = 255;
+      }
+      RgbaImage::from_raw(width, height, out).ok_or_else(|| {
+        Error::Render(RenderError::InvalidParameters {
+          message: "Failed to decode PNG: invalid grayscale->RGBA buffer".to_string(),
+        })
+      })
+    }
+    (png::ColorType::GrayscaleAlpha, png::BitDepth::Eight) => {
+      let ga_len = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|px| px.checked_mul(2))
+        .ok_or_else(|| {
+          Error::Render(RenderError::InvalidParameters {
+            message: "Failed to decode PNG: grayscale-alpha byte size overflow".to_string(),
+          })
+        })?;
+      let ga_len = usize::try_from(ga_len).map_err(|_| {
+        Error::Render(RenderError::InvalidParameters {
+          message: "Failed to decode PNG: grayscale-alpha byte size does not fit in usize".to_string(),
+        })
+      })?;
+      if buf.len() != ga_len {
+        return Err(Error::Render(RenderError::InvalidParameters {
+          message: format!(
+            "Failed to decode PNG: grayscale-alpha output length mismatch (expected {ga_len} bytes, got {})",
+            buf.len()
+          ),
+        }));
+      }
+
+      let mut out = reserve_buffer(rgba_bytes, "decode_png: RGBA buffer").map_err(Error::Render)?;
+      out.resize(rgba_len, 0);
+      for (in_px, out_px) in buf.chunks_exact(2).zip(out.chunks_exact_mut(4)) {
+        let gray = in_px[0];
+        out_px[0] = gray;
+        out_px[1] = gray;
+        out_px[2] = gray;
+        out_px[3] = in_px[1];
+      }
+      RgbaImage::from_raw(width, height, out).ok_or_else(|| {
+        Error::Render(RenderError::InvalidParameters {
+          message: "Failed to decode PNG: invalid grayscale-alpha->RGBA buffer".to_string(),
+        })
+      })
+    }
+    (color_type, bit_depth) => Err(Error::Render(RenderError::InvalidParameters {
+      message: format!("Failed to decode PNG: unsupported PNG format ({color_type:?} {bit_depth:?})"),
+    })),
+  }
 }
 
 /// Encode an RGBA image to PNG bytes.
