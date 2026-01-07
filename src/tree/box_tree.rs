@@ -202,6 +202,31 @@ impl FormControlKind {
       // `<select>` may carry a full option/optgroup model for listbox painting.
       // Snapshot output must avoid dumping the entire tree.
       FormControlKind::Select(select) => {
+        const MAX_SELECTED_LABEL_CHARS: usize = 80;
+
+        fn truncate_for_snapshot(s: &str, max_chars: usize) -> String {
+          if max_chars == 0 {
+            return "...".to_string();
+          }
+
+          let mut end = s.len();
+          for (i, (idx, _)) in s.char_indices().enumerate() {
+            if i == max_chars {
+              end = idx;
+              break;
+            }
+          }
+
+          if end == s.len() {
+            s.to_string()
+          } else {
+            let mut out = String::with_capacity(end + 3);
+            out.push_str(&s[..end]);
+            out.push_str("...");
+            out
+          }
+        }
+
         let mode = if select.multiple || select.size > 1 {
           "listbox"
         } else {
@@ -220,29 +245,24 @@ impl FormControlKind {
           .count();
 
         let mut selected_option_count = 0usize;
-        let mut first_selected: Option<(&str, &str)> = None;
-        for idx in &select.selected {
-          let Some(item) = select.items.get(*idx) else {
-            continue;
-          };
-          let SelectItem::Option { label, value, .. } = item else {
-            continue;
-          };
-          selected_option_count += 1;
-          if first_selected.is_none() {
-            first_selected = Some((label.as_str(), value.as_str()));
+        let mut min_selected_idx: Option<usize> = None;
+        for &idx in &select.selected {
+          if matches!(select.items.get(idx), Some(SelectItem::Option { .. })) {
+            selected_option_count += 1;
+            min_selected_idx = Some(min_selected_idx.map(|min| min.min(idx)).unwrap_or(idx));
           }
         }
+        let first_selected = min_selected_idx.and_then(|idx| match select.items.get(idx) {
+          Some(SelectItem::Option { label, value, .. }) => Some((label.as_str(), value.as_str())),
+          _ => None,
+        });
 
         let selected_summary = if selected_option_count == 0 {
           "none".to_string()
         } else if selected_option_count == 1 {
           let (label, value) = first_selected.unwrap_or(("", ""));
-          let text = if label.trim().is_empty() {
-            value
-          } else {
-            label
-          };
+          let text = if label.trim().is_empty() { value } else { label };
+          let text = truncate_for_snapshot(text, MAX_SELECTED_LABEL_CHARS);
           format!("{text:?}")
         } else {
           format!("{selected_option_count} selected")
