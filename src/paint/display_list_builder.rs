@@ -8013,11 +8013,10 @@ impl DisplayListBuilder {
           cloned.color = fallback_color;
           cloned
         };
-        let line_height = compute_line_height_with_metrics_viewport(
-          &text_style,
-          None,
-          self.viewport.map(|(w, h)| Size::new(w, h)),
-        );
+        let viewport = self.viewport.map(|(w, h)| Size::new(w, h));
+        let metrics_scaled = Self::resolve_scaled_metrics(&text_style, &self.font_ctx);
+        let line_height =
+          compute_line_height_with_metrics_viewport(&text_style, metrics_scaled.as_ref(), viewport);
 
         if text_style.color.a > f32::EPSILON {
           if let Some(text) = paint_text {
