@@ -768,10 +768,17 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       "link" => Ok(PseudoClass::Link),
       "visited" => Ok(PseudoClass::Visited),
       "any-link" => Ok(PseudoClass::AnyLink),
+      "-webkit-any-link" => Ok(PseudoClass::AnyLink),
+      "-moz-any-link" => Ok(PseudoClass::AnyLink),
       "target" => Ok(PseudoClass::Target),
       "target-within" => Ok(PseudoClass::TargetWithin),
       "scope" => Ok(PseudoClass::Scope),
-      s if s.starts_with("-moz-") || s.starts_with("-webkit-") || s.starts_with("-ms-") => {
+      s if s.starts_with("-moz-")
+        || s.starts_with("-webkit-")
+        || s.starts_with("-ms-")
+        || s.starts_with("-o-")
+        || s.starts_with("-khtml-") =>
+      {
         Ok(PseudoClass::Vendor(CssString::from(s)))
       }
       _ => Err(ParseError {
@@ -942,7 +949,12 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       "-moz-focus-outer" => Ok(PseudoElement::MozFocusOuter),
       "-webkit-slider-thumb" | "-moz-range-thumb" | "-ms-thumb" => Ok(PseudoElement::SliderThumb),
       "-webkit-slider-runnable-track" | "-moz-range-track" | "-ms-track" => Ok(PseudoElement::SliderTrack),
-      s if s.starts_with("-webkit-") || s.starts_with("-moz-") || s.starts_with("-ms-") => {
+      s if s.starts_with("-webkit-")
+        || s.starts_with("-moz-")
+        || s.starts_with("-ms-")
+        || s.starts_with("-o-")
+        || s.starts_with("-khtml-") =>
+      {
         Ok(PseudoElement::Vendor(CssString::from(s)))
       }
       _ => Err(ParseError {
@@ -983,6 +995,9 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
     // Selectors Level 4 notes that previous drafts used `:matches()` for `:is()`, and UAs may
     // support it as a legacy alias for backwards-compatibility.
     name.eq_ignore_ascii_case("matches")
+      // Real-world stylesheets still contain vendor-prefixed `:any()` equivalents.
+      || name.eq_ignore_ascii_case("-webkit-any")
+      || name.eq_ignore_ascii_case("-moz-any")
   }
 }
 
@@ -1806,6 +1821,8 @@ mod tests {
       "a:-moz-broken",
       "a:-webkit-nonexistent-pseudo",
       "a:-ms-nonexistent-pseudo",
+      "a:-o-nonexistent-pseudo",
+      "a:-khtml-nonexistent-pseudo",
       "a, a:-moz-broken",
     ] {
       let mut input = ParserInput::new(selector_text);
@@ -1820,6 +1837,65 @@ mod tests {
     assert_eq!(
       list.to_css_string(),
       "a:-webkit-nonexistent-pseudo, a:-moz-broken"
+    );
+  }
+
+  #[test]
+  fn parses_any_link_vendor_aliases() {
+    for selector_text in [
+      "a:any-link",
+      "a:-webkit-any-link",
+      "a:-moz-any-link",
+      "a:any-link, a:-webkit-any-link, a",
+    ] {
+      let mut input = ParserInput::new(selector_text);
+      let mut parser = Parser::new(&mut input);
+      assert!(
+        SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok(),
+        "{selector_text} should parse"
+      );
+    }
+
+    // Vendor spellings should behave like aliases and serialize to the standard form.
+    let list = parse_selector_list("a:-webkit-any-link, a:-moz-any-link, a:any-link");
+    let selectors: Vec<String> = list.slice().iter().map(|sel| sel.to_css_string()).collect();
+    assert_eq!(
+      selectors,
+      vec![
+        "a:any-link".to_string(),
+        "a:any-link".to_string(),
+        "a:any-link".to_string()
+      ]
+    );
+  }
+
+  #[test]
+  fn parses_vendor_any_functional_pseudo_as_is_alias() {
+    for selector_text in [
+      "div:is(.a, #b)",
+      "div:matches(.a, #b)",
+      "div:-webkit-any(.a, #b)",
+      "div:-moz-any(.a, #b)",
+      "div:-webkit-any(.a, #b), div",
+    ] {
+      let mut input = ParserInput::new(selector_text);
+      let mut parser = Parser::new(&mut input);
+      assert!(
+        SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok(),
+        "{selector_text} should parse"
+      );
+    }
+
+    // Legacy spellings should behave like aliases and serialize to `:is(...)`.
+    let list = parse_selector_list("div:matches(.a, #b), div:-webkit-any(.a, #b), div:-moz-any(.a, #b)");
+    let selectors: Vec<String> = list.slice().iter().map(|sel| sel.to_css_string()).collect();
+    assert_eq!(
+      selectors,
+      vec![
+        "div:is(.a, #b)".to_string(),
+        "div:is(.a, #b)".to_string(),
+        "div:is(.a, #b)".to_string()
+      ]
     );
   }
 
@@ -1901,6 +1977,7 @@ mod tests {
       "input::-webkit-search-cancel-button",
       "input::-ms-clear",
       "progress::-moz-progress-bar",
+      "progress::-khtml-progress-bar",
       "dialog::-webkit-backdrop, dialog::backdrop",
     ] {
       let mut input = ParserInput::new(selector_text);
