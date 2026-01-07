@@ -423,3 +423,79 @@ fn part_container_query_is_evaluated_against_the_part_element() {
   let part_large = find_by_id(&styled_large, "part").expect("part element");
   assert_eq!(part_large.styles.color, Rgba::rgb(255, 0, 0));
 }
+
+#[test]
+fn part_container_query_uses_flat_tree_ancestors_when_host_is_slotted() {
+  let html = r#"
+    <x-outer id="outer">
+      <template shadowroot="open">
+        <style>
+          #container { container-type: inline-size; }
+        </style>
+        <div id="container">
+          <slot></slot>
+        </div>
+      </template>
+      <x-inner id="inner">
+        <template shadowroot="open">
+          <span id="part" part="foo">Hello</span>
+        </template>
+      </x-inner>
+    </x-outer>
+  "#;
+
+  let dom = parse_html(html).expect("parsed html");
+  let ids = enumerate_dom_ids(&dom);
+  let container = find_dom_by_id(&dom, "container").expect("container element");
+  let container_id = *ids
+    .get(&(container as *const DomNode))
+    .expect("container node id");
+
+  let stylesheet = parse_stylesheet(
+    r#"
+      x-inner::part(foo) { color: rgb(0, 0, 255); }
+      @container (min-width: 150px) {
+        x-inner::part(foo) { color: rgb(255, 0, 0); }
+      }
+    "#,
+  )
+  .expect("stylesheet");
+  let media = MediaContext::screen(800.0, 600.0);
+
+  let cascade = |inline_size: f32| {
+    let ctx = ContainerQueryContext {
+      base_media: media.clone(),
+      containers: HashMap::from([(
+        container_id,
+        ContainerQueryInfo {
+          inline_size,
+          block_size: 300.0,
+          container_type: ContainerType::InlineSize,
+          names: Vec::new(),
+          font_size: 16.0,
+          styles: Arc::new(ComputedStyle::default()),
+        },
+      )]),
+    };
+
+    apply_styles_with_media_target_and_imports(
+      &dom,
+      &stylesheet,
+      &media,
+      None,
+      None,
+      None,
+      Some(&ctx),
+      None,
+      None,
+    )
+  };
+
+  let styled_small = cascade(100.0);
+  let part_small = find_by_id(&styled_small, "part").expect("part element");
+  assert_eq!(part_small.styles.color, Rgba::rgb(0, 0, 255));
+
+  let styled_large = cascade(200.0);
+  let part_large = find_by_id(&styled_large, "part").expect("part element");
+  assert_eq!(part_large.styles.color, Rgba::rgb(255, 0, 0));
+}
