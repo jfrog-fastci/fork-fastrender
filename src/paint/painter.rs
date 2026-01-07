@@ -7019,10 +7019,12 @@ impl Painter {
         };
         let mut rect = inset_rect(content_rect, 2.0);
         let mut affordance_space = 0.0;
-        match kind {
-          TextControlKind::Number => affordance_space = 14.0,
-          TextControlKind::Date => affordance_space = 12.0,
-          _ => {}
+        if !matches!(control.appearance, Appearance::None) {
+          match kind {
+            TextControlKind::Number => affordance_space = 14.0,
+            TextControlKind::Date => affordance_space = 12.0,
+            _ => {}
+          }
         }
         if affordance_space > 0.0 {
           rect = Rect::from_xywh(

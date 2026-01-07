@@ -7870,10 +7870,12 @@ impl DisplayListBuilder {
 
         let mut text_rect = content_rect;
         let mut affordance_space = 0.0;
-        match kind {
-          TextControlKind::Number => affordance_space = 14.0,
-          TextControlKind::Date => affordance_space = 12.0,
-          _ => {}
+        if !matches!(control.appearance, Appearance::None) {
+          match kind {
+            TextControlKind::Number => affordance_space = 14.0,
+            TextControlKind::Date => affordance_space = 12.0,
+            _ => {}
+          }
         }
         let mut affordance_rect: Option<Rect> = None;
         if affordance_space > 0.0 && padding_rect.width() > 0.0 {

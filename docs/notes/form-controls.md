@@ -53,6 +53,11 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
   - Checkbox/radio marks are skipped when `control.appearance == Appearance::None`:
     - `src/paint/display_list_builder.rs::emit_form_control` (`FormControlKind::Checkbox`)
     - `src/paint/painter.rs::paint_form_control` (`FormControlKind::Checkbox`)
+  - Text-control affordances are skipped when `control.appearance == Appearance::None`:
+    - Number spinners (▲/▼) are only painted when `appearance != none` (`TextControlKind::Number`)
+    - Date-like dropdown caret (▾) is only painted when `appearance != none` (`TextControlKind::Date`)
+    - See `src/paint/display_list_builder.rs::emit_form_control` and `src/paint/painter.rs::paint_form_control`
+      (`FormControlKind::Text`)
   - Range controls treat `appearance:none` as “custom range” mode:
     - UA track/fill painting is skipped when `control.appearance == Appearance::None`, so the
       element’s own `background`/`border` becomes the “track”.
@@ -63,10 +68,10 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
       `:-ms-track`) but is not yet used for `appearance:none` painting.
     - See `src/paint/display_list_builder.rs::emit_form_control` and
       `src/paint/painter.rs::paint_form_control` (`FormControlKind::Range`).
-- Task 80 tracks further broadening of the suppressed affordance set for `appearance:none` (beyond the current select/checkbox/range hooks).
+- Task 80 tracks further broadening of the suppressed affordance set for `appearance:none` (beyond the current select/checkbox/range/number/date hooks).
 - Current limitations:
   - `appearance:none` does **not** turn the element into a normal container: the control is still a `ReplacedType::FormControl`, so its DOM children are not laid out (e.g. `<button><svg>…</svg>Label</button>` collapses to a plain text label).
-  - `appearance:none` does **not** yet disable all affordances (e.g. number/date glyphs are still painted today; see `TextControlKind::{Number,Date}` handling in both painters).
+  - `appearance:none` does **not** yet disable all affordances (e.g. `<input type=color>` still paints a swatch + hex label; `FormControlKind::Color` does not currently special-case `Appearance::None`).
   - Range pseudo-element selectors are normalized internally (WebKit/Mozilla/MS spellings are accepted), but painters still only consume a subset of the style hooks:
     - `slider_thumb_style` is used by the immediate painter only in `appearance:none` mode.
     - `slider_track_style` is currently used by the display-list renderer only when `appearance != none` (the immediate painter ignores it).
@@ -89,6 +94,8 @@ This work is tracked in the capability map under `alg.forms.appearance-none`.
   - `src/tree/box_generation.rs::appearance_none_does_not_disable_form_control_replacement`
   - `src/tree/box_generation.rs::webkit_appearance_none_propagates_to_form_control`
   - `src/tree/box_generation.rs::moz_appearance_none_propagates_to_form_control`
+- Paint integration tests:
+  - `tests/paint/form_control_appearance_none_affordances.rs` asserts `appearance:none` suppresses number/date affordance glyphs.
 - Offline page fixtures:
   - `tests/pages/fixtures/form_controls_appearance` includes `appearance:none` custom controls (including vendor slider pseudos like `::-webkit-slider-thumb` / `::-moz-range-thumb`).
 

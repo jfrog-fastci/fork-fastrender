@@ -54,6 +54,7 @@ mod mix_blend_mode_isolation_test;
 mod multi_root_display_list;
 mod offscreen_culling_stress;
 mod optimize_test;
+mod form_control_appearance_none_affordances;
 mod form_control_overflow_clip_regression;
 mod overflow_clip_test;
 mod overflow_hidden_does_not_create_stacking_context;
