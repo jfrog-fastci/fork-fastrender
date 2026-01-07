@@ -1738,9 +1738,10 @@ pub fn load_svg_filter(url: &str, image_cache: &ImageCache) -> Option<Arc<SvgFil
   let mut scoped_cache = image_cache.clone();
   let filter_base_url = final_url.clone().unwrap_or_else(|| resource_url.clone());
   scoped_cache.set_base_url(filter_base_url);
-  let doc = match Document::parse(&text) {
-    Ok(doc) => doc,
-    Err(err) => {
+  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Document::parse(&text)))
+  {
+    Ok(Ok(doc)) => doc,
+    Ok(Err(err)) => {
       if let Some(ctx) = context.as_ref() {
         let status = status
           .map(|s| s.to_string())
@@ -1751,6 +1752,21 @@ pub fn load_svg_filter(url: &str, image_cache: &ImageCache) -> Option<Arc<SvgFil
           &resolved,
           final_url.as_deref(),
           format!("invalid SVG XML ({err}) (status {status}, final_url {final_url_str})"),
+        );
+      }
+      return None;
+    }
+    Err(_) => {
+      if let Some(ctx) = context.as_ref() {
+        let status = status
+          .map(|s| s.to_string())
+          .unwrap_or_else(|| "<missing>".to_string());
+        let final_url_str = final_url.as_deref().unwrap_or(&resource_url);
+        ctx.record_violation(
+          ResourceKind::Other,
+          &resolved,
+          final_url.as_deref(),
+          format!("SVG XML parser panicked (status {status}, final_url {final_url_str})"),
         );
       }
       return None;
@@ -1792,7 +1808,10 @@ fn parse_filter_definition(
   fragment: Option<&str>,
   image_cache: &ImageCache,
 ) -> Option<Arc<SvgFilter>> {
-  let doc = Document::parse(svg).ok()?;
+  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Document::parse(svg))) {
+    Ok(Ok(doc)) => doc,
+    _ => return None,
+  };
   let filter_node = doc.descendants().find(|n| {
     n.has_tag_name("filter")
       && fragment
@@ -2049,8 +2068,9 @@ pub(crate) fn collect_svg_filters(
   image_cache: &ImageCache,
 ) -> HashMap<String, Arc<SvgFilter>> {
   let mut registry = HashMap::new();
-  let Ok(doc) = Document::parse(svg) else {
-    return registry;
+  let doc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Document::parse(svg))) {
+    Ok(Ok(doc)) => doc,
+    _ => return registry,
   };
 
   for filter in doc.descendants().filter(|n| n.has_tag_name("filter")) {
@@ -2066,6 +2086,30 @@ pub(crate) fn collect_svg_filters(
   }
 
   registry
+}
+
+#[cfg(test)]
+mod parse_tests {
+  use super::{collect_svg_filters, parse_svg_filter_from_svg_document};
+  use crate::image_loader::ImageCache;
+
+  #[test]
+  fn svg_filter_parsing_rejects_invalid_markup_without_panicking() {
+    let cache = ImageCache::new();
+    let invalid = "<svg><";
+
+    let collected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      collect_svg_filters(invalid, &cache)
+    }));
+    assert!(collected.is_ok());
+    assert!(collected.unwrap().is_empty());
+
+    let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      parse_svg_filter_from_svg_document(invalid, None, &cache)
+    }));
+    assert!(parsed.is_ok());
+    assert!(parsed.unwrap().is_none());
+  }
 }
 
 /// Resolves SVG filter references against a document-level registry and fragment tree.
