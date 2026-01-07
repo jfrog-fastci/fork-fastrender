@@ -12365,6 +12365,38 @@ mod tests {
   }
 
   #[test]
+  fn vendor_placeholder_color_selectors_target_placeholder_not_control() {
+    let stylesheet = parse_stylesheet(
+      r#"
+        input:-ms-input-placeholder { color: rgb(10, 20, 30); }
+      "#,
+    )
+    .expect("parse stylesheet");
+
+    let empty_input = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("placeholder".to_string(), "Search…".to_string())],
+      },
+      children: vec![],
+    };
+
+    let baseline = apply_styles(&empty_input, &StyleSheet::new());
+    let styled = apply_styles(&empty_input, &stylesheet);
+
+    assert_eq!(
+      styled.styles.color, baseline.styles.color,
+      "vendor placeholder selectors must not change the input element text color"
+    );
+    let placeholder_styles = styled
+      .placeholder_styles
+      .as_deref()
+      .expect("expected ::placeholder pseudo styles");
+    assert_eq!(placeholder_styles.color, Rgba::rgb(10, 20, 30));
+  }
+
+  #[test]
   fn overflow_axis_normalization_matches_chrome() {
     let stylesheet = StyleSheet::new();
 
