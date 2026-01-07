@@ -14,6 +14,7 @@ mod fixture_chrome_diff;
 mod fixture_determinism;
 mod generate_emoji_tables;
 mod import_page_fixture;
+mod lint_no_panics;
 mod recapture_page_fixtures;
 mod sync_progress_accuracy;
 mod update_pageset_guardrails;
@@ -54,6 +55,10 @@ fn main() -> Result<()> {
       validate_page_fixtures::run_validate_page_fixtures(args)
     }
     Commands::PerfSmoke(args) => run_perf_smoke(args),
+    Commands::LintNoPanics(args) => {
+      let repo_root = repo_root();
+      lint_no_panics::run_lint_no_panics(&repo_root, args)
+    }
     Commands::GenerateEmojiTables(args) => generate_emoji_tables::run_generate_emoji_tables(args),
   }
 }
@@ -117,6 +122,8 @@ enum Commands {
   /// Regenerate the Unicode emoji property tables used by the renderer.
   #[command(alias = "gen-emoji-tables")]
   GenerateEmojiTables(generate_emoji_tables::GenerateEmojiTablesArgs),
+  /// Fail CI if new panic sites are introduced in production code (`src/`, excluding `#[cfg(test)]`).
+  LintNoPanics(lint_no_panics::LintNoPanicsArgs),
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]

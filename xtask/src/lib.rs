@@ -2,6 +2,7 @@
 
 pub mod capture_accuracy_fixtures;
 pub mod capture_missing_failure_fixtures;
+pub mod lint_no_panics;
 pub mod pageset_failure_fixtures;
 use serde::Deserialize;
 use std::process::Command;
