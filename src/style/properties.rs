@@ -13394,7 +13394,9 @@ fn parse_container_type_keyword(text: &str) -> Option<ContainerType> {
 }
 
 fn parse_container_type_value(value: &PropertyValue) -> Option<ContainerType> {
-  let text = property_value_to_string(value)?;
+  let PropertyValue::Keyword(text) = value else {
+    return None;
+  };
   let trimmed = text.trim();
   if trimmed.is_empty() {
     return None;
@@ -13407,29 +13409,52 @@ fn parse_container_names_from_str(input: &str) -> Option<Vec<String>> {
   if trimmed.is_empty() {
     return None;
   }
-  if trimmed.eq_ignore_ascii_case("none") {
-    return Some(Vec::new());
-  }
-  if trimmed.contains(',') {
-    return None;
-  }
-
+  let mut input = ParserInput::new(trimmed);
+  let mut parser = Parser::new(&mut input);
   let mut names = Vec::new();
-  for name in trimmed.split_ascii_whitespace() {
-    let candidate = name.trim();
-    if !candidate.is_empty() {
-      names.push(candidate.to_string());
+  let mut saw_none = false;
+
+  while let Ok(token) = parser.next_including_whitespace_and_comments() {
+    match token {
+      Token::WhiteSpace(_) | Token::Comment(_) => continue,
+      Token::Ident(ident) => {
+        let ident = ident.as_ref();
+        if ident.eq_ignore_ascii_case("none") {
+          if !names.is_empty() {
+            return None;
+          }
+          saw_none = true;
+          continue;
+        }
+
+        if saw_none
+          || ident.eq_ignore_ascii_case("and")
+          || ident.eq_ignore_ascii_case("or")
+          || ident.eq_ignore_ascii_case("not")
+          || ident.eq_ignore_ascii_case("default")
+          || ident.eq_ignore_ascii_case("inherit")
+          || ident.eq_ignore_ascii_case("initial")
+          || ident.eq_ignore_ascii_case("unset")
+          || ident.eq_ignore_ascii_case("revert")
+          || ident.eq_ignore_ascii_case("revert-layer")
+        {
+          return None;
+        }
+
+        names.push(ident.to_string());
+      }
+      Token::Comma | Token::Delim(',') => return None,
+      _ => return None,
     }
   }
 
-  if names.is_empty() {
-    None
-  } else if names.iter().any(|n| {
-    n.eq_ignore_ascii_case("none")
-      || n.eq_ignore_ascii_case("and")
-      || n.eq_ignore_ascii_case("or")
-      || n.eq_ignore_ascii_case("not")
-  }) {
+  if saw_none {
+    if names.is_empty() {
+      Some(Vec::new())
+    } else {
+      None
+    }
+  } else if names.is_empty() {
     None
   } else {
     Some(names)
@@ -13437,14 +13462,18 @@ fn parse_container_names_from_str(input: &str) -> Option<Vec<String>> {
 }
 
 fn parse_container_names(value: &PropertyValue) -> Option<Vec<String>> {
-  let text = property_value_to_string(value)?;
-  parse_container_names_from_str(&text)
+  let PropertyValue::Keyword(text) = value else {
+    return None;
+  };
+  parse_container_names_from_str(text)
 }
 
 fn parse_container_shorthand(
   value: &PropertyValue,
 ) -> Option<(Vec<String>, ContainerType)> {
-  let text = property_value_to_string(value)?;
+  let PropertyValue::Keyword(text) = value else {
+    return None;
+  };
   let trimmed = text.trim();
   if trimmed.is_empty() {
     return None;

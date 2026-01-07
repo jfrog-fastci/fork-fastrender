@@ -169,3 +169,16 @@ fn container_query_list_uses_or_semantics() {
     "block"
   );
 }
+
+#[test]
+fn container_query_rejects_reserved_container_names() {
+  let css = r#"
+    .target { display: block; }
+    @container and (min-width: 0px) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let styled = cascade_with_container(css, 500.0, vec!["and".into()]);
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "block");
+}

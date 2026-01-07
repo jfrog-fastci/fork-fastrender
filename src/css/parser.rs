@@ -1036,19 +1036,27 @@ fn parse_container_query_list<'i, 't>(
 }
 
 fn parse_container_name<'i, 't>(parser: &mut Parser<'i, 't>) -> Option<String> {
-  let mut parts = Vec::new();
-  loop {
-    parser.skip_whitespace();
-    let Ok(ident) = parser.try_parse(|p| p.expect_ident_cloned()) else {
-      break;
-    };
-    parts.push(ident.to_string());
+  parser.skip_whitespace();
+  let state = parser.state();
+  let ident = parser.try_parse(|p| p.expect_ident_cloned()).ok()?;
+  let ident = ident.as_ref();
+
+  if ident.eq_ignore_ascii_case("none")
+    || ident.eq_ignore_ascii_case("and")
+    || ident.eq_ignore_ascii_case("or")
+    || ident.eq_ignore_ascii_case("not")
+    || ident.eq_ignore_ascii_case("default")
+    || ident.eq_ignore_ascii_case("inherit")
+    || ident.eq_ignore_ascii_case("initial")
+    || ident.eq_ignore_ascii_case("unset")
+    || ident.eq_ignore_ascii_case("revert")
+    || ident.eq_ignore_ascii_case("revert-layer")
+  {
+    parser.reset(&state);
+    return None;
   }
-  if parts.is_empty() {
-    None
-  } else {
-    Some(parts.join(" "))
-  }
+
+  Some(ident.to_string())
 }
 
 fn parse_container_condition<'i, 't>(
