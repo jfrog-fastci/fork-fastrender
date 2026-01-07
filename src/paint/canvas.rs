@@ -506,6 +506,7 @@ impl Canvas {
       width,
       height,
       is_backdrop_root,
+      false,
     )
   }
 
@@ -532,7 +533,62 @@ impl Canvas {
       self.pixmap.width(),
       self.pixmap.height(),
       is_backdrop_root,
+      false,
     )
+  }
+
+  pub(crate) fn push_layer_with_blend_initialized_from_backdrop_and_backdrop_root(
+    &mut self,
+    opacity: f32,
+    blend: Option<SkiaBlendMode>,
+    is_backdrop_root: bool,
+  ) -> Result<()> {
+    self.push_layer_internal(
+      opacity,
+      blend,
+      0,
+      0,
+      self.pixmap.width(),
+      self.pixmap.height(),
+      is_backdrop_root,
+      true,
+    )
+  }
+
+  pub(crate) fn push_layer_bounded_initialized_from_backdrop_and_backdrop_root(
+    &mut self,
+    opacity: f32,
+    blend: Option<SkiaBlendMode>,
+    bounds: Rect,
+    is_backdrop_root: bool,
+  ) -> Result<()> {
+    let (origin_x, origin_y, width, height) = match self.layer_bounds(bounds) {
+      Some(b) => b,
+      None => (0, 0, self.pixmap.width(), self.pixmap.height()),
+    };
+    self.push_layer_internal(opacity, blend, origin_x, origin_y, width, height, is_backdrop_root, true)
+  }
+
+  /// Pushes a new offscreen layer initialized from the already-painted backdrop.
+  ///
+  /// This is used for non-isolated compositing groups (e.g. CSS non-isolated `mix-blend-mode`
+  /// groups) whose initial backdrop is the current contents of the canvas.
+  pub fn push_layer_with_blend_initialized_from_backdrop(
+    &mut self,
+    opacity: f32,
+    blend: Option<SkiaBlendMode>,
+  ) -> Result<()> {
+    self.push_layer_with_blend_initialized_from_backdrop_and_backdrop_root(opacity, blend, false)
+  }
+
+  /// Pushes a new bounded offscreen layer initialized from the already-painted backdrop.
+  pub fn push_layer_bounded_initialized_from_backdrop(
+    &mut self,
+    opacity: f32,
+    blend: Option<SkiaBlendMode>,
+    bounds: Rect,
+  ) -> Result<()> {
+    self.push_layer_bounded_initialized_from_backdrop_and_backdrop_root(opacity, blend, bounds, false)
   }
 
   fn push_layer_internal(
@@ -544,13 +600,17 @@ impl Canvas {
     width: u32,
     height: u32,
     is_backdrop_root: bool,
+    init_from_backdrop: bool,
   ) -> Result<()> {
     let parent_width = self.pixmap.width();
     let parent_height = self.pixmap.height();
     let width = width.max(1);
     let height = height.max(1);
 
-    let new_pixmap = new_pixmap_with_context(width, height, "layer")?;
+    let mut new_pixmap = new_pixmap_with_context(width, height, "layer")?;
+    if init_from_backdrop {
+      Self::copy_pixmap_region(&mut new_pixmap, &self.pixmap, origin_x, origin_y)?;
+    }
 
     let parent_transform = self.current_state.transform;
 
@@ -607,6 +667,54 @@ impl Canvas {
         )?
         .map(Rc::new);
       }
+    }
+
+    Ok(())
+  }
+
+  fn copy_pixmap_region(
+    dst: &mut Pixmap,
+    src: &Pixmap,
+    src_x: i32,
+    src_y: i32,
+  ) -> RenderResult<()> {
+    let dst_w = dst.width() as i32;
+    let dst_h = dst.height() as i32;
+    if dst_w <= 0 || dst_h <= 0 {
+      return Ok(());
+    }
+    let src_w = src.width() as i32;
+    let src_h = src.height() as i32;
+    if src_w <= 0 || src_h <= 0 {
+      return Ok(());
+    }
+
+    let x0 = src_x.max(0);
+    let y0 = src_y.max(0);
+    let x1 = (src_x + dst_w).min(src_w);
+    let y1 = (src_y + dst_h).min(src_h);
+    if x0 >= x1 || y0 >= y1 {
+      return Ok(());
+    }
+
+    let dst_off_x = (x0 - src_x) as usize;
+    let dst_off_y = (y0 - src_y) as usize;
+    let copy_w = (x1 - x0) as usize;
+    let copy_h = (y1 - y0) as usize;
+
+    let dst_stride = dst.width() as usize * 4;
+    let src_stride = src.width() as usize * 4;
+    let row_bytes = copy_w * 4;
+    let src_data = src.data();
+    let dst_data = dst.data_mut();
+
+    let mut deadline_counter = 0usize;
+    for row in 0..copy_h {
+      check_active_periodic(&mut deadline_counter, 32, RenderStage::Paint)?;
+      let src_idx = (y0 as usize + row) * src_stride + x0 as usize * 4;
+      let dst_idx = (dst_off_y + row) * dst_stride + dst_off_x * 4;
+      dst_data[dst_idx..dst_idx + row_bytes]
+        .copy_from_slice(&src_data[src_idx..src_idx + row_bytes]);
     }
 
     Ok(())

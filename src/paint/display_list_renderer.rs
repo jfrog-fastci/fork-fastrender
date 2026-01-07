@@ -702,6 +702,148 @@ pub fn composite_manual_layer_pixmap(
   Ok(())
 }
 
+/// Convert a non-isolated group surface into an isolated source image.
+///
+/// For a non-isolated compositing group, the group surface is initialized with the group backdrop
+/// (the already-painted pixels behind the group) and group content is rendered on top. This
+/// produces a surface `out` where:
+///
+/// ```text
+/// out = src ⊕ backdrop
+/// ```
+///
+/// where `⊕` is source-over compositing and `src` is the group's "computed element" (its color and
+/// alpha contribution excluding the backdrop).
+///
+/// This helper extracts `src` from `out` and `backdrop` in-place so the caller can then composite
+/// `src` onto the backdrop once (with the group's mix-blend-mode / opacity / filters) without the
+/// backdrop contributing twice (CSS Compositing & Blending group invariance).
+fn uncomposite_layer_source_over_backdrop(
+  layer: &mut Pixmap,
+  backdrop: &Pixmap,
+  origin: (i32, i32),
+) -> Result<()> {
+  let layer_w = layer.width() as i32;
+  let layer_h = layer.height() as i32;
+  if layer_w <= 0 || layer_h <= 0 {
+    return Ok(());
+  }
+
+  let backdrop_w = backdrop.width() as i32;
+  let backdrop_h = backdrop.height() as i32;
+  if backdrop_w <= 0 || backdrop_h <= 0 {
+    return Ok(());
+  }
+
+  let origin_x = origin.0;
+  let origin_y = origin.1;
+
+  let mut lx0 = 0i32;
+  let mut ly0 = 0i32;
+  let mut lx1 = layer_w;
+  let mut ly1 = layer_h;
+
+  if origin_x < 0 {
+    lx0 = lx0.max(-origin_x);
+  }
+  if origin_y < 0 {
+    ly0 = ly0.max(-origin_y);
+  }
+  if origin_x + layer_w > backdrop_w {
+    lx1 = lx1.min(backdrop_w - origin_x);
+  }
+  if origin_y + layer_h > backdrop_h {
+    ly1 = ly1.min(backdrop_h - origin_y);
+  }
+
+  if lx0 >= lx1 || ly0 >= ly1 {
+    return Ok(());
+  }
+
+  #[inline]
+  fn ceil_div(numer: u32, denom: u32) -> u16 {
+    if denom == 0 {
+      return 0;
+    }
+    ((numer + denom - 1) / denom).min(255) as u16
+  }
+
+  let layer_stride = layer.width() as usize;
+  let backdrop_stride = backdrop.width() as usize;
+  let layer_pixels = layer.pixels_mut();
+  let backdrop_pixels = backdrop.pixels();
+  let width = (lx1 - lx0) as usize;
+
+  let mut deadline_counter = 0usize;
+  for ly in ly0..ly1 {
+    check_active_periodic(&mut deadline_counter, 32, RenderStage::Paint).map_err(Error::Render)?;
+
+    let layer_row = ly as usize * layer_stride + lx0 as usize;
+    let backdrop_row =
+      (ly + origin_y) as usize * backdrop_stride + (lx0 + origin_x) as usize;
+
+    for offset in 0..width {
+      let out_px = &mut layer_pixels[layer_row + offset];
+      let back_px = backdrop_pixels[backdrop_row + offset];
+
+      let ba = back_px.alpha() as u16;
+      let oa = out_px.alpha() as u16;
+
+      let sa = if ba < 255 {
+        let num = oa.saturating_sub(ba) as u32;
+        if num == 0 {
+          0
+        } else {
+          let denom = (255u32).saturating_sub(ba as u32);
+          (((num * 255 + denom / 2) / denom).min(255)) as u16
+        }
+      } else {
+        // When the backdrop is fully opaque, `oa` is always 255 under source-over compositing, so
+        // alpha alone cannot recover the source alpha. Choose the smallest alpha that yields a
+        // valid premultiplied source color for all channels.
+        let (br, bg, bb) = (
+          back_px.red() as u16,
+          back_px.green() as u16,
+          back_px.blue() as u16,
+        );
+        let (or, og, ob) = (out_px.red() as u16, out_px.green() as u16, out_px.blue() as u16);
+
+        let mut bound = 0u16;
+        for (b, o) in [(br, or), (bg, og), (bb, ob)] {
+          if b > 0 && b > o {
+            bound = bound.max(ceil_div(u32::from(b - o) * 255, u32::from(b)));
+          }
+          if b < 255 && o > b {
+            bound = bound.max(ceil_div(u32::from(o - b) * 255, u32::from(255 - b)));
+          }
+        }
+        bound
+      };
+
+      if sa == 0 {
+        *out_px = PremultipliedColorU8::TRANSPARENT;
+        continue;
+      }
+
+      let inv_sa = 255u16.saturating_sub(sa);
+      let sr = (out_px.red() as u16).saturating_sub(mul_div_255_round_u16(back_px.red() as u16, inv_sa));
+      let sg =
+        (out_px.green() as u16).saturating_sub(mul_div_255_round_u16(back_px.green() as u16, inv_sa));
+      let sb =
+        (out_px.blue() as u16).saturating_sub(mul_div_255_round_u16(back_px.blue() as u16, inv_sa));
+
+      let sr = sr.min(sa);
+      let sg = sg.min(sa);
+      let sb = sb.min(sa);
+
+      *out_px = PremultipliedColorU8::from_rgba(sr as u8, sg as u8, sb as u8, sa as u8)
+        .unwrap_or(PremultipliedColorU8::TRANSPARENT);
+    }
+  }
+
+  Ok(())
+}
+
 #[derive(Copy, Clone)]
 enum EdgeOrientation {
   Horizontal,
@@ -3142,6 +3284,7 @@ struct StackingRecord {
   establishes_backdrop_root: bool,
   needs_layer: bool,
   mix_blend_mode: BlendMode,
+  init_from_backdrop: bool,
   filters: Vec<ResolvedFilter>,
   radii: BorderRadii,
   bounds: Rect,
@@ -9795,17 +9938,66 @@ impl DisplayListRenderer {
         } else {
           (None, (0, 0))
         };
+        let init_from_backdrop = !is_isolated && !matches!(item.mix_blend_mode, BlendMode::Normal);
         if needs_layer {
           if manual_blend.is_some() {
             if let Some(layer_rect) = bounded_rect {
-              self.push_layer_bounded_tracked(opacity, None, layer_rect, item.establishes_backdrop_root)?;
+              if init_from_backdrop {
+                self.canvas.push_layer_bounded_initialized_from_backdrop_and_backdrop_root(
+                  opacity,
+                  None,
+                  layer_rect,
+                  item.establishes_backdrop_root,
+                )?;
+                self.push_layer_mutation_state();
+              } else {
+                self.push_layer_bounded_tracked(
+                  opacity,
+                  None,
+                  layer_rect,
+                  item.establishes_backdrop_root,
+                )?;
+              }
+            } else if init_from_backdrop {
+              self
+                .canvas
+                .push_layer_with_blend_initialized_from_backdrop_and_backdrop_root(
+                  opacity,
+                  None,
+                  item.establishes_backdrop_root,
+                )?;
+              self.push_layer_mutation_state();
             } else {
               self.push_layer_tracked(opacity, item.establishes_backdrop_root)?;
             }
           } else {
             let blend = map_blend_mode(item.mix_blend_mode);
             if let Some(layer_rect) = bounded_rect {
-              self.push_layer_bounded_tracked(opacity, Some(blend), layer_rect, item.establishes_backdrop_root)?;
+              if init_from_backdrop {
+                self.canvas.push_layer_bounded_initialized_from_backdrop_and_backdrop_root(
+                  opacity,
+                  Some(blend),
+                  layer_rect,
+                  item.establishes_backdrop_root,
+                )?;
+                self.push_layer_mutation_state();
+              } else {
+                self.push_layer_bounded_tracked(
+                  opacity,
+                  Some(blend),
+                  layer_rect,
+                  item.establishes_backdrop_root,
+                )?;
+              }
+            } else if init_from_backdrop {
+              self
+                .canvas
+                .push_layer_with_blend_initialized_from_backdrop_and_backdrop_root(
+                  opacity,
+                  Some(blend),
+                  item.establishes_backdrop_root,
+                )?;
+              self.push_layer_mutation_state();
             } else {
               self.push_layer_with_blend_tracked(opacity, Some(blend), item.establishes_backdrop_root)?;
             }
@@ -9838,6 +10030,7 @@ impl DisplayListRenderer {
           establishes_backdrop_root: item.establishes_backdrop_root,
           needs_layer,
           mix_blend_mode: item.mix_blend_mode,
+          init_from_backdrop,
           filters: scaled_filters,
           radii,
           bounds,
@@ -9875,6 +10068,7 @@ impl DisplayListRenderer {
             establishes_backdrop_root: false,
             needs_layer: false,
             mix_blend_mode: BlendMode::Normal,
+            init_from_backdrop: false,
             filters: Vec::new(),
             radii: BorderRadii::ZERO,
             bounds: Rect::ZERO,
@@ -9933,6 +10127,9 @@ impl DisplayListRenderer {
         }
         if record.needs_layer {
           let (mut layer, origin, opacity, composite_blend) = self.pop_layer_raw_tracked()?;
+          if record.init_from_backdrop {
+            uncomposite_layer_source_over_backdrop(&mut layer, self.canvas.pixmap(), origin)?;
+          }
 
           let (out_l, out_t, out_r, out_b) =
             filter_outset_with_bounds(&record.filters, self.scale, Some(record.css_bounds))
