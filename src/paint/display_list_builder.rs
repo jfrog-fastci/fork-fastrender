@@ -4447,13 +4447,14 @@ impl DisplayListBuilder {
             if !clip_x && !clip_y {
               return None;
             }
+            let overflow_bounds = rect.union(fragment.scroll_overflow.translate(rect.origin));
             let rects = Self::background_rects(rect, style, self.viewport);
             Self::overflow_clip_from_style_with_rects(
               style,
               &rects,
               clip_x,
               clip_y,
-              rect,
+              overflow_bounds,
               self.viewport,
               self.build_breakdown.as_deref(),
             )

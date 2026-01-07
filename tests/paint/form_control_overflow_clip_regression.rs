@@ -27,13 +27,13 @@ fn form_control_overflow_clip_uses_padding_box_not_content_box() {
   let select = SelectControl {
     multiple: false,
     size: 1,
-    items: vec![SelectItem::Option {
+    items: Arc::new(vec![SelectItem::Option {
       label: "Label".to_string(),
       value: "value".to_string(),
       selected: true,
       disabled: false,
       in_optgroup: false,
-    }],
+    }]),
     selected: vec![0],
   };
 
