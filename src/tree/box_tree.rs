@@ -1912,6 +1912,7 @@ mod tests {
       viewport: None,
       media_context: None,
       font_size: None,
+      root_font_size: None,
       base_url: None,
     });
     assert!(
@@ -1931,6 +1932,7 @@ mod tests {
       viewport: None,
       media_context: None,
       font_size: None,
+      root_font_size: None,
       base_url: None,
     });
     assert!(
