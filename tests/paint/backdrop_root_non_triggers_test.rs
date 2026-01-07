@@ -181,3 +181,15 @@ fn will_change_isolation_is_not_a_backdrop_root() {
   let pixmap = render("will-change: isolation;");
   assert_child_inverts_body_bg(&pixmap);
 }
+
+#[test]
+fn overflow_hidden_is_not_a_backdrop_root() {
+  let pixmap = render("overflow: hidden;");
+  assert_child_inverts_body_bg(&pixmap);
+}
+
+#[test]
+fn overflow_clip_is_not_a_backdrop_root() {
+  let pixmap = render("overflow: clip;");
+  assert_child_inverts_body_bg(&pixmap);
+}
