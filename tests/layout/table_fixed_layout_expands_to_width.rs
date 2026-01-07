@@ -74,8 +74,8 @@ fn table_fixed_layout_expands_to_specified_width() {
 
   for (idx, width) in widths.iter().enumerate() {
     assert!(
-      *width > 50.0 + 0.1,
-      "expected cell {idx} width to expand beyond 50px, got {width}"
+      (*width - 150.0).abs() < 0.1,
+      "expected cell {idx} width ~150px, got {width}"
     );
   }
 }
