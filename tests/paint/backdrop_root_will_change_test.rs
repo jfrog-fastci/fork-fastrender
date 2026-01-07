@@ -481,6 +481,7 @@ fn will_change_other_stacking_context_hints_do_not_establish_backdrop_root() {
     "scale",
     "isolation",
     "contain",
+    "z-index",
     "scroll-position",
     "contents",
   ] {
