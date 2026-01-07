@@ -17361,11 +17361,11 @@ mod tests {
       color: Rgba::BLACK,
       font_size: 16.0,
       advance_width: 0.0,
-        emphasis: Some(TextEmphasis {
-          style: TextEmphasisStyle::Mark {
-            fill: TextEmphasisFill::Filled,
-            shape: Some(TextEmphasisShape::Triangle),
-          },
+      emphasis: Some(TextEmphasis {
+        style: TextEmphasisStyle::Mark {
+          fill: TextEmphasisFill::Filled,
+          shape: Some(TextEmphasisShape::Triangle),
+        },
         color: Rgba::from_rgba8(255, 0, 0, 255),
         position: TextEmphasisPosition::Under,
         size: 50.0,
@@ -17401,11 +17401,11 @@ mod tests {
       color: Rgba::BLACK,
       font_size: 16.0,
       advance_width: 0.0,
-        emphasis: Some(TextEmphasis {
-          style: TextEmphasisStyle::Mark {
-            fill: TextEmphasisFill::Filled,
-            shape: Some(TextEmphasisShape::Sesame),
-          },
+      emphasis: Some(TextEmphasis {
+        style: TextEmphasisStyle::Mark {
+          fill: TextEmphasisFill::Filled,
+          shape: Some(TextEmphasisShape::Sesame),
+        },
         color: Rgba::from_rgba8(255, 0, 0, 255),
         position: TextEmphasisPosition::Under,
         size: 50.0,

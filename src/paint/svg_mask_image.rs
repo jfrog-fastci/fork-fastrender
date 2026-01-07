@@ -4,6 +4,13 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 
+fn parse_svg_fragment(fragment: &str) -> Option<Document<'_>> {
+  match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Document::parse(fragment))) {
+    Ok(Ok(doc)) => Some(doc),
+    Ok(Err(_)) | Err(_) => None,
+  }
+}
+
 fn extract_url_fragment_ids(value: &str, out: &mut HashSet<String>) {
   let bytes = value.as_bytes();
   let mut idx = 0usize;
@@ -59,7 +66,7 @@ fn extract_url_fragment_ids(value: &str, out: &mut HashSet<String>) {
 }
 
 fn collect_svg_fragment_references(fragment: &str) -> HashSet<String> {
-  let Ok(doc) = Document::parse(fragment) else {
+  let Some(doc) = parse_svg_fragment(fragment) else {
     return HashSet::new();
   };
 
@@ -113,7 +120,7 @@ fn collect_svg_fragment_references(fragment: &str) -> HashSet<String> {
 }
 
 fn collect_svg_fragment_ids(fragment: &str) -> HashSet<String> {
-  let Ok(doc) = Document::parse(fragment) else {
+  let Some(doc) = parse_svg_fragment(fragment) else {
     return HashSet::new();
   };
 
@@ -197,4 +204,46 @@ pub(crate) fn inline_svg_for_mask_id(
   out.push_str(mask_id);
   out.push_str(")\"/></svg>");
   Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{collect_svg_fragment_ids, collect_svg_fragment_references, inline_svg_for_mask_id};
+  use std::collections::HashMap;
+
+  #[test]
+  fn svg_mask_image_helpers_do_not_panic_on_invalid_markup() {
+    let invalid = "<svg><";
+
+    let refs = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      collect_svg_fragment_references(invalid)
+    }));
+    assert!(refs.is_ok());
+    assert!(refs.unwrap().is_empty());
+
+    let ids =
+      std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| collect_svg_fragment_ids(invalid)));
+    assert!(ids.is_ok());
+    assert!(ids.unwrap().is_empty());
+
+    let defs = HashMap::from([("mask".to_string(), invalid.to_string())]);
+    let inlined = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+      inline_svg_for_mask_id(&defs, "mask", 10, 10)
+    }));
+    assert!(inlined.is_ok());
+    assert!(inlined.unwrap().is_some());
+  }
+
+  #[test]
+  fn svg_mask_image_helpers_collect_ids_and_references() {
+    let fragment = r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"><defs><mask id="m"></mask><g id="ref"></g><use xlink:href="#ref" fill="url(#m)"/></defs></svg>"##;
+
+    let refs = collect_svg_fragment_references(fragment);
+    assert!(refs.contains("ref"));
+    assert!(refs.contains("m"));
+
+    let ids = collect_svg_fragment_ids(fragment);
+    assert!(ids.contains("m"));
+    assert!(ids.contains("ref"));
+  }
 }
