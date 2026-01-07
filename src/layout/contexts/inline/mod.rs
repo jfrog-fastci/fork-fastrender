@@ -692,13 +692,18 @@ impl InlineFormattingContext {
           }
         };
 
-      if let Some(running_name) = child.style.running_position.as_ref() {
-        self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
-        let running = self.snapshot_running_fragment(child, available_width, running_name)?;
-        let anchor = self.create_running_anchor(child, running);
-        current_items.push(anchor);
-        whitespace.note_ignorable();
-        continue;
+      if matches!(
+        child.box_type,
+        BoxType::Block(_) | BoxType::Inline(_) | BoxType::Replaced(_)
+      ) {
+        if let Some(running_name) = child.style.running_position.as_ref() {
+          self.flush_pending_collapsible_space(&mut whitespace, &mut current_items)?;
+          let running = self.snapshot_running_fragment(child, available_width, running_name)?;
+          let anchor = self.create_running_anchor(child, running);
+          current_items.push(anchor);
+          whitespace.note_ignorable();
+          continue;
+        }
       }
 
       if matches!(
@@ -1536,13 +1541,18 @@ impl InlineFormattingContext {
         continue;
       }
 
-      if let Some(running_name) = child.style.running_position.as_ref() {
-        self.flush_pending_collapsible_space(whitespace, &mut items)?;
-        let running = self.snapshot_running_fragment(child, available_width, running_name)?;
-        let anchor = self.create_running_anchor(child, running);
-        items.push(anchor);
-        whitespace.note_ignorable();
-        continue;
+      if matches!(
+        child.box_type,
+        BoxType::Block(_) | BoxType::Inline(_) | BoxType::Replaced(_)
+      ) {
+        if let Some(running_name) = child.style.running_position.as_ref() {
+          self.flush_pending_collapsible_space(whitespace, &mut items)?;
+          let running = self.snapshot_running_fragment(child, available_width, running_name)?;
+          let anchor = self.create_running_anchor(child, running);
+          items.push(anchor);
+          whitespace.note_ignorable();
+          continue;
+        }
       }
       if matches!(
         child.style.position,

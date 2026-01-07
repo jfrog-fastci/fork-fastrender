@@ -3044,7 +3044,16 @@ impl BlockFormattingContext {
         }
       }
 
-      if let Some(running_name) = child.style.running_position.as_ref() {
+      let running_name = if matches!(
+        child.box_type,
+        BoxType::Block(_) | BoxType::Inline(_) | BoxType::Replaced(_)
+      ) {
+        child.style.running_position.as_ref()
+      } else {
+        None
+      };
+
+      if let Some(running_name) = running_name {
         let pending_margin = margin_ctx.pending_margin();
         // Running elements are positioned based on the hypothetical in-flow position. Make sure we
         // resolve intrinsic sizing keywords (`min-content`, `max-content`, `fit-content(...)`) the
