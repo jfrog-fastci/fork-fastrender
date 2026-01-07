@@ -607,3 +607,94 @@ fn rowspan_across_collapsed_row_removes_extra_border_spacing_gap() {
     "border-spacing should be applied once between adjacent rows (gap={gap})"
   );
 }
+
+#[test]
+fn colspan_across_collapsed_middle_column_keeps_remaining_columns_and_spacing() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table { display: inline-table; border-collapse: separate; border-spacing: 10px 0; table-layout: fixed; }
+          td { padding: 0; margin: 0; border: 0; font-size: 10px; line-height: 10px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col style="width: 30px" />
+          <col style="width: 40px; visibility: collapse" />
+          <col style="width: 50px" />
+          <tr>
+            <td colspan="3">A</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  let a = cells.get(&'A').expect("cell A present");
+  // Only the first and third columns remain (30px and 50px) with a single border-spacing gap (10px)
+  // between them.
+  assert!(
+    (a.rect.width() - 90.0).abs() < 0.1,
+    "colspan should collapse away hidden column + spacing (expected 90, got {})",
+    a.rect.width()
+  );
+}
+
+#[test]
+fn rowspan_over_collapsed_middle_row_keeps_later_rows_in_span() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table { display: inline-table; border-collapse: separate; border-spacing: 0 8px; table-layout: fixed; }
+          td { height: 10px; padding: 0; margin: 0; border: 0; font-size: 10px; line-height: 10px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col style="width: 40px" />
+          <col style="width: 40px" />
+          <tr>
+            <td rowspan="3">A</td>
+            <td>X</td>
+          </tr>
+          <tr style="visibility: collapse">
+            <td>(collapsed)</td>
+          </tr>
+          <tr>
+            <td>B</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 200, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  let a = cells.get(&'A').expect("cell A present");
+
+  // The original rowspan=3 covers rows 1 and 3 (with row 2 collapsed), so after collapse it should
+  // span 2 visible rows, including the single vertical border-spacing (8px) between them.
+  assert!(
+    (a.rect.height() - 28.0).abs() < 0.1,
+    "rowspan should include later visible row but skip collapsed row (expected 28, got {})",
+    a.rect.height()
+  );
+}
