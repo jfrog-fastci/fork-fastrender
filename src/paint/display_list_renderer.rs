@@ -6811,6 +6811,14 @@ impl DisplayListRenderer {
             Some("preserve-3d stacking contexts require serial painting".to_string());
           return Ok(true);
         }
+        // `mix-blend-mode` compositing is per-pixel, so it is tile-friendly *when the stacking
+        // context is an isolated blend group* (i.e. its contents are first rendered against a
+        // transparent backdrop).
+        //
+        // For non-isolated groups (CSS `isolation:auto`), the spec allows descendants to blend
+        // against pixels painted outside the group. The current tiler renders each tile from a
+        // clipped display-list slice and does not yet reproduce those non-isolated backdrop
+        // semantics. Fall back to serial painting for correctness until that support exists.
         if !matches!(sc.mix_blend_mode, BlendMode::Normal) && !sc.is_isolated {
           *fallback_reason =
             Some("mix-blend-mode on non-isolated context requires serial painting".to_string());
