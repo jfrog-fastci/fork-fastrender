@@ -31,6 +31,7 @@ FastRender treats native form controls as replaced elements so they participate 
   - Select caret (“▾”) is skipped when `control.appearance == Appearance::None` (gated inside `emit_form_control` / `paint_form_control`).
   - Checkbox/radio marks are skipped when `control.appearance == Appearance::None` (early-return in `emit_form_control` / `paint_form_control`).
 - Current limitations:
+  - `appearance:none` does **not** turn the element into a normal container: the control is still a `ReplacedType::FormControl`, so its DOM children are not laid out (e.g. `<button><svg>…</svg>Label</button>` collapses to a plain text label).
   - `appearance:none` does **not** currently suppress range painting (`FormControlKind::Range` still draws a track + thumb in both painters).
   - `appearance:none` does **not** yet disable all affordances (e.g. number/date glyphs are still painted today).
   - Vendor pseudo-elements like `::-webkit-slider-thumb`, `::-webkit-slider-runnable-track`, `::-moz-range-thumb`, etc. are not implemented yet, so fully custom range styling isn’t available.
