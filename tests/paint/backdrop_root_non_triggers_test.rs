@@ -139,3 +139,21 @@ fn will_change_contain_is_not_a_backdrop_root() {
   let pixmap = render("will-change: contain;");
   assert_child_inverts_body_bg(&pixmap);
 }
+
+#[test]
+fn backface_visibility_hidden_is_not_a_backdrop_root() {
+  let pixmap = render("backface-visibility: hidden;");
+  assert_child_inverts_body_bg(&pixmap);
+}
+
+#[test]
+fn will_change_contents_is_not_a_backdrop_root() {
+  let pixmap = render("will-change: contents;");
+  assert_child_inverts_body_bg(&pixmap);
+}
+
+#[test]
+fn will_change_scroll_position_is_not_a_backdrop_root() {
+  let pixmap = render("will-change: scroll-position;");
+  assert_child_inverts_body_bg(&pixmap);
+}
