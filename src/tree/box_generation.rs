@@ -3844,7 +3844,7 @@ fn object_has_renderable_external_content(styled: &StyledNode) -> bool {
   if !styled
     .node
     .get_attribute_ref("data")
-    .is_some_and(|data| !data.is_empty())
+    .is_some_and(|data| !data.trim().is_empty())
   {
     return false;
   }
@@ -4629,6 +4629,27 @@ mod tests {
     assert!(
       texts.iter().any(|t| t.contains("hi")),
       "fallback text from object children should be present"
+    );
+  }
+
+  #[test]
+  fn object_with_whitespace_data_renders_children() {
+    let html = "<html><body><object data=\"   \"><p>fallback</p></object></body></html>";
+    let dom = crate::dom::parse_html(html).expect("parse");
+    let styled = crate::style::cascade::apply_styles(&dom, &crate::css::types::StyleSheet::new());
+    let box_tree = generate_box_tree(&styled);
+
+    assert_eq!(
+      count_object_replacements(&box_tree.root),
+      0,
+      "object with whitespace-only data should render fallback content"
+    );
+
+    let mut texts = Vec::new();
+    collect_text(&box_tree.root, &mut texts);
+    assert!(
+      texts.iter().any(|t| t.contains("fallback")),
+      "fallback text should be present"
     );
   }
 
