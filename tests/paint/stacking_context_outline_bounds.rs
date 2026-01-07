@@ -40,7 +40,7 @@ fn stacking_context_layer_bounds_do_not_clip_outline() {
 
 #[test]
 fn stacking_context_outline_em_units_resolve_against_font_size() {
-  let mut renderer = create_renderer();
+  let mut renderer = create_stacking_context_bounds_renderer();
 
   let html = r#"
   <style>
