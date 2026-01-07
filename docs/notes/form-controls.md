@@ -52,6 +52,12 @@ FastRender does **not** implement that model yet (see limitations above). Implem
 
 This work is tracked in the capability map under `alg.forms.appearance-none`.
 
+## Regression coverage
+
+- Box-generation unit tests:
+  - `src/tree/box_generation.rs::appearance_none_does_not_disable_form_control_replacement`
+  - `src/tree/box_generation.rs::webkit_appearance_none_propagates_to_form_control`
+
 The offline page regression suite includes form-heavy fixtures under `tests/pages/fixtures/form_controls*`
 so we can catch large visual diffs caused by missing UA form control styling/painting. Regenerate
 their goldens with:
@@ -63,6 +69,8 @@ UPDATE_PAGES_GOLDEN=1 \
 ```
 
 Note: `PAGES_FIXTURE_FILTER` expects a comma-separated list of **exact** fixture names (it is not a prefix/regex match).
+
+Tip: to refresh a single page fixture, you can also use `PAGES_FIXTURE=<name>` instead of `PAGES_FIXTURE_FILTER`.
 
 The reference fixture at `tests/ref/fixtures/form_controls` exercises common control types and
 states (including size/rows/cols hints, invalid and disabled colors, unknown types, date/time
