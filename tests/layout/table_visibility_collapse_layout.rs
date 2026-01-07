@@ -809,6 +809,65 @@ fn column_visibility_collapse_removes_extra_border_spacing_gap() {
 }
 
 #[test]
+fn column_visibility_collapse_removes_extra_border_spacing_gap_rtl() {
+  ensure_rayon_threads();
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            display: inline-table;
+            border-collapse: separate;
+            border-spacing: 10px 0;
+            table-layout: fixed;
+            direction: rtl;
+          }
+          td { padding: 0; margin: 0; border: 0; font-size: 10px; line-height: 10px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col style="width: 30px" />
+          <col style="width: 40px; visibility: collapse" />
+          <col style="width: 50px" />
+          <tr>
+            <td>A</td>
+            <td>B</td>
+            <td>C</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  assert!(!cells.contains_key(&'B'), "collapsed column cell should not be laid out");
+
+  let a = cells.get(&'A').expect("cell A present");
+  let c = cells.get(&'C').expect("cell C present");
+
+  assert!(
+    a.rect.x() > c.rect.x(),
+    "expected RTL order A (right) > C (left), got A.x={} C.x={}",
+    a.rect.x(),
+    c.rect.x()
+  );
+  let gap = a.rect.x() - (c.rect.x() + c.rect.width());
+  assert!(
+    (gap - 10.0).abs() < 0.1,
+    "border-spacing should be applied once between adjacent columns in RTL (gap={gap})"
+  );
+}
+
+#[test]
 fn row_visibility_collapse_removes_extra_border_spacing_gap() {
   ensure_rayon_threads();
   let html = r#"
@@ -907,6 +966,7 @@ fn rowspan_across_collapsed_row_removes_extra_border_spacing_gap() {
 
 #[test]
 fn colspan_across_collapsed_middle_column_keeps_remaining_columns_and_spacing() {
+  ensure_rayon_threads();
   let html = r#"
     <html>
       <head>
@@ -948,7 +1008,55 @@ fn colspan_across_collapsed_middle_column_keeps_remaining_columns_and_spacing() 
 }
 
 #[test]
+fn colspan_across_collapsed_middle_column_keeps_remaining_columns_and_spacing_rtl() {
+  ensure_rayon_threads();
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          body { margin: 0; }
+          table {
+            display: inline-table;
+            border-collapse: separate;
+            border-spacing: 10px 0;
+            table-layout: fixed;
+            direction: rtl;
+          }
+          td { padding: 0; margin: 0; border: 0; font-size: 10px; line-height: 10px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <col style="width: 30px" />
+          <col style="width: 40px; visibility: collapse" />
+          <col style="width: 50px" />
+          <tr>
+            <td colspan="3">A</td>
+          </tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 400, 200).unwrap();
+
+  let table = find_table(&tree.root).expect("table fragment present");
+  let mut cells = HashMap::new();
+  collect_cells(table, (0.0, 0.0), &mut cells);
+
+  let a = cells.get(&'A').expect("cell A present");
+  assert!(
+    (a.rect.width() - 90.0).abs() < 0.1,
+    "colspan should collapse away hidden column + spacing in RTL (expected 90, got {})",
+    a.rect.width()
+  );
+}
+
+#[test]
 fn rowspan_over_collapsed_middle_row_keeps_later_rows_in_span() {
+  ensure_rayon_threads();
   let html = r#"
     <html>
       <head>
