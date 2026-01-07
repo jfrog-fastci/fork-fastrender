@@ -5,6 +5,7 @@ use fastrender::style::types::AlignContent;
 use fastrender::style::types::AlignItems;
 use fastrender::style::types::FlexDirection;
 use fastrender::style::types::FlexWrap;
+use fastrender::style::types::WritingMode;
 use fastrender::style::values::Length;
 use fastrender::tree::fragment_tree::FragmentContent;
 use fastrender::BoxNode;
@@ -362,6 +363,89 @@ fn flex_wrap_reverse_multi_line_align_content_start_packs_lines_to_top() {
   assert!(
     (tall_y - 10.0).abs() < 1e-3,
     "bottom line (tall child) should stack below the top line under wrap-reverse + align-content:start: {:?}",
+    debug_children
+  );
+}
+
+#[test]
+fn flex_wrap_reverse_vertical_rl_align_content_start_packs_lines_to_block_start() {
+  let fc = FlexFormattingContext::new();
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.writing_mode = WritingMode::VerticalRl;
+  container_style.flex_direction = FlexDirection::Row;
+  container_style.flex_wrap = FlexWrap::WrapReverse;
+  container_style.align_content = AlignContent::Start;
+  container_style.align_items = AlignItems::FlexStart;
+  container_style.width = Some(Length::px(100.0));
+  container_style.width_keyword = None;
+  container_style.height = Some(Length::px(40.0));
+  container_style.height_keyword = None;
+
+  let mut child_style = ComputedStyle::default();
+  child_style.display = Display::Block;
+  child_style.width = Some(Length::px(10.0));
+  child_style.width_keyword = None;
+  child_style.height = Some(Length::px(20.0));
+  child_style.height_keyword = None;
+  child_style.flex_shrink = 0.0;
+
+  let mut children = Vec::new();
+  for id in 1..=3 {
+    let mut child = BoxNode::new_block(
+      Arc::new(child_style.clone()),
+      FormattingContextType::Block,
+      vec![],
+    );
+    child.id = id;
+    children.push(child);
+  }
+
+  let first_id = children[0].id;
+  let last_id = children[2].id;
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    children,
+  );
+
+  let fragment = fc
+    .layout(&container, &LayoutConstraints::definite(100.0, 40.0))
+    .expect("layout succeeds");
+
+  let mut first_x = None;
+  let mut last_x = None;
+  let mut debug_children = Vec::new();
+
+  for child in fragment.children.iter() {
+    let id = fragment_box_id(&child.content);
+    debug_children.push((
+      id,
+      child.bounds.x(),
+      child.bounds.y(),
+      child.bounds.width(),
+      child.bounds.height(),
+    ));
+    match id {
+      Some(id) if id == first_id => first_x = Some(child.bounds.x()),
+      Some(id) if id == last_id => last_x = Some(child.bounds.x()),
+      _ => {}
+    }
+  }
+
+  let first_x = first_x.unwrap_or_else(|| panic!("missing first child: {:?}", debug_children));
+  let last_x = last_x.unwrap_or_else(|| panic!("missing last child: {:?}", debug_children));
+
+  assert!(
+    (first_x - 80.0).abs() < 1e-3,
+    "first column should start at x=80 under vertical-rl + wrap-reverse + align-content:start: {:?}",
+    debug_children
+  );
+  assert!(
+    (last_x - 90.0).abs() < 1e-3,
+    "second column should start at x=90 under vertical-rl + wrap-reverse + align-content:start: {:?}",
     debug_children
   );
 }
