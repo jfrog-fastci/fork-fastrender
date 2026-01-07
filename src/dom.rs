@@ -12120,6 +12120,27 @@ mod tests {
       "<select required> is invalid when the placeholder label option is the only selected option"
     );
 
+    let optgroup_first_option_empty_value = element_with_attrs(
+      "select",
+      vec![("required", "")],
+      vec![
+        element_with_attrs(
+          "optgroup",
+          vec![("label", "g")],
+          vec![element_with_attrs(
+            "option",
+            vec![("selected", ""), ("value", "")],
+            vec![],
+          )],
+        ),
+        element_with_attrs("option", vec![("value", "x")], vec![]),
+      ],
+    );
+    assert!(
+      ElementRef::new(&optgroup_first_option_empty_value).accessibility_is_valid(),
+      "<select required> is valid when the first option is inside an <optgroup>, even if its value is empty"
+    );
+
     let single_last_selected_wins = element_with_attrs(
       "select",
       vec![("required", "")],

@@ -5722,6 +5722,15 @@ mod tests {
   }
 
   #[test]
+  fn required_select_with_first_option_in_optgroup_empty_value_is_valid() {
+    let control = first_select_control_from_html(
+      "<html><body><select required><optgroup label=\"g\"><option selected value=\"\">Empty</option></optgroup><option value=\"a\">A</option></select></body></html>",
+    );
+    assert!(control.required);
+    assert!(!control.invalid);
+  }
+
+  #[test]
   fn required_multiple_select_without_selection_is_invalid() {
     let control = first_select_control_from_html(
       "<html><body><select multiple required><option>One</option><option>Two</option></select></body></html>",
