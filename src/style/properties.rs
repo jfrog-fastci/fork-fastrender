@@ -1310,6 +1310,24 @@ fn parse_timeline_scope(raw: &str) -> Option<TimelineScopeProperty> {
   }
 }
 
+#[cfg(test)]
+mod timeline_scope_apply_tests {
+  use super::*;
+  use crate::css::parser::parse_declarations;
+
+  #[test]
+  fn timeline_scope_declaration_updates_computed_style() {
+    let parent = ComputedStyle::default();
+    let decls = parse_declarations("timeline-scope: all;");
+    assert_eq!(decls.len(), 1);
+
+    let mut styles = ComputedStyle::default();
+    apply_declaration(&mut styles, &decls[0], &parent, 16.0, 16.0);
+
+    assert_eq!(styles.timeline_scope, TimelineScopeProperty::All);
+  }
+}
+
 pub(crate) fn parse_animation_timeline_list(raw: &str) -> Option<Vec<AnimationTimeline>> {
   let trimmed = raw.trim();
   if trimmed.is_empty() {
