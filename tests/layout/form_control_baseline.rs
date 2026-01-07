@@ -136,7 +136,8 @@ fn inline_text_like_form_controls_use_text_baseline() {
           selected: true,
           disabled: false,
           in_optgroup: false,
-        }],
+        }]
+        .into(),
         selected: vec![0],
       }),
     ),

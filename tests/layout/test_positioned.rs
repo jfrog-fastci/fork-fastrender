@@ -637,8 +637,8 @@ fn relative_position_vertical_rl_offsets_apply_to_physical_axes() {
   child_style.display = Display::Block;
   child_style.writing_mode = WritingMode::VerticalRl;
   child_style.position = Position::Relative;
-  child_style.left = Some(Length::percent(10.0)); // 10% of 200px width = 20px
-  child_style.top = Some(Length::percent(30.0)); // 30% of 100px height = 30px
+  child_style.left = InsetValue::Length(Length::percent(10.0)); // 10% of 200px width = 20px
+  child_style.top = InsetValue::Length(Length::percent(30.0)); // 30% of 100px height = 30px
   child_style.width = Some(Length::px(20.0));
   child_style.height = Some(Length::px(20.0));
   // For `vertical-rl`, the block-start side is physical right; inset from the right edge so the
