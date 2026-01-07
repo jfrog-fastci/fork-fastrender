@@ -13995,6 +13995,334 @@ mod tests {
   }
 
   #[test]
+  fn backdrop_filter_crosses_isolation_layers_for_backdrop_root_sampling() {
+    let bounds = Rect::from_xywh(0.0, 0.0, 50.0, 20.0);
+    let plane = Rect::from_xywh(0.0, 0.0, 25.0, 20.0);
+
+    let mut list = DisplayList::new();
+    // Paint a red backdrop outside the isolation layer.
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: bounds,
+      color: Rgba::RED,
+    }));
+
+    // `isolation: isolate` creates an implementation layer, but it must *not* establish a new
+    // Backdrop Root. A descendant backdrop-filter should still see the red backdrop behind it.
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      establishes_backdrop_root: false,
+      bounds,
+      plane_rect: bounds,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: true,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+      has_clip_path: false,
+    }));
+
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      establishes_backdrop_root: true,
+      bounds: plane,
+      plane_rect: plane,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: true,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
+      radii: BorderRadii::ZERO,
+      mask: None,
+      has_clip_path: false,
+    }));
+    list.push(DisplayItem::PopStackingContext);
+    list.push(DisplayItem::PopStackingContext);
+
+    let pixmap = DisplayListRenderer::new(50, 20, Rgba::TRANSPARENT, FontContext::new())
+      .unwrap()
+      .render(&list)
+      .unwrap();
+
+    assert_eq!(
+      pixel(&pixmap, 10, 10),
+      (0, 255, 255, 255),
+      "expected backdrop-filter to invert the red backdrop across isolation layers"
+    );
+    assert_eq!(
+      pixel(&pixmap, 40, 10),
+      (255, 0, 0, 255),
+      "expected pixels outside the backdrop-filter bounds to remain unchanged"
+    );
+  }
+
+  #[test]
+  fn preserve_3d_backdrop_filter_crosses_isolation_layers_for_backdrop_root_sampling() {
+    let bounds = Rect::from_xywh(0.0, 0.0, 50.0, 20.0);
+    let plane = Rect::from_xywh(0.0, 0.0, 25.0, 20.0);
+
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: bounds,
+      color: Rgba::RED,
+    }));
+
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      establishes_backdrop_root: false,
+      bounds,
+      plane_rect: bounds,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: true,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+      has_clip_path: false,
+    }));
+
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      establishes_backdrop_root: false,
+      bounds,
+      plane_rect: bounds,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: true,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Preserve3d,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+      has_clip_path: false,
+    }));
+
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      establishes_backdrop_root: true,
+      bounds: plane,
+      plane_rect: plane,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: true,
+      transform: Some(Transform3D::translate(0.0, 0.0, 10.0)),
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
+      radii: BorderRadii::ZERO,
+      mask: None,
+      has_clip_path: false,
+    }));
+    list.push(DisplayItem::PopStackingContext);
+
+    list.push(DisplayItem::PopStackingContext);
+    list.push(DisplayItem::PopStackingContext);
+
+    let pixmap = DisplayListRenderer::new(50, 20, Rgba::TRANSPARENT, FontContext::new())
+      .unwrap()
+      .render(&list)
+      .unwrap();
+
+    assert_eq!(
+      pixel(&pixmap, 10, 10),
+      (0, 255, 255, 255),
+      "expected preserve-3d backdrop-filter to invert the red backdrop across isolation layers"
+    );
+    assert_eq!(
+      pixel(&pixmap, 40, 10),
+      (255, 0, 0, 255),
+      "expected pixels outside the backdrop-filter bounds to remain unchanged"
+    );
+  }
+
+  #[test]
+  fn backdrop_filter_stops_at_opacity_backdrop_root_trigger() {
+    let bounds = Rect::from_xywh(0.0, 0.0, 50.0, 20.0);
+    let plane = Rect::from_xywh(0.0, 0.0, 25.0, 20.0);
+
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: bounds,
+      color: Rgba::RED,
+    }));
+
+    // `opacity < 1` establishes a Backdrop Root. Descendant backdrop-filters must not sample
+    // content outside this stacking context, otherwise the opacity would effectively be applied
+    // twice (see filter-effects-2 §Backdrop Root Triggers).
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      establishes_backdrop_root: true,
+      bounds,
+      plane_rect: bounds,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 0.5,
+      is_isolated: false,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+      has_clip_path: false,
+    }));
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      establishes_backdrop_root: true,
+      bounds: plane,
+      plane_rect: plane,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: true,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
+      radii: BorderRadii::ZERO,
+      mask: None,
+      has_clip_path: false,
+    }));
+    list.push(DisplayItem::PopStackingContext);
+    list.push(DisplayItem::PopStackingContext);
+
+    let pixmap = DisplayListRenderer::new(50, 20, Rgba::TRANSPARENT, FontContext::new())
+      .unwrap()
+      .render(&list)
+      .unwrap();
+
+    assert_eq!(
+      pixel(&pixmap, 10, 10),
+      (255, 0, 0, 255),
+      "expected backdrop-filter to stop at the opacity Backdrop Root"
+    );
+    assert_eq!(
+      pixel(&pixmap, 40, 10),
+      (255, 0, 0, 255),
+      "expected pixels outside the backdrop-filter bounds to remain unchanged"
+    );
+  }
+
+  #[test]
+  fn preserve_3d_backdrop_filter_stops_at_opacity_backdrop_root_trigger() {
+    let bounds = Rect::from_xywh(0.0, 0.0, 50.0, 20.0);
+    let plane = Rect::from_xywh(0.0, 0.0, 25.0, 20.0);
+
+    let mut list = DisplayList::new();
+    list.push(DisplayItem::FillRect(FillRectItem {
+      rect: bounds,
+      color: Rgba::RED,
+    }));
+
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      establishes_backdrop_root: true,
+      bounds,
+      plane_rect: bounds,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 0.5,
+      is_isolated: false,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+      has_clip_path: false,
+    }));
+
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      establishes_backdrop_root: false,
+      bounds,
+      plane_rect: bounds,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: false,
+      transform: None,
+      child_perspective: None,
+      transform_style: TransformStyle::Preserve3d,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: Vec::new(),
+      radii: BorderRadii::ZERO,
+      mask: None,
+      has_clip_path: false,
+    }));
+
+    list.push(DisplayItem::PushStackingContext(StackingContextItem {
+      z_index: 0,
+      creates_stacking_context: true,
+      establishes_backdrop_root: true,
+      bounds: plane,
+      plane_rect: plane,
+      mix_blend_mode: BlendMode::Normal,
+      opacity: 1.0,
+      is_isolated: true,
+      transform: Some(Transform3D::translate(0.0, 0.0, 10.0)),
+      child_perspective: None,
+      transform_style: TransformStyle::Flat,
+      backface_visibility: BackfaceVisibility::Visible,
+      filters: Vec::new(),
+      backdrop_filters: vec![ResolvedFilter::Invert(1.0)],
+      radii: BorderRadii::ZERO,
+      mask: None,
+      has_clip_path: false,
+    }));
+    list.push(DisplayItem::PopStackingContext);
+    list.push(DisplayItem::PopStackingContext);
+    list.push(DisplayItem::PopStackingContext);
+
+    let pixmap = DisplayListRenderer::new(50, 20, Rgba::TRANSPARENT, FontContext::new())
+      .unwrap()
+      .render(&list)
+      .unwrap();
+
+    assert_eq!(
+      pixel(&pixmap, 10, 10),
+      (255, 0, 0, 255),
+      "expected preserve-3d backdrop-filter to stop at the opacity Backdrop Root"
+    );
+    assert_eq!(
+      pixel(&pixmap, 40, 10),
+      (255, 0, 0, 255),
+      "expected pixels outside the backdrop-filter bounds to remain unchanged"
+    );
+  }
+
+  #[test]
   fn preserve_3d_offscreen_plane_is_culled_before_rasterization() {
     RENDER_SCENE_ITEM_INVOCATIONS.with(|count| count.set(0));
 
