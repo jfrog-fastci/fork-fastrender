@@ -1580,6 +1580,36 @@ impl FormattingContext for FlexFormattingContext {
                         style.height_keyword = None;
                       }
                     }
+                    if matches!(
+                      box_node.style.flex_basis,
+                      crate::style::types::FlexBasis::Auto | crate::style::types::FlexBasis::Content
+                    ) {
+                      // Flexbox determines the flex base size using max-content sizing, and it does
+                      // so *without clamping* by the flex item's min/max main sizes (CSS Flexbox
+                      // §9.2). Taffy applies min/max constraints separately when resolving the
+                      // hypothetical main size, so the measurement callback should ignore them here.
+                      let probing_main_axis = if container_main_axis_is_horizontal {
+                        known_dimensions.width.is_none()
+                          && matches!(avail.width, AvailableSpace::MaxContent)
+                      } else {
+                        known_dimensions.height.is_none()
+                          && matches!(avail.height, AvailableSpace::MaxContent)
+                      };
+                      if probing_main_axis {
+                        let style = cloned_style.get_or_insert_with(|| (*box_node.style).clone());
+                        if container_main_axis_is_horizontal {
+                          style.min_width = None;
+                          style.max_width = None;
+                          style.min_width_keyword = None;
+                          style.max_width_keyword = None;
+                        } else {
+                          style.min_height = None;
+                          style.max_height = None;
+                          style.min_height_keyword = None;
+                          style.max_height_keyword = None;
+                        }
+                      }
+                    }
                     // When the available inline size is intrinsic (min-/max-content), percentage
                     // widths/min/max can't be resolved (§10.5). Treat them as auto so intrinsic
                     // sizing uses content-driven sizes instead of forcing 100% of an unknown base.

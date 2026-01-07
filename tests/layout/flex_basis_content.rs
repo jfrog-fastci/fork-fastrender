@@ -221,3 +221,97 @@ fn flex_basis_content_uses_max_content_size_for_base_size() {
     "item should size to its max-content width when flex-basis is content",
   );
 }
+
+#[test]
+fn flex_basis_content_ignores_min_main_size_when_growing() {
+  let text = "x y";
+
+  let block_fc = BlockFormattingContext::new();
+  let measure = BoxNode::new_block(
+    Arc::new(ComputedStyle::default()),
+    FormattingContextType::Block,
+    vec![BoxNode::new_text(
+      Arc::new(ComputedStyle::default()),
+      text.to_string(),
+    )],
+  );
+  let (_, max_content) = block_fc
+    .compute_intrinsic_inline_sizes(&measure)
+    .expect("intrinsic inline sizes");
+  assert!(
+    max_content < 100.0,
+    "expected test text to have a small max-content width; got {max_content:.2}"
+  );
+
+  let container_width = 600.0;
+  let fixed_width = 200.0;
+
+  let mut container_style = ComputedStyle::default();
+  container_style.display = Display::Flex;
+  container_style.width = Some(Length::px(container_width));
+
+  let mut child_a_style = ComputedStyle::default();
+  child_a_style.display = Display::Block;
+  child_a_style.min_width = Some(Length::px(100.0));
+  child_a_style.flex_grow = 1.0;
+  child_a_style.flex_shrink = 0.0;
+  child_a_style.flex_basis = FlexBasis::Content;
+
+  let mut child_b_style = ComputedStyle::default();
+  child_b_style.display = Display::Block;
+  child_b_style.width = Some(Length::px(fixed_width));
+  child_b_style.flex_grow = 1.0;
+  child_b_style.flex_shrink = 0.0;
+  child_b_style.flex_basis = FlexBasis::Auto;
+
+  let mut child_a = BoxNode::new_block(
+    Arc::new(child_a_style),
+    FormattingContextType::Block,
+    vec![BoxNode::new_text(
+      Arc::new(ComputedStyle::default()),
+      text.to_string(),
+    )],
+  );
+  child_a.id = 30;
+  let mut child_b = BoxNode::new_block(
+    Arc::new(child_b_style),
+    FormattingContextType::Block,
+    vec![],
+  );
+  child_b.id = 31;
+
+  let container = BoxNode::new_block(
+    Arc::new(container_style),
+    FormattingContextType::Flex,
+    vec![child_a, child_b],
+  );
+
+  let free_space = container_width - (max_content + fixed_width);
+  let expected_a = max_content + free_space / 2.0;
+  let expected_b = fixed_width + free_space / 2.0;
+
+  let fc = FlexFormattingContext::new();
+  let fragment = fc
+    .layout(
+      &container,
+      &LayoutConstraints::new(
+        AvailableSpace::Definite(container_width),
+        AvailableSpace::Indefinite,
+      ),
+    )
+    .expect("layout succeeds");
+
+  let child_a_fragment = find_first_fragment_with_id(&fragment, 30).expect("child A fragment");
+  let child_b_fragment = find_first_fragment_with_id(&fragment, 31).expect("child B fragment");
+
+  assert_approx(
+    child_a_fragment.bounds.width(),
+    expected_a,
+    "child A should start from max-content (not min-width) when distributing free space",
+  );
+  assert_approx(
+    child_b_fragment.bounds.width(),
+    expected_b,
+    "child B should receive the expected share of free space",
+  );
+}
