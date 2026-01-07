@@ -2104,7 +2104,16 @@ impl Painter {
       .map(|s| s.mix_blend_mode)
       .unwrap_or(MixBlendMode::Normal);
     let isolated = style_ref
-      .map(|s| matches!(s.isolation, crate::style::types::Isolation::Isolate))
+      .map(|s| {
+        matches!(s.isolation, crate::style::types::Isolation::Isolate)
+          // `will-change` hints for Backdrop Root triggers (Filter Effects 2) must behave as if the
+          // trigger were present, scoping descendant backdrop-filter sampling. In the legacy paint
+          // path we reuse the "isolated group" layer allocation to create that boundary.
+          //
+          // Avoid overriding explicit `mix-blend-mode` compositing: when the stacking context root
+          // itself is blending, we still need to composite with its blend mode.
+          || (matches!(blend_mode, MixBlendMode::Normal) && s.will_change.establishes_backdrop_root())
+      })
       .unwrap_or(false);
     let filters = style_ref
       .map(|s| resolve_filters(&s.filter, s, viewport, &self.font_ctx, svg_filters))

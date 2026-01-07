@@ -4129,58 +4129,60 @@ impl DisplayListBuilder {
     offset: Point,
     visibility: Visibility,
   ) {
-    let paint_pool = crate::paint::paint_thread_pool::paint_pool();
-    let pool = paint_pool.pool;
-    let threads = paint_pool.threads;
-    if let Some(plan) = self.plan_parallel(fragments.len(), threads) {
-      let start = self.parallel_stats.as_ref().map(|_| Instant::now());
-      let deadline = active_deadline();
-      let root_deadline = crate::render_control::root_deadline();
-      let stage = active_stage();
-      let diagnostics_session = paint_diagnostics_session_id();
-      let run_build = || -> Vec<(usize, DisplayList, ThreadId)> {
-        fragments
-          .par_chunks(plan.chunk_size)
-          .enumerate()
-          .map(|(chunk_idx, chunk)| {
-            let chunk_offset = chunk_idx * plan.chunk_size;
-            let _diagnostics_guard = diagnostics_session.map(PaintDiagnosticsThreadGuard::enter);
-            let deadline = deadline.clone();
-            let root_deadline = root_deadline.clone();
-            with_deadline(root_deadline.as_ref(), || {
-              with_deadline(deadline.as_ref(), || {
-                let _stage_guard = StageGuard::install(stage);
-                let mut builder = self.fork();
-                let mut counter = 0usize;
-                for fragment in chunk {
-                  if builder.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
-                    break;
+    if self.parallel_enabled {
+      let paint_pool = crate::paint::paint_thread_pool::paint_pool();
+      let pool = paint_pool.pool;
+      let threads = paint_pool.threads;
+      if let Some(plan) = self.plan_parallel(fragments.len(), threads) {
+        let start = self.parallel_stats.as_ref().map(|_| Instant::now());
+        let deadline = active_deadline();
+        let root_deadline = crate::render_control::root_deadline();
+        let stage = active_stage();
+        let diagnostics_session = paint_diagnostics_session_id();
+        let run_build = || -> Vec<(usize, DisplayList, ThreadId)> {
+          fragments
+            .par_chunks(plan.chunk_size)
+            .enumerate()
+            .map(|(chunk_idx, chunk)| {
+              let chunk_offset = chunk_idx * plan.chunk_size;
+              let _diagnostics_guard = diagnostics_session.map(PaintDiagnosticsThreadGuard::enter);
+              let deadline = deadline.clone();
+              let root_deadline = root_deadline.clone();
+              with_deadline(root_deadline.as_ref(), || {
+                with_deadline(deadline.as_ref(), || {
+                  let _stage_guard = StageGuard::install(stage);
+                  let mut builder = self.fork();
+                  let mut counter = 0usize;
+                  for fragment in chunk {
+                    if builder.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
+                      break;
+                    }
+                    builder.build_fragment(fragment, offset, visibility);
                   }
-                  builder.build_fragment(fragment, offset, visibility);
-                }
-                (chunk_offset, builder.list, std::thread::current().id())
+                  (chunk_offset, builder.list, std::thread::current().id())
+                })
               })
             })
-          })
-          .collect()
-      };
-      let mut partials: Vec<(usize, DisplayList, ThreadId)> = if let Some(pool) = pool {
-        pool.install(run_build)
-      } else {
-        run_build()
-      };
-      if let (Some(stats), Some(start)) = (self.parallel_stats.as_ref(), start) {
-        stats.record_parallel(
-          partials.len(),
-          start.elapsed(),
-          partials.iter().map(|(_, _, thread)| *thread),
-        );
+            .collect()
+        };
+        let mut partials: Vec<(usize, DisplayList, ThreadId)> = if let Some(pool) = pool {
+          pool.install(run_build)
+        } else {
+          run_build()
+        };
+        if let (Some(stats), Some(start)) = (self.parallel_stats.as_ref(), start) {
+          stats.record_parallel(
+            partials.len(),
+            start.elapsed(),
+            partials.iter().map(|(_, _, thread)| *thread),
+          );
+        }
+        partials.sort_by_key(|(idx, _, _)| *idx);
+        for (_, list, _) in partials {
+          self.list.append(list);
+        }
+        return;
       }
-      partials.sort_by_key(|(idx, _, _)| *idx);
-      for (_, list, _) in partials {
-        self.list.append(list);
-      }
-      return;
     }
 
     let serial_start = self.parallel_stats.as_ref().map(|_| Instant::now());
@@ -4203,62 +4205,64 @@ impl DisplayListBuilder {
     suppress_opacity: bool,
     visibility: Visibility,
   ) {
-    let paint_pool = crate::paint::paint_thread_pool::paint_pool();
-    let pool = paint_pool.pool;
-    let threads = paint_pool.threads;
-    if let Some(plan) = self.plan_parallel(fragments.len(), threads) {
-      let start = self.parallel_stats.as_ref().map(|_| Instant::now());
-      let deadline = active_deadline();
-      let root_deadline = crate::render_control::root_deadline();
-      let stage = active_stage();
-      let diagnostics_session = paint_diagnostics_session_id();
-      let run_build = || -> Vec<(usize, DisplayList, ThreadId)> {
-        fragments
-          .par_chunks(plan.chunk_size)
-          .enumerate()
-          .map(|(chunk_idx, chunk)| {
-            let chunk_offset = chunk_idx * plan.chunk_size;
-            let _diagnostics_guard = diagnostics_session.map(PaintDiagnosticsThreadGuard::enter);
-            let deadline = deadline.clone();
-            let root_deadline = root_deadline.clone();
-            with_deadline(root_deadline.as_ref(), || {
-              with_deadline(deadline.as_ref(), || {
-                let _stage_guard = StageGuard::install(stage);
-                let mut builder = self.fork();
-                let mut counter = 0usize;
-                for fragment in chunk {
-                  if builder.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
-                    break;
+    if self.parallel_enabled {
+      let paint_pool = crate::paint::paint_thread_pool::paint_pool();
+      let pool = paint_pool.pool;
+      let threads = paint_pool.threads;
+      if let Some(plan) = self.plan_parallel(fragments.len(), threads) {
+        let start = self.parallel_stats.as_ref().map(|_| Instant::now());
+        let deadline = active_deadline();
+        let root_deadline = crate::render_control::root_deadline();
+        let stage = active_stage();
+        let diagnostics_session = paint_diagnostics_session_id();
+        let run_build = || -> Vec<(usize, DisplayList, ThreadId)> {
+          fragments
+            .par_chunks(plan.chunk_size)
+            .enumerate()
+            .map(|(chunk_idx, chunk)| {
+              let chunk_offset = chunk_idx * plan.chunk_size;
+              let _diagnostics_guard = diagnostics_session.map(PaintDiagnosticsThreadGuard::enter);
+              let deadline = deadline.clone();
+              let root_deadline = root_deadline.clone();
+              with_deadline(root_deadline.as_ref(), || {
+                with_deadline(deadline.as_ref(), || {
+                  let _stage_guard = StageGuard::install(stage);
+                  let mut builder = self.fork();
+                  let mut counter = 0usize;
+                  for fragment in chunk {
+                    if builder.deadline_reached_periodic(&mut counter, DEADLINE_STRIDE) {
+                      break;
+                    }
+                    if suppress_opacity {
+                      builder.build_fragment_internal(fragment, offset, false, true, visibility);
+                    } else {
+                      builder.build_fragment_shallow(fragment, offset, visibility);
+                    }
                   }
-                  if suppress_opacity {
-                    builder.build_fragment_internal(fragment, offset, false, true, visibility);
-                  } else {
-                    builder.build_fragment_shallow(fragment, offset, visibility);
-                  }
-                }
-                (chunk_offset, builder.list, std::thread::current().id())
+                  (chunk_offset, builder.list, std::thread::current().id())
+                })
               })
             })
-          })
-          .collect()
-      };
-      let mut partials: Vec<(usize, DisplayList, ThreadId)> = if let Some(pool) = pool {
-        pool.install(run_build)
-      } else {
-        run_build()
-      };
-      if let (Some(stats), Some(start)) = (self.parallel_stats.as_ref(), start) {
-        stats.record_parallel(
-          partials.len(),
-          start.elapsed(),
-          partials.iter().map(|(_, _, thread)| *thread),
-        );
+            .collect()
+        };
+        let mut partials: Vec<(usize, DisplayList, ThreadId)> = if let Some(pool) = pool {
+          pool.install(run_build)
+        } else {
+          run_build()
+        };
+        if let (Some(stats), Some(start)) = (self.parallel_stats.as_ref(), start) {
+          stats.record_parallel(
+            partials.len(),
+            start.elapsed(),
+            partials.iter().map(|(_, _, thread)| *thread),
+          );
+        }
+        partials.sort_by_key(|(idx, _, _)| *idx);
+        for (_, list, _) in partials {
+          self.list.append(list);
+        }
+        return;
       }
-      partials.sort_by_key(|(idx, _, _)| *idx);
-      for (_, list, _) in partials {
-        self.list.append(list);
-      }
-      return;
     }
 
     let serial_start = self.parallel_stats.as_ref().map(|_| Instant::now());

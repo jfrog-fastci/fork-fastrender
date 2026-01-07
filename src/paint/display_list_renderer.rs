@@ -9067,6 +9067,11 @@ impl DisplayListRenderer {
           )
           || !scaled_filters.is_empty()
           || has_backdrop
+          // Filter Effects Level 2 Backdrop Roots must isolate backdrop sampling for descendants
+          // (e.g. `backdrop-filter`). Some triggers (notably `will-change`) can establish a
+          // backdrop root without otherwise requiring an offscreen surface, so ensure we still
+          // allocate a layer boundary in those cases.
+          || item.establishes_backdrop_root
           || opacity < 1.0 - f32::EPSILON
           || mask.is_some()
           || item.has_clip_path
