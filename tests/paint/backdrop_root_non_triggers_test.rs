@@ -193,3 +193,15 @@ fn overflow_clip_is_not_a_backdrop_root() {
   let pixmap = render("overflow: clip;");
   assert_child_inverts_body_bg(&pixmap);
 }
+
+#[test]
+fn clip_rect_is_not_a_backdrop_root() {
+  let pixmap = render("position: absolute; left: 0; top: 0; clip: rect(0px, 40px, 40px, 0px);");
+  assert_child_inverts_body_bg(&pixmap);
+}
+
+#[test]
+fn container_type_size_is_not_a_backdrop_root() {
+  let pixmap = render("container-type: size;");
+  assert_child_inverts_body_bg(&pixmap);
+}
