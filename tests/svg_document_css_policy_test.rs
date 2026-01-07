@@ -34,6 +34,27 @@ fn serialized_inline_svg(html: &str, width: f32, height: f32) -> Option<SvgConte
 }
 
 #[test]
+fn svg_document_css_forced_on_injects_even_without_class_or_id() {
+  let html = r#"
+    <style>rect { fill: red; }</style>
+    <svg width="10" height="10" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>
+  "#;
+
+  let content = runtime::with_runtime_toggles(
+    Arc::new(RuntimeToggles::from_map(HashMap::from([(
+      "FASTR_SVG_EMBED_DOCUMENT_CSS".to_string(),
+      "1".to_string(),
+    )]))),
+    || serialized_inline_svg(html, 20.0, 20.0).expect("serialize svg"),
+  );
+
+  assert!(
+    content.document_css_injection.is_some(),
+    "document CSS injection should happen when forced on even without class/id in the SVG subtree"
+  );
+}
+
+#[test]
 fn svg_document_css_embedding_policy_respects_svg_count_overrides_and_size_limit() {
   let html_many_svgs = r#"
     <style>

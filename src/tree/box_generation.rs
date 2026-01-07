@@ -1304,21 +1304,7 @@ fn serialize_svg_subtree(
     any.then_some(out)
   }
 
-  fn svg_uses_document_css(node: &StyledNode) -> bool {
-    if node.node.get_attribute_ref("class").is_some() || node.node.get_attribute_ref("id").is_some()
-    {
-      return true;
-    }
-    if let Some(tag) = node.node.tag_name() {
-      if tag.eq_ignore_ascii_case("foreignObject") {
-        return true;
-      }
-    }
-    node.children.iter().any(svg_uses_document_css)
-  }
-
-  let embed_document_css =
-    svg_document_css_style_element.is_some() && svg_uses_document_css(styled);
+  let embed_document_css = svg_document_css_style_element.is_some();
 
   fn serialize_foreign_object_placeholder(
     styled: &StyledNode,
