@@ -3,7 +3,6 @@
 //! These tests verify the complete rendering pipeline from HTML/CSS to images.
 
 use fastrender::{FastRender, FastRenderConfig};
-use image::GenericImageView;
 
 fn with_large_stack<F, R>(f: F) -> R
 where
@@ -85,6 +84,44 @@ fn preserve_3d_depth_sorting_orders_by_z() {
     // Sample near the center of the scene; the red front face should be drawn over green.
     let pixel = image.get_pixel(75, 75);
     assert!(pixel[0] > pixel[1], "front face should win depth sort");
+  });
+}
+
+#[test]
+fn svg_preserve_aspect_ratio_none_keeps_auto_height_from_intrinsic_height() {
+  with_large_stack(|| {
+    let html = r#"
+        <!doctype html>
+        <style>
+          html, body { margin: 0; padding: 0; background: rgb(0 255 0); }
+          svg {
+            display: block;
+            width: 100px;
+            height: auto;
+            background: rgb(255 0 0);
+          }
+        </style>
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="200"
+          height="100"
+          preserveAspectRatio="none"
+        ></svg>
+    "#;
+
+    let mut renderer = FastRender::new().unwrap();
+    let png_bytes = renderer.render_to_png(html, 200, 200).unwrap();
+    let image = image::load_from_memory(&png_bytes).unwrap().to_rgba8();
+
+    // The SVG has an intrinsic size of 200x100 but explicitly declares it has no intrinsic ratio
+    // (`preserveAspectRatio="none"`). With `width:100px; height:auto`, the used height should come
+    // from the intrinsic height (100px), not from an inferred 2:1 ratio (which would yield 50px).
+    let pixel = image.get_pixel(10, 80);
+    assert!(
+      pixel[0] > 200 && pixel[1] < 50 && pixel[2] < 50,
+      "expected svg background red at y=80; got rgba={:?}",
+      pixel.0
+    );
   });
 }
 
