@@ -71,6 +71,15 @@ pub enum MathLength {
   Px(f32),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MathLengthOrKeyword {
+  Length(MathLength),
+  Thin,
+  Medium,
+  Thick,
+  Zero,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowAlign {
   Axis,
@@ -170,6 +179,10 @@ pub enum MathNode {
   Fraction {
     numerator: Box<MathNode>,
     denominator: Box<MathNode>,
+    linethickness: Option<MathLengthOrKeyword>,
+    bevelled: bool,
+    numalign: ColumnAlign,
+    denomalign: ColumnAlign,
   },
   Sqrt(Box<MathNode>),
   Root {
@@ -406,6 +419,20 @@ fn parse_math_length(raw: Option<&str>) -> Option<MathLength> {
   value.parse::<f32>().ok().map(MathLength::Em)
 }
 
+fn parse_math_length_or_keyword(raw: Option<&str>) -> Option<MathLengthOrKeyword> {
+  let value = raw?.trim();
+  if value.is_empty() {
+    return None;
+  }
+  match value.to_ascii_lowercase().as_str() {
+    "thin" => Some(MathLengthOrKeyword::Thin),
+    "medium" => Some(MathLengthOrKeyword::Medium),
+    "thick" => Some(MathLengthOrKeyword::Thick),
+    "0" => Some(MathLengthOrKeyword::Zero),
+    _ => parse_math_length(Some(value)).map(MathLengthOrKeyword::Length),
+  }
+}
+
 fn parse_math_size(raw: &str) -> Option<MathSize> {
   match raw.trim().to_ascii_lowercase().as_str() {
     "small" => Some(MathSize::Scale(0.8)),
@@ -476,6 +503,10 @@ fn parse_column_align_list(value: Option<&str>) -> Vec<ColumnAlign> {
         .collect()
     })
     .unwrap_or_default()
+}
+
+fn parse_column_align(value: Option<&str>) -> Option<ColumnAlign> {
+  value.and_then(|v| parse_column_align_list(Some(v)).into_iter().next())
 }
 
 fn parse_menclose_notation(value: Option<&str>) -> Vec<MencloseNotation> {
@@ -663,9 +694,19 @@ pub fn parse_mathml(node: &DomNode) -> Option<MathNode> {
           let mut children = parse_children(node).into_iter();
           let num = children.next().unwrap_or_else(empty_text_node);
           let den = children.next().unwrap_or_else(empty_text_node);
+          let linethickness = parse_math_length_or_keyword(node.get_attribute_ref("linethickness"));
+          let bevelled = parse_display_style(node.get_attribute_ref("bevelled")).unwrap_or(false);
+          let numalign =
+            parse_column_align(node.get_attribute_ref("numalign")).unwrap_or(ColumnAlign::Center);
+          let denomalign =
+            parse_column_align(node.get_attribute_ref("denomalign")).unwrap_or(ColumnAlign::Center);
           Some(MathNode::Fraction {
             numerator: Box::new(num),
             denominator: Box::new(den),
+            linethickness,
+            bevelled,
+            numalign,
+            denomalign,
           })
         }
         "msqrt" => {
@@ -1748,12 +1789,25 @@ impl MathLayoutContext {
     &mut self,
     num: &MathNode,
     den: &MathNode,
+    linethickness: Option<MathLengthOrKeyword>,
+    bevelled: bool,
+    numalign: ColumnAlign,
+    denomalign: ColumnAlign,
     style: &MathStyle,
     base_style: &ComputedStyle,
   ) -> MathLayout {
+    fn align_x(align: ColumnAlign, container_width: f32, child_width: f32) -> f32 {
+      let free = (container_width - child_width).max(0.0);
+      match align {
+        ColumnAlign::Left => 0.0,
+        ColumnAlign::Center => free * 0.5,
+        ColumnAlign::Right => free,
+      }
+    }
+
     let metrics = self.base_font_metrics(base_style, style.font_size);
     let constants = self.default_math_constants(style, base_style, MathVariant::Normal);
-    let axis = Self::axis_height(&metrics, style, constants.as_ref());
+
     let script_style = if style.display_style {
       *style
     } else {
@@ -1761,15 +1815,108 @@ impl MathLayoutContext {
     };
     let numerator = self.layout_node(num, &script_style, base_style);
     let denominator = self.layout_node(den, &script_style, base_style);
-    let annotations = numerator
-      .annotations
-      .merge_trailing(&denominator.annotations);
-    let width = numerator.width.max(denominator.width);
-    let rule = constants
+
+    if bevelled {
+      let x_height = metrics.x_height.unwrap_or(style.font_size * 0.5);
+      let sup_shift = constants
+        .as_ref()
+        .and_then(|c| c.superscript_shift_up)
+        .unwrap_or_else(|| {
+          (metrics.ascent * 0.6)
+            .max(x_height * 0.65)
+            .max(style.font_size * if style.display_style { 0.4 } else { 0.34 })
+        });
+      let sub_shift = constants
+        .as_ref()
+        .and_then(|c| c.subscript_shift_down)
+        .unwrap_or_else(|| (metrics.descent * 0.8 + x_height * 0.2).max(style.font_size * 0.24));
+
+      let num_ascent = numerator.baseline;
+      let num_descent = numerator.height - numerator.baseline;
+      let den_ascent = denominator.baseline;
+      let den_descent = denominator.height - denominator.baseline;
+
+      let num_top = sup_shift + num_ascent;
+      let num_bottom = sup_shift - num_descent;
+      let den_top = -sub_shift + den_ascent;
+      let den_bottom = -sub_shift - den_descent;
+
+      let target_ascent = num_top.max(den_top).max(0.0);
+      let target_descent = (-num_bottom.min(den_bottom)).max(0.0);
+      let slash_text = "∕";
+      let slash_layout = self
+        .stretch_operator_vertical(
+          slash_text,
+          MathVariant::Normal,
+          target_ascent,
+          target_descent,
+          style,
+          base_style,
+        )
+        .unwrap_or_else(|| self.layout_glyphs(slash_text, base_style, style, MathVariant::Normal));
+
+      let slash_ascent = slash_layout.baseline;
+      let slash_descent = slash_layout.height - slash_layout.baseline;
+      let slash_top = slash_ascent;
+      let slash_bottom = -slash_descent;
+
+      let ascent = num_top.max(den_top).max(slash_top).max(0.0);
+      let descent = (-num_bottom.min(den_bottom).min(slash_bottom).min(0.0)).max(0.0);
+      let baseline = ascent;
+
+      let gap = Self::script_gap(style) * 0.5;
+      let num_x = 0.0;
+      let slash_x = numerator.width + gap;
+      let den_x = slash_x + slash_layout.width + gap;
+      let width = den_x + denominator.width;
+
+      let num_y = (baseline - sup_shift) - numerator.baseline;
+      let slash_y = baseline - slash_layout.baseline;
+      let den_y = (baseline + sub_shift) - denominator.baseline;
+
+      let mut fragments = Vec::new();
+      for frag in numerator.fragments {
+        fragments.push(frag.translate(Point::new(num_x, num_y)));
+      }
+      for frag in slash_layout.fragments {
+        fragments.push(frag.translate(Point::new(slash_x, slash_y)));
+      }
+      for frag in denominator.fragments {
+        fragments.push(frag.translate(Point::new(den_x, den_y)));
+      }
+
+      let annotations = numerator
+        .annotations
+        .merge_trailing(&slash_layout.annotations)
+        .merge_trailing(&denominator.annotations);
+      return MathLayout {
+        width,
+        height: baseline + descent,
+        baseline,
+        fragments,
+        annotations,
+      };
+    }
+
+    let axis = Self::axis_height(&metrics, style, constants.as_ref());
+
+    let default_rule = constants
       .as_ref()
       .and_then(|c| c.fraction_rule_thickness)
       .unwrap_or_else(|| Self::rule_thickness(style));
-    let gap = if style.display_style {
+    let mut rule = match linethickness {
+      None | Some(MathLengthOrKeyword::Medium) => default_rule,
+      Some(MathLengthOrKeyword::Thin) => default_rule * 0.5,
+      Some(MathLengthOrKeyword::Thick) => default_rule * 2.0,
+      Some(MathLengthOrKeyword::Zero) => 0.0,
+      Some(MathLengthOrKeyword::Length(len)) => self.resolve_length(len, style, &metrics),
+    };
+    if rule <= 0.0 {
+      rule = 0.0;
+    }
+    let has_rule = rule > 0.0;
+
+    let num_gap = if style.display_style {
       constants
         .as_ref()
         .and_then(|c| c.fraction_num_display_style_gap_min)
@@ -1780,33 +1927,93 @@ impl MathLayoutContext {
         .and_then(|c| c.fraction_numerator_gap_min)
         .unwrap_or_else(|| Self::frac_gap(style))
     };
-    let baseline = (numerator.height + gap + rule * 0.5).max(axis + gap + rule * 0.5);
-    let mut fragments = Vec::new();
-    let num_x = (width - numerator.width) / 2.0;
-    let den_x = (width - denominator.width) / 2.0;
-    let num_y = baseline - rule * 0.5 - gap - numerator.baseline;
-    let den_y = baseline + rule * 0.5 + gap - denominator.baseline;
+    let den_gap = if style.display_style {
+      constants
+        .as_ref()
+        .and_then(|c| c.fraction_denom_display_style_gap_min)
+        .unwrap_or_else(|| Self::frac_gap(style))
+    } else {
+      constants
+        .as_ref()
+        .and_then(|c| c.fraction_denominator_gap_min)
+        .unwrap_or_else(|| Self::frac_gap(style))
+    };
 
+    let num_ascent = numerator.baseline;
+    let num_descent = numerator.height - numerator.baseline;
+    let den_ascent = denominator.baseline;
+    let den_descent = denominator.height - denominator.baseline;
+
+    let mut shift_up = constants
+      .as_ref()
+      .and_then(|c| {
+        if style.display_style {
+          c.fraction_numerator_display_style_shift_up
+        } else {
+          c.fraction_numerator_shift_up
+        }
+      })
+      .unwrap_or(0.0);
+    let mut shift_down = constants
+      .as_ref()
+      .and_then(|c| {
+        if style.display_style {
+          c.fraction_denominator_display_style_shift_down
+        } else {
+          c.fraction_denominator_shift_down
+        }
+      })
+      .unwrap_or(0.0);
+
+    let min_shift_up = num_descent + num_gap + rule * 0.5;
+    let min_shift_down = den_ascent + den_gap + rule * 0.5;
+    shift_up = shift_up.max(min_shift_up);
+    shift_down = shift_down.max(min_shift_down);
+
+    let num_baseline = axis + shift_up;
+    let den_baseline = axis - shift_down;
+
+    let num_top = num_baseline + num_ascent;
+    let num_bottom = num_baseline - num_descent;
+    let den_top = den_baseline + den_ascent;
+    let den_bottom = den_baseline - den_descent;
+    let rule_top = axis + rule * 0.5;
+    let rule_bottom = axis - rule * 0.5;
+
+    let ascent = num_top.max(den_top).max(rule_top).max(0.0);
+    let descent = (-num_bottom.min(den_bottom).min(rule_bottom).min(0.0)).max(0.0);
+    let baseline = ascent;
+
+    let width = numerator.width.max(denominator.width);
+    let axis_y = baseline - axis;
+
+    let num_x = align_x(numalign, width, numerator.width);
+    let den_x = align_x(denomalign, width, denominator.width);
+    let num_y = (axis_y - shift_up) - numerator.baseline;
+    let den_y = (axis_y + shift_down) - denominator.baseline;
+
+    let mut fragments = Vec::new();
     for frag in numerator.fragments {
       fragments.push(frag.translate(Point::new(num_x, num_y)));
     }
     for frag in denominator.fragments {
       fragments.push(frag.translate(Point::new(den_x, den_y)));
     }
+    if has_rule {
+      fragments.push(MathFragment::Rule(Rect::from_xywh(
+        0.0,
+        axis_y - rule * 0.5,
+        width,
+        rule,
+      )));
+    }
 
-    fragments.push(MathFragment::Rule(Rect::from_xywh(
-      0.0,
-      baseline - rule * 0.5,
-      width,
-      rule,
-    )));
-
-    let height = (den_y + denominator.height)
-      .max(num_y + numerator.height)
-      .max(baseline + rule * 0.5);
+    let annotations = numerator
+      .annotations
+      .merge_trailing(&denominator.annotations);
     MathLayout {
       width,
-      height,
+      height: baseline + descent,
       baseline,
       fragments,
       annotations,
@@ -2700,7 +2907,20 @@ impl MathLayoutContext {
       MathNode::Fraction {
         numerator,
         denominator,
-      } => self.layout_fraction(numerator, denominator, style, base_style),
+        linethickness,
+        bevelled,
+        numalign,
+        denomalign,
+      } => self.layout_fraction(
+        numerator,
+        denominator,
+        *linethickness,
+        *bevelled,
+        *numalign,
+        *denomalign,
+        style,
+        base_style,
+      ),
       MathNode::Sqrt(body) => self.layout_sqrt(body, style, base_style),
       MathNode::Root { radicand, index } => self.layout_root(radicand, index, style, base_style),
       MathNode::Superscript { base, superscript } => {

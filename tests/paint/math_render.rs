@@ -1,5 +1,5 @@
 use crate::r#ref::compare::{compare_images, load_png_from_bytes, CompareConfig};
-use fastrender::math::{layout_mathml, MathNode, MathVariant};
+use fastrender::math::{layout_mathml, ColumnAlign, MathFragment, MathNode, MathVariant};
 use fastrender::paint::display_list::DisplayItem;
 use fastrender::paint::display_list_builder::DisplayListBuilder;
 use fastrender::text::font_db::FontConfig;
@@ -70,6 +70,34 @@ fn fraction_mathml_layouts_and_paints() {
 }
 
 #[test]
+fn fraction_linethickness_zero_emits_no_rule_fragments() {
+  with_stack(|| {
+    let mut renderer = FastRender::new().expect("renderer");
+    let dom = renderer
+      .parse_html("<math><mfrac linethickness=\"0\"><mi>a</mi><mi>b</mi></mfrac></math>")
+      .expect("dom");
+    let fragments = renderer
+      .layout_document(&dom, 200, 200)
+      .expect("layout document");
+
+    let replaced = find_math_fragment(&fragments.root).expect("math fragment");
+    let ReplacedType::Math(math) = replaced else {
+      panic!("expected math replaced type");
+    };
+    let layout = math.layout.as_ref().expect("math layout");
+    let rules = layout
+      .fragments
+      .iter()
+      .filter(|f| matches!(f, MathFragment::Rule(_)))
+      .count();
+    assert_eq!(
+      rules, 0,
+      "linethickness=0 should not produce a fraction bar"
+    );
+  });
+}
+
+#[test]
 fn math_constructs_match_golden() {
   with_stack(|| {
     let mut renderer = FastRender::new().expect("renderer");
@@ -116,6 +144,19 @@ fn math_stretchy_ops_match_golden() {
       .render_to_png(&html, 540, 360)
       .expect("render stretchy math");
     compare_golden("math_stretchy_ops", &png, &CompareConfig::lenient());
+  });
+}
+
+#[test]
+fn math_fractions_match_golden() {
+  with_stack(|| {
+    let mut renderer = FastRender::new().expect("renderer");
+    let html =
+      std::fs::read_to_string(fixture_path("math_fractions")).expect("load math_fractions");
+    let png = renderer
+      .render_to_png(&html, 520, 420)
+      .expect("render math fractions");
+    compare_golden("math_fractions", &png, &CompareConfig::lenient());
   });
 }
 
@@ -194,6 +235,10 @@ fn math_layout_falls_back_without_fonts() {
       text: "2".into(),
       variant: None,
     }),
+    linethickness: None,
+    bevelled: false,
+    numalign: ColumnAlign::Center,
+    denomalign: ColumnAlign::Center,
   };
   let layout = layout_mathml(&node, &style, &FontContext::empty());
   assert!(layout.width > 0.0);
