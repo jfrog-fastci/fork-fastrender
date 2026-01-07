@@ -78,6 +78,7 @@ mod table_colgroup_span_background;
 mod table_column_span_backgrounds;
 mod table_columns_test;
 mod table_direction_rtl;
+mod table_direction_rtl_column_order;
 mod table_empty_cells;
 mod table_fixed_layout_expands_to_width;
 mod table_fixup_box_generation;

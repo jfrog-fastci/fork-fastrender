@@ -2117,8 +2117,8 @@ impl TableStructure {
         }
       }
 
-      structure.cells.push(cell);
-    }
+    structure.cells.push(cell);
+  }
 
     structure.percent_sensitive = percent_sensitive;
 
@@ -3013,8 +3013,10 @@ fn compute_collapsed_borders(
             source_col_idx += 1;
           }
         }
-        if let (Some(start), Some(end)) = (first_visible, last_visible) {
-          column_groups.push((start, end + 1, child.style.clone(), group_order));
+        if let (Some(first), Some(last)) = (first_visible, last_visible) {
+          let start = first.min(last);
+          let end = first.max(last) + 1;
+          column_groups.push((start, end, child.style.clone(), group_order));
         }
       }
       _ => {}
@@ -7056,8 +7058,10 @@ impl FormattingContext for TableFormattingContext {
             }
             source_col_idx += span;
           }
-          if let (Some(start), Some(end)) = (first_visible, last_visible) {
-            column_groups.push((start, end + 1, child.style.clone()));
+          if let (Some(first), Some(last)) = (first_visible, last_visible) {
+            let start = first.min(last);
+            let end = first.max(last) + 1;
+            column_groups.push((start, end, child.style.clone()));
           }
         }
         _ => {}
@@ -11000,15 +11004,15 @@ mod tests {
 
     let mut left_cell_style = ComputedStyle::default();
     left_cell_style.display = Display::TableCell;
-    left_cell_style.border_right_style = BorderStyle::Solid;
-    left_cell_style.border_right_width = Length::px(3.0);
-    left_cell_style.border_right_color = Rgba::from_rgba8(255, 0, 0, 255);
+    left_cell_style.border_left_style = BorderStyle::Solid;
+    left_cell_style.border_left_width = Length::px(3.0);
+    left_cell_style.border_left_color = Rgba::from_rgba8(255, 0, 0, 255);
 
     let mut right_cell_style = ComputedStyle::default();
     right_cell_style.display = Display::TableCell;
-    right_cell_style.border_left_style = BorderStyle::Solid;
-    right_cell_style.border_left_width = Length::px(3.0);
-    right_cell_style.border_left_color = Rgba::from_rgba8(0, 255, 0, 255);
+    right_cell_style.border_right_style = BorderStyle::Solid;
+    right_cell_style.border_right_width = Length::px(3.0);
+    right_cell_style.border_right_color = Rgba::from_rgba8(0, 255, 0, 255);
 
     let left = BoxNode::new_block(
       Arc::new(left_cell_style),
@@ -11037,8 +11041,8 @@ mod tests {
     let borders = compute_collapsed_borders(&table, &structure).unwrap();
 
     let middle_border = &borders.vertical[1][0];
-    // Start edge in RTL is right cell (green).
-    assert_eq!(middle_border.color, Rgba::from_rgba8(0, 255, 0, 255));
+    // In RTL the first source cell is on the right, so its left border wins the tie.
+    assert_eq!(middle_border.color, Rgba::from_rgba8(255, 0, 0, 255));
   }
 
   #[test]

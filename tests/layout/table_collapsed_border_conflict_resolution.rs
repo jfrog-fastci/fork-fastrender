@@ -100,8 +100,8 @@ fn collapsed_border_conflict_color_tie_break_respects_direction() {
           <body>
             <table>
               <tr>
-                <td style="border-right: 2px solid red;"></td>
-                <td style="border-left: 2px solid blue;"></td>
+                <td style="border-left: 2px solid blue; border-right: 2px solid red;"></td>
+                <td style="border-left: 2px solid blue; border-right: 2px solid red;"></td>
               </tr>
             </table>
           </body>
