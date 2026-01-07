@@ -1475,11 +1475,7 @@ fn collect_selected_option_text(
   let next_optgroup_disabled =
     optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
 
-  if is_option
-    && node.node.get_attribute_ref("selected").is_some()
-    && !(option_disabled || optgroup_disabled)
-    && !ctx.is_hidden(node)
-  {
+  if is_option && node.node.get_attribute_ref("selected").is_some() && !ctx.is_hidden(node) {
     out.push(option_label_text(node, ctx));
   }
 
@@ -1526,11 +1522,7 @@ fn collect_selected_option_texts(
   let next_optgroup_disabled =
     optgroup_disabled || (tag.as_deref() == Some("optgroup") && option_disabled);
 
-  if is_option
-    && node.node.get_attribute_ref("selected").is_some()
-    && !(option_disabled || optgroup_disabled)
-    && !ctx.is_hidden(node)
-  {
+  if is_option && node.node.get_attribute_ref("selected").is_some() && !ctx.is_hidden(node) {
     let text = option_text(node, ctx);
     if !text.is_empty() {
       out.push(text);
@@ -2305,17 +2297,6 @@ fn compute_selected(
   styled_ancestors: &[&StyledNode],
   ctx: &BuildContext,
 ) -> Option<bool> {
-  let is_native_option =
-    is_html_element(&node.node) && node.node.tag_name().is_some_and(|t| t.eq_ignore_ascii_case("option"));
-
-  if is_native_option {
-    return Some(element_ref.accessibility_selected());
-  }
-
-  if let Some(selected) = parse_bool_attr(&node.node, "aria-selected") {
-    return Some(selected);
-  }
-
   if role == Some("option") {
     if let Some(select) = styled_ancestors.iter().rev().find(|ancestor| {
       ancestor
@@ -2331,7 +2312,14 @@ fn compute_selected(
       return Some(selected_id.is_some_and(|id| id == node.node_id));
     }
 
+    if let Some(selected) = parse_bool_attr(&node.node, "aria-selected") {
+      return Some(selected);
+    }
     return Some(element_ref.accessibility_selected());
+  }
+
+  if let Some(selected) = parse_bool_attr(&node.node, "aria-selected") {
+    return Some(selected);
   }
 
   None

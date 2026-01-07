@@ -227,6 +227,88 @@ fn role_inference_and_heading_levels() {
 }
 
 #[test]
+fn select_value_includes_disabled_selected_placeholder() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r##"
+    <html>
+      <body>
+        <select id="s">
+          <option id="placeholder" disabled selected>Placeholder</option>
+          <option id="real">Real</option>
+        </select>
+      </body>
+    </html>
+  "##;
+
+  let dom = renderer.parse_html(html).expect("parse");
+  let tree = renderer
+    .accessibility_tree(&dom, 800, 600)
+    .expect("accessibility tree");
+
+  let select = find_by_id(&tree, "s").expect("select");
+  assert_eq!(select.value.as_deref(), Some("Placeholder"));
+
+  let placeholder = find_by_id(&tree, "placeholder").expect("placeholder option");
+  assert_eq!(placeholder.states.selected, Some(true));
+}
+
+#[test]
+fn select_last_selected_option_wins_for_single_select() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r##"
+    <html>
+      <body>
+        <select id="s">
+          <option id="first" selected>First</option>
+          <option id="second" selected>Second</option>
+        </select>
+      </body>
+    </html>
+  "##;
+
+  let dom = renderer.parse_html(html).expect("parse");
+  let tree = renderer
+    .accessibility_tree(&dom, 800, 600)
+    .expect("accessibility tree");
+
+  let select = find_by_id(&tree, "s").expect("select");
+  assert_eq!(select.value.as_deref(), Some("Second"));
+
+  let first = find_by_id(&tree, "first").expect("first option");
+  assert_eq!(first.states.selected, Some(false));
+  let second = find_by_id(&tree, "second").expect("second option");
+  assert_eq!(second.states.selected, Some(true));
+}
+
+#[test]
+fn select_value_ignores_hidden_selected_options() {
+  let mut renderer = FastRender::new().expect("renderer");
+  let html = r##"
+    <html>
+      <body>
+        <select id="s">
+          <option id="visible">Visible</option>
+          <option id="hidden" hidden selected>Hidden</option>
+        </select>
+      </body>
+    </html>
+  "##;
+
+  let dom = renderer.parse_html(html).expect("parse");
+  let tree = renderer
+    .accessibility_tree(&dom, 800, 600)
+    .expect("accessibility tree");
+
+  let select = find_by_id(&tree, "s").expect("select");
+  assert_eq!(select.value.as_deref(), Some("Visible"));
+
+  let visible = find_by_id(&tree, "visible").expect("visible option");
+  assert_eq!(visible.states.selected, Some(true));
+
+  assert!(find_by_id(&tree, "hidden").is_none());
+}
+
+#[test]
 fn shadow_dom_nodes_keep_roles_and_names() {
   let mut renderer = FastRender::new().expect("renderer");
   let html = r##"
