@@ -1215,6 +1215,19 @@ width = 120
 height = 120
 
 [[tests]]
+id = "style/conditional/container-query-list-block-axis-requires-size-001"
+path = "style/conditional/container-query-list-block-axis-requires-size-001.html"
+reference = "style/conditional/container-query-list-block-axis-requires-size-001-ref.html"
+test_type = "reftest"
+expected = "pass"
+timeout_ms = 12000
+dpr = 1.0
+
+[tests.viewport]
+width = 120
+height = 120
+
+[[tests]]
 id = "style/conditional/container-name-only-true-001"
 path = "style/conditional/container-name-only-true-001.html"
 reference = "style/conditional/container-name-only-true-001-ref.html"

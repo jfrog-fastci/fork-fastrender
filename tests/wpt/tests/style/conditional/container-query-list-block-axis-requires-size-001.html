@@ -1,0 +1,41 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>@container query list with block-axis feature must select size container</title>
+<style>
+  body {
+    margin: 0;
+    background: white;
+  }
+  #outer {
+    width: 120px;
+    height: 120px;
+    container-type: size;
+  }
+  #inner {
+    width: 120px;
+    height: 60px;
+    container-type: inline-size;
+  }
+  #box {
+    width: 100%;
+    height: 100%;
+    background: rgb(255, 0, 0);
+  }
+
+  /*
+    Query list is OR semantics, but includes a block-axis query (min-height) which requires selecting
+    a size container. The outer size container matches min-height; the inner inline-size container
+    should not be selected for evaluating the list.
+  */
+  @container (min-width: 150px), (min-height: 80px) {
+    #box {
+      background: rgb(0, 160, 0);
+    }
+  }
+</style>
+<div id="outer">
+  <div id="inner">
+    <div id="box"></div>
+  </div>
+</div>
+
