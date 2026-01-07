@@ -229,7 +229,13 @@ pub(crate) fn collect_variations_for_face(
   if axis_bounds.contains_key(&opsz_tag)
     && matches!(style.font_optical_sizing, FontOpticalSizing::Auto)
   {
-    push_variation(&mut variations, opsz_tag, font_size);
+    // `size-adjust` scales the used font size for this face, so auto optical sizing should use
+    // the same effective size that will be used when scaling glyph advances.
+    push_variation(
+      &mut variations,
+      opsz_tag,
+      font_size * font.face_metrics_overrides.size_adjust,
+    );
   }
 
   // --------------------------------------------------------------------------

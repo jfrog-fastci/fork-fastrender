@@ -532,6 +532,58 @@ fn font_optical_sizing_auto_overrides_font_face_opsz_descriptor() {
 }
 
 #[test]
+fn font_optical_sizing_auto_uses_size_adjust_scaled_font_size() {
+  let url = "https://example.test/opsz_size_adjust.ttf";
+  let fetcher: Arc<dyn FontFetcher> =
+    Arc::new(FixtureFetcher::new(vec![(url, AMSTELVAR_ALPHA_FONT)]));
+  let ctx = context_with_fetcher(fetcher);
+
+  let (min_opsz, def_opsz, max_opsz) =
+    axis_values(AMSTELVAR_ALPHA_FONT, *b"opsz").expect("fixture font should expose opsz axis");
+  let midpoint = (min_opsz + max_opsz) * 0.5;
+
+  let mut size_adjust = 1.5;
+  let mut font_size = midpoint / size_adjust;
+  if font_size < min_opsz {
+    size_adjust = 1.25;
+    font_size = midpoint / size_adjust;
+  }
+  if font_size < min_opsz {
+    size_adjust = 1.1;
+    font_size = midpoint / size_adjust;
+  }
+  assert!(
+    size_adjust > 1.0 && font_size >= min_opsz,
+    "expected to pick a size-adjust multiplier that keeps font size within opsz bounds (min={min_opsz}, max={max_opsz}, def={def_opsz})"
+  );
+  assert!(
+    font_size <= max_opsz,
+    "expected chosen font size to stay within opsz axis bounds (min={min_opsz}, max={max_opsz}, chosen={font_size})"
+  );
+
+  let size_adjust_percent = size_adjust * 100.0;
+  let faces = parse_faces(&format!(
+    "@font-face {{ font-family: OpszAdjusted; src: url(\"{url}\"); size-adjust: {size_adjust_percent}%; }}"
+  ));
+  assert_eq!(faces.len(), 1);
+  ctx.load_web_fonts(&faces, None, None)
+    .expect("load opsz adjusted face");
+
+  let mut style = ComputedStyle::default();
+  style.font_family = vec!["OpszAdjusted".to_string()].into();
+  style.font_size = font_size;
+  style.font_optical_sizing = FontOpticalSizing::Auto;
+
+  let run = shape_single_run("A", &style, &ctx);
+  let actual = variation_value(&run, *b"opsz").unwrap_or_default();
+  let expected = font_size * size_adjust;
+  assert!(
+    (actual - expected).abs() < 0.001,
+    "expected opsz from font-optical-sizing:auto to use size-adjust scaled font size {expected}, got {actual} (font_size={font_size}, size_adjust={size_adjust_percent}%)"
+  );
+}
+
+#[test]
 fn font_named_instance_matching_is_case_insensitive() {
   let (font_bytes, instance_name, instance_wght) =
     [INTER_VAR_FONT, TEST_VAR_FONT, AMSTELVAR_ALPHA_FONT]
