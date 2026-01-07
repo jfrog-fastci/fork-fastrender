@@ -1,5 +1,6 @@
 use fastrender::debug::runtime::RuntimeToggles;
-use fastrender::{FastRender, FastRenderConfig};
+use fastrender::paint::display_list_renderer::PaintParallelism;
+use fastrender::{FastRender, FastRenderConfig, FontConfig, LayoutParallelism};
 use rayon::ThreadPoolBuilder;
 use resvg::tiny_skia::Pixmap;
 use std::collections::HashMap;
@@ -9,8 +10,26 @@ static INIT_RAYON: Once = Once::new();
 
 fn ensure_rayon_global_pool() {
   INIT_RAYON.call_once(|| {
-    let _ = ThreadPoolBuilder::new().num_threads(1).build_global();
+    // Rayon defaults to spawning one worker per CPU; in constrained environments this can fail
+    // global pool initialization (EAGAIN). Pre-initialize a conservative pool so paint tests are
+    // stable under `scripts/run_limited.sh`.
+    std::env::set_var("RAYON_NUM_THREADS", "2");
+    let _ = ThreadPoolBuilder::new().num_threads(2).build_global();
   });
+}
+
+fn create_renderer() -> FastRender {
+  ensure_rayon_global_pool();
+  let toggles = RuntimeToggles::from_map(HashMap::from([(
+    "FASTR_PAINT_BACKEND".to_string(),
+    "display_list".to_string(),
+  )]));
+  let config = FastRenderConfig::new()
+    .with_runtime_toggles(toggles)
+    .with_font_sources(FontConfig::bundled_only())
+    .with_layout_parallelism(LayoutParallelism::disabled())
+    .with_paint_parallelism(PaintParallelism::disabled());
+  FastRender::with_config(config).expect("renderer")
 }
 
 fn color_at(pixmap: &Pixmap, x: u32, y: u32) -> [u8; 4] {
@@ -20,7 +39,7 @@ fn color_at(pixmap: &Pixmap, x: u32, y: u32) -> [u8; 4] {
 
 #[test]
 fn stacking_context_layer_bounds_do_not_clip_outline() {
-  ensure_rayon_global_pool();
+  let mut renderer = create_renderer();
 
   let html = r#"
   <style>
@@ -40,12 +59,6 @@ fn stacking_context_layer_bounds_do_not_clip_outline() {
   <div id="box"></div>
   "#;
 
-  let toggles = RuntimeToggles::from_map(HashMap::from([(
-    "FASTR_PAINT_BACKEND".to_string(),
-    "display_list".to_string(),
-  )]));
-  let config = FastRenderConfig::new().with_runtime_toggles(toggles);
-  let mut renderer = FastRender::with_config(config).expect("renderer");
   let pixmap = renderer.render_html(html, 120, 120).expect("render");
 
   let outline_px = color_at(&pixmap, 30, 50);
