@@ -341,6 +341,30 @@ impl selectors::parser::NonTSPseudoClass for PseudoClass {
 
   fn specificity(&self) -> u32 {
     const PSEUDO_CLASS_SPECIFICITY: u32 = 1 << 10;
+    const MAX_10BIT: u32 = (1u32 << 10) - 1;
+    // Specificity values use a packed 10-bit per-component encoding:
+    //   A (IDs)    = bits 20..29
+    //   B (class)  = bits 10..19
+    //   C (type)   = bits  0..9
+    //
+    // When adding specificity from nested selector arguments, we must clamp each component to
+    // avoid overflowing into higher components (e.g. B overflowing into A). This mirrors the
+    // selectors crate's internal `Specificity` accumulation behavior.
+    let add_specificity = |base: u32, extra: u32| -> u32 {
+      let base_a = base >> 20;
+      let base_b = (base >> 10) & MAX_10BIT;
+      let base_c = base & MAX_10BIT;
+
+      let extra_a = extra >> 20;
+      let extra_b = (extra >> 10) & MAX_10BIT;
+      let extra_c = extra & MAX_10BIT;
+
+      let a = base_a.saturating_add(extra_a).min(MAX_10BIT);
+      let b = base_b.saturating_add(extra_b).min(MAX_10BIT);
+      let c = base_c.saturating_add(extra_c).min(MAX_10BIT);
+
+      (a << 20) | (b << 10) | c
+    };
     let argument_specificity = |selectors: &SelectorList<FastRenderSelectorImpl>| {
       selectors
         .slice()
@@ -359,14 +383,14 @@ impl selectors::parser::NonTSPseudoClass for PseudoClass {
       // the specificity of the most specific selector in their `of <selector-list>` argument.
       PseudoClass::NthChild(_, _, Some(selectors))
       | PseudoClass::NthLastChild(_, _, Some(selectors)) => {
-        PSEUDO_CLASS_SPECIFICITY + argument_specificity(selectors)
+        add_specificity(PSEUDO_CLASS_SPECIFICITY, argument_specificity(selectors))
       }
       PseudoClass::Host(None) => PSEUDO_CLASS_SPECIFICITY,
       PseudoClass::Host(Some(selectors)) => {
-        PSEUDO_CLASS_SPECIFICITY + argument_specificity(selectors)
+        add_specificity(PSEUDO_CLASS_SPECIFICITY, argument_specificity(selectors))
       }
       PseudoClass::HostContext(selectors) => {
-        PSEUDO_CLASS_SPECIFICITY + argument_specificity(selectors)
+        add_specificity(PSEUDO_CLASS_SPECIFICITY, argument_specificity(selectors))
       }
       _ => PSEUDO_CLASS_SPECIFICITY, // Pseudo-classes have class-level specificity by default.
     }
@@ -1175,6 +1199,38 @@ mod tests {
       PseudoClass::NthLastChild(0, 1, Some(of_list)).specificity(),
       pseudo_class_weight + max_arg_spec
     );
+  }
+
+  #[test]
+  fn specificity_addition_clamps_each_component() {
+    // The selectors crate represents specificity as three 10-bit components (A, B, C).
+    // When adding pseudo-class specificity to an argument's specificity, B must not overflow into A.
+    const MAX_10BIT: u32 = (1u32 << 10) - 1;
+
+    let mut max_class_selector = String::new();
+    for _ in 0..MAX_10BIT as usize {
+      max_class_selector.push_str(".a");
+    }
+    let selectors = parse_selector_list(&max_class_selector);
+    let arg_spec = selectors
+      .slice()
+      .first()
+      .expect("one selector")
+      .specificity();
+    assert_eq!((arg_spec >> 20) & MAX_10BIT, 0);
+    assert_eq!((arg_spec >> 10) & MAX_10BIT, MAX_10BIT);
+
+    let nth_spec = PseudoClass::NthChild(0, 1, Some(selectors.clone())).specificity();
+    assert_eq!(
+      (nth_spec >> 20) & MAX_10BIT,
+      0,
+      "specificity overflow should not carry into the ID component"
+    );
+    assert_eq!((nth_spec >> 10) & MAX_10BIT, MAX_10BIT);
+
+    let host_ctx_spec = PseudoClass::HostContext(selectors).specificity();
+    assert_eq!((host_ctx_spec >> 20) & MAX_10BIT, 0);
+    assert_eq!((host_ctx_spec >> 10) & MAX_10BIT, MAX_10BIT);
   }
 
   #[test]
