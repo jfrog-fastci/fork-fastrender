@@ -1004,6 +1004,55 @@ fn transition_behavior_allows_untyped_custom_properties_when_opted_in() {
 }
 
 #[test]
+fn transition_property_all_includes_custom_properties() {
+  let html = r#"
+    <style>
+      @starting-style { #box { --x: 0; opacity: 0; } }
+      #box {
+        width: 100px;
+        height: 100px;
+        opacity: 1;
+        --x: 1;
+        transition-property: all;
+        transition-duration: 1000ms;
+        transition-timing-function: linear;
+        transition-behavior: allow-discrete;
+      }
+    </style>
+    <div id="box"></div>
+  "#;
+  let (box_tree, fragment_tree, styled_tree) = prepare(html, 200, 200);
+  let node_id = styled_node_id_by_id(&styled_tree, "box").expect("styled id");
+  let box_id = box_id_for_styled(&box_tree.root, node_id).expect("box id");
+
+  let mut early = fragment_tree.clone();
+  let viewport = early.viewport_size();
+  animation::apply_transitions(&mut early, 400.0, viewport);
+  assert!((fragment_opacity(&early, box_id) - 0.4).abs() < 1e-3);
+  let frag = find_fragment(&early.root, box_id).expect("fragment present");
+  let style = frag.style.as_ref().expect("style present");
+  let value = style
+    .custom_properties
+    .get("--x")
+    .expect("custom property present");
+  assert!(value.typed.is_none());
+  assert_eq!(value.value.trim(), "0");
+
+  let mut late = fragment_tree.clone();
+  let viewport = late.viewport_size();
+  animation::apply_transitions(&mut late, 600.0, viewport);
+  assert!((fragment_opacity(&late, box_id) - 0.6).abs() < 1e-3);
+  let frag = find_fragment(&late.root, box_id).expect("fragment present");
+  let style = frag.style.as_ref().expect("style present");
+  let value = style
+    .custom_properties
+    .get("--x")
+    .expect("custom property present");
+  assert!(value.typed.is_none());
+  assert_eq!(value.value.trim(), "1");
+}
+
+#[test]
 fn transitions_interpolate_transform_origin_over_time() {
   let html = r#"
     <style>
