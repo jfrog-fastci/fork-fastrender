@@ -245,6 +245,63 @@ fn container_query_rem_uses_root_font_size() {
 }
 
 #[test]
+fn container_query_em_uses_container_font_size() {
+  let css = r#"
+    .target { display: block; }
+    @container (min-width: 8em) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let mut style = ComputedStyle::default();
+  style.font_size = 20.0;
+  style.root_font_size = 10.0;
+
+  let styled = cascade_with_container_styles(css, 150.0, vec![], Arc::new(style));
+
+  // 8em = 160px when resolved against the query container's computed 20px font size.
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "block");
+}
+
+#[test]
+fn container_query_calc_rem_uses_root_font_size() {
+  let css = r#"
+    .target { display: block; }
+    @container (min-width: calc(12rem - 2em)) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let mut style = ComputedStyle::default();
+  style.font_size = 20.0;
+  style.root_font_size = 10.0;
+
+  let styled = cascade_with_container_styles(css, 150.0, vec![], Arc::new(style));
+
+  // 12rem - 2em = 120px - 40px = 80px, so the query should match.
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "inline");
+}
+
+#[test]
+fn container_query_calc_em_uses_container_font_size() {
+  let css = r#"
+    .target { display: block; }
+    @container (min-width: calc(8em + 1px)) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let mut style = ComputedStyle::default();
+  style.font_size = 20.0;
+  style.root_font_size = 10.0;
+
+  let styled = cascade_with_container_styles(css, 150.0, vec![], Arc::new(style));
+
+  // 8em + 1px = 160px + 1px, so the query should *not* match.
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "block");
+}
+
+#[test]
 fn container_query_comma_conditions_select_independent_containers() {
   let html = r#"
     <div id="outer">

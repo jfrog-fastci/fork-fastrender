@@ -55,7 +55,8 @@ fn grouped_container_queries_parse() {
   match container_rule.conditions[0]
     .query
     .as_ref()
-    .expect("container query") {
+    .expect("container query")
+  {
     ContainerQuery::And(list) => {
       assert_eq!(list.len(), 2);
       assert!(matches!(list[0], ContainerQuery::Size(_)));
