@@ -18,6 +18,7 @@ use crate::css::selectors::TextDirection;
 use crate::css::types::CollectedPageRule;
 use crate::css::types::CollectedRule;
 use crate::css::types::ContainerCondition;
+use crate::css::types::ContainerConditionGroup;
 use crate::css::types::ContainerQuery;
 use crate::css::types::ContainerStyleQuery;
 use crate::css::types::CssImportLoader;
@@ -872,15 +873,9 @@ fn cq_query_support_mask(query: &ContainerQuery) -> u8 {
 }
 
 fn cq_condition_support_mask(condition: &ContainerCondition) -> u8 {
-  if condition.query_list.is_empty() {
-    0
-  } else {
-    condition
-      .query_list
-      .iter()
-      .fold(CQ_SUPPORT_ALL, |acc, query| {
-        acc & cq_query_support_mask(query)
-      })
+  match &condition.query {
+    Some(query) => cq_query_support_mask(query),
+    None => condition.name.as_ref().map(|_| CQ_SUPPORT_ALL).unwrap_or(0),
   }
 }
 
@@ -1808,7 +1803,7 @@ struct CascadeRule<'a> {
   order: usize,
   rule: &'a StyleRule,
   layer_order: Arc<[u32]>,
-  container_conditions: Vec<ContainerCondition>,
+  container_conditions: Vec<ContainerConditionGroup>,
   scopes: Vec<ScopeContext<'a>>,
   scope_signature: ScopeSignature,
   scope: RuleScope,
@@ -6657,12 +6652,12 @@ pub struct ContainerQueryContext {
 }
 
 impl ContainerQueryContext {
-  /// Returns true when all container conditions match against the nearest qualifying containers.
+  /// Returns true when nested container condition groups match against their nearest qualifying containers.
   pub fn matches(
     &self,
     node_id: usize,
     ancestor_ids: &[usize],
-    conditions: &[ContainerCondition],
+    conditions: &[ContainerConditionGroup],
   ) -> bool {
     const MAX_RECURSION_DEPTH: usize = 32;
     if conditions.is_empty() {
@@ -6686,7 +6681,7 @@ impl ContainerQueryContext {
     &self,
     node_id: usize,
     ancestor_ids: &[usize],
-    conditions: &[ContainerCondition],
+    conditions: &[ContainerConditionGroup],
     guard: &mut Vec<usize>,
     depth_limit: usize,
   ) -> bool {
@@ -6697,76 +6692,91 @@ impl ContainerQueryContext {
         memo.clear();
         memo.active_ctx_ptr = Some(ctx_ptr);
       }
-      for condition in conditions {
-        let condition_ptr = condition as *const _ as usize;
-        let (name_id, support_mask) = match memo.condition_sigs.get(&condition_ptr).copied() {
-          Some(sig) => (sig.name_id, sig.support_mask),
-          None => {
-            let support_mask = cq_condition_support_mask(condition);
-            let name_id = condition
-              .name
-              .as_deref()
-              .map(|name| memo.intern_name(name))
-              .unwrap_or(0);
-            memo.condition_sigs.insert(
-              condition_ptr,
-              ConditionSignature {
-                name_id,
-                support_mask,
-              },
-            );
-            (name_id, support_mask)
-          }
-        };
-
-        let key = FindContainerCacheKey {
-          ctx_ptr,
-          node_id,
-          name_id,
-          support_mask,
-        };
-        let container_id = if let Some(cached) = memo.find_container.get(&key) {
-          *cached
-        } else {
-          let found = self
-            .find_container_impl(
-              node_id,
-              ancestor_ids,
-              condition.name.as_deref(),
-              support_mask,
-            )
-            .map(|(id, _)| id);
-          memo.find_container.insert(key, found);
-          found
-        };
-
-        let Some(container_id) = container_id else {
-          return false;
-        };
-        let Some(container) = self.containers.get(&container_id) else {
-          return false;
-        };
-
-        if guard.len() >= depth_limit || guard.contains(&container_id) {
+      for group in conditions {
+        if group.is_empty() {
           return false;
         }
 
-        guard.push(container_id);
-        let matches = !condition.query_list.is_empty()
-          && condition.query_list.iter().any(|query| {
-            container_query_matches(
-              container_id,
-              query,
-              container,
-              self,
-              ctx_ptr,
-              guard,
-              &mut memo,
-            )
-          });
-        guard.pop();
+        let mut group_matches = false;
+        for condition in group {
+          let condition_ptr = condition as *const _ as usize;
+          let (name_id, support_mask) = match memo.condition_sigs.get(&condition_ptr).copied() {
+            Some(sig) => (sig.name_id, sig.support_mask),
+            None => {
+              let support_mask = cq_condition_support_mask(condition);
+              let name_id = condition
+                .name
+                .as_deref()
+                .map(|name| memo.intern_name(name))
+                .unwrap_or(0);
+              memo.condition_sigs.insert(
+                condition_ptr,
+                ConditionSignature {
+                  name_id,
+                  support_mask,
+                },
+              );
+              (name_id, support_mask)
+            }
+          };
 
-        if !matches {
+          let key = FindContainerCacheKey {
+            ctx_ptr,
+            node_id,
+            name_id,
+            support_mask,
+          };
+          let container_id = if let Some(cached) = memo.find_container.get(&key) {
+            *cached
+          } else {
+            let found = self
+              .find_container_impl(
+                node_id,
+                ancestor_ids,
+                condition.name.as_deref(),
+                support_mask,
+              )
+              .map(|(id, _)| id);
+            memo.find_container.insert(key, found);
+            found
+          };
+
+          let Some(container_id) = container_id else {
+            continue;
+          };
+          let Some(container) = self.containers.get(&container_id) else {
+            continue;
+          };
+
+          let matches = match &condition.query {
+            Some(query) => {
+              if guard.len() >= depth_limit || guard.contains(&container_id) {
+                false
+              } else {
+                guard.push(container_id);
+                let matches = container_query_matches(
+                  container_id,
+                  query,
+                  container,
+                  self,
+                  ctx_ptr,
+                  guard,
+                  &mut memo,
+                );
+                guard.pop();
+                matches
+              }
+            }
+            None => true,
+          };
+
+          if matches {
+            group_matches = true;
+            break;
+          }
+        }
+
+        if !group_matches {
           return false;
         }
       }
@@ -13620,9 +13630,9 @@ mod tests {
 
     let condition = ContainerCondition {
       name: None,
-      query_list: vec![ContainerQuery::Size(
+      query: Some(ContainerQuery::Size(
         MediaQuery::parse("(min-width: 500px)").expect("media query"),
-      )],
+      )),
     };
     let ancestor_ids = vec![0, 1];
 
@@ -13630,7 +13640,7 @@ mod tests {
       .find_container(2, &ancestor_ids, &condition)
       .expect("container");
     assert_eq!(container_id, 2);
-    assert!(ctx.matches(2, &ancestor_ids, &[condition]));
+    assert!(ctx.matches(2, &ancestor_ids, &[vec![condition]]));
   }
 
   #[test]
@@ -13666,9 +13676,9 @@ mod tests {
 
     let condition = ContainerCondition {
       name: Some("foo".to_string()),
-      query_list: vec![ContainerQuery::Size(
+      query: Some(ContainerQuery::Size(
         MediaQuery::parse("(min-width: 500px)").expect("media query"),
-      )],
+      )),
     };
     let ancestor_ids = vec![0, 1];
 
@@ -13676,7 +13686,7 @@ mod tests {
       .find_container(2, &ancestor_ids, &condition)
       .expect("container");
     assert_eq!(container_id, 2);
-    assert!(ctx.matches(2, &ancestor_ids, &[condition]));
+    assert!(ctx.matches(2, &ancestor_ids, &[vec![condition]]));
   }
 
   #[test]
@@ -13712,9 +13722,9 @@ mod tests {
 
     let condition = ContainerCondition {
       name: None,
-      query_list: vec![ContainerQuery::Size(
+      query: Some(ContainerQuery::Size(
         MediaQuery::parse("(min-width: 500px)").expect("media query"),
-      )],
+      )),
     };
     let ancestor_ids = vec![0, 1];
 
@@ -13722,7 +13732,7 @@ mod tests {
       .find_container(2, &ancestor_ids, &condition)
       .expect("container");
     assert_eq!(container_id, 1);
-    assert!(ctx.matches(2, &ancestor_ids, &[condition]));
+    assert!(ctx.matches(2, &ancestor_ids, &[vec![condition]]));
   }
 
   #[test]
@@ -13758,9 +13768,9 @@ mod tests {
 
     let condition = ContainerCondition {
       name: None,
-      query_list: vec![ContainerQuery::Size(
+      query: Some(ContainerQuery::Size(
         MediaQuery::parse("(min-height: 700px)").expect("media query"),
-      )],
+      )),
     };
     let ancestor_ids = vec![0, 1, 2];
 
@@ -13768,7 +13778,7 @@ mod tests {
       .find_container(3, &ancestor_ids, &condition)
       .expect("container");
     assert_eq!(container_id, 1);
-    assert!(ctx.matches(3, &ancestor_ids, &[condition]));
+    assert!(ctx.matches(3, &ancestor_ids, &[vec![condition]]));
   }
 
   #[test]

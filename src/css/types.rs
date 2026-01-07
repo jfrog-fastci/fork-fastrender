@@ -265,7 +265,7 @@ pub struct CollectedRule<'a> {
   /// Whether this rule originated inside an @starting-style block.
   pub starting_style: bool,
   /// Container query conditions that must match at cascade time.
-  pub container_conditions: Vec<ContainerCondition>,
+  pub container_conditions: Vec<ContainerConditionGroup>,
   /// Scoping contexts that constrain where the rule applies.
   pub scopes: Vec<ScopeContext<'a>>,
 }
@@ -855,7 +855,7 @@ fn collect_rules_recursive<'a>(
   cache: Option<&mut MediaQueryCache>,
   registry: &mut LayerRegistry,
   current_layer: &Arc<[u32]>,
-  container_conditions: &[ContainerCondition],
+  container_conditions: &[ContainerConditionGroup],
   current_scopes: &[ScopeContext<'a>],
   in_starting_style: bool,
   out: &mut Vec<CollectedRule<'a>>,
@@ -910,10 +910,7 @@ fn collect_rules_recursive<'a>(
       }
       CssRule::Container(container_rule) => {
         let mut updated_conditions = container_conditions.to_vec();
-        updated_conditions.push(ContainerCondition {
-          name: container_rule.name.clone(),
-          query_list: container_rule.query_list.clone(),
-        });
+        updated_conditions.push(container_rule.conditions.clone());
         collect_rules_recursive(
           &container_rule.rules,
           media_ctx,
@@ -1359,7 +1356,11 @@ fn collect_css_metadata_recursive(
       CssRule::Container(container_rule) => {
         out.has_container_rules = true;
         out.needs_container_pass = true;
-        collect_container_style_query_metadata(&container_rule.query_list, out);
+        for condition in &container_rule.conditions {
+          if let Some(query) = &condition.query {
+            collect_container_style_query_metadata(std::slice::from_ref(query), out);
+          }
+        }
         collect_css_metadata_recursive(
           &container_rule.rules,
           media_ctx,
@@ -2893,10 +2894,8 @@ pub struct MediaRule {
 /// A @container rule containing conditional rules
 #[derive(Debug, Clone)]
 pub struct ContainerRule {
-  /// Optional named container to target.
-  pub name: Option<String>,
-  /// Container query list to evaluate (OR semantics).
-  pub query_list: Vec<ContainerQuery>,
+  /// Container query conditions to evaluate (OR semantics).
+  pub conditions: Vec<ContainerCondition>,
   /// Rules that apply when query matches (can be nested)
   pub rules: Vec<CssRule>,
 }
@@ -2945,9 +2944,17 @@ pub struct ScopeRule {
 pub struct ContainerCondition {
   /// Optional container name to match (None targets the nearest container).
   pub name: Option<String>,
-  /// The parsed container queries (OR semantics).
-  pub query_list: Vec<ContainerQuery>,
+  /// Optional container query to evaluate against the selected query container.
+  ///
+  /// When omitted, the condition matches as long as a query container can be selected.
+  pub query: Option<ContainerQuery>,
 }
+
+/// One nesting level of container conditions for collected rules.
+///
+/// The outer `Vec` stored on [`CollectedRule`] uses AND semantics (nested `@container` blocks),
+/// while each group uses OR semantics (comma-separated `@container` conditions).
+pub type ContainerConditionGroup = Vec<ContainerCondition>;
 
 /// A scoping context attached to collected style rules.
 #[derive(Debug, Clone)]
@@ -3438,8 +3445,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
       | CssRule::Page(_) => out.push(rule),
       CssRule::Container(container_rule) => {
         let ContainerRule {
-          name,
-          query_list,
+          conditions,
           rules,
         } = container_rule;
         let mut resolved_children = Vec::new();
@@ -3455,8 +3461,7 @@ fn resolve_rules_owned<L: CssImportLoader + ?Sized>(
           deadline_counter,
         )?;
         out.push(CssRule::Container(ContainerRule {
-          name,
-          query_list,
+          conditions,
           rules: resolved_children,
         }));
       }

@@ -15046,10 +15046,10 @@ mod tests {
     let matches = cq_ctx.matches(
       target_id,
       &target_ancestors,
-      &[crate::css::types::ContainerCondition {
+      &[vec![crate::css::types::ContainerCondition {
         name: None,
-        query_list: vec![crate::css::types::ContainerQuery::Size(cond.clone())],
-      }],
+        query: Some(crate::css::types::ContainerQuery::Size(cond.clone())),
+      }]],
     );
     eprintln!("container match result: {}", matches);
     assert!(matches, "container context should match width query");

@@ -13,6 +13,7 @@ use super::properties::vendor_prefixed_property_alias;
 use super::properties::DeclarationContext;
 use super::selectors::FastRenderSelectorImpl;
 use super::selectors::PseudoClassParser;
+use super::types::ContainerCondition;
 use super::types::ContainerQuery;
 use super::types::ContainerRule;
 use super::types::ContainerStyleQuery;
@@ -943,7 +944,7 @@ fn parse_media_rule<'i, 't>(
   })))
 }
 
-/// Parse a @container rule (size queries only; name is optional and stored for future use).
+/// Parse a @container rule.
 fn parse_container_rule<'i, 't>(
   parser: &mut Parser<'i, 't>,
   errors: &mut CssErrorCollector,
@@ -983,80 +984,84 @@ fn parse_container_rule<'i, 't>(
     ))
   })?;
 
-  let Some((name, query_list)) = parse_container_prelude(prelude) else {
+  let Some(conditions) = parse_container_prelude(prelude) else {
     return Ok(None);
   };
 
   Ok(Some(CssRule::Container(ContainerRule {
-    name,
-    query_list,
+    conditions,
     rules: nested_rules,
   })))
 }
 
-fn parse_container_prelude(prelude: &str) -> Option<(Option<String>, Vec<ContainerQuery>)> {
+fn parse_container_prelude(prelude: &str) -> Option<Vec<ContainerCondition>> {
   let mut input = ParserInput::new(prelude);
   let mut parser = Parser::new(&mut input);
 
   parser.skip_whitespace();
-  let state = parser.state();
-  if let Ok(query_list) = parse_container_query_list(&mut parser) {
-    parser.skip_whitespace();
-    if parser.is_exhausted() {
-      return Some((None, query_list));
-    }
+  if parser.is_exhausted() {
+    return None;
   }
 
-  parser.reset(&state);
-  let name = parse_container_name(&mut parser);
-  let query_list = parse_container_query_list(&mut parser).ok()?;
+  let mut conditions = Vec::new();
+  conditions.push(parse_container_condition_item(&mut parser).ok()?);
+
+  loop {
+    parser.skip_whitespace();
+    if parser.try_parse(|p| p.expect_comma()).is_err() {
+      break;
+    }
+    parser.skip_whitespace();
+    conditions.push(parse_container_condition_item(&mut parser).ok()?);
+  }
+
+  if conditions.is_empty() {
+    return None;
+  }
+
   parser.skip_whitespace();
   if parser.is_exhausted() {
-    Some((name, query_list))
+    Some(conditions)
   } else {
     None
   }
 }
 
-fn parse_container_query_list<'i, 't>(
+fn parse_container_condition_item<'i, 't>(
   parser: &mut Parser<'i, 't>,
-) -> std::result::Result<Vec<ContainerQuery>, ParseError<'i, ()>> {
-  let mut queries = vec![parse_container_condition(parser)?];
-  loop {
-    parser.skip_whitespace();
-    if parser.try_parse(|p| p.expect_comma()).is_ok() {
-      parser.skip_whitespace();
-      queries.push(parse_container_condition(parser)?);
-    } else {
-      break;
-    }
+) -> std::result::Result<ContainerCondition, ParseError<'i, ()>> {
+  parser.skip_whitespace();
+  let name = parser.try_parse(parse_container_name).ok();
+  parser.skip_whitespace();
+  let query = parser.try_parse(parse_container_condition).ok();
+
+  if name.is_none() && query.is_none() {
+    return Err(parser.new_custom_error(()));
   }
 
-  Ok(queries)
+  Ok(ContainerCondition { name, query })
 }
 
-fn parse_container_name<'i, 't>(parser: &mut Parser<'i, 't>) -> Option<String> {
+fn parse_container_name<'i, 't>(
+  parser: &mut Parser<'i, 't>,
+) -> std::result::Result<String, ParseError<'i, ()>> {
   parser.skip_whitespace();
-  let state = parser.state();
-  let ident = parser.try_parse(|p| p.expect_ident_cloned()).ok()?;
-  let ident = ident.as_ref();
-
-  if ident.eq_ignore_ascii_case("none")
-    || ident.eq_ignore_ascii_case("and")
-    || ident.eq_ignore_ascii_case("or")
-    || ident.eq_ignore_ascii_case("not")
-    || ident.eq_ignore_ascii_case("default")
-    || ident.eq_ignore_ascii_case("inherit")
-    || ident.eq_ignore_ascii_case("initial")
-    || ident.eq_ignore_ascii_case("unset")
-    || ident.eq_ignore_ascii_case("revert")
-    || ident.eq_ignore_ascii_case("revert-layer")
+  let ident = parser.expect_ident_cloned()?;
+  let ident_ref = ident.as_ref();
+  if ident_ref.eq_ignore_ascii_case("none")
+    || ident_ref.eq_ignore_ascii_case("and")
+    || ident_ref.eq_ignore_ascii_case("or")
+    || ident_ref.eq_ignore_ascii_case("not")
+    || ident_ref.eq_ignore_ascii_case("default")
+    || ident_ref.eq_ignore_ascii_case("inherit")
+    || ident_ref.eq_ignore_ascii_case("initial")
+    || ident_ref.eq_ignore_ascii_case("unset")
+    || ident_ref.eq_ignore_ascii_case("revert")
+    || ident_ref.eq_ignore_ascii_case("revert-layer")
   {
-    parser.reset(&state);
-    return None;
+    return Err(parser.new_custom_error(()));
   }
-
-  Some(ident.to_string())
+  Ok(ident.to_string())
 }
 
 fn parse_container_condition<'i, 't>(

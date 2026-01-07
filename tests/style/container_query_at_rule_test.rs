@@ -5,6 +5,7 @@ use fastrender::style::cascade::{
 };
 use fastrender::style::media::MediaContext;
 use fastrender::style::types::ContainerType;
+use fastrender::style::values::CustomPropertyValue;
 use fastrender::style::ComputedStyle;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -93,6 +94,40 @@ fn cascade_with_container_styles(
 
 fn cascade_with_container(css: &str, inline_size: f32, names: Vec<String>) -> StyledNode {
   cascade_with_container_styles(css, inline_size, names, Arc::new(ComputedStyle::default()))
+}
+
+fn cascade_with_containers(
+  html: &str,
+  css: &str,
+  containers: Vec<(&str, ContainerQueryInfo)>,
+) -> StyledNode {
+  let dom = dom::parse_html(html).unwrap();
+  let ids = dom::enumerate_dom_ids(&dom);
+
+  let base_media = MediaContext::screen(800.0, 600.0);
+  let mut container_map = HashMap::new();
+  for (id, info) in containers {
+    let node = find_dom_by_id(&dom, id).expect("container node");
+    let node_id = *ids.get(&(node as *const DomNode)).expect("id for container");
+    container_map.insert(node_id, info);
+  }
+  let ctx = ContainerQueryContext {
+    base_media: base_media.clone(),
+    containers: container_map,
+  };
+  let stylesheet = parse_stylesheet(css).unwrap();
+
+  apply_styles_with_media_target_and_imports(
+    &dom,
+    &stylesheet,
+    &base_media,
+    None,
+    None,
+    None,
+    Some(&ctx),
+    None,
+    None,
+  )
 }
 
 #[test]
@@ -206,5 +241,122 @@ fn container_query_rem_uses_root_font_size() {
 
   let styled = cascade_with_container_styles(css, 150.0, vec![], Arc::new(style));
 
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "inline");
+}
+
+#[test]
+fn container_query_comma_conditions_select_independent_containers() {
+  let html = r#"
+    <div id="outer">
+      <div id="inner">
+        <div id="t" class="target"></div>
+      </div>
+    </div>
+  "#;
+  let css = r#"
+    .target { display: block; }
+    @container card (min-width: 999px), style(--large: true) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let mut inner_styles = ComputedStyle::default();
+  inner_styles.custom_properties.insert(
+    Arc::from("--large"),
+    CustomPropertyValue::new("true", None),
+  );
+  let inner_styles = Arc::new(inner_styles);
+  let outer_styles = Arc::new(ComputedStyle::default());
+
+  let styled = cascade_with_containers(
+    html,
+    css,
+    vec![
+      (
+        "outer",
+        ContainerQueryInfo {
+          inline_size: 500.0,
+          block_size: 300.0,
+          container_type: ContainerType::InlineSize,
+          names: vec!["card".into()],
+          font_size: outer_styles.font_size,
+          styles: Arc::clone(&outer_styles),
+        },
+      ),
+      (
+        "inner",
+        ContainerQueryInfo {
+          inline_size: 0.0,
+          block_size: 0.0,
+          container_type: ContainerType::Style,
+          names: Vec::new(),
+          font_size: inner_styles.font_size,
+          styles: Arc::clone(&inner_styles),
+        },
+      ),
+    ],
+  );
+
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "inline");
+}
+
+#[test]
+fn container_query_comma_conditions_allow_distinct_names() {
+  let html = r#"
+    <div id="foo">
+      <div id="bar">
+        <div id="t" class="target"></div>
+      </div>
+    </div>
+  "#;
+  let css = r#"
+    .target { display: block; }
+    @container foo (min-width: 400px), bar (min-width: 200px) {
+      .target { display: inline; }
+    }
+  "#;
+
+  let styled = cascade_with_containers(
+    html,
+    css,
+    vec![
+      (
+        "foo",
+        ContainerQueryInfo {
+          inline_size: 300.0,
+          block_size: 300.0,
+          container_type: ContainerType::InlineSize,
+          names: vec!["foo".into()],
+          font_size: 16.0,
+          styles: Arc::new(ComputedStyle::default()),
+        },
+      ),
+      (
+        "bar",
+        ContainerQueryInfo {
+          inline_size: 250.0,
+          block_size: 300.0,
+          container_type: ContainerType::InlineSize,
+          names: vec!["bar".into()],
+          font_size: 16.0,
+          styles: Arc::new(ComputedStyle::default()),
+        },
+      ),
+    ],
+  );
+
+  assert_eq!(display(find_by_id(&styled, "t").expect("target")), "inline");
+}
+
+#[test]
+fn container_query_name_only_condition_matches_when_container_exists() {
+  let css = r#"
+    .target { display: block; }
+    @container sidebar {
+      .target { display: inline; }
+    }
+  "#;
+
+  let styled = cascade_with_container(css, 500.0, vec!["sidebar".into()]);
   assert_eq!(display(find_by_id(&styled, "t").expect("target")), "inline");
 }
