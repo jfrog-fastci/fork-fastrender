@@ -12244,6 +12244,58 @@ mod tests {
   }
 
   #[test]
+  fn vendor_placeholder_opacity_selectors_target_placeholder_not_control() {
+    // This is the classic unsafe case: if `:-ms-input-placeholder` were treated as a pseudo-class
+    // alias for `:placeholder-shown`, `opacity: 0` would hide the whole input element.
+    let stylesheet = parse_stylesheet(
+      r#"
+        input:-ms-input-placeholder { opacity: 0; }
+      "#,
+    )
+    .expect("parse stylesheet");
+
+    let empty_input = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![("placeholder".to_string(), "Search…".to_string())],
+      },
+      children: vec![],
+    };
+    let styled_empty = apply_styles(&empty_input, &stylesheet);
+    assert_eq!(
+      styled_empty.styles.opacity, 1.0,
+      "vendor placeholder selectors should not affect the input element opacity"
+    );
+    let placeholder_styles = styled_empty
+      .placeholder_styles
+      .as_deref()
+      .expect("expected ::placeholder pseudo styles");
+    assert_eq!(placeholder_styles.opacity, 0.0);
+
+    let filled_input = DomNode {
+      node_type: DomNodeType::Element {
+        tag_name: "input".to_string(),
+        namespace: HTML_NAMESPACE.to_string(),
+        attributes: vec![
+          ("placeholder".to_string(), "Search…".to_string()),
+          ("value".to_string(), "filled".to_string()),
+        ],
+      },
+      children: vec![],
+    };
+    let styled_filled = apply_styles(&filled_input, &stylesheet);
+    assert_eq!(
+      styled_filled.styles.opacity, 1.0,
+      "vendor placeholder selectors should not affect the input element opacity"
+    );
+    assert!(
+      styled_filled.placeholder_styles.is_none(),
+      "placeholder pseudo styles should not be generated when placeholder is not shown"
+    );
+  }
+
+  #[test]
   fn overflow_axis_normalization_matches_chrome() {
     let stylesheet = StyleSheet::new();
 
