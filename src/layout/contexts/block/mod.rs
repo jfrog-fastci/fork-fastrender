@@ -741,7 +741,12 @@ impl BlockFormattingContext {
       }
     }
 
-    if style.shrink_to_fit_inline_size && width_auto {
+    // Tables use a shrink-to-fit inline size when `width` is `auto` (CSS 2.1 §17.5.2).
+    // Without this, the block constraint equation would force auto-width tables to span the
+    // containing block, which then makes `table-layout: fixed` distribute slack into authored
+    // columns (CSS 2.1 §17.5.2.1) and breaks expected fixed-width column behavior.
+    let shrink_to_fit = style.shrink_to_fit_inline_size || matches!(style.display, Display::Table);
+    if shrink_to_fit && width_auto {
       let inline_edges = computed_width.border_left
         + computed_width.padding_left
         + computed_width.padding_right
