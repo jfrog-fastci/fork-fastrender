@@ -178,3 +178,26 @@ fn shadow_host_rules_respect_layer_order() {
   let host = find_by_id(&styled, "host").expect("styled host");
   assert_eq!(host.styles.color, Rgba::rgb(1, 2, 3));
 }
+
+#[test]
+fn document_rules_outrank_shadow_host_context_rules() {
+  let html = r#"
+    <style>
+      .theme x-host { color: rgb(255, 0, 0); }
+    </style>
+    <div class="theme">
+      <x-host id="host">
+        <template shadowroot="open">
+          <style>
+            :host-context(.theme) { color: rgb(0, 0, 255); }
+          </style>
+          <slot></slot>
+        </template>
+      </x-host>
+    </div>
+  "#;
+
+  let styled = apply_scoped_styles(html);
+  let host = find_by_id(&styled, "host").expect("styled host");
+  assert_eq!(host.styles.color, Rgba::rgb(255, 0, 0));
+}
