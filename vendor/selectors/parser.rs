@@ -3834,7 +3834,8 @@ where
             };
             let is_pseudo_element = !is_single_colon
                 || is_css2_pseudo_element(&name)
-                || parser.is_pseudo_element_with_single_colon(&name);
+                || (!state.intersects(SelectorParsingState::DISALLOW_PSEUDOS)
+                    && parser.is_pseudo_element_with_single_colon(&name));
             if is_pseudo_element {
                 // Pseudos after pseudo elements are not allowed in some cases:
                 // - Some states will disallow pseudos, such as the interiors of

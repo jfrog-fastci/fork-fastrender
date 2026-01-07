@@ -6095,6 +6095,7 @@ impl<'a> Element for ElementRef<'a> {
       PseudoClass::ReadOnly => !self.is_read_write(),
       PseudoClass::ReadWrite => self.is_read_write(),
       PseudoClass::PlaceholderShown
+      | PseudoClass::WebkitInputPlaceholder
       | PseudoClass::MsInputPlaceholder
       | PseudoClass::MozPlaceholder => self.is_placeholder_shown(),
       PseudoClass::MozUiInvalid | PseudoClass::MozFocusring => false,
@@ -10072,6 +10073,39 @@ mod tests {
       &[],
       &PseudoClass::PlaceholderShown
     ));
+  }
+
+  #[test]
+  fn legacy_vendor_placeholder_pseudos_inside_not_match_like_placeholder_shown() {
+    let placeholder_empty = element_with_attrs(
+      "input",
+      vec![("placeholder", "x"), ("value", "")],
+      vec![],
+    );
+    let placeholder_empty_ref = ElementRef::new(&placeholder_empty);
+
+    let placeholder_filled = element_with_attrs(
+      "input",
+      vec![("placeholder", "x"), ("value", "hello")],
+      vec![],
+    );
+    let placeholder_filled_ref = ElementRef::new(&placeholder_filled);
+
+    for pseudo in [
+      ":-webkit-input-placeholder",
+      ":-moz-placeholder",
+      ":-ms-input-placeholder",
+    ] {
+      let selector = parse_selector(&format!("input:not({pseudo})"));
+      assert!(
+        !selector_matches(&placeholder_empty_ref, &selector),
+        "input:not({pseudo}) should not match when placeholder is shown"
+      );
+      assert!(
+        selector_matches(&placeholder_filled_ref, &selector),
+        "input:not({pseudo}) should match when control has a value"
+      );
+    }
   }
 
   #[test]

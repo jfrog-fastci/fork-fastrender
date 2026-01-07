@@ -299,6 +299,7 @@ pub enum PseudoClass {
   ReadOnly,
   ReadWrite,
   PlaceholderShown,
+  WebkitInputPlaceholder,
   MsInputPlaceholder,
   MozPlaceholder,
   Autofill,
@@ -503,6 +504,7 @@ impl ToCss for PseudoClass {
       PseudoClass::ReadOnly => dest.write_str(":read-only"),
       PseudoClass::ReadWrite => dest.write_str(":read-write"),
       PseudoClass::PlaceholderShown => dest.write_str(":placeholder-shown"),
+      PseudoClass::WebkitInputPlaceholder => dest.write_str(":-webkit-input-placeholder"),
       PseudoClass::MsInputPlaceholder => dest.write_str(":-ms-input-placeholder"),
       PseudoClass::MozPlaceholder => dest.write_str(":-moz-placeholder"),
       PseudoClass::Autofill => dest.write_str(":autofill"),
@@ -667,7 +669,10 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
     match name.to_ascii_lowercase().as_str() {
       // Real-world stylesheets (and some engines) still use single-colon forms for these
       // vendor pseudo-elements.
-      "placeholder" | "-webkit-input-placeholder" => true,
+      "placeholder"
+      | "-webkit-input-placeholder"
+      | "-moz-placeholder"
+      | "-ms-input-placeholder" => true,
       "-webkit-slider-thumb" | "-moz-range-thumb" | "-ms-thumb" => true,
       "-webkit-slider-runnable-track" | "-moz-range-track" | "-ms-track" => true,
       _ => false,
@@ -708,9 +713,10 @@ impl<'i> selectors::parser::Parser<'i> for PseudoClassParser {
       "read-only" => Ok(PseudoClass::ReadOnly),
       "read-write" => Ok(PseudoClass::ReadWrite),
       "placeholder-shown" => Ok(PseudoClass::PlaceholderShown),
-      "-moz-placeholder" => Ok(PseudoClass::PlaceholderShown),
+      "-webkit-input-placeholder" => Ok(PseudoClass::WebkitInputPlaceholder),
+      "-ms-input-placeholder" => Ok(PseudoClass::MsInputPlaceholder),
+      "-moz-placeholder" => Ok(PseudoClass::MozPlaceholder),
       "-moz-placeholder-shown" => Ok(PseudoClass::PlaceholderShown),
-      "-ms-input-placeholder" => Ok(PseudoClass::PlaceholderShown),
       "autofill" => Ok(PseudoClass::Autofill),
       "-webkit-autofill" => Ok(PseudoClass::Autofill),
       "-moz-ui-invalid" => Ok(PseudoClass::MozUiInvalid),
@@ -1533,6 +1539,10 @@ mod tests {
       ":placeholder-shown"
     );
     assert_eq!(
+      PseudoClass::WebkitInputPlaceholder.to_css_string(),
+      ":-webkit-input-placeholder"
+    );
+    assert_eq!(
       PseudoClass::MsInputPlaceholder.to_css_string(),
       ":-ms-input-placeholder"
     );
@@ -1671,6 +1681,8 @@ mod tests {
     for selector_text in [
       "input:placeholder",
       "input:-webkit-input-placeholder",
+      "input:-moz-placeholder",
+      "input:-ms-input-placeholder",
     ] {
       let mut input = ParserInput::new(selector_text);
       let mut parser = Parser::new(&mut input);
@@ -1715,6 +1727,22 @@ mod tests {
         selector.pseudo_element(),
         Some(&PseudoElement::SliderTrack),
         "{selector_text} should parse as slider track"
+      );
+    }
+  }
+
+  #[test]
+  fn parses_legacy_vendor_placeholder_pseudos_inside_not() {
+    for selector_text in [
+      "input:not(:-webkit-input-placeholder)",
+      "input:not(:-moz-placeholder)",
+      "input:not(:-ms-input-placeholder)",
+    ] {
+      let mut input = ParserInput::new(selector_text);
+      let mut parser = Parser::new(&mut input);
+      assert!(
+        SelectorList::parse(&PseudoClassParser, &mut parser, ParseRelative::No).is_ok(),
+        "{selector_text} should parse"
       );
     }
   }
