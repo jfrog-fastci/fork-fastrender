@@ -1519,14 +1519,14 @@ impl Painter {
     for root in svg_filter_roots {
       self
         .collect_stacking_context(
-        root,
-        offset,
-        None,
-        true,
-        root_paint,
-        &mut items,
-        &mut svg_filter_resolver,
-      )
+          root,
+          offset,
+          None,
+          true,
+          root_paint,
+          &mut items,
+          &mut svg_filter_resolver,
+        )
         .map_err(Error::Render)?;
     }
     drop(_display_list_span);
@@ -3427,7 +3427,10 @@ impl Painter {
           render_w: u32,
           render_h: u32,
         },
-        Image { resolved_src: String, image: Arc<crate::image_loader::CachedImage> },
+        Image {
+          resolved_src: String,
+          image: Arc<crate::image_loader::CachedImage>,
+        },
       }
 
       let url_tile = match image {
@@ -3467,12 +3470,9 @@ impl Painter {
               Err(_) => continue,
             };
             let orientation = style.image_orientation.resolve(image.orientation, true);
-            let Some((w, h)) = image.css_dimensions(
-              orientation,
-              &style.image_resolution,
-              self.scale,
-              None,
-            ) else {
+            let Some((w, h)) =
+              image.css_dimensions(orientation, &style.image_resolution, self.scale, None)
+            else {
               continue;
             };
             img_w = w;
@@ -3595,18 +3595,18 @@ impl Painter {
             render_h,
           }) => {
             let cache_key = format!("svg-mask-fragment:{}", id);
-            tile_pixmap = match self.image_cache.render_svg_pixmap_at_size(
-              &svg,
-              render_w,
-              render_h,
-              &cache_key,
-              self.scale,
-            ) {
+            tile_pixmap = match self
+              .image_cache
+              .render_svg_pixmap_at_size(&svg, render_w, render_h, &cache_key, self.scale)
+            {
               Ok(pixmap) => Some(pixmap),
               Err(_) => None,
             };
           }
-          Some(MaskUrlTile::Image { resolved_src, image }) => {
+          Some(MaskUrlTile::Image {
+            resolved_src,
+            image,
+          }) => {
             let orientation = style.image_orientation.resolve(image.orientation, true);
             if image.is_vector {
               let Some(svg) = &image.svg_content else {
@@ -3627,13 +3627,14 @@ impl Painter {
                 Err(_) => None,
               };
             } else {
-              tile_pixmap = match self
-                .image_cache
-                .load_raster_pixmap(&resolved_src, orientation, true)
-              {
-                Ok(Some(pixmap)) => Some(pixmap),
-                _ => None,
-              };
+              tile_pixmap =
+                match self
+                  .image_cache
+                  .load_raster_pixmap(&resolved_src, orientation, true)
+                {
+                  Ok(Some(pixmap)) => Some(pixmap),
+                  _ => None,
+                };
             }
           }
           None => {}
@@ -7019,7 +7020,9 @@ impl Painter {
         let text_style = if let Some(pseudo_style) = placeholder_style {
           let mut style = pseudo_style.clone();
           let opacity = pseudo_style.opacity.clamp(0.0, 1.0);
-          style.color = style.color.with_alpha((style.color.a * opacity).clamp(0.0, 1.0));
+          style.color = style
+            .color
+            .with_alpha((style.color.a * opacity).clamp(0.0, 1.0));
           style
         } else {
           let mut style = style.clone();
@@ -7161,7 +7164,9 @@ impl Painter {
         let text_style = if let Some(pseudo_style) = placeholder_style {
           let mut style = pseudo_style.clone();
           let opacity = pseudo_style.opacity.clamp(0.0, 1.0);
-          style.color = style.color.with_alpha((style.color.a * opacity).clamp(0.0, 1.0));
+          style.color = style
+            .color
+            .with_alpha((style.color.a * opacity).clamp(0.0, 1.0));
           style
         } else {
           let mut style = style.clone();
@@ -7269,7 +7274,9 @@ impl Painter {
           let total_rows = select.items.len();
           let viewport_height = content_rect.height().max(0.0);
           let content_height = row_height * total_rows as f32;
-          let mut scroll_y = box_id.map(|id| self.scroll_state.element_offset(id).y).unwrap_or(0.0);
+          let mut scroll_y = box_id
+            .map(|id| self.scroll_state.element_offset(id).y)
+            .unwrap_or(0.0);
           if !scroll_y.is_finite() {
             scroll_y = 0.0;
           }
@@ -7580,6 +7587,128 @@ impl Painter {
           )
         };
 
+        let paint_outset_box_shadows = |painter: &mut Painter,
+                                        rect: Rect,
+                                        radii: BorderRadii,
+                                        style: &ComputedStyle,
+                                        clip_mask: Option<&Mask>| {
+          if style.box_shadow.is_empty() || rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return;
+          }
+          let percentage_base = rect.width().max(0.0);
+          let device_rect = painter.device_rect(rect);
+          let device_radii = painter.device_radii(radii);
+          for shadow in &style.box_shadow {
+            if shadow.inset {
+              continue;
+            }
+            let offset_x = resolve_length_for_paint(
+              &shadow.offset_x,
+              style.font_size,
+              style.root_font_size,
+              percentage_base,
+              viewport,
+            );
+            let offset_y = resolve_length_for_paint(
+              &shadow.offset_y,
+              style.font_size,
+              style.root_font_size,
+              percentage_base,
+              viewport,
+            );
+            let blur = resolve_length_for_paint(
+              &shadow.blur_radius,
+              style.font_size,
+              style.root_font_size,
+              percentage_base,
+              viewport,
+            )
+            .max(0.0);
+            let spread = resolve_length_for_paint(
+              &shadow.spread_radius,
+              style.font_size,
+              style.root_font_size,
+              percentage_base,
+              viewport,
+            )
+            .max(-1e6);
+            if !offset_x.is_finite() || !offset_y.is_finite() || !blur.is_finite() || !spread.is_finite()
+            {
+              continue;
+            }
+            let shadow = crate::paint::rasterize::BoxShadow {
+              offset_x: painter.device_length(offset_x),
+              offset_y: painter.device_length(offset_y),
+              blur_radius: painter.device_length(blur),
+              spread_radius: painter.device_length(spread),
+              color: shadow.color,
+              inset: false,
+            };
+            let _ = crate::paint::rasterize::render_box_shadow_masked(
+              &mut painter.pixmap,
+              device_rect.x(),
+              device_rect.y(),
+              device_rect.width(),
+              device_rect.height(),
+              &device_radii,
+              &shadow,
+              clip_mask,
+            );
+          }
+        };
+
+        let paint_rounded_border = |painter: &mut Painter,
+                                    rect: Rect,
+                                    device_rect: Rect,
+                                    radii: BorderRadii,
+                                    style: &ComputedStyle,
+                                    clip_mask: Option<&Mask>| {
+          let border_width = resolve_length_for_paint(
+            &style.used_border_top_width(),
+            style.font_size,
+            style.root_font_size,
+            rect.width().max(0.0),
+            viewport,
+          )
+          .max(0.0);
+          let border_style = style.border_top_style;
+          let border_color = style.border_top_color;
+          if border_width <= 0.0
+            || matches!(
+              border_style,
+              crate::style::types::BorderStyle::None | crate::style::types::BorderStyle::Hidden
+            )
+            || border_color.is_transparent()
+          {
+            return;
+          }
+
+          let Some(path) = crate::paint::rasterize::build_rounded_rect_path(
+            device_rect.x(),
+            device_rect.y(),
+            device_rect.width(),
+            device_rect.height(),
+            &radii,
+          ) else {
+            return;
+          };
+          let mut paint = Paint::default();
+          paint.set_color(tiny_skia::Color::from_rgba8(
+            border_color.r,
+            border_color.g,
+            border_color.b,
+            border_color.alpha_u8(),
+          ));
+          paint.anti_alias = true;
+          let stroke = tiny_skia::Stroke {
+            width: border_width * painter.scale,
+            ..Default::default()
+          };
+          painter
+            .pixmap
+            .stroke_path(&path, &paint, &stroke, Transform::identity(), clip_mask);
+        };
+
         let default_knob_diameter = padding_rect.height().min(16.0);
         let knob_width = thumb_style
           .and_then(|style| style.width.map(|len| resolve_px(style, len, padding_rect.width())))
@@ -7626,12 +7755,15 @@ impl Painter {
               Rect::from_xywh(padding_rect.x(), track_y, padding_rect.width(), track_height);
 
             if let Some(track_style) = track_style {
+              let track_radii = resolve_border_radii(Some(track_style), track_rect);
+              paint_outset_box_shadows(self, track_rect, track_radii, track_style, clip_mask);
+
               let device_track_rect = self.device_rect(track_rect);
-              let radii = self.device_radii(resolve_border_radii(Some(track_style), track_rect));
+              let device_radii = self.device_radii(track_radii);
               fill_rounded_rect_masked(
                 &mut self.pixmap,
                 device_track_rect,
-                radii,
+                device_radii,
                 track_style.background_color,
                 clip_mask,
               );
@@ -7670,111 +7802,45 @@ impl Painter {
             }
 
             if let Some(track_style) = track_style {
-              let border_width = resolve_length_for_paint(
-                &track_style.used_border_top_width(),
-                track_style.font_size,
-                track_style.root_font_size,
-                track_rect.width().max(0.0),
-                viewport,
-              )
-              .max(0.0);
-              let border_style = track_style.border_top_style;
-              let border_color = track_style.border_top_color;
-              if border_width > 0.0
-                && !matches!(
-                  border_style,
-                  crate::style::types::BorderStyle::None | crate::style::types::BorderStyle::Hidden
-                )
-                && !border_color.is_transparent()
-              {
-                let device_track_rect = self.device_rect(track_rect);
-                let radii = self.device_radii(resolve_border_radii(Some(track_style), track_rect));
-                let Some(path) = crate::paint::rasterize::build_rounded_rect_path(
-                  device_track_rect.x(),
-                  device_track_rect.y(),
-                  device_track_rect.width(),
-                  device_track_rect.height(),
-                  &radii,
-                ) else {
-                  return true;
-                };
-                let mut paint = Paint::default();
-                paint.set_color(tiny_skia::Color::from_rgba8(
-                  border_color.r,
-                  border_color.g,
-                  border_color.b,
-                  border_color.alpha_u8(),
-                ));
-                paint.anti_alias = true;
-                let stroke = tiny_skia::Stroke {
-                  width: border_width * self.scale,
-                  ..Default::default()
-                };
-                self
-                  .pixmap
-                  .stroke_path(&path, &paint, &stroke, Transform::identity(), clip_mask);
-              }
+              let device_track_rect = self.device_rect(track_rect);
+              let device_radii =
+                self.device_radii(resolve_border_radii(Some(track_style), track_rect));
+              paint_rounded_border(
+                self,
+                track_rect,
+                device_track_rect,
+                device_radii,
+                track_style,
+                clip_mask,
+              );
             }
           }
         }
 
         if let Some(thumb_style) = thumb_style {
-          let device_knob_rect = self.device_rect(knob_rect);
-          let mut radii = resolve_border_radii(Some(thumb_style), knob_rect);
-          if radii.is_zero() {
-            radii = BorderRadii::uniform((knob_width.min(knob_height)) / 2.0);
+          let mut knob_radii = resolve_border_radii(Some(thumb_style), knob_rect);
+          if knob_radii.is_zero() {
+            knob_radii = BorderRadii::uniform((knob_width.min(knob_height)) / 2.0);
           }
-          let radii = self.device_radii(radii);
+          paint_outset_box_shadows(self, knob_rect, knob_radii, thumb_style, clip_mask);
+
+          let device_knob_rect = self.device_rect(knob_rect);
+          let device_radii = self.device_radii(knob_radii);
           fill_rounded_rect_masked(
             &mut self.pixmap,
             device_knob_rect,
-            radii,
+            device_radii,
             thumb_style.background_color,
             clip_mask,
           );
-
-          let border_width = resolve_length_for_paint(
-            &thumb_style.used_border_top_width(),
-            thumb_style.font_size,
-            thumb_style.root_font_size,
-            knob_rect.width().max(0.0),
-            viewport,
-          )
-          .max(0.0);
-          let border_style = thumb_style.border_top_style;
-          let border_color = thumb_style.border_top_color;
-          if border_width > 0.0
-            && !matches!(
-              border_style,
-              crate::style::types::BorderStyle::None | crate::style::types::BorderStyle::Hidden
-            )
-            && !border_color.is_transparent()
-          {
-            let Some(path) = crate::paint::rasterize::build_rounded_rect_path(
-              device_knob_rect.x(),
-              device_knob_rect.y(),
-              device_knob_rect.width(),
-              device_knob_rect.height(),
-              &radii,
-            ) else {
-              return true;
-            };
-            let mut paint = Paint::default();
-            paint.set_color(tiny_skia::Color::from_rgba8(
-              border_color.r,
-              border_color.g,
-              border_color.b,
-              border_color.alpha_u8(),
-            ));
-            paint.anti_alias = true;
-            let stroke = tiny_skia::Stroke {
-              width: border_width * self.scale,
-              ..Default::default()
-            };
-            self
-              .pixmap
-              .stroke_path(&path, &paint, &stroke, Transform::identity(), clip_mask);
-          }
+          paint_rounded_border(
+            self,
+            knob_rect,
+            device_knob_rect,
+            device_radii,
+            thumb_style,
+            clip_mask,
+          );
         } else {
           let knob_radius = (knob_width.min(knob_height)) / 2.0;
           let knob_center_x = self.device_x(knob_center_x);
@@ -8826,7 +8892,11 @@ impl Painter {
     // requires this offset to be zero when `text-underline-position: from-font` and font metrics
     // are available.
     match position {
-      crate::style::types::TextUnderlinePosition::FromFont if metrics.has_font_underline_metrics => 0.0,
+      crate::style::types::TextUnderlinePosition::FromFont
+        if metrics.has_font_underline_metrics =>
+      {
+        0.0
+      }
       crate::style::types::TextUnderlinePosition::Under
       | crate::style::types::TextUnderlinePosition::UnderLeft
       | crate::style::types::TextUnderlinePosition::UnderRight => {
@@ -8866,7 +8936,9 @@ impl Painter {
     } else {
       match position {
         crate::style::types::TextUnderlinePosition::Left
-        | crate::style::types::TextUnderlinePosition::Right => crate::style::types::TextUnderlinePosition::Auto,
+        | crate::style::types::TextUnderlinePosition::Right => {
+          crate::style::types::TextUnderlinePosition::Auto
+        }
         _ => position,
       }
     };
@@ -14323,8 +14395,11 @@ mod tests {
       overflow_y: Overflow::Visible,
     };
 
-    let output =
-      crate::paint::svg_foreign_object::foreign_object_image_tag(&foreign, "data:image/png;base64,abc", 0);
+    let output = crate::paint::svg_foreign_object::foreign_object_image_tag(
+      &foreign,
+      "data:image/png;base64,abc",
+      0,
+    );
     assert_eq!(output.match_indices("opacity=").count(), 1);
   }
 
@@ -14381,9 +14456,15 @@ mod tests {
       overflow_y: Overflow::Visible,
     };
 
-    let output =
-      crate::paint::svg_foreign_object::foreign_object_image_tag(&foreign, "data:image/png;base64,abc", 0);
-    assert!(!output.contains("<g"), "visible overflow should not introduce wrapper groups");
+    let output = crate::paint::svg_foreign_object::foreign_object_image_tag(
+      &foreign,
+      "data:image/png;base64,abc",
+      0,
+    );
+    assert!(
+      !output.contains("<g"),
+      "visible overflow should not introduce wrapper groups"
+    );
     assert_eq!(output.match_indices("clip-path=").count(), 1);
     assert!(output.contains("clip-path=\"url(#foo)\""));
   }
@@ -14408,8 +14489,11 @@ mod tests {
       overflow_y: Overflow::Hidden,
     };
 
-    let output =
-      crate::paint::svg_foreign_object::foreign_object_image_tag(&foreign, "data:image/png;base64,abc", 0);
+    let output = crate::paint::svg_foreign_object::foreign_object_image_tag(
+      &foreign,
+      "data:image/png;base64,abc",
+      0,
+    );
     assert!(output.contains("<g clip-path=\"url(#foo)\">"));
     assert!(output.contains("<image clip-path=\"url(#fastr-fo-0)\""));
     assert_eq!(output.match_indices("url(#foo)").count(), 1);
@@ -14696,19 +14780,20 @@ mod tests {
     let painter = Painter::new(100, 10, Rgba::WHITE).expect("painter");
     let mut commands = Vec::new();
     let mut svg_filters = SvgFilterResolver::new(None, vec![&root], None);
-    painter.collect_stacking_context(
-      &root,
-      Point::ZERO,
-      None,
-      true,
-      RootPaintOptions {
-        use_root_background: false,
-        extend_background_to_viewport: false,
-      },
-      &mut commands,
-      &mut svg_filters,
-    )
-    .expect("stacking context collection should succeed");
+    painter
+      .collect_stacking_context(
+        &root,
+        Point::ZERO,
+        None,
+        true,
+        RootPaintOptions {
+          use_root_background: false,
+          extend_background_to_viewport: false,
+        },
+        &mut commands,
+        &mut svg_filters,
+      )
+      .expect("stacking context collection should succeed");
 
     // Background commands occur in paint order; filter child backgrounds to check ordering.
     let xs: Vec<f32> = commands

@@ -42,6 +42,7 @@ use crate::style::color::Rgba;
 use tiny_skia::FillRule;
 use tiny_skia::LineCap;
 use tiny_skia::LineJoin;
+use tiny_skia::Mask;
 use tiny_skia::Paint;
 use tiny_skia::Path;
 use tiny_skia::PathBuilder;
@@ -1025,6 +1026,20 @@ pub fn render_box_shadow(
   render_box_shadow_cached(pixmap, x, y, width, height, radii, shadow, None)
 }
 
+/// Renders a box shadow, clipped by an optional mask.
+pub fn render_box_shadow_masked(
+  pixmap: &mut Pixmap,
+  x: f32,
+  y: f32,
+  width: f32,
+  height: f32,
+  radii: &BorderRadii,
+  shadow: &BoxShadow,
+  mask: Option<&Mask>,
+) -> Result<bool, RenderError> {
+  render_box_shadow_cached_masked(pixmap, x, y, width, height, radii, shadow, None, mask)
+}
+
 /// Renders a box shadow using an optional blur cache.
 ///
 /// When `cache` is provided, the gaussian blur step can be reused across identical
@@ -1052,6 +1067,32 @@ pub fn render_box_shadow_cached(
   )
 }
 
+/// Renders a box shadow using an optional blur cache, clipped by an optional mask.
+pub fn render_box_shadow_cached_masked(
+  pixmap: &mut Pixmap,
+  x: f32,
+  y: f32,
+  width: f32,
+  height: f32,
+  radii: &BorderRadii,
+  shadow: &BoxShadow,
+  cache: Option<&mut BlurCache>,
+  mask: Option<&Mask>,
+) -> Result<bool, RenderError> {
+  render_box_shadow_cached_with_clamp_masked(
+    pixmap,
+    x,
+    y,
+    width,
+    height,
+    radii,
+    shadow,
+    cache.map(|cache| cache as &mut (dyn BlurCacheOps + 'static)),
+    BoxShadowSurfaceClamp::ExpandByBlurRadius,
+    mask,
+  )
+}
+
 pub(crate) fn render_box_shadow_cached_with_clamp(
   pixmap: &mut Pixmap,
   x: f32,
@@ -1063,6 +1104,23 @@ pub(crate) fn render_box_shadow_cached_with_clamp(
   cache: Option<&mut (dyn BlurCacheOps + 'static)>,
   clamp: BoxShadowSurfaceClamp,
 ) -> Result<bool, RenderError> {
+  render_box_shadow_cached_with_clamp_masked(
+    pixmap, x, y, width, height, radii, shadow, cache, clamp, None,
+  )
+}
+
+pub(crate) fn render_box_shadow_cached_with_clamp_masked(
+  pixmap: &mut Pixmap,
+  x: f32,
+  y: f32,
+  width: f32,
+  height: f32,
+  radii: &BorderRadii,
+  shadow: &BoxShadow,
+  cache: Option<&mut (dyn BlurCacheOps + 'static)>,
+  clamp: BoxShadowSurfaceClamp,
+  mask: Option<&Mask>,
+) -> Result<bool, RenderError> {
   crate::render_control::check_active(RenderStage::Paint)?;
   if shadow.color.a == 0.0 {
     return Ok(false);
@@ -1070,9 +1128,13 @@ pub(crate) fn render_box_shadow_cached_with_clamp(
   check_active(RenderStage::Paint)?;
 
   if shadow.inset {
-    render_inset_shadow(pixmap, x, y, width, height, radii, shadow, cache, clamp)
+    render_inset_shadow(
+      pixmap, x, y, width, height, radii, shadow, cache, clamp, mask,
+    )
   } else {
-    render_outset_shadow(pixmap, x, y, width, height, radii, shadow, cache, clamp)
+    render_outset_shadow(
+      pixmap, x, y, width, height, radii, shadow, cache, clamp, mask,
+    )
   }
 }
 
@@ -1087,6 +1149,7 @@ fn render_outset_shadow(
   shadow: &BoxShadow,
   cache: Option<&mut (dyn BlurCacheOps + 'static)>,
   clamp: BoxShadowSurfaceClamp,
+  mask: Option<&Mask>,
 ) -> Result<bool, RenderError> {
   crate::render_control::check_active(RenderStage::Paint)?;
   let sigma = shadow.blur_radius.max(0.0);
@@ -1186,7 +1249,7 @@ fn render_outset_shadow(
     tmp.as_ref(),
     &paint,
     Transform::identity(),
-    None,
+    mask,
   );
   Ok(true)
 }
@@ -1202,6 +1265,7 @@ fn render_inset_shadow(
   shadow: &BoxShadow,
   cache: Option<&mut (dyn BlurCacheOps + 'static)>,
   clamp: BoxShadowSurfaceClamp,
+  mask: Option<&Mask>,
 ) -> Result<bool, RenderError> {
   crate::render_control::check_active(RenderStage::Paint)?;
   let sigma = shadow.blur_radius.max(0.0);
@@ -1371,7 +1435,7 @@ fn render_inset_shadow(
     tmp.as_ref(),
     &final_paint,
     Transform::identity(),
-    None,
+    mask,
   );
   Ok(true)
 }
