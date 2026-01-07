@@ -15962,6 +15962,8 @@ fn parse_text_underline_offset(value: &PropertyValue) -> Option<TextUnderlineOff
       Some(TextUnderlineOffset::Auto)
     }
     PropertyValue::Length(l) => Some(TextUnderlineOffset::Length(*l)),
+    // CSS `<length-percentage>` allows unitless `0` as a `<length>`.
+    PropertyValue::Number(n) if *n == 0.0 => Some(TextUnderlineOffset::Length(Length::px(0.0))),
     PropertyValue::Percentage(p) => Some(TextUnderlineOffset::Length(Length::percent(*p))),
     _ => None,
   }
@@ -17034,6 +17036,15 @@ mod tests {
   #[test]
   fn text_underline_offset_parses_length_and_percentage() {
     let parent = ComputedStyle::default();
+
+    let decls = parse_declarations("text-underline-offset: 0;");
+    assert_eq!(decls.len(), 1);
+    let mut styles = ComputedStyle::default();
+    apply_declaration(&mut styles, &decls[0], &parent, 16.0, 16.0);
+    assert_eq!(
+      styles.text_underline_offset,
+      TextUnderlineOffset::Length(Length::px(0.0))
+    );
 
     let decls = parse_declarations("text-underline-offset: 0.2em;");
     assert_eq!(decls.len(), 1);
