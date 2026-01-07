@@ -18,7 +18,7 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
   - Unknown `<input type=...>` falls back to `Unknown` and uses placeholder/value/type text as the label.
   - Checkboxes/radios draw marks when checked/indeterminate; selects render either a collapsed dropdown (label + caret) or a listbox when `multiple`/`size` > 1; ranges draw a track + thumb; color inputs render a swatch plus a hex label.
 - Disabled, focus, focus-visible, required, and invalid states are derived from element attributes + `data-fastr-focus*` hints during box generation and influence native painting (tinted overlays, accent changes). The `data-fastr-focus-visible` hint implies focus for native painting so standalone focus-visible markers are captured.
-- Some form-control pseudo-element styles are captured during the cascade (placeholder + range slider thumb/track) and passed into the painters via `FormControl::{placeholder_style, slider_thumb_style, slider_track_style}`. Vendor spellings like `::-webkit-input-placeholder`, `::-moz-placeholder`, `:-ms-input-placeholder`, `::-moz-range-thumb`, `::-moz-range-track`, `::-ms-thumb`, and `::-ms-track` are accepted and normalized internally.
+- Some form-control pseudo-element styles are captured during the cascade (placeholder + range slider thumb/track) and passed into the painters via `FormControl::{placeholder_style, slider_thumb_style, slider_track_style}`. Vendor spellings and legacy single-colon forms (e.g. `::-webkit-input-placeholder`/`:-webkit-input-placeholder`, `::-moz-range-thumb`/`:-moz-range-thumb`, `::-ms-track`/`:-ms-track`) are accepted and normalized internally.
 - `appearance: none` affects **native painting** (suppresses some UA chrome) but does **not** currently change box generation: the element is still a `ReplacedType::FormControl` and keeps form-control intrinsic sizing. (Non-`none` keywords are preserved as `Appearance::Keyword(...)`, but painters currently only special-case `Appearance::None`.)
 - Vendor-prefixed `-webkit-appearance` and other vendor-prefixed spellings (`-moz-appearance`, `-ms-appearance`, `-o-appearance`) are treated as aliases of `appearance` (for site compatibility), so those spellings can drive `Appearance::None` / keyword values through box generation and painting. (Task 94 tracks vendor-alias conformance; note: `@supports` intentionally only reports support for a small allowlist like `-webkit-appearance` to avoid inverting feature queries.)
 
@@ -57,8 +57,8 @@ Note: FastRender does not delegate to platform-native widgets; “native paintin
     - UA track/fill painting is skipped when `control.appearance == Appearance::None`, so the
       element’s own `background`/`border` becomes the “track”.
     - The thumb is still painted; in `Appearance::None` mode it can be styled via
-      `slider_thumb_style` (captured from `::-webkit-slider-thumb` / `::-moz-range-thumb` /
-      `::-ms-thumb`).
+      `slider_thumb_style` (captured from `::-webkit-slider-thumb` and vendor/legacy aliases like
+      `::-moz-range-thumb`/`:-moz-range-thumb`/`::-ms-thumb`).
     - `slider_track_style` is captured (e.g. `::-webkit-slider-runnable-track`) but is not yet used
       for `appearance:none` painting.
     - See `src/paint/display_list_builder.rs::emit_form_control` and
