@@ -3891,7 +3891,9 @@ fn apply_property_from_source(
       styles.line_clamp = source.line_clamp;
       styles.line_clamp_source = LineClampSource::Webkit;
     }
-    "appearance" => styles.appearance = source.appearance.clone(),
+    "appearance" | "-webkit-appearance" | "-moz-appearance" => {
+      styles.appearance = source.appearance.clone()
+    }
     "resize" => styles.resize = source.resize,
     "box-sizing" => styles.box_sizing = source.box_sizing,
     "box-decoration-break" => styles.box_decoration_break = source.box_decoration_break,
@@ -6867,6 +6869,7 @@ fn apply_declaration_with_base_internal_with_order(
     "-webkit-animation-composition" => "animation-composition",
     "-webkit-backdrop-filter" => "backdrop-filter",
     "-webkit-appearance" => "appearance",
+    "-moz-appearance" => "appearance",
     other => other,
   };
 
@@ -10465,7 +10468,7 @@ fn apply_declaration_with_base_internal_with_order(
         };
       }
     }
-    "appearance" | "-webkit-appearance" => {
+    "appearance" | "-webkit-appearance" | "-moz-appearance" => {
       if let PropertyValue::Keyword(kw) = resolved_value {
         if kw.eq_ignore_ascii_case("auto") {
           styles.appearance = Appearance::Auto;
@@ -21310,6 +21313,22 @@ mod tests {
       16.0,
     );
     assert!(matches!(style.appearance, Appearance::None));
+
+    let mut vendor_style = ComputedStyle::default();
+    apply_declaration(
+      &mut vendor_style,
+      &Declaration {
+        property: "-moz-appearance".into(),
+        value: PropertyValue::Keyword("none".into()),
+        contains_var: false,
+        raw_value: String::new(),
+        important: false,
+      },
+      &ComputedStyle::default(),
+      16.0,
+      16.0,
+    );
+    assert!(matches!(vendor_style.appearance, Appearance::None));
 
     apply_declaration(
       &mut style,
