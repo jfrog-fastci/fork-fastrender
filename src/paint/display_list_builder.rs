@@ -6429,9 +6429,6 @@ impl DisplayListBuilder {
       || Self::border_side_visible(&sides.1)
       || Self::border_side_visible(&sides.2)
       || Self::border_side_visible(&sides.3);
-    if !any_visible {
-      return;
-    }
 
     let border_image = match &style.border_image.source {
       BorderImageSource::Image(bg) => {
@@ -6463,6 +6460,11 @@ impl DisplayListBuilder {
       }
       BorderImageSource::None => None,
     };
+    // `border-image` paints even when the border stroke itself is fully transparent. Only skip the
+    // border display item when neither the border-image nor the stroked border can produce pixels.
+    if border_image.is_none() && !any_visible {
+      return;
+    }
 
     let radii = Self::border_radii(rect, style).clamped(rect.width(), rect.height());
     self.list.push(DisplayItem::Border(Box::new(BorderItem {

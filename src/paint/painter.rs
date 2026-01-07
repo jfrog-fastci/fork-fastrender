@@ -2350,10 +2350,44 @@ impl Painter {
       });
     }
 
-    let has_border = style.used_border_top_width().to_px() > 0.0
-      || style.used_border_right_width().to_px() > 0.0
-      || style.used_border_bottom_width().to_px() > 0.0
-      || style.used_border_left_width().to_px() > 0.0;
+    let viewport = (self.css_width, self.css_height);
+    let base = abs_bounds.width().max(0.0);
+    let has_border = resolve_length_for_paint(
+      &style.used_border_top_width(),
+      style.font_size,
+      style.root_font_size,
+      base,
+      viewport,
+    )
+    .max(0.0)
+      > 0.0
+      || resolve_length_for_paint(
+        &style.used_border_right_width(),
+        style.font_size,
+        style.root_font_size,
+        base,
+        viewport,
+      )
+      .max(0.0)
+        > 0.0
+      || resolve_length_for_paint(
+        &style.used_border_bottom_width(),
+        style.font_size,
+        style.root_font_size,
+        base,
+        viewport,
+      )
+      .max(0.0)
+        > 0.0
+      || resolve_length_for_paint(
+        &style.used_border_left_width(),
+        style.font_size,
+        style.root_font_size,
+        base,
+        viewport,
+      )
+      .max(0.0)
+        > 0.0;
     if has_border {
       items.push(DisplayCommand::Border {
         rect: abs_bounds,
@@ -2361,7 +2395,7 @@ impl Painter {
       });
     }
 
-    if let Some(outline_rect) = Self::outline_bounds(abs_bounds, &style) {
+    if let Some(outline_rect) = Self::outline_bounds(abs_bounds, &style, viewport) {
       items.push(DisplayCommand::Outline {
         rect: outline_rect,
         style,
@@ -2369,13 +2403,30 @@ impl Painter {
     }
   }
 
-  fn outline_bounds(abs_bounds: Rect, style: &ComputedStyle) -> Option<Rect> {
+  fn outline_bounds(
+    abs_bounds: Rect,
+    style: &ComputedStyle,
+    viewport: (f32, f32),
+  ) -> Option<Rect> {
     let outline_style = style.outline_style.to_border_style();
-    let width = style.outline_width.to_px();
+    let width = resolve_length_for_paint(
+      &style.outline_width,
+      style.font_size,
+      style.root_font_size,
+      abs_bounds.width(),
+      viewport,
+    )
+    .max(0.0);
     if width <= 0.0 || matches!(outline_style, CssBorderStyle::None | CssBorderStyle::Hidden) {
       return None;
     }
-    let expand = style.outline_offset.to_px() + width;
+    let expand = resolve_length_for_paint(
+      &style.outline_offset,
+      style.font_size,
+      style.root_font_size,
+      abs_bounds.width(),
+      viewport,
+    ) + width;
     Some(Rect::from_xywh(
       abs_bounds.x() - expand,
       abs_bounds.y() - expand,
@@ -2748,6 +2799,7 @@ impl Painter {
           transform_3d.as_ref(),
           clip.as_ref(),
           clip_path.as_ref(),
+          (self.css_width, self.css_height),
         ) else {
           return Ok(());
         };
@@ -4803,10 +4855,40 @@ impl Painter {
   /// Paints the borders of a fragment
   fn paint_borders(&mut self, x: f32, y: f32, width: f32, height: f32, style: &ComputedStyle) {
     // Only paint if there are borders
-    let top_css = style.used_border_top_width().to_px();
-    let right_css = style.used_border_right_width().to_px();
-    let bottom_css = style.used_border_bottom_width().to_px();
-    let left_css = style.used_border_left_width().to_px();
+    let viewport = (self.css_width, self.css_height);
+    let base = width.max(0.0);
+    let top_css = resolve_length_for_paint(
+      &style.used_border_top_width(),
+      style.font_size,
+      style.root_font_size,
+      base,
+      viewport,
+    )
+    .max(0.0);
+    let right_css = resolve_length_for_paint(
+      &style.used_border_right_width(),
+      style.font_size,
+      style.root_font_size,
+      base,
+      viewport,
+    )
+    .max(0.0);
+    let bottom_css = resolve_length_for_paint(
+      &style.used_border_bottom_width(),
+      style.font_size,
+      style.root_font_size,
+      base,
+      viewport,
+    )
+    .max(0.0);
+    let left_css = resolve_length_for_paint(
+      &style.used_border_left_width(),
+      style.font_size,
+      style.root_font_size,
+      base,
+      viewport,
+    )
+    .max(0.0);
 
     if matches!(style.border_image.source, BorderImageSource::Image(_)) {
       if self.paint_border_image(
@@ -5579,7 +5661,16 @@ impl Painter {
   }
 
   fn paint_outline(&mut self, x: f32, y: f32, width: f32, height: f32, style: &ComputedStyle) {
-    let ow = style.outline_width.to_px() * self.scale;
+    let viewport = (self.css_width, self.css_height);
+    let ow = resolve_length_for_paint(
+      &style.outline_width,
+      style.font_size,
+      style.root_font_size,
+      width.max(0.0),
+      viewport,
+    )
+    .max(0.0)
+      * self.scale;
     let outline_style = style.outline_style.to_border_style();
     if ow <= 0.0 || matches!(outline_style, CssBorderStyle::None | CssBorderStyle::Hidden) {
       return;
@@ -10932,14 +11023,24 @@ fn clip_rect_axes(mut bounds: Rect, clip: Rect, clip_x: bool, clip_y: bool) -> R
   bounds
 }
 
-fn compute_descendant_bounds(commands: &[DisplayCommand], root_rect: Rect) -> Option<Rect> {
+fn compute_descendant_bounds(
+  commands: &[DisplayCommand],
+  root_rect: Rect,
+  viewport: (f32, f32),
+  clip_root: bool,
+) -> Option<Rect> {
   let mut current: Option<Rect> = None;
   for cmd in commands {
-    if matches!(cmd, DisplayCommand::Background { rect, .. } | DisplayCommand::Border { rect, .. } if approx_same_rect(*rect, root_rect))
+    if !clip_root
+      && matches!(
+        cmd,
+        DisplayCommand::Background { rect, .. } | DisplayCommand::Border { rect, .. }
+          if approx_same_rect(*rect, root_rect)
+      )
     {
       continue;
     }
-    if let Some(r) = command_bounds(cmd) {
+    if let Some(r) = command_bounds(cmd, viewport) {
       current = Some(match current {
         Some(acc) => acc.union(r),
         None => r,
@@ -10969,6 +11070,23 @@ fn compute_outline_bounds(commands: &[DisplayCommand]) -> Option<Rect> {
   current
 }
 
+fn root_border_image_bounds(
+  commands: &[DisplayCommand],
+  root_rect: Rect,
+  viewport: (f32, f32),
+) -> Option<Rect> {
+  for cmd in commands {
+    let DisplayCommand::Border { rect, style } = cmd else {
+      continue;
+    };
+    if !approx_same_rect(*rect, root_rect) {
+      continue;
+    }
+    return crate::paint::paint_bounds::border_image_paint_bounds(*rect, style, Some(viewport));
+  }
+  None
+}
+
 fn stacking_context_bounds(
   commands: &[DisplayCommand],
   filters: &[ResolvedFilter],
@@ -10977,6 +11095,7 @@ fn stacking_context_bounds(
   transform: Option<&Transform3D>,
   clip: Option<&StackingClip>,
   clip_path: Option<&ResolvedClipPath>,
+  viewport: (f32, f32),
 ) -> Option<Rect> {
   let project_rect_bounds = |rect: Rect, transform: &Transform3D| -> Option<Rect> {
     let corners = rect_corners(rect);
@@ -10992,10 +11111,16 @@ fn stacking_context_bounds(
   };
 
   let mut base = rect;
+  let clip_root = clip.map(|c| c.clip_root).unwrap_or(false);
+  if !clip_root {
+    if let Some(bounds) = root_border_image_bounds(commands, rect, viewport) {
+      base = base.union(bounds);
+    }
+  }
   let outline_bounds = compute_outline_bounds(commands);
-  if let Some(desc) = compute_descendant_bounds(commands, rect) {
+  if let Some(desc) = compute_descendant_bounds(commands, rect, viewport, clip_root) {
     let clipped = if let Some(clip) = clip {
-      clip_non_outline(commands, desc, clip.rect, clip.clip_x, clip.clip_y)
+      clip_non_outline(commands, desc, clip.rect, clip.clip_x, clip.clip_y, viewport)
     } else {
       desc
     };
@@ -11030,13 +11155,21 @@ fn stacking_context_bounds(
   Some(base)
 }
 
-fn command_bounds(cmd: &DisplayCommand) -> Option<Rect> {
+fn command_bounds(cmd: &DisplayCommand, viewport: (f32, f32)) -> Option<Rect> {
   match cmd {
     DisplayCommand::Background { rect, .. }
-    | DisplayCommand::Border { rect, .. }
     | DisplayCommand::Outline { rect, .. }
     | DisplayCommand::Text { rect, .. }
     | DisplayCommand::Replaced { rect, .. } => Some(*rect),
+    DisplayCommand::Border { rect, style } => {
+      if let Some(bounds) =
+        crate::paint::paint_bounds::border_image_paint_bounds(*rect, style, Some(viewport))
+      {
+        Some(bounds)
+      } else {
+        Some(*rect)
+      }
+    }
     DisplayCommand::StackingContext {
       commands,
       filters,
@@ -11054,15 +11187,16 @@ fn command_bounds(cmd: &DisplayCommand) -> Option<Rect> {
       transform_3d.as_ref(),
       clip.as_ref(),
       clip_path.as_ref(),
+      viewport,
     ),
   }
 }
 
 #[allow(dead_code)]
-fn compute_commands_bounds(commands: &[DisplayCommand]) -> Option<Rect> {
+fn compute_commands_bounds(commands: &[DisplayCommand], viewport: (f32, f32)) -> Option<Rect> {
   let mut current: Option<Rect> = None;
   for cmd in commands {
-    if let Some(r) = command_bounds(cmd) {
+    if let Some(r) = command_bounds(cmd, viewport) {
       current = Some(match current {
         Some(acc) => acc.union(r),
         None => r,
@@ -11078,13 +11212,14 @@ fn clip_non_outline(
   clip_rect: Rect,
   clip_x: bool,
   clip_y: bool,
+  viewport: (f32, f32),
 ) -> Rect {
   let mut current: Option<Rect> = None;
   for cmd in commands {
     if matches!(cmd, DisplayCommand::Outline { .. }) {
       continue;
     }
-    if let Some(r) = command_bounds(cmd) {
+    if let Some(r) = command_bounds(cmd, viewport) {
       let clipped = clip_rect_axes(r, clip_rect, clip_x, clip_y);
       current = Some(current.map(|c| c.union(clipped)).unwrap_or(clipped));
     }
@@ -17254,8 +17389,17 @@ mod tests {
       clip_y: true,
       clip_root: false,
     });
-    let bounds = stacking_context_bounds(&commands, &[], &[], root_rect, None, clip.as_ref(), None)
-      .expect("bounds");
+    let bounds = stacking_context_bounds(
+      &commands,
+      &[],
+      &[],
+      root_rect,
+      None,
+      clip.as_ref(),
+      None,
+      (20.0, 20.0),
+    )
+    .expect("bounds");
     assert!((bounds.width() - 1010.0).abs() < 0.01);
     assert!(bounds.min_x().abs() < 0.01);
     assert!((bounds.max_x() - 1010.0).abs() < 0.01);

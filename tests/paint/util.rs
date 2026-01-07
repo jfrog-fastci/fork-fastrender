@@ -5,10 +5,18 @@ use std::collections::HashMap;
 use tiny_skia::Pixmap;
 
 pub fn create_stacking_context_bounds_renderer() -> FastRender {
+  create_renderer_with_backend("display_list")
+}
+
+pub fn create_stacking_context_bounds_renderer_legacy() -> FastRender {
+  create_renderer_with_backend("legacy")
+}
+
+fn create_renderer_with_backend(backend: &str) -> FastRender {
   crate::rayon_test_util::init_rayon_for_tests(2);
   let toggles = RuntimeToggles::from_map(HashMap::from([(
     "FASTR_PAINT_BACKEND".to_string(),
-    "display_list".to_string(),
+    backend.to_string(),
   )]));
   let config = FastRenderConfig::new()
     .with_runtime_toggles(toggles)

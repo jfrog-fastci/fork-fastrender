@@ -703,6 +703,9 @@ impl DisplayListOptimizer {
           || item.color.a == 0.0
       }
       DisplayItem::Border(border) => {
+        if border.image.is_some() {
+          return false;
+        }
         let invisible = |side: &crate::paint::display_list::BorderSide| {
           side.width <= 0.0
             || matches!(
