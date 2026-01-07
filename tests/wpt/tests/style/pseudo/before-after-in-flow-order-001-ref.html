@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>::before and ::after appear before/after normal children reference</title>
+<style>
+  body {
+    margin: 0;
+    background: white;
+  }
+  #host {
+    width: 80px;
+    height: 90px;
+    background: red;
+    margin: 20px;
+  }
+  .before {
+    display: block;
+    width: 80px;
+    height: 30px;
+    background: green;
+  }
+  .middle {
+    width: 80px;
+    height: 30px;
+    background: blue;
+  }
+  .after {
+    display: block;
+    width: 80px;
+    height: 30px;
+    background: rgb(200, 120, 0);
+  }
+</style>
+<div id="host">
+  <div class="before"></div>
+  <div class="middle"></div>
+  <div class="after"></div>
+</div>

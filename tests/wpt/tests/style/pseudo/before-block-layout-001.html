@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>::before in-flow block affects layout</title>
+<style>
+  body {
+    margin: 0;
+    background: white;
+  }
+  #host {
+    width: 80px;
+    height: 60px;
+    background: red;
+    margin: 20px;
+  }
+  #host::before {
+    content: "";
+    display: block;
+    width: 80px;
+    height: 30px;
+    background: green;
+  }
+  .child {
+    width: 80px;
+    height: 30px;
+    background: blue;
+  }
+</style>
+<div id="host">
+  <div class="child"></div>
+</div>

@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>::before/::after paint above element background reference</title>
+<style>
+  body {
+    margin: 0;
+    background: white;
+  }
+  #host {
+    position: relative;
+    width: 100px;
+    height: 80px;
+    background: red;
+    margin: 20px;
+  }
+  .before {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 60px;
+    height: 80px;
+    background: green;
+  }
+  .after {
+    position: absolute;
+    top: 0;
+    left: 40px;
+    width: 60px;
+    height: 80px;
+    background: blue;
+  }
+</style>
+<div id="host">
+  <div class="before"></div>
+  <div class="after"></div>
+</div>

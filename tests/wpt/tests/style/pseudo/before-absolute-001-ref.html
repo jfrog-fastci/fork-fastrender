@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>::before absolute positioned box reference</title>
+<style>
+  body {
+    margin: 0;
+    background: white;
+  }
+  #parent {
+    position: relative;
+    width: 100px;
+    height: 80px;
+    background: red;
+    margin: 20px;
+  }
+  .before {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    width: 30px;
+    height: 30px;
+    background: green;
+  }
+</style>
+<div id="parent">
+  <div class="before"></div>
+</div>

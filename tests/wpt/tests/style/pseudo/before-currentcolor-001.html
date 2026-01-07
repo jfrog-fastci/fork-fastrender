@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>::before uses currentColor from parent</title>
+<style>
+  body {
+    margin: 0;
+    background: white;
+  }
+  #parent {
+    position: relative;
+    width: 100px;
+    height: 80px;
+    background: red;
+    color: rgb(0, 128, 0);
+    margin: 20px;
+  }
+  #parent::before {
+    content: "";
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    width: 30px;
+    height: 30px;
+    background: currentColor;
+  }
+</style>
+<div id="parent"></div>
