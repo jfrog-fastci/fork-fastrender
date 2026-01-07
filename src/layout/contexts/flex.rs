@@ -4839,6 +4839,38 @@ impl FlexFormattingContext {
       inline_positive_item
     };
 
+    // `start`/`end` alignment keywords resolve against the flex container's axes, but
+    // `self-start`/`self-end` resolve against the item's own writing-mode/direction.
+    // Determine which physical axis the container is aligning in so we can interpret
+    // `self-start`/`self-end` correctly for items whose writing mode differs from their container.
+    let container_axes = FragmentAxes::from_writing_mode_and_direction(
+      axis_source.writing_mode,
+      axis_source.direction,
+    );
+    let self_axes = FragmentAxes::from_writing_mode_and_direction(style.writing_mode, style.direction);
+    let container_cross_axis = if axis_main_is_inline {
+      container_axes.block_axis()
+    } else {
+      container_axes.inline_axis()
+    };
+    let self_axis_positive = |axis: PhysicalAxis| {
+      if axis == self_axes.inline_axis() {
+        self_axes.inline_positive()
+      } else {
+        self_axes.block_positive()
+      }
+    };
+    let cross_positive_self = self_axis_positive(container_cross_axis);
+    let inline_positive_self = self_axis_positive(container_axes.inline_axis());
+    let align_self_axis_positive = match style.align_self {
+      Some(AlignItems::SelfStart | AlignItems::SelfEnd) => cross_positive_self,
+      _ => cross_positive_item,
+    };
+    let justify_self_axis_positive = match style.justify_self {
+      Some(AlignItems::SelfStart | AlignItems::SelfEnd) => inline_positive_self,
+      _ => inline_positive_item,
+    };
+
     let reserve_scroll_x = style.scrollbar_gutter.stable
       && matches!(style.overflow_x, CssOverflow::Auto | CssOverflow::Scroll);
     let reserve_scroll_y = style.scrollbar_gutter.stable
@@ -4879,8 +4911,8 @@ impl FlexFormattingContext {
       justify_content: self.justify_content_to_taffy(style.justify_content),
       align_items: self.align_items_to_taffy(style.align_items, cross_positive_container),
       align_content: self.align_content_to_taffy(style.align_content, cross_positive_container),
-      align_self: self.align_self_to_taffy(style.align_self, cross_positive_item),
-      justify_self: self.align_self_to_taffy(style.justify_self, inline_positive_item),
+      align_self: self.align_self_to_taffy(style.align_self, align_self_axis_positive),
+      justify_self: self.align_self_to_taffy(style.justify_self, justify_self_axis_positive),
       justify_items: self.align_items_to_taffy(style.justify_items, inline_positive_container),
 
       // Gap
