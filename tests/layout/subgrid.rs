@@ -1531,6 +1531,167 @@ fn row_subgrid_respects_local_direction_for_columns() {
   assert_approx(second.bounds.width(), 30.0, "second column width preserved");
 }
 
+// Per CSS Writing Modes, `direction` affects the inline base direction even when the inline axis is
+// vertical. For vertical writing modes this means `direction: rtl` flips inline-start/inline-end on
+// the physical Y axis, so grid "columns" (the inline axis) flow bottom-to-top.
+fn assert_vertical_writing_mode_direction_rtl_mirrors_inline_axis(writing_mode: WritingMode) {
+  let col1 = 20.0;
+  let col2 = 30.0;
+  let row = 40.0;
+  let item = 10.0;
+
+  // Grid container case (detailed track info available).
+  let mut grid_style = ComputedStyle::default();
+  grid_style.display = Display::Grid;
+  grid_style.writing_mode = writing_mode;
+  grid_style.direction = Direction::Rtl;
+  grid_style.grid_template_columns =
+    vec![GridTrack::Length(Length::px(col1)), GridTrack::Length(Length::px(col2))];
+  grid_style.grid_template_rows = vec![GridTrack::Length(Length::px(row))];
+  grid_style.width = Some(Length::px(row));
+  grid_style.height = Some(Length::px(col1 + col2));
+
+  let mut first_style = ComputedStyle::default();
+  first_style.display = Display::Block;
+  first_style.width = Some(Length::px(item));
+  first_style.height = Some(Length::px(item));
+  first_style.justify_self = Some(AlignItems::Start);
+  first_style.grid_column_start = 1;
+  first_style.grid_column_end = 2;
+  first_style.grid_row_start = 1;
+  first_style.grid_row_end = 2;
+
+  let mut second_style = ComputedStyle::default();
+  second_style.display = Display::Block;
+  second_style.width = Some(Length::px(item));
+  second_style.height = Some(Length::px(item));
+  second_style.justify_self = Some(AlignItems::Start);
+  second_style.grid_column_start = 2;
+  second_style.grid_column_end = 3;
+  second_style.grid_row_start = 1;
+  second_style.grid_row_end = 2;
+
+  let child1 = BoxNode::new_block(Arc::new(first_style), FormattingContextType::Block, vec![]);
+  let child2 = BoxNode::new_block(Arc::new(second_style), FormattingContextType::Block, vec![]);
+  let grid = BoxNode::new_block(
+    Arc::new(grid_style),
+    FormattingContextType::Grid,
+    vec![child1, child2],
+  );
+
+  let fc = GridFormattingContext::new();
+  let fragment = fc
+    .layout(&grid, &LayoutConstraints::definite(200.0, 200.0))
+    .expect("layout succeeds");
+
+  let first = &fragment.children[0];
+  let second = &fragment.children[1];
+  assert!(
+    first.bounds.y() > second.bounds.y(),
+    "rtl should reverse the inline axis when it is vertical",
+  );
+  assert_approx(
+    first.bounds.y(),
+    col1 + col2 - item,
+    "column 1 is at the inline-start (bottom) edge",
+  );
+  assert_approx(
+    second.bounds.y(),
+    col2 - item,
+    "column 2 is immediately above column 1",
+  );
+
+  // Column subgrid case (subgrid track offsets derived from ancestor).
+  let mut parent_style = ComputedStyle::default();
+  parent_style.display = Display::Grid;
+  parent_style.writing_mode = writing_mode;
+  parent_style.direction = Direction::Rtl;
+  parent_style.grid_template_columns =
+    vec![GridTrack::Length(Length::px(col1)), GridTrack::Length(Length::px(col2))];
+  parent_style.grid_template_rows = vec![GridTrack::Length(Length::px(row))];
+  parent_style.width = Some(Length::px(row));
+  parent_style.height = Some(Length::px(col1 + col2));
+
+  let mut subgrid_style = ComputedStyle::default();
+  subgrid_style.display = Display::Grid;
+  subgrid_style.writing_mode = writing_mode;
+  subgrid_style.direction = Direction::Rtl;
+  subgrid_style.grid_column_subgrid = true;
+  subgrid_style.grid_column_start = 1;
+  subgrid_style.grid_column_end = 3;
+  subgrid_style.grid_row_start = 1;
+  subgrid_style.grid_row_end = 2;
+
+  let mut sub_first = ComputedStyle::default();
+  sub_first.display = Display::Block;
+  sub_first.width = Some(Length::px(item));
+  sub_first.height = Some(Length::px(item));
+  sub_first.justify_self = Some(AlignItems::Start);
+  sub_first.grid_column_start = 1;
+  sub_first.grid_column_end = 2;
+  sub_first.grid_row_start = 1;
+  sub_first.grid_row_end = 2;
+
+  let mut sub_second = ComputedStyle::default();
+  sub_second.display = Display::Block;
+  sub_second.width = Some(Length::px(item));
+  sub_second.height = Some(Length::px(item));
+  sub_second.justify_self = Some(AlignItems::Start);
+  sub_second.grid_column_start = 2;
+  sub_second.grid_column_end = 3;
+  sub_second.grid_row_start = 1;
+  sub_second.grid_row_end = 2;
+
+  let sub_child1 = BoxNode::new_block(Arc::new(sub_first), FormattingContextType::Block, vec![]);
+  let sub_child2 = BoxNode::new_block(Arc::new(sub_second), FormattingContextType::Block, vec![]);
+  let subgrid = BoxNode::new_block(
+    Arc::new(subgrid_style),
+    FormattingContextType::Grid,
+    vec![sub_child1, sub_child2],
+  );
+  let parent = BoxNode::new_block(
+    Arc::new(parent_style),
+    FormattingContextType::Grid,
+    vec![subgrid],
+  );
+
+  let fragment = fc
+    .layout(&parent, &LayoutConstraints::definite(200.0, 200.0))
+    .expect("layout succeeds");
+  let subgrid_fragment = &fragment.children[0];
+  let first = &subgrid_fragment.children[0];
+  let second = &subgrid_fragment.children[1];
+  assert!(
+    first.bounds.y() > second.bounds.y(),
+    "rtl should reverse the inline axis inside a vertical-writing-mode subgrid",
+  );
+  assert_approx(
+    first.bounds.y(),
+    col1 + col2 - item,
+    "subgrid column 1 aligns to inline-start (bottom)",
+  );
+  assert_approx(
+    second.bounds.y(),
+    col2 - item,
+    "subgrid column 2 aligns above column 1",
+  );
+}
+
+#[test]
+fn vertical_rl_direction_rtl_mirrors_inline_axis() {
+  assert_vertical_writing_mode_direction_rtl_mirrors_inline_axis(WritingMode::VerticalRl);
+}
+
+#[test]
+fn vertical_lr_direction_rtl_mirrors_inline_axis() {
+  assert_vertical_writing_mode_direction_rtl_mirrors_inline_axis(WritingMode::VerticalLr);
+}
+
+#[test]
+fn sideways_rl_direction_rtl_mirrors_inline_axis() {
+  assert_vertical_writing_mode_direction_rtl_mirrors_inline_axis(WritingMode::SidewaysRl);
+}
+
 #[test]
 fn subgrid_inherits_named_lines_with_offset() {
   let mut parent_style = ComputedStyle::default();
