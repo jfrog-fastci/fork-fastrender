@@ -598,8 +598,57 @@ impl ColumnDistributor {
       }
     }
 
+    // Phase 4: If the table is wider than the sum of computed column widths, CSS 2.1 fixed layout
+    // requires us to distribute the extra space over the columns. This can happen when there are
+    // no auto columns, or when authored max-width caps clamp auto columns below their equal share.
+    //
+    // Prefer distributing to auto columns (those without fixed/percentage widths), but if they
+    // cannot absorb all slack (e.g. they are capped) then fall back to distributing across all
+    // columns. Only authored max-width caps (`has_max_cap`) participate in limiting this growth;
+    // content-based maxima should not prevent the fixed algorithm from honoring a specified table
+    // width.
+    let mut total: f32 = widths.iter().sum();
+    if available_width.is_finite() && total.is_finite() {
+      let mut slack = available_width - total;
+      if slack > 0.0 {
+        let auto_indices: Vec<usize> = columns
+          .iter()
+          .enumerate()
+          .filter(|(_, col)| col.fixed_width.is_none() && col.percentage.is_none())
+          .map(|(idx, _)| idx)
+          .collect();
+        if !auto_indices.is_empty() {
+          slack = match self.distribute_fixed_slack(
+            columns,
+            &mut widths,
+            &auto_indices,
+            slack,
+            &mut deadline_counter,
+          ) {
+            Some(remaining) => remaining,
+            None => return ColumnWidthDistributionResult::new(vec![]),
+          };
+        }
+        if slack > 0.0 {
+          let all_indices: Vec<usize> = (0..columns.len()).collect();
+          if self
+            .distribute_fixed_slack(
+              columns,
+              &mut widths,
+              &all_indices,
+              slack,
+              &mut deadline_counter,
+            )
+            .is_none()
+          {
+            return ColumnWidthDistributionResult::new(vec![]);
+          }
+        }
+        total = widths.iter().sum();
+      }
+    }
+
     // Handle over-constraint
-    let total: f32 = widths.iter().sum();
     let is_over_constrained = total > available_width;
     let overflow_amount = if is_over_constrained {
       total - available_width
@@ -613,6 +662,113 @@ impl ColumnDistributor {
       is_over_constrained,
       overflow_amount,
     }
+  }
+
+  fn distribute_fixed_slack(
+    &self,
+    columns: &[ColumnConstraints],
+    widths: &mut [f32],
+    indices: &[usize],
+    slack: f32,
+    deadline_counter: &mut usize,
+  ) -> Option<f32> {
+    if slack <= 0.0 || indices.is_empty() || !slack.is_finite() {
+      return Some(slack.max(0.0));
+    }
+    if self.check_deadline(deadline_counter) {
+      return None;
+    }
+
+    // Track candidate columns and their (optional) authored max-width caps.
+    let mut active: Vec<(usize, Option<f32>)> = Vec::new();
+    for &idx in indices {
+      if self.check_deadline(deadline_counter) {
+        return None;
+      }
+      if idx >= columns.len() || idx >= widths.len() {
+        continue;
+      }
+      let col = &columns[idx];
+      let cap = if col.has_max_cap && col.max_width.is_finite() {
+        let min_bound = col.min_width.max(self.min_column_width);
+        Some(col.max_width.max(min_bound))
+      } else {
+        None
+      };
+
+      if let Some(cap) = cap {
+        if cap <= widths[idx] {
+          continue;
+        }
+      }
+      active.push((idx, cap));
+    }
+
+    if active.is_empty() {
+      return Some(slack);
+    }
+
+    let epsilon = 0.0001;
+    let mut remaining = slack;
+    let mut next_active: Vec<(usize, Option<f32>)> = Vec::new();
+    let mut iterations = 0usize;
+    while remaining > epsilon && !active.is_empty() {
+      if self.check_deadline(deadline_counter) {
+        return None;
+      }
+      iterations += 1;
+      // Safety: the active set only ever shrinks, so we should converge in <= N iterations.
+      if iterations > indices.len() + 4 {
+        break;
+      }
+
+      let per = remaining / active.len() as f32;
+      if !per.is_finite() {
+        // Avoid inf/NaN propagation for pathological inputs.
+        break;
+      }
+
+      next_active.clear();
+      let mut remaining_round = remaining;
+      for (idx, cap) in active.iter().copied() {
+        if self.check_deadline(deadline_counter) {
+          return None;
+        }
+        if remaining_round <= epsilon {
+          // No more slack to distribute this round; keep the rest of the active set as-is.
+          next_active.push((idx, cap));
+          continue;
+        }
+
+        let mut add = per;
+        if let Some(cap) = cap {
+          let headroom = (cap - widths[idx]).max(0.0);
+          add = add.min(headroom);
+        }
+        add = add.min(remaining_round);
+        if add.is_finite() && add > 0.0 {
+          widths[idx] += add;
+          remaining_round -= add;
+        }
+
+        let can_grow = match cap {
+          Some(cap) => widths[idx] + epsilon < cap,
+          None => true,
+        };
+        if can_grow {
+          next_active.push((idx, cap));
+        }
+      }
+
+      let distributed = remaining - remaining_round;
+      if distributed <= epsilon {
+        break;
+      }
+      remaining = remaining_round;
+      std::mem::swap(&mut active, &mut next_active);
+    }
+
+    Some(remaining.max(0.0))
   }
 
   /// Auto layout distribution
@@ -1752,6 +1908,39 @@ mod tests {
     assert_eq!(result.widths[0], 100.0);
     // Remaining 300 goes to flexible column
     assert!((result.widths[1] - 300.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn fixed_layout_distributes_slack_when_all_columns_are_fixed() {
+    // CSS 2.1 §17.5.2.1: in fixed table layout, any extra space from a larger table width
+    // should be distributed across the columns even when every column has an explicit width.
+    let columns = vec![ColumnConstraints::fixed(50.0), ColumnConstraints::fixed(50.0)];
+    let distributor = ColumnDistributor::new(DistributionMode::Fixed);
+
+    let result = distributor.distribute(&columns, 300.0);
+
+    assert!((result.total_width - 300.0).abs() < 0.01);
+    assert!((result.widths[0] - 150.0).abs() < 0.01);
+    assert!((result.widths[1] - 150.0).abs() < 0.01);
+  }
+
+  #[test]
+  fn fixed_layout_slack_prefers_uncapped_columns_and_avoids_nan() {
+    // When some columns are max-width capped, slack should be redirected to uncapped columns,
+    // keeping the total stable and never producing NaNs.
+    let mut capped = ColumnConstraints::fixed(50.0);
+    capped.has_max_cap = true;
+    capped.max_width = 60.0;
+
+    let columns = vec![capped, ColumnConstraints::fixed(50.0)];
+    let distributor = ColumnDistributor::new(DistributionMode::Fixed);
+
+    let result = distributor.distribute(&columns, 200.0);
+
+    assert!(result.widths.iter().all(|w| w.is_finite()));
+    assert!((result.total_width - 200.0).abs() < 0.01);
+    assert!((result.widths[0] - 60.0).abs() < 0.01);
+    assert!((result.widths[1] - 140.0).abs() < 0.01);
   }
 
   // ========== ColumnDistributor Tests - Edge Cases ==========
