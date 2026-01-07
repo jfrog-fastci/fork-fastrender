@@ -10823,7 +10823,6 @@ fn apply_declaration_with_base_internal_with_order(
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
       styles.view_timelines = parse_view_timeline_list(css_text);
     }
-    "timeline-scope" => {}
     "animation-timeline" => {
       let css_text = declaration_css_text_str(decl, resolved_css_text.as_ref());
       if let Some(val) = parse_animation_timeline_list(css_text) {
