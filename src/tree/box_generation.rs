@@ -11,6 +11,7 @@ use crate::debug::runtime;
 use crate::dom::DomNode;
 use crate::dom::DomNodeType;
 use crate::dom::ElementRef;
+use crate::dom::HTML_NAMESPACE;
 use crate::dom::SVG_NAMESPACE;
 use crate::error::{RenderStage, Result};
 use crate::geometry::Size;
@@ -3762,13 +3763,46 @@ fn collect_text_content(node: &StyledNode) -> String {
   text
 }
 
+fn option_text_from_node(node: &StyledNode) -> String {
+  let mut text = String::new();
+  let mut stack: Vec<&StyledNode> = Vec::new();
+  stack.push(node);
+
+  while let Some(node) = stack.pop() {
+    match &node.node.node_type {
+      DomNodeType::Text { content } => text.push_str(content),
+      DomNodeType::Element {
+        tag_name,
+        namespace,
+        ..
+      } => {
+        if tag_name.eq_ignore_ascii_case("script")
+          && (namespace.is_empty() || namespace == HTML_NAMESPACE || namespace == SVG_NAMESPACE)
+        {
+          continue;
+        }
+      }
+      _ => {}
+    }
+
+    for child in node.children.iter().rev() {
+      stack.push(child);
+    }
+  }
+
+  crate::dom::strip_and_collapse_ascii_whitespace(&text)
+}
+
 fn option_label_from_node(node: &StyledNode) -> String {
-  if let Some(label) = node.node.get_attribute_ref("label") {
-    // When present, use the `label` attribute verbatim per HTML.
+  if let Some(label) = node
+    .node
+    .get_attribute_ref("label")
+    .filter(|label| !label.is_empty())
+  {
     return label.to_string();
   }
 
-  crate::dom::strip_and_collapse_ascii_whitespace(&collect_text_content(node))
+  option_text_from_node(node)
 }
 
 fn optgroup_label_from_node(node: &StyledNode) -> String {
@@ -3784,7 +3818,7 @@ fn option_value_from_node(node: &StyledNode) -> String {
     return value.to_string();
   }
 
-  crate::dom::strip_and_collapse_ascii_whitespace(&collect_text_content(node))
+  option_text_from_node(node)
 }
 
 fn parse_select_size(node: &StyledNode, multiple: bool) -> u32 {
@@ -5730,7 +5764,7 @@ mod tests {
   }
 
   #[test]
-  fn select_option_label_uses_empty_label_attribute() {
+  fn select_option_label_empty_label_attribute_falls_back_to_text_even_with_value() {
     let control = first_select_control_from_html(
       "<html><body><select><option label=\"\" value=\"v\">Text</option></select></body></html>",
     );
@@ -5739,7 +5773,7 @@ mod tests {
     };
     assert!(matches!(
       select.items.first(),
-      Some(SelectItem::Option { label, value, .. }) if label.is_empty() && value == "v"
+      Some(SelectItem::Option { label, value, .. }) if label == "Text" && value == "v"
     ));
   }
 
@@ -5758,7 +5792,7 @@ mod tests {
   }
 
   #[test]
-  fn select_option_label_honors_empty_label_attribute() {
+  fn select_option_label_empty_label_attribute_falls_back_to_text() {
     let control = first_select_control_from_html(
       "<html><body><select><option label=\"\">Text</option></select></body></html>",
     );
@@ -5767,7 +5801,7 @@ mod tests {
     };
     assert!(matches!(
       select.items.first(),
-      Some(SelectItem::Option { label, value, .. }) if label.is_empty() && value == "Text"
+      Some(SelectItem::Option { label, value, .. }) if label == "Text" && value == "Text"
     ));
   }
 
@@ -5782,6 +5816,72 @@ mod tests {
     assert!(matches!(
       select.items.first(),
       Some(SelectItem::Option { label, .. }) if label == "Foo Bar Baz"
+    ));
+  }
+
+  #[test]
+  fn select_option_value_falls_back_to_option_text() {
+    let control = first_select_control_from_html(
+      "<html><body><select><option label=\"L\">  Foo \n</option></select></body></html>",
+    );
+    let FormControlKind::Select(select) = &control.control else {
+      panic!("expected select form control kind");
+    };
+    assert!(matches!(
+      select.items.first(),
+      Some(SelectItem::Option { label, value, .. }) if label == "L" && value == "Foo"
+    ));
+  }
+
+  #[test]
+  fn select_option_text_ignores_script_descendants() {
+    fn styled_text(content: &str) -> StyledNode {
+      StyledNode {
+        node_id: 0,
+        node: DomNode {
+          node_type: DomNodeType::Text {
+            content: content.to_string(),
+          },
+          children: vec![],
+        },
+        styles: Arc::new(ComputedStyle::default()),
+        starting_styles: StartingStyleSet::default(),
+        before_styles: None,
+        after_styles: None,
+        marker_styles: None,
+        first_line_styles: None,
+        first_letter_styles: None,
+        placeholder_styles: None,
+        slider_thumb_styles: None,
+        slider_track_styles: None,
+        assigned_slot: None,
+        slotted_node_ids: Vec::new(),
+        children: vec![],
+      }
+    }
+
+    let mut select = styled_element("select");
+    let mut option = styled_element("option");
+    option.children = vec![
+      styled_text("Foo "),
+      {
+        let mut script = styled_element("script");
+        script.children = vec![styled_text("BAR")];
+        script
+      },
+      styled_text(" Baz"),
+    ];
+    select.children = vec![option];
+
+    let control = create_form_control_replaced(&select)
+      .expect("select should generate a form control")
+      .control;
+    let FormControlKind::Select(select) = &control else {
+      panic!("expected select form control kind");
+    };
+    assert!(matches!(
+      select.items.first(),
+      Some(SelectItem::Option { label, value, .. }) if label == "Foo Baz" && value == "Foo Baz"
     ));
   }
 

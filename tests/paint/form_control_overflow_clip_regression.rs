@@ -1,15 +1,13 @@
 use fastrender::geometry::Rect;
 use fastrender::paint::display_list::{BorderRadii, ClipItem, ClipShape, DisplayItem};
 use fastrender::paint::display_list_builder::DisplayListBuilder;
-use fastrender::style::types::{Appearance, BorderCornerRadius, Overflow};
+use fastrender::style::types::{Appearance, BorderCornerRadius, BorderStyle, Overflow};
 use fastrender::style::values::Length;
 use fastrender::tree::box_tree::{
   FormControl, FormControlKind, ReplacedType, SelectControl, SelectItem,
 };
 use fastrender::tree::fragment_tree::{FragmentContent, FragmentNode};
-use fastrender::ComputedStyle;
-use fastrender::Rgba;
-use fastrender::style::types::BorderStyle;
+use fastrender::{ComputedStyle, Rgba};
 use std::sync::Arc;
 
 #[test]

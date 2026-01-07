@@ -5592,8 +5592,20 @@ fn collect_descendant_text_content(node: &DomNode) -> String {
   stack.push(node);
 
   while let Some(node) = stack.pop() {
-    if let DomNodeType::Text { content } = &node.node_type {
-      text.push_str(content);
+    match &node.node_type {
+      DomNodeType::Text { content } => text.push_str(content),
+      DomNodeType::Element {
+        tag_name,
+        namespace,
+        ..
+      } => {
+        if tag_name.eq_ignore_ascii_case("script")
+          && (namespace.is_empty() || namespace == HTML_NAMESPACE || namespace == SVG_NAMESPACE)
+        {
+          continue;
+        }
+      }
+      _ => {}
     }
     for child in node.children.iter().rev() {
       stack.push(child);
@@ -8166,6 +8178,28 @@ mod tests {
     let selected = single_select_selected_option(&select).expect("expected selected option");
     assert_eq!(selected.tag_name().unwrap_or(""), "option");
     assert_eq!(selected.get_attribute_ref("value"), Some("x"));
+  }
+
+  #[test]
+  fn option_value_falls_back_to_normalized_option_text() {
+    let option = element(
+      "option",
+      vec![
+        text("  Foo \n"),
+        element("span", vec![text("Bar")]),
+        text("\tBaz  "),
+      ],
+    );
+    assert_eq!(option_value_from_node(&option), "Foo Bar Baz");
+  }
+
+  #[test]
+  fn option_text_ignores_script_descendants() {
+    let option = element(
+      "option",
+      vec![text("Foo "), element("script", vec![text("BAR")]), text(" Baz")],
+    );
+    assert_eq!(option_value_from_node(&option), "Foo Baz");
   }
 
   #[test]

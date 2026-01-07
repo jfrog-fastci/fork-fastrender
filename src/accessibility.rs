@@ -1577,7 +1577,11 @@ fn first_option_text(node: &StyledNode, ctx: &BuildContext) -> Option<String> {
 }
 
 fn option_label_text(node: &StyledNode, ctx: &BuildContext) -> String {
-  if let Some(label) = node.node.get_attribute_ref("label") {
+  if let Some(label) = node
+    .node
+    .get_attribute_ref("label")
+    .filter(|label| !label.is_empty())
+  {
     return normalize_whitespace(label);
   }
 
@@ -1960,11 +1964,20 @@ fn role_specific_name(
     }
     "option" => {
       if let Some(label) = node.node.get_attribute_ref("label") {
-        let norm = normalize_whitespace(label);
-        if norm.is_empty() {
-          None
+        if label.is_empty() {
+          let text = ctx.subtree_text(node, visited, mode);
+          if text.is_empty() {
+            None
+          } else {
+            Some(text)
+          }
         } else {
-          Some(norm)
+          let norm = normalize_whitespace(label);
+          if norm.is_empty() {
+            None
+          } else {
+            Some(norm)
+          }
         }
       } else {
         let text = ctx.subtree_text(node, visited, mode);
@@ -2024,11 +2037,21 @@ fn fallback_name_for_role(
     }
     Some("option") => {
       if let Some(label) = node.node.get_attribute_ref("label") {
-        let norm = normalize_whitespace(label);
-        if norm.is_empty() {
-          None
+        if label.is_empty() {
+          let mut visited = HashSet::new();
+          let text = ctx.subtree_text(node, &mut visited, TextAlternativeMode::Visible);
+          if text.is_empty() {
+            None
+          } else {
+            Some(text)
+          }
         } else {
-          Some(norm)
+          let norm = normalize_whitespace(label);
+          if norm.is_empty() {
+            None
+          } else {
+            Some(norm)
+          }
         }
       } else {
         let mut visited = HashSet::new();
