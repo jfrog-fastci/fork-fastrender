@@ -1215,4 +1215,47 @@ mod tests {
       Length::new(100.0, LengthUnit::Vw).into()
     );
   }
+
+  #[test]
+  fn parse_sizes_splits_media_and_calc_length_like_browsers() {
+    let parsed =
+      parse_sizes("(max-width: 600px) calc(50vw - 10px), 100vw").expect("sizes parsed");
+    assert_eq!(parsed.entries.len(), 2);
+    assert!(parsed.entries[0].media.is_some());
+    let SizesLength::Length(len) = &parsed.entries[0].length else {
+      panic!("expected calc() to parse as a length");
+    };
+    assert_eq!(len.unit, LengthUnit::Calc);
+    assert!(len.calc.is_some());
+    assert_eq!(
+      parsed.entries[1].length,
+      Length::new(100.0, LengthUnit::Vw).into()
+    );
+  }
+
+  #[test]
+  fn parse_sizes_does_not_split_commas_inside_clamp() {
+    let parsed = parse_sizes("clamp(200px, 50vw, 400px)").expect("sizes parsed");
+    assert_eq!(parsed.entries.len(), 1);
+    let SizesLength::Clamp {
+      min,
+      preferred,
+      max,
+    } = &parsed.entries[0].length
+    else {
+      panic!("expected clamp() to parse");
+    };
+    assert!(matches!(
+      min.as_ref(),
+      SizesLength::Length(len) if len.unit == LengthUnit::Px && (len.value - 200.0).abs() < f32::EPSILON
+    ));
+    assert!(matches!(
+      preferred.as_ref(),
+      SizesLength::Length(len) if len.unit == LengthUnit::Vw && (len.value - 50.0).abs() < f32::EPSILON
+    ));
+    assert!(matches!(
+      max.as_ref(),
+      SizesLength::Length(len) if len.unit == LengthUnit::Px && (len.value - 400.0).abs() < f32::EPSILON
+    ));
+  }
 }

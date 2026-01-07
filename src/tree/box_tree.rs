@@ -2144,6 +2144,52 @@ mod tests {
   }
 
   #[test]
+  fn sizes_calc_is_evaluated_for_srcset_width_selection() {
+    let calc_length =
+      crate::css::properties::parse_length("calc(50vw - 10px)").expect("calc length parsed");
+    assert!(matches!(calc_length.unit, LengthUnit::Calc));
+
+    let img = ReplacedType::Image {
+      src: "fallback".to_string(),
+      alt: None,
+      srcset: vec![
+        SrcsetCandidate {
+          url: "80w".to_string(),
+          descriptor: SrcsetDescriptor::Width(80),
+        },
+        SrcsetCandidate {
+          url: "100w".to_string(),
+          descriptor: SrcsetDescriptor::Width(100),
+        },
+      ],
+      sizes: Some(SizesList {
+        entries: vec![SizesEntry {
+          media: None,
+          length: calc_length.into(),
+        }],
+      }),
+      picture_sources: Vec::new(),
+      crossorigin: CrossOriginAttribute::None,
+    };
+
+    // Viewport width 200 => 50vw = 100; minus 10px => slot width 90px.
+    let viewport = Size::new(200.0, 100.0);
+    let media_ctx =
+      MediaContext::screen(viewport.width, viewport.height).with_device_pixel_ratio(1.0);
+    let chosen = img.image_source_for_context(ImageSelectionContext {
+      device_pixel_ratio: 1.0,
+      slot_width: None,
+      viewport: Some(viewport),
+      media_context: Some(&media_ctx),
+      font_size: Some(16.0),
+      root_font_size: Some(16.0),
+      base_url: None,
+    });
+
+    assert_eq!(chosen, "100w");
+  }
+
+  #[test]
   fn width_descriptors_default_to_viewport_when_no_sizes_and_no_slot() {
     let img = ReplacedType::Image {
       src: "fallback".to_string(),
