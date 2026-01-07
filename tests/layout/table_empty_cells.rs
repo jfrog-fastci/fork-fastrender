@@ -303,6 +303,161 @@ fn white_space_pre_makes_whitespace_only_cells_non_empty_for_empty_cells() {
 }
 
 #[test]
+fn float_descendant_counts_as_cell_content_for_empty_cells() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          table { border-collapse: separate; empty-cells: hide; border-spacing: 0; }
+          td { background: rgb(200, 20, 30); border: 2px solid black; padding: 0; }
+          span.floaty { float: left; width: 10px; height: 10px; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <tr><td><span class="floaty"></span></td><td></td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 200, 200).unwrap();
+
+  let cells = cell_fragments(&tree);
+  assert_eq!(cells.len(), 2, "expected 2 table-cell fragments");
+
+  let suppressed = cells
+    .iter()
+    .filter(|cell| {
+      cell
+        .style
+        .as_ref()
+        .map(|s| s.background_color.is_transparent())
+        .unwrap_or(false)
+    })
+    .count();
+  assert_eq!(
+    suppressed, 1,
+    "expected the float-descendant cell to count as content (so only the truly empty cell is suppressed)"
+  );
+}
+
+#[test]
+fn absolutely_positioned_descendant_does_not_count_as_cell_content_for_empty_cells() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          table { border-collapse: separate; empty-cells: hide; border-spacing: 0; }
+          td { background: rgb(200, 20, 30); border: 2px solid black; padding: 0; }
+          span.abspos { position: absolute; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <tr><td><span class="abspos">abs</span></td><td>filled</td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 200, 200).unwrap();
+
+  let cells = cell_fragments(&tree);
+  assert_eq!(cells.len(), 2, "expected 2 table-cell fragments");
+
+  let suppressed = cells
+    .iter()
+    .filter(|cell| {
+      cell
+        .style
+        .as_ref()
+        .map(|s| s.background_color.is_transparent())
+        .unwrap_or(false)
+    })
+    .count();
+  assert_eq!(
+    suppressed, 1,
+    "expected the absolute-positioned descendant to be ignored when determining cell emptiness"
+  );
+
+  let filled = find_cell_fragment_with_text(&tree.root, "filled")
+    .or_else(|| {
+      tree
+        .additional_fragments
+        .iter()
+        .find_map(|fragment| find_cell_fragment_with_text(fragment, "filled"))
+    })
+    .expect("filled cell fragment");
+  let filled_style = filled.style.as_ref().expect("cell style");
+  assert!(
+    !filled_style.background_color.is_transparent(),
+    "filled cell should not be suppressed"
+  );
+}
+
+#[test]
+fn visibility_hidden_cells_are_treated_as_visually_empty_for_empty_cells() {
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          table { border-collapse: separate; empty-cells: hide; border-spacing: 0; }
+          td { background: rgb(200, 20, 30); border: 2px solid black; padding: 0; }
+          td.hidden { visibility: hidden; }
+        </style>
+      </head>
+      <body>
+        <table>
+          <tr><td class="hidden">hidden</td><td>visible</td></tr>
+        </table>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let tree = renderer.layout_document(&dom, 200, 200).unwrap();
+
+  let hidden = find_cell_fragment_with_text(&tree.root, "hidden")
+    .or_else(|| {
+      tree
+        .additional_fragments
+        .iter()
+        .find_map(|fragment| find_cell_fragment_with_text(fragment, "hidden"))
+    })
+    .expect("hidden cell fragment");
+  let visible = find_cell_fragment_with_text(&tree.root, "visible")
+    .or_else(|| {
+      tree
+        .additional_fragments
+        .iter()
+        .find_map(|fragment| find_cell_fragment_with_text(fragment, "visible"))
+    })
+    .expect("visible cell fragment");
+
+  let hidden_style = hidden.style.as_ref().expect("cell style");
+  assert!(
+    hidden_style.background_color.is_transparent(),
+    "visibility:hidden cells should be treated as having no visible content for empty-cells"
+  );
+  assert_eq!(hidden_style.border_top_color, Rgba::TRANSPARENT);
+  assert_eq!(hidden_style.border_right_color, Rgba::TRANSPARENT);
+  assert_eq!(hidden_style.border_bottom_color, Rgba::TRANSPARENT);
+  assert_eq!(hidden_style.border_left_color, Rgba::TRANSPARENT);
+
+  let visible_style = visible.style.as_ref().expect("cell style");
+  assert!(
+    !visible_style.background_color.is_transparent(),
+    "visible cell should not be suppressed"
+  );
+}
+
+#[test]
 fn empty_cells_hide_collapses_empty_rows_and_dedupes_border_spacing() {
   let html = r#"
     <html>
