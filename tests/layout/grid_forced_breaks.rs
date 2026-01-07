@@ -95,3 +95,65 @@ fn grid_item_forced_break_after_propagates_to_row_boundary_in_paged_media() {
     blue_pos.1
   );
 }
+
+#[test]
+fn grid_item_forced_break_after_does_not_create_gap_only_pages() {
+  // Regression: if forced breaks are propagated to the start edge of the next track, breaks land
+  // after the row-gap and pagination can produce an extra page containing only the gap when the
+  // fragmentainer size ends exactly at the previous track boundary.
+  let html = r#"
+    <html>
+      <head>
+        <style>
+          @page { size: 100px 30px; margin: 0; }
+          body { margin: 0; }
+          .grid {
+            display: grid;
+            grid-template-rows: 30px 20px;
+            grid-template-columns: 1fr;
+            row-gap: 10px;
+            align-items: start;
+          }
+          .row1 {
+            height: 10px;
+            break-after: page;
+            background: rgb(255, 0, 0);
+          }
+          .row2 {
+            height: 10px;
+            background: rgb(0, 0, 255);
+          }
+        </style>
+      </head>
+      <body>
+        <div class="grid">
+          <div class="row1"></div>
+          <div class="row2"></div>
+        </div>
+      </body>
+    </html>
+  "#;
+
+  let mut renderer = FastRender::new().unwrap();
+  let dom = renderer.parse_html(html).unwrap();
+  let options = LayoutDocumentOptions::new().with_page_stacking(PageStacking::Untranslated);
+  let tree = renderer
+    .layout_document_for_media_with_options(&dom, 200, 200, MediaType::Print, options, None)
+    .unwrap();
+  let page_roots = pages(&tree);
+
+  assert_eq!(
+    page_roots.len(),
+    2,
+    "expected forced break to happen at the track boundary (before the row-gap) without inserting an extra gap-only page",
+  );
+
+  let blue = Rgba::rgb(0, 0, 255);
+  let blue_pos =
+    find_fragment_by_background(page_roots[1], (0.0, 0.0), blue).expect("row 2 item on page 2");
+  assert!(
+    (blue_pos.1 - 10.0).abs() < 1.0,
+    "expected the second row to appear after the 10px row-gap at the start of page 2; got y={}",
+    blue_pos.1
+  );
+}

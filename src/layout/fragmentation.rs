@@ -1893,32 +1893,34 @@ pub(crate) fn collect_forced_boundaries_with_axes(
           }
 
           if boundary_reqs.iter().any(|req| req.forced) {
-            // Precompute flow-start offsets for each track. Index `i` is the boundary at grid line
-            // `i + 1` (i.e. before the track that starts at that line).
-            let mut track_flow_starts = Vec::with_capacity(tracks.len());
-            for (track_start, track_end) in tracks.iter().copied() {
-              let size = track_end - track_start;
-              track_flow_starts.push(abs_start + axis.flow_offset(track_start, size, parent_block_size));
-            }
+             // Grid line boundaries should align to row/column band atomic ranges. Our atomic range
+             // collection treats the gutter *following* a track as belonging to the next band, so
+             // the boundary before line `i + 1` is the end edge of track `i` (rather than the start
+             // edge of track `i + 1`, which would land after the gutter and can create gap-only
+             // pages when page sizes line up exactly with track ends).
+             let mut track_flow_ends = Vec::with_capacity(tracks.len());
+             for (_track_start, track_end) in tracks.iter().copied() {
+               track_flow_ends.push(abs_start + axis.flow_offset(track_end, 0.0, parent_block_size));
+             }
 
-            if boundary_reqs[0].forced {
-              forced.push(ForcedBoundary {
-                position: abs_start,
-                page_side: boundary_reqs[0].side,
-              });
-            }
-            for idx in 1..tracks.len() {
-              let req = boundary_reqs[idx];
-              if !req.forced {
-                continue;
-              }
-              if let Some(&position) = track_flow_starts.get(idx) {
-                forced.push(ForcedBoundary {
-                  position,
-                  page_side: req.side,
-                });
-              }
-            }
+             if boundary_reqs[0].forced {
+               forced.push(ForcedBoundary {
+                 position: abs_start,
+                 page_side: boundary_reqs[0].side,
+               });
+             }
+             for idx in 1..tracks.len() {
+               let req = boundary_reqs[idx];
+               if !req.forced {
+                 continue;
+               }
+               if let Some(&position) = track_flow_ends.get(idx.saturating_sub(1)) {
+                 forced.push(ForcedBoundary {
+                   position,
+                   page_side: req.side,
+                 });
+               }
+             }
             let end_req = boundary_reqs[tracks.len()];
             if end_req.forced {
               forced.push(ForcedBoundary {
