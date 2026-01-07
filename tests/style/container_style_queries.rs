@@ -498,6 +498,26 @@ fn container_style_query_resolves_lh_against_container_line_height() {
 }
 
 #[test]
+fn container_style_query_resolves_lh_inside_calc_against_container_line_height() {
+  let html = r#"
+    <style>
+      .container { container-type: inline-size; font-size: 16px; line-height: 0.5; }
+      .child { color: rgb(0 0 255); }
+      @container style(font-size > calc(1lh + 1px)) {
+        .child { color: rgb(255 0 0); }
+      }
+    </style>
+    <div class="container">
+      <div id="target" class="child">hello</div>
+    </div>
+  "#;
+
+  let styled = styled_tree_for(html);
+  let target = find_by_id(&styled, "target").expect("target element");
+  assert_eq!(target.styles.color, Rgba::rgb(255, 0, 0));
+}
+
+#[test]
 fn container_style_query_range_feature_matches_opacity() {
   let html = r#"
     <style>
