@@ -45,7 +45,6 @@ use crate::style::display::Display;
 use crate::style::types::Direction;
 use crate::style::types::ListStylePosition;
 use crate::style::types::OverflowWrap;
-use crate::style::types::TextEmphasisPosition;
 use crate::style::types::TextWrap;
 use crate::style::types::UnicodeBidi;
 use crate::style::types::WhiteSpace;
@@ -677,22 +676,17 @@ impl TextItem {
       return;
     };
 
-    let position = match style.text_emphasis_position {
-      TextEmphasisPosition::Auto => TextEmphasisPosition::Over,
-      other => other,
-    };
-
-    match position {
-      TextEmphasisPosition::Over | TextEmphasisPosition::OverLeft | TextEmphasisPosition::OverRight => {
+    match crate::style::resolve_text_emphasis_block_side(
+      style.writing_mode,
+      style.text_emphasis_position,
+    ) {
+      crate::style::BlockSide::Start => {
         metrics.baseline_offset += extra;
         metrics.height += extra;
       }
-      TextEmphasisPosition::Under
-      | TextEmphasisPosition::UnderLeft
-      | TextEmphasisPosition::UnderRight => {
+      crate::style::BlockSide::End => {
         metrics.height += extra;
       }
-      TextEmphasisPosition::Auto => {}
     }
   }
 

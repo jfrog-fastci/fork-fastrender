@@ -291,6 +291,14 @@ pub(crate) fn block_axis_is_horizontal(wm: WritingMode) -> bool {
   )
 }
 
+/// Whether the writing mode is a vertical *typographic mode* (as opposed to sideways).
+///
+/// CSS Text Decoration 4 defines that in vertical typographic modes, `text-emphasis-position`
+/// uses the `left`/`right` keywords to choose the emphasis side.
+pub(crate) fn is_vertical_typographic_mode(wm: WritingMode) -> bool {
+  matches!(wm, WritingMode::VerticalRl | WritingMode::VerticalLr)
+}
+
 pub(crate) fn inline_axis_positive(wm: WritingMode, dir: Direction) -> bool {
   match wm {
     WritingMode::HorizontalTb => dir != Direction::Rtl,
@@ -305,6 +313,66 @@ pub(crate) fn block_axis_positive(wm: WritingMode) -> bool {
   match wm {
     WritingMode::VerticalRl | WritingMode::SidewaysRl => false,
     _ => true,
+  }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BlockSide {
+  Start,
+  End,
+}
+
+/// Resolves the logical block side where `text-emphasis` marks are placed for the given
+/// `writing-mode`.
+///
+/// In horizontal typographic modes, the `over`/`under` component controls whether the emphasis
+/// is on the block-start or block-end side.
+///
+/// In vertical typographic modes, the `right`/`left` component controls the side; when omitted it
+/// defaults to `right` (per the spec initial value `over right`).
+///
+/// Spec: <https://www.w3.org/TR/css-text-decor-4/#text-emphasis-position-property>
+pub(crate) fn resolve_text_emphasis_block_side(
+  writing_mode: WritingMode,
+  position: TextEmphasisPosition,
+) -> BlockSide {
+  let position = match position {
+    TextEmphasisPosition::Auto => TextEmphasisPosition::Over,
+    other => other,
+  };
+
+  if is_vertical_typographic_mode(writing_mode) {
+    let mark_on_left = matches!(
+      position,
+      TextEmphasisPosition::OverLeft | TextEmphasisPosition::UnderLeft
+    );
+
+    // In vertical typographic modes, block-start is physical left for `*-lr` and physical right
+    // for `*-rl`.
+    let block_start_is_left = block_axis_positive(writing_mode);
+    let mark_on_block_start = if mark_on_left {
+      block_start_is_left
+    } else {
+      !block_start_is_left
+    };
+
+    if mark_on_block_start {
+      BlockSide::Start
+    } else {
+      BlockSide::End
+    }
+  } else {
+    let mark_on_block_start = matches!(
+      position,
+      TextEmphasisPosition::Over
+        | TextEmphasisPosition::OverLeft
+        | TextEmphasisPosition::OverRight
+    );
+    if mark_on_block_start {
+      BlockSide::Start
+    } else {
+      BlockSide::End
+    }
   }
 }
 
