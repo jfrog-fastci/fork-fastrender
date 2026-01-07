@@ -15082,6 +15082,7 @@ mod tests {
         name: None,
         query: Some(crate::css::types::ContainerQuery::Size(cond.clone())),
       }]],
+      false,
     );
     eprintln!("container match result: {}", matches);
     assert!(matches, "container context should match width query");

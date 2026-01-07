@@ -288,7 +288,7 @@ fn container_query_comma_conditions_select_independent_containers() {
         ContainerQueryInfo {
           inline_size: 0.0,
           block_size: 0.0,
-          container_type: ContainerType::Style,
+          container_type: ContainerType::Normal,
           names: Vec::new(),
           font_size: inner_styles.font_size,
           styles: Arc::clone(&inner_styles),

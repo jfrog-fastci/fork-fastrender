@@ -24,7 +24,7 @@ fn unknown_container_queries_do_not_drop_nested_keyframes() {
     .expect("@container rule retained");
 
   assert!(matches!(
-    container_rule.query_list.first(),
+    container_rule.conditions.first().and_then(|condition| condition.query.as_ref()),
     Some(ContainerQuery::Unknown(raw)) if raw.starts_with("scroll-state(")
   ));
 
@@ -50,8 +50,11 @@ fn grouped_container_queries_parse() {
     })
     .expect("@container rule");
 
-  assert_eq!(container_rule.query_list.len(), 1);
-  match &container_rule.query_list[0] {
+  assert_eq!(container_rule.conditions.len(), 1);
+  match container_rule.conditions[0]
+    .query
+    .as_ref()
+    .expect("container query") {
     ContainerQuery::And(list) => {
       assert_eq!(list.len(), 2);
       assert!(matches!(list[0], ContainerQuery::Size(_)));
@@ -60,4 +63,3 @@ fn grouped_container_queries_parse() {
     other => panic!("expected grouped query to parse as And, got {other:?}"),
   }
 }
-

@@ -10,6 +10,7 @@ mod container_query_forward_compat_test;
 mod container_query_pseudo_element_test;
 mod container_query_units_inline_styles_test;
 mod container_name_parsing_test;
+mod container_query_self_selection_test;
 mod container_style_queries;
 mod content_generation_test;
 mod counter_style_rules_test;

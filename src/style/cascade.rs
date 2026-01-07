@@ -892,6 +892,7 @@ struct FindContainerCacheKey {
   /// Interned container-name id; 0 represents "no name restriction".
   name_id: u32,
   support_mask: u8,
+  include_self: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -6713,6 +6714,7 @@ impl ContainerQueryContext {
     node_id: usize,
     ancestor_ids: &[usize],
     conditions: &[ContainerConditionGroup],
+    include_self: bool,
   ) -> bool {
     const MAX_RECURSION_DEPTH: usize = 32;
     if conditions.is_empty() {
@@ -6726,6 +6728,7 @@ impl ContainerQueryContext {
         node_id,
         ancestor_ids,
         conditions,
+        include_self,
         &mut guard,
         MAX_RECURSION_DEPTH,
       )
@@ -6737,6 +6740,7 @@ impl ContainerQueryContext {
     node_id: usize,
     ancestor_ids: &[usize],
     conditions: &[ContainerConditionGroup],
+    include_self: bool,
     guard: &mut Vec<usize>,
     depth_limit: usize,
   ) -> bool {
@@ -6780,6 +6784,7 @@ impl ContainerQueryContext {
             node_id,
             name_id,
             support_mask,
+            include_self,
           };
           let container_id = if let Some(cached) = memo.find_container.get(&key) {
             *cached
@@ -6790,6 +6795,7 @@ impl ContainerQueryContext {
                 ancestor_ids,
                 condition.name.as_deref(),
                 support_mask,
+                include_self,
               )
               .map(|(id, _)| id);
             memo.find_container.insert(key, found);
@@ -6845,12 +6851,14 @@ impl ContainerQueryContext {
     node_id: usize,
     ancestor_ids: &[usize],
     condition: &ContainerCondition,
+    include_self: bool,
   ) -> Option<(usize, &'a ContainerQueryInfo)> {
     self.find_container_impl(
       node_id,
       ancestor_ids,
       condition.name.as_deref(),
       cq_condition_support_mask(condition),
+      include_self,
     )
   }
 
@@ -6860,14 +6868,19 @@ impl ContainerQueryContext {
     ancestor_ids: &[usize],
     required_name: Option<&str>,
     support_mask: u8,
+    include_self: bool,
   ) -> Option<(usize, &'a ContainerQueryInfo)> {
     if support_mask == 0 {
       return None;
     }
 
-    // Per spec the query container is the nearest ancestor that establishes a container;
-    // allow the current element itself if it is a container.
-    for candidate in std::iter::once(node_id).chain(ancestor_ids.iter().rev().copied()) {
+    // Per spec the query container is the nearest ancestor that establishes a container.
+    // Pseudo-elements may query the originating element itself, so callers control whether the
+    // starting element participates in container selection.
+    for candidate in std::iter::once(node_id)
+      .take(include_self as usize)
+      .chain(ancestor_ids.iter().rev().copied())
+    {
       let Some(info) = self.containers.get(&candidate) else {
         continue;
       };
@@ -9223,6 +9236,7 @@ fn compute_base_styles<'a>(
       parent_ua_styles.font_size,
       ua_root_font_size,
       viewport,
+      false,
     );
     resolve_container_query_font_size(
       &mut styles,
@@ -9232,6 +9246,7 @@ fn compute_base_styles<'a>(
       parent_styles.font_size,
       root_font_size,
       viewport,
+      false,
     );
 
     let is_root = is_root_element(ancestors);
@@ -9257,8 +9272,16 @@ fn compute_base_styles<'a>(
       ancestor_ids,
       container_ctx,
       viewport,
+      false,
     );
-    resolve_container_query_lengths(&mut styles, node_id, ancestor_ids, container_ctx, viewport);
+    resolve_container_query_lengths(
+      &mut styles,
+      node_id,
+      ancestor_ids,
+      container_ctx,
+      viewport,
+      false,
+    );
     return Ok(NodeBaseStyles {
       styles,
       ua_styles,
@@ -9344,6 +9367,7 @@ fn compute_base_styles<'a>(
     parent_ua_styles.font_size,
     ua_root_font_size,
     viewport,
+    false,
   );
 
   let current_ua_root_font_size = if is_root {
@@ -9360,6 +9384,7 @@ fn compute_base_styles<'a>(
     ancestor_ids,
     container_ctx,
     viewport,
+    false,
   );
   let ua_default_color = ua_styles.color;
   let ua_default_background = ua_styles.background_color;
@@ -9427,6 +9452,7 @@ fn compute_base_styles<'a>(
     parent_styles.font_size,
     root_font_size,
     viewport,
+    false,
   );
 
   // Root font size for rem resolution: the document root sets the value for all descendants.
@@ -9438,7 +9464,14 @@ fn compute_base_styles<'a>(
   styles.root_font_size = current_root_font_size;
   resolve_line_height_length(&mut styles, viewport);
   resolve_absolute_lengths(&mut styles, current_root_font_size, viewport);
-  resolve_container_query_lengths(&mut styles, node_id, ancestor_ids, container_ctx, viewport);
+  resolve_container_query_lengths(
+    &mut styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    viewport,
+    false,
+  );
 
   let selected_scheme = select_color_scheme(&styles.color_scheme, color_scheme_pref);
   styles.used_dark_color_scheme = matches!(selected_scheme, Some(ColorSchemeEntry::Dark));
@@ -13656,7 +13689,7 @@ mod tests {
   }
 
   #[test]
-  fn container_query_prefers_self_container_over_ancestor() {
+  fn container_query_excludes_self_for_elements_but_includes_self_for_pseudos() {
     reset_container_query_memo();
     let mut containers = HashMap::new();
     containers.insert(
@@ -13695,10 +13728,22 @@ mod tests {
     let ancestor_ids = vec![0, 1];
 
     let (container_id, _) = ctx
-      .find_container(2, &ancestor_ids, &condition)
+      .find_container(2, &ancestor_ids, &condition, false)
+      .expect("container");
+    assert_eq!(container_id, 1);
+    assert!(
+      !ctx.matches(2, &ancestor_ids, &[vec![condition.clone()]], false),
+      "elements should not query themselves"
+    );
+
+    let (container_id, _) = ctx
+      .find_container(2, &ancestor_ids, &condition, true)
       .expect("container");
     assert_eq!(container_id, 2);
-    assert!(ctx.matches(2, &ancestor_ids, &[vec![condition]]));
+    assert!(
+      ctx.matches(2, &ancestor_ids, &[vec![condition]], true),
+      "pseudo-elements should be able to query their originating element"
+    );
   }
 
   #[test]
@@ -13738,13 +13783,13 @@ mod tests {
         MediaQuery::parse("(min-width: 500px)").expect("media query"),
       )),
     };
-    let ancestor_ids = vec![0, 1];
+    let ancestor_ids = vec![0, 1, 2];
 
     let (container_id, _) = ctx
-      .find_container(2, &ancestor_ids, &condition)
+      .find_container(3, &ancestor_ids, &condition, false)
       .expect("container");
     assert_eq!(container_id, 2);
-    assert!(ctx.matches(2, &ancestor_ids, &[vec![condition]]));
+    assert!(ctx.matches(3, &ancestor_ids, &[vec![condition]], false));
   }
 
   #[test]
@@ -13787,10 +13832,10 @@ mod tests {
     let ancestor_ids = vec![0, 1];
 
     let (container_id, _) = ctx
-      .find_container(2, &ancestor_ids, &condition)
+      .find_container(2, &ancestor_ids, &condition, false)
       .expect("container");
     assert_eq!(container_id, 1);
-    assert!(ctx.matches(2, &ancestor_ids, &[vec![condition]]));
+    assert!(ctx.matches(2, &ancestor_ids, &[vec![condition]], false));
   }
 
   #[test]
@@ -13833,10 +13878,10 @@ mod tests {
     let ancestor_ids = vec![0, 1, 2];
 
     let (container_id, _) = ctx
-      .find_container(3, &ancestor_ids, &condition)
+      .find_container(3, &ancestor_ids, &condition, false)
       .expect("container");
     assert_eq!(container_id, 1);
-    assert!(ctx.matches(3, &ancestor_ids, &[vec![condition]]));
+    assert!(ctx.matches(3, &ancestor_ids, &[vec![condition]], false));
   }
 
   #[test]
@@ -24831,7 +24876,7 @@ fn find_matching_rules<'a>(
 
       if !rule.container_conditions.is_empty() {
         match container_ctx {
-          Some(ctx) if ctx.matches(node_id, ancestor_ids, &rule.container_conditions) => {}
+          Some(ctx) if ctx.matches(node_id, ancestor_ids, &rule.container_conditions, false) => {}
           _ => {
             idx = end;
             continue;
@@ -25093,7 +25138,7 @@ fn find_matching_rules<'a>(
 
       if !rule.container_conditions.is_empty() {
         match container_ctx {
-          Some(ctx) if ctx.matches(node_id, ancestor_ids, &rule.container_conditions) => {}
+          Some(ctx) if ctx.matches(node_id, ancestor_ids, &rule.container_conditions, false) => {}
           _ => {
             idx = end;
             continue;
@@ -25447,6 +25492,8 @@ fn find_pseudo_element_rules<'a>(
     element_attr_cache,
   };
 
+  let include_self_container =
+    !matches!(pseudo, PseudoElement::Part(_) | PseudoElement::Slotted(_));
   let mut scoped_rule_idx: Option<usize> = None;
   let mut scoped_match: Option<ScopeMatchResult> = None;
   let mut scoped_container_match: Option<bool> = None;
@@ -25473,7 +25520,12 @@ fn find_pseudo_element_rules<'a>(
         true
       } else {
         match container_ctx {
-          Some(ctx) => ctx.matches(node_id, ancestor_ids, &rule.container_conditions),
+          Some(ctx) => ctx.matches(
+            node_id,
+            ancestor_ids,
+            &rule.container_conditions,
+            include_self_container,
+          ),
           None => false,
         }
       };
@@ -26670,6 +26722,7 @@ fn container_query_unit_bases(
   ancestor_ids: &[usize],
   container_ctx: Option<&ContainerQueryContext>,
   viewport: Size,
+  include_self: bool,
 ) -> ContainerQueryUnitBases {
   let viewport_width = if viewport.width.is_finite() {
     viewport.width.max(0.0)
@@ -26705,7 +26758,10 @@ fn container_query_unit_bases(
   let mut found_cqi = false;
   let mut found_cqb = false;
 
-  for candidate_id in std::iter::once(node_id).chain(ancestor_ids.iter().rev().copied()) {
+  for candidate_id in std::iter::once(node_id)
+    .take(include_self as usize)
+    .chain(ancestor_ids.iter().rev().copied())
+  {
     let Some(info) = ctx.containers.get(&candidate_id) else {
       continue;
     };
@@ -26795,12 +26851,20 @@ fn resolve_container_query_font_size(
   parent_font_size: f32,
   root_font_size: f32,
   viewport: Size,
+  include_self: bool,
 ) {
   let Some(pending) = styles.font_size_pending.take() else {
     return;
   };
 
-  let bases = container_query_unit_bases(styles, node_id, ancestor_ids, container_ctx, viewport);
+  let bases = container_query_unit_bases(
+    styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    viewport,
+    include_self,
+  );
   let resolved = pending.resolve_container_query_units(bases.cqw, bases.cqh, bases.cqi, bases.cqb);
   if let Some(size) = crate::style::properties::resolve_font_size_length(
     resolved,
@@ -26818,6 +26882,7 @@ fn resolve_container_query_lengths(
   ancestor_ids: &[usize],
   container_ctx: Option<&ContainerQueryContext>,
   viewport: Size,
+  include_self: bool,
 ) {
   use crate::css::types::RadialGradientSize;
   use crate::css::types::Transform;
@@ -26850,7 +26915,14 @@ fn resolve_container_query_lengths(
   use crate::style::types::TextUnderlineOffset;
   use crate::style::types::VerticalAlign;
 
-  let bases = container_query_unit_bases(styles, node_id, ancestor_ids, container_ctx, viewport);
+  let bases = container_query_unit_bases(
+    styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    viewport,
+    include_self,
+  );
 
   let mut resolve_len = |len: &mut Length| {
     *len = len.resolve_container_query_units(bases.cqw, bases.cqh, bases.cqi, bases.cqb);
@@ -28141,6 +28213,16 @@ fn compute_pseudo_element_styles(
   resolve_match_parent_text_align(&mut ua_styles, ua_parent_styles, false);
   resolve_relative_font_weight(&mut ua_styles, ua_parent_styles);
   propagate_text_decorations(&mut ua_styles, ua_parent_styles);
+  resolve_container_query_font_size(
+    &mut ua_styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    ua_parent_styles.font_size,
+    ua_root_font_size,
+    viewport,
+    true,
+  );
   ua_styles.root_font_size = ua_root_font_size;
   resolve_line_height_length(&mut ua_styles, viewport);
   resolve_absolute_lengths(&mut ua_styles, ua_root_font_size, viewport);
@@ -28150,6 +28232,7 @@ fn compute_pseudo_element_styles(
     ancestor_ids,
     container_ctx,
     viewport,
+    true,
   );
 
   // Start with default inline styles (pseudo-elements default to display: inline)
@@ -28177,10 +28260,27 @@ fn compute_pseudo_element_styles(
   resolve_match_parent_text_align_last(&mut styles, parent_styles, false);
   resolve_relative_font_weight(&mut styles, parent_styles);
   propagate_text_decorations(&mut styles, parent_styles);
+  resolve_container_query_font_size(
+    &mut styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    parent_styles.font_size,
+    root_font_size,
+    viewport,
+    true,
+  );
   styles.root_font_size = root_font_size;
   resolve_line_height_length(&mut styles, viewport);
   resolve_absolute_lengths(&mut styles, root_font_size, viewport);
-  resolve_container_query_lengths(&mut styles, node_id, ancestor_ids, container_ctx, viewport);
+  resolve_container_query_lengths(
+    &mut styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    viewport,
+    true,
+  );
 
   match pseudo {
     PseudoElement::Before | PseudoElement::After => {
@@ -28333,6 +28433,16 @@ fn compute_first_line_styles(
   resolve_match_parent_text_align(&mut ua_styles, base_ua_styles, false);
   resolve_relative_font_weight(&mut ua_styles, base_ua_styles);
   propagate_text_decorations(&mut ua_styles, base_ua_styles);
+  resolve_container_query_font_size(
+    &mut ua_styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    base_ua_styles.font_size,
+    ua_root_font_size,
+    viewport,
+    true,
+  );
   ua_styles.root_font_size = ua_root_font_size;
   resolve_line_height_length(&mut ua_styles, viewport);
   resolve_absolute_lengths(&mut ua_styles, ua_root_font_size, viewport);
@@ -28342,6 +28452,7 @@ fn compute_first_line_styles(
     ancestor_ids,
     container_ctx,
     viewport,
+    true,
   );
 
   let mut styles = base_styles.clone();
@@ -28363,10 +28474,27 @@ fn compute_first_line_styles(
   resolve_match_parent_text_align_last(&mut styles, base_styles, false);
   resolve_relative_font_weight(&mut styles, base_styles);
   propagate_text_decorations(&mut styles, base_styles);
+  resolve_container_query_font_size(
+    &mut styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    base_styles.font_size,
+    root_font_size,
+    viewport,
+    true,
+  );
   styles.root_font_size = root_font_size;
   resolve_line_height_length(&mut styles, viewport);
   resolve_absolute_lengths(&mut styles, root_font_size, viewport);
-  resolve_container_query_lengths(&mut styles, node_id, ancestor_ids, container_ctx, viewport);
+  resolve_container_query_lengths(
+    &mut styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    viewport,
+    true,
+  );
 
   Some((styles, ua_styles))
 }
@@ -28453,6 +28581,16 @@ fn compute_first_letter_styles(
   resolve_match_parent_text_align(&mut ua_styles, base_ua_styles, false);
   resolve_relative_font_weight(&mut ua_styles, base_ua_styles);
   propagate_text_decorations(&mut ua_styles, base_ua_styles);
+  resolve_container_query_font_size(
+    &mut ua_styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    base_ua_styles.font_size,
+    ua_root_font_size,
+    viewport,
+    true,
+  );
   ua_styles.root_font_size = ua_root_font_size;
   resolve_line_height_length(&mut ua_styles, viewport);
   resolve_absolute_lengths(&mut ua_styles, ua_root_font_size, viewport);
@@ -28462,6 +28600,7 @@ fn compute_first_letter_styles(
     ancestor_ids,
     container_ctx,
     viewport,
+    true,
   );
 
   let mut styles = base_styles.clone();
@@ -28483,10 +28622,27 @@ fn compute_first_letter_styles(
   resolve_match_parent_text_align_last(&mut styles, base_styles, false);
   resolve_relative_font_weight(&mut styles, base_styles);
   propagate_text_decorations(&mut styles, base_styles);
+  resolve_container_query_font_size(
+    &mut styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    base_styles.font_size,
+    root_font_size,
+    viewport,
+    true,
+  );
   styles.root_font_size = root_font_size;
   resolve_line_height_length(&mut styles, viewport);
   resolve_absolute_lengths(&mut styles, root_font_size, viewport);
-  resolve_container_query_lengths(&mut styles, node_id, ancestor_ids, container_ctx, viewport);
+  resolve_container_query_lengths(
+    &mut styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    viewport,
+    true,
+  );
   styles.display = Display::Inline;
 
   Some(styles)
@@ -28583,11 +28739,29 @@ fn compute_marker_styles(
   resolve_match_parent_text_align(&mut ua_styles, ua_list_item_styles, false);
   resolve_relative_font_weight(&mut ua_styles, ua_list_item_styles);
   propagate_text_decorations(&mut ua_styles, ua_list_item_styles);
+  resolve_container_query_font_size(
+    &mut ua_styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    ua_list_item_styles.font_size,
+    ua_root_font_size,
+    viewport,
+    true,
+  );
   ua_styles.root_font_size = ua_root_font_size;
   resolve_line_height_length(&mut ua_styles, viewport);
   resolve_absolute_lengths(&mut ua_styles, ua_root_font_size, viewport);
   reset_marker_box_properties(&mut ua_styles);
   ua_styles.display = Display::Inline;
+  resolve_container_query_lengths(
+    &mut ua_styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    viewport,
+    true,
+  );
 
   let mut styles = ComputedStyle::default();
   styles.display = Display::Inline;
@@ -28616,12 +28790,30 @@ fn compute_marker_styles(
   resolve_match_parent_text_align_last(&mut styles, list_item_styles, false);
   resolve_relative_font_weight(&mut styles, list_item_styles);
   propagate_text_decorations(&mut styles, list_item_styles);
+  resolve_container_query_font_size(
+    &mut styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    list_item_styles.font_size,
+    root_font_size,
+    viewport,
+    true,
+  );
   styles.root_font_size = root_font_size;
   resolve_line_height_length(&mut styles, viewport);
   resolve_absolute_lengths(&mut styles, root_font_size, viewport);
 
   reset_marker_box_properties(&mut styles);
   styles.display = Display::Inline;
+  resolve_container_query_lengths(
+    &mut styles,
+    node_id,
+    ancestor_ids,
+    container_ctx,
+    viewport,
+    true,
+  );
   Some(styles)
 }
 
